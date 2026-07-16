@@ -54,7 +54,10 @@ func (s *Service) Quote(ctx context.Context, request RequestV1, boundRecipe reci
 		return QuoteV1{}, err
 	}
 
-	now := s.now().UTC()
+	// PostgreSQL timestamptz and Dart DateTime both preserve microseconds. Pin
+	// authority-issued quote timestamps to that shared precision before they
+	// enter hashes, CBOR, protobuf, or persisted comparison columns.
+	now := s.now().UTC().Truncate(time.Microsecond)
 	if now.IsZero() {
 		return QuoteV1{}, fmt.Errorf("clock returned zero time")
 	}

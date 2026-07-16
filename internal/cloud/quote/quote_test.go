@@ -50,6 +50,25 @@ func TestServiceBuildsThreeExactCandidatesWithoutSecretProviderInput(t *testing.
 	}
 }
 
+func TestServiceNormalizesAuthoritativeQuoteTimeToPostgresPrecision(t *testing.T) {
+	clock := time.Date(2026, time.July, 16, 8, 0, 0, 123456789, time.UTC)
+	boundRecipe := quoteRecipe(t)
+	request := quoteRequest(t, boundRecipe, PurchaseOnDemand)
+	service, err := NewService(NewFakePricingPort(pricingSnapshot(clock, PurchaseOnDemand)), func() time.Time { return clock })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := service.Quote(context.Background(), request, boundRecipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := clock.Truncate(time.Microsecond)
+	if !got.QuotedAt.Equal(want) || !got.ValidUntil.Equal(want.Add(Validity)) {
+		t.Fatalf("quote times=(%s,%s), want PostgreSQL-stable (%s,%s)", got.QuotedAt, got.ValidUntil, want, want.Add(Validity))
+	}
+}
+
 func TestQuoteRequiresRequoteForExpiryAndEveryCompleteScopeDrift(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 8, 0, 0, 0, time.UTC)
 	boundRecipe := quoteRecipe(t)

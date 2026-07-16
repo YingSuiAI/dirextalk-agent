@@ -456,6 +456,7 @@ service CloudControlService {
   rpc GetCloudQuote(GetCloudQuoteRequest) returns (GetCloudQuoteResponse);
   rpc CreateCloudPlan(CreateCloudPlanRequest) returns (CreateCloudPlanResponse);
   rpc GetCloudPlan(GetCloudPlanRequest) returns (GetCloudPlanResponse);
+  rpc ListCloudPlans(ListCloudPlansRequest) returns (ListCloudPlansResponse);
   rpc CreateApprovalChallenge(CreateApprovalChallengeRequest) returns (CreateApprovalChallengeResponse);
   rpc ApproveCloudPlan(ApproveCloudPlanRequest) returns (ApproveCloudPlanResponse);
   rpc EstablishAwsConnection(EstablishAwsConnectionRequest) returns (EstablishAwsConnectionResponse);

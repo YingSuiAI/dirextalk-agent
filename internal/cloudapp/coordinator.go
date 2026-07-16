@@ -204,14 +204,37 @@ func (service *Service) ApprovePlan(ctx context.Context, scope MutationScope, co
 	if err != nil {
 		return cloudapproval.PlanV1{}, err
 	}
-	if plan.Revision != command.ExpectedRevision {
-		return cloudapproval.PlanV1{}, ErrRevisionConflict
-	}
-	priced, err := service.facts.LoadQuote(ctx, command.OwnerID, plan.Quote.QuoteID)
+	challenge, err := service.facts.LoadChallenge(ctx, command.Approval.ChallengeID)
 	if err != nil {
 		return cloudapproval.PlanV1{}, err
 	}
-	challenge, err := service.facts.LoadChallenge(ctx, command.Approval.ChallengeID)
+	if plan.Status == cloudapproval.PlanApproved && plan.Revision == command.ExpectedRevision+1 {
+		stored, loadErr := service.facts.LoadApproval(ctx, command.OwnerID, command.Approval.ApprovalID)
+		if loadErr != nil {
+			return cloudapproval.PlanV1{}, loadErr
+		}
+		now := service.now().UTC()
+		if challenge.ConsumedAt == nil || challenge.Revision < 2 || validateStoredApprovalAuthorization(stored, plan, command.Approval, now, false) != nil {
+			return cloudapproval.PlanV1{}, ErrApprovalRequired
+		}
+		approved, persistErr := service.facts.PersistApproval(
+			ctx, scope, command.IdempotencyKey, challenge.Revision-1, command.ExpectedRevision, stored,
+		)
+		if persistErr != nil {
+			return cloudapproval.PlanV1{}, persistErr
+		}
+		approvalIsFresh := now.Before(stored.ExpiresAt) && now.Before(stored.QuoteValidUntil)
+		if service.launcher != nil && approvalIsFresh {
+			if launchErr := service.launcher.SubmitApprovedPlan(ctx, scope, SubmitApprovedPlanCommand{OwnerID: command.OwnerID, PlanID: command.PlanID, ApprovalID: stored.ApprovalID}); launchErr != nil {
+				return approved, launchErr
+			}
+		}
+		return approved, nil
+	}
+	if plan.Status != cloudapproval.PlanReadyForConfirmation || plan.Revision != command.ExpectedRevision {
+		return cloudapproval.PlanV1{}, ErrRevisionConflict
+	}
+	priced, err := service.facts.LoadQuote(ctx, command.OwnerID, plan.Quote.QuoteID)
 	if err != nil {
 		return cloudapproval.PlanV1{}, err
 	}

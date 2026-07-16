@@ -129,6 +129,7 @@ func TestCloudStatusContractSeparatesAxesAndRequiresOwnerFilters(t *testing.T) {
 	worker := (&agentv1.CloudWorker{}).ProtoReflect().Descriptor()
 	assertFieldKind(t, worker, "revision", protoreflect.Int64Kind)
 	for _, request := range []proto.Message{
+		&agentv1.ListCloudPlansRequest{},
 		&agentv1.GetCloudConnectionRequest{}, &agentv1.ListCloudConnectionsRequest{},
 		&agentv1.GetCloudDeploymentRequest{}, &agentv1.ListCloudDeploymentsRequest{},
 		&agentv1.GetCloudResourceRequest{}, &agentv1.ListCloudResourcesRequest{},

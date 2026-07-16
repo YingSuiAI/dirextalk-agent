@@ -46,7 +46,10 @@ func (s *Service) DraftChallenge(ctx context.Context, plan PlanV1, pricedQuote c
 	if plan.Status != PlanReadyForConfirmation {
 		return ChallengeV1{}, fmt.Errorf("plan must be ready_for_confirmation")
 	}
-	now := s.now().UTC()
+	// Approval timestamps cross PostgreSQL, protobuf, and Dart. Truncating the
+	// authority clock before drafting avoids a sub-microsecond value being
+	// signed by the client but rounded by PostgreSQL during challenge read-back.
+	now := s.now().UTC().Truncate(time.Microsecond)
 	if err := plan.ValidateQuote(pricedQuote, now); err != nil {
 		return ChallengeV1{}, err
 	}

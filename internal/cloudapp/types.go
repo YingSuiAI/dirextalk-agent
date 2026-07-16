@@ -68,6 +68,21 @@ type ConnectionRepository interface {
 	FailFoundationOperation(context.Context, string, int64, bool, string) (FoundationOperation, error)
 }
 
+// FoundationLaunchHandoff is the de-secreted, caller-bound command implied by
+// a succeeded Foundation operation. PostgreSQL retains the Foundation fact as
+// an outbox until the matching cloud launch intent exists, so a transient
+// launch-store failure cannot strand an active, billable Connection.
+type FoundationLaunchHandoff struct {
+	Caller     MutationScope
+	OwnerID    string
+	PlanID     string
+	ApprovalID string
+}
+
+type FoundationLaunchHandoffRepository interface {
+	ListPendingFoundationLaunchHandoffs(context.Context, int) ([]FoundationLaunchHandoff, error)
+}
+
 type Connection struct {
 	ConnectionID    string
 	OwnerID         string

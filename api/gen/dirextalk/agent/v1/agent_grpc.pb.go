@@ -579,6 +579,7 @@ const (
 	CloudControlService_GetCloudQuote_FullMethodName           = "/dirextalk.agent.v1.CloudControlService/GetCloudQuote"
 	CloudControlService_CreateCloudPlan_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/CreateCloudPlan"
 	CloudControlService_GetCloudPlan_FullMethodName            = "/dirextalk.agent.v1.CloudControlService/GetCloudPlan"
+	CloudControlService_ListCloudPlans_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/ListCloudPlans"
 	CloudControlService_CreateApprovalChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateApprovalChallenge"
 	CloudControlService_ApproveCloudPlan_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPlan"
 	CloudControlService_EstablishAwsConnection_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/EstablishAwsConnection"
@@ -602,6 +603,7 @@ type CloudControlServiceClient interface {
 	GetCloudQuote(ctx context.Context, in *GetCloudQuoteRequest, opts ...grpc.CallOption) (*GetCloudQuoteResponse, error)
 	CreateCloudPlan(ctx context.Context, in *CreateCloudPlanRequest, opts ...grpc.CallOption) (*CreateCloudPlanResponse, error)
 	GetCloudPlan(ctx context.Context, in *GetCloudPlanRequest, opts ...grpc.CallOption) (*GetCloudPlanResponse, error)
+	ListCloudPlans(ctx context.Context, in *ListCloudPlansRequest, opts ...grpc.CallOption) (*ListCloudPlansResponse, error)
 	CreateApprovalChallenge(ctx context.Context, in *CreateApprovalChallengeRequest, opts ...grpc.CallOption) (*CreateApprovalChallengeResponse, error)
 	ApproveCloudPlan(ctx context.Context, in *ApproveCloudPlanRequest, opts ...grpc.CallOption) (*ApproveCloudPlanResponse, error)
 	EstablishAwsConnection(ctx context.Context, in *EstablishAwsConnectionRequest, opts ...grpc.CallOption) (*EstablishAwsConnectionResponse, error)
@@ -677,6 +679,16 @@ func (c *cloudControlServiceClient) GetCloudPlan(ctx context.Context, in *GetClo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetCloudPlanResponse)
 	err := c.cc.Invoke(ctx, CloudControlService_GetCloudPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ListCloudPlans(ctx context.Context, in *ListCloudPlansRequest, opts ...grpc.CallOption) (*ListCloudPlansResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCloudPlansResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ListCloudPlans_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -803,6 +815,7 @@ type CloudControlServiceServer interface {
 	GetCloudQuote(context.Context, *GetCloudQuoteRequest) (*GetCloudQuoteResponse, error)
 	CreateCloudPlan(context.Context, *CreateCloudPlanRequest) (*CreateCloudPlanResponse, error)
 	GetCloudPlan(context.Context, *GetCloudPlanRequest) (*GetCloudPlanResponse, error)
+	ListCloudPlans(context.Context, *ListCloudPlansRequest) (*ListCloudPlansResponse, error)
 	CreateApprovalChallenge(context.Context, *CreateApprovalChallengeRequest) (*CreateApprovalChallengeResponse, error)
 	ApproveCloudPlan(context.Context, *ApproveCloudPlanRequest) (*ApproveCloudPlanResponse, error)
 	EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error)
@@ -841,6 +854,9 @@ func (UnimplementedCloudControlServiceServer) CreateCloudPlan(context.Context, *
 }
 func (UnimplementedCloudControlServiceServer) GetCloudPlan(context.Context, *GetCloudPlanRequest) (*GetCloudPlanResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudPlan not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ListCloudPlans(context.Context, *ListCloudPlansRequest) (*ListCloudPlansResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCloudPlans not implemented")
 }
 func (UnimplementedCloudControlServiceServer) CreateApprovalChallenge(context.Context, *CreateApprovalChallengeRequest) (*CreateApprovalChallengeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateApprovalChallenge not implemented")
@@ -1000,6 +1016,24 @@ func _CloudControlService_GetCloudPlan_Handler(srv interface{}, ctx context.Cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CloudControlServiceServer).GetCloudPlan(ctx, req.(*GetCloudPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ListCloudPlans_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCloudPlansRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ListCloudPlans(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ListCloudPlans_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ListCloudPlans(ctx, req.(*ListCloudPlansRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1232,6 +1266,10 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCloudPlan",
 			Handler:    _CloudControlService_GetCloudPlan_Handler,
+		},
+		{
+			MethodName: "ListCloudPlans",
+			Handler:    _CloudControlService_ListCloudPlans_Handler,
 		},
 		{
 			MethodName: "CreateApprovalChallenge",

@@ -78,6 +78,28 @@ func TestServiceDraftAndVerifyDoNotPersistOrConsume(t *testing.T) {
 	}
 }
 
+func TestDraftChallengeNormalizesAuthorityTimeToPostgresPrecision(t *testing.T) {
+	clock := time.Date(2026, time.July, 16, 8, 0, 0, 123456789, time.UTC)
+	plan := validPlan()
+	plan.Quote.ValidUntil = clock.Add(cloudquote.Validity)
+	pricedQuote := pricedQuoteForPlan(t, &plan, clock)
+	registry, _, _ := approvalRegistry(t, clock, plan)
+	service, err := NewService(registry, registry, func() time.Time { return clock })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.random = bytes.NewReader(bytes.Repeat([]byte{0x25}, 32))
+
+	challenge, err := service.DraftChallenge(context.Background(), plan, pricedQuote, "device-key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := clock.Truncate(time.Microsecond)
+	if !challenge.IssuedAt.Equal(want) || !challenge.ExpiresAt.Equal(want.Add(ChallengeValidity)) {
+		t.Fatalf("challenge times=(%s,%s), want PostgreSQL-stable (%s,%s)", challenge.IssuedAt, challenge.ExpiresAt, want, want.Add(ChallengeValidity))
+	}
+}
+
 func TestServiceRejectsUnsignedExpiredOldRevisionOwnerAndScopeTampering(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 8, 0, 0, 0, time.UTC)
 	tests := []struct {

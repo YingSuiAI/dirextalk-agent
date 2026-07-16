@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+var _ cloudapp.FoundationLaunchHandoffRepository = (*Store)(nil)
+
 func (store *Store) PutAWSIdentityEvidence(ctx context.Context, value cloudapp.AWSIdentityEvidence) error {
 	if store == nil || validateAWSIdentityEvidence(value, store.instanceID) != nil {
 		return cloudapp.ErrInvalid
@@ -107,6 +109,60 @@ func (store *Store) ListRecoverableFoundationOperations(ctx context.Context, lim
 			return nil, scanErr
 		}
 		result = append(result, operation)
+	}
+	if rows.Err() != nil {
+		return nil, cloudapp.ErrUnavailable
+	}
+	return result, nil
+}
+
+// ListPendingFoundationLaunchHandoffs treats each succeeded Foundation
+// operation as a durable outbox until the exact Plan/Approval/Connection launch
+// intent exists. A valid Plan can have exactly one accepted Approval; missing
+// or ambiguous approval facts fail the scan closed instead of guessing.
+func (store *Store) ListPendingFoundationLaunchHandoffs(ctx context.Context, limit int) ([]cloudapp.FoundationLaunchHandoff, error) {
+	if store == nil || store.pool == nil || limit < 1 || limit > 256 {
+		return nil, cloudapp.ErrInvalid
+	}
+	rows, err := store.pool.Query(ctx, `
+		SELECT operation.caller_client_id, operation.caller_credential_id,
+		       operation.owner_id, operation.plan_id, accepted.approval_id
+		FROM aws_foundation_operations AS operation
+		CROSS JOIN LATERAL (
+			SELECT CASE WHEN count(*)=1 THEN min(approval.approval_id::text)::uuid END AS approval_id
+			FROM cloud_approvals AS approval
+			WHERE approval.agent_instance_id=operation.agent_instance_id
+			  AND approval.owner_id=operation.owner_id
+			  AND approval.plan_id=operation.plan_id
+		) AS accepted
+		WHERE operation.agent_instance_id=$1 AND operation.status='succeeded'
+		  AND NOT EXISTS (
+			SELECT 1 FROM cloud_launch_operations AS launch
+			WHERE launch.agent_instance_id=operation.agent_instance_id
+			  AND launch.owner_id=operation.owner_id
+			  AND launch.plan_id=operation.plan_id
+			  AND launch.approval_id=accepted.approval_id
+			  AND launch.connection_id=operation.connection_id
+		  )
+		ORDER BY operation.updated_at, operation.operation_id
+		LIMIT $2`, store.instanceID, limit)
+	if err != nil {
+		return nil, cloudapp.ErrUnavailable
+	}
+	defer rows.Close()
+	result := make([]cloudapp.FoundationLaunchHandoff, 0, limit)
+	for rows.Next() {
+		var value cloudapp.FoundationLaunchHandoff
+		var credentialID, planID, approvalID uuid.UUID
+		if err := rows.Scan(&value.Caller.ClientID, &credentialID, &value.OwnerID, &planID, &approvalID); err != nil {
+			return nil, cloudapp.ErrUnavailable
+		}
+		value.Caller.CredentialID = credentialID.String()
+		value.PlanID, value.ApprovalID = planID.String(), approvalID.String()
+		if value.Caller.Validate() != nil || strings.TrimSpace(value.OwnerID) == "" {
+			return nil, cloudapp.ErrUnavailable
+		}
+		result = append(result, value)
 	}
 	if rows.Err() != nil {
 		return nil, cloudapp.ErrUnavailable
@@ -343,7 +399,7 @@ func validateFoundationIntent(value cloudapp.FoundationOperationIntent) error {
 
 func validateCloudConnection(value cloudapp.Connection) error {
 	parsed, err := uuid.Parse(value.ConnectionID)
-	if err != nil || parsed == uuid.Nil || strings.TrimSpace(value.OwnerID) == "" || !awsAccountPattern.MatchString(value.AccountID) ||
+	if err != nil || parsed == uuid.Nil || parsed.String() != value.ConnectionID || strings.TrimSpace(value.OwnerID) == "" || !awsAccountPattern.MatchString(value.AccountID) ||
 		!awsRegionPattern.MatchString(value.Region) || strings.TrimSpace(value.ControlRoleARN) == "" ||
 		strings.TrimSpace(value.FoundationStack) == "" || value.Status != "active" || value.Revision != 1 {
 		return cloudapp.ErrInvalid

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
@@ -68,6 +69,11 @@ type ConnectionPage struct {
 	NextPageToken string
 }
 
+type PlanPage struct {
+	Plans         []cloudapproval.PlanV1
+	NextPageToken string
+}
+
 // Deployment is the durable cloud-control relationship for one exclusive
 // Worker. PlanID and ConnectionID come from the immutable launch intent; they
 // are deliberately not inferred from Worker or resource state.
@@ -88,6 +94,7 @@ type ResourcePage struct {
 }
 
 type Reader interface {
+	ListPlans(context.Context, ListQuery) (PlanPage, error)
 	GetConnection(context.Context, string, string) (Connection, error)
 	ListConnections(context.Context, ListQuery) (ConnectionPage, error)
 	GetDeployment(context.Context, string, string) (Deployment, error)

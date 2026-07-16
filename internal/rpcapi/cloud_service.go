@@ -1,6 +1,7 @@
 package rpcapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
@@ -168,12 +170,51 @@ func (service *CloudControlService) CreateApprovalChallenge(ctx context.Context,
 	if err != nil {
 		return nil, publicError(err)
 	}
+	plan, err := service.coordinator.GetPlan(ctx, request.GetOwnerId(), request.GetPlanId())
+	if err != nil {
+		return nil, publicError(err)
+	}
+	if !validApprovalChallengeProjection(value, plan, request, service.agentInstanceID) {
+		return nil, status.Error(codes.Internal, "stored approval challenge projection is invalid")
+	}
 	return &agentv1.CreateApprovalChallengeResponse{Challenge: &agentv1.ApprovalChallenge{
 		ChallengeId: value.Challenge.ChallengeID, SignerKeyId: value.Challenge.SignerKeyID,
 		PlanId: value.Challenge.PlanID, PlanRevision: int64(value.Challenge.PlanRevision), PlanHash: value.Challenge.PlanHash,
 		ExpiresAt: timestamppb.New(value.ExpiresAt), SigningPayloadCbor: value.SigningCBOR,
 		Revision: int64(value.Challenge.Revision), ApprovalId: value.ApprovalID,
+		AgentInstanceId: value.Challenge.AgentInstanceID, OwnerId: value.Challenge.OwnerID,
+		ConnectionId: value.Challenge.ConnectionID, RecipeDigest: value.Challenge.RecipeDigest,
+		QuoteId: value.Challenge.QuoteID, QuoteDigest: value.Challenge.QuoteDigest,
+		QuoteScopeDigest: value.Challenge.QuoteScopeDigest, QuoteCandidateId: value.Challenge.QuoteCandidateID,
 	}}, nil
+}
+
+func validApprovalChallengeProjection(value cloudapp.Challenge, plan cloudapproval.PlanV1, request *agentv1.CreateApprovalChallengeRequest, agentInstanceID string) bool {
+	if request == nil || request.GetExpectedRevision() < 1 || agentInstanceID == "" ||
+		plan.AgentInstanceID != agentInstanceID || plan.OwnerID != request.GetOwnerId() || plan.PlanID != request.GetPlanId() ||
+		plan.Revision != uint64(request.GetExpectedRevision()) || plan.Status != cloudapproval.PlanReadyForConfirmation {
+		return false
+	}
+	challenge := value.Challenge
+	planHash, err := plan.Hash()
+	if err != nil || challenge.ChallengeID == "" || challenge.Revision == 0 || challenge.ConsumedAt != nil ||
+		challenge.IssuedAt.IsZero() || challenge.ExpiresAt.IsZero() || !challenge.IssuedAt.Before(challenge.ExpiresAt) ||
+		!value.ExpiresAt.Equal(challenge.ExpiresAt) || challenge.SignerKeyID != request.GetSignerKeyId() ||
+		challenge.AgentInstanceID != plan.AgentInstanceID || challenge.OwnerID != plan.OwnerID ||
+		challenge.PlanID != plan.PlanID || challenge.PlanRevision != plan.Revision || challenge.PlanHash != planHash ||
+		challenge.ConnectionID != plan.ConnectionID || challenge.RecipeDigest != plan.Recipe.Digest ||
+		challenge.QuoteID != plan.Quote.QuoteID || challenge.QuoteDigest != plan.Quote.Digest ||
+		challenge.QuoteScopeDigest != plan.Quote.ScopeDigest || challenge.QuoteCandidateID != plan.Quote.CandidateID {
+		return false
+	}
+	unsigned, err := cloudapproval.NewApprovalV1(
+		plan, value.ApprovalID, challenge.ChallengeID, challenge.SignerKeyID, challenge.ExpiresAt,
+	)
+	if err != nil {
+		return false
+	}
+	payload, err := unsigned.SigningPayload()
+	return err == nil && len(payload) > 0 && bytes.Equal(payload, value.SigningCBOR)
 }
 
 func (service *CloudControlService) ApproveCloudPlan(ctx context.Context, request *agentv1.ApproveCloudPlanRequest) (*agentv1.ApproveCloudPlanResponse, error) {

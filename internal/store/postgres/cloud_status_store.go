@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
@@ -18,6 +19,7 @@ import (
 )
 
 const (
+	cloudStatusPlanCursor       = "plan"
 	cloudStatusConnectionCursor = "connection"
 	cloudStatusDeploymentCursor = "deployment"
 	cloudStatusWorkerCursor     = "worker"
@@ -27,6 +29,72 @@ const (
 type CloudStatusStore struct {
 	pool       *pgxpool.Pool
 	instanceID uuid.UUID
+	facts      *Store
+}
+
+func (store *CloudStatusStore) ListPlans(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.PlanPage, error) {
+	if err := query.Validate(); err != nil || strings.TrimSpace(query.DeploymentID) != "" {
+		return cloudstatus.PlanPage{}, cloudstatus.ErrInvalid
+	}
+	pageSize := statusPageSize(query.PageSize)
+	cursor, err := decodeCloudOwnedStatusCursor(query.PageToken, cloudStatusPlanCursor, query.OwnerID)
+	if err != nil {
+		return cloudstatus.PlanPage{}, cloudstatus.ErrInvalid
+	}
+	arguments := []any{store.instanceID, strings.TrimSpace(query.OwnerID)}
+	where := ` WHERE agent_instance_id=$1 AND owner_id=$2`
+	if cursor != nil {
+		arguments = append(arguments, cursor.CreatedAt, cursor.ID)
+		where += ` AND (created_at, plan_id) > ($3, $4)`
+	}
+	arguments = append(arguments, pageSize+1)
+	rows, err := store.pool.Query(ctx, `SELECT plan_id, created_at FROM cloud_plans`+where+
+		fmt.Sprintf(` ORDER BY created_at, plan_id LIMIT $%d`, len(arguments)), arguments...)
+	if err != nil {
+		return cloudstatus.PlanPage{}, fmt.Errorf("list owned cloud Plan links: %w", err)
+	}
+	defer rows.Close()
+	type planLink struct {
+		id        uuid.UUID
+		createdAt time.Time
+	}
+	links := make([]planLink, 0, pageSize+1)
+	for rows.Next() {
+		var link planLink
+		if err := rows.Scan(&link.id, &link.createdAt); err != nil || link.id == uuid.Nil || link.createdAt.IsZero() {
+			if err == nil {
+				err = errors.New("invalid persisted cloud Plan link")
+			}
+			return cloudstatus.PlanPage{}, fmt.Errorf("scan owned cloud Plan link: %w", err)
+		}
+		link.createdAt = link.createdAt.UTC()
+		links = append(links, link)
+	}
+	if err := rows.Err(); err != nil {
+		return cloudstatus.PlanPage{}, fmt.Errorf("iterate owned cloud Plan links: %w", err)
+	}
+	rows.Close()
+	visible := links
+	result := cloudstatus.PlanPage{Plans: make([]cloudapproval.PlanV1, 0, min(len(links), pageSize))}
+	if len(links) > pageSize {
+		visible = links[:pageSize]
+		last := visible[pageSize-1]
+		result.NextPageToken, err = encodeCloudOwnedStatusCursor(cloudStatusPlanCursor, query.OwnerID, last.createdAt, last.id.String())
+		if err != nil {
+			return cloudstatus.PlanPage{}, err
+		}
+	}
+	for _, link := range visible {
+		plan, readErr := store.facts.GetPlan(ctx, strings.TrimSpace(query.OwnerID), link.id.String())
+		if readErr != nil {
+			return cloudstatus.PlanPage{}, fmt.Errorf("read owned cloud Plan status: %w", readErr)
+		}
+		if plan.AgentInstanceID != store.instanceID.String() || plan.OwnerID != strings.TrimSpace(query.OwnerID) {
+			return cloudstatus.PlanPage{}, errors.New("cloud Plan link does not match persisted fact")
+		}
+		result.Plans = append(result.Plans, plan)
+	}
+	return result, nil
 }
 
 func (store *CloudStatusStore) GetConnection(ctx context.Context, ownerID, connectionID string) (cloudstatus.Connection, error) {
@@ -130,7 +198,7 @@ func NewCloudStatusStore(store *Store) (*CloudStatusStore, error) {
 	if store == nil || store.pool == nil || store.instanceID == uuid.Nil {
 		return nil, cloudstatus.ErrInvalid
 	}
-	return &CloudStatusStore{pool: store.pool, instanceID: store.instanceID}, nil
+	return &CloudStatusStore{pool: store.pool, instanceID: store.instanceID, facts: store}, nil
 }
 
 func (store *CloudStatusStore) GetDeployment(ctx context.Context, ownerID, deploymentID string) (cloudstatus.Deployment, error) {
@@ -388,6 +456,10 @@ type cloudStatusCursor struct {
 }
 
 func encodeCloudConnectionCursor(ownerID string, createdAt time.Time, rawID string) (string, error) {
+	return encodeCloudOwnedStatusCursor(cloudStatusConnectionCursor, ownerID, createdAt, rawID)
+}
+
+func encodeCloudOwnedStatusCursor(kind, ownerID string, createdAt time.Time, rawID string) (string, error) {
 	if err := cloudstatus.ValidateOwnerID(ownerID); err != nil {
 		return "", err
 	}
@@ -396,7 +468,7 @@ func encodeCloudConnectionCursor(ownerID string, createdAt time.Time, rawID stri
 		return "", cloudstatus.ErrInvalid
 	}
 	encoded, err := json.Marshal(cloudStatusCursor{
-		Kind: cloudStatusConnectionCursor, OwnerID: strings.TrimSpace(ownerID), CreatedAt: createdAt.UTC(), ID: id,
+		Kind: kind, OwnerID: strings.TrimSpace(ownerID), CreatedAt: createdAt.UTC(), ID: id,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode cloud connection cursor: %w", err)
@@ -405,10 +477,14 @@ func encodeCloudConnectionCursor(ownerID string, createdAt time.Time, rawID stri
 }
 
 func decodeCloudConnectionCursor(value, ownerID string) (*cloudStatusCursor, error) {
+	return decodeCloudOwnedStatusCursor(value, cloudStatusConnectionCursor, ownerID)
+}
+
+func decodeCloudOwnedStatusCursor(value, kind, ownerID string) (*cloudStatusCursor, error) {
 	if err := cloudstatus.ValidateOwnerID(ownerID); err != nil {
 		return nil, err
 	}
-	cursor, err := decodeCloudStatusCursor(value, cloudStatusConnectionCursor)
+	cursor, err := decodeCloudStatusCursor(value, kind)
 	if err != nil || (cursor != nil && cursor.OwnerID != strings.TrimSpace(ownerID)) {
 		return nil, cloudstatus.ErrInvalid
 	}

@@ -71,7 +71,7 @@ Observable acceptance: after encrypted credential bootstrap and device-approved 
 - [x] Store `quoted_at`, 15-minute `valid_until`, currency, hourly/monthly estimate, maximum launch amount, assumptions, and excluded costs.
 - [x] Install an owner's first approval device only through the local mounted-public-key bootstrap; exact replay is idempotent and a second device is atomically rejected.
 - [ ] Define device-signed approval-device rotation/revocation. Reserved remote Admin RPCs and generic SecretBootstrap completion remain fail closed until their complete signature bindings are frozen.
-- [ ] Implement deterministic CBOR Go/Dart golden vectors and device signatures binding plan, revision, quote, connection, Recipe, resources, network, secrets, integration, retention, and expiry.
+- [x] Implement deterministic CBOR Go/Dart golden vectors and device signatures binding plan, revision, quote, connection, Recipe, resources, network, secrets, integration, retention, and expiry.
 - [x] Requote when price expires or any approved Region/spec/image/network/secret/cost scope changes.
 
 ### Provisioning And Worker
@@ -103,7 +103,7 @@ P2 remaining work, in priority order:
 5. Add public device-approved manual destroy, Managed acceptance, service operation, pairing, backup/restore, and destroy-blocked workflows.
 6. Complete EIP/endpoint/snapshot lifecycle support, orphan re-import, stale-controller alerts, retry policy, Foundation upgrade, and full teardown.
 7. Replace the direct CloudWatch Worker-log policy: `${aws:userid}` contains `:` for assumed EC2 roles, while CloudWatch log stream names cannot use `:`. Direct Worker CloudWatch logging must not be claimed until this is redesigned.
-8. Complete P3 Message Server/Flutter integration before any conversation-driven or OpenClaw/knowledge-node acceptance claim.
+8. Complete the remaining P3 Cloud façade, event projection, cutover preflight, and client workload views before any conversation-driven or OpenClaw/knowledge-node acceptance claim.
 
 ## P3 — Message Server Façade And Flutter Workflow
 
@@ -129,14 +129,16 @@ P3 third-validation slice completed on 2026-07-16: Flutter parses an AWS CSV inc
 
 P3 fourth-validation slice completed on 2026-07-16: after encrypted upload, Message Server reloads the exact owner-scoped Role Plan, derives Region and connection target server-side, calls Agent `PreviewAwsIdentity`, validates the persisted session/revision/owner/target/Region/time evidence, then re-reads the Role Plan before returning it. Agent performs typed STS `GetCallerIdentity` without consuming the bootstrap secret and read-backs the evidence from PostgreSQL. Flutter strictly parses and displays `identity_verified`, supports same-plan retry, and explicitly states that no Connection, Foundation, EC2, or billable compute resource exists yet. Agent tokens and WS cannot call the action; HTTP responses are `no-store`. Focused PostgreSQL, gRPC/ProductCore race, Go vet/Buf, Flutter model/widget, analyze, and diff checks passed.
 
+P3 fifth-validation slice completed on 2026-07-16: Agent Approval-v1 now binds the mounted Ed25519 device trust root, canonical signer key ID, deterministic CBOR Plan/Approval bytes, quote and full capability scopes, and a canonical Connection UUID with exact Go/Dart golden vectors. Message Server exposes typed prepare/approve/Establish/read-back operations, merges owner-scoped Agent Plan/Connection lists with legacy local facts, and routes canonical entities to Agent without globally replacing legacy workflows. Agent treats a successful Foundation operation as a durable outbox and compensates a missing exact launch intent after restart and during runtime. Flutter requires current identity evidence before signing, accepts only `active` as success, preserves the original idempotency reservation across unknown-result, preview outage, and bootstrap expiry, and replays the accepted approval without persisting its signature. Focused Go/Flutter tests, race, vet/analyze, command builds, real PostgreSQL restart/handoff coverage, cross-language golden comparison, secret-canary scan, and accumulated P0-P2 review passed.
+
 Deferred before remote Chat or Cloud can be enabled in a release:
 
 1. Publish the new Agent module and replace the temporary sibling `go.mod` replacement with an immutable remote version; a single-repository Message Server container build is not yet reproducible.
 2. Migrate model/runtime configuration and encrypted model secrets to Agent so Flutter no longer sends the legacy request-scoped `model_profile`; the current adapter discards that envelope before gRPC only to preserve local-Runner compatibility.
 3. Add typed Cloud dialogue, Knowledge/Embedding, and attachment contracts. The remote adapter intentionally rejects those modes instead of silently dropping behavior.
 4. Add conversation cursor reconciliation for the crash window after Agent commits a response but before Flutter persists the returned revision; current normal reconnect/session persistence is covered, but that cross-device/reinstall recovery path is not.
-5. Complete the remaining Cloud façade (`cloud.bootstrap`, Connections, Plans, Services, Recipes, Alerts), durable Agent event cursor/projection, approval compatibility, and cutover preflight below. Deployment list/get and Agent-side Connection list/get are complete.
-6. Before Establish, switch the remote connection target to a canonical UUID, install the same Flutter approval key through the local mounted trust anchor, freeze Agent Approval-v1 Go/Dart CBOR golden vectors, and use Connection get/list to reconcile unknown Establish results.
+5. Complete the remaining Cloud façade (`cloud.bootstrap`, Services, Recipes, Alerts), durable Agent event cursor/projection, and cutover preflight below. Owner-scoped Plan, Connection, and Deployment list/get plus device-approved Establish are complete.
+6. Add a full pending-to-active Flutter widget E2E and approved-quote expiry/requote/supersede UX; current model, HTTP, signature, read-back, and unknown-result recovery boundaries are covered.
 
 ### Flutter
 
@@ -145,7 +147,7 @@ Deferred before remote Chat or Cloud can be enabled in a release:
 - [x] Show strict STS caller-identity evidence after upload while keeping `identity_verified` distinct from an active Connection, Foundation, or billable state.
 - [ ] Add an optional pasted AK/SK/Session Token entry without weakening buffer clearing or logging guarantees.
 - [ ] Display goal/Task/Step progress, three quotes, Region, estimated cost, exclusions, retention deadline, execution/outcome/resource axes, Managed status, owner, alerts, health, pairing, logs, Recipe, operations, and destroy-blocked evidence.
-- [ ] Label confirmation as “确认创建并开始计费” and state that estimates are not hard budgets, failure/pairing may still bill, and ingress requires separate approval.
+- [x] Label confirmation as “确认创建并开始计费” and state that estimates are not hard budgets, failure/pairing may still bill, and ingress requires separate approval.
 - [ ] Implement revision-aware WS reducer, entity-only gap refresh, Cloud projection rebuild after cursor reset, and disconnect/reconnect tests.
 
 ### Cutover And Cleanup

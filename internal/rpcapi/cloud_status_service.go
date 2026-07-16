@@ -18,6 +18,23 @@ import (
 
 const maxCloudStatusRevision int64 = 1<<63 - 1
 
+func (service *CloudControlService) ListCloudPlans(ctx context.Context, request *agentv1.ListCloudPlansRequest) (*agentv1.ListCloudPlansResponse, error) {
+	if service.statusReader == nil {
+		return nil, cloudStatusUnavailable()
+	}
+	page, err := service.statusReader.ListPlans(ctx, cloudstatus.ListQuery{
+		OwnerID: request.GetOwnerId(), PageSize: int(request.GetPageSize()), PageToken: request.GetPageToken(),
+	})
+	if err != nil {
+		return nil, publicError(err)
+	}
+	response := &agentv1.ListCloudPlansResponse{Plans: make([]*agentv1.CloudPlan, 0, len(page.Plans)), NextPageToken: page.NextPageToken}
+	for _, item := range page.Plans {
+		response.Plans = append(response.Plans, cloudPlanToProto(item))
+	}
+	return response, nil
+}
+
 func (service *CloudControlService) GetCloudConnection(ctx context.Context, request *agentv1.GetCloudConnectionRequest) (*agentv1.GetCloudConnectionResponse, error) {
 	if service.statusReader == nil {
 		return nil, cloudStatusUnavailable()

@@ -68,11 +68,17 @@ func TestApprovalSigningPayloadBindsEveryHighRiskScope(t *testing.T) {
 		name   string
 		mutate func(*ApprovalV1)
 	}{
+		{"approval", func(a *ApprovalV1) { a.ApprovalID = "approval-2" }},
 		{"agent instance", func(a *ApprovalV1) { a.AgentInstanceID = "agent-instance-2" }},
 		{"owner", func(a *ApprovalV1) { a.OwnerID = "owner-2" }},
+		{"plan", func(a *ApprovalV1) { a.PlanID = "plan-2" }},
+		{"plan hash", func(a *ApprovalV1) { a.PlanHash = digest("6") }},
 		{"connection", func(a *ApprovalV1) { a.ConnectionID = "connection-2" }},
+		{"quote identity", func(a *ApprovalV1) { a.QuoteID = "quote-2" }},
 		{"quote", func(a *ApprovalV1) { a.QuoteDigest = digest("9") }},
 		{"quote scope", func(a *ApprovalV1) { a.QuoteScopeDigest = digest("7") }},
+		{"quote candidate", func(a *ApprovalV1) { a.QuoteCandidateID = "performance" }},
+		{"quote validity", func(a *ApprovalV1) { a.QuoteValidUntil = a.QuoteValidUntil.Add(-time.Second) }},
 		{"revision", func(a *ApprovalV1) { a.PlanRevision++ }},
 		{"recipe", func(a *ApprovalV1) { a.RecipeDigest = digest("8") }},
 		{"resource", func(a *ApprovalV1) { a.ResourceScope.DiskGiB++ }},
@@ -80,6 +86,8 @@ func TestApprovalSigningPayloadBindsEveryHighRiskScope(t *testing.T) {
 		{"secret", func(a *ApprovalV1) { a.SecretScope[0].Purpose = "different purpose" }},
 		{"integration", func(a *ApprovalV1) { a.IntegrationScope[0].Name = "different integration" }},
 		{"retention", func(a *ApprovalV1) { a.RetentionScope.GracePeriodSeconds++ }},
+		{"challenge", func(a *ApprovalV1) { a.ChallengeID = "challenge-2" }},
+		{"signer", func(a *ApprovalV1) { a.SignerKeyID = "device-key-2" }},
 		{"expiry", func(a *ApprovalV1) { a.ExpiresAt = a.ExpiresAt.Add(-time.Second) }},
 	}
 	for _, test := range tests {
@@ -165,7 +173,7 @@ func TestPlanAndApprovalGoldenVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approval, err := NewApprovalV1(plan, "approval-1", "challenge-1", "device-key-1", time.Date(2026, time.July, 16, 8, 5, 0, 0, time.UTC))
+	approval, err := NewApprovalV1(plan, "approval-1", "challenge-1", readGolden(t, "testdata/v1/approval-key-id.txt"), time.Date(2026, time.July, 16, 8, 5, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,13 +191,25 @@ func TestPlanAndApprovalGoldenVectors(t *testing.T) {
 		t.Fatalf("plan hash = %q, want golden %q", planHash, want)
 	}
 	if got, want := hex.EncodeToString(payload), readGolden(t, "testdata/v1/approval-signing-payload.cbor.hex"); got != want {
-		t.Fatalf("signing payload differs from language-neutral golden")
+		t.Fatal("signing payload differs from language-neutral golden")
 	}
 	if got, want := hex.EncodeToString(payloadHash[:]), readGolden(t, "testdata/v1/approval-signing-payload.sha256"); got != want {
 		t.Fatalf("payload SHA-256 = %q, want golden %q", got, want)
 	}
 	if got, want := base64.RawURLEncoding.EncodeToString(signature), readGolden(t, "testdata/v1/approval-signature.base64url"); got != want {
 		t.Fatalf("signature = %q, want golden %q", got, want)
+	}
+	publicKey := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	if got, want := base64.RawURLEncoding.EncodeToString(publicKey), readGolden(t, "testdata/v1/approval-public-key.raw.base64url"); got != want {
+		t.Fatalf("raw public key = %q, want golden %q", got, want)
+	}
+	spki := append([]byte{0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00}, publicKey...)
+	if got, want := base64.StdEncoding.EncodeToString(spki), readGolden(t, "testdata/v1/approval-public-key.spki.base64"); got != want {
+		t.Fatalf("SPKI public key = %q, want golden %q", got, want)
+	}
+	publicKeyHash := sha256.Sum256(publicKey)
+	if got, want := "cloud-device-"+hex.EncodeToString(publicKeyHash[:])[:24], readGolden(t, "testdata/v1/approval-key-id.txt"); got != want {
+		t.Fatalf("approval key ID = %q, want golden %q", got, want)
 	}
 }
 

@@ -86,18 +86,32 @@ func (service *AWSConnectionService) EstablishAWSConnection(ctx context.Context,
 	if err != nil {
 		return Connection{}, err
 	}
-	if evidence.AgentInstanceID != service.agentInstanceID || evidence.OwnerID != command.OwnerID ||
+	if evidence.BootstrapSessionID != command.BootstrapSessionID || evidence.SessionRevision != command.ExpectedSessionRevision ||
+		evidence.AgentInstanceID != service.agentInstanceID || evidence.OwnerID != command.OwnerID ||
 		evidence.TargetID != plan.ConnectionID || evidence.Identity.Region != plan.ResourceScope.Region ||
 		evidence.Identity.AccountID == "" {
 		return Connection{}, ErrApprovalRequired
 	}
 	connectionID, err := uuid.Parse(plan.ConnectionID)
-	if err != nil || connectionID == uuid.Nil {
+	if err != nil || connectionID == uuid.Nil || connectionID.String() != plan.ConnectionID {
 		return Connection{}, ErrInvalid
 	}
 	requestHash, err := command.Digest()
 	if err != nil {
 		return Connection{}, ErrInvalid
+	}
+	if !consumedReplay {
+		// Approval expiry is the deadline for accepting the device signature.
+		// Once Agent has durably accepted that exact Approval, Foundation may be
+		// established until the approved quote expires. Persist no mutation
+		// intent after any live bootstrap, identity, or quote authorization has
+		// expired; recovery is allowed only for an intent authorized here.
+		if !now.Before(descriptor.ExpiresAt) || !now.Before(evidence.ExpiresAt) {
+			return Connection{}, ErrRevisionConflict
+		}
+		if !now.Before(storedApproval.QuoteValidUntil) {
+			return Connection{}, ErrApprovalRequired
+		}
 	}
 	operationID := deterministicFoundationOperationID(service.agentInstanceID, scope, command.IdempotencyKey)
 	operation, created, err := service.operations.BeginFoundationOperation(ctx, scope, FoundationOperationIntent{
@@ -112,11 +126,8 @@ func (service *AWSConnectionService) EstablishAWSConnection(ctx context.Context,
 	if operation.Status == FoundationOperationSucceeded && operation.Connection != nil {
 		return *operation.Connection, nil
 	}
-	if consumedReplay || !now.Before(descriptor.ExpiresAt) || !now.Before(evidence.ExpiresAt) {
+	if consumedReplay {
 		return Connection{}, ErrRevisionConflict
-	}
-	if err := validateStoredApprovalAuthorization(storedApproval, plan, command.Approval, now, true); err != nil {
-		return Connection{}, err
 	}
 	if operation.Status == FoundationOperationDestroyBlocked {
 		return Connection{}, ErrUnavailable

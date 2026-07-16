@@ -1,7 +1,9 @@
 package rpcapi
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,6 +27,8 @@ type cloudCoordinatorStub struct {
 	previewScope  cloudapp.MutationScope
 	previewValue  cloudapp.AWSIdentityEvidence
 	connection    cloudapp.Connection
+	plan          cloudapproval.PlanV1
+	challenge     cloudapp.Challenge
 }
 
 func (stub *cloudCoordinatorStub) Capabilities(context.Context) cloudapp.Capabilities {
@@ -54,11 +59,11 @@ func (*cloudCoordinatorStub) GetQuote(context.Context, string, string) (cloudquo
 func (*cloudCoordinatorStub) CreatePlan(context.Context, cloudapp.MutationScope, cloudapp.CreatePlanCommand) (cloudapproval.PlanV1, error) {
 	return cloudapproval.PlanV1{}, nil
 }
-func (*cloudCoordinatorStub) GetPlan(context.Context, string, string) (cloudapproval.PlanV1, error) {
-	return cloudapproval.PlanV1{}, nil
+func (stub *cloudCoordinatorStub) GetPlan(context.Context, string, string) (cloudapproval.PlanV1, error) {
+	return stub.plan, nil
 }
-func (*cloudCoordinatorStub) CreateApprovalChallenge(context.Context, cloudapp.MutationScope, cloudapp.CreateChallengeCommand) (cloudapp.Challenge, error) {
-	return cloudapp.Challenge{}, nil
+func (stub *cloudCoordinatorStub) CreateApprovalChallenge(context.Context, cloudapp.MutationScope, cloudapp.CreateChallengeCommand) (cloudapp.Challenge, error) {
+	return stub.challenge, nil
 }
 func (stub *cloudCoordinatorStub) ApprovePlan(context.Context, cloudapp.MutationScope, cloudapp.ApprovePlanCommand) (cloudapproval.PlanV1, error) {
 	stub.approveCalls++
@@ -151,6 +156,69 @@ func TestCloudControlServiceCannotApproveWithoutDeviceSignature(t *testing.T) {
 	}
 }
 
+func TestApprovalChallengeMapsCompleteStructuredSigningBindings(t *testing.T) {
+	instanceID := uuid.NewString()
+	plan := rpcApprovalPlan(t, instanceID)
+	challenge := rpcApprovalChallenge(t, plan)
+	stub := &cloudCoordinatorStub{plan: plan, challenge: challenge}
+	service := NewCloudControlService(stub, instanceID)
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+
+	response, err := service.CreateApprovalChallenge(ctx, &agentv1.CreateApprovalChallengeRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: plan.OwnerID, PlanId: plan.PlanID,
+		ExpectedRevision: int64(plan.Revision), SignerKeyId: challenge.Challenge.SignerKeyID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.GetChallenge()
+	if got.GetApprovalId() != challenge.ApprovalID || got.GetChallengeId() != challenge.Challenge.ChallengeID ||
+		got.GetAgentInstanceId() != plan.AgentInstanceID || got.GetOwnerId() != plan.OwnerID ||
+		got.GetPlanId() != plan.PlanID || got.GetPlanRevision() != int64(plan.Revision) ||
+		got.GetPlanHash() != challenge.Challenge.PlanHash || got.GetConnectionId() != plan.ConnectionID ||
+		got.GetRecipeDigest() != plan.Recipe.Digest || got.GetQuoteId() != plan.Quote.QuoteID ||
+		got.GetQuoteDigest() != plan.Quote.Digest || got.GetQuoteScopeDigest() != plan.Quote.ScopeDigest ||
+		got.GetQuoteCandidateId() != plan.Quote.CandidateID || !bytes.Equal(got.GetSigningPayloadCbor(), challenge.SigningCBOR) {
+		t.Fatalf("structured approval challenge lost a signed binding: %+v", got)
+	}
+}
+
+func TestApprovalChallengeRejectsCoordinatorBindingOrPayloadTampering(t *testing.T) {
+	instanceID := uuid.NewString()
+	basePlan := rpcApprovalPlan(t, instanceID)
+	tests := map[string]func(*cloudapp.Challenge){
+		"agent instance": func(value *cloudapp.Challenge) { value.Challenge.AgentInstanceID = uuid.NewString() },
+		"owner":          func(value *cloudapp.Challenge) { value.Challenge.OwnerID = "owner-other" },
+		"connection":     func(value *cloudapp.Challenge) { value.Challenge.ConnectionID = uuid.NewString() },
+		"recipe":         func(value *cloudapp.Challenge) { value.Challenge.RecipeDigest = rpcApprovalDigest("9") },
+		"quote id":       func(value *cloudapp.Challenge) { value.Challenge.QuoteID = uuid.NewString() },
+		"quote digest":   func(value *cloudapp.Challenge) { value.Challenge.QuoteDigest = rpcApprovalDigest("8") },
+		"quote scope":    func(value *cloudapp.Challenge) { value.Challenge.QuoteScopeDigest = rpcApprovalDigest("7") },
+		"quote candidate": func(value *cloudapp.Challenge) {
+			value.Challenge.QuoteCandidateID = string(cloudquote.CandidatePerformance)
+		},
+		"opaque payload": func(value *cloudapp.Challenge) {
+			value.SigningCBOR = append([]byte(nil), value.SigningCBOR...)
+			value.SigningCBOR[len(value.SigningCBOR)-1] ^= 1
+		},
+	}
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			challenge := rpcApprovalChallenge(t, basePlan)
+			mutate(&challenge)
+			service := NewCloudControlService(&cloudCoordinatorStub{plan: basePlan, challenge: challenge}, instanceID)
+			_, err := service.CreateApprovalChallenge(ctx, &agentv1.CreateApprovalChallengeRequest{
+				IdempotencyKey: uuid.NewString(), OwnerId: basePlan.OwnerID, PlanId: basePlan.PlanID,
+				ExpectedRevision: int64(basePlan.Revision), SignerKeyId: challenge.Challenge.SignerKeyID,
+			})
+			if status.Code(err) != codes.Internal {
+				t.Fatalf("tampered challenge code=%v, want Internal", status.Code(err))
+			}
+		})
+	}
+}
+
 func TestCloudCapabilitiesFailClosedWithoutCoordinator(t *testing.T) {
 	response, err := NewCloudControlService(nil, uuid.NewString()).GetCapabilities(context.Background(), &agentv1.CloudControlServiceGetCapabilitiesRequest{})
 	if err != nil || response.GetCapabilities().GetAws() || response.GetCapabilities().GetWorker() {
@@ -186,3 +254,107 @@ func TestEstablishAWSConnectionReturnsPersistedConnectionReadModel(t *testing.T)
 		t.Fatalf("establishment returned non-durable connection facts: %+v", got)
 	}
 }
+
+type failOnceConnectionReader struct {
+	*cloudStatusReaderStub
+	err error
+}
+
+func (reader *failOnceConnectionReader) GetConnection(ctx context.Context, ownerID, connectionID string) (cloudstatus.Connection, error) {
+	if reader.err != nil {
+		err := reader.err
+		reader.err = nil
+		return cloudstatus.Connection{}, err
+	}
+	return reader.cloudStatusReaderStub.GetConnection(ctx, ownerID, connectionID)
+}
+
+func TestEstablishAWSConnectionUnknownResponseCanReadBackCanonicalConnection(t *testing.T) {
+	connectionID := uuid.NewString()
+	connection := cloudstatus.Connection{
+		ConnectionID: connectionID, OwnerID: "owner-a", AccountID: "123456789012", Region: "us-east-1",
+		ControlRoleARN: "arn:aws:iam::123456789012:role/dirextalk-control", FoundationStackID: "foundation-stack",
+		CredentialGeneration: 1, Status: "active", Revision: 1,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	reader := &failOnceConnectionReader{
+		cloudStatusReaderStub: &cloudStatusReaderStub{ownerID: connection.OwnerID, connection: connection},
+		err:                   cloudapp.ErrUnavailable,
+	}
+	service := NewCloudControlService(
+		&cloudCoordinatorStub{connection: cloudapp.Connection{ConnectionID: connectionID, OwnerID: connection.OwnerID}},
+		uuid.NewString(), reader,
+	)
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	request := &agentv1.EstablishAwsConnectionRequest{
+		IdempotencyKey: uuid.NewString(), BootstrapSessionId: uuid.NewString(), ExpectedSessionRevision: 2,
+		PlanId: uuid.NewString(), ExpectedPlanRevision: 2, OwnerId: connection.OwnerID,
+		Approval: &agentv1.DeviceApprovalSignature{
+			ApprovalId: uuid.NewString(), ChallengeId: "challenge-test", SignerKeyId: "device-test",
+			ExpiresAt: timestamppb.New(time.Now().UTC().Add(time.Minute)), Signature: make([]byte, 64),
+		},
+	}
+	if _, err := service.EstablishAwsConnection(ctx, request); status.Code(err) != codes.Unavailable {
+		t.Fatalf("lost establish response code=%v, want Unavailable", status.Code(err))
+	}
+	recovered, err := service.GetCloudConnection(ctx, &agentv1.GetCloudConnectionRequest{OwnerId: connection.OwnerID, ConnectionId: connectionID})
+	if err != nil || recovered.GetConnection().GetConnectionId() != connectionID {
+		t.Fatalf("connection read-back=%#v err=%v", recovered.GetConnection(), err)
+	}
+}
+
+func rpcApprovalPlan(t *testing.T, instanceID string) cloudapproval.PlanV1 {
+	t.Helper()
+	now := time.Date(2026, time.July, 16, 8, 0, 0, 0, time.UTC)
+	plan := cloudapproval.PlanV1{
+		SchemaVersion: cloudapproval.PlanSchemaV1, AgentInstanceID: instanceID, OwnerID: "owner-a",
+		PlanID: uuid.NewString(), Revision: 7, Status: cloudapproval.PlanReadyForConfirmation, ConnectionID: uuid.NewString(),
+		Recipe: cloudapproval.RecipeBindingV1{RecipeID: "recipe-a", Digest: rpcApprovalDigest("a"), Maturity: recipe.MaturityExperimental},
+		Quote: cloudapproval.QuoteBindingV1{
+			QuoteID: uuid.NewString(), Digest: rpcApprovalDigest("b"), CandidateID: string(cloudquote.CandidateRecommended), ValidUntil: now.Add(15 * time.Minute),
+		},
+		ResourceScope: cloudapproval.ResourceScopeV1{
+			Region: "us-east-1", AvailabilityZones: []string{"us-east-1a", "us-east-1b"}, InstanceType: "m7i.xlarge",
+			InstanceCount: 1, Architecture: recipe.ArchitectureAMD64, VCPU: 4, MemoryMiB: 16384,
+			DiskGiB: 80, VolumeType: "gp3", VolumeEncrypted: true, PurchaseOption: cloudapproval.PurchaseOnDemand,
+			WorkerImageID: "ami-0123456789abcdef0", WorkerImageDigest: rpcApprovalDigest("c"),
+		},
+		NetworkScope:   cloudapproval.NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupID: "sg-0123456789abcdef0", EntryPoint: cloudapproval.EntryPointNone},
+		SecretScope:    []cloudapproval.SecretReferenceV1{{SecretRef: "secret_ref:plan/model-token", Purpose: "model access", Delivery: recipe.SecretDeliveryFile}},
+		RetentionScope: cloudapproval.RetentionScopeV1{Class: cloudapproval.RetentionEphemeral, AutoDestroy: true, GracePeriodSeconds: 1800, MaxLifetimeSeconds: 86400},
+	}
+	var err error
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
+func rpcApprovalChallenge(t *testing.T, plan cloudapproval.PlanV1) cloudapp.Challenge {
+	t.Helper()
+	issuedAt := time.Date(2026, time.July, 16, 8, 0, 1, 0, time.UTC)
+	planHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge := cloudapproval.ChallengeV1{
+		ChallengeID: "challenge_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", Revision: 1,
+		AgentInstanceID: plan.AgentInstanceID, OwnerID: plan.OwnerID, PlanID: plan.PlanID, PlanRevision: plan.Revision,
+		PlanHash: planHash, ConnectionID: plan.ConnectionID, RecipeDigest: plan.Recipe.Digest,
+		QuoteID: plan.Quote.QuoteID, QuoteDigest: plan.Quote.Digest, QuoteScopeDigest: plan.Quote.ScopeDigest,
+		QuoteCandidateID: plan.Quote.CandidateID, SignerKeyID: "cloud-device-test", IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(5 * time.Minute),
+	}
+	approvalID := uuid.NewString()
+	unsigned, err := cloudapproval.NewApprovalV1(plan, approvalID, challenge.ChallengeID, challenge.SignerKeyID, challenge.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := unsigned.SigningPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cloudapp.Challenge{ApprovalID: approvalID, Challenge: challenge, ExpiresAt: challenge.ExpiresAt, SigningCBOR: payload}
+}
+
+func rpcApprovalDigest(fill string) string { return "sha256:" + strings.Repeat(fill, 64) }

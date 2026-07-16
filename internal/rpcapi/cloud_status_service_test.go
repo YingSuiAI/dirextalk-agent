@@ -7,6 +7,7 @@ import (
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -24,9 +25,18 @@ type cloudStatusReaderStub struct {
 	resources      []resource.ResourceV1
 	deploymentPage cloudstatus.DeploymentPage
 	connectionPage cloudstatus.ConnectionPage
+	planPage       cloudstatus.PlanPage
 	workerPage     cloudstatus.WorkerPage
 	resourcePage   cloudstatus.ResourcePage
 	lastQuery      cloudstatus.ListQuery
+}
+
+func (stub *cloudStatusReaderStub) ListPlans(_ context.Context, query cloudstatus.ListQuery) (cloudstatus.PlanPage, error) {
+	stub.lastQuery = query
+	if query.OwnerID != stub.ownerID {
+		return cloudstatus.PlanPage{}, cloudstatus.ErrNotFound
+	}
+	return cloudstatus.PlanPage{Plans: append([]cloudapproval.PlanV1(nil), stub.planPage.Plans...), NextPageToken: stub.planPage.NextPageToken}, nil
 }
 
 func (stub *cloudStatusReaderStub) GetConnection(_ context.Context, ownerID, connectionID string) (cloudstatus.Connection, error) {
@@ -183,6 +193,26 @@ func TestCloudConnectionQueriesKeepPersistedStatusRevisionAndTimestamps(t *testi
 	if err != nil || len(page.GetConnections()) != 1 || page.GetNextPageToken() != "next-connection-page" ||
 		stub.lastQuery.OwnerID != "owner-a" || stub.lastQuery.PageSize != 13 || stub.lastQuery.PageToken != "connection-page" {
 		t.Fatalf("connection list response=%+v query=%+v err=%v", page, stub.lastQuery, err)
+	}
+}
+
+func TestCloudPlanListKeepsOwnerAndCursorScope(t *testing.T) {
+	instanceID := uuid.NewString()
+	plan := rpcApprovalPlan(t, instanceID)
+	stub := &cloudStatusReaderStub{
+		ownerID:  plan.OwnerID,
+		planPage: cloudstatus.PlanPage{Plans: []cloudapproval.PlanV1{plan}, NextPageToken: "next-plan-page"},
+	}
+	service := NewCloudControlService(nil, instanceID, stub)
+	page, err := service.ListCloudPlans(context.Background(), &agentv1.ListCloudPlansRequest{
+		OwnerId: plan.OwnerID, PageSize: 11, PageToken: "plan-page",
+	})
+	if err != nil || len(page.GetPlans()) != 1 || page.GetPlans()[0].GetPlanId() != plan.PlanID || page.GetNextPageToken() != "next-plan-page" ||
+		stub.lastQuery.OwnerID != plan.OwnerID || stub.lastQuery.PageSize != 11 || stub.lastQuery.PageToken != "plan-page" {
+		t.Fatalf("plan list response=%+v query=%+v err=%v", page, stub.lastQuery, err)
+	}
+	if _, err := service.ListCloudPlans(context.Background(), &agentv1.ListCloudPlansRequest{OwnerId: "owner-b"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("cross-owner plan list code=%s err=%v", status.Code(err), err)
 	}
 }
 

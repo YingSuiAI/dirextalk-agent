@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +22,10 @@ import (
 )
 
 const approvalDeviceBootstrapTimeout = 30 * time.Second
+
+var ed25519SubjectPublicKeyInfoPrefix = []byte{
+	0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+}
 
 func bootstrapApprovalDevice() error {
 	common, err := config.LoadCommon()
@@ -86,18 +93,46 @@ func approvalDeviceBootstrapCommandFromEnvironment(instanceID string, now time.T
 		return postgres.RegisterApprovalDeviceCommand{}, errors.New("could not read mounted approval-device public key")
 	}
 	defer clear(publicKeyMaterial)
-	if len(publicKeyMaterial) != ed25519.PublicKeySize {
-		return postgres.RegisterApprovalDeviceCommand{}, errors.New("mounted approval-device public key must contain exactly 32 Ed25519 public-key bytes")
+	publicKey, err := approvalDevicePublicKey(publicKeyMaterial)
+	if err != nil {
+		return postgres.RegisterApprovalDeviceCommand{}, err
+	}
+	canonicalKeyID := approvalDeviceKeyID(publicKey)
+	if keyID != canonicalKeyID {
+		clear(publicKey)
+		return postgres.RegisterApprovalDeviceCommand{}, errors.New("AGENT_APPROVAL_DEVICE_KEY_ID does not match the canonical Ed25519 public-key identity")
 	}
 	return postgres.RegisterApprovalDeviceCommand{
 		IdempotencyKey: idempotencyKey,
 		Device: cloudapproval.DeviceKeyV1{
 			KeyID: keyID, AgentInstanceID: instanceID, OwnerID: ownerID,
 			Revision: 1, Status: cloudapproval.DeviceKeyActive,
-			PublicKey: append(ed25519.PublicKey(nil), publicKeyMaterial...),
+			PublicKey: publicKey,
 			NotBefore: now.Add(-time.Minute), ExpiresAt: expiresAt.UTC(),
 		},
 	}, nil
+}
+
+func approvalDeviceKeyID(publicKey ed25519.PublicKey) string {
+	digest := sha256.Sum256(publicKey)
+	return "cloud-device-" + hex.EncodeToString(digest[:])[:24]
+}
+
+// approvalDevicePublicKey accepts the raw Ed25519 key used internally and the
+// exact RFC 8410 SubjectPublicKeyInfo exported by the Flutter approval-key
+// store. The strict prefix rejects another algorithm, parameters, trailing
+// fields, and private-key material instead of relying on a permissive ASN.1
+// decoder at this one-time trust boundary.
+func approvalDevicePublicKey(material []byte) (ed25519.PublicKey, error) {
+	switch {
+	case len(material) == ed25519.PublicKeySize:
+		return append(ed25519.PublicKey(nil), material...), nil
+	case len(material) == len(ed25519SubjectPublicKeyInfoPrefix)+ed25519.PublicKeySize &&
+		bytes.Equal(material[:len(ed25519SubjectPublicKeyInfoPrefix)], ed25519SubjectPublicKeyInfoPrefix):
+		return append(ed25519.PublicKey(nil), material[len(ed25519SubjectPublicKeyInfoPrefix):]...), nil
+	default:
+		return nil, errors.New("mounted approval-device public key must contain a raw 32-byte Ed25519 key or strict RFC 8410 Ed25519 SubjectPublicKeyInfo")
+	}
 }
 
 func validApprovalDeviceBootstrapIdentifier(value string, limit int) bool {

@@ -13,6 +13,7 @@ import (
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -90,6 +91,36 @@ func TestCloudPlanApprovalFactsReplayRestartAndAtomicApproval(t *testing.T) {
 	}
 	if _, err := store.CreatePlan(ctx, scope, postgres.CreatePlanCommand{IdempotencyKey: planKey, Plan: conflictingPlan}); !errors.Is(err, task.ErrIdempotencyConflict) {
 		t.Fatalf("Plan idempotency conflict error = %v", err)
+	}
+	secondPlan := cloudApprovalPlanFixture(instanceID)
+	secondQuote := cloudApprovalQuoteFixture(t, secondPlan, uuid.NewString(), now.Add(-30*time.Second))
+	secondDigest, err := secondQuote.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPlan.Quote.QuoteID = secondQuote.QuoteID
+	secondPlan.Quote.Digest = secondDigest
+	secondPlan.Quote.ValidUntil = secondQuote.ValidUntil
+	if _, err = store.CreateQuote(ctx, scope, postgres.CreateQuoteCommand{IdempotencyKey: uuid.NewString(), Quote: secondQuote}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreatePlan(ctx, scope, postgres.CreatePlanCommand{IdempotencyKey: uuid.NewString(), Plan: secondPlan}); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err := postgres.NewCloudStatusStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPage, err := statuses.ListPlans(ctx, cloudstatus.ListQuery{OwnerID: plan.OwnerID, PageSize: 1})
+	if err != nil || len(firstPage.Plans) != 1 || firstPage.NextPageToken == "" {
+		t.Fatalf("first Plan page=%#v err=%v", firstPage, err)
+	}
+	secondPage, err := statuses.ListPlans(ctx, cloudstatus.ListQuery{OwnerID: plan.OwnerID, PageSize: 1, PageToken: firstPage.NextPageToken})
+	if err != nil || len(secondPage.Plans) != 1 || secondPage.NextPageToken != "" || secondPage.Plans[0].PlanID == firstPage.Plans[0].PlanID {
+		t.Fatalf("second Plan page=%#v err=%v", secondPage, err)
+	}
+	if _, err = statuses.ListPlans(ctx, cloudstatus.ListQuery{OwnerID: "different-owner", PageSize: 1, PageToken: firstPage.NextPageToken}); !errors.Is(err, cloudstatus.ErrInvalid) {
+		t.Fatalf("cross-owner Plan cursor error=%v", err)
 	}
 
 	seed := bytes.Repeat([]byte{0x31}, ed25519.SeedSize)

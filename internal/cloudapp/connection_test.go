@@ -12,6 +12,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
+	"github.com/google/uuid"
 )
 
 type connectionIdentities struct{ evidence AWSIdentityEvidence }
@@ -120,13 +121,13 @@ func TestAWSConnectionPersistsIntentAndAtomicallyFinalizesBootstrapSecret(t *tes
 	session := secretbootstrap.SessionV1{
 		SessionID: sessionID, AgentInstanceID: testAgentID, OwnerID: ready.OwnerID,
 		Purpose: "aws_connection", TargetID: ready.ConnectionID, Status: secretbootstrap.StatusUploaded,
-		Revision: 2, CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(9 * time.Minute),
+		Revision: 2, CreatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(30 * time.Minute),
 	}
 	identities := &connectionIdentities{evidence: AWSIdentityEvidence{
 		BootstrapSessionID: sessionID, SessionRevision: 2, AgentInstanceID: testAgentID,
 		OwnerID: ready.OwnerID, TargetID: ready.ConnectionID,
 		Identity:   AWSIdentity{AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:root", PrincipalID: "123456789012", Region: "us-east-1", RootIdentity: true},
-		ObservedAt: now.Add(-time.Minute), ExpiresAt: now.Add(5 * time.Minute),
+		ObservedAt: now.Add(-time.Minute), ExpiresAt: now.Add(30 * time.Minute),
 	}}
 	operations := &connectionOperations{}
 	foundation := &connectionFoundation{result: awsfoundation.EstablishResult{
@@ -152,6 +153,36 @@ func TestAWSConnectionPersistsIntentAndAtomicallyFinalizesBootstrapSecret(t *tes
 			ExpiresAt: unsigned.ExpiresAt, Signature: signature,
 		},
 	}
+	validEvidence := identities.evidence
+	for name, mutate := range map[string]func(*AWSIdentityEvidence){
+		"bootstrap session": func(value *AWSIdentityEvidence) { value.BootstrapSessionID = uuid.NewString() },
+		"session revision":  func(value *AWSIdentityEvidence) { value.SessionRevision++ },
+		"agent instance":    func(value *AWSIdentityEvidence) { value.AgentInstanceID = uuid.NewString() },
+		"owner":             func(value *AWSIdentityEvidence) { value.OwnerID = "owner-other" },
+		"connection target": func(value *AWSIdentityEvidence) { value.TargetID = uuid.NewString() },
+		"region":            func(value *AWSIdentityEvidence) { value.Identity.Region = "eu-west-1" },
+		"account":           func(value *AWSIdentityEvidence) { value.Identity.AccountID = "" },
+	} {
+		t.Run("rejects mismatched "+name+" evidence", func(t *testing.T) {
+			identities.evidence = validEvidence
+			mutate(&identities.evidence)
+			if _, establishErr := service.EstablishAWSConnection(context.Background(), MutationScope{ClientID: "message-server", CredentialID: testCredentialID}, command); !errors.Is(establishErr, ErrApprovalRequired) {
+				t.Fatalf("EstablishAWSConnection error=%v, want approval required", establishErr)
+			}
+			if foundation.calls != 0 || secrets.inspectCalls != 0 || operations.intent.OperationID != "" {
+				t.Fatalf("mismatched evidence reached mutation boundary: foundation=%d inspect=%d intent=%#v", foundation.calls, secrets.inspectCalls, operations.intent)
+			}
+		})
+	}
+	identities.evidence = validEvidence
+	currentTime = ready.Quote.ValidUntil.Add(time.Second)
+	if _, establishErr := service.EstablishAWSConnection(context.Background(), MutationScope{ClientID: "message-server", CredentialID: testCredentialID}, command); !errors.Is(establishErr, ErrApprovalRequired) {
+		t.Fatalf("expired quote error=%v, want approval required", establishErr)
+	}
+	if operations.intent.OperationID != "" || foundation.calls != 0 || secrets.inspectCalls != 0 {
+		t.Fatalf("expired quote persisted or executed mutation: intent=%#v foundation=%d inspect=%d", operations.intent, foundation.calls, secrets.inspectCalls)
+	}
+	currentTime = unsigned.ExpiresAt.Add(time.Second)
 	connection, err := service.EstablishAWSConnection(context.Background(), MutationScope{ClientID: "message-server", CredentialID: testCredentialID}, command)
 	if err != nil {
 		t.Fatal(err)

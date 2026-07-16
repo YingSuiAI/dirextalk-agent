@@ -26,16 +26,20 @@ type CloudComposition struct {
 	WorkerIdentityVerifier     *workeridentity.Verifier
 	WorkerIdentityMaterializer *workerIdentityMaterializer
 	FoundationConnections      *cloudapp.AWSConnectionService
+	foundationLaunches         *foundationLaunchCompensator
 	vault                      *awsfoundation.CredentialVault
 }
 
-// Recover resumes exact, pre-authorized Foundation operations before the
-// server begins accepting new cloud mutations.
+// Recover resumes exact, pre-authorized Foundation operations and persists any
+// missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
-	return composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64)
+	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
+		return err
+	}
+	return composition.foundationLaunches.RunOnce(ctx)
 }
 
 func (composition *CloudComposition) Close() {
@@ -45,25 +49,29 @@ func (composition *CloudComposition) Close() {
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 2)
+	errorsChannel := make(chan error, 3)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
+	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
 	first := <-errorsChannel
 	cancel()
-	second := <-errorsChannel
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if first != nil && !errors.Is(first, context.Canceled) {
-		return first
+	var result error
+	for _, runErr := range runErrors {
+		if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
+			result = errors.Join(result, runErr)
+		}
 	}
-	if second != nil && !errors.Is(second, context.Canceled) {
-		return second
+	if result != nil {
+		return result
 	}
 	return first
 }
@@ -182,6 +190,11 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	launcher := cloudLaunchAdapter{dispatcher: dispatcher, target: workerControlTarget}
+	launchCompensator, err := newFoundationLaunchCompensator(store, launcher, 15*time.Second)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	coordinator, err := cloudapp.NewService(
 		agentInstanceID, facts, store, pricing, approvalService, identity, connections,
 		cloudapp.Capabilities{AWS: true, DirectSTS: true, Worker: true, Reaper: true}, time.Now,
@@ -195,6 +208,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		Coordinator: coordinator, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
 		FoundationConnections: connections,
+		foundationLaunches:    launchCompensator,
 		vault:                 vault,
 	}, nil
 }

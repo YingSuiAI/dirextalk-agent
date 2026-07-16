@@ -13,12 +13,24 @@ import (
 type launcherFacts struct {
 	*coordinatorFacts
 	persistedApproval cloudapproval.ApprovalV1
+	persistedKey      string
 	persisted         bool
 }
 
-func (facts *launcherFacts) PersistApproval(_ context.Context, _ MutationScope, _ string, _, _ uint64, approval cloudapproval.ApprovalV1) (cloudapproval.PlanV1, error) {
+func (facts *launcherFacts) PersistApproval(_ context.Context, _ MutationScope, key string, _, _ uint64, approval cloudapproval.ApprovalV1) (cloudapproval.PlanV1, error) {
+	if facts.persisted {
+		if key != facts.persistedKey || approval.Signature != facts.persistedApproval.Signature || approval.ApprovalID != facts.persistedApproval.ApprovalID {
+			return cloudapproval.PlanV1{}, ErrRevisionConflict
+		}
+		return facts.plan, nil
+	}
 	facts.persistedApproval = approval
+	facts.persistedKey = key
 	facts.persisted = true
+	facts.approval = approval
+	facts.challenge.Revision++
+	consumedAt := approval.ExpiresAt.Add(-time.Minute)
+	facts.challenge.ConsumedAt = &consumedAt
 	approved := facts.plan
 	approved.Status = cloudapproval.PlanApproved
 	approved.Revision++
@@ -82,6 +94,55 @@ func TestApprovePlanPersistsApprovalBeforeSubmittingDeployment(t *testing.T) {
 	}
 	if launcher.commands[0].ApprovalID != facts.persistedApproval.ApprovalID {
 		t.Fatalf("launcher approval=%q persisted approval=%q", launcher.commands[0].ApprovalID, facts.persistedApproval.ApprovalID)
+	}
+}
+
+func TestApprovePlanExactRetryAfterLauncherFailureReplaysDurableApproval(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 8, 0, 0, 0, time.UTC)
+	currentTime := now
+	plan := coordinatorPlan(now)
+	command, challenge := launcherApprovalCommand(plan, now)
+	facts := &launcherFacts{coordinatorFacts: &coordinatorFacts{plan: plan, challenge: challenge}}
+	launcherErr := errors.New("connection is not established yet")
+	launcher := &recordingDeploymentLauncher{facts: facts, err: launcherErr}
+	service, err := NewService(
+		testAgentID, facts, coordinatorRecipes{}, coordinatorQuotes{}, &coordinatorApprovals{}, nil, nil,
+		Capabilities{}, func() time.Time { return currentTime }, WithDeploymentLauncher(launcher),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := MutationScope{ClientID: "message-server", CredentialID: testCredentialID}
+	first, err := service.ApprovePlan(context.Background(), scope, command)
+	if !errors.Is(err, launcherErr) || first.Status != cloudapproval.PlanApproved || first.Revision != plan.Revision+1 {
+		t.Fatalf("first approval=%#v err=%v", first, err)
+	}
+	launcher.err = nil
+	replayed, err := service.ApprovePlan(context.Background(), scope, command)
+	if err != nil || replayed.PlanID != first.PlanID || replayed.Revision != first.Revision || replayed.Status != first.Status {
+		t.Fatalf("exact approval retry=%#v err=%v, want %#v", replayed, err, first)
+	}
+	if len(launcher.commands) != 2 || launcher.commands[0] != launcher.commands[1] {
+		t.Fatalf("launcher retry changed approved command: %#v", launcher.commands)
+	}
+	currentTime = command.Approval.ExpiresAt.Add(time.Minute)
+	replayed, err = service.ApprovePlan(context.Background(), scope, command)
+	if err != nil || replayed.PlanID != first.PlanID || replayed.Revision != first.Revision || replayed.Status != first.Status {
+		t.Fatalf("expired exact approval replay=%#v err=%v, want durable %#v", replayed, err, first)
+	}
+	if len(launcher.commands) != 2 {
+		t.Fatalf("expired read-only replay resubmitted launcher: %#v", launcher.commands)
+	}
+	otherKey := command
+	otherKey.IdempotencyKey = "019b2d57-b3c0-7e65-a1d2-10c43de26729"
+	if _, err = service.ApprovePlan(context.Background(), scope, otherKey); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("different idempotency key error=%v, want revision conflict", err)
+	}
+	changedApproval := command
+	changedApproval.Approval.Signature = append([]byte(nil), command.Approval.Signature...)
+	changedApproval.Approval.Signature[0] ^= 1
+	if _, err = service.ApprovePlan(context.Background(), scope, changedApproval); !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("changed approval under same idempotency key error=%v, want approval required", err)
 	}
 }
 

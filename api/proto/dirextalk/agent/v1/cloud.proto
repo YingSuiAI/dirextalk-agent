@@ -212,6 +212,14 @@ message ApprovalChallenge {
   bytes signing_payload_cbor = 7;
   int64 revision = 8;
   string approval_id = 9;
+  string agent_instance_id = 10;
+  string owner_id = 11;
+  string connection_id = 12;
+  string recipe_digest = 13;
+  string quote_id = 14;
+  string quote_digest = 15;
+  string quote_scope_digest = 16;
+  string quote_candidate_id = 17;
 }
 
 message AwsBootstrapIdentity {
@@ -293,6 +301,15 @@ message GetCloudPlanRequest {
   string owner_id = 2;
 }
 message GetCloudPlanResponse { CloudPlan plan = 1; }
+message ListCloudPlansRequest {
+  string owner_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListCloudPlansResponse {
+  repeated CloudPlan plans = 1;
+  string next_page_token = 2;
+}
 
 message CreateApprovalChallengeRequest {
   string idempotency_key = 1;

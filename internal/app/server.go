@@ -103,6 +103,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.CloudControlService_GetCloudQuote_FullMethodName:           "cloud.read",
 		agentv1.CloudControlService_CreateCloudPlan_FullMethodName:         "cloud.plan.write",
 		agentv1.CloudControlService_GetCloudPlan_FullMethodName:            "cloud.read",
+		agentv1.CloudControlService_ListCloudPlans_FullMethodName:          "cloud.read",
 		agentv1.CloudControlService_CreateApprovalChallenge_FullMethodName: "cloud.approve",
 		agentv1.CloudControlService_ApproveCloudPlan_FullMethodName:        "cloud.approve",
 		agentv1.CloudControlService_EstablishAwsConnection_FullMethodName:  "cloud.connection.write",
