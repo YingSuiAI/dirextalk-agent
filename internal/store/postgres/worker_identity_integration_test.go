@@ -47,7 +47,7 @@ func TestWorkerIdentityPostgresChallengeAtomicEnrollmentAndEncryptedReplay(t *te
 	}
 	enrollment.Destroy()
 	providerInstanceID := "i-0123456789abcdef0"
-	seedWorkerIdentityBinding(t, pool, instanceID, created.OwnerID, taskID, deploymentID, providerInstanceID)
+	seedWorkerIdentityBinding(t, pool, instanceID, created.OwnerID, taskID, deploymentID, providerInstanceID, "123456789012")
 	workerID := uuid.NewString()
 
 	firstChallenge, err := service.CreateIdentityChallenge(ctx, worker.CreateIdentityChallengeRequest{
@@ -172,7 +172,7 @@ func testVerifiedWorkerIdentity(challenge worker.IdentityChallenge, instanceID s
 	}
 }
 
-func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, ownerID, taskID, deploymentID, providerInstanceID string) {
+func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, ownerID, taskID, deploymentID, providerInstanceID, accountID string) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
@@ -182,11 +182,14 @@ func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, own
 	defer func() { _ = tx.Rollback(ctx) }()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	connectionID, quoteID, planID, deviceID, challengeRowID, approvalID := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	keyID := "worker-identity-device-" + accountID
+	challengeID := strings.Repeat("q", 36) + accountID
+	controlRoleARN := "arn:aws:iam::" + accountID + ":role/control"
 	digest := func(value string) string { return "sha256:" + strings.Repeat(value, 64) }
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_connections (connection_id,agent_instance_id,owner_id,account_id,region,control_role_arn,foundation_stack_id,credential_generation,status,revision,created_at,updated_at)
-		VALUES ($1,$2,$3,'123456789012','us-west-2','arn:aws:iam::123456789012:role/control','foundation-stack',1,'active',1,$4,$4)`,
-		connectionID, instanceID, ownerID, now); err != nil {
+		VALUES ($1,$2,$3,$4,'us-west-2',$5,'foundation-stack',1,'active',1,$6,$6)`,
+		connectionID, instanceID, ownerID, accountID, controlRoleARN, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `
@@ -202,21 +205,21 @@ func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, own
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_approval_devices (device_id,key_id,agent_instance_id,owner_id,public_key,status,revision,not_before,expires_at,created_at,updated_at)
-		VALUES ($1,'worker-identity-device',$2,$3,decode(repeat('01',32),'hex'),'active',1,$4,$5,$4,$4)`,
-		deviceID, instanceID, ownerID, now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
+		VALUES ($1,$2,$3,$4,decode(repeat('01',32),'hex'),'active',1,$5,$6,$5,$5)`,
+		deviceID, keyID, instanceID, ownerID, now.Add(-time.Minute), now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_approval_challenges (challenge_row_id,challenge_id,agent_instance_id,owner_id,plan_id,plan_revision,plan_hash,connection_id,recipe_digest,quote_id,quote_digest,quote_scope_digest,quote_candidate_id,device_id,signer_key_id,issued_at,expires_at,consumed_at,revision,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,2,$6,$7,$8,$9,$10,$11,'recommended',$12,'worker-identity-device',$13,$14,$15,2,$15,$15)`,
-		challengeRowID, strings.Repeat("q", 48), instanceID, ownerID, planID, digest("c"), connectionID.String(), digest("d"), quoteID,
-		digest("a"), digest("b"), deviceID, now.Add(-time.Minute), now.Add(4*time.Minute), now); err != nil {
+		VALUES ($1,$2,$3,$4,$5,2,$6,$7,$8,$9,$10,$11,'recommended',$12,$13,$14,$15,$16,2,$16,$16)`,
+		challengeRowID, challengeID, instanceID, ownerID, planID, digest("c"), connectionID.String(), digest("d"), quoteID,
+		digest("a"), digest("b"), deviceID, keyID, now.Add(-time.Minute), now.Add(4*time.Minute), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_approvals (approval_id,agent_instance_id,owner_id,plan_id,plan_revision,plan_hash,quote_id,quote_digest,challenge_row_id,signer_key_id,approval_json,signing_payload,signature,revision,approved_at)
-		VALUES ($1,$2,$3,$4,2,$5,$6,$7,$8,'worker-identity-device','{}',decode('01','hex'),decode(repeat('01',64),'hex'),1,$9)`,
-		approvalID, instanceID, ownerID, planID, digest("c"), quoteID, digest("a"), challengeRowID, now); err != nil {
+		VALUES ($1,$2,$3,$4,2,$5,$6,$7,$8,$9,'{}',decode('01','hex'),decode(repeat('01',64),'hex'),1,$10)`,
+		approvalID, instanceID, ownerID, planID, digest("c"), quoteID, digest("a"), challengeRowID, keyID, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `

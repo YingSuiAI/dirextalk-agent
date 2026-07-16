@@ -360,6 +360,8 @@ message CloudDeployment {
   int64 revision = 9;
   google.protobuf.Timestamp created_at = 10;
   google.protobuf.Timestamp updated_at = 11;
+  string plan_id = 12;
+  string connection_id = 13;
 }
 
 message CloudResource {

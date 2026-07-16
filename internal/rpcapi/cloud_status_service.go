@@ -22,7 +22,7 @@ func (service *CloudControlService) GetCloudDeployment(ctx context.Context, requ
 	if service.statusReader == nil {
 		return nil, cloudStatusUnavailable()
 	}
-	item, err := service.statusReader.GetWorker(ctx, request.GetOwnerId(), request.GetDeploymentId())
+	item, err := service.statusReader.GetDeployment(ctx, request.GetOwnerId(), request.GetDeploymentId())
 	if err != nil {
 		return nil, publicError(err)
 	}
@@ -37,17 +37,17 @@ func (service *CloudControlService) ListCloudDeployments(ctx context.Context, re
 	if service.statusReader == nil {
 		return nil, cloudStatusUnavailable()
 	}
-	page, err := service.statusReader.ListWorkers(ctx, cloudstatus.ListQuery{
+	page, err := service.statusReader.ListDeployments(ctx, cloudstatus.ListQuery{
 		OwnerID: request.GetOwnerId(), PageSize: int(request.GetPageSize()), PageToken: request.GetPageToken(),
 	})
 	if err != nil {
 		return nil, publicError(err)
 	}
 	response := &agentv1.ListCloudDeploymentsResponse{
-		Deployments: make([]*agentv1.CloudDeployment, 0, len(page.Workers)), NextPageToken: page.NextPageToken,
+		Deployments: make([]*agentv1.CloudDeployment, 0, len(page.Deployments)), NextPageToken: page.NextPageToken,
 	}
-	for _, item := range page.Workers {
-		resources, listErr := service.statusReader.ListDeploymentResources(ctx, request.GetOwnerId(), item.DeploymentID)
+	for _, item := range page.Deployments {
+		resources, listErr := service.statusReader.ListDeploymentResources(ctx, request.GetOwnerId(), item.Worker.DeploymentID)
 		if listErr != nil {
 			return nil, publicError(listErr)
 		}
@@ -117,12 +117,21 @@ func (service *CloudControlService) ListCloudWorkers(ctx context.Context, reques
 	return response, nil
 }
 
-func cloudDeploymentToProto(item worker.Deployment, resources []resource.ResourceV1) *agentv1.CloudDeployment {
+func cloudDeploymentToProto(item cloudstatus.Deployment, resources []resource.ResourceV1) *agentv1.CloudDeployment {
+	workerItem := item.Worker
+	resourceSummary := cloudResourceSummaryToProto(resources)
+	updatedAt := workerItem.UpdatedAt
+	for _, resourceItem := range resources {
+		if resourceItem.UpdatedAt.After(updatedAt) {
+			updatedAt = resourceItem.UpdatedAt
+		}
+	}
 	return &agentv1.CloudDeployment{
-		DeploymentId: item.DeploymentID, OwnerId: item.OwnerID, TaskId: item.TaskID, StepId: item.StepID, WorkerId: item.WorkerID,
-		ExecutionStatus: cloudWorkerExecutionToProto(item.State), OutcomeStatus: cloudWorkerOutcomeToProto(item.Outcome),
-		Resources: cloudResourceSummaryToProto(resources), Revision: item.Revision,
-		CreatedAt: cloudStatusTimestamp(item.CreatedAt), UpdatedAt: cloudStatusTimestamp(item.UpdatedAt),
+		DeploymentId: workerItem.DeploymentID, OwnerId: workerItem.OwnerID, TaskId: workerItem.TaskID, StepId: workerItem.StepID, WorkerId: workerItem.WorkerID,
+		ExecutionStatus: cloudWorkerExecutionToProto(workerItem.State), OutcomeStatus: cloudWorkerOutcomeToProto(workerItem.Outcome),
+		Resources: resourceSummary, Revision: cloudStatusRevisionSum(workerItem.Revision, resourceSummary.GetRevision()),
+		CreatedAt: cloudStatusTimestamp(workerItem.CreatedAt), UpdatedAt: cloudStatusTimestamp(updatedAt),
+		PlanId: item.PlanID, ConnectionId: item.ConnectionID,
 	}
 }
 
@@ -167,11 +176,7 @@ func cloudResourceSummaryToProto(resources []resource.ResourceV1) *agentv1.Cloud
 	for _, item := range resources {
 		state := cloudResourceStateToProto(item.State)
 		counts[state]++
-		if summary.Revision <= maxCloudStatusRevision-item.Revision {
-			summary.Revision += item.Revision
-		} else {
-			summary.Revision = maxCloudStatusRevision
-		}
+		summary.Revision = cloudStatusRevisionSum(summary.Revision, item.Revision)
 		if item.ReadBack.ObservedAt.IsZero() {
 			continue
 		}
@@ -203,6 +208,17 @@ func cloudResourceSummaryToProto(resources []resource.ResourceV1) *agentv1.Cloud
 		summary.Status = agentv1.CloudResourceStatus_CLOUD_RESOURCE_STATUS_MIXED
 	}
 	return summary
+}
+
+// cloud_resources are retained through verified destruction and their
+// revisions are monotonic. The saturating sum is therefore a monotonic
+// revision for the composed Deployment read model. Introducing resource-fact
+// deletion would require a separately persisted projection revision.
+func cloudStatusRevisionSum(left, right int64) int64 {
+	if left > maxCloudStatusRevision-right {
+		return maxCloudStatusRevision
+	}
+	return left + right
 }
 
 func cloudWorkerExecutionToProto(value worker.State) agentv1.ExecutionStatus {

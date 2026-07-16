@@ -18,7 +18,7 @@ import (
 )
 
 func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
-	_, baseStore, instanceID := newPlanningTestStore(t)
+	pool, baseStore, instanceID := newPlanningTestStore(t)
 	ctx := context.Background()
 	taskID, stepID := createWorkerTask(t, baseStore)
 	workerStore, err := baseStore.NewWorkerStore(bytes.Repeat([]byte{0x55}, 32))
@@ -116,5 +116,70 @@ func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
 	if err != nil || len(resources.Resources) != 1 || resources.Resources[0].ResourceID != ownedResource.ResourceID ||
 		resources.Resources[0].ReadBack.ProviderID != ownedResource.ProviderID || resources.Resources[0].Revision != ownedResource.Revision {
 		t.Fatalf("owner-filtered resources=%+v err=%v", resources, err)
+	}
+	if _, err := statuses.GetDeployment(ctx, first.OwnerID, first.DeploymentID); !errors.Is(err, cloudstatus.ErrNotFound) {
+		t.Fatalf("unlinked Worker was exposed as a CloudDeployment: %v", err)
+	}
+
+	// A CloudDeployment is not inferred from a Worker. It exists only when the
+	// immutable launch record durably binds the Worker to an approved Plan and
+	// CloudConnection. Seed those already-used production relations, then prove
+	// the read model survives reconstruction of the Agent store.
+	seedWorkerIdentityBinding(t, pool, instanceID, first.OwnerID, first.TaskID, first.DeploymentID, "i-00000001", "123456789012")
+	seedWorkerIdentityBinding(t, pool, instanceID, second.OwnerID, second.TaskID, second.DeploymentID, "i-00000002", "123456789013")
+	seedWorkerIdentityBinding(t, pool, instanceID, foreign.OwnerID, foreign.TaskID, foreign.DeploymentID, "i-00000003", "123456789014")
+	var expectedPlanID, expectedConnectionID string
+	if err := pool.QueryRow(ctx, `
+		SELECT plan_id::text, connection_id::text
+		FROM cloud_launch_operations
+		WHERE agent_instance_id=$1 AND deployment_id=$2`, instanceID, first.DeploymentID).Scan(&expectedPlanID, &expectedConnectionID); err != nil {
+		t.Fatal(err)
+	}
+
+	linked, err := statuses.GetDeployment(ctx, first.OwnerID, first.DeploymentID)
+	if err != nil || linked.Worker.DeploymentID != first.DeploymentID || linked.PlanID != expectedPlanID || linked.ConnectionID != expectedConnectionID {
+		t.Fatalf("durable cloud deployment=%+v err=%v", linked, err)
+	}
+	if _, err := statuses.GetDeployment(ctx, "owner-b", first.DeploymentID); !errors.Is(err, cloudstatus.ErrNotFound) {
+		t.Fatalf("cross-owner cloud deployment read error=%v", err)
+	}
+	deploymentFirstPage, err := statuses.ListDeployments(ctx, cloudstatus.ListQuery{OwnerID: "owner-a", PageSize: 1})
+	if err != nil || len(deploymentFirstPage.Deployments) != 1 || deploymentFirstPage.NextPageToken == "" {
+		t.Fatalf("first CloudDeployment page=%+v err=%v", deploymentFirstPage, err)
+	}
+	if _, err := statuses.ListDeployments(ctx, cloudstatus.ListQuery{
+		OwnerID: "owner-a", PageSize: 1, PageToken: firstPage.NextPageToken,
+	}); !errors.Is(err, cloudstatus.ErrInvalid) {
+		t.Fatalf("Worker cursor was accepted by CloudDeployment pagination: %v", err)
+	}
+	if _, err := statuses.ListWorkers(ctx, cloudstatus.ListQuery{
+		OwnerID: "owner-a", PageSize: 1, PageToken: deploymentFirstPage.NextPageToken,
+	}); !errors.Is(err, cloudstatus.ErrInvalid) {
+		t.Fatalf("CloudDeployment cursor was accepted by Worker pagination: %v", err)
+	}
+	deploymentSecondPage, err := statuses.ListDeployments(ctx, cloudstatus.ListQuery{
+		OwnerID: "owner-a", PageSize: 1, PageToken: deploymentFirstPage.NextPageToken,
+	})
+	if err != nil || len(deploymentSecondPage.Deployments) != 1 || deploymentSecondPage.NextPageToken != "" ||
+		deploymentSecondPage.Deployments[0].Worker.DeploymentID == deploymentFirstPage.Deployments[0].Worker.DeploymentID {
+		t.Fatalf("second CloudDeployment page=%+v err=%v", deploymentSecondPage, err)
+	}
+	for _, deployment := range append(deploymentFirstPage.Deployments, deploymentSecondPage.Deployments...) {
+		if deployment.PlanID == "" || deployment.ConnectionID == "" || deployment.Worker.OwnerID != "owner-a" {
+			t.Fatalf("incomplete CloudDeployment relation=%+v", deployment)
+		}
+	}
+
+	restartedBaseStore, err := postgres.New(pool, instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedStatuses, err := postgres.NewCloudStatusStore(restartedBaseStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := restartedStatuses.GetDeployment(ctx, first.OwnerID, first.DeploymentID)
+	if err != nil || reloaded.PlanID != expectedPlanID || reloaded.ConnectionID != expectedConnectionID || reloaded.Worker.Revision != first.Revision {
+		t.Fatalf("restarted CloudDeployment=%+v err=%v", reloaded, err)
 	}
 }

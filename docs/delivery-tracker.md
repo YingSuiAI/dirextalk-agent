@@ -122,13 +122,16 @@ Observable acceptance: existing Dirextalk clients keep their ProductCore/WS cont
 
 P3 first-validation slice completed on 2026-07-16: Message Server can delegate only ordinary Chat/StreamChat to the independent Agent over TLS 1.3 with a mounted pairwise Service Key and stable protocol-independent owner ID. Flutter now sends a stable conversation UUID, per-request UUID idempotency key, and persisted exact conversation revision; invalid stream terminal sequences fail closed. The default remains the local Runner, and non-Chat runtime actions stay local.
 
+P3 second-validation slice completed on 2026-07-16: `cloud.deployments.list/get` can use the same Agent gRPC connection without granting mutation capability. Agent returns durable Plan/Connection relationships from `cloud_launch_operations`, keeps Worker and Deployment cursor domains separate, and composes a monotonic read-model revision/time from Worker plus retained resource facts. Message Server consumes all pages with bounded/cycle-safe traversal and preserves the existing ProductCore nine-field Deployment and 404 shapes. Unlinked historical Worker rows remain visible only through Worker status and are never fabricated as Deployments.
+
 Deferred before remote Chat or Cloud can be enabled in a release:
 
 1. Publish the new Agent module and replace the temporary sibling `go.mod` replacement with an immutable remote version; a single-repository Message Server container build is not yet reproducible.
 2. Migrate model/runtime configuration and encrypted model secrets to Agent so Flutter no longer sends the legacy request-scoped `model_profile`; the current adapter discards that envelope before gRPC only to preserve local-Runner compatibility.
 3. Add typed Cloud dialogue, Knowledge/Embedding, and attachment contracts. The remote adapter intentionally rejects those modes instead of silently dropping behavior.
 4. Add conversation cursor reconciliation for the crash window after Agent commits a response but before Flutter persists the returned revision; current normal reconnect/session persistence is covered, but that cross-device/reinstall recovery path is not.
-5. Complete the Cloud façade, durable Agent event cursor/projection, ciphertext bootstrap tunnel, approval compatibility, and cutover preflight below.
+5. Complete the remaining Cloud façade (`cloud.bootstrap`, Connections, Plans, Services, Recipes, Alerts), durable Agent event cursor/projection, ciphertext bootstrap tunnel, approval compatibility, and cutover preflight below. Deployment list/get is complete.
+6. Extend the SecretBootstrap session response with the server-authoritative `agent_instance_id` and exact AAD fields before Flutter encryption work; the current Flutter envelope/AAD/HKDF and credential JSON are not compatible with Agent and must not be guessed or silently adapted.
 
 ### Flutter
 

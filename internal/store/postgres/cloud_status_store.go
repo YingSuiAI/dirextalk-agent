@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	cloudStatusWorkerCursor   = "worker"
-	cloudStatusResourceCursor = "resource"
+	cloudStatusDeploymentCursor = "deployment"
+	cloudStatusWorkerCursor     = "worker"
+	cloudStatusResourceCursor   = "resource"
 )
 
 type CloudStatusStore struct {
@@ -36,6 +37,98 @@ func NewCloudStatusStore(store *Store) (*CloudStatusStore, error) {
 	return &CloudStatusStore{pool: store.pool, instanceID: store.instanceID}, nil
 }
 
+func (store *CloudStatusStore) GetDeployment(ctx context.Context, ownerID, deploymentID string) (cloudstatus.Deployment, error) {
+	owner, parsedDeployment, err := validateOwnedStatusID(ownerID, deploymentID)
+	if err != nil {
+		return cloudstatus.Deployment{}, err
+	}
+	link, err := scanCloudDeploymentLink(store.pool.QueryRow(ctx, `
+		SELECT lo.deployment_id, wd.created_at, lo.plan_id, lo.connection_id
+		FROM cloud_launch_operations lo
+		JOIN worker_deployments wd
+		  ON wd.deployment_id=lo.deployment_id
+		 AND wd.agent_instance_id=lo.agent_instance_id
+		 AND wd.owner_id=lo.owner_id
+		WHERE lo.deployment_id=$1 AND lo.owner_id=$2 AND lo.agent_instance_id=$3`, parsedDeployment, owner, store.instanceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cloudstatus.Deployment{}, cloudstatus.ErrNotFound
+	}
+	if err != nil {
+		return cloudstatus.Deployment{}, fmt.Errorf("get owned cloud deployment link: %w", err)
+	}
+	item, err := store.GetWorker(ctx, owner, link.DeploymentID)
+	if err != nil {
+		return cloudstatus.Deployment{}, err
+	}
+	if !item.CreatedAt.Equal(link.CreatedAt) {
+		return cloudstatus.Deployment{}, fmt.Errorf("cloud deployment link does not match Worker fact")
+	}
+	return cloudstatus.Deployment{Worker: item, PlanID: link.PlanID, ConnectionID: link.ConnectionID}, nil
+}
+
+func (store *CloudStatusStore) ListDeployments(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.DeploymentPage, error) {
+	if err := query.Validate(); err != nil || strings.TrimSpace(query.DeploymentID) != "" {
+		return cloudstatus.DeploymentPage{}, cloudstatus.ErrInvalid
+	}
+	pageSize := statusPageSize(query.PageSize)
+	cursor, err := decodeCloudStatusCursor(query.PageToken, cloudStatusDeploymentCursor)
+	if err != nil {
+		return cloudstatus.DeploymentPage{}, cloudstatus.ErrInvalid
+	}
+	arguments := []any{store.instanceID, strings.TrimSpace(query.OwnerID)}
+	where := ` WHERE lo.agent_instance_id=$1 AND lo.owner_id=$2`
+	if cursor != nil {
+		arguments = append(arguments, cursor.CreatedAt, cursor.ID)
+		where += ` AND (wd.created_at, wd.deployment_id) > ($3, $4)`
+	}
+	arguments = append(arguments, pageSize+1)
+	rows, err := store.pool.Query(ctx, `
+		SELECT lo.deployment_id, wd.created_at, lo.plan_id, lo.connection_id
+		FROM cloud_launch_operations lo
+		JOIN worker_deployments wd
+		  ON wd.deployment_id=lo.deployment_id
+		 AND wd.agent_instance_id=lo.agent_instance_id
+		 AND wd.owner_id=lo.owner_id`+where+fmt.Sprintf(` ORDER BY wd.created_at, wd.deployment_id LIMIT $%d`, len(arguments)), arguments...)
+	if err != nil {
+		return cloudstatus.DeploymentPage{}, fmt.Errorf("list owned cloud deployment links: %w", err)
+	}
+	defer rows.Close()
+	links := make([]cloudDeploymentLink, 0, pageSize+1)
+	for rows.Next() {
+		link, scanErr := scanCloudDeploymentLink(rows)
+		if scanErr != nil {
+			return cloudstatus.DeploymentPage{}, fmt.Errorf("scan owned cloud deployment link: %w", scanErr)
+		}
+		links = append(links, link)
+	}
+	if err := rows.Err(); err != nil {
+		return cloudstatus.DeploymentPage{}, fmt.Errorf("iterate owned cloud deployment links: %w", err)
+	}
+	result := cloudstatus.DeploymentPage{Deployments: make([]cloudstatus.Deployment, 0, min(len(links), pageSize))}
+	visible := links
+	if len(links) > pageSize {
+		visible = links[:pageSize]
+		last := visible[pageSize-1]
+		result.NextPageToken, err = encodeCloudStatusCursor(cloudStatusDeploymentCursor, last.CreatedAt, last.DeploymentID)
+		if err != nil {
+			return cloudstatus.DeploymentPage{}, err
+		}
+	}
+	for _, link := range visible {
+		item, readErr := store.GetWorker(ctx, query.OwnerID, link.DeploymentID)
+		if readErr != nil {
+			return cloudstatus.DeploymentPage{}, readErr
+		}
+		if !item.CreatedAt.Equal(link.CreatedAt) {
+			return cloudstatus.DeploymentPage{}, fmt.Errorf("cloud deployment link does not match Worker fact")
+		}
+		result.Deployments = append(result.Deployments, cloudstatus.Deployment{
+			Worker: item, PlanID: link.PlanID, ConnectionID: link.ConnectionID,
+		})
+	}
+	return result, nil
+}
+
 func (store *CloudStatusStore) GetWorker(ctx context.Context, ownerID, deploymentID string) (worker.Deployment, error) {
 	owner, parsedDeployment, err := validateOwnedStatusID(ownerID, deploymentID)
 	if err != nil {
@@ -50,6 +143,27 @@ func (store *CloudStatusStore) GetWorker(ctx context.Context, ownerID, deploymen
 		return worker.Deployment{}, fmt.Errorf("get owned Worker status: %w", err)
 	}
 	return item, nil
+}
+
+type cloudDeploymentLink struct {
+	DeploymentID string
+	CreatedAt    time.Time
+	PlanID       string
+	ConnectionID string
+}
+
+type cloudDeploymentLinkRow interface{ Scan(...any) error }
+
+func scanCloudDeploymentLink(row cloudDeploymentLinkRow) (cloudDeploymentLink, error) {
+	var deploymentID, planID, connectionID uuid.UUID
+	var createdAt time.Time
+	if err := row.Scan(&deploymentID, &createdAt, &planID, &connectionID); err != nil {
+		return cloudDeploymentLink{}, err
+	}
+	return cloudDeploymentLink{
+		DeploymentID: deploymentID.String(), CreatedAt: createdAt.UTC(),
+		PlanID: planID.String(), ConnectionID: connectionID.String(),
+	}, nil
 }
 
 func (store *CloudStatusStore) ListWorkers(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.WorkerPage, error) {

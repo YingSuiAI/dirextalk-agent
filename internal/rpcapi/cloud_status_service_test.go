@@ -17,12 +17,29 @@ import (
 )
 
 type cloudStatusReaderStub struct {
-	ownerID      string
-	worker       worker.Deployment
-	resources    []resource.ResourceV1
-	workerPage   cloudstatus.WorkerPage
-	resourcePage cloudstatus.ResourcePage
-	lastQuery    cloudstatus.ListQuery
+	ownerID        string
+	deployment     cloudstatus.Deployment
+	worker         worker.Deployment
+	resources      []resource.ResourceV1
+	deploymentPage cloudstatus.DeploymentPage
+	workerPage     cloudstatus.WorkerPage
+	resourcePage   cloudstatus.ResourcePage
+	lastQuery      cloudstatus.ListQuery
+}
+
+func (stub *cloudStatusReaderStub) GetDeployment(_ context.Context, ownerID, deploymentID string) (cloudstatus.Deployment, error) {
+	if ownerID != stub.ownerID || deploymentID != stub.deployment.Worker.DeploymentID {
+		return cloudstatus.Deployment{}, cloudstatus.ErrNotFound
+	}
+	return stub.deployment, nil
+}
+
+func (stub *cloudStatusReaderStub) ListDeployments(_ context.Context, query cloudstatus.ListQuery) (cloudstatus.DeploymentPage, error) {
+	stub.lastQuery = query
+	if query.OwnerID != stub.ownerID {
+		return cloudstatus.DeploymentPage{}, cloudstatus.ErrNotFound
+	}
+	return stub.deploymentPage, nil
 }
 
 func (stub *cloudStatusReaderStub) GetWorker(_ context.Context, ownerID, deploymentID string) (worker.Deployment, error) {
@@ -61,7 +78,11 @@ func (stub *cloudStatusReaderStub) ListResources(_ context.Context, query clouds
 }
 
 func (stub *cloudStatusReaderStub) ListDeploymentResources(_ context.Context, ownerID, deploymentID string) ([]resource.ResourceV1, error) {
-	if ownerID != stub.ownerID || deploymentID != stub.worker.DeploymentID {
+	expectedDeploymentID := stub.worker.DeploymentID
+	if expectedDeploymentID == "" {
+		expectedDeploymentID = stub.deployment.Worker.DeploymentID
+	}
+	if ownerID != stub.ownerID || deploymentID != expectedDeploymentID {
 		return nil, cloudstatus.ErrNotFound
 	}
 	return append([]resource.ResourceV1(nil), stub.resources...), nil
@@ -69,12 +90,15 @@ func (stub *cloudStatusReaderStub) ListDeploymentResources(_ context.Context, ow
 
 func TestCloudDeploymentStatusKeepsExecutionOutcomeAndResourceAxesIndependent(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	deploymentID := uuid.NewString()
+	deploymentID, planID, connectionID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	stub := &cloudStatusReaderStub{
 		ownerID: "owner-a",
-		worker: worker.Deployment{
-			DeploymentID: deploymentID, OwnerID: "owner-a", TaskID: uuid.NewString(), StepID: uuid.NewString(), WorkerID: uuid.NewString(),
-			State: worker.StateLeased, Outcome: worker.OutcomePending, Revision: 7, CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+		deployment: cloudstatus.Deployment{
+			Worker: worker.Deployment{
+				DeploymentID: deploymentID, OwnerID: "owner-a", TaskID: uuid.NewString(), StepID: uuid.NewString(), WorkerID: uuid.NewString(),
+				State: worker.StateLeased, Outcome: worker.OutcomePending, Revision: 7, CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+			},
+			PlanID: planID, ConnectionID: connectionID,
 		},
 		resources: []resource.ResourceV1{
 			{ResourceID: uuid.NewString(), OwnerID: "owner-a", DeploymentID: deploymentID, State: resource.StateActive, Revision: 2,
@@ -91,16 +115,42 @@ func TestCloudDeploymentStatusKeepsExecutionOutcomeAndResourceAxesIndependent(t 
 		t.Fatal(err)
 	}
 	got := response.GetDeployment()
+	if got.GetPlanId() != planID || got.GetConnectionId() != connectionID {
+		t.Fatalf("deployment relationships plan=%q connection=%q", got.GetPlanId(), got.GetConnectionId())
+	}
 	if got.GetExecutionStatus() != agentv1.ExecutionStatus_EXECUTION_STATUS_RUNNING || got.GetOutcomeStatus() != agentv1.OutcomeStatus_OUTCOME_STATUS_PENDING {
 		t.Fatalf("execution=%s outcome=%s", got.GetExecutionStatus(), got.GetOutcomeStatus())
 	}
-	if got.GetRevision() != 7 || got.GetResources().GetRevision() != 6 || got.GetResources().GetStatus() != agentv1.CloudResourceStatus_CLOUD_RESOURCE_STATUS_MIXED {
+	if got.GetRevision() != 13 || got.GetResources().GetRevision() != 6 || got.GetResources().GetStatus() != agentv1.CloudResourceStatus_CLOUD_RESOURCE_STATUS_MIXED {
 		t.Fatalf("deployment revisions/status=%+v", got)
 	}
 	readBack := got.GetResources().GetReadBack()
 	if readBack.GetTotalResources() != 3 || readBack.GetObservedResources() != 2 || readBack.GetExistingResources() != 1 ||
 		readBack.GetMissingResources() != 1 || readBack.GetUnobservedResources() != 1 || !readBack.GetLastObservedAt().AsTime().Equal(now) {
 		t.Fatalf("read-back summary=%+v", readBack)
+	}
+}
+
+func TestCloudDeploymentReadModelAdvancesWhenOnlyResourceChanges(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	item := cloudstatus.Deployment{
+		Worker: worker.Deployment{
+			DeploymentID: uuid.NewString(), OwnerID: "owner-a", TaskID: uuid.NewString(), StepID: uuid.NewString(),
+			Revision: 7, CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+		},
+		PlanID: uuid.NewString(), ConnectionID: uuid.NewString(),
+	}
+	resourceItem := resource.ResourceV1{
+		ResourceID: uuid.NewString(), DeploymentID: item.Worker.DeploymentID,
+		Revision: 2, CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+	}
+	before := cloudDeploymentToProto(item, []resource.ResourceV1{resourceItem})
+	resourceItem.Revision++
+	resourceItem.UpdatedAt = now.Add(time.Minute)
+	after := cloudDeploymentToProto(item, []resource.ResourceV1{resourceItem})
+	if before.GetRevision() != 9 || after.GetRevision() != 10 || !before.GetUpdatedAt().AsTime().Equal(now) ||
+		!after.GetUpdatedAt().AsTime().Equal(resourceItem.UpdatedAt) {
+		t.Fatalf("resource-only read-model transition before=%+v after=%+v", before, after)
 	}
 }
 
@@ -132,9 +182,13 @@ func TestCloudStatusQueriesFailClosedAcrossOwnersAndRedactStoredErrors(t *testin
 
 func TestCloudStatusListsPropagateOwnerFilterAndCursor(t *testing.T) {
 	item := worker.Deployment{DeploymentID: uuid.NewString(), OwnerID: "owner-a", State: worker.StateReady, Outcome: worker.OutcomePending}
-	stub := &cloudStatusReaderStub{ownerID: "owner-a", worker: item, workerPage: cloudstatus.WorkerPage{
-		Workers: []worker.Deployment{item}, NextPageToken: "next-worker-page",
-	}}
+	planID, connectionID := uuid.NewString(), uuid.NewString()
+	deployment := cloudstatus.Deployment{Worker: item, PlanID: planID, ConnectionID: connectionID}
+	stub := &cloudStatusReaderStub{
+		ownerID: "owner-a", worker: item, deployment: deployment,
+		workerPage:     cloudstatus.WorkerPage{Workers: []worker.Deployment{item}, NextPageToken: "next-worker-page"},
+		deploymentPage: cloudstatus.DeploymentPage{Deployments: []cloudstatus.Deployment{deployment}, NextPageToken: "next-deployment-page"},
+	}
 	response, err := NewCloudControlService(nil, uuid.NewString(), stub).ListCloudWorkers(context.Background(), &agentv1.ListCloudWorkersRequest{
 		OwnerId: "owner-a", PageSize: 23, PageToken: "worker-page",
 	})
@@ -144,5 +198,16 @@ func TestCloudStatusListsPropagateOwnerFilterAndCursor(t *testing.T) {
 	if len(response.GetWorkers()) != 1 || response.GetNextPageToken() != "next-worker-page" ||
 		stub.lastQuery.OwnerID != "owner-a" || stub.lastQuery.PageSize != 23 || stub.lastQuery.PageToken != "worker-page" {
 		t.Fatalf("list response=%+v query=%+v", response, stub.lastQuery)
+	}
+	deployments, err := NewCloudControlService(nil, uuid.NewString(), stub).ListCloudDeployments(context.Background(), &agentv1.ListCloudDeploymentsRequest{
+		OwnerId: "owner-a", PageSize: 17, PageToken: "deployment-page",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deployments.GetDeployments()) != 1 || deployments.GetNextPageToken() != "next-deployment-page" ||
+		deployments.GetDeployments()[0].GetPlanId() != planID || deployments.GetDeployments()[0].GetConnectionId() != connectionID ||
+		stub.lastQuery.OwnerID != "owner-a" || stub.lastQuery.PageSize != 17 || stub.lastQuery.PageToken != "deployment-page" {
+		t.Fatalf("deployment list response=%+v query=%+v", deployments, stub.lastQuery)
 	}
 }

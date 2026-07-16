@@ -3503,6 +3503,8 @@ type CloudDeployment struct {
 	Revision        int64                  `protobuf:"varint,9,opt,name=revision,proto3" json:"revision,omitempty"`
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	PlanId          string                 `protobuf:"bytes,12,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	ConnectionId    string                 `protobuf:"bytes,13,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -3612,6 +3614,20 @@ func (x *CloudDeployment) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *CloudDeployment) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+func (x *CloudDeployment) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
 }
 
 type CloudResource struct {
@@ -7724,7 +7740,7 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\x0e2'.dirextalk.agent.v1.CloudResourceStatusR\x06status\x12N\n" +
 	"\fstate_counts\x18\x02 \x03(\v2+.dirextalk.agent.v1.CloudResourceStateCountR\vstateCounts\x12E\n" +
 	"\tread_back\x18\x03 \x01(\v2(.dirextalk.agent.v1.CloudReadBackSummaryR\breadBack\x12\x1a\n" +
-	"\brevision\x18\x04 \x01(\x03R\brevision\"\x94\x04\n" +
+	"\brevision\x18\x04 \x01(\x03R\brevision\"\xd2\x04\n" +
 	"\x0fCloudDeployment\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12\x17\n" +
@@ -7739,7 +7755,9 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xe4\x06\n" +
+	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x17\n" +
+	"\aplan_id\x18\f \x01(\tR\x06planId\x12#\n" +
+	"\rconnection_id\x18\r \x01(\tR\fconnectionId\"\xe4\x06\n" +
 	"\rCloudResource\x12\x1f\n" +
 	"\vresource_id\x18\x01 \x01(\tR\n" +
 	"resourceId\x12\x19\n" +

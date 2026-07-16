@@ -45,12 +45,28 @@ type WorkerPage struct {
 	NextPageToken string
 }
 
+// Deployment is the durable cloud-control relationship for one exclusive
+// Worker. PlanID and ConnectionID come from the immutable launch intent; they
+// are deliberately not inferred from Worker or resource state.
+type Deployment struct {
+	Worker       worker.Deployment
+	PlanID       string
+	ConnectionID string
+}
+
+type DeploymentPage struct {
+	Deployments   []Deployment
+	NextPageToken string
+}
+
 type ResourcePage struct {
 	Resources     []resource.ResourceV1
 	NextPageToken string
 }
 
 type Reader interface {
+	GetDeployment(context.Context, string, string) (Deployment, error)
+	ListDeployments(context.Context, ListQuery) (DeploymentPage, error)
 	GetWorker(context.Context, string, string) (worker.Deployment, error)
 	ListWorkers(context.Context, ListQuery) (WorkerPage, error)
 	GetResource(context.Context, string, string) (resource.ResourceV1, error)
