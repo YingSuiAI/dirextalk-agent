@@ -1,0 +1,76 @@
+{
+  "schema_version": "dirextalk.agent.cloud.plan/v1",
+  "agent_instance_id": "agent-instance-1",
+  "owner_id": "owner-1",
+  "plan_id": "plan-1",
+  "revision": 7,
+  "status": "ready_for_confirmation",
+  "connection_id": "connection-1",
+  "recipe": {
+    "recipe_id": "recipe-1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "maturity": "experimental"
+  },
+  "quote": {
+    "quote_id": "quote-1",
+    "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "scope_digest": "sha256:19e02ba316296f39cb2ab53542b8ff1af42e4f3ee9b0dd727bf726c0ad3ec813",
+    "candidate_id": "recommended",
+    "valid_until": "2026-07-16T08:15:00Z"
+  },
+  "resource_scope": {
+    "region": "us-east-1",
+    "availability_zones": [
+      "us-east-1a",
+      "us-east-1b"
+    ],
+    "instance_type": "m7i.xlarge",
+    "instance_count": 1,
+    "architecture": "amd64",
+    "vcpu": 4,
+    "memory_mib": 16384,
+    "disk_gib": 80,
+    "volume_type": "gp3",
+    "volume_encrypted": true,
+    "purchase_option": "on_demand",
+    "worker_image_id": "ami-0123456789abcdef0",
+    "worker_image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "network_scope": {
+    "vpc_id": "vpc-0123456789abcdef0",
+    "subnet_id": "subnet-0123456789abcdef0",
+    "security_group_id": "sg-0123456789abcdef0",
+    "entry_point": "none",
+    "public_exposure": false,
+    "tls_required": false,
+    "authentication_required": false
+  },
+  "secret_scope": [
+    {
+      "secret_ref": "secret_ref:plan-1/model-token",
+      "purpose": "model access",
+      "delivery": "file"
+    },
+    {
+      "secret_ref": "secret_ref:plan-1/registry-token",
+      "purpose": "registry access",
+      "delivery": "file"
+    }
+  ],
+  "integration_scope": [
+    {
+      "kind": "mcp",
+      "name": "service tools"
+    },
+    {
+      "kind": "web",
+      "name": "service ui"
+    }
+  ],
+  "retention_scope": {
+    "class": "ephemeral",
+    "auto_destroy": true,
+    "grace_period_seconds": 1800,
+    "max_lifetime_seconds": 86400
+  }
+}

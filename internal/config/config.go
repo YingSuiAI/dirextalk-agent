@@ -5,12 +5,16 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/google/uuid"
 )
+
+var immutableOCIImagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)(?:[.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$`)
 
 type Common struct {
 	InstanceID  string
@@ -19,13 +23,17 @@ type Common struct {
 
 type Server struct {
 	Common
-	ListenAddress     string
-	TLSCertFile       string
-	TLSKeyFile        string
-	PepperFile        string
-	MountedSecretsDir string
-	ModelProfilesFile string
-	MCPServersFile    string
+	ListenAddress         string
+	TLSCertFile           string
+	TLSKeyFile            string
+	PepperFile            string
+	MasterKeyFile         string
+	MountedSecretsDir     string
+	ModelProfilesFile     string
+	MCPServersFile        string
+	EnableAWSControl      bool
+	AWSReaperImageURI     string
+	WorkerControlEndpoint string
 }
 
 func LoadCommon() (Common, error) {
@@ -54,12 +62,23 @@ func LoadServer() (Server, error) {
 	}
 	server := Server{
 		Common: common, ListenAddress: strings.TrimSpace(os.Getenv("AGENT_GRPC_LISTEN")),
-		TLSCertFile:       strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
-		TLSKeyFile:        strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
-		PepperFile:        strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
-		MountedSecretsDir: strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
-		ModelProfilesFile: strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
-		MCPServersFile:    strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
+		TLSCertFile:           strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
+		TLSKeyFile:            strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
+		PepperFile:            strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
+		MasterKeyFile:         strings.TrimSpace(os.Getenv("AGENT_MASTER_KEY_FILE")),
+		MountedSecretsDir:     strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
+		ModelProfilesFile:     strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
+		MCPServersFile:        strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
+		AWSReaperImageURI:     strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
+		WorkerControlEndpoint: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_ENABLE_AWS_CONTROL"))) {
+	case "", "false":
+		server.EnableAWSControl = false
+	case "true":
+		server.EnableAWSControl = true
+	default:
+		return Server{}, errors.New("AGENT_ENABLE_AWS_CONTROL must be true or false")
 	}
 	if server.ListenAddress == "" {
 		server.ListenAddress = ":9443"
@@ -75,6 +94,24 @@ func LoadServer() (Server, error) {
 	}
 	if server.ModelProfilesFile == "" {
 		return Server{}, errors.New("AGENT_MODEL_PROFILES_FILE is required")
+	}
+	if server.MasterKeyFile == "" {
+		return Server{}, errors.New("AGENT_MASTER_KEY_FILE is required")
+	}
+	if server.AWSReaperImageURI != "" {
+		lower := strings.ToLower(server.AWSReaperImageURI)
+		if !immutableOCIImagePattern.MatchString(server.AWSReaperImageURI) || strings.Contains(lower, ":latest@") || strings.Contains(lower, ":v1.0.3@") {
+			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI must be an immutable digest-pinned prerelease image")
+		}
+	}
+	if server.EnableAWSControl {
+		if server.AWSReaperImageURI == "" {
+			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI is required when AWS cloud control is enabled")
+		}
+		endpoint, endpointErr := url.Parse(server.WorkerControlEndpoint)
+		if endpointErr != nil || endpoint.Scheme != "grpcs" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
+			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT must be a credential-free grpcs endpoint when AWS cloud control is enabled")
+		}
 	}
 	return server, nil
 }

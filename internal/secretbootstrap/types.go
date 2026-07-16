@@ -3,9 +3,16 @@
 package secretbootstrap
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
+	"github.com/google/uuid"
 )
 
 const (
@@ -15,7 +22,69 @@ const (
 	SessionTTL                = 10 * time.Minute
 	MaxPlaintextSize          = 1024 * 1024
 	MaxAADSize                = 64 * 1024
+	CreateOperation           = "secret.bootstrap.create"
+	UploadOperation           = "secret.bootstrap.upload"
+	legacyUnboundClientID     = "__legacy_unbound__"
 )
+
+// MutationScope binds one idempotency key to the authenticated calling
+// service and the concrete credential used for the request. It intentionally
+// does not grant approval for consuming or delivering a secret.
+type MutationScope struct {
+	ClientID     string
+	CredentialID string
+}
+
+func (scope MutationScope) Validate() error {
+	if err := ValidateClientID(scope.ClientID); err != nil {
+		return err
+	}
+	credentialID, err := uuid.Parse(scope.CredentialID)
+	if err != nil || credentialID == uuid.Nil {
+		return ErrInvalidContext
+	}
+	return nil
+}
+
+// ValidateClientID validates the stable authenticated service identity used to
+// own a bootstrap session. Credential IDs are intentionally excluded so an
+// overlapping service-key rotation does not strand an in-flight session.
+func ValidateClientID(value string) error {
+	clientID := strings.TrimSpace(value)
+	if utf8.RuneCountInString(clientID) < 1 || utf8.RuneCountInString(clientID) > 255 || clientID == legacyUnboundClientID || security.ContainsLikelySecret(clientID) {
+		return ErrInvalidContext
+	}
+	for _, r := range clientID {
+		if unicode.IsControl(r) {
+			return ErrInvalidContext
+		}
+	}
+	return nil
+}
+
+// IdempotencyMutation is a secret-free persistence command. RequestHash is
+// computed over the immutable request binding and digests of bearer material,
+// never over plaintext credentials.
+type IdempotencyMutation struct {
+	Operation   string
+	Scope       MutationScope
+	Key         string
+	RequestHash [sha256.Size]byte
+}
+
+func (mutation IdempotencyMutation) Validate() error {
+	if mutation.Operation != CreateOperation && mutation.Operation != UploadOperation {
+		return ErrInvalidContext
+	}
+	if err := mutation.Scope.Validate(); err != nil {
+		return err
+	}
+	key, err := uuid.Parse(mutation.Key)
+	if err != nil || key == uuid.Nil {
+		return ErrInvalidContext
+	}
+	return nil
+}
 
 type Status string
 
@@ -109,7 +178,50 @@ type SecretConsumer func(plaintext []byte) error
 // upload-token material, or an X25519 private key.
 type Record struct {
 	Session         SessionV1   `json:"session"`
+	CreatorClientID string      `json:"creator_client_id"`
 	UploadTokenHash [32]byte    `json:"upload_token_hash"`
 	KeyHandle       string      `json:"key_handle,omitempty"`
 	Envelope        *EnvelopeV1 `json:"envelope,omitempty"`
+}
+
+func createMutation(scope MutationScope, key string, binding BindingV1) (IdempotencyMutation, error) {
+	binding = BindingV1{
+		AgentInstanceID: strings.TrimSpace(binding.AgentInstanceID),
+		OwnerID:         strings.TrimSpace(binding.OwnerID),
+		Purpose:         strings.TrimSpace(binding.Purpose),
+		TargetID:        strings.TrimSpace(binding.TargetID),
+	}
+	encoded, _ := json.Marshal(binding)
+	mutation := IdempotencyMutation{
+		Operation: CreateOperation,
+		Scope: MutationScope{
+			ClientID:     strings.TrimSpace(scope.ClientID),
+			CredentialID: strings.TrimSpace(scope.CredentialID),
+		},
+		Key:         strings.TrimSpace(key),
+		RequestHash: sha256.Sum256(encoded),
+	}
+	return mutation, mutation.Validate()
+}
+
+func uploadMutation(scope MutationScope, key, sessionID string, expectedRevision uint64, tokenHash [sha256.Size]byte, envelope EnvelopeV1) (IdempotencyMutation, error) {
+	encoded, _ := json.Marshal(struct {
+		SessionID        string     `json:"session_id"`
+		ExpectedRevision uint64     `json:"expected_revision"`
+		UploadTokenHash  [32]byte   `json:"upload_token_hash"`
+		Envelope         EnvelopeV1 `json:"envelope"`
+	}{
+		SessionID: strings.TrimSpace(sessionID), ExpectedRevision: expectedRevision,
+		UploadTokenHash: tokenHash, Envelope: envelope,
+	})
+	mutation := IdempotencyMutation{
+		Operation: UploadOperation,
+		Scope: MutationScope{
+			ClientID:     strings.TrimSpace(scope.ClientID),
+			CredentialID: strings.TrimSpace(scope.CredentialID),
+		},
+		Key:         strings.TrimSpace(key),
+		RequestHash: sha256.Sum256(encoded),
+	}
+	return mutation, mutation.Validate()
 }

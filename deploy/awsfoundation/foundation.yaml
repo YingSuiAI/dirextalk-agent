@@ -1,0 +1,705 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Dirextalk Agent single-tenant AWS Foundation (no broker/API Gateway)
+
+Parameters:
+  AgentInstanceId:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+  ControlRoleName:
+    Type: String
+  WorkerRoleName:
+    Type: String
+  WorkerProfileName:
+    Type: String
+  ReaperRoleName:
+    Type: String
+  ArtifactBucketName:
+    Type: String
+  ManifestTableName:
+    Type: String
+  WorkerLogGroupName:
+    Type: String
+  ReaperLogGroupName:
+    Type: String
+  ReaperFunctionName:
+    Type: String
+  ReaperScheduleName:
+    Type: String
+  SecretNamespace:
+    Type: String
+  ReaperImageUri:
+    Type: String
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$'
+
+Resources:
+  FoundationKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description:
+        Fn::Sub: Dirextalk Agent ${AgentInstanceId} foundation key
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - kms:CancelKeyDeletion
+              - kms:CreateAlias
+              - kms:CreateGrant
+              - kms:Decrypt
+              - kms:DeleteAlias
+              - kms:DescribeKey
+              - kms:DisableKey
+              - kms:DisableKeyRotation
+              - kms:Encrypt
+              - kms:EnableKey
+              - kms:EnableKeyRotation
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:GetKeyPolicy
+              - kms:GetKeyRotationStatus
+              - kms:ListAliases
+              - kms:ListGrants
+              - kms:ListKeyPolicies
+              - kms:ListResourceTags
+              - kms:PutKeyPolicy
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+              - kms:RevokeGrant
+              - kms:ScheduleKeyDeletion
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:UpdateAlias
+              - kms:UpdateKeyDescription
+            Resource: '*'
+          - Sid: RegionalCloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service:
+                Fn::Sub: logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn:
+                  Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: foundation
+
+  FoundationKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName:
+        Fn::Sub: alias/${AWS::StackName}
+      TargetKeyId:
+        Ref: FoundationKey
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName:
+        Ref: ArtifactBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID:
+                Fn::GetAtt: [FoundationKey, Arn]
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+          - Id: ExpireNoncurrentEphemeralArtifacts
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: foundation
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: ArtifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              Fn::Sub: ${ArtifactBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  ManifestTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName:
+        Ref: ManifestTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId:
+          Fn::GetAtt: [FoundationKey, Arn]
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: resource-manifest
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName:
+        Ref: WorkerLogGroupName
+      KmsKeyId:
+        Fn::GetAtt: [FoundationKey, Arn]
+      RetentionInDays: 30
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: worker-logs
+
+  ReaperLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName:
+        Ref: ReaperLogGroupName
+      KmsKeyId:
+        Fn::GetAtt: [FoundationKey, Arn]
+      RetentionInDays: 90
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: reaper-logs
+
+  SecretNamespaceMarker:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name:
+        Fn::Sub: ${SecretNamespace}_foundation
+      Description: Namespace marker only; contains no service credential
+      KmsKeyId:
+        Fn::GetAtt: [FoundationKey, Arn]
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: secret-namespace
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Ref: WorkerRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EC2Only
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: worker-deployment-scope
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WorkerSessionArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                Resource:
+                  Fn::Sub: ${ArtifactBucket.Arn}/workers/${!aws:userid}/*
+              - Sid: WorkerEnvelopeKMS
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource:
+                  Fn::GetAtt: [FoundationKey, Arn]
+                Condition:
+                  StringEquals:
+                    kms:ViaService:
+                      Fn::Sub: s3.${AWS::Region}.${AWS::URLSuffix}
+                    kms:EncryptionContext:aws:s3:arn:
+                      Fn::GetAtt: [ArtifactBucket, Arn]
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: cloud-worker
+
+  WorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName:
+        Ref: WorkerProfileName
+      Roles:
+        - Ref: WorkerRole
+
+  ReaperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Ref: ReaperRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: LambdaOnly
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: expired-ephemeral-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadManifest
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource:
+                  Fn::GetAtt: [ManifestTable, Arn]
+              - Sid: ObserveOwnedResources
+                Effect: Allow
+                Action:
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeInstances
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeVpcEndpoints
+                Resource: '*'
+              - Sid: DestroyExpiredEphemeralCompute
+                Effect: Allow
+                Action:
+                  - ec2:TerminateInstances
+                  - ec2:DeleteVolume
+                  - ec2:DeleteNetworkInterface
+                  - ec2:ReleaseAddress
+                  - ec2:DeleteSecurityGroup
+                  - ec2:DeleteSnapshot
+                  - ec2:DeleteVpcEndpoints
+                Resource:
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/dirextalk:agent_instance_id:
+                      Ref: AgentInstanceId
+                    ec2:ResourceTag/dirextalk:retention: ephemeral
+                  # The Go Reaper verifies the approved manifest deadline before
+                  # mutation. IAM Date operators cannot compare a resource-tag
+                  # date against a dynamic aws:CurrentTime policy variable.
+              - Sid: ReaperLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  Fn::Sub: ${ReaperLogGroup.Arn}:log-stream:*
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: expiry-reaper
+
+  ReaperFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - ReaperLogGroup
+    Properties:
+      FunctionName:
+        Ref: ReaperFunctionName
+      PackageType: Image
+      Code:
+        ImageUri:
+          Ref: ReaperImageUri
+      Architectures:
+        - arm64
+      MemorySize: 256
+      Timeout: 60
+      Role:
+        Fn::GetAtt: [ReaperRole, Arn]
+      Environment:
+        Variables:
+          AGENT_INSTANCE_ID:
+            Ref: AgentInstanceId
+          RESOURCE_MANIFEST_TABLE:
+            Ref: ManifestTable
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: expiry-reaper
+
+  ReaperSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name:
+        Ref: ReaperScheduleName
+      Description: Reconcile only approved expired ephemeral manifests
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn:
+            Fn::GetAtt: [ReaperFunction, Arn]
+          Id: ReaperFunction
+
+  ReaperInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName:
+        Ref: ReaperFunction
+      Principal: events.amazonaws.com
+      SourceArn:
+        Fn::GetAtt: [ReaperSchedule, Arn]
+
+  ReaperErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName:
+        Fn::Sub: ${ReaperFunctionName}-errors
+      AlarmDescription: Dirextalk expiry Reaper invocation failures
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Period: 300
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: ReaperFunction
+
+  ControlRuntimePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        Fn::Sub: ${AWS::StackName}-control-runtime
+      Roles:
+        - Ref: ControlRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ObserveRegionalCompute
+            Effect: Allow
+            Action:
+              - ec2:DescribeAddresses
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeImages
+              - ec2:DescribeInstanceStatus
+              - ec2:DescribeInstanceTypeOfferings
+              - ec2:DescribeInstanceTypes
+              - ec2:DescribeInstances
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeSnapshots
+              - ec2:DescribeSubnets
+              - ec2:DescribeVolumes
+              - ec2:DescribeVpcEndpoints
+              - ec2:DescribeVpcs
+            Resource: '*'
+          - Sid: CreateTaggedCompute
+            Effect: Allow
+            Action:
+              - ec2:AllocateAddress
+              - ec2:CreateNetworkInterface
+              - ec2:CreateSecurityGroup
+              - ec2:CreateVolume
+              - ec2:CreateVpcEndpoint
+              - ec2:RunInstances
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:key-pair/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: TagComputeOnCreate
+            Effect: Allow
+            Action:
+              - ec2:CreateTags
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                ec2:CreateAction:
+                  - CreateNetworkInterface
+                  - CreateSecurityGroup
+                  - CreateVolume
+                  - CreateVpcEndpoint
+                  - RunInstances
+          - Sid: UseOnlyOwnedVolumeForSnapshot
+            Effect: Allow
+            Action:
+              - ec2:CreateSnapshot
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: CreateOnlyTaggedSnapshot
+            Effect: Allow
+            Action:
+              - ec2:CreateSnapshot
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: MutateOnlyOwnedCompute
+            Effect: Allow
+            Action:
+              - ec2:AssociateAddress
+              - ec2:AttachVolume
+              - ec2:AuthorizeSecurityGroupEgress
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:DeleteNetworkInterface
+              - ec2:DeleteSecurityGroup
+              - ec2:DeleteSnapshot
+              - ec2:DeleteVolume
+              - ec2:DeleteVpcEndpoints
+              - ec2:DetachVolume
+              - ec2:DisassociateAddress
+              - ec2:ModifyInstanceAttribute
+              - ec2:ModifyVolume
+              - ec2:RebootInstances
+              - ec2:ReleaseAddress
+              - ec2:RevokeSecurityGroupEgress
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:StartInstances
+              - ec2:StopInstances
+              - ec2:TerminateInstances
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: TagOnlyOwnedCompute
+            Effect: Allow
+            Action:
+              - ec2:CreateTags
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: PassOnlyWorkerRole
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource:
+              Fn::GetAtt: [WorkerRole, Arn]
+            Condition:
+              StringEquals:
+                iam:PassedToService: ec2.amazonaws.com
+          - Sid: FoundationArtifacts
+            Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:DeleteObject
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Resource:
+              - Fn::GetAtt: [ArtifactBucket, Arn]
+              - Fn::Sub: ${ArtifactBucket.Arn}/*
+          - Sid: FoundationEncryption
+            Effect: Allow
+            Action:
+              - kms:CreateGrant
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey
+            Resource:
+              Fn::GetAtt: [FoundationKey, Arn]
+          - Sid: CreateTaggedDeploymentSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:CreateSecret
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: MutateOnlyOwnedDeploymentSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:DeleteSecret
+              - secretsmanager:DescribeSecret
+              - secretsmanager:GetSecretValue
+              - secretsmanager:PutSecretValue
+              - secretsmanager:TagResource
+              - secretsmanager:UntagResource
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: ResourceManifest
+            Effect: Allow
+            Action:
+              - dynamodb:DeleteItem
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+            Resource:
+              Fn::GetAtt: [ManifestTable, Arn]
+          - Sid: WorkerAndReaperLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:DescribeLogStreams
+              - logs:FilterLogEvents
+              - logs:GetLogEvents
+              - logs:PutLogEvents
+            Resource:
+              - Fn::Sub: ${WorkerLogGroup.Arn}:*
+              - Fn::Sub: ${ReaperLogGroup.Arn}:*
+
+Outputs:
+  ArtifactBucketName:
+    Value:
+      Ref: ArtifactBucket
+  FoundationKeyArn:
+    Value:
+      Fn::GetAtt: [FoundationKey, Arn]
+  ManifestTableName:
+    Value:
+      Ref: ManifestTable
+  WorkerInstanceProfileArn:
+    Value:
+      Fn::GetAtt: [WorkerInstanceProfile, Arn]
+  SecretNamespace:
+    Value:
+      Ref: SecretNamespace
+  ReaperFunctionArn:
+    Value:
+      Fn::GetAtt: [ReaperFunction, Arn]

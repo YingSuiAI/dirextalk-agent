@@ -99,6 +99,13 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	if err != nil || draft.Revision != 1 || draft.Digest == "" {
 		t.Fatalf("save recipe draft failed: revision=%d err=%T", draft.Revision, err)
 	}
+	resolvedRecipe, err := restarted.ResolveRecipe(context.Background(), recipeCommand.Binding.OwnerID, draft.RecipeID, draft.Digest)
+	if err != nil || resolvedRecipe.RecipeID != draft.RecipeID {
+		t.Fatalf("ResolveRecipe exact binding=%q err=%v", resolvedRecipe.RecipeID, err)
+	}
+	if _, err := restarted.ResolveRecipe(context.Background(), recipeCommand.Binding.OwnerID, draft.RecipeID, "sha256:"+strings.Repeat("0", 64)); !errors.Is(err, planning.ErrNotFound) {
+		t.Fatalf("ResolveRecipe wrong digest error=%v", err)
+	}
 	replayedDraft, err := restarted.SaveRecipeDraft(context.Background(), scope, recipeCommand)
 	if err != nil || !reflect.DeepEqual(draft, replayedDraft) {
 		t.Fatalf("recipe idempotent replay changed response: err=%T", err)

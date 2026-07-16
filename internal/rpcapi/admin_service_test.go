@@ -87,6 +87,25 @@ func TestCreateServiceKeyRequiresAuthenticatedPrincipalAndValidRecipient(t *test
 	}
 }
 
+func TestApprovalDeviceAdministrationFailsClosedForEveryServiceKeyScope(t *testing.T) {
+	service := NewAdminService(&credentialManagerStub{}, []byte("0123456789abcdef0123456789abcdef"))
+	for _, scopes := range []map[string]struct{}{
+		{"admin": {}},
+		{"admin.approval_devices": {}},
+		{"cloud.approve": {}},
+	} {
+		ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{
+			CredentialID: uuid.NewString(), ClientID: "message-server", Scopes: scopes,
+		})
+		if _, err := service.RegisterApprovalDevice(ctx, &agentv1.RegisterApprovalDeviceRequest{}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("RegisterApprovalDevice scopes=%v code=%v", scopes, status.Code(err))
+		}
+		if _, err := service.RevokeApprovalDevice(ctx, &agentv1.RevokeApprovalDeviceRequest{}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("RevokeApprovalDevice scopes=%v code=%v", scopes, status.Code(err))
+		}
+	}
+}
+
 type credentialManagerStub struct {
 	created auth.CreatedCredential
 }

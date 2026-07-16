@@ -347,7 +347,7 @@ func (adapter *CloudSkillAdapter) advancePlanStage(
 	}
 	attempt, found, err := adapter.tasks.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
 		IdempotencyKey: deterministicSubmissionUUID(request.Binding.RequestID, request.ToolCallID, stage.Name, "acquire"),
-		TaskID:         taskID, WorkerID: workerID, ExecutorKind: task.ExecutorControlPlane, LeaseDuration: 5 * time.Minute,
+		TaskID:         taskID, StepID: stage.StepID, WorkerID: workerID, ExecutorKind: task.ExecutorControlPlane, LeaseDuration: 5 * time.Minute,
 	})
 	if err != nil {
 		return ErrTaskOperation

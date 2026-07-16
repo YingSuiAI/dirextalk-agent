@@ -28,6 +28,7 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 		return task.Attempt{}, false, err
 	}
 	taskID, _ := uuid.Parse(command.TaskID)
+	requestedStepID, _ := uuid.Parse(command.StepID)
 	workerID, _ := uuid.Parse(command.WorkerID)
 	digest := command.Digest()
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -68,7 +69,7 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 		FROM task_steps s
 		LEFT JOIN task_attempts a
 		  ON a.task_id=s.task_id AND a.step_id=s.step_id AND a.attempt=s.attempt
-		WHERE s.task_id=$1 AND s.executor_kind=$2 AND s.outcome_status=$3
+		WHERE s.task_id=$1 AND s.executor_kind=$2 AND s.outcome_status=$3 AND s.step_id=$8
 		  AND NOT EXISTS (
 		      SELECT 1
 		      FROM task_step_dependencies d
@@ -88,7 +89,7 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 		FOR UPDATE OF s SKIP LOCKED
 		LIMIT 1`,
 		taskID, command.ExecutorKind, task.OutcomePending, task.ExecutionRunning,
-		task.ExecutionFinished, task.OutcomeSucceeded, task.ExecutionQueued,
+		task.ExecutionFinished, task.OutcomeSucceeded, task.ExecutionQueued, requestedStepID,
 	).Scan(
 		&step.StepID, &step.TaskID, &step.Name, &step.ExecutorKind, &step.ExecutionStatus, &step.OutcomeStatus,
 		&step.Attempt, &step.LeaseEpoch, &step.CheckpointRef, &step.ResultRef, &step.Revision, &step.CreatedAt, &step.UpdatedAt,
@@ -108,7 +109,7 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 		return task.Attempt{}, false, fmt.Errorf("select ready task step: %w", err)
 	}
 	step = normalizeStepTimes(step)
-	stepID, _ := uuid.Parse(step.StepID)
+	stepID := requestedStepID
 	if expiredLease {
 		result, err := tx.Exec(ctx, `
 			UPDATE task_attempts

@@ -1,0 +1,86 @@
+name: dirextalk-agent
+
+services:
+  agent:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:?set a prerelease tag plus @sha256 digest; latest and v1.0.3 are forbidden}
+    command: ["serve"]
+    user: "65532:65532"
+    read_only: true
+    restart: unless-stopped
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    ports:
+      - "${AGENT_GRPC_PORT:-9443}:9443"
+    environment:
+      AGENT_INSTANCE_ID: ${AGENT_INSTANCE_ID:?set the stable Agent instance UUID}
+      AGENT_DATABASE_URL_FILE: /run/secrets/agent_postgres_dsn
+      AGENT_GRPC_LISTEN: :9443
+      AGENT_TLS_CERT_FILE: /run/secrets/agent_tls_cert
+      AGENT_TLS_KEY_FILE: /run/secrets/agent_tls_key
+      AGENT_SERVICE_KEY_PEPPER_FILE: /run/secrets/agent_service_key_pepper
+      AGENT_MASTER_KEY_FILE: /run/secrets/agent_master_key
+      AGENT_BOOTSTRAP_SERVICE_KEY_FILE: /run/secrets/agent_bootstrap_service_key
+      AGENT_BOOTSTRAP_CLIENT_ID: ${AGENT_BOOTSTRAP_CLIENT_ID:?set the non-secret initial caller id}
+      AGENT_BOOTSTRAP_SCOPES: ${AGENT_BOOTSTRAP_SCOPES:-admin}
+      AGENT_MOUNTED_SECRETS_DIR: /run/dirextalk/mounted-secrets
+      AGENT_MODEL_PROFILES_FILE: /run/dirextalk/config/model-profiles.json
+      AGENT_ENABLE_AWS_CONTROL: ${AGENT_ENABLE_AWS_CONTROL:-false}
+      AGENT_AWS_REAPER_IMAGE_URI: ${DIREXTALK_REAPER_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:-}
+      AGENT_WORKER_CONTROL_ENDPOINT: ${AGENT_WORKER_CONTROL_ENDPOINT:-}
+    secrets:
+      - source: agent_postgres_dsn
+        target: agent_postgres_dsn
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_tls_cert
+        target: agent_tls_cert
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_tls_key
+        target: agent_tls_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_service_key_pepper
+        target: agent_service_key_pepper
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_master_key
+        target: agent_master_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_bootstrap_service_key
+        target: agent_bootstrap_service_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    volumes:
+      - type: bind
+        source: ${AGENT_MODEL_PROFILES_PATH:?set the host model profile catalog path}
+        target: /run/dirextalk/config/model-profiles.json
+        read_only: true
+      - type: bind
+        source: ${AGENT_MOUNTED_SECRETS_DIR_PATH:?set the protected host runtime-secret directory}
+        target: /run/dirextalk/mounted-secrets
+        read_only: true
+
+secrets:
+  agent_postgres_dsn:
+    environment: AGENT_POSTGRES_DSN
+  agent_tls_cert:
+    environment: AGENT_TLS_CERT_PEM
+  agent_tls_key:
+    environment: AGENT_TLS_KEY_PEM
+  agent_service_key_pepper:
+    environment: AGENT_SERVICE_KEY_PEPPER
+  agent_master_key:
+    environment: AGENT_MASTER_KEY
+  agent_bootstrap_service_key:
+    environment: AGENT_BOOTSTRAP_SERVICE_KEY

@@ -573,7 +573,21 @@ var RuntimeService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	CloudControlService_GetCapabilities_FullMethodName = "/dirextalk.agent.v1.CloudControlService/GetCapabilities"
+	CloudControlService_GetCapabilities_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/GetCapabilities"
+	CloudControlService_PreviewAwsIdentity_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/PreviewAwsIdentity"
+	CloudControlService_CreateCloudQuote_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/CreateCloudQuote"
+	CloudControlService_GetCloudQuote_FullMethodName           = "/dirextalk.agent.v1.CloudControlService/GetCloudQuote"
+	CloudControlService_CreateCloudPlan_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/CreateCloudPlan"
+	CloudControlService_GetCloudPlan_FullMethodName            = "/dirextalk.agent.v1.CloudControlService/GetCloudPlan"
+	CloudControlService_CreateApprovalChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateApprovalChallenge"
+	CloudControlService_ApproveCloudPlan_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPlan"
+	CloudControlService_EstablishAwsConnection_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/EstablishAwsConnection"
+	CloudControlService_GetCloudDeployment_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetCloudDeployment"
+	CloudControlService_ListCloudDeployments_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/ListCloudDeployments"
+	CloudControlService_GetCloudResource_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/GetCloudResource"
+	CloudControlService_ListCloudResources_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/ListCloudResources"
+	CloudControlService_GetCloudWorker_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/GetCloudWorker"
+	CloudControlService_ListCloudWorkers_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ListCloudWorkers"
 )
 
 // CloudControlServiceClient is the client API for CloudControlService service.
@@ -581,6 +595,20 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type CloudControlServiceClient interface {
 	GetCapabilities(ctx context.Context, in *CloudControlServiceGetCapabilitiesRequest, opts ...grpc.CallOption) (*CloudControlServiceGetCapabilitiesResponse, error)
+	PreviewAwsIdentity(ctx context.Context, in *PreviewAwsIdentityRequest, opts ...grpc.CallOption) (*PreviewAwsIdentityResponse, error)
+	CreateCloudQuote(ctx context.Context, in *CreateCloudQuoteRequest, opts ...grpc.CallOption) (*CreateCloudQuoteResponse, error)
+	GetCloudQuote(ctx context.Context, in *GetCloudQuoteRequest, opts ...grpc.CallOption) (*GetCloudQuoteResponse, error)
+	CreateCloudPlan(ctx context.Context, in *CreateCloudPlanRequest, opts ...grpc.CallOption) (*CreateCloudPlanResponse, error)
+	GetCloudPlan(ctx context.Context, in *GetCloudPlanRequest, opts ...grpc.CallOption) (*GetCloudPlanResponse, error)
+	CreateApprovalChallenge(ctx context.Context, in *CreateApprovalChallengeRequest, opts ...grpc.CallOption) (*CreateApprovalChallengeResponse, error)
+	ApproveCloudPlan(ctx context.Context, in *ApproveCloudPlanRequest, opts ...grpc.CallOption) (*ApproveCloudPlanResponse, error)
+	EstablishAwsConnection(ctx context.Context, in *EstablishAwsConnectionRequest, opts ...grpc.CallOption) (*EstablishAwsConnectionResponse, error)
+	GetCloudDeployment(ctx context.Context, in *GetCloudDeploymentRequest, opts ...grpc.CallOption) (*GetCloudDeploymentResponse, error)
+	ListCloudDeployments(ctx context.Context, in *ListCloudDeploymentsRequest, opts ...grpc.CallOption) (*ListCloudDeploymentsResponse, error)
+	GetCloudResource(ctx context.Context, in *GetCloudResourceRequest, opts ...grpc.CallOption) (*GetCloudResourceResponse, error)
+	ListCloudResources(ctx context.Context, in *ListCloudResourcesRequest, opts ...grpc.CallOption) (*ListCloudResourcesResponse, error)
+	GetCloudWorker(ctx context.Context, in *GetCloudWorkerRequest, opts ...grpc.CallOption) (*GetCloudWorkerResponse, error)
+	ListCloudWorkers(ctx context.Context, in *ListCloudWorkersRequest, opts ...grpc.CallOption) (*ListCloudWorkersResponse, error)
 }
 
 type cloudControlServiceClient struct {
@@ -601,11 +629,165 @@ func (c *cloudControlServiceClient) GetCapabilities(ctx context.Context, in *Clo
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) PreviewAwsIdentity(ctx context.Context, in *PreviewAwsIdentityRequest, opts ...grpc.CallOption) (*PreviewAwsIdentityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewAwsIdentityResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_PreviewAwsIdentity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateCloudQuote(ctx context.Context, in *CreateCloudQuoteRequest, opts ...grpc.CallOption) (*CreateCloudQuoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudQuoteResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudQuote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudQuote(ctx context.Context, in *GetCloudQuoteRequest, opts ...grpc.CallOption) (*GetCloudQuoteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudQuoteResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudQuote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateCloudPlan(ctx context.Context, in *CreateCloudPlanRequest, opts ...grpc.CallOption) (*CreateCloudPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudPlanResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudPlan(ctx context.Context, in *GetCloudPlanRequest, opts ...grpc.CallOption) (*GetCloudPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudPlanResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateApprovalChallenge(ctx context.Context, in *CreateApprovalChallengeRequest, opts ...grpc.CallOption) (*CreateApprovalChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateApprovalChallengeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateApprovalChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveCloudPlan(ctx context.Context, in *ApproveCloudPlanRequest, opts ...grpc.CallOption) (*ApproveCloudPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveCloudPlanResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveCloudPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) EstablishAwsConnection(ctx context.Context, in *EstablishAwsConnectionRequest, opts ...grpc.CallOption) (*EstablishAwsConnectionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EstablishAwsConnectionResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_EstablishAwsConnection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudDeployment(ctx context.Context, in *GetCloudDeploymentRequest, opts ...grpc.CallOption) (*GetCloudDeploymentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudDeploymentResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudDeployment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ListCloudDeployments(ctx context.Context, in *ListCloudDeploymentsRequest, opts ...grpc.CallOption) (*ListCloudDeploymentsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCloudDeploymentsResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ListCloudDeployments_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudResource(ctx context.Context, in *GetCloudResourceRequest, opts ...grpc.CallOption) (*GetCloudResourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudResourceResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudResource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ListCloudResources(ctx context.Context, in *ListCloudResourcesRequest, opts ...grpc.CallOption) (*ListCloudResourcesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCloudResourcesResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ListCloudResources_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudWorker(ctx context.Context, in *GetCloudWorkerRequest, opts ...grpc.CallOption) (*GetCloudWorkerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudWorkerResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudWorker_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ListCloudWorkers(ctx context.Context, in *ListCloudWorkersRequest, opts ...grpc.CallOption) (*ListCloudWorkersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCloudWorkersResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ListCloudWorkers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CloudControlServiceServer is the server API for CloudControlService service.
 // All implementations must embed UnimplementedCloudControlServiceServer
 // for forward compatibility.
 type CloudControlServiceServer interface {
 	GetCapabilities(context.Context, *CloudControlServiceGetCapabilitiesRequest) (*CloudControlServiceGetCapabilitiesResponse, error)
+	PreviewAwsIdentity(context.Context, *PreviewAwsIdentityRequest) (*PreviewAwsIdentityResponse, error)
+	CreateCloudQuote(context.Context, *CreateCloudQuoteRequest) (*CreateCloudQuoteResponse, error)
+	GetCloudQuote(context.Context, *GetCloudQuoteRequest) (*GetCloudQuoteResponse, error)
+	CreateCloudPlan(context.Context, *CreateCloudPlanRequest) (*CreateCloudPlanResponse, error)
+	GetCloudPlan(context.Context, *GetCloudPlanRequest) (*GetCloudPlanResponse, error)
+	CreateApprovalChallenge(context.Context, *CreateApprovalChallengeRequest) (*CreateApprovalChallengeResponse, error)
+	ApproveCloudPlan(context.Context, *ApproveCloudPlanRequest) (*ApproveCloudPlanResponse, error)
+	EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error)
+	GetCloudDeployment(context.Context, *GetCloudDeploymentRequest) (*GetCloudDeploymentResponse, error)
+	ListCloudDeployments(context.Context, *ListCloudDeploymentsRequest) (*ListCloudDeploymentsResponse, error)
+	GetCloudResource(context.Context, *GetCloudResourceRequest) (*GetCloudResourceResponse, error)
+	ListCloudResources(context.Context, *ListCloudResourcesRequest) (*ListCloudResourcesResponse, error)
+	GetCloudWorker(context.Context, *GetCloudWorkerRequest) (*GetCloudWorkerResponse, error)
+	ListCloudWorkers(context.Context, *ListCloudWorkersRequest) (*ListCloudWorkersResponse, error)
 	mustEmbedUnimplementedCloudControlServiceServer()
 }
 
@@ -618,6 +800,48 @@ type UnimplementedCloudControlServiceServer struct{}
 
 func (UnimplementedCloudControlServiceServer) GetCapabilities(context.Context, *CloudControlServiceGetCapabilitiesRequest) (*CloudControlServiceGetCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapabilities not implemented")
+}
+func (UnimplementedCloudControlServiceServer) PreviewAwsIdentity(context.Context, *PreviewAwsIdentityRequest) (*PreviewAwsIdentityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreviewAwsIdentity not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudQuote(context.Context, *CreateCloudQuoteRequest) (*CreateCloudQuoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudQuote not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudQuote(context.Context, *GetCloudQuoteRequest) (*GetCloudQuoteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudQuote not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudPlan(context.Context, *CreateCloudPlanRequest) (*CreateCloudPlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudPlan not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudPlan(context.Context, *GetCloudPlanRequest) (*GetCloudPlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudPlan not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateApprovalChallenge(context.Context, *CreateApprovalChallengeRequest) (*CreateApprovalChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateApprovalChallenge not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveCloudPlan(context.Context, *ApproveCloudPlanRequest) (*ApproveCloudPlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveCloudPlan not implemented")
+}
+func (UnimplementedCloudControlServiceServer) EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EstablishAwsConnection not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudDeployment(context.Context, *GetCloudDeploymentRequest) (*GetCloudDeploymentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudDeployment not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ListCloudDeployments(context.Context, *ListCloudDeploymentsRequest) (*ListCloudDeploymentsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCloudDeployments not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudResource(context.Context, *GetCloudResourceRequest) (*GetCloudResourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudResource not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ListCloudResources(context.Context, *ListCloudResourcesRequest) (*ListCloudResourcesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCloudResources not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudWorker(context.Context, *GetCloudWorkerRequest) (*GetCloudWorkerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudWorker not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ListCloudWorkers(context.Context, *ListCloudWorkersRequest) (*ListCloudWorkersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCloudWorkers not implemented")
 }
 func (UnimplementedCloudControlServiceServer) mustEmbedUnimplementedCloudControlServiceServer() {}
 func (UnimplementedCloudControlServiceServer) testEmbeddedByValue()                             {}
@@ -658,6 +882,258 @@ func _CloudControlService_GetCapabilities_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_PreviewAwsIdentity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewAwsIdentityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).PreviewAwsIdentity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_PreviewAwsIdentity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).PreviewAwsIdentity(ctx, req.(*PreviewAwsIdentityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateCloudQuote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudQuoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudQuote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudQuote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudQuote(ctx, req.(*CreateCloudQuoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudQuote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudQuoteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudQuote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudQuote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudQuote(ctx, req.(*GetCloudQuoteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateCloudPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudPlan(ctx, req.(*CreateCloudPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudPlan(ctx, req.(*GetCloudPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateApprovalChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateApprovalChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateApprovalChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateApprovalChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateApprovalChallenge(ctx, req.(*CreateApprovalChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveCloudPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveCloudPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveCloudPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveCloudPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveCloudPlan(ctx, req.(*ApproveCloudPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_EstablishAwsConnection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EstablishAwsConnectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).EstablishAwsConnection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_EstablishAwsConnection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).EstablishAwsConnection(ctx, req.(*EstablishAwsConnectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudDeployment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudDeploymentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudDeployment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudDeployment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudDeployment(ctx, req.(*GetCloudDeploymentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ListCloudDeployments_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCloudDeploymentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ListCloudDeployments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ListCloudDeployments_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ListCloudDeployments(ctx, req.(*ListCloudDeploymentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudResourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudResource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudResource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudResource(ctx, req.(*GetCloudResourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ListCloudResources_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCloudResourcesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ListCloudResources(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ListCloudResources_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ListCloudResources(ctx, req.(*ListCloudResourcesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudWorker_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudWorkerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudWorker(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudWorker_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudWorker(ctx, req.(*GetCloudWorkerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ListCloudWorkers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCloudWorkersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ListCloudWorkers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ListCloudWorkers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ListCloudWorkers(ctx, req.(*ListCloudWorkersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CloudControlService_ServiceDesc is the grpc.ServiceDesc for CloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -669,6 +1145,62 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetCapabilities",
 			Handler:    _CloudControlService_GetCapabilities_Handler,
 		},
+		{
+			MethodName: "PreviewAwsIdentity",
+			Handler:    _CloudControlService_PreviewAwsIdentity_Handler,
+		},
+		{
+			MethodName: "CreateCloudQuote",
+			Handler:    _CloudControlService_CreateCloudQuote_Handler,
+		},
+		{
+			MethodName: "GetCloudQuote",
+			Handler:    _CloudControlService_GetCloudQuote_Handler,
+		},
+		{
+			MethodName: "CreateCloudPlan",
+			Handler:    _CloudControlService_CreateCloudPlan_Handler,
+		},
+		{
+			MethodName: "GetCloudPlan",
+			Handler:    _CloudControlService_GetCloudPlan_Handler,
+		},
+		{
+			MethodName: "CreateApprovalChallenge",
+			Handler:    _CloudControlService_CreateApprovalChallenge_Handler,
+		},
+		{
+			MethodName: "ApproveCloudPlan",
+			Handler:    _CloudControlService_ApproveCloudPlan_Handler,
+		},
+		{
+			MethodName: "EstablishAwsConnection",
+			Handler:    _CloudControlService_EstablishAwsConnection_Handler,
+		},
+		{
+			MethodName: "GetCloudDeployment",
+			Handler:    _CloudControlService_GetCloudDeployment_Handler,
+		},
+		{
+			MethodName: "ListCloudDeployments",
+			Handler:    _CloudControlService_ListCloudDeployments_Handler,
+		},
+		{
+			MethodName: "GetCloudResource",
+			Handler:    _CloudControlService_GetCloudResource_Handler,
+		},
+		{
+			MethodName: "ListCloudResources",
+			Handler:    _CloudControlService_ListCloudResources_Handler,
+		},
+		{
+			MethodName: "GetCloudWorker",
+			Handler:    _CloudControlService_GetCloudWorker_Handler,
+		},
+		{
+			MethodName: "ListCloudWorkers",
+			Handler:    _CloudControlService_ListCloudWorkers_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "dirextalk/agent/v1/agent.proto",
@@ -676,6 +1208,7 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	SecretBootstrapService_CreateSession_FullMethodName   = "/dirextalk.agent.v1.SecretBootstrapService/CreateSession"
+	SecretBootstrapService_GetSession_FullMethodName      = "/dirextalk.agent.v1.SecretBootstrapService/GetSession"
 	SecretBootstrapService_UploadEncrypted_FullMethodName = "/dirextalk.agent.v1.SecretBootstrapService/UploadEncrypted"
 	SecretBootstrapService_Complete_FullMethodName        = "/dirextalk.agent.v1.SecretBootstrapService/Complete"
 )
@@ -685,7 +1218,10 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type SecretBootstrapServiceClient interface {
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
+	GetSession(ctx context.Context, in *SecretBootstrapServiceGetSessionRequest, opts ...grpc.CallOption) (*SecretBootstrapServiceGetSessionResponse, error)
 	UploadEncrypted(ctx context.Context, in *UploadEncryptedRequest, opts ...grpc.CallOption) (*UploadEncryptedResponse, error)
+	// Reserved; see CompleteRequest. This RPC performs no secret consumption or
+	// delivery in v1.
 	Complete(ctx context.Context, in *CompleteRequest, opts ...grpc.CallOption) (*CompleteResponse, error)
 }
 
@@ -701,6 +1237,16 @@ func (c *secretBootstrapServiceClient) CreateSession(ctx context.Context, in *Cr
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateSessionResponse)
 	err := c.cc.Invoke(ctx, SecretBootstrapService_CreateSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretBootstrapServiceClient) GetSession(ctx context.Context, in *SecretBootstrapServiceGetSessionRequest, opts ...grpc.CallOption) (*SecretBootstrapServiceGetSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SecretBootstrapServiceGetSessionResponse)
+	err := c.cc.Invoke(ctx, SecretBootstrapService_GetSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -732,7 +1278,10 @@ func (c *secretBootstrapServiceClient) Complete(ctx context.Context, in *Complet
 // for forward compatibility.
 type SecretBootstrapServiceServer interface {
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
+	GetSession(context.Context, *SecretBootstrapServiceGetSessionRequest) (*SecretBootstrapServiceGetSessionResponse, error)
 	UploadEncrypted(context.Context, *UploadEncryptedRequest) (*UploadEncryptedResponse, error)
+	// Reserved; see CompleteRequest. This RPC performs no secret consumption or
+	// delivery in v1.
 	Complete(context.Context, *CompleteRequest) (*CompleteResponse, error)
 	mustEmbedUnimplementedSecretBootstrapServiceServer()
 }
@@ -746,6 +1295,9 @@ type UnimplementedSecretBootstrapServiceServer struct{}
 
 func (UnimplementedSecretBootstrapServiceServer) CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateSession not implemented")
+}
+func (UnimplementedSecretBootstrapServiceServer) GetSession(context.Context, *SecretBootstrapServiceGetSessionRequest) (*SecretBootstrapServiceGetSessionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSession not implemented")
 }
 func (UnimplementedSecretBootstrapServiceServer) UploadEncrypted(context.Context, *UploadEncryptedRequest) (*UploadEncryptedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UploadEncrypted not implemented")
@@ -789,6 +1341,24 @@ func _SecretBootstrapService_CreateSession_Handler(srv interface{}, ctx context.
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SecretBootstrapServiceServer).CreateSession(ctx, req.(*CreateSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretBootstrapService_GetSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SecretBootstrapServiceGetSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretBootstrapServiceServer).GetSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretBootstrapService_GetSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretBootstrapServiceServer).GetSession(ctx, req.(*SecretBootstrapServiceGetSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -841,6 +1411,10 @@ var SecretBootstrapService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SecretBootstrapService_CreateSession_Handler,
 		},
 		{
+			MethodName: "GetSession",
+			Handler:    _SecretBootstrapService_GetSession_Handler,
+		},
+		{
 			MethodName: "UploadEncrypted",
 			Handler:    _SecretBootstrapService_UploadEncrypted_Handler,
 		},
@@ -854,8 +1428,10 @@ var SecretBootstrapService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	AdminService_CreateServiceKey_FullMethodName = "/dirextalk.agent.v1.AdminService/CreateServiceKey"
-	AdminService_RevokeServiceKey_FullMethodName = "/dirextalk.agent.v1.AdminService/RevokeServiceKey"
+	AdminService_CreateServiceKey_FullMethodName       = "/dirextalk.agent.v1.AdminService/CreateServiceKey"
+	AdminService_RevokeServiceKey_FullMethodName       = "/dirextalk.agent.v1.AdminService/RevokeServiceKey"
+	AdminService_RegisterApprovalDevice_FullMethodName = "/dirextalk.agent.v1.AdminService/RegisterApprovalDevice"
+	AdminService_RevokeApprovalDevice_FullMethodName   = "/dirextalk.agent.v1.AdminService/RevokeApprovalDevice"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -864,6 +1440,13 @@ const (
 type AdminServiceClient interface {
 	CreateServiceKey(ctx context.Context, in *CreateServiceKeyRequest, opts ...grpc.CallOption) (*CreateServiceKeyResponse, error)
 	RevokeServiceKey(ctx context.Context, in *RevokeServiceKeyRequest, opts ...grpc.CallOption) (*RevokeServiceKeyResponse, error)
+	// Reserved for a future device-signed rotation protocol. Service Keys cannot
+	// register or revoke approval devices. The first device is installed only by
+	// the local one-time bootstrap command.
+	RegisterApprovalDevice(ctx context.Context, in *RegisterApprovalDeviceRequest, opts ...grpc.CallOption) (*RegisterApprovalDeviceResponse, error)
+	// Reserved for a future device-signed rotation protocol; always fails closed
+	// in v1.
+	RevokeApprovalDevice(ctx context.Context, in *RevokeApprovalDeviceRequest, opts ...grpc.CallOption) (*RevokeApprovalDeviceResponse, error)
 }
 
 type adminServiceClient struct {
@@ -894,12 +1477,39 @@ func (c *adminServiceClient) RevokeServiceKey(ctx context.Context, in *RevokeSer
 	return out, nil
 }
 
+func (c *adminServiceClient) RegisterApprovalDevice(ctx context.Context, in *RegisterApprovalDeviceRequest, opts ...grpc.CallOption) (*RegisterApprovalDeviceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterApprovalDeviceResponse)
+	err := c.cc.Invoke(ctx, AdminService_RegisterApprovalDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) RevokeApprovalDevice(ctx context.Context, in *RevokeApprovalDeviceRequest, opts ...grpc.CallOption) (*RevokeApprovalDeviceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokeApprovalDeviceResponse)
+	err := c.cc.Invoke(ctx, AdminService_RevokeApprovalDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
 type AdminServiceServer interface {
 	CreateServiceKey(context.Context, *CreateServiceKeyRequest) (*CreateServiceKeyResponse, error)
 	RevokeServiceKey(context.Context, *RevokeServiceKeyRequest) (*RevokeServiceKeyResponse, error)
+	// Reserved for a future device-signed rotation protocol. Service Keys cannot
+	// register or revoke approval devices. The first device is installed only by
+	// the local one-time bootstrap command.
+	RegisterApprovalDevice(context.Context, *RegisterApprovalDeviceRequest) (*RegisterApprovalDeviceResponse, error)
+	// Reserved for a future device-signed rotation protocol; always fails closed
+	// in v1.
+	RevokeApprovalDevice(context.Context, *RevokeApprovalDeviceRequest) (*RevokeApprovalDeviceResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -915,6 +1525,12 @@ func (UnimplementedAdminServiceServer) CreateServiceKey(context.Context, *Create
 }
 func (UnimplementedAdminServiceServer) RevokeServiceKey(context.Context, *RevokeServiceKeyRequest) (*RevokeServiceKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeServiceKey not implemented")
+}
+func (UnimplementedAdminServiceServer) RegisterApprovalDevice(context.Context, *RegisterApprovalDeviceRequest) (*RegisterApprovalDeviceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterApprovalDevice not implemented")
+}
+func (UnimplementedAdminServiceServer) RevokeApprovalDevice(context.Context, *RevokeApprovalDeviceRequest) (*RevokeApprovalDeviceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeApprovalDevice not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -973,6 +1589,42 @@ func _AdminService_RevokeServiceKey_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_RegisterApprovalDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterApprovalDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).RegisterApprovalDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_RegisterApprovalDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).RegisterApprovalDevice(ctx, req.(*RegisterApprovalDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_RevokeApprovalDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeApprovalDeviceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).RevokeApprovalDevice(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_RevokeApprovalDevice_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).RevokeApprovalDevice(ctx, req.(*RevokeApprovalDeviceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -988,22 +1640,47 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "RevokeServiceKey",
 			Handler:    _AdminService_RevokeServiceKey_Handler,
 		},
+		{
+			MethodName: "RegisterApprovalDevice",
+			Handler:    _AdminService_RegisterApprovalDevice_Handler,
+		},
+		{
+			MethodName: "RevokeApprovalDevice",
+			Handler:    _AdminService_RevokeApprovalDevice_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "dirextalk/agent/v1/agent.proto",
 }
 
 const (
-	WorkerControlService_Enroll_FullMethodName    = "/dirextalk.agent.v1.WorkerControlService/Enroll"
-	WorkerControlService_Heartbeat_FullMethodName = "/dirextalk.agent.v1.WorkerControlService/Heartbeat"
+	WorkerControlService_CreateIdentityChallenge_FullMethodName = "/dirextalk.agent.v1.WorkerControlService/CreateIdentityChallenge"
+	WorkerControlService_EnrollVerifiedIdentity_FullMethodName  = "/dirextalk.agent.v1.WorkerControlService/EnrollVerifiedIdentity"
+	WorkerControlService_Enroll_FullMethodName                  = "/dirextalk.agent.v1.WorkerControlService/Enroll"
+	WorkerControlService_GetCurrentAssignment_FullMethodName    = "/dirextalk.agent.v1.WorkerControlService/GetCurrentAssignment"
+	WorkerControlService_Claim_FullMethodName                   = "/dirextalk.agent.v1.WorkerControlService/Claim"
+	WorkerControlService_Heartbeat_FullMethodName               = "/dirextalk.agent.v1.WorkerControlService/Heartbeat"
+	WorkerControlService_RecordEvidence_FullMethodName          = "/dirextalk.agent.v1.WorkerControlService/RecordEvidence"
+	WorkerControlService_Complete_FullMethodName                = "/dirextalk.agent.v1.WorkerControlService/Complete"
 )
 
 // WorkerControlServiceClient is the client API for WorkerControlService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WorkerControlServiceClient interface {
+	CreateIdentityChallenge(ctx context.Context, in *CreateIdentityChallengeRequest, opts ...grpc.CallOption) (*CreateIdentityChallengeResponse, error)
+	EnrollVerifiedIdentity(ctx context.Context, in *EnrollVerifiedIdentityRequest, opts ...grpc.CallOption) (*EnrollVerifiedIdentityResponse, error)
+	// Enroll is retained only for local/fake Workers that receive a one-time
+	// token out of band. Production EC2 Workers use identity enrollment.
 	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
+	// Returns the current durable revision/lease/checkpoint under the Worker
+	// session. A restarted process must call this before Claim; enrollment
+	// replay responses are historical snapshots and cannot be used as CAS.
+	GetCurrentAssignment(ctx context.Context, in *WorkerControlServiceGetCurrentAssignmentRequest, opts ...grpc.CallOption) (*WorkerControlServiceGetCurrentAssignmentResponse, error)
+	Claim(ctx context.Context, in *WorkerControlServiceClaimRequest, opts ...grpc.CallOption) (*WorkerControlServiceClaimResponse, error)
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	RecordEvidence(ctx context.Context, in *WorkerControlServiceRecordEvidenceRequest, opts ...grpc.CallOption) (*WorkerControlServiceRecordEvidenceResponse, error)
+	Complete(ctx context.Context, in *WorkerControlServiceCompleteRequest, opts ...grpc.CallOption) (*WorkerControlServiceCompleteResponse, error)
 }
 
 type workerControlServiceClient struct {
@@ -1014,10 +1691,50 @@ func NewWorkerControlServiceClient(cc grpc.ClientConnInterface) WorkerControlSer
 	return &workerControlServiceClient{cc}
 }
 
+func (c *workerControlServiceClient) CreateIdentityChallenge(ctx context.Context, in *CreateIdentityChallengeRequest, opts ...grpc.CallOption) (*CreateIdentityChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateIdentityChallengeResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_CreateIdentityChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerControlServiceClient) EnrollVerifiedIdentity(ctx context.Context, in *EnrollVerifiedIdentityRequest, opts ...grpc.CallOption) (*EnrollVerifiedIdentityResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollVerifiedIdentityResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_EnrollVerifiedIdentity_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerControlServiceClient) Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EnrollResponse)
 	err := c.cc.Invoke(ctx, WorkerControlService_Enroll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerControlServiceClient) GetCurrentAssignment(ctx context.Context, in *WorkerControlServiceGetCurrentAssignmentRequest, opts ...grpc.CallOption) (*WorkerControlServiceGetCurrentAssignmentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerControlServiceGetCurrentAssignmentResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_GetCurrentAssignment_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerControlServiceClient) Claim(ctx context.Context, in *WorkerControlServiceClaimRequest, opts ...grpc.CallOption) (*WorkerControlServiceClaimResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerControlServiceClaimResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_Claim_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1034,12 +1751,43 @@ func (c *workerControlServiceClient) Heartbeat(ctx context.Context, in *Heartbea
 	return out, nil
 }
 
+func (c *workerControlServiceClient) RecordEvidence(ctx context.Context, in *WorkerControlServiceRecordEvidenceRequest, opts ...grpc.CallOption) (*WorkerControlServiceRecordEvidenceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerControlServiceRecordEvidenceResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_RecordEvidence_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerControlServiceClient) Complete(ctx context.Context, in *WorkerControlServiceCompleteRequest, opts ...grpc.CallOption) (*WorkerControlServiceCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerControlServiceCompleteResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_Complete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerControlServiceServer is the server API for WorkerControlService service.
 // All implementations must embed UnimplementedWorkerControlServiceServer
 // for forward compatibility.
 type WorkerControlServiceServer interface {
+	CreateIdentityChallenge(context.Context, *CreateIdentityChallengeRequest) (*CreateIdentityChallengeResponse, error)
+	EnrollVerifiedIdentity(context.Context, *EnrollVerifiedIdentityRequest) (*EnrollVerifiedIdentityResponse, error)
+	// Enroll is retained only for local/fake Workers that receive a one-time
+	// token out of band. Production EC2 Workers use identity enrollment.
 	Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error)
+	// Returns the current durable revision/lease/checkpoint under the Worker
+	// session. A restarted process must call this before Claim; enrollment
+	// replay responses are historical snapshots and cannot be used as CAS.
+	GetCurrentAssignment(context.Context, *WorkerControlServiceGetCurrentAssignmentRequest) (*WorkerControlServiceGetCurrentAssignmentResponse, error)
+	Claim(context.Context, *WorkerControlServiceClaimRequest) (*WorkerControlServiceClaimResponse, error)
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	RecordEvidence(context.Context, *WorkerControlServiceRecordEvidenceRequest) (*WorkerControlServiceRecordEvidenceResponse, error)
+	Complete(context.Context, *WorkerControlServiceCompleteRequest) (*WorkerControlServiceCompleteResponse, error)
 	mustEmbedUnimplementedWorkerControlServiceServer()
 }
 
@@ -1050,11 +1798,29 @@ type WorkerControlServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedWorkerControlServiceServer struct{}
 
+func (UnimplementedWorkerControlServiceServer) CreateIdentityChallenge(context.Context, *CreateIdentityChallengeRequest) (*CreateIdentityChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateIdentityChallenge not implemented")
+}
+func (UnimplementedWorkerControlServiceServer) EnrollVerifiedIdentity(context.Context, *EnrollVerifiedIdentityRequest) (*EnrollVerifiedIdentityResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EnrollVerifiedIdentity not implemented")
+}
 func (UnimplementedWorkerControlServiceServer) Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Enroll not implemented")
 }
+func (UnimplementedWorkerControlServiceServer) GetCurrentAssignment(context.Context, *WorkerControlServiceGetCurrentAssignmentRequest) (*WorkerControlServiceGetCurrentAssignmentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCurrentAssignment not implemented")
+}
+func (UnimplementedWorkerControlServiceServer) Claim(context.Context, *WorkerControlServiceClaimRequest) (*WorkerControlServiceClaimResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Claim not implemented")
+}
 func (UnimplementedWorkerControlServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedWorkerControlServiceServer) RecordEvidence(context.Context, *WorkerControlServiceRecordEvidenceRequest) (*WorkerControlServiceRecordEvidenceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RecordEvidence not implemented")
+}
+func (UnimplementedWorkerControlServiceServer) Complete(context.Context, *WorkerControlServiceCompleteRequest) (*WorkerControlServiceCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Complete not implemented")
 }
 func (UnimplementedWorkerControlServiceServer) mustEmbedUnimplementedWorkerControlServiceServer() {}
 func (UnimplementedWorkerControlServiceServer) testEmbeddedByValue()                              {}
@@ -1077,6 +1843,42 @@ func RegisterWorkerControlServiceServer(s grpc.ServiceRegistrar, srv WorkerContr
 	s.RegisterService(&WorkerControlService_ServiceDesc, srv)
 }
 
+func _WorkerControlService_CreateIdentityChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateIdentityChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).CreateIdentityChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_CreateIdentityChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).CreateIdentityChallenge(ctx, req.(*CreateIdentityChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerControlService_EnrollVerifiedIdentity_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EnrollVerifiedIdentityRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).EnrollVerifiedIdentity(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_EnrollVerifiedIdentity_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).EnrollVerifiedIdentity(ctx, req.(*EnrollVerifiedIdentityRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerControlService_Enroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(EnrollRequest)
 	if err := dec(in); err != nil {
@@ -1091,6 +1893,42 @@ func _WorkerControlService_Enroll_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WorkerControlServiceServer).Enroll(ctx, req.(*EnrollRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerControlService_GetCurrentAssignment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerControlServiceGetCurrentAssignmentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).GetCurrentAssignment(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_GetCurrentAssignment_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).GetCurrentAssignment(ctx, req.(*WorkerControlServiceGetCurrentAssignmentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerControlService_Claim_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerControlServiceClaimRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).Claim(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_Claim_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).Claim(ctx, req.(*WorkerControlServiceClaimRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1113,6 +1951,42 @@ func _WorkerControlService_Heartbeat_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerControlService_RecordEvidence_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerControlServiceRecordEvidenceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).RecordEvidence(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_RecordEvidence_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).RecordEvidence(ctx, req.(*WorkerControlServiceRecordEvidenceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerControlService_Complete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerControlServiceCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).Complete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_Complete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).Complete(ctx, req.(*WorkerControlServiceCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerControlService_ServiceDesc is the grpc.ServiceDesc for WorkerControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1121,12 +1995,36 @@ var WorkerControlService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*WorkerControlServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "CreateIdentityChallenge",
+			Handler:    _WorkerControlService_CreateIdentityChallenge_Handler,
+		},
+		{
+			MethodName: "EnrollVerifiedIdentity",
+			Handler:    _WorkerControlService_EnrollVerifiedIdentity_Handler,
+		},
+		{
 			MethodName: "Enroll",
 			Handler:    _WorkerControlService_Enroll_Handler,
 		},
 		{
+			MethodName: "GetCurrentAssignment",
+			Handler:    _WorkerControlService_GetCurrentAssignment_Handler,
+		},
+		{
+			MethodName: "Claim",
+			Handler:    _WorkerControlService_Claim_Handler,
+		},
+		{
 			MethodName: "Heartbeat",
 			Handler:    _WorkerControlService_Heartbeat_Handler,
+		},
+		{
+			MethodName: "RecordEvidence",
+			Handler:    _WorkerControlService_RecordEvidence_Handler,
+		},
+		{
+			MethodName: "Complete",
+			Handler:    _WorkerControlService_Complete_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

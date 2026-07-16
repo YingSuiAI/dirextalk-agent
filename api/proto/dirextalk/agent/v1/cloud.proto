@@ -1,0 +1,298 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+enum CloudCandidateProfile {
+  CLOUD_CANDIDATE_PROFILE_UNSPECIFIED = 0;
+  CLOUD_CANDIDATE_PROFILE_ECONOMY = 1;
+  CLOUD_CANDIDATE_PROFILE_RECOMMENDED = 2;
+  CLOUD_CANDIDATE_PROFILE_PERFORMANCE = 3;
+}
+
+enum CloudPurchaseOption {
+  CLOUD_PURCHASE_OPTION_UNSPECIFIED = 0;
+  CLOUD_PURCHASE_OPTION_ON_DEMAND = 1;
+  CLOUD_PURCHASE_OPTION_SPOT = 2;
+}
+
+enum CloudEntryPointKind {
+  CLOUD_ENTRY_POINT_KIND_UNSPECIFIED = 0;
+  CLOUD_ENTRY_POINT_KIND_NONE = 1;
+  CLOUD_ENTRY_POINT_KIND_ALB = 2;
+  CLOUD_ENTRY_POINT_KIND_CLOUDFRONT = 3;
+}
+
+enum CloudRetentionClass {
+  CLOUD_RETENTION_CLASS_UNSPECIFIED = 0;
+  CLOUD_RETENTION_CLASS_EPHEMERAL = 1;
+  CLOUD_RETENTION_CLASS_MANAGED = 2;
+}
+
+enum CloudPlanStatus {
+  CLOUD_PLAN_STATUS_UNSPECIFIED = 0;
+  CLOUD_PLAN_STATUS_RESEARCHING = 1;
+  CLOUD_PLAN_STATUS_QUOTING = 2;
+  CLOUD_PLAN_STATUS_READY_FOR_CONFIRMATION = 3;
+  CLOUD_PLAN_STATUS_APPROVED = 4;
+  CLOUD_PLAN_STATUS_EXPIRED = 5;
+  CLOUD_PLAN_STATUS_SUPERSEDED = 6;
+}
+
+message CloudRecipeBinding {
+  string recipe_id = 1;
+  string digest = 2;
+  string maturity = 3;
+}
+
+message CloudResourceScope {
+  CloudCandidateProfile candidate_profile = 1;
+  string region = 2;
+  repeated string availability_zones = 3;
+  string instance_type = 4;
+  uint32 instance_count = 5;
+  string architecture = 6;
+  uint32 vcpu = 7;
+  uint64 memory_mib = 8;
+  string gpu_type = 9;
+  uint32 gpu_count = 10;
+  uint64 gpu_memory_mib = 11;
+  uint64 disk_gib = 12;
+  string volume_type = 13;
+  uint32 volume_iops = 14;
+  uint32 volume_throughput_mibps = 15;
+  bool volume_encrypted = 16;
+  CloudPurchaseOption purchase_option = 17;
+  string worker_image_id = 18;
+  string worker_image_digest = 19;
+}
+
+message CloudNetworkScope {
+  string vpc_id = 1;
+  string subnet_id = 2;
+  string security_group_id = 3;
+  CloudEntryPointKind entry_point = 4;
+  bool public_exposure = 5;
+  repeated uint32 ingress_ports = 6;
+  string hostname = 7;
+  bool tls_required = 8;
+  bool authentication_required = 9;
+}
+
+message CloudSecretScope {
+  string secret_ref = 1;
+  string purpose = 2;
+  string delivery = 3;
+}
+
+message CloudIntegrationScope {
+  string kind = 1;
+  string name = 2;
+  repeated string scopes = 3;
+}
+
+message CloudRetentionScope {
+  CloudRetentionClass retention_class = 1;
+  bool auto_destroy = 2;
+  uint32 grace_period_seconds = 3;
+  uint64 max_lifetime_seconds = 4;
+}
+
+message CloudQuoteScope {
+  string owner_id = 1;
+  string connection_id = 2;
+  CloudRecipeBinding recipe = 3;
+  CloudResourceScope resource = 4;
+  CloudNetworkScope network = 5;
+  repeated CloudSecretScope secret_scope = 6;
+  repeated CloudIntegrationScope integration_scope = 7;
+  CloudRetentionScope retention = 8;
+}
+
+message CloudUsageEstimate {
+  uint32 runtime_hours_per_month = 1;
+  uint32 public_ipv4_hours = 2;
+  uint64 log_ingest_mib = 3;
+  uint64 log_stored_mib_months = 4;
+  uint64 snapshot_gib_months = 5;
+  uint32 entry_hours = 6;
+  uint64 internet_egress_mib = 7;
+}
+
+message CloudSpotQualification {
+  string evidence_id = 1;
+  string recipe_digest = 2;
+  string checkpoint_name = 3;
+  string resume_action = 4;
+  uint32 max_retries = 5;
+  google.protobuf.Timestamp checkpoint_verified_at = 6;
+  google.protobuf.Timestamp interruption_tested_at = 7;
+}
+
+message CloudCostItem {
+  string category = 1;
+  string description = 2;
+  string source_id = 3;
+  uint64 hourly_estimate_micros = 4;
+  uint64 monthly_estimate_micros = 5;
+  uint64 maximum_launch_amount_micros = 6;
+}
+
+message CloudQuotaEvidence {
+  string service_code = 1;
+  string quota_code = 2;
+  uint64 limit_units = 3;
+  uint64 used_units = 4;
+  uint64 required_units = 5;
+}
+
+message CloudQuoteCandidate {
+  CloudCandidateProfile candidate_profile = 1;
+  CloudQuoteScope scope = 2;
+  string scope_digest = 3;
+  repeated string offered_availability_zones = 4;
+  repeated CloudQuotaEvidence quotas = 5;
+  repeated CloudCostItem cost_items = 6;
+  uint64 hourly_estimate_micros = 7;
+  uint64 monthly_estimate_micros = 8;
+  uint64 maximum_launch_amount_micros = 9;
+}
+
+message CloudQuote {
+  string quote_id = 1;
+  google.protobuf.Timestamp quoted_at = 2;
+  google.protobuf.Timestamp valid_until = 3;
+  string currency = 4;
+  repeated CloudQuoteCandidate candidates = 5;
+  CloudUsageEstimate usage = 6;
+  repeated string assumptions = 7;
+  repeated string exclusions = 8;
+  CloudSpotQualification spot_evidence = 9;
+  string digest = 10;
+}
+
+message CloudPlan {
+  string plan_id = 1;
+  string owner_id = 2;
+  string connection_id = 3;
+  CloudRecipeBinding recipe = 4;
+  string quote_id = 5;
+  string quote_digest = 6;
+  string quote_scope_digest = 7;
+  CloudCandidateProfile candidate_profile = 8;
+  google.protobuf.Timestamp quote_valid_until = 9;
+  CloudResourceScope resource = 10;
+  CloudNetworkScope network = 11;
+  repeated CloudSecretScope secret_scope = 12;
+  repeated CloudIntegrationScope integration_scope = 13;
+  CloudRetentionScope retention = 14;
+  CloudPlanStatus status = 15;
+  string plan_hash = 16;
+  int64 revision = 17;
+}
+
+message DeviceApprovalSignature {
+  string approval_id = 1;
+  string challenge_id = 2;
+  string signer_key_id = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  bytes signature = 5;
+}
+
+message ApprovalChallenge {
+  string challenge_id = 1;
+  string signer_key_id = 2;
+  string plan_id = 3;
+  int64 plan_revision = 4;
+  string plan_hash = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  bytes signing_payload_cbor = 7;
+  int64 revision = 8;
+  string approval_id = 9;
+}
+
+message AwsBootstrapIdentity {
+  string account_id = 1;
+  string principal_arn = 2;
+  string principal_id = 3;
+  string region = 4;
+  bool root_identity = 5;
+}
+
+message CloudConnection {
+  string connection_id = 1;
+  string owner_id = 2;
+  string account_id = 3;
+  string region = 4;
+  string control_role_arn = 5;
+  string foundation_stack_id = 6;
+  string status = 7;
+  int64 revision = 8;
+}
+
+message PreviewAwsIdentityRequest {
+  string bootstrap_session_id = 1;
+  int64 expected_session_revision = 2;
+  string region = 3;
+}
+message PreviewAwsIdentityResponse { AwsBootstrapIdentity identity = 1; }
+
+message CreateCloudQuoteRequest {
+  string idempotency_key = 1;
+  repeated CloudQuoteScope scopes = 2;
+  CloudUsageEstimate usage = 3;
+  CloudSpotQualification spot_qualification = 4;
+  string bootstrap_session_id = 5;
+  int64 expected_session_revision = 6;
+}
+message CreateCloudQuoteResponse { CloudQuote quote = 1; }
+message GetCloudQuoteRequest {
+  string quote_id = 1;
+  string owner_id = 2;
+}
+message GetCloudQuoteResponse { CloudQuote quote = 1; }
+
+message CreateCloudPlanRequest {
+  string idempotency_key = 1;
+  string quote_id = 2;
+  CloudCandidateProfile candidate_profile = 3;
+  CloudQuoteScope current_scope = 4;
+}
+message CreateCloudPlanResponse { CloudPlan plan = 1; }
+message GetCloudPlanRequest {
+  string plan_id = 1;
+  string owner_id = 2;
+}
+message GetCloudPlanResponse { CloudPlan plan = 1; }
+
+message CreateApprovalChallengeRequest {
+  string idempotency_key = 1;
+  string plan_id = 2;
+  int64 expected_revision = 3;
+  string signer_key_id = 4;
+  string owner_id = 5;
+}
+message CreateApprovalChallengeResponse { ApprovalChallenge challenge = 1; }
+
+message ApproveCloudPlanRequest {
+  string idempotency_key = 1;
+  string plan_id = 2;
+  int64 expected_revision = 3;
+  DeviceApprovalSignature approval = 4;
+  string owner_id = 5;
+}
+message ApproveCloudPlanResponse { CloudPlan plan = 1; }
+
+message EstablishAwsConnectionRequest {
+  string idempotency_key = 1;
+  string bootstrap_session_id = 2;
+  int64 expected_session_revision = 3;
+  string plan_id = 4;
+  int64 expected_plan_revision = 5;
+  DeviceApprovalSignature approval = 6;
+  string owner_id = 7;
+}
+message EstablishAwsConnectionResponse { CloudConnection connection = 1; }

@@ -468,7 +468,7 @@ func (stub *adapterTaskStub) AcquireReadyStep(_ context.Context, _ task.Mutation
 	}
 	for index := range steps {
 		step := &steps[index]
-		if step.ExecutorKind != command.ExecutorKind || step.ExecutionStatus != task.ExecutionQueued || step.OutcomeStatus != task.OutcomePending {
+		if step.StepID != command.StepID || step.ExecutorKind != command.ExecutorKind || step.ExecutionStatus != task.ExecutionQueued || step.OutcomeStatus != task.OutcomePending {
 			continue
 		}
 		ready := true

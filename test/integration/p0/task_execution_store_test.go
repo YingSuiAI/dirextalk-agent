@@ -125,6 +125,50 @@ func TestTaskStoreRollsBackTaskWhenDAGInsertFails(t *testing.T) {
 	}
 }
 
+func TestAcquireReadyStepLeasesOnlyTheRequestedReadyStep(t *testing.T) {
+	database := newMigratedDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	scope := task.MutationScope{ClientID: "worker-coordinator", CredentialID: uuid.NewString()}
+	created, err := database.store.Create(ctx, scope, task.CreateCommand{
+		IdempotencyKey: uuid.NewString(), OwnerID: "owner-1", Goal: "run two independent Worker deployments",
+		Retention: task.RetentionEphemeralAutoDestroy,
+		Steps: []task.StepDefinition{
+			{StepID: uuid.NewString(), Name: "older-ready-step", ExecutorKind: task.ExecutorCloudWorker},
+			{StepID: uuid.NewString(), Name: "deployment-target-step", ExecutorKind: task.ExecutorCloudWorker},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	steps, err := database.store.ListSteps(ctx, created.TaskID)
+	if err != nil {
+		t.Fatalf("list task steps: %v", err)
+	}
+	olderStepID := stepIDByName(t, steps, "older-ready-step")
+	targetStepID := stepIDByName(t, steps, "deployment-target-step")
+
+	attempt, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: targetStepID, WorkerID: uuid.NewString(),
+		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("acquire requested step: attempt=%#v found=%v err=%v", attempt, found, err)
+	}
+	if attempt.StepID != targetStepID {
+		t.Fatalf("leased step=%s, want deployment target=%s (older ready step=%s)", attempt.StepID, targetStepID, olderStepID)
+	}
+	steps, err = database.store.ListSteps(ctx, created.TaskID)
+	if err != nil {
+		t.Fatalf("list steps after acquire: %v", err)
+	}
+	for _, step := range steps {
+		if step.StepID == olderStepID && (step.ExecutionStatus != task.ExecutionQueued || step.Attempt != 0 || step.LeaseEpoch != 0) {
+			t.Fatalf("unrequested ready step was mutated: %#v", step)
+		}
+	}
+}
+
 func TestTaskStoreLeaseFencingCheckpointCompleteAndCancel(t *testing.T) {
 	database := newMigratedDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -150,7 +194,7 @@ func TestTaskStoreLeaseFencingCheckpointCompleteAndCancel(t *testing.T) {
 	firstStepID, secondStepID = stepIDByName(t, steps, "compile"), stepIDByName(t, steps, "verify")
 
 	firstAttempt, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: firstStepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	})
 	if err != nil || !found {
@@ -161,7 +205,7 @@ func TestTaskStoreLeaseFencingCheckpointCompleteAndCancel(t *testing.T) {
 	}
 
 	if _, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: secondStepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	}); err != nil || found {
 		t.Fatalf("dependency-blocked acquire: found=%v err=%v", found, err)
@@ -196,7 +240,7 @@ func TestTaskStoreLeaseFencingCheckpointCompleteAndCancel(t *testing.T) {
 	}
 
 	secondAttempt, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: secondStepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	})
 	if err != nil || !found || secondAttempt.StepID != secondStepID {
@@ -289,15 +333,21 @@ func TestFailedStepCancelsAndFencesRunningSiblings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create parallel task: %v", err)
 	}
+	steps, err := database.store.ListSteps(ctx, created.TaskID)
+	if err != nil {
+		t.Fatalf("list parallel steps: %v", err)
+	}
+	firstStepID := stepIDByName(t, steps, "first")
+	siblingStepID := stepIDByName(t, steps, "sibling")
 	first, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: firstStepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	})
 	if err != nil || !found {
 		t.Fatalf("acquire first parallel step: found=%v err=%v", found, err)
 	}
 	sibling, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: siblingStepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	})
 	if err != nil || !found {
@@ -356,7 +406,7 @@ func TestExpiredLeaseReacquiresWithNewEpochAndFencesOldWorker(t *testing.T) {
 	}
 	stepID = stepIDByName(t, steps, "compile")
 	first, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: stepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	})
 	if err != nil || !found {
@@ -368,7 +418,7 @@ func TestExpiredLeaseReacquiresWithNewEpochAndFencesOldWorker(t *testing.T) {
 		t.Fatalf("expire fixture lease: %v", err)
 	}
 	second, found, err := database.store.AcquireReadyStep(ctx, scope, task.AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: created.TaskID, StepID: stepID, WorkerID: workerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: time.Minute,
 	})
 	if err != nil || !found {

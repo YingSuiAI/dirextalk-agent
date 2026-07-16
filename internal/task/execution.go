@@ -79,13 +79,14 @@ type Attempt struct {
 type AcquireReadyStepCommand struct {
 	IdempotencyKey string
 	TaskID         string
+	StepID         string
 	WorkerID       string
 	ExecutorKind   ExecutorKind
 	LeaseDuration  time.Duration
 }
 
 func (command AcquireReadyStepCommand) Validate() error {
-	if err := validateMutationIDs(command.IdempotencyKey, command.TaskID, "", command.WorkerID); err != nil {
+	if err := validateMutationIDs(command.IdempotencyKey, command.TaskID, command.StepID, command.WorkerID); err != nil {
 		return err
 	}
 	if command.ExecutorKind != ExecutorControlPlane && command.ExecutorKind != ExecutorCloudWorker {
@@ -97,10 +98,11 @@ func (command AcquireReadyStepCommand) Validate() error {
 func (command AcquireReadyStepCommand) Digest() [sha256.Size]byte {
 	encoded, _ := json.Marshal(struct {
 		TaskID        string       `json:"task_id"`
+		StepID        string       `json:"step_id"`
 		WorkerID      string       `json:"worker_id"`
 		ExecutorKind  ExecutorKind `json:"executor_kind"`
 		LeaseDuration int64        `json:"lease_duration_ns"`
-	}{normalizedUUID(command.TaskID), normalizedUUID(command.WorkerID), command.ExecutorKind, int64(command.LeaseDuration)})
+	}{normalizedUUID(command.TaskID), normalizedUUID(command.StepID), normalizedUUID(command.WorkerID), command.ExecutorKind, int64(command.LeaseDuration)})
 	return sha256.Sum256(encoded)
 }
 

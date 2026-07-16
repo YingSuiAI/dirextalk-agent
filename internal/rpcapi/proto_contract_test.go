@@ -21,10 +21,19 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 		{message: &agentv1.CreateSessionRequest{}},
 		{message: &agentv1.UploadEncryptedRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.CompleteRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CreateCloudQuoteRequest{}},
+		{message: &agentv1.CreateCloudPlanRequest{}},
+		{message: &agentv1.CreateApprovalChallengeRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.ApproveCloudPlanRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.CreateServiceKeyRequest{}},
 		{message: &agentv1.RevokeServiceKeyRequest{}, revisionField: "expected_revision"},
-		{message: &agentv1.EnrollRequest{}},
+		{message: &agentv1.EnrollRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CreateIdentityChallengeRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.EnrollVerifiedIdentityRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.WorkerControlServiceClaimRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.HeartbeatRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.WorkerControlServiceRecordEvidenceRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.WorkerControlServiceCompleteRequest{}, revisionField: "expected_revision"},
 	}
 	for _, test := range tests {
 		descriptor := test.message.ProtoReflect().Descriptor()
@@ -34,6 +43,17 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 				assertFieldKind(t, descriptor, test.revisionField, protoreflect.Int64Kind)
 			}
 		})
+	}
+}
+
+func TestFoundationEstablishmentFencesBothPlanAndBootstrapSession(t *testing.T) {
+	descriptor := (&agentv1.EstablishAwsConnectionRequest{}).ProtoReflect().Descriptor()
+	assertFieldKind(t, descriptor, "idempotency_key", protoreflect.StringKind)
+	assertFieldKind(t, descriptor, "expected_plan_revision", protoreflect.Int64Kind)
+	assertFieldKind(t, descriptor, "expected_session_revision", protoreflect.Int64Kind)
+	approval := descriptor.Fields().ByName("approval")
+	if approval == nil || approval.Kind() != protoreflect.MessageKind || approval.Message().Name() != "DeviceApprovalSignature" {
+		t.Fatal("EstablishAwsConnectionRequest must require a typed device approval")
 	}
 }
 
@@ -64,6 +84,30 @@ func TestCreateServiceKeyContractHasEncryptedDeliveryOnly(t *testing.T) {
 	}
 	request := (&agentv1.CreateServiceKeyRequest{}).ProtoReflect().Descriptor()
 	assertFieldKind(t, request, "recipient_public_key", protoreflect.StringKind)
+}
+
+func TestCloudStatusContractSeparatesAxesAndRequiresOwnerFilters(t *testing.T) {
+	deployment := (&agentv1.CloudDeployment{}).ProtoReflect().Descriptor()
+	assertFieldKind(t, deployment, "revision", protoreflect.Int64Kind)
+	for _, name := range []protoreflect.Name{"execution_status", "outcome_status", "resources"} {
+		if deployment.Fields().ByName(name) == nil {
+			t.Fatalf("CloudDeployment.%s is required", name)
+		}
+	}
+	resource := (&agentv1.CloudResource{}).ProtoReflect().Descriptor()
+	assertFieldKind(t, resource, "revision", protoreflect.Int64Kind)
+	if resource.Fields().ByName("read_back") == nil {
+		t.Fatal("CloudResource.read_back is required")
+	}
+	worker := (&agentv1.CloudWorker{}).ProtoReflect().Descriptor()
+	assertFieldKind(t, worker, "revision", protoreflect.Int64Kind)
+	for _, request := range []proto.Message{
+		&agentv1.GetCloudDeploymentRequest{}, &agentv1.ListCloudDeploymentsRequest{},
+		&agentv1.GetCloudResourceRequest{}, &agentv1.ListCloudResourcesRequest{},
+		&agentv1.GetCloudWorkerRequest{}, &agentv1.ListCloudWorkersRequest{},
+	} {
+		assertFieldKind(t, request.ProtoReflect().Descriptor(), "owner_id", protoreflect.StringKind)
+	}
 }
 
 func assertFieldKind(t *testing.T, descriptor protoreflect.MessageDescriptor, name protoreflect.Name, kind protoreflect.Kind) {

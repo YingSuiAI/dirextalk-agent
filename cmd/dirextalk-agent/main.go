@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +18,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
+	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 )
 
 func main() {
@@ -28,17 +33,19 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) != 1 {
-		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|serve>")
+		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|bootstrap-approval-device|serve>")
 	}
 	switch arguments[0] {
 	case "migrate":
 		return migrate()
 	case "bootstrap-service-key":
 		return bootstrapServiceKey()
+	case "bootstrap-approval-device":
+		return bootstrapApprovalDevice()
 	case "serve":
 		return serve()
 	default:
-		return errors.New("unknown command; expected migrate, bootstrap-service-key, or serve")
+		return errors.New("unknown command; expected migrate, bootstrap-service-key, bootstrap-approval-device, or serve")
 	}
 }
 
@@ -127,6 +134,14 @@ func serve() error {
 		return err
 	}
 	defer clear(pepper)
+	masterKey, err := config.ReadKeyMaterial(serverConfig.MasterKeyFile)
+	if err != nil {
+		return err
+	}
+	defer clear(masterKey)
+	if len(masterKey) != 32 {
+		return errors.New("AGENT_MASTER_KEY_FILE must contain exactly 32 bytes")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	pool, err := postgres.Open(ctx, serverConfig.DatabaseURL)
 	if err != nil {
@@ -143,15 +158,72 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	secretStore, err := store.NewSecretBootstrapStore(masterKey)
+	if err != nil {
+		return errors.New("could not initialize secret bootstrap persistence")
+	}
+	secretManager, err := secretbootstrap.NewManager(secretStore, secretStore.KeyStore(), rand.Reader, time.Now)
+	if err != nil {
+		return errors.New("could not initialize secret bootstrap manager")
+	}
+	recoveryContext, recoveryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, recoveryErr := secretManager.Expire(recoveryContext)
+	recoveryCancel()
+	if recoveryErr != nil {
+		return errors.New("could not recover expired secret bootstrap sessions")
+	}
+	workerReplayKey := deriveKey(masterKey, "dirextalk-agent/worker-replay/v1")
+	defer clear(workerReplayKey)
+	workerCredentialPepper := deriveKey(masterKey, "dirextalk-agent/worker-credential/v1")
+	defer clear(workerCredentialPepper)
+	workerStore, err := store.NewWorkerStore(workerReplayKey)
+	if err != nil {
+		return errors.New("could not initialize Worker persistence")
+	}
+	workerTaskCoordinator, err := app.NewWorkerTaskCoordinator(serverConfig.InstanceID, store)
+	if err != nil {
+		return errors.New("could not initialize Worker Task coordination")
+	}
+	workerService, err := worker.NewService(workerStore, workerCredentialPepper, worker.WithTaskExecutionCoordinator(workerTaskCoordinator))
+	if err != nil {
+		return errors.New("could not initialize Worker control")
+	}
 	runtimeComposition, err := app.NewRuntimeComposition(
 		store, serverConfig.InstanceID, serverConfig.MountedSecretsDir, serverConfig.ModelProfilesFile, serverConfig.MCPServersFile,
 	)
 	if err != nil {
 		return errors.New("could not initialize Agent runtime")
 	}
+	serverOptions := []app.ServerOption{
+		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
+		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
+		app.WithWorkerControl(workerService),
+	}
+	var cloudComposition *app.CloudComposition
+	if serverConfig.EnableAWSControl {
+		var cloudErr error
+		cloudComposition, cloudErr = app.NewCloudComposition(
+			store, secretManager, workerStore, workerService, serverConfig.InstanceID, masterKey,
+			serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint,
+		)
+		if cloudErr != nil {
+			return errors.New("could not initialize typed AWS cloud control")
+		}
+		defer cloudComposition.Close()
+		foundationRecoveryContext, stopFoundationRecovery := context.WithTimeout(context.Background(), 2*time.Minute)
+		cloudErr = cloudComposition.Recover(foundationRecoveryContext)
+		stopFoundationRecovery()
+		if cloudErr != nil {
+			return errors.New("could not safely recover pending AWS Foundation operations")
+		}
+		serverOptions = append(serverOptions,
+			app.WithCloudControl(cloudComposition.Coordinator),
+			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),
+		)
+	}
 	grpcServer, err := app.NewServer(
 		store, pepper, serverConfig.TLSCertFile, serverConfig.TLSKeyFile,
-		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
+		serverOptions...,
 	)
 	if err != nil {
 		return errors.New("could not initialize TLS gRPC server")
@@ -161,6 +233,16 @@ func serve() error {
 		return fmt.Errorf("listen for gRPC: %w", err)
 	}
 	defer listener.Close()
+	bootstrapContext, stopBootstrap := context.WithCancel(context.Background())
+	defer stopBootstrap()
+	go expireBootstrapSessions(bootstrapContext, secretManager)
+	if cloudComposition != nil {
+		go func() {
+			if dispatchErr := cloudComposition.Run(bootstrapContext); dispatchErr != nil && !errors.Is(dispatchErr, context.Canceled) {
+				slog.Warn("cloud dispatcher stopped", "error", safeError(dispatchErr))
+			}
+		}()
+	}
 
 	stopped := make(chan struct{})
 	go func() {
@@ -182,6 +264,27 @@ func serve() error {
 		return nil
 	default:
 		return err
+	}
+}
+
+func deriveKey(masterKey []byte, label string) []byte {
+	mac := hmac.New(sha256.New, masterKey)
+	_, _ = mac.Write([]byte(label))
+	return mac.Sum(nil)
+}
+
+func expireBootstrapSessions(ctx context.Context, manager *secretbootstrap.Manager) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := manager.Expire(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("secret bootstrap expiry sweep failed", "error", safeError(err))
+			}
+		}
 	}
 }
 

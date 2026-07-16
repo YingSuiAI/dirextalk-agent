@@ -1,14 +1,16 @@
 # Dirextalk Agent
 
-Dirextalk Agent is a reusable, single-tenant control service for persistent AI tasks and typed cloud workloads. It exposes a versioned gRPC API, stores durable facts in PostgreSQL, and uses Eino with typed tools to prepare deployment plans. Privileged cloud execution is reserved for the later exclusive-Worker stage and never runs in the control container.
+Dirextalk Agent is a reusable, single-tenant control service for persistent AI tasks and typed cloud workloads. It exposes a versioned gRPC API, stores durable facts in PostgreSQL, and uses Eino with typed tools to prepare deployment plans. Privileged execution runs only in an exclusive Cloud Worker VM and never in the control container.
 
 The control container does not depend on Matrix or ProductCore and does not run arbitrary user commands. Projects integrate through a pairwise service key and keep their own user-facing transport and authentication.
 
 ## Current delivery
 
-P0 provides service-key authentication, durable Task/Step state, idempotency, revision and lease fencing, and cursor-resumable events. P1 adds persisted runtime configuration and conversations, `RuntimeService.Chat`/`StreamChat`, the native Eino runtime, mounted model-secret references, optional Streamable HTTP MCP configuration, and the planning-only `cloud-dispatcher` Skill. A conversation can create and finish the three-step research/Recipe/resource-candidate Task, persist an experimental `RecipeDraft`, and prepare economy/recommended/performance candidates without calling AWS.
+P0 provides service-key authentication, durable Task/Step state, idempotency, revision and lease fencing, and cursor-resumable events. P1 adds persisted runtime configuration and conversations, `RuntimeService.Chat`/`StreamChat`, the native Eino runtime, mounted model-secret references, optional Streamable HTTP MCP configuration, and the planning-only `cloud-dispatcher` Skill.
 
-AWS credential bootstrap, pricing, approvals, provider mutations, EC2 Workers, reconciliation, and Reaper behavior remain P2 work. This repository does not yet claim a real OpenClaw, knowledge-node, or AWS deployment. Detailed progress is tracked in [docs/delivery-tracker.md](docs/delivery-tracker.md).
+The P2 first-validation build adds encrypted one-time AWS bootstrap, typed live pricing and quota evidence, device-signed plans, deterministic Foundation contracts, direct STS control, durable EC2 mutation intents, STS/IMDS-bound Worker enrollment, Task/Worker checkpoint synchronization, scoped artifacts, resource manifests, automatic ephemeral cleanup, and the AWS-side Reaper. Agent, Worker, and Reaper container definitions are repository-local and contain no Node, AWS CLI, or Docker socket dependency.
+
+This build is locally and fake-provider testable. AWS mutations remain fail-closed unless `AGENT_ENABLE_AWS_CONTROL=true` is explicitly configured. It does not yet claim a real EC2, OpenClaw, knowledge-node, persistent-data, or service-secret deployment: the repository-local Worker rootfs is hardened and reproducible, but AMI publishing and independent AMI/root-snapshot attestation are still required, and the only execution action is the typed validation action `worker.noop`. Detailed progress and prioritized gaps are tracked in [docs/delivery-tracker.md](docs/delivery-tracker.md).
 
 ## Development
 
@@ -24,7 +26,7 @@ Production startup requires TLS certificate/key files, a PostgreSQL DSN, an immu
 
 ## Operation
 
-The control process has three commands: `migrate`, `bootstrap-service-key`, and `serve`. All three use the same immutable `AGENT_INSTANCE_ID` and read the PostgreSQL DSN from `AGENT_DATABASE_URL_FILE`; the legacy plaintext `AGENT_DATABASE_URL` environment variable is deliberately ignored.
+The control process has four commands: `migrate`, `bootstrap-service-key`, `bootstrap-approval-device`, and `serve`. All four use the same immutable `AGENT_INSTANCE_ID` and read the PostgreSQL DSN from `AGENT_DATABASE_URL_FILE`; the legacy plaintext `AGENT_DATABASE_URL` environment variable is deliberately ignored.
 
 `serve` additionally requires:
 
@@ -38,6 +40,8 @@ The control process has three commands: `migrate`, `bootstrap-service-key`, and 
 Callers select a configured model by `profile_id`; they cannot choose or recombine its endpoint and credential reference. A minimal catalog is `{"schema_version":1,"profiles":[{"profile_id":"deepseek-v4","provider":"deepseek","model":"deepseekv4-pro","base_url":"https://api.deepseek.com/v1","secret_ref":"mounted:deepseek-token","context_window":65536,"max_output_tokens":8192}]}`. Keep credential bytes only in the referenced mounted file.
 
 `bootstrap-service-key` additionally requires a protected `AGENT_BOOTSTRAP_SERVICE_KEY_FILE`, `AGENT_BOOTSTRAP_CLIENT_ID`, and optional comma-separated `AGENT_BOOTSTRAP_SCOPES`. The key file contains `key_id.<32-byte-base64url-secret>`. Generate it outside the process, mount it read-only, and never place its value in shell history, Compose YAML, logs, or source control.
+
+`bootstrap-approval-device` is the one-time, local trust-anchor command for an owner's first approval device. It requires `AGENT_APPROVAL_DEVICE_OWNER_ID`, `AGENT_APPROVAL_DEVICE_KEY_ID`, a canonical UUID `AGENT_APPROVAL_DEVICE_IDEMPOTENCY_KEY`, a future RFC3339 `AGENT_APPROVAL_DEVICE_EXPIRES_AT`, and `AGENT_APPROVAL_DEVICE_PUBLIC_KEY_FILE` pointing to a protected read-only file containing exactly 32 raw Ed25519 public-key bytes or their unpadded base64url encoding. An exact rerun is idempotent; any different second device for that owner is rejected. Service Keys cannot call the reserved remote register/revoke RPCs.
 
 On Linux, DSN, TLS private key, pepper, and bootstrap key files must be regular files without group/world permission bits. Run `migrate` before bootstrap or serve; startup rejects a database owned by another `agent_instance_id` or a migration whose recorded checksum differs.
 

@@ -14,9 +14,11 @@ import (
 	"time"
 )
 
+const testBootstrapClientID = "message-server"
+
 func TestSessionUploadAndConsumeExactlyOnce(t *testing.T) {
 	manager, store, keys, clock := newTestManager(t)
-	created, err := manager.Create(context.Background(), testBinding())
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,19 +27,19 @@ func TestSessionUploadAndConsumeExactlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	uploaded, err := manager.Upload(context.Background(), created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope)
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if uploaded.Status != StatusUploaded || uploaded.Revision != 2 {
 		t.Fatalf("uploaded session = %#v", uploaded)
 	}
-	if _, err := manager.Upload(context.Background(), created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope); !errors.Is(err, ErrRevisionConflict) {
+	if _, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("second upload error = %v, want ErrRevisionConflict", err)
 	}
 
 	var callbackBuffer []byte
-	consumed, err := manager.Consume(context.Background(), uploaded.SessionID, uploaded.Revision, func(secret []byte) error {
+	consumed, err := manager.Consume(context.Background(), testBootstrapClientID, uploaded.SessionID, uploaded.Revision, func(secret []byte) error {
 		callbackBuffer = secret
 		if !bytes.Equal(secret, plaintext) {
 			t.Fatalf("consumer secret = %q, want original", secret)
@@ -53,7 +55,7 @@ func TestSessionUploadAndConsumeExactlyOnce(t *testing.T) {
 	if !allZero(callbackBuffer) {
 		t.Fatal("consumer plaintext was not zeroized after callback")
 	}
-	if _, err := manager.Consume(context.Background(), uploaded.SessionID, uploaded.Revision, func([]byte) error { return nil }); !errors.Is(err, ErrRevisionConflict) {
+	if _, err := manager.Consume(context.Background(), testBootstrapClientID, uploaded.SessionID, uploaded.Revision, func([]byte) error { return nil }); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("second consume error = %v, want ErrRevisionConflict", err)
 	}
 
@@ -70,9 +72,85 @@ func TestSessionUploadAndConsumeExactlyOnce(t *testing.T) {
 	_ = clock
 }
 
+func TestInspectDoesNotConsumeAndWipesCallbackBuffer(t *testing.T) {
+	manager, store, keys, _ := newTestManager(t)
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext := []byte("temporary administrator material")
+	envelope, err := Seal(created.Session, plaintext, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspected []byte
+	read, err := manager.Inspect(context.Background(), testBootstrapClientID, uploaded.SessionID, uploaded.Revision, func(value []byte) error {
+		inspected = value
+		if !bytes.Equal(value, plaintext) {
+			t.Fatal("inspect did not decrypt the uploaded envelope")
+		}
+		return nil
+	})
+	if err != nil || read.Status != StatusUploaded || read.Revision != uploaded.Revision {
+		t.Fatalf("Inspect() = %#v, %v", read, err)
+	}
+	if !allZero(inspected) {
+		t.Fatal("inspect callback plaintext was not wiped")
+	}
+	record, err := store.Get(context.Background(), uploaded.SessionID)
+	if err != nil || record.Session.Status != StatusUploaded || record.Envelope == nil || record.KeyHandle == "" || keys.Len() != 1 {
+		t.Fatalf("Inspect consumed bootstrap state: record=%#v keys=%d err=%v", record, keys.Len(), err)
+	}
+	if _, err := manager.Consume(context.Background(), testBootstrapClientID, uploaded.SessionID, uploaded.Revision, func([]byte) error { return nil }); err != nil {
+		t.Fatalf("Consume after Inspect: %v", err)
+	}
+}
+
+func TestManagerRejectsAnotherClientAcrossBootstrapLifecycle(t *testing.T) {
+	manager, _, _, _ := newTestManager(t)
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Get(context.Background(), "other-project", created.Session.SessionID); !errors.Is(err, ErrCallerMismatch) {
+		t.Fatalf("other-client Get error = %v, want ErrCallerMismatch", err)
+	}
+	envelope, err := Seal(created.Session, []byte("credential-canary"), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Upload(context.Background(), "other-project", created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope); !errors.Is(err, ErrCallerMismatch) {
+		t.Fatalf("other-client Upload error = %v, want ErrCallerMismatch", err)
+	}
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if _, err := manager.Inspect(context.Background(), "other-project", uploaded.SessionID, uploaded.Revision, func([]byte) error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrCallerMismatch) || called {
+		t.Fatalf("other-client Inspect error=%v callback=%v", err, called)
+	}
+	if _, err := manager.Consume(context.Background(), "other-project", uploaded.SessionID, uploaded.Revision, func([]byte) error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrCallerMismatch) || called {
+		t.Fatalf("other-client Consume error=%v callback=%v", err, called)
+	}
+	if _, err := manager.Get(context.Background(), testBootstrapClientID, uploaded.SessionID); err != nil {
+		t.Fatalf("creator Get after rejected access: %v", err)
+	}
+}
+
 func TestUploadRejectsTokenAADAndConcurrentReplay(t *testing.T) {
 	manager, _, _, _ := newTestManager(t)
-	created, err := manager.Create(context.Background(), testBinding())
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +158,7 @@ func TestUploadRejectsTokenAADAndConcurrentReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Upload(context.Background(), created.Session.SessionID, 1, strings.Repeat("A", 43), envelope); !errors.Is(err, ErrInvalidUploadToken) {
+	if _, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, strings.Repeat("A", 43), envelope); !errors.Is(err, ErrInvalidUploadToken) {
 		t.Fatalf("invalid token error = %v", err)
 	}
 	drifted := created.Session
@@ -89,7 +167,7 @@ func TestUploadRejectsTokenAADAndConcurrentReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Upload(context.Background(), created.Session.SessionID, 1, created.UploadToken.Reveal(), driftedEnvelope); !errors.Is(err, ErrInvalidEnvelope) {
+	if _, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, created.UploadToken.Reveal(), driftedEnvelope); !errors.Is(err, ErrInvalidEnvelope) {
 		t.Fatalf("AAD drift error = %v", err)
 	}
 
@@ -100,7 +178,7 @@ func TestUploadRejectsTokenAADAndConcurrentReplay(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, uploadErr := manager.Upload(context.Background(), created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope)
+			_, uploadErr := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope)
 			switch {
 			case uploadErr == nil:
 				successes.Add(1)
@@ -119,7 +197,7 @@ func TestUploadRejectsTokenAADAndConcurrentReplay(t *testing.T) {
 
 func TestConcurrentConsumeInvokesConsumerOnce(t *testing.T) {
 	manager, _, _, _ := newTestManager(t)
-	created, err := manager.Create(context.Background(), testBinding())
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +205,7 @@ func TestConcurrentConsumeInvokesConsumerOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	uploaded, err := manager.Upload(context.Background(), created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope)
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +216,7 @@ func TestConcurrentConsumeInvokesConsumerOnce(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, consumeErr := manager.Consume(context.Background(), uploaded.SessionID, uploaded.Revision, func([]byte) error {
+			_, consumeErr := manager.Consume(context.Background(), testBootstrapClientID, uploaded.SessionID, uploaded.Revision, func([]byte) error {
 				callbacks.Add(1)
 				return nil
 			})
@@ -165,7 +243,7 @@ func TestConcurrentConsumeInvokesConsumerOnce(t *testing.T) {
 
 func TestSessionExpiryDeletesKeyAndRejectsUpload(t *testing.T) {
 	manager, store, keys, clock := newTestManager(t)
-	created, err := manager.Create(context.Background(), testBinding())
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +252,7 @@ func TestSessionExpiryDeletesKeyAndRejectsUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock.Advance(SessionTTL)
-	if _, err := manager.Upload(context.Background(), created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope); !errors.Is(err, ErrExpired) {
+	if _, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expired upload error = %v, want ErrExpired", err)
 	}
 	record, err := store.Get(context.Background(), created.Session.SessionID)
@@ -191,7 +269,7 @@ func TestSessionExpiryDeletesKeyAndRejectsUpload(t *testing.T) {
 
 func TestCleanupRecoversTerminalKeyAfterInterruptedConsume(t *testing.T) {
 	manager, store, keys, clock := newTestManager(t)
-	created, err := manager.Create(context.Background(), testBinding())
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +277,7 @@ func TestCleanupRecoversTerminalKeyAfterInterruptedConsume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	uploaded, err := manager.Upload(context.Background(), created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope)
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, created.UploadToken.Reveal(), envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,10 +305,10 @@ func TestSecretCanaryNeverAppearsAndBuffersAreWiped(t *testing.T) {
 	canary := "sk_" + strings.Repeat("z", 40)
 	badBinding := testBinding()
 	badBinding.OwnerID = canary
-	if _, err := manager.Create(context.Background(), badBinding); !errors.Is(err, ErrInvalidContext) || strings.Contains(err.Error(), canary) {
+	if _, err := manager.Create(context.Background(), testBootstrapClientID, badBinding); !errors.Is(err, ErrInvalidContext) || strings.Contains(err.Error(), canary) {
 		t.Fatalf("credential-bearing context error = %v", err)
 	}
-	created, err := manager.Create(context.Background(), testBinding())
+	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +326,7 @@ func TestSecretCanaryNeverAppearsAndBuffersAreWiped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	uploaded, err := manager.Upload(context.Background(), created.Session.SessionID, 1, rawToken, envelope)
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, 1, rawToken, envelope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +346,7 @@ func TestSecretCanaryNeverAppearsAndBuffersAreWiped(t *testing.T) {
 	keyBuffer := keys.entries[record.KeyHandle]
 	keys.mu.Unlock()
 	var consumerBuffer []byte
-	_, consumeErr := manager.Consume(context.Background(), uploaded.SessionID, uploaded.Revision, func(secret []byte) error {
+	_, consumeErr := manager.Consume(context.Background(), testBootstrapClientID, uploaded.SessionID, uploaded.Revision, func(secret []byte) error {
 		consumerBuffer = secret
 		return fmt.Errorf("downstream rejected %s", canary)
 	})

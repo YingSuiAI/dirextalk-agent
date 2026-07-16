@@ -5,6 +5,7 @@ package dirextalk.agent.v1;
 option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
 
 import "google/protobuf/timestamp.proto";
+import "dirextalk/agent/v1/cloud.proto";
 
 enum ExecutionStatus {
   EXECUTION_STATUS_UNSPECIFIED = 0;
@@ -284,14 +285,211 @@ message CloudCapabilities {
 message CloudControlServiceGetCapabilitiesRequest {}
 message CloudControlServiceGetCapabilitiesResponse { CloudCapabilities capabilities = 1; }
 
+enum CloudResourceType {
+  CLOUD_RESOURCE_TYPE_UNSPECIFIED = 0;
+  CLOUD_RESOURCE_TYPE_EC2 = 1;
+  CLOUD_RESOURCE_TYPE_EBS = 2;
+  CLOUD_RESOURCE_TYPE_ENI = 3;
+  CLOUD_RESOURCE_TYPE_EIP = 4;
+  CLOUD_RESOURCE_TYPE_SECURITY_GROUP = 5;
+  CLOUD_RESOURCE_TYPE_ENDPOINT = 6;
+  CLOUD_RESOURCE_TYPE_SNAPSHOT = 7;
+}
+
+enum CloudResourceStatus {
+  CLOUD_RESOURCE_STATUS_UNSPECIFIED = 0;
+  CLOUD_RESOURCE_STATUS_NONE = 1;
+  CLOUD_RESOURCE_STATUS_PROVISIONING = 2;
+  CLOUD_RESOURCE_STATUS_ACTIVE = 3;
+  CLOUD_RESOURCE_STATUS_DESTROY_SCHEDULED = 4;
+  CLOUD_RESOURCE_STATUS_RETAINED_MANAGED = 5;
+  CLOUD_RESOURCE_STATUS_DESTROYING = 6;
+  CLOUD_RESOURCE_STATUS_VERIFIED_DESTROYED = 7;
+  CLOUD_RESOURCE_STATUS_DESTROY_BLOCKED = 8;
+  CLOUD_RESOURCE_STATUS_ORPHANED = 9;
+  CLOUD_RESOURCE_STATUS_MIXED = 10;
+}
+
+enum CloudWorkerStatus {
+  CLOUD_WORKER_STATUS_UNSPECIFIED = 0;
+  CLOUD_WORKER_STATUS_PENDING_ENROLLMENT = 1;
+  CLOUD_WORKER_STATUS_READY = 2;
+  CLOUD_WORKER_STATUS_LEASED = 3;
+  CLOUD_WORKER_STATUS_CANCEL_REQUESTED = 4;
+  CLOUD_WORKER_STATUS_FINISHED = 5;
+}
+
+message CloudResourceReadBack {
+  bool observed = 1;
+  bool exists = 2;
+  string provider_id = 3;
+  google.protobuf.Timestamp observed_at = 4;
+  string tag_digest = 5;
+}
+
+message CloudResourceStateCount {
+  CloudResourceStatus status = 1;
+  uint32 count = 2;
+}
+
+message CloudReadBackSummary {
+  uint32 total_resources = 1;
+  uint32 observed_resources = 2;
+  uint32 existing_resources = 3;
+  uint32 missing_resources = 4;
+  uint32 unobserved_resources = 5;
+  google.protobuf.Timestamp last_observed_at = 6;
+}
+
+message CloudResourceSummary {
+  CloudResourceStatus status = 1;
+  repeated CloudResourceStateCount state_counts = 2;
+  CloudReadBackSummary read_back = 3;
+  int64 revision = 4;
+}
+
+message CloudDeployment {
+  string deployment_id = 1;
+  string owner_id = 2;
+  string task_id = 3;
+  string step_id = 4;
+  string worker_id = 5;
+  ExecutionStatus execution_status = 6;
+  OutcomeStatus outcome_status = 7;
+  CloudResourceSummary resources = 8;
+  int64 revision = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message CloudResource {
+  string resource_id = 1;
+  string owner_id = 2;
+  string task_id = 3;
+  string deployment_id = 4;
+  CloudResourceType type = 5;
+  string logical_name = 6;
+  string region = 7;
+  string provider_id = 8;
+  repeated string depends_on_resource_ids = 9;
+  RetentionPolicy retention_policy = 10;
+  google.protobuf.Timestamp destroy_deadline = 11;
+  bool auto_destroy_approved = 12;
+  CloudResourceStatus status = 13;
+  CloudResourceReadBack read_back = 14;
+  string blocked_reason = 15;
+  int64 revision = 16;
+  google.protobuf.Timestamp created_at = 17;
+  google.protobuf.Timestamp updated_at = 18;
+}
+
+message CloudWorker {
+  string deployment_id = 1;
+  string owner_id = 2;
+  string worker_id = 3;
+  CloudWorkerStatus status = 4;
+  int32 attempt = 5;
+  int64 lease_epoch = 6;
+  google.protobuf.Timestamp lease_expires_at = 7;
+  google.protobuf.Timestamp last_heartbeat_at = 8;
+  bool cancellation_requested = 9;
+  bool checkpoint_available = 10;
+  bool result_available = 11;
+  uint32 evidence_count = 12;
+  int64 revision = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+}
+
+message GetCloudDeploymentRequest {
+  string owner_id = 1;
+  string deployment_id = 2;
+}
+message GetCloudDeploymentResponse { CloudDeployment deployment = 1; }
+message ListCloudDeploymentsRequest {
+  string owner_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListCloudDeploymentsResponse {
+  repeated CloudDeployment deployments = 1;
+  string next_page_token = 2;
+}
+
+message GetCloudResourceRequest {
+  string owner_id = 1;
+  string resource_id = 2;
+}
+message GetCloudResourceResponse { CloudResource resource = 1; }
+message ListCloudResourcesRequest {
+  string owner_id = 1;
+  string deployment_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+message ListCloudResourcesResponse {
+  repeated CloudResource resources = 1;
+  string next_page_token = 2;
+}
+
+message GetCloudWorkerRequest {
+  string owner_id = 1;
+  string deployment_id = 2;
+}
+message GetCloudWorkerResponse { CloudWorker worker = 1; }
+message ListCloudWorkersRequest {
+  string owner_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListCloudWorkersResponse {
+  repeated CloudWorker workers = 1;
+  string next_page_token = 2;
+}
+
 service CloudControlService {
   rpc GetCapabilities(CloudControlServiceGetCapabilitiesRequest) returns (CloudControlServiceGetCapabilitiesResponse);
+  rpc PreviewAwsIdentity(PreviewAwsIdentityRequest) returns (PreviewAwsIdentityResponse);
+  rpc CreateCloudQuote(CreateCloudQuoteRequest) returns (CreateCloudQuoteResponse);
+  rpc GetCloudQuote(GetCloudQuoteRequest) returns (GetCloudQuoteResponse);
+  rpc CreateCloudPlan(CreateCloudPlanRequest) returns (CreateCloudPlanResponse);
+  rpc GetCloudPlan(GetCloudPlanRequest) returns (GetCloudPlanResponse);
+  rpc CreateApprovalChallenge(CreateApprovalChallengeRequest) returns (CreateApprovalChallengeResponse);
+  rpc ApproveCloudPlan(ApproveCloudPlanRequest) returns (ApproveCloudPlanResponse);
+  rpc EstablishAwsConnection(EstablishAwsConnectionRequest) returns (EstablishAwsConnectionResponse);
+  rpc GetCloudDeployment(GetCloudDeploymentRequest) returns (GetCloudDeploymentResponse);
+  rpc ListCloudDeployments(ListCloudDeploymentsRequest) returns (ListCloudDeploymentsResponse);
+  rpc GetCloudResource(GetCloudResourceRequest) returns (GetCloudResourceResponse);
+  rpc ListCloudResources(ListCloudResourcesRequest) returns (ListCloudResourcesResponse);
+  rpc GetCloudWorker(GetCloudWorkerRequest) returns (GetCloudWorkerResponse);
+  rpc ListCloudWorkers(ListCloudWorkersRequest) returns (ListCloudWorkersResponse);
 }
 
 message CreateSessionRequest {
   string idempotency_key = 1;
   string owner_id = 2;
   string purpose = 3;
+  string target_id = 4;
+}
+
+enum SecretBootstrapSessionStatus {
+  SECRET_BOOTSTRAP_SESSION_STATUS_UNSPECIFIED = 0;
+  SECRET_BOOTSTRAP_SESSION_STATUS_AWAITING_UPLOAD = 1;
+  SECRET_BOOTSTRAP_SESSION_STATUS_UPLOADED = 2;
+  SECRET_BOOTSTRAP_SESSION_STATUS_CONSUMED = 3;
+  SECRET_BOOTSTRAP_SESSION_STATUS_EXPIRED = 4;
+}
+
+message SecretBootstrapSession {
+  string session_id = 1;
+  string owner_id = 2;
+  string purpose = 3;
+  string target_id = 4;
+  bytes server_public_key = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  SecretBootstrapSessionStatus status = 8;
+  int64 revision = 9;
 }
 
 message CreateSessionResponse {
@@ -299,7 +497,11 @@ message CreateSessionResponse {
   bytes server_public_key = 2;
   bytes upload_token = 3;
   google.protobuf.Timestamp expires_at = 4;
+  SecretBootstrapSession session = 5;
 }
+
+message SecretBootstrapServiceGetSessionRequest { string session_id = 1; }
+message SecretBootstrapServiceGetSessionResponse { SecretBootstrapSession session = 1; }
 
 message UploadEncryptedRequest {
   string session_id = 1;
@@ -311,7 +513,14 @@ message UploadEncryptedRequest {
   int64 expected_revision = 7;
 }
 
-message UploadEncryptedResponse { int64 revision = 1; }
+message UploadEncryptedResponse {
+  int64 revision = 1;
+  SecretBootstrapSession session = 2;
+}
+// Reserved for a future device-approved secret destination protocol. After
+// authenticating the caller, servers MUST return UNIMPLEMENTED until the signed
+// request binds session revision, owner, purpose, target, destination, expiry,
+// and approval-device identity.
 message CompleteRequest {
   string session_id = 1;
   string idempotency_key = 2;
@@ -321,7 +530,10 @@ message CompleteResponse { string secret_ref = 1; }
 
 service SecretBootstrapService {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc GetSession(SecretBootstrapServiceGetSessionRequest) returns (SecretBootstrapServiceGetSessionResponse);
   rpc UploadEncrypted(UploadEncryptedRequest) returns (UploadEncryptedResponse);
+  // Reserved; see CompleteRequest. This RPC performs no secret consumption or
+  // delivery in v1.
   rpc Complete(CompleteRequest) returns (CompleteResponse);
 }
 
@@ -368,38 +580,247 @@ message RevokeServiceKeyResponse {
   google.protobuf.Timestamp expires_at = 7;
 }
 
+enum ApprovalDeviceStatus {
+  APPROVAL_DEVICE_STATUS_UNSPECIFIED = 0;
+  APPROVAL_DEVICE_STATUS_ACTIVE = 1;
+  APPROVAL_DEVICE_STATUS_REVOKED = 2;
+}
+
+message ApprovalDevice {
+  string key_id = 1;
+  string agent_instance_id = 2;
+  string owner_id = 3;
+  int64 revision = 4;
+  ApprovalDeviceStatus status = 5;
+  bytes public_key = 6;
+  google.protobuf.Timestamp not_before = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  google.protobuf.Timestamp revoked_at = 9;
+}
+
+message RegisterApprovalDeviceRequest {
+  string idempotency_key = 1;
+  int64 expected_revision = 2;
+  string owner_id = 3;
+  string key_id = 4;
+  bytes public_key = 5;
+  google.protobuf.Timestamp not_before = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+message RegisterApprovalDeviceResponse { ApprovalDevice device = 1; }
+
+message RevokeApprovalDeviceRequest {
+  string idempotency_key = 1;
+  string key_id = 2;
+  int64 expected_revision = 3;
+}
+
+message RevokeApprovalDeviceResponse { ApprovalDevice device = 1; }
+
 service AdminService {
   rpc CreateServiceKey(CreateServiceKeyRequest) returns (CreateServiceKeyResponse);
   rpc RevokeServiceKey(RevokeServiceKeyRequest) returns (RevokeServiceKeyResponse);
+  // Reserved for a future device-signed rotation protocol. Service Keys cannot
+  // register or revoke approval devices. The first device is installed only by
+  // the local one-time bootstrap command.
+  rpc RegisterApprovalDevice(RegisterApprovalDeviceRequest) returns (RegisterApprovalDeviceResponse);
+  // Reserved for a future device-signed rotation protocol; always fails closed
+  // in v1.
+  rpc RevokeApprovalDevice(RevokeApprovalDeviceRequest) returns (RevokeApprovalDeviceResponse);
 }
 
 message EnrollRequest {
-  string enrollment_id = 1;
-  bytes enrollment_token = 2;
-  string deployment_id = 3;
-  string idempotency_key = 4;
-}
-
-message EnrollResponse {
-  string worker_id = 1;
-  int64 lease_epoch = 2;
-  google.protobuf.Timestamp lease_expires_at = 3;
-}
-
-message HeartbeatRequest {
-  string worker_id = 1;
-  int64 lease_epoch = 2;
+  string deployment_id = 1;
+  string worker_id = 2;
   string idempotency_key = 3;
   int64 expected_revision = 4;
 }
 
-message HeartbeatResponse {
-  string worker_id = 1;
-  int64 lease_epoch = 2;
-  google.protobuf.Timestamp lease_expires_at = 3;
+message EnrollResponse {
+  WorkerAssignment assignment = 1;
+  bytes session_token = 2;
 }
 
+// CreateWorkerIdentityChallengeRequest starts production EC2 enrollment. It
+// carries no AWS assertion; account, Region, owner, and expected instance are
+// loaded from the approved deployment and provider read-back.
+message CreateIdentityChallengeRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string idempotency_key = 3;
+  int64 expected_revision = 4;
+}
+
+message WorkerIdentityChallenge {
+  string challenge_id = 1;
+  string deployment_id = 2;
+  string worker_id = 3;
+  string region = 4;
+  int64 expected_revision = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  int64 revision = 7;
+}
+
+message CreateIdentityChallengeResponse {
+  WorkerIdentityChallenge challenge = 1;
+}
+
+// WorkerIdentityProof carries a one-use SigV4 STS GetCallerIdentity request.
+// authorization and session_token are bearer-equivalent and must be destroyed
+// after verification; they are forbidden from logs, events, and persistence.
+message WorkerIdentityProof {
+  int32 schema_version = 1;
+  string region = 2;
+  string endpoint = 3;
+  string method = 4;
+  string host = 5;
+  string content_type = 6;
+  string content_sha256 = 7;
+  string amz_date = 8;
+  string challenge_id = 9;
+  bytes body = 10;
+  bytes authorization = 11;
+  bytes session_token = 12;
+}
+
+message EnrollVerifiedIdentityRequest {
+  string challenge_id = 1;
+  string deployment_id = 2;
+  string worker_id = 3;
+  string idempotency_key = 4;
+  int64 expected_revision = 5;
+  WorkerIdentityProof proof = 6;
+}
+
+message EnrollVerifiedIdentityResponse {
+  WorkerAssignment assignment = 1;
+  bytes session_token = 2;
+}
+
+message WorkerAccessScope {
+  string artifact_bucket = 1;
+  string artifact_prefix = 2;
+  string checkpoint_prefix = 3;
+  string evidence_prefix = 4;
+  string log_group = 5;
+  string log_prefix = 6;
+  repeated string secret_refs = 7;
+}
+
+message WorkerBundleReference {
+  string s3_ref = 1;
+  bytes sha256 = 2;
+}
+
+message WorkerAssignment {
+  string deployment_id = 1;
+  string owner_id = 2;
+  string task_id = 3;
+  string step_id = 4;
+  string control_plane_endpoint = 5;
+  string worker_id = 6;
+  int32 attempt = 7;
+  int64 lease_epoch = 8;
+  google.protobuf.Timestamp lease_expires_at = 9;
+  string checkpoint_ref = 10;
+  WorkerAccessScope access = 11;
+  bool cancellation_requested = 12;
+  int64 revision = 13;
+  WorkerBundleReference recipe_bundle = 14;
+  WorkerBundleReference execution_bundle = 15;
+  uint32 execution_timeout_seconds = 16;
+  // These identify the lease that durably recorded checkpoint_ref. They may
+  // differ from attempt/lease_epoch after a restarted Worker claims a new
+  // fenced lease and are required to validate checkpoint contents.
+  int32 checkpoint_attempt = 17;
+  int64 checkpoint_lease_epoch = 18;
+}
+
+message WorkerControlServiceGetCurrentAssignmentRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+}
+
+message WorkerControlServiceGetCurrentAssignmentResponse { WorkerAssignment assignment = 1; }
+
+message WorkerControlServiceClaimRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string idempotency_key = 3;
+  int64 expected_revision = 4;
+  int32 lease_duration_seconds = 5;
+}
+message WorkerControlServiceClaimResponse { WorkerAssignment assignment = 1; }
+
+message HeartbeatRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  int64 lease_epoch = 3;
+  string idempotency_key = 4;
+  int64 expected_revision = 5;
+  int32 lease_duration_seconds = 6;
+}
+
+message HeartbeatResponse {
+  int64 lease_epoch = 1;
+  google.protobuf.Timestamp lease_expires_at = 2;
+  bool cancellation_requested = 3;
+  string checkpoint_ref = 4;
+  int64 revision = 5;
+}
+
+enum WorkerEvidenceKind {
+  WORKER_EVIDENCE_KIND_UNSPECIFIED = 0;
+  WORKER_EVIDENCE_KIND_CHECKPOINT = 1;
+  WORKER_EVIDENCE_KIND_ARTIFACT = 2;
+  WORKER_EVIDENCE_KIND_LOG = 3;
+  WORKER_EVIDENCE_KIND_CLAIM = 4;
+}
+
+message WorkerControlServiceRecordEvidenceRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  int64 lease_epoch = 3;
+  string idempotency_key = 4;
+  int64 expected_revision = 5;
+  WorkerEvidenceKind kind = 6;
+  string ref = 7;
+}
+message WorkerControlServiceRecordEvidenceResponse { int64 revision = 1; }
+
+enum WorkerOutcome {
+  WORKER_OUTCOME_UNSPECIFIED = 0;
+  WORKER_OUTCOME_SUCCEEDED = 1;
+  WORKER_OUTCOME_FAILED = 2;
+  WORKER_OUTCOME_CANCELED = 3;
+  WORKER_OUTCOME_TIMED_OUT = 4;
+  WORKER_OUTCOME_INTERRUPTED = 5;
+}
+
+message WorkerControlServiceCompleteRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  int64 lease_epoch = 3;
+  string idempotency_key = 4;
+  int64 expected_revision = 5;
+  WorkerOutcome outcome = 6;
+  string result_ref = 7;
+}
+message WorkerControlServiceCompleteResponse { int64 revision = 1; }
+
 service WorkerControlService {
+  rpc CreateIdentityChallenge(CreateIdentityChallengeRequest) returns (CreateIdentityChallengeResponse);
+  rpc EnrollVerifiedIdentity(EnrollVerifiedIdentityRequest) returns (EnrollVerifiedIdentityResponse);
+  // Enroll is retained only for local/fake Workers that receive a one-time
+  // token out of band. Production EC2 Workers use identity enrollment.
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  // Returns the current durable revision/lease/checkpoint under the Worker
+  // session. A restarted process must call this before Claim; enrollment
+  // replay responses are historical snapshots and cannot be used as CAS.
+  rpc GetCurrentAssignment(WorkerControlServiceGetCurrentAssignmentRequest) returns (WorkerControlServiceGetCurrentAssignmentResponse);
+  rpc Claim(WorkerControlServiceClaimRequest) returns (WorkerControlServiceClaimResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc RecordEvidence(WorkerControlServiceRecordEvidenceRequest) returns (WorkerControlServiceRecordEvidenceResponse);
+  rpc Complete(WorkerControlServiceCompleteRequest) returns (WorkerControlServiceCompleteResponse);
 }

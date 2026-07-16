@@ -15,6 +15,7 @@ bin/
 dist/
 coverage/
 .cache/
+.codex/
 .idea/
 .run.local/
 .worktrees/

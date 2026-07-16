@@ -1,0 +1,358 @@
+package rpcapi
+
+import (
+	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+func cloudQuoteScopeFromProto(value *agentv1.CloudQuoteScope, agentInstanceID string) cloudquote.ScopeV1 {
+	if value == nil {
+		return cloudquote.ScopeV1{}
+	}
+	result := cloudquote.ScopeV1{
+		SchemaVersion: cloudquote.ScopeSchemaV1, AgentInstanceID: agentInstanceID,
+		OwnerID: value.GetOwnerId(), ConnectionID: value.GetConnectionId(),
+		Recipe: cloudquote.RecipeBindingV1{
+			RecipeID: value.GetRecipe().GetRecipeId(), Digest: value.GetRecipe().GetDigest(),
+			Maturity: recipe.Maturity(value.GetRecipe().GetMaturity()),
+		},
+		Resource: cloudResourceScopeFromProto(value.GetResource()),
+		Network:  cloudNetworkScopeFromProto(value.GetNetwork()),
+		Retention: cloudquote.RetentionScopeV1{
+			Class:              cloudRetentionFromProto(value.GetRetention().GetRetentionClass()),
+			AutoDestroy:        value.GetRetention().GetAutoDestroy(),
+			GracePeriodSeconds: value.GetRetention().GetGracePeriodSeconds(),
+			MaxLifetimeSeconds: value.GetRetention().GetMaxLifetimeSeconds(),
+		},
+	}
+	for _, secret := range value.GetSecretScope() {
+		result.SecretScope = append(result.SecretScope, cloudquote.SecretScopeV1{
+			SecretRef: secret.GetSecretRef(), Purpose: secret.GetPurpose(), Delivery: recipe.SecretDelivery(secret.GetDelivery()),
+		})
+	}
+	for _, integration := range value.GetIntegrationScope() {
+		result.IntegrationScope = append(result.IntegrationScope, cloudquote.IntegrationScopeV1{
+			Kind: cloudquote.IntegrationKind(integration.GetKind()), Name: integration.GetName(), Scopes: integration.GetScopes(),
+		})
+	}
+	return result
+}
+
+func cloudResourceScopeFromProto(value *agentv1.CloudResourceScope) cloudquote.ResourceScopeV1 {
+	if value == nil {
+		return cloudquote.ResourceScopeV1{}
+	}
+	return cloudquote.ResourceScopeV1{
+		CandidateID: cloudCandidateFromProto(value.GetCandidateProfile()), Region: value.GetRegion(),
+		AvailabilityZones: value.GetAvailabilityZones(), InstanceType: value.GetInstanceType(), InstanceCount: value.GetInstanceCount(),
+		Architecture: recipe.Architecture(value.GetArchitecture()), VCPU: value.GetVcpu(), MemoryMiB: value.GetMemoryMib(),
+		GPUType: value.GetGpuType(), GPUCount: value.GetGpuCount(), GPUMemoryMiB: value.GetGpuMemoryMib(),
+		DiskGiB: value.GetDiskGib(), VolumeType: value.GetVolumeType(), VolumeIOPS: value.GetVolumeIops(),
+		VolumeThroughputMiBPS: value.GetVolumeThroughputMibps(), VolumeEncrypted: value.GetVolumeEncrypted(),
+		PurchaseOption: cloudPurchaseFromProto(value.GetPurchaseOption()), WorkerImageID: value.GetWorkerImageId(),
+		WorkerImageDigest: value.GetWorkerImageDigest(),
+	}
+}
+
+func cloudNetworkScopeFromProto(value *agentv1.CloudNetworkScope) cloudquote.NetworkScopeV1 {
+	if value == nil {
+		return cloudquote.NetworkScopeV1{}
+	}
+	return cloudquote.NetworkScopeV1{
+		VPCID: value.GetVpcId(), SubnetID: value.GetSubnetId(), SecurityGroupID: value.GetSecurityGroupId(),
+		EntryPoint: cloudEntryPointFromProto(value.GetEntryPoint()), PublicExposure: value.GetPublicExposure(),
+		IngressPorts: value.GetIngressPorts(), Hostname: value.GetHostname(), TLSRequired: value.GetTlsRequired(),
+		AuthenticationRequired: value.GetAuthenticationRequired(),
+	}
+}
+
+func cloudUsageFromProto(value *agentv1.CloudUsageEstimate) cloudquote.UsageV1 {
+	if value == nil {
+		return cloudquote.UsageV1{}
+	}
+	return cloudquote.UsageV1{
+		RuntimeHoursPerMonth: value.GetRuntimeHoursPerMonth(), PublicIPv4Hours: value.GetPublicIpv4Hours(),
+		LogIngestMiB: value.GetLogIngestMib(), LogStoredMiBMonths: value.GetLogStoredMibMonths(),
+		SnapshotGiBMonths: value.GetSnapshotGibMonths(), EntryHours: value.GetEntryHours(), InternetEgressMiB: value.GetInternetEgressMib(),
+	}
+}
+
+func cloudQuoteToProto(value cloudquote.QuoteV1) *agentv1.CloudQuote {
+	result := &agentv1.CloudQuote{
+		QuoteId: value.QuoteID, QuotedAt: timestamppb.New(value.QuotedAt), ValidUntil: timestamppb.New(value.ValidUntil),
+		Currency: value.Currency, Usage: cloudUsageToProto(value.Usage), Assumptions: value.Assumptions, Exclusions: value.Exclusions,
+	}
+	result.Digest, _ = value.Digest()
+	for _, candidate := range value.Candidates {
+		converted := &agentv1.CloudQuoteCandidate{
+			CandidateProfile: cloudCandidateToProto(candidate.CandidateID), Scope: cloudQuoteScopeToProto(candidate.Scope),
+			ScopeDigest: candidate.ScopeDigest, OfferedAvailabilityZones: candidate.OfferedAvailabilityZones,
+			HourlyEstimateMicros: candidate.HourlyEstimateMicros, MonthlyEstimateMicros: candidate.MonthlyEstimateMicros,
+			MaximumLaunchAmountMicros: candidate.MaximumLaunchAmountMicros,
+		}
+		for _, quota := range candidate.Quotas {
+			converted.Quotas = append(converted.Quotas, &agentv1.CloudQuotaEvidence{
+				ServiceCode: quota.ServiceCode, QuotaCode: quota.QuotaCode, LimitUnits: quota.LimitUnits,
+				UsedUnits: quota.UsedUnits, RequiredUnits: quota.RequiredUnits,
+			})
+		}
+		for _, item := range candidate.CostItems {
+			converted.CostItems = append(converted.CostItems, &agentv1.CloudCostItem{
+				Category: string(item.Category), Description: item.Description, SourceId: item.SourceID,
+				HourlyEstimateMicros: item.HourlyEstimateMicros, MonthlyEstimateMicros: item.MonthlyEstimateMicros,
+				MaximumLaunchAmountMicros: item.MaximumLaunchAmountMicros,
+			})
+		}
+		result.Candidates = append(result.Candidates, converted)
+	}
+	if value.SpotEvidence != nil {
+		result.SpotEvidence = cloudSpotToProto(*value.SpotEvidence)
+	}
+	return result
+}
+
+func cloudQuoteScopeToProto(value cloudquote.ScopeV1) *agentv1.CloudQuoteScope {
+	result := &agentv1.CloudQuoteScope{
+		OwnerId: value.OwnerID, ConnectionId: value.ConnectionID,
+		Recipe:   &agentv1.CloudRecipeBinding{RecipeId: value.Recipe.RecipeID, Digest: value.Recipe.Digest, Maturity: string(value.Recipe.Maturity)},
+		Resource: cloudResourceScopeToProto(value.Resource), Network: cloudNetworkScopeToProto(value.Network),
+		Retention: &agentv1.CloudRetentionScope{
+			RetentionClass: cloudRetentionToProto(value.Retention.Class), AutoDestroy: value.Retention.AutoDestroy,
+			GracePeriodSeconds: value.Retention.GracePeriodSeconds, MaxLifetimeSeconds: value.Retention.MaxLifetimeSeconds,
+		},
+	}
+	for _, secret := range value.SecretScope {
+		result.SecretScope = append(result.SecretScope, &agentv1.CloudSecretScope{SecretRef: secret.SecretRef, Purpose: secret.Purpose, Delivery: string(secret.Delivery)})
+	}
+	for _, integration := range value.IntegrationScope {
+		result.IntegrationScope = append(result.IntegrationScope, &agentv1.CloudIntegrationScope{Kind: string(integration.Kind), Name: integration.Name, Scopes: integration.Scopes})
+	}
+	return result
+}
+
+func cloudResourceScopeToProto(value cloudquote.ResourceScopeV1) *agentv1.CloudResourceScope {
+	return &agentv1.CloudResourceScope{
+		CandidateProfile: cloudCandidateToProto(value.CandidateID), Region: value.Region, AvailabilityZones: value.AvailabilityZones,
+		InstanceType: value.InstanceType, InstanceCount: value.InstanceCount, Architecture: string(value.Architecture),
+		Vcpu: value.VCPU, MemoryMib: value.MemoryMiB, GpuType: value.GPUType, GpuCount: value.GPUCount,
+		GpuMemoryMib: value.GPUMemoryMiB, DiskGib: value.DiskGiB, VolumeType: value.VolumeType,
+		VolumeIops: value.VolumeIOPS, VolumeThroughputMibps: value.VolumeThroughputMiBPS, VolumeEncrypted: value.VolumeEncrypted,
+		PurchaseOption: cloudPurchaseToProto(value.PurchaseOption), WorkerImageId: value.WorkerImageID, WorkerImageDigest: value.WorkerImageDigest,
+	}
+}
+
+func cloudNetworkScopeToProto(value cloudquote.NetworkScopeV1) *agentv1.CloudNetworkScope {
+	return &agentv1.CloudNetworkScope{
+		VpcId: value.VPCID, SubnetId: value.SubnetID, SecurityGroupId: value.SecurityGroupID,
+		EntryPoint: cloudEntryPointToProto(value.EntryPoint), PublicExposure: value.PublicExposure, IngressPorts: value.IngressPorts,
+		Hostname: value.Hostname, TlsRequired: value.TLSRequired, AuthenticationRequired: value.AuthenticationRequired,
+	}
+}
+
+func cloudUsageToProto(value cloudquote.UsageV1) *agentv1.CloudUsageEstimate {
+	return &agentv1.CloudUsageEstimate{
+		RuntimeHoursPerMonth: value.RuntimeHoursPerMonth, PublicIpv4Hours: value.PublicIPv4Hours,
+		LogIngestMib: value.LogIngestMiB, LogStoredMibMonths: value.LogStoredMiBMonths,
+		SnapshotGibMonths: value.SnapshotGiBMonths, EntryHours: value.EntryHours, InternetEgressMib: value.InternetEgressMiB,
+	}
+}
+
+func cloudSpotToProto(value cloudquote.SpotQualificationV1) *agentv1.CloudSpotQualification {
+	return &agentv1.CloudSpotQualification{
+		EvidenceId: value.EvidenceID, RecipeDigest: value.RecipeDigest, CheckpointName: value.CheckpointName,
+		ResumeAction: value.ResumeAction, MaxRetries: value.MaxRetries,
+		CheckpointVerifiedAt: timestamppb.New(value.CheckpointVerifiedAt), InterruptionTestedAt: timestamppb.New(value.InterruptionTestedAt),
+	}
+}
+
+func cloudSpotFromProto(value *agentv1.CloudSpotQualification) *cloudquote.SpotQualificationV1 {
+	if value == nil {
+		return nil
+	}
+	result := &cloudquote.SpotQualificationV1{
+		EvidenceID: value.GetEvidenceId(), RecipeDigest: value.GetRecipeDigest(), CheckpointName: value.GetCheckpointName(),
+		ResumeAction: value.GetResumeAction(), MaxRetries: value.GetMaxRetries(),
+	}
+	if value.GetCheckpointVerifiedAt() != nil && value.GetCheckpointVerifiedAt().IsValid() {
+		result.CheckpointVerifiedAt = value.GetCheckpointVerifiedAt().AsTime().UTC()
+	}
+	if value.GetInterruptionTestedAt() != nil && value.GetInterruptionTestedAt().IsValid() {
+		result.InterruptionTestedAt = value.GetInterruptionTestedAt().AsTime().UTC()
+	}
+	return result
+}
+
+func cloudPlanToProto(value cloudapproval.PlanV1) *agentv1.CloudPlan {
+	hash, _ := value.Hash()
+	return &agentv1.CloudPlan{
+		PlanId: value.PlanID, OwnerId: value.OwnerID, ConnectionId: value.ConnectionID,
+		Recipe:  &agentv1.CloudRecipeBinding{RecipeId: value.Recipe.RecipeID, Digest: value.Recipe.Digest, Maturity: string(value.Recipe.Maturity)},
+		QuoteId: value.Quote.QuoteID, QuoteDigest: value.Quote.Digest, QuoteScopeDigest: value.Quote.ScopeDigest,
+		CandidateProfile: cloudCandidateStringToProto(value.Quote.CandidateID), QuoteValidUntil: timestamppb.New(value.Quote.ValidUntil),
+		Resource: approvalResourceScopeToProto(value.ResourceScope), Network: approvalNetworkScopeToProto(value.NetworkScope),
+		SecretScope: approvalSecretsToProto(value.SecretScope), IntegrationScope: approvalIntegrationsToProto(value.IntegrationScope),
+		Retention: approvalRetentionToProto(value.RetentionScope), Status: cloudPlanStatusToProto(value.Status),
+		PlanHash: hash, Revision: int64(value.Revision),
+	}
+}
+
+func cloudCandidateFromProto(value agentv1.CloudCandidateProfile) cloudquote.CandidateProfile {
+	switch value {
+	case agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_ECONOMY:
+		return cloudquote.CandidateEconomic
+	case agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_RECOMMENDED:
+		return cloudquote.CandidateRecommended
+	case agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_PERFORMANCE:
+		return cloudquote.CandidatePerformance
+	default:
+		return ""
+	}
+}
+
+func cloudCandidateToProto(value cloudquote.CandidateProfile) agentv1.CloudCandidateProfile {
+	return cloudCandidateStringToProto(string(value))
+}
+
+func cloudCandidateStringToProto(value string) agentv1.CloudCandidateProfile {
+	switch value {
+	case string(cloudquote.CandidateEconomic):
+		return agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_ECONOMY
+	case string(cloudquote.CandidateRecommended):
+		return agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_RECOMMENDED
+	case string(cloudquote.CandidatePerformance):
+		return agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_PERFORMANCE
+	default:
+		return agentv1.CloudCandidateProfile_CLOUD_CANDIDATE_PROFILE_UNSPECIFIED
+	}
+}
+
+func cloudPurchaseFromProto(value agentv1.CloudPurchaseOption) cloudquote.PurchaseOption {
+	if value == agentv1.CloudPurchaseOption_CLOUD_PURCHASE_OPTION_SPOT {
+		return cloudquote.PurchaseSpot
+	}
+	if value == agentv1.CloudPurchaseOption_CLOUD_PURCHASE_OPTION_ON_DEMAND {
+		return cloudquote.PurchaseOnDemand
+	}
+	return ""
+}
+
+func cloudPurchaseToProto(value cloudquote.PurchaseOption) agentv1.CloudPurchaseOption {
+	if value == cloudquote.PurchaseSpot {
+		return agentv1.CloudPurchaseOption_CLOUD_PURCHASE_OPTION_SPOT
+	}
+	if value == cloudquote.PurchaseOnDemand {
+		return agentv1.CloudPurchaseOption_CLOUD_PURCHASE_OPTION_ON_DEMAND
+	}
+	return agentv1.CloudPurchaseOption_CLOUD_PURCHASE_OPTION_UNSPECIFIED
+}
+
+func cloudEntryPointFromProto(value agentv1.CloudEntryPointKind) cloudquote.EntryPointKind {
+	switch value {
+	case agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_NONE:
+		return cloudquote.EntryPointNone
+	case agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_ALB:
+		return cloudquote.EntryPointALB
+	case agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_CLOUDFRONT:
+		return cloudquote.EntryPointCloudFront
+	default:
+		return ""
+	}
+}
+
+func cloudEntryPointToProto(value cloudquote.EntryPointKind) agentv1.CloudEntryPointKind {
+	switch value {
+	case cloudquote.EntryPointNone:
+		return agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_NONE
+	case cloudquote.EntryPointALB:
+		return agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_ALB
+	case cloudquote.EntryPointCloudFront:
+		return agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_CLOUDFRONT
+	default:
+		return agentv1.CloudEntryPointKind_CLOUD_ENTRY_POINT_KIND_UNSPECIFIED
+	}
+}
+
+func cloudRetentionFromProto(value agentv1.CloudRetentionClass) cloudquote.RetentionClass {
+	if value == agentv1.CloudRetentionClass_CLOUD_RETENTION_CLASS_EPHEMERAL {
+		return cloudquote.RetentionEphemeral
+	}
+	if value == agentv1.CloudRetentionClass_CLOUD_RETENTION_CLASS_MANAGED {
+		return cloudquote.RetentionManaged
+	}
+	return ""
+}
+
+func cloudRetentionToProto(value cloudquote.RetentionClass) agentv1.CloudRetentionClass {
+	if value == cloudquote.RetentionEphemeral {
+		return agentv1.CloudRetentionClass_CLOUD_RETENTION_CLASS_EPHEMERAL
+	}
+	if value == cloudquote.RetentionManaged {
+		return agentv1.CloudRetentionClass_CLOUD_RETENTION_CLASS_MANAGED
+	}
+	return agentv1.CloudRetentionClass_CLOUD_RETENTION_CLASS_UNSPECIFIED
+}
+
+func cloudPlanStatusToProto(value cloudapproval.PlanStatus) agentv1.CloudPlanStatus {
+	switch value {
+	case cloudapproval.PlanResearching:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_RESEARCHING
+	case cloudapproval.PlanQuoting:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_QUOTING
+	case cloudapproval.PlanReadyForConfirmation:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_READY_FOR_CONFIRMATION
+	case cloudapproval.PlanApproved:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_APPROVED
+	case cloudapproval.PlanExpired:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_EXPIRED
+	case cloudapproval.PlanSuperseded:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_SUPERSEDED
+	default:
+		return agentv1.CloudPlanStatus_CLOUD_PLAN_STATUS_UNSPECIFIED
+	}
+}
+
+func approvalResourceScopeToProto(value cloudapproval.ResourceScopeV1) *agentv1.CloudResourceScope {
+	return cloudResourceScopeToProto(cloudquote.ResourceScopeV1{
+		Region: value.Region, AvailabilityZones: value.AvailabilityZones, InstanceType: value.InstanceType,
+		InstanceCount: value.InstanceCount, Architecture: value.Architecture, VCPU: value.VCPU, MemoryMiB: value.MemoryMiB,
+		GPUType: value.GPUType, GPUCount: value.GPUCount, GPUMemoryMiB: value.GPUMemoryMiB, DiskGiB: value.DiskGiB,
+		VolumeType: value.VolumeType, VolumeIOPS: value.VolumeIOPS, VolumeThroughputMiBPS: value.VolumeThroughputMiBPS,
+		VolumeEncrypted: value.VolumeEncrypted, PurchaseOption: cloudquote.PurchaseOption(value.PurchaseOption),
+		WorkerImageID: value.WorkerImageID, WorkerImageDigest: value.WorkerImageDigest,
+	})
+}
+
+func approvalNetworkScopeToProto(value cloudapproval.NetworkScopeV1) *agentv1.CloudNetworkScope {
+	return cloudNetworkScopeToProto(cloudquote.NetworkScopeV1{
+		VPCID: value.VPCID, SubnetID: value.SubnetID, SecurityGroupID: value.SecurityGroupID,
+		EntryPoint: cloudquote.EntryPointKind(value.EntryPoint), PublicExposure: value.PublicExposure,
+		IngressPorts: value.IngressPorts, Hostname: value.Hostname, TLSRequired: value.TLSRequired,
+		AuthenticationRequired: value.AuthenticationRequired,
+	})
+}
+
+func approvalSecretsToProto(values []cloudapproval.SecretReferenceV1) []*agentv1.CloudSecretScope {
+	result := make([]*agentv1.CloudSecretScope, 0, len(values))
+	for _, value := range values {
+		result = append(result, &agentv1.CloudSecretScope{SecretRef: value.SecretRef, Purpose: value.Purpose, Delivery: string(value.Delivery)})
+	}
+	return result
+}
+
+func approvalIntegrationsToProto(values []cloudapproval.IntegrationScopeV1) []*agentv1.CloudIntegrationScope {
+	result := make([]*agentv1.CloudIntegrationScope, 0, len(values))
+	for _, value := range values {
+		result = append(result, &agentv1.CloudIntegrationScope{Kind: string(value.Kind), Name: value.Name, Scopes: value.Scopes})
+	}
+	return result
+}
+
+func approvalRetentionToProto(value cloudapproval.RetentionScopeV1) *agentv1.CloudRetentionScope {
+	return &agentv1.CloudRetentionScope{
+		RetentionClass: cloudRetentionToProto(cloudquote.RetentionClass(value.Class)), AutoDestroy: value.AutoDestroy,
+		GracePeriodSeconds: value.GracePeriodSeconds, MaxLifetimeSeconds: value.MaxLifetimeSeconds,
+	}
+}

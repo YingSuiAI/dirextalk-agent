@@ -17,6 +17,23 @@ type Store interface {
 	ClearKeyHandle(ctx context.Context, sessionID string, revision uint64, keyHandle string) error
 }
 
+// AtomicSessionStore is an optional stronger adapter used when the durable
+// session record and its sealed X25519 private key share one transaction. It
+// closes the crash window between KeyStore.Put and Store.Create without
+// weakening the small interfaces used by in-memory tests.
+type AtomicSessionStore interface {
+	CreateWithPrivateKey(ctx context.Context, record Record, privateKey []byte) (Record, error)
+}
+
+// AtomicIdempotentSessionStore is required by the public mutation boundary.
+// Durable implementations commit the scoped idempotency claim, sealed private
+// key, encrypted upload-token replay material, and session transition in one
+// transaction so a lost response cannot create a second session.
+type AtomicIdempotentSessionStore interface {
+	CreateIdempotent(ctx context.Context, mutation IdempotencyMutation, record Record, privateKey []byte, uploadToken string) (Record, string, error)
+	CommitUploadIdempotent(ctx context.Context, mutation IdempotencyMutation, sessionID string, expectedRevision uint64, uploadTokenHash [32]byte, envelope EnvelopeV1, now time.Time) (Record, error)
+}
+
 // KeyStore isolates short-lived X25519 private keys from the normal session
 // store. A PostgreSQL implementation must seal values with the configured
 // Agent master key and expose only opaque handles in Record.

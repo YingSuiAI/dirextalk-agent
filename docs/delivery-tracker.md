@@ -57,37 +57,53 @@ Observable acceptance: after encrypted credential bootstrap and device-approved 
 
 ### Connection And Foundation
 
-- [ ] Implement X25519 one-time bootstrap sessions with 10-minute expiry, single upload/consume, request binding, memory zeroing, and opaque Message Server forwarding.
-- [ ] Accept AWS root/admin credentials only for bootstrap; call STS identity read-back and show account/Region before foundation confirmation.
-- [ ] Create deterministic minimal IAM source user, fixed Control Role, Worker Role/Profile, Foundation service role, and locally envelope-encrypted source key; daily operations use short STS sessions.
-- [ ] Migrate valid Go/CloudFormation/rootbootstrap/teardown contracts from the old Connection Stack into `awsfoundation`; remove Broker Lambda/API Gateway command indirection and do not migrate historical JS/npm code.
+- [x] Implement Agent-side X25519 one-time bootstrap sessions with 10-minute expiry, single upload/consume, request binding, and memory zeroing.
+- [ ] Complete opaque Message Server forwarding through the P3 ciphertext tunnel; Message Server must never decrypt or persist plaintext.
+- [x] Accept AWS root/admin credentials only for bootstrap; call STS identity read-back and show account/Region before foundation confirmation.
+- [x] Create deterministic minimal IAM source user, fixed Control Role, Worker Role/Profile, Foundation service role, and locally envelope-encrypted source key; daily operations use short STS sessions.
+- [x] Migrate valid Go/CloudFormation/root-bootstrap contracts from the old Connection Stack into `awsfoundation`; remove Broker Lambda/API Gateway command indirection and do not migrate historical JS/npm code.
 - [ ] Provision scoped S3 artifacts/logs, KMS, Secrets Manager layout, DynamoDB resource-manifest mirror, CloudWatch, EventBridge, and Go Reaper Lambda.
 - [ ] Require a fresh admin bootstrap for foundation upgrade/full teardown; incomplete IAM/stack removal remains `destroy_blocked`.
 
 ### Quote And Approval
 
-- [ ] Implement typed Price List, EC2 Offerings, quotas, On-Demand/EBS/IPv4/log/snapshot/entry/traffic estimates and three candidate profiles.
-- [ ] Store `quoted_at`, 15-minute `valid_until`, currency, hourly/monthly estimate, maximum launch amount, assumptions, and excluded costs.
+- [x] Implement typed Price List, EC2 Offerings, quotas, On-Demand/EBS/IPv4/log/snapshot/entry/traffic estimates and three candidate profiles.
+- [x] Store `quoted_at`, 15-minute `valid_until`, currency, hourly/monthly estimate, maximum launch amount, assumptions, and excluded costs.
+- [x] Install an owner's first approval device only through the local mounted-public-key bootstrap; exact replay is idempotent and a second device is atomically rejected.
+- [ ] Define device-signed approval-device rotation/revocation. Reserved remote Admin RPCs and generic SecretBootstrap completion remain fail closed until their complete signature bindings are frozen.
 - [ ] Implement deterministic CBOR Go/Dart golden vectors and device signatures binding plan, revision, quote, connection, Recipe, resources, network, secrets, integration, retention, and expiry.
-- [ ] Requote when price expires or any approved Region/spec/image/network/secret/cost scope changes.
+- [x] Requote when price expires or any approved Region/spec/image/network/secret/cost scope changes.
 
 ### Provisioning And Worker
 
-- [ ] Persist mutation intent before AWS calls; use deterministic names, ClientToken, mandatory ownership/retention/deadline tags, response reconciliation, and read-back.
-- [ ] Build digest-pinned non-root Agent and exclusive-VM Worker images/archives without AWS CLI or Docker socket.
-- [ ] Implement Worker enrollment, outbound TLS gRPC, deployment-bound credential, lease epoch, task claim, heartbeat, checkpoint, result/evidence, cancellation, late-result rejection, and restart resume.
+- [x] For the current EC2/EBS/ENI/SG scope, persist mutation intent before every AWS-created dependency; use deterministic names, ClientToken, mandatory ownership/retention/deadline tags, response reconciliation, and read-back. The implicit RunInstances root EBS volume has a separate deterministic ledger fact, provider read-back, manifest entry, and Reaper path.
+- [ ] Build and publish digest-pinned non-root Agent and exclusive-VM Worker images/archives without AWS CLI or Docker socket. Repository-local OCI/rootfs builds, fixed UID/GID, binary self-verification, and hardened AMI service assets are complete; publishing plus AMI/root-snapshot attestation remain.
+- [x] Implement Worker enrollment, outbound TLS gRPC, deployment-bound credential, lease epoch, exact-Step task claim, heartbeat, checkpoint, result/evidence, cancellation, late-result rejection, and process restart resume.
 - [ ] Deliver Worker artifacts/logs/checkpoints through scoped S3/CloudWatch paths and deliver only deployment-declared service secrets.
 - [ ] Implement external health/readiness/semantic probes; mark Worker-local root logs as untrusted claims.
 
 ### Resource Lifecycle
 
 - [ ] Implement EC2/EBS/ENI/EIP/SG/endpoint/snapshot resource ledger and dependency-order destruction with independent read-back.
-- [ ] Mirror resource graph and expiry policy to DynamoDB before exposing active state.
-- [ ] Implement Reaper deletion only for approved expired ephemeral manifests; never delete Managed assets.
+- [ ] Mirror resource graph and expiry policy to DynamoDB before exposing active state; wire the tracked PostgreSQL generation/replay adapter into production composition.
+- [x] For the current EC2/EBS/ENI/SG scope, make Reaper delete only approved expired ephemeral manifests, require exact per-resource owner/task/deployment/plan/approval/resource-ID tags, independently read back each resource, and never delete Managed assets.
 - [ ] Implement retry/backoff, orphan detection by tags, `destroy_blocked`, stale-controller alerts, and re-import after Agent/DB loss.
 - [ ] Require Managed acceptance to bind owner, cost alert, monitor, maintenance, restart, backup/restore, upgrade/rollback, and destroy contracts.
 - [ ] Implement pairing as resumable `waiting_user` with sensitive payload available only through on-demand encrypted retrieval.
-- [ ] Pass P2 fake-provider, AWS SDK contract, PostgreSQL recovery, Worker fault, Reaper, idempotency, lifecycle, and security tests.
+- [x] Pass P2 fake-provider, AWS SDK contract, PostgreSQL recovery, Worker fault, Reaper, idempotency, lifecycle, and security tests for the implemented first-validation scope.
+
+P2 first-validation evidence (2026-07-16): encrypted bootstrap, typed quote/approval, deterministic Foundation construction, direct STS adapters, EC2/EBS/ENI/SG provider operations, independently tracked root EBS, response-loss reconciliation, startup Foundation-operation recovery, STS/IMDS Worker identity, exact-Step Task/Worker synchronization, process-level checkpoint resume, scoped S3 artifact binding, deployment-monotonic DynamoDB manifests, strict Reaper authorization, automatic ephemeral scheduling, and a hardened locally buildable Worker rootfs exist behind a default-off `AGENT_ENABLE_AWS_CONTROL` gate. Full Go tests/vet/command builds, Buf generation/lint, high-risk race tests, PostgreSQL restart/recovery tests, container checks/builds, and secret-canary boundaries passed. This proves the local/fake-provider validation build, not a safe real-AWS release.
+
+P2 remaining work, in priority order:
+
+1. Publish digest-pinned Agent/Worker/Reaper artifacts, create the fixed Worker AMI, and independently attest that the approved Worker image digest matches the launched AMI and root snapshot. Add a separate approval-bound privileged installer before any root service action.
+2. Add startup replay for pending/failed PostgreSQL-to-DynamoDB manifest generations; retain orphan re-import and stale-controller handling as explicit recovery work.
+3. Implement device-approved Foundation upgrade/full teardown and complete blocked-remediation workflows; startup Foundation-operation recovery, S3/KMS context, and source-key crash safety are complete.
+4. Add typed real service actions beyond `worker.noop`, persistent encrypted EBS data delivery, deployment-scoped service secrets, and external liveness/readiness/semantic probes.
+5. Add public device-approved manual destroy, Managed acceptance, service operation, pairing, backup/restore, and destroy-blocked workflows.
+6. Complete EIP/endpoint/snapshot lifecycle support, orphan re-import, stale-controller alerts, retry policy, Foundation upgrade, and full teardown.
+7. Replace the direct CloudWatch Worker-log policy: `${aws:userid}` contains `:` for assumed EC2 roles, while CloudWatch log stream names cannot use `:`. Direct Worker CloudWatch logging must not be claimed until this is redesigned.
+8. Complete P3 Message Server/Flutter integration before any conversation-driven or OpenClaw/knowledge-node acceptance claim.
 
 ## P3 — Message Server Façade And Flutter Workflow
 

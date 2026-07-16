@@ -21,7 +21,7 @@ func (s *MemoryStore) Create(ctx context.Context, record Record) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateSession(record.Session); err != nil || record.Session.Status != StatusAwaitingUpload || record.Session.Revision != 1 || record.KeyHandle == "" || record.Envelope != nil || record.UploadTokenHash == ([32]byte{}) {
+	if err := validateSession(record.Session); err != nil || ValidateClientID(record.CreatorClientID) != nil || record.Session.Status != StatusAwaitingUpload || record.Session.Revision != 1 || record.KeyHandle == "" || record.Envelope != nil || record.UploadTokenHash == ([32]byte{}) {
 		return ErrInvalidContext
 	}
 	s.mu.Lock()

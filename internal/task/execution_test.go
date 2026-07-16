@@ -121,11 +121,16 @@ func TestLeaseMutationCommandsBindEpochWorkerAndReferences(t *testing.T) {
 
 	taskID, stepID, workerID := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	acquire := AcquireReadyStepCommand{
-		IdempotencyKey: uuid.NewString(), TaskID: taskID, WorkerID: workerID,
+		IdempotencyKey: uuid.NewString(), TaskID: taskID, StepID: stepID, WorkerID: workerID,
 		ExecutorKind: ExecutorCloudWorker, LeaseDuration: time.Minute,
 	}
 	if err := acquire.Validate(); err != nil {
 		t.Fatalf("valid acquire rejected: %v", err)
+	}
+	otherStep := acquire
+	otherStep.StepID = uuid.NewString()
+	if acquire.Digest() == otherStep.Digest() {
+		t.Fatal("acquire digest did not bind the exact step")
 	}
 	renew := RenewStepLeaseCommand{
 		IdempotencyKey: uuid.NewString(), TaskID: taskID, StepID: stepID,
