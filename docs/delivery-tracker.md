@@ -158,7 +158,7 @@ Deferred before remote Chat or Cloud can be enabled in a release:
 ### Cutover And Cleanup
 
 - [ ] After parity and preflight, remove migrated Eino/cloud/orchestrator/worker code and old Agent/Cloud fact tables from Message Server; retain only façade/integration code.
-- [ ] Update workspace `PROJECTS.md`, `COMMANDS.md`, ownership/routing docs, and run workspace doctor.
+- [x] Update workspace `PROJECTS.md`, `COMMANDS.md`, ownership/routing docs, and run workspace doctor.
 - [ ] Verify obsolete deployer Cloud worktree is clean and patch-equivalent before `git worktree remove`; do not edit active deployer/updater/release scripts.
 - [ ] Pass Message Server focused tests/build, Flutter focused reducer/widget tests/analyze/build, secret canary, contract compatibility, and accumulated cross-repository review.
 
