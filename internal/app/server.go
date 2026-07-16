@@ -29,6 +29,7 @@ type serverOptions struct {
 	runtimeFeatures    rpcapi.RuntimeFeatures
 	secretBootstrap    rpcapi.SecretBootstrapManager
 	cloudCoordinator   cloudapp.Coordinator
+	cloudDestroy       rpcapi.CloudDestroyCoordinator
 	workerService      *worker.Service
 	workerVerifier     rpcapi.WorkerIdentityVerifier
 	workerMaterializer rpcapi.WorkerIdentityMaterializer
@@ -53,6 +54,10 @@ func WithSecretBootstrap(manager rpcapi.SecretBootstrapManager, agentInstanceID 
 
 func WithCloudControl(coordinator cloudapp.Coordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudCoordinator = coordinator }
+}
+
+func WithCloudDestroy(coordinator rpcapi.CloudDestroyCoordinator) ServerOption {
+	return func(options *serverOptions) { options.cloudDestroy = coordinator }
 }
 
 func WithWorkerControl(service *worker.Service) ServerOption {
@@ -86,41 +91,44 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		return nil, errors.New("cloud status persistence could not be initialized")
 	}
 	scopes := map[string]string{
-		agentv1.TaskService_CreateTask_FullMethodName:                      "task.write",
-		agentv1.TaskService_GetTask_FullMethodName:                         "task.read",
-		agentv1.TaskService_ListTasks_FullMethodName:                       "task.read",
-		agentv1.TaskService_CancelTask_FullMethodName:                      "task.write",
-		agentv1.TaskService_ListSteps_FullMethodName:                       "task.read",
-		agentv1.TaskService_WatchEvents_FullMethodName:                     "event.read",
-		agentv1.RuntimeService_GetCapabilities_FullMethodName:              "runtime.read",
-		agentv1.RuntimeService_GetRuntimeConfig_FullMethodName:             "runtime.read",
-		agentv1.RuntimeService_PutRuntimeConfig_FullMethodName:             "runtime.write",
-		agentv1.RuntimeService_Chat_FullMethodName:                         "runtime.chat",
-		agentv1.RuntimeService_StreamChat_FullMethodName:                   "runtime.chat",
-		agentv1.CloudControlService_GetCapabilities_FullMethodName:         "cloud.read",
-		agentv1.CloudControlService_PreviewAwsIdentity_FullMethodName:      "cloud.connection.preview",
-		agentv1.CloudControlService_CreateCloudQuote_FullMethodName:        "cloud.plan.write",
-		agentv1.CloudControlService_GetCloudQuote_FullMethodName:           "cloud.read",
-		agentv1.CloudControlService_CreateCloudPlan_FullMethodName:         "cloud.plan.write",
-		agentv1.CloudControlService_GetCloudPlan_FullMethodName:            "cloud.read",
-		agentv1.CloudControlService_ListCloudPlans_FullMethodName:          "cloud.read",
-		agentv1.CloudControlService_CreateApprovalChallenge_FullMethodName: "cloud.approve",
-		agentv1.CloudControlService_ApproveCloudPlan_FullMethodName:        "cloud.approve",
-		agentv1.CloudControlService_EstablishAwsConnection_FullMethodName:  "cloud.connection.write",
-		agentv1.CloudControlService_GetCloudConnection_FullMethodName:      "cloud.read",
-		agentv1.CloudControlService_ListCloudConnections_FullMethodName:    "cloud.read",
-		agentv1.CloudControlService_GetCloudDeployment_FullMethodName:      "cloud.read",
-		agentv1.CloudControlService_ListCloudDeployments_FullMethodName:    "cloud.read",
-		agentv1.CloudControlService_GetCloudResource_FullMethodName:        "cloud.read",
-		agentv1.CloudControlService_ListCloudResources_FullMethodName:      "cloud.read",
-		agentv1.CloudControlService_GetCloudWorker_FullMethodName:          "cloud.read",
-		agentv1.CloudControlService_ListCloudWorkers_FullMethodName:        "cloud.read",
-		agentv1.SecretBootstrapService_CreateSession_FullMethodName:        "secret.bootstrap",
-		agentv1.SecretBootstrapService_GetSession_FullMethodName:           "secret.bootstrap",
-		agentv1.SecretBootstrapService_UploadEncrypted_FullMethodName:      "secret.bootstrap",
-		agentv1.SecretBootstrapService_Complete_FullMethodName:             "secret.bootstrap",
-		agentv1.AdminService_CreateServiceKey_FullMethodName:               "admin.credentials",
-		agentv1.AdminService_RevokeServiceKey_FullMethodName:               "admin.credentials",
+		agentv1.TaskService_CreateTask_FullMethodName:                                    "task.write",
+		agentv1.TaskService_GetTask_FullMethodName:                                       "task.read",
+		agentv1.TaskService_ListTasks_FullMethodName:                                     "task.read",
+		agentv1.TaskService_CancelTask_FullMethodName:                                    "task.write",
+		agentv1.TaskService_ListSteps_FullMethodName:                                     "task.read",
+		agentv1.TaskService_WatchEvents_FullMethodName:                                   "event.read",
+		agentv1.RuntimeService_GetCapabilities_FullMethodName:                            "runtime.read",
+		agentv1.RuntimeService_GetRuntimeConfig_FullMethodName:                           "runtime.read",
+		agentv1.RuntimeService_PutRuntimeConfig_FullMethodName:                           "runtime.write",
+		agentv1.RuntimeService_Chat_FullMethodName:                                       "runtime.chat",
+		agentv1.RuntimeService_StreamChat_FullMethodName:                                 "runtime.chat",
+		agentv1.CloudControlService_GetCapabilities_FullMethodName:                       "cloud.read",
+		agentv1.CloudControlService_PreviewAwsIdentity_FullMethodName:                    "cloud.connection.preview",
+		agentv1.CloudControlService_CreateCloudQuote_FullMethodName:                      "cloud.plan.write",
+		agentv1.CloudControlService_GetCloudQuote_FullMethodName:                         "cloud.read",
+		agentv1.CloudControlService_CreateCloudPlan_FullMethodName:                       "cloud.plan.write",
+		agentv1.CloudControlService_GetCloudPlan_FullMethodName:                          "cloud.read",
+		agentv1.CloudControlService_ListCloudPlans_FullMethodName:                        "cloud.read",
+		agentv1.CloudControlService_CreateApprovalChallenge_FullMethodName:               "cloud.approve",
+		agentv1.CloudControlService_ApproveCloudPlan_FullMethodName:                      "cloud.approve",
+		agentv1.CloudControlService_EstablishAwsConnection_FullMethodName:                "cloud.connection.write",
+		agentv1.CloudControlService_GetCloudConnection_FullMethodName:                    "cloud.read",
+		agentv1.CloudControlService_ListCloudConnections_FullMethodName:                  "cloud.read",
+		agentv1.CloudControlService_GetCloudDeployment_FullMethodName:                    "cloud.read",
+		agentv1.CloudControlService_ListCloudDeployments_FullMethodName:                  "cloud.read",
+		agentv1.CloudControlService_GetCloudResource_FullMethodName:                      "cloud.read",
+		agentv1.CloudControlService_ListCloudResources_FullMethodName:                    "cloud.read",
+		agentv1.CloudControlService_GetCloudWorker_FullMethodName:                        "cloud.read",
+		agentv1.CloudControlService_ListCloudWorkers_FullMethodName:                      "cloud.read",
+		agentv1.CloudControlService_CreateCloudDeploymentDestroyChallenge_FullMethodName: "cloud.destroy",
+		agentv1.CloudControlService_ApproveCloudDeploymentDestroy_FullMethodName:         "cloud.destroy",
+		agentv1.CloudControlService_GetCloudDestroyOperation_FullMethodName:              "cloud.read",
+		agentv1.SecretBootstrapService_CreateSession_FullMethodName:                      "secret.bootstrap",
+		agentv1.SecretBootstrapService_GetSession_FullMethodName:                         "secret.bootstrap",
+		agentv1.SecretBootstrapService_UploadEncrypted_FullMethodName:                    "secret.bootstrap",
+		agentv1.SecretBootstrapService_Complete_FullMethodName:                           "secret.bootstrap",
+		agentv1.AdminService_CreateServiceKey_FullMethodName:                             "admin.credentials",
+		agentv1.AdminService_RevokeServiceKey_FullMethodName:                             "admin.credentials",
 	}
 	serviceKeyScopes := auth.StaticScopeResolver(scopes)
 	resolver := auth.ScopeResolver(func(fullMethod string) (string, bool) {
@@ -144,7 +152,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeService(options.runtimeCoordinator, options.runtimeFeatures))
-	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlService(options.cloudCoordinator, options.agentInstanceID, cloudStatuses))
+	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithDestroy(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy))
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer))
 	healthServer := health.NewServer()

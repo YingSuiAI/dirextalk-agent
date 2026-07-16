@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
@@ -21,6 +22,7 @@ import (
 
 type CloudComposition struct {
 	Coordinator                cloudapp.Coordinator
+	DestroyCoordinator         *clouddestroy.Service
 	Dispatcher                 *cloudexecution.Dispatcher
 	Lifecycle                  *cloudexecution.EphemeralDestroyController
 	WorkerIdentityVerifier     *workeridentity.Verifier
@@ -33,13 +35,16 @@ type CloudComposition struct {
 // Recover resumes exact, pre-authorized Foundation operations and persists any
 // missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || composition.Lifecycle == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
 	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
 		return err
 	}
-	return composition.foundationLaunches.RunOnce(ctx)
+	if err := composition.foundationLaunches.RunOnce(ctx); err != nil {
+		return err
+	}
+	return composition.Lifecycle.RunOnce(ctx)
 }
 
 func (composition *CloudComposition) Close() {
@@ -189,6 +194,20 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	cloudStatuses, err := postgres.NewCloudStatusStore(store)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	destroyCoordinator, err := clouddestroy.NewService(agentInstanceID, store, approvalReads, cloudStatuses, facts, lifecycle, time.Now)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	if err := lifecycle.ConfigureManualDestroy(store, destroyCoordinator); err != nil {
+		vault.Close()
+		return nil, err
+	}
 	launcher := cloudLaunchAdapter{dispatcher: dispatcher, target: workerControlTarget}
 	launchCompensator, err := newFoundationLaunchCompensator(store, launcher, 15*time.Second)
 	if err != nil {
@@ -205,7 +224,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	return &CloudComposition{
-		Coordinator: coordinator, Dispatcher: dispatcher, Lifecycle: lifecycle,
+		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
 		FoundationConnections: connections,
 		foundationLaunches:    launchCompensator,

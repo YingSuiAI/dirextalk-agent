@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
@@ -23,10 +24,12 @@ func publicError(err error) error {
 		errors.Is(err, task.ErrRawSecret), errors.Is(err, auth.ErrInvalidCredentialInput),
 		errors.Is(err, secretbootstrap.ErrInvalidContext), errors.Is(err, secretbootstrap.ErrInvalidEnvelope),
 		errors.Is(err, cloudapp.ErrInvalid), errors.Is(err, cloudstatus.ErrInvalid),
+		errors.Is(err, clouddestroy.ErrInvalid),
 		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, task.ErrNotFound), errors.Is(err, task.ErrStepNotFound), errors.Is(err, task.ErrAttemptNotFound), errors.Is(err, auth.ErrCredentialNotFound),
 		errors.Is(err, secretbootstrap.ErrNotFound), errors.Is(err, cloudapp.ErrNotFound), errors.Is(err, cloudstatus.ErrNotFound),
+		errors.Is(err, clouddestroy.ErrNotFound),
 		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
 			return status.Error(codes.NotFound, "requested cloud status entity was not found")
@@ -41,12 +44,22 @@ func publicError(err error) error {
 		return status.Error(codes.PermissionDenied, "secret bootstrap session belongs to another authenticated client")
 	case errors.Is(err, idempotency.ErrConflict):
 		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier request")
+	case errors.Is(err, clouddestroy.ErrIdempotencyConflict):
+		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier cloud destroy request")
 	case errors.Is(err, task.ErrRevisionConflict), errors.Is(err, task.ErrStaleLease), errors.Is(err, auth.ErrCredentialRevision),
 		errors.Is(err, secretbootstrap.ErrRevisionConflict), errors.Is(err, cloudapp.ErrRevisionConflict):
 		if errors.Is(err, cloudapp.ErrRevisionConflict) {
 			return status.Error(codes.Aborted, "cloud entity revision does not match")
 		}
 		return status.Error(codes.Aborted, "expected revision does not match")
+	case errors.Is(err, clouddestroy.ErrRevisionConflict):
+		return status.Error(codes.Aborted, "cloud destroy scope revision does not match")
+	case errors.Is(err, clouddestroy.ErrApprovalRequired):
+		return status.Error(codes.PermissionDenied, "valid device approval is required")
+	case errors.Is(err, clouddestroy.ErrManaged):
+		return status.Error(codes.FailedPrecondition, "managed resources require a separate destroy contract")
+	case errors.Is(err, clouddestroy.ErrUnavailable):
+		return status.Error(codes.Unavailable, "cloud destroy persistence is unavailable")
 	case errors.Is(err, task.ErrTerminal), errors.Is(err, task.ErrNoReadyStep), errors.Is(err, task.ErrLeaseExpired), errors.Is(err, auth.ErrCredentialInactive),
 		errors.Is(err, secretbootstrap.ErrStateConflict), errors.Is(err, secretbootstrap.ErrExpired):
 		return status.Error(codes.FailedPrecondition, err.Error())

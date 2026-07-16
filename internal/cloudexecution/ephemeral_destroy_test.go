@@ -3,10 +3,12 @@ package cloudexecution
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -93,6 +95,52 @@ func TestEphemeralDestroyControllerRetriesBlockedDestruction(t *testing.T) {
 	if fixture.lifecycle.scheduleCalls != 2 || fixture.lifecycle.destroyCalls != 2 {
 		t.Fatalf("lifecycle calls schedule=%d destroy=%d, want two retry attempts", fixture.lifecycle.scheduleCalls, fixture.lifecycle.destroyCalls)
 	}
+}
+
+func TestEphemeralDestroyControllerExecutesPersistedManualApprovalAndRequiresReadBack(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	prepareManualDestroyResource(&fixture.resources[0], fixture.plan, fixture.approval)
+	verified := fixture.resources[0]
+	verified.State = resource.StateVerifiedDestroyed
+	verified.ReadBack.Exists = false
+	verified.ReadBack.ObservedAt = fixture.now.Add(time.Second)
+	fixture.lifecycle.scheduled = append([]resource.ResourceV1(nil), fixture.resources...)
+	fixture.lifecycle.destroyResults = []resource.DestroyResult{{Resources: []resource.ResourceV1{verified}}}
+	scope := manualDestroyScope(fixture)
+	repository := &fakeManualDestroyRepository{operation: manualDestroyOperation(t, scope)}
+	controller := fixture.controller(t)
+	if err := controller.ConfigureManualDestroy(repository, fakeManualScopeReader{scope: scope}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.operation.Status != clouddestroy.StatusVerifiedDestroyed || fixture.lifecycle.destroyCalls != 1 {
+		t.Fatalf("manual destroy status=%s destroy_calls=%d", repository.operation.Status, fixture.lifecycle.destroyCalls)
+	}
+}
+
+func TestEphemeralDestroyControllerBlocksManualApprovalOnExactScopeDrift(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	prepareManualDestroyResource(&fixture.resources[0], fixture.plan, fixture.approval)
+	scope := manualDestroyScope(fixture)
+	drifted := scope
+	drifted.Resources = append([]clouddestroy.ResourceScopeV1(nil), scope.Resources...)
+	drifted.Resources[0].Revision++
+	repository := &fakeManualDestroyRepository{operation: manualDestroyOperation(t, scope)}
+	controller := fixture.controller(t)
+	if err := controller.ConfigureManualDestroy(repository, fakeManualScopeReader{scope: drifted}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.operation.Status != clouddestroy.StatusDestroyBlocked || repository.operation.ErrorCode != "scope_revision_changed" {
+		t.Fatalf("manual destroy operation=%#v", repository.operation)
+	}
+	fixture.requireNoLifecycleCalls(t)
 }
 
 type ephemeralDestroyFixture struct {
@@ -214,6 +262,75 @@ type fakeDestroyLifecycle struct {
 	lastDestroy    resource.DestroyRequest
 	scheduled      []resource.ResourceV1
 	destroyResults []resource.DestroyResult
+}
+
+type fakeManualScopeReader struct{ scope clouddestroy.ScopeV1 }
+
+func (reader fakeManualScopeReader) CurrentScope(context.Context, string, string) (clouddestroy.ScopeV1, error) {
+	return reader.scope, nil
+}
+
+type fakeManualDestroyRepository struct{ operation clouddestroy.OperationV1 }
+
+func (*fakeManualDestroyRepository) CreateDestroyChallenge(context.Context, clouddestroy.Mutation, clouddestroy.ChallengeV1) (clouddestroy.ChallengeV1, error) {
+	panic("unused")
+}
+func (*fakeManualDestroyRepository) GetDestroyChallenge(context.Context, string, string) (clouddestroy.ChallengeV1, error) {
+	panic("unused")
+}
+func (*fakeManualDestroyRepository) ApproveDestroy(context.Context, clouddestroy.Mutation, string, int64, clouddestroy.SignatureV1, time.Time) (clouddestroy.OperationV1, error) {
+	panic("unused")
+}
+func (repository *fakeManualDestroyRepository) GetDestroyOperation(context.Context, string, string) (clouddestroy.OperationV1, error) {
+	return repository.operation, nil
+}
+func (repository *fakeManualDestroyRepository) ListPendingDestroy(context.Context, int) ([]clouddestroy.OperationV1, error) {
+	return []clouddestroy.OperationV1{repository.operation}, nil
+}
+func (repository *fakeManualDestroyRepository) SaveDestroyOperation(_ context.Context, next clouddestroy.OperationV1, expected int64) (clouddestroy.OperationV1, error) {
+	if repository.operation.Revision != expected {
+		return clouddestroy.OperationV1{}, clouddestroy.ErrRevisionConflict
+	}
+	next.Revision = expected + 1
+	repository.operation = next
+	return next, nil
+}
+
+func prepareManualDestroyResource(item *resource.ResourceV1, plan cloudapproval.PlanV1, approval cloudapproval.ApprovalV1) {
+	item.Type, item.ProviderID, item.Region = resource.TypeEC2, "i-0123456789abcdef0", "us-east-1"
+	item.SpecDigest, item.ApprovedPlanHash, item.ApprovalID = "sha256:"+strings.Repeat("1", 64), approval.PlanHash, approval.ApprovalID
+	item.ReadBack = resource.ReadBackEvidence{Exists: true, ProviderID: item.ProviderID, ObservedAt: item.CreatedAt.Add(time.Second), TagDigest: "sha256:" + strings.Repeat("2", 64)}
+	_ = plan
+}
+
+func manualDestroyScope(fixture *ephemeralDestroyFixture) clouddestroy.ScopeV1 {
+	item := fixture.resources[0]
+	return clouddestroy.NormalizeScope(clouddestroy.ScopeV1{SchemaVersion: clouddestroy.ScopeSchemaV1, AgentInstanceID: fixture.agentID,
+		OwnerID: fixture.plan.OwnerID, DeploymentID: fixture.operation.DeploymentID, DeploymentRevision: item.Revision + 1, TaskID: fixture.operation.TaskID,
+		PlanID: fixture.plan.PlanID, PlanHash: fixture.approval.PlanHash, ConnectionID: fixture.connection.ConnectionID,
+		Resources: []clouddestroy.ResourceScopeV1{{ResourceID: item.ResourceID, Type: item.Type, ProviderID: item.ProviderID, Revision: item.Revision,
+			Retention: item.Retention, State: item.State, Region: item.Region, SpecDigest: item.SpecDigest, ApprovedPlanHash: item.ApprovedPlanHash,
+			OriginalApprovalID: item.ApprovalID, ReadBack: clouddestroy.ReadBackScopeV1{Observed: true, Exists: true, ProviderID: item.ProviderID,
+				ObservedAt: item.ReadBack.ObservedAt, TagDigest: item.ReadBack.TagDigest}, DestroyDeadline: item.DestroyDeadline, AutoDestroyApproved: true}}})
+}
+
+func manualDestroyOperation(t *testing.T, scope clouddestroy.ScopeV1) clouddestroy.OperationV1 {
+	t.Helper()
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	challenge := clouddestroy.ChallengeV1{OperationID: uuid.NewString(), ChallengeID: uuid.NewString(), ApprovalID: uuid.NewString(), SignerKeyID: "device-key",
+		Scope: scope, IssuedAt: now, ExpiresAt: now.Add(time.Minute), Revision: 1}
+	var err error
+	challenge.ScopeDigest, err = clouddestroy.ScopeDigest(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge.SigningCBOR, err = challenge.SigningPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedAt := now.Add(time.Second)
+	return clouddestroy.OperationV1{Challenge: challenge, Status: clouddestroy.StatusApproved, Signature: make([]byte, 64), Revision: 2,
+		CreatedAt: now, UpdatedAt: approvedAt, ApprovedAt: &approvedAt}
 }
 
 func (lifecycle *fakeDestroyLifecycle) ScheduleDestroy(context.Context, string, string) ([]resource.ResourceV1, error) {

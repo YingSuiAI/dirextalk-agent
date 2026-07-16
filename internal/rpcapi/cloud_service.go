@@ -10,6 +10,7 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
@@ -22,7 +23,14 @@ type CloudControlService struct {
 	agentv1.UnimplementedCloudControlServiceServer
 	coordinator     cloudapp.Coordinator
 	statusReader    cloudstatus.Reader
+	destroyer       CloudDestroyCoordinator
 	agentInstanceID string
+}
+
+type CloudDestroyCoordinator interface {
+	Prepare(context.Context, clouddestroy.PrepareCommand) (clouddestroy.ChallengeV1, error)
+	Approve(context.Context, clouddestroy.ApproveCommand) (clouddestroy.OperationV1, error)
+	Get(context.Context, string, string) (clouddestroy.OperationV1, error)
 }
 
 func NewCloudControlService(coordinator cloudapp.Coordinator, agentInstanceID string, statusReaders ...cloudstatus.Reader) *CloudControlService {
@@ -30,6 +38,12 @@ func NewCloudControlService(coordinator cloudapp.Coordinator, agentInstanceID st
 	if len(statusReaders) > 0 {
 		service.statusReader = statusReaders[0]
 	}
+	return service
+}
+
+func NewCloudControlServiceWithDestroy(coordinator cloudapp.Coordinator, agentInstanceID string, statusReader cloudstatus.Reader, destroyer CloudDestroyCoordinator) *CloudControlService {
+	service := NewCloudControlService(coordinator, agentInstanceID, statusReader)
+	service.destroyer = destroyer
 	return service
 }
 

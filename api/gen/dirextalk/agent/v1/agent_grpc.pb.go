@@ -573,24 +573,27 @@ var RuntimeService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	CloudControlService_GetCapabilities_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/GetCapabilities"
-	CloudControlService_PreviewAwsIdentity_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/PreviewAwsIdentity"
-	CloudControlService_CreateCloudQuote_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/CreateCloudQuote"
-	CloudControlService_GetCloudQuote_FullMethodName           = "/dirextalk.agent.v1.CloudControlService/GetCloudQuote"
-	CloudControlService_CreateCloudPlan_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/CreateCloudPlan"
-	CloudControlService_GetCloudPlan_FullMethodName            = "/dirextalk.agent.v1.CloudControlService/GetCloudPlan"
-	CloudControlService_ListCloudPlans_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/ListCloudPlans"
-	CloudControlService_CreateApprovalChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateApprovalChallenge"
-	CloudControlService_ApproveCloudPlan_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPlan"
-	CloudControlService_EstablishAwsConnection_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/EstablishAwsConnection"
-	CloudControlService_GetCloudConnection_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetCloudConnection"
-	CloudControlService_ListCloudConnections_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/ListCloudConnections"
-	CloudControlService_GetCloudDeployment_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetCloudDeployment"
-	CloudControlService_ListCloudDeployments_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/ListCloudDeployments"
-	CloudControlService_GetCloudResource_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/GetCloudResource"
-	CloudControlService_ListCloudResources_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/ListCloudResources"
-	CloudControlService_GetCloudWorker_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/GetCloudWorker"
-	CloudControlService_ListCloudWorkers_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ListCloudWorkers"
+	CloudControlService_GetCapabilities_FullMethodName                       = "/dirextalk.agent.v1.CloudControlService/GetCapabilities"
+	CloudControlService_PreviewAwsIdentity_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/PreviewAwsIdentity"
+	CloudControlService_CreateCloudQuote_FullMethodName                      = "/dirextalk.agent.v1.CloudControlService/CreateCloudQuote"
+	CloudControlService_GetCloudQuote_FullMethodName                         = "/dirextalk.agent.v1.CloudControlService/GetCloudQuote"
+	CloudControlService_CreateCloudPlan_FullMethodName                       = "/dirextalk.agent.v1.CloudControlService/CreateCloudPlan"
+	CloudControlService_GetCloudPlan_FullMethodName                          = "/dirextalk.agent.v1.CloudControlService/GetCloudPlan"
+	CloudControlService_ListCloudPlans_FullMethodName                        = "/dirextalk.agent.v1.CloudControlService/ListCloudPlans"
+	CloudControlService_CreateApprovalChallenge_FullMethodName               = "/dirextalk.agent.v1.CloudControlService/CreateApprovalChallenge"
+	CloudControlService_ApproveCloudPlan_FullMethodName                      = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPlan"
+	CloudControlService_EstablishAwsConnection_FullMethodName                = "/dirextalk.agent.v1.CloudControlService/EstablishAwsConnection"
+	CloudControlService_GetCloudConnection_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/GetCloudConnection"
+	CloudControlService_ListCloudConnections_FullMethodName                  = "/dirextalk.agent.v1.CloudControlService/ListCloudConnections"
+	CloudControlService_GetCloudDeployment_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/GetCloudDeployment"
+	CloudControlService_ListCloudDeployments_FullMethodName                  = "/dirextalk.agent.v1.CloudControlService/ListCloudDeployments"
+	CloudControlService_GetCloudResource_FullMethodName                      = "/dirextalk.agent.v1.CloudControlService/GetCloudResource"
+	CloudControlService_ListCloudResources_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/ListCloudResources"
+	CloudControlService_GetCloudWorker_FullMethodName                        = "/dirextalk.agent.v1.CloudControlService/GetCloudWorker"
+	CloudControlService_ListCloudWorkers_FullMethodName                      = "/dirextalk.agent.v1.CloudControlService/ListCloudWorkers"
+	CloudControlService_CreateCloudDeploymentDestroyChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateCloudDeploymentDestroyChallenge"
+	CloudControlService_ApproveCloudDeploymentDestroy_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/ApproveCloudDeploymentDestroy"
+	CloudControlService_GetCloudDestroyOperation_FullMethodName              = "/dirextalk.agent.v1.CloudControlService/GetCloudDestroyOperation"
 )
 
 // CloudControlServiceClient is the client API for CloudControlService service.
@@ -615,6 +618,9 @@ type CloudControlServiceClient interface {
 	ListCloudResources(ctx context.Context, in *ListCloudResourcesRequest, opts ...grpc.CallOption) (*ListCloudResourcesResponse, error)
 	GetCloudWorker(ctx context.Context, in *GetCloudWorkerRequest, opts ...grpc.CallOption) (*GetCloudWorkerResponse, error)
 	ListCloudWorkers(ctx context.Context, in *ListCloudWorkersRequest, opts ...grpc.CallOption) (*ListCloudWorkersResponse, error)
+	CreateCloudDeploymentDestroyChallenge(ctx context.Context, in *CreateCloudDeploymentDestroyChallengeRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentDestroyChallengeResponse, error)
+	ApproveCloudDeploymentDestroy(ctx context.Context, in *ApproveCloudDeploymentDestroyRequest, opts ...grpc.CallOption) (*ApproveCloudDeploymentDestroyResponse, error)
+	GetCloudDestroyOperation(ctx context.Context, in *GetCloudDestroyOperationRequest, opts ...grpc.CallOption) (*GetCloudDestroyOperationResponse, error)
 }
 
 type cloudControlServiceClient struct {
@@ -805,6 +811,36 @@ func (c *cloudControlServiceClient) ListCloudWorkers(ctx context.Context, in *Li
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) CreateCloudDeploymentDestroyChallenge(ctx context.Context, in *CreateCloudDeploymentDestroyChallengeRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentDestroyChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudDeploymentDestroyChallengeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudDeploymentDestroyChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveCloudDeploymentDestroy(ctx context.Context, in *ApproveCloudDeploymentDestroyRequest, opts ...grpc.CallOption) (*ApproveCloudDeploymentDestroyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveCloudDeploymentDestroyResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveCloudDeploymentDestroy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudDestroyOperation(ctx context.Context, in *GetCloudDestroyOperationRequest, opts ...grpc.CallOption) (*GetCloudDestroyOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudDestroyOperationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudDestroyOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CloudControlServiceServer is the server API for CloudControlService service.
 // All implementations must embed UnimplementedCloudControlServiceServer
 // for forward compatibility.
@@ -827,6 +863,9 @@ type CloudControlServiceServer interface {
 	ListCloudResources(context.Context, *ListCloudResourcesRequest) (*ListCloudResourcesResponse, error)
 	GetCloudWorker(context.Context, *GetCloudWorkerRequest) (*GetCloudWorkerResponse, error)
 	ListCloudWorkers(context.Context, *ListCloudWorkersRequest) (*ListCloudWorkersResponse, error)
+	CreateCloudDeploymentDestroyChallenge(context.Context, *CreateCloudDeploymentDestroyChallengeRequest) (*CreateCloudDeploymentDestroyChallengeResponse, error)
+	ApproveCloudDeploymentDestroy(context.Context, *ApproveCloudDeploymentDestroyRequest) (*ApproveCloudDeploymentDestroyResponse, error)
+	GetCloudDestroyOperation(context.Context, *GetCloudDestroyOperationRequest) (*GetCloudDestroyOperationResponse, error)
 	mustEmbedUnimplementedCloudControlServiceServer()
 }
 
@@ -890,6 +929,15 @@ func (UnimplementedCloudControlServiceServer) GetCloudWorker(context.Context, *G
 }
 func (UnimplementedCloudControlServiceServer) ListCloudWorkers(context.Context, *ListCloudWorkersRequest) (*ListCloudWorkersResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCloudWorkers not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudDeploymentDestroyChallenge(context.Context, *CreateCloudDeploymentDestroyChallengeRequest) (*CreateCloudDeploymentDestroyChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudDeploymentDestroyChallenge not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveCloudDeploymentDestroy(context.Context, *ApproveCloudDeploymentDestroyRequest) (*ApproveCloudDeploymentDestroyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveCloudDeploymentDestroy not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudDestroyOperation(context.Context, *GetCloudDestroyOperationRequest) (*GetCloudDestroyOperationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudDestroyOperation not implemented")
 }
 func (UnimplementedCloudControlServiceServer) mustEmbedUnimplementedCloudControlServiceServer() {}
 func (UnimplementedCloudControlServiceServer) testEmbeddedByValue()                             {}
@@ -1236,6 +1284,60 @@ func _CloudControlService_ListCloudWorkers_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_CreateCloudDeploymentDestroyChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudDeploymentDestroyChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudDeploymentDestroyChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudDeploymentDestroyChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudDeploymentDestroyChallenge(ctx, req.(*CreateCloudDeploymentDestroyChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveCloudDeploymentDestroy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveCloudDeploymentDestroyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveCloudDeploymentDestroy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveCloudDeploymentDestroy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveCloudDeploymentDestroy(ctx, req.(*ApproveCloudDeploymentDestroyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudDestroyOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudDestroyOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudDestroyOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudDestroyOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudDestroyOperation(ctx, req.(*GetCloudDestroyOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CloudControlService_ServiceDesc is the grpc.ServiceDesc for CloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1314,6 +1416,18 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCloudWorkers",
 			Handler:    _CloudControlService_ListCloudWorkers_Handler,
+		},
+		{
+			MethodName: "CreateCloudDeploymentDestroyChallenge",
+			Handler:    _CloudControlService_CreateCloudDeploymentDestroyChallenge_Handler,
+		},
+		{
+			MethodName: "ApproveCloudDeploymentDestroy",
+			Handler:    _CloudControlService_ApproveCloudDeploymentDestroy_Handler,
+		},
+		{
+			MethodName: "GetCloudDestroyOperation",
+			Handler:    _CloudControlService_GetCloudDestroyOperation_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -46,6 +48,10 @@ type LifecycleFactory interface {
 	ForConnection(context.Context, cloudapp.Connection) (ResourceLifecycle, error)
 }
 
+type ManualDestroyScopeReader interface {
+	CurrentScope(context.Context, string, string) (clouddestroy.ScopeV1, error)
+}
+
 type EphemeralDestroyConfig struct {
 	AgentInstanceID string
 	PollInterval    time.Duration
@@ -55,6 +61,8 @@ type EphemeralDestroyConfig struct {
 	Connections     ConnectionReader
 	Tasks           TaskFactReader
 	Lifecycles      LifecycleFactory
+	ManualDestroy   clouddestroy.Repository
+	ManualScopes    ManualDestroyScopeReader
 	Now             func() time.Time
 }
 
@@ -70,6 +78,9 @@ type EphemeralDestroyController struct {
 	connections     ConnectionReader
 	tasks           TaskFactReader
 	lifecycles      LifecycleFactory
+	manualDestroy   clouddestroy.Repository
+	manualScopes    ManualDestroyScopeReader
+	manualWake      chan struct{}
 	now             func() time.Time
 }
 
@@ -77,14 +88,36 @@ func NewEphemeralDestroyController(config EphemeralDestroyConfig) (*EphemeralDes
 	agentID, err := uuid.Parse(strings.TrimSpace(config.AgentInstanceID))
 	if err != nil || agentID == uuid.Nil || config.PollInterval < time.Second || config.PollInterval > 5*time.Minute ||
 		config.Resources == nil || config.Launches == nil || config.Facts == nil || config.Connections == nil ||
-		config.Tasks == nil || config.Lifecycles == nil || config.Now == nil {
+		config.Tasks == nil || config.Lifecycles == nil || config.Now == nil || (config.ManualDestroy == nil) != (config.ManualScopes == nil) {
 		return nil, ErrInvalid
 	}
 	return &EphemeralDestroyController{
 		agentInstanceID: agentID.String(), interval: config.PollInterval, resources: config.Resources,
 		launches: config.Launches, facts: config.Facts, connections: config.Connections,
-		tasks: config.Tasks, lifecycles: config.Lifecycles, now: config.Now,
+		tasks: config.Tasks, lifecycles: config.Lifecycles, manualDestroy: config.ManualDestroy,
+		manualScopes: config.ManualScopes, manualWake: make(chan struct{}, 1), now: config.Now,
 	}, nil
+}
+
+func (controller *EphemeralDestroyController) NotifyManualDestroy() {
+	if controller == nil || controller.manualDestroy == nil {
+		return
+	}
+	select {
+	case controller.manualWake <- struct{}{}:
+	default:
+	}
+}
+
+// ConfigureManualDestroy closes the composition cycle between the durable
+// outbox service (which notifies this controller) and its exact scope reader.
+// It must be called once during startup before Run or RunOnce.
+func (controller *EphemeralDestroyController) ConfigureManualDestroy(repository clouddestroy.Repository, scopes ManualDestroyScopeReader) error {
+	if controller == nil || repository == nil || scopes == nil || controller.manualDestroy != nil || controller.manualScopes != nil {
+		return ErrInvalid
+	}
+	controller.manualDestroy, controller.manualScopes = repository, scopes
+	return nil
 }
 
 func (controller *EphemeralDestroyController) Run(ctx context.Context) error {
@@ -102,6 +135,7 @@ func (controller *EphemeralDestroyController) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+		case <-controller.manualWake:
 		}
 	}
 }
@@ -110,14 +144,17 @@ func (controller *EphemeralDestroyController) RunOnce(ctx context.Context) error
 	if controller == nil || ctx == nil {
 		return ErrInvalid
 	}
+	var batchErr error
+	if controller.manualDestroy != nil {
+		batchErr = controller.runManualDestroy(ctx)
+	}
 	items, err := controller.resources.ListByAgent(ctx, controller.agentInstanceID)
 	if err != nil {
-		return err
+		return errors.Join(batchErr, err)
 	}
 	groups, invalid := groupDestroyCandidates(controller.agentInstanceID, items)
-	var batchErr error
 	if invalid {
-		batchErr = ErrLifecycleFactsMismatch
+		batchErr = errors.Join(batchErr, ErrLifecycleFactsMismatch)
 	}
 	deployments := make([]string, 0, len(groups))
 	for deploymentID := range groups {
@@ -134,6 +171,144 @@ func (controller *EphemeralDestroyController) RunOnce(ctx context.Context) error
 		}
 	}
 	return batchErr
+}
+
+func (controller *EphemeralDestroyController) runManualDestroy(ctx context.Context) error {
+	operations, err := controller.manualDestroy.ListPendingDestroy(ctx, 64)
+	if err != nil {
+		return err
+	}
+	var batchErr error
+	for _, operation := range operations {
+		if executeErr := controller.executeManualDestroy(ctx, operation); executeErr != nil {
+			batchErr = errors.Join(batchErr, fmt.Errorf("manual destroy %s: %w", operation.Challenge.OperationID, executeErr))
+		}
+	}
+	return batchErr
+}
+
+func (controller *EphemeralDestroyController) executeManualDestroy(ctx context.Context, operation clouddestroy.OperationV1) error {
+	currentScope, err := controller.manualScopes.CurrentScope(ctx, operation.Challenge.Scope.OwnerID, operation.Challenge.Scope.DeploymentID)
+	if err != nil {
+		return controller.blockManualDestroy(ctx, operation, "scope_read_failed", "current resource scope could not be verified")
+	}
+	if operation.Status == clouddestroy.StatusApproved {
+		digest, digestErr := clouddestroy.ScopeDigest(currentScope)
+		if digestErr != nil || digest != operation.Challenge.ScopeDigest {
+			return controller.blockManualDestroy(ctx, operation, "scope_revision_changed", "deployment or resource scope changed after approval")
+		}
+	} else if !manualScopeIdentityMatches(operation.Challenge.Scope, currentScope) {
+		return controller.blockManualDestroy(ctx, operation, "scope_identity_changed", "resource graph identity changed during destroy recovery")
+	}
+	connection, err := controller.connections.LoadConnection(ctx, operation.Challenge.Scope.OwnerID, operation.Challenge.Scope.ConnectionID)
+	if err != nil || connection.ConnectionID != operation.Challenge.Scope.ConnectionID || connection.OwnerID != operation.Challenge.Scope.OwnerID {
+		return controller.blockManualDestroy(ctx, operation, "connection_unavailable", "approved cloud connection is unavailable")
+	}
+	lifecycle, err := controller.lifecycles.ForConnection(ctx, connection)
+	if err != nil || lifecycle == nil {
+		return controller.blockManualDestroy(ctx, operation, "provider_unavailable", "typed resource lifecycle is unavailable")
+	}
+	if operation.Status != clouddestroy.StatusDestroying {
+		next := operation
+		next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusDestroying, "", ""
+		next.UpdatedAt = controller.now().UTC()
+		operation, err = controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
+		if err != nil {
+			return err
+		}
+	}
+	scheduled, err := lifecycle.ScheduleDestroy(ctx, operation.Challenge.Scope.DeploymentID, operation.Challenge.Scope.OwnerID)
+	if err != nil {
+		code := "schedule_failed"
+		if errors.Is(err, resource.ErrManaged) {
+			code = "managed_resource_rejected"
+		}
+		return controller.blockManualDestroy(ctx, operation, code, "resource destruction could not be scheduled")
+	}
+	if !manualScheduledScopeMatches(operation.Challenge.Scope, scheduled) {
+		return controller.blockManualDestroy(ctx, operation, "scheduled_scope_mismatch", "scheduled resource graph does not match approval")
+	}
+	result, err := lifecycle.Destroy(ctx, resource.DestroyRequest{
+		DeploymentID: operation.Challenge.Scope.DeploymentID,
+		OwnerID:      operation.Challenge.Scope.OwnerID,
+		ApprovalID:   operation.Challenge.ApprovalID,
+	})
+	if err != nil && !errors.Is(err, resource.ErrDestroyBlocked) {
+		return controller.blockManualDestroy(ctx, operation, "provider_destroy_failed", "provider destruction did not complete")
+	}
+	if result.Blocked || !manualResourcesVerifiedDestroyed(operation.Challenge.Scope, result.Resources) {
+		return controller.blockManualDestroy(ctx, operation, "provider_readback_blocked", "independent provider read-back has not verified destruction")
+	}
+	next := operation
+	next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusVerifiedDestroyed, "", ""
+	next.UpdatedAt = controller.now().UTC()
+	_, err = controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
+	return err
+}
+
+func (controller *EphemeralDestroyController) blockManualDestroy(ctx context.Context, operation clouddestroy.OperationV1, code, reason string) error {
+	if operation.Status == clouddestroy.StatusVerifiedDestroyed {
+		return nil
+	}
+	next := operation
+	next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusDestroyBlocked, code, reason
+	next.UpdatedAt = controller.now().UTC()
+	_, err := controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
+	return err
+}
+
+func manualScopeIdentityMatches(approved, current clouddestroy.ScopeV1) bool {
+	if approved.AgentInstanceID != current.AgentInstanceID || approved.OwnerID != current.OwnerID || approved.DeploymentID != current.DeploymentID ||
+		approved.TaskID != current.TaskID || approved.PlanID != current.PlanID || approved.PlanHash != current.PlanHash || approved.ConnectionID != current.ConnectionID ||
+		len(approved.Resources) != len(current.Resources) {
+		return false
+	}
+	for index := range approved.Resources {
+		left, right := approved.Resources[index], current.Resources[index]
+		if left.ResourceID != right.ResourceID || left.Type != right.Type || left.ProviderID != right.ProviderID || left.Retention != right.Retention ||
+			left.Region != right.Region || left.SpecDigest != right.SpecDigest || left.ApprovedPlanHash != right.ApprovedPlanHash ||
+			left.OriginalApprovalID != right.OriginalApprovalID || !slices.Equal(left.DependsOn, right.DependsOn) {
+			return false
+		}
+	}
+	return true
+}
+
+func manualScheduledScopeMatches(approved clouddestroy.ScopeV1, scheduled []resource.ResourceV1) bool {
+	if len(approved.Resources) != len(scheduled) {
+		return false
+	}
+	byID := make(map[string]resource.ResourceV1, len(scheduled))
+	for _, item := range scheduled {
+		byID[item.ResourceID] = item
+	}
+	for _, expected := range approved.Resources {
+		item, ok := byID[expected.ResourceID]
+		if !ok || item.OwnerID != approved.OwnerID || item.DeploymentID != approved.DeploymentID || item.TaskID != approved.TaskID ||
+			item.Type != expected.Type || item.ProviderID != expected.ProviderID || item.Retention != task.RetentionEphemeralAutoDestroy ||
+			item.ApprovedPlanHash != approved.PlanHash || item.ApprovalID != expected.OriginalApprovalID || item.State == resource.StateRetainedManaged ||
+			!slices.Equal(item.DependsOn, expected.DependsOn) {
+			return false
+		}
+	}
+	return true
+}
+
+func manualResourcesVerifiedDestroyed(approved clouddestroy.ScopeV1, resources []resource.ResourceV1) bool {
+	if len(approved.Resources) != len(resources) {
+		return false
+	}
+	byID := make(map[string]resource.ResourceV1, len(resources))
+	for _, item := range resources {
+		byID[item.ResourceID] = item
+	}
+	for _, expected := range approved.Resources {
+		item, ok := byID[expected.ResourceID]
+		if !ok || item.ProviderID != expected.ProviderID || item.State != resource.StateVerifiedDestroyed || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.Exists {
+			return false
+		}
+	}
+	return true
 }
 
 func (controller *EphemeralDestroyController) reconcile(ctx context.Context, deploymentID string, resources []resource.ResourceV1) error {

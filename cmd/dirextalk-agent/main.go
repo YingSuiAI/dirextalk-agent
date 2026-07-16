@@ -218,6 +218,7 @@ func serve() error {
 		}
 		serverOptions = append(serverOptions,
 			app.WithCloudControl(cloudComposition.Coordinator),
+			app.WithCloudDestroy(cloudComposition.DestroyCoordinator),
 			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),
 		)
 	}

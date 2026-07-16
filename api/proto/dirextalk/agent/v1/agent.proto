@@ -385,6 +385,105 @@ message CloudResource {
   google.protobuf.Timestamp updated_at = 18;
 }
 
+// CloudDestroyResourceScope is the exact provider/resource graph authorized
+// by a manual destroy signature. The first release accepts only ephemeral
+// EC2/EBS/ENI/security-group resources; all other resource types and Managed
+// retention fail closed before a challenge is issued.
+message CloudDestroyResourceScope {
+  string resource_id = 1;
+  CloudResourceType type = 2;
+  string provider_id = 3;
+  int64 revision = 4;
+  repeated string depends_on_resource_ids = 5;
+  RetentionPolicy retention_policy = 6;
+  CloudResourceStatus status = 7;
+  string region = 8;
+  string spec_digest = 9;
+  string approved_plan_hash = 10;
+  string original_approval_id = 11;
+  CloudResourceReadBack read_back = 12;
+  google.protobuf.Timestamp destroy_deadline = 13;
+  bool auto_destroy_approved = 14;
+}
+
+message CloudDeploymentDestroyScope {
+  string schema_version = 1;
+  string agent_instance_id = 2;
+  string owner_id = 3;
+  string deployment_id = 4;
+  int64 deployment_revision = 5;
+  string task_id = 6;
+  string plan_id = 7;
+  string plan_hash = 8;
+  string connection_id = 9;
+  repeated CloudDestroyResourceScope resources = 10;
+}
+
+message CloudDeploymentDestroyChallenge {
+  string operation_id = 1;
+  string challenge_id = 2;
+  string approval_id = 3;
+  string signer_key_id = 4;
+  CloudDeploymentDestroyScope scope = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  bytes signing_payload_cbor = 7;
+  int64 revision = 8;
+}
+
+enum CloudDestroyOperationStatus {
+  CLOUD_DESTROY_OPERATION_STATUS_UNSPECIFIED = 0;
+  CLOUD_DESTROY_OPERATION_STATUS_AWAITING_APPROVAL = 1;
+  CLOUD_DESTROY_OPERATION_STATUS_APPROVED = 2;
+  CLOUD_DESTROY_OPERATION_STATUS_DESTROYING = 3;
+  CLOUD_DESTROY_OPERATION_STATUS_VERIFIED_DESTROYED = 4;
+  CLOUD_DESTROY_OPERATION_STATUS_DESTROY_BLOCKED = 5;
+}
+
+message CloudDestroyOperation {
+  string operation_id = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string approval_id = 4;
+  string scope_digest = 5;
+  CloudDestroyOperationStatus status = 6;
+  string blocked_reason = 7;
+  int64 revision = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  string error_code = 11;
+}
+
+message CreateCloudDeploymentDestroyChallengeRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  int64 expected_revision = 4;
+  string signer_key_id = 5;
+}
+message CreateCloudDeploymentDestroyChallengeResponse {
+  CloudDeploymentDestroyChallenge challenge = 1;
+}
+
+message ApproveCloudDeploymentDestroyRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  int64 expected_revision = 4;
+  DeviceApprovalSignature approval = 5;
+}
+message ApproveCloudDeploymentDestroyResponse {
+  CloudDestroyOperation operation = 1;
+  CloudDeployment deployment = 2;
+}
+
+message GetCloudDestroyOperationRequest {
+  string owner_id = 1;
+  string operation_id = 2;
+}
+message GetCloudDestroyOperationResponse {
+  CloudDestroyOperation operation = 1;
+}
+
 message CloudWorker {
   string deployment_id = 1;
   string owner_id = 2;
@@ -468,6 +567,9 @@ service CloudControlService {
   rpc ListCloudResources(ListCloudResourcesRequest) returns (ListCloudResourcesResponse);
   rpc GetCloudWorker(GetCloudWorkerRequest) returns (GetCloudWorkerResponse);
   rpc ListCloudWorkers(ListCloudWorkersRequest) returns (ListCloudWorkersResponse);
+  rpc CreateCloudDeploymentDestroyChallenge(CreateCloudDeploymentDestroyChallengeRequest) returns (CreateCloudDeploymentDestroyChallengeResponse);
+  rpc ApproveCloudDeploymentDestroy(ApproveCloudDeploymentDestroyRequest) returns (ApproveCloudDeploymentDestroyResponse);
+  rpc GetCloudDestroyOperation(GetCloudDestroyOperationRequest) returns (GetCloudDestroyOperationResponse);
 }
 
 message CreateSessionRequest {
