@@ -76,6 +76,19 @@ func TestSecretBootstrapPostgresAtomicRestartAndSingleConsumption(t *testing.T) 
 	if err != nil {
 		t.Fatalf("UploadIdempotent: %v", err)
 	}
+	var replayNonceAfterUpload, replayCiphertextAfterUpload []byte
+	if err := pool.QueryRow(context.Background(), `SELECT idempotency_token_nonce, idempotency_token_ciphertext
+		FROM secret_bootstrap_sessions WHERE session_id=$1`, uploaded.SessionID).Scan(&replayNonceAfterUpload, &replayCiphertextAfterUpload); err != nil {
+		t.Fatal(err)
+	}
+	if replayNonceAfterUpload != nil || replayCiphertextAfterUpload != nil {
+		t.Fatal("uploaded session retained encrypted upload-token replay material")
+	}
+	replayedCreateAfterUpload, err := manager.CreateIdempotent(context.Background(), scope, createKey, binding)
+	if err != nil || replayedCreateAfterUpload.Session.Status != secretbootstrap.StatusUploaded || replayedCreateAfterUpload.UploadToken.Reveal() != "" {
+		t.Fatalf("uploaded CreateIdempotent replay=%#v token_present=%t err=%v",
+			replayedCreateAfterUpload.Session, replayedCreateAfterUpload.UploadToken.Reveal() != "", err)
+	}
 	replayedUpload, err := manager.UploadIdempotent(context.Background(), rotatedScope, uploadKey, created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope)
 	if err != nil || replayedUpload.SessionID != uploaded.SessionID || replayedUpload.Revision != uploaded.Revision {
 		t.Fatalf("UploadIdempotent replay=%#v err=%v", replayedUpload, err)

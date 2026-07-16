@@ -58,7 +58,7 @@ Observable acceptance: after encrypted credential bootstrap and device-approved 
 ### Connection And Foundation
 
 - [x] Implement Agent-side X25519 one-time bootstrap sessions with 10-minute expiry, single upload/consume, request binding, and memory zeroing.
-- [ ] Complete opaque Message Server forwarding through the P3 ciphertext tunnel; Message Server must never decrypt or persist plaintext.
+- [x] Complete opaque Message Server forwarding through the P3 ciphertext tunnel; Message Server never decrypts or persists plaintext, and post-upload retries cannot reissue the one-time upload capability.
 - [x] Accept AWS root/admin credentials only for bootstrap; call STS identity read-back and show account/Region before foundation confirmation.
 - [x] Create deterministic minimal IAM source user, fixed Control Role, Worker Role/Profile, Foundation service role, and locally envelope-encrypted source key; daily operations use short STS sessions.
 - [x] Migrate valid Go/CloudFormation/root-bootstrap contracts from the old Connection Stack into `awsfoundation`; remove Broker Lambda/API Gateway command indirection and do not migrate historical JS/npm code.
@@ -117,12 +117,14 @@ Observable acceptance: existing Dirextalk clients keep their ProductCore/WS cont
 - [ ] Split `agent.config`: runtime/model/Skill/MCP/knowledge fields in Agent; display/avatar/room policies in Message Server.
 - [ ] Convert `agent.runtime.install/run` to quoted/approved Cloud Worker Tasks; never execute them in Message Server or Agent control container.
 - [ ] Persist Agent event cursor and project de-secreted summaries into ProductCore events; ignore duplicate/older revisions and refresh only the entity with a detected gap.
-- [ ] Implement encrypted SecretBootstrap ciphertext tunnel; Message Server never decrypts, logs, stores, or retries plaintext.
+- [x] Implement encrypted SecretBootstrap ciphertext tunnel; Message Server never decrypts, logs, stores, or retries plaintext.
 - [ ] Add no-active-resource/data preflight before direct cutover; fail closed rather than dropping live resource facts.
 
 P3 first-validation slice completed on 2026-07-16: Message Server can delegate only ordinary Chat/StreamChat to the independent Agent over TLS 1.3 with a mounted pairwise Service Key and stable protocol-independent owner ID. Flutter now sends a stable conversation UUID, per-request UUID idempotency key, and persisted exact conversation revision; invalid stream terminal sequences fail closed. The default remains the local Runner, and non-Chat runtime actions stay local.
 
 P3 second-validation slice completed on 2026-07-16: `cloud.deployments.list/get` can use the same Agent gRPC connection without granting mutation capability. Agent returns durable Plan/Connection relationships from `cloud_launch_operations`, keeps Worker and Deployment cursor domains separate, and composes a monotonic read-model revision/time from Worker plus retained resource facts. Message Server consumes all pages with bounded/cycle-safe traversal and preserves the existing ProductCore nine-field Deployment and 404 shapes. Unlinked historical Worker rows remain visible only through Worker status and are never fabricated as Deployments.
+
+P3 third-validation slice completed on 2026-07-16: Flutter parses an AWS CSV including an optional Session Token, creates the Agent-compatible X25519/HKDF-SHA256/AES-256-GCM envelope from server-authoritative AAD fields, and sends only ciphertext through the fixed same-origin owner-only HTTP tunnel. Message Server never routes the upload through ProductCore, WS, durable operations, or plaintext handling; Agent atomically removes the one-time upload-token replay material after upload. Lost-response Create retries return the same token only while `awaiting_upload`; `uploaded` retries return only a public descriptor and Flutter stops at “waiting for identity verification” without claiming a Connection, Foundation, or billable resource. Go/Dart golden vectors, owner/auth/revision/size checks, race tests, real PostgreSQL token cleanup, and Flutter widget flow passed. Agent also exposes owner-scoped durable Connection get/list with a distinct owner-bound cursor so later Foundation response-loss reconciliation has a factual read path.
 
 Deferred before remote Chat or Cloud can be enabled in a release:
 
@@ -130,13 +132,14 @@ Deferred before remote Chat or Cloud can be enabled in a release:
 2. Migrate model/runtime configuration and encrypted model secrets to Agent so Flutter no longer sends the legacy request-scoped `model_profile`; the current adapter discards that envelope before gRPC only to preserve local-Runner compatibility.
 3. Add typed Cloud dialogue, Knowledge/Embedding, and attachment contracts. The remote adapter intentionally rejects those modes instead of silently dropping behavior.
 4. Add conversation cursor reconciliation for the crash window after Agent commits a response but before Flutter persists the returned revision; current normal reconnect/session persistence is covered, but that cross-device/reinstall recovery path is not.
-5. Complete the remaining Cloud façade (`cloud.bootstrap`, Connections, Plans, Services, Recipes, Alerts), durable Agent event cursor/projection, ciphertext bootstrap tunnel, approval compatibility, and cutover preflight below. Deployment list/get is complete.
-6. Extend the SecretBootstrap session response with the server-authoritative `agent_instance_id` and exact AAD fields before Flutter encryption work; the current Flutter envelope/AAD/HKDF and credential JSON are not compatible with Agent and must not be guessed or silently adapted.
+5. Complete the remaining Cloud façade (`cloud.bootstrap`, Connections, Plans, Services, Recipes, Alerts), durable Agent event cursor/projection, approval compatibility, and cutover preflight below. Deployment list/get and Agent-side Connection list/get are complete.
+6. Wire the next safe root-bootstrap transition: bind Region to the stored role plan, call Agent `PreviewAwsIdentity`, and show `identity_verified` without claiming a Connection. Before Establish, switch the remote connection target to a canonical UUID, install the same Flutter approval key through the local mounted trust anchor, freeze Agent Approval-v1 Go/Dart CBOR golden vectors, and use Connection get/list to reconcile unknown Establish results.
 
 ### Flutter
 
 - [ ] Preserve Message Server-only networking and existing `/agent/workloads`, plan, service, and Agent chat navigation.
-- [ ] Add local AWS CSV/paste/session-token parsing, X25519 encryption, best-effort buffer clearing, secure device approval keys, and no plaintext persistence/logging.
+- [x] Add local AWS CSV parsing (including optional Session Token), X25519 encryption, best-effort buffer clearing, secure device approval keys, and no plaintext persistence/logging.
+- [ ] Add an optional pasted AK/SK/Session Token entry without weakening buffer clearing or logging guarantees.
 - [ ] Display goal/Task/Step progress, three quotes, Region, estimated cost, exclusions, retention deadline, execution/outcome/resource axes, Managed status, owner, alerts, health, pairing, logs, Recipe, operations, and destroy-blocked evidence.
 - [ ] Label confirmation as “确认创建并开始计费” and state that estimates are not hard budgets, failure/pairing may still bill, and ingress requires separate approval.
 - [ ] Implement revision-aware WS reducer, entity-only gap refresh, Cloud projection rebuild after cursor reset, and disconnect/reconnect tests.

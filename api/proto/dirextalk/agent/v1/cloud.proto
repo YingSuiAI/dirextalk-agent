@@ -231,6 +231,24 @@ message CloudConnection {
   string foundation_stack_id = 6;
   string status = 7;
   int64 revision = 8;
+  int64 credential_generation = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message GetCloudConnectionRequest {
+  string owner_id = 1;
+  string connection_id = 2;
+}
+message GetCloudConnectionResponse { CloudConnection connection = 1; }
+message ListCloudConnectionsRequest {
+  string owner_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListCloudConnectionsResponse {
+  repeated CloudConnection connections = 1;
+  string next_page_token = 2;
 }
 
 message PreviewAwsIdentityRequest {

@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	cloudStatusConnectionCursor = "connection"
 	cloudStatusDeploymentCursor = "deployment"
 	cloudStatusWorkerCursor     = "worker"
 	cloudStatusResourceCursor   = "resource"
@@ -26,6 +27,101 @@ const (
 type CloudStatusStore struct {
 	pool       *pgxpool.Pool
 	instanceID uuid.UUID
+}
+
+func (store *CloudStatusStore) GetConnection(ctx context.Context, ownerID, connectionID string) (cloudstatus.Connection, error) {
+	owner, parsedConnection, err := validateOwnedStatusCanonicalID(ownerID, connectionID)
+	if err != nil {
+		return cloudstatus.Connection{}, err
+	}
+	item, err := scanCloudConnectionStatus(store.pool.QueryRow(ctx, cloudConnectionStatusSelectSQL+`
+		WHERE connection_id=$1 AND owner_id=$2 AND agent_instance_id=$3`, parsedConnection, owner, store.instanceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cloudstatus.Connection{}, cloudstatus.ErrNotFound
+	}
+	if err != nil {
+		return cloudstatus.Connection{}, fmt.Errorf("get owned cloud connection status: %w", err)
+	}
+	return item, nil
+}
+
+func (store *CloudStatusStore) ListConnections(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.ConnectionPage, error) {
+	if err := query.Validate(); err != nil || strings.TrimSpace(query.DeploymentID) != "" {
+		return cloudstatus.ConnectionPage{}, cloudstatus.ErrInvalid
+	}
+	pageSize := statusPageSize(query.PageSize)
+	cursor, err := decodeCloudConnectionCursor(query.PageToken, query.OwnerID)
+	if err != nil {
+		return cloudstatus.ConnectionPage{}, cloudstatus.ErrInvalid
+	}
+	arguments := []any{store.instanceID, strings.TrimSpace(query.OwnerID)}
+	where := ` WHERE agent_instance_id=$1 AND owner_id=$2`
+	if cursor != nil {
+		arguments = append(arguments, cursor.CreatedAt, cursor.ID)
+		where += ` AND (created_at, connection_id) > ($3, $4)`
+	}
+	arguments = append(arguments, pageSize+1)
+	rows, err := store.pool.Query(ctx, cloudConnectionStatusSelectSQL+where+
+		fmt.Sprintf(` ORDER BY created_at, connection_id LIMIT $%d`, len(arguments)), arguments...)
+	if err != nil {
+		return cloudstatus.ConnectionPage{}, fmt.Errorf("list owned cloud connection statuses: %w", err)
+	}
+	defer rows.Close()
+	items := make([]cloudstatus.Connection, 0, pageSize+1)
+	for rows.Next() {
+		item, scanErr := scanCloudConnectionStatus(rows)
+		if scanErr != nil {
+			return cloudstatus.ConnectionPage{}, fmt.Errorf("scan owned cloud connection status: %w", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return cloudstatus.ConnectionPage{}, fmt.Errorf("iterate owned cloud connection statuses: %w", err)
+	}
+	result := cloudstatus.ConnectionPage{Connections: items}
+	if len(items) > pageSize {
+		result.Connections = items[:pageSize]
+		last := result.Connections[pageSize-1]
+		result.NextPageToken, err = encodeCloudConnectionCursor(query.OwnerID, last.CreatedAt, last.ConnectionID)
+		if err != nil {
+			return cloudstatus.ConnectionPage{}, err
+		}
+	}
+	return result, nil
+}
+
+const cloudConnectionStatusSelectSQL = `SELECT connection_id, owner_id, account_id, region, control_role_arn,
+	foundation_stack_id, credential_generation, status, revision, created_at, updated_at FROM cloud_connections `
+
+type cloudConnectionStatusRow interface{ Scan(...any) error }
+
+func scanCloudConnectionStatus(row cloudConnectionStatusRow) (cloudstatus.Connection, error) {
+	var item cloudstatus.Connection
+	var connectionID uuid.UUID
+	if err := row.Scan(&connectionID, &item.OwnerID, &item.AccountID, &item.Region, &item.ControlRoleARN,
+		&item.FoundationStackID, &item.CredentialGeneration, &item.Status, &item.Revision,
+		&item.CreatedAt, &item.UpdatedAt); err != nil {
+		return cloudstatus.Connection{}, err
+	}
+	item.ConnectionID = connectionID.String()
+	item.CreatedAt, item.UpdatedAt = item.CreatedAt.UTC(), item.UpdatedAt.UTC()
+	if connectionID == uuid.Nil || cloudstatus.ValidateOwnerID(item.OwnerID) != nil ||
+		!awsAccountPattern.MatchString(item.AccountID) || !awsRegionPattern.MatchString(item.Region) ||
+		strings.TrimSpace(item.ControlRoleARN) == "" || strings.TrimSpace(item.FoundationStackID) == "" ||
+		item.CredentialGeneration < 1 || item.Revision < 1 || item.CreatedAt.IsZero() || item.UpdatedAt.Before(item.CreatedAt) ||
+		!validCloudConnectionStatus(item.Status) {
+		return cloudstatus.Connection{}, errors.New("invalid persisted cloud connection status")
+	}
+	return item, nil
+}
+
+func validCloudConnectionStatus(value string) bool {
+	switch value {
+	case "establishing", "active", "degraded", "teardown_blocked", "destroyed":
+		return true
+	default:
+		return false
+	}
 }
 
 var _ cloudstatus.Reader = (*CloudStatusStore)(nil)
@@ -286,8 +382,37 @@ func (store *CloudStatusStore) ListDeploymentResources(ctx context.Context, owne
 
 type cloudStatusCursor struct {
 	Kind      string    `json:"kind"`
+	OwnerID   string    `json:"owner_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	ID        uuid.UUID `json:"id"`
+}
+
+func encodeCloudConnectionCursor(ownerID string, createdAt time.Time, rawID string) (string, error) {
+	if err := cloudstatus.ValidateOwnerID(ownerID); err != nil {
+		return "", err
+	}
+	id, err := uuid.Parse(rawID)
+	if err != nil || id == uuid.Nil || rawID != id.String() || createdAt.IsZero() {
+		return "", cloudstatus.ErrInvalid
+	}
+	encoded, err := json.Marshal(cloudStatusCursor{
+		Kind: cloudStatusConnectionCursor, OwnerID: strings.TrimSpace(ownerID), CreatedAt: createdAt.UTC(), ID: id,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode cloud connection cursor: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), nil
+}
+
+func decodeCloudConnectionCursor(value, ownerID string) (*cloudStatusCursor, error) {
+	if err := cloudstatus.ValidateOwnerID(ownerID); err != nil {
+		return nil, err
+	}
+	cursor, err := decodeCloudStatusCursor(value, cloudStatusConnectionCursor)
+	if err != nil || (cursor != nil && cursor.OwnerID != strings.TrimSpace(ownerID)) {
+		return nil, cloudstatus.ErrInvalid
+	}
+	return cursor, nil
 }
 
 func encodeCloudStatusCursor(kind string, createdAt time.Time, rawID string) (string, error) {
@@ -327,6 +452,14 @@ func validateOwnedStatusID(ownerID, rawID string) (string, uuid.UUID, error) {
 		return "", uuid.Nil, cloudstatus.ErrInvalid
 	}
 	return strings.TrimSpace(ownerID), id, nil
+}
+
+func validateOwnedStatusCanonicalID(ownerID, rawID string) (string, uuid.UUID, error) {
+	owner, id, err := validateOwnedStatusID(ownerID, rawID)
+	if err != nil || rawID != id.String() {
+		return "", uuid.Nil, cloudstatus.ErrInvalid
+	}
+	return owner, id, nil
 }
 
 func statusPageSize(value int) int {

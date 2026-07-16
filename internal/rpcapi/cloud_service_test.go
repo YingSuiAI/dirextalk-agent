@@ -10,6 +10,7 @@ import (
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -21,6 +22,7 @@ type cloudCoordinatorStub struct {
 	mutationScope cloudapp.MutationScope
 	approveCalls  int
 	previewScope  cloudapp.MutationScope
+	connection    cloudapp.Connection
 }
 
 func (stub *cloudCoordinatorStub) Capabilities(context.Context) cloudapp.Capabilities {
@@ -50,8 +52,8 @@ func (stub *cloudCoordinatorStub) ApprovePlan(context.Context, cloudapp.Mutation
 	stub.approveCalls++
 	return cloudapproval.PlanV1{}, nil
 }
-func (*cloudCoordinatorStub) EstablishAWSConnection(context.Context, cloudapp.MutationScope, cloudapp.EstablishConnectionCommand) (cloudapp.Connection, error) {
-	return cloudapp.Connection{}, nil
+func (stub *cloudCoordinatorStub) EstablishAWSConnection(context.Context, cloudapp.MutationScope, cloudapp.EstablishConnectionCommand) (cloudapp.Connection, error) {
+	return stub.connection, nil
 }
 
 func TestCloudControlServiceMapsCallerAndKeepsAgentInstanceServerOwned(t *testing.T) {
@@ -101,5 +103,34 @@ func TestCloudCapabilitiesFailClosedWithoutCoordinator(t *testing.T) {
 	response, err := NewCloudControlService(nil, uuid.NewString()).GetCapabilities(context.Background(), &agentv1.CloudControlServiceGetCapabilitiesRequest{})
 	if err != nil || response.GetCapabilities().GetAws() || response.GetCapabilities().GetWorker() {
 		t.Fatalf("nil coordinator capabilities=%#v err=%v", response.GetCapabilities(), err)
+	}
+}
+
+func TestEstablishAWSConnectionReturnsPersistedConnectionReadModel(t *testing.T) {
+	createdAt := time.Date(2026, 7, 16, 8, 0, 0, 123000000, time.UTC)
+	connection := cloudstatus.Connection{
+		ConnectionID: uuid.NewString(), OwnerID: "owner-a", AccountID: "123456789012", Region: "us-east-1",
+		ControlRoleARN: "arn:aws:iam::123456789012:role/dirextalk-control", FoundationStackID: "foundation-stack",
+		CredentialGeneration: 3, Status: "active", Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
+	coordinator := &cloudCoordinatorStub{connection: cloudapp.Connection{ConnectionID: connection.ConnectionID, OwnerID: connection.OwnerID}}
+	reader := &cloudStatusReaderStub{ownerID: connection.OwnerID, connection: connection}
+	service := NewCloudControlService(coordinator, uuid.NewString(), reader)
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	response, err := service.EstablishAwsConnection(ctx, &agentv1.EstablishAwsConnectionRequest{
+		IdempotencyKey: uuid.NewString(), BootstrapSessionId: uuid.NewString(), ExpectedSessionRevision: 2,
+		PlanId: uuid.NewString(), ExpectedPlanRevision: 3, OwnerId: connection.OwnerID,
+		Approval: &agentv1.DeviceApprovalSignature{
+			ApprovalId: uuid.NewString(), ChallengeId: "challenge-test", SignerKeyId: "device-test",
+			ExpiresAt: timestamppb.New(time.Now().UTC().Add(time.Minute)), Signature: make([]byte, 64),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.GetConnection()
+	if got.GetConnectionId() != connection.ConnectionID || got.GetCredentialGeneration() != 3 || got.GetRevision() != 1 ||
+		!got.GetCreatedAt().AsTime().Equal(createdAt) || !got.GetUpdatedAt().AsTime().Equal(createdAt) {
+		t.Fatalf("establishment returned non-durable connection facts: %+v", got)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
@@ -45,6 +46,28 @@ type WorkerPage struct {
 	NextPageToken string
 }
 
+// Connection is the persisted AWS control-plane read model. Status, revision,
+// credential generation, and timestamps are read from cloud_connections; none
+// of them are inferred from an in-memory coordinator or provider response.
+type Connection struct {
+	ConnectionID         string
+	OwnerID              string
+	AccountID            string
+	Region               string
+	ControlRoleARN       string
+	FoundationStackID    string
+	CredentialGeneration int64
+	Status               string
+	Revision             int64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type ConnectionPage struct {
+	Connections   []Connection
+	NextPageToken string
+}
+
 // Deployment is the durable cloud-control relationship for one exclusive
 // Worker. PlanID and ConnectionID come from the immutable launch intent; they
 // are deliberately not inferred from Worker or resource state.
@@ -65,6 +88,8 @@ type ResourcePage struct {
 }
 
 type Reader interface {
+	GetConnection(context.Context, string, string) (Connection, error)
+	ListConnections(context.Context, ListQuery) (ConnectionPage, error)
 	GetDeployment(context.Context, string, string) (Deployment, error)
 	ListDeployments(context.Context, ListQuery) (DeploymentPage, error)
 	GetWorker(context.Context, string, string) (worker.Deployment, error)

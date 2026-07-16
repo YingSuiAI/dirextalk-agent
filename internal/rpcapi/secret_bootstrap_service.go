@@ -49,9 +49,16 @@ func (service *SecretBootstrapService) CreateSession(ctx context.Context, reques
 	if err != nil {
 		return nil, status.Error(codes.Internal, "stored bootstrap session is invalid")
 	}
-	uploadToken, err := decodeBootstrapValue(created.UploadToken.Reveal(), 32)
-	if err != nil && created.UploadToken.Reveal() != "" {
-		return nil, status.Error(codes.Internal, "stored bootstrap replay token is invalid")
+	var uploadToken []byte
+	if created.Session.Status == secretbootstrap.StatusAwaitingUpload {
+		rawUploadToken := created.UploadToken.Reveal()
+		if rawUploadToken == "" {
+			return nil, status.Error(codes.Internal, "stored bootstrap replay token is unavailable")
+		}
+		uploadToken, err = decodeBootstrapValue(rawUploadToken, 32)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "stored bootstrap replay token is invalid")
+		}
 	}
 	return &agentv1.CreateSessionResponse{
 		SessionId: created.Session.SessionID, ServerPublicKey: publicKey,
@@ -133,6 +140,8 @@ func secretBootstrapSessionToProto(session secretbootstrap.SessionV1) *agentv1.S
 		TargetId: session.TargetID, ServerPublicKey: publicKey,
 		CreatedAt: timestamppb.New(session.CreatedAt), ExpiresAt: timestamppb.New(session.ExpiresAt),
 		Status: secretBootstrapStatusToProto(session.Status), Revision: int64(session.Revision),
+		AgentInstanceId: session.AgentInstanceID, SessionSchemaVersion: session.SchemaVersion,
+		EnvelopeSchemaVersion: secretbootstrap.EnvelopeSchemaV1,
 	}
 }
 

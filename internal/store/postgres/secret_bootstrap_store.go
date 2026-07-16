@@ -123,14 +123,23 @@ func (store *SecretBootstrapStore) CreateIdempotent(ctx context.Context, mutatio
 			return secretbootstrap.Record{}, "", err
 		}
 		replayToken := ""
-		if len(tokenNonce) > 0 || len(tokenCiphertext) > 0 {
+		if restored.Session.Status == secretbootstrap.StatusAwaitingUpload {
+			if len(tokenNonce) == 0 || len(tokenCiphertext) == 0 {
+				return secretbootstrap.Record{}, "", secretbootstrap.ErrKeyUnavailable
+			}
 			var openErr error
 			replayToken, openErr = store.openReplayToken(restored.Session.SessionID, tokenNonce, tokenCiphertext)
 			if openErr != nil {
 				return secretbootstrap.Record{}, "", openErr
 			}
-		} else if restored.Session.Status == secretbootstrap.StatusAwaitingUpload || restored.Session.Status == secretbootstrap.StatusUploaded {
-			return secretbootstrap.Record{}, "", secretbootstrap.ErrKeyUnavailable
+		} else if len(tokenNonce) > 0 || len(tokenCiphertext) > 0 {
+			// Clean replay material retained by an older process without ever
+			// decrypting or reissuing the post-upload capability.
+			if _, err := tx.Exec(ctx, `UPDATE secret_bootstrap_sessions
+				SET idempotency_token_nonce=NULL, idempotency_token_ciphertext=NULL, updated_at=clock_timestamp()
+				WHERE session_id=$1`, aggregateID); err != nil {
+				return secretbootstrap.Record{}, "", err
+			}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return secretbootstrap.Record{}, "", err
@@ -223,6 +232,7 @@ func (store *SecretBootstrapStore) CommitUpload(ctx context.Context, sessionID s
 	row := store.pool.QueryRow(ctx, `
 		UPDATE secret_bootstrap_sessions
 		SET status='uploaded', revision=revision+1, upload_token_hash=NULL,
+		    idempotency_token_nonce=NULL, idempotency_token_ciphertext=NULL,
 		    envelope_schema=$4, client_public_key=$5, envelope_nonce=$6, envelope_ciphertext=$7,
 		    updated_at=clock_timestamp()
 		WHERE session_id=$1 AND revision=$2 AND status='awaiting_upload'
@@ -268,6 +278,7 @@ func (store *SecretBootstrapStore) CommitUploadIdempotent(ctx context.Context, m
 	row := tx.QueryRow(ctx, `
 		UPDATE secret_bootstrap_sessions
 		SET status='uploaded', revision=revision+1, upload_token_hash=NULL,
+		    idempotency_token_nonce=NULL, idempotency_token_ciphertext=NULL,
 		    envelope_schema=$4, client_public_key=$5, envelope_nonce=$6, envelope_ciphertext=$7,
 		    updated_at=clock_timestamp()
 		WHERE session_id=$1 AND revision=$2 AND status='awaiting_upload'

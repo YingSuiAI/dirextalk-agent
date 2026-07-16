@@ -459,6 +459,8 @@ service CloudControlService {
   rpc CreateApprovalChallenge(CreateApprovalChallengeRequest) returns (CreateApprovalChallengeResponse);
   rpc ApproveCloudPlan(ApproveCloudPlanRequest) returns (ApproveCloudPlanResponse);
   rpc EstablishAwsConnection(EstablishAwsConnectionRequest) returns (EstablishAwsConnectionResponse);
+  rpc GetCloudConnection(GetCloudConnectionRequest) returns (GetCloudConnectionResponse);
+  rpc ListCloudConnections(ListCloudConnectionsRequest) returns (ListCloudConnectionsResponse);
   rpc GetCloudDeployment(GetCloudDeploymentRequest) returns (GetCloudDeploymentResponse);
   rpc ListCloudDeployments(ListCloudDeploymentsRequest) returns (ListCloudDeploymentsResponse);
   rpc GetCloudResource(GetCloudResourceRequest) returns (GetCloudResourceResponse);
@@ -492,6 +494,12 @@ message SecretBootstrapSession {
   google.protobuf.Timestamp expires_at = 7;
   SecretBootstrapSessionStatus status = 8;
   int64 revision = 9;
+  // The following immutable values are server-authoritative inputs to the
+  // secret-bootstrap v1 AEAD associated data. Clients MUST use these values
+  // instead of assuming a local Agent identity or schema version.
+  string agent_instance_id = 10;
+  string session_schema_version = 11;
+  string envelope_schema_version = 12;
 }
 
 message CreateSessionResponse {

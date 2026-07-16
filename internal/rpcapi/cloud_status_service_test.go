@@ -18,13 +18,30 @@ import (
 
 type cloudStatusReaderStub struct {
 	ownerID        string
+	connection     cloudstatus.Connection
 	deployment     cloudstatus.Deployment
 	worker         worker.Deployment
 	resources      []resource.ResourceV1
 	deploymentPage cloudstatus.DeploymentPage
+	connectionPage cloudstatus.ConnectionPage
 	workerPage     cloudstatus.WorkerPage
 	resourcePage   cloudstatus.ResourcePage
 	lastQuery      cloudstatus.ListQuery
+}
+
+func (stub *cloudStatusReaderStub) GetConnection(_ context.Context, ownerID, connectionID string) (cloudstatus.Connection, error) {
+	if ownerID != stub.ownerID || connectionID != stub.connection.ConnectionID {
+		return cloudstatus.Connection{}, cloudstatus.ErrNotFound
+	}
+	return stub.connection, nil
+}
+
+func (stub *cloudStatusReaderStub) ListConnections(_ context.Context, query cloudstatus.ListQuery) (cloudstatus.ConnectionPage, error) {
+	stub.lastQuery = query
+	if query.OwnerID != stub.ownerID {
+		return cloudstatus.ConnectionPage{}, cloudstatus.ErrNotFound
+	}
+	return stub.connectionPage, nil
 }
 
 func (stub *cloudStatusReaderStub) GetDeployment(_ context.Context, ownerID, deploymentID string) (cloudstatus.Deployment, error) {
@@ -128,6 +145,44 @@ func TestCloudDeploymentStatusKeepsExecutionOutcomeAndResourceAxesIndependent(t 
 	if readBack.GetTotalResources() != 3 || readBack.GetObservedResources() != 2 || readBack.GetExistingResources() != 1 ||
 		readBack.GetMissingResources() != 1 || readBack.GetUnobservedResources() != 1 || !readBack.GetLastObservedAt().AsTime().Equal(now) {
 		t.Fatalf("read-back summary=%+v", readBack)
+	}
+}
+
+func TestCloudConnectionQueriesKeepPersistedStatusRevisionAndTimestamps(t *testing.T) {
+	createdAt := time.Date(2026, 7, 16, 8, 0, 0, 123000000, time.UTC)
+	updatedAt := createdAt.Add(3 * time.Minute)
+	item := cloudstatus.Connection{
+		ConnectionID: uuid.NewString(), OwnerID: "owner-a", AccountID: "123456789012", Region: "us-east-1",
+		ControlRoleARN: "arn:aws:iam::123456789012:role/dirextalk-control", FoundationStackID: "foundation-stack",
+		CredentialGeneration: 7, Status: "degraded", Revision: 4, CreatedAt: createdAt, UpdatedAt: updatedAt,
+	}
+	stub := &cloudStatusReaderStub{
+		ownerID: "owner-a", connection: item,
+		connectionPage: cloudstatus.ConnectionPage{Connections: []cloudstatus.Connection{item}, NextPageToken: "next-connection-page"},
+	}
+	service := NewCloudControlService(nil, uuid.NewString(), stub)
+	response, err := service.GetCloudConnection(context.Background(), &agentv1.GetCloudConnectionRequest{
+		OwnerId: "owner-a", ConnectionId: item.ConnectionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := response.GetConnection()
+	if got.GetStatus() != "degraded" || got.GetRevision() != 4 || got.GetCredentialGeneration() != 7 ||
+		!got.GetCreatedAt().AsTime().Equal(createdAt) || !got.GetUpdatedAt().AsTime().Equal(updatedAt) {
+		t.Fatalf("connection read model drifted: %+v", got)
+	}
+	if _, err := service.GetCloudConnection(context.Background(), &agentv1.GetCloudConnectionRequest{
+		OwnerId: "owner-b", ConnectionId: item.ConnectionID,
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("cross-owner connection status code=%s err=%v", status.Code(err), err)
+	}
+	page, err := service.ListCloudConnections(context.Background(), &agentv1.ListCloudConnectionsRequest{
+		OwnerId: "owner-a", PageSize: 13, PageToken: "connection-page",
+	})
+	if err != nil || len(page.GetConnections()) != 1 || page.GetNextPageToken() != "next-connection-page" ||
+		stub.lastQuery.OwnerID != "owner-a" || stub.lastQuery.PageSize != 13 || stub.lastQuery.PageToken != "connection-page" {
+		t.Fatalf("connection list response=%+v query=%+v err=%v", page, stub.lastQuery, err)
 	}
 }
 

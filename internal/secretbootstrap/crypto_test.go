@@ -85,6 +85,12 @@ func TestEnvelopeGoldenVector(t *testing.T) {
 		t.Fatal(err)
 	}
 	aadHash := sha256.Sum256(aad)
+	if got, want := session.SchemaVersion, "dirextalk.agent.secret-bootstrap.session/v1"; got != want {
+		t.Fatalf("session schema = %q, want golden %q", got, want)
+	}
+	if got, want := envelope.SchemaVersion, "dirextalk.agent.secret-bootstrap.envelope/v1"; got != want {
+		t.Fatalf("envelope schema = %q, want golden %q", got, want)
+	}
 	if got, want := envelope.ClientPublicKey, "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns"; got != want {
 		t.Fatalf("client public key = %q, want golden %q", got, want)
 	}

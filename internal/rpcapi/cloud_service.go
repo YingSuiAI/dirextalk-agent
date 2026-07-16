@@ -184,6 +184,12 @@ func (service *CloudControlService) EstablishAwsConnection(ctx context.Context, 
 	if service.coordinator == nil {
 		return nil, cloudUnavailable()
 	}
+	// Establishment returns the durable read model, not the coordinator's
+	// provider response. This keeps status, generation, revision, and timestamps
+	// truthful and leaves Get/List as a recovery path if this read is interrupted.
+	if service.statusReader == nil {
+		return nil, cloudStatusUnavailable()
+	}
 	approval, err := cloudApprovalFromProto(request.GetApproval())
 	if err != nil || request.GetExpectedSessionRevision() < 1 || request.GetExpectedPlanRevision() < 1 {
 		return nil, status.Error(codes.InvalidArgument, "valid device approval and revision fences are required")
@@ -196,11 +202,11 @@ func (service *CloudControlService) EstablishAwsConnection(ctx context.Context, 
 	if err != nil {
 		return nil, publicError(err)
 	}
-	return &agentv1.EstablishAwsConnectionResponse{Connection: &agentv1.CloudConnection{
-		ConnectionId: value.ConnectionID, OwnerId: value.OwnerID, AccountId: value.AccountID, Region: value.Region,
-		ControlRoleArn: value.ControlRoleARN, FoundationStackId: value.FoundationStack,
-		Status: value.Status, Revision: value.Revision,
-	}}, nil
+	persisted, err := service.statusReader.GetConnection(ctx, request.GetOwnerId(), value.ConnectionID)
+	if err != nil {
+		return nil, publicError(err)
+	}
+	return &agentv1.EstablishAwsConnectionResponse{Connection: cloudConnectionToProto(persisted)}, nil
 }
 
 func cloudMutationScope(ctx context.Context) (cloudapp.MutationScope, error) {

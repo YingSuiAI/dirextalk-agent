@@ -78,20 +78,53 @@ func TestSecretBootstrapServiceBindsCallerAndReturnsRawTransportValues(t *testin
 	if string(response.GetServerPublicKey()) != string(publicKey) || string(response.GetUploadToken()) != string(rawUploadToken) {
 		t.Fatal("CreateSession did not return raw X25519/token bytes")
 	}
+	assertBootstrapAADDescriptor(t, response.GetSession(), stub.created.Session)
 	if stub.createdScope.ClientID != "message-server" || stub.createdScope.CredentialID != credentialID || stub.createdKey != request.IdempotencyKey {
 		t.Fatalf("mutation scope was not bound: %#v", stub.createdScope)
 	}
 	if stub.createdBind.AgentInstanceID != stub.created.Session.AgentInstanceID || stub.createdBind.TargetID != request.TargetId {
 		t.Fatalf("session binding was not server-owned: %#v", stub.createdBind)
 	}
-	if _, err := service.GetSession(ctx, &agentv1.SecretBootstrapServiceGetSessionRequest{SessionId: stub.created.Session.SessionID}); err != nil || stub.getClientID != "message-server" {
+	gotSession, err := service.GetSession(ctx, &agentv1.SecretBootstrapServiceGetSessionRequest{SessionId: stub.created.Session.SessionID})
+	if err != nil || stub.getClientID != "message-server" {
 		t.Fatalf("GetSession caller binding=%q err=%v", stub.getClientID, err)
+	}
+	assertBootstrapAADDescriptor(t, gotSession.GetSession(), stub.created.Session)
+}
+
+func TestSecretBootstrapServiceNeverReturnsUploadTokenAfterUpload(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 10, 0, 0, 0, time.UTC)
+	stub := &secretBootstrapManagerStub{created: secretbootstrap.CreateResult{
+		Session: secretbootstrap.SessionV1{
+			SchemaVersion: secretbootstrap.SessionSchemaV1, SessionID: uuid.NewString(), AgentInstanceID: uuid.NewString(),
+			OwnerID: "owner-a", Purpose: "aws_connection", TargetID: uuid.NewString(),
+			ServerPublicKey: base64.RawURLEncoding.EncodeToString(bytesForBootstrapTest(0x31)), CreatedAt: now,
+			ExpiresAt: now.Add(secretbootstrap.SessionTTL), Status: secretbootstrap.StatusUploaded, Revision: 2,
+		},
+		// A faulty or old adapter must not make a post-upload capability public.
+		UploadToken: bootstrapTokenForTest(bytesForBootstrapTest(0xb5)),
+	}}
+	service := NewSecretBootstrapService(stub, stub.created.Session.AgentInstanceID)
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	response, err := service.CreateSession(ctx, &agentv1.CreateSessionRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: stub.created.Session.OwnerID,
+		Purpose: stub.created.Session.Purpose, TargetId: stub.created.Session.TargetID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetSession().GetStatus() != agentv1.SecretBootstrapSessionStatus_SECRET_BOOTSTRAP_SESSION_STATUS_UPLOADED || len(response.GetUploadToken()) != 0 {
+		t.Fatalf("uploaded session returned upload capability: status=%s token_length=%d", response.GetSession().GetStatus(), len(response.GetUploadToken()))
 	}
 }
 
 func TestSecretBootstrapServiceEncodesEncryptedUploadWithoutPlaintext(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 10, 0, 0, 0, time.UTC)
 	stub := &secretBootstrapManagerStub{uploadedSession: secretbootstrap.SessionV1{
-		SchemaVersion: secretbootstrap.SessionSchemaV1, SessionID: uuid.NewString(), Status: secretbootstrap.StatusUploaded, Revision: 2,
+		SchemaVersion: secretbootstrap.SessionSchemaV1, SessionID: uuid.NewString(), AgentInstanceID: uuid.NewString(),
+		OwnerID: "owner-a", Purpose: "aws_connection", TargetID: uuid.NewString(),
+		ServerPublicKey: base64.RawURLEncoding.EncodeToString(bytesForBootstrapTest(0x21)), CreatedAt: now,
+		ExpiresAt: now.Add(secretbootstrap.SessionTTL), Status: secretbootstrap.StatusUploaded, Revision: 2,
 	}}
 	service := NewSecretBootstrapService(stub, uuid.NewString())
 	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
@@ -111,6 +144,7 @@ func TestSecretBootstrapServiceEncodesEncryptedUploadWithoutPlaintext(t *testing
 		stub.uploadedEnvelope.Ciphertext != base64.RawURLEncoding.EncodeToString(ciphertext) {
 		t.Fatalf("encrypted envelope was not normalized: %#v", stub.uploadedEnvelope)
 	}
+	assertBootstrapAADDescriptor(t, response.GetSession(), stub.uploadedSession)
 }
 
 func TestSecretBootstrapCompleteRemainsReservedAndUnimplemented(t *testing.T) {
@@ -159,4 +193,13 @@ func bytesForBootstrapTest(value byte) []byte {
 		result[index] = value + byte(index)
 	}
 	return result
+}
+
+func assertBootstrapAADDescriptor(t *testing.T, got *agentv1.SecretBootstrapSession, want secretbootstrap.SessionV1) {
+	t.Helper()
+	if got.GetAgentInstanceId() != want.AgentInstanceID ||
+		got.GetSessionSchemaVersion() != secretbootstrap.SessionSchemaV1 ||
+		got.GetEnvelopeSchemaVersion() != secretbootstrap.EnvelopeSchemaV1 {
+		t.Fatalf("bootstrap session omitted server-authoritative AAD inputs: %#v", got)
+	}
 }

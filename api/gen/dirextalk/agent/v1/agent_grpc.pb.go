@@ -582,6 +582,8 @@ const (
 	CloudControlService_CreateApprovalChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateApprovalChallenge"
 	CloudControlService_ApproveCloudPlan_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPlan"
 	CloudControlService_EstablishAwsConnection_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/EstablishAwsConnection"
+	CloudControlService_GetCloudConnection_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetCloudConnection"
+	CloudControlService_ListCloudConnections_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/ListCloudConnections"
 	CloudControlService_GetCloudDeployment_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetCloudDeployment"
 	CloudControlService_ListCloudDeployments_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/ListCloudDeployments"
 	CloudControlService_GetCloudResource_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/GetCloudResource"
@@ -603,6 +605,8 @@ type CloudControlServiceClient interface {
 	CreateApprovalChallenge(ctx context.Context, in *CreateApprovalChallengeRequest, opts ...grpc.CallOption) (*CreateApprovalChallengeResponse, error)
 	ApproveCloudPlan(ctx context.Context, in *ApproveCloudPlanRequest, opts ...grpc.CallOption) (*ApproveCloudPlanResponse, error)
 	EstablishAwsConnection(ctx context.Context, in *EstablishAwsConnectionRequest, opts ...grpc.CallOption) (*EstablishAwsConnectionResponse, error)
+	GetCloudConnection(ctx context.Context, in *GetCloudConnectionRequest, opts ...grpc.CallOption) (*GetCloudConnectionResponse, error)
+	ListCloudConnections(ctx context.Context, in *ListCloudConnectionsRequest, opts ...grpc.CallOption) (*ListCloudConnectionsResponse, error)
 	GetCloudDeployment(ctx context.Context, in *GetCloudDeploymentRequest, opts ...grpc.CallOption) (*GetCloudDeploymentResponse, error)
 	ListCloudDeployments(ctx context.Context, in *ListCloudDeploymentsRequest, opts ...grpc.CallOption) (*ListCloudDeploymentsResponse, error)
 	GetCloudResource(ctx context.Context, in *GetCloudResourceRequest, opts ...grpc.CallOption) (*GetCloudResourceResponse, error)
@@ -709,6 +713,26 @@ func (c *cloudControlServiceClient) EstablishAwsConnection(ctx context.Context, 
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) GetCloudConnection(ctx context.Context, in *GetCloudConnectionRequest, opts ...grpc.CallOption) (*GetCloudConnectionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudConnectionResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudConnection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ListCloudConnections(ctx context.Context, in *ListCloudConnectionsRequest, opts ...grpc.CallOption) (*ListCloudConnectionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCloudConnectionsResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ListCloudConnections_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cloudControlServiceClient) GetCloudDeployment(ctx context.Context, in *GetCloudDeploymentRequest, opts ...grpc.CallOption) (*GetCloudDeploymentResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetCloudDeploymentResponse)
@@ -782,6 +806,8 @@ type CloudControlServiceServer interface {
 	CreateApprovalChallenge(context.Context, *CreateApprovalChallengeRequest) (*CreateApprovalChallengeResponse, error)
 	ApproveCloudPlan(context.Context, *ApproveCloudPlanRequest) (*ApproveCloudPlanResponse, error)
 	EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error)
+	GetCloudConnection(context.Context, *GetCloudConnectionRequest) (*GetCloudConnectionResponse, error)
+	ListCloudConnections(context.Context, *ListCloudConnectionsRequest) (*ListCloudConnectionsResponse, error)
 	GetCloudDeployment(context.Context, *GetCloudDeploymentRequest) (*GetCloudDeploymentResponse, error)
 	ListCloudDeployments(context.Context, *ListCloudDeploymentsRequest) (*ListCloudDeploymentsResponse, error)
 	GetCloudResource(context.Context, *GetCloudResourceRequest) (*GetCloudResourceResponse, error)
@@ -824,6 +850,12 @@ func (UnimplementedCloudControlServiceServer) ApproveCloudPlan(context.Context, 
 }
 func (UnimplementedCloudControlServiceServer) EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EstablishAwsConnection not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudConnection(context.Context, *GetCloudConnectionRequest) (*GetCloudConnectionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudConnection not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ListCloudConnections(context.Context, *ListCloudConnectionsRequest) (*ListCloudConnectionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCloudConnections not implemented")
 }
 func (UnimplementedCloudControlServiceServer) GetCloudDeployment(context.Context, *GetCloudDeploymentRequest) (*GetCloudDeploymentResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudDeployment not implemented")
@@ -1026,6 +1058,42 @@ func _CloudControlService_EstablishAwsConnection_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_GetCloudConnection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudConnectionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudConnection(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudConnection_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudConnection(ctx, req.(*GetCloudConnectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ListCloudConnections_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCloudConnectionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ListCloudConnections(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ListCloudConnections_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ListCloudConnections(ctx, req.(*ListCloudConnectionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CloudControlService_GetCloudDeployment_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetCloudDeploymentRequest)
 	if err := dec(in); err != nil {
@@ -1176,6 +1244,14 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EstablishAwsConnection",
 			Handler:    _CloudControlService_EstablishAwsConnection_Handler,
+		},
+		{
+			MethodName: "GetCloudConnection",
+			Handler:    _CloudControlService_GetCloudConnection_Handler,
+		},
+		{
+			MethodName: "ListCloudConnections",
+			Handler:    _CloudControlService_ListCloudConnections_Handler,
 		},
 		{
 			MethodName: "GetCloudDeployment",

@@ -86,7 +86,34 @@ func TestCreateServiceKeyContractHasEncryptedDeliveryOnly(t *testing.T) {
 	assertFieldKind(t, request, "recipient_public_key", protoreflect.StringKind)
 }
 
+func TestSecretBootstrapSessionExposesServerAuthoritativeAADInputs(t *testing.T) {
+	descriptor := (&agentv1.SecretBootstrapSession{}).ProtoReflect().Descriptor()
+	for _, field := range []struct {
+		name   protoreflect.Name
+		number protoreflect.FieldNumber
+	}{
+		{name: "agent_instance_id", number: 10},
+		{name: "session_schema_version", number: 11},
+		{name: "envelope_schema_version", number: 12},
+	} {
+		assertFieldKind(t, descriptor, field.name, protoreflect.StringKind)
+		if got := descriptor.Fields().ByName(field.name).Number(); got != field.number {
+			t.Fatalf("SecretBootstrapSession.%s number = %d, want %d", field.name, got, field.number)
+		}
+	}
+}
+
 func TestCloudStatusContractSeparatesAxesAndRequiresOwnerFilters(t *testing.T) {
+	connection := (&agentv1.CloudConnection{}).ProtoReflect().Descriptor()
+	for _, name := range []protoreflect.Name{"revision", "credential_generation"} {
+		assertFieldKind(t, connection, name, protoreflect.Int64Kind)
+	}
+	for _, name := range []protoreflect.Name{"created_at", "updated_at"} {
+		field := connection.Fields().ByName(name)
+		if field == nil || field.Kind() != protoreflect.MessageKind || field.Message().FullName() != "google.protobuf.Timestamp" {
+			t.Fatalf("CloudConnection.%s must be a protobuf Timestamp", name)
+		}
+	}
 	deployment := (&agentv1.CloudDeployment{}).ProtoReflect().Descriptor()
 	assertFieldKind(t, deployment, "revision", protoreflect.Int64Kind)
 	for _, name := range []protoreflect.Name{"execution_status", "outcome_status", "resources"} {
@@ -102,6 +129,7 @@ func TestCloudStatusContractSeparatesAxesAndRequiresOwnerFilters(t *testing.T) {
 	worker := (&agentv1.CloudWorker{}).ProtoReflect().Descriptor()
 	assertFieldKind(t, worker, "revision", protoreflect.Int64Kind)
 	for _, request := range []proto.Message{
+		&agentv1.GetCloudConnectionRequest{}, &agentv1.ListCloudConnectionsRequest{},
 		&agentv1.GetCloudDeploymentRequest{}, &agentv1.ListCloudDeploymentsRequest{},
 		&agentv1.GetCloudResourceRequest{}, &agentv1.ListCloudResourcesRequest{},
 		&agentv1.GetCloudWorkerRequest{}, &agentv1.ListCloudWorkersRequest{},

@@ -148,6 +148,15 @@ func (m *Manager) CreateIdempotent(ctx context.Context, scope MutationScope, ide
 	if err := authorizeClient(record, scope.ClientID); err != nil {
 		return CreateResult{}, err
 	}
+	if record.Session.Status == StatusAwaitingUpload {
+		if replayToken == "" {
+			return CreateResult{}, ErrKeyUnavailable
+		}
+	} else {
+		// The upload token is a one-time capability. Idempotent create retries
+		// return only the public descriptor after the upload transition.
+		replayToken = ""
+	}
 	return CreateResult{Session: record.Session, UploadToken: newUploadToken(replayToken)}, nil
 }
 

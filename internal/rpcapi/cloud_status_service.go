@@ -18,6 +18,36 @@ import (
 
 const maxCloudStatusRevision int64 = 1<<63 - 1
 
+func (service *CloudControlService) GetCloudConnection(ctx context.Context, request *agentv1.GetCloudConnectionRequest) (*agentv1.GetCloudConnectionResponse, error) {
+	if service.statusReader == nil {
+		return nil, cloudStatusUnavailable()
+	}
+	item, err := service.statusReader.GetConnection(ctx, request.GetOwnerId(), request.GetConnectionId())
+	if err != nil {
+		return nil, publicError(err)
+	}
+	return &agentv1.GetCloudConnectionResponse{Connection: cloudConnectionToProto(item)}, nil
+}
+
+func (service *CloudControlService) ListCloudConnections(ctx context.Context, request *agentv1.ListCloudConnectionsRequest) (*agentv1.ListCloudConnectionsResponse, error) {
+	if service.statusReader == nil {
+		return nil, cloudStatusUnavailable()
+	}
+	page, err := service.statusReader.ListConnections(ctx, cloudstatus.ListQuery{
+		OwnerID: request.GetOwnerId(), PageSize: int(request.GetPageSize()), PageToken: request.GetPageToken(),
+	})
+	if err != nil {
+		return nil, publicError(err)
+	}
+	response := &agentv1.ListCloudConnectionsResponse{
+		Connections: make([]*agentv1.CloudConnection, 0, len(page.Connections)), NextPageToken: page.NextPageToken,
+	}
+	for _, item := range page.Connections {
+		response.Connections = append(response.Connections, cloudConnectionToProto(item))
+	}
+	return response, nil
+}
+
 func (service *CloudControlService) GetCloudDeployment(ctx context.Context, request *agentv1.GetCloudDeploymentRequest) (*agentv1.GetCloudDeploymentResponse, error) {
 	if service.statusReader == nil {
 		return nil, cloudStatusUnavailable()
@@ -132,6 +162,15 @@ func cloudDeploymentToProto(item cloudstatus.Deployment, resources []resource.Re
 		Resources: resourceSummary, Revision: cloudStatusRevisionSum(workerItem.Revision, resourceSummary.GetRevision()),
 		CreatedAt: cloudStatusTimestamp(workerItem.CreatedAt), UpdatedAt: cloudStatusTimestamp(updatedAt),
 		PlanId: item.PlanID, ConnectionId: item.ConnectionID,
+	}
+}
+
+func cloudConnectionToProto(item cloudstatus.Connection) *agentv1.CloudConnection {
+	return &agentv1.CloudConnection{
+		ConnectionId: item.ConnectionID, OwnerId: item.OwnerID, AccountId: item.AccountID, Region: item.Region,
+		ControlRoleArn: item.ControlRoleARN, FoundationStackId: item.FoundationStackID,
+		Status: item.Status, Revision: item.Revision, CredentialGeneration: item.CredentialGeneration,
+		CreatedAt: cloudStatusTimestamp(item.CreatedAt), UpdatedAt: cloudStatusTimestamp(item.UpdatedAt),
 	}
 }
 
