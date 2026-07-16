@@ -19,10 +19,13 @@ type Common struct {
 
 type Server struct {
 	Common
-	ListenAddress string
-	TLSCertFile   string
-	TLSKeyFile    string
-	PepperFile    string
+	ListenAddress     string
+	TLSCertFile       string
+	TLSKeyFile        string
+	PepperFile        string
+	MountedSecretsDir string
+	ModelProfilesFile string
+	MCPServersFile    string
 }
 
 func LoadCommon() (Common, error) {
@@ -51,9 +54,12 @@ func LoadServer() (Server, error) {
 	}
 	server := Server{
 		Common: common, ListenAddress: strings.TrimSpace(os.Getenv("AGENT_GRPC_LISTEN")),
-		TLSCertFile: strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
-		TLSKeyFile:  strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
-		PepperFile:  strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
+		TLSCertFile:       strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
+		TLSKeyFile:        strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
+		PepperFile:        strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
+		MountedSecretsDir: strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
+		ModelProfilesFile: strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
+		MCPServersFile:    strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
 	}
 	if server.ListenAddress == "" {
 		server.ListenAddress = ":9443"
@@ -63,6 +69,12 @@ func LoadServer() (Server, error) {
 	}
 	if server.PepperFile == "" {
 		return Server{}, errors.New("AGENT_SERVICE_KEY_PEPPER_FILE is required")
+	}
+	if server.MountedSecretsDir == "" {
+		return Server{}, errors.New("AGENT_MOUNTED_SECRETS_DIR is required")
+	}
+	if server.ModelProfilesFile == "" {
+		return Server{}, errors.New("AGENT_MODEL_PROFILES_FILE is required")
 	}
 	return server, nil
 }

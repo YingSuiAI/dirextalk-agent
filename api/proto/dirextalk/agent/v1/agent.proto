@@ -131,23 +131,108 @@ message RuntimeCapabilities {
   bool cloud_worker = 2;
   bool local_connector = 3;
   repeated string skills = 4;
+  bool stream_chat = 5;
+  bool runtime_config = 6;
+  bool knowledge = 7;
+  bool mcp_http = 8;
+  repeated string model_profile_ids = 9;
 }
 
 message RuntimeServiceGetCapabilitiesRequest {}
 message RuntimeServiceGetCapabilitiesResponse { RuntimeCapabilities capabilities = 1; }
+
+enum ModelProvider {
+  MODEL_PROVIDER_UNSPECIFIED = 0;
+  MODEL_PROVIDER_OPENAI_COMPATIBLE = 1;
+  MODEL_PROVIDER_DEEPSEEK = 2;
+  MODEL_PROVIDER_ANTHROPIC = 3;
+}
+
+message ModelProfile {
+  ModelProvider provider = 1;
+  string model = 2;
+  string base_url = 3;
+  string secret_ref = 4;
+  optional double temperature = 5;
+  optional double top_p = 6;
+  int32 max_output_tokens = 7;
+  int32 context_window = 8;
+  string reasoning_effort = 9;
+
+  // Selects immutable server-owned provider, endpoint, model and credential
+  // metadata. Callers may only override bounded sampling fields.
+  string profile_id = 10;
+}
+
+message RuntimeConfigSpec {
+  ModelProfile model_profile = 1;
+
+  // Project-specific context is appended beneath the immutable server policy;
+  // callers cannot replace the security policy or tool boundaries.
+  string project_profile = 2;
+  int32 context_message_limit = 3;
+  int32 memory_message_limit = 4;
+  int32 max_steps = 5;
+  bool memory_disabled = 6;
+  repeated string enabled_tools = 7;
+  repeated string knowledge_refs = 8;
+  repeated string mcp_server_ids = 9;
+  repeated string recipe_ids = 10;
+}
+
+message RuntimeConfig {
+  string owner_id = 1;
+  RuntimeConfigSpec spec = 2;
+  int64 revision = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message GetRuntimeConfigRequest { string owner_id = 1; }
+message GetRuntimeConfigResponse { RuntimeConfig config = 1; }
+
+message PutRuntimeConfigRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  RuntimeConfigSpec spec = 3;
+  int64 expected_revision = 4;
+}
+message PutRuntimeConfigResponse { RuntimeConfig config = 1; }
 
 message ChatRequest {
   string idempotency_key = 1;
   string owner_id = 2;
   string conversation_id = 3;
   string message = 4;
+  bool memory_disabled = 5;
+  int64 expected_conversation_revision = 6;
+}
+
+enum RuntimeStepKind {
+  RUNTIME_STEP_KIND_UNSPECIFIED = 0;
+  RUNTIME_STEP_KIND_MODEL = 1;
+  RUNTIME_STEP_KIND_TOOL_CALL = 2;
+  RUNTIME_STEP_KIND_TOOL_RESULT = 3;
+}
+
+message RuntimeStepSummary {
+  RuntimeStepKind kind = 1;
+  string tool_call_id = 2;
+  string tool_name = 3;
+  bool is_error = 4;
+}
+
+message RuntimeAssistantMessage {
+  string message_id = 1;
+  string content = 2;
 }
 
 message ChatResponse {
   string conversation_id = 1;
-  string message_id = 2;
-  string content = 3;
-  bool final = 4;
+  RuntimeAssistantMessage message = 2;
+  int64 conversation_revision = 3;
+  repeated RuntimeStepSummary steps = 4;
+  repeated string related_task_ids = 5;
+  repeated string related_plan_ids = 6;
 }
 
 message StreamChatRequest {
@@ -155,17 +240,36 @@ message StreamChatRequest {
   string owner_id = 2;
   string conversation_id = 3;
   string message = 4;
+  bool memory_disabled = 5;
+  int64 expected_conversation_revision = 6;
 }
 
+message ChatDelta {
+  string message_id = 1;
+  string content = 2;
+}
+
+message ToolExecutionSummary {
+  string tool_call_id = 1;
+  string tool_name = 2;
+  bool finished = 3;
+  bool is_error = 4;
+}
+
+message ChatDone { ChatResponse response = 1; }
+
 message StreamChatResponse {
-  string conversation_id = 1;
-  string message_id = 2;
-  string content = 3;
-  bool final = 4;
+  oneof event {
+    ChatDelta delta = 1;
+    ToolExecutionSummary tool = 2;
+    ChatDone done = 3;
+  }
 }
 
 service RuntimeService {
   rpc GetCapabilities(RuntimeServiceGetCapabilitiesRequest) returns (RuntimeServiceGetCapabilitiesResponse);
+  rpc GetRuntimeConfig(GetRuntimeConfigRequest) returns (GetRuntimeConfigResponse);
+  rpc PutRuntimeConfig(PutRuntimeConfigRequest) returns (PutRuntimeConfigResponse);
   rpc Chat(ChatRequest) returns (ChatResponse);
   rpc StreamChat(StreamChatRequest) returns (stream StreamChatResponse);
 }

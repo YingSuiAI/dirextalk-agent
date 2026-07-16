@@ -1,12 +1,14 @@
 # Dirextalk Agent
 
-Dirextalk Agent is a reusable, single-tenant control service for persistent AI tasks and typed cloud workloads. It exposes a versioned gRPC API, stores all durable facts in PostgreSQL, plans work through Eino, and runs privileged installation only on exclusive cloud Workers.
+Dirextalk Agent is a reusable, single-tenant control service for persistent AI tasks and typed cloud workloads. It exposes a versioned gRPC API, stores durable facts in PostgreSQL, and uses Eino with typed tools to prepare deployment plans. Privileged cloud execution is reserved for the later exclusive-Worker stage and never runs in the control container.
 
 The control container does not depend on Matrix or ProductCore and does not run arbitrary user commands. Projects integrate through a pairwise service key and keep their own user-facing transport and authentication.
 
 ## Current delivery
 
-The first vertical slice provides service-key authentication, durable Task creation/cancellation, idempotency, revision fencing, and cursor-resumable events. AWS, Worker, Eino, and Message Server cutover progress is tracked in [docs/delivery-tracker.md](docs/delivery-tracker.md).
+P0 provides service-key authentication, durable Task/Step state, idempotency, revision and lease fencing, and cursor-resumable events. P1 adds persisted runtime configuration and conversations, `RuntimeService.Chat`/`StreamChat`, the native Eino runtime, mounted model-secret references, optional Streamable HTTP MCP configuration, and the planning-only `cloud-dispatcher` Skill. A conversation can create and finish the three-step research/Recipe/resource-candidate Task, persist an experimental `RecipeDraft`, and prepare economy/recommended/performance candidates without calling AWS.
+
+AWS credential bootstrap, pricing, approvals, provider mutations, EC2 Workers, reconciliation, and Reaper behavior remain P2 work. This repository does not yet claim a real OpenClaw, knowledge-node, or AWS deployment. Detailed progress is tracked in [docs/delivery-tracker.md](docs/delivery-tracker.md).
 
 ## Development
 
@@ -20,7 +22,7 @@ go build ./cmd/...
 
 Production startup requires TLS certificate/key files, a PostgreSQL DSN, an immutable instance ID, a service-key pepper file, and an initial service-key file. Secret values must be mounted as files rather than supplied in command arguments.
 
-## P0 operation
+## Operation
 
 The control process has three commands: `migrate`, `bootstrap-service-key`, and `serve`. All three use the same immutable `AGENT_INSTANCE_ID` and read the PostgreSQL DSN from `AGENT_DATABASE_URL_FILE`; the legacy plaintext `AGENT_DATABASE_URL` environment variable is deliberately ignored.
 
@@ -29,11 +31,16 @@ The control process has three commands: `migrate`, `bootstrap-service-key`, and 
 - `AGENT_GRPC_LISTEN` (defaults to `:9443`).
 - `AGENT_TLS_CERT_FILE` and a protected `AGENT_TLS_KEY_FILE`.
 - `AGENT_SERVICE_KEY_PEPPER_FILE` containing at least 32 bytes of random material.
+- `AGENT_MOUNTED_SECRETS_DIR`, whose protected files are addressed only as opaque `mounted:<name>` references.
+- `AGENT_MODEL_PROFILES_FILE`, a strict, secret-free JSON catalog that binds each public `profile_id` to one provider, model, HTTPS endpoint, mounted credential reference, context window, and maximum output-token limit.
+- Optional `AGENT_MCP_SERVERS_FILE`, containing trusted, secret-free HTTPS MCP endpoint metadata and optional mounted secret references.
+
+Callers select a configured model by `profile_id`; they cannot choose or recombine its endpoint and credential reference. A minimal catalog is `{"schema_version":1,"profiles":[{"profile_id":"deepseek-v4","provider":"deepseek","model":"deepseekv4-pro","base_url":"https://api.deepseek.com/v1","secret_ref":"mounted:deepseek-token","context_window":65536,"max_output_tokens":8192}]}`. Keep credential bytes only in the referenced mounted file.
 
 `bootstrap-service-key` additionally requires a protected `AGENT_BOOTSTRAP_SERVICE_KEY_FILE`, `AGENT_BOOTSTRAP_CLIENT_ID`, and optional comma-separated `AGENT_BOOTSTRAP_SCOPES`. The key file contains `key_id.<32-byte-base64url-secret>`. Generate it outside the process, mount it read-only, and never place its value in shell history, Compose YAML, logs, or source control.
 
 On Linux, DSN, TLS private key, pepper, and bootstrap key files must be regular files without group/world permission bits. Run `migrate` before bootstrap or serve; startup rejects a database owned by another `agent_instance_id` or a migration whose recorded checksum differs.
 
-P0 PostgreSQL integration checks are opt-in and documented in [test/integration/p0/README.md](test/integration/p0/README.md). Later Runtime, AWS, and Worker surfaces report disabled capabilities or `UNIMPLEMENTED` until their tracker stage is accepted.
+PostgreSQL integration checks are opt-in through `AGENT_TEST_POSTGRES_DSN`. The P1 lane verifies the complete TLS gRPC/Eino/planning flow against PostgreSQL 18, including official-source evidence, structured Task references, exact replay, restart recovery, event cursors, secret canaries, stateless completion, and database/role cleanup.
 
-The Agent requires an independent logical database and role, not an independent PostgreSQL process. A Dirextalk deployment should reuse the existing Message Server PostgreSQL 18 server/container and create a separate Agent database and least-privilege role. Agent and Message Server must not share tables, schemas, migration ledgers, or database credentials.
+The Agent requires an independent logical database and role, not an independent PostgreSQL process. A Dirextalk deployment should reuse the existing Message Server PostgreSQL 18 server/container and create a separate Agent database and least-privilege role. Agent and Message Server must not share a database, schema, role, migration ledger, or credentials. No PostgreSQL 16 or second PostgreSQL container is required.

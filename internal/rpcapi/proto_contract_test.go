@@ -10,29 +10,46 @@ import (
 
 func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 	tests := []struct {
-		message          proto.Message
-		requiresRevision bool
+		message       proto.Message
+		revisionField protoreflect.Name
 	}{
 		{message: &agentv1.CreateTaskRequest{}},
-		{message: &agentv1.CancelTaskRequest{}, requiresRevision: true},
-		{message: &agentv1.ChatRequest{}},
-		{message: &agentv1.StreamChatRequest{}},
+		{message: &agentv1.CancelTaskRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.PutRuntimeConfigRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.ChatRequest{}, revisionField: "expected_conversation_revision"},
+		{message: &agentv1.StreamChatRequest{}, revisionField: "expected_conversation_revision"},
 		{message: &agentv1.CreateSessionRequest{}},
-		{message: &agentv1.UploadEncryptedRequest{}, requiresRevision: true},
-		{message: &agentv1.CompleteRequest{}, requiresRevision: true},
+		{message: &agentv1.UploadEncryptedRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CompleteRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.CreateServiceKeyRequest{}},
-		{message: &agentv1.RevokeServiceKeyRequest{}, requiresRevision: true},
+		{message: &agentv1.RevokeServiceKeyRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.EnrollRequest{}},
-		{message: &agentv1.HeartbeatRequest{}, requiresRevision: true},
+		{message: &agentv1.HeartbeatRequest{}, revisionField: "expected_revision"},
 	}
 	for _, test := range tests {
 		descriptor := test.message.ProtoReflect().Descriptor()
 		t.Run(string(descriptor.Name()), func(t *testing.T) {
 			assertFieldKind(t, descriptor, "idempotency_key", protoreflect.StringKind)
-			if test.requiresRevision {
-				assertFieldKind(t, descriptor, "expected_revision", protoreflect.Int64Kind)
+			if test.revisionField != "" {
+				assertFieldKind(t, descriptor, test.revisionField, protoreflect.Int64Kind)
 			}
 		})
+	}
+}
+
+func TestStreamChatUsesTypedEventsWithoutLegacyFinalFlag(t *testing.T) {
+	descriptor := (&agentv1.StreamChatResponse{}).ProtoReflect().Descriptor()
+	if descriptor.Fields().ByName("final") != nil || descriptor.Oneofs().ByName("event") == nil {
+		t.Fatal("StreamChatResponse must use the typed event oneof without a final flag")
+	}
+	for _, fieldName := range []protoreflect.Name{"delta", "tool", "done"} {
+		field := descriptor.Fields().ByName(fieldName)
+		if field == nil || field.ContainingOneof() == nil || field.ContainingOneof().Name() != "event" {
+			t.Fatalf("StreamChatResponse.%s is not part of event oneof", fieldName)
+		}
+	}
+	if descriptor.Fields().ByName("reasoning") != nil {
+		t.Fatal("StreamChatResponse must not expose raw model reasoning")
 	}
 }
 

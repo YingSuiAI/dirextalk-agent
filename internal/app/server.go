@@ -22,7 +22,21 @@ type Server struct {
 	health *health.Server
 }
 
-func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string) (*Server, error) {
+type serverOptions struct {
+	runtimeCoordinator rpcapi.RuntimeCoordinator
+	runtimeFeatures    rpcapi.RuntimeFeatures
+}
+
+type ServerOption func(*serverOptions)
+
+func WithRuntime(coordinator rpcapi.RuntimeCoordinator, features rpcapi.RuntimeFeatures) ServerOption {
+	return func(options *serverOptions) {
+		options.runtimeCoordinator = coordinator
+		options.runtimeFeatures = features
+	}
+}
+
+func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, optionValues ...ServerOption) (*Server, error) {
 	if store == nil {
 		return nil, errors.New("postgres store is required")
 	}
@@ -45,6 +59,8 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string) (
 		agentv1.TaskService_ListSteps_FullMethodName:                  "task.read",
 		agentv1.TaskService_WatchEvents_FullMethodName:                "event.read",
 		agentv1.RuntimeService_GetCapabilities_FullMethodName:         "runtime.read",
+		agentv1.RuntimeService_GetRuntimeConfig_FullMethodName:        "runtime.read",
+		agentv1.RuntimeService_PutRuntimeConfig_FullMethodName:        "runtime.write",
 		agentv1.RuntimeService_Chat_FullMethodName:                    "runtime.chat",
 		agentv1.RuntimeService_StreamChat_FullMethodName:              "runtime.chat",
 		agentv1.CloudControlService_GetCapabilities_FullMethodName:    "cloud.read",
@@ -62,9 +78,15 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string) (
 		grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream),
 		grpc.MaxRecvMsgSize(4<<20), grpc.MaxSendMsgSize(4<<20),
 	)
+	options := serverOptions{}
+	for _, option := range optionValues {
+		if option != nil {
+			option(&options)
+		}
+	}
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
-	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.RuntimeService{})
+	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeService(options.runtimeCoordinator, options.runtimeFeatures))
 	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.CloudControlService{})
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.SecretBootstrapService{})
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.WorkerControlService{})

@@ -315,9 +315,11 @@ var TaskService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	RuntimeService_GetCapabilities_FullMethodName = "/dirextalk.agent.v1.RuntimeService/GetCapabilities"
-	RuntimeService_Chat_FullMethodName            = "/dirextalk.agent.v1.RuntimeService/Chat"
-	RuntimeService_StreamChat_FullMethodName      = "/dirextalk.agent.v1.RuntimeService/StreamChat"
+	RuntimeService_GetCapabilities_FullMethodName  = "/dirextalk.agent.v1.RuntimeService/GetCapabilities"
+	RuntimeService_GetRuntimeConfig_FullMethodName = "/dirextalk.agent.v1.RuntimeService/GetRuntimeConfig"
+	RuntimeService_PutRuntimeConfig_FullMethodName = "/dirextalk.agent.v1.RuntimeService/PutRuntimeConfig"
+	RuntimeService_Chat_FullMethodName             = "/dirextalk.agent.v1.RuntimeService/Chat"
+	RuntimeService_StreamChat_FullMethodName       = "/dirextalk.agent.v1.RuntimeService/StreamChat"
 )
 
 // RuntimeServiceClient is the client API for RuntimeService service.
@@ -325,6 +327,8 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RuntimeServiceClient interface {
 	GetCapabilities(ctx context.Context, in *RuntimeServiceGetCapabilitiesRequest, opts ...grpc.CallOption) (*RuntimeServiceGetCapabilitiesResponse, error)
+	GetRuntimeConfig(ctx context.Context, in *GetRuntimeConfigRequest, opts ...grpc.CallOption) (*GetRuntimeConfigResponse, error)
+	PutRuntimeConfig(ctx context.Context, in *PutRuntimeConfigRequest, opts ...grpc.CallOption) (*PutRuntimeConfigResponse, error)
 	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error)
 	StreamChat(ctx context.Context, in *StreamChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamChatResponse], error)
 }
@@ -341,6 +345,26 @@ func (c *runtimeServiceClient) GetCapabilities(ctx context.Context, in *RuntimeS
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RuntimeServiceGetCapabilitiesResponse)
 	err := c.cc.Invoke(ctx, RuntimeService_GetCapabilities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeServiceClient) GetRuntimeConfig(ctx context.Context, in *GetRuntimeConfigRequest, opts ...grpc.CallOption) (*GetRuntimeConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRuntimeConfigResponse)
+	err := c.cc.Invoke(ctx, RuntimeService_GetRuntimeConfig_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeServiceClient) PutRuntimeConfig(ctx context.Context, in *PutRuntimeConfigRequest, opts ...grpc.CallOption) (*PutRuntimeConfigResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutRuntimeConfigResponse)
+	err := c.cc.Invoke(ctx, RuntimeService_PutRuntimeConfig_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +405,8 @@ type RuntimeService_StreamChatClient = grpc.ServerStreamingClient[StreamChatResp
 // for forward compatibility.
 type RuntimeServiceServer interface {
 	GetCapabilities(context.Context, *RuntimeServiceGetCapabilitiesRequest) (*RuntimeServiceGetCapabilitiesResponse, error)
+	GetRuntimeConfig(context.Context, *GetRuntimeConfigRequest) (*GetRuntimeConfigResponse, error)
+	PutRuntimeConfig(context.Context, *PutRuntimeConfigRequest) (*PutRuntimeConfigResponse, error)
 	Chat(context.Context, *ChatRequest) (*ChatResponse, error)
 	StreamChat(*StreamChatRequest, grpc.ServerStreamingServer[StreamChatResponse]) error
 	mustEmbedUnimplementedRuntimeServiceServer()
@@ -395,6 +421,12 @@ type UnimplementedRuntimeServiceServer struct{}
 
 func (UnimplementedRuntimeServiceServer) GetCapabilities(context.Context, *RuntimeServiceGetCapabilitiesRequest) (*RuntimeServiceGetCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapabilities not implemented")
+}
+func (UnimplementedRuntimeServiceServer) GetRuntimeConfig(context.Context, *GetRuntimeConfigRequest) (*GetRuntimeConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRuntimeConfig not implemented")
+}
+func (UnimplementedRuntimeServiceServer) PutRuntimeConfig(context.Context, *PutRuntimeConfigRequest) (*PutRuntimeConfigResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutRuntimeConfig not implemented")
 }
 func (UnimplementedRuntimeServiceServer) Chat(context.Context, *ChatRequest) (*ChatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Chat not implemented")
@@ -441,6 +473,42 @@ func _RuntimeService_GetCapabilities_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RuntimeService_GetRuntimeConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRuntimeConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeServiceServer).GetRuntimeConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeService_GetRuntimeConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeServiceServer).GetRuntimeConfig(ctx, req.(*GetRuntimeConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RuntimeService_PutRuntimeConfig_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutRuntimeConfigRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeServiceServer).PutRuntimeConfig(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeService_PutRuntimeConfig_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeServiceServer).PutRuntimeConfig(ctx, req.(*PutRuntimeConfigRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RuntimeService_Chat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ChatRequest)
 	if err := dec(in); err != nil {
@@ -480,6 +548,14 @@ var RuntimeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapabilities",
 			Handler:    _RuntimeService_GetCapabilities_Handler,
+		},
+		{
+			MethodName: "GetRuntimeConfig",
+			Handler:    _RuntimeService_GetRuntimeConfig_Handler,
+		},
+		{
+			MethodName: "PutRuntimeConfig",
+			Handler:    _RuntimeService_PutRuntimeConfig_Handler,
 		},
 		{
 			MethodName: "Chat",

@@ -248,6 +248,110 @@ func (ExecutorKind) EnumDescriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{3}
 }
 
+type ModelProvider int32
+
+const (
+	ModelProvider_MODEL_PROVIDER_UNSPECIFIED       ModelProvider = 0
+	ModelProvider_MODEL_PROVIDER_OPENAI_COMPATIBLE ModelProvider = 1
+	ModelProvider_MODEL_PROVIDER_DEEPSEEK          ModelProvider = 2
+	ModelProvider_MODEL_PROVIDER_ANTHROPIC         ModelProvider = 3
+)
+
+// Enum value maps for ModelProvider.
+var (
+	ModelProvider_name = map[int32]string{
+		0: "MODEL_PROVIDER_UNSPECIFIED",
+		1: "MODEL_PROVIDER_OPENAI_COMPATIBLE",
+		2: "MODEL_PROVIDER_DEEPSEEK",
+		3: "MODEL_PROVIDER_ANTHROPIC",
+	}
+	ModelProvider_value = map[string]int32{
+		"MODEL_PROVIDER_UNSPECIFIED":       0,
+		"MODEL_PROVIDER_OPENAI_COMPATIBLE": 1,
+		"MODEL_PROVIDER_DEEPSEEK":          2,
+		"MODEL_PROVIDER_ANTHROPIC":         3,
+	}
+)
+
+func (x ModelProvider) Enum() *ModelProvider {
+	p := new(ModelProvider)
+	*p = x
+	return p
+}
+
+func (x ModelProvider) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ModelProvider) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_agent_proto_enumTypes[4].Descriptor()
+}
+
+func (ModelProvider) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_agent_proto_enumTypes[4]
+}
+
+func (x ModelProvider) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ModelProvider.Descriptor instead.
+func (ModelProvider) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{4}
+}
+
+type RuntimeStepKind int32
+
+const (
+	RuntimeStepKind_RUNTIME_STEP_KIND_UNSPECIFIED RuntimeStepKind = 0
+	RuntimeStepKind_RUNTIME_STEP_KIND_MODEL       RuntimeStepKind = 1
+	RuntimeStepKind_RUNTIME_STEP_KIND_TOOL_CALL   RuntimeStepKind = 2
+	RuntimeStepKind_RUNTIME_STEP_KIND_TOOL_RESULT RuntimeStepKind = 3
+)
+
+// Enum value maps for RuntimeStepKind.
+var (
+	RuntimeStepKind_name = map[int32]string{
+		0: "RUNTIME_STEP_KIND_UNSPECIFIED",
+		1: "RUNTIME_STEP_KIND_MODEL",
+		2: "RUNTIME_STEP_KIND_TOOL_CALL",
+		3: "RUNTIME_STEP_KIND_TOOL_RESULT",
+	}
+	RuntimeStepKind_value = map[string]int32{
+		"RUNTIME_STEP_KIND_UNSPECIFIED": 0,
+		"RUNTIME_STEP_KIND_MODEL":       1,
+		"RUNTIME_STEP_KIND_TOOL_CALL":   2,
+		"RUNTIME_STEP_KIND_TOOL_RESULT": 3,
+	}
+)
+
+func (x RuntimeStepKind) Enum() *RuntimeStepKind {
+	p := new(RuntimeStepKind)
+	*p = x
+	return p
+}
+
+func (x RuntimeStepKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (RuntimeStepKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_agent_proto_enumTypes[5].Descriptor()
+}
+
+func (RuntimeStepKind) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_agent_proto_enumTypes[5]
+}
+
+func (x RuntimeStepKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use RuntimeStepKind.Descriptor instead.
+func (RuntimeStepKind) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{5}
+}
+
 type Task struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	TaskId          string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
@@ -1221,13 +1325,18 @@ func (x *WatchEventsResponse) GetEvent() *Event {
 }
 
 type RuntimeCapabilities struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Chat           bool                   `protobuf:"varint,1,opt,name=chat,proto3" json:"chat,omitempty"`
-	CloudWorker    bool                   `protobuf:"varint,2,opt,name=cloud_worker,json=cloudWorker,proto3" json:"cloud_worker,omitempty"`
-	LocalConnector bool                   `protobuf:"varint,3,opt,name=local_connector,json=localConnector,proto3" json:"local_connector,omitempty"`
-	Skills         []string               `protobuf:"bytes,4,rep,name=skills,proto3" json:"skills,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Chat            bool                   `protobuf:"varint,1,opt,name=chat,proto3" json:"chat,omitempty"`
+	CloudWorker     bool                   `protobuf:"varint,2,opt,name=cloud_worker,json=cloudWorker,proto3" json:"cloud_worker,omitempty"`
+	LocalConnector  bool                   `protobuf:"varint,3,opt,name=local_connector,json=localConnector,proto3" json:"local_connector,omitempty"`
+	Skills          []string               `protobuf:"bytes,4,rep,name=skills,proto3" json:"skills,omitempty"`
+	StreamChat      bool                   `protobuf:"varint,5,opt,name=stream_chat,json=streamChat,proto3" json:"stream_chat,omitempty"`
+	RuntimeConfig   bool                   `protobuf:"varint,6,opt,name=runtime_config,json=runtimeConfig,proto3" json:"runtime_config,omitempty"`
+	Knowledge       bool                   `protobuf:"varint,7,opt,name=knowledge,proto3" json:"knowledge,omitempty"`
+	McpHttp         bool                   `protobuf:"varint,8,opt,name=mcp_http,json=mcpHttp,proto3" json:"mcp_http,omitempty"`
+	ModelProfileIds []string               `protobuf:"bytes,9,rep,name=model_profile_ids,json=modelProfileIds,proto3" json:"model_profile_ids,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *RuntimeCapabilities) Reset() {
@@ -1284,6 +1393,41 @@ func (x *RuntimeCapabilities) GetLocalConnector() bool {
 func (x *RuntimeCapabilities) GetSkills() []string {
 	if x != nil {
 		return x.Skills
+	}
+	return nil
+}
+
+func (x *RuntimeCapabilities) GetStreamChat() bool {
+	if x != nil {
+		return x.StreamChat
+	}
+	return false
+}
+
+func (x *RuntimeCapabilities) GetRuntimeConfig() bool {
+	if x != nil {
+		return x.RuntimeConfig
+	}
+	return false
+}
+
+func (x *RuntimeCapabilities) GetKnowledge() bool {
+	if x != nil {
+		return x.Knowledge
+	}
+	return false
+}
+
+func (x *RuntimeCapabilities) GetMcpHttp() bool {
+	if x != nil {
+		return x.McpHttp
+	}
+	return false
+}
+
+func (x *RuntimeCapabilities) GetModelProfileIds() []string {
+	if x != nil {
+		return x.ModelProfileIds
 	}
 	return nil
 }
@@ -1368,19 +1512,525 @@ func (x *RuntimeServiceGetCapabilitiesResponse) GetCapabilities() *RuntimeCapabi
 	return nil
 }
 
+type ModelProfile struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Provider        ModelProvider          `protobuf:"varint,1,opt,name=provider,proto3,enum=dirextalk.agent.v1.ModelProvider" json:"provider,omitempty"`
+	Model           string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	BaseUrl         string                 `protobuf:"bytes,3,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	SecretRef       string                 `protobuf:"bytes,4,opt,name=secret_ref,json=secretRef,proto3" json:"secret_ref,omitempty"`
+	Temperature     *float64               `protobuf:"fixed64,5,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
+	TopP            *float64               `protobuf:"fixed64,6,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
+	MaxOutputTokens int32                  `protobuf:"varint,7,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
+	ContextWindow   int32                  `protobuf:"varint,8,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
+	ReasoningEffort string                 `protobuf:"bytes,9,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
+	// Selects immutable server-owned provider, endpoint, model and credential
+	// metadata. Callers may only override bounded sampling fields.
+	ProfileId     string `protobuf:"bytes,10,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ModelProfile) Reset() {
+	*x = ModelProfile{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModelProfile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModelProfile) ProtoMessage() {}
+
+func (x *ModelProfile) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModelProfile.ProtoReflect.Descriptor instead.
+func (*ModelProfile) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ModelProfile) GetProvider() ModelProvider {
+	if x != nil {
+		return x.Provider
+	}
+	return ModelProvider_MODEL_PROVIDER_UNSPECIFIED
+}
+
+func (x *ModelProfile) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *ModelProfile) GetBaseUrl() string {
+	if x != nil {
+		return x.BaseUrl
+	}
+	return ""
+}
+
+func (x *ModelProfile) GetSecretRef() string {
+	if x != nil {
+		return x.SecretRef
+	}
+	return ""
+}
+
+func (x *ModelProfile) GetTemperature() float64 {
+	if x != nil && x.Temperature != nil {
+		return *x.Temperature
+	}
+	return 0
+}
+
+func (x *ModelProfile) GetTopP() float64 {
+	if x != nil && x.TopP != nil {
+		return *x.TopP
+	}
+	return 0
+}
+
+func (x *ModelProfile) GetMaxOutputTokens() int32 {
+	if x != nil {
+		return x.MaxOutputTokens
+	}
+	return 0
+}
+
+func (x *ModelProfile) GetContextWindow() int32 {
+	if x != nil {
+		return x.ContextWindow
+	}
+	return 0
+}
+
+func (x *ModelProfile) GetReasoningEffort() string {
+	if x != nil {
+		return x.ReasoningEffort
+	}
+	return ""
+}
+
+func (x *ModelProfile) GetProfileId() string {
+	if x != nil {
+		return x.ProfileId
+	}
+	return ""
+}
+
+type RuntimeConfigSpec struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ModelProfile *ModelProfile          `protobuf:"bytes,1,opt,name=model_profile,json=modelProfile,proto3" json:"model_profile,omitempty"`
+	// Project-specific context is appended beneath the immutable server policy;
+	// callers cannot replace the security policy or tool boundaries.
+	ProjectProfile      string   `protobuf:"bytes,2,opt,name=project_profile,json=projectProfile,proto3" json:"project_profile,omitempty"`
+	ContextMessageLimit int32    `protobuf:"varint,3,opt,name=context_message_limit,json=contextMessageLimit,proto3" json:"context_message_limit,omitempty"`
+	MemoryMessageLimit  int32    `protobuf:"varint,4,opt,name=memory_message_limit,json=memoryMessageLimit,proto3" json:"memory_message_limit,omitempty"`
+	MaxSteps            int32    `protobuf:"varint,5,opt,name=max_steps,json=maxSteps,proto3" json:"max_steps,omitempty"`
+	MemoryDisabled      bool     `protobuf:"varint,6,opt,name=memory_disabled,json=memoryDisabled,proto3" json:"memory_disabled,omitempty"`
+	EnabledTools        []string `protobuf:"bytes,7,rep,name=enabled_tools,json=enabledTools,proto3" json:"enabled_tools,omitempty"`
+	KnowledgeRefs       []string `protobuf:"bytes,8,rep,name=knowledge_refs,json=knowledgeRefs,proto3" json:"knowledge_refs,omitempty"`
+	McpServerIds        []string `protobuf:"bytes,9,rep,name=mcp_server_ids,json=mcpServerIds,proto3" json:"mcp_server_ids,omitempty"`
+	RecipeIds           []string `protobuf:"bytes,10,rep,name=recipe_ids,json=recipeIds,proto3" json:"recipe_ids,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *RuntimeConfigSpec) Reset() {
+	*x = RuntimeConfigSpec{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeConfigSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeConfigSpec) ProtoMessage() {}
+
+func (x *RuntimeConfigSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeConfigSpec.ProtoReflect.Descriptor instead.
+func (*RuntimeConfigSpec) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *RuntimeConfigSpec) GetModelProfile() *ModelProfile {
+	if x != nil {
+		return x.ModelProfile
+	}
+	return nil
+}
+
+func (x *RuntimeConfigSpec) GetProjectProfile() string {
+	if x != nil {
+		return x.ProjectProfile
+	}
+	return ""
+}
+
+func (x *RuntimeConfigSpec) GetContextMessageLimit() int32 {
+	if x != nil {
+		return x.ContextMessageLimit
+	}
+	return 0
+}
+
+func (x *RuntimeConfigSpec) GetMemoryMessageLimit() int32 {
+	if x != nil {
+		return x.MemoryMessageLimit
+	}
+	return 0
+}
+
+func (x *RuntimeConfigSpec) GetMaxSteps() int32 {
+	if x != nil {
+		return x.MaxSteps
+	}
+	return 0
+}
+
+func (x *RuntimeConfigSpec) GetMemoryDisabled() bool {
+	if x != nil {
+		return x.MemoryDisabled
+	}
+	return false
+}
+
+func (x *RuntimeConfigSpec) GetEnabledTools() []string {
+	if x != nil {
+		return x.EnabledTools
+	}
+	return nil
+}
+
+func (x *RuntimeConfigSpec) GetKnowledgeRefs() []string {
+	if x != nil {
+		return x.KnowledgeRefs
+	}
+	return nil
+}
+
+func (x *RuntimeConfigSpec) GetMcpServerIds() []string {
+	if x != nil {
+		return x.McpServerIds
+	}
+	return nil
+}
+
+func (x *RuntimeConfigSpec) GetRecipeIds() []string {
+	if x != nil {
+		return x.RecipeIds
+	}
+	return nil
+}
+
+type RuntimeConfig struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Spec          *RuntimeConfigSpec     `protobuf:"bytes,2,opt,name=spec,proto3" json:"spec,omitempty"`
+	Revision      int64                  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeConfig) Reset() {
+	*x = RuntimeConfig{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeConfig) ProtoMessage() {}
+
+func (x *RuntimeConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeConfig.ProtoReflect.Descriptor instead.
+func (*RuntimeConfig) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *RuntimeConfig) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *RuntimeConfig) GetSpec() *RuntimeConfigSpec {
+	if x != nil {
+		return x.Spec
+	}
+	return nil
+}
+
+func (x *RuntimeConfig) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *RuntimeConfig) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+type GetRuntimeConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRuntimeConfigRequest) Reset() {
+	*x = GetRuntimeConfigRequest{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRuntimeConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRuntimeConfigRequest) ProtoMessage() {}
+
+func (x *GetRuntimeConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRuntimeConfigRequest.ProtoReflect.Descriptor instead.
+func (*GetRuntimeConfigRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *GetRuntimeConfigRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+type GetRuntimeConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Config        *RuntimeConfig         `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRuntimeConfigResponse) Reset() {
+	*x = GetRuntimeConfigResponse{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRuntimeConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRuntimeConfigResponse) ProtoMessage() {}
+
+func (x *GetRuntimeConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRuntimeConfigResponse.ProtoReflect.Descriptor instead.
+func (*GetRuntimeConfigResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *GetRuntimeConfigResponse) GetConfig() *RuntimeConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type PutRuntimeConfigRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey   string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	OwnerId          string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Spec             *RuntimeConfigSpec     `protobuf:"bytes,3,opt,name=spec,proto3" json:"spec,omitempty"`
+	ExpectedRevision int64                  `protobuf:"varint,4,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *PutRuntimeConfigRequest) Reset() {
+	*x = PutRuntimeConfigRequest{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutRuntimeConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutRuntimeConfigRequest) ProtoMessage() {}
+
+func (x *PutRuntimeConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutRuntimeConfigRequest.ProtoReflect.Descriptor instead.
+func (*PutRuntimeConfigRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *PutRuntimeConfigRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *PutRuntimeConfigRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *PutRuntimeConfigRequest) GetSpec() *RuntimeConfigSpec {
+	if x != nil {
+		return x.Spec
+	}
+	return nil
+}
+
+func (x *PutRuntimeConfigRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+type PutRuntimeConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Config        *RuntimeConfig         `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutRuntimeConfigResponse) Reset() {
+	*x = PutRuntimeConfigResponse{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutRuntimeConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutRuntimeConfigResponse) ProtoMessage() {}
+
+func (x *PutRuntimeConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutRuntimeConfigResponse.ProtoReflect.Descriptor instead.
+func (*PutRuntimeConfigResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *PutRuntimeConfigResponse) GetConfig() *RuntimeConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
 type ChatRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	OwnerId        string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	ConversationId string                 `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Message        string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                        protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey               string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	OwnerId                      string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	ConversationId               string                 `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message                      string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	MemoryDisabled               bool                   `protobuf:"varint,5,opt,name=memory_disabled,json=memoryDisabled,proto3" json:"memory_disabled,omitempty"`
+	ExpectedConversationRevision int64                  `protobuf:"varint,6,opt,name=expected_conversation_revision,json=expectedConversationRevision,proto3" json:"expected_conversation_revision,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *ChatRequest) Reset() {
 	*x = ChatRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1392,7 +2042,7 @@ func (x *ChatRequest) String() string {
 func (*ChatRequest) ProtoMessage() {}
 
 func (x *ChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1405,7 +2055,7 @@ func (x *ChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatRequest.ProtoReflect.Descriptor instead.
 func (*ChatRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{18}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ChatRequest) GetIdempotencyKey() string {
@@ -1436,19 +2086,155 @@ func (x *ChatRequest) GetMessage() string {
 	return ""
 }
 
+func (x *ChatRequest) GetMemoryDisabled() bool {
+	if x != nil {
+		return x.MemoryDisabled
+	}
+	return false
+}
+
+func (x *ChatRequest) GetExpectedConversationRevision() int64 {
+	if x != nil {
+		return x.ExpectedConversationRevision
+	}
+	return 0
+}
+
+type RuntimeStepSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          RuntimeStepKind        `protobuf:"varint,1,opt,name=kind,proto3,enum=dirextalk.agent.v1.RuntimeStepKind" json:"kind,omitempty"`
+	ToolCallId    string                 `protobuf:"bytes,2,opt,name=tool_call_id,json=toolCallId,proto3" json:"tool_call_id,omitempty"`
+	ToolName      string                 `protobuf:"bytes,3,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	IsError       bool                   `protobuf:"varint,4,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeStepSummary) Reset() {
+	*x = RuntimeStepSummary{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeStepSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeStepSummary) ProtoMessage() {}
+
+func (x *RuntimeStepSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeStepSummary.ProtoReflect.Descriptor instead.
+func (*RuntimeStepSummary) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *RuntimeStepSummary) GetKind() RuntimeStepKind {
+	if x != nil {
+		return x.Kind
+	}
+	return RuntimeStepKind_RUNTIME_STEP_KIND_UNSPECIFIED
+}
+
+func (x *RuntimeStepSummary) GetToolCallId() string {
+	if x != nil {
+		return x.ToolCallId
+	}
+	return ""
+}
+
+func (x *RuntimeStepSummary) GetToolName() string {
+	if x != nil {
+		return x.ToolName
+	}
+	return ""
+}
+
+func (x *RuntimeStepSummary) GetIsError() bool {
+	if x != nil {
+		return x.IsError
+	}
+	return false
+}
+
+type RuntimeAssistantMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MessageId     string                 `protobuf:"bytes,1,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeAssistantMessage) Reset() {
+	*x = RuntimeAssistantMessage{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeAssistantMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeAssistantMessage) ProtoMessage() {}
+
+func (x *RuntimeAssistantMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeAssistantMessage.ProtoReflect.Descriptor instead.
+func (*RuntimeAssistantMessage) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *RuntimeAssistantMessage) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
+func (x *RuntimeAssistantMessage) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
 type ChatResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	ConversationId string                 `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	MessageId      string                 `protobuf:"bytes,2,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
-	Content        string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	Final          bool                   `protobuf:"varint,4,opt,name=final,proto3" json:"final,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                protoimpl.MessageState   `protogen:"open.v1"`
+	ConversationId       string                   `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message              *RuntimeAssistantMessage `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	ConversationRevision int64                    `protobuf:"varint,3,opt,name=conversation_revision,json=conversationRevision,proto3" json:"conversation_revision,omitempty"`
+	Steps                []*RuntimeStepSummary    `protobuf:"bytes,4,rep,name=steps,proto3" json:"steps,omitempty"`
+	RelatedTaskIds       []string                 `protobuf:"bytes,5,rep,name=related_task_ids,json=relatedTaskIds,proto3" json:"related_task_ids,omitempty"`
+	RelatedPlanIds       []string                 `protobuf:"bytes,6,rep,name=related_plan_ids,json=relatedPlanIds,proto3" json:"related_plan_ids,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ChatResponse) Reset() {
 	*x = ChatResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1460,7 +2246,7 @@ func (x *ChatResponse) String() string {
 func (*ChatResponse) ProtoMessage() {}
 
 func (x *ChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1473,7 +2259,7 @@ func (x *ChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatResponse.ProtoReflect.Descriptor instead.
 func (*ChatResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{19}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ChatResponse) GetConversationId() string {
@@ -1483,40 +2269,56 @@ func (x *ChatResponse) GetConversationId() string {
 	return ""
 }
 
-func (x *ChatResponse) GetMessageId() string {
+func (x *ChatResponse) GetMessage() *RuntimeAssistantMessage {
 	if x != nil {
-		return x.MessageId
+		return x.Message
 	}
-	return ""
+	return nil
 }
 
-func (x *ChatResponse) GetContent() string {
+func (x *ChatResponse) GetConversationRevision() int64 {
 	if x != nil {
-		return x.Content
+		return x.ConversationRevision
 	}
-	return ""
+	return 0
 }
 
-func (x *ChatResponse) GetFinal() bool {
+func (x *ChatResponse) GetSteps() []*RuntimeStepSummary {
 	if x != nil {
-		return x.Final
+		return x.Steps
 	}
-	return false
+	return nil
+}
+
+func (x *ChatResponse) GetRelatedTaskIds() []string {
+	if x != nil {
+		return x.RelatedTaskIds
+	}
+	return nil
+}
+
+func (x *ChatResponse) GetRelatedPlanIds() []string {
+	if x != nil {
+		return x.RelatedPlanIds
+	}
+	return nil
 }
 
 type StreamChatRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	IdempotencyKey string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	OwnerId        string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	ConversationId string                 `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Message        string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                        protoimpl.MessageState `protogen:"open.v1"`
+	IdempotencyKey               string                 `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	OwnerId                      string                 `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	ConversationId               string                 `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message                      string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	MemoryDisabled               bool                   `protobuf:"varint,5,opt,name=memory_disabled,json=memoryDisabled,proto3" json:"memory_disabled,omitempty"`
+	ExpectedConversationRevision int64                  `protobuf:"varint,6,opt,name=expected_conversation_revision,json=expectedConversationRevision,proto3" json:"expected_conversation_revision,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
 }
 
 func (x *StreamChatRequest) Reset() {
 	*x = StreamChatRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1528,7 +2330,7 @@ func (x *StreamChatRequest) String() string {
 func (*StreamChatRequest) ProtoMessage() {}
 
 func (x *StreamChatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1541,7 +2343,7 @@ func (x *StreamChatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamChatRequest.ProtoReflect.Descriptor instead.
 func (*StreamChatRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{20}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *StreamChatRequest) GetIdempotencyKey() string {
@@ -1572,19 +2374,199 @@ func (x *StreamChatRequest) GetMessage() string {
 	return ""
 }
 
+func (x *StreamChatRequest) GetMemoryDisabled() bool {
+	if x != nil {
+		return x.MemoryDisabled
+	}
+	return false
+}
+
+func (x *StreamChatRequest) GetExpectedConversationRevision() int64 {
+	if x != nil {
+		return x.ExpectedConversationRevision
+	}
+	return 0
+}
+
+type ChatDelta struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MessageId     string                 `protobuf:"bytes,1,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChatDelta) Reset() {
+	*x = ChatDelta{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatDelta) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatDelta) ProtoMessage() {}
+
+func (x *ChatDelta) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatDelta.ProtoReflect.Descriptor instead.
+func (*ChatDelta) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ChatDelta) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
+func (x *ChatDelta) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+type ToolExecutionSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ToolCallId    string                 `protobuf:"bytes,1,opt,name=tool_call_id,json=toolCallId,proto3" json:"tool_call_id,omitempty"`
+	ToolName      string                 `protobuf:"bytes,2,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	Finished      bool                   `protobuf:"varint,3,opt,name=finished,proto3" json:"finished,omitempty"`
+	IsError       bool                   `protobuf:"varint,4,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ToolExecutionSummary) Reset() {
+	*x = ToolExecutionSummary{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ToolExecutionSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ToolExecutionSummary) ProtoMessage() {}
+
+func (x *ToolExecutionSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ToolExecutionSummary.ProtoReflect.Descriptor instead.
+func (*ToolExecutionSummary) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ToolExecutionSummary) GetToolCallId() string {
+	if x != nil {
+		return x.ToolCallId
+	}
+	return ""
+}
+
+func (x *ToolExecutionSummary) GetToolName() string {
+	if x != nil {
+		return x.ToolName
+	}
+	return ""
+}
+
+func (x *ToolExecutionSummary) GetFinished() bool {
+	if x != nil {
+		return x.Finished
+	}
+	return false
+}
+
+func (x *ToolExecutionSummary) GetIsError() bool {
+	if x != nil {
+		return x.IsError
+	}
+	return false
+}
+
+type ChatDone struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Response      *ChatResponse          `protobuf:"bytes,1,opt,name=response,proto3" json:"response,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChatDone) Reset() {
+	*x = ChatDone{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatDone) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatDone) ProtoMessage() {}
+
+func (x *ChatDone) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatDone.ProtoReflect.Descriptor instead.
+func (*ChatDone) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ChatDone) GetResponse() *ChatResponse {
+	if x != nil {
+		return x.Response
+	}
+	return nil
+}
+
 type StreamChatResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	ConversationId string                 `protobuf:"bytes,1,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	MessageId      string                 `protobuf:"bytes,2,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
-	Content        string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	Final          bool                   `protobuf:"varint,4,opt,name=final,proto3" json:"final,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Event:
+	//
+	//	*StreamChatResponse_Delta
+	//	*StreamChatResponse_Tool
+	//	*StreamChatResponse_Done
+	Event         isStreamChatResponse_Event `protobuf_oneof:"event"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StreamChatResponse) Reset() {
 	*x = StreamChatResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1596,7 +2578,7 @@ func (x *StreamChatResponse) String() string {
 func (*StreamChatResponse) ProtoMessage() {}
 
 func (x *StreamChatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1609,36 +2591,64 @@ func (x *StreamChatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamChatResponse.ProtoReflect.Descriptor instead.
 func (*StreamChatResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{21}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{33}
 }
 
-func (x *StreamChatResponse) GetConversationId() string {
+func (x *StreamChatResponse) GetEvent() isStreamChatResponse_Event {
 	if x != nil {
-		return x.ConversationId
+		return x.Event
 	}
-	return ""
+	return nil
 }
 
-func (x *StreamChatResponse) GetMessageId() string {
+func (x *StreamChatResponse) GetDelta() *ChatDelta {
 	if x != nil {
-		return x.MessageId
+		if x, ok := x.Event.(*StreamChatResponse_Delta); ok {
+			return x.Delta
+		}
 	}
-	return ""
+	return nil
 }
 
-func (x *StreamChatResponse) GetContent() string {
+func (x *StreamChatResponse) GetTool() *ToolExecutionSummary {
 	if x != nil {
-		return x.Content
+		if x, ok := x.Event.(*StreamChatResponse_Tool); ok {
+			return x.Tool
+		}
 	}
-	return ""
+	return nil
 }
 
-func (x *StreamChatResponse) GetFinal() bool {
+func (x *StreamChatResponse) GetDone() *ChatDone {
 	if x != nil {
-		return x.Final
+		if x, ok := x.Event.(*StreamChatResponse_Done); ok {
+			return x.Done
+		}
 	}
-	return false
+	return nil
 }
+
+type isStreamChatResponse_Event interface {
+	isStreamChatResponse_Event()
+}
+
+type StreamChatResponse_Delta struct {
+	Delta *ChatDelta `protobuf:"bytes,1,opt,name=delta,proto3,oneof"`
+}
+
+type StreamChatResponse_Tool struct {
+	Tool *ToolExecutionSummary `protobuf:"bytes,2,opt,name=tool,proto3,oneof"`
+}
+
+type StreamChatResponse_Done struct {
+	Done *ChatDone `protobuf:"bytes,3,opt,name=done,proto3,oneof"`
+}
+
+func (*StreamChatResponse_Delta) isStreamChatResponse_Event() {}
+
+func (*StreamChatResponse_Tool) isStreamChatResponse_Event() {}
+
+func (*StreamChatResponse_Done) isStreamChatResponse_Event() {}
 
 type CloudCapabilities struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1652,7 +2662,7 @@ type CloudCapabilities struct {
 
 func (x *CloudCapabilities) Reset() {
 	*x = CloudCapabilities{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1664,7 +2674,7 @@ func (x *CloudCapabilities) String() string {
 func (*CloudCapabilities) ProtoMessage() {}
 
 func (x *CloudCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1677,7 +2687,7 @@ func (x *CloudCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudCapabilities.ProtoReflect.Descriptor instead.
 func (*CloudCapabilities) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{22}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *CloudCapabilities) GetAws() bool {
@@ -1716,7 +2726,7 @@ type CloudControlServiceGetCapabilitiesRequest struct {
 
 func (x *CloudControlServiceGetCapabilitiesRequest) Reset() {
 	*x = CloudControlServiceGetCapabilitiesRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1728,7 +2738,7 @@ func (x *CloudControlServiceGetCapabilitiesRequest) String() string {
 func (*CloudControlServiceGetCapabilitiesRequest) ProtoMessage() {}
 
 func (x *CloudControlServiceGetCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1741,7 +2751,7 @@ func (x *CloudControlServiceGetCapabilitiesRequest) ProtoReflect() protoreflect.
 
 // Deprecated: Use CloudControlServiceGetCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*CloudControlServiceGetCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{23}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{35}
 }
 
 type CloudControlServiceGetCapabilitiesResponse struct {
@@ -1753,7 +2763,7 @@ type CloudControlServiceGetCapabilitiesResponse struct {
 
 func (x *CloudControlServiceGetCapabilitiesResponse) Reset() {
 	*x = CloudControlServiceGetCapabilitiesResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1765,7 +2775,7 @@ func (x *CloudControlServiceGetCapabilitiesResponse) String() string {
 func (*CloudControlServiceGetCapabilitiesResponse) ProtoMessage() {}
 
 func (x *CloudControlServiceGetCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1778,7 +2788,7 @@ func (x *CloudControlServiceGetCapabilitiesResponse) ProtoReflect() protoreflect
 
 // Deprecated: Use CloudControlServiceGetCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*CloudControlServiceGetCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{24}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *CloudControlServiceGetCapabilitiesResponse) GetCapabilities() *CloudCapabilities {
@@ -1799,7 +2809,7 @@ type CreateSessionRequest struct {
 
 func (x *CreateSessionRequest) Reset() {
 	*x = CreateSessionRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1811,7 +2821,7 @@ func (x *CreateSessionRequest) String() string {
 func (*CreateSessionRequest) ProtoMessage() {}
 
 func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1824,7 +2834,7 @@ func (x *CreateSessionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionRequest.ProtoReflect.Descriptor instead.
 func (*CreateSessionRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{25}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CreateSessionRequest) GetIdempotencyKey() string {
@@ -1860,7 +2870,7 @@ type CreateSessionResponse struct {
 
 func (x *CreateSessionResponse) Reset() {
 	*x = CreateSessionResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1872,7 +2882,7 @@ func (x *CreateSessionResponse) String() string {
 func (*CreateSessionResponse) ProtoMessage() {}
 
 func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1885,7 +2895,7 @@ func (x *CreateSessionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionResponse.ProtoReflect.Descriptor instead.
 func (*CreateSessionResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{26}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CreateSessionResponse) GetSessionId() string {
@@ -1931,7 +2941,7 @@ type UploadEncryptedRequest struct {
 
 func (x *UploadEncryptedRequest) Reset() {
 	*x = UploadEncryptedRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1943,7 +2953,7 @@ func (x *UploadEncryptedRequest) String() string {
 func (*UploadEncryptedRequest) ProtoMessage() {}
 
 func (x *UploadEncryptedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1956,7 +2966,7 @@ func (x *UploadEncryptedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadEncryptedRequest.ProtoReflect.Descriptor instead.
 func (*UploadEncryptedRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{27}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *UploadEncryptedRequest) GetSessionId() string {
@@ -2017,7 +3027,7 @@ type UploadEncryptedResponse struct {
 
 func (x *UploadEncryptedResponse) Reset() {
 	*x = UploadEncryptedResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2029,7 +3039,7 @@ func (x *UploadEncryptedResponse) String() string {
 func (*UploadEncryptedResponse) ProtoMessage() {}
 
 func (x *UploadEncryptedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2042,7 +3052,7 @@ func (x *UploadEncryptedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadEncryptedResponse.ProtoReflect.Descriptor instead.
 func (*UploadEncryptedResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{28}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *UploadEncryptedResponse) GetRevision() int64 {
@@ -2063,7 +3073,7 @@ type CompleteRequest struct {
 
 func (x *CompleteRequest) Reset() {
 	*x = CompleteRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2075,7 +3085,7 @@ func (x *CompleteRequest) String() string {
 func (*CompleteRequest) ProtoMessage() {}
 
 func (x *CompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2088,7 +3098,7 @@ func (x *CompleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteRequest.ProtoReflect.Descriptor instead.
 func (*CompleteRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{29}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CompleteRequest) GetSessionId() string {
@@ -2121,7 +3131,7 @@ type CompleteResponse struct {
 
 func (x *CompleteResponse) Reset() {
 	*x = CompleteResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2133,7 +3143,7 @@ func (x *CompleteResponse) String() string {
 func (*CompleteResponse) ProtoMessage() {}
 
 func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[30]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2146,7 +3156,7 @@ func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompleteResponse.ProtoReflect.Descriptor instead.
 func (*CompleteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{30}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *CompleteResponse) GetSecretRef() string {
@@ -2169,7 +3179,7 @@ type CreateServiceKeyRequest struct {
 
 func (x *CreateServiceKeyRequest) Reset() {
 	*x = CreateServiceKeyRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2181,7 +3191,7 @@ func (x *CreateServiceKeyRequest) String() string {
 func (*CreateServiceKeyRequest) ProtoMessage() {}
 
 func (x *CreateServiceKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[31]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2194,7 +3204,7 @@ func (x *CreateServiceKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateServiceKeyRequest.ProtoReflect.Descriptor instead.
 func (*CreateServiceKeyRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{31}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *CreateServiceKeyRequest) GetIdempotencyKey() string {
@@ -2245,7 +3255,7 @@ type ServiceKeyDelivery struct {
 
 func (x *ServiceKeyDelivery) Reset() {
 	*x = ServiceKeyDelivery{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2257,7 +3267,7 @@ func (x *ServiceKeyDelivery) String() string {
 func (*ServiceKeyDelivery) ProtoMessage() {}
 
 func (x *ServiceKeyDelivery) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[32]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2270,7 +3280,7 @@ func (x *ServiceKeyDelivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceKeyDelivery.ProtoReflect.Descriptor instead.
 func (*ServiceKeyDelivery) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{32}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ServiceKeyDelivery) GetSchemaVersion() string {
@@ -2324,7 +3334,7 @@ type CreateServiceKeyResponse struct {
 
 func (x *CreateServiceKeyResponse) Reset() {
 	*x = CreateServiceKeyResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2336,7 +3346,7 @@ func (x *CreateServiceKeyResponse) String() string {
 func (*CreateServiceKeyResponse) ProtoMessage() {}
 
 func (x *CreateServiceKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[33]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2349,7 +3359,7 @@ func (x *CreateServiceKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateServiceKeyResponse.ProtoReflect.Descriptor instead.
 func (*CreateServiceKeyResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{33}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CreateServiceKeyResponse) GetCredentialId() string {
@@ -2419,7 +3429,7 @@ type RevokeServiceKeyRequest struct {
 
 func (x *RevokeServiceKeyRequest) Reset() {
 	*x = RevokeServiceKeyRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2431,7 +3441,7 @@ func (x *RevokeServiceKeyRequest) String() string {
 func (*RevokeServiceKeyRequest) ProtoMessage() {}
 
 func (x *RevokeServiceKeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[34]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2444,7 +3454,7 @@ func (x *RevokeServiceKeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeServiceKeyRequest.ProtoReflect.Descriptor instead.
 func (*RevokeServiceKeyRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{34}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *RevokeServiceKeyRequest) GetIdempotencyKey() string {
@@ -2483,7 +3493,7 @@ type RevokeServiceKeyResponse struct {
 
 func (x *RevokeServiceKeyResponse) Reset() {
 	*x = RevokeServiceKeyResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2495,7 +3505,7 @@ func (x *RevokeServiceKeyResponse) String() string {
 func (*RevokeServiceKeyResponse) ProtoMessage() {}
 
 func (x *RevokeServiceKeyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[35]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2508,7 +3518,7 @@ func (x *RevokeServiceKeyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeServiceKeyResponse.ProtoReflect.Descriptor instead.
 func (*RevokeServiceKeyResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{35}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *RevokeServiceKeyResponse) GetCredentialId() string {
@@ -2572,7 +3582,7 @@ type EnrollRequest struct {
 
 func (x *EnrollRequest) Reset() {
 	*x = EnrollRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[36]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2584,7 +3594,7 @@ func (x *EnrollRequest) String() string {
 func (*EnrollRequest) ProtoMessage() {}
 
 func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[36]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2597,7 +3607,7 @@ func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollRequest.ProtoReflect.Descriptor instead.
 func (*EnrollRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{36}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *EnrollRequest) GetEnrollmentId() string {
@@ -2639,7 +3649,7 @@ type EnrollResponse struct {
 
 func (x *EnrollResponse) Reset() {
 	*x = EnrollResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[37]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2651,7 +3661,7 @@ func (x *EnrollResponse) String() string {
 func (*EnrollResponse) ProtoMessage() {}
 
 func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[37]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2664,7 +3674,7 @@ func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollResponse.ProtoReflect.Descriptor instead.
 func (*EnrollResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{37}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *EnrollResponse) GetWorkerId() string {
@@ -2700,7 +3710,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[38]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2712,7 +3722,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[38]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2725,7 +3735,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{38}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *HeartbeatRequest) GetWorkerId() string {
@@ -2767,7 +3777,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[39]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2779,7 +3789,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[39]
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2792,7 +3802,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{39}
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *HeartbeatResponse) GetWorkerId() string {
@@ -2900,37 +3910,115 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\x12WatchEventsRequest\x12\x1b\n" +
 	"\tafter_seq\x18\x01 \x01(\x03R\bafterSeq\"F\n" +
 	"\x13WatchEventsResponse\x12/\n" +
-	"\x05event\x18\x01 \x01(\v2\x19.dirextalk.agent.v1.EventR\x05event\"\x8d\x01\n" +
+	"\x05event\x18\x01 \x01(\v2\x19.dirextalk.agent.v1.EventR\x05event\"\xba\x02\n" +
 	"\x13RuntimeCapabilities\x12\x12\n" +
 	"\x04chat\x18\x01 \x01(\bR\x04chat\x12!\n" +
 	"\fcloud_worker\x18\x02 \x01(\bR\vcloudWorker\x12'\n" +
 	"\x0flocal_connector\x18\x03 \x01(\bR\x0elocalConnector\x12\x16\n" +
-	"\x06skills\x18\x04 \x03(\tR\x06skills\"&\n" +
+	"\x06skills\x18\x04 \x03(\tR\x06skills\x12\x1f\n" +
+	"\vstream_chat\x18\x05 \x01(\bR\n" +
+	"streamChat\x12%\n" +
+	"\x0eruntime_config\x18\x06 \x01(\bR\rruntimeConfig\x12\x1c\n" +
+	"\tknowledge\x18\a \x01(\bR\tknowledge\x12\x19\n" +
+	"\bmcp_http\x18\b \x01(\bR\amcpHttp\x12*\n" +
+	"\x11model_profile_ids\x18\t \x03(\tR\x0fmodelProfileIds\"&\n" +
 	"$RuntimeServiceGetCapabilitiesRequest\"t\n" +
 	"%RuntimeServiceGetCapabilitiesResponse\x12K\n" +
-	"\fcapabilities\x18\x01 \x01(\v2'.dirextalk.agent.v1.RuntimeCapabilitiesR\fcapabilities\"\x94\x01\n" +
+	"\fcapabilities\x18\x01 \x01(\v2'.dirextalk.agent.v1.RuntimeCapabilitiesR\fcapabilities\"\x95\x03\n" +
+	"\fModelProfile\x12=\n" +
+	"\bprovider\x18\x01 \x01(\x0e2!.dirextalk.agent.v1.ModelProviderR\bprovider\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x19\n" +
+	"\bbase_url\x18\x03 \x01(\tR\abaseUrl\x12\x1d\n" +
+	"\n" +
+	"secret_ref\x18\x04 \x01(\tR\tsecretRef\x12%\n" +
+	"\vtemperature\x18\x05 \x01(\x01H\x00R\vtemperature\x88\x01\x01\x12\x18\n" +
+	"\x05top_p\x18\x06 \x01(\x01H\x01R\x04topP\x88\x01\x01\x12*\n" +
+	"\x11max_output_tokens\x18\a \x01(\x05R\x0fmaxOutputTokens\x12%\n" +
+	"\x0econtext_window\x18\b \x01(\x05R\rcontextWindow\x12)\n" +
+	"\x10reasoning_effort\x18\t \x01(\tR\x0freasoningEffort\x12\x1d\n" +
+	"\n" +
+	"profile_id\x18\n" +
+	" \x01(\tR\tprofileIdB\x0e\n" +
+	"\f_temperatureB\b\n" +
+	"\x06_top_p\"\xc0\x03\n" +
+	"\x11RuntimeConfigSpec\x12E\n" +
+	"\rmodel_profile\x18\x01 \x01(\v2 .dirextalk.agent.v1.ModelProfileR\fmodelProfile\x12'\n" +
+	"\x0fproject_profile\x18\x02 \x01(\tR\x0eprojectProfile\x122\n" +
+	"\x15context_message_limit\x18\x03 \x01(\x05R\x13contextMessageLimit\x120\n" +
+	"\x14memory_message_limit\x18\x04 \x01(\x05R\x12memoryMessageLimit\x12\x1b\n" +
+	"\tmax_steps\x18\x05 \x01(\x05R\bmaxSteps\x12'\n" +
+	"\x0fmemory_disabled\x18\x06 \x01(\bR\x0ememoryDisabled\x12#\n" +
+	"\renabled_tools\x18\a \x03(\tR\fenabledTools\x12%\n" +
+	"\x0eknowledge_refs\x18\b \x03(\tR\rknowledgeRefs\x12$\n" +
+	"\x0emcp_server_ids\x18\t \x03(\tR\fmcpServerIds\x12\x1d\n" +
+	"\n" +
+	"recipe_ids\x18\n" +
+	" \x03(\tR\trecipeIds\"\xbc\x01\n" +
+	"\rRuntimeConfig\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\tR\aownerId\x129\n" +
+	"\x04spec\x18\x02 \x01(\v2%.dirextalk.agent.v1.RuntimeConfigSpecR\x04spec\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\x03R\brevision\x129\n" +
+	"\n" +
+	"updated_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"4\n" +
+	"\x17GetRuntimeConfigRequest\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\tR\aownerId\"U\n" +
+	"\x18GetRuntimeConfigResponse\x129\n" +
+	"\x06config\x18\x01 \x01(\v2!.dirextalk.agent.v1.RuntimeConfigR\x06config\"\xc5\x01\n" +
+	"\x17PutRuntimeConfigRequest\x12'\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x19\n" +
+	"\bowner_id\x18\x02 \x01(\tR\aownerId\x129\n" +
+	"\x04spec\x18\x03 \x01(\v2%.dirextalk.agent.v1.RuntimeConfigSpecR\x04spec\x12+\n" +
+	"\x11expected_revision\x18\x04 \x01(\x03R\x10expectedRevision\"U\n" +
+	"\x18PutRuntimeConfigResponse\x129\n" +
+	"\x06config\x18\x01 \x01(\v2!.dirextalk.agent.v1.RuntimeConfigR\x06config\"\x83\x02\n" +
 	"\vChatRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12'\n" +
 	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\x12\x18\n" +
-	"\amessage\x18\x04 \x01(\tR\amessage\"\x86\x01\n" +
-	"\fChatResponse\x12'\n" +
-	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\x12'\n" +
+	"\x0fmemory_disabled\x18\x05 \x01(\bR\x0ememoryDisabled\x12D\n" +
+	"\x1eexpected_conversation_revision\x18\x06 \x01(\x03R\x1cexpectedConversationRevision\"\xa7\x01\n" +
+	"\x12RuntimeStepSummary\x127\n" +
+	"\x04kind\x18\x01 \x01(\x0e2#.dirextalk.agent.v1.RuntimeStepKindR\x04kind\x12 \n" +
+	"\ftool_call_id\x18\x02 \x01(\tR\n" +
+	"toolCallId\x12\x1b\n" +
+	"\ttool_name\x18\x03 \x01(\tR\btoolName\x12\x19\n" +
+	"\bis_error\x18\x04 \x01(\bR\aisError\"R\n" +
+	"\x17RuntimeAssistantMessage\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x02 \x01(\tR\tmessageId\x12\x18\n" +
-	"\acontent\x18\x03 \x01(\tR\acontent\x12\x14\n" +
-	"\x05final\x18\x04 \x01(\bR\x05final\"\x9a\x01\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"\xc5\x02\n" +
+	"\fChatResponse\x12'\n" +
+	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12E\n" +
+	"\amessage\x18\x02 \x01(\v2+.dirextalk.agent.v1.RuntimeAssistantMessageR\amessage\x123\n" +
+	"\x15conversation_revision\x18\x03 \x01(\x03R\x14conversationRevision\x12<\n" +
+	"\x05steps\x18\x04 \x03(\v2&.dirextalk.agent.v1.RuntimeStepSummaryR\x05steps\x12(\n" +
+	"\x10related_task_ids\x18\x05 \x03(\tR\x0erelatedTaskIds\x12(\n" +
+	"\x10related_plan_ids\x18\x06 \x03(\tR\x0erelatedPlanIds\"\x89\x02\n" +
 	"\x11StreamChatRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x19\n" +
 	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12'\n" +
 	"\x0fconversation_id\x18\x03 \x01(\tR\x0econversationId\x12\x18\n" +
-	"\amessage\x18\x04 \x01(\tR\amessage\"\x8c\x01\n" +
-	"\x12StreamChatResponse\x12'\n" +
-	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x1d\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\x12'\n" +
+	"\x0fmemory_disabled\x18\x05 \x01(\bR\x0ememoryDisabled\x12D\n" +
+	"\x1eexpected_conversation_revision\x18\x06 \x01(\x03R\x1cexpectedConversationRevision\"D\n" +
+	"\tChatDelta\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x02 \x01(\tR\tmessageId\x12\x18\n" +
-	"\acontent\x18\x03 \x01(\tR\acontent\x12\x14\n" +
-	"\x05final\x18\x04 \x01(\bR\x05final\"t\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"\x8c\x01\n" +
+	"\x14ToolExecutionSummary\x12 \n" +
+	"\ftool_call_id\x18\x01 \x01(\tR\n" +
+	"toolCallId\x12\x1b\n" +
+	"\ttool_name\x18\x02 \x01(\tR\btoolName\x12\x1a\n" +
+	"\bfinished\x18\x03 \x01(\bR\bfinished\x12\x19\n" +
+	"\bis_error\x18\x04 \x01(\bR\aisError\"H\n" +
+	"\bChatDone\x12<\n" +
+	"\bresponse\x18\x01 \x01(\v2 .dirextalk.agent.v1.ChatResponseR\bresponse\"\xc8\x01\n" +
+	"\x12StreamChatResponse\x125\n" +
+	"\x05delta\x18\x01 \x01(\v2\x1d.dirextalk.agent.v1.ChatDeltaH\x00R\x05delta\x12>\n" +
+	"\x04tool\x18\x02 \x01(\v2(.dirextalk.agent.v1.ToolExecutionSummaryH\x00R\x04tool\x122\n" +
+	"\x04done\x18\x03 \x01(\v2\x1c.dirextalk.agent.v1.ChatDoneH\x00R\x04doneB\a\n" +
+	"\x05event\"t\n" +
 	"\x11CloudCapabilities\x12\x10\n" +
 	"\x03aws\x18\x01 \x01(\bR\x03aws\x12\x1d\n" +
 	"\n" +
@@ -3056,7 +4144,17 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\fExecutorKind\x12\x1d\n" +
 	"\x19EXECUTOR_KIND_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bEXECUTOR_KIND_CONTROL_PLANE\x10\x01\x12\x1e\n" +
-	"\x1aEXECUTOR_KIND_CLOUD_WORKER\x10\x022\xb1\x04\n" +
+	"\x1aEXECUTOR_KIND_CLOUD_WORKER\x10\x02*\x90\x01\n" +
+	"\rModelProvider\x12\x1e\n" +
+	"\x1aMODEL_PROVIDER_UNSPECIFIED\x10\x00\x12$\n" +
+	" MODEL_PROVIDER_OPENAI_COMPATIBLE\x10\x01\x12\x1b\n" +
+	"\x17MODEL_PROVIDER_DEEPSEEK\x10\x02\x12\x1c\n" +
+	"\x18MODEL_PROVIDER_ANTHROPIC\x10\x03*\x95\x01\n" +
+	"\x0fRuntimeStepKind\x12!\n" +
+	"\x1dRUNTIME_STEP_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17RUNTIME_STEP_KIND_MODEL\x10\x01\x12\x1f\n" +
+	"\x1bRUNTIME_STEP_KIND_TOOL_CALL\x10\x02\x12!\n" +
+	"\x1dRUNTIME_STEP_KIND_TOOL_RESULT\x10\x032\xb1\x04\n" +
 	"\vTaskService\x12[\n" +
 	"\n" +
 	"CreateTask\x12%.dirextalk.agent.v1.CreateTaskRequest\x1a&.dirextalk.agent.v1.CreateTaskResponse\x12R\n" +
@@ -3065,9 +4163,11 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"CancelTask\x12%.dirextalk.agent.v1.CancelTaskRequest\x1a&.dirextalk.agent.v1.CancelTaskResponse\x12X\n" +
 	"\tListSteps\x12$.dirextalk.agent.v1.ListStepsRequest\x1a%.dirextalk.agent.v1.ListStepsResponse\x12`\n" +
-	"\vWatchEvents\x12&.dirextalk.agent.v1.WatchEventsRequest\x1a'.dirextalk.agent.v1.WatchEventsResponse0\x012\xc3\x02\n" +
+	"\vWatchEvents\x12&.dirextalk.agent.v1.WatchEventsRequest\x1a'.dirextalk.agent.v1.WatchEventsResponse0\x012\xa1\x04\n" +
 	"\x0eRuntimeService\x12\x86\x01\n" +
-	"\x0fGetCapabilities\x128.dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest\x1a9.dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse\x12I\n" +
+	"\x0fGetCapabilities\x128.dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest\x1a9.dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse\x12m\n" +
+	"\x10GetRuntimeConfig\x12+.dirextalk.agent.v1.GetRuntimeConfigRequest\x1a,.dirextalk.agent.v1.GetRuntimeConfigResponse\x12m\n" +
+	"\x10PutRuntimeConfig\x12+.dirextalk.agent.v1.PutRuntimeConfigRequest\x1a,.dirextalk.agent.v1.PutRuntimeConfigResponse\x12I\n" +
 	"\x04Chat\x12\x1f.dirextalk.agent.v1.ChatRequest\x1a .dirextalk.agent.v1.ChatResponse\x12]\n" +
 	"\n" +
 	"StreamChat\x12%.dirextalk.agent.v1.StreamChatRequest\x1a&.dirextalk.agent.v1.StreamChatResponse0\x012\xa8\x01\n" +
@@ -3096,122 +4196,154 @@ func file_dirextalk_agent_v1_agent_proto_rawDescGZIP() []byte {
 	return file_dirextalk_agent_v1_agent_proto_rawDescData
 }
 
-var file_dirextalk_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_dirextalk_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_dirextalk_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_dirextalk_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
 var file_dirextalk_agent_v1_agent_proto_goTypes = []any{
 	(ExecutionStatus)(0),                               // 0: dirextalk.agent.v1.ExecutionStatus
 	(OutcomeStatus)(0),                                 // 1: dirextalk.agent.v1.OutcomeStatus
 	(RetentionPolicy)(0),                               // 2: dirextalk.agent.v1.RetentionPolicy
 	(ExecutorKind)(0),                                  // 3: dirextalk.agent.v1.ExecutorKind
-	(*Task)(nil),                                       // 4: dirextalk.agent.v1.Task
-	(*Step)(nil),                                       // 5: dirextalk.agent.v1.Step
-	(*Event)(nil),                                      // 6: dirextalk.agent.v1.Event
-	(*CreateTaskRequest)(nil),                          // 7: dirextalk.agent.v1.CreateTaskRequest
-	(*CreateTaskResponse)(nil),                         // 8: dirextalk.agent.v1.CreateTaskResponse
-	(*GetTaskRequest)(nil),                             // 9: dirextalk.agent.v1.GetTaskRequest
-	(*GetTaskResponse)(nil),                            // 10: dirextalk.agent.v1.GetTaskResponse
-	(*ListTasksRequest)(nil),                           // 11: dirextalk.agent.v1.ListTasksRequest
-	(*ListTasksResponse)(nil),                          // 12: dirextalk.agent.v1.ListTasksResponse
-	(*CancelTaskRequest)(nil),                          // 13: dirextalk.agent.v1.CancelTaskRequest
-	(*CancelTaskResponse)(nil),                         // 14: dirextalk.agent.v1.CancelTaskResponse
-	(*ListStepsRequest)(nil),                           // 15: dirextalk.agent.v1.ListStepsRequest
-	(*ListStepsResponse)(nil),                          // 16: dirextalk.agent.v1.ListStepsResponse
-	(*WatchEventsRequest)(nil),                         // 17: dirextalk.agent.v1.WatchEventsRequest
-	(*WatchEventsResponse)(nil),                        // 18: dirextalk.agent.v1.WatchEventsResponse
-	(*RuntimeCapabilities)(nil),                        // 19: dirextalk.agent.v1.RuntimeCapabilities
-	(*RuntimeServiceGetCapabilitiesRequest)(nil),       // 20: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
-	(*RuntimeServiceGetCapabilitiesResponse)(nil),      // 21: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
-	(*ChatRequest)(nil),                                // 22: dirextalk.agent.v1.ChatRequest
-	(*ChatResponse)(nil),                               // 23: dirextalk.agent.v1.ChatResponse
-	(*StreamChatRequest)(nil),                          // 24: dirextalk.agent.v1.StreamChatRequest
-	(*StreamChatResponse)(nil),                         // 25: dirextalk.agent.v1.StreamChatResponse
-	(*CloudCapabilities)(nil),                          // 26: dirextalk.agent.v1.CloudCapabilities
-	(*CloudControlServiceGetCapabilitiesRequest)(nil),  // 27: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
-	(*CloudControlServiceGetCapabilitiesResponse)(nil), // 28: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
-	(*CreateSessionRequest)(nil),                       // 29: dirextalk.agent.v1.CreateSessionRequest
-	(*CreateSessionResponse)(nil),                      // 30: dirextalk.agent.v1.CreateSessionResponse
-	(*UploadEncryptedRequest)(nil),                     // 31: dirextalk.agent.v1.UploadEncryptedRequest
-	(*UploadEncryptedResponse)(nil),                    // 32: dirextalk.agent.v1.UploadEncryptedResponse
-	(*CompleteRequest)(nil),                            // 33: dirextalk.agent.v1.CompleteRequest
-	(*CompleteResponse)(nil),                           // 34: dirextalk.agent.v1.CompleteResponse
-	(*CreateServiceKeyRequest)(nil),                    // 35: dirextalk.agent.v1.CreateServiceKeyRequest
-	(*ServiceKeyDelivery)(nil),                         // 36: dirextalk.agent.v1.ServiceKeyDelivery
-	(*CreateServiceKeyResponse)(nil),                   // 37: dirextalk.agent.v1.CreateServiceKeyResponse
-	(*RevokeServiceKeyRequest)(nil),                    // 38: dirextalk.agent.v1.RevokeServiceKeyRequest
-	(*RevokeServiceKeyResponse)(nil),                   // 39: dirextalk.agent.v1.RevokeServiceKeyResponse
-	(*EnrollRequest)(nil),                              // 40: dirextalk.agent.v1.EnrollRequest
-	(*EnrollResponse)(nil),                             // 41: dirextalk.agent.v1.EnrollResponse
-	(*HeartbeatRequest)(nil),                           // 42: dirextalk.agent.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),                          // 43: dirextalk.agent.v1.HeartbeatResponse
-	(*timestamppb.Timestamp)(nil),                      // 44: google.protobuf.Timestamp
+	(ModelProvider)(0),                                 // 4: dirextalk.agent.v1.ModelProvider
+	(RuntimeStepKind)(0),                               // 5: dirextalk.agent.v1.RuntimeStepKind
+	(*Task)(nil),                                       // 6: dirextalk.agent.v1.Task
+	(*Step)(nil),                                       // 7: dirextalk.agent.v1.Step
+	(*Event)(nil),                                      // 8: dirextalk.agent.v1.Event
+	(*CreateTaskRequest)(nil),                          // 9: dirextalk.agent.v1.CreateTaskRequest
+	(*CreateTaskResponse)(nil),                         // 10: dirextalk.agent.v1.CreateTaskResponse
+	(*GetTaskRequest)(nil),                             // 11: dirextalk.agent.v1.GetTaskRequest
+	(*GetTaskResponse)(nil),                            // 12: dirextalk.agent.v1.GetTaskResponse
+	(*ListTasksRequest)(nil),                           // 13: dirextalk.agent.v1.ListTasksRequest
+	(*ListTasksResponse)(nil),                          // 14: dirextalk.agent.v1.ListTasksResponse
+	(*CancelTaskRequest)(nil),                          // 15: dirextalk.agent.v1.CancelTaskRequest
+	(*CancelTaskResponse)(nil),                         // 16: dirextalk.agent.v1.CancelTaskResponse
+	(*ListStepsRequest)(nil),                           // 17: dirextalk.agent.v1.ListStepsRequest
+	(*ListStepsResponse)(nil),                          // 18: dirextalk.agent.v1.ListStepsResponse
+	(*WatchEventsRequest)(nil),                         // 19: dirextalk.agent.v1.WatchEventsRequest
+	(*WatchEventsResponse)(nil),                        // 20: dirextalk.agent.v1.WatchEventsResponse
+	(*RuntimeCapabilities)(nil),                        // 21: dirextalk.agent.v1.RuntimeCapabilities
+	(*RuntimeServiceGetCapabilitiesRequest)(nil),       // 22: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
+	(*RuntimeServiceGetCapabilitiesResponse)(nil),      // 23: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
+	(*ModelProfile)(nil),                               // 24: dirextalk.agent.v1.ModelProfile
+	(*RuntimeConfigSpec)(nil),                          // 25: dirextalk.agent.v1.RuntimeConfigSpec
+	(*RuntimeConfig)(nil),                              // 26: dirextalk.agent.v1.RuntimeConfig
+	(*GetRuntimeConfigRequest)(nil),                    // 27: dirextalk.agent.v1.GetRuntimeConfigRequest
+	(*GetRuntimeConfigResponse)(nil),                   // 28: dirextalk.agent.v1.GetRuntimeConfigResponse
+	(*PutRuntimeConfigRequest)(nil),                    // 29: dirextalk.agent.v1.PutRuntimeConfigRequest
+	(*PutRuntimeConfigResponse)(nil),                   // 30: dirextalk.agent.v1.PutRuntimeConfigResponse
+	(*ChatRequest)(nil),                                // 31: dirextalk.agent.v1.ChatRequest
+	(*RuntimeStepSummary)(nil),                         // 32: dirextalk.agent.v1.RuntimeStepSummary
+	(*RuntimeAssistantMessage)(nil),                    // 33: dirextalk.agent.v1.RuntimeAssistantMessage
+	(*ChatResponse)(nil),                               // 34: dirextalk.agent.v1.ChatResponse
+	(*StreamChatRequest)(nil),                          // 35: dirextalk.agent.v1.StreamChatRequest
+	(*ChatDelta)(nil),                                  // 36: dirextalk.agent.v1.ChatDelta
+	(*ToolExecutionSummary)(nil),                       // 37: dirextalk.agent.v1.ToolExecutionSummary
+	(*ChatDone)(nil),                                   // 38: dirextalk.agent.v1.ChatDone
+	(*StreamChatResponse)(nil),                         // 39: dirextalk.agent.v1.StreamChatResponse
+	(*CloudCapabilities)(nil),                          // 40: dirextalk.agent.v1.CloudCapabilities
+	(*CloudControlServiceGetCapabilitiesRequest)(nil),  // 41: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
+	(*CloudControlServiceGetCapabilitiesResponse)(nil), // 42: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
+	(*CreateSessionRequest)(nil),                       // 43: dirextalk.agent.v1.CreateSessionRequest
+	(*CreateSessionResponse)(nil),                      // 44: dirextalk.agent.v1.CreateSessionResponse
+	(*UploadEncryptedRequest)(nil),                     // 45: dirextalk.agent.v1.UploadEncryptedRequest
+	(*UploadEncryptedResponse)(nil),                    // 46: dirextalk.agent.v1.UploadEncryptedResponse
+	(*CompleteRequest)(nil),                            // 47: dirextalk.agent.v1.CompleteRequest
+	(*CompleteResponse)(nil),                           // 48: dirextalk.agent.v1.CompleteResponse
+	(*CreateServiceKeyRequest)(nil),                    // 49: dirextalk.agent.v1.CreateServiceKeyRequest
+	(*ServiceKeyDelivery)(nil),                         // 50: dirextalk.agent.v1.ServiceKeyDelivery
+	(*CreateServiceKeyResponse)(nil),                   // 51: dirextalk.agent.v1.CreateServiceKeyResponse
+	(*RevokeServiceKeyRequest)(nil),                    // 52: dirextalk.agent.v1.RevokeServiceKeyRequest
+	(*RevokeServiceKeyResponse)(nil),                   // 53: dirextalk.agent.v1.RevokeServiceKeyResponse
+	(*EnrollRequest)(nil),                              // 54: dirextalk.agent.v1.EnrollRequest
+	(*EnrollResponse)(nil),                             // 55: dirextalk.agent.v1.EnrollResponse
+	(*HeartbeatRequest)(nil),                           // 56: dirextalk.agent.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),                          // 57: dirextalk.agent.v1.HeartbeatResponse
+	(*timestamppb.Timestamp)(nil),                      // 58: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_agent_proto_depIdxs = []int32{
 	0,  // 0: dirextalk.agent.v1.Task.execution_status:type_name -> dirextalk.agent.v1.ExecutionStatus
 	1,  // 1: dirextalk.agent.v1.Task.outcome_status:type_name -> dirextalk.agent.v1.OutcomeStatus
 	2,  // 2: dirextalk.agent.v1.Task.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	44, // 3: dirextalk.agent.v1.Task.created_at:type_name -> google.protobuf.Timestamp
-	44, // 4: dirextalk.agent.v1.Task.updated_at:type_name -> google.protobuf.Timestamp
+	58, // 3: dirextalk.agent.v1.Task.created_at:type_name -> google.protobuf.Timestamp
+	58, // 4: dirextalk.agent.v1.Task.updated_at:type_name -> google.protobuf.Timestamp
 	3,  // 5: dirextalk.agent.v1.Step.executor_kind:type_name -> dirextalk.agent.v1.ExecutorKind
 	0,  // 6: dirextalk.agent.v1.Step.execution_status:type_name -> dirextalk.agent.v1.ExecutionStatus
 	1,  // 7: dirextalk.agent.v1.Step.outcome_status:type_name -> dirextalk.agent.v1.OutcomeStatus
-	44, // 8: dirextalk.agent.v1.Step.created_at:type_name -> google.protobuf.Timestamp
-	44, // 9: dirextalk.agent.v1.Step.updated_at:type_name -> google.protobuf.Timestamp
-	44, // 10: dirextalk.agent.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
+	58, // 8: dirextalk.agent.v1.Step.created_at:type_name -> google.protobuf.Timestamp
+	58, // 9: dirextalk.agent.v1.Step.updated_at:type_name -> google.protobuf.Timestamp
+	58, // 10: dirextalk.agent.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
 	2,  // 11: dirextalk.agent.v1.CreateTaskRequest.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	4,  // 12: dirextalk.agent.v1.CreateTaskResponse.task:type_name -> dirextalk.agent.v1.Task
-	4,  // 13: dirextalk.agent.v1.GetTaskResponse.task:type_name -> dirextalk.agent.v1.Task
-	4,  // 14: dirextalk.agent.v1.ListTasksResponse.tasks:type_name -> dirextalk.agent.v1.Task
-	4,  // 15: dirextalk.agent.v1.CancelTaskResponse.task:type_name -> dirextalk.agent.v1.Task
-	5,  // 16: dirextalk.agent.v1.ListStepsResponse.steps:type_name -> dirextalk.agent.v1.Step
-	6,  // 17: dirextalk.agent.v1.WatchEventsResponse.event:type_name -> dirextalk.agent.v1.Event
-	19, // 18: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.RuntimeCapabilities
-	26, // 19: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.CloudCapabilities
-	44, // 20: dirextalk.agent.v1.CreateSessionResponse.expires_at:type_name -> google.protobuf.Timestamp
-	44, // 21: dirextalk.agent.v1.CreateServiceKeyRequest.expires_at:type_name -> google.protobuf.Timestamp
-	44, // 22: dirextalk.agent.v1.CreateServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
-	36, // 23: dirextalk.agent.v1.CreateServiceKeyResponse.delivery:type_name -> dirextalk.agent.v1.ServiceKeyDelivery
-	44, // 24: dirextalk.agent.v1.RevokeServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
-	44, // 25: dirextalk.agent.v1.EnrollResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
-	44, // 26: dirextalk.agent.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
-	7,  // 27: dirextalk.agent.v1.TaskService.CreateTask:input_type -> dirextalk.agent.v1.CreateTaskRequest
-	9,  // 28: dirextalk.agent.v1.TaskService.GetTask:input_type -> dirextalk.agent.v1.GetTaskRequest
-	11, // 29: dirextalk.agent.v1.TaskService.ListTasks:input_type -> dirextalk.agent.v1.ListTasksRequest
-	13, // 30: dirextalk.agent.v1.TaskService.CancelTask:input_type -> dirextalk.agent.v1.CancelTaskRequest
-	15, // 31: dirextalk.agent.v1.TaskService.ListSteps:input_type -> dirextalk.agent.v1.ListStepsRequest
-	17, // 32: dirextalk.agent.v1.TaskService.WatchEvents:input_type -> dirextalk.agent.v1.WatchEventsRequest
-	20, // 33: dirextalk.agent.v1.RuntimeService.GetCapabilities:input_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
-	22, // 34: dirextalk.agent.v1.RuntimeService.Chat:input_type -> dirextalk.agent.v1.ChatRequest
-	24, // 35: dirextalk.agent.v1.RuntimeService.StreamChat:input_type -> dirextalk.agent.v1.StreamChatRequest
-	27, // 36: dirextalk.agent.v1.CloudControlService.GetCapabilities:input_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
-	29, // 37: dirextalk.agent.v1.SecretBootstrapService.CreateSession:input_type -> dirextalk.agent.v1.CreateSessionRequest
-	31, // 38: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:input_type -> dirextalk.agent.v1.UploadEncryptedRequest
-	33, // 39: dirextalk.agent.v1.SecretBootstrapService.Complete:input_type -> dirextalk.agent.v1.CompleteRequest
-	35, // 40: dirextalk.agent.v1.AdminService.CreateServiceKey:input_type -> dirextalk.agent.v1.CreateServiceKeyRequest
-	38, // 41: dirextalk.agent.v1.AdminService.RevokeServiceKey:input_type -> dirextalk.agent.v1.RevokeServiceKeyRequest
-	40, // 42: dirextalk.agent.v1.WorkerControlService.Enroll:input_type -> dirextalk.agent.v1.EnrollRequest
-	42, // 43: dirextalk.agent.v1.WorkerControlService.Heartbeat:input_type -> dirextalk.agent.v1.HeartbeatRequest
-	8,  // 44: dirextalk.agent.v1.TaskService.CreateTask:output_type -> dirextalk.agent.v1.CreateTaskResponse
-	10, // 45: dirextalk.agent.v1.TaskService.GetTask:output_type -> dirextalk.agent.v1.GetTaskResponse
-	12, // 46: dirextalk.agent.v1.TaskService.ListTasks:output_type -> dirextalk.agent.v1.ListTasksResponse
-	14, // 47: dirextalk.agent.v1.TaskService.CancelTask:output_type -> dirextalk.agent.v1.CancelTaskResponse
-	16, // 48: dirextalk.agent.v1.TaskService.ListSteps:output_type -> dirextalk.agent.v1.ListStepsResponse
-	18, // 49: dirextalk.agent.v1.TaskService.WatchEvents:output_type -> dirextalk.agent.v1.WatchEventsResponse
-	21, // 50: dirextalk.agent.v1.RuntimeService.GetCapabilities:output_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
-	23, // 51: dirextalk.agent.v1.RuntimeService.Chat:output_type -> dirextalk.agent.v1.ChatResponse
-	25, // 52: dirextalk.agent.v1.RuntimeService.StreamChat:output_type -> dirextalk.agent.v1.StreamChatResponse
-	28, // 53: dirextalk.agent.v1.CloudControlService.GetCapabilities:output_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
-	30, // 54: dirextalk.agent.v1.SecretBootstrapService.CreateSession:output_type -> dirextalk.agent.v1.CreateSessionResponse
-	32, // 55: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:output_type -> dirextalk.agent.v1.UploadEncryptedResponse
-	34, // 56: dirextalk.agent.v1.SecretBootstrapService.Complete:output_type -> dirextalk.agent.v1.CompleteResponse
-	37, // 57: dirextalk.agent.v1.AdminService.CreateServiceKey:output_type -> dirextalk.agent.v1.CreateServiceKeyResponse
-	39, // 58: dirextalk.agent.v1.AdminService.RevokeServiceKey:output_type -> dirextalk.agent.v1.RevokeServiceKeyResponse
-	41, // 59: dirextalk.agent.v1.WorkerControlService.Enroll:output_type -> dirextalk.agent.v1.EnrollResponse
-	43, // 60: dirextalk.agent.v1.WorkerControlService.Heartbeat:output_type -> dirextalk.agent.v1.HeartbeatResponse
-	44, // [44:61] is the sub-list for method output_type
-	27, // [27:44] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	6,  // 12: dirextalk.agent.v1.CreateTaskResponse.task:type_name -> dirextalk.agent.v1.Task
+	6,  // 13: dirextalk.agent.v1.GetTaskResponse.task:type_name -> dirextalk.agent.v1.Task
+	6,  // 14: dirextalk.agent.v1.ListTasksResponse.tasks:type_name -> dirextalk.agent.v1.Task
+	6,  // 15: dirextalk.agent.v1.CancelTaskResponse.task:type_name -> dirextalk.agent.v1.Task
+	7,  // 16: dirextalk.agent.v1.ListStepsResponse.steps:type_name -> dirextalk.agent.v1.Step
+	8,  // 17: dirextalk.agent.v1.WatchEventsResponse.event:type_name -> dirextalk.agent.v1.Event
+	21, // 18: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.RuntimeCapabilities
+	4,  // 19: dirextalk.agent.v1.ModelProfile.provider:type_name -> dirextalk.agent.v1.ModelProvider
+	24, // 20: dirextalk.agent.v1.RuntimeConfigSpec.model_profile:type_name -> dirextalk.agent.v1.ModelProfile
+	25, // 21: dirextalk.agent.v1.RuntimeConfig.spec:type_name -> dirextalk.agent.v1.RuntimeConfigSpec
+	58, // 22: dirextalk.agent.v1.RuntimeConfig.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 23: dirextalk.agent.v1.GetRuntimeConfigResponse.config:type_name -> dirextalk.agent.v1.RuntimeConfig
+	25, // 24: dirextalk.agent.v1.PutRuntimeConfigRequest.spec:type_name -> dirextalk.agent.v1.RuntimeConfigSpec
+	26, // 25: dirextalk.agent.v1.PutRuntimeConfigResponse.config:type_name -> dirextalk.agent.v1.RuntimeConfig
+	5,  // 26: dirextalk.agent.v1.RuntimeStepSummary.kind:type_name -> dirextalk.agent.v1.RuntimeStepKind
+	33, // 27: dirextalk.agent.v1.ChatResponse.message:type_name -> dirextalk.agent.v1.RuntimeAssistantMessage
+	32, // 28: dirextalk.agent.v1.ChatResponse.steps:type_name -> dirextalk.agent.v1.RuntimeStepSummary
+	34, // 29: dirextalk.agent.v1.ChatDone.response:type_name -> dirextalk.agent.v1.ChatResponse
+	36, // 30: dirextalk.agent.v1.StreamChatResponse.delta:type_name -> dirextalk.agent.v1.ChatDelta
+	37, // 31: dirextalk.agent.v1.StreamChatResponse.tool:type_name -> dirextalk.agent.v1.ToolExecutionSummary
+	38, // 32: dirextalk.agent.v1.StreamChatResponse.done:type_name -> dirextalk.agent.v1.ChatDone
+	40, // 33: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.CloudCapabilities
+	58, // 34: dirextalk.agent.v1.CreateSessionResponse.expires_at:type_name -> google.protobuf.Timestamp
+	58, // 35: dirextalk.agent.v1.CreateServiceKeyRequest.expires_at:type_name -> google.protobuf.Timestamp
+	58, // 36: dirextalk.agent.v1.CreateServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	50, // 37: dirextalk.agent.v1.CreateServiceKeyResponse.delivery:type_name -> dirextalk.agent.v1.ServiceKeyDelivery
+	58, // 38: dirextalk.agent.v1.RevokeServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	58, // 39: dirextalk.agent.v1.EnrollResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	58, // 40: dirextalk.agent.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	9,  // 41: dirextalk.agent.v1.TaskService.CreateTask:input_type -> dirextalk.agent.v1.CreateTaskRequest
+	11, // 42: dirextalk.agent.v1.TaskService.GetTask:input_type -> dirextalk.agent.v1.GetTaskRequest
+	13, // 43: dirextalk.agent.v1.TaskService.ListTasks:input_type -> dirextalk.agent.v1.ListTasksRequest
+	15, // 44: dirextalk.agent.v1.TaskService.CancelTask:input_type -> dirextalk.agent.v1.CancelTaskRequest
+	17, // 45: dirextalk.agent.v1.TaskService.ListSteps:input_type -> dirextalk.agent.v1.ListStepsRequest
+	19, // 46: dirextalk.agent.v1.TaskService.WatchEvents:input_type -> dirextalk.agent.v1.WatchEventsRequest
+	22, // 47: dirextalk.agent.v1.RuntimeService.GetCapabilities:input_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
+	27, // 48: dirextalk.agent.v1.RuntimeService.GetRuntimeConfig:input_type -> dirextalk.agent.v1.GetRuntimeConfigRequest
+	29, // 49: dirextalk.agent.v1.RuntimeService.PutRuntimeConfig:input_type -> dirextalk.agent.v1.PutRuntimeConfigRequest
+	31, // 50: dirextalk.agent.v1.RuntimeService.Chat:input_type -> dirextalk.agent.v1.ChatRequest
+	35, // 51: dirextalk.agent.v1.RuntimeService.StreamChat:input_type -> dirextalk.agent.v1.StreamChatRequest
+	41, // 52: dirextalk.agent.v1.CloudControlService.GetCapabilities:input_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
+	43, // 53: dirextalk.agent.v1.SecretBootstrapService.CreateSession:input_type -> dirextalk.agent.v1.CreateSessionRequest
+	45, // 54: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:input_type -> dirextalk.agent.v1.UploadEncryptedRequest
+	47, // 55: dirextalk.agent.v1.SecretBootstrapService.Complete:input_type -> dirextalk.agent.v1.CompleteRequest
+	49, // 56: dirextalk.agent.v1.AdminService.CreateServiceKey:input_type -> dirextalk.agent.v1.CreateServiceKeyRequest
+	52, // 57: dirextalk.agent.v1.AdminService.RevokeServiceKey:input_type -> dirextalk.agent.v1.RevokeServiceKeyRequest
+	54, // 58: dirextalk.agent.v1.WorkerControlService.Enroll:input_type -> dirextalk.agent.v1.EnrollRequest
+	56, // 59: dirextalk.agent.v1.WorkerControlService.Heartbeat:input_type -> dirextalk.agent.v1.HeartbeatRequest
+	10, // 60: dirextalk.agent.v1.TaskService.CreateTask:output_type -> dirextalk.agent.v1.CreateTaskResponse
+	12, // 61: dirextalk.agent.v1.TaskService.GetTask:output_type -> dirextalk.agent.v1.GetTaskResponse
+	14, // 62: dirextalk.agent.v1.TaskService.ListTasks:output_type -> dirextalk.agent.v1.ListTasksResponse
+	16, // 63: dirextalk.agent.v1.TaskService.CancelTask:output_type -> dirextalk.agent.v1.CancelTaskResponse
+	18, // 64: dirextalk.agent.v1.TaskService.ListSteps:output_type -> dirextalk.agent.v1.ListStepsResponse
+	20, // 65: dirextalk.agent.v1.TaskService.WatchEvents:output_type -> dirextalk.agent.v1.WatchEventsResponse
+	23, // 66: dirextalk.agent.v1.RuntimeService.GetCapabilities:output_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
+	28, // 67: dirextalk.agent.v1.RuntimeService.GetRuntimeConfig:output_type -> dirextalk.agent.v1.GetRuntimeConfigResponse
+	30, // 68: dirextalk.agent.v1.RuntimeService.PutRuntimeConfig:output_type -> dirextalk.agent.v1.PutRuntimeConfigResponse
+	34, // 69: dirextalk.agent.v1.RuntimeService.Chat:output_type -> dirextalk.agent.v1.ChatResponse
+	39, // 70: dirextalk.agent.v1.RuntimeService.StreamChat:output_type -> dirextalk.agent.v1.StreamChatResponse
+	42, // 71: dirextalk.agent.v1.CloudControlService.GetCapabilities:output_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
+	44, // 72: dirextalk.agent.v1.SecretBootstrapService.CreateSession:output_type -> dirextalk.agent.v1.CreateSessionResponse
+	46, // 73: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:output_type -> dirextalk.agent.v1.UploadEncryptedResponse
+	48, // 74: dirextalk.agent.v1.SecretBootstrapService.Complete:output_type -> dirextalk.agent.v1.CompleteResponse
+	51, // 75: dirextalk.agent.v1.AdminService.CreateServiceKey:output_type -> dirextalk.agent.v1.CreateServiceKeyResponse
+	53, // 76: dirextalk.agent.v1.AdminService.RevokeServiceKey:output_type -> dirextalk.agent.v1.RevokeServiceKeyResponse
+	55, // 77: dirextalk.agent.v1.WorkerControlService.Enroll:output_type -> dirextalk.agent.v1.EnrollResponse
+	57, // 78: dirextalk.agent.v1.WorkerControlService.Heartbeat:output_type -> dirextalk.agent.v1.HeartbeatResponse
+	60, // [60:79] is the sub-list for method output_type
+	41, // [41:60] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_agent_proto_init() }
@@ -3219,13 +4351,19 @@ func file_dirextalk_agent_v1_agent_proto_init() {
 	if File_dirextalk_agent_v1_agent_proto != nil {
 		return
 	}
+	file_dirextalk_agent_v1_agent_proto_msgTypes[18].OneofWrappers = []any{}
+	file_dirextalk_agent_v1_agent_proto_msgTypes[33].OneofWrappers = []any{
+		(*StreamChatResponse_Delta)(nil),
+		(*StreamChatResponse_Tool)(nil),
+		(*StreamChatResponse_Done)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_agent_proto_rawDesc), len(file_dirextalk_agent_v1_agent_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   40,
+			NumEnums:      6,
+			NumMessages:   52,
 			NumExtensions: 0,
 			NumServices:   6,
 		},

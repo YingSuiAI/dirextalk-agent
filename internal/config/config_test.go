@@ -36,6 +36,36 @@ func TestLoadCommonRejectsLegacyDatabaseURLEnvironmentVariable(t *testing.T) {
 	}
 }
 
+func TestLoadServerRequiresMountedRuntimeSecretDirectory(t *testing.T) {
+	t.Setenv("AGENT_INSTANCE_ID", uuid.NewString())
+	t.Setenv("AGENT_DATABASE_URL_FILE", writeSecretFile(t, "postgres://agent:password@db.example/agent?sslmode=require"))
+	t.Setenv("AGENT_TLS_CERT_FILE", "tls.crt")
+	t.Setenv("AGENT_TLS_KEY_FILE", "tls.key")
+	t.Setenv("AGENT_SERVICE_KEY_PEPPER_FILE", "pepper")
+	t.Setenv("AGENT_MODEL_PROFILES_FILE", "model-profiles.json")
+	t.Setenv("AGENT_MOUNTED_SECRETS_DIR", "")
+
+	_, err := LoadServer()
+	if err == nil || !strings.Contains(err.Error(), "AGENT_MOUNTED_SECRETS_DIR is required") {
+		t.Fatalf("LoadServer() error = %v", err)
+	}
+}
+
+func TestLoadServerRequiresModelProfileCatalog(t *testing.T) {
+	t.Setenv("AGENT_INSTANCE_ID", uuid.NewString())
+	t.Setenv("AGENT_DATABASE_URL_FILE", writeSecretFile(t, "postgres://agent:password@db.example/agent?sslmode=require"))
+	t.Setenv("AGENT_TLS_CERT_FILE", "tls.crt")
+	t.Setenv("AGENT_TLS_KEY_FILE", "tls.key")
+	t.Setenv("AGENT_SERVICE_KEY_PEPPER_FILE", "pepper")
+	t.Setenv("AGENT_MOUNTED_SECRETS_DIR", t.TempDir())
+	t.Setenv("AGENT_MODEL_PROFILES_FILE", "")
+
+	_, err := LoadServer()
+	if err == nil || !strings.Contains(err.Error(), "AGENT_MODEL_PROFILES_FILE is required") {
+		t.Fatalf("LoadServer() error = %v", err)
+	}
+}
+
 func TestValidateMountedSecretFileRejectsLoosePermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not expose Unix permission bits")

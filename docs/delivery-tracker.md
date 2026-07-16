@@ -40,14 +40,16 @@ Observable acceptance: a TLS gRPC caller with a valid scoped Service Key can cre
 
 Observable acceptance: a caller can hold a generic conversation that creates a durable planning Task and RecipeDraft without Matrix/ProductCore assumptions; the LLM can draft/research/query status but cannot approve or invoke provider/credential/shell capabilities.
 
-- [ ] Migrate the reusable Eino runtime from Message Server while removing Matrix, ProductCore, MXID, Flutter deep links, Dirextalk room/contact assumptions, and local runtime shell execution.
-- [ ] Define generic runtime configuration: project profile, model/secret reference, context window, system policy, MCP/tool providers, knowledge references, and private recipe catalog.
-- [ ] Implement RuntimeService Chat/StreamChat, conversation persistence, safe cancellation, context trimming, and model failure recovery.
-- [ ] Implement the native Go `cloud-dispatcher` Skill for goal analysis, official-source research, de-secreted RecipeDraft, three resource candidates, quote request, plan draft, and status explanation.
-- [ ] Restrict Skill ports to typed draft/list/get/status operations; exclude credential material, device signing, provider mutation, raw AWS SDK, arbitrary HTTP credentials, and shell.
-- [ ] Store Recipe source URL, retrieval time, official/repository identity, version/commit, artifact digest, license, hardware/data requirements, steps, adaptive limits, timeout/checkpoint, root/network/secret/volume declarations, probes, pairing, operations, backup/restore, rollback, and destroy contract.
-- [ ] Keep OpenClaw, knowledge nodes, websites, databases, models, and training as natural-language recipes/acceptance scenarios rather than built-in product templates.
-- [ ] Pass P1 runtime/Skill boundary tests, secret canary, focused build, accumulated review, and documentation closeout.
+- [x] Migrate the reusable Eino runtime from Message Server while removing Matrix, ProductCore, MXID, Flutter deep links, Dirextalk room/contact assumptions, and local runtime shell execution.
+- [x] Define generic runtime configuration: project profile, model/secret reference, context window, system policy, MCP/tool providers, knowledge references, and private recipe catalog.
+- [x] Implement RuntimeService Chat/StreamChat, conversation persistence, safe cancellation, context trimming, and model failure recovery.
+- [x] Implement the native Go `cloud-dispatcher` Skill for goal analysis, official-source research, de-secreted RecipeDraft, three resource candidates, quote request, plan draft, and status explanation.
+- [x] Restrict Skill ports to typed draft/list/get/status operations; exclude credential material, device signing, provider mutation, raw AWS SDK, arbitrary HTTP credentials, and shell.
+- [x] Store Recipe source URL, retrieval time, official/repository identity, version/commit, artifact digest, license, hardware/data requirements, steps, adaptive limits, timeout/checkpoint, root/network/secret/volume declarations, probes, pairing, operations, backup/restore, rollback, and destroy contract.
+- [x] Keep OpenClaw, knowledge nodes, websites, databases, models, and training as natural-language recipes/acceptance scenarios rather than built-in product templates.
+- [x] Pass P1 runtime/Skill boundary tests, secret canary, focused build, accumulated review, and documentation closeout.
+
+P1 closeout evidence (2026-07-16): full Go tests/vet/command builds and Buf generation/lint passed; affected packages and the real PostgreSQL 18 E2E passed under the race detector; official-source receipts, stateless completion, context-window enforcement, named model-profile credential audiences, restart replay, and structured Task references were exercised. The integration lane reused the existing PostgreSQL 18 service, then independently read back zero temporary Agent databases, roles, or schemas.
 
 ## P2 — AWS Foundation, Direct STS Provider, Worker, And Reaper
 

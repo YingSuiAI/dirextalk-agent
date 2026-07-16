@@ -143,7 +143,16 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	grpcServer, err := app.NewServer(store, pepper, serverConfig.TLSCertFile, serverConfig.TLSKeyFile)
+	runtimeComposition, err := app.NewRuntimeComposition(
+		store, serverConfig.InstanceID, serverConfig.MountedSecretsDir, serverConfig.ModelProfilesFile, serverConfig.MCPServersFile,
+	)
+	if err != nil {
+		return errors.New("could not initialize Agent runtime")
+	}
+	grpcServer, err := app.NewServer(
+		store, pepper, serverConfig.TLSCertFile, serverConfig.TLSKeyFile,
+		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
+	)
 	if err != nil {
 		return errors.New("could not initialize TLS gRPC server")
 	}
