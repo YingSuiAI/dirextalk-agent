@@ -2,9 +2,33 @@ package container_test
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestAllContainerBasesUseReviewedLinuxAMD64Digests(t *testing.T) {
+	const goBuilder = "FROM --platform=linux/amd64 docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135 AS build"
+	const lambdaRuntime = "FROM --platform=linux/amd64 public.ecr.aws/lambda/provided:al2023@sha256:f91e5c83528080b2e41d22536d413042e451e67968c7473c4f7e77a627c944bc"
+
+	tests := map[string][]string{
+		"agent.Containerfile":  {goBuilder, "FROM scratch"},
+		"worker.Containerfile": {goBuilder, "FROM scratch"},
+		"reaper.Containerfile": {goBuilder, lambdaRuntime},
+	}
+	for name, expected := range tests {
+		var bases []string
+		for _, line := range strings.Split(readArtifact(t, name), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "FROM ") {
+				bases = append(bases, line)
+			}
+		}
+		if !reflect.DeepEqual(bases, expected) {
+			t.Fatalf("%s base images = %q, want reviewed immutable bases %q", name, bases, expected)
+		}
+	}
+}
 
 func TestWorkerArtifactPreservesExclusiveVMRuntimeBoundary(t *testing.T) {
 	containerfile := readArtifact(t, "worker.Containerfile")

@@ -11,6 +11,14 @@ shared with the legacy deployer, updater, or release scripts.
 | `worker.Containerfile` | Static Worker supervisor, binary digest sidecar, CA bundle, and fixed-AMI systemd assets in `scratch`; fixed UID/GID `65532`, no shell, Docker client/daemon/socket, AWS CLI, Node, or package manager. |
 | `reaper.Containerfile` | Static `lambda.norpc` Go binary on the AWS `provided.al2023` OS-only Lambda image. |
 
+Every external base is locked to the reviewed official `linux/amd64` child
+manifest, not only to a mutable tag. The current pins are
+`docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135`
+and
+`public.ecr.aws/lambda/provided:al2023@sha256:f91e5c83528080b2e41d22536d413042e451e67968c7473c4f7e77a627c944bc`.
+Changing either digest requires resolving the official registry manifest and
+updating the container artifact boundary test in the same review.
+
 The first-validation Worker supervisor is deliberately non-root. The current
 typed `worker.noop` action needs no elevated privilege. A later service-install
 executor must introduce a separately approved, narrowly scoped privilege
@@ -34,9 +42,11 @@ docker buildx build --load --platform linux/amd64 --build-arg "VERSION=$Tag" --b
 docker buildx build --load --platform linux/amd64 --provenance=false --build-arg "VERSION=$Tag" --build-arg "REVISION=$Revision" -f deploy/container/reaper.Containerfile -t "dirextalk-reaper-local:$Tag" .
 ```
 
-Use `linux/arm64` consistently when targeting ARM64. The Reaper build uses
-`--provenance=false` because AWS Lambda requires that form for container-image
-compatibility. The Worker build rejects missing or mutable/stable version
+The first-validation artifact set is intentionally `linux/amd64` only. ARM64
+must not be published until every external base is separately pinned to its
+official `linux/arm64` child manifest and the artifact boundary test is
+updated. The Reaper build uses `--provenance=false` because AWS Lambda requires
+that form for container-image compatibility. The Worker build rejects missing or mutable/stable version
 metadata before compiling and writes a SHA-256 sidecar for the exact static
 binary. Worker startup recomputes that digest before it reads EC2 user-data or
 contacts AWS.
@@ -195,7 +205,7 @@ filesystem, and the AMI tool installs the sysusers/tmpfiles/systemd definitions
 and enables `dirextalk-cloud-worker.service`. Docker/BuildKit is permitted on
 the trusted release host only; the resulting EC2 image contains no container
 runtime or socket. The privileged installer socket remains disabled and its
-daemon only verifies pre-staged bytes. Base-container digest pinning, a
-separately approved production Foundation onboarding, and dynamic installer
+daemon only verifies pre-staged bytes. A separately approved production
+Foundation onboarding and dynamic installer
 trust/execution remain deferred gates. See
 [worker-ami/README.md](worker-ami/README.md) for the fixed-AMI contract.

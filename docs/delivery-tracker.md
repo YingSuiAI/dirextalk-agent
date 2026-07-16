@@ -77,7 +77,7 @@ Observable acceptance: after encrypted credential bootstrap and device-approved 
 ### Provisioning And Worker
 
 - [x] For the current EC2/EBS/ENI/SG scope, persist mutation intent before every AWS-created dependency; use deterministic names, ClientToken, mandatory ownership/retention/deadline tags, response reconciliation, and read-back. The implicit RunInstances root EBS volume has a separate deterministic ledger fact, provider read-back, manifest entry, and Reaper path.
-- [ ] Build and publish digest-pinned non-root Agent and exclusive-VM Worker images/archives without AWS CLI or Docker socket. The closed Go ECR/release/AMI tools, recoverable build intents, independent AMI/root-snapshot attestation, durable active-release catalog, and quote binding are implemented. No real ECR push or Worker AMI build/verify/destroy has been executed yet, and base container images still need digest pinning; this item and P2 remain incomplete.
+- [ ] Build and publish digest-pinned non-root Agent and exclusive-VM Worker images/archives without AWS CLI or Docker socket. All official `linux/amd64` base images are pinned to reviewed child-manifest digests, and the closed Go ECR/release/AMI tools, recoverable build intents, independent AMI/root-snapshot attestation, durable active-release catalog, and quote binding are implemented. No real ECR push or Worker AMI build/verify/destroy has been executed yet; this item and P2 remain incomplete.
 - [x] Implement Worker enrollment, outbound TLS gRPC, deployment-bound credential, lease epoch, exact-Step task claim, heartbeat, checkpoint, result/evidence, cancellation, late-result rejection, and process restart resume.
 - [ ] Deliver Worker artifacts/logs/checkpoints through scoped S3/CloudWatch paths and deliver only deployment-declared service secrets.
 - [ ] Implement external health/readiness/semantic probes; mark Worker-local root logs as untrusted claims.
@@ -97,7 +97,7 @@ P2 first-validation evidence (through 2026-07-16): encrypted bootstrap, typed qu
 
 P2 remaining work, in priority order:
 
-1. Pin every base container image by digest, then use the closed operator tools in an authorized disposable account to publish the digest-pinned Agent/Worker/Reaper artifacts, create and verify the fixed Worker AMI, import its publication into the active catalog, and destroy the test AMI/snapshot with read-back. The three ECR repositories remain explicitly owned Managed release infrastructure rather than per-test cleanup targets.
+1. Use the closed operator tools in an authorized disposable account to publish the digest-pinned Agent/Worker/Reaper artifacts, create and verify the fixed Worker AMI, import its publication into the active catalog, and destroy the test AMI/snapshot with read-back. The three ECR repositories remain explicitly owned Managed release infrastructure rather than per-test cleanup targets.
 2. Add startup replay for pending/failed PostgreSQL-to-DynamoDB manifest generations; retain orphan re-import and stale-controller handling as explicit recovery work.
 3. Add an independent device-approved Foundation onboarding transition, then implement approved Foundation upgrade/full teardown and complete blocked-remediation workflows; operator release credentials are not a substitute for product approval.
 4. Keep the privileged installer socket disabled while adding per-deployment trust material, Worker request construction, and separately approved typed install/mount/execute actions beyond `installer.verify` and `worker.noop`; then add persistent encrypted EBS data delivery, deployment-scoped service secrets, and external liveness/readiness/semantic probes.
@@ -106,7 +106,7 @@ P2 remaining work, in priority order:
 7. Replace the direct CloudWatch Worker-log policy: `${aws:userid}` contains `:` for assumed EC2 roles, while CloudWatch log stream names cannot use `:`. Direct Worker CloudWatch logging must not be claimed until this is redesigned.
 8. Complete the remaining P3 Cloud façade, event projection, cutover preflight, and client workload views before any conversation-driven or OpenClaw/knowledge-node acceptance claim.
 
-Deferred from the current release-tooling slice, but required before real acceptance: digest-pinned base images, an independent Foundation-onboarding approval, and dynamic installer trust provisioning/execution. The current installer only verifies a pre-staged artifact and its socket remains disabled.
+Deferred from the current release-tooling slice, but required before real acceptance: an independent Foundation-onboarding approval and dynamic installer trust provisioning/execution. The current installer only verifies a pre-staged artifact and its socket remains disabled.
 
 ## P3 — Message Server Façade And Flutter Workflow
 
