@@ -1,0 +1,301 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum ExecutionStatus {
+  EXECUTION_STATUS_UNSPECIFIED = 0;
+  EXECUTION_STATUS_DRAFT = 1;
+  EXECUTION_STATUS_PLANNING = 2;
+  EXECUTION_STATUS_AWAITING_APPROVAL = 3;
+  EXECUTION_STATUS_QUEUED = 4;
+  EXECUTION_STATUS_RUNNING = 5;
+  EXECUTION_STATUS_WAITING_USER = 6;
+  EXECUTION_STATUS_VERIFYING = 7;
+  EXECUTION_STATUS_FINISHED = 8;
+}
+
+enum OutcomeStatus {
+  OUTCOME_STATUS_UNSPECIFIED = 0;
+  OUTCOME_STATUS_PENDING = 1;
+  OUTCOME_STATUS_SUCCEEDED = 2;
+  OUTCOME_STATUS_FAILED = 3;
+  OUTCOME_STATUS_CANCELED = 4;
+  OUTCOME_STATUS_TIMED_OUT = 5;
+  OUTCOME_STATUS_INTERRUPTED = 6;
+}
+
+enum RetentionPolicy {
+  RETENTION_POLICY_UNSPECIFIED = 0;
+  RETENTION_POLICY_EPHEMERAL_AUTO_DESTROY = 1;
+  RETENTION_POLICY_MANAGED_RETAINED = 2;
+}
+
+enum ExecutorKind {
+  EXECUTOR_KIND_UNSPECIFIED = 0;
+  EXECUTOR_KIND_CONTROL_PLANE = 1;
+  EXECUTOR_KIND_CLOUD_WORKER = 2;
+}
+
+message Task {
+  string task_id = 1;
+  string owner_id = 2;
+  string goal = 3;
+  ExecutionStatus execution_status = 4;
+  OutcomeStatus outcome_status = 5;
+  RetentionPolicy retention_policy = 6;
+  string current_step_id = 7;
+  string approved_plan_id = 8;
+  int64 revision = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+message Step {
+  string step_id = 1;
+  string task_id = 2;
+  string name = 3;
+  repeated string depends_on_step_ids = 4;
+  ExecutorKind executor_kind = 5;
+  ExecutionStatus execution_status = 6;
+  OutcomeStatus outcome_status = 7;
+  int32 attempt = 8;
+  int64 lease_epoch = 9;
+  string checkpoint_ref = 10;
+  string result_ref = 11;
+  int64 revision = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message Event {
+  int64 seq = 1;
+  string event_id = 2;
+  string event_type = 3;
+  string aggregate_type = 4;
+  string aggregate_id = 5;
+  int64 revision = 6;
+  bytes summary_json = 7;
+  google.protobuf.Timestamp occurred_at = 8;
+}
+
+message CreateTaskRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string goal = 3;
+  RetentionPolicy retention_policy = 4;
+}
+message CreateTaskResponse { Task task = 1; }
+
+message GetTaskRequest { string task_id = 1; }
+message GetTaskResponse { Task task = 1; }
+
+message ListTasksRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string owner_id = 3;
+}
+
+message ListTasksResponse {
+  repeated Task tasks = 1;
+  string next_page_token = 2;
+}
+
+message CancelTaskRequest {
+  string idempotency_key = 1;
+  string task_id = 2;
+  int64 expected_revision = 3;
+  string reason = 4;
+}
+message CancelTaskResponse { Task task = 1; }
+
+message ListStepsRequest { string task_id = 1; }
+message ListStepsResponse { repeated Step steps = 1; }
+message WatchEventsRequest { int64 after_seq = 1; }
+message WatchEventsResponse { Event event = 1; }
+
+service TaskService {
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+  rpc ListSteps(ListStepsRequest) returns (ListStepsResponse);
+  rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse);
+}
+
+message RuntimeCapabilities {
+  bool chat = 1;
+  bool cloud_worker = 2;
+  bool local_connector = 3;
+  repeated string skills = 4;
+}
+
+message RuntimeServiceGetCapabilitiesRequest {}
+message RuntimeServiceGetCapabilitiesResponse { RuntimeCapabilities capabilities = 1; }
+
+message ChatRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string conversation_id = 3;
+  string message = 4;
+}
+
+message ChatResponse {
+  string conversation_id = 1;
+  string message_id = 2;
+  string content = 3;
+  bool final = 4;
+}
+
+message StreamChatRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string conversation_id = 3;
+  string message = 4;
+}
+
+message StreamChatResponse {
+  string conversation_id = 1;
+  string message_id = 2;
+  string content = 3;
+  bool final = 4;
+}
+
+service RuntimeService {
+  rpc GetCapabilities(RuntimeServiceGetCapabilitiesRequest) returns (RuntimeServiceGetCapabilitiesResponse);
+  rpc Chat(ChatRequest) returns (ChatResponse);
+  rpc StreamChat(StreamChatRequest) returns (stream StreamChatResponse);
+}
+
+message CloudCapabilities {
+  bool aws = 1;
+  bool direct_sts = 2;
+  bool worker = 3;
+  bool reaper = 4;
+}
+
+message CloudControlServiceGetCapabilitiesRequest {}
+message CloudControlServiceGetCapabilitiesResponse { CloudCapabilities capabilities = 1; }
+
+service CloudControlService {
+  rpc GetCapabilities(CloudControlServiceGetCapabilitiesRequest) returns (CloudControlServiceGetCapabilitiesResponse);
+}
+
+message CreateSessionRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string purpose = 3;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  bytes server_public_key = 2;
+  bytes upload_token = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message UploadEncryptedRequest {
+  string session_id = 1;
+  bytes upload_token = 2;
+  bytes client_public_key = 3;
+  bytes nonce = 4;
+  bytes ciphertext = 5;
+  string idempotency_key = 6;
+  int64 expected_revision = 7;
+}
+
+message UploadEncryptedResponse { int64 revision = 1; }
+message CompleteRequest {
+  string session_id = 1;
+  string idempotency_key = 2;
+  int64 expected_revision = 3;
+}
+message CompleteResponse { string secret_ref = 1; }
+
+service SecretBootstrapService {
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc UploadEncrypted(UploadEncryptedRequest) returns (UploadEncryptedResponse);
+  rpc Complete(CompleteRequest) returns (CompleteResponse);
+}
+
+message CreateServiceKeyRequest {
+  string idempotency_key = 1;
+  string client_id = 2;
+  repeated string scopes = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  string recipient_public_key = 5;
+}
+
+message ServiceKeyDelivery {
+  string schema_version = 1;
+  string server_public_key = 2;
+  string nonce = 3;
+  string ciphertext = 4;
+  bytes associated_data = 5;
+}
+
+message CreateServiceKeyResponse {
+  string credential_id = 1;
+  string key_id = 2;
+  string client_id = 3;
+  repeated string scopes = 4;
+  bool active = 5;
+  int64 revision = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  ServiceKeyDelivery delivery = 8;
+}
+
+message RevokeServiceKeyRequest {
+  string idempotency_key = 1;
+  string credential_id = 2;
+  int64 expected_revision = 3;
+}
+
+message RevokeServiceKeyResponse {
+  string credential_id = 1;
+  string key_id = 2;
+  string client_id = 3;
+  repeated string scopes = 4;
+  bool active = 5;
+  int64 revision = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+
+service AdminService {
+  rpc CreateServiceKey(CreateServiceKeyRequest) returns (CreateServiceKeyResponse);
+  rpc RevokeServiceKey(RevokeServiceKeyRequest) returns (RevokeServiceKeyResponse);
+}
+
+message EnrollRequest {
+  string enrollment_id = 1;
+  bytes enrollment_token = 2;
+  string deployment_id = 3;
+  string idempotency_key = 4;
+}
+
+message EnrollResponse {
+  string worker_id = 1;
+  int64 lease_epoch = 2;
+  google.protobuf.Timestamp lease_expires_at = 3;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+  int64 lease_epoch = 2;
+  string idempotency_key = 3;
+  int64 expected_revision = 4;
+}
+
+message HeartbeatResponse {
+  string worker_id = 1;
+  int64 lease_epoch = 2;
+  google.protobuf.Timestamp lease_expires_at = 3;
+}
+
+service WorkerControlService {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
