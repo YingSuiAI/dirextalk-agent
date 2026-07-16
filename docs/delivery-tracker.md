@@ -111,7 +111,7 @@ Observable acceptance: existing Dirextalk clients keep their ProductCore/WS cont
 
 ### Message Server
 
-- [ ] Add TLS gRPC Agent client using a mounted pairwise Service Key; never pass it to Matrix, MCP, Eino prompts, or ProductCore payloads.
+- [x] Add TLS gRPC Agent client using a mounted pairwise Service Key; never pass it to Matrix, MCP, Eino prompts, or ProductCore payloads.
 - [ ] Preserve existing `agent.*` and `cloud.*` public actions/error shapes while mapping Agent runtime/cloud operations to typed RPCs.
 - [ ] Keep password, Matrix Agent session/identity/room/status, contacts, rooms, messages, members, channels, ProductCore WS, Matrix projection, and Dirextalk `/mcp` in Message Server.
 - [ ] Split `agent.config`: runtime/model/Skill/MCP/knowledge fields in Agent; display/avatar/room policies in Message Server.
@@ -119,6 +119,16 @@ Observable acceptance: existing Dirextalk clients keep their ProductCore/WS cont
 - [ ] Persist Agent event cursor and project de-secreted summaries into ProductCore events; ignore duplicate/older revisions and refresh only the entity with a detected gap.
 - [ ] Implement encrypted SecretBootstrap ciphertext tunnel; Message Server never decrypts, logs, stores, or retries plaintext.
 - [ ] Add no-active-resource/data preflight before direct cutover; fail closed rather than dropping live resource facts.
+
+P3 first-validation slice completed on 2026-07-16: Message Server can delegate only ordinary Chat/StreamChat to the independent Agent over TLS 1.3 with a mounted pairwise Service Key and stable protocol-independent owner ID. Flutter now sends a stable conversation UUID, per-request UUID idempotency key, and persisted exact conversation revision; invalid stream terminal sequences fail closed. The default remains the local Runner, and non-Chat runtime actions stay local.
+
+Deferred before remote Chat or Cloud can be enabled in a release:
+
+1. Publish the new Agent module and replace the temporary sibling `go.mod` replacement with an immutable remote version; a single-repository Message Server container build is not yet reproducible.
+2. Migrate model/runtime configuration and encrypted model secrets to Agent so Flutter no longer sends the legacy request-scoped `model_profile`; the current adapter discards that envelope before gRPC only to preserve local-Runner compatibility.
+3. Add typed Cloud dialogue, Knowledge/Embedding, and attachment contracts. The remote adapter intentionally rejects those modes instead of silently dropping behavior.
+4. Add conversation cursor reconciliation for the crash window after Agent commits a response but before Flutter persists the returned revision; current normal reconnect/session persistence is covered, but that cross-device/reinstall recovery path is not.
+5. Complete the Cloud façade, durable Agent event cursor/projection, ciphertext bootstrap tunnel, approval compatibility, and cutover preflight below.
 
 ### Flutter
 
