@@ -13,7 +13,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,mode=1777
     ports:
-      - "${AGENT_GRPC_PORT:-9443}:9443"
+      - "${AGENT_GRPC_BIND_ADDRESS:-127.0.0.1}:${AGENT_GRPC_PORT:-9443}:9443"
     environment:
       AGENT_INSTANCE_ID: ${AGENT_INSTANCE_ID:?set the stable Agent instance UUID}
       AGENT_DATABASE_URL_FILE: /run/secrets/agent_postgres_dsn

@@ -166,6 +166,10 @@ the same mounted-secret path and are not present in the YAML.
 `AGENT_BOOTSTRAP_SCOPES` defaults to `admin` for the first key and can be
 overridden explicitly. The bootstrap key value must use the service-key file
 format accepted by the Agent; never place it in `.env` or the Compose YAML.
+The host gRPC publish defaults to `127.0.0.1:9443`; set
+`AGENT_GRPC_BIND_ADDRESS` only when an explicitly reviewed network path needs a
+different bind. Callers on `compose.shared-postgres.yaml` should use the Docker
+network alias and do not require a public host listener.
 
 The Agent image variable uses the explicit
 `*_IMMUTABLE_PRERELEASE_WITH_DIGEST` name. The full three-image preflight above
