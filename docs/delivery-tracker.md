@@ -119,7 +119,7 @@ Observable acceptance: existing Dirextalk clients keep their ProductCore/WS cont
 - [ ] Keep password, Matrix Agent session/identity/room/status, contacts, rooms, messages, members, channels, ProductCore WS, Matrix projection, and Dirextalk `/mcp` in Message Server.
 - [ ] Split `agent.config`: runtime/model/Skill/MCP/knowledge fields in Agent; display/avatar/room policies in Message Server.
 - [ ] Convert `agent.runtime.install/run` to quoted/approved Cloud Worker Tasks; never execute them in Message Server or Agent control container.
-- [ ] Persist Agent event cursor and project de-secreted summaries into ProductCore events; ignore duplicate/older revisions and refresh only the entity with a detected gap.
+- [x] Persist the Agent event cursor and project the first exact de-secreted `cloud.plan.changed` schema into ProductCore; atomically advance the source cursor/revision, ignore replay/older revisions, serialize ProductCore sequence allocation with ordinary events, and stop before persistence on any extra or credential-shaped field. Later event types remain non-projectable until each has an exact schema.
 - [x] Implement encrypted SecretBootstrap ciphertext tunnel; Message Server never decrypts, logs, stores, or retries plaintext.
 - [x] Bind an uploaded AWS bootstrap session to the owner-scoped durable Role Plan, proxy typed STS identity preview over Agent gRPC, and expose only short-lived persisted evidence without creating a Connection or Foundation.
 - [ ] Add no-active-resource/data preflight before direct cutover; fail closed rather than dropping live resource facts.
@@ -136,13 +136,15 @@ P3 fifth-validation slice completed on 2026-07-16: Agent Approval-v1 now binds t
 
 P3 sixth-validation slice completed on 2026-07-16: an owner can prepare and device-sign a canonical manual Deployment-destroy challenge through the existing HTTP-only ProductCore façade. Agent persists the exact EC2/EBS/ENI/SG graph and approval before provider work, recovers approved/destroying/blocked operations after restart, and reports success only after every signed provider identifier is independently absent. Message Server remains a stateless projection and preserves legacy non-UUID destruction; Flutter keeps one signature and idempotency reservation through ambiguous and blocked results, supports partial-resource recovery, and never renders provider identifiers. Go/Message/Dart golden and empty-DAG-root encoding agree; first-concurrent PostgreSQL create/approve replay, migration 12, revision fencing, race/vet/build/analyze, and a focused security/spec review passed.
 
+P3 seventh-validation slice completed on 2026-07-16: Message Server durably consumes Agent `WatchEvents` from an Agent-instance/project cursor and projects only an exact owner-bound `cloud.plan.changed` summary. The Agent cursor, aggregate revision, and ProductCore row commit atomically; ordinary and Agent rows allocate their final ProductCore sequence inside the same serialized database transaction. The relay is fenced by account deletion, cancels failed streams, strips internal actor data, rejects every unreviewed field, and injects a canonical Agent source epoch. Flutter rebuilds only Cloud projections when that epoch changes, fences stale bootstrap responses, accepts the new instance's lower revisions, and preserves non-Cloud state. The existing public `cloud.goals.create` `{goal, plan}` contract remains unchanged until Agent can return a real Plan correlation; its typed Goal RPC/adapter is staged without inventing a Plan. Focused Go/Flutter tests, PostgreSQL ordering regression, build/vet/analyze, secret-schema checks, and accumulated compatibility/security review passed.
+
 Deferred before remote Chat or Cloud can be enabled in a release:
 
 1. Publish the new Agent module and replace the temporary sibling `go.mod` replacement with an immutable remote version; a single-repository Message Server container build is not yet reproducible.
 2. Migrate model/runtime configuration and encrypted model secrets to Agent so Flutter no longer sends the legacy request-scoped `model_profile`; the current adapter discards that envelope before gRPC only to preserve local-Runner compatibility.
 3. Add typed Cloud dialogue, Knowledge/Embedding, and attachment contracts. The remote adapter intentionally rejects those modes instead of silently dropping behavior.
 4. Add conversation cursor reconciliation for the crash window after Agent commits a response but before Flutter persists the returned revision; current normal reconnect/session persistence is covered, but that cross-device/reinstall recovery path is not.
-5. Complete the remaining Cloud façade (`cloud.bootstrap`, Services, Recipes, Alerts), durable Agent event cursor/projection, and cutover preflight below. Owner-scoped Plan, Connection, and Deployment list/get plus device-approved Establish are complete.
+5. Complete the remaining Cloud façade (`cloud.bootstrap`, Services, Recipes, Alerts), add exact schemas for their Agent events, and complete cutover preflight below. Owner-scoped Plan, Connection, and Deployment list/get, device-approved Establish, and the first durable Plan event projection are complete.
 6. Add a full pending-to-active Flutter widget E2E and approved-quote expiry/requote/supersede UX; current model, HTTP, signature, read-back, and unknown-result recovery boundaries are covered.
 
 ### Flutter
@@ -153,7 +155,7 @@ Deferred before remote Chat or Cloud can be enabled in a release:
 - [ ] Add an optional pasted AK/SK/Session Token entry without weakening buffer clearing or logging guarantees.
 - [ ] Display goal/Task/Step progress, three quotes, Region, estimated cost, exclusions, retention deadline, execution/outcome/resource axes, Managed status, owner, alerts, health, pairing, logs, Recipe, operations, and destroy-blocked evidence.
 - [x] Label confirmation as “确认创建并开始计费” and state that estimates are not hard budgets, failure/pairing may still bill, and ingress requires separate approval.
-- [ ] Implement revision-aware WS reducer, entity-only gap refresh, Cloud projection rebuild after cursor reset, and disconnect/reconnect tests.
+- [x] Implement revision-aware WS reduction, entity-only gap refresh, Cloud-only projection rebuild after cursor/Agent-epoch reset, stale-bootstrap fencing, and disconnect/reconnect coverage.
 
 ### Cutover And Cleanup
 
