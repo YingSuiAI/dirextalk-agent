@@ -574,6 +574,7 @@ var RuntimeService_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	CloudControlService_GetCapabilities_FullMethodName                       = "/dirextalk.agent.v1.CloudControlService/GetCapabilities"
+	CloudControlService_CreateCloudGoal_FullMethodName                       = "/dirextalk.agent.v1.CloudControlService/CreateCloudGoal"
 	CloudControlService_PreviewAwsIdentity_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/PreviewAwsIdentity"
 	CloudControlService_CreateCloudQuote_FullMethodName                      = "/dirextalk.agent.v1.CloudControlService/CreateCloudQuote"
 	CloudControlService_GetCloudQuote_FullMethodName                         = "/dirextalk.agent.v1.CloudControlService/GetCloudQuote"
@@ -601,6 +602,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type CloudControlServiceClient interface {
 	GetCapabilities(ctx context.Context, in *CloudControlServiceGetCapabilitiesRequest, opts ...grpc.CallOption) (*CloudControlServiceGetCapabilitiesResponse, error)
+	CreateCloudGoal(ctx context.Context, in *CreateCloudGoalRequest, opts ...grpc.CallOption) (*CreateCloudGoalResponse, error)
 	PreviewAwsIdentity(ctx context.Context, in *PreviewAwsIdentityRequest, opts ...grpc.CallOption) (*PreviewAwsIdentityResponse, error)
 	CreateCloudQuote(ctx context.Context, in *CreateCloudQuoteRequest, opts ...grpc.CallOption) (*CreateCloudQuoteResponse, error)
 	GetCloudQuote(ctx context.Context, in *GetCloudQuoteRequest, opts ...grpc.CallOption) (*GetCloudQuoteResponse, error)
@@ -635,6 +637,16 @@ func (c *cloudControlServiceClient) GetCapabilities(ctx context.Context, in *Clo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CloudControlServiceGetCapabilitiesResponse)
 	err := c.cc.Invoke(ctx, CloudControlService_GetCapabilities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateCloudGoal(ctx context.Context, in *CreateCloudGoalRequest, opts ...grpc.CallOption) (*CreateCloudGoalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudGoalResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudGoal_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -846,6 +858,7 @@ func (c *cloudControlServiceClient) GetCloudDestroyOperation(ctx context.Context
 // for forward compatibility.
 type CloudControlServiceServer interface {
 	GetCapabilities(context.Context, *CloudControlServiceGetCapabilitiesRequest) (*CloudControlServiceGetCapabilitiesResponse, error)
+	CreateCloudGoal(context.Context, *CreateCloudGoalRequest) (*CreateCloudGoalResponse, error)
 	PreviewAwsIdentity(context.Context, *PreviewAwsIdentityRequest) (*PreviewAwsIdentityResponse, error)
 	CreateCloudQuote(context.Context, *CreateCloudQuoteRequest) (*CreateCloudQuoteResponse, error)
 	GetCloudQuote(context.Context, *GetCloudQuoteRequest) (*GetCloudQuoteResponse, error)
@@ -878,6 +891,9 @@ type UnimplementedCloudControlServiceServer struct{}
 
 func (UnimplementedCloudControlServiceServer) GetCapabilities(context.Context, *CloudControlServiceGetCapabilitiesRequest) (*CloudControlServiceGetCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCapabilities not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudGoal(context.Context, *CreateCloudGoalRequest) (*CreateCloudGoalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudGoal not implemented")
 }
 func (UnimplementedCloudControlServiceServer) PreviewAwsIdentity(context.Context, *PreviewAwsIdentityRequest) (*PreviewAwsIdentityResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PreviewAwsIdentity not implemented")
@@ -974,6 +990,24 @@ func _CloudControlService_GetCapabilities_Handler(srv interface{}, ctx context.C
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CloudControlServiceServer).GetCapabilities(ctx, req.(*CloudControlServiceGetCapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateCloudGoal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudGoalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudGoal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudGoal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudGoal(ctx, req.(*CreateCloudGoalRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1348,6 +1382,10 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapabilities",
 			Handler:    _CloudControlService_GetCapabilities_Handler,
+		},
+		{
+			MethodName: "CreateCloudGoal",
+			Handler:    _CloudControlService_CreateCloudGoal_Handler,
 		},
 		{
 			MethodName: "PreviewAwsIdentity",

@@ -21,6 +21,7 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 		{message: &agentv1.CreateSessionRequest{}},
 		{message: &agentv1.UploadEncryptedRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.CompleteRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CreateCloudGoalRequest{}},
 		{message: &agentv1.CreateCloudQuoteRequest{}},
 		{message: &agentv1.CreateCloudPlanRequest{}},
 		{message: &agentv1.CreateApprovalChallengeRequest{}, revisionField: "expected_revision"},

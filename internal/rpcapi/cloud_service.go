@@ -24,6 +24,7 @@ type CloudControlService struct {
 	coordinator     cloudapp.Coordinator
 	statusReader    cloudstatus.Reader
 	destroyer       CloudDestroyCoordinator
+	goalPlanner     CloudGoalPlanner
 	agentInstanceID string
 }
 
@@ -44,6 +45,12 @@ func NewCloudControlService(coordinator cloudapp.Coordinator, agentInstanceID st
 func NewCloudControlServiceWithDestroy(coordinator cloudapp.Coordinator, agentInstanceID string, statusReader cloudstatus.Reader, destroyer CloudDestroyCoordinator) *CloudControlService {
 	service := NewCloudControlService(coordinator, agentInstanceID, statusReader)
 	service.destroyer = destroyer
+	return service
+}
+
+func NewCloudControlServiceWithGoals(coordinator cloudapp.Coordinator, agentInstanceID string, statusReader cloudstatus.Reader, destroyer CloudDestroyCoordinator, planner CloudGoalPlanner) *CloudControlService {
+	service := NewCloudControlServiceWithDestroy(coordinator, agentInstanceID, statusReader, destroyer)
+	service.goalPlanner = planner
 	return service
 }
 

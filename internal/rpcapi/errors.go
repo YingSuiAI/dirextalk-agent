@@ -8,6 +8,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
+	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -24,11 +25,13 @@ func publicError(err error) error {
 		errors.Is(err, task.ErrRawSecret), errors.Is(err, auth.ErrInvalidCredentialInput),
 		errors.Is(err, secretbootstrap.ErrInvalidContext), errors.Is(err, secretbootstrap.ErrInvalidEnvelope),
 		errors.Is(err, cloudapp.ErrInvalid), errors.Is(err, cloudstatus.ErrInvalid),
+		errors.Is(err, planning.ErrInvalid), errors.Is(err, planning.ErrRawSecret),
 		errors.Is(err, clouddestroy.ErrInvalid),
 		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, task.ErrNotFound), errors.Is(err, task.ErrStepNotFound), errors.Is(err, task.ErrAttemptNotFound), errors.Is(err, auth.ErrCredentialNotFound),
 		errors.Is(err, secretbootstrap.ErrNotFound), errors.Is(err, cloudapp.ErrNotFound), errors.Is(err, cloudstatus.ErrNotFound),
+		errors.Is(err, planning.ErrNotFound),
 		errors.Is(err, clouddestroy.ErrNotFound),
 		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
@@ -42,6 +45,8 @@ func publicError(err error) error {
 		return status.Error(codes.PermissionDenied, "secret bootstrap upload was not authorized")
 	case errors.Is(err, secretbootstrap.ErrCallerMismatch):
 		return status.Error(codes.PermissionDenied, "secret bootstrap session belongs to another authenticated client")
+	case errors.Is(err, planning.ErrScopeMismatch):
+		return status.Error(codes.PermissionDenied, "planning session belongs to another authenticated client")
 	case errors.Is(err, idempotency.ErrConflict):
 		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier request")
 	case errors.Is(err, clouddestroy.ErrIdempotencyConflict):
@@ -61,7 +66,7 @@ func publicError(err error) error {
 	case errors.Is(err, clouddestroy.ErrUnavailable):
 		return status.Error(codes.Unavailable, "cloud destroy persistence is unavailable")
 	case errors.Is(err, task.ErrTerminal), errors.Is(err, task.ErrNoReadyStep), errors.Is(err, task.ErrLeaseExpired), errors.Is(err, auth.ErrCredentialInactive),
-		errors.Is(err, secretbootstrap.ErrStateConflict), errors.Is(err, secretbootstrap.ErrExpired):
+		errors.Is(err, secretbootstrap.ErrStateConflict), errors.Is(err, secretbootstrap.ErrExpired), errors.Is(err, planning.ErrResearchPending):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, cloudapp.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid device approval is required")

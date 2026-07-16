@@ -83,8 +83,10 @@ func (adapter *CloudSkillAdapter) CreateResearch(ctx context.Context, request cl
 		return created, nil
 	}
 
-	created, err := adapter.tasks.Get(ctx, session.TaskID)
-	if err != nil || !taskMatchesResearch(created, command) {
+	// Re-enter Task.Create so the task-owned idempotency snapshot is returned
+	// even if the live Task has advanced since the original Goal response.
+	created, err := adapter.tasks.Create(ctx, scope, command.Create)
+	if err != nil || created.TaskID != session.TaskID || !taskMatchesResearch(created, command) {
 		return task.Task{}, ErrTaskOperation
 	}
 	return created, nil

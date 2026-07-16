@@ -550,6 +550,7 @@ message ListCloudWorkersResponse {
 
 service CloudControlService {
   rpc GetCapabilities(CloudControlServiceGetCapabilitiesRequest) returns (CloudControlServiceGetCapabilitiesResponse);
+  rpc CreateCloudGoal(CreateCloudGoalRequest) returns (CreateCloudGoalResponse);
   rpc PreviewAwsIdentity(PreviewAwsIdentityRequest) returns (PreviewAwsIdentityResponse);
   rpc CreateCloudQuote(CreateCloudQuoteRequest) returns (CreateCloudQuoteResponse);
   rpc GetCloudQuote(GetCloudQuoteRequest) returns (GetCloudQuoteResponse);
@@ -936,4 +937,37 @@ service WorkerControlService {
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc RecordEvidence(WorkerControlServiceRecordEvidenceRequest) returns (WorkerControlServiceRecordEvidenceResponse);
   rpc Complete(WorkerControlServiceCompleteRequest) returns (WorkerControlServiceCompleteResponse);
+}
+
+// CreateCloudGoal starts durable planning only. It cannot approve a Plan,
+// establish AWS control, create provider resources, or expose credentials.
+message CreateCloudGoalRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string cloud_connection_id = 3;
+  string goal = 4;
+  RetentionPolicy retention_policy = 5;
+  // Empty creates a private server-derived Recipe identity for this Goal.
+  string recipe_id = 6;
+}
+
+enum CloudGoalPlanningState {
+  CLOUD_GOAL_PLANNING_STATE_UNSPECIFIED = 0;
+  CLOUD_GOAL_PLANNING_STATE_RESEARCH_QUEUED = 1;
+  CLOUD_GOAL_PLANNING_STATE_PLAN_READY = 2;
+}
+
+message CloudGoalPlanning {
+  string task_id = 1;
+  string owner_id = 2;
+  string cloud_connection_id = 3;
+  string recipe_id = 4;
+  CloudGoalPlanningState state = 5;
+  // Empty until the planning pipeline persists and binds a CloudPlan.
+  string related_plan_id = 6;
+}
+
+message CreateCloudGoalResponse {
+  Task task = 1;
+  CloudGoalPlanning planning = 2;
 }

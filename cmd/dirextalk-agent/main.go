@@ -197,6 +197,7 @@ func serve() error {
 	}
 	serverOptions := []app.ServerOption{
 		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
+		app.WithCloudGoals(runtimeComposition.CloudGoals),
 		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
 		app.WithWorkerControl(workerService),
 	}

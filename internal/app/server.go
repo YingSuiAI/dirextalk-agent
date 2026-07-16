@@ -30,6 +30,7 @@ type serverOptions struct {
 	secretBootstrap    rpcapi.SecretBootstrapManager
 	cloudCoordinator   cloudapp.Coordinator
 	cloudDestroy       rpcapi.CloudDestroyCoordinator
+	cloudGoals         rpcapi.CloudGoalPlanner
 	workerService      *worker.Service
 	workerVerifier     rpcapi.WorkerIdentityVerifier
 	workerMaterializer rpcapi.WorkerIdentityMaterializer
@@ -58,6 +59,10 @@ func WithCloudControl(coordinator cloudapp.Coordinator) ServerOption {
 
 func WithCloudDestroy(coordinator rpcapi.CloudDestroyCoordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudDestroy = coordinator }
+}
+
+func WithCloudGoals(planner rpcapi.CloudGoalPlanner) ServerOption {
+	return func(options *serverOptions) { options.cloudGoals = planner }
 }
 
 func WithWorkerControl(service *worker.Service) ServerOption {
@@ -103,6 +108,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.RuntimeService_Chat_FullMethodName:                                       "runtime.chat",
 		agentv1.RuntimeService_StreamChat_FullMethodName:                                 "runtime.chat",
 		agentv1.CloudControlService_GetCapabilities_FullMethodName:                       "cloud.read",
+		agentv1.CloudControlService_CreateCloudGoal_FullMethodName:                       "cloud.plan.write",
 		agentv1.CloudControlService_PreviewAwsIdentity_FullMethodName:                    "cloud.connection.preview",
 		agentv1.CloudControlService_CreateCloudQuote_FullMethodName:                      "cloud.plan.write",
 		agentv1.CloudControlService_GetCloudQuote_FullMethodName:                         "cloud.read",
@@ -152,7 +158,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeService(options.runtimeCoordinator, options.runtimeFeatures))
-	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithDestroy(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy))
+	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals))
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer))
 	healthServer := health.NewServer()

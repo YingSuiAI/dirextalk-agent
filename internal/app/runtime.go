@@ -23,6 +23,7 @@ import (
 type RuntimeComposition struct {
 	Coordinator *runtimeapp.Service
 	Features    rpcapi.RuntimeFeatures
+	CloudGoals  rpcapi.CloudGoalPlanner
 }
 
 func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir, modelProfilesFile, mcpServersFile string) (RuntimeComposition, error) {
@@ -95,7 +96,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}
-	return RuntimeComposition{Coordinator: coordinator, Features: features}, nil
+	return RuntimeComposition{Coordinator: coordinator, Features: features, CloudGoals: planningAdapter}, nil
 }
 
 type catalogModelFactory struct {

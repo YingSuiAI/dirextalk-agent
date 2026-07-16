@@ -41,6 +41,17 @@ func TestCloudSkillAdapterRecoversAttachmentWithoutDuplicateTask(t *testing.T) {
 	if created.TaskID == "" || repository.session.TaskID != created.TaskID || tasks.distinctCreates != 1 {
 		t.Fatalf("recovery state task=%q mapped=%q distinct_creates=%d", created.TaskID, repository.session.TaskID, tasks.distinctCreates)
 	}
+	tasks.mu.Lock()
+	advanced := tasks.byID[created.TaskID]
+	advanced.ExecutionStatus = task.ExecutionFinished
+	advanced.OutcomeStatus = task.OutcomeSucceeded
+	advanced.Revision = 4
+	tasks.byID[created.TaskID] = advanced
+	tasks.mu.Unlock()
+	replayed, err := adapter.CreateResearch(ctx, request)
+	if err != nil || !reflect.DeepEqual(replayed, created) || tasks.distinctCreates != 1 {
+		t.Fatalf("research replay did not return the task-owned snapshot: replay=%#v creates=%d err=%v", replayed, tasks.distinctCreates, err)
+	}
 }
 
 func TestCloudSkillAdapterRequiresAuthenticatedPrincipal(t *testing.T) {
