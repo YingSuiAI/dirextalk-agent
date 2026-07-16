@@ -225,7 +225,7 @@ type DeploymentLauncher interface {
 
 type Coordinator interface {
 	Capabilities(context.Context) Capabilities
-	PreviewAWSIdentity(context.Context, MutationScope, string, uint64, string) (AWSIdentity, error)
+	PreviewAWSIdentity(context.Context, MutationScope, string, uint64, string) (AWSIdentityEvidence, error)
 	CreateQuote(context.Context, MutationScope, CreateQuoteCommand) (cloudquote.QuoteV1, error)
 	GetQuote(context.Context, string, string) (cloudquote.QuoteV1, error)
 	CreatePlan(context.Context, MutationScope, CreatePlanCommand) (cloudapproval.PlanV1, error)

@@ -29,7 +29,7 @@ type ApprovalEngine interface {
 }
 
 type IdentityPreviewer interface {
-	PreviewIdentity(context.Context, string, string, uint64, string) (AWSIdentity, error)
+	PreviewIdentity(context.Context, string, string, uint64, string) (AWSIdentityEvidence, error)
 }
 
 type ConnectionEstablisher interface {
@@ -83,9 +83,9 @@ func NewService(agentInstanceID string, facts CloudFactRepository, recipes Recip
 
 func (service *Service) Capabilities(context.Context) Capabilities { return service.capabilities }
 
-func (service *Service) PreviewAWSIdentity(ctx context.Context, scope MutationScope, sessionID string, expectedRevision uint64, region string) (AWSIdentity, error) {
+func (service *Service) PreviewAWSIdentity(ctx context.Context, scope MutationScope, sessionID string, expectedRevision uint64, region string) (AWSIdentityEvidence, error) {
 	if service == nil || service.identity == nil || scope.Validate() != nil {
-		return AWSIdentity{}, ErrUnavailable
+		return AWSIdentityEvidence{}, ErrUnavailable
 	}
 	return service.identity.PreviewIdentity(ctx, scope.ClientID, sessionID, expectedRevision, region)
 }

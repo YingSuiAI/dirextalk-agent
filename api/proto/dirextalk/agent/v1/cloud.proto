@@ -256,7 +256,15 @@ message PreviewAwsIdentityRequest {
   int64 expected_session_revision = 2;
   string region = 3;
 }
-message PreviewAwsIdentityResponse { AwsBootstrapIdentity identity = 1; }
+message PreviewAwsIdentityResponse {
+  AwsBootstrapIdentity identity = 1;
+  string bootstrap_session_id = 2;
+  int64 session_revision = 3;
+  string owner_id = 4;
+  string target_id = 5;
+  google.protobuf.Timestamp observed_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
 
 message CreateCloudQuoteRequest {
   string idempotency_key = 1;

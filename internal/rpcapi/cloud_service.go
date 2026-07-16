@@ -3,6 +3,7 @@ package rpcapi
 import (
 	"context"
 	"crypto/ed25519"
+	"strings"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
@@ -51,14 +52,35 @@ func (service *CloudControlService) PreviewAwsIdentity(ctx context.Context, requ
 	if request.GetExpectedSessionRevision() < 1 {
 		return nil, status.Error(codes.InvalidArgument, "expected_session_revision must be positive")
 	}
-	identity, err := service.coordinator.PreviewAWSIdentity(ctx, scope, request.GetBootstrapSessionId(), uint64(request.GetExpectedSessionRevision()), request.GetRegion())
+	evidence, err := service.coordinator.PreviewAWSIdentity(ctx, scope, request.GetBootstrapSessionId(), uint64(request.GetExpectedSessionRevision()), request.GetRegion())
 	if err != nil {
 		return nil, publicError(err)
 	}
+	if !validPreviewAWSIdentityEvidence(evidence, request) {
+		return nil, status.Error(codes.Internal, "stored AWS identity evidence is invalid")
+	}
+	observedAt := timestamppb.New(evidence.ObservedAt.UTC())
+	expiresAt := timestamppb.New(evidence.ExpiresAt.UTC())
 	return &agentv1.PreviewAwsIdentityResponse{Identity: &agentv1.AwsBootstrapIdentity{
-		AccountId: identity.AccountID, PrincipalArn: identity.PrincipalARN, PrincipalId: identity.PrincipalID,
-		Region: identity.Region, RootIdentity: identity.RootIdentity,
-	}}, nil
+		AccountId: evidence.Identity.AccountID, PrincipalArn: evidence.Identity.PrincipalARN, PrincipalId: evidence.Identity.PrincipalID,
+		Region: evidence.Identity.Region, RootIdentity: evidence.Identity.RootIdentity,
+	}, BootstrapSessionId: evidence.BootstrapSessionID, SessionRevision: int64(evidence.SessionRevision),
+		OwnerId: evidence.OwnerID, TargetId: evidence.TargetID, ObservedAt: observedAt, ExpiresAt: expiresAt}, nil
+}
+
+func validPreviewAWSIdentityEvidence(evidence cloudapp.AWSIdentityEvidence, request *agentv1.PreviewAwsIdentityRequest) bool {
+	if request == nil || evidence.BootstrapSessionID != request.GetBootstrapSessionId() ||
+		evidence.SessionRevision != uint64(request.GetExpectedSessionRevision()) ||
+		evidence.Identity.Region != request.GetRegion() || evidence.Identity.AccountID == "" ||
+		strings.TrimSpace(evidence.Identity.PrincipalARN) == "" || strings.TrimSpace(evidence.Identity.PrincipalID) == "" ||
+		strings.TrimSpace(evidence.OwnerID) == "" || evidence.OwnerID != strings.TrimSpace(evidence.OwnerID) ||
+		strings.TrimSpace(evidence.TargetID) == "" || evidence.TargetID != strings.TrimSpace(evidence.TargetID) ||
+		evidence.ObservedAt.IsZero() || evidence.ExpiresAt.IsZero() || !evidence.ObservedAt.Before(evidence.ExpiresAt) {
+		return false
+	}
+	observedAt := timestamppb.New(evidence.ObservedAt.UTC())
+	expiresAt := timestamppb.New(evidence.ExpiresAt.UTC())
+	return observedAt.CheckValid() == nil && expiresAt.CheckValid() == nil
 }
 
 func (service *CloudControlService) CreateCloudQuote(ctx context.Context, request *agentv1.CreateCloudQuoteRequest) (*agentv1.CreateCloudQuoteResponse, error) {

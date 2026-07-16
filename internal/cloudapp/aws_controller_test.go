@@ -15,10 +15,22 @@ import (
 type identityRepositoryStub struct{ value AWSIdentityEvidence }
 
 func (repository *identityRepositoryStub) PutAWSIdentityEvidence(_ context.Context, value AWSIdentityEvidence) error {
+	if existing := repository.value; existing.BootstrapSessionID != "" {
+		if existing.BootstrapSessionID != value.BootstrapSessionID || existing.SessionRevision != value.SessionRevision ||
+			existing.AgentInstanceID != value.AgentInstanceID || existing.OwnerID != value.OwnerID ||
+			existing.TargetID != value.TargetID || existing.Identity != value.Identity {
+			return ErrRevisionConflict
+		}
+	}
+	value.ObservedAt = value.ObservedAt.UTC().Truncate(time.Microsecond)
+	value.ExpiresAt = value.ExpiresAt.UTC().Truncate(time.Microsecond)
 	repository.value = value
 	return nil
 }
-func (repository *identityRepositoryStub) GetAWSIdentityEvidence(context.Context, string, uint64) (AWSIdentityEvidence, error) {
+func (repository *identityRepositoryStub) GetAWSIdentityEvidence(_ context.Context, sessionID string, revision uint64) (AWSIdentityEvidence, error) {
+	if repository.value.BootstrapSessionID != sessionID || repository.value.SessionRevision != revision {
+		return AWSIdentityEvidence{}, ErrNotFound
+	}
 	return repository.value, nil
 }
 
@@ -42,8 +54,8 @@ func (bootstrapProviderStub) CreateFoundationStack(context.Context, awsprovider.
 	return awsprovider.FoundationStackReceipt{}, nil
 }
 
-func TestAWSControllerPreviewsEncryptedBootstrapAndPersistsIdentityEvidence(t *testing.T) {
-	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+func TestAWSControllerPreviewsEncryptedBootstrapAndReturnsPersistedIdentityEvidence(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 123456789, time.UTC)
 	instanceID := uuid.NewString()
 	callerClientID := "message-server"
 	store, keys := secretbootstrap.NewMemoryStore(), secretbootstrap.NewMemoryKeyStore()
@@ -76,14 +88,27 @@ func TestAWSControllerPreviewsEncryptedBootstrapAndPersistsIdentityEvidence(t *t
 	if _, err := controller.PreviewIdentity(context.Background(), "other-project", uploaded.SessionID, uploaded.Revision, "us-east-1"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("other-client preview error=%v, want ErrForbidden", err)
 	}
-	identity, err := controller.PreviewIdentity(context.Background(), callerClientID, uploaded.SessionID, uploaded.Revision, "us-east-1")
+	if _, err := controller.PreviewIdentity(context.Background(), callerClientID, uploaded.SessionID, uploaded.Revision-1, "us-east-1"); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("old-revision preview error=%v, want ErrRevisionConflict", err)
+	}
+	evidence, err := controller.PreviewIdentity(context.Background(), callerClientID, uploaded.SessionID, uploaded.Revision, "us-east-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.AccountID != "123456789012" || !identity.RootIdentity || repository.value.OwnerID != "owner-a" || repository.value.SessionRevision != 2 {
-		t.Fatalf("identity=%#v evidence=%#v", identity, repository.value)
+	if evidence != repository.value {
+		t.Fatalf("returned evidence=%#v, persisted=%#v", evidence, repository.value)
 	}
-	if repository.value.ExpiresAt.After(created.Session.ExpiresAt) || repository.value.Identity.PrincipalARN != identity.PrincipalARN {
+	if evidence.Identity.AccountID != "123456789012" || !evidence.Identity.RootIdentity || evidence.OwnerID != "owner-a" || evidence.SessionRevision != 2 {
+		t.Fatalf("evidence=%#v", evidence)
+	}
+	if evidence.ObservedAt.Nanosecond() != 123456000 || evidence.ExpiresAt.After(created.Session.ExpiresAt) || evidence.Identity.Region != "us-east-1" {
 		t.Fatal("identity evidence expiry or principal binding changed")
+	}
+	replayed, err := controller.PreviewIdentity(context.Background(), callerClientID, uploaded.SessionID, uploaded.Revision, "us-east-1")
+	if err != nil || replayed != repository.value {
+		t.Fatalf("same-region replay=%#v persisted=%#v err=%v", replayed, repository.value, err)
+	}
+	if _, err := controller.PreviewIdentity(context.Background(), callerClientID, uploaded.SessionID, uploaded.Revision, "eu-west-1"); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("different-region preview error=%v, want ErrRevisionConflict", err)
 	}
 }

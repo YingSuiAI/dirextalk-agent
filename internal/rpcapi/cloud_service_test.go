@@ -22,15 +22,27 @@ type cloudCoordinatorStub struct {
 	mutationScope cloudapp.MutationScope
 	approveCalls  int
 	previewScope  cloudapp.MutationScope
+	previewValue  cloudapp.AWSIdentityEvidence
 	connection    cloudapp.Connection
 }
 
 func (stub *cloudCoordinatorStub) Capabilities(context.Context) cloudapp.Capabilities {
 	return cloudapp.Capabilities{AWS: true, DirectSTS: true, Worker: true, Reaper: true}
 }
-func (stub *cloudCoordinatorStub) PreviewAWSIdentity(_ context.Context, scope cloudapp.MutationScope, _ string, _ uint64, _ string) (cloudapp.AWSIdentity, error) {
+func (stub *cloudCoordinatorStub) PreviewAWSIdentity(_ context.Context, scope cloudapp.MutationScope, sessionID string, revision uint64, region string) (cloudapp.AWSIdentityEvidence, error) {
 	stub.previewScope = scope
-	return cloudapp.AWSIdentity{AccountID: "123456789012", Region: "us-east-1"}, nil
+	if stub.previewValue.BootstrapSessionID != "" {
+		return stub.previewValue, nil
+	}
+	observedAt := time.Date(2026, time.July, 16, 8, 0, 0, 123000000, time.UTC)
+	return cloudapp.AWSIdentityEvidence{
+		BootstrapSessionID: sessionID, SessionRevision: revision, OwnerID: "owner-a", TargetID: uuid.NewString(),
+		Identity: cloudapp.AWSIdentity{
+			AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:root",
+			PrincipalID: "123456789012", Region: region, RootIdentity: true,
+		},
+		ObservedAt: observedAt, ExpiresAt: observedAt.Add(5 * time.Minute),
+	}, nil
 }
 func (stub *cloudCoordinatorStub) CreateQuote(_ context.Context, scope cloudapp.MutationScope, command cloudapp.CreateQuoteCommand) (cloudquote.QuoteV1, error) {
 	stub.mutationScope, stub.quoteCommand = scope, command
@@ -73,10 +85,50 @@ func TestCloudControlServiceMapsCallerAndKeepsAgentInstanceServerOwned(t *testin
 	if stub.mutationScope.ClientID != "message-server" || len(stub.quoteCommand.Scopes) != 1 || stub.quoteCommand.Scopes[0].AgentInstanceID != instanceID {
 		t.Fatalf("cloud mutation binding=%#v command=%#v", stub.mutationScope, stub.quoteCommand)
 	}
-	if _, err := service.PreviewAwsIdentity(ctx, &agentv1.PreviewAwsIdentityRequest{
-		BootstrapSessionId: uuid.NewString(), ExpectedSessionRevision: 2, Region: "us-east-1",
-	}); err != nil || stub.previewScope.ClientID != "message-server" {
+	sessionID := uuid.NewString()
+	response, err := service.PreviewAwsIdentity(ctx, &agentv1.PreviewAwsIdentityRequest{
+		BootstrapSessionId: sessionID, ExpectedSessionRevision: 2, Region: "us-east-1",
+	})
+	if err != nil || stub.previewScope.ClientID != "message-server" {
 		t.Fatalf("preview caller scope=%#v err=%v", stub.previewScope, err)
+	}
+	if response.GetBootstrapSessionId() != sessionID || response.GetSessionRevision() != 2 || response.GetOwnerId() != "owner-a" ||
+		response.GetTargetId() == "" || response.GetIdentity().GetRegion() != "us-east-1" ||
+		response.GetObservedAt().AsTime().Nanosecond() != 123000000 || !response.GetObservedAt().AsTime().Before(response.GetExpiresAt().AsTime()) {
+		t.Fatalf("preview evidence response=%#v", response)
+	}
+}
+
+func TestPreviewAWSIdentityRejectsUnboundOrInvalidPersistedEvidence(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 8, 0, 0, 0, time.UTC)
+	sessionID := uuid.NewString()
+	valid := cloudapp.AWSIdentityEvidence{
+		BootstrapSessionID: sessionID, SessionRevision: 2, OwnerID: "owner-a", TargetID: uuid.NewString(),
+		Identity: cloudapp.AWSIdentity{
+			AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:root",
+			PrincipalID: "123456789012", Region: "us-east-1", RootIdentity: true,
+		},
+		ObservedAt: now, ExpiresAt: now.Add(time.Minute),
+	}
+	tests := map[string]func(*cloudapp.AWSIdentityEvidence){
+		"session":  func(value *cloudapp.AWSIdentityEvidence) { value.BootstrapSessionID = uuid.NewString() },
+		"revision": func(value *cloudapp.AWSIdentityEvidence) { value.SessionRevision++ },
+		"region":   func(value *cloudapp.AWSIdentityEvidence) { value.Identity.Region = "eu-west-1" },
+		"owner":    func(value *cloudapp.AWSIdentityEvidence) { value.OwnerID = "" },
+		"target":   func(value *cloudapp.AWSIdentityEvidence) { value.TargetID = "" },
+		"time":     func(value *cloudapp.AWSIdentityEvidence) { value.ExpiresAt = value.ObservedAt },
+	}
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	request := &agentv1.PreviewAwsIdentityRequest{BootstrapSessionId: sessionID, ExpectedSessionRevision: 2, Region: "us-east-1"}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			value := valid
+			mutate(&value)
+			service := NewCloudControlService(&cloudCoordinatorStub{previewValue: value}, uuid.NewString())
+			if _, err := service.PreviewAwsIdentity(ctx, request); status.Code(err) != codes.Internal {
+				t.Fatalf("code=%v, want Internal", status.Code(err))
+			}
+		})
 	}
 }
 

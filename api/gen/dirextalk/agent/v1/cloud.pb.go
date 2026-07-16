@@ -2322,10 +2322,16 @@ func (x *PreviewAwsIdentityRequest) GetRegion() string {
 }
 
 type PreviewAwsIdentityResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Identity      *AwsBootstrapIdentity  `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Identity           *AwsBootstrapIdentity  `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	BootstrapSessionId string                 `protobuf:"bytes,2,opt,name=bootstrap_session_id,json=bootstrapSessionId,proto3" json:"bootstrap_session_id,omitempty"`
+	SessionRevision    int64                  `protobuf:"varint,3,opt,name=session_revision,json=sessionRevision,proto3" json:"session_revision,omitempty"`
+	OwnerId            string                 `protobuf:"bytes,4,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	TargetId           string                 `protobuf:"bytes,5,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	ObservedAt         *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	ExpiresAt          *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PreviewAwsIdentityResponse) Reset() {
@@ -2361,6 +2367,48 @@ func (*PreviewAwsIdentityResponse) Descriptor() ([]byte, []int) {
 func (x *PreviewAwsIdentityResponse) GetIdentity() *AwsBootstrapIdentity {
 	if x != nil {
 		return x.Identity
+	}
+	return nil
+}
+
+func (x *PreviewAwsIdentityResponse) GetBootstrapSessionId() string {
+	if x != nil {
+		return x.BootstrapSessionId
+	}
+	return ""
+}
+
+func (x *PreviewAwsIdentityResponse) GetSessionRevision() int64 {
+	if x != nil {
+		return x.SessionRevision
+	}
+	return 0
+}
+
+func (x *PreviewAwsIdentityResponse) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *PreviewAwsIdentityResponse) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+func (x *PreviewAwsIdentityResponse) GetObservedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ObservedAt
+	}
+	return nil
+}
+
+func (x *PreviewAwsIdentityResponse) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
 	}
 	return nil
 }
@@ -3384,9 +3432,17 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x19PreviewAwsIdentityRequest\x120\n" +
 	"\x14bootstrap_session_id\x18\x01 \x01(\tR\x12bootstrapSessionId\x12:\n" +
 	"\x19expected_session_revision\x18\x02 \x01(\x03R\x17expectedSessionRevision\x12\x16\n" +
-	"\x06region\x18\x03 \x01(\tR\x06region\"b\n" +
+	"\x06region\x18\x03 \x01(\tR\x06region\"\xef\x02\n" +
 	"\x1aPreviewAwsIdentityResponse\x12D\n" +
-	"\bidentity\x18\x01 \x01(\v2(.dirextalk.agent.v1.AwsBootstrapIdentityR\bidentity\"\x86\x03\n" +
+	"\bidentity\x18\x01 \x01(\v2(.dirextalk.agent.v1.AwsBootstrapIdentityR\bidentity\x120\n" +
+	"\x14bootstrap_session_id\x18\x02 \x01(\tR\x12bootstrapSessionId\x12)\n" +
+	"\x10session_revision\x18\x03 \x01(\x03R\x0fsessionRevision\x12\x19\n" +
+	"\bowner_id\x18\x04 \x01(\tR\aownerId\x12\x1b\n" +
+	"\ttarget_id\x18\x05 \x01(\tR\btargetId\x12;\n" +
+	"\vobserved_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"observedAt\x129\n" +
+	"\n" +
+	"expires_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\"\x86\x03\n" +
 	"\x17CreateCloudQuoteRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12;\n" +
 	"\x06scopes\x18\x02 \x03(\v2#.dirextalk.agent.v1.CloudQuoteScopeR\x06scopes\x12<\n" +
@@ -3566,25 +3622,27 @@ var file_dirextalk_agent_v1_cloud_proto_depIdxs = []int32{
 	22, // 34: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
 	22, // 35: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
 	21, // 36: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
-	11, // 37: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	12, // 38: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	13, // 39: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	17, // 40: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	17, // 41: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	0,  // 42: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	11, // 43: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	18, // 44: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	18, // 45: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	20, // 46: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
-	19, // 47: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	18, // 48: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	19, // 49: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	22, // 50: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	51, // [51:51] is the sub-list for method output_type
-	51, // [51:51] is the sub-list for method input_type
-	51, // [51:51] is the sub-list for extension type_name
-	51, // [51:51] is the sub-list for extension extendee
-	0,  // [0:51] is the sub-list for field type_name
+	43, // 37: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
+	43, // 38: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
+	11, // 39: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	12, // 40: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	13, // 41: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	17, // 42: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	17, // 43: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	0,  // 44: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	11, // 45: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	18, // 46: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	18, // 47: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	20, // 48: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
+	19, // 49: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	18, // 50: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	19, // 51: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	22, // 52: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	53, // [53:53] is the sub-list for method output_type
+	53, // [53:53] is the sub-list for method input_type
+	53, // [53:53] is the sub-list for extension type_name
+	53, // [53:53] is the sub-list for extension extendee
+	0,  // [0:53] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_cloud_proto_init() }
