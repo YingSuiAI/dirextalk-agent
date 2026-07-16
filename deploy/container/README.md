@@ -193,6 +193,21 @@ docker compose -f deploy/container/compose.yaml run --rm agent bootstrap-service
 docker compose -f deploy/container/compose.yaml up -d agent
 ```
 
+When Agent reuses a PostgreSQL server already owned by another Compose project,
+add `compose.shared-postgres.yaml` and set `AGENT_UPSTREAM_NETWORK` to that
+project's existing Docker network. The overlay attaches Agent with the stable
+network alias `dirextalk-agent` (overridable through `AGENT_NETWORK_ALIAS`) and
+does not create, restart, inspect credentials from, or otherwise own the
+PostgreSQL container. Agent still uses its own database, role, migration ledger,
+and backup boundary inside that PostgreSQL server.
+
+```powershell
+docker compose `
+  -f deploy/container/compose.yaml `
+  -f deploy/container/compose.shared-postgres.yaml `
+  config --quiet
+```
+
 The model-profile file and runtime-secret directory must be readable by UID
 `65532` and remain read-only. No host Docker socket should be mounted into the
 Agent or Worker.

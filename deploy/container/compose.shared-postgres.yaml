@@ -1,0 +1,16 @@
+name: dirextalk-agent
+
+# Optional overlay for deployments that reuse an existing PostgreSQL service.
+# It joins only that explicitly named Docker network; it does not create or
+# mutate the database container owned by the host project.
+services:
+  agent:
+    networks:
+      upstream:
+        aliases:
+          - ${AGENT_NETWORK_ALIAS:-dirextalk-agent}
+
+networks:
+  upstream:
+    external: true
+    name: ${AGENT_UPSTREAM_NETWORK:?set the existing PostgreSQL/message-server Docker network}
