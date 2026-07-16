@@ -30,9 +30,12 @@ const (
 var ErrManifestStore = errors.New("AWS resource manifest store failed")
 
 type DynamoDBAPI interface {
+	GetItem(context.Context, *dynamodb.GetItemInput, ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	Query(context.Context, *dynamodb.QueryInput, ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	UpdateItem(context.Context, *dynamodb.UpdateItemInput, ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 }
+
+var _ resource.ManifestReadBack = (*DynamoManifestStore)(nil)
 
 type DynamoManifestStore struct {
 	client          DynamoDBAPI
@@ -70,6 +73,34 @@ func (store *DynamoManifestStore) PutIfRevision(ctx context.Context, manifest re
 		return resource.ErrRevisionConflict
 	}
 	return store.put(ctx, manifest, &expectedRevision, observed.digest)
+}
+
+func (store *DynamoManifestStore) Get(ctx context.Context, deploymentID string) (resource.Manifest, error) {
+	parsed, err := uuid.Parse(strings.TrimSpace(deploymentID))
+	if err != nil || parsed == uuid.Nil || parsed.String() != deploymentID {
+		return resource.Manifest{}, resource.ErrInvalid
+	}
+	output, err := store.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &store.table,
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"pk": &dynamodbtypes.AttributeValueMemberS{Value: manifestPartition(store.agentInstanceID)},
+			"sk": &dynamodbtypes.AttributeValueMemberS{Value: manifestSortKey(deploymentID)},
+		},
+		ConsistentRead: awsBool(true),
+	})
+	if err != nil || output == nil || len(output.Item) == 0 {
+		return resource.Manifest{}, ErrManifestStore
+	}
+	manifest, err := store.decode(output.Item)
+	if err != nil || manifest.DeploymentID != deploymentID {
+		return resource.Manifest{}, ErrManifestStore
+	}
+	_, digest, _, err := store.encode(manifest)
+	if err != nil {
+		return resource.Manifest{}, err
+	}
+	store.remember(manifest.DeploymentID, manifest.Revision, digest)
+	return manifest, nil
 }
 
 func (store *DynamoManifestStore) put(ctx context.Context, manifest resource.Manifest, expectedRevision *int64, expectedDigest string) error {

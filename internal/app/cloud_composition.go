@@ -28,6 +28,7 @@ type CloudComposition struct {
 	WorkerIdentityVerifier     *workeridentity.Verifier
 	WorkerIdentityMaterializer *workerIdentityMaterializer
 	FoundationConnections      *cloudapp.AWSConnectionService
+	ManifestRecovery           *resourceManifestRecovery
 	foundationLaunches         *foundationLaunchCompensator
 	vault                      *awsfoundation.CredentialVault
 }
@@ -35,13 +36,16 @@ type CloudComposition struct {
 // Recover resumes exact, pre-authorized Foundation operations and persists any
 // missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || composition.Lifecycle == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
 	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
 		return err
 	}
 	if err := composition.foundationLaunches.RunOnce(ctx); err != nil {
+		return err
+	}
+	if err := composition.ManifestRecovery.RunOnce(ctx); err != nil {
 		return err
 	}
 	return composition.Lifecycle.RunOnce(ctx)
@@ -54,18 +58,19 @@ func (composition *CloudComposition) Close() {
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 3)
+	errorsChannel := make(chan error, 4)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
+	go func() { errorsChannel <- composition.ManifestRecovery.Run(runContext) }()
 	first := <-errorsChannel
 	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel}
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -143,6 +148,14 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	runtimeFactory, err := newAWSResourceRuntimeFactory(agentInstanceID, vault, resourceStore)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	manifestRecovery, err := newResourceManifestRecovery(
+		agentInstanceID, resourceStore, store, store, runtimeFactory,
+		trackedManifestGenerationReplayer{store: resourceStore}, 15*time.Second,
+	)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -227,6 +240,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
 		FoundationConnections: connections,
+		ManifestRecovery:      manifestRecovery,
 		foundationLaunches:    launchCompensator,
 		vault:                 vault,
 	}, nil

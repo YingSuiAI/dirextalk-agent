@@ -301,6 +301,12 @@ type ManifestMirror interface {
 	ListExpired(context.Context, time.Time) ([]Manifest, error)
 }
 
+// ManifestReadBack independently proves the exact durable cloud value after a
+// write or a lost provider response.
+type ManifestReadBack interface {
+	Get(context.Context, string) (Manifest, error)
+}
+
 // ConditionalManifestMirror fences a Reaper against a concurrent manifest
 // transition, most importantly an ephemeral-to-managed acceptance. Mirrors
 // backed by a shared cloud store should implement it; the plain Put method is

@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/google/uuid"
@@ -38,30 +39,9 @@ func newAWSResourceRuntimeFactory(agentInstanceID string, vault *awsfoundation.C
 }
 
 func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connection cloudapp.Connection) (resource.Provider, resource.ManifestMirror, error) {
-	role, err := arn.Parse(connection.ControlRoleARN)
-	if factory == nil || err != nil || role.Service != "iam" || role.AccountID != connection.AccountID || connection.Status != "active" {
-		return nil, nil, cloudapp.ErrInvalid
-	}
-	foundation, err := awsfoundation.BuildSpec(awsfoundation.SpecInput{
-		AgentInstanceID: factory.agentInstanceID, Partition: role.Partition,
-		AccountID: connection.AccountID, Region: connection.Region,
-	})
-	if err != nil || role.Resource != "role/"+foundation.ControlRoleName {
-		return nil, nil, cloudapp.ErrInvalid
-	}
-	source, err := factory.vault.Open(ctx, awsfoundation.SourceCredentialBinding{
-		AgentInstanceID: factory.agentInstanceID, AccountID: connection.AccountID, Region: connection.Region,
-	})
+	config, foundation, err := factory.controlConfig(ctx, connection)
 	if err != nil {
-		return nil, nil, cloudapp.ErrUnavailable
-	}
-	config, configErr := awsprovider.AssumedControlAWSConfig(
-		connection.Region, &source, connection.ControlRoleARN,
-		"dtx-resource-"+strings.ReplaceAll(uuid.NewString(), "-", "")[:20],
-	)
-	source.Wipe()
-	if configErr != nil {
-		return nil, nil, cloudapp.ErrUnavailable
+		return nil, nil, err
 	}
 	amiReader, err := awsprovider.NewWorkerAMIAttestorFromConfig(config)
 	if err != nil {
@@ -71,15 +51,60 @@ func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connectio
 	if err != nil {
 		return nil, nil, cloudapp.ErrUnavailable
 	}
-	remoteMirror, err := awsreaper.NewDynamoManifestStore(dynamodb.NewFromConfig(config), foundation.ManifestTableName, factory.agentInstanceID)
+	remoteMirror, err := newDynamoResourceManifest(config, foundation.ManifestTableName, factory.agentInstanceID)
 	if err != nil {
-		return nil, nil, cloudapp.ErrUnavailable
+		return nil, nil, err
 	}
 	mirror, err := postgres.NewTrackedResourceManifestMirror(factory.resourceStore, remoteMirror)
 	if err != nil {
 		return nil, nil, cloudapp.ErrUnavailable
 	}
 	return provider, mirror, nil
+}
+
+func (factory *awsResourceRuntimeFactory) RemoteManifest(ctx context.Context, connection cloudapp.Connection) (recoverableManifestMirror, error) {
+	config, foundation, err := factory.controlConfig(ctx, connection)
+	if err != nil {
+		return nil, err
+	}
+	return newDynamoResourceManifest(config, foundation.ManifestTableName, factory.agentInstanceID)
+}
+
+func (factory *awsResourceRuntimeFactory) controlConfig(ctx context.Context, connection cloudapp.Connection) (aws.Config, awsprovider.BootstrapIdentitySpec, error) {
+	role, err := arn.Parse(connection.ControlRoleARN)
+	if factory == nil || err != nil || role.Service != "iam" || role.AccountID != connection.AccountID || connection.Status != "active" {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, cloudapp.ErrInvalid
+	}
+	foundation, err := awsfoundation.BuildSpec(awsfoundation.SpecInput{
+		AgentInstanceID: factory.agentInstanceID, Partition: role.Partition,
+		AccountID: connection.AccountID, Region: connection.Region,
+	})
+	if err != nil || role.Resource != "role/"+foundation.ControlRoleName {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, cloudapp.ErrInvalid
+	}
+	source, err := factory.vault.Open(ctx, awsfoundation.SourceCredentialBinding{
+		AgentInstanceID: factory.agentInstanceID, AccountID: connection.AccountID, Region: connection.Region,
+	})
+	if err != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, cloudapp.ErrUnavailable
+	}
+	defer source.Wipe()
+	config, configErr := awsprovider.AssumedControlAWSConfig(
+		connection.Region, &source, connection.ControlRoleARN,
+		"dtx-resource-"+strings.ReplaceAll(uuid.NewString(), "-", "")[:20],
+	)
+	if configErr != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, cloudapp.ErrUnavailable
+	}
+	return config, foundation, nil
+}
+
+func newDynamoResourceManifest(config aws.Config, table, agentInstanceID string) (*awsreaper.DynamoManifestStore, error) {
+	remoteMirror, err := awsreaper.NewDynamoManifestStore(dynamodb.NewFromConfig(config), table, agentInstanceID)
+	if err != nil {
+		return nil, cloudapp.ErrUnavailable
+	}
+	return remoteMirror, nil
 }
 
 func (factory *awsResourceRuntimeFactory) WorkerIdentityVerifier(ctx context.Context, connection cloudapp.Connection) (awsprovider.WorkerInstanceIdentityVerifier, error) {

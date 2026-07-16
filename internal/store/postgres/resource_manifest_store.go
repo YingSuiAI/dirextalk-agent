@@ -19,11 +19,16 @@ import (
 type ResourceManifestMirrorStatus string
 
 const (
-	ResourceManifestPending  ResourceManifestMirrorStatus = "pending"
-	ResourceManifestMirrored ResourceManifestMirrorStatus = "mirrored"
-	ResourceManifestFailed   ResourceManifestMirrorStatus = "failed"
-	resourceManifestSchemaV1                              = 1
+	ResourceManifestPending         ResourceManifestMirrorStatus = "pending"
+	ResourceManifestMirrored        ResourceManifestMirrorStatus = "mirrored"
+	ResourceManifestFailedRetriable ResourceManifestMirrorStatus = "failed"
+	// ResourceManifestFailed is retained as a source-compatible alias. The
+	// persisted "failed" state is explicitly retried by the recovery loop.
+	ResourceManifestFailed   = ResourceManifestFailedRetriable
+	resourceManifestSchemaV1 = 1
 )
+
+var errResourceManifestReadBack = errors.New("resource manifest read-back did not match the pending generation")
 
 type ResourceManifestRecord struct {
 	Manifest   resource.Manifest
@@ -80,14 +85,55 @@ func (mirror *TrackedResourceManifestMirror) Put(ctx context.Context, manifest r
 	if record.Status == ResourceManifestMirrored {
 		return nil
 	}
-	if err := mirror.remote.Put(ctx, record.Manifest); err != nil {
-		_, markErr := mirror.store.MarkResourceManifestFailed(ctx, manifest.DeploymentID, record.Generation, err)
-		if markErr != nil {
-			return errors.Join(err, markErr)
-		}
+	return mirror.mirrorRecord(ctx, record)
+}
+
+// Replay retries exactly one persisted generation. It re-reads the local row
+// before any remote call so a stale scanner result cannot overwrite or mark a
+// newer PostgreSQL generation.
+func (mirror *TrackedResourceManifestMirror) Replay(ctx context.Context, record ResourceManifestRecord) error {
+	current, err := mirror.store.GetResourceManifestRecord(ctx, record.Manifest.DeploymentID)
+	if err != nil {
 		return err
 	}
-	_, err = mirror.store.MarkResourceManifestMirrored(ctx, manifest.DeploymentID, record.Generation)
+	currentJSON, currentErr := encodeResourceManifest(current.Manifest)
+	recordJSON, recordErr := encodeResourceManifest(record.Manifest)
+	if currentErr != nil || recordErr != nil || current.Generation != record.Generation || !bytes.Equal(currentJSON, recordJSON) {
+		return resource.ErrRevisionConflict
+	}
+	if current.Status == ResourceManifestMirrored {
+		return nil
+	}
+	if current.Status != ResourceManifestPending && current.Status != ResourceManifestFailedRetriable {
+		return resource.ErrRevisionConflict
+	}
+	return mirror.mirrorRecord(ctx, current)
+}
+
+func (mirror *TrackedResourceManifestMirror) mirrorRecord(ctx context.Context, record ResourceManifestRecord) error {
+	putErr := mirror.remote.Put(ctx, record.Manifest)
+	if reader, ok := mirror.remote.(resource.ManifestReadBack); ok {
+		observed, readErr := reader.Get(ctx, record.Manifest.DeploymentID)
+		observedJSON, observedErr := encodeResourceManifest(observed)
+		expectedJSON, expectedErr := encodeResourceManifest(record.Manifest)
+		if readErr == nil && observedErr == nil && expectedErr == nil && bytes.Equal(observedJSON, expectedJSON) {
+			putErr = nil // UpdateItem may have committed before its response was lost.
+		} else if putErr == nil {
+			putErr = errResourceManifestReadBack
+		} else if readErr != nil {
+			putErr = errors.Join(putErr, readErr)
+		} else {
+			putErr = errors.Join(putErr, errResourceManifestReadBack)
+		}
+	}
+	if putErr != nil {
+		_, markErr := mirror.store.MarkResourceManifestFailed(ctx, record.Manifest.DeploymentID, record.Generation, putErr)
+		if markErr != nil {
+			return errors.Join(putErr, markErr)
+		}
+		return putErr
+	}
+	_, err := mirror.store.MarkResourceManifestMirrored(ctx, record.Manifest.DeploymentID, record.Generation)
 	return err
 }
 
@@ -143,7 +189,7 @@ func (store *ResourceStore) PutResourceManifestPending(ctx context.Context, mani
 	if canonicalErr != nil {
 		return ResourceManifestRecord{}, canonicalErr
 	}
-	if bytes.Equal(currentCanonical, encoded) && (current.Status == ResourceManifestPending || current.Status == ResourceManifestMirrored) {
+	if bytes.Equal(currentCanonical, encoded) && (current.Status == ResourceManifestPending || current.Status == ResourceManifestMirrored || current.Status == ResourceManifestFailedRetriable) {
 		if err := tx.Commit(ctx); err != nil {
 			return ResourceManifestRecord{}, fmt.Errorf("commit resource manifest replay: %w", err)
 		}
@@ -199,15 +245,15 @@ func (store *ResourceStore) MarkResourceManifestMirrored(ctx context.Context, de
 		}
 		return current, nil
 	}
-	if current.Status != ResourceManifestPending {
+	if current.Status != ResourceManifestPending && current.Status != ResourceManifestFailedRetriable {
 		return ResourceManifestRecord{}, resource.ErrRevisionConflict
 	}
 	if err := tx.QueryRow(ctx, `
 		UPDATE resource_manifest_mirror
 		SET mirror_status=$4, last_error='', mirrored_at=clock_timestamp(), updated_at=clock_timestamp()
-		WHERE deployment_id=$1 AND agent_instance_id=$2 AND mirror_generation=$3 AND mirror_status=$5
+		WHERE deployment_id=$1 AND agent_instance_id=$2 AND mirror_generation=$3 AND mirror_status IN ($5,$6)
 		RETURNING mirrored_at, updated_at`,
-		parsed, store.instanceID, generation, ResourceManifestMirrored, ResourceManifestPending,
+		parsed, store.instanceID, generation, ResourceManifestMirrored, ResourceManifestPending, ResourceManifestFailedRetriable,
 	).Scan(&current.MirroredAt, &current.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ResourceManifestRecord{}, resource.ErrRevisionConflict
@@ -245,12 +291,6 @@ func (store *ResourceStore) MarkResourceManifestFailed(ctx context.Context, depl
 	}
 	if current.Generation != generation || current.Status == ResourceManifestMirrored {
 		return ResourceManifestRecord{}, resource.ErrRevisionConflict
-	}
-	if current.Status == ResourceManifestFailed && current.LastError == reason {
-		if err := tx.Commit(ctx); err != nil {
-			return ResourceManifestRecord{}, err
-		}
-		return current, nil
 	}
 	if err := tx.QueryRow(ctx, `
 		UPDATE resource_manifest_mirror
@@ -291,9 +331,9 @@ func (store *ResourceStore) ListResourceManifestsNeedingRecovery(ctx context.Con
 	rows, err := store.pool.Query(ctx, `
 		SELECT manifest_json, mirror_generation, mirror_status, last_error, mirrored_at, updated_at
 		FROM resource_manifest_mirror
-		WHERE agent_instance_id=$1 AND mirror_status<>$2
+		WHERE agent_instance_id=$1 AND mirror_status IN ($2,$3)
 		ORDER BY updated_at, deployment_id
-		LIMIT $3`, store.instanceID, ResourceManifestMirrored, limit)
+		LIMIT $4`, store.instanceID, ResourceManifestPending, ResourceManifestFailedRetriable, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list resource manifest recovery: %w", err)
 	}

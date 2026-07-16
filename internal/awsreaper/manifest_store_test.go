@@ -16,11 +16,23 @@ import (
 )
 
 type fakeDynamoDB struct {
-	items map[string]map[string]dynamodbtypes.AttributeValue
+	items                map[string]map[string]dynamodbtypes.AttributeValue
+	failUpdateAfterWrite bool
+	lastGet              *dynamodb.GetItemInput
 }
 
 func newFakeDynamoDB() *fakeDynamoDB {
 	return &fakeDynamoDB{items: make(map[string]map[string]dynamodbtypes.AttributeValue)}
+}
+
+func (fake *fakeDynamoDB) GetItem(_ context.Context, input *dynamodb.GetItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	fake.lastGet = input
+	sk, _ := stringAttribute(input.Key["sk"])
+	item := fake.items[sk]
+	if item == nil {
+		return &dynamodb.GetItemOutput{}, nil
+	}
+	return &dynamodb.GetItemOutput{Item: cloneItem(item)}, nil
 }
 
 func (fake *fakeDynamoDB) Query(_ context.Context, input *dynamodb.QueryInput, _ ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error) {
@@ -61,7 +73,38 @@ func (fake *fakeDynamoDB) UpdateItem(_ context.Context, input *dynamodb.UpdateIt
 		}
 	}
 	fake.items[sk] = item
+	if fake.failUpdateAfterWrite {
+		fake.failUpdateAfterWrite = false
+		return nil, errors.New("simulated response loss")
+	}
 	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func TestDynamoManifestStoreReadBackRecoversLostUpdateResponseByExactKey(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	fake.failUpdateAfterWrite = true
+	store, err := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := reaperManifest(agentID, now.Add(time.Hour), false)
+	if err := store.Put(context.Background(), manifest); !errors.Is(err, ErrManifestStore) {
+		t.Fatalf("lost response error = %v", err)
+	}
+	observed, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil || observed.DeploymentID != manifest.DeploymentID || observed.Revision != manifest.Revision {
+		t.Fatalf("read-back = %+v, err=%v", observed, err)
+	}
+	if fake.lastGet == nil || fake.lastGet.ConsistentRead == nil || !*fake.lastGet.ConsistentRead {
+		t.Fatal("manifest read-back was not strongly consistent")
+	}
+	pk, _ := stringAttribute(fake.lastGet.Key["pk"])
+	sk, _ := stringAttribute(fake.lastGet.Key["sk"])
+	if pk != manifestPartition(agentID) || sk != manifestSortKey(manifest.DeploymentID) {
+		t.Fatalf("read-back used wrong deterministic key: pk=%q sk=%q", pk, sk)
+	}
 }
 
 func TestDynamoManifestStoreBlocksManagedOverwriteOfActiveReaperClaim(t *testing.T) {
