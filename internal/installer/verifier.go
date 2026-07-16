@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -18,10 +19,11 @@ import (
 )
 
 var (
-	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	namePattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	hostPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
-	secretRefPattern = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	namePattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	hostPattern       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
+	secretRefPattern  = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+	executablePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
 )
 
 type ArtifactInspector interface {
@@ -34,6 +36,8 @@ type VerifierConfig struct {
 	TargetRoot            string
 	Now                   func() time.Time
 	Inspector             ArtifactInspector
+	Runner                CommandRunner
+	Journal               ExecutionJournal
 	MaxIdempotencyEntries int
 }
 
@@ -49,6 +53,8 @@ type Verifier struct {
 	targetRoot      string
 	now             func() time.Time
 	inspector       ArtifactInspector
+	runner          CommandRunner
+	journal         ExecutionJournal
 	maxEntries      int
 
 	mu       sync.Mutex
@@ -79,6 +85,7 @@ func NewVerifier(config VerifierConfig) (*Verifier, error) {
 	return &Verifier{
 		publicKey: append(ed25519.PublicKey(nil), config.PublicKey...), expectedBinding: config.ExpectedBinding,
 		targetRoot: root, now: config.Now, inspector: config.Inspector, maxEntries: config.MaxIdempotencyEntries,
+		runner: config.Runner, journal: config.Journal,
 		entries: make(map[string]idempotencyEntry),
 	}, nil
 }
@@ -86,9 +93,6 @@ func NewVerifier(config VerifierConfig) (*Verifier, error) {
 func (v *Verifier) Verify(ctx context.Context, request RequestV1) (ResponseV1, error) {
 	if err := validateRequestEnvelope(request); err != nil {
 		return ResponseV1{}, err
-	}
-	if request.Action != ActionVerify {
-		return ResponseV1{}, errorf(CodeUnsupportedAction, "action is not permitted")
 	}
 	if request.Binding != v.expectedBinding {
 		return ResponseV1{}, errorf(CodeBindingMismatch, "request does not match daemon binding")
@@ -107,6 +111,21 @@ func (v *Verifier) Verify(ctx context.Context, request RequestV1) (ResponseV1, e
 	if plan.Binding != v.expectedBinding || plan.Binding != request.Binding {
 		return ResponseV1{}, errorf(CodeBindingMismatch, "signed installer plan does not match daemon binding")
 	}
+	requestDigest, err := canonical.Digest(request)
+	if err != nil {
+		return ResponseV1{}, errorf(CodeInvalidRequest, "digest installer request: %v", err)
+	}
+	switch request.Action {
+	case ActionVerify:
+		return v.verifyArtifact(ctx, request, plan, requestDigest)
+	case ActionExecute:
+		return v.executeCommand(ctx, request, plan, requestDigest)
+	default:
+		return ResponseV1{}, errorf(CodeUnsupportedAction, "action is not permitted")
+	}
+}
+
+func (v *Verifier) verifyArtifact(ctx context.Context, request RequestV1, plan InstallerPlanV1, requestDigest string) (ResponseV1, error) {
 	expiresAt, _ := time.Parse(time.RFC3339Nano, plan.ExpiresAt)
 	if !v.now().UTC().Before(expiresAt) {
 		return ResponseV1{}, errorf(CodePlanExpired, "installer plan has expired")
@@ -115,11 +134,6 @@ func (v *Verifier) Verify(ctx context.Context, request RequestV1) (ResponseV1, e
 	if !found {
 		return ResponseV1{}, errorf(CodeArtifactNotAllowed, "artifact is not declared by the signed plan")
 	}
-	requestDigest, err := canonical.Digest(request)
-	if err != nil {
-		return ResponseV1{}, errorf(CodeInvalidRequest, "digest installer request: %v", err)
-	}
-
 	// Keep the read-only file verification under the idempotency lock. This
 	// guarantees that concurrent replays do not hash the artifact twice.
 	v.mu.Lock()
@@ -142,6 +156,75 @@ func (v *Verifier) Verify(ctx context.Context, request RequestV1) (ResponseV1, e
 	v.sequence++
 	v.entries[request.IdempotencyKey] = idempotencyEntry{requestDigest: requestDigest, response: response, sequence: v.sequence}
 	v.evictOldest()
+	return response, nil
+}
+
+func (v *Verifier) executeCommand(ctx context.Context, request RequestV1, plan InstallerPlanV1, requestDigest string) (ResponseV1, error) {
+	if v.runner == nil || v.journal == nil {
+		return ResponseV1{}, errorf(CodeUnsupportedAction, "privileged execution is disabled")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if response, found, err := v.journal.Lookup(request.IdempotencyKey, requestDigest); err != nil {
+		return ResponseV1{}, err
+	} else if found {
+		return response, nil
+	}
+	expiresAt, _ := time.Parse(time.RFC3339Nano, plan.ExpiresAt)
+	if !v.now().UTC().Before(expiresAt) {
+		return ResponseV1{}, errorf(CodePlanExpired, "installer plan has expired")
+	}
+	command, found := findCommand(plan.Commands, request.CommandID)
+	if !found {
+		return ResponseV1{}, errorf(CodeCommandNotAllowed, "command is not declared by the signed plan")
+	}
+	for _, artifactName := range command.ArtifactRefs {
+		artifact, exists := findArtifact(plan.Artifacts, artifactName)
+		if !exists {
+			return ResponseV1{}, errorf(CodeArtifactNotAllowed, "command artifact is not declared by the signed plan")
+		}
+		if err := v.inspector.Verify(ctx, artifact); err != nil {
+			return ResponseV1{}, &protocolError{code: CodeArtifactVerification, err: err}
+		}
+	}
+	if !v.now().UTC().Before(expiresAt) {
+		return ResponseV1{}, errorf(CodePlanExpired, "installer plan expired during artifact verification")
+	}
+	base := ResponseV1{
+		SchemaVersion: ResponseSchemaV1, RequestID: request.RequestID,
+		Action: ActionExecute, CommandID: command.CommandID,
+	}
+	if response, replayed, err := v.journal.Begin(request.IdempotencyKey, requestDigest, base); err != nil {
+		return ResponseV1{}, err
+	} else if replayed {
+		return response, nil
+	}
+	timeout := time.Duration(command.TimeoutSeconds) * time.Second
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	execution := CommandExecution{
+		Argv: append([]string(nil), command.Argv...), WorkingDirectory: command.WorkingDirectory,
+		Environment: []string{SafePathEnvironment}, Timeout: timeout,
+	}
+	runErr := v.runner.Run(runCtx, execution)
+	runState := runCtx.Err()
+	cancel()
+	response := base
+	switch {
+	case ctx.Err() != nil:
+		response.Status = StatusInterrupted
+		response.ErrorCode = CodeExecutionInterrupted
+	case runState == context.DeadlineExceeded:
+		response.Status = StatusFailed
+		response.ErrorCode = CodeExecutionTimedOut
+	case runErr == nil:
+		response.Status = StatusExecuted
+	default:
+		response.Status = StatusFailed
+		response.ErrorCode = CodeExecutionFailed
+	}
+	if err := v.journal.Complete(request.IdempotencyKey, requestDigest, response); err != nil {
+		return ResponseV1{}, err
+	}
 	return response, nil
 }
 
@@ -171,8 +254,18 @@ func validateRequestEnvelope(request RequestV1) error {
 			return errorf(CodeInvalidRequest, "%s must be a canonical UUID", name)
 		}
 	}
-	if len(request.Action) == 0 || len(request.Action) > 64 || !namePattern.MatchString(request.ArtifactName) {
-		return errorf(CodeInvalidRequest, "invalid action or artifact name")
+	if len(request.Action) == 0 || len(request.Action) > 64 {
+		return errorf(CodeInvalidRequest, "invalid action")
+	}
+	switch request.Action {
+	case ActionVerify:
+		if !namePattern.MatchString(request.ArtifactName) || request.CommandID != "" {
+			return errorf(CodeInvalidRequest, "verify requires only an artifact name")
+		}
+	case ActionExecute:
+		if request.ArtifactName != "" || !namePattern.MatchString(request.CommandID) {
+			return errorf(CodeInvalidRequest, "execute requires only a command ID")
+		}
 	}
 	if err := validateBinding(request.Binding); err != nil {
 		return err
@@ -182,7 +275,7 @@ func validateRequestEnvelope(request RequestV1) error {
 
 func validatePlan(plan InstallerPlanV1, targetRoot string) error {
 	if plan.SchemaVersion != PlanSchemaV1 || len(plan.Artifacts) == 0 || len(plan.Artifacts) > 128 ||
-		len(plan.SecretRefs) > 128 || len(plan.Ports) > 128 || len(plan.Volumes) > 128 {
+		len(plan.SecretRefs) > 128 || len(plan.Ports) > 128 || len(plan.Volumes) > 128 || len(plan.Commands) > 128 {
 		return errorf(CodeInvalidRequest, "invalid installer plan schema or declaration count")
 	}
 	if err := validateBinding(plan.Binding); err != nil {
@@ -216,6 +309,80 @@ func validatePlan(plan InstallerPlanV1, targetRoot string) error {
 	}
 	if err := validateVolumes(plan.Volumes); err != nil {
 		return err
+	}
+	if err := validateCommands(plan); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCommands(plan InstallerPlanV1) error {
+	artifacts := make(map[string]struct{}, len(plan.Artifacts))
+	for _, artifact := range plan.Artifacts {
+		artifacts[artifact.Name] = struct{}{}
+	}
+	volumes := make(map[string]struct{}, len(plan.Volumes))
+	for _, volume := range plan.Volumes {
+		volumes[volume.Name] = struct{}{}
+	}
+	secrets := make(map[string]struct{}, len(plan.SecretRefs))
+	for _, secret := range plan.SecretRefs {
+		secrets[secret] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(plan.Commands))
+	for _, command := range plan.Commands {
+		if !namePattern.MatchString(command.CommandID) || len(command.Argv) < 1 || len(command.Argv) > 128 || len(command.ArtifactRefs) < 1 ||
+			command.TimeoutSeconds < 1 || command.TimeoutSeconds > 24*60*60 {
+			return errorf(CodeInvalidRequest, "invalid command ID, argv/artifact count, or timeout")
+		}
+		if strings.ContainsRune(command.WorkingDirectory, '\x00') || !path.IsAbs(command.WorkingDirectory) ||
+			path.Clean(command.WorkingDirectory) != command.WorkingDirectory {
+			return errorf(CodeInvalidPath, "invalid command working directory")
+		}
+		if _, exists := seen[command.CommandID]; exists {
+			return errorf(CodeInvalidRequest, "duplicate command ID")
+		}
+		seen[command.CommandID] = struct{}{}
+		totalArgvBytes := 0
+		for index, argument := range command.Argv {
+			totalArgvBytes += len(argument)
+			if len(argument) > 16<<10 || strings.ContainsRune(argument, '\x00') {
+				return errorf(CodeInvalidRequest, "command argv contains an invalid value")
+			}
+			if index == 0 && ((strings.Contains(argument, "/") && (!path.IsAbs(argument) || path.Clean(argument) != argument)) ||
+				(!strings.Contains(argument, "/") && !executablePattern.MatchString(argument))) {
+				return errorf(CodeInvalidPath, "command executable is not absolute or safe-PATH-resolvable")
+			}
+		}
+		if totalArgvBytes > 64<<10 {
+			return errorf(CodeInvalidRequest, "command argv exceeds limit")
+		}
+		if err := validateCommandRefs(command.ArtifactRefs, artifacts, namePattern); err != nil {
+			return errorf(CodeInvalidRequest, "invalid command artifact references")
+		}
+		if err := validateCommandRefs(command.VolumeRefs, volumes, namePattern); err != nil {
+			return errorf(CodeInvalidRequest, "invalid command volume references")
+		}
+		if err := validateCommandRefs(command.SecretRefs, secrets, secretRefPattern); err != nil {
+			return errorf(CodeInvalidRequest, "invalid command secret references")
+		}
+	}
+	return nil
+}
+
+func validateCommandRefs(values []string, declared map[string]struct{}, pattern *regexp.Regexp) error {
+	if !slices.IsSorted(values) {
+		return errors.New("references are not sorted")
+	}
+	previous := ""
+	for _, value := range values {
+		if !pattern.MatchString(value) || value == previous {
+			return errors.New("reference is invalid or duplicated")
+		}
+		if _, exists := declared[value]; !exists {
+			return errors.New("reference is undeclared")
+		}
+		previous = value
 	}
 	return nil
 }
@@ -326,6 +493,15 @@ func findArtifact(artifacts []ArtifactV1, name string) (ArtifactV1, bool) {
 		}
 	}
 	return ArtifactV1{}, false
+}
+
+func findCommand(commands []CommandV1, commandID string) (CommandV1, bool) {
+	for _, command := range commands {
+		if command.CommandID == commandID {
+			return command, true
+		}
+	}
+	return CommandV1{}, false
 }
 
 func parseDigest(value string) ([sha256.Size]byte, error) {

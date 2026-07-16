@@ -66,6 +66,9 @@ func (s *Server) Handle(ctx context.Context, input io.Reader, output io.Writer) 
 		return s.writeResponse(output, response)
 	}
 	response.RequestID = request.RequestID
+	response.Action = request.Action
+	response.ArtifactName = request.ArtifactName
+	response.CommandID = request.CommandID
 	verified, err := s.verifier.Verify(ctx, request)
 	if err != nil {
 		response.ErrorCode = ErrorCodeOf(err)

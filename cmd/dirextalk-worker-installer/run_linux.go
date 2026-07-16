@@ -20,6 +20,7 @@ import (
 const (
 	defaultPublicKeyFile = "/etc/dirextalk-installer/approval-public-key"
 	defaultBindingFile   = "/etc/dirextalk-installer/binding.cbor"
+	defaultJournalFile   = "/var/lib/dirextalk-installer/execution.journal"
 )
 
 func run() error {
@@ -46,8 +47,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	journal, err := installer.OpenRootOwnedExecutionJournal(defaultJournalFile)
+	if err != nil {
+		return err
+	}
 	verifier, err := installer.NewVerifier(installer.VerifierConfig{
 		PublicKey: publicKey, ExpectedBinding: config.Binding, TargetRoot: config.TargetRoot, Inspector: inspector,
+		Runner: installer.OSCommandRunner{}, Journal: journal,
 	})
 	if err != nil {
 		return err

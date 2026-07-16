@@ -17,10 +17,14 @@ const (
 	ResponseSchemaV1   = "dirextalk.agent.installer-response/v1"
 	DaemonConfigSchema = "dirextalk.agent.installer-daemon-config/v1"
 
-	ActionVerify = "installer.verify"
+	ActionVerify  = "installer.verify"
+	ActionExecute = "installer.execute"
 
-	StatusVerified = "verified"
-	StatusRejected = "rejected"
+	StatusVerified    = "verified"
+	StatusExecuted    = "executed"
+	StatusFailed      = "failed"
+	StatusInterrupted = "interrupted"
+	StatusRejected    = "rejected"
 )
 
 // BindingV1 is repeated in the local request, the signed installer plan, and
@@ -61,10 +65,22 @@ type VolumeV1 struct {
 	SizeGiB   uint32 `json:"size_gib"`
 }
 
+// CommandV1 is an exact, approval-bound process invocation. Runtime requests
+// select it only by ID; they cannot add argv, environment, paths, or refs.
+type CommandV1 struct {
+	CommandID        string   `json:"command_id"`
+	Argv             []string `json:"argv"`
+	WorkingDirectory string   `json:"working_directory"`
+	TimeoutSeconds   uint32   `json:"timeout_seconds"`
+	ArtifactRefs     []string `json:"artifact_refs"`
+	VolumeRefs       []string `json:"volume_refs"`
+	SecretRefs       []string `json:"secret_refs"`
+}
+
 // InstallerPlanV1 is the complete approval-bound capability presented to the
-// root daemon. The initial implementation consumes only Artifacts, but secret,
-// network, port, and volume declarations are signed now so later typed actions
-// cannot silently expand the approved scope.
+// root daemon. Execute commands can reference only the artifact, secret, and
+// volume declarations carried by this same signature; network and port scope
+// also remains bound for later separately typed actions.
 type InstallerPlanV1 struct {
 	SchemaVersion string       `json:"schema_version"`
 	Binding       BindingV1    `json:"binding"`
@@ -73,6 +89,7 @@ type InstallerPlanV1 struct {
 	Network       NetworkV1    `json:"network"`
 	Ports         []PortV1     `json:"ports"`
 	Volumes       []VolumeV1   `json:"volumes"`
+	Commands      []CommandV1  `json:"commands,omitempty"`
 	ExpiresAt     string       `json:"expires_at"`
 }
 
@@ -89,7 +106,8 @@ type RequestV1 struct {
 	Action         string                `json:"action"`
 	Binding        BindingV1             `json:"binding"`
 	SignedPlan     SignedInstallerPlanV1 `json:"signed_plan"`
-	ArtifactName   string                `json:"artifact_name"`
+	ArtifactName   string                `json:"artifact_name,omitempty"`
+	CommandID      string                `json:"command_id,omitempty"`
 }
 
 // ResponseV1 intentionally contains no path, secret reference, command text,
@@ -99,7 +117,8 @@ type ResponseV1 struct {
 	RequestID     string    `json:"request_id"`
 	Action        string    `json:"action"`
 	Status        string    `json:"status"`
-	ArtifactName  string    `json:"artifact_name"`
+	ArtifactName  string    `json:"artifact_name,omitempty"`
+	CommandID     string    `json:"command_id,omitempty"`
 	SHA256        string    `json:"sha256"`
 	Replayed      bool      `json:"replayed"`
 	ErrorCode     ErrorCode `json:"error_code"`

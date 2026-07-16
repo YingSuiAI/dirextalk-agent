@@ -19,6 +19,11 @@ const (
 	CodeArtifactNotAllowed   ErrorCode = "artifact_not_allowed"
 	CodeInvalidPath          ErrorCode = "invalid_path"
 	CodeArtifactVerification ErrorCode = "artifact_verification_failed"
+	CodeCommandNotAllowed    ErrorCode = "command_not_allowed"
+	CodeExecutionFailed      ErrorCode = "execution_failed"
+	CodeExecutionTimedOut    ErrorCode = "execution_timed_out"
+	CodeExecutionInterrupted ErrorCode = "execution_interrupted"
+	CodeJournalUnavailable   ErrorCode = "journal_unavailable"
 	CodeInternal             ErrorCode = "internal_error"
 )
 

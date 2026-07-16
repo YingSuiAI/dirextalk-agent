@@ -8,6 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +22,19 @@ import (
 type fakeArtifactInspector struct {
 	err   error
 	paths []string
+}
+
+type fakeCommandRunner struct {
+	executions []CommandExecution
+	run        func(context.Context, CommandExecution) error
+}
+
+func (f *fakeCommandRunner) Run(ctx context.Context, execution CommandExecution) error {
+	f.executions = append(f.executions, execution)
+	if f.run != nil {
+		return f.run(ctx, execution)
+	}
+	return nil
 }
 
 func (f *fakeArtifactInspector) Verify(_ context.Context, artifact ArtifactV1) error {
@@ -69,8 +85,17 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 			PublicInbound:      false,
 			OutboundHTTPSHosts: []string{"api.deepseek.com", "github.com"},
 		},
-		Ports:     []PortV1{{Name: "gateway", Protocol: "tcp", Direction: "loopback", Port: 18789}},
-		Volumes:   []VolumeV1{{Name: "knowledge", MountPath: "/srv/knowledge", ReadOnly: false, SizeGiB: 40}},
+		Ports:   []PortV1{{Name: "gateway", Protocol: "tcp", Direction: "loopback", Port: 18789}},
+		Volumes: []VolumeV1{{Name: "knowledge", MountPath: "/srv/knowledge", ReadOnly: false, SizeGiB: 40}},
+		Commands: []CommandV1{{
+			CommandID:        "install-openclaw",
+			Argv:             []string{"/bin/sh", "-ceu", "printf '%s' \"$1\"", "installer", "ready"},
+			WorkingDirectory: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111",
+			TimeoutSeconds:   300,
+			ArtifactRefs:     []string{"openclaw-bundle"},
+			VolumeRefs:       []string{"knowledge"},
+			SecretRefs:       []string{"secret_ref:deployment/model-token"},
+		}},
 		ExpiresAt: now.Add(5 * time.Minute).Format(time.RFC3339Nano),
 	}
 	payload, err := PlanSigningBytes(plan)
@@ -102,6 +127,320 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 	return verifierFixture{now: now, private: privateKey, public: publicKey, binding: binding, plan: plan, request: request, inspector: inspector, verifier: verifier}
 }
 
+func TestExecutorRunsOnlyExactSignedCommandAndReplaysFromPersistentJournal(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.request.Action = ActionExecute
+	fixture.request.ArtifactName = ""
+	fixture.request.CommandID = "install-openclaw"
+	resignRequest(t, &fixture)
+	journalPath := filepath.Join(t.TempDir(), "execution.journal")
+	journal, err := openExecutionJournal(journalPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{}
+	verifier, err := NewVerifier(VerifierConfig{
+		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector,
+		Runner: runner, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := verifier.Verify(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != StatusExecuted || first.CommandID != "install-openclaw" || first.Replayed || len(runner.executions) != 1 {
+		t.Fatalf("unexpected first execution: response=%#v executions=%#v", first, runner.executions)
+	}
+	execution := runner.executions[0]
+	want := fixture.plan.Commands[0]
+	if !slices.Equal(execution.Argv, want.Argv) || execution.WorkingDirectory != want.WorkingDirectory || execution.Timeout != 300*time.Second ||
+		!slices.Equal(execution.Environment, []string{SafePathEnvironment}) {
+		t.Fatalf("execution escaped signed command: %#v", execution)
+	}
+	if len(fixture.inspector.paths) != 1 {
+		t.Fatalf("referenced artifact was not verified exactly once: %#v", fixture.inspector.paths)
+	}
+
+	reopened, err := openExecutionJournal(journalPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayRunner := &fakeCommandRunner{}
+	replayVerifier, err := NewVerifier(VerifierConfig{
+		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		Now:        func() time.Time { return fixture.now.Add(24 * time.Hour) }, Inspector: &fakeArtifactInspector{},
+		Runner: replayRunner, Journal: reopened,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := replayVerifier.Verify(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replayed || replayed.Status != StatusExecuted || len(replayRunner.executions) != 0 {
+		t.Fatalf("persistent replay executed again: response=%#v executions=%d", replayed, len(replayRunner.executions))
+	}
+	changed := fixture.request
+	changed.RequestID = "66666666-6666-4666-8666-666666666666"
+	if _, err := replayVerifier.Verify(context.Background(), changed); !errors.Is(err, Error(CodeIdempotencyConflict)) {
+		t.Fatalf("changed request reused persistent key: %v", err)
+	}
+}
+
+func TestExecutorRecoversRunningJournalAsNonReplayableInterruption(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.request.Action = ActionExecute
+	fixture.request.ArtifactName = ""
+	fixture.request.CommandID = "install-openclaw"
+	resignRequest(t, &fixture)
+	digest, err := canonical.Digest(fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journalPath := filepath.Join(t.TempDir(), "execution.journal")
+	journal, err := openExecutionJournal(journalPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, replayed, err := journal.Begin(fixture.request.IdempotencyKey, digest, ResponseV1{
+		SchemaVersion: ResponseSchemaV1, RequestID: fixture.request.RequestID,
+		Action: ActionExecute, CommandID: fixture.request.CommandID,
+	})
+	if err != nil || replayed {
+		t.Fatalf("begin journal: replayed=%v err=%v", replayed, err)
+	}
+	file, err := os.OpenFile(journalPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte{0, 1}); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openExecutionJournal(journalPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{}
+	verifier, err := NewVerifier(VerifierConfig{
+		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		Now:        func() time.Time { return fixture.now }, Inspector: &fakeArtifactInspector{}, Runner: runner, Journal: reopened,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := verifier.Verify(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != StatusInterrupted || response.ErrorCode != CodeExecutionInterrupted || !response.Replayed || len(runner.executions) != 0 {
+		t.Fatalf("interrupted execution replayed automatically: response=%#v calls=%d", response, len(runner.executions))
+	}
+}
+
+func TestExecutorRejectsRuntimeScopeAndSignedCommandChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		code ErrorCode
+		edit func(*verifierFixture)
+	}{
+		{name: "relative working directory", code: CodeInvalidPath, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].WorkingDirectory = "relative"
+			resignRequest(t, f)
+		}},
+		{name: "nul argument", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].Argv[2] += "\x00hidden"
+			resignRequest(t, f)
+		}},
+		{name: "missing artifact ref", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].ArtifactRefs = nil
+			resignRequest(t, f)
+		}},
+		{name: "undeclared artifact ref", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].ArtifactRefs = []string{"other"}
+			resignRequest(t, f)
+		}},
+		{name: "undeclared volume ref", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].VolumeRefs = []string{"other"}
+			resignRequest(t, f)
+		}},
+		{name: "undeclared secret ref", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].SecretRefs = []string{"secret_ref:deployment/other"}
+			resignRequest(t, f)
+		}},
+		{name: "runtime artifact", code: CodeInvalidRequest, edit: func(f *verifierFixture) { f.request.ArtifactName = "openclaw-bundle" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newVerifierFixture(t)
+			fixture.request.Action = ActionExecute
+			fixture.request.ArtifactName = ""
+			fixture.request.CommandID = "install-openclaw"
+			test.edit(&fixture)
+			journal, err := openExecutionJournal(filepath.Join(t.TempDir(), "execution.journal"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := &fakeCommandRunner{}
+			verifier, err := NewVerifier(VerifierConfig{
+				PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+				TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+				Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = verifier.Verify(context.Background(), fixture.request)
+			if !errors.Is(err, Error(test.code)) {
+				t.Fatalf("error = %v, want code %s", err, test.code)
+			}
+			if len(runner.executions) != 0 {
+				t.Fatalf("runner called for rejected request: %#v", runner.executions)
+			}
+		})
+	}
+}
+
+func TestExecutorResponseAndJournalDoNotLeakCommandOrRunnerError(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.request.Action = ActionExecute
+	fixture.request.ArtifactName = ""
+	fixture.request.CommandID = "install-openclaw"
+	resignRequest(t, &fixture)
+	journalPath := filepath.Join(t.TempDir(), "execution.journal")
+	journal, err := openExecutionJournal(journalPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{run: func(context.Context, CommandExecution) error {
+		return errors.New("failed with token super-secret at /private/path")
+	}}
+	verifier, err := NewVerifier(VerifierConfig{
+		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(verifier, ServerConfig{})
+	raw, err := canonical.Marshal(fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input, output bytes.Buffer
+	writeTestFrame(&input, raw)
+	if err := server.Handle(context.Background(), &input, &output); err != nil {
+		t.Fatal(err)
+	}
+	responseBytes := readTestFrame(t, &output)
+	journalBytes, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"super-secret", "/private/path", "printf '%s'", "secret_ref:"} {
+		if bytes.Contains(responseBytes, []byte(secret)) || bytes.Contains(journalBytes, []byte(secret)) {
+			t.Fatalf("response or journal leaked %q", secret)
+		}
+	}
+	var response ResponseV1
+	if err := DecodeCanonical(responseBytes, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != StatusFailed || response.ErrorCode != CodeExecutionFailed || response.CommandID != "install-openclaw" {
+		t.Fatalf("unexpected execution failure response: %#v", response)
+	}
+}
+
+func TestExecutorEnforcesSignedTimeoutAndDoesNotRetry(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.request.Action = ActionExecute
+	fixture.request.ArtifactName = ""
+	fixture.request.CommandID = "install-openclaw"
+	fixture.request.SignedPlan.Plan.Commands[0].TimeoutSeconds = 1
+	resignRequest(t, &fixture)
+	journal, err := openExecutionJournal(filepath.Join(t.TempDir(), "execution.journal"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{run: func(ctx context.Context, _ CommandExecution) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	verifier, err := NewVerifier(VerifierConfig{
+		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := verifier.Verify(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != StatusFailed || first.ErrorCode != CodeExecutionTimedOut || len(runner.executions) != 1 {
+		t.Fatalf("signed timeout was not enforced: response=%#v calls=%d", first, len(runner.executions))
+	}
+	second, err := verifier.Verify(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Replayed || second.ErrorCode != CodeExecutionTimedOut || len(runner.executions) != 1 {
+		t.Fatalf("timed-out command was retried: response=%#v calls=%d", second, len(runner.executions))
+	}
+}
+
+func TestServerRejectsRequestSuppliedArgvAndEnvironment(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.request.Action = ActionExecute
+	fixture.request.ArtifactName = ""
+	fixture.request.CommandID = "install-openclaw"
+	resignRequest(t, &fixture)
+	malicious := map[string]any{
+		"schema_version":  fixture.request.SchemaVersion,
+		"request_id":      fixture.request.RequestID,
+		"idempotency_key": fixture.request.IdempotencyKey,
+		"action":          fixture.request.Action,
+		"binding":         fixture.request.Binding,
+		"signed_plan":     fixture.request.SignedPlan,
+		"command_id":      fixture.request.CommandID,
+		"argv":            []string{"aws", "ec2", "terminate-instances"},
+		"environment":     []string{"AWS_SECRET_ACCESS_KEY=must-not-enter"},
+	}
+	raw, err := canonical.Marshal(malicious)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(fixture.verifier, ServerConfig{})
+	var input, output bytes.Buffer
+	writeTestFrame(&input, raw)
+	if err := server.Handle(context.Background(), &input, &output); err != nil {
+		t.Fatal(err)
+	}
+	responseBytes := readTestFrame(t, &output)
+	if bytes.Contains(responseBytes, []byte("AWS_SECRET")) || bytes.Contains(responseBytes, []byte("terminate-instances")) {
+		t.Fatalf("rejected response echoed runtime parameters: %x", responseBytes)
+	}
+	var response ResponseV1
+	if err := DecodeCanonical(responseBytes, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ErrorCode != CodeInvalidRequest {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+}
+
 func TestVerifierAcceptsExactSignedBindingAndReplaysIdempotently(t *testing.T) {
 	fixture := newVerifierFixture(t)
 	first, err := fixture.verifier.Verify(context.Background(), fixture.request)
@@ -117,6 +456,26 @@ func TestVerifierAcceptsExactSignedBindingAndReplaysIdempotently(t *testing.T) {
 	}
 	if !second.Replayed || second.Status != StatusVerified || len(fixture.inspector.paths) != 1 {
 		t.Fatalf("replay re-executed verification: response=%#v calls=%d", second, len(fixture.inspector.paths))
+	}
+}
+
+func TestVerifyContractRemainsCanonicalWithoutExecuteFields(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.request.SignedPlan.Plan.Commands = nil
+	resignRequest(t, &fixture)
+	raw, err := canonical.Marshal(fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("commands")) || bytes.Contains(raw, []byte("command_id")) {
+		t.Fatalf("verify-only V1 unexpectedly contains execute fields: %x", raw)
+	}
+	var decoded RequestV1
+	if err := DecodeCanonical(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.verifier.Verify(context.Background(), decoded); err != nil {
+		t.Fatal(err)
 	}
 }
 

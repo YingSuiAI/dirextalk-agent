@@ -204,8 +204,10 @@ Agent or Worker.
 filesystem, and the AMI tool installs the sysusers/tmpfiles/systemd definitions
 and enables `dirextalk-cloud-worker.service`. Docker/BuildKit is permitted on
 the trusted release host only; the resulting EC2 image contains no container
-runtime or socket. The privileged installer socket remains disabled and its
-daemon only verifies pre-staged bytes. A separately approved production
-Foundation onboarding and dynamic installer
-trust/execution remain deferred gates. See
+runtime or socket. The privileged installer socket remains disabled. Its
+daemon can verify pre-staged bytes and execute only an exact command selected
+by ID from the same signed plan, with durable idempotency/interruption state;
+the Worker does not yet provision trust or construct that request. A separately
+approved production Foundation onboarding and per-deployment installer wiring
+remain deferred gates. See
 [worker-ami/README.md](worker-ami/README.md) for the fixed-AMI contract.

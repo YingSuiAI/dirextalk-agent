@@ -1,5 +1,5 @@
 [Unit]
-Description=Dirextalk approval-bound Worker installer verifier
+Description=Dirextalk approval-bound Worker root installer
 Documentation=https://github.com/YingSuiAI/dirextalk-agent
 Requires=dirextalk-worker-installer.socket
 After=dirextalk-worker-installer.socket
@@ -15,6 +15,8 @@ ExecStart=/usr/local/bin/dirextalk-worker-installer
 Environment=DIREXTALK_INSTALLER_APPROVAL_PUBLIC_KEY_FILE=/etc/dirextalk-installer/approval-public-key
 Environment=DIREXTALK_INSTALLER_BINDING_FILE=/etc/dirextalk-installer/binding.cbor
 UMask=0077
+StateDirectory=dirextalk-installer
+StateDirectoryMode=0700
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -33,6 +35,7 @@ ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectProc=invisible
 ProtectSystem=strict
+ReadWritePaths=-/opt/dirextalk/deployments -/srv
 ProcSubset=pid
 RemoveIPC=yes
 RestrictAddressFamilies=AF_UNIX

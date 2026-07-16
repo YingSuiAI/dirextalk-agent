@@ -104,6 +104,8 @@ func TestWorkerAMIInstallerUsesOnlyApprovalBoundUnixSocket(t *testing.T) {
 	for _, required := range []string{
 		"User=root", "ExecStart=/usr/local/bin/dirextalk-worker-installer", "PrivateNetwork=yes",
 		"RestrictAddressFamilies=AF_UNIX", "ProtectSystem=strict", "CapabilityBoundingSet=\n",
+		"StateDirectory=dirextalk-installer", "StateDirectoryMode=0700",
+		"ReadWritePaths=-/opt/dirextalk/deployments -/srv",
 		"ConditionPathExists=/etc/dirextalk-installer/approval-public-key",
 		"ConditionPathExists=/etc/dirextalk-installer/binding.cbor",
 	} {
