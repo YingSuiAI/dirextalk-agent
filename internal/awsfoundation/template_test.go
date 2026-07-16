@@ -30,6 +30,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("CreateImageFromOwnedBuilder"), []byte("CreateImageOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
 		[]byte("ec2:CreateImage"), []byte("ec2:DeregisterImage"), []byte("s3:GetBucketVersioning"), []byte("s3:GetEncryptionConfiguration"),
 		[]byte("s3:ListBucketVersions"), []byte("s3:GetObjectVersion"), []byte("s3:DeleteObjectVersion"),
+		[]byte("WorkerInstallerArtifacts"), []byte("${ArtifactBucket.Arn}/deployments/*/artifacts/*"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
 	} {
 		if !bytes.Contains(template, required) {

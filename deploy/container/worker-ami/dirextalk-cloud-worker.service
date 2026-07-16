@@ -2,7 +2,8 @@
 Description=Dirextalk exclusive-VM Cloud Worker
 Documentation=https://github.com/YingSuiAI/dirextalk-agent
 Wants=network-online.target
-After=network-online.target
+Requires=dirextalk-worker-installer-bootstrap.service
+After=network-online.target dirextalk-worker-installer-bootstrap.service
 ConditionPathIsExecutable=/usr/local/bin/dirextalk-cloud-worker
 ConditionPathIsReadWrite=/var/lib/dirextalk-worker
 

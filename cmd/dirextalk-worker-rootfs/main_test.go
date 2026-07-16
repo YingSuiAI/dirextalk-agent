@@ -67,17 +67,18 @@ func makeCLIRootfs(t *testing.T, root string) {
 	workerSum := sha256.Sum256(worker)
 	installerSum := sha256.Sum256(installer)
 	files := map[string][]byte{
-		"etc/ssl/certs/ca-certificates.crt":                                       []byte("ca bundle\n"),
-		"usr/local/bin/dirextalk-cloud-worker":                                    worker,
-		"usr/local/bin/dirextalk-worker-installer":                                installer,
-		"usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256":          []byte(hex.EncodeToString(workerSum[:]) + "\n"),
-		"usr/local/share/dirextalk-worker/dirextalk-worker-installer.sha256":      []byte(hex.EncodeToString(installerSum[:]) + "\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service":     []byte("worker service\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles":       []byte("installer tmpfiles\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service": []byte("installer service\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket":  []byte("installer socket\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.sysusers":          []byte("worker sysusers\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.tmpfiles":          []byte("worker tmpfiles\n"),
+		"etc/ssl/certs/ca-certificates.crt":                                                 []byte("ca bundle\n"),
+		"usr/local/bin/dirextalk-cloud-worker":                                              worker,
+		"usr/local/bin/dirextalk-worker-installer":                                          installer,
+		"usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256":                    []byte(hex.EncodeToString(workerSum[:]) + "\n"),
+		"usr/local/share/dirextalk-worker/dirextalk-worker-installer.sha256":                []byte(hex.EncodeToString(installerSum[:]) + "\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service":               []byte("worker service\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles":                 []byte("installer tmpfiles\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service": []byte("installer bootstrap service\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service":           []byte("installer service\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket":            []byte("installer socket\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.sysusers":                    []byte("worker sysusers\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.tmpfiles":                    []byte("worker tmpfiles\n"),
 	}
 	for name, content := range files {
 		path := filepath.Join(root, filepath.FromSlash(name))

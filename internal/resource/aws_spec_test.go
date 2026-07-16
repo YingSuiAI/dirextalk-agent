@@ -180,7 +180,7 @@ func workerInstanceSpec() *AWSResourceSpecV1 {
 		Instance: &AWSEC2InstanceSpecV1{
 			ImageID: "ami-0123456789abcdef0", ImageDigest: "sha256:" + strings.Repeat("a", 64), Architecture: recipe.ArchitectureAMD64,
 			InstanceType: "m7i.large", InstanceProfileName: "dtx-agent-0123456789ab-worker",
-			UserDataArtifactRef:    "s3://dtx-agent-artifacts/worker/v0.1.0/worker.tar.zst",
+			UserDataArtifactRef:    "s3://dtx-agent-artifacts/deployments/11111111-1111-4111-8111-111111111111/launch/config.json",
 			UserDataArtifactDigest: "sha256:" + strings.Repeat("b", 64),
 			Bootstrap: AWSWorkerBootstrapSpecV1{
 				DeploymentID: "11111111-1111-4111-8111-111111111111", WorkerID: "22222222-2222-4222-8222-222222222222",

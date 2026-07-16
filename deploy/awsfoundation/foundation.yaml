@@ -164,6 +164,7 @@ Resources:
             Principal: '*'
             Action:
               - s3:GetObject
+              - s3:GetObjectVersion
               - s3:PutObject
               - s3:DeleteObject
             Resource:
@@ -283,6 +284,16 @@ Resources:
                   - s3:AbortMultipartUpload
                 Resource:
                   Fn::Sub: ${ArtifactBucket.Arn}/workers/${!aws:userid}/*
+              # Installer payloads are immutable, non-secret, versioned
+              # objects. User-data and the signed manifest bind a Worker to
+              # one exact deployment key/version before root materialization.
+              - Sid: WorkerInstallerArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/artifacts/*
               - Sid: WorkerEnvelopeKMS
                 Effect: Allow
                 Action:

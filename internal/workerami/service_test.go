@@ -136,6 +136,11 @@ func TestDeferredCleanupReconcilesBillingResourcesAfterDoubleAmbiguity(t *testin
 
 	t.Run("builder", func(t *testing.T) {
 		request := validBuildRequest(t)
+		var recorded BuilderCleanupEvidenceV1
+		request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
+			recorded = evidence
+			return nil
+		}
 		provider := newFakeProvider(request)
 		provider.loseLaunchResponse = true
 		provider.findBuilderMissAt = map[int]bool{2: true}
@@ -148,6 +153,9 @@ func TestDeferredCleanupReconcilesBillingResourcesAfterDoubleAmbiguity(t *testin
 		if manifest != (ImageManifestV1{}) || provider.builder.State != BuilderTerminated || provider.terminateCalls != 1 ||
 			provider.artifactFound || provider.deleteArtifactCalls != 1 || provider.findBuilderCalls < 3 {
 			t.Fatalf("deferred builder reconciliation failed: %#v calls=%#v", provider, provider.calls)
+		}
+		if recorded.BuilderInstanceID == "" || recorded.BuilderRootVolumeID == "" || len(recorded.BuilderNetworkInterfaceIDs) != 1 {
+			t.Fatalf("lost launch response did not retain cleanup evidence: %#v", recorded)
 		}
 	})
 }
@@ -264,6 +272,85 @@ func TestBuildWithholdsManifestWhenCleanupCannotBeVerified(t *testing.T) {
 	}
 }
 
+func TestBuildPersistsAndIndependentlyReadsBackBuilderDependencies(t *testing.T) {
+	request := validBuildRequest(t)
+	var recorded BuilderCleanupEvidenceV1
+	request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
+		recorded = evidence
+		return nil
+	}
+	provider := newFakeProvider(request)
+
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if err != nil || manifest.ImageID == "" {
+		t.Fatalf("Build() = %#v, %v", manifest, err)
+	}
+	if recorded.BuilderInstanceID != provider.builder.InstanceID || recorded.BuilderRootVolumeID != provider.builder.RootVolumeID ||
+		!reflect.DeepEqual(recorded.BuilderNetworkInterfaceIDs, provider.builder.NetworkInterfaceIDs) {
+		t.Fatalf("recorded cleanup evidence = %#v, builder = %#v", recorded, provider.builder)
+	}
+	terminateIndex := callIndex(provider.calls, "terminate-builder")
+	volumeIndex := callIndex(provider.calls, "observe-builder-volume")
+	networkIndex := callIndex(provider.calls, "observe-builder-network-interface")
+	if terminateIndex < 0 || volumeIndex <= terminateIndex || networkIndex <= terminateIndex || provider.builderVolumeFound || provider.builderNetworkFound {
+		t.Fatalf("builder dependencies were not independently read absent: %#v", provider.calls)
+	}
+	if err := newTestService(t, provider).VerifyBuilderCleanup(context.Background(), recorded); err != nil {
+		t.Fatalf("VerifyBuilderCleanup() = %v", err)
+	}
+}
+
+func TestBuildRejectsMissingDurableCleanupRecorderBeforeProviderCalls(t *testing.T) {
+	request := validBuildRequest(t)
+	request.RecordBuilderCleanupEvidence = nil
+	provider := newFakeProvider(request)
+	if _, err := newTestService(t, provider).Build(context.Background(), request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if len(provider.calls) != 0 {
+		t.Fatalf("provider called without durable cleanup recorder: %#v", provider.calls)
+	}
+}
+
+func TestBuildDoesNotTerminateBuilderWhenProviderIDsCannotBePersisted(t *testing.T) {
+	request := validBuildRequest(t)
+	request.RecordBuilderCleanupEvidence = func(BuilderCleanupEvidenceV1) error { return errors.New("disk full") }
+	provider := newFakeProvider(request)
+
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if !errors.Is(err, ErrCleanupFailed) || manifest != (ImageManifestV1{}) {
+		t.Fatalf("Build() = %#v, %v", manifest, err)
+	}
+	if provider.terminateCalls != 0 || provider.builder.State == BuilderTerminated {
+		t.Fatalf("builder was terminated without durable provider IDs: %#v", provider.calls)
+	}
+}
+
+func TestBuildFailsClosedAndRetainsEvidenceWhenDependencyReadBackFails(t *testing.T) {
+	request := validBuildRequest(t)
+	var recorded BuilderCleanupEvidenceV1
+	request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
+		recorded = evidence
+		return nil
+	}
+	provider := newFakeProvider(request)
+	provider.failBuilderVolumeReadBack = true
+
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if !errors.Is(err, ErrCleanupFailed) || manifest != (ImageManifestV1{}) {
+		t.Fatalf("Build() = %#v, %v", manifest, err)
+	}
+	if recorded.BuilderInstanceID == "" || recorded.BuilderRootVolumeID == "" || len(recorded.BuilderNetworkInterfaceIDs) != 1 {
+		t.Fatalf("recoverable provider IDs were not retained: %#v", recorded)
+	}
+	if provider.builder.State != BuilderTerminated || !provider.builderVolumeFound {
+		t.Fatalf("unexpected cleanup state: builder=%#v volume_found=%v", provider.builder, provider.builderVolumeFound)
+	}
+	if err := newTestService(t, provider).VerifyBuilderCleanup(context.Background(), recorded); !errors.Is(err, ErrProviderOperation) {
+		t.Fatalf("VerifyBuilderCleanup(read-back denied) = %v", err)
+	}
+}
+
 func TestVerifyAndDestroyRequireExactOwnedImageAndSnapshot(t *testing.T) {
 	request := validBuildRequest(t)
 	provider := newFakeProvider(request)
@@ -371,7 +458,7 @@ func assertSafeLaunch(t *testing.T, provider *fakeProvider, request BuildRequest
 		"sha256sum --check --strict", "--numeric-owner --same-owner --same-permissions",
 		"readonly expected_worker_sha256='" + strings.TrimPrefix(request.RootFS.Manifest.BinaryDigest, "sha256:") + "'",
 		"test \"$(cat \"${worker_digest_file}\")\" = \"${expected_worker_sha256}\"",
-		"systemctl disable dirextalk-worker-installer.socket", "systemctl enable dirextalk-cloud-worker.service",
+		"systemctl disable dirextalk-worker-installer.socket", "systemctl enable dirextalk-worker-installer-bootstrap.service", "systemctl enable dirextalk-cloud-worker.service",
 		"systemd-sysusers", "systemd-tmpfiles", "apt-get purge -y curl",
 		"dnf remove -y curl curl-minimal", "forbidden_runtime in aws node npm docker dockerd containerd",
 		"forbidden_unit in docker.service docker.socket containerd.service", "forbidden_socket in /var/run/docker.sock",
@@ -440,6 +527,7 @@ func validBuildRequest(t *testing.T) BuildRequestV1 {
 		ArtifactBucket: "dtx-agent-worker-artifacts", ArtifactKey: "worker-ami/releases/rootfs.tar",
 		ArtifactKMSKeyARN:   "arn:aws:kms:us-west-2:123456789012:key/11111111-2222-4333-8444-555555555555",
 		BuilderInstanceType: "m7i.large", RootDeviceName: "/dev/sda1", Timeout: 5 * time.Minute,
+		RecordBuilderCleanupEvidence: func(BuilderCleanupEvidenceV1) error { return nil },
 	}
 }
 
@@ -488,6 +576,7 @@ type fakeProvider struct {
 	loseLaunchResponse              bool
 	loseCreateResponse              bool
 	failBuilderObserveDuringCleanup bool
+	failBuilderVolumeReadBack       bool
 	findArtifactErrorAt             map[int]bool
 	findBuilderMissAt               map[int]bool
 	findImageMissAt                 map[int]bool
@@ -502,6 +591,8 @@ type fakeProvider struct {
 	deleteArtifactCalls int
 	deregisterCalls     int
 	deleteSnapshotCalls int
+	builderVolumeFound  bool
+	builderNetworkFound bool
 }
 
 func newFakeProvider(request BuildRequestV1) *fakeProvider {
@@ -587,8 +678,11 @@ func (provider *fakeProvider) LaunchBuilder(_ context.Context, launch LaunchBuil
 	provider.builder = BuilderObservationV1{
 		InstanceID: "i-0123456789abcdef0", Name: launch.Name, State: BuilderRunning,
 		BaseAMIID: launch.BaseAMIID, PrivateSubnetID: launch.PrivateSubnetID, ZeroIngressSGID: launch.ZeroIngressSGID,
-		InstanceType: launch.InstanceType, RootDeviceName: launch.RootDeviceName, Tags: cloneTags(launch.Tags),
+		InstanceType: launch.InstanceType, RootDeviceName: launch.RootDeviceName,
+		RootVolumeID: "vol-0123456789abcdef0", NetworkInterfaceIDs: []string{"eni-0123456789abcdef0"}, Tags: cloneTags(launch.Tags),
 	}
+	provider.builderVolumeFound = true
+	provider.builderNetworkFound = true
 	if provider.loseLaunchResponse {
 		return BuilderObservationV1{}, errors.New("lost launch response")
 	}
@@ -617,6 +711,31 @@ func (provider *fakeProvider) TerminateBuilder(_ context.Context, instanceID str
 	}
 	provider.builder.State = BuilderTerminated
 	return nil
+}
+
+func (provider *fakeProvider) ObserveBuilderVolume(_ context.Context, volumeID string) (bool, error) {
+	provider.calls = append(provider.calls, "observe-builder-volume")
+	if volumeID != provider.builder.RootVolumeID {
+		return false, ErrInvalidInput
+	}
+	if provider.failBuilderVolumeReadBack {
+		return false, errors.New("access denied")
+	}
+	if provider.builder.State == BuilderTerminated {
+		provider.builderVolumeFound = false
+	}
+	return provider.builderVolumeFound, nil
+}
+
+func (provider *fakeProvider) ObserveBuilderNetworkInterface(_ context.Context, networkInterfaceID string) (bool, error) {
+	provider.calls = append(provider.calls, "observe-builder-network-interface")
+	if len(provider.builder.NetworkInterfaceIDs) != 1 || networkInterfaceID != provider.builder.NetworkInterfaceIDs[0] {
+		return false, ErrInvalidInput
+	}
+	if provider.builder.State == BuilderTerminated {
+		provider.builderNetworkFound = false
+	}
+	return provider.builderNetworkFound, nil
 }
 
 func (provider *fakeProvider) FindImage(_ context.Context, lookup ImageLookupV1) (ImageObservationV1, bool, error) {
@@ -700,7 +819,8 @@ func (provider *fakeProvider) validBuilder(validated validatedBuild) BuilderObse
 		InstanceID: "i-0123456789abcdef0", Name: validated.builderName, State: BuilderRunning,
 		BaseAMIID: validated.request.BaseAMIID, PrivateSubnetID: validated.request.PrivateSubnetID,
 		ZeroIngressSGID: validated.request.ZeroIngressSGID, InstanceType: validated.request.BuilderInstanceType,
-		RootDeviceName: validated.request.RootDeviceName, Tags: cloneTags(validated.builderTags),
+		RootDeviceName: validated.request.RootDeviceName, RootVolumeID: "vol-0123456789abcdef0",
+		NetworkInterfaceIDs: []string{"eni-0123456789abcdef0"}, Tags: cloneTags(validated.builderTags),
 	}
 }
 

@@ -96,6 +96,15 @@ func TestTrustIssuerProducesDeterministicLeaseScopedDelivery(t *testing.T) {
 	if _, err := issuer.Issue(unlockedPlan, config, now); !errors.Is(err, Error(CodeCommandNotAllowed)) {
 		t.Fatalf("non-digest-locked executable was accepted: %v", err)
 	}
+	shellPlan := fixture.plan
+	shellPlan.Artifacts = append([]ArtifactV1(nil), fixture.plan.Artifacts...)
+	shellPlan.Commands = append([]CommandV1(nil), fixture.plan.Commands...)
+	shellPlan.Commands[0].Argv = []string{config.TargetRoot + "/bash", "-c", "exit 0"}
+	shellPlan.Commands[0].ArtifactRefs = []string{"service-bundle"}
+	shellPlan.Artifacts[0].TargetPath = config.TargetRoot + "/bash"
+	if _, err := issuer.Issue(shellPlan, config, now); !errors.Is(err, Error(CodeCommandNotAllowed)) {
+		t.Fatalf("digest-locked shell evaluator was accepted: %v", err)
+	}
 	stagedPlan := fixture.plan
 	stagedPlan.Artifacts = append([]ArtifactV1(nil), fixture.plan.Artifacts...)
 	stagedRoot := "/opt/dirextalk/deployments/" + fixture.binding.DeploymentID + "/artifacts"
@@ -186,6 +195,20 @@ func TestRootVerifierRejectsOldTrustAndOldLease(t *testing.T) {
 	}
 	if _, err := verifier.Verify(context.Background(), oldRequest); !errors.Is(err, Error(CodeInvalidSignature)) {
 		t.Fatalf("old trust error = %v", err)
+	}
+	wrongRootTrust := oldDelivery.TrustID[:len(oldDelivery.TrustID)-1] + "0"
+	if wrongRootTrust == oldDelivery.TrustID {
+		wrongRootTrust = oldDelivery.TrustID[:len(oldDelivery.TrustID)-1] + "1"
+	}
+	trustVerifier, err := NewVerifier(VerifierConfig{
+		PublicKey: oldDelivery.PublicKey, ExpectedTrustID: wrongRootTrust, ExpectedBinding: config.Binding, TargetRoot: config.TargetRoot,
+		Now: func() time.Time { return now }, Inspector: fixture.inspector,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trustVerifier.Verify(context.Background(), oldRequest); !errors.Is(err, Error(CodeLeaseRejected)) {
+		t.Fatalf("mismatched root trust ID error = %v", err)
 	}
 
 	journalPath := filepath.Join(t.TempDir(), "execution.journal")

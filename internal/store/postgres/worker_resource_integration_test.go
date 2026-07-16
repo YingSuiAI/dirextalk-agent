@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -20,7 +22,7 @@ import (
 )
 
 func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testing.T) {
-	pool, baseStore, _ := newPlanningTestStore(t)
+	pool, baseStore, instanceID := newPlanningTestStore(t)
 	ctx := context.Background()
 	taskID, stepID := createWorkerTask(t, baseStore)
 	replayKey := bytes.Repeat([]byte{0x31}, 32)
@@ -29,7 +31,12 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := worker.NewService(workerStore, pepper)
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x54}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	service, err := worker.NewService(workerStore, pepper, worker.WithInstallerTrustIssuer(issuer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +54,8 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 			SecretRefs: []string{"secret://agent-fixture/deployments/worker/model"},
 		},
 	}
+	createRequest.InstallerDelivery = integrationInstallerDelivery(t, issuer, instanceID, deploymentID, taskID, createRequest.RecipeBundle.SHA256)
+	createRequest.InstallerCommandIDs = []string{"install-service"}
 	created, enrollment, err := service.CreateDeployment(ctx, createMutation, createRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +70,7 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedCreateService, err := worker.NewService(restartedCreateStore, pepper)
+	restartedCreateService, err := worker.NewService(restartedCreateStore, pepper, worker.WithInstallerTrustIssuer(issuer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +99,7 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 	concurrentRequest.Access.CheckpointPrefix = "s3://agent-fixture/deployments/concurrent/checkpoints/"
 	concurrentRequest.Access.EvidencePrefix = "s3://agent-fixture/deployments/concurrent/evidence/"
 	concurrentRequest.Access.LogPrefix = "cloudwatch://agent-fixture/concurrent"
+	concurrentRequest.InstallerDelivery = integrationInstallerDelivery(t, issuer, instanceID, concurrentRequest.DeploymentID, taskID, concurrentRequest.RecipeBundle.SHA256)
 	concurrentMutation := worker.ControlMutation{ClientID: "worker-store-test", CredentialID: uuid.NewString(), IdempotencyKey: uuid.NewString()}
 	type createResult struct {
 		credential []byte
@@ -128,7 +138,7 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	restartedService, err := worker.NewService(restartedStore, pepper)
+	restartedService, err := worker.NewService(restartedStore, pepper, worker.WithInstallerTrustIssuer(issuer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +166,7 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrongService, _ := worker.NewService(wrongStore, pepper)
+	wrongService, _ := worker.NewService(wrongStore, pepper, worker.WithInstallerTrustIssuer(issuer))
 	if _, credential, err := wrongService.Enroll(ctx, enrollRequest); !errors.Is(err, worker.ErrInvalidCredential) {
 		credential.Destroy()
 		t.Fatalf("wrong replay key error=%v", err)
@@ -226,11 +236,40 @@ func TestWorkerPostgresEncryptedEnrollmentReplayLeaseFencingAndRestart(t *testin
 
 	reloaded, err := restartedStore.Get(ctx, created.DeploymentID)
 	if err != nil || reloaded.Lease.Epoch != secondLease.LeaseEpoch || reloaded.Lease.CheckpointRef != checkpointRef ||
-		reloaded.RecipeBundle != created.RecipeBundle || reloaded.ExecutionBundle != created.ExecutionBundle || reloaded.ExecutionTimeout != created.ExecutionTimeout {
+		reloaded.RecipeBundle != created.RecipeBundle || reloaded.ExecutionBundle != created.ExecutionBundle || reloaded.ExecutionTimeout != created.ExecutionTimeout ||
+		reloaded.InstallerDelivery == nil || reloaded.InstallerDelivery.TrustID != createRequest.InstallerDelivery.TrustID ||
+		!slices.Equal(reloaded.InstallerCommandIDs, createRequest.InstallerCommandIDs) {
 		t.Fatalf("worker restart reload=%+v err=%v", reloaded, err)
 	}
 	assertWorkerCredentialCanaryAbsent(t, pool, enrollmentRaw, firstSessionRaw)
 	enrollment.Destroy()
+}
+
+func integrationInstallerDelivery(t *testing.T, issuer *installer.TrustIssuer, instanceID, deploymentID, taskID string, recipeDigest [32]byte) *installer.DeliveryV1 {
+	t.Helper()
+	now := time.Now().UTC()
+	root := installer.PreinstalledArtifactRoot
+	binding := installer.BindingV1{
+		AgentInstanceID: instanceID, DeploymentID: deploymentID, TaskID: taskID,
+		PlanHash: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x61}, 32)), ApprovalID: uuid.NewString(),
+		RecipeDigest: "sha256:" + hex.EncodeToString(recipeDigest[:]),
+	}
+	delivery, err := issuer.Issue(installer.InstallerPlanV1{
+		SchemaVersion: installer.PlanSchemaV1, Binding: binding,
+		Artifacts: []installer.ArtifactV1{{
+			Name: "installer", SHA256: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x62}, 32)),
+			SizeBytes: 32, TargetPath: root + "/installer",
+		}},
+		Commands: []installer.CommandV1{{
+			CommandID: "install-service", Argv: []string{root + "/installer"}, WorkingDirectory: root,
+			TimeoutSeconds: 30, ArtifactRefs: []string{"installer"},
+		}},
+		ExpiresAt: now.Add(time.Hour).Format(time.RFC3339Nano),
+	}, installer.DaemonConfigV1{SchemaVersion: installer.DaemonConfigSchema, Binding: binding, TargetRoot: root}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &delivery
 }
 
 func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {

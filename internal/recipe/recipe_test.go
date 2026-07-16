@@ -79,6 +79,49 @@ func TestRecipeRequiresRetrievedContentDigestAlongsideArtifactDigest(t *testing.
 	}
 }
 
+func TestRecipeInstallerCapabilityBindsExactCommandWithoutShellSurface(t *testing.T) {
+	value := validRecipe()
+	value.Sources[0].ID = "service-release"
+	root := "/usr/local/share/dirextalk-worker/artifacts"
+	value.Install.Installer = &InstallerCapabilityV1{
+		Artifacts: []InstallerArtifactV1{{Name: "service-installer", SourceID: "service-release", SizeBytes: 1024, TargetPath: root + "/service-installer"}},
+		Commands: []InstallerCommandV1{{
+			CommandID: "install-service", Argv: []string{root + "/service-installer", "install"}, WorkingDirectory: root,
+			TimeoutSeconds: 120, ArtifactRefs: []string{"service-installer"},
+		}},
+	}
+	value.Install.Steps[0].Action = "installer.execute"
+	value.Install.Steps[0].TimeoutSeconds = 120
+	value.Install.Steps[0].Inputs = []ActionInputV1{{Name: "command_id", Kind: ActionInputConfig, Ref: "install-service"}}
+	if err := value.Validate(); err != nil {
+		t.Fatalf("valid exact installer capability rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*RecipeV1)
+	}{
+		{name: "shell", mutate: func(recipe *RecipeV1) { recipe.Install.Installer.Commands[0].Argv[0] = "/bin/sh" }},
+		{name: "unlocked executable", mutate: func(recipe *RecipeV1) { recipe.Install.Installer.Commands[0].Argv[0] = root + "/other" }},
+		{name: "unknown artifact", mutate: func(recipe *RecipeV1) { recipe.Install.Installer.Commands[0].ArtifactRefs[0] = "other" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := value
+			installer := *value.Install.Installer
+			installer.Artifacts = append([]InstallerArtifactV1(nil), value.Install.Installer.Artifacts...)
+			installer.Commands = append([]InstallerCommandV1(nil), value.Install.Installer.Commands...)
+			installer.Commands[0].Argv = append([]string(nil), value.Install.Installer.Commands[0].Argv...)
+			installer.Commands[0].ArtifactRefs = append([]string(nil), value.Install.Installer.Commands[0].ArtifactRefs...)
+			changed.Install.Installer = &installer
+			test.mutate(&changed)
+			if err := changed.Validate(); err == nil {
+				t.Fatal("unsafe installer capability was accepted")
+			}
+		})
+	}
+}
+
 func TestRecipeRejectsUnsafeNetworkAndExecutableActions(t *testing.T) {
 	tests := []struct {
 		name   string

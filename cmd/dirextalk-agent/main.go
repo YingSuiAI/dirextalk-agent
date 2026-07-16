@@ -18,6 +18,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -177,6 +178,13 @@ func serve() error {
 	defer clear(workerReplayKey)
 	workerCredentialPepper := deriveKey(masterKey, "dirextalk-agent/worker-credential/v1")
 	defer clear(workerCredentialPepper)
+	installerIssuerKey := deriveKey(masterKey, "dirextalk-agent/installer-trust-issuer/v1")
+	installerIssuer, err := installer.NewTrustIssuer(installerIssuerKey)
+	clear(installerIssuerKey)
+	if err != nil {
+		return errors.New("could not initialize Worker installer trust")
+	}
+	defer installerIssuer.Close()
 	workerStore, err := store.NewWorkerStore(workerReplayKey)
 	if err != nil {
 		return errors.New("could not initialize Worker persistence")
@@ -185,7 +193,7 @@ func serve() error {
 	if err != nil {
 		return errors.New("could not initialize Worker Task coordination")
 	}
-	workerService, err := worker.NewService(workerStore, workerCredentialPepper, worker.WithTaskExecutionCoordinator(workerTaskCoordinator))
+	workerService, err := worker.NewService(workerStore, workerCredentialPepper, worker.WithTaskExecutionCoordinator(workerTaskCoordinator), worker.WithInstallerTrustIssuer(installerIssuer))
 	if err != nil {
 		return errors.New("could not initialize Worker control")
 	}
@@ -205,7 +213,7 @@ func serve() error {
 		}
 		var cloudErr error
 		cloudComposition, cloudErr = app.NewCloudComposition(
-			store, secretManager, workerStore, workerService, serverConfig.InstanceID, masterKey,
+			store, secretManager, workerStore, workerService, installerIssuer, serverConfig.InstanceID, masterKey,
 			serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint,
 		)
 		if cloudErr != nil {

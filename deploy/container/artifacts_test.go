@@ -39,6 +39,7 @@ func TestWorkerArtifactPreservesExclusiveVMRuntimeBoundary(t *testing.T) {
 		"sha256sum /out/dirextalk-cloud-worker",
 		"sha256sum /out/dirextalk-worker-installer",
 		"COPY --from=build --chmod=0555 /out/dirextalk-worker-installer /usr/local/bin/dirextalk-worker-installer",
+		"dirextalk-worker-installer-bootstrap.service /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service",
 		"dirextalk-worker-installer.socket /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket",
 		"dirextalk-installer.tmpfiles /usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles",
 		"ENTRYPOINT [\"/usr/local/bin/dirextalk-cloud-worker\"]",
@@ -102,16 +103,41 @@ func TestWorkerAMIRootfsRunsSupervisorWithoutPrivilegeOrInboundSocket(t *testing
 func TestWorkerAMIInstallerUsesOnlyApprovalBoundUnixSocket(t *testing.T) {
 	service := readArtifact(t, "worker-ami/dirextalk-worker-installer.service")
 	for _, required := range []string{
-		"User=root", "ExecStart=/usr/local/bin/dirextalk-worker-installer", "PrivateNetwork=yes",
-		"RestrictAddressFamilies=AF_UNIX", "ProtectSystem=strict", "CapabilityBoundingSet=\n",
+		"User=root", "ExecStart=/usr/local/bin/dirextalk-worker-installer serve", "NoNewPrivileges=yes",
 		"StateDirectory=dirextalk-installer", "StateDirectoryMode=0700",
-		"ReadWritePaths=-/opt/dirextalk/deployments -/srv",
-		"ConditionPathExists=/etc/dirextalk-installer/approval-public-key",
-		"ConditionPathExists=/etc/dirextalk-installer/binding.cbor",
+		"ConditionPathExists=/etc/dirextalk-installer/trust.cbor",
 	} {
 		if !strings.Contains(service, required) {
 			t.Fatalf("Worker installer service is missing %q", required)
 		}
+	}
+	for _, forbidden := range []string{
+		"CapabilityBoundingSet=", "AmbientCapabilities=", "PrivateDevices=yes", "PrivateNetwork=yes",
+		"ProtectSystem=", "ProtectHome=", "ProtectProc=", "ReadWritePaths=", "RestrictAddressFamilies=",
+		"RestrictNamespaces=", "RestrictSUIDSGID=", "SocketBindDeny=", "SystemCallFilter=", "IPAddressDeny=",
+	} {
+		if strings.Contains(service, forbidden) {
+			t.Fatalf("exclusive-VM root installer is accidentally sandboxed by %q", forbidden)
+		}
+	}
+	bootstrap := readArtifact(t, "worker-ami/dirextalk-worker-installer-bootstrap.service")
+	for _, required := range []string{
+		"Type=oneshot", "User=root", "ExecStart=/usr/local/bin/dirextalk-worker-installer bootstrap",
+		"Before=dirextalk-cloud-worker.service dirextalk-worker-installer.socket",
+		"ReadWritePaths=/etc/dirextalk-installer /etc/systemd/system /usr/local/share/dirextalk-worker/artifacts",
+	} {
+		if !strings.Contains(bootstrap, required) {
+			t.Fatalf("Worker installer bootstrap service is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"ExecStart=/bin/", "ExecStart=/usr/bin/aws", "AWS_ACCESS_KEY", "docker.sock", "node", "npm", "IPAddressDeny=any"} {
+		if strings.Contains(strings.ToLower(bootstrap), strings.ToLower(forbidden)) {
+			t.Fatalf("Worker installer bootstrap contains forbidden surface %q", forbidden)
+		}
+	}
+	if tmpfiles := readArtifact(t, "worker-ami/dirextalk-installer.tmpfiles"); !strings.Contains(tmpfiles, "d /etc/dirextalk-installer 0700 root root -") ||
+		!strings.Contains(tmpfiles, "d /usr/local/share/dirextalk-worker/artifacts 0755 root root -") {
+		t.Fatal("installer trust/artifact directories are not root-owned")
 	}
 	for _, forbidden := range []string{"ExecStart=/bin/", "ExecStart=/usr/bin/aws", "docker.sock", "Environment=AWS_", "Environment=SECRET"} {
 		if strings.Contains(service, forbidden) {

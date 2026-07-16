@@ -20,16 +20,19 @@ import (
 )
 
 type runnerControlFake struct {
-	mu             sync.Mutex
-	assignment     *agentv1.WorkerAssignment
-	current        *agentv1.WorkerAssignment
-	revision       int64
-	enrollments    int
-	currentReads   int
-	heartbeats     int
-	claimExpiresAt time.Time
-	checkpoints    []string
-	completion     *agentv1.WorkerControlServiceCompleteRequest
+	mu              sync.Mutex
+	assignment      *agentv1.WorkerAssignment
+	current         *agentv1.WorkerAssignment
+	revision        int64
+	enrollments     int
+	currentReads    int
+	heartbeats      int
+	claimExpiresAt  time.Time
+	claimGrants     []*agentv1.WorkerInstallerLeaseGrant
+	heartbeatGrants func(time.Time) []*agentv1.WorkerInstallerLeaseGrant
+	heartbeatEpoch  int64
+	checkpoints     []string
+	completion      *agentv1.WorkerControlServiceCompleteRequest
 }
 
 func (fake *runnerControlFake) GetCurrentAssignment(_ context.Context, _ []byte, request *agentv1.WorkerControlServiceGetCurrentAssignmentRequest) (*agentv1.WorkerControlServiceGetCurrentAssignmentResponse, error) {
@@ -79,9 +82,13 @@ func (fake *runnerControlFake) Claim(_ context.Context, _ []byte, request *agent
 	assignment.Attempt++
 	leaseExpiresAt := fake.claimExpiresAt
 	if leaseExpiresAt.IsZero() {
-		leaseExpiresAt = time.Now().Add(time.Minute)
+		leaseExpiresAt = time.Now().Add(time.Duration(request.GetLeaseDurationSeconds()) * time.Second)
 	}
 	assignment.LeaseExpiresAt = timestamppb.New(leaseExpiresAt)
+	assignment.InstallerLeaseGrants = make([]*agentv1.WorkerInstallerLeaseGrant, 0, len(fake.claimGrants))
+	for _, grant := range fake.claimGrants {
+		assignment.InstallerLeaseGrants = append(assignment.InstallerLeaseGrants, proto.Clone(grant).(*agentv1.WorkerInstallerLeaseGrant))
+	}
 	return &agentv1.WorkerControlServiceClaimResponse{Assignment: assignment}, nil
 }
 
@@ -93,7 +100,16 @@ func (fake *runnerControlFake) Heartbeat(_ context.Context, _ []byte, request *a
 	}
 	fake.revision++
 	fake.heartbeats++
-	return &agentv1.HeartbeatResponse{LeaseEpoch: 9, LeaseExpiresAt: timestamppb.New(time.Now().Add(time.Minute)), Revision: fake.revision}, nil
+	expiresAt := time.Now().Add(time.Duration(request.GetLeaseDurationSeconds()) * time.Second)
+	epoch := int64(9)
+	if fake.heartbeatEpoch != 0 {
+		epoch = fake.heartbeatEpoch
+	}
+	response := &agentv1.HeartbeatResponse{LeaseEpoch: epoch, LeaseExpiresAt: timestamppb.New(expiresAt), Revision: fake.revision}
+	if fake.heartbeatGrants != nil {
+		response.InstallerLeaseGrants = fake.heartbeatGrants(expiresAt)
+	}
+	return response, nil
 }
 
 func (fake *runnerControlFake) RecordEvidence(_ context.Context, _ []byte, request *agentv1.WorkerControlServiceRecordEvidenceRequest) (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {

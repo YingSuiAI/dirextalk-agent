@@ -7,6 +7,7 @@ import (
 	"time"
 
 	awsfoundationassets "github.com/YingSuiAI/dirextalk-agent/deploy/awsfoundation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/artifactresolver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
@@ -14,6 +15,7 @@ import (
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -105,8 +107,8 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	return first
 }
 
-func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget string) (*CloudComposition, error) {
-	if store == nil || manager == nil || workerStore == nil || workerService == nil || len(masterKey) != 32 || reaperImageURI == "" || workerControlTarget == "" {
+func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, installerIssuer *installer.TrustIssuer, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget string) (*CloudComposition, error) {
+	if store == nil || manager == nil || workerStore == nil || workerService == nil || installerIssuer == nil || len(masterKey) != 32 || reaperImageURI == "" || workerControlTarget == "" {
 		return nil, errors.New("cloud composition requires durable stores, master key, and immutable Reaper image")
 	}
 	facts, err := postgres.NewCloudAdapter(store)
@@ -219,9 +221,16 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	installerArtifacts, err := artifactresolver.New(artifactresolver.DefaultConfig())
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	execution, err := cloudexecution.NewService(
 		agentInstanceID, facts, store, store, store, artifactPublisher, workerAdapter,
 		cloudexecution.NewIdentityBootstrapPublisher(), resourcePlans, resourceProvisioner, store, time.Now,
+		cloudexecution.WithInstallerTrustIssuer(installerIssuer),
+		cloudexecution.WithInstallerArtifactResolver(installerArtifacts),
 	)
 	if err != nil {
 		vault.Close()

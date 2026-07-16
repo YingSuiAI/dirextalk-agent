@@ -33,6 +33,7 @@ type ArtifactInspector interface {
 
 type VerifierConfig struct {
 	PublicKey             ed25519.PublicKey
+	ExpectedTrustID       string
 	ExpectedBinding       BindingV1
 	TargetRoot            string
 	Now                   func() time.Time
@@ -50,6 +51,7 @@ type idempotencyEntry struct {
 
 type Verifier struct {
 	publicKey       ed25519.PublicKey
+	expectedTrustID string
 	expectedBinding BindingV1
 	targetRoot      string
 	now             func() time.Time
@@ -70,6 +72,9 @@ func NewVerifier(config VerifierConfig) (*Verifier, error) {
 	if err := validateBinding(config.ExpectedBinding); err != nil {
 		return nil, err
 	}
+	if config.ExpectedTrustID != "" && !digestPattern.MatchString(config.ExpectedTrustID) {
+		return nil, errorf(CodeInvalidRequest, "expected installer trust ID is invalid")
+	}
 	root, err := validateTargetRoot(config.TargetRoot)
 	if err != nil {
 		return nil, err
@@ -84,7 +89,7 @@ func NewVerifier(config VerifierConfig) (*Verifier, error) {
 		config.MaxIdempotencyEntries = 1024
 	}
 	return &Verifier{
-		publicKey: append(ed25519.PublicKey(nil), config.PublicKey...), expectedBinding: config.ExpectedBinding,
+		publicKey: append(ed25519.PublicKey(nil), config.PublicKey...), expectedTrustID: config.ExpectedTrustID, expectedBinding: config.ExpectedBinding,
 		targetRoot: root, now: config.Now, inspector: config.Inspector, maxEntries: config.MaxIdempotencyEntries,
 		runner: config.Runner, journal: config.Journal,
 		entries: make(map[string]idempotencyEntry),
@@ -362,6 +367,10 @@ func validateCommands(plan InstallerPlanV1) error {
 			return errorf(CodeInvalidRequest, "duplicate command ID")
 		}
 		seen[command.CommandID] = struct{}{}
+		switch strings.ToLower(path.Base(command.Argv[0])) {
+		case "sh", "bash", "dash", "ash", "zsh", "ksh", "fish", "eval", "powershell", "pwsh", "cmd", "cmd.exe":
+			return errorf(CodeCommandNotAllowed, "installer command cannot invoke a shell or evaluator")
+		}
 		totalArgvBytes := 0
 		for index, argument := range command.Argv {
 			totalArgvBytes += len(argument)
@@ -425,6 +434,9 @@ func validateBinding(binding BindingV1) error {
 func (v *Verifier) validateExecutionLease(request RequestV1) (time.Time, int64, error) {
 	if request.LeaseGrant == nil {
 		return time.Time{}, 0, errorf(CodeLeaseRejected, "installer lease grant is required")
+	}
+	if v.expectedTrustID != "" && request.LeaseGrant.Grant.TrustID != v.expectedTrustID {
+		return time.Time{}, 0, errorf(CodeLeaseRejected, "installer lease grant does not match root trust")
 	}
 	delivery := DeliveryV1{
 		SchemaVersion: DeliverySchemaV1, TrustID: request.LeaseGrant.Grant.TrustID,

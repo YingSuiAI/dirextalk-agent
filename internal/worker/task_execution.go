@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 )
 
 // TaskExecutionCoordinator synchronizes an already-persisted Worker mutation
@@ -69,6 +71,16 @@ type TaskExecutionCompletion struct {
 }
 
 type ServiceOption func(*Service) error
+
+func WithInstallerTrustIssuer(issuer *installer.TrustIssuer) ServiceOption {
+	return func(service *Service) error {
+		if service == nil || issuer == nil {
+			return ErrInvalid
+		}
+		service.installerTrust = issuer
+		return nil
+	}
+}
 
 func WithTaskExecutionCoordinator(coordinator TaskExecutionCoordinator) ServiceOption {
 	return func(service *Service) error {

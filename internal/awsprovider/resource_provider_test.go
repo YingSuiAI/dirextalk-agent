@@ -1,13 +1,18 @@
 package awsprovider
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -29,11 +34,13 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 	}
 	spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Instance: &resource.AWSEC2InstanceSpecV1{
 		ImageID: "ami-0123456789abcdef0", ImageDigest: imageDigest, Architecture: recipe.ArchitectureAMD64, InstanceType: "t3.large",
-		InstanceProfileName: "dtx-agent-example-worker", UserDataArtifactRef: "s3://dtx-artifacts/deployments/123/worker.json",
+		InstanceProfileName: "dtx-agent-example-worker", UserDataArtifactRef: "s3://dtx-artifacts/deployments/33333333-3333-4333-8333-333333333333/launch/config.json",
 		UserDataArtifactDigest: digestOf('b'), Bootstrap: testWorkerBootstrap(),
 		RootDeviceName: "/dev/sda1", RootVolumeGiB: 24, RootKMSKeyID: "alias/dtx-worker",
 		Market: resource.AWSMarketOnDemand, EBSOptimized: true,
 	}}
+	spec.Instance.Bootstrap.InstallerTrust = testProviderInstallerTrust(t, spec.Instance.Bootstrap.DeploymentID)
+	spec.Instance.Bootstrap.InstallerArtifacts = providerInstallerSources(spec.Instance.Bootstrap.InstallerTrust, spec.Instance.Bootstrap.DeploymentID)
 	specDigest, err := spec.Digest(resource.TypeEC2)
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +110,13 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 		strings.Contains(userData, request.ClientToken) || strings.Contains(strings.ToLower(userData), "token") || strings.Contains(userData, "#!/") {
 		t.Fatalf("user-data must be a secret-free immutable reference document: %s", userData)
 	}
+	parsed, trust, err := installerbootstrap.ParseUserData(decoded, installerbootstrap.InstanceIdentityV1{
+		AccountID: "123456789012", Region: request.Region, InstanceID: client.instanceID,
+	})
+	if err != nil || trust == nil || parsed.InstallerTrust == nil || trust.TrustID != spec.Instance.Bootstrap.InstallerTrust.TrustID ||
+		trust.Config.Binding.PlanHash == "" || trust.Config.Binding.RecipeDigest == "" {
+		t.Fatalf("provider user-data lost installer approval trust: parsed=%+v trust=%+v err=%v", parsed, trust, err)
+	}
 	wrongOwner := validResourceTags(request.ResourceID)
 	wrongOwner[resource.TagOwnerID] = "another-owner"
 	if err := provider.Delete(context.Background(), resource.TypeEC2, client.instanceID, request.Region, wrongOwner); !errors.Is(err, resource.ErrReadBack) {
@@ -123,7 +137,7 @@ func TestEC2ResourceProviderDoesNotReconcileHalfConfiguredWorkerAsReady(t *testi
 	}
 	spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Instance: &resource.AWSEC2InstanceSpecV1{
 		ImageID: "ami-0123456789abcdef0", ImageDigest: imageDigest, Architecture: recipe.ArchitectureAMD64, InstanceType: "t3.large", InstanceProfileName: "dtx-agent-example-worker",
-		UserDataArtifactRef: "s3://dtx-artifacts/deployments/123/worker.json", UserDataArtifactDigest: digestOf('b'), Bootstrap: testWorkerBootstrap(),
+		UserDataArtifactRef: "s3://dtx-artifacts/deployments/33333333-3333-4333-8333-333333333333/launch/config.json", UserDataArtifactDigest: digestOf('b'), Bootstrap: testWorkerBootstrap(),
 		RootDeviceName: "/dev/sda1", RootVolumeGiB: 24, RootKMSKeyID: "alias/dtx-worker", Market: resource.AWSMarketOnDemand,
 	}}
 	digest, err := spec.Digest(resource.TypeEC2)
@@ -148,6 +162,56 @@ func testWorkerBootstrap() resource.AWSWorkerBootstrapSpecV1 {
 		DeploymentID: "33333333-3333-4333-8333-333333333333", WorkerID: "44444444-4444-4444-8444-444444444444",
 		ControlPlaneEndpoint: "grpcs://agent.example.com:7443", EnrollmentExpectedRevision: 1,
 	}
+}
+
+func testProviderInstallerTrust(t *testing.T, deploymentID string) *installerbootstrap.RootTrustMaterialV1 {
+	t.Helper()
+	config := installer.DaemonConfigV1{
+		SchemaVersion: installer.DaemonConfigSchema,
+		Binding: installer.BindingV1{
+			AgentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", DeploymentID: deploymentID,
+			TaskID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", PlanHash: digestOf('c'),
+			ApprovalID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", RecipeDigest: digestOf('e'),
+		},
+		TargetRoot: installer.PreinstalledArtifactRoot,
+	}
+	payload := []byte("provider installer")
+	digest := sha256.Sum256(payload)
+	plan := installer.InstallerPlanV1{
+		SchemaVersion: installer.PlanSchemaV1, Binding: config.Binding,
+		Artifacts: []installer.ArtifactV1{{Name: "installer", SHA256: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(payload)), TargetPath: installer.PreinstalledArtifactRoot + "/installer"}},
+		Commands:  []installer.CommandV1{{CommandID: "install", Argv: []string{installer.PreinstalledArtifactRoot + "/installer"}, WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 30, ArtifactRefs: []string{"installer"}}},
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+	}
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x61}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	delivery, err := issuer.Issue(plan, config, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := delivery.RootTrustMaterial(time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := installerbootstrap.NewRootTrustMaterial(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &material
+}
+
+func providerInstallerSources(trust *installerbootstrap.RootTrustMaterialV1, deploymentID string) []installerbootstrap.ArtifactSourceV1 {
+	artifact := trust.ArtifactManifest.Manifest.Artifacts[0]
+	return []installerbootstrap.ArtifactSourceV1{{
+		SchemaVersion: installerbootstrap.ArtifactSourceSchemaV1, Name: artifact.Name, Bucket: "dtx-artifacts",
+		Key: "deployments/" + deploymentID + "/artifacts/" + artifact.Name, VersionID: "version-1",
+		KMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-4333-8444-555555555555",
+		SHA256:    artifact.SHA256, SizeBytes: artifact.SizeBytes, TargetPath: artifact.TargetPath,
+		RecipeDigest: trust.ArtifactManifest.Manifest.Binding.RecipeDigest,
+	}}
 }
 
 func TestEC2ResourceProviderFailsClosedBeforeLaunchWithoutExactAMIInspection(t *testing.T) {

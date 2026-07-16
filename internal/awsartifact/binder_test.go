@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 )
 
@@ -18,7 +19,7 @@ func TestPrincipalBinderCreatesImmutableWorkerPolicyScopedArtifacts(t *testing.T
 	publisher, factory, connection, deploymentID := publisherFixture(t)
 	recipeBytes := []byte("approved recipe")
 	executionBytes := []byte(`{"schema_version":1,"actions":[{"kind":"worker.noop"}]}`)
-	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, recipeBytes, executionBytes, nil)
+	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: recipeBytes, ExecutionBytes: executionBytes}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestPrincipalBinderCreatesImmutableWorkerPolicyScopedArtifacts(t *testing.T
 
 func TestPrincipalBinderRejectsUntrustedPrincipalAndSecretsBeforeAWS(t *testing.T) {
 	publisher, factory, connection, deploymentID := publisherFixture(t)
-	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, []byte("recipe"), []byte(`{"safe":true}`), nil)
+	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe"), ExecutionBytes: []byte(`{"safe":true}`)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestPrincipalBinderRejectsUntrustedPrincipalAndSecretsBeforeAWS(t *testing.
 
 func TestPrincipalBinderVerifiesPublishedSourceDigestBeforeWriting(t *testing.T) {
 	publisher, factory, connection, deploymentID := publisherFixture(t)
-	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, []byte("recipe"), []byte(`{"safe":true}`), nil)
+	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe"), ExecutionBytes: []byte(`{"safe":true}`)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

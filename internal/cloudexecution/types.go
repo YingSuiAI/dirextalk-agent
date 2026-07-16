@@ -8,10 +8,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -65,11 +68,45 @@ type PublishedBundle struct {
 }
 
 type PublishedBundles struct {
-	Recipe         worker.BundleRef
-	Execution      worker.BundleRef
-	Launch         BootstrapArtifact
-	Access         worker.AccessScope
-	SecretBindings map[string]string
+	Recipe             worker.BundleRef
+	Execution          worker.BundleRef
+	Launch             BootstrapArtifact
+	Access             worker.AccessScope
+	SecretBindings     map[string]string
+	InstallerRootTrust *InstallerRootTrustV1
+	InstallerArtifacts []installerbootstrap.ArtifactSourceV1
+}
+
+// InstallerArtifactContent is an already-resolved, replayable byte source.
+// Publication never resolves a URL or performs arbitrary HTTP; a later
+// official-artifact resolver may provide this typed input.
+type InstallerArtifactContent interface {
+	Open(context.Context) (io.ReadSeekCloser, error)
+	Cleanup() error
+}
+
+type InstallerArtifactStagingInput struct {
+	Name         string
+	SourceID     string
+	SHA256       string
+	SizeBytes    int64
+	TargetPath   string
+	RecipeDigest string
+	Content      InstallerArtifactContent
+}
+
+type InstallerArtifactResolveRequest struct {
+	SourceID     string
+	SourceURL    string
+	Official     bool
+	SHA256       string
+	SizeBytes    int64
+	TargetPath   string
+	RecipeDigest string
+}
+
+type InstallerArtifactResolver interface {
+	Resolve(context.Context, InstallerArtifactResolveRequest) (InstallerArtifactContent, error)
 }
 
 // BootstrapArtifact is a non-secret immutable object consumed by the fixed
@@ -83,16 +120,20 @@ type BootstrapArtifact struct {
 
 type Operation struct {
 	Intent
-	State           State
-	TaskID          string
-	RecipeBundle    worker.BundleRef
-	ExecutionBundle worker.BundleRef
-	Bootstrap       BootstrapArtifact
-	ResourceIDs     []string
-	RedactedError   string
-	Revision        int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	State               State
+	TaskID              string
+	RecipeBundle        worker.BundleRef
+	ExecutionBundle     worker.BundleRef
+	InstallerDelivery   *installer.DeliveryV1
+	InstallerCommandIDs []string
+	InstallerRootTrust  *InstallerRootTrustV1
+	InstallerArtifacts  []installerbootstrap.ArtifactSourceV1
+	Bootstrap           BootstrapArtifact
+	ResourceIDs         []string
+	RedactedError       string
+	Revision            int64
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type Repository interface {
@@ -120,7 +161,7 @@ type TaskCreator interface {
 }
 
 type BundlePublisher interface {
-	PublishBundles(context.Context, cloudapp.Connection, string, []byte, []byte, []string) (PublishedBundles, error)
+	PublishBundles(context.Context, cloudapp.Connection, string, CompiledBundles, []string) (PublishedBundles, error)
 }
 
 // WorkerCreator must provide caller-scoped, request-bound idempotency and

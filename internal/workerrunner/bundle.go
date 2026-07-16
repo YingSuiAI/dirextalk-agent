@@ -53,9 +53,11 @@ type NoopInputV1 struct {
 // deployment-scoped delivery. Its mutable selector is command_id; it has no
 // runtime argv, environment, path, AWS parameter, or secret value field.
 type InstallerExecuteInputV1 struct {
-	CommandID  string                       `json:"command_id"`
-	Delivery   installer.DeliveryV1         `json:"delivery"`
-	LeaseGrant installer.SignedLeaseGrantV1 `json:"lease_grant"`
+	CommandID string               `json:"command_id"`
+	Delivery  installer.DeliveryV1 `json:"delivery"`
+	// LeaseGrant is injected only from the claimed WorkerAssignment after the
+	// immutable execution bundle has passed digest verification.
+	LeaseGrant *installer.SignedLeaseGrantV1 `json:"-"`
 }
 
 type ActionResult struct {

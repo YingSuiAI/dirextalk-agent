@@ -67,6 +67,7 @@ var rootfsEntries = []entrySpec{
 	{path: "usr/local/share/dirextalk-worker/ami", kind: directoryEntry, mode: 0o755},
 	{path: "usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service", kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},
 	{path: "usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles", kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},
+	{path: "usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service", kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},
 	{path: "usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service", kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},
 	{path: "usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket", kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},
 	{path: "usr/local/share/dirextalk-worker/ami/dirextalk-worker.sysusers", kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},

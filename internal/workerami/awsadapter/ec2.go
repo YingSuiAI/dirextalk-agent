@@ -125,6 +125,40 @@ func (adapter *Adapter) TerminateBuilder(ctx context.Context, instanceID string)
 	return providerError(ctx, err)
 }
 
+func (adapter *Adapter) ObserveBuilderVolume(ctx context.Context, volumeID string) (bool, error) {
+	if !volumePattern.MatchString(volumeID) {
+		return false, workerami.ErrInvalidInput
+	}
+	output, err := adapter.ec2.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []string{volumeID}})
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, providerError(ctx, err)
+	}
+	if output == nil || len(output.Volumes) > 1 || (len(output.Volumes) == 1 && stringValue(output.Volumes[0].VolumeId) != volumeID) {
+		return false, workerami.ErrReadBackMismatch
+	}
+	return len(output.Volumes) == 1, nil
+}
+
+func (adapter *Adapter) ObserveBuilderNetworkInterface(ctx context.Context, networkInterfaceID string) (bool, error) {
+	if !networkPattern.MatchString(networkInterfaceID) {
+		return false, workerami.ErrInvalidInput
+	}
+	output, err := adapter.ec2.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{NetworkInterfaceIds: []string{networkInterfaceID}})
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, providerError(ctx, err)
+	}
+	if output == nil || len(output.NetworkInterfaces) > 1 || (len(output.NetworkInterfaces) == 1 && stringValue(output.NetworkInterfaces[0].NetworkInterfaceId) != networkInterfaceID) {
+		return false, workerami.ErrReadBackMismatch
+	}
+	return len(output.NetworkInterfaces) == 1, nil
+}
+
 func (adapter *Adapter) FindImage(ctx context.Context, lookup workerami.ImageLookupV1) (workerami.ImageObservationV1, bool, error) {
 	if err := adapter.validateScope(lookup.Region, lookup.AccountID); err != nil {
 		return workerami.ImageObservationV1{}, false, err
@@ -354,6 +388,8 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 	if tags == nil || !validBuilderTags(name, tags) {
 		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 	}
+	var rootVolumeID string
+	var networkInterfaceIDs []string
 	if state != workerami.BuilderTerminated && !launchResponse {
 		if instance.IamInstanceProfile != nil || stringValue(instance.PublicIpAddress) != "" || stringValue(instance.PublicDnsName) != "" || instance.KeyName != nil || len(instance.NetworkInterfaces) != 1 || instance.MetadataOptions == nil || instance.MetadataOptions.HttpTokens != ec2types.HttpTokensStateRequired || instance.MetadataOptions.HttpEndpoint != ec2types.InstanceMetadataEndpointStateEnabled || len(instance.BlockDeviceMappings) != 1 {
 			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
@@ -378,6 +414,7 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 			!equalTags(tagsToMap(networks.NetworkInterfaces[0].TagSet), expectedResourceTags) {
 			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 		}
+		networkInterfaceIDs = []string{stringValue(network.NetworkInterfaceId)}
 		mapping := instance.BlockDeviceMappings[0]
 		if instance.RootDeviceType != ec2types.DeviceTypeEbs || stringValue(instance.RootDeviceName) == "" || stringValue(mapping.DeviceName) != stringValue(instance.RootDeviceName) ||
 			mapping.Ebs == nil || !aws.ToBool(mapping.Ebs.DeleteOnTermination) || stringValue(mapping.Ebs.VolumeId) == "" {
@@ -394,6 +431,7 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 		if stringValue(volumes.Volumes[0].VolumeId) != stringValue(mapping.Ebs.VolumeId) || !aws.ToBool(volumes.Volumes[0].Encrypted) || !equalTags(volumeTags, expectedResourceTags) {
 			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 		}
+		rootVolumeID = stringValue(mapping.Ebs.VolumeId)
 		attribute, err := adapter.ec2.DescribeInstanceAttribute(ctx, &ec2.DescribeInstanceAttributeInput{InstanceId: aws.String(instanceID), Attribute: ec2types.InstanceAttributeNameInstanceInitiatedShutdownBehavior})
 		if err != nil {
 			return workerami.BuilderObservationV1{}, providerError(ctx, err)
@@ -402,10 +440,17 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 		}
 	}
+	if (launchResponse || state == workerami.BuilderTerminated) && len(instance.NetworkInterfaces) == 1 && networkPattern.MatchString(stringValue(instance.NetworkInterfaces[0].NetworkInterfaceId)) {
+		networkInterfaceIDs = []string{stringValue(instance.NetworkInterfaces[0].NetworkInterfaceId)}
+	}
+	if (launchResponse || state == workerami.BuilderTerminated) && len(instance.BlockDeviceMappings) == 1 && instance.BlockDeviceMappings[0].Ebs != nil && volumePattern.MatchString(stringValue(instance.BlockDeviceMappings[0].Ebs.VolumeId)) {
+		rootVolumeID = stringValue(instance.BlockDeviceMappings[0].Ebs.VolumeId)
+	}
 	return workerami.BuilderObservationV1{
 		InstanceID: instanceID, Name: name, State: state, BaseAMIID: baseAMIID,
 		PrivateSubnetID: privateSubnetID, ZeroIngressSGID: zeroIngressSGID,
-		InstanceType: instanceType, RootDeviceName: rootDeviceName, Tags: tags,
+		InstanceType: instanceType, RootDeviceName: rootDeviceName, RootVolumeID: rootVolumeID,
+		NetworkInterfaceIDs: networkInterfaceIDs, Tags: tags,
 	}, nil
 }
 

@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -67,9 +70,116 @@ func TestLaunchApprovedPlanFailsClosedBeforeMutationWithoutMatchingConnection(t 
 func TestCompileBundlesNeverFallsBackToUnknownAction(t *testing.T) {
 	value := launchRecipe(time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
 	value.Install.Steps[0].Action = "shell.run"
-	_, _, err := compileBundles(value)
+	err := validateExecutionRecipe(value)
 	if !errors.Is(err, ErrUnsupportedRecipe) {
 		t.Fatalf("error = %v, want ErrUnsupportedRecipe", err)
+	}
+}
+
+func TestCompileBundlesCarriesStableCapabilityWithoutLeaseGrant(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	value := launchRecipe(now)
+	value.Sources[0].ID = "service-release"
+	root := installer.PreinstalledArtifactRoot
+	value.Install.Installer = &recipe.InstallerCapabilityV1{
+		Artifacts: []recipe.InstallerArtifactV1{{Name: "service-installer", SourceID: "service-release", SizeBytes: 32, TargetPath: root + "/service-installer"}},
+		Commands:  []recipe.InstallerCommandV1{{CommandID: "install-service", Argv: []string{root + "/service-installer", "install"}, WorkingDirectory: root, TimeoutSeconds: 5, ArtifactRefs: []string{"service-installer"}}},
+	}
+	value.Install.Steps[0] = recipe.InstallStepV1{ID: "install", Summary: "Install exact service", TimeoutSeconds: 5, Action: installer.ActionExecute, Checkpoint: "done", Inputs: []recipe.ActionInputV1{{Name: "command_id", Kind: recipe.ActionInputConfig, Ref: "install-service"}}}
+	recipeDigest, err := value.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := installer.BindingV1{AgentInstanceID: uuid.NewString(), DeploymentID: uuid.NewString(), TaskID: uuid.NewString(), PlanHash: testDigest("1"), ApprovalID: uuid.NewString(), RecipeDigest: recipeDigest}
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x75}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	delivery, err := issuer.Issue(installer.InstallerPlanV1{
+		SchemaVersion: installer.PlanSchemaV1, Binding: binding,
+		Artifacts: []installer.ArtifactV1{{Name: "service-installer", SHA256: value.Sources[0].ArtifactDigest, SizeBytes: 32, TargetPath: root + "/service-installer"}},
+		Commands:  []installer.CommandV1{{CommandID: "install-service", Argv: []string{root + "/service-installer", "install"}, WorkingDirectory: root, TimeoutSeconds: 5, ArtifactRefs: []string{"service-installer"}}},
+		ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339Nano),
+	}, installer.DaemonConfigV1{SchemaVersion: installer.DaemonConfigSchema, Binding: binding, TargetRoot: root}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := compileBundles(value, &delivery, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.InstallerDelivery == nil || compiled.InstallerDelivery.TrustID != delivery.TrustID || len(compiled.InstallerCommandIDs) != 1 || compiled.InstallerCommandIDs[0] != "install-service" || compiled.InstallerRootTrust == nil {
+		t.Fatalf("compiled installer capability is incomplete: %+v", compiled)
+	}
+	if bytes.Contains(compiled.ExecutionBytes, []byte("lease_grant")) || !bytes.Contains(compiled.ExecutionBytes, []byte(`"command_id":"install-service"`)) ||
+		!bytes.Contains(compiled.ExecutionBytes, []byte(`"trust_id":"`+delivery.TrustID+`"`)) {
+		t.Fatal("execution bundle omitted stable delivery or embedded lease grant")
+	}
+}
+
+func TestLaunchInstallerCapabilityOutlivesShortApprovalAndHonorsEphemeralLifetime(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name               string
+		maxLifetimeSeconds uint64
+		wantExpiry         time.Time
+	}{
+		{name: "approval expiry is not capability expiry", maxLifetimeSeconds: uint64((24 * time.Hour) / time.Second), wantExpiry: now.Add(2*time.Hour + 30*time.Minute)},
+		{name: "ephemeral lifetime caps capability", maxLifetimeSeconds: uint64((45 * time.Minute) / time.Second), wantExpiry: now.Add(45 * time.Minute)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newLaunchFixture(t, now)
+			issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x76}, 32))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer issuer.Close()
+			configureInstallerLaunch(t, fixture, issuer, now, 2*time.Hour, 5*time.Minute, cloudapproval.RetentionScopeV1{
+				Class: cloudapproval.RetentionEphemeral, AutoDestroy: true, GracePeriodSeconds: 60, MaxLifetimeSeconds: test.maxLifetimeSeconds,
+			})
+
+			operation, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request)
+			if err != nil {
+				t.Fatalf("LaunchApprovedPlan() error = %v", err)
+			}
+			if operation.InstallerDelivery == nil {
+				t.Fatal("launch omitted installer capability")
+			}
+			expiresAt, err := time.Parse(time.RFC3339Nano, operation.InstallerDelivery.SignedPlan.Plan.ExpiresAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !expiresAt.Equal(test.wantExpiry) {
+				t.Fatalf("capability expiry = %v, want %v", expiresAt, test.wantExpiry)
+			}
+			approval := fixture.service.facts.(fakeFacts).approval
+			if !expiresAt.After(approval.ExpiresAt) {
+				t.Fatalf("capability expiry %v was incorrectly bounded by approval expiry %v", expiresAt, approval.ExpiresAt)
+			}
+		})
+	}
+}
+
+func TestInstallerCapabilityExpiryHasSevenDayHardLimitAndFailsClosedWhenExpired(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	value := launchRecipe(now)
+	value.Install.TimeoutSeconds = uint32((8 * 24 * time.Hour) / time.Second)
+	plan := cloudapproval.PlanV1{RetentionScope: cloudapproval.RetentionScopeV1{Class: cloudapproval.RetentionManaged}}
+
+	expiresAt, err := installerCapabilityExpiry(value, plan, Operation{Intent: Intent{RecordedAt: now}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(7 * 24 * time.Hour); !expiresAt.Equal(want) {
+		t.Fatalf("capability expiry = %v, want seven-day ceiling %v", expiresAt, want)
+	}
+
+	plan.RetentionScope = cloudapproval.RetentionScopeV1{Class: cloudapproval.RetentionEphemeral, AutoDestroy: true, MaxLifetimeSeconds: 60}
+	_, err = installerCapabilityExpiry(value, plan, Operation{Intent: Intent{RecordedAt: now.Add(-time.Minute)}}, now)
+	if !errors.Is(err, ErrNotReady) {
+		t.Fatalf("expired ephemeral lifetime error = %v, want ErrNotReady", err)
 	}
 }
 
@@ -80,9 +190,10 @@ func TestAWSResourcePlanUsesOnlyApprovedExistingSecurityGroup(t *testing.T) {
 	recipeValue := fixture.service.recipes.(fakeRecipes).value
 	operation := Operation{
 		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: fixture.service.facts.(fakeFacts).approval.PlanHash, DeploymentID: uuid.NewString()},
-		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{Reference: "s3://agent-bucket/launch/config.json", SHA256: sha256.Sum256([]byte("launch"))},
+		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
 		CreatedAt: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 7, 16, 10, 0, 1, 0, time.UTC),
 	}
+	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
 	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID)
 	if err != nil {
 		t.Fatal(err)
@@ -111,9 +222,10 @@ func TestAWSResourcePlanCreatesDedicatedNoIngressNetworkAndApprovedPublicIPv4(t 
 	connection := fixture.connections.value
 	operation := Operation{
 		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: fixture.service.facts.(fakeFacts).approval.PlanHash, DeploymentID: uuid.NewString()},
-		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{Reference: "s3://agent-bucket/launch/config.json", SHA256: sha256.Sum256([]byte("launch"))},
+		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
 		CreatedAt: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 7, 16, 10, 0, 1, 0, time.UTC),
 	}
+	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
 	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID)
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +305,7 @@ func newLaunchFixture(t *testing.T, now time.Time) launchFixture {
 	service, err := NewService(
 		agentID, fakeFacts{plan: plan, approval: approval}, connections, fakeRecipes{value: value}, tasks,
 		bundles, workers, bootstraps, fakeResourcePlans{}, resources, operations, func() time.Time { return now },
+		WithInstallerArtifactResolver(fakeArtifactResolver{}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +315,47 @@ func newLaunchFixture(t *testing.T, now time.Time) launchFixture {
 		request: LaunchRequest{IdempotencyKey: uuid.NewString(), OwnerID: ownerID, PlanID: planID, ApprovalID: approvalID, ControlPlaneTarget: "grpcs://agent.example.com:7443"},
 		tasks:   tasks, bundles: bundles, workers: workers, bootstraps: bootstraps, resources: resources, connections: connections,
 	}
+}
+
+func configureInstallerLaunch(t *testing.T, fixture launchFixture, issuer *installer.TrustIssuer, now time.Time, installTimeout, approvalTTL time.Duration, retention cloudapproval.RetentionScopeV1) {
+	t.Helper()
+	value := fixture.service.recipes.(fakeRecipes).value
+	value.Sources[0].ID = "service-release"
+	value.Install.TimeoutSeconds = uint32(installTimeout / time.Second)
+	root := installer.PreinstalledArtifactRoot
+	value.Install.Installer = &recipe.InstallerCapabilityV1{
+		Artifacts: []recipe.InstallerArtifactV1{{Name: "service-installer", SourceID: "service-release", SizeBytes: 32, TargetPath: root + "/service-installer"}},
+		Commands: []recipe.InstallerCommandV1{{
+			CommandID: "install-service", Argv: []string{root + "/service-installer", "install"}, WorkingDirectory: root,
+			TimeoutSeconds: 5, ArtifactRefs: []string{"service-installer"},
+		}},
+	}
+	value.Install.Steps[0] = recipe.InstallStepV1{
+		ID: "install", Summary: "Install exact service", TimeoutSeconds: 5, Action: installer.ActionExecute, Checkpoint: "done",
+		Inputs: []recipe.ActionInputV1{{Name: "command_id", Kind: recipe.ActionInputConfig, Ref: "install-service"}},
+	}
+	digest, err := value.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := fixture.service.facts.(fakeFacts)
+	plan := facts.plan
+	plan.Status, plan.Revision = cloudapproval.PlanReadyForConfirmation, 1
+	plan.Recipe.Digest = digest
+	plan.RetentionScope = retention
+	scopeDigest, err := plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Quote.ScopeDigest = scopeDigest
+	approval, err := cloudapproval.NewApprovalV1(plan, facts.approval.ApprovalID, strings.Repeat("d", 48), "device-1", now.Add(approvalTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
+	fixture.service.facts = fakeFacts{plan: plan, approval: approval}
+	fixture.service.recipes = fakeRecipes{value: value}
+	fixture.service.installerTrust = issuer
 }
 
 func launchRecipe(now time.Time) recipe.RecipeV1 {
@@ -258,14 +412,56 @@ func (tasks *fakeTasks) Create(context.Context, task.MutationScope, task.CreateC
 
 type fakeBundles struct{ calls int }
 
-func (publisher *fakeBundles) PublishBundles(_ context.Context, _ cloudapp.Connection, deploymentID string, recipeBytes, executionBytes []byte, _ []string) (PublishedBundles, error) {
+type fakeArtifactResolver struct{}
+
+func (fakeArtifactResolver) Resolve(context.Context, InstallerArtifactResolveRequest) (InstallerArtifactContent, error) {
+	return &fakeArtifactContent{reader: bytes.NewReader(bytes.Repeat([]byte{0x61}, 32))}, nil
+}
+
+type fakeArtifactContent struct {
+	reader  *bytes.Reader
+	cleaned bool
+}
+
+func (content *fakeArtifactContent) Open(context.Context) (io.ReadSeekCloser, error) {
+	if content.cleaned {
+		return nil, ErrNotReady
+	}
+	return &readSeekCloser{Reader: content.reader}, nil
+}
+
+func (content *fakeArtifactContent) Cleanup() error {
+	content.cleaned = true
+	return nil
+}
+
+type readSeekCloser struct{ *bytes.Reader }
+
+func (*readSeekCloser) Close() error { return nil }
+
+func (publisher *fakeBundles) PublishBundles(_ context.Context, connection cloudapp.Connection, deploymentID string, compiled CompiledBundles, _ []string) (PublishedBundles, error) {
 	publisher.calls++
+	recipeBytes, executionBytes := compiled.RecipeBytes, compiled.ExecutionBytes
 	recipeDigest, executionDigest := sha256.Sum256(recipeBytes), sha256.Sum256(executionBytes)
 	base := "s3://agent-bucket/workers/" + deploymentID + "/"
+	var installerArtifacts []installerbootstrap.ArtifactSourceV1
+	if compiled.InstallerRootTrust != nil {
+		for _, artifact := range compiled.InstallerRootTrust.ArtifactManifest.Manifest.Artifacts {
+			installerArtifacts = append(installerArtifacts, installerbootstrap.ArtifactSourceV1{
+				SchemaVersion: installerbootstrap.ArtifactSourceSchemaV1, Name: artifact.Name, Bucket: "agent-bucket",
+				Key: "deployments/" + deploymentID + "/artifacts/" + artifact.Name, VersionID: "version-1",
+				KMSKeyARN: "arn:aws:kms:" + connection.Region + ":" + connection.AccountID + ":key/11111111-2222-4333-8444-555555555555",
+				SHA256:    artifact.SHA256, SizeBytes: artifact.SizeBytes, TargetPath: artifact.TargetPath,
+				RecipeDigest: compiled.InstallerRootTrust.ArtifactManifest.Manifest.Binding.RecipeDigest,
+			})
+		}
+	}
 	return PublishedBundles{
 		Recipe: worker.BundleRef{S3Ref: base + "recipe.cbor", SHA256: recipeDigest}, Execution: worker.BundleRef{S3Ref: base + "execution.json", SHA256: executionDigest},
 		Launch: BootstrapArtifact{Reference: base + "launch/config.json", SHA256: sha256.Sum256([]byte("launch"))},
 		Access: worker.AccessScope{ArtifactPrefix: base + "artifacts/", CheckpointPrefix: base + "checkpoints/", EvidencePrefix: base + "evidence/", LogPrefix: "cloudwatch://worker-log/" + deploymentID}, SecretBindings: map[string]string{},
+		InstallerRootTrust: cloneInstallerRootTrust(compiled.InstallerRootTrust),
+		InstallerArtifacts: installerArtifacts,
 	}, nil
 }
 

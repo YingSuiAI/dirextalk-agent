@@ -33,6 +33,8 @@ var (
 	imageIDPattern       = regexp.MustCompile(`^ami-[0-9a-f]{8,17}$`)
 	snapshotIDPattern    = regexp.MustCompile(`^snap-[0-9a-f]{8,17}$`)
 	instanceIDPattern    = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	volumeIDPattern      = regexp.MustCompile(`^vol-[0-9a-f]{8,17}$`)
+	networkIDPattern     = regexp.MustCompile(`^eni-[0-9a-f]{8,17}$`)
 	bucketPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 	kmsARNPattern        = regexp.MustCompile(`^arn:(aws|aws-cn|aws-us-gov):kms:([^:]+):([0-9]{12}):key/([0-9a-fA-F-]{36}|mrk-[0-9a-f]{32})$`)
 )
@@ -125,6 +127,17 @@ func validateBuildRequest(input BuildRequestV1) (validatedBuild, error) {
 	}, nil
 }
 
+// BuildDigest returns the deterministic, de-secreted identity also applied to
+// the builder tag. Recovery evidence binds this value so it cannot be replayed
+// across a different environment or effective request.
+func BuildDigest(input BuildRequestV1) (string, error) {
+	validated, err := validateBuildRequest(input)
+	if err != nil {
+		return "", err
+	}
+	return validated.buildDigest, nil
+}
+
 func openValidatedArchive(artifact RootFSArtifactV1) (*os.File, error) {
 	if strings.TrimSpace(artifact.ArchivePath) == "" {
 		return nil, ErrInvalidInput
@@ -189,6 +202,52 @@ func (manifest ImageManifestV1) Digest() (string, error) {
 		return "", err
 	}
 	return canonical.Digest(normalized)
+}
+
+func (evidence BuilderCleanupEvidenceV1) normalized() (BuilderCleanupEvidenceV1, error) {
+	if evidence.SchemaVersion != BuilderCleanupEvidenceSchemaV1 || !validCanonicalUUID(evidence.AgentInstanceID) ||
+		!accountPattern.MatchString(evidence.AccountID) || !regionPattern.MatchString(evidence.Region) ||
+		!digestPattern.MatchString(evidence.ReleaseManifestDigest) || !digestPattern.MatchString(evidence.WorkerRootFSDigest) ||
+		!digestPattern.MatchString(evidence.WorkerBinaryDigest) || !digestPattern.MatchString(evidence.BuildDigest) || !instanceIDPattern.MatchString(evidence.BuilderInstanceID) ||
+		!volumeIDPattern.MatchString(evidence.BuilderRootVolumeID) || len(evidence.BuilderNetworkInterfaceIDs) != 1 ||
+		!networkIDPattern.MatchString(evidence.BuilderNetworkInterfaceIDs[0]) {
+		return BuilderCleanupEvidenceV1{}, ErrInvalidInput
+	}
+	evidence.BuilderNetworkInterfaceIDs = append([]string(nil), evidence.BuilderNetworkInterfaceIDs...)
+	return evidence, nil
+}
+
+func (evidence BuilderCleanupEvidenceV1) Validate() error {
+	_, err := evidence.normalized()
+	return err
+}
+
+func builderCleanupEvidenceFromObservation(observation BuilderObservationV1, expected validatedBuild) (BuilderCleanupEvidenceV1, error) {
+	if err := validateBuilderObservation(observation, expected); err != nil || !volumeIDPattern.MatchString(observation.RootVolumeID) ||
+		len(observation.NetworkInterfaceIDs) != 1 || !networkIDPattern.MatchString(observation.NetworkInterfaceIDs[0]) {
+		return BuilderCleanupEvidenceV1{}, ErrReadBackMismatch
+	}
+	return BuilderCleanupEvidenceV1{
+		SchemaVersion: BuilderCleanupEvidenceSchemaV1, AgentInstanceID: expected.request.AgentInstanceID,
+		AccountID: expected.request.AccountID, Region: expected.request.Region,
+		ReleaseManifestDigest: expected.request.ReleaseManifestDigest,
+		WorkerRootFSDigest:    expected.request.RootFS.Manifest.RootFSDigest,
+		WorkerBinaryDigest:    expected.request.RootFS.Manifest.BinaryDigest,
+		BuildDigest:           expected.buildDigest,
+		BuilderInstanceID:     observation.InstanceID, BuilderRootVolumeID: observation.RootVolumeID,
+		BuilderNetworkInterfaceIDs: append([]string(nil), observation.NetworkInterfaceIDs...),
+	}.normalized()
+}
+
+func validateBuilderCleanupEvidenceForBuild(evidence BuilderCleanupEvidenceV1, expected validatedBuild) (BuilderCleanupEvidenceV1, error) {
+	normalized, err := evidence.normalized()
+	if err != nil || normalized.AgentInstanceID != expected.request.AgentInstanceID || normalized.AccountID != expected.request.AccountID ||
+		normalized.Region != expected.request.Region || normalized.ReleaseManifestDigest != expected.request.ReleaseManifestDigest ||
+		normalized.WorkerRootFSDigest != expected.request.RootFS.Manifest.RootFSDigest ||
+		normalized.WorkerBinaryDigest != expected.request.RootFS.Manifest.BinaryDigest || normalized.BuildDigest != expected.buildDigest {
+		return BuilderCleanupEvidenceV1{}, ErrOwnershipMismatch
+	}
+	return normalized, nil
 }
 
 func validCanonicalUUID(value string) bool {
@@ -323,6 +382,23 @@ func validateBuilderObservation(observation BuilderObservationV1, expected valid
 	default:
 		return ErrReadBackMismatch
 	}
+}
+
+func validateTerminatedBuilderForCleanup(observation BuilderObservationV1, evidence BuilderCleanupEvidenceV1) error {
+	if evidence.Validate() != nil || observation.InstanceID != evidence.BuilderInstanceID || observation.State != BuilderTerminated ||
+		!strings.HasPrefix(observation.Name, "dtx-worker-ami-builder-") || observation.Tags[TagAgentInstanceID] != evidence.AgentInstanceID ||
+		observation.Tags[TagReleaseManifestDigest] != evidence.ReleaseManifestDigest || observation.Tags[TagWorkerRootFSDigest] != evidence.WorkerRootFSDigest ||
+		observation.Tags[TagWorkerBinaryDigest] != evidence.WorkerBinaryDigest || observation.Tags[tagBuildDigest] != evidence.BuildDigest ||
+		observation.Tags[tagComponent] != "worker-ami-builder" {
+		return ErrOwnershipMismatch
+	}
+	if observation.RootVolumeID != "" && observation.RootVolumeID != evidence.BuilderRootVolumeID {
+		return ErrOwnershipMismatch
+	}
+	if len(observation.NetworkInterfaceIDs) != 0 && (len(observation.NetworkInterfaceIDs) != 1 || observation.NetworkInterfaceIDs[0] != evidence.BuilderNetworkInterfaceIDs[0]) {
+		return ErrOwnershipMismatch
+	}
+	return nil
 }
 
 func imageManifestFromObservation(observation ImageObservationV1, expected validatedBuild) (ImageManifestV1, error) {

@@ -57,6 +57,10 @@ func TestRunBuildAttestsAndWritesExclusiveCanonicalManifest(t *testing.T) {
 	if _, err := os.Stat(buildIntentPath(output)); !os.IsNotExist(err) {
 		t.Fatalf("successful build left intent behind: %v", err)
 	}
+	cleanupEvidence, err := readBuilderCleanupEvidence(builderCleanupEvidencePath(output))
+	if err != nil || cleanupEvidence.BuilderInstanceID == "" || cleanupEvidence.BuilderRootVolumeID == "" || len(cleanupEvidence.BuilderNetworkInterfaceIDs) != 1 {
+		t.Fatalf("builder cleanup evidence = %#v, %v", cleanupEvidence, err)
+	}
 
 	cloud = newFakeCloud(fixture.image, fixture.evidence)
 	stderr.Reset()
@@ -113,6 +117,29 @@ func TestRunBuildRecoversSameIntentAfterProcessCrash(t *testing.T) {
 	}
 }
 
+func TestRunBuildFailureRetainsIntentAndBuilderProviderIDs(t *testing.T) {
+	fixture := newBuildFixture(t)
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	cloud.buildErr = errors.New("AccessDenied credential=SHOULD_NOT_ESCAPE")
+	output := filepath.Join(t.TempDir(), "publication.json")
+	var stdout, stderr bytes.Buffer
+
+	code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", output}, &stdout, &stderr, cloud.dependencies())
+	if code == 0 || strings.Contains(stdout.String()+stderr.String(), "SHOULD_NOT_ESCAPE") {
+		t.Fatalf("Run(build failure) = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(buildIntentPath(output)); err != nil {
+		t.Fatalf("failed build lost recovery intent: %v", err)
+	}
+	evidence, err := readBuilderCleanupEvidence(builderCleanupEvidencePath(output))
+	if err != nil || evidence.BuilderInstanceID == "" || evidence.BuilderRootVolumeID == "" || len(evidence.BuilderNetworkInterfaceIDs) != 1 {
+		t.Fatalf("failed build lost provider IDs: %#v, %v", evidence, err)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("failed build persisted a publication: %v", err)
+	}
+}
+
 func TestRunBuildRejectsDifferentRequestForExistingIntent(t *testing.T) {
 	fixture := newBuildFixture(t)
 	prepared, err := parseBuildRequest(fixture.requestPath)
@@ -158,6 +185,9 @@ func TestRunBuildVerifiesFinalThenRemovesCrashLeftIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := writeFinalPublication(output, publication); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureBuilderCleanupEvidence(builderCleanupEvidencePath(output), builderCleanupEvidenceForRequest(t, prepared.request)); err != nil {
 		t.Fatal(err)
 	}
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
@@ -268,8 +298,9 @@ func TestRunDestroyRequiresExactAccountAndImageDigestThenReadsAbsence(t *testing
 	}
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 
-	bad := DestroyRequestFileV1{
-		SchemaVersion: DestroyRequestSchemaV1, PublicationManifestPath: publicationPath,
+	cleanupEvidencePath := writeBuilderCleanupEvidenceForImage(t, fixture.image)
+	bad := DestroyRequestFileV2{
+		SchemaVersion: DestroyRequestSchemaV2, PublicationManifestPath: publicationPath, BuilderCleanupEvidencePath: cleanupEvidencePath,
 		ConfirmAccountID: fixture.image.AccountID, ConfirmImageDigest: "sha256:" + strings.Repeat("f", 64),
 	}
 	badPath := writeJSON(t, "destroy-bad.json", bad)
@@ -288,7 +319,7 @@ func TestRunDestroyRequiresExactAccountAndImageDigestThenReadsAbsence(t *testing
 	if code := Run(context.Background(), []string{"destroy", "--request", goodPath}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
 		t.Fatalf("destroy failed: %q", stderr.String())
 	}
-	if cloud.destroyCalls != 1 || cloud.absenceCalls != 1 {
+	if cloud.destroyCalls != 1 || cloud.absenceCalls != 1 || cloud.cleanupVerifyCalls != 2 {
 		t.Fatalf("destroy did not independently confirm absence: %#v", cloud)
 	}
 }
@@ -391,17 +422,18 @@ func populateBuildRootFS(t *testing.T, root string) {
 	workerSum := sha256.Sum256(worker)
 	installerSum := sha256.Sum256(installer)
 	files := map[string][]byte{
-		"etc/ssl/certs/ca-certificates.crt":                                       worker,
-		"usr/local/bin/dirextalk-cloud-worker":                                    worker,
-		"usr/local/bin/dirextalk-worker-installer":                                installer,
-		"usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service":     []byte("fixed cloud Worker service\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles":       []byte("fixed installer tmpfiles\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service": []byte("fixed installer service\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket":  []byte("fixed installer socket\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.sysusers":          []byte("fixed Worker sysusers\n"),
-		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.tmpfiles":          []byte("fixed Worker tmpfiles\n"),
-		"usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256":          []byte(hex.EncodeToString(workerSum[:]) + "\n"),
-		"usr/local/share/dirextalk-worker/dirextalk-worker-installer.sha256":      []byte(hex.EncodeToString(installerSum[:]) + "\n"),
+		"etc/ssl/certs/ca-certificates.crt":                                                 worker,
+		"usr/local/bin/dirextalk-cloud-worker":                                              worker,
+		"usr/local/bin/dirextalk-worker-installer":                                          installer,
+		"usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service":               []byte("fixed cloud Worker service\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles":                 []byte("fixed installer tmpfiles\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service": []byte("fixed installer bootstrap service\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service":           []byte("fixed installer service\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket":            []byte("fixed installer socket\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.sysusers":                    []byte("fixed Worker sysusers\n"),
+		"usr/local/share/dirextalk-worker/ami/dirextalk-worker.tmpfiles":                    []byte("fixed Worker tmpfiles\n"),
+		"usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256":                    []byte(hex.EncodeToString(workerSum[:]) + "\n"),
+		"usr/local/share/dirextalk-worker/dirextalk-worker-installer.sha256":                []byte(hex.EncodeToString(installerSum[:]) + "\n"),
 	}
 	for name, content := range files {
 		path := filepath.Join(root, filepath.FromSlash(name))
@@ -462,18 +494,52 @@ func writePublication(t *testing.T, image workerami.ImageManifestV1, evidence aw
 	return writeBytes(t, "publication.json", encoded)
 }
 
+func writeBuilderCleanupEvidenceForImage(t *testing.T, image workerami.ImageManifestV1) string {
+	t.Helper()
+	evidence := workerami.BuilderCleanupEvidenceV1{
+		SchemaVersion: workerami.BuilderCleanupEvidenceSchemaV1, AgentInstanceID: image.AgentInstanceID,
+		AccountID: image.AccountID, Region: image.Region, ReleaseManifestDigest: image.ReleaseManifestDigest,
+		WorkerRootFSDigest: image.WorkerRootFSDigest, WorkerBinaryDigest: image.WorkerBinaryDigest,
+		BuildDigest: "sha256:" + strings.Repeat("b", 64), BuilderInstanceID: "i-0123456789abcdef0",
+		BuilderRootVolumeID: "vol-0123456789abcdef0", BuilderNetworkInterfaceIDs: []string{"eni-0123456789abcdef0"},
+	}
+	encoded, err := canonicalBuilderCleanupEvidenceJSON(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return writeBytes(t, "builder-cleanup.json", encoded)
+}
+
+func builderCleanupEvidenceForRequest(t *testing.T, request workerami.BuildRequestV1) workerami.BuilderCleanupEvidenceV1 {
+	t.Helper()
+	buildDigest, err := workerami.BuildDigest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workerami.BuilderCleanupEvidenceV1{
+		SchemaVersion: workerami.BuilderCleanupEvidenceSchemaV1, AgentInstanceID: request.AgentInstanceID,
+		AccountID: request.AccountID, Region: request.Region, ReleaseManifestDigest: request.ReleaseManifestDigest,
+		WorkerRootFSDigest: request.RootFS.Manifest.RootFSDigest, WorkerBinaryDigest: request.RootFS.Manifest.BinaryDigest,
+		BuildDigest: buildDigest, BuilderInstanceID: "i-0123456789abcdef0", BuilderRootVolumeID: "vol-0123456789abcdef0",
+		BuilderNetworkInterfaceIDs: []string{"eni-0123456789abcdef0"},
+	}
+}
+
 type fakeCloud struct {
-	identity      CallerIdentityV1
-	loadErr       error
-	image         workerami.ImageManifestV1
-	evidence      awsprovider.WorkerAMIAttestationV1
-	loadCalls     int
-	identityReads int
-	buildCalls    int
-	verifyCalls   int
-	destroyCalls  int
-	attestCalls   int
-	absenceCalls  int
+	identity           CallerIdentityV1
+	loadErr            error
+	buildErr           error
+	image              workerami.ImageManifestV1
+	evidence           awsprovider.WorkerAMIAttestationV1
+	loadCalls          int
+	identityReads      int
+	buildCalls         int
+	verifyCalls        int
+	destroyCalls       int
+	attestCalls        int
+	absenceCalls       int
+	cleanupVerifyCalls int
+	cleanupEvidence    workerami.BuilderCleanupEvidenceV1
 }
 
 func newFakeCloud(image workerami.ImageManifestV1, evidence awsprovider.WorkerAMIAttestationV1) *fakeCloud {
@@ -505,15 +571,53 @@ func (reader fakeIdentityReader) Read(context.Context) (CallerIdentityV1, error)
 
 type fakeAMIService struct{ cloud *fakeCloud }
 
-func (service fakeAMIService) Build(_ context.Context, _ workerami.BuildRequestV1) (workerami.ImageManifestV1, error) {
+func (service fakeAMIService) Build(_ context.Context, request workerami.BuildRequestV1) (workerami.ImageManifestV1, error) {
 	service.cloud.buildCalls++
+	evidence, err := builderCleanupEvidenceForRequestForFake(request)
+	if err != nil {
+		return workerami.ImageManifestV1{}, err
+	}
+	if request.ExistingBuilderCleanupEvidence != nil {
+		evidence = *request.ExistingBuilderCleanupEvidence
+	}
+	if request.RecordBuilderCleanupEvidence == nil || request.RecordBuilderCleanupEvidence(evidence) != nil {
+		return workerami.ImageManifestV1{}, errors.New("cleanup evidence not persisted")
+	}
+	service.cloud.cleanupEvidence = evidence
+	if service.cloud.buildErr != nil {
+		return workerami.ImageManifestV1{}, service.cloud.buildErr
+	}
 	return service.cloud.image, nil
+}
+
+func builderCleanupEvidenceForRequestForFake(request workerami.BuildRequestV1) (workerami.BuilderCleanupEvidenceV1, error) {
+	buildDigest, err := workerami.BuildDigest(request)
+	if err != nil {
+		return workerami.BuilderCleanupEvidenceV1{}, err
+	}
+	return workerami.BuilderCleanupEvidenceV1{
+		SchemaVersion: workerami.BuilderCleanupEvidenceSchemaV1, AgentInstanceID: request.AgentInstanceID,
+		AccountID: request.AccountID, Region: request.Region, ReleaseManifestDigest: request.ReleaseManifestDigest,
+		WorkerRootFSDigest: request.RootFS.Manifest.RootFSDigest, WorkerBinaryDigest: request.RootFS.Manifest.BinaryDigest,
+		BuildDigest: buildDigest, BuilderInstanceID: "i-0123456789abcdef0", BuilderRootVolumeID: "vol-0123456789abcdef0",
+		BuilderNetworkInterfaceIDs: []string{"eni-0123456789abcdef0"},
+	}, nil
 }
 
 func (service fakeAMIService) Verify(_ context.Context, manifest workerami.ImageManifestV1) error {
 	service.cloud.verifyCalls++
 	if manifest != service.cloud.image {
 		return errors.New("unexpected image")
+	}
+	return nil
+}
+
+func (service fakeAMIService) VerifyBuilderCleanup(_ context.Context, evidence workerami.BuilderCleanupEvidenceV1) error {
+	service.cloud.cleanupVerifyCalls++
+	if evidence.Validate() != nil || evidence.AccountID != service.cloud.image.AccountID || evidence.Region != service.cloud.image.Region ||
+		evidence.AgentInstanceID != service.cloud.image.AgentInstanceID || evidence.ReleaseManifestDigest != service.cloud.image.ReleaseManifestDigest ||
+		evidence.WorkerRootFSDigest != service.cloud.image.WorkerRootFSDigest || evidence.WorkerBinaryDigest != service.cloud.image.WorkerBinaryDigest {
+		return errors.New("unexpected builder cleanup evidence")
 	}
 	return nil
 }

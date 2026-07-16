@@ -298,7 +298,7 @@ func TestProvisionTypedEC2FailsClosedWhenRootEBSCannotBeReadBack(t *testing.T) {
 func testTypedEC2AWS(deploymentID string) *AWSResourceSpecV1 {
 	return &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Instance: &AWSEC2InstanceSpecV1{Architecture: recipe.ArchitectureAMD64,
 		ImageID: "ami-0123456789abcdef0", ImageDigest: "sha256:" + repeatHex('a'), InstanceType: "t3.large",
-		InstanceProfileName: "dtx-agent-example-worker", UserDataArtifactRef: "s3://dtx-artifacts/deployments/worker.json",
+		InstanceProfileName: "dtx-agent-example-worker", UserDataArtifactRef: "s3://dtx-artifacts/deployments/" + deploymentID + "/launch/config.json",
 		UserDataArtifactDigest: "sha256:" + repeatHex('b'), Bootstrap: AWSWorkerBootstrapSpecV1{
 			DeploymentID: deploymentID, WorkerID: uuid.NewString(), ControlPlaneEndpoint: "grpcs://agent.example.com:7443", EnrollmentExpectedRevision: 1,
 		},

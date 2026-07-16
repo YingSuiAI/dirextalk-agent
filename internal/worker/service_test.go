@@ -3,15 +3,154 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/google/uuid"
 )
+
+func TestClaimAndRecoveryIssueFreshLeaseBoundInstallerGrant(t *testing.T) {
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	repository := newMemoryRepository()
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x74}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	service, err := NewService(repository, []byte("0123456789abcdef0123456789abcdef"), WithInstallerTrustIssuer(issuer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now }
+	deploymentID, taskID, stepID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	recipeDigest := [sha256.Size]byte{1}
+	binding := installer.BindingV1{
+		AgentInstanceID: uuid.NewString(), DeploymentID: deploymentID, TaskID: taskID,
+		PlanHash: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{2}, sha256.Size)), ApprovalID: uuid.NewString(),
+		RecipeDigest: "sha256:" + hex.EncodeToString(recipeDigest[:]),
+	}
+	root := installer.PreinstalledArtifactRoot
+	delivery, err := issuer.Issue(installer.InstallerPlanV1{
+		SchemaVersion: installer.PlanSchemaV1, Binding: binding,
+		Artifacts: []installer.ArtifactV1{{Name: "installer", SHA256: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{3}, sha256.Size)), SizeBytes: 32, TargetPath: root + "/installer"}},
+		Commands:  []installer.CommandV1{{CommandID: "install-service", Argv: []string{root + "/installer"}, WorkingDirectory: root, TimeoutSeconds: 30, ArtifactRefs: []string{"installer"}}},
+		ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339Nano),
+	}, installer.DaemonConfigV1{SchemaVersion: installer.DaemonConfigSchema, Binding: binding, TargetRoot: root}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CreateDeploymentRequest{
+		DeploymentID: deploymentID, OwnerID: "owner", TaskID: taskID, StepID: stepID,
+		ControlPlaneEndpoint: "grpcs://agent.example:7443", EnrollmentTTL: time.Minute,
+		RecipeBundle:    BundleRef{S3Ref: "s3://worker/d/recipe.cbor", SHA256: recipeDigest},
+		ExecutionBundle: BundleRef{S3Ref: "s3://worker/d/execution.json", SHA256: [32]byte{4}}, ExecutionTimeout: time.Minute,
+		InstallerDelivery: &delivery, InstallerCommandIDs: []string{"install-service"},
+		Access: AccessScope{ArtifactPrefix: "s3://worker/d/a/", CheckpointPrefix: "s3://worker/d/c/", EvidencePrefix: "s3://worker/d/e/", LogPrefix: "cloudwatch://worker/d"},
+	}
+	created, enrollment, err := service.CreateDeployment(context.Background(), newControlMutation(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer enrollment.Destroy()
+	enrollmentBytes := enrollment.Reveal()
+	workerID := uuid.NewString()
+	enrolled, session, err := service.Enroll(context.Background(), EnrollRequest{DeploymentID: deploymentID, WorkerID: workerID, IdempotencyKey: uuid.NewString(), ExpectedRevision: created.Revision, Credential: enrollmentBytes})
+	zero(enrollmentBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Destroy()
+	if len(enrolled.InstallerLeaseGrants) != 0 {
+		t.Fatal("unleased enrollment exposed installer grant")
+	}
+	sessionBytes := session.Reveal()
+	defer zero(sessionBytes)
+	claimKey := uuid.NewString()
+	claimed, err := service.Claim(context.Background(), AuthenticatedRequest{DeploymentID: deploymentID, WorkerID: workerID, IdempotencyKey: claimKey, ExpectedRevision: enrolled.Revision, Credential: sessionBytes}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.InstallerLeaseGrants) != 1 || claimed.InstallerLeaseGrants[0].Grant.LeaseEpoch != claimed.LeaseEpoch ||
+		claimed.InstallerLeaseGrants[0].Grant.ExpiresAt != claimed.LeaseExpiresAt.UTC().Format(time.RFC3339Nano) ||
+		installer.ValidateLeaseGrantAt(delivery, claimed.InstallerLeaseGrants[0], "install-service", now) != nil {
+		t.Fatalf("claim did not issue exact installer grant: %+v", claimed)
+	}
+	firstSignature := append([]byte(nil), claimed.InstallerLeaseGrants[0].Signature...)
+	now = now.Add(10 * time.Second)
+	heartbeat, err := service.Heartbeat(context.Background(), LeasedRequest{
+		AuthenticatedRequest: AuthenticatedRequest{
+			DeploymentID: deploymentID, WorkerID: workerID, IdempotencyKey: uuid.NewString(), ExpectedRevision: claimed.Revision, Credential: sessionBytes,
+		},
+		LeaseEpoch: claimed.LeaseEpoch,
+	}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(heartbeat.InstallerLeaseGrants) != 1 || heartbeat.LeaseEpoch != claimed.LeaseEpoch ||
+		heartbeat.InstallerLeaseGrants[0].Grant.ExpiresAt != heartbeat.LeaseExpiresAt.UTC().Format(time.RFC3339Nano) ||
+		!heartbeat.LeaseExpiresAt.After(claimed.LeaseExpiresAt) || bytes.Equal(firstSignature, heartbeat.InstallerLeaseGrants[0].Signature) ||
+		installer.ValidateLeaseGrantAt(delivery, heartbeat.InstallerLeaseGrants[0], "install-service", now) != nil {
+		t.Fatalf("heartbeat did not rotate grants to the renewed durable lease: %+v", heartbeat)
+	}
+	renewedSignature := append([]byte(nil), heartbeat.InstallerLeaseGrants[0].Signature...)
+	now = claimed.LeaseExpiresAt.Add(time.Nanosecond)
+	if installer.ValidateLeaseGrantAt(delivery, claimed.InstallerLeaseGrants[0], "install-service", now) == nil {
+		t.Fatal("old installer grant remained valid beyond its original durable lease")
+	}
+	if installer.ValidateLeaseGrantAt(delivery, heartbeat.InstallerLeaseGrants[0], "install-service", now) != nil {
+		t.Fatal("renewed installer grant did not remain valid for the renewed durable lease")
+	}
+	restarted, err := NewService(repository, []byte("0123456789abcdef0123456789abcdef"), WithInstallerTrustIssuer(issuer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.now = func() time.Time { return now }
+	recovered, err := restarted.GetCurrentAssignment(context.Background(), SessionRequest{DeploymentID: deploymentID, WorkerID: workerID, Credential: sessionBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered.InstallerLeaseGrants) != 1 || recovered.InstallerLeaseGrants[0].Grant.LeaseEpoch != heartbeat.LeaseEpoch ||
+		recovered.InstallerLeaseGrants[0].Grant.ExpiresAt != heartbeat.LeaseExpiresAt.UTC().Format(time.RFC3339Nano) ||
+		bytes.Equal(renewedSignature, recovered.InstallerLeaseGrants[0].Signature) || installer.ValidateLeaseGrantAt(delivery, recovered.InstallerLeaseGrants[0], "install-service", now) != nil {
+		t.Fatal("recovery did not issue a fresh grant for the persisted renewed lease")
+	}
+	withoutIssuer, _ := NewService(repository, []byte("0123456789abcdef0123456789abcdef"))
+	withoutIssuer.now = func() time.Time { return now }
+	if _, err := withoutIssuer.GetCurrentAssignment(context.Background(), SessionRequest{DeploymentID: deploymentID, WorkerID: workerID, Credential: sessionBytes}); !errors.Is(err, ErrInstallerTrustUnavailable) {
+		t.Fatalf("missing issuer recovery error = %v", err)
+	}
+	now = heartbeat.LeaseExpiresAt.Add(time.Nanosecond)
+	expired, err := restarted.GetCurrentAssignment(context.Background(), SessionRequest{DeploymentID: deploymentID, WorkerID: workerID, Credential: sessionBytes})
+	if err != nil || len(expired.InstallerLeaseGrants) != 0 || expired.Revision != heartbeat.Revision {
+		t.Fatalf("expired lease was not readable without a grant: assignment=%+v err=%v", expired, err)
+	}
+	reclaimed, err := restarted.Claim(context.Background(), AuthenticatedRequest{
+		DeploymentID: deploymentID, WorkerID: workerID, IdempotencyKey: uuid.NewString(), ExpectedRevision: expired.Revision, Credential: sessionBytes,
+	}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reclaimed.LeaseEpoch != claimed.LeaseEpoch+1 || len(reclaimed.InstallerLeaseGrants) != 1 ||
+		reclaimed.InstallerLeaseGrants[0].Grant.LeaseEpoch != reclaimed.LeaseEpoch {
+		t.Fatalf("reclaim did not fence the old installer epoch: %+v", reclaimed)
+	}
+	_, err = restarted.Heartbeat(context.Background(), LeasedRequest{
+		AuthenticatedRequest: AuthenticatedRequest{
+			DeploymentID: deploymentID, WorkerID: workerID, IdempotencyKey: uuid.NewString(), ExpectedRevision: reclaimed.Revision, Credential: sessionBytes,
+		},
+		LeaseEpoch: claimed.LeaseEpoch,
+	}, time.Minute)
+	if !errors.Is(err, ErrStaleLease) {
+		t.Fatalf("old installer lease epoch heartbeat error = %v, want ErrStaleLease", err)
+	}
+}
 
 type memoryRepository struct {
 	mu                  sync.Mutex

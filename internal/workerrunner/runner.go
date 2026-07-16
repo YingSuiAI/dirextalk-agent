@@ -17,6 +17,7 @@ import (
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -129,6 +130,9 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 		epoch: assignment.GetLeaseEpoch(), revision: assignment.GetRevision(), leaseDuration: config.LeaseDuration,
 		retryDelay: runner.retryDelay(),
 	}
+	if err := lease.initializeInstallerGrants(assignment); err != nil {
+		return Result{}, err
+	}
 	heartbeatContext, stopHeartbeat := context.WithCancel(executionContext)
 	heartbeatDone := make(chan error, 1)
 	go func() {
@@ -231,10 +235,11 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := runner.Registry.Validate(bundle); err != nil {
+	bundle, err = lease.bindInstallerBundle(bundle, assignment, time.Now().UTC())
+	if err != nil {
 		return nil, nil, err
 	}
-	if err := validateInstallerAssignment(bundle, assignment, time.Now().UTC()); err != nil {
+	if err := runner.Registry.Validate(bundle); err != nil {
 		return nil, nil, err
 	}
 	completed, startIndex, err := runner.resumeCheckpoint(ctx, assignment, bundle)
@@ -242,7 +247,10 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		return nil, nil, err
 	}
 	for actionIndex := startIndex; actionIndex < len(bundle.Actions); actionIndex++ {
-		action := bundle.Actions[actionIndex]
+		action, err := lease.bindCurrentInstallerAction(bundle.Actions[actionIndex], time.Now().UTC())
+		if err != nil {
+			return completed, nil, err
+		}
 		actionContext, cancel := context.WithTimeout(ctx, time.Duration(action.TimeoutSeconds)*time.Second)
 		_, actionErr := runner.Registry.Execute(actionContext, action)
 		cancel()
@@ -422,8 +430,15 @@ func validateAssignment(assignment *agentv1.WorkerAssignment, config Config, lea
 		assignment.GetAccess() == nil {
 		return errors.New("Worker assignment is invalid")
 	}
-	if leased && (assignment.GetLeaseEpoch() < 1 || assignment.GetLeaseExpiresAt() == nil || assignment.GetLeaseExpiresAt().AsTime().Before(time.Now().UTC())) {
+	now := time.Now().UTC()
+	if leased && (assignment.GetLeaseEpoch() < 1 || assignment.GetLeaseExpiresAt() == nil || assignment.GetLeaseExpiresAt().CheckValid() != nil ||
+		!now.Before(assignment.GetLeaseExpiresAt().AsTime())) {
 		return errors.New("Worker lease assignment is invalid or expired")
+	}
+	if !leased && len(assignment.GetInstallerLeaseGrants()) != 0 &&
+		(assignment.GetLeaseEpoch() < 1 || assignment.GetLeaseExpiresAt() == nil || assignment.GetLeaseExpiresAt().CheckValid() != nil ||
+			!now.Before(assignment.GetLeaseExpiresAt().AsTime())) {
+		return errors.New("unleased or expired Worker assignment contains installer grants")
 	}
 	return nil
 }
@@ -487,15 +502,18 @@ func checkpointRefWithinScope(access *agentv1.WorkerAccessScope, reference strin
 }
 
 type leaseState struct {
-	mu            sync.Mutex
-	control       ControlClient
-	token         []byte
-	deploymentID  string
-	workerID      string
-	epoch         int64
-	revision      int64
-	leaseDuration time.Duration
-	retryDelay    time.Duration
+	mu                sync.Mutex
+	control           ControlClient
+	token             []byte
+	deploymentID      string
+	workerID          string
+	epoch             int64
+	revision          int64
+	leaseExpiresAt    time.Time
+	installerCommands map[string]struct{}
+	installerGrants   map[string]installer.SignedLeaseGrantV1
+	leaseDuration     time.Duration
+	retryDelay        time.Duration
 }
 
 func (state *leaseState) heartbeatLoop(ctx context.Context, interval time.Duration) error {
@@ -526,10 +544,19 @@ func (state *leaseState) heartbeat(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if response.GetLeaseEpoch() != state.epoch || response.GetRevision() <= state.revision {
+	if response.GetLeaseEpoch() != state.epoch || response.GetRevision() <= state.revision || response.GetLeaseExpiresAt() == nil ||
+		response.GetLeaseExpiresAt().CheckValid() != nil {
 		return errors.New("Worker heartbeat returned an invalid fence")
 	}
+	leaseExpiresAt := response.GetLeaseExpiresAt().AsTime().UTC()
+	if !leaseExpiresAt.After(state.leaseExpiresAt) || !time.Now().UTC().Before(leaseExpiresAt) {
+		return errors.New("Worker heartbeat did not extend the durable lease")
+	}
+	if err := state.replaceInstallerGrantsLocked(response.GetInstallerLeaseGrants(), state.epoch, leaseExpiresAt, false); err != nil {
+		return err
+	}
 	state.revision = response.GetRevision()
+	state.leaseExpiresAt = leaseExpiresAt
 	if response.GetCancellationRequested() {
 		return ErrCancellationRequested
 	}

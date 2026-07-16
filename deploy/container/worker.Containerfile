@@ -42,6 +42,7 @@ COPY --from=build --chmod=0444 /out/dirextalk-cloud-worker.sha256 /usr/local/sha
 COPY --from=build --chmod=0444 /out/dirextalk-worker-installer.sha256 /usr/local/share/dirextalk-worker/dirextalk-worker-installer.sha256
 COPY --chmod=0444 deploy/container/worker-ami/dirextalk-cloud-worker.service /usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service
 COPY --chmod=0444 deploy/container/worker-ami/dirextalk-worker-installer.service /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service
+COPY --chmod=0444 deploy/container/worker-ami/dirextalk-worker-installer-bootstrap.service /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service
 COPY --chmod=0444 deploy/container/worker-ami/dirextalk-worker-installer.socket /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket
 COPY --chmod=0444 deploy/container/worker-ami/dirextalk-worker.sysusers /usr/local/share/dirextalk-worker/ami/dirextalk-worker.sysusers
 COPY --chmod=0444 deploy/container/worker-ami/dirextalk-worker.tmpfiles /usr/local/share/dirextalk-worker/ami/dirextalk-worker.tmpfiles

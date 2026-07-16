@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/google/uuid"
@@ -96,11 +98,12 @@ type Repository interface {
 }
 
 type Service struct {
-	repository    Repository
-	pepper        []byte
-	random        io.Reader
-	now           func() time.Time
-	taskExecution TaskExecutionCoordinator
+	repository     Repository
+	pepper         []byte
+	random         io.Reader
+	now            func() time.Time
+	taskExecution  TaskExecutionCoordinator
+	installerTrust *installer.TrustIssuer
 }
 
 func NewService(repository Repository, pepper []byte, options ...ServiceOption) (*Service, error) {
@@ -139,6 +142,7 @@ func (service *Service) CreateDeployment(ctx context.Context, mutation ControlMu
 		TaskID: strings.TrimSpace(request.TaskID), StepID: strings.TrimSpace(request.StepID),
 		ControlPlaneEndpoint: strings.TrimSpace(request.ControlPlaneEndpoint),
 		RecipeBundle:         request.RecipeBundle, ExecutionBundle: request.ExecutionBundle, ExecutionTimeout: request.ExecutionTimeout,
+		InstallerDelivery: cloneInstallerDelivery(request.InstallerDelivery), InstallerCommandIDs: slices.Clone(request.InstallerCommandIDs),
 		State: StatePendingEnrollment, Outcome: OutcomePending, Access: request.Access,
 		Enrollment: Enrollment{CredentialDigest: service.digest(raw), ExpiresAt: now.Add(request.EnrollmentTTL)},
 		Revision:   1, CreatedAt: now, UpdatedAt: now,
@@ -253,7 +257,12 @@ func (service *Service) EnrollVerifiedIdentity(ctx context.Context, request Veri
 	}
 	credential := newCredential(replaySession)
 	zero(replaySession)
-	return stored.assignment(), credential, nil
+	assignment, assignmentErr := service.assignment(stored)
+	if assignmentErr != nil {
+		credential.Destroy()
+		return Assignment{}, Credential{}, assignmentErr
+	}
+	return assignment, credential, nil
 }
 
 func validateIdentityChallengeRequest(request CreateIdentityChallengeRequest) error {
@@ -378,7 +387,12 @@ func (service *Service) Enroll(ctx context.Context, request EnrollRequest) (Assi
 	credential := newCredential(replaySession)
 	zero(session)
 	zero(replaySession)
-	return deployment.assignment(), credential, nil
+	assignment, assignmentErr := service.assignment(deployment)
+	if assignmentErr != nil {
+		credential.Destroy()
+		return Assignment{}, Credential{}, assignmentErr
+	}
+	return assignment, credential, nil
 }
 
 func (service *Service) Claim(ctx context.Context, request AuthenticatedRequest, leaseDuration time.Duration) (Assignment, error) {
@@ -428,7 +442,7 @@ func (service *Service) Claim(ctx context.Context, request AuthenticatedRequest,
 			return Assignment{}, fmt.Errorf("synchronize claimed Worker task: %w", err)
 		}
 	}
-	return deployment.assignment(), nil
+	return service.assignment(deployment)
 }
 
 func (service *Service) Heartbeat(ctx context.Context, request LeasedRequest, leaseDuration time.Duration) (Heartbeat, error) {
@@ -459,8 +473,13 @@ func (service *Service) Heartbeat(ctx context.Context, request LeasedRequest, le
 			return Heartbeat{}, fmt.Errorf("synchronize Worker task heartbeat: %w", err)
 		}
 	}
+	installerLeaseGrants, err := service.installerLeaseGrants(deployment, service.now().UTC())
+	if err != nil {
+		return Heartbeat{}, err
+	}
 	return Heartbeat{
 		LeaseEpoch: deployment.Lease.Epoch, LeaseExpiresAt: deployment.Lease.ExpiresAt,
+		InstallerLeaseGrants:  installerLeaseGrants,
 		CancellationRequested: deployment.State == StateCancelRequested, CheckpointRef: deployment.Lease.CheckpointRef, Revision: deployment.Revision,
 	}, nil
 }
@@ -626,7 +645,7 @@ func (service *Service) GetCurrentAssignment(ctx context.Context, request Sessio
 	}); err != nil {
 		return Assignment{}, err
 	}
-	return deployment.assignment(), nil
+	return service.assignment(deployment)
 }
 
 func (service *Service) record(ctx context.Context, request LeasedRequest, kind, ref string, claim *ObjectClaim, apply func(*Deployment, EvidenceRef)) (Deployment, error) {
@@ -810,11 +829,11 @@ func (deployment *Deployment) touch(now time.Time) {
 	deployment.UpdatedAt = now
 }
 
-func (deployment Deployment) assignment() Assignment {
+func (service *Service) assignment(deployment Deployment) (Assignment, error) {
 	access := deployment.Access
 	access.SecretRefs = append([]string(nil), access.SecretRefs...)
 	checkpointAttempt, checkpointLeaseEpoch := deployment.checkpointFence()
-	return Assignment{
+	assignment := Assignment{
 		DeploymentID: deployment.DeploymentID, OwnerID: deployment.OwnerID, TaskID: deployment.TaskID,
 		StepID: deployment.StepID, ControlPlaneEndpoint: deployment.ControlPlaneEndpoint, WorkerID: deployment.WorkerID, Attempt: deployment.Lease.Attempt,
 		RecipeBundle: deployment.RecipeBundle, ExecutionBundle: deployment.ExecutionBundle, ExecutionTimeout: deployment.ExecutionTimeout,
@@ -823,6 +842,36 @@ func (deployment Deployment) assignment() Assignment {
 		CancellationRequested: deployment.State == StateCancelRequested,
 		Revision:              deployment.Revision,
 	}
+	grants, err := service.installerLeaseGrants(deployment, service.now().UTC())
+	if err != nil {
+		return Assignment{}, err
+	}
+	assignment.InstallerLeaseGrants = grants
+	return assignment, nil
+}
+
+func (service *Service) installerLeaseGrants(deployment Deployment, issuedAt time.Time) ([]installer.SignedLeaseGrantV1, error) {
+	if deployment.InstallerDelivery == nil || (deployment.State != StateLeased && deployment.State != StateCancelRequested) {
+		return nil, nil
+	}
+	if !issuedAt.Before(deployment.Lease.ExpiresAt) {
+		// An expired durable lease must remain readable so a restarted Worker can
+		// use its revision as the CAS fence for a new claim. Never issue an
+		// already-expired privileged grant.
+		return nil, nil
+	}
+	if service == nil || service.installerTrust == nil || deployment.Lease.Epoch < 1 || deployment.Lease.ExpiresAt.IsZero() {
+		return nil, ErrInstallerTrustUnavailable
+	}
+	grants := make([]installer.SignedLeaseGrantV1, 0, len(deployment.InstallerCommandIDs))
+	for _, commandID := range deployment.InstallerCommandIDs {
+		grant, err := service.installerTrust.IssueLeaseGrant(*deployment.InstallerDelivery, commandID, deployment.Lease.Epoch, deployment.Lease.ExpiresAt, issuedAt)
+		if err != nil {
+			return nil, fmt.Errorf("%w: issue installer lease grant", ErrInstallerTrustUnavailable)
+		}
+		grants = append(grants, grant)
+	}
+	return grants, nil
 }
 
 func (deployment Deployment) checkpointFence() (int32, int64) {

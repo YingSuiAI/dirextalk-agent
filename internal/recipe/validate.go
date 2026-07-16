@@ -403,6 +403,9 @@ func validateInstall(value InstallContractV1, refs *recipeReferences) error {
 	if len(value.Steps) == 0 || len(value.Steps) > 64 {
 		return fmt.Errorf("install.steps must contain between 1 and 64 entries")
 	}
+	if err := validateInstallerCapability(value.Installer, *refs); err != nil {
+		return err
+	}
 	seenSteps := make(map[string]struct{}, len(value.Steps))
 	var totalTimeout uint64
 	for index, step := range value.Steps {
@@ -453,6 +456,107 @@ func validateInstall(value InstallContractV1, refs *recipeReferences) error {
 	}
 	if totalTimeout > uint64(value.TimeoutSeconds) {
 		return fmt.Errorf("install step timeouts exceed install.timeout_seconds")
+	}
+	return nil
+}
+
+func validateInstallerCapability(value *InstallerCapabilityV1, refs recipeReferences) error {
+	if value == nil {
+		return nil
+	}
+	if len(value.Artifacts) == 0 || len(value.Artifacts) > 128 || len(value.Commands) == 0 || len(value.Commands) > 128 {
+		return fmt.Errorf("install.installer must declare between 1 and 128 artifacts and commands")
+	}
+	artifacts := make(map[string]InstallerArtifactV1, len(value.Artifacts))
+	for index, artifact := range value.Artifacts {
+		name := fmt.Sprintf("install.installer.artifacts[%d]", index)
+		if err := validateIdentifier(name+".name", artifact.Name); err != nil {
+			return err
+		}
+		if _, duplicate := artifacts[artifact.Name]; duplicate {
+			return fmt.Errorf("%s.name is duplicated", name)
+		}
+		if _, exists := refs.sources[artifact.SourceID]; !exists {
+			return fmt.Errorf("%s.source_id does not reference a declared source", name)
+		}
+		if artifact.SizeBytes < 1 || artifact.SizeBytes > 8<<30 {
+			return fmt.Errorf("%s.size_bytes must be between 1 and 8 GiB", name)
+		}
+		root := "/usr/local/share/dirextalk-worker/artifacts/"
+		if !strings.HasPrefix(artifact.TargetPath, root) || path.Clean(artifact.TargetPath) != artifact.TargetPath || artifact.TargetPath == strings.TrimSuffix(root, "/") || strings.Contains(artifact.TargetPath, "\\") {
+			return fmt.Errorf("%s.target_path must be a clean preinstalled artifact path", name)
+		}
+		artifacts[artifact.Name] = artifact
+	}
+	commands := make(map[string]struct{}, len(value.Commands))
+	for index, command := range value.Commands {
+		name := fmt.Sprintf("install.installer.commands[%d]", index)
+		if err := validateIdentifier(name+".command_id", command.CommandID); err != nil {
+			return err
+		}
+		if _, duplicate := commands[command.CommandID]; duplicate {
+			return fmt.Errorf("%s.command_id is duplicated", name)
+		}
+		commands[command.CommandID] = struct{}{}
+		if len(command.Argv) == 0 || len(command.Argv) > 128 || command.TimeoutSeconds == 0 || command.TimeoutSeconds > 24*60*60 {
+			return fmt.Errorf("%s argv or timeout is invalid", name)
+		}
+		if !path.IsAbs(command.WorkingDirectory) || path.Clean(command.WorkingDirectory) != command.WorkingDirectory || strings.Contains(command.WorkingDirectory, "\\") {
+			return fmt.Errorf("%s.working_directory must be a clean absolute Worker path", name)
+		}
+		if err := validateInstallerCommandArgv(name, command.Argv); err != nil {
+			return err
+		}
+		if err := validateInstallerRefs(name+".artifact_refs", command.ArtifactRefs, func(reference string) bool { _, ok := artifacts[reference]; return ok }); err != nil {
+			return err
+		}
+		if len(command.ArtifactRefs) == 0 {
+			return fmt.Errorf("%s.artifact_refs must lock the executable", name)
+		}
+		executableLocked := false
+		for _, reference := range command.ArtifactRefs {
+			if artifacts[reference].TargetPath == command.Argv[0] {
+				executableLocked = true
+				break
+			}
+		}
+		if !executableLocked {
+			return fmt.Errorf("%s argv executable is not a referenced digest-locked artifact", name)
+		}
+		if err := validateInstallerRefs(name+".volume_slot_refs", command.VolumeSlotRefs, func(reference string) bool { _, ok := refs.volumes[reference]; return ok }); err != nil {
+			return err
+		}
+		if err := validateInstallerRefs(name+".secret_slot_refs", command.SecretSlotRefs, func(reference string) bool { _, ok := refs.secrets[reference]; return ok }); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateInstallerCommandArgv(name string, values []string) error {
+	for index, value := range values {
+		if value == "" || len(value) > 16<<10 || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("%s.argv[%d] is invalid", name, index)
+		}
+	}
+	base := strings.ToLower(path.Base(values[0]))
+	switch base {
+	case "sh", "bash", "dash", "ash", "zsh", "ksh", "fish", "eval", "powershell", "pwsh", "cmd", "cmd.exe":
+		return fmt.Errorf("%s.argv cannot invoke a shell or evaluator", name)
+	}
+	return nil
+}
+
+func validateInstallerRefs(name string, values []string, declared func(string) bool) error {
+	seen := make(map[string]struct{}, len(values))
+	for index, value := range values {
+		if err := validateIdentifier(fmt.Sprintf("%s[%d]", name, index), value); err != nil {
+			return err
+		}
+		if _, duplicate := seen[value]; duplicate || !declared(value) {
+			return fmt.Errorf("%s contains a duplicate or undeclared reference", name)
+		}
+		seen[value] = struct{}{}
 	}
 	return nil
 }

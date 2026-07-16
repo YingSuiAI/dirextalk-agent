@@ -829,6 +829,32 @@ message WorkerBundleReference {
   bytes sha256 = 2;
 }
 
+message WorkerInstallerBinding {
+  string agent_instance_id = 1;
+  string deployment_id = 2;
+  string task_id = 3;
+  string plan_hash = 4;
+  string approval_id = 5;
+  string recipe_digest = 6;
+}
+
+// WorkerInstallerLeaseGrant is a short-lived, post-claim authorization for
+// one command already present in the immutable execution bundle. It contains
+// no argv, environment, path, provider credential, or secret value.
+message WorkerInstallerLeaseGrant {
+  string schema_version = 1;
+  string trust_id = 2;
+  WorkerInstallerBinding binding = 3;
+  string plan_digest = 4;
+  string operation_id = 5;
+  string command_id = 6;
+  int64 lease_epoch = 7;
+  google.protobuf.Timestamp issued_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  string signer_key_id = 10;
+  bytes signature = 11;
+}
+
 message WorkerAssignment {
   string deployment_id = 1;
   string owner_id = 2;
@@ -851,6 +877,7 @@ message WorkerAssignment {
   // fenced lease and are required to validate checkpoint contents.
   int32 checkpoint_attempt = 17;
   int64 checkpoint_lease_epoch = 18;
+  repeated WorkerInstallerLeaseGrant installer_lease_grants = 19;
 }
 
 message WorkerControlServiceGetCurrentAssignmentRequest {
@@ -884,6 +911,11 @@ message HeartbeatResponse {
   bool cancellation_requested = 3;
   string checkpoint_ref = 4;
   int64 revision = 5;
+  // A heartbeat that extends the durable Worker lease also rotates every
+  // installer grant to that exact lease epoch and expiry. Workers must replace
+  // the previous set atomically and read the current grant immediately before
+  // each privileged installer action.
+  repeated WorkerInstallerLeaseGrant installer_lease_grants = 6;
 }
 
 enum WorkerEvidenceKind {

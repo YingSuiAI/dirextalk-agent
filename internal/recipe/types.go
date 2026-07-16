@@ -184,12 +184,39 @@ type DataLocationRequirementV1 struct {
 }
 
 type InstallContractV1 struct {
-	RootRequired       bool               `json:"root_required"`
-	TimeoutSeconds     uint32             `json:"timeout_seconds"`
-	CheckpointNames    []string           `json:"checkpoint_names"`
-	AllowedAdaptations []string           `json:"allowed_adaptations,omitempty"`
-	Adaptations        []AdaptationRuleV1 `json:"adaptations,omitempty"`
-	Steps              []InstallStepV1    `json:"steps"`
+	RootRequired       bool                   `json:"root_required"`
+	TimeoutSeconds     uint32                 `json:"timeout_seconds"`
+	CheckpointNames    []string               `json:"checkpoint_names"`
+	AllowedAdaptations []string               `json:"allowed_adaptations,omitempty"`
+	Adaptations        []AdaptationRuleV1     `json:"adaptations,omitempty"`
+	Installer          *InstallerCapabilityV1 `json:"installer,omitempty"`
+	Steps              []InstallStepV1        `json:"steps"`
+}
+
+// InstallerCapabilityV1 is a portable, secret-free declaration of exact
+// privileged commands. It is part of the Recipe digest and therefore of the
+// device-approved Plan. Runtime actions can select only command_id; they can
+// never add argv, environment, paths, or references.
+type InstallerCapabilityV1 struct {
+	Artifacts []InstallerArtifactV1 `json:"artifacts"`
+	Commands  []InstallerCommandV1  `json:"commands"`
+}
+
+type InstallerArtifactV1 struct {
+	Name       string `json:"name"`
+	SourceID   string `json:"source_id"`
+	SizeBytes  int64  `json:"size_bytes"`
+	TargetPath string `json:"target_path"`
+}
+
+type InstallerCommandV1 struct {
+	CommandID        string   `json:"command_id"`
+	Argv             []string `json:"argv"`
+	WorkingDirectory string   `json:"working_directory"`
+	TimeoutSeconds   uint32   `json:"timeout_seconds"`
+	ArtifactRefs     []string `json:"artifact_refs"`
+	VolumeSlotRefs   []string `json:"volume_slot_refs,omitempty"`
+	SecretSlotRefs   []string `json:"secret_slot_refs,omitempty"`
 }
 
 // InstallStepV1 identifies a typed Worker action from the locked action

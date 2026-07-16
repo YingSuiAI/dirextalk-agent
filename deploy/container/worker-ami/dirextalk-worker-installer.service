@@ -4,46 +4,29 @@ Documentation=https://github.com/YingSuiAI/dirextalk-agent
 Requires=dirextalk-worker-installer.socket
 After=dirextalk-worker-installer.socket
 ConditionFileIsExecutable=/usr/local/bin/dirextalk-worker-installer
-ConditionPathExists=/etc/dirextalk-installer/approval-public-key
-ConditionPathExists=/etc/dirextalk-installer/binding.cbor
+ConditionPathExists=/etc/dirextalk-installer/trust.cbor
 
 [Service]
 Type=exec
 User=root
 Group=root
-ExecStart=/usr/local/bin/dirextalk-worker-installer
-Environment=DIREXTALK_INSTALLER_APPROVAL_PUBLIC_KEY_FILE=/etc/dirextalk-installer/approval-public-key
-Environment=DIREXTALK_INSTALLER_BINDING_FILE=/etc/dirextalk-installer/binding.cbor
+ExecStart=/usr/local/bin/dirextalk-worker-installer serve
 UMask=0077
 StateDirectory=dirextalk-installer
 StateDirectoryMode=0700
 
+# This is the approved privileged boundary of an exclusive Worker VM. The
+# daemon still accepts only digest-locked, device-approved commands, but child
+# processes may install packages, write system service files, mount approved
+# volumes, and use the approved network. Do not apply filesystem, network,
+# namespace, device, capability, or syscall sandboxes here.
 NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
-PrivateDevices=yes
-PrivateNetwork=yes
 PrivateTmp=yes
 ProtectClock=yes
-ProtectControlGroups=yes
-ProtectHome=yes
 ProtectHostname=yes
 ProtectKernelLogs=yes
 ProtectKernelModules=yes
-ProtectKernelTunables=yes
-ProtectProc=invisible
-ProtectSystem=strict
-ReadWritePaths=-/opt/dirextalk/deployments -/srv
-ProcSubset=pid
 RemoveIPC=yes
-RestrictAddressFamilies=AF_UNIX
-RestrictNamespaces=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
-SocketBindDeny=any
 SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
-IPAddressDeny=any

@@ -12,13 +12,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -41,6 +44,7 @@ var (
 	ErrSecretMaterial              = errors.New("secret-like material is forbidden in AWS artifacts")
 	ErrImmutableConflict           = errors.New("immutable AWS artifact conflicts with an existing object")
 	ErrArtifactUnavailable         = errors.New("AWS artifact publication is unavailable")
+	ErrInstallerArtifactUnresolved = errors.New("installer artifact bytes are not resolved")
 )
 
 type S3API interface {
@@ -77,16 +81,19 @@ func (publisher *BundlePublisher) PublishBundles(
 	ctx context.Context,
 	connection cloudapp.Connection,
 	deploymentID string,
-	recipeBytes []byte,
-	executionBytes []byte,
+	compiled cloudexecution.CompiledBundles,
 	secretRefs []string,
 ) (cloudexecution.PublishedBundles, error) {
+	recipeBytes, executionBytes := compiled.RecipeBytes, compiled.ExecutionBytes
 	if len(secretRefs) != 0 {
 		return cloudexecution.PublishedBundles{}, ErrSecretReferencesUnsupported
 	}
 	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
 	if err != nil || deployment == uuid.Nil || len(recipeBytes) == 0 || len(recipeBytes) > maxBundleBytes || len(executionBytes) == 0 || len(executionBytes) > maxBundleBytes {
 		return cloudexecution.PublishedBundles{}, ErrInvalidRequest
+	}
+	if err := validateInstallerStaging(compiled); err != nil {
+		return cloudexecution.PublishedBundles{}, err
 	}
 	if security.ContainsLikelySecret(string(recipeBytes)) || security.ContainsLikelySecret(string(executionBytes)) {
 		return cloudexecution.PublishedBundles{}, ErrSecretMaterial
@@ -149,15 +156,147 @@ func (publisher *BundlePublisher) PublishBundles(
 			return cloudexecution.PublishedBundles{}, err
 		}
 	}
+	installerSources := make([]installerbootstrap.ArtifactSourceV1, 0, len(compiled.InstallerArtifacts))
+	for _, artifact := range compiled.InstallerArtifacts {
+		source, err := putResolvedInstallerArtifact(ctx, client, resolvedInstallerObject{
+			immutableObject: immutableObject{
+				bucket: spec.ArtifactBucketName, key: prefix + "artifacts/" + artifact.Name, kind: "installer-artifact",
+				contentType: "application/octet-stream", kmsAlias: kmsAlias, deploymentID: deployment.String(), agentInstanceID: publisher.agentInstanceID,
+			},
+			staging: artifact, recipeDigest: artifact.RecipeDigest,
+		})
+		if err != nil {
+			return cloudexecution.PublishedBundles{}, err
+		}
+		installerSources = append(installerSources, source)
+	}
 	launchDigest := sha256.Sum256(launchBytes)
 	return cloudexecution.PublishedBundles{
 		Recipe: recipeRef, Execution: executionRef,
 		Launch: cloudexecution.BootstrapArtifact{
 			Reference: s3Prefix(spec.ArtifactBucketName, prefix+"launch/config.json"), SHA256: launchDigest,
 		},
-		Access:         access,
-		SecretBindings: map[string]string{},
+		Access:             access,
+		SecretBindings:     map[string]string{},
+		InstallerRootTrust: compiled.InstallerRootTrust,
+		InstallerArtifacts: installerSources,
 	}, nil
+}
+
+func validateInstallerStaging(compiled cloudexecution.CompiledBundles) error {
+	if compiled.InstallerRootTrust == nil {
+		if len(compiled.InstallerArtifacts) != 0 {
+			return ErrInvalidRequest
+		}
+		return nil
+	}
+	manifest := compiled.InstallerRootTrust.ArtifactManifest.Manifest
+	if len(compiled.InstallerArtifacts) != len(manifest.Artifacts) || len(manifest.Artifacts) == 0 {
+		return ErrInstallerArtifactUnresolved
+	}
+	expected := make(map[string]struct {
+		digest string
+		size   int64
+		target string
+	}, len(manifest.Artifacts))
+	for _, artifact := range manifest.Artifacts {
+		expected[artifact.Name] = struct {
+			digest string
+			size   int64
+			target string
+		}{artifact.SHA256, artifact.SizeBytes, artifact.TargetPath}
+	}
+	seen := make(map[string]struct{}, len(compiled.InstallerArtifacts))
+	for _, artifact := range compiled.InstallerArtifacts {
+		declaration, ok := expected[artifact.Name]
+		if !ok || strings.TrimSpace(artifact.SourceID) == "" || artifact.Content == nil || artifact.SHA256 != declaration.digest || artifact.SizeBytes != declaration.size ||
+			artifact.TargetPath != declaration.target || artifact.RecipeDigest != manifest.Binding.RecipeDigest {
+			return ErrInstallerArtifactUnresolved
+		}
+		if _, duplicate := seen[artifact.Name]; duplicate {
+			return ErrInvalidRequest
+		}
+		seen[artifact.Name] = struct{}{}
+	}
+	return nil
+}
+
+type resolvedInstallerObject struct {
+	immutableObject
+	staging      cloudexecution.InstallerArtifactStagingInput
+	recipeDigest string
+}
+
+func putResolvedInstallerArtifact(ctx context.Context, client S3API, object resolvedInstallerObject) (installerbootstrap.ArtifactSourceV1, error) {
+	reader, err := object.staging.Content.Open(ctx)
+	if err != nil || reader == nil {
+		return installerbootstrap.ArtifactSourceV1{}, ErrInstallerArtifactUnresolved
+	}
+	defer reader.Close()
+	hasher := sha256.New()
+	written, err := io.Copy(hasher, io.LimitReader(reader, object.staging.SizeBytes+1))
+	actual := hasher.Sum(nil)
+	expected, decodeErr := hex.DecodeString(strings.TrimPrefix(object.staging.SHA256, "sha256:"))
+	matched := decodeErr == nil && len(expected) == sha256.Size && bytes.Equal(actual, expected)
+	clear(actual)
+	clear(expected)
+	if err != nil || written != object.staging.SizeBytes || !matched {
+		return installerbootstrap.ArtifactSourceV1{}, ErrInstallerArtifactUnresolved
+	}
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		return installerbootstrap.ArtifactSourceV1{}, ErrInstallerArtifactUnresolved
+	}
+	hexDigest := strings.TrimPrefix(object.staging.SHA256, "sha256:")
+	rawDigest, _ := hex.DecodeString(hexDigest)
+	base64Digest := base64.StdEncoding.EncodeToString(rawDigest)
+	clear(rawDigest)
+	metadata := map[string]string{
+		"schema": artifactSchemaV1, "sha256": hexDigest, "kind": object.kind,
+		"deployment-id": object.deploymentID, "recipe-digest": strings.TrimPrefix(object.recipeDigest, "sha256:"),
+	}
+	tagging := url.Values{}
+	tagging.Set("dirextalk:agent_instance_id", object.agentInstanceID)
+	tagging.Set("dirextalk:deployment_id", object.deploymentID)
+	tagging.Set("dirextalk:component", object.kind)
+	put := func() error {
+		_, putErr := client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: &object.bucket, Key: &object.key, Body: reader, ContentLength: aws.Int64(object.staging.SizeBytes),
+			ContentType: &object.contentType, IfNoneMatch: aws.String("*"), ChecksumAlgorithm: s3types.ChecksumAlgorithmSha256,
+			ChecksumSHA256: &base64Digest, ServerSideEncryption: s3types.ServerSideEncryptionAwsKms, SSEKMSKeyId: &object.kmsAlias,
+			BucketKeyEnabled: aws.Bool(true), Metadata: metadata, Tagging: aws.String(tagging.Encode()),
+		})
+		return putErr
+	}
+	head, headErr := headObject(ctx, client, object.bucket, object.key)
+	if errors.Is(headErr, errObjectNotFound) {
+		if putErr := put(); putErr != nil && !isPreconditionFailed(putErr) {
+			// A lost response is reconciled by the same exact read-back below.
+		}
+		head, headErr = headObject(ctx, client, object.bucket, object.key)
+	}
+	if headErr != nil || !exactResolvedInstallerHead(head, object, hexDigest, base64Digest) {
+		return installerbootstrap.ArtifactSourceV1{}, ErrArtifactUnavailable
+	}
+	versionID := aws.ToString(head.VersionId)
+	kmsKeyARN := aws.ToString(head.SSEKMSKeyId)
+	if versionID == "" || versionID == "null" || kmsKeyARN == "" {
+		return installerbootstrap.ArtifactSourceV1{}, ErrArtifactUnavailable
+	}
+	return installerbootstrap.ArtifactSourceV1{
+		SchemaVersion: installerbootstrap.ArtifactSourceSchemaV1, Name: object.staging.Name,
+		Bucket: object.bucket, Key: object.key, VersionID: versionID, KMSKeyARN: kmsKeyARN,
+		SHA256: object.staging.SHA256, SizeBytes: object.staging.SizeBytes, TargetPath: object.staging.TargetPath,
+		RecipeDigest: object.recipeDigest,
+	}, nil
+}
+
+func exactResolvedInstallerHead(head *s3.HeadObjectOutput, object resolvedInstallerObject, hexDigest, base64Digest string) bool {
+	return head != nil && aws.ToInt64(head.ContentLength) == object.staging.SizeBytes && aws.ToString(head.ChecksumSHA256) == base64Digest &&
+		head.ServerSideEncryption == s3types.ServerSideEncryptionAwsKms && aws.ToString(head.SSEKMSKeyId) != "" && aws.ToBool(head.BucketKeyEnabled) &&
+		aws.ToString(head.ContentType) == object.contentType && head.Metadata["schema"] == artifactSchemaV1 && head.Metadata["sha256"] == hexDigest &&
+		head.Metadata["kind"] == object.kind && head.Metadata["deployment-id"] == object.deploymentID &&
+		head.Metadata["recipe-digest"] == strings.TrimPrefix(object.recipeDigest, "sha256:") &&
+		object.key == path.Join("deployments", object.deploymentID, "artifacts", object.staging.Name)
 }
 
 func (publisher *BundlePublisher) foundationSpec(connection cloudapp.Connection) (awsprovider.BootstrapIdentitySpec, error) {

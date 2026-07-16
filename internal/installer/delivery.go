@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"slices"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 const (
 	DeliverySchemaV1          = "dirextalk.agent.installer-delivery/v1"
+	ArtifactManifestSchemaV1  = "dirextalk.agent.installer-artifact-manifest/v1"
 	PreinstalledArtifactRoot  = "/usr/local/share/dirextalk-worker/artifacts"
 	maximumLeaseGrantDuration = 30 * time.Minute
 )
@@ -22,17 +24,35 @@ const (
 // and consumed by the trusted root bootstrap when it writes the public key and
 // daemon configuration. The signing seed is never included.
 type DeliveryV1 struct {
-	SchemaVersion string                `json:"schema_version"`
-	TrustID       string                `json:"trust_id"`
-	PublicKey     []byte                `json:"public_key"`
-	Config        DaemonConfigV1        `json:"config"`
-	SignedPlan    SignedInstallerPlanV1 `json:"signed_plan"`
+	SchemaVersion    string                   `json:"schema_version"`
+	TrustID          string                   `json:"trust_id"`
+	PublicKey        []byte                   `json:"public_key"`
+	Config           DaemonConfigV1           `json:"config"`
+	SignedPlan       SignedInstallerPlanV1    `json:"signed_plan"`
+	ArtifactManifest SignedArtifactManifestV1 `json:"artifact_manifest"`
 }
 
 type RootTrustMaterialV1 struct {
-	TrustID    string
-	PublicKey  []byte
-	ConfigCBOR []byte
+	TrustID          string
+	PublicKey        []byte
+	ConfigCBOR       []byte
+	ArtifactManifest SignedArtifactManifestV1
+}
+
+// ArtifactManifestV1 is the compact, independently signed subset needed by
+// the privileged bootstrap before the full Worker execution bundle is
+// available. Its binding carries the device-approved plan and Recipe digest;
+// its declarations carry the exact digest, size and root target path.
+type ArtifactManifestV1 struct {
+	SchemaVersion string       `json:"schema_version"`
+	Binding       BindingV1    `json:"binding"`
+	Artifacts     []ArtifactV1 `json:"artifacts"`
+}
+
+type SignedArtifactManifestV1 struct {
+	Manifest    ArtifactManifestV1 `json:"manifest"`
+	SignerKeyID string             `json:"signer_key_id"`
+	Signature   []byte             `json:"signature"`
 }
 
 // TrustIssuer derives a stable, independent Ed25519 key for each exact signed
@@ -73,13 +93,30 @@ func (issuer *TrustIssuer) Issue(plan InstallerPlanV1, config DaemonConfigV1, no
 	signed := SignedInstallerPlanV1{
 		Plan: plan, SignerKeyID: SignerKeyID(publicKey), Signature: ed25519.Sign(privateKey, planBytes),
 	}
+	manifest := ArtifactManifestV1{
+		SchemaVersion: ArtifactManifestSchemaV1, Binding: plan.Binding,
+		Artifacts: append([]ArtifactV1(nil), plan.Artifacts...),
+	}
+	manifestBytes, err := canonical.Marshal(manifest)
+	if err != nil {
+		clear(publicKey)
+		clear(signed.Signature)
+		return DeliveryV1{}, errorf(CodeInvalidRequest, "canonicalize installer artifact manifest")
+	}
+	defer clear(manifestBytes)
+	signedManifest := SignedArtifactManifestV1{
+		Manifest: manifest, SignerKeyID: SignerKeyID(publicKey), Signature: ed25519.Sign(privateKey, manifestBytes),
+	}
 	clonedPlan, err := cloneSignedPlan(signed)
 	if err != nil {
 		clear(publicKey)
 		clear(signed.Signature)
 		return DeliveryV1{}, err
 	}
-	delivery := DeliveryV1{SchemaVersion: DeliverySchemaV1, PublicKey: publicKey, Config: config, SignedPlan: clonedPlan}
+	delivery := DeliveryV1{
+		SchemaVersion: DeliverySchemaV1, PublicKey: publicKey, Config: config, SignedPlan: clonedPlan,
+		ArtifactManifest: signedManifest,
+	}
 	delivery.TrustID, err = deliveryDigest(delivery)
 	if err != nil {
 		clear(delivery.PublicKey)
@@ -145,6 +182,14 @@ func ValidateDeliveryAt(delivery DeliveryV1, now time.Time) error {
 		return errorf(CodeInvalidSignature, "installer delivery signature is invalid")
 	}
 	clear(planBytes)
+	if hasArtifactManifest(delivery.ArtifactManifest) {
+		if err := ValidateRootTrustMaterial(RootTrustMaterialV1{
+			TrustID: delivery.TrustID, PublicKey: delivery.PublicKey, ArtifactManifest: delivery.ArtifactManifest,
+		}); err != nil || delivery.ArtifactManifest.Manifest.Binding != delivery.Config.Binding ||
+			!slices.Equal(delivery.ArtifactManifest.Manifest.Artifacts, delivery.SignedPlan.Plan.Artifacts) {
+			return errorf(CodeInvalidSignature, "installer artifact manifest is invalid")
+		}
+	}
 	if err := validateDeliveryPlan(delivery.SignedPlan.Plan, delivery.Config, now); err != nil {
 		return err
 	}
@@ -212,11 +257,62 @@ func (delivery DeliveryV1) RootTrustMaterial(now time.Time) (RootTrustMaterialV1
 	if err := ValidateDeliveryAt(delivery, now); err != nil {
 		return RootTrustMaterialV1{}, err
 	}
+	if !hasArtifactManifest(delivery.ArtifactManifest) {
+		return RootTrustMaterialV1{}, errorf(CodeInvalidSignature, "installer artifact manifest is unavailable")
+	}
 	config, err := canonical.Marshal(delivery.Config)
 	if err != nil {
 		return RootTrustMaterialV1{}, errorf(CodeInvalidRequest, "encode root installer binding")
 	}
-	return RootTrustMaterialV1{TrustID: delivery.TrustID, PublicKey: append([]byte(nil), delivery.PublicKey...), ConfigCBOR: config}, nil
+	return RootTrustMaterialV1{
+		TrustID: delivery.TrustID, PublicKey: append([]byte(nil), delivery.PublicKey...), ConfigCBOR: config,
+		ArtifactManifest: cloneArtifactManifest(delivery.ArtifactManifest),
+	}, nil
+}
+
+// ValidateRootTrustMaterial verifies the compact artifact manifest without
+// requiring the full installer plan. It is safe to call during early boot.
+func ValidateRootTrustMaterial(material RootTrustMaterialV1) error {
+	if !digestPattern.MatchString(material.TrustID) || len(material.PublicKey) != ed25519.PublicKeySize {
+		return errorf(CodeInvalidSignature, "installer root trust identity is invalid")
+	}
+	signed := material.ArtifactManifest
+	if signed.Manifest.SchemaVersion != ArtifactManifestSchemaV1 || len(signed.Manifest.Artifacts) == 0 || len(signed.Manifest.Artifacts) > 128 ||
+		signed.SignerKeyID != SignerKeyID(ed25519.PublicKey(material.PublicKey)) || len(signed.Signature) != ed25519.SignatureSize ||
+		validateBinding(signed.Manifest.Binding) != nil {
+		return errorf(CodeInvalidSignature, "installer artifact manifest is invalid")
+	}
+	seen := make(map[string]struct{}, len(signed.Manifest.Artifacts))
+	for _, artifact := range signed.Manifest.Artifacts {
+		if !namePattern.MatchString(artifact.Name) || !digestPattern.MatchString(artifact.SHA256) || artifact.SizeBytes < 1 || artifact.SizeBytes > 8<<30 ||
+			validateArtifactPath(PreinstalledArtifactRoot, artifact.TargetPath) != nil {
+			return errorf(CodeArtifactVerification, "installer artifact declaration is invalid")
+		}
+		if _, exists := seen[artifact.Name]; exists {
+			return errorf(CodeArtifactVerification, "installer artifact declaration is duplicated")
+		}
+		seen[artifact.Name] = struct{}{}
+	}
+	payload, err := canonical.Marshal(signed.Manifest)
+	if err != nil {
+		return errorf(CodeInvalidSignature, "canonicalize installer artifact manifest")
+	}
+	defer clear(payload)
+	if subtle.ConstantTimeCompare([]byte(signed.SignerKeyID), []byte(SignerKeyID(ed25519.PublicKey(material.PublicKey)))) != 1 ||
+		!ed25519.Verify(ed25519.PublicKey(material.PublicKey), payload, signed.Signature) {
+		return errorf(CodeInvalidSignature, "installer artifact manifest signature is invalid")
+	}
+	return nil
+}
+
+func cloneArtifactManifest(value SignedArtifactManifestV1) SignedArtifactManifestV1 {
+	return SignedArtifactManifestV1{
+		Manifest: ArtifactManifestV1{
+			SchemaVersion: value.Manifest.SchemaVersion, Binding: value.Manifest.Binding,
+			Artifacts: append([]ArtifactV1(nil), value.Manifest.Artifacts...),
+		},
+		SignerKeyID: value.SignerKeyID, Signature: append([]byte(nil), value.Signature...),
+	}
 }
 
 func validateDeliveryPlan(plan InstallerPlanV1, config DaemonConfigV1, now time.Time) error {
@@ -252,11 +348,19 @@ func validateDeliveryPlan(plan InstallerPlanV1, config DaemonConfigV1, now time.
 func deliveryDigest(delivery DeliveryV1) (string, error) {
 	document := delivery
 	document.TrustID = ""
+	// The root-only compact manifest is signed by the plan-derived key but is
+	// not part of TrustID. This keeps the daemon able to reconstruct and verify
+	// a lease from the signed plan without receiving a second large payload.
+	document.ArtifactManifest = SignedArtifactManifestV1{}
 	digest, err := canonical.Digest(document)
 	if err != nil {
 		return "", errorf(CodeInvalidRequest, "digest installer delivery")
 	}
 	return digest, nil
+}
+
+func hasArtifactManifest(value SignedArtifactManifestV1) bool {
+	return value.Manifest.SchemaVersion != "" || value.SignerKeyID != "" || len(value.Signature) != 0 || len(value.Manifest.Artifacts) != 0
 }
 
 func cloneSignedPlan(value SignedInstallerPlanV1) (SignedInstallerPlanV1, error) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -20,7 +21,6 @@ const (
 	resourceSpecDigestTag  = "dirextalk_spec_digest"
 	embeddedParentTag      = "dirextalk_embedded_parent"
 	awsResourceIDTag       = "dirextalk:resource_id"
-	workerBootstrapSchema  = "dirextalk.agent.worker-bootstrap/v1"
 )
 
 var logicalNameSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -535,31 +535,19 @@ func dependencyID(dependencies []resource.ProviderDependency, kind resource.Type
 	return ""
 }
 
-type workerBootstrapV1 struct {
-	SchemaVersion              string `json:"schema_version"`
-	ResourceID                 string `json:"resource_id"`
-	SpecDigest                 string `json:"spec_digest"`
-	ArtifactRef                string `json:"artifact_ref"`
-	ArtifactDigest             string `json:"artifact_digest"`
-	Region                     string `json:"region"`
-	DeploymentID               string `json:"deployment_id"`
-	WorkerID                   string `json:"worker_id"`
-	ControlPlaneEndpoint       string `json:"control_plane_endpoint"`
-	EnrollmentExpectedRevision int64  `json:"enrollment_expected_revision"`
-	EnrollmentMethod           string `json:"enrollment_method"`
-}
-
 func fixedWorkerUserData(request resource.ProviderCreateRequest) (string, error) {
 	spec := request.AWS.Instance
-	encoded, err := json.Marshal(workerBootstrapV1{
-		SchemaVersion: workerBootstrapSchema, ResourceID: request.ResourceID, SpecDigest: request.SpecDigest,
+	encoded, err := json.Marshal(installerbootstrap.UserDataV1{
+		SchemaVersion: installerbootstrap.UserDataSchemaV1, ResourceID: request.ResourceID, SpecDigest: request.SpecDigest,
 		ArtifactRef: spec.UserDataArtifactRef, ArtifactDigest: spec.UserDataArtifactDigest, Region: request.Region,
 		DeploymentID: spec.Bootstrap.DeploymentID, WorkerID: spec.Bootstrap.WorkerID,
 		ControlPlaneEndpoint:       spec.Bootstrap.ControlPlaneEndpoint,
 		EnrollmentExpectedRevision: spec.Bootstrap.EnrollmentExpectedRevision,
 		EnrollmentMethod:           "aws_sts_sigv4",
+		InstallerTrust:             spec.Bootstrap.InstallerTrust,
+		InstallerArtifacts:         spec.Bootstrap.InstallerArtifacts,
 	})
-	if err != nil {
+	if err != nil || len(encoded) == 0 || len(encoded) > installerbootstrap.MaxUserDataBytes {
 		return "", resource.ErrInvalid
 	}
 	return base64.StdEncoding.EncodeToString(encoded), nil

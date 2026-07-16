@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/google/uuid"
@@ -149,14 +151,16 @@ func (store *WorkerStore) insertWorkerDeployment(ctx context.Context, query inte
 		INSERT INTO worker_deployments (
 			deployment_id, agent_instance_id, owner_id, task_id, step_id, control_plane_endpoint,
 			recipe_bundle_ref, recipe_bundle_sha256, execution_bundle_ref, execution_bundle_sha256, execution_timeout_seconds,
+			installer_delivery_json, installer_command_ids,
 			worker_id, provider_instance_id, state, outcome, artifact_prefix, checkpoint_prefix, evidence_prefix, log_prefix,
 			secret_refs, enrollment_digest, enrollment_expires_at, enrollment_consumed_at, session_digest,
 			lease_attempt, lease_epoch, lease_expires_at, last_heartbeat_at, checkpoint_ref, result_ref,
 			evidence_json, cancel_reason, revision, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)`,
 		deployment.DeploymentID, store.instanceID, deployment.OwnerID, deployment.TaskID, deployment.StepID,
 		deployment.ControlPlaneEndpoint, deployment.RecipeBundle.S3Ref, deployment.RecipeBundle.SHA256[:],
 		deployment.ExecutionBundle.S3Ref, deployment.ExecutionBundle.SHA256[:], int64(deployment.ExecutionTimeout/time.Second),
+		installerDeliveryJSON(deployment.InstallerDelivery), nonNilWorkerCommandIDs(deployment.InstallerCommandIDs),
 		nullableUUID(deployment.WorkerID), nullableString(deployment.ProviderInstanceID), deployment.State, deployment.Outcome,
 		deployment.Access.ArtifactPrefix, deployment.Access.CheckpointPrefix, deployment.Access.EvidencePrefix,
 		deployment.Access.LogPrefix, nonNilWorkerSecretRefs(deployment.Access.SecretRefs), deployment.Enrollment.CredentialDigest[:],
@@ -385,6 +389,7 @@ func (store *WorkerStore) UpdateControl(ctx context.Context, deploymentID string
 const workerSelectSQL = `
 	SELECT deployment_id, owner_id, task_id, step_id, control_plane_endpoint, worker_id, provider_instance_id,
 	       recipe_bundle_ref, recipe_bundle_sha256, execution_bundle_ref, execution_bundle_sha256, execution_timeout_seconds,
+	       installer_delivery_json, installer_command_ids,
 	       state, outcome, artifact_prefix, checkpoint_prefix, evidence_prefix, log_prefix,
 	       secret_refs, enrollment_digest, enrollment_expires_at, enrollment_consumed_at,
 	       session_digest, lease_attempt, lease_epoch, lease_expires_at, last_heartbeat_at,
@@ -398,12 +403,13 @@ func scanWorkerDeployment(row workerRow) (worker.Deployment, error) {
 	var deploymentID, taskID, stepID uuid.UUID
 	var workerID *uuid.UUID
 	var providerInstanceID *string
-	var enrollmentDigest, sessionDigest, evidenceJSON, recipeDigest, executionDigest []byte
+	var enrollmentDigest, sessionDigest, evidenceJSON, recipeDigest, executionDigest, installerDeliveryJSON []byte
 	var executionTimeoutSeconds int64
 	var consumedAt, leaseExpiresAt, heartbeatAt *time.Time
 	if err := row.Scan(
 		&deploymentID, &deployment.OwnerID, &taskID, &stepID, &deployment.ControlPlaneEndpoint, &workerID, &providerInstanceID,
 		&deployment.RecipeBundle.S3Ref, &recipeDigest, &deployment.ExecutionBundle.S3Ref, &executionDigest, &executionTimeoutSeconds,
+		&installerDeliveryJSON, &deployment.InstallerCommandIDs,
 		&deployment.State, &deployment.Outcome, &deployment.Access.ArtifactPrefix, &deployment.Access.CheckpointPrefix,
 		&deployment.Access.EvidencePrefix, &deployment.Access.LogPrefix, &deployment.Access.SecretRefs,
 		&enrollmentDigest, &deployment.Enrollment.ExpiresAt, &consumedAt, &sessionDigest,
@@ -418,6 +424,13 @@ func scanWorkerDeployment(row workerRow) (worker.Deployment, error) {
 	}
 	copy(deployment.RecipeBundle.SHA256[:], recipeDigest)
 	copy(deployment.ExecutionBundle.SHA256[:], executionDigest)
+	if len(installerDeliveryJSON) != 0 {
+		var delivery installer.DeliveryV1
+		if json.Unmarshal(installerDeliveryJSON, &delivery) != nil {
+			return worker.Deployment{}, errors.New("worker persisted installer delivery is invalid")
+		}
+		deployment.InstallerDelivery = &delivery
+	}
 	deployment.ExecutionTimeout = time.Duration(executionTimeoutSeconds) * time.Second
 	copy(deployment.Enrollment.CredentialDigest[:], enrollmentDigest)
 	copy(deployment.SessionDigest[:], sessionDigest)
@@ -496,6 +509,7 @@ func validateWorkerTransition(current, next worker.Deployment) error {
 	if current.DeploymentID != next.DeploymentID || current.OwnerID != next.OwnerID || current.TaskID != next.TaskID || current.StepID != next.StepID ||
 		current.ControlPlaneEndpoint != next.ControlPlaneEndpoint || current.RecipeBundle != next.RecipeBundle || current.ExecutionBundle != next.ExecutionBundle ||
 		current.ProviderInstanceID != next.ProviderInstanceID ||
+		!reflect.DeepEqual(current.InstallerDelivery, next.InstallerDelivery) || !slices.Equal(current.InstallerCommandIDs, next.InstallerCommandIDs) ||
 		current.ExecutionTimeout != next.ExecutionTimeout || current.Access.ArtifactPrefix != next.Access.ArtifactPrefix ||
 		current.Access.CheckpointPrefix != next.Access.CheckpointPrefix || current.Access.EvidencePrefix != next.Access.EvidencePrefix ||
 		current.Access.LogPrefix != next.Access.LogPrefix || !slices.Equal(current.Access.SecretRefs, next.Access.SecretRefs) ||
@@ -536,6 +550,9 @@ func validateWorkerDeployment(deployment worker.Deployment) error {
 		deployment.RecipeBundle.Validate() != nil || deployment.ExecutionBundle.Validate() != nil || deployment.ExecutionTimeout < time.Second ||
 		deployment.ExecutionTimeout > 7*24*time.Hour || deployment.ExecutionTimeout%time.Second != 0 ||
 		deployment.Revision < 1 || deployment.CreatedAt.IsZero() || deployment.UpdatedAt.IsZero() || deployment.Enrollment.ExpiresAt.IsZero() {
+		return worker.ErrInvalid
+	}
+	if worker.ValidateInstallerCapability(deployment.DeploymentID, deployment.TaskID, deployment.RecipeBundle, deployment.InstallerDelivery, deployment.InstallerCommandIDs) != nil {
 		return worker.ErrInvalid
 	}
 	if len(deployment.Evidence) > 2048 || security.ContainsLikelySecret(deployment.CancelReason) || security.ContainsLikelySecret(deployment.ResultRef) || security.ContainsLikelySecret(deployment.Lease.CheckpointRef) {
@@ -833,6 +850,24 @@ func nonNilWorkerSecretRefs(values []string) []string {
 		return []string{}
 	}
 	return values
+}
+
+func nonNilWorkerCommandIDs(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func installerDeliveryJSON(value *installer.DeliveryV1) any {
+	if value == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func wipeBytes(value []byte) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/google/uuid"
@@ -219,6 +220,52 @@ func TestWorkerControlPropagatesRevisionAndLeaseFences(t *testing.T) {
 	})
 	if status.Code(err) != codes.Aborted {
 		t.Fatalf("stale Heartbeat lease code = %s, want Aborted (err=%v)", status.Code(err), err)
+	}
+}
+
+func TestWorkerControlHeartbeatReturnsOnlyExactRenewedInstallerGrants(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	expiresAt := now.Add(time.Minute)
+	deploymentID, workerID := uuid.NewString(), uuid.NewString()
+	grant := installer.SignedLeaseGrantV1{
+		Grant: installer.LeaseGrantV1{
+			SchemaVersion: installer.LeaseGrantSchemaV1, TrustID: "sha256:" + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 24)),
+			Binding: installer.BindingV1{
+				AgentInstanceID: uuid.NewString(), DeploymentID: deploymentID, TaskID: uuid.NewString(),
+				PlanHash: "sha256:plan", ApprovalID: uuid.NewString(), RecipeDigest: "sha256:recipe",
+			},
+			PlanDigest: "sha256:plan", OperationID: uuid.NewString(), CommandID: "install-service", LeaseEpoch: 9,
+			IssuedAt: now.Format(time.RFC3339Nano), ExpiresAt: expiresAt.Format(time.RFC3339Nano),
+		},
+		SignerKeyID: "ed25519:installer", Signature: bytes.Repeat([]byte{0x31}, 64),
+	}
+	backend := &workerBackendStub{heartbeat: func(_ context.Context, _ worker.LeasedRequest, _ time.Duration) (worker.Heartbeat, error) {
+		return worker.Heartbeat{
+			LeaseEpoch: 9, LeaseExpiresAt: expiresAt, InstallerLeaseGrants: []installer.SignedLeaseGrantV1{grant}, Revision: 15,
+		}, nil
+	}}
+	service := newWorkerControlHandler(backend)
+	response, err := service.Heartbeat(workerAuthorizationContext("DTX-Worker-Session "+workerTestToken("dtxw-session", 0x61)), &agentv1.HeartbeatRequest{
+		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 9, IdempotencyKey: uuid.NewString(), ExpectedRevision: 14, LeaseDurationSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetLeaseExpiresAt() == nil || !response.GetLeaseExpiresAt().AsTime().Equal(expiresAt) || len(response.GetInstallerLeaseGrants()) != 1 ||
+		response.GetInstallerLeaseGrants()[0].GetCommandId() != "install-service" ||
+		!response.GetInstallerLeaseGrants()[0].GetExpiresAt().AsTime().Equal(expiresAt) {
+		t.Fatalf("heartbeat installer grant mapping = %+v", response)
+	}
+
+	backend.heartbeat = func(_ context.Context, _ worker.LeasedRequest, _ time.Duration) (worker.Heartbeat, error) {
+		invalid := grant
+		invalid.Grant.ExpiresAt = expiresAt.Add(time.Second).Format(time.RFC3339Nano)
+		return worker.Heartbeat{LeaseEpoch: 9, LeaseExpiresAt: expiresAt, InstallerLeaseGrants: []installer.SignedLeaseGrantV1{invalid}, Revision: 15}, nil
+	}
+	if _, err := service.Heartbeat(workerAuthorizationContext("DTX-Worker-Session "+workerTestToken("dtxw-session", 0x61)), &agentv1.HeartbeatRequest{
+		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 9, IdempotencyKey: uuid.NewString(), ExpectedRevision: 14, LeaseDurationSeconds: 60,
+	}); status.Code(err) != codes.Internal {
+		t.Fatalf("grant beyond durable lease code = %s, want Internal", status.Code(err))
 	}
 }
 

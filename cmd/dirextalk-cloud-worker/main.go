@@ -26,6 +26,7 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
@@ -41,7 +42,7 @@ import (
 )
 
 const (
-	workerBootstrapSchema = "dirextalk.agent.worker-bootstrap/v1"
+	workerBootstrapSchema = installerbootstrap.UserDataSchemaV1
 	identityMethod        = "aws_sts_sigv4"
 	maxUserDataBytes      = 32 << 10
 	localTokenMode        = "token"
@@ -227,19 +228,7 @@ type workerLaunch struct {
 	token    []byte
 }
 
-type workerBootstrapV1 struct {
-	SchemaVersion              string `json:"schema_version"`
-	ResourceID                 string `json:"resource_id"`
-	SpecDigest                 string `json:"spec_digest"`
-	ArtifactRef                string `json:"artifact_ref"`
-	ArtifactDigest             string `json:"artifact_digest"`
-	Region                     string `json:"region"`
-	DeploymentID               string `json:"deployment_id"`
-	WorkerID                   string `json:"worker_id"`
-	ControlPlaneEndpoint       string `json:"control_plane_endpoint"`
-	EnrollmentExpectedRevision int64  `json:"enrollment_expected_revision"`
-	EnrollmentMethod           string `json:"enrollment_method"`
-}
+type workerBootstrapV1 = installerbootstrap.UserDataV1
 
 type userDataSource interface {
 	Read(context.Context) ([]byte, error)
@@ -320,6 +309,11 @@ func validateBootstrap(bootstrap workerBootstrapV1) error {
 		artifact.User != nil || artifact.RawQuery != "" || artifact.Fragment != "" || !regionPattern.MatchString(bootstrap.Region) ||
 		bootstrap.EnrollmentExpectedRevision < 1 || bootstrap.EnrollmentMethod != identityMethod {
 		return errors.New("EC2 Worker bootstrap contract is invalid")
+	}
+	if bootstrap.InstallerTrust != nil {
+		if _, err := installerbootstrap.ValidateTrustMaterial(*bootstrap.InstallerTrust, bootstrap.DeploymentID); err != nil {
+			return errors.New("EC2 Worker installer trust is invalid")
+		}
 	}
 	_, err = parseControlEndpoint(bootstrap.ControlPlaneEndpoint)
 	return err

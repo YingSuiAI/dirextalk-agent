@@ -17,7 +17,7 @@ import (
 const (
 	BuildRequestSchemaV1        = "dirextalk.agent.worker-ami-build-request/v1"
 	BuildIntentSchemaV1         = "dirextalk.agent.worker-ami-build-intent/v1"
-	DestroyRequestSchemaV1      = "dirextalk.agent.worker-ami-destroy-request/v1"
+	DestroyRequestSchemaV2      = "dirextalk.agent.worker-ami-destroy-request/v2"
 	PublicationManifestSchemaV1 = workerrelease.PublicationSchemaV1
 
 	maxControlJSONBytes = 1 << 20
@@ -55,11 +55,12 @@ type BuildRequestFileV1 struct {
 	AllowTestHTTPSInternetEgress bool     `json:"allow_test_https_internet_egress"`
 }
 
-type DestroyRequestFileV1 struct {
-	SchemaVersion           string `json:"schema_version"`
-	PublicationManifestPath string `json:"publication_manifest_path"`
-	ConfirmAccountID        string `json:"confirm_account_id"`
-	ConfirmImageDigest      string `json:"confirm_image_digest"`
+type DestroyRequestFileV2 struct {
+	SchemaVersion              string `json:"schema_version"`
+	PublicationManifestPath    string `json:"publication_manifest_path"`
+	BuilderCleanupEvidencePath string `json:"builder_cleanup_evidence_path"`
+	ConfirmAccountID           string `json:"confirm_account_id"`
+	ConfirmImageDigest         string `json:"confirm_image_digest"`
 }
 
 // BuildIntentV1 is a de-secreted crash-recovery marker stored next to the
@@ -96,6 +97,7 @@ type IdentityReader interface {
 type AMIService interface {
 	Build(context.Context, workerami.BuildRequestV1) (workerami.ImageManifestV1, error)
 	Verify(context.Context, workerami.ImageManifestV1) error
+	VerifyBuilderCleanup(context.Context, workerami.BuilderCleanupEvidenceV1) error
 	Destroy(context.Context, workerami.ImageManifestV1) error
 }
 

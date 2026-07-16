@@ -15,6 +15,9 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -118,7 +121,7 @@ func TestBundlePublisherUploadsEncryptedImmutableDeploymentArtifactsIdempotently
 	recipeBytes := []byte{0xa1, 0x64, 'n', 'a', 'm', 'e', 0x64, 't', 'e', 's', 't'}
 	executionBytes := []byte(`{"schema_version":1,"actions":[{"kind":"worker.noop"}]}`)
 
-	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, recipeBytes, executionBytes, nil)
+	published, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: recipeBytes, ExecutionBytes: executionBytes}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +141,7 @@ func TestBundlePublisherUploadsEncryptedImmutableDeploymentArtifactsIdempotently
 		t.Fatalf("unsafe or missing launch config: key=%s payload=%s tags=%s", launchKey, launch.payload, launch.tagging)
 	}
 	firstPuts := factory.client.putCalls
-	replayed, err := publisher.PublishBundles(context.Background(), connection, deploymentID, recipeBytes, executionBytes, []string{})
+	replayed, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: recipeBytes, ExecutionBytes: executionBytes}, []string{})
 	if err != nil || replayed.Recipe != published.Recipe || replayed.Execution != published.Execution || factory.client.putCalls != firstPuts {
 		t.Fatalf("idempotent replay failed: published=%+v puts=%d err=%v", replayed, factory.client.putCalls, err)
 	}
@@ -157,7 +160,7 @@ func TestBundlePublisherFailsClosedBeforeAWSForSecretRefsOrSecretLikePayload(t *
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := publisher.PublishBundles(context.Background(), connection, deploymentID, test.recipe, []byte(`{"safe":true}`), test.secretRefs)
+			_, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: test.recipe, ExecutionBytes: []byte(`{"safe":true}`)}, test.secretRefs)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("error=%v want=%v", err, test.want)
 			}
@@ -168,14 +171,38 @@ func TestBundlePublisherFailsClosedBeforeAWSForSecretRefsOrSecretLikePayload(t *
 	}
 }
 
+func TestBundlePublisherFailsClosedBeforeAWSUntilInstallerBytesAreResolved(t *testing.T) {
+	publisher, factory, connection, deploymentID := publisherFixture(t)
+	artifact := installer.ArtifactV1{
+		Name: "installer", SHA256: "sha256:" + strings.Repeat("a", 64), SizeBytes: 16,
+		TargetPath: installer.PreinstalledArtifactRoot + "/installer",
+	}
+	compiled := cloudexecution.CompiledBundles{
+		RecipeBytes: []byte("safe recipe"), ExecutionBytes: []byte(`{"safe":true}`),
+		InstallerRootTrust: &installerbootstrap.RootTrustMaterialV1{ArtifactManifest: installer.SignedArtifactManifestV1{
+			Manifest: installer.ArtifactManifestV1{Binding: installer.BindingV1{DeploymentID: deploymentID, RecipeDigest: "sha256:" + strings.Repeat("b", 64)}, Artifacts: []installer.ArtifactV1{artifact}},
+		}},
+		InstallerArtifacts: []cloudexecution.InstallerArtifactStagingInput{{
+			Name: artifact.Name, SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, TargetPath: artifact.TargetPath,
+			RecipeDigest: "sha256:" + strings.Repeat("b", 64),
+		}},
+	}
+	if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, compiled, nil); !errors.Is(err, ErrInstallerArtifactUnresolved) {
+		t.Fatalf("unresolved installer artifact error = %v", err)
+	}
+	if factory.calls != 0 || factory.client.putCalls != 0 {
+		t.Fatalf("unresolved installer artifact reached AWS: factory=%d puts=%d", factory.calls, factory.client.putCalls)
+	}
+}
+
 func TestBundlePublisherRejectsImmutableConflictAndRecoversLostPutResponse(t *testing.T) {
 	t.Run("conflict", func(t *testing.T) {
 		publisher, factory, connection, deploymentID := publisherFixture(t)
-		if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, []byte("recipe-v1"), []byte(`{"v":1}`), nil); err != nil {
+		if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe-v1"), ExecutionBytes: []byte(`{"v":1}`)}, nil); err != nil {
 			t.Fatal(err)
 		}
 		puts := factory.client.putCalls
-		if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, []byte("recipe-v2"), []byte(`{"v":1}`), nil); !errors.Is(err, ErrImmutableConflict) {
+		if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe-v2"), ExecutionBytes: []byte(`{"v":1}`)}, nil); !errors.Is(err, ErrImmutableConflict) {
 			t.Fatalf("conflict error=%v", err)
 		}
 		if factory.client.putCalls != puts {
@@ -188,7 +215,7 @@ func TestBundlePublisherRejectsImmutableConflictAndRecoversLostPutResponse(t *te
 		spec, _ := publisher.foundationSpec(connection)
 		key := spec.ArtifactBucketName + "/deployments/" + deploymentID + "/bundles/recipe.cbor"
 		factory.client.lostResponse[key] = true
-		if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, []byte("recipe"), []byte(`{"v":1}`), nil); err != nil {
+		if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe"), ExecutionBytes: []byte(`{"v":1}`)}, nil); err != nil {
 			t.Fatalf("lost response was not reconciled: %v", err)
 		}
 		if factory.client.putCalls != 3 {
@@ -200,7 +227,7 @@ func TestBundlePublisherRejectsImmutableConflictAndRecoversLostPutResponse(t *te
 func TestBundlePublisherRequiresSSEKMSDigestReadBack(t *testing.T) {
 	publisher, factory, connection, deploymentID := publisherFixture(t)
 	factory.client.corruptReadback = true
-	if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, []byte("recipe"), []byte(`{"v":1}`), nil); !errors.Is(err, ErrArtifactUnavailable) {
+	if _, err := publisher.PublishBundles(context.Background(), connection, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe"), ExecutionBytes: []byte(`{"v":1}`)}, nil); !errors.Is(err, ErrArtifactUnavailable) {
 		t.Fatalf("corrupt read-back error=%v", err)
 	}
 }
@@ -220,7 +247,7 @@ func TestBundlePublisherRejectsConnectionOutsideDeterministicControlRole(t *test
 		t.Run(name, func(t *testing.T) {
 			changed := connection
 			mutate(&changed)
-			if _, err := publisher.PublishBundles(context.Background(), changed, deploymentID, []byte("recipe"), []byte(`{"v":1}`), nil); !errors.Is(err, ErrInvalidRequest) {
+			if _, err := publisher.PublishBundles(context.Background(), changed, deploymentID, cloudexecution.CompiledBundles{RecipeBytes: []byte("recipe"), ExecutionBytes: []byte(`{"v":1}`)}, nil); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("error=%v", err)
 			}
 		})

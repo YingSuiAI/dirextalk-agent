@@ -60,6 +60,11 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		_, _ = io.WriteString(stderr, "worker-ami: build intent conflicts with existing state\n")
 		return 1
 	}
+	cleanupEvidence, hasCleanupEvidence, err := prepareBuilderCleanupEvidence(*outputPath, &prepared)
+	if err != nil || (hasFinal && !hasCleanupEvidence) {
+		_, _ = io.WriteString(stderr, "worker-ami: builder cleanup evidence conflicts with existing state\n")
+		return 1
+	}
 	config, err := loadAndConfirmIdentity(ctx, dependencies, prepared.request.AccountID, prepared.request.Region)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: AWS identity confirmation failed\n")
@@ -76,7 +81,7 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		return 1
 	}
 	if hasFinal {
-		if verifyPublication(ctx, existing, service, attestor) != nil {
+		if service.VerifyBuilderCleanup(ctx, cleanupEvidence) != nil || verifyPublication(ctx, existing, service, attestor) != nil {
 			_, _ = io.WriteString(stderr, "worker-ami: existing publication verification failed\n")
 			return 1
 		}
@@ -97,11 +102,16 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		_, _ = io.WriteString(stderr, "worker-ami: Worker AMI build failed\n")
 		return 1
 	}
+	cleanupEvidence, err = readBuilderCleanupEvidence(builderCleanupEvidencePath(*outputPath))
+	if err != nil || !builderCleanupEvidenceMatchesPrepared(cleanupEvidence, prepared) || service.VerifyBuilderCleanup(ctx, cleanupEvidence) != nil {
+		_, _ = io.WriteString(stderr, "worker-ami: builder cleanup absence read-back failed\n")
+		return 1
+	}
 	attestCtx, attestCancel := context.WithTimeout(ctx, 5*time.Minute)
 	publication, err := attestManifest(attestCtx, manifest, attestor)
 	attestCancel()
 	if err != nil {
-		if cleanupBuiltAMI(ctx, service, absenceVerifier, manifest) != nil {
+		if cleanupBuiltAMI(ctx, service, absenceVerifier, manifest, cleanupEvidence) != nil {
 			_, _ = io.WriteString(stderr, "worker-ami: build failed and cleanup is unconfirmed\n")
 		} else {
 			_, _ = io.WriteString(stderr, "worker-ami: Worker AMI attestation failed\n")
@@ -119,7 +129,7 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 			_, _ = io.WriteString(stderr, "worker-ami: publication verified but intent cleanup failed\n")
 			return 1
 		}
-		if cleanupBuiltAMI(ctx, service, absenceVerifier, manifest) != nil {
+		if cleanupBuiltAMI(ctx, service, absenceVerifier, manifest, cleanupEvidence) != nil {
 			_, _ = io.WriteString(stderr, "worker-ami: output failed and cleanup is unconfirmed\n")
 		} else {
 			_, _ = io.WriteString(stderr, "worker-ami: cannot persist publication manifest\n")
@@ -183,7 +193,7 @@ func runDestroy(ctx context.Context, args []string, stderr io.Writer, dependenci
 		_, _ = io.WriteString(stderr, usage)
 		return 2
 	}
-	_, publication, err := parseDestroyRequest(*requestPath)
+	_, publication, cleanupEvidence, err := parseDestroyRequest(*requestPath)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: invalid destruction confirmation\n")
 		return 1
@@ -205,7 +215,8 @@ func runDestroy(ctx context.Context, args []string, stderr io.Writer, dependenci
 	}
 	destroyCtx, cancel := context.WithTimeout(ctx, 35*time.Minute)
 	defer cancel()
-	if err := service.Destroy(destroyCtx, publication.ImageManifest); err != nil || absenceVerifier.VerifyAbsent(destroyCtx, publication.ImageManifest) != nil {
+	if err := service.VerifyBuilderCleanup(destroyCtx, cleanupEvidence); err != nil || service.Destroy(destroyCtx, publication.ImageManifest) != nil ||
+		absenceVerifier.VerifyAbsent(destroyCtx, publication.ImageManifest) != nil || service.VerifyBuilderCleanup(destroyCtx, cleanupEvidence) != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: Worker AMI destruction or absence read-back failed\n")
 		return 1
 	}
@@ -269,11 +280,38 @@ func verifyPublication(ctx context.Context, publication PublicationManifestV1, s
 	return nil
 }
 
-func cleanupBuiltAMI(ctx context.Context, service AMIService, verifier AMIAbsenceVerifier, manifest workerami.ImageManifestV1) error {
+func cleanupBuiltAMI(ctx context.Context, service AMIService, verifier AMIAbsenceVerifier, manifest workerami.ImageManifestV1, cleanupEvidence workerami.BuilderCleanupEvidenceV1) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 35*time.Minute)
 	defer cancel()
-	if service.Destroy(cleanupCtx, manifest) != nil || verifier.VerifyAbsent(cleanupCtx, manifest) != nil {
+	if service.VerifyBuilderCleanup(cleanupCtx, cleanupEvidence) != nil || service.Destroy(cleanupCtx, manifest) != nil ||
+		verifier.VerifyAbsent(cleanupCtx, manifest) != nil || service.VerifyBuilderCleanup(cleanupCtx, cleanupEvidence) != nil {
 		return errCloudOperation
 	}
 	return nil
+}
+
+func prepareBuilderCleanupEvidence(outputPath string, prepared *preparedBuild) (workerami.BuilderCleanupEvidenceV1, bool, error) {
+	if prepared == nil {
+		return workerami.BuilderCleanupEvidenceV1{}, false, errInvalidInput
+	}
+	path := builderCleanupEvidencePath(outputPath)
+	exists, err := regularFileExists(path)
+	if err != nil {
+		return workerami.BuilderCleanupEvidenceV1{}, false, errOutput
+	}
+	var evidence workerami.BuilderCleanupEvidenceV1
+	if exists {
+		evidence, err = readBuilderCleanupEvidence(path)
+		if err != nil || !builderCleanupEvidenceMatchesPrepared(evidence, *prepared) {
+			return workerami.BuilderCleanupEvidenceV1{}, false, errInvalidInput
+		}
+		prepared.request.ExistingBuilderCleanupEvidence = &evidence
+	}
+	prepared.request.RecordBuilderCleanupEvidence = func(observed workerami.BuilderCleanupEvidenceV1) error {
+		if !builderCleanupEvidenceMatchesPrepared(observed, *prepared) {
+			return errInvalidInput
+		}
+		return ensureBuilderCleanupEvidence(path, observed)
+	}
+	return evidence, exists, nil
 }

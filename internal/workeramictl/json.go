@@ -281,21 +281,26 @@ func inspectRootFSArchive(path string, release releaseartifact.ReleaseManifestV1
 	}, nil
 }
 
-func parseDestroyRequest(path string) (DestroyRequestFileV1, PublicationManifestV1, error) {
+func parseDestroyRequest(path string) (DestroyRequestFileV2, PublicationManifestV1, workerami.BuilderCleanupEvidenceV1, error) {
 	input, err := readBoundedRegularFile(path, maxControlJSONBytes)
 	if err != nil {
-		return DestroyRequestFileV1{}, PublicationManifestV1{}, errInvalidInput
+		return DestroyRequestFileV2{}, PublicationManifestV1{}, workerami.BuilderCleanupEvidenceV1{}, errInvalidInput
 	}
 	defer clear(input)
-	var request DestroyRequestFileV1
-	if err := decodeStrictJSON(input, &request); err != nil || request.SchemaVersion != DestroyRequestSchemaV1 || !validLocalPath(request.PublicationManifestPath) {
-		return DestroyRequestFileV1{}, PublicationManifestV1{}, errInvalidInput
+	var request DestroyRequestFileV2
+	if err := decodeStrictJSON(input, &request); err != nil || request.SchemaVersion != DestroyRequestSchemaV2 ||
+		!validLocalPath(request.PublicationManifestPath) || !validLocalPath(request.BuilderCleanupEvidencePath) {
+		return DestroyRequestFileV2{}, PublicationManifestV1{}, workerami.BuilderCleanupEvidenceV1{}, errInvalidInput
 	}
 	publication, err := readPublicationManifest(request.PublicationManifestPath)
 	if err != nil || request.ConfirmAccountID != publication.ImageManifest.AccountID || request.ConfirmImageDigest != publication.ImageDigest {
-		return DestroyRequestFileV1{}, PublicationManifestV1{}, errInvalidInput
+		return DestroyRequestFileV2{}, PublicationManifestV1{}, workerami.BuilderCleanupEvidenceV1{}, errInvalidInput
 	}
-	return request, publication, nil
+	cleanupEvidence, err := readBuilderCleanupEvidence(request.BuilderCleanupEvidencePath)
+	if err != nil || !builderCleanupEvidenceMatchesPublication(cleanupEvidence, publication) {
+		return DestroyRequestFileV2{}, PublicationManifestV1{}, workerami.BuilderCleanupEvidenceV1{}, errInvalidInput
+	}
+	return request, publication, cleanupEvidence, nil
 }
 
 func readPublicationManifest(path string) (PublicationManifestV1, error) {
@@ -356,6 +361,72 @@ func canonicalPublicationJSON(input PublicationManifestV1) ([]byte, error) {
 
 func buildIntentPath(outputPath string) string {
 	return outputPath + ".build-intent"
+}
+
+func builderCleanupEvidencePath(outputPath string) string {
+	return outputPath + ".builder-cleanup"
+}
+
+func canonicalBuilderCleanupEvidenceJSON(evidence workerami.BuilderCleanupEvidenceV1) ([]byte, error) {
+	if evidence.Validate() != nil {
+		return nil, errInvalidInput
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		return nil, errOutput
+	}
+	return encoded, nil
+}
+
+func readBuilderCleanupEvidence(path string) (workerami.BuilderCleanupEvidenceV1, error) {
+	input, err := readBoundedRegularFile(path, maxControlJSONBytes)
+	if err != nil {
+		return workerami.BuilderCleanupEvidenceV1{}, errInvalidInput
+	}
+	defer clear(input)
+	var evidence workerami.BuilderCleanupEvidenceV1
+	if err := decodeStrictJSON(input, &evidence); err != nil || evidence.Validate() != nil {
+		return workerami.BuilderCleanupEvidenceV1{}, errInvalidInput
+	}
+	return evidence, nil
+}
+
+func ensureBuilderCleanupEvidence(path string, expected workerami.BuilderCleanupEvidenceV1) error {
+	encoded, err := canonicalBuilderCleanupEvidenceJSON(expected)
+	if err != nil {
+		return err
+	}
+	if writeErr := writeExclusiveFile(path, encoded); writeErr == nil {
+		return nil
+	}
+	actual, readErr := readBuilderCleanupEvidence(path)
+	if readErr != nil || !equalBuilderCleanupEvidence(actual, expected) {
+		return errInvalidInput
+	}
+	return nil
+}
+
+func equalBuilderCleanupEvidence(left, right workerami.BuilderCleanupEvidenceV1) bool {
+	return left.SchemaVersion == right.SchemaVersion && left.AgentInstanceID == right.AgentInstanceID && left.AccountID == right.AccountID &&
+		left.Region == right.Region && left.ReleaseManifestDigest == right.ReleaseManifestDigest && left.WorkerRootFSDigest == right.WorkerRootFSDigest &&
+		left.WorkerBinaryDigest == right.WorkerBinaryDigest && left.BuildDigest == right.BuildDigest && left.BuilderInstanceID == right.BuilderInstanceID &&
+		left.BuilderRootVolumeID == right.BuilderRootVolumeID && len(left.BuilderNetworkInterfaceIDs) == 1 && len(right.BuilderNetworkInterfaceIDs) == 1 &&
+		left.BuilderNetworkInterfaceIDs[0] == right.BuilderNetworkInterfaceIDs[0]
+}
+
+func builderCleanupEvidenceMatchesPrepared(evidence workerami.BuilderCleanupEvidenceV1, prepared preparedBuild) bool {
+	buildDigest, err := workerami.BuildDigest(prepared.request)
+	return err == nil && evidence.Validate() == nil && evidence.AgentInstanceID == prepared.request.AgentInstanceID &&
+		evidence.AccountID == prepared.request.AccountID && evidence.Region == prepared.request.Region && evidence.BuildDigest == buildDigest &&
+		evidence.ReleaseManifestDigest == prepared.request.ReleaseManifestDigest && evidence.WorkerRootFSDigest == prepared.request.RootFS.Manifest.RootFSDigest &&
+		evidence.WorkerBinaryDigest == prepared.request.RootFS.Manifest.BinaryDigest
+}
+
+func builderCleanupEvidenceMatchesPublication(evidence workerami.BuilderCleanupEvidenceV1, publication PublicationManifestV1) bool {
+	image := publication.ImageManifest
+	return evidence.Validate() == nil && evidence.AgentInstanceID == image.AgentInstanceID && evidence.AccountID == image.AccountID &&
+		evidence.Region == image.Region && evidence.ReleaseManifestDigest == image.ReleaseManifestDigest &&
+		evidence.WorkerRootFSDigest == image.WorkerRootFSDigest && evidence.WorkerBinaryDigest == image.WorkerBinaryDigest
 }
 
 func canonicalBuildIntentJSON(intent BuildIntentV1) ([]byte, error) {

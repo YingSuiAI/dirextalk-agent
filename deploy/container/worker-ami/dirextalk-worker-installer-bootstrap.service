@@ -1,0 +1,43 @@
+[Unit]
+Description=Dirextalk per-deployment Worker installer trust bootstrap
+Documentation=https://github.com/YingSuiAI/dirextalk-agent
+Wants=network-online.target
+After=network-online.target
+Before=dirextalk-cloud-worker.service dirextalk-worker-installer.socket
+ConditionPathIsExecutable=/usr/local/bin/dirextalk-worker-installer
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/bin/dirextalk-worker-installer bootstrap
+RemainAfterExit=yes
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+ReadWritePaths=/etc/dirextalk-installer /etc/systemd/system /usr/local/share/dirextalk-worker/artifacts
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

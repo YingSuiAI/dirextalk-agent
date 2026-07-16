@@ -16,6 +16,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 const (
@@ -379,6 +380,81 @@ func TestFindBuilderPaginatesAndRejectsAmbiguousOrUnsafeReadBack(t *testing.T) {
 		adapter := newTestAdapter(t, ec2Client, &fakeS3{}, nil)
 		if _, _, err := adapter.ObserveBuilder(context.Background(), aws.ToString(unsafe.InstanceId)); !errors.Is(err, workerami.ErrReadBackMismatch) {
 			t.Fatalf("ObserveBuilder() = %v", err)
+		}
+	})
+}
+
+func TestObserveBuilderDependenciesUsesExactIndependentDescribeReadBack(t *testing.T) {
+	const volumeID = "vol-0123456789abcdef0"
+	const networkID = "eni-0123456789abcdef0"
+	t.Run("present", func(t *testing.T) {
+		ec2Client := &fakeEC2{
+			describeVolumesFn: func(in *ec2.DescribeVolumesInput) (*ec2.DescribeVolumesOutput, error) {
+				if len(in.VolumeIds) != 1 || in.VolumeIds[0] != volumeID {
+					t.Fatalf("DescribeVolumes input = %#v", in)
+				}
+				return &ec2.DescribeVolumesOutput{Volumes: []ec2types.Volume{{VolumeId: aws.String(volumeID)}}}, nil
+			},
+			describeNetworkInterfacesFn: func(in *ec2.DescribeNetworkInterfacesInput) (*ec2.DescribeNetworkInterfacesOutput, error) {
+				if len(in.NetworkInterfaceIds) != 1 || in.NetworkInterfaceIds[0] != networkID {
+					t.Fatalf("DescribeNetworkInterfaces input = %#v", in)
+				}
+				return &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: []ec2types.NetworkInterface{{NetworkInterfaceId: aws.String(networkID)}}}, nil
+			},
+		}
+		adapter := newTestAdapter(t, ec2Client, &fakeS3{}, nil)
+		volumeFound, volumeErr := adapter.ObserveBuilderVolume(context.Background(), volumeID)
+		networkFound, networkErr := adapter.ObserveBuilderNetworkInterface(context.Background(), networkID)
+		if volumeErr != nil || networkErr != nil || !volumeFound || !networkFound {
+			t.Fatalf("dependency read-back = volume(%v,%v) network(%v,%v)", volumeFound, volumeErr, networkFound, networkErr)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		ec2Client := &fakeEC2{
+			describeVolumesFn: func(*ec2.DescribeVolumesInput) (*ec2.DescribeVolumesOutput, error) {
+				return &ec2.DescribeVolumesOutput{}, nil
+			},
+			describeNetworkInterfacesFn: func(*ec2.DescribeNetworkInterfacesInput) (*ec2.DescribeNetworkInterfacesOutput, error) {
+				return &ec2.DescribeNetworkInterfacesOutput{}, nil
+			},
+		}
+		adapter := newTestAdapter(t, ec2Client, &fakeS3{}, nil)
+		volumeFound, volumeErr := adapter.ObserveBuilderVolume(context.Background(), volumeID)
+		networkFound, networkErr := adapter.ObserveBuilderNetworkInterface(context.Background(), networkID)
+		if volumeErr != nil || networkErr != nil || volumeFound || networkFound {
+			t.Fatalf("dependency absence = volume(%v,%v) network(%v,%v)", volumeFound, volumeErr, networkFound, networkErr)
+		}
+	})
+	t.Run("provider not-found codes are absence", func(t *testing.T) {
+		ec2Client := &fakeEC2{
+			describeVolumesFn: func(*ec2.DescribeVolumesInput) (*ec2.DescribeVolumesOutput, error) {
+				return nil, &smithy.GenericAPIError{Code: "InvalidVolume.NotFound", Message: "gone"}
+			},
+			describeNetworkInterfacesFn: func(*ec2.DescribeNetworkInterfacesInput) (*ec2.DescribeNetworkInterfacesOutput, error) {
+				return nil, &smithy.GenericAPIError{Code: "InvalidNetworkInterfaceID.NotFound", Message: "gone"}
+			},
+		}
+		adapter := newTestAdapter(t, ec2Client, &fakeS3{}, nil)
+		volumeFound, volumeErr := adapter.ObserveBuilderVolume(context.Background(), volumeID)
+		networkFound, networkErr := adapter.ObserveBuilderNetworkInterface(context.Background(), networkID)
+		if volumeErr != nil || networkErr != nil || volumeFound || networkFound {
+			t.Fatalf("not-found mapping = volume(%v,%v) network(%v,%v)", volumeFound, volumeErr, networkFound, networkErr)
+		}
+	})
+	t.Run("access denied and unknown IDs fail closed", func(t *testing.T) {
+		secretError := errors.New("AccessDenied credential=SHOULD_NOT_ESCAPE")
+		ec2Client := &fakeEC2{
+			describeVolumesFn: func(*ec2.DescribeVolumesInput) (*ec2.DescribeVolumesOutput, error) { return nil, secretError },
+			describeNetworkInterfacesFn: func(*ec2.DescribeNetworkInterfacesInput) (*ec2.DescribeNetworkInterfacesOutput, error) {
+				return nil, secretError
+			},
+		}
+		adapter := newTestAdapter(t, ec2Client, &fakeS3{}, nil)
+		if _, err := adapter.ObserveBuilderVolume(context.Background(), volumeID); !errors.Is(err, workerami.ErrProviderOperation) || strings.Contains(err.Error(), "SHOULD_NOT_ESCAPE") {
+			t.Fatalf("ObserveBuilderVolume() = %v", err)
+		}
+		if _, err := adapter.ObserveBuilderNetworkInterface(context.Background(), "eni-unknown"); !errors.Is(err, workerami.ErrInvalidInput) {
+			t.Fatalf("ObserveBuilderNetworkInterface(unknown) = %v", err)
 		}
 	})
 }

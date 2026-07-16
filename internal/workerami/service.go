@@ -65,6 +65,47 @@ type Service struct {
 	destroyTimeout time.Duration
 }
 
+type builderCleanupState struct {
+	evidence BuilderCleanupEvidenceV1
+	recorder func(BuilderCleanupEvidenceV1) error
+}
+
+func newBuilderCleanupState(validated validatedBuild) (*builderCleanupState, error) {
+	state := &builderCleanupState{recorder: validated.request.RecordBuilderCleanupEvidence}
+	if validated.request.ExistingBuilderCleanupEvidence == nil {
+		return state, nil
+	}
+	evidence, err := validateBuilderCleanupEvidenceForBuild(*validated.request.ExistingBuilderCleanupEvidence, validated)
+	if err != nil {
+		return nil, err
+	}
+	state.evidence = evidence
+	return state, nil
+}
+
+func (state *builderCleanupState) capture(observation BuilderObservationV1, validated validatedBuild) error {
+	evidence, err := builderCleanupEvidenceFromObservation(observation, validated)
+	if err != nil {
+		return err
+	}
+	if state.evidence.SchemaVersion != "" && !equalBuilderCleanupEvidence(state.evidence, evidence) {
+		return ErrOwnershipMismatch
+	}
+	state.evidence = evidence
+	if state.recorder != nil && state.recorder(evidence) != nil {
+		return ErrCleanupFailed
+	}
+	return nil
+}
+
+func equalBuilderCleanupEvidence(left, right BuilderCleanupEvidenceV1) bool {
+	return left.SchemaVersion == right.SchemaVersion && left.AgentInstanceID == right.AgentInstanceID && left.AccountID == right.AccountID &&
+		left.Region == right.Region && left.ReleaseManifestDigest == right.ReleaseManifestDigest && left.WorkerRootFSDigest == right.WorkerRootFSDigest &&
+		left.WorkerBinaryDigest == right.WorkerBinaryDigest && left.BuildDigest == right.BuildDigest && left.BuilderInstanceID == right.BuilderInstanceID &&
+		left.BuilderRootVolumeID == right.BuilderRootVolumeID && len(left.BuilderNetworkInterfaceIDs) == 1 && len(right.BuilderNetworkInterfaceIDs) == 1 &&
+		left.BuilderNetworkInterfaceIDs[0] == right.BuilderNetworkInterfaceIDs[0]
+}
+
 func New(provider Provider, options ...Option) (*Service, error) {
 	if provider == nil {
 		return nil, ErrInvalidInput
@@ -92,6 +133,13 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 	if validationErr != nil {
 		return ImageManifestV1{}, validationErr
 	}
+	if request.RecordBuilderCleanupEvidence == nil {
+		return ImageManifestV1{}, ErrInvalidInput
+	}
+	cleanupState, validationErr := newBuilderCleanupState(validated)
+	if validationErr != nil {
+		return ImageManifestV1{}, validationErr
+	}
 	archive, validationErr := openValidatedArchive(validated.request.RootFS)
 	if validationErr != nil {
 		return ImageManifestV1{}, validationErr
@@ -106,11 +154,14 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 
 	var artifactVersion string
 	var builderID string
+	if cleanupState.evidence.SchemaVersion != "" {
+		builderID = cleanupState.evidence.BuilderInstanceID
+	}
 	imageMutationAttempted := false
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), service.cleanupTimeout)
 		defer cleanupCancel()
-		cleanupErr := service.cleanup(cleanupCtx, validated, builderID, artifactVersion)
+		cleanupErr := service.cleanup(cleanupCtx, validated, cleanupState, builderID, artifactVersion)
 		if imageMutationAttempted && (err != nil || cleanupErr != nil) {
 			if imageCleanupErr := service.cleanupBuildImage(cleanupCtx, validated); imageCleanupErr != nil {
 				cleanupErr = errors.Join(cleanupErr, imageCleanupErr)
@@ -238,6 +289,9 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 	if err != nil {
 		return ImageManifestV1{}, err
 	}
+	if err = cleanupState.capture(builderObservation, validated); err != nil {
+		return ImageManifestV1{}, err
+	}
 
 	imageObservation, imageFound, providerErr = service.provider.FindImage(buildCtx, ImageLookupV1{
 		Name: validated.imageName, AccountID: validated.request.AccountID, Region: validated.request.Region,
@@ -362,7 +416,7 @@ func (service *Service) reconcileImageByName(ctx context.Context, validated vali
 	return ImageObservationV1{}, false, nil
 }
 
-func (service *Service) cleanup(ctx context.Context, validated validatedBuild, builderID, artifactVersion string) error {
+func (service *Service) cleanup(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, builderID, artifactVersion string) error {
 	failed := false
 	if builderID == "" {
 		observation, found, providerErr := service.provider.FindBuilder(ctx, BuilderLookupV1{
@@ -394,7 +448,7 @@ func (service *Service) cleanup(ctx context.Context, validated validatedBuild, b
 			}
 		}
 	}
-	if builderID != "" && service.terminateBuilder(ctx, validated, builderID) != nil {
+	if builderID != "" && service.terminateBuilder(ctx, validated, cleanupState, builderID) != nil {
 		failed = true
 	}
 	if artifactVersion != "" && service.deleteArtifact(ctx, validated.object, artifactVersion) != nil {
@@ -493,36 +547,92 @@ func cleanupManifestFromObservation(observation ImageObservationV1, expected val
 	}.normalized()
 }
 
-func (service *Service) terminateBuilder(ctx context.Context, validated validatedBuild, builderID string) error {
+func (service *Service) terminateBuilder(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, builderID string) error {
+	if cleanupState == nil {
+		return ErrCleanupFailed
+	}
 	observation, found, providerErr := service.provider.ObserveBuilder(ctx, builderID)
 	if providerErr != nil {
 		return ErrCleanupFailed
 	}
 	if !found {
+		if cleanupState.evidence.SchemaVersion == "" || cleanupState.evidence.BuilderInstanceID != builderID {
+			return ErrCleanupFailed
+		}
+		if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
+			return ErrCleanupFailed
+		}
 		return nil
 	}
 	if validateBuilderObservation(observation, validated) != nil {
 		return ErrCleanupFailed
 	}
-	if observation.State == BuilderTerminated {
-		return nil
+	if observation.State != BuilderTerminated {
+		if err := cleanupState.capture(observation, validated); err != nil {
+			return ErrCleanupFailed
+		}
+	} else if cleanupState.evidence.SchemaVersion == "" {
+		if err := cleanupState.capture(observation, validated); err != nil {
+			return ErrCleanupFailed
+		}
+	} else if cleanupState.evidence.BuilderInstanceID != builderID {
+		return ErrCleanupFailed
 	}
-	_ = service.provider.TerminateBuilder(ctx, builderID)
+	if observation.State != BuilderTerminated {
+		_ = service.provider.TerminateBuilder(ctx, builderID)
+		for {
+			observation, found, providerErr = service.provider.ObserveBuilder(ctx, builderID)
+			if providerErr != nil {
+				return ErrCleanupFailed
+			}
+			if !found || observation.State == BuilderTerminated {
+				break
+			}
+			if validateBuilderObservation(observation, validated) != nil {
+				return ErrCleanupFailed
+			}
+			if service.pause(ctx) != nil {
+				return ErrCleanupFailed
+			}
+		}
+	}
+	if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
+		return ErrCleanupFailed
+	}
+	return nil
+}
+
+func (service *Service) waitBuilderDependenciesAbsent(ctx context.Context, evidence BuilderCleanupEvidenceV1) error {
+	if evidence.Validate() != nil {
+		return ErrCleanupFailed
+	}
 	for {
-		observation, found, providerErr = service.provider.ObserveBuilder(ctx, builderID)
+		found, providerErr := service.provider.ObserveBuilderVolume(ctx, evidence.BuilderRootVolumeID)
 		if providerErr != nil {
 			return ErrCleanupFailed
 		}
-		if !found || observation.State == BuilderTerminated {
-			return nil
-		}
-		if validateBuilderObservation(observation, validated) != nil {
-			return ErrCleanupFailed
+		if !found {
+			break
 		}
 		if service.pause(ctx) != nil {
 			return ErrCleanupFailed
 		}
 	}
+	for _, networkInterfaceID := range evidence.BuilderNetworkInterfaceIDs {
+		for {
+			found, providerErr := service.provider.ObserveBuilderNetworkInterface(ctx, networkInterfaceID)
+			if providerErr != nil {
+				return ErrCleanupFailed
+			}
+			if !found {
+				break
+			}
+			if service.pause(ctx) != nil {
+				return ErrCleanupFailed
+			}
+		}
+	}
+	return nil
 }
 
 func (service *Service) deleteArtifact(ctx context.Context, object ArtifactObjectV1, versionID string) error {
@@ -539,6 +649,44 @@ func (service *Service) deleteArtifact(ctx context.Context, object ArtifactObjec
 			return ErrCleanupFailed
 		}
 	}
+}
+
+// VerifyBuilderCleanup performs fresh provider reads for the terminated
+// builder, its root EBS volume, and every recorded network interface. A
+// terminated instance is the EC2 terminal absence state; EBS and ENI IDs must
+// no longer be returned. Provider errors and malformed IDs fail closed.
+func (service *Service) VerifyBuilderCleanup(ctx context.Context, input BuilderCleanupEvidenceV1) error {
+	if ctx == nil || service == nil || service.provider == nil {
+		return ErrInvalidInput
+	}
+	evidence, err := input.normalized()
+	if err != nil {
+		return err
+	}
+	builder, found, providerErr := service.provider.ObserveBuilder(ctx, evidence.BuilderInstanceID)
+	if providerErr != nil {
+		return operationError(ctx)
+	}
+	if found && validateTerminatedBuilderForCleanup(builder, evidence) != nil {
+		return ErrOwnershipMismatch
+	}
+	volumeFound, providerErr := service.provider.ObserveBuilderVolume(ctx, evidence.BuilderRootVolumeID)
+	if providerErr != nil {
+		return operationError(ctx)
+	}
+	if volumeFound {
+		return ErrReadBackMismatch
+	}
+	for _, networkInterfaceID := range evidence.BuilderNetworkInterfaceIDs {
+		networkFound, observeErr := service.provider.ObserveBuilderNetworkInterface(ctx, networkInterfaceID)
+		if observeErr != nil {
+			return operationError(ctx)
+		}
+		if networkFound {
+			return ErrReadBackMismatch
+		}
+	}
+	return nil
 }
 
 // Verify independently reads both image and snapshot and rejects any identity,

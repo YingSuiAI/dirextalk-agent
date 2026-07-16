@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
+	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/google/uuid"
 )
 
@@ -132,10 +135,12 @@ type AWSEC2InstanceSpecV1 struct {
 // deployment-scoped artifacts. The provider serializes this closed structure;
 // callers cannot supply shell, cloud-init, or arbitrary user-data.
 type AWSWorkerBootstrapSpecV1 struct {
-	DeploymentID               string `json:"deployment_id"`
-	WorkerID                   string `json:"worker_id"`
-	ControlPlaneEndpoint       string `json:"control_plane_endpoint"`
-	EnrollmentExpectedRevision int64  `json:"enrollment_expected_revision"`
+	DeploymentID               string                                  `json:"deployment_id"`
+	WorkerID                   string                                  `json:"worker_id"`
+	ControlPlaneEndpoint       string                                  `json:"control_plane_endpoint"`
+	EnrollmentExpectedRevision int64                                   `json:"enrollment_expected_revision"`
+	InstallerTrust             *installerbootstrap.RootTrustMaterialV1 `json:"installer_trust,omitempty"`
+	InstallerArtifacts         []installerbootstrap.ArtifactSourceV1   `json:"installer_artifacts,omitempty"`
 }
 
 type ProviderDependency struct {
@@ -224,6 +229,15 @@ func (spec *AWSResourceSpecV1) Clone() *AWSResourceSpecV1 {
 	}
 	if spec.Instance != nil {
 		value := *spec.Instance
+		if value.Bootstrap.InstallerTrust != nil {
+			trust := *value.Bootstrap.InstallerTrust
+			trust.PublicKey = slices.Clone(trust.PublicKey)
+			trust.ConfigCBOR = slices.Clone(trust.ConfigCBOR)
+			trust.ArtifactManifest.Manifest.Artifacts = slices.Clone(trust.ArtifactManifest.Manifest.Artifacts)
+			trust.ArtifactManifest.Signature = slices.Clone(trust.ArtifactManifest.Signature)
+			value.Bootstrap.InstallerTrust = &trust
+		}
+		value.Bootstrap.InstallerArtifacts = slices.Clone(value.Bootstrap.InstallerArtifacts)
 		clone.Instance = &value
 	}
 	return &clone
@@ -388,7 +402,9 @@ func (spec AWSEC2InstanceSpecV1) validate() error {
 		return fmt.Errorf("%w: EC2 Worker scope is invalid", ErrInvalid)
 	}
 	parsed, err := url.Parse(spec.UserDataArtifactRef)
-	if err != nil || parsed.Scheme != "s3" || parsed.Host == "" || parsed.Path == "" || parsed.RawQuery != "" || parsed.Fragment != "" || len(spec.UserDataArtifactRef) > 1024 || security.ContainsLikelySecret(spec.UserDataArtifactRef) {
+	if err != nil || parsed.Scheme != "s3" || parsed.Host == "" || parsed.User != nil || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		strings.TrimPrefix(parsed.Path, "/") != path.Join("deployments", spec.Bootstrap.DeploymentID, "launch", "config.json") ||
+		len(spec.UserDataArtifactRef) > 1024 || security.ContainsLikelySecret(spec.UserDataArtifactRef) {
 		return fmt.Errorf("%w: immutable S3 Worker artifact reference is required", ErrInvalid)
 	}
 	if err := spec.Bootstrap.validate(); err != nil {
@@ -411,6 +427,22 @@ func (spec AWSWorkerBootstrapSpecV1) validate() error {
 	if err != nil || endpoint.Scheme != "grpcs" || endpoint.Host == "" || (endpoint.Path != "" && endpoint.Path != "/") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" ||
 		len(spec.ControlPlaneEndpoint) > 1024 || security.ContainsLikelySecret(spec.ControlPlaneEndpoint) || spec.EnrollmentExpectedRevision < 1 {
 		return fmt.Errorf("%w: Worker identity bootstrap scope is invalid", ErrInvalid)
+	}
+	if spec.InstallerTrust != nil {
+		if _, err := installerbootstrap.ValidateTrustMaterial(*spec.InstallerTrust, spec.DeploymentID); err != nil {
+			return fmt.Errorf("%w: Worker installer trust scope is invalid", ErrInvalid)
+		}
+		if len(spec.InstallerArtifacts) == 0 {
+			return fmt.Errorf("%w: Worker installer artifact sources are required", ErrInvalid)
+		}
+		key, err := arn.Parse(spec.InstallerArtifacts[0].KMSKeyARN)
+		if err != nil || installerbootstrap.ValidateArtifactSources(*spec.InstallerTrust, spec.InstallerArtifacts, spec.DeploymentID, installerbootstrap.InstanceIdentityV1{
+			AccountID: key.AccountID, Region: key.Region, InstanceID: "i-00000000",
+		}) != nil {
+			return fmt.Errorf("%w: Worker installer artifact scope is invalid", ErrInvalid)
+		}
+	} else if len(spec.InstallerArtifacts) != 0 {
+		return fmt.Errorf("%w: Worker installer artifacts require root trust", ErrInvalid)
 	}
 	return nil
 }

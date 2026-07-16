@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	ImageManifestSchemaV1 = "dirextalk.agent.worker-ami/v1"
+	ImageManifestSchemaV1          = "dirextalk.agent.worker-ami/v1"
+	BuilderCleanupEvidenceSchemaV1 = "dirextalk.agent.worker-ami-builder-cleanup/v1"
 
 	TagAgentInstanceID       = "dirextalk:agent_instance_id"
 	TagReleaseManifestDigest = "dirextalk:release_manifest_digest"
@@ -62,6 +63,12 @@ type BuildRequestV1 struct {
 	BuilderInstanceType   string
 	RootDeviceName        string
 	Timeout               time.Duration
+
+	// ExistingBuilderCleanupEvidence resumes an interrupted cleanup. The
+	// recorder must durably persist the exact provider IDs before the builder
+	// is terminated; it is deliberately excluded from the build identity.
+	ExistingBuilderCleanupEvidence *BuilderCleanupEvidenceV1
+	RecordBuilderCleanupEvidence   func(BuilderCleanupEvidenceV1) error
 }
 
 // BuildEnvironmentV1 is a read-only preflight request. Implementations must
@@ -136,15 +143,35 @@ type LaunchBuilderV1 struct {
 }
 
 type BuilderObservationV1 struct {
-	InstanceID      string
-	Name            string
-	State           BuilderState
-	BaseAMIID       string
-	PrivateSubnetID string
-	ZeroIngressSGID string
-	InstanceType    string
-	RootDeviceName  string
-	Tags            map[string]string
+	InstanceID          string
+	Name                string
+	State               BuilderState
+	BaseAMIID           string
+	PrivateSubnetID     string
+	ZeroIngressSGID     string
+	InstanceType        string
+	RootDeviceName      string
+	RootVolumeID        string
+	NetworkInterfaceIDs []string
+	Tags                map[string]string
+}
+
+// BuilderCleanupEvidenceV1 is the immutable, de-secreted recovery record for
+// the temporary EC2 resources created by one AMI build. It is persisted before
+// termination so a process crash, AccessDenied, or timeout can be resumed
+// without guessing provider identifiers.
+type BuilderCleanupEvidenceV1 struct {
+	SchemaVersion              string   `json:"schema_version"`
+	AgentInstanceID            string   `json:"agent_instance_id"`
+	AccountID                  string   `json:"account_id"`
+	Region                     string   `json:"region"`
+	ReleaseManifestDigest      string   `json:"release_manifest_digest"`
+	WorkerRootFSDigest         string   `json:"worker_rootfs_digest"`
+	WorkerBinaryDigest         string   `json:"worker_binary_digest"`
+	BuildDigest                string   `json:"build_digest"`
+	BuilderInstanceID          string   `json:"builder_instance_id"`
+	BuilderRootVolumeID        string   `json:"builder_root_volume_id"`
+	BuilderNetworkInterfaceIDs []string `json:"builder_network_interface_ids"`
 }
 
 type ImageState string
@@ -241,6 +268,8 @@ type Provider interface {
 	LaunchBuilder(context.Context, LaunchBuilderV1) (BuilderObservationV1, error)
 	ObserveBuilder(context.Context, string) (BuilderObservationV1, bool, error)
 	TerminateBuilder(context.Context, string) error
+	ObserveBuilderVolume(context.Context, string) (bool, error)
+	ObserveBuilderNetworkInterface(context.Context, string) (bool, error)
 
 	FindImage(context.Context, ImageLookupV1) (ImageObservationV1, bool, error)
 	CreateImage(context.Context, CreateImageV1) (ImageObservationV1, error)

@@ -3,10 +3,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -15,35 +12,47 @@ import (
 	"syscall"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 const (
-	defaultPublicKeyFile = "/etc/dirextalk-installer/approval-public-key"
-	defaultBindingFile   = "/etc/dirextalk-installer/binding.cbor"
-	defaultJournalFile   = "/var/lib/dirextalk-installer/execution.journal"
+	defaultTrustFile   = "/etc/dirextalk-installer/trust.cbor"
+	defaultJournalFile = "/var/lib/dirextalk-installer/execution.journal"
 )
 
 func run() error {
 	if os.Geteuid() != 0 {
 		return installer.Error(installer.CodeInvalidRequest)
 	}
-	publicKeyContent, err := installer.ReadRootOwnedFile(environmentOrDefault("DIREXTALK_INSTALLER_APPROVAL_PUBLIC_KEY_FILE", defaultPublicKeyFile), 4096)
-	if err != nil {
-		return err
-	}
-	publicKey, err := parsePublicKey(publicKeyContent)
-	if err != nil {
-		return installer.Error(installer.CodeInvalidSignature)
-	}
-	configContent, err := installer.ReadRootOwnedFile(environmentOrDefault("DIREXTALK_INSTALLER_BINDING_FILE", defaultBindingFile), 64<<10)
-	if err != nil {
-		return err
-	}
-	var config installer.DaemonConfigV1
-	if err := installer.DecodeCanonical(configContent, &config); err != nil || config.SchemaVersion != installer.DaemonConfigSchema {
+	if len(os.Args) != 2 {
 		return installer.Error(installer.CodeInvalidRequest)
 	}
-	inspector, err := installer.NewRootOwnedArtifactInspector(config.TargetRoot)
+	switch os.Args[1] {
+	case "serve":
+		return runDaemon()
+	case "bootstrap":
+		return runBootstrap()
+	default:
+		return installer.Error(installer.CodeInvalidRequest)
+	}
+}
+
+func runDaemon() error {
+	trustContent, err := installer.ReadRootOwnedFile(defaultTrustFile, 64<<10)
+	if err != nil {
+		return err
+	}
+	defer clear(trustContent)
+	trust, err := installerbootstrap.DecodeTrustFile(trustContent)
+	if err != nil {
+		return installer.Error(installer.CodeInvalidRequest)
+	}
+	inspector, err := installer.NewRootOwnedArtifactInspector(trust.Config.TargetRoot)
 	if err != nil {
 		return err
 	}
@@ -52,7 +61,7 @@ func run() error {
 		return err
 	}
 	verifier, err := installer.NewVerifier(installer.VerifierConfig{
-		PublicKey: publicKey, ExpectedBinding: config.Binding, TargetRoot: config.TargetRoot, Inspector: inspector,
+		PublicKey: trust.PublicKey, ExpectedTrustID: trust.TrustID, ExpectedBinding: trust.Config.Binding, TargetRoot: trust.Config.TargetRoot, Inspector: inspector,
 		Runner: installer.OSCommandRunner{}, Journal: journal,
 	})
 	if err != nil {
@@ -72,18 +81,33 @@ func run() error {
 	return installer.NewServer(verifier, installer.ServerConfig{}).Serve(ctx, listener)
 }
 
-func parsePublicKey(content []byte) (ed25519.PublicKey, error) {
-	if len(content) == ed25519.PublicKeySize {
-		return append(ed25519.PublicKey(nil), content...), nil
+func runBootstrap() error {
+	metadata := imds.New(imds.Options{EnableFallback: aws.FalseTernary})
+	source, err := installerbootstrap.NewIMDSSource(metadata)
+	if err != nil {
+		return err
 	}
-	trimmed := bytes.TrimSpace(content)
-	for _, encoding := range []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.StdEncoding} {
-		decoded, err := encoding.DecodeString(string(trimmed))
-		if err == nil && len(decoded) == ed25519.PublicKeySize {
-			return ed25519.PublicKey(decoded), nil
-		}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	configuration, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithEC2IMDSRegion(func(options *awsconfig.UseEC2IMDSRegion) { options.Client = metadata }),
+		awsconfig.WithCredentialsProvider(ec2rolecreds.New(func(options *ec2rolecreds.Options) { options.Client = metadata })),
+	)
+	if err != nil {
+		return installerbootstrap.ErrArtifactSource
 	}
-	return nil, fmt.Errorf("invalid Ed25519 public key")
+	downloader, err := installerbootstrap.NewS3ArtifactDownloader(s3.NewFromConfig(configuration))
+	if err != nil {
+		return err
+	}
+	service, err := installerbootstrap.NewArtifactService(
+		source, installerbootstrap.NewAtomicTrustMaterializer(), downloader, installerbootstrap.NewAtomicArtifactMaterializer(),
+		installerbootstrap.NewSystemdSocketController(), installerbootstrap.DefaultTrustFile,
+	)
+	if err != nil {
+		return err
+	}
+	return service.Run(ctx)
 }
 
 func systemdListener() (net.Listener, error) {
@@ -106,11 +130,4 @@ func systemdListener() (net.Listener, error) {
 		return nil, fmt.Errorf("systemd listener is not a Unix socket")
 	}
 	return listener, nil
-}
-
-func environmentOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
 }

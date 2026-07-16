@@ -6,6 +6,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -262,6 +264,9 @@ func validateLaunchOperation(value cloudexecution.Operation) error {
 	if validateLaunchIntent(value.Intent) != nil || value.Revision < 1 || value.CreatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) || len(value.RedactedError) > 512 || security.ContainsLikelySecret(value.RedactedError) {
 		return cloudexecution.ErrInvalid
 	}
+	if cloudexecution.ValidateInstallerOperation(value) != nil {
+		return cloudexecution.ErrInvalid
+	}
 	if value.State != cloudexecution.StateIntent && value.State != cloudexecution.StateFailedRetriable && value.TaskID == "" {
 		return cloudexecution.ErrInvalid
 	}
@@ -282,6 +287,10 @@ func validateLaunchOperation(value cloudexecution.Operation) error {
 }
 
 func validLaunchTransition(current, next cloudexecution.Operation) bool {
+	if current.InstallerDelivery != nil && (!reflect.DeepEqual(current.InstallerDelivery, next.InstallerDelivery) ||
+		!slices.Equal(current.InstallerCommandIDs, next.InstallerCommandIDs) || !reflect.DeepEqual(current.InstallerRootTrust, next.InstallerRootTrust)) {
+		return false
+	}
 	if current.State == cloudexecution.StateActive || current.State == cloudexecution.StateDestroyBlocked {
 		return current.State == next.State && bytes.Equal(current.RequestHash[:], next.RequestHash[:])
 	}

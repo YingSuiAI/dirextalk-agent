@@ -9,6 +9,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -47,6 +49,10 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		if slot.Persistent {
 			return nil, ErrUnsupportedRecipe
 		}
+	}
+	installerTrust, err := resourceInstallerTrust(operation)
+	if err != nil {
+		return nil, err
 	}
 	parsedRole, err := arn.Parse(connection.ControlRoleARN)
 	if err != nil || parsedRole.Service != "iam" || parsedRole.AccountID != connection.AccountID {
@@ -149,6 +155,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 			Bootstrap: resource.AWSWorkerBootstrapSpecV1{
 				DeploymentID: operation.DeploymentID, WorkerID: deterministicID(operation.DeploymentID, "worker"),
 				ControlPlaneEndpoint: operation.Launch.ControlPlaneTarget, EnrollmentExpectedRevision: 1,
+				InstallerTrust: installerTrust, InstallerArtifacts: append([]installerbootstrap.ArtifactSourceV1(nil), operation.InstallerArtifacts...),
 			},
 			RootDeviceName: "/dev/sda1", RootVolumeGiB: uint32(plan.ResourceScope.DiskGiB),
 			RootKMSKeyID: "alias/" + foundation.StackName, Market: resource.AWSMarketOnDemand,
@@ -164,6 +171,27 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	instance.SpecDigest, instance.DependsOn, instance.AWS = instanceDigest, []string{eniID}, instanceAWS
 	result = append(result, instance)
 	return result, nil
+}
+
+func resourceInstallerTrust(operation Operation) (*installerbootstrap.RootTrustMaterialV1, error) {
+	if operation.InstallerRootTrust == nil {
+		return nil, nil
+	}
+	value := operation.InstallerRootTrust
+	trust := &installerbootstrap.RootTrustMaterialV1{
+		SchemaVersion:    value.SchemaVersion,
+		TrustID:          value.TrustID,
+		PublicKey:        append([]byte(nil), value.PublicKey...),
+		ConfigCBOR:       append([]byte(nil), value.ConfigCBOR...),
+		ConfigDigest:     value.ConfigDigest,
+		ArtifactManifest: value.ArtifactManifest,
+	}
+	trust.ArtifactManifest.Manifest.Artifacts = append([]installer.ArtifactV1(nil), value.ArtifactManifest.Manifest.Artifacts...)
+	trust.ArtifactManifest.Signature = append([]byte(nil), value.ArtifactManifest.Signature...)
+	if _, err := installerbootstrap.ValidateTrustMaterial(*trust, operation.DeploymentID); err != nil {
+		return nil, ErrInvalid
+	}
+	return trust, nil
 }
 
 func resourceRetention(plan cloudapproval.PlanV1, operation Operation) (task.RetentionPolicy, time.Time, bool, error) {

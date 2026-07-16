@@ -42,11 +42,13 @@ install -o root -g root -m 0644 /usr/local/share/dirextalk-worker/ami/dirextalk-
 install -o root -g root -m 0644 /usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles /usr/lib/tmpfiles.d/dirextalk-installer.conf
 install -o root -g root -m 0644 /usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service /etc/systemd/system/dirextalk-cloud-worker.service
 install -o root -g root -m 0644 /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.service /etc/systemd/system/dirextalk-worker-installer.service
+install -o root -g root -m 0644 /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service /etc/systemd/system/dirextalk-worker-installer-bootstrap.service
 install -o root -g root -m 0644 /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket /etc/systemd/system/dirextalk-worker-installer.socket
 systemd-sysusers /usr/lib/sysusers.d/dirextalk-worker.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/dirextalk-worker.conf /usr/lib/tmpfiles.d/dirextalk-installer.conf
 systemctl daemon-reload
 systemctl disable dirextalk-worker-installer.socket
+systemctl enable dirextalk-worker-installer-bootstrap.service
 systemctl enable dirextalk-cloud-worker.service
 
 rm -rf /var/tmp/* /tmp/* /root/.cache /root/.bash_history

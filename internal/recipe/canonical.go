@@ -53,6 +53,20 @@ func (r RecipeV1) normalized() RecipeV1 {
 			return normalized.Install.Steps[index].Inputs[i].Name < normalized.Install.Steps[index].Inputs[j].Name
 		})
 	}
+	if r.Install.Installer != nil {
+		installer := *r.Install.Installer
+		installer.Artifacts = append([]InstallerArtifactV1(nil), r.Install.Installer.Artifacts...)
+		sort.Slice(installer.Artifacts, func(i, j int) bool { return installer.Artifacts[i].Name < installer.Artifacts[j].Name })
+		installer.Commands = append([]InstallerCommandV1(nil), r.Install.Installer.Commands...)
+		for index := range installer.Commands {
+			installer.Commands[index].Argv = append([]string(nil), installer.Commands[index].Argv...)
+			installer.Commands[index].ArtifactRefs = sortedStrings(installer.Commands[index].ArtifactRefs)
+			installer.Commands[index].VolumeSlotRefs = sortedStrings(installer.Commands[index].VolumeSlotRefs)
+			installer.Commands[index].SecretSlotRefs = sortedStrings(installer.Commands[index].SecretSlotRefs)
+		}
+		sort.Slice(installer.Commands, func(i, j int) bool { return installer.Commands[i].CommandID < installer.Commands[j].CommandID })
+		normalized.Install.Installer = &installer
+	}
 	normalized.Requirements.DataLocations = append([]DataLocationRequirementV1(nil), r.Requirements.DataLocations...)
 	for index := range normalized.Requirements.DataLocations {
 		normalized.Requirements.DataLocations[index].Residency = sortedStrings(r.Requirements.DataLocations[index].Residency)

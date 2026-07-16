@@ -3,6 +3,7 @@ package worker
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
@@ -32,6 +34,7 @@ var (
 	ErrIdentityChallengeConsumed = errors.New("worker identity challenge is consumed")
 	ErrIdentityRejected          = errors.New("worker provider identity is rejected")
 	ErrIdentityUnavailable       = errors.New("worker provider identity is not ready")
+	ErrInstallerTrustUnavailable = errors.New("worker installer trust issuer is unavailable")
 	ErrIdempotencyConflict       = idempotency.ErrConflict
 )
 
@@ -192,6 +195,8 @@ type Deployment struct {
 	RecipeBundle         BundleRef
 	ExecutionBundle      BundleRef
 	ExecutionTimeout     time.Duration
+	InstallerDelivery    *installer.DeliveryV1
+	InstallerCommandIDs  []string
 	WorkerID             string
 	ProviderInstanceID   string
 	State                State
@@ -211,6 +216,8 @@ type Deployment struct {
 func (deployment Deployment) clone() Deployment {
 	deployment.Access.SecretRefs = slices.Clone(deployment.Access.SecretRefs)
 	deployment.Evidence = slices.Clone(deployment.Evidence)
+	deployment.InstallerDelivery = cloneInstallerDelivery(deployment.InstallerDelivery)
+	deployment.InstallerCommandIDs = slices.Clone(deployment.InstallerCommandIDs)
 	return deployment
 }
 
@@ -223,6 +230,7 @@ type Assignment struct {
 	RecipeBundle          BundleRef
 	ExecutionBundle       BundleRef
 	ExecutionTimeout      time.Duration
+	InstallerLeaseGrants  []installer.SignedLeaseGrantV1
 	WorkerID              string
 	Attempt               int32
 	LeaseEpoch            int64
@@ -238,6 +246,7 @@ type Assignment struct {
 type Heartbeat struct {
 	LeaseEpoch            int64
 	LeaseExpiresAt        time.Time
+	InstallerLeaseGrants  []installer.SignedLeaseGrantV1
 	CancellationRequested bool
 	CheckpointRef         string
 	Revision              int64
@@ -274,6 +283,8 @@ type CreateDeploymentRequest struct {
 	RecipeBundle         BundleRef
 	ExecutionBundle      BundleRef
 	ExecutionTimeout     time.Duration
+	InstallerDelivery    *installer.DeliveryV1
+	InstallerCommandIDs  []string
 	Access               AccessScope
 	EnrollmentTTL        time.Duration
 }
@@ -432,11 +443,65 @@ func validateCreate(request CreateDeploymentRequest) error {
 	if request.ExecutionTimeout < time.Second || request.ExecutionTimeout > 7*24*time.Hour || request.ExecutionTimeout%time.Second != 0 {
 		return fmt.Errorf("%w: execution timeout must be between one second and seven days", ErrInvalid)
 	}
+	if err := ValidateInstallerCapability(request.DeploymentID, request.TaskID, request.RecipeBundle, request.InstallerDelivery, request.InstallerCommandIDs); err != nil {
+		return err
+	}
 	endpoint, err := url.Parse(strings.TrimSpace(request.ControlPlaneEndpoint))
 	if err != nil || endpoint.Scheme != "grpcs" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || security.ContainsLikelySecret(request.ControlPlaneEndpoint) {
 		return fmt.Errorf("%w: control_plane_endpoint must be credential-free outbound grpcs", ErrInvalid)
 	}
 	return request.Access.Validate()
+}
+
+func ValidateInstallerCapability(deploymentID, taskID string, recipeBundle BundleRef, delivery *installer.DeliveryV1, commandIDs []string) error {
+	if delivery == nil {
+		if len(commandIDs) != 0 {
+			return fmt.Errorf("%w: installer command selectors require a stable delivery", ErrInvalid)
+		}
+		return nil
+	}
+	if len(commandIDs) == 0 || len(commandIDs) > 128 {
+		return fmt.Errorf("%w: installer delivery requires command selectors", ErrInvalid)
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, delivery.SignedPlan.Plan.ExpiresAt)
+	if err != nil || installer.ValidateDeliveryAt(*delivery, expiresAt.Add(-time.Nanosecond)) != nil {
+		return fmt.Errorf("%w: installer delivery is invalid", ErrInvalid)
+	}
+	binding := delivery.Config.Binding
+	if binding.DeploymentID != strings.TrimSpace(deploymentID) || binding.TaskID != strings.TrimSpace(taskID) ||
+		binding.RecipeDigest != "sha256:"+hex.EncodeToString(recipeBundle.SHA256[:]) {
+		return fmt.Errorf("%w: installer delivery binding does not match deployment", ErrInvalid)
+	}
+	declared := make(map[string]struct{}, len(delivery.SignedPlan.Plan.Commands))
+	for _, command := range delivery.SignedPlan.Plan.Commands {
+		declared[command.CommandID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(commandIDs))
+	for _, commandID := range commandIDs {
+		if _, ok := declared[commandID]; !ok {
+			return fmt.Errorf("%w: installer command selector is undeclared", ErrInvalid)
+		}
+		if _, duplicate := seen[commandID]; duplicate {
+			return fmt.Errorf("%w: installer command selector is duplicated", ErrInvalid)
+		}
+		seen[commandID] = struct{}{}
+	}
+	return nil
+}
+
+func cloneInstallerDelivery(value *installer.DeliveryV1) *installer.DeliveryV1 {
+	if value == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var cloned installer.DeliveryV1
+	if json.Unmarshal(encoded, &cloned) != nil {
+		return nil
+	}
+	return &cloned
 }
 
 func validateIdentity(deploymentID, workerID string, credential []byte) error {

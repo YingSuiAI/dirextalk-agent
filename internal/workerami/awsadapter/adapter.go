@@ -28,6 +28,8 @@ var (
 	regionPattern   = regexp.MustCompile(`^[a-z]{2}(?:-gov)?-[a-z]+-[1-9][0-9]*$`)
 	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	instancePattern = regexp.MustCompile(`^i-[0-9a-f]{8,32}$`)
+	volumePattern   = regexp.MustCompile(`^vol-[0-9a-f]{8,32}$`)
+	networkPattern  = regexp.MustCompile(`^eni-[0-9a-f]{8,32}$`)
 	imagePattern    = regexp.MustCompile(`^ami-[0-9a-f]{8,32}$`)
 	snapshotPattern = regexp.MustCompile(`^snap-[0-9a-f]{8,32}$`)
 	prefixPattern   = regexp.MustCompile(`^pl-[0-9a-f]{8,32}$`)
@@ -154,7 +156,7 @@ func isNotFound(err error) bool {
 		return false
 	}
 	switch apiError.ErrorCode() {
-	case "InvalidAMIID.NotFound", "InvalidInstanceID.NotFound", "InvalidSnapshot.NotFound", "NoSuchKey", "NoSuchVersion", "NotFound", "404":
+	case "InvalidAMIID.NotFound", "InvalidInstanceID.NotFound", "InvalidSnapshot.NotFound", "InvalidVolume.NotFound", "InvalidNetworkInterfaceID.NotFound", "NoSuchKey", "NoSuchVersion", "NotFound", "404":
 		return true
 	default:
 		return false

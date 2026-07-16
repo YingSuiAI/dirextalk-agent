@@ -3,14 +3,17 @@ package rpcapi
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"net/url"
 	"strings"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"google.golang.org/grpc/codes"
@@ -333,6 +336,10 @@ func (service *workerControlHandler) Heartbeat(ctx context.Context, request *age
 			return nil, status.Error(codes.Internal, "stored Worker lease is invalid")
 		}
 	}
+	response.InstallerLeaseGrants, err = workerHeartbeatInstallerGrantsToProto(heartbeat)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "stored Worker installer grants are invalid")
+	}
 	return response, nil
 }
 
@@ -519,6 +526,9 @@ func workerAssignmentToProto(assignment worker.Assignment) (*agentv1.WorkerAssig
 			assignment.CheckpointAttempt > assignment.Attempt || assignment.CheckpointLeaseEpoch > assignment.LeaseEpoch)) {
 		return nil, errors.New("invalid Worker checkpoint assignment")
 	}
+	if len(assignment.InstallerLeaseGrants) != 0 && (assignment.LeaseEpoch < 1 || assignment.LeaseExpiresAt.IsZero()) {
+		return nil, errors.New("invalid Worker installer grant assignment")
+	}
 	access, err := workerAccessToProto(assignment.Access)
 	if err != nil {
 		return nil, err
@@ -532,11 +542,79 @@ func workerAssignmentToProto(assignment worker.Assignment) (*agentv1.WorkerAssig
 		RecipeBundle: workerBundleToProto(assignment.RecipeBundle), ExecutionBundle: workerBundleToProto(assignment.ExecutionBundle),
 		ExecutionTimeoutSeconds: uint32(assignment.ExecutionTimeout / time.Second),
 	}
+	seenInstallerCommands := make(map[string]struct{}, len(assignment.InstallerLeaseGrants))
+	for _, grant := range assignment.InstallerLeaseGrants {
+		binding := grant.Grant.Binding
+		if binding.DeploymentID != assignment.DeploymentID || binding.TaskID != assignment.TaskID ||
+			binding.RecipeDigest != "sha256:"+hex.EncodeToString(assignment.RecipeBundle.SHA256[:]) ||
+			grant.Grant.LeaseEpoch != assignment.LeaseEpoch || grant.Grant.ExpiresAt != assignment.LeaseExpiresAt.UTC().Format(time.RFC3339Nano) {
+			return nil, errors.New("invalid Worker installer grant binding")
+		}
+		if _, duplicate := seenInstallerCommands[grant.Grant.CommandID]; duplicate {
+			return nil, errors.New("duplicate Worker installer grant")
+		}
+		seenInstallerCommands[grant.Grant.CommandID] = struct{}{}
+		encoded, err := workerInstallerGrantToProto(grant)
+		if err != nil {
+			return nil, err
+		}
+		result.InstallerLeaseGrants = append(result.InstallerLeaseGrants, encoded)
+	}
 	if !assignment.LeaseExpiresAt.IsZero() {
 		result.LeaseExpiresAt = timestamppb.New(assignment.LeaseExpiresAt)
 		if err := result.LeaseExpiresAt.CheckValid(); err != nil {
 			return nil, err
 		}
+	}
+	return result, nil
+}
+
+func workerInstallerGrantToProto(value installer.SignedLeaseGrantV1) (*agentv1.WorkerInstallerLeaseGrant, error) {
+	issuedAt, issuedErr := time.Parse(time.RFC3339Nano, value.Grant.IssuedAt)
+	expiresAt, expiresErr := time.Parse(time.RFC3339Nano, value.Grant.ExpiresAt)
+	if issuedErr != nil || expiresErr != nil || !issuedAt.Before(expiresAt) || len(value.Signature) != ed25519.SignatureSize {
+		return nil, errors.New("invalid Worker installer lease grant")
+	}
+	binding := value.Grant.Binding
+	result := &agentv1.WorkerInstallerLeaseGrant{
+		SchemaVersion: value.Grant.SchemaVersion, TrustId: value.Grant.TrustID,
+		Binding: &agentv1.WorkerInstallerBinding{
+			AgentInstanceId: binding.AgentInstanceID, DeploymentId: binding.DeploymentID, TaskId: binding.TaskID,
+			PlanHash: binding.PlanHash, ApprovalId: binding.ApprovalID, RecipeDigest: binding.RecipeDigest,
+		},
+		PlanDigest: value.Grant.PlanDigest, OperationId: value.Grant.OperationID, CommandId: value.Grant.CommandID,
+		LeaseEpoch: value.Grant.LeaseEpoch, IssuedAt: timestamppb.New(issuedAt), ExpiresAt: timestamppb.New(expiresAt),
+		SignerKeyId: value.SignerKeyID, Signature: append([]byte(nil), value.Signature...),
+	}
+	if result.IssuedAt.CheckValid() != nil || result.ExpiresAt.CheckValid() != nil {
+		return nil, errors.New("invalid Worker installer lease grant time")
+	}
+	return result, nil
+}
+
+func workerHeartbeatInstallerGrantsToProto(heartbeat worker.Heartbeat) ([]*agentv1.WorkerInstallerLeaseGrant, error) {
+	if len(heartbeat.InstallerLeaseGrants) == 0 {
+		return nil, nil
+	}
+	if heartbeat.LeaseEpoch < 1 || heartbeat.LeaseExpiresAt.IsZero() {
+		return nil, errors.New("installer grants require an active Worker lease")
+	}
+	expiresAt := heartbeat.LeaseExpiresAt.UTC().Format(time.RFC3339Nano)
+	seen := make(map[string]struct{}, len(heartbeat.InstallerLeaseGrants))
+	result := make([]*agentv1.WorkerInstallerLeaseGrant, 0, len(heartbeat.InstallerLeaseGrants))
+	for _, grant := range heartbeat.InstallerLeaseGrants {
+		if grant.Grant.LeaseEpoch != heartbeat.LeaseEpoch || grant.Grant.ExpiresAt != expiresAt {
+			return nil, errors.New("installer grant exceeds or mismatches the durable Worker lease")
+		}
+		if _, duplicate := seen[grant.Grant.CommandID]; duplicate {
+			return nil, errors.New("duplicate Worker installer grant")
+		}
+		seen[grant.Grant.CommandID] = struct{}{}
+		encoded, err := workerInstallerGrantToProto(grant)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, encoded)
 	}
 	return result, nil
 }
@@ -599,6 +677,8 @@ func workerPublicError(err error) error {
 		return status.Error(codes.PermissionDenied, "Worker identity is not authorized for this deployment")
 	case errors.Is(err, worker.ErrIdentityUnavailable):
 		return status.Error(codes.Unavailable, "Worker identity enrollment is unavailable")
+	case errors.Is(err, worker.ErrInstallerTrustUnavailable):
+		return status.Error(codes.Unavailable, "Worker installer trust is unavailable")
 	default:
 		return status.Error(codes.Internal, "Worker control operation failed")
 	}
