@@ -27,6 +27,7 @@ var (
 	awsZonePattern         = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
 	awsProfilePattern      = regexp.MustCompile(`^dtx-agent-[a-z0-9-]{1,54}-worker$`)
 	awsKMSPattern          = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
+	awsEndpointServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{2,253}[a-z0-9]$`)
 )
 
 type AWSMarketType string
@@ -44,6 +45,9 @@ type AWSResourceSpecV1 struct {
 	SecurityGroup    *AWSSecurityGroupSpecV1    `json:"security_group,omitempty"`
 	Volume           *AWSEBSVolumeSpecV1        `json:"volume,omitempty"`
 	NetworkInterface *AWSNetworkInterfaceSpecV1 `json:"network_interface,omitempty"`
+	ElasticIP        *AWSElasticIPSpecV1        `json:"elastic_ip,omitempty"`
+	Endpoint         *AWSVPCEndpointSpecV1      `json:"endpoint,omitempty"`
+	Snapshot         *AWSEBSSnapshotSpecV1      `json:"snapshot,omitempty"`
 	Instance         *AWSEC2InstanceSpecV1      `json:"instance,omitempty"`
 }
 
@@ -74,6 +78,36 @@ type AWSNetworkInterfaceSpecV1 struct {
 	SubnetID                string `json:"subnet_id"`
 	Description             string `json:"description"`
 	ExistingSecurityGroupID string `json:"existing_security_group_id,omitempty"`
+}
+
+type AWSElasticIPSpecV1 struct {
+	Domain string `json:"domain"`
+}
+
+// AWSVPCEndpointSpecV1 deliberately supports only private interface
+// endpoints. Security groups are either an exact approved existing group or
+// one typed ResourceV1 dependency; endpoint creation never mutates ingress.
+type AWSVPCEndpointSpecV1 struct {
+	VPCID                   string   `json:"vpc_id"`
+	ServiceName             string   `json:"service_name"`
+	SubnetIDs               []string `json:"subnet_ids"`
+	ExistingSecurityGroupID string   `json:"existing_security_group_id,omitempty"`
+	PrivateDNSEnabled       bool     `json:"private_dns_enabled"`
+}
+
+type AWSSnapshotDisposition string
+
+const (
+	AWSSnapshotDeleteWithDeployment     AWSSnapshotDisposition = "delete_with_deployment"
+	AWSSnapshotRetainWithManagedService AWSSnapshotDisposition = "retain_with_managed_service"
+)
+
+// AWSEBSSnapshotSpecV1 snapshots exactly one encrypted EBS dependency. The
+// disposition must agree with ProvisionSpec retention, making retention an
+// explicit approved choice rather than an implicit destroy-time default.
+type AWSEBSSnapshotSpecV1 struct {
+	Description string                 `json:"description"`
+	Disposition AWSSnapshotDisposition `json:"disposition"`
 }
 
 type AWSEC2InstanceSpecV1 struct {
@@ -175,6 +209,19 @@ func (spec *AWSResourceSpecV1) Clone() *AWSResourceSpecV1 {
 		value := *spec.NetworkInterface
 		clone.NetworkInterface = &value
 	}
+	if spec.ElasticIP != nil {
+		value := *spec.ElasticIP
+		clone.ElasticIP = &value
+	}
+	if spec.Endpoint != nil {
+		value := *spec.Endpoint
+		value.SubnetIDs = slices.Clone(value.SubnetIDs)
+		clone.Endpoint = &value
+	}
+	if spec.Snapshot != nil {
+		value := *spec.Snapshot
+		clone.Snapshot = &value
+	}
 	if spec.Instance != nil {
 		value := *spec.Instance
 		clone.Instance = &value
@@ -187,7 +234,7 @@ func (spec *AWSResourceSpecV1) Validate(kind Type) error {
 		return fmt.Errorf("%w: AWS resource schema is invalid", ErrInvalid)
 	}
 	count := 0
-	for _, present := range []bool{spec.SecurityGroup != nil, spec.Volume != nil, spec.NetworkInterface != nil, spec.Instance != nil} {
+	for _, present := range []bool{spec.SecurityGroup != nil, spec.Volume != nil, spec.NetworkInterface != nil, spec.ElasticIP != nil, spec.Endpoint != nil, spec.Snapshot != nil, spec.Instance != nil} {
 		if present {
 			count++
 		}
@@ -211,6 +258,21 @@ func (spec *AWSResourceSpecV1) Validate(kind Type) error {
 			return fmt.Errorf("%w: ENI spec is required", ErrInvalid)
 		}
 		return spec.NetworkInterface.validate()
+	case TypeEIP:
+		if spec.ElasticIP == nil {
+			return fmt.Errorf("%w: Elastic IP spec is required", ErrInvalid)
+		}
+		return spec.ElasticIP.validate()
+	case TypeEndpoint:
+		if spec.Endpoint == nil {
+			return fmt.Errorf("%w: VPC endpoint spec is required", ErrInvalid)
+		}
+		return spec.Endpoint.validate()
+	case TypeSnapshot:
+		if spec.Snapshot == nil {
+			return fmt.Errorf("%w: EBS snapshot spec is required", ErrInvalid)
+		}
+		return spec.Snapshot.validate()
 	case TypeEC2:
 		if spec.Instance == nil {
 			return fmt.Errorf("%w: EC2 spec is required", ErrInvalid)
@@ -284,6 +346,43 @@ func (spec AWSNetworkInterfaceSpecV1) validate() error {
 	return nil
 }
 
+func (spec AWSElasticIPSpecV1) validate() error {
+	if spec.Domain != "vpc" {
+		return fmt.Errorf("%w: Elastic IP domain must be vpc", ErrInvalid)
+	}
+	return nil
+}
+
+func (spec AWSVPCEndpointSpecV1) validate() error {
+	if !strings.HasPrefix(spec.VPCID, "vpc-") || !awsIDPattern.MatchString(spec.VPCID) ||
+		!awsEndpointServiceName.MatchString(spec.ServiceName) || !strings.Contains(spec.ServiceName, ".") ||
+		security.ContainsLikelySecret(spec.ServiceName) || len(spec.SubnetIDs) == 0 || len(spec.SubnetIDs) > 16 {
+		return fmt.Errorf("%w: private interface endpoint scope is invalid", ErrInvalid)
+	}
+	seen := make(map[string]struct{}, len(spec.SubnetIDs))
+	for _, subnetID := range spec.SubnetIDs {
+		if !strings.HasPrefix(subnetID, "subnet-") || !awsIDPattern.MatchString(subnetID) {
+			return fmt.Errorf("%w: endpoint subnet is invalid", ErrInvalid)
+		}
+		if _, duplicate := seen[subnetID]; duplicate {
+			return fmt.Errorf("%w: duplicate endpoint subnet", ErrInvalid)
+		}
+		seen[subnetID] = struct{}{}
+	}
+	if spec.ExistingSecurityGroupID != "" && (!strings.HasPrefix(spec.ExistingSecurityGroupID, "sg-") || !awsIDPattern.MatchString(spec.ExistingSecurityGroupID)) {
+		return fmt.Errorf("%w: endpoint existing security group is invalid", ErrInvalid)
+	}
+	return nil
+}
+
+func (spec AWSEBSSnapshotSpecV1) validate() error {
+	if strings.TrimSpace(spec.Description) == "" || len(spec.Description) > 255 || security.ContainsLikelySecret(spec.Description) ||
+		(spec.Disposition != AWSSnapshotDeleteWithDeployment && spec.Disposition != AWSSnapshotRetainWithManagedService) {
+		return fmt.Errorf("%w: EBS snapshot scope is invalid", ErrInvalid)
+	}
+	return nil
+}
+
 func (spec AWSEC2InstanceSpecV1) validate() error {
 	if !strings.HasPrefix(spec.ImageID, "ami-") || !awsIDPattern.MatchString(spec.ImageID) || !sha256Pattern.MatchString(spec.ImageDigest) || !recipe.ValidArchitecture(spec.Architecture) || !awsInstanceTypePattern.MatchString(spec.InstanceType) || !awsProfilePattern.MatchString(spec.InstanceProfileName) || !sha256Pattern.MatchString(spec.UserDataArtifactDigest) || spec.RootDeviceName != "/dev/sda1" || spec.RootVolumeGiB < 8 || spec.RootVolumeGiB > 1024 || !awsKMSPattern.MatchString(spec.RootKMSKeyID) || (spec.Market != AWSMarketOnDemand && spec.Market != AWSMarketSpot) {
 		return fmt.Errorf("%w: EC2 Worker scope is invalid", ErrInvalid)
@@ -344,6 +443,20 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 		owned := len(dependencies) == 1 && counts[TypeSG] == 1
 		if existing == owned {
 			return fmt.Errorf("%w: ENI requires an existing or one owned security group", ErrInvalid)
+		}
+	case TypeEIP:
+		if len(dependencies) != 1 || counts[TypeENI] != 1 || spec.ElasticIP == nil {
+			return fmt.Errorf("%w: Elastic IP requires exactly one ENI", ErrInvalid)
+		}
+	case TypeEndpoint:
+		existing := spec.Endpoint != nil && spec.Endpoint.ExistingSecurityGroupID != ""
+		owned := len(dependencies) == 1 && counts[TypeSG] == 1
+		if existing == owned {
+			return fmt.Errorf("%w: interface endpoint requires an existing or one owned security group", ErrInvalid)
+		}
+	case TypeSnapshot:
+		if len(dependencies) != 1 || counts[TypeEBS] != 1 || spec.Snapshot == nil {
+			return fmt.Errorf("%w: EBS snapshot requires exactly one source volume", ErrInvalid)
 		}
 	case TypeEC2:
 		if counts[TypeENI] != 1 || counts[TypeEBS] > 1 || len(dependencies) != counts[TypeENI]+counts[TypeEBS] {

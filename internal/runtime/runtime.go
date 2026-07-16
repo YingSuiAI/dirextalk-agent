@@ -242,6 +242,11 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 	if !validRuntimeID(request.RequestID, false) || !validRuntimeID(request.OwnerID, false) || !validRuntimeID(request.ConversationID, true) || request.ExpectedConversationRevision < 0 {
 		return runState{}, ErrInvalidRequest
 	}
+	cloudDialogue, err := cloneCloudDialogueScope(request.CloudDialogue)
+	if err != nil || (cloudDialogue != nil && request.ConversationID == "") {
+		return runState{}, ErrInvalidRequest
+	}
+	request.CloudDialogue = cloudDialogue
 	requestMessages := sanitizePairedMessages(request.Messages, false)
 	if !hasUserMessage(requestMessages) {
 		return runState{}, ErrInvalidRequest
@@ -298,14 +303,25 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 		// input can never become valid after those definitions are loaded.
 		return runState{}, contextWindowInputError()
 	}
+	enabledNames := append([]string(nil), config.EnabledTools...)
+	knowledgeRefs := append([]string(nil), config.KnowledgeRefs...)
+	mcpServerIDs := append([]string(nil), config.MCPServerIDs...)
+	recipeIDs := append([]string(nil), config.RecipeIDs...)
+	if request.CloudDialogue != nil {
+		enabledNames = CloudDialogueToolNames()
+		knowledgeRefs = nil
+		mcpServerIDs = nil
+		recipeIDs = nil
+	}
 	tools, err := loadToolSet(ctx, r.tools, ToolRequest{
 		RequestID:      request.RequestID,
 		OwnerID:        request.OwnerID,
 		ConversationID: request.ConversationID,
-		EnabledNames:   append([]string(nil), config.EnabledTools...),
-		KnowledgeRefs:  append([]string(nil), config.KnowledgeRefs...),
-		MCPServerIDs:   append([]string(nil), config.MCPServerIDs...),
-		RecipeIDs:      append([]string(nil), config.RecipeIDs...),
+		EnabledNames:   enabledNames,
+		KnowledgeRefs:  knowledgeRefs,
+		MCPServerIDs:   mcpServerIDs,
+		RecipeIDs:      recipeIDs,
+		CloudDialogue:  request.CloudDialogue,
 	})
 	if err != nil {
 		return runState{}, err

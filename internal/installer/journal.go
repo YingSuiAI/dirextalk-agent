@@ -15,6 +15,7 @@ const (
 	executionJournalSchema = "dirextalk.agent.installer-execution-journal/v1"
 	journalStateRunning    = "running"
 	journalStateTerminal   = "terminal"
+	journalStateLeaseFence = "lease_fence"
 	maxJournalRecordBytes  = 64 << 10
 	maxJournalBytes        = 16 << 20
 	maxJournalEntries      = 8192
@@ -25,6 +26,7 @@ type executionJournalRecord struct {
 	IdempotencyKey string     `json:"idempotency_key"`
 	RequestDigest  string     `json:"request_digest"`
 	State          string     `json:"state"`
+	LeaseEpoch     int64      `json:"lease_epoch,omitempty"`
 	Response       ResponseV1 `json:"response"`
 }
 
@@ -35,6 +37,7 @@ type executionJournalEntry struct {
 }
 
 type ExecutionJournal interface {
+	FenceLease(leaseEpoch int64) error
 	Lookup(idempotencyKey, requestDigest string) (ResponseV1, bool, error)
 	Begin(idempotencyKey, requestDigest string, response ResponseV1) (ResponseV1, bool, error)
 	Complete(idempotencyKey, requestDigest string, response ResponseV1) error
@@ -47,9 +50,10 @@ type ExecutionJournal interface {
 type FileExecutionJournal struct {
 	path string
 
-	mu      sync.Mutex
-	entries map[string]executionJournalEntry
-	failed  bool
+	mu            sync.Mutex
+	entries       map[string]executionJournalEntry
+	maxLeaseEpoch int64
+	failed        bool
 }
 
 func OpenRootOwnedExecutionJournal(name string) (*FileExecutionJournal, error) {
@@ -169,7 +173,17 @@ func repairJournalTail(name string, size int64) error {
 }
 
 func (j *FileExecutionJournal) applyRecord(record executionJournalRecord) error {
-	if record.SchemaVersion != executionJournalSchema || !digestPattern.MatchString(record.RequestDigest) || !isCanonicalUUID(record.IdempotencyKey) {
+	if record.SchemaVersion != executionJournalSchema {
+		return errors.New("invalid journal record")
+	}
+	if record.State == journalStateLeaseFence {
+		if record.LeaseEpoch < 1 || record.LeaseEpoch <= j.maxLeaseEpoch || record.IdempotencyKey != "" || record.RequestDigest != "" || record.Response != (ResponseV1{}) {
+			return errors.New("invalid lease fence record")
+		}
+		j.maxLeaseEpoch = record.LeaseEpoch
+		return nil
+	}
+	if record.LeaseEpoch != 0 || !digestPattern.MatchString(record.RequestDigest) || !isCanonicalUUID(record.IdempotencyKey) {
 		return errors.New("invalid journal record")
 	}
 	if record.Response.SchemaVersion != ResponseSchemaV1 || record.Response.Action != ActionExecute || !namePattern.MatchString(record.Response.CommandID) ||
@@ -195,6 +209,27 @@ func (j *FileExecutionJournal) applyRecord(record executionJournalRecord) error 
 		return errors.New("invalid journal state")
 	}
 	j.entries[record.IdempotencyKey] = executionJournalEntry{requestDigest: record.RequestDigest, state: record.State, response: record.Response}
+	return nil
+}
+
+func (j *FileExecutionJournal) FenceLease(leaseEpoch int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.failed {
+		return errorf(CodeJournalUnavailable, "execution journal requires restart")
+	}
+	if leaseEpoch < j.maxLeaseEpoch {
+		return errorf(CodeLeaseRejected, "installer lease epoch is stale")
+	}
+	if leaseEpoch == j.maxLeaseEpoch {
+		return nil
+	}
+	record := executionJournalRecord{SchemaVersion: executionJournalSchema, State: journalStateLeaseFence, LeaseEpoch: leaseEpoch}
+	if err := j.appendRecord(record); err != nil {
+		j.failed = true
+		return err
+	}
+	j.maxLeaseEpoch = leaseEpoch
 	return nil
 }
 

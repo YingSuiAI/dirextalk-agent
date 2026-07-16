@@ -113,9 +113,14 @@ func validateResource(value ResourceScopeV1) error {
 
 func validateNetwork(value NetworkScopeV1) error {
 	if !awsIDPattern.MatchString(value.VPCID) || !strings.HasPrefix(value.VPCID, "vpc-") ||
-		!awsIDPattern.MatchString(value.SubnetID) || !strings.HasPrefix(value.SubnetID, "subnet-") ||
-		!awsIDPattern.MatchString(value.SecurityGroupID) || !strings.HasPrefix(value.SecurityGroupID, "sg-") {
+		!awsIDPattern.MatchString(value.SubnetID) || !strings.HasPrefix(value.SubnetID, "subnet-") {
 		return fmt.Errorf("scope.network contains an invalid AWS network identifier")
+	}
+	mode := normalizedSecurityGroupMode(value)
+	if (mode == SecurityGroupExisting && (!awsIDPattern.MatchString(value.SecurityGroupID) || !strings.HasPrefix(value.SecurityGroupID, "sg-"))) ||
+		(mode == SecurityGroupCreateDedicated && value.SecurityGroupID != "") ||
+		(mode != SecurityGroupExisting && mode != SecurityGroupCreateDedicated) {
+		return fmt.Errorf("scope.network security group intent is invalid")
 	}
 	if err := validatePorts(value.IngressPorts); err != nil {
 		return err
@@ -133,6 +138,13 @@ func validateNetwork(value NetworkScopeV1) error {
 		return fmt.Errorf("public scope.network requires ports, hostname, TLS, and authentication")
 	}
 	return validateText("scope.network.hostname", value.Hostname, 1, 253)
+}
+
+func normalizedSecurityGroupMode(value NetworkScopeV1) SecurityGroupMode {
+	if value.SecurityGroupMode == "" && value.SecurityGroupID != "" {
+		return SecurityGroupExisting
+	}
+	return value.SecurityGroupMode
 }
 
 func validateSecrets(values []SecretScopeV1) error {

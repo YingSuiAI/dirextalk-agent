@@ -239,8 +239,9 @@ func (store *ResourceStore) ImportOrphan(ctx context.Context, item resource.Reso
 const resourceSelectSQL = `
 	SELECT resource_id, agent_instance_id, owner_id, task_id, deployment_id, resource_type,
 	       logical_name, region, spec_digest, approved_plan_hash, approval_id, provider_id,
-	       depends_on, retention, destroy_deadline, auto_destroy_approved, tags, state,
+	       provider_candidate_ids, depends_on, retention, destroy_deadline, auto_destroy_approved, tags, state,
 	       intent_operation, intent_client_token, intent_recorded_at, readback_exists,
+	       provider_create_started_at,
 	       readback_provider_id, readback_observed_at, readback_tag_digest, blocked_reason,
 	       revision, created_at, updated_at
 	FROM cloud_resources`
@@ -252,19 +253,22 @@ func scanResource(row resourceRow) (resource.ResourceV1, error) {
 	var resourceID, agentID, taskID, deploymentID uuid.UUID
 	var approvalID *uuid.UUID
 	var dependencies []uuid.UUID
-	var destroyDeadline, intentRecordedAt, readbackObservedAt *time.Time
+	var providerCandidateIDs []string
+	var destroyDeadline, intentRecordedAt, providerCreateStartedAt, readbackObservedAt *time.Time
 	var tagsJSON []byte
 	if err := row.Scan(
 		&resourceID, &agentID, &item.OwnerID, &taskID, &deploymentID, &item.Type,
 		&item.LogicalName, &item.Region, &item.SpecDigest, &item.ApprovedPlanHash, &approvalID, &item.ProviderID,
-		&dependencies, &item.Retention, &destroyDeadline, &item.AutoDestroyApproved, &tagsJSON, &item.State,
+		&providerCandidateIDs, &dependencies, &item.Retention, &destroyDeadline, &item.AutoDestroyApproved, &tagsJSON, &item.State,
 		&item.Intent.Operation, &item.Intent.ClientToken, &intentRecordedAt, &item.ReadBack.Exists,
+		&providerCreateStartedAt,
 		&item.ReadBack.ProviderID, &readbackObservedAt, &item.ReadBack.TagDigest, &item.BlockedReason,
 		&item.Revision, &item.CreatedAt, &item.UpdatedAt,
 	); err != nil {
 		return resource.ResourceV1{}, err
 	}
 	item.ResourceID, item.AgentInstanceID, item.TaskID, item.DeploymentID = resourceID.String(), agentID.String(), taskID.String(), deploymentID.String()
+	item.ProviderCandidateIDs = slices.Clone(providerCandidateIDs)
 	if approvalID != nil {
 		item.ApprovalID = approvalID.String()
 	}
@@ -277,6 +281,9 @@ func scanResource(row resourceRow) (resource.ResourceV1, error) {
 	}
 	if intentRecordedAt != nil {
 		item.Intent.RecordedAt = intentRecordedAt.UTC()
+	}
+	if providerCreateStartedAt != nil {
+		item.Intent.ProviderCreateStartedAt = providerCreateStartedAt.UTC()
 	}
 	if readbackObservedAt != nil {
 		item.ReadBack.ObservedAt = readbackObservedAt.UTC()
@@ -318,16 +325,18 @@ func (store *ResourceStore) insertResource(ctx context.Context, query interface 
 		INSERT INTO cloud_resources (
 			resource_id, agent_instance_id, owner_id, task_id, deployment_id, resource_type,
 			logical_name, region, spec_digest, approved_plan_hash, approval_id, provider_id,
-			depends_on, retention, destroy_deadline, auto_destroy_approved, tags, state,
+			provider_candidate_ids, depends_on, retention, destroy_deadline, auto_destroy_approved, tags, state,
 			intent_operation, intent_client_token, intent_recorded_at, readback_exists,
+			provider_create_started_at,
 			readback_provider_id, readback_observed_at, readback_tag_digest, blocked_reason,
 			revision, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
 		ON CONFLICT (resource_id) DO NOTHING`,
 		item.ResourceID, store.instanceID, item.OwnerID, item.TaskID, item.DeploymentID, item.Type,
 		item.LogicalName, item.Region, item.SpecDigest, item.ApprovedPlanHash, nullableUUID(item.ApprovalID), item.ProviderID,
-		dependencies, item.Retention, nullableTime(item.DestroyDeadline), item.AutoDestroyApproved, tagsJSON, item.State,
+		nonNilStrings(item.ProviderCandidateIDs), dependencies, item.Retention, nullableTime(item.DestroyDeadline), item.AutoDestroyApproved, tagsJSON, item.State,
 		item.Intent.Operation, item.Intent.ClientToken, nullableTime(item.Intent.RecordedAt), item.ReadBack.Exists,
+		nullableTime(item.Intent.ProviderCreateStartedAt),
 		item.ReadBack.ProviderID, nullableTime(item.ReadBack.ObservedAt), item.ReadBack.TagDigest, item.BlockedReason,
 		item.Revision, item.CreatedAt.UTC(), item.UpdatedAt.UTC(),
 	)
@@ -365,15 +374,15 @@ func saveResourceTx(ctx context.Context, tx pgx.Tx, instanceID uuid.UUID, expect
 	}
 	result, err := tx.Exec(ctx, `
 		UPDATE cloud_resources SET
-			provider_id=$4, retention=$5, destroy_deadline=$6, auto_destroy_approved=$7,
-			tags=$8, state=$9, intent_operation=$10, intent_client_token=$11, intent_recorded_at=$12,
-			readback_exists=$13, readback_provider_id=$14, readback_observed_at=$15,
-			readback_tag_digest=$16, blocked_reason=$17, revision=$18, updated_at=$19
+			provider_id=$4, provider_candidate_ids=$5, retention=$6, destroy_deadline=$7, auto_destroy_approved=$8,
+			tags=$9, state=$10, intent_operation=$11, intent_client_token=$12, intent_recorded_at=$13,
+			readback_exists=$14, provider_create_started_at=$15, readback_provider_id=$16, readback_observed_at=$17,
+			readback_tag_digest=$18, blocked_reason=$19, revision=$20, updated_at=$21
 		WHERE resource_id=$1 AND agent_instance_id=$2 AND revision=$3`,
-		item.ResourceID, instanceID, expectedRevision, item.ProviderID, item.Retention,
+		item.ResourceID, instanceID, expectedRevision, item.ProviderID, nonNilStrings(item.ProviderCandidateIDs), item.Retention,
 		nullableTime(item.DestroyDeadline), item.AutoDestroyApproved, tagsJSON, item.State,
 		item.Intent.Operation, item.Intent.ClientToken, nullableTime(item.Intent.RecordedAt), item.ReadBack.Exists,
-		item.ReadBack.ProviderID, nullableTime(item.ReadBack.ObservedAt), item.ReadBack.TagDigest,
+		nullableTime(item.Intent.ProviderCreateStartedAt), item.ReadBack.ProviderID, nullableTime(item.ReadBack.ObservedAt), item.ReadBack.TagDigest,
 		item.BlockedReason, item.Revision, item.UpdatedAt.UTC(),
 	)
 	if err != nil {
@@ -424,10 +433,14 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 		}
 	}
 	if item.Intent.Operation == "" {
-		if item.Intent.ClientToken != "" || !item.Intent.RecordedAt.IsZero() {
+		if item.Intent.ClientToken != "" || !item.Intent.RecordedAt.IsZero() || !item.Intent.ProviderCreateStartedAt.IsZero() {
 			return resource.ErrInvalid
 		}
 	} else if (item.Intent.Operation != resource.MutationCreate && item.Intent.Operation != resource.MutationDestroy) || item.Intent.ClientToken == "" || item.Intent.RecordedAt.IsZero() || security.ContainsLikelySecret(item.Intent.ClientToken) {
+		return resource.ErrInvalid
+	}
+	if (!item.Intent.ProviderCreateStartedAt.IsZero() && (item.Intent.Operation != resource.MutationCreate || item.Intent.ProviderCreateStartedAt.Before(item.Intent.RecordedAt))) ||
+		(item.Intent.Operation == resource.MutationDestroy && !item.Intent.ProviderCreateStartedAt.IsZero()) {
 		return resource.ErrInvalid
 	}
 	if item.State == resource.StateVerifiedDestroyed && (item.ReadBack.Exists || item.ReadBack.ObservedAt.IsZero()) {
@@ -449,6 +462,15 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 	}
 	if security.ContainsLikelySecret(item.BlockedReason) || security.ContainsLikelySecret(item.ProviderID) || len(item.ProviderID) > 512 || len(item.BlockedReason) > 4096 || len(item.DependsOn) > 64 || len(item.Intent.ClientToken) > 128 {
 		return resource.ErrInvalid
+	}
+	if !slices.IsSorted(item.ProviderCandidateIDs) {
+		return resource.ErrInvalid
+	}
+	for index, providerID := range item.ProviderCandidateIDs {
+		if strings.TrimSpace(providerID) != providerID || providerID == "" || len(providerID) > 512 || security.ContainsLikelySecret(providerID) ||
+			(index > 0 && item.ProviderCandidateIDs[index-1] == providerID) {
+			return resource.ErrInvalid
+		}
 	}
 	seen := make(map[string]struct{}, len(item.DependsOn))
 	for _, dependency := range item.DependsOn {
@@ -506,6 +528,7 @@ func parseResourceDependencies(values []string) ([]uuid.UUID, error) {
 }
 
 func cloneResource(item resource.ResourceV1) resource.ResourceV1 {
+	item.ProviderCandidateIDs = slices.Clone(item.ProviderCandidateIDs)
 	item.DependsOn = slices.Clone(item.DependsOn)
 	item.Tags = maps.Clone(item.Tags)
 	return item
@@ -517,4 +540,11 @@ func cloneResources(items []resource.ResourceV1) []resource.ResourceV1 {
 		result[index] = cloneResource(item)
 	}
 	return result
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }

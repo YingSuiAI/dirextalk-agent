@@ -8,6 +8,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
@@ -35,8 +36,15 @@ type RuntimeCoordinator interface {
 
 type RuntimeService struct {
 	agentv1.UnimplementedRuntimeServiceServer
-	coordinator RuntimeCoordinator
-	features    RuntimeFeatures
+	coordinator              RuntimeCoordinator
+	features                 RuntimeFeatures
+	cloudDialogueConnections CloudDialogueConnectionReader
+}
+
+// CloudDialogueConnectionReader is the smallest read-only ownership seam
+// required by RuntimeService. It does not copy cloud facts into runtime state.
+type CloudDialogueConnectionReader interface {
+	GetConnection(context.Context, string, string) (cloudstatus.Connection, error)
 }
 
 func NewRuntimeService(coordinator RuntimeCoordinator, features ...RuntimeFeatures) *RuntimeService {
@@ -45,6 +53,12 @@ func NewRuntimeService(coordinator RuntimeCoordinator, features ...RuntimeFeatur
 		service.features = features[0]
 		service.features.Skills = append([]string(nil), features[0].Skills...)
 	}
+	return service
+}
+
+func NewRuntimeServiceWithCloudDialogue(coordinator RuntimeCoordinator, features RuntimeFeatures, connections CloudDialogueConnectionReader) *RuntimeService {
+	service := NewRuntimeService(coordinator, features)
+	service.cloudDialogueConnections = connections
 	return service
 }
 
@@ -109,7 +123,11 @@ func (service *RuntimeService) Chat(ctx context.Context, request *agentv1.ChatRe
 	if err != nil {
 		return nil, err
 	}
-	command := chatCommand(request.GetIdempotencyKey(), request.GetOwnerId(), request.GetConversationId(), request.GetMessage(), request.GetMemoryDisabled(), request.GetExpectedConversationRevision())
+	cloudDialogue, err := service.resolveCloudDialogueScope(ctx, request.GetOwnerId(), request.GetCloudDialogueScope())
+	if err != nil {
+		return nil, err
+	}
+	command := chatCommand(request.GetIdempotencyKey(), request.GetOwnerId(), request.GetConversationId(), request.GetMessage(), request.GetMemoryDisabled(), request.GetExpectedConversationRevision(), cloudDialogue)
 	result, err := service.coordinator.Chat(ctx, scope, command)
 	if err != nil {
 		return nil, publicRuntimeError(err)
@@ -125,7 +143,11 @@ func (service *RuntimeService) StreamChat(request *agentv1.StreamChatRequest, st
 	if err != nil {
 		return err
 	}
-	command := chatCommand(request.GetIdempotencyKey(), request.GetOwnerId(), request.GetConversationId(), request.GetMessage(), request.GetMemoryDisabled(), request.GetExpectedConversationRevision())
+	cloudDialogue, err := service.resolveCloudDialogueScope(stream.Context(), request.GetOwnerId(), request.GetCloudDialogueScope())
+	if err != nil {
+		return err
+	}
+	command := chatCommand(request.GetIdempotencyKey(), request.GetOwnerId(), request.GetConversationId(), request.GetMessage(), request.GetMemoryDisabled(), request.GetExpectedConversationRevision(), cloudDialogue)
 	err = service.coordinator.Stream(stream.Context(), scope, command, func(event runtimeapi.StreamEvent) error {
 		response := runtimeStreamResponse(request.GetIdempotencyKey(), request.GetConversationId(), event)
 		if response == nil {
@@ -151,12 +173,38 @@ func runtimeMutationScope(ctx context.Context) (runtimeapi.MutationScope, error)
 	return scope, nil
 }
 
-func chatCommand(requestID, ownerID, conversationID, message string, memoryDisabled bool, expectedRevision int64) runtimeapi.ChatRequest {
+func chatCommand(requestID, ownerID, conversationID, message string, memoryDisabled bool, expectedRevision int64, cloudDialogue *runtimeapi.CloudDialogueScope) runtimeapi.ChatRequest {
 	return runtimeapi.ChatRequest{
 		RequestID: requestID, OwnerID: ownerID, ConversationID: conversationID,
 		ExpectedConversationRevision: expectedRevision,
 		Messages:                     []modelapi.Message{{Role: modelapi.RoleUser, Content: message}}, MemoryDisabled: memoryDisabled,
+		CloudDialogue: cloudDialogue,
 	}
+}
+
+func (service *RuntimeService) resolveCloudDialogueScope(ctx context.Context, ownerID string, scope *agentv1.CloudDialogueScopeV1) (*runtimeapi.CloudDialogueScope, error) {
+	if scope == nil {
+		return nil, nil
+	}
+	trusted, err := runtimeapi.NewCloudDialogueScope(scope.GetCloudConnectionId())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "cloud dialogue scope is invalid")
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if err := cloudstatus.ValidateOwnerID(ownerID); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "cloud dialogue owner is invalid")
+	}
+	if service == nil || service.cloudDialogueConnections == nil {
+		return nil, status.Error(codes.FailedPrecondition, "cloud dialogue connection resolver is unavailable")
+	}
+	connection, err := service.cloudDialogueConnections.GetConnection(ctx, ownerID, trusted.ConnectionID)
+	if err != nil {
+		return nil, publicError(err)
+	}
+	if connection.ConnectionID != trusted.ConnectionID || connection.OwnerID != ownerID {
+		return nil, status.Error(codes.Internal, "cloud dialogue connection ownership read-back is invalid")
+	}
+	return trusted, nil
 }
 
 func runtimeConfigFromProto(spec *agentv1.RuntimeConfigSpec, revision int64, profiles *modelapi.ProfileCatalog) (runtimeapi.RuntimeConfig, error) {

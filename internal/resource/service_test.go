@@ -120,23 +120,28 @@ func (repository *fakeResourceRepository) ImportOrphan(_ context.Context, resour
 }
 
 type fakeProvider struct {
-	mu            sync.Mutex
-	resources     map[string]ProviderObservation
-	byToken       map[string]string
-	createCount   int
-	readCount     int
-	responseLost  bool
-	blockedDelete map[string]bool
-	deleteOrder   []string
-	beforeCreate  func(ProviderCreateRequest) error
-	omitEmbedded  bool
-	now           time.Time
+	mu               sync.Mutex
+	resources        map[string]ProviderObservation
+	byToken          map[string]string
+	createCount      int
+	readCount        int
+	responseLost     bool
+	hiddenFinds      int
+	hiddenAllFinds   int
+	findBarrier      chan struct{}
+	findArrivals     int
+	ambiguousByToken map[string][]string
+	blockedDelete    map[string]bool
+	deleteOrder      []string
+	beforeCreate     func(ProviderCreateRequest) error
+	omitEmbedded     bool
+	now              time.Time
 }
 
 func newFakeProvider(now time.Time) *fakeProvider {
 	return &fakeProvider{
 		resources: make(map[string]ProviderObservation), byToken: make(map[string]string),
-		blockedDelete: make(map[string]bool), now: now,
+		ambiguousByToken: make(map[string][]string), blockedDelete: make(map[string]bool), now: now,
 	}
 }
 
@@ -198,7 +203,7 @@ func TestProvisionTypedEC2TracksRootEBSBeforeLaunchAndMirrorsItForReaper(t *test
 		parent, parentErr := fixture.repository.Get(context.Background(), request.ResourceID)
 		root, rootErr := fixture.repository.Get(context.Background(), rootID)
 		if parentErr != nil || rootErr != nil || parent.State != StateProvisioning || root.State != StateProvisioning ||
-			parent.Intent.ClientToken == "" || root.Intent.ClientToken != parent.Intent.ClientToken {
+			parent.Intent.ClientToken == "" || parent.Intent.ProviderCreateStartedAt.IsZero() || root.Intent.ClientToken != parent.Intent.ClientToken {
 			return errors.New("RunInstances reached provider before parent and root-volume intents were durable")
 		}
 		return nil
@@ -281,8 +286,12 @@ func TestProvisionTypedEC2FailsClosedWhenRootEBSCannotBeReadBack(t *testing.T) {
 	if root.State != StateProvisioning || root.ProviderID != "" {
 		t.Fatalf("unverified root EBS became active: %+v", root)
 	}
-	if manifest, exists := fixture.mirror.manifests[fixture.deploymentID]; exists && len(manifest.Resources) > 1 {
-		t.Fatalf("unverified EC2/root facts reached the active manifest: %+v", manifest)
+	if manifest, exists := fixture.mirror.manifests[fixture.deploymentID]; exists {
+		for _, item := range manifest.Resources {
+			if (item.ResourceID == spec.ResourceID || item.ResourceID == rootID) && (item.State == StateActive || item.ProviderID != "") {
+				t.Fatalf("unverified EC2/root facts reached the active manifest: %+v", manifest)
+			}
+		}
 	}
 }
 
@@ -299,12 +308,167 @@ func testTypedEC2AWS(deploymentID string) *AWSResourceSpecV1 {
 
 func (provider *fakeProvider) FindByClientToken(_ context.Context, _ Type, _ string, token string) (ProviderObservation, bool, error) {
 	provider.mu.Lock()
+	if provider.findBarrier != nil && len(provider.byToken) == 0 {
+		barrier := provider.findBarrier
+		provider.findArrivals++
+		if provider.findArrivals == 2 {
+			close(barrier)
+			provider.findBarrier = nil
+		}
+		provider.mu.Unlock()
+		<-barrier
+		return ProviderObservation{}, false, nil
+	}
 	defer provider.mu.Unlock()
+	if provider.hiddenFinds > 0 {
+		provider.hiddenFinds--
+		return ProviderObservation{}, false, nil
+	}
+	if candidates := provider.ambiguousByToken[token]; len(candidates) > 1 {
+		return ProviderObservation{}, false, ErrReadBack
+	} else if len(candidates) == 1 {
+		return provider.resources[candidates[0]], true, nil
+	}
 	providerID, found := provider.byToken[token]
 	if !found {
 		return ProviderObservation{}, false, nil
 	}
 	return provider.resources[providerID], true, nil
+}
+
+func (provider *fakeProvider) FindAllByClientToken(_ context.Context, _ Type, _ string, token string) ([]ProviderObservation, error) {
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if provider.hiddenAllFinds > 0 {
+		provider.hiddenAllFinds--
+		return nil, nil
+	}
+	providerIDs := append([]string(nil), provider.ambiguousByToken[token]...)
+	if len(providerIDs) == 0 {
+		if providerID := provider.byToken[token]; providerID != "" {
+			providerIDs = append(providerIDs, providerID)
+		}
+	}
+	result := make([]ProviderObservation, 0, len(providerIDs))
+	for _, providerID := range providerIDs {
+		result = append(result, provider.resources[providerID])
+	}
+	return result, nil
+}
+
+func TestProvisionDoesNotRepeatAmbiguousEIPOrSnapshotCreateWhileTagsAreDelayed(t *testing.T) {
+	for _, kind := range []Type{TypeEIP, TypeSnapshot} {
+		t.Run(string(kind), func(t *testing.T) {
+			fixture := newResourceFixture(t)
+			fixture.provider.responseLost = true
+			fixture.provider.hiddenFinds = 3
+			fixture.provider.hiddenAllFinds = 2
+			spec := fixture.spec(kind, "delayed-provider-tags")
+
+			first, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+			if !errors.Is(err, ErrCreateAmbiguous) || first.State != StateProvisioning || fixture.provider.createCount != 1 {
+				t.Fatalf("first ambiguous create resource=%+v error=%v creates=%d", first, err, fixture.provider.createCount)
+			}
+			second, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+			if !errors.Is(err, ErrCreateAmbiguous) || second.State != StateProvisioning || fixture.provider.createCount != 1 {
+				t.Fatalf("delayed retry resource=%+v error=%v creates=%d", second, err, fixture.provider.createCount)
+			}
+			active, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+			if err != nil || active.State != StateActive || fixture.provider.createCount != 1 {
+				t.Fatalf("visible reconciliation resource=%+v error=%v creates=%d", active, err, fixture.provider.createCount)
+			}
+		})
+	}
+}
+
+func TestProvisionFencesConcurrentEIPAndSnapshotCreatesAcrossRepositoryCAS(t *testing.T) {
+	for _, kind := range []Type{TypeEIP, TypeSnapshot} {
+		t.Run(string(kind), func(t *testing.T) {
+			fixture := newResourceFixture(t)
+			fixture.provider.findBarrier = make(chan struct{})
+			spec := fixture.spec(kind, "concurrent-provider-create")
+			type result struct {
+				resource ResourceV1
+				err      error
+			}
+			results := make(chan result, 2)
+			for range 2 {
+				go func() {
+					created, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+					results <- result{resource: created, err: err}
+				}()
+			}
+			for range 2 {
+				value := <-results
+				if value.err != nil && !errors.Is(value.err, ErrCreateAmbiguous) {
+					t.Fatalf("concurrent Provision() resource=%+v error=%v", value.resource, value.err)
+				}
+			}
+			if fixture.provider.createCount != 1 {
+				t.Fatalf("concurrent provider creates=%d, want exactly one", fixture.provider.createCount)
+			}
+			active, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+			if err != nil || active.State != StateActive || fixture.provider.createCount != 1 {
+				t.Fatalf("fenced reconciliation resource=%+v error=%v creates=%d", active, err, fixture.provider.createCount)
+			}
+			stored, err := fixture.repository.Get(context.Background(), spec.ResourceID)
+			if err != nil || stored.Intent.ProviderCreateStartedAt.IsZero() {
+				t.Fatalf("durable provider-create fence missing: resource=%+v error=%v", stored, err)
+			}
+		})
+	}
+}
+
+func TestProvisionPersistsAndReapsEveryAmbiguousEIPAndSnapshotMatch(t *testing.T) {
+	for _, kind := range []Type{TypeEIP, TypeSnapshot} {
+		t.Run(string(kind), func(t *testing.T) {
+			fixture := newResourceFixture(t)
+			spec := fixture.spec(kind, "ambiguous-provider-matches")
+			token := clientToken("create", spec.AgentInstanceID, spec.DeploymentID, spec.ResourceID, spec.SpecDigest)
+			providerIDs := []string{string(kind) + "-candidate-a", string(kind) + "-candidate-b"}
+			for _, providerID := range providerIDs {
+				fixture.provider.resources[providerID] = ProviderObservation{
+					ProviderID: providerID, Type: kind, Exists: true, Tags: spec.mandatoryTags(), ObservedAt: fixture.now,
+				}
+			}
+			fixture.provider.ambiguousByToken[token] = append([]string(nil), providerIDs...)
+			fixture.provider.hiddenAllFinds = 1
+
+			provisioning, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+			if !errors.Is(err, ErrCreateAmbiguous) || provisioning.State != StateProvisioning || fixture.provider.createCount != 0 ||
+				provisioning.Intent.ProviderCreateStartedAt.IsZero() || len(provisioning.ProviderCandidateIDs) != 0 {
+				t.Fatalf("temporarily hidden ambiguous matches were not durably fenced: resource=%+v error=%v creates=%d", provisioning, err, fixture.provider.createCount)
+			}
+			provisioning, err = fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+			if !errors.Is(err, ErrCreateAmbiguous) || provisioning.State != StateProvisioning || fixture.provider.createCount != 0 ||
+				!slicesEqual(provisioning.ProviderCandidateIDs, providerIDs) {
+				t.Fatalf("visible ambiguous matches were not all recorded: resource=%+v error=%v creates=%d", provisioning, err, fixture.provider.createCount)
+			}
+			manifest, exists := fixture.mirror.manifests[fixture.deploymentID]
+			if !exists || len(manifest.Resources) != 1 || !slicesEqual(manifest.Resources[0].ProviderCandidateIDs, providerIDs) {
+				t.Fatalf("candidate cleanup evidence was not mirrored: %+v", manifest)
+			}
+
+			manifest.DestroyDeadline = fixture.now.Add(-time.Minute)
+			manifest.Resources[0].DestroyDeadline = manifest.DestroyDeadline
+			manifest.Resources[0].Tags[TagDestroyDeadline] = manifest.DestroyDeadline.Format(time.RFC3339)
+			fixture.mirror.manifests[fixture.deploymentID] = manifest
+			reaper, err := NewReaper(fixture.provider, fixture.mirror)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reaper.now = func() time.Time { return fixture.now }
+			report, err := reaper.Sweep(context.Background())
+			if err != nil || report.VerifiedDestroyed != 1 || report.Blocked != 0 || !slicesEqual(fixture.provider.deleteOrder, providerIDs) {
+				t.Fatalf("ambiguous candidate cleanup report=%+v error=%v deletes=%v", report, err, fixture.provider.deleteOrder)
+			}
+			for _, providerID := range providerIDs {
+				if fixture.provider.resources[providerID].Exists {
+					t.Fatalf("candidate %s remains billable after verified cleanup", providerID)
+				}
+			}
+		})
+	}
 }
 
 func (provider *fakeProvider) ReadBack(_ context.Context, kind Type, providerID, _ string) (ProviderObservation, error) {
@@ -349,6 +513,7 @@ type fakeMirror struct {
 	mu        sync.Mutex
 	manifests map[string]Manifest
 	failNext  bool
+	failAtPut int
 	puts      int
 }
 
@@ -358,7 +523,7 @@ func (mirror *fakeMirror) Put(_ context.Context, manifest Manifest) error {
 	mirror.mu.Lock()
 	defer mirror.mu.Unlock()
 	mirror.puts++
-	if mirror.failNext {
+	if mirror.failNext || mirror.failAtPut == mirror.puts {
 		mirror.failNext = false
 		return errors.New("simulated DynamoDB outage")
 	}
@@ -433,12 +598,12 @@ func TestProvisionPersistsIntentReconcilesLostResponseAndMirrorsBeforeActive(t *
 		if err != nil {
 			return err
 		}
-		if stored.State != StateProvisioning || stored.Intent.Operation != MutationCreate || stored.Intent.ClientToken != request.ClientToken {
+		if stored.State != StateProvisioning || stored.Intent.Operation != MutationCreate || stored.Intent.ClientToken != request.ClientToken || stored.Intent.ProviderCreateStartedAt.IsZero() {
 			return errors.New("provider called before durable mutation intent")
 		}
 		return nil
 	}
-	fixture.mirror.failNext = true
+	fixture.mirror.failAtPut = 2
 	resource, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
 	if err == nil || resource.State != StateProvisioning || resource.ProviderID == "" {
 		t.Fatalf("mirror failure must leave reconciled resource provisioning: resource=%+v err=%v", resource, err)
@@ -486,7 +651,7 @@ func TestProvisionChecksFreshnessOnlyBeforeFirstProviderMutation(t *testing.T) {
 		fixture.service.now = func() time.Time { return clock }
 		spec := fixture.spec(TypeEC2, "recoverable-worker")
 		authorization := fixture.createAuthorization()
-		fixture.mirror.failNext = true
+		fixture.mirror.failAtPut = 2
 
 		provisioning, err := fixture.service.Provision(context.Background(), spec, authorization)
 		if err == nil || provisioning.State != StateProvisioning || provisioning.ProviderID == "" || fixture.provider.createCount != 1 {
@@ -542,6 +707,63 @@ func TestDestroyUsesReverseDependenciesAndBlocksUntilReadBack(t *testing.T) {
 	for _, resource := range result.Resources {
 		if resource.State != StateVerifiedDestroyed || resource.ReadBack.Exists {
 			t.Fatalf("destroy was not independently read back: %+v", resource)
+		}
+	}
+}
+
+func TestEndpointAndSnapshotDestroyBeforeTheirDependencies(t *testing.T) {
+	fixture := newResourceFixture(t)
+	group, err := fixture.service.Provision(context.Background(), fixture.spec(TypeSG, "endpoint-security-group"), fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointAWS := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Endpoint: &AWSVPCEndpointSpecV1{
+		VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-west-2.s3",
+		SubnetIDs: []string{"subnet-0123456789abcdef0"}, PrivateDNSEnabled: true,
+	}}
+	endpointSpec := fixture.spec(TypeEndpoint, "private-s3-endpoint", group.ResourceID)
+	endpointSpec.AWS = endpointAWS
+	endpointSpec.SpecDigest, err = endpointAWS.Digest(TypeEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := fixture.service.Provision(context.Background(), endpointSpec, fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	volume, err := fixture.service.Provision(context.Background(), fixture.spec(TypeEBS, "data-volume"), fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotAWS := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Snapshot: &AWSEBSSnapshotSpecV1{
+		Description: "checkpoint before destroy", Disposition: AWSSnapshotDeleteWithDeployment,
+	}}
+	snapshotSpec := fixture.spec(TypeSnapshot, "destroy-checkpoint", volume.ResourceID)
+	snapshotSpec.AWS = snapshotAWS
+	snapshotSpec.SpecDigest, err = snapshotAWS.Digest(TypeSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := fixture.service.Provision(context.Background(), snapshotSpec, fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := fixture.service.Destroy(context.Background(), DestroyRequest{DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, ApprovalID: uuid.NewString()})
+	if err != nil || result.Blocked {
+		t.Fatalf("destroy endpoint/snapshot graph: result=%+v err=%v", result, err)
+	}
+	position := make(map[string]int, len(fixture.provider.deleteOrder))
+	for index, providerID := range fixture.provider.deleteOrder {
+		position[providerID] = index
+	}
+	if position[endpoint.ProviderID] >= position[group.ProviderID] || position[snapshot.ProviderID] >= position[volume.ProviderID] {
+		t.Fatalf("dependency destroy order = %v", fixture.provider.deleteOrder)
+	}
+	for _, item := range result.Resources {
+		if item.State != StateVerifiedDestroyed || item.ReadBack.Exists {
+			t.Fatalf("destroy was not independently verified: %+v", item)
 		}
 	}
 }

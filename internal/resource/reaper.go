@@ -91,9 +91,9 @@ func (reaper *Reaper) destroyManifest(ctx context.Context, manifest Manifest, no
 			blocked++
 			continue
 		}
-		if resource.ProviderID == "" {
+		if len(providerIDsForCleanup(resource)) == 0 {
 			resource.State = StateDestroyBlocked
-			resource.BlockedReason = "provider id is missing; read-back cannot verify destruction"
+			resource.BlockedReason = "provider id and candidate ids are missing; read-back cannot verify destruction"
 			resource.Revision++
 			resource.UpdatedAt = now
 			resources[resourceID] = resource
@@ -117,16 +117,15 @@ func (reaper *Reaper) destroyManifest(ctx context.Context, manifest Manifest, no
 			return manifest, destroyed, blocked, err
 		}
 
-		deleteErr := reaper.provider.Delete(ctx, resource.Type, resource.ProviderID, resource.Region, cloneMap(resource.Tags))
-		observation, readErr := reaper.provider.ReadBack(ctx, resource.Type, resource.ProviderID, resource.Region)
-		if readErr == nil && !observation.Exists {
+		evidence, verified, cleanupErr := deleteAndVerifyProviderIDs(ctx, reaper.provider, resource)
+		if verified {
 			resource.State = StateVerifiedDestroyed
-			resource.ReadBack = evidenceFrom(observation)
+			resource.ReadBack = evidence
 			resource.BlockedReason = ""
 			destroyed++
 		} else {
 			resource.State = StateDestroyBlocked
-			resource.BlockedReason = blockedReason(deleteErr, readErr, observation.Exists)
+			resource.BlockedReason = cleanupErr.Error()
 			blocked++
 		}
 		resource.Revision++

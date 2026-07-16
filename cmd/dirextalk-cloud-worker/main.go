@@ -25,6 +25,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
@@ -120,7 +121,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	runner := workerrunner.Runner{Control: control, Objects: objects, Registry: workerrunner.DefaultRegistry()}
+	installerClient, err := installer.NewSocketClient(installer.DefaultSocketPath)
+	if err != nil {
+		return err
+	}
+	installerAction, err := workerrunner.NewInstallerExecuteAction(installerClient, time.Now)
+	if err != nil {
+		return err
+	}
+	registry, err := workerrunner.NewRegistry(workerrunner.NoopAction{}, installerAction)
+	if err != nil {
+		return err
+	}
+	runner := workerrunner.Runner{Control: control, Objects: objects, Registry: registry}
 	slog.Info("cloud Worker starting typed execution", "deployment_id", launch.config.DeploymentID, "worker_id", launch.config.WorkerID)
 	result, err := runner.Run(ctx, launch.config)
 	if err != nil {

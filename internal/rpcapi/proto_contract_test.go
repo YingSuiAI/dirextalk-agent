@@ -74,6 +74,20 @@ func TestStreamChatUsesTypedEventsWithoutLegacyFinalFlag(t *testing.T) {
 	}
 }
 
+func TestChatCloudDialogueUsesVersionedTypedScope(t *testing.T) {
+	for _, request := range []proto.Message{&agentv1.ChatRequest{}, &agentv1.StreamChatRequest{}} {
+		descriptor := request.ProtoReflect().Descriptor()
+		field := descriptor.Fields().ByName("cloud_dialogue_scope")
+		if field == nil || field.Kind() != protoreflect.MessageKind || field.Message().Name() != "CloudDialogueScopeV1" {
+			t.Fatalf("%s.cloud_dialogue_scope is not a versioned typed scope", descriptor.Name())
+		}
+		scopeFields := field.Message().Fields()
+		if scopeFields.Len() != 1 || scopeFields.ByName("cloud_connection_id") == nil || scopeFields.ByName("cloud_connection_id").Kind() != protoreflect.StringKind {
+			t.Fatalf("CloudDialogueScopeV1 contains caller-controlled fields beyond cloud_connection_id: %v", scopeFields)
+		}
+	}
+}
+
 func TestCreateServiceKeyContractHasEncryptedDeliveryOnly(t *testing.T) {
 	descriptor := (&agentv1.CreateServiceKeyResponse{}).ProtoReflect().Descriptor()
 	if descriptor.Fields().ByName("secret") != nil {

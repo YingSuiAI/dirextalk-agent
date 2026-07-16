@@ -46,6 +46,7 @@ type ChatRequest struct {
 	ExpectedConversationRevision int64
 	Messages                     []modelapi.Message
 	MemoryDisabled               bool
+	CloudDialogue                *CloudDialogueScope
 	// MemoryModeBound is set only by the durable application coordinator after
 	// it has fenced this request and persisted the effective memory mode. It is
 	// deliberately excluded from request hashing and every public contract.

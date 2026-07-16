@@ -10,6 +10,8 @@ import (
 	"io"
 	"regexp"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 )
 
 const (
@@ -19,14 +21,16 @@ const (
 )
 
 var (
-	ErrInvalidBundle  = errors.New("invalid Worker execution bundle")
-	ErrDigestMismatch = errors.New("Worker bundle digest mismatch")
-	ErrUnknownAction  = errors.New("Worker action is not registered")
-	actionIDPattern   = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
+	ErrInvalidBundle   = errors.New("invalid Worker execution bundle")
+	ErrDigestMismatch  = errors.New("Worker bundle digest mismatch")
+	ErrUnknownAction   = errors.New("Worker action is not registered")
+	ErrInstallerAction = errors.New("Worker installer execution failed")
+	actionIDPattern    = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
 )
 
-// ExecutionBundleV1 contains only typed registry actions. There is no shell,
-// command, script, argv, or generic environment field in this wire shape.
+// ExecutionBundleV1 contains only typed registry actions. Installer actions
+// may carry an immutable signed capability containing exact argv, but there is
+// no unsigned runtime shell, command, argv, or generic environment field.
 type ExecutionBundleV1 struct {
 	SchemaVersion int        `json:"schema_version"`
 	RecipeSHA256  string     `json:"recipe_sha256"`
@@ -34,14 +38,24 @@ type ExecutionBundleV1 struct {
 }
 
 type ActionV1 struct {
-	ID             string       `json:"id"`
-	Kind           string       `json:"kind"`
-	TimeoutSeconds uint32       `json:"timeout_seconds"`
-	Noop           *NoopInputV1 `json:"noop,omitempty"`
+	ID             string                   `json:"id"`
+	Kind           string                   `json:"kind"`
+	TimeoutSeconds uint32                   `json:"timeout_seconds"`
+	Noop           *NoopInputV1             `json:"noop,omitempty"`
+	Installer      *InstallerExecuteInputV1 `json:"installer,omitempty"`
 }
 
 type NoopInputV1 struct {
 	DelayMillis uint32 `json:"delay_millis"`
+}
+
+// InstallerExecuteInputV1 selects one exact command from a signed,
+// deployment-scoped delivery. Its mutable selector is command_id; it has no
+// runtime argv, environment, path, AWS parameter, or secret value field.
+type InstallerExecuteInputV1 struct {
+	CommandID  string                       `json:"command_id"`
+	Delivery   installer.DeliveryV1         `json:"delivery"`
+	LeaseGrant installer.SignedLeaseGrantV1 `json:"lease_grant"`
 }
 
 type ActionResult struct {
@@ -110,7 +124,7 @@ type NoopAction struct{}
 func (NoopAction) Kind() string { return "worker.noop" }
 
 func (NoopAction) Validate(action ActionV1) error {
-	if action.Kind != (NoopAction{}).Kind() || action.Noop == nil || action.Noop.DelayMillis > 10_000 {
+	if action.Kind != (NoopAction{}).Kind() || action.Noop == nil || action.Installer != nil || action.Noop.DelayMillis > 10_000 {
 		return fmt.Errorf("%w: worker.noop input is invalid", ErrInvalidBundle)
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -267,18 +268,40 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 	if replayed, err := store.CreateIntent(ctx, volume); err != nil || replayed.ResourceID != volume.ResourceID {
 		t.Fatalf("resource intent replay=%+v err=%v", replayed, err)
 	}
+	secondStore, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleClaim := volume
+	staleClaim.Intent.ProviderCreateStartedAt = now.Add(100 * time.Millisecond)
+	staleClaim.ProviderCandidateIDs = []string{"vol-candidate-a", "vol-candidate-b"}
+	staleClaim.Revision, staleClaim.UpdatedAt = 2, now.Add(100*time.Millisecond)
+	claimed, err := store.Save(ctx, staleClaim, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondStore.Save(ctx, staleClaim, 1); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("cross-store provider-create fence CAS error=%v", err)
+	}
+	reloadedClaim, err := secondStore.Get(ctx, volume.ResourceID)
+	if err != nil || !reloadedClaim.Intent.ProviderCreateStartedAt.Equal(staleClaim.Intent.ProviderCreateStartedAt) ||
+		reloadedClaim.Revision != 2 || !slices.Equal(reloadedClaim.ProviderCandidateIDs, staleClaim.ProviderCandidateIDs) {
+		t.Fatalf("provider-create fence did not survive reload: resource=%+v error=%v", reloadedClaim, err)
+	}
+	volume = claimed
+	volume.ProviderCandidateIDs = nil
 	volume.ProviderID = "vol-fixture"
 	volume.ReadBack = resource.ReadBackEvidence{
 		Exists: true, ProviderID: volume.ProviderID, ObservedAt: now.Add(time.Second), TagDigest: "sha256:" + strings.Repeat("d", 64),
 	}
-	volume.State, volume.Revision, volume.UpdatedAt = resource.StateActive, 2, now.Add(time.Second)
-	volume, err = store.Save(ctx, volume, 1)
+	volume.State, volume.Revision, volume.UpdatedAt = resource.StateActive, 3, now.Add(time.Second)
+	volume, err = store.Save(ctx, volume, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stale := volume
-	stale.Revision = 2
-	if _, err := store.Save(ctx, stale, 1); !errors.Is(err, resource.ErrRevisionConflict) {
+	stale.Revision = 3
+	if _, err := store.Save(ctx, stale, 2); !errors.Is(err, resource.ErrRevisionConflict) {
 		t.Fatalf("stale resource CAS error=%v", err)
 	}
 

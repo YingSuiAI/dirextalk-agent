@@ -97,6 +97,10 @@ func TestQuoteRequiresRequoteForExpiryAndEveryCompleteScopeDrift(t *testing.T) {
 		{"disk", func(s *ScopeV1) { s.Resource.DiskGiB++ }},
 		{"image", func(s *ScopeV1) { s.Resource.WorkerImageDigest = testDigest("8") }},
 		{"network", func(s *ScopeV1) { s.Network.SubnetID = "subnet-0bbbbbbbbbbbbbbbb" }},
+		{"security group mode", func(s *ScopeV1) {
+			s.Network.SecurityGroupMode, s.Network.SecurityGroupID = SecurityGroupCreateDedicated, ""
+		}},
+		{"public IPv4", func(s *ScopeV1) { s.Network.PublicIPv4 = !s.Network.PublicIPv4 }},
 		{"secret", func(s *ScopeV1) { s.SecretScope[0].Purpose = "changed purpose" }},
 		{"integration", func(s *ScopeV1) { s.IntegrationScope[0].Scopes = []string{"read", "write"} }},
 		{"retention", func(s *ScopeV1) { s.Retention.GracePeriodSeconds++ }},
@@ -116,6 +120,30 @@ func TestQuoteRequiresRequoteForExpiryAndEveryCompleteScopeDrift(t *testing.T) {
 	}
 	if err := got.ValidateSelection(got.ValidUntil, CandidateRecommended, selected.Scope); !errors.Is(err, ErrRequoteRequired) {
 		t.Fatalf("expired quote error = %v, want ErrRequoteRequired", err)
+	}
+}
+
+func TestNetworkScopeSeparatesOutboundPublicIPv4FromPublicEntryPoint(t *testing.T) {
+	existing := NetworkScopeV1{
+		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
+		SecurityGroupID: "sg-0123456789abcdef0", EntryPoint: EntryPointNone,
+	}
+	if err := validateNetwork(existing); err != nil {
+		t.Fatalf("legacy existing security group scope was rejected: %v", err)
+	}
+	dedicated := existing
+	dedicated.SecurityGroupMode, dedicated.SecurityGroupID = SecurityGroupCreateDedicated, ""
+	dedicated.PublicIPv4 = true
+	if err := validateNetwork(dedicated); err != nil {
+		t.Fatalf("outbound-only public IPv4 was treated as public ingress: %v", err)
+	}
+	dedicated.SecurityGroupID = "sg-0123456789abcdef0"
+	if err := validateNetwork(dedicated); err == nil {
+		t.Fatal("dedicated security group mode accepted an existing group ID")
+	}
+	existing.SecurityGroupMode, existing.SecurityGroupID = SecurityGroupExisting, ""
+	if err := validateNetwork(existing); err == nil {
+		t.Fatal("existing security group mode accepted an empty group ID")
 	}
 }
 

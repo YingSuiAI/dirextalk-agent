@@ -357,6 +357,7 @@ Resources:
                   - ec2:TerminateInstances
                   - ec2:DeleteVolume
                   - ec2:DeleteNetworkInterface
+                  - ec2:DisassociateAddress
                   - ec2:ReleaseAddress
                   - ec2:DeleteSecurityGroup
                   - ec2:DeleteSnapshot
@@ -484,7 +485,9 @@ Resources:
               - ec2:DescribeInstanceTypeOfferings
               - ec2:DescribeInstanceTypes
               - ec2:DescribeInstances
+              - ec2:DescribeInternetGateways
               - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeRouteTables
               - ec2:DescribeSecurityGroups
               - ec2:DescribeSnapshots
               - ec2:DescribeSubnets
@@ -498,6 +501,7 @@ Resources:
               - ec2:AllocateAddress
               - ec2:CreateNetworkInterface
               - ec2:CreateSecurityGroup
+              - ec2:CreateSnapshot
               - ec2:CreateVolume
               - ec2:CreateVpcEndpoint
             Resource:
@@ -507,13 +511,36 @@ Resources:
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
-          - Sid: RunTaggedComputeInstanceAndVolume
+          - Sid: UseNetworkCreationInputs
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:CreateVpcEndpoint
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+          - Sid: UseVPCForNetworkCreation
+            Effect: Allow
+            Action:
+              - ec2:CreateSecurityGroup
+              - ec2:CreateVpcEndpoint
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*
+          - Sid: UseOwnedVolumeForSnapshot
+            Effect: Allow
+            Action:
+              - ec2:CreateSnapshot
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: RunTaggedInstanceVolume
             Effect: Allow
             Action:
               - ec2:RunInstances
@@ -528,19 +555,7 @@ Resources:
                 ec2:MetadataHttpTokens: required
               BoolIfExists:
                 ec2:Encrypted: 'true'
-          - Sid: RunTaggedComputeNetworkInterface
-            Effect: Allow
-            Action:
-              - ec2:RunInstances
-            Resource:
-              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
-            Condition:
-              StringEquals:
-                aws:RequestTag/dirextalk:agent_instance_id:
-                  Ref: AgentInstanceId
-              Bool:
-                ec2:AssociatePublicIpAddress: 'false'
-          - Sid: UseOwnedComputeNetworkInterface
+          - Sid: UseOwnedNetworkInterface
             Effect: Allow
             Action:
               - ec2:RunInstances
@@ -571,7 +586,7 @@ Resources:
                   Ref: AWS::AccountId
                 ec2:ResourceTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
-          - Sid: UseComputeLaunchNetworkInputs
+          - Sid: UseLaunchNetworkInputs
             Effect: Allow
             Action:
               - ec2:RunInstances
@@ -583,22 +598,33 @@ Resources:
             Action:
               - ec2:CreateTags
             Resource:
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
                 ec2:CreateAction:
+                  - AllocateAddress
                   - CreateNetworkInterface
                   - CreateSecurityGroup
+                  - CreateSnapshot
                   - CreateVolume
                   - CreateVpcEndpoint
                   - RunInstances
-          - Sid: CreateWorkerImageFromOwnedBuilder
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: CreateImageFromOwnedBuilder
             Effect: Allow
             Action:
               - ec2:CreateImage
@@ -609,7 +635,7 @@ Resources:
                 ec2:ResourceTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
                 ec2:ResourceTag/dirextalk:component: worker-ami-builder
-          - Sid: CreateWorkerImageOutput
+          - Sid: CreateImageOutput
             Effect: Allow
             Action:
               - ec2:CreateImage
@@ -643,25 +669,17 @@ Resources:
               - ec2:DeleteSnapshot
               - ec2:DeleteVolume
               - ec2:DeleteVpcEndpoints
-              - ec2:DetachVolume
               - ec2:DisassociateAddress
-              - ec2:ModifyInstanceAttribute
-              - ec2:ModifyVolume
-              - ec2:RebootInstances
               - ec2:ReleaseAddress
               - ec2:RevokeSecurityGroupEgress
               - ec2:RevokeSecurityGroupIngress
-              - ec2:StartInstances
-              - ec2:StopInstances
               - ec2:TerminateInstances
             Resource:
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+              # Each exact action above supports only the tracked EC2 ledger
+              # types. The resource-type wildcard avoids the fixed IAM inline
+              # policy quota while the ownership tag remains mandatory.
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
             Condition:
               StringEquals:
                 ec2:ResourceTag/dirextalk:agent_instance_id:
@@ -681,17 +699,28 @@ Resources:
             Action:
               - ec2:CreateTags
             Resource:
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
+              # AWS documents this resource shape for CreateTags. Both the
+              # existing and requested ownership values are still exact.
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
                 ec2:ResourceTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
           - Sid: PassOnlyWorkerRole
             Effect: Allow
             Action:

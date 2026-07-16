@@ -18,6 +18,33 @@ type leaseGuard struct {
 	once   sync.Once
 }
 
+// LeaseRenewalGuard exposes the canonical cancellation and join semantics to
+// trusted application coordinators that own a separate durable lease. It does
+// not expose persistence or fencing; callers provide the typed renewal
+// mutation and must still complete with the originally claimed epoch.
+type LeaseRenewalGuard struct {
+	inner *leaseGuard
+}
+
+// StartLeaseRenewalGuard keeps one durable lease alive for the duration of an
+// external execution. Renewal failure cancels the returned context
+// immediately, and Stop joins the renewer before a fenced completion begins.
+func StartLeaseRenewalGuard(
+	parent context.Context,
+	lease time.Duration,
+	renew func(context.Context, time.Duration) error,
+) (context.Context, *LeaseRenewalGuard) {
+	executionCtx, guard := startLeaseGuard(parent, lease, renew)
+	return executionCtx, &LeaseRenewalGuard{inner: guard}
+}
+
+func (guard *LeaseRenewalGuard) Stop() error {
+	if guard == nil {
+		return nil
+	}
+	return guard.inner.stop()
+}
+
 // startLeaseGuard keeps a fenced claim alive only while the associated
 // execution is running. A renewal failure cancels that execution; a normal
 // stop cancels and joins the goroutine before completion is attempted.

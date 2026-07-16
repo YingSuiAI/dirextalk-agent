@@ -17,10 +17,11 @@ import (
 )
 
 // AWSResourcePlanBuilder projects exactly the resource scope covered by the
-// device signature. The first validation slice supports an approved existing
-// security group, one exclusive ENI, and one exclusive EC2 instance. It fails
-// closed for Spot and persistent data volumes until their additional quote and
-// lifecycle contracts are represented in PlanV1.
+// device signature. The first validation slice supports either an approved
+// existing security group or an exclusive no-ingress security group, one
+// exclusive ENI, an optional outbound-only Elastic IP, and one exclusive EC2
+// instance. It fails closed for Spot and persistent data volumes until their
+// additional quote and lifecycle contracts are represented in PlanV1.
 type AWSResourcePlanBuilder struct {
 	agentInstanceID string
 }
@@ -68,6 +69,46 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		ApprovedPlanHash: operation.ApprovedPlanHash, ApprovalID: operation.Launch.ApprovalID,
 		Retention: retention, DestroyDeadline: deadline, AutoDestroyApproved: autoDestroy,
 	}
+	result := make([]resource.ProvisionSpec, 0, 4)
+	securityGroupID := plan.NetworkScope.SecurityGroupID
+	securityGroupMode := plan.NetworkScope.SecurityGroupMode
+	if securityGroupMode == "" && securityGroupID != "" {
+		securityGroupMode = cloudapproval.SecurityGroupExisting
+	}
+	var eniDependencies []string
+	switch securityGroupMode {
+	case cloudapproval.SecurityGroupExisting:
+		if securityGroupID == "" {
+			return nil, ErrInvalid
+		}
+	case cloudapproval.SecurityGroupCreateDedicated:
+		if securityGroupID != "" {
+			return nil, ErrInvalid
+		}
+		groupID := deterministicID(operation.DeploymentID, "security-group")
+		groupAWS := &resource.AWSResourceSpecV1{
+			SchemaVersion: resource.AWSResourceSpecSchemaV1,
+			SecurityGroup: &resource.AWSSecurityGroupSpecV1{
+				VPCID: plan.NetworkScope.VPCID, Description: "Dirextalk exclusive Worker " + operation.DeploymentID,
+				Egress: []resource.AWSNetworkRuleV1{
+					{Protocol: "tcp", FromPort: 53, ToPort: 53, CIDRv4: "0.0.0.0/0"},
+					{Protocol: "udp", FromPort: 53, ToPort: 53, CIDRv4: "0.0.0.0/0"},
+					{Protocol: "tcp", FromPort: 443, ToPort: 443, CIDRv4: "0.0.0.0/0"},
+				},
+			},
+		}
+		groupDigest, digestErr := groupAWS.Digest(resource.TypeSG)
+		if digestErr != nil {
+			return nil, ErrInvalid
+		}
+		group := common
+		group.ResourceID, group.Type, group.LogicalName, group.SpecDigest, group.AWS = groupID, resource.TypeSG, "worker-security-group", groupDigest, groupAWS
+		result = append(result, group)
+		eniDependencies = []string{groupID}
+	default:
+		return nil, ErrInvalid
+	}
+
 	eniID := deterministicID(operation.DeploymentID, "eni")
 	eniAWS := &resource.AWSResourceSpecV1{
 		SchemaVersion: resource.AWSResourceSpecSchemaV1,
@@ -82,6 +123,20 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	}
 	eni := common
 	eni.ResourceID, eni.Type, eni.LogicalName, eni.SpecDigest, eni.AWS = eniID, resource.TypeENI, "worker-network-interface", eniDigest, eniAWS
+	eni.DependsOn = eniDependencies
+	result = append(result, eni)
+
+	if plan.NetworkScope.PublicIPv4 {
+		eipAWS := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, ElasticIP: &resource.AWSElasticIPSpecV1{Domain: "vpc"}}
+		eipDigest, digestErr := eipAWS.Digest(resource.TypeEIP)
+		if digestErr != nil {
+			return nil, ErrInvalid
+		}
+		eip := common
+		eip.ResourceID, eip.Type, eip.LogicalName = deterministicID(operation.DeploymentID, "eip"), resource.TypeEIP, "worker-public-ipv4"
+		eip.SpecDigest, eip.DependsOn, eip.AWS = eipDigest, []string{eniID}, eipAWS
+		result = append(result, eip)
+	}
 
 	instanceAWS := &resource.AWSResourceSpecV1{
 		SchemaVersion: resource.AWSResourceSpecSchemaV1,
@@ -107,7 +162,8 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	instance := common
 	instance.ResourceID, instance.Type, instance.LogicalName = deterministicID(operation.DeploymentID, "ec2"), resource.TypeEC2, "exclusive-cloud-worker"
 	instance.SpecDigest, instance.DependsOn, instance.AWS = instanceDigest, []string{eniID}, instanceAWS
-	return []resource.ProvisionSpec{eni, instance}, nil
+	result = append(result, instance)
+	return result, nil
 }
 
 func resourceRetention(plan cloudapproval.PlanV1, operation Operation) (task.RetentionPolicy, time.Time, bool, error) {

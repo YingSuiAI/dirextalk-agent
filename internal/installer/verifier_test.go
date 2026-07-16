@@ -43,14 +43,16 @@ func (f *fakeArtifactInspector) Verify(_ context.Context, artifact ArtifactV1) e
 }
 
 type verifierFixture struct {
-	now       time.Time
-	private   ed25519.PrivateKey
-	public    ed25519.PublicKey
-	binding   BindingV1
-	plan      InstallerPlanV1
-	request   RequestV1
-	inspector *fakeArtifactInspector
-	verifier  *Verifier
+	now            time.Time
+	private        ed25519.PrivateKey
+	public         ed25519.PublicKey
+	binding        BindingV1
+	plan           InstallerPlanV1
+	request        RequestV1
+	leaseEpoch     int64
+	leaseExpiresAt time.Time
+	inspector      *fakeArtifactInspector
+	verifier       *Verifier
 }
 
 func newVerifierFixture(t *testing.T) verifierFixture {
@@ -66,7 +68,6 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 		TaskID:          "22222222-2222-4222-8222-222222222222",
 		PlanHash:        "sha256:" + strings.Repeat("1", 64),
 		ApprovalID:      "33333333-3333-4333-8333-333333333333",
-		LeaseEpoch:      7,
 		RecipeDigest:    "sha256:" + strings.Repeat("2", 64),
 	}
 	artifactContent := []byte("digest-pinned artifact")
@@ -78,7 +79,7 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 			Name:       "openclaw-bundle",
 			SHA256:     digestString(artifactDigest),
 			SizeBytes:  int64(len(artifactContent)),
-			TargetPath: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts/openclaw.tar.zst",
+			TargetPath: PreinstalledArtifactRoot + "/openclaw.tar.zst",
 		}},
 		SecretRefs: []string{"secret_ref:deployment/model-token"},
 		Network: NetworkV1{
@@ -89,8 +90,8 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 		Volumes: []VolumeV1{{Name: "knowledge", MountPath: "/srv/knowledge", ReadOnly: false, SizeGiB: 40}},
 		Commands: []CommandV1{{
 			CommandID:        "install-openclaw",
-			Argv:             []string{"/bin/sh", "-ceu", "printf '%s' \"$1\"", "installer", "ready"},
-			WorkingDirectory: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111",
+			Argv:             []string{PreinstalledArtifactRoot + "/openclaw.tar.zst", "--mode", "ready"},
+			WorkingDirectory: PreinstalledArtifactRoot,
 			TimeoutSeconds:   300,
 			ArtifactRefs:     []string{"openclaw-bundle"},
 			VolumeRefs:       []string{"knowledge"},
@@ -118,13 +119,16 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 	inspector := &fakeArtifactInspector{}
 	verifier, err := NewVerifier(VerifierConfig{
 		PublicKey: publicKey, ExpectedBinding: binding,
-		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		TargetRoot: PreinstalledArtifactRoot,
 		Now:        func() time.Time { return now }, Inspector: inspector, MaxIdempotencyEntries: 16,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return verifierFixture{now: now, private: privateKey, public: publicKey, binding: binding, plan: plan, request: request, inspector: inspector, verifier: verifier}
+	return verifierFixture{
+		now: now, private: privateKey, public: publicKey, binding: binding, plan: plan, request: request,
+		leaseEpoch: 7, leaseExpiresAt: now.Add(time.Minute), inspector: inspector, verifier: verifier,
+	}
 }
 
 func TestExecutorRunsOnlyExactSignedCommandAndReplaysFromPersistentJournal(t *testing.T) {
@@ -141,7 +145,7 @@ func TestExecutorRunsOnlyExactSignedCommandAndReplaysFromPersistentJournal(t *te
 	runner := &fakeCommandRunner{}
 	verifier, err := NewVerifier(VerifierConfig{
 		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
-		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		TargetRoot: PreinstalledArtifactRoot,
 		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector,
 		Runner: runner, Journal: journal,
 	})
@@ -157,7 +161,7 @@ func TestExecutorRunsOnlyExactSignedCommandAndReplaysFromPersistentJournal(t *te
 	}
 	execution := runner.executions[0]
 	want := fixture.plan.Commands[0]
-	if !slices.Equal(execution.Argv, want.Argv) || execution.WorkingDirectory != want.WorkingDirectory || execution.Timeout != 300*time.Second ||
+	if !slices.Equal(execution.Argv, want.Argv) || execution.WorkingDirectory != want.WorkingDirectory || execution.Timeout != time.Minute ||
 		!slices.Equal(execution.Environment, []string{SafePathEnvironment}) {
 		t.Fatalf("execution escaped signed command: %#v", execution)
 	}
@@ -170,10 +174,14 @@ func TestExecutorRunsOnlyExactSignedCommandAndReplaysFromPersistentJournal(t *te
 		t.Fatal(err)
 	}
 	replayRunner := &fakeCommandRunner{}
+	fixture.now = fixture.now.Add(30 * time.Second)
+	fixture.leaseEpoch++
+	fixture.leaseExpiresAt = fixture.now.Add(time.Minute)
+	resignRequest(t, &fixture)
 	replayVerifier, err := NewVerifier(VerifierConfig{
 		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
-		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
-		Now:        func() time.Time { return fixture.now.Add(24 * time.Hour) }, Inspector: &fakeArtifactInspector{},
+		TargetRoot: PreinstalledArtifactRoot,
+		Now:        func() time.Time { return fixture.now }, Inspector: &fakeArtifactInspector{},
 		Runner: replayRunner, Journal: reopened,
 	})
 	if err != nil {
@@ -188,8 +196,8 @@ func TestExecutorRunsOnlyExactSignedCommandAndReplaysFromPersistentJournal(t *te
 	}
 	changed := fixture.request
 	changed.RequestID = "66666666-6666-4666-8666-666666666666"
-	if _, err := replayVerifier.Verify(context.Background(), changed); !errors.Is(err, Error(CodeIdempotencyConflict)) {
-		t.Fatalf("changed request reused persistent key: %v", err)
+	if _, err := replayVerifier.Verify(context.Background(), changed); !errors.Is(err, Error(CodeLeaseRejected)) {
+		t.Fatalf("changed operation identity was accepted: %v", err)
 	}
 }
 
@@ -199,13 +207,16 @@ func TestExecutorRecoversRunningJournalAsNonReplayableInterruption(t *testing.T)
 	fixture.request.ArtifactName = ""
 	fixture.request.CommandID = "install-openclaw"
 	resignRequest(t, &fixture)
-	digest, err := canonical.Digest(fixture.request)
+	digest, err := executionOperationDigest(fixture.request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	journalPath := filepath.Join(t.TempDir(), "execution.journal")
 	journal, err := openExecutionJournal(journalPath, false)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.FenceLease(fixture.leaseEpoch); err != nil {
 		t.Fatal(err)
 	}
 	_, replayed, err := journal.Begin(fixture.request.IdempotencyKey, digest, ResponseV1{
@@ -231,9 +242,13 @@ func TestExecutorRecoversRunningJournalAsNonReplayableInterruption(t *testing.T)
 		t.Fatal(err)
 	}
 	runner := &fakeCommandRunner{}
+	fixture.now = fixture.now.Add(30 * time.Second)
+	fixture.leaseEpoch++
+	fixture.leaseExpiresAt = fixture.now.Add(time.Minute)
+	resignRequest(t, &fixture)
 	verifier, err := NewVerifier(VerifierConfig{
 		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
-		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		TargetRoot: PreinstalledArtifactRoot,
 		Now:        func() time.Time { return fixture.now }, Inspector: &fakeArtifactInspector{}, Runner: runner, Journal: reopened,
 	})
 	if err != nil {
@@ -262,6 +277,10 @@ func TestExecutorRejectsRuntimeScopeAndSignedCommandChanges(t *testing.T) {
 			f.request.SignedPlan.Plan.Commands[0].Argv[2] += "\x00hidden"
 			resignRequest(t, f)
 		}},
+		{name: "plaintext secret in argument", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
+			f.request.SignedPlan.Plan.Commands[0].Argv = append(f.request.SignedPlan.Plan.Commands[0].Argv, "sk-0123456789abcdef0123456789abcdef")
+			resignRequest(t, f)
+		}},
 		{name: "missing artifact ref", code: CodeInvalidRequest, edit: func(f *verifierFixture) {
 			f.request.SignedPlan.Plan.Commands[0].ArtifactRefs = nil
 			resignRequest(t, f)
@@ -286,6 +305,7 @@ func TestExecutorRejectsRuntimeScopeAndSignedCommandChanges(t *testing.T) {
 			fixture.request.Action = ActionExecute
 			fixture.request.ArtifactName = ""
 			fixture.request.CommandID = "install-openclaw"
+			resignRequest(t, &fixture)
 			test.edit(&fixture)
 			journal, err := openExecutionJournal(filepath.Join(t.TempDir(), "execution.journal"), false)
 			if err != nil {
@@ -294,7 +314,7 @@ func TestExecutorRejectsRuntimeScopeAndSignedCommandChanges(t *testing.T) {
 			runner := &fakeCommandRunner{}
 			verifier, err := NewVerifier(VerifierConfig{
 				PublicKey: fixture.public, ExpectedBinding: fixture.binding,
-				TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+				TargetRoot: PreinstalledArtifactRoot,
 				Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
 			})
 			if err != nil {
@@ -327,7 +347,7 @@ func TestExecutorResponseAndJournalDoNotLeakCommandOrRunnerError(t *testing.T) {
 	}}
 	verifier, err := NewVerifier(VerifierConfig{
 		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
-		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		TargetRoot: PreinstalledArtifactRoot,
 		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
 	})
 	if err != nil {
@@ -379,7 +399,7 @@ func TestExecutorEnforcesSignedTimeoutAndDoesNotRetry(t *testing.T) {
 	}}
 	verifier, err := NewVerifier(VerifierConfig{
 		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
-		TargetRoot: "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts",
+		TargetRoot: PreinstalledArtifactRoot,
 		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
 	})
 	if err != nil {
@@ -398,6 +418,40 @@ func TestExecutorEnforcesSignedTimeoutAndDoesNotRetry(t *testing.T) {
 	}
 	if !second.Replayed || second.ErrorCode != CodeExecutionTimedOut || len(runner.executions) != 1 {
 		t.Fatalf("timed-out command was retried: response=%#v calls=%d", second, len(runner.executions))
+	}
+}
+
+func TestExecutorCannotRunBeyondSignedLeaseExpiry(t *testing.T) {
+	fixture := newVerifierFixture(t)
+	fixture.leaseExpiresAt = fixture.now.Add(25 * time.Millisecond)
+	fixture.request.Action = ActionExecute
+	fixture.request.ArtifactName = ""
+	fixture.request.CommandID = "install-openclaw"
+	resignRequest(t, &fixture)
+	journal, err := openExecutionJournal(filepath.Join(t.TempDir(), "execution.journal"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeCommandRunner{run: func(ctx context.Context, _ CommandExecution) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	verifier, err := NewVerifier(VerifierConfig{
+		PublicKey: fixture.public, ExpectedBinding: fixture.binding,
+		TargetRoot: PreinstalledArtifactRoot,
+		Now:        func() time.Time { return fixture.now }, Inspector: fixture.inspector, Runner: runner, Journal: journal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	response, err := verifier.Verify(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != StatusFailed || response.ErrorCode != CodeExecutionTimedOut || len(runner.executions) != 1 ||
+		runner.executions[0].Timeout > 25*time.Millisecond || time.Since(started) > time.Second {
+		t.Fatalf("signed lease did not stop execution: response=%#v execution=%#v elapsed=%s", response, runner.executions, time.Since(started))
 	}
 }
 
@@ -527,7 +581,7 @@ func TestVerifierRejectsSecurityBoundaryChanges(t *testing.T) {
 			f.now = f.now.Add(10 * time.Minute)
 			f.verifier.now = func() time.Time { return f.now }
 		}},
-		{name: "request binding mismatch", code: CodeBindingMismatch, edit: func(f *verifierFixture) { f.request.Binding.LeaseEpoch++ }},
+		{name: "request binding mismatch", code: CodeBindingMismatch, edit: func(f *verifierFixture) { f.request.Binding.TaskID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }},
 		{name: "signed plan binding mismatch", code: CodeBindingMismatch, edit: func(f *verifierFixture) {
 			f.request.SignedPlan.Plan.Binding.TaskID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 			resignRequest(t, f)
@@ -536,7 +590,7 @@ func TestVerifierRejectsSecurityBoundaryChanges(t *testing.T) {
 		{name: "wrong signer", code: CodeInvalidSignature, edit: func(f *verifierFixture) { f.request.SignedPlan.SignerKeyID = "sha256:" + strings.Repeat("f", 64) }},
 		{name: "undeclared artifact", code: CodeArtifactNotAllowed, edit: func(f *verifierFixture) { f.request.ArtifactName = "other" }},
 		{name: "path traversal", code: CodeInvalidPath, edit: func(f *verifierFixture) {
-			f.request.SignedPlan.Plan.Artifacts[0].TargetPath = "/opt/dirextalk/deployments/11111111-1111-4111-8111-111111111111/artifacts/../escape"
+			f.request.SignedPlan.Plan.Artifacts[0].TargetPath = PreinstalledArtifactRoot + "/../escape"
 			resignRequest(t, f)
 		}},
 		{name: "outside target root", code: CodeInvalidPath, edit: func(f *verifierFixture) {
@@ -639,6 +693,38 @@ func resignRequest(t *testing.T, fixture *verifierFixture) {
 		t.Fatal(err)
 	}
 	fixture.request.SignedPlan.Signature = ed25519.Sign(fixture.private, payload)
+	if fixture.request.Action != ActionExecute {
+		return
+	}
+	delivery := DeliveryV1{
+		SchemaVersion: DeliverySchemaV1, PublicKey: fixture.public,
+		Config:     DaemonConfigV1{SchemaVersion: DaemonConfigSchema, Binding: fixture.request.SignedPlan.Plan.Binding, TargetRoot: PreinstalledArtifactRoot},
+		SignedPlan: fixture.request.SignedPlan,
+	}
+	delivery.TrustID, err = deliveryDigest(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planDigest, err := canonical.Digest(fixture.request.SignedPlan.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID := installerOperationID(delivery.TrustID, fixture.request.CommandID)
+	grant := LeaseGrantV1{
+		SchemaVersion: LeaseGrantSchemaV1, TrustID: delivery.TrustID, Binding: fixture.request.SignedPlan.Plan.Binding,
+		PlanDigest: planDigest, OperationID: operationID, CommandID: fixture.request.CommandID, LeaseEpoch: fixture.leaseEpoch,
+		IssuedAt: fixture.now.UTC().Format(time.RFC3339Nano), ExpiresAt: fixture.leaseExpiresAt.UTC().Format(time.RFC3339Nano),
+	}
+	grantPayload, err := LeaseGrantSigningBytes(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.RequestID = installerRequestID(operationID)
+	fixture.request.IdempotencyKey = installerIdempotencyKey(operationID)
+	fixture.request.OperationID = operationID
+	fixture.request.LeaseGrant = &SignedLeaseGrantV1{
+		Grant: grant, SignerKeyID: fixture.request.SignedPlan.SignerKeyID, Signature: ed25519.Sign(fixture.private, grantPayload),
+	}
 }
 
 func writeTestFrame(buffer *bytes.Buffer, payload []byte) {

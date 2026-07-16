@@ -41,6 +41,7 @@ type EC2API interface {
 	DescribeNetworkInterfaces(context.Context, *ec2.DescribeNetworkInterfacesInput, ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
 	DeleteNetworkInterface(context.Context, *ec2.DeleteNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error)
 	DescribeAddresses(context.Context, *ec2.DescribeAddressesInput, ...func(*ec2.Options)) (*ec2.DescribeAddressesOutput, error)
+	DisassociateAddress(context.Context, *ec2.DisassociateAddressInput, ...func(*ec2.Options)) (*ec2.DisassociateAddressOutput, error)
 	ReleaseAddress(context.Context, *ec2.ReleaseAddressInput, ...func(*ec2.Options)) (*ec2.ReleaseAddressOutput, error)
 	DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error)
 	DeleteSecurityGroup(context.Context, *ec2.DeleteSecurityGroupInput, ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
@@ -71,6 +72,10 @@ func (provider *EC2Provider) Create(context.Context, resource.ProviderCreateRequ
 
 func (provider *EC2Provider) FindByClientToken(context.Context, resource.Type, string, string) (resource.ProviderObservation, bool, error) {
 	return resource.ProviderObservation{}, false, ErrUnsupportedMutation
+}
+
+func (provider *EC2Provider) FindAllByClientToken(context.Context, resource.Type, string, string) ([]resource.ProviderObservation, error) {
+	return nil, ErrUnsupportedMutation
 }
 
 func (provider *EC2Provider) ListOwned(context.Context, string) ([]resource.ProviderObservation, error) {
@@ -224,7 +229,19 @@ func (provider *EC2Provider) delete(ctx context.Context, kind resource.Type, pro
 		_, err := provider.client.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: &providerID})
 		return err
 	case resource.TypeEIP:
-		_, err := provider.client.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: &providerID})
+		output, err := provider.client.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{AllocationIds: []string{providerID}})
+		if err != nil {
+			return err
+		}
+		if output == nil || len(output.Addresses) != 1 || aws.ToString(output.Addresses[0].AllocationId) != providerID {
+			return ErrCloudReadBack
+		}
+		if associationID := aws.ToString(output.Addresses[0].AssociationId); associationID != "" {
+			if _, err := provider.client.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{AssociationId: &associationID}); err != nil && !isNotFound(err) {
+				return err
+			}
+		}
+		_, err = provider.client.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: &providerID})
 		return err
 	case resource.TypeSG:
 		_, err := provider.client.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: &providerID})

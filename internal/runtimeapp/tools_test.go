@@ -46,6 +46,32 @@ func TestDurableToolProviderExecutesOnceAndReplaysCompletion(t *testing.T) {
 	}
 }
 
+func TestDurableToolProviderToolsWithLeaseBindsTrustedScope(t *testing.T) {
+	store := newToolStoreFake()
+	store.parentEpoch = 7
+	provider, err := NewDurableToolProvider(store, oneToolProvider("lookup", func(context.Context, runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
+		return runtimeapi.ToolResult{Content: `{"ok":true}`}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := runtimeapi.ToolRequest{RequestID: "request-1", OwnerID: "owner-1", ConversationID: "conversation-1"}
+	tools, err := provider.ToolsWithLease(context.Background(), validScope(), 7, request)
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("ToolsWithLease() = %#v, %v", tools, err)
+	}
+	result, err := tools[0].Run(context.Background(), validToolInvocation())
+	if err != nil || result.Content != `{"ok":true}` {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	if _, err := provider.ToolsWithLease(context.Background(), runtimeapi.MutationScope{}, 7, request); !errors.Is(err, ErrRuntimeLeaseMissing) {
+		t.Fatalf("invalid scope error = %v", err)
+	}
+	if _, err := provider.ToolsWithLease(context.Background(), validScope(), 0, request); !errors.Is(err, ErrRuntimeLeaseMissing) {
+		t.Fatalf("invalid lease error = %v", err)
+	}
+}
+
 func TestDurableToolProviderPersistsStableFailureWithoutLeakingCause(t *testing.T) {
 	store := newToolStoreFake()
 	var runs atomic.Int32

@@ -11,17 +11,21 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 var ErrCancellationRequested = errors.New("Worker cancellation was requested")
+
+var workerObjectNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,191}$`)
 
 type ControlClient interface {
 	Enroll(context.Context, []byte, *agentv1.EnrollRequest) (*agentv1.EnrollResponse, error)
@@ -34,7 +38,7 @@ type ControlClient interface {
 
 type ObjectStore interface {
 	Get(context.Context, string) ([]byte, error)
-	Put(context.Context, string, string, []byte) error
+	Put(context.Context, string, string, []byte) (worker.ObjectClaim, error)
 }
 
 type Runner struct {
@@ -135,7 +139,11 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 		heartbeatDone <- heartbeatErr
 	}()
 
-	completedActions, resultRef, executionErr := runner.execute(executionContext, assignment, lease)
+	completedActions, resultObject, executionErr := runner.execute(executionContext, assignment, lease)
+	resultRef := ""
+	if resultObject != nil {
+		resultRef = resultObject.Ref
+	}
 	stopHeartbeat()
 	heartbeatErr := <-heartbeatDone
 	if errors.Is(heartbeatErr, context.Canceled) || errors.Is(heartbeatErr, context.DeadlineExceeded) {
@@ -148,10 +156,12 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 	outcome := agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED
 	if heartbeatErr != nil && errors.Is(heartbeatErr, ErrCancellationRequested) {
 		outcome = agentv1.WorkerOutcome_WORKER_OUTCOME_CANCELED
+		resultObject = nil
 		resultRef = ""
 		executionErr = ErrCancellationRequested
 	} else if executionErr != nil {
 		outcome = agentv1.WorkerOutcome_WORKER_OUTCOME_FAILED
+		resultObject = nil
 		resultRef = ""
 		if errors.Is(executionContext.Err(), context.DeadlineExceeded) {
 			outcome = agentv1.WorkerOutcome_WORKER_OUTCOME_TIMED_OUT
@@ -162,7 +172,7 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 
 	completeContext, cancelComplete := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancelComplete()
-	if err := lease.complete(completeContext, outcome, resultRef); err != nil {
+	if err := lease.complete(completeContext, outcome, resultObject); err != nil {
 		return Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}, fmt.Errorf("complete Worker execution: %w", err)
 	}
 	result := Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}
@@ -206,27 +216,30 @@ func (runner Runner) waitForClaimableAssignment(ctx context.Context, config Conf
 	}
 }
 
-func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssignment, lease *leaseState) ([]string, string, error) {
+func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssignment, lease *leaseState) ([]string, *worker.ObjectClaim, error) {
 	recipeBytes, err := runner.verifiedObject(ctx, assignment.GetRecipeBundle())
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	wipe(recipeBytes)
 	executionBytes, err := runner.verifiedObject(ctx, assignment.GetExecutionBundle())
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	bundle, err := parseExecutionBundle(executionBytes, assignment.GetRecipeBundle().GetSha256(), time.Duration(assignment.GetExecutionTimeoutSeconds())*time.Second)
 	wipe(executionBytes)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	if err := runner.Registry.Validate(bundle); err != nil {
-		return nil, "", err
+		return nil, nil, err
+	}
+	if err := validateInstallerAssignment(bundle, assignment, time.Now().UTC()); err != nil {
+		return nil, nil, err
 	}
 	completed, startIndex, err := runner.resumeCheckpoint(ctx, assignment, bundle)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	for actionIndex := startIndex; actionIndex < len(bundle.Actions); actionIndex++ {
 		action := bundle.Actions[actionIndex]
@@ -234,7 +247,7 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		_, actionErr := runner.Registry.Execute(actionContext, action)
 		cancel()
 		if actionErr != nil {
-			return completed, "", fmt.Errorf("typed action %s failed: %w", action.ID, actionErr)
+			return completed, nil, fmt.Errorf("typed action %s failed: %w", action.ID, actionErr)
 		}
 		checkpoint := checkpointV1{
 			SchemaVersion: checkpointSchemaV1, DeploymentID: assignment.GetDeploymentId(), WorkerID: assignment.GetWorkerId(),
@@ -244,37 +257,54 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		}
 		checkpointBytes, err := json.Marshal(checkpoint)
 		if err != nil {
-			return completed, "", err
+			return completed, nil, err
 		}
 		checkpointDigest := sha256.Sum256(checkpointBytes)
 		checkpointRef, err := scopedCheckpointRef(assignment.GetAccess(), checkpoint, checkpointDigest)
 		if err != nil {
 			wipe(checkpointBytes)
-			return completed, "", err
+			return completed, nil, err
 		}
-		if err := runner.Objects.Put(ctx, checkpointRef, "application/json", checkpointBytes); err != nil {
+		checkpointObject, err := runner.Objects.Put(ctx, checkpointRef, "application/json", checkpointBytes)
+		if err != nil {
 			wipe(checkpointBytes)
-			return completed, "", fmt.Errorf("store Worker checkpoint: %w", err)
+			return completed, nil, fmt.Errorf("store Worker checkpoint: %w", err)
+		}
+		expectedCheckpoint := worker.ObjectClaim{
+			Ref: checkpointRef, SHA256: checkpointDigest, SizeBytes: int64(len(checkpointBytes)), MediaType: "application/json",
 		}
 		wipe(checkpointBytes)
-		if err := lease.recordCheckpoint(ctx, checkpointRef); err != nil {
-			return completed, "", err
+		if checkpointObject != expectedCheckpoint {
+			return completed, nil, errors.New("Worker object store returned a mismatched checkpoint claim")
+		}
+		if err := lease.recordCheckpoint(ctx, checkpointObject); err != nil {
+			return completed, nil, err
 		}
 		completed = append(completed, action.ID)
 	}
-	resultRef, err := scopedObjectRef(assignment.GetAccess(), false, "result.json")
-	if err != nil {
-		return completed, "", err
-	}
 	resultBody, _ := json.Marshal(struct {
 		SchemaVersion    int      `json:"schema_version"`
+		Attempt          int32    `json:"attempt"`
+		LeaseEpoch       int64    `json:"lease_epoch"`
 		Status           string   `json:"status"`
 		CompletedActions []string `json:"completed_actions"`
-	}{SchemaVersion: 1, Status: "succeeded", CompletedActions: completed})
-	if err := runner.Objects.Put(ctx, resultRef, "application/json", resultBody); err != nil {
-		return completed, "", fmt.Errorf("store Worker result: %w", err)
+	}{SchemaVersion: 1, Attempt: assignment.GetAttempt(), LeaseEpoch: assignment.GetLeaseEpoch(), Status: "succeeded", CompletedActions: completed})
+	resultDigest := sha256.Sum256(resultBody)
+	resultRef, err := scopedResultRef(assignment.GetAccess(), assignment.GetAttempt(), assignment.GetLeaseEpoch(), resultDigest)
+	if err != nil {
+		wipe(resultBody)
+		return completed, nil, err
 	}
-	return completed, resultRef, nil
+	resultObject, err := runner.Objects.Put(ctx, resultRef, "application/json", resultBody)
+	expectedResult := worker.ObjectClaim{Ref: resultRef, SHA256: resultDigest, SizeBytes: int64(len(resultBody)), MediaType: "application/json"}
+	wipe(resultBody)
+	if err != nil {
+		return completed, nil, fmt.Errorf("store Worker result: %w", err)
+	}
+	if resultObject != expectedResult {
+		return completed, nil, errors.New("Worker object store returned a mismatched result claim")
+	}
+	return completed, &resultObject, nil
 }
 
 type checkpointV1 struct {
@@ -405,7 +435,8 @@ func validS3ObjectRef(raw string) bool {
 }
 
 func scopedObjectRef(access *agentv1.WorkerAccessScope, checkpoint bool, name string) (string, error) {
-	if access == nil || access.GetArtifactBucket() == "" || !actionIDPattern.MatchString(strings.TrimSuffix(name, ".json")) {
+	if access == nil || access.GetArtifactBucket() == "" || !strings.HasSuffix(name, ".json") ||
+		!workerObjectNamePattern.MatchString(strings.TrimSuffix(name, ".json")) {
 		return "", errors.New("Worker output scope is invalid")
 	}
 	prefix := access.GetArtifactPrefix()
@@ -429,6 +460,13 @@ func scopedCheckpointRef(access *agentv1.WorkerAccessScope, checkpoint checkpoin
 	}
 	name := fmt.Sprintf("checkpoint-a%d-e%d-i%d-%s.json", checkpoint.Attempt, checkpoint.LeaseEpoch, checkpoint.ActionIndex, hex.EncodeToString(digest[:]))
 	return "s3://" + access.GetArtifactBucket() + "/" + prefix + name, nil
+}
+
+func scopedResultRef(access *agentv1.WorkerAccessScope, attempt int32, leaseEpoch int64, digest [sha256.Size]byte) (string, error) {
+	if attempt < 1 || leaseEpoch < 1 {
+		return "", errors.New("Worker result fence is invalid")
+	}
+	return scopedObjectRef(access, false, fmt.Sprintf("result-a%d-e%d-%s.json", attempt, leaseEpoch, hex.EncodeToString(digest[:])))
 }
 
 func checkpointRefWithinScope(access *agentv1.WorkerAccessScope, reference string) bool {
@@ -498,13 +536,13 @@ func (state *leaseState) heartbeat(ctx context.Context) error {
 	return nil
 }
 
-func (state *leaseState) recordCheckpoint(ctx context.Context, ref string) error {
+func (state *leaseState) recordCheckpoint(ctx context.Context, object worker.ObjectClaim) error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	request := &agentv1.WorkerControlServiceRecordEvidenceRequest{
 		DeploymentId: state.deploymentID, WorkerId: state.workerID, LeaseEpoch: state.epoch,
 		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision,
-		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT, Ref: ref,
+		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT, Object: workerObjectClaimToProto(object),
 	}
 	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
 		return state.control.RecordEvidence(ctx, state.token, request)
@@ -519,12 +557,15 @@ func (state *leaseState) recordCheckpoint(ctx context.Context, ref string) error
 	return nil
 }
 
-func (state *leaseState) complete(ctx context.Context, outcome agentv1.WorkerOutcome, resultRef string) error {
+func (state *leaseState) complete(ctx context.Context, outcome agentv1.WorkerOutcome, resultObject *worker.ObjectClaim) error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	request := &agentv1.WorkerControlServiceCompleteRequest{
 		DeploymentId: state.deploymentID, WorkerId: state.workerID, LeaseEpoch: state.epoch,
-		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision, Outcome: outcome, ResultRef: resultRef,
+		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision, Outcome: outcome,
+	}
+	if resultObject != nil {
+		request.ResultObject = workerObjectClaimToProto(*resultObject)
 	}
 	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.WorkerControlServiceCompleteResponse, error) {
 		return state.control.Complete(ctx, state.token, request)
@@ -537,6 +578,12 @@ func (state *leaseState) complete(ctx context.Context, outcome agentv1.WorkerOut
 	}
 	state.revision = response.GetRevision()
 	return nil
+}
+
+func workerObjectClaimToProto(claim worker.ObjectClaim) *agentv1.WorkerObjectClaim {
+	return &agentv1.WorkerObjectClaim{
+		Ref: claim.Ref, Sha256: append([]byte(nil), claim.SHA256[:]...), SizeBytes: uint64(claim.SizeBytes), MediaType: claim.MediaType,
+	}
 }
 
 func retryCall[T any](ctx context.Context, delay time.Duration, call func() (T, error)) (T, error) {

@@ -13,21 +13,23 @@ import (
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type runnerControlFake struct {
-	mu           sync.Mutex
-	assignment   *agentv1.WorkerAssignment
-	current      *agentv1.WorkerAssignment
-	revision     int64
-	enrollments  int
-	currentReads int
-	heartbeats   int
-	checkpoints  []string
-	completion   *agentv1.WorkerControlServiceCompleteRequest
+	mu             sync.Mutex
+	assignment     *agentv1.WorkerAssignment
+	current        *agentv1.WorkerAssignment
+	revision       int64
+	enrollments    int
+	currentReads   int
+	heartbeats     int
+	claimExpiresAt time.Time
+	checkpoints    []string
+	completion     *agentv1.WorkerControlServiceCompleteRequest
 }
 
 func (fake *runnerControlFake) GetCurrentAssignment(_ context.Context, _ []byte, request *agentv1.WorkerControlServiceGetCurrentAssignmentRequest) (*agentv1.WorkerControlServiceGetCurrentAssignmentResponse, error) {
@@ -75,7 +77,11 @@ func (fake *runnerControlFake) Claim(_ context.Context, _ []byte, request *agent
 	assignment = proto.Clone(assignment).(*agentv1.WorkerAssignment)
 	assignment.Revision, assignment.LeaseEpoch = fake.revision, 9
 	assignment.Attempt++
-	assignment.LeaseExpiresAt = timestamppb.New(time.Now().Add(time.Minute))
+	leaseExpiresAt := fake.claimExpiresAt
+	if leaseExpiresAt.IsZero() {
+		leaseExpiresAt = time.Now().Add(time.Minute)
+	}
+	assignment.LeaseExpiresAt = timestamppb.New(leaseExpiresAt)
 	return &agentv1.WorkerControlServiceClaimResponse{Assignment: assignment}, nil
 }
 
@@ -93,11 +99,13 @@ func (fake *runnerControlFake) Heartbeat(_ context.Context, _ []byte, request *a
 func (fake *runnerControlFake) RecordEvidence(_ context.Context, _ []byte, request *agentv1.WorkerControlServiceRecordEvidenceRequest) (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if request.GetExpectedRevision() != fake.revision || request.GetLeaseEpoch() != 9 || request.GetKind() != agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT {
+	object := request.GetObject()
+	if request.GetExpectedRevision() != fake.revision || request.GetLeaseEpoch() != 9 || request.GetKind() != agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT ||
+		object == nil || len(object.GetSha256()) != sha256.Size || object.GetSizeBytes() == 0 || object.GetMediaType() != "application/json" || request.GetRef() != "" {
 		return nil, errors.New("stale checkpoint")
 	}
 	fake.revision++
-	fake.checkpoints = append(fake.checkpoints, request.GetRef())
+	fake.checkpoints = append(fake.checkpoints, object.GetRef())
 	return &agentv1.WorkerControlServiceRecordEvidenceResponse{Revision: fake.revision}, nil
 }
 
@@ -127,14 +135,14 @@ func (store *memoryObjects) Get(_ context.Context, reference string) ([]byte, er
 	return bytes.Clone(value), nil
 }
 
-func (store *memoryObjects) Put(_ context.Context, reference, contentType string, content []byte) error {
+func (store *memoryObjects) Put(_ context.Context, reference, contentType string, content []byte) (worker.ObjectClaim, error) {
 	if contentType != "application/json" {
-		return errors.New("unexpected content type")
+		return worker.ObjectClaim{}, errors.New("unexpected content type")
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.objects[reference] = bytes.Clone(content)
-	return nil
+	return worker.ObjectClaim{Ref: reference, SHA256: sha256.Sum256(content), SizeBytes: int64(len(content)), MediaType: contentType}, nil
 }
 
 func TestRunnerExecutesDigestLockedNoopWithHeartbeatCheckpointAndResult(t *testing.T) {
@@ -143,7 +151,9 @@ func TestRunnerExecutesDigestLockedNoopWithHeartbeatCheckpointAndResult(t *testi
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED || result.ResultRef != "s3://worker-bucket/deployments/test/artifacts/result.json" || len(result.CompletedActions) != 1 || result.CompletedActions[0] != "smoke" {
+	if result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED ||
+		!strings.HasPrefix(result.ResultRef, "s3://worker-bucket/deployments/test/artifacts/result-a1-e9-") ||
+		!strings.HasSuffix(result.ResultRef, ".json") || len(result.CompletedActions) != 1 || result.CompletedActions[0] != "smoke" {
 		t.Fatalf("Run() result = %#v", result)
 	}
 	control.mu.Lock()
@@ -151,7 +161,9 @@ func TestRunnerExecutesDigestLockedNoopWithHeartbeatCheckpointAndResult(t *testi
 	if control.heartbeats == 0 || len(control.checkpoints) != 1 || !strings.HasPrefix(control.checkpoints[0], "s3://worker-bucket/deployments/test/checkpoints/checkpoint-a1-e9-i0-") {
 		t.Fatalf("heartbeat/checkpoints = (%d, %#v)", control.heartbeats, control.checkpoints)
 	}
-	if control.completion == nil || control.completion.GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED || control.completion.GetResultRef() != result.ResultRef {
+	if control.completion == nil || control.completion.GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED ||
+		control.completion.GetResultRef() != "" || control.completion.GetResultObject().GetRef() != result.ResultRef ||
+		len(control.completion.GetResultObject().GetSha256()) != sha256.Size || control.completion.GetResultObject().GetSizeBytes() == 0 {
 		t.Fatalf("completion = %#v", control.completion)
 	}
 	objects.mu.Lock()

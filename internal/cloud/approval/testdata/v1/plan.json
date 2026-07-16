@@ -14,7 +14,7 @@
   "quote": {
     "quote_id": "quote-1",
     "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "scope_digest": "sha256:19e02ba316296f39cb2ab53542b8ff1af42e4f3ee9b0dd727bf726c0ad3ec813",
+    "scope_digest": "sha256:aa0933de152face8ba1e2785f467279494d18d32f73c9e8fa849344c57b7cc65",
     "candidate_id": "recommended",
     "valid_until": "2026-07-16T08:15:00Z"
   },
@@ -39,7 +39,9 @@
   "network_scope": {
     "vpc_id": "vpc-0123456789abcdef0",
     "subnet_id": "subnet-0123456789abcdef0",
+    "security_group_mode": "existing",
     "security_group_id": "sg-0123456789abcdef0",
+    "public_ipv4": false,
     "entry_point": "none",
     "public_exposure": false,
     "tls_required": false,

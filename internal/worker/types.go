@@ -2,6 +2,7 @@ package worker
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -128,12 +129,58 @@ type Lease struct {
 }
 
 type EvidenceRef struct {
-	Kind       string
-	Ref        string
-	Trust      EvidenceTrust
-	Attempt    int32
-	LeaseEpoch int64
-	RecordedAt time.Time
+	Kind         string
+	Ref          string
+	ObjectSHA256 string
+	SizeBytes    int64
+	MediaType    string
+	Trust        EvidenceTrust
+	Attempt      int32
+	LeaseEpoch   int64
+	RecordedAt   time.Time
+}
+
+const MaximumObjectClaimBytes int64 = 8 << 20
+
+// ObjectClaim binds a deployment-scoped S3 reference to the exact bytes a
+// Worker uploaded. The bytes themselves never enter gRPC, events, or the Agent
+// database, and the claim remains untrusted Worker-local evidence.
+type ObjectClaim struct {
+	Ref       string
+	SHA256    [sha256.Size]byte
+	SizeBytes int64
+	MediaType string
+}
+
+func (claim ObjectClaim) Validate() error {
+	trimmedRef := strings.TrimSpace(claim.Ref)
+	parsed, err := url.Parse(trimmedRef)
+	if err != nil || parsed.Scheme != "s3" || parsed.Host == "" || parsed.Path == "" || strings.HasSuffix(parsed.Path, "/") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(claim.Ref) > 2048 || strings.ContainsAny(claim.Ref, "*?#") ||
+		claim.Ref != trimmedRef || security.ContainsLikelySecret(claim.Ref) {
+		return fmt.Errorf("%w: Worker object reference is invalid", ErrInvalid)
+	}
+	var empty [sha256.Size]byte
+	if claim.SHA256 == empty || claim.SizeBytes < 1 || claim.SizeBytes > MaximumObjectClaimBytes {
+		return fmt.Errorf("%w: Worker object digest or size is invalid", ErrInvalid)
+	}
+	switch claim.MediaType {
+	case "application/json", "application/cbor", "application/octet-stream", "text/plain; charset=utf-8":
+	default:
+		return fmt.Errorf("%w: Worker object media type is invalid", ErrInvalid)
+	}
+	if security.ContainsLikelySecret(claim.MediaType) {
+		return fmt.Errorf("%w: Worker object media type contains forbidden data", ErrInvalid)
+	}
+	return nil
+}
+
+func (claim ObjectClaim) Digest() string {
+	var empty [sha256.Size]byte
+	if claim.SHA256 == empty {
+		return ""
+	}
+	return "sha256:" + hex.EncodeToString(claim.SHA256[:])
 }
 
 type Deployment struct {
@@ -357,8 +404,9 @@ type LeasedRequest struct {
 
 type CompleteRequest struct {
 	LeasedRequest
-	Outcome   Outcome
-	ResultRef string
+	Outcome      Outcome
+	ResultRef    string
+	ResultObject *ObjectClaim
 }
 
 func validateCreate(request CreateDeploymentRequest) error {

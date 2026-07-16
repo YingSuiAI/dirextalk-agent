@@ -23,9 +23,9 @@ type workerBackendStub struct {
 	current        func(context.Context, worker.SessionRequest) (worker.Assignment, error)
 	claim          func(context.Context, worker.AuthenticatedRequest, time.Duration) (worker.Assignment, error)
 	heartbeat      func(context.Context, worker.LeasedRequest, time.Duration) (worker.Heartbeat, error)
-	checkpoint     func(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
-	recordArtifact func(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
-	recordEvidence func(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
+	checkpoint     func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	recordArtifact func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	recordEvidence func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
 	recordLog      func(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
 	complete       func(context.Context, worker.CompleteRequest) (worker.Deployment, error)
 }
@@ -50,19 +50,19 @@ func (stub *workerBackendStub) Heartbeat(ctx context.Context, request worker.Lea
 	return stub.heartbeat(ctx, request, duration)
 }
 
-func (stub *workerBackendStub) Checkpoint(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
+func (stub *workerBackendStub) CheckpointObject(ctx context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
 	stub.calls++
-	return stub.checkpoint(ctx, request, ref)
+	return stub.checkpoint(ctx, request, claim)
 }
 
-func (stub *workerBackendStub) RecordArtifact(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
+func (stub *workerBackendStub) RecordArtifactObject(ctx context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
 	stub.calls++
-	return stub.recordArtifact(ctx, request, ref)
+	return stub.recordArtifact(ctx, request, claim)
 }
 
-func (stub *workerBackendStub) RecordEvidence(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
+func (stub *workerBackendStub) RecordEvidenceObject(ctx context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
 	stub.calls++
-	return stub.recordEvidence(ctx, request, ref)
+	return stub.recordEvidence(ctx, request, claim)
 }
 
 func (stub *workerBackendStub) RecordLog(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
@@ -268,14 +268,19 @@ func TestWorkerControlMapsEvidenceAndCompletion(t *testing.T) {
 	deploymentID := uuid.NewString()
 	workerID := uuid.NewString()
 	backend := &workerBackendStub{}
-	backend.checkpoint = func(_ context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
-		if request.LeaseEpoch != 4 || request.ExpectedRevision != 20 || ref != "s3://bucket/deployment/checkpoints/cp-1" {
-			t.Fatalf("mapped checkpoint = (%#v, %q)", request, ref)
+	checkpointDigest := bytes.Repeat([]byte{0x44}, 32)
+	var expectedCheckpointDigest [32]byte
+	copy(expectedCheckpointDigest[:], checkpointDigest)
+	backend.checkpoint = func(_ context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
+		if request.LeaseEpoch != 4 || request.ExpectedRevision != 20 || claim.Ref != "s3://bucket/deployment/checkpoints/cp-1" ||
+			claim.SHA256 != expectedCheckpointDigest || claim.SizeBytes != 128 || claim.MediaType != "application/json" {
+			t.Fatalf("mapped checkpoint = (%#v, %#v)", request, claim)
 		}
 		return worker.Deployment{Revision: 21}, nil
 	}
 	backend.complete = func(_ context.Context, request worker.CompleteRequest) (worker.Deployment, error) {
-		if request.LeaseEpoch != 4 || request.ExpectedRevision != 21 || request.Outcome != worker.OutcomeSucceeded || request.ResultRef != "s3://bucket/deployment/artifacts/result" {
+		if request.LeaseEpoch != 4 || request.ExpectedRevision != 21 || request.Outcome != worker.OutcomeSucceeded || request.ResultRef != "" ||
+			request.ResultObject == nil || request.ResultObject.Ref != "s3://bucket/deployment/artifacts/result" || request.ResultObject.SizeBytes != 64 {
 			t.Fatalf("mapped completion = %#v", request)
 		}
 		return worker.Deployment{Revision: 22}, nil
@@ -284,17 +289,26 @@ func TestWorkerControlMapsEvidenceAndCompletion(t *testing.T) {
 	ctx := workerAuthorizationContext("DTX-Worker-Session " + sessionToken)
 	evidence, err := service.RecordEvidence(ctx, &agentv1.WorkerControlServiceRecordEvidenceRequest{
 		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 4, IdempotencyKey: uuid.NewString(), ExpectedRevision: 20,
-		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT, Ref: "s3://bucket/deployment/checkpoints/cp-1",
+		Kind:   agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT,
+		Object: &agentv1.WorkerObjectClaim{Ref: "s3://bucket/deployment/checkpoints/cp-1", Sha256: checkpointDigest, SizeBytes: 128, MediaType: "application/json"},
 	})
 	if err != nil || evidence.GetRevision() != 21 {
 		t.Fatalf("RecordEvidence() = (%#v, %v)", evidence, err)
 	}
 	completed, err := service.Complete(ctx, &agentv1.WorkerControlServiceCompleteRequest{
 		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 4, IdempotencyKey: uuid.NewString(), ExpectedRevision: 21,
-		Outcome: agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED, ResultRef: "s3://bucket/deployment/artifacts/result",
+		Outcome:      agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED,
+		ResultObject: &agentv1.WorkerObjectClaim{Ref: "s3://bucket/deployment/artifacts/result", Sha256: bytes.Repeat([]byte{0x55}, 32), SizeBytes: 64, MediaType: "application/json"},
 	})
 	if err != nil || completed.GetRevision() != 22 {
 		t.Fatalf("Complete() = (%#v, %v)", completed, err)
+	}
+	_, err = service.RecordEvidence(ctx, &agentv1.WorkerControlServiceRecordEvidenceRequest{
+		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 4, IdempotencyKey: uuid.NewString(), ExpectedRevision: 22,
+		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT, Ref: "s3://bucket/deployment/checkpoints/legacy-only",
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("untyped checkpoint code = %s", status.Code(err))
 	}
 
 	_, err = service.RecordEvidence(ctx, &agentv1.WorkerControlServiceRecordEvidenceRequest{Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_UNSPECIFIED})

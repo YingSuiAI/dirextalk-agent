@@ -98,7 +98,14 @@ func (engine *AWSBootstrapQuoteEngine) Quote(ctx context.Context, request QuoteE
 }
 
 func (engine *AWSBootstrapQuoteEngine) bindWorkerRelease(ctx context.Context, request cloudquote.RequestV1, accountID string) (cloudquote.RequestV1, error) {
-	if engine == nil || engine.releases == nil || ctx == nil || accountID == "" || len(request.Scopes) == 0 {
+	if engine == nil {
+		return cloudquote.RequestV1{}, ErrInvalid
+	}
+	return bindWorkerReleaseForQuote(ctx, engine.agentInstanceID, engine.releases, request, accountID)
+}
+
+func bindWorkerReleaseForQuote(ctx context.Context, agentInstanceID string, releases WorkerReleaseResolver, request cloudquote.RequestV1, accountID string) (cloudquote.RequestV1, error) {
+	if releases == nil || ctx == nil || agentInstanceID == "" || accountID == "" || len(request.Scopes) == 0 {
 		return cloudquote.RequestV1{}, ErrInvalid
 	}
 	bound := request
@@ -110,11 +117,11 @@ func (engine *AWSBootstrapQuoteEngine) bindWorkerRelease(ctx context.Context, re
 		release, ok := cache[key]
 		if !ok {
 			var err error
-			release, err = engine.releases.ResolveActiveWorkerRelease(ctx, engine.agentInstanceID, accountID, resource.Region, resource.Architecture)
+			release, err = releases.ResolveActiveWorkerRelease(ctx, agentInstanceID, accountID, resource.Region, resource.Architecture)
 			if err != nil {
 				return cloudquote.RequestV1{}, ErrUnavailable
 			}
-			if release.AgentInstanceID != engine.agentInstanceID || release.AccountID != accountID || release.Region != resource.Region || release.Architecture != resource.Architecture {
+			if release.AgentInstanceID != agentInstanceID || release.AccountID != accountID || release.Region != resource.Region || release.Architecture != resource.Architecture {
 				return cloudquote.RequestV1{}, ErrUnavailable
 			}
 			cache[key] = release

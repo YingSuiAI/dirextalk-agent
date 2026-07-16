@@ -189,18 +189,6 @@ func serve() error {
 	if err != nil {
 		return errors.New("could not initialize Worker control")
 	}
-	runtimeComposition, err := app.NewRuntimeComposition(
-		store, serverConfig.InstanceID, serverConfig.MountedSecretsDir, serverConfig.ModelProfilesFile, serverConfig.MCPServersFile,
-	)
-	if err != nil {
-		return errors.New("could not initialize Agent runtime")
-	}
-	serverOptions := []app.ServerOption{
-		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
-		app.WithCloudGoals(runtimeComposition.CloudGoals),
-		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
-		app.WithWorkerControl(workerService),
-	}
 	var cloudComposition *app.CloudComposition
 	if serverConfig.EnableAWSControl {
 		if serverConfig.WorkerAMIPublicationFile != "" {
@@ -230,6 +218,35 @@ func serve() error {
 		if cloudErr != nil {
 			return errors.New("could not safely recover pending AWS Foundation operations")
 		}
+	}
+	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 1)
+	if cloudComposition != nil {
+		runtimeOptions = append(runtimeOptions, app.WithCloudGoalMaterializer(cloudComposition.ProviderPlans))
+	}
+	runtimeComposition, err := app.NewRuntimeComposition(
+		store, serverConfig.InstanceID, serverConfig.MountedSecretsDir, serverConfig.ModelProfilesFile, serverConfig.MCPServersFile,
+		runtimeOptions...,
+	)
+	if err != nil {
+		return errors.New("could not initialize Agent runtime")
+	}
+	cloudGoalRecoveryContext, stopCloudGoalRecovery := context.WithTimeout(context.Background(), 30*time.Second)
+	cloudGoalRecoveryErr := runtimeComposition.RecoverCloudGoals(cloudGoalRecoveryContext)
+	stopCloudGoalRecovery()
+	if cloudGoalRecoveryErr != nil {
+		// Cloud Goal planning cannot mutate AWS or approve spend. A transient
+		// model/provider/read-store failure must not make the whole Agent
+		// unavailable after restart; the durable dispatcher retries the exact
+		// fenced stage after startup and all provider mutations remain closed.
+		slog.Warn("queued Cloud Goal recovery deferred", "error", safeError(cloudGoalRecoveryErr))
+	}
+	serverOptions := []app.ServerOption{
+		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
+		app.WithCloudGoals(runtimeComposition.CloudGoals),
+		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
+		app.WithWorkerControl(workerService),
+	}
+	if cloudComposition != nil {
 		serverOptions = append(serverOptions,
 			app.WithCloudControl(cloudComposition.Coordinator),
 			app.WithCloudDestroy(cloudComposition.DestroyCoordinator),
@@ -251,6 +268,11 @@ func serve() error {
 	bootstrapContext, stopBootstrap := context.WithCancel(context.Background())
 	defer stopBootstrap()
 	go expireBootstrapSessions(bootstrapContext, secretManager)
+	go func() {
+		if dispatchErr := runtimeComposition.RunCloudGoals(bootstrapContext); dispatchErr != nil && !errors.Is(dispatchErr, context.Canceled) {
+			slog.Warn("cloud Goal dispatcher stopped", "error", safeError(dispatchErr))
+		}
+	}()
 	if cloudComposition != nil {
 		go func() {
 			if dispatchErr := cloudComposition.Run(bootstrapContext); dispatchErr != nil && !errors.Is(dispatchErr, context.Canceled) {

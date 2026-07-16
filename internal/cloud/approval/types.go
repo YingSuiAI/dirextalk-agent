@@ -41,6 +41,13 @@ const (
 	EntryPointCloudFront EntryPointKind = "cloudfront"
 )
 
+type SecurityGroupMode string
+
+const (
+	SecurityGroupExisting        SecurityGroupMode = "existing"
+	SecurityGroupCreateDedicated SecurityGroupMode = "create_dedicated"
+)
+
 type IntegrationKind string
 
 const (
@@ -110,15 +117,17 @@ type ResourceScopeV1 struct {
 }
 
 type NetworkScopeV1 struct {
-	VPCID                  string         `json:"vpc_id"`
-	SubnetID               string         `json:"subnet_id"`
-	SecurityGroupID        string         `json:"security_group_id"`
-	EntryPoint             EntryPointKind `json:"entry_point"`
-	PublicExposure         bool           `json:"public_exposure"`
-	IngressPorts           []uint32       `json:"ingress_ports,omitempty"`
-	Hostname               string         `json:"hostname,omitempty"`
-	TLSRequired            bool           `json:"tls_required"`
-	AuthenticationRequired bool           `json:"authentication_required"`
+	VPCID                  string            `json:"vpc_id"`
+	SubnetID               string            `json:"subnet_id"`
+	SecurityGroupMode      SecurityGroupMode `json:"security_group_mode"`
+	SecurityGroupID        string            `json:"security_group_id,omitempty"`
+	PublicIPv4             bool              `json:"public_ipv4"`
+	EntryPoint             EntryPointKind    `json:"entry_point"`
+	PublicExposure         bool              `json:"public_exposure"`
+	IngressPorts           []uint32          `json:"ingress_ports,omitempty"`
+	Hostname               string            `json:"hostname,omitempty"`
+	TLSRequired            bool              `json:"tls_required"`
+	AuthenticationRequired bool              `json:"authentication_required"`
 }
 
 type SecretReferenceV1 struct {

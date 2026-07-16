@@ -26,6 +26,12 @@ enum CloudEntryPointKind {
   CLOUD_ENTRY_POINT_KIND_CLOUDFRONT = 3;
 }
 
+enum CloudSecurityGroupMode {
+  CLOUD_SECURITY_GROUP_MODE_UNSPECIFIED = 0;
+  CLOUD_SECURITY_GROUP_MODE_EXISTING = 1;
+  CLOUD_SECURITY_GROUP_MODE_CREATE_DEDICATED = 2;
+}
+
 enum CloudRetentionClass {
   CLOUD_RETENTION_CLASS_UNSPECIFIED = 0;
   CLOUD_RETENTION_CLASS_EPHEMERAL = 1;
@@ -80,6 +86,8 @@ message CloudNetworkScope {
   string hostname = 7;
   bool tls_required = 8;
   bool authentication_required = 9;
+  CloudSecurityGroupMode security_group_mode = 10;
+  bool public_ipv4 = 11;
 }
 
 message CloudSecretScope {

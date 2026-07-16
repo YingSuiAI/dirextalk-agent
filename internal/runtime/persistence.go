@@ -305,6 +305,11 @@ func (command RuntimeRequestCommand) Validated() (RuntimeRequestCommand, error) 
 	if security.ContainsLikelySecret(command.Request.RequestID) || security.ContainsLikelySecret(command.Request.OwnerID) || security.ContainsLikelySecret(command.Request.ConversationID) {
 		return RuntimeRequestCommand{}, ErrRuntimeRawSecret
 	}
+	cloudDialogue, err := cloneCloudDialogueScope(command.Request.CloudDialogue)
+	if err != nil || (cloudDialogue != nil && command.Request.ConversationID == "") {
+		return RuntimeRequestCommand{}, fmt.Errorf("%w: invalid cloud dialogue scope", ErrRuntimePersistence)
+	}
+	command.Request.CloudDialogue = cloudDialogue
 	if err := validatePersistedMessages(command.Request.Messages); err != nil || !hasUserMessage(command.Request.Messages) {
 		if err != nil {
 			return RuntimeRequestCommand{}, err

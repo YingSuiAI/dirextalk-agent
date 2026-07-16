@@ -173,7 +173,8 @@ func (adapter *CloudSkillAdapter) SubmitPlanDraft(ctx context.Context, request c
 		return cloudskill.SubmitPlanDraftResult{}, err
 	}
 	evidence, err := adapter.planning.BindOfficialSourceEvidence(ctx, scope, BindOfficialSourceEvidenceCommand{
-		Binding: binding, TaskID: item.TaskID, Sources: request.Recipe.Sources,
+		IdempotencyKey: deterministicSubmissionUUID(binding.RequestID, request.ToolCallID, cloudskill.StepResearchOfficialSources, "bind"),
+		Binding:        binding, TaskID: item.TaskID, Sources: request.Recipe.Sources,
 	})
 	if err != nil {
 		return cloudskill.SubmitPlanDraftResult{}, err

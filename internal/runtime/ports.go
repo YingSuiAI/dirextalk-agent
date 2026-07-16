@@ -68,6 +68,9 @@ type ToolRequest struct {
 	KnowledgeRefs  []string
 	MCPServerIDs   []string
 	RecipeIDs      []string
+	// CloudDialogue is trusted request scope. Providers may use it to bind
+	// application state, but it is never serialized as model tool input.
+	CloudDialogue *CloudDialogueScope
 }
 
 // ToolInvocation binds every model tool call to the authenticated chat

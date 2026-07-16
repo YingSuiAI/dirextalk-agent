@@ -52,9 +52,10 @@ func BuildPlan(agentInstanceID, planID string, priced cloudquote.QuoteV1, candid
 		},
 		NetworkScope: cloudapproval.NetworkScopeV1{
 			VPCID: candidate.Scope.Network.VPCID, SubnetID: candidate.Scope.Network.SubnetID,
-			SecurityGroupID: candidate.Scope.Network.SecurityGroupID,
-			EntryPoint:      cloudapproval.EntryPointKind(candidate.Scope.Network.EntryPoint),
-			PublicExposure:  candidate.Scope.Network.PublicExposure, IngressPorts: candidate.Scope.Network.IngressPorts,
+			SecurityGroupMode: cloudapproval.SecurityGroupMode(candidate.Scope.Network.SecurityGroupMode),
+			SecurityGroupID:   candidate.Scope.Network.SecurityGroupID, PublicIPv4: candidate.Scope.Network.PublicIPv4,
+			EntryPoint:     cloudapproval.EntryPointKind(candidate.Scope.Network.EntryPoint),
+			PublicExposure: candidate.Scope.Network.PublicExposure, IngressPorts: candidate.Scope.Network.IngressPorts,
 			Hostname: candidate.Scope.Network.Hostname, TLSRequired: candidate.Scope.Network.TLSRequired,
 			AuthenticationRequired: candidate.Scope.Network.AuthenticationRequired,
 		},

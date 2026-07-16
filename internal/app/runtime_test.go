@@ -69,6 +69,33 @@ func TestScopedCloudProviderDerivesStableServerOwnedRecipeScope(t *testing.T) {
 	if captured.RecipeID != wantRecipeID || captured.ConnectionID != "" || captured.ConversationID != request.ConversationID {
 		t.Fatalf("captured trusted planning scope = %#v", captured)
 	}
+
+	connectionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	cloudRequest := runtimeapi.ToolRequest{
+		RequestID: uuid.NewString(), OwnerID: "owner-1", ConversationID: "conversation-2",
+		CloudDialogue: &runtimeapi.CloudDialogueScope{ConnectionID: connectionID},
+	}
+	cloudTools, err := provider.Tools(context.Background(), cloudRequest)
+	if err != nil {
+		t.Fatalf("cloud Tools() error = %v", err)
+	}
+	for _, tool := range cloudTools {
+		if tool.Definition.Name != cloudskill.ToolResearch {
+			continue
+		}
+		properties, _ := tool.Definition.InputSchema["properties"].(map[string]any)
+		if len(properties) != 1 || properties["goal"] == nil || tool.Definition.InputSchema["additionalProperties"] != false {
+			t.Fatalf("cloud dialogue model arguments are not goal-only: %#v", tool.Definition.InputSchema)
+		}
+		_, err = tool.Run(context.Background(), runtimeapi.ToolInvocation{
+			RequestID: cloudRequest.RequestID, OwnerID: cloudRequest.OwnerID, ConversationID: cloudRequest.ConversationID,
+			ToolCallID: "call-2", Name: cloudskill.ToolResearch, Arguments: json.RawMessage("{\"goal\":\"research an official cloud service\"}"),
+		})
+		break
+	}
+	if err != nil || captured.ConnectionID != connectionID || captured.ConversationID != cloudRequest.ConversationID {
+		t.Fatalf("cloud connection was not bound from trusted scope: captured=%#v err=%v", captured, err)
+	}
 }
 
 func TestSelectedMCPProviderContactsOnlyConfiguredRuntimeServers(t *testing.T) {

@@ -50,6 +50,20 @@ type EC2ResourceAPI interface {
 	DescribeNetworkInterfaces(context.Context, *ec2.DescribeNetworkInterfacesInput, ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
 	DeleteNetworkInterface(context.Context, *ec2.DeleteNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.DeleteNetworkInterfaceOutput, error)
 
+	AllocateAddress(context.Context, *ec2.AllocateAddressInput, ...func(*ec2.Options)) (*ec2.AllocateAddressOutput, error)
+	AssociateAddress(context.Context, *ec2.AssociateAddressInput, ...func(*ec2.Options)) (*ec2.AssociateAddressOutput, error)
+	DescribeAddresses(context.Context, *ec2.DescribeAddressesInput, ...func(*ec2.Options)) (*ec2.DescribeAddressesOutput, error)
+	DisassociateAddress(context.Context, *ec2.DisassociateAddressInput, ...func(*ec2.Options)) (*ec2.DisassociateAddressOutput, error)
+	ReleaseAddress(context.Context, *ec2.ReleaseAddressInput, ...func(*ec2.Options)) (*ec2.ReleaseAddressOutput, error)
+
+	CreateVpcEndpoint(context.Context, *ec2.CreateVpcEndpointInput, ...func(*ec2.Options)) (*ec2.CreateVpcEndpointOutput, error)
+	DescribeVpcEndpoints(context.Context, *ec2.DescribeVpcEndpointsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcEndpointsOutput, error)
+	DeleteVpcEndpoints(context.Context, *ec2.DeleteVpcEndpointsInput, ...func(*ec2.Options)) (*ec2.DeleteVpcEndpointsOutput, error)
+
+	CreateSnapshot(context.Context, *ec2.CreateSnapshotInput, ...func(*ec2.Options)) (*ec2.CreateSnapshotOutput, error)
+	DescribeSnapshots(context.Context, *ec2.DescribeSnapshotsInput, ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error)
+	DeleteSnapshot(context.Context, *ec2.DeleteSnapshotInput, ...func(*ec2.Options)) (*ec2.DeleteSnapshotOutput, error)
+
 	RunInstances(context.Context, *ec2.RunInstancesInput, ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
 	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	TerminateInstances(context.Context, *ec2.TerminateInstancesInput, ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
@@ -135,6 +149,12 @@ func (provider *EC2ResourceProvider) Create(ctx context.Context, request resourc
 		return provider.createVolume(ctx, request)
 	case resource.TypeENI:
 		return provider.createNetworkInterface(ctx, request)
+	case resource.TypeEIP:
+		return provider.createElasticIP(ctx, request)
+	case resource.TypeEndpoint:
+		return provider.createVpcEndpoint(ctx, request)
+	case resource.TypeSnapshot:
+		return provider.createSnapshot(ctx, request)
 	case resource.TypeEC2:
 		return provider.createInstance(ctx, request)
 	default:
@@ -147,6 +167,27 @@ func (provider *EC2ResourceProvider) FindByClientToken(ctx context.Context, kind
 		return resource.ProviderObservation{}, false, resource.ErrInvalid
 	}
 	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{clientToken}}}
+	if kind == resource.TypeEIP {
+		addresses, err := provider.addressesByFilters(ctx, filters)
+		if err != nil {
+			return resource.ProviderObservation{}, false, err
+		}
+		if len(addresses) == 0 {
+			return resource.ProviderObservation{}, false, nil
+		}
+		if len(addresses) != 1 {
+			return resource.ProviderObservation{}, false, resource.ErrReadBack
+		}
+		// A tagged but unassociated address is already billable and may be the
+		// result of a lost AllocateAddress response. It is not ready to adopt,
+		// but it must never be reported as absent because that permits a second
+		// allocation.
+		if aws.ToString(addresses[0].AssociationId) == "" {
+			return resource.ProviderObservation{}, false, resource.ErrReadBack
+		}
+		value := addresses[0]
+		return observation(aws.ToString(value.AllocationId), kind, tagsFromEC2(value.Tags), provider.now().UTC()), true, nil
+	}
 	observations, err := provider.describeByFilters(ctx, kind, filters)
 	if err != nil {
 		return resource.ProviderObservation{}, false, err
@@ -157,7 +198,27 @@ func (provider *EC2ResourceProvider) FindByClientToken(ctx context.Context, kind
 	if len(observations) != 1 {
 		return resource.ProviderObservation{}, false, resource.ErrReadBack
 	}
+	if kind == resource.TypeEndpoint || kind == resource.TypeSnapshot {
+		if err := provider.waitReady(ctx, kind, observations[0].ProviderID); err != nil {
+			return resource.ProviderObservation{}, false, err
+		}
+		verified, err := provider.readBack(ctx, kind, observations[0].ProviderID)
+		return verified, err == nil, err
+	}
 	return observations[0], true, nil
+}
+
+func (provider *EC2ResourceProvider) FindAllByClientToken(ctx context.Context, kind resource.Type, region, clientToken string) ([]resource.ProviderObservation, error) {
+	if provider == nil || provider.client == nil || region != provider.region || !providerClientTokenPattern.MatchString(clientToken) {
+		return nil, resource.ErrInvalid
+	}
+	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{clientToken}}}
+	observations, err := provider.describeByFilters(ctx, kind, filters)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(observations, func(i, j int) bool { return observations[i].ProviderID < observations[j].ProviderID })
+	return observations, nil
 }
 
 func (provider *EC2ResourceProvider) ReadBack(ctx context.Context, kind resource.Type, providerID, region string) (resource.ProviderObservation, error) {
@@ -173,7 +234,7 @@ func (provider *EC2ResourceProvider) ListOwned(ctx context.Context, agentInstanc
 	}
 	filters := []ec2types.Filter{{Name: aws.String("tag:" + TagAgentInstanceID), Values: []string{agentInstanceID}}}
 	result := make([]resource.ProviderObservation, 0)
-	for _, kind := range []resource.Type{resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeSG} {
+	for _, kind := range []resource.Type{resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP, resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot} {
 		items, err := provider.describeByFilters(ctx, kind, filters)
 		if err != nil {
 			return nil, err
@@ -243,6 +304,32 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 			return err
 		}
 		_, err = provider.client.DeleteNetworkInterface(ctx, &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(providerID)})
+	case resource.TypeEIP:
+		address, addressErr := provider.address(ctx, providerID)
+		if addressErr != nil {
+			return addressErr
+		}
+		if associationID := aws.ToString(address.AssociationId); associationID != "" {
+			if _, disassociateErr := provider.client.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{AssociationId: aws.String(associationID)}); disassociateErr != nil && !apiCode(disassociateErr, "InvalidAssociationID.NotFound") {
+				return providerError(ctx, disassociateErr)
+			}
+			if waitErr := provider.wait(ctx, func(ctx context.Context) (bool, error) {
+				current, readErr := provider.address(ctx, providerID)
+				return readErr == nil && aws.ToString(current.AssociationId) == "", readErr
+			}); waitErr != nil {
+				return waitErr
+			}
+		}
+		_, err = provider.client.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: aws.String(providerID)})
+	case resource.TypeEndpoint:
+		output, deleteErr := provider.client.DeleteVpcEndpoints(ctx, &ec2.DeleteVpcEndpointsInput{VpcEndpointIds: []string{providerID}})
+		if deleteErr != nil {
+			err = deleteErr
+		} else if output == nil || len(output.Unsuccessful) != 0 {
+			return resource.ErrReadBack
+		}
+	case resource.TypeSnapshot:
+		_, err = provider.client.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(providerID)})
 	case resource.TypeSG:
 		_, err = provider.client.DeleteSecurityGroup(ctx, &ec2.DeleteSecurityGroupInput{GroupId: aws.String(providerID)})
 	default:
@@ -264,6 +351,9 @@ func (provider *EC2ResourceProvider) validateCreate(request resource.ProviderCre
 	}
 	if err := resource.ValidateAWSDependencies(request.Type, request.Dependencies, request.AWS); err != nil {
 		return err
+	}
+	if request.Type == resource.TypeEndpoint && !strings.Contains(request.AWS.Endpoint.ServiceName, "."+provider.region+".") {
+		return resource.ErrInvalid
 	}
 	for _, dependency := range request.Dependencies {
 		if !providerDependencyIDPattern.MatchString(dependency.ProviderID) {
@@ -501,6 +591,41 @@ func (provider *EC2ResourceProvider) waitMissing(ctx context.Context, kind resou
 	})
 }
 
+func (provider *EC2ResourceProvider) waitReady(ctx context.Context, kind resource.Type, providerID string) error {
+	return provider.wait(ctx, func(ctx context.Context) (bool, error) {
+		switch kind {
+		case resource.TypeEndpoint:
+			value, err := provider.vpcEndpoint(ctx, providerID)
+			if err != nil {
+				return false, err
+			}
+			switch value.State {
+			case ec2types.StateAvailable:
+				return true, nil
+			case ec2types.StatePending, ec2types.StatePendingAcceptance:
+				return false, nil
+			default:
+				return false, resource.ErrReadBack
+			}
+		case resource.TypeSnapshot:
+			value, err := provider.snapshot(ctx, providerID)
+			if err != nil {
+				return false, err
+			}
+			switch value.State {
+			case ec2types.SnapshotStateCompleted:
+				return true, nil
+			case ec2types.SnapshotStatePending, ec2types.SnapshotStateRecoverable, ec2types.SnapshotStateRecovering:
+				return false, nil
+			default:
+				return false, resource.ErrReadBack
+			}
+		default:
+			return false, resource.ErrInvalid
+		}
+	})
+}
+
 func (provider *EC2ResourceProvider) instanceRootVolumes(ctx context.Context, instanceID string) ([]string, error) {
 	output, err := provider.client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceID}})
 	if err != nil {
@@ -541,6 +666,12 @@ func isNotFound(kind resource.Type, err error) bool {
 		return apiCode(err, "InvalidVolume.NotFound")
 	case resource.TypeENI:
 		return apiCode(err, "InvalidNetworkInterfaceID.NotFound")
+	case resource.TypeEIP:
+		return apiCode(err, "InvalidAllocationID.NotFound") || apiCode(err, "InvalidAddress.NotFound")
+	case resource.TypeEndpoint:
+		return apiCode(err, "InvalidVpcEndpointId.NotFound")
+	case resource.TypeSnapshot:
+		return apiCode(err, "InvalidSnapshot.NotFound")
 	case resource.TypeEC2:
 		return apiCode(err, "InvalidInstanceID.NotFound")
 	default:

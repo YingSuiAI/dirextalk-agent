@@ -161,7 +161,7 @@ func pricingCandidate(id cloudquote.CandidateProfile, instance string, purchase 
 		CandidateID: id, InstanceType: instance, InstanceCount: 1,
 		Architecture: recipe.ArchitectureAMD64, DiskGiB: disk, VolumeType: "gp3",
 		VolumeIOPS: 3000, VolumeThroughputMiBPS: 125,
-		PurchaseOption: purchase, EntryPoint: entry, PublicExposure: public,
+		PurchaseOption: purchase, EntryPoint: entry, PublicIPv4: public, PublicExposure: public,
 	}
 }
 

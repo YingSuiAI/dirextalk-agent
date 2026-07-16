@@ -157,7 +157,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	}
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
-	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeService(options.runtimeCoordinator, options.runtimeFeatures))
+	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))
 	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals))
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer))

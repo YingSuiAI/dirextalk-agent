@@ -197,7 +197,7 @@ func readEBSCosts(ctx context.Context, catalog *priceCatalog, region string, can
 }
 
 func readIPv4Cost(ctx context.Context, catalog *priceCatalog, region string, candidate cloudquote.PricingCandidateQueryV1, usage cloudquote.UsageV1) (cloudquote.CostItemV1, error) {
-	if !candidate.PublicExposure {
+	if !candidate.PublicIPv4 {
 		return zeroCost(cloudquote.CostPublicIPv4, "no public IPv4 requested", sourceIdentifier("estimate", "none", "ipv4", string(candidate.CandidateID))), nil
 	}
 	rate, err := catalog.rate(ctx, rateSpec{serviceCode: "AmazonVPC", unit: "Hrs", filters: map[string]string{

@@ -180,8 +180,14 @@ func validateResourceScope(value ResourceScopeV1) error {
 }
 
 func validateNetworkScope(value NetworkScopeV1) error {
-	if !vpcPattern.MatchString(value.VPCID) || !subnetPattern.MatchString(value.SubnetID) || !securityGroupPattern.MatchString(value.SecurityGroupID) {
+	if !vpcPattern.MatchString(value.VPCID) || !subnetPattern.MatchString(value.SubnetID) {
 		return fmt.Errorf("network_scope contains an invalid AWS network identifier")
+	}
+	mode := normalizedSecurityGroupMode(value)
+	if (mode == SecurityGroupExisting && !securityGroupPattern.MatchString(value.SecurityGroupID)) ||
+		(mode == SecurityGroupCreateDedicated && value.SecurityGroupID != "") ||
+		(mode != SecurityGroupExisting && mode != SecurityGroupCreateDedicated) {
+		return fmt.Errorf("network_scope security group intent is invalid")
 	}
 	seenPorts := make(map[uint32]struct{}, len(value.IngressPorts))
 	for _, port := range value.IngressPorts {
@@ -388,9 +394,17 @@ func normalizeResource(value ResourceScopeV1) ResourceScopeV1 {
 }
 
 func normalizeNetwork(value NetworkScopeV1) NetworkScopeV1 {
+	value.SecurityGroupMode = normalizedSecurityGroupMode(value)
 	value.IngressPorts = append([]uint32(nil), value.IngressPorts...)
 	sort.Slice(value.IngressPorts, func(i, j int) bool { return value.IngressPorts[i] < value.IngressPorts[j] })
 	return value
+}
+
+func normalizedSecurityGroupMode(value NetworkScopeV1) SecurityGroupMode {
+	if value.SecurityGroupMode == "" && value.SecurityGroupID != "" {
+		return SecurityGroupExisting
+	}
+	return value.SecurityGroupMode
 }
 
 func normalizeSecrets(values []SecretReferenceV1) []SecretReferenceV1 {

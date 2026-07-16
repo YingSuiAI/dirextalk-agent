@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/einoengine"
@@ -21,18 +22,63 @@ import (
 )
 
 type RuntimeComposition struct {
-	Coordinator *runtimeapp.Service
-	Features    rpcapi.RuntimeFeatures
-	CloudGoals  rpcapi.CloudGoalPlanner
+	Coordinator         *runtimeapp.Service
+	Features            rpcapi.RuntimeFeatures
+	CloudGoals          rpcapi.CloudGoalPlanner
+	CloudGoalDispatcher *planning.CloudGoalDispatcher
 }
 
-func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir, modelProfilesFile, mcpServersFile string) (RuntimeComposition, error) {
+type runtimeCompositionOptions struct {
+	cloudGoalOutput       planning.CloudGoalOutputAdapter
+	cloudGoalMaterializer planning.ProviderPlanMaterializer
+}
+
+// WithCloudGoalMaterializer enables the production queued planning path. The
+// Runtime composition builds the real Eino + durable official-fetch model and
+// keeps the provider seam limited to read-only placement, pricing and typed
+// Quote/Plan persistence.
+func WithCloudGoalMaterializer(materializer planning.ProviderPlanMaterializer) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || materializer == nil {
+			return errors.New("cloud Goal provider materializer is unavailable")
+		}
+		options.cloudGoalMaterializer = materializer
+		return nil
+	}
+}
+
+type RuntimeCompositionOption func(*runtimeCompositionOptions) error
+
+// WithCloudGoalOutputAdapter enables queued Cloud Goal progression. The
+// adapter is deliberately the only provider-specific output seam: it must
+// persist real provider Quotes and a ready Plan, while the dispatcher retains
+// the durable Task lease and independently reads those facts back.
+func WithCloudGoalOutputAdapter(adapter planning.CloudGoalOutputAdapter) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || adapter == nil {
+			return errors.New("cloud Goal output adapter is unavailable")
+		}
+		options.cloudGoalOutput = adapter
+		return nil
+	}
+}
+
+func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir, modelProfilesFile, mcpServersFile string, optionSet ...RuntimeCompositionOption) (RuntimeComposition, error) {
 	if store == nil {
 		return RuntimeComposition{}, errors.New("runtime store is required")
 	}
 	namespace, err := uuid.Parse(strings.TrimSpace(instanceID))
 	if err != nil || namespace == uuid.Nil {
 		return RuntimeComposition{}, errors.New("agent instance id is invalid")
+	}
+	options := runtimeCompositionOptions{}
+	for _, option := range optionSet {
+		if option == nil || option(&options) != nil {
+			return RuntimeComposition{}, errors.New("runtime composition option is invalid")
+		}
+	}
+	if options.cloudGoalOutput != nil && options.cloudGoalMaterializer != nil {
+		return RuntimeComposition{}, errors.New("cloud Goal output composition is ambiguous")
 	}
 	modelProfiles, err := modelapi.LoadProfileCatalog(modelProfilesFile)
 	if err != nil {
@@ -84,8 +130,34 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("model factory is unavailable")
 	}
+	engine := einoengine.New()
+	cloudGoalOutput := options.cloudGoalOutput
+	if cloudGoalOutput == nil && options.cloudGoalMaterializer != nil {
+		officialTools, toolErr := runtimeapp.NewDurableToolProvider(store, publicweb.New())
+		if toolErr != nil {
+			return RuntimeComposition{}, errors.New("durable cloud research tool is unavailable")
+		}
+		planningModel, modelErr := planning.NewEinoCloudGoalPlanningModel(store, engine, modelFactory, secrets, officialTools)
+		if modelErr != nil {
+			return RuntimeComposition{}, errors.New("cloud Goal planning model is unavailable")
+		}
+		cloudGoalOutput, modelErr = planning.NewPersistentCloudGoalOutputAdapter(
+			namespace.String(), store, store, planningModel, options.cloudGoalMaterializer, store, time.Now,
+		)
+		if modelErr != nil {
+			return RuntimeComposition{}, errors.New("cloud Goal output adapter is unavailable")
+		}
+	}
+	cloudGoalDispatcher, err := planning.NewCloudGoalDispatcher(namespace.String(), store, store, store, cloudGoalOutput, planning.CloudGoalDispatcherConfig{
+		PollInterval:  15 * time.Second,
+		LeaseDuration: 5 * time.Minute,
+		BatchSize:     64,
+	})
+	if err != nil {
+		return RuntimeComposition{}, errors.New("cloud Goal dispatcher is unavailable")
+	}
 	executor, err := runtimeapi.New(runtimeapi.Dependencies{
-		Engine: einoengine.New(),
+		Engine: engine,
 		Models: modelFactory,
 		Tools:  durableTools, Configs: store, Conversations: store, Secrets: secrets,
 	})
@@ -96,7 +168,26 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}
-	return RuntimeComposition{Coordinator: coordinator, Features: features, CloudGoals: planningAdapter}, nil
+	return RuntimeComposition{
+		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter, CloudGoalDispatcher: cloudGoalDispatcher,
+	}, nil
+}
+
+// RecoverCloudGoals resumes only expired or queued control-plane stages. With
+// no real output adapter installed it is a no-op and, importantly, does not
+// reserve a Task lease.
+func (composition RuntimeComposition) RecoverCloudGoals(ctx context.Context) error {
+	if composition.CloudGoalDispatcher == nil || ctx == nil {
+		return errors.New("cloud Goal dispatcher is unavailable")
+	}
+	return composition.CloudGoalDispatcher.RunOnce(ctx)
+}
+
+func (composition RuntimeComposition) RunCloudGoals(ctx context.Context) error {
+	if composition.CloudGoalDispatcher == nil || ctx == nil {
+		return errors.New("cloud Goal dispatcher is unavailable")
+	}
+	return composition.CloudGoalDispatcher.Run(ctx)
 }
 
 type catalogModelFactory struct {
@@ -179,8 +270,16 @@ func (provider *scopedCloudProvider) Tools(ctx context.Context, request runtimea
 		return nil, nil
 	}
 	recipeID := uuid.NewSHA1(provider.namespace, []byte(request.OwnerID+"\x00"+request.ConversationID)).String()
+	connectionID := ""
+	if request.CloudDialogue != nil {
+		trusted, scopeErr := runtimeapi.NewCloudDialogueScope(request.CloudDialogue.ConnectionID)
+		if scopeErr != nil {
+			return nil, cloudskill.ErrInvalidCallScope
+		}
+		connectionID = trusted.ConnectionID
+	}
 	scoped, err := cloudskill.BindCallScope(ctx, cloudskill.CallScope{
-		OwnerID: request.OwnerID, RecipeID: recipeID, Retention: task.RetentionEphemeralAutoDestroy,
+		OwnerID: request.OwnerID, ConnectionID: connectionID, RecipeID: recipeID, Retention: task.RetentionEphemeralAutoDestroy,
 	})
 	if err != nil {
 		return nil, err

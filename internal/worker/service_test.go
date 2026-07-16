@@ -656,6 +656,61 @@ func TestLeaseRestartRecoveryAndLateResultFencing(t *testing.T) {
 	}
 }
 
+func TestTypedObjectClaimsAreScopedSecretFreeAndLeaseFenced(t *testing.T) {
+	fixture := newWorkerFixture(t)
+	defer fixture.enrollment.Destroy()
+	defer fixture.session.Destroy()
+	session := fixture.session.Reveal()
+	defer zero(session)
+
+	assignment, err := fixture.service.Claim(context.Background(), AuthenticatedRequest{
+		DeploymentID: fixture.deploymentID, WorkerID: fixture.workerID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: fixture.assignment.Revision, Credential: session,
+	}, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := LeasedRequest{AuthenticatedRequest: AuthenticatedRequest{
+		DeploymentID: fixture.deploymentID, WorkerID: fixture.workerID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: assignment.Revision, Credential: session,
+	}, LeaseEpoch: assignment.LeaseEpoch}
+	claim := ObjectClaim{
+		Ref:    "s3://agent-bucket/deployments/d1/checkpoints/checkpoint-a1-e1.json",
+		SHA256: [32]byte{0x42}, SizeBytes: 128, MediaType: "application/json",
+	}
+	checkpointed, err := fixture.service.CheckpointObject(context.Background(), request, claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := checkpointed.Evidence[len(checkpointed.Evidence)-1]
+	if evidence.Ref != claim.Ref || evidence.ObjectSHA256 != claim.Digest() || evidence.SizeBytes != claim.SizeBytes ||
+		evidence.MediaType != claim.MediaType || evidence.Trust != TrustWorkerClaim {
+		t.Fatalf("typed checkpoint evidence=%+v", evidence)
+	}
+
+	request.IdempotencyKey = uuid.NewString()
+	request.ExpectedRevision = checkpointed.Revision
+	unsafe := claim
+	unsafe.Ref = "s3://agent-bucket/deployments/d1/checkpoints/sk-abcdefghijklmnopqrstuvwxyz012345.json"
+	if _, err := fixture.service.CheckpointObject(context.Background(), request, unsafe); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("secret-shaped object claim error=%v", err)
+	}
+
+	*fixture.now = fixture.now.Add(11 * time.Second)
+	request.IdempotencyKey = uuid.NewString()
+	request.ExpectedRevision = checkpointed.Revision
+	result := ObjectClaim{
+		Ref:    "s3://agent-bucket/deployments/d1/artifacts/result-a1-e1.json",
+		SHA256: [32]byte{0x24}, SizeBytes: 64, MediaType: "application/json",
+	}
+	_, err = fixture.service.Complete(context.Background(), CompleteRequest{
+		LeasedRequest: request, Outcome: OutcomeSucceeded, ResultRef: result.Ref, ResultObject: &result,
+	})
+	if !errors.Is(err, ErrLeaseExpired) {
+		t.Fatalf("expired typed result must be fenced, got %v", err)
+	}
+}
+
 func TestScopedReferencesCancellationAndWorkerTrust(t *testing.T) {
 	fixture := newWorkerFixture(t)
 	defer fixture.enrollment.Destroy()

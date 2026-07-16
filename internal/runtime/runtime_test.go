@@ -404,6 +404,90 @@ func TestRuntimeRequestDigestBindsExpectedConversationRevision(t *testing.T) {
 	}
 }
 
+func TestRuntimeRequestCloudDialogueScopeIsCanonicalAndIdempotencyBound(t *testing.T) {
+	t.Parallel()
+	command := RuntimeRequestCommand{
+		Request: ChatRequest{
+			RequestID: "request-cloud-digest", OwnerID: "owner-1", ConversationID: "conversation-1",
+			Messages:      []modelapi.Message{{Role: modelapi.RoleUser, Content: "research official documentation"}},
+			CloudDialogue: &CloudDialogueScope{ConnectionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+		},
+		LeaseDuration: minimumPersistenceLease,
+	}
+	first, err := command.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.Request.CloudDialogue.ConnectionID = "22222222-2222-4222-8222-222222222222"
+	second, err := command.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("idempotency digest did not bind trusted Cloud Dialogue connection")
+	}
+	command.Request.CloudDialogue.ConnectionID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	command.Request.CloudDialogue.ConnectionID = strings.ToUpper(command.Request.CloudDialogue.ConnectionID)
+	if _, err := command.Validated(); !errors.Is(err, ErrRuntimePersistence) {
+		t.Fatalf("non-canonical Cloud Connection error = %v", err)
+	}
+	secret := "sk-" + strings.Repeat("Z", 40)
+	command.Request.CloudDialogue.ConnectionID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	command.Request.Messages = []modelapi.Message{{Role: modelapi.RoleUser, Content: "deploy with " + secret}}
+	if _, err := command.Validated(); !errors.Is(err, ErrRuntimeRawSecret) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("secret-bearing Cloud Dialogue error = %v", err)
+	}
+}
+
+func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *testing.T) {
+	t.Parallel()
+	connectionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	config := validTestConfig()
+	config.MemoryDisabled = true
+	config.EnabledTools = []string{"dangerous_runtime_mutation"}
+	config.KnowledgeRefs = []string{"knowledge-private"}
+	config.MCPServerIDs = []string{"network-mcp"}
+	config.RecipeIDs = []string{"caller-recipe"}
+	var toolRequest ToolRequest
+	engine := &scriptedEngine{generate: func(_ context.Context, request EngineRequest) (EngineResult, error) {
+		got := make(map[string]struct{}, len(request.Tools))
+		for _, tool := range request.Tools {
+			got[tool.Name] = struct{}{}
+		}
+		for _, name := range CloudDialogueToolNames() {
+			if _, ok := got[name]; !ok {
+				t.Fatalf("cloud dialogue allowlist omitted %q: %#v", name, request.Tools)
+			}
+		}
+		if _, ok := got["dangerous_runtime_mutation"]; ok || len(got) != len(CloudDialogueToolNames()) {
+			t.Fatalf("cloud dialogue exposed configured capabilities: %#v", request.Tools)
+		}
+		return finalEngineResult("planning only"), nil
+	}}
+	dependencies := testDependencies(engine, &recordingConversationRepository{}, config)
+	dependencies.Tools = ToolProviderFunc(func(_ context.Context, request ToolRequest) ([]Tool, error) {
+		toolRequest = request
+		names := append(CloudDialogueToolNames(), "dangerous_runtime_mutation")
+		tools := make([]Tool, 0, len(names))
+		for _, name := range names {
+			tools = append(tools, Tool{Definition: modelapi.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, Run: func(context.Context, ToolInvocation) (ToolResult, error) { return ToolResult{}, nil }})
+		}
+		return tools, nil
+	})
+	runtime := mustTestRuntime(t, dependencies)
+	_, err := runtime.Chat(context.Background(), ChatRequest{
+		RequestID: "cloud-dialogue-request", OwnerID: "owner-1", ConversationID: "conversation-1", MemoryDisabled: true,
+		Messages:      []modelapi.Message{{Role: modelapi.RoleUser, Content: "research official documentation"}},
+		CloudDialogue: &CloudDialogueScope{ConnectionID: connectionID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if toolRequest.CloudDialogue == nil || toolRequest.CloudDialogue.ConnectionID != connectionID || len(toolRequest.KnowledgeRefs) != 0 || len(toolRequest.MCPServerIDs) != 0 || len(toolRequest.RecipeIDs) != 0 {
+		t.Fatalf("trusted cloud tool scope drifted: %#v", toolRequest)
+	}
+}
+
 func TestRuntimeConfigDigestBindsServerModelProfileID(t *testing.T) {
 	config := RuntimeConfig{
 		ModelProfile: modelapi.Profile{

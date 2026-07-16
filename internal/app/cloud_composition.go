@@ -14,6 +14,7 @@ import (
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
@@ -28,9 +29,27 @@ type CloudComposition struct {
 	WorkerIdentityVerifier     *workeridentity.Verifier
 	WorkerIdentityMaterializer *workerIdentityMaterializer
 	FoundationConnections      *cloudapp.AWSConnectionService
+	ActiveQuotes               *cloudapp.AWSActiveQuoteEngine
+	ActivePlacements           *cloudapp.AWSActivePlacementResolver
+	ProviderPlans              planning.ProviderPlanMaterializer
 	ManifestRecovery           *resourceManifestRecovery
 	foundationLaunches         *foundationLaunchCompensator
+	agentInstanceID            string
+	cloudGoalStore             *postgres.Store
 	vault                      *awsfoundation.CredentialVault
+}
+
+// NewCloudGoalOutputAdapter composes the durable provider path only after a
+// real model/research implementation is supplied. Startup intentionally does
+// not install a stub model or fabricate planning output.
+func (composition *CloudComposition) NewCloudGoalOutputAdapter(model planning.CloudGoalPlanningModel) (*planning.PersistentCloudGoalOutputAdapter, error) {
+	if composition == nil || composition.cloudGoalStore == nil || composition.ProviderPlans == nil || model == nil {
+		return nil, errors.New("cloud Goal planning dependencies are unavailable")
+	}
+	return planning.NewPersistentCloudGoalOutputAdapter(
+		composition.agentInstanceID, composition.cloudGoalStore, composition.cloudGoalStore,
+		model, composition.ProviderPlans, composition.cloudGoalStore, time.Now,
+	)
 }
 
 // Recover resumes exact, pre-authorized Foundation operations and persists any
@@ -128,6 +147,21 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	artifactPublisher, err := awsartifact.NewBundlePublisher(agentInstanceID, vault, awsartifact.SDKFactory{})
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	activeQuotes, err := cloudapp.NewAWSActiveQuoteEngine(agentInstanceID, vault, store, cloudapp.SDKActivePricingFactory{}, time.Now)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	activePlacements, err := cloudapp.NewAWSActivePlacementResolver(agentInstanceID, vault, cloudapp.SDKActivePlacementFactory{})
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -239,9 +273,11 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	return &CloudComposition{
 		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
-		FoundationConnections: connections,
-		ManifestRecovery:      manifestRecovery,
-		foundationLaunches:    launchCompensator,
-		vault:                 vault,
+		FoundationConnections: connections, ActiveQuotes: activeQuotes, ActivePlacements: activePlacements, ProviderPlans: providerPlans,
+		ManifestRecovery:   manifestRecovery,
+		foundationLaunches: launchCompensator,
+		agentInstanceID:    agentInstanceID,
+		cloudGoalStore:     store,
+		vault:              vault,
 	}, nil
 }

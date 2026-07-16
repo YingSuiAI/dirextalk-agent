@@ -8,6 +8,7 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -543,6 +544,21 @@ func validateWorkerDeployment(deployment worker.Deployment) error {
 	for _, evidence := range deployment.Evidence {
 		if evidence.Trust != worker.TrustWorkerClaim || security.ContainsLikelySecret(evidence.Ref) {
 			return worker.ErrInvalid
+		}
+		typed := evidence.ObjectSHA256 != "" || evidence.SizeBytes != 0 || evidence.MediaType != ""
+		if typed {
+			if len(evidence.ObjectSHA256) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(evidence.ObjectSHA256, "sha256:") {
+				return worker.ErrInvalid
+			}
+			rawDigest, err := hex.DecodeString(strings.TrimPrefix(evidence.ObjectSHA256, "sha256:"))
+			if err != nil || len(rawDigest) != sha256.Size {
+				return worker.ErrInvalid
+			}
+			var digest [sha256.Size]byte
+			copy(digest[:], rawDigest)
+			if (worker.ObjectClaim{Ref: evidence.Ref, SHA256: digest, SizeBytes: evidence.SizeBytes, MediaType: evidence.MediaType}).Validate() != nil {
+				return worker.ErrInvalid
+			}
 		}
 	}
 	if deployment.Enrollment.ExpiresAt.Before(deployment.CreatedAt) || deployment.UpdatedAt.Before(deployment.CreatedAt) {

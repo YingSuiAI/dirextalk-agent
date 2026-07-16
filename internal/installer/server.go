@@ -14,6 +14,7 @@ import (
 const (
 	defaultMaxRequestBytes  = 256 << 10
 	defaultMaxResponseBytes = 16 << 10
+	executionResponseGrace  = 5 * time.Second
 )
 
 type ServerConfig struct {
@@ -69,12 +70,44 @@ func (s *Server) Handle(ctx context.Context, input io.Reader, output io.Writer) 
 	response.Action = request.Action
 	response.ArtifactName = request.ArtifactName
 	response.CommandID = request.CommandID
+	s.extendExecutionDeadline(input, request)
 	verified, err := s.verifier.Verify(ctx, request)
 	if err != nil {
 		response.ErrorCode = ErrorCodeOf(err)
 		return s.writeResponse(output, response)
 	}
 	return s.writeResponse(output, verified)
+}
+
+type deadlineSetter interface{ SetDeadline(time.Time) error }
+
+func (s *Server) extendExecutionDeadline(input io.Reader, request RequestV1) {
+	connection, ok := input.(deadlineSetter)
+	if !ok || request.Action != ActionExecute || request.LeaseGrant == nil {
+		return
+	}
+	now := time.Now().UTC()
+	maximum := now.Add(maximumLeaseGrantDuration + executionResponseGrace)
+	planExpiresAt, planErr := parseCanonicalUTC(request.SignedPlan.Plan.ExpiresAt)
+	leaseExpiresAt, leaseErr := parseCanonicalUTC(request.LeaseGrant.Grant.ExpiresAt)
+	deadline := now.Add(executionResponseGrace)
+	if planErr == nil && leaseErr == nil {
+		deadline = earlierTime(planExpiresAt, leaseExpiresAt).Add(executionResponseGrace)
+	}
+	if minimum := now.Add(executionResponseGrace); deadline.Before(minimum) {
+		deadline = minimum
+	}
+	if deadline.After(maximum) {
+		deadline = maximum
+	}
+	_ = connection.SetDeadline(deadline)
+}
+
+func earlierTime(left, right time.Time) time.Time {
+	if left.Before(right) {
+		return left
+	}
+	return right
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {

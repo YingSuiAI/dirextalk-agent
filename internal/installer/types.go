@@ -13,6 +13,7 @@ import (
 
 const (
 	PlanSchemaV1       = "dirextalk.agent.installer-plan/v1"
+	LeaseGrantSchemaV1 = "dirextalk.agent.installer-lease-grant/v1"
 	RequestSchemaV1    = "dirextalk.agent.installer-request/v1"
 	ResponseSchemaV1   = "dirextalk.agent.installer-response/v1"
 	DaemonConfigSchema = "dirextalk.agent.installer-daemon-config/v1"
@@ -27,16 +28,34 @@ const (
 	StatusRejected    = "rejected"
 )
 
-// BindingV1 is repeated in the local request, the signed installer plan, and
-// the root-owned daemon configuration. All three copies must match exactly.
+// BindingV1 is the stable approval capability repeated in the local request,
+// signed installer plan, and root-owned daemon configuration. Runtime lease
+// epoch and expiry are carried by a separate short-lived LeaseGrantV1.
 type BindingV1 struct {
 	AgentInstanceID string `json:"agent_instance_id"`
 	DeploymentID    string `json:"deployment_id"`
 	TaskID          string `json:"task_id"`
 	PlanHash        string `json:"plan_hash"`
 	ApprovalID      string `json:"approval_id"`
-	LeaseEpoch      int64  `json:"lease_epoch"`
 	RecipeDigest    string `json:"recipe_digest"`
+}
+
+type LeaseGrantV1 struct {
+	SchemaVersion string    `json:"schema_version"`
+	TrustID       string    `json:"trust_id"`
+	Binding       BindingV1 `json:"binding"`
+	PlanDigest    string    `json:"plan_digest"`
+	OperationID   string    `json:"operation_id"`
+	CommandID     string    `json:"command_id"`
+	LeaseEpoch    int64     `json:"lease_epoch"`
+	IssuedAt      string    `json:"issued_at"`
+	ExpiresAt     string    `json:"expires_at"`
+}
+
+type SignedLeaseGrantV1 struct {
+	Grant       LeaseGrantV1 `json:"grant"`
+	SignerKeyID string       `json:"signer_key_id"`
+	Signature   []byte       `json:"signature"`
 }
 
 type ArtifactV1 struct {
@@ -108,6 +127,8 @@ type RequestV1 struct {
 	SignedPlan     SignedInstallerPlanV1 `json:"signed_plan"`
 	ArtifactName   string                `json:"artifact_name,omitempty"`
 	CommandID      string                `json:"command_id,omitempty"`
+	OperationID    string                `json:"operation_id,omitempty"`
+	LeaseGrant     *SignedLeaseGrantV1   `json:"lease_grant,omitempty"`
 }
 
 // ResponseV1 intentionally contains no path, secret reference, command text,
@@ -134,6 +155,10 @@ type DaemonConfigV1 struct {
 
 func PlanSigningBytes(plan InstallerPlanV1) ([]byte, error) {
 	return canonical.Marshal(plan)
+}
+
+func LeaseGrantSigningBytes(grant LeaseGrantV1) ([]byte, error) {
+	return canonical.Marshal(grant)
 }
 
 func SignerKeyID(publicKey ed25519.PublicKey) string {

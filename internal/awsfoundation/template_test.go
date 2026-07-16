@@ -15,7 +15,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 	if err := ValidateTemplate(template); err != nil {
 		t.Fatalf("validate template: %v", err)
 	}
-	for _, forbidden := range [][]byte{[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"), []byte("ec2:CreateSnapshot")} {
+	for _, forbidden := range [][]byte{[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"), []byte("RunTaggedNetworkInterface")} {
 		if bytes.Contains(template, forbidden) {
 			t.Fatalf("template contains forbidden %q", forbidden)
 		}
@@ -24,10 +24,10 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("AWS::S3::Bucket"), []byte("AWS::KMS::Key"), []byte("AWS::DynamoDB::Table"), []byte("AWS::Logs::LogGroup"),
 		[]byte("AWS::SecretsManager"), []byte("AWS::Events::Rule"), []byte("AWS::Lambda::Function"), []byte("WorkerInstanceProfile"),
 		[]byte("ec2:AuthorizeSecurityGroupEgress"), []byte("ec2:RevokeSecurityGroupIngress"), []byte("ec2:RevokeSecurityGroupEgress"),
-		[]byte("ec2:DescribeVpcEndpoints"), []byte("ec2:DescribeInstanceAttribute"), []byte("TagComputeOnCreate"), []byte("TagOnlyOwnedCompute"),
-		[]byte("RunTaggedComputeInstanceAndVolume"), []byte("RunTaggedComputeNetworkInterface"),
-		[]byte("UseOwnedComputeNetworkInterface"), []byte("UsePublicBuilderBaseImage"), []byte("UseOwnedWorkerImage"), []byte("UseComputeLaunchNetworkInputs"),
-		[]byte("CreateWorkerImageFromOwnedBuilder"), []byte("CreateWorkerImageOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
+		[]byte("ec2:CreateSnapshot"), []byte("ec2:DescribeVpcEndpoints"), []byte("ec2:DescribeInstanceAttribute"), []byte("TagComputeOnCreate"), []byte("TagOnlyOwnedCompute"),
+		[]byte("RunTaggedInstanceVolume"),
+		[]byte("UseOwnedNetworkInterface"), []byte("UsePublicBuilderBaseImage"), []byte("UseOwnedWorkerImage"), []byte("UseLaunchNetworkInputs"),
+		[]byte("CreateImageFromOwnedBuilder"), []byte("CreateImageOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
 		[]byte("ec2:CreateImage"), []byte("ec2:DeregisterImage"), []byte("s3:GetBucketVersioning"), []byte("s3:GetEncryptionConfiguration"),
 		[]byte("s3:ListBucketVersions"), []byte("s3:GetObjectVersion"), []byte("s3:DeleteObjectVersion"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
@@ -50,21 +50,20 @@ func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {
 		new  string
 	}{
 		{name: "instance attribute readback removed", sid: "ObserveRegionalCompute", old: "- ec2:DescribeInstanceAttribute", new: "- ec2:DescribeAddresses"},
-		{name: "instance launch ownership removed", sid: "RunTaggedComputeInstanceAndVolume", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
-		{name: "instance launch allows IMDSv1", sid: "RunTaggedComputeInstanceAndVolume", old: "ec2:MetadataHttpTokens: required", new: "ec2:MetadataHttpTokens: optional"},
-		{name: "launch allows an unencrypted root", sid: "RunTaggedComputeInstanceAndVolume", old: "ec2:Encrypted: 'true'", new: "ec2:Encrypted: 'false'"},
-		{name: "launch allows a public interface", sid: "RunTaggedComputeNetworkInterface", old: "ec2:AssociatePublicIpAddress: 'false'", new: "ec2:AssociatePublicIpAddress: 'true'"},
-		{name: "existing interface loses ownership", sid: "UseOwnedComputeNetworkInterface", old: "ec2:ResourceTag/dirextalk:agent_instance_id", new: "aws:RequestTag/dirextalk:agent_instance_id"},
+		{name: "instance launch ownership removed", sid: "RunTaggedInstanceVolume", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
+		{name: "instance launch allows IMDSv1", sid: "RunTaggedInstanceVolume", old: "ec2:MetadataHttpTokens: required", new: "ec2:MetadataHttpTokens: optional"},
+		{name: "launch allows an unencrypted root", sid: "RunTaggedInstanceVolume", old: "ec2:Encrypted: 'true'", new: "ec2:Encrypted: 'false'"},
+		{name: "existing interface loses ownership", sid: "UseOwnedNetworkInterface", old: "ec2:ResourceTag/dirextalk:agent_instance_id", new: "aws:RequestTag/dirextalk:agent_instance_id"},
 		{name: "builder base image may be private", sid: "UsePublicBuilderBaseImage", old: "ec2:Public: 'true'", new: "ec2:Public: 'false'"},
 		{name: "worker image loses ownership", sid: "UseOwnedWorkerImage", old: "ec2:ResourceTag/dirextalk:agent_instance_id", new: "aws:RequestTag/dirextalk:agent_instance_id"},
-		{name: "launch network input scope is broadened", sid: "UseComputeLaunchNetworkInputs", old: ":security-group/*", new: ":key-pair/*"},
-		{name: "source instance loses ownership", sid: "CreateWorkerImageFromOwnedBuilder", old: "ec2:ResourceTag/dirextalk:agent_instance_id", new: "aws:RequestTag/dirextalk:agent_instance_id"},
-		{name: "source instance ownership references the wrong stack value", sid: "CreateWorkerImageFromOwnedBuilder", old: "Ref: AgentInstanceId", new: "Ref: AWS::AccountId"},
-		{name: "source instance component is broadened", sid: "CreateWorkerImageFromOwnedBuilder", old: "ec2:ResourceTag/dirextalk:component: worker-ami-builder", new: "ec2:ResourceTag/dirextalk:component: worker"},
-		{name: "source action is granted on the wrong resource", sid: "CreateWorkerImageFromOwnedBuilder", old: ":instance/*", new: ":image/*"},
-		{name: "new image loses request ownership", sid: "CreateWorkerImageOutput", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
-		{name: "CreateImage is combined with its dependent tag action", sid: "CreateWorkerImageOutput", old: "- ec2:CreateImage", new: "- ec2:CreateImage\n              - ec2:CreateTags"},
-		{name: "new image action is granted on a snapshot", sid: "CreateWorkerImageOutput", old: "::image/*", new: ":${AWS::AccountId}:snapshot/*"},
+		{name: "launch network input scope is broadened", sid: "UseLaunchNetworkInputs", old: ":security-group/*", new: ":key-pair/*"},
+		{name: "source instance loses ownership", sid: "CreateImageFromOwnedBuilder", old: "ec2:ResourceTag/dirextalk:agent_instance_id", new: "aws:RequestTag/dirextalk:agent_instance_id"},
+		{name: "source instance ownership references the wrong stack value", sid: "CreateImageFromOwnedBuilder", old: "Ref: AgentInstanceId", new: "Ref: AWS::AccountId"},
+		{name: "source instance component is broadened", sid: "CreateImageFromOwnedBuilder", old: "ec2:ResourceTag/dirextalk:component: worker-ami-builder", new: "ec2:ResourceTag/dirextalk:component: worker"},
+		{name: "source action is granted on the wrong resource", sid: "CreateImageFromOwnedBuilder", old: ":instance/*", new: ":image/*"},
+		{name: "new image loses request ownership", sid: "CreateImageOutput", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
+		{name: "CreateImage is combined with its dependent tag action", sid: "CreateImageOutput", old: "- ec2:CreateImage", new: "- ec2:CreateImage\n              - ec2:CreateTags"},
+		{name: "new image action is granted on a snapshot", sid: "CreateImageOutput", old: "::image/*", new: ":${AWS::AccountId}:snapshot/*"},
 		{name: "new image tags lose request ownership", sid: "TagWorkerImageOutputs", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
 		{name: "new image snapshot tag scope is broadened", sid: "TagWorkerImageOutputs", old: ":snapshot/*", new: ":volume/*"},
 		{name: "image tagging is detached from CreateImage", sid: "TagWorkerImageOutputs", old: "ec2:CreateAction: CreateImage", new: "ec2:CreateAction: RunInstances"},
@@ -81,6 +80,121 @@ func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {
 			mutated := mutateFoundationStatement(t, template, test.sid, test.old, test.new)
 			if err := ValidateTemplate(mutated); err == nil {
 				t.Fatalf("worker AMI policy mutation in %s was accepted", test.sid)
+			}
+		})
+	}
+}
+
+func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(t *testing.T) {
+	statements := controlRuntimeStatements(t)
+	assertStatement := func(sid string, actions, resources []string) map[string]any {
+		t.Helper()
+		statement, ok := statements[sid]
+		if !ok {
+			t.Fatalf("control runtime policy is missing %s", sid)
+		}
+		if actual := stringValues(statement["Action"]); !sameStrings(actual, actions) {
+			t.Fatalf("%s actions = %v, want %v", sid, actual, actions)
+		}
+		if actual := templateResourceStrings(statement["Resource"]); !sameStrings(actual, resources) {
+			t.Fatalf("%s resources = %v, want %v", sid, actual, resources)
+		}
+		return statement
+	}
+
+	created := assertStatement("CreateTaggedCompute", []string{
+		"ec2:AllocateAddress", "ec2:CreateNetworkInterface", "ec2:CreateSecurityGroup",
+		"ec2:CreateSnapshot", "ec2:CreateVolume", "ec2:CreateVpcEndpoint",
+	}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*",
+	})
+	if !conditionRefEquals(created, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+		t.Fatal("new EC2 resources are not protected by an exact ownership request tag")
+	}
+
+	for _, dependency := range []struct {
+		sid       string
+		actions   []string
+		resources []string
+	}{
+		{
+			sid:     "UseNetworkCreationInputs",
+			actions: []string{"ec2:CreateNetworkInterface", "ec2:CreateVpcEndpoint"},
+			resources: []string{
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+			},
+		},
+		{
+			sid:     "UseVPCForNetworkCreation",
+			actions: []string{"ec2:CreateSecurityGroup", "ec2:CreateVpcEndpoint"},
+			resources: []string{
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*",
+			},
+		},
+	} {
+		statement := assertStatement(dependency.sid, dependency.actions, dependency.resources)
+		if _, exists := statement["Condition"]; exists {
+			t.Fatalf("%s incorrectly applies a new-resource tag condition to existing dependency resources", dependency.sid)
+		}
+	}
+
+	volume := assertStatement("UseOwnedVolumeForSnapshot", []string{"ec2:CreateSnapshot"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*",
+	})
+	if !singleRefCondition(volume, "StringEquals", "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+		t.Fatal("snapshot creation is not bound to an owned source volume")
+	}
+
+	tagging := assertStatement("TagComputeOnCreate", []string{"ec2:CreateTags"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*",
+	})
+	condition, _ := stringMap(tagging["Condition"])
+	equals, _ := stringMap(condition["StringEquals"])
+	if !conditionRefEquals(tagging, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		!sameStrings(stringValues(equals["ec2:CreateAction"]), []string{
+			"AllocateAddress", "CreateNetworkInterface", "CreateSecurityGroup", "CreateSnapshot", "CreateVolume", "CreateVpcEndpoint", "RunInstances",
+		}) {
+		t.Fatal("tag-on-create permission does not cover the exact supported EC2 create actions")
+	}
+	if !computeTagCondition(tagging, true) {
+		t.Fatal("tag-on-create permission does not restrict ownership, tag keys, and create actions")
+	}
+	ownedTagging := assertStatement("TagOnlyOwnedCompute", []string{"ec2:CreateTags"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*",
+	})
+	if !computeTagCondition(ownedTagging, false) {
+		t.Fatal("direct CreateTags is not restricted to an already-owned resource and the runtime tag allowlist")
+	}
+}
+
+func TestFoundationTemplateEC2CreationPermissionsFailClosed(t *testing.T) {
+	template := testFoundationTemplate(t)
+	tests := []struct {
+		name        string
+		sid         string
+		old         string
+		replacement string
+	}{
+		{name: "new resource loses request ownership", sid: "CreateTaggedCompute", old: "aws:RequestTag/dirextalk:agent_instance_id", replacement: "ec2:ResourceTag/dirextalk:agent_instance_id"},
+		{name: "new resource statement absorbs a subnet dependency", sid: "CreateTaggedCompute", old: ":vpc-endpoint/*", replacement: ":subnet/*"},
+		{name: "network dependency receives a new-resource condition", sid: "UseNetworkCreationInputs", old: "            Resource:", replacement: "            Condition:\n              StringEquals:\n                aws:RequestTag/dirextalk:agent_instance_id:\n                  Ref: AgentInstanceId\n            Resource:"},
+		{name: "snapshot accepts an unowned source volume", sid: "UseOwnedVolumeForSnapshot", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:RequestTag/dirextalk:agent_instance_id"},
+		{name: "elastic ip tagging is omitted", sid: "TagComputeOnCreate", old: "                  - AllocateAddress\n", replacement: ""},
+		{name: "unlisted create action may tag", sid: "TagComputeOnCreate", old: "                  - AllocateAddress", replacement: "                  - ModifyVolume"},
+		{name: "tag key allowlist is broadened", sid: "TagComputeOnCreate", old: "                  - dirextalk_client_token", replacement: "                  - unrestricted_tag_key"},
+		{name: "direct tagging loses existing ownership", sid: "TagOnlyOwnedCompute", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:ResourceTag/unrelated"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := mutateFoundationStatement(t, template, test.sid, test.old, test.replacement)
+			if err := ValidateTemplate(mutated); err == nil {
+				t.Fatalf("unsafe EC2 creation policy mutation in %s was accepted", test.sid)
 			}
 		})
 	}
@@ -134,6 +248,35 @@ func testFoundationTemplate(t *testing.T) []byte {
 		t.Fatalf("read foundation template: %v", err)
 	}
 	return template
+}
+
+func controlRuntimeStatements(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	resources, _ := stringMap(root["Resources"])
+	control, _ := stringMap(resources["ControlRuntimePolicy"])
+	properties, _ := stringMap(control["Properties"])
+	document, _ := stringMap(properties["PolicyDocument"])
+	items, _ := anySlice(document["Statement"])
+	statements := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		statement, ok := stringMap(item)
+		if !ok {
+			t.Fatal("control runtime policy contains a non-object statement")
+		}
+		sid := scalarString(statement["Sid"])
+		if sid == "" {
+			t.Fatal("control runtime policy contains a statement without Sid")
+		}
+		if _, duplicate := statements[sid]; duplicate {
+			t.Fatalf("control runtime policy contains duplicate Sid %s", sid)
+		}
+		statements[sid] = statement
+	}
+	return statements
 }
 
 func mutateFoundationStatement(t *testing.T, template []byte, sid, old, replacement string) []byte {

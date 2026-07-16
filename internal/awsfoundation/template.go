@@ -33,7 +33,7 @@ var requiredTemplateResources = map[string]string{
 var templateAccountReadActions = map[string]struct{}{
 	"ec2:DescribeAddresses": {}, "ec2:DescribeAvailabilityZones": {}, "ec2:DescribeImages": {},
 	"ec2:DescribeInstanceAttribute": {}, "ec2:DescribeInstanceStatus": {}, "ec2:DescribeInstanceTypeOfferings": {}, "ec2:DescribeInstanceTypes": {},
-	"ec2:DescribeInstances": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribeSecurityGroups": {},
+	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
 	"ec2:DescribeSnapshots": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeVpcEndpoints": {}, "ec2:DescribeVpcs": {},
 }
 
@@ -123,8 +123,10 @@ func controlPolicyFailsClosed(value any) bool {
 	var workerAMI struct {
 		observe, terminate, createFromBuilder, createOutputs, tagOutputs bool
 		deregister, deleteSnapshot, artifactAccess                       bool
-		launchInstanceVolume, launchNetworkOutput, ownedNetworkInput     bool
-		publicBaseImage, ownedWorkerImage, launchNetworkInputs           bool
+		launchInstanceVolume, ownedNetworkInput, publicBaseImage         bool
+		ownedWorkerImage, launchNetworkInputs, createTaggedCompute       bool
+		useNetworkCreationInputs, useVPCForNetworkCreation               bool
+		ownedSnapshotVolume, tagComputeOnCreate, tagOnlyOwnedCompute     bool
 	}
 	for _, item := range statements {
 		statement, _ := stringMap(item)
@@ -132,6 +134,59 @@ func controlPolicyFailsClosed(value any) bool {
 		condition := fmt.Sprint(statement["Condition"])
 		sid := scalarString(statement["Sid"])
 		resources := templateResourceStrings(statement["Resource"])
+		switch sid {
+		case "CreateTaggedCompute":
+			if !sameStrings(actions, []string{
+				"ec2:AllocateAddress", "ec2:CreateNetworkInterface", "ec2:CreateSecurityGroup",
+				"ec2:CreateSnapshot", "ec2:CreateVolume", "ec2:CreateVpcEndpoint",
+			}) || !sameStrings(resources, []string{
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*",
+			}) || !singleRefCondition(statement, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+			workerAMI.createTaggedCompute = true
+		case "UseNetworkCreationInputs":
+			if !sameStrings(actions, []string{"ec2:CreateNetworkInterface", "ec2:CreateVpcEndpoint"}) ||
+				!sameStrings(resources, []string{
+					"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*",
+					"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+				}) || statement["Condition"] != nil {
+				return false
+			}
+			workerAMI.useNetworkCreationInputs = true
+		case "UseVPCForNetworkCreation":
+			if !sameStrings(actions, []string{"ec2:CreateSecurityGroup", "ec2:CreateVpcEndpoint"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*"}) || statement["Condition"] != nil {
+				return false
+			}
+			workerAMI.useVPCForNetworkCreation = true
+		case "UseOwnedVolumeForSnapshot":
+			if !sameStrings(actions, []string{"ec2:CreateSnapshot"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*"}) ||
+				!singleRefCondition(statement, "StringEquals", "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+			workerAMI.ownedSnapshotVolume = true
+		case "TagComputeOnCreate":
+			if !sameStrings(actions, []string{"ec2:CreateTags"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*"}) ||
+				!computeTagCondition(statement, true) {
+				return false
+			}
+			workerAMI.tagComputeOnCreate = true
+		case "TagOnlyOwnedCompute":
+			if !sameStrings(actions, []string{"ec2:CreateTags"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*"}) ||
+				!computeTagCondition(statement, false) {
+				return false
+			}
+			workerAMI.tagOnlyOwnedCompute = true
+		}
 		if sid == "FoundationArtifacts" {
 			workerAMI.artifactAccess = sameStrings(actions, []string{
 				"s3:AbortMultipartUpload", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration",
@@ -147,7 +202,7 @@ func controlPolicyFailsClosed(value any) bool {
 					return false
 				}
 				switch sid {
-				case "RunTaggedComputeInstanceAndVolume":
+				case "RunTaggedInstanceVolume":
 					if !sameStrings(resources, []string{
 						"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*",
 						"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*",
@@ -157,14 +212,7 @@ func controlPolicyFailsClosed(value any) bool {
 						return false
 					}
 					workerAMI.launchInstanceVolume = true
-				case "RunTaggedComputeNetworkInterface":
-					if !sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"}) ||
-						!conditionRefEquals(statement, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
-						!conditionScalarEquals(statement, "Bool", "ec2:AssociatePublicIpAddress", "false") {
-						return false
-					}
-					workerAMI.launchNetworkOutput = true
-				case "UseOwnedComputeNetworkInterface":
+				case "UseOwnedNetworkInterface":
 					if !sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"}) ||
 						!conditionRefEquals(statement, "StringEquals", "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
 						return false
@@ -183,7 +231,7 @@ func controlPolicyFailsClosed(value any) bool {
 						return false
 					}
 					workerAMI.ownedWorkerImage = true
-				case "UseComputeLaunchNetworkInputs":
+				case "UseLaunchNetworkInputs":
 					if !sameStrings(resources, []string{
 						"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*",
 						"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
@@ -199,14 +247,14 @@ func controlPolicyFailsClosed(value any) bool {
 					return false
 				}
 				switch sid {
-				case "CreateWorkerImageFromOwnedBuilder":
+				case "CreateImageFromOwnedBuilder":
 					if !sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*"}) ||
 						!conditionRefEquals(statement, "StringEquals", "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
 						!conditionScalarEquals(statement, "StringEquals", "ec2:ResourceTag/dirextalk:component", "worker-ami-builder") {
 						return false
 					}
 					workerAMI.createFromBuilder = true
-				case "CreateWorkerImageOutput":
+				case "CreateImageOutput":
 					if !sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}::image/*"}) ||
 						!conditionRefEquals(statement, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
 						return false
@@ -222,15 +270,17 @@ func controlPolicyFailsClosed(value any) bool {
 					return false
 				}
 				workerAMI.deregister = true
-			case action == "ec2:CreateTags" && strings.Contains(scalarString(statement["Sid"]), "Owned"):
-				if !strings.Contains(condition, "aws:RequestTag/dirextalk:agent_instance_id") || !strings.Contains(condition, "ec2:ResourceTag/dirextalk:agent_instance_id") {
-					return false
-				}
 			case action == "ec2:CreateTags":
-				if !strings.Contains(condition, "aws:RequestTag/dirextalk:agent_instance_id") || !strings.Contains(condition, "ec2:CreateAction") {
-					return false
-				}
-				if sid == "TagWorkerImageOutputs" {
+				switch sid {
+				case "TagComputeOnCreate":
+					if !workerAMI.tagComputeOnCreate {
+						return false
+					}
+				case "TagOnlyOwnedCompute":
+					if !workerAMI.tagOnlyOwnedCompute {
+						return false
+					}
+				case "TagWorkerImageOutputs":
 					if !sameStrings(actions, []string{"ec2:CreateTags"}) {
 						return false
 					}
@@ -238,9 +288,13 @@ func controlPolicyFailsClosed(value any) bool {
 						return false
 					}
 					workerAMI.tagOutputs = true
+				default:
+					return false
 				}
 			case action == "ec2:AllocateAddress" || strings.HasPrefix(action, "ec2:Create"):
-				if !strings.Contains(condition, "aws:RequestTag/dirextalk:agent_instance_id") {
+				switch sid {
+				case "CreateTaggedCompute", "UseNetworkCreationInputs", "UseVPCForNetworkCreation", "UseOwnedVolumeForSnapshot":
+				default:
 					return false
 				}
 			case action == "ec2:TerminateInstances" || action == "ec2:StartInstances" || action == "ec2:StopInstances" || action == "ec2:AttachVolume" || action == "ec2:DetachVolume" || strings.HasPrefix(action, "ec2:AuthorizeSecurityGroup") || strings.HasPrefix(action, "ec2:RevokeSecurityGroup") || strings.HasPrefix(action, "ec2:Delete") || strings.HasPrefix(action, "ec2:Modify") || action == "ec2:ReleaseAddress":
@@ -265,8 +319,9 @@ func controlPolicyFailsClosed(value any) bool {
 		}
 	}
 	return workerAMI.observe && workerAMI.terminate && workerAMI.createFromBuilder && workerAMI.createOutputs && workerAMI.tagOutputs &&
-		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.launchNetworkOutput && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
-		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs
+		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
+		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs && workerAMI.createTaggedCompute && workerAMI.useNetworkCreationInputs &&
+		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute
 }
 
 func conditionRefEquals(statement map[string]any, operator, key, ref string) bool {
@@ -289,6 +344,49 @@ func conditionScalarEquals(statement map[string]any, operator, key, expected str
 	}
 	values, ok := stringMap(condition[operator])
 	return ok && scalarString(values[key]) == expected
+}
+
+func singleRefCondition(statement map[string]any, operator, key, ref string) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 1 {
+		return false
+	}
+	values, ok := stringMap(condition[operator])
+	if !ok || len(values) != 1 {
+		return false
+	}
+	reference, ok := stringMap(values[key])
+	return ok && len(reference) == 1 && scalarString(reference["Ref"]) == ref
+}
+
+func computeTagCondition(statement map[string]any, onCreate bool) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 2 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	if !ok || len(equals) != 2 {
+		return false
+	}
+	agentRef, ok := stringMap(equals["aws:RequestTag/dirextalk:agent_instance_id"])
+	if !ok || len(agentRef) != 1 || scalarString(agentRef["Ref"]) != "AgentInstanceId" {
+		return false
+	}
+	if onCreate {
+		if !sameStrings(stringValues(equals["ec2:CreateAction"]), []string{
+			"AllocateAddress", "CreateNetworkInterface", "CreateSecurityGroup", "CreateSnapshot", "CreateVolume", "CreateVpcEndpoint", "RunInstances",
+		}) {
+			return false
+		}
+	} else if resourceRef, ok := stringMap(equals["ec2:ResourceTag/dirextalk:agent_instance_id"]); !ok || len(resourceRef) != 1 || scalarString(resourceRef["Ref"]) != "AgentInstanceId" {
+		return false
+	}
+	tagKeys, ok := stringMap(condition["ForAllValues:StringEquals"])
+	return ok && len(tagKeys) == 1 && sameStrings(stringValues(tagKeys["aws:TagKeys"]), []string{
+		"Name", "dirextalk:agent_instance_id", "dirextalk:owner_id", "dirextalk:task_id", "dirextalk:deployment_id",
+		"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dirextalk_embedded_parent",
+		"dirextalk_spec_digest", "dirextalk_client_token",
+	})
 }
 
 func workerAMIOutputResources(resources []string) bool {

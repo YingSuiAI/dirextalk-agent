@@ -69,8 +69,8 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	}
 
 	recipeValue := integrationRecipe(command.Binding.RecipeID)
-	persistOfficialSourceReceipt(t, restarted, scope, command.Binding, recipeValue.Sources[0])
-	wrongEvidence := planning.BindOfficialSourceEvidenceCommand{Binding: command.Binding, TaskID: session.TaskID, Sources: append([]recipe.SourceV1(nil), recipeValue.Sources...)}
+	persistOfficialSourceReceipt(t, restarted, scope, command.Binding, session.TaskID, recipeValue.Sources[0])
+	wrongEvidence := planning.BindOfficialSourceEvidenceCommand{IdempotencyKey: uuid.NewString(), Binding: command.Binding, TaskID: session.TaskID, Sources: append([]recipe.SourceV1(nil), recipeValue.Sources...)}
 	wrongEvidence.Sources[0].ContentDigest = "sha256:" + strings.Repeat("f", 64)
 	if _, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, wrongEvidence); !errors.Is(err, planning.ErrResearchEvidenceMissing) {
 		t.Fatalf("unmatched official evidence error = %T, want evidence missing", err)
@@ -79,17 +79,23 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM planning_official_source_evidence`).Scan(&evidenceRows); err != nil || evidenceRows != 0 {
 		t.Fatalf("unmatched evidence persisted rows=%d err=%T", evidenceRows, err)
 	}
-	evidenceSet, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, planning.BindOfficialSourceEvidenceCommand{
-		Binding: command.Binding, TaskID: session.TaskID, Sources: recipeValue.Sources,
-	})
+	evidenceKey := uuid.NewString()
+	evidenceCommand := planning.BindOfficialSourceEvidenceCommand{
+		IdempotencyKey: evidenceKey, Binding: command.Binding, TaskID: session.TaskID, Sources: recipeValue.Sources,
+	}
+	evidenceSet, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, evidenceCommand)
 	if err != nil || len(evidenceSet.Evidence) != 1 || !strings.HasPrefix(evidenceSet.ResultRef(), "planning://official-source-evidence/sha256:") {
 		t.Fatalf("bind official evidence failed: count=%d ref=%q err=%T", len(evidenceSet.Evidence), evidenceSet.ResultRef(), err)
 	}
-	replayedEvidence, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, planning.BindOfficialSourceEvidenceCommand{
-		Binding: command.Binding, TaskID: session.TaskID, Sources: recipeValue.Sources,
-	})
+	replayedEvidence, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, evidenceCommand)
 	if err != nil || !reflect.DeepEqual(evidenceSet, replayedEvidence) {
 		t.Fatalf("official evidence replay changed result: err=%T", err)
+	}
+	conflictingEvidence := evidenceCommand
+	conflictingEvidence.Sources = append([]recipe.SourceV1(nil), evidenceCommand.Sources...)
+	conflictingEvidence.Sources[0].Version = "v1.0.1"
+	if _, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, conflictingEvidence); !errors.Is(err, planning.ErrIdempotencyConflict) {
+		t.Fatalf("official evidence output conflict error=%v", err)
 	}
 
 	recipeCommand := planning.SaveRecipeDraftCommand{
@@ -157,12 +163,16 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	assertPlanningCanaryAbsent(t, pool, canary)
 }
 
-func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope task.MutationScope, binding planning.Binding, source recipe.SourceV1) {
+func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope task.MutationScope, binding planning.Binding, taskID string, source recipe.SourceV1) {
 	t.Helper()
+	requestID, err := planning.CloudGoalModelRequestID(binding, taskID, cloudskill.StepResearchOfficialSources)
+	if err != nil {
+		t.Fatal("derive evidence model request id")
+	}
 	runtimeScope := runtimeapi.MutationScope{ClientID: scope.ClientID, CredentialID: scope.CredentialID}
 	requestClaim, err := store.BeginRuntimeRequest(context.Background(), runtimeScope, runtimeapi.RuntimeRequestCommand{
 		Request: runtimeapi.ChatRequest{
-			RequestID: binding.RequestID, OwnerID: binding.OwnerID, ConversationID: binding.ConversationID,
+			RequestID: requestID, OwnerID: binding.OwnerID, ConversationID: binding.ConversationID, MemoryDisabled: true,
 			Messages: []modelapi.Message{{Role: modelapi.RoleUser, Content: "Research the official source."}},
 		},
 		LeaseDuration: time.Minute,
@@ -171,13 +181,13 @@ func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope tas
 		t.Fatalf("begin evidence parent request failed (%T)", err)
 	}
 	if _, err := store.BindRuntimeRequestMemoryMode(context.Background(), runtimeScope, runtimeapi.BindRuntimeRequestMemoryModeCommand{
-		RequestID: binding.RequestID, LeaseEpoch: requestClaim.LeaseEpoch, MemoryDisabled: false,
+		RequestID: requestID, LeaseEpoch: requestClaim.LeaseEpoch, MemoryDisabled: true,
 	}); err != nil {
 		t.Fatalf("bind evidence parent memory mode failed (%T)", err)
 	}
 	failedCallID := "official-source-failed"
 	failedClaim, err := store.BeginToolExecution(context.Background(), runtimeScope, runtimeapi.ToolExecutionCommand{
-		RequestID: binding.RequestID, ParentLeaseEpoch: requestClaim.LeaseEpoch, OwnerID: binding.OwnerID,
+		RequestID: requestID, ParentLeaseEpoch: requestClaim.LeaseEpoch, OwnerID: binding.OwnerID,
 		ConversationID: binding.ConversationID, ToolCallID: failedCallID, Name: publicweb.ToolName,
 		Arguments: json.RawMessage(`{"url":"https://docs.example.com/unavailable"}`), LeaseDuration: time.Minute,
 	})
@@ -185,7 +195,7 @@ func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope tas
 		t.Fatalf("begin failed official-source receipt failed (%T)", err)
 	}
 	if _, err := store.CompleteToolExecution(context.Background(), runtimeScope, runtimeapi.CompleteToolExecutionCommand{
-		RequestID: binding.RequestID, ToolCallID: failedCallID, ParentLeaseEpoch: requestClaim.LeaseEpoch,
+		RequestID: requestID, ToolCallID: failedCallID, ParentLeaseEpoch: requestClaim.LeaseEpoch,
 		LeaseEpoch: failedClaim.LeaseEpoch,
 		Execution:  runtimeapi.ToolExecution{ToolCallID: failedCallID, Name: publicweb.ToolName, Content: `{"error":"tool_execution_failed"}`, IsError: true},
 	}); err != nil {
@@ -193,7 +203,7 @@ func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope tas
 	}
 	toolCallID := "official-source-integration"
 	toolClaim, err := store.BeginToolExecution(context.Background(), runtimeScope, runtimeapi.ToolExecutionCommand{
-		RequestID: binding.RequestID, ParentLeaseEpoch: requestClaim.LeaseEpoch, OwnerID: binding.OwnerID,
+		RequestID: requestID, ParentLeaseEpoch: requestClaim.LeaseEpoch, OwnerID: binding.OwnerID,
 		ConversationID: binding.ConversationID, ToolCallID: toolCallID, Name: publicweb.ToolName,
 		Arguments: json.RawMessage(`{"url":"` + source.URL + `"}`), LeaseDuration: time.Minute,
 	})
@@ -208,7 +218,7 @@ func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope tas
 		t.Fatalf("encode official-source receipt failed (%T)", err)
 	}
 	if _, err := store.CompleteToolExecution(context.Background(), runtimeScope, runtimeapi.CompleteToolExecutionCommand{
-		RequestID: binding.RequestID, ToolCallID: toolCallID, ParentLeaseEpoch: requestClaim.LeaseEpoch,
+		RequestID: requestID, ToolCallID: toolCallID, ParentLeaseEpoch: requestClaim.LeaseEpoch,
 		LeaseEpoch: toolClaim.LeaseEpoch,
 		Execution:  runtimeapi.ToolExecution{ToolCallID: toolCallID, Name: publicweb.ToolName, Content: string(result)},
 	}); err != nil {

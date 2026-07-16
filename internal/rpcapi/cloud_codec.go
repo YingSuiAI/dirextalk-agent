@@ -62,7 +62,7 @@ func cloudNetworkScopeFromProto(value *agentv1.CloudNetworkScope) cloudquote.Net
 		return cloudquote.NetworkScopeV1{}
 	}
 	return cloudquote.NetworkScopeV1{
-		VPCID: value.GetVpcId(), SubnetID: value.GetSubnetId(), SecurityGroupID: value.GetSecurityGroupId(),
+		VPCID: value.GetVpcId(), SubnetID: value.GetSubnetId(), SecurityGroupMode: cloudSecurityGroupModeFromProto(value.GetSecurityGroupMode()), SecurityGroupID: value.GetSecurityGroupId(), PublicIPv4: value.GetPublicIpv4(),
 		EntryPoint: cloudEntryPointFromProto(value.GetEntryPoint()), PublicExposure: value.GetPublicExposure(),
 		IngressPorts: value.GetIngressPorts(), Hostname: value.GetHostname(), TLSRequired: value.GetTlsRequired(),
 		AuthenticationRequired: value.GetAuthenticationRequired(),
@@ -146,7 +146,7 @@ func cloudResourceScopeToProto(value cloudquote.ResourceScopeV1) *agentv1.CloudR
 
 func cloudNetworkScopeToProto(value cloudquote.NetworkScopeV1) *agentv1.CloudNetworkScope {
 	return &agentv1.CloudNetworkScope{
-		VpcId: value.VPCID, SubnetId: value.SubnetID, SecurityGroupId: value.SecurityGroupID,
+		VpcId: value.VPCID, SubnetId: value.SubnetID, SecurityGroupMode: cloudSecurityGroupModeToProto(value.SecurityGroupMode), SecurityGroupId: value.SecurityGroupID, PublicIpv4: value.PublicIPv4,
 		EntryPoint: cloudEntryPointToProto(value.EntryPoint), PublicExposure: value.PublicExposure, IngressPorts: value.IngressPorts,
 		Hostname: value.Hostname, TlsRequired: value.TLSRequired, AuthenticationRequired: value.AuthenticationRequired,
 	}
@@ -275,6 +275,28 @@ func cloudEntryPointToProto(value cloudquote.EntryPointKind) agentv1.CloudEntryP
 	}
 }
 
+func cloudSecurityGroupModeFromProto(value agentv1.CloudSecurityGroupMode) cloudquote.SecurityGroupMode {
+	switch value {
+	case agentv1.CloudSecurityGroupMode_CLOUD_SECURITY_GROUP_MODE_EXISTING:
+		return cloudquote.SecurityGroupExisting
+	case agentv1.CloudSecurityGroupMode_CLOUD_SECURITY_GROUP_MODE_CREATE_DEDICATED:
+		return cloudquote.SecurityGroupCreateDedicated
+	default:
+		return ""
+	}
+}
+
+func cloudSecurityGroupModeToProto(value cloudquote.SecurityGroupMode) agentv1.CloudSecurityGroupMode {
+	switch value {
+	case cloudquote.SecurityGroupExisting:
+		return agentv1.CloudSecurityGroupMode_CLOUD_SECURITY_GROUP_MODE_EXISTING
+	case cloudquote.SecurityGroupCreateDedicated:
+		return agentv1.CloudSecurityGroupMode_CLOUD_SECURITY_GROUP_MODE_CREATE_DEDICATED
+	default:
+		return agentv1.CloudSecurityGroupMode_CLOUD_SECURITY_GROUP_MODE_UNSPECIFIED
+	}
+}
+
 func cloudRetentionFromProto(value agentv1.CloudRetentionClass) cloudquote.RetentionClass {
 	if value == agentv1.CloudRetentionClass_CLOUD_RETENTION_CLASS_EPHEMERAL {
 		return cloudquote.RetentionEphemeral
@@ -327,7 +349,7 @@ func approvalResourceScopeToProto(value cloudapproval.ResourceScopeV1) *agentv1.
 
 func approvalNetworkScopeToProto(value cloudapproval.NetworkScopeV1) *agentv1.CloudNetworkScope {
 	return cloudNetworkScopeToProto(cloudquote.NetworkScopeV1{
-		VPCID: value.VPCID, SubnetID: value.SubnetID, SecurityGroupID: value.SecurityGroupID,
+		VPCID: value.VPCID, SubnetID: value.SubnetID, SecurityGroupMode: cloudquote.SecurityGroupMode(value.SecurityGroupMode), SecurityGroupID: value.SecurityGroupID, PublicIPv4: value.PublicIPv4,
 		EntryPoint: cloudquote.EntryPointKind(value.EntryPoint), PublicExposure: value.PublicExposure,
 		IngressPorts: value.IngressPorts, Hostname: value.Hostname, TLSRequired: value.TLSRequired,
 		AuthenticationRequired: value.AuthenticationRequired,

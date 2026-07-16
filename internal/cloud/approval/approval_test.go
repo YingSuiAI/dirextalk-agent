@@ -138,6 +138,16 @@ func TestApprovalVerifyAndCurrentPlanBinding(t *testing.T) {
 	if err := approval.ValidateAgainstPlan(drifted, now); err == nil {
 		t.Fatal("ValidateAgainstPlan() accepted retention drift")
 	}
+	drifted = plan
+	drifted.NetworkScope.SecurityGroupMode, drifted.NetworkScope.SecurityGroupID = SecurityGroupCreateDedicated, ""
+	if err := approval.ValidateAgainstPlan(drifted, now); err == nil {
+		t.Fatal("ValidateAgainstPlan() accepted security group ownership drift")
+	}
+	drifted = plan
+	drifted.NetworkScope.PublicIPv4 = !drifted.NetworkScope.PublicIPv4
+	if err := approval.ValidateAgainstPlan(drifted, now); err == nil {
+		t.Fatal("ValidateAgainstPlan() accepted public IPv4 drift")
+	}
 	if err := approval.Verify(publicKey, approval.ExpiresAt); err == nil {
 		t.Fatal("Verify() accepted an expired approval")
 	}
@@ -230,7 +240,7 @@ func validPlan() PlanV1 {
 			InstanceCount: 1, VCPU: 4, MemoryMiB: 16384, DiskGiB: 80, VolumeType: "gp3", VolumeEncrypted: true, PurchaseOption: PurchaseOnDemand,
 			WorkerImageID: "ami-0123456789abcdef0", WorkerImageDigest: digest("c"),
 		},
-		NetworkScope: NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupID: "sg-0123456789abcdef0", EntryPoint: EntryPointNone},
+		NetworkScope: NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: SecurityGroupExisting, SecurityGroupID: "sg-0123456789abcdef0", EntryPoint: EntryPointNone},
 		SecretScope: []SecretReferenceV1{
 			{SecretRef: "secret_ref:plan-1/model-token", Purpose: "model access", Delivery: recipe.SecretDeliveryFile},
 			{SecretRef: "secret_ref:plan-1/registry-token", Purpose: "registry access", Delivery: recipe.SecretDeliveryFile},

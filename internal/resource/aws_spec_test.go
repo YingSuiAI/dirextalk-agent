@@ -3,8 +3,11 @@ package resource
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/google/uuid"
 )
 
 func TestAWSResourceSpecDigestBindsClosedWorkerInputs(t *testing.T) {
@@ -102,6 +105,72 @@ func TestAWSSecurityGroupAllowsSameRuleInOppositeDirections(t *testing.T) {
 	}}
 	if err := spec.Validate(TypeSG); err != nil {
 		t.Fatalf("the same scoped rule is valid in different directions: %v", err)
+	}
+}
+
+func TestAWSPrivateEndpointAndSnapshotSpecsBindDependenciesAndRetention(t *testing.T) {
+	t.Parallel()
+	endpoint := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Endpoint: &AWSVPCEndpointSpecV1{
+		VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.s3",
+		SubnetIDs: []string{"subnet-0123456789abcdef0"}, PrivateDNSEnabled: true,
+	}}
+	endpointDependency := []ProviderDependency{{ResourceID: "endpoint-security-group", Type: TypeSG, ProviderID: "sg-0123456789abcdef0"}}
+	if err := endpoint.Validate(TypeEndpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAWSDependencies(TypeEndpoint, endpointDependency, endpoint); err != nil {
+		t.Fatal(err)
+	}
+	changed := endpoint.Clone()
+	changed.Endpoint.SubnetIDs[0] = "subnet-0fedcba9876543210"
+	left, err := endpoint.Digest(TypeEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := changed.Digest(TypeEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left == right || endpoint.Endpoint.SubnetIDs[0] != "subnet-0123456789abcdef0" {
+		t.Fatal("endpoint digest or clone did not bind the approved private subnet")
+	}
+	if err := ValidateAWSDependencies(TypeEndpoint, nil, endpoint); err == nil {
+		t.Fatal("interface endpoint without an approved security group unexpectedly validated")
+	}
+
+	snapshot := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Snapshot: &AWSEBSSnapshotSpecV1{
+		Description: "checkpoint before upgrade", Disposition: AWSSnapshotDeleteWithDeployment,
+	}}
+	if err := ValidateAWSDependencies(TypeSnapshot, []ProviderDependency{{ResourceID: "source-volume", Type: TypeEBS, ProviderID: "vol-0123456789abcdef0"}}, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	base := ProvisionSpec{
+		ResourceID: uuid.NewString(), AgentInstanceID: uuid.NewString(), OwnerID: "owner-1",
+		TaskID: uuid.NewString(), DeploymentID: uuid.NewString(), Type: TypeSnapshot, LogicalName: "upgrade-checkpoint",
+		Region: "us-east-1", ApprovedPlanHash: "sha256:" + strings.Repeat("a", 64), ApprovalID: uuid.NewString(),
+		Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: now.Add(time.Hour), AutoDestroyApproved: true, AWS: snapshot,
+	}
+	base.SpecDigest, err = snapshot.Digest(TypeSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Validate(now); err != nil {
+		t.Fatal(err)
+	}
+	retain := snapshot.Clone()
+	retain.Snapshot.Disposition = AWSSnapshotRetainWithManagedService
+	base.AWS = retain
+	base.SpecDigest, err = retain.Digest(TypeSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Validate(now); err == nil {
+		t.Fatal("an ephemeral snapshot with retain disposition unexpectedly validated")
+	}
+	base.Retention, base.DestroyDeadline, base.AutoDestroyApproved = task.RetentionManaged, time.Time{}, false
+	if err := base.Validate(now); err != nil {
+		t.Fatalf("managed snapshot retain disposition rejected: %v", err)
 	}
 }
 

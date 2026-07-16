@@ -48,12 +48,15 @@ artifact targets. The daemon has no IP network namespace or inherited cloud
 environment, retains its systemd hardening, and accepts exactly two actions:
 `installer.verify` and `installer.execute`.
 
-Every request carries an Ed25519-signed `InstallerPlanV1`. The plan binds the
-Agent instance, deployment, task, approved plan hash, approval, lease epoch,
-Recipe digest, allowed artifact digests and root-owned target paths, secret
+Every request carries an Ed25519-signed `InstallerPlanV1`. The stable plan binds
+the Agent instance, deployment, task, approved plan hash, approval, Recipe
+digest, allowed artifact digests and root-owned target paths, secret
 references, network/port/volume declarations, exact command argv, working
 directory, timeout and per-command artifact/volume/secret refs, and expiry. An
-execute request supplies only the signed `command_id`; it has no argv,
+execute request also carries a separately signed, short-lived `LeaseGrantV1`
+binding trust, plan digest, stable operation ID, command ID, lease epoch, issue
+time, and exact lease expiry. The mutable selector is only `command_id`; the
+request has no runtime argv,
 environment, working-directory, AWS parameter, or shell fragment field. The
 daemon invokes argv directly without shell joining, although an explicitly
 signed `/bin/sh -ceu ...` argv remains a valid command. Child processes receive
@@ -70,17 +73,26 @@ size, root ownership and SHA-256 digest.
 Execution is fenced by a root-owned append-only journal at
 `/var/lib/dirextalk-installer/execution.journal`. The running record is fsynced
 before starting a child and the terminal result is fsynced afterwards. An exact
-idempotency-key/request-digest retry returns the recorded de-secreted result; a
-different digest conflicts. A running record found after restart is converted
-to `interrupted` and is never automatically executed again, so the upper task
-must resume from its own checkpoint with a newly approved step/key.
+idempotency-key/stable-operation-digest retry returns the recorded de-secreted
+result. Lease epochs are fsynced monotonically, so a lower epoch is rejected. A
+new lease grant for the same operation can read its terminal result but cannot
+run it again. A running record found after restart is converted to `interrupted`
+and is likewise never automatically executed again; an intentional retry needs
+a newly approved operation capability rather than a new lease alone.
 
 This action does not copy, unpack, mount, expose a port, resolve a secret ref,
-or add runtime arguments. The current Worker supervisor does not yet construct
-installer requests, and no trusted bootstrap currently writes the
-per-deployment binding or approval key; therefore the socket must not be
-enabled by a production AMI build until that wiring exists. This repository
-does not yet claim an OpenClaw or knowledge-node deployment.
+or add runtime arguments. The Worker supervisor now validates an immutable
+per-deployment capability and exact LeaseGrant against its current assignment
+and constructs the deterministic local request using only the selected
+`command_id`. The deadline is the minimum of command timeout, capability expiry,
+and grant expiry. No trusted bootstrap currently issues that capability/grant
+or atomically writes its root-owned public key and binding; therefore
+the socket must not be enabled by a production AMI build until that wiring
+exists. The current bridge accepts only root-owned, digest-locked artifacts
+already present in the AMI, and `argv[0]` must be one of those referenced
+artifacts rather than `/bin/sh` or another unlocked host executable. It does
+not stage deployment artifacts. This
+repository does not yet claim an OpenClaw or knowledge-node deployment.
 
 ## Release, attestation, and recovery boundary
 
@@ -110,7 +122,8 @@ stay off for production launches. Base container images also still require
 digest pinning. Do not substitute runtime downloads, mutable S3 keys, `latest`,
 `v1.0.3`, or a manually edited AMI.
 
-The root daemon can now execute an exact signed command, but the Worker does
-not yet construct its request and the socket is disabled in the AMI build.
-Per-deployment trust provisioning, artifact delivery, secret resolution,
-copy/unpack/mount actions, and Worker checkpoint integration remain required.
+The Worker/root bridge can now execute and checkpoint an exact signed command,
+but the socket remains disabled in the AMI build. Production capability and
+post-claim LeaseGrant delivery, atomic root-owned trust materialization, safe
+daemon rotation, artifact staging, secret resolution, and separately typed
+copy/unpack/mount actions remain required.

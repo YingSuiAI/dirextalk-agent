@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	ToolResearch        = "cloud_dispatcher_research"
-	ToolStatus          = "cloud_dispatcher_status"
-	ToolRecipeDraft     = "cloud_dispatcher_recipe_draft"
-	ToolSubmitPlanDraft = "cloud_dispatcher_submit_plan_draft"
+	ToolResearch        = runtimeapi.CloudDialogueToolResearch
+	ToolStatus          = runtimeapi.CloudDialogueToolStatus
+	ToolRecipeDraft     = runtimeapi.CloudDialogueToolRecipeDraft
+	ToolSubmitPlanDraft = runtimeapi.CloudDialogueToolSubmitPlanDraft
 
 	maxModelVisibleResultBytes = 60 << 10
 )
@@ -270,6 +270,18 @@ type planDraftInputV1 struct {
 	Performance candidateDraftInputV1 `json:"performance"`
 }
 
+type officialSourceDraftInputV1 struct {
+	Sources []recipe.SourceV1 `json:"sources"`
+}
+
+// DecodedPlanningDraft is the validated, provider-neutral model output used
+// by both the interactive Skill and the durable background planning runner.
+// Trusted identity and lifecycle fields remain server-bound by Binding.
+type DecodedPlanningDraft struct {
+	Recipe     recipe.RecipeV1
+	Candidates []ResourceCandidateDraftV1
+}
+
 type decodedPlanDraft struct {
 	recipe     recipe.RecipeV1
 	candidates []ResourceCandidateDraftV1
@@ -299,6 +311,41 @@ func decodePlanDraft(raw json.RawMessage, binding Binding) (decodedPlanDraft, er
 		return decodedPlanDraft{}, err
 	}
 	return decodedPlanDraft{recipe: boundRecipe, candidates: candidates}, nil
+}
+
+// PlanningDraftInputSchema returns the same closed schema used by the native
+// cloud-dispatcher Skill. Background planning must not invent a second model
+// contract for Recipe and resource candidate output.
+func PlanningDraftInputSchema() map[string]any {
+	return submitPlanDraftInputSchema()
+}
+
+// OfficialSourceDraftInputSchema is the closed capture schema for researched
+// source claims. The caller must still bind every claim to a completed,
+// server-produced official_source_fetch receipt before persistence.
+func OfficialSourceDraftInputSchema() map[string]any {
+	return schemaForType(reflect.TypeOf(officialSourceDraftInputV1{}))
+}
+
+func DecodeOfficialSourceDraft(raw json.RawMessage) ([]recipe.SourceV1, error) {
+	if security.ContainsLikelySecret(string(raw)) {
+		return nil, task.ErrRawSecret
+	}
+	var input officialSourceDraftInputV1
+	if err := decodeStrict(raw, &input); err != nil || len(input.Sources) == 0 {
+		return nil, ErrInvalidArguments
+	}
+	return append([]recipe.SourceV1(nil), input.Sources...), nil
+}
+
+func DecodePlanningDraft(raw json.RawMessage, binding Binding) (DecodedPlanningDraft, error) {
+	decoded, err := decodePlanDraft(raw, binding)
+	if err != nil {
+		return DecodedPlanningDraft{}, err
+	}
+	return DecodedPlanningDraft{
+		Recipe: decoded.recipe, Candidates: append([]ResourceCandidateDraftV1(nil), decoded.candidates...),
+	}, nil
 }
 
 func candidateFromInput(tier string, input candidateDraftInputV1) ResourceCandidateDraftV1 {

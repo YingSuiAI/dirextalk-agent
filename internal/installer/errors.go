@@ -20,6 +20,7 @@ const (
 	CodeInvalidPath          ErrorCode = "invalid_path"
 	CodeArtifactVerification ErrorCode = "artifact_verification_failed"
 	CodeCommandNotAllowed    ErrorCode = "command_not_allowed"
+	CodeLeaseRejected        ErrorCode = "lease_rejected"
 	CodeExecutionFailed      ErrorCode = "execution_failed"
 	CodeExecutionTimedOut    ErrorCode = "execution_timed_out"
 	CodeExecutionInterrupted ErrorCode = "execution_interrupted"

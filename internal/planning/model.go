@@ -277,14 +277,18 @@ func (set OfficialSourceEvidenceSet) ResultRef() string {
 }
 
 type BindOfficialSourceEvidenceCommand struct {
-	Binding Binding
-	TaskID  string
-	Sources []recipe.SourceV1
+	IdempotencyKey string
+	Binding        Binding
+	TaskID         string
+	Sources        []recipe.SourceV1
 }
 
 func (command BindOfficialSourceEvidenceCommand) Validate() error {
 	if err := command.Binding.Validate(); err != nil {
 		return err
+	}
+	if _, err := uuid.Parse(command.IdempotencyKey); err != nil {
+		return fmt.Errorf("%w: official-source evidence idempotency key is invalid", ErrInvalid)
 	}
 	if _, err := uuid.Parse(command.TaskID); err != nil || len(command.Sources) < 1 || len(command.Sources) > 16 {
 		return fmt.Errorf("%w: official-source evidence binding is invalid", ErrInvalid)
@@ -303,6 +307,22 @@ func (command BindOfficialSourceEvidenceCommand) Validate() error {
 		seen[source.URL] = struct{}{}
 	}
 	return nil
+}
+
+func (command BindOfficialSourceEvidenceCommand) Digest() [sha256.Size]byte {
+	sources := append([]recipe.SourceV1(nil), command.Sources...)
+	slices.SortFunc(sources, func(left, right recipe.SourceV1) int {
+		if compared := strings.Compare(left.URL, right.URL); compared != 0 {
+			return compared
+		}
+		return strings.Compare(left.ContentDigest, right.ContentDigest)
+	})
+	encoded, _ := json.Marshal(struct {
+		Binding Binding           `json:"binding"`
+		TaskID  string            `json:"task_id"`
+		Sources []recipe.SourceV1 `json:"sources"`
+	}{command.Binding, command.TaskID, sources})
+	return sha256.Sum256(encoded)
 }
 
 func BuildOfficialSourceEvidenceSet(taskID string, values []OfficialSourceEvidence) (OfficialSourceEvidenceSet, error) {

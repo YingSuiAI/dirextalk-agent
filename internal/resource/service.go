@@ -110,12 +110,46 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 	} else {
 		var found bool
 		observation, found, err = service.provider.FindByClientToken(ctx, stored.Type, stored.Region, stored.Intent.ClientToken)
-		if err == nil && !found {
+		if err != nil {
+			return service.reconcileProvisionCandidates(ctx, stored, err, errors.Is(err, ErrReadBack) || !stored.Intent.ProviderCreateStartedAt.IsZero() || len(stored.ProviderCandidateIDs) > 0)
+		}
+		if found && len(stored.ProviderCandidateIDs) > 0 && !sameSoleProviderCandidate(stored.ProviderCandidateIDs, observation.ProviderID) {
+			return service.reconcileProvisionCandidates(ctx, stored, ErrCreateAmbiguous, true)
+		}
+		if !found {
+			// A durable marker means another process already crossed the
+			// irreversible boundary. From this point onward retries are
+			// reconciliation-only, even when provider tags are not visible yet.
+			if !stored.Intent.ProviderCreateStartedAt.IsZero() || len(stored.ProviderCandidateIDs) > 0 {
+				return service.reconcileProvisionCandidates(ctx, stored, nil, true)
+			}
 			// Re-read the clock at the irreversible boundary. Planning, queueing,
 			// artifact publication, or dependency resolution may have consumed
 			// the validity window since this Provision call began.
 			if err = authorization.authorize(service.now().UTC()); err != nil {
 				return stored.clone(), err
+			}
+			createStartedAt := service.now().UTC()
+			if createStartedAt.Before(stored.Intent.RecordedAt) {
+				createStartedAt = stored.Intent.RecordedAt
+			}
+			stored.Intent.ProviderCreateStartedAt = createStartedAt
+			stored, err = service.save(ctx, stored)
+			if err != nil {
+				if errors.Is(err, ErrRevisionConflict) {
+					latest, getErr := service.repository.Get(ctx, spec.ResourceID)
+					if getErr != nil {
+						return ResourceV1{}, errors.Join(ErrCreateAmbiguous, err, getErr)
+					}
+					if latest.State == StateActive || latest.State == StateRetainedManaged {
+						return latest.clone(), nil
+					}
+					return latest.clone(), ErrCreateAmbiguous
+				}
+				return stored.clone(), err
+			}
+			if mirrorErr := service.mirrorProvisionFence(ctx, stored); mirrorErr != nil {
+				return stored.clone(), mirrorErr
 			}
 			observation, err = service.provider.Create(ctx, ProviderCreateRequest{
 				ResourceID: stored.ResourceID, Type: stored.Type, LogicalName: stored.LogicalName, Region: stored.Region,
@@ -125,11 +159,8 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 		}
 		if err != nil {
 			reconciled, found, reconcileErr := service.provider.FindByClientToken(ctx, stored.Type, stored.Region, stored.Intent.ClientToken)
-			if reconcileErr != nil {
-				return stored.clone(), errors.Join(err, reconcileErr)
-			}
-			if !found {
-				return stored.clone(), err
+			if reconcileErr != nil || !found {
+				return service.reconcileProvisionCandidates(ctx, stored, errors.Join(err, reconcileErr), true)
 			}
 			observation = reconciled
 		}
@@ -163,6 +194,7 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 		}
 	}
 	stored.ProviderID = observation.ProviderID
+	stored.ProviderCandidateIDs = nil
 	stored.ReadBack = evidenceFrom(observation)
 	stored, err = service.save(ctx, stored)
 	if err != nil {
@@ -357,9 +389,9 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 		if err := service.putManifest(ctx, mapValues(byID), false); err != nil {
 			return DestroyResult{}, err
 		}
-		if resource.ProviderID == "" {
+		if len(providerIDsForCleanup(resource)) == 0 {
 			resource.State = StateDestroyBlocked
-			resource.BlockedReason = "provider id is missing; read-back cannot verify destruction"
+			resource.BlockedReason = "provider id and candidate ids are missing; read-back cannot verify destruction"
 			resource, err = service.save(ctx, resource)
 			if err != nil {
 				return DestroyResult{}, err
@@ -368,15 +400,14 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 			blocked = true
 			continue
 		}
-		deleteErr := service.provider.Delete(ctx, resource.Type, resource.ProviderID, resource.Region, cloneMap(resource.Tags))
-		observation, readErr := service.provider.ReadBack(ctx, resource.Type, resource.ProviderID, resource.Region)
-		if readErr == nil && !observation.Exists {
+		evidence, verified, cleanupErr := deleteAndVerifyProviderIDs(ctx, service.provider, resource)
+		if verified {
 			resource.State = StateVerifiedDestroyed
-			resource.ReadBack = evidenceFrom(observation)
+			resource.ReadBack = evidence
 			resource.BlockedReason = ""
 		} else {
 			resource.State = StateDestroyBlocked
-			resource.BlockedReason = blockedReason(deleteErr, readErr, observation.Exists)
+			resource.BlockedReason = security.RedactText(cleanupErr.Error())
 			blocked = true
 		}
 		resource, err = service.save(ctx, resource)
@@ -459,6 +490,130 @@ func (service *Service) save(ctx context.Context, resource ResourceV1) (Resource
 	resource.Revision++
 	resource.UpdatedAt = service.now().UTC()
 	return service.repository.Save(ctx, resource, expected)
+}
+
+func (service *Service) reconcileProvisionCandidates(ctx context.Context, stored ResourceV1, cause error, forceAmbiguous bool) (ResourceV1, error) {
+	observations, findErr := service.provider.FindAllByClientToken(ctx, stored.Type, stored.Region, stored.Intent.ClientToken)
+	if findErr == nil && len(observations) > 0 {
+		var persistErr error
+		stored, persistErr = service.persistProviderCandidates(ctx, stored, observations)
+		return stored.clone(), errors.Join(ErrCreateAmbiguous, cause, persistErr)
+	}
+	if forceAmbiguous || len(stored.ProviderCandidateIDs) > 0 {
+		if stored.Intent.ProviderCreateStartedAt.IsZero() && len(stored.ProviderCandidateIDs) == 0 {
+			var fenceErr error
+			stored, fenceErr = service.persistReconcileOnlyFence(ctx, stored)
+			return stored.clone(), errors.Join(ErrCreateAmbiguous, cause, findErr, fenceErr)
+		}
+		return stored.clone(), errors.Join(ErrCreateAmbiguous, cause, findErr)
+	}
+	return stored.clone(), errors.Join(cause, findErr)
+}
+
+func (service *Service) persistReconcileOnlyFence(ctx context.Context, stored ResourceV1) (ResourceV1, error) {
+	startedAt := service.now().UTC()
+	if startedAt.Before(stored.Intent.RecordedAt) {
+		startedAt = stored.Intent.RecordedAt
+	}
+	stored.Intent.ProviderCreateStartedAt = startedAt
+	saved, err := service.save(ctx, stored)
+	if err == nil {
+		if mirrorErr := service.mirrorProvisionFence(ctx, saved); mirrorErr != nil {
+			return saved, mirrorErr
+		}
+		return saved, nil
+	}
+	if !errors.Is(err, ErrRevisionConflict) {
+		return stored.clone(), err
+	}
+	latest, getErr := service.repository.Get(ctx, stored.ResourceID)
+	if getErr != nil {
+		return ResourceV1{}, errors.Join(err, getErr)
+	}
+	return latest, nil
+}
+
+func (service *Service) mirrorProvisionFence(ctx context.Context, stored ResourceV1) error {
+	if stored.Retention != task.RetentionEphemeralAutoDestroy || !stored.AutoDestroyApproved {
+		return nil
+	}
+	resources, err := service.repository.ListDeployment(ctx, stored.DeploymentID)
+	if err != nil {
+		return err
+	}
+	if err := service.putManifest(ctx, resources, false); err != nil {
+		return fmt.Errorf("mirror provider-create fence before mutation: %w", err)
+	}
+	return nil
+}
+
+func (service *Service) persistProviderCandidates(ctx context.Context, stored ResourceV1, observations []ProviderObservation) (ResourceV1, error) {
+	observedIDs := make([]string, 0, len(observations))
+	seen := make(map[string]struct{}, len(observations))
+	for _, observation := range observations {
+		if err := verifyObservation(stored, observation); err != nil {
+			return stored.clone(), err
+		}
+		if _, duplicate := seen[observation.ProviderID]; duplicate {
+			continue
+		}
+		seen[observation.ProviderID] = struct{}{}
+		observedIDs = append(observedIDs, observation.ProviderID)
+	}
+	sort.Strings(observedIDs)
+	current := stored.clone()
+	for attempt := 0; attempt < 8; attempt++ {
+		merged := mergeProviderCandidateIDs(current.ProviderCandidateIDs, observedIDs)
+		if !slicesEqual(merged, current.ProviderCandidateIDs) {
+			current.ProviderCandidateIDs = merged
+			saved, err := service.save(ctx, current)
+			if err != nil {
+				if errors.Is(err, ErrRevisionConflict) {
+					current, err = service.repository.Get(ctx, stored.ResourceID)
+					if err != nil {
+						return ResourceV1{}, err
+					}
+					continue
+				}
+				return current.clone(), err
+			}
+			current = saved
+		}
+		// Candidate IDs must reach the independent manifest before returning;
+		// otherwise an Agent/database outage could strand a billable object.
+		if current.Retention == task.RetentionEphemeralAutoDestroy && current.AutoDestroyApproved {
+			resources, err := service.repository.ListDeployment(ctx, current.DeploymentID)
+			if err != nil {
+				return current.clone(), err
+			}
+			if err := service.putManifest(ctx, resources, false); err != nil {
+				return current.clone(), fmt.Errorf("mirror ambiguous provider candidates: %w", err)
+			}
+		}
+		return current.clone(), nil
+	}
+	return current.clone(), ErrRevisionConflict
+}
+
+func sameSoleProviderCandidate(candidates []string, providerID string) bool {
+	return len(candidates) == 1 && candidates[0] == providerID
+}
+
+func mergeProviderCandidateIDs(left, right []string) []string {
+	seen := make(map[string]struct{}, len(left)+len(right))
+	for _, values := range [][]string{left, right} {
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for value := range seen {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (service *Service) putManifest(ctx context.Context, resources []ResourceV1, managed bool) error {
@@ -700,6 +855,43 @@ func blockedReason(deleteErr, readErr error, stillExists bool) string {
 		parts = append(parts, ErrDestroyBlocked.Error())
 	}
 	return security.RedactText(strings.Join(parts, "; "))
+}
+
+func providerIDsForCleanup(resource ResourceV1) []string {
+	values := append([]string(nil), resource.ProviderCandidateIDs...)
+	if resource.ProviderID != "" {
+		values = append(values, resource.ProviderID)
+	}
+	sort.Strings(values)
+	result := values[:0]
+	for _, value := range values {
+		if value != "" && (len(result) == 0 || result[len(result)-1] != value) {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func deleteAndVerifyProviderIDs(ctx context.Context, provider Provider, item ResourceV1) (ReadBackEvidence, bool, error) {
+	providerIDs := providerIDsForCleanup(item)
+	if len(providerIDs) == 0 {
+		return ReadBackEvidence{}, false, ErrReadBack
+	}
+	var evidence ReadBackEvidence
+	blocked := make([]string, 0)
+	for _, providerID := range providerIDs {
+		deleteErr := provider.Delete(ctx, item.Type, providerID, item.Region, cloneMap(item.Tags))
+		observation, readErr := provider.ReadBack(ctx, item.Type, providerID, item.Region)
+		if readErr == nil && !observation.Exists {
+			evidence = evidenceFrom(observation)
+			continue
+		}
+		blocked = append(blocked, providerID+": "+blockedReason(deleteErr, readErr, observation.Exists))
+	}
+	if len(blocked) > 0 {
+		return evidence, false, errors.New(strings.Join(blocked, "; "))
+	}
+	return evidence, true, nil
 }
 
 func replaceResource(resources []ResourceV1, replacement ResourceV1) {

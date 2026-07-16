@@ -136,6 +136,7 @@ func pricingQuery(request RequestV1) PricingQueryV1 {
 			VolumeThroughputMiBPS: resource.VolumeThroughputMiBPS,
 			PurchaseOption:        resource.PurchaseOption,
 			EntryPoint:            scope.Network.EntryPoint,
+			PublicIPv4:            scope.Network.PublicIPv4,
 			PublicExposure:        scope.Network.PublicExposure,
 		})
 	}

@@ -206,6 +206,7 @@ message ChatRequest {
   string message = 4;
   bool memory_disabled = 5;
   int64 expected_conversation_revision = 6;
+  CloudDialogueScopeV1 cloud_dialogue_scope = 7;
 }
 
 enum RuntimeStepKind {
@@ -243,6 +244,7 @@ message StreamChatRequest {
   string message = 4;
   bool memory_disabled = 5;
   int64 expected_conversation_revision = 6;
+  CloudDialogueScopeV1 cloud_dialogue_scope = 7;
 }
 
 message ChatDelta {
@@ -892,6 +894,16 @@ enum WorkerEvidenceKind {
   WORKER_EVIDENCE_KIND_CLAIM = 4;
 }
 
+// WorkerObjectClaim binds a scoped S3 reference to bytes already uploaded by
+// the current lease. It contains no object body or credential material. The
+// control plane persists it only as an untrusted Worker-local claim.
+message WorkerObjectClaim {
+  string ref = 1;
+  bytes sha256 = 2;
+  uint64 size_bytes = 3;
+  string media_type = 4;
+}
+
 message WorkerControlServiceRecordEvidenceRequest {
   string deployment_id = 1;
   string worker_id = 2;
@@ -899,7 +911,10 @@ message WorkerControlServiceRecordEvidenceRequest {
   string idempotency_key = 4;
   int64 expected_revision = 5;
   WorkerEvidenceKind kind = 6;
+  // Legacy non-object reference. New checkpoint/artifact/claim submissions
+  // must use object and cannot rely on this field alone.
   string ref = 7;
+  WorkerObjectClaim object = 8;
 }
 message WorkerControlServiceRecordEvidenceResponse { int64 revision = 1; }
 
@@ -919,7 +934,10 @@ message WorkerControlServiceCompleteRequest {
   string idempotency_key = 4;
   int64 expected_revision = 5;
   WorkerOutcome outcome = 6;
+  // Legacy non-object result reference. A successful completion must bind the
+  // exact uploaded result through result_object.
   string result_ref = 7;
+  WorkerObjectClaim result_object = 8;
 }
 message WorkerControlServiceCompleteResponse { int64 revision = 1; }
 
@@ -970,4 +988,11 @@ message CloudGoalPlanning {
 message CreateCloudGoalResponse {
   Task task = 1;
   CloudGoalPlanning planning = 2;
+}
+
+// CloudDialogueScopeV1 is trusted caller scope for a restricted cloud
+// planning dialogue. It is resolved against persisted ownership by the Agent
+// and is never derived from model output or model-callable tool arguments.
+message CloudDialogueScopeV1 {
+  string cloud_connection_id = 1;
 }

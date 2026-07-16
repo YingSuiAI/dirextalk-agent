@@ -5,13 +5,24 @@ import (
 	"encoding/json"
 	"slices"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/publicweb"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-const runtimeToolExecutionSnapshotV1 = 1
+const (
+	runtimeToolExecutionSnapshotV1   = 1
+	bindOfficialEvidenceOperation    = "planning.official_source_evidence.bind"
+	officialEvidenceSnapshotSchemaV1 = 1
+)
+
+type officialEvidenceSnapshot struct {
+	SchemaVersion int                                `json:"schema_version"`
+	Set           planning.OfficialSourceEvidenceSet `json:"set"`
+}
 
 type persistedToolExecutionSnapshot struct {
 	SchemaVersion int `json:"schema_version"`
@@ -59,8 +70,27 @@ func (store *Store) BindOfficialSourceEvidence(
 	if session.TaskID == "" || session.TaskID != command.TaskID {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrTaskOperation
 	}
+	sessionID, err := uuid.Parse(session.SessionID)
+	if err != nil {
+		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
+	}
+	digest := command.Digest()
+	existing, _, response, err := claimScopedIdempotency(ctx, tx, caller, bindOfficialEvidenceOperation, command.IdempotencyKey, digest[:], sessionID)
+	if err != nil {
+		return planning.OfficialSourceEvidenceSet{}, err
+	}
+	if existing {
+		set, err := decodeOfficialEvidenceSnapshot(response)
+		if err != nil {
+			return planning.OfficialSourceEvidenceSet{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
+		}
+		return set, nil
+	}
 
-	receipts, err := loadCompletedOfficialSourceReceipts(ctx, tx, caller, command.Binding)
+	receipts, err := loadCompletedOfficialSourceReceipts(ctx, tx, caller, command.Binding, command.TaskID)
 	if err != nil {
 		return planning.OfficialSourceEvidenceSet{}, err
 	}
@@ -112,10 +142,67 @@ func (store *Store) BindOfficialSourceEvidence(
 	if err != nil || !slices.Equal(actual.Evidence, wanted.Evidence) || actual.Digest != wanted.Digest {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrIdempotencyConflict
 	}
+	if err := setScopedIdempotencyResponse(ctx, tx, caller, bindOfficialEvidenceOperation, command.IdempotencyKey, officialEvidenceSnapshot{
+		SchemaVersion: officialEvidenceSnapshotSchemaV1, Set: actual,
+	}); err != nil {
+		return planning.OfficialSourceEvidenceSet{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
 	}
 	return actual, nil
+}
+
+func (store *Store) GetOfficialSourceEvidence(
+	ctx context.Context,
+	scope task.MutationScope,
+	binding planning.Binding,
+	taskID string,
+) (planning.OfficialSourceEvidenceSet, bool, error) {
+	caller, err := parseIdempotencyCaller(scope)
+	if err != nil {
+		return planning.OfficialSourceEvidenceSet{}, false, err
+	}
+	if err := binding.Validate(); err != nil {
+		return planning.OfficialSourceEvidenceSet{}, false, err
+	}
+	if _, err := uuid.Parse(taskID); err != nil {
+		return planning.OfficialSourceEvidenceSet{}, false, planning.ErrInvalid
+	}
+	session, storedCaller, _, err := readResearchByBinding(ctx, store.pool, binding, false)
+	if err != nil {
+		return planning.OfficialSourceEvidenceSet{}, false, err
+	}
+	if storedCaller != caller {
+		return planning.OfficialSourceEvidenceSet{}, false, planning.ErrScopeMismatch
+	}
+	if session.Binding != binding || session.TaskID != taskID {
+		return planning.OfficialSourceEvidenceSet{}, false, planning.ErrIdempotencyConflict
+	}
+	values, err := loadBoundOfficialSourceEvidence(ctx, store.pool, session.SessionID, taskID)
+	if err != nil {
+		return planning.OfficialSourceEvidenceSet{}, false, err
+	}
+	if len(values) == 0 {
+		return planning.OfficialSourceEvidenceSet{}, false, nil
+	}
+	set, err := planning.BuildOfficialSourceEvidenceSet(taskID, values)
+	if err != nil {
+		return planning.OfficialSourceEvidenceSet{}, false, planning.ErrPersistence
+	}
+	return set, true, nil
+}
+
+func decodeOfficialEvidenceSnapshot(encoded []byte) (planning.OfficialSourceEvidenceSet, error) {
+	var snapshot officialEvidenceSnapshot
+	if err := json.Unmarshal(encoded, &snapshot); err != nil || snapshot.SchemaVersion != officialEvidenceSnapshotSchemaV1 || len(snapshot.Set.Evidence) == 0 {
+		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
+	}
+	built, err := planning.BuildOfficialSourceEvidenceSet(snapshot.Set.Evidence[0].TaskID, snapshot.Set.Evidence)
+	if err != nil || built.Digest != snapshot.Set.Digest || !slices.Equal(built.Evidence, snapshot.Set.Evidence) {
+		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
+	}
+	return snapshot.Set, nil
 }
 
 func loadCompletedOfficialSourceReceipts(
@@ -123,14 +210,19 @@ func loadCompletedOfficialSourceReceipts(
 	query planningQuerier,
 	caller idempotencyCaller,
 	binding planning.Binding,
+	taskID string,
 ) ([]completedOfficialSourceReceipt, error) {
+	requestID, err := planning.CloudGoalModelRequestID(binding, taskID, cloudskill.StepResearchOfficialSources)
+	if err != nil {
+		return nil, planning.ErrPersistence
+	}
 	rows, err := query.Query(ctx, `
 		SELECT tool_call_id, result_json
 		FROM runtime_tool_executions
-		WHERE caller_client_id=$1 AND caller_credential_id=$2 AND request_id=$3
-		  AND owner_id=$4 AND conversation_id=$5 AND tool_name=$6
-		  AND state='completed' AND result_schema_version=$7
-		ORDER BY tool_call_id`, caller.ClientID, caller.CredentialID, binding.RequestID,
+		WHERE caller_client_id=$1 AND caller_credential_id=$2 AND request_id IN ($3,$4)
+		  AND owner_id=$5 AND conversation_id=$6 AND tool_name=$7
+		  AND state='completed' AND result_schema_version=$8
+		ORDER BY request_id, tool_call_id`, caller.ClientID, caller.CredentialID, requestID, binding.RequestID,
 		binding.OwnerID, binding.ConversationID, publicweb.ToolName, runtimeToolExecutionSnapshotV1)
 	if err != nil {
 		return nil, planning.ErrPersistence
@@ -187,9 +279,6 @@ func loadBoundOfficialSourceEvidence(
 		values = append(values, value)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, planning.ErrPersistence
-	}
-	if len(values) == 0 {
 		return nil, planning.ErrPersistence
 	}
 	return values, nil

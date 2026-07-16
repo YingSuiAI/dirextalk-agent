@@ -466,7 +466,15 @@ func (service *Service) Heartbeat(ctx context.Context, request LeasedRequest, le
 }
 
 func (service *Service) Checkpoint(ctx context.Context, request LeasedRequest, ref string) (Deployment, error) {
-	deployment, err := service.record(ctx, request, "checkpoint", ref, func(deployment *Deployment, evidence EvidenceRef) {
+	return service.checkpoint(ctx, request, ref, nil)
+}
+
+func (service *Service) CheckpointObject(ctx context.Context, request LeasedRequest, claim ObjectClaim) (Deployment, error) {
+	return service.checkpoint(ctx, request, claim.Ref, &claim)
+}
+
+func (service *Service) checkpoint(ctx context.Context, request LeasedRequest, ref string, claim *ObjectClaim) (Deployment, error) {
+	deployment, err := service.record(ctx, request, "checkpoint", ref, claim, func(deployment *Deployment, evidence EvidenceRef) {
 		deployment.Lease.CheckpointRef = evidence.Ref
 	})
 	if err != nil || service.taskExecution == nil {
@@ -479,15 +487,23 @@ func (service *Service) Checkpoint(ctx context.Context, request LeasedRequest, r
 }
 
 func (service *Service) RecordArtifact(ctx context.Context, request LeasedRequest, ref string) (Deployment, error) {
-	return service.record(ctx, request, "artifact", ref, nil)
+	return service.record(ctx, request, "artifact", ref, nil, nil)
+}
+
+func (service *Service) RecordArtifactObject(ctx context.Context, request LeasedRequest, claim ObjectClaim) (Deployment, error) {
+	return service.record(ctx, request, "artifact", claim.Ref, &claim, nil)
 }
 
 func (service *Service) RecordEvidence(ctx context.Context, request LeasedRequest, ref string) (Deployment, error) {
-	return service.record(ctx, request, "evidence", ref, nil)
+	return service.record(ctx, request, "evidence", ref, nil, nil)
+}
+
+func (service *Service) RecordEvidenceObject(ctx context.Context, request LeasedRequest, claim ObjectClaim) (Deployment, error) {
+	return service.record(ctx, request, "evidence", claim.Ref, &claim, nil)
 }
 
 func (service *Service) RecordLog(ctx context.Context, request LeasedRequest, ref string) (Deployment, error) {
-	return service.record(ctx, request, "log", ref, nil)
+	return service.record(ctx, request, "log", ref, nil, nil)
 }
 
 func (service *Service) Complete(ctx context.Context, request CompleteRequest) (Deployment, error) {
@@ -502,10 +518,24 @@ func (service *Service) Complete(ctx context.Context, request CompleteRequest) (
 	default:
 		return Deployment{}, fmt.Errorf("%w: terminal outcome is invalid", ErrInvalid)
 	}
+	resultRef := strings.TrimSpace(request.ResultRef)
+	var resultObject *ObjectClaim
+	if request.ResultObject != nil {
+		claim := *request.ResultObject
+		if err := claim.Validate(); err != nil {
+			return Deployment{}, err
+		}
+		if resultRef != "" && resultRef != claim.Ref {
+			return Deployment{}, fmt.Errorf("%w: result_ref does not match result_object", ErrInvalid)
+		}
+		resultRef = claim.Ref
+		resultObject = &claim
+	}
 	mutation, err := service.leasedMutation("complete", request.LeasedRequest, struct {
-		Outcome   Outcome `json:"outcome"`
-		ResultRef string  `json:"result_ref"`
-	}{request.Outcome, strings.TrimSpace(request.ResultRef)})
+		Outcome      Outcome      `json:"outcome"`
+		ResultRef    string       `json:"result_ref"`
+		ResultObject *ObjectClaim `json:"result_object,omitempty"`
+	}{request.Outcome, resultRef, resultObject})
 	if err != nil {
 		return Deployment{}, err
 	}
@@ -517,18 +547,24 @@ func (service *Service) Complete(ctx context.Context, request CompleteRequest) (
 		if deployment.State == StateCancelRequested && request.Outcome != OutcomeCanceled {
 			return ErrCancellationRequested
 		}
-		if request.ResultRef != "" && !deployment.Access.permitsS3(request.ResultRef, deployment.Access.ArtifactPrefix) && !deployment.Access.permitsS3(request.ResultRef, deployment.Access.EvidencePrefix) {
+		if resultRef != "" && !deployment.Access.permitsS3(resultRef, deployment.Access.ArtifactPrefix) && !deployment.Access.permitsS3(resultRef, deployment.Access.EvidencePrefix) {
 			return fmt.Errorf("%w: result_ref is outside the deployment scope", ErrInvalid)
 		}
-		if request.Outcome == OutcomeSucceeded && request.ResultRef == "" {
+		if request.Outcome == OutcomeSucceeded && resultRef == "" {
 			return fmt.Errorf("%w: successful result_ref is required", ErrInvalid)
 		}
-		if request.ResultRef != "" && security.ContainsLikelySecret(request.ResultRef) {
+		if resultRef != "" && security.ContainsLikelySecret(resultRef) {
 			return fmt.Errorf("%w: result_ref contains secret material", ErrInvalid)
+		}
+		if resultObject != nil {
+			if len(deployment.Evidence) >= maxEvidenceRefs {
+				return fmt.Errorf("%w: evidence reference limit exceeded", ErrInvalid)
+			}
+			deployment.Evidence = append(deployment.Evidence, objectEvidence("artifact", *resultObject, deployment.Lease, now))
 		}
 		deployment.State = StateFinished
 		deployment.Outcome = request.Outcome
-		deployment.ResultRef = strings.TrimSpace(request.ResultRef)
+		deployment.ResultRef = resultRef
 		deployment.Lease.ExpiresAt = time.Time{}
 		deployment.touch(now)
 		return nil
@@ -593,16 +629,25 @@ func (service *Service) GetCurrentAssignment(ctx context.Context, request Sessio
 	return deployment.assignment(), nil
 }
 
-func (service *Service) record(ctx context.Context, request LeasedRequest, kind, ref string, apply func(*Deployment, EvidenceRef)) (Deployment, error) {
+func (service *Service) record(ctx context.Context, request LeasedRequest, kind, ref string, claim *ObjectClaim, apply func(*Deployment, EvidenceRef)) (Deployment, error) {
 	if err := validateIdentity(request.DeploymentID, request.WorkerID, request.Credential); err != nil {
 		return Deployment{}, err
 	}
 	if request.LeaseEpoch < 1 {
 		return Deployment{}, fmt.Errorf("%w: lease_epoch must be positive", ErrInvalid)
 	}
+	if claim != nil {
+		if err := claim.Validate(); err != nil || strings.TrimSpace(ref) != claim.Ref {
+			if err != nil {
+				return Deployment{}, err
+			}
+			return Deployment{}, fmt.Errorf("%w: object claim reference mismatch", ErrInvalid)
+		}
+	}
 	mutation, err := service.leasedMutation("record_"+kind, request, struct {
-		Reference string `json:"reference"`
-	}{strings.TrimSpace(ref)})
+		Reference string       `json:"reference"`
+		Object    *ObjectClaim `json:"object,omitempty"`
+	}{strings.TrimSpace(ref), claim})
 	if err != nil {
 		return Deployment{}, err
 	}
@@ -632,6 +677,11 @@ func (service *Service) record(ctx context.Context, request LeasedRequest, kind,
 			Kind: kind, Ref: strings.TrimSpace(ref), Trust: TrustWorkerClaim,
 			Attempt: deployment.Lease.Attempt, LeaseEpoch: deployment.Lease.Epoch, RecordedAt: now,
 		}
+		if claim != nil {
+			evidence.ObjectSHA256 = claim.Digest()
+			evidence.SizeBytes = claim.SizeBytes
+			evidence.MediaType = claim.MediaType
+		}
 		deployment.Evidence = append(deployment.Evidence, evidence)
 		if apply != nil {
 			apply(deployment, evidence)
@@ -640,6 +690,13 @@ func (service *Service) record(ctx context.Context, request LeasedRequest, kind,
 		return nil
 	})
 	return deployment.clone(), err
+}
+
+func objectEvidence(kind string, claim ObjectClaim, lease Lease, now time.Time) EvidenceRef {
+	return EvidenceRef{
+		Kind: kind, Ref: claim.Ref, ObjectSHA256: claim.Digest(), SizeBytes: claim.SizeBytes, MediaType: claim.MediaType,
+		Trust: TrustWorkerClaim, Attempt: lease.Attempt, LeaseEpoch: lease.Epoch, RecordedAt: now,
+	}
 }
 
 func (service *Service) authenticate(deployment *Deployment, request AuthenticatedRequest) error {

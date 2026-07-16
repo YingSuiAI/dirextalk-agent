@@ -3,6 +3,7 @@ package rpcapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"net/url"
@@ -31,9 +32,9 @@ type workerControlBackend interface {
 	GetCurrentAssignment(context.Context, worker.SessionRequest) (worker.Assignment, error)
 	Claim(context.Context, worker.AuthenticatedRequest, time.Duration) (worker.Assignment, error)
 	Heartbeat(context.Context, worker.LeasedRequest, time.Duration) (worker.Heartbeat, error)
-	Checkpoint(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
-	RecordArtifact(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
-	RecordEvidence(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
+	CheckpointObject(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	RecordArtifactObject(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	RecordEvidenceObject(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
 	RecordLog(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
 	Complete(context.Context, worker.CompleteRequest) (worker.Deployment, error)
 }
@@ -102,16 +103,16 @@ func (backend domainWorkerBackend) Heartbeat(ctx context.Context, request worker
 	return backend.service.Heartbeat(ctx, request, duration)
 }
 
-func (backend domainWorkerBackend) Checkpoint(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
-	return backend.service.Checkpoint(ctx, request, ref)
+func (backend domainWorkerBackend) CheckpointObject(ctx context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
+	return backend.service.CheckpointObject(ctx, request, claim)
 }
 
-func (backend domainWorkerBackend) RecordArtifact(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
-	return backend.service.RecordArtifact(ctx, request, ref)
+func (backend domainWorkerBackend) RecordArtifactObject(ctx context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
+	return backend.service.RecordArtifactObject(ctx, request, claim)
 }
 
-func (backend domainWorkerBackend) RecordEvidence(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
-	return backend.service.RecordEvidence(ctx, request, ref)
+func (backend domainWorkerBackend) RecordEvidenceObject(ctx context.Context, request worker.LeasedRequest, claim worker.ObjectClaim) (worker.Deployment, error) {
+	return backend.service.RecordEvidenceObject(ctx, request, claim)
 }
 
 func (backend domainWorkerBackend) RecordLog(ctx context.Context, request worker.LeasedRequest, ref string) (worker.Deployment, error) {
@@ -350,13 +351,28 @@ func (service *workerControlHandler) RecordEvidence(ctx context.Context, request
 	var deployment worker.Deployment
 	switch request.GetKind() {
 	case agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT:
-		deployment, err = service.backend.Checkpoint(cleanCtx, leased, request.GetRef())
+		claim, claimErr := workerObjectClaimFromProto(request.GetObject(), request.GetRef())
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		deployment, err = service.backend.CheckpointObject(cleanCtx, leased, claim)
 	case agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_ARTIFACT:
-		deployment, err = service.backend.RecordArtifact(cleanCtx, leased, request.GetRef())
+		claim, claimErr := workerObjectClaimFromProto(request.GetObject(), request.GetRef())
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		deployment, err = service.backend.RecordArtifactObject(cleanCtx, leased, claim)
 	case agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_LOG:
+		if request.GetObject() != nil || strings.TrimSpace(request.GetRef()) == "" {
+			return nil, status.Error(codes.InvalidArgument, "Worker log reference is invalid")
+		}
 		deployment, err = service.backend.RecordLog(cleanCtx, leased, request.GetRef())
 	case agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CLAIM:
-		deployment, err = service.backend.RecordEvidence(cleanCtx, leased, request.GetRef())
+		claim, claimErr := workerObjectClaimFromProto(request.GetObject(), request.GetRef())
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		deployment, err = service.backend.RecordEvidenceObject(cleanCtx, leased, claim)
 	default:
 		return nil, status.Error(codes.InvalidArgument, "Worker evidence kind is required")
 	}
@@ -379,16 +395,42 @@ func (service *workerControlHandler) Complete(ctx context.Context, request *agen
 	if !ok {
 		return nil, status.Error(codes.InvalidArgument, "terminal Worker outcome is required")
 	}
+	var resultObject *worker.ObjectClaim
+	if request.GetResultObject() != nil {
+		claim, claimErr := workerObjectClaimFromProto(request.GetResultObject(), request.GetResultRef())
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		resultObject = &claim
+	} else if outcome == worker.OutcomeSucceeded || strings.TrimSpace(request.GetResultRef()) != "" {
+		return nil, status.Error(codes.InvalidArgument, "typed Worker result object is required")
+	}
 	completed, err := service.backend.Complete(cleanCtx, worker.CompleteRequest{
 		LeasedRequest: workerLeasedRequest(
 			request.GetDeploymentId(), request.GetWorkerId(), request.GetIdempotencyKey(), request.GetExpectedRevision(), request.GetLeaseEpoch(), credential,
 		),
-		Outcome: outcome, ResultRef: request.GetResultRef(),
+		Outcome: outcome, ResultRef: request.GetResultRef(), ResultObject: resultObject,
 	})
 	if err != nil {
 		return nil, workerPublicError(err)
 	}
 	return &agentv1.WorkerControlServiceCompleteResponse{Revision: completed.Revision}, nil
+}
+
+func workerObjectClaimFromProto(value *agentv1.WorkerObjectClaim, legacyRef string) (worker.ObjectClaim, error) {
+	if value == nil || len(value.GetSha256()) != sha256.Size || value.GetSizeBytes() > uint64(worker.MaximumObjectClaimBytes) ||
+		(strings.TrimSpace(legacyRef) != "" && strings.TrimSpace(legacyRef) != value.GetRef()) {
+		return worker.ObjectClaim{}, status.Error(codes.InvalidArgument, "typed Worker object claim is required")
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], value.GetSha256())
+	claim := worker.ObjectClaim{
+		Ref: value.GetRef(), SHA256: digest, SizeBytes: int64(value.GetSizeBytes()), MediaType: value.GetMediaType(),
+	}
+	if err := claim.Validate(); err != nil {
+		return worker.ObjectClaim{}, status.Error(codes.InvalidArgument, "Worker object claim is invalid")
+	}
+	return claim, nil
 }
 
 func workerCredentialFromContext(ctx context.Context, scheme, tokenPrefix string) (context.Context, []byte, error) {

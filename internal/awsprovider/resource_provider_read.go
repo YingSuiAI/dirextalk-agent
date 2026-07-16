@@ -52,6 +52,57 @@ func (provider *EC2ResourceProvider) readBack(ctx context.Context, kind resource
 			return resource.ProviderObservation{}, resource.ErrReadBack
 		}
 		return observation(providerID, kind, tagsFromEC2(output.NetworkInterfaces[0].TagSet), now), nil
+	case resource.TypeEIP:
+		output, err := provider.client.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{AllocationIds: []string{providerID}})
+		if err != nil {
+			if isNotFound(kind, err) {
+				return resource.ProviderObservation{ProviderID: providerID, Type: kind, Exists: false, ObservedAt: now}, nil
+			}
+			return resource.ProviderObservation{}, providerError(ctx, err)
+		}
+		if output == nil || len(output.Addresses) != 1 || aws.ToString(output.Addresses[0].AllocationId) != providerID {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		return observation(providerID, kind, tagsFromEC2(output.Addresses[0].Tags), now), nil
+	case resource.TypeEndpoint:
+		output, err := provider.client.DescribeVpcEndpoints(ctx, &ec2.DescribeVpcEndpointsInput{VpcEndpointIds: []string{providerID}})
+		if err != nil {
+			if isNotFound(kind, err) {
+				return resource.ProviderObservation{ProviderID: providerID, Type: kind, Exists: false, ObservedAt: now}, nil
+			}
+			return resource.ProviderObservation{}, providerError(ctx, err)
+		}
+		if output == nil {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		if len(output.VpcEndpoints) == 0 {
+			return resource.ProviderObservation{ProviderID: providerID, Type: kind, Exists: false, ObservedAt: now}, nil
+		}
+		if len(output.VpcEndpoints) != 1 || aws.ToString(output.VpcEndpoints[0].VpcEndpointId) != providerID {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		if output.VpcEndpoints[0].State == ec2types.StateDeleted {
+			return resource.ProviderObservation{ProviderID: providerID, Type: kind, Exists: false, ObservedAt: now}, nil
+		}
+		return observation(providerID, kind, tagsFromEC2(output.VpcEndpoints[0].Tags), now), nil
+	case resource.TypeSnapshot:
+		output, err := provider.client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{SnapshotIds: []string{providerID}, OwnerIds: []string{"self"}})
+		if err != nil {
+			if isNotFound(kind, err) {
+				return resource.ProviderObservation{ProviderID: providerID, Type: kind, Exists: false, ObservedAt: now}, nil
+			}
+			return resource.ProviderObservation{}, providerError(ctx, err)
+		}
+		if output == nil {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		if len(output.Snapshots) == 0 {
+			return resource.ProviderObservation{ProviderID: providerID, Type: kind, Exists: false, ObservedAt: now}, nil
+		}
+		if len(output.Snapshots) != 1 || aws.ToString(output.Snapshots[0].SnapshotId) != providerID {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		return observation(providerID, kind, tagsFromEC2(output.Snapshots[0].Tags), now), nil
 	case resource.TypeEC2:
 		output, err := provider.client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{providerID}})
 		if err != nil {
@@ -155,6 +206,35 @@ func (provider *EC2ResourceProvider) describeByFilters(ctx context.Context, kind
 				return result, err
 			}
 		}
+	case resource.TypeEIP:
+		addresses, err := provider.addressesByFilters(ctx, filters)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range addresses {
+			result = append(result, observation(aws.ToString(value.AllocationId), kind, tagsFromEC2(value.Tags), now))
+		}
+		return result, nil
+	case resource.TypeEndpoint:
+		values, err := provider.vpcEndpointsByFilters(ctx, filters)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range values {
+			if value.State != ec2types.StateDeleted {
+				result = append(result, observation(aws.ToString(value.VpcEndpointId), kind, tagsFromEC2(value.Tags), now))
+			}
+		}
+		return result, nil
+	case resource.TypeSnapshot:
+		values, err := provider.snapshotsByFilters(ctx, filters)
+		if err != nil {
+			return nil, err
+		}
+		for _, value := range values {
+			result = append(result, observation(aws.ToString(value.SnapshotId), kind, tagsFromEC2(value.Tags), now))
+		}
+		return result, nil
 	case resource.TypeEC2:
 		seen, next := map[string]struct{}{}, ""
 		for {
@@ -219,6 +299,88 @@ func (provider *EC2ResourceProvider) networkInterface(ctx context.Context, inter
 		return ec2types.NetworkInterface{}, resource.ErrReadBack
 	}
 	return output.NetworkInterfaces[0], nil
+}
+
+func (provider *EC2ResourceProvider) address(ctx context.Context, allocationID string) (ec2types.Address, error) {
+	output, err := provider.client.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{AllocationIds: []string{allocationID}})
+	if err != nil {
+		return ec2types.Address{}, providerError(ctx, err)
+	}
+	if output == nil || len(output.Addresses) != 1 || aws.ToString(output.Addresses[0].AllocationId) != allocationID {
+		return ec2types.Address{}, resource.ErrReadBack
+	}
+	return output.Addresses[0], nil
+}
+
+func (provider *EC2ResourceProvider) addressesByFilters(ctx context.Context, filters []ec2types.Filter) ([]ec2types.Address, error) {
+	output, err := provider.client.DescribeAddresses(ctx, &ec2.DescribeAddressesInput{Filters: filters})
+	if err != nil {
+		return nil, providerError(ctx, err)
+	}
+	if output == nil {
+		return nil, resource.ErrReadBack
+	}
+	return output.Addresses, nil
+}
+
+func (provider *EC2ResourceProvider) vpcEndpoint(ctx context.Context, endpointID string) (ec2types.VpcEndpoint, error) {
+	output, err := provider.client.DescribeVpcEndpoints(ctx, &ec2.DescribeVpcEndpointsInput{VpcEndpointIds: []string{endpointID}})
+	if err != nil {
+		return ec2types.VpcEndpoint{}, providerError(ctx, err)
+	}
+	if output == nil || len(output.VpcEndpoints) != 1 || aws.ToString(output.VpcEndpoints[0].VpcEndpointId) != endpointID {
+		return ec2types.VpcEndpoint{}, resource.ErrReadBack
+	}
+	return output.VpcEndpoints[0], nil
+}
+
+func (provider *EC2ResourceProvider) vpcEndpointsByFilters(ctx context.Context, filters []ec2types.Filter) ([]ec2types.VpcEndpoint, error) {
+	seen, next := map[string]struct{}{}, ""
+	result := make([]ec2types.VpcEndpoint, 0)
+	for {
+		output, err := provider.client.DescribeVpcEndpoints(ctx, &ec2.DescribeVpcEndpointsInput{Filters: filters, NextToken: optionalToken(next)})
+		if err != nil {
+			return nil, providerError(ctx, err)
+		}
+		if output == nil {
+			return nil, resource.ErrReadBack
+		}
+		result = append(result, output.VpcEndpoints...)
+		next, err = advancePage(output.NextToken, seen)
+		if err != nil || next == "" {
+			return result, err
+		}
+	}
+}
+
+func (provider *EC2ResourceProvider) snapshot(ctx context.Context, snapshotID string) (ec2types.Snapshot, error) {
+	output, err := provider.client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{SnapshotIds: []string{snapshotID}, OwnerIds: []string{"self"}})
+	if err != nil {
+		return ec2types.Snapshot{}, providerError(ctx, err)
+	}
+	if output == nil || len(output.Snapshots) != 1 || aws.ToString(output.Snapshots[0].SnapshotId) != snapshotID {
+		return ec2types.Snapshot{}, resource.ErrReadBack
+	}
+	return output.Snapshots[0], nil
+}
+
+func (provider *EC2ResourceProvider) snapshotsByFilters(ctx context.Context, filters []ec2types.Filter) ([]ec2types.Snapshot, error) {
+	seen, next := map[string]struct{}{}, ""
+	result := make([]ec2types.Snapshot, 0)
+	for {
+		output, err := provider.client.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{Filters: filters, OwnerIds: []string{"self"}, NextToken: optionalToken(next)})
+		if err != nil {
+			return nil, providerError(ctx, err)
+		}
+		if output == nil {
+			return nil, resource.ErrReadBack
+		}
+		result = append(result, output.Snapshots...)
+		next, err = advancePage(output.NextToken, seen)
+		if err != nil || next == "" {
+			return result, err
+		}
+	}
 }
 
 func (provider *EC2ResourceProvider) instance(ctx context.Context, instanceID string) (ec2types.Instance, error) {

@@ -7,12 +7,14 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRuntimeServiceCapabilitiesFailClosedWithoutCoordinator(t *testing.T) {
@@ -111,6 +113,72 @@ func TestPutRuntimeConfigRejectsProfileTamperingBeforeCoordinator(t *testing.T) 
 	}
 }
 
+func TestRuntimeServiceCloudDialogueResolvesOwnedCanonicalConnection(t *testing.T) {
+	connectionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	coordinator := &runtimeCoordinatorStub{}
+	reader := &cloudDialogueConnectionReaderStub{connection: cloudstatus.Connection{ConnectionID: connectionID, OwnerID: "owner-a", Status: "active"}}
+	service := NewRuntimeServiceWithCloudDialogue(coordinator, RuntimeFeatures{ModelProfiles: runtimeServiceTestProfiles(t)}, reader)
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	request := &agentv1.ChatRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: "owner-a", ConversationId: "conversation-a", Message: "Research an official service.",
+		CloudDialogueScope: &agentv1.CloudDialogueScopeV1{CloudConnectionId: connectionID},
+	}
+	if _, err := service.Chat(ctx, request); err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if reader.calls != 1 || reader.ownerID != "owner-a" || reader.connectionID != connectionID {
+		t.Fatalf("connection ownership read = %#v", reader)
+	}
+	if coordinator.chatCalls != 1 || coordinator.chatRequest.CloudDialogue == nil || coordinator.chatRequest.CloudDialogue.ConnectionID != connectionID {
+		t.Fatalf("trusted cloud dialogue scope was not forwarded: %#v", coordinator.chatRequest)
+	}
+
+	normal := &agentv1.ChatRequest{IdempotencyKey: uuid.NewString(), OwnerId: "owner-a", ConversationId: "conversation-b", Message: "hello"}
+	serviceWithoutResolver := NewRuntimeService(coordinator, RuntimeFeatures{ModelProfiles: runtimeServiceTestProfiles(t)})
+	if _, err := serviceWithoutResolver.Chat(ctx, normal); err != nil || coordinator.chatRequest.CloudDialogue != nil {
+		t.Fatalf("ordinary Chat compatibility changed: request=%#v err=%v", coordinator.chatRequest, err)
+	}
+}
+
+func TestRuntimeServiceCloudDialogueFailsClosedBeforeCoordinator(t *testing.T) {
+	connectionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	base := &agentv1.ChatRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: "owner-a", ConversationId: "conversation-a", Message: "Research an official service.",
+		CloudDialogueScope: &agentv1.CloudDialogueScopeV1{CloudConnectionId: connectionID},
+	}
+	tests := []struct {
+		name       string
+		request    *agentv1.ChatRequest
+		reader     CloudDialogueConnectionReader
+		wantStatus codes.Code
+	}{
+		{name: "missing connection", request: func() *agentv1.ChatRequest {
+			value := proto.Clone(base).(*agentv1.ChatRequest)
+			value.CloudDialogueScope = &agentv1.CloudDialogueScopeV1{}
+			return value
+		}(), reader: &cloudDialogueConnectionReaderStub{}, wantStatus: codes.InvalidArgument},
+		{name: "non canonical connection", request: func() *agentv1.ChatRequest {
+			value := proto.Clone(base).(*agentv1.ChatRequest)
+			value.CloudDialogueScope = &agentv1.CloudDialogueScopeV1{CloudConnectionId: strings.ToUpper(connectionID)}
+			return value
+		}(), reader: &cloudDialogueConnectionReaderStub{}, wantStatus: codes.InvalidArgument},
+		{name: "resolver unavailable", request: base, wantStatus: codes.FailedPrecondition},
+		{name: "foreign connection", request: base, reader: &cloudDialogueConnectionReaderStub{err: cloudstatus.ErrNotFound}, wantStatus: codes.NotFound},
+		{name: "invalid read back", request: base, reader: &cloudDialogueConnectionReaderStub{connection: cloudstatus.Connection{ConnectionID: connectionID, OwnerID: "owner-b"}}, wantStatus: codes.Internal},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := &runtimeCoordinatorStub{}
+			service := NewRuntimeServiceWithCloudDialogue(coordinator, RuntimeFeatures{ModelProfiles: runtimeServiceTestProfiles(t)}, test.reader)
+			_, err := service.Chat(ctx, test.request)
+			if status.Code(err) != test.wantStatus || coordinator.chatCalls != 0 {
+				t.Fatalf("Chat code=%s calls=%d err=%v", status.Code(err), coordinator.chatCalls, err)
+			}
+		})
+	}
+}
+
 func TestRuntimeResponsesNeverExposeReasoningToolArgumentsOrToolResults(t *testing.T) {
 	const canary = "sk-secret-canary-abcdefghijklmnopqrstuvwxyz"
 	requestID := uuid.NewString()
@@ -173,6 +241,8 @@ type runtimeCoordinatorStub struct {
 	savedScope   runtimeapi.MutationScope
 	savedCommand runtimeapi.SaveRuntimeConfigCommand
 	saveCalls    int
+	chatRequest  runtimeapi.ChatRequest
+	chatCalls    int
 }
 
 func (*runtimeCoordinatorStub) LoadRuntimeConfig(context.Context, string) (runtimeapi.RuntimeConfig, error) {
@@ -200,10 +270,30 @@ func runtimeServiceTestProfiles(t *testing.T) *modelapi.ProfileCatalog {
 	return catalog
 }
 
-func (*runtimeCoordinatorStub) Chat(context.Context, runtimeapi.MutationScope, runtimeapi.ChatRequest) (runtimeapi.ChatResult, error) {
+func (stub *runtimeCoordinatorStub) Chat(_ context.Context, _ runtimeapi.MutationScope, request runtimeapi.ChatRequest) (runtimeapi.ChatResult, error) {
+	stub.chatCalls++
+	stub.chatRequest = request
 	return runtimeapi.ChatResult{}, nil
 }
 
 func (*runtimeCoordinatorStub) Stream(context.Context, runtimeapi.MutationScope, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) error {
 	return nil
+}
+
+type cloudDialogueConnectionReaderStub struct {
+	connection   cloudstatus.Connection
+	err          error
+	ownerID      string
+	connectionID string
+	calls        int
+}
+
+func (stub *cloudDialogueConnectionReaderStub) GetConnection(_ context.Context, ownerID, connectionID string) (cloudstatus.Connection, error) {
+	stub.calls++
+	stub.ownerID = ownerID
+	stub.connectionID = connectionID
+	if stub.err != nil {
+		return cloudstatus.Connection{}, stub.err
+	}
+	return stub.connection, nil
 }

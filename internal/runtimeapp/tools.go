@@ -66,6 +66,22 @@ func NewDurableToolProvider(store ToolExecutionStore, next runtimeapi.ToolProvid
 	return &DurableToolProvider{store: store, next: next, toolLease: defaultToolLease}, nil
 }
 
+// ToolsWithLease exposes the same durable wrapper to trusted background
+// coordinators that already own an authenticated runtime request lease. It is
+// intentionally typed: callers cannot smuggle scope or lease values through
+// model arguments or tool JSON.
+func (provider *DurableToolProvider) ToolsWithLease(
+	ctx context.Context,
+	scope runtimeapi.MutationScope,
+	parentLeaseEpoch int64,
+	request runtimeapi.ToolRequest,
+) ([]runtimeapi.Tool, error) {
+	if ctx == nil || scope.Validate() != nil || parentLeaseEpoch < 1 {
+		return nil, ErrRuntimeLeaseMissing
+	}
+	return provider.Tools(withRuntimeLease(withMutationScope(ctx, scope), parentLeaseEpoch), request)
+}
+
 func (provider *DurableToolProvider) Tools(ctx context.Context, request runtimeapi.ToolRequest) ([]runtimeapi.Tool, error) {
 	if provider == nil || provider.store == nil || provider.next == nil {
 		return nil, ErrInvalidDependencies

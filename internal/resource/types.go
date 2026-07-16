@@ -26,6 +26,7 @@ var (
 	ErrDestroyBlocked             = errors.New("resource destruction is blocked")
 	ErrManaged                    = errors.New("managed resource requires an explicit operation approval")
 	ErrCreateAuthorizationExpired = errors.New("provider create authorization expired")
+	ErrCreateAmbiguous            = errors.New("provider create result is ambiguous and requires reconciliation")
 )
 
 type Type string
@@ -77,9 +78,10 @@ const (
 var sha256Pattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 type MutationIntent struct {
-	Operation   MutationOperation
-	ClientToken string
-	RecordedAt  time.Time
+	Operation               MutationOperation
+	ClientToken             string
+	RecordedAt              time.Time
+	ProviderCreateStartedAt time.Time
 }
 
 type ReadBackEvidence struct {
@@ -90,33 +92,39 @@ type ReadBackEvidence struct {
 }
 
 type ResourceV1 struct {
-	ResourceID          string
-	AgentInstanceID     string
-	OwnerID             string
-	TaskID              string
-	DeploymentID        string
-	Type                Type
-	LogicalName         string
-	Region              string
-	SpecDigest          string
-	ApprovedPlanHash    string
-	ApprovalID          string
-	ProviderID          string
-	DependsOn           []string
-	Retention           task.RetentionPolicy
-	DestroyDeadline     time.Time
-	AutoDestroyApproved bool
-	Tags                map[string]string
-	State               State
-	Intent              MutationIntent
-	ReadBack            ReadBackEvidence
-	BlockedReason       string
-	Revision            int64
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ResourceID       string
+	AgentInstanceID  string
+	OwnerID          string
+	TaskID           string
+	DeploymentID     string
+	Type             Type
+	LogicalName      string
+	Region           string
+	SpecDigest       string
+	ApprovedPlanHash string
+	ApprovalID       string
+	ProviderID       string
+	// ProviderCandidateIDs records every provider object observed for this
+	// mutation while the control plane cannot safely select one. Keeping these
+	// IDs in the authoritative ledger lets both the Agent and the independent
+	// Reaper clean up every billable object without guessing.
+	ProviderCandidateIDs []string
+	DependsOn            []string
+	Retention            task.RetentionPolicy
+	DestroyDeadline      time.Time
+	AutoDestroyApproved  bool
+	Tags                 map[string]string
+	State                State
+	Intent               MutationIntent
+	ReadBack             ReadBackEvidence
+	BlockedReason        string
+	Revision             int64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 func (resource ResourceV1) clone() ResourceV1 {
+	resource.ProviderCandidateIDs = slices.Clone(resource.ProviderCandidateIDs)
 	resource.DependsOn = slices.Clone(resource.DependsOn)
 	resource.Tags = cloneMap(resource.Tags)
 	return resource
@@ -198,6 +206,13 @@ func (spec ProvisionSpec) Validate(now time.Time) error {
 		if err != nil || digest != spec.SpecDigest {
 			return fmt.Errorf("%w: AWS typed spec does not match spec_digest", ErrInvalid)
 		}
+		if spec.Type == TypeSnapshot {
+			disposition := spec.AWS.Snapshot.Disposition
+			if (spec.Retention == task.RetentionEphemeralAutoDestroy && disposition != AWSSnapshotDeleteWithDeployment) ||
+				(spec.Retention == task.RetentionManaged && disposition != AWSSnapshotRetainWithManagedService) {
+				return fmt.Errorf("%w: snapshot disposition does not match retention", ErrInvalid)
+			}
+		}
 	}
 	if spec.Retention != task.RetentionEphemeralAutoDestroy && spec.Retention != task.RetentionManaged {
 		return fmt.Errorf("%w: retention is invalid", ErrInvalid)
@@ -265,6 +280,7 @@ type ProviderObservation struct {
 type Provider interface {
 	Create(context.Context, ProviderCreateRequest) (ProviderObservation, error)
 	FindByClientToken(context.Context, Type, string, string) (ProviderObservation, bool, error)
+	FindAllByClientToken(context.Context, Type, string, string) ([]ProviderObservation, error)
 	ReadBack(context.Context, Type, string, string) (ProviderObservation, error)
 	Delete(context.Context, Type, string, string, map[string]string) error
 	ListOwned(context.Context, string) ([]ProviderObservation, error)

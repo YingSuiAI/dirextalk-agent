@@ -204,6 +204,177 @@ func (provider *EC2ResourceProvider) createNetworkInterface(ctx context.Context,
 	return provider.readBack(ctx, resource.TypeENI, interfaceID)
 }
 
+func (provider *EC2ResourceProvider) createElasticIP(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
+	interfaceID := dependencyID(request.Dependencies, resource.TypeENI)
+	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{request.ClientToken}}}
+	addresses, err := provider.addressesByFilters(ctx, filters)
+	if err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	if len(addresses) == 0 {
+		output, allocateErr := provider.client.AllocateAddress(ctx, &ec2.AllocateAddressInput{
+			Domain:            ec2types.DomainTypeVpc,
+			TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeElasticIp, Tags: ec2Tags(provider.readyTags(request))}},
+		})
+		if allocateErr == nil && output != nil && aws.ToString(output.AllocationId) != "" {
+			address, readErr := provider.address(ctx, aws.ToString(output.AllocationId))
+			if readErr != nil {
+				return resource.ProviderObservation{}, readErr
+			}
+			addresses = []ec2types.Address{address}
+		} else {
+			addresses, err = provider.addressesByFilters(ctx, filters)
+			if err != nil {
+				return resource.ProviderObservation{}, err
+			}
+			if len(addresses) == 0 {
+				return resource.ProviderObservation{}, providerError(ctx, allocateErr)
+			}
+		}
+	}
+	if len(addresses) != 1 {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	address := addresses[0]
+	allocationID := aws.ToString(address.AllocationId)
+	if allocationID == "" || address.Domain != ec2types.DomainTypeVpc || !containsTags(tagsFromEC2(address.Tags), provider.readyTags(request)) {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	if associatedInterfaceID := aws.ToString(address.NetworkInterfaceId); associatedInterfaceID != "" && associatedInterfaceID != interfaceID {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	if aws.ToString(address.AssociationId) == "" {
+		if _, err := provider.client.AssociateAddress(ctx, &ec2.AssociateAddressInput{
+			AllocationId: aws.String(allocationID), NetworkInterfaceId: aws.String(interfaceID), AllowReassociation: aws.Bool(false),
+		}); err != nil {
+			return resource.ProviderObservation{}, providerError(ctx, err)
+		}
+		address, err = provider.address(ctx, allocationID)
+		if err != nil {
+			return resource.ProviderObservation{}, err
+		}
+	}
+	if aws.ToString(address.AssociationId) == "" || aws.ToString(address.NetworkInterfaceId) != interfaceID {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	return provider.readBack(ctx, resource.TypeEIP, allocationID)
+}
+
+func (provider *EC2ResourceProvider) createVpcEndpoint(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
+	spec := request.AWS.Endpoint
+	securityGroupID := spec.ExistingSecurityGroupID
+	if securityGroupID == "" {
+		securityGroupID = dependencyID(request.Dependencies, resource.TypeSG)
+	}
+	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{request.ClientToken}}}
+	values, err := provider.vpcEndpointsByFilters(ctx, filters)
+	if err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	if len(values) == 0 {
+		output, createErr := provider.client.CreateVpcEndpoint(ctx, &ec2.CreateVpcEndpointInput{
+			VpcId: aws.String(spec.VPCID), ServiceName: aws.String(spec.ServiceName), ClientToken: aws.String(request.ClientToken),
+			VpcEndpointType: ec2types.VpcEndpointTypeInterface, IpAddressType: ec2types.IpAddressTypeIpv4,
+			SubnetIds: append([]string(nil), spec.SubnetIDs...), SecurityGroupIds: []string{securityGroupID},
+			PrivateDnsEnabled: aws.Bool(spec.PrivateDNSEnabled),
+			TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeVpcEndpoint, Tags: ec2Tags(provider.readyTags(request))}},
+		})
+		if createErr == nil && output != nil && output.VpcEndpoint != nil && aws.ToString(output.VpcEndpoint.VpcEndpointId) != "" {
+			values = []ec2types.VpcEndpoint{*output.VpcEndpoint}
+		} else {
+			values, err = provider.vpcEndpointsByFilters(ctx, filters)
+			if err != nil {
+				return resource.ProviderObservation{}, err
+			}
+			if len(values) == 0 {
+				return resource.ProviderObservation{}, providerError(ctx, createErr)
+			}
+		}
+	}
+	if len(values) != 1 || aws.ToString(values[0].VpcEndpointId) == "" {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	endpointID := aws.ToString(values[0].VpcEndpointId)
+	if err := provider.waitReady(ctx, resource.TypeEndpoint, endpointID); err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	value, err := provider.vpcEndpoint(ctx, endpointID)
+	if err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	if aws.ToString(value.VpcId) != spec.VPCID || aws.ToString(value.ServiceName) != spec.ServiceName || value.VpcEndpointType != ec2types.VpcEndpointTypeInterface ||
+		value.IpAddressType != ec2types.IpAddressTypeIpv4 || aws.ToBool(value.PrivateDnsEnabled) != spec.PrivateDNSEnabled ||
+		!sameStringSet(value.SubnetIds, spec.SubnetIDs) || len(value.Groups) != 1 || aws.ToString(value.Groups[0].GroupId) != securityGroupID ||
+		!containsTags(tagsFromEC2(value.Tags), provider.readyTags(request)) {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	return provider.readBack(ctx, resource.TypeEndpoint, endpointID)
+}
+
+func (provider *EC2ResourceProvider) createSnapshot(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
+	spec := request.AWS.Snapshot
+	volumeID := dependencyID(request.Dependencies, resource.TypeEBS)
+	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{request.ClientToken}}}
+	values, err := provider.snapshotsByFilters(ctx, filters)
+	if err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	if len(values) == 0 {
+		output, createErr := provider.client.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{
+			VolumeId: aws.String(volumeID), Description: aws.String(spec.Description),
+			TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeSnapshot, Tags: ec2Tags(provider.readyTags(request))}},
+		})
+		if createErr == nil && output != nil && aws.ToString(output.SnapshotId) != "" {
+			value, readErr := provider.snapshot(ctx, aws.ToString(output.SnapshotId))
+			if readErr != nil {
+				return resource.ProviderObservation{}, readErr
+			}
+			values = []ec2types.Snapshot{value}
+		} else {
+			values, err = provider.snapshotsByFilters(ctx, filters)
+			if err != nil {
+				return resource.ProviderObservation{}, err
+			}
+			if len(values) == 0 {
+				return resource.ProviderObservation{}, providerError(ctx, createErr)
+			}
+		}
+	}
+	if len(values) != 1 || aws.ToString(values[0].SnapshotId) == "" {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	snapshotID := aws.ToString(values[0].SnapshotId)
+	if err := provider.waitReady(ctx, resource.TypeSnapshot, snapshotID); err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	value, err := provider.snapshot(ctx, snapshotID)
+	if err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	if aws.ToString(value.VolumeId) != volumeID || aws.ToString(value.Description) != spec.Description || !aws.ToBool(value.Encrypted) ||
+		!containsTags(tagsFromEC2(value.Tags), provider.readyTags(request)) {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	return provider.readBack(ctx, resource.TypeSnapshot, snapshotID)
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]int, len(left))
+	for _, value := range left {
+		values[value]++
+	}
+	for _, value := range right {
+		if values[value] == 0 {
+			return false
+		}
+		values[value]--
+	}
+	return true
+}
+
 func (provider *EC2ResourceProvider) createInstance(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
 	spec := request.AWS.Instance
 	if err := provider.verifyApprovedWorkerAMI(ctx, request, spec); err != nil {

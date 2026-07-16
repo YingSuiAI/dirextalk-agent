@@ -13,10 +13,11 @@ import (
 
 type typedFakeEC2 struct {
 	EC2API
-	providerID string
-	tags       []ec2types.Tag
-	exists     map[resource.Type]bool
-	deleted    []resource.Type
+	providerID    string
+	tags          []ec2types.Tag
+	exists        map[resource.Type]bool
+	deleted       []resource.Type
+	disassociated bool
 }
 
 func (fake *typedFakeEC2) markDeleted(kind resource.Type) {
@@ -60,11 +61,23 @@ func (fake *typedFakeEC2) DeleteNetworkInterface(context.Context, *ec2.DeleteNet
 func (fake *typedFakeEC2) DescribeAddresses(context.Context, *ec2.DescribeAddressesInput, ...func(*ec2.Options)) (*ec2.DescribeAddressesOutput, error) {
 	result := &ec2.DescribeAddressesOutput{}
 	if fake.exists[resource.TypeEIP] {
-		result.Addresses = []ec2types.Address{{AllocationId: &fake.providerID, Tags: fake.tags}}
+		address := ec2types.Address{AllocationId: &fake.providerID, Tags: fake.tags}
+		if !fake.disassociated {
+			associationID := "eipassoc-0123456789abcdef0"
+			address.AssociationId = &associationID
+		}
+		result.Addresses = []ec2types.Address{address}
 	}
 	return result, nil
 }
+func (fake *typedFakeEC2) DisassociateAddress(context.Context, *ec2.DisassociateAddressInput, ...func(*ec2.Options)) (*ec2.DisassociateAddressOutput, error) {
+	fake.disassociated = true
+	return &ec2.DisassociateAddressOutput{}, nil
+}
 func (fake *typedFakeEC2) ReleaseAddress(context.Context, *ec2.ReleaseAddressInput, ...func(*ec2.Options)) (*ec2.ReleaseAddressOutput, error) {
+	if !fake.disassociated {
+		return nil, ErrCloudMutation
+	}
 	fake.markDeleted(resource.TypeEIP)
 	return &ec2.ReleaseAddressOutput{}, nil
 }
@@ -121,6 +134,9 @@ func TestEC2ProviderDispatchesTypedDestroyAndReadBackForEveryResourceKind(t *tes
 			}
 			if len(fake.deleted) != 1 || fake.deleted[0] != kind {
 				t.Fatalf("deleted = %v", fake.deleted)
+			}
+			if kind == resource.TypeEIP && !fake.disassociated {
+				t.Fatal("associated Elastic IP was released without disassociation")
 			}
 			observation, err := provider.ReadBack(context.Background(), kind, providerID, "us-west-2")
 			if err != nil || observation.Exists {

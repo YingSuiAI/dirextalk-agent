@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type cloudGoalPlannerStub struct {
@@ -85,9 +86,9 @@ func TestCreateCloudGoalIsOwnerBoundPlanningOnlyAndIdempotent(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(created, replayed) || planner.calls != 2 {
 		t.Fatalf("exact replay changed result: replay=%#v calls=%d err=%v", replayed, planner.calls, err)
 	}
-	conflict := *request
+	conflict := proto.Clone(request).(*agentv1.CreateCloudGoalRequest)
 	conflict.Goal = "Deploy a different service."
-	if _, err := service.CreateCloudGoal(ctx, &conflict); status.Code(err) != codes.AlreadyExists {
+	if _, err := service.CreateCloudGoal(ctx, conflict); status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("changed idempotent payload code=%s err=%v", status.Code(err), err)
 	}
 }
@@ -104,15 +105,15 @@ func TestCreateCloudGoalRejectsCrossOwnerConnectionAndSensitiveGoal(t *testing.T
 		RetentionPolicy: agentv1.RetentionPolicy_RETENTION_POLICY_EPHEMERAL_AUTO_DESTROY,
 	}
 
-	crossOwner := *base
+	crossOwner := proto.Clone(base).(*agentv1.CreateCloudGoalRequest)
 	crossOwner.OwnerId = "project-owner-b"
-	if _, err := service.CreateCloudGoal(ctx, &crossOwner); status.Code(err) != codes.NotFound || planner.calls != 0 {
+	if _, err := service.CreateCloudGoal(ctx, crossOwner); status.Code(err) != codes.NotFound || planner.calls != 0 {
 		t.Fatalf("cross-owner connection code=%s calls=%d err=%v", status.Code(err), planner.calls, err)
 	}
-	sensitive := *base
+	sensitive := proto.Clone(base).(*agentv1.CreateCloudGoalRequest)
 	sensitive.IdempotencyKey = uuid.NewString()
 	sensitive.Goal = "Use sk-" + strings.Repeat("Z", 40) + " to deploy it."
-	if _, err := service.CreateCloudGoal(ctx, &sensitive); status.Code(err) != codes.InvalidArgument || planner.calls != 0 || strings.Contains(err.Error(), sensitive.Goal) {
+	if _, err := service.CreateCloudGoal(ctx, sensitive); status.Code(err) != codes.InvalidArgument || planner.calls != 0 || strings.Contains(err.Error(), sensitive.Goal) {
 		t.Fatalf("sensitive goal rejection code=%s calls=%d err=%v", status.Code(err), planner.calls, err)
 	}
 }

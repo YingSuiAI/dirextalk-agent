@@ -40,7 +40,9 @@ func (p PlanV1) PricingScope() cloudquote.ScopeV1 {
 		Network: cloudquote.NetworkScopeV1{
 			VPCID:                  p.NetworkScope.VPCID,
 			SubnetID:               p.NetworkScope.SubnetID,
+			SecurityGroupMode:      cloudquote.SecurityGroupMode(normalizedSecurityGroupMode(p.NetworkScope)),
 			SecurityGroupID:        p.NetworkScope.SecurityGroupID,
+			PublicIPv4:             p.NetworkScope.PublicIPv4,
 			EntryPoint:             cloudquote.EntryPointKind(p.NetworkScope.EntryPoint),
 			PublicExposure:         p.NetworkScope.PublicExposure,
 			IngressPorts:           append([]uint32(nil), p.NetworkScope.IngressPorts...),

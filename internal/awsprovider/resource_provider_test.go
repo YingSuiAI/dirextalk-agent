@@ -338,8 +338,20 @@ func (fake *paginatedEC2Fake) DescribeNetworkInterfaces(context.Context, *ec2.De
 	return &ec2.DescribeNetworkInterfacesOutput{}, nil
 }
 
+func (fake *paginatedEC2Fake) DescribeAddresses(context.Context, *ec2.DescribeAddressesInput, ...func(*ec2.Options)) (*ec2.DescribeAddressesOutput, error) {
+	return &ec2.DescribeAddressesOutput{}, nil
+}
+
 func (fake *paginatedEC2Fake) DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
 	return &ec2.DescribeSecurityGroupsOutput{}, nil
+}
+
+func (fake *paginatedEC2Fake) DescribeVpcEndpoints(context.Context, *ec2.DescribeVpcEndpointsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcEndpointsOutput, error) {
+	return &ec2.DescribeVpcEndpointsOutput{}, nil
+}
+
+func (fake *paginatedEC2Fake) DescribeSnapshots(context.Context, *ec2.DescribeSnapshotsInput, ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error) {
+	return &ec2.DescribeSnapshotsOutput{}, nil
 }
 
 func (fake *networkInterfaceEC2Fake) CreateNetworkInterface(_ context.Context, input *ec2.CreateNetworkInterfaceInput, _ ...func(*ec2.Options)) (*ec2.CreateNetworkInterfaceOutput, error) {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
 
@@ -111,15 +112,23 @@ func (v *Verifier) Verify(ctx context.Context, request RequestV1) (ResponseV1, e
 	if plan.Binding != v.expectedBinding || plan.Binding != request.Binding {
 		return ResponseV1{}, errorf(CodeBindingMismatch, "signed installer plan does not match daemon binding")
 	}
-	requestDigest, err := canonical.Digest(request)
-	if err != nil {
-		return ResponseV1{}, errorf(CodeInvalidRequest, "digest installer request: %v", err)
-	}
 	switch request.Action {
 	case ActionVerify:
+		requestDigest, err := canonical.Digest(request)
+		if err != nil {
+			return ResponseV1{}, errorf(CodeInvalidRequest, "digest installer request: %v", err)
+		}
 		return v.verifyArtifact(ctx, request, plan, requestDigest)
 	case ActionExecute:
-		return v.executeCommand(ctx, request, plan, requestDigest)
+		leaseExpiresAt, leaseEpoch, err := v.validateExecutionLease(request)
+		if err != nil {
+			return ResponseV1{}, err
+		}
+		operationDigest, err := executionOperationDigest(request)
+		if err != nil {
+			return ResponseV1{}, err
+		}
+		return v.executeCommand(ctx, request, plan, operationDigest, leaseEpoch, leaseExpiresAt)
 	default:
 		return ResponseV1{}, errorf(CodeUnsupportedAction, "action is not permitted")
 	}
@@ -159,19 +168,22 @@ func (v *Verifier) verifyArtifact(ctx context.Context, request RequestV1, plan I
 	return response, nil
 }
 
-func (v *Verifier) executeCommand(ctx context.Context, request RequestV1, plan InstallerPlanV1, requestDigest string) (ResponseV1, error) {
+func (v *Verifier) executeCommand(ctx context.Context, request RequestV1, plan InstallerPlanV1, requestDigest string, leaseEpoch int64, leaseExpiresAt time.Time) (ResponseV1, error) {
 	if v.runner == nil || v.journal == nil {
 		return ResponseV1{}, errorf(CodeUnsupportedAction, "privileged execution is disabled")
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if err := v.journal.FenceLease(leaseEpoch); err != nil {
+		return ResponseV1{}, err
+	}
 	if response, found, err := v.journal.Lookup(request.IdempotencyKey, requestDigest); err != nil {
 		return ResponseV1{}, err
 	} else if found {
 		return response, nil
 	}
 	expiresAt, _ := time.Parse(time.RFC3339Nano, plan.ExpiresAt)
-	if !v.now().UTC().Before(expiresAt) {
+	if now := v.now().UTC(); !now.Before(expiresAt) || !now.Before(leaseExpiresAt) {
 		return ResponseV1{}, errorf(CodePlanExpired, "installer plan has expired")
 	}
 	command, found := findCommand(plan.Commands, request.CommandID)
@@ -187,7 +199,7 @@ func (v *Verifier) executeCommand(ctx context.Context, request RequestV1, plan I
 			return ResponseV1{}, &protocolError{code: CodeArtifactVerification, err: err}
 		}
 	}
-	if !v.now().UTC().Before(expiresAt) {
+	if now := v.now().UTC(); !now.Before(expiresAt) || !now.Before(leaseExpiresAt) {
 		return ResponseV1{}, errorf(CodePlanExpired, "installer plan expired during artifact verification")
 	}
 	base := ResponseV1{
@@ -200,10 +212,16 @@ func (v *Verifier) executeCommand(ctx context.Context, request RequestV1, plan I
 		return response, nil
 	}
 	timeout := time.Duration(command.TimeoutSeconds) * time.Second
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	now := v.now().UTC()
+	remaining := min(expiresAt.Sub(now), leaseExpiresAt.Sub(now))
+	if remaining <= 0 {
+		return ResponseV1{}, errorf(CodePlanExpired, "installer lease expired before execution")
+	}
+	runTimeout := min(timeout, remaining)
+	runCtx, cancel := context.WithTimeout(ctx, runTimeout)
 	execution := CommandExecution{
 		Argv: append([]string(nil), command.Argv...), WorkingDirectory: command.WorkingDirectory,
-		Environment: []string{SafePathEnvironment}, Timeout: timeout,
+		Environment: []string{SafePathEnvironment}, Timeout: runTimeout,
 	}
 	runErr := v.runner.Run(runCtx, execution)
 	runState := runCtx.Err()
@@ -259,12 +277,13 @@ func validateRequestEnvelope(request RequestV1) error {
 	}
 	switch request.Action {
 	case ActionVerify:
-		if !namePattern.MatchString(request.ArtifactName) || request.CommandID != "" {
+		if !namePattern.MatchString(request.ArtifactName) || request.CommandID != "" || request.OperationID != "" || request.LeaseGrant != nil {
 			return errorf(CodeInvalidRequest, "verify requires only an artifact name")
 		}
 	case ActionExecute:
-		if request.ArtifactName != "" || !namePattern.MatchString(request.CommandID) {
-			return errorf(CodeInvalidRequest, "execute requires only a command ID")
+		operationID, err := uuid.Parse(request.OperationID)
+		if request.ArtifactName != "" || !namePattern.MatchString(request.CommandID) || err != nil || operationID.String() != request.OperationID || request.LeaseGrant == nil {
+			return errorf(CodeInvalidRequest, "execute requires a command operation and lease grant")
 		}
 	}
 	if err := validateBinding(request.Binding); err != nil {
@@ -346,7 +365,7 @@ func validateCommands(plan InstallerPlanV1) error {
 		totalArgvBytes := 0
 		for index, argument := range command.Argv {
 			totalArgvBytes += len(argument)
-			if len(argument) > 16<<10 || strings.ContainsRune(argument, '\x00') {
+			if len(argument) > 16<<10 || strings.ContainsRune(argument, '\x00') || security.ContainsLikelySecret(argument) {
 				return errorf(CodeInvalidRequest, "command argv contains an invalid value")
 			}
 			if index == 0 && ((strings.Contains(argument, "/") && (!path.IsAbs(argument) || path.Clean(argument) != argument)) ||
@@ -388,7 +407,7 @@ func validateCommandRefs(values []string, declared map[string]struct{}, pattern 
 }
 
 func validateBinding(binding BindingV1) error {
-	if !digestPattern.MatchString(binding.PlanHash) || !digestPattern.MatchString(binding.RecipeDigest) || binding.LeaseEpoch < 1 {
+	if !digestPattern.MatchString(binding.PlanHash) || !digestPattern.MatchString(binding.RecipeDigest) {
 		return errorf(CodeInvalidRequest, "invalid installer binding")
 	}
 	for name, value := range map[string]string{
@@ -401,6 +420,42 @@ func validateBinding(binding BindingV1) error {
 		}
 	}
 	return nil
+}
+
+func (v *Verifier) validateExecutionLease(request RequestV1) (time.Time, int64, error) {
+	if request.LeaseGrant == nil {
+		return time.Time{}, 0, errorf(CodeLeaseRejected, "installer lease grant is required")
+	}
+	delivery := DeliveryV1{
+		SchemaVersion: DeliverySchemaV1, TrustID: request.LeaseGrant.Grant.TrustID,
+		PublicKey:  append([]byte(nil), v.publicKey...),
+		Config:     DaemonConfigV1{SchemaVersion: DaemonConfigSchema, Binding: v.expectedBinding, TargetRoot: v.targetRoot},
+		SignedPlan: request.SignedPlan,
+	}
+	if err := ValidateLeaseGrantAt(delivery, *request.LeaseGrant, request.CommandID, v.now().UTC()); err != nil {
+		return time.Time{}, 0, err
+	}
+	operationID := installerOperationID(delivery.TrustID, request.CommandID)
+	if request.OperationID != operationID || request.RequestID != installerRequestID(operationID) || request.IdempotencyKey != installerIdempotencyKey(operationID) {
+		return time.Time{}, 0, errorf(CodeLeaseRejected, "installer operation identity is invalid")
+	}
+	expiresAt, _ := time.Parse(time.RFC3339Nano, request.LeaseGrant.Grant.ExpiresAt)
+	return expiresAt, request.LeaseGrant.Grant.LeaseEpoch, nil
+}
+
+func executionOperationDigest(request RequestV1) (string, error) {
+	digest, err := canonical.Digest(struct {
+		SchemaVersion string                `json:"schema_version"`
+		Action        string                `json:"action"`
+		Binding       BindingV1             `json:"binding"`
+		SignedPlan    SignedInstallerPlanV1 `json:"signed_plan"`
+		OperationID   string                `json:"operation_id"`
+		CommandID     string                `json:"command_id"`
+	}{request.SchemaVersion, request.Action, request.Binding, request.SignedPlan, request.OperationID, request.CommandID})
+	if err != nil {
+		return "", errorf(CodeInvalidRequest, "digest installer operation")
+	}
+	return digest, nil
 }
 
 func validateTargetRoot(value string) (string, error) {
