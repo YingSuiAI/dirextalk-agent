@@ -87,6 +87,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		SchemaVersion: resource.AWSResourceSpecSchemaV1,
 		Instance: &resource.AWSEC2InstanceSpecV1{
 			ImageID: plan.ResourceScope.WorkerImageID, ImageDigest: plan.ResourceScope.WorkerImageDigest,
+			Architecture: plan.ResourceScope.Architecture,
 			InstanceType: plan.ResourceScope.InstanceType, InstanceProfileName: foundation.WorkerProfileName,
 			UserDataArtifactRef:    operation.Bootstrap.Reference,
 			UserDataArtifactDigest: "sha256:" + hex.EncodeToString(operation.Bootstrap.SHA256[:]),

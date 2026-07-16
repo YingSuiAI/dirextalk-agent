@@ -403,7 +403,7 @@ Resources:
         ImageUri:
           Ref: ReaperImageUri
       Architectures:
-        - arm64
+        - x86_64
       MemorySize: 256
       Timeout: 60
       Role:
@@ -479,6 +479,7 @@ Resources:
               - ec2:DescribeAddresses
               - ec2:DescribeAvailabilityZones
               - ec2:DescribeImages
+              - ec2:DescribeInstanceAttribute
               - ec2:DescribeInstanceStatus
               - ec2:DescribeInstanceTypeOfferings
               - ec2:DescribeInstanceTypes
@@ -499,9 +500,7 @@ Resources:
               - ec2:CreateSecurityGroup
               - ec2:CreateVolume
               - ec2:CreateVpcEndpoint
-              - ec2:RunInstances
             Resource:
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
@@ -510,12 +509,75 @@ Resources:
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:key-pair/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
+          - Sid: RunTaggedComputeInstanceAndVolume
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+              StringEqualsIfExists:
+                ec2:MetadataHttpTokens: required
+              BoolIfExists:
+                ec2:Encrypted: 'true'
+          - Sid: RunTaggedComputeNetworkInterface
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+              Bool:
+                ec2:AssociatePublicIpAddress: 'false'
+          - Sid: UseOwnedComputeNetworkInterface
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: UsePublicBuilderBaseImage
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
+            Condition:
+              Bool:
+                ec2:Public: 'true'
+          - Sid: UseOwnedWorkerImage
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
+            Condition:
+              StringEquals:
+                ec2:Owner:
+                  Ref: AWS::AccountId
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: UseComputeLaunchNetworkInputs
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
           - Sid: TagComputeOnCreate
             Effect: Allow
             Action:
@@ -536,26 +598,39 @@ Resources:
                   - CreateVolume
                   - CreateVpcEndpoint
                   - RunInstances
-          - Sid: UseOnlyOwnedVolumeForSnapshot
+          - Sid: CreateWorkerImageFromOwnedBuilder
             Effect: Allow
             Action:
-              - ec2:CreateSnapshot
+              - ec2:CreateImage
             Resource:
-              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
             Condition:
               StringEquals:
                 ec2:ResourceTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
-          - Sid: CreateOnlyTaggedSnapshot
+                ec2:ResourceTag/dirextalk:component: worker-ami-builder
+          - Sid: CreateWorkerImageOutput
             Effect: Allow
             Action:
-              - ec2:CreateSnapshot
+              - ec2:CreateImage
             Resource:
-              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
+          - Sid: TagWorkerImageOutputs
+            Effect: Allow
+            Action:
+              - ec2:CreateTags
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                ec2:CreateAction: CreateImage
           - Sid: MutateOnlyOwnedCompute
             Effect: Allow
             Action:
@@ -591,6 +666,16 @@ Resources:
               StringEquals:
                 ec2:ResourceTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
+          - Sid: DestroyOwnedWorkerImage
+            Effect: Allow
+            Action:
+              - ec2:DeregisterImage
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
           - Sid: TagOnlyOwnedCompute
             Effect: Allow
             Action:
@@ -621,8 +706,13 @@ Resources:
             Action:
               - s3:AbortMultipartUpload
               - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetBucketVersioning
+              - s3:GetEncryptionConfiguration
               - s3:GetObject
+              - s3:GetObjectVersion
               - s3:ListBucket
+              - s3:ListBucketVersions
               - s3:PutObject
             Resource:
               - Fn::GetAtt: [ArtifactBucket, Arn]

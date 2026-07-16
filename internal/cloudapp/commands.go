@@ -16,6 +16,11 @@ import (
 
 const validationQuoteID = "00000000-0000-4000-8000-000000000001"
 
+const (
+	validationWorkerImageID     = "ami-00000000000000000"
+	validationWorkerImageDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+)
+
 func (scope MutationScope) Validate() error {
 	clientID := strings.TrimSpace(scope.ClientID)
 	if utf8.RuneCountInString(clientID) < 1 || utf8.RuneCountInString(clientID) > 255 || security.ContainsLikelySecret(clientID) {
@@ -45,8 +50,23 @@ func (command CreateQuoteCommand) Validate() error {
 			return ErrInvalid
 		}
 	}
+	validationScopes := append([]cloudquote.ScopeV1(nil), command.Scopes...)
+	for index := range validationScopes {
+		resource := &validationScopes[index].Resource
+		if (resource.WorkerImageID == "") != (resource.WorkerImageDigest == "") {
+			return ErrInvalid
+		}
+		if resource.WorkerImageID == "" {
+			// AWS quote execution replaces this validation-only pair with the
+			// active server-owned Worker release before provider pricing. This
+			// lets clients omit AMI coordinates without weakening validation of
+			// the remaining price- and approval-sensitive scope.
+			resource.WorkerImageID = validationWorkerImageID
+			resource.WorkerImageDigest = validationWorkerImageDigest
+		}
+	}
 	request := cloudquote.RequestV1{
-		QuoteID: validationQuoteID, Scopes: command.Scopes, Usage: command.Usage, SpotQualification: command.SpotQualification,
+		QuoteID: validationQuoteID, Scopes: validationScopes, Usage: command.Usage, SpotQualification: command.SpotQualification,
 	}
 	if err := request.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalid, err)

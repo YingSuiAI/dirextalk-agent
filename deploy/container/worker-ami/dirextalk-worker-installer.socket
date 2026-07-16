@@ -1,0 +1,15 @@
+[Unit]
+Description=Dirextalk approval-bound Worker installer socket
+Documentation=https://github.com/YingSuiAI/dirextalk-agent
+
+[Socket]
+ListenStream=/run/dirextalk-installer/installer.sock
+SocketUser=root
+SocketGroup=dirextalk-worker
+SocketMode=0620
+DirectoryMode=0710
+RemoveOnStop=yes
+Accept=no
+
+[Install]
+WantedBy=sockets.target

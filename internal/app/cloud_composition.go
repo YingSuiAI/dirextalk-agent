@@ -97,7 +97,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	if err != nil {
 		return nil, err
 	}
-	pricing, err := cloudapp.NewAWSBootstrapQuoteEngine(agentInstanceID, manager, store, cloudapp.SDKBootstrapPricingFactory{}, time.Now)
+	pricing, err := cloudapp.NewAWSBootstrapQuoteEngine(agentInstanceID, manager, store, store, cloudapp.SDKBootstrapPricingFactory{}, time.Now)
 	if err != nil {
 		return nil, err
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
 )
 
 func main() {
@@ -201,6 +202,18 @@ func serve() error {
 	}
 	var cloudComposition *app.CloudComposition
 	if serverConfig.EnableAWSControl {
+		if serverConfig.WorkerAMIPublicationFile != "" {
+			release, releaseErr := workerrelease.LoadPublicationFile(serverConfig.WorkerAMIPublicationFile)
+			if releaseErr != nil || release.AgentInstanceID != serverConfig.InstanceID {
+				return errors.New("could not validate configured Worker AMI publication")
+			}
+			importContext, stopImport := context.WithTimeout(context.Background(), 30*time.Second)
+			_, releaseErr = store.ImportWorkerRelease(importContext, release)
+			stopImport()
+			if releaseErr != nil {
+				return errors.New("could not persist configured Worker AMI publication")
+			}
+		}
 		var cloudErr error
 		cloudComposition, cloudErr = app.NewCloudComposition(
 			store, secretManager, workerStore, workerService, serverConfig.InstanceID, masterKey,

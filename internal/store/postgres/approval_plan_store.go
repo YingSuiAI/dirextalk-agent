@@ -92,6 +92,12 @@ func (store *Store) ApprovePlan(ctx context.Context, scope task.MutationScope, c
 		return cloudapproval.PlanV1{}, fmt.Errorf("read approval time: %w", err)
 	}
 	approvedAt = approvedAt.UTC()
+	// Challenge creation accepts at most 30 seconds of client/database clock
+	// skew. Keep consumption inside the already-accepted challenge window while
+	// still using PostgreSQL time whenever it is later.
+	if approvedAt.Before(challengeRecord.Challenge.IssuedAt) {
+		approvedAt = challengeRecord.Challenge.IssuedAt.UTC()
+	}
 	if err := deviceRecord.Device.ValidateAt(approvedAt); err != nil {
 		return cloudapproval.PlanV1{}, err
 	}

@@ -1,0 +1,3 @@
+d /run/dirextalk-installer 0710 root dirextalk-worker -
+d /etc/dirextalk-installer 0755 root root -
+d /opt/dirextalk/deployments 0755 root root -

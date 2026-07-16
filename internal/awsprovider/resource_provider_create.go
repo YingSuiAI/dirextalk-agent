@@ -206,6 +206,9 @@ func (provider *EC2ResourceProvider) createNetworkInterface(ctx context.Context,
 
 func (provider *EC2ResourceProvider) createInstance(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
 	spec := request.AWS.Instance
+	if err := provider.verifyApprovedWorkerAMI(ctx, request, spec); err != nil {
+		return resource.ProviderObservation{}, err
+	}
 	userData, err := fixedWorkerUserData(request)
 	if err != nil {
 		return resource.ProviderObservation{}, err
@@ -284,6 +287,25 @@ func (provider *EC2ResourceProvider) createInstance(ctx context.Context, request
 		return resource.ProviderObservation{}, err
 	}
 	return provider.readBack(ctx, resource.TypeEC2, instanceID)
+}
+
+func (provider *EC2ResourceProvider) verifyApprovedWorkerAMI(ctx context.Context, request resource.ProviderCreateRequest, spec *resource.AWSEC2InstanceSpecV1) error {
+	if provider == nil || provider.workerAMIReader == nil || !sdkAccountPattern.MatchString(provider.workerAMIAccount) || spec == nil {
+		return resource.ErrReadBack
+	}
+	evidence, err := provider.workerAMIReader.InspectWorkerAMI(ctx, WorkerAMIInspectionRequest{
+		AMIID: spec.ImageID, AccountID: provider.workerAMIAccount, Region: request.Region,
+		Architecture: spec.Architecture, RootDeviceName: spec.RootDeviceName,
+		AgentInstanceID: request.Tags[resource.TagAgentInstanceID],
+	})
+	if err != nil {
+		return err
+	}
+	digest, err := evidence.ImageDigest()
+	if err != nil || digest != spec.ImageDigest {
+		return resource.ErrReadBack
+	}
+	return nil
 }
 
 func embeddedRootCreateRequest(parent resource.ProviderCreateRequest, spec *resource.AWSEC2InstanceSpecV1) (resource.ProviderCreateRequest, error) {

@@ -404,6 +404,18 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 	}
 }
 
+func TestApprovePlanAcceptsChallengeIssuedWithinAllowedClockSkew(t *testing.T) {
+	_, store, instanceID := newPlanningTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Challenge creation explicitly accepts a client clock up to 30 seconds
+	// ahead of PostgreSQL. Approval must use a timestamp inside that accepted
+	// challenge window instead of violating consumed_at >= issued_at.
+	clientNow := time.Now().UTC().Add(2 * time.Second).Truncate(time.Microsecond)
+	createApprovedResourcePlan(t, ctx, store, instanceID, "owner-clock-skew", clientNow)
+}
+
 type recordingManifestMirror struct {
 	revisions []int64
 }

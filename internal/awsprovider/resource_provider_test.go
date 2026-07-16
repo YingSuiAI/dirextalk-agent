@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -17,12 +18,17 @@ import (
 func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	client := &workerEC2Fake{instanceID: "i-0123456789abcdef0", state: ec2types.InstanceStateNameRunning}
-	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond))
+	amiReader := &workerAMIInspectionFake{evidence: validWorkerAMIInspectionEvidence(now)}
+	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond), WithWorkerAMIInspection("123456789012", amiReader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageDigest, err := amiReader.evidence.ImageDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Instance: &resource.AWSEC2InstanceSpecV1{
-		ImageID: "ami-0123456789abcdef0", ImageDigest: digestOf('a'), InstanceType: "t3.large",
+		ImageID: "ami-0123456789abcdef0", ImageDigest: imageDigest, Architecture: recipe.ArchitectureAMD64, InstanceType: "t3.large",
 		InstanceProfileName: "dtx-agent-example-worker", UserDataArtifactRef: "s3://dtx-artifacts/deployments/123/worker.json",
 		UserDataArtifactDigest: digestOf('b'), Bootstrap: testWorkerBootstrap(),
 		RootDeviceName: "/dev/sda1", RootVolumeGiB: 24, RootKMSKeyID: "alias/dtx-worker",
@@ -47,6 +53,10 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 	}
 	if !observed.Exists || observed.ProviderID != client.instanceID || observed.Tags[resourceClientTokenTag] != request.ClientToken {
 		t.Fatalf("unexpected observation: %#v", observed)
+	}
+	if amiReader.calls != 1 || amiReader.request.AMIID != spec.Instance.ImageID || amiReader.request.AccountID != "123456789012" ||
+		amiReader.request.AgentInstanceID != request.Tags[resource.TagAgentInstanceID] || amiReader.request.Architecture != spec.Instance.Architecture {
+		t.Fatalf("approved AMI was not independently inspected before launch: %#v", amiReader.request)
 	}
 	if len(observed.Embedded) != 1 || observed.Embedded[0].Type != resource.TypeEBS || observed.Embedded[0].ProviderID != "vol-0123456789abcdef0" ||
 		observed.Embedded[0].Tags[resource.TagResourceID] != rootResourceID || observed.Embedded[0].Tags[resource.TagEmbeddedParentResourceID] != request.ResourceID {
@@ -102,12 +112,17 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 
 func TestEC2ResourceProviderDoesNotReconcileHalfConfiguredWorkerAsReady(t *testing.T) {
 	client := &workerEC2Fake{instanceID: "i-0123456789abcdef0", state: ec2types.InstanceStateNameRunning, tagError: errors.New("tag write lost")}
-	provider, err := NewEC2ResourceProvider(client, "us-east-1", time.Now, WithEC2ResourcePollInterval(time.Nanosecond))
+	amiReader := &workerAMIInspectionFake{evidence: validWorkerAMIInspectionEvidence(time.Now())}
+	provider, err := NewEC2ResourceProvider(client, "us-east-1", time.Now, WithEC2ResourcePollInterval(time.Nanosecond), WithWorkerAMIInspection("123456789012", amiReader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageDigest, err := amiReader.evidence.ImageDigest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Instance: &resource.AWSEC2InstanceSpecV1{
-		ImageID: "ami-0123456789abcdef0", ImageDigest: digestOf('a'), InstanceType: "t3.large", InstanceProfileName: "dtx-agent-example-worker",
+		ImageID: "ami-0123456789abcdef0", ImageDigest: imageDigest, Architecture: recipe.ArchitectureAMD64, InstanceType: "t3.large", InstanceProfileName: "dtx-agent-example-worker",
 		UserDataArtifactRef: "s3://dtx-artifacts/deployments/123/worker.json", UserDataArtifactDigest: digestOf('b'), Bootstrap: testWorkerBootstrap(),
 		RootDeviceName: "/dev/sda1", RootVolumeGiB: 24, RootKMSKeyID: "alias/dtx-worker", Market: resource.AWSMarketOnDemand,
 	}}
@@ -132,6 +147,33 @@ func testWorkerBootstrap() resource.AWSWorkerBootstrapSpecV1 {
 	return resource.AWSWorkerBootstrapSpecV1{
 		DeploymentID: "33333333-3333-4333-8333-333333333333", WorkerID: "44444444-4444-4444-8444-444444444444",
 		ControlPlaneEndpoint: "grpcs://agent.example.com:7443", EnrollmentExpectedRevision: 1,
+	}
+}
+
+func TestEC2ResourceProviderFailsClosedBeforeLaunchWithoutExactAMIInspection(t *testing.T) {
+	client := &workerEC2Fake{}
+	provider, err := NewEC2ResourceProvider(client, "us-east-1", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := &resource.AWSEC2InstanceSpecV1{
+		ImageID: "ami-0123456789abcdef0", ImageDigest: digestOf('a'), Architecture: recipe.ArchitectureAMD64, RootDeviceName: "/dev/sda1",
+	}
+	request := resource.ProviderCreateRequest{Region: "us-east-1", Tags: validResourceTags("11111111-1111-4111-8111-111111111111")}
+	if err := provider.verifyApprovedWorkerAMI(context.Background(), request, spec); !errors.Is(err, resource.ErrReadBack) {
+		t.Fatalf("missing AMI reader did not fail closed: %v", err)
+	}
+
+	reader := &workerAMIInspectionFake{evidence: validWorkerAMIInspectionEvidence(time.Now())}
+	provider, err = NewEC2ResourceProvider(client, "us-east-1", time.Now, WithWorkerAMIInspection("123456789012", reader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.verifyApprovedWorkerAMI(context.Background(), request, spec); !errors.Is(err, resource.ErrReadBack) || reader.calls != 1 {
+		t.Fatalf("mismatched approved image digest did not fail closed: calls=%d err=%v", reader.calls, err)
+	}
+	if client.runInput != nil {
+		t.Fatal("AMI preflight reached RunInstances")
 	}
 }
 
@@ -356,4 +398,27 @@ func validResourceTags(resourceID string) map[string]string {
 
 func digestOf(value byte) string {
 	return "sha256:" + strings.Repeat(string(value), 64)
+}
+
+type workerAMIInspectionFake struct {
+	evidence WorkerAMIAttestationV1
+	err      error
+	request  WorkerAMIInspectionRequest
+	calls    int
+}
+
+func (fake *workerAMIInspectionFake) InspectWorkerAMI(_ context.Context, request WorkerAMIInspectionRequest) (WorkerAMIAttestationV1, error) {
+	fake.calls++
+	fake.request = request
+	return fake.evidence, fake.err
+}
+
+func validWorkerAMIInspectionEvidence(observedAt time.Time) WorkerAMIAttestationV1 {
+	return WorkerAMIAttestationV1{
+		SchemaVersion: WorkerAMIAttestationSchemaV1, AgentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		AMIID: "ami-0123456789abcdef0", RootSnapshotID: "snap-0123456789abcdef0", AccountID: "123456789012",
+		Region: "us-east-1", Architecture: recipe.ArchitectureAMD64,
+		ReleaseManifestDigest: digestOf('c'), WorkerRootFSDigest: digestOf('d'), WorkerBinaryDigest: digestOf('e'),
+		ObservedAt: observedAt,
+	}
 }

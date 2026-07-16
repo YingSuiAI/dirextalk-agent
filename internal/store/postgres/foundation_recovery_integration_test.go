@@ -164,14 +164,58 @@ func TestSucceededFoundationRemainsPendingUntilExactLaunchIntentExists(t *testin
 }
 
 func TestFoundationIntentIdempotencyRejectsChangedSpecification(t *testing.T) {
-	_, store, _ := newPlanningTestStore(t)
+	pool, store, instanceID := newPlanningTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
+	now := time.Now().UTC().Truncate(time.Second)
 	scope := cloudapp.MutationScope{ClientID: "foundation-idempotency-test", CredentialID: uuid.NewString()}
+	ownerID, connectionID := "owner-idempotency", uuid.NewString()
+	facts, err := postgres.NewCloudAdapter(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := cloudApprovalPlanFixture(instanceID)
+	plan.OwnerID, plan.ConnectionID = ownerID, connectionID
+	quote := cloudApprovalQuoteFixture(t, plan, uuid.NewString(), now.Add(-time.Minute))
+	quoteDigest, err := quote.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Quote.QuoteID, plan.Quote.Digest, plan.Quote.ValidUntil = quote.QuoteID, quoteDigest, quote.ValidUntil
+	plan.Quote.ScopeDigest = quote.Candidates[1].ScopeDigest
+	if _, err = facts.PersistQuote(ctx, scope, uuid.NewString(), [32]byte{1}, quote); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = facts.PersistPlan(ctx, scope, uuid.NewString(), plan); err != nil {
+		t.Fatal(err)
+	}
+	secretStore, err := postgres.NewSecretBootstrapStore(pool, bytes.Repeat([]byte{0x49}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := secretbootstrap.NewManager(secretStore, secretStore.KeyStore(), rand.Reader, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdSession, err := manager.CreateIdempotent(ctx, secretbootstrap.MutationScope(scope), uuid.NewString(), secretbootstrap.BindingV1{
+		AgentInstanceID: instanceID, OwnerID: ownerID, Purpose: "aws_connection", TargetID: connectionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := secretbootstrap.Seal(createdSession.Session, []byte("synthetic bootstrap payload"), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadedSession, err := manager.UploadIdempotent(ctx, secretbootstrap.MutationScope(scope), uuid.NewString(), createdSession.Session.SessionID,
+		createdSession.Session.Revision, createdSession.UploadToken.Reveal(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
 	intent := cloudapp.FoundationOperationIntent{
 		Caller: scope, OperationID: uuid.NewString(), IdempotencyKey: uuid.NewString(), RequestHash: [32]byte{1},
-		OwnerID: "owner-idempotency", BootstrapSessionID: uuid.NewString(), PlanID: uuid.NewString(), ConnectionID: uuid.NewString(),
-		AccountID: "123456789012", Region: "us-east-1", ExpectedSessionRevision: 2,
+		OwnerID: ownerID, BootstrapSessionID: uploadedSession.SessionID, PlanID: plan.PlanID, ConnectionID: connectionID,
+		AccountID: "123456789012", Region: "us-east-1", ExpectedSessionRevision: uploadedSession.Revision,
 		ReaperImageURI: "registry.example/reaper:v0.1.0-alpha.1@sha256:" + strings.Repeat("a", 64),
 	}
 	created, wasCreated, err := store.BeginFoundationOperation(ctx, scope, intent)

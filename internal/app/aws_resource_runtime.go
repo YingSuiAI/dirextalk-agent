@@ -63,7 +63,11 @@ func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connectio
 	if configErr != nil {
 		return nil, nil, cloudapp.ErrUnavailable
 	}
-	provider, err := awsprovider.NewEC2ResourceProviderFromConfig(config)
+	amiReader, err := awsprovider.NewWorkerAMIAttestorFromConfig(config)
+	if err != nil {
+		return nil, nil, cloudapp.ErrUnavailable
+	}
+	provider, err := awsprovider.NewEC2ResourceProviderFromConfig(config, awsprovider.WithWorkerAMIInspection(connection.AccountID, amiReader))
 	if err != nil {
 		return nil, nil, cloudapp.ErrUnavailable
 	}

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
@@ -78,6 +79,7 @@ type AWSNetworkInterfaceSpecV1 struct {
 type AWSEC2InstanceSpecV1 struct {
 	ImageID                string                   `json:"image_id"`
 	ImageDigest            string                   `json:"image_digest"`
+	Architecture           recipe.Architecture      `json:"architecture"`
 	InstanceType           string                   `json:"instance_type"`
 	InstanceProfileName    string                   `json:"instance_profile_name"`
 	UserDataArtifactRef    string                   `json:"user_data_artifact_ref"`
@@ -283,7 +285,7 @@ func (spec AWSNetworkInterfaceSpecV1) validate() error {
 }
 
 func (spec AWSEC2InstanceSpecV1) validate() error {
-	if !strings.HasPrefix(spec.ImageID, "ami-") || !awsIDPattern.MatchString(spec.ImageID) || !sha256Pattern.MatchString(spec.ImageDigest) || !awsInstanceTypePattern.MatchString(spec.InstanceType) || !awsProfilePattern.MatchString(spec.InstanceProfileName) || !sha256Pattern.MatchString(spec.UserDataArtifactDigest) || spec.RootDeviceName != "/dev/sda1" || spec.RootVolumeGiB < 8 || spec.RootVolumeGiB > 1024 || !awsKMSPattern.MatchString(spec.RootKMSKeyID) || (spec.Market != AWSMarketOnDemand && spec.Market != AWSMarketSpot) {
+	if !strings.HasPrefix(spec.ImageID, "ami-") || !awsIDPattern.MatchString(spec.ImageID) || !sha256Pattern.MatchString(spec.ImageDigest) || !recipe.ValidArchitecture(spec.Architecture) || !awsInstanceTypePattern.MatchString(spec.InstanceType) || !awsProfilePattern.MatchString(spec.InstanceProfileName) || !sha256Pattern.MatchString(spec.UserDataArtifactDigest) || spec.RootDeviceName != "/dev/sda1" || spec.RootVolumeGiB < 8 || spec.RootVolumeGiB > 1024 || !awsKMSPattern.MatchString(spec.RootKMSKeyID) || (spec.Market != AWSMarketOnDemand && spec.Market != AWSMarketSpot) {
 		return fmt.Errorf("%w: EC2 Worker scope is invalid", ErrInvalid)
 	}
 	parsed, err := url.Parse(spec.UserDataArtifactRef)

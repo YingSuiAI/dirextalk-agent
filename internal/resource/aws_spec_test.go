@@ -3,6 +3,8 @@ package resource
 import (
 	"strings"
 	"testing"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 )
 
 func TestAWSResourceSpecDigestBindsClosedWorkerInputs(t *testing.T) {
@@ -35,6 +37,7 @@ func TestAWSResourceSpecRejectsRawOrUnscopedWorkerInputs(t *testing.T) {
 		{name: "mutable artifact query", mutate: func(value *AWSResourceSpecV1) { value.Instance.UserDataArtifactRef += "?token=secret" }},
 		{name: "unscoped profile", mutate: func(value *AWSResourceSpecV1) { value.Instance.InstanceProfileName = "Administrator" }},
 		{name: "missing image digest", mutate: func(value *AWSResourceSpecV1) { value.Instance.ImageDigest = "" }},
+		{name: "missing image architecture", mutate: func(value *AWSResourceSpecV1) { value.Instance.Architecture = "" }},
 		{name: "raw device", mutate: func(value *AWSResourceSpecV1) { value.Instance.DataDeviceName = "/dev/root" }},
 		{name: "missing deployment", mutate: func(value *AWSResourceSpecV1) { value.Instance.Bootstrap.DeploymentID = "" }},
 		{name: "insecure control endpoint", mutate: func(value *AWSResourceSpecV1) {
@@ -106,7 +109,7 @@ func workerInstanceSpec() *AWSResourceSpecV1 {
 	return &AWSResourceSpecV1{
 		SchemaVersion: AWSResourceSpecSchemaV1,
 		Instance: &AWSEC2InstanceSpecV1{
-			ImageID: "ami-0123456789abcdef0", ImageDigest: "sha256:" + strings.Repeat("a", 64),
+			ImageID: "ami-0123456789abcdef0", ImageDigest: "sha256:" + strings.Repeat("a", 64), Architecture: recipe.ArchitectureAMD64,
 			InstanceType: "m7i.large", InstanceProfileName: "dtx-agent-0123456789ab-worker",
 			UserDataArtifactRef:    "s3://dtx-agent-artifacts/worker/v0.1.0/worker.tar.zst",
 			UserDataArtifactDigest: "sha256:" + strings.Repeat("b", 64),

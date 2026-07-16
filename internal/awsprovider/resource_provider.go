@@ -57,10 +57,12 @@ type EC2ResourceAPI interface {
 }
 
 type EC2ResourceProvider struct {
-	client       EC2ResourceAPI
-	region       string
-	now          func() time.Time
-	pollInterval time.Duration
+	client           EC2ResourceAPI
+	region           string
+	now              func() time.Time
+	pollInterval     time.Duration
+	workerAMIAccount string
+	workerAMIReader  WorkerAMIInspectionVerifier
 }
 
 type EC2ResourceProviderOption func(*EC2ResourceProvider) error
@@ -71,6 +73,20 @@ func WithEC2ResourcePollInterval(interval time.Duration) EC2ResourceProviderOpti
 			return ErrInvalidRequest
 		}
 		provider.pollInterval = interval
+		return nil
+	}
+}
+
+// WithWorkerAMIInspection makes EC2 launch fail closed unless the approved
+// image digest is independently reconstructed from the account-owned AMI and
+// encrypted root snapshot immediately before RunInstances.
+func WithWorkerAMIInspection(accountID string, reader WorkerAMIInspectionVerifier) EC2ResourceProviderOption {
+	return func(provider *EC2ResourceProvider) error {
+		if !sdkAccountPattern.MatchString(accountID) || reader == nil {
+			return ErrInvalidRequest
+		}
+		provider.workerAMIAccount = accountID
+		provider.workerAMIReader = reader
 		return nil
 	}
 }

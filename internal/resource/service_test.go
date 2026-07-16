@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 )
@@ -286,7 +287,7 @@ func TestProvisionTypedEC2FailsClosedWhenRootEBSCannotBeReadBack(t *testing.T) {
 }
 
 func testTypedEC2AWS(deploymentID string) *AWSResourceSpecV1 {
-	return &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Instance: &AWSEC2InstanceSpecV1{
+	return &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Instance: &AWSEC2InstanceSpecV1{Architecture: recipe.ArchitectureAMD64,
 		ImageID: "ami-0123456789abcdef0", ImageDigest: "sha256:" + repeatHex('a'), InstanceType: "t3.large",
 		InstanceProfileName: "dtx-agent-example-worker", UserDataArtifactRef: "s3://dtx-artifacts/deployments/worker.json",
 		UserDataArtifactDigest: "sha256:" + repeatHex('b'), Bootstrap: AWSWorkerBootstrapSpecV1{
