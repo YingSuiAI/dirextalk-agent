@@ -215,6 +215,30 @@ func TestAWSResourcePlanUsesOnlyApprovedExistingSecurityGroup(t *testing.T) {
 	}
 }
 
+func TestAWSResourcePlanRejectsUnimplementedPublicEntryPoint(t *testing.T) {
+	fixture := newLaunchFixture(t, time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC))
+	plan := fixture.service.facts.(fakeFacts).plan
+	plan.NetworkScope.EntryPoint = cloudapproval.EntryPointALB
+	plan.NetworkScope.PublicExposure = true
+	plan.NetworkScope.IngressPorts = []uint32{443}
+	plan.NetworkScope.Hostname = "service.example.test"
+	plan.NetworkScope.TLSRequired = true
+	plan.NetworkScope.AuthenticationRequired = true
+	connection := fixture.connections.value
+	operation := Operation{
+		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: fixture.service.facts.(fakeFacts).approval.PlanHash, DeploymentID: uuid.NewString()},
+		State: StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
+	}
+	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Build(plan, connection, fixture.service.recipes.(fakeRecipes).value, operation); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unimplemented public entry point error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestAWSResourcePlanCreatesDedicatedNoIngressNetworkAndApprovedPublicIPv4(t *testing.T) {
 	fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
 	plan := fixture.service.facts.(fakeFacts).plan

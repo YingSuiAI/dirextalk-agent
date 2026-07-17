@@ -46,6 +46,14 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	if plan.ResourceScope.PurchaseOption != cloudapproval.PurchaseOnDemand || plan.ResourceScope.DiskGiB < 8 || plan.ResourceScope.DiskGiB > 1024 {
 		return nil, ErrUnsupportedRecipe
 	}
+	// A public entry point is a separately approved, post-Worker operation. The
+	// initial Worker plan must never make a network declaration that this
+	// builder cannot materialize and independently read back.
+	if plan.NetworkScope.EntryPoint != cloudapproval.EntryPointNone || plan.NetworkScope.PublicExposure ||
+		len(plan.NetworkScope.IngressPorts) != 0 || plan.NetworkScope.Hostname != "" ||
+		plan.NetworkScope.TLSRequired || plan.NetworkScope.AuthenticationRequired {
+		return nil, ErrInvalid
+	}
 	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, boundRecipe, cloudquote.RetentionScopeV1{
 		Class: cloudquote.RetentionClass(plan.RetentionScope.Class), AutoDestroy: plan.RetentionScope.AutoDestroy,
 		GracePeriodSeconds: plan.RetentionScope.GracePeriodSeconds, MaxLifetimeSeconds: plan.RetentionScope.MaxLifetimeSeconds,
