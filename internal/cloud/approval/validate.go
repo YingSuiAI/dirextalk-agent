@@ -27,8 +27,8 @@ var (
 )
 
 func (p PlanV1) Validate() error {
-	if p.SchemaVersion != PlanSchemaV1 {
-		return fmt.Errorf("schema_version must be %q", PlanSchemaV1)
+	if p.SchemaVersion != PlanSchemaV1 && p.SchemaVersion != PlanSchemaV2 {
+		return fmt.Errorf("schema_version must be %q or %q", PlanSchemaV1, PlanSchemaV2)
 	}
 	for name, value := range map[string]string{
 		"agent_instance_id": p.AgentInstanceID,
@@ -69,6 +69,15 @@ func (p PlanV1) Validate() error {
 	}
 	if err := validateVolumeDisposition(p.ResourceScope.VolumeScopes, p.RetentionScope); err != nil {
 		return err
+	}
+	if p.SchemaVersion == PlanSchemaV1 {
+		if p.ServiceOperations != nil {
+			return fmt.Errorf("service_operations require %q", PlanSchemaV2)
+		}
+	} else if p.ServiceOperations == nil {
+		return fmt.Errorf("service_operations are required for %q", PlanSchemaV2)
+	} else if err := validateServiceOperations(*p.ServiceOperations, p.ResourceScope, p.NetworkScope, p.RetentionScope); err != nil {
+		return fmt.Errorf("service_operations: %w", err)
 	}
 	scopeDigest, err := p.PricingScopeDigest()
 	if err != nil {
@@ -329,8 +338,8 @@ func validateStringSet(name string, values []string, maximum int) error {
 }
 
 func (a ApprovalV1) validate(requireSignature bool) error {
-	if a.SchemaVersion != ApprovalSchemaV1 {
-		return fmt.Errorf("schema_version must be %q", ApprovalSchemaV1)
+	if a.SchemaVersion != ApprovalSchemaV1 && a.SchemaVersion != ApprovalSchemaV2 {
+		return fmt.Errorf("schema_version must be %q or %q", ApprovalSchemaV1, ApprovalSchemaV2)
 	}
 	if a.HashAlgorithm != canonical.Algorithm {
 		return fmt.Errorf("hash_algorithm must be %q", canonical.Algorithm)
@@ -384,6 +393,15 @@ func (a ApprovalV1) validate(requireSignature bool) error {
 	if err := validateVolumeDisposition(a.ResourceScope.VolumeScopes, a.RetentionScope); err != nil {
 		return err
 	}
+	if a.SchemaVersion == ApprovalSchemaV1 {
+		if a.ServiceOperations != nil {
+			return fmt.Errorf("service_operations require %q", ApprovalSchemaV2)
+		}
+	} else if a.ServiceOperations == nil {
+		return fmt.Errorf("service_operations are required for %q", ApprovalSchemaV2)
+	} else if err := validateServiceOperations(*a.ServiceOperations, a.ResourceScope, a.NetworkScope, a.RetentionScope); err != nil {
+		return fmt.Errorf("service_operations: %w", err)
+	}
 	if a.Signature == "" {
 		if requireSignature {
 			return fmt.Errorf("signature is required")
@@ -415,6 +433,14 @@ func validateVolumeDisposition(values []VolumeScopeV1, retention RetentionScopeV
 		}
 	}
 	return nil
+}
+
+func validateServiceOperations(value ServiceOperationScopeV1, resource ResourceScopeV1, network NetworkScopeV1, retention RetentionScopeV1) error {
+	return cloudquote.ValidateServiceOperations(value,
+		cloudquote.ResourceScopeV1{VolumeScopes: append([]cloudquote.VolumeScopeV1(nil), resource.VolumeScopes...)},
+		cloudquote.NetworkScopeV1{SecurityGroupMode: cloudquote.SecurityGroupMode(network.SecurityGroupMode), SecurityGroupID: network.SecurityGroupID},
+		cloudquote.RetentionScopeV1{Class: cloudquote.RetentionClass(retention.Class), AutoDestroy: retention.AutoDestroy, GracePeriodSeconds: retention.GracePeriodSeconds, MaxLifetimeSeconds: retention.MaxLifetimeSeconds},
+	)
 }
 
 func normalizeNetwork(value NetworkScopeV1) NetworkScopeV1 {

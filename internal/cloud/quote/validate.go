@@ -28,8 +28,8 @@ var (
 )
 
 func (s ScopeV1) Validate() error {
-	if s.SchemaVersion != ScopeSchemaV1 {
-		return fmt.Errorf("scope.schema_version must be %q", ScopeSchemaV1)
+	if s.SchemaVersion != ScopeSchemaV1 && s.SchemaVersion != ScopeSchemaV2 {
+		return fmt.Errorf("scope.schema_version must be %q or %q", ScopeSchemaV1, ScopeSchemaV2)
 	}
 	for name, value := range map[string]string{
 		"scope.agent_instance_id": s.AgentInstanceID,
@@ -62,7 +62,19 @@ func (s ScopeV1) Validate() error {
 	if err := validateIntegrations(s.IntegrationScope); err != nil {
 		return err
 	}
-	return validateRetention(s.Retention)
+	if err := validateRetention(s.Retention); err != nil {
+		return err
+	}
+	if s.SchemaVersion == ScopeSchemaV1 {
+		if s.ServiceOperations != nil {
+			return fmt.Errorf("scope.service_operations require %q", ScopeSchemaV2)
+		}
+		return nil
+	}
+	if s.ServiceOperations == nil {
+		return fmt.Errorf("scope.service_operations are required for %q", ScopeSchemaV2)
+	}
+	return ValidateServiceOperations(*s.ServiceOperations, s.Resource, s.Network, s.Retention)
 }
 
 func validateResource(value ResourceScopeV1) error {
@@ -351,10 +363,11 @@ func (r RequestV1) Validate() error {
 		current := normalized[index]
 		if base.AgentInstanceID != current.AgentInstanceID || base.OwnerID != current.OwnerID || base.ConnectionID != current.ConnectionID ||
 			!reflect.DeepEqual(base.Recipe, current.Recipe) || !reflect.DeepEqual(base.Network, current.Network) ||
-			!reflect.DeepEqual(base.SecretScope, current.SecretScope) || !reflect.DeepEqual(base.IntegrationScope, current.IntegrationScope) ||
+			base.SchemaVersion != current.SchemaVersion || !reflect.DeepEqual(base.SecretScope, current.SecretScope) || !reflect.DeepEqual(base.IntegrationScope, current.IntegrationScope) ||
 			!reflect.DeepEqual(base.Retention, current.Retention) || base.Resource.Region != current.Resource.Region ||
 			!reflect.DeepEqual(base.Resource.AvailabilityZones, current.Resource.AvailabilityZones) ||
-			!sameVolumeScopeIdentity(base.Resource.VolumeScopes, current.Resource.VolumeScopes) {
+			!sameVolumeScopeIdentity(base.Resource.VolumeScopes, current.Resource.VolumeScopes) ||
+			!reflect.DeepEqual(base.ServiceOperations, current.ServiceOperations) {
 			return fmt.Errorf("candidate scopes must share identity, Region, network, secret, integration, and retention scope")
 		}
 	}
@@ -366,6 +379,13 @@ func (r RequestV1) Validate() error {
 		if !volumeScopesMonotonic(previous.VolumeScopes, current.VolumeScopes) {
 			return fmt.Errorf("recommended/performance candidates cannot reduce data-volume resources")
 		}
+	}
+	if base.SchemaVersion == ScopeSchemaV2 {
+		if err := validateServiceOperationUsage(base.ServiceOperations, base.Resource, r.Usage); err != nil {
+			return err
+		}
+	} else if r.Usage.PrivateEndpointHours != 0 || r.Usage.PrivateEndpointDataMiB != 0 {
+		return fmt.Errorf("private endpoint usage requires %q", ScopeSchemaV2)
 	}
 	return nil
 }
@@ -507,10 +527,17 @@ func validateCandidate(value CandidateV1, _ string) error {
 }
 
 func validateCosts(value CandidateV1) error {
-	if len(value.CostItems) < 7 || len(value.CostItems) > 32 {
+	minimum := 7
+	if value.Scope.ServiceOperations != nil && len(value.Scope.ServiceOperations.PrivateEndpoints) != 0 {
+		minimum++
+	}
+	if len(value.CostItems) < minimum || len(value.CostItems) > 32 {
 		return fmt.Errorf("candidate must include compute, EBS, IPv4, logs, snapshot, entry, and traffic estimates")
 	}
 	required := map[CostCategory]bool{CostEBS: false, CostPublicIPv4: false, CostLogs: false, CostSnapshot: false, CostEntry: false, CostTraffic: false}
+	if value.Scope.ServiceOperations != nil && len(value.Scope.ServiceOperations.PrivateEndpoints) != 0 {
+		required[CostPrivateEndpoint] = false
+	}
 	compute := CostComputeOnDemand
 	if value.Scope.Resource.PurchaseOption == PurchaseSpot {
 		compute = CostComputeSpot
@@ -556,11 +583,11 @@ func validateCosts(value CandidateV1) error {
 }
 
 func validateUsage(value UsageV1) error {
-	if value.RuntimeHoursPerMonth == 0 || value.RuntimeHoursPerMonth > 744 || value.PublicIPv4Hours > 744 || value.EntryHours > 744 {
+	if value.RuntimeHoursPerMonth == 0 || value.RuntimeHoursPerMonth > 744 || value.PublicIPv4Hours > 744 || value.EntryHours > 744 || value.PrivateEndpointHours > 16*744 {
 		return fmt.Errorf("usage hourly assumptions are invalid")
 	}
 	const maxUsage = uint64(1 << 50)
-	if value.LogIngestMiB > maxUsage || value.LogStoredMiBMonths > maxUsage || value.SnapshotGiBMonths > maxUsage || value.InternetEgressMiB > maxUsage {
+	if value.LogIngestMiB > maxUsage || value.LogStoredMiBMonths > maxUsage || value.SnapshotGiBMonths > maxUsage || value.InternetEgressMiB > maxUsage || value.PrivateEndpointDataMiB > maxUsage {
 		return fmt.Errorf("usage assumptions are out of range")
 	}
 	return nil

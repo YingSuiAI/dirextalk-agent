@@ -27,8 +27,12 @@ func BuildPlan(agentInstanceID, planID string, priced cloudquote.QuoteV1, candid
 	if err != nil {
 		return cloudapproval.PlanV1{}, fmt.Errorf("%w: quote digest", ErrInvalid)
 	}
+	planSchema := cloudapproval.PlanSchemaV1
+	if candidate.Scope.SchemaVersion == cloudquote.ScopeSchemaV2 {
+		planSchema = cloudapproval.PlanSchemaV2
+	}
 	plan := cloudapproval.PlanV1{
-		SchemaVersion: cloudapproval.PlanSchemaV1, AgentInstanceID: agentInstanceID,
+		SchemaVersion: planSchema, AgentInstanceID: agentInstanceID,
 		OwnerID: candidate.Scope.OwnerID, PlanID: planID, Revision: 1,
 		Status: cloudapproval.PlanReadyForConfirmation, ConnectionID: candidate.Scope.ConnectionID,
 		Recipe: cloudapproval.RecipeBindingV1{
@@ -65,6 +69,9 @@ func BuildPlan(agentInstanceID, planID string, priced cloudquote.QuoteV1, candid
 			GracePeriodSeconds: candidate.Scope.Retention.GracePeriodSeconds,
 			MaxLifetimeSeconds: candidate.Scope.Retention.MaxLifetimeSeconds,
 		},
+		// The quote is immutable input. Detach the V2 template slices before the
+		// Plan is persisted or projected for device signing.
+		ServiceOperations: cloudquote.NormalizeServiceOperations(candidate.Scope.ServiceOperations),
 	}
 	for _, secret := range candidate.Scope.SecretScope {
 		plan.SecretScope = append(plan.SecretScope, cloudapproval.SecretReferenceV1{

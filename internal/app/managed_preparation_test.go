@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
@@ -21,34 +23,14 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestManagedPreparationScopeBuilderBindsAuthoritativeFactsAndThreshold(t *testing.T) {
+func TestManagedPreparationScopeBuilderFailsClosedUntilSnapshotRetentionIsExecutable(t *testing.T) {
 	fixture := newManagedPreparationScopeFixture(t)
 	builder, err := newManagedPreparationScopeBuilder(fixture.agentID, fixture.facts, fixture.current, fixture.monitor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	operationID := uuid.NewString()
-	scope, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID, operationID, 12_345)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scope.Validate() != nil || scope.PreparationOperationID != operationID || scope.Currency != "USD" ||
-		scope.CostAlertAmountMinor != 12_345 || scope.RecipeRevision != fixture.facts.draft.Revision ||
-		scope.Restart.OperationID != uuid.NewSHA1(uuid.MustParse(operationID), []byte("restart")).String() ||
-		len(scope.Volumes) != 1 || scope.Volumes[0].SlotID != "knowledge" {
-		t.Fatalf("authoritative scope invalid: %+v", scope)
-	}
-	changed := fixture.current.resources
-	changed[1].SpecDigest = managedPreparationDigest('0')
-	fixture.current.resources = changed
 	if _, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID, uuid.NewString(), 12_345); !errors.Is(err, serviceoperation.ErrRevisionConflict) {
-		t.Fatalf("volume spec drift error=%v", err)
-	}
-	missingRestart := newManagedPreparationScopeFixture(t)
-	missingRestart.current.deployment.Worker.InstallerDelivery.SignedPlan.Plan.Commands = nil
-	missingBuilder, _ := newManagedPreparationScopeBuilder(missingRestart.agentID, missingRestart.facts, missingRestart.current, missingRestart.monitor)
-	if _, err := missingBuilder.BuildManagedPreparationScope(context.Background(), missingRestart.ownerID, missingRestart.deploymentID, uuid.NewString(), 12_345); !errors.Is(err, serviceoperation.ErrRevisionConflict) {
-		t.Fatalf("undeclared privileged restart error=%v", err)
+		t.Fatalf("bounded V2 snapshot template reached legacy managed-preparation mutation: %v", err)
 	}
 }
 
@@ -71,7 +53,7 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 	}
 	quoteID := uuid.NewString()
 	plan := cloudapproval.PlanV1{
-		SchemaVersion: cloudapproval.PlanSchemaV1, AgentInstanceID: agentID, OwnerID: ownerID, PlanID: planID,
+		SchemaVersion: cloudapproval.PlanSchemaV2, AgentInstanceID: agentID, OwnerID: ownerID, PlanID: planID,
 		Revision: 3, Status: cloudapproval.PlanApproved, ConnectionID: connectionID,
 		Recipe: cloudapproval.RecipeBindingV1{RecipeID: currentRecipe.RecipeID, Digest: recipeDigest, Maturity: currentRecipe.Maturity},
 		Quote:  cloudapproval.QuoteBindingV1{QuoteID: quoteID, CandidateID: string(cloudquote.CandidateRecommended), ValidUntil: now.Add(15 * time.Minute)},
@@ -89,6 +71,14 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 		NetworkScope:   cloudapproval.NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: cloudapproval.SecurityGroupCreateDedicated, EntryPoint: cloudapproval.EntryPointNone},
 		RetentionScope: cloudapproval.RetentionScopeV1{Class: cloudapproval.RetentionManaged},
 	}
+	volumeScopeDigest, err := cloudquote.VolumeScopeDigest(plan.ResourceScope.VolumeScopes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ServiceOperations = &cloudapproval.ServiceOperationScopeV1{Snapshots: []cloudapproval.SnapshotOperationSpecV1{{
+		OperationKey: "managed-snapshot-knowledge", SourceVolumeSlotID: "knowledge", SourceVolumeSpecDigest: volumeScopeDigest,
+		Disposition: cloudapproval.SnapshotRetainWithManagedService, MaxRetentionSeconds: 30 * 24 * 60 * 60,
+	}}}
 	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
 	if err != nil {
 		t.Fatal(err)
@@ -144,10 +134,75 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 		monitor: &managedPreparationMonitorFake{record: monitor}}
 }
 
+// managedPreparationScopeForDownstreamTest supplies a validated historical
+// scope to unit-test dormant downstream components. Production creation is
+// intentionally fail-closed until runtime resource retention can honor the
+// V2 Plan's signed snapshot deadline.
+func managedPreparationScopeForDownstreamTest(t *testing.T, fixture managedPreparationScopeFixture, operationID string) serviceoperation.ScopeV1 {
+	t.Helper()
+	plan := fixture.facts.plan
+	if err := plan.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	planHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployment := fixture.current.deployment
+	ec2, volumes, ok := exactPreparationResources(fixture.current.resources, fixture.agentID, fixture.ownerID, deployment, plan, planHash)
+	if !ok {
+		t.Fatal("managed preparation fixture no longer has exact authoritative resource facts")
+	}
+	monitor := fixture.monitor.record
+	monitorDigest, err := canonical.Digest(monitor.Suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest, err := canonical.Digest(deployment.Worker.InstallerDelivery.ArtifactManifest.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := serviceoperation.ScopeV1{
+		SchemaVersion: serviceoperation.ScopeSchemaV1, Intent: serviceoperation.IntentManagedPreparation,
+		PreparationOperationID: operationID, OwnerID: fixture.ownerID, AgentInstanceID: fixture.agentID,
+		DeploymentID: fixture.deploymentID, DeploymentRevision: deployment.Worker.Revision,
+		ConnectionID: deployment.ConnectionID, ConnectionRevision: fixture.current.connection.Revision,
+		PlanID: plan.PlanID, PlanRevision: int64(plan.Revision), PlanHash: planHash,
+		RecipeID: fixture.facts.draft.RecipeID, RecipeDigest: fixture.facts.draft.Digest, RecipeRevision: fixture.facts.draft.Revision,
+		EC2: ec2, SourceVolumes: make([]serviceoperation.ResourceFactV1, 0, len(volumes)),
+		Restart: serviceoperation.RestartReferenceV1{
+			OperationID:             uuid.NewSHA1(uuid.MustParse(operationID), []byte("restart")).String(),
+			ExpectedInitialRevision: 1, Action: "restart", LifecycleRestartRef: fixture.facts.draft.Recipe.Lifecycle.Restart,
+			ExecutionBundleDigest: "sha256:" + hex.EncodeToString(deployment.Worker.ExecutionBundle.SHA256[:]),
+		},
+		ServiceMonitorRevision: monitor.Revision, ServiceMonitorSuiteDigest: monitorDigest,
+		Currency: fixture.facts.quote.Currency, CostAlertAmountMinor: 12_345, ExpectedInstalledManifestDigest: manifestDigest,
+	}
+	for _, item := range volumes {
+		snapshotID, replacementID, err := serviceoperation.DeriveVolumeResourceIDs(operationID, item.fact.ResourceID, item.slot.SlotID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope.SourceVolumes = append(scope.SourceVolumes, item.fact)
+		scope.Volumes = append(scope.Volumes, serviceoperation.VolumePreparationV1{
+			SlotID: item.slot.SlotID, SourceVolume: item.fact, SnapshotResourceID: snapshotID,
+			ReplacementVolumeResourceID: replacementID, AvailabilityZone: plan.ResourceScope.AvailabilityZones[0],
+			SizeGiB: item.slot.SizeGiB, VolumeType: item.slot.VolumeType, IOPS: item.slot.IOPS,
+			ThroughputMiBPS: item.slot.ThroughputMiBPS, KMSKeyID: item.slot.KMSKeyID,
+			DeviceName: item.slot.DeviceName, MountPath: item.slot.MountPath, ReadOnly: item.slot.ReadOnly,
+			Persistent: item.slot.Persistent, Disposition: string(item.slot.Disposition),
+		})
+	}
+	if err := scope.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return scope
+}
+
 func managedPreparationQuote(t *testing.T, now time.Time, quoteID string, plan cloudapproval.PlanV1) cloudquote.QuoteV1 {
 	t.Helper()
 	value := cloudquote.QuoteV1{SchemaVersion: cloudquote.SchemaV1, QuoteID: quoteID, QuotedAt: now,
-		ValidUntil: plan.Quote.ValidUntil, Currency: "USD", Usage: cloudquote.UsageV1{RuntimeHoursPerMonth: 730},
+		ValidUntil: plan.Quote.ValidUntil, Currency: "USD", Usage: cloudquote.UsageV1{RuntimeHoursPerMonth: 730, SnapshotGiBMonths: 80},
 		Assumptions: []string{"one worker"}, Exclusions: []string{"taxes"}}
 	for _, profile := range []cloudquote.CandidateProfile{cloudquote.CandidateEconomic, cloudquote.CandidateRecommended, cloudquote.CandidatePerformance} {
 		scope := plan.PricingScope()

@@ -54,6 +54,7 @@ func cloneQuery(value PricingQueryV1) PricingQueryV1 {
 	value.Candidates = append([]PricingCandidateQueryV1(nil), value.Candidates...)
 	for index := range value.Candidates {
 		value.Candidates[index].DataVolumes = append([]VolumePricingV1(nil), value.Candidates[index].DataVolumes...)
+		value.Candidates[index].PrivateEndpoints = append([]PrivateEndpointPricingV1(nil), value.Candidates[index].PrivateEndpoints...)
 	}
 	return value
 }

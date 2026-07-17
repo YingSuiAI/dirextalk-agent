@@ -19,15 +19,7 @@ func TestManagedPreparationSnapshotTemplateUsesOnlyCurrentAgentFacts(t *testing.
 	fixture.current.deployment.Worker.CreatedAt = fixture.current.deployment.Worker.UpdatedAt.Add(-2 * time.Hour)
 	fixture.facts.draft.CreatedAt = fixture.current.deployment.Worker.UpdatedAt.Add(-3 * time.Hour)
 	fixture.facts.draft.UpdatedAt = fixture.current.deployment.Worker.UpdatedAt.Add(-time.Hour)
-	builder, err := newManagedPreparationScopeBuilder(fixture.agentID, fixture.facts, fixture.current, fixture.monitor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID,
-		"11111111-1111-4111-8111-111111111111", 12_345)
-	if err != nil {
-		t.Fatal(err)
-	}
+	scope := managedPreparationScopeForDownstreamTest(t, fixture, "11111111-1111-4111-8111-111111111111")
 	facts := &templateFactsFake{planning: fixture.facts, current: fixture.current}
 	port, err := newManagedPreparationSnapshotTemplates(facts)
 	if err != nil {
@@ -83,15 +75,7 @@ func TestManagedPreparationAWSCompositionOptionIsDefaultOff(t *testing.T) {
 
 func TestManagedPreparationAWSRuntimeIsBoundToSignedConnectionRevisionAndRegion(t *testing.T) {
 	fixture := newManagedPreparationScopeFixture(t)
-	builder, err := newManagedPreparationScopeBuilder(fixture.agentID, fixture.facts, fixture.current, fixture.monitor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID,
-		"11111111-1111-4111-8111-111111111111", 12_345)
-	if err != nil {
-		t.Fatal(err)
-	}
+	scope := managedPreparationScopeForDownstreamTest(t, fixture, "11111111-1111-4111-8111-111111111111")
 	connection := cloudapp.Connection{
 		ConnectionID: scope.ConnectionID, OwnerID: scope.OwnerID, AccountID: "123456789012",
 		Region: "us-east-1", Status: "active", Revision: scope.ConnectionRevision,

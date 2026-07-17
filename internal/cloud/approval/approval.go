@@ -28,6 +28,26 @@ type planHashDocumentV1 struct {
 	RetentionScope   RetentionScopeV1     `json:"retention_scope"`
 }
 
+// planHashDocumentV2 is a distinct payload domain. V1 vectors remain exactly
+// frozen while V2 adds only device-visible service-operation templates.
+type planHashDocumentV2 struct {
+	SchemaVersion     string                   `json:"schema_version"`
+	HashAlgorithm     string                   `json:"hash_algorithm"`
+	AgentInstanceID   string                   `json:"agent_instance_id"`
+	OwnerID           string                   `json:"owner_id"`
+	PlanID            string                   `json:"plan_id"`
+	Revision          uint64                   `json:"revision"`
+	ConnectionID      string                   `json:"connection_id"`
+	Recipe            RecipeBindingV1          `json:"recipe"`
+	Quote             QuoteBindingV1           `json:"quote"`
+	ResourceScope     ResourceScopeV1          `json:"resource_scope"`
+	NetworkScope      NetworkScopeV1           `json:"network_scope"`
+	SecretScope       []SecretReferenceV1      `json:"secret_scope,omitempty"`
+	IntegrationScope  []IntegrationScopeV1     `json:"integration_scope,omitempty"`
+	RetentionScope    RetentionScopeV1         `json:"retention_scope"`
+	ServiceOperations *ServiceOperationScopeV1 `json:"service_operations"`
+}
+
 func (p PlanV1) CanonicalCBOR() ([]byte, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
@@ -42,8 +62,18 @@ func (p PlanV1) Hash() (string, error) {
 	return canonical.Digest(p.hashDocument())
 }
 
-func (p PlanV1) hashDocument() planHashDocumentV1 {
+func (p PlanV1) hashDocument() any {
 	normalized := normalizePlan(p)
+	if normalized.SchemaVersion == PlanSchemaV2 {
+		return planHashDocumentV2{
+			SchemaVersion: normalized.SchemaVersion, HashAlgorithm: canonical.Algorithm,
+			AgentInstanceID: normalized.AgentInstanceID, OwnerID: normalized.OwnerID, PlanID: normalized.PlanID,
+			Revision: normalized.Revision, ConnectionID: normalized.ConnectionID, Recipe: normalized.Recipe,
+			Quote: normalized.Quote, ResourceScope: normalized.ResourceScope, NetworkScope: normalized.NetworkScope,
+			SecretScope: normalized.SecretScope, IntegrationScope: normalized.IntegrationScope,
+			RetentionScope: normalized.RetentionScope, ServiceOperations: normalized.ServiceOperations,
+		}
+	}
 	return planHashDocumentV1{
 		SchemaVersion:    normalized.SchemaVersion,
 		HashAlgorithm:    canonical.Algorithm,
@@ -68,6 +98,7 @@ func normalizePlan(value PlanV1) PlanV1 {
 	value.NetworkScope = normalizeNetwork(value.NetworkScope)
 	value.SecretScope = normalizeSecrets(value.SecretScope)
 	value.IntegrationScope = normalizeIntegrations(value.IntegrationScope)
+	value.ServiceOperations = cloudquote.NormalizeServiceOperations(value.ServiceOperations)
 	return value
 }
 
@@ -86,34 +117,42 @@ func NewApprovalV1(plan PlanV1, approvalID, challengeID, signerKeyID string, exp
 		return ApprovalV1{}, err
 	}
 	approval := ApprovalV1{
-		SchemaVersion:    ApprovalSchemaV1,
-		HashAlgorithm:    canonical.Algorithm,
-		ApprovalID:       approvalID,
-		AgentInstanceID:  normalized.AgentInstanceID,
-		OwnerID:          normalized.OwnerID,
-		PlanID:           normalized.PlanID,
-		PlanRevision:     normalized.Revision,
-		PlanHash:         planHash,
-		ConnectionID:     normalized.ConnectionID,
-		RecipeDigest:     normalized.Recipe.Digest,
-		QuoteID:          normalized.Quote.QuoteID,
-		QuoteDigest:      normalized.Quote.Digest,
-		QuoteScopeDigest: normalized.Quote.ScopeDigest,
-		QuoteCandidateID: normalized.Quote.CandidateID,
-		QuoteValidUntil:  normalized.Quote.ValidUntil,
-		ResourceScope:    normalized.ResourceScope,
-		NetworkScope:     normalized.NetworkScope,
-		SecretScope:      normalized.SecretScope,
-		IntegrationScope: normalized.IntegrationScope,
-		RetentionScope:   normalized.RetentionScope,
-		ChallengeID:      challengeID,
-		SignerKeyID:      signerKeyID,
-		ExpiresAt:        expiresAt.UTC(),
+		SchemaVersion:     approvalSchemaForPlan(normalized.SchemaVersion),
+		HashAlgorithm:     canonical.Algorithm,
+		ApprovalID:        approvalID,
+		AgentInstanceID:   normalized.AgentInstanceID,
+		OwnerID:           normalized.OwnerID,
+		PlanID:            normalized.PlanID,
+		PlanRevision:      normalized.Revision,
+		PlanHash:          planHash,
+		ConnectionID:      normalized.ConnectionID,
+		RecipeDigest:      normalized.Recipe.Digest,
+		QuoteID:           normalized.Quote.QuoteID,
+		QuoteDigest:       normalized.Quote.Digest,
+		QuoteScopeDigest:  normalized.Quote.ScopeDigest,
+		QuoteCandidateID:  normalized.Quote.CandidateID,
+		QuoteValidUntil:   normalized.Quote.ValidUntil,
+		ResourceScope:     normalized.ResourceScope,
+		NetworkScope:      normalized.NetworkScope,
+		SecretScope:       normalized.SecretScope,
+		IntegrationScope:  normalized.IntegrationScope,
+		RetentionScope:    normalized.RetentionScope,
+		ServiceOperations: normalized.ServiceOperations,
+		ChallengeID:       challengeID,
+		SignerKeyID:       signerKeyID,
+		ExpiresAt:         expiresAt.UTC(),
 	}
 	if err := approval.validate(false); err != nil {
 		return ApprovalV1{}, err
 	}
 	return approval, nil
+}
+
+func approvalSchemaForPlan(planSchema string) string {
+	if planSchema == PlanSchemaV2 {
+		return ApprovalSchemaV2
+	}
+	return ApprovalSchemaV1
 }
 
 type approvalSigningDocumentV1 struct {
@@ -142,6 +181,33 @@ type approvalSigningDocumentV1 struct {
 	ExpiresAt        time.Time            `json:"expires_at"`
 }
 
+type approvalSigningDocumentV2 struct {
+	PayloadSchema     string                   `json:"payload_schema"`
+	HashAlgorithm     string                   `json:"hash_algorithm"`
+	ApprovalID        string                   `json:"approval_id"`
+	AgentInstanceID   string                   `json:"agent_instance_id"`
+	OwnerID           string                   `json:"owner_id"`
+	PlanID            string                   `json:"plan_id"`
+	PlanRevision      uint64                   `json:"plan_revision"`
+	PlanHash          string                   `json:"plan_hash"`
+	ConnectionID      string                   `json:"connection_id"`
+	RecipeDigest      string                   `json:"recipe_digest"`
+	QuoteID           string                   `json:"quote_id"`
+	QuoteDigest       string                   `json:"quote_digest"`
+	QuoteScopeDigest  string                   `json:"quote_scope_digest"`
+	QuoteCandidateID  string                   `json:"quote_candidate_id"`
+	QuoteValidUntil   time.Time                `json:"quote_valid_until"`
+	ResourceScope     ResourceScopeV1          `json:"resource_scope"`
+	NetworkScope      NetworkScopeV1           `json:"network_scope"`
+	SecretScope       []SecretReferenceV1      `json:"secret_scope,omitempty"`
+	IntegrationScope  []IntegrationScopeV1     `json:"integration_scope,omitempty"`
+	RetentionScope    RetentionScopeV1         `json:"retention_scope"`
+	ServiceOperations *ServiceOperationScopeV1 `json:"service_operations"`
+	ChallengeID       string                   `json:"challenge_id"`
+	SignerKeyID       string                   `json:"signer_key_id"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+}
+
 // SigningPayload returns deterministic bytes for Ed25519 signing. Signature is
 // intentionally excluded from the projection.
 func (a ApprovalV1) SigningPayload() ([]byte, error) {
@@ -149,6 +215,20 @@ func (a ApprovalV1) SigningPayload() ([]byte, error) {
 		return nil, err
 	}
 	normalized := normalizeApproval(a)
+	if normalized.SchemaVersion == ApprovalSchemaV2 {
+		return canonical.Marshal(approvalSigningDocumentV2{
+			PayloadSchema: ApprovalSigningPayloadV2, HashAlgorithm: normalized.HashAlgorithm,
+			ApprovalID: normalized.ApprovalID, AgentInstanceID: normalized.AgentInstanceID,
+			OwnerID: normalized.OwnerID, PlanID: normalized.PlanID, PlanRevision: normalized.PlanRevision,
+			PlanHash: normalized.PlanHash, ConnectionID: normalized.ConnectionID, RecipeDigest: normalized.RecipeDigest,
+			QuoteID: normalized.QuoteID, QuoteDigest: normalized.QuoteDigest, QuoteScopeDigest: normalized.QuoteScopeDigest,
+			QuoteCandidateID: normalized.QuoteCandidateID, QuoteValidUntil: normalized.QuoteValidUntil,
+			ResourceScope: normalized.ResourceScope, NetworkScope: normalized.NetworkScope,
+			SecretScope: normalized.SecretScope, IntegrationScope: normalized.IntegrationScope,
+			RetentionScope: normalized.RetentionScope, ServiceOperations: normalized.ServiceOperations,
+			ChallengeID: normalized.ChallengeID, SignerKeyID: normalized.SignerKeyID, ExpiresAt: normalized.ExpiresAt,
+		})
+	}
 	return canonical.Marshal(approvalSigningDocumentV1{
 		PayloadSchema:    ApprovalSigningPayloadV1,
 		HashAlgorithm:    normalized.HashAlgorithm,
@@ -245,7 +325,9 @@ func (a ApprovalV1) ValidateAgainstPlan(plan PlanV1, now time.Time) error {
 		!reflect.DeepEqual(normalizedApproval.NetworkScope, normalizedPlan.NetworkScope) ||
 		!reflect.DeepEqual(normalizedApproval.SecretScope, normalizedPlan.SecretScope) ||
 		!reflect.DeepEqual(normalizedApproval.IntegrationScope, normalizedPlan.IntegrationScope) ||
-		!reflect.DeepEqual(normalizedApproval.RetentionScope, normalizedPlan.RetentionScope) {
+		!reflect.DeepEqual(normalizedApproval.RetentionScope, normalizedPlan.RetentionScope) ||
+		!reflect.DeepEqual(normalizedApproval.ServiceOperations, normalizedPlan.ServiceOperations) ||
+		normalizedApproval.SchemaVersion != approvalSchemaForPlan(normalizedPlan.SchemaVersion) {
 		return fmt.Errorf("approval does not match the current plan revision and scopes")
 	}
 	return nil
@@ -299,5 +381,6 @@ func normalizeApproval(value ApprovalV1) ApprovalV1 {
 	value.NetworkScope = normalizeNetwork(value.NetworkScope)
 	value.SecretScope = normalizeSecrets(value.SecretScope)
 	value.IntegrationScope = normalizeIntegrations(value.IntegrationScope)
+	value.ServiceOperations = cloudquote.NormalizeServiceOperations(value.ServiceOperations)
 	return value
 }

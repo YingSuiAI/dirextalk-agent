@@ -15,12 +15,7 @@ import (
 
 func TestWorkerOperationRestartPortFailsClosedUntilHelperReadyThenReplaysExactIntent(t *testing.T) {
 	fixture := newManagedPreparationScopeFixture(t)
-	builder, _ := newManagedPreparationScopeBuilder(fixture.agentID, fixture.facts, fixture.current, fixture.monitor)
-	scope, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID,
-		uuid.NewString(), 12_345)
-	if err != nil {
-		t.Fatal(err)
-	}
+	scope := managedPreparationScopeForDownstreamTest(t, fixture, uuid.NewString())
 	operations, _ := workeroperation.NewService(workeroperation.NewMemoryRepository(),
 		workeroperation.Ed25519ReceiptVerifier{Keys: map[string]ed25519.PublicKey{}},
 		func() time.Time { return time.Date(2026, 7, 17, 16, 0, 0, 0, time.UTC) })

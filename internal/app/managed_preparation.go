@@ -68,7 +68,7 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 	if err != nil || plan.Validate() != nil || plan.Status != cloudapproval.PlanApproved ||
 		plan.AgentInstanceID != builder.agentInstanceID || plan.OwnerID != ownerID || plan.PlanID != deployment.PlanID ||
 		plan.ConnectionID != deployment.ConnectionID || len(plan.ResourceScope.AvailabilityZones) != 1 ||
-		len(plan.ResourceScope.VolumeScopes) == 0 {
+		len(plan.ResourceScope.VolumeScopes) == 0 || !managedPreparationPlanAllowsSnapshots(plan) {
 		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
 	}
 	planHash, err := plan.Hash()
@@ -148,6 +148,17 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
 	}
 	return scope, nil
+}
+
+// managedPreparationPlanAllowsSnapshots stays false until the signed
+// service-operation scope carries each snapshot's bounded retention into the
+// runtime resource, manifest, and reaper paths. The existing ScopeV1 records
+// only a Managed retain disposition, so accepting a V2 Plan template here
+// could turn a signed finite retention period into an indefinitely retained
+// snapshot. Plan V2 preserves the device-visible binding but does not yet
+// authorize this legacy mutation workflow.
+func managedPreparationPlanAllowsSnapshots(cloudapproval.PlanV1) bool {
+	return false
 }
 
 func installerDeliveryDeclaresCommand(delivery *installer.DeliveryV1, commandID string) bool {

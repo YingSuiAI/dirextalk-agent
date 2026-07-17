@@ -148,6 +148,13 @@ func pricingQuery(request RequestV1) PricingQueryV1 {
 				SizeGiB: volume.SizeGiB, VolumeType: volume.VolumeType, IOPS: volume.IOPS, ThroughputMiBPS: volume.ThroughputMiBPS,
 			})
 		}
+		if scope.ServiceOperations != nil {
+			for _, endpoint := range scope.ServiceOperations.PrivateEndpoints {
+				candidate.PrivateEndpoints = append(candidate.PrivateEndpoints, PrivateEndpointPricingV1{
+					Service: endpoint.Service, MonthlyHours: endpoint.MonthlyHours, DataMiBPerMonth: endpoint.DataMiBPerMonth,
+				})
+			}
+		}
 	}
 	query.Zones = sortedStrings(query.Zones)
 	sort.Slice(query.Candidates, func(i, j int) bool {

@@ -13,6 +13,7 @@ import (
 const (
 	SchemaV1      = "dirextalk.agent.cloud.quote/v1"
 	ScopeSchemaV1 = "dirextalk.agent.cloud.quote-scope/v1"
+	ScopeSchemaV2 = "dirextalk.agent.cloud.quote-scope/v2"
 	Validity      = 15 * time.Minute
 )
 
@@ -65,16 +66,17 @@ const (
 // ScopeV1 is the complete price-sensitive and approval-sensitive projection
 // for one candidate. Any change produces another digest and requires a quote.
 type ScopeV1 struct {
-	SchemaVersion    string               `json:"schema_version"`
-	AgentInstanceID  string               `json:"agent_instance_id"`
-	OwnerID          string               `json:"owner_id"`
-	ConnectionID     string               `json:"connection_id"`
-	Recipe           RecipeBindingV1      `json:"recipe"`
-	Resource         ResourceScopeV1      `json:"resource"`
-	Network          NetworkScopeV1       `json:"network"`
-	SecretScope      []SecretScopeV1      `json:"secret_scope,omitempty"`
-	IntegrationScope []IntegrationScopeV1 `json:"integration_scope,omitempty"`
-	Retention        RetentionScopeV1     `json:"retention"`
+	SchemaVersion     string                   `json:"schema_version"`
+	AgentInstanceID   string                   `json:"agent_instance_id"`
+	OwnerID           string                   `json:"owner_id"`
+	ConnectionID      string                   `json:"connection_id"`
+	Recipe            RecipeBindingV1          `json:"recipe"`
+	Resource          ResourceScopeV1          `json:"resource"`
+	Network           NetworkScopeV1           `json:"network"`
+	SecretScope       []SecretScopeV1          `json:"secret_scope,omitempty"`
+	IntegrationScope  []IntegrationScopeV1     `json:"integration_scope,omitempty"`
+	Retention         RetentionScopeV1         `json:"retention"`
+	ServiceOperations *ServiceOperationScopeV1 `json:"service_operations,omitempty"`
 }
 
 type RecipeBindingV1 struct {
@@ -169,13 +171,15 @@ type RetentionScopeV1 struct {
 // UsageV1 makes non-compute estimates explicit. Values are integral units;
 // provider adapters perform any price-list decimal conversion into micros.
 type UsageV1 struct {
-	RuntimeHoursPerMonth uint32 `json:"runtime_hours_per_month"`
-	PublicIPv4Hours      uint32 `json:"public_ipv4_hours"`
-	LogIngestMiB         uint64 `json:"log_ingest_mib"`
-	LogStoredMiBMonths   uint64 `json:"log_stored_mib_months"`
-	SnapshotGiBMonths    uint64 `json:"snapshot_gib_months"`
-	EntryHours           uint32 `json:"entry_hours"`
-	InternetEgressMiB    uint64 `json:"internet_egress_mib"`
+	RuntimeHoursPerMonth   uint32 `json:"runtime_hours_per_month"`
+	PublicIPv4Hours        uint32 `json:"public_ipv4_hours"`
+	LogIngestMiB           uint64 `json:"log_ingest_mib"`
+	LogStoredMiBMonths     uint64 `json:"log_stored_mib_months"`
+	SnapshotGiBMonths      uint64 `json:"snapshot_gib_months"`
+	EntryHours             uint32 `json:"entry_hours"`
+	InternetEgressMiB      uint64 `json:"internet_egress_mib"`
+	PrivateEndpointHours   uint32 `json:"private_endpoint_hours,omitempty"`
+	PrivateEndpointDataMiB uint64 `json:"private_endpoint_data_mib,omitempty"`
 }
 
 // SpotQualificationV1 is persisted evidence, not an Agent assertion. A Spot
@@ -210,6 +214,7 @@ const (
 	CostSnapshot        CostCategory = "snapshot"
 	CostEntry           CostCategory = "entry"
 	CostTraffic         CostCategory = "traffic"
+	CostPrivateEndpoint CostCategory = "private_endpoint"
 )
 
 type CostItemV1 struct {
@@ -268,19 +273,20 @@ type PricingQueryV1 struct {
 }
 
 type PricingCandidateQueryV1 struct {
-	CandidateID           CandidateProfile    `json:"candidate_id"`
-	InstanceType          string              `json:"instance_type"`
-	InstanceCount         uint32              `json:"instance_count"`
-	Architecture          recipe.Architecture `json:"architecture"`
-	DiskGiB               uint64              `json:"disk_gib"`
-	VolumeType            string              `json:"volume_type"`
-	VolumeIOPS            uint32              `json:"volume_iops,omitempty"`
-	VolumeThroughputMiBPS uint32              `json:"volume_throughput_mibps,omitempty"`
-	PurchaseOption        PurchaseOption      `json:"purchase_option"`
-	EntryPoint            EntryPointKind      `json:"entry_point"`
-	PublicIPv4            bool                `json:"public_ipv4"`
-	PublicExposure        bool                `json:"public_exposure"`
-	DataVolumes           []VolumePricingV1   `json:"data_volumes,omitempty"`
+	CandidateID           CandidateProfile           `json:"candidate_id"`
+	InstanceType          string                     `json:"instance_type"`
+	InstanceCount         uint32                     `json:"instance_count"`
+	Architecture          recipe.Architecture        `json:"architecture"`
+	DiskGiB               uint64                     `json:"disk_gib"`
+	VolumeType            string                     `json:"volume_type"`
+	VolumeIOPS            uint32                     `json:"volume_iops,omitempty"`
+	VolumeThroughputMiBPS uint32                     `json:"volume_throughput_mibps,omitempty"`
+	PurchaseOption        PurchaseOption             `json:"purchase_option"`
+	EntryPoint            EntryPointKind             `json:"entry_point"`
+	PublicIPv4            bool                       `json:"public_ipv4"`
+	PublicExposure        bool                       `json:"public_exposure"`
+	DataVolumes           []VolumePricingV1          `json:"data_volumes,omitempty"`
+	PrivateEndpoints      []PrivateEndpointPricingV1 `json:"private_endpoints,omitempty"`
 }
 
 // VolumePricingV1 is the minimal non-secret projection consumed by the AWS
@@ -291,6 +297,15 @@ type VolumePricingV1 struct {
 	VolumeType      string `json:"volume_type"`
 	IOPS            uint32 `json:"iops,omitempty"`
 	ThroughputMiBPS uint32 `json:"throughput_mibps,omitempty"`
+}
+
+// PrivateEndpointPricingV1 is the public, bounded pricing projection of one
+// approved PrivateLink interface endpoint. It never contains a VPC, subnet,
+// security-group, policy, or provider identifier.
+type PrivateEndpointPricingV1 struct {
+	Service         PrivateEndpointServiceV1 `json:"service"`
+	MonthlyHours    uint32                   `json:"monthly_hours"`
+	DataMiBPerMonth uint64                   `json:"data_mib_per_month"`
 }
 
 type PricingSnapshotV1 struct {

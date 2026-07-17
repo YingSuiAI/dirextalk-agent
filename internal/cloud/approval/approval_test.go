@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 )
 
@@ -254,6 +255,92 @@ func validPlan() PlanV1 {
 	}
 	plan.Quote.ScopeDigest = scopeDigest
 	return plan
+}
+
+func validPlanV2(t *testing.T) PlanV1 {
+	t.Helper()
+	plan := validPlan()
+	plan.SchemaVersion = PlanSchemaV2
+	plan.ResourceScope.VolumeScopes = []VolumeScopeV1{{
+		SlotID: "data", SizeGiB: 30, VolumeType: "gp3", IOPS: 3000, ThroughputMiBPS: 125,
+		Encrypted: true, KMSKeyID: "alias/dirextalk/data", DeviceName: "/dev/sdf", MountPath: "/srv/data",
+		Persistent: true, Disposition: VolumeDeleteWithDeployment,
+	}}
+	volumeDigest, err := cloudquote.VolumeScopeDigest(plan.ResourceScope.VolumeScopes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ServiceOperations = &ServiceOperationScopeV1{
+		PrivateEndpoints: []PrivateEndpointOperationSpecV1{{
+			OperationKey: "endpoint-s3", Service: PrivateEndpointServiceS3,
+			SecurityGroupSource: EndpointSecurityGroupPlanExisting, PrivateDNSEnabled: true,
+			MonthlyHours: 720, DataMiBPerMonth: 96,
+		}},
+		Snapshots: []SnapshotOperationSpecV1{{
+			OperationKey: "snapshot-data", SourceVolumeSlotID: "data", SourceVolumeSpecDigest: volumeDigest,
+			Disposition: SnapshotDeleteWithDeployment, MaxRetentionSeconds: plan.RetentionScope.MaxLifetimeSeconds,
+		}},
+	}
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
+func TestPlanAndApprovalV2GoldenVectors(t *testing.T) {
+	planJSON := readGolden(t, "testdata/v2/plan.json")
+	var plan PlanV1
+	if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan, validPlanV2(t)) {
+		t.Fatal("V2 plan.json no longer matches the Go PlanV1 vector")
+	}
+	planHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := readGolden(t, "testdata/v2/approval-key-id.txt")
+	approval, err := NewApprovalV1(plan, "approval-2", "challenge-2", keyID, time.Date(2026, time.July, 16, 8, 5, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := approval.SigningPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := make([]byte, ed25519.SeedSize)
+	for index := range seed {
+		seed[index] = byte(index)
+	}
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	signature := ed25519.Sign(privateKey, payload)
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	spki := append([]byte{0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00}, publicKey...)
+	payloadHash := sha256.Sum256(payload)
+	if want := readGolden(t, "testdata/v2/plan.hash"); planHash != want {
+		t.Fatalf("V2 plan hash = %q, want golden %q", planHash, want)
+	}
+	if got, want := hex.EncodeToString(payloadHash[:]), readGolden(t, "testdata/v2/approval-signing-payload.sha256"); got != want {
+		t.Fatalf("V2 signing payload SHA-256 = %q, want golden %q", got, want)
+	}
+	if got, want := base64.RawURLEncoding.EncodeToString(signature), readGolden(t, "testdata/v2/approval-signature.base64url"); got != want {
+		t.Fatalf("V2 signature = %q, want golden %q", got, want)
+	}
+	if got, want := base64.RawURLEncoding.EncodeToString(publicKey), readGolden(t, "testdata/v2/approval-public-key.raw.base64url"); got != want {
+		t.Fatalf("V2 raw public key = %q, want golden %q", got, want)
+	}
+	if got, want := base64.StdEncoding.EncodeToString(spki), readGolden(t, "testdata/v2/approval-public-key.spki.base64"); got != want {
+		t.Fatalf("V2 SPKI public key = %q, want golden %q", got, want)
+	}
+	approval.Signature = base64.RawURLEncoding.EncodeToString(signature)
+	if err := approval.Verify(publicKey, approval.ExpiresAt.Add(-time.Minute)); err != nil {
+		t.Fatalf("V2 golden approval verification failed: %v", err)
+	}
 }
 
 func digest(fill string) string { return "sha256:" + strings.Repeat(fill, 64) }

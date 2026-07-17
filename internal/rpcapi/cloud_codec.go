@@ -12,15 +12,20 @@ func cloudQuoteScopeFromProto(value *agentv1.CloudQuoteScope, agentInstanceID st
 	if value == nil {
 		return cloudquote.ScopeV1{}
 	}
+	schemaVersion := value.GetSchemaVersion()
+	if schemaVersion == "" {
+		schemaVersion = cloudquote.ScopeSchemaV1
+	}
 	result := cloudquote.ScopeV1{
-		SchemaVersion: cloudquote.ScopeSchemaV1, AgentInstanceID: agentInstanceID,
+		SchemaVersion: schemaVersion, AgentInstanceID: agentInstanceID,
 		OwnerID: value.GetOwnerId(), ConnectionID: value.GetConnectionId(),
 		Recipe: cloudquote.RecipeBindingV1{
 			RecipeID: value.GetRecipe().GetRecipeId(), Digest: value.GetRecipe().GetDigest(),
 			Maturity: recipe.Maturity(value.GetRecipe().GetMaturity()),
 		},
-		Resource: cloudResourceScopeFromProto(value.GetResource()),
-		Network:  cloudNetworkScopeFromProto(value.GetNetwork()),
+		ServiceOperations: cloudServiceOperationsFromProto(value.GetServiceOperations()),
+		Resource:          cloudResourceScopeFromProto(value.GetResource()),
+		Network:           cloudNetworkScopeFromProto(value.GetNetwork()),
 		Retention: cloudquote.RetentionScopeV1{
 			Class:              cloudRetentionFromProto(value.GetRetention().GetRetentionClass()),
 			AutoDestroy:        value.GetRetention().GetAutoDestroy(),
@@ -86,6 +91,7 @@ func cloudUsageFromProto(value *agentv1.CloudUsageEstimate) cloudquote.UsageV1 {
 		RuntimeHoursPerMonth: value.GetRuntimeHoursPerMonth(), PublicIPv4Hours: value.GetPublicIpv4Hours(),
 		LogIngestMiB: value.GetLogIngestMib(), LogStoredMiBMonths: value.GetLogStoredMibMonths(),
 		SnapshotGiBMonths: value.GetSnapshotGibMonths(), EntryHours: value.GetEntryHours(), InternetEgressMiB: value.GetInternetEgressMib(),
+		PrivateEndpointHours: value.GetPrivateEndpointHours(), PrivateEndpointDataMiB: value.GetPrivateEndpointDataMib(),
 	}
 }
 
@@ -125,13 +131,14 @@ func cloudQuoteToProto(value cloudquote.QuoteV1) *agentv1.CloudQuote {
 
 func cloudQuoteScopeToProto(value cloudquote.ScopeV1) *agentv1.CloudQuoteScope {
 	result := &agentv1.CloudQuoteScope{
-		OwnerId: value.OwnerID, ConnectionId: value.ConnectionID,
+		OwnerId: value.OwnerID, ConnectionId: value.ConnectionID, SchemaVersion: value.SchemaVersion,
 		Recipe:   &agentv1.CloudRecipeBinding{RecipeId: value.Recipe.RecipeID, Digest: value.Recipe.Digest, Maturity: string(value.Recipe.Maturity)},
 		Resource: cloudResourceScopeToProto(value.Resource), Network: cloudNetworkScopeToProto(value.Network),
 		Retention: &agentv1.CloudRetentionScope{
 			RetentionClass: cloudRetentionToProto(value.Retention.Class), AutoDestroy: value.Retention.AutoDestroy,
 			GracePeriodSeconds: value.Retention.GracePeriodSeconds, MaxLifetimeSeconds: value.Retention.MaxLifetimeSeconds,
 		},
+		ServiceOperations: cloudServiceOperationsToProto(value.ServiceOperations),
 	}
 	for _, secret := range value.SecretScope {
 		result.SecretScope = append(result.SecretScope, &agentv1.CloudSecretScope{SecretRef: secret.SecretRef, Purpose: secret.Purpose, Delivery: string(secret.Delivery)})
@@ -175,6 +182,7 @@ func cloudUsageToProto(value cloudquote.UsageV1) *agentv1.CloudUsageEstimate {
 		RuntimeHoursPerMonth: value.RuntimeHoursPerMonth, PublicIpv4Hours: value.PublicIPv4Hours,
 		LogIngestMib: value.LogIngestMiB, LogStoredMibMonths: value.LogStoredMiBMonths,
 		SnapshotGibMonths: value.SnapshotGiBMonths, EntryHours: value.EntryHours, InternetEgressMib: value.InternetEgressMiB,
+		PrivateEndpointHours: value.PrivateEndpointHours, PrivateEndpointDataMib: value.PrivateEndpointDataMiB,
 	}
 }
 
@@ -213,7 +221,110 @@ func cloudPlanToProto(value cloudapproval.PlanV1) *agentv1.CloudPlan {
 		Resource: approvalResourceScopeToProto(value.ResourceScope), Network: approvalNetworkScopeToProto(value.NetworkScope),
 		SecretScope: approvalSecretsToProto(value.SecretScope), IntegrationScope: approvalIntegrationsToProto(value.IntegrationScope),
 		Retention: approvalRetentionToProto(value.RetentionScope), Status: cloudPlanStatusToProto(value.Status),
-		PlanHash: hash, Revision: int64(value.Revision),
+		PlanHash: hash, Revision: int64(value.Revision), SchemaVersion: value.SchemaVersion,
+		ServiceOperations: cloudServiceOperationsToProto(value.ServiceOperations),
+	}
+}
+
+func cloudServiceOperationsFromProto(value *agentv1.CloudServiceOperationScope) *cloudquote.ServiceOperationScopeV1 {
+	if value == nil {
+		return nil
+	}
+	result := &cloudquote.ServiceOperationScopeV1{}
+	for _, endpoint := range value.GetPrivateEndpoints() {
+		result.PrivateEndpoints = append(result.PrivateEndpoints, cloudquote.PrivateEndpointOperationSpecV1{
+			OperationKey: endpoint.GetOperationKey(), Service: cloudPrivateEndpointServiceFromProto(endpoint.GetService()),
+			SecurityGroupSource: cloudEndpointSecurityGroupSourceFromProto(endpoint.GetSecurityGroupSource()),
+			PrivateDNSEnabled:   endpoint.GetPrivateDnsEnabled(), MonthlyHours: endpoint.GetMonthlyHours(), DataMiBPerMonth: endpoint.GetDataMibPerMonth(),
+		})
+	}
+	for _, snapshot := range value.GetSnapshots() {
+		result.Snapshots = append(result.Snapshots, cloudquote.SnapshotOperationSpecV1{
+			OperationKey: snapshot.GetOperationKey(), SourceVolumeSlotID: snapshot.GetSourceVolumeSlotId(),
+			SourceVolumeSpecDigest: snapshot.GetSourceVolumeSpecDigest(), Disposition: cloudSnapshotDispositionFromProto(snapshot.GetDisposition()),
+			MaxRetentionSeconds: snapshot.GetMaxRetentionSeconds(),
+		})
+	}
+	return result
+}
+
+func cloudServiceOperationsToProto(value *cloudquote.ServiceOperationScopeV1) *agentv1.CloudServiceOperationScope {
+	if value == nil {
+		return nil
+	}
+	result := &agentv1.CloudServiceOperationScope{}
+	for _, endpoint := range value.PrivateEndpoints {
+		result.PrivateEndpoints = append(result.PrivateEndpoints, &agentv1.CloudPrivateEndpointOperation{
+			OperationKey: endpoint.OperationKey, Service: cloudPrivateEndpointServiceToProto(endpoint.Service),
+			SecurityGroupSource: cloudEndpointSecurityGroupSourceToProto(endpoint.SecurityGroupSource),
+			PrivateDnsEnabled:   endpoint.PrivateDNSEnabled, MonthlyHours: endpoint.MonthlyHours, DataMibPerMonth: endpoint.DataMiBPerMonth,
+		})
+	}
+	for _, snapshot := range value.Snapshots {
+		result.Snapshots = append(result.Snapshots, &agentv1.CloudSnapshotOperation{
+			OperationKey: snapshot.OperationKey, SourceVolumeSlotId: snapshot.SourceVolumeSlotID,
+			SourceVolumeSpecDigest: snapshot.SourceVolumeSpecDigest, Disposition: cloudSnapshotDispositionToProto(snapshot.Disposition),
+			MaxRetentionSeconds: snapshot.MaxRetentionSeconds,
+		})
+	}
+	return result
+}
+
+func cloudPrivateEndpointServiceFromProto(value agentv1.CloudPrivateEndpointService) cloudquote.PrivateEndpointServiceV1 {
+	if value == agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3 {
+		return cloudquote.PrivateEndpointServiceS3
+	}
+	return ""
+}
+
+func cloudPrivateEndpointServiceToProto(value cloudquote.PrivateEndpointServiceV1) agentv1.CloudPrivateEndpointService {
+	if value == cloudquote.PrivateEndpointServiceS3 {
+		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3
+	}
+	return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED
+}
+
+func cloudEndpointSecurityGroupSourceFromProto(value agentv1.CloudEndpointSecurityGroupSource) cloudquote.EndpointSecurityGroupSourceV1 {
+	switch value {
+	case agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING:
+		return cloudquote.EndpointSecurityGroupPlanExisting
+	case agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED:
+		return cloudquote.EndpointSecurityGroupWorkerDedicated
+	default:
+		return ""
+	}
+}
+
+func cloudEndpointSecurityGroupSourceToProto(value cloudquote.EndpointSecurityGroupSourceV1) agentv1.CloudEndpointSecurityGroupSource {
+	switch value {
+	case cloudquote.EndpointSecurityGroupPlanExisting:
+		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING
+	case cloudquote.EndpointSecurityGroupWorkerDedicated:
+		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED
+	default:
+		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED
+	}
+}
+
+func cloudSnapshotDispositionFromProto(value agentv1.CloudSnapshotOperationDisposition) cloudquote.SnapshotOperationDispositionV1 {
+	switch value {
+	case agentv1.CloudSnapshotOperationDisposition_CLOUD_SNAPSHOT_OPERATION_DISPOSITION_DELETE_WITH_DEPLOYMENT:
+		return cloudquote.SnapshotDeleteWithDeployment
+	case agentv1.CloudSnapshotOperationDisposition_CLOUD_SNAPSHOT_OPERATION_DISPOSITION_RETAIN_WITH_MANAGED_SERVICE:
+		return cloudquote.SnapshotRetainWithManagedService
+	default:
+		return ""
+	}
+}
+
+func cloudSnapshotDispositionToProto(value cloudquote.SnapshotOperationDispositionV1) agentv1.CloudSnapshotOperationDisposition {
+	switch value {
+	case cloudquote.SnapshotDeleteWithDeployment:
+		return agentv1.CloudSnapshotOperationDisposition_CLOUD_SNAPSHOT_OPERATION_DISPOSITION_DELETE_WITH_DEPLOYMENT
+	case cloudquote.SnapshotRetainWithManagedService:
+		return agentv1.CloudSnapshotOperationDisposition_CLOUD_SNAPSHOT_OPERATION_DISPOSITION_RETAIN_WITH_MANAGED_SERVICE
+	default:
+		return agentv1.CloudSnapshotOperationDisposition_CLOUD_SNAPSHOT_OPERATION_DISPOSITION_UNSPECIFIED
 	}
 }
 

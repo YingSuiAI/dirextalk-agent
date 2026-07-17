@@ -6,8 +6,12 @@ import cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 // candidate. QuoteBinding itself is excluded so no caller-provided digest can
 // influence the computed value.
 func (p PlanV1) PricingScope() cloudquote.ScopeV1 {
+	schemaVersion := cloudquote.ScopeSchemaV1
+	if p.SchemaVersion == PlanSchemaV2 {
+		schemaVersion = cloudquote.ScopeSchemaV2
+	}
 	scope := cloudquote.ScopeV1{
-		SchemaVersion:   cloudquote.ScopeSchemaV1,
+		SchemaVersion:   schemaVersion,
 		AgentInstanceID: p.AgentInstanceID,
 		OwnerID:         p.OwnerID,
 		ConnectionID:    p.ConnectionID,
@@ -57,6 +61,7 @@ func (p PlanV1) PricingScope() cloudquote.ScopeV1 {
 			GracePeriodSeconds: p.RetentionScope.GracePeriodSeconds,
 			MaxLifetimeSeconds: p.RetentionScope.MaxLifetimeSeconds,
 		},
+		ServiceOperations: p.ServiceOperations,
 	}
 	for _, secret := range p.SecretScope {
 		scope.SecretScope = append(scope.SecretScope, cloudquote.SecretScopeV1{

@@ -125,6 +125,45 @@ message CloudRetentionScope {
   uint64 max_lifetime_seconds = 4;
 }
 
+enum CloudPrivateEndpointService {
+  CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED = 0;
+  CLOUD_PRIVATE_ENDPOINT_SERVICE_S3 = 1;
+}
+
+enum CloudEndpointSecurityGroupSource {
+  CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED = 0;
+  CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING = 1;
+  CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED = 2;
+}
+
+enum CloudSnapshotOperationDisposition {
+  CLOUD_SNAPSHOT_OPERATION_DISPOSITION_UNSPECIFIED = 0;
+  CLOUD_SNAPSHOT_OPERATION_DISPOSITION_DELETE_WITH_DEPLOYMENT = 1;
+  CLOUD_SNAPSHOT_OPERATION_DISPOSITION_RETAIN_WITH_MANAGED_SERVICE = 2;
+}
+
+message CloudPrivateEndpointOperation {
+  string operation_key = 1;
+  CloudPrivateEndpointService service = 2;
+  CloudEndpointSecurityGroupSource security_group_source = 3;
+  bool private_dns_enabled = 4;
+  uint32 monthly_hours = 5;
+  uint64 data_mib_per_month = 6;
+}
+
+message CloudSnapshotOperation {
+  string operation_key = 1;
+  string source_volume_slot_id = 2;
+  string source_volume_spec_digest = 3;
+  CloudSnapshotOperationDisposition disposition = 4;
+  uint64 max_retention_seconds = 5;
+}
+
+message CloudServiceOperationScope {
+  repeated CloudPrivateEndpointOperation private_endpoints = 1;
+  repeated CloudSnapshotOperation snapshots = 2;
+}
+
 message CloudQuoteScope {
   string owner_id = 1;
   string connection_id = 2;
@@ -134,6 +173,8 @@ message CloudQuoteScope {
   repeated CloudSecretScope secret_scope = 6;
   repeated CloudIntegrationScope integration_scope = 7;
   CloudRetentionScope retention = 8;
+  string schema_version = 9;
+  CloudServiceOperationScope service_operations = 10;
 }
 
 message CloudUsageEstimate {
@@ -144,6 +185,8 @@ message CloudUsageEstimate {
   uint64 snapshot_gib_months = 5;
   uint32 entry_hours = 6;
   uint64 internet_egress_mib = 7;
+  uint32 private_endpoint_hours = 8;
+  uint64 private_endpoint_data_mib = 9;
 }
 
 message CloudSpotQualification {
@@ -216,6 +259,8 @@ message CloudPlan {
   CloudPlanStatus status = 15;
   string plan_hash = 16;
   int64 revision = 17;
+  string schema_version = 18;
+  CloudServiceOperationScope service_operations = 19;
 }
 
 message DeviceApprovalSignature {

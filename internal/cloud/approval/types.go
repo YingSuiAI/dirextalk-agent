@@ -12,16 +12,30 @@ import (
 
 type VolumeScopeV1 = cloudquote.VolumeScopeV1
 type VolumeDisposition = cloudquote.VolumeDisposition
+type ServiceOperationScopeV1 = cloudquote.ServiceOperationScopeV1
+type PrivateEndpointOperationSpecV1 = cloudquote.PrivateEndpointOperationSpecV1
+type PrivateEndpointServiceV1 = cloudquote.PrivateEndpointServiceV1
+type EndpointSecurityGroupSourceV1 = cloudquote.EndpointSecurityGroupSourceV1
+type SnapshotOperationSpecV1 = cloudquote.SnapshotOperationSpecV1
+type SnapshotOperationDispositionV1 = cloudquote.SnapshotOperationDispositionV1
 
 const (
-	VolumeDeleteWithDeployment     = cloudquote.VolumeDeleteWithDeployment
-	VolumeRetainWithManagedService = cloudquote.VolumeRetainWithManagedService
+	VolumeDeleteWithDeployment           = cloudquote.VolumeDeleteWithDeployment
+	VolumeRetainWithManagedService       = cloudquote.VolumeRetainWithManagedService
+	PrivateEndpointServiceS3             = cloudquote.PrivateEndpointServiceS3
+	EndpointSecurityGroupPlanExisting    = cloudquote.EndpointSecurityGroupPlanExisting
+	EndpointSecurityGroupWorkerDedicated = cloudquote.EndpointSecurityGroupWorkerDedicated
+	SnapshotDeleteWithDeployment         = cloudquote.SnapshotDeleteWithDeployment
+	SnapshotRetainWithManagedService     = cloudquote.SnapshotRetainWithManagedService
 )
 
 const (
 	PlanSchemaV1             = "dirextalk.agent.cloud.plan/v1"
+	PlanSchemaV2             = "dirextalk.agent.cloud.plan/v2"
 	ApprovalSchemaV1         = "dirextalk.agent.cloud.approval/v1"
+	ApprovalSchemaV2         = "dirextalk.agent.cloud.approval/v2"
 	ApprovalSigningPayloadV1 = "dirextalk.agent.cloud.approval-signing-payload/v1"
+	ApprovalSigningPayloadV2 = "dirextalk.agent.cloud.approval-signing-payload/v2"
 )
 
 type PlanStatus string
@@ -74,20 +88,21 @@ const (
 )
 
 type PlanV1 struct {
-	SchemaVersion    string               `json:"schema_version"`
-	AgentInstanceID  string               `json:"agent_instance_id"`
-	OwnerID          string               `json:"owner_id"`
-	PlanID           string               `json:"plan_id"`
-	Revision         uint64               `json:"revision"`
-	Status           PlanStatus           `json:"status"`
-	ConnectionID     string               `json:"connection_id"`
-	Recipe           RecipeBindingV1      `json:"recipe"`
-	Quote            QuoteBindingV1       `json:"quote"`
-	ResourceScope    ResourceScopeV1      `json:"resource_scope"`
-	NetworkScope     NetworkScopeV1       `json:"network_scope"`
-	SecretScope      []SecretReferenceV1  `json:"secret_scope,omitempty"`
-	IntegrationScope []IntegrationScopeV1 `json:"integration_scope,omitempty"`
-	RetentionScope   RetentionScopeV1     `json:"retention_scope"`
+	SchemaVersion     string                   `json:"schema_version"`
+	AgentInstanceID   string                   `json:"agent_instance_id"`
+	OwnerID           string                   `json:"owner_id"`
+	PlanID            string                   `json:"plan_id"`
+	Revision          uint64                   `json:"revision"`
+	Status            PlanStatus               `json:"status"`
+	ConnectionID      string                   `json:"connection_id"`
+	Recipe            RecipeBindingV1          `json:"recipe"`
+	Quote             QuoteBindingV1           `json:"quote"`
+	ResourceScope     ResourceScopeV1          `json:"resource_scope"`
+	NetworkScope      NetworkScopeV1           `json:"network_scope"`
+	SecretScope       []SecretReferenceV1      `json:"secret_scope,omitempty"`
+	IntegrationScope  []IntegrationScopeV1     `json:"integration_scope,omitempty"`
+	RetentionScope    RetentionScopeV1         `json:"retention_scope"`
+	ServiceOperations *ServiceOperationScopeV1 `json:"service_operations,omitempty"`
 }
 
 type RecipeBindingV1 struct {
@@ -160,28 +175,29 @@ type RetentionScopeV1 struct {
 }
 
 type ApprovalV1 struct {
-	SchemaVersion    string               `json:"schema_version"`
-	HashAlgorithm    string               `json:"hash_algorithm"`
-	ApprovalID       string               `json:"approval_id"`
-	AgentInstanceID  string               `json:"agent_instance_id"`
-	OwnerID          string               `json:"owner_id"`
-	PlanID           string               `json:"plan_id"`
-	PlanRevision     uint64               `json:"plan_revision"`
-	PlanHash         string               `json:"plan_hash"`
-	ConnectionID     string               `json:"connection_id"`
-	RecipeDigest     string               `json:"recipe_digest"`
-	QuoteID          string               `json:"quote_id"`
-	QuoteDigest      string               `json:"quote_digest"`
-	QuoteScopeDigest string               `json:"quote_scope_digest"`
-	QuoteCandidateID string               `json:"quote_candidate_id"`
-	QuoteValidUntil  time.Time            `json:"quote_valid_until"`
-	ResourceScope    ResourceScopeV1      `json:"resource_scope"`
-	NetworkScope     NetworkScopeV1       `json:"network_scope"`
-	SecretScope      []SecretReferenceV1  `json:"secret_scope,omitempty"`
-	IntegrationScope []IntegrationScopeV1 `json:"integration_scope,omitempty"`
-	RetentionScope   RetentionScopeV1     `json:"retention_scope"`
-	ChallengeID      string               `json:"challenge_id"`
-	SignerKeyID      string               `json:"signer_key_id"`
-	ExpiresAt        time.Time            `json:"expires_at"`
-	Signature        string               `json:"signature,omitempty"`
+	SchemaVersion     string                   `json:"schema_version"`
+	HashAlgorithm     string                   `json:"hash_algorithm"`
+	ApprovalID        string                   `json:"approval_id"`
+	AgentInstanceID   string                   `json:"agent_instance_id"`
+	OwnerID           string                   `json:"owner_id"`
+	PlanID            string                   `json:"plan_id"`
+	PlanRevision      uint64                   `json:"plan_revision"`
+	PlanHash          string                   `json:"plan_hash"`
+	ConnectionID      string                   `json:"connection_id"`
+	RecipeDigest      string                   `json:"recipe_digest"`
+	QuoteID           string                   `json:"quote_id"`
+	QuoteDigest       string                   `json:"quote_digest"`
+	QuoteScopeDigest  string                   `json:"quote_scope_digest"`
+	QuoteCandidateID  string                   `json:"quote_candidate_id"`
+	QuoteValidUntil   time.Time                `json:"quote_valid_until"`
+	ResourceScope     ResourceScopeV1          `json:"resource_scope"`
+	NetworkScope      NetworkScopeV1           `json:"network_scope"`
+	SecretScope       []SecretReferenceV1      `json:"secret_scope,omitempty"`
+	IntegrationScope  []IntegrationScopeV1     `json:"integration_scope,omitempty"`
+	RetentionScope    RetentionScopeV1         `json:"retention_scope"`
+	ServiceOperations *ServiceOperationScopeV1 `json:"service_operations,omitempty"`
+	ChallengeID       string                   `json:"challenge_id"`
+	SignerKeyID       string                   `json:"signer_key_id"`
+	ExpiresAt         time.Time                `json:"expires_at"`
+	Signature         string                   `json:"signature,omitempty"`
 }

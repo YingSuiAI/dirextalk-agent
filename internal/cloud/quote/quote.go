@@ -113,6 +113,7 @@ func normalizeScope(value ScopeV1) ScopeV1 {
 		}
 		return value.IntegrationScope[i].Name < value.IntegrationScope[j].Name
 	})
+	value.ServiceOperations = NormalizeServiceOperations(value.ServiceOperations)
 	return value
 }
 
