@@ -31,6 +31,7 @@ type serverOptions struct {
 	secretBootstrap    rpcapi.SecretBootstrapManager
 	cloudCoordinator   cloudapp.Coordinator
 	cloudDestroy       rpcapi.CloudDestroyCoordinator
+	cloudEntrypoint    rpcapi.CloudEntrypointCoordinator
 	cloudGoals         rpcapi.CloudGoalPlanner
 	cloudHealth        cloudstatus.HealthReader
 	workerService      *worker.Service
@@ -61,6 +62,10 @@ func WithCloudControl(coordinator cloudapp.Coordinator) ServerOption {
 
 func WithCloudDestroy(coordinator rpcapi.CloudDestroyCoordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudDestroy = coordinator }
+}
+
+func WithCloudEntrypoint(coordinator rpcapi.CloudEntrypointCoordinator) ServerOption {
+	return func(options *serverOptions) { options.cloudEntrypoint = coordinator }
 }
 
 func WithCloudGoals(planner rpcapi.CloudGoalPlanner) ServerOption {
@@ -146,6 +151,11 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.CloudControlService_CreateCloudDeploymentDestroyChallenge_FullMethodName: "cloud.destroy",
 		agentv1.CloudControlService_ApproveCloudDeploymentDestroy_FullMethodName:         "cloud.destroy",
 		agentv1.CloudControlService_GetCloudDestroyOperation_FullMethodName:              "cloud.read",
+		agentv1.CloudControlService_CreateCloudDeploymentEntryPlan_FullMethodName:        "cloud.plan.write",
+		agentv1.CloudControlService_GetCloudEntryPlan_FullMethodName:                     "cloud.read",
+		agentv1.CloudControlService_CreateCloudDeploymentEntryChallenge_FullMethodName:   "cloud.approve",
+		agentv1.CloudControlService_ApproveCloudDeploymentEntry_FullMethodName:           "cloud.approve",
+		agentv1.CloudControlService_GetCloudEntryOperation_FullMethodName:                "cloud.read",
 		agentv1.SecretBootstrapService_CreateSession_FullMethodName:                      "secret.bootstrap",
 		agentv1.SecretBootstrapService_GetSession_FullMethodName:                         "secret.bootstrap",
 		agentv1.SecretBootstrapService_UploadEncrypted_FullMethodName:                    "secret.bootstrap",
@@ -169,7 +179,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))
-	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals))
+	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals, options.cloudEntrypoint))
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer))
 	healthServer := health.NewServer()

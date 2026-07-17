@@ -426,6 +426,14 @@ func cloudResourceTypeToProto(value resource.Type) agentv1.CloudResourceType {
 		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_ENDPOINT
 	case resource.TypeSnapshot:
 		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_SNAPSHOT
+	case resource.TypeALB:
+		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_ALB
+	case resource.TypeTargetGroup:
+		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_TARGET_GROUP
+	case resource.TypeListener:
+		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_LISTENER
+	case resource.TypeSecurityGroupRule:
+		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_SECURITY_GROUP_RULE
 	default:
 		return agentv1.CloudResourceType_CLOUD_RESOURCE_TYPE_UNSPECIFIED
 	}

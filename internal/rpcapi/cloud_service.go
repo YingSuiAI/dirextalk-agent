@@ -11,9 +11,11 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
+	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -24,6 +26,7 @@ type CloudControlService struct {
 	coordinator     cloudapp.Coordinator
 	statusReader    cloudstatus.Reader
 	destroyer       CloudDestroyCoordinator
+	entrypoint      CloudEntrypointCoordinator
 	goalPlanner     CloudGoalPlanner
 	agentInstanceID string
 }
@@ -32,6 +35,17 @@ type CloudDestroyCoordinator interface {
 	Prepare(context.Context, clouddestroy.PrepareCommand) (clouddestroy.ChallengeV1, error)
 	Approve(context.Context, clouddestroy.ApproveCommand) (clouddestroy.OperationV1, error)
 	Get(context.Context, string, string) (clouddestroy.OperationV1, error)
+}
+
+// CloudEntrypointCoordinator is deliberately narrower than the general cloud
+// coordinator. Its device-approved public ALB flow never exposes a generic
+// AWS mutation or caller-controlled Worker endpoint through gRPC.
+type CloudEntrypointCoordinator interface {
+	CreatePlan(context.Context, entrypoint.CreatePlanCommand) (entrypoint.PlanV1, error)
+	GetPlan(context.Context, string, string) (entrypoint.PlanV1, error)
+	Prepare(context.Context, entrypoint.PrepareCommand) (entrypoint.ChallengeV1, error)
+	Approve(context.Context, entrypoint.ApproveCommand) (entrypoint.OperationV1, error)
+	Get(context.Context, string, string) (entrypoint.OperationV1, error)
 }
 
 func NewCloudControlService(coordinator cloudapp.Coordinator, agentInstanceID string, statusReaders ...cloudstatus.Reader) *CloudControlService {
@@ -48,10 +62,17 @@ func NewCloudControlServiceWithDestroy(coordinator cloudapp.Coordinator, agentIn
 	return service
 }
 
-func NewCloudControlServiceWithGoals(coordinator cloudapp.Coordinator, agentInstanceID string, statusReader cloudstatus.Reader, destroyer CloudDestroyCoordinator, planner CloudGoalPlanner) *CloudControlService {
+func NewCloudControlServiceWithGoals(coordinator cloudapp.Coordinator, agentInstanceID string, statusReader cloudstatus.Reader, destroyer CloudDestroyCoordinator, planner CloudGoalPlanner, entrypoints ...CloudEntrypointCoordinator) *CloudControlService {
 	service := NewCloudControlServiceWithDestroy(coordinator, agentInstanceID, statusReader, destroyer)
 	service.goalPlanner = planner
+	if len(entrypoints) > 0 {
+		service.entrypoint = entrypoints[0]
+	}
 	return service
+}
+
+func entryMutationScope(value cloudapp.MutationScope) task.MutationScope {
+	return task.MutationScope{ClientID: value.ClientID, CredentialID: value.CredentialID}
 }
 
 func (service *CloudControlService) GetCapabilities(ctx context.Context, _ *agentv1.CloudControlServiceGetCapabilitiesRequest) (*agentv1.CloudControlServiceGetCapabilitiesResponse, error) {
