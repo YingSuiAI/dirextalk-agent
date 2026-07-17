@@ -51,6 +51,64 @@ func (scope MutationScope) Validate() error {
 	return nil
 }
 
+// ResourceApprovalProofV1 is the narrow, non-provider proof required before
+// a controller can destroy one resource from a deployment that may contain
+// more than one independently approved graph.  The original Worker plan is
+// always present; ApprovedPlanHash/ApprovalID identify either that original
+// approval or a separately approved public-entry operation.
+//
+// This deliberately contains no AWS identifiers, credentials, URLs, or
+// mutable provider request.  Implementations must independently read the
+// durable ledger and approval facts rather than trusting the caller's copy.
+type ResourceApprovalProofV1 struct {
+	AgentInstanceID  string
+	OwnerID          string
+	TaskID           string
+	DeploymentID     string
+	ConnectionID     string
+	OriginalPlanID   string
+	OriginalPlanHash string
+	ResourceID       string
+	ApprovedPlanHash string
+	ApprovalID       string
+	Retention        task.RetentionPolicy
+	DestroyDeadline  time.Time
+	AutoDestroy      bool
+	State            resource.State
+}
+
+func (proof ResourceApprovalProofV1) Validate() error {
+	for _, value := range []string{
+		proof.AgentInstanceID, proof.TaskID, proof.DeploymentID, proof.ConnectionID,
+		proof.OriginalPlanID, proof.ResourceID, proof.ApprovalID,
+	} {
+		parsed, err := uuid.Parse(strings.TrimSpace(value))
+		if err != nil || parsed == uuid.Nil {
+			return ErrInvalid
+		}
+	}
+	if strings.TrimSpace(proof.OwnerID) == "" || len(proof.OwnerID) > 255 || security.ContainsLikelySecret(proof.OwnerID) ||
+		!validDigest(proof.OriginalPlanHash) || !validDigest(proof.ApprovedPlanHash) ||
+		proof.Retention != task.RetentionEphemeralAutoDestroy || !proof.AutoDestroy || proof.DestroyDeadline.IsZero() {
+		return ErrInvalid
+	}
+	switch proof.State {
+	case resource.StateProvisioning, resource.StateActive, resource.StateDestroyScheduled,
+		resource.StateDestroying, resource.StateVerifiedDestroyed, resource.StateDestroyBlocked:
+		return nil
+	default:
+		return ErrInvalid
+	}
+}
+
+// ResourceApprovalVerifier validates the durable source of a resource's
+// original plan/approval binding.  It is intentionally a single read-only
+// method: neither destroy coordinators nor lifecycle controllers receive a
+// general persistence or provider interface.
+type ResourceApprovalVerifier interface {
+	VerifyResourceApproval(context.Context, ResourceApprovalProofV1) error
+}
+
 type ReadBackScopeV1 struct {
 	Observed   bool      `json:"observed"`
 	Exists     bool      `json:"exists"`

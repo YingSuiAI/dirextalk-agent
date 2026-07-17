@@ -30,6 +30,15 @@ func TestEphemeralDestroyControllerRunsAfterTerminalGrace(t *testing.T) {
 	}
 }
 
+func TestEphemeralDestroyControllerRequiresApprovalVerifier(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	config := fixture.config()
+	config.Approvals = nil
+	if _, err := NewEphemeralDestroyController(config); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("NewEphemeralDestroyController() error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestEphemeralDestroyControllerWaitsForTerminalGrace(t *testing.T) {
 	fixture := newEphemeralDestroyFixture(t)
 	fixture.now = fixture.task.UpdatedAt.Add(30*time.Minute - time.Nanosecond)
@@ -97,6 +106,41 @@ func TestEphemeralDestroyControllerRetriesBlockedDestruction(t *testing.T) {
 	}
 }
 
+func TestEphemeralDestroyControllerAutoDestroysMixedApprovedEntryResources(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	entry := fixture.entryResource()
+	fixture.resources = append(fixture.resources, entry)
+	fixture.lifecycle.scheduled = append([]resource.ResourceV1(nil), fixture.resources...)
+	fixture.approvals.entries = map[string]fakeEntryApproval{entry.ResourceID: {
+		planHash: entry.ApprovedPlanHash, approvalID: entry.ApprovalID, ownerID: fixture.plan.OwnerID, connection: fixture.connection.ConnectionID,
+	}}
+	fixture.now = fixture.task.UpdatedAt.Add(30 * time.Minute)
+
+	if err := fixture.controller(t).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if fixture.lifecycle.scheduleCalls != 1 || fixture.lifecycle.destroyCalls != 1 {
+		t.Fatalf("mixed lifecycle calls schedule=%d destroy=%d", fixture.lifecycle.scheduleCalls, fixture.lifecycle.destroyCalls)
+	}
+	if len(fixture.approvals.proofs) < len(fixture.resources)*2 {
+		t.Fatalf("approval source verifier calls=%d, want pre/post-schedule checks for each resource", len(fixture.approvals.proofs))
+	}
+}
+
+func TestEphemeralDestroyControllerRejectsUnverifiedMixedEntryResource(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	entry := fixture.entryResource()
+	fixture.resources = append(fixture.resources, entry)
+	fixture.lifecycle.scheduled = append([]resource.ResourceV1(nil), fixture.resources...)
+	fixture.now = fixture.task.UpdatedAt.Add(30 * time.Minute)
+
+	err := fixture.controller(t).RunOnce(context.Background())
+	if !errors.Is(err, ErrLifecycleFactsMismatch) {
+		t.Fatalf("RunOnce() error = %v, want ErrLifecycleFactsMismatch", err)
+	}
+	fixture.requireNoLifecycleCalls(t)
+}
+
 func TestEphemeralDestroyControllerExecutesPersistedManualApprovalAndRequiresReadBack(t *testing.T) {
 	fixture := newEphemeralDestroyFixture(t)
 	prepareManualDestroyResource(&fixture.resources[0], fixture.plan, fixture.approval)
@@ -118,6 +162,51 @@ func TestEphemeralDestroyControllerExecutesPersistedManualApprovalAndRequiresRea
 	}
 	if repository.operation.Status != clouddestroy.StatusVerifiedDestroyed || fixture.lifecycle.destroyCalls != 1 {
 		t.Fatalf("manual destroy status=%s destroy_calls=%d", repository.operation.Status, fixture.lifecycle.destroyCalls)
+	}
+}
+
+func TestEphemeralDestroyControllerExecutesManualMixedApprovalAndPreservesEachResourceBinding(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	prepareManualDestroyResource(&fixture.resources[0], fixture.plan, fixture.approval)
+	entry := fixture.entryResource()
+	entry.ProviderID = "alb-fixture"
+	entry.ReadBack = resource.ReadBackEvidence{Exists: true, ProviderID: entry.ProviderID, ObservedAt: fixture.now.Add(time.Second), TagDigest: "sha256:" + strings.Repeat("3", 64)}
+	fixture.resources = append(fixture.resources, entry)
+	fixture.approvals.entries = map[string]fakeEntryApproval{entry.ResourceID: {
+		planHash: entry.ApprovedPlanHash, approvalID: entry.ApprovalID, ownerID: fixture.plan.OwnerID, connection: fixture.connection.ConnectionID,
+	}}
+	scope := manualDestroyScope(fixture)
+	verified := make([]resource.ResourceV1, len(fixture.resources))
+	copy(verified, fixture.resources)
+	for index := range verified {
+		verified[index].State = resource.StateVerifiedDestroyed
+		verified[index].ReadBack.Exists = false
+		verified[index].ReadBack.ObservedAt = fixture.now.Add(time.Second)
+	}
+	fixture.lifecycle.scheduled = append([]resource.ResourceV1(nil), fixture.resources...)
+	fixture.lifecycle.destroyResults = []resource.DestroyResult{{Resources: verified}}
+	repository := &fakeManualDestroyRepository{operation: manualDestroyOperation(t, scope)}
+	controller := fixture.controller(t)
+	if err := controller.ConfigureManualDestroy(repository, fakeManualScopeReader{scope: scope}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.operation.Status != clouddestroy.StatusVerifiedDestroyed || fixture.lifecycle.destroyCalls != 1 {
+		t.Fatalf("manual mixed destroy status=%s calls=%d", repository.operation.Status, fixture.lifecycle.destroyCalls)
+	}
+	for _, expected := range scope.Resources {
+		found := false
+		for _, actual := range fixture.lifecycle.scheduled {
+			if actual.ResourceID == expected.ResourceID {
+				found = actual.ApprovedPlanHash == expected.ApprovedPlanHash && actual.ApprovalID == expected.OriginalApprovalID
+			}
+		}
+		if !found {
+			t.Fatalf("scheduled resource %s lost its signed approval binding", expected.ResourceID)
+		}
 	}
 }
 
@@ -153,6 +242,7 @@ type ephemeralDestroyFixture struct {
 	task       task.Task
 	resources  []resource.ResourceV1
 	lifecycle  *fakeDestroyLifecycle
+	approvals  *fakeDestroyApprovals
 }
 
 func newEphemeralDestroyFixture(t *testing.T) *ephemeralDestroyFixture {
@@ -183,15 +273,24 @@ func newEphemeralDestroyFixture(t *testing.T) *ephemeralDestroyFixture {
 		AutoDestroyApproved: true, State: resource.StateActive,
 	}
 	lifecycle := &fakeDestroyLifecycle{scheduled: []resource.ResourceV1{resourceValue}}
+	approvals := &fakeDestroyApprovals{}
 	return &ephemeralDestroyFixture{
 		agentID: plan.AgentInstanceID, now: operationCreatedAt, operation: operation, plan: plan, approval: approval,
-		connection: connection, task: taskValue, resources: []resource.ResourceV1{resourceValue}, lifecycle: lifecycle,
+		connection: connection, task: taskValue, resources: []resource.ResourceV1{resourceValue}, lifecycle: lifecycle, approvals: approvals,
 	}
 }
 
 func (fixture *ephemeralDestroyFixture) controller(t *testing.T) *EphemeralDestroyController {
 	t.Helper()
-	controller, err := NewEphemeralDestroyController(EphemeralDestroyConfig{
+	controller, err := NewEphemeralDestroyController(fixture.config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return controller
+}
+
+func (fixture *ephemeralDestroyFixture) config() EphemeralDestroyConfig {
+	return EphemeralDestroyConfig{
 		AgentInstanceID: fixture.agentID,
 		PollInterval:    time.Second,
 		Resources:       fakeDestroyResourceReader{resources: fixture.resources},
@@ -200,18 +299,25 @@ func (fixture *ephemeralDestroyFixture) controller(t *testing.T) *EphemeralDestr
 		Connections:     fakeDestroyConnections{connection: fixture.connection},
 		Tasks:           fakeDestroyTasks{task: fixture.task},
 		Lifecycles:      &fakeDestroyLifecycleFactory{lifecycle: fixture.lifecycle},
+		Approvals:       fixture.approvals,
 		Now:             func() time.Time { return fixture.now },
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
-	return controller
 }
 
 func (fixture *ephemeralDestroyFixture) requireNoLifecycleCalls(t *testing.T) {
 	t.Helper()
 	if fixture.lifecycle.scheduleCalls != 0 || fixture.lifecycle.destroyCalls != 0 {
 		t.Fatalf("unexpected lifecycle calls schedule=%d destroy=%d", fixture.lifecycle.scheduleCalls, fixture.lifecycle.destroyCalls)
+	}
+}
+
+func (fixture *ephemeralDestroyFixture) entryResource() resource.ResourceV1 {
+	return resource.ResourceV1{
+		ResourceID: uuid.NewString(), AgentInstanceID: fixture.agentID, OwnerID: fixture.plan.OwnerID, TaskID: fixture.operation.TaskID,
+		DeploymentID: fixture.operation.DeploymentID, Type: resource.TypeALB, LogicalName: "approved-public-entry", Region: fixture.connection.Region,
+		SpecDigest: "sha256:" + strings.Repeat("4", 64), ApprovedPlanHash: "sha256:" + strings.Repeat("5", 64), ApprovalID: uuid.NewString(),
+		ProviderID: "alb-fixture", Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: fixture.resources[0].DestroyDeadline,
+		AutoDestroyApproved: true, State: resource.StateActive,
 	}
 }
 
@@ -249,6 +355,43 @@ func (connections fakeDestroyConnections) LoadConnection(context.Context, string
 type fakeDestroyTasks struct{ task task.Task }
 
 func (tasks fakeDestroyTasks) Get(context.Context, string) (task.Task, error) { return tasks.task, nil }
+
+// fakeDestroyApprovals models the narrow durable approval source check.  It
+// accepts the original Worker source by default and lets mixed-graph tests
+// register a separately approved entry resource without exposing a general
+// persistence fake to the lifecycle controller.
+type fakeDestroyApprovals struct {
+	err     error
+	proofs  []clouddestroy.ResourceApprovalProofV1
+	entries map[string]fakeEntryApproval
+}
+
+type fakeEntryApproval struct {
+	planHash   string
+	approvalID string
+	ownerID    string
+	connection string
+}
+
+func (fake *fakeDestroyApprovals) VerifyResourceApproval(_ context.Context, proof clouddestroy.ResourceApprovalProofV1) error {
+	fake.proofs = append(fake.proofs, proof)
+	if fake.err != nil {
+		return fake.err
+	}
+	if proof.Validate() != nil {
+		return clouddestroy.ErrInvalid
+	}
+	if entry, ok := fake.entries[proof.ResourceID]; ok {
+		if proof.ApprovedPlanHash != entry.planHash || proof.ApprovalID != entry.approvalID || proof.OwnerID != entry.ownerID || proof.ConnectionID != entry.connection {
+			return clouddestroy.ErrInvalid
+		}
+		return nil
+	}
+	if proof.ApprovedPlanHash != proof.OriginalPlanHash {
+		return clouddestroy.ErrInvalid
+	}
+	return nil
+}
 
 type fakeDestroyLifecycleFactory struct{ lifecycle ResourceLifecycle }
 
@@ -304,14 +447,20 @@ func prepareManualDestroyResource(item *resource.ResourceV1, plan cloudapproval.
 }
 
 func manualDestroyScope(fixture *ephemeralDestroyFixture) clouddestroy.ScopeV1 {
-	item := fixture.resources[0]
+	resources := make([]clouddestroy.ResourceScopeV1, 0, len(fixture.resources))
+	var revision int64 = 1
+	for _, item := range fixture.resources {
+		revision += item.Revision
+		resources = append(resources, clouddestroy.ResourceScopeV1{ResourceID: item.ResourceID, Type: item.Type, ProviderID: item.ProviderID, Revision: item.Revision,
+			DependsOn: append([]string(nil), item.DependsOn...), Retention: item.Retention, State: item.State, Region: item.Region, SpecDigest: item.SpecDigest,
+			ApprovedPlanHash: item.ApprovedPlanHash, OriginalApprovalID: item.ApprovalID,
+			ReadBack: clouddestroy.ReadBackScopeV1{Observed: true, Exists: item.ReadBack.Exists, ProviderID: item.ReadBack.ProviderID,
+				ObservedAt: item.ReadBack.ObservedAt, TagDigest: item.ReadBack.TagDigest}, DestroyDeadline: item.DestroyDeadline, AutoDestroyApproved: item.AutoDestroyApproved})
+	}
 	return clouddestroy.NormalizeScope(clouddestroy.ScopeV1{SchemaVersion: clouddestroy.ScopeSchemaV1, AgentInstanceID: fixture.agentID,
-		OwnerID: fixture.plan.OwnerID, DeploymentID: fixture.operation.DeploymentID, DeploymentRevision: item.Revision + 1, TaskID: fixture.operation.TaskID,
+		OwnerID: fixture.plan.OwnerID, DeploymentID: fixture.operation.DeploymentID, DeploymentRevision: revision, TaskID: fixture.operation.TaskID,
 		PlanID: fixture.plan.PlanID, PlanHash: fixture.approval.PlanHash, ConnectionID: fixture.connection.ConnectionID,
-		Resources: []clouddestroy.ResourceScopeV1{{ResourceID: item.ResourceID, Type: item.Type, ProviderID: item.ProviderID, Revision: item.Revision,
-			Retention: item.Retention, State: item.State, Region: item.Region, SpecDigest: item.SpecDigest, ApprovedPlanHash: item.ApprovedPlanHash,
-			OriginalApprovalID: item.ApprovalID, ReadBack: clouddestroy.ReadBackScopeV1{Observed: true, Exists: true, ProviderID: item.ProviderID,
-				ObservedAt: item.ReadBack.ObservedAt, TagDigest: item.ReadBack.TagDigest}, DestroyDeadline: item.DestroyDeadline, AutoDestroyApproved: true}}})
+		Resources: resources})
 }
 
 func manualDestroyOperation(t *testing.T, scope clouddestroy.ScopeV1) clouddestroy.OperationV1 {

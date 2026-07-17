@@ -3,6 +3,7 @@ package destroy
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -28,16 +29,17 @@ type Service struct {
 	devices         cloudapproval.DeviceKeyRepository
 	statuses        cloudstatus.Reader
 	plans           PlanReader
+	approvals       ResourceApprovalVerifier
 	notifier        Notifier
 	now             func() time.Time
 }
 
-func NewService(agentInstanceID string, repository Repository, devices cloudapproval.DeviceKeyRepository, statuses cloudstatus.Reader, plans PlanReader, notifier Notifier, now func() time.Time) (*Service, error) {
+func NewService(agentInstanceID string, repository Repository, devices cloudapproval.DeviceKeyRepository, statuses cloudstatus.Reader, plans PlanReader, approvals ResourceApprovalVerifier, notifier Notifier, now func() time.Time) (*Service, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil || repository == nil || devices == nil || statuses == nil || plans == nil || notifier == nil || now == nil {
+	if err != nil || parsed == uuid.Nil || repository == nil || devices == nil || statuses == nil || plans == nil || approvals == nil || notifier == nil || now == nil {
 		return nil, ErrInvalid
 	}
-	return &Service{agentInstanceID: parsed.String(), repository: repository, devices: devices, statuses: statuses, plans: plans, notifier: notifier, now: now}, nil
+	return &Service{agentInstanceID: parsed.String(), repository: repository, devices: devices, statuses: statuses, plans: plans, approvals: approvals, notifier: notifier, now: now}, nil
 }
 
 type PrepareCommand struct {
@@ -173,7 +175,7 @@ func (service *Service) snapshot(ctx context.Context, ownerID, deploymentID stri
 		return ScopeV1{}, ErrNotFound
 	}
 	planHash, err := plan.Hash()
-	if err != nil || plan.AgentInstanceID != service.agentInstanceID || plan.OwnerID != ownerID || plan.PlanID != deployment.PlanID || plan.ConnectionID != deployment.ConnectionID {
+	if err != nil || plan.Status != cloudapproval.PlanApproved || plan.AgentInstanceID != service.agentInstanceID || plan.OwnerID != ownerID || plan.PlanID != deployment.PlanID || plan.ConnectionID != deployment.ConnectionID {
 		return ScopeV1{}, ErrInvalid
 	}
 	scope := ScopeV1{SchemaVersion: ScopeSchemaV1, AgentInstanceID: service.agentInstanceID, OwnerID: ownerID,
@@ -183,12 +185,14 @@ func (service *Service) snapshot(ctx context.Context, ownerID, deploymentID stri
 		return ScopeV1{}, ErrInvalid
 	}
 	for _, item := range resources {
-		if item.AgentInstanceID != service.agentInstanceID || item.OwnerID != ownerID || item.DeploymentID != deploymentID || item.TaskID != scope.TaskID ||
-			item.Retention == task.RetentionManaged || item.State == resource.StateRetainedManaged {
+		if item.AgentInstanceID != service.agentInstanceID || item.OwnerID != ownerID || item.DeploymentID != deploymentID || item.TaskID != scope.TaskID {
+			return ScopeV1{}, ErrInvalid
+		}
+		if item.Retention == task.RetentionManaged || item.State == resource.StateRetainedManaged {
 			return ScopeV1{}, ErrManaged
 		}
 		if item.Retention != task.RetentionEphemeralAutoDestroy || !item.AutoDestroyApproved || !supportedResourceType(item.Type) || item.ProviderID == "" ||
-			item.ApprovedPlanHash != planHash || !validUUID(item.ApprovalID) || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.ProviderID != item.ProviderID ||
+			!validDigest(item.ApprovedPlanHash) || !validUUID(item.ApprovalID) || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.ProviderID != item.ProviderID ||
 			!validDigest(item.ReadBack.TagDigest) {
 			return ScopeV1{}, ErrInvalid
 		}
@@ -203,6 +207,18 @@ func (service *Service) snapshot(ctx context.Context, ownerID, deploymentID stri
 			}
 		default:
 			return ScopeV1{}, ErrInvalid
+		}
+		proof := ResourceApprovalProofV1{
+			AgentInstanceID: service.agentInstanceID, OwnerID: ownerID, TaskID: scope.TaskID, DeploymentID: deploymentID,
+			ConnectionID: deployment.ConnectionID, OriginalPlanID: deployment.PlanID, OriginalPlanHash: planHash,
+			ResourceID: item.ResourceID, ApprovedPlanHash: item.ApprovedPlanHash, ApprovalID: item.ApprovalID,
+			Retention: item.Retention, DestroyDeadline: item.DestroyDeadline, AutoDestroy: item.AutoDestroyApproved, State: item.State,
+		}
+		if proof.Validate() != nil {
+			return ScopeV1{}, ErrInvalid
+		}
+		if err := service.approvals.VerifyResourceApproval(ctx, proof); err != nil {
+			return ScopeV1{}, mapResourceApprovalError(err)
 		}
 		scope.Resources = append(scope.Resources, ResourceScopeV1{ResourceID: item.ResourceID, Type: item.Type, ProviderID: item.ProviderID,
 			Revision: item.Revision, DependsOn: append([]string(nil), item.DependsOn...), Retention: item.Retention, State: item.State,
@@ -288,4 +304,20 @@ func mapStatusError(err error) error {
 		return ErrInvalid
 	}
 	return fmt.Errorf("%w: status read", ErrUnavailable)
+}
+
+// A verifier reports only typed availability/validation outcomes.  Preserve
+// cancellation for callers, expose unavailable storage as retryable, and map
+// every source mismatch to the existing safe invalid-scope result.
+func mapResourceApprovalError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case errors.Is(err, ErrUnavailable):
+		return ErrUnavailable
+	default:
+		return ErrInvalid
+	}
 }

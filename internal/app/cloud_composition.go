@@ -204,6 +204,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	resourceApprovals := destroyResourceApprovalAdapter{store: store}
 	healthProbeStore, err := store.NewHealthProbeStore()
 	if err != nil {
 		vault.Close()
@@ -296,7 +297,8 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	lifecycle, err := cloudexecution.NewEphemeralDestroyController(cloudexecution.EphemeralDestroyConfig{
 		AgentInstanceID: agentInstanceID, PollInterval: 30 * time.Second,
 		Resources: resourceStore, Launches: store, Facts: facts, Connections: store, Tasks: store,
-		Lifecycles: awsLifecycleFactory{repository: resourceStore, runtimes: runtimeFactory}, Secrets: deploymentSecrets, Now: time.Now,
+		Lifecycles: awsLifecycleFactory{repository: resourceStore, runtimes: runtimeFactory}, Secrets: deploymentSecrets,
+		Approvals: resourceApprovals, Now: time.Now,
 	})
 	if err != nil {
 		vault.Close()
@@ -331,7 +333,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	destroyCoordinator, err := clouddestroy.NewService(agentInstanceID, store, approvalReads, cloudStatuses, facts, lifecycle, time.Now)
+	destroyCoordinator, err := clouddestroy.NewService(agentInstanceID, store, approvalReads, cloudStatuses, facts, resourceApprovals, lifecycle, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err

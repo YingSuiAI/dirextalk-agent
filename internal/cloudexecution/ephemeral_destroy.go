@@ -66,6 +66,7 @@ type EphemeralDestroyConfig struct {
 	Tasks           TaskFactReader
 	Lifecycles      LifecycleFactory
 	Secrets         DeploymentSecretLifecycle
+	Approvals       clouddestroy.ResourceApprovalVerifier
 	ManualDestroy   clouddestroy.Repository
 	ManualScopes    ManualDestroyScopeReader
 	Now             func() time.Time
@@ -84,6 +85,7 @@ type EphemeralDestroyController struct {
 	tasks           TaskFactReader
 	lifecycles      LifecycleFactory
 	secrets         DeploymentSecretLifecycle
+	approvals       clouddestroy.ResourceApprovalVerifier
 	manualDestroy   clouddestroy.Repository
 	manualScopes    ManualDestroyScopeReader
 	manualWake      chan struct{}
@@ -94,13 +96,13 @@ func NewEphemeralDestroyController(config EphemeralDestroyConfig) (*EphemeralDes
 	agentID, err := uuid.Parse(strings.TrimSpace(config.AgentInstanceID))
 	if err != nil || agentID == uuid.Nil || config.PollInterval < time.Second || config.PollInterval > 5*time.Minute ||
 		config.Resources == nil || config.Launches == nil || config.Facts == nil || config.Connections == nil ||
-		config.Tasks == nil || config.Lifecycles == nil || config.Now == nil || (config.ManualDestroy == nil) != (config.ManualScopes == nil) {
+		config.Tasks == nil || config.Lifecycles == nil || config.Approvals == nil || config.Now == nil || (config.ManualDestroy == nil) != (config.ManualScopes == nil) {
 		return nil, ErrInvalid
 	}
 	return &EphemeralDestroyController{
 		agentInstanceID: agentID.String(), interval: config.PollInterval, resources: config.Resources,
 		launches: config.Launches, facts: config.Facts, connections: config.Connections,
-		tasks: config.Tasks, lifecycles: config.Lifecycles, manualDestroy: config.ManualDestroy,
+		tasks: config.Tasks, lifecycles: config.Lifecycles, approvals: config.Approvals, manualDestroy: config.ManualDestroy,
 		secrets: config.Secrets, manualScopes: config.ManualScopes, manualWake: make(chan struct{}, 1), now: config.Now,
 	}, nil
 }
@@ -301,8 +303,10 @@ func manualScheduledScopeMatches(approved clouddestroy.ScopeV1, scheduled []reso
 		item, ok := byID[expected.ResourceID]
 		if !ok || item.OwnerID != approved.OwnerID || item.DeploymentID != approved.DeploymentID || item.TaskID != approved.TaskID ||
 			item.Type != expected.Type || item.ProviderID != expected.ProviderID || item.Retention != task.RetentionEphemeralAutoDestroy ||
-			item.ApprovedPlanHash != approved.PlanHash || item.ApprovalID != expected.OriginalApprovalID || item.State == resource.StateRetainedManaged ||
-			!slices.Equal(item.DependsOn, expected.DependsOn) {
+			item.Region != expected.Region || item.SpecDigest != expected.SpecDigest ||
+			item.ApprovedPlanHash != expected.ApprovedPlanHash || item.ApprovalID != expected.OriginalApprovalID ||
+			item.AutoDestroyApproved != expected.AutoDestroyApproved || !item.DestroyDeadline.UTC().Equal(expected.DestroyDeadline.UTC()) ||
+			item.State == resource.StateRetainedManaged || !slices.Equal(item.DependsOn, expected.DependsOn) {
 			return false
 		}
 	}
@@ -319,7 +323,12 @@ func manualResourcesVerifiedDestroyed(approved clouddestroy.ScopeV1, resources [
 	}
 	for _, expected := range approved.Resources {
 		item, ok := byID[expected.ResourceID]
-		if !ok || item.ProviderID != expected.ProviderID || item.State != resource.StateVerifiedDestroyed || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.Exists {
+		if !ok || item.OwnerID != approved.OwnerID || item.DeploymentID != approved.DeploymentID || item.TaskID != approved.TaskID ||
+			item.Type != expected.Type || item.ProviderID != expected.ProviderID || item.Region != expected.Region || item.SpecDigest != expected.SpecDigest ||
+			item.ApprovedPlanHash != expected.ApprovedPlanHash || item.ApprovalID != expected.OriginalApprovalID ||
+			item.Retention != task.RetentionEphemeralAutoDestroy || item.AutoDestroyApproved != expected.AutoDestroyApproved ||
+			!item.DestroyDeadline.UTC().Equal(expected.DestroyDeadline.UTC()) || !slices.Equal(item.DependsOn, expected.DependsOn) ||
+			item.State != resource.StateVerifiedDestroyed || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.Exists {
 			return false
 		}
 	}
@@ -347,7 +356,7 @@ func (controller *EphemeralDestroyController) reconcile(ctx context.Context, dep
 	if err != nil {
 		return err
 	}
-	managed, due, err := controller.lifecycleDecision(operation, plan, approval, connection, taskValue, resources)
+	managed, due, err := controller.lifecycleDecision(ctx, operation, plan, approval, connection, taskValue, resources)
 	if err != nil || managed || !due {
 		return err
 	}
@@ -373,8 +382,8 @@ func (controller *EphemeralDestroyController) reconcile(ctx context.Context, dep
 	if err != nil {
 		return err
 	}
-	if !scheduledSnapshotMatches(controller.agentInstanceID, operation, resources, scheduled) {
-		return ErrLifecycleFactsMismatch
+	if err := controller.scheduledSnapshotMatches(ctx, operation, plan, approval, resources, scheduled); err != nil {
+		return err
 	}
 	result, err := lifecycle.Destroy(ctx, resource.DestroyRequest{
 		DeploymentID: deploymentID,
@@ -396,6 +405,7 @@ func (controller *EphemeralDestroyController) reconcile(ctx context.Context, dep
 }
 
 func (controller *EphemeralDestroyController) lifecycleDecision(
+	ctx context.Context,
 	operation Operation,
 	plan cloudapproval.PlanV1,
 	approval cloudapproval.ApprovalV1,
@@ -403,6 +413,9 @@ func (controller *EphemeralDestroyController) lifecycleDecision(
 	taskValue task.Task,
 	resources []resource.ResourceV1,
 ) (managed bool, due bool, err error) {
+	if len(resources) == 0 {
+		return false, false, ErrLifecycleFactsMismatch
+	}
 	if plan.RetentionScope.Class == cloudapproval.RetentionManaged || taskValue.RetentionPolicy == task.RetentionManaged {
 		return true, false, nil
 	}
@@ -420,9 +433,12 @@ func (controller *EphemeralDestroyController) lifecycleDecision(
 	maximumDeadline := operation.CreatedAt.UTC().Add(time.Duration(plan.RetentionScope.MaxLifetimeSeconds) * time.Second)
 	for _, item := range resources {
 		if item.AgentInstanceID != controller.agentInstanceID || item.DeploymentID != operation.DeploymentID || item.OwnerID != plan.OwnerID ||
-			item.TaskID != operation.TaskID || item.ApprovalID != approval.ApprovalID || item.ApprovedPlanHash != approval.PlanHash ||
+			item.TaskID != operation.TaskID ||
 			item.Retention != task.RetentionEphemeralAutoDestroy || !item.AutoDestroyApproved || !item.DestroyDeadline.UTC().Equal(maximumDeadline) {
 			return false, false, ErrLifecycleFactsMismatch
+		}
+		if err := controller.verifyResourceApproval(ctx, operation, plan, approval, item); err != nil {
+			return false, false, err
 		}
 	}
 	now := controller.now().UTC()
@@ -434,6 +450,41 @@ func (controller *EphemeralDestroyController) lifecycleDecision(
 	}
 	graceDeadline := taskValue.UpdatedAt.UTC().Add(time.Duration(plan.RetentionScope.GracePeriodSeconds) * time.Second)
 	return false, !now.Before(graceDeadline), nil
+}
+
+// verifyResourceApproval makes the original Worker plan explicit while
+// leaving the individual resource plan/approval pair intact.  The verifier is
+// the sole place that may recognize a separately approved entry operation;
+// ordinary resources therefore still have to resolve to the original launch
+// approval in durable storage.
+func (controller *EphemeralDestroyController) verifyResourceApproval(
+	ctx context.Context,
+	operation Operation,
+	plan cloudapproval.PlanV1,
+	approval cloudapproval.ApprovalV1,
+	item resource.ResourceV1,
+) error {
+	proof := clouddestroy.ResourceApprovalProofV1{
+		AgentInstanceID: controller.agentInstanceID, OwnerID: operation.Launch.OwnerID, TaskID: operation.TaskID,
+		DeploymentID: operation.DeploymentID, ConnectionID: operation.ConnectionID, OriginalPlanID: plan.PlanID,
+		OriginalPlanHash: approval.PlanHash, ResourceID: item.ResourceID, ApprovedPlanHash: item.ApprovedPlanHash,
+		ApprovalID: item.ApprovalID, Retention: item.Retention, DestroyDeadline: item.DestroyDeadline,
+		AutoDestroy: item.AutoDestroyApproved, State: item.State,
+	}
+	if proof.Validate() != nil || controller.approvals == nil {
+		return ErrLifecycleFactsMismatch
+	}
+	if err := controller.approvals.VerifyResourceApproval(ctx, proof); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return err
+		case errors.Is(err, clouddestroy.ErrUnavailable):
+			return ErrUnavailable
+		default:
+			return ErrLifecycleFactsMismatch
+		}
+	}
+	return nil
 }
 
 func groupDestroyCandidates(agentInstanceID string, items []resource.ResourceV1) (map[string][]resource.ResourceV1, bool) {
@@ -470,26 +521,43 @@ func deploymentIsManaged(items []resource.ResourceV1) bool {
 	return false
 }
 
-func scheduledSnapshotMatches(agentInstanceID string, operation Operation, before, after []resource.ResourceV1) bool {
+func (controller *EphemeralDestroyController) scheduledSnapshotMatches(
+	ctx context.Context,
+	operation Operation,
+	plan cloudapproval.PlanV1,
+	approval cloudapproval.ApprovalV1,
+	before, after []resource.ResourceV1,
+) error {
 	if len(before) == 0 || len(before) != len(after) {
-		return false
+		return ErrLifecycleFactsMismatch
 	}
-	expected := make(map[string]struct{}, len(before))
+	expected := make(map[string]resource.ResourceV1, len(before))
 	for _, item := range before {
-		expected[item.ResourceID] = struct{}{}
+		expected[item.ResourceID] = item
 	}
 	for _, item := range after {
-		if _, ok := expected[item.ResourceID]; !ok {
-			return false
+		beforeItem, ok := expected[item.ResourceID]
+		if !ok {
+			return ErrLifecycleFactsMismatch
 		}
 		delete(expected, item.ResourceID)
-		if item.AgentInstanceID != agentInstanceID || item.DeploymentID != operation.DeploymentID || item.OwnerID != operation.Launch.OwnerID || item.TaskID != operation.TaskID ||
-			item.ApprovalID != operation.Launch.ApprovalID || item.ApprovedPlanHash != operation.ApprovedPlanHash ||
-			item.Retention != task.RetentionEphemeralAutoDestroy || !item.AutoDestroyApproved || item.State == resource.StateRetainedManaged {
-			return false
+		if item.AgentInstanceID != controller.agentInstanceID || item.DeploymentID != operation.DeploymentID || item.OwnerID != operation.Launch.OwnerID || item.TaskID != operation.TaskID ||
+			item.Type != beforeItem.Type || item.ProviderID != beforeItem.ProviderID || item.Region != beforeItem.Region || item.SpecDigest != beforeItem.SpecDigest ||
+			item.ApprovalID != beforeItem.ApprovalID || item.ApprovedPlanHash != beforeItem.ApprovedPlanHash ||
+			item.Retention != task.RetentionEphemeralAutoDestroy || item.Retention != beforeItem.Retention ||
+			!item.AutoDestroyApproved || item.AutoDestroyApproved != beforeItem.AutoDestroyApproved ||
+			!item.DestroyDeadline.UTC().Equal(beforeItem.DestroyDeadline.UTC()) || item.State == resource.StateRetainedManaged ||
+			!slices.Equal(item.DependsOn, beforeItem.DependsOn) {
+			return ErrLifecycleFactsMismatch
+		}
+		if err := controller.verifyResourceApproval(ctx, operation, plan, approval, item); err != nil {
+			return err
 		}
 	}
-	return len(expected) == 0
+	if len(expected) != 0 {
+		return ErrLifecycleFactsMismatch
+	}
+	return nil
 }
 
 func terminalOutcome(value task.OutcomeStatus) bool {
