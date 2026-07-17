@@ -57,6 +57,30 @@ func TestCloudManagedPreparationRPCRoundTripPreservesSignedScopeStepsAndResult(t
 	}
 }
 
+func TestCloudManagedPreparationRPCMapsV2BoundedSnapshotTerms(t *testing.T) {
+	challenge := rpcManagedPreparationChallenge(t, time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC))
+	challenge.SchemaVersion = serviceoperation.ChallengeSchemaV2
+	challenge.Scope.SchemaVersion = serviceoperation.ScopeSchemaV2
+	challenge.Scope.Volumes[0].SnapshotOperationKey = "managed-snapshot-knowledge"
+	challenge.Scope.Volumes[0].SnapshotSourceVolumeScopeDigest = rpcManagedDigest('f')
+	challenge.Scope.Volumes[0].SnapshotMaxRetentionSeconds = 3_600
+	var err error
+	challenge.ScopeDigest, err = serviceoperation.SigningPayloadDigest(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := managedPreparationChallengeToProto(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	volume := value.GetScope().GetVolumes()[0]
+	if volume.GetSnapshotOperationKey() != challenge.Scope.Volumes[0].SnapshotOperationKey ||
+		volume.GetSnapshotSourceVolumeScopeDigest() != challenge.Scope.Volumes[0].SnapshotSourceVolumeScopeDigest ||
+		volume.GetSnapshotMaxRetentionSeconds() != challenge.Scope.Volumes[0].SnapshotMaxRetentionSeconds {
+		t.Fatalf("V2 snapshot terms lost in protobuf mapping: %+v", volume)
+	}
+}
+
 type managedPreparationCoordinatorFake struct {
 	challenge serviceoperation.ChallengeV1
 	operation serviceoperation.OperationV1

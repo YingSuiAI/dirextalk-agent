@@ -93,7 +93,7 @@ func (repository *fakeResourceRepository) AcceptManaged(_ context.Context, deplo
 		result := make([]ResourceV1, 0, len(expected))
 		for resourceID := range expected {
 			item, found := repository.resources[resourceID]
-			if !found || item.DeploymentID != deploymentID || item.State != StateRetainedManaged {
+			if !found || item.DeploymentID != deploymentID || !managedAcceptanceStable(item) {
 				return nil, ErrRevisionConflict
 			}
 			result = append(result, item.clone())
@@ -110,20 +110,45 @@ func (repository *fakeResourceRepository) AcceptManaged(_ context.Context, deplo
 	result := make([]ResourceV1, 0, len(expected))
 	for resourceID := range expected {
 		resource := repository.resources[resourceID]
-		resource.State = StateRetainedManaged
-		resource.Retention = task.RetentionManaged
-		resource.DestroyDeadline = time.Time{}
-		resource.AutoDestroyApproved = false
-		resource.Tags[TagRetention] = string(task.RetentionManaged)
-		resource.Tags[TagDestroyDeadline] = "managed"
-		resource.Revision++
-		resource.UpdatedAt = managed.UpdatedAt
-		repository.resources[resourceID] = resource.clone()
+		changed := false
+		if IsBoundedManagedPreparationSnapshot(resource) {
+			if resource.State != StateActive && resource.State != StateVerifiedDestroyed {
+				return nil, ErrRevisionConflict
+			}
+		} else {
+			if resource.State != StateActive && resource.State != StateVerifiedDestroyed {
+				return nil, ErrRevisionConflict
+			}
+			if resource.State == StateVerifiedDestroyed && resource.Retention != task.RetentionManaged {
+				return nil, ErrRevisionConflict
+			}
+			if resource.State == StateActive {
+				resource.State = StateRetainedManaged
+				resource.Retention = task.RetentionManaged
+				resource.DestroyDeadline = time.Time{}
+				resource.AutoDestroyApproved = false
+				resource.Tags[TagRetention] = string(task.RetentionManaged)
+				resource.Tags[TagDestroyDeadline] = "managed"
+				changed = true
+			}
+		}
+		if changed {
+			resource.Revision++
+			resource.UpdatedAt = managed.UpdatedAt
+			repository.resources[resourceID] = resource.clone()
+		}
 		result = append(result, resource.clone())
 	}
 	repository.managed[deploymentID] = managed
 	sort.Slice(result, func(i, j int) bool { return result[i].ResourceID < result[j].ResourceID })
 	return result, nil
+}
+
+func managedAcceptanceStable(item ResourceV1) bool {
+	if IsBoundedManagedPreparationSnapshot(item) {
+		return item.State == StateActive || item.State == StateVerifiedDestroyed
+	}
+	return item.Retention == task.RetentionManaged && (item.State == StateRetainedManaged || item.State == StateVerifiedDestroyed)
 }
 
 func (repository *fakeResourceRepository) GetManaged(_ context.Context, deploymentID string) (ManagedServiceV1, []ResourceV1, error) {
@@ -933,6 +958,56 @@ func TestManagedAcceptanceRequiresCompleteContractAndDisablesReaper(t *testing.T
 	}
 	if report.SkippedManaged != 1 || len(fixture.provider.deleteOrder) != 0 || !fixture.provider.resources[resource.ProviderID].Exists {
 		t.Fatalf("reaper touched a managed resource: report=%+v order=%v", report, fixture.provider.deleteOrder)
+	}
+}
+
+func TestManagedAcceptancePreservesBoundedPreparationSnapshot(t *testing.T) {
+	fixture := newResourceFixture(t)
+	sourceSpec := fixture.spec(TypeEBS, "managed-source")
+	sourceSpec.Retention, sourceSpec.DestroyDeadline, sourceSpec.AutoDestroyApproved = task.RetentionManaged, time.Time{}, false
+	source, err := fixture.service.Provision(context.Background(), sourceSpec, fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparationID := uuid.NewString()
+	scopeDigest := "sha256:" + repeatHex('c')
+	snapshotSpec := fixture.spec(TypeSnapshot, "managed-preparation-snapshot", source.ResourceID)
+	snapshotSpec.ApprovalID, snapshotSpec.IntentOrigin, snapshotSpec.OriginScopeDigest = preparationID, IntentOriginManagedPreparation, scopeDigest
+	snapshotSpec.DestroyDeadline = fixture.now.Add(72 * time.Hour)
+	snapshot, err := fixture.service.Provision(context.Background(), snapshotSpec, fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsBoundedManagedPreparationSnapshot(snapshot) {
+		t.Fatalf("preparation snapshot was not bounded: %+v", snapshot)
+	}
+	contract := ManagedContractV1{
+		DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, AcceptanceApprovalID: uuid.NewString(),
+		Currency: "USD", CostAlertAmountMinor: 5_000, MonitorRef: "monitor://service/health",
+		MaintenanceRef: "runbook://service/maintenance", RestartRef: "runbook://service/restart",
+		BackupRef: "runbook://service/backup", RestoreRef: "runbook://service/restore",
+		UpgradeRef: "runbook://service/upgrade", RollbackRef: "runbook://service/rollback",
+		DestroyRef: "runbook://service/destroy", AcceptedAt: fixture.now,
+	}
+	_, accepted, err := fixture.service.AcceptManaged(context.Background(), contract)
+	if err != nil || len(accepted) != 2 {
+		t.Fatalf("managed acceptance resources=%+v error=%v", accepted, err)
+	}
+	byID := make(map[string]ResourceV1, len(accepted))
+	for _, item := range accepted {
+		byID[item.ResourceID] = item
+	}
+	if byID[source.ResourceID].State != StateRetainedManaged || byID[source.ResourceID].Retention != task.RetentionManaged ||
+		!IsBoundedManagedPreparationSnapshot(byID[snapshot.ResourceID]) || byID[snapshot.ResourceID].State != StateActive ||
+		!byID[snapshot.ResourceID].DestroyDeadline.Equal(snapshot.DestroyDeadline) {
+		t.Fatalf("managed acceptance rewrote snapshot lifetime: %+v", accepted)
+	}
+	manifest := fixture.mirror.manifests[fixture.deploymentID]
+	if !manifest.Managed || !HasExpiredManagedPreparationSnapshot(manifest, snapshot.DestroyDeadline) {
+		t.Fatalf("managed manifest lost bounded snapshot: %+v", manifest)
+	}
+	if _, replayed, replayErr := FindExactManagedReplay(context.Background(), fixture.repository, contract); replayErr != nil || !replayed {
+		t.Fatalf("bounded managed replay=%v error=%v", replayed, replayErr)
 	}
 }
 

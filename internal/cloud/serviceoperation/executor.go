@@ -238,7 +238,7 @@ func (executor *Executor) snapshotFacts(ctx context.Context, operation Operation
 		} else {
 			item, err = executor.resources.GetPreparationResource(ctx, volume.SnapshotResourceID)
 		}
-		if err != nil || !exactPreparationResource(item, operation.Challenge.Scope, volume.SnapshotResourceID, resource.TypeSnapshot, volume.SourceVolume.ResourceID, true) {
+		if err != nil || !exactPreparationSnapshot(item, operation, volume) {
 			if err != nil {
 				return nil, err
 			}
@@ -247,6 +247,17 @@ func (executor *Executor) snapshotFacts(ctx context.Context, operation Operation
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func exactPreparationSnapshot(item resource.ResourceV1, operation OperationV1, volume VolumePreparationV1) bool {
+	if !exactPreparationResource(item, operation, volume.SnapshotResourceID, resource.TypeSnapshot, volume.SourceVolume.ResourceID, true) {
+		return false
+	}
+	if operation.Challenge.Scope.SchemaVersion != ScopeSchemaV2 {
+		return true
+	}
+	deadline, err := operation.Challenge.SnapshotDestroyDeadline(volume)
+	return err == nil && resource.IsBoundedManagedPreparationSnapshot(item) && item.DestroyDeadline.Equal(deadline)
 }
 
 func (executor *Executor) replacementFacts(ctx context.Context, operation OperationV1, create bool) ([]resource.ResourceV1, error) {
@@ -259,7 +270,7 @@ func (executor *Executor) replacementFacts(ctx context.Context, operation Operat
 		} else {
 			item, err = executor.resources.GetPreparationResource(ctx, volume.ReplacementVolumeResourceID)
 		}
-		if err != nil || !exactPreparationResource(item, operation.Challenge.Scope, volume.ReplacementVolumeResourceID, resource.TypeEBS, volume.SnapshotResourceID, true) {
+		if err != nil || !exactPreparationResource(item, operation, volume.ReplacementVolumeResourceID, resource.TypeEBS, volume.SnapshotResourceID, true) {
 			if err != nil {
 				return nil, err
 			}
@@ -490,10 +501,13 @@ func buildVerifiedPreparation(operation OperationV1, snapshot cloudmanaged.Snaps
 	return value, nil
 }
 
-func exactPreparationResource(item resource.ResourceV1, scope ScopeV1, resourceID string, kind resource.Type, dependency string, exists bool) bool {
+func exactPreparationResource(item resource.ResourceV1, operation OperationV1, resourceID string, kind resource.Type, dependency string, exists bool) bool {
+	scope := operation.Challenge.Scope
 	return item.ResourceID == resourceID && item.AgentInstanceID == scope.AgentInstanceID &&
 		item.OwnerID == scope.OwnerID && item.DeploymentID == scope.DeploymentID && item.Type == kind &&
-		item.ApprovedPlanHash == scope.PlanHash && item.ProviderID != "" && item.Revision > 0 &&
+		item.ApprovedPlanHash == scope.PlanHash && item.ApprovalID == operation.OperationID &&
+		item.IntentOrigin == resource.IntentOriginManagedPreparation && item.OriginScopeDigest == operation.Challenge.ScopeDigest &&
+		item.ProviderID != "" && item.Revision > 0 &&
 		item.State == resource.StateActive && item.ReadBack.Exists == exists &&
 		item.ReadBack.ProviderID == item.ProviderID && len(item.DependsOn) == 1 && item.DependsOn[0] == dependency
 }

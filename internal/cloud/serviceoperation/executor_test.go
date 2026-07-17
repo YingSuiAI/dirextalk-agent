@@ -33,7 +33,7 @@ func TestExecutorFullFakeRecoversSnapshotAndLedgerResponseLossAndRevisionGap(t *
 	}
 	operations := &executorOperationRepository{operation: operation, gapPhase: PhaseRestoreCreate, loseCompleteResponse: true}
 	restart := executorRestartOperation(t, scope, now.Add(-10*time.Minute))
-	resources := newExecutorResourceFake(scope, now)
+	resources := newExecutorResourceFake(scope, operation, now)
 	resources.loseSnapshotResponse = true
 	attachments := resources.attachments
 	cost := &executorCostFake{policy: executorCostPolicy(scope, now)}
@@ -87,6 +87,49 @@ func TestExecutorFullFakeRecoversSnapshotAndLedgerResponseLossAndRevisionGap(t *
 	}
 	if attachments.detachCalls != 1 || attachments.attachCalls != 1 || !attachments.attached[resources.replacement.ProviderID] {
 		t.Fatalf("swap was not exact/idempotent: detach=%d attach=%d", attachments.detachCalls, attachments.attachCalls)
+	}
+}
+
+func TestExecutorRejectsPreparationResourcesBoundToAnotherOperation(t *testing.T) {
+	now := time.Date(2026, 7, 18, 9, 0, 0, 0, time.UTC)
+	scope := testScope(t)
+	challenge := ChallengeV1{SchemaVersion: ChallengeSchemaV1, ChallengeID: uuid.NewString(), OperationID: scope.PreparationOperationID,
+		SignerKeyID: "device-1", Scope: scope, IssuedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
+	challenge.ScopeDigest, _ = SigningPayloadDigest(challenge)
+	operation := OperationV1{OperationID: challenge.OperationID, Challenge: challenge, Status: StatusApproved}
+	tests := []struct {
+		name   string
+		read   func(*Executor, context.Context, OperationV1) error
+		mutate func(*executorResourceFake)
+	}{
+		{
+			name: "snapshot approval", read: func(executor *Executor, ctx context.Context, operation OperationV1) error {
+				_, err := executor.snapshotFacts(ctx, operation, false)
+				return err
+			}, mutate: func(resources *executorResourceFake) { resources.snapshot.ApprovalID = uuid.NewString() },
+		},
+		{
+			name: "snapshot origin", read: func(executor *Executor, ctx context.Context, operation OperationV1) error {
+				_, err := executor.snapshotFacts(ctx, operation, false)
+				return err
+			}, mutate: func(resources *executorResourceFake) { resources.snapshot.IntentOrigin = "" },
+		},
+		{
+			name: "replacement scope digest", read: func(executor *Executor, ctx context.Context, operation OperationV1) error {
+				_, err := executor.replacementFacts(ctx, operation, false)
+				return err
+			}, mutate: func(resources *executorResourceFake) { resources.replacement.OriginScopeDigest = digest("f") },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resources := newExecutorResourceFake(scope, operation, now)
+			test.mutate(resources)
+			err := test.read(&Executor{resources: resources}, context.Background(), operation)
+			if !errors.Is(err, ErrRevisionConflict) {
+				t.Fatalf("recovery error = %v, want revision conflict", err)
+			}
+		})
 	}
 }
 
@@ -226,7 +269,7 @@ func (fake *executorResourceFake) SwapVolumes(_ context.Context, _ OperationV1, 
 	return err
 }
 
-func newExecutorResourceFake(scope ScopeV1, now time.Time) *executorResourceFake {
+func newExecutorResourceFake(scope ScopeV1, operation OperationV1, now time.Time) *executorResourceFake {
 	fake := &executorResourceFake{scope: scope, now: now,
 		attachments: &executorAttachmentFake{attached: map[string]bool{scope.Volumes[0].SourceVolume.ProviderID: true}}}
 	fake.original = executorResource(scope, scope.Volumes[0].SourceVolume.ResourceID, resource.TypeEBS,
@@ -235,6 +278,11 @@ func newExecutorResourceFake(scope ScopeV1, now time.Time) *executorResourceFake
 		"snap-1123456789abcdef0", []string{fake.original.ResourceID}, now.Add(-8*time.Minute))
 	fake.replacement = executorResource(scope, scope.Volumes[0].ReplacementVolumeResourceID, resource.TypeEBS,
 		"vol-1123456789abcdef0", []string{fake.snapshot.ResourceID}, now.Add(-7*time.Minute))
+	for _, item := range []*resource.ResourceV1{&fake.snapshot, &fake.replacement} {
+		item.ApprovalID = operation.OperationID
+		item.IntentOrigin = resource.IntentOriginManagedPreparation
+		item.OriginScopeDigest = operation.Challenge.ScopeDigest
+	}
 	return fake
 }
 func (fake *executorResourceFake) EnsureSnapshot(context.Context, OperationV1, VolumePreparationV1) (resource.ResourceV1, error) {

@@ -19,11 +19,19 @@ import (
 )
 
 const (
-	ScopeSchemaV1            = "dirextalk.agent.cloud.service-operation-scope/v1"
-	ChallengeSchemaV1        = "dirextalk.agent.cloud.service-operation-challenge/v1"
-	SigningPayloadV1         = "dirextalk.agent.cloud.service-operation-signing-payload/v1"
+	ScopeSchemaV1     = "dirextalk.agent.cloud.service-operation-scope/v1"
+	ChallengeSchemaV1 = "dirextalk.agent.cloud.service-operation-challenge/v1"
+	SigningPayloadV1  = "dirextalk.agent.cloud.service-operation-signing-payload/v1"
+	// ScopeSchemaV2 carries the finite retention terms of a Plan V2 managed
+	// snapshot template. V1 is deliberately frozen because its whole JSON
+	// projection participates in the device-signing CBOR payload.
+	ScopeSchemaV2            = "dirextalk.agent.cloud.service-operation-scope/v2"
+	ChallengeSchemaV2        = "dirextalk.agent.cloud.service-operation-challenge/v2"
+	SigningPayloadV2         = "dirextalk.agent.cloud.service-operation-signing-payload/v2"
 	IntentManagedPreparation = "MANAGED_PREPARATION"
 )
+
+const maxManagedSnapshotRetentionSeconds = uint64(365 * 24 * 60 * 60)
 
 var (
 	ErrInvalid          = errors.New("invalid service operation")
@@ -86,6 +94,13 @@ type VolumePreparationV1 struct {
 	ReadOnly                    bool           `json:"read_only"`
 	Persistent                  bool           `json:"persistent"`
 	Disposition                 string         `json:"disposition"`
+	// The following fields are intentionally omitted from the V1 JSON
+	// projection. They are required in Scope V2 and bind this concrete
+	// preparation snapshot to the exact Plan V2 template and finite retention
+	// the owner approved.
+	SnapshotOperationKey            string `json:"snapshot_operation_key,omitempty"`
+	SnapshotSourceVolumeScopeDigest string `json:"snapshot_source_volume_scope_digest,omitempty"`
+	SnapshotMaxRetentionSeconds     uint64 `json:"snapshot_max_retention_seconds,omitempty"`
 }
 
 func (volume VolumePreparationV1) SourceSpecDigest() (string, error) {
@@ -141,7 +156,8 @@ func DeriveVolumeResourceIDs(operationID, sourceVolumeResourceID, slotID string)
 }
 
 func (scope ScopeV1) Validate() error {
-	if scope.SchemaVersion != ScopeSchemaV1 || scope.Intent != IntentManagedPreparation || !validUUID(scope.PreparationOperationID) ||
+	isV2 := scope.SchemaVersion == ScopeSchemaV2
+	if (scope.SchemaVersion != ScopeSchemaV1 && !isV2) || scope.Intent != IntentManagedPreparation || !validUUID(scope.PreparationOperationID) ||
 		!validRef(scope.OwnerID) || !validUUID(scope.AgentInstanceID) || !validUUID(scope.DeploymentID) ||
 		scope.DeploymentRevision < 1 || !validUUID(scope.ConnectionID) || scope.ConnectionRevision < 1 ||
 		!validUUID(scope.PlanID) || scope.PlanRevision < 1 || !validDigest(scope.PlanHash) ||
@@ -185,6 +201,14 @@ func (scope ScopeV1) Validate() error {
 			specErr != nil || specDigest != volume.SourceVolume.SpecDigest {
 			return ErrInvalid
 		}
+		if isV2 {
+			if !validRef(volume.SnapshotOperationKey) || !validDigest(volume.SnapshotSourceVolumeScopeDigest) ||
+				volume.SnapshotMaxRetentionSeconds == 0 || volume.SnapshotMaxRetentionSeconds > maxManagedSnapshotRetentionSeconds {
+				return ErrInvalid
+			}
+		} else if volume.SnapshotOperationKey != "" || volume.SnapshotSourceVolumeScopeDigest != "" || volume.SnapshotMaxRetentionSeconds != 0 {
+			return ErrInvalid
+		}
 		if _, duplicate := usedSources[volume.SourceVolume.ResourceID]; duplicate {
 			return ErrInvalid
 		}
@@ -221,16 +245,13 @@ type signingPayloadV1 struct {
 }
 
 func (challenge ChallengeV1) payload() signingPayloadV1 {
-	return signingPayloadV1{ChallengeSchemaV1, SigningPayloadV1, IntentManagedPreparation, challenge.ChallengeID,
+	schemaVersion, payloadVersion, _ := scopeSigningVersions(challenge.Scope.SchemaVersion)
+	return signingPayloadV1{schemaVersion, payloadVersion, IntentManagedPreparation, challenge.ChallengeID,
 		challenge.OperationID, challenge.SignerKeyID, challenge.Scope, challenge.IssuedAt, challenge.ExpiresAt}
 }
 
 func (challenge ChallengeV1) SigningPayload() ([]byte, error) {
-	if challenge.SchemaVersion != ChallengeSchemaV1 || !validUUID(challenge.ChallengeID) ||
-		!validUUID(challenge.OperationID) || challenge.Scope.PreparationOperationID != challenge.OperationID ||
-		!validRef(challenge.SignerKeyID) || challenge.Scope.Validate() != nil ||
-		challenge.IssuedAt.Location() != time.UTC || challenge.ExpiresAt.Location() != time.UTC ||
-		!challenge.ExpiresAt.After(challenge.IssuedAt) || challenge.ExpiresAt.Sub(challenge.IssuedAt) > 5*time.Minute {
+	if challenge.validateSigningPayloadFields() != nil {
 		return nil, ErrInvalid
 	}
 	digest, err := canonical.Digest(challenge.payload())
@@ -240,11 +261,55 @@ func (challenge ChallengeV1) SigningPayload() ([]byte, error) {
 	return canonical.Marshal(challenge.payload())
 }
 
+func (challenge ChallengeV1) validateSigningPayloadFields() error {
+	challengeSchema, _, ok := scopeSigningVersions(challenge.Scope.SchemaVersion)
+	if !ok || challenge.SchemaVersion != challengeSchema || !validUUID(challenge.ChallengeID) ||
+		!validUUID(challenge.OperationID) || challenge.Scope.PreparationOperationID != challenge.OperationID ||
+		!validRef(challenge.SignerKeyID) || challenge.Scope.Validate() != nil ||
+		challenge.IssuedAt.Location() != time.UTC || challenge.ExpiresAt.Location() != time.UTC ||
+		!challenge.ExpiresAt.After(challenge.IssuedAt) || challenge.ExpiresAt.Sub(challenge.IssuedAt) > 5*time.Minute {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func SigningPayloadDigest(challenge ChallengeV1) (string, error) {
-	if challenge.Scope.Validate() != nil {
+	challengeSchema, _, ok := scopeSigningVersions(challenge.Scope.SchemaVersion)
+	if !ok || challenge.SchemaVersion != challengeSchema || challenge.Scope.Validate() != nil {
 		return "", ErrInvalid
 	}
 	return canonical.Digest(challenge.payload())
+}
+
+// SnapshotDestroyDeadline derives the hard, finite retention deadline from
+// the signed V2 challenge. It intentionally anchors at IssuedAt rather than a
+// retry-time clock, so a response loss or delayed executor can only shorten a
+// snapshot lifetime, never extend the maximum that the owner approved.
+func (challenge ChallengeV1) SnapshotDestroyDeadline(volume VolumePreparationV1) (time.Time, error) {
+	if challenge.Scope.SchemaVersion != ScopeSchemaV2 || challenge.Scope.Validate() != nil ||
+		challenge.IssuedAt.IsZero() || challenge.IssuedAt.Location() != time.UTC ||
+		volume.SnapshotMaxRetentionSeconds == 0 || volume.SnapshotMaxRetentionSeconds > maxManagedSnapshotRetentionSeconds {
+		return time.Time{}, ErrInvalid
+	}
+	// PostgreSQL stores timestamptz at microsecond precision. Normalize before
+	// the resource intent is persisted so the exact signed deadline compares
+	// identically in the durable origin verifier after a restart.
+	deadline := challenge.IssuedAt.UTC().Add(time.Duration(volume.SnapshotMaxRetentionSeconds) * time.Second).Truncate(time.Microsecond)
+	if !deadline.After(challenge.IssuedAt.UTC()) {
+		return time.Time{}, ErrInvalid
+	}
+	return deadline, nil
+}
+
+func scopeSigningVersions(scopeSchema string) (challengeSchema, payloadSchema string, ok bool) {
+	switch scopeSchema {
+	case ScopeSchemaV1:
+		return ChallengeSchemaV1, SigningPayloadV1, true
+	case ScopeSchemaV2:
+		return ChallengeSchemaV2, SigningPayloadV2, true
+	default:
+		return "", "", false
+	}
 }
 
 type SignatureV1 struct {

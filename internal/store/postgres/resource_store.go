@@ -360,30 +360,92 @@ const managedPreparationResourceIntentOriginSQL = `
 	  AND source.revision=(volume->'source_volume'->>'revision')::bigint
 	  AND source.spec_digest=volume->'source_volume'->>'spec_digest'
 	  AND source.readback_tag_digest=volume->'source_volume'->>'tag_digest'
-	  AND source.state='active'
-	  AND source.retention=$12
-	  AND source.destroy_deadline IS NOT DISTINCT FROM $13::timestamptz
-	  AND source.auto_destroy_approved=$14
 	  AND (
-	    ($11::text='snapshot'
-	      AND volume->>'snapshot_resource_id'=$9::text
-	      AND volume->'source_volume'->>'resource_id'=$10::text)
+	    -- V1 is frozen: retain its original same-retention authorization
+	    -- predicate byte-for-byte in meaning while V2 gets its own finite
+	    -- snapshot branch below.
+    (operation.challenge_json->>'schema_version'='dirextalk.agent.cloud.service-operation-challenge/v1'
+      AND operation.challenge_json->'scope'->>'schema_version'='dirextalk.agent.cloud.service-operation-scope/v1'
+      AND source.state='active'
+	      AND source.retention=$12
+	      AND source.destroy_deadline IS NOT DISTINCT FROM $13::timestamptz
+	      AND source.auto_destroy_approved=$14
+	      AND (
+	        ($11::text='snapshot'
+	          AND volume->>'snapshot_resource_id'=$9::text
+	          AND volume->'source_volume'->>'resource_id'=$10::text)
+	        OR
+	        ($11::text='ebs'
+	          AND volume->>'replacement_volume_resource_id'=$9::text
+	          AND volume->>'snapshot_resource_id'=$10::text
+	          AND snapshot.agent_instance_id=$1
+	          AND snapshot.owner_id=$2
+	          AND snapshot.task_id=$3
+	          AND snapshot.deployment_id=$4
+	          AND snapshot.resource_id=$10
+	          AND snapshot.resource_type='snapshot'
+	          AND snapshot.state='active'
+	          AND snapshot.intent_origin='managed_preparation'
+	          AND snapshot.origin_scope_digest=$8
+	          AND snapshot.approval_id=$5
+	          AND snapshot.approved_plan_hash=$6
+	          AND snapshot.depends_on=ARRAY[source.resource_id]::uuid[])
+	      ))
 	    OR
-	    ($11::text='ebs'
-	      AND volume->>'replacement_volume_resource_id'=$9::text
-	      AND volume->>'snapshot_resource_id'=$10::text
-	      AND snapshot.agent_instance_id=$1
-	      AND snapshot.owner_id=$2
-	      AND snapshot.task_id=$3
-	      AND snapshot.deployment_id=$4
-	      AND snapshot.resource_id=$10
-	      AND snapshot.resource_type='snapshot'
-	      AND snapshot.state='active'
-	      AND snapshot.intent_origin='managed_preparation'
-	      AND snapshot.origin_scope_digest=$8
-	      AND snapshot.approval_id=$5
-	      AND snapshot.approved_plan_hash=$6
-	      AND snapshot.depends_on=ARRAY[source.resource_id]::uuid[])
+	    -- V2 permits exactly one finite exception: a signed preparation
+	    -- snapshot remains provider-retained but is ledgered as ephemeral.
+	    (operation.challenge_json->>'schema_version'='dirextalk.agent.cloud.service-operation-challenge/v2'
+	      AND operation.challenge_json->'scope'->>'schema_version'='dirextalk.agent.cloud.service-operation-scope/v2'
+	      AND source.state='active'
+	      AND source.retention='managed'
+	      AND source.destroy_deadline IS NULL
+	      AND source.auto_destroy_approved=false
+	      AND plan.plan_json->>'schema_version'='dirextalk.agent.cloud.plan/v2'
+	      AND (volume->>'snapshot_max_retention_seconds') ~ '^[1-9][0-9]*$'
+	      AND (volume->>'snapshot_max_retention_seconds')::bigint <= 31536000
+	      AND EXISTS (
+	        SELECT 1
+	        FROM jsonb_array_elements(plan.plan_json->'service_operations'->'snapshots') AS template
+	        WHERE template->>'operation_key'=volume->>'snapshot_operation_key'
+	          AND template->>'source_volume_slot_id'=volume->>'slot_id'
+	          AND template->>'source_volume_spec_digest'=volume->>'snapshot_source_volume_scope_digest'
+	          AND template->>'disposition'='retain_with_managed_service'
+	          AND template->>'max_retention_seconds'=volume->>'snapshot_max_retention_seconds'
+	      )
+	      AND (
+	        ($11::text='snapshot'
+	          AND volume->>'snapshot_resource_id'=$9::text
+	          AND volume->'source_volume'->>'resource_id'=$10::text
+	          AND $12::text='ephemeral_auto_destroy'
+	          AND $14=true
+	          AND $13::timestamptz=date_trunc('microseconds',
+	            (operation.challenge_json->>'issued_at')::timestamptz +
+	            ((volume->>'snapshot_max_retention_seconds')::bigint * interval '1 second')))
+	        OR
+	        ($11::text='ebs'
+	          AND volume->>'replacement_volume_resource_id'=$9::text
+	          AND volume->>'snapshot_resource_id'=$10::text
+	          AND $12::text='managed'
+	          AND $13::timestamptz IS NULL
+	          AND $14=false
+	          AND snapshot.agent_instance_id=$1
+	          AND snapshot.owner_id=$2
+	          AND snapshot.task_id=$3
+	          AND snapshot.deployment_id=$4
+	          AND snapshot.resource_id=$10
+	          AND snapshot.resource_type='snapshot'
+	          AND snapshot.state='active'
+	          AND snapshot.intent_origin='managed_preparation'
+	          AND snapshot.origin_scope_digest=$8
+	          AND snapshot.approval_id=$5
+	          AND snapshot.approved_plan_hash=$6
+	          AND snapshot.retention='ephemeral_auto_destroy'
+	          AND snapshot.auto_destroy_approved=true
+	          AND snapshot.destroy_deadline=date_trunc('microseconds',
+	            (operation.challenge_json->>'issued_at')::timestamptz +
+	            ((volume->>'snapshot_max_retention_seconds')::bigint * interval '1 second'))
+	          AND snapshot.depends_on=ARRAY[source.resource_id]::uuid[])
+	      ))
 	  )
 	FOR SHARE OF operation, step, device, plan, connection, deployment, source`
 
@@ -510,6 +572,11 @@ func (store *ResourceStore) AcceptManaged(
 		if loadErr != nil {
 			return nil, loadErr
 		}
+		for _, item := range items {
+			if !managedAcceptanceStableResource(item) {
+				return nil, resource.ErrRevisionConflict
+			}
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, fmt.Errorf("commit managed acceptance replay: %w", err)
 		}
@@ -526,12 +593,16 @@ func (store *ResourceStore) AcceptManaged(
 		return nil, resource.ErrRevisionConflict
 	}
 	for _, item := range items {
-		if expected[item.ResourceID] != item.Revision || item.OwnerID != managed.Contract.OwnerID || item.State != resource.StateActive {
+		if expected[item.ResourceID] != item.Revision || item.OwnerID != managed.Contract.OwnerID ||
+			!managedAcceptanceCandidateResource(item) {
 			return nil, resource.ErrRevisionConflict
 		}
 	}
 	for index := range items {
 		item := items[index]
+		if resource.IsBoundedManagedPreparationSnapshot(item) || item.State == resource.StateVerifiedDestroyed {
+			continue
+		}
 		item.State = resource.StateRetainedManaged
 		item.Retention = task.RetentionManaged
 		item.DestroyDeadline = time.Time{}
@@ -561,6 +632,22 @@ func (store *ResourceStore) AcceptManaged(
 		return nil, fmt.Errorf("commit managed acceptance: %w", err)
 	}
 	return cloneResources(items), nil
+}
+
+func managedAcceptanceCandidateResource(item resource.ResourceV1) bool {
+	if resource.IsBoundedManagedPreparationSnapshot(item) {
+		return item.State == resource.StateActive || item.State == resource.StateVerifiedDestroyed
+	}
+	return item.State == resource.StateActive ||
+		(item.State == resource.StateVerifiedDestroyed && item.Retention == task.RetentionManaged)
+}
+
+func managedAcceptanceStableResource(item resource.ResourceV1) bool {
+	if resource.IsBoundedManagedPreparationSnapshot(item) {
+		return item.State == resource.StateActive || item.State == resource.StateVerifiedDestroyed
+	}
+	return item.Retention == task.RetentionManaged &&
+		(item.State == resource.StateRetainedManaged || item.State == resource.StateVerifiedDestroyed)
 }
 
 func (store *ResourceStore) GetManaged(

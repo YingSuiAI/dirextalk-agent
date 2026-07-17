@@ -12,6 +12,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
+	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/google/uuid"
 )
 
 func TestManagedPreparationSnapshotTemplateUsesOnlyCurrentAgentFacts(t *testing.T) {
@@ -98,6 +100,31 @@ func TestManagedPreparationAWSRuntimeIsBoundToSignedConnectionRevisionAndRegion(
 	if _, _, err := drifted.runtime(context.Background(), scope); !errors.Is(err, serviceoperation.ErrRevisionConflict) ||
 		runtimes.calls != 1 {
 		t.Fatalf("revision drift reached AWS runtime: calls=%d err=%v", runtimes.calls, err)
+	}
+}
+
+func TestManagedPreparationV2SnapshotProvisionUsesSignedFiniteRetention(t *testing.T) {
+	fixture := newManagedPreparationScopeFixture(t)
+	builder, err := newManagedPreparationScopeBuilder(fixture.agentID, fixture.facts, fixture.current, fixture.monitor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID, uuid.NewString(), 12_345)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuedAt := time.Date(2026, 7, 18, 10, 0, 0, 123_456_789, time.UTC)
+	operation := serviceoperation.OperationV1{Challenge: serviceoperation.ChallengeV1{Scope: scope, IssuedAt: issuedAt}}
+	retention, deadline, autoApproved, err := managedPreparationProvisionRetention(operation, scope.Volumes[0], resource.TypeSnapshot)
+	if err != nil || retention != task.RetentionEphemeralAutoDestroy || !autoApproved ||
+		!deadline.Equal(issuedAt.Add(time.Duration(scope.Volumes[0].SnapshotMaxRetentionSeconds)*time.Second).Truncate(time.Microsecond)) {
+		t.Fatalf("V2 snapshot retention=%q deadline=%s auto=%v error=%v", retention, deadline, autoApproved, err)
+	}
+	legacy := managedPreparationScopeForDownstreamTest(t, fixture, uuid.NewString())
+	operation.Challenge.Scope = legacy
+	retention, deadline, autoApproved, err = managedPreparationProvisionRetention(operation, legacy.Volumes[0], resource.TypeSnapshot)
+	if err != nil || retention != task.RetentionManaged || autoApproved || !deadline.IsZero() {
+		t.Fatalf("V1 snapshot retention=%q deadline=%s auto=%v error=%v", retention, deadline, autoApproved, err)
 	}
 }
 

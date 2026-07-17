@@ -469,7 +469,7 @@ func (store *ResourceStore) validateManifest(manifest resource.Manifest) error {
 		if err := store.validateResource(item); err != nil {
 			return err
 		}
-		if manifest.Managed && item.State != resource.StateRetainedManaged {
+		if manifest.Managed && !resource.IsManagedManifestResource(item) {
 			return resource.ErrInvalid
 		}
 	}

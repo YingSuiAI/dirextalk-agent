@@ -185,7 +185,8 @@ func (store *DynamoManifestStore) ListExpired(ctx context.Context, before time.T
 			if err != nil {
 				return nil, err
 			}
-			if manifest.Retention == task.RetentionEphemeralAutoDestroy && !manifest.DestroyDeadline.After(before.UTC()) {
+			if (manifest.Retention == task.RetentionEphemeralAutoDestroy && !manifest.DestroyDeadline.After(before.UTC())) ||
+				resource.HasExpiredManagedPreparationSnapshot(manifest, before) {
 				_, digest, _, encodeErr := store.encode(manifest)
 				if encodeErr != nil {
 					return nil, encodeErr
@@ -312,7 +313,7 @@ func validateManifest(manifest resource.Manifest, agentInstanceID string) error 
 		return resource.ErrInvalid
 	}
 	for _, item := range manifest.Resources {
-		if manifest.Managed && item.State != resource.StateRetainedManaged {
+		if manifest.Managed && !resource.IsManagedManifestResource(item) {
 			return resource.ErrInvalid
 		}
 	}

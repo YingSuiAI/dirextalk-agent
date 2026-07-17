@@ -14992,24 +14992,27 @@ func (x *CloudManagedPreparationRestart) GetExecutionBundleDigest() string {
 }
 
 type CloudManagedPreparationVolume struct {
-	state                       protoimpl.MessageState               `protogen:"open.v1"`
-	SlotId                      string                               `protobuf:"bytes,1,opt,name=slot_id,json=slotId,proto3" json:"slot_id,omitempty"`
-	SourceVolume                *CloudManagedPreparationResourceFact `protobuf:"bytes,2,opt,name=source_volume,json=sourceVolume,proto3" json:"source_volume,omitempty"`
-	SnapshotResourceId          string                               `protobuf:"bytes,3,opt,name=snapshot_resource_id,json=snapshotResourceId,proto3" json:"snapshot_resource_id,omitempty"`
-	ReplacementVolumeResourceId string                               `protobuf:"bytes,4,opt,name=replacement_volume_resource_id,json=replacementVolumeResourceId,proto3" json:"replacement_volume_resource_id,omitempty"`
-	AvailabilityZone            string                               `protobuf:"bytes,5,opt,name=availability_zone,json=availabilityZone,proto3" json:"availability_zone,omitempty"`
-	SizeGib                     uint32                               `protobuf:"varint,6,opt,name=size_gib,json=sizeGib,proto3" json:"size_gib,omitempty"`
-	KmsKeyId                    string                               `protobuf:"bytes,7,opt,name=kms_key_id,json=kmsKeyId,proto3" json:"kms_key_id,omitempty"`
-	DeviceName                  string                               `protobuf:"bytes,8,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
-	VolumeType                  string                               `protobuf:"bytes,9,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
-	Iops                        uint32                               `protobuf:"varint,10,opt,name=iops,proto3" json:"iops,omitempty"`
-	ThroughputMibps             uint32                               `protobuf:"varint,11,opt,name=throughput_mibps,json=throughputMibps,proto3" json:"throughput_mibps,omitempty"`
-	MountPath                   string                               `protobuf:"bytes,12,opt,name=mount_path,json=mountPath,proto3" json:"mount_path,omitempty"`
-	ReadOnly                    bool                                 `protobuf:"varint,13,opt,name=read_only,json=readOnly,proto3" json:"read_only,omitempty"`
-	Persistent                  bool                                 `protobuf:"varint,14,opt,name=persistent,proto3" json:"persistent,omitempty"`
-	Disposition                 string                               `protobuf:"bytes,15,opt,name=disposition,proto3" json:"disposition,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	state                           protoimpl.MessageState               `protogen:"open.v1"`
+	SlotId                          string                               `protobuf:"bytes,1,opt,name=slot_id,json=slotId,proto3" json:"slot_id,omitempty"`
+	SourceVolume                    *CloudManagedPreparationResourceFact `protobuf:"bytes,2,opt,name=source_volume,json=sourceVolume,proto3" json:"source_volume,omitempty"`
+	SnapshotResourceId              string                               `protobuf:"bytes,3,opt,name=snapshot_resource_id,json=snapshotResourceId,proto3" json:"snapshot_resource_id,omitempty"`
+	ReplacementVolumeResourceId     string                               `protobuf:"bytes,4,opt,name=replacement_volume_resource_id,json=replacementVolumeResourceId,proto3" json:"replacement_volume_resource_id,omitempty"`
+	AvailabilityZone                string                               `protobuf:"bytes,5,opt,name=availability_zone,json=availabilityZone,proto3" json:"availability_zone,omitempty"`
+	SizeGib                         uint32                               `protobuf:"varint,6,opt,name=size_gib,json=sizeGib,proto3" json:"size_gib,omitempty"`
+	KmsKeyId                        string                               `protobuf:"bytes,7,opt,name=kms_key_id,json=kmsKeyId,proto3" json:"kms_key_id,omitempty"`
+	DeviceName                      string                               `protobuf:"bytes,8,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	VolumeType                      string                               `protobuf:"bytes,9,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
+	Iops                            uint32                               `protobuf:"varint,10,opt,name=iops,proto3" json:"iops,omitempty"`
+	ThroughputMibps                 uint32                               `protobuf:"varint,11,opt,name=throughput_mibps,json=throughputMibps,proto3" json:"throughput_mibps,omitempty"`
+	MountPath                       string                               `protobuf:"bytes,12,opt,name=mount_path,json=mountPath,proto3" json:"mount_path,omitempty"`
+	ReadOnly                        bool                                 `protobuf:"varint,13,opt,name=read_only,json=readOnly,proto3" json:"read_only,omitempty"`
+	Persistent                      bool                                 `protobuf:"varint,14,opt,name=persistent,proto3" json:"persistent,omitempty"`
+	Disposition                     string                               `protobuf:"bytes,15,opt,name=disposition,proto3" json:"disposition,omitempty"`
+	SnapshotOperationKey            string                               `protobuf:"bytes,16,opt,name=snapshot_operation_key,json=snapshotOperationKey,proto3" json:"snapshot_operation_key,omitempty"`
+	SnapshotSourceVolumeScopeDigest string                               `protobuf:"bytes,17,opt,name=snapshot_source_volume_scope_digest,json=snapshotSourceVolumeScopeDigest,proto3" json:"snapshot_source_volume_scope_digest,omitempty"`
+	SnapshotMaxRetentionSeconds     uint64                               `protobuf:"varint,18,opt,name=snapshot_max_retention_seconds,json=snapshotMaxRetentionSeconds,proto3" json:"snapshot_max_retention_seconds,omitempty"`
+	unknownFields                   protoimpl.UnknownFields
+	sizeCache                       protoimpl.SizeCache
 }
 
 func (x *CloudManagedPreparationVolume) Reset() {
@@ -15145,6 +15148,27 @@ func (x *CloudManagedPreparationVolume) GetDisposition() string {
 		return x.Disposition
 	}
 	return ""
+}
+
+func (x *CloudManagedPreparationVolume) GetSnapshotOperationKey() string {
+	if x != nil {
+		return x.SnapshotOperationKey
+	}
+	return ""
+}
+
+func (x *CloudManagedPreparationVolume) GetSnapshotSourceVolumeScopeDigest() string {
+	if x != nil {
+		return x.SnapshotSourceVolumeScopeDigest
+	}
+	return ""
+}
+
+func (x *CloudManagedPreparationVolume) GetSnapshotMaxRetentionSeconds() uint64 {
+	if x != nil {
+		return x.SnapshotMaxRetentionSeconds
+	}
+	return 0
 }
 
 type CloudManagedPreparationScope struct {
@@ -21445,7 +21469,7 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\x19expected_initial_revision\x18\x02 \x01(\x03R\x17expectedInitialRevision\x12\x16\n" +
 	"\x06action\x18\x03 \x01(\tR\x06action\x122\n" +
 	"\x15lifecycle_restart_ref\x18\x04 \x01(\tR\x13lifecycleRestartRef\x126\n" +
-	"\x17execution_bundle_digest\x18\x05 \x01(\tR\x15executionBundleDigest\"\xf2\x04\n" +
+	"\x17execution_bundle_digest\x18\x05 \x01(\tR\x15executionBundleDigest\"\xbb\x06\n" +
 	"\x1dCloudManagedPreparationVolume\x12\x17\n" +
 	"\aslot_id\x18\x01 \x01(\tR\x06slotId\x12\\\n" +
 	"\rsource_volume\x18\x02 \x01(\v27.dirextalk.agent.v1.CloudManagedPreparationResourceFactR\fsourceVolume\x120\n" +
@@ -21468,7 +21492,10 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"persistent\x18\x0e \x01(\bR\n" +
 	"persistent\x12 \n" +
-	"\vdisposition\x18\x0f \x01(\tR\vdisposition\"\xb1\t\n" +
+	"\vdisposition\x18\x0f \x01(\tR\vdisposition\x124\n" +
+	"\x16snapshot_operation_key\x18\x10 \x01(\tR\x14snapshotOperationKey\x12L\n" +
+	"#snapshot_source_volume_scope_digest\x18\x11 \x01(\tR\x1fsnapshotSourceVolumeScopeDigest\x12C\n" +
+	"\x1esnapshot_max_retention_seconds\x18\x12 \x01(\x04R\x1bsnapshotMaxRetentionSeconds\"\xb1\t\n" +
 	"\x1cCloudManagedPreparationScope\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\tR\rschemaVersion\x12\x16\n" +
 	"\x06intent\x18\x02 \x01(\tR\x06intent\x128\n" +

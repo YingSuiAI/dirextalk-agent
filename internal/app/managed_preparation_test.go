@@ -23,14 +23,25 @@ import (
 	"github.com/google/uuid"
 )
 
-func TestManagedPreparationScopeBuilderFailsClosedUntilSnapshotRetentionIsExecutable(t *testing.T) {
+func TestManagedPreparationScopeBuilderBindsEveryV2SnapshotRetentionTerm(t *testing.T) {
 	fixture := newManagedPreparationScopeFixture(t)
 	builder, err := newManagedPreparationScopeBuilder(fixture.agentID, fixture.facts, fixture.current, fixture.monitor)
 	if err != nil {
 		t.Fatal(err)
 	}
+	scope, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID, uuid.NewString(), 12_345)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.SchemaVersion != serviceoperation.ScopeSchemaV2 || len(scope.Volumes) != 1 ||
+		scope.Volumes[0].SnapshotOperationKey != "managed-snapshot-knowledge" ||
+		scope.Volumes[0].SnapshotSourceVolumeScopeDigest == "" ||
+		scope.Volumes[0].SnapshotMaxRetentionSeconds != 30*24*60*60 {
+		t.Fatalf("V2 snapshot template was not bound exactly: %+v", scope.Volumes)
+	}
+	fixture.facts.plan.ServiceOperations.Snapshots = nil
 	if _, err := builder.BuildManagedPreparationScope(context.Background(), fixture.ownerID, fixture.deploymentID, uuid.NewString(), 12_345); !errors.Is(err, serviceoperation.ErrRevisionConflict) {
-		t.Fatalf("bounded V2 snapshot template reached legacy managed-preparation mutation: %v", err)
+		t.Fatalf("incomplete V2 snapshot templates reached preparation: %v", err)
 	}
 }
 
@@ -134,10 +145,9 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 		monitor: &managedPreparationMonitorFake{record: monitor}}
 }
 
-// managedPreparationScopeForDownstreamTest supplies a validated historical
-// scope to unit-test dormant downstream components. Production creation is
-// intentionally fail-closed until runtime resource retention can honor the
-// V2 Plan's signed snapshot deadline.
+// managedPreparationScopeForDownstreamTest supplies a frozen V1 historical
+// scope for legacy downstream tests. Production creation uses the V2 builder
+// above; keeping this fixture V1 protects persisted V1 signing compatibility.
 func managedPreparationScopeForDownstreamTest(t *testing.T, fixture managedPreparationScopeFixture, operationID string) serviceoperation.ScopeV1 {
 	t.Helper()
 	plan := fixture.facts.plan

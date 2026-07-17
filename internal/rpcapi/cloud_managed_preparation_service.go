@@ -114,6 +114,9 @@ func managedPreparationChallengeToProto(value serviceoperation.ChallengeV1) (*ag
 			AvailabilityZone: item.AvailabilityZone, SizeGib: item.SizeGiB, KmsKeyId: item.KMSKeyID, DeviceName: item.DeviceName,
 			VolumeType: item.VolumeType, Iops: item.IOPS, ThroughputMibps: item.ThroughputMiBPS,
 			MountPath: item.MountPath, ReadOnly: item.ReadOnly, Persistent: item.Persistent, Disposition: item.Disposition,
+			SnapshotOperationKey:            item.SnapshotOperationKey,
+			SnapshotSourceVolumeScopeDigest: item.SnapshotSourceVolumeScopeDigest,
+			SnapshotMaxRetentionSeconds:     item.SnapshotMaxRetentionSeconds,
 		})
 	}
 	return &agentv1.CloudManagedPreparationChallenge{

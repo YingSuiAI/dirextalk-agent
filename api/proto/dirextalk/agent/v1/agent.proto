@@ -1673,6 +1673,9 @@ message CloudManagedPreparationVolume {
   bool read_only = 13;
   bool persistent = 14;
   string disposition = 15;
+  string snapshot_operation_key = 16;
+  string snapshot_source_volume_scope_digest = 17;
+  uint64 snapshot_max_retention_seconds = 18;
 }
 message CloudManagedPreparationScope {
   string schema_version = 1;

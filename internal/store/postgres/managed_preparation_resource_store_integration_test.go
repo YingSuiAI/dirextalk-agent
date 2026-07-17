@@ -139,6 +139,81 @@ func TestManagedPreparationResourceIntentFailsClosedForTerminalOrTamperedScope(t
 	}
 }
 
+func TestManagedPreparationV2ResourceIntentBindsFiniteSnapshotDeadline(t *testing.T) {
+	t.Run("signed snapshot and replacement pass", func(t *testing.T) {
+		fixture := seedManagedPreparationV2ResourceLedger(t)
+		resourceStore, err := fixture.store.NewResourceStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot := fixture.preparationIntent(resource.TypeSnapshot, fixture.snapshotID, fixture.sourceID)
+		if _, err := resourceStore.CreateIntent(context.Background(), snapshot); err != nil {
+			t.Fatalf("create V2 bounded snapshot intent: %v", err)
+		}
+		fixture.activate(t, snapshot, "snap-2123456789abcdef0")
+		fixture.setPhase(t, serviceoperation.PhaseRestoreCreate)
+		replacement := fixture.v2PreparationIntent(resource.TypeEBS, fixture.replacementID, fixture.snapshotID)
+		if _, err := resourceStore.CreateIntent(context.Background(), replacement); err != nil {
+			t.Fatalf("create V2 managed replacement intent: %v", err)
+		}
+	})
+
+	t.Run("replacement rejects a tampered persisted snapshot deadline", func(t *testing.T) {
+		fixture := seedManagedPreparationV2ResourceLedger(t)
+		resourceStore, err := fixture.store.NewResourceStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot := fixture.preparationIntent(resource.TypeSnapshot, fixture.snapshotID, fixture.sourceID)
+		if _, err := resourceStore.CreateIntent(context.Background(), snapshot); err != nil {
+			t.Fatalf("create V2 bounded snapshot intent: %v", err)
+		}
+		fixture.activate(t, snapshot, "snap-2123456789abcdef0")
+		if _, err := fixture.pool.Exec(context.Background(), `
+			UPDATE cloud_resources SET destroy_deadline=$2 WHERE resource_id=$1`, fixture.snapshotID, fixture.deadline.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		fixture.setPhase(t, serviceoperation.PhaseRestoreCreate)
+		replacement := fixture.v2PreparationIntent(resource.TypeEBS, fixture.replacementID, fixture.snapshotID)
+		if _, err := resourceStore.CreateIntent(context.Background(), replacement); !errors.Is(err, resource.ErrInvalid) {
+			t.Fatalf("tampered V2 snapshot authorized replacement intent: %v", err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, managedPreparationResourceFixture, *resource.ResourceV1)
+	}{
+		{name: "snapshot deadline changes", mutate: func(_ *testing.T, fixture managedPreparationResourceFixture, item *resource.ResourceV1) {
+			item.DestroyDeadline = fixture.deadline.Add(time.Second)
+			item.Tags[resource.TagDestroyDeadline] = item.DestroyDeadline.Format(time.RFC3339)
+		}},
+		{name: "snapshot auto approval clears", mutate: func(_ *testing.T, _ managedPreparationResourceFixture, item *resource.ResourceV1) {
+			item.AutoDestroyApproved = false
+		}},
+		{name: "source is not managed", mutate: func(t *testing.T, fixture managedPreparationResourceFixture, _ *resource.ResourceV1) {
+			if _, err := fixture.pool.Exec(context.Background(), `
+				UPDATE cloud_resources SET retention='ephemeral_auto_destroy',destroy_deadline=$2,auto_destroy_approved=true
+				WHERE resource_id=$1`, fixture.sourceID, fixture.now.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := seedManagedPreparationV2ResourceLedger(t)
+			resourceStore, err := fixture.store.NewResourceStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := fixture.preparationIntent(resource.TypeSnapshot, fixture.snapshotID, fixture.sourceID)
+			test.mutate(t, fixture, &item)
+			if _, err := resourceStore.CreateIntent(context.Background(), item); !errors.Is(err, resource.ErrInvalid) {
+				t.Fatalf("%s authorized V2 snapshot intent: %v", test.name, err)
+			}
+		})
+	}
+}
+
 type managedPreparationResourceFixture struct {
 	pool               *pgxpool.Pool
 	store              *postgres.Store
@@ -301,6 +376,73 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 	return fixture
 }
 
+func seedManagedPreparationV2ResourceLedger(t *testing.T) managedPreparationResourceFixture {
+	t.Helper()
+	fixture := seedManagedPreparationResourceLedger(t)
+	ctx := context.Background()
+	var raw []byte
+	if err := fixture.pool.QueryRow(ctx, `SELECT challenge_json FROM cloud_service_operations WHERE operation_id=$1`, fixture.operationID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var challenge serviceoperation.ChallengeV1
+	if err := json.Unmarshal(raw, &challenge); err != nil {
+		t.Fatal(err)
+	}
+	challenge.SchemaVersion = serviceoperation.ChallengeSchemaV2
+	challenge.Scope.SchemaVersion = serviceoperation.ScopeSchemaV2
+	challenge.Scope.Volumes[0].SnapshotOperationKey = "managed-snapshot-data"
+	challenge.Scope.Volumes[0].SnapshotSourceVolumeScopeDigest = managedPreparationDigest("v")
+	challenge.Scope.Volumes[0].SnapshotMaxRetentionSeconds = 3_600
+	challenge.IssuedAt = fixture.now.Add(-time.Minute).UTC().Truncate(time.Microsecond)
+	challenge.ExpiresAt = challenge.IssuedAt.Add(4 * time.Minute)
+	var err error
+	challenge.ScopeDigest, err = serviceoperation.SigningPayloadDigest(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.scopeDigest = challenge.ScopeDigest
+	fixture.deadline, err = challenge.SnapshotDestroyDeadline(challenge.Scope.Volumes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.deadline = fixture.deadline.UTC().Truncate(time.Microsecond)
+	challengeJSON, err := json.Marshal(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planJSON, err := json.Marshal(map[string]any{
+		"schema_version": cloudapproval.PlanSchemaV2,
+		"service_operations": map[string]any{"snapshots": []map[string]any{{
+			"operation_key": "managed-snapshot-data", "source_volume_slot_id": "data",
+			"source_volume_spec_digest": challenge.Scope.Volumes[0].SnapshotSourceVolumeScopeDigest,
+			"disposition":               "retain_with_managed_service", "max_retention_seconds": 3_600,
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `UPDATE cloud_plans SET plan_json=$2 WHERE plan_id=$1`, fixture.planID, planJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE cloud_service_operations SET challenge_json=$2,scope_digest=$3,updated_at=$4
+		WHERE operation_id=$1`, fixture.operationID, challengeJSON, challenge.ScopeDigest, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	sourceTags := fixture.tags(fixture.sourceID, fixture.originalApprovalID, fixture.planHash, "", "")
+	sourceTags[resource.TagRetention], sourceTags[resource.TagDestroyDeadline] = string(task.RetentionManaged), "managed"
+	sourceTagsJSON, err := json.Marshal(sourceTags)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(ctx, `
+		UPDATE cloud_resources SET retention='managed',destroy_deadline=NULL,auto_destroy_approved=false,tags=$2,updated_at=$3
+		WHERE resource_id=$1`, fixture.sourceID, sourceTagsJSON, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	return fixture
+}
+
 func (fixture managedPreparationResourceFixture) preparationIntent(kind resource.Type, resourceID, dependencyID string) resource.ResourceV1 {
 	logicalName := "managed-preparation-snapshot"
 	if kind == resource.TypeEBS {
@@ -319,6 +461,18 @@ func (fixture managedPreparationResourceFixture) preparationIntent(kind resource
 		},
 		Revision: 1, CreatedAt: fixture.now, UpdatedAt: fixture.now,
 	}
+}
+
+func (fixture managedPreparationResourceFixture) v2PreparationIntent(kind resource.Type, resourceID, dependencyID string) resource.ResourceV1 {
+	item := fixture.preparationIntent(kind, resourceID, dependencyID)
+	if kind == resource.TypeEBS {
+		item.Retention = task.RetentionManaged
+		item.DestroyDeadline = time.Time{}
+		item.AutoDestroyApproved = false
+		item.Tags[resource.TagRetention] = string(task.RetentionManaged)
+		item.Tags[resource.TagDestroyDeadline] = "managed"
+	}
+	return item
 }
 
 func (fixture managedPreparationResourceFixture) tags(resourceID, approvalID, planHash, origin, scopeDigest string) map[string]string {

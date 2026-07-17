@@ -177,6 +177,43 @@ func TestDynamoManifestStoreListsOnlyExpiredEphemeralAndFencesRevision(t *testin
 	}
 }
 
+func TestDynamoManifestStoreListsExpiredBoundedManagedPreparationSnapshot(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	store, err := NewDynamoManifestStore(newFakeDynamoDB(), "dtx-agent-resources", agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := reaperManifest(agentID, time.Time{}, true)
+	snapshotDeadline := now.Add(-time.Minute)
+	snapshotID := uuid.NewString()
+	snapshot := resource.ResourceV1{
+		ResourceID: snapshotID, AgentInstanceID: manifest.AgentInstanceID, OwnerID: manifest.OwnerID, TaskID: manifest.TaskID,
+		DeploymentID: manifest.DeploymentID, Type: resource.TypeSnapshot, LogicalName: "managed-preparation-snapshot",
+		Region: "us-west-2", SpecDigest: digestFixture(), ApprovedPlanHash: manifest.Resources[0].ApprovedPlanHash,
+		ApprovalID: manifest.Resources[0].ApprovalID, IntentOrigin: resource.IntentOriginManagedPreparation,
+		OriginScopeDigest: "sha256:" + strings.Repeat("b", 64), ProviderID: "snap-0123456789abcdef0",
+		DependsOn: []string{manifest.Resources[0].ResourceID}, Retention: task.RetentionEphemeralAutoDestroy,
+		DestroyDeadline: snapshotDeadline, AutoDestroyApproved: true, State: resource.StateActive,
+		Revision: 1, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+		Tags: map[string]string{
+			resource.TagAgentInstanceID: agentID, resource.TagOwnerID: manifest.OwnerID, resource.TagTaskID: manifest.TaskID,
+			resource.TagDeploymentID: manifest.DeploymentID, resource.TagResourceID: snapshotID,
+			resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: snapshotDeadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: manifest.Resources[0].ApprovedPlanHash, resource.TagApprovalID: manifest.Resources[0].ApprovalID,
+			resource.TagIntentOrigin: string(resource.IntentOriginManagedPreparation), resource.TagOriginScopeDigest: "sha256:" + strings.Repeat("b", 64),
+		},
+	}
+	manifest.Resources = append(manifest.Resources, snapshot)
+	if err := store.Put(context.Background(), manifest); err != nil {
+		t.Fatalf("put bounded managed manifest: %v", err)
+	}
+	manifests, err := store.ListExpired(context.Background(), now)
+	if err != nil || len(manifests) != 1 || manifests[0].DeploymentID != manifest.DeploymentID {
+		t.Fatalf("expired bounded managed manifests=%+v error=%v", manifests, err)
+	}
+}
+
 func TestDynamoManifestStoreRejectsMetadataTampering(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	agentID := uuid.NewString()

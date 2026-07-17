@@ -58,12 +58,20 @@ func FindExactManagedReplay(ctx context.Context, repository Repository, contract
 	}
 	for _, item := range resources {
 		if item.DeploymentID != contract.DeploymentID || item.OwnerID != contract.OwnerID ||
-			item.State != StateRetainedManaged || item.Retention != task.RetentionManaged ||
-			item.AutoDestroyApproved || !item.DestroyDeadline.IsZero() {
+			!managedAcceptanceReplayStable(item) {
 			return ManagedServiceV1{}, false, ErrRevisionConflict
 		}
 	}
 	return managed, true, nil
+}
+
+func managedAcceptanceReplayStable(item ResourceV1) bool {
+	if IsBoundedManagedPreparationSnapshot(item) {
+		return item.State == StateActive || item.State == StateVerifiedDestroyed
+	}
+	return item.Retention == task.RetentionManaged &&
+		(item.State == StateRetainedManaged || item.State == StateVerifiedDestroyed) &&
+		!item.AutoDestroyApproved && item.DestroyDeadline.IsZero()
 }
 
 // DeploymentFencer is an optional repository capability that serializes every
@@ -416,14 +424,16 @@ func (service *Service) acceptManaged(ctx context.Context, contract ManagedContr
 		ServiceID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(contract.DeploymentID)).String(), Contract: contract,
 		State: "active", Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
-	retained := 0
+	changed := false
 	for index := range desired {
 		if desired[index].OwnerID != contract.OwnerID {
 			return ManagedServiceV1{}, nil, fmt.Errorf("%w: managed owner mismatch", ErrInvalid)
 		}
-		if desired[index].State == StateRetainedManaged {
-			retained++
-			expected[desired[index].ResourceID] = desired[index].Revision
+		expected[desired[index].ResourceID] = desired[index].Revision
+		if IsBoundedManagedPreparationSnapshot(desired[index]) {
+			if desired[index].State != StateActive && desired[index].State != StateVerifiedDestroyed {
+				return ManagedServiceV1{}, nil, fmt.Errorf("%w: bounded managed-preparation snapshot is not stable", ErrInvalid)
+			}
 			continue
 		}
 		// Managed acceptance and destruction are mutually exclusive state
@@ -431,10 +441,21 @@ func (service *Service) acceptManaged(ctx context.Context, contract ManagedContr
 		// atomic: a resource already scheduled for destruction cannot be rescued
 		// after a destroy approval has begun, and a managed transition that wins
 		// first prevents Destroy from committing StateDestroying.
+		if desired[index].State == StateRetainedManaged {
+			if desired[index].Retention != task.RetentionManaged {
+				return ManagedServiceV1{}, nil, fmt.Errorf("%w: retained managed resource retention is invalid", ErrInvalid)
+			}
+			continue
+		}
+		if desired[index].State == StateVerifiedDestroyed {
+			if desired[index].Retention != task.RetentionManaged {
+				return ManagedServiceV1{}, nil, fmt.Errorf("%w: retired managed resource retention is invalid", ErrInvalid)
+			}
+			continue
+		}
 		if desired[index].State != StateActive {
 			return ManagedServiceV1{}, nil, fmt.Errorf("%w: all managed resources must be active", ErrInvalid)
 		}
-		expected[desired[index].ResourceID] = desired[index].Revision
 		desired[index].State = StateRetainedManaged
 		desired[index].Retention = task.RetentionManaged
 		desired[index].DestroyDeadline = time.Time{}
@@ -443,18 +464,10 @@ func (service *Service) acceptManaged(ctx context.Context, contract ManagedContr
 		desired[index].AutoDestroyApproved = false
 		desired[index].Revision++
 		desired[index].UpdatedAt = now
+		changed = true
 	}
-	if retained > 0 {
-		if retained != len(desired) {
-			return ManagedServiceV1{}, nil, fmt.Errorf("%w: managed resource states are inconsistent", ErrRevisionConflict)
-		}
-		mirrorTime := desired[0].UpdatedAt.UTC()
-		for _, item := range desired[1:] {
-			if !item.UpdatedAt.Equal(mirrorTime) {
-				return ManagedServiceV1{}, nil, fmt.Errorf("%w: managed resource timestamps are inconsistent", ErrRevisionConflict)
-			}
-		}
-		manifest, manifestErr := manifestFrom(desired, false, mirrorTime)
+	if !changed {
+		manifest, manifestErr := manifestFrom(desired, false, latestResourceUpdate(desired))
 		if manifestErr != nil {
 			return ManagedServiceV1{}, nil, manifestErr
 		}
@@ -471,11 +484,6 @@ func (service *Service) acceptManaged(ctx context.Context, contract ManagedContr
 	if err != nil {
 		return ManagedServiceV1{}, nil, err
 	}
-	manifest.Managed = true
-	manifest.Retention = task.RetentionManaged
-	manifest.DestroyDeadline = time.Time{}
-	manifest.AutoDestroyApproved = false
-	manifest.AutoDestroyApprovalID = ""
 	if err := service.mirror.Put(ctx, manifest); err != nil {
 		return ManagedServiceV1{}, nil, fmt.Errorf("mirror managed manifest before acceptance: %w", err)
 	}
@@ -487,6 +495,16 @@ func (service *Service) acceptManaged(ctx context.Context, contract ManagedContr
 		return ManagedServiceV1{}, nil, err
 	}
 	return managed, cloneResources(accepted), nil
+}
+
+func latestResourceUpdate(resources []ResourceV1) time.Time {
+	var latest time.Time
+	for _, item := range resources {
+		if item.UpdatedAt.After(latest) {
+			latest = item.UpdatedAt.UTC()
+		}
+	}
+	return latest
 }
 
 func (service *Service) requireExactManagedManifest(ctx context.Context, manifest Manifest) error {
@@ -890,21 +908,37 @@ func manifestFrom(resources []ResourceV1, autoApproved bool, now time.Time) (Man
 		DestroyDeadline: first.DestroyDeadline, AutoDestroyApproved: autoApproved || first.AutoDestroyApproved,
 		Resources: resources, Revision: maxRevision(resources), UpdatedAt: now,
 	}
+	hasManagedResource := false
 	for _, resource := range resources {
 		if resource.AgentInstanceID != manifest.AgentInstanceID || resource.OwnerID != manifest.OwnerID || resource.TaskID != manifest.TaskID || resource.DeploymentID != manifest.DeploymentID {
 			return Manifest{}, fmt.Errorf("%w: manifest ownership is inconsistent", ErrInvalid)
 		}
-		if resource.Retention != first.Retention || !resource.DestroyDeadline.Equal(first.DestroyDeadline) {
-			return Manifest{}, fmt.Errorf("%w: manifest retention scope is inconsistent", ErrInvalid)
-		}
 		if resource.Retention == task.RetentionManaged || resource.State == StateRetainedManaged {
-			manifest.Managed = true
-			manifest.Retention = task.RetentionManaged
-			manifest.DestroyDeadline = time.Time{}
-			manifest.AutoDestroyApproved = false
+			hasManagedResource = true
 		}
-		if resource.AutoDestroyApproved && manifest.Retention == task.RetentionEphemeralAutoDestroy {
-			manifest.AutoDestroyApproved = true
+	}
+	if hasManagedResource {
+		manifest.Managed = true
+		manifest.Retention = task.RetentionManaged
+		manifest.DestroyDeadline = time.Time{}
+		manifest.AutoDestroyApproved = false
+		manifest.AutoDestroyApprovalID = ""
+		for _, item := range resources {
+			if IsBoundedManagedPreparationSnapshot(item) {
+				continue
+			}
+			if item.Retention != task.RetentionManaged {
+				return Manifest{}, fmt.Errorf("%w: managed manifest contains a generic ephemeral resource", ErrInvalid)
+			}
+		}
+	} else {
+		for _, item := range resources {
+			if item.Retention != first.Retention || !item.DestroyDeadline.Equal(first.DestroyDeadline) {
+				return Manifest{}, fmt.Errorf("%w: manifest retention scope is inconsistent", ErrInvalid)
+			}
+			if item.AutoDestroyApproved && manifest.Retention == task.RetentionEphemeralAutoDestroy {
+				manifest.AutoDestroyApproved = true
+			}
 		}
 	}
 	if manifest.Retention == task.RetentionEphemeralAutoDestroy && autoApproved {

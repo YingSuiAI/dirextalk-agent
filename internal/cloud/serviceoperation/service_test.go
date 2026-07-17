@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,81 @@ func TestManagedPreparationSigningPayloadGolden(t *testing.T) {
 	const expected = "1c12fffde17b8bc5b7e975a9270e0e791d55071dc33323519b96f9616eec2f51"
 	if got != expected {
 		t.Fatalf("payload sha256=%s scope_digest=%s", got, challenge.ScopeDigest)
+	}
+}
+
+func TestManagedPreparationV2SignsBoundedSnapshotRetention(t *testing.T) {
+	scope := testScope(t)
+	scope.SchemaVersion = ScopeSchemaV2
+	scope.Volumes[0].SnapshotOperationKey = "managed-snapshot-data"
+	scope.Volumes[0].SnapshotSourceVolumeScopeDigest = digest("a")
+	scope.Volumes[0].SnapshotMaxRetentionSeconds = uint64((30 * 24 * time.Hour) / time.Second)
+	challenge := ChallengeV1{
+		SchemaVersion: ChallengeSchemaV2, ChallengeID: uuid.NewString(), OperationID: scope.PreparationOperationID,
+		SignerKeyID: "device-v2", Scope: scope,
+		IssuedAt:  time.Date(2026, 7, 18, 9, 0, 0, 0, time.UTC),
+		ExpiresAt: time.Date(2026, 7, 18, 9, 5, 0, 0, time.UTC),
+	}
+	var err error
+	challenge.ScopeDigest, err = SigningPayloadDigest(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := challenge.SigningPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) == 0 {
+		t.Fatal("V2 signing payload is empty")
+	}
+	deadline, err := challenge.SnapshotDestroyDeadline(scope.Volumes[0])
+	if err != nil || !deadline.Equal(challenge.IssuedAt.Add(30*24*time.Hour)) {
+		t.Fatalf("bounded snapshot deadline=%v err=%v", deadline, err)
+	}
+	precision := challenge
+	precision.IssuedAt = time.Date(2026, 7, 18, 9, 0, 0, 123_456_789, time.UTC)
+	precision.ExpiresAt = precision.IssuedAt.Add(5 * time.Minute)
+	precision.ScopeDigest, err = SigningPayloadDigest(precision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline, err = precision.SnapshotDestroyDeadline(precision.Scope.Volumes[0])
+	if err != nil || !deadline.Equal(precision.IssuedAt.Add(30*24*time.Hour).Truncate(time.Microsecond)) {
+		t.Fatalf("PostgreSQL-normalized snapshot deadline=%v err=%v", deadline, err)
+	}
+	for name, mutate := range map[string]func(*VolumePreparationV1){
+		"operation key":       func(volume *VolumePreparationV1) { volume.SnapshotOperationKey = "other-snapshot" },
+		"source scope digest": func(volume *VolumePreparationV1) { volume.SnapshotSourceVolumeScopeDigest = digest("b") },
+		"retention":           func(volume *VolumePreparationV1) { volume.SnapshotMaxRetentionSeconds++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := challenge
+			changed.Scope = cloneScope(challenge.Scope)
+			mutate(&changed.Scope.Volumes[0])
+			digest, err := SigningPayloadDigest(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if digest == challenge.ScopeDigest {
+				t.Fatal("bounded snapshot term did not change signed digest")
+			}
+		})
+	}
+	invalid := challenge
+	invalid.Scope = cloneScope(challenge.Scope)
+	invalid.Scope.Volumes[0].SnapshotMaxRetentionSeconds = 0
+	if _, err := invalid.SigningPayload(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unbounded V2 snapshot signed: %v", err)
+	}
+	mismatched := challenge
+	mismatched.SchemaVersion = ChallengeSchemaV1
+	if _, err := SigningPayloadDigest(mismatched); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("mismatched V2 challenge schema received a signing digest: %v", err)
+	}
+	legacy := testScope(t)
+	legacy.Volumes[0].SnapshotMaxRetentionSeconds = 1
+	if err := legacy.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("V1 scope accepted V2 retention field: %v", err)
 	}
 }
 
@@ -173,6 +249,57 @@ func TestServiceRejectsConflictingIdempotencyBeforeMutableChecks(t *testing.T) {
 	}
 }
 
+func TestServicePrepareApproveV2ScopeUsesV2Challenge(t *testing.T) {
+	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	scope := testScope(t)
+	scope.SchemaVersion = ScopeSchemaV2
+	scope.Volumes[0].SnapshotOperationKey = "managed-snapshot-data"
+	scope.Volumes[0].SnapshotSourceVolumeScopeDigest = digest("a")
+	scope.Volumes[0].SnapshotMaxRetentionSeconds = 3_600
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := cloudapproval.DeviceKeyV1{
+		KeyID: "device-v2", AgentInstanceID: scope.AgentInstanceID, OwnerID: scope.OwnerID, Revision: 1,
+		Status: cloudapproval.DeviceKeyActive, PublicKey: public, NotBefore: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+	}
+	repository := &serviceRepositoryFake{}
+	service, err := NewService(scope.AgentInstanceID, repository, serviceDeviceFake{device}, serviceScopeBuilderFake{scope}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepare := PrepareCommand{
+		ClientID: "message-server", CredentialID: uuid.NewString(), IdempotencyKey: uuid.NewString(), OwnerID: scope.OwnerID,
+		DeploymentID: scope.DeploymentID, SignerKeyID: device.KeyID, ExpectedDeploymentRevision: scope.DeploymentRevision,
+		CostAlertAmountMinor: scope.CostAlertAmountMinor,
+	}
+	challenge, err := service.Prepare(context.Background(), prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if challenge.SchemaVersion != ChallengeSchemaV2 || challenge.Scope.SchemaVersion != ScopeSchemaV2 {
+		t.Fatalf("V2 preparation returned incompatible challenge: %+v", challenge)
+	}
+	payload, err := challenge.SigningPayload()
+	if err != nil {
+		t.Fatalf("V2 challenge is not signable: %v", err)
+	}
+	approve := ApproveCommand{
+		ClientID: "message-server", CredentialID: uuid.NewString(), IdempotencyKey: uuid.NewString(), OwnerID: scope.OwnerID,
+		OperationID: challenge.OperationID, DeploymentID: scope.DeploymentID, ScopeDigest: challenge.ScopeDigest, ExpectedRevision: 1,
+		Signature: SignatureV1{ChallengeID: challenge.ChallengeID, OperationID: challenge.OperationID, SignerKeyID: device.KeyID,
+			Signature: ed25519.Sign(private, payload)},
+	}
+	operation, err := service.Approve(context.Background(), approve)
+	if err != nil {
+		t.Fatalf("V2 challenge approval failed: %v", err)
+	}
+	if operation.Challenge.SchemaVersion != ChallengeSchemaV2 || operation.OperationID != challenge.OperationID {
+		t.Fatalf("V2 approval did not persist the prepared operation: %+v", operation)
+	}
+}
+
 func TestManagedPreparationPhaseOrderIsClosedAndCASFriendly(t *testing.T) {
 	phases := Phases()
 	for index := 0; index < len(phases)-1; index++ {
@@ -271,11 +398,41 @@ func (failingScopeBuilder) BuildManagedPreparationScope(context.Context, string,
 	return ScopeV1{}, ErrRevisionConflict
 }
 
+type serviceDeviceFake struct{ device cloudapproval.DeviceKeyV1 }
+
+func (fake serviceDeviceFake) GetDeviceKey(_ context.Context, keyID string) (cloudapproval.DeviceKeyV1, error) {
+	if keyID != fake.device.KeyID {
+		return cloudapproval.DeviceKeyV1{}, ErrNotFound
+	}
+	return fake.device, nil
+}
+
+type serviceScopeBuilderFake struct{ scope ScopeV1 }
+
+func (fake serviceScopeBuilderFake) BuildManagedPreparationScope(_ context.Context, ownerID, deploymentID, operationID string, amountMinor int64) (ScopeV1, error) {
+	scope := cloneScope(fake.scope)
+	if scope.OwnerID != ownerID || scope.DeploymentID != deploymentID || scope.CostAlertAmountMinor != amountMinor {
+		return ScopeV1{}, ErrRevisionConflict
+	}
+	scope.PreparationOperationID = operationID
+	scope.Restart.OperationID = uuid.NewSHA1(uuid.MustParse(operationID), []byte("restart")).String()
+	for index := range scope.Volumes {
+		snapshotID, replacementID, err := DeriveVolumeResourceIDs(operationID, scope.Volumes[index].SourceVolume.ResourceID, scope.Volumes[index].SlotID)
+		if err != nil {
+			return ScopeV1{}, err
+		}
+		scope.Volumes[index].SnapshotResourceID = snapshotID
+		scope.Volumes[index].ReplacementVolumeResourceID = replacementID
+	}
+	return scope, nil
+}
+
 type serviceRepositoryFake struct {
 	challengeReplay    *ChallengeV1
 	approvalReplay     *OperationV1
 	challengeReplayErr error
 	approvalReplayErr  error
+	createdChallenge   *ChallengeV1
 }
 
 func (repository *serviceRepositoryFake) FindServiceOperationChallengeReplay(context.Context, Mutation) (ChallengeV1, error) {
@@ -287,10 +444,15 @@ func (repository *serviceRepositoryFake) FindServiceOperationChallengeReplay(con
 	}
 	return *repository.challengeReplay, nil
 }
-func (*serviceRepositoryFake) CreateServiceOperationChallenge(context.Context, Mutation, ChallengeV1) (ChallengeV1, error) {
-	return ChallengeV1{}, ErrInvalid
+func (repository *serviceRepositoryFake) CreateServiceOperationChallenge(_ context.Context, _ Mutation, challenge ChallengeV1) (ChallengeV1, error) {
+	copy := challenge
+	repository.createdChallenge = &copy
+	return copy, nil
 }
-func (*serviceRepositoryFake) GetServiceOperationChallenge(context.Context, string, string) (ChallengeV1, error) {
+func (repository *serviceRepositoryFake) GetServiceOperationChallenge(_ context.Context, _ string, challengeID string) (ChallengeV1, error) {
+	if repository.createdChallenge != nil && repository.createdChallenge.ChallengeID == challengeID {
+		return *repository.createdChallenge, nil
+	}
 	return ChallengeV1{}, ErrNotFound
 }
 func (repository *serviceRepositoryFake) FindServiceOperationApprovalReplay(context.Context, Mutation) (OperationV1, error) {
@@ -302,8 +464,11 @@ func (repository *serviceRepositoryFake) FindServiceOperationApprovalReplay(cont
 	}
 	return *repository.approvalReplay, nil
 }
-func (*serviceRepositoryFake) ApproveServiceOperation(context.Context, Mutation, SignatureV1, time.Time) (OperationV1, error) {
-	return OperationV1{}, ErrInvalid
+func (repository *serviceRepositoryFake) ApproveServiceOperation(_ context.Context, _ Mutation, _ SignatureV1, _ time.Time) (OperationV1, error) {
+	if repository.createdChallenge == nil {
+		return OperationV1{}, ErrNotFound
+	}
+	return OperationV1{OperationID: repository.createdChallenge.OperationID, Challenge: *repository.createdChallenge, Status: StatusApproved, Revision: 2}, nil
 }
 func (*serviceRepositoryFake) GetServiceOperation(context.Context, string, string) (OperationV1, error) {
 	return OperationV1{}, ErrNotFound

@@ -245,7 +245,8 @@ func (spec ProvisionSpec) Validate(now time.Time) error {
 		}
 		if spec.Type == TypeSnapshot {
 			disposition := spec.AWS.Snapshot.Disposition
-			if (spec.Retention == task.RetentionEphemeralAutoDestroy && disposition != AWSSnapshotDeleteWithDeployment) ||
+			if (spec.Retention == task.RetentionEphemeralAutoDestroy && disposition != AWSSnapshotDeleteWithDeployment &&
+				!isBoundedManagedPreparationSnapshotProvision(spec)) ||
 				(spec.Retention == task.RetentionManaged && disposition != AWSSnapshotRetainWithManagedService) {
 				return fmt.Errorf("%w: snapshot disposition does not match retention", ErrInvalid)
 			}
@@ -283,6 +284,28 @@ func (spec ProvisionSpec) Validate(now time.Time) error {
 		seen[parsed.String()] = struct{}{}
 	}
 	return nil
+}
+
+// IsBoundedManagedPreparationSnapshot recognizes the sole mixed-retention
+// exception in a Managed deployment. It is deliberately narrower than a
+// generic ephemeral resource: only a signed managed-preparation snapshot may
+// retain provider-side data for a finite, owner-approved deadline.
+func IsBoundedManagedPreparationSnapshot(item ResourceV1) bool {
+	if item.Type != TypeSnapshot || item.IntentOrigin != IntentOriginManagedPreparation ||
+		item.Retention != task.RetentionEphemeralAutoDestroy || !item.AutoDestroyApproved || item.DestroyDeadline.IsZero() ||
+		!sha256Pattern.MatchString(item.OriginScopeDigest) || item.Tags == nil {
+		return false
+	}
+	return item.Tags[TagIntentOrigin] == string(IntentOriginManagedPreparation) &&
+		item.Tags[TagOriginScopeDigest] == item.OriginScopeDigest &&
+		item.Tags[TagRetention] == string(task.RetentionEphemeralAutoDestroy) &&
+		item.Tags[TagDestroyDeadline] == item.DestroyDeadline.UTC().Format(time.RFC3339)
+}
+
+func isBoundedManagedPreparationSnapshotProvision(spec ProvisionSpec) bool {
+	return spec.Type == TypeSnapshot && spec.IntentOrigin == IntentOriginManagedPreparation &&
+		spec.Retention == task.RetentionEphemeralAutoDestroy && spec.AutoDestroyApproved && !spec.DestroyDeadline.IsZero() &&
+		spec.AWS != nil && spec.AWS.Snapshot != nil && spec.AWS.Snapshot.Disposition == AWSSnapshotRetainWithManagedService
 }
 
 func (spec ProvisionSpec) mandatoryTags() map[string]string {
@@ -484,7 +507,10 @@ func (manifest Manifest) ValidateResourceApprovalScope() error {
 	for _, item := range manifest.Resources {
 		if !canonicalManifestUUID(item.ResourceID) || !sha256Pattern.MatchString(item.SpecDigest) ||
 			item.AgentInstanceID != manifest.AgentInstanceID || item.OwnerID != manifest.OwnerID ||
-			item.TaskID != manifest.TaskID || item.DeploymentID != manifest.DeploymentID || item.Retention != manifest.Retention {
+			item.TaskID != manifest.TaskID || item.DeploymentID != manifest.DeploymentID {
+			return ErrInvalid
+		}
+		if manifest.Retention == task.RetentionEphemeralAutoDestroy && item.Retention != task.RetentionEphemeralAutoDestroy {
 			return ErrInvalid
 		}
 		expectedTags := map[string]string{
@@ -493,7 +519,7 @@ func (manifest Manifest) ValidateResourceApprovalScope() error {
 			TagTaskID:           manifest.TaskID,
 			TagDeploymentID:     manifest.DeploymentID,
 			TagResourceID:       item.ResourceID,
-			TagRetention:        string(manifest.Retention),
+			TagRetention:        string(item.Retention),
 			TagApprovedPlanHash: item.ApprovedPlanHash,
 			TagApprovalID:       item.ApprovalID,
 		}
@@ -522,11 +548,62 @@ func (manifest Manifest) ValidateResourceApprovalScope() error {
 			}
 			continue
 		}
+		if IsBoundedManagedPreparationSnapshot(item) {
+			if !IsManagedManifestResource(item) {
+				return ErrInvalid
+			}
+			continue
+		}
+		if item.Retention != task.RetentionManaged || !IsManagedManifestResource(item) {
+			return ErrInvalid
+		}
 		if item.AutoDestroyApproved || !item.DestroyDeadline.IsZero() || item.Tags[TagDestroyDeadline] != "managed" {
 			return ErrInvalid
 		}
 	}
 	return nil
+}
+
+// IsManagedManifestResource limits the states which may live in a managed
+// manifest. Before acceptance, provider creation can still be active; after
+// acceptance, retained and independently verified retired facts remain
+// durable. No scheduled generic destruction state is permitted.
+func IsManagedManifestResource(item ResourceV1) bool {
+	if IsBoundedManagedPreparationSnapshot(item) {
+		switch item.State {
+		case StateProvisioning, StateActive, StateDestroying, StateVerifiedDestroyed, StateDestroyBlocked:
+			return true
+		default:
+			return false
+		}
+	}
+	if item.Retention != task.RetentionManaged {
+		return false
+	}
+	switch item.State {
+	case StateProvisioning, StateActive, StateRetainedManaged, StateDestroying, StateVerifiedDestroyed, StateDestroyBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+// HasExpiredManagedPreparationSnapshot reports whether a managed manifest
+// carries the sole finite-retention exception that the Reaper may consider.
+// It deliberately does not say that deletion is safe: callers must still
+// fence the manifest and prove the replacement dependency state before a
+// provider mutation.
+func HasExpiredManagedPreparationSnapshot(manifest Manifest, before time.Time) bool {
+	if !manifest.Managed || manifest.Retention != task.RetentionManaged || before.IsZero() ||
+		manifest.ValidateResourceApprovalScope() != nil {
+		return false
+	}
+	for _, item := range manifest.Resources {
+		if IsBoundedManagedPreparationSnapshot(item) && item.State != StateVerifiedDestroyed && !item.DestroyDeadline.After(before.UTC()) {
+			return true
+		}
+	}
+	return false
 }
 
 func approvalBindingsFromResources(resources []ResourceV1) []ApprovalBinding {

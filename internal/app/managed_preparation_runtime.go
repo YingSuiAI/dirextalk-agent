@@ -322,7 +322,7 @@ func (port *managedPreparationResourceLifecycle) EnsureSnapshot(ctx context.Cont
 		Description: "Dirextalk managed preparation " + operation.OperationID,
 		Disposition: resource.AWSSnapshotRetainWithManagedService,
 	}}
-	return port.provision(ctx, service, operation, volume.SnapshotResourceID, resource.TypeSnapshot,
+	return port.provision(ctx, service, operation, volume, volume.SnapshotResourceID, resource.TypeSnapshot,
 		"managed-backup-"+volume.SlotID, source.Region, []string{source.ResourceID}, source.TaskID, awsSpec)
 }
 
@@ -340,6 +340,14 @@ func (port *managedPreparationResourceLifecycle) EnsureReplacement(ctx context.C
 		!snapshot.ReadBack.Exists || snapshot.ReadBack.ProviderID != snapshot.ProviderID {
 		return resource.ResourceV1{}, serviceoperation.ErrRevisionConflict
 	}
+	if scope.SchemaVersion == serviceoperation.ScopeSchemaV2 {
+		deadline, deadlineErr := operation.Challenge.SnapshotDestroyDeadline(volume)
+		if deadlineErr != nil || !resource.IsBoundedManagedPreparationSnapshot(snapshot) || !snapshot.DestroyDeadline.Equal(deadline) {
+			return resource.ResourceV1{}, serviceoperation.ErrRevisionConflict
+		}
+	} else if snapshot.Retention != task.RetentionManaged || snapshot.AutoDestroyApproved || !snapshot.DestroyDeadline.IsZero() {
+		return resource.ResourceV1{}, serviceoperation.ErrRevisionConflict
+	}
 	service, _, err := port.runtime(ctx, scope)
 	if err != nil {
 		return resource.ResourceV1{}, err
@@ -351,15 +359,19 @@ func (port *managedPreparationResourceLifecycle) EnsureReplacement(ctx context.C
 		MountPath: volume.MountPath, ReadOnly: volume.ReadOnly, Persistent: volume.Persistent,
 		Disposition: resource.AWSVolumeDisposition(volume.Disposition),
 	}}
-	return port.provision(ctx, service, operation, volume.ReplacementVolumeResourceID, resource.TypeEBS,
+	return port.provision(ctx, service, operation, volume, volume.ReplacementVolumeResourceID, resource.TypeEBS,
 		"recipe-volume-"+volume.SlotID, snapshot.Region, []string{snapshot.ResourceID}, snapshot.TaskID, awsSpec)
 }
 
 func (port *managedPreparationResourceLifecycle) provision(ctx context.Context, service *resource.Service, operation serviceoperation.OperationV1,
-	resourceID string, kind resource.Type, logicalName, region string, dependencies []string, taskID string,
+	volume serviceoperation.VolumePreparationV1, resourceID string, kind resource.Type, logicalName, region string, dependencies []string, taskID string,
 	awsSpec *resource.AWSResourceSpecV1) (resource.ResourceV1, error) {
 	scope := operation.Challenge.Scope
 	specDigest, err := awsSpec.Digest(kind)
+	if err != nil {
+		return resource.ResourceV1{}, serviceoperation.ErrInvalid
+	}
+	retention, deadline, autoDestroyApproved, err := managedPreparationProvisionRetention(operation, volume, kind)
 	if err != nil {
 		return resource.ResourceV1{}, serviceoperation.ErrInvalid
 	}
@@ -369,7 +381,7 @@ func (port *managedPreparationResourceLifecycle) provision(ctx context.Context, 
 		Region:     region,
 		SpecDigest: specDigest, ApprovedPlanHash: scope.PlanHash, ApprovalID: operation.OperationID,
 		IntentOrigin: resource.IntentOriginManagedPreparation, OriginScopeDigest: operation.Challenge.ScopeDigest,
-		DependsOn: dependencies, Retention: task.RetentionManaged, AWS: awsSpec,
+		DependsOn: dependencies, Retention: retention, DestroyDeadline: deadline, AutoDestroyApproved: autoDestroyApproved, AWS: awsSpec,
 	}, resource.ProviderCreateAuthorization{
 		ApprovalExpiresAt: operation.Challenge.ExpiresAt, QuoteValidUntil: operation.Challenge.ExpiresAt,
 	})
@@ -381,7 +393,28 @@ func (port *managedPreparationResourceLifecycle) provision(ctx context.Context, 
 		item.State != resource.StateActive || !item.ReadBack.Exists || item.ReadBack.ProviderID != item.ProviderID {
 		return resource.ResourceV1{}, serviceoperation.ErrRevisionConflict
 	}
+	if kind == resource.TypeSnapshot && scope.SchemaVersion == serviceoperation.ScopeSchemaV2 {
+		if !resource.IsBoundedManagedPreparationSnapshot(item) || !item.DestroyDeadline.Equal(deadline) {
+			return resource.ResourceV1{}, serviceoperation.ErrRevisionConflict
+		}
+	} else if item.Retention != task.RetentionManaged || item.AutoDestroyApproved || !item.DestroyDeadline.IsZero() {
+		return resource.ResourceV1{}, serviceoperation.ErrRevisionConflict
+	}
 	return item, nil
+}
+
+func managedPreparationProvisionRetention(operation serviceoperation.OperationV1, volume serviceoperation.VolumePreparationV1, kind resource.Type) (task.RetentionPolicy, time.Time, bool, error) {
+	if kind != resource.TypeSnapshot || operation.Challenge.Scope.SchemaVersion == serviceoperation.ScopeSchemaV1 {
+		return task.RetentionManaged, time.Time{}, false, nil
+	}
+	if operation.Challenge.Scope.SchemaVersion != serviceoperation.ScopeSchemaV2 {
+		return "", time.Time{}, false, serviceoperation.ErrInvalid
+	}
+	deadline, err := operation.Challenge.SnapshotDestroyDeadline(volume)
+	if err != nil {
+		return "", time.Time{}, false, err
+	}
+	return task.RetentionEphemeralAutoDestroy, deadline, true, nil
 }
 
 func (port *managedPreparationResourceLifecycle) GetPreparationResource(ctx context.Context, resourceID string) (resource.ResourceV1, error) {

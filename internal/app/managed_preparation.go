@@ -68,7 +68,11 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 	if err != nil || plan.Validate() != nil || plan.Status != cloudapproval.PlanApproved ||
 		plan.AgentInstanceID != builder.agentInstanceID || plan.OwnerID != ownerID || plan.PlanID != deployment.PlanID ||
 		plan.ConnectionID != deployment.ConnectionID || len(plan.ResourceScope.AvailabilityZones) != 1 ||
-		len(plan.ResourceScope.VolumeScopes) == 0 || !managedPreparationPlanAllowsSnapshots(plan) {
+		len(plan.ResourceScope.VolumeScopes) == 0 {
+		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
+	}
+	snapshotTemplates, templatesOK := managedPreparationSnapshotTemplateSet(plan)
+	if !templatesOK {
 		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
 	}
 	planHash, err := plan.Hash()
@@ -114,7 +118,7 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
 	}
 	scope := serviceoperation.ScopeV1{
-		SchemaVersion: serviceoperation.ScopeSchemaV1, Intent: serviceoperation.IntentManagedPreparation,
+		SchemaVersion: serviceoperation.ScopeSchemaV2, Intent: serviceoperation.IntentManagedPreparation,
 		PreparationOperationID: operationID, OwnerID: ownerID, AgentInstanceID: builder.agentInstanceID,
 		DeploymentID: deploymentID, DeploymentRevision: deployment.Worker.Revision,
 		ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision,
@@ -130,6 +134,10 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 		Currency: quote.Currency, CostAlertAmountMinor: amountMinor, ExpectedInstalledManifestDigest: manifestDigest,
 	}
 	for _, item := range volumes {
+		template, found := snapshotTemplates[item.slot.SlotID]
+		if !found {
+			return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
+		}
 		scope.SourceVolumes = append(scope.SourceVolumes, item.fact)
 		snapshotID, replacementID, deriveErr := serviceoperation.DeriveVolumeResourceIDs(operationID, item.fact.ResourceID, item.slot.SlotID)
 		if deriveErr != nil {
@@ -142,6 +150,8 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 			ThroughputMiBPS: item.slot.ThroughputMiBPS, KMSKeyID: item.slot.KMSKeyID,
 			DeviceName: item.slot.DeviceName, MountPath: item.slot.MountPath, ReadOnly: item.slot.ReadOnly,
 			Persistent: item.slot.Persistent, Disposition: string(item.slot.Disposition),
+			SnapshotOperationKey: template.operationKey, SnapshotSourceVolumeScopeDigest: template.sourceVolumeScopeDigest,
+			SnapshotMaxRetentionSeconds: template.maxRetentionSeconds,
 		})
 	}
 	if scope.Validate() != nil {
@@ -150,15 +160,47 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 	return scope, nil
 }
 
-// managedPreparationPlanAllowsSnapshots stays false until the signed
-// service-operation scope carries each snapshot's bounded retention into the
-// runtime resource, manifest, and reaper paths. The existing ScopeV1 records
-// only a Managed retain disposition, so accepting a V2 Plan template here
-// could turn a signed finite retention period into an indefinitely retained
-// snapshot. Plan V2 preserves the device-visible binding but does not yet
-// authorize this legacy mutation workflow.
-func managedPreparationPlanAllowsSnapshots(cloudapproval.PlanV1) bool {
-	return false
+type managedPreparationSnapshotTemplate struct {
+	operationKey            string
+	sourceVolumeScopeDigest string
+	maxRetentionSeconds     uint64
+}
+
+// managedPreparationSnapshotTemplateSet converts only a complete, already
+// device-signed Plan V2 snapshot set into the execution scope. A partial,
+// duplicate, or stale logical-volume binding is not a best-effort workflow:
+// preparation is rejected before it can create any provider resource.
+func managedPreparationSnapshotTemplateSet(plan cloudapproval.PlanV1) (map[string]managedPreparationSnapshotTemplate, bool) {
+	if plan.SchemaVersion != cloudapproval.PlanSchemaV2 || plan.ServiceOperations == nil ||
+		plan.RetentionScope.Class != cloudapproval.RetentionManaged {
+		return nil, false
+	}
+	volumes := make(map[string]cloudapproval.VolumeScopeV1, len(plan.ResourceScope.VolumeScopes))
+	for _, volume := range plan.ResourceScope.VolumeScopes {
+		if _, duplicate := volumes[volume.SlotID]; duplicate {
+			return nil, false
+		}
+		volumes[volume.SlotID] = volume
+	}
+	result := make(map[string]managedPreparationSnapshotTemplate, len(plan.ServiceOperations.Snapshots))
+	for _, snapshot := range plan.ServiceOperations.Snapshots {
+		volume, found := volumes[snapshot.SourceVolumeSlotID]
+		expectedDigest, err := cloudquote.VolumeScopeDigest(volume)
+		if !found || err != nil || snapshot.OperationKey == "" ||
+			snapshot.SourceVolumeSpecDigest != expectedDigest ||
+			snapshot.Disposition != cloudapproval.SnapshotRetainWithManagedService ||
+			snapshot.MaxRetentionSeconds == 0 || snapshot.MaxRetentionSeconds > 365*24*60*60 {
+			return nil, false
+		}
+		if _, duplicate := result[snapshot.SourceVolumeSlotID]; duplicate {
+			return nil, false
+		}
+		result[snapshot.SourceVolumeSlotID] = managedPreparationSnapshotTemplate{
+			operationKey: snapshot.OperationKey, sourceVolumeScopeDigest: snapshot.SourceVolumeSpecDigest,
+			maxRetentionSeconds: snapshot.MaxRetentionSeconds,
+		}
+	}
+	return result, len(result) == len(volumes)
 }
 
 func installerDeliveryDeclaresCommand(delivery *installer.DeliveryV1, commandID string) bool {

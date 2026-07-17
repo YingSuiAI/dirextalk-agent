@@ -71,8 +71,12 @@ func (service *Service) Prepare(ctx context.Context, command PrepareCommand) (Ch
 		scope.Validate() != nil {
 		return ChallengeV1{}, ErrRevisionConflict
 	}
+	challengeSchema, _, compatibleScope := scopeSigningVersions(scope.SchemaVersion)
+	if !compatibleScope {
+		return ChallengeV1{}, ErrRevisionConflict
+	}
 	challenge := ChallengeV1{
-		SchemaVersion: ChallengeSchemaV1,
+		SchemaVersion: challengeSchema,
 		ChallengeID:   uuid.NewSHA1(uuid.NameSpaceOID, []byte(operationID+":challenge")).String(),
 		OperationID:   operationID, SignerKeyID: command.SignerKeyID, Scope: scope,
 		IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute),

@@ -165,11 +165,22 @@ func (recovery *resourceManifestRecovery) Run(ctx context.Context) error {
 }
 
 func validateResourceManifestRecoveryScope(agentInstanceID string, manifest resource.Manifest, operation cloudexecution.Operation, connection cloudapp.Connection) error {
+	// Recovery is allowed to replay a mixed managed manifest only after the
+	// durable per-resource authorization proof has been reconstructed. A
+	// managed-preparation snapshot carries a distinct service-operation
+	// approval, so the legacy top-level plan/approval pair is not sufficient
+	// once the manifest has more than one binding.
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil || manifest.ValidateResourceApprovalScope() != nil {
+		return errResourceManifestRecoveryScope
+	}
 	managed := manifest.Retention == task.RetentionManaged
 	if manifest.AgentInstanceID != agentInstanceID || manifest.ManifestID != manifest.DeploymentID || manifest.DeploymentID != operation.DeploymentID ||
-		manifest.OwnerID != operation.Launch.OwnerID || manifest.TaskID != operation.TaskID || manifest.ApprovedPlanHash != operation.ApprovedPlanHash ||
+		manifest.OwnerID != operation.Launch.OwnerID || manifest.TaskID != operation.TaskID ||
 		operation.ConnectionID == "" || operation.Launch.ApprovalID == "" || connection.ConnectionID != operation.ConnectionID ||
 		connection.OwnerID != manifest.OwnerID || connection.Status != "active" || manifest.Managed != managed {
+		return errResourceManifestRecoveryScope
+	}
+	if !manifestContainsApprovalBinding(manifest, operation.ApprovedPlanHash, operation.Launch.ApprovalID) {
 		return errResourceManifestRecoveryScope
 	}
 	if managed {
@@ -180,18 +191,46 @@ func validateResourceManifestRecoveryScope(agentInstanceID string, manifest reso
 		manifest.AutoDestroyApprovalID != operation.Launch.ApprovalID || manifest.DestroyDeadline.IsZero() {
 		return errResourceManifestRecoveryScope
 	}
+	matchedLaunchResource := false
 	for _, item := range manifest.Resources {
 		if item.AgentInstanceID != agentInstanceID || item.OwnerID != manifest.OwnerID || item.TaskID != manifest.TaskID ||
-			item.DeploymentID != manifest.DeploymentID || item.ApprovedPlanHash != manifest.ApprovedPlanHash ||
-			item.ApprovalID != operation.Launch.ApprovalID || item.Region != connection.Region || item.Retention != manifest.Retention {
+			item.DeploymentID != manifest.DeploymentID || item.Region != connection.Region {
 			return errResourceManifestRecoveryScope
 		}
-		if managed && item.State != resource.StateRetainedManaged {
+		switch item.IntentOrigin {
+		case "":
+			if item.ApprovedPlanHash != operation.ApprovedPlanHash || item.ApprovalID != operation.Launch.ApprovalID {
+				return errResourceManifestRecoveryScope
+			}
+			matchedLaunchResource = true
+		case resource.IntentOriginManagedPreparation:
+			// The preparation operation has its own approval ID, but it is bound
+			// to this launch's approved Plan. ValidateResourceApprovalScope has
+			// already narrowed this origin to the typed resource contract.
+			if !managed || item.ApprovedPlanHash != operation.ApprovedPlanHash {
+				return errResourceManifestRecoveryScope
+			}
+		default:
+			return errResourceManifestRecoveryScope
+		}
+		if managed && !resource.IsManagedManifestResource(item) {
 			return errResourceManifestRecoveryScope
 		}
 		if !managed && item.State == resource.StateRetainedManaged {
 			return errResourceManifestRecoveryScope
 		}
 	}
+	if !matchedLaunchResource {
+		return errResourceManifestRecoveryScope
+	}
 	return nil
+}
+
+func manifestContainsApprovalBinding(manifest resource.Manifest, planHash, approvalID string) bool {
+	for _, binding := range manifest.ApprovalBindings {
+		if binding.ApprovedPlanHash == planHash && binding.ApprovalID == approvalID {
+			return true
+		}
+	}
+	return false
 }
