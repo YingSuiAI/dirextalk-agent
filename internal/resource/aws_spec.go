@@ -26,9 +26,12 @@ const (
 
 var (
 	awsIDPattern           = regexp.MustCompile(`^(?:ami|vpc|subnet|sg|eni|vol)-[0-9a-f]{8,17}$`)
+	awsInstanceIDPattern   = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
 	awsInstanceTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
 	awsZonePattern         = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
 	awsProfilePattern      = regexp.MustCompile(`^dtx-agent-[a-z0-9-]{1,54}-worker$`)
+	awsHTTPPathPattern     = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
+	awsAccountIDPattern    = regexp.MustCompile(`^[0-9]{12}$`)
 	awsKMSPattern          = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
 	awsEndpointServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{2,253}[a-z0-9]$`)
 )
@@ -44,14 +47,117 @@ const (
 // or user-data field; the provider serializes a fixed Worker bootstrap JSON
 // document from the immutable artifact reference and digest.
 type AWSResourceSpecV1 struct {
-	SchemaVersion    string                     `json:"schema_version"`
-	SecurityGroup    *AWSSecurityGroupSpecV1    `json:"security_group,omitempty"`
-	Volume           *AWSEBSVolumeSpecV1        `json:"volume,omitempty"`
-	NetworkInterface *AWSNetworkInterfaceSpecV1 `json:"network_interface,omitempty"`
-	ElasticIP        *AWSElasticIPSpecV1        `json:"elastic_ip,omitempty"`
-	Endpoint         *AWSVPCEndpointSpecV1      `json:"endpoint,omitempty"`
-	Snapshot         *AWSEBSSnapshotSpecV1      `json:"snapshot,omitempty"`
-	Instance         *AWSEC2InstanceSpecV1      `json:"instance,omitempty"`
+	SchemaVersion     string                      `json:"schema_version"`
+	SecurityGroup     *AWSSecurityGroupSpecV1     `json:"security_group,omitempty"`
+	ALB               *AWSALBSpecV1               `json:"alb,omitempty"`
+	TargetGroup       *AWSTargetGroupSpecV1       `json:"target_group,omitempty"`
+	Listener          *AWSListenerSpecV1          `json:"listener,omitempty"`
+	SecurityGroupRule *AWSSecurityGroupRuleSpecV1 `json:"security_group_rule,omitempty"`
+	Volume            *AWSEBSVolumeSpecV1         `json:"volume,omitempty"`
+	NetworkInterface  *AWSNetworkInterfaceSpecV1  `json:"network_interface,omitempty"`
+	ElasticIP         *AWSElasticIPSpecV1         `json:"elastic_ip,omitempty"`
+	Endpoint          *AWSVPCEndpointSpecV1       `json:"endpoint,omitempty"`
+	Snapshot          *AWSEBSSnapshotSpecV1       `json:"snapshot,omitempty"`
+	Instance          *AWSEC2InstanceSpecV1       `json:"instance,omitempty"`
+}
+
+type AWSALBScheme string
+
+const (
+	// AWSALBSchemeInternetFacing is deliberately the only first-release ALB
+	// scheme. A private VPC witness is a separate entry mode and cannot be
+	// silently substituted for an approved public HTTPS entry point.
+	AWSALBSchemeInternetFacing AWSALBScheme = "internet-facing"
+)
+
+type AWSALBIPAddressType string
+
+const (
+	// AWSALBIPAddressTypeIPv4 avoids implied EIP or IPv6 allocation. Any
+	// future dual-stack option must be explicit in a new approved spec.
+	AWSALBIPAddressTypeIPv4 AWSALBIPAddressType = "ipv4"
+)
+
+// AWSALBSpecV1 deliberately refers to its security group by Agent resource
+// identity, never an arbitrary existing AWS security-group ID. The provider
+// resolves that exact dependency after the mutation intent is durable.
+type AWSALBSpecV1 struct {
+	VPCID                   string              `json:"vpc_id"`
+	SubnetIDs               []string            `json:"subnet_ids"`
+	SecurityGroupResourceID string              `json:"security_group_resource_id"`
+	Scheme                  AWSALBScheme        `json:"scheme"`
+	IPAddressType           AWSALBIPAddressType `json:"ip_address_type"`
+}
+
+type AWSTargetGroupProtocol string
+
+const (
+	// AWSTargetGroupProtocolHTTP keeps TLS termination at the approved ALB.
+	// Worker-local TLS is not assumed or treated as external health evidence.
+	AWSTargetGroupProtocolHTTP AWSTargetGroupProtocol = "HTTP"
+)
+
+// AWSTargetRegistrationV1 is intentionally embedded in AWSTargetGroupSpecV1.
+// ELB target registration is not independently taggable or recoverable, so it
+// must be read back and destroyed together with the tagged target group.
+type AWSTargetRegistrationV1 struct {
+	InstanceID string `json:"instance_id"`
+}
+
+type AWSTargetGroupSpecV1 struct {
+	VPCID              string                  `json:"vpc_id"`
+	Protocol           AWSTargetGroupProtocol  `json:"protocol"`
+	Port               uint16                  `json:"port"`
+	Registration       AWSTargetRegistrationV1 `json:"registration"`
+	HealthCheckPath    string                  `json:"health_check_path"`
+	HealthCheckMatcher string                  `json:"health_check_matcher"`
+}
+
+type AWSListenerProtocol string
+
+const (
+	AWSListenerProtocolHTTPS AWSListenerProtocol = "HTTPS"
+)
+
+type AWSListenerTLSPolicy string
+
+const (
+	// AWSListenerTLSPolicyTLS13_12_2021_06 is the fixed, modern first-release
+	// policy. The typed model does not permit caller-selected weaker policies.
+	AWSListenerTLSPolicyTLS13_12_2021_06 AWSListenerTLSPolicy = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+)
+
+// AWSListenerSpecV1 accepts an existing ACM certificate only. Certificate
+// issuance and DNS/Route53 mutations are intentionally outside this resource
+// model, and both ALB/TG inputs are Agent resource identities.
+type AWSListenerSpecV1 struct {
+	LoadBalancerResourceID string               `json:"load_balancer_resource_id"`
+	TargetGroupResourceID  string               `json:"target_group_resource_id"`
+	Port                   uint16               `json:"port"`
+	Protocol               AWSListenerProtocol  `json:"protocol"`
+	CertificateARN         string               `json:"certificate_arn"`
+	TLSPolicy              AWSListenerTLSPolicy `json:"tls_policy"`
+}
+
+type AWSSecurityGroupRuleDirection string
+
+const (
+	// AWSSecurityGroupRuleDirectionIngress only allows the explicit ALB-to-
+	// Worker ingress bridge. Public CIDR ingress remains part of the separately
+	// approved ALB security-group spec; it cannot be smuggled into a rule.
+	AWSSecurityGroupRuleDirectionIngress AWSSecurityGroupRuleDirection = "ingress"
+)
+
+// AWSSecurityGroupRuleSpecV1 has no AWS security-group ID or CIDR fields.
+// Source and target are both exact Agent resource identities, which makes the
+// provider resolve them only from the approved dependency graph.
+type AWSSecurityGroupRuleSpecV1 struct {
+	Direction                     AWSSecurityGroupRuleDirection `json:"direction"`
+	Protocol                      string                        `json:"protocol"`
+	FromPort                      uint16                        `json:"from_port"`
+	ToPort                        uint16                        `json:"to_port"`
+	SourceSecurityGroupResourceID string                        `json:"source_security_group_resource_id"`
+	TargetSecurityGroupResourceID string                        `json:"target_security_group_resource_id"`
 }
 
 type AWSSecurityGroupSpecV1 struct {
@@ -226,6 +332,23 @@ func (spec *AWSResourceSpecV1) Clone() *AWSResourceSpecV1 {
 		value.Egress = slices.Clone(value.Egress)
 		clone.SecurityGroup = &value
 	}
+	if spec.ALB != nil {
+		value := *spec.ALB
+		value.SubnetIDs = slices.Clone(value.SubnetIDs)
+		clone.ALB = &value
+	}
+	if spec.TargetGroup != nil {
+		value := *spec.TargetGroup
+		clone.TargetGroup = &value
+	}
+	if spec.Listener != nil {
+		value := *spec.Listener
+		clone.Listener = &value
+	}
+	if spec.SecurityGroupRule != nil {
+		value := *spec.SecurityGroupRule
+		clone.SecurityGroupRule = &value
+	}
 	if spec.Volume != nil {
 		value := *spec.Volume
 		clone.Volume = &value
@@ -272,7 +395,10 @@ func (spec *AWSResourceSpecV1) Validate(kind Type) error {
 		return fmt.Errorf("%w: AWS resource schema is invalid", ErrInvalid)
 	}
 	count := 0
-	for _, present := range []bool{spec.SecurityGroup != nil, spec.Volume != nil, spec.NetworkInterface != nil, spec.ElasticIP != nil, spec.Endpoint != nil, spec.Snapshot != nil, spec.Instance != nil} {
+	for _, present := range []bool{
+		spec.SecurityGroup != nil, spec.ALB != nil, spec.TargetGroup != nil, spec.Listener != nil, spec.SecurityGroupRule != nil,
+		spec.Volume != nil, spec.NetworkInterface != nil, spec.ElasticIP != nil, spec.Endpoint != nil, spec.Snapshot != nil, spec.Instance != nil,
+	} {
 		if present {
 			count++
 		}
@@ -286,6 +412,26 @@ func (spec *AWSResourceSpecV1) Validate(kind Type) error {
 			return fmt.Errorf("%w: security group spec is required", ErrInvalid)
 		}
 		return spec.SecurityGroup.validate()
+	case TypeALB:
+		if spec.ALB == nil {
+			return fmt.Errorf("%w: ALB spec is required", ErrInvalid)
+		}
+		return spec.ALB.validate()
+	case TypeTargetGroup:
+		if spec.TargetGroup == nil {
+			return fmt.Errorf("%w: target group spec is required", ErrInvalid)
+		}
+		return spec.TargetGroup.validate()
+	case TypeListener:
+		if spec.Listener == nil {
+			return fmt.Errorf("%w: listener spec is required", ErrInvalid)
+		}
+		return spec.Listener.validate()
+	case TypeSecurityGroupRule:
+		if spec.SecurityGroupRule == nil {
+			return fmt.Errorf("%w: security group rule spec is required", ErrInvalid)
+		}
+		return spec.SecurityGroupRule.validate()
 	case TypeEBS:
 		if spec.Volume == nil {
 			return fmt.Errorf("%w: EBS spec is required", ErrInvalid)
@@ -351,6 +497,82 @@ func (spec AWSSecurityGroupSpecV1) validate() error {
 		}
 	}
 	return nil
+}
+
+func (spec AWSALBSpecV1) validate() error {
+	if !validAWSVPCID(spec.VPCID) || len(spec.SubnetIDs) < 2 || len(spec.SubnetIDs) > 16 ||
+		!validCanonicalResourceID(spec.SecurityGroupResourceID) || spec.Scheme != AWSALBSchemeInternetFacing ||
+		spec.IPAddressType != AWSALBIPAddressTypeIPv4 {
+		return fmt.Errorf("%w: ALB scope is invalid", ErrInvalid)
+	}
+	seen := make(map[string]struct{}, len(spec.SubnetIDs))
+	for _, subnetID := range spec.SubnetIDs {
+		if !validAWSSubnetID(subnetID) {
+			return fmt.Errorf("%w: ALB subnet is invalid", ErrInvalid)
+		}
+		if _, duplicate := seen[subnetID]; duplicate {
+			return fmt.Errorf("%w: duplicate ALB subnet", ErrInvalid)
+		}
+		seen[subnetID] = struct{}{}
+	}
+	return nil
+}
+
+func (spec AWSTargetGroupSpecV1) validate() error {
+	if !validAWSVPCID(spec.VPCID) || spec.Protocol != AWSTargetGroupProtocolHTTP || spec.Port == 0 ||
+		!awsInstanceIDPattern.MatchString(spec.Registration.InstanceID) || !validAWSHTTPPath(spec.HealthCheckPath) ||
+		spec.HealthCheckMatcher != "200" {
+		return fmt.Errorf("%w: target group scope is invalid", ErrInvalid)
+	}
+	return nil
+}
+
+func (spec AWSListenerSpecV1) validate() error {
+	if !validCanonicalResourceID(spec.LoadBalancerResourceID) || !validCanonicalResourceID(spec.TargetGroupResourceID) ||
+		spec.LoadBalancerResourceID == spec.TargetGroupResourceID || spec.Port != 443 || spec.Protocol != AWSListenerProtocolHTTPS ||
+		!validACMCertificateARN(spec.CertificateARN) || spec.TLSPolicy != AWSListenerTLSPolicyTLS13_12_2021_06 {
+		return fmt.Errorf("%w: HTTPS listener scope is invalid", ErrInvalid)
+	}
+	return nil
+}
+
+func (spec AWSSecurityGroupRuleSpecV1) validate() error {
+	if spec.Direction != AWSSecurityGroupRuleDirectionIngress || spec.Protocol != "tcp" || spec.FromPort == 0 ||
+		spec.ToPort < spec.FromPort || !validCanonicalResourceID(spec.SourceSecurityGroupResourceID) ||
+		!validCanonicalResourceID(spec.TargetSecurityGroupResourceID) ||
+		spec.SourceSecurityGroupResourceID == spec.TargetSecurityGroupResourceID {
+		return fmt.Errorf("%w: security group bridge scope is invalid", ErrInvalid)
+	}
+	return nil
+}
+
+func validAWSVPCID(value string) bool {
+	return strings.HasPrefix(value, "vpc-") && awsIDPattern.MatchString(value)
+}
+
+func validAWSSubnetID(value string) bool {
+	return strings.HasPrefix(value, "subnet-") && awsIDPattern.MatchString(value)
+}
+
+func validCanonicalResourceID(value string) bool {
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed != uuid.Nil && parsed.String() == value
+}
+
+func validAWSHTTPPath(value string) bool {
+	return len(value) <= 512 && awsHTTPPathPattern.MatchString(value) && path.Clean(value) == value
+}
+
+func validACMCertificateARN(value string) bool {
+	parsed, err := arn.Parse(value)
+	if err != nil || parsed.Service != "acm" || parsed.Region == "" || !awsAccountIDPattern.MatchString(parsed.AccountID) {
+		return false
+	}
+	prefix, certificateID, found := strings.Cut(parsed.Resource, "certificate/")
+	if !found || prefix != "" || !validCanonicalResourceID(certificateID) {
+		return false
+	}
+	return parsed.Resource == "certificate/"+certificateID
 }
 
 func (rule AWSNetworkRuleV1) validate() error {
@@ -537,6 +759,7 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 	}
 	counts := make(map[Type]int)
 	seen := make(map[string]struct{}, len(dependencies))
+	dependenciesByID := make(map[string]ProviderDependency, len(dependencies))
 	for _, dependency := range dependencies {
 		if dependency.ResourceID == "" || dependency.ProviderID == "" || !validType(dependency.Type) {
 			return fmt.Errorf("%w: AWS dependency is incomplete", ErrInvalid)
@@ -546,11 +769,34 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 		}
 		seen[dependency.ResourceID] = struct{}{}
 		counts[dependency.Type]++
+		dependenciesByID[dependency.ResourceID] = dependency
 	}
 	switch kind {
 	case TypeSG, TypeEBS:
 		if len(dependencies) != 0 {
 			return fmt.Errorf("%w: resource does not accept dependencies", ErrInvalid)
+		}
+	case TypeALB:
+		if len(dependencies) != 1 || counts[TypeSG] != 1 || spec.ALB == nil ||
+			dependenciesByID[spec.ALB.SecurityGroupResourceID].Type != TypeSG {
+			return fmt.Errorf("%w: ALB requires exactly its approved security group", ErrInvalid)
+		}
+	case TypeTargetGroup:
+		if len(dependencies) != 1 || counts[TypeEC2] != 1 || spec.TargetGroup == nil ||
+			dependencies[0].ProviderID != spec.TargetGroup.Registration.InstanceID {
+			return fmt.Errorf("%w: target group requires its exact approved EC2 instance", ErrInvalid)
+		}
+	case TypeListener:
+		if len(dependencies) != 2 || counts[TypeALB] != 1 || counts[TypeTargetGroup] != 1 || spec.Listener == nil ||
+			dependenciesByID[spec.Listener.LoadBalancerResourceID].Type != TypeALB ||
+			dependenciesByID[spec.Listener.TargetGroupResourceID].Type != TypeTargetGroup {
+			return fmt.Errorf("%w: listener requires its approved ALB and target group", ErrInvalid)
+		}
+	case TypeSecurityGroupRule:
+		if len(dependencies) != 2 || counts[TypeSG] != 2 || spec.SecurityGroupRule == nil ||
+			dependenciesByID[spec.SecurityGroupRule.SourceSecurityGroupResourceID].Type != TypeSG ||
+			dependenciesByID[spec.SecurityGroupRule.TargetSecurityGroupResourceID].Type != TypeSG {
+			return fmt.Errorf("%w: security group rule requires its approved source and target security groups", ErrInvalid)
 		}
 	case TypeENI:
 		existing := spec.NetworkInterface != nil && spec.NetworkInterface.ExistingSecurityGroupID != ""
@@ -588,12 +834,8 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 		if counts[TypeEBS] != len(spec.Instance.DataVolumes) {
 			return fmt.Errorf("%w: EC2 data device must match its EBS dependency", ErrInvalid)
 		}
-		dependenciesByID := make(map[string]Type, len(dependencies))
-		for _, dependency := range dependencies {
-			dependenciesByID[dependency.ResourceID] = dependency.Type
-		}
 		for _, attachment := range spec.Instance.DataVolumes {
-			if dependenciesByID[attachment.ResourceID] != TypeEBS {
+			if dependenciesByID[attachment.ResourceID].Type != TypeEBS {
 				return fmt.Errorf("%w: EC2 data-volume attachment is not an EBS dependency", ErrInvalid)
 			}
 		}

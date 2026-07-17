@@ -39,6 +39,14 @@ const (
 	TypeSG       Type = "security_group"
 	TypeEndpoint Type = "endpoint"
 	TypeSnapshot Type = "snapshot"
+	// TypeALB, TypeTargetGroup, TypeListener, and TypeSecurityGroupRule model
+	// the closed public-entry graph. Target registration deliberately remains a
+	// field of TypeTargetGroup because AWS does not give it an independently
+	// taggable resource identity.
+	TypeALB               Type = "alb"
+	TypeTargetGroup       Type = "target_group"
+	TypeListener          Type = "listener"
+	TypeSecurityGroupRule Type = "security_group_rule"
 )
 
 type State string
@@ -406,7 +414,8 @@ type DestroyResult struct {
 
 func validType(kind Type) bool {
 	switch kind {
-	case TypeEC2, TypeEBS, TypeENI, TypeEIP, TypeSG, TypeEndpoint, TypeSnapshot:
+	case TypeEC2, TypeEBS, TypeENI, TypeEIP, TypeSG, TypeEndpoint, TypeSnapshot,
+		TypeALB, TypeTargetGroup, TypeListener, TypeSecurityGroupRule:
 		return true
 	default:
 		return false
