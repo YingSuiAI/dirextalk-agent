@@ -28,6 +28,21 @@ type Repository interface {
 	ImportOrphan(context.Context, ResourceV1) (ResourceV1, error)
 }
 
+// DeploymentFencer is an optional repository capability that serializes every
+// resource lifecycle mutation for one deployment. A durable implementation
+// must retain the fence for the complete callback, including any provider
+// mutation and read-back that the callback performs. Repository implementations
+// without this capability retain the existing in-memory behavior.
+//
+// The callback receives the context supplied by the repository so a durable
+// implementation can attach a transaction or lock lifetime without forcing
+// provider clients to know about its storage details. Service methods call the
+// private lifecycle bodies from the callback; they must never call another
+// public fenced method while holding this fence.
+type DeploymentFencer interface {
+	WithDeploymentFence(context.Context, string, func(context.Context) error) error
+}
+
 type Service struct {
 	repository Repository
 	provider   Provider
@@ -50,6 +65,19 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 	if err := authorization.validate(); err != nil {
 		return ResourceV1{}, err
 	}
+	var provisioned ResourceV1
+	err := service.withDeploymentFence(ctx, spec.DeploymentID, func(fenced context.Context) error {
+		var provisionErr error
+		provisioned, provisionErr = service.provision(fenced, spec, authorization, now)
+		return provisionErr
+	})
+	return provisioned.clone(), err
+}
+
+// provision is the complete provider lifecycle held by the optional
+// deployment fence. Keeping it private prevents Provision/ScheduleDestroy
+// from recursively taking a non-reentrant durable fence.
+func (service *Service) provision(ctx context.Context, spec ProvisionSpec, authorization ProviderCreateAuthorization, now time.Time) (ResourceV1, error) {
 	dependencies, providerDependencies, err := service.resolveDependencies(ctx, spec)
 	if err != nil {
 		return ResourceV1{}, err
@@ -102,6 +130,13 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 	if (stored.State == StateActive || stored.State == StateRetainedManaged) &&
 		(storedRoot == nil || storedRoot.State == StateActive || storedRoot.State == StateRetainedManaged) {
 		return stored.clone(), nil
+	}
+	if destroyHasBegun(stored.State) || (storedRoot != nil && destroyHasBegun(storedRoot.State)) {
+		// A destroy can legitimately win after intent persistence but before a
+		// retry reaches the provider. It must never be possible for that retry
+		// to recreate or reactivate the deployment after destruction was
+		// scheduled.
+		return stored.clone(), ErrDestroyBlocked
 	}
 
 	observation := ProviderObservation{}
@@ -243,6 +278,19 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 }
 
 func (service *Service) ScheduleDestroy(ctx context.Context, deploymentID, ownerID string) ([]ResourceV1, error) {
+	var scheduled []ResourceV1
+	err := service.withDeploymentFence(ctx, deploymentID, func(fenced context.Context) error {
+		var scheduleErr error
+		scheduled, scheduleErr = service.scheduleDestroy(fenced, deploymentID, ownerID)
+		return scheduleErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cloneResources(scheduled), nil
+}
+
+func (service *Service) scheduleDestroy(ctx context.Context, deploymentID, ownerID string) ([]ResourceV1, error) {
 	resources, err := service.repository.ListDeployment(ctx, deploymentID)
 	if err != nil {
 		return nil, err
@@ -255,7 +303,7 @@ func (service *Service) ScheduleDestroy(ctx context.Context, deploymentID, owner
 		if resource.State == StateRetainedManaged || resource.Retention == task.RetentionManaged {
 			return nil, ErrManaged
 		}
-		if resource.State == StateActive {
+		if resource.State == StateActive || resource.State == StateProvisioning {
 			resource.State = StateDestroyScheduled
 			resource, err = service.save(ctx, resource)
 			if err != nil {
@@ -268,6 +316,22 @@ func (service *Service) ScheduleDestroy(ctx context.Context, deploymentID, owner
 		return nil, err
 	}
 	return cloneResources(resources), nil
+}
+
+func (service *Service) withDeploymentFence(ctx context.Context, deploymentID string, run func(context.Context) error) error {
+	if fencer, ok := service.repository.(DeploymentFencer); ok {
+		return fencer.WithDeploymentFence(ctx, deploymentID, run)
+	}
+	return run(ctx)
+}
+
+func destroyHasBegun(state State) bool {
+	switch state {
+	case StateDestroyScheduled, StateDestroying, StateVerifiedDestroyed, StateDestroyBlocked:
+		return true
+	default:
+		return false
+	}
 }
 
 func (service *Service) AcceptManaged(ctx context.Context, contract ManagedContractV1) (ManagedServiceV1, []ResourceV1, error) {
