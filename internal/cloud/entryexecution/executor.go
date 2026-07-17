@@ -219,7 +219,7 @@ func (executor *Executor) reconcile(ctx context.Context, operation entrypoint.Op
 		}
 		return executor.failBinding(ctx, operation, err)
 	}
-	specs, err := resourceSpecs(operation, plan.Scope, bindings)
+	specs, err := resourceSpecs(operation, plan, bindings)
 	if err != nil {
 		return executor.fail(ctx, operation, entrypoint.ErrorCodeProvisioningFailed, summaryProvisioningFailed)
 	}
@@ -368,14 +368,21 @@ func retentionPolicy(scope entrypoint.RetentionScopeV1) task.RetentionPolicy {
 	return task.RetentionManaged
 }
 
-func resourceSpecs(operation entrypoint.OperationV1, scope entrypoint.ScopeV1, bindings workerBindings) ([]resource.ProvisionSpec, error) {
-	if operation.Challenge.OperationID == "" || scope.Validate() != nil || !matchesExistingWorker(bindings.worker, scope) || !matchesExistingWorkerSecurityGroup(bindings.securityGroup, scope) {
+func resourceSpecs(operation entrypoint.OperationV1, plan entrypoint.PlanV1, bindings workerBindings) ([]resource.ProvisionSpec, error) {
+	scope := plan.Scope
+	entryPlanHash, err := plan.Hash()
+	if operation.Challenge.OperationID == "" || plan.Validate() != nil || plan.Status != entrypoint.PlanApproved ||
+		err != nil || entryPlanHash != operation.Challenge.PlanHash || operation.Challenge.EntryPlanID != plan.EntryPlanID ||
+		scope.Validate() != nil || !matchesExistingWorker(bindings.worker, scope) || !matchesExistingWorkerSecurityGroup(bindings.securityGroup, scope) {
 		return nil, entrypoint.ErrInvalid
 	}
 	retention := retentionPolicy(scope.Retention)
 	common := resource.ProvisionSpec{
 		AgentInstanceID: scope.AgentInstanceID, OwnerID: scope.OwnerID, TaskID: scope.Worker.TaskID, DeploymentID: scope.Worker.DeploymentID,
-		Region: scope.Region, ApprovedPlanHash: scope.Worker.OriginalPlanHash, ApprovalID: scope.Worker.OriginalApprovalID,
+		// New public-entry resources are authorized by the separate entry plan
+		// and device approval, not by the historical Worker purchase approval.
+		// The latter remains solely an immutable check on bindings.worker above.
+		Region: scope.Region, ApprovedPlanHash: entryPlanHash, ApprovalID: operation.Challenge.ApprovalID,
 		Retention: retention, DestroyDeadline: scope.Retention.DestroyDeadline.UTC(), AutoDestroyApproved: scope.Retention.AutoDestroy,
 	}
 

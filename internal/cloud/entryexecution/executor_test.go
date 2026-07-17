@@ -37,6 +37,22 @@ func TestRunOnceProvisionsClosedALBGraphAndActivates(t *testing.T) {
 		t.Fatalf("resource types = %v, want %v", got, want)
 	}
 	assertClosedEntrySpecs(t, fixture, specs)
+	entryPlanHash, err := fixture.plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range specs {
+		if spec.ApprovedPlanHash != entryPlanHash || spec.ApprovalID != operation.Challenge.ApprovalID {
+			t.Fatalf("entry resource %s approval binding = (%q, %q), want entry plan/device approval", spec.LogicalName, spec.ApprovedPlanHash, spec.ApprovalID)
+		}
+		if spec.ApprovedPlanHash == fixture.plan.Scope.Worker.OriginalPlanHash || spec.ApprovalID == fixture.plan.Scope.Worker.OriginalApprovalID {
+			t.Fatalf("entry resource %s reused the historical Worker approval", spec.LogicalName)
+		}
+	}
+	worker := fixture.workerResource()
+	if worker.ApprovedPlanHash != fixture.plan.Scope.Worker.OriginalPlanHash || worker.ApprovalID != fixture.plan.Scope.Worker.OriginalApprovalID {
+		t.Fatal("existing Worker binding must remain tied to its original approval")
+	}
 }
 
 func TestRunOnceRecoversProvisioningOperationWithoutDuplicatingResources(t *testing.T) {
@@ -52,7 +68,7 @@ func TestRunOnceRecoversProvisioningOperationWithoutDuplicatingResources(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	specs, err := resourceSpecs(operation, fixture.plan.Scope, bindings)
+	specs, err := resourceSpecs(operation, fixture.plan, bindings)
 	if err != nil {
 		t.Fatal(err)
 	}
