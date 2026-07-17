@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The entry approval is intentionally not a cloud_approvals row. This
@@ -31,12 +32,41 @@ func TestResourceStoreCreateIntentAcceptsExactEntryApprovalOrigin(t *testing.T) 
 		t.Fatal("entry approval unexpectedly exists in cloud_approvals")
 	}
 	item := entryResourceIntentFixture(t, fixture, operation)
+	advanceApprovedWorkerPlanSnapshot(t, fixture.ctx, fixture.pool, fixture.plan.Scope.Worker.DeploymentID)
 	created, err := store.CreateIntent(fixture.ctx, item)
 	if err != nil {
 		t.Fatalf("create exact entry resource intent: %v", err)
 	}
 	if created.ResourceID != item.ResourceID || created.ApprovalID != operation.Challenge.ApprovalID || created.ApprovedPlanHash != operation.Challenge.PlanHash {
 		t.Fatalf("stored entry resource intent=%+v", created)
+	}
+}
+
+// An approval records the exact signed pre-transition Plan snapshot. The
+// cloud_plans row becomes approved at a later revision and has a different
+// hash, so the mutable row is only a current plan-ID/status guard; it is not
+// the authorization fact for a Worker resource intent.
+func TestResourceStoreCreateIntentAcceptsWorkerApprovalSnapshotAfterPlanTransition(t *testing.T) {
+	pool, baseStore, instanceID := newPlanningTestStore(t)
+	ctx := context.Background()
+	taskID, _ := createWorkerTask(t, baseStore)
+	deploymentID := uuid.NewString()
+	const ownerID = "owner-worker-snapshot"
+	seedWorkerIdentityBinding(t, pool, instanceID, ownerID, taskID, deploymentID, "i-0123456789abcdef0", "123456789012")
+	approvalID, approvalHash := workerApprovalSnapshot(t, ctx, pool, deploymentID)
+	advanceApprovedWorkerPlanSnapshot(t, ctx, pool, deploymentID)
+
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := workerResourceIntentFixture(instanceID, ownerID, taskID, deploymentID, approvalHash, approvalID)
+	created, err := store.CreateIntent(ctx, item)
+	if err != nil {
+		t.Fatalf("create Worker resource from immutable approval snapshot: %v", err)
+	}
+	if created.ResourceID != item.ResourceID || created.ApprovedPlanHash != approvalHash || created.ApprovalID != approvalID {
+		t.Fatalf("stored Worker resource intent=%+v", created)
 	}
 }
 
@@ -125,16 +155,8 @@ func TestResourceStoreImportOrphanRequiresTaggedWorkerOrEntryOrigin(t *testing.T
 		taskID, _ := createWorkerTask(t, baseStore)
 		deploymentID := uuid.NewString()
 		seedWorkerIdentityBinding(t, pool, instanceID, "owner-worker-store", taskID, deploymentID, "i-0123456789abcdef0", "123456789012")
-		var approvalID uuid.UUID
-		var planHash string
-		if err := pool.QueryRow(ctx, `
-			SELECT launch.approval_id, plan.plan_hash
-			FROM cloud_launch_operations AS launch
-			JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
-			WHERE launch.deployment_id=$1`, deploymentID,
-		).Scan(&approvalID, &planHash); err != nil {
-			t.Fatalf("load Worker orphan origin: %v", err)
-		}
+		approvalID, planHash := workerApprovalSnapshot(t, ctx, pool, deploymentID)
+		advanceApprovedWorkerPlanSnapshot(t, ctx, pool, deploymentID)
 		if _, err := pool.Exec(ctx, `DELETE FROM cloud_resources WHERE deployment_id=$1`, deploymentID); err != nil {
 			t.Fatalf("remove fixture Worker resource: %v", err)
 		}
@@ -142,7 +164,7 @@ func TestResourceStoreImportOrphanRequiresTaggedWorkerOrEntryOrigin(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		item := orphanResourceFixture(instanceID, "owner-worker-store", taskID, deploymentID, planHash, approvalID.String(), "i-orphan-worker")
+		item := orphanResourceFixture(instanceID, "owner-worker-store", taskID, deploymentID, planHash, approvalID, "i-orphan-worker")
 		if _, err := store.ImportOrphan(ctx, item); err != nil {
 			t.Fatalf("import Worker orphan with exact historical origin: %v", err)
 		}
@@ -151,6 +173,7 @@ func TestResourceStoreImportOrphanRequiresTaggedWorkerOrEntryOrigin(t *testing.T
 	t.Run("signed entry history without active connection", func(t *testing.T) {
 		fixture := seedEntryOperationPlanLookup(t)
 		operation := transitionEntryOperationToProvisioning(t, fixture)
+		advanceApprovedWorkerPlanSnapshot(t, fixture.ctx, fixture.pool, fixture.plan.Scope.Worker.DeploymentID)
 		if _, err := fixture.pool.Exec(fixture.ctx, `
 			UPDATE cloud_connections
 			SET status='destroyed', revision=revision+1, updated_at=clock_timestamp()
@@ -181,6 +204,72 @@ func TestResourceStoreImportOrphanRequiresTaggedWorkerOrEntryOrigin(t *testing.T
 			t.Fatalf("old orphan without origin tag error=%v, want resource.ErrInvalid", err)
 		}
 	})
+}
+
+func workerApprovalSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool, deploymentID string) (string, string) {
+	t.Helper()
+	var approvalID uuid.UUID
+	var approvalHash string
+	if err := pool.QueryRow(ctx, `
+		SELECT launch.approval_id, approval.plan_hash
+		FROM cloud_launch_operations AS launch
+		JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
+		WHERE launch.deployment_id=$1`, deploymentID,
+	).Scan(&approvalID, &approvalHash); err != nil {
+		t.Fatalf("load immutable Worker approval snapshot: %v", err)
+	}
+	return approvalID.String(), approvalHash
+}
+
+func advanceApprovedWorkerPlanSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool, deploymentID string) {
+	t.Helper()
+	var planID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT plan_id FROM cloud_launch_operations WHERE deployment_id=$1`, deploymentID).Scan(&planID); err != nil {
+		t.Fatalf("load Worker plan for snapshot transition: %v", err)
+	}
+	const nextPlanHash = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	result, err := pool.Exec(ctx, `
+		UPDATE cloud_plans
+		SET plan_hash=$2, revision=revision+1, updated_at=clock_timestamp()
+		WHERE plan_id=$1 AND status='approved'`, planID, nextPlanHash)
+	if err != nil || result.RowsAffected() != 1 {
+		t.Fatalf("advance mutable approved Plan after approval: rows=%d err=%v", result.RowsAffected(), err)
+	}
+	var approvalHash, planHash string
+	var approvalRevision, planRevision int64
+	if err := pool.QueryRow(ctx, `
+		SELECT approval.plan_hash, plan.plan_hash, approval.plan_revision, plan.revision
+		FROM cloud_launch_operations AS launch
+		JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
+		JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+		WHERE launch.deployment_id=$1`, deploymentID,
+	).Scan(&approvalHash, &planHash, &approvalRevision, &planRevision); err != nil {
+		t.Fatalf("read advanced mutable Plan snapshot: %v", err)
+	}
+	if approvalHash == planHash || approvalRevision == planRevision {
+		t.Fatalf("fixture did not separate immutable approval snapshot: approval=(%s,%d) plan=(%s,%d)", approvalHash, approvalRevision, planHash, planRevision)
+	}
+}
+
+func workerResourceIntentFixture(agentID, ownerID, taskID, deploymentID, approvalHash, approvalID string) resource.ResourceV1 {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	deadline := now.Add(time.Hour).Truncate(time.Second)
+	resourceID := uuid.NewString()
+	return resource.ResourceV1{
+		ResourceID: resourceID, AgentInstanceID: agentID, OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
+		Type: resource.TypeEBS, LogicalName: "snapshot-authorized-volume", Region: "us-west-2",
+		SpecDigest: entryDigest("e"), ApprovedPlanHash: approvalHash, ApprovalID: approvalID,
+		Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline, AutoDestroyApproved: true,
+		Tags: map[string]string{
+			resource.TagAgentInstanceID: agentID, resource.TagOwnerID: ownerID, resource.TagTaskID: taskID,
+			resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
+			resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: approvalHash, resource.TagApprovalID: approvalID,
+		},
+		State:    resource.StateProvisioning,
+		Intent:   resource.MutationIntent{Operation: resource.MutationCreate, ClientToken: strings.Repeat("a", 64), RecordedAt: now},
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
 }
 
 func orphanResourceFixture(agentID, ownerID, taskID, deploymentID, planHash, approvalID, providerID string) resource.ResourceV1 {
