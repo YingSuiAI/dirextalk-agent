@@ -22,6 +22,11 @@ go test ./...
 go build ./cmd/...
 ```
 
+For a release-preparation path that builds and publishes only the Agent
+container (without Worker/Reaper/rootfs/AMI artifacts), see
+[docs/agent-image-release.md](docs/agent-image-release.md). It intentionally
+does not provide remote-host ECR pull credentials.
+
 Production startup requires TLS certificate/key files, a PostgreSQL DSN, an immutable instance ID, a service-key pepper file, and an initial service-key file. Secret values must be mounted as files rather than supplied in command arguments.
 
 ## Operation

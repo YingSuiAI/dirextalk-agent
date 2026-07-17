@@ -24,27 +24,59 @@ var (
 )
 
 type Preparer struct {
-	options    Options
-	clients    Clients
-	runner     CommandRunner
-	newSession func() (SessionV1, error)
+	options      Options
+	clients      Clients
+	runner       CommandRunner
+	repositories []RepositorySpec
+	resultSchema string
+	newSession   func() (SessionV1, error)
 }
 
 func New(options Options, clients Clients, runner CommandRunner) (*Preparer, error) {
+	return newPreparer(options, clients, runner, FixedRepositories(), ResultSchemaV1)
+}
+
+// NewAgent constructs the closed ECR preparation path for an Agent image
+// only. It shares the same identity, immutable-tag, scan-on-push, AES-256,
+// ownership-tag, and read-back checks as the bundle preparer, but it never
+// reads, creates, or returns Worker or Reaper repositories.
+func NewAgent(options Options, clients Clients, runner CommandRunner) (*Preparer, error) {
+	return newPreparer(options, clients, runner, AgentRepositories(), AgentResultSchemaV1)
+}
+
+func newPreparer(options Options, clients Clients, runner CommandRunner, repositories []RepositorySpec, resultSchema string) (*Preparer, error) {
 	if !regionPattern.MatchString(options.Region) || !accountPattern.MatchString(options.ExpectedAccountID) ||
-		options.Now == nil || clients.STS == nil || clients.ECR == nil || runner == nil {
+		options.Now == nil || clients.STS == nil || clients.ECR == nil || runner == nil || len(repositories) == 0 || resultSchema == "" {
 		return nil, ErrInvalidInput
 	}
 	if clients.Region != options.Region {
 		return nil, ErrRegionMismatch
 	}
-	return &Preparer{options: options, clients: clients, runner: runner, newSession: newDockerSession}, nil
+	return &Preparer{
+		options: options, clients: clients, runner: runner,
+		repositories: append([]RepositorySpec(nil), repositories...), resultSchema: resultSchema, newSession: newDockerSession,
+	}, nil
 }
 
 // PrepareDefault uses only the AWS SDK default credential chain. Options must
 // carry an explicit region and expected account ID; there is deliberately no
 // access-key, secret-key, session-token, profile-file, or rootkey input.
 func PrepareDefault(ctx context.Context, options Options) (PreparedV1, error) {
+	return prepareDefault(ctx, options, New)
+}
+
+// PrepareAgentDefault prepares only the fixed private dirextalk-agent ECR
+// repository. It obtains credentials solely through the AWS SDK default
+// chain, creates no Worker/Reaper repository, and emits no runtime pull
+// credential. The returned Docker session is a short-lived publisher session
+// that must be consumed and cleaned by the release CLI.
+func PrepareAgentDefault(ctx context.Context, options Options) (PreparedV1, error) {
+	return prepareDefault(ctx, options, NewAgent)
+}
+
+type preparerFactory func(Options, Clients, CommandRunner) (*Preparer, error)
+
+func prepareDefault(ctx context.Context, options Options, factory preparerFactory) (PreparedV1, error) {
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -55,7 +87,7 @@ func PrepareDefault(ctx context.Context, options Options) (PreparedV1, error) {
 	if err != nil {
 		return PreparedV1{}, redactedAWSFailure(ctx)
 	}
-	preparer, err := New(options, Clients{
+	preparer, err := factory(options, Clients{
 		Region: awsConfig.Region,
 		STS:    sts.NewFromConfig(awsConfig),
 		ECR:    ecr.NewFromConfig(awsConfig),
@@ -75,8 +107,8 @@ func (preparer *Preparer) Prepare(ctx context.Context) (prepared PreparedV1, err
 	if err != nil {
 		return PreparedV1{}, err
 	}
-	results := make([]RepositoryResultV1, 0, len(fixedRepositories))
-	for _, spec := range fixedRepositories {
+	results := make([]RepositoryResultV1, 0, len(preparer.repositories))
+	for _, spec := range preparer.repositories {
 		repository, created, ensureErr := preparer.ensureRepository(ctx, partition, registryHost, spec)
 		if ensureErr != nil {
 			return PreparedV1{}, ensureErr
@@ -106,7 +138,7 @@ func (preparer *Preparer) Prepare(ctx context.Context) (prepared PreparedV1, err
 	}
 	keepSession = true
 	return PreparedV1{Result: ResultV1{
-		SchemaVersion: ResultSchemaV1, AccountID: preparer.options.ExpectedAccountID, Region: preparer.options.Region,
+		SchemaVersion: preparer.resultSchema, AccountID: preparer.options.ExpectedAccountID, Region: preparer.options.Region,
 		RegistryHost: registryHost, LoginExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano), Repositories: results,
 	}, Session: session}, nil
 }

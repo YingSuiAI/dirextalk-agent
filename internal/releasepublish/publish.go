@@ -1,4 +1,4 @@
-// Package releasepublish owns the repository-local, offline release publisher.
+// Package releasepublish owns repository-local, offline release publishers.
 // It is deliberately not linked into the Agent runtime: the only external
 // processes it can start are fixed git inspections and fixed docker buildx
 // builds, and it never accepts registry or cloud credentials.

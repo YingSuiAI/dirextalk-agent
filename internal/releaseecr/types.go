@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	ResultSchemaV1  = "dirextalk.agent.ecr-release-preparation/v1"
-	SessionSchemaV1 = "dirextalk.agent.ecr-docker-session/v1"
+	ResultSchemaV1      = "dirextalk.agent.ecr-release-preparation/v1"
+	AgentResultSchemaV1 = "dirextalk.agent.agent-image-ecr-preparation/v1"
+	SessionSchemaV1     = "dirextalk.agent.ecr-docker-session/v1"
 
 	RepositoryAgent  = "dirextalk-agent"
 	RepositoryWorker = "dirextalk-cloud-worker"
@@ -46,6 +47,14 @@ var fixedRepositories = []RepositorySpec{
 
 func FixedRepositories() []RepositorySpec {
 	return append([]RepositorySpec(nil), fixedRepositories...)
+}
+
+// AgentRepositories returns the closed repository set used by the standalone
+// Agent-image release path. It intentionally excludes the Worker and Reaper
+// repositories so preparing an Agent image cannot provision their release
+// surfaces as a side effect.
+func AgentRepositories() []RepositorySpec {
+	return []RepositorySpec{{Component: "agent", Name: RepositoryAgent}}
 }
 
 type Options struct {
