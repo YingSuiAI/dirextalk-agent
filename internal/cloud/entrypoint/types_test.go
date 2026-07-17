@@ -142,6 +142,7 @@ func TestScopeRejectsUnsafeTargetDerivationAndIncompleteIndependentEvidence(t *t
 			value.ALB.PublicSubnets[1].AvailabilityZone = value.ALB.PublicSubnets[0].AvailabilityZone
 		},
 		"non-approved TLS policy":    func(value *ScopeV1) { value.ALB.TLSPolicy = "ELBSecurityPolicy-TLS13-1-3-2021-06" },
+		"HTTPS Worker target":        func(value *ScopeV1) { value.ALB.TargetProtocol = TargetProtocolHTTPS },
 		"non-approved ingress CIDR":  func(value *ScopeV1) { value.ALB.IngressCIDRs = []string{"10.0.0.0/8"} },
 		"authenticated health route": func(value *ScopeV1) { value.Health.NoCredentialRoute = false },
 		"wrong health recipe digest": func(value *ScopeV1) { value.Health.EvidenceDigest = digest('e') },

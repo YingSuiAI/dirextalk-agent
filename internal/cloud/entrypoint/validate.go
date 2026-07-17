@@ -213,7 +213,10 @@ func validateALB(value ALBScopeV1, region string, worker WorkerReadBackScopeV1) 
 	if prefix, err := netip.ParsePrefix(value.IngressCIDRs[0]); err != nil || prefix.String() != value.IngressCIDRs[0] {
 		return invalidf("ALB ingress CIDR is invalid")
 	}
-	if (value.TargetProtocol != TargetProtocolHTTP && value.TargetProtocol != TargetProtocolHTTPS) || value.TargetPort == 0 || value.TargetPort > 65535 {
+	// The first provider implementation deliberately terminates TLS at the ALB
+	// and has a closed HTTP target-group spec. Do not accept a signed HTTPS
+	// Worker target until the resource provider can independently read it back.
+	if value.TargetProtocol != TargetProtocolHTTP || value.TargetPort == 0 || value.TargetPort > 65535 {
 		return invalidf("ALB target protocol or port is invalid")
 	}
 	if value.TargetSource != TargetSourceApprovedWorkerReadBack {
