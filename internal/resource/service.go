@@ -78,6 +78,17 @@ func (service *Service) Provision(ctx context.Context, spec ProvisionSpec, autho
 // deployment fence. Keeping it private prevents Provision/ScheduleDestroy
 // from recursively taking a non-reentrant durable fence.
 func (service *Service) provision(ctx context.Context, spec ProvisionSpec, authorization ProviderCreateAuthorization, now time.Time) (ResourceV1, error) {
+	// A durable deployment fence can wait behind a provider read-back or
+	// destroy transition. Revalidate all time-bounded scope after acquiring it,
+	// otherwise a resource could cross the irreversible boundary after its
+	// approved retention deadline elapsed while waiting for the fence.
+	now = service.now().UTC()
+	if err := spec.Validate(now); err != nil {
+		return ResourceV1{}, err
+	}
+	if err := authorization.validate(); err != nil {
+		return ResourceV1{}, err
+	}
 	dependencies, providerDependencies, err := service.resolveDependencies(ctx, spec)
 	if err != nil {
 		return ResourceV1{}, err

@@ -24,6 +24,7 @@ type fencedResourceRepository struct {
 	entered   []string
 	requested chan string
 	fenceErr  error
+	beforeRun func()
 }
 
 func newFencedResourceRepository(repository *fakeResourceRepository) *fencedResourceRepository {
@@ -54,6 +55,9 @@ func (repository *fencedResourceRepository) WithDeploymentFence(ctx context.Cont
 	}()
 	if fenceErr != nil {
 		return fenceErr
+	}
+	if repository.beforeRun != nil {
+		repository.beforeRun()
 	}
 	return run(ctx)
 }
@@ -227,6 +231,24 @@ func TestScheduleDestroyFencesProvisioningIntentAndPreventsReactivation(t *testi
 		t.Fatalf("destroyed intent reactivated: resource=%+v error=%v creates=%d", retry, err, fixture.provider.createCount)
 	}
 	requireFenceRequest(t, fixture.fencer, spec.DeploymentID)
+}
+
+func TestDeploymentFenceRevalidatesExpiredRetentionBeforeProviderMutation(t *testing.T) {
+	fixture := newFencedResourceFixture(t)
+	clock := fixture.now
+	fixture.service.now = func() time.Time { return clock }
+	spec := fixture.spec(TypeEBS, "fence-expired-volume")
+	spec.DestroyDeadline = clock.Add(time.Second)
+	fixture.fencer.beforeRun = func() { clock = clock.Add(2 * time.Second) }
+
+	created, err := fixture.service.Provision(context.Background(), spec, fixture.createAuthorization())
+	if !errors.Is(err, ErrInvalid) || created.ResourceID != "" || fixture.provider.createCount != 0 {
+		t.Fatalf("expired retention crossed deployment fence: resource=%+v error=%v creates=%d", created, err, fixture.provider.createCount)
+	}
+	requireFenceRequest(t, fixture.fencer, spec.DeploymentID)
+	if _, getErr := fixture.repository.Get(context.Background(), spec.ResourceID); !errors.Is(getErr, ErrNotFound) {
+		t.Fatalf("expired retention persisted an intent: error=%v", getErr)
+	}
 }
 
 func TestDeploymentFencePreservesProviderErrorAndManagedSemantics(t *testing.T) {
