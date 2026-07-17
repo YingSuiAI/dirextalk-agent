@@ -175,6 +175,24 @@ func (store *ResourceStore) validateResourceIntentOrigin(ctx context.Context, tx
 	if err != nil || approvalID == uuid.Nil {
 		return resource.ErrInvalid
 	}
+	if item.IntentOrigin == resource.IntentOriginManagedPreparation {
+		if len(item.DependsOn) != 1 {
+			return resource.ErrInvalid
+		}
+		if err := tx.QueryRow(ctx, managedPreparationResourceIntentOriginSQL,
+			store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash, item.Region,
+			item.OriginScopeDigest, item.ResourceID, item.DependsOn[0], item.Type, item.Retention,
+			nullableTime(item.DestroyDeadline), item.AutoDestroyApproved,
+		).Scan(new(uuid.UUID)); err == nil {
+			return nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("verify managed preparation resource intent origin: %w", err)
+		}
+		return resource.ErrInvalid
+	}
+	if item.IntentOrigin != "" {
+		return resource.ErrInvalid
+	}
 
 	if err := tx.QueryRow(ctx, workerResourceIntentOriginSQL,
 		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash, item.Region,
@@ -270,6 +288,104 @@ const entryResourceIntentOriginSQL = `
 	  AND connection.region=$7
 	  AND connection.status='active'
 	FOR SHARE OF operation, entry_plan, launch, original_plan, original_approval, connection`
+
+const managedPreparationResourceIntentOriginSQL = `
+	SELECT operation.operation_id
+	FROM cloud_service_operations AS operation
+	JOIN cloud_service_operation_steps AS step
+	  ON step.operation_id=operation.operation_id
+	JOIN cloud_approval_devices AS device
+	  ON device.key_id=operation.signer_key_id
+	JOIN cloud_plans AS plan ON plan.plan_id=operation.plan_id
+	JOIN cloud_connections AS connection ON connection.connection_id=operation.connection_id
+	JOIN worker_deployments AS deployment ON deployment.deployment_id=operation.deployment_id
+	JOIN LATERAL jsonb_array_elements(operation.challenge_json->'scope'->'volumes') AS volume ON true
+	JOIN cloud_resources AS source
+	  ON source.resource_id=(volume->'source_volume'->>'resource_id')::uuid
+	LEFT JOIN cloud_resources AS snapshot
+	  ON snapshot.resource_id=(volume->>'snapshot_resource_id')::uuid
+	WHERE operation.operation_id=$5
+	  AND operation.agent_instance_id=$1
+	  AND operation.owner_id=$2
+	  AND operation.deployment_id=$4
+	  AND operation.status='running'
+	  AND operation.signature IS NOT NULL
+	  AND octet_length(operation.signature)=64
+	  AND operation.approved_at IS NOT NULL
+	  AND operation.scope_digest=$8
+	  AND operation.scope_digest=operation.challenge_json->>'scope_digest'
+	  AND operation.plan_hash=$6
+	  AND operation.current_phase=CASE $11::text WHEN 'snapshot' THEN 'backup' WHEN 'ebs' THEN 'restore_create' ELSE '' END
+	  AND step.phase=operation.current_phase
+	  AND step.status='running'
+	  AND device.agent_instance_id=$1
+	  AND device.owner_id=$2
+	  AND device.status='active'
+	  AND operation.approved_at>=device.not_before
+	  AND operation.approved_at<device.expires_at
+	  AND plan.agent_instance_id=$1
+	  AND plan.owner_id=$2
+	  AND plan.plan_id=operation.plan_id
+	  AND plan.connection_id=operation.connection_id::text
+	  AND plan.revision=operation.plan_revision
+	  AND plan.plan_hash=$6
+	  AND plan.status='approved'
+	  AND connection.agent_instance_id=$1
+	  AND connection.owner_id=$2
+	  AND connection.connection_id=operation.connection_id
+	  AND connection.revision=operation.connection_revision
+	  AND connection.region=$7
+	  AND connection.status='active'
+	  AND deployment.agent_instance_id=$1
+	  AND deployment.owner_id=$2
+	  AND deployment.deployment_id=$4
+	  AND deployment.task_id=$3
+	  AND deployment.revision=operation.deployment_revision
+	  AND operation.challenge_json->'scope'->>'preparation_operation_id'=operation.operation_id::text
+	  AND operation.challenge_json->'scope'->>'agent_instance_id'=$1::text
+	  AND operation.challenge_json->'scope'->>'owner_id'=$2
+	  AND operation.challenge_json->'scope'->>'deployment_id'=$4::text
+	  AND (operation.challenge_json->'scope'->>'deployment_revision')::bigint=operation.deployment_revision
+	  AND operation.challenge_json->'scope'->>'connection_id'=operation.connection_id::text
+	  AND (operation.challenge_json->'scope'->>'connection_revision')::bigint=operation.connection_revision
+	  AND operation.challenge_json->'scope'->>'plan_id'=operation.plan_id::text
+	  AND (operation.challenge_json->'scope'->>'plan_revision')::bigint=operation.plan_revision
+	  AND operation.challenge_json->'scope'->>'plan_hash'=$6
+	  AND source.agent_instance_id=$1
+	  AND source.owner_id=$2
+	  AND source.task_id=$3
+	  AND source.deployment_id=$4
+	  AND source.resource_id=(volume->'source_volume'->>'resource_id')::uuid
+	  AND source.provider_id=volume->'source_volume'->>'provider_id'
+	  AND source.revision=(volume->'source_volume'->>'revision')::bigint
+	  AND source.spec_digest=volume->'source_volume'->>'spec_digest'
+	  AND source.readback_tag_digest=volume->'source_volume'->>'tag_digest'
+	  AND source.state='active'
+	  AND source.retention=$12
+	  AND source.destroy_deadline IS NOT DISTINCT FROM $13::timestamptz
+	  AND source.auto_destroy_approved=$14
+	  AND (
+	    ($11::text='snapshot'
+	      AND volume->>'snapshot_resource_id'=$9::text
+	      AND volume->'source_volume'->>'resource_id'=$10::text)
+	    OR
+	    ($11::text='ebs'
+	      AND volume->>'replacement_volume_resource_id'=$9::text
+	      AND volume->>'snapshot_resource_id'=$10::text
+	      AND snapshot.agent_instance_id=$1
+	      AND snapshot.owner_id=$2
+	      AND snapshot.task_id=$3
+	      AND snapshot.deployment_id=$4
+	      AND snapshot.resource_id=$10
+	      AND snapshot.resource_type='snapshot'
+	      AND snapshot.state='active'
+	      AND snapshot.intent_origin='managed_preparation'
+	      AND snapshot.origin_scope_digest=$8
+	      AND snapshot.approval_id=$5
+	      AND snapshot.approved_plan_hash=$6
+	      AND snapshot.depends_on=ARRAY[source.resource_id]::uuid[])
+	  )
+	FOR SHARE OF operation, step, device, plan, connection, deployment, source`
 
 func (store *ResourceStore) Get(ctx context.Context, resourceID string) (resource.ResourceV1, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(resourceID))
@@ -410,7 +526,7 @@ func (store *ResourceStore) AcceptManaged(
 		return nil, resource.ErrRevisionConflict
 	}
 	for _, item := range items {
-		if expected[item.ResourceID] != item.Revision || item.OwnerID != managed.Contract.OwnerID || (item.State != resource.StateActive && item.State != resource.StateDestroyScheduled) {
+		if expected[item.ResourceID] != item.Revision || item.OwnerID != managed.Contract.OwnerID || item.State != resource.StateActive {
 			return nil, resource.ErrRevisionConflict
 		}
 	}
@@ -445,6 +561,38 @@ func (store *ResourceStore) AcceptManaged(
 		return nil, fmt.Errorf("commit managed acceptance: %w", err)
 	}
 	return cloneResources(items), nil
+}
+
+func (store *ResourceStore) GetManaged(
+	ctx context.Context,
+	deploymentID string,
+) (resource.ManagedServiceV1, []resource.ResourceV1, error) {
+	parsedDeployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
+	if ctx == nil || err != nil || parsedDeployment == uuid.Nil || parsedDeployment.String() != deploymentID {
+		return resource.ManagedServiceV1{}, nil, resource.ErrInvalid
+	}
+	var managed resource.ManagedServiceV1
+	var contractJSON []byte
+	err = store.pool.QueryRow(ctx, `
+		SELECT service_id::text,contract_json,state,revision,created_at,updated_at
+		FROM managed_services
+		WHERE deployment_id=$1 AND agent_instance_id=$2`,
+		parsedDeployment, store.instanceID).Scan(
+		&managed.ServiceID, &contractJSON, &managed.State, &managed.Revision, &managed.CreatedAt, &managed.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return resource.ManagedServiceV1{}, nil, resource.ErrNotFound
+	}
+	if err != nil {
+		return resource.ManagedServiceV1{}, nil, fmt.Errorf("read managed service replay: %w", err)
+	}
+	if json.Unmarshal(contractJSON, &managed.Contract) != nil || managed.Contract.Validate() != nil {
+		return resource.ManagedServiceV1{}, nil, resource.ErrInvalid
+	}
+	items, err := store.ListDeployment(ctx, deploymentID)
+	if err != nil {
+		return resource.ManagedServiceV1{}, nil, err
+	}
+	return managed, items, nil
 }
 
 func (store *ResourceStore) ImportOrphan(ctx context.Context, item resource.ResourceV1) (resource.ResourceV1, error) {
@@ -588,6 +736,7 @@ const entryOrphanResourceOriginSQL = `
 const resourceSelectSQL = `
 	SELECT resource_id, agent_instance_id, owner_id, task_id, deployment_id, resource_type,
 	       logical_name, region, spec_digest, approved_plan_hash, approval_id, provider_id,
+	       intent_origin, origin_scope_digest,
 	       provider_candidate_ids, depends_on, retention, destroy_deadline, auto_destroy_approved, tags, state,
 	       intent_operation, intent_client_token, intent_recorded_at, readback_exists,
 	       provider_create_started_at,
@@ -608,6 +757,7 @@ func scanResource(row resourceRow) (resource.ResourceV1, error) {
 	if err := row.Scan(
 		&resourceID, &agentID, &item.OwnerID, &taskID, &deploymentID, &item.Type,
 		&item.LogicalName, &item.Region, &item.SpecDigest, &item.ApprovedPlanHash, &approvalID, &item.ProviderID,
+		&item.IntentOrigin, &item.OriginScopeDigest,
 		&providerCandidateIDs, &dependencies, &item.Retention, &destroyDeadline, &item.AutoDestroyApproved, &tagsJSON, &item.State,
 		&item.Intent.Operation, &item.Intent.ClientToken, &intentRecordedAt, &item.ReadBack.Exists,
 		&providerCreateStartedAt,
@@ -674,15 +824,17 @@ func (store *ResourceStore) insertResource(ctx context.Context, query interface 
 		INSERT INTO cloud_resources (
 			resource_id, agent_instance_id, owner_id, task_id, deployment_id, resource_type,
 			logical_name, region, spec_digest, approved_plan_hash, approval_id, provider_id,
+			intent_origin, origin_scope_digest,
 			provider_candidate_ids, depends_on, retention, destroy_deadline, auto_destroy_approved, tags, state,
 			intent_operation, intent_client_token, intent_recorded_at, readback_exists,
 			provider_create_started_at,
 			readback_provider_id, readback_observed_at, readback_tag_digest, blocked_reason,
 			revision, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 		ON CONFLICT (resource_id) DO NOTHING`,
 		item.ResourceID, store.instanceID, item.OwnerID, item.TaskID, item.DeploymentID, item.Type,
 		item.LogicalName, item.Region, item.SpecDigest, item.ApprovedPlanHash, nullableUUID(item.ApprovalID), item.ProviderID,
+		item.IntentOrigin, item.OriginScopeDigest,
 		nonNilStrings(item.ProviderCandidateIDs), dependencies, item.Retention, nullableTime(item.DestroyDeadline), item.AutoDestroyApproved, tagsJSON, item.State,
 		item.Intent.Operation, item.Intent.ClientToken, nullableTime(item.Intent.RecordedAt), item.ReadBack.Exists,
 		nullableTime(item.Intent.ProviderCreateStartedAt),
@@ -721,14 +873,20 @@ func saveResourceTx(ctx context.Context, tx pgx.Tx, instanceID uuid.UUID, expect
 	if err != nil {
 		return resource.ErrInvalid
 	}
+	dependencies, err := parseResourceDependencies(item.DependsOn)
+	if err != nil {
+		return resource.ErrInvalid
+	}
 	result, err := tx.Exec(ctx, `
 		UPDATE cloud_resources SET
-			provider_id=$4, provider_candidate_ids=$5, retention=$6, destroy_deadline=$7, auto_destroy_approved=$8,
-			tags=$9, state=$10, intent_operation=$11, intent_client_token=$12, intent_recorded_at=$13,
-			readback_exists=$14, provider_create_started_at=$15, readback_provider_id=$16, readback_observed_at=$17,
-			readback_tag_digest=$18, blocked_reason=$19, revision=$20, updated_at=$21
+			provider_id=$4, intent_origin=$5, origin_scope_digest=$6, provider_candidate_ids=$7, depends_on=$8,
+			retention=$9, destroy_deadline=$10, auto_destroy_approved=$11, tags=$12, state=$13,
+			intent_operation=$14, intent_client_token=$15, intent_recorded_at=$16,
+			readback_exists=$17, provider_create_started_at=$18, readback_provider_id=$19, readback_observed_at=$20,
+			readback_tag_digest=$21, blocked_reason=$22, revision=$23, updated_at=$24
 		WHERE resource_id=$1 AND agent_instance_id=$2 AND revision=$3`,
-		item.ResourceID, instanceID, expectedRevision, item.ProviderID, nonNilStrings(item.ProviderCandidateIDs), item.Retention,
+		item.ResourceID, instanceID, expectedRevision, item.ProviderID, item.IntentOrigin, item.OriginScopeDigest,
+		nonNilStrings(item.ProviderCandidateIDs), dependencies, item.Retention,
 		nullableTime(item.DestroyDeadline), item.AutoDestroyApproved, tagsJSON, item.State,
 		item.Intent.Operation, item.Intent.ClientToken, nullableTime(item.Intent.RecordedAt), item.ReadBack.Exists,
 		nullableTime(item.Intent.ProviderCreateStartedAt), item.ReadBack.ProviderID, nullableTime(item.ReadBack.ObservedAt), item.ReadBack.TagDigest,
@@ -813,6 +971,19 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 	if item.State == resource.StateRetainedManaged && item.Retention != task.RetentionManaged {
 		return resource.ErrInvalid
 	}
+	switch item.IntentOrigin {
+	case "":
+		if item.OriginScopeDigest != "" || item.Tags[resource.TagIntentOrigin] != "" || item.Tags[resource.TagOriginScopeDigest] != "" {
+			return resource.ErrInvalid
+		}
+	case resource.IntentOriginManagedPreparation:
+		if !resourceSHA256Pattern.MatchString(item.OriginScopeDigest) || (item.Type != resource.TypeSnapshot && item.Type != resource.TypeEBS) ||
+			item.Tags[resource.TagIntentOrigin] != string(item.IntentOrigin) || item.Tags[resource.TagOriginScopeDigest] != item.OriginScopeDigest {
+			return resource.ErrInvalid
+		}
+	default:
+		return resource.ErrInvalid
+	}
 	if item.ReadBack.TagDigest != "" && !resourceSHA256Pattern.MatchString(item.ReadBack.TagDigest) {
 		return resource.ErrInvalid
 	}
@@ -869,6 +1040,7 @@ func sameResourceIdentity(left, right resource.ResourceV1) bool {
 		left.TaskID == right.TaskID && left.DeploymentID == right.DeploymentID && left.Type == right.Type &&
 		left.LogicalName == right.LogicalName && left.Region == right.Region && left.SpecDigest == right.SpecDigest &&
 		left.ApprovedPlanHash == right.ApprovedPlanHash && left.ApprovalID == right.ApprovalID &&
+		left.IntentOrigin == right.IntentOrigin && left.OriginScopeDigest == right.OriginScopeDigest &&
 		slices.Equal(left.DependsOn, right.DependsOn) && left.CreatedAt.Equal(right.CreatedAt)
 }
 

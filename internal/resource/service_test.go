@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"testing"
@@ -84,6 +85,22 @@ func (repository *fakeResourceRepository) Save(_ context.Context, resource Resou
 func (repository *fakeResourceRepository) AcceptManaged(_ context.Context, deploymentID string, managed ManagedServiceV1, expected map[string]int64) ([]ResourceV1, error) {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
+	if existing, ok := repository.managed[deploymentID]; ok {
+		if existing.ServiceID != managed.ServiceID || existing.State != managed.State || existing.Revision != managed.Revision ||
+			!reflect.DeepEqual(existing.Contract, managed.Contract) {
+			return nil, ErrRevisionConflict
+		}
+		result := make([]ResourceV1, 0, len(expected))
+		for resourceID := range expected {
+			item, found := repository.resources[resourceID]
+			if !found || item.DeploymentID != deploymentID || item.State != StateRetainedManaged {
+				return nil, ErrRevisionConflict
+			}
+			result = append(result, item.clone())
+		}
+		sort.Slice(result, func(i, j int) bool { return result[i].ResourceID < result[j].ResourceID })
+		return result, nil
+	}
 	for resourceID, revision := range expected {
 		resource, exists := repository.resources[resourceID]
 		if !exists || resource.DeploymentID != deploymentID || resource.Revision != revision {
@@ -107,6 +124,16 @@ func (repository *fakeResourceRepository) AcceptManaged(_ context.Context, deplo
 	repository.managed[deploymentID] = managed
 	sort.Slice(result, func(i, j int) bool { return result[i].ResourceID < result[j].ResourceID })
 	return result, nil
+}
+
+func (repository *fakeResourceRepository) GetManaged(_ context.Context, deploymentID string) (ManagedServiceV1, []ResourceV1, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	managed, ok := repository.managed[deploymentID]
+	if !ok {
+		return ManagedServiceV1{}, nil, ErrNotFound
+	}
+	return managed, repository.list(func(item ResourceV1) bool { return item.DeploymentID == deploymentID }), nil
 }
 
 func (repository *fakeResourceRepository) ImportOrphan(_ context.Context, resource ResourceV1) (ResourceV1, error) {
@@ -511,11 +538,12 @@ func (provider *fakeProvider) ListOwned(_ context.Context, agentInstanceID, owne
 }
 
 type fakeMirror struct {
-	mu        sync.Mutex
-	manifests map[string]Manifest
-	failNext  bool
-	failAtPut int
-	puts      int
+	mu               sync.Mutex
+	manifests        map[string]Manifest
+	readBackOverride *Manifest
+	failNext         bool
+	failAtPut        int
+	puts             int
 }
 
 func newFakeMirror() *fakeMirror { return &fakeMirror{manifests: make(map[string]Manifest)} }
@@ -530,6 +558,19 @@ func (mirror *fakeMirror) Put(_ context.Context, manifest Manifest) error {
 	}
 	mirror.manifests[manifest.ManifestID] = manifest.clone()
 	return nil
+}
+
+func (mirror *fakeMirror) Get(_ context.Context, deploymentID string) (Manifest, error) {
+	mirror.mu.Lock()
+	defer mirror.mu.Unlock()
+	if mirror.readBackOverride != nil {
+		return mirror.readBackOverride.clone(), nil
+	}
+	manifest, ok := mirror.manifests[deploymentID]
+	if !ok {
+		return Manifest{}, ErrNotFound
+	}
+	return manifest.clone(), nil
 }
 
 func (mirror *fakeMirror) ListExpired(_ context.Context, _ time.Time) ([]Manifest, error) {
@@ -892,6 +933,71 @@ func TestManagedAcceptanceRequiresCompleteContractAndDisablesReaper(t *testing.T
 	}
 	if report.SkippedManaged != 1 || len(fixture.provider.deleteOrder) != 0 || !fixture.provider.resources[resource.ProviderID].Exists {
 		t.Fatalf("reaper touched a managed resource: report=%+v order=%v", report, fixture.provider.deleteOrder)
+	}
+}
+
+func TestManagedAcceptanceExactReplayDoesNotWriteAnotherManifestGeneration(t *testing.T) {
+	fixture := newResourceFixture(t)
+	if _, err := fixture.service.Provision(context.Background(), fixture.spec(TypeEC2, "service"), fixture.createAuthorization()); err != nil {
+		t.Fatal(err)
+	}
+	contract := ManagedContractV1{
+		DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, AcceptanceApprovalID: uuid.NewString(),
+		Currency: "USD", CostAlertAmountMinor: 5_000, MonitorRef: "monitor://service/health",
+		MaintenanceRef: "runbook://service/maintenance", RestartRef: "runbook://service/restart",
+		BackupRef: "runbook://service/backup", RestoreRef: "runbook://service/restore",
+		UpgradeRef: "runbook://service/upgrade", RollbackRef: "runbook://service/rollback",
+		DestroyRef: "runbook://service/destroy", AcceptedAt: fixture.now,
+	}
+	firstManaged, firstResources, err := fixture.service.AcceptManaged(context.Background(), contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	puts := fixture.mirror.puts
+	secondManaged, secondResources, err := fixture.service.AcceptManaged(context.Background(), contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.mirror.puts != puts || !reflect.DeepEqual(firstManaged.Contract, secondManaged.Contract) ||
+		!reflect.DeepEqual(firstResources, secondResources) {
+		t.Fatalf("managed replay mutated state: puts=%d->%d first=%+v/%+v second=%+v/%+v",
+			puts, fixture.mirror.puts, firstManaged, firstResources, secondManaged, secondResources)
+	}
+	replayed, ok, err := FindExactManagedReplay(context.Background(), fixture.repository, contract)
+	if err != nil || !ok || !reflect.DeepEqual(replayed.Contract, contract) {
+		t.Fatalf("read-only managed replay=%+v ok=%v error=%v", replayed, ok, err)
+	}
+	conflict := contract
+	conflict.AcceptanceApprovalID = uuid.NewString()
+	if _, ok, err = FindExactManagedReplay(context.Background(), fixture.repository, conflict); !errors.Is(err, ErrRevisionConflict) || ok {
+		t.Fatalf("conflicting managed replay ok=%v error=%v", ok, err)
+	}
+}
+
+func TestManagedAcceptanceRequiresExactManifestReadBackBeforeLocalTransition(t *testing.T) {
+	fixture := newResourceFixture(t)
+	created, err := fixture.service.Provision(context.Background(), fixture.spec(TypeEC2, "service"), fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := fixture.mirror.manifests[fixture.deploymentID]
+	observed.Revision++
+	fixture.mirror.readBackOverride = &observed
+
+	_, _, err = fixture.service.AcceptManaged(context.Background(), ManagedContractV1{
+		DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, AcceptanceApprovalID: uuid.NewString(),
+		Currency: "USD", CostAlertAmountMinor: 5_000, MonitorRef: "monitor://service/health",
+		MaintenanceRef: "runbook://service/maintenance", RestartRef: "runbook://service/restart",
+		BackupRef: "runbook://service/backup", RestoreRef: "runbook://service/restore",
+		UpgradeRef: "runbook://service/upgrade", RollbackRef: "runbook://service/rollback",
+		DestroyRef: "runbook://service/destroy", AcceptedAt: fixture.now,
+	})
+	if !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("AcceptManaged() error=%v, want ErrRevisionConflict", err)
+	}
+	stored, getErr := fixture.repository.Get(context.Background(), created.ResourceID)
+	if getErr != nil || stored.State != StateActive || stored.Retention != task.RetentionEphemeralAutoDestroy {
+		t.Fatalf("local resource changed without exact mirror proof: resource=%+v error=%v", stored, getErr)
 	}
 }
 

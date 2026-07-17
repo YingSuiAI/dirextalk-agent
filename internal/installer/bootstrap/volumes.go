@@ -46,6 +46,79 @@ type MountObservationV1 struct {
 	Options    []string
 }
 
+type InstalledVolumeObservationV1 struct {
+	ResolvedDevicePath string
+	SizeBytes          uint64
+	FileSystem         string
+	FileSystemUUID     string
+	MountPath          string
+	ReadOnly           bool
+}
+
+type VolumeStateReader interface {
+	Observe(context.Context, string, string) (InstalledVolumeObservationV1, error)
+}
+
+type approvedVolumeStateReader struct{ host VolumeHost }
+
+type unavailableVolumeStateReader struct{}
+
+func (unavailableVolumeStateReader) Observe(context.Context, string, string) (InstalledVolumeObservationV1, error) {
+	return InstalledVolumeObservationV1{}, ErrMaterialize
+}
+
+func NewVolumeStateReader(host VolumeHost) (VolumeStateReader, error) {
+	if host == nil {
+		return nil, ErrInvalidInput
+	}
+	return &approvedVolumeStateReader{host: host}, nil
+}
+
+// Observe resolves the stable EBS VolumeID again and verifies the active
+// whole-device ext4 mount. Nitro device paths are intentionally not treated
+// as stable across boots.
+func (reader *approvedVolumeStateReader) Observe(ctx context.Context, volumeID, mountPath string) (InstalledVolumeObservationV1, error) {
+	if reader == nil || reader.host == nil || ctx == nil || ctx.Err() != nil ||
+		!volumeIDPattern.MatchString(volumeID) || !mountPathPattern.MatchString(mountPath) || reservedVolumeMount(mountPath) {
+		return InstalledVolumeObservationV1{}, ErrMaterialize
+	}
+	devices, err := reader.host.ListBlockDevices(ctx)
+	if err != nil {
+		return InstalledVolumeObservationV1{}, ErrMaterialize
+	}
+	wanted := normalizeVolumeSerial(volumeID)
+	matches := make([]BlockDeviceV1, 0, 1)
+	for _, device := range devices {
+		if device.Type == "disk" && nitroDevicePattern.MatchString(device.Path) && normalizeVolumeSerial(device.Serial) == wanted {
+			matches = append(matches, device)
+		}
+	}
+	if len(matches) != 1 {
+		return InstalledVolumeObservationV1{}, ErrMaterialize
+	}
+	device := matches[0]
+	for _, candidate := range devices {
+		if descendantOf(candidate.Path, device.Path, devices) {
+			return InstalledVolumeObservationV1{}, ErrMaterialize
+		}
+	}
+	probe, err := reader.host.ProbeSignatures(ctx, device.Path)
+	if err != nil || probe.Blank || probe.HasOther || len(probe.FileSystems) != 1 ||
+		probe.FileSystems[0].Type != "ext4" || !filesystemUUIDPattern.MatchString(probe.FileSystems[0].UUID) {
+		return InstalledVolumeObservationV1{}, ErrMaterialize
+	}
+	uuid := strings.ToLower(probe.FileSystems[0].UUID)
+	mount, err := reader.host.FindMount(ctx, mountPath)
+	if err != nil || !mount.Found || mount.DevicePath != device.Path || mount.TargetPath != mountPath ||
+		mount.FileSystem != "ext4" || strings.ToLower(mount.UUID) != uuid {
+		return InstalledVolumeObservationV1{}, ErrMaterialize
+	}
+	return InstalledVolumeObservationV1{
+		ResolvedDevicePath: device.Path, SizeBytes: device.SizeBytes, FileSystem: "ext4", FileSystemUUID: uuid,
+		MountPath: mountPath, ReadOnly: slices.Contains(mount.Options, "ro"),
+	}, nil
+}
+
 // VolumeHost is deliberately typed around fixed filesystem operations. The
 // Linux implementation invokes only fixed executables with separately
 // validated argv and performs the fstab replacement itself; no caller can
@@ -70,127 +143,143 @@ func NewVolumeMaterializer(host VolumeHost) (VolumeMaterializer, error) {
 	return &approvedVolumeMaterializer{host: host}, nil
 }
 
-func (materializer *approvedVolumeMaterializer) Prepare(ctx context.Context, volumes []VolumeMountV1) error {
+func (materializer *approvedVolumeMaterializer) Prepare(ctx context.Context, volumes []VolumeMountV1) ([]InstalledVolumeEvidenceV1, error) {
 	if materializer == nil || materializer.host == nil || ctx == nil {
-		return ErrMaterialize
+		return nil, ErrMaterialize
 	}
 	if len(volumes) == 0 {
-		return nil
+		return []InstalledVolumeEvidenceV1{}, nil
 	}
 	if len(volumes) > 11 || ctx.Err() != nil {
-		return ErrMaterialize
+		return nil, ErrMaterialize
 	}
+	installed := make([]InstalledVolumeEvidenceV1, 0, len(volumes))
 	seenIDs := make(map[string]struct{}, len(volumes))
 	seenDevices := make(map[string]struct{}, len(volumes))
 	seenMounts := make(map[string]struct{}, len(volumes))
 	selectedPaths := make(map[string]struct{}, len(volumes))
 	for _, volume := range volumes {
 		if !validVolumeMount(volume) {
-			return ErrMaterialize
+			return nil, ErrMaterialize
 		}
 		if _, duplicate := seenIDs[volume.Source.VolumeID]; duplicate {
-			return ErrMaterialize
+			return nil, ErrMaterialize
 		}
 		if _, duplicate := seenDevices[volume.Approved.DeviceName]; duplicate {
-			return ErrMaterialize
+			return nil, ErrMaterialize
 		}
 		if _, duplicate := seenMounts[volume.Approved.MountPath]; duplicate {
-			return ErrMaterialize
+			return nil, ErrMaterialize
 		}
 		seenIDs[volume.Source.VolumeID] = struct{}{}
 		seenDevices[volume.Approved.DeviceName] = struct{}{}
 		seenMounts[volume.Approved.MountPath] = struct{}{}
 		devices, err := materializer.host.ListBlockDevices(ctx)
 		if err != nil {
-			return ErrMaterialize
+			return nil, ErrMaterialize
 		}
 		device, err := resolveNitroVolume(devices, volume)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, duplicate := selectedPaths[device.Path]; duplicate {
-			return ErrMaterialize
+			return nil, ErrMaterialize
 		}
 		selectedPaths[device.Path] = struct{}{}
-		if err := materializer.prepareOne(ctx, volume, device); err != nil {
-			return err
+		evidence, err := materializer.prepareOne(ctx, volume, device)
+		if err != nil {
+			return nil, err
 		}
+		installed = append(installed, evidence)
 	}
-	return nil
+	return installed, nil
 }
 
-func (materializer *approvedVolumeMaterializer) prepareOne(ctx context.Context, volume VolumeMountV1, device BlockDeviceV1) error {
+func (materializer *approvedVolumeMaterializer) prepareOne(ctx context.Context, volume VolumeMountV1, device BlockDeviceV1) (InstalledVolumeEvidenceV1, error) {
 	probe, err := materializer.host.ProbeSignatures(ctx, device.Path)
 	if err != nil {
-		return ErrMaterialize
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
 	}
 	uuid := ""
 	if probe.Blank && len(probe.FileSystems) == 0 && !probe.HasOther {
 		devices, listErr := materializer.host.ListBlockDevices(ctx)
 		confirmed, resolveErr := resolveNitroVolume(devices, volume)
 		if listErr != nil || resolveErr != nil || confirmed.Path != device.Path {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 		if err := materializer.host.MakeExt4(ctx, device.Path); err != nil {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 		probe, err = materializer.host.ProbeSignatures(ctx, device.Path)
 		if err != nil {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 	}
 	if probe.Blank || len(probe.FileSystems) != 1 || probe.HasOther {
-		return ErrMaterialize
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
 	}
 	signature := probe.FileSystems[0]
 	if signature.Type != "ext4" || !filesystemUUIDPattern.MatchString(signature.UUID) {
-		return ErrMaterialize
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
 	}
 	uuid = strings.ToLower(signature.UUID)
 	observation, err := materializer.host.FindMount(ctx, volume.Approved.MountPath)
 	if err != nil {
-		return ErrMaterialize
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
 	}
 	if observation.Found {
 		if !mountMatches(observation, device.Path, volume.Approved.MountPath, uuid, volume.Approved.ReadOnly) {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 	} else {
 		if err := materializer.host.EnsureMountPath(ctx, volume.Approved.MountPath); err != nil {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 		if err := materializer.host.MountExt4(ctx, device.Path, volume.Approved.MountPath, volume.Approved.ReadOnly); err != nil {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 		observation, err = materializer.host.FindMount(ctx, volume.Approved.MountPath)
 		if err != nil || !mountMatches(observation, device.Path, volume.Approved.MountPath, uuid, volume.Approved.ReadOnly) {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 	}
 	current, err := materializer.host.ReadFSTab(ctx)
 	if err != nil {
-		return ErrMaterialize
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
 	}
 	if !volume.Approved.Persistent {
 		if fstabConflicts(current, uuid, volume.Approved.MountPath) {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
-		return nil
+		return materializer.observeEvidence(ctx, volume)
 	}
 	next, err := withPersistentVolume(current, uuid, volume)
 	if err != nil {
-		return ErrMaterialize
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
 	}
 	if !bytes.Equal(current, next) {
 		if err := materializer.host.ReplaceFSTab(ctx, current, next); err != nil {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 		readBack, err := materializer.host.ReadFSTab(ctx)
 		if err != nil || !bytes.Equal(readBack, next) {
-			return ErrMaterialize
+			return InstalledVolumeEvidenceV1{}, ErrMaterialize
 		}
 	}
-	return nil
+	return materializer.observeEvidence(ctx, volume)
+}
+
+func (materializer *approvedVolumeMaterializer) observeEvidence(ctx context.Context, volume VolumeMountV1) (InstalledVolumeEvidenceV1, error) {
+	reader := &approvedVolumeStateReader{host: materializer.host}
+	observed, err := reader.Observe(ctx, volume.Source.VolumeID, volume.Approved.MountPath)
+	if err != nil || observed.SizeBytes != uint64(volume.Approved.SizeGiB)<<30 || observed.ReadOnly != volume.Approved.ReadOnly {
+		return InstalledVolumeEvidenceV1{}, ErrMaterialize
+	}
+	return InstalledVolumeEvidenceV1{
+		Name: volume.Approved.Name, ResourceID: volume.Source.ResourceID, VolumeID: volume.Source.VolumeID,
+		AttachmentDevice: volume.Approved.DeviceName, ResolvedDevicePath: observed.ResolvedDevicePath, SizeBytes: observed.SizeBytes,
+		FileSystem: observed.FileSystem, FileSystemUUID: observed.FileSystemUUID, MountPath: observed.MountPath, ReadOnly: observed.ReadOnly,
+	}, nil
 }
 
 func validVolumeMount(value VolumeMountV1) bool {

@@ -227,7 +227,7 @@ func TestAWSResourcePlanRejectsUnimplementedPublicEntryPoint(t *testing.T) {
 	connection := fixture.connections.value
 	operation := Operation{
 		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: fixture.service.facts.(fakeFacts).approval.PlanHash, DeploymentID: uuid.NewString()},
-		State: StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
+		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
 	}
 	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
 	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID)
@@ -638,7 +638,7 @@ func launchRecipe(now time.Time) recipe.RecipeV1 {
 			Readiness: recipe.ProbeV1{Kind: recipe.ProbeAction, Target: "worker.noop", TimeoutSeconds: 5},
 			Semantic:  recipe.ProbeV1{Kind: recipe.ProbeAction, Target: "worker.noop", TimeoutSeconds: 5},
 		},
-		Lifecycle: recipe.LifecycleContractV1{Start: "worker.start", Stop: "worker.stop", Restart: "worker.restart", Upgrade: "worker.upgrade", Rollback: "worker.rollback", Backup: "worker.backup", Restore: "worker.restore", Destroy: "worker.destroy"},
+		Lifecycle: recipe.LifecycleContractV1{Start: "worker.start", Stop: "worker.stop", Maintenance: "worker.maintenance", Restart: "worker.restart", Upgrade: "worker.upgrade", Rollback: "worker.rollback", Backup: "worker.backup", Restore: "worker.restore", Destroy: "worker.destroy"},
 	}
 }
 

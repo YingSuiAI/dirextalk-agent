@@ -226,7 +226,7 @@ func TestRecipeGoldenDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:f0defb0b8f7851b8d2ee9894df989981ccb477cd02ba9e2c09127dc63e53a3e8"
+	const want = "sha256:bde54b7df421ecfb44c832b0e6f3fd18029e96a654cc680fce89274bff9a52ac"
 	if got != want {
 		t.Fatalf("recipe digest = %q, want golden %q", got, want)
 	}
@@ -269,7 +269,7 @@ func validRecipe() RecipeV1 {
 			Readiness: ProbeV1{Kind: ProbeHTTP, Target: "/health/ready"},
 			Semantic:  ProbeV1{Kind: ProbeAction, Target: "semantic_check"},
 		},
-		Lifecycle: LifecycleContractV1{Start: "start", Stop: "stop", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy"},
+		Lifecycle: LifecycleContractV1{Start: "start", Stop: "stop", Maintenance: "maintenance", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy"},
 		VolumeSlots: []VolumeSlotRequirementV1{
 			{SlotID: "data", Purpose: "persistent index", MountPath: "/srv/service/data", Persistent: true, EncryptionRequired: true},
 			{SlotID: "cache", Purpose: "rebuildable cache", MountPath: "/srv/service/cache"},

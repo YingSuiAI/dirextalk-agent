@@ -13,7 +13,9 @@ import (
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
+	cloudmanaged "github.com/YingSuiAI/dirextalk-agent/internal/cloud/managed"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -24,13 +26,16 @@ import (
 
 type CloudControlService struct {
 	agentv1.UnimplementedCloudControlServiceServer
-	coordinator     cloudapp.Coordinator
-	statusReader    cloudstatus.Reader
-	destroyer       CloudDestroyCoordinator
-	entrypoint      CloudEntrypointCoordinator
-	foundation      CloudFoundationCoordinator
-	goalPlanner     CloudGoalPlanner
-	agentInstanceID string
+	coordinator            cloudapp.Coordinator
+	statusReader           cloudstatus.Reader
+	destroyer              CloudDestroyCoordinator
+	entrypoint             CloudEntrypointCoordinator
+	foundation             CloudFoundationCoordinator
+	managed                CloudManagedAcceptanceCoordinator
+	preparation            CloudManagedPreparationCoordinator
+	rootHelperKeyApprovals RootHelperKeyApprovalCoordinator
+	goalPlanner            CloudGoalPlanner
+	agentInstanceID        string
 }
 
 type CloudDestroyCoordinator interface {
@@ -43,6 +48,16 @@ type CloudFoundationCoordinator interface {
 	Prepare(context.Context, cloudfoundation.PrepareCommand) (cloudfoundation.ChallengeV1, error)
 	Approve(context.Context, cloudfoundation.ApproveCommand) (cloudfoundation.OperationV1, error)
 	Get(context.Context, string, string) (cloudfoundation.OperationV1, error)
+}
+type CloudManagedAcceptanceCoordinator interface {
+	Prepare(context.Context, cloudmanaged.PrepareCommand) (cloudmanaged.ChallengeV1, error)
+	Approve(context.Context, cloudmanaged.ApproveCommand) (cloudmanaged.OperationV1, error)
+	Get(context.Context, string, string) (cloudmanaged.OperationV1, error)
+}
+type CloudManagedPreparationCoordinator interface {
+	Prepare(context.Context, serviceoperation.PrepareCommand) (serviceoperation.ChallengeV1, error)
+	Approve(context.Context, serviceoperation.ApproveCommand) (serviceoperation.OperationV1, error)
+	Get(context.Context, string, string) (serviceoperation.OperationV1, error)
 }
 
 // CloudEntrypointCoordinator is deliberately narrower than the general cloud
@@ -81,6 +96,14 @@ func NewCloudControlServiceWithGoals(coordinator cloudapp.Coordinator, agentInst
 
 func (service *CloudControlService) WithFoundation(coordinator CloudFoundationCoordinator) *CloudControlService {
 	service.foundation = coordinator
+	return service
+}
+func (service *CloudControlService) WithManagedAcceptance(coordinator CloudManagedAcceptanceCoordinator) *CloudControlService {
+	service.managed = coordinator
+	return service
+}
+func (service *CloudControlService) WithManagedPreparation(coordinator CloudManagedPreparationCoordinator) *CloudControlService {
+	service.preparation = coordinator
 	return service
 }
 

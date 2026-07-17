@@ -121,10 +121,25 @@ func permissionDigest(permissions []ec2types.IpPermission) string {
 
 func (provider *EC2ResourceProvider) createVolume(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
 	spec := request.AWS.Volume
+	snapshotID := ""
+	snapshotKMSKeyID := ""
+	if spec.SourceSnapshotResourceID != "" {
+		snapshotID = dependencyIDByResource(request.Dependencies, spec.SourceSnapshotResourceID, resource.TypeSnapshot)
+		snapshot, err := provider.snapshot(ctx, snapshotID)
+		if err != nil {
+			return resource.ProviderObservation{}, err
+		}
+		snapshotKMSKeyID = aws.ToString(snapshot.KmsKeyId)
+		if snapshot.State != ec2types.SnapshotStateCompleted || !aws.ToBool(snapshot.Encrypted) ||
+			aws.ToInt32(snapshot.VolumeSize) != int32(spec.SizeGiB) ||
+			!kmsReadBackMatches(spec.KMSKeyID, snapshotKMSKeyID) {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+	}
 	output, err := provider.client.CreateVolume(ctx, &ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(spec.AvailabilityZone), ClientToken: aws.String(request.ClientToken), Encrypted: aws.Bool(true),
 		Iops: aws.Int32(int32(spec.IOPS)), KmsKeyId: aws.String(spec.KMSKeyID), Size: aws.Int32(int32(spec.SizeGiB)),
-		Throughput: aws.Int32(int32(spec.ThroughputMiBPS)), VolumeType: ec2types.VolumeTypeGp3,
+		SnapshotId: optionalToken(snapshotID), Throughput: aws.Int32(int32(spec.ThroughputMiBPS)), VolumeType: ec2types.VolumeTypeGp3,
 		TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeVolume, Tags: ec2Tags(provider.creationTags(request))}},
 	})
 	if err != nil {
@@ -154,6 +169,9 @@ func (provider *EC2ResourceProvider) createVolume(ctx context.Context, request r
 		return resource.ProviderObservation{}, err
 	}
 	if !aws.ToBool(volume.Encrypted) || aws.ToInt32(volume.Size) != int32(spec.SizeGiB) || volume.VolumeType != ec2types.VolumeTypeGp3 || aws.ToString(volume.AvailabilityZone) != spec.AvailabilityZone || aws.ToInt32(volume.Iops) != int32(spec.IOPS) || aws.ToInt32(volume.Throughput) != int32(spec.ThroughputMiBPS) || !kmsReadBackMatches(spec.KMSKeyID, aws.ToString(volume.KmsKeyId)) {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	if snapshotKMSKeyID != "" && aws.ToString(volume.KmsKeyId) != snapshotKMSKeyID {
 		return resource.ProviderObservation{}, resource.ErrReadBack
 	}
 	if err := provider.markReady(ctx, volumeID, request); err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,43 @@ type Repository interface {
 	Save(context.Context, ResourceV1, int64) (ResourceV1, error)
 	AcceptManaged(context.Context, string, ManagedServiceV1, map[string]int64) ([]ResourceV1, error)
 	ImportOrphan(context.Context, ResourceV1) (ResourceV1, error)
+}
+
+type managedReplayRepository interface {
+	GetManaged(context.Context, string) (ManagedServiceV1, []ResourceV1, error)
+}
+
+// FindExactManagedReplay performs a read-only recovery check for the crash
+// window after the managed service/resource transaction commits but before its
+// caller durably records success.
+func FindExactManagedReplay(ctx context.Context, repository Repository, contract ManagedContractV1) (ManagedServiceV1, bool, error) {
+	if ctx == nil || repository == nil || contract.Validate() != nil {
+		return ManagedServiceV1{}, false, ErrInvalid
+	}
+	reader, ok := repository.(managedReplayRepository)
+	if !ok {
+		return ManagedServiceV1{}, false, nil
+	}
+	managed, resources, err := reader.GetManaged(ctx, contract.DeploymentID)
+	if errors.Is(err, ErrNotFound) {
+		return ManagedServiceV1{}, false, nil
+	}
+	if err != nil {
+		return ManagedServiceV1{}, false, err
+	}
+	if managed.ServiceID != uuid.NewSHA1(uuid.NameSpaceOID, []byte(contract.DeploymentID)).String() ||
+		managed.State != "active" || managed.Revision != 1 || !reflect.DeepEqual(managed.Contract, contract) ||
+		len(resources) == 0 {
+		return ManagedServiceV1{}, false, ErrRevisionConflict
+	}
+	for _, item := range resources {
+		if item.DeploymentID != contract.DeploymentID || item.OwnerID != contract.OwnerID ||
+			item.State != StateRetainedManaged || item.Retention != task.RetentionManaged ||
+			item.AutoDestroyApproved || !item.DestroyDeadline.IsZero() {
+			return ManagedServiceV1{}, false, ErrRevisionConflict
+		}
+	}
+	return managed, true, nil
 }
 
 // DeploymentFencer is an optional repository capability that serializes every
@@ -117,6 +155,7 @@ func (service *Service) provision(ctx context.Context, spec ProvisionSpec, autho
 		OwnerID: strings.TrimSpace(spec.OwnerID), TaskID: strings.TrimSpace(spec.TaskID), DeploymentID: strings.TrimSpace(spec.DeploymentID),
 		Type: spec.Type, LogicalName: strings.TrimSpace(spec.LogicalName), Region: strings.TrimSpace(spec.Region),
 		SpecDigest: spec.SpecDigest, ApprovedPlanHash: spec.ApprovedPlanHash, ApprovalID: strings.TrimSpace(spec.ApprovalID),
+		IntentOrigin: spec.IntentOrigin, OriginScopeDigest: spec.OriginScopeDigest,
 		DependsOn: dependencies, Retention: spec.Retention, DestroyDeadline: spec.DestroyDeadline.UTC(), AutoDestroyApproved: spec.AutoDestroyApproved, Tags: spec.mandatoryTags(),
 		State: StateProvisioning, Intent: intent, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
@@ -349,6 +388,20 @@ func (service *Service) AcceptManaged(ctx context.Context, contract ManagedContr
 	if err := contract.Validate(); err != nil {
 		return ManagedServiceV1{}, nil, err
 	}
+	var managed ManagedServiceV1
+	var accepted []ResourceV1
+	err := service.withDeploymentFence(ctx, contract.DeploymentID, func(fenced context.Context) error {
+		var acceptErr error
+		managed, accepted, acceptErr = service.acceptManaged(fenced, contract)
+		return acceptErr
+	})
+	if err != nil {
+		return ManagedServiceV1{}, nil, err
+	}
+	return managed, cloneResources(accepted), nil
+}
+
+func (service *Service) acceptManaged(ctx context.Context, contract ManagedContractV1) (ManagedServiceV1, []ResourceV1, error) {
 	resources, err := service.repository.ListDeployment(ctx, contract.DeploymentID)
 	if err != nil {
 		return ManagedServiceV1{}, nil, err
@@ -359,9 +412,19 @@ func (service *Service) AcceptManaged(ctx context.Context, contract ManagedContr
 	expected := make(map[string]int64, len(resources))
 	desired := cloneResources(resources)
 	now := service.now().UTC()
+	managed := ManagedServiceV1{
+		ServiceID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(contract.DeploymentID)).String(), Contract: contract,
+		State: "active", Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	retained := 0
 	for index := range desired {
 		if desired[index].OwnerID != contract.OwnerID {
 			return ManagedServiceV1{}, nil, fmt.Errorf("%w: managed owner mismatch", ErrInvalid)
+		}
+		if desired[index].State == StateRetainedManaged {
+			retained++
+			expected[desired[index].ResourceID] = desired[index].Revision
+			continue
 		}
 		// Managed acceptance and destruction are mutually exclusive state
 		// transitions. Save/AcceptManaged revision fencing then makes the winner
@@ -381,9 +444,28 @@ func (service *Service) AcceptManaged(ctx context.Context, contract ManagedContr
 		desired[index].Revision++
 		desired[index].UpdatedAt = now
 	}
-	managed := ManagedServiceV1{
-		ServiceID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(contract.DeploymentID)).String(), Contract: contract,
-		State: "active", Revision: 1, CreatedAt: now, UpdatedAt: now,
+	if retained > 0 {
+		if retained != len(desired) {
+			return ManagedServiceV1{}, nil, fmt.Errorf("%w: managed resource states are inconsistent", ErrRevisionConflict)
+		}
+		mirrorTime := desired[0].UpdatedAt.UTC()
+		for _, item := range desired[1:] {
+			if !item.UpdatedAt.Equal(mirrorTime) {
+				return ManagedServiceV1{}, nil, fmt.Errorf("%w: managed resource timestamps are inconsistent", ErrRevisionConflict)
+			}
+		}
+		manifest, manifestErr := manifestFrom(desired, false, mirrorTime)
+		if manifestErr != nil {
+			return ManagedServiceV1{}, nil, manifestErr
+		}
+		if manifestErr = service.requireExactManagedManifest(ctx, manifest); manifestErr != nil {
+			return ManagedServiceV1{}, nil, manifestErr
+		}
+		accepted, acceptErr := service.repository.AcceptManaged(ctx, contract.DeploymentID, managed, expected)
+		if acceptErr != nil {
+			return ManagedServiceV1{}, nil, acceptErr
+		}
+		return managed, cloneResources(accepted), nil
 	}
 	manifest, err := manifestFrom(desired, false, now)
 	if err != nil {
@@ -397,11 +479,35 @@ func (service *Service) AcceptManaged(ctx context.Context, contract ManagedContr
 	if err := service.mirror.Put(ctx, manifest); err != nil {
 		return ManagedServiceV1{}, nil, fmt.Errorf("mirror managed manifest before acceptance: %w", err)
 	}
+	if err := service.requireExactManagedManifest(ctx, manifest); err != nil {
+		return ManagedServiceV1{}, nil, err
+	}
 	accepted, err := service.repository.AcceptManaged(ctx, contract.DeploymentID, managed, expected)
 	if err != nil {
 		return ManagedServiceV1{}, nil, err
 	}
 	return managed, cloneResources(accepted), nil
+}
+
+func (service *Service) requireExactManagedManifest(ctx context.Context, manifest Manifest) error {
+	readBack, ok := service.mirror.(ManifestReadBack)
+	if !ok {
+		return fmt.Errorf("%w: managed manifest mirror does not support exact read-back", ErrInvalid)
+	}
+	observed, err := readBack.Get(ctx, manifest.DeploymentID)
+	if err != nil {
+		return fmt.Errorf("read back managed manifest before acceptance: %w", err)
+	}
+	// A tracked mirror owns the monotonic manifest-generation revision and may
+	// advance it during Put. Every acceptance-controlled field must still
+	// match exactly; only that writer-assigned revision is adopted.
+	expectedManifest := manifest
+	expectedManifest.Revision = observed.Revision
+	if observed.Revision < 1 || observed.DeploymentID != manifest.DeploymentID ||
+		observed.ValidateResourceApprovalScope() != nil || !reflect.DeepEqual(observed, expectedManifest) {
+		return fmt.Errorf("%w: managed manifest read-back mismatch", ErrRevisionConflict)
+	}
+	return nil
 }
 
 func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (DestroyResult, error) {
@@ -744,7 +850,8 @@ func sameProvision(stored, requested ResourceV1) error {
 	if stored.ResourceID != requested.ResourceID || stored.AgentInstanceID != requested.AgentInstanceID || stored.OwnerID != requested.OwnerID ||
 		stored.TaskID != requested.TaskID || stored.DeploymentID != requested.DeploymentID || stored.Type != requested.Type ||
 		stored.LogicalName != requested.LogicalName || stored.Region != requested.Region || stored.SpecDigest != requested.SpecDigest ||
-		stored.ApprovedPlanHash != requested.ApprovedPlanHash || stored.ApprovalID != requested.ApprovalID || stored.Retention != requested.Retention ||
+		stored.ApprovedPlanHash != requested.ApprovedPlanHash || stored.ApprovalID != requested.ApprovalID ||
+		stored.IntentOrigin != requested.IntentOrigin || stored.OriginScopeDigest != requested.OriginScopeDigest || stored.Retention != requested.Retention ||
 		stored.AutoDestroyApproved != requested.AutoDestroyApproved || !stored.DestroyDeadline.Equal(requested.DestroyDeadline) || !slicesEqual(stored.DependsOn, requested.DependsOn) {
 		return ErrAlreadyExists
 	}

@@ -23,18 +23,19 @@ type Common struct {
 
 type Server struct {
 	Common
-	ListenAddress            string
-	TLSCertFile              string
-	TLSKeyFile               string
-	PepperFile               string
-	MasterKeyFile            string
-	MountedSecretsDir        string
-	ModelProfilesFile        string
-	MCPServersFile           string
-	EnableAWSControl         bool
-	AWSReaperImageURI        string
-	WorkerControlEndpoint    string
-	WorkerAMIPublicationFile string
+	ListenAddress               string
+	TLSCertFile                 string
+	TLSKeyFile                  string
+	PepperFile                  string
+	MasterKeyFile               string
+	MountedSecretsDir           string
+	ModelProfilesFile           string
+	MCPServersFile              string
+	EnableAWSControl            bool
+	EnableManagedPreparationAWS bool
+	AWSReaperImageURI           string
+	WorkerControlEndpoint       string
+	WorkerAMIPublicationFile    string
 }
 
 func LoadCommon() (Common, error) {
@@ -81,6 +82,17 @@ func LoadServer() (Server, error) {
 		server.EnableAWSControl = true
 	default:
 		return Server{}, errors.New("AGENT_ENABLE_AWS_CONTROL must be true or false")
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS"))) {
+	case "", "false":
+		server.EnableManagedPreparationAWS = false
+	case "true":
+		server.EnableManagedPreparationAWS = true
+	default:
+		return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS must be true or false")
+	}
+	if server.EnableManagedPreparationAWS && !server.EnableAWSControl {
+		return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS requires AGENT_ENABLE_AWS_CONTROL=true")
 	}
 	if server.ListenAddress == "" {
 		server.ListenAddress = ":9443"

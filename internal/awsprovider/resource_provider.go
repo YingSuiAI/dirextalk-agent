@@ -28,7 +28,7 @@ const (
 var logicalNameSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
 var (
 	providerClientTokenPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
-	providerDependencyIDPattern = regexp.MustCompile(`^(?:sg|eni|vol)-[0-9a-f]{8,17}$`)
+	providerDependencyIDPattern = regexp.MustCompile(`^(?:sg|eni|vol|snap)-[0-9a-f]{8,17}$`)
 )
 
 // EC2ResourceAPI is the deliberately closed AWS mutation/read-back surface

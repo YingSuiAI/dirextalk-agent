@@ -57,6 +57,37 @@ func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connectio
 	return provider, mirror, nil
 }
 
+// ManagedPreparationRuntime returns one exact Connection-scoped resource
+// service and volume-attachment provider. The two adapters share the same
+// assumed Control Role session and cannot be reused for another account or
+// Region.
+func (factory *awsResourceRuntimeFactory) ManagedPreparationRuntime(
+	ctx context.Context,
+	connection cloudapp.Connection,
+) (*resource.Service, awsprovider.VolumeAttachmentProvider, error) {
+	config, foundation, provider, err := factory.resourceProvider(ctx, connection)
+	if err != nil {
+		return nil, nil, err
+	}
+	remoteMirror, err := newDynamoResourceManifest(config, foundation.ManifestTableName, factory.agentInstanceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	mirror, err := postgres.NewTrackedResourceManifestMirror(factory.resourceStore, remoteMirror)
+	if err != nil {
+		return nil, nil, cloudapp.ErrUnavailable
+	}
+	service, err := resource.NewService(factory.resourceStore, provider, mirror)
+	if err != nil {
+		return nil, nil, cloudapp.ErrUnavailable
+	}
+	attachments, err := awsprovider.NewVolumeAttachmentProviderFromConfig(config)
+	if err != nil {
+		return nil, nil, cloudapp.ErrUnavailable
+	}
+	return service, attachments, nil
+}
+
 // Provider returns a Connection-scoped typed AWS reader without constructing
 // a DynamoDB manifest client. Orphan discovery uses this read-only path so
 // DynamoDB cannot become an inventory or authorization source for imported

@@ -17,8 +17,12 @@ func TestApprovedVolumeMaterializerFormatsBlankNitroVolumeOnceAndPersistsUUID(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); err != nil {
+	evidence, err := materializer.Prepare(context.Background(), []VolumeMountV1{volume})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].VolumeID != volume.Source.VolumeID || evidence[0].FileSystemUUID != testVolumeUUID || evidence[0].SizeBytes != 40<<30 {
+		t.Fatalf("installed evidence = %#v", evidence)
 	}
 	if host.mkfsCalls != 1 || host.mountCalls != 1 || host.fstabWrites != 1 {
 		t.Fatalf("first prepare calls = mkfs:%d mount:%d fstab:%d", host.mkfsCalls, host.mountCalls, host.fstabWrites)
@@ -27,7 +31,7 @@ func TestApprovedVolumeMaterializerFormatsBlankNitroVolumeOnceAndPersistsUUID(t 
 	if !bytes.Contains(host.fstab, []byte(wantLine)) {
 		t.Fatalf("fstab did not bind the approved UUID: %q", host.fstab)
 	}
-	if err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); err != nil {
+	if _, err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); err != nil {
 		t.Fatal(err)
 	}
 	if host.mkfsCalls != 1 || host.mountCalls != 1 || host.fstabWrites != 1 {
@@ -41,11 +45,49 @@ func TestApprovedVolumeMaterializerNeverReformatsExistingExt4(t *testing.T) {
 	host := newFakeVolumeHost(volume)
 	host.probe = SignatureProbeV1{FileSystems: []FileSystemSignatureV1{{Type: "ext4", UUID: testVolumeUUID}}}
 	materializer, _ := NewVolumeMaterializer(host)
-	if err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); err != nil {
+	if _, err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); err != nil {
 		t.Fatal(err)
 	}
 	if host.mkfsCalls != 0 || !reflect.DeepEqual(host.mountModes, []bool{true}) || !bytes.Contains(host.fstab, []byte("defaults,nofail,ro")) {
 		t.Fatalf("existing ext4 was not mounted read-only without format: mkfs=%d modes=%v fstab=%q", host.mkfsCalls, host.mountModes, host.fstab)
+	}
+}
+
+func TestVolumeStateReaderResolvesStableVolumeIdentityAcrossDeviceRenumbering(t *testing.T) {
+	volume := testVolumeMount()
+	host := newFakeVolumeHost(volume)
+	host.probe = SignatureProbeV1{FileSystems: []FileSystemSignatureV1{{Type: "ext4", UUID: testVolumeUUID}}}
+	host.mount = MountObservationV1{Found: true, DevicePath: "/dev/nvme3n1", TargetPath: volume.Approved.MountPath, FileSystem: "ext4", UUID: testVolumeUUID, Options: []string{"rw"}}
+	host.devices[0].Path = "/dev/nvme3n1"
+	reader, err := NewVolumeStateReader(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := reader.Observe(context.Background(), volume.Source.VolumeID, volume.Approved.MountPath)
+	if err != nil || observed.ResolvedDevicePath != "/dev/nvme3n1" || observed.SizeBytes != 40<<30 || observed.FileSystemUUID != testVolumeUUID || observed.ReadOnly {
+		t.Fatalf("observed volume = %#v err=%v", observed, err)
+	}
+}
+
+func TestVolumeStateReaderRejectsIdentityAndMountDrift(t *testing.T) {
+	volume := testVolumeMount()
+	for name, mutate := range map[string]func(*fakeVolumeHost){
+		"wrong serial":     func(host *fakeVolumeHost) { host.devices[0].Serial = "vol0ffffffffffffffff" },
+		"uuid drift":       func(host *fakeVolumeHost) { host.probe.FileSystems[0].UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+		"filesystem drift": func(host *fakeVolumeHost) { host.probe.FileSystems[0].Type = "xfs" },
+		"source drift":     func(host *fakeVolumeHost) { host.mount.DevicePath = "/dev/nvme9n1" },
+		"mount missing":    func(host *fakeVolumeHost) { host.mount.Found = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			host := newFakeVolumeHost(volume)
+			host.probe = SignatureProbeV1{FileSystems: []FileSystemSignatureV1{{Type: "ext4", UUID: testVolumeUUID}}}
+			host.mount = MountObservationV1{Found: true, DevicePath: "/dev/nvme1n1", TargetPath: volume.Approved.MountPath, FileSystem: "ext4", UUID: testVolumeUUID, Options: []string{"rw"}}
+			mutate(host)
+			reader, _ := NewVolumeStateReader(host)
+			if _, err := reader.Observe(context.Background(), volume.Source.VolumeID, volume.Approved.MountPath); !errors.Is(err, ErrMaterialize) {
+				t.Fatalf("drift error = %v", err)
+			}
+		})
 	}
 }
 
@@ -73,7 +115,7 @@ func TestApprovedVolumeMaterializerFailsClosedBeforeFormattingUnsafeDevice(t *te
 			host := newFakeVolumeHost(volume)
 			mutate(host, &volume)
 			materializer, _ := NewVolumeMaterializer(host)
-			if err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); !errors.Is(err, ErrMaterialize) {
+			if _, err := materializer.Prepare(context.Background(), []VolumeMountV1{volume}); !errors.Is(err, ErrMaterialize) {
 				t.Fatalf("unsafe volume error = %v", err)
 			}
 			if host.mkfsCalls != 0 || host.mountCalls != 0 || host.fstabWrites != 0 {

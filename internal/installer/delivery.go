@@ -174,8 +174,24 @@ func (issuer *TrustIssuer) IssueLeaseGrant(delivery DeliveryV1, commandID string
 }
 
 func ValidateDeliveryAt(delivery DeliveryV1, now time.Time) error {
+	if err := ValidateDeliveryTrust(delivery); err != nil {
+		return err
+	}
+	expiresAt, _ := time.Parse(time.RFC3339Nano, delivery.SignedPlan.Plan.ExpiresAt)
+	if now.IsZero() || !now.UTC().Before(expiresAt) {
+		return errorf(CodePlanExpired, "installer delivery has expired")
+	}
+	return nil
+}
+
+// ValidateDeliveryTrust verifies the immutable InstallerDelivery trust,
+// binding, signatures, digest and exact declared commands without treating the
+// original deployment-task expiry as a maintenance lease. Installer execute
+// continues to use ValidateDeliveryAt; root-helper maintenance is instead
+// fenced by its own short-lived signed capability.
+func ValidateDeliveryTrust(delivery DeliveryV1) error {
 	if delivery.SchemaVersion != DeliverySchemaV1 || !digestPattern.MatchString(delivery.TrustID) || len(delivery.PublicKey) != ed25519.PublicKeySize ||
-		delivery.Config.SchemaVersion != DaemonConfigSchema || delivery.Config.Binding != delivery.SignedPlan.Plan.Binding || now.IsZero() {
+		delivery.Config.SchemaVersion != DaemonConfigSchema || delivery.Config.Binding != delivery.SignedPlan.Plan.Binding {
 		return errorf(CodeInvalidRequest, "installer delivery contract is invalid")
 	}
 	if delivery.SignedPlan.SignerKeyID != SignerKeyID(ed25519.PublicKey(delivery.PublicKey)) || len(delivery.SignedPlan.Signature) != ed25519.SignatureSize {
@@ -197,7 +213,7 @@ func ValidateDeliveryAt(delivery DeliveryV1, now time.Time) error {
 			return errorf(CodeInvalidSignature, "installer artifact manifest is invalid")
 		}
 	}
-	if err := validateDeliveryPlan(delivery.SignedPlan.Plan, delivery.Config, now); err != nil {
+	if err := validateDeliveryPlanTrust(delivery.SignedPlan.Plan, delivery.Config); err != nil {
 		return err
 	}
 	digest, err := deliveryDigest(delivery)
@@ -325,6 +341,34 @@ func ValidateRootTrustMaterial(material RootTrustMaterialV1) error {
 	return nil
 }
 
+// ValidateDeliveryAgainstRootTrust binds a non-secret full Delivery received
+// after boot to the compact trust.cbor material already installed by the
+// trusted root bootstrap. No field in the received Delivery can replace the
+// root-owned trust identity, config, public key, or manifest.
+func ValidateDeliveryAgainstRootTrust(delivery DeliveryV1, material RootTrustMaterialV1) error {
+	if err := ValidateDeliveryTrust(delivery); err != nil {
+		return err
+	}
+	if err := ValidateRootTrustMaterial(material); err != nil {
+		return err
+	}
+	var compactConfig DaemonConfigV1
+	if DecodeCanonical(material.ConfigCBOR, &compactConfig) != nil ||
+		compactConfig != delivery.Config ||
+		subtle.ConstantTimeCompare([]byte(material.TrustID), []byte(delivery.TrustID)) != 1 ||
+		subtle.ConstantTimeCompare(material.PublicKey, delivery.PublicKey) != 1 {
+		return errorf(CodeInvalidSignature, "full installer delivery does not match root trust")
+	}
+	compactManifest, compactErr := canonical.Marshal(material.ArtifactManifest)
+	deliveryManifest, deliveryErr := canonical.Marshal(delivery.ArtifactManifest)
+	defer clear(compactManifest)
+	defer clear(deliveryManifest)
+	if compactErr != nil || deliveryErr != nil || !hmac.Equal(compactManifest, deliveryManifest) {
+		return errorf(CodeInvalidSignature, "full installer delivery manifest does not match root trust")
+	}
+	return nil
+}
+
 func cloneArtifactManifest(value SignedArtifactManifestV1) SignedArtifactManifestV1 {
 	return SignedArtifactManifestV1{
 		Manifest: ArtifactManifestV1{
@@ -338,6 +382,17 @@ func cloneArtifactManifest(value SignedArtifactManifestV1) SignedArtifactManifes
 }
 
 func validateDeliveryPlan(plan InstallerPlanV1, config DaemonConfigV1, now time.Time) error {
+	if err := validateDeliveryPlanTrust(plan, config); err != nil {
+		return err
+	}
+	expiresAt, _ := time.Parse(time.RFC3339Nano, plan.ExpiresAt)
+	if current := now.UTC(); !current.Before(expiresAt) {
+		return errorf(CodePlanExpired, "installer delivery has expired")
+	}
+	return nil
+}
+
+func validateDeliveryPlanTrust(plan InstallerPlanV1, config DaemonConfigV1) error {
 	root, err := validateTargetRoot(config.TargetRoot)
 	if err != nil {
 		return err
@@ -359,10 +414,6 @@ func validateDeliveryPlan(plan InstallerPlanV1, config DaemonConfigV1, now time.
 		if !executableLocked {
 			return errorf(CodeCommandNotAllowed, "installer executable is not a referenced preinstalled artifact")
 		}
-	}
-	expiresAt, _ := time.Parse(time.RFC3339Nano, plan.ExpiresAt)
-	if current := now.UTC(); !current.Before(expiresAt) {
-		return errorf(CodePlanExpired, "installer delivery has expired")
 	}
 	return nil
 }

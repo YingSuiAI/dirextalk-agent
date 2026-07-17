@@ -326,7 +326,7 @@ func integrationRecipe(recipeID string) recipe.RecipeV1 {
 			Readiness: recipe.ProbeV1{Kind: recipe.ProbeHTTP, Target: "/health/ready", TimeoutSeconds: 5},
 			Semantic:  recipe.ProbeV1{Kind: recipe.ProbeAction, Target: "semantic_check", TimeoutSeconds: 30},
 		},
-		Lifecycle:   recipe.LifecycleContractV1{Start: "start", Stop: "stop", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy"},
+		Lifecycle:   recipe.LifecycleContractV1{Start: "start", Stop: "stop", Maintenance: "maintenance", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy"},
 		VolumeSlots: []recipe.VolumeSlotRequirementV1{{SlotID: "data", Purpose: "Persistent index data"}},
 	}
 }

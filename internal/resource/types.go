@@ -82,8 +82,10 @@ const (
 	// exact device-approved operation that authorized it. They are deliberately
 	// non-secret so an otherwise unknown provider object can be recovered only
 	// after its durable approval origin is re-verified.
-	TagApprovedPlanHash = "approved_plan_hash"
-	TagApprovalID       = "approval_id"
+	TagApprovedPlanHash  = "approved_plan_hash"
+	TagApprovalID        = "approval_id"
+	TagIntentOrigin      = "intent_origin"
+	TagOriginScopeDigest = "origin_scope_digest"
 	// TagEmbeddedParentResourceID binds an AWS resource that is created as part
 	// of another provider mutation (currently an EC2 root EBS volume) to its
 	// parent while still giving it an independent ledger identity.
@@ -91,6 +93,10 @@ const (
 )
 
 var sha256Pattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+type IntentOrigin string
+
+const IntentOriginManagedPreparation IntentOrigin = "managed_preparation"
 
 type MutationIntent struct {
 	Operation               MutationOperation
@@ -107,18 +113,20 @@ type ReadBackEvidence struct {
 }
 
 type ResourceV1 struct {
-	ResourceID       string
-	AgentInstanceID  string
-	OwnerID          string
-	TaskID           string
-	DeploymentID     string
-	Type             Type
-	LogicalName      string
-	Region           string
-	SpecDigest       string
-	ApprovedPlanHash string
-	ApprovalID       string
-	ProviderID       string
+	ResourceID        string
+	AgentInstanceID   string
+	OwnerID           string
+	TaskID            string
+	DeploymentID      string
+	Type              Type
+	LogicalName       string
+	Region            string
+	SpecDigest        string
+	ApprovedPlanHash  string
+	ApprovalID        string
+	IntentOrigin      IntentOrigin
+	OriginScopeDigest string
+	ProviderID        string
 	// ProviderCandidateIDs records every provider object observed for this
 	// mutation while the control plane cannot safely select one. Keeping these
 	// IDs in the authoritative ledger lets both the Agent and the independent
@@ -157,6 +165,8 @@ type ProvisionSpec struct {
 	SpecDigest          string
 	ApprovedPlanHash    string
 	ApprovalID          string
+	IntentOrigin        IntentOrigin
+	OriginScopeDigest   string
 	DependsOn           []string
 	Retention           task.RetentionPolicy
 	DestroyDeadline     time.Time
@@ -216,6 +226,18 @@ func (spec ProvisionSpec) Validate(now time.Time) error {
 	if !sha256Pattern.MatchString(spec.SpecDigest) || !sha256Pattern.MatchString(spec.ApprovedPlanHash) {
 		return fmt.Errorf("%w: spec and approved plan digests must be sha256", ErrInvalid)
 	}
+	switch spec.IntentOrigin {
+	case "":
+		if spec.OriginScopeDigest != "" {
+			return fmt.Errorf("%w: origin scope digest requires a typed origin", ErrInvalid)
+		}
+	case IntentOriginManagedPreparation:
+		if !sha256Pattern.MatchString(spec.OriginScopeDigest) || (spec.Type != TypeSnapshot && spec.Type != TypeEBS) {
+			return fmt.Errorf("%w: managed preparation origin is invalid", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported resource intent origin", ErrInvalid)
+	}
 	if spec.AWS != nil {
 		digest, err := spec.AWS.Digest(spec.Type)
 		if err != nil || digest != spec.SpecDigest {
@@ -268,12 +290,17 @@ func (spec ProvisionSpec) mandatoryTags() map[string]string {
 	if !spec.DestroyDeadline.IsZero() {
 		deadline = spec.DestroyDeadline.UTC().Format(time.RFC3339)
 	}
-	return map[string]string{
+	result := map[string]string{
 		TagAgentInstanceID: strings.TrimSpace(spec.AgentInstanceID), TagOwnerID: strings.TrimSpace(spec.OwnerID),
 		TagTaskID: strings.TrimSpace(spec.TaskID), TagDeploymentID: strings.TrimSpace(spec.DeploymentID),
 		TagResourceID: strings.TrimSpace(spec.ResourceID), TagRetention: string(spec.Retention), TagDestroyDeadline: deadline,
 		TagApprovedPlanHash: strings.TrimSpace(spec.ApprovedPlanHash), TagApprovalID: strings.TrimSpace(spec.ApprovalID),
 	}
+	if spec.IntentOrigin != "" {
+		result[TagIntentOrigin] = string(spec.IntentOrigin)
+		result[TagOriginScopeDigest] = spec.OriginScopeDigest
+	}
+	return result
 }
 
 type ProviderCreateRequest struct {
@@ -474,6 +501,19 @@ func (manifest Manifest) ValidateResourceApprovalScope() error {
 			if expected == "" || item.Tags[key] != expected {
 				return ErrInvalid
 			}
+		}
+		switch item.IntentOrigin {
+		case "":
+			if item.OriginScopeDigest != "" || item.Tags[TagIntentOrigin] != "" || item.Tags[TagOriginScopeDigest] != "" {
+				return ErrInvalid
+			}
+		case IntentOriginManagedPreparation:
+			if !sha256Pattern.MatchString(item.OriginScopeDigest) || (item.Type != TypeSnapshot && item.Type != TypeEBS) ||
+				item.Tags[TagIntentOrigin] != string(item.IntentOrigin) || item.Tags[TagOriginScopeDigest] != item.OriginScopeDigest {
+				return ErrInvalid
+			}
+		default:
+			return ErrInvalid
 		}
 		if manifest.Retention == task.RetentionEphemeralAutoDestroy {
 			if !item.AutoDestroyApproved || !item.DestroyDeadline.Equal(manifest.DestroyDeadline) ||

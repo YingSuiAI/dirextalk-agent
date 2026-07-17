@@ -154,6 +154,28 @@ func TestLoadServerKeepsAWSControlFailClosedUnlessExplicitlyEnabled(t *testing.T
 	}
 }
 
+func TestLoadServerKeepsManagedPreparationAWSBehindIndependentExplicitGate(t *testing.T) {
+	setValidServerEnvironment(t)
+	t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.internal:9444")
+
+	server, err := LoadServer()
+	if err != nil || server.EnableManagedPreparationAWS {
+		t.Fatalf("default managed preparation gate=%v error=%v", server.EnableManagedPreparationAWS, err)
+	}
+
+	t.Setenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS", "true")
+	if _, err := LoadServer(); err == nil || !strings.Contains(err.Error(), "requires AGENT_ENABLE_AWS_CONTROL=true") {
+		t.Fatalf("managed preparation without AWS control error=%v", err)
+	}
+
+	t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
+	server, err = LoadServer()
+	if err != nil || !server.EnableManagedPreparationAWS {
+		t.Fatalf("explicit managed preparation gate=%v error=%v", server.EnableManagedPreparationAWS, err)
+	}
+}
+
 func TestLoadServerRejectsInvalidAWSControlFlagOrMissingImage(t *testing.T) {
 	setValidServerEnvironment(t)
 	t.Setenv("AGENT_ENABLE_AWS_CONTROL", "yes")

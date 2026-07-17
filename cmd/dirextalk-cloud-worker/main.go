@@ -27,9 +27,11 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
+	installerroothelper "github.com/YingSuiAI/dirextalk-agent/internal/installer/roothelper"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workermaintenance"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -155,7 +157,35 @@ func run() error {
 		return err
 	}
 	slog.Info("cloud Worker execution finished", "deployment_id", launch.config.DeploymentID, "outcome", result.Outcome.String(), "actions", len(result.CompletedActions))
-	return nil
+	if launch.method != identityMethod {
+		return nil
+	}
+	rootSocket, err := installerroothelper.NewSocketClient(installer.DefaultSocketPath)
+	if err != nil {
+		return errors.New("initialize root-helper socket client")
+	}
+	rootControl, err := workermaintenance.NewSocketRootControl(rootSocket)
+	if err != nil {
+		return errors.New("initialize root-helper control")
+	}
+	maintenanceControl, err := workermaintenance.NewGRPCControl(
+		agentv1.NewRootHelperBootstrapControlServiceClient(connection),
+		agentv1.NewWorkerServiceOperationServiceClient(connection),
+		launch.config.DeploymentID, launch.config.WorkerID, launch.config.IdentitySessionToken,
+	)
+	if err != nil {
+		return errors.New("initialize Worker maintenance control")
+	}
+	defer maintenanceControl.Close()
+	slog.Info("cloud Worker entering typed maintenance", "deployment_id", launch.config.DeploymentID, "worker_id", launch.config.WorkerID)
+	err = (&workermaintenance.Service{
+		Control: maintenanceControl, Root: rootControl, PollInterval: time.Second,
+		Lease: launch.config.LeaseDuration,
+	}).Run(ctx)
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 type runtimeIdentity struct {

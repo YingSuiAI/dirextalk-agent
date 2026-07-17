@@ -7,6 +7,8 @@ import (
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
+	cloudmanaged "github.com/YingSuiAI/dirextalk-agent/internal/cloud/managed"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
@@ -31,6 +33,8 @@ func publicError(err error) error {
 		errors.Is(err, clouddestroy.ErrInvalid),
 		errors.Is(err, entrypoint.ErrInvalid),
 		errors.Is(err, cloudfoundation.ErrInvalid),
+		errors.Is(err, cloudmanaged.ErrInvalid),
+		errors.Is(err, serviceoperation.ErrInvalid),
 		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, task.ErrNotFound), errors.Is(err, task.ErrStepNotFound), errors.Is(err, task.ErrAttemptNotFound), errors.Is(err, auth.ErrCredentialNotFound),
@@ -39,6 +43,8 @@ func publicError(err error) error {
 		errors.Is(err, clouddestroy.ErrNotFound),
 		errors.Is(err, entrypoint.ErrNotFound),
 		errors.Is(err, cloudfoundation.ErrNotFound),
+		errors.Is(err, cloudmanaged.ErrNotFound),
+		errors.Is(err, serviceoperation.ErrNotFound),
 		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
 			return status.Error(codes.NotFound, "requested cloud status entity was not found")
@@ -73,12 +79,20 @@ func publicError(err error) error {
 		return status.Error(codes.Aborted, "cloud entrypoint scope revision does not match")
 	case errors.Is(err, cloudfoundation.ErrRevisionConflict):
 		return status.Error(codes.Aborted, "Foundation scope revision does not match")
+	case errors.Is(err, cloudmanaged.ErrRevisionConflict):
+		return status.Error(codes.Aborted, "Managed acceptance scope revision does not match")
+	case errors.Is(err, serviceoperation.ErrRevisionConflict):
+		return status.Error(codes.Aborted, "Managed preparation scope revision does not match")
 	case errors.Is(err, clouddestroy.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid device approval is required")
 	case errors.Is(err, entrypoint.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid device approval is required")
 	case errors.Is(err, cloudfoundation.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid Foundation device approval is required")
+	case errors.Is(err, cloudmanaged.ErrApprovalRequired):
+		return status.Error(codes.PermissionDenied, "valid Managed acceptance device approval is required")
+	case errors.Is(err, serviceoperation.ErrApprovalRequired):
+		return status.Error(codes.PermissionDenied, "valid Managed preparation device approval is required")
 	case errors.Is(err, entrypoint.ErrApprovalExpired), errors.Is(err, entrypoint.ErrWorkerNotReady), errors.Is(err, entrypoint.ErrReadBackRequired), errors.Is(err, entrypoint.ErrUnsupportedEntry):
 		return status.Error(codes.FailedPrecondition, "cloud entrypoint approval scope is no longer valid")
 	case errors.Is(err, clouddestroy.ErrManaged):

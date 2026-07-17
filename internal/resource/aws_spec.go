@@ -132,17 +132,17 @@ const (
 // issuance and DNS/Route53 mutations are intentionally outside this resource
 // model, and both ALB/TG inputs are Agent resource identities.
 type AWSListenerSpecV1 struct {
-	LoadBalancerResourceID string               `json:"load_balancer_resource_id"`
-	TargetGroupResourceID  string               `json:"target_group_resource_id"`
-	Port                   uint16               `json:"port"`
-	Protocol               AWSListenerProtocol  `json:"protocol"`
+	LoadBalancerResourceID string              `json:"load_balancer_resource_id"`
+	TargetGroupResourceID  string              `json:"target_group_resource_id"`
+	Port                   uint16              `json:"port"`
+	Protocol               AWSListenerProtocol `json:"protocol"`
 	// Hostname is the exact user-approved public DNS name that must be covered
 	// by the existing ACM certificate. It is deliberately part of the typed
 	// listener spec so Provider read-back cannot substitute a different
 	// certificate with an unrelated SAN.
-	Hostname               string               `json:"hostname"`
-	CertificateARN         string               `json:"certificate_arn"`
-	TLSPolicy              AWSListenerTLSPolicy `json:"tls_policy"`
+	Hostname       string               `json:"hostname"`
+	CertificateARN string               `json:"certificate_arn"`
+	TLSPolicy      AWSListenerTLSPolicy `json:"tls_policy"`
 }
 
 type AWSSecurityGroupRuleDirection string
@@ -181,18 +181,19 @@ type AWSNetworkRuleV1 struct {
 }
 
 type AWSEBSVolumeSpecV1 struct {
-	AvailabilityZone string               `json:"availability_zone"`
-	SizeGiB          uint32               `json:"size_gib"`
-	VolumeType       string               `json:"volume_type"`
-	IOPS             uint32               `json:"iops,omitempty"`
-	ThroughputMiBPS  uint32               `json:"throughput_mibps,omitempty"`
-	KMSKeyID         string               `json:"kms_key_id"`
-	SlotID           string               `json:"slot_id,omitempty"`
-	DeviceName       string               `json:"device_name,omitempty"`
-	MountPath        string               `json:"mount_path,omitempty"`
-	ReadOnly         bool                 `json:"read_only,omitempty"`
-	Persistent       bool                 `json:"persistent,omitempty"`
-	Disposition      AWSVolumeDisposition `json:"disposition,omitempty"`
+	AvailabilityZone         string               `json:"availability_zone"`
+	SizeGiB                  uint32               `json:"size_gib"`
+	VolumeType               string               `json:"volume_type"`
+	IOPS                     uint32               `json:"iops,omitempty"`
+	ThroughputMiBPS          uint32               `json:"throughput_mibps,omitempty"`
+	KMSKeyID                 string               `json:"kms_key_id"`
+	SourceSnapshotResourceID string               `json:"source_snapshot_resource_id,omitempty"`
+	SlotID                   string               `json:"slot_id,omitempty"`
+	DeviceName               string               `json:"device_name,omitempty"`
+	MountPath                string               `json:"mount_path,omitempty"`
+	ReadOnly                 bool                 `json:"read_only,omitempty"`
+	Persistent               bool                 `json:"persistent,omitempty"`
+	Disposition              AWSVolumeDisposition `json:"disposition,omitempty"`
 }
 
 type AWSVolumeDisposition string
@@ -603,6 +604,9 @@ func (spec AWSEBSVolumeSpecV1) validate() error {
 	if !awsZonePattern.MatchString(spec.AvailabilityZone) || spec.SizeGiB == 0 || spec.SizeGiB > 65_536 || spec.VolumeType != "gp3" || spec.IOPS < 3_000 || spec.IOPS > 80_000 || spec.ThroughputMiBPS < 125 || spec.ThroughputMiBPS > 2_000 || !awsKMSPattern.MatchString(spec.KMSKeyID) {
 		return fmt.Errorf("%w: encrypted gp3 volume scope is invalid", ErrInvalid)
 	}
+	if spec.SourceSnapshotResourceID != "" && !validCanonicalResourceID(spec.SourceSnapshotResourceID) {
+		return fmt.Errorf("%w: source snapshot resource identity is invalid", ErrInvalid)
+	}
 	declared := spec.SlotID != "" || spec.DeviceName != "" || spec.MountPath != "" || spec.ReadOnly || spec.Persistent || spec.Disposition != ""
 	if declared {
 		if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`).MatchString(spec.SlotID) ||
@@ -782,9 +786,23 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 		dependenciesByID[dependency.ResourceID] = dependency
 	}
 	switch kind {
-	case TypeSG, TypeEBS:
+	case TypeSG:
 		if len(dependencies) != 0 {
 			return fmt.Errorf("%w: resource does not accept dependencies", ErrInvalid)
+		}
+	case TypeEBS:
+		if spec.Volume == nil {
+			return fmt.Errorf("%w: EBS volume scope is required", ErrInvalid)
+		}
+		if spec.Volume.SourceSnapshotResourceID == "" {
+			if len(dependencies) != 0 {
+				return fmt.Errorf("%w: fresh EBS volume does not accept dependencies", ErrInvalid)
+			}
+			break
+		}
+		if len(dependencies) != 1 || counts[TypeSnapshot] != 1 ||
+			dependenciesByID[spec.Volume.SourceSnapshotResourceID].Type != TypeSnapshot {
+			return fmt.Errorf("%w: replacement EBS volume requires its exact completed snapshot", ErrInvalid)
 		}
 	case TypeALB:
 		if len(dependencies) != 1 || counts[TypeSG] != 1 || spec.ALB == nil ||

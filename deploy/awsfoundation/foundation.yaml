@@ -946,6 +946,7 @@ Resources:
             Effect: Allow
             Action:
               - secretsmanager:DeleteSecret
+              - secretsmanager:DeleteResourcePolicy
               - secretsmanager:DescribeSecret
               - secretsmanager:GetSecretValue
               - secretsmanager:GetResourcePolicy

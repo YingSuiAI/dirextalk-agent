@@ -628,7 +628,7 @@ func validateLifecycle(value LifecycleContractV1) error {
 		name  string
 		value string
 	}{
-		{"start", value.Start}, {"stop", value.Stop}, {"restart", value.Restart},
+		{"start", value.Start}, {"stop", value.Stop}, {"maintenance", value.Maintenance}, {"restart", value.Restart},
 		{"upgrade", value.Upgrade}, {"rollback", value.Rollback}, {"backup", value.Backup},
 		{"restore", value.Restore}, {"destroy", value.Destroy},
 	}

@@ -411,7 +411,7 @@ func validPlanDraftArguments(t *testing.T) string {
 			Semantic:  recipe.ProbeV1{Kind: recipe.ProbeAction, Target: "semantic_check"},
 		},
 		Lifecycle: recipe.LifecycleContractV1{
-			Start: "start", Stop: "stop", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback",
+			Start: "start", Stop: "stop", Maintenance: "maintenance", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback",
 			Backup: "backup", Restore: "restore", Destroy: "destroy",
 		},
 	}

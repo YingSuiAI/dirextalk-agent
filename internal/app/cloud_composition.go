@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"time"
 
@@ -12,14 +14,18 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/costalert"
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entryexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
+	cloudmanaged "github.com/YingSuiAI/dirextalk-agent/internal/cloud/managed"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/healthprobe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/helperkey"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
@@ -28,6 +34,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workeroperation"
 )
 
 type CloudComposition struct {
@@ -35,6 +42,8 @@ type CloudComposition struct {
 	DestroyCoordinator         *clouddestroy.Service
 	Entrypoint                 *entrypoint.Service
 	FoundationLifecycle        *cloudfoundation.Service
+	ManagedAcceptance          *cloudmanaged.Service
+	ManagedPreparation         *serviceoperation.Service
 	Dispatcher                 *cloudexecution.Dispatcher
 	Lifecycle                  *cloudexecution.EphemeralDestroyController
 	WorkerIdentityVerifier     *workeridentity.Verifier
@@ -46,14 +55,34 @@ type CloudComposition struct {
 	ManifestRecovery           *resourceManifestRecovery
 	HealthProbes               *resource.ProbeService
 	HealthProbeReader          cloudstatus.HealthReader
+	RootHelperApprovals        *rootHelperApprovalCoordinator
+	RootHelperDeliveries       *helperkey.Service
+	WorkerOperations           *workeroperation.Service
+	RootHelperCapabilities     *productionRootHelperCapabilityIssuer
 	foundationLaunches         *foundationLaunchCompensator
 	healthProbeScheduler       *healthProbeScheduler
 	orphanRecovery             *orphanRecoveryController
 	entryExecutor              entryexecution.Runner
 	foundationExecutor         *cloudfoundation.Executor
+	managedAcceptanceExecutor  *cloudmanaged.Executor
+	managedPreparationRecovery *managedPreparationRecoveryController
 	agentInstanceID            string
 	cloudGoalStore             *postgres.Store
 	vault                      *awsfoundation.CredentialVault
+	rootHelperDeriver          *helperkey.DeterministicKeyDeriver
+}
+
+type CloudCompositionOption func(*cloudCompositionOptions)
+
+type cloudCompositionOptions struct {
+	enableManagedPreparationAWS bool
+}
+
+// WithManagedPreparationAWS enables the public ManagedPreparation API and its
+// typed AWS recovery loop. It is intentionally opt-in in addition to the
+// existing AWS-control gate.
+func WithManagedPreparationAWS() CloudCompositionOption {
+	return func(options *cloudCompositionOptions) { options.enableManagedPreparationAWS = true }
 }
 
 // NewCloudGoalOutputAdapter composes the durable provider path only after a
@@ -72,7 +101,7 @@ func (composition *CloudComposition) NewCloudGoalOutputAdapter(model planning.Cl
 // Recover resumes exact, pre-authorized Foundation operations and persists any
 // missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
 	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
@@ -90,6 +119,12 @@ func (composition *CloudComposition) Recover(ctx context.Context) error {
 	if err := composition.Lifecycle.RunOnce(ctx); err != nil {
 		return err
 	}
+	if err := composition.managedPreparationRecovery.RunOnce(ctx); err != nil {
+		return err
+	}
+	if err := composition.managedAcceptanceExecutor.RunOnce(ctx); err != nil {
+		return err
+	}
 	if err := composition.orphanRecovery.RunOnce(ctx); err != nil {
 		return err
 	}
@@ -97,18 +132,23 @@ func (composition *CloudComposition) Recover(ctx context.Context) error {
 }
 
 func (composition *CloudComposition) Close() {
-	if composition != nil && composition.vault != nil {
-		composition.vault.Close()
+	if composition != nil {
+		if composition.rootHelperDeriver != nil {
+			composition.rootHelperDeriver.Close()
+		}
+		if composition.vault != nil {
+			composition.vault.Close()
+		}
 	}
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 8)
+	errorsChannel := make(chan error, 10)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
@@ -117,9 +157,11 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	go func() { errorsChannel <- composition.orphanRecovery.Run(runContext) }()
 	go func() { errorsChannel <- composition.entryExecutor.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationExecutor.Run(runContext) }()
+	go func() { errorsChannel <- composition.managedAcceptanceExecutor.Run(runContext) }()
+	go func() { errorsChannel <- composition.managedPreparationRecovery.Run(runContext) }()
 	first := <-errorsChannel
 	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -135,9 +177,15 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	return first
 }
 
-func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, installerIssuer *installer.TrustIssuer, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget string) (*CloudComposition, error) {
+func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, installerIssuer *installer.TrustIssuer, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget string, optionValues ...CloudCompositionOption) (*CloudComposition, error) {
 	if store == nil || manager == nil || workerStore == nil || workerService == nil || installerIssuer == nil || len(masterKey) != 32 || reaperImageURI == "" || workerControlTarget == "" {
 		return nil, errors.New("cloud composition requires durable stores, master key, and immutable Reaper image")
+	}
+	options := cloudCompositionOptions{}
+	for _, option := range optionValues {
+		if option != nil {
+			option(&options)
+		}
 	}
 	facts, err := postgres.NewCloudAdapter(store)
 	if err != nil {
@@ -330,6 +378,151 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	rootHelperStore, err := postgres.NewRootHelperKeyStore(store)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	helperRoot := rootHelperDerivationRoot(masterKey)
+	rootHelperDeriver, err := helperkey.NewDeterministicKeyDeriver(helperRoot)
+	clear(helperRoot)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	retainRootHelperDeriver := false
+	defer func() {
+		if !retainRootHelperDeriver {
+			rootHelperDeriver.Close()
+		}
+	}()
+	closeRootHelper := func() {
+		rootHelperDeriver.Close()
+		vault.Close()
+	}
+	rootHelperApprovalService, err := helperkey.NewApprovalService(
+		rootHelperStore, rootHelperApprovalDeviceVerifier{devices: store, now: time.Now}, rootHelperDeriver, time.Now,
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	rootHelperAWS := &rootHelperAWSRouter{
+		agentInstanceID: agentInstanceID, current: cloudStatuses, vault: vault, factory: sdkRootHelperSecretsFactory{},
+	}
+	rootHelperDeliveries, err := helperkey.NewService(
+		rootHelperStore, rootHelperAWS, rootHelperAWS, time.Now,
+		helperkey.WithApprovedKeyDelivery(rootHelperApprovalService, rootHelperDeriver),
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	rootHelperAuthority := &productionRootHelperBindingAuthority{
+		agentInstanceID: agentInstanceID, current: cloudStatuses, identities: workerStore,
+		vault: vault, factory: sdkRootHelperCloudFormationFactory{},
+	}
+	rootHelperApprovals, err := newRootHelperApprovalCoordinator(rootHelperAuthority, rootHelperApprovalService, rootHelperDeliveries)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	workerOperationStore, err := postgres.NewWorkerServiceOperationStore(store)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	workerOperations, err := workeroperation.NewService(
+		workerOperationStore, workeroperation.CurrentReadyReceiptVerifier{Keys: rootHelperStore}, time.Now,
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	rootHelperCapabilities, err := newProductionRootHelperCapabilityIssuer(
+		workerStore, rootHelperStore, installerIssuer, time.Now,
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationFacts := managedPreparationFactAdapter{cloud: facts, recipes: store, launches: store}
+	managedPreparationScopes, err := newManagedPreparationScopeBuilder(
+		agentInstanceID, managedPreparationFacts, cloudStatuses, healthProbeStore,
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationTemplates, err := newManagedPreparationSnapshotTemplates(
+		managedPreparationTemplateFactAdapter{current: cloudStatuses, recipes: store},
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationResources, err := newManagedPreparationResourceLifecycle(store, runtimeFactory, resourceStore)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationHealth, err := newManagedPreparationSemanticHealth(healthProbes, healthProbeStore)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedCostStore, err := postgres.NewManagedCostAlertStore(store)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedCostController, err := costalert.NewController(agentInstanceID, managedPreparationFacts, managedCostStore)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationCost, err := newManagedPreparationCostPolicy(managedCostController, managedCostStore)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationStack, err := newManagedPreparationStackObservation(store, runtimeFactory, managedPreparationFacts)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationRestart, err := newWorkerOperationRestartPort(workerOperations, rootHelperStore)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationExecutor, err := serviceoperation.NewExecutor(
+		store, managedPreparationScopes, managedPreparationRestart, managedPreparationResources,
+		managedPreparationHealth, managedPreparationCost, managedPreparationStack,
+		managedPreparationTemplates, store, time.Now,
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedPreparationGate := staticManagedPreparationAWSGate(options.enableManagedPreparationAWS)
+	managedPreparationRecovery, err := newManagedPreparationRecoveryController(
+		store, managedPreparationExecutor, managedPreparationGate, 64,
+	)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	var managedPreparation *serviceoperation.Service
+	if managedPreparationGate.Enabled() {
+		managedPreparation, err = serviceoperation.NewService(
+			agentInstanceID, store, approvalReads, managedPreparationScopes, time.Now,
+		)
+		if err != nil {
+			closeRootHelper()
+			return nil, err
+		}
+	}
 	foundationRepository, err := postgres.NewFoundationLifecycleRepository(store)
 	if err != nil {
 		vault.Close()
@@ -389,6 +582,26 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	managedScopes, err := newManagedAcceptanceScopeBuilder(store, cloudStatuses, facts, store)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	managedAcceptor, err := newManagedAcceptanceResourceAcceptor(store, resourceStore, runtimeFactory)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	managedExecutor, err := cloudmanaged.NewExecutor(store, managedScopes, managedAcceptor, 15*time.Second)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	managedAcceptance, err := cloudmanaged.NewService(agentInstanceID, store, approvalReads, managedScopes, managedExecutor, time.Now)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	if err := lifecycle.ConfigureManualDestroy(store, destroyCoordinator); err != nil {
 		vault.Close()
 		return nil, err
@@ -408,20 +621,35 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	retainRootHelperDeriver = true
 	return &CloudComposition{
-		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, FoundationLifecycle: foundationLifecycle, Dispatcher: dispatcher, Lifecycle: lifecycle,
+		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, FoundationLifecycle: foundationLifecycle, ManagedAcceptance: managedAcceptance, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
 		FoundationConnections: connections, ActiveQuotes: activeQuotes, ActivePlacements: activePlacements, ProviderPlans: providerPlans,
-		ManifestRecovery:     manifestRecovery,
-		HealthProbes:         healthProbes,
-		HealthProbeReader:    healthProbeStore,
-		foundationLaunches:   launchCompensator,
-		healthProbeScheduler: healthProbeScheduler,
-		orphanRecovery:       orphanRecovery,
-		entryExecutor:        entryExecutor,
-		foundationExecutor:   foundationExecutor,
-		agentInstanceID:      agentInstanceID,
-		cloudGoalStore:       store,
-		vault:                vault,
+		ManifestRecovery:           manifestRecovery,
+		HealthProbes:               healthProbes,
+		HealthProbeReader:          healthProbeStore,
+		RootHelperApprovals:        rootHelperApprovals,
+		RootHelperDeliveries:       rootHelperDeliveries,
+		WorkerOperations:           workerOperations,
+		RootHelperCapabilities:     rootHelperCapabilities,
+		ManagedPreparation:         managedPreparation,
+		foundationLaunches:         launchCompensator,
+		healthProbeScheduler:       healthProbeScheduler,
+		orphanRecovery:             orphanRecovery,
+		entryExecutor:              entryExecutor,
+		foundationExecutor:         foundationExecutor,
+		managedAcceptanceExecutor:  managedExecutor,
+		managedPreparationRecovery: managedPreparationRecovery,
+		agentInstanceID:            agentInstanceID,
+		cloudGoalStore:             store,
+		vault:                      vault,
+		rootHelperDeriver:          rootHelperDeriver,
 	}, nil
+}
+
+func rootHelperDerivationRoot(masterKey []byte) []byte {
+	mac := hmac.New(sha256.New, masterKey)
+	_, _ = mac.Write([]byte("dirextalk-agent/root-helper-key-deriver/v1"))
+	return mac.Sum(nil)
 }

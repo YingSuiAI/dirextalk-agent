@@ -652,7 +652,7 @@ func validRecipeDraft() recipe.RecipeV1 {
 			Semantic:  recipe.ProbeV1{Kind: recipe.ProbeAction, Target: "semantic_check"},
 		},
 		Lifecycle: recipe.LifecycleContractV1{
-			Start: "start", Stop: "stop", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy",
+			Start: "start", Stop: "stop", Maintenance: "maintenance", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy",
 		},
 	}
 }

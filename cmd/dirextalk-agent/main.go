@@ -212,9 +212,14 @@ func serve() error {
 			}
 		}
 		var cloudErr error
+		cloudOptions := make([]app.CloudCompositionOption, 0, 1)
+		if serverConfig.EnableManagedPreparationAWS {
+			cloudOptions = append(cloudOptions, app.WithManagedPreparationAWS())
+		}
 		cloudComposition, cloudErr = app.NewCloudComposition(
 			store, secretManager, workerStore, workerService, installerIssuer, serverConfig.InstanceID, masterKey,
 			serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint,
+			cloudOptions...,
 		)
 		if cloudErr != nil {
 			return errors.New("could not initialize typed AWS cloud control")
@@ -260,9 +265,15 @@ func serve() error {
 			app.WithCloudDestroy(cloudComposition.DestroyCoordinator),
 			app.WithCloudEntrypoint(cloudComposition.Entrypoint),
 			app.WithCloudFoundation(cloudComposition.FoundationLifecycle),
+			app.WithCloudManagedAcceptance(cloudComposition.ManagedAcceptance),
 			app.WithCloudHealth(cloudComposition.HealthProbeReader),
 			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),
+			app.WithRootHelperControl(cloudComposition.RootHelperApprovals, cloudComposition.RootHelperDeliveries,
+				cloudComposition.WorkerOperations, cloudComposition.RootHelperCapabilities),
 		)
+		if cloudComposition.ManagedPreparation != nil {
+			serverOptions = append(serverOptions, app.WithCloudManagedPreparation(cloudComposition.ManagedPreparation))
+		}
 	}
 	grpcServer, err := app.NewServer(
 		store, pepper, serverConfig.TLSCertFile, serverConfig.TLSKeyFile,

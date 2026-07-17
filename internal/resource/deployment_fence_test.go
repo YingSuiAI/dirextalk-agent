@@ -283,6 +283,7 @@ func TestDeploymentFencePreservesProviderErrorAndManagedSemantics(t *testing.T) 
 		if _, _, err := fixture.service.AcceptManaged(context.Background(), managedContractFor(fixture.resourceFixture)); err != nil {
 			t.Fatal(err)
 		}
+		requireFenceRequest(t, fixture.fencer, fixture.deploymentID)
 
 		_, err = fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID)
 		if !errors.Is(err, ErrManaged) {

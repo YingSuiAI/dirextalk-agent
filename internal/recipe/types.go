@@ -257,14 +257,15 @@ type ProbeV1 struct {
 // LifecycleContractV1 contains names from the Worker's typed lifecycle-action
 // registry, never executable command strings.
 type LifecycleContractV1 struct {
-	Start    string `json:"start"`
-	Stop     string `json:"stop"`
-	Restart  string `json:"restart"`
-	Upgrade  string `json:"upgrade"`
-	Rollback string `json:"rollback"`
-	Backup   string `json:"backup"`
-	Restore  string `json:"restore"`
-	Destroy  string `json:"destroy"`
+	Start       string `json:"start"`
+	Stop        string `json:"stop"`
+	Maintenance string `json:"maintenance"`
+	Restart     string `json:"restart"`
+	Upgrade     string `json:"upgrade"`
+	Rollback    string `json:"rollback"`
+	Backup      string `json:"backup"`
+	Restore     string `json:"restore"`
+	Destroy     string `json:"destroy"`
 }
 
 type VolumeSlotRequirementV1 struct {

@@ -603,6 +603,15 @@ const (
 	CloudControlService_CreateCloudDeploymentEntryChallenge_FullMethodName   = "/dirextalk.agent.v1.CloudControlService/CreateCloudDeploymentEntryChallenge"
 	CloudControlService_ApproveCloudDeploymentEntry_FullMethodName           = "/dirextalk.agent.v1.CloudControlService/ApproveCloudDeploymentEntry"
 	CloudControlService_GetCloudEntryOperation_FullMethodName                = "/dirextalk.agent.v1.CloudControlService/GetCloudEntryOperation"
+	CloudControlService_CreateCloudManagedAcceptanceChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateCloudManagedAcceptanceChallenge"
+	CloudControlService_ApproveCloudManagedAcceptance_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/ApproveCloudManagedAcceptance"
+	CloudControlService_GetCloudManagedAcceptanceOperation_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/GetCloudManagedAcceptanceOperation"
+	CloudControlService_CreateCloudManagedPreparation_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/CreateCloudManagedPreparation"
+	CloudControlService_ApproveCloudManagedPreparation_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudManagedPreparation"
+	CloudControlService_GetCloudManagedPreparation_FullMethodName            = "/dirextalk.agent.v1.CloudControlService/GetCloudManagedPreparation"
+	CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/PrepareRootHelperKeyDeliveryApproval"
+	CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/ApproveRootHelperKeyDelivery"
+	CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetRootHelperKeyDeliveryApproval"
 )
 
 // CloudControlServiceClient is the client API for CloudControlService service.
@@ -639,6 +648,15 @@ type CloudControlServiceClient interface {
 	CreateCloudDeploymentEntryChallenge(ctx context.Context, in *CreateCloudDeploymentEntryChallengeRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentEntryChallengeResponse, error)
 	ApproveCloudDeploymentEntry(ctx context.Context, in *ApproveCloudDeploymentEntryRequest, opts ...grpc.CallOption) (*ApproveCloudDeploymentEntryResponse, error)
 	GetCloudEntryOperation(ctx context.Context, in *GetCloudEntryOperationRequest, opts ...grpc.CallOption) (*GetCloudEntryOperationResponse, error)
+	CreateCloudManagedAcceptanceChallenge(ctx context.Context, in *CreateCloudManagedAcceptanceChallengeRequest, opts ...grpc.CallOption) (*CreateCloudManagedAcceptanceChallengeResponse, error)
+	ApproveCloudManagedAcceptance(ctx context.Context, in *ApproveCloudManagedAcceptanceRequest, opts ...grpc.CallOption) (*ApproveCloudManagedAcceptanceResponse, error)
+	GetCloudManagedAcceptanceOperation(ctx context.Context, in *GetCloudManagedAcceptanceOperationRequest, opts ...grpc.CallOption) (*GetCloudManagedAcceptanceOperationResponse, error)
+	CreateCloudManagedPreparation(ctx context.Context, in *CreateCloudManagedPreparationRequest, opts ...grpc.CallOption) (*CreateCloudManagedPreparationResponse, error)
+	ApproveCloudManagedPreparation(ctx context.Context, in *ApproveCloudManagedPreparationRequest, opts ...grpc.CallOption) (*ApproveCloudManagedPreparationResponse, error)
+	GetCloudManagedPreparation(ctx context.Context, in *GetCloudManagedPreparationRequest, opts ...grpc.CallOption) (*GetCloudManagedPreparationResponse, error)
+	PrepareRootHelperKeyDeliveryApproval(ctx context.Context, in *PrepareRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*PrepareRootHelperKeyDeliveryApprovalResponse, error)
+	ApproveRootHelperKeyDelivery(ctx context.Context, in *ApproveRootHelperKeyDeliveryRequest, opts ...grpc.CallOption) (*ApproveRootHelperKeyDeliveryResponse, error)
+	GetRootHelperKeyDeliveryApproval(ctx context.Context, in *GetRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*GetRootHelperKeyDeliveryApprovalResponse, error)
 }
 
 type cloudControlServiceClient struct {
@@ -949,6 +967,96 @@ func (c *cloudControlServiceClient) GetCloudEntryOperation(ctx context.Context, 
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) CreateCloudManagedAcceptanceChallenge(ctx context.Context, in *CreateCloudManagedAcceptanceChallengeRequest, opts ...grpc.CallOption) (*CreateCloudManagedAcceptanceChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudManagedAcceptanceChallengeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudManagedAcceptanceChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveCloudManagedAcceptance(ctx context.Context, in *ApproveCloudManagedAcceptanceRequest, opts ...grpc.CallOption) (*ApproveCloudManagedAcceptanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveCloudManagedAcceptanceResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveCloudManagedAcceptance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudManagedAcceptanceOperation(ctx context.Context, in *GetCloudManagedAcceptanceOperationRequest, opts ...grpc.CallOption) (*GetCloudManagedAcceptanceOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudManagedAcceptanceOperationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudManagedAcceptanceOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateCloudManagedPreparation(ctx context.Context, in *CreateCloudManagedPreparationRequest, opts ...grpc.CallOption) (*CreateCloudManagedPreparationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudManagedPreparationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudManagedPreparation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveCloudManagedPreparation(ctx context.Context, in *ApproveCloudManagedPreparationRequest, opts ...grpc.CallOption) (*ApproveCloudManagedPreparationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveCloudManagedPreparationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveCloudManagedPreparation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudManagedPreparation(ctx context.Context, in *GetCloudManagedPreparationRequest, opts ...grpc.CallOption) (*GetCloudManagedPreparationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudManagedPreparationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudManagedPreparation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) PrepareRootHelperKeyDeliveryApproval(ctx context.Context, in *PrepareRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*PrepareRootHelperKeyDeliveryApprovalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareRootHelperKeyDeliveryApprovalResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveRootHelperKeyDelivery(ctx context.Context, in *ApproveRootHelperKeyDeliveryRequest, opts ...grpc.CallOption) (*ApproveRootHelperKeyDeliveryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveRootHelperKeyDeliveryResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetRootHelperKeyDeliveryApproval(ctx context.Context, in *GetRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*GetRootHelperKeyDeliveryApprovalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetRootHelperKeyDeliveryApprovalResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CloudControlServiceServer is the server API for CloudControlService service.
 // All implementations must embed UnimplementedCloudControlServiceServer
 // for forward compatibility.
@@ -983,6 +1091,15 @@ type CloudControlServiceServer interface {
 	CreateCloudDeploymentEntryChallenge(context.Context, *CreateCloudDeploymentEntryChallengeRequest) (*CreateCloudDeploymentEntryChallengeResponse, error)
 	ApproveCloudDeploymentEntry(context.Context, *ApproveCloudDeploymentEntryRequest) (*ApproveCloudDeploymentEntryResponse, error)
 	GetCloudEntryOperation(context.Context, *GetCloudEntryOperationRequest) (*GetCloudEntryOperationResponse, error)
+	CreateCloudManagedAcceptanceChallenge(context.Context, *CreateCloudManagedAcceptanceChallengeRequest) (*CreateCloudManagedAcceptanceChallengeResponse, error)
+	ApproveCloudManagedAcceptance(context.Context, *ApproveCloudManagedAcceptanceRequest) (*ApproveCloudManagedAcceptanceResponse, error)
+	GetCloudManagedAcceptanceOperation(context.Context, *GetCloudManagedAcceptanceOperationRequest) (*GetCloudManagedAcceptanceOperationResponse, error)
+	CreateCloudManagedPreparation(context.Context, *CreateCloudManagedPreparationRequest) (*CreateCloudManagedPreparationResponse, error)
+	ApproveCloudManagedPreparation(context.Context, *ApproveCloudManagedPreparationRequest) (*ApproveCloudManagedPreparationResponse, error)
+	GetCloudManagedPreparation(context.Context, *GetCloudManagedPreparationRequest) (*GetCloudManagedPreparationResponse, error)
+	PrepareRootHelperKeyDeliveryApproval(context.Context, *PrepareRootHelperKeyDeliveryApprovalRequest) (*PrepareRootHelperKeyDeliveryApprovalResponse, error)
+	ApproveRootHelperKeyDelivery(context.Context, *ApproveRootHelperKeyDeliveryRequest) (*ApproveRootHelperKeyDeliveryResponse, error)
+	GetRootHelperKeyDeliveryApproval(context.Context, *GetRootHelperKeyDeliveryApprovalRequest) (*GetRootHelperKeyDeliveryApprovalResponse, error)
 	mustEmbedUnimplementedCloudControlServiceServer()
 }
 
@@ -1082,6 +1199,33 @@ func (UnimplementedCloudControlServiceServer) ApproveCloudDeploymentEntry(contex
 }
 func (UnimplementedCloudControlServiceServer) GetCloudEntryOperation(context.Context, *GetCloudEntryOperationRequest) (*GetCloudEntryOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudEntryOperation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudManagedAcceptanceChallenge(context.Context, *CreateCloudManagedAcceptanceChallengeRequest) (*CreateCloudManagedAcceptanceChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudManagedAcceptanceChallenge not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveCloudManagedAcceptance(context.Context, *ApproveCloudManagedAcceptanceRequest) (*ApproveCloudManagedAcceptanceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveCloudManagedAcceptance not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudManagedAcceptanceOperation(context.Context, *GetCloudManagedAcceptanceOperationRequest) (*GetCloudManagedAcceptanceOperationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudManagedAcceptanceOperation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudManagedPreparation(context.Context, *CreateCloudManagedPreparationRequest) (*CreateCloudManagedPreparationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudManagedPreparation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveCloudManagedPreparation(context.Context, *ApproveCloudManagedPreparationRequest) (*ApproveCloudManagedPreparationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveCloudManagedPreparation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudManagedPreparation(context.Context, *GetCloudManagedPreparationRequest) (*GetCloudManagedPreparationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudManagedPreparation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) PrepareRootHelperKeyDeliveryApproval(context.Context, *PrepareRootHelperKeyDeliveryApprovalRequest) (*PrepareRootHelperKeyDeliveryApprovalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareRootHelperKeyDeliveryApproval not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveRootHelperKeyDelivery(context.Context, *ApproveRootHelperKeyDeliveryRequest) (*ApproveRootHelperKeyDeliveryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveRootHelperKeyDelivery not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetRootHelperKeyDeliveryApproval(context.Context, *GetRootHelperKeyDeliveryApprovalRequest) (*GetRootHelperKeyDeliveryApprovalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRootHelperKeyDeliveryApproval not implemented")
 }
 func (UnimplementedCloudControlServiceServer) mustEmbedUnimplementedCloudControlServiceServer() {}
 func (UnimplementedCloudControlServiceServer) testEmbeddedByValue()                             {}
@@ -1644,6 +1788,168 @@ func _CloudControlService_GetCloudEntryOperation_Handler(srv interface{}, ctx co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_CreateCloudManagedAcceptanceChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudManagedAcceptanceChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudManagedAcceptanceChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudManagedAcceptanceChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudManagedAcceptanceChallenge(ctx, req.(*CreateCloudManagedAcceptanceChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveCloudManagedAcceptance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveCloudManagedAcceptanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveCloudManagedAcceptance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveCloudManagedAcceptance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveCloudManagedAcceptance(ctx, req.(*ApproveCloudManagedAcceptanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudManagedAcceptanceOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudManagedAcceptanceOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudManagedAcceptanceOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudManagedAcceptanceOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudManagedAcceptanceOperation(ctx, req.(*GetCloudManagedAcceptanceOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateCloudManagedPreparation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudManagedPreparationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudManagedPreparation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudManagedPreparation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudManagedPreparation(ctx, req.(*CreateCloudManagedPreparationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveCloudManagedPreparation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveCloudManagedPreparationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveCloudManagedPreparation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveCloudManagedPreparation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveCloudManagedPreparation(ctx, req.(*ApproveCloudManagedPreparationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudManagedPreparation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudManagedPreparationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudManagedPreparation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudManagedPreparation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudManagedPreparation(ctx, req.(*GetCloudManagedPreparationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_PrepareRootHelperKeyDeliveryApproval_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareRootHelperKeyDeliveryApprovalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).PrepareRootHelperKeyDeliveryApproval(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).PrepareRootHelperKeyDeliveryApproval(ctx, req.(*PrepareRootHelperKeyDeliveryApprovalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveRootHelperKeyDelivery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveRootHelperKeyDeliveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveRootHelperKeyDelivery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveRootHelperKeyDelivery(ctx, req.(*ApproveRootHelperKeyDeliveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetRootHelperKeyDeliveryApproval_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRootHelperKeyDeliveryApprovalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetRootHelperKeyDeliveryApproval(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetRootHelperKeyDeliveryApproval(ctx, req.(*GetRootHelperKeyDeliveryApprovalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CloudControlService_ServiceDesc is the grpc.ServiceDesc for CloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1770,6 +2076,42 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCloudEntryOperation",
 			Handler:    _CloudControlService_GetCloudEntryOperation_Handler,
+		},
+		{
+			MethodName: "CreateCloudManagedAcceptanceChallenge",
+			Handler:    _CloudControlService_CreateCloudManagedAcceptanceChallenge_Handler,
+		},
+		{
+			MethodName: "ApproveCloudManagedAcceptance",
+			Handler:    _CloudControlService_ApproveCloudManagedAcceptance_Handler,
+		},
+		{
+			MethodName: "GetCloudManagedAcceptanceOperation",
+			Handler:    _CloudControlService_GetCloudManagedAcceptanceOperation_Handler,
+		},
+		{
+			MethodName: "CreateCloudManagedPreparation",
+			Handler:    _CloudControlService_CreateCloudManagedPreparation_Handler,
+		},
+		{
+			MethodName: "ApproveCloudManagedPreparation",
+			Handler:    _CloudControlService_ApproveCloudManagedPreparation_Handler,
+		},
+		{
+			MethodName: "GetCloudManagedPreparation",
+			Handler:    _CloudControlService_GetCloudManagedPreparation_Handler,
+		},
+		{
+			MethodName: "PrepareRootHelperKeyDeliveryApproval",
+			Handler:    _CloudControlService_PrepareRootHelperKeyDeliveryApproval_Handler,
+		},
+		{
+			MethodName: "ApproveRootHelperKeyDelivery",
+			Handler:    _CloudControlService_ApproveRootHelperKeyDelivery_Handler,
+		},
+		{
+			MethodName: "GetRootHelperKeyDeliveryApproval",
+			Handler:    _CloudControlService_GetRootHelperKeyDeliveryApproval_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -2595,6 +2937,478 @@ var WorkerControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Complete",
 			Handler:    _WorkerControlService_Complete_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "dirextalk/agent/v1/agent.proto",
+}
+
+const (
+	WorkerServiceOperationService_Get_FullMethodName         = "/dirextalk.agent.v1.WorkerServiceOperationService/Get"
+	WorkerServiceOperationService_Claim_FullMethodName       = "/dirextalk.agent.v1.WorkerServiceOperationService/Claim"
+	WorkerServiceOperationService_AcquireNext_FullMethodName = "/dirextalk.agent.v1.WorkerServiceOperationService/AcquireNext"
+	WorkerServiceOperationService_Complete_FullMethodName    = "/dirextalk.agent.v1.WorkerServiceOperationService/Complete"
+)
+
+// WorkerServiceOperationServiceClient is the client API for WorkerServiceOperationService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type WorkerServiceOperationServiceClient interface {
+	Get(ctx context.Context, in *WorkerServiceOperationServiceGetRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceGetResponse, error)
+	Claim(ctx context.Context, in *WorkerServiceOperationServiceClaimRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceClaimResponse, error)
+	AcquireNext(ctx context.Context, in *WorkerServiceOperationServiceAcquireNextRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceAcquireNextResponse, error)
+	Complete(ctx context.Context, in *WorkerServiceOperationServiceCompleteRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceCompleteResponse, error)
+}
+
+type workerServiceOperationServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewWorkerServiceOperationServiceClient(cc grpc.ClientConnInterface) WorkerServiceOperationServiceClient {
+	return &workerServiceOperationServiceClient{cc}
+}
+
+func (c *workerServiceOperationServiceClient) Get(ctx context.Context, in *WorkerServiceOperationServiceGetRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerServiceOperationServiceGetResponse)
+	err := c.cc.Invoke(ctx, WorkerServiceOperationService_Get_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceOperationServiceClient) Claim(ctx context.Context, in *WorkerServiceOperationServiceClaimRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceClaimResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerServiceOperationServiceClaimResponse)
+	err := c.cc.Invoke(ctx, WorkerServiceOperationService_Claim_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceOperationServiceClient) AcquireNext(ctx context.Context, in *WorkerServiceOperationServiceAcquireNextRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceAcquireNextResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerServiceOperationServiceAcquireNextResponse)
+	err := c.cc.Invoke(ctx, WorkerServiceOperationService_AcquireNext_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *workerServiceOperationServiceClient) Complete(ctx context.Context, in *WorkerServiceOperationServiceCompleteRequest, opts ...grpc.CallOption) (*WorkerServiceOperationServiceCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerServiceOperationServiceCompleteResponse)
+	err := c.cc.Invoke(ctx, WorkerServiceOperationService_Complete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// WorkerServiceOperationServiceServer is the server API for WorkerServiceOperationService service.
+// All implementations must embed UnimplementedWorkerServiceOperationServiceServer
+// for forward compatibility.
+type WorkerServiceOperationServiceServer interface {
+	Get(context.Context, *WorkerServiceOperationServiceGetRequest) (*WorkerServiceOperationServiceGetResponse, error)
+	Claim(context.Context, *WorkerServiceOperationServiceClaimRequest) (*WorkerServiceOperationServiceClaimResponse, error)
+	AcquireNext(context.Context, *WorkerServiceOperationServiceAcquireNextRequest) (*WorkerServiceOperationServiceAcquireNextResponse, error)
+	Complete(context.Context, *WorkerServiceOperationServiceCompleteRequest) (*WorkerServiceOperationServiceCompleteResponse, error)
+	mustEmbedUnimplementedWorkerServiceOperationServiceServer()
+}
+
+// UnimplementedWorkerServiceOperationServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedWorkerServiceOperationServiceServer struct{}
+
+func (UnimplementedWorkerServiceOperationServiceServer) Get(context.Context, *WorkerServiceOperationServiceGetRequest) (*WorkerServiceOperationServiceGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Get not implemented")
+}
+func (UnimplementedWorkerServiceOperationServiceServer) Claim(context.Context, *WorkerServiceOperationServiceClaimRequest) (*WorkerServiceOperationServiceClaimResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Claim not implemented")
+}
+func (UnimplementedWorkerServiceOperationServiceServer) AcquireNext(context.Context, *WorkerServiceOperationServiceAcquireNextRequest) (*WorkerServiceOperationServiceAcquireNextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AcquireNext not implemented")
+}
+func (UnimplementedWorkerServiceOperationServiceServer) Complete(context.Context, *WorkerServiceOperationServiceCompleteRequest) (*WorkerServiceOperationServiceCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Complete not implemented")
+}
+func (UnimplementedWorkerServiceOperationServiceServer) mustEmbedUnimplementedWorkerServiceOperationServiceServer() {
+}
+func (UnimplementedWorkerServiceOperationServiceServer) testEmbeddedByValue() {}
+
+// UnsafeWorkerServiceOperationServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to WorkerServiceOperationServiceServer will
+// result in compilation errors.
+type UnsafeWorkerServiceOperationServiceServer interface {
+	mustEmbedUnimplementedWorkerServiceOperationServiceServer()
+}
+
+func RegisterWorkerServiceOperationServiceServer(s grpc.ServiceRegistrar, srv WorkerServiceOperationServiceServer) {
+	// If the following call panics, it indicates UnimplementedWorkerServiceOperationServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&WorkerServiceOperationService_ServiceDesc, srv)
+}
+
+func _WorkerServiceOperationService_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerServiceOperationServiceGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceOperationServiceServer).Get(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerServiceOperationService_Get_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceOperationServiceServer).Get(ctx, req.(*WorkerServiceOperationServiceGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerServiceOperationService_Claim_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerServiceOperationServiceClaimRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceOperationServiceServer).Claim(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerServiceOperationService_Claim_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceOperationServiceServer).Claim(ctx, req.(*WorkerServiceOperationServiceClaimRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerServiceOperationService_AcquireNext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerServiceOperationServiceAcquireNextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceOperationServiceServer).AcquireNext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerServiceOperationService_AcquireNext_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceOperationServiceServer).AcquireNext(ctx, req.(*WorkerServiceOperationServiceAcquireNextRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WorkerServiceOperationService_Complete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerServiceOperationServiceCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceOperationServiceServer).Complete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerServiceOperationService_Complete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceOperationServiceServer).Complete(ctx, req.(*WorkerServiceOperationServiceCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// WorkerServiceOperationService_ServiceDesc is the grpc.ServiceDesc for WorkerServiceOperationService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var WorkerServiceOperationService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "dirextalk.agent.v1.WorkerServiceOperationService",
+	HandlerType: (*WorkerServiceOperationServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Get",
+			Handler:    _WorkerServiceOperationService_Get_Handler,
+		},
+		{
+			MethodName: "Claim",
+			Handler:    _WorkerServiceOperationService_Claim_Handler,
+		},
+		{
+			MethodName: "AcquireNext",
+			Handler:    _WorkerServiceOperationService_AcquireNext_Handler,
+		},
+		{
+			MethodName: "Complete",
+			Handler:    _WorkerServiceOperationService_Complete_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "dirextalk/agent/v1/agent.proto",
+}
+
+const (
+	RootHelperBootstrapControlService_AcquirePending_FullMethodName      = "/dirextalk.agent.v1.RootHelperBootstrapControlService/AcquirePending"
+	RootHelperBootstrapControlService_Current_FullMethodName             = "/dirextalk.agent.v1.RootHelperBootstrapControlService/Current"
+	RootHelperBootstrapControlService_SubmitProof_FullMethodName         = "/dirextalk.agent.v1.RootHelperBootstrapControlService/SubmitProof"
+	RootHelperBootstrapControlService_ReconcileRevocation_FullMethodName = "/dirextalk.agent.v1.RootHelperBootstrapControlService/ReconcileRevocation"
+	RootHelperBootstrapControlService_ConfirmCanary_FullMethodName       = "/dirextalk.agent.v1.RootHelperBootstrapControlService/ConfirmCanary"
+)
+
+// RootHelperBootstrapControlServiceClient is the client API for RootHelperBootstrapControlService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type RootHelperBootstrapControlServiceClient interface {
+	AcquirePending(ctx context.Context, in *RootHelperBootstrapControlServiceAcquirePendingRequest, opts ...grpc.CallOption) (*RootHelperBootstrapControlServiceAcquirePendingResponse, error)
+	Current(ctx context.Context, in *RootHelperBootstrapControlServiceCurrentRequest, opts ...grpc.CallOption) (*RootHelperBootstrapControlServiceCurrentResponse, error)
+	SubmitProof(ctx context.Context, in *SubmitProofRequest, opts ...grpc.CallOption) (*SubmitProofResponse, error)
+	ReconcileRevocation(ctx context.Context, in *ReconcileRevocationRequest, opts ...grpc.CallOption) (*ReconcileRevocationResponse, error)
+	ConfirmCanary(ctx context.Context, in *ConfirmCanaryRequest, opts ...grpc.CallOption) (*ConfirmCanaryResponse, error)
+}
+
+type rootHelperBootstrapControlServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewRootHelperBootstrapControlServiceClient(cc grpc.ClientConnInterface) RootHelperBootstrapControlServiceClient {
+	return &rootHelperBootstrapControlServiceClient{cc}
+}
+
+func (c *rootHelperBootstrapControlServiceClient) AcquirePending(ctx context.Context, in *RootHelperBootstrapControlServiceAcquirePendingRequest, opts ...grpc.CallOption) (*RootHelperBootstrapControlServiceAcquirePendingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RootHelperBootstrapControlServiceAcquirePendingResponse)
+	err := c.cc.Invoke(ctx, RootHelperBootstrapControlService_AcquirePending_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootHelperBootstrapControlServiceClient) Current(ctx context.Context, in *RootHelperBootstrapControlServiceCurrentRequest, opts ...grpc.CallOption) (*RootHelperBootstrapControlServiceCurrentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RootHelperBootstrapControlServiceCurrentResponse)
+	err := c.cc.Invoke(ctx, RootHelperBootstrapControlService_Current_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootHelperBootstrapControlServiceClient) SubmitProof(ctx context.Context, in *SubmitProofRequest, opts ...grpc.CallOption) (*SubmitProofResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubmitProofResponse)
+	err := c.cc.Invoke(ctx, RootHelperBootstrapControlService_SubmitProof_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootHelperBootstrapControlServiceClient) ReconcileRevocation(ctx context.Context, in *ReconcileRevocationRequest, opts ...grpc.CallOption) (*ReconcileRevocationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReconcileRevocationResponse)
+	err := c.cc.Invoke(ctx, RootHelperBootstrapControlService_ReconcileRevocation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *rootHelperBootstrapControlServiceClient) ConfirmCanary(ctx context.Context, in *ConfirmCanaryRequest, opts ...grpc.CallOption) (*ConfirmCanaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfirmCanaryResponse)
+	err := c.cc.Invoke(ctx, RootHelperBootstrapControlService_ConfirmCanary_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RootHelperBootstrapControlServiceServer is the server API for RootHelperBootstrapControlService service.
+// All implementations must embed UnimplementedRootHelperBootstrapControlServiceServer
+// for forward compatibility.
+type RootHelperBootstrapControlServiceServer interface {
+	AcquirePending(context.Context, *RootHelperBootstrapControlServiceAcquirePendingRequest) (*RootHelperBootstrapControlServiceAcquirePendingResponse, error)
+	Current(context.Context, *RootHelperBootstrapControlServiceCurrentRequest) (*RootHelperBootstrapControlServiceCurrentResponse, error)
+	SubmitProof(context.Context, *SubmitProofRequest) (*SubmitProofResponse, error)
+	ReconcileRevocation(context.Context, *ReconcileRevocationRequest) (*ReconcileRevocationResponse, error)
+	ConfirmCanary(context.Context, *ConfirmCanaryRequest) (*ConfirmCanaryResponse, error)
+	mustEmbedUnimplementedRootHelperBootstrapControlServiceServer()
+}
+
+// UnimplementedRootHelperBootstrapControlServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedRootHelperBootstrapControlServiceServer struct{}
+
+func (UnimplementedRootHelperBootstrapControlServiceServer) AcquirePending(context.Context, *RootHelperBootstrapControlServiceAcquirePendingRequest) (*RootHelperBootstrapControlServiceAcquirePendingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AcquirePending not implemented")
+}
+func (UnimplementedRootHelperBootstrapControlServiceServer) Current(context.Context, *RootHelperBootstrapControlServiceCurrentRequest) (*RootHelperBootstrapControlServiceCurrentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Current not implemented")
+}
+func (UnimplementedRootHelperBootstrapControlServiceServer) SubmitProof(context.Context, *SubmitProofRequest) (*SubmitProofResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SubmitProof not implemented")
+}
+func (UnimplementedRootHelperBootstrapControlServiceServer) ReconcileRevocation(context.Context, *ReconcileRevocationRequest) (*ReconcileRevocationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReconcileRevocation not implemented")
+}
+func (UnimplementedRootHelperBootstrapControlServiceServer) ConfirmCanary(context.Context, *ConfirmCanaryRequest) (*ConfirmCanaryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfirmCanary not implemented")
+}
+func (UnimplementedRootHelperBootstrapControlServiceServer) mustEmbedUnimplementedRootHelperBootstrapControlServiceServer() {
+}
+func (UnimplementedRootHelperBootstrapControlServiceServer) testEmbeddedByValue() {}
+
+// UnsafeRootHelperBootstrapControlServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to RootHelperBootstrapControlServiceServer will
+// result in compilation errors.
+type UnsafeRootHelperBootstrapControlServiceServer interface {
+	mustEmbedUnimplementedRootHelperBootstrapControlServiceServer()
+}
+
+func RegisterRootHelperBootstrapControlServiceServer(s grpc.ServiceRegistrar, srv RootHelperBootstrapControlServiceServer) {
+	// If the following call panics, it indicates UnimplementedRootHelperBootstrapControlServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&RootHelperBootstrapControlService_ServiceDesc, srv)
+}
+
+func _RootHelperBootstrapControlService_AcquirePending_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RootHelperBootstrapControlServiceAcquirePendingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootHelperBootstrapControlServiceServer).AcquirePending(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RootHelperBootstrapControlService_AcquirePending_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootHelperBootstrapControlServiceServer).AcquirePending(ctx, req.(*RootHelperBootstrapControlServiceAcquirePendingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootHelperBootstrapControlService_Current_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RootHelperBootstrapControlServiceCurrentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootHelperBootstrapControlServiceServer).Current(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RootHelperBootstrapControlService_Current_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootHelperBootstrapControlServiceServer).Current(ctx, req.(*RootHelperBootstrapControlServiceCurrentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootHelperBootstrapControlService_SubmitProof_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubmitProofRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootHelperBootstrapControlServiceServer).SubmitProof(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RootHelperBootstrapControlService_SubmitProof_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootHelperBootstrapControlServiceServer).SubmitProof(ctx, req.(*SubmitProofRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootHelperBootstrapControlService_ReconcileRevocation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReconcileRevocationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootHelperBootstrapControlServiceServer).ReconcileRevocation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RootHelperBootstrapControlService_ReconcileRevocation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootHelperBootstrapControlServiceServer).ReconcileRevocation(ctx, req.(*ReconcileRevocationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RootHelperBootstrapControlService_ConfirmCanary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmCanaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RootHelperBootstrapControlServiceServer).ConfirmCanary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RootHelperBootstrapControlService_ConfirmCanary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RootHelperBootstrapControlServiceServer).ConfirmCanary(ctx, req.(*ConfirmCanaryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// RootHelperBootstrapControlService_ServiceDesc is the grpc.ServiceDesc for RootHelperBootstrapControlService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var RootHelperBootstrapControlService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "dirextalk.agent.v1.RootHelperBootstrapControlService",
+	HandlerType: (*RootHelperBootstrapControlServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "AcquirePending",
+			Handler:    _RootHelperBootstrapControlService_AcquirePending_Handler,
+		},
+		{
+			MethodName: "Current",
+			Handler:    _RootHelperBootstrapControlService_Current_Handler,
+		},
+		{
+			MethodName: "SubmitProof",
+			Handler:    _RootHelperBootstrapControlService_SubmitProof_Handler,
+		},
+		{
+			MethodName: "ReconcileRevocation",
+			Handler:    _RootHelperBootstrapControlService_ReconcileRevocation_Handler,
+		},
+		{
+			MethodName: "ConfirmCanary",
+			Handler:    _RootHelperBootstrapControlService_ConfirmCanary_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

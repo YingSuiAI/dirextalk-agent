@@ -37,7 +37,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("BindExactInstallerArtifactVersions"), []byte("s3:GetObjectVersionTagging"), []byte("s3:PutObjectVersionTagging"),
 		[]byte("WorkerTypedMilestoneLogs"), []byte("${WorkerLogGroup.Arn}:log-stream:*"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
-		[]byte("AWS::IAM::ManagedPolicy"), []byte("ControlEntrypointPolicy"), []byte("acm:DescribeCertificate"),
+		[]byte("AWS::IAM::ManagedPolicy"), []byte("ControlEntrypointPolicy"), []byte("acm:DescribeCertificate"), []byte("secretsmanager:DeleteResourcePolicy"),
 		[]byte("elasticloadbalancing:CreateLoadBalancer"), []byte("elasticloadbalancing:CreateTargetGroup"), []byte("elasticloadbalancing:CreateListener"),
 		[]byte("elasticloadbalancing:DescribeTargetHealth"), []byte("elasticloadbalancing:AddTags"), []byte("elasticloadbalancing:DeleteLoadBalancer"),
 		[]byte("ec2:DescribeSecurityGroupRules"), []byte("AuthorizeTaggedIngressOnOwnedSecurityGroup"), []byte("TagIngressRuleOnCreate"),

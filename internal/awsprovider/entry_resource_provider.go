@@ -51,7 +51,18 @@ func (provider *EC2ResourceProvider) validDependencyProviderID(kind resource.Typ
 			return false
 		}
 	default:
-		return providerDependencyIDPattern.MatchString(dependency.ProviderID)
+		switch dependency.Type {
+		case resource.TypeSG:
+			return validEntryEC2ID(dependency.ProviderID, "sg-")
+		case resource.TypeENI:
+			return validEntryEC2ID(dependency.ProviderID, "eni-")
+		case resource.TypeEBS:
+			return validEntryEC2ID(dependency.ProviderID, "vol-")
+		case resource.TypeSnapshot:
+			return validEntryEC2ID(dependency.ProviderID, "snap-")
+		default:
+			return false
+		}
 	}
 }
 

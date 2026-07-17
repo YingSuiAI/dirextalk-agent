@@ -174,6 +174,58 @@ func TestAWSPrivateEndpointAndSnapshotSpecsBindDependenciesAndRetention(t *testi
 	}
 }
 
+func TestAWSReplacementVolumeBindsExactlyOneSnapshotResource(t *testing.T) {
+	t.Parallel()
+	const snapshotResourceID = "33333333-3333-4333-8333-333333333333"
+	spec := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Volume: &AWSEBSVolumeSpecV1{
+		AvailabilityZone: "us-east-1a", SizeGiB: 80, VolumeType: "gp3", IOPS: 3_000, ThroughputMiBPS: 125,
+		KMSKeyID: "alias/dtx-agent-test-foundation", SourceSnapshotResourceID: snapshotResourceID,
+	}}
+	dependency := ProviderDependency{ResourceID: snapshotResourceID, Type: TypeSnapshot, ProviderID: "snap-0123456789abcdef0"}
+	if err := spec.Validate(TypeEBS); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAWSDependencies(TypeEBS, []ProviderDependency{dependency}, spec); err != nil {
+		t.Fatal(err)
+	}
+	changed := spec.Clone()
+	changed.Volume.SourceSnapshotResourceID = "44444444-4444-4444-8444-444444444444"
+	left, err := spec.Digest(TypeEBS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := changed.Digest(TypeEBS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left == right {
+		t.Fatal("source snapshot resource identity did not change the canonical volume digest")
+	}
+	for name, dependencies := range map[string][]ProviderDependency{
+		"missing": nil,
+		"wrong resource": {{
+			ResourceID: "44444444-4444-4444-8444-444444444444", Type: TypeSnapshot, ProviderID: dependency.ProviderID,
+		}},
+		"wrong type": {{
+			ResourceID: snapshotResourceID, Type: TypeEBS, ProviderID: "vol-0123456789abcdef0",
+		}},
+		"additional": {dependency, {
+			ResourceID: "55555555-5555-4555-8555-555555555555", Type: TypeSnapshot, ProviderID: "snap-0fedcba9876543210",
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateAWSDependencies(TypeEBS, dependencies, spec); err == nil {
+				t.Fatal("invalid replacement-volume snapshot topology unexpectedly validated")
+			}
+		})
+	}
+	fresh := spec.Clone()
+	fresh.Volume.SourceSnapshotResourceID = ""
+	if err := ValidateAWSDependencies(TypeEBS, nil, fresh); err != nil {
+		t.Fatalf("fresh volume without a snapshot dependency rejected: %v", err)
+	}
+}
+
 func workerInstanceSpec() *AWSResourceSpecV1 {
 	return &AWSResourceSpecV1{
 		SchemaVersion: AWSResourceSpecSchemaV1,

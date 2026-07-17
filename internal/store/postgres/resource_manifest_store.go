@@ -48,12 +48,24 @@ type TrackedResourceManifestMirror struct {
 }
 
 var _ resource.ManifestMirror = (*TrackedResourceManifestMirror)(nil)
+var _ resource.ManifestReadBack = (*TrackedResourceManifestMirror)(nil)
 
 func NewTrackedResourceManifestMirror(store *ResourceStore, remote resource.ManifestMirror) (*TrackedResourceManifestMirror, error) {
 	if store == nil || remote == nil {
 		return nil, resource.ErrInvalid
 	}
+	if _, ok := remote.(resource.ManifestReadBack); !ok {
+		return nil, resource.ErrInvalid
+	}
 	return &TrackedResourceManifestMirror{store: store, remote: remote}, nil
+}
+
+func (mirror *TrackedResourceManifestMirror) Get(ctx context.Context, deploymentID string) (resource.Manifest, error) {
+	reader, ok := mirror.remote.(resource.ManifestReadBack)
+	if mirror == nil || !ok {
+		return resource.Manifest{}, resource.ErrInvalid
+	}
+	return reader.Get(ctx, deploymentID)
 }
 
 func (mirror *TrackedResourceManifestMirror) Put(ctx context.Context, manifest resource.Manifest) error {

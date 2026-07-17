@@ -206,6 +206,14 @@ func TestBootstrapPreparesSignedVolumeBeforeTrustAndSocket(t *testing.T) {
 	if volumes.calls != 1 || fixture.materializer.calls != 1 || !fixture.socket.enabled {
 		t.Fatalf("volume/trust/socket sequence was incomplete: volumes=%d trust=%d socket=%#v", volumes.calls, fixture.materializer.calls, fixture.socket)
 	}
+	trust, err := DecodeTrustFile(fixture.materializer.content)
+	if err != nil || len(trust.InstalledState.Volumes) != 1 || trust.InstalledState.Volumes[0].VolumeID != fixture.userData.InstallerVolumes[0].VolumeID {
+		t.Fatalf("committed installed volume evidence = %#v err=%v", trust.InstalledState, err)
+	}
+	trust.InstalledState.Volumes[0].SizeBytes++
+	if _, err := EncodeTrustFile(trust); !errors.Is(err, ErrTrustMismatch) {
+		t.Fatalf("drifted installed evidence error = %v", err)
+	}
 
 	failure := newBootstrapFixture(t, 'a', volume)
 	failingVolumes := &recordingVolumeMaterializer{socket: failure.socket, err: errors.New("unknown filesystem")}
@@ -457,12 +465,24 @@ type recordingVolumeMaterializer struct {
 	err    error
 }
 
-func (materializer *recordingVolumeMaterializer) Prepare(_ context.Context, _ []VolumeMountV1) error {
+func (materializer *recordingVolumeMaterializer) Prepare(_ context.Context, volumes []VolumeMountV1) ([]InstalledVolumeEvidenceV1, error) {
 	materializer.calls++
 	if materializer.socket == nil || !materializer.socket.disabled || materializer.socket.enabled {
-		return errors.New("volume preparation ran outside disabled socket boundary")
+		return nil, errors.New("volume preparation ran outside disabled socket boundary")
 	}
-	return materializer.err
+	if materializer.err != nil {
+		return nil, materializer.err
+	}
+	result := make([]InstalledVolumeEvidenceV1, 0, len(volumes))
+	for _, volume := range volumes {
+		result = append(result, InstalledVolumeEvidenceV1{
+			Name: volume.Approved.Name, ResourceID: volume.Source.ResourceID, VolumeID: volume.Source.VolumeID,
+			AttachmentDevice: volume.Approved.DeviceName, ResolvedDevicePath: "/dev/nvme1n1",
+			SizeBytes: uint64(volume.Approved.SizeGiB) << 30, FileSystem: "ext4",
+			FileSystemUUID: "11111111-2222-4333-8444-555555555555", MountPath: volume.Approved.MountPath, ReadOnly: volume.Approved.ReadOnly,
+		})
+	}
+	return result, nil
 }
 
 func (socket *fakeSocket) Disable(context.Context) error {

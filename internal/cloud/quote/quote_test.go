@@ -292,7 +292,7 @@ func quoteRecipe(t *testing.T) recipe.RecipeV1 {
 		Requirements: recipe.ResourceRequirementsV1{MinVCPU: 2, MinMemoryMiB: 4096, MinDiskGiB: 40, Architecture: recipe.ArchitectureAMD64},
 		Install:      recipe.InstallContractV1{RootRequired: true, TimeoutSeconds: 1800, CheckpointNames: []string{"installed", "verified"}, Steps: []recipe.InstallStepV1{{ID: "install", Summary: "Install digest-pinned service", TimeoutSeconds: 1200, Action: "artifact.install", Checkpoint: "installed", Inputs: []recipe.ActionInputV1{{Name: "artifact", Kind: recipe.ActionInputSource, Ref: "primary"}}}, {ID: "verify", Summary: "Verify service", TimeoutSeconds: 300, Action: "service.verify", Checkpoint: "verified"}}},
 		Health:       recipe.HealthContractV1{Liveness: recipe.ProbeV1{Kind: recipe.ProbeHTTP, Target: "/health/live"}, Readiness: recipe.ProbeV1{Kind: recipe.ProbeHTTP, Target: "/health/ready"}, Semantic: recipe.ProbeV1{Kind: recipe.ProbeAction, Target: "semantic_check"}},
-		Lifecycle:    recipe.LifecycleContractV1{Start: "start", Stop: "stop", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy"},
+		Lifecycle:    recipe.LifecycleContractV1{Start: "start", Stop: "stop", Maintenance: "maintenance", Restart: "restart", Upgrade: "upgrade", Rollback: "rollback", Backup: "backup", Restore: "restore", Destroy: "destroy"},
 		Network:      &recipe.NetworkContractV1{DefaultDeny: true, PublicIngress: recipe.PublicIngressV1{Mode: recipe.PublicIngressNone}},
 		Restart:      &recipe.RestartContractV1{Mode: recipe.RestartOnFailure, Action: "restart", MaxAttempts: 3, RecoveryCheckpoints: []string{"installed", "verified"}},
 	}

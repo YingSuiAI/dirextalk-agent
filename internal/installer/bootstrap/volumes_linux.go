@@ -35,6 +35,14 @@ func NewLinuxVolumeMaterializer() VolumeMaterializer {
 	return materializer
 }
 
+func NewLinuxVolumeStateReader() VolumeStateReader {
+	reader, err := NewVolumeStateReader(linuxVolumeHost{})
+	if err != nil {
+		return unavailableVolumeStateReader{}
+	}
+	return reader
+}
+
 type lsblkDocument struct {
 	Devices []struct {
 		Path        string      `json:"path"`

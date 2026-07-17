@@ -45,3 +45,37 @@ func (store *Store) ResolveRecipe(ctx context.Context, ownerID, recipeID, digest
 	}
 	return value, nil
 }
+
+// ResolveRecipeDraft returns the exact persisted Recipe revision selected by
+// an approved Plan. Managed preparation signs this revision together with the
+// Recipe digest so a later draft cannot be substituted during execution.
+func (store *Store) ResolveRecipeDraft(ctx context.Context, ownerID, recipeID, digest string) (planning.RecipeDraft, error) {
+	if store == nil || ctx == nil || strings.TrimSpace(ownerID) == "" || strings.TrimSpace(recipeID) == "" {
+		return planning.RecipeDraft{}, planning.ErrInvalid
+	}
+	var value planning.RecipeDraft
+	var encoded []byte
+	err := store.pool.QueryRow(ctx, `
+		SELECT recipe_json, digest, revision, created_at, updated_at
+		FROM planning_recipe_drafts
+		WHERE owner_id=$1 AND recipe_id=$2 AND digest=$3
+		ORDER BY updated_at DESC, recipe_row_id DESC
+		LIMIT 1`, strings.TrimSpace(ownerID), strings.TrimSpace(recipeID), strings.TrimSpace(digest)).
+		Scan(&encoded, &value.Digest, &value.Revision, &value.CreatedAt, &value.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return planning.RecipeDraft{}, planning.ErrNotFound
+	}
+	if err != nil {
+		return planning.RecipeDraft{}, planning.ErrPersistence
+	}
+	if err := json.Unmarshal(encoded, &value.Recipe); err != nil || value.Recipe.Validate() != nil ||
+		value.Recipe.RecipeID != strings.TrimSpace(recipeID) || value.Revision < 1 {
+		return planning.RecipeDraft{}, planning.ErrPersistence
+	}
+	value.RecipeID = value.Recipe.RecipeID
+	computed, err := value.Recipe.Digest()
+	if err != nil || computed != value.Digest || computed != strings.TrimSpace(digest) {
+		return planning.RecipeDraft{}, planning.ErrPersistence
+	}
+	return value, nil
+}

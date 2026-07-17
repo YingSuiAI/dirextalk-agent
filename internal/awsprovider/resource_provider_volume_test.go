@@ -56,12 +56,18 @@ func TestWorkerUserDataBindsProviderEBSIDToSignedVolumeScope(t *testing.T) {
 
 func TestEBSCreateRetriesSameClientTokenAfterResponseLossWithoutDuplicate(t *testing.T) {
 	now := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
-	client := &volumeLifecycleFake{loseFirstCreateResponse: true}
+	client := &volumeLifecycleFake{
+		loseFirstCreateResponse: true,
+		snapshot: ec2types.Snapshot{
+			SnapshotId: aws.String("snap-0123456789abcdef0"), State: ec2types.SnapshotStateCompleted,
+			Encrypted: aws.Bool(true), KmsKeyId: aws.String(testVolumeKMSKeyARN), VolumeSize: aws.Int32(80),
+		},
+	}
 	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := volumeCreateRequest(t)
+	request := replacementVolumeCreateRequest(t)
 	if _, err := provider.Create(context.Background(), request); err == nil {
 		t.Fatal("simulated response loss was not reported")
 	}
@@ -71,6 +77,64 @@ func TestEBSCreateRetriesSameClientTokenAfterResponseLossWithoutDuplicate(t *tes
 	}
 	if !observed.Exists || observed.ProviderID != client.volumeID || client.actualCreates != 1 || client.createCalls != 2 {
 		t.Fatalf("response-loss recovery duplicated EBS: observed=%+v actualCreates=%d calls=%d", observed, client.actualCreates, client.createCalls)
+	}
+	if client.createInput == nil || aws.ToString(client.createInput.SnapshotId) != client.snapshotID() {
+		t.Fatalf("replacement volume did not bind the exact completed snapshot: %#v", client.createInput)
+	}
+}
+
+func TestEBSReplacementRejectsInvalidSourceSnapshotBeforeCreate(t *testing.T) {
+	request := replacementVolumeCreateRequest(t)
+	wrongProviderID := request
+	wrongProviderID.Dependencies = append([]resource.ProviderDependency(nil), request.Dependencies...)
+	wrongProviderID.Dependencies[0].ProviderID = "vol-0123456789abcdef0"
+	wrongProviderClient := &volumeLifecycleFake{}
+	wrongProvider, err := NewEC2ResourceProvider(wrongProviderClient, request.Region, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrongProvider.Create(context.Background(), wrongProviderID); !errors.Is(err, resource.ErrInvalid) {
+		t.Fatalf("wrong typed snapshot provider ID error = %v", err)
+	}
+	if wrongProviderClient.createCalls != 0 {
+		t.Fatal("wrong typed snapshot provider ID reached CreateVolume")
+	}
+
+	tests := []struct {
+		name     string
+		snapshot ec2types.Snapshot
+	}{
+		{name: "pending", snapshot: ec2types.Snapshot{
+			SnapshotId: aws.String("snap-0123456789abcdef0"), State: ec2types.SnapshotStatePending,
+			Encrypted: aws.Bool(true), KmsKeyId: aws.String(testVolumeKMSKeyARN), VolumeSize: aws.Int32(80),
+		}},
+		{name: "unencrypted", snapshot: ec2types.Snapshot{
+			SnapshotId: aws.String("snap-0123456789abcdef0"), State: ec2types.SnapshotStateCompleted,
+			Encrypted: aws.Bool(false), KmsKeyId: aws.String(testVolumeKMSKeyARN), VolumeSize: aws.Int32(80),
+		}},
+		{name: "wrong kms", snapshot: ec2types.Snapshot{
+			SnapshotId: aws.String("snap-0123456789abcdef0"), State: ec2types.SnapshotStateCompleted,
+			Encrypted: aws.Bool(true), KmsKeyId: aws.String("alias/other"), VolumeSize: aws.Int32(80),
+		}},
+		{name: "larger source", snapshot: ec2types.Snapshot{
+			SnapshotId: aws.String("snap-0123456789abcdef0"), State: ec2types.SnapshotStateCompleted,
+			Encrypted: aws.Bool(true), KmsKeyId: aws.String(testVolumeKMSKeyARN), VolumeSize: aws.Int32(81),
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &volumeLifecycleFake{snapshot: test.snapshot}
+			provider, err := NewEC2ResourceProvider(client, request.Region, time.Now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.Create(context.Background(), request); !errors.Is(err, resource.ErrReadBack) {
+				t.Fatalf("invalid snapshot error = %v", err)
+			}
+			if client.createCalls != 0 {
+				t.Fatalf("CreateVolume called %d times for an invalid source snapshot", client.createCalls)
+			}
+		})
 	}
 }
 
@@ -136,11 +200,31 @@ func volumeCreateRequest(t *testing.T) resource.ProviderCreateRequest {
 	}
 }
 
+func replacementVolumeCreateRequest(t *testing.T) resource.ProviderCreateRequest {
+	t.Helper()
+	request := volumeCreateRequest(t)
+	request.AWS.Volume.KMSKeyID = testVolumeKMSKeyARN
+	request.AWS.Volume.SourceSnapshotResourceID = "33333333-3333-4333-8333-333333333333"
+	request.Dependencies = []resource.ProviderDependency{{
+		ResourceID: request.AWS.Volume.SourceSnapshotResourceID, Type: resource.TypeSnapshot, ProviderID: "snap-0123456789abcdef0",
+	}}
+	digest, err := request.AWS.Digest(resource.TypeEBS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.SpecDigest = digest
+	return request
+}
+
+const testVolumeKMSKeyARN = "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111"
+
 type volumeLifecycleFake struct {
 	EC2ResourceAPI
 	volumeID                string
 	instanceID              string
 	volume                  ec2types.Volume
+	snapshot                ec2types.Snapshot
+	createInput             *ec2.CreateVolumeInput
 	instanceTags            []ec2types.Tag
 	created                 bool
 	deleted                 bool
@@ -154,6 +238,7 @@ type volumeLifecycleFake struct {
 
 func (fake *volumeLifecycleFake) CreateVolume(_ context.Context, input *ec2.CreateVolumeInput, _ ...func(*ec2.Options)) (*ec2.CreateVolumeOutput, error) {
 	fake.createCalls++
+	fake.createInput = input
 	token := aws.ToString(input.ClientToken)
 	if !fake.created {
 		fake.created, fake.actualCreates, fake.clientToken = true, 1, token
@@ -172,6 +257,17 @@ func (fake *volumeLifecycleFake) CreateVolume(_ context.Context, input *ec2.Crea
 		return nil, errors.New("simulated CreateVolume response loss")
 	}
 	return &ec2.CreateVolumeOutput{VolumeId: fake.string(fake.volumeID)}, nil
+}
+
+func (fake *volumeLifecycleFake) DescribeSnapshots(context.Context, *ec2.DescribeSnapshotsInput, ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error) {
+	if aws.ToString(fake.snapshot.SnapshotId) == "" {
+		return &ec2.DescribeSnapshotsOutput{}, nil
+	}
+	return &ec2.DescribeSnapshotsOutput{Snapshots: []ec2types.Snapshot{fake.snapshot}}, nil
+}
+
+func (fake *volumeLifecycleFake) snapshotID() string {
+	return aws.ToString(fake.snapshot.SnapshotId)
 }
 
 func (fake *volumeLifecycleFake) DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {

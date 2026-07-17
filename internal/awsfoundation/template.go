@@ -174,6 +174,7 @@ func controlPolicyFailsClosed(value any) bool {
 		ownedWorkerImage, launchNetworkInputs, createTaggedCompute       bool
 		useNetworkCreationInputs, useVPCForNetworkCreation               bool
 		ownedSnapshotVolume, tagComputeOnCreate, tagOnlyOwnedCompute     bool
+		deleteSecretPolicy                                               bool
 	}
 	for _, item := range statements {
 		statement, _ := stringMap(item)
@@ -369,13 +370,17 @@ func controlPolicyFailsClosed(value any) bool {
 				if !strings.Contains(condition, "aws:ResourceTag/dirextalk:agent_instance_id") {
 					return false
 				}
+				if action == "secretsmanager:DeleteResourcePolicy" {
+					workerAMI.deleteSecretPolicy = true
+				}
 			}
 		}
 	}
 	return workerAMI.observe && workerAMI.terminate && workerAMI.createFromBuilder && workerAMI.createOutputs && workerAMI.tagOutputs && workerAMI.installerArtifactBinding &&
 		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
 		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs && workerAMI.createTaggedCompute && workerAMI.useNetworkCreationInputs &&
-		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute
+		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute &&
+		workerAMI.deleteSecretPolicy
 }
 
 var entrypointTagKeys = []string{

@@ -50,10 +50,11 @@ type SecretDownloader interface {
 }
 
 type SecretFileSpec struct {
-	Path string
-	Mode fs.FileMode
-	UID  int
-	GID  int
+	Path      string
+	Mode      fs.FileMode
+	UID       int
+	GID       int
+	VersionID string
 }
 
 type SecretMaterializer interface {
@@ -61,7 +62,7 @@ type SecretMaterializer interface {
 }
 
 type VolumeMaterializer interface {
-	Prepare(context.Context, []VolumeMountV1) error
+	Prepare(context.Context, []VolumeMountV1) ([]InstalledVolumeEvidenceV1, error)
 }
 
 // SocketController must leave the socket disabled when either method returns
@@ -80,8 +81,11 @@ type Service struct {
 	volumes     VolumeMaterializer
 	secrets     SecretDownloader
 	secretFiles SecretMaterializer
-	socket      SocketController
-	trustFile   string
+	helperKey   interface {
+		Bootstrap(context.Context, RootHelperKeySourceV1) error
+	}
+	socket    SocketController
+	trustFile string
 }
 
 // NewService preserves the no-artifact constructor for Recipes that omit the
@@ -100,10 +104,16 @@ func NewArtifactAndSecretService(source MetadataSource, trust TrustMaterializer,
 }
 
 func NewArtifactSecretAndVolumeService(source MetadataSource, trust TrustMaterializer, downloader ArtifactDownloader, artifacts ArtifactMaterializer, volumes VolumeMaterializer, secrets SecretDownloader, secretFiles SecretMaterializer, socket SocketController, trustFile string) (*Service, error) {
-	if source == nil || trust == nil || downloader == nil || artifacts == nil || volumes == nil || secrets == nil || secretFiles == nil || socket == nil || trustFile != DefaultTrustFile {
+	return NewArtifactSecretVolumeAndHelperService(source, trust, downloader, artifacts, volumes, secrets, secretFiles, unavailableHelperKey{}, socket, trustFile)
+}
+
+func NewArtifactSecretVolumeAndHelperService(source MetadataSource, trust TrustMaterializer, downloader ArtifactDownloader, artifacts ArtifactMaterializer, volumes VolumeMaterializer, secrets SecretDownloader, secretFiles SecretMaterializer, helperKey interface {
+	Bootstrap(context.Context, RootHelperKeySourceV1) error
+}, socket SocketController, trustFile string) (*Service, error) {
+	if source == nil || trust == nil || downloader == nil || artifacts == nil || volumes == nil || secrets == nil || secretFiles == nil || helperKey == nil || socket == nil || trustFile != DefaultTrustFile {
 		return nil, ErrInvalidInput
 	}
-	return &Service{source: source, trust: trust, downloader: downloader, artifacts: artifacts, volumes: volumes, secrets: secrets, secretFiles: secretFiles, socket: socket, trustFile: trustFile}, nil
+	return &Service{source: source, trust: trust, downloader: downloader, artifacts: artifacts, volumes: volumes, secrets: secrets, secretFiles: secretFiles, helperKey: helperKey, socket: socket, trustFile: trustFile}, nil
 }
 
 type unavailableArtifacts struct{}
@@ -119,12 +129,17 @@ func (unavailableArtifacts) Replace(context.Context, ArtifactFileSpec, io.Reader
 type unavailableSecrets struct{}
 
 type unavailableVolumes struct{}
+type unavailableHelperKey struct{}
 
-func (unavailableVolumes) Prepare(_ context.Context, volumes []VolumeMountV1) error {
+func (unavailableHelperKey) Bootstrap(context.Context, RootHelperKeySourceV1) error {
+	return ErrMaterialize
+}
+
+func (unavailableVolumes) Prepare(_ context.Context, volumes []VolumeMountV1) ([]InstalledVolumeEvidenceV1, error) {
 	if len(volumes) != 0 {
-		return ErrMaterialize
+		return nil, ErrMaterialize
 	}
-	return nil
+	return []InstalledVolumeEvidenceV1{}, nil
 }
 
 func (unavailableSecrets) Read(context.Context, SecretSourceV1) (SecretDownload, error) {
@@ -176,9 +191,11 @@ func (service *Service) Run(ctx context.Context) error {
 			return errors.Join(ErrMaterialize, replaceErr, closeErr)
 		}
 	}
-	if err := service.volumes.Prepare(ctx, userData.resolvedVolumes); err != nil {
+	installedVolumes, err := service.volumes.Prepare(ctx, userData.resolvedVolumes)
+	if err != nil {
 		return errors.Join(ErrMaterialize, err)
 	}
+	trust.InstalledState.Volumes = installedVolumes
 	for _, source := range userData.InstallerSecrets {
 		download, readErr := service.secrets.Read(ctx, source)
 		if readErr != nil || len(download.Value) == 0 {
@@ -187,10 +204,16 @@ func (service *Service) Run(ctx context.Context) error {
 		}
 		_, replaceErr := service.secretFiles.ReplaceSecret(ctx, SecretFileSpec{
 			Path: source.TargetPath, Mode: fs.FileMode(source.FileMode), UID: int(source.OwnerUID), GID: int(source.OwnerGID),
+			VersionID: source.VersionID,
 		}, download.Value)
 		clear(download.Value)
 		if replaceErr != nil {
 			return errors.Join(ErrMaterialize, replaceErr)
+		}
+	}
+	if userData.RootHelperKey != nil {
+		if service.helperKey == nil || service.helperKey.Bootstrap(ctx, *userData.RootHelperKey) != nil {
+			return ErrMaterialize
 		}
 	}
 	encoded, err := EncodeTrustFile(*trust)

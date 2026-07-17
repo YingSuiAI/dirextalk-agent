@@ -30,6 +30,7 @@ const (
 	ArtifactSourceSchemaV1 = "dirextalk.agent.installer-artifact-source/v1"
 	SecretSourceSchemaV1   = "dirextalk.agent.installer-secret-source/v1"
 	VolumeSourceSchemaV1   = "dirextalk.agent.installer-volume-source/v1"
+	InstalledStateSchemaV1 = "dirextalk.agent.installer-installed-state/v1"
 
 	DefaultTrustFile = "/etc/dirextalk-installer/trust.cbor"
 	MaxUserDataBytes = 16 << 10
@@ -101,6 +102,38 @@ type SecretSourceV1 struct {
 	RecipeDigest  string `json:"recipe_digest"`
 }
 
+// RootHelperKeySourceV1 is an Agent-internal bootstrap declaration. It is
+// intentionally separate from Recipe secrets: its slot, path, mode and owner
+// are constants and cannot be supplied by a Recipe or arbitrary caller.
+type RootHelperKeySourceV1 struct {
+	SchemaVersion     string `json:"schema_version"`
+	AgentInstanceID   string `json:"agent_instance_id"`
+	OwnerID           string `json:"owner_id"`
+	DeliveryID        string `json:"delivery_id"`
+	DeploymentID      string `json:"deployment_id"`
+	BindingRevision   int64  `json:"binding_revision"`
+	InstanceID        string `json:"instance_id"`
+	WorkerRoleARN     string `json:"worker_role_arn"`
+	WorkerPrincipalID string `json:"worker_principal_id"`
+	HelperID          string `json:"helper_id"`
+	SignerKeyID       string `json:"signer_key_id"`
+	PublicKey         []byte `json:"public_key"`
+	PublicKeyDigest   string `json:"public_key_digest"`
+	Nonce             []byte `json:"nonce"`
+	NonceDigest       string `json:"nonce_digest"`
+	SecretPartition   string `json:"secret_partition"`
+	SecretAccountID   string `json:"secret_account_id"`
+	SecretRegion      string `json:"secret_region"`
+	SecretARN         string `json:"secret_arn"`
+	SecretName        string `json:"secret_name"`
+	VersionID         string `json:"version_id"`
+	KMSKeyARN         string `json:"kms_key_arn"`
+	TargetPath        string `json:"target_path"`
+	FileMode          uint32 `json:"file_mode"`
+	OwnerUID          uint32 `json:"owner_uid"`
+	OwnerGID          uint32 `json:"owner_gid"`
+}
+
 // VolumeSourceV1 binds a provider-created EBS volume to one signed installer
 // volume declaration. DeviceName is only the approved EC2 attachment slot;
 // Linux resolves the real Nitro NVMe device from VolumeID and never trusts
@@ -121,25 +154,49 @@ type VolumeMountV1 struct {
 	Approved installer.VolumeV1
 }
 
+// InstalledVolumeEvidenceV1 records the non-secret, root-observed identity of
+// one mounted volume. ResolvedDevicePath is diagnostic evidence from this
+// boot only; runtime verification resolves the stable VolumeID again because
+// Nitro device numbering may change after a restart.
+type InstalledVolumeEvidenceV1 struct {
+	Name               string `json:"name"`
+	ResourceID         string `json:"resource_id"`
+	VolumeID           string `json:"volume_id"`
+	AttachmentDevice   string `json:"attachment_device"`
+	ResolvedDevicePath string `json:"resolved_device_path"`
+	SizeBytes          uint64 `json:"size_bytes"`
+	FileSystem         string `json:"file_system"`
+	FileSystemUUID     string `json:"file_system_uuid"`
+	MountPath          string `json:"mount_path"`
+	ReadOnly           bool   `json:"read_only"`
+}
+
+type InstalledStateV1 struct {
+	SchemaVersion  string                      `json:"schema_version"`
+	ManifestDigest string                      `json:"manifest_digest"`
+	Volumes        []InstalledVolumeEvidenceV1 `json:"volumes"`
+}
+
 // UserDataV1 mirrors the closed, secret-free EC2 user-data document emitted
 // by the typed EC2 provider. ArtifactRef remains an immutable reference for
 // the unprivileged Worker; the privileged bootstrap never reads it.
 type UserDataV1 struct {
-	SchemaVersion              string               `json:"schema_version"`
-	ResourceID                 string               `json:"resource_id"`
-	SpecDigest                 string               `json:"spec_digest"`
-	ArtifactRef                string               `json:"artifact_ref"`
-	ArtifactDigest             string               `json:"artifact_digest"`
-	Region                     string               `json:"region"`
-	DeploymentID               string               `json:"deployment_id"`
-	WorkerID                   string               `json:"worker_id"`
-	ControlPlaneEndpoint       string               `json:"control_plane_endpoint"`
-	EnrollmentExpectedRevision int64                `json:"enrollment_expected_revision"`
-	EnrollmentMethod           string               `json:"enrollment_method"`
-	InstallerTrust             *RootTrustMaterialV1 `json:"installer_trust,omitempty"`
-	InstallerArtifacts         []ArtifactSourceV1   `json:"installer_artifacts,omitempty"`
-	InstallerSecrets           []SecretSourceV1     `json:"installer_secrets,omitempty"`
-	InstallerVolumes           []VolumeSourceV1     `json:"installer_volumes,omitempty"`
+	SchemaVersion              string                 `json:"schema_version"`
+	ResourceID                 string                 `json:"resource_id"`
+	SpecDigest                 string                 `json:"spec_digest"`
+	ArtifactRef                string                 `json:"artifact_ref"`
+	ArtifactDigest             string                 `json:"artifact_digest"`
+	Region                     string                 `json:"region"`
+	DeploymentID               string                 `json:"deployment_id"`
+	WorkerID                   string                 `json:"worker_id"`
+	ControlPlaneEndpoint       string                 `json:"control_plane_endpoint"`
+	EnrollmentExpectedRevision int64                  `json:"enrollment_expected_revision"`
+	EnrollmentMethod           string                 `json:"enrollment_method"`
+	InstallerTrust             *RootTrustMaterialV1   `json:"installer_trust,omitempty"`
+	InstallerArtifacts         []ArtifactSourceV1     `json:"installer_artifacts,omitempty"`
+	InstallerSecrets           []SecretSourceV1       `json:"installer_secrets,omitempty"`
+	RootHelperKey              *RootHelperKeySourceV1 `json:"root_helper_key,omitempty"`
+	InstallerVolumes           []VolumeSourceV1       `json:"installer_volumes,omitempty"`
 	resolvedVolumes            []VolumeMountV1
 }
 
@@ -156,11 +213,13 @@ type InstanceIdentityV1 struct {
 // A single file permits atomic replacement: no daemon can observe a new key
 // with an old binding or vice versa.
 type TrustFileV1 struct {
-	SchemaVersion string                   `json:"schema_version"`
-	TrustID       string                   `json:"trust_id"`
-	PublicKey     []byte                   `json:"public_key"`
-	ConfigDigest  string                   `json:"config_digest"`
-	Config        installer.DaemonConfigV1 `json:"config"`
+	SchemaVersion    string                             `json:"schema_version"`
+	TrustID          string                             `json:"trust_id"`
+	PublicKey        []byte                             `json:"public_key"`
+	ConfigDigest     string                             `json:"config_digest"`
+	Config           installer.DaemonConfigV1           `json:"config"`
+	ArtifactManifest installer.SignedArtifactManifestV1 `json:"artifact_manifest"`
+	InstalledState   InstalledStateV1                   `json:"installed_state"`
 }
 
 func ParseUserData(raw []byte, identity InstanceIdentityV1) (UserDataV1, *TrustFileV1, error) {
@@ -185,7 +244,7 @@ func ParseUserData(raw []byte, identity InstanceIdentityV1) (UserDataV1, *TrustF
 		return UserDataV1{}, nil, ErrInvalidInput
 	}
 	if value.InstallerTrust == nil {
-		if len(value.InstallerArtifacts) != 0 || len(value.InstallerSecrets) != 0 || len(value.InstallerVolumes) != 0 {
+		if len(value.InstallerArtifacts) != 0 || len(value.InstallerSecrets) != 0 || len(value.InstallerVolumes) != 0 || value.RootHelperKey != nil {
 			return UserDataV1{}, nil, ErrTrustMismatch
 		}
 		return value, nil, nil
@@ -199,6 +258,11 @@ func ParseUserData(raw []byte, identity InstanceIdentityV1) (UserDataV1, *TrustF
 	}
 	if err := ValidateSecretSources(*value.InstallerTrust, value.InstallerSecrets, value.DeploymentID, identity); err != nil {
 		return UserDataV1{}, nil, err
+	}
+	if value.RootHelperKey != nil {
+		if err := ValidateRootHelperKeySource(*value.RootHelperKey, value.DeploymentID, identity); err != nil {
+			return UserDataV1{}, nil, err
+		}
 	}
 	resolvedVolumes, err := ValidateVolumeSources(*value.InstallerTrust, value.InstallerVolumes, value.DeploymentID)
 	if err != nil {
@@ -247,9 +311,15 @@ func ValidateTrustMaterial(material RootTrustMaterialV1, deploymentID string) (T
 	}) != nil || material.ArtifactManifest.Manifest.Binding != config.Binding {
 		return TrustFileV1{}, ErrTrustMismatch
 	}
+	manifestDigest, err := canonical.Digest(material.ArtifactManifest.Manifest)
+	if err != nil {
+		return TrustFileV1{}, ErrTrustMismatch
+	}
 	return TrustFileV1{
 		SchemaVersion: TrustFileSchemaV1, TrustID: material.TrustID,
 		PublicKey: append([]byte(nil), material.PublicKey...), ConfigDigest: material.ConfigDigest, Config: config,
+		ArtifactManifest: cloneSignedManifest(material.ArtifactManifest),
+		InstalledState:   InstalledStateV1{SchemaVersion: InstalledStateSchemaV1, ManifestDigest: manifestDigest, Volumes: []InstalledVolumeEvidenceV1{}},
 	}, nil
 }
 
@@ -436,7 +506,46 @@ func ValidateTrustFile(value TrustFileV1) error {
 	if sha256Digest(configCBOR) != value.ConfigDigest {
 		return ErrTrustMismatch
 	}
+	if installer.ValidateRootTrustMaterial(installer.RootTrustMaterialV1{
+		TrustID: value.TrustID, PublicKey: value.PublicKey, ConfigCBOR: configCBOR,
+		ArtifactManifest: value.ArtifactManifest,
+	}) != nil || value.ArtifactManifest.Manifest.Binding != value.Config.Binding {
+		return ErrTrustMismatch
+	}
+	if !validInstalledState(value.InstalledState, value.ArtifactManifest.Manifest) {
+		return ErrTrustMismatch
+	}
 	return nil
+}
+
+func validInstalledState(state InstalledStateV1, manifest installer.ArtifactManifestV1) bool {
+	manifestDigest, err := canonical.Digest(manifest)
+	if err != nil || state.SchemaVersion != InstalledStateSchemaV1 || state.ManifestDigest != manifestDigest ||
+		len(state.Volumes) != len(manifest.Volumes) {
+		return false
+	}
+	expected := make(map[string]installer.VolumeV1, len(manifest.Volumes))
+	for _, volume := range manifest.Volumes {
+		expected[volume.Name] = volume
+	}
+	seenResources := make(map[string]struct{}, len(state.Volumes))
+	seenVolumes := make(map[string]struct{}, len(state.Volumes))
+	for _, evidence := range state.Volumes {
+		approved, ok := expected[evidence.Name]
+		_, duplicateResource := seenResources[evidence.ResourceID]
+		_, duplicateVolume := seenVolumes[evidence.VolumeID]
+		if !ok || duplicateResource || duplicateVolume || !canonicalUUID(evidence.ResourceID) ||
+			!volumeIDPattern.MatchString(evidence.VolumeID) || evidence.AttachmentDevice != approved.DeviceName ||
+			!nitroDevicePattern.MatchString(evidence.ResolvedDevicePath) || evidence.SizeBytes != uint64(approved.SizeGiB)<<30 ||
+			evidence.FileSystem != "ext4" || !filesystemUUIDPattern.MatchString(evidence.FileSystemUUID) ||
+			evidence.MountPath != approved.MountPath || evidence.ReadOnly != approved.ReadOnly {
+			return false
+		}
+		seenResources[evidence.ResourceID] = struct{}{}
+		seenVolumes[evidence.VolumeID] = struct{}{}
+		delete(expected, evidence.Name)
+	}
+	return len(expected) == 0
 }
 
 func validConfig(config installer.DaemonConfigV1) bool {

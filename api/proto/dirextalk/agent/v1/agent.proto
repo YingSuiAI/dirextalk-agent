@@ -875,6 +875,7 @@ message GetCloudEntryOperationRequest {
 }
 message GetCloudEntryOperationResponse { CloudEntryOperation operation = 1; }
 
+
 message CloudWorker {
   string deployment_id = 1;
   string owner_id = 2;
@@ -970,6 +971,15 @@ service CloudControlService {
   rpc CreateCloudDeploymentEntryChallenge(CreateCloudDeploymentEntryChallengeRequest) returns (CreateCloudDeploymentEntryChallengeResponse);
   rpc ApproveCloudDeploymentEntry(ApproveCloudDeploymentEntryRequest) returns (ApproveCloudDeploymentEntryResponse);
   rpc GetCloudEntryOperation(GetCloudEntryOperationRequest) returns (GetCloudEntryOperationResponse);
+  rpc CreateCloudManagedAcceptanceChallenge(CreateCloudManagedAcceptanceChallengeRequest) returns (CreateCloudManagedAcceptanceChallengeResponse);
+  rpc ApproveCloudManagedAcceptance(ApproveCloudManagedAcceptanceRequest) returns (ApproveCloudManagedAcceptanceResponse);
+  rpc GetCloudManagedAcceptanceOperation(GetCloudManagedAcceptanceOperationRequest) returns (GetCloudManagedAcceptanceOperationResponse);
+  rpc CreateCloudManagedPreparation(CreateCloudManagedPreparationRequest) returns (CreateCloudManagedPreparationResponse);
+  rpc ApproveCloudManagedPreparation(ApproveCloudManagedPreparationRequest) returns (ApproveCloudManagedPreparationResponse);
+  rpc GetCloudManagedPreparation(GetCloudManagedPreparationRequest) returns (GetCloudManagedPreparationResponse);
+  rpc PrepareRootHelperKeyDeliveryApproval(PrepareRootHelperKeyDeliveryApprovalRequest) returns (PrepareRootHelperKeyDeliveryApprovalResponse);
+  rpc ApproveRootHelperKeyDelivery(ApproveRootHelperKeyDeliveryRequest) returns (ApproveRootHelperKeyDeliveryResponse);
+  rpc GetRootHelperKeyDeliveryApproval(GetRootHelperKeyDeliveryApprovalRequest) returns (GetRootHelperKeyDeliveryApprovalResponse);
 }
 
 message CreateSessionRequest {
@@ -1424,4 +1434,611 @@ message CreateCloudGoalResponse {
 // and is never derived from model output or model-callable tool arguments.
 message CloudDialogueScopeV1 {
   string cloud_connection_id = 1;
+}
+
+message CloudManagedLifecycleContract {
+  string start = 1;
+  string stop = 2;
+  string restart = 3;
+  string upgrade = 4;
+  string rollback = 5;
+  string backup = 6;
+  string restore = 7;
+  string destroy = 8;
+  string maintenance = 9;
+}
+message CloudManagedAcceptanceResource {
+  string resource_id = 1;
+  CloudResourceType type = 2;
+  int64 revision = 3;
+  string provider_id = 4;
+  string tag_digest = 5;
+}
+message CloudManagedHealthProbe {
+  string kind = 1;
+  string target = 2;
+}
+message CloudManagedHealthContract {
+  CloudManagedHealthProbe liveness = 1;
+  CloudManagedHealthProbe readiness = 2;
+  CloudManagedHealthProbe semantic = 3;
+}
+message CloudManagedVolumeSlot {
+  string slot_id = 1;
+  string volume_ref = 2;
+  bool read_only = 3;
+}
+message CloudManagedDataSlot {
+  string slot_id = 1;
+  string data_ref = 2;
+  bool read_only = 3;
+}
+message CloudManagedSecretSlot {
+  string slot_id = 1;
+  string secret_ref = 2;
+}
+message CloudManagedCompatibilityService {
+  string service_id = 1;
+  string deployment_id = 2;
+  string recipe_id = 3;
+  string name = 4;
+  string service_status = 5;
+  string integration_status = 6;
+  int64 revision = 7;
+  int64 created_at_unix_ms = 8;
+  int64 updated_at_unix_ms = 9;
+  repeated CloudManagedCompatibilityBackup backups = 10;
+  repeated CloudManagedCompatibilityRestore restores = 11;
+}
+message CloudManagedCompatibilityBackup {
+  string backup_id = 1;
+  string service_id = 2;
+  string deployment_id = 3;
+  string status = 4;
+  string retention_policy = 5;
+  string image_id = 6;
+  repeated string snapshot_ids = 7;
+  int64 revision = 8;
+  int64 created_at_unix_ms = 9;
+  int64 updated_at_unix_ms = 10;
+}
+message CloudManagedCompatibilityRestore {
+  string restore_id = 1;
+  string restore_plan_id = 2;
+  string service_id = 3;
+  string deployment_id = 4;
+  string backup_id = 5;
+  string status = 6;
+  repeated string original_volume_ids = 7;
+  repeated string replacement_volume_ids = 8;
+  int64 revision = 9;
+  int64 created_at_unix_ms = 10;
+  int64 updated_at_unix_ms = 11;
+}
+message CloudManagedCompatibilityRecipe {
+  string recipe_id = 1;
+  string name = 2;
+  string version = 3;
+  string digest = 4;
+  string maturity = 5;
+  int64 revision = 6;
+  int64 created_at_unix_ms = 7;
+  int64 updated_at_unix_ms = 8;
+}
+message CloudManagedCompatibilityAcceptance {
+  string acceptance_id = 1;
+  string service_id = 2;
+  string recipe_id = 3;
+  string status = 4;
+  int64 revision = 5;
+  int64 created_at_unix_ms = 6;
+  int64 updated_at_unix_ms = 7;
+}
+message CloudManagedAcceptanceScope {
+  string acceptance_id = 1;
+  string service_id = 2;
+  uint64 service_revision = 3;
+  string owner_id = 4;
+  string deployment_id = 5;
+  int64 deployment_revision = 6;
+  string connection_id = 7;
+  string plan_id = 8;
+  uint64 plan_revision = 9;
+  string plan_hash = 10;
+  string recipe_id = 11;
+  string recipe_digest = 12;
+  uint64 recipe_revision = 13;
+  string recipe_maturity = 14;
+  string installed_manifest_digest = 15;
+  string artifact_digest = 16;
+  string readiness_semantic_evidence_digest = 17;
+  string readiness_stack_observation_digest = 18;
+  string restart_operation_id = 19;
+  uint64 restart_operation_revision = 20;
+  string backup_id = 21;
+  uint64 backup_revision = 22;
+  string restore_id = 23;
+  uint64 restore_revision = 24;
+  repeated string source_artifact_digests = 25;
+  int64 health_revision = 26;
+  string health_evidence_digest = 27;
+  google.protobuf.Timestamp health_observed_at = 28;
+  string currency = 29;
+  int64 cost_alert_amount_minor = 30;
+  CloudManagedLifecycleContract lifecycle = 31;
+  repeated CloudManagedAcceptanceResource resources = 32;
+  string destroy_instance_id = 33;
+  repeated string destroy_volume_ids = 34;
+  repeated string destroy_network_interface_ids = 35;
+  string acceptance_policy = 36;
+  CloudManagedHealthContract health = 37;
+  repeated CloudManagedVolumeSlot volume_slots = 38;
+  repeated CloudManagedDataSlot data_slots = 39;
+  repeated CloudManagedSecretSlot secret_slots = 40;
+  string health_monitor_kind = 41;
+  int64 connection_revision = 42;
+  string health_status = 43;
+  string health_evidence_type = 44;
+  string agent_instance_id = 45;
+}
+message CloudManagedAcceptanceChallenge {
+  string operation_id = 1;
+  string challenge_id = 2;
+  string approval_id = 3;
+  string signer_key_id = 4;
+  CloudManagedAcceptanceScope scope = 5;
+  string scope_digest = 6;
+  google.protobuf.Timestamp issued_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  int64 revision = 9;
+  bytes signing_payload_cbor = 10;
+  CloudManagedCompatibilityService compatibility_service = 11;
+  CloudManagedCompatibilityRecipe compatibility_recipe = 12;
+}
+enum CloudManagedAcceptanceOperationStatus {
+  CLOUD_MANAGED_ACCEPTANCE_OPERATION_STATUS_UNSPECIFIED = 0;
+  CLOUD_MANAGED_ACCEPTANCE_OPERATION_STATUS_AWAITING_APPROVAL = 1;
+  CLOUD_MANAGED_ACCEPTANCE_OPERATION_STATUS_APPROVED = 2;
+  CLOUD_MANAGED_ACCEPTANCE_OPERATION_STATUS_RUNNING = 3;
+  CLOUD_MANAGED_ACCEPTANCE_OPERATION_STATUS_SUCCEEDED = 4;
+  CLOUD_MANAGED_ACCEPTANCE_OPERATION_STATUS_FAILED_TERMINAL = 5;
+}
+message CloudManagedAcceptanceOperation {
+  string operation_id = 1;
+  CloudManagedAcceptanceChallenge challenge = 2;
+  CloudManagedAcceptanceOperationStatus status = 3;
+  int64 revision = 4;
+  string error_code = 5;
+  string error_summary = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  CloudManagedCompatibilityService compatibility_service = 9;
+  CloudManagedCompatibilityRecipe compatibility_recipe = 10;
+  CloudManagedCompatibilityAcceptance compatibility_acceptance = 11;
+}
+message CreateCloudManagedAcceptanceChallengeRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string signer_key_id = 4;
+  int64 expected_deployment_revision = 5;
+}
+message CreateCloudManagedAcceptanceChallengeResponse { CloudManagedAcceptanceChallenge challenge = 1; }
+message ApproveCloudManagedAcceptanceRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string acceptance_id = 3;
+  string deployment_id = 4;
+  int64 expected_revision = 5;
+  string scope_digest = 6;
+  DeviceApprovalSignature approval = 7;
+}
+message ApproveCloudManagedAcceptanceResponse { CloudManagedAcceptanceOperation operation = 1; }
+message GetCloudManagedAcceptanceOperationRequest { string owner_id = 1; string operation_id = 2; }
+message GetCloudManagedAcceptanceOperationResponse { CloudManagedAcceptanceOperation operation = 1; }
+
+message CloudManagedPreparationResourceFact {
+  string resource_id = 1;
+  string provider_id = 2;
+  int64 revision = 3;
+  string spec_digest = 4;
+  string tag_digest = 5;
+}
+message CloudManagedPreparationRestart {
+  string operation_id = 1;
+  int64 expected_initial_revision = 2;
+  string action = 3;
+  string lifecycle_restart_ref = 4;
+  string execution_bundle_digest = 5;
+}
+message CloudManagedPreparationVolume {
+  string slot_id = 1;
+  CloudManagedPreparationResourceFact source_volume = 2;
+  string snapshot_resource_id = 3;
+  string replacement_volume_resource_id = 4;
+  string availability_zone = 5;
+  uint32 size_gib = 6;
+  string kms_key_id = 7;
+  string device_name = 8;
+  string volume_type = 9;
+  uint32 iops = 10;
+  uint32 throughput_mibps = 11;
+  string mount_path = 12;
+  bool read_only = 13;
+  bool persistent = 14;
+  string disposition = 15;
+}
+message CloudManagedPreparationScope {
+  string schema_version = 1;
+  string intent = 2;
+  string preparation_operation_id = 3;
+  string owner_id = 4;
+  string agent_instance_id = 5;
+  string deployment_id = 6;
+  int64 deployment_revision = 7;
+  string connection_id = 8;
+  int64 connection_revision = 9;
+  string plan_id = 10;
+  int64 plan_revision = 11;
+  string plan_hash = 12;
+  string recipe_id = 13;
+  string recipe_digest = 14;
+  int64 recipe_revision = 15;
+  CloudManagedPreparationResourceFact ec2 = 16;
+  repeated CloudManagedPreparationResourceFact source_volumes = 17;
+  CloudManagedPreparationRestart restart = 18;
+  repeated CloudManagedPreparationVolume volumes = 19;
+  int64 service_monitor_revision = 20;
+  string service_monitor_suite_digest = 21;
+  string currency = 22;
+  int64 cost_alert_amount_minor = 23;
+  string expected_installed_manifest_digest = 24;
+}
+message CloudManagedPreparationChallenge {
+  string schema_version = 1;
+  string challenge_id = 2;
+  string operation_id = 3;
+  string signer_key_id = 4;
+  CloudManagedPreparationScope scope = 5;
+  string scope_digest = 6;
+  google.protobuf.Timestamp issued_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  bytes signing_payload_cbor = 9;
+}
+enum CloudManagedPreparationStatus {
+  CLOUD_MANAGED_PREPARATION_STATUS_UNSPECIFIED = 0;
+  CLOUD_MANAGED_PREPARATION_STATUS_AWAITING_APPROVAL = 1;
+  CLOUD_MANAGED_PREPARATION_STATUS_APPROVED = 2;
+  CLOUD_MANAGED_PREPARATION_STATUS_RUNNING = 3;
+  CLOUD_MANAGED_PREPARATION_STATUS_SUCCEEDED = 4;
+  CLOUD_MANAGED_PREPARATION_STATUS_FAILED_TERMINAL = 5;
+}
+enum CloudManagedPreparationStepStatus {
+  CLOUD_MANAGED_PREPARATION_STEP_STATUS_UNSPECIFIED = 0;
+  CLOUD_MANAGED_PREPARATION_STEP_STATUS_PENDING = 1;
+  CLOUD_MANAGED_PREPARATION_STEP_STATUS_RUNNING = 2;
+  CLOUD_MANAGED_PREPARATION_STEP_STATUS_SUCCEEDED = 3;
+}
+message CloudManagedPreparationStep {
+  string phase = 1;
+  int32 ordinal = 2;
+  CloudManagedPreparationStepStatus status = 3;
+  int64 revision = 4;
+  string intent_digest = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp completed_at = 7;
+}
+message CloudManagedPreparationResult {
+  string preparation_id = 1;
+  string preparation_digest = 2;
+  string fresh_health_digest = 3;
+  int64 fresh_health_revision = 4;
+  google.protobuf.Timestamp fresh_health_observed_at = 5;
+  string cost_digest = 6;
+  int64 cost_policy_revision = 7;
+  google.protobuf.Timestamp cost_observed_at = 8;
+  string stack_digest = 9;
+  int64 stack_revision = 10;
+  google.protobuf.Timestamp stack_observed_at = 11;
+}
+message CloudManagedPreparationOperation {
+  string operation_id = 1;
+  CloudManagedPreparationChallenge challenge = 2;
+  CloudManagedPreparationStatus status = 3;
+  string current_phase = 4;
+  int64 revision = 5;
+  repeated CloudManagedPreparationStep steps = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  google.protobuf.Timestamp approved_at = 9;
+  CloudManagedPreparationResult result = 10;
+}
+message CreateCloudManagedPreparationRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string signer_key_id = 4;
+  int64 expected_deployment_revision = 5;
+  int64 cost_alert_amount_minor = 6;
+}
+message CreateCloudManagedPreparationResponse { CloudManagedPreparationChallenge challenge = 1; }
+message ApproveCloudManagedPreparationRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string operation_id = 3;
+  string deployment_id = 4;
+  string scope_digest = 5;
+  int64 expected_revision = 6;
+  DeviceApprovalSignature approval = 7;
+}
+message ApproveCloudManagedPreparationResponse { CloudManagedPreparationOperation operation = 1; }
+message GetCloudManagedPreparationRequest {
+  string owner_id = 1;
+  string operation_id = 2;
+}
+message GetCloudManagedPreparationResponse { CloudManagedPreparationOperation operation = 1; }
+
+// Worker service operations are deployment-bound maintenance assignments.
+// They are deliberately independent of Deployment TaskID/StepID leases and
+// expose only closed, Recipe-bound capabilities.
+enum WorkerServiceOperationAction {
+  WORKER_SERVICE_OPERATION_ACTION_UNSPECIFIED = 0;
+  WORKER_SERVICE_OPERATION_ACTION_RESTART = 1;
+}
+enum WorkerServiceOperationState {
+  WORKER_SERVICE_OPERATION_STATE_UNSPECIFIED = 0;
+  WORKER_SERVICE_OPERATION_STATE_PENDING = 1;
+  WORKER_SERVICE_OPERATION_STATE_LEASED = 2;
+  WORKER_SERVICE_OPERATION_STATE_SUCCEEDED = 3;
+  WORKER_SERVICE_OPERATION_STATE_FAILED = 4;
+}
+message WorkerServiceOperationAssignment {
+  string operation_id = 1;
+  string deployment_id = 2;
+  string owner_id = 3;
+  WorkerServiceOperationAction action = 4;
+  string lifecycle_restart_ref = 5;
+  string execution_bundle_digest = 6;
+  string worker_id = 7;
+  int64 lease_epoch = 8;
+  google.protobuf.Timestamp lease_expires_at = 9;
+  int64 revision = 10;
+  string expected_installed_manifest_digest = 11;
+}
+// This is an authenticated root-helper receipt, not untrusted Worker Evidence.
+message WorkerServiceOperationRootHelperReceipt {
+  string schema_version = 1;
+  string operation_id = 2;
+  string deployment_id = 3;
+  string owner_id = 4;
+  WorkerServiceOperationAction action = 5;
+  string lifecycle_restart_ref = 6;
+  string execution_bundle_digest = 7;
+  int64 lease_epoch = 8;
+  string install_manifest_digest = 9;
+  string restart_observation_digest = 10;
+  google.protobuf.Timestamp observed_at = 11;
+  string helper_id = 12;
+  string signer_key_id = 13;
+  bytes signature = 14;
+}
+message WorkerServiceOperation {
+  WorkerServiceOperationAssignment assignment = 1;
+  WorkerServiceOperationState state = 2;
+  WorkerServiceOperationRootHelperReceipt receipt = 3;
+  string failure_code = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+message WorkerServiceOperationServiceGetRequest {
+  string operation_id = 1;
+  string deployment_id = 2;
+  string worker_id = 3;
+}
+message WorkerServiceOperationServiceGetResponse { WorkerServiceOperation operation = 1; }
+message WorkerServiceOperationServiceClaimRequest {
+  string operation_id = 1;
+  string deployment_id = 2;
+  string worker_id = 3;
+  string idempotency_key = 4;
+  int64 expected_revision = 5;
+  int32 lease_duration_seconds = 6;
+}
+message WorkerServiceOperationServiceClaimResponse { WorkerServiceOperationAssignment assignment = 1; }
+message WorkerServiceOperationServiceAcquireNextRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string idempotency_key = 3;
+  int32 lease_duration_seconds = 4;
+}
+message WorkerServiceOperationServiceAcquireNextResponse {
+  WorkerServiceOperationAssignment assignment = 1;
+  bytes installer_delivery_cbor = 2;
+  bytes signed_capability_cbor = 3;
+}
+message WorkerServiceOperationServiceCompleteRequest {
+  string operation_id = 1;
+  string deployment_id = 2;
+  string worker_id = 3;
+  int64 lease_epoch = 4;
+  string idempotency_key = 5;
+  int64 expected_revision = 6;
+  WorkerServiceOperationRootHelperReceipt receipt = 7;
+  string failure_code = 8;
+}
+message WorkerServiceOperationServiceCompleteResponse { WorkerServiceOperation operation = 1; }
+
+service WorkerServiceOperationService {
+  rpc Get(WorkerServiceOperationServiceGetRequest) returns (WorkerServiceOperationServiceGetResponse);
+  rpc Claim(WorkerServiceOperationServiceClaimRequest) returns (WorkerServiceOperationServiceClaimResponse);
+  rpc AcquireNext(WorkerServiceOperationServiceAcquireNextRequest) returns (WorkerServiceOperationServiceAcquireNextResponse);
+  rpc Complete(WorkerServiceOperationServiceCompleteRequest) returns (WorkerServiceOperationServiceCompleteResponse);
+}
+
+// Root-helper key approval is an owner-facing control-plane contract. The
+// approved binding contains public metadata only; private key bytes never enter
+// protobuf, persistence, logs, or ordinary events.
+message RootHelperKeySecretPlan {
+  string partition = 1;
+  string account_id = 2;
+  string region = 3;
+  string name = 4;
+  string version_id = 5;
+  string kms_key_arn = 6;
+  string target_path = 7;
+  uint32 file_mode = 8;
+}
+message RootHelperKeySecretCoordinate {
+  string arn = 1;
+  string name = 2;
+  string version_id = 3;
+  string kms_key_arn = 4;
+}
+message RootHelperKeyDeviceBinding {
+  string schema_version = 1;
+  string agent_instance_id = 2;
+  string owner_id = 3;
+  string delivery_id = 4;
+  string deployment_id = 5;
+  int64 binding_revision = 6;
+  string instance_id = 7;
+  string worker_role_arn = 8;
+  string worker_principal_id = 9;
+  string helper_id = 10;
+  string signer_key_id = 11;
+  string public_key_digest = 12;
+  RootHelperKeySecretPlan secret_plan = 13;
+  RootHelperKeySecretCoordinate secret = 14;
+  string nonce_digest = 15;
+}
+enum RootHelperKeyDeliveryApprovalStatus {
+  ROOT_HELPER_KEY_DELIVERY_APPROVAL_STATUS_UNSPECIFIED = 0;
+  ROOT_HELPER_KEY_DELIVERY_APPROVAL_STATUS_AWAITING_APPROVAL = 1;
+  ROOT_HELPER_KEY_DELIVERY_APPROVAL_STATUS_APPROVED = 2;
+}
+message RootHelperKeyDeliveryApproval {
+  string schema_version = 1;
+  string challenge_id = 2;
+  string device_signer_key_id = 3;
+  RootHelperKeyDeviceBinding binding = 4;
+  bytes public_key = 5;
+  bytes nonce = 6;
+  bytes signing_payload_cbor = 7;
+  string signing_payload_digest = 8;
+  RootHelperKeyDeliveryApprovalStatus status = 9;
+  int64 revision = 10;
+  bytes device_signature = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+message PrepareRootHelperKeyDeliveryApprovalRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  int64 expected_deployment_revision = 4;
+  string device_signer_key_id = 5;
+}
+message PrepareRootHelperKeyDeliveryApprovalResponse {
+  RootHelperKeyDeliveryApproval approval = 1;
+}
+message ApproveRootHelperKeyDeliveryRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string delivery_id = 4;
+  int64 expected_revision = 5;
+  bytes device_signature = 6;
+}
+message ApproveRootHelperKeyDeliveryResponse {
+  RootHelperKeyDeliveryApproval approval = 1;
+}
+message GetRootHelperKeyDeliveryApprovalRequest {
+  string owner_id = 1;
+  string deployment_id = 2;
+  string delivery_id = 3;
+}
+message GetRootHelperKeyDeliveryApprovalResponse {
+  RootHelperKeyDeliveryApproval approval = 1;
+}
+
+// RootHelperBootstrapControlService is an internal Worker-session endpoint.
+// Every call is authenticated against the same deployment and Worker session
+// used by WorkerControlService; request principals are additionally matched to
+// the immutable approved delivery binding.
+enum RootHelperKeyDeliveryState {
+  ROOT_HELPER_KEY_DELIVERY_STATE_UNSPECIFIED = 0;
+  ROOT_HELPER_KEY_DELIVERY_STATE_DRAFT = 1;
+  ROOT_HELPER_KEY_DELIVERY_STATE_GRANT = 2;
+  ROOT_HELPER_KEY_DELIVERY_STATE_PROOF = 3;
+  ROOT_HELPER_KEY_DELIVERY_STATE_REVOKING = 4;
+  ROOT_HELPER_KEY_DELIVERY_STATE_VERIFIED_REVOKED = 5;
+  ROOT_HELPER_KEY_DELIVERY_STATE_READY = 6;
+  ROOT_HELPER_KEY_DELIVERY_STATE_FAILED = 7;
+  ROOT_HELPER_KEY_DELIVERY_STATE_REVOKED = 8;
+}
+message RootHelperKeyDelivery {
+  RootHelperKeyDeviceBinding binding = 1;
+  bytes public_key = 2;
+  bytes nonce = 3;
+  RootHelperKeyDeliveryState state = 4;
+  int64 revision = 5;
+  string failure_code = 6;
+  google.protobuf.Timestamp proof_observed_at = 7;
+  google.protobuf.Timestamp revoked_at = 8;
+  google.protobuf.Timestamp ready_at = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}
+message SubmitProofRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string delivery_id = 3;
+  string instance_id = 4;
+  string principal_id = 5;
+  string idempotency_key = 6;
+  bytes nonce = 7;
+  bytes signature = 8;
+}
+message SubmitProofResponse { RootHelperKeyDelivery delivery = 1; }
+message ReconcileRevocationRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string delivery_id = 3;
+  string instance_id = 4;
+  string principal_id = 5;
+  string idempotency_key = 6;
+}
+message ReconcileRevocationResponse { RootHelperKeyDelivery delivery = 1; }
+message ConfirmCanaryRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string delivery_id = 3;
+  string instance_id = 4;
+  string principal_id = 5;
+  string error_code = 6;
+  google.protobuf.Timestamp observed_at = 7;
+  string idempotency_key = 8;
+  bytes signature = 9;
+}
+message ConfirmCanaryResponse { RootHelperKeyDelivery delivery = 1; }
+message RootHelperBootstrapControlServiceAcquirePendingRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+}
+message RootHelperBootstrapControlServiceAcquirePendingResponse {
+  RootHelperKeyDelivery delivery = 1;
+  bytes installer_delivery_cbor = 2;
+  bytes signed_capability_cbor = 3;
+}
+message RootHelperBootstrapControlServiceCurrentRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+}
+message RootHelperBootstrapControlServiceCurrentResponse { RootHelperKeyDelivery delivery = 1; }
+service RootHelperBootstrapControlService {
+  rpc AcquirePending(RootHelperBootstrapControlServiceAcquirePendingRequest) returns (RootHelperBootstrapControlServiceAcquirePendingResponse);
+  rpc Current(RootHelperBootstrapControlServiceCurrentRequest) returns (RootHelperBootstrapControlServiceCurrentResponse);
+  rpc SubmitProof(SubmitProofRequest) returns (SubmitProofResponse);
+  rpc ReconcileRevocation(ReconcileRevocationRequest) returns (ReconcileRevocationResponse);
+  rpc ConfirmCanary(ConfirmCanaryRequest) returns (ConfirmCanaryResponse);
 }

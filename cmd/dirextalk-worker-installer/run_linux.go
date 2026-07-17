@@ -10,9 +10,12 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer/roothelper"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
@@ -22,8 +25,9 @@ import (
 )
 
 const (
-	defaultTrustFile   = "/etc/dirextalk-installer/trust.cbor"
-	defaultJournalFile = "/var/lib/dirextalk-installer/execution.journal"
+	defaultTrustFile             = "/etc/dirextalk-installer/trust.cbor"
+	defaultJournalFile           = "/var/lib/dirextalk-installer/execution.journal"
+	defaultRootHelperJournalFile = "/var/lib/dirextalk-installer/root-helper-restart.journal"
 )
 
 func run() error {
@@ -44,6 +48,8 @@ func run() error {
 }
 
 func runDaemon() error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	trustContent, err := installer.ReadRootOwnedFile(defaultTrustFile, 64<<10)
 	if err != nil {
 		return err
@@ -68,18 +74,62 @@ func runDaemon() error {
 	if err != nil {
 		return err
 	}
+	configCBOR, err := canonical.Marshal(trust.Config)
+	if err != nil {
+		return installer.Error(installer.CodeInvalidRequest)
+	}
+	rootTrust := installer.RootTrustMaterialV1{
+		TrustID: trust.TrustID, PublicKey: append([]byte(nil), trust.PublicKey...),
+		ConfigCBOR: configCBOR, ArtifactManifest: trust.ArtifactManifest,
+	}
+	if err := installer.ValidateRootTrustMaterial(rootTrust); err != nil {
+		return installer.Error(installer.CodeInvalidRequest)
+	}
+	metadata := imds.New(imds.Options{EnableFallback: aws.FalseTernary})
+	configuration, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithEC2IMDSRegion(func(options *awsconfig.UseEC2IMDSRegion) { options.Client = metadata }),
+		awsconfig.WithCredentialsProvider(ec2rolecreds.New(func(options *ec2rolecreds.Options) { options.Client = metadata })),
+	)
+	if err != nil {
+		return roothelper.ErrUnavailable
+	}
+	secretAccess, err := roothelper.NewExactSecretsAccess(secretsmanager.NewFromConfig(configuration))
+	if err != nil {
+		return err
+	}
+	restartJournal, err := roothelper.OpenRootOwnedRestartJournal(defaultRootHelperJournalFile)
+	if err != nil {
+		return err
+	}
+	deliveryFence, err := roothelper.OpenRootOwnedDeliveryFence()
+	if err != nil {
+		return err
+	}
+	keys := roothelper.NewRootOwnedSigningKeyFile()
+	observer := roothelper.LocalObserver{
+		Artifacts: inspector, State: roothelper.NewRootOwnedInstalledStateInspector(trust.InstalledState), Now: time.Now,
+	}
+	helperServer, err := roothelper.NewLocalServer(rootTrust, roothelper.ControlFactoryFunc(
+		func(_ context.Context, delivery installer.DeliveryV1) (roothelper.LocalControl, error) {
+			return roothelper.New(delivery, secretAccess, keys, installer.OSCommandRunner{}, observer, restartJournal, deliveryFence, time.Now)
+		},
+	))
+	if err != nil {
+		return err
+	}
 	listener, err := systemdListener()
 	if err != nil {
 		return installer.Error(installer.CodeInvalidRequest)
 	}
 	defer listener.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
-	return installer.NewServer(verifier, installer.ServerConfig{}).Serve(ctx, listener)
+	return (socketDispatcher{
+		installer: installer.NewServer(verifier, installer.ServerConfig{}),
+		helper:    helperServer,
+	}).Serve(ctx, listener)
 }
 
 func runBootstrap() error {
