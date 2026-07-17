@@ -13,22 +13,25 @@ import (
 var ErrInvalidTemplate = errors.New("invalid AWS foundation template")
 
 var requiredTemplateResources = map[string]string{
-	"FoundationKey":           "AWS::KMS::Key",
-	"ArtifactBucket":          "AWS::S3::Bucket",
-	"ArtifactBucketPolicy":    "AWS::S3::BucketPolicy",
-	"ManifestTable":           "AWS::DynamoDB::Table",
-	"WorkerLogGroup":          "AWS::Logs::LogGroup",
-	"ReaperLogGroup":          "AWS::Logs::LogGroup",
-	"SecretNamespaceMarker":   "AWS::SecretsManager::Secret",
-	"WorkerRole":              "AWS::IAM::Role",
-	"WorkerInstanceProfile":   "AWS::IAM::InstanceProfile",
-	"ReaperRole":              "AWS::IAM::Role",
-	"ReaperFunction":          "AWS::Lambda::Function",
-	"ReaperSchedule":          "AWS::Events::Rule",
-	"ReaperInvokePermission":  "AWS::Lambda::Permission",
-	"ReaperErrorAlarm":        "AWS::CloudWatch::Alarm",
-	"ControlRuntimePolicy":    "AWS::IAM::Policy",
-	"ControlEntrypointPolicy": "AWS::IAM::ManagedPolicy",
+	"ReleaseVPC":                      "AWS::EC2::VPC",
+	"ReleasePrivateSubnet":            "AWS::EC2::Subnet",
+	"ReleaseZeroIngressSecurityGroup": "AWS::EC2::SecurityGroup",
+	"FoundationKey":                   "AWS::KMS::Key",
+	"ArtifactBucket":                  "AWS::S3::Bucket",
+	"ArtifactBucketPolicy":            "AWS::S3::BucketPolicy",
+	"ManifestTable":                   "AWS::DynamoDB::Table",
+	"WorkerLogGroup":                  "AWS::Logs::LogGroup",
+	"ReaperLogGroup":                  "AWS::Logs::LogGroup",
+	"SecretNamespaceMarker":           "AWS::SecretsManager::Secret",
+	"WorkerRole":                      "AWS::IAM::Role",
+	"WorkerInstanceProfile":           "AWS::IAM::InstanceProfile",
+	"ReaperRole":                      "AWS::IAM::Role",
+	"ReaperFunction":                  "AWS::Lambda::Function",
+	"ReaperSchedule":                  "AWS::Events::Rule",
+	"ReaperInvokePermission":          "AWS::Lambda::Permission",
+	"ReaperErrorAlarm":                "AWS::CloudWatch::Alarm",
+	"ControlRuntimePolicy":            "AWS::IAM::Policy",
+	"ControlEntrypointPolicy":         "AWS::IAM::ManagedPolicy",
 }
 
 var templateAccountReadActions = map[string]struct{}{
@@ -105,8 +108,12 @@ func ValidateTemplate(raw []byte) error {
 			}
 		}
 	}
-	if !retained(resources, "ArtifactBucket") || !retained(resources, "ManifestTable") || !retained(resources, "WorkerLogGroup") || !retained(resources, "ReaperLogGroup") || !retained(resources, "SecretNamespaceMarker") {
-		return fmt.Errorf("%w: durable Foundation resources must be retained", ErrInvalidTemplate)
+	if !destroyableOnlyByStackDelete(resources, "FoundationKey") || !destroyableOnlyByStackDelete(resources, "ArtifactBucket") || !destroyableOnlyByStackDelete(resources, "ManifestTable") ||
+		!destroyableOnlyByStackDelete(resources, "WorkerLogGroup") || !destroyableOnlyByStackDelete(resources, "ReaperLogGroup") || !destroyableOnlyByStackDelete(resources, "SecretNamespaceMarker") {
+		return fmt.Errorf("%w: Foundation resources must remain removable after upgrade and approved full teardown", ErrInvalidTemplate)
+	}
+	if !validReleaseEnvironment(resources) {
+		return fmt.Errorf("%w: fixed AMI release environment is not private and zero-route", ErrInvalidTemplate)
 	}
 	if !validReaperImage(resources["ReaperFunction"]) {
 		return fmt.Errorf("%w: Reaper image must use the digest-bound parameter", ErrInvalidTemplate)
@@ -124,6 +131,31 @@ func ValidateTemplate(raw []byte) error {
 		return fmt.Errorf("%w: Control Role entry-point policy is not minimally scoped", ErrInvalidTemplate)
 	}
 	return nil
+}
+
+func validReleaseEnvironment(resources map[string]any) bool {
+	vpc, vpcOK := stringMap(resources["ReleaseVPC"])
+	vpcProperties, vpcPropertiesOK := stringMap(vpc["Properties"])
+	subnet, subnetOK := stringMap(resources["ReleasePrivateSubnet"])
+	subnetProperties, subnetPropertiesOK := stringMap(subnet["Properties"])
+	group, groupOK := stringMap(resources["ReleaseZeroIngressSecurityGroup"])
+	groupProperties, groupPropertiesOK := stringMap(group["Properties"])
+	vpcRef, vpcRefOK := stringMap(subnetProperties["VpcId"])
+	groupVPCRef, groupVPCRefOK := stringMap(groupProperties["VpcId"])
+	ingress, ingressOK := anySlice(groupProperties["SecurityGroupIngress"])
+	egress, egressOK := anySlice(groupProperties["SecurityGroupEgress"])
+	if !vpcOK || !vpcPropertiesOK || !subnetOK || !subnetPropertiesOK || !groupOK || !groupPropertiesOK || !vpcRefOK || !groupVPCRefOK || !ingressOK || !egressOK ||
+		scalarString(vpcProperties["CidrBlock"]) != "10.255.0.0/24" || scalarString(subnetProperties["CidrBlock"]) != "10.255.0.0/26" ||
+		vpcRef["Ref"] != "ReleaseVPC" || groupVPCRef["Ref"] != "ReleaseVPC" || subnetProperties["MapPublicIpOnLaunch"] != false || len(ingress) != 0 || len(egress) != 1 {
+		return false
+	}
+	rule, ok := stringMap(egress[0])
+	return ok && scalarString(rule["IpProtocol"]) == "-1" && scalarString(rule["CidrIp"]) == "127.0.0.1/32"
+}
+
+func destroyableOnlyByStackDelete(resources map[string]any, name string) bool {
+	resource, ok := stringMap(resources[name])
+	return ok && scalarString(resource["DeletionPolicy"]) == "Delete" && scalarString(resource["UpdateReplacePolicy"]) == "Delete"
 }
 
 func controlPolicyFailsClosed(value any) bool {

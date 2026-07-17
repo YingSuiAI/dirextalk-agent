@@ -12,6 +12,7 @@ import (
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
+	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
@@ -27,6 +28,7 @@ type CloudControlService struct {
 	statusReader    cloudstatus.Reader
 	destroyer       CloudDestroyCoordinator
 	entrypoint      CloudEntrypointCoordinator
+	foundation      CloudFoundationCoordinator
 	goalPlanner     CloudGoalPlanner
 	agentInstanceID string
 }
@@ -35,6 +37,12 @@ type CloudDestroyCoordinator interface {
 	Prepare(context.Context, clouddestroy.PrepareCommand) (clouddestroy.ChallengeV1, error)
 	Approve(context.Context, clouddestroy.ApproveCommand) (clouddestroy.OperationV1, error)
 	Get(context.Context, string, string) (clouddestroy.OperationV1, error)
+}
+
+type CloudFoundationCoordinator interface {
+	Prepare(context.Context, cloudfoundation.PrepareCommand) (cloudfoundation.ChallengeV1, error)
+	Approve(context.Context, cloudfoundation.ApproveCommand) (cloudfoundation.OperationV1, error)
+	Get(context.Context, string, string) (cloudfoundation.OperationV1, error)
 }
 
 // CloudEntrypointCoordinator is deliberately narrower than the general cloud
@@ -68,6 +76,11 @@ func NewCloudControlServiceWithGoals(coordinator cloudapp.Coordinator, agentInst
 	if len(entrypoints) > 0 {
 		service.entrypoint = entrypoints[0]
 	}
+	return service
+}
+
+func (service *CloudControlService) WithFoundation(coordinator CloudFoundationCoordinator) *CloudControlService {
+	service.foundation = coordinator
 	return service
 }
 

@@ -126,6 +126,31 @@ func (vault *CredentialVault) ResumeExistingGeneration(ctx context.Context, bind
 	return cloneEncryptedCredential(record), nil
 }
 
+// AdoptExistingGeneration is used only by a newly device-approved establish
+// retry after a prior operation became terminal. The caller has independently
+// re-proved the same account/Region with fresh admin credentials; this method
+// authenticates and reuses generation one without rotating an unrecoverable
+// IAM access key. Repository state, not caller input, decides whether adoption
+// is permitted.
+func (vault *CredentialVault) AdoptExistingGeneration(ctx context.Context, binding SourceCredentialBinding, expectedGeneration uint64) (EncryptedSourceCredential, error) {
+	if err := validateBinding(binding); err != nil || expectedGeneration != 0 {
+		return EncryptedSourceCredential{}, ErrCredentialRevisionConflict
+	}
+	record, err := vault.store.Get(ctx, binding.AgentInstanceID)
+	if errors.Is(err, ErrCredentialNotFound) {
+		return EncryptedSourceCredential{}, ErrCredentialNotFound
+	}
+	if err != nil || record.AgentInstanceID != binding.AgentInstanceID || record.AccountID != binding.AccountID || record.Region != binding.Region || record.Generation != 1 {
+		return EncryptedSourceCredential{}, ErrCredentialRevisionConflict
+	}
+	opened, err := openSourceCredential(vault.masterKey, binding, record)
+	if err != nil {
+		return EncryptedSourceCredential{}, err
+	}
+	opened.Wipe()
+	return cloneEncryptedCredential(record), nil
+}
+
 // CheckGeneration is a read-before-mutate guard for IAM access-key rotation.
 // Bootstrapper additionally serializes rotations in the single control
 // process; the final store write remains compare-and-swap protected.

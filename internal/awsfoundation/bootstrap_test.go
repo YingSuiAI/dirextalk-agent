@@ -314,16 +314,45 @@ func (factory *fakeBootstrapFactory) NewBootstrapProvider(_ context.Context, _ s
 }
 
 type fakeBootstrapProvider struct {
-	identity     awsprovider.CallerIdentity
-	identityErr  error
-	source       awsprovider.SourceCredentials
-	ensureErr    error
-	receipt      awsprovider.FoundationStackReceipt
-	stackErr     error
-	ensureCalls  int
-	stackCalls   int
-	stackRequest awsprovider.FoundationStackRequest
-	activeKeyIDs []string
+	identity                                      awsprovider.CallerIdentity
+	identityErr                                   error
+	source                                        awsprovider.SourceCredentials
+	ensureErr                                     error
+	receipt                                       awsprovider.FoundationStackReceipt
+	stackErr                                      error
+	ensureCalls                                   int
+	stackCalls                                    int
+	stackRequest                                  awsprovider.FoundationStackRequest
+	activeKeyIDs                                  []string
+	updateCalls, deleteCalls, deleteIdentityCalls int
+	policyUpdateCalls                             int
+	updateErr, deleteErr, deleteIdentityErr       error
+}
+
+func (provider *fakeBootstrapProvider) UpdateBootstrapPolicies(context.Context, awsprovider.BootstrapIdentitySpec) error {
+	provider.policyUpdateCalls++
+	return nil
+}
+
+func (provider *fakeBootstrapProvider) UpdateFoundationStack(_ context.Context, request awsprovider.FoundationStackRequest) (awsprovider.FoundationStackReceipt, error) {
+	provider.updateCalls++
+	provider.stackRequest = request
+	if provider.updateErr != nil {
+		return awsprovider.FoundationStackReceipt{}, provider.updateErr
+	}
+	return provider.receipt, nil
+}
+func (provider *fakeBootstrapProvider) DeleteFoundationStack(_ context.Context, request awsprovider.FoundationStackRequest) (awsprovider.FoundationStackReceipt, error) {
+	provider.deleteCalls++
+	provider.stackRequest = request
+	if provider.deleteErr != nil {
+		return awsprovider.FoundationStackReceipt{}, provider.deleteErr
+	}
+	return awsprovider.FoundationStackReceipt{Status: awsprovider.FoundationStackDeletedStatus, ObservedAt: provider.receipt.ObservedAt}, nil
+}
+func (provider *fakeBootstrapProvider) DeleteBootstrapIdentity(context.Context, awsprovider.BootstrapIdentitySpec) error {
+	provider.deleteIdentityCalls++
+	return provider.deleteIdentityErr
 }
 
 func (provider *fakeBootstrapProvider) GetCallerIdentity(context.Context) (awsprovider.CallerIdentity, error) {

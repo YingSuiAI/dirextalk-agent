@@ -51,6 +51,23 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 	}
 }
 
+func TestFoundationTemplateProvidesClosedAMIReleaseEnvironment(t *testing.T) {
+	template := testFoundationTemplate(t)
+	for _, required := range [][]byte{
+		[]byte("ReleaseVPC"), []byte("AWS::EC2::VPC"),
+		[]byte("ReleasePrivateSubnet"), []byte("MapPublicIpOnLaunch: false"),
+		[]byte("ReleaseZeroIngressSecurityGroup"), []byte("SecurityGroupIngress: []"), []byte("CidrIp: 127.0.0.1/32"),
+		[]byte("ReleasePrivateSubnetId"), []byte("ReleaseZeroIngressSecurityGroupId"),
+	} {
+		if !bytes.Contains(template, required) {
+			t.Fatalf("Foundation template does not bind the fixed AMI release environment marker %q", required)
+		}
+	}
+	if err := ValidateTemplate(template); err != nil {
+		t.Fatalf("ValidateTemplate() error = %v", err)
+	}
+}
+
 func TestFoundationTemplateReaperEntrypointPermissionsAreMinimumScoped(t *testing.T) {
 	statements := reaperStatements(t)
 	assertStatement := func(sid string, actions, resources []string, tagPrefix string) {

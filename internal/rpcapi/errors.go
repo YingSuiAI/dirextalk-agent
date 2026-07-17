@@ -6,6 +6,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
+	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
@@ -29,6 +30,7 @@ func publicError(err error) error {
 		errors.Is(err, planning.ErrInvalid), errors.Is(err, planning.ErrRawSecret),
 		errors.Is(err, clouddestroy.ErrInvalid),
 		errors.Is(err, entrypoint.ErrInvalid),
+		errors.Is(err, cloudfoundation.ErrInvalid),
 		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, task.ErrNotFound), errors.Is(err, task.ErrStepNotFound), errors.Is(err, task.ErrAttemptNotFound), errors.Is(err, auth.ErrCredentialNotFound),
@@ -36,6 +38,7 @@ func publicError(err error) error {
 		errors.Is(err, planning.ErrNotFound),
 		errors.Is(err, clouddestroy.ErrNotFound),
 		errors.Is(err, entrypoint.ErrNotFound),
+		errors.Is(err, cloudfoundation.ErrNotFound),
 		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
 			return status.Error(codes.NotFound, "requested cloud status entity was not found")
@@ -56,6 +59,8 @@ func publicError(err error) error {
 		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier cloud destroy request")
 	case errors.Is(err, entrypoint.ErrIdempotencyConflict):
 		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier cloud entrypoint request")
+	case errors.Is(err, cloudfoundation.ErrIdempotencyConflict):
+		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier Foundation request")
 	case errors.Is(err, task.ErrRevisionConflict), errors.Is(err, task.ErrStaleLease), errors.Is(err, auth.ErrCredentialRevision),
 		errors.Is(err, secretbootstrap.ErrRevisionConflict), errors.Is(err, cloudapp.ErrRevisionConflict):
 		if errors.Is(err, cloudapp.ErrRevisionConflict) {
@@ -66,10 +71,14 @@ func publicError(err error) error {
 		return status.Error(codes.Aborted, "cloud destroy scope revision does not match")
 	case errors.Is(err, entrypoint.ErrRevisionConflict):
 		return status.Error(codes.Aborted, "cloud entrypoint scope revision does not match")
+	case errors.Is(err, cloudfoundation.ErrRevisionConflict):
+		return status.Error(codes.Aborted, "Foundation scope revision does not match")
 	case errors.Is(err, clouddestroy.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid device approval is required")
 	case errors.Is(err, entrypoint.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid device approval is required")
+	case errors.Is(err, cloudfoundation.ErrApprovalRequired):
+		return status.Error(codes.PermissionDenied, "valid Foundation device approval is required")
 	case errors.Is(err, entrypoint.ErrApprovalExpired), errors.Is(err, entrypoint.ErrWorkerNotReady), errors.Is(err, entrypoint.ErrReadBackRequired), errors.Is(err, entrypoint.ErrUnsupportedEntry):
 		return status.Error(codes.FailedPrecondition, "cloud entrypoint approval scope is no longer valid")
 	case errors.Is(err, clouddestroy.ErrManaged):
@@ -78,6 +87,8 @@ func publicError(err error) error {
 		return status.Error(codes.Unavailable, "cloud destroy persistence is unavailable")
 	case errors.Is(err, entrypoint.ErrUnavailable):
 		return status.Error(codes.Unavailable, "cloud entrypoint persistence is unavailable")
+	case errors.Is(err, cloudfoundation.ErrUnavailable):
+		return status.Error(codes.Unavailable, "Foundation persistence is unavailable")
 	case errors.Is(err, task.ErrTerminal), errors.Is(err, task.ErrNoReadyStep), errors.Is(err, task.ErrLeaseExpired), errors.Is(err, auth.ErrCredentialInactive),
 		errors.Is(err, secretbootstrap.ErrStateConflict), errors.Is(err, secretbootstrap.ErrExpired), errors.Is(err, planning.ErrResearchPending):
 		return status.Error(codes.FailedPrecondition, err.Error())

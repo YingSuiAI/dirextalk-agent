@@ -15,6 +15,7 @@ import (
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entryexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
+	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
@@ -33,6 +34,7 @@ type CloudComposition struct {
 	Coordinator                cloudapp.Coordinator
 	DestroyCoordinator         *clouddestroy.Service
 	Entrypoint                 *entrypoint.Service
+	FoundationLifecycle        *cloudfoundation.Service
 	Dispatcher                 *cloudexecution.Dispatcher
 	Lifecycle                  *cloudexecution.EphemeralDestroyController
 	WorkerIdentityVerifier     *workeridentity.Verifier
@@ -48,6 +50,7 @@ type CloudComposition struct {
 	healthProbeScheduler       *healthProbeScheduler
 	orphanRecovery             *orphanRecoveryController
 	entryExecutor              entryexecution.Runner
+	foundationExecutor         *cloudfoundation.Executor
 	agentInstanceID            string
 	cloudGoalStore             *postgres.Store
 	vault                      *awsfoundation.CredentialVault
@@ -69,10 +72,13 @@ func (composition *CloudComposition) NewCloudGoalOutputAdapter(model planning.Cl
 // Recover resumes exact, pre-authorized Foundation operations and persists any
 // missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
 	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
+		return err
+	}
+	if err := composition.foundationExecutor.RunOnce(ctx); err != nil {
 		return err
 	}
 	if err := composition.foundationLaunches.RunOnce(ctx); err != nil {
@@ -97,12 +103,12 @@ func (composition *CloudComposition) Close() {
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 7)
+	errorsChannel := make(chan error, 8)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
@@ -110,9 +116,10 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	go func() { errorsChannel <- composition.healthProbeScheduler.Run(runContext) }()
 	go func() { errorsChannel <- composition.orphanRecovery.Run(runContext) }()
 	go func() { errorsChannel <- composition.entryExecutor.Run(runContext) }()
+	go func() { errorsChannel <- composition.foundationExecutor.Run(runContext) }()
 	first := <-errorsChannel
 	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -323,6 +330,36 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	foundationRepository, err := postgres.NewFoundationLifecycleRepository(store)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	foundationSnapshots, err := cloudapp.NewFoundationSnapshotReader(agentInstanceID, awsfoundationassets.Template(), reaperImageURI, manager, store, cloudStatuses, foundationRepository, time.Now)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	foundationMutator, err := cloudapp.NewAWSFoundationLifecycleMutator(foundation)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	foundationProvider, err := cloudapp.NewFoundationLifecycleProvider(manager, foundationMutator)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	foundationExecutor, err := cloudfoundation.NewExecutor(foundationRepository, foundationProvider)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	foundationLifecycle, err := cloudfoundation.NewService(agentInstanceID, foundationRepository, approvalReads, foundationSnapshots, foundationExecutor, time.Now)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	entryScopeBuilder, err := newEntrypointScopeBuilder(agentInstanceID, facts, store, cloudStatuses, runtimeFactory, time.Now)
 	if err != nil {
 		vault.Close()
@@ -372,7 +409,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	return &CloudComposition{
-		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, Dispatcher: dispatcher, Lifecycle: lifecycle,
+		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, FoundationLifecycle: foundationLifecycle, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
 		FoundationConnections: connections, ActiveQuotes: activeQuotes, ActivePlacements: activePlacements, ProviderPlans: providerPlans,
 		ManifestRecovery:     manifestRecovery,
@@ -382,6 +419,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		healthProbeScheduler: healthProbeScheduler,
 		orphanRecovery:       orphanRecovery,
 		entryExecutor:        entryExecutor,
+		foundationExecutor:   foundationExecutor,
 		agentInstanceID:      agentInstanceID,
 		cloudGoalStore:       store,
 		vault:                vault,

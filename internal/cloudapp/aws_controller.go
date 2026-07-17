@@ -43,7 +43,7 @@ func (controller *AWSController) PreviewIdentity(ctx context.Context, callerClie
 	if err != nil {
 		return AWSIdentityEvidence{}, mapBootstrapError(err)
 	}
-	if descriptor.AgentInstanceID != controller.agentInstanceID || descriptor.Purpose != "aws_connection" || descriptor.Status != secretbootstrap.StatusUploaded || descriptor.Revision != expectedRevision {
+	if descriptor.AgentInstanceID != controller.agentInstanceID || !validAWSBootstrapPurpose(descriptor.Purpose) || descriptor.Status != secretbootstrap.StatusUploaded || descriptor.Revision != expectedRevision {
 		return AWSIdentityEvidence{}, ErrRevisionConflict
 	}
 	var identity awsprovider.CallerIdentity
@@ -97,6 +97,15 @@ func (controller *AWSController) PreviewIdentity(ctx context.Context, callerClie
 		return AWSIdentityEvidence{}, ErrUnavailable
 	}
 	return persisted, nil
+}
+
+func validAWSBootstrapPurpose(value string) bool {
+	switch value {
+	case "aws_connection", "aws_foundation_establish", "aws_foundation_upgrade", "aws_foundation_teardown", "aws_foundation_remediate_destroy_blocked":
+		return true
+	default:
+		return false
+	}
 }
 
 func mapBootstrapError(err error) error {

@@ -948,6 +948,9 @@ service CloudControlService {
   rpc CreateApprovalChallenge(CreateApprovalChallengeRequest) returns (CreateApprovalChallengeResponse);
   rpc ApproveCloudPlan(ApproveCloudPlanRequest) returns (ApproveCloudPlanResponse);
   rpc EstablishAwsConnection(EstablishAwsConnectionRequest) returns (EstablishAwsConnectionResponse);
+  rpc CreateAwsFoundationOperationChallenge(CreateAwsFoundationOperationChallengeRequest) returns (CreateAwsFoundationOperationChallengeResponse);
+  rpc ApproveAwsFoundationOperation(ApproveAwsFoundationOperationRequest) returns (ApproveAwsFoundationOperationResponse);
+  rpc GetAwsFoundationOperation(GetAwsFoundationOperationRequest) returns (GetAwsFoundationOperationResponse);
   rpc GetCloudConnection(GetCloudConnectionRequest) returns (GetCloudConnectionResponse);
   rpc ListCloudConnections(ListCloudConnectionsRequest) returns (ListCloudConnectionsResponse);
   rpc GetCloudDeployment(GetCloudDeploymentRequest) returns (GetCloudDeploymentResponse);

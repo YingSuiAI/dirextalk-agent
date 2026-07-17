@@ -32,6 +32,7 @@ type serverOptions struct {
 	cloudCoordinator   cloudapp.Coordinator
 	cloudDestroy       rpcapi.CloudDestroyCoordinator
 	cloudEntrypoint    rpcapi.CloudEntrypointCoordinator
+	cloudFoundation    rpcapi.CloudFoundationCoordinator
 	cloudGoals         rpcapi.CloudGoalPlanner
 	cloudHealth        cloudstatus.HealthReader
 	workerService      *worker.Service
@@ -66,6 +67,9 @@ func WithCloudDestroy(coordinator rpcapi.CloudDestroyCoordinator) ServerOption {
 
 func WithCloudEntrypoint(coordinator rpcapi.CloudEntrypointCoordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudEntrypoint = coordinator }
+}
+func WithCloudFoundation(coordinator rpcapi.CloudFoundationCoordinator) ServerOption {
+	return func(options *serverOptions) { options.cloudFoundation = coordinator }
 }
 
 func WithCloudGoals(planner rpcapi.CloudGoalPlanner) ServerOption {
@@ -140,6 +144,9 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.CloudControlService_CreateApprovalChallenge_FullMethodName:               "cloud.approve",
 		agentv1.CloudControlService_ApproveCloudPlan_FullMethodName:                      "cloud.approve",
 		agentv1.CloudControlService_EstablishAwsConnection_FullMethodName:                "cloud.connection.write",
+		agentv1.CloudControlService_CreateAwsFoundationOperationChallenge_FullMethodName: "cloud.approve",
+		agentv1.CloudControlService_ApproveAwsFoundationOperation_FullMethodName:         "cloud.approve",
+		agentv1.CloudControlService_GetAwsFoundationOperation_FullMethodName:             "cloud.read",
 		agentv1.CloudControlService_GetCloudConnection_FullMethodName:                    "cloud.read",
 		agentv1.CloudControlService_ListCloudConnections_FullMethodName:                  "cloud.read",
 		agentv1.CloudControlService_GetCloudDeployment_FullMethodName:                    "cloud.read",
@@ -179,7 +186,8 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))
-	agentv1.RegisterCloudControlServiceServer(grpcServer, rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals, options.cloudEntrypoint))
+	cloudControl := rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals, options.cloudEntrypoint).WithFoundation(options.cloudFoundation)
+	agentv1.RegisterCloudControlServiceServer(grpcServer, cloudControl)
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer))
 	healthServer := health.NewServer()

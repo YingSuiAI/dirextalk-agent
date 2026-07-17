@@ -23,6 +23,7 @@ import (
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
@@ -227,6 +228,47 @@ func TestSDKProviderRejectsFoundationFailureAndReturnsContextTimeoutForRetry(t *
 	}
 }
 
+func TestSDKProviderDeleteFoundationRecoversLostResponseAndInProgressRetry(t *testing.T) {
+	clients, _, formation := completeFakeClients()
+	multipart := &foundationMultipartS3{}
+	clients.S3 = multipart
+	now := time.Date(2026, 7, 17, 6, 0, 0, 0, time.UTC)
+	provider, err := awsprovider.NewSDKProvider(clients, "us-east-1", func() time.Time { return now }, awsprovider.WithFoundationStackPollInterval(time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, _ := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
+	sum := sha256.Sum256(template)
+	request := awsprovider.FoundationStackRequest{StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
+		FoundationRoleARN: "arn:aws:iam::123456789012:role/dtx-agent-0123456789ab-foundation", ClientToken: "dtx-delete-operation",
+		TemplateBody: string(template), TemplateSHA256: "sha256:" + hex.EncodeToString(sum[:]), Parameters: map[string]string{"AgentInstanceId": "agent-01", "ArtifactBucketName": "dtx-agent-test-bucket"},
+		Tags: []awsprovider.Tag{{Key: awsprovider.TagAgentInstanceID, Value: "agent-01"}}, TerminationProtect: true}
+	stable := stackReadBack(request, cloudformationtypes.StackStatusCreateComplete)
+	deleting := stackReadBack(request, cloudformationtypes.StackStatusDeleteInProgress)
+	absent := &smithy.GenericAPIError{Code: "ValidationError", Message: "stack does not exist"}
+	formation.describeOutputs = []*cloudformation.DescribeStacksOutput{stable, deleting, &cloudformation.DescribeStacksOutput{}}
+	formation.describeErrors = []error{nil, nil, absent}
+	formation.deleteErr = errors.New("connection closed after delete was accepted")
+	receipt, err := provider.DeleteFoundationStack(context.Background(), request)
+	if err != nil {
+		t.Fatalf("DeleteFoundationStack() error = %v", err)
+	}
+	if receipt.Status != awsprovider.FoundationStackDeletedStatus || formation.deleteInput == nil || formation.terminationInput == nil || multipart.abortCalls != 1 {
+		t.Fatalf("receipt=%#v delete=%#v protection=%#v", receipt, formation.deleteInput, formation.terminationInput)
+	}
+
+	clients, _, formation = completeFakeClients()
+	provider, _ = awsprovider.NewSDKProvider(clients, "us-east-1", func() time.Time { return now }, awsprovider.WithFoundationStackPollInterval(time.Nanosecond))
+	formation.describeOutputs = []*cloudformation.DescribeStacksOutput{deleting, &cloudformation.DescribeStacksOutput{}}
+	formation.describeErrors = []error{nil, absent}
+	if _, err := provider.DeleteFoundationStack(context.Background(), request); err != nil {
+		t.Fatalf("in-progress recovery error = %v", err)
+	}
+	if formation.deleteInput != nil || formation.terminationInput != nil {
+		t.Fatalf("in-progress recovery repeated delete preparation: delete=%#v protection=%#v", formation.deleteInput, formation.terminationInput)
+	}
+}
+
 func stackReadBack(request awsprovider.FoundationStackRequest, status cloudformationtypes.StackStatus) *cloudformation.DescribeStacksOutput {
 	parameters := make([]cloudformationtypes.Parameter, 0, len(request.Parameters))
 	for key, value := range request.Parameters {
@@ -347,20 +389,49 @@ func (client *fakeIAM) CreateAccessKey(_ context.Context, input *iam.CreateAcces
 	}
 	return client.createAccessKeyOutput, nil
 }
+func (client *fakeIAM) DeleteUserPolicy(context.Context, *iam.DeleteUserPolicyInput, ...func(*iam.Options)) (*iam.DeleteUserPolicyOutput, error) {
+	return &iam.DeleteUserPolicyOutput{}, nil
+}
+func (client *fakeIAM) DeleteUser(context.Context, *iam.DeleteUserInput, ...func(*iam.Options)) (*iam.DeleteUserOutput, error) {
+	return &iam.DeleteUserOutput{}, nil
+}
+func (client *fakeIAM) DeleteRolePolicy(context.Context, *iam.DeleteRolePolicyInput, ...func(*iam.Options)) (*iam.DeleteRolePolicyOutput, error) {
+	return &iam.DeleteRolePolicyOutput{}, nil
+}
+func (client *fakeIAM) DeleteRole(context.Context, *iam.DeleteRoleInput, ...func(*iam.Options)) (*iam.DeleteRoleOutput, error) {
+	return &iam.DeleteRoleOutput{}, nil
+}
 
 type fakeCFN struct {
-	createInput     *cloudformation.CreateStackInput
-	createOutput    *cloudformation.CreateStackOutput
-	createErr       error
-	describeOutput  *cloudformation.DescribeStacksOutput
-	describeOutputs []*cloudformation.DescribeStacksOutput
-	describeCalls   int
-	templateOutput  *cloudformation.GetTemplateOutput
+	createInput      *cloudformation.CreateStackInput
+	createOutput     *cloudformation.CreateStackOutput
+	createErr        error
+	describeOutput   *cloudformation.DescribeStacksOutput
+	describeOutputs  []*cloudformation.DescribeStacksOutput
+	describeCalls    int
+	templateOutput   *cloudformation.GetTemplateOutput
+	updateInput      *cloudformation.UpdateStackInput
+	deleteInput      *cloudformation.DeleteStackInput
+	terminationInput *cloudformation.UpdateTerminationProtectionInput
+	deleteErr        error
+	describeErrors   []error
 }
 
 func (client *fakeCFN) CreateStack(_ context.Context, input *cloudformation.CreateStackInput, _ ...func(*cloudformation.Options)) (*cloudformation.CreateStackOutput, error) {
 	client.createInput = input
 	return client.createOutput, client.createErr
+}
+func (client *fakeCFN) UpdateStack(_ context.Context, input *cloudformation.UpdateStackInput, _ ...func(*cloudformation.Options)) (*cloudformation.UpdateStackOutput, error) {
+	client.updateInput = input
+	return &cloudformation.UpdateStackOutput{}, nil
+}
+func (client *fakeCFN) DeleteStack(_ context.Context, input *cloudformation.DeleteStackInput, _ ...func(*cloudformation.Options)) (*cloudformation.DeleteStackOutput, error) {
+	client.deleteInput = input
+	return &cloudformation.DeleteStackOutput{}, client.deleteErr
+}
+func (client *fakeCFN) UpdateTerminationProtection(_ context.Context, input *cloudformation.UpdateTerminationProtectionInput, _ ...func(*cloudformation.Options)) (*cloudformation.UpdateTerminationProtectionOutput, error) {
+	client.terminationInput = input
+	return &cloudformation.UpdateTerminationProtectionOutput{}, nil
 }
 
 func (client *fakeCFN) DescribeStacks(context.Context, *cloudformation.DescribeStacksInput, ...func(*cloudformation.Options)) (*cloudformation.DescribeStacksOutput, error) {
@@ -370,6 +441,9 @@ func (client *fakeCFN) DescribeStacks(context.Context, *cloudformation.DescribeS
 			index = len(client.describeOutputs) - 1
 		}
 		client.describeCalls++
+		if index < len(client.describeErrors) && client.describeErrors[index] != nil {
+			return nil, client.describeErrors[index]
+		}
 		return client.describeOutputs[index], nil
 	}
 	return client.describeOutput, nil
@@ -382,6 +456,37 @@ type fakeS3 struct{}
 
 func (fakeS3) HeadBucket(context.Context, *s3.HeadBucketInput, ...func(*s3.Options)) (*s3.HeadBucketOutput, error) {
 	return &s3.HeadBucketOutput{}, nil
+}
+func (fakeS3) ListMultipartUploads(context.Context, *s3.ListMultipartUploadsInput, ...func(*s3.Options)) (*s3.ListMultipartUploadsOutput, error) {
+	return &s3.ListMultipartUploadsOutput{}, nil
+}
+func (fakeS3) AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error) {
+	return &s3.AbortMultipartUploadOutput{}, nil
+}
+func (fakeS3) ListObjectVersions(context.Context, *s3.ListObjectVersionsInput, ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {
+	return &s3.ListObjectVersionsOutput{}, nil
+}
+func (fakeS3) DeleteObjects(context.Context, *s3.DeleteObjectsInput, ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error) {
+	return &s3.DeleteObjectsOutput{}, nil
+}
+
+type foundationMultipartS3 struct {
+	fakeS3
+	listCalls  int
+	abortCalls int
+}
+
+func (client *foundationMultipartS3) ListMultipartUploads(context.Context, *s3.ListMultipartUploadsInput, ...func(*s3.Options)) (*s3.ListMultipartUploadsOutput, error) {
+	client.listCalls++
+	if client.listCalls == 1 {
+		return &s3.ListMultipartUploadsOutput{Uploads: []s3types.MultipartUpload{{Key: aws.String("partial-artifact"), UploadId: aws.String("upload-1")}}}, nil
+	}
+	return &s3.ListMultipartUploadsOutput{}, nil
+}
+
+func (client *foundationMultipartS3) AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error) {
+	client.abortCalls++
+	return &s3.AbortMultipartUploadOutput{}, nil
 }
 
 type fakeKMS struct{}

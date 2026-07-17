@@ -27,6 +27,8 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 		{message: &agentv1.CreateCloudPlanRequest{}},
 		{message: &agentv1.CreateApprovalChallengeRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.ApproveCloudPlanRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CreateAwsFoundationOperationChallengeRequest{}, revisionField: "expected_bootstrap_revision"},
+		{message: &agentv1.ApproveAwsFoundationOperationRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.CreateServiceKeyRequest{}},
 		{message: &agentv1.RevokeServiceKeyRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.EnrollRequest{}, revisionField: "expected_revision"},
@@ -48,6 +50,28 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 				assertFieldKind(t, descriptor, test.revisionField, protoreflect.Int64Kind)
 			}
 		})
+	}
+}
+
+func TestFoundationApprovalContractIsIndependentAndFullyFenced(t *testing.T) {
+	scope := (&agentv1.AwsFoundationOperationScope{}).ProtoReflect().Descriptor()
+	for _, required := range []protoreflect.Name{"agent_instance_id", "owner_id", "action", "connection_id", "expected_connection_revision", "account_id", "region",
+		"bootstrap_session_id", "expected_bootstrap_revision", "expected_credential_generation", "identity_observed_at", "identity_expires_at",
+		"foundation_template_digest", "reaper_image_uri", "release_environment"} {
+		if scope.Fields().ByName(required) == nil {
+			t.Fatalf("Foundation scope is missing %s", required)
+		}
+	}
+	for _, forbidden := range []protoreflect.Name{"plan_id", "quote_id", "recipe_id", "instance_type", "operator_credentials", "argv", "environment"} {
+		if scope.Fields().ByName(forbidden) != nil {
+			t.Fatalf("Foundation scope must not contain %s", forbidden)
+		}
+	}
+	approve := (&agentv1.ApproveAwsFoundationOperationRequest{}).ProtoReflect().Descriptor()
+	for _, required := range []protoreflect.Name{"operation_id", "expected_revision", "connection_id", "action", "scope_digest", "approval"} {
+		if approve.Fields().ByName(required) == nil {
+			t.Fatalf("Foundation approval request is missing %s", required)
+		}
 	}
 }
 

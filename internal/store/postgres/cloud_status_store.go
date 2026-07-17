@@ -174,9 +174,11 @@ func scanCloudConnectionStatus(row cloudConnectionStatusRow) (cloudstatus.Connec
 	}
 	item.ConnectionID = connectionID.String()
 	item.CreatedAt, item.UpdatedAt = item.CreatedAt.UTC(), item.UpdatedAt.UTC()
+	providerBindingPresent := strings.TrimSpace(item.ControlRoleARN) != "" && strings.TrimSpace(item.FoundationStackID) != ""
+	providerBindingRemoved := strings.TrimSpace(item.ControlRoleARN) == "" && strings.TrimSpace(item.FoundationStackID) == ""
 	if connectionID == uuid.Nil || cloudstatus.ValidateOwnerID(item.OwnerID) != nil ||
 		!awsAccountPattern.MatchString(item.AccountID) || !awsRegionPattern.MatchString(item.Region) ||
-		strings.TrimSpace(item.ControlRoleARN) == "" || strings.TrimSpace(item.FoundationStackID) == "" ||
+		(!providerBindingPresent && !providerBindingRemoved) || (item.Status != "destroyed" && !providerBindingPresent) ||
 		item.CredentialGeneration < 1 || item.Revision < 1 || item.CreatedAt.IsZero() || item.UpdatedAt.Before(item.CreatedAt) ||
 		!validCloudConnectionStatus(item.Status) {
 		return cloudstatus.Connection{}, errors.New("invalid persisted cloud connection status")
@@ -186,7 +188,7 @@ func scanCloudConnectionStatus(row cloudConnectionStatusRow) (cloudstatus.Connec
 
 func validCloudConnectionStatus(value string) bool {
 	switch value {
-	case "establishing", "active", "degraded", "teardown_blocked", "destroyed":
+	case "establishing", "active", "degraded", "tearing_down", "teardown_blocked", "destroyed":
 		return true
 	default:
 		return false

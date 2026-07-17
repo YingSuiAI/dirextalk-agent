@@ -584,6 +584,9 @@ const (
 	CloudControlService_CreateApprovalChallenge_FullMethodName               = "/dirextalk.agent.v1.CloudControlService/CreateApprovalChallenge"
 	CloudControlService_ApproveCloudPlan_FullMethodName                      = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPlan"
 	CloudControlService_EstablishAwsConnection_FullMethodName                = "/dirextalk.agent.v1.CloudControlService/EstablishAwsConnection"
+	CloudControlService_CreateAwsFoundationOperationChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateAwsFoundationOperationChallenge"
+	CloudControlService_ApproveAwsFoundationOperation_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/ApproveAwsFoundationOperation"
+	CloudControlService_GetAwsFoundationOperation_FullMethodName             = "/dirextalk.agent.v1.CloudControlService/GetAwsFoundationOperation"
 	CloudControlService_GetCloudConnection_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/GetCloudConnection"
 	CloudControlService_ListCloudConnections_FullMethodName                  = "/dirextalk.agent.v1.CloudControlService/ListCloudConnections"
 	CloudControlService_GetCloudDeployment_FullMethodName                    = "/dirextalk.agent.v1.CloudControlService/GetCloudDeployment"
@@ -617,6 +620,9 @@ type CloudControlServiceClient interface {
 	CreateApprovalChallenge(ctx context.Context, in *CreateApprovalChallengeRequest, opts ...grpc.CallOption) (*CreateApprovalChallengeResponse, error)
 	ApproveCloudPlan(ctx context.Context, in *ApproveCloudPlanRequest, opts ...grpc.CallOption) (*ApproveCloudPlanResponse, error)
 	EstablishAwsConnection(ctx context.Context, in *EstablishAwsConnectionRequest, opts ...grpc.CallOption) (*EstablishAwsConnectionResponse, error)
+	CreateAwsFoundationOperationChallenge(ctx context.Context, in *CreateAwsFoundationOperationChallengeRequest, opts ...grpc.CallOption) (*CreateAwsFoundationOperationChallengeResponse, error)
+	ApproveAwsFoundationOperation(ctx context.Context, in *ApproveAwsFoundationOperationRequest, opts ...grpc.CallOption) (*ApproveAwsFoundationOperationResponse, error)
+	GetAwsFoundationOperation(ctx context.Context, in *GetAwsFoundationOperationRequest, opts ...grpc.CallOption) (*GetAwsFoundationOperationResponse, error)
 	GetCloudConnection(ctx context.Context, in *GetCloudConnectionRequest, opts ...grpc.CallOption) (*GetCloudConnectionResponse, error)
 	ListCloudConnections(ctx context.Context, in *ListCloudConnectionsRequest, opts ...grpc.CallOption) (*ListCloudConnectionsResponse, error)
 	GetCloudDeployment(ctx context.Context, in *GetCloudDeploymentRequest, opts ...grpc.CallOption) (*GetCloudDeploymentResponse, error)
@@ -747,6 +753,36 @@ func (c *cloudControlServiceClient) EstablishAwsConnection(ctx context.Context, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(EstablishAwsConnectionResponse)
 	err := c.cc.Invoke(ctx, CloudControlService_EstablishAwsConnection_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateAwsFoundationOperationChallenge(ctx context.Context, in *CreateAwsFoundationOperationChallengeRequest, opts ...grpc.CallOption) (*CreateAwsFoundationOperationChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateAwsFoundationOperationChallengeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateAwsFoundationOperationChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveAwsFoundationOperation(ctx context.Context, in *ApproveAwsFoundationOperationRequest, opts ...grpc.CallOption) (*ApproveAwsFoundationOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveAwsFoundationOperationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveAwsFoundationOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetAwsFoundationOperation(ctx context.Context, in *GetAwsFoundationOperationRequest, opts ...grpc.CallOption) (*GetAwsFoundationOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAwsFoundationOperationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetAwsFoundationOperation_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -928,6 +964,9 @@ type CloudControlServiceServer interface {
 	CreateApprovalChallenge(context.Context, *CreateApprovalChallengeRequest) (*CreateApprovalChallengeResponse, error)
 	ApproveCloudPlan(context.Context, *ApproveCloudPlanRequest) (*ApproveCloudPlanResponse, error)
 	EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error)
+	CreateAwsFoundationOperationChallenge(context.Context, *CreateAwsFoundationOperationChallengeRequest) (*CreateAwsFoundationOperationChallengeResponse, error)
+	ApproveAwsFoundationOperation(context.Context, *ApproveAwsFoundationOperationRequest) (*ApproveAwsFoundationOperationResponse, error)
+	GetAwsFoundationOperation(context.Context, *GetAwsFoundationOperationRequest) (*GetAwsFoundationOperationResponse, error)
 	GetCloudConnection(context.Context, *GetCloudConnectionRequest) (*GetCloudConnectionResponse, error)
 	ListCloudConnections(context.Context, *ListCloudConnectionsRequest) (*ListCloudConnectionsResponse, error)
 	GetCloudDeployment(context.Context, *GetCloudDeploymentRequest) (*GetCloudDeploymentResponse, error)
@@ -986,6 +1025,15 @@ func (UnimplementedCloudControlServiceServer) ApproveCloudPlan(context.Context, 
 }
 func (UnimplementedCloudControlServiceServer) EstablishAwsConnection(context.Context, *EstablishAwsConnectionRequest) (*EstablishAwsConnectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method EstablishAwsConnection not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateAwsFoundationOperationChallenge(context.Context, *CreateAwsFoundationOperationChallengeRequest) (*CreateAwsFoundationOperationChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateAwsFoundationOperationChallenge not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveAwsFoundationOperation(context.Context, *ApproveAwsFoundationOperationRequest) (*ApproveAwsFoundationOperationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveAwsFoundationOperation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetAwsFoundationOperation(context.Context, *GetAwsFoundationOperationRequest) (*GetAwsFoundationOperationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAwsFoundationOperation not implemented")
 }
 func (UnimplementedCloudControlServiceServer) GetCloudConnection(context.Context, *GetCloudConnectionRequest) (*GetCloudConnectionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudConnection not implemented")
@@ -1250,6 +1298,60 @@ func _CloudControlService_EstablishAwsConnection_Handler(srv interface{}, ctx co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(CloudControlServiceServer).EstablishAwsConnection(ctx, req.(*EstablishAwsConnectionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateAwsFoundationOperationChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateAwsFoundationOperationChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateAwsFoundationOperationChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateAwsFoundationOperationChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateAwsFoundationOperationChallenge(ctx, req.(*CreateAwsFoundationOperationChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveAwsFoundationOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveAwsFoundationOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveAwsFoundationOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveAwsFoundationOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveAwsFoundationOperation(ctx, req.(*ApproveAwsFoundationOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetAwsFoundationOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAwsFoundationOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetAwsFoundationOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetAwsFoundationOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetAwsFoundationOperation(ctx, req.(*GetAwsFoundationOperationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1592,6 +1694,18 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "EstablishAwsConnection",
 			Handler:    _CloudControlService_EstablishAwsConnection_Handler,
+		},
+		{
+			MethodName: "CreateAwsFoundationOperationChallenge",
+			Handler:    _CloudControlService_CreateAwsFoundationOperationChallenge_Handler,
+		},
+		{
+			MethodName: "ApproveAwsFoundationOperation",
+			Handler:    _CloudControlService_ApproveAwsFoundationOperation_Handler,
+		},
+		{
+			MethodName: "GetAwsFoundationOperation",
+			Handler:    _CloudControlService_GetAwsFoundationOperation_Handler,
 		},
 		{
 			MethodName: "GetCloudConnection",

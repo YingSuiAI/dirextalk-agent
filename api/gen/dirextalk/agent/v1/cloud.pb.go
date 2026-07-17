@@ -334,6 +334,125 @@ func (CloudPlanStatus) EnumDescriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{5}
 }
 
+type AwsFoundationOperationAction int32
+
+const (
+	AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED               AwsFoundationOperationAction = 0
+	AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_ESTABLISH                 AwsFoundationOperationAction = 1
+	AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_UPGRADE                   AwsFoundationOperationAction = 2
+	AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_TEARDOWN                  AwsFoundationOperationAction = 3
+	AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_REMEDIATE_DESTROY_BLOCKED AwsFoundationOperationAction = 4
+)
+
+// Enum value maps for AwsFoundationOperationAction.
+var (
+	AwsFoundationOperationAction_name = map[int32]string{
+		0: "AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED",
+		1: "AWS_FOUNDATION_OPERATION_ACTION_ESTABLISH",
+		2: "AWS_FOUNDATION_OPERATION_ACTION_UPGRADE",
+		3: "AWS_FOUNDATION_OPERATION_ACTION_TEARDOWN",
+		4: "AWS_FOUNDATION_OPERATION_ACTION_REMEDIATE_DESTROY_BLOCKED",
+	}
+	AwsFoundationOperationAction_value = map[string]int32{
+		"AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED":               0,
+		"AWS_FOUNDATION_OPERATION_ACTION_ESTABLISH":                 1,
+		"AWS_FOUNDATION_OPERATION_ACTION_UPGRADE":                   2,
+		"AWS_FOUNDATION_OPERATION_ACTION_TEARDOWN":                  3,
+		"AWS_FOUNDATION_OPERATION_ACTION_REMEDIATE_DESTROY_BLOCKED": 4,
+	}
+)
+
+func (x AwsFoundationOperationAction) Enum() *AwsFoundationOperationAction {
+	p := new(AwsFoundationOperationAction)
+	*p = x
+	return p
+}
+
+func (x AwsFoundationOperationAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AwsFoundationOperationAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[6].Descriptor()
+}
+
+func (AwsFoundationOperationAction) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[6]
+}
+
+func (x AwsFoundationOperationAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AwsFoundationOperationAction.Descriptor instead.
+func (AwsFoundationOperationAction) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{6}
+}
+
+type AwsFoundationOperationStatus int32
+
+const (
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_UNSPECIFIED       AwsFoundationOperationStatus = 0
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_AWAITING_APPROVAL AwsFoundationOperationStatus = 1
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_APPROVED          AwsFoundationOperationStatus = 2
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_RUNNING           AwsFoundationOperationStatus = 3
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_SUCCEEDED         AwsFoundationOperationStatus = 4
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_FAILED_RETRIABLE  AwsFoundationOperationStatus = 5
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_DESTROY_BLOCKED   AwsFoundationOperationStatus = 6
+	AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_FAILED_TERMINAL   AwsFoundationOperationStatus = 7
+)
+
+// Enum value maps for AwsFoundationOperationStatus.
+var (
+	AwsFoundationOperationStatus_name = map[int32]string{
+		0: "AWS_FOUNDATION_OPERATION_STATUS_UNSPECIFIED",
+		1: "AWS_FOUNDATION_OPERATION_STATUS_AWAITING_APPROVAL",
+		2: "AWS_FOUNDATION_OPERATION_STATUS_APPROVED",
+		3: "AWS_FOUNDATION_OPERATION_STATUS_RUNNING",
+		4: "AWS_FOUNDATION_OPERATION_STATUS_SUCCEEDED",
+		5: "AWS_FOUNDATION_OPERATION_STATUS_FAILED_RETRIABLE",
+		6: "AWS_FOUNDATION_OPERATION_STATUS_DESTROY_BLOCKED",
+		7: "AWS_FOUNDATION_OPERATION_STATUS_FAILED_TERMINAL",
+	}
+	AwsFoundationOperationStatus_value = map[string]int32{
+		"AWS_FOUNDATION_OPERATION_STATUS_UNSPECIFIED":       0,
+		"AWS_FOUNDATION_OPERATION_STATUS_AWAITING_APPROVAL": 1,
+		"AWS_FOUNDATION_OPERATION_STATUS_APPROVED":          2,
+		"AWS_FOUNDATION_OPERATION_STATUS_RUNNING":           3,
+		"AWS_FOUNDATION_OPERATION_STATUS_SUCCEEDED":         4,
+		"AWS_FOUNDATION_OPERATION_STATUS_FAILED_RETRIABLE":  5,
+		"AWS_FOUNDATION_OPERATION_STATUS_DESTROY_BLOCKED":   6,
+		"AWS_FOUNDATION_OPERATION_STATUS_FAILED_TERMINAL":   7,
+	}
+)
+
+func (x AwsFoundationOperationStatus) Enum() *AwsFoundationOperationStatus {
+	p := new(AwsFoundationOperationStatus)
+	*p = x
+	return p
+}
+
+func (x AwsFoundationOperationStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AwsFoundationOperationStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[7].Descriptor()
+}
+
+func (AwsFoundationOperationStatus) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[7]
+}
+
+func (x AwsFoundationOperationStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AwsFoundationOperationStatus.Descriptor instead.
+func (AwsFoundationOperationStatus) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{7}
+}
+
 type CloudRecipeBinding struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RecipeId      string                 `protobuf:"bytes,1,opt,name=recipe_id,json=recipeId,proto3" json:"recipe_id,omitempty"`
@@ -3602,6 +3721,870 @@ func (x *EstablishAwsConnectionResponse) GetConnection() *CloudConnection {
 	return nil
 }
 
+type AwsFoundationReleaseEnvironment struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	PrivateSubnetCidr string                 `protobuf:"bytes,1,opt,name=private_subnet_cidr,json=privateSubnetCidr,proto3" json:"private_subnet_cidr,omitempty"`
+	ZeroIngress       bool                   `protobuf:"varint,2,opt,name=zero_ingress,json=zeroIngress,proto3" json:"zero_ingress,omitempty"`
+	ArtifactBucket    string                 `protobuf:"bytes,3,opt,name=artifact_bucket,json=artifactBucket,proto3" json:"artifact_bucket,omitempty"`
+	KmsAlias          string                 `protobuf:"bytes,4,opt,name=kms_alias,json=kmsAlias,proto3" json:"kms_alias,omitempty"`
+	BucketVersioned   bool                   `protobuf:"varint,5,opt,name=bucket_versioned,json=bucketVersioned,proto3" json:"bucket_versioned,omitempty"`
+	BucketSseKms      bool                   `protobuf:"varint,6,opt,name=bucket_sse_kms,json=bucketSseKms,proto3" json:"bucket_sse_kms,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *AwsFoundationReleaseEnvironment) Reset() {
+	*x = AwsFoundationReleaseEnvironment{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AwsFoundationReleaseEnvironment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AwsFoundationReleaseEnvironment) ProtoMessage() {}
+
+func (x *AwsFoundationReleaseEnvironment) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AwsFoundationReleaseEnvironment.ProtoReflect.Descriptor instead.
+func (*AwsFoundationReleaseEnvironment) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *AwsFoundationReleaseEnvironment) GetPrivateSubnetCidr() string {
+	if x != nil {
+		return x.PrivateSubnetCidr
+	}
+	return ""
+}
+
+func (x *AwsFoundationReleaseEnvironment) GetZeroIngress() bool {
+	if x != nil {
+		return x.ZeroIngress
+	}
+	return false
+}
+
+func (x *AwsFoundationReleaseEnvironment) GetArtifactBucket() string {
+	if x != nil {
+		return x.ArtifactBucket
+	}
+	return ""
+}
+
+func (x *AwsFoundationReleaseEnvironment) GetKmsAlias() string {
+	if x != nil {
+		return x.KmsAlias
+	}
+	return ""
+}
+
+func (x *AwsFoundationReleaseEnvironment) GetBucketVersioned() bool {
+	if x != nil {
+		return x.BucketVersioned
+	}
+	return false
+}
+
+func (x *AwsFoundationReleaseEnvironment) GetBucketSseKms() bool {
+	if x != nil {
+		return x.BucketSseKms
+	}
+	return false
+}
+
+type AwsFoundationOperationScope struct {
+	state                        protoimpl.MessageState           `protogen:"open.v1"`
+	SchemaVersion                string                           `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	AgentInstanceId              string                           `protobuf:"bytes,2,opt,name=agent_instance_id,json=agentInstanceId,proto3" json:"agent_instance_id,omitempty"`
+	OwnerId                      string                           `protobuf:"bytes,3,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Action                       AwsFoundationOperationAction     `protobuf:"varint,4,opt,name=action,proto3,enum=dirextalk.agent.v1.AwsFoundationOperationAction" json:"action,omitempty"`
+	ConnectionId                 string                           `protobuf:"bytes,5,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	ExpectedConnectionRevision   int64                            `protobuf:"varint,6,opt,name=expected_connection_revision,json=expectedConnectionRevision,proto3" json:"expected_connection_revision,omitempty"`
+	AccountId                    string                           `protobuf:"bytes,7,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	Region                       string                           `protobuf:"bytes,8,opt,name=region,proto3" json:"region,omitempty"`
+	BootstrapSessionId           string                           `protobuf:"bytes,9,opt,name=bootstrap_session_id,json=bootstrapSessionId,proto3" json:"bootstrap_session_id,omitempty"`
+	ExpectedBootstrapRevision    int64                            `protobuf:"varint,10,opt,name=expected_bootstrap_revision,json=expectedBootstrapRevision,proto3" json:"expected_bootstrap_revision,omitempty"`
+	ExpectedCredentialGeneration int64                            `protobuf:"varint,11,opt,name=expected_credential_generation,json=expectedCredentialGeneration,proto3" json:"expected_credential_generation,omitempty"`
+	FoundationTemplateDigest     string                           `protobuf:"bytes,12,opt,name=foundation_template_digest,json=foundationTemplateDigest,proto3" json:"foundation_template_digest,omitempty"`
+	ReaperImageUri               string                           `protobuf:"bytes,13,opt,name=reaper_image_uri,json=reaperImageUri,proto3" json:"reaper_image_uri,omitempty"`
+	ReleaseEnvironment           *AwsFoundationReleaseEnvironment `protobuf:"bytes,14,opt,name=release_environment,json=releaseEnvironment,proto3" json:"release_environment,omitempty"`
+	IdentityObservedAt           *timestamppb.Timestamp           `protobuf:"bytes,15,opt,name=identity_observed_at,json=identityObservedAt,proto3" json:"identity_observed_at,omitempty"`
+	IdentityExpiresAt            *timestamppb.Timestamp           `protobuf:"bytes,16,opt,name=identity_expires_at,json=identityExpiresAt,proto3" json:"identity_expires_at,omitempty"`
+	unknownFields                protoimpl.UnknownFields
+	sizeCache                    protoimpl.SizeCache
+}
+
+func (x *AwsFoundationOperationScope) Reset() {
+	*x = AwsFoundationOperationScope{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AwsFoundationOperationScope) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AwsFoundationOperationScope) ProtoMessage() {}
+
+func (x *AwsFoundationOperationScope) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AwsFoundationOperationScope.ProtoReflect.Descriptor instead.
+func (*AwsFoundationOperationScope) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *AwsFoundationOperationScope) GetSchemaVersion() string {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetAgentInstanceId() string {
+	if x != nil {
+		return x.AgentInstanceId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetAction() AwsFoundationOperationAction {
+	if x != nil {
+		return x.Action
+	}
+	return AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED
+}
+
+func (x *AwsFoundationOperationScope) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetExpectedConnectionRevision() int64 {
+	if x != nil {
+		return x.ExpectedConnectionRevision
+	}
+	return 0
+}
+
+func (x *AwsFoundationOperationScope) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetBootstrapSessionId() string {
+	if x != nil {
+		return x.BootstrapSessionId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetExpectedBootstrapRevision() int64 {
+	if x != nil {
+		return x.ExpectedBootstrapRevision
+	}
+	return 0
+}
+
+func (x *AwsFoundationOperationScope) GetExpectedCredentialGeneration() int64 {
+	if x != nil {
+		return x.ExpectedCredentialGeneration
+	}
+	return 0
+}
+
+func (x *AwsFoundationOperationScope) GetFoundationTemplateDigest() string {
+	if x != nil {
+		return x.FoundationTemplateDigest
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetReaperImageUri() string {
+	if x != nil {
+		return x.ReaperImageUri
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationScope) GetReleaseEnvironment() *AwsFoundationReleaseEnvironment {
+	if x != nil {
+		return x.ReleaseEnvironment
+	}
+	return nil
+}
+
+func (x *AwsFoundationOperationScope) GetIdentityObservedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.IdentityObservedAt
+	}
+	return nil
+}
+
+func (x *AwsFoundationOperationScope) GetIdentityExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.IdentityExpiresAt
+	}
+	return nil
+}
+
+type AwsFoundationOperationChallenge struct {
+	state              protoimpl.MessageState       `protogen:"open.v1"`
+	OperationId        string                       `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	ChallengeId        string                       `protobuf:"bytes,2,opt,name=challenge_id,json=challengeId,proto3" json:"challenge_id,omitempty"`
+	ApprovalId         string                       `protobuf:"bytes,3,opt,name=approval_id,json=approvalId,proto3" json:"approval_id,omitempty"`
+	SignerKeyId        string                       `protobuf:"bytes,4,opt,name=signer_key_id,json=signerKeyId,proto3" json:"signer_key_id,omitempty"`
+	Scope              *AwsFoundationOperationScope `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`
+	ScopeDigest        string                       `protobuf:"bytes,6,opt,name=scope_digest,json=scopeDigest,proto3" json:"scope_digest,omitempty"`
+	ExpiresAt          *timestamppb.Timestamp       `protobuf:"bytes,7,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	SigningPayloadCbor []byte                       `protobuf:"bytes,8,opt,name=signing_payload_cbor,json=signingPayloadCbor,proto3" json:"signing_payload_cbor,omitempty"`
+	Revision           int64                        `protobuf:"varint,9,opt,name=revision,proto3" json:"revision,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *AwsFoundationOperationChallenge) Reset() {
+	*x = AwsFoundationOperationChallenge{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AwsFoundationOperationChallenge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AwsFoundationOperationChallenge) ProtoMessage() {}
+
+func (x *AwsFoundationOperationChallenge) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AwsFoundationOperationChallenge.ProtoReflect.Descriptor instead.
+func (*AwsFoundationOperationChallenge) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *AwsFoundationOperationChallenge) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationChallenge) GetChallengeId() string {
+	if x != nil {
+		return x.ChallengeId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationChallenge) GetApprovalId() string {
+	if x != nil {
+		return x.ApprovalId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationChallenge) GetSignerKeyId() string {
+	if x != nil {
+		return x.SignerKeyId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationChallenge) GetScope() *AwsFoundationOperationScope {
+	if x != nil {
+		return x.Scope
+	}
+	return nil
+}
+
+func (x *AwsFoundationOperationChallenge) GetScopeDigest() string {
+	if x != nil {
+		return x.ScopeDigest
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperationChallenge) GetExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return nil
+}
+
+func (x *AwsFoundationOperationChallenge) GetSigningPayloadCbor() []byte {
+	if x != nil {
+		return x.SigningPayloadCbor
+	}
+	return nil
+}
+
+func (x *AwsFoundationOperationChallenge) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+type AwsFoundationOperation struct {
+	state         protoimpl.MessageState       `protogen:"open.v1"`
+	OperationId   string                       `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	OwnerId       string                       `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	ConnectionId  string                       `protobuf:"bytes,3,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	Action        AwsFoundationOperationAction `protobuf:"varint,4,opt,name=action,proto3,enum=dirextalk.agent.v1.AwsFoundationOperationAction" json:"action,omitempty"`
+	ApprovalId    string                       `protobuf:"bytes,5,opt,name=approval_id,json=approvalId,proto3" json:"approval_id,omitempty"`
+	ScopeDigest   string                       `protobuf:"bytes,6,opt,name=scope_digest,json=scopeDigest,proto3" json:"scope_digest,omitempty"`
+	Status        AwsFoundationOperationStatus `protobuf:"varint,7,opt,name=status,proto3,enum=dirextalk.agent.v1.AwsFoundationOperationStatus" json:"status,omitempty"`
+	ErrorCode     string                       `protobuf:"bytes,8,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	BlockedReason string                       `protobuf:"bytes,9,opt,name=blocked_reason,json=blockedReason,proto3" json:"blocked_reason,omitempty"`
+	Revision      int64                        `protobuf:"varint,10,opt,name=revision,proto3" json:"revision,omitempty"`
+	CreatedAt     *timestamppb.Timestamp       `protobuf:"bytes,11,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp       `protobuf:"bytes,12,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AwsFoundationOperation) Reset() {
+	*x = AwsFoundationOperation{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AwsFoundationOperation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AwsFoundationOperation) ProtoMessage() {}
+
+func (x *AwsFoundationOperation) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AwsFoundationOperation.ProtoReflect.Descriptor instead.
+func (*AwsFoundationOperation) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *AwsFoundationOperation) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetAction() AwsFoundationOperationAction {
+	if x != nil {
+		return x.Action
+	}
+	return AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED
+}
+
+func (x *AwsFoundationOperation) GetApprovalId() string {
+	if x != nil {
+		return x.ApprovalId
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetScopeDigest() string {
+	if x != nil {
+		return x.ScopeDigest
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetStatus() AwsFoundationOperationStatus {
+	if x != nil {
+		return x.Status
+	}
+	return AwsFoundationOperationStatus_AWS_FOUNDATION_OPERATION_STATUS_UNSPECIFIED
+}
+
+func (x *AwsFoundationOperation) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetBlockedReason() string {
+	if x != nil {
+		return x.BlockedReason
+	}
+	return ""
+}
+
+func (x *AwsFoundationOperation) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *AwsFoundationOperation) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *AwsFoundationOperation) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+type CreateAwsFoundationOperationChallengeRequest struct {
+	state                     protoimpl.MessageState       `protogen:"open.v1"`
+	IdempotencyKey            string                       `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	OwnerId                   string                       `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Action                    AwsFoundationOperationAction `protobuf:"varint,3,opt,name=action,proto3,enum=dirextalk.agent.v1.AwsFoundationOperationAction" json:"action,omitempty"`
+	ConnectionId              string                       `protobuf:"bytes,4,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	BootstrapSessionId        string                       `protobuf:"bytes,5,opt,name=bootstrap_session_id,json=bootstrapSessionId,proto3" json:"bootstrap_session_id,omitempty"`
+	ExpectedBootstrapRevision int64                        `protobuf:"varint,6,opt,name=expected_bootstrap_revision,json=expectedBootstrapRevision,proto3" json:"expected_bootstrap_revision,omitempty"`
+	SignerKeyId               string                       `protobuf:"bytes,7,opt,name=signer_key_id,json=signerKeyId,proto3" json:"signer_key_id,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) Reset() {
+	*x = CreateAwsFoundationOperationChallengeRequest{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAwsFoundationOperationChallengeRequest) ProtoMessage() {}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAwsFoundationOperationChallengeRequest.ProtoReflect.Descriptor instead.
+func (*CreateAwsFoundationOperationChallengeRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetAction() AwsFoundationOperationAction {
+	if x != nil {
+		return x.Action
+	}
+	return AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetBootstrapSessionId() string {
+	if x != nil {
+		return x.BootstrapSessionId
+	}
+	return ""
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetExpectedBootstrapRevision() int64 {
+	if x != nil {
+		return x.ExpectedBootstrapRevision
+	}
+	return 0
+}
+
+func (x *CreateAwsFoundationOperationChallengeRequest) GetSignerKeyId() string {
+	if x != nil {
+		return x.SignerKeyId
+	}
+	return ""
+}
+
+type CreateAwsFoundationOperationChallengeResponse struct {
+	state         protoimpl.MessageState           `protogen:"open.v1"`
+	Challenge     *AwsFoundationOperationChallenge `protobuf:"bytes,1,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateAwsFoundationOperationChallengeResponse) Reset() {
+	*x = CreateAwsFoundationOperationChallengeResponse{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateAwsFoundationOperationChallengeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateAwsFoundationOperationChallengeResponse) ProtoMessage() {}
+
+func (x *CreateAwsFoundationOperationChallengeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateAwsFoundationOperationChallengeResponse.ProtoReflect.Descriptor instead.
+func (*CreateAwsFoundationOperationChallengeResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *CreateAwsFoundationOperationChallengeResponse) GetChallenge() *AwsFoundationOperationChallenge {
+	if x != nil {
+		return x.Challenge
+	}
+	return nil
+}
+
+type ApproveAwsFoundationOperationRequest struct {
+	state            protoimpl.MessageState       `protogen:"open.v1"`
+	IdempotencyKey   string                       `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	OwnerId          string                       `protobuf:"bytes,2,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Approval         *DeviceApprovalSignature     `protobuf:"bytes,3,opt,name=approval,proto3" json:"approval,omitempty"`
+	OperationId      string                       `protobuf:"bytes,4,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	ExpectedRevision int64                        `protobuf:"varint,5,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	ConnectionId     string                       `protobuf:"bytes,6,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	Action           AwsFoundationOperationAction `protobuf:"varint,7,opt,name=action,proto3,enum=dirextalk.agent.v1.AwsFoundationOperationAction" json:"action,omitempty"`
+	ScopeDigest      string                       `protobuf:"bytes,8,opt,name=scope_digest,json=scopeDigest,proto3" json:"scope_digest,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ApproveAwsFoundationOperationRequest) Reset() {
+	*x = ApproveAwsFoundationOperationRequest{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApproveAwsFoundationOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApproveAwsFoundationOperationRequest) ProtoMessage() {}
+
+func (x *ApproveAwsFoundationOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApproveAwsFoundationOperationRequest.ProtoReflect.Descriptor instead.
+func (*ApproveAwsFoundationOperationRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetApproval() *DeviceApprovalSignature {
+	if x != nil {
+		return x.Approval
+	}
+	return nil
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetExpectedRevision() int64 {
+	if x != nil {
+		return x.ExpectedRevision
+	}
+	return 0
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetConnectionId() string {
+	if x != nil {
+		return x.ConnectionId
+	}
+	return ""
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetAction() AwsFoundationOperationAction {
+	if x != nil {
+		return x.Action
+	}
+	return AwsFoundationOperationAction_AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED
+}
+
+func (x *ApproveAwsFoundationOperationRequest) GetScopeDigest() string {
+	if x != nil {
+		return x.ScopeDigest
+	}
+	return ""
+}
+
+type ApproveAwsFoundationOperationResponse struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Operation     *AwsFoundationOperation `protobuf:"bytes,1,opt,name=operation,proto3" json:"operation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApproveAwsFoundationOperationResponse) Reset() {
+	*x = ApproveAwsFoundationOperationResponse{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApproveAwsFoundationOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApproveAwsFoundationOperationResponse) ProtoMessage() {}
+
+func (x *ApproveAwsFoundationOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApproveAwsFoundationOperationResponse.ProtoReflect.Descriptor instead.
+func (*ApproveAwsFoundationOperationResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *ApproveAwsFoundationOperationResponse) GetOperation() *AwsFoundationOperation {
+	if x != nil {
+		return x.Operation
+	}
+	return nil
+}
+
+type GetAwsFoundationOperationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	OperationId   string                 `protobuf:"bytes,2,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAwsFoundationOperationRequest) Reset() {
+	*x = GetAwsFoundationOperationRequest{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAwsFoundationOperationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAwsFoundationOperationRequest) ProtoMessage() {}
+
+func (x *GetAwsFoundationOperationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAwsFoundationOperationRequest.ProtoReflect.Descriptor instead.
+func (*GetAwsFoundationOperationRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *GetAwsFoundationOperationRequest) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
+	}
+	return ""
+}
+
+func (x *GetAwsFoundationOperationRequest) GetOperationId() string {
+	if x != nil {
+		return x.OperationId
+	}
+	return ""
+}
+
+type GetAwsFoundationOperationResponse struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	Operation     *AwsFoundationOperation `protobuf:"bytes,1,opt,name=operation,proto3" json:"operation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAwsFoundationOperationResponse) Reset() {
+	*x = GetAwsFoundationOperationResponse{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAwsFoundationOperationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAwsFoundationOperationResponse) ProtoMessage() {}
+
+func (x *GetAwsFoundationOperationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAwsFoundationOperationResponse.ProtoReflect.Descriptor instead.
+func (*GetAwsFoundationOperationResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *GetAwsFoundationOperationResponse) GetOperation() *AwsFoundationOperation {
+	if x != nil {
+		return x.Operation
+	}
+	return nil
+}
+
 var File_dirextalk_agent_v1_cloud_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
@@ -3919,7 +4902,89 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x1eEstablishAwsConnectionResponse\x12C\n" +
 	"\n" +
 	"connection\x18\x01 \x01(\v2#.dirextalk.agent.v1.CloudConnectionR\n" +
-	"connection*\xb7\x01\n" +
+	"connection\"\x8b\x02\n" +
+	"\x1fAwsFoundationReleaseEnvironment\x12.\n" +
+	"\x13private_subnet_cidr\x18\x01 \x01(\tR\x11privateSubnetCidr\x12!\n" +
+	"\fzero_ingress\x18\x02 \x01(\bR\vzeroIngress\x12'\n" +
+	"\x0fartifact_bucket\x18\x03 \x01(\tR\x0eartifactBucket\x12\x1b\n" +
+	"\tkms_alias\x18\x04 \x01(\tR\bkmsAlias\x12)\n" +
+	"\x10bucket_versioned\x18\x05 \x01(\bR\x0fbucketVersioned\x12$\n" +
+	"\x0ebucket_sse_kms\x18\x06 \x01(\bR\fbucketSseKms\"\x93\a\n" +
+	"\x1bAwsFoundationOperationScope\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\tR\rschemaVersion\x12*\n" +
+	"\x11agent_instance_id\x18\x02 \x01(\tR\x0fagentInstanceId\x12\x19\n" +
+	"\bowner_id\x18\x03 \x01(\tR\aownerId\x12H\n" +
+	"\x06action\x18\x04 \x01(\x0e20.dirextalk.agent.v1.AwsFoundationOperationActionR\x06action\x12#\n" +
+	"\rconnection_id\x18\x05 \x01(\tR\fconnectionId\x12@\n" +
+	"\x1cexpected_connection_revision\x18\x06 \x01(\x03R\x1aexpectedConnectionRevision\x12\x1d\n" +
+	"\n" +
+	"account_id\x18\a \x01(\tR\taccountId\x12\x16\n" +
+	"\x06region\x18\b \x01(\tR\x06region\x120\n" +
+	"\x14bootstrap_session_id\x18\t \x01(\tR\x12bootstrapSessionId\x12>\n" +
+	"\x1bexpected_bootstrap_revision\x18\n" +
+	" \x01(\x03R\x19expectedBootstrapRevision\x12D\n" +
+	"\x1eexpected_credential_generation\x18\v \x01(\x03R\x1cexpectedCredentialGeneration\x12<\n" +
+	"\x1afoundation_template_digest\x18\f \x01(\tR\x18foundationTemplateDigest\x12(\n" +
+	"\x10reaper_image_uri\x18\r \x01(\tR\x0ereaperImageUri\x12d\n" +
+	"\x13release_environment\x18\x0e \x01(\v23.dirextalk.agent.v1.AwsFoundationReleaseEnvironmentR\x12releaseEnvironment\x12L\n" +
+	"\x14identity_observed_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\x12identityObservedAt\x12J\n" +
+	"\x13identity_expires_at\x18\x10 \x01(\v2\x1a.google.protobuf.TimestampR\x11identityExpiresAt\"\x9f\x03\n" +
+	"\x1fAwsFoundationOperationChallenge\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12!\n" +
+	"\fchallenge_id\x18\x02 \x01(\tR\vchallengeId\x12\x1f\n" +
+	"\vapproval_id\x18\x03 \x01(\tR\n" +
+	"approvalId\x12\"\n" +
+	"\rsigner_key_id\x18\x04 \x01(\tR\vsignerKeyId\x12E\n" +
+	"\x05scope\x18\x05 \x01(\v2/.dirextalk.agent.v1.AwsFoundationOperationScopeR\x05scope\x12!\n" +
+	"\fscope_digest\x18\x06 \x01(\tR\vscopeDigest\x129\n" +
+	"\n" +
+	"expires_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x120\n" +
+	"\x14signing_payload_cbor\x18\b \x01(\fR\x12signingPayloadCbor\x12\x1a\n" +
+	"\brevision\x18\t \x01(\x03R\brevision\"\xab\x04\n" +
+	"\x16AwsFoundationOperation\x12!\n" +
+	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x19\n" +
+	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12#\n" +
+	"\rconnection_id\x18\x03 \x01(\tR\fconnectionId\x12H\n" +
+	"\x06action\x18\x04 \x01(\x0e20.dirextalk.agent.v1.AwsFoundationOperationActionR\x06action\x12\x1f\n" +
+	"\vapproval_id\x18\x05 \x01(\tR\n" +
+	"approvalId\x12!\n" +
+	"\fscope_digest\x18\x06 \x01(\tR\vscopeDigest\x12H\n" +
+	"\x06status\x18\a \x01(\x0e20.dirextalk.agent.v1.AwsFoundationOperationStatusR\x06status\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\b \x01(\tR\terrorCode\x12%\n" +
+	"\x0eblocked_reason\x18\t \x01(\tR\rblockedReason\x12\x1a\n" +
+	"\brevision\x18\n" +
+	" \x01(\x03R\brevision\x129\n" +
+	"\n" +
+	"created_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"updated_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xf7\x02\n" +
+	",CreateAwsFoundationOperationChallengeRequest\x12'\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x19\n" +
+	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12H\n" +
+	"\x06action\x18\x03 \x01(\x0e20.dirextalk.agent.v1.AwsFoundationOperationActionR\x06action\x12#\n" +
+	"\rconnection_id\x18\x04 \x01(\tR\fconnectionId\x120\n" +
+	"\x14bootstrap_session_id\x18\x05 \x01(\tR\x12bootstrapSessionId\x12>\n" +
+	"\x1bexpected_bootstrap_revision\x18\x06 \x01(\x03R\x19expectedBootstrapRevision\x12\"\n" +
+	"\rsigner_key_id\x18\a \x01(\tR\vsignerKeyId\"\x82\x01\n" +
+	"-CreateAwsFoundationOperationChallengeResponse\x12Q\n" +
+	"\tchallenge\x18\x01 \x01(\v23.dirextalk.agent.v1.AwsFoundationOperationChallengeR\tchallenge\"\x95\x03\n" +
+	"$ApproveAwsFoundationOperationRequest\x12'\n" +
+	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x19\n" +
+	"\bowner_id\x18\x02 \x01(\tR\aownerId\x12G\n" +
+	"\bapproval\x18\x03 \x01(\v2+.dirextalk.agent.v1.DeviceApprovalSignatureR\bapproval\x12!\n" +
+	"\foperation_id\x18\x04 \x01(\tR\voperationId\x12+\n" +
+	"\x11expected_revision\x18\x05 \x01(\x03R\x10expectedRevision\x12#\n" +
+	"\rconnection_id\x18\x06 \x01(\tR\fconnectionId\x12H\n" +
+	"\x06action\x18\a \x01(\x0e20.dirextalk.agent.v1.AwsFoundationOperationActionR\x06action\x12!\n" +
+	"\fscope_digest\x18\b \x01(\tR\vscopeDigest\"q\n" +
+	"%ApproveAwsFoundationOperationResponse\x12H\n" +
+	"\toperation\x18\x01 \x01(\v2*.dirextalk.agent.v1.AwsFoundationOperationR\toperation\"`\n" +
+	" GetAwsFoundationOperationRequest\x12\x19\n" +
+	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12!\n" +
+	"\foperation_id\x18\x02 \x01(\tR\voperationId\"m\n" +
+	"!GetAwsFoundationOperationResponse\x12H\n" +
+	"\toperation\x18\x01 \x01(\v2*.dirextalk.agent.v1.AwsFoundationOperationR\toperation*\xb7\x01\n" +
 	"\x15CloudCandidateProfile\x12'\n" +
 	"#CLOUD_CANDIDATE_PROFILE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fCLOUD_CANDIDATE_PROFILE_ECONOMY\x10\x01\x12'\n" +
@@ -3949,7 +5014,22 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"(CLOUD_PLAN_STATUS_READY_FOR_CONFIRMATION\x10\x03\x12\x1e\n" +
 	"\x1aCLOUD_PLAN_STATUS_APPROVED\x10\x04\x12\x1d\n" +
 	"\x19CLOUD_PLAN_STATUS_EXPIRED\x10\x05\x12 \n" +
-	"\x1cCLOUD_PLAN_STATUS_SUPERSEDED\x10\x06BIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	"\x1cCLOUD_PLAN_STATUS_SUPERSEDED\x10\x06*\x98\x02\n" +
+	"\x1cAwsFoundationOperationAction\x12/\n" +
+	"+AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED\x10\x00\x12-\n" +
+	")AWS_FOUNDATION_OPERATION_ACTION_ESTABLISH\x10\x01\x12+\n" +
+	"'AWS_FOUNDATION_OPERATION_ACTION_UPGRADE\x10\x02\x12,\n" +
+	"(AWS_FOUNDATION_OPERATION_ACTION_TEARDOWN\x10\x03\x12=\n" +
+	"9AWS_FOUNDATION_OPERATION_ACTION_REMEDIATE_DESTROY_BLOCKED\x10\x04*\xb0\x03\n" +
+	"\x1cAwsFoundationOperationStatus\x12/\n" +
+	"+AWS_FOUNDATION_OPERATION_STATUS_UNSPECIFIED\x10\x00\x125\n" +
+	"1AWS_FOUNDATION_OPERATION_STATUS_AWAITING_APPROVAL\x10\x01\x12,\n" +
+	"(AWS_FOUNDATION_OPERATION_STATUS_APPROVED\x10\x02\x12+\n" +
+	"'AWS_FOUNDATION_OPERATION_STATUS_RUNNING\x10\x03\x12-\n" +
+	")AWS_FOUNDATION_OPERATION_STATUS_SUCCEEDED\x10\x04\x124\n" +
+	"0AWS_FOUNDATION_OPERATION_STATUS_FAILED_RETRIABLE\x10\x05\x123\n" +
+	"/AWS_FOUNDATION_OPERATION_STATUS_DESTROY_BLOCKED\x10\x06\x123\n" +
+	"/AWS_FOUNDATION_OPERATION_STATUS_FAILED_TERMINAL\x10\aBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_cloud_proto_rawDescOnce sync.Once
@@ -3963,120 +5043,148 @@ func file_dirextalk_agent_v1_cloud_proto_rawDescGZIP() []byte {
 	return file_dirextalk_agent_v1_cloud_proto_rawDescData
 }
 
-var file_dirextalk_agent_v1_cloud_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_dirextalk_agent_v1_cloud_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_dirextalk_agent_v1_cloud_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
+var file_dirextalk_agent_v1_cloud_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
 var file_dirextalk_agent_v1_cloud_proto_goTypes = []any{
-	(CloudCandidateProfile)(0),              // 0: dirextalk.agent.v1.CloudCandidateProfile
-	(CloudPurchaseOption)(0),                // 1: dirextalk.agent.v1.CloudPurchaseOption
-	(CloudEntryPointKind)(0),                // 2: dirextalk.agent.v1.CloudEntryPointKind
-	(CloudSecurityGroupMode)(0),             // 3: dirextalk.agent.v1.CloudSecurityGroupMode
-	(CloudRetentionClass)(0),                // 4: dirextalk.agent.v1.CloudRetentionClass
-	(CloudPlanStatus)(0),                    // 5: dirextalk.agent.v1.CloudPlanStatus
-	(*CloudRecipeBinding)(nil),              // 6: dirextalk.agent.v1.CloudRecipeBinding
-	(*CloudResourceScope)(nil),              // 7: dirextalk.agent.v1.CloudResourceScope
-	(*CloudVolumeScope)(nil),                // 8: dirextalk.agent.v1.CloudVolumeScope
-	(*CloudNetworkScope)(nil),               // 9: dirextalk.agent.v1.CloudNetworkScope
-	(*CloudSecretScope)(nil),                // 10: dirextalk.agent.v1.CloudSecretScope
-	(*CloudIntegrationScope)(nil),           // 11: dirextalk.agent.v1.CloudIntegrationScope
-	(*CloudRetentionScope)(nil),             // 12: dirextalk.agent.v1.CloudRetentionScope
-	(*CloudQuoteScope)(nil),                 // 13: dirextalk.agent.v1.CloudQuoteScope
-	(*CloudUsageEstimate)(nil),              // 14: dirextalk.agent.v1.CloudUsageEstimate
-	(*CloudSpotQualification)(nil),          // 15: dirextalk.agent.v1.CloudSpotQualification
-	(*CloudCostItem)(nil),                   // 16: dirextalk.agent.v1.CloudCostItem
-	(*CloudQuotaEvidence)(nil),              // 17: dirextalk.agent.v1.CloudQuotaEvidence
-	(*CloudQuoteCandidate)(nil),             // 18: dirextalk.agent.v1.CloudQuoteCandidate
-	(*CloudQuote)(nil),                      // 19: dirextalk.agent.v1.CloudQuote
-	(*CloudPlan)(nil),                       // 20: dirextalk.agent.v1.CloudPlan
-	(*DeviceApprovalSignature)(nil),         // 21: dirextalk.agent.v1.DeviceApprovalSignature
-	(*ApprovalChallenge)(nil),               // 22: dirextalk.agent.v1.ApprovalChallenge
-	(*AwsBootstrapIdentity)(nil),            // 23: dirextalk.agent.v1.AwsBootstrapIdentity
-	(*CloudConnection)(nil),                 // 24: dirextalk.agent.v1.CloudConnection
-	(*GetCloudConnectionRequest)(nil),       // 25: dirextalk.agent.v1.GetCloudConnectionRequest
-	(*GetCloudConnectionResponse)(nil),      // 26: dirextalk.agent.v1.GetCloudConnectionResponse
-	(*ListCloudConnectionsRequest)(nil),     // 27: dirextalk.agent.v1.ListCloudConnectionsRequest
-	(*ListCloudConnectionsResponse)(nil),    // 28: dirextalk.agent.v1.ListCloudConnectionsResponse
-	(*PreviewAwsIdentityRequest)(nil),       // 29: dirextalk.agent.v1.PreviewAwsIdentityRequest
-	(*PreviewAwsIdentityResponse)(nil),      // 30: dirextalk.agent.v1.PreviewAwsIdentityResponse
-	(*CreateCloudQuoteRequest)(nil),         // 31: dirextalk.agent.v1.CreateCloudQuoteRequest
-	(*CreateCloudQuoteResponse)(nil),        // 32: dirextalk.agent.v1.CreateCloudQuoteResponse
-	(*GetCloudQuoteRequest)(nil),            // 33: dirextalk.agent.v1.GetCloudQuoteRequest
-	(*GetCloudQuoteResponse)(nil),           // 34: dirextalk.agent.v1.GetCloudQuoteResponse
-	(*CreateCloudPlanRequest)(nil),          // 35: dirextalk.agent.v1.CreateCloudPlanRequest
-	(*CreateCloudPlanResponse)(nil),         // 36: dirextalk.agent.v1.CreateCloudPlanResponse
-	(*GetCloudPlanRequest)(nil),             // 37: dirextalk.agent.v1.GetCloudPlanRequest
-	(*GetCloudPlanResponse)(nil),            // 38: dirextalk.agent.v1.GetCloudPlanResponse
-	(*ListCloudPlansRequest)(nil),           // 39: dirextalk.agent.v1.ListCloudPlansRequest
-	(*ListCloudPlansResponse)(nil),          // 40: dirextalk.agent.v1.ListCloudPlansResponse
-	(*CreateApprovalChallengeRequest)(nil),  // 41: dirextalk.agent.v1.CreateApprovalChallengeRequest
-	(*CreateApprovalChallengeResponse)(nil), // 42: dirextalk.agent.v1.CreateApprovalChallengeResponse
-	(*ApproveCloudPlanRequest)(nil),         // 43: dirextalk.agent.v1.ApproveCloudPlanRequest
-	(*ApproveCloudPlanResponse)(nil),        // 44: dirextalk.agent.v1.ApproveCloudPlanResponse
-	(*EstablishAwsConnectionRequest)(nil),   // 45: dirextalk.agent.v1.EstablishAwsConnectionRequest
-	(*EstablishAwsConnectionResponse)(nil),  // 46: dirextalk.agent.v1.EstablishAwsConnectionResponse
-	(*timestamppb.Timestamp)(nil),           // 47: google.protobuf.Timestamp
+	(CloudCandidateProfile)(0),                            // 0: dirextalk.agent.v1.CloudCandidateProfile
+	(CloudPurchaseOption)(0),                              // 1: dirextalk.agent.v1.CloudPurchaseOption
+	(CloudEntryPointKind)(0),                              // 2: dirextalk.agent.v1.CloudEntryPointKind
+	(CloudSecurityGroupMode)(0),                           // 3: dirextalk.agent.v1.CloudSecurityGroupMode
+	(CloudRetentionClass)(0),                              // 4: dirextalk.agent.v1.CloudRetentionClass
+	(CloudPlanStatus)(0),                                  // 5: dirextalk.agent.v1.CloudPlanStatus
+	(AwsFoundationOperationAction)(0),                     // 6: dirextalk.agent.v1.AwsFoundationOperationAction
+	(AwsFoundationOperationStatus)(0),                     // 7: dirextalk.agent.v1.AwsFoundationOperationStatus
+	(*CloudRecipeBinding)(nil),                            // 8: dirextalk.agent.v1.CloudRecipeBinding
+	(*CloudResourceScope)(nil),                            // 9: dirextalk.agent.v1.CloudResourceScope
+	(*CloudVolumeScope)(nil),                              // 10: dirextalk.agent.v1.CloudVolumeScope
+	(*CloudNetworkScope)(nil),                             // 11: dirextalk.agent.v1.CloudNetworkScope
+	(*CloudSecretScope)(nil),                              // 12: dirextalk.agent.v1.CloudSecretScope
+	(*CloudIntegrationScope)(nil),                         // 13: dirextalk.agent.v1.CloudIntegrationScope
+	(*CloudRetentionScope)(nil),                           // 14: dirextalk.agent.v1.CloudRetentionScope
+	(*CloudQuoteScope)(nil),                               // 15: dirextalk.agent.v1.CloudQuoteScope
+	(*CloudUsageEstimate)(nil),                            // 16: dirextalk.agent.v1.CloudUsageEstimate
+	(*CloudSpotQualification)(nil),                        // 17: dirextalk.agent.v1.CloudSpotQualification
+	(*CloudCostItem)(nil),                                 // 18: dirextalk.agent.v1.CloudCostItem
+	(*CloudQuotaEvidence)(nil),                            // 19: dirextalk.agent.v1.CloudQuotaEvidence
+	(*CloudQuoteCandidate)(nil),                           // 20: dirextalk.agent.v1.CloudQuoteCandidate
+	(*CloudQuote)(nil),                                    // 21: dirextalk.agent.v1.CloudQuote
+	(*CloudPlan)(nil),                                     // 22: dirextalk.agent.v1.CloudPlan
+	(*DeviceApprovalSignature)(nil),                       // 23: dirextalk.agent.v1.DeviceApprovalSignature
+	(*ApprovalChallenge)(nil),                             // 24: dirextalk.agent.v1.ApprovalChallenge
+	(*AwsBootstrapIdentity)(nil),                          // 25: dirextalk.agent.v1.AwsBootstrapIdentity
+	(*CloudConnection)(nil),                               // 26: dirextalk.agent.v1.CloudConnection
+	(*GetCloudConnectionRequest)(nil),                     // 27: dirextalk.agent.v1.GetCloudConnectionRequest
+	(*GetCloudConnectionResponse)(nil),                    // 28: dirextalk.agent.v1.GetCloudConnectionResponse
+	(*ListCloudConnectionsRequest)(nil),                   // 29: dirextalk.agent.v1.ListCloudConnectionsRequest
+	(*ListCloudConnectionsResponse)(nil),                  // 30: dirextalk.agent.v1.ListCloudConnectionsResponse
+	(*PreviewAwsIdentityRequest)(nil),                     // 31: dirextalk.agent.v1.PreviewAwsIdentityRequest
+	(*PreviewAwsIdentityResponse)(nil),                    // 32: dirextalk.agent.v1.PreviewAwsIdentityResponse
+	(*CreateCloudQuoteRequest)(nil),                       // 33: dirextalk.agent.v1.CreateCloudQuoteRequest
+	(*CreateCloudQuoteResponse)(nil),                      // 34: dirextalk.agent.v1.CreateCloudQuoteResponse
+	(*GetCloudQuoteRequest)(nil),                          // 35: dirextalk.agent.v1.GetCloudQuoteRequest
+	(*GetCloudQuoteResponse)(nil),                         // 36: dirextalk.agent.v1.GetCloudQuoteResponse
+	(*CreateCloudPlanRequest)(nil),                        // 37: dirextalk.agent.v1.CreateCloudPlanRequest
+	(*CreateCloudPlanResponse)(nil),                       // 38: dirextalk.agent.v1.CreateCloudPlanResponse
+	(*GetCloudPlanRequest)(nil),                           // 39: dirextalk.agent.v1.GetCloudPlanRequest
+	(*GetCloudPlanResponse)(nil),                          // 40: dirextalk.agent.v1.GetCloudPlanResponse
+	(*ListCloudPlansRequest)(nil),                         // 41: dirextalk.agent.v1.ListCloudPlansRequest
+	(*ListCloudPlansResponse)(nil),                        // 42: dirextalk.agent.v1.ListCloudPlansResponse
+	(*CreateApprovalChallengeRequest)(nil),                // 43: dirextalk.agent.v1.CreateApprovalChallengeRequest
+	(*CreateApprovalChallengeResponse)(nil),               // 44: dirextalk.agent.v1.CreateApprovalChallengeResponse
+	(*ApproveCloudPlanRequest)(nil),                       // 45: dirextalk.agent.v1.ApproveCloudPlanRequest
+	(*ApproveCloudPlanResponse)(nil),                      // 46: dirextalk.agent.v1.ApproveCloudPlanResponse
+	(*EstablishAwsConnectionRequest)(nil),                 // 47: dirextalk.agent.v1.EstablishAwsConnectionRequest
+	(*EstablishAwsConnectionResponse)(nil),                // 48: dirextalk.agent.v1.EstablishAwsConnectionResponse
+	(*AwsFoundationReleaseEnvironment)(nil),               // 49: dirextalk.agent.v1.AwsFoundationReleaseEnvironment
+	(*AwsFoundationOperationScope)(nil),                   // 50: dirextalk.agent.v1.AwsFoundationOperationScope
+	(*AwsFoundationOperationChallenge)(nil),               // 51: dirextalk.agent.v1.AwsFoundationOperationChallenge
+	(*AwsFoundationOperation)(nil),                        // 52: dirextalk.agent.v1.AwsFoundationOperation
+	(*CreateAwsFoundationOperationChallengeRequest)(nil),  // 53: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
+	(*CreateAwsFoundationOperationChallengeResponse)(nil), // 54: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
+	(*ApproveAwsFoundationOperationRequest)(nil),          // 55: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
+	(*ApproveAwsFoundationOperationResponse)(nil),         // 56: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
+	(*GetAwsFoundationOperationRequest)(nil),              // 57: dirextalk.agent.v1.GetAwsFoundationOperationRequest
+	(*GetAwsFoundationOperationResponse)(nil),             // 58: dirextalk.agent.v1.GetAwsFoundationOperationResponse
+	(*timestamppb.Timestamp)(nil),                         // 59: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_cloud_proto_depIdxs = []int32{
 	0,  // 0: dirextalk.agent.v1.CloudResourceScope.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
 	1,  // 1: dirextalk.agent.v1.CloudResourceScope.purchase_option:type_name -> dirextalk.agent.v1.CloudPurchaseOption
-	8,  // 2: dirextalk.agent.v1.CloudResourceScope.volume_scopes:type_name -> dirextalk.agent.v1.CloudVolumeScope
+	10, // 2: dirextalk.agent.v1.CloudResourceScope.volume_scopes:type_name -> dirextalk.agent.v1.CloudVolumeScope
 	2,  // 3: dirextalk.agent.v1.CloudNetworkScope.entry_point:type_name -> dirextalk.agent.v1.CloudEntryPointKind
 	3,  // 4: dirextalk.agent.v1.CloudNetworkScope.security_group_mode:type_name -> dirextalk.agent.v1.CloudSecurityGroupMode
 	4,  // 5: dirextalk.agent.v1.CloudRetentionScope.retention_class:type_name -> dirextalk.agent.v1.CloudRetentionClass
-	6,  // 6: dirextalk.agent.v1.CloudQuoteScope.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
-	7,  // 7: dirextalk.agent.v1.CloudQuoteScope.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
-	9,  // 8: dirextalk.agent.v1.CloudQuoteScope.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
-	10, // 9: dirextalk.agent.v1.CloudQuoteScope.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
-	11, // 10: dirextalk.agent.v1.CloudQuoteScope.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
-	12, // 11: dirextalk.agent.v1.CloudQuoteScope.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
-	47, // 12: dirextalk.agent.v1.CloudSpotQualification.checkpoint_verified_at:type_name -> google.protobuf.Timestamp
-	47, // 13: dirextalk.agent.v1.CloudSpotQualification.interruption_tested_at:type_name -> google.protobuf.Timestamp
+	8,  // 6: dirextalk.agent.v1.CloudQuoteScope.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
+	9,  // 7: dirextalk.agent.v1.CloudQuoteScope.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
+	11, // 8: dirextalk.agent.v1.CloudQuoteScope.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
+	12, // 9: dirextalk.agent.v1.CloudQuoteScope.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
+	13, // 10: dirextalk.agent.v1.CloudQuoteScope.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
+	14, // 11: dirextalk.agent.v1.CloudQuoteScope.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
+	59, // 12: dirextalk.agent.v1.CloudSpotQualification.checkpoint_verified_at:type_name -> google.protobuf.Timestamp
+	59, // 13: dirextalk.agent.v1.CloudSpotQualification.interruption_tested_at:type_name -> google.protobuf.Timestamp
 	0,  // 14: dirextalk.agent.v1.CloudQuoteCandidate.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	13, // 15: dirextalk.agent.v1.CloudQuoteCandidate.scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	17, // 16: dirextalk.agent.v1.CloudQuoteCandidate.quotas:type_name -> dirextalk.agent.v1.CloudQuotaEvidence
-	16, // 17: dirextalk.agent.v1.CloudQuoteCandidate.cost_items:type_name -> dirextalk.agent.v1.CloudCostItem
-	47, // 18: dirextalk.agent.v1.CloudQuote.quoted_at:type_name -> google.protobuf.Timestamp
-	47, // 19: dirextalk.agent.v1.CloudQuote.valid_until:type_name -> google.protobuf.Timestamp
-	18, // 20: dirextalk.agent.v1.CloudQuote.candidates:type_name -> dirextalk.agent.v1.CloudQuoteCandidate
-	14, // 21: dirextalk.agent.v1.CloudQuote.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	15, // 22: dirextalk.agent.v1.CloudQuote.spot_evidence:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	6,  // 23: dirextalk.agent.v1.CloudPlan.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
+	15, // 15: dirextalk.agent.v1.CloudQuoteCandidate.scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	19, // 16: dirextalk.agent.v1.CloudQuoteCandidate.quotas:type_name -> dirextalk.agent.v1.CloudQuotaEvidence
+	18, // 17: dirextalk.agent.v1.CloudQuoteCandidate.cost_items:type_name -> dirextalk.agent.v1.CloudCostItem
+	59, // 18: dirextalk.agent.v1.CloudQuote.quoted_at:type_name -> google.protobuf.Timestamp
+	59, // 19: dirextalk.agent.v1.CloudQuote.valid_until:type_name -> google.protobuf.Timestamp
+	20, // 20: dirextalk.agent.v1.CloudQuote.candidates:type_name -> dirextalk.agent.v1.CloudQuoteCandidate
+	16, // 21: dirextalk.agent.v1.CloudQuote.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	17, // 22: dirextalk.agent.v1.CloudQuote.spot_evidence:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	8,  // 23: dirextalk.agent.v1.CloudPlan.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
 	0,  // 24: dirextalk.agent.v1.CloudPlan.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	47, // 25: dirextalk.agent.v1.CloudPlan.quote_valid_until:type_name -> google.protobuf.Timestamp
-	7,  // 26: dirextalk.agent.v1.CloudPlan.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
-	9,  // 27: dirextalk.agent.v1.CloudPlan.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
-	10, // 28: dirextalk.agent.v1.CloudPlan.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
-	11, // 29: dirextalk.agent.v1.CloudPlan.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
-	12, // 30: dirextalk.agent.v1.CloudPlan.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
+	59, // 25: dirextalk.agent.v1.CloudPlan.quote_valid_until:type_name -> google.protobuf.Timestamp
+	9,  // 26: dirextalk.agent.v1.CloudPlan.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
+	11, // 27: dirextalk.agent.v1.CloudPlan.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
+	12, // 28: dirextalk.agent.v1.CloudPlan.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
+	13, // 29: dirextalk.agent.v1.CloudPlan.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
+	14, // 30: dirextalk.agent.v1.CloudPlan.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
 	5,  // 31: dirextalk.agent.v1.CloudPlan.status:type_name -> dirextalk.agent.v1.CloudPlanStatus
-	47, // 32: dirextalk.agent.v1.DeviceApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
-	47, // 33: dirextalk.agent.v1.ApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	47, // 34: dirextalk.agent.v1.CloudConnection.created_at:type_name -> google.protobuf.Timestamp
-	47, // 35: dirextalk.agent.v1.CloudConnection.updated_at:type_name -> google.protobuf.Timestamp
-	24, // 36: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	24, // 37: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
-	23, // 38: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
-	47, // 39: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
-	47, // 40: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
-	13, // 41: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	14, // 42: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	15, // 43: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	19, // 44: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	19, // 45: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	59, // 32: dirextalk.agent.v1.DeviceApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
+	59, // 33: dirextalk.agent.v1.ApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	59, // 34: dirextalk.agent.v1.CloudConnection.created_at:type_name -> google.protobuf.Timestamp
+	59, // 35: dirextalk.agent.v1.CloudConnection.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 36: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	26, // 37: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
+	25, // 38: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
+	59, // 39: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
+	59, // 40: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
+	15, // 41: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	16, // 42: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	17, // 43: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	21, // 44: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	21, // 45: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
 	0,  // 46: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	13, // 47: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	20, // 48: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	20, // 49: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	20, // 50: dirextalk.agent.v1.ListCloudPlansResponse.plans:type_name -> dirextalk.agent.v1.CloudPlan
-	22, // 51: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
-	21, // 52: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	20, // 53: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	21, // 54: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	24, // 55: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	56, // [56:56] is the sub-list for method output_type
-	56, // [56:56] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	15, // 47: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	22, // 48: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	22, // 49: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	22, // 50: dirextalk.agent.v1.ListCloudPlansResponse.plans:type_name -> dirextalk.agent.v1.CloudPlan
+	24, // 51: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
+	23, // 52: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	22, // 53: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	23, // 54: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	26, // 55: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	6,  // 56: dirextalk.agent.v1.AwsFoundationOperationScope.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	49, // 57: dirextalk.agent.v1.AwsFoundationOperationScope.release_environment:type_name -> dirextalk.agent.v1.AwsFoundationReleaseEnvironment
+	59, // 58: dirextalk.agent.v1.AwsFoundationOperationScope.identity_observed_at:type_name -> google.protobuf.Timestamp
+	59, // 59: dirextalk.agent.v1.AwsFoundationOperationScope.identity_expires_at:type_name -> google.protobuf.Timestamp
+	50, // 60: dirextalk.agent.v1.AwsFoundationOperationChallenge.scope:type_name -> dirextalk.agent.v1.AwsFoundationOperationScope
+	59, // 61: dirextalk.agent.v1.AwsFoundationOperationChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	6,  // 62: dirextalk.agent.v1.AwsFoundationOperation.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	7,  // 63: dirextalk.agent.v1.AwsFoundationOperation.status:type_name -> dirextalk.agent.v1.AwsFoundationOperationStatus
+	59, // 64: dirextalk.agent.v1.AwsFoundationOperation.created_at:type_name -> google.protobuf.Timestamp
+	59, // 65: dirextalk.agent.v1.AwsFoundationOperation.updated_at:type_name -> google.protobuf.Timestamp
+	6,  // 66: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	51, // 67: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse.challenge:type_name -> dirextalk.agent.v1.AwsFoundationOperationChallenge
+	23, // 68: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	6,  // 69: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	52, // 70: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse.operation:type_name -> dirextalk.agent.v1.AwsFoundationOperation
+	52, // 71: dirextalk.agent.v1.GetAwsFoundationOperationResponse.operation:type_name -> dirextalk.agent.v1.AwsFoundationOperation
+	72, // [72:72] is the sub-list for method output_type
+	72, // [72:72] is the sub-list for method input_type
+	72, // [72:72] is the sub-list for extension type_name
+	72, // [72:72] is the sub-list for extension extendee
+	0,  // [0:72] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_cloud_proto_init() }
@@ -4089,8 +5197,8 @@ func file_dirextalk_agent_v1_cloud_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_cloud_proto_rawDesc), len(file_dirextalk_agent_v1_cloud_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   41,
+			NumEnums:      8,
+			NumMessages:   51,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

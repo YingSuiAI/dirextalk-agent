@@ -112,3 +112,16 @@ func TestAWSControllerPreviewsEncryptedBootstrapAndReturnsPersistedIdentityEvide
 		t.Fatalf("different-region preview error=%v, want ErrRevisionConflict", err)
 	}
 }
+
+func TestAWSBootstrapPurposeIsClosedToConnectionAndFoundationLifecycle(t *testing.T) {
+	for _, purpose := range []string{"aws_connection", "aws_foundation_establish", "aws_foundation_upgrade", "aws_foundation_teardown", "aws_foundation_remediate_destroy_blocked"} {
+		if !validAWSBootstrapPurpose(purpose) {
+			t.Fatalf("purpose %q rejected", purpose)
+		}
+	}
+	for _, purpose := range []string{"aws_release", "aws_foundation", "operator", "aws_foundation_delete_anything"} {
+		if validAWSBootstrapPurpose(purpose) {
+			t.Fatalf("unapproved purpose %q accepted", purpose)
+		}
+	}
+}

@@ -85,6 +85,33 @@ func TestBuildSpecRejectsInvalidIdentityScope(t *testing.T) {
 	}
 }
 
+func TestFoundationExecutionPolicyOwnsOnlyTaggedReleaseNetwork(t *testing.T) {
+	spec, err := BuildSpec(SpecInput{AgentInstanceID: "019f5e2d-5350-7073-87d9-3ba4fdbc6818", Partition: "aws", AccountID: "123456789012", Region: "us-east-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := map[string]bool{"FoundationReleaseNetworkCreate": false, "FoundationReleaseNetworkConfigure": false, "FoundationReleaseNetworkDelete": false}
+	for _, statement := range spec.FoundationExecutionPolicy.Statement {
+		if _, ok := wanted[statement.SID]; !ok {
+			continue
+		}
+		wanted[statement.SID] = true
+		if len(statement.Condition) == 0 {
+			t.Fatalf("%s has no ownership condition", statement.SID)
+		}
+		for _, resource := range statement.Resource {
+			if resource == "*" || !strings.HasPrefix(resource, "arn:aws:ec2:us-east-1:123456789012:") {
+				t.Fatalf("%s resource = %q", statement.SID, resource)
+			}
+		}
+	}
+	for sid, found := range wanted {
+		if !found {
+			t.Fatalf("missing %s", sid)
+		}
+	}
+}
+
 func TestFoundationExecutionPolicyManagesOnlyExactControlEntrypointPolicy(t *testing.T) {
 	input := SpecInput{
 		AgentInstanceID: "019f5e2d-5350-7073-87d9-3ba4fdbc6818",

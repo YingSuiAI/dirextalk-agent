@@ -363,3 +363,106 @@ message EstablishAwsConnectionRequest {
   string owner_id = 7;
 }
 message EstablishAwsConnectionResponse { CloudConnection connection = 1; }
+
+enum AwsFoundationOperationAction {
+  AWS_FOUNDATION_OPERATION_ACTION_UNSPECIFIED = 0;
+  AWS_FOUNDATION_OPERATION_ACTION_ESTABLISH = 1;
+  AWS_FOUNDATION_OPERATION_ACTION_UPGRADE = 2;
+  AWS_FOUNDATION_OPERATION_ACTION_TEARDOWN = 3;
+  AWS_FOUNDATION_OPERATION_ACTION_REMEDIATE_DESTROY_BLOCKED = 4;
+}
+
+enum AwsFoundationOperationStatus {
+  AWS_FOUNDATION_OPERATION_STATUS_UNSPECIFIED = 0;
+  AWS_FOUNDATION_OPERATION_STATUS_AWAITING_APPROVAL = 1;
+  AWS_FOUNDATION_OPERATION_STATUS_APPROVED = 2;
+  AWS_FOUNDATION_OPERATION_STATUS_RUNNING = 3;
+  AWS_FOUNDATION_OPERATION_STATUS_SUCCEEDED = 4;
+  AWS_FOUNDATION_OPERATION_STATUS_FAILED_RETRIABLE = 5;
+  AWS_FOUNDATION_OPERATION_STATUS_DESTROY_BLOCKED = 6;
+  AWS_FOUNDATION_OPERATION_STATUS_FAILED_TERMINAL = 7;
+}
+
+message AwsFoundationReleaseEnvironment {
+  string private_subnet_cidr = 1;
+  bool zero_ingress = 2;
+  string artifact_bucket = 3;
+  string kms_alias = 4;
+  bool bucket_versioned = 5;
+  bool bucket_sse_kms = 6;
+}
+
+message AwsFoundationOperationScope {
+  string schema_version = 1;
+  string agent_instance_id = 2;
+  string owner_id = 3;
+  AwsFoundationOperationAction action = 4;
+  string connection_id = 5;
+  int64 expected_connection_revision = 6;
+  string account_id = 7;
+  string region = 8;
+  string bootstrap_session_id = 9;
+  int64 expected_bootstrap_revision = 10;
+  int64 expected_credential_generation = 11;
+  string foundation_template_digest = 12;
+  string reaper_image_uri = 13;
+  AwsFoundationReleaseEnvironment release_environment = 14;
+  google.protobuf.Timestamp identity_observed_at = 15;
+  google.protobuf.Timestamp identity_expires_at = 16;
+}
+
+message AwsFoundationOperationChallenge {
+  string operation_id = 1;
+  string challenge_id = 2;
+  string approval_id = 3;
+  string signer_key_id = 4;
+  AwsFoundationOperationScope scope = 5;
+  string scope_digest = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  bytes signing_payload_cbor = 8;
+  int64 revision = 9;
+}
+
+message AwsFoundationOperation {
+  string operation_id = 1;
+  string owner_id = 2;
+  string connection_id = 3;
+  AwsFoundationOperationAction action = 4;
+  string approval_id = 5;
+  string scope_digest = 6;
+  AwsFoundationOperationStatus status = 7;
+  string error_code = 8;
+  string blocked_reason = 9;
+  int64 revision = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message CreateAwsFoundationOperationChallengeRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  AwsFoundationOperationAction action = 3;
+  string connection_id = 4;
+  string bootstrap_session_id = 5;
+  int64 expected_bootstrap_revision = 6;
+  string signer_key_id = 7;
+}
+message CreateAwsFoundationOperationChallengeResponse { AwsFoundationOperationChallenge challenge = 1; }
+
+message ApproveAwsFoundationOperationRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  DeviceApprovalSignature approval = 3;
+  string operation_id = 4;
+  int64 expected_revision = 5;
+  string connection_id = 6;
+  AwsFoundationOperationAction action = 7;
+  string scope_digest = 8;
+}
+message ApproveAwsFoundationOperationResponse { AwsFoundationOperation operation = 1; }
+
+message GetAwsFoundationOperationRequest {
+  string owner_id = 1;
+  string operation_id = 2;
+}
+message GetAwsFoundationOperationResponse { AwsFoundationOperation operation = 1; }

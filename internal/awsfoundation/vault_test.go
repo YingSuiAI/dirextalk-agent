@@ -41,6 +41,13 @@ func TestVaultPersistsOnlyAuthenticatedCiphertextAndEnforcesRotationCAS(t *testi
 	if bytes.Contains(encoded, credential.AccessKeyID) || bytes.Contains(encoded, credential.SecretAccessKey) {
 		t.Fatalf("persisted record contains plaintext credential: %s", encoded)
 	}
+	adopted, err := vault.AdoptExistingGeneration(ctx, binding, 0)
+	if err != nil || adopted.Generation != 1 || adopted.OperationID != authorization.SessionID {
+		t.Fatalf("approved retry adoption=%+v error=%v", adopted, err)
+	}
+	if _, err := vault.AdoptExistingGeneration(ctx, binding, 1); !errors.Is(err, ErrCredentialRevisionConflict) {
+		t.Fatalf("noninitial adoption error=%v", err)
+	}
 
 	opened, err := vault.Open(ctx, binding)
 	if err != nil {

@@ -259,6 +259,7 @@ func serve() error {
 			app.WithCloudControl(cloudComposition.Coordinator),
 			app.WithCloudDestroy(cloudComposition.DestroyCoordinator),
 			app.WithCloudEntrypoint(cloudComposition.Entrypoint),
+			app.WithCloudFoundation(cloudComposition.FoundationLifecycle),
 			app.WithCloudHealth(cloudComposition.HealthProbeReader),
 			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),
 		)

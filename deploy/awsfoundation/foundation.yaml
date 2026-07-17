@@ -32,8 +32,63 @@ Parameters:
     AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$'
 
 Resources:
+  # Fixed, Foundation-owned AMI build environment. It has no Internet gateway,
+  # NAT gateway, route to the public Internet, public address assignment, or
+  # inbound security-group rule. The release controller may add only the
+  # explicitly approved private endpoints needed by a build operation.
+  ReleaseVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.255.0.0/24
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: foundation-release
+
+  ReleasePrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: ReleaseVPC
+      CidrBlock: 10.255.0.0/26
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: foundation-release
+
+  ReleaseZeroIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Dirextalk fixed AMI builder with no inbound access
+      VpcId:
+        Ref: ReleaseVPC
+      SecurityGroupIngress: []
+      # CloudFormation/EC2 adds allow-all egress when no outbound rule is
+      # supplied. A loopback-only sentinel removes that default while granting
+      # no usable VPC or Internet route to an attached instance.
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 127.0.0.1/32
+          Description: Remove default outbound access
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: foundation-release
+
   FoundationKey:
     Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       Description:
         Fn::Sub: Dirextalk Agent ${AgentInstanceId} foundation key
@@ -112,8 +167,8 @@ Resources:
 
   ArtifactBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       BucketName:
         Ref: ArtifactBucketName
@@ -175,8 +230,8 @@ Resources:
 
   ManifestTable:
     Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       TableName:
         Ref: ManifestTableName
@@ -207,8 +262,8 @@ Resources:
 
   WorkerLogGroup:
     Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       LogGroupName:
         Ref: WorkerLogGroupName
@@ -224,8 +279,8 @@ Resources:
 
   ReaperLogGroup:
     Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       LogGroupName:
         Ref: ReaperLogGroupName
@@ -241,8 +296,8 @@ Resources:
 
   SecretNamespaceMarker:
     Type: AWS::SecretsManager::Secret
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       Name:
         Fn::Sub: ${SecretNamespace}_foundation
@@ -1166,6 +1221,12 @@ Resources:
                   Ref: AgentInstanceId
 
 Outputs:
+  ReleasePrivateSubnetId:
+    Value:
+      Ref: ReleasePrivateSubnet
+  ReleaseZeroIngressSecurityGroupId:
+    Value:
+      Fn::GetAtt: [ReleaseZeroIngressSecurityGroup, GroupId]
   ArtifactBucketName:
     Value:
       Ref: ArtifactBucket

@@ -24,6 +24,7 @@ import (
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
@@ -51,16 +52,27 @@ type IAMAPI interface {
 	ListAccessKeys(context.Context, *iam.ListAccessKeysInput, ...func(*iam.Options)) (*iam.ListAccessKeysOutput, error)
 	DeleteAccessKey(context.Context, *iam.DeleteAccessKeyInput, ...func(*iam.Options)) (*iam.DeleteAccessKeyOutput, error)
 	CreateAccessKey(context.Context, *iam.CreateAccessKeyInput, ...func(*iam.Options)) (*iam.CreateAccessKeyOutput, error)
+	DeleteUserPolicy(context.Context, *iam.DeleteUserPolicyInput, ...func(*iam.Options)) (*iam.DeleteUserPolicyOutput, error)
+	DeleteUser(context.Context, *iam.DeleteUserInput, ...func(*iam.Options)) (*iam.DeleteUserOutput, error)
+	DeleteRolePolicy(context.Context, *iam.DeleteRolePolicyInput, ...func(*iam.Options)) (*iam.DeleteRolePolicyOutput, error)
+	DeleteRole(context.Context, *iam.DeleteRoleInput, ...func(*iam.Options)) (*iam.DeleteRoleOutput, error)
 }
 
 type CloudFormationAPI interface {
 	CreateStack(context.Context, *cloudformation.CreateStackInput, ...func(*cloudformation.Options)) (*cloudformation.CreateStackOutput, error)
+	UpdateStack(context.Context, *cloudformation.UpdateStackInput, ...func(*cloudformation.Options)) (*cloudformation.UpdateStackOutput, error)
+	DeleteStack(context.Context, *cloudformation.DeleteStackInput, ...func(*cloudformation.Options)) (*cloudformation.DeleteStackOutput, error)
+	UpdateTerminationProtection(context.Context, *cloudformation.UpdateTerminationProtectionInput, ...func(*cloudformation.Options)) (*cloudformation.UpdateTerminationProtectionOutput, error)
 	DescribeStacks(context.Context, *cloudformation.DescribeStacksInput, ...func(*cloudformation.Options)) (*cloudformation.DescribeStacksOutput, error)
 	GetTemplate(context.Context, *cloudformation.GetTemplateInput, ...func(*cloudformation.Options)) (*cloudformation.GetTemplateOutput, error)
 }
 
 type S3API interface {
 	HeadBucket(context.Context, *s3.HeadBucketInput, ...func(*s3.Options)) (*s3.HeadBucketOutput, error)
+	ListMultipartUploads(context.Context, *s3.ListMultipartUploadsInput, ...func(*s3.Options)) (*s3.ListMultipartUploadsOutput, error)
+	AbortMultipartUpload(context.Context, *s3.AbortMultipartUploadInput, ...func(*s3.Options)) (*s3.AbortMultipartUploadOutput, error)
+	ListObjectVersions(context.Context, *s3.ListObjectVersionsInput, ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error)
+	DeleteObjects(context.Context, *s3.DeleteObjectsInput, ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
 }
 
 type KMSAPI interface {
@@ -191,40 +203,47 @@ func (provider *SDKProvider) GetCallerIdentity(ctx context.Context) (CallerIdent
 }
 
 func (provider *SDKProvider) EnsureBootstrapIdentity(ctx context.Context, spec BootstrapIdentitySpec) (SourceCredentials, error) {
-	if err := validateBootstrapSpec(spec, provider.region); err != nil {
+	if err := provider.UpdateBootstrapPolicies(ctx, spec); err != nil {
 		return SourceCredentials{}, err
-	}
-	controlTrust, err := json.Marshal(spec.ControlTrustPolicy)
-	if err != nil {
-		return SourceCredentials{}, ErrInvalidRequest
-	}
-	controlPolicy, err := json.Marshal(spec.ControlBaselinePolicy)
-	if err != nil {
-		return SourceCredentials{}, ErrInvalidRequest
-	}
-	foundationTrust, err := json.Marshal(spec.FoundationTrustPolicy)
-	if err != nil {
-		return SourceCredentials{}, ErrInvalidRequest
-	}
-	foundationPolicy, err := json.Marshal(spec.FoundationExecutionPolicy)
-	if err != nil {
-		return SourceCredentials{}, ErrInvalidRequest
 	}
 	sourcePolicy, err := json.Marshal(spec.SourceUserPolicy)
 	if err != nil {
 		return SourceCredentials{}, ErrInvalidRequest
 	}
-	roleTags := iamTagSet(spec.Tags)
-	if err := provider.ensureRole(ctx, spec.ControlRoleName, "Dirextalk Agent typed control role", string(controlTrust), "control-baseline-v1", string(controlPolicy), roleTags); err != nil {
-		return SourceCredentials{}, err
-	}
-	if err := provider.ensureRole(ctx, spec.FoundationRoleName, "Dirextalk Agent CloudFormation execution role", string(foundationTrust), "foundation-execution-v1", string(foundationPolicy), roleTags); err != nil {
-		return SourceCredentials{}, err
-	}
-	if err := provider.ensureSourceUser(ctx, spec.SourceUserName, string(sourcePolicy), roleTags); err != nil {
+	if err := provider.ensureSourceUser(ctx, spec.SourceUserName, string(sourcePolicy), iamTagSet(spec.Tags)); err != nil {
 		return SourceCredentials{}, err
 	}
 	return provider.createInitialSourceAccessKey(ctx, spec.SourceUserName)
+}
+
+func (provider *SDKProvider) UpdateBootstrapPolicies(ctx context.Context, spec BootstrapIdentitySpec) error {
+	if err := validateBootstrapSpec(spec, provider.region); err != nil {
+		return err
+	}
+	controlTrust, err := json.Marshal(spec.ControlTrustPolicy)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	controlPolicy, err := json.Marshal(spec.ControlBaselinePolicy)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	foundationTrust, err := json.Marshal(spec.FoundationTrustPolicy)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	foundationPolicy, err := json.Marshal(spec.FoundationExecutionPolicy)
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	roleTags := iamTagSet(spec.Tags)
+	if err := provider.ensureRole(ctx, spec.ControlRoleName, "Dirextalk Agent typed control role", string(controlTrust), "control-baseline-v1", string(controlPolicy), roleTags); err != nil {
+		return err
+	}
+	if err := provider.ensureRole(ctx, spec.FoundationRoleName, "Dirextalk Agent CloudFormation execution role", string(foundationTrust), "foundation-execution-v1", string(foundationPolicy), roleTags); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (provider *SDKProvider) ensureRole(ctx context.Context, roleName, description, trustPolicy, policyName, policy string, tags []iamtypes.Tag) error {
@@ -335,6 +354,234 @@ func (provider *SDKProvider) CreateFoundationStack(ctx context.Context, request 
 	return provider.waitForFoundationStack(ctx, request)
 }
 
+func (provider *SDKProvider) UpdateFoundationStack(ctx context.Context, request FoundationStackRequest) (FoundationStackReceipt, error) {
+	if err := validateStackRequest(request, provider.region); err != nil {
+		return FoundationStackReceipt{}, err
+	}
+	current, err := provider.recoverFoundationStackOwnership(ctx, request)
+	if err != nil {
+		return FoundationStackReceipt{}, err
+	}
+	if current.Status != string(cloudformationtypes.StackStatusCreateComplete) && current.Status != string(cloudformationtypes.StackStatusUpdateComplete) {
+		return FoundationStackReceipt{}, ErrFoundationStackFailed
+	}
+	parameters := make([]cloudformationtypes.Parameter, 0, len(request.Parameters))
+	for _, key := range sortedMapKeys(request.Parameters) {
+		parameters = append(parameters, cloudformationtypes.Parameter{ParameterKey: aws.String(key), ParameterValue: aws.String(request.Parameters[key])})
+	}
+	output, err := provider.clients.CloudFormation.UpdateStack(ctx, &cloudformation.UpdateStackInput{StackName: aws.String(request.StackName), TemplateBody: aws.String(request.TemplateBody), ClientRequestToken: aws.String(request.ClientToken),
+		Capabilities: []cloudformationtypes.Capability{cloudformationtypes.CapabilityCapabilityNamedIam}, RoleARN: aws.String(request.FoundationRoleARN), Parameters: parameters, Tags: cloudFormationTagSet(request.Tags)})
+	if err != nil && !apiCode(err, "ValidationError") {
+		classified := providerError(ctx, err)
+		if errors.Is(classified, ErrPermissionDenied) || errors.Is(classified, context.Canceled) || errors.Is(classified, context.DeadlineExceeded) {
+			return FoundationStackReceipt{}, classified
+		}
+	}
+	if err == nil && output != nil && aws.ToString(output.StackId) != "" && !validStackARN(aws.ToString(output.StackId), request) {
+		return FoundationStackReceipt{}, ErrReadBackMismatch
+	}
+	for {
+		receipt, readErr := provider.recoverFoundationStack(ctx, request)
+		if readErr == nil {
+			switch cloudformationtypes.StackStatus(receipt.Status) {
+			case cloudformationtypes.StackStatusUpdateComplete, cloudformationtypes.StackStatusCreateComplete:
+				return receipt, nil
+			case cloudformationtypes.StackStatusUpdateInProgress, cloudformationtypes.StackStatusUpdateCompleteCleanupInProgress: // poll
+			default:
+				return FoundationStackReceipt{}, ErrFoundationStackFailed
+			}
+		} else if errors.Is(readErr, ErrReadBackMismatch) {
+			return FoundationStackReceipt{}, readErr
+		}
+		if waitErr := waitForContext(ctx, provider.stackPollInterval); waitErr != nil {
+			return FoundationStackReceipt{}, waitErr
+		}
+	}
+}
+
+func (provider *SDKProvider) DeleteFoundationStack(ctx context.Context, request FoundationStackRequest) (FoundationStackReceipt, error) {
+	if err := validateStackRequest(request, provider.region); err != nil {
+		return FoundationStackReceipt{}, err
+	}
+	receipt, err := provider.recoverFoundationStackOwnership(ctx, request)
+	if err != nil {
+		if errors.Is(err, ErrProviderUnavailable) && provider.foundationStackAbsent(ctx, request.StackName) {
+			return FoundationStackReceipt{Status: FoundationStackDeletedStatus, ObservedAt: provider.now().UTC()}, nil
+		}
+		return FoundationStackReceipt{}, err
+	}
+	switch cloudformationtypes.StackStatus(receipt.Status) {
+	case cloudformationtypes.StackStatusDeleteInProgress:
+		return provider.waitForFoundationDeletion(ctx, request.StackName)
+	case cloudformationtypes.StackStatusDeleteFailed:
+		return FoundationStackReceipt{}, ErrFoundationStackFailed
+	}
+	if err := provider.emptyFoundationBucket(ctx, request.Parameters["ArtifactBucketName"]); err != nil {
+		return FoundationStackReceipt{}, err
+	}
+	if _, err := provider.clients.CloudFormation.UpdateTerminationProtection(ctx, &cloudformation.UpdateTerminationProtectionInput{StackName: aws.String(request.StackName), EnableTerminationProtection: aws.Bool(false)}); err != nil {
+		return FoundationStackReceipt{}, providerError(ctx, err)
+	}
+	if _, err := provider.clients.CloudFormation.DeleteStack(ctx, &cloudformation.DeleteStackInput{StackName: aws.String(request.StackName), ClientRequestToken: aws.String(request.ClientToken), RoleARN: aws.String(request.FoundationRoleARN)}); err != nil {
+		classified := providerError(ctx, err)
+		if errors.Is(classified, ErrPermissionDenied) || errors.Is(classified, context.Canceled) || errors.Is(classified, context.DeadlineExceeded) {
+			return FoundationStackReceipt{}, classified
+		}
+	}
+	return provider.waitForFoundationDeletion(ctx, request.StackName)
+}
+
+func (provider *SDKProvider) waitForFoundationDeletion(ctx context.Context, stackName string) (FoundationStackReceipt, error) {
+	for {
+		output, err := provider.clients.CloudFormation.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(stackName)})
+		if err != nil && apiCode(err, "ValidationError") {
+			return FoundationStackReceipt{Status: FoundationStackDeletedStatus, ObservedAt: provider.now().UTC()}, nil
+		}
+		if err != nil || output == nil || len(output.Stacks) != 1 {
+			return FoundationStackReceipt{}, ErrProviderUnavailable
+		}
+		switch output.Stacks[0].StackStatus {
+		case cloudformationtypes.StackStatusDeleteInProgress: // poll
+		case cloudformationtypes.StackStatusDeleteFailed:
+			return FoundationStackReceipt{}, ErrFoundationStackFailed
+		default:
+			return FoundationStackReceipt{}, ErrReadBackMismatch
+		}
+		if waitErr := waitForContext(ctx, provider.stackPollInterval); waitErr != nil {
+			return FoundationStackReceipt{}, waitErr
+		}
+	}
+}
+
+func (provider *SDKProvider) foundationStackAbsent(ctx context.Context, stackName string) bool {
+	_, err := provider.clients.CloudFormation.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(stackName)})
+	return err != nil && apiCode(err, "ValidationError")
+}
+
+func (provider *SDKProvider) emptyFoundationBucket(ctx context.Context, bucket string) error {
+	if bucket == "" || provider.clients.S3 == nil {
+		return ErrInvalidRequest
+	}
+	var multipartKeyMarker, multipartUploadMarker *string
+	for {
+		output, err := provider.clients.S3.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{Bucket: aws.String(bucket), KeyMarker: multipartKeyMarker, UploadIdMarker: multipartUploadMarker})
+		if err != nil {
+			if apiCode(err, "NoSuchBucket") {
+				return nil
+			}
+			return providerError(ctx, err)
+		}
+		if output == nil {
+			return ErrReadBackMismatch
+		}
+		for _, upload := range output.Uploads {
+			key, uploadID := aws.ToString(upload.Key), aws.ToString(upload.UploadId)
+			if key == "" || uploadID == "" {
+				return ErrReadBackMismatch
+			}
+			if _, err := provider.clients.S3.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{Bucket: aws.String(bucket), Key: aws.String(key), UploadId: aws.String(uploadID)}); err != nil && !apiCode(err, "NoSuchUpload") {
+				return providerError(ctx, err)
+			}
+		}
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+		if output.NextKeyMarker == nil || aws.ToString(output.NextKeyMarker) == "" {
+			return ErrReadBackMismatch
+		}
+		multipartKeyMarker, multipartUploadMarker = output.NextKeyMarker, output.NextUploadIdMarker
+	}
+	var keyMarker, versionMarker *string
+	for {
+		output, err := provider.clients.S3.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), KeyMarker: keyMarker, VersionIdMarker: versionMarker})
+		if err != nil {
+			if apiCode(err, "NoSuchBucket") {
+				return nil
+			}
+			return providerError(ctx, err)
+		}
+		if output == nil {
+			return ErrReadBackMismatch
+		}
+		objects := make([]s3types.ObjectIdentifier, 0, len(output.Versions)+len(output.DeleteMarkers))
+		for _, version := range output.Versions {
+			objects = append(objects, s3types.ObjectIdentifier{Key: version.Key, VersionId: version.VersionId})
+		}
+		for _, marker := range output.DeleteMarkers {
+			objects = append(objects, s3types.ObjectIdentifier{Key: marker.Key, VersionId: marker.VersionId})
+		}
+		if len(objects) > 0 {
+			deleted, err := provider.clients.S3.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(bucket), Delete: &s3types.Delete{Objects: objects, Quiet: aws.Bool(true)}})
+			if err != nil || deleted == nil || len(deleted.Errors) != 0 {
+				return ErrProviderUnavailable
+			}
+		}
+		if !aws.ToBool(output.IsTruncated) {
+			break
+		}
+		if output.NextKeyMarker == nil {
+			return ErrReadBackMismatch
+		}
+		keyMarker, versionMarker = output.NextKeyMarker, output.NextVersionIdMarker
+	}
+	readBack, err := provider.clients.S3.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{Bucket: aws.String(bucket)})
+	if err != nil && apiCode(err, "NoSuchBucket") {
+		return nil
+	}
+	if err != nil || readBack == nil || len(readBack.Versions) != 0 || len(readBack.DeleteMarkers) != 0 {
+		return ErrReadBackMismatch
+	}
+	multipartReadBack, err := provider.clients.S3.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{Bucket: aws.String(bucket)})
+	if err != nil && apiCode(err, "NoSuchBucket") {
+		return nil
+	}
+	if err != nil || multipartReadBack == nil || len(multipartReadBack.Uploads) != 0 || aws.ToBool(multipartReadBack.IsTruncated) {
+		return ErrReadBackMismatch
+	}
+	return nil
+}
+
+func (provider *SDKProvider) DeleteBootstrapIdentity(ctx context.Context, spec BootstrapIdentitySpec) error {
+	if err := validateBootstrapSpec(spec, provider.region); err != nil {
+		return err
+	}
+	keys, err := provider.clients.IAM.ListAccessKeys(ctx, &iam.ListAccessKeysInput{UserName: aws.String(spec.SourceUserName)})
+	if err != nil {
+		if apiCode(err, "NoSuchEntity") {
+			keys = &iam.ListAccessKeysOutput{}
+		} else {
+			return providerError(ctx, err)
+		}
+	}
+	if keys == nil || keys.IsTruncated {
+		return ErrReadBackMismatch
+	}
+	for _, key := range keys.AccessKeyMetadata {
+		keyID := aws.ToString(key.AccessKeyId)
+		if keyID == "" {
+			return ErrReadBackMismatch
+		}
+		if _, err := provider.clients.IAM.DeleteAccessKey(ctx, &iam.DeleteAccessKeyInput{UserName: aws.String(spec.SourceUserName), AccessKeyId: aws.String(keyID)}); err != nil {
+			return providerError(ctx, err)
+		}
+	}
+	if _, err := provider.clients.IAM.DeleteUserPolicy(ctx, &iam.DeleteUserPolicyInput{UserName: aws.String(spec.SourceUserName), PolicyName: aws.String("assume-control-only-v1")}); err != nil && !apiCode(err, "NoSuchEntity") {
+		return providerError(ctx, err)
+	}
+	if _, err := provider.clients.IAM.DeleteUser(ctx, &iam.DeleteUserInput{UserName: aws.String(spec.SourceUserName)}); err != nil && !apiCode(err, "NoSuchEntity") {
+		return providerError(ctx, err)
+	}
+	for _, role := range []struct{ name, policy string }{{spec.ControlRoleName, "control-baseline-v1"}, {spec.FoundationRoleName, "foundation-execution-v1"}} {
+		if _, err := provider.clients.IAM.DeleteRolePolicy(ctx, &iam.DeleteRolePolicyInput{RoleName: aws.String(role.name), PolicyName: aws.String(role.policy)}); err != nil && !apiCode(err, "NoSuchEntity") {
+			return providerError(ctx, err)
+		}
+		if _, err := provider.clients.IAM.DeleteRole(ctx, &iam.DeleteRoleInput{RoleName: aws.String(role.name)}); err != nil && !apiCode(err, "NoSuchEntity") {
+			return providerError(ctx, err)
+		}
+	}
+	return nil
+}
+
 func (provider *SDKProvider) waitForFoundationStack(ctx context.Context, request FoundationStackRequest) (FoundationStackReceipt, error) {
 	for {
 		receipt, err := provider.recoverFoundationStack(ctx, request)
@@ -368,14 +615,25 @@ func waitForContext(ctx context.Context, duration time.Duration) error {
 }
 
 func (provider *SDKProvider) recoverFoundationStack(ctx context.Context, request FoundationStackRequest) (FoundationStackReceipt, error) {
+	return provider.recoverFoundationStackChecked(ctx, request, true)
+}
+
+func (provider *SDKProvider) recoverFoundationStackOwnership(ctx context.Context, request FoundationStackRequest) (FoundationStackReceipt, error) {
+	return provider.recoverFoundationStackChecked(ctx, request, false)
+}
+
+func (provider *SDKProvider) recoverFoundationStackChecked(ctx context.Context, request FoundationStackRequest, requireTemplate bool) (FoundationStackReceipt, error) {
 	output, err := provider.clients.CloudFormation.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(request.StackName)})
 	if err != nil || output == nil || len(output.Stacks) != 1 {
 		return FoundationStackReceipt{}, ErrProviderUnavailable
 	}
 	stack := output.Stacks[0]
 	stackID := aws.ToString(stack.StackId)
-	if !validStackARN(stackID, request) || aws.ToString(stack.RoleARN) != request.FoundationRoleARN || !sameParameters(request.Parameters, stack.Parameters) || !sameTags(request.Tags, stack.Tags) {
+	if !validStackARN(stackID, request) || aws.ToString(stack.RoleARN) != request.FoundationRoleARN || !sameTags(request.Tags, stack.Tags) || (requireTemplate && !sameParameters(request.Parameters, stack.Parameters)) {
 		return FoundationStackReceipt{}, ErrReadBackMismatch
+	}
+	if !requireTemplate {
+		return FoundationStackReceipt{StackID: stackID, Status: string(stack.StackStatus), ObservedAt: provider.now().UTC()}, nil
 	}
 	template, err := provider.clients.CloudFormation.GetTemplate(ctx, &cloudformation.GetTemplateInput{StackName: aws.String(stackID), TemplateStage: cloudformationtypes.TemplateStageOriginal})
 	if err != nil || template == nil || template.TemplateBody == nil {

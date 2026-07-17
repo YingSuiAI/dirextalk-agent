@@ -329,6 +329,16 @@ func (store *ResourceStore) Save(ctx context.Context, item resource.ResourceV1, 
 	if current.Revision != expectedRevision || !sameResourceIdentity(current, item) {
 		return resource.ResourceV1{}, resource.ErrRevisionConflict
 	}
+	if current.Intent.ProviderCreateStartedAt.IsZero() && !item.Intent.ProviderCreateStartedAt.IsZero() {
+		var active bool
+		if err := tx.QueryRow(ctx, `SELECT connection.status='active'
+		 FROM cloud_launch_operations launch
+		 JOIN cloud_connections connection ON connection.agent_instance_id=launch.agent_instance_id AND connection.connection_id=launch.connection_id
+		 WHERE launch.agent_instance_id=$1 AND launch.owner_id=$2 AND launch.deployment_id=$3
+		 FOR UPDATE OF connection`, store.instanceID, item.OwnerID, item.DeploymentID).Scan(&active); err != nil || !active {
+			return resource.ResourceV1{}, resource.ErrRevisionConflict
+		}
+	}
 	if err := saveResourceTx(ctx, tx, store.instanceID, expectedRevision, item); err != nil {
 		return resource.ResourceV1{}, err
 	}

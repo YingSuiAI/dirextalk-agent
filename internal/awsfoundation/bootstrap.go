@@ -18,6 +18,7 @@ var (
 	ErrFoundationBootstrap          = errors.New("AWS foundation bootstrap failed")
 	ErrFoundationPermissionDenied   = errors.New("AWS foundation bootstrap permission denied")
 	ErrIdentityConfirmationMismatch = errors.New("AWS account or Region did not match confirmation")
+	ErrFoundationDestroyBlocked     = errors.New("AWS Foundation teardown is incomplete")
 	immutableImagePattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)(?:[.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$`)
 )
 
@@ -27,6 +28,7 @@ type EstablishRequest struct {
 	ConfirmedAccountID           string
 	ExpectedCredentialGeneration uint64
 	ResumeExistingGeneration     bool
+	AdoptExistingGeneration      bool
 	AdminAuthorization           AdminAuthorization
 	ReaperImageURI               string
 }
@@ -61,7 +63,8 @@ func (bootstrapper *Bootstrapper) Establish(ctx context.Context, payload []byte,
 	}
 	bootstrapper.mu.Lock()
 	defer bootstrapper.mu.Unlock()
-	if !idPattern.MatchString(request.AgentInstanceID) || !accountPattern.MatchString(request.ConfirmedAccountID) || !regionPattern.MatchString(request.Region) || !validImmutableImage(request.ReaperImageURI) {
+	if !idPattern.MatchString(request.AgentInstanceID) || !accountPattern.MatchString(request.ConfirmedAccountID) || !regionPattern.MatchString(request.Region) ||
+		!validImmutableImage(request.ReaperImageURI) || (request.AdoptExistingGeneration && !request.ResumeExistingGeneration) {
 		zeroBytes(payload)
 		return EstablishResult{}, ErrFoundationBootstrap
 	}
@@ -93,14 +96,24 @@ func (bootstrapper *Bootstrapper) Establish(ctx context.Context, payload []byte,
 			return err
 		}
 		var generation uint64
-		if request.ResumeExistingGeneration {
-			record, err := bootstrapper.vault.ResumeExistingGeneration(ctx, binding, request.ExpectedCredentialGeneration, request.AdminAuthorization.SessionID)
-			if err != nil {
+		resumeExisting := request.ResumeExistingGeneration
+		if resumeExisting {
+			var record EncryptedSourceCredential
+			if request.AdoptExistingGeneration {
+				record, err = bootstrapper.vault.AdoptExistingGeneration(ctx, binding, request.ExpectedCredentialGeneration)
+			} else {
+				record, err = bootstrapper.vault.ResumeExistingGeneration(ctx, binding, request.ExpectedCredentialGeneration, request.AdminAuthorization.SessionID)
+			}
+			if request.AdoptExistingGeneration && errors.Is(err, ErrCredentialNotFound) {
+				resumeExisting = false
+			} else if err != nil {
 				establishErr = err
 				return err
+			} else {
+				generation = record.Generation
 			}
-			generation = record.Generation
-		} else {
+		}
+		if !resumeExisting {
 			if err := bootstrapper.vault.CheckGeneration(ctx, binding, request.ExpectedCredentialGeneration); err != nil {
 				establishErr = err
 				return err
@@ -122,7 +135,7 @@ func (bootstrapper *Bootstrapper) Establish(ctx context.Context, payload []byte,
 			}
 			generation = record.Generation
 		}
-		stackRequest := foundationStackRequest(spec, request.ReaperImageURI, bootstrapper.templateBody, bootstrapper.templateHash)
+		stackRequest := foundationStackRequest(spec, request.ReaperImageURI, bootstrapper.templateBody, bootstrapper.templateHash, string(LifecycleEstablish), request.AdminAuthorization.SessionID)
 		receipt, err := provider.CreateFoundationStack(ctx, stackRequest)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -175,9 +188,9 @@ func validImmutableImage(value string) bool {
 	return !strings.Contains(lower, ":latest@") && !strings.Contains(lower, ":v1.0.3@")
 }
 
-func foundationStackRequest(spec awsprovider.BootstrapIdentitySpec, reaperImageURI, templateBody, templateHash string) awsprovider.FoundationStackRequest {
+func foundationStackRequest(spec awsprovider.BootstrapIdentitySpec, reaperImageURI, templateBody, templateHash, action, operationID string) awsprovider.FoundationStackRequest {
 	roleARN := "arn:" + spec.Partition + ":iam::" + spec.AccountID + ":role/" + spec.FoundationRoleName
-	tokenHash := sha256.Sum256([]byte(strings.Join([]string{spec.AgentInstanceID, spec.AccountID, spec.Region, templateHash, reaperImageURI}, "\x00")))
+	tokenHash := sha256.Sum256([]byte(strings.Join([]string{spec.AgentInstanceID, spec.AccountID, spec.Region, templateHash, reaperImageURI, action, operationID}, "\x00")))
 	return awsprovider.FoundationStackRequest{
 		StackName: spec.StackName, Region: spec.Region, AccountID: spec.AccountID, FoundationRoleARN: roleARN,
 		ClientToken: "dtx-" + hex.EncodeToString(tokenHash[:16]), TemplateBody: templateBody, TemplateSHA256: templateHash,

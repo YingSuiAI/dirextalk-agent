@@ -19,6 +19,8 @@ var (
 )
 
 const FoundationStackReadyStatus = "CREATE_COMPLETE"
+const FoundationStackUpdatedStatus = "UPDATE_COMPLETE"
+const FoundationStackDeletedStatus = "DELETE_COMPLETE"
 
 type CallerIdentity struct {
 	Partition string
@@ -116,6 +118,16 @@ type BootstrapProvider interface {
 
 type BootstrapProviderFactory interface {
 	NewBootstrapProvider(context.Context, string, *Credentials) (BootstrapProvider, error)
+}
+
+// FoundationLifecycleProvider is available only to a fresh admin-bootstrap
+// operation. Daily Control Role sessions never implement this interface.
+type FoundationLifecycleProvider interface {
+	BootstrapProvider
+	UpdateFoundationStack(context.Context, FoundationStackRequest) (FoundationStackReceipt, error)
+	DeleteFoundationStack(context.Context, FoundationStackRequest) (FoundationStackReceipt, error)
+	UpdateBootstrapPolicies(context.Context, BootstrapIdentitySpec) error
+	DeleteBootstrapIdentity(context.Context, BootstrapIdentitySpec) error
 }
 
 func zero(value []byte) {
