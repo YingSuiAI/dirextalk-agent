@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 )
 
 var ErrSweepFailed = errors.New("AWS Reaper sweep failed")
@@ -33,7 +34,11 @@ func NewAWSHandler(config Config, awsConfig aws.Config, logger *slog.Logger) (*H
 	if err != nil {
 		return nil, err
 	}
-	provider, err := NewEC2Provider(ec2.NewFromConfig(awsConfig), config.AgentInstanceID, config.Region)
+	ec2Client := ec2.NewFromConfig(awsConfig)
+	provider, err := NewProvider(ec2Client, config.AgentInstanceID, config.Region,
+		WithSecurityGroupRuleClient(ec2Client),
+		WithELBV2Client(elbv2.NewFromConfig(awsConfig)),
+	)
 	if err != nil {
 		return nil, err
 	}

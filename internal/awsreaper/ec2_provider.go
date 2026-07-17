@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	"github.com/aws/smithy-go"
 )
 
@@ -51,19 +52,71 @@ type EC2API interface {
 	DeleteVpcEndpoints(context.Context, *ec2.DeleteVpcEndpointsInput, ...func(*ec2.Options)) (*ec2.DeleteVpcEndpointsOutput, error)
 }
 
+// SecurityGroupRuleAPI is the narrow additional EC2 surface the Reaper needs
+// to inspect and revoke an exact, tagged ingress rule. Keeping it separate
+// preserves NewEC2Provider compatibility for existing EC2-only clients.
+type SecurityGroupRuleAPI interface {
+	DescribeSecurityGroupRules(context.Context, *ec2.DescribeSecurityGroupRulesInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupRulesOutput, error)
+	RevokeSecurityGroupIngress(context.Context, *ec2.RevokeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupIngressOutput, error)
+}
+
+// ELBV2API is the destroy-only ELBv2 surface used by the AWS-side expiry
+// Reaper. It intentionally omits all public-entry creation and modification
+// operations.
+type ELBV2API interface {
+	DescribeLoadBalancers(context.Context, *elbv2.DescribeLoadBalancersInput, ...func(*elbv2.Options)) (*elbv2.DescribeLoadBalancersOutput, error)
+	DescribeTargetGroups(context.Context, *elbv2.DescribeTargetGroupsInput, ...func(*elbv2.Options)) (*elbv2.DescribeTargetGroupsOutput, error)
+	DescribeListeners(context.Context, *elbv2.DescribeListenersInput, ...func(*elbv2.Options)) (*elbv2.DescribeListenersOutput, error)
+	DescribeTags(context.Context, *elbv2.DescribeTagsInput, ...func(*elbv2.Options)) (*elbv2.DescribeTagsOutput, error)
+	DescribeTargetHealth(context.Context, *elbv2.DescribeTargetHealthInput, ...func(*elbv2.Options)) (*elbv2.DescribeTargetHealthOutput, error)
+	DeleteLoadBalancer(context.Context, *elbv2.DeleteLoadBalancerInput, ...func(*elbv2.Options)) (*elbv2.DeleteLoadBalancerOutput, error)
+	DeleteTargetGroup(context.Context, *elbv2.DeleteTargetGroupInput, ...func(*elbv2.Options)) (*elbv2.DeleteTargetGroupOutput, error)
+	DeregisterTargets(context.Context, *elbv2.DeregisterTargetsInput, ...func(*elbv2.Options)) (*elbv2.DeregisterTargetsOutput, error)
+	DeleteListener(context.Context, *elbv2.DeleteListenerInput, ...func(*elbv2.Options)) (*elbv2.DeleteListenerOutput, error)
+}
+
 type EC2Provider struct {
-	client          EC2API
-	agentInstanceID string
-	region          string
-	now             func() time.Time
+	client                  EC2API
+	securityGroupRuleClient SecurityGroupRuleAPI
+	entryClient             ELBV2API
+	agentInstanceID         string
+	region                  string
+	now                     func() time.Time
 }
 
 func NewEC2Provider(client EC2API, agentInstanceID, region string) (*EC2Provider, error) {
+	return NewProvider(client, agentInstanceID, region)
+}
+
+// ProviderOption supplies an optional destroy-only API surface. The base EC2
+// constructor remains valid for the original seven resource kinds.
+type ProviderOption func(*EC2Provider)
+
+func WithSecurityGroupRuleClient(client SecurityGroupRuleAPI) ProviderOption {
+	return func(provider *EC2Provider) { provider.securityGroupRuleClient = client }
+}
+
+func WithELBV2Client(client ELBV2API) ProviderOption {
+	return func(provider *EC2Provider) { provider.entryClient = client }
+}
+
+// NewProvider constructs an AWS Reaper provider with optional public-entry
+// destroy clients. It never enables create or mutation paths beyond deletion.
+func NewProvider(client EC2API, agentInstanceID, region string, options ...ProviderOption) (*EC2Provider, error) {
 	config := Config{AgentInstanceID: strings.TrimSpace(agentInstanceID), Region: strings.TrimSpace(region), ManifestTable: "placeholder"}
 	if client == nil || config.Validate() != nil {
 		return nil, ErrInvalidConfig
 	}
-	return &EC2Provider{client: client, agentInstanceID: config.AgentInstanceID, region: config.Region, now: time.Now}, nil
+	provider := &EC2Provider{client: client, agentInstanceID: config.AgentInstanceID, region: config.Region, now: time.Now}
+	if ruleClient, ok := client.(SecurityGroupRuleAPI); ok {
+		provider.securityGroupRuleClient = ruleClient
+	}
+	for _, option := range options {
+		if option != nil {
+			option(provider)
+		}
+	}
+	return provider, nil
 }
 
 func (provider *EC2Provider) Create(context.Context, resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
@@ -117,17 +170,26 @@ func (provider *EC2Provider) Delete(ctx context.Context, kind resource.Type, pro
 		return err
 	}
 	if err := provider.delete(ctx, kind, providerID); err != nil && !isNotFound(err) {
+		if errors.Is(err, ErrCloudReadBack) {
+			return ErrCloudReadBack
+		}
+		if errors.Is(err, ErrCloudMutation) {
+			return ErrCloudMutation
+		}
 		return ErrCloudMutation
 	}
 	return nil
 }
 
 func (provider *EC2Provider) validRequest(kind resource.Type, providerID, region string) bool {
-	if strings.TrimSpace(providerID) == "" || len(providerID) > 255 || region != provider.region || strings.ContainsAny(providerID, "\r\n\x00*/ ") {
+	if strings.TrimSpace(providerID) == "" || len(providerID) > 255 || region != provider.region || strings.ContainsAny(providerID, "\r\n\x00* ") {
 		return false
 	}
 	switch kind {
-	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP, resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot:
+	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP, resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot,
+		resource.TypeSecurityGroupRule:
+		return !strings.Contains(providerID, "/")
+	case resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener:
 		return true
 	default:
 		return false
@@ -213,6 +275,8 @@ func (provider *EC2Provider) observe(ctx context.Context, kind resource.Type, pr
 				return rawObservation{exists: true, tags: sdkTags(value.Tags)}, nil
 			}
 		}
+	case resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener, resource.TypeSecurityGroupRule:
+		return provider.observeEntryResource(ctx, kind, providerID)
 	}
 	return rawObservation{exists: false}, nil
 }
@@ -258,6 +322,8 @@ func (provider *EC2Provider) delete(ctx context.Context, kind resource.Type, pro
 			return ErrCloudMutation
 		}
 		return nil
+	case resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener, resource.TypeSecurityGroupRule:
+		return provider.deleteEntryResource(ctx, kind, providerID)
 	default:
 		return ErrUnsupportedMutation
 	}

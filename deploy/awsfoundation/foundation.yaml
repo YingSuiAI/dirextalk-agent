@@ -395,9 +395,22 @@ Resources:
                   - ec2:DescribeInstances
                   - ec2:DescribeNetworkInterfaces
                   - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSecurityGroupRules
                   - ec2:DescribeSnapshots
                   - ec2:DescribeVolumes
                   - ec2:DescribeVpcEndpoints
+                Resource: '*'
+              # ELBv2 Describe APIs do not support resource-level IAM
+              # controls. The Reaper reads exactly one requested ARN and
+              # verifies all ephemeral manifest tags before mutation.
+              - Sid: ObserveExpiredEntrypointResources
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTags
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
                 Resource: '*'
               - Sid: DestroyExpiredEphemeralCompute
                 Effect: Allow
@@ -426,6 +439,45 @@ Resources:
                   # The Go Reaper verifies the approved manifest deadline before
                   # mutation. IAM Date operators cannot compare a resource-tag
                   # date against a dynamic aws:CurrentTime policy variable.
+              - Sid: DestroyExpiredEphemeralLoadBalancerAndListener
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:DeleteListener
+                  - elasticloadbalancing:DeleteLoadBalancer
+                Resource:
+                  - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*
+                  - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/dirextalk:agent_instance_id:
+                      Ref: AgentInstanceId
+                    aws:ResourceTag/dirextalk:retention: ephemeral
+              - Sid: DestroyExpiredEphemeralTargetGroup
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:DeleteTargetGroup
+                  - elasticloadbalancing:DeregisterTargets
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/dirextalk:agent_instance_id:
+                      Ref: AgentInstanceId
+                    aws:ResourceTag/dirextalk:retention: ephemeral
+              # RevokeSecurityGroupIngress only supports security-group
+              # resource ARNs. The provider supplies a single read-back
+              # security-group-rule ID and independently verifies its tags.
+              - Sid: RevokeExpiredEphemeralIngressRule
+                Effect: Allow
+                Action:
+                  - ec2:RevokeSecurityGroupIngress
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/dirextalk:agent_instance_id:
+                      Ref: AgentInstanceId
+                    ec2:ResourceTag/dirextalk:retention: ephemeral
               - Sid: ReaperLogs
                 Effect: Allow
                 Action:

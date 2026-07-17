@@ -545,7 +545,9 @@ func conditionReferenceEquals(values map[string]any, key, ref string) bool {
 
 func noEntrypointActionsOutsideControlPolicy(resources map[string]any) bool {
 	for logicalID, raw := range resources {
-		if logicalID == "ControlEntrypointPolicy" {
+		// The Reaper has a separately validated, strictly destruction-only
+		// entry-point surface. No other role or policy may carry these actions.
+		if logicalID == "ControlEntrypointPolicy" || logicalID == "ReaperRole" {
 			continue
 		}
 		resource, ok := stringMap(raw)
@@ -924,35 +926,110 @@ func reaperFailsClosed(value any) bool {
 	}
 	properties, _ := stringMap(resource["Properties"])
 	policies, _ := anySlice(properties["Policies"])
-	hasManifestRead := false
-	hasScopedDestroy := false
-	for _, item := range policies {
-		policy, _ := stringMap(item)
-		document, _ := stringMap(policy["PolicyDocument"])
-		statements, _ := anySlice(document["Statement"])
-		for _, item := range statements {
-			statement, _ := stringMap(item)
-			actions := stringValues(statement["Action"])
-			destructive := false
-			for _, action := range actions {
-				if action == "dynamodb:GetItem" || action == "dynamodb:Query" {
-					hasManifestRead = true
-				}
-				if action == "ec2:TerminateInstances" || strings.HasPrefix(action, "ec2:Delete") || action == "ec2:ReleaseAddress" {
-					destructive = true
-				}
-			}
-			if !destructive {
-				continue
-			}
-			encoded := fmt.Sprint(statement["Condition"])
-			if !strings.Contains(encoded, "dirextalk:agent_instance_id") || !strings.Contains(encoded, "dirextalk:retention") || !strings.Contains(encoded, "ephemeral") {
+	if len(policies) != 1 {
+		return false
+	}
+	policy, ok := stringMap(policies[0])
+	if !ok || scalarString(policy["PolicyName"]) != "expired-ephemeral-only" {
+		return false
+	}
+	document, _ := stringMap(policy["PolicyDocument"])
+	statements, ok := anySlice(document["Statement"])
+	if !ok || len(statements) != 8 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(statements))
+	for _, item := range statements {
+		statement, ok := stringMap(item)
+		if !ok || scalarString(statement["Effect"]) != "Allow" {
+			return false
+		}
+		sid := scalarString(statement["Sid"])
+		if sid == "" {
+			return false
+		}
+		if _, duplicate := seen[sid]; duplicate {
+			return false
+		}
+		seen[sid] = struct{}{}
+		actions := stringValues(statement["Action"])
+		resources := templateResourceStrings(statement["Resource"])
+		switch sid {
+		case "ReadManifest":
+			if !sameStrings(actions, []string{"dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"}) ||
+				!sameStrings(resources, []string{"getatt:ManifestTable:Arn"}) || statement["Condition"] != nil {
 				return false
 			}
-			hasScopedDestroy = true
+		case "ObserveOwnedResources":
+			if !sameStrings(actions, []string{
+				"ec2:DescribeAddresses", "ec2:DescribeInstances", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSecurityGroups",
+				"ec2:DescribeSecurityGroupRules", "ec2:DescribeSnapshots", "ec2:DescribeVolumes", "ec2:DescribeVpcEndpoints",
+			}) || !sameStrings(resources, []string{"*"}) || statement["Condition"] != nil {
+				return false
+			}
+		case "ObserveExpiredEntrypointResources":
+			if !sameStrings(actions, []string{
+				"elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeTags",
+				"elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetHealth",
+			}) || !sameStrings(resources, []string{"*"}) || statement["Condition"] != nil {
+				return false
+			}
+		case "DestroyExpiredEphemeralCompute":
+			if !sameStrings(actions, []string{
+				"ec2:TerminateInstances", "ec2:DeleteVolume", "ec2:DeleteNetworkInterface", "ec2:DisassociateAddress",
+				"ec2:ReleaseAddress", "ec2:DeleteSecurityGroup", "ec2:DeleteSnapshot", "ec2:DeleteVpcEndpoints",
+			}) || !sameStrings(resources, []string{
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*",
+			}) || !reaperEphemeralCondition(statement, "ec2:ResourceTag/") {
+				return false
+			}
+		case "DestroyExpiredEphemeralLoadBalancerAndListener":
+			if !sameStrings(actions, []string{"elasticloadbalancing:DeleteListener", "elasticloadbalancing:DeleteLoadBalancer"}) ||
+				!sameStrings(resources, []string{
+					"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+					"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
+				}) || !reaperEphemeralCondition(statement, "aws:ResourceTag/") {
+				return false
+			}
+		case "DestroyExpiredEphemeralTargetGroup":
+			if !sameStrings(actions, []string{"elasticloadbalancing:DeleteTargetGroup", "elasticloadbalancing:DeregisterTargets"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*"}) ||
+				!reaperEphemeralCondition(statement, "aws:ResourceTag/") {
+				return false
+			}
+		case "RevokeExpiredEphemeralIngressRule":
+			if !sameStrings(actions, []string{"ec2:RevokeSecurityGroupIngress"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*"}) ||
+				!reaperEphemeralCondition(statement, "ec2:ResourceTag/") {
+				return false
+			}
+		case "ReaperLogs":
+			if !sameStrings(actions, []string{"logs:CreateLogStream", "logs:PutLogEvents"}) ||
+				!sameStrings(resources, []string{"${ReaperLogGroup.Arn}:log-stream:*"}) || statement["Condition"] != nil {
+				return false
+			}
+		default:
+			return false
 		}
 	}
-	return hasManifestRead && hasScopedDestroy
+	return len(seen) == 8
+}
+
+func reaperEphemeralCondition(statement map[string]any, tagPrefix string) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 1 {
+		return false
+	}
+	values, ok := stringMap(condition["StringEquals"])
+	return ok && len(values) == 2 &&
+		conditionReferenceEquals(values, tagPrefix+"dirextalk:agent_instance_id", "AgentInstanceId") &&
+		scalarString(values[tagPrefix+"dirextalk:retention"]) == "ephemeral"
 }
 
 func templatePolicyActions(value any) []string {

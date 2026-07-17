@@ -51,6 +51,53 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 	}
 }
 
+func TestFoundationTemplateReaperEntrypointPermissionsAreMinimumScoped(t *testing.T) {
+	statements := reaperStatements(t)
+	assertStatement := func(sid string, actions, resources []string, tagPrefix string) {
+		t.Helper()
+		statement, ok := statements[sid]
+		if !ok || !sameStrings(stringValues(statement["Action"]), actions) || !sameStrings(templateResourceStrings(statement["Resource"]), resources) ||
+			!reaperEphemeralCondition(statement, tagPrefix) {
+			t.Fatalf("Reaper statement %s is not exactly ephemeral-scoped: %#v", sid, statement)
+		}
+	}
+	assertStatement("DestroyExpiredEphemeralLoadBalancerAndListener", []string{
+		"elasticloadbalancing:DeleteListener", "elasticloadbalancing:DeleteLoadBalancer",
+	}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
+	}, "aws:ResourceTag/")
+	assertStatement("DestroyExpiredEphemeralTargetGroup", []string{
+		"elasticloadbalancing:DeleteTargetGroup", "elasticloadbalancing:DeregisterTargets",
+	}, []string{"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*"}, "aws:ResourceTag/")
+	assertStatement("RevokeExpiredEphemeralIngressRule", []string{"ec2:RevokeSecurityGroupIngress"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+	}, "ec2:ResourceTag/")
+	observe, ok := statements["ObserveExpiredEntrypointResources"]
+	if !ok || !sameStrings(stringValues(observe["Action"]), []string{
+		"elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeTags",
+		"elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetHealth",
+	}) || !sameStrings(templateResourceStrings(observe["Resource"]), []string{"*"}) || observe["Condition"] != nil {
+		t.Fatalf("Reaper entrypoint observation is not read-only and account-scoped: %#v", observe)
+	}
+	if len(statements) != 8 {
+		t.Fatalf("Reaper statements = %d, want 8", len(statements))
+	}
+
+	template := testFoundationTemplate(t)
+	for name, change := range map[string][3]string{
+		"ELB deletion loses ephemeral tag": {"DestroyExpiredEphemeralLoadBalancerAndListener", "aws:ResourceTag/dirextalk:retention: ephemeral", "aws:ResourceTag/dirextalk:retention: managed"},
+		"target group deletion broadens":   {"DestroyExpiredEphemeralTargetGroup", "targetgroup/*", "*"},
+		"ingress revoke loses ownership":   {"RevokeExpiredEphemeralIngressRule", "ec2:ResourceTag/dirextalk:agent_instance_id", "ec2:ResourceTag/unrelated"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateTemplate(mutateReaperStatement(t, template, change[0], change[1], change[2])); err == nil {
+				t.Fatalf("unsafe Reaper entrypoint policy mutation %s was accepted", name)
+			}
+		})
+	}
+}
+
 func TestFoundationTemplateWorkerInstallerArtifactsRequireExactBoundPrincipal(t *testing.T) {
 	template := testFoundationTemplate(t)
 	for name, change := range map[string][2]string{
@@ -513,6 +560,40 @@ func controlEntrypointStatements(t *testing.T) map[string]map[string]any {
 	return statements
 }
 
+func reaperStatements(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	resources, _ := stringMap(root["Resources"])
+	reaper, _ := stringMap(resources["ReaperRole"])
+	properties, _ := stringMap(reaper["Properties"])
+	policies, ok := anySlice(properties["Policies"])
+	if !ok || len(policies) != 1 {
+		t.Fatalf("Reaper role policies = %#v", properties["Policies"])
+	}
+	policy, _ := stringMap(policies[0])
+	document, _ := stringMap(policy["PolicyDocument"])
+	items, _ := anySlice(document["Statement"])
+	statements := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		statement, ok := stringMap(item)
+		if !ok {
+			t.Fatal("Reaper policy contains a non-object statement")
+		}
+		sid := scalarString(statement["Sid"])
+		if sid == "" {
+			t.Fatal("Reaper policy contains a statement without Sid")
+		}
+		if _, duplicate := statements[sid]; duplicate {
+			t.Fatalf("Reaper policy contains duplicate Sid %s", sid)
+		}
+		statements[sid] = statement
+	}
+	return statements
+}
+
 func mutateFoundationStatement(t *testing.T, template []byte, sid, old, replacement string) []byte {
 	t.Helper()
 	startMarker := []byte("          - Sid: " + sid)
@@ -534,6 +615,32 @@ func mutateFoundationStatement(t *testing.T, template []byte, sid, old, replacem
 	result := append([]byte(nil), template...)
 	copy(result[start:start+end], mutatedStatement)
 	if len(mutatedStatement) != len(statement) {
+		result = append(append(append([]byte(nil), template[:start]...), mutatedStatement...), template[start+end:]...)
+	}
+	return result
+}
+
+func mutateReaperStatement(t *testing.T, template []byte, sid, old, replacement string) []byte {
+	t.Helper()
+	startMarker := []byte("              - Sid: " + sid)
+	start := bytes.Index(template, startMarker)
+	if start < 0 {
+		t.Fatalf("Reaper statement %s not found", sid)
+	}
+	end := bytes.Index(template[start+len(startMarker):], []byte("\n              - Sid: "))
+	if end < 0 {
+		end = len(template) - start
+	} else {
+		end += len(startMarker)
+	}
+	segment := template[start : start+end]
+	mutatedStatement := bytes.Replace(segment, []byte(old), []byte(replacement), 1)
+	if bytes.Equal(segment, mutatedStatement) {
+		t.Fatalf("Reaper statement %s does not contain %q", sid, old)
+	}
+	result := append([]byte(nil), template...)
+	copy(result[start:start+end], mutatedStatement)
+	if len(mutatedStatement) != len(segment) {
 		result = append(append(append([]byte(nil), template[:start]...), mutatedStatement...), template[start+end:]...)
 	}
 	return result
