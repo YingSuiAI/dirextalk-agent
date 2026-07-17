@@ -15,13 +15,29 @@ import (
 
 type orphanRecoveryStateStoreFake struct {
 	controllers []postgres.OrphanRecoveryControllerRecord
+	confirmed   []postgres.OrphanRecoveryControllerRecord
 	claimErr    error
 	successErr  error
 	failureErr  error
+	confirmErr  error
 	successes   []orphanRecoverySuccessCall
 	failures    []orphanRecoveryFailureCall
 	onFailure   func()
 	mu          sync.Mutex
+}
+
+func (fake *orphanRecoveryStateStoreFake) ConfirmActiveOrphanRecoveryConnection(_ context.Context, connectionID, ownerID string, controllerRevision, connectionRevision int64) (cloudapp.Connection, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.confirmErr != nil {
+		return cloudapp.Connection{}, fake.confirmErr
+	}
+	for _, controller := range fake.confirmed {
+		if controller.Connection.ConnectionID == connectionID && controller.Connection.OwnerID == ownerID && controller.Revision == controllerRevision && controller.Connection.Revision == connectionRevision {
+			return controller.Connection, nil
+		}
+	}
+	return cloudapp.Connection{}, cloudapp.ErrRevisionConflict
 }
 
 type orphanRecoverySuccessCall struct {
@@ -47,6 +63,7 @@ func (fake *orphanRecoveryStateStoreFake) ClaimDueOrphanRecoveryControllers(_ co
 	}
 	result := append([]postgres.OrphanRecoveryControllerRecord(nil), fake.controllers...)
 	fake.controllers = nil
+	fake.confirmed = append([]postgres.OrphanRecoveryControllerRecord(nil), result...)
 	return result, nil
 }
 
@@ -96,9 +113,9 @@ type orphanOwnedRecovererFake struct {
 	err      error
 }
 
-func (fake *orphanOwnedRecovererFake) RecoverOwned(_ context.Context, agentInstanceID string) ([]resource.ResourceV1, error) {
+func (fake *orphanOwnedRecovererFake) RecoverOwned(_ context.Context, agentInstanceID, ownerID string) ([]resource.ResourceV1, error) {
 	fake.calls++
-	fake.agentIDs = append(fake.agentIDs, agentInstanceID)
+	fake.agentIDs = append(fake.agentIDs, agentInstanceID+"/"+ownerID)
 	return append([]resource.ResourceV1(nil), fake.result...), fake.err
 }
 
@@ -141,11 +158,30 @@ func TestOrphanRecoveryImportsThroughExistingServiceAndSchedulesSuccess(t *testi
 		t.Fatal(err)
 	}
 	if len(services.calls) != 1 || services.calls[0].ConnectionID != state.Connection.ConnectionID || recoverer.calls != 1 ||
-		len(recoverer.agentIDs) != 1 || recoverer.agentIDs[0] != agentID {
+		len(recoverer.agentIDs) != 1 || recoverer.agentIDs[0] != agentID+"/"+state.Connection.OwnerID {
 		t.Fatalf("unexpected scoped recovery factory=%+v recoverer=%+v", services.calls, recoverer.agentIDs)
 	}
 	if len(states.failures) != 0 || len(states.successes) != 1 || !states.successes[0].nextAttempt.Equal(now.Add(3*time.Second)) {
 		t.Fatalf("success persistence failures=%+v successes=%+v", states.failures, states.successes)
+	}
+}
+
+func TestOrphanRecoveryDoesNotCallAWSAfterClaimedConnectionBecomesInactive(t *testing.T) {
+	now := time.Date(2026, 7, 17, 9, 5, 0, 0, time.UTC)
+	agentID, state := orphanRecoveryFixture(now)
+	states := &orphanRecoveryStateStoreFake{
+		controllers: []postgres.OrphanRecoveryControllerRecord{state}, confirmErr: cloudapp.ErrRevisionConflict,
+	}
+	services := &orphanRecoveryServiceFactoryFake{recoverer: &orphanOwnedRecovererFake{}}
+	controller, err := newOrphanRecoveryController(agentID, states, services, time.Second, time.Second, time.Minute, 2*time.Second, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatalf("stale connection should become a retry, got %v", err)
+	}
+	if len(services.calls) != 0 || len(states.failures) != 1 {
+		t.Fatalf("stale connection touched AWS=%d failures=%d", len(services.calls), len(states.failures))
 	}
 }
 

@@ -501,10 +501,10 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 // RecoverOwned re-imports tagged provider resources that survived loss of the
 // Agent database. They stay orphaned until an explicitly approved plan adopts
 // or destroys them.
-func (service *Service) RecoverOwned(ctx context.Context, agentInstanceID string) ([]ResourceV1, error) {
+func (service *Service) RecoverOwned(ctx context.Context, agentInstanceID, ownerID string) ([]ResourceV1, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil {
-		return nil, fmt.Errorf("%w: agent_instance_id must be a non-zero UUID", ErrInvalid)
+	if err != nil || parsed == uuid.Nil || strings.TrimSpace(ownerID) == "" || security.ContainsLikelySecret(ownerID) {
+		return nil, fmt.Errorf("%w: agent_instance_id and owner_id must be valid", ErrInvalid)
 	}
 	local, err := service.repository.ListByAgent(ctx, agentInstanceID)
 	if err != nil {
@@ -512,11 +512,11 @@ func (service *Service) RecoverOwned(ctx context.Context, agentInstanceID string
 	}
 	known := make(map[string]struct{}, len(local))
 	for _, resource := range local {
-		if resource.ProviderID != "" {
+		if resource.OwnerID == ownerID && resource.ProviderID != "" {
 			known[resource.ProviderID] = struct{}{}
 		}
 	}
-	observations, err := service.provider.ListOwned(ctx, agentInstanceID)
+	observations, err := service.provider.ListOwned(ctx, agentInstanceID, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -528,7 +528,7 @@ func (service *Service) RecoverOwned(ctx context.Context, agentInstanceID string
 		if _, exists := known[observation.ProviderID]; exists {
 			continue
 		}
-		resource, err := orphanFromObservation(observation, agentInstanceID, service.now().UTC())
+		resource, err := orphanFromObservation(observation, agentInstanceID, ownerID, service.now().UTC())
 		if err != nil {
 			continue // fail closed: incomplete or foreign tags are not adopted.
 		}
@@ -871,8 +871,8 @@ func firstUndestroyedDependent(dependentIDs []string, resources map[string]Resou
 	return ""
 }
 
-func orphanFromObservation(observation ProviderObservation, agentInstanceID string, now time.Time) (ResourceV1, error) {
-	if !observation.Exists || !validType(observation.Type) || observation.Tags[TagAgentInstanceID] != agentInstanceID {
+func orphanFromObservation(observation ProviderObservation, agentInstanceID, ownerID string, now time.Time) (ResourceV1, error) {
+	if !observation.Exists || !validType(observation.Type) || observation.Tags[TagAgentInstanceID] != agentInstanceID || observation.Tags[TagOwnerID] != ownerID {
 		return ResourceV1{}, ErrInvalid
 	}
 	for _, key := range []string{TagResourceID, TagOwnerID, TagTaskID, TagDeploymentID, TagRetention, TagDestroyDeadline, TagApprovedPlanHash, TagApprovalID} {

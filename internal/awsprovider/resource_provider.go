@@ -342,11 +342,14 @@ func (provider *EC2ResourceProvider) ReadBack(ctx context.Context, kind resource
 	return provider.readBack(ctx, kind, providerID)
 }
 
-func (provider *EC2ResourceProvider) ListOwned(ctx context.Context, agentInstanceID string) ([]resource.ProviderObservation, error) {
-	if provider == nil || provider.client == nil || strings.TrimSpace(agentInstanceID) == "" {
+func (provider *EC2ResourceProvider) ListOwned(ctx context.Context, agentInstanceID, ownerID string) ([]resource.ProviderObservation, error) {
+	if provider == nil || provider.client == nil || strings.TrimSpace(agentInstanceID) == "" || strings.TrimSpace(ownerID) == "" {
 		return nil, resource.ErrInvalid
 	}
-	filters := []ec2types.Filter{{Name: aws.String("tag:" + TagAgentInstanceID), Values: []string{agentInstanceID}}}
+	filters := []ec2types.Filter{
+		{Name: aws.String("tag:" + TagAgentInstanceID), Values: []string{agentInstanceID}},
+		{Name: aws.String("tag:" + TagOwnerID), Values: []string{ownerID}},
+	}
 	result := make([]resource.ProviderObservation, 0)
 	for _, kind := range []resource.Type{resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP, resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot} {
 		items, err := provider.describeByFilters(ctx, kind, filters)
@@ -359,7 +362,7 @@ func (provider *EC2ResourceProvider) ListOwned(ctx context.Context, agentInstanc
 	// created them. Keep their historical recovery path usable; providers built
 	// from a real AWS config always carry the entry clients.
 	if provider.entryClient != nil {
-		entryItems, err := provider.listOwnedEntryResources(ctx, agentInstanceID)
+		entryItems, err := provider.listOwnedEntryResources(ctx, agentInstanceID, ownerID)
 		if err != nil {
 			return nil, err
 		}

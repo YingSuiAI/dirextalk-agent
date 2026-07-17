@@ -786,14 +786,26 @@ func (provider *EC2ResourceProvider) findAllEntryByTag(ctx context.Context, kind
 	return observations, nil
 }
 
-func (provider *EC2ResourceProvider) listOwnedEntryResources(ctx context.Context, agentInstanceID string) ([]resource.ProviderObservation, error) {
+func (provider *EC2ResourceProvider) listOwnedEntryResources(ctx context.Context, agentInstanceID, ownerID string) ([]resource.ProviderObservation, error) {
 	result := make([]resource.ProviderObservation, 0)
 	for _, kind := range []resource.Type{resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener, resource.TypeSecurityGroupRule} {
 		values, err := provider.findAllEntryByTag(ctx, kind, resource.TagAgentInstanceID, agentInstanceID)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, values...)
+		ownerValues, err := provider.findAllEntryByTag(ctx, kind, resource.TagOwnerID, ownerID)
+		if err != nil {
+			return nil, err
+		}
+		ownerIDs := make(map[string]struct{}, len(ownerValues))
+		for _, item := range ownerValues {
+			ownerIDs[item.ProviderID] = struct{}{}
+		}
+		for _, item := range values {
+			if _, owned := ownerIDs[item.ProviderID]; owned && item.Tags[resource.TagOwnerID] == ownerID {
+				result = append(result, item)
+			}
+		}
 	}
 	return result, nil
 }

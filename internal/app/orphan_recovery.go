@@ -20,12 +20,13 @@ var errOrphanRecoveryRunning = errors.New("orphan recovery controller is already
 // facts. It never supplies an authorization decision for a provider object.
 type orphanRecoveryStateStore interface {
 	ClaimDueOrphanRecoveryControllers(context.Context, time.Time, time.Time, int) ([]postgres.OrphanRecoveryControllerRecord, error)
+	ConfirmActiveOrphanRecoveryConnection(context.Context, string, string, int64, int64) (cloudapp.Connection, error)
 	RecordOrphanRecoverySuccess(context.Context, string, int64, time.Time, time.Time) (postgres.OrphanRecoveryControllerRecord, error)
 	RecordOrphanRecoveryFailure(context.Context, string, int64, time.Time, time.Time, postgres.OrphanRecoveryErrorCode) (postgres.OrphanRecoveryControllerRecord, error)
 }
 
 type orphanOwnedRecoverer interface {
-	RecoverOwned(context.Context, string) ([]resource.ResourceV1, error)
+	RecoverOwned(context.Context, string, string) ([]resource.ResourceV1, error)
 }
 
 type orphanRecoveryServiceFactory interface {
@@ -143,9 +144,18 @@ func (controller *orphanRecoveryController) RunOnce(ctx context.Context) error {
 }
 
 func (controller *orphanRecoveryController) recoverController(ctx context.Context, now time.Time, state postgres.OrphanRecoveryControllerRecord) error {
-	recoverer, err := controller.services.ForConnection(ctx, state.Connection)
+	// Re-read the exact claimed Connection immediately before constructing any
+	// AWS client. A claim is only scheduling evidence; a degraded/revised
+	// Connection must never result in even a read-only AWS discovery call.
+	connection, err := controller.states.ConfirmActiveOrphanRecoveryConnection(
+		ctx, state.Connection.ConnectionID, state.Connection.OwnerID, state.Revision, state.Connection.Revision,
+	)
 	if err == nil {
-		_, err = recoverer.RecoverOwned(ctx, controller.agentInstanceID)
+		recoverer, factoryErr := controller.services.ForConnection(ctx, connection)
+		err = factoryErr
+		if err == nil {
+			_, err = recoverer.RecoverOwned(ctx, controller.agentInstanceID, connection.OwnerID)
+		}
 	}
 	if err == nil {
 		_, saveErr := controller.states.RecordOrphanRecoverySuccess(

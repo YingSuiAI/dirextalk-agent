@@ -306,7 +306,10 @@ type Provider interface {
 	FindAllByClientToken(context.Context, Type, string, string) ([]ProviderObservation, error)
 	ReadBack(context.Context, Type, string, string) (ProviderObservation, error)
 	Delete(context.Context, Type, string, string, map[string]string) error
-	ListOwned(context.Context, string) ([]ProviderObservation, error)
+	// ListOwned is a read-only, owner-scoped discovery operation. Providers
+	// must require both immutable Agent and owner tags; Agent identity alone is
+	// not a tenancy boundary for orphan recovery.
+	ListOwned(context.Context, string, string) ([]ProviderObservation, error)
 }
 
 type Manifest struct {

@@ -293,7 +293,7 @@ func TestEC2ResourceProviderListsEveryOwnedPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	observed, err := provider.ListOwned(context.Background(), agentID)
+	observed, err := provider.ListOwned(context.Background(), agentID, rootTags[resource.TagOwnerID])
 	if err != nil {
 		t.Fatal(err)
 	}

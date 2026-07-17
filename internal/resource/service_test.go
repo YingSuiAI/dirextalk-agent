@@ -120,22 +120,23 @@ func (repository *fakeResourceRepository) ImportOrphan(_ context.Context, resour
 }
 
 type fakeProvider struct {
-	mu               sync.Mutex
-	resources        map[string]ProviderObservation
-	byToken          map[string]string
-	createCount      int
-	readCount        int
-	responseLost     bool
-	hiddenFinds      int
-	hiddenAllFinds   int
-	findBarrier      chan struct{}
-	findArrivals     int
-	ambiguousByToken map[string][]string
-	blockedDelete    map[string]bool
-	deleteOrder      []string
-	beforeCreate     func(ProviderCreateRequest) error
-	omitEmbedded     bool
-	now              time.Time
+	mu                sync.Mutex
+	resources         map[string]ProviderObservation
+	byToken           map[string]string
+	createCount       int
+	readCount         int
+	responseLost      bool
+	hiddenFinds       int
+	hiddenAllFinds    int
+	findBarrier       chan struct{}
+	findArrivals      int
+	ambiguousByToken  map[string][]string
+	blockedDelete     map[string]bool
+	deleteOrder       []string
+	beforeCreate      func(ProviderCreateRequest) error
+	omitEmbedded      bool
+	ignoreOwnerFilter bool
+	now               time.Time
 }
 
 func newFakeProvider(now time.Time) *fakeProvider {
@@ -497,12 +498,12 @@ func (provider *fakeProvider) Delete(_ context.Context, _ Type, providerID, _ st
 	return nil
 }
 
-func (provider *fakeProvider) ListOwned(_ context.Context, agentInstanceID string) ([]ProviderObservation, error) {
+func (provider *fakeProvider) ListOwned(_ context.Context, agentInstanceID, ownerID string) ([]ProviderObservation, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	result := make([]ProviderObservation, 0)
 	for _, observation := range provider.resources {
-		if observation.Exists && observation.Tags[TagAgentInstanceID] == agentInstanceID {
+		if observation.Exists && observation.Tags[TagAgentInstanceID] == agentInstanceID && (provider.ignoreOwnerFilter || observation.Tags[TagOwnerID] == ownerID) {
 			result = append(result, observation)
 		}
 	}
@@ -997,12 +998,29 @@ func TestRecoverOwnedImportsOnlyCompletelyTaggedOrphans(t *testing.T) {
 	foreignTags := cloneMap(tags)
 	foreignTags[TagAgentInstanceID] = uuid.NewString()
 	fixture.provider.resources["snap-foreign"] = ProviderObservation{ProviderID: "snap-foreign", Type: TypeSnapshot, Exists: true, Tags: foreignTags, ObservedAt: fixture.now}
-	imported, err := fixture.service.RecoverOwned(context.Background(), fixture.agentID)
+	crossOwnerTags := cloneMap(tags)
+	crossOwnerTags[TagOwnerID] = "other-owner"
+	fixture.provider.resources["snap-other-owner"] = ProviderObservation{ProviderID: "snap-other-owner", Type: TypeSnapshot, Exists: true, Tags: crossOwnerTags, ObservedAt: fixture.now}
+	imported, err := fixture.service.RecoverOwned(context.Background(), fixture.agentID, fixture.ownerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(imported) != 1 || imported[0].ProviderID != orphanID || imported[0].State != StateOrphaned {
 		t.Fatalf("unexpected recovered resources: %+v", imported)
+	}
+}
+
+func TestRecoverOwnedRejectsCrossOwnerObservationEvenIfProviderReturnsIt(t *testing.T) {
+	fixture := newResourceFixture(t)
+	tags := fixture.spec(TypeSnapshot, "snapshot").mandatoryTags()
+	tags[TagOwnerID] = "other-owner"
+	fixture.provider.ignoreOwnerFilter = true // simulate a broken provider-side filter.
+	fixture.provider.resources["snap-other-owner"] = ProviderObservation{
+		ProviderID: "snap-other-owner", Type: TypeSnapshot, Exists: true, Tags: tags, ObservedAt: fixture.now,
+	}
+	imported, err := fixture.service.RecoverOwned(context.Background(), fixture.agentID, fixture.ownerID)
+	if err != nil || len(imported) != 0 {
+		t.Fatalf("cross-owner observation was adopted: imported=%+v err=%v", imported, err)
 	}
 }
 

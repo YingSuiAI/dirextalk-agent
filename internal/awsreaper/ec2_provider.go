@@ -137,7 +137,7 @@ func (provider *EC2Provider) FindAllByClientToken(context.Context, resource.Type
 	return nil, ErrUnsupportedMutation
 }
 
-func (provider *EC2Provider) ListOwned(context.Context, string) ([]resource.ProviderObservation, error) {
+func (provider *EC2Provider) ListOwned(context.Context, string, string) ([]resource.ProviderObservation, error) {
 	return nil, ErrUnsupportedMutation
 }
 

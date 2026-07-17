@@ -63,7 +63,7 @@ func TestEC2ResourceProviderRecoversPrivateEndpointAndSnapshotAndVerifiesDelete(
 		t.Fatalf("snapshot candidate evidence=%#v err=%v", candidates, err)
 	}
 
-	owned, err := provider.ListOwned(context.Background(), endpointRequest.Tags[resource.TagAgentInstanceID])
+	owned, err := provider.ListOwned(context.Background(), endpointRequest.Tags[resource.TagAgentInstanceID], endpointRequest.Tags[resource.TagOwnerID])
 	if err != nil {
 		t.Fatal(err)
 	}

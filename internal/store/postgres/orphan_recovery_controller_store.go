@@ -126,6 +126,36 @@ func (store *Store) ClaimDueOrphanRecoveryControllers(ctx context.Context, now, 
 	return cloneOrphanRecoveryControllers(claimed), nil
 }
 
+// ConfirmActiveOrphanRecoveryConnection is the final PostgreSQL CAS read
+// before orphan recovery creates a scoped AWS client. It binds the original
+// controller and Connection revisions to the same owner and active state;
+// callers must treat a conflict as retryable and must not call AWS.
+func (store *Store) ConfirmActiveOrphanRecoveryConnection(ctx context.Context, connectionID, ownerID string, expectedControllerRevision, expectedConnectionRevision int64) (cloudapp.Connection, error) {
+	if store == nil || store.pool == nil || ctx == nil || !validControllerID(connectionID) || strings.TrimSpace(ownerID) == "" ||
+		expectedControllerRevision < 1 || expectedConnectionRevision < 1 {
+		return cloudapp.Connection{}, cloudapp.ErrInvalid
+	}
+	var connection cloudapp.Connection
+	err := store.pool.QueryRow(ctx, `
+		SELECT connection.connection_id, connection.owner_id, connection.account_id, connection.region,
+		       connection.control_role_arn, connection.foundation_stack_id, connection.status, connection.revision
+		FROM cloud_orphan_recovery_controllers AS controller
+		JOIN cloud_connections AS connection ON connection.connection_id=controller.connection_id
+		WHERE controller.agent_instance_id=$1 AND controller.connection_id=$2 AND controller.revision=$3
+		  AND connection.agent_instance_id=$1 AND connection.owner_id=$4
+		  AND connection.status='active' AND connection.revision=$5`,
+		store.instanceID, connectionID, expectedControllerRevision, ownerID, expectedConnectionRevision,
+	).Scan(&connection.ConnectionID, &connection.OwnerID, &connection.AccountID, &connection.Region,
+		&connection.ControlRoleARN, &connection.FoundationStack, &connection.Status, &connection.Revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cloudapp.Connection{}, cloudapp.ErrRevisionConflict
+	}
+	if err != nil || connection.ConnectionID != connectionID || connection.OwnerID != ownerID || connection.Status != "active" || connection.Revision != expectedConnectionRevision {
+		return cloudapp.Connection{}, cloudapp.ErrUnavailable
+	}
+	return connection, nil
+}
+
 // RecordOrphanRecoverySuccess clears the alert and attempts only after the
 // caller completed a read-only provider discovery. It does not issue any
 // provider mutation and it intentionally emits no success event.

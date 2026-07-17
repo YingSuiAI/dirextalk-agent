@@ -44,6 +44,9 @@ func TestOrphanRecoveryControllerPersistsRetryAndDeduplicatesSafeAlerts(t *testi
 	if claimedAgain, err := store.ClaimDueOrphanRecoveryControllers(ctx, now, now.Add(time.Minute), 8); err != nil || len(claimedAgain) != 0 {
 		t.Fatalf("claimed in-flight controller again=%+v err=%v", claimedAgain, err)
 	}
+	if confirmed, err := store.ConfirmActiveOrphanRecoveryConnection(ctx, activeID, "owner-orphan-recovery", claimed[0].Revision, claimed[0].Connection.Revision); err != nil || confirmed != claimed[0].Connection {
+		t.Fatalf("fresh active connection confirmation=%+v err=%v", confirmed, err)
+	}
 
 	firstFailure, err := store.RecordOrphanRecoveryFailure(
 		ctx, activeID, claimed[0].Revision, now, now.Add(2*time.Second), postgres.OrphanRecoveryErrorProviderUnavailable,
@@ -92,10 +95,17 @@ func TestOrphanRecoveryControllerPersistsRetryAndDeduplicatesSafeAlerts(t *testi
 	if _, err := restarted.RecordOrphanRecoveryFailure(ctx, activeID, recurrenceClaim[0].Revision-1, now.Add(9*time.Second), now.Add(12*time.Second), postgres.OrphanRecoveryErrorInvalid); !errors.Is(err, cloudapp.ErrRevisionConflict) {
 		t.Fatalf("stale controller revision error=%v", err)
 	}
-	if _, err := restarted.RecordOrphanRecoveryFailure(ctx, activeID, recurrenceClaim[0].Revision, now.Add(9*time.Second), now.Add(12*time.Second), postgres.OrphanRecoveryErrorInvalid); err != nil {
+	recurrence, err := restarted.RecordOrphanRecoveryFailure(ctx, activeID, recurrenceClaim[0].Revision, now.Add(9*time.Second), now.Add(12*time.Second), postgres.OrphanRecoveryErrorInvalid)
+	if err != nil {
 		t.Fatalf("recurrence failure: %v", err)
 	}
 	assertOrphanRecoveryAlertCount(t, pool, activeID, 2)
+	if _, err := pool.Exec(ctx, `UPDATE cloud_connections SET status='degraded', revision=revision+1 WHERE connection_id=$1`, activeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.ConfirmActiveOrphanRecoveryConnection(ctx, activeID, "owner-orphan-recovery", recurrence.Revision, recurrence.Connection.Revision); !errors.Is(err, cloudapp.ErrRevisionConflict) {
+		t.Fatalf("degraded connection confirmation error=%v", err)
+	}
 
 	var persisted string
 	if err := pool.QueryRow(ctx, `
