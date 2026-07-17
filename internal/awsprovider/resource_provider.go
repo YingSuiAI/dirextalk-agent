@@ -107,6 +107,7 @@ type ACMCertificateAPI interface {
 type EC2ResourceProvider struct {
 	client            EC2ResourceAPI
 	entryClient       ELBV2ResourceAPI
+	entryReadClient   EntryScopeEC2ReadAPI
 	certificateClient ACMCertificateAPI
 	region            string
 	now               func() time.Time
@@ -127,6 +128,22 @@ func WithEntryPointResourceClients(entry ELBV2ResourceAPI, certificates ACMCerti
 			return ErrInvalidRequest
 		}
 		provider.entryClient = entry
+		provider.certificateClient = certificates
+		return nil
+	}
+}
+
+// WithEntryScopeReadBackClients enables the strictly read-only AWS facts used
+// to build and revalidate a separately device-approved public entry scope.
+// Keeping this as an optional narrow interface prevents ordinary EC2 resource
+// fakes from acquiring new methods, and prevents the scope builder from
+// receiving a mutation-capable AWS client.
+func WithEntryScopeReadBackClients(reader EntryScopeEC2ReadAPI, certificates ACMCertificateAPI) EC2ResourceProviderOption {
+	return func(provider *EC2ResourceProvider) error {
+		if reader == nil || certificates == nil {
+			return ErrInvalidRequest
+		}
+		provider.entryReadClient = reader
 		provider.certificateClient = certificates
 		return nil
 	}
@@ -199,8 +216,13 @@ func NewEC2ResourceProviderFromConfig(config aws.Config, options ...EC2ResourceP
 		return nil, ErrInvalidRequest
 	}
 	configured := append([]EC2ResourceProviderOption(nil), options...)
-	configured = append(configured, WithEntryPointResourceClients(elbv2.NewFromConfig(config), acm.NewFromConfig(config)))
-	return NewEC2ResourceProvider(ec2.NewFromConfig(config), config.Region, time.Now, configured...)
+	ec2Client := ec2.NewFromConfig(config)
+	certificateClient := acm.NewFromConfig(config)
+	configured = append(configured,
+		WithEntryPointResourceClients(elbv2.NewFromConfig(config), certificateClient),
+		WithEntryScopeReadBackClients(ec2Client, certificateClient),
+	)
+	return NewEC2ResourceProvider(ec2Client, config.Region, time.Now, configured...)
 }
 
 // NewEC2ResourceProviderFromSource is the daily runtime factory. The caller
