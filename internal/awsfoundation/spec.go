@@ -119,11 +119,21 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 	partition := input.Partition
 	region := input.Region
 	requestTag := map[string]map[string]string{"StringEquals": {"aws:RequestTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}
+	controlARN := iamARN(input, "role/"+spec.ControlRoleName)
+	entrypointPolicyARN := iamARN(input, "policy/"+spec.StackName+"-control-entrypoint")
 	return identityPolicy(
 		statement("FoundationIAM", []string{"iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:GetInstanceProfile", "iam:ListInstanceProfilesForRole", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:PassRole"}, []string{
 			iamARN(input, "role/"+spec.ControlRoleName), iamARN(input, "role/"+spec.WorkerRoleName), iamARN(input, "role/"+spec.ReaperRoleName),
 			iamARN(input, "instance-profile/"+spec.WorkerProfileName),
 		}, nil),
+		// The Foundation stack owns one deterministic customer-managed policy
+		// because the accumulated runtime inline policy is near IAM's aggregate
+		// inline quota. These actions cannot create or attach any other policy.
+		statement("FoundationControlEntrypointManagedPolicy", []string{
+			"iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion",
+			"iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListEntitiesForPolicy",
+		}, []string{entrypointPolicyARN}, nil),
+		statement("FoundationAttachControlEntrypointManagedPolicy", []string{"iam:AttachRolePolicy", "iam:DetachRolePolicy"}, []string{controlARN, entrypointPolicyARN}, nil),
 		statement("FoundationS3", []string{"s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration", "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock", "s3:ListBucket", "s3:DeleteObject", "s3:GetObject", "s3:PutObject"}, []string{
 			fmt.Sprintf("arn:%s:s3:::%s", partition, spec.ArtifactBucketName), fmt.Sprintf("arn:%s:s3:::%s/*", partition, spec.ArtifactBucketName),
 		}, nil),

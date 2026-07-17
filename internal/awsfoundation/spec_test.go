@@ -85,6 +85,48 @@ func TestBuildSpecRejectsInvalidIdentityScope(t *testing.T) {
 	}
 }
 
+func TestFoundationExecutionPolicyManagesOnlyExactControlEntrypointPolicy(t *testing.T) {
+	input := SpecInput{
+		AgentInstanceID: "019f5e2d-5350-7073-87d9-3ba4fdbc6818",
+		Partition:       "aws",
+		AccountID:       "123456789012",
+		Region:          "us-east-1",
+	}
+	spec, err := BuildSpec(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyARN := "arn:aws:iam::123456789012:policy/" + spec.StackName + "-control-entrypoint"
+	controlARN := "arn:aws:iam::123456789012:role/" + spec.ControlRoleName
+	var policyStatement, attachmentStatement *awsprovider.PolicyStatement
+	for index := range spec.FoundationExecutionPolicy.Statement {
+		statement := &spec.FoundationExecutionPolicy.Statement[index]
+		switch statement.SID {
+		case "FoundationControlEntrypointManagedPolicy":
+			policyStatement = statement
+		case "FoundationAttachControlEntrypointManagedPolicy":
+			attachmentStatement = statement
+		}
+	}
+	if policyStatement == nil || !sameStringSet(policyStatement.Action, []string{
+		"iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion",
+		"iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListEntitiesForPolicy",
+	}) || !sameStringSet(policyStatement.Resource, []string{policyARN}) {
+		t.Fatalf("managed policy authority = %#v", policyStatement)
+	}
+	if attachmentStatement == nil || !sameStringSet(attachmentStatement.Action, []string{"iam:AttachRolePolicy", "iam:DetachRolePolicy"}) ||
+		!sameStringSet(attachmentStatement.Resource, []string{controlARN, policyARN}) {
+		t.Fatalf("managed policy attachment authority = %#v", attachmentStatement)
+	}
+	for _, statement := range spec.FoundationExecutionPolicy.Statement {
+		for _, action := range statement.Action {
+			if action == "iam:TagPolicy" || action == "iam:UntagPolicy" || strings.Contains(action, "*") {
+				t.Fatalf("unexpected managed-policy authority %s", action)
+			}
+		}
+	}
+}
+
 func TestValidatePolicyRejectsBroadPrivilege(t *testing.T) {
 	tests := []awsprovider.PolicyDocument{
 		{Version: policyVersion, Statement: []awsprovider.PolicyStatement{{Effect: "Allow", Action: []string{"*"}, Resource: []string{"*"}}}},

@@ -15,7 +15,10 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 	if err := ValidateTemplate(template); err != nil {
 		t.Fatalf("validate template: %v", err)
 	}
-	for _, forbidden := range [][]byte{[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"), []byte("RunTaggedNetworkInterface")} {
+	for _, forbidden := range [][]byte{
+		[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"), []byte("RunTaggedNetworkInterface"),
+		[]byte("AWS::Route53"), []byte("route53:"), []byte("acm:RequestCertificate"), []byte("acm:DeleteCertificate"), []byte("acm:ImportCertificate"),
+	} {
 		if bytes.Contains(template, forbidden) {
 			t.Fatalf("template contains forbidden %q", forbidden)
 		}
@@ -34,6 +37,10 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("BindExactInstallerArtifactVersions"), []byte("s3:GetObjectVersionTagging"), []byte("s3:PutObjectVersionTagging"),
 		[]byte("WorkerTypedMilestoneLogs"), []byte("${WorkerLogGroup.Arn}:log-stream:*"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
+		[]byte("AWS::IAM::ManagedPolicy"), []byte("ControlEntrypointPolicy"), []byte("acm:DescribeCertificate"),
+		[]byte("elasticloadbalancing:CreateLoadBalancer"), []byte("elasticloadbalancing:CreateTargetGroup"), []byte("elasticloadbalancing:CreateListener"),
+		[]byte("elasticloadbalancing:DescribeTargetHealth"), []byte("elasticloadbalancing:AddTags"), []byte("elasticloadbalancing:DeleteLoadBalancer"),
+		[]byte("ec2:DescribeSecurityGroupRules"), []byte("AuthorizeTaggedIngressOnOwnedSecurityGroup"), []byte("TagIngressRuleOnCreate"),
 	} {
 		if !bytes.Contains(template, required) {
 			t.Fatalf("template is missing %q", required)
@@ -263,6 +270,117 @@ func TestFoundationTemplateEC2CreationPermissionsFailClosed(t *testing.T) {
 	}
 }
 
+func TestFoundationTemplateControlEntrypointPolicyIsMinimumScoped(t *testing.T) {
+	statements := controlEntrypointStatements(t)
+	assertStatement := func(sid string, actions, resources []string) map[string]any {
+		t.Helper()
+		statement, ok := statements[sid]
+		if !ok {
+			t.Fatalf("control entrypoint policy is missing %s", sid)
+		}
+		if actual := stringValues(statement["Action"]); !sameStrings(actual, actions) {
+			t.Fatalf("%s actions = %v, want %v", sid, actual, actions)
+		}
+		if actual := templateResourceStrings(statement["Resource"]); !sameStrings(actual, resources) {
+			t.Fatalf("%s resources = %v, want %v", sid, actual, resources)
+		}
+		return statement
+	}
+
+	assertStatement("ObserveEntrypointResources", []string{
+		"ec2:DescribeSecurityGroupRules", "elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeLoadBalancers",
+		"elasticloadbalancing:DescribeTags", "elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetHealth",
+	}, []string{"*"})
+	assertStatement("ReadExistingACMCertificate", []string{"acm:DescribeCertificate"}, []string{
+		"arn:${AWS::Partition}:acm:${AWS::Region}:${AWS::AccountId}:certificate/*",
+	})
+	assertStatement("CreateTaggedApplicationLoadBalancer", []string{"elasticloadbalancing:CreateLoadBalancer"}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+	})
+	assertStatement("CreateTaggedTargetGroup", []string{"elasticloadbalancing:CreateTargetGroup"}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*",
+	})
+	assertStatement("CreateTLSListenerOnOwnedApplicationLoadBalancer", []string{"elasticloadbalancing:CreateListener"}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+	})
+	assertStatement("TagEntrypointResourcesOnCreate", []string{"elasticloadbalancing:AddTags"}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*",
+	})
+	assertStatement("MutateTargetsOnOwnedTargetGroup", []string{"elasticloadbalancing:DeleteTargetGroup", "elasticloadbalancing:DeregisterTargets", "elasticloadbalancing:RegisterTargets"}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*",
+	})
+	assertStatement("DeleteOwnedEntrypointResources", []string{
+		"elasticloadbalancing:DeleteListener", "elasticloadbalancing:DeleteLoadBalancer",
+	}, []string{
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
+	})
+	assertStatement("AuthorizeTaggedIngressOnOwnedSecurityGroup", []string{"ec2:AuthorizeSecurityGroupIngress"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+	})
+	assertStatement("TagIngressRuleOnCreate", []string{"ec2:CreateTags"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*",
+	})
+	assertStatement("RevokeIngressOnOwnedSecurityGroup", []string{"ec2:RevokeSecurityGroupIngress"}, []string{
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
+	})
+	if len(statements) != 11 {
+		t.Fatalf("entrypoint statements = %d, want 11", len(statements))
+	}
+}
+
+func TestFoundationTemplateEntrypointPermissionsFailClosed(t *testing.T) {
+	template := testFoundationTemplate(t)
+	tests := []struct {
+		name        string
+		sid         string
+		old         string
+		replacement string
+	}{
+		{name: "load balancer loses ownership request tag", sid: "CreateTaggedApplicationLoadBalancer", old: "aws:RequestTag/dirextalk:agent_instance_id", replacement: "aws:RequestTag/unrelated"},
+		{name: "load balancer accepts private scheme", sid: "CreateTaggedApplicationLoadBalancer", old: "internet-facing", replacement: "internal"},
+		{name: "load balancer creates a network load balancer", sid: "CreateTaggedApplicationLoadBalancer", old: "loadbalancer/app/*", replacement: "loadbalancer/net/*"},
+		{name: "target group loses request tag", sid: "CreateTaggedTargetGroup", old: "aws:RequestTag/dirextalk:agent_instance_id", replacement: "aws:RequestTag/unrelated"},
+		{name: "listener permits cleartext", sid: "CreateTLSListenerOnOwnedApplicationLoadBalancer", old: "elasticloadbalancing:ListenerProtocol: HTTPS", replacement: "elasticloadbalancing:ListenerProtocol: HTTP"},
+		{name: "listener loses owned load balancer", sid: "CreateTLSListenerOnOwnedApplicationLoadBalancer", old: "aws:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:ResourceTag/unrelated"},
+		{name: "entrypoint tags are not create bound", sid: "TagEntrypointResourcesOnCreate", old: "CreateLoadBalancer", replacement: "ModifyLoadBalancer"},
+		{name: "entrypoint tags can reach network load balancers", sid: "TagEntrypointResourcesOnCreate", old: "loadbalancer/app/*", replacement: "loadbalancer/net/*"},
+		{name: "target registration loses ownership", sid: "MutateTargetsOnOwnedTargetGroup", old: "aws:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:ResourceTag/unrelated"},
+		{name: "entrypoint deletion loses ownership", sid: "DeleteOwnedEntrypointResources", old: "aws:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:ResourceTag/unrelated"},
+		{name: "ingress loses request tagging", sid: "AuthorizeTaggedIngressOnOwnedSecurityGroup", old: "aws:RequestTag/dirextalk:agent_instance_id", replacement: "aws:RequestTag/unrelated"},
+		{name: "ingress may change an unowned group", sid: "AuthorizeTaggedIngressOnOwnedSecurityGroup", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "ec2:ResourceTag/unrelated"},
+		{name: "ingress rule tag path broadens", sid: "TagIngressRuleOnCreate", old: "security-group-rule/*", replacement: "security-group/*"},
+		{name: "ingress revoke loses ownership", sid: "RevokeIngressOnOwnedSecurityGroup", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "ec2:ResourceTag/unrelated"},
+		{name: "certificate becomes destructive", sid: "ReadExistingACMCertificate", old: "acm:DescribeCertificate", replacement: "acm:DeleteCertificate"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := mutateFoundationStatement(t, template, test.sid, test.old, test.replacement)
+			if err := ValidateTemplate(mutated); err == nil {
+				t.Fatalf("unsafe entrypoint policy mutation in %s was accepted", test.sid)
+			}
+		})
+	}
+	for name, mutation := range map[string][2]string{
+		"attaches to worker role": {"Ref: ControlRoleName", "Ref: WorkerRoleName"},
+		"attaches to user":        {"      Roles:\n        - Ref: ControlRoleName", "      Users:\n        - Ref: ControlRoleName"},
+		"changes policy path":     {"      Path: /", "      Path: /other/"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := mutateFoundationResource(t, template, "ControlEntrypointPolicy", mutation[0], mutation[1])
+			if err := ValidateTemplate(mutated); err == nil {
+				t.Fatalf("unsafe entrypoint attachment or action mutation %s was accepted", name)
+			}
+		})
+	}
+	mutated := bytes.Replace(template, []byte("acm:DescribeCertificate"), []byte("route53:ChangeResourceRecordSets"), 1)
+	if err := ValidateTemplate(mutated); err == nil {
+		t.Fatal("Route53 action was accepted")
+	}
+}
+
 func TestControlRuntimeInlinePolicyFitsIAMRoleQuota(t *testing.T) {
 	var root map[string]any
 	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
@@ -280,6 +398,30 @@ func TestControlRuntimeInlinePolicyFitsIAMRoleQuota(t *testing.T) {
 	// leave headroom for expanded partition, Region, account, and resource ARNs.
 	if len(document) > 9_500 {
 		t.Fatalf("Control Runtime inline policy is too large before intrinsic expansion: %d bytes", len(document))
+	}
+}
+
+func TestControlEntrypointManagedPolicyFitsIAMQuota(t *testing.T) {
+	var root map[string]any
+	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	resources, _ := stringMap(root["Resources"])
+	entrypoint, _ := stringMap(resources["ControlEntrypointPolicy"])
+	properties, _ := stringMap(entrypoint["Properties"])
+	document, err := json.Marshal(properties["PolicyDocument"])
+	if err != nil {
+		t.Fatalf("marshal entrypoint policy: %v", err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, document); err != nil {
+		t.Fatalf("compact entrypoint policy: %v", err)
+	}
+	// Customer managed policies are capped at 6,144 non-whitespace bytes. Keep
+	// the deterministic template document within that budget so a new action
+	// cannot silently turn the Foundation update into a deployment failure.
+	if compact.Len() > 6_144 {
+		t.Fatalf("Control Entrypoint managed policy exceeds IAM policy quota: %d bytes", compact.Len())
 	}
 }
 
@@ -342,6 +484,35 @@ func controlRuntimeStatements(t *testing.T) map[string]map[string]any {
 	return statements
 }
 
+func controlEntrypointStatements(t *testing.T) map[string]map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	resources, _ := stringMap(root["Resources"])
+	policy, _ := stringMap(resources["ControlEntrypointPolicy"])
+	properties, _ := stringMap(policy["Properties"])
+	document, _ := stringMap(properties["PolicyDocument"])
+	items, _ := anySlice(document["Statement"])
+	statements := make(map[string]map[string]any, len(items))
+	for _, item := range items {
+		statement, ok := stringMap(item)
+		if !ok {
+			t.Fatal("control entrypoint policy contains a non-object statement")
+		}
+		sid := scalarString(statement["Sid"])
+		if sid == "" {
+			t.Fatal("control entrypoint policy contains a statement without Sid")
+		}
+		if _, duplicate := statements[sid]; duplicate {
+			t.Fatalf("control entrypoint policy contains duplicate Sid %s", sid)
+		}
+		statements[sid] = statement
+	}
+	return statements
+}
+
 func mutateFoundationStatement(t *testing.T, template []byte, sid, old, replacement string) []byte {
 	t.Helper()
 	startMarker := []byte("          - Sid: " + sid)
@@ -364,6 +535,39 @@ func mutateFoundationStatement(t *testing.T, template []byte, sid, old, replacem
 	copy(result[start:start+end], mutatedStatement)
 	if len(mutatedStatement) != len(statement) {
 		result = append(append(append([]byte(nil), template[:start]...), mutatedStatement...), template[start+end:]...)
+	}
+	return result
+}
+
+func mutateFoundationResource(t *testing.T, template []byte, logicalID, old, replacement string) []byte {
+	t.Helper()
+	startMarker := []byte("  " + logicalID + ":")
+	start := bytes.Index(template, startMarker)
+	if start < 0 {
+		t.Fatalf("resource %s not found", logicalID)
+	}
+	end := len(template) - start
+	for offset := start + len(startMarker); offset < len(template); {
+		next := bytes.Index(template[offset:], []byte("\n  "))
+		if next < 0 {
+			break
+		}
+		candidate := offset + next
+		if candidate+3 < len(template) && template[candidate+3] != ' ' && template[candidate+3] != '#' {
+			end = candidate - start
+			break
+		}
+		offset = candidate + 3
+	}
+	resource := template[start : start+end]
+	mutatedResource := bytes.Replace(resource, []byte(old), []byte(replacement), 1)
+	if bytes.Equal(resource, mutatedResource) {
+		t.Fatalf("resource %s does not contain %q", logicalID, old)
+	}
+	result := append([]byte(nil), template...)
+	copy(result[start:start+end], mutatedResource)
+	if len(mutatedResource) != len(resource) {
+		result = append(append(append([]byte(nil), template[:start]...), mutatedResource...), template[start+end:]...)
 	}
 	return result
 }

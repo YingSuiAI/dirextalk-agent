@@ -13,32 +13,35 @@ import (
 var ErrInvalidTemplate = errors.New("invalid AWS foundation template")
 
 var requiredTemplateResources = map[string]string{
-	"FoundationKey":          "AWS::KMS::Key",
-	"ArtifactBucket":         "AWS::S3::Bucket",
-	"ArtifactBucketPolicy":   "AWS::S3::BucketPolicy",
-	"ManifestTable":          "AWS::DynamoDB::Table",
-	"WorkerLogGroup":         "AWS::Logs::LogGroup",
-	"ReaperLogGroup":         "AWS::Logs::LogGroup",
-	"SecretNamespaceMarker":  "AWS::SecretsManager::Secret",
-	"WorkerRole":             "AWS::IAM::Role",
-	"WorkerInstanceProfile":  "AWS::IAM::InstanceProfile",
-	"ReaperRole":             "AWS::IAM::Role",
-	"ReaperFunction":         "AWS::Lambda::Function",
-	"ReaperSchedule":         "AWS::Events::Rule",
-	"ReaperInvokePermission": "AWS::Lambda::Permission",
-	"ReaperErrorAlarm":       "AWS::CloudWatch::Alarm",
-	"ControlRuntimePolicy":   "AWS::IAM::Policy",
+	"FoundationKey":           "AWS::KMS::Key",
+	"ArtifactBucket":          "AWS::S3::Bucket",
+	"ArtifactBucketPolicy":    "AWS::S3::BucketPolicy",
+	"ManifestTable":           "AWS::DynamoDB::Table",
+	"WorkerLogGroup":          "AWS::Logs::LogGroup",
+	"ReaperLogGroup":          "AWS::Logs::LogGroup",
+	"SecretNamespaceMarker":   "AWS::SecretsManager::Secret",
+	"WorkerRole":              "AWS::IAM::Role",
+	"WorkerInstanceProfile":   "AWS::IAM::InstanceProfile",
+	"ReaperRole":              "AWS::IAM::Role",
+	"ReaperFunction":          "AWS::Lambda::Function",
+	"ReaperSchedule":          "AWS::Events::Rule",
+	"ReaperInvokePermission":  "AWS::Lambda::Permission",
+	"ReaperErrorAlarm":        "AWS::CloudWatch::Alarm",
+	"ControlRuntimePolicy":    "AWS::IAM::Policy",
+	"ControlEntrypointPolicy": "AWS::IAM::ManagedPolicy",
 }
 
 var templateAccountReadActions = map[string]struct{}{
 	"ec2:DescribeAddresses": {}, "ec2:DescribeAvailabilityZones": {}, "ec2:DescribeImages": {},
 	"ec2:DescribeInstanceAttribute": {}, "ec2:DescribeInstanceStatus": {}, "ec2:DescribeInstanceTypeOfferings": {}, "ec2:DescribeInstanceTypes": {},
 	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
-	"ec2:DescribeSnapshots": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeVpcEndpoints": {}, "ec2:DescribeVpcs": {},
+	"ec2:DescribeSecurityGroupRules": {}, "ec2:DescribeSnapshots": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeVpcEndpoints": {}, "ec2:DescribeVpcs": {},
+	"elasticloadbalancing:DescribeListeners": {}, "elasticloadbalancing:DescribeLoadBalancers": {}, "elasticloadbalancing:DescribeTags": {},
+	"elasticloadbalancing:DescribeTargetGroups": {}, "elasticloadbalancing:DescribeTargetHealth": {},
 }
 
 func ValidateTemplate(raw []byte) error {
-	if len(raw) == 0 || len(raw) > 512*1024 || bytes.Contains(bytes.ToLower(raw), []byte("brokerlambda")) {
+	if len(raw) == 0 || len(raw) > 512*1024 || bytes.Contains(bytes.ToLower(raw), []byte("brokerlambda")) || bytes.Contains(bytes.ToLower(raw), []byte("route53:")) {
 		return ErrInvalidTemplate
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
@@ -71,7 +74,7 @@ func ValidateTemplate(raw []byte) error {
 			return ErrInvalidTemplate
 		}
 		resourceType := scalarString(resource["Type"])
-		if strings.HasPrefix(resourceType, "AWS::ApiGateway") || strings.HasPrefix(resourceType, "AWS::ApiGatewayV2") || strings.Contains(strings.ToLower(logicalID), "broker") {
+		if strings.HasPrefix(resourceType, "AWS::ApiGateway") || strings.HasPrefix(resourceType, "AWS::ApiGatewayV2") || strings.HasPrefix(resourceType, "AWS::Route53") || strings.Contains(strings.ToLower(logicalID), "broker") {
 			return ErrInvalidTemplate
 		}
 		if resourceType == "AWS::IAM::User" || (resourceType == "AWS::Lambda::Function" && logicalID != "ReaperFunction") {
@@ -86,6 +89,14 @@ func ValidateTemplate(raw []byte) error {
 			properties, _ := stringMap(resource["Properties"])
 			if err := validateTemplatePolicy(properties["PolicyDocument"], false); err != nil {
 				return fmt.Errorf("%w: %s identity policy", err, logicalID)
+			}
+		case "AWS::IAM::ManagedPolicy":
+			if logicalID != "ControlEntrypointPolicy" || !managedPolicyAttachesOnlyControlRole(resource) {
+				return fmt.Errorf("%w: %s managed policy attachment", ErrInvalidTemplate, logicalID)
+			}
+			properties, _ := stringMap(resource["Properties"])
+			if err := validateTemplatePolicy(properties["PolicyDocument"], false); err != nil {
+				return fmt.Errorf("%w: %s managed policy", err, logicalID)
 			}
 		case "AWS::KMS::Key":
 			properties, _ := stringMap(resource["Properties"])
@@ -108,6 +119,9 @@ func ValidateTemplate(raw []byte) error {
 	}
 	if !controlPolicyFailsClosed(resources["ControlRuntimePolicy"]) {
 		return fmt.Errorf("%w: Control Role mutation is not ownership-tag scoped", ErrInvalidTemplate)
+	}
+	if !controlEntrypointPolicyFailsClosed(resources["ControlEntrypointPolicy"]) || !noEntrypointActionsOutsideControlPolicy(resources) {
+		return fmt.Errorf("%w: Control Role entry-point policy is not minimally scoped", ErrInvalidTemplate)
 	}
 	return nil
 }
@@ -203,6 +217,8 @@ func controlPolicyFailsClosed(value any) bool {
 			switch {
 			case action == "ec2:DescribeInstanceAttribute":
 				workerAMI.observe = true
+			case strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:"):
+				return false
 			case action == "ec2:RunInstances":
 				if !sameStrings(actions, []string{"ec2:RunInstances"}) {
 					return false
@@ -330,6 +346,240 @@ func controlPolicyFailsClosed(value any) bool {
 		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute
 }
 
+var entrypointTagKeys = []string{
+	"Name", "dirextalk:agent_instance_id", "dirextalk:owner_id", "dirextalk:task_id", "dirextalk:deployment_id",
+	"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dirextalk_embedded_parent",
+	"dirextalk_spec_digest", "dirextalk_client_token",
+}
+
+func managedPolicyAttachesOnlyControlRole(resource map[string]any) bool {
+	properties, ok := stringMap(resource["Properties"])
+	if !ok || properties["Users"] != nil || properties["Groups"] != nil {
+		return false
+	}
+	name, ok := stringMap(properties["ManagedPolicyName"])
+	if !ok || scalarString(name["Fn::Sub"]) != "${AWS::StackName}-control-entrypoint" || scalarString(properties["Path"]) != "/" {
+		return false
+	}
+	roles, ok := anySlice(properties["Roles"])
+	if !ok || len(roles) != 1 {
+		return false
+	}
+	role, ok := stringMap(roles[0])
+	return ok && len(role) == 1 && scalarString(role["Ref"]) == "ControlRoleName"
+}
+
+func controlEntrypointPolicyFailsClosed(value any) bool {
+	resource, ok := stringMap(value)
+	if !ok || !managedPolicyAttachesOnlyControlRole(resource) {
+		return false
+	}
+	properties, _ := stringMap(resource["Properties"])
+	document, _ := stringMap(properties["PolicyDocument"])
+	statements, ok := anySlice(document["Statement"])
+	if !ok || len(statements) != 11 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(statements))
+	for _, raw := range statements {
+		statement, ok := stringMap(raw)
+		if !ok {
+			return false
+		}
+		sid := scalarString(statement["Sid"])
+		if sid == "" {
+			return false
+		}
+		if _, duplicate := seen[sid]; duplicate {
+			return false
+		}
+		seen[sid] = struct{}{}
+		actions := stringValues(statement["Action"])
+		resources := templateResourceStrings(statement["Resource"])
+		switch sid {
+		case "ObserveEntrypointResources":
+			if !sameStrings(actions, []string{
+				"ec2:DescribeSecurityGroupRules",
+				"elasticloadbalancing:DescribeListeners", "elasticloadbalancing:DescribeLoadBalancers", "elasticloadbalancing:DescribeTags",
+				"elasticloadbalancing:DescribeTargetGroups", "elasticloadbalancing:DescribeTargetHealth",
+			}) || !sameStrings(resources, []string{"*"}) || statement["Condition"] != nil {
+				return false
+			}
+		case "ReadExistingACMCertificate":
+			if !sameStrings(actions, []string{"acm:DescribeCertificate"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:acm:${AWS::Region}:${AWS::AccountId}:certificate/*"}) || statement["Condition"] != nil {
+				return false
+			}
+		case "CreateTaggedApplicationLoadBalancer":
+			if !sameStrings(actions, []string{"elasticloadbalancing:CreateLoadBalancer"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*"}) ||
+				!entrypointLoadBalancerCreateCondition(statement) {
+				return false
+			}
+		case "CreateTaggedTargetGroup":
+			if !sameStrings(actions, []string{"elasticloadbalancing:CreateTargetGroup"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*"}) ||
+				!entrypointRequestTagCondition(statement, "", nil) {
+				return false
+			}
+		case "CreateTLSListenerOnOwnedApplicationLoadBalancer":
+			if !sameStrings(actions, []string{"elasticloadbalancing:CreateListener"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*"}) ||
+				!entrypointTLSListenerCondition(statement) {
+				return false
+			}
+		case "TagEntrypointResourcesOnCreate":
+			if !sameStrings(actions, []string{"elasticloadbalancing:AddTags"}) || !sameStrings(resources, []string{
+				"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+				"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
+				"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*",
+			}) || !entrypointRequestTagCondition(statement, "elasticloadbalancing:CreateAction", []string{"CreateLoadBalancer", "CreateTargetGroup", "CreateListener"}) {
+				return false
+			}
+		case "MutateTargetsOnOwnedTargetGroup":
+			if !sameStrings(actions, []string{"elasticloadbalancing:DeleteTargetGroup", "elasticloadbalancing:DeregisterTargets", "elasticloadbalancing:RegisterTargets"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*"}) ||
+				!singleRefCondition(statement, "StringEquals", "aws:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+		case "DeleteOwnedEntrypointResources":
+			if !sameStrings(actions, []string{"elasticloadbalancing:DeleteListener", "elasticloadbalancing:DeleteLoadBalancer"}) || !sameStrings(resources, []string{
+				"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
+				"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
+			}) || !singleRefCondition(statement, "StringEquals", "aws:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+		case "AuthorizeTaggedIngressOnOwnedSecurityGroup":
+			if !sameStrings(actions, []string{"ec2:AuthorizeSecurityGroupIngress"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*"}) ||
+				!entrypointIngressAuthorizeCondition(statement) {
+				return false
+			}
+		case "TagIngressRuleOnCreate":
+			if !sameStrings(actions, []string{"ec2:CreateTags"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*"}) ||
+				!entrypointRequestTagCondition(statement, "ec2:CreateAction", []string{"AuthorizeSecurityGroupIngress"}) {
+				return false
+			}
+		case "RevokeIngressOnOwnedSecurityGroup":
+			if !sameStrings(actions, []string{"ec2:RevokeSecurityGroupIngress"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*"}) ||
+				!singleRefCondition(statement, "StringEquals", "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return len(seen) == 11
+}
+
+func entrypointLoadBalancerCreateCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 2 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	if !ok || len(equals) != 2 || !conditionReferenceEquals(equals, "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		scalarString(equals["elasticloadbalancing:Scheme"]) != "internet-facing" {
+		return false
+	}
+	return entrypointTagKeysCondition(condition)
+}
+
+func entrypointTLSListenerCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 2 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	if !ok || len(equals) != 3 ||
+		!conditionReferenceEquals(equals, "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		!conditionReferenceEquals(equals, "aws:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		scalarString(equals["elasticloadbalancing:ListenerProtocol"]) != "HTTPS" {
+		return false
+	}
+	return entrypointTagKeysCondition(condition)
+}
+
+func entrypointIngressAuthorizeCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 2 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	return ok && len(equals) == 2 &&
+		conditionReferenceEquals(equals, "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") &&
+		conditionReferenceEquals(equals, "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") &&
+		entrypointTagKeysCondition(condition)
+}
+
+func entrypointRequestTagCondition(statement map[string]any, createActionKey string, createActions []string) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 2 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	expectedEquals := 1
+	if createActionKey != "" {
+		expectedEquals++
+	}
+	if !ok || len(equals) != expectedEquals || !conditionReferenceEquals(equals, "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+		return false
+	}
+	if createActionKey != "" && !sameStrings(stringValues(equals[createActionKey]), createActions) {
+		return false
+	}
+	return entrypointTagKeysCondition(condition)
+}
+
+func entrypointTagKeysCondition(condition map[string]any) bool {
+	tagKeys, ok := stringMap(condition["ForAllValues:StringEquals"])
+	return ok && len(tagKeys) == 1 && sameStrings(stringValues(tagKeys["aws:TagKeys"]), entrypointTagKeys)
+}
+
+func conditionReferenceEquals(values map[string]any, key, ref string) bool {
+	reference, ok := stringMap(values[key])
+	return ok && len(reference) == 1 && scalarString(reference["Ref"]) == ref
+}
+
+func noEntrypointActionsOutsideControlPolicy(resources map[string]any) bool {
+	for logicalID, raw := range resources {
+		if logicalID == "ControlEntrypointPolicy" {
+			continue
+		}
+		resource, ok := stringMap(raw)
+		if !ok {
+			return false
+		}
+		properties, _ := stringMap(resource["Properties"])
+		switch scalarString(resource["Type"]) {
+		case "AWS::IAM::Policy", "AWS::IAM::ManagedPolicy":
+			if containsEntrypointAction(properties["PolicyDocument"]) {
+				return false
+			}
+		case "AWS::IAM::Role":
+			policies, _ := anySlice(properties["Policies"])
+			for _, rawPolicy := range policies {
+				policy, ok := stringMap(rawPolicy)
+				if !ok || containsEntrypointAction(policy["PolicyDocument"]) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func containsEntrypointAction(value any) bool {
+	for _, action := range templatePolicyActions(value) {
+		if strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:") {
+			return true
+		}
+	}
+	return false
+}
+
 func conditionRefEquals(statement map[string]any, operator, key, ref string) bool {
 	condition, ok := stringMap(statement["Condition"])
 	if !ok {
@@ -453,7 +703,7 @@ func validateRoleResource(logicalID string, resource map[string]any) error {
 		if logicalID == "WorkerRole" {
 			actions := templatePolicyActions(policy["PolicyDocument"])
 			for _, action := range actions {
-				if strings.HasPrefix(action, "iam:") || strings.HasPrefix(action, "ec2:") || strings.HasPrefix(action, "cloudformation:") {
+				if strings.HasPrefix(action, "iam:") || strings.HasPrefix(action, "ec2:") || strings.HasPrefix(action, "cloudformation:") || strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:") {
 					return ErrInvalidTemplate
 				}
 				if action == "s3:GetObjectTagging" || action == "s3:GetObjectVersionTagging" || action == "s3:PutObjectTagging" || action == "s3:PutObjectVersionTagging" {
@@ -585,7 +835,8 @@ func validateTemplatePolicy(value any, kmsKeyPolicy bool) error {
 			return ErrInvalidTemplate
 		}
 		for _, action := range actions {
-			if action == "" || strings.Contains(action, "*") || !strings.Contains(action, ":") {
+			if action == "" || strings.Contains(action, "*") || !strings.Contains(action, ":") || strings.HasPrefix(action, "route53:") ||
+				(strings.HasPrefix(action, "acm:") && action != "acm:DescribeCertificate") {
 				return ErrInvalidTemplate
 			}
 		}

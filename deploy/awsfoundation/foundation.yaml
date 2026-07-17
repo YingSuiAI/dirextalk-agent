@@ -869,6 +869,233 @@ Resources:
               - Fn::Sub: ${WorkerLogGroup.Arn}:*
               - Fn::Sub: ${ReaperLogGroup.Arn}:*
 
+  # Keep public entry-point authority in a separate managed policy. The
+  # existing runtime policy is already close to the IAM inline-policy quota;
+  # this policy attaches only to the same fixed Control Role and is closed to
+  # a device-approved, provider-read-back application ALB path.
+  ControlEntrypointPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName:
+        Fn::Sub: ${AWS::StackName}-control-entrypoint
+      Path: /
+      Roles:
+        - Ref: ControlRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # ELBv2 Describe APIs do not support resource-level IAM controls.
+          # The provider still reads only approved ARNs and rejects unowned
+          # observations before making a state transition.
+          - Sid: ObserveEntrypointResources
+            Effect: Allow
+            Action:
+              - ec2:DescribeSecurityGroupRules
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeTags
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetHealth
+            Resource: '*'
+          # User-managed, ISSUED ACM certificates are only inspected. The
+          # Control Role cannot issue, import, export, tag, renew, or delete
+          # certificates, and the provider verifies the exact approved ARN.
+          - Sid: ReadExistingACMCertificate
+            Effect: Allow
+            Action:
+              - acm:DescribeCertificate
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:acm:${AWS::Region}:${AWS::AccountId}:certificate/*
+          - Sid: CreateTaggedApplicationLoadBalancer
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateLoadBalancer
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                elasticloadbalancing:Scheme: internet-facing
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: CreateTaggedTargetGroup
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateTargetGroup
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: CreateTLSListenerOnOwnedApplicationLoadBalancer
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateListener
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                aws:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                elasticloadbalancing:ListenerProtocol: HTTPS
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: TagEntrypointResourcesOnCreate
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:AddTags
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*
+              - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*
+              - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                elasticloadbalancing:CreateAction:
+                  - CreateLoadBalancer
+                  - CreateTargetGroup
+                  - CreateListener
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: MutateTargetsOnOwnedTargetGroup
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:DeleteTargetGroup
+              - elasticloadbalancing:DeregisterTargets
+              - elasticloadbalancing:RegisterTargets
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: DeleteOwnedEntrypointResources
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:DeleteListener
+              - elasticloadbalancing:DeleteLoadBalancer
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*
+              - Fn::Sub: arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          # An ALB may forward only into the dedicated Worker security group
+          # owned by this Agent instance. A future provider must issue tagged
+          # ingress rules and revoke exact read-back rule IDs; it must never
+          # modify an arbitrary user-provided existing security group.
+          - Sid: AuthorizeTaggedIngressOnOwnedSecurityGroup
+            Effect: Allow
+            Action:
+              - ec2:AuthorizeSecurityGroupIngress
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: TagIngressRuleOnCreate
+            Effect: Allow
+            Action:
+              - ec2:CreateTags
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                ec2:CreateAction: AuthorizeSecurityGroupIngress
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:owner_id
+                  - dirextalk:task_id
+                  - dirextalk:deployment_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+                  - dirextalk:destroy_deadline
+                  - dirextalk_embedded_parent
+                  - dirextalk_spec_digest
+                  - dirextalk_client_token
+          - Sid: RevokeIngressOnOwnedSecurityGroup
+            Effect: Allow
+            Action:
+              - ec2:RevokeSecurityGroupIngress
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
+            Condition:
+              StringEquals:
+                ec2:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+
 Outputs:
   ArtifactBucketName:
     Value:
