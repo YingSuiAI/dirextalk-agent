@@ -247,7 +247,10 @@ func validateALB(value ALBScopeV1, region string, worker WorkerReadBackScopeV1) 
 }
 
 func validateHealth(value HealthRouteScopeV1, recipe RecipeHealthBindingV1) error {
-	if !value.NoCredentialRoute || value.ExpectedStatusCode < 200 || value.ExpectedStatusCode > 299 || value.EvidenceDigest != recipe.HealthContractDigest {
+	// Target groups and the independent HTTPS probe both use the first-release
+	// exact 200 contract. Accepting an arbitrary 2xx value here would make the
+	// signed scope claim stronger behavior than either verifier enforces.
+	if !value.NoCredentialRoute || value.ExpectedStatusCode != 200 || value.EvidenceDigest != recipe.HealthContractDigest {
 		return fmt.Errorf("%w: health route must be an exact no-credential Recipe health contract", ErrReadBackRequired)
 	}
 	if !digestPattern.MatchString(value.EvidenceDigest) {

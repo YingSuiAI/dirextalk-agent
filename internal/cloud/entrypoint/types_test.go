@@ -131,6 +131,7 @@ func TestScopeRejectsUnsafeTargetDerivationAndIncompleteIndependentEvidence(t *t
 		"worker log source":              func(value *ScopeV1) { value.ALB.TargetSource = TargetSourceWorkerLog },
 		"direct public IPv4":             func(value *ScopeV1) { value.ALB.WorkerPublicIPv4 = true },
 		"EIP requested":                  func(value *ScopeV1) { value.ALB.EIPRequested = true },
+		"non-200 health status":          func(value *ScopeV1) { value.Health.ExpectedStatusCode = 204 },
 		"worker unsuccessful":            func(value *ScopeV1) { value.Worker.ExecutionOutcome = WorkerOutcomeFailed },
 		"worker readback absent":         func(value *ScopeV1) { value.Worker.ReadBack.Exists = false },
 		"readback before worker success": func(value *ScopeV1) { value.Worker.ReadBack.ObservedAt = value.Worker.SucceededAt.Add(-time.Second) },

@@ -70,7 +70,7 @@ func (draft DraftV1) normalized() DraftV1 {
 func (draft DraftV1) Validate() error {
 	draft = draft.normalized()
 	if draft.Hostname == "" || draft.CertificateARN == "" || len(draft.PublicSubnetIDs) < 2 || draft.TargetPort == 0 || draft.TargetPort > 65535 ||
-		draft.HealthPath == "" || draft.ExpectedHealthStatusCode < 200 || draft.ExpectedHealthStatusCode > 299 ||
+		draft.HealthPath == "" || draft.ExpectedHealthStatusCode != 200 ||
 		draft.RecipeHealthContractDigest == "" || draft.RecipeAuthenticationDigest == "" || security.ContainsLikelySecret(draft.Hostname) ||
 		security.ContainsLikelySecret(draft.CertificateARN) || security.ContainsLikelySecret(draft.HealthPath) {
 		return ErrInvalid
