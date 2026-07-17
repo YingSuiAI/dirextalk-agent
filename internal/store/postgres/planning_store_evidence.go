@@ -35,6 +35,7 @@ type persistedToolExecutionSnapshot struct {
 }
 
 type completedOfficialSourceReceipt struct {
+	requestID  string
 	toolCallID string
 	evidence   publicweb.Evidence
 }
@@ -95,6 +96,7 @@ func (store *Store) BindOfficialSourceEvidence(
 		return planning.OfficialSourceEvidenceSet{}, err
 	}
 	selected := make([]planning.OfficialSourceEvidence, 0, len(command.Sources))
+	selectedRequestIDs := make(map[string]string, len(command.Sources))
 	usedToolCalls := make(map[string]struct{}, len(command.Sources))
 	for _, source := range command.Sources {
 		matched := false
@@ -107,6 +109,7 @@ func (store *Store) BindOfficialSourceEvidence(
 				TaskID: command.TaskID, ToolCallID: receipt.toolCallID, URL: receipt.evidence.URL,
 				RetrievedAt: receipt.evidence.RetrievedAt, ContentDigest: receipt.evidence.ContentDigest,
 			})
+			selectedRequestIDs[receipt.toolCallID] = receipt.requestID
 			usedToolCalls[receipt.toolCallID] = struct{}{}
 			matched = true
 			break
@@ -117,13 +120,17 @@ func (store *Store) BindOfficialSourceEvidence(
 	}
 
 	for _, evidence := range selected {
+		requestID, ok := selectedRequestIDs[evidence.ToolCallID]
+		if !ok || requestID == "" {
+			return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO planning_official_source_evidence
 			    (session_id, task_id, caller_client_id, caller_credential_id, request_id,
 			     tool_call_id, source_url, retrieved_at, content_digest)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 			ON CONFLICT DO NOTHING`,
-			session.SessionID, command.TaskID, caller.ClientID, caller.CredentialID, command.Binding.RequestID,
+			session.SessionID, command.TaskID, caller.ClientID, caller.CredentialID, requestID,
 			evidence.ToolCallID, evidence.URL, evidence.RetrievedAt, evidence.ContentDigest,
 		); err != nil {
 			return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
@@ -217,7 +224,7 @@ func loadCompletedOfficialSourceReceipts(
 		return nil, planning.ErrPersistence
 	}
 	rows, err := query.Query(ctx, `
-		SELECT tool_call_id, result_json
+		SELECT request_id, tool_call_id, result_json
 		FROM runtime_tool_executions
 		WHERE caller_client_id=$1 AND caller_credential_id=$2 AND request_id IN ($3,$4)
 		  AND owner_id=$5 AND conversation_id=$6 AND tool_name=$7
@@ -230,9 +237,9 @@ func loadCompletedOfficialSourceReceipts(
 	defer rows.Close()
 	receipts := make([]completedOfficialSourceReceipt, 0)
 	for rows.Next() {
-		var toolCallID string
+		var requestID, toolCallID string
 		var encoded []byte
-		if err := rows.Scan(&toolCallID, &encoded); err != nil {
+		if err := rows.Scan(&requestID, &toolCallID, &encoded); err != nil {
 			return nil, planning.ErrPersistence
 		}
 		var snapshot persistedToolExecutionSnapshot
@@ -247,7 +254,7 @@ func loadCompletedOfficialSourceReceipts(
 		if err != nil {
 			return nil, planning.ErrPersistence
 		}
-		receipts = append(receipts, completedOfficialSourceReceipt{toolCallID: toolCallID, evidence: evidence})
+		receipts = append(receipts, completedOfficialSourceReceipt{requestID: requestID, toolCallID: toolCallID, evidence: evidence})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, planning.ErrPersistence

@@ -87,6 +87,14 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	if err != nil || len(evidenceSet.Evidence) != 1 || !strings.HasPrefix(evidenceSet.ResultRef(), "planning://official-source-evidence/sha256:") {
 		t.Fatalf("bind official evidence failed: count=%d ref=%q err=%T", len(evidenceSet.Evidence), evidenceSet.ResultRef(), err)
 	}
+	wantEvidenceRequestID, err := planning.CloudGoalModelRequestID(command.Binding, session.TaskID, cloudskill.StepResearchOfficialSources)
+	if err != nil {
+		t.Fatal("derive bound evidence model request id")
+	}
+	var boundEvidenceRequestID string
+	if err := pool.QueryRow(context.Background(), `SELECT request_id FROM planning_official_source_evidence`).Scan(&boundEvidenceRequestID); err != nil || boundEvidenceRequestID != wantEvidenceRequestID {
+		t.Fatalf("official evidence request binding=%q want=%q err=%T", boundEvidenceRequestID, wantEvidenceRequestID, err)
+	}
 	replayedEvidence, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, evidenceCommand)
 	if err != nil || !reflect.DeepEqual(evidenceSet, replayedEvidence) {
 		t.Fatalf("official evidence replay changed result: err=%T", err)
