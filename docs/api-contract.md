@@ -29,6 +29,14 @@ Task creation and cancellation atomically persist their idempotency response, en
 
 Task event `summary_json` schema version 1 contains the complete de-secreted projection: task/owner IDs, execution/outcome/retention, current step, approved plan, revision, timestamps, and actor client/credential IDs. Cancellation adds only a redacted reason. Step summaries are independently versioned. `WatchEvents(after_seq)` emits facts strictly after the durable global sequence and supports reconnect after server/store restart.
 
+### Cloud dialogue Task projection v1
+
+Only a server-created Cloud Goal session (`cloud-goal-<request-id>`) produces the additional `cloud.task.changed` and `cloud.step.changed` facts. Their aggregate types are respectively `cloud_task` and `cloud_step`; the existing generic `agent.task.*` and `agent.step.*` facts remain unchanged.
+
+Both Cloud summaries have exactly the following stable fields: `schema_version`, `task_id`, optional `step_id`, `owner_id`, `execution_status`, `outcome_status`, `current_stage`, optional `related_plan_id`, optional fixed `error_code`, `revision`, and `updated_at`. `current_stage` is limited to `research`, `recipe`, `quote`, `waiting_user`, `ready_for_confirmation`, or `finished`. `error_code` is limited to `task_failed`, `task_canceled`, `task_timed_out`, or `task_interrupted`.
+
+The projection never contains a goal prompt, cloud/provider resource identifier, connection ID, URL, credential reference, Worker identifier, checkpoint, result reference, log, or user-controlled error text. A related Plan is written to the existing Task only during the final successful planning Step after the same Agent instance, owner, AWS Connection, and durable `cloud_plans.task_id` binding have been verified. A Cloud Goal Plan cannot be attached to a different Task of the same owner/Connection. The Task mutation and Cloud facts use the same database transaction and Cloud Outbox envelope; idempotent replays return before a second projection event is appended.
+
 ## P1 runtime contract
 
 `RuntimeService` implements `GetRuntimeConfig`, `PutRuntimeConfig`, `Chat`, and server-streaming `StreamChat`. Runtime methods require `runtime.read`, `runtime.write`, or `runtime.chat` as appropriate. `GetCapabilities` lists configured model profile IDs. `PutRuntimeConfig` selects one server-owned `profile_id`; provider, model, endpoint, mounted `secret_ref`, context window, and output ceiling are catalog-bound and cannot be recombined by a Service Key. Only bounded temperature, top-p, and configured output-limit overrides are accepted. `GetRuntimeConfig` returns de-secreted profile metadata and never credential bytes. Configuration also stores a project profile subordinate to the immutable base policy, bounded context/memory/step limits, enabled tool names, and knowledge/MCP/Recipe references; raw credential material is rejected before persistence.

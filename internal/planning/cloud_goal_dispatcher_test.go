@@ -44,6 +44,9 @@ func TestCloudGoalDispatcherAdvancesFencedStagesAndAcceptsOnlyReadyThreeCandidat
 	if got := tasks.completed[2].ResultRef; got != "cloud://plan/"+facts.plan.PlanID {
 		t.Fatalf("final result_ref=%q", got)
 	}
+	if got := tasks.completed[2].RelatedPlanID; got != facts.plan.PlanID {
+		t.Fatalf("final related_plan_id=%q want %q", got, facts.plan.PlanID)
+	}
 }
 
 func TestCloudGoalDispatcherDoesNotCompleteStaleOutputAndRecoversWithNextLeaseEpoch(t *testing.T) {

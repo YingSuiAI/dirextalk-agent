@@ -279,7 +279,11 @@ func (store *Store) CompleteStep(ctx context.Context, scope task.MutationScope, 
 		if err != nil {
 			return task.Attempt{}, err
 		}
-		currentTask, err := finishOrQueueTask(ctx, tx, attempt.TaskID, command.Outcome, caller)
+		relatedPlanID, err := resolveCloudGoalPlanForCompletion(ctx, tx, attempt.TaskID, step, command)
+		if err != nil {
+			return task.Attempt{}, err
+		}
+		currentTask, err := finishOrQueueTask(ctx, tx, attempt.TaskID, command.Outcome, relatedPlanID, caller)
 		if err != nil {
 			return task.Attempt{}, err
 		}
@@ -427,7 +431,7 @@ func updateStepProjection(ctx context.Context, tx pgx.Tx, attempt task.Attempt, 
 	return normalizeStepTimes(step), nil
 }
 
-func finishOrQueueTask(ctx context.Context, tx pgx.Tx, rawTaskID string, stepOutcome task.OutcomeStatus, caller idempotencyCaller) (task.Task, error) {
+func finishOrQueueTask(ctx context.Context, tx pgx.Tx, rawTaskID string, stepOutcome task.OutcomeStatus, relatedPlanID string, caller idempotencyCaller) (task.Task, error) {
 	taskID, _ := uuid.Parse(rawTaskID)
 	current, err := loadTask(ctx, tx, taskID, true)
 	if err != nil {
@@ -456,11 +460,12 @@ func finishOrQueueTask(ctx context.Context, tx pgx.Tx, rawTaskID string, stepOut
 	if err := tx.QueryRow(ctx, `
 		UPDATE tasks
 		SET execution_status=$2, outcome_status=$3, current_step_id=NULL,
+		    approved_plan_id=COALESCE(NULLIF($4::text,'')::uuid, approved_plan_id),
 		    revision=revision+1, updated_at=clock_timestamp()
-		WHERE task_id=$1 AND outcome_status=$4
-		RETURNING revision, updated_at`,
-		taskID, nextExecution, nextOutcome, task.OutcomePending,
-	).Scan(&current.Revision, &current.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
+		WHERE task_id=$1 AND outcome_status=$5
+		RETURNING COALESCE(approved_plan_id::text,''), revision, updated_at`,
+		taskID, nextExecution, nextOutcome, relatedPlanID, task.OutcomePending,
+	).Scan(&current.ApprovedPlanID, &current.Revision, &current.UpdatedAt); errors.Is(err, pgx.ErrNoRows) {
 		return task.Task{}, task.ErrTerminal
 	} else if err != nil {
 		return task.Task{}, fmt.Errorf("advance task after step completion: %w", err)
@@ -560,6 +565,9 @@ func appendStepEvent(ctx context.Context, tx pgx.Tx, step task.Step, caller idem
 		INSERT INTO outbox_events (outbox_id, event_seq, topic, payload_json)
 		VALUES ($1,$2,$3,$4)`, outboxID, event.Seq, eventType, summary); err != nil {
 		return task.Event{}, fmt.Errorf("insert step outbox event: %w", err)
+	}
+	if err := appendCloudStepChangedIfDialogue(ctx, tx, step); err != nil {
+		return task.Event{}, err
 	}
 	return event, nil
 }

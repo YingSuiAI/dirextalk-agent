@@ -102,7 +102,11 @@ func (command CreateQuoteCommand) digest() ([sha256.Size]byte, error) {
 type CreatePlanCommand struct {
 	IdempotencyKey   string
 	ExpectedRevision uint64
-	Plan             approval.PlanV1
+	// TaskID is set only for a server-created Cloud Goal Plan. It is a durable
+	// relational binding, not a field of the user-approved Plan hash: ordinary
+	// standalone Plans intentionally have no Task.
+	TaskID string
+	Plan   approval.PlanV1
 }
 
 func (command CreatePlanCommand) validate() error {
@@ -118,6 +122,12 @@ func (command CreatePlanCommand) validate() error {
 	if _, err := uuid.Parse(command.Plan.Quote.QuoteID); err != nil {
 		return fmt.Errorf("%w: quote_id must be a UUID", ErrCloudFactInvalid)
 	}
+	if command.TaskID != "" {
+		parsed, err := uuid.Parse(command.TaskID)
+		if err != nil || parsed == uuid.Nil || parsed.String() != command.TaskID {
+			return fmt.Errorf("%w: task_id must be a canonical UUID", ErrCloudFactInvalid)
+		}
+	}
 	if command.ExpectedRevision != 0 || command.Plan.Revision != 1 || command.Plan.Status != approval.PlanReadyForConfirmation {
 		return fmt.Errorf("%w: new Plan must be ready_for_confirmation with expected/revision 0/1", ErrCloudFactInvalid)
 	}
@@ -127,6 +137,7 @@ func (command CreatePlanCommand) validate() error {
 func (command CreatePlanCommand) digest() ([sha256.Size]byte, error) {
 	return cloudMutationDigest(struct {
 		ExpectedRevision uint64    `json:"expected_revision"`
+		TaskID           string    `json:"task_id,omitempty"`
 		AgentInstanceID  string    `json:"agent_instance_id"`
 		OwnerID          string    `json:"owner_id"`
 		ConnectionID     string    `json:"connection_id"`
@@ -137,7 +148,7 @@ func (command CreatePlanCommand) digest() ([sha256.Size]byte, error) {
 		QuoteCandidateID string    `json:"quote_candidate_id"`
 		QuoteValidUntil  time.Time `json:"quote_valid_until"`
 	}{
-		command.ExpectedRevision, command.Plan.AgentInstanceID, command.Plan.OwnerID,
+		command.ExpectedRevision, command.TaskID, command.Plan.AgentInstanceID, command.Plan.OwnerID,
 		command.Plan.ConnectionID, command.Plan.Recipe.Digest, command.Plan.Quote.QuoteID,
 		command.Plan.Quote.Digest, command.Plan.Quote.ScopeDigest, command.Plan.Quote.CandidateID,
 		command.Plan.Quote.ValidUntil.UTC(),

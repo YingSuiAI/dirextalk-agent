@@ -42,6 +42,10 @@ func (store *Store) createPlanRecord(ctx context.Context, scope task.MutationSco
 	}
 	planID, _ := uuid.Parse(command.Plan.PlanID)
 	quoteID, _ := uuid.Parse(command.Plan.Quote.QuoteID)
+	var taskID uuid.UUID
+	if command.TaskID != "" {
+		taskID, _ = uuid.Parse(command.TaskID)
+	}
 	agentID, err := uuid.Parse(command.Plan.AgentInstanceID)
 	if err != nil || agentID != store.instanceID {
 		return CloudPlanRecord{}, ErrCloudFactScope
@@ -96,6 +100,25 @@ func (store *Store) createPlanRecord(ctx context.Context, scope task.MutationSco
 	if err != nil || quoteAgent != agentID || quoteOwner != command.Plan.OwnerID || quoteConnection != command.Plan.ConnectionID {
 		return CloudPlanRecord{}, ErrCloudFactScope
 	}
+	if taskID != uuid.Nil {
+		var exactCloudGoal bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM planning_sessions session
+				JOIN tasks task ON task.task_id=session.task_id
+				WHERE session.task_id=$1
+				  AND task.owner_id=$2
+				  AND session.owner_id=task.owner_id
+				  AND session.connection_id=$3
+				  AND session.conversation_id='cloud-goal-' || replace(session.request_id::text,'-','')
+			)`, taskID, command.Plan.OwnerID, command.Plan.ConnectionID).Scan(&exactCloudGoal); err != nil {
+			return CloudPlanRecord{}, fmt.Errorf("validate Cloud Goal Plan task binding: %w", err)
+		}
+		if !exactCloudGoal {
+			return CloudPlanRecord{}, ErrCloudFactScope
+		}
+	}
 	var alreadyExists bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM cloud_plans WHERE plan_id=$1)`, planID).Scan(&alreadyExists); err != nil {
 		return CloudPlanRecord{}, fmt.Errorf("check Plan existence: %w", err)
@@ -106,11 +129,11 @@ func (store *Store) createPlanRecord(ctx context.Context, scope task.MutationSco
 	record := CloudPlanRecord{Plan: command.Plan, PlanHash: planHash, Revision: command.Plan.Revision}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO cloud_plans
-		    (plan_id, agent_instance_id, owner_id, connection_id, quote_id, quote_digest,
+		    (plan_id, agent_instance_id, owner_id, connection_id, task_id, quote_id, quote_digest,
 		     quote_scope_digest, plan_hash, status, plan_json, plan_cbor, revision)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		VALUES ($1,$2,$3,$4,NULLIF($5::text,'')::uuid,$6,$7,$8,$9,$10,$11,$12,$13)
 		RETURNING created_at, updated_at`,
-		planID, agentID, command.Plan.OwnerID, command.Plan.ConnectionID, quoteID, command.Plan.Quote.Digest,
+		planID, agentID, command.Plan.OwnerID, command.Plan.ConnectionID, command.TaskID, quoteID, command.Plan.Quote.Digest,
 		command.Plan.Quote.ScopeDigest, planHash, command.Plan.Status, planJSON, planCBOR, int64(command.Plan.Revision),
 	).Scan(&record.CreatedAt, &record.UpdatedAt); err != nil {
 		return CloudPlanRecord{}, fmt.Errorf("insert Plan: %w", err)

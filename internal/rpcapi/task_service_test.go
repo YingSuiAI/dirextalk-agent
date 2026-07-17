@@ -2,6 +2,7 @@ package rpcapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -97,6 +98,42 @@ func TestWatchEventsResumesStrictlyAfterCursor(t *testing.T) {
 	}
 	if requestedAfter != 41 || len(stream.sent) != 1 || stream.sent[0].GetEvent().GetSeq() != 42 {
 		t.Fatalf("resume = after %d, sent %#v", requestedAfter, stream.sent)
+	}
+}
+
+func TestWatchEventsPreservesCloudTaskProjectionSchema(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	taskID, planID := uuid.NewString(), uuid.NewString()
+	summary := []byte(`{"schema_version":1,"task_id":"` + taskID + `","owner_id":"owner-project","execution_status":"finished","outcome_status":"succeeded","current_stage":"ready_for_confirmation","related_plan_id":"` + planID + `","revision":7,"updated_at":"2026-07-17T09:00:00Z"}`)
+	service := NewTaskService(taskStoreStub{
+		create: func(context.Context, task.MutationScope, task.CreateCommand) (task.Task, error) {
+			return task.Task{}, errors.New("unused")
+		},
+		eventsAfter: func(_ context.Context, after int64, _ int) ([]task.Event, error) {
+			if after != 0 {
+				t.Fatalf("after_seq=%d", after)
+			}
+			return []task.Event{{
+				Seq: 1, EventID: uuid.NewString(), EventType: "cloud.task.changed", AggregateType: "cloud_task",
+				AggregateID: taskID, Revision: 7, SummaryJSON: summary, OccurredAt: time.Date(2026, time.July, 17, 9, 0, 0, 0, time.UTC),
+			}}, nil
+		},
+	})
+	stream := &watchEventsStreamStub{ctx: ctx, onSend: cancel}
+	err := service.WatchEvents(&agentv1.WatchEventsRequest{}, stream)
+	if !errors.Is(err, context.Canceled) || len(stream.sent) != 1 {
+		t.Fatalf("WatchEvents cloud projection err=%v sent=%#v", err, stream.sent)
+	}
+	event := stream.sent[0].GetEvent()
+	if event.GetEventType() != "cloud.task.changed" || event.GetAggregateType() != "cloud_task" ||
+		event.GetAggregateId() != taskID || string(event.GetSummaryJson()) != string(summary) {
+		t.Fatalf("cloud projection drifted in gRPC: %#v", event)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(event.GetSummaryJson(), &fields); err != nil || fields["goal"] != nil || fields["connection_id"] != nil || fields["worker_log"] != nil {
+		t.Fatalf("cloud projection schema leaked or changed: %s err=%v", event.GetSummaryJson(), err)
 	}
 }
 

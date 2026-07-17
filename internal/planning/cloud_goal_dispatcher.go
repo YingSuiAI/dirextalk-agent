@@ -213,10 +213,14 @@ func (dispatcher *CloudGoalDispatcher) dispatchOne(ctx context.Context, item Clo
 	if err != nil {
 		return err
 	}
+	relatedPlanID := ""
+	if next.Name == cloudskill.StepPrepareResourceCandidates {
+		relatedPlanID = output.PlanID
+	}
 	completed, err := dispatcher.tasks.CompleteStep(ctx, item.Caller, task.CompleteStepCommand{
 		IdempotencyKey: deterministicCloudGoalUUID(item.Session.Binding.RequestID, next.StepID, "complete", strconv.FormatInt(attempt.LeaseEpoch, 10)),
 		TaskID:         item.Task.TaskID, StepID: next.StepID, Attempt: attempt.Attempt, LeaseEpoch: attempt.LeaseEpoch,
-		WorkerID: workerID, Outcome: task.OutcomeSucceeded, ResultRef: resultRef,
+		WorkerID: workerID, Outcome: task.OutcomeSucceeded, ResultRef: resultRef, RelatedPlanID: relatedPlanID,
 	})
 	if err != nil {
 		return err

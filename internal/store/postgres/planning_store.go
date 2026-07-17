@@ -129,6 +129,16 @@ func (store *Store) AttachResearchTask(ctx context.Context, scope task.MutationS
 	if err := appendPlanningSessionEvent(ctx, tx, session, caller, "agent.planning.task_attached"); err != nil {
 		return planning.ResearchSession{}, err
 	}
+	attachedTask, err := loadTask(ctx, tx, parsedTaskID, false)
+	if err != nil || attachedTask.TaskID != session.TaskID || attachedTask.OwnerID != session.Binding.OwnerID {
+		return planning.ResearchSession{}, planning.ErrTaskOperation
+	}
+	// Task.Create ran before this session acquired its durable task_id. Emit the
+	// first public Cloud projection at the attachment boundary, where the exact
+	// server-created cloud-goal session and Task are both transactionally known.
+	if err := appendCloudTaskChangedIfDialogue(ctx, tx, attachedTask); err != nil {
+		return planning.ResearchSession{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return planning.ResearchSession{}, planning.ErrPersistence
 	}

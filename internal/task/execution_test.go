@@ -154,6 +154,14 @@ func TestLeaseMutationCommandsBindEpochWorkerAndReferences(t *testing.T) {
 	if err := complete.Validate(); err != nil {
 		t.Fatalf("valid complete rejected: %v", err)
 	}
+	withPlan := complete
+	withPlan.RelatedPlanID = uuid.NewString()
+	if err := withPlan.Validate(); err != nil {
+		t.Fatalf("valid complete with related Plan rejected: %v", err)
+	}
+	if complete.Digest() == withPlan.Digest() {
+		t.Fatal("completion digest did not bind related Plan")
+	}
 
 	stale := renew
 	stale.LeaseEpoch = 0
@@ -169,6 +177,11 @@ func TestLeaseMutationCommandsBindEpochWorkerAndReferences(t *testing.T) {
 	invalidOutcome.Outcome = OutcomeCanceled
 	if err := invalidOutcome.Validate(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("worker canceled outcome error = %v, want ErrInvalid", err)
+	}
+	planWithFailedOutcome := withPlan
+	planWithFailedOutcome.Outcome = OutcomeFailed
+	if err := planWithFailedOutcome.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("related Plan with failed outcome error = %v, want ErrInvalid", err)
 	}
 }
 

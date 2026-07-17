@@ -79,6 +79,7 @@ type cloudGoalFactsFake struct {
 	plans                 map[string]cloudapproval.PlanV1
 	quoteKeys             []string
 	planKeys              []string
+	planTaskIDs           []string
 	failQuoteResponseOnce bool
 	quoteReadbackDrift    bool
 	planReadbackDrift     bool
@@ -126,8 +127,9 @@ func (fake *cloudGoalFactsFake) LoadQuote(_ context.Context, ownerID, quoteID st
 	return value, nil
 }
 
-func (fake *cloudGoalFactsFake) PersistPlan(_ context.Context, _ cloudapp.MutationScope, key string, value cloudapproval.PlanV1) (cloudapproval.PlanV1, error) {
+func (fake *cloudGoalFactsFake) PersistCloudGoalPlan(_ context.Context, _ cloudapp.MutationScope, key, taskID string, value cloudapproval.PlanV1) (cloudapproval.PlanV1, error) {
 	fake.planKeys = append(fake.planKeys, key)
+	fake.planTaskIDs = append(fake.planTaskIDs, taskID)
 	fake.plans[value.PlanID] = value
 	return value, nil
 }
@@ -155,9 +157,10 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 	if fixture.connections.calls != 1 || fixture.placements.validateCall != 1 || fixture.placements.resolveCalls != 1 || fixture.quotes.calls != 1 {
 		t.Fatalf("calls connection=%d validate=%d placement=%d quote=%d", fixture.connections.calls, fixture.placements.validateCall, fixture.placements.resolveCalls, fixture.quotes.calls)
 	}
-	if len(fixture.facts.quoteKeys) != 1 || len(fixture.facts.planKeys) != 1 ||
-		fixture.facts.quoteKeys[0] != fixture.request.Stage.OutputIdempotencyKey || fixture.facts.planKeys[0] != fixture.request.Stage.OutputIdempotencyKey {
-		t.Fatalf("operation keys quote=%v plan=%v", fixture.facts.quoteKeys, fixture.facts.planKeys)
+	if len(fixture.facts.quoteKeys) != 1 || len(fixture.facts.planKeys) != 1 || len(fixture.facts.planTaskIDs) != 1 ||
+		fixture.facts.quoteKeys[0] != fixture.request.Stage.OutputIdempotencyKey || fixture.facts.planKeys[0] != fixture.request.Stage.OutputIdempotencyKey ||
+		fixture.facts.planTaskIDs[0] != fixture.request.Stage.Attempt.TaskID {
+		t.Fatalf("operation keys quote=%v plan=%v task=%v", fixture.facts.quoteKeys, fixture.facts.planKeys, fixture.facts.planTaskIDs)
 	}
 	if fixture.placements.request.Placement.PublicIPv4 || fixture.placements.request.Placement.RuntimeHoursPerMonth != cloudGoalRuntimeHours ||
 		fixture.placements.request.Placement.Requirements.MinVCPU != 2 || fixture.placements.request.Placement.Requirements.MinMemoryMiB != 4096 ||

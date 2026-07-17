@@ -447,6 +447,9 @@ func appendTaskEvent(ctx context.Context, tx pgx.Tx, item task.Task, caller idem
 		VALUES ($1,$2,$3,$4)`, outboxID, event.Seq, eventType, summary); err != nil {
 		return task.Event{}, fmt.Errorf("insert task outbox event: %w", err)
 	}
+	if err := appendCloudTaskChangedIfDialogue(ctx, tx, item); err != nil {
+		return task.Event{}, err
+	}
 	return event, nil
 }
 

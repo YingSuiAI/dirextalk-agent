@@ -43,7 +43,7 @@ type cloudGoalQuotePlanner interface {
 type cloudGoalProviderFacts interface {
 	PersistQuote(context.Context, cloudapp.MutationScope, string, [sha256.Size]byte, cloudquote.QuoteV1) (cloudquote.QuoteV1, error)
 	LoadQuote(context.Context, string, string) (cloudquote.QuoteV1, error)
-	PersistPlan(context.Context, cloudapp.MutationScope, string, cloudapproval.PlanV1) (cloudapproval.PlanV1, error)
+	PersistCloudGoalPlan(context.Context, cloudapp.MutationScope, string, string, cloudapproval.PlanV1) (cloudapproval.PlanV1, error)
 	LoadPlan(context.Context, string, string) (cloudapproval.PlanV1, error)
 }
 
@@ -193,7 +193,7 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreatePlan(
 	if !errors.Is(err, cloudapp.ErrNotFound) {
 		return cloudapproval.PlanV1{}, cloudapp.ErrUnavailable
 	}
-	if _, err = materializer.facts.PersistPlan(ctx, caller, request.Stage.OutputIdempotencyKey, expected); err != nil {
+	if _, err = materializer.facts.PersistCloudGoalPlan(ctx, caller, request.Stage.OutputIdempotencyKey, request.Stage.Attempt.TaskID, expected); err != nil {
 		return cloudapproval.PlanV1{}, err
 	}
 	readBack, err := materializer.facts.LoadPlan(ctx, request.Stage.Binding.OwnerID, request.PlanID)

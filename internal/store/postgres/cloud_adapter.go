@@ -37,6 +37,14 @@ func (adapter *CloudAdapter) PersistPlan(ctx context.Context, scope cloudapp.Mut
 	return result, mapCloudFactError(err)
 }
 
+// PersistCloudGoalPlan adds the exact durable Task binding required for a
+// server-created Cloud Goal. Generic CloudFactRepository callers continue to
+// use PersistPlan and cannot accidentally manufacture a task association.
+func (adapter *CloudAdapter) PersistCloudGoalPlan(ctx context.Context, scope cloudapp.MutationScope, key, taskID string, value cloudapproval.PlanV1) (cloudapproval.PlanV1, error) {
+	result, err := adapter.store.CreatePlan(ctx, taskScope(scope), CreatePlanCommand{IdempotencyKey: key, TaskID: taskID, Plan: value})
+	return result, mapCloudFactError(err)
+}
+
 func (adapter *CloudAdapter) LoadPlan(ctx context.Context, ownerID, planID string) (cloudapproval.PlanV1, error) {
 	result, err := adapter.store.GetPlan(ctx, ownerID, planID)
 	return result, mapCloudFactError(err)

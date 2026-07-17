@@ -130,7 +130,7 @@ func (command RenewStepLeaseCommand) Validate() error {
 }
 
 func (command RenewStepLeaseCommand) Digest() [sha256.Size]byte {
-	return leaseMutationDigest(command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch, int64(command.LeaseDuration), "", "")
+	return leaseMutationDigest(command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch, int64(command.LeaseDuration), "", "", "")
 }
 
 type CheckpointStepCommand struct {
@@ -151,7 +151,7 @@ func (command CheckpointStepCommand) Validate() error {
 }
 
 func (command CheckpointStepCommand) Digest() [sha256.Size]byte {
-	return leaseMutationDigest(command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch, 0, strings.TrimSpace(command.CheckpointRef), "")
+	return leaseMutationDigest(command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch, 0, strings.TrimSpace(command.CheckpointRef), "", "")
 }
 
 type CompleteStepCommand struct {
@@ -163,6 +163,12 @@ type CompleteStepCommand struct {
 	WorkerID       string
 	Outcome        OutcomeStatus
 	ResultRef      string
+	// RelatedPlanID is set only by the trusted cloud planning controller when
+	// the final planning Step has already persisted an exact ready Plan. It is
+	// deliberately not part of the Worker RPC: the store verifies the owning
+	// Cloud Goal session, owner, connection, final stage, and Plan before
+	// projecting it into Task.ApprovedPlanID.
+	RelatedPlanID string
 }
 
 // WaitingReasonServiceSecretsNotReady is the only reason persisted for a
@@ -264,11 +270,24 @@ func (command CompleteStepCommand) Validate() error {
 	default:
 		return fmt.Errorf("%w: worker completion outcome is invalid", ErrInvalid)
 	}
-	return validateEvidenceReference("result_ref", command.ResultRef, command.Outcome != OutcomeSucceeded)
+	if err := validateEvidenceReference("result_ref", command.ResultRef, command.Outcome != OutcomeSucceeded); err != nil {
+		return err
+	}
+	if strings.TrimSpace(command.RelatedPlanID) == "" {
+		return nil
+	}
+	planID, err := uuid.Parse(command.RelatedPlanID)
+	if err != nil || planID == uuid.Nil || planID.String() != command.RelatedPlanID || command.Outcome != OutcomeSucceeded {
+		return fmt.Errorf("%w: related_plan_id is invalid", ErrInvalid)
+	}
+	return nil
 }
 
 func (command CompleteStepCommand) Digest() [sha256.Size]byte {
-	return leaseMutationDigest(command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch, 0, strings.TrimSpace(command.ResultRef), string(command.Outcome))
+	return leaseMutationDigest(
+		command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch, 0,
+		strings.TrimSpace(command.ResultRef), string(command.Outcome), strings.TrimSpace(command.RelatedPlanID),
+	)
 }
 
 func validateMutationIDs(idempotencyKey, taskID, stepID, workerID string) error {
@@ -330,7 +349,7 @@ func validRecipeDigest(value string) bool {
 	return true
 }
 
-func leaseMutationDigest(taskID, stepID, workerID string, attempt int32, leaseEpoch, duration int64, reference, outcome string) [sha256.Size]byte {
+func leaseMutationDigest(taskID, stepID, workerID string, attempt int32, leaseEpoch, duration int64, reference, outcome, relatedPlanID string) [sha256.Size]byte {
 	encoded, _ := json.Marshal(struct {
 		TaskID     string `json:"task_id"`
 		StepID     string `json:"step_id"`
@@ -340,7 +359,8 @@ func leaseMutationDigest(taskID, stepID, workerID string, attempt int32, leaseEp
 		Duration   int64  `json:"duration_ns,omitempty"`
 		Reference  string `json:"reference,omitempty"`
 		Outcome    string `json:"outcome,omitempty"`
-	}{normalizedUUID(taskID), normalizedUUID(stepID), normalizedUUID(workerID), attempt, leaseEpoch, duration, reference, outcome})
+		PlanID     string `json:"related_plan_id,omitempty"`
+	}{normalizedUUID(taskID), normalizedUUID(stepID), normalizedUUID(workerID), attempt, leaseEpoch, duration, reference, outcome, relatedPlanID})
 	return sha256.Sum256(encoded)
 }
 
