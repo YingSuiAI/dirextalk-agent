@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
@@ -252,6 +254,232 @@ func TestAWSResourcePlanCreatesDedicatedNoIngressNetworkAndApprovedPublicIPv4(t 
 	}
 }
 
+func TestAWSResourcePlanCreatesSeparateEncryptedEBSForPersistentRecipeSlot(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	plan, recipeValue, approval := bindPersistentVolume(t, fixture)
+	connection := fixture.connections.value
+	operation := Operation{
+		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: approval.PlanHash, DeploymentID: uuid.NewString()},
+		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
+		CreatedAt: time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 7, 17, 10, 0, 1, 0, time.UTC),
+	}
+	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
+	bindOperationInstallerVolume(t, &operation, plan, approval, now)
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := builder.Build(plan, connection, recipeValue, operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != 3 || specs[0].Type != resource.TypeENI || specs[1].Type != resource.TypeEBS || specs[2].Type != resource.TypeEC2 {
+		t.Fatalf("persistent slot topology = %+v", specs)
+	}
+	volume := specs[1]
+	if volume.AWS.Volume == nil || volume.AWS.Volume.SlotID != "knowledge" || volume.AWS.Volume.KMSKeyID == "" ||
+		volume.AWS.Volume.DeviceName != "/dev/sdf" || volume.AWS.Volume.MountPath != "/srv/knowledge" ||
+		volume.AWS.Volume.Disposition != resource.AWSVolumeDeleteWithDeployment {
+		t.Fatalf("data EBS lost approved scope: %+v", volume.AWS.Volume)
+	}
+	instance := specs[2]
+	if instance.AWS.Instance.RootVolumeGiB != uint32(plan.ResourceScope.DiskGiB) || len(instance.AWS.Instance.DataVolumes) != 1 ||
+		instance.AWS.Instance.DataVolumes[0].ResourceID != volume.ResourceID || !reflect.DeepEqual(instance.DependsOn, []string{specs[0].ResourceID, volume.ResourceID}) {
+		t.Fatalf("persistent slot was not a separate EC2 dependency: %+v", instance)
+	}
+	replayed, err := builder.Build(plan, connection, recipeValue, operation)
+	if err != nil || !reflect.DeepEqual(replayed, specs) {
+		t.Fatalf("restart did not reconstruct deterministic volume intents: equal=%v err=%v", reflect.DeepEqual(replayed, specs), err)
+	}
+}
+
+func TestInstallerDeliveryCarriesOnlySignedNonSecretVolumeBinding(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x79}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	configureInstallerLaunch(t, fixture, issuer, now, time.Hour, 5*time.Minute, cloudapproval.RetentionScopeV1{
+		Class: cloudapproval.RetentionEphemeral, AutoDestroy: true, GracePeriodSeconds: 60, MaxLifetimeSeconds: 86_400,
+	})
+	_, _, _ = bindPersistentVolume(t, fixture)
+	value := fixture.service.recipes.(fakeRecipes).value
+	value.Install.Installer.Commands[0].VolumeSlotRefs = []string{"knowledge"}
+	fixture.service.recipes = fakeRecipes{value: value}
+	plan := fixture.service.facts.(fakeFacts).plan
+	plan.Status, plan.Revision = cloudapproval.PlanReadyForConfirmation, 1
+	plan.Recipe.Digest, err = value.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := fixture.service.facts.(fakeFacts)
+	approval, err := cloudapproval.NewApprovalV1(plan, facts.approval.ApprovalID, strings.Repeat("e", 48), "device-1", now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
+	fixture.service.facts = fakeFacts{plan: plan, approval: approval}
+
+	operation, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery := operation.InstallerDelivery
+	if delivery == nil || len(delivery.SignedPlan.Plan.Volumes) != 1 || len(delivery.SignedPlan.Plan.Commands) != 1 ||
+		operation.InstallerRootTrust == nil || len(operation.InstallerRootTrust.ArtifactManifest.Manifest.Volumes) != 1 {
+		t.Fatalf("installer delivery omitted volume binding: %+v", delivery)
+	}
+	volume := delivery.SignedPlan.Plan.Volumes[0]
+	command := delivery.SignedPlan.Plan.Commands[0]
+	if volume.Name != "knowledge" || volume.DeviceName != "/dev/sdf" || volume.MountPath != "/srv/knowledge" ||
+		len(command.VolumeRefs) != 1 || command.VolumeRefs[0] != "knowledge" {
+		t.Fatalf("installer volume capability mismatch: volume=%+v command=%+v", volume, command)
+	}
+}
+
+func TestLaunchApprovedPlanStopsBeforeAWSArtifactMutationWhenBootstrapSecretIsNotReady(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x71}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configureInstallerSecretLaunch(t, fixture, issuer, now, "secret_ref:bootstrap/"+uuid.NewString())
+	resolver := &fakeInstallerSecretResolver{err: ErrNotReady}
+	fixture.service.secretResolver = resolver
+
+	if _, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("error=%v", err)
+	}
+	if resolver.calls != 1 || fixture.bundles.calls+fixture.workers.calls+fixture.bootstraps.calls+fixture.resources.calls != 0 {
+		t.Fatalf("unresolved secret reached AWS mutation: resolve=%d bundles=%d workers=%d bootstrap=%d resources=%d",
+			resolver.calls, fixture.bundles.calls, fixture.workers.calls, fixture.bootstraps.calls, fixture.resources.calls)
+	}
+}
+
+func TestLaunchApprovedPlanStagesUploadedBootstrapSecretForArtifactPublisher(t *testing.T) {
+	now := time.Date(2026, 7, 17, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x72}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := "secret_ref:bootstrap/" + uuid.NewString()
+	configureInstallerSecretLaunch(t, fixture, issuer, now, reference)
+	content := &fakeInstallerSecretContent{}
+	resolver := &fakeInstallerSecretResolver{content: content}
+	fixture.service.secretResolver = resolver
+
+	// The generic fake publisher intentionally does not manufacture a signed
+	// AWS SecretSource. Reaching it with the resolved content is the boundary
+	// under test; production publication/read-back is covered in awsartifact.
+	if _, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request); err == nil {
+		t.Fatal("fake publisher unexpectedly produced a complete signed secret source")
+	}
+	if fixture.bundles.calls != 1 || resolver.calls != 1 || content.materializeCalls != 1 || content.commitCalls != 1 ||
+		len(fixture.bundles.compiled.InstallerSecrets) != 1 || fixture.bundles.compiled.InstallerSecrets[0].SecretRef != reference {
+		t.Fatalf("staging resolve=%d bundle=%d materialize=%d commit=%d secrets=%#v", resolver.calls, fixture.bundles.calls,
+			content.materializeCalls, content.commitCalls, fixture.bundles.compiled.InstallerSecrets)
+	}
+}
+
+func bindPersistentVolume(t *testing.T, fixture launchFixture) (cloudapproval.PlanV1, recipe.RecipeV1, cloudapproval.ApprovalV1) {
+	t.Helper()
+	recipeValue := fixture.service.recipes.(fakeRecipes).value
+	recipeValue.VolumeSlots = []recipe.VolumeSlotRequirementV1{{
+		SlotID: "knowledge", Purpose: "persistent knowledge index", MountPath: "/srv/knowledge", Persistent: true, EncryptionRequired: true,
+	}}
+	digest, err := recipeValue.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := fixture.service.facts.(fakeFacts)
+	plan := facts.plan
+	plan.Status, plan.Revision = cloudapproval.PlanReadyForConfirmation, 1
+	plan.Recipe.Digest = digest
+	kmsAlias, err := awsfoundation.KMSAliasForAgent(plan.AgentInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.ResourceScope.VolumeScopes = []cloudapproval.VolumeScopeV1{{
+		SlotID: "knowledge", SizeGiB: 80, VolumeType: "gp3", IOPS: 3_000, ThroughputMiBPS: 125,
+		Encrypted: true, KMSKeyID: kmsAlias, DeviceName: "/dev/sdf", MountPath: "/srv/knowledge",
+		Persistent: true, Disposition: cloudapproval.VolumeDeleteWithDeployment,
+	}}
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := cloudapproval.NewApprovalV1(plan, facts.approval.ApprovalID, strings.Repeat("f", 48), "device-1", plan.Quote.ValidUntil.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
+	fixture.service.facts = fakeFacts{plan: plan, approval: approval}
+	fixture.service.recipes = fakeRecipes{value: recipeValue}
+	return plan, recipeValue, approval
+}
+
+func bindOperationInstallerVolume(t *testing.T, operation *Operation, plan cloudapproval.PlanV1, approval cloudapproval.ApprovalV1, now time.Time) {
+	t.Helper()
+	if operation == nil || len(plan.ResourceScope.VolumeScopes) != 1 {
+		t.Fatal("volume operation fixture is incomplete")
+	}
+	volume := plan.ResourceScope.VolumeScopes[0]
+	binding := installer.BindingV1{
+		AgentInstanceID: plan.AgentInstanceID, DeploymentID: operation.DeploymentID, TaskID: operation.TaskID,
+		PlanHash: approval.PlanHash, ApprovalID: approval.ApprovalID, RecipeDigest: plan.Recipe.Digest,
+	}
+	artifact := installer.ArtifactV1{
+		Name: "installer", SHA256: testDigest("a"), SizeBytes: 32, TargetPath: installer.PreinstalledArtifactRoot + "/installer",
+	}
+	installerPlan := installer.InstallerPlanV1{
+		SchemaVersion: installer.PlanSchemaV1, Binding: binding, Artifacts: []installer.ArtifactV1{artifact},
+		Volumes: []installer.VolumeV1{{
+			Name: volume.SlotID, DeviceName: volume.DeviceName, MountPath: volume.MountPath, ReadOnly: volume.ReadOnly,
+			Persistent: volume.Persistent, Disposition: string(volume.Disposition), SizeGiB: volume.SizeGiB,
+		}},
+		Commands: []installer.CommandV1{{
+			CommandID: "install", Argv: []string{artifact.TargetPath}, WorkingDirectory: installer.PreinstalledArtifactRoot,
+			TimeoutSeconds: 30, ArtifactRefs: []string{artifact.Name}, VolumeRefs: []string{volume.SlotID},
+		}},
+		ExpiresAt: now.Add(time.Hour).Format(time.RFC3339Nano),
+	}
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x58}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	delivery, err := issuer.Issue(installerPlan, installer.DaemonConfigV1{
+		SchemaVersion: installer.DaemonConfigSchema, Binding: binding, TargetRoot: installer.PreinstalledArtifactRoot,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := delivery.RootTrustMaterial(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := installerbootstrap.NewRootTrustMaterial(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation.InstallerRootTrust = &material
+	operation.InstallerArtifacts = []installerbootstrap.ArtifactSourceV1{{
+		SchemaVersion: installerbootstrap.ArtifactSourceSchemaV1, Name: artifact.Name, Bucket: "agent-bucket",
+		Key: "deployments/" + operation.DeploymentID + "/artifacts/" + artifact.Name, VersionID: "version-1",
+		KMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-4333-8444-555555555555",
+		SHA256:    artifact.SHA256, SizeBytes: artifact.SizeBytes, TargetPath: artifact.TargetPath, RecipeDigest: binding.RecipeDigest,
+	}}
+}
+
 type launchFixture struct {
 	service     *Service
 	caller      cloudapp.MutationScope
@@ -358,6 +586,40 @@ func configureInstallerLaunch(t *testing.T, fixture launchFixture, issuer *insta
 	fixture.service.installerTrust = issuer
 }
 
+func configureInstallerSecretLaunch(t *testing.T, fixture launchFixture, issuer *installer.TrustIssuer, now time.Time, reference string) {
+	t.Helper()
+	configureInstallerLaunch(t, fixture, issuer, now, time.Minute, 10*time.Minute, cloudapproval.RetentionScopeV1{
+		Class: cloudapproval.RetentionEphemeral, AutoDestroy: true, GracePeriodSeconds: 1800, MaxLifetimeSeconds: 86400,
+	})
+	value := fixture.service.recipes.(fakeRecipes).value
+	value.SecretSlots = []recipe.SecretSlotRequirementV1{{
+		SlotID: "model-token", Purpose: "model token", Delivery: recipe.SecretDeliveryFile,
+		TargetPath: "/etc/dirextalk-service-secrets/model-token", FileMode: 0o400,
+	}}
+	value.Install.Installer.Commands[0].SecretSlotRefs = []string{"model-token"}
+	digest, err := value.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := fixture.service.facts.(fakeFacts)
+	plan := facts.plan
+	plan.Status, plan.Revision = cloudapproval.PlanReadyForConfirmation, 1
+	plan.Recipe.Digest = digest
+	plan.SecretScope = []cloudapproval.SecretReferenceV1{{SecretRef: reference, Purpose: "model token", Delivery: recipe.SecretDeliveryFile}}
+	scopeDigest, err := plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Quote.ScopeDigest = scopeDigest
+	approval, err := cloudapproval.NewApprovalV1(plan, facts.approval.ApprovalID, strings.Repeat("e", 48), "device-1", now.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
+	fixture.service.facts = fakeFacts{plan: plan, approval: approval}
+	fixture.service.recipes = fakeRecipes{value: value}
+}
+
 func launchRecipe(now time.Time) recipe.RecipeV1 {
 	return recipe.RecipeV1{
 		SchemaVersion: recipe.SchemaV1, RecipeID: uuid.NewString(), Name: "Validation Worker", Maturity: recipe.MaturityExperimental,
@@ -410,7 +672,38 @@ func (tasks *fakeTasks) Create(context.Context, task.MutationScope, task.CreateC
 	return tasks.task, nil
 }
 
-type fakeBundles struct{ calls int }
+type fakeBundles struct {
+	calls    int
+	compiled CompiledBundles
+}
+
+type fakeInstallerSecretResolver struct {
+	content InstallerSecretContent
+	err     error
+	calls   int
+}
+
+func (resolver *fakeInstallerSecretResolver) Resolve(context.Context, InstallerSecretResolveRequest) (InstallerSecretContent, error) {
+	resolver.calls++
+	return resolver.content, resolver.err
+}
+
+type fakeInstallerSecretContent struct {
+	materializeCalls int
+	commitCalls      int
+}
+
+func (content *fakeInstallerSecretContent) Materialize(_ context.Context, write func([]byte) error) error {
+	content.materializeCalls++
+	value := []byte("secret-canary")
+	defer clear(value)
+	return write(value)
+}
+
+func (content *fakeInstallerSecretContent) Commit(_ context.Context, verify func() error) error {
+	content.commitCalls++
+	return verify()
+}
 
 type fakeArtifactResolver struct{}
 
@@ -439,8 +732,20 @@ type readSeekCloser struct{ *bytes.Reader }
 
 func (*readSeekCloser) Close() error { return nil }
 
-func (publisher *fakeBundles) PublishBundles(_ context.Context, connection cloudapp.Connection, deploymentID string, compiled CompiledBundles, _ []string) (PublishedBundles, error) {
+func (publisher *fakeBundles) PublishBundles(ctx context.Context, connection cloudapp.Connection, deploymentID string, compiled CompiledBundles, _ []string) (PublishedBundles, error) {
 	publisher.calls++
+	publisher.compiled = compiled
+	for _, secret := range compiled.InstallerSecrets {
+		if secret.Content == nil {
+			return PublishedBundles{}, ErrNotReady
+		}
+		if err := secret.Content.Materialize(ctx, func([]byte) error { return nil }); err != nil {
+			return PublishedBundles{}, err
+		}
+		if err := secret.Content.Commit(ctx, func() error { return nil }); err != nil {
+			return PublishedBundles{}, err
+		}
+	}
 	recipeBytes, executionBytes := compiled.RecipeBytes, compiled.ExecutionBytes
 	recipeDigest, executionDigest := sha256.Sum256(recipeBytes), sha256.Sum256(executionBytes)
 	base := "s3://agent-bucket/workers/" + deploymentID + "/"

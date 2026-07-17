@@ -18,6 +18,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -46,6 +47,7 @@ type Runner struct {
 	Control           ControlClient
 	Objects           ObjectStore
 	Registry          *Registry
+	Logs              LogSink
 	HeartbeatInterval time.Duration
 	RetryDelay        time.Duration
 }
@@ -142,6 +144,19 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 		}
 		heartbeatDone <- heartbeatErr
 	}()
+	if runner.Logs != nil {
+		if err := runner.emitLog(executionContext, assignment, LogExecutionStarted, "", ""); err != nil {
+			stopHeartbeat()
+			<-heartbeatDone
+			return Result{}, err
+		}
+		logRef, err := scopedLogRef(assignment.GetAccess(), assignment.GetAttempt(), assignment.GetLeaseEpoch())
+		if err != nil || lease.recordLog(executionContext, logRef) != nil {
+			stopHeartbeat()
+			<-heartbeatDone
+			return Result{}, errors.New("record Worker milestone log scope")
+		}
+	}
 
 	completedActions, resultObject, executionErr := runner.execute(executionContext, assignment, lease)
 	resultRef := ""
@@ -176,6 +191,9 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 
 	completeContext, cancelComplete := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancelComplete()
+	if err := runner.emitLog(completeContext, assignment, LogExecutionFinished, "", logOutcome(outcome)); err != nil {
+		return Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}, err
+	}
 	if err := lease.complete(completeContext, outcome, resultObject); err != nil {
 		return Result{Outcome: outcome, ResultRef: resultRef, CompletedActions: completedActions}, fmt.Errorf("complete Worker execution: %w", err)
 	}
@@ -251,11 +269,18 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		if err != nil {
 			return completed, nil, err
 		}
+		if err := runner.emitLog(ctx, assignment, LogActionStarted, action.ID, ""); err != nil {
+			return completed, nil, err
+		}
 		actionContext, cancel := context.WithTimeout(ctx, time.Duration(action.TimeoutSeconds)*time.Second)
 		_, actionErr := runner.Registry.Execute(actionContext, action)
 		cancel()
 		if actionErr != nil {
+			_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
 			return completed, nil, fmt.Errorf("typed action %s failed: %w", action.ID, actionErr)
+		}
+		if err := runner.emitLog(ctx, assignment, LogActionSucceeded, action.ID, ""); err != nil {
+			return completed, nil, err
 		}
 		checkpoint := checkpointV1{
 			SchemaVersion: checkpointSchemaV1, DeploymentID: assignment.GetDeploymentId(), WorkerID: assignment.GetWorkerId(),
@@ -313,6 +338,46 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		return completed, nil, errors.New("Worker object store returned a mismatched result claim")
 	}
 	return completed, &resultObject, nil
+}
+
+func (runner Runner) emitLog(ctx context.Context, assignment *agentv1.WorkerAssignment, kind LogKind, actionID string, outcome LogOutcome) error {
+	if runner.Logs == nil {
+		return nil
+	}
+	if assignment == nil {
+		return errors.New("write Worker milestone log")
+	}
+	event := LogEventV1{
+		SchemaVersion: WorkerLogSchemaV1,
+		EventID:       uuid.NewString(),
+		DeploymentID:  assignment.GetDeploymentId(),
+		WorkerID:      assignment.GetWorkerId(),
+		Attempt:       assignment.GetAttempt(),
+		LeaseEpoch:    assignment.GetLeaseEpoch(),
+		Kind:          kind,
+		ActionID:      actionID,
+		Outcome:       outcome,
+		OccurredAt:    time.Now().UTC(),
+	}
+	if err := runner.Logs.Emit(ctx, event); err != nil {
+		return errors.New("write Worker milestone log")
+	}
+	return nil
+}
+
+func logOutcome(value agentv1.WorkerOutcome) LogOutcome {
+	switch value {
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED:
+		return LogOutcomeSucceeded
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_CANCELED:
+		return LogOutcomeCanceled
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_TIMED_OUT:
+		return LogOutcomeTimedOut
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_INTERRUPTED:
+		return LogOutcomeInterrupted
+	default:
+		return LogOutcomeFailed
+	}
 }
 
 type checkpointV1 struct {
@@ -501,6 +566,24 @@ func checkpointRefWithinScope(access *agentv1.WorkerAccessScope, reference strin
 	return key != name && name != "" && !strings.Contains(name, "/") && !strings.Contains(name, "..")
 }
 
+func scopedLogRef(access *agentv1.WorkerAccessScope, attempt int32, leaseEpoch int64) (string, error) {
+	if access == nil || attempt < 1 || leaseEpoch < 1 {
+		return "", errors.New("Worker log scope is invalid")
+	}
+	group := strings.TrimSpace(access.GetLogGroup())
+	prefix := strings.Trim(strings.TrimSpace(access.GetLogPrefix()), "/")
+	if group == "" || prefix == "" || len(group) > 192 || len(prefix) > 512 || strings.ContainsAny(group, "/:*?#\r\n") || strings.Contains(prefix, "..") ||
+		strings.ContainsAny(prefix, ":*?#\r\n") || !workerObjectNamePattern.MatchString(group) || security.ContainsLikelySecret(group) || security.ContainsLikelySecret(prefix) {
+		return "", errors.New("Worker log scope is invalid")
+	}
+	reference := fmt.Sprintf("cloudwatch://%s/%s/milestones-a%d-e%d", group, prefix, attempt, leaseEpoch)
+	parsed, err := url.Parse(reference)
+	if err != nil || parsed.Scheme != "cloudwatch" || parsed.Host != group || parsed.Path == "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return "", errors.New("Worker log scope is invalid")
+	}
+	return reference, nil
+}
+
 type leaseState struct {
 	mu                sync.Mutex
 	control           ControlClient
@@ -579,6 +662,27 @@ func (state *leaseState) recordCheckpoint(ctx context.Context, object worker.Obj
 	}
 	if response.GetRevision() <= state.revision {
 		return errors.New("Worker checkpoint returned an invalid revision")
+	}
+	state.revision = response.GetRevision()
+	return nil
+}
+
+func (state *leaseState) recordLog(ctx context.Context, reference string) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	request := &agentv1.WorkerControlServiceRecordEvidenceRequest{
+		DeploymentId: state.deploymentID, WorkerId: state.workerID, LeaseEpoch: state.epoch,
+		IdempotencyKey: uuid.NewString(), ExpectedRevision: state.revision,
+		Kind: agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_LOG, Ref: reference,
+	}
+	response, err := retryCall(ctx, state.retryDelay, func() (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
+		return state.control.RecordEvidence(ctx, state.token, request)
+	})
+	if err != nil {
+		return err
+	}
+	if response.GetRevision() <= state.revision {
+		return errors.New("Worker log scope returned an invalid revision")
 	}
 	state.revision = response.GetRevision()
 	return nil

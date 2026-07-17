@@ -30,7 +30,9 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("CreateImageFromOwnedBuilder"), []byte("CreateImageOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
 		[]byte("ec2:CreateImage"), []byte("ec2:DeregisterImage"), []byte("s3:GetBucketVersioning"), []byte("s3:GetEncryptionConfiguration"),
 		[]byte("s3:ListBucketVersions"), []byte("s3:GetObjectVersion"), []byte("s3:DeleteObjectVersion"),
-		[]byte("WorkerInstallerArtifacts"), []byte("${ArtifactBucket.Arn}/deployments/*/artifacts/*"),
+		[]byte("WorkerInstallerArtifacts"), []byte("${ArtifactBucket.Arn}/deployments/*/artifacts/*"), []byte("s3:ExistingObjectTag/dirextalk:worker_principal"),
+		[]byte("BindExactInstallerArtifactVersions"), []byte("s3:GetObjectVersionTagging"), []byte("s3:PutObjectVersionTagging"),
+		[]byte("WorkerTypedMilestoneLogs"), []byte("${WorkerLogGroup.Arn}:log-stream:*"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
 	} {
 		if !bytes.Contains(template, required) {
@@ -39,6 +41,66 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 	}
 	if bytes.Contains(template, []byte("log-stream:${!aws:userid}")) {
 		t.Fatal("Worker log stream policy uses an invalid STS aws:userid stream name")
+	}
+}
+
+func TestFoundationTemplateWorkerInstallerArtifactsRequireExactBoundPrincipal(t *testing.T) {
+	template := testFoundationTemplate(t)
+	for name, change := range map[string][2]string{
+		"missing object tag condition": {"s3:ExistingObjectTag/dirextalk:worker_principal", "s3:ExistingObjectTag/unrelated"},
+		"wrong principal condition":    {"${!aws:userid}", "${AWS::AccountId}"},
+		"broadens deployment path":     {"${ArtifactBucket.Arn}/deployments/*/artifacts/*", "${ArtifactBucket.Arn}/*"},
+		"adds tag write to worker":     {"- s3:GetObjectVersion", "- s3:GetObjectVersion\n                  - s3:PutObjectTagging"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := mutateFoundationStatement(t, template, "WorkerInstallerArtifacts", change[0], change[1])
+			if err := ValidateTemplate(mutated); err == nil {
+				t.Fatalf("unsafe Worker installer artifact policy %s was accepted", name)
+			}
+		})
+	}
+	mutated := mutateFoundationStatement(t, template, "WorkerEnvelopeKMS", "- kms:Decrypt", "- s3:PutObjectTagging")
+	if err := ValidateTemplate(mutated); err == nil {
+		t.Fatal("a separate Worker object-tag write statement was accepted")
+	}
+}
+
+func TestFoundationTemplateControlArtifactBinderIsVersionedAndNarrow(t *testing.T) {
+	statements := controlRuntimeStatements(t)
+	binding, ok := statements["BindExactInstallerArtifactVersions"]
+	if !ok || !sameStrings(stringValues(binding["Action"]), []string{
+		"s3:GetObjectTagging", "s3:GetObjectVersionTagging", "s3:PutObjectTagging", "s3:PutObjectVersionTagging",
+	}) || !sameStrings(templateResourceStrings(binding["Resource"]), []string{"${ArtifactBucket.Arn}/deployments/*/artifacts/*"}) || binding["Condition"] != nil {
+		t.Fatalf("control artifact binding policy is not exact-version scoped: %#v", binding)
+	}
+	template := testFoundationTemplate(t)
+	for name, change := range map[string][2]string{
+		"drops version tag write": {"- s3:PutObjectVersionTagging", "- s3:GetObject"},
+		"broadens object path":    {"${ArtifactBucket.Arn}/deployments/*/artifacts/*", "${ArtifactBucket.Arn}/*"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := mutateFoundationStatement(t, template, "BindExactInstallerArtifactVersions", change[0], change[1])
+			if err := ValidateTemplate(mutated); err == nil {
+				t.Fatalf("unsafe control artifact binding policy %s was accepted", name)
+			}
+		})
+	}
+}
+
+func TestFoundationTemplateWorkerLogsAreAppendOnlyAndGroupScoped(t *testing.T) {
+	template := testFoundationTemplate(t)
+	for name, change := range map[string][2]string{
+		"read access":      {"- logs:PutLogEvents", "- logs:GetLogEvents"},
+		"all groups":       {"${WorkerLogGroup.Arn}:log-stream:*", "*"},
+		"invalid userid":   {"${WorkerLogGroup.Arn}:log-stream:*", "${WorkerLogGroup.Arn}:log-stream:${!aws:userid}"},
+		"missing creation": {"- logs:CreateLogStream\n", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := mutateFoundationStatement(t, template, "WorkerTypedMilestoneLogs", change[0], change[1])
+			if err := ValidateTemplate(mutated); err == nil {
+				t.Fatalf("unsafe Worker log policy %s was accepted", name)
+			}
+		})
 	}
 }
 

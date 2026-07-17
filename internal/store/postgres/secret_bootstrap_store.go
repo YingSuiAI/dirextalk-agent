@@ -37,6 +37,8 @@ type SecretBootstrapStore struct {
 var _ secretbootstrap.Store = (*SecretBootstrapStore)(nil)
 var _ secretbootstrap.AtomicSessionStore = (*SecretBootstrapStore)(nil)
 var _ secretbootstrap.AtomicIdempotentSessionStore = (*SecretBootstrapStore)(nil)
+var _ secretbootstrap.AtomicUploadWakeStore = (*SecretBootstrapStore)(nil)
+var _ secretbootstrap.UploadedSessionStore = (*SecretBootstrapStore)(nil)
 
 func NewSecretBootstrapStore(pool *pgxpool.Pool, masterKey []byte) (*SecretBootstrapStore, error) {
 	if pool == nil || len(masterKey) != 32 {
@@ -226,6 +228,40 @@ func validateBootstrapCreate(record secretbootstrap.Record, requireHandle bool) 
 
 func (store *SecretBootstrapStore) Get(ctx context.Context, sessionID string) (secretbootstrap.Record, error) {
 	return readBootstrapRecord(ctx, store.pool, sessionID, "")
+}
+
+func (store *SecretBootstrapStore) FindUploaded(ctx context.Context, creatorClientID string, binding secretbootstrap.BindingV1, now time.Time) (secretbootstrap.Record, error) {
+	if store == nil || store.pool == nil || secretbootstrap.ValidateClientID(creatorClientID) != nil ||
+		strings.TrimSpace(binding.AgentInstanceID) == "" || strings.TrimSpace(binding.OwnerID) == "" ||
+		strings.TrimSpace(binding.Purpose) == "" || strings.TrimSpace(binding.TargetID) == "" || now.IsZero() {
+		return secretbootstrap.Record{}, secretbootstrap.ErrInvalidContext
+	}
+	rows, err := store.pool.Query(ctx, `SELECT `+bootstrapRecordColumns+` FROM secret_bootstrap_sessions
+		WHERE creator_client_id=$1 AND agent_instance_id=$2 AND owner_id=$3 AND purpose=$4 AND target_id=$5
+		  AND status='uploaded' AND expires_at>$6
+		ORDER BY created_at, session_id LIMIT 2`, creatorClientID, binding.AgentInstanceID, binding.OwnerID, binding.Purpose, binding.TargetID, now.UTC())
+	if err != nil {
+		return secretbootstrap.Record{}, err
+	}
+	defer rows.Close()
+	var matched *secretbootstrap.Record
+	for rows.Next() {
+		record, scanErr := scanBootstrapRecord(rows)
+		if scanErr != nil {
+			return secretbootstrap.Record{}, scanErr
+		}
+		if matched != nil {
+			return secretbootstrap.Record{}, secretbootstrap.ErrStateConflict
+		}
+		matched = &record
+	}
+	if err := rows.Err(); err != nil {
+		return secretbootstrap.Record{}, err
+	}
+	if matched == nil {
+		return secretbootstrap.Record{}, secretbootstrap.ErrNotFound
+	}
+	return *matched, nil
 }
 
 func (store *SecretBootstrapStore) CommitUpload(ctx context.Context, sessionID string, expectedRevision uint64, uploadTokenHash [32]byte, envelope secretbootstrap.EnvelopeV1, now time.Time) (secretbootstrap.Record, error) {

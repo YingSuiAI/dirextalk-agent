@@ -684,7 +684,7 @@ func (service *Service) record(ctx context.Context, request LeasedRequest, kind,
 		case "evidence":
 			allowed = deployment.Access.permitsS3(ref, deployment.Access.EvidencePrefix)
 		case "log":
-			allowed = deployment.Access.permitsLog(ref)
+			allowed = deployment.Access.permitsLog(ref, deployment.Lease.Attempt, deployment.Lease.Epoch)
 		}
 		if !allowed {
 			return fmt.Errorf("%w: %s reference is outside the deployment scope", ErrInvalid, kind)

@@ -48,6 +48,10 @@ type LifecycleFactory interface {
 	ForConnection(context.Context, cloudapp.Connection) (ResourceLifecycle, error)
 }
 
+type DeploymentSecretLifecycle interface {
+	Destroy(context.Context, cloudapp.Connection, Operation) error
+}
+
 type ManualDestroyScopeReader interface {
 	CurrentScope(context.Context, string, string) (clouddestroy.ScopeV1, error)
 }
@@ -61,6 +65,7 @@ type EphemeralDestroyConfig struct {
 	Connections     ConnectionReader
 	Tasks           TaskFactReader
 	Lifecycles      LifecycleFactory
+	Secrets         DeploymentSecretLifecycle
 	ManualDestroy   clouddestroy.Repository
 	ManualScopes    ManualDestroyScopeReader
 	Now             func() time.Time
@@ -78,6 +83,7 @@ type EphemeralDestroyController struct {
 	connections     ConnectionReader
 	tasks           TaskFactReader
 	lifecycles      LifecycleFactory
+	secrets         DeploymentSecretLifecycle
 	manualDestroy   clouddestroy.Repository
 	manualScopes    ManualDestroyScopeReader
 	manualWake      chan struct{}
@@ -95,7 +101,7 @@ func NewEphemeralDestroyController(config EphemeralDestroyConfig) (*EphemeralDes
 		agentInstanceID: agentID.String(), interval: config.PollInterval, resources: config.Resources,
 		launches: config.Launches, facts: config.Facts, connections: config.Connections,
 		tasks: config.Tasks, lifecycles: config.Lifecycles, manualDestroy: config.ManualDestroy,
-		manualScopes: config.ManualScopes, manualWake: make(chan struct{}, 1), now: config.Now,
+		secrets: config.Secrets, manualScopes: config.ManualScopes, manualWake: make(chan struct{}, 1), now: config.Now,
 	}, nil
 }
 
@@ -203,6 +209,15 @@ func (controller *EphemeralDestroyController) executeManualDestroy(ctx context.C
 	connection, err := controller.connections.LoadConnection(ctx, operation.Challenge.Scope.OwnerID, operation.Challenge.Scope.ConnectionID)
 	if err != nil || connection.ConnectionID != operation.Challenge.Scope.ConnectionID || connection.OwnerID != operation.Challenge.Scope.OwnerID {
 		return controller.blockManualDestroy(ctx, operation, "connection_unavailable", "approved cloud connection is unavailable")
+	}
+	launch, err := controller.launches.GetByDeployment(ctx, operation.Challenge.Scope.DeploymentID)
+	if err != nil || launch.Launch.OwnerID != operation.Challenge.Scope.OwnerID || launch.ConnectionID != connection.ConnectionID {
+		return controller.blockManualDestroy(ctx, operation, "secret_scope_unavailable", "deployment secret scope could not be verified")
+	}
+	if len(launch.InstallerSecrets) != 0 {
+		if controller.secrets == nil || controller.secrets.Destroy(ctx, connection, launch) != nil {
+			return controller.blockManualDestroy(ctx, operation, "secret_destroy_blocked", "deployment secrets are not yet verified deleted")
+		}
 	}
 	lifecycle, err := controller.lifecycles.ForConnection(ctx, connection)
 	if err != nil || lifecycle == nil {
@@ -342,6 +357,14 @@ func (controller *EphemeralDestroyController) reconcile(ctx context.Context, dep
 	}
 	if lifecycle == nil {
 		return ErrUnavailable
+	}
+	if len(operation.InstallerSecrets) != 0 {
+		if controller.secrets == nil {
+			return ErrUnavailable
+		}
+		if err := controller.secrets.Destroy(ctx, connection, operation); err != nil {
+			return err
+		}
 	}
 	scheduled, err := lifecycle.ScheduleDestroy(ctx, deploymentID, operation.Launch.OwnerID)
 	if errors.Is(err, resource.ErrManaged) {

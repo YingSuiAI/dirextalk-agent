@@ -291,6 +291,9 @@ func validLaunchTransition(current, next cloudexecution.Operation) bool {
 		!slices.Equal(current.InstallerCommandIDs, next.InstallerCommandIDs) || !reflect.DeepEqual(current.InstallerRootTrust, next.InstallerRootTrust)) {
 		return false
 	}
+	if len(current.InstallerSecrets) != 0 && !reflect.DeepEqual(current.InstallerSecrets, next.InstallerSecrets) {
+		return false
+	}
 	if current.State == cloudexecution.StateActive || current.State == cloudexecution.StateDestroyBlocked {
 		return current.State == next.State && bytes.Equal(current.RequestHash[:], next.RequestHash[:])
 	}
@@ -309,6 +312,11 @@ func validLaunchTransition(current, next cloudexecution.Operation) bool {
 }
 
 func sameLaunchIntent(left, right cloudexecution.Intent) bool {
+	// SecretClientID records the original service identity solely so the
+	// internal recovery dispatcher can reopen that service's encrypted
+	// bootstrap session. Recovery recomputes the intent under the stable
+	// internal launcher identity, so this auxiliary authorization coordinate is
+	// deliberately not part of provider/idempotency intent equality.
 	return left.OperationID == right.OperationID && left.Caller == right.Caller && left.Launch == right.Launch &&
 		left.ConnectionID == right.ConnectionID && left.ApprovedPlanHash == right.ApprovedPlanHash && left.TaskStepID == right.TaskStepID && left.DeploymentID == right.DeploymentID &&
 		subtle.ConstantTimeCompare(left.RequestHash[:], right.RequestHash[:]) == 1

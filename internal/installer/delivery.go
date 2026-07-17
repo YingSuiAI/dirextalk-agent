@@ -16,6 +16,7 @@ const (
 	DeliverySchemaV1          = "dirextalk.agent.installer-delivery/v1"
 	ArtifactManifestSchemaV1  = "dirextalk.agent.installer-artifact-manifest/v1"
 	PreinstalledArtifactRoot  = "/usr/local/share/dirextalk-worker/artifacts"
+	PreinstalledSecretRoot    = "/etc/dirextalk-service-secrets"
 	maximumLeaseGrantDuration = 30 * time.Minute
 )
 
@@ -47,6 +48,8 @@ type ArtifactManifestV1 struct {
 	SchemaVersion string       `json:"schema_version"`
 	Binding       BindingV1    `json:"binding"`
 	Artifacts     []ArtifactV1 `json:"artifacts"`
+	Secrets       []SecretV1   `json:"secrets,omitempty"`
+	Volumes       []VolumeV1   `json:"volumes,omitempty"`
 }
 
 type SignedArtifactManifestV1 struct {
@@ -96,6 +99,8 @@ func (issuer *TrustIssuer) Issue(plan InstallerPlanV1, config DaemonConfigV1, no
 	manifest := ArtifactManifestV1{
 		SchemaVersion: ArtifactManifestSchemaV1, Binding: plan.Binding,
 		Artifacts: append([]ArtifactV1(nil), plan.Artifacts...),
+		Secrets:   append([]SecretV1(nil), plan.Secrets...),
+		Volumes:   append([]VolumeV1(nil), plan.Volumes...),
 	}
 	manifestBytes, err := canonical.Marshal(manifest)
 	if err != nil {
@@ -186,7 +191,9 @@ func ValidateDeliveryAt(delivery DeliveryV1, now time.Time) error {
 		if err := ValidateRootTrustMaterial(RootTrustMaterialV1{
 			TrustID: delivery.TrustID, PublicKey: delivery.PublicKey, ArtifactManifest: delivery.ArtifactManifest,
 		}); err != nil || delivery.ArtifactManifest.Manifest.Binding != delivery.Config.Binding ||
-			!slices.Equal(delivery.ArtifactManifest.Manifest.Artifacts, delivery.SignedPlan.Plan.Artifacts) {
+			!slices.Equal(delivery.ArtifactManifest.Manifest.Artifacts, delivery.SignedPlan.Plan.Artifacts) ||
+			!slices.Equal(delivery.ArtifactManifest.Manifest.Secrets, delivery.SignedPlan.Plan.Secrets) ||
+			!slices.Equal(delivery.ArtifactManifest.Manifest.Volumes, delivery.SignedPlan.Plan.Volumes) {
 			return errorf(CodeInvalidSignature, "installer artifact manifest is invalid")
 		}
 	}
@@ -293,6 +300,19 @@ func ValidateRootTrustMaterial(material RootTrustMaterialV1) error {
 		}
 		seen[artifact.Name] = struct{}{}
 	}
+	seenSecrets := make(map[string]struct{}, len(signed.Manifest.Secrets))
+	for _, secret := range signed.Manifest.Secrets {
+		if validateSecretDeclaration(secret) != nil {
+			return errorf(CodeInvalidRequest, "installer secret declaration is invalid")
+		}
+		if _, exists := seenSecrets[secret.SecretRef]; exists {
+			return errorf(CodeInvalidRequest, "installer secret declaration is duplicated")
+		}
+		seenSecrets[secret.SecretRef] = struct{}{}
+	}
+	if err := validateVolumes(signed.Manifest.Volumes); err != nil {
+		return errorf(CodeInvalidRequest, "installer volume declaration is invalid")
+	}
 	payload, err := canonical.Marshal(signed.Manifest)
 	if err != nil {
 		return errorf(CodeInvalidSignature, "canonicalize installer artifact manifest")
@@ -310,6 +330,8 @@ func cloneArtifactManifest(value SignedArtifactManifestV1) SignedArtifactManifes
 		Manifest: ArtifactManifestV1{
 			SchemaVersion: value.Manifest.SchemaVersion, Binding: value.Manifest.Binding,
 			Artifacts: append([]ArtifactV1(nil), value.Manifest.Artifacts...),
+			Secrets:   append([]SecretV1(nil), value.Manifest.Secrets...),
+			Volumes:   append([]VolumeV1(nil), value.Manifest.Volumes...),
 		},
 		SignerKeyID: value.SignerKeyID, Signature: append([]byte(nil), value.Signature...),
 	}
@@ -360,7 +382,7 @@ func deliveryDigest(delivery DeliveryV1) (string, error) {
 }
 
 func hasArtifactManifest(value SignedArtifactManifestV1) bool {
-	return value.Manifest.SchemaVersion != "" || value.SignerKeyID != "" || len(value.Signature) != 0 || len(value.Manifest.Artifacts) != 0
+	return value.Manifest.SchemaVersion != "" || value.SignerKeyID != "" || len(value.Signature) != 0 || len(value.Manifest.Artifacts) != 0 || len(value.Manifest.Secrets) != 0 || len(value.Manifest.Volumes) != 0
 }
 
 func cloneSignedPlan(value SignedInstallerPlanV1) (SignedInstallerPlanV1, error) {

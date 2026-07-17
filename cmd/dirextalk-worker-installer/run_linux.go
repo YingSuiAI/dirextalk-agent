@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
 const (
@@ -100,8 +101,14 @@ func runBootstrap() error {
 	if err != nil {
 		return err
 	}
-	service, err := installerbootstrap.NewArtifactService(
+	secretDownloader, err := installerbootstrap.NewSecretsDownloader(secretsmanager.NewFromConfig(configuration))
+	if err != nil {
+		return err
+	}
+	service, err := installerbootstrap.NewArtifactSecretAndVolumeService(
 		source, installerbootstrap.NewAtomicTrustMaterializer(), downloader, installerbootstrap.NewAtomicArtifactMaterializer(),
+		installerbootstrap.NewLinuxVolumeMaterializer(),
+		secretDownloader, installerbootstrap.NewAtomicSecretMaterializer(),
 		installerbootstrap.NewSystemdSocketController(), installerbootstrap.DefaultTrustFile,
 	)
 	if err != nil {

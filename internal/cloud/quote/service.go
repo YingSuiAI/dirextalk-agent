@@ -49,6 +49,9 @@ func (s *Service) Quote(ctx context.Context, request RequestV1, boundRecipe reci
 		if err := validateMeetsRecipe(scope.Resource, boundRecipe.Requirements); err != nil {
 			return QuoteV1{}, fmt.Errorf("scopes[%d]: %w", index, err)
 		}
+		if err := ValidateVolumeScopesForRecipe(scope.Resource.VolumeScopes, boundRecipe, scope.Retention); err != nil {
+			return QuoteV1{}, fmt.Errorf("scopes[%d]: %w", index, err)
+		}
 	}
 	if err := validateSpotQualification(request, boundRecipe, recipeDigest); err != nil {
 		return QuoteV1{}, err
@@ -139,6 +142,12 @@ func pricingQuery(request RequestV1) PricingQueryV1 {
 			PublicIPv4:            scope.Network.PublicIPv4,
 			PublicExposure:        scope.Network.PublicExposure,
 		})
+		candidate := &query.Candidates[len(query.Candidates)-1]
+		for _, volume := range resource.VolumeScopes {
+			candidate.DataVolumes = append(candidate.DataVolumes, VolumePricingV1{
+				SizeGiB: volume.SizeGiB, VolumeType: volume.VolumeType, IOPS: volume.IOPS, ThroughputMiBPS: volume.ThroughputMiBPS,
+			})
+		}
 	}
 	query.Zones = sortedStrings(query.Zones)
 	sort.Slice(query.Candidates, func(i, j int) bool {

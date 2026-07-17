@@ -295,6 +295,17 @@ func validateSlots(volumes []VolumeSlotRequirementV1, data []DataSlotRequirement
 		if !ValidSecretDelivery(slot.Delivery) {
 			return fmt.Errorf("%s.delivery is invalid", name)
 		}
+		switch slot.Delivery {
+		case SecretDeliveryFile:
+			if !strings.HasPrefix(slot.TargetPath, "/etc/dirextalk-service-secrets/") || path.Clean(slot.TargetPath) != slot.TargetPath || strings.Contains(slot.TargetPath, "\\") ||
+				(slot.FileMode != 0o400 && slot.FileMode != 0o440) || slot.OwnerUID > 65535 || slot.OwnerGID > 65535 {
+				return fmt.Errorf("%s file delivery requires a read-only dedicated target and owner", name)
+			}
+		case SecretDeliveryEnvironment:
+			if slot.TargetPath != "" || slot.FileMode != 0 || slot.OwnerUID != 0 || slot.OwnerGID != 0 {
+				return fmt.Errorf("%s environment delivery cannot declare a file target", name)
+			}
+		}
 	}
 	return nil
 }

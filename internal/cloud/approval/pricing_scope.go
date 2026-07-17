@@ -36,6 +36,7 @@ func (p PlanV1) PricingScope() cloudquote.ScopeV1 {
 			PurchaseOption:        cloudquote.PurchaseOption(p.ResourceScope.PurchaseOption),
 			WorkerImageID:         p.ResourceScope.WorkerImageID,
 			WorkerImageDigest:     p.ResourceScope.WorkerImageDigest,
+			VolumeScopes:          append([]cloudquote.VolumeScopeV1(nil), p.ResourceScope.VolumeScopes...),
 		},
 		Network: cloudquote.NetworkScopeV1{
 			VPCID:                  p.NetworkScope.VPCID,

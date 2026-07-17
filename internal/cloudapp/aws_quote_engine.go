@@ -2,8 +2,10 @@ package cloudapp
 
 import (
 	"context"
+	"sort"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
@@ -76,6 +78,10 @@ func (engine *AWSBootstrapQuoteEngine) Quote(ctx context.Context, request QuoteE
 	if err != nil {
 		return cloudquote.QuoteV1{}, err
 	}
+	pricingRequest, err = bindVolumeScopesForQuote(engine.agentInstanceID, pricingRequest, boundRecipe)
+	if err != nil {
+		return cloudquote.QuoteV1{}, err
+	}
 	var result cloudquote.QuoteV1
 	_, err = engine.secrets.Inspect(ctx, request.CallerClientID, request.BootstrapSessionID, request.ExpectedSessionRevision, func(payload []byte) error {
 		return awsprovider.ConsumeBootstrapCredentials(payload, func(credentials *awsprovider.Credentials) error {
@@ -128,6 +134,80 @@ func bindWorkerReleaseForQuote(ctx context.Context, agentInstanceID string, rele
 		}
 		resource.WorkerImageID = release.ImageID
 		resource.WorkerImageDigest = release.ImageDigest
+	}
+	return bound, nil
+}
+
+var quoteVolumeDevices = []string{
+	"/dev/sdf", "/dev/sdg", "/dev/sdh", "/dev/sdi", "/dev/sdj", "/dev/sdk",
+	"/dev/sdl", "/dev/sdm", "/dev/sdn", "/dev/sdo", "/dev/sdp",
+}
+
+// bindVolumeScopesForQuote fills only server-owned defaults. A caller may
+// choose size/performance/device values, but it cannot redirect an approved
+// data volume to a KMS key outside the deterministic Foundation boundary.
+func bindVolumeScopesForQuote(agentInstanceID string, request cloudquote.RequestV1, boundRecipe recipe.RecipeV1) (cloudquote.RequestV1, error) {
+	if len(request.Scopes) == 0 || len(boundRecipe.VolumeSlots) > len(quoteVolumeDevices) {
+		return cloudquote.RequestV1{}, ErrInvalid
+	}
+	kmsAlias, err := awsfoundation.KMSAliasForAgent(agentInstanceID)
+	if err != nil {
+		return cloudquote.RequestV1{}, ErrInvalid
+	}
+	bound := request
+	bound.Scopes = append([]cloudquote.ScopeV1(nil), request.Scopes...)
+	provided := 0
+	for _, scope := range bound.Scopes {
+		if len(scope.Resource.VolumeScopes) != 0 {
+			provided++
+		}
+	}
+	if len(boundRecipe.VolumeSlots) == 0 {
+		if provided != 0 {
+			return cloudquote.RequestV1{}, ErrInvalid
+		}
+		return bound, nil
+	}
+	if provided != 0 && provided != len(bound.Scopes) {
+		return cloudquote.RequestV1{}, ErrInvalid
+	}
+	slots := append([]recipe.VolumeSlotRequirementV1(nil), boundRecipe.VolumeSlots...)
+	sort.Slice(slots, func(i, j int) bool { return slots[i].SlotID < slots[j].SlotID })
+	for index := range bound.Scopes {
+		resource := &bound.Scopes[index].Resource
+		if provided == 0 {
+			for slotIndex, slot := range slots {
+				if slot.MountPath == "" {
+					return cloudquote.RequestV1{}, ErrInvalid
+				}
+				sizeGiB := resource.DiskGiB
+				if sizeGiB < 8 {
+					sizeGiB = 8
+				}
+				if sizeGiB > 65_536 {
+					return cloudquote.RequestV1{}, ErrInvalid
+				}
+				disposition := cloudquote.VolumeDeleteWithDeployment
+				if bound.Scopes[index].Retention.Class == cloudquote.RetentionManaged {
+					disposition = cloudquote.VolumeRetainWithManagedService
+				}
+				resource.VolumeScopes = append(resource.VolumeScopes, cloudquote.VolumeScopeV1{
+					SlotID: slot.SlotID, SizeGiB: uint32(sizeGiB), VolumeType: "gp3", IOPS: 3_000, ThroughputMiBPS: 125,
+					Encrypted: true, KMSKeyID: kmsAlias, DeviceName: quoteVolumeDevices[slotIndex], MountPath: slot.MountPath,
+					ReadOnly: slot.ReadOnly, Persistent: slot.Persistent, Disposition: disposition,
+				})
+			}
+		} else {
+			resource.VolumeScopes = append([]cloudquote.VolumeScopeV1(nil), resource.VolumeScopes...)
+			for _, volume := range resource.VolumeScopes {
+				if volume.KMSKeyID != kmsAlias {
+					return cloudquote.RequestV1{}, ErrInvalid
+				}
+			}
+		}
+		if err := cloudquote.ValidateVolumeScopesForRecipe(resource.VolumeScopes, boundRecipe, bound.Scopes[index].Retention); err != nil {
+			return cloudquote.RequestV1{}, ErrInvalid
+		}
 	}
 	return bound, nil
 }

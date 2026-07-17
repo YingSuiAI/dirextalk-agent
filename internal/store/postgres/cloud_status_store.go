@@ -30,6 +30,7 @@ type CloudStatusStore struct {
 	pool       *pgxpool.Pool
 	instanceID uuid.UUID
 	facts      *Store
+	health     cloudstatus.HealthReader
 }
 
 func (store *CloudStatusStore) ListPlans(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.PlanPage, error) {
@@ -194,11 +195,24 @@ func validCloudConnectionStatus(value string) bool {
 
 var _ cloudstatus.Reader = (*CloudStatusStore)(nil)
 
-func NewCloudStatusStore(store *Store) (*CloudStatusStore, error) {
-	if store == nil || store.pool == nil || store.instanceID == uuid.Nil {
+func NewCloudStatusStore(store *Store, healthReaders ...cloudstatus.HealthReader) (*CloudStatusStore, error) {
+	if store == nil || store.pool == nil || store.instanceID == uuid.Nil || len(healthReaders) > 1 {
 		return nil, cloudstatus.ErrInvalid
 	}
-	return &CloudStatusStore{pool: store.pool, instanceID: store.instanceID, facts: store}, nil
+	var healthReader cloudstatus.HealthReader
+	if len(healthReaders) == 1 {
+		healthReader = healthReaders[0]
+	} else {
+		var err error
+		healthReader, err = store.NewHealthProbeStore()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if healthReader == nil {
+		return nil, cloudstatus.ErrInvalid
+	}
+	return &CloudStatusStore{pool: store.pool, instanceID: store.instanceID, facts: store, health: healthReader}, nil
 }
 
 func (store *CloudStatusStore) GetDeployment(ctx context.Context, ownerID, deploymentID string) (cloudstatus.Deployment, error) {
@@ -227,7 +241,11 @@ func (store *CloudStatusStore) GetDeployment(ctx context.Context, ownerID, deplo
 	if !item.CreatedAt.Equal(link.CreatedAt) {
 		return cloudstatus.Deployment{}, fmt.Errorf("cloud deployment link does not match Worker fact")
 	}
-	return cloudstatus.Deployment{Worker: item, PlanID: link.PlanID, ConnectionID: link.ConnectionID}, nil
+	health, err := store.health.GetDeploymentHealth(ctx, owner, link.DeploymentID)
+	if err != nil {
+		return cloudstatus.Deployment{}, err
+	}
+	return cloudstatus.Deployment{Worker: item, PlanID: link.PlanID, ConnectionID: link.ConnectionID, Health: health}, nil
 }
 
 func (store *CloudStatusStore) ListDeployments(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.DeploymentPage, error) {
@@ -286,8 +304,12 @@ func (store *CloudStatusStore) ListDeployments(ctx context.Context, query clouds
 		if !item.CreatedAt.Equal(link.CreatedAt) {
 			return cloudstatus.DeploymentPage{}, fmt.Errorf("cloud deployment link does not match Worker fact")
 		}
+		health, healthErr := store.health.GetDeploymentHealth(ctx, query.OwnerID, link.DeploymentID)
+		if healthErr != nil {
+			return cloudstatus.DeploymentPage{}, healthErr
+		}
 		result.Deployments = append(result.Deployments, cloudstatus.Deployment{
-			Worker: item, PlanID: link.PlanID, ConnectionID: link.ConnectionID,
+			Worker: item, PlanID: link.PlanID, ConnectionID: link.ConnectionID, Health: health,
 		})
 	}
 	return result, nil

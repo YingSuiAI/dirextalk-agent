@@ -84,6 +84,10 @@ func (q QuoteV1) ValidateSelection(now time.Time, candidateID CandidateProfile, 
 
 func normalizeScope(value ScopeV1) ScopeV1 {
 	value.Resource.AvailabilityZones = sortedStrings(value.Resource.AvailabilityZones)
+	value.Resource.VolumeScopes = append([]VolumeScopeV1(nil), value.Resource.VolumeScopes...)
+	sort.Slice(value.Resource.VolumeScopes, func(i, j int) bool {
+		return value.Resource.VolumeScopes[i].SlotID < value.Resource.VolumeScopes[j].SlotID
+	})
 	value.Network.SecurityGroupMode = normalizedSecurityGroupMode(value.Network)
 	value.Network.IngressPorts = append([]uint32(nil), value.Network.IngressPorts...)
 	sort.Slice(value.Network.IngressPorts, func(i, j int) bool {

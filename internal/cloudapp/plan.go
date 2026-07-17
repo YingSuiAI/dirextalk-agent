@@ -49,6 +49,7 @@ func BuildPlan(agentInstanceID, planID string, priced cloudquote.QuoteV1, candid
 			VolumeEncrypted: candidate.Scope.Resource.VolumeEncrypted,
 			PurchaseOption:  cloudapproval.PurchaseOption(candidate.Scope.Resource.PurchaseOption),
 			WorkerImageID:   candidate.Scope.Resource.WorkerImageID, WorkerImageDigest: candidate.Scope.Resource.WorkerImageDigest,
+			VolumeScopes: append([]cloudapproval.VolumeScopeV1(nil), candidate.Scope.Resource.VolumeScopes...),
 		},
 		NetworkScope: cloudapproval.NetworkScopeV1{
 			VPCID: candidate.Scope.Network.VPCID, SubnetID: candidate.Scope.Network.SubnetID,

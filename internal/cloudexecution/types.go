@@ -55,6 +55,7 @@ type Intent struct {
 	OperationID      string
 	RequestHash      [sha256.Size]byte
 	Caller           cloudapp.MutationScope
+	SecretClientID   string
 	Launch           LaunchRequest
 	ConnectionID     string
 	ApprovedPlanHash string
@@ -75,6 +76,7 @@ type PublishedBundles struct {
 	SecretBindings     map[string]string
 	InstallerRootTrust *InstallerRootTrustV1
 	InstallerArtifacts []installerbootstrap.ArtifactSourceV1
+	InstallerSecrets   []installerbootstrap.SecretSourceV1
 }
 
 // InstallerArtifactContent is an already-resolved, replayable byte source.
@@ -109,6 +111,48 @@ type InstallerArtifactResolver interface {
 	Resolve(context.Context, InstallerArtifactResolveRequest) (InstallerArtifactContent, error)
 }
 
+// InstallerSecretContent performs one-use secret delivery without returning
+// plaintext to cloudexecution. Materialize is retryable while the encrypted
+// bootstrap session remains uploaded; Commit consumes it only after the AWS
+// destination has been independently read back.
+type InstallerSecretContent interface {
+	Materialize(context.Context, func([]byte) error) error
+	Commit(context.Context, func() error) error
+}
+
+type InstallerSecretStagingInput struct {
+	SlotID       string
+	SecretRef    string
+	SecretName   string
+	VersionID    string
+	TargetPath   string
+	FileMode     uint32
+	OwnerUID     uint32
+	OwnerGID     uint32
+	RecipeDigest string
+	Content      InstallerSecretContent
+}
+
+type InstallerSecretResolveRequest struct {
+	CallerClientID string
+	OwnerID        string
+	PlanID         string
+	SlotID         string
+	Purpose        string
+	SecretRef      string
+	SecretName     string
+	VersionID      string
+	TargetPath     string
+	FileMode       uint32
+	OwnerUID       uint32
+	OwnerGID       uint32
+	RecipeDigest   string
+}
+
+type InstallerSecretResolver interface {
+	Resolve(context.Context, InstallerSecretResolveRequest) (InstallerSecretContent, error)
+}
+
 // BootstrapArtifact is a non-secret immutable object consumed by the fixed
 // Worker AMI bootstrap. EnrollmentMaterialRef may name a deployment-scoped,
 // KMS-protected delivery channel, but may never contain credential bytes.
@@ -128,6 +172,7 @@ type Operation struct {
 	InstallerCommandIDs []string
 	InstallerRootTrust  *InstallerRootTrustV1
 	InstallerArtifacts  []installerbootstrap.ArtifactSourceV1
+	InstallerSecrets    []installerbootstrap.SecretSourceV1
 	Bootstrap           BootstrapArtifact
 	ResourceIDs         []string
 	RedactedError       string

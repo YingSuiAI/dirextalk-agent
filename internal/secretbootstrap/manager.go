@@ -38,7 +38,11 @@ func (m *Manager) Create(ctx context.Context, creatorClientID string, binding Bi
 	if err := validateBinding(binding); err != nil {
 		return CreateResult{}, err
 	}
-	now := utc(m.now())
+	// Session timestamps are authenticated AAD and are persisted in PostgreSQL
+	// timestamptz fields, whose wire precision is microseconds. Canonicalize
+	// before returning the public descriptor so a client seals against exactly
+	// the descriptor that a durable store later reads back.
+	now := utc(m.now()).Truncate(time.Microsecond)
 	if now.IsZero() {
 		return CreateResult{}, ErrInvalidContext
 	}
@@ -111,7 +115,9 @@ func (m *Manager) CreateIdempotent(ctx context.Context, scope MutationScope, ide
 	if !ok {
 		return CreateResult{}, ErrInvalidContext
 	}
-	now := utc(m.now())
+	// Keep the idempotent public descriptor byte-for-byte compatible with its
+	// PostgreSQL representation before it is used as envelope AAD.
+	now := utc(m.now()).Truncate(time.Microsecond)
 	if now.IsZero() {
 		return CreateResult{}, ErrInvalidContext
 	}
@@ -182,6 +188,30 @@ func (m *Manager) Get(ctx context.Context, callerClientID, sessionID string) (Se
 		if err := authorizeClient(record, callerClientID); err != nil {
 			return SessionV1{}, err
 		}
+	}
+	return record.Session, nil
+}
+
+// FindUploaded returns only the public descriptor for the unique live session
+// matching the authenticated caller and immutable binding. Plaintext remains
+// sealed until the separately approved execution consumes the exact ref.
+func (m *Manager) FindUploaded(ctx context.Context, callerClientID string, binding BindingV1) (SessionV1, error) {
+	callerClientID = strings.TrimSpace(callerClientID)
+	if ctx == nil || ValidateClientID(callerClientID) != nil || validateBinding(binding) != nil {
+		return SessionV1{}, ErrInvalidContext
+	}
+	finder, ok := m.store.(UploadedSessionStore)
+	if !ok {
+		return SessionV1{}, ErrKeyUnavailable
+	}
+	now := utc(m.now())
+	record, err := finder.FindUploaded(ctx, callerClientID, binding, now)
+	if err != nil {
+		return SessionV1{}, err
+	}
+	if authorizeClient(record, callerClientID) != nil || record.Session.Binding() != binding ||
+		record.Session.Status != StatusUploaded || !now.Before(record.Session.ExpiresAt) {
+		return SessionV1{}, ErrStateConflict
 	}
 	return record.Session, nil
 }
@@ -262,6 +292,7 @@ func (m *Manager) UploadIdempotent(ctx context.Context, scope MutationScope, ide
 	if !ok {
 		return SessionV1{}, ErrInvalidContext
 	}
+	waking, _ := m.store.(AtomicUploadWakeStore)
 	record, err := m.store.Get(ctx, sessionID)
 	if err != nil {
 		return SessionV1{}, err
@@ -274,7 +305,13 @@ func (m *Manager) UploadIdempotent(ctx context.Context, scope MutationScope, ide
 		// return the original response even after the session revision has
 		// advanced. A different key or request still reaches the adapter's
 		// scoped idempotency/CAS checks and fails closed.
-		updated, replayErr := atomic.CommitUploadIdempotent(ctx, mutation, sessionID, expectedRevision, tokenHash, envelope, utc(m.now()))
+		var updated Record
+		var replayErr error
+		if waking != nil {
+			updated, replayErr = waking.CommitUploadIdempotentAndWake(ctx, mutation, sessionID, expectedRevision, tokenHash, envelope, utc(m.now()))
+		} else {
+			updated, replayErr = atomic.CommitUploadIdempotent(ctx, mutation, sessionID, expectedRevision, tokenHash, envelope, utc(m.now()))
+		}
 		if replayErr != nil {
 			return SessionV1{}, replayErr
 		}
@@ -304,7 +341,12 @@ func (m *Manager) UploadIdempotent(ctx context.Context, scope MutationScope, ide
 		return SessionV1{}, ErrInvalidEnvelope
 	}
 	Wipe(plaintext)
-	updated, err := atomic.CommitUploadIdempotent(ctx, mutation, sessionID, expectedRevision, tokenHash, envelope, now)
+	var updated Record
+	if waking != nil {
+		updated, err = waking.CommitUploadIdempotentAndWake(ctx, mutation, sessionID, expectedRevision, tokenHash, envelope, now)
+	} else {
+		updated, err = atomic.CommitUploadIdempotent(ctx, mutation, sessionID, expectedRevision, tokenHash, envelope, now)
+	}
 	if err != nil {
 		if errors.Is(err, ErrExpired) {
 			_, expireErr := m.Expire(ctx)

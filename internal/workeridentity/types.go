@@ -100,8 +100,9 @@ type DeploymentClaim struct {
 	WorkerRoleName  string
 	InstanceID      string
 	// PrincipalID is the complete, provider-verified STS UserId. For an EC2
-	// role session AWS emits <role-id>:<instance-id>; the Foundation policy
-	// uses the same value in its per-Worker S3 and CloudWatch prefixes.
+	// role session AWS emits <role-id>:<instance-id>. S3 uses that exact value;
+	// the CloudWatch stream uses the same components separated by '/' because
+	// CloudWatch Logs forbids ':' in stream names.
 	PrincipalID string
 }
 

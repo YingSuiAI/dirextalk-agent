@@ -10,10 +10,12 @@ import (
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
+	"github.com/google/uuid"
 )
 
 const (
@@ -30,6 +32,7 @@ type CompiledBundles struct {
 	InstallerCommandIDs []string
 	InstallerRootTrust  *InstallerRootTrustV1
 	InstallerArtifacts  []InstallerArtifactStagingInput
+	InstallerSecrets    []InstallerSecretStagingInput
 }
 
 // InstallerRootTrustV1 is the single shared, public IMDS user-data contract.
@@ -97,6 +100,14 @@ func compileBundles(value recipe.RecipeV1, delivery *installer.DeliveryV1, now t
 				TargetPath: artifact.TargetPath, RecipeDigest: delivery.Config.Binding.RecipeDigest,
 			})
 		}
+		result.InstallerSecrets = make([]InstallerSecretStagingInput, 0, len(delivery.SignedPlan.Plan.Secrets))
+		for _, secret := range delivery.SignedPlan.Plan.Secrets {
+			result.InstallerSecrets = append(result.InstallerSecrets, InstallerSecretStagingInput{
+				SlotID: secret.SlotID, SecretRef: secret.SecretRef, SecretName: secret.SecretName, VersionID: secret.VersionID,
+				TargetPath: secret.TargetPath, FileMode: secret.FileMode, OwnerUID: secret.OwnerUID, OwnerGID: secret.OwnerGID,
+				RecipeDigest: delivery.Config.Binding.RecipeDigest,
+			})
+		}
 	}
 	return result, nil
 }
@@ -157,15 +168,25 @@ func issueInstallerDelivery(value recipe.RecipeV1, plan cloudapproval.PlanV1, ap
 		}
 		artifacts = append(artifacts, installer.ArtifactV1{Name: declaration.Name, SHA256: source.ArtifactDigest, SizeBytes: declaration.SizeBytes, TargetPath: declaration.TargetPath})
 	}
-	secretRefs, secretSlots, err := resolveInstallerSecrets(value, plan)
+	secretRefs, secretSlots, secrets, err := resolveInstallerSecrets(value, plan, operation.DeploymentID)
+	if err != nil {
+		return nil, err
+	}
+	volumes, volumeSlots, err := resolveInstallerVolumes(value, plan)
 	if err != nil {
 		return nil, err
 	}
 	commands := make([]installer.CommandV1, 0, len(value.Install.Installer.Commands))
 	for _, declaration := range value.Install.Installer.Commands {
-		if len(declaration.VolumeSlotRefs) != 0 {
-			return nil, ErrUnsupportedRecipe
+		resolvedVolumes := make([]string, 0, len(declaration.VolumeSlotRefs))
+		for _, slot := range declaration.VolumeSlotRefs {
+			name, ok := volumeSlots[slot]
+			if !ok {
+				return nil, ErrNotReady
+			}
+			resolvedVolumes = append(resolvedVolumes, name)
 		}
+		sort.Strings(resolvedVolumes)
 		resolvedSecrets := make([]string, 0, len(declaration.SecretSlotRefs))
 		for _, slot := range declaration.SecretSlotRefs {
 			reference, ok := secretSlots[slot]
@@ -179,7 +200,7 @@ func issueInstallerDelivery(value recipe.RecipeV1, plan cloudapproval.PlanV1, ap
 		sort.Strings(artifactRefs)
 		commands = append(commands, installer.CommandV1{
 			CommandID: declaration.CommandID, Argv: append([]string(nil), declaration.Argv...), WorkingDirectory: declaration.WorkingDirectory,
-			TimeoutSeconds: declaration.TimeoutSeconds, ArtifactRefs: artifactRefs, SecretRefs: resolvedSecrets,
+			TimeoutSeconds: declaration.TimeoutSeconds, ArtifactRefs: artifactRefs, VolumeRefs: resolvedVolumes, SecretRefs: resolvedSecrets,
 		})
 	}
 	binding := installer.BindingV1{
@@ -191,8 +212,8 @@ func issueInstallerDelivery(value recipe.RecipeV1, plan cloudapproval.PlanV1, ap
 		return nil, err
 	}
 	installerPlan := installer.InstallerPlanV1{
-		SchemaVersion: installer.PlanSchemaV1, Binding: binding, Artifacts: artifacts, SecretRefs: secretRefs,
-		Network: installerNetwork(value, plan), Ports: installerPorts(value, plan), Commands: commands,
+		SchemaVersion: installer.PlanSchemaV1, Binding: binding, Artifacts: artifacts, SecretRefs: secretRefs, Secrets: secrets,
+		Network: installerNetwork(value, plan), Ports: installerPorts(value, plan), Volumes: volumes, Commands: commands,
 		ExpiresAt: expiresAt.Format(time.RFC3339Nano),
 	}
 	delivery, err := issuer.Issue(installerPlan, installer.DaemonConfigV1{SchemaVersion: installer.DaemonConfigSchema, Binding: binding, TargetRoot: installer.PreinstalledArtifactRoot}, now)
@@ -200,6 +221,26 @@ func issueInstallerDelivery(value recipe.RecipeV1, plan cloudapproval.PlanV1, ap
 		return nil, ErrUnsupportedRecipe
 	}
 	return &delivery, nil
+}
+
+func resolveInstallerVolumes(value recipe.RecipeV1, plan cloudapproval.PlanV1) ([]installer.VolumeV1, map[string]string, error) {
+	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, value, cloudquote.RetentionScopeV1{
+		Class: cloudquote.RetentionClass(plan.RetentionScope.Class), AutoDestroy: plan.RetentionScope.AutoDestroy,
+		GracePeriodSeconds: plan.RetentionScope.GracePeriodSeconds, MaxLifetimeSeconds: plan.RetentionScope.MaxLifetimeSeconds,
+	}); err != nil {
+		return nil, nil, ErrNotReady
+	}
+	volumes := make([]installer.VolumeV1, 0, len(plan.ResourceScope.VolumeScopes))
+	bySlot := make(map[string]string, len(plan.ResourceScope.VolumeScopes))
+	for _, scope := range plan.ResourceScope.VolumeScopes {
+		volumes = append(volumes, installer.VolumeV1{
+			Name: scope.SlotID, DeviceName: scope.DeviceName, MountPath: scope.MountPath, ReadOnly: scope.ReadOnly,
+			Persistent: scope.Persistent, Disposition: string(scope.Disposition), SizeGiB: scope.SizeGiB,
+		})
+		bySlot[scope.SlotID] = scope.SlotID
+	}
+	sort.Slice(volumes, func(i, j int) bool { return volumes[i].Name < volumes[j].Name })
+	return volumes, bySlot, nil
 }
 
 func installerCapabilityExpiry(value recipe.RecipeV1, plan cloudapproval.PlanV1, operation Operation, issuedNow time.Time) (time.Time, error) {
@@ -231,28 +272,63 @@ func installerCapabilityExpiry(value recipe.RecipeV1, plan cloudapproval.PlanV1,
 	return expiresAt, nil
 }
 
-func resolveInstallerSecrets(value recipe.RecipeV1, plan cloudapproval.PlanV1) ([]string, map[string]string, error) {
+func resolveInstallerSecrets(value recipe.RecipeV1, plan cloudapproval.PlanV1, deploymentID string) ([]string, map[string]string, []installer.SecretV1, error) {
 	resolved := make(map[string]string)
-	all := make([]string, 0, len(plan.SecretScope))
-	for _, scope := range plan.SecretScope {
-		all = append(all, scope.SecretRef)
+	declarations := make([]installer.SecretV1, 0, len(plan.SecretScope))
+	matchedRefs := make(map[string]struct{}, len(plan.SecretScope))
+	deployment, deploymentErr := uuid.Parse(deploymentID)
+	if deploymentErr != nil || deployment == uuid.Nil {
+		return nil, nil, nil, ErrInvalid
 	}
 	for _, slot := range value.SecretSlots {
 		match := ""
 		for _, scope := range plan.SecretScope {
 			if scope.Purpose == slot.Purpose && scope.Delivery == slot.Delivery {
 				if match != "" {
-					return nil, nil, ErrNotReady
+					return nil, nil, nil, ErrNotReady
 				}
 				match = scope.SecretRef
 			}
 		}
 		if match != "" {
+			if slot.Delivery != recipe.SecretDeliveryFile {
+				return nil, nil, nil, ErrUnsupportedRecipe
+			}
+			if _, err := bootstrapSessionID(match); err != nil {
+				return nil, nil, nil, ErrNotReady
+			}
 			resolved[slot.SlotID] = match
+			matchedRefs[match] = struct{}{}
+			version := uuid.NewSHA1(deployment, []byte("dirextalk-service-secret/v1\x00"+slot.SlotID+"\x00"+match)).String()
+			declarations = append(declarations, installer.SecretV1{
+				SlotID: slot.SlotID, SecretRef: match,
+				SecretName: "dtx/" + plan.AgentInstanceID + "/deployments/" + deploymentID + "/" + slot.SlotID,
+				VersionID:  version, TargetPath: slot.TargetPath, FileMode: slot.FileMode, OwnerUID: slot.OwnerUID, OwnerGID: slot.OwnerGID,
+			})
+		} else {
+			return nil, nil, nil, ErrNotReady
 		}
 	}
+	if len(matchedRefs) != len(plan.SecretScope) {
+		return nil, nil, nil, ErrNotReady
+	}
+	sort.Slice(declarations, func(left, right int) bool { return declarations[left].SecretRef < declarations[right].SecretRef })
+	all := make([]string, 0, len(declarations))
+	for _, declaration := range declarations {
+		all = append(all, declaration.SecretRef)
+	}
 	sort.Strings(all)
-	return all, resolved, nil
+	return all, resolved, declarations, nil
+}
+
+func bootstrapSessionID(reference string) (string, error) {
+	const prefix = "secret_ref:bootstrap/"
+	sessionID := strings.TrimPrefix(reference, prefix)
+	parsed, err := uuid.Parse(sessionID)
+	if reference == sessionID || err != nil || parsed == uuid.Nil || parsed.String() != sessionID {
+		return "", ErrNotReady
+	}
+	return sessionID, nil
 }
 
 func installerNetwork(value recipe.RecipeV1, plan cloudapproval.PlanV1) installer.NetworkV1 {

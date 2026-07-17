@@ -924,34 +924,6 @@ func TestRecoverOwnedImportsOnlyCompletelyTaggedOrphans(t *testing.T) {
 	}
 }
 
-type fixedProbeRunner struct{ observation ProbeObservation }
-
-func (runner fixedProbeRunner) Run(context.Context, ProbeSpec) (ProbeObservation, error) {
-	return runner.observation, nil
-}
-
-func TestExternalProbeEvidenceIsIndependentAndSemantic(t *testing.T) {
-	digest := "sha256:" + repeatHex('c')
-	service, err := NewProbeService(fixedProbeRunner{observation: ProbeObservation{Healthy: true, StatusCode: 200, SummaryDigest: digest}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	evidence, err := service.Run(context.Background(), ProbeSpec{
-		DeploymentID: uuid.NewString(), Kind: ProbeSemantic, Endpoint: "https://probe.example.com/semantic",
-		ExpectedDigest: "sha256:" + repeatHex('d'), Timeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if evidence.Healthy || evidence.Trust != ProbeTrustIndependent {
-		t.Fatalf("semantic mismatch or trust boundary was ignored: %+v", evidence)
-	}
-	_, err = service.Run(context.Background(), ProbeSpec{DeploymentID: uuid.NewString(), Kind: ProbeReadiness, Endpoint: "https://127.0.0.1/ready", Timeout: 5 * time.Second})
-	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("private external probe endpoint accepted: %v", err)
-	}
-}
-
 func repeatHex(value byte) string {
 	buffer := make([]byte, 64)
 	for index := range buffer {

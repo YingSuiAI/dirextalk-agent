@@ -8,6 +8,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
@@ -22,8 +23,8 @@ import (
 // device signature. The first validation slice supports either an approved
 // existing security group or an exclusive no-ingress security group, one
 // exclusive ENI, an optional outbound-only Elastic IP, and one exclusive EC2
-// instance. It fails closed for Spot and persistent data volumes until their
-// additional quote and lifecycle contracts are represented in PlanV1.
+// instance. Data volumes are explicit EBS ledger resources and are never
+// silently folded into the Worker root disk.
 type AWSResourcePlanBuilder struct {
 	agentInstanceID string
 }
@@ -45,10 +46,14 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	if plan.ResourceScope.PurchaseOption != cloudapproval.PurchaseOnDemand || plan.ResourceScope.DiskGiB < 8 || plan.ResourceScope.DiskGiB > 1024 {
 		return nil, ErrUnsupportedRecipe
 	}
-	for _, slot := range boundRecipe.VolumeSlots {
-		if slot.Persistent {
-			return nil, ErrUnsupportedRecipe
-		}
+	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, boundRecipe, cloudquote.RetentionScopeV1{
+		Class: cloudquote.RetentionClass(plan.RetentionScope.Class), AutoDestroy: plan.RetentionScope.AutoDestroy,
+		GracePeriodSeconds: plan.RetentionScope.GracePeriodSeconds, MaxLifetimeSeconds: plan.RetentionScope.MaxLifetimeSeconds,
+	}); err != nil {
+		return nil, ErrInvalid
+	}
+	if len(plan.ResourceScope.VolumeScopes) != 0 && len(plan.ResourceScope.AvailabilityZones) != 1 {
+		return nil, ErrInvalid
 	}
 	installerTrust, err := resourceInstallerTrust(operation)
 	if err != nil {
@@ -75,7 +80,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		ApprovedPlanHash: operation.ApprovedPlanHash, ApprovalID: operation.Launch.ApprovalID,
 		Retention: retention, DestroyDeadline: deadline, AutoDestroyApproved: autoDestroy,
 	}
-	result := make([]resource.ProvisionSpec, 0, 4)
+	result := make([]resource.ProvisionSpec, 0, 4+len(plan.ResourceScope.VolumeScopes))
 	securityGroupID := plan.NetworkScope.SecurityGroupID
 	securityGroupMode := plan.NetworkScope.SecurityGroupMode
 	if securityGroupMode == "" && securityGroupID != "" {
@@ -144,6 +149,35 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		result = append(result, eip)
 	}
 
+	instanceDependencies := []string{eniID}
+	attachments := make([]resource.AWSDataVolumeAttachmentV1, 0, len(plan.ResourceScope.VolumeScopes))
+	for _, volume := range plan.ResourceScope.VolumeScopes {
+		volumeID := deterministicID(operation.DeploymentID, "volume:"+volume.SlotID)
+		disposition := resource.AWSVolumeDeleteWithDeployment
+		if volume.Disposition == cloudapproval.VolumeRetainWithManagedService {
+			disposition = resource.AWSVolumeRetainWithManagedService
+		}
+		volumeAWS := &resource.AWSResourceSpecV1{
+			SchemaVersion: resource.AWSResourceSpecSchemaV1,
+			Volume: &resource.AWSEBSVolumeSpecV1{
+				AvailabilityZone: plan.ResourceScope.AvailabilityZones[0], SizeGiB: volume.SizeGiB,
+				VolumeType: volume.VolumeType, IOPS: volume.IOPS, ThroughputMiBPS: volume.ThroughputMiBPS,
+				KMSKeyID: volume.KMSKeyID, SlotID: volume.SlotID, DeviceName: volume.DeviceName,
+				MountPath: volume.MountPath, ReadOnly: volume.ReadOnly, Persistent: volume.Persistent, Disposition: disposition,
+			},
+		}
+		volumeDigest, digestErr := volumeAWS.Digest(resource.TypeEBS)
+		if digestErr != nil {
+			return nil, ErrInvalid
+		}
+		volumeSpec := common
+		volumeSpec.ResourceID, volumeSpec.Type, volumeSpec.LogicalName = volumeID, resource.TypeEBS, "recipe-volume-"+volume.SlotID
+		volumeSpec.SpecDigest, volumeSpec.AWS = volumeDigest, volumeAWS
+		result = append(result, volumeSpec)
+		instanceDependencies = append(instanceDependencies, volumeID)
+		attachments = append(attachments, resource.AWSDataVolumeAttachmentV1{ResourceID: volumeID, DeviceName: volume.DeviceName})
+	}
+
 	instanceAWS := &resource.AWSResourceSpecV1{
 		SchemaVersion: resource.AWSResourceSpecSchemaV1,
 		Instance: &resource.AWSEC2InstanceSpecV1{
@@ -156,10 +190,11 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 				DeploymentID: operation.DeploymentID, WorkerID: deterministicID(operation.DeploymentID, "worker"),
 				ControlPlaneEndpoint: operation.Launch.ControlPlaneTarget, EnrollmentExpectedRevision: 1,
 				InstallerTrust: installerTrust, InstallerArtifacts: append([]installerbootstrap.ArtifactSourceV1(nil), operation.InstallerArtifacts...),
+				InstallerSecrets: append([]installerbootstrap.SecretSourceV1(nil), operation.InstallerSecrets...),
 			},
 			RootDeviceName: "/dev/sda1", RootVolumeGiB: uint32(plan.ResourceScope.DiskGiB),
 			RootKMSKeyID: "alias/" + foundation.StackName, Market: resource.AWSMarketOnDemand,
-			EBSOptimized: true,
+			DataVolumes: attachments, EBSOptimized: true,
 		},
 	}
 	instanceDigest, err := instanceAWS.Digest(resource.TypeEC2)
@@ -168,7 +203,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	}
 	instance := common
 	instance.ResourceID, instance.Type, instance.LogicalName = deterministicID(operation.DeploymentID, "ec2"), resource.TypeEC2, "exclusive-cloud-worker"
-	instance.SpecDigest, instance.DependsOn, instance.AWS = instanceDigest, []string{eniID}, instanceAWS
+	instance.SpecDigest, instance.DependsOn, instance.AWS = instanceDigest, instanceDependencies, instanceAWS
 	result = append(result, instance)
 	return result, nil
 }
@@ -187,6 +222,8 @@ func resourceInstallerTrust(operation Operation) (*installerbootstrap.RootTrustM
 		ArtifactManifest: value.ArtifactManifest,
 	}
 	trust.ArtifactManifest.Manifest.Artifacts = append([]installer.ArtifactV1(nil), value.ArtifactManifest.Manifest.Artifacts...)
+	trust.ArtifactManifest.Manifest.Secrets = append([]installer.SecretV1(nil), value.ArtifactManifest.Manifest.Secrets...)
+	trust.ArtifactManifest.Manifest.Volumes = append([]installer.VolumeV1(nil), value.ArtifactManifest.Manifest.Volumes...)
 	trust.ArtifactManifest.Signature = append([]byte(nil), value.ArtifactManifest.Signature...)
 	if _, err := installerbootstrap.ValidateTrustMaterial(*trust, operation.DeploymentID); err != nil {
 		return nil, ErrInvalid

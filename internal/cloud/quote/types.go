@@ -83,6 +83,31 @@ type RecipeBindingV1 struct {
 	Maturity recipe.Maturity `json:"maturity"`
 }
 
+type VolumeDisposition string
+
+const (
+	VolumeDeleteWithDeployment     VolumeDisposition = "delete_with_deployment"
+	VolumeRetainWithManagedService VolumeDisposition = "retain_with_managed_service"
+)
+
+// VolumeScopeV1 is one approval- and price-bound data-volume slot. It is
+// deliberately separate from the Worker root disk: a persistent Recipe slot
+// can never be satisfied implicitly by increasing ResourceScopeV1.DiskGiB.
+type VolumeScopeV1 struct {
+	SlotID          string            `json:"slot_id"`
+	SizeGiB         uint32            `json:"size_gib"`
+	VolumeType      string            `json:"volume_type"`
+	IOPS            uint32            `json:"iops,omitempty"`
+	ThroughputMiBPS uint32            `json:"throughput_mibps,omitempty"`
+	Encrypted       bool              `json:"encrypted"`
+	KMSKeyID        string            `json:"kms_key_id"`
+	DeviceName      string            `json:"device_name"`
+	MountPath       string            `json:"mount_path"`
+	ReadOnly        bool              `json:"read_only"`
+	Persistent      bool              `json:"persistent"`
+	Disposition     VolumeDisposition `json:"disposition"`
+}
+
 // ResourceScopeV1 intentionally includes storage, image, and GPU details that
 // can alter availability or price. One deployment currently means one Worker.
 type ResourceScopeV1 struct {
@@ -105,6 +130,7 @@ type ResourceScopeV1 struct {
 	PurchaseOption        PurchaseOption      `json:"purchase_option"`
 	WorkerImageID         string              `json:"worker_image_id"`
 	WorkerImageDigest     string              `json:"worker_image_digest"`
+	VolumeScopes          []VolumeScopeV1     `json:"volume_scopes,omitempty"`
 }
 
 type NetworkScopeV1 struct {
@@ -254,6 +280,17 @@ type PricingCandidateQueryV1 struct {
 	EntryPoint            EntryPointKind      `json:"entry_point"`
 	PublicIPv4            bool                `json:"public_ipv4"`
 	PublicExposure        bool                `json:"public_exposure"`
+	DataVolumes           []VolumePricingV1   `json:"data_volumes,omitempty"`
+}
+
+// VolumePricingV1 is the minimal non-secret projection consumed by the AWS
+// Price List adapter. Mount paths, KMS aliases, and Recipe slot names never
+// need to cross the read-only pricing boundary.
+type VolumePricingV1 struct {
+	SizeGiB         uint32 `json:"size_gib"`
+	VolumeType      string `json:"volume_type"`
+	IOPS            uint32 `json:"iops,omitempty"`
+	ThroughputMiBPS uint32 `json:"throughput_mibps,omitempty"`
 }
 
 type PricingSnapshotV1 struct {

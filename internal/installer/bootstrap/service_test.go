@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,7 +16,11 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 var bootstrapNow = time.Date(2026, time.July, 17, 8, 0, 0, 0, time.UTC)
@@ -41,6 +46,42 @@ func TestBootstrapMaterializesOneAtomicRootTrustFileBeforeSocketActivation(t *te
 	if trust.TrustID != fixture.userData.InstallerTrust.TrustID || trust.Config.Binding.DeploymentID != fixture.userData.DeploymentID ||
 		trust.Config.Binding.PlanHash == "" || trust.Config.Binding.RecipeDigest == "" {
 		t.Fatalf("persisted trust lost approval binding: %+v", trust)
+	}
+}
+
+func TestBootstrapKeepsSocketDisabledDuringS3PrincipalBindingPropagation(t *testing.T) {
+	fixture := newBootstrapFixture(t, 'a')
+	source := fixture.userData.InstallerArtifacts[0]
+	payload := bytes.Clone(fixture.downloader.content)
+	digest := sha256.Sum256(payload)
+	client := &artifactS3Fake{
+		errors: []error{&smithy.GenericAPIError{Code: "AccessDenied", Message: "principal tag propagation"}},
+		output: &s3.GetObjectOutput{
+			Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: aws.Int64(int64(len(payload))), VersionId: aws.String(source.VersionID),
+			ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest[:])), ServerSideEncryption: s3types.ServerSideEncryptionAwsKms,
+			SSEKMSKeyId: aws.String(source.KMSKeyARN), BucketKeyEnabled: aws.Bool(true),
+		},
+	}
+	waits := 0
+	downloader, err := newS3ArtifactDownloaderWithRetry(client, accessDeniedRetry{attempts: 2, wait: func(context.Context, time.Duration) error {
+		waits++
+		if !fixture.socket.disabled || fixture.socket.enabled {
+			t.Fatal("installer socket became reachable while S3 principal binding propagated")
+		}
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.service, err = NewArtifactService(fixture.source, fixture.materializer, downloader, fixture.artifacts, fixture.socket, DefaultTrustFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if waits != 1 || client.calls != 2 || !fixture.socket.enabled || fixture.socket.calls[0] != "disable" {
+		t.Fatalf("retry/socket state waits=%d calls=%d socket=%#v", waits, client.calls, fixture.socket)
 	}
 }
 
@@ -148,6 +189,68 @@ func TestBootstrapFailuresNeverEnableSocket(t *testing.T) {
 	})
 }
 
+func TestBootstrapPreparesSignedVolumeBeforeTrustAndSocket(t *testing.T) {
+	volume := installer.VolumeV1{
+		Name: "knowledge", DeviceName: "/dev/sdf", MountPath: "/srv/knowledge", Persistent: true,
+		Disposition: "delete_with_deployment", SizeGiB: 40,
+	}
+	fixture := newBootstrapFixture(t, 'a', volume)
+	volumes := &recordingVolumeMaterializer{socket: fixture.socket}
+	fixture.service, _ = NewArtifactSecretAndVolumeService(
+		fixture.source, fixture.materializer, fixture.downloader, fixture.artifacts, volumes,
+		unavailableSecrets{}, unavailableSecrets{}, fixture.socket, DefaultTrustFile,
+	)
+	if err := fixture.service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if volumes.calls != 1 || fixture.materializer.calls != 1 || !fixture.socket.enabled {
+		t.Fatalf("volume/trust/socket sequence was incomplete: volumes=%d trust=%d socket=%#v", volumes.calls, fixture.materializer.calls, fixture.socket)
+	}
+
+	failure := newBootstrapFixture(t, 'a', volume)
+	failingVolumes := &recordingVolumeMaterializer{socket: failure.socket, err: errors.New("unknown filesystem")}
+	failure.service, _ = NewArtifactSecretAndVolumeService(
+		failure.source, failure.materializer, failure.downloader, failure.artifacts, failingVolumes,
+		unavailableSecrets{}, unavailableSecrets{}, failure.socket, DefaultTrustFile,
+	)
+	if err := failure.service.Run(context.Background()); !errors.Is(err, ErrMaterialize) {
+		t.Fatalf("volume failure = %v", err)
+	}
+	if failure.socket.enabled || !failure.socket.disabled || failure.materializer.calls != 0 {
+		t.Fatalf("volume failure exposed installer trust/socket: trust=%d socket=%#v", failure.materializer.calls, failure.socket)
+	}
+}
+
+func TestBootstrapRejectsRuntimeVolumeOutsideSignedDeviceScope(t *testing.T) {
+	volume := installer.VolumeV1{
+		Name: "knowledge", DeviceName: "/dev/sdf", MountPath: "/srv/knowledge", Persistent: true,
+		Disposition: "delete_with_deployment", SizeGiB: 40,
+	}
+	for name, edit := range map[string]func(*VolumeSourceV1){
+		"different slot":      func(value *VolumeSourceV1) { value.Name = "foreign" },
+		"different device":    func(value *VolumeSourceV1) { value.DeviceName = "/dev/sdg" },
+		"invalid volume ID":   func(value *VolumeSourceV1) { value.VolumeID = "vol-foreign" },
+		"invalid resource ID": func(value *VolumeSourceV1) { value.ResourceID = "not-a-uuid" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newBootstrapFixture(t, 'a', volume)
+			edit(&fixture.userData.InstallerVolumes[0])
+			fixture.source.raw = mustJSON(t, fixture.userData)
+			volumes := &recordingVolumeMaterializer{socket: fixture.socket}
+			fixture.service, _ = NewArtifactSecretAndVolumeService(
+				fixture.source, fixture.materializer, fixture.downloader, fixture.artifacts, volumes,
+				unavailableSecrets{}, unavailableSecrets{}, fixture.socket, DefaultTrustFile,
+			)
+			if err := fixture.service.Run(context.Background()); err == nil {
+				t.Fatal("unbound runtime volume was accepted")
+			}
+			if volumes.calls != 0 || fixture.socket.enabled || fixture.materializer.calls != 0 {
+				t.Fatalf("unbound volume reached privileged mutation: calls=%d socket=%#v", volumes.calls, fixture.socket)
+			}
+		})
+	}
+}
+
 func TestBootstrapWithoutInstallerCapabilityLeavesSocketDisabledAndStartsWorkerPath(t *testing.T) {
 	fixture := newBootstrapFixture(t, 'a')
 	fixture.userData.InstallerTrust = nil
@@ -208,7 +311,7 @@ type bootstrapFixture struct {
 	service      *Service
 }
 
-func newBootstrapFixture(t *testing.T, recipeByte byte) *bootstrapFixture {
+func newBootstrapFixture(t *testing.T, recipeByte byte, volumes ...installer.VolumeV1) *bootstrapFixture {
 	t.Helper()
 	binding := installer.BindingV1{
 		AgentInstanceID: "11111111-1111-4111-8111-111111111111", DeploymentID: "22222222-2222-4222-8222-222222222222",
@@ -221,7 +324,7 @@ func newBootstrapFixture(t *testing.T, recipeByte byte) *bootstrapFixture {
 	plan := installer.InstallerPlanV1{
 		SchemaVersion: installer.PlanSchemaV1, Binding: binding,
 		Artifacts: []installer.ArtifactV1{{Name: "service", SHA256: "sha256:" + hex.EncodeToString(artifactDigest[:]), SizeBytes: int64(len(artifactBytes)), TargetPath: installer.PreinstalledArtifactRoot + "/service"}},
-		Network:   installer.NetworkV1{}, Commands: []installer.CommandV1{{
+		Network:   installer.NetworkV1{}, Volumes: append([]installer.VolumeV1(nil), volumes...), Commands: []installer.CommandV1{{
 			CommandID: "install", Argv: []string{installer.PreinstalledArtifactRoot + "/service"}, WorkingDirectory: installer.PreinstalledArtifactRoot,
 			TimeoutSeconds: 30, ArtifactRefs: []string{"service"},
 		}}, ExpiresAt: bootstrapNow.Add(time.Hour).Format(time.RFC3339Nano),
@@ -256,6 +359,13 @@ func newBootstrapFixture(t *testing.T, recipeByte byte) *bootstrapFixture {
 			SHA256:    "sha256:" + hex.EncodeToString(artifactDigest[:]), SizeBytes: int64(len(artifactBytes)), TargetPath: installer.PreinstalledArtifactRoot + "/service",
 			RecipeDigest: binding.RecipeDigest,
 		}},
+	}
+	for index, volume := range volumes {
+		userData.InstallerVolumes = append(userData.InstallerVolumes, VolumeSourceV1{
+			SchemaVersion: VolumeSourceSchemaV1, Name: volume.Name,
+			ResourceID: fmt.Sprintf("77777777-7777-4777-8777-%012d", index+1),
+			VolumeID:   fmt.Sprintf("vol-%017x", index+1), DeviceName: volume.DeviceName,
+		})
 	}
 	source := &fakeSource{raw: mustJSON(t, userData), identity: InstanceIdentityV1{AccountID: "123456789012", Region: "ap-south-1", InstanceID: "i-0123456789abcdef0"}}
 	materializer := &memoryMaterializer{}
@@ -339,6 +449,20 @@ type fakeSocket struct {
 	calls      []string
 	disableErr error
 	enableErr  error
+}
+
+type recordingVolumeMaterializer struct {
+	socket *fakeSocket
+	calls  int
+	err    error
+}
+
+func (materializer *recordingVolumeMaterializer) Prepare(_ context.Context, _ []VolumeMountV1) error {
+	materializer.calls++
+	if materializer.socket == nil || !materializer.socket.disabled || materializer.socket.enabled {
+		return errors.New("volume preparation ran outside disabled socket boundary")
+	}
+	return materializer.err
 }
 
 func (socket *fakeSocket) Disable(context.Context) error {

@@ -18,6 +18,7 @@ const (
 var (
 	ErrInvalidSpec      = errors.New("invalid external health probe specification")
 	ErrInvalidTransport = errors.New("invalid external health probe transport")
+	ErrInvalidEvidence  = errors.New("invalid external health probe evidence")
 )
 
 type Purpose string
@@ -46,11 +47,17 @@ const (
 type AggregateStatus string
 
 const (
+	AggregatePending   AggregateStatus = "pending"
 	AggregateHealthy   AggregateStatus = "healthy"
 	AggregateDegraded  AggregateStatus = "degraded"
 	AggregateUnhealthy AggregateStatus = "unhealthy"
 	AggregateCanceled  AggregateStatus = "canceled"
 )
+
+// TrustIndependentControlPlane is assigned only by the control-plane Engine.
+// Worker-local health declarations are intentionally not accepted as external
+// evidence and have no conversion path to this trust class.
+const TrustIndependentControlPlane = "independent_control_plane_probe"
 
 type FailureCode string
 
@@ -133,6 +140,7 @@ type ProbeEvidence struct {
 	Purpose       Purpose           `json:"purpose"`
 	Protocol      Protocol          `json:"protocol"`
 	Target        string            `json:"target"`
+	Trust         string            `json:"trust"`
 	Status        Status            `json:"status"`
 	Healthy       bool              `json:"healthy"`
 	Attempts      []AttemptEvidence `json:"attempts"`

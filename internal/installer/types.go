@@ -65,6 +65,20 @@ type ArtifactV1 struct {
 	TargetPath string `json:"target_path"`
 }
 
+// SecretV1 is the complete, device-approved root materialization boundary.
+// SecretRef and VersionID are non-secret identifiers; plaintext is never
+// carried by a signed plan, bundle, event, log, or EC2 user-data document.
+type SecretV1 struct {
+	SlotID     string `json:"slot_id"`
+	SecretRef  string `json:"secret_ref"`
+	SecretName string `json:"secret_name"`
+	VersionID  string `json:"version_id"`
+	TargetPath string `json:"target_path"`
+	FileMode   uint32 `json:"file_mode"`
+	OwnerUID   uint32 `json:"owner_uid"`
+	OwnerGID   uint32 `json:"owner_gid"`
+}
+
 type NetworkV1 struct {
 	PublicInbound      bool     `json:"public_inbound"`
 	OutboundHTTPSHosts []string `json:"outbound_https_hosts"`
@@ -78,10 +92,13 @@ type PortV1 struct {
 }
 
 type VolumeV1 struct {
-	Name      string `json:"name"`
-	MountPath string `json:"mount_path"`
-	ReadOnly  bool   `json:"read_only"`
-	SizeGiB   uint32 `json:"size_gib"`
+	Name        string `json:"name"`
+	DeviceName  string `json:"device_name"`
+	MountPath   string `json:"mount_path"`
+	ReadOnly    bool   `json:"read_only"`
+	Persistent  bool   `json:"persistent"`
+	Disposition string `json:"disposition"`
+	SizeGiB     uint32 `json:"size_gib"`
 }
 
 // CommandV1 is an exact, approval-bound process invocation. Runtime requests
@@ -105,6 +122,7 @@ type InstallerPlanV1 struct {
 	Binding       BindingV1    `json:"binding"`
 	Artifacts     []ArtifactV1 `json:"artifacts"`
 	SecretRefs    []string     `json:"secret_refs"`
+	Secrets       []SecretV1   `json:"secrets,omitempty"`
 	Network       NetworkV1    `json:"network"`
 	Ports         []PortV1     `json:"ports"`
 	Volumes       []VolumeV1   `json:"volumes"`

@@ -123,6 +123,7 @@ func controlPolicyFailsClosed(value any) bool {
 	var workerAMI struct {
 		observe, terminate, createFromBuilder, createOutputs, tagOutputs bool
 		deregister, deleteSnapshot, artifactAccess                       bool
+		installerArtifactBinding                                         bool
 		launchInstanceVolume, ownedNetworkInput, publicBaseImage         bool
 		ownedWorkerImage, launchNetworkInputs, createTaggedCompute       bool
 		useNetworkCreationInputs, useVPCForNetworkCreation               bool
@@ -192,6 +193,11 @@ func controlPolicyFailsClosed(value any) bool {
 				"s3:AbortMultipartUpload", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration",
 				"s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:ListBucketVersions", "s3:PutObject",
 			}) && sameStrings(resources, []string{"getatt:ArtifactBucket:Arn", "${ArtifactBucket.Arn}/*"})
+		}
+		if sid == "BindExactInstallerArtifactVersions" {
+			workerAMI.installerArtifactBinding = sameStrings(actions, []string{
+				"s3:GetObjectTagging", "s3:GetObjectVersionTagging", "s3:PutObjectTagging", "s3:PutObjectVersionTagging",
+			}) && sameStrings(resources, []string{"${ArtifactBucket.Arn}/deployments/*/artifacts/*"}) && statement["Condition"] == nil
 		}
 		for _, action := range actions {
 			switch {
@@ -318,7 +324,7 @@ func controlPolicyFailsClosed(value any) bool {
 			}
 		}
 	}
-	return workerAMI.observe && workerAMI.terminate && workerAMI.createFromBuilder && workerAMI.createOutputs && workerAMI.tagOutputs &&
+	return workerAMI.observe && workerAMI.terminate && workerAMI.createFromBuilder && workerAMI.createOutputs && workerAMI.tagOutputs && workerAMI.installerArtifactBinding &&
 		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
 		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs && workerAMI.createTaggedCompute && workerAMI.useNetworkCreationInputs &&
 		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute
@@ -437,6 +443,8 @@ func validateRoleResource(logicalID string, resource map[string]any) error {
 	if len(policies) == 0 {
 		return ErrInvalidTemplate
 	}
+	workerLogs := false
+	workerArtifacts := false
 	for _, item := range policies {
 		policy, ok := stringMap(item)
 		if !ok || validateTemplatePolicy(policy["PolicyDocument"], false) != nil {
@@ -448,10 +456,114 @@ func validateRoleResource(logicalID string, resource map[string]any) error {
 				if strings.HasPrefix(action, "iam:") || strings.HasPrefix(action, "ec2:") || strings.HasPrefix(action, "cloudformation:") {
 					return ErrInvalidTemplate
 				}
+				if action == "s3:GetObjectTagging" || action == "s3:GetObjectVersionTagging" || action == "s3:PutObjectTagging" || action == "s3:PutObjectVersionTagging" {
+					return ErrInvalidTemplate
+				}
 			}
+			workerLogs = workerLogs || hasExactWorkerLogStatement(policy["PolicyDocument"])
+			workerArtifacts = workerArtifacts || hasExactWorkerInstallerArtifactStatements(policy["PolicyDocument"])
 		}
 	}
+	if logicalID == "WorkerRole" && (!workerLogs || !workerArtifacts) {
+		return ErrInvalidTemplate
+	}
 	return nil
+}
+
+func hasExactWorkerInstallerArtifactStatements(value any) bool {
+	policy, ok := stringMap(value)
+	if !ok {
+		return false
+	}
+	statements, _ := anySlice(policy["Statement"])
+	workerSession, installer := false, false
+	for _, raw := range statements {
+		statement, ok := stringMap(raw)
+		if !ok {
+			return false
+		}
+		actions := stringValues(statement["Action"])
+		readsInstallerObject := false
+		for _, action := range actions {
+			if action == "s3:GetObject" || action == "s3:GetObjectVersion" {
+				readsInstallerObject = true
+			}
+		}
+		if !readsInstallerObject {
+			continue
+		}
+		resource, resourceOK := stringMap(statement["Resource"])
+		if !resourceOK {
+			return false
+		}
+		switch scalarString(statement["Sid"]) {
+		case "WorkerSessionArtifacts":
+			if !sameStringSet(actions, []string{"s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"}) ||
+				scalarString(resource["Fn::Sub"]) != "${ArtifactBucket.Arn}/workers/${!aws:userid}/*" || statement["Condition"] != nil {
+				return false
+			}
+			workerSession = true
+		case "WorkerInstallerArtifacts":
+			if !sameStringSet(actions, []string{"s3:GetObject", "s3:GetObjectVersion"}) ||
+				scalarString(resource["Fn::Sub"]) != "${ArtifactBucket.Arn}/deployments/*/artifacts/*" ||
+				!conditionSubEquals(statement, "StringEquals", "s3:ExistingObjectTag/dirextalk:worker_principal", "${!aws:userid}") {
+				return false
+			}
+			installer = true
+		default:
+			return false
+		}
+	}
+	return workerSession && installer
+}
+
+func conditionSubEquals(statement map[string]any, operator, key, expected string) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok {
+		return false
+	}
+	values, ok := stringMap(condition[operator])
+	if !ok {
+		return false
+	}
+	intrinsic, ok := stringMap(values[key])
+	return ok && scalarString(intrinsic["Fn::Sub"]) == expected
+}
+
+func hasExactWorkerLogStatement(value any) bool {
+	policy, ok := stringMap(value)
+	if !ok {
+		return false
+	}
+	statements, _ := anySlice(policy["Statement"])
+	for _, raw := range statements {
+		statement, ok := stringMap(raw)
+		if !ok || !sameStringSet(stringValues(statement["Action"]), []string{"logs:CreateLogStream", "logs:PutLogEvents"}) {
+			continue
+		}
+		resource, ok := stringMap(statement["Resource"])
+		if ok && scalarString(resource["Fn::Sub"]) == "${WorkerLogGroup.Arn}:log-stream:*" {
+			return true
+		}
+	}
+	return false
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(right))
+	for _, value := range right {
+		wanted[value] = struct{}{}
+	}
+	for _, value := range left {
+		if _, ok := wanted[value]; !ok {
+			return false
+		}
+		delete(wanted, value)
+	}
+	return len(wanted) == 0
 }
 
 func validateTemplatePolicy(value any, kmsKeyPolicy bool) error {

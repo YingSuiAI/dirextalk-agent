@@ -45,6 +45,9 @@ func (taskStoreStub) RenewStepLease(context.Context, task.MutationScope, task.Re
 func (taskStoreStub) CheckpointStep(context.Context, task.MutationScope, task.CheckpointStepCommand) (task.Attempt, error) {
 	return task.Attempt{}, task.ErrAttemptNotFound
 }
+func (taskStoreStub) SuspendStepForSecrets(context.Context, task.MutationScope, task.SuspendStepForSecretsCommand) (task.Attempt, error) {
+	return task.Attempt{}, task.ErrAttemptNotFound
+}
 func (taskStoreStub) CompleteStep(context.Context, task.MutationScope, task.CompleteStepCommand) (task.Attempt, error) {
 	return task.Attempt{}, task.ErrAttemptNotFound
 }

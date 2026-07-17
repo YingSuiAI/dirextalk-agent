@@ -60,6 +60,8 @@ type attemptSnapshotV1 struct {
 	Attempt         int32                `json:"attempt"`
 	LeaseEpoch      int64                `json:"lease_epoch"`
 	WorkerID        string               `json:"worker_id"`
+	TaskRevision    int64                `json:"task_revision,omitempty"`
+	StepRevision    int64                `json:"step_revision,omitempty"`
 	LeaseExpiresAt  time.Time            `json:"lease_expires_at"`
 	ExecutionStatus task.ExecutionStatus `json:"execution_status"`
 	OutcomeStatus   task.OutcomeStatus   `json:"outcome_status"`
@@ -75,6 +77,7 @@ func newAttemptSnapshot(item task.Attempt) attemptSnapshotV1 {
 	return attemptSnapshotV1{
 		SchemaVersion: snapshotSchemaV1, TaskID: item.TaskID, StepID: item.StepID,
 		Attempt: item.Attempt, LeaseEpoch: item.LeaseEpoch, WorkerID: item.WorkerID,
+		TaskRevision: item.TaskRevision, StepRevision: item.StepRevision,
 		LeaseExpiresAt: item.LeaseExpiresAt.UTC(), ExecutionStatus: item.ExecutionStatus,
 		OutcomeStatus: item.OutcomeStatus, CheckpointRef: item.CheckpointRef, ResultRef: item.ResultRef,
 		Revision: item.Revision, CreatedAt: item.CreatedAt.UTC(), UpdatedAt: item.UpdatedAt.UTC(),
@@ -107,6 +110,7 @@ func (snapshot attemptSnapshotV1) attemptValue() (task.Attempt, error) {
 	return normalizeAttemptTimes(task.Attempt{
 		TaskID: snapshot.TaskID, StepID: snapshot.StepID, Attempt: snapshot.Attempt,
 		LeaseEpoch: snapshot.LeaseEpoch, WorkerID: snapshot.WorkerID, LeaseExpiresAt: snapshot.LeaseExpiresAt,
+		TaskRevision: snapshot.TaskRevision, StepRevision: snapshot.StepRevision,
 		ExecutionStatus: snapshot.ExecutionStatus, OutcomeStatus: snapshot.OutcomeStatus,
 		CheckpointRef: snapshot.CheckpointRef, ResultRef: snapshot.ResultRef, Revision: snapshot.Revision,
 		CreatedAt: snapshot.CreatedAt, UpdatedAt: snapshot.UpdatedAt,

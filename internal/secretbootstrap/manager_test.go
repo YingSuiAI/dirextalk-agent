@@ -110,6 +110,46 @@ func TestInspectDoesNotConsumeAndWipesCallbackBuffer(t *testing.T) {
 	}
 }
 
+func TestFindUploadedBindsUniqueCallerRecipeOwnerAndPurpose(t *testing.T) {
+	manager, _, _, _ := newTestManager(t)
+	binding := BindingV1{
+		AgentInstanceID: "agent-instance-1", OwnerID: "owner-1", Purpose: "model token",
+		TargetID: "sha256:" + strings.Repeat("a", 64),
+	}
+	created, err := manager.Create(context.Background(), testBootstrapClientID, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := Seal(created.Session, []byte("service secret"), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploaded, err := manager.Upload(context.Background(), testBootstrapClientID, created.Session.SessionID, created.Session.Revision, created.UploadToken.Reveal(), envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := manager.FindUploaded(context.Background(), testBootstrapClientID, binding)
+	if err != nil || found.SessionID != uploaded.SessionID || found.Status != StatusUploaded {
+		t.Fatalf("found=%#v error=%v", found, err)
+	}
+	for name, mutate := range map[string]func(*BindingV1){
+		"owner":   func(value *BindingV1) { value.OwnerID = "other-owner" },
+		"purpose": func(value *BindingV1) { value.Purpose = "other purpose" },
+		"recipe":  func(value *BindingV1) { value.TargetID = "sha256:" + strings.Repeat("b", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := binding
+			mutate(&changed)
+			if _, err := manager.FindUploaded(context.Background(), testBootstrapClientID, changed); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+	if _, err := manager.FindUploaded(context.Background(), "different-client", binding); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong caller error=%v", err)
+	}
+}
+
 func TestManagerRejectsAnotherClientAcrossBootstrapLifecycle(t *testing.T) {
 	manager, _, _, _ := newTestManager(t)
 	created, err := manager.Create(context.Background(), testBootstrapClientID, testBinding())

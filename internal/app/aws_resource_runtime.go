@@ -14,6 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 )
 
@@ -47,7 +50,26 @@ func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connectio
 	if err != nil {
 		return nil, nil, cloudapp.ErrUnavailable
 	}
-	provider, err := awsprovider.NewEC2ResourceProviderFromConfig(config, awsprovider.WithWorkerAMIInspection(connection.AccountID, amiReader))
+	iamClient := iam.NewFromConfig(config)
+	artifactBinder, err := awsprovider.NewWorkerArtifactSessionBinder(
+		iamClient, s3.NewFromConfig(config), factory.agentInstanceID,
+		foundation.Partition, connection.AccountID, connection.Region, foundation.WorkerRoleName, foundation.ArtifactBucketName,
+	)
+	if err != nil {
+		return nil, nil, cloudapp.ErrUnavailable
+	}
+	secretBinder, err := awsprovider.NewWorkerSecretSessionBinder(
+		iamClient, secretsmanager.NewFromConfig(config), factory.agentInstanceID,
+		foundation.Partition, connection.AccountID, connection.Region, foundation.WorkerRoleName,
+	)
+	if err != nil {
+		return nil, nil, cloudapp.ErrUnavailable
+	}
+	provider, err := awsprovider.NewEC2ResourceProviderFromConfig(config,
+		awsprovider.WithWorkerAMIInspection(connection.AccountID, amiReader),
+		awsprovider.WithWorkerArtifactBinder(artifactBinder),
+		awsprovider.WithWorkerSecretBinder(secretBinder),
+	)
 	if err != nil {
 		return nil, nil, cloudapp.ErrUnavailable
 	}

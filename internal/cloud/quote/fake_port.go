@@ -52,6 +52,9 @@ func (f *FakePricingPort) Queries() []PricingQueryV1 {
 func cloneQuery(value PricingQueryV1) PricingQueryV1 {
 	value.Zones = append([]string(nil), value.Zones...)
 	value.Candidates = append([]PricingCandidateQueryV1(nil), value.Candidates...)
+	for index := range value.Candidates {
+		value.Candidates[index].DataVolumes = append([]VolumePricingV1(nil), value.Candidates[index].DataVolumes...)
+	}
 	return value
 }
 

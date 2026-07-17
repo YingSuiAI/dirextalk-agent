@@ -26,8 +26,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 )
@@ -60,6 +62,10 @@ type S3Factory interface {
 type SDKFactory struct{}
 
 func (SDKFactory) New(config aws.Config) S3API { return s3.NewFromConfig(config) }
+func (SDKFactory) NewSecrets(config aws.Config) SecretsAPI {
+	return secretsmanager.NewFromConfig(config)
+}
+func (SDKFactory) NewKMS(config aws.Config) KMSAPI { return kms.NewFromConfig(config) }
 
 type BundlePublisher struct {
 	agentInstanceID string
@@ -85,15 +91,20 @@ func (publisher *BundlePublisher) PublishBundles(
 	secretRefs []string,
 ) (cloudexecution.PublishedBundles, error) {
 	recipeBytes, executionBytes := compiled.RecipeBytes, compiled.ExecutionBytes
-	if len(secretRefs) != 0 {
-		return cloudexecution.PublishedBundles{}, ErrSecretReferencesUnsupported
-	}
 	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
 	if err != nil || deployment == uuid.Nil || len(recipeBytes) == 0 || len(recipeBytes) > maxBundleBytes || len(executionBytes) == 0 || len(executionBytes) > maxBundleBytes {
 		return cloudexecution.PublishedBundles{}, ErrInvalidRequest
 	}
 	if err := validateInstallerStaging(compiled); err != nil {
 		return cloudexecution.PublishedBundles{}, err
+	}
+	secretBindings, boundSecretRefs, err := validateInstallerSecretStaging(compiled, secretRefs, deployment.String())
+	if err != nil {
+		return cloudexecution.PublishedBundles{}, err
+	}
+	secretFactory, secretsEnabled := publisher.factory.(SecretsFactory)
+	if len(boundSecretRefs) != 0 && !secretsEnabled {
+		return cloudexecution.PublishedBundles{}, ErrSecretReferencesUnsupported
 	}
 	if security.ContainsLikelySecret(string(recipeBytes)) || security.ContainsLikelySecret(string(executionBytes)) {
 		return cloudexecution.PublishedBundles{}, ErrSecretMaterial
@@ -110,7 +121,7 @@ func (publisher *BundlePublisher) PublishBundles(
 		CheckpointPrefix: s3Prefix(spec.ArtifactBucketName, prefix+"checkpoints/"),
 		EvidencePrefix:   s3Prefix(spec.ArtifactBucketName, prefix+"evidence/"),
 		LogPrefix:        "cloudwatch://" + spec.StackName + "/" + deployment.String(),
-		SecretRefs:       []string{},
+		SecretRefs:       boundSecretRefs,
 	}
 	if recipeRef.Validate() != nil || executionRef.Validate() != nil || access.Validate() != nil {
 		return cloudexecution.PublishedBundles{}, ErrInvalidRequest
@@ -142,6 +153,14 @@ func (publisher *BundlePublisher) PublishBundles(
 	if client == nil {
 		return cloudexecution.PublishedBundles{}, ErrArtifactUnavailable
 	}
+	var secretsClient SecretsAPI
+	var kmsClient KMSAPI
+	if len(compiled.InstallerSecrets) != 0 {
+		secretsClient, kmsClient = secretFactory.NewSecrets(config), secretFactory.NewKMS(config)
+		if secretsClient == nil || kmsClient == nil {
+			return cloudexecution.PublishedBundles{}, ErrArtifactUnavailable
+		}
+	}
 	kmsAlias := "alias/" + spec.StackName
 	objects := []immutableObject{
 		{bucket: spec.ArtifactBucketName, key: prefix + "bundles/recipe.cbor", kind: "recipe", contentType: "application/cbor", payload: recipeBytes},
@@ -170,6 +189,13 @@ func (publisher *BundlePublisher) PublishBundles(
 		}
 		installerSources = append(installerSources, source)
 	}
+	installerSecrets, err := publishInstallerSecrets(ctx, secretsClient, kmsClient, secretPublicationRequest{
+		AgentInstanceID: publisher.agentInstanceID, OwnerID: connection.OwnerID, AccountID: connection.AccountID,
+		Region: connection.Region, DeploymentID: deployment.String(), KMSAlias: kmsAlias, Staging: compiled.InstallerSecrets,
+	})
+	if err != nil {
+		return cloudexecution.PublishedBundles{}, err
+	}
 	launchDigest := sha256.Sum256(launchBytes)
 	return cloudexecution.PublishedBundles{
 		Recipe: recipeRef, Execution: executionRef,
@@ -177,9 +203,10 @@ func (publisher *BundlePublisher) PublishBundles(
 			Reference: s3Prefix(spec.ArtifactBucketName, prefix+"launch/config.json"), SHA256: launchDigest,
 		},
 		Access:             access,
-		SecretBindings:     map[string]string{},
+		SecretBindings:     secretBindings,
 		InstallerRootTrust: compiled.InstallerRootTrust,
 		InstallerArtifacts: installerSources,
+		InstallerSecrets:   installerSecrets,
 	}, nil
 }
 

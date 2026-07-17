@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 )
@@ -46,6 +47,12 @@ type cloudGoalProviderFacts interface {
 	LoadPlan(context.Context, string, string) (cloudapproval.PlanV1, error)
 }
 
+type cloudGoalSecretSessionLocator interface {
+	FindUploaded(context.Context, string, secretbootstrap.BindingV1) (secretbootstrap.SessionV1, error)
+}
+
+var ErrCloudGoalSecretsNotReady = planning.ErrCloudGoalSecretsNotReady
+
 // cloudGoalProviderPlanMaterializer is deliberately not an AWS mutation
 // coordinator. Its only provider operations are active-Connection placement
 // discovery and price read-back; PostgreSQL remains the Quote/Plan fact source.
@@ -55,6 +62,7 @@ type cloudGoalProviderPlanMaterializer struct {
 	placements      cloudGoalPlacementPlanner
 	quotes          cloudGoalQuotePlanner
 	facts           cloudGoalProviderFacts
+	secrets         cloudGoalSecretSessionLocator
 	now             func() time.Time
 }
 
@@ -64,14 +72,15 @@ func newCloudGoalProviderPlanMaterializer(
 	placements cloudGoalPlacementPlanner,
 	quotes cloudGoalQuotePlanner,
 	facts cloudGoalProviderFacts,
+	secrets cloudGoalSecretSessionLocator,
 	now func() time.Time,
 ) (*cloudGoalProviderPlanMaterializer, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil || parsed.String() != agentInstanceID || connections == nil || placements == nil || quotes == nil || facts == nil || now == nil {
+	if err != nil || parsed == uuid.Nil || parsed.String() != agentInstanceID || connections == nil || placements == nil || quotes == nil || facts == nil || secrets == nil || now == nil {
 		return nil, cloudapp.ErrInvalid
 	}
 	return &cloudGoalProviderPlanMaterializer{
-		agentInstanceID: agentInstanceID, connections: connections, placements: placements, quotes: quotes, facts: facts, now: now,
+		agentInstanceID: agentInstanceID, connections: connections, placements: placements, quotes: quotes, facts: facts, secrets: secrets, now: now,
 	}, nil
 }
 
@@ -90,12 +99,16 @@ func (materializer *cloudGoalProviderPlanMaterializer) MaterializeProviderPlan(
 	if caller.Validate() != nil {
 		return planning.ProviderPlanMaterialization{}, cloudapp.ErrInvalid
 	}
+	secretScope, err := materializer.resolveSecretScope(ctx, caller.ClientID, request)
+	if err != nil {
+		return planning.ProviderPlanMaterialization{}, err
+	}
 	connection, err := materializer.connections.LoadConnection(ctx, request.Stage.Binding.OwnerID, request.Stage.Binding.ConnectionID)
 	if err != nil || materializer.placements.ValidateConnection(connection, request.Stage.Binding.OwnerID, request.Stage.Binding.ConnectionID) != nil {
 		return planning.ProviderPlanMaterialization{}, cloudapp.ErrUnavailable
 	}
 
-	quoted, err := materializer.loadOrCreateQuote(ctx, caller, connection, request, now)
+	quoted, err := materializer.loadOrCreateQuote(ctx, caller, connection, request, secretScope, now)
 	if err != nil {
 		return planning.ProviderPlanMaterialization{}, err
 	}
@@ -111,11 +124,12 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 	caller cloudapp.MutationScope,
 	connection cloudapp.Connection,
 	request planning.ProviderPlanMaterializationRequest,
+	secretScope []cloudquote.SecretScopeV1,
 	now time.Time,
 ) (cloudquote.QuoteV1, error) {
 	quoted, err := materializer.facts.LoadQuote(ctx, request.Stage.Binding.OwnerID, request.QuoteID)
 	if err == nil {
-		if validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, quoted, now) != nil {
+		if validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, secretScope, quoted, now) != nil {
 			return cloudquote.QuoteV1{}, cloudapp.ErrInvalid
 		}
 		return quoted, nil
@@ -135,12 +149,12 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 	if err != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
 	}
-	quoteRequest, command, err := buildCloudGoalQuoteRequest(materializer.agentInstanceID, connection, request, placement)
+	quoteRequest, command, err := buildCloudGoalQuoteRequest(materializer.agentInstanceID, connection, request, placement, secretScope)
 	if err != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrInvalid
 	}
 	created, err := materializer.quotes.Quote(ctx, connection, quoteRequest, request.Draft.Recipe)
-	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, created, now) != nil {
+	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, secretScope, created, now) != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
 	}
 	requestDigest, err := command.Digest()
@@ -151,7 +165,7 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 		return cloudquote.QuoteV1{}, err
 	}
 	readBack, err := materializer.facts.LoadQuote(ctx, request.Stage.Binding.OwnerID, request.QuoteID)
-	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, readBack, now) != nil || !sameCloudGoalQuote(created, readBack) {
+	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, secretScope, readBack, now) != nil || !sameCloudGoalQuote(created, readBack) {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
 	}
 	return readBack, nil
@@ -209,6 +223,7 @@ func buildCloudGoalQuoteRequest(
 	connection cloudapp.Connection,
 	request planning.ProviderPlanMaterializationRequest,
 	placement awsprovider.PlacementV1,
+	secretScope []cloudquote.SecretScopeV1,
 ) (cloudquote.RequestV1, cloudapp.CreateQuoteCommand, error) {
 	if placement.Region != connection.Region || len(placement.Candidates) != 3 ||
 		placement.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours, PublicIPv4Hours: cloudGoalRuntimeHours}) ||
@@ -217,7 +232,6 @@ func buildCloudGoalQuoteRequest(
 		placement.Network.PublicExposure || len(placement.Network.IngressPorts) != 0 {
 		return cloudquote.RequestV1{}, cloudapp.CreateQuoteCommand{}, cloudapp.ErrInvalid
 	}
-	secretScope := cloudGoalSecretScope(request.Draft)
 	retention := cloudGoalRetention(request.Stage.Binding.Retention)
 	if retention.Class == "" {
 		return cloudquote.RequestV1{}, cloudapp.CreateQuoteCommand{}, cloudapp.ErrInvalid
@@ -311,6 +325,7 @@ func validateCloudGoalProviderQuote(
 	agentInstanceID string,
 	connection cloudapp.Connection,
 	request planning.ProviderPlanMaterializationRequest,
+	secretScope []cloudquote.SecretScopeV1,
 	quoted cloudquote.QuoteV1,
 	now time.Time,
 ) error {
@@ -318,7 +333,6 @@ func validateCloudGoalProviderQuote(
 		quoted.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours, PublicIPv4Hours: cloudGoalRuntimeHours}) {
 		return cloudapp.ErrInvalid
 	}
-	secretScope := cloudGoalSecretScope(request.Draft)
 	retention := cloudGoalRetention(request.Stage.Binding.Retention)
 	for _, profile := range cloudGoalQuoteProfiles() {
 		candidate, found := quoted.Candidate(profile)
@@ -365,23 +379,35 @@ func validateCloudGoalProviderPlan(
 	return nil
 }
 
-func cloudGoalSecretScope(draft planning.RecipeDraft) []cloudquote.SecretScopeV1 {
-	if len(draft.Recipe.SecretSlots) == 0 {
-		return nil
+func (materializer *cloudGoalProviderPlanMaterializer) resolveSecretScope(ctx context.Context, callerClientID string, request planning.ProviderPlanMaterializationRequest) ([]cloudquote.SecretScopeV1, error) {
+	if len(request.Draft.Recipe.SecretSlots) == 0 {
+		return nil, nil
 	}
-	result := make([]cloudquote.SecretScopeV1, 0, len(draft.Recipe.SecretSlots))
-	recipePart := strings.TrimPrefix(draft.Digest, "sha256:")
-	for _, slot := range draft.Recipe.SecretSlots {
-		digest := sha256.Sum256([]byte(slot.SlotID))
+	result := make([]cloudquote.SecretScopeV1, 0, len(request.Draft.Recipe.SecretSlots))
+	seenPurposes := make(map[string]struct{}, len(request.Draft.Recipe.SecretSlots))
+	for _, slot := range request.Draft.Recipe.SecretSlots {
+		if _, duplicate := seenPurposes[slot.Purpose]; duplicate {
+			return nil, cloudapp.ErrInvalid
+		}
+		seenPurposes[slot.Purpose] = struct{}{}
+		binding := secretbootstrap.BindingV1{
+			AgentInstanceID: materializer.agentInstanceID, OwnerID: request.Stage.Binding.OwnerID,
+			Purpose: slot.Purpose, TargetID: request.Draft.Digest,
+		}
+		session, err := materializer.secrets.FindUploaded(ctx, callerClientID, binding)
+		parsed, parseErr := uuid.Parse(session.SessionID)
+		if err != nil || parseErr != nil || parsed == uuid.Nil || parsed.String() != session.SessionID ||
+			session.Binding() != binding || session.Status != secretbootstrap.StatusUploaded {
+			return nil, ErrCloudGoalSecretsNotReady
+		}
 		result = append(result, cloudquote.SecretScopeV1{
-			SecretRef: "secret_ref:recipe/" + recipePart + "/" + strings.ToLower(uuid.Must(uuid.FromBytes(digest[:16])).String()),
-			Purpose:   slot.Purpose, Delivery: slot.Delivery,
+			SecretRef: "secret_ref:bootstrap/" + session.SessionID, Purpose: slot.Purpose, Delivery: slot.Delivery,
 		})
 	}
 	slices.SortFunc(result, func(left, right cloudquote.SecretScopeV1) int {
 		return strings.Compare(left.SecretRef, right.SecretRef)
 	})
-	return result
+	return result, nil
 }
 
 func cloudGoalRetention(value task.RetentionPolicy) cloudquote.RetentionScopeV1 {

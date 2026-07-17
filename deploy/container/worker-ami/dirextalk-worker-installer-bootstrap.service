@@ -12,26 +12,21 @@ User=root
 Group=root
 ExecStart=/usr/local/bin/dirextalk-worker-installer bootstrap
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5s
 UMask=0077
 
 NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
+# The bootstrap mounts approval-bound EBS filesystems into the host mount
+# namespace before any Worker or installer socket can start. Filesystem
+# namespace hardening (ProtectSystem/PrivateDevices/PrivateTmp) would hide
+# those mounts from the services that consume them, so this one-shot keeps the
+# host namespace and retains only the capabilities required for block mounts
+# and root-owned path/fstab updates.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-PrivateDevices=yes
-PrivateTmp=yes
-ProtectClock=yes
-ProtectControlGroups=yes
-ProtectHome=yes
-ProtectHostname=yes
-ProtectKernelLogs=yes
-ProtectKernelModules=yes
-ProtectKernelTunables=yes
-ProtectProc=invisible
-ProtectSystem=strict
-ReadWritePaths=/etc/dirextalk-installer /etc/systemd/system /usr/local/share/dirextalk-worker/artifacts
-ProcSubset=pid
 RemoveIPC=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes

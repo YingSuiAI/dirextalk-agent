@@ -45,7 +45,7 @@ func cloudResourceScopeFromProto(value *agentv1.CloudResourceScope) cloudquote.R
 	if value == nil {
 		return cloudquote.ResourceScopeV1{}
 	}
-	return cloudquote.ResourceScopeV1{
+	result := cloudquote.ResourceScopeV1{
 		CandidateID: cloudCandidateFromProto(value.GetCandidateProfile()), Region: value.GetRegion(),
 		AvailabilityZones: value.GetAvailabilityZones(), InstanceType: value.GetInstanceType(), InstanceCount: value.GetInstanceCount(),
 		Architecture: recipe.Architecture(value.GetArchitecture()), VCPU: value.GetVcpu(), MemoryMiB: value.GetMemoryMib(),
@@ -55,6 +55,15 @@ func cloudResourceScopeFromProto(value *agentv1.CloudResourceScope) cloudquote.R
 		PurchaseOption: cloudPurchaseFromProto(value.GetPurchaseOption()), WorkerImageID: value.GetWorkerImageId(),
 		WorkerImageDigest: value.GetWorkerImageDigest(),
 	}
+	for _, volume := range value.GetVolumeScopes() {
+		result.VolumeScopes = append(result.VolumeScopes, cloudquote.VolumeScopeV1{
+			SlotID: volume.GetSlotId(), SizeGiB: volume.GetSizeGib(), VolumeType: volume.GetVolumeType(), IOPS: volume.GetIops(),
+			ThroughputMiBPS: volume.GetThroughputMibps(), Encrypted: volume.GetEncrypted(), KMSKeyID: volume.GetKmsKeyId(),
+			DeviceName: volume.GetDeviceName(), MountPath: volume.GetMountPath(), ReadOnly: volume.GetReadOnly(),
+			Persistent: volume.GetPersistent(), Disposition: cloudquote.VolumeDisposition(volume.GetDisposition()),
+		})
+	}
+	return result
 }
 
 func cloudNetworkScopeFromProto(value *agentv1.CloudNetworkScope) cloudquote.NetworkScopeV1 {
@@ -134,7 +143,7 @@ func cloudQuoteScopeToProto(value cloudquote.ScopeV1) *agentv1.CloudQuoteScope {
 }
 
 func cloudResourceScopeToProto(value cloudquote.ResourceScopeV1) *agentv1.CloudResourceScope {
-	return &agentv1.CloudResourceScope{
+	result := &agentv1.CloudResourceScope{
 		CandidateProfile: cloudCandidateToProto(value.CandidateID), Region: value.Region, AvailabilityZones: value.AvailabilityZones,
 		InstanceType: value.InstanceType, InstanceCount: value.InstanceCount, Architecture: string(value.Architecture),
 		Vcpu: value.VCPU, MemoryMib: value.MemoryMiB, GpuType: value.GPUType, GpuCount: value.GPUCount,
@@ -142,6 +151,15 @@ func cloudResourceScopeToProto(value cloudquote.ResourceScopeV1) *agentv1.CloudR
 		VolumeIops: value.VolumeIOPS, VolumeThroughputMibps: value.VolumeThroughputMiBPS, VolumeEncrypted: value.VolumeEncrypted,
 		PurchaseOption: cloudPurchaseToProto(value.PurchaseOption), WorkerImageId: value.WorkerImageID, WorkerImageDigest: value.WorkerImageDigest,
 	}
+	for _, volume := range value.VolumeScopes {
+		result.VolumeScopes = append(result.VolumeScopes, &agentv1.CloudVolumeScope{
+			SlotId: volume.SlotID, SizeGib: volume.SizeGiB, VolumeType: volume.VolumeType, Iops: volume.IOPS,
+			ThroughputMibps: volume.ThroughputMiBPS, Encrypted: volume.Encrypted, KmsKeyId: volume.KMSKeyID,
+			DeviceName: volume.DeviceName, MountPath: volume.MountPath, ReadOnly: volume.ReadOnly,
+			Persistent: volume.Persistent, Disposition: string(volume.Disposition),
+		})
+	}
+	return result
 }
 
 func cloudNetworkScopeToProto(value cloudquote.NetworkScopeV1) *agentv1.CloudNetworkScope {
@@ -344,6 +362,7 @@ func approvalResourceScopeToProto(value cloudapproval.ResourceScopeV1) *agentv1.
 		VolumeType: value.VolumeType, VolumeIOPS: value.VolumeIOPS, VolumeThroughputMiBPS: value.VolumeThroughputMiBPS,
 		VolumeEncrypted: value.VolumeEncrypted, PurchaseOption: cloudquote.PurchaseOption(value.PurchaseOption),
 		WorkerImageID: value.WorkerImageID, WorkerImageDigest: value.WorkerImageDigest,
+		VolumeScopes: append([]cloudquote.VolumeScopeV1(nil), value.VolumeScopes...),
 	})
 }
 

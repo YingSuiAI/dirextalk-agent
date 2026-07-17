@@ -15,9 +15,13 @@ import (
 	clouddestroy "github.com/YingSuiAI/dirextalk-agent/internal/cloud/destroy"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
+	"github.com/YingSuiAI/dirextalk-agent/internal/healthprobe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
+	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretresolver"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
@@ -35,7 +39,10 @@ type CloudComposition struct {
 	ActivePlacements           *cloudapp.AWSActivePlacementResolver
 	ProviderPlans              planning.ProviderPlanMaterializer
 	ManifestRecovery           *resourceManifestRecovery
+	HealthProbes               *resource.ProbeService
+	HealthProbeReader          cloudstatus.HealthReader
 	foundationLaunches         *foundationLaunchCompensator
+	healthProbeScheduler       *healthProbeScheduler
 	agentInstanceID            string
 	cloudGoalStore             *postgres.Store
 	vault                      *awsfoundation.CredentialVault
@@ -79,19 +86,20 @@ func (composition *CloudComposition) Close() {
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 4)
+	errorsChannel := make(chan error, 5)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
 	go func() { errorsChannel <- composition.ManifestRecovery.Run(runContext) }()
+	go func() { errorsChannel <- composition.healthProbeScheduler.Run(runContext) }()
 	first := <-errorsChannel
 	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel}
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -153,6 +161,11 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	deploymentSecrets, err := awsartifact.NewDeploymentSecretLifecycle(agentInstanceID, vault, awsartifact.SDKFactory{})
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	activeQuotes, err := cloudapp.NewAWSActiveQuoteEngine(agentInstanceID, vault, store, cloudapp.SDKActivePricingFactory{}, time.Now)
 	if err != nil {
 		vault.Close()
@@ -163,7 +176,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, time.Now)
+	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, manager, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -179,6 +192,26 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	resourceStore, err := store.NewResourceStore()
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	healthProbeStore, err := store.NewHealthProbeStore()
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	healthProbeEngine, err := healthprobe.NewEngine(healthprobe.NewNetworkTransport())
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	healthProbes, err := resource.NewProbeService(healthProbeEngine, healthProbeStore)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	healthProbeScheduler, err := newHealthProbeScheduler(healthProbes, 15*time.Second, time.Second, time.Minute)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -226,11 +259,17 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	installerSecrets, err := secretresolver.New(manager)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	execution, err := cloudexecution.NewService(
 		agentInstanceID, facts, store, store, store, artifactPublisher, workerAdapter,
 		cloudexecution.NewIdentityBootstrapPublisher(), resourcePlans, resourceProvisioner, store, time.Now,
 		cloudexecution.WithInstallerTrustIssuer(installerIssuer),
 		cloudexecution.WithInstallerArtifactResolver(installerArtifacts),
+		cloudexecution.WithInstallerSecretResolver(installerSecrets),
 	)
 	if err != nil {
 		vault.Close()
@@ -244,7 +283,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	lifecycle, err := cloudexecution.NewEphemeralDestroyController(cloudexecution.EphemeralDestroyConfig{
 		AgentInstanceID: agentInstanceID, PollInterval: 30 * time.Second,
 		Resources: resourceStore, Launches: store, Facts: facts, Connections: store, Tasks: store,
-		Lifecycles: awsLifecycleFactory{repository: resourceStore, runtimes: runtimeFactory}, Now: time.Now,
+		Lifecycles: awsLifecycleFactory{repository: resourceStore, runtimes: runtimeFactory}, Secrets: deploymentSecrets, Now: time.Now,
 	})
 	if err != nil {
 		vault.Close()
@@ -283,10 +322,13 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
 		FoundationConnections: connections, ActiveQuotes: activeQuotes, ActivePlacements: activePlacements, ProviderPlans: providerPlans,
-		ManifestRecovery:   manifestRecovery,
-		foundationLaunches: launchCompensator,
-		agentInstanceID:    agentInstanceID,
-		cloudGoalStore:     store,
-		vault:              vault,
+		ManifestRecovery:     manifestRecovery,
+		HealthProbes:         healthProbes,
+		HealthProbeReader:    healthProbeStore,
+		foundationLaunches:   launchCompensator,
+		healthProbeScheduler: healthProbeScheduler,
+		agentInstanceID:      agentInstanceID,
+		cloudGoalStore:       store,
+		vault:                vault,
 	}, nil
 }

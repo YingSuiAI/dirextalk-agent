@@ -459,6 +459,7 @@ func assertSafeLaunch(t *testing.T, provider *fakeProvider, request BuildRequest
 		"readonly expected_worker_sha256='" + strings.TrimPrefix(request.RootFS.Manifest.BinaryDigest, "sha256:") + "'",
 		"test \"$(cat \"${worker_digest_file}\")\" = \"${expected_worker_sha256}\"",
 		"systemctl disable dirextalk-worker-installer.socket", "systemctl enable dirextalk-worker-installer-bootstrap.service", "systemctl enable dirextalk-cloud-worker.service",
+		"for required_filesystem_tool in /usr/bin/lsblk /usr/sbin/blkid /usr/bin/findmnt /usr/sbin/mkfs.ext4 /usr/bin/mount",
 		"systemd-sysusers", "systemd-tmpfiles", "apt-get purge -y curl",
 		"dnf remove -y curl curl-minimal", "forbidden_runtime in aws node npm docker dockerd containerd",
 		"forbidden_unit in docker.service docker.socket containerd.service", "forbidden_socket in /var/run/docker.sock",

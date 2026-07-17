@@ -283,9 +283,13 @@ type DataSlotRequirementV1 struct {
 }
 
 type SecretSlotRequirementV1 struct {
-	SlotID   string         `json:"slot_id"`
-	Purpose  string         `json:"purpose"`
-	Delivery SecretDelivery `json:"delivery"`
+	SlotID     string         `json:"slot_id"`
+	Purpose    string         `json:"purpose"`
+	Delivery   SecretDelivery `json:"delivery"`
+	TargetPath string         `json:"target_path,omitempty"`
+	FileMode   uint32         `json:"file_mode,omitempty"`
+	OwnerUID   uint32         `json:"owner_uid,omitempty"`
+	OwnerGID   uint32         `json:"owner_gid,omitempty"`
 }
 
 type RestartContractV1 struct {

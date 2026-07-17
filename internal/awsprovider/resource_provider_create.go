@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -443,7 +444,39 @@ func (provider *EC2ResourceProvider) createInstance(ctx context.Context, request
 	if err != nil {
 		return resource.ProviderObservation{}, err
 	}
-	if volumeID := dependencyID(request.Dependencies, resource.TypeEBS); volumeID != "" {
+	if len(spec.Bootstrap.InstallerArtifacts) != 0 {
+		if provider.workerArtifacts == nil {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		if err := provider.workerArtifacts.Bind(ctx, WorkerArtifactBindingRequest{
+			InstanceID: instanceID, RoleName: spec.InstanceProfileName, DeploymentID: spec.Bootstrap.DeploymentID,
+			Artifacts: append([]installerbootstrap.ArtifactSourceV1(nil), spec.Bootstrap.InstallerArtifacts...),
+		}); err != nil {
+			return resource.ProviderObservation{}, err
+		}
+	}
+	if len(spec.Bootstrap.InstallerSecrets) != 0 {
+		if provider.workerSecrets == nil {
+			return resource.ProviderObservation{}, resource.ErrReadBack
+		}
+		if err := provider.workerSecrets.Bind(ctx, WorkerSecretBindingRequest{
+			InstanceID: instanceID, RoleName: spec.InstanceProfileName, DeploymentID: spec.Bootstrap.DeploymentID,
+			Secrets: append([]installerbootstrap.SecretSourceV1(nil), spec.Bootstrap.InstallerSecrets...),
+		}); err != nil {
+			return resource.ProviderObservation{}, err
+		}
+	}
+	if len(spec.DataVolumes) != 0 {
+		for _, attachment := range spec.DataVolumes {
+			volumeID := dependencyIDByResource(request.Dependencies, attachment.ResourceID, resource.TypeEBS)
+			if volumeID == "" {
+				return resource.ProviderObservation{}, resource.ErrInvalid
+			}
+			if err := provider.ensureVolumeAttachment(ctx, volumeID, instanceID, attachment.DeviceName); err != nil {
+				return resource.ProviderObservation{}, err
+			}
+		}
+	} else if volumeID := dependencyID(request.Dependencies, resource.TypeEBS); volumeID != "" {
 		if err := provider.ensureVolumeAttachment(ctx, volumeID, instanceID, spec.DataDeviceName); err != nil {
 			return resource.ProviderObservation{}, err
 		}

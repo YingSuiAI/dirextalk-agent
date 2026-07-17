@@ -44,6 +44,7 @@ type CloudGoalTaskRepository interface {
 	ListSteps(context.Context, string) ([]task.Step, error)
 	AcquireReadyStep(context.Context, task.MutationScope, task.AcquireReadyStepCommand) (task.Attempt, bool, error)
 	RenewStepLease(context.Context, task.MutationScope, task.RenewStepLeaseCommand) (task.Attempt, error)
+	SuspendStepForSecrets(context.Context, task.MutationScope, task.SuspendStepForSecretsCommand) (task.Attempt, error)
 	CompleteStep(context.Context, task.MutationScope, task.CompleteStepCommand) (task.Attempt, error)
 }
 
@@ -203,6 +204,9 @@ func (dispatcher *CloudGoalDispatcher) dispatchOne(ctx context.Context, item Clo
 	}
 	output, err := dispatcher.executeWithLease(ctx, item.Caller, request)
 	if err != nil {
+		if errors.Is(err, ErrCloudGoalSecretsNotReady) {
+			return dispatcher.suspendForServiceSecrets(ctx, item, next, attempt)
+		}
 		return err
 	}
 	resultRef, err := dispatcher.validateOutput(ctx, item, next, output)
@@ -223,6 +227,27 @@ func (dispatcher *CloudGoalDispatcher) dispatchOne(ctx context.Context, item Clo
 		return ErrCloudGoalDispatchInvalid
 	}
 	return nil
+}
+
+func (dispatcher *CloudGoalDispatcher) suspendForServiceSecrets(ctx context.Context, item CloudGoalDispatch, step task.Step, attempt task.Attempt) error {
+	if step.Name != cloudskill.StepPrepareResourceCandidates || attempt.TaskRevision < 1 || attempt.StepRevision < 1 || attempt.Revision < 1 {
+		return ErrCloudGoalDispatchInvalid
+	}
+	draft, found, err := dispatcher.queue.GetRecipeDraft(ctx, item.Caller, item.Session.Binding)
+	if err != nil || !found || draft.RecipeID != item.Session.Binding.RecipeID || draft.Digest == "" || len(draft.Recipe.SecretSlots) == 0 {
+		return ErrCloudGoalDispatchInvalid
+	}
+	requirements := make([]task.SecretWaitRequirement, 0, len(draft.Recipe.SecretSlots))
+	for _, slot := range draft.Recipe.SecretSlots {
+		requirements = append(requirements, task.SecretWaitRequirement{Purpose: slot.Purpose, RecipeDigest: draft.Digest})
+	}
+	_, err = dispatcher.tasks.SuspendStepForSecrets(ctx, item.Caller, task.SuspendStepForSecretsCommand{
+		IdempotencyKey: deterministicCloudGoalUUID(item.Session.Binding.RequestID, step.StepID, "wait-service-secrets", strconv.FormatInt(attempt.LeaseEpoch, 10)),
+		TaskID:         item.Task.TaskID, StepID: step.StepID, Attempt: attempt.Attempt, LeaseEpoch: attempt.LeaseEpoch, WorkerID: attempt.WorkerID,
+		ExpectedTaskRevision: attempt.TaskRevision, ExpectedStepRevision: attempt.StepRevision, ExpectedAttemptRevision: attempt.Revision,
+		AgentInstanceID: dispatcher.agentInstanceID, Requirements: requirements,
+	})
+	return err
 }
 
 func (dispatcher *CloudGoalDispatcher) executeWithLease(ctx context.Context, caller task.MutationScope, request CloudGoalStageRequest) (CloudGoalStageOutput, error) {
@@ -267,6 +292,12 @@ func (dispatcher *CloudGoalDispatcher) executeWithLease(ctx context.Context, cal
 	default:
 	}
 	if outputErr != nil {
+		if errors.Is(outputErr, ErrCloudGoalSecretsNotReady) {
+			// dispatchOne converts this into a lease-fenced, durable waiting_user
+			// transition. It is not a failed stage and never leaves a busy lease
+			// behind while the user uploads the declared service secret.
+			return CloudGoalStageOutput{}, ErrCloudGoalSecretsNotReady
+		}
 		return CloudGoalStageOutput{}, fmt.Errorf("%w", ErrCloudGoalOutputAdapterFailed)
 	}
 	return output, nil

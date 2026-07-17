@@ -43,6 +43,27 @@ type ArtifactMaterializer interface {
 	Replace(context.Context, ArtifactFileSpec, io.Reader) (bool, error)
 }
 
+type SecretDownload struct{ Value []byte }
+
+type SecretDownloader interface {
+	Read(context.Context, SecretSourceV1) (SecretDownload, error)
+}
+
+type SecretFileSpec struct {
+	Path string
+	Mode fs.FileMode
+	UID  int
+	GID  int
+}
+
+type SecretMaterializer interface {
+	ReplaceSecret(context.Context, SecretFileSpec, []byte) (bool, error)
+}
+
+type VolumeMaterializer interface {
+	Prepare(context.Context, []VolumeMountV1) error
+}
+
 // SocketController must leave the socket disabled when either method returns
 // an error. Enable implementations therefore compensate a partial enable or
 // start before returning failure.
@@ -52,26 +73,37 @@ type SocketController interface {
 }
 
 type Service struct {
-	source     MetadataSource
-	trust      TrustMaterializer
-	downloader ArtifactDownloader
-	artifacts  ArtifactMaterializer
-	socket     SocketController
-	trustFile  string
+	source      MetadataSource
+	trust       TrustMaterializer
+	downloader  ArtifactDownloader
+	artifacts   ArtifactMaterializer
+	volumes     VolumeMaterializer
+	secrets     SecretDownloader
+	secretFiles SecretMaterializer
+	socket      SocketController
+	trustFile   string
 }
 
 // NewService preserves the no-artifact constructor for Recipes that omit the
 // installer capability. If installer sources are present it deliberately
-// fails closed; production bootstrap uses NewArtifactService.
+// fails closed; production bootstrap uses NewArtifactSecretAndVolumeService.
 func NewService(source MetadataSource, trust TrustMaterializer, socket SocketController, trustFile string) (*Service, error) {
 	return NewArtifactService(source, trust, unavailableArtifacts{}, unavailableArtifacts{}, socket, trustFile)
 }
 
 func NewArtifactService(source MetadataSource, trust TrustMaterializer, downloader ArtifactDownloader, artifacts ArtifactMaterializer, socket SocketController, trustFile string) (*Service, error) {
-	if source == nil || trust == nil || downloader == nil || artifacts == nil || socket == nil || trustFile != DefaultTrustFile {
+	return NewArtifactAndSecretService(source, trust, downloader, artifacts, unavailableSecrets{}, unavailableSecrets{}, socket, trustFile)
+}
+
+func NewArtifactAndSecretService(source MetadataSource, trust TrustMaterializer, downloader ArtifactDownloader, artifacts ArtifactMaterializer, secrets SecretDownloader, secretFiles SecretMaterializer, socket SocketController, trustFile string) (*Service, error) {
+	return NewArtifactSecretAndVolumeService(source, trust, downloader, artifacts, unavailableVolumes{}, secrets, secretFiles, socket, trustFile)
+}
+
+func NewArtifactSecretAndVolumeService(source MetadataSource, trust TrustMaterializer, downloader ArtifactDownloader, artifacts ArtifactMaterializer, volumes VolumeMaterializer, secrets SecretDownloader, secretFiles SecretMaterializer, socket SocketController, trustFile string) (*Service, error) {
+	if source == nil || trust == nil || downloader == nil || artifacts == nil || volumes == nil || secrets == nil || secretFiles == nil || socket == nil || trustFile != DefaultTrustFile {
 		return nil, ErrInvalidInput
 	}
-	return &Service{source: source, trust: trust, downloader: downloader, artifacts: artifacts, socket: socket, trustFile: trustFile}, nil
+	return &Service{source: source, trust: trust, downloader: downloader, artifacts: artifacts, volumes: volumes, secrets: secrets, secretFiles: secretFiles, socket: socket, trustFile: trustFile}, nil
 }
 
 type unavailableArtifacts struct{}
@@ -81,6 +113,25 @@ func (unavailableArtifacts) Open(context.Context, ArtifactSourceV1) (ArtifactDow
 }
 
 func (unavailableArtifacts) Replace(context.Context, ArtifactFileSpec, io.Reader) (bool, error) {
+	return false, ErrMaterialize
+}
+
+type unavailableSecrets struct{}
+
+type unavailableVolumes struct{}
+
+func (unavailableVolumes) Prepare(_ context.Context, volumes []VolumeMountV1) error {
+	if len(volumes) != 0 {
+		return ErrMaterialize
+	}
+	return nil
+}
+
+func (unavailableSecrets) Read(context.Context, SecretSourceV1) (SecretDownload, error) {
+	return SecretDownload{}, ErrMaterialize
+}
+
+func (unavailableSecrets) ReplaceSecret(context.Context, SecretFileSpec, []byte) (bool, error) {
 	return false, ErrMaterialize
 }
 
@@ -123,6 +174,23 @@ func (service *Service) Run(ctx context.Context) error {
 		closeErr := download.Body.Close()
 		if replaceErr != nil || closeErr != nil {
 			return errors.Join(ErrMaterialize, replaceErr, closeErr)
+		}
+	}
+	if err := service.volumes.Prepare(ctx, userData.resolvedVolumes); err != nil {
+		return errors.Join(ErrMaterialize, err)
+	}
+	for _, source := range userData.InstallerSecrets {
+		download, readErr := service.secrets.Read(ctx, source)
+		if readErr != nil || len(download.Value) == 0 {
+			clear(download.Value)
+			return errors.Join(ErrMaterialize, readErr)
+		}
+		_, replaceErr := service.secretFiles.ReplaceSecret(ctx, SecretFileSpec{
+			Path: source.TargetPath, Mode: fs.FileMode(source.FileMode), UID: int(source.OwnerUID), GID: int(source.OwnerGID),
+		}, download.Value)
+		clear(download.Value)
+		if replaceErr != nil {
+			return errors.Join(ErrMaterialize, replaceErr)
 		}
 	}
 	encoded, err := EncodeTrustFile(*trust)

@@ -178,7 +178,68 @@ func cloudDeploymentToProto(item cloudstatus.Deployment, resources []resource.Re
 		ExecutionStatus: cloudWorkerExecutionToProto(workerItem.State), OutcomeStatus: cloudWorkerOutcomeToProto(workerItem.Outcome),
 		Resources: resourceSummary, Revision: cloudStatusRevisionSum(workerItem.Revision, resourceSummary.GetRevision()),
 		CreatedAt: cloudStatusTimestamp(workerItem.CreatedAt), UpdatedAt: cloudStatusTimestamp(updatedAt),
-		PlanId: item.PlanID, ConnectionId: item.ConnectionID,
+		PlanId: item.PlanID, ConnectionId: item.ConnectionID, Health: cloudHealthSummaryToProto(item.Health),
+	}
+}
+
+func cloudHealthSummaryToProto(value cloudstatus.HealthSummary) *agentv1.CloudHealthSummary {
+	counts := make([]*agentv1.CloudHealthProbeCount, 0, len(value.ProbeCounts))
+	for _, count := range value.ProbeCounts {
+		counts = append(counts, &agentv1.CloudHealthProbeCount{
+			Kind:  cloudHealthProbeKindToProto(count.Kind),
+			Count: count.Count,
+		})
+	}
+	return &agentv1.CloudHealthSummary{
+		Status:                 cloudHealthStatusToProto(value.Status),
+		Revision:               value.Revision,
+		ObservedAt:             cloudStatusTimestamp(value.ObservedAt),
+		NextDueAt:              cloudStatusTimestamp(value.NextDueAt),
+		ProbeCount:             value.ProbeCount,
+		ProbeCounts:            counts,
+		ExternalEvidenceDigest: value.EvidenceDigest,
+		EvidenceType:           cloudHealthEvidenceTypeToProto(value.EvidenceType),
+	}
+}
+
+func cloudHealthStatusToProto(value cloudstatus.HealthStatus) agentv1.CloudHealthStatus {
+	switch value {
+	case cloudstatus.HealthPending:
+		return agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_PENDING
+	case cloudstatus.HealthHealthy:
+		return agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_HEALTHY
+	case cloudstatus.HealthDegraded:
+		return agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_DEGRADED
+	case cloudstatus.HealthUnhealthy:
+		return agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_UNHEALTHY
+	case cloudstatus.HealthCanceled:
+		return agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_CANCELED
+	default:
+		return agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_UNKNOWN
+	}
+}
+
+func cloudHealthProbeKindToProto(value cloudstatus.HealthProbeKind) agentv1.CloudHealthProbeKind {
+	switch value {
+	case cloudstatus.HealthProbeLiveness:
+		return agentv1.CloudHealthProbeKind_CLOUD_HEALTH_PROBE_KIND_LIVENESS
+	case cloudstatus.HealthProbeReadiness:
+		return agentv1.CloudHealthProbeKind_CLOUD_HEALTH_PROBE_KIND_READINESS
+	case cloudstatus.HealthProbeSemantic:
+		return agentv1.CloudHealthProbeKind_CLOUD_HEALTH_PROBE_KIND_SEMANTIC
+	default:
+		return agentv1.CloudHealthProbeKind_CLOUD_HEALTH_PROBE_KIND_UNSPECIFIED
+	}
+}
+
+func cloudHealthEvidenceTypeToProto(value string) agentv1.CloudHealthEvidenceType {
+	switch value {
+	case cloudstatus.HealthEvidenceIndependent:
+		return agentv1.CloudHealthEvidenceType_CLOUD_HEALTH_EVIDENCE_TYPE_INDEPENDENT_EXTERNAL
+	case cloudstatus.HealthEvidenceNone, "":
+		return agentv1.CloudHealthEvidenceType_CLOUD_HEALTH_EVIDENCE_TYPE_NONE
+	default:
+		return agentv1.CloudHealthEvidenceType_CLOUD_HEALTH_EVIDENCE_TYPE_UNSPECIFIED
 	}
 }
 

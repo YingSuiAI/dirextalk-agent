@@ -226,7 +226,7 @@ func TestRecipeGoldenDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:42fd1e82e06f8008c2838982a21b16f3c806f9ac76a17d7dd8fe669dd1a3e3ad"
+	const want = "sha256:f0defb0b8f7851b8d2ee9894df989981ccb477cd02ba9e2c09127dc63e53a3e8"
 	if got != want {
 		t.Fatalf("recipe digest = %q, want golden %q", got, want)
 	}
@@ -276,8 +276,8 @@ func validRecipe() RecipeV1 {
 		},
 		DataSlots: []DataSlotRequirementV1{{SlotID: "documents", Purpose: "knowledge documents", ReadOnly: true}},
 		SecretSlots: []SecretSlotRequirementV1{
-			{SlotID: "model-token", Purpose: "embedding model access", Delivery: SecretDeliveryFile},
-			{SlotID: "integration-auth", Purpose: "service integration authentication", Delivery: SecretDeliveryFile},
+			{SlotID: "model-token", Purpose: "embedding model access", Delivery: SecretDeliveryFile, TargetPath: "/etc/dirextalk-service-secrets/model-token", FileMode: 0o400},
+			{SlotID: "integration-auth", Purpose: "service integration authentication", Delivery: SecretDeliveryFile, TargetPath: "/etc/dirextalk-service-secrets/integration-auth", FileMode: 0o400},
 		},
 		Network: &NetworkContractV1{
 			DefaultDeny: true,

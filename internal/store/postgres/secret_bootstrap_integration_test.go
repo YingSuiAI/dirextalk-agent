@@ -21,7 +21,9 @@ func TestSecretBootstrapPostgresAtomicRestartAndSingleConsumption(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, time.July, 16, 9, 0, 0, 0, time.UTC)
+	// PostgreSQL timestamptz persists microseconds. A non-representable input
+	// verifies that the public descriptor used for envelope AAD is canonical.
+	now := time.Date(2026, time.July, 16, 9, 0, 0, 123456789, time.UTC)
 	manager, err := secretbootstrap.NewManager(store, store.KeyStore(), rand.Reader, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)

@@ -16,13 +16,20 @@ type S3API interface {
 	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
-type S3ArtifactDownloader struct{ client S3API }
+type S3ArtifactDownloader struct {
+	client S3API
+	retry  accessDeniedRetry
+}
 
 func NewS3ArtifactDownloader(client S3API) (*S3ArtifactDownloader, error) {
-	if client == nil {
+	return newS3ArtifactDownloaderWithRetry(client, defaultAccessDeniedRetry())
+}
+
+func newS3ArtifactDownloaderWithRetry(client S3API, retry accessDeniedRetry) (*S3ArtifactDownloader, error) {
+	if client == nil || !retry.valid() {
 		return nil, ErrInvalidInput
 	}
-	return &S3ArtifactDownloader{client: client}, nil
+	return &S3ArtifactDownloader{client: client, retry: retry}, nil
 }
 
 // Open uses an exact object version and asks S3 to return its stored checksum.
@@ -34,9 +41,11 @@ func (downloader *S3ArtifactDownloader) Open(ctx context.Context, source Artifac
 		!digestPattern.MatchString(source.SHA256) || source.SizeBytes < 1 || source.TargetPath == "" || source.KMSKeyARN == "" {
 		return ArtifactDownload{}, ErrArtifactSource
 	}
-	output, err := downloader.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(source.Bucket), Key: aws.String(source.Key), VersionId: aws.String(source.VersionID),
-		ChecksumMode: s3types.ChecksumModeEnabled,
+	output, err := retryAccessDenied(ctx, downloader.retry, func() (*s3.GetObjectOutput, error) {
+		return downloader.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(source.Bucket), Key: aws.String(source.Key), VersionId: aws.String(source.VersionID),
+			ChecksumMode: s3types.ChecksumModeEnabled,
+		})
 	})
 	if err != nil || output == nil || output.Body == nil {
 		return ArtifactDownload{}, ErrArtifactSource

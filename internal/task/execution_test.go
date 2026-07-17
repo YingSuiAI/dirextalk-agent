@@ -172,6 +172,41 @@ func TestLeaseMutationCommandsBindEpochWorkerAndReferences(t *testing.T) {
 	}
 }
 
+func TestSuspendStepForSecretsFencesAllRevisionsWithoutSecretIdentity(t *testing.T) {
+	t.Parallel()
+
+	command := SuspendStepForSecretsCommand{
+		IdempotencyKey: uuid.NewString(), TaskID: uuid.NewString(), StepID: uuid.NewString(),
+		Attempt: 1, LeaseEpoch: 3, WorkerID: uuid.NewString(),
+		ExpectedTaskRevision: 7, ExpectedStepRevision: 5, ExpectedAttemptRevision: 2,
+		AgentInstanceID: uuid.NewString(),
+		Requirements:    []SecretWaitRequirement{{Purpose: "model token", RecipeDigest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+	}
+	if err := command.Validate(); err != nil {
+		t.Fatalf("valid suspend command rejected: %v", err)
+	}
+	reordered := command
+	reordered.Requirements = append([]SecretWaitRequirement(nil), command.Requirements...)
+	if command.Digest() != reordered.Digest() {
+		t.Fatal("equivalent secret wait requirements changed digest")
+	}
+	changed := command
+	changed.ExpectedAttemptRevision++
+	if command.Digest() == changed.Digest() {
+		t.Fatal("attempt revision did not bind suspend digest")
+	}
+	withSecret := command
+	withSecret.Requirements = []SecretWaitRequirement{{Purpose: "model token sk-abcdefghijklmnopqrstuvwxyz012345", RecipeDigest: command.Requirements[0].RecipeDigest}}
+	if err := withSecret.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("secret-shaped purpose error=%v, want ErrInvalid", err)
+	}
+	duplicate := command
+	duplicate.Requirements = append(duplicate.Requirements, command.Requirements[0])
+	if err := duplicate.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate purpose error=%v, want ErrInvalid", err)
+	}
+}
+
 func TestCancelDigestUsesOnlyRedactedReason(t *testing.T) {
 	t.Parallel()
 

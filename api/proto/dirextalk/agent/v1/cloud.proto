@@ -74,6 +74,22 @@ message CloudResourceScope {
   CloudPurchaseOption purchase_option = 17;
   string worker_image_id = 18;
   string worker_image_digest = 19;
+  repeated CloudVolumeScope volume_scopes = 20;
+}
+
+message CloudVolumeScope {
+  string slot_id = 1;
+  uint32 size_gib = 2;
+  string volume_type = 3;
+  uint32 iops = 4;
+  uint32 throughput_mibps = 5;
+  bool encrypted = 6;
+  string kms_key_id = 7;
+  string device_name = 8;
+  string mount_path = 9;
+  bool read_only = 10;
+  bool persistent = 11;
+  string disposition = 12;
 }
 
 message CloudNetworkScope {

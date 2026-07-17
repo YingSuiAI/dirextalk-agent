@@ -877,9 +877,15 @@ func TestScopedReferencesCancellationAndWorkerTrust(t *testing.T) {
 	}
 	request.IdempotencyKey = uuid.NewString()
 	request.ExpectedRevision = evidence.Revision
-	logged, err := fixture.service.RecordLog(context.Background(), request, "cloudwatch://agent-workers/d1/install-0001")
+	logRef := fmt.Sprintf("cloudwatch://agent-workers/d1/milestones-a%d-e%d", assignment.Attempt, assignment.LeaseEpoch)
+	logged, err := fixture.service.RecordLog(context.Background(), request, logRef)
 	if err != nil {
 		t.Fatal(err)
+	}
+	request.IdempotencyKey = uuid.NewString()
+	request.ExpectedRevision = logged.Revision
+	if _, err := fixture.service.RecordLog(context.Background(), request, logRef+"/forged"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("log reference outside the exact lease-fenced stream must be denied: %v", err)
 	}
 	last := logged.Evidence[len(logged.Evidence)-1]
 	if last.Kind != "log" || last.Trust != TrustWorkerClaim {

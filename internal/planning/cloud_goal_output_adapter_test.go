@@ -107,6 +107,23 @@ func TestPersistentCloudGoalOutputAdapterRejectsSecretCanaryAndIncompleteCandida
 	}
 }
 
+func TestPersistentCloudGoalOutputAdapterPreservesServiceSecretNotReady(t *testing.T) {
+	fixture := newPersistentOutputFixture(t)
+	requests := fixture.stageRequests()
+	for _, request := range requests[:2] {
+		if _, err := fixture.adapter.ExecuteCloudGoalStage(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture.materializer.err = ErrCloudGoalSecretsNotReady
+	if _, err := fixture.adapter.ExecuteCloudGoalStage(context.Background(), requests[2]); !errors.Is(err, ErrCloudGoalSecretsNotReady) {
+		t.Fatalf("error=%v", err)
+	}
+	if _, exists := fixture.repository.outputs[requests[2].OutputIdempotencyKey]; exists {
+		t.Fatal("secret-not-ready stage was persisted as complete")
+	}
+}
+
 func TestPersistentCloudGoalOutputAdapterRecoversProviderFactsAfterOutputJournalCrash(t *testing.T) {
 	fixture := newPersistentOutputFixture(t)
 	requests := fixture.stageRequests()
@@ -429,11 +446,15 @@ type persistentOutputMaterializerFake struct {
 	persistMutate func(*ProviderPlanMaterialization)
 	calls         int
 	request       ProviderPlanMaterializationRequest
+	err           error
 }
 
 func (fake *persistentOutputMaterializerFake) MaterializeProviderPlan(ctx context.Context, request ProviderPlanMaterializationRequest) (ProviderPlanMaterialization, error) {
 	fake.calls++
 	fake.request = request
+	if fake.err != nil {
+		return ProviderPlanMaterialization{}, fake.err
+	}
 	quoted := persistentOutputQuote(ctx, request, fake.now)
 	selected, _ := quoted.Candidate(cloudquote.CandidateRecommended)
 	plan, err := cloudapp.BuildPlan(request.AgentInstanceID, request.PlanID, quoted, cloudquote.CandidateRecommended, selected.Scope, fake.now)

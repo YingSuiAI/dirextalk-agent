@@ -74,6 +74,53 @@ type PlanPage struct {
 	NextPageToken string
 }
 
+type HealthStatus string
+
+const (
+	HealthUnknown   HealthStatus = "unknown"
+	HealthPending   HealthStatus = "pending"
+	HealthHealthy   HealthStatus = "healthy"
+	HealthDegraded  HealthStatus = "degraded"
+	HealthUnhealthy HealthStatus = "unhealthy"
+	HealthCanceled  HealthStatus = "canceled"
+)
+
+type HealthProbeKind string
+
+const (
+	HealthProbeLiveness  HealthProbeKind = "liveness"
+	HealthProbeReadiness HealthProbeKind = "readiness"
+	HealthProbeSemantic  HealthProbeKind = "semantic"
+)
+
+const (
+	HealthEvidenceNone        = "none"
+	HealthEvidenceIndependent = "independent_external"
+)
+
+type HealthProbeCount struct {
+	Kind  HealthProbeKind `json:"kind"`
+	Count uint32          `json:"count"`
+}
+
+// HealthSummary is the deliberately de-sensitive Deployment health read
+// model. It contains no endpoint, response body, header, pairing material, or
+// secret reference. Revision belongs only to the health axis.
+type HealthSummary struct {
+	Status         HealthStatus       `json:"status"`
+	Revision       int64              `json:"revision"`
+	ObservedAt     time.Time          `json:"observed_at"`
+	NextDueAt      time.Time          `json:"next_due_at"`
+	ProbeCount     uint32             `json:"probe_count"`
+	ProbeCounts    []HealthProbeCount `json:"probe_counts"`
+	EvidenceDigest string             `json:"external_evidence_digest"`
+	EvidenceType   string             `json:"evidence_type"`
+}
+
+type HealthReader interface {
+	GetDeploymentHealth(context.Context, string, string) (HealthSummary, error)
+}
+
 // Deployment is the durable cloud-control relationship for one exclusive
 // Worker. PlanID and ConnectionID come from the immutable launch intent; they
 // are deliberately not inferred from Worker or resource state.
@@ -81,6 +128,7 @@ type Deployment struct {
 	Worker       worker.Deployment
 	PlanID       string
 	ConnectionID string
+	Health       HealthSummary
 }
 
 type DeploymentPage struct {

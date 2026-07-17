@@ -76,6 +76,38 @@ func TestCloudGoalDispatcherDoesNotCompleteStaleOutputAndRecoversWithNextLeaseEp
 	}
 }
 
+func TestCloudGoalDispatcherPersistsSecretNotReadyAsWaitingUserWithoutHotRetry(t *testing.T) {
+	now := time.Date(2026, time.July, 17, 5, 0, 0, 0, time.UTC)
+	queue, tasks, facts, output, agentID := newCloudGoalDispatcherFixture(now)
+	dispatcher, err := NewCloudGoalDispatcher(agentID, queue, tasks, facts, output, CloudGoalDispatcherConfig{
+		PollInterval: time.Second, LeaseDuration: 6 * time.Second, BatchSize: 8, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for stage := 0; stage < 2; stage++ {
+		if err := dispatcher.RunOnce(context.Background()); err != nil {
+			t.Fatalf("setup stage %d error=%v", stage, err)
+		}
+	}
+	output.err = ErrCloudGoalSecretsNotReady
+	if err := dispatcher.RunOnce(context.Background()); err != nil {
+		t.Fatalf("secret wait transition error=%v", err)
+	}
+	if len(tasks.suspended) != 1 || len(output.requests) != 3 || queue.work.Task.ExecutionStatus != task.ExecutionWaitingUser ||
+		queue.work.Task.OutcomeStatus != task.OutcomePending || tasks.steps[2].ExecutionStatus != task.ExecutionWaitingUser ||
+		tasks.active.ExecutionStatus != task.ExecutionFinished || tasks.active.OutcomeStatus != task.OutcomeInterrupted {
+		t.Fatalf("secret wait was not durable/released: suspended=%d task=%#v step=%#v attempt=%#v", len(tasks.suspended), queue.work.Task, tasks.steps[2], tasks.active)
+	}
+	if got := tasks.suspended[0]; got.ExpectedTaskRevision < 1 || got.ExpectedStepRevision < 1 || got.ExpectedAttemptRevision < 1 ||
+		got.Requirements[0].Purpose != "model token" || got.Requirements[0].RecipeDigest != queue.draft.Digest {
+		t.Fatalf("secret wait lost fenced metadata: %#v", got)
+	}
+	if err := dispatcher.RunOnce(context.Background()); err != nil || len(output.requests) != 3 {
+		t.Fatalf("unexpired not-ready lease hot-retried: requests=%d err=%v", len(output.requests), err)
+	}
+}
+
 func TestCloudGoalDispatcherWithoutOutputAdapterLeavesQueueUntouched(t *testing.T) {
 	now := time.Date(2026, time.July, 17, 5, 0, 0, 0, time.UTC)
 	queue, tasks, facts, _, agentID := newCloudGoalDispatcherFixture(now)
@@ -107,7 +139,7 @@ type cloudGoalQueueFake struct {
 
 func (fake *cloudGoalQueueFake) ListDispatchableCloudGoals(context.Context, int) ([]CloudGoalDispatch, error) {
 	fake.listCalls++
-	if fake.work.Task.OutcomeStatus != task.OutcomePending {
+	if fake.work.Task.OutcomeStatus != task.OutcomePending || fake.work.Task.ExecutionStatus == task.ExecutionWaitingUser {
 		return nil, nil
 	}
 	return []CloudGoalDispatch{fake.work}, nil
@@ -130,6 +162,7 @@ type cloudGoalTaskFake struct {
 	steps        []task.Step
 	active       task.Attempt
 	completed    []task.CompleteStepCommand
+	suspended    []task.SuspendStepForSecretsCommand
 	leaseExpired bool
 }
 
@@ -151,11 +184,14 @@ func (fake *cloudGoalTaskFake) AcquireReadyStep(_ context.Context, _ task.Mutati
 		step.OutcomeStatus = task.OutcomePending
 		step.Attempt++
 		step.LeaseEpoch++
+		step.Revision++
 		fake.queue.work.Task.ExecutionStatus = task.ExecutionRunning
 		fake.queue.work.Task.CurrentStepID = step.StepID
+		fake.queue.work.Task.Revision++
 		fake.active = task.Attempt{
 			TaskID: step.TaskID, StepID: step.StepID, Attempt: step.Attempt, LeaseEpoch: step.LeaseEpoch,
 			WorkerID: command.WorkerID, LeaseExpiresAt: time.Now().Add(command.LeaseDuration),
+			TaskRevision: fake.queue.work.Task.Revision, StepRevision: step.Revision, Revision: 1,
 			ExecutionStatus: task.ExecutionRunning, OutcomeStatus: task.OutcomePending,
 		}
 		return fake.active, true, nil
@@ -164,6 +200,29 @@ func (fake *cloudGoalTaskFake) AcquireReadyStep(_ context.Context, _ task.Mutati
 }
 
 func (fake *cloudGoalTaskFake) RenewStepLease(context.Context, task.MutationScope, task.RenewStepLeaseCommand) (task.Attempt, error) {
+	return fake.active, nil
+}
+
+func (fake *cloudGoalTaskFake) SuspendStepForSecrets(_ context.Context, _ task.MutationScope, command task.SuspendStepForSecretsCommand) (task.Attempt, error) {
+	if command.TaskID != fake.active.TaskID || command.StepID != fake.active.StepID || command.Attempt != fake.active.Attempt ||
+		command.LeaseEpoch != fake.active.LeaseEpoch || command.WorkerID != fake.active.WorkerID ||
+		command.ExpectedTaskRevision != fake.active.TaskRevision || command.ExpectedStepRevision != fake.active.StepRevision ||
+		command.ExpectedAttemptRevision != fake.active.Revision {
+		return task.Attempt{}, task.ErrStaleLease
+	}
+	for index := range fake.steps {
+		if fake.steps[index].StepID == command.StepID {
+			fake.steps[index].ExecutionStatus = task.ExecutionWaitingUser
+			fake.steps[index].Revision++
+		}
+	}
+	fake.queue.work.Task.ExecutionStatus = task.ExecutionWaitingUser
+	fake.queue.work.Task.Revision++
+	fake.active.ExecutionStatus = task.ExecutionFinished
+	fake.active.OutcomeStatus = task.OutcomeInterrupted
+	fake.active.LeaseExpiresAt = time.Time{}
+	fake.active.Revision++
+	fake.suspended = append(fake.suspended, command)
 	return fake.active, nil
 }
 
@@ -177,6 +236,7 @@ func (fake *cloudGoalTaskFake) CompleteStep(_ context.Context, _ task.MutationSc
 			fake.steps[index].ExecutionStatus = task.ExecutionFinished
 			fake.steps[index].OutcomeStatus = task.OutcomeSucceeded
 			fake.steps[index].ResultRef = command.ResultRef
+			fake.steps[index].Revision++
 		}
 	}
 	fake.completed = append(fake.completed, command)
@@ -186,6 +246,7 @@ func (fake *cloudGoalTaskFake) CompleteStep(_ context.Context, _ task.MutationSc
 	completed.ResultRef = command.ResultRef
 	fake.queue.work.Task.ExecutionStatus = task.ExecutionQueued
 	fake.queue.work.Task.CurrentStepID = ""
+	fake.queue.work.Task.Revision++
 	if len(fake.completed) == len(fake.steps) {
 		fake.queue.work.Task.ExecutionStatus = task.ExecutionFinished
 		fake.queue.work.Task.OutcomeStatus = task.OutcomeSucceeded
@@ -198,10 +259,14 @@ type cloudGoalOutputFake struct {
 	planID   string
 	requests []CloudGoalStageRequest
 	failOnce bool
+	err      error
 }
 
 func (fake *cloudGoalOutputFake) ExecuteCloudGoalStage(_ context.Context, request CloudGoalStageRequest) (CloudGoalStageOutput, error) {
 	fake.requests = append(fake.requests, request)
+	if fake.err != nil {
+		return CloudGoalStageOutput{}, fake.err
+	}
 	if fake.failOnce {
 		fake.failOnce = false
 		return CloudGoalStageOutput{}, errors.New("injected output interruption")
@@ -248,7 +313,9 @@ func newCloudGoalDispatcherFixture(now time.Time) (*cloudGoalQueueFake, *cloudGo
 		Task: task.Task{TaskID: taskID, OwnerID: ownerID, Goal: "Research an official knowledge service.", ExecutionStatus: task.ExecutionQueued,
 			OutcomeStatus: task.OutcomePending, RetentionPolicy: task.RetentionEphemeralAutoDestroy, Revision: 1},
 		Caller: task.MutationScope{ClientID: "message-server", CredentialID: uuid.NewString()},
-	}, draft: RecipeDraft{RecipeID: recipeID, Digest: recipeDigest, Revision: 1}}
+	}, draft: RecipeDraft{RecipeID: recipeID, Digest: recipeDigest, Revision: 1, Recipe: recipe.RecipeV1{
+		RecipeID: recipeID, SecretSlots: []recipe.SecretSlotRequirementV1{{SlotID: "model-secret", Purpose: "model token", Delivery: recipe.SecretDeliveryEnvironment}},
+	}}}
 	definitions := cloudskill.PlanningSteps(requestID)
 	taskNamespace := uuid.MustParse(taskID)
 	steps := make([]task.Step, 0, len(definitions))

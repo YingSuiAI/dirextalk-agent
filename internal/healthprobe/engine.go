@@ -30,7 +30,7 @@ func (engine *Engine) Run(ctx context.Context, spec SpecV1) (ProbeEvidence, erro
 	}
 	evidence := ProbeEvidence{
 		SchemaVersion: EvidenceV1, Binding: spec.Binding, Purpose: spec.Purpose,
-		Protocol: spec.Protocol, Target: spec.Target, Status: StatusUnhealthy,
+		Protocol: spec.Protocol, Target: spec.Target, Trust: TrustIndependentControlPlane, Status: StatusUnhealthy,
 		Attempts: make([]AttemptEvidence, 0, spec.MaxAttempts),
 	}
 	for attempt := uint32(1); attempt <= spec.MaxAttempts; attempt++ {

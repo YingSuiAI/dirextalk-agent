@@ -415,6 +415,7 @@ type CloudResourceScope struct {
 	PurchaseOption        CloudPurchaseOption    `protobuf:"varint,17,opt,name=purchase_option,json=purchaseOption,proto3,enum=dirextalk.agent.v1.CloudPurchaseOption" json:"purchase_option,omitempty"`
 	WorkerImageId         string                 `protobuf:"bytes,18,opt,name=worker_image_id,json=workerImageId,proto3" json:"worker_image_id,omitempty"`
 	WorkerImageDigest     string                 `protobuf:"bytes,19,opt,name=worker_image_digest,json=workerImageDigest,proto3" json:"worker_image_digest,omitempty"`
+	VolumeScopes          []*CloudVolumeScope    `protobuf:"bytes,20,rep,name=volume_scopes,json=volumeScopes,proto3" json:"volume_scopes,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -582,6 +583,145 @@ func (x *CloudResourceScope) GetWorkerImageDigest() string {
 	return ""
 }
 
+func (x *CloudResourceScope) GetVolumeScopes() []*CloudVolumeScope {
+	if x != nil {
+		return x.VolumeScopes
+	}
+	return nil
+}
+
+type CloudVolumeScope struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SlotId          string                 `protobuf:"bytes,1,opt,name=slot_id,json=slotId,proto3" json:"slot_id,omitempty"`
+	SizeGib         uint32                 `protobuf:"varint,2,opt,name=size_gib,json=sizeGib,proto3" json:"size_gib,omitempty"`
+	VolumeType      string                 `protobuf:"bytes,3,opt,name=volume_type,json=volumeType,proto3" json:"volume_type,omitempty"`
+	Iops            uint32                 `protobuf:"varint,4,opt,name=iops,proto3" json:"iops,omitempty"`
+	ThroughputMibps uint32                 `protobuf:"varint,5,opt,name=throughput_mibps,json=throughputMibps,proto3" json:"throughput_mibps,omitempty"`
+	Encrypted       bool                   `protobuf:"varint,6,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	KmsKeyId        string                 `protobuf:"bytes,7,opt,name=kms_key_id,json=kmsKeyId,proto3" json:"kms_key_id,omitempty"`
+	DeviceName      string                 `protobuf:"bytes,8,opt,name=device_name,json=deviceName,proto3" json:"device_name,omitempty"`
+	MountPath       string                 `protobuf:"bytes,9,opt,name=mount_path,json=mountPath,proto3" json:"mount_path,omitempty"`
+	ReadOnly        bool                   `protobuf:"varint,10,opt,name=read_only,json=readOnly,proto3" json:"read_only,omitempty"`
+	Persistent      bool                   `protobuf:"varint,11,opt,name=persistent,proto3" json:"persistent,omitempty"`
+	Disposition     string                 `protobuf:"bytes,12,opt,name=disposition,proto3" json:"disposition,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *CloudVolumeScope) Reset() {
+	*x = CloudVolumeScope{}
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloudVolumeScope) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloudVolumeScope) ProtoMessage() {}
+
+func (x *CloudVolumeScope) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloudVolumeScope.ProtoReflect.Descriptor instead.
+func (*CloudVolumeScope) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CloudVolumeScope) GetSlotId() string {
+	if x != nil {
+		return x.SlotId
+	}
+	return ""
+}
+
+func (x *CloudVolumeScope) GetSizeGib() uint32 {
+	if x != nil {
+		return x.SizeGib
+	}
+	return 0
+}
+
+func (x *CloudVolumeScope) GetVolumeType() string {
+	if x != nil {
+		return x.VolumeType
+	}
+	return ""
+}
+
+func (x *CloudVolumeScope) GetIops() uint32 {
+	if x != nil {
+		return x.Iops
+	}
+	return 0
+}
+
+func (x *CloudVolumeScope) GetThroughputMibps() uint32 {
+	if x != nil {
+		return x.ThroughputMibps
+	}
+	return 0
+}
+
+func (x *CloudVolumeScope) GetEncrypted() bool {
+	if x != nil {
+		return x.Encrypted
+	}
+	return false
+}
+
+func (x *CloudVolumeScope) GetKmsKeyId() string {
+	if x != nil {
+		return x.KmsKeyId
+	}
+	return ""
+}
+
+func (x *CloudVolumeScope) GetDeviceName() string {
+	if x != nil {
+		return x.DeviceName
+	}
+	return ""
+}
+
+func (x *CloudVolumeScope) GetMountPath() string {
+	if x != nil {
+		return x.MountPath
+	}
+	return ""
+}
+
+func (x *CloudVolumeScope) GetReadOnly() bool {
+	if x != nil {
+		return x.ReadOnly
+	}
+	return false
+}
+
+func (x *CloudVolumeScope) GetPersistent() bool {
+	if x != nil {
+		return x.Persistent
+	}
+	return false
+}
+
+func (x *CloudVolumeScope) GetDisposition() string {
+	if x != nil {
+		return x.Disposition
+	}
+	return ""
+}
+
 type CloudNetworkScope struct {
 	state                  protoimpl.MessageState `protogen:"open.v1"`
 	VpcId                  string                 `protobuf:"bytes,1,opt,name=vpc_id,json=vpcId,proto3" json:"vpc_id,omitempty"`
@@ -601,7 +741,7 @@ type CloudNetworkScope struct {
 
 func (x *CloudNetworkScope) Reset() {
 	*x = CloudNetworkScope{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[2]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -613,7 +753,7 @@ func (x *CloudNetworkScope) String() string {
 func (*CloudNetworkScope) ProtoMessage() {}
 
 func (x *CloudNetworkScope) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[2]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -626,7 +766,7 @@ func (x *CloudNetworkScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudNetworkScope.ProtoReflect.Descriptor instead.
 func (*CloudNetworkScope) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{2}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CloudNetworkScope) GetVpcId() string {
@@ -717,7 +857,7 @@ type CloudSecretScope struct {
 
 func (x *CloudSecretScope) Reset() {
 	*x = CloudSecretScope{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[3]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +869,7 @@ func (x *CloudSecretScope) String() string {
 func (*CloudSecretScope) ProtoMessage() {}
 
 func (x *CloudSecretScope) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[3]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,7 +882,7 @@ func (x *CloudSecretScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudSecretScope.ProtoReflect.Descriptor instead.
 func (*CloudSecretScope) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{3}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CloudSecretScope) GetSecretRef() string {
@@ -777,7 +917,7 @@ type CloudIntegrationScope struct {
 
 func (x *CloudIntegrationScope) Reset() {
 	*x = CloudIntegrationScope{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[4]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -789,7 +929,7 @@ func (x *CloudIntegrationScope) String() string {
 func (*CloudIntegrationScope) ProtoMessage() {}
 
 func (x *CloudIntegrationScope) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[4]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -802,7 +942,7 @@ func (x *CloudIntegrationScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudIntegrationScope.ProtoReflect.Descriptor instead.
 func (*CloudIntegrationScope) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{4}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CloudIntegrationScope) GetKind() string {
@@ -838,7 +978,7 @@ type CloudRetentionScope struct {
 
 func (x *CloudRetentionScope) Reset() {
 	*x = CloudRetentionScope{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[5]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -850,7 +990,7 @@ func (x *CloudRetentionScope) String() string {
 func (*CloudRetentionScope) ProtoMessage() {}
 
 func (x *CloudRetentionScope) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[5]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -863,7 +1003,7 @@ func (x *CloudRetentionScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudRetentionScope.ProtoReflect.Descriptor instead.
 func (*CloudRetentionScope) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{5}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CloudRetentionScope) GetRetentionClass() CloudRetentionClass {
@@ -910,7 +1050,7 @@ type CloudQuoteScope struct {
 
 func (x *CloudQuoteScope) Reset() {
 	*x = CloudQuoteScope{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[6]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +1062,7 @@ func (x *CloudQuoteScope) String() string {
 func (*CloudQuoteScope) ProtoMessage() {}
 
 func (x *CloudQuoteScope) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[6]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +1075,7 @@ func (x *CloudQuoteScope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudQuoteScope.ProtoReflect.Descriptor instead.
 func (*CloudQuoteScope) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{6}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CloudQuoteScope) GetOwnerId() string {
@@ -1009,7 +1149,7 @@ type CloudUsageEstimate struct {
 
 func (x *CloudUsageEstimate) Reset() {
 	*x = CloudUsageEstimate{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[7]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1021,7 +1161,7 @@ func (x *CloudUsageEstimate) String() string {
 func (*CloudUsageEstimate) ProtoMessage() {}
 
 func (x *CloudUsageEstimate) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[7]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1034,7 +1174,7 @@ func (x *CloudUsageEstimate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudUsageEstimate.ProtoReflect.Descriptor instead.
 func (*CloudUsageEstimate) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{7}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CloudUsageEstimate) GetRuntimeHoursPerMonth() uint32 {
@@ -1101,7 +1241,7 @@ type CloudSpotQualification struct {
 
 func (x *CloudSpotQualification) Reset() {
 	*x = CloudSpotQualification{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[8]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1113,7 +1253,7 @@ func (x *CloudSpotQualification) String() string {
 func (*CloudSpotQualification) ProtoMessage() {}
 
 func (x *CloudSpotQualification) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[8]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1126,7 +1266,7 @@ func (x *CloudSpotQualification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudSpotQualification.ProtoReflect.Descriptor instead.
 func (*CloudSpotQualification) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{8}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CloudSpotQualification) GetEvidenceId() string {
@@ -1192,7 +1332,7 @@ type CloudCostItem struct {
 
 func (x *CloudCostItem) Reset() {
 	*x = CloudCostItem{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[9]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1204,7 +1344,7 @@ func (x *CloudCostItem) String() string {
 func (*CloudCostItem) ProtoMessage() {}
 
 func (x *CloudCostItem) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[9]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1217,7 +1357,7 @@ func (x *CloudCostItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudCostItem.ProtoReflect.Descriptor instead.
 func (*CloudCostItem) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{9}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CloudCostItem) GetCategory() string {
@@ -1275,7 +1415,7 @@ type CloudQuotaEvidence struct {
 
 func (x *CloudQuotaEvidence) Reset() {
 	*x = CloudQuotaEvidence{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[10]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1287,7 +1427,7 @@ func (x *CloudQuotaEvidence) String() string {
 func (*CloudQuotaEvidence) ProtoMessage() {}
 
 func (x *CloudQuotaEvidence) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[10]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1300,7 +1440,7 @@ func (x *CloudQuotaEvidence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudQuotaEvidence.ProtoReflect.Descriptor instead.
 func (*CloudQuotaEvidence) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{10}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CloudQuotaEvidence) GetServiceCode() string {
@@ -1355,7 +1495,7 @@ type CloudQuoteCandidate struct {
 
 func (x *CloudQuoteCandidate) Reset() {
 	*x = CloudQuoteCandidate{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[11]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1367,7 +1507,7 @@ func (x *CloudQuoteCandidate) String() string {
 func (*CloudQuoteCandidate) ProtoMessage() {}
 
 func (x *CloudQuoteCandidate) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[11]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1380,7 +1520,7 @@ func (x *CloudQuoteCandidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudQuoteCandidate.ProtoReflect.Descriptor instead.
 func (*CloudQuoteCandidate) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{11}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CloudQuoteCandidate) GetCandidateProfile() CloudCandidateProfile {
@@ -1464,7 +1604,7 @@ type CloudQuote struct {
 
 func (x *CloudQuote) Reset() {
 	*x = CloudQuote{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[12]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1476,7 +1616,7 @@ func (x *CloudQuote) String() string {
 func (*CloudQuote) ProtoMessage() {}
 
 func (x *CloudQuote) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[12]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1489,7 +1629,7 @@ func (x *CloudQuote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudQuote.ProtoReflect.Descriptor instead.
 func (*CloudQuote) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{12}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CloudQuote) GetQuoteId() string {
@@ -1587,7 +1727,7 @@ type CloudPlan struct {
 
 func (x *CloudPlan) Reset() {
 	*x = CloudPlan{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[13]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +1739,7 @@ func (x *CloudPlan) String() string {
 func (*CloudPlan) ProtoMessage() {}
 
 func (x *CloudPlan) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[13]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +1752,7 @@ func (x *CloudPlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudPlan.ProtoReflect.Descriptor instead.
 func (*CloudPlan) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{13}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CloudPlan) GetPlanId() string {
@@ -1747,7 +1887,7 @@ type DeviceApprovalSignature struct {
 
 func (x *DeviceApprovalSignature) Reset() {
 	*x = DeviceApprovalSignature{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1759,7 +1899,7 @@ func (x *DeviceApprovalSignature) String() string {
 func (*DeviceApprovalSignature) ProtoMessage() {}
 
 func (x *DeviceApprovalSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1772,7 +1912,7 @@ func (x *DeviceApprovalSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceApprovalSignature.ProtoReflect.Descriptor instead.
 func (*DeviceApprovalSignature) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{14}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeviceApprovalSignature) GetApprovalId() string {
@@ -1835,7 +1975,7 @@ type ApprovalChallenge struct {
 
 func (x *ApprovalChallenge) Reset() {
 	*x = ApprovalChallenge{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1847,7 +1987,7 @@ func (x *ApprovalChallenge) String() string {
 func (*ApprovalChallenge) ProtoMessage() {}
 
 func (x *ApprovalChallenge) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1860,7 +2000,7 @@ func (x *ApprovalChallenge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalChallenge.ProtoReflect.Descriptor instead.
 func (*ApprovalChallenge) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{15}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ApprovalChallenge) GetChallengeId() string {
@@ -1995,7 +2135,7 @@ type AwsBootstrapIdentity struct {
 
 func (x *AwsBootstrapIdentity) Reset() {
 	*x = AwsBootstrapIdentity{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2007,7 +2147,7 @@ func (x *AwsBootstrapIdentity) String() string {
 func (*AwsBootstrapIdentity) ProtoMessage() {}
 
 func (x *AwsBootstrapIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2020,7 +2160,7 @@ func (x *AwsBootstrapIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwsBootstrapIdentity.ProtoReflect.Descriptor instead.
 func (*AwsBootstrapIdentity) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{16}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AwsBootstrapIdentity) GetAccountId() string {
@@ -2077,7 +2217,7 @@ type CloudConnection struct {
 
 func (x *CloudConnection) Reset() {
 	*x = CloudConnection{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2089,7 +2229,7 @@ func (x *CloudConnection) String() string {
 func (*CloudConnection) ProtoMessage() {}
 
 func (x *CloudConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2102,7 +2242,7 @@ func (x *CloudConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudConnection.ProtoReflect.Descriptor instead.
 func (*CloudConnection) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{17}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CloudConnection) GetConnectionId() string {
@@ -2192,7 +2332,7 @@ type GetCloudConnectionRequest struct {
 
 func (x *GetCloudConnectionRequest) Reset() {
 	*x = GetCloudConnectionRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2204,7 +2344,7 @@ func (x *GetCloudConnectionRequest) String() string {
 func (*GetCloudConnectionRequest) ProtoMessage() {}
 
 func (x *GetCloudConnectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2217,7 +2357,7 @@ func (x *GetCloudConnectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCloudConnectionRequest.ProtoReflect.Descriptor instead.
 func (*GetCloudConnectionRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{18}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetCloudConnectionRequest) GetOwnerId() string {
@@ -2243,7 +2383,7 @@ type GetCloudConnectionResponse struct {
 
 func (x *GetCloudConnectionResponse) Reset() {
 	*x = GetCloudConnectionResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2255,7 +2395,7 @@ func (x *GetCloudConnectionResponse) String() string {
 func (*GetCloudConnectionResponse) ProtoMessage() {}
 
 func (x *GetCloudConnectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2268,7 +2408,7 @@ func (x *GetCloudConnectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCloudConnectionResponse.ProtoReflect.Descriptor instead.
 func (*GetCloudConnectionResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{19}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetCloudConnectionResponse) GetConnection() *CloudConnection {
@@ -2289,7 +2429,7 @@ type ListCloudConnectionsRequest struct {
 
 func (x *ListCloudConnectionsRequest) Reset() {
 	*x = ListCloudConnectionsRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2301,7 +2441,7 @@ func (x *ListCloudConnectionsRequest) String() string {
 func (*ListCloudConnectionsRequest) ProtoMessage() {}
 
 func (x *ListCloudConnectionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2314,7 +2454,7 @@ func (x *ListCloudConnectionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCloudConnectionsRequest.ProtoReflect.Descriptor instead.
 func (*ListCloudConnectionsRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{20}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ListCloudConnectionsRequest) GetOwnerId() string {
@@ -2348,7 +2488,7 @@ type ListCloudConnectionsResponse struct {
 
 func (x *ListCloudConnectionsResponse) Reset() {
 	*x = ListCloudConnectionsResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2360,7 +2500,7 @@ func (x *ListCloudConnectionsResponse) String() string {
 func (*ListCloudConnectionsResponse) ProtoMessage() {}
 
 func (x *ListCloudConnectionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[21]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2373,7 +2513,7 @@ func (x *ListCloudConnectionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCloudConnectionsResponse.ProtoReflect.Descriptor instead.
 func (*ListCloudConnectionsResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{21}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListCloudConnectionsResponse) GetConnections() []*CloudConnection {
@@ -2401,7 +2541,7 @@ type PreviewAwsIdentityRequest struct {
 
 func (x *PreviewAwsIdentityRequest) Reset() {
 	*x = PreviewAwsIdentityRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2413,7 +2553,7 @@ func (x *PreviewAwsIdentityRequest) String() string {
 func (*PreviewAwsIdentityRequest) ProtoMessage() {}
 
 func (x *PreviewAwsIdentityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[22]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2426,7 +2566,7 @@ func (x *PreviewAwsIdentityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewAwsIdentityRequest.ProtoReflect.Descriptor instead.
 func (*PreviewAwsIdentityRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{22}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PreviewAwsIdentityRequest) GetBootstrapSessionId() string {
@@ -2465,7 +2605,7 @@ type PreviewAwsIdentityResponse struct {
 
 func (x *PreviewAwsIdentityResponse) Reset() {
 	*x = PreviewAwsIdentityResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2477,7 +2617,7 @@ func (x *PreviewAwsIdentityResponse) String() string {
 func (*PreviewAwsIdentityResponse) ProtoMessage() {}
 
 func (x *PreviewAwsIdentityResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[23]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2490,7 +2630,7 @@ func (x *PreviewAwsIdentityResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewAwsIdentityResponse.ProtoReflect.Descriptor instead.
 func (*PreviewAwsIdentityResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{23}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PreviewAwsIdentityResponse) GetIdentity() *AwsBootstrapIdentity {
@@ -2556,7 +2696,7 @@ type CreateCloudQuoteRequest struct {
 
 func (x *CreateCloudQuoteRequest) Reset() {
 	*x = CreateCloudQuoteRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2568,7 +2708,7 @@ func (x *CreateCloudQuoteRequest) String() string {
 func (*CreateCloudQuoteRequest) ProtoMessage() {}
 
 func (x *CreateCloudQuoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[24]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2581,7 +2721,7 @@ func (x *CreateCloudQuoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCloudQuoteRequest.ProtoReflect.Descriptor instead.
 func (*CreateCloudQuoteRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{24}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateCloudQuoteRequest) GetIdempotencyKey() string {
@@ -2635,7 +2775,7 @@ type CreateCloudQuoteResponse struct {
 
 func (x *CreateCloudQuoteResponse) Reset() {
 	*x = CreateCloudQuoteResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2647,7 +2787,7 @@ func (x *CreateCloudQuoteResponse) String() string {
 func (*CreateCloudQuoteResponse) ProtoMessage() {}
 
 func (x *CreateCloudQuoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[25]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2660,7 +2800,7 @@ func (x *CreateCloudQuoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCloudQuoteResponse.ProtoReflect.Descriptor instead.
 func (*CreateCloudQuoteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{25}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateCloudQuoteResponse) GetQuote() *CloudQuote {
@@ -2680,7 +2820,7 @@ type GetCloudQuoteRequest struct {
 
 func (x *GetCloudQuoteRequest) Reset() {
 	*x = GetCloudQuoteRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2692,7 +2832,7 @@ func (x *GetCloudQuoteRequest) String() string {
 func (*GetCloudQuoteRequest) ProtoMessage() {}
 
 func (x *GetCloudQuoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[26]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2705,7 +2845,7 @@ func (x *GetCloudQuoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCloudQuoteRequest.ProtoReflect.Descriptor instead.
 func (*GetCloudQuoteRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{26}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetCloudQuoteRequest) GetQuoteId() string {
@@ -2731,7 +2871,7 @@ type GetCloudQuoteResponse struct {
 
 func (x *GetCloudQuoteResponse) Reset() {
 	*x = GetCloudQuoteResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2743,7 +2883,7 @@ func (x *GetCloudQuoteResponse) String() string {
 func (*GetCloudQuoteResponse) ProtoMessage() {}
 
 func (x *GetCloudQuoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[27]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2756,7 +2896,7 @@ func (x *GetCloudQuoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCloudQuoteResponse.ProtoReflect.Descriptor instead.
 func (*GetCloudQuoteResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{27}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetCloudQuoteResponse) GetQuote() *CloudQuote {
@@ -2778,7 +2918,7 @@ type CreateCloudPlanRequest struct {
 
 func (x *CreateCloudPlanRequest) Reset() {
 	*x = CreateCloudPlanRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2790,7 +2930,7 @@ func (x *CreateCloudPlanRequest) String() string {
 func (*CreateCloudPlanRequest) ProtoMessage() {}
 
 func (x *CreateCloudPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[28]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2803,7 +2943,7 @@ func (x *CreateCloudPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCloudPlanRequest.ProtoReflect.Descriptor instead.
 func (*CreateCloudPlanRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{28}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *CreateCloudPlanRequest) GetIdempotencyKey() string {
@@ -2843,7 +2983,7 @@ type CreateCloudPlanResponse struct {
 
 func (x *CreateCloudPlanResponse) Reset() {
 	*x = CreateCloudPlanResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2855,7 +2995,7 @@ func (x *CreateCloudPlanResponse) String() string {
 func (*CreateCloudPlanResponse) ProtoMessage() {}
 
 func (x *CreateCloudPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[29]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2868,7 +3008,7 @@ func (x *CreateCloudPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCloudPlanResponse.ProtoReflect.Descriptor instead.
 func (*CreateCloudPlanResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{29}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *CreateCloudPlanResponse) GetPlan() *CloudPlan {
@@ -2888,7 +3028,7 @@ type GetCloudPlanRequest struct {
 
 func (x *GetCloudPlanRequest) Reset() {
 	*x = GetCloudPlanRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[30]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2900,7 +3040,7 @@ func (x *GetCloudPlanRequest) String() string {
 func (*GetCloudPlanRequest) ProtoMessage() {}
 
 func (x *GetCloudPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[30]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2913,7 +3053,7 @@ func (x *GetCloudPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCloudPlanRequest.ProtoReflect.Descriptor instead.
 func (*GetCloudPlanRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{30}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetCloudPlanRequest) GetPlanId() string {
@@ -2939,7 +3079,7 @@ type GetCloudPlanResponse struct {
 
 func (x *GetCloudPlanResponse) Reset() {
 	*x = GetCloudPlanResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[31]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2951,7 +3091,7 @@ func (x *GetCloudPlanResponse) String() string {
 func (*GetCloudPlanResponse) ProtoMessage() {}
 
 func (x *GetCloudPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[31]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2964,7 +3104,7 @@ func (x *GetCloudPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCloudPlanResponse.ProtoReflect.Descriptor instead.
 func (*GetCloudPlanResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{31}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetCloudPlanResponse) GetPlan() *CloudPlan {
@@ -2985,7 +3125,7 @@ type ListCloudPlansRequest struct {
 
 func (x *ListCloudPlansRequest) Reset() {
 	*x = ListCloudPlansRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[32]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2997,7 +3137,7 @@ func (x *ListCloudPlansRequest) String() string {
 func (*ListCloudPlansRequest) ProtoMessage() {}
 
 func (x *ListCloudPlansRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[32]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3010,7 +3150,7 @@ func (x *ListCloudPlansRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCloudPlansRequest.ProtoReflect.Descriptor instead.
 func (*ListCloudPlansRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{32}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListCloudPlansRequest) GetOwnerId() string {
@@ -3044,7 +3184,7 @@ type ListCloudPlansResponse struct {
 
 func (x *ListCloudPlansResponse) Reset() {
 	*x = ListCloudPlansResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[33]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3056,7 +3196,7 @@ func (x *ListCloudPlansResponse) String() string {
 func (*ListCloudPlansResponse) ProtoMessage() {}
 
 func (x *ListCloudPlansResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[33]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3069,7 +3209,7 @@ func (x *ListCloudPlansResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCloudPlansResponse.ProtoReflect.Descriptor instead.
 func (*ListCloudPlansResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{33}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListCloudPlansResponse) GetPlans() []*CloudPlan {
@@ -3099,7 +3239,7 @@ type CreateApprovalChallengeRequest struct {
 
 func (x *CreateApprovalChallengeRequest) Reset() {
 	*x = CreateApprovalChallengeRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[34]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3111,7 +3251,7 @@ func (x *CreateApprovalChallengeRequest) String() string {
 func (*CreateApprovalChallengeRequest) ProtoMessage() {}
 
 func (x *CreateApprovalChallengeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[34]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3124,7 +3264,7 @@ func (x *CreateApprovalChallengeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateApprovalChallengeRequest.ProtoReflect.Descriptor instead.
 func (*CreateApprovalChallengeRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{34}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *CreateApprovalChallengeRequest) GetIdempotencyKey() string {
@@ -3171,7 +3311,7 @@ type CreateApprovalChallengeResponse struct {
 
 func (x *CreateApprovalChallengeResponse) Reset() {
 	*x = CreateApprovalChallengeResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[35]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3183,7 +3323,7 @@ func (x *CreateApprovalChallengeResponse) String() string {
 func (*CreateApprovalChallengeResponse) ProtoMessage() {}
 
 func (x *CreateApprovalChallengeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[35]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3196,7 +3336,7 @@ func (x *CreateApprovalChallengeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateApprovalChallengeResponse.ProtoReflect.Descriptor instead.
 func (*CreateApprovalChallengeResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{35}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *CreateApprovalChallengeResponse) GetChallenge() *ApprovalChallenge {
@@ -3219,7 +3359,7 @@ type ApproveCloudPlanRequest struct {
 
 func (x *ApproveCloudPlanRequest) Reset() {
 	*x = ApproveCloudPlanRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[36]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3231,7 +3371,7 @@ func (x *ApproveCloudPlanRequest) String() string {
 func (*ApproveCloudPlanRequest) ProtoMessage() {}
 
 func (x *ApproveCloudPlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[36]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3244,7 +3384,7 @@ func (x *ApproveCloudPlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveCloudPlanRequest.ProtoReflect.Descriptor instead.
 func (*ApproveCloudPlanRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{36}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ApproveCloudPlanRequest) GetIdempotencyKey() string {
@@ -3291,7 +3431,7 @@ type ApproveCloudPlanResponse struct {
 
 func (x *ApproveCloudPlanResponse) Reset() {
 	*x = ApproveCloudPlanResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[37]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3303,7 +3443,7 @@ func (x *ApproveCloudPlanResponse) String() string {
 func (*ApproveCloudPlanResponse) ProtoMessage() {}
 
 func (x *ApproveCloudPlanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[37]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3316,7 +3456,7 @@ func (x *ApproveCloudPlanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveCloudPlanResponse.ProtoReflect.Descriptor instead.
 func (*ApproveCloudPlanResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{37}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ApproveCloudPlanResponse) GetPlan() *CloudPlan {
@@ -3341,7 +3481,7 @@ type EstablishAwsConnectionRequest struct {
 
 func (x *EstablishAwsConnectionRequest) Reset() {
 	*x = EstablishAwsConnectionRequest{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[38]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3353,7 +3493,7 @@ func (x *EstablishAwsConnectionRequest) String() string {
 func (*EstablishAwsConnectionRequest) ProtoMessage() {}
 
 func (x *EstablishAwsConnectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[38]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3366,7 +3506,7 @@ func (x *EstablishAwsConnectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstablishAwsConnectionRequest.ProtoReflect.Descriptor instead.
 func (*EstablishAwsConnectionRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{38}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *EstablishAwsConnectionRequest) GetIdempotencyKey() string {
@@ -3427,7 +3567,7 @@ type EstablishAwsConnectionResponse struct {
 
 func (x *EstablishAwsConnectionResponse) Reset() {
 	*x = EstablishAwsConnectionResponse{}
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[39]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3439,7 +3579,7 @@ func (x *EstablishAwsConnectionResponse) String() string {
 func (*EstablishAwsConnectionResponse) ProtoMessage() {}
 
 func (x *EstablishAwsConnectionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[39]
+	mi := &file_dirextalk_agent_v1_cloud_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3452,7 +3592,7 @@ func (x *EstablishAwsConnectionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EstablishAwsConnectionResponse.ProtoReflect.Descriptor instead.
 func (*EstablishAwsConnectionResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{39}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *EstablishAwsConnectionResponse) GetConnection() *CloudConnection {
@@ -3470,7 +3610,7 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x12CloudRecipeBinding\x12\x1b\n" +
 	"\trecipe_id\x18\x01 \x01(\tR\brecipeId\x12\x16\n" +
 	"\x06digest\x18\x02 \x01(\tR\x06digest\x12\x1a\n" +
-	"\bmaturity\x18\x03 \x01(\tR\bmaturity\"\x9e\x06\n" +
+	"\bmaturity\x18\x03 \x01(\tR\bmaturity\"\xe9\x06\n" +
 	"\x12CloudResourceScope\x12V\n" +
 	"\x11candidate_profile\x18\x01 \x01(\x0e2).dirextalk.agent.v1.CloudCandidateProfileR\x10candidateProfile\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12-\n" +
@@ -3494,7 +3634,28 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x10volume_encrypted\x18\x10 \x01(\bR\x0fvolumeEncrypted\x12P\n" +
 	"\x0fpurchase_option\x18\x11 \x01(\x0e2'.dirextalk.agent.v1.CloudPurchaseOptionR\x0epurchaseOption\x12&\n" +
 	"\x0fworker_image_id\x18\x12 \x01(\tR\rworkerImageId\x12.\n" +
-	"\x13worker_image_digest\x18\x13 \x01(\tR\x11workerImageDigest\"\x80\x04\n" +
+	"\x13worker_image_digest\x18\x13 \x01(\tR\x11workerImageDigest\x12I\n" +
+	"\rvolume_scopes\x18\x14 \x03(\v2$.dirextalk.agent.v1.CloudVolumeScopeR\fvolumeScopes\"\x81\x03\n" +
+	"\x10CloudVolumeScope\x12\x17\n" +
+	"\aslot_id\x18\x01 \x01(\tR\x06slotId\x12\x19\n" +
+	"\bsize_gib\x18\x02 \x01(\rR\asizeGib\x12\x1f\n" +
+	"\vvolume_type\x18\x03 \x01(\tR\n" +
+	"volumeType\x12\x12\n" +
+	"\x04iops\x18\x04 \x01(\rR\x04iops\x12)\n" +
+	"\x10throughput_mibps\x18\x05 \x01(\rR\x0fthroughputMibps\x12\x1c\n" +
+	"\tencrypted\x18\x06 \x01(\bR\tencrypted\x12\x1c\n" +
+	"\n" +
+	"kms_key_id\x18\a \x01(\tR\bkmsKeyId\x12\x1f\n" +
+	"\vdevice_name\x18\b \x01(\tR\n" +
+	"deviceName\x12\x1d\n" +
+	"\n" +
+	"mount_path\x18\t \x01(\tR\tmountPath\x12\x1b\n" +
+	"\tread_only\x18\n" +
+	" \x01(\bR\breadOnly\x12\x1e\n" +
+	"\n" +
+	"persistent\x18\v \x01(\bR\n" +
+	"persistent\x12 \n" +
+	"\vdisposition\x18\f \x01(\tR\vdisposition\"\x80\x04\n" +
 	"\x11CloudNetworkScope\x12\x15\n" +
 	"\x06vpc_id\x18\x01 \x01(\tR\x05vpcId\x12\x1b\n" +
 	"\tsubnet_id\x18\x02 \x01(\tR\bsubnetId\x12*\n" +
@@ -3803,7 +3964,7 @@ func file_dirextalk_agent_v1_cloud_proto_rawDescGZIP() []byte {
 }
 
 var file_dirextalk_agent_v1_cloud_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_dirextalk_agent_v1_cloud_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_dirextalk_agent_v1_cloud_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_dirextalk_agent_v1_cloud_proto_goTypes = []any{
 	(CloudCandidateProfile)(0),              // 0: dirextalk.agent.v1.CloudCandidateProfile
 	(CloudPurchaseOption)(0),                // 1: dirextalk.agent.v1.CloudPurchaseOption
@@ -3813,107 +3974,109 @@ var file_dirextalk_agent_v1_cloud_proto_goTypes = []any{
 	(CloudPlanStatus)(0),                    // 5: dirextalk.agent.v1.CloudPlanStatus
 	(*CloudRecipeBinding)(nil),              // 6: dirextalk.agent.v1.CloudRecipeBinding
 	(*CloudResourceScope)(nil),              // 7: dirextalk.agent.v1.CloudResourceScope
-	(*CloudNetworkScope)(nil),               // 8: dirextalk.agent.v1.CloudNetworkScope
-	(*CloudSecretScope)(nil),                // 9: dirextalk.agent.v1.CloudSecretScope
-	(*CloudIntegrationScope)(nil),           // 10: dirextalk.agent.v1.CloudIntegrationScope
-	(*CloudRetentionScope)(nil),             // 11: dirextalk.agent.v1.CloudRetentionScope
-	(*CloudQuoteScope)(nil),                 // 12: dirextalk.agent.v1.CloudQuoteScope
-	(*CloudUsageEstimate)(nil),              // 13: dirextalk.agent.v1.CloudUsageEstimate
-	(*CloudSpotQualification)(nil),          // 14: dirextalk.agent.v1.CloudSpotQualification
-	(*CloudCostItem)(nil),                   // 15: dirextalk.agent.v1.CloudCostItem
-	(*CloudQuotaEvidence)(nil),              // 16: dirextalk.agent.v1.CloudQuotaEvidence
-	(*CloudQuoteCandidate)(nil),             // 17: dirextalk.agent.v1.CloudQuoteCandidate
-	(*CloudQuote)(nil),                      // 18: dirextalk.agent.v1.CloudQuote
-	(*CloudPlan)(nil),                       // 19: dirextalk.agent.v1.CloudPlan
-	(*DeviceApprovalSignature)(nil),         // 20: dirextalk.agent.v1.DeviceApprovalSignature
-	(*ApprovalChallenge)(nil),               // 21: dirextalk.agent.v1.ApprovalChallenge
-	(*AwsBootstrapIdentity)(nil),            // 22: dirextalk.agent.v1.AwsBootstrapIdentity
-	(*CloudConnection)(nil),                 // 23: dirextalk.agent.v1.CloudConnection
-	(*GetCloudConnectionRequest)(nil),       // 24: dirextalk.agent.v1.GetCloudConnectionRequest
-	(*GetCloudConnectionResponse)(nil),      // 25: dirextalk.agent.v1.GetCloudConnectionResponse
-	(*ListCloudConnectionsRequest)(nil),     // 26: dirextalk.agent.v1.ListCloudConnectionsRequest
-	(*ListCloudConnectionsResponse)(nil),    // 27: dirextalk.agent.v1.ListCloudConnectionsResponse
-	(*PreviewAwsIdentityRequest)(nil),       // 28: dirextalk.agent.v1.PreviewAwsIdentityRequest
-	(*PreviewAwsIdentityResponse)(nil),      // 29: dirextalk.agent.v1.PreviewAwsIdentityResponse
-	(*CreateCloudQuoteRequest)(nil),         // 30: dirextalk.agent.v1.CreateCloudQuoteRequest
-	(*CreateCloudQuoteResponse)(nil),        // 31: dirextalk.agent.v1.CreateCloudQuoteResponse
-	(*GetCloudQuoteRequest)(nil),            // 32: dirextalk.agent.v1.GetCloudQuoteRequest
-	(*GetCloudQuoteResponse)(nil),           // 33: dirextalk.agent.v1.GetCloudQuoteResponse
-	(*CreateCloudPlanRequest)(nil),          // 34: dirextalk.agent.v1.CreateCloudPlanRequest
-	(*CreateCloudPlanResponse)(nil),         // 35: dirextalk.agent.v1.CreateCloudPlanResponse
-	(*GetCloudPlanRequest)(nil),             // 36: dirextalk.agent.v1.GetCloudPlanRequest
-	(*GetCloudPlanResponse)(nil),            // 37: dirextalk.agent.v1.GetCloudPlanResponse
-	(*ListCloudPlansRequest)(nil),           // 38: dirextalk.agent.v1.ListCloudPlansRequest
-	(*ListCloudPlansResponse)(nil),          // 39: dirextalk.agent.v1.ListCloudPlansResponse
-	(*CreateApprovalChallengeRequest)(nil),  // 40: dirextalk.agent.v1.CreateApprovalChallengeRequest
-	(*CreateApprovalChallengeResponse)(nil), // 41: dirextalk.agent.v1.CreateApprovalChallengeResponse
-	(*ApproveCloudPlanRequest)(nil),         // 42: dirextalk.agent.v1.ApproveCloudPlanRequest
-	(*ApproveCloudPlanResponse)(nil),        // 43: dirextalk.agent.v1.ApproveCloudPlanResponse
-	(*EstablishAwsConnectionRequest)(nil),   // 44: dirextalk.agent.v1.EstablishAwsConnectionRequest
-	(*EstablishAwsConnectionResponse)(nil),  // 45: dirextalk.agent.v1.EstablishAwsConnectionResponse
-	(*timestamppb.Timestamp)(nil),           // 46: google.protobuf.Timestamp
+	(*CloudVolumeScope)(nil),                // 8: dirextalk.agent.v1.CloudVolumeScope
+	(*CloudNetworkScope)(nil),               // 9: dirextalk.agent.v1.CloudNetworkScope
+	(*CloudSecretScope)(nil),                // 10: dirextalk.agent.v1.CloudSecretScope
+	(*CloudIntegrationScope)(nil),           // 11: dirextalk.agent.v1.CloudIntegrationScope
+	(*CloudRetentionScope)(nil),             // 12: dirextalk.agent.v1.CloudRetentionScope
+	(*CloudQuoteScope)(nil),                 // 13: dirextalk.agent.v1.CloudQuoteScope
+	(*CloudUsageEstimate)(nil),              // 14: dirextalk.agent.v1.CloudUsageEstimate
+	(*CloudSpotQualification)(nil),          // 15: dirextalk.agent.v1.CloudSpotQualification
+	(*CloudCostItem)(nil),                   // 16: dirextalk.agent.v1.CloudCostItem
+	(*CloudQuotaEvidence)(nil),              // 17: dirextalk.agent.v1.CloudQuotaEvidence
+	(*CloudQuoteCandidate)(nil),             // 18: dirextalk.agent.v1.CloudQuoteCandidate
+	(*CloudQuote)(nil),                      // 19: dirextalk.agent.v1.CloudQuote
+	(*CloudPlan)(nil),                       // 20: dirextalk.agent.v1.CloudPlan
+	(*DeviceApprovalSignature)(nil),         // 21: dirextalk.agent.v1.DeviceApprovalSignature
+	(*ApprovalChallenge)(nil),               // 22: dirextalk.agent.v1.ApprovalChallenge
+	(*AwsBootstrapIdentity)(nil),            // 23: dirextalk.agent.v1.AwsBootstrapIdentity
+	(*CloudConnection)(nil),                 // 24: dirextalk.agent.v1.CloudConnection
+	(*GetCloudConnectionRequest)(nil),       // 25: dirextalk.agent.v1.GetCloudConnectionRequest
+	(*GetCloudConnectionResponse)(nil),      // 26: dirextalk.agent.v1.GetCloudConnectionResponse
+	(*ListCloudConnectionsRequest)(nil),     // 27: dirextalk.agent.v1.ListCloudConnectionsRequest
+	(*ListCloudConnectionsResponse)(nil),    // 28: dirextalk.agent.v1.ListCloudConnectionsResponse
+	(*PreviewAwsIdentityRequest)(nil),       // 29: dirextalk.agent.v1.PreviewAwsIdentityRequest
+	(*PreviewAwsIdentityResponse)(nil),      // 30: dirextalk.agent.v1.PreviewAwsIdentityResponse
+	(*CreateCloudQuoteRequest)(nil),         // 31: dirextalk.agent.v1.CreateCloudQuoteRequest
+	(*CreateCloudQuoteResponse)(nil),        // 32: dirextalk.agent.v1.CreateCloudQuoteResponse
+	(*GetCloudQuoteRequest)(nil),            // 33: dirextalk.agent.v1.GetCloudQuoteRequest
+	(*GetCloudQuoteResponse)(nil),           // 34: dirextalk.agent.v1.GetCloudQuoteResponse
+	(*CreateCloudPlanRequest)(nil),          // 35: dirextalk.agent.v1.CreateCloudPlanRequest
+	(*CreateCloudPlanResponse)(nil),         // 36: dirextalk.agent.v1.CreateCloudPlanResponse
+	(*GetCloudPlanRequest)(nil),             // 37: dirextalk.agent.v1.GetCloudPlanRequest
+	(*GetCloudPlanResponse)(nil),            // 38: dirextalk.agent.v1.GetCloudPlanResponse
+	(*ListCloudPlansRequest)(nil),           // 39: dirextalk.agent.v1.ListCloudPlansRequest
+	(*ListCloudPlansResponse)(nil),          // 40: dirextalk.agent.v1.ListCloudPlansResponse
+	(*CreateApprovalChallengeRequest)(nil),  // 41: dirextalk.agent.v1.CreateApprovalChallengeRequest
+	(*CreateApprovalChallengeResponse)(nil), // 42: dirextalk.agent.v1.CreateApprovalChallengeResponse
+	(*ApproveCloudPlanRequest)(nil),         // 43: dirextalk.agent.v1.ApproveCloudPlanRequest
+	(*ApproveCloudPlanResponse)(nil),        // 44: dirextalk.agent.v1.ApproveCloudPlanResponse
+	(*EstablishAwsConnectionRequest)(nil),   // 45: dirextalk.agent.v1.EstablishAwsConnectionRequest
+	(*EstablishAwsConnectionResponse)(nil),  // 46: dirextalk.agent.v1.EstablishAwsConnectionResponse
+	(*timestamppb.Timestamp)(nil),           // 47: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_cloud_proto_depIdxs = []int32{
 	0,  // 0: dirextalk.agent.v1.CloudResourceScope.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
 	1,  // 1: dirextalk.agent.v1.CloudResourceScope.purchase_option:type_name -> dirextalk.agent.v1.CloudPurchaseOption
-	2,  // 2: dirextalk.agent.v1.CloudNetworkScope.entry_point:type_name -> dirextalk.agent.v1.CloudEntryPointKind
-	3,  // 3: dirextalk.agent.v1.CloudNetworkScope.security_group_mode:type_name -> dirextalk.agent.v1.CloudSecurityGroupMode
-	4,  // 4: dirextalk.agent.v1.CloudRetentionScope.retention_class:type_name -> dirextalk.agent.v1.CloudRetentionClass
-	6,  // 5: dirextalk.agent.v1.CloudQuoteScope.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
-	7,  // 6: dirextalk.agent.v1.CloudQuoteScope.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
-	8,  // 7: dirextalk.agent.v1.CloudQuoteScope.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
-	9,  // 8: dirextalk.agent.v1.CloudQuoteScope.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
-	10, // 9: dirextalk.agent.v1.CloudQuoteScope.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
-	11, // 10: dirextalk.agent.v1.CloudQuoteScope.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
-	46, // 11: dirextalk.agent.v1.CloudSpotQualification.checkpoint_verified_at:type_name -> google.protobuf.Timestamp
-	46, // 12: dirextalk.agent.v1.CloudSpotQualification.interruption_tested_at:type_name -> google.protobuf.Timestamp
-	0,  // 13: dirextalk.agent.v1.CloudQuoteCandidate.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	12, // 14: dirextalk.agent.v1.CloudQuoteCandidate.scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	16, // 15: dirextalk.agent.v1.CloudQuoteCandidate.quotas:type_name -> dirextalk.agent.v1.CloudQuotaEvidence
-	15, // 16: dirextalk.agent.v1.CloudQuoteCandidate.cost_items:type_name -> dirextalk.agent.v1.CloudCostItem
-	46, // 17: dirextalk.agent.v1.CloudQuote.quoted_at:type_name -> google.protobuf.Timestamp
-	46, // 18: dirextalk.agent.v1.CloudQuote.valid_until:type_name -> google.protobuf.Timestamp
-	17, // 19: dirextalk.agent.v1.CloudQuote.candidates:type_name -> dirextalk.agent.v1.CloudQuoteCandidate
-	13, // 20: dirextalk.agent.v1.CloudQuote.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	14, // 21: dirextalk.agent.v1.CloudQuote.spot_evidence:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	6,  // 22: dirextalk.agent.v1.CloudPlan.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
-	0,  // 23: dirextalk.agent.v1.CloudPlan.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	46, // 24: dirextalk.agent.v1.CloudPlan.quote_valid_until:type_name -> google.protobuf.Timestamp
-	7,  // 25: dirextalk.agent.v1.CloudPlan.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
-	8,  // 26: dirextalk.agent.v1.CloudPlan.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
-	9,  // 27: dirextalk.agent.v1.CloudPlan.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
-	10, // 28: dirextalk.agent.v1.CloudPlan.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
-	11, // 29: dirextalk.agent.v1.CloudPlan.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
-	5,  // 30: dirextalk.agent.v1.CloudPlan.status:type_name -> dirextalk.agent.v1.CloudPlanStatus
-	46, // 31: dirextalk.agent.v1.DeviceApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
-	46, // 32: dirextalk.agent.v1.ApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	46, // 33: dirextalk.agent.v1.CloudConnection.created_at:type_name -> google.protobuf.Timestamp
-	46, // 34: dirextalk.agent.v1.CloudConnection.updated_at:type_name -> google.protobuf.Timestamp
-	23, // 35: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	23, // 36: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
-	22, // 37: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
-	46, // 38: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
-	46, // 39: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
-	12, // 40: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	13, // 41: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	14, // 42: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	18, // 43: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	18, // 44: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	0,  // 45: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	12, // 46: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	19, // 47: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	19, // 48: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	19, // 49: dirextalk.agent.v1.ListCloudPlansResponse.plans:type_name -> dirextalk.agent.v1.CloudPlan
-	21, // 50: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
-	20, // 51: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	19, // 52: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	20, // 53: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	23, // 54: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	55, // [55:55] is the sub-list for method output_type
-	55, // [55:55] is the sub-list for method input_type
-	55, // [55:55] is the sub-list for extension type_name
-	55, // [55:55] is the sub-list for extension extendee
-	0,  // [0:55] is the sub-list for field type_name
+	8,  // 2: dirextalk.agent.v1.CloudResourceScope.volume_scopes:type_name -> dirextalk.agent.v1.CloudVolumeScope
+	2,  // 3: dirextalk.agent.v1.CloudNetworkScope.entry_point:type_name -> dirextalk.agent.v1.CloudEntryPointKind
+	3,  // 4: dirextalk.agent.v1.CloudNetworkScope.security_group_mode:type_name -> dirextalk.agent.v1.CloudSecurityGroupMode
+	4,  // 5: dirextalk.agent.v1.CloudRetentionScope.retention_class:type_name -> dirextalk.agent.v1.CloudRetentionClass
+	6,  // 6: dirextalk.agent.v1.CloudQuoteScope.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
+	7,  // 7: dirextalk.agent.v1.CloudQuoteScope.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
+	9,  // 8: dirextalk.agent.v1.CloudQuoteScope.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
+	10, // 9: dirextalk.agent.v1.CloudQuoteScope.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
+	11, // 10: dirextalk.agent.v1.CloudQuoteScope.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
+	12, // 11: dirextalk.agent.v1.CloudQuoteScope.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
+	47, // 12: dirextalk.agent.v1.CloudSpotQualification.checkpoint_verified_at:type_name -> google.protobuf.Timestamp
+	47, // 13: dirextalk.agent.v1.CloudSpotQualification.interruption_tested_at:type_name -> google.protobuf.Timestamp
+	0,  // 14: dirextalk.agent.v1.CloudQuoteCandidate.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	13, // 15: dirextalk.agent.v1.CloudQuoteCandidate.scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	17, // 16: dirextalk.agent.v1.CloudQuoteCandidate.quotas:type_name -> dirextalk.agent.v1.CloudQuotaEvidence
+	16, // 17: dirextalk.agent.v1.CloudQuoteCandidate.cost_items:type_name -> dirextalk.agent.v1.CloudCostItem
+	47, // 18: dirextalk.agent.v1.CloudQuote.quoted_at:type_name -> google.protobuf.Timestamp
+	47, // 19: dirextalk.agent.v1.CloudQuote.valid_until:type_name -> google.protobuf.Timestamp
+	18, // 20: dirextalk.agent.v1.CloudQuote.candidates:type_name -> dirextalk.agent.v1.CloudQuoteCandidate
+	14, // 21: dirextalk.agent.v1.CloudQuote.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	15, // 22: dirextalk.agent.v1.CloudQuote.spot_evidence:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	6,  // 23: dirextalk.agent.v1.CloudPlan.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
+	0,  // 24: dirextalk.agent.v1.CloudPlan.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	47, // 25: dirextalk.agent.v1.CloudPlan.quote_valid_until:type_name -> google.protobuf.Timestamp
+	7,  // 26: dirextalk.agent.v1.CloudPlan.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
+	9,  // 27: dirextalk.agent.v1.CloudPlan.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
+	10, // 28: dirextalk.agent.v1.CloudPlan.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
+	11, // 29: dirextalk.agent.v1.CloudPlan.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
+	12, // 30: dirextalk.agent.v1.CloudPlan.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
+	5,  // 31: dirextalk.agent.v1.CloudPlan.status:type_name -> dirextalk.agent.v1.CloudPlanStatus
+	47, // 32: dirextalk.agent.v1.DeviceApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
+	47, // 33: dirextalk.agent.v1.ApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	47, // 34: dirextalk.agent.v1.CloudConnection.created_at:type_name -> google.protobuf.Timestamp
+	47, // 35: dirextalk.agent.v1.CloudConnection.updated_at:type_name -> google.protobuf.Timestamp
+	24, // 36: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	24, // 37: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
+	23, // 38: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
+	47, // 39: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
+	47, // 40: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
+	13, // 41: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	14, // 42: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	15, // 43: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	19, // 44: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	19, // 45: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	0,  // 46: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	13, // 47: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	20, // 48: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	20, // 49: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	20, // 50: dirextalk.agent.v1.ListCloudPlansResponse.plans:type_name -> dirextalk.agent.v1.CloudPlan
+	22, // 51: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
+	21, // 52: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	20, // 53: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	21, // 54: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	24, // 55: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	56, // [56:56] is the sub-list for method output_type
+	56, // [56:56] is the sub-list for method input_type
+	56, // [56:56] is the sub-list for extension type_name
+	56, // [56:56] is the sub-list for extension extendee
+	0,  // [0:56] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_cloud_proto_init() }
@@ -3927,7 +4090,7 @@ func file_dirextalk_agent_v1_cloud_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_cloud_proto_rawDesc), len(file_dirextalk_agent_v1_cloud_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   40,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

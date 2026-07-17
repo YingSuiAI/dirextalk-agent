@@ -41,6 +41,9 @@ func TestBuildSpecIsDeterministicAndLeastPrivilege(t *testing.T) {
 			t.Fatalf("%s name = %q", name, value)
 		}
 	}
+	if first.WorkerLogGroupName != first.StackName {
+		t.Fatalf("Worker log group %q is not the assignment-safe stack scope %q", first.WorkerLogGroupName, first.StackName)
+	}
 
 	policies := []awsprovider.PolicyDocument{
 		first.SourceUserPolicy,

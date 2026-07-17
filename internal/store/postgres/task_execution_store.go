@@ -163,6 +163,11 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 	currentTask.ExecutionStatus = task.ExecutionRunning
 	currentTask.CurrentStepID = step.StepID
 	currentTask = normalizeTaskTimes(currentTask)
+	// Preserve the exact aggregate revisions alongside the lease replay. A
+	// later waiting_user transition must fence Task, Step, and Attempt together
+	// rather than trusting a stale controller after an upload race.
+	leased.TaskRevision = currentTask.Revision
+	leased.StepRevision = step.Revision
 	if _, err := appendStepEvent(ctx, tx, step, caller, "agent.step.leased"); err != nil {
 		return task.Attempt{}, false, err
 	}

@@ -147,6 +147,16 @@ func readEBSCosts(ctx context.Context, catalog *priceCatalog, region string, can
 	if err != nil {
 		return nil, err
 	}
+	for _, volume := range candidate.DataVolumes {
+		dataQuantity, multiplyErr := checkedProduct(uint64(volume.SizeGiB), uint64(candidate.InstanceCount))
+		if multiplyErr != nil {
+			return nil, multiplyErr
+		}
+		quantity, err = checkedSum(quantity, dataQuantity)
+		if err != nil {
+			return nil, err
+		}
+	}
 	monthly, err := scaleMicros(storageRate.unitMicros, quantity, 1)
 	if err != nil {
 		return nil, err
@@ -159,14 +169,26 @@ func readEBSCosts(ctx context.Context, catalog *priceCatalog, region string, can
 		Category: cloudquote.CostEBS, Description: fmt.Sprintf("encrypted %s EBS storage", candidate.VolumeType), SourceID: storageRate.sourceID,
 		HourlyEstimateMicros: hourly, MonthlyEstimateMicros: monthly, MaximumLaunchAmountMicros: monthly,
 	}}
+	extraIOPS := uint64(0)
 	if candidate.VolumeType == "gp3" && candidate.VolumeIOPS > 3000 {
+		extraIOPS = uint64(candidate.VolumeIOPS - 3000)
+	}
+	for _, volume := range candidate.DataVolumes {
+		if volume.IOPS > 3000 {
+			extraIOPS, err = checkedSum(extraIOPS, uint64(volume.IOPS-3000))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if extraIOPS > 0 {
 		rate, err := catalog.rate(ctx, rateSpec{serviceCode: "AmazonEC2", unit: "IOPS-Mo", filters: map[string]string{
 			"regionCode": region, "productFamily": "Provisioned Throughput", "group": "EBS IOPS", "volumeApiName": "gp3",
 		}})
 		if err != nil {
 			return nil, fmt.Errorf("EBS IOPS: %w", err)
 		}
-		extra, err := checkedProduct(uint64(candidate.VolumeIOPS-3000), uint64(candidate.InstanceCount))
+		extra, err := checkedProduct(extraIOPS, uint64(candidate.InstanceCount))
 		if err != nil {
 			return nil, err
 		}
@@ -176,14 +198,26 @@ func readEBSCosts(ctx context.Context, catalog *priceCatalog, region string, can
 		}
 		items = append(items, item)
 	}
+	extraThroughput := uint64(0)
 	if candidate.VolumeType == "gp3" && candidate.VolumeThroughputMiBPS > 125 {
+		extraThroughput = uint64(candidate.VolumeThroughputMiBPS - 125)
+	}
+	for _, volume := range candidate.DataVolumes {
+		if volume.ThroughputMiBPS > 125 {
+			extraThroughput, err = checkedSum(extraThroughput, uint64(volume.ThroughputMiBPS-125))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if extraThroughput > 0 {
 		rate, err := catalog.rate(ctx, rateSpec{serviceCode: "AmazonEC2", unit: "MBps-Mo", filters: map[string]string{
 			"regionCode": region, "productFamily": "Provisioned Throughput", "group": "EBS Throughput", "volumeApiName": "gp3",
 		}})
 		if err != nil {
 			return nil, fmt.Errorf("EBS throughput: %w", err)
 		}
-		extra, err := checkedProduct(uint64(candidate.VolumeThroughputMiBPS-125), uint64(candidate.InstanceCount))
+		extra, err := checkedProduct(extraThroughput, uint64(candidate.InstanceCount))
 		if err != nil {
 			return nil, err
 		}
@@ -368,4 +402,11 @@ func checkedProduct(left, right uint64) (uint64, error) {
 		return 0, errors.New("pricing quantity overflows uint64")
 	}
 	return left * right, nil
+}
+
+func checkedSum(left, right uint64) (uint64, error) {
+	if right > ^uint64(0)-left {
+		return 0, errors.New("pricing quantity overflows uint64")
+	}
+	return left + right, nil
 }

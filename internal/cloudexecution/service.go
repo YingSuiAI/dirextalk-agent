@@ -39,6 +39,17 @@ type Service struct {
 	now              func() time.Time
 	installerTrust   *installer.TrustIssuer
 	artifactResolver InstallerArtifactResolver
+	secretResolver   InstallerSecretResolver
+}
+
+func WithInstallerSecretResolver(resolver InstallerSecretResolver) ServiceOption {
+	return func(service *Service) error {
+		if service == nil || resolver == nil {
+			return ErrInvalid
+		}
+		service.secretResolver = resolver
+		return nil
+	}
 }
 
 func WithInstallerArtifactResolver(resolver InstallerArtifactResolver) ServiceOption {
@@ -149,6 +160,9 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if err := service.resolveInstallerArtifacts(ctx, boundRecipe, &compiled); err != nil {
 		return service.fail(ctx, operation, err)
 	}
+	if err := service.resolveInstallerSecrets(ctx, operation, plan, &compiled); err != nil {
+		return service.fail(ctx, operation, err)
+	}
 	if len(compiled.InstallerArtifacts) != 0 {
 		cleanupPending = true
 		defer func() {
@@ -191,6 +205,11 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if len(operation.InstallerArtifacts) == 0 && len(published.InstallerArtifacts) != 0 {
 		operation.InstallerArtifacts = append([]installerbootstrap.ArtifactSourceV1(nil), published.InstallerArtifacts...)
 	} else if !reflect.DeepEqual(operation.InstallerArtifacts, published.InstallerArtifacts) {
+		return Operation{}, ErrRevisionConflict
+	}
+	if len(operation.InstallerSecrets) == 0 && len(published.InstallerSecrets) != 0 {
+		operation.InstallerSecrets = append([]installerbootstrap.SecretSourceV1(nil), published.InstallerSecrets...)
+	} else if !reflect.DeepEqual(operation.InstallerSecrets, published.InstallerSecrets) {
 		return Operation{}, ErrRevisionConflict
 	}
 	if operation.State == StateTaskReady || operation.State == StateFailedRetriable || operation.RecipeBundle.S3Ref == "" {
@@ -338,6 +357,43 @@ func cleanupInstallerArtifacts(artifacts []InstallerArtifactStagingInput) error 
 	return nil
 }
 
+func (service *Service) resolveInstallerSecrets(ctx context.Context, operation Operation, plan cloudapproval.PlanV1, compiled *CompiledBundles) error {
+	if compiled == nil {
+		return ErrInvalid
+	}
+	if len(compiled.InstallerSecrets) == 0 {
+		return nil
+	}
+	if service.secretResolver == nil || strings.TrimSpace(operation.SecretClientID) == "" {
+		return ErrNotReady
+	}
+	purposes := make(map[string]string, len(plan.SecretScope))
+	for _, scope := range plan.SecretScope {
+		if _, duplicate := purposes[scope.SecretRef]; duplicate {
+			return ErrInvalid
+		}
+		purposes[scope.SecretRef] = scope.Purpose
+	}
+	for index := range compiled.InstallerSecrets {
+		secret := &compiled.InstallerSecrets[index]
+		purpose, ok := purposes[secret.SecretRef]
+		if !ok {
+			return ErrNotReady
+		}
+		content, err := service.secretResolver.Resolve(ctx, InstallerSecretResolveRequest{
+			CallerClientID: operation.SecretClientID, OwnerID: operation.Launch.OwnerID, PlanID: operation.Launch.PlanID,
+			SlotID: secret.SlotID, Purpose: purpose, SecretRef: secret.SecretRef, SecretName: secret.SecretName,
+			VersionID: secret.VersionID, TargetPath: secret.TargetPath, FileMode: secret.FileMode,
+			OwnerUID: secret.OwnerUID, OwnerGID: secret.OwnerGID, RecipeDigest: secret.RecipeDigest,
+		})
+		if err != nil || content == nil {
+			return ErrNotReady
+		}
+		secret.Content = content
+	}
+	return nil
+}
+
 // PrepareApprovedPlan performs all immutable approval/Recipe validation and
 // writes the durable operation intent, but does not call Task, Worker, S3, or
 // AWS resource mutations. A background Dispatcher can safely acknowledge the
@@ -380,6 +436,7 @@ func (service *Service) prepare(ctx context.Context, caller cloudapp.MutationSco
 
 func (service *Service) intent(caller cloudapp.MutationScope, request LaunchRequest, plan cloudapproval.PlanV1, approval cloudapproval.ApprovalV1) (Intent, error) {
 	operationID := deterministicID(service.agentInstanceID, "cloud-launch\x00"+plan.PlanID)
+	secretClientID := caller.ClientID
 	// The external caller is authenticated at entry. Durable launch work uses a
 	// stable internal scope so Service Key rotation cannot strand an approved,
 	// billable resource without a recoverable controller.
@@ -393,7 +450,7 @@ func (service *Service) intent(caller cloudapp.MutationScope, request LaunchRequ
 	}
 	now := service.now().UTC().Truncate(time.Microsecond)
 	return Intent{
-		OperationID: operationID, RequestHash: sha256.Sum256(encoded), Caller: caller, Launch: request,
+		OperationID: operationID, RequestHash: sha256.Sum256(encoded), Caller: caller, SecretClientID: secretClientID, Launch: request,
 		ConnectionID: plan.ConnectionID, ApprovedPlanHash: approval.PlanHash, TaskStepID: deterministicID(operationID, "task-step"),
 		DeploymentID: deterministicID(operationID, "deployment"), RecordedAt: now,
 	}, nil
@@ -475,7 +532,7 @@ func validatePublishedBundles(published PublishedBundles, compiled CompiledBundl
 		return ErrUnavailable
 	}
 	if compiled.InstallerRootTrust == nil {
-		if len(published.InstallerArtifacts) != 0 {
+		if len(published.InstallerArtifacts) != 0 || len(published.InstallerSecrets) != 0 {
 			return ErrUnavailable
 		}
 	} else {
@@ -488,6 +545,18 @@ func validatePublishedBundles(published PublishedBundles, compiled CompiledBundl
 				AccountID: key.AccountID, Region: key.Region, InstanceID: "i-00000000",
 			}) != nil {
 			return ErrUnavailable
+		}
+		if len(compiled.InstallerSecrets) != len(published.InstallerSecrets) {
+			return ErrUnavailable
+		}
+		if len(published.InstallerSecrets) != 0 {
+			secretKey, secretErr := arn.Parse(published.InstallerSecrets[0].KMSKeyARN)
+			if secretErr != nil || installerbootstrap.ValidateSecretSources(*compiled.InstallerRootTrust, published.InstallerSecrets,
+				compiled.InstallerRootTrust.ArtifactManifest.Manifest.Binding.DeploymentID, installerbootstrap.InstanceIdentityV1{
+					AccountID: secretKey.AccountID, Region: secretKey.Region, InstanceID: "i-00000000",
+				}) != nil {
+				return ErrUnavailable
+			}
 		}
 	}
 	return nil
@@ -549,6 +618,8 @@ func mapDependencyError(err error) error {
 		return nil
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrUnsupportedRecipe):
 		return err
+	case errors.Is(err, ErrNotReady):
+		return ErrNotReady
 	case errors.Is(err, cloudapp.ErrNotFound), errors.Is(err, task.ErrNotFound), errors.Is(err, worker.ErrNotFound), errors.Is(err, resource.ErrNotFound), errors.Is(err, resource.ErrCreateAuthorizationExpired):
 		return ErrNotReady
 	case errors.Is(err, cloudapp.ErrRevisionConflict), errors.Is(err, task.ErrRevisionConflict), errors.Is(err, worker.ErrRevisionConflict), errors.Is(err, resource.ErrRevisionConflict):

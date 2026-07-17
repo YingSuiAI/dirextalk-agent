@@ -20,11 +20,13 @@ import (
 )
 
 var (
-	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	namePattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	hostPattern       = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
-	secretRefPattern  = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
-	executablePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	digestPattern       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	namePattern         = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	hostPattern         = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
+	secretRefPattern    = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+	executablePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+	volumeDevicePattern = regexp.MustCompile(`^/dev/sd[f-p]$`)
+	volumeMountPattern  = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
 )
 
 type ArtifactInspector interface {
@@ -299,7 +301,7 @@ func validateRequestEnvelope(request RequestV1) error {
 
 func validatePlan(plan InstallerPlanV1, targetRoot string) error {
 	if plan.SchemaVersion != PlanSchemaV1 || len(plan.Artifacts) == 0 || len(plan.Artifacts) > 128 ||
-		len(plan.SecretRefs) > 128 || len(plan.Ports) > 128 || len(plan.Volumes) > 128 || len(plan.Commands) > 128 {
+		len(plan.SecretRefs) > 128 || len(plan.Secrets) > 32 || len(plan.Ports) > 128 || len(plan.Volumes) > 128 || len(plan.Commands) > 128 {
 		return errorf(CodeInvalidRequest, "invalid installer plan schema or declaration count")
 	}
 	if err := validateBinding(plan.Binding); err != nil {
@@ -325,6 +327,9 @@ func validatePlan(plan InstallerPlanV1, targetRoot string) error {
 	if err := validateSecrets(plan.SecretRefs); err != nil {
 		return err
 	}
+	if err := validateSecretDeclarations(plan); err != nil {
+		return err
+	}
 	if err := validateNetwork(plan.Network); err != nil {
 		return err
 	}
@@ -336,6 +341,50 @@ func validatePlan(plan InstallerPlanV1, targetRoot string) error {
 	}
 	if err := validateCommands(plan); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateSecretDeclarations(plan InstallerPlanV1) error {
+	if len(plan.Secrets) != len(plan.SecretRefs) {
+		return errorf(CodeInvalidRequest, "installer secret declarations do not match references")
+	}
+	seenSlots := make(map[string]struct{}, len(plan.Secrets))
+	seenRefs := make(map[string]struct{}, len(plan.Secrets))
+	declaredRefs := make([]string, 0, len(plan.Secrets))
+	for _, secret := range plan.Secrets {
+		if err := validateSecretDeclaration(secret); err != nil {
+			return err
+		}
+		if secret.SecretName != "dtx/"+plan.Binding.AgentInstanceID+"/deployments/"+plan.Binding.DeploymentID+"/"+secret.SlotID ||
+			secret.TargetPath != PreinstalledSecretRoot+"/"+secret.SlotID {
+			return errorf(CodeInvalidPath, "installer secret destination is outside its deployment binding")
+		}
+		if _, duplicate := seenSlots[secret.SlotID]; duplicate {
+			return errorf(CodeInvalidRequest, "duplicate installer secret slot")
+		}
+		if _, duplicate := seenRefs[secret.SecretRef]; duplicate {
+			return errorf(CodeInvalidRequest, "duplicate installer secret reference")
+		}
+		seenSlots[secret.SlotID] = struct{}{}
+		seenRefs[secret.SecretRef] = struct{}{}
+		declaredRefs = append(declaredRefs, secret.SecretRef)
+	}
+	slices.Sort(declaredRefs)
+	if !slices.Equal(declaredRefs, plan.SecretRefs) {
+		return errorf(CodeInvalidRequest, "installer secret references are not canonical")
+	}
+	return nil
+}
+
+func validateSecretDeclaration(secret SecretV1) error {
+	version, versionErr := uuid.Parse(secret.VersionID)
+	if !namePattern.MatchString(secret.SlotID) || !secretRefPattern.MatchString(secret.SecretRef) ||
+		secret.SecretName == "" || len(secret.SecretName) > 512 || strings.ContainsAny(secret.SecretName, "*?\\\x00") ||
+		versionErr != nil || version == uuid.Nil || version.String() != secret.VersionID ||
+		!path.IsAbs(secret.TargetPath) || path.Clean(secret.TargetPath) != secret.TargetPath || !strings.HasPrefix(secret.TargetPath, PreinstalledSecretRoot+"/") ||
+		(secret.FileMode != 0o400 && secret.FileMode != 0o440) || secret.OwnerUID > 65535 || secret.OwnerGID > 65535 {
+		return errorf(CodeInvalidRequest, "invalid installer secret declaration")
 	}
 	return nil
 }
@@ -539,18 +588,41 @@ func validatePorts(network NetworkV1, ports []PortV1) error {
 }
 
 func validateVolumes(volumes []VolumeV1) error {
+	if len(volumes) > 11 {
+		return errorf(CodeInvalidRequest, "too many volume declarations")
+	}
 	seen := make(map[string]struct{}, len(volumes))
+	devices := make(map[string]struct{}, len(volumes))
+	mounts := make(map[string]struct{}, len(volumes))
 	for _, volume := range volumes {
-		if !namePattern.MatchString(volume.Name) || volume.SizeGiB < 1 || !path.IsAbs(volume.MountPath) ||
-			path.Clean(volume.MountPath) != volume.MountPath || volume.MountPath == "/" {
+		if !namePattern.MatchString(volume.Name) || volume.SizeGiB < 1 || !volumeDevicePattern.MatchString(volume.DeviceName) ||
+			!path.IsAbs(volume.MountPath) || !volumeMountPattern.MatchString(volume.MountPath) || path.Clean(volume.MountPath) != volume.MountPath || reservedInstallerVolumeMount(volume.MountPath) ||
+			(volume.Disposition != "delete_with_deployment" && volume.Disposition != "retain_with_managed_service") {
 			return errorf(CodeInvalidRequest, "invalid volume declaration")
 		}
 		if _, exists := seen[volume.Name]; exists {
 			return errorf(CodeInvalidRequest, "duplicate volume declaration")
 		}
 		seen[volume.Name] = struct{}{}
+		if _, exists := devices[volume.DeviceName]; exists {
+			return errorf(CodeInvalidRequest, "duplicate volume device")
+		}
+		devices[volume.DeviceName] = struct{}{}
+		if _, exists := mounts[volume.MountPath]; exists {
+			return errorf(CodeInvalidRequest, "duplicate volume mount")
+		}
+		mounts[volume.MountPath] = struct{}{}
 	}
 	return nil
+}
+
+func reservedInstallerVolumeMount(value string) bool {
+	for _, root := range []string{"/", "/boot", "/dev", "/efi", "/etc", "/home", "/proc", "/run", "/sys", "/tmp", "/usr"} {
+		if value == root || strings.HasPrefix(value, root+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func findArtifact(artifacts []ArtifactV1, name string) (ArtifactV1, bool) {

@@ -30,6 +30,19 @@ type SpecInput struct {
 	Region          string
 }
 
+// KMSAliasForAgent returns the deterministic Foundation-owned KMS alias used
+// by root and data EBS volumes. It does not require AWS credentials or account
+// data, so quote binding can expose the exact non-secret KMS configuration
+// before a user signs the Plan.
+func KMSAliasForAgent(agentInstanceID string) (string, error) {
+	if !idPattern.MatchString(agentInstanceID) {
+		return "", ErrInvalidSpec
+	}
+	digest := sha256.Sum256([]byte(agentInstanceID))
+	suffix := hex.EncodeToString(digest[:6])
+	return "alias/dtx-agent-" + suffix + "-foundation", nil
+}
+
 func BuildSpec(input SpecInput) (awsprovider.BootstrapIdentitySpec, error) {
 	if !idPattern.MatchString(input.AgentInstanceID) || !accountPattern.MatchString(input.AccountID) || !regionPattern.MatchString(input.Region) {
 		return awsprovider.BootstrapIdentitySpec{}, ErrInvalidSpec
@@ -39,9 +52,13 @@ func BuildSpec(input SpecInput) (awsprovider.BootstrapIdentitySpec, error) {
 	default:
 		return awsprovider.BootstrapIdentitySpec{}, ErrInvalidSpec
 	}
-	digest := sha256.Sum256([]byte(input.AgentInstanceID))
-	suffix := hex.EncodeToString(digest[:6])
-	prefix := "dtx-agent-" + suffix
+	alias, err := KMSAliasForAgent(input.AgentInstanceID)
+	if err != nil {
+		return awsprovider.BootstrapIdentitySpec{}, err
+	}
+	prefix := strings.TrimSuffix(strings.TrimPrefix(alias, "alias/"), "-foundation")
+	suffix := strings.TrimPrefix(prefix, "dtx-agent-")
+	stackName := prefix + "-foundation"
 	spec := awsprovider.BootstrapIdentitySpec{
 		AgentInstanceID:    input.AgentInstanceID,
 		AccountID:          input.AccountID,
@@ -53,10 +70,13 @@ func BuildSpec(input SpecInput) (awsprovider.BootstrapIdentitySpec, error) {
 		WorkerRoleName:     prefix + "-worker",
 		WorkerProfileName:  prefix + "-worker",
 		ReaperRoleName:     prefix + "-reaper",
-		StackName:          prefix + "-foundation",
+		StackName:          stackName,
 		ArtifactBucketName: fmt.Sprintf("dtx-agent-%s-%s-%s", input.AccountID, input.Region, suffix),
 		ManifestTableName:  prefix + "-resources",
-		WorkerLogGroupName: "/dirextalk/agent/" + suffix + "/worker",
+		// The assignment encodes this value as the authority component of a
+		// cloudwatch:// scope. Keep it identical to the DNS-safe stack name so
+		// no lossy slash/colon transformation is needed on the Worker.
+		WorkerLogGroupName: stackName,
 		ReaperFunctionName: prefix + "-reaper",
 		ReaperScheduleName: prefix + "-reaper",
 		ReaperAlarmName:    prefix + "-reaper-errors",

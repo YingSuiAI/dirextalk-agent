@@ -113,8 +113,12 @@ func (scope AccessScope) permitsS3(ref, prefix string) bool {
 	return hasScopedPrefix(ref, prefix, "s3")
 }
 
-func (scope AccessScope) permitsLog(ref string) bool {
-	return strings.HasPrefix(ref, strings.TrimSuffix(scope.LogPrefix, "/")+"/") && !security.ContainsLikelySecret(ref)
+func (scope AccessScope) permitsLog(ref string, attempt int32, leaseEpoch int64) bool {
+	if attempt < 1 || leaseEpoch < 1 || security.ContainsLikelySecret(ref) {
+		return false
+	}
+	expected := fmt.Sprintf("%s/milestones-a%d-e%d", strings.TrimSuffix(scope.LogPrefix, "/"), attempt, leaseEpoch)
+	return strings.TrimSpace(ref) == expected
 }
 
 type Enrollment struct {

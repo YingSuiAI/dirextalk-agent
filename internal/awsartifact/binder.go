@@ -41,8 +41,9 @@ type PrincipalBindRequest struct {
 
 // PrincipalBinding contains only non-secret references reachable by the
 // Foundation Worker policy. CloudWatchLogStream is a valid principal-derived
-// stream name; it deliberately uses '/' instead of the STS UserId ':' because
-// CloudWatch Logs forbids ':' in stream names.
+// stream prefix; the Worker appends the lease-fenced milestone stream name. It
+// deliberately uses '/' instead of the STS UserId ':' because CloudWatch Logs
+// forbids ':' in stream names.
 type PrincipalBinding struct {
 	Recipe              worker.BundleRef
 	Execution           worker.BundleRef
@@ -75,7 +76,8 @@ func (binder *PrincipalBinder) Bind(ctx context.Context, request PrincipalBindRe
 	if err != nil || deployment == uuid.Nil || principalErr != nil {
 		return PrincipalBinding{}, ErrInvalidRequest
 	}
-	if len(request.Published.SecretBindings) != 0 || len(request.Published.Access.SecretRefs) != 0 {
+	if len(request.Published.SecretBindings) != len(request.Published.Access.SecretRefs) ||
+		len(request.Published.InstallerSecrets) != len(request.Published.Access.SecretRefs) {
 		return PrincipalBinding{}, ErrSecretReferencesUnsupported
 	}
 	spec, err := binder.publisher.foundationSpec(request.Connection)
@@ -148,7 +150,7 @@ func (binder *PrincipalBinder) Bind(ctx context.Context, request PrincipalBindRe
 	}
 	access := worker.AccessScope{
 		ArtifactPrefix: result.ArtifactPrefix, CheckpointPrefix: result.CheckpointPrefix,
-		EvidencePrefix: result.EvidencePrefix, LogPrefix: result.LogPrefix, SecretRefs: []string{},
+		EvidencePrefix: result.EvidencePrefix, LogPrefix: result.LogPrefix, SecretRefs: append([]string(nil), request.Published.Access.SecretRefs...),
 	}
 	if result.Recipe.Validate() != nil || result.Execution.Validate() != nil || access.Validate() != nil {
 		return PrincipalBinding{}, ErrInvalidRequest
@@ -173,6 +175,25 @@ func validatePublishedSource(bucket, prefix string, published cloudexecution.Pub
 		published.Recipe.S3Ref != base+"bundles/recipe.cbor" || published.Execution.S3Ref != base+"bundles/execution.json" ||
 		published.Access.ArtifactPrefix != base+"artifacts/" || published.Access.CheckpointPrefix != base+"checkpoints/" || published.Access.EvidencePrefix != base+"evidence/" {
 		return ErrInvalidRequest
+	}
+	if len(published.SecretBindings) != len(published.Access.SecretRefs) || len(published.InstallerSecrets) != len(published.Access.SecretRefs) {
+		return ErrInvalidRequest
+	}
+	if len(published.InstallerSecrets) != 0 && published.InstallerRootTrust == nil {
+		return ErrInvalidRequest
+	}
+	resolved := make(map[string]struct{}, len(published.Access.SecretRefs))
+	for _, reference := range published.Access.SecretRefs {
+		resolved[reference] = struct{}{}
+	}
+	for _, source := range published.InstallerSecrets {
+		bound, ok := published.SecretBindings[source.SecretRef]
+		if !ok || source.SecretName == "" || !strings.Contains(source.SecretName, "/deployments/"+published.InstallerRootTrust.ArtifactManifest.Manifest.Binding.DeploymentID+"/") {
+			return ErrInvalidRequest
+		}
+		if _, ok := resolved[bound]; !ok {
+			return ErrInvalidRequest
+		}
 	}
 	return nil
 }

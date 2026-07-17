@@ -210,5 +210,6 @@ type Store interface {
 	AcquireReadyStep(context.Context, MutationScope, AcquireReadyStepCommand) (Attempt, bool, error)
 	RenewStepLease(context.Context, MutationScope, RenewStepLeaseCommand) (Attempt, error)
 	CheckpointStep(context.Context, MutationScope, CheckpointStepCommand) (Attempt, error)
+	SuspendStepForSecrets(context.Context, MutationScope, SuspendStepForSecretsCommand) (Attempt, error)
 	CompleteStep(context.Context, MutationScope, CompleteStepCommand) (Attempt, error)
 }

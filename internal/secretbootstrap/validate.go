@@ -4,7 +4,10 @@ import (
 	"crypto/ecdh"
 	"encoding/base64"
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -14,8 +17,17 @@ var (
 )
 
 func validateBinding(value BindingV1) error {
-	for _, item := range []string{value.AgentInstanceID, value.OwnerID, value.Purpose, value.TargetID} {
+	for _, item := range []string{value.AgentInstanceID, value.OwnerID, value.TargetID} {
 		if !identifierPattern.MatchString(item) || credentialPattern.MatchString(item) {
+			return ErrInvalidContext
+		}
+	}
+	if strings.TrimSpace(value.Purpose) != value.Purpose || len(value.Purpose) == 0 || len(value.Purpose) > 256 ||
+		!utf8.ValidString(value.Purpose) || credentialPattern.MatchString(value.Purpose) {
+		return ErrInvalidContext
+	}
+	for _, character := range value.Purpose {
+		if unicode.IsControl(character) {
 			return ErrInvalidContext
 		}
 	}

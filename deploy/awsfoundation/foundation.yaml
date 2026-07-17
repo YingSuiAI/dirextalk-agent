@@ -294,6 +294,14 @@ Resources:
                   - s3:GetObjectVersion
                 Resource:
                   Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/artifacts/*
+                # The control plane binds this tag only after RunInstances and
+                # EC2 read-back have proven the unique Worker instance. S3
+                # evaluates it on the exact object version requested by the
+                # signed bootstrap manifest; the Worker cannot mutate tags.
+                Condition:
+                  StringEquals:
+                    s3:ExistingObjectTag/dirextalk:worker_principal:
+                      Fn::Sub: ${!aws:userid}
               - Sid: WorkerEnvelopeKMS
                 Effect: Allow
                 Action:
@@ -308,6 +316,35 @@ Resources:
                       Fn::Sub: s3.${AWS::Region}.${AWS::URLSuffix}
                     kms:EncryptionContext:aws:s3:arn:
                       Fn::GetAtt: [ArtifactBucket, Arn]
+              # The secret resource policy is the primary per-instance gate.
+              # KMS can only be reached indirectly through Secrets Manager and
+              # only for ciphertext whose encryption context names this
+              # Agent's deployment-secret namespace.
+              - Sid: WorkerDeploymentSecretKMS
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  Fn::GetAtt: [FoundationKey, Arn]
+                Condition:
+                  StringEquals:
+                    kms:ViaService:
+                      Fn::Sub: secretsmanager.${AWS::Region}.${AWS::URLSuffix}
+                  ArnLike:
+                    kms:EncryptionContext:SecretARN:
+                      Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
+              # Workers can append untrusted typed milestones anywhere in the
+              # one single-tenant Agent log group, but cannot read, delete, or
+              # mutate the group. The exact assigned stream is still bound by
+              # the provider-verified role id and EC2 instance id. CloudWatch
+              # IAM cannot transform aws:userid's ':' into a legal stream name.
+              - Sid: WorkerTypedMilestoneLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  Fn::Sub: ${WorkerLogGroup.Arn}:log-stream:*
       Tags:
         - Key: dirextalk:agent_instance_id
           Value:
@@ -680,6 +717,7 @@ Resources:
               - ec2:DeleteSnapshot
               - ec2:DeleteVolume
               - ec2:DeleteVpcEndpoints
+              - ec2:DetachVolume
               - ec2:DisassociateAddress
               - ec2:ReleaseAddress
               - ec2:RevokeSecurityGroupEgress
@@ -741,6 +779,12 @@ Resources:
             Condition:
               StringEquals:
                 iam:PassedToService: ec2.amazonaws.com
+          - Sid: ReadExactWorkerRoleIdentity
+            Effect: Allow
+            Action:
+              - iam:GetRole
+            Resource:
+              Fn::GetAtt: [WorkerRole, Arn]
           - Sid: FoundationArtifacts
             Effect: Allow
             Action:
@@ -757,6 +801,15 @@ Resources:
             Resource:
               - Fn::GetAtt: [ArtifactBucket, Arn]
               - Fn::Sub: ${ArtifactBucket.Arn}/*
+          - Sid: BindExactInstallerArtifactVersions
+            Effect: Allow
+            Action:
+              - s3:GetObjectTagging
+              - s3:GetObjectVersionTagging
+              - s3:PutObjectTagging
+              - s3:PutObjectVersionTagging
+            Resource:
+              Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/artifacts/*
           - Sid: FoundationEncryption
             Effect: Allow
             Action:
@@ -783,7 +836,9 @@ Resources:
               - secretsmanager:DeleteSecret
               - secretsmanager:DescribeSecret
               - secretsmanager:GetSecretValue
+              - secretsmanager:GetResourcePolicy
               - secretsmanager:PutSecretValue
+              - secretsmanager:PutResourcePolicy
               - secretsmanager:TagResource
               - secretsmanager:UntagResource
             Resource:

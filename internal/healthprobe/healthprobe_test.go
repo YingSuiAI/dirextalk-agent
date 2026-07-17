@@ -170,6 +170,35 @@ func TestSuiteValidatesAllBindingsBeforeIOAndAggregatesDeterministically(t *test
 	}
 }
 
+func TestPersistedEvidenceValidationRejectsWorkerTrustAndImpossibleStatus(t *testing.T) {
+	spec := mustBind(t, baseSpec(PurposeLiveness, ProtocolHTTPS, "https://probe.example.com/live"))
+	spec.MaxAttempts = 1
+	spec.Binding.ProbeDigest = ""
+	spec = mustBind(t, spec)
+	suite := SuiteV1{SchemaVersion: SuiteSchemaV1, Probes: []SpecV1{spec}}
+	engine, _ := newEngine(&routeTransport{results: map[string]Observation{
+		spec.Target: {StatusCode: 200, SummaryDigest: digestOfText("live")},
+	}}, &fakeClock{now: time.Now().UTC()})
+	evidence, err := engine.RunSuite(context.Background(), suite)
+	if err != nil || ValidateSuiteEvidence(suite, evidence) != nil {
+		t.Fatalf("valid Engine evidence rejected: %+v err=%v", evidence, err)
+	}
+
+	workerClaim := cloneSuiteEvidence(evidence)
+	workerClaim.Probes[0].Trust = "worker_local_declaration"
+	if !errors.Is(ValidateSuiteEvidence(suite, workerClaim), ErrInvalidEvidence) {
+		t.Fatal("Worker-local health claim was accepted as independent evidence")
+	}
+	impossible := cloneSuiteEvidence(evidence)
+	impossible.Status, impossible.Healthy = AggregateUnhealthy, false
+	impossible.Probes[0].Status, impossible.Probes[0].Healthy = StatusUnhealthy, false
+	impossible.Probes[0].Attempts[0].Status = StatusUnhealthy
+	impossible.Probes[0].Attempts[0].FailureCode = FailureHTTPStatus
+	if !errors.Is(ValidateSuiteEvidence(suite, impossible), ErrInvalidEvidence) {
+		t.Fatal("HTTP 200 was accepted as an unhealthy HTTP-status observation")
+	}
+}
+
 func TestNetworkTransportPinsPublicDNSAndNeverWritesTCPData(t *testing.T) {
 	resolver := &fakeResolver{addresses: []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("8.8.8.8")}}
 	connection := &recordingConn{}

@@ -51,6 +51,10 @@ systemctl disable dirextalk-worker-installer.socket
 systemctl enable dirextalk-worker-installer-bootstrap.service
 systemctl enable dirextalk-cloud-worker.service
 
+for required_filesystem_tool in /usr/bin/lsblk /usr/sbin/blkid /usr/bin/findmnt /usr/sbin/mkfs.ext4 /usr/bin/mount; do
+  test -x "${required_filesystem_tool}" || exit 76
+done
+
 rm -rf /var/tmp/* /tmp/* /root/.cache /root/.bash_history
 if command -v apt-get >/dev/null 2>&1; then
   DEBIAN_FRONTEND=noninteractive apt-get purge -y curl

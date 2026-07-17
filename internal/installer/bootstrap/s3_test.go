@@ -9,10 +9,12 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 func TestS3ArtifactDownloaderRequiresExactVersionChecksumAndKMSReadback(t *testing.T) {
@@ -22,7 +24,7 @@ func TestS3ArtifactDownloaderRequiresExactVersionChecksumAndKMSReadback(t *testi
 		SchemaVersion: ArtifactSourceSchemaV1, Name: "installer", Bucket: "dtx-artifacts",
 		Key: "deployments/22222222-2222-4222-8222-222222222222/artifacts/installer", VersionID: "version-1",
 		KMSKeyARN: "arn:aws:kms:ap-south-1:123456789012:key/11111111-2222-4333-8444-555555555555",
-		SHA256: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(payload)),
+		SHA256:    "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(payload)),
 		TargetPath: "/usr/local/share/dirextalk-worker/artifacts/installer", RecipeDigest: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x11}, 32)),
 	}
 	exact := &s3.GetObjectOutput{
@@ -54,7 +56,9 @@ func TestS3ArtifactDownloaderRequiresExactVersionChecksumAndKMSReadback(t *testi
 		{name: "missing", edit: func(output *s3.GetObjectOutput) { output.Body = nil }},
 		{name: "size", edit: func(output *s3.GetObjectOutput) { output.ContentLength = aws.Int64(int64(len(payload) + 1)) }},
 		{name: "version", edit: func(output *s3.GetObjectOutput) { output.VersionId = aws.String("other") }},
-		{name: "checksum", edit: func(output *s3.GetObjectOutput) { output.ChecksumSHA256 = aws.String(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x44}, 32))) }},
+		{name: "checksum", edit: func(output *s3.GetObjectOutput) {
+			output.ChecksumSHA256 = aws.String(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x44}, 32)))
+		}},
 		{name: "encryption", edit: func(output *s3.GetObjectOutput) { output.ServerSideEncryption = s3types.ServerSideEncryptionAes256 }},
 		{name: "kms key", edit: func(output *s3.GetObjectOutput) { output.SSEKMSKeyId = aws.String(source.KMSKeyARN + "-other") }},
 		{name: "bucket key", edit: func(output *s3.GetObjectOutput) { output.BucketKeyEnabled = aws.Bool(false) }},
@@ -72,13 +76,60 @@ func TestS3ArtifactDownloaderRequiresExactVersionChecksumAndKMSReadback(t *testi
 	}
 }
 
+func TestS3ArtifactDownloaderRetriesOnlyBoundedAccessDeniedPropagation(t *testing.T) {
+	payload := []byte("retry-bound-installer")
+	digest := sha256.Sum256(payload)
+	source := ArtifactSourceV1{
+		SchemaVersion: ArtifactSourceSchemaV1, Name: "installer", Bucket: "dtx-artifacts",
+		Key: "deployments/22222222-2222-4222-8222-222222222222/artifacts/installer", VersionID: "version-1",
+		KMSKeyARN: "arn:aws:kms:ap-south-1:123456789012:key/11111111-2222-4333-8444-555555555555",
+		SHA256:    "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(payload)), TargetPath: "/usr/local/share/dirextalk-worker/artifacts/installer",
+		RecipeDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	exact := &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(payload)), ContentLength: aws.Int64(int64(len(payload))), VersionId: aws.String(source.VersionID),
+		ChecksumSHA256: aws.String(base64.StdEncoding.EncodeToString(digest[:])), ServerSideEncryption: s3types.ServerSideEncryptionAwsKms,
+		SSEKMSKeyId: aws.String(source.KMSKeyARN), BucketKeyEnabled: aws.Bool(true)}
+	client := &artifactS3Fake{output: exact, errors: []error{
+		&smithy.GenericAPIError{Code: "AccessDenied", Message: "policy propagation"},
+		&smithy.GenericAPIError{Code: "AccessDenied", Message: "policy propagation"},
+	}}
+	waits := 0
+	downloader, err := newS3ArtifactDownloaderWithRetry(client, accessDeniedRetry{attempts: 3, wait: func(context.Context, time.Duration) error { waits++; return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	download, err := downloader.Open(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(download.Body)
+	_ = download.Body.Close()
+	if client.calls != 3 || waits != 2 {
+		t.Fatalf("AccessDenied propagation retry calls=%d waits=%d", client.calls, waits)
+	}
+
+	nonRetry := &artifactS3Fake{output: exact, errors: []error{errors.New("network unreachable")}}
+	downloader, _ = newS3ArtifactDownloaderWithRetry(nonRetry, accessDeniedRetry{attempts: 3, wait: func(context.Context, time.Duration) error { t.Fatal("non-AccessDenied was retried"); return nil }})
+	if _, err := downloader.Open(context.Background(), source); !errors.Is(err, ErrArtifactSource) || nonRetry.calls != 1 {
+		t.Fatalf("non-AccessDenied result=%v calls=%d", err, nonRetry.calls)
+	}
+}
+
 type artifactS3Fake struct {
 	input  *s3.GetObjectInput
 	output *s3.GetObjectOutput
 	err    error
+	errors []error
+	calls  int
 }
 
 func (fake *artifactS3Fake) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	fake.calls++
 	fake.input = input
+	if len(fake.errors) != 0 {
+		err := fake.errors[0]
+		fake.errors = fake.errors[1:]
+		return nil, err
+	}
 	return fake.output, fake.err
 }

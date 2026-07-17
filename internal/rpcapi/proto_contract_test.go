@@ -136,6 +136,25 @@ func TestCloudStatusContractSeparatesAxesAndRequiresOwnerFilters(t *testing.T) {
 			t.Fatalf("CloudDeployment.%s is required", name)
 		}
 	}
+	healthField := deployment.Fields().ByName("health")
+	if healthField == nil || healthField.Number() != 14 || healthField.Kind() != protoreflect.MessageKind || healthField.Message().Name() != "CloudHealthSummary" {
+		t.Fatalf("CloudDeployment.health must remain the additive field 14: %v", healthField)
+	}
+	health := (&agentv1.CloudHealthSummary{}).ProtoReflect().Descriptor()
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"status": 1, "revision": 2, "observed_at": 3, "next_due_at": 4,
+		"probe_count": 5, "probe_counts": 6, "external_evidence_digest": 7, "evidence_type": 8,
+	} {
+		field := health.Fields().ByName(name)
+		if field == nil || field.Number() != number {
+			t.Fatalf("CloudHealthSummary.%s number = %v, want %d", name, field, number)
+		}
+	}
+	for _, forbidden := range []protoreflect.Name{"url", "target", "body", "headers", "pairing", "secret", "secret_ref"} {
+		if health.Fields().ByName(forbidden) != nil {
+			t.Fatalf("CloudHealthSummary must not expose %s", forbidden)
+		}
+	}
 	resource := (&agentv1.CloudResource{}).ProtoReflect().Descriptor()
 	assertFieldKind(t, resource, "revision", protoreflect.Int64Kind)
 	if resource.Fields().ByName("read_back") == nil {

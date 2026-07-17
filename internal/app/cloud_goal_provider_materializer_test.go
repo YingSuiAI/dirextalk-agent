@@ -13,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 )
@@ -81,6 +82,23 @@ type cloudGoalFactsFake struct {
 	failQuoteResponseOnce bool
 	quoteReadbackDrift    bool
 	planReadbackDrift     bool
+}
+
+type cloudGoalSecretLocatorFake struct {
+	session secretbootstrap.SessionV1
+	err     error
+	calls   int
+	caller  string
+	binding secretbootstrap.BindingV1
+}
+
+func (fake *cloudGoalSecretLocatorFake) FindUploaded(_ context.Context, caller string, binding secretbootstrap.BindingV1) (secretbootstrap.SessionV1, error) {
+	fake.calls++
+	fake.caller, fake.binding = caller, binding
+	if fake.err != nil {
+		return secretbootstrap.SessionV1{}, fake.err
+	}
+	return fake.session, nil
 }
 
 func newCloudGoalFactsFake() *cloudGoalFactsFake {
@@ -225,12 +243,72 @@ func TestCloudGoalProviderMaterializerRejectsIndependentReadbackDrift(t *testing
 	})
 }
 
+func TestCloudGoalProviderMaterializerRequiresUploadedRecipeBoundSecretBeforeProviderWork(t *testing.T) {
+	fixture := newCloudGoalProviderFixture(t)
+	fixture.request.Draft.Recipe.SecretSlots = []recipe.SecretSlotRequirementV1{{
+		SlotID: "model-token", Purpose: "model token", Delivery: recipe.SecretDeliveryFile,
+		TargetPath: "/etc/dirextalk-service-secrets/model-token", FileMode: 0o400,
+	}}
+	digest, err := fixture.request.Draft.Recipe.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.Draft.Digest = digest
+	fixture.secrets.err = secretbootstrap.ErrNotFound
+
+	if _, err := fixture.materializer.MaterializeProviderPlan(context.Background(), fixture.request); !errors.Is(err, ErrCloudGoalSecretsNotReady) {
+		t.Fatalf("error=%v", err)
+	}
+	if fixture.connections.calls+fixture.placements.resolveCalls+fixture.quotes.calls+len(fixture.facts.quoteKeys)+len(fixture.facts.planKeys) != 0 {
+		t.Fatal("an unresolved secret reached provider reads or fact mutations")
+	}
+	if fixture.secrets.caller != fixture.request.Stage.Caller.ClientID || fixture.secrets.binding.TargetID != digest ||
+		fixture.secrets.binding.OwnerID != fixture.request.Stage.Binding.OwnerID || fixture.secrets.binding.Purpose != "model token" {
+		t.Fatalf("lookup caller=%q binding=%#v", fixture.secrets.caller, fixture.secrets.binding)
+	}
+}
+
+func TestCloudGoalProviderMaterializerBindsUploadedBootstrapRefIntoQuoteAndPlan(t *testing.T) {
+	fixture := newCloudGoalProviderFixture(t)
+	fixture.request.Draft.Recipe.SecretSlots = []recipe.SecretSlotRequirementV1{{
+		SlotID: "model-token", Purpose: "model token", Delivery: recipe.SecretDeliveryFile,
+		TargetPath: "/etc/dirextalk-service-secrets/model-token", FileMode: 0o400,
+	}}
+	digest, err := fixture.request.Draft.Recipe.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.Draft.Digest = digest
+	sessionID := uuid.NewString()
+	fixture.secrets.session = secretbootstrap.SessionV1{
+		SchemaVersion: secretbootstrap.SessionSchemaV1, SessionID: sessionID,
+		AgentInstanceID: fixture.request.AgentInstanceID, OwnerID: fixture.request.Stage.Binding.OwnerID,
+		Purpose: "model token", TargetID: digest, Status: secretbootstrap.StatusUploaded, Revision: 2,
+	}
+
+	materialized, err := fixture.materializer.MaterializeProviderPlan(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRef := "secret_ref:bootstrap/" + sessionID
+	if len(materialized.Plan.SecretScope) != 1 || materialized.Plan.SecretScope[0].SecretRef != wantRef ||
+		materialized.Plan.SecretScope[0].Purpose != "model token" || materialized.Plan.SecretScope[0].Delivery != recipe.SecretDeliveryFile {
+		t.Fatalf("plan secret scope=%#v", materialized.Plan.SecretScope)
+	}
+	for _, candidate := range materialized.Quote.Candidates {
+		if len(candidate.Scope.SecretScope) != 1 || candidate.Scope.SecretScope[0].SecretRef != wantRef {
+			t.Fatalf("quote secret scope=%#v", candidate.Scope.SecretScope)
+		}
+	}
+}
+
 type cloudGoalProviderFixture struct {
 	request      planning.ProviderPlanMaterializationRequest
 	connections  *cloudGoalConnectionFake
 	placements   *cloudGoalPlacementFake
 	quotes       *cloudGoalQuoteFake
 	facts        *cloudGoalFactsFake
+	secrets      *cloudGoalSecretLocatorFake
 	materializer *cloudGoalProviderPlanMaterializer
 }
 
@@ -267,11 +345,12 @@ func newCloudGoalProviderFixture(t *testing.T) *cloudGoalProviderFixture {
 	placements := &cloudGoalPlacementFake{placement: cloudGoalProviderPlacement()}
 	quotes := &cloudGoalQuoteFake{now: now}
 	facts := newCloudGoalFactsFake()
-	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, func() time.Time { return now })
+	secrets := &cloudGoalSecretLocatorFake{}
+	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &cloudGoalProviderFixture{request: request, connections: connections, placements: placements, quotes: quotes, facts: facts, materializer: materializer}
+	return &cloudGoalProviderFixture{request: request, connections: connections, placements: placements, quotes: quotes, facts: facts, secrets: secrets, materializer: materializer}
 }
 
 func cloudGoalProviderCandidates() []planning.ResourceCandidateV1 {

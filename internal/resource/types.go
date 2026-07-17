@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -27,6 +26,7 @@ var (
 	ErrManaged                    = errors.New("managed resource requires an explicit operation approval")
 	ErrCreateAuthorizationExpired = errors.New("provider create authorization expired")
 	ErrCreateAmbiguous            = errors.New("provider create result is ambiguous and requires reconciliation")
+	ErrStaleProbeEvidence         = errors.New("stale external probe evidence")
 )
 
 type Type string
@@ -213,6 +213,13 @@ func (spec ProvisionSpec) Validate(now time.Time) error {
 				return fmt.Errorf("%w: snapshot disposition does not match retention", ErrInvalid)
 			}
 		}
+		if spec.Type == TypeEBS && spec.AWS.Volume != nil && spec.AWS.Volume.Disposition != "" {
+			disposition := spec.AWS.Volume.Disposition
+			if (spec.Retention == task.RetentionEphemeralAutoDestroy && disposition != AWSVolumeDeleteWithDeployment) ||
+				(spec.Retention == task.RetentionManaged && disposition != AWSVolumeRetainWithManagedService) {
+				return fmt.Errorf("%w: volume disposition does not match retention", ErrInvalid)
+			}
+		}
 	}
 	if spec.Retention != task.RetentionEphemeralAutoDestroy && spec.Retention != task.RetentionManaged {
 		return fmt.Errorf("%w: retention is invalid", ErrInvalid)
@@ -395,72 +402,6 @@ type DestroyRequest struct {
 type DestroyResult struct {
 	Resources []ResourceV1
 	Blocked   bool
-}
-
-type ProbeKind string
-
-const (
-	ProbeLiveness  ProbeKind = "liveness"
-	ProbeReadiness ProbeKind = "readiness"
-	ProbeSemantic  ProbeKind = "semantic"
-)
-
-type ProbeSpec struct {
-	DeploymentID   string
-	Kind           ProbeKind
-	Endpoint       string
-	ExpectedDigest string
-	Timeout        time.Duration
-}
-
-type ProbeObservation struct {
-	Healthy       bool
-	StatusCode    int
-	SummaryDigest string
-	ObservedAt    time.Time
-}
-
-type ProbeEvidence struct {
-	DeploymentID  string
-	Kind          ProbeKind
-	Endpoint      string
-	Healthy       bool
-	StatusCode    int
-	SummaryDigest string
-	Trust         string
-	ObservedAt    time.Time
-}
-
-type ProbeRunner interface {
-	Run(context.Context, ProbeSpec) (ProbeObservation, error)
-}
-
-func (spec ProbeSpec) Validate() error {
-	parsedID, err := uuid.Parse(strings.TrimSpace(spec.DeploymentID))
-	if err != nil || parsedID == uuid.Nil {
-		return fmt.Errorf("%w: deployment_id must be a non-zero UUID", ErrInvalid)
-	}
-	if spec.Kind != ProbeLiveness && spec.Kind != ProbeReadiness && spec.Kind != ProbeSemantic {
-		return fmt.Errorf("%w: probe kind is invalid", ErrInvalid)
-	}
-	parsed, err := url.Parse(strings.TrimSpace(spec.Endpoint))
-	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" || security.ContainsLikelySecret(spec.Endpoint) {
-		return fmt.Errorf("%w: external probe endpoint must be credential-free HTTPS", ErrInvalid)
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return fmt.Errorf("%w: loopback probe endpoint is forbidden", ErrInvalid)
-	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast()) {
-		return fmt.Errorf("%w: private probe endpoint is forbidden", ErrInvalid)
-	}
-	if spec.Timeout < time.Second || spec.Timeout > time.Minute {
-		return fmt.Errorf("%w: probe timeout must be 1..60 seconds", ErrInvalid)
-	}
-	if spec.Kind == ProbeSemantic && !sha256Pattern.MatchString(spec.ExpectedDigest) {
-		return fmt.Errorf("%w: semantic probe expected digest is required", ErrInvalid)
-	}
-	return nil
 }
 
 func validType(kind Type) bool {

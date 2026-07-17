@@ -82,12 +82,18 @@ func newVerifierFixture(t *testing.T) verifierFixture {
 			TargetPath: PreinstalledArtifactRoot + "/openclaw.tar.zst",
 		}},
 		SecretRefs: []string{"secret_ref:deployment/model-token"},
+		Secrets: []SecretV1{{
+			SlotID: "model-token", SecretRef: "secret_ref:deployment/model-token",
+			SecretName: "dtx/" + binding.AgentInstanceID + "/deployments/" + binding.DeploymentID + "/model-token",
+			VersionID:  "88888888-8888-4888-8888-888888888888", TargetPath: PreinstalledSecretRoot + "/model-token",
+			FileMode: 0o400,
+		}},
 		Network: NetworkV1{
 			PublicInbound:      false,
 			OutboundHTTPSHosts: []string{"api.deepseek.com", "github.com"},
 		},
 		Ports:   []PortV1{{Name: "gateway", Protocol: "tcp", Direction: "loopback", Port: 18789}},
-		Volumes: []VolumeV1{{Name: "knowledge", MountPath: "/srv/knowledge", ReadOnly: false, SizeGiB: 40}},
+		Volumes: []VolumeV1{{Name: "knowledge", DeviceName: "/dev/sdf", MountPath: "/srv/knowledge", ReadOnly: false, Persistent: true, Disposition: "retain_with_managed_service", SizeGiB: 40}},
 		Commands: []CommandV1{{
 			CommandID:        "install-openclaw",
 			Argv:             []string{PreinstalledArtifactRoot + "/openclaw.tar.zst", "--mode", "ready"},

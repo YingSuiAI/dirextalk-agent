@@ -7,6 +7,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 )
@@ -64,7 +65,8 @@ func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
 	}
 	published := cloudexecution.PublishedBundles{
 		Recipe: operation.RecipeBundle, Execution: operation.ExecutionBundle, Access: deployment.Access,
-		SecretBindings: map[string]string{},
+		SecretBindings: installerSecretBindings(operation), InstallerRootTrust: operation.InstallerRootTrust,
+		InstallerSecrets: append([]installerbootstrap.SecretSourceV1(nil), operation.InstallerSecrets...),
 	}
 	bound, err := materializer.binder.Bind(ctx, awsartifact.PrincipalBindRequest{
 		Connection: connection, DeploymentID: challenge.DeploymentID, InstanceID: identity.InstanceID,
@@ -78,11 +80,19 @@ func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
 		Access: worker.AccessScope{
 			ArtifactPrefix: bound.ArtifactPrefix, CheckpointPrefix: bound.CheckpointPrefix, EvidencePrefix: bound.EvidencePrefix,
 			LogPrefix:  bound.LogPrefix,
-			SecretRefs: []string{},
+			SecretRefs: append([]string(nil), deployment.Access.SecretRefs...),
 		},
 	}
 	if err := result.Validate(identity.PrincipalID, challenge.DeploymentID); err != nil {
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
 	return result, nil
+}
+
+func installerSecretBindings(operation cloudexecution.Operation) map[string]string {
+	result := make(map[string]string, len(operation.InstallerSecrets))
+	for _, source := range operation.InstallerSecrets {
+		result[source.SecretRef] = "secret://aws/deployments/" + operation.DeploymentID + "/" + source.SlotID + "/" + source.VersionID
+	}
+	return result
 }

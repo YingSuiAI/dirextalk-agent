@@ -44,6 +44,7 @@ type EC2ResourceAPI interface {
 	CreateVolume(context.Context, *ec2.CreateVolumeInput, ...func(*ec2.Options)) (*ec2.CreateVolumeOutput, error)
 	DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error)
 	AttachVolume(context.Context, *ec2.AttachVolumeInput, ...func(*ec2.Options)) (*ec2.AttachVolumeOutput, error)
+	DetachVolume(context.Context, *ec2.DetachVolumeInput, ...func(*ec2.Options)) (*ec2.DetachVolumeOutput, error)
 	DeleteVolume(context.Context, *ec2.DeleteVolumeInput, ...func(*ec2.Options)) (*ec2.DeleteVolumeOutput, error)
 
 	CreateNetworkInterface(context.Context, *ec2.CreateNetworkInterfaceInput, ...func(*ec2.Options)) (*ec2.CreateNetworkInterfaceOutput, error)
@@ -77,6 +78,31 @@ type EC2ResourceProvider struct {
 	pollInterval     time.Duration
 	workerAMIAccount string
 	workerAMIReader  WorkerAMIInspectionVerifier
+	workerArtifacts  WorkerArtifactBinder
+	workerSecrets    WorkerSecretBinder
+}
+
+// WithWorkerArtifactBinder enables the post-launch, instance-principal S3
+// authorization step for signed installer artifacts. A Worker with such
+// artifacts is never marked active until its exact object versions are bound.
+func WithWorkerArtifactBinder(binder WorkerArtifactBinder) EC2ResourceProviderOption {
+	return func(provider *EC2ResourceProvider) error {
+		if binder == nil {
+			return ErrInvalidRequest
+		}
+		provider.workerArtifacts = binder
+		return nil
+	}
+}
+
+func WithWorkerSecretBinder(binder WorkerSecretBinder) EC2ResourceProviderOption {
+	return func(provider *EC2ResourceProvider) error {
+		if binder == nil {
+			return ErrInvalidRequest
+		}
+		provider.workerSecrets = binder
+		return nil
+	}
 }
 
 type EC2ResourceProviderOption func(*EC2ResourceProvider) error
@@ -283,6 +309,11 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 		}
 		return nil
 	case resource.TypeEBS:
+		if expectedTags[resource.TagEmbeddedParentResourceID] == "" {
+			if err := provider.detachOwnedVolume(ctx, providerID, expectedTags); err != nil {
+				return err
+			}
+		}
 		if err := provider.wait(ctx, func(ctx context.Context) (bool, error) {
 			volume, err := provider.volume(ctx, providerID)
 			if err != nil {
@@ -339,6 +370,43 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 		return providerError(ctx, err)
 	}
 	return provider.waitMissing(ctx, kind, providerID)
+}
+
+func (provider *EC2ResourceProvider) detachOwnedVolume(ctx context.Context, volumeID string, expectedTags map[string]string) error {
+	volume, err := provider.volume(ctx, volumeID)
+	if err != nil {
+		return err
+	}
+	for _, attachment := range volume.Attachments {
+		instanceID := aws.ToString(attachment.InstanceId)
+		device := aws.ToString(attachment.Device)
+		if instanceID == "" || device == "" {
+			return resource.ErrReadBack
+		}
+		instance, readErr := provider.instance(ctx, instanceID)
+		if readErr != nil {
+			return readErr
+		}
+		instanceTags := tagsFromEC2(instance.Tags)
+		for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID} {
+			if instanceTags[key] != expectedTags[key] {
+				return resource.ErrReadBack
+			}
+		}
+		_, detachErr := provider.client.DetachVolume(ctx, &ec2.DetachVolumeInput{
+			VolumeId: aws.String(volumeID), InstanceId: aws.String(instanceID), Device: aws.String(device), Force: aws.Bool(false),
+		})
+		if detachErr != nil && !apiCode(detachErr, "InvalidAttachment.NotFound") {
+			return providerError(ctx, detachErr)
+		}
+	}
+	return provider.wait(ctx, func(ctx context.Context) (bool, error) {
+		current, readErr := provider.volume(ctx, volumeID)
+		if readErr != nil {
+			return false, readErr
+		}
+		return current.State == ec2types.VolumeStateAvailable && len(current.Attachments) == 0, nil
+	})
 }
 
 func (provider *EC2ResourceProvider) validateCreate(request resource.ProviderCreateRequest) error {
@@ -535,8 +603,21 @@ func dependencyID(dependencies []resource.ProviderDependency, kind resource.Type
 	return ""
 }
 
+func dependencyIDByResource(dependencies []resource.ProviderDependency, resourceID string, kind resource.Type) string {
+	for _, dependency := range dependencies {
+		if dependency.ResourceID == resourceID && dependency.Type == kind {
+			return dependency.ProviderID
+		}
+	}
+	return ""
+}
+
 func fixedWorkerUserData(request resource.ProviderCreateRequest) (string, error) {
 	spec := request.AWS.Instance
+	volumes, err := fixedWorkerVolumeSources(request)
+	if err != nil {
+		return "", err
+	}
 	encoded, err := json.Marshal(installerbootstrap.UserDataV1{
 		SchemaVersion: installerbootstrap.UserDataSchemaV1, ResourceID: request.ResourceID, SpecDigest: request.SpecDigest,
 		ArtifactRef: spec.UserDataArtifactRef, ArtifactDigest: spec.UserDataArtifactDigest, Region: request.Region,
@@ -546,11 +627,57 @@ func fixedWorkerUserData(request resource.ProviderCreateRequest) (string, error)
 		EnrollmentMethod:           "aws_sts_sigv4",
 		InstallerTrust:             spec.Bootstrap.InstallerTrust,
 		InstallerArtifacts:         spec.Bootstrap.InstallerArtifacts,
+		InstallerSecrets:           spec.Bootstrap.InstallerSecrets,
+		InstallerVolumes:           volumes,
 	})
 	if err != nil || len(encoded) == 0 || len(encoded) > installerbootstrap.MaxUserDataBytes {
 		return "", resource.ErrInvalid
 	}
 	return base64.StdEncoding.EncodeToString(encoded), nil
+}
+
+func fixedWorkerVolumeSources(request resource.ProviderCreateRequest) ([]installerbootstrap.VolumeSourceV1, error) {
+	instance := request.AWS.Instance
+	if instance == nil {
+		return nil, resource.ErrInvalid
+	}
+	if instance.Bootstrap.InstallerTrust == nil {
+		if len(instance.DataVolumes) != 0 {
+			return nil, resource.ErrInvalid
+		}
+		return nil, nil
+	}
+	approved := instance.Bootstrap.InstallerTrust.ArtifactManifest.Manifest.Volumes
+	if len(approved) != len(instance.DataVolumes) {
+		return nil, resource.ErrInvalid
+	}
+	attachments := make(map[string]resource.AWSDataVolumeAttachmentV1, len(instance.DataVolumes))
+	for _, attachment := range instance.DataVolumes {
+		if _, duplicate := attachments[attachment.DeviceName]; duplicate {
+			return nil, resource.ErrInvalid
+		}
+		attachments[attachment.DeviceName] = attachment
+	}
+	result := make([]installerbootstrap.VolumeSourceV1, 0, len(approved))
+	for _, volume := range approved {
+		attachment, ok := attachments[volume.DeviceName]
+		if !ok {
+			return nil, resource.ErrInvalid
+		}
+		volumeID := dependencyIDByResource(request.Dependencies, attachment.ResourceID, resource.TypeEBS)
+		if !strings.HasPrefix(volumeID, "vol-") || !providerDependencyIDPattern.MatchString(volumeID) {
+			return nil, resource.ErrInvalid
+		}
+		result = append(result, installerbootstrap.VolumeSourceV1{
+			SchemaVersion: installerbootstrap.VolumeSourceSchemaV1,
+			Name:          volume.Name, ResourceID: attachment.ResourceID, VolumeID: volumeID, DeviceName: attachment.DeviceName,
+		})
+		delete(attachments, volume.DeviceName)
+	}
+	if len(attachments) != 0 {
+		return nil, resource.ErrInvalid
+	}
+	return result, nil
 }
 
 func (provider *EC2ResourceProvider) wait(ctx context.Context, check func(context.Context) (bool, error)) error {

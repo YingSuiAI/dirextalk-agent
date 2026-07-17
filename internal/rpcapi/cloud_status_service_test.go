@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type cloudStatusReaderStub struct {
@@ -151,10 +152,73 @@ func TestCloudDeploymentStatusKeepsExecutionOutcomeAndResourceAxesIndependent(t 
 	if got.GetRevision() != 13 || got.GetResources().GetRevision() != 6 || got.GetResources().GetStatus() != agentv1.CloudResourceStatus_CLOUD_RESOURCE_STATUS_MIXED {
 		t.Fatalf("deployment revisions/status=%+v", got)
 	}
+	if got.GetHealth().GetStatus() != agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_UNKNOWN ||
+		got.GetHealth().GetEvidenceType() != agentv1.CloudHealthEvidenceType_CLOUD_HEALTH_EVIDENCE_TYPE_NONE {
+		t.Fatalf("deployment without a monitor must expose explicit unknown health: %+v", got.GetHealth())
+	}
 	readBack := got.GetResources().GetReadBack()
 	if readBack.GetTotalResources() != 3 || readBack.GetObservedResources() != 2 || readBack.GetExistingResources() != 1 ||
 		readBack.GetMissingResources() != 1 || readBack.GetUnobservedResources() != 1 || !readBack.GetLastObservedAt().AsTime().Equal(now) {
 		t.Fatalf("read-back summary=%+v", readBack)
+	}
+}
+
+func TestCloudDeploymentGetAndListExposeSanitizedIndependentHealthSummary(t *testing.T) {
+	now := time.Date(2026, 7, 17, 6, 0, 0, 0, time.UTC)
+	deployment := cloudstatus.Deployment{
+		Worker: worker.Deployment{
+			DeploymentID: uuid.NewString(), OwnerID: "owner-health", TaskID: uuid.NewString(), StepID: uuid.NewString(),
+			Revision: 7, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute),
+		},
+		PlanID: uuid.NewString(), ConnectionID: uuid.NewString(),
+		Health: cloudstatus.HealthSummary{
+			Status: cloudstatus.HealthDegraded, Revision: 9, ObservedAt: now, NextDueAt: now.Add(time.Minute),
+			ProbeCount: 3,
+			ProbeCounts: []cloudstatus.HealthProbeCount{
+				{Kind: cloudstatus.HealthProbeLiveness, Count: 1},
+				{Kind: cloudstatus.HealthProbeReadiness, Count: 1},
+				{Kind: cloudstatus.HealthProbeSemantic, Count: 1},
+			},
+			EvidenceDigest: "sha256:5e7f10a71a487e30a1c7f8a377c4970f4f7ef067157628e33bb744f0c52d60ef",
+			EvidenceType:   cloudstatus.HealthEvidenceIndependent,
+		},
+	}
+	stub := &cloudStatusReaderStub{
+		ownerID: "owner-health", deployment: deployment,
+		deploymentPage: cloudstatus.DeploymentPage{Deployments: []cloudstatus.Deployment{deployment}},
+	}
+	service := NewCloudControlService(nil, uuid.NewString(), stub)
+	getResponse, err := service.GetCloudDeployment(context.Background(), &agentv1.GetCloudDeploymentRequest{
+		OwnerId: deployment.Worker.OwnerID, DeploymentId: deployment.Worker.DeploymentID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listResponse, err := service.ListCloudDeployments(context.Background(), &agentv1.ListCloudDeploymentsRequest{OwnerId: deployment.Worker.OwnerID})
+	if err != nil || len(listResponse.GetDeployments()) != 1 {
+		t.Fatalf("list response=%+v err=%v", listResponse, err)
+	}
+	for _, got := range []*agentv1.CloudDeployment{getResponse.GetDeployment(), listResponse.GetDeployments()[0]} {
+		health := got.GetHealth()
+		if health.GetStatus() != agentv1.CloudHealthStatus_CLOUD_HEALTH_STATUS_DEGRADED || health.GetRevision() != 9 ||
+			health.GetProbeCount() != 3 || len(health.GetProbeCounts()) != 3 ||
+			health.GetEvidenceType() != agentv1.CloudHealthEvidenceType_CLOUD_HEALTH_EVIDENCE_TYPE_INDEPENDENT_EXTERNAL ||
+			health.GetExternalEvidenceDigest() != deployment.Health.EvidenceDigest ||
+			!health.GetObservedAt().AsTime().Equal(now) || !health.GetNextDueAt().AsTime().Equal(now.Add(time.Minute)) {
+			t.Fatalf("sanitized health projection=%+v", health)
+		}
+		if got.GetRevision() != deployment.Worker.Revision {
+			t.Fatalf("health revision leaked into deployment revision: deployment=%d health=%d", got.GetRevision(), health.GetRevision())
+		}
+		payload, marshalErr := protojson.Marshal(got)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		for _, forbidden := range []string{"probeUrl", "responseBody", "headers", "pairing", "secretRef"} {
+			if strings.Contains(string(payload), forbidden) {
+				t.Fatalf("health projection contains forbidden field %q: %s", forbidden, payload)
+			}
+		}
 	}
 }
 

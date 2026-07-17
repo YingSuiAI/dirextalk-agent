@@ -32,6 +32,7 @@ type runnerControlFake struct {
 	heartbeatGrants func(time.Time) []*agentv1.WorkerInstallerLeaseGrant
 	heartbeatEpoch  int64
 	checkpoints     []string
+	logs            []string
 	completion      *agentv1.WorkerControlServiceCompleteRequest
 }
 
@@ -100,7 +101,9 @@ func (fake *runnerControlFake) Heartbeat(_ context.Context, _ []byte, request *a
 	}
 	fake.revision++
 	fake.heartbeats++
-	expiresAt := time.Now().Add(time.Duration(request.GetLeaseDurationSeconds()) * time.Second)
+	// Stay strictly beyond the claim expiry even when the test process stalls
+	// between Claim and this synthetic heartbeat.
+	expiresAt := time.Now().Add(2 * time.Duration(request.GetLeaseDurationSeconds()) * time.Second)
 	epoch := int64(9)
 	if fake.heartbeatEpoch != 0 {
 		epoch = fake.heartbeatEpoch
@@ -115,8 +118,19 @@ func (fake *runnerControlFake) Heartbeat(_ context.Context, _ []byte, request *a
 func (fake *runnerControlFake) RecordEvidence(_ context.Context, _ []byte, request *agentv1.WorkerControlServiceRecordEvidenceRequest) (*agentv1.WorkerControlServiceRecordEvidenceResponse, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
+	if request.GetExpectedRevision() != fake.revision || request.GetLeaseEpoch() != 9 {
+		return nil, errors.New("stale evidence")
+	}
+	if request.GetKind() == agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_LOG {
+		if request.GetObject() != nil || !strings.HasPrefix(request.GetRef(), "cloudwatch://worker-log/deployments/test/milestones-a1-e9") {
+			return nil, errors.New("invalid log scope")
+		}
+		fake.revision++
+		fake.logs = append(fake.logs, request.GetRef())
+		return &agentv1.WorkerControlServiceRecordEvidenceResponse{Revision: fake.revision}, nil
+	}
 	object := request.GetObject()
-	if request.GetExpectedRevision() != fake.revision || request.GetLeaseEpoch() != 9 || request.GetKind() != agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT ||
+	if request.GetKind() != agentv1.WorkerEvidenceKind_WORKER_EVIDENCE_KIND_CHECKPOINT ||
 		object == nil || len(object.GetSha256()) != sha256.Size || object.GetSizeBytes() == 0 || object.GetMediaType() != "application/json" || request.GetRef() != "" {
 		return nil, errors.New("stale checkpoint")
 	}
@@ -139,6 +153,22 @@ func (fake *runnerControlFake) Complete(_ context.Context, _ []byte, request *ag
 type memoryObjects struct {
 	mu      sync.Mutex
 	objects map[string][]byte
+}
+
+type logSinkFake struct {
+	mu     sync.Mutex
+	events []LogEventV1
+	failAt int
+}
+
+func (sink *logSinkFake) Emit(_ context.Context, event LogEventV1) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	sink.events = append(sink.events, event)
+	if sink.failAt > 0 && len(sink.events) == sink.failAt {
+		return errors.New("provider error containing sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	}
+	return nil
 }
 
 func (store *memoryObjects) Get(_ context.Context, reference string) ([]byte, error) {
@@ -174,8 +204,8 @@ func TestRunnerExecutesDigestLockedNoopWithHeartbeatCheckpointAndResult(t *testi
 	}
 	control.mu.Lock()
 	defer control.mu.Unlock()
-	if control.heartbeats == 0 || len(control.checkpoints) != 1 || !strings.HasPrefix(control.checkpoints[0], "s3://worker-bucket/deployments/test/checkpoints/checkpoint-a1-e9-i0-") {
-		t.Fatalf("heartbeat/checkpoints = (%d, %#v)", control.heartbeats, control.checkpoints)
+	if control.heartbeats == 0 || len(control.logs) != 0 || len(control.checkpoints) != 1 || !strings.HasPrefix(control.checkpoints[0], "s3://worker-bucket/deployments/test/checkpoints/checkpoint-a1-e9-i0-") {
+		t.Fatalf("heartbeat/logs/checkpoints = (%d, %#v, %#v)", control.heartbeats, control.logs, control.checkpoints)
 	}
 	if control.completion == nil || control.completion.GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED ||
 		control.completion.GetResultRef() != "" || control.completion.GetResultObject().GetRef() != result.ResultRef ||
@@ -186,6 +216,51 @@ func TestRunnerExecutesDigestLockedNoopWithHeartbeatCheckpointAndResult(t *testi
 	defer objects.mu.Unlock()
 	if len(objects.objects[control.checkpoints[0]]) == 0 || len(objects.objects[result.ResultRef]) == 0 {
 		t.Fatal("checkpoint or result object was not stored")
+	}
+}
+
+func TestRunnerWritesOnlyTypedMilestonesBeforeDurableCompletion(t *testing.T) {
+	runner, config, control, _ := runnerFixture(t, validNoopBundle(t, 0))
+	sink := &logSinkFake{}
+	runner.Logs = sink
+	result, err := runner.Run(t.Context(), config)
+	if err != nil || result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("Run() = (%#v, %v)", result, err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	wantKinds := []LogKind{LogExecutionStarted, LogActionStarted, LogActionSucceeded, LogExecutionFinished}
+	if len(sink.events) != len(wantKinds) {
+		t.Fatalf("events = %#v", sink.events)
+	}
+	for index, event := range sink.events {
+		if event.SchemaVersion != WorkerLogSchemaV1 || event.Kind != wantKinds[index] || event.DeploymentID != config.DeploymentID ||
+			event.WorkerID != config.WorkerID || event.Attempt != 1 || event.LeaseEpoch != 9 || event.EventID == "" || event.OccurredAt.IsZero() {
+			t.Fatalf("event[%d] = %#v", index, event)
+		}
+	}
+	if sink.events[1].ActionID != "smoke" || sink.events[2].ActionID != "smoke" || sink.events[3].Outcome != LogOutcomeSucceeded {
+		t.Fatalf("typed milestones lost action/outcome binding: %#v", sink.events)
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	if len(control.logs) != 1 || !strings.HasSuffix(control.logs[0], "/milestones-a1-e9") || control.completion == nil {
+		t.Fatalf("milestone scope/completion was not persisted: logs=%#v completion=%#v", control.logs, control.completion)
+	}
+}
+
+func TestRunnerFailsClosedBeforeActionWhenMilestoneLogIsUnavailable(t *testing.T) {
+	runner, config, control, objects := runnerFixture(t, validNoopBundle(t, 0))
+	runner.Logs = &logSinkFake{failAt: 1}
+	result, err := runner.Run(t.Context(), config)
+	if err == nil || err.Error() != "write Worker milestone log" || result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_UNSPECIFIED ||
+		strings.Contains(err.Error(), "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {
+		t.Fatalf("Run() = (%#v, %v)", result, err)
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	if len(control.logs) != 0 || len(control.checkpoints) != 0 || control.completion != nil || len(objects.objects) != 2 {
+		t.Fatalf("unlogged execution crossed action boundary: logs=%#v checkpoints=%#v completion=%#v objects=%d", control.logs, control.checkpoints, control.completion, len(objects.objects))
 	}
 }
 

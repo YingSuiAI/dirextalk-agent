@@ -4,9 +4,18 @@
 package approval
 
 import (
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+)
+
+type VolumeScopeV1 = cloudquote.VolumeScopeV1
+type VolumeDisposition = cloudquote.VolumeDisposition
+
+const (
+	VolumeDeleteWithDeployment     = cloudquote.VolumeDeleteWithDeployment
+	VolumeRetainWithManagedService = cloudquote.VolumeRetainWithManagedService
 )
 
 const (
@@ -114,6 +123,7 @@ type ResourceScopeV1 struct {
 	PurchaseOption        PurchaseOption      `json:"purchase_option"`
 	WorkerImageID         string              `json:"worker_image_id"`
 	WorkerImageDigest     string              `json:"worker_image_digest"`
+	VolumeScopes          []VolumeScopeV1     `json:"volume_scopes,omitempty"`
 }
 
 type NetworkScopeV1 struct {

@@ -179,6 +179,14 @@ func validatePricingQuery(query cloudquote.PricingQueryV1) error {
 		if candidate.CandidateID == "" || candidate.InstanceType == "" || candidate.InstanceCount == 0 || candidate.DiskGiB == 0 || candidate.VolumeType == "" {
 			return errors.New("pricing candidate is incomplete")
 		}
+		if len(candidate.DataVolumes) > 11 {
+			return errors.New("pricing candidate has too many data volumes")
+		}
+		for _, volume := range candidate.DataVolumes {
+			if volume.SizeGiB == 0 || volume.VolumeType != "gp3" || volume.IOPS < 3_000 || volume.IOPS > 80_000 || volume.ThroughputMiBPS < 125 || volume.ThroughputMiBPS > 2_000 {
+				return errors.New("pricing candidate data volume is invalid")
+			}
+		}
 		if _, exists := seen[candidate.CandidateID]; exists {
 			return errors.New("pricing candidate IDs must be unique")
 		}

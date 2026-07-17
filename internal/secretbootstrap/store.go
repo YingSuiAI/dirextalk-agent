@@ -34,6 +34,23 @@ type AtomicIdempotentSessionStore interface {
 	CommitUploadIdempotent(ctx context.Context, mutation IdempotencyMutation, sessionID string, expectedRevision uint64, uploadTokenHash [32]byte, envelope EnvelopeV1, now time.Time) (Record, error)
 }
 
+// AtomicUploadWakeStore is an optional stronger durable boundary. Its upload
+// transaction may wake metadata-bound work that was waiting for the exact
+// secret upload. The interface intentionally passes only the existing upload
+// mutation and opaque envelope; no Task, secret reference, session payload, or
+// plaintext enters the generic Manager.
+type AtomicUploadWakeStore interface {
+	CommitUploadIdempotentAndWake(ctx context.Context, mutation IdempotencyMutation, sessionID string, expectedRevision uint64, uploadTokenHash [32]byte, envelope EnvelopeV1, now time.Time) (Record, error)
+}
+
+// UploadedSessionStore provides a metadata-only lookup used when a planning
+// flow must bind an already-uploaded one-use session into an approvable Plan.
+// Implementations must fail closed when more than one live session matches so
+// the control plane never guesses which secret capability the caller meant.
+type UploadedSessionStore interface {
+	FindUploaded(ctx context.Context, creatorClientID string, binding BindingV1, now time.Time) (Record, error)
+}
+
 // KeyStore isolates short-lived X25519 private keys from the normal session
 // store. A PostgreSQL implementation must seal values with the configured
 // Agent master key and expose only opaque handles in Record.

@@ -66,6 +66,10 @@ func (engine *AWSActiveQuoteEngine) Quote(ctx context.Context, connection Connec
 	if err != nil {
 		return cloudquote.QuoteV1{}, err
 	}
+	bound, err = bindVolumeScopesForQuote(engine.agentInstanceID, bound, boundRecipe)
+	if err != nil {
+		return cloudquote.QuoteV1{}, err
+	}
 	if err := bound.Validate(); err != nil {
 		return cloudquote.QuoteV1{}, ErrInvalid
 	}

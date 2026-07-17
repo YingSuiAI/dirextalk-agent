@@ -28,6 +28,8 @@ const (
 	TrustMaterialSchemaV1  = "dirextalk.agent.installer-root-trust/v1"
 	TrustFileSchemaV1      = "dirextalk.agent.installer-root-trust-file/v1"
 	ArtifactSourceSchemaV1 = "dirextalk.agent.installer-artifact-source/v1"
+	SecretSourceSchemaV1   = "dirextalk.agent.installer-secret-source/v1"
+	VolumeSourceSchemaV1   = "dirextalk.agent.installer-volume-source/v1"
 
 	DefaultTrustFile = "/etc/dirextalk-installer/trust.cbor"
 	MaxUserDataBytes = 16 << 10
@@ -45,6 +47,7 @@ var (
 	regionPattern       = regexp.MustCompile(`^[a-z]{2}(?:-gov)?-[a-z]+-\d$`)
 	accountPattern      = regexp.MustCompile(`^[0-9]{12}$`)
 	instancePattern     = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	volumeIDPattern     = regexp.MustCompile(`^vol-[0-9a-f]{8}(?:[0-9a-f]{9})?$`)
 	bucketPattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 	versionPattern      = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]+$`)
 )
@@ -80,6 +83,44 @@ type ArtifactSourceV1 struct {
 	RecipeDigest  string `json:"recipe_digest"`
 }
 
+// SecretSourceV1 contains only the exact Secrets Manager coordinate and
+// signed root destination. SecretString/SecretBinary is never serialized into
+// user-data, bundles, state, events, or logs.
+type SecretSourceV1 struct {
+	SchemaVersion string `json:"schema_version"`
+	SlotID        string `json:"slot_id"`
+	SecretRef     string `json:"secret_ref"`
+	SecretARN     string `json:"secret_arn"`
+	SecretName    string `json:"secret_name"`
+	VersionID     string `json:"version_id"`
+	KMSKeyARN     string `json:"kms_key_arn"`
+	TargetPath    string `json:"target_path"`
+	FileMode      uint32 `json:"file_mode"`
+	OwnerUID      uint32 `json:"owner_uid"`
+	OwnerGID      uint32 `json:"owner_gid"`
+	RecipeDigest  string `json:"recipe_digest"`
+}
+
+// VolumeSourceV1 binds a provider-created EBS volume to one signed installer
+// volume declaration. DeviceName is only the approved EC2 attachment slot;
+// Linux resolves the real Nitro NVMe device from VolumeID and never trusts
+// this legacy /dev/sdX name as a local block-device path.
+type VolumeSourceV1 struct {
+	SchemaVersion string `json:"schema_version"`
+	Name          string `json:"name"`
+	ResourceID    string `json:"resource_id"`
+	VolumeID      string `json:"volume_id"`
+	DeviceName    string `json:"device_name"`
+}
+
+// VolumeMountV1 is produced only after VolumeSourceV1 has been matched to the
+// independently signed manifest. It is the complete input accepted by the
+// privileged filesystem materializer.
+type VolumeMountV1 struct {
+	Source   VolumeSourceV1
+	Approved installer.VolumeV1
+}
+
 // UserDataV1 mirrors the closed, secret-free EC2 user-data document emitted
 // by the typed EC2 provider. ArtifactRef remains an immutable reference for
 // the unprivileged Worker; the privileged bootstrap never reads it.
@@ -97,6 +138,9 @@ type UserDataV1 struct {
 	EnrollmentMethod           string               `json:"enrollment_method"`
 	InstallerTrust             *RootTrustMaterialV1 `json:"installer_trust,omitempty"`
 	InstallerArtifacts         []ArtifactSourceV1   `json:"installer_artifacts,omitempty"`
+	InstallerSecrets           []SecretSourceV1     `json:"installer_secrets,omitempty"`
+	InstallerVolumes           []VolumeSourceV1     `json:"installer_volumes,omitempty"`
+	resolvedVolumes            []VolumeMountV1
 }
 
 // InstanceIdentityV1 is independently read from IMDSv2. Region must exactly
@@ -141,7 +185,7 @@ func ParseUserData(raw []byte, identity InstanceIdentityV1) (UserDataV1, *TrustF
 		return UserDataV1{}, nil, ErrInvalidInput
 	}
 	if value.InstallerTrust == nil {
-		if len(value.InstallerArtifacts) != 0 {
+		if len(value.InstallerArtifacts) != 0 || len(value.InstallerSecrets) != 0 || len(value.InstallerVolumes) != 0 {
 			return UserDataV1{}, nil, ErrTrustMismatch
 		}
 		return value, nil, nil
@@ -153,6 +197,14 @@ func ParseUserData(raw []byte, identity InstanceIdentityV1) (UserDataV1, *TrustF
 	if err := ValidateArtifactSources(*value.InstallerTrust, value.InstallerArtifacts, value.DeploymentID, identity); err != nil {
 		return UserDataV1{}, nil, err
 	}
+	if err := ValidateSecretSources(*value.InstallerTrust, value.InstallerSecrets, value.DeploymentID, identity); err != nil {
+		return UserDataV1{}, nil, err
+	}
+	resolvedVolumes, err := ValidateVolumeSources(*value.InstallerTrust, value.InstallerVolumes, value.DeploymentID)
+	if err != nil {
+		return UserDataV1{}, nil, err
+	}
+	value.resolvedVolumes = resolvedVolumes
 	return value, &trust, nil
 }
 
@@ -239,9 +291,114 @@ func ValidateArtifactSources(material RootTrustMaterialV1, sources []ArtifactSou
 	return nil
 }
 
+// ValidateSecretSources binds every readable AWS secret version to the signed
+// Recipe slot and its exact root-owned file destination.
+func ValidateSecretSources(material RootTrustMaterialV1, sources []SecretSourceV1, deploymentID string, identity InstanceIdentityV1) error {
+	manifest := material.ArtifactManifest.Manifest
+	if !validIdentity(identity) || manifest.Binding.DeploymentID != deploymentID || manifest.Binding.RecipeDigest == "" || len(sources) != len(manifest.Secrets) {
+		return ErrTrustMismatch
+	}
+	if len(sources) == 0 {
+		return nil
+	}
+	expected := make(map[string]installer.SecretV1, len(manifest.Secrets))
+	for _, secret := range manifest.Secrets {
+		expected[secret.SecretRef] = secret
+	}
+	seen := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		secret, ok := expected[source.SecretRef]
+		if !ok || source.SchemaVersion != SecretSourceSchemaV1 || source.SlotID != secret.SlotID || source.SecretName != secret.SecretName ||
+			source.VersionID != secret.VersionID || source.TargetPath != secret.TargetPath || source.FileMode != secret.FileMode ||
+			source.OwnerUID != secret.OwnerUID || source.OwnerGID != secret.OwnerGID || source.RecipeDigest != manifest.Binding.RecipeDigest {
+			return ErrTrustMismatch
+		}
+		if _, duplicate := seen[source.SecretRef]; duplicate {
+			return ErrTrustMismatch
+		}
+		seen[source.SecretRef] = struct{}{}
+		secretARN, err := arn.Parse(source.SecretARN)
+		if err != nil || secretARN.Service != "secretsmanager" || secretARN.Region != identity.Region || secretARN.AccountID != identity.AccountID ||
+			!validSecretsManagerResource(secretARN.Resource, source.SecretName) {
+			return ErrTrustMismatch
+		}
+		keyARN, err := arn.Parse(source.KMSKeyARN)
+		if err != nil || keyARN.Service != "kms" || keyARN.Region != identity.Region || keyARN.AccountID != identity.AccountID ||
+			!strings.HasPrefix(keyARN.Resource, "key/") || strings.TrimPrefix(keyARN.Resource, "key/") == "" {
+			return ErrTrustMismatch
+		}
+	}
+	return nil
+}
+
+// ValidateVolumeSources rejects any runtime volume identifier which does not
+// have exactly one corresponding signed slot. The provider-generated EBS ID
+// is intentionally not part of the pre-provision approval, while every
+// capability it receives (device slot, mount path, size and lifecycle) is.
+func ValidateVolumeSources(material RootTrustMaterialV1, sources []VolumeSourceV1, deploymentID string) ([]VolumeMountV1, error) {
+	if _, err := ValidateTrustMaterial(material, deploymentID); err != nil {
+		return nil, err
+	}
+	manifest := material.ArtifactManifest.Manifest
+	if len(sources) != len(manifest.Volumes) {
+		return nil, ErrTrustMismatch
+	}
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	expected := make(map[string]installer.VolumeV1, len(manifest.Volumes))
+	for _, volume := range manifest.Volumes {
+		expected[volume.Name] = volume
+	}
+	seenResources := make(map[string]struct{}, len(sources))
+	seenVolumes := make(map[string]struct{}, len(sources))
+	resolved := make([]VolumeMountV1, 0, len(sources))
+	for _, source := range sources {
+		approved, ok := expected[source.Name]
+		if !ok || source.SchemaVersion != VolumeSourceSchemaV1 || !canonicalUUID(source.ResourceID) ||
+			!volumeIDPattern.MatchString(source.VolumeID) || source.DeviceName != approved.DeviceName {
+			return nil, ErrTrustMismatch
+		}
+		if _, duplicate := seenResources[source.ResourceID]; duplicate {
+			return nil, ErrTrustMismatch
+		}
+		if _, duplicate := seenVolumes[source.VolumeID]; duplicate {
+			return nil, ErrTrustMismatch
+		}
+		seenResources[source.ResourceID] = struct{}{}
+		seenVolumes[source.VolumeID] = struct{}{}
+		delete(expected, source.Name)
+		resolved = append(resolved, VolumeMountV1{Source: source, Approved: approved})
+	}
+	if len(expected) != 0 {
+		return nil, ErrTrustMismatch
+	}
+	return resolved, nil
+}
+
+func validSecretsManagerResource(resource, name string) bool {
+	prefix := "secret:" + name + "-"
+	suffix := strings.TrimPrefix(resource, prefix)
+	if resource == suffix || len(suffix) != 6 {
+		return false
+	}
+	for _, character := range suffix {
+		if character < 'A' || character > 'Z' {
+			if character < 'a' || character > 'z' {
+				if character < '0' || character > '9' {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 func cloneSignedManifest(value installer.SignedArtifactManifestV1) installer.SignedArtifactManifestV1 {
 	clone := value
 	clone.Manifest.Artifacts = slices.Clone(value.Manifest.Artifacts)
+	clone.Manifest.Secrets = slices.Clone(value.Manifest.Secrets)
+	clone.Manifest.Volumes = slices.Clone(value.Manifest.Volumes)
 	clone.Signature = slices.Clone(value.Signature)
 	return clone
 }

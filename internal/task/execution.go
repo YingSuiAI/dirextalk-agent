@@ -61,11 +61,17 @@ type StepDefinition struct {
 }
 
 type Attempt struct {
-	TaskID          string
-	StepID          string
-	Attempt         int32
-	LeaseEpoch      int64
-	WorkerID        string
+	TaskID     string
+	StepID     string
+	Attempt    int32
+	LeaseEpoch int64
+	WorkerID   string
+	// TaskRevision and StepRevision are the durable revisions observed when a
+	// lease was acquired. They are deliberately carried in the acquire replay
+	// snapshot so a later user-wait transition can fence all three aggregates
+	// instead of relying on a best-effort lease timeout.
+	TaskRevision    int64
+	StepRevision    int64
 	LeaseExpiresAt  time.Time
 	ExecutionStatus ExecutionStatus
 	OutcomeStatus   OutcomeStatus
@@ -159,6 +165,96 @@ type CompleteStepCommand struct {
 	ResultRef      string
 }
 
+// WaitingReasonServiceSecretsNotReady is the only reason persisted for a
+// Cloud Goal that needs a user upload. It is a stable, non-sensitive code;
+// secret references, bootstrap session IDs, and source error text are never
+// written to Task events or the outbox.
+const WaitingReasonServiceSecretsNotReady = "service_secrets_not_ready"
+
+// SecretWaitRequirement is metadata-only. RecipeDigest becomes the
+// SecretBootstrap target_id; no secret reference, session ID, plaintext, or
+// delivery path crosses the Task boundary.
+type SecretWaitRequirement struct {
+	Purpose      string
+	RecipeDigest string
+}
+
+// SuspendStepForSecretsCommand releases one live attempt and makes its Task
+// visibly waiting_user until matching encrypted secret uploads exist. All
+// revisions are the values returned by AcquireReadyStep, while Attempt and
+// LeaseEpoch fence an older Worker/controller from completing afterwards.
+type SuspendStepForSecretsCommand struct {
+	IdempotencyKey          string
+	TaskID                  string
+	StepID                  string
+	Attempt                 int32
+	LeaseEpoch              int64
+	WorkerID                string
+	ExpectedTaskRevision    int64
+	ExpectedStepRevision    int64
+	ExpectedAttemptRevision int64
+	AgentInstanceID         string
+	Requirements            []SecretWaitRequirement
+}
+
+func (command SuspendStepForSecretsCommand) Validate() error {
+	if err := validateLeasedMutation(command.IdempotencyKey, command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch); err != nil {
+		return err
+	}
+	if command.ExpectedTaskRevision < 1 || command.ExpectedStepRevision < 1 || command.ExpectedAttemptRevision < 1 {
+		return fmt.Errorf("%w: expected revisions must be positive", ErrInvalid)
+	}
+	agentID, err := uuid.Parse(command.AgentInstanceID)
+	if err != nil || agentID == uuid.Nil || agentID.String() != command.AgentInstanceID {
+		return fmt.Errorf("%w: agent_instance_id must be a UUID", ErrInvalid)
+	}
+	if len(command.Requirements) < 1 || len(command.Requirements) > 32 {
+		return fmt.Errorf("%w: secret requirements length is invalid", ErrInvalid)
+	}
+	seen := make(map[string]struct{}, len(command.Requirements))
+	for _, requirement := range command.Requirements {
+		purpose := strings.TrimSpace(requirement.Purpose)
+		if purpose == "" || purpose != requirement.Purpose || len(purpose) > 256 || !utf8.ValidString(purpose) ||
+			strings.IndexFunc(purpose, unicode.IsControl) >= 0 || security.ContainsLikelySecret(purpose) || !validRecipeDigest(requirement.RecipeDigest) {
+			return fmt.Errorf("%w: secret requirement is invalid", ErrInvalid)
+		}
+		if _, duplicate := seen[purpose]; duplicate {
+			return fmt.Errorf("%w: secret requirement purpose is duplicated", ErrInvalid)
+		}
+		seen[purpose] = struct{}{}
+	}
+	return nil
+}
+
+func (command SuspendStepForSecretsCommand) Digest() [sha256.Size]byte {
+	requirements := append([]SecretWaitRequirement(nil), command.Requirements...)
+	sort.Slice(requirements, func(i, j int) bool {
+		if requirements[i].Purpose == requirements[j].Purpose {
+			return requirements[i].RecipeDigest < requirements[j].RecipeDigest
+		}
+		return requirements[i].Purpose < requirements[j].Purpose
+	})
+	encoded, _ := json.Marshal(struct {
+		TaskID                  string                  `json:"task_id"`
+		StepID                  string                  `json:"step_id"`
+		Attempt                 int32                   `json:"attempt"`
+		LeaseEpoch              int64                   `json:"lease_epoch"`
+		WorkerID                string                  `json:"worker_id"`
+		ExpectedTaskRevision    int64                   `json:"expected_task_revision"`
+		ExpectedStepRevision    int64                   `json:"expected_step_revision"`
+		ExpectedAttemptRevision int64                   `json:"expected_attempt_revision"`
+		AgentInstanceID         string                  `json:"agent_instance_id"`
+		Requirements            []SecretWaitRequirement `json:"requirements"`
+	}{
+		TaskID: normalizedUUID(command.TaskID), StepID: normalizedUUID(command.StepID), Attempt: command.Attempt,
+		LeaseEpoch: command.LeaseEpoch, WorkerID: normalizedUUID(command.WorkerID),
+		ExpectedTaskRevision: command.ExpectedTaskRevision, ExpectedStepRevision: command.ExpectedStepRevision,
+		ExpectedAttemptRevision: command.ExpectedAttemptRevision, AgentInstanceID: normalizedUUID(command.AgentInstanceID),
+		Requirements: requirements,
+	})
+	return sha256.Sum256(encoded)
+}
+
 func (command CompleteStepCommand) Validate() error {
 	if err := validateLeasedMutation(command.IdempotencyKey, command.TaskID, command.StepID, command.WorkerID, command.Attempt, command.LeaseEpoch); err != nil {
 		return err
@@ -220,6 +316,18 @@ func validateEvidenceReference(name, value string, allowEmpty bool) error {
 		return ErrRawSecret
 	}
 	return nil
+}
+
+func validRecipeDigest(value string) bool {
+	if len(value) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, character := range value[len("sha256:"):] {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func leaseMutationDigest(taskID, stepID, workerID string, attempt int32, leaseEpoch, duration int64, reference, outcome string) [sha256.Size]byte {

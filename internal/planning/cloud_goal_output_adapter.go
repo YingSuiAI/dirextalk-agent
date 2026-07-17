@@ -22,6 +22,7 @@ import (
 var (
 	ErrCloudGoalPlanningModelFailed = errors.New("cloud Goal planning model failed")
 	ErrCloudGoalMaterializerFailed  = errors.New("cloud Goal provider Plan materializer failed")
+	ErrCloudGoalSecretsNotReady     = errors.New("cloud Goal service secrets are not uploaded")
 )
 
 // CloudGoalPlanningRepository is the provider-neutral durable projection used
@@ -392,6 +393,9 @@ func (adapter *PersistentCloudGoalOutputAdapter) candidates(ctx context.Context,
 			Candidates: append([]ResourceCandidateV1(nil), candidates...), QuoteID: quoteID, PlanID: planID,
 		})
 		if materializeErr != nil {
+			if errors.Is(materializeErr, ErrCloudGoalSecretsNotReady) {
+				return CloudGoalStageOutput{}, ErrCloudGoalSecretsNotReady
+			}
 			return CloudGoalStageOutput{}, ErrCloudGoalMaterializerFailed
 		}
 		if validateMaterializedPlan(adapter.agentInstanceID, request, draft, candidates, quoteID, planID, returned, adapter.now().UTC()) != nil {

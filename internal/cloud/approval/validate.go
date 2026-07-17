@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 )
 
@@ -64,6 +65,9 @@ func (p PlanV1) Validate() error {
 		return err
 	}
 	if err := validateRetentionScope(p.RetentionScope); err != nil {
+		return err
+	}
+	if err := validateVolumeDisposition(p.ResourceScope.VolumeScopes, p.RetentionScope); err != nil {
 		return err
 	}
 	scopeDigest, err := p.PricingScopeDigest()
@@ -175,6 +179,9 @@ func validateResourceScope(value ResourceScopeV1) error {
 	}
 	if err := recipe.ValidateDigest(value.WorkerImageDigest); err != nil {
 		return fmt.Errorf("resource_scope.worker_image_digest %w", err)
+	}
+	if err := cloudquote.ValidateVolumeScopes(value.VolumeScopes); err != nil {
+		return fmt.Errorf("resource_scope.volume_scopes are invalid: %w", err)
 	}
 	return nil
 }
@@ -374,6 +381,9 @@ func (a ApprovalV1) validate(requireSignature bool) error {
 	if err := validateRetentionScope(a.RetentionScope); err != nil {
 		return err
 	}
+	if err := validateVolumeDisposition(a.ResourceScope.VolumeScopes, a.RetentionScope); err != nil {
+		return err
+	}
 	if a.Signature == "" {
 		if requireSignature {
 			return fmt.Errorf("signature is required")
@@ -390,7 +400,21 @@ func (a ApprovalV1) validate(requireSignature bool) error {
 func normalizeResource(value ResourceScopeV1) ResourceScopeV1 {
 	value.AvailabilityZones = append([]string(nil), value.AvailabilityZones...)
 	sort.Strings(value.AvailabilityZones)
+	value.VolumeScopes = append([]VolumeScopeV1(nil), value.VolumeScopes...)
+	sort.Slice(value.VolumeScopes, func(i, j int) bool { return value.VolumeScopes[i].SlotID < value.VolumeScopes[j].SlotID })
 	return value
+}
+
+func validateVolumeDisposition(values []VolumeScopeV1, retention RetentionScopeV1) error {
+	for _, value := range values {
+		if retention.Class == RetentionEphemeral && value.Disposition != VolumeDeleteWithDeployment {
+			return fmt.Errorf("ephemeral volume scope must be deleted with the deployment")
+		}
+		if retention.Class == RetentionManaged && value.Disposition != VolumeRetainWithManagedService {
+			return fmt.Errorf("managed volume scope must be retained with the managed service")
+		}
+	}
+	return nil
 }
 
 func normalizeNetwork(value NetworkScopeV1) NetworkScopeV1 {

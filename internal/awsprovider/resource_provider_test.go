@@ -24,7 +24,12 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	client := &workerEC2Fake{instanceID: "i-0123456789abcdef0", state: ec2types.InstanceStateNameRunning}
 	amiReader := &workerAMIInspectionFake{evidence: validWorkerAMIInspectionEvidence(now)}
-	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond), WithWorkerAMIInspection("123456789012", amiReader))
+	artifactBinder := &workerArtifactBinderFake{onBind: func(WorkerArtifactBindingRequest) {
+		if client.tagCalls != 0 {
+			t.Fatal("Worker installer artifact binding occurred after a resource was exposed ready")
+		}
+	}}
+	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond), WithWorkerAMIInspection("123456789012", amiReader), WithWorkerArtifactBinder(artifactBinder))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +69,11 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 	if amiReader.calls != 1 || amiReader.request.AMIID != spec.Instance.ImageID || amiReader.request.AccountID != "123456789012" ||
 		amiReader.request.AgentInstanceID != request.Tags[resource.TagAgentInstanceID] || amiReader.request.Architecture != spec.Instance.Architecture {
 		t.Fatalf("approved AMI was not independently inspected before launch: %#v", amiReader.request)
+	}
+	if len(artifactBinder.requests) != 1 || artifactBinder.requests[0].InstanceID != client.instanceID ||
+		artifactBinder.requests[0].DeploymentID != spec.Instance.Bootstrap.DeploymentID ||
+		len(artifactBinder.requests[0].Artifacts) != len(spec.Instance.Bootstrap.InstallerArtifacts) {
+		t.Fatalf("installer artifacts were not principal-bound before ready: %#v", artifactBinder.requests)
 	}
 	if len(observed.Embedded) != 1 || observed.Embedded[0].Type != resource.TypeEBS || observed.Embedded[0].ProviderID != "vol-0123456789abcdef0" ||
 		observed.Embedded[0].Tags[resource.TagResourceID] != rootResourceID || observed.Embedded[0].Tags[resource.TagEmbeddedParentResourceID] != request.ResourceID {
@@ -164,7 +174,7 @@ func testWorkerBootstrap() resource.AWSWorkerBootstrapSpecV1 {
 	}
 }
 
-func testProviderInstallerTrust(t *testing.T, deploymentID string) *installerbootstrap.RootTrustMaterialV1 {
+func testProviderInstallerTrust(t *testing.T, deploymentID string, volumes ...installer.VolumeV1) *installerbootstrap.RootTrustMaterialV1 {
 	t.Helper()
 	config := installer.DaemonConfigV1{
 		SchemaVersion: installer.DaemonConfigSchema,
@@ -180,6 +190,7 @@ func testProviderInstallerTrust(t *testing.T, deploymentID string) *installerboo
 	plan := installer.InstallerPlanV1{
 		SchemaVersion: installer.PlanSchemaV1, Binding: config.Binding,
 		Artifacts: []installer.ArtifactV1{{Name: "installer", SHA256: "sha256:" + hex.EncodeToString(digest[:]), SizeBytes: int64(len(payload)), TargetPath: installer.PreinstalledArtifactRoot + "/installer"}},
+		Volumes:   append([]installer.VolumeV1(nil), volumes...),
 		Commands:  []installer.CommandV1{{CommandID: "install", Argv: []string{installer.PreinstalledArtifactRoot + "/installer"}, WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 30, ArtifactRefs: []string{"installer"}}},
 		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
 	}
@@ -301,6 +312,7 @@ type workerEC2Fake struct {
 	volumeTags []ec2types.Tag
 	runInput   *ec2.RunInstancesInput
 	tagError   error
+	tagCalls   int
 }
 
 func (fake *workerEC2Fake) RunInstances(_ context.Context, input *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
@@ -353,6 +365,7 @@ func (fake *workerEC2Fake) DescribeVolumes(_ context.Context, input *ec2.Describ
 }
 
 func (fake *workerEC2Fake) CreateTags(_ context.Context, input *ec2.CreateTagsInput, _ ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error) {
+	fake.tagCalls++
 	if fake.tagError != nil {
 		return nil, fake.tagError
 	}

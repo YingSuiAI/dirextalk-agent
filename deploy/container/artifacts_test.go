@@ -124,10 +124,16 @@ func TestWorkerAMIInstallerUsesOnlyApprovalBoundUnixSocket(t *testing.T) {
 	for _, required := range []string{
 		"Type=oneshot", "User=root", "ExecStart=/usr/local/bin/dirextalk-worker-installer bootstrap",
 		"Before=dirextalk-cloud-worker.service dirextalk-worker-installer.socket",
-		"ReadWritePaths=/etc/dirextalk-installer /etc/systemd/system /usr/local/share/dirextalk-worker/artifacts",
+		"CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE", "AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE",
+		"Restart=on-failure", "RestartSec=5s",
 	} {
 		if !strings.Contains(bootstrap, required) {
 			t.Fatalf("Worker installer bootstrap service is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"PrivateDevices=yes", "PrivateTmp=yes", "ProtectSystem=", "ReadWritePaths="} {
+		if strings.Contains(bootstrap, forbidden) {
+			t.Fatalf("Worker installer bootstrap would hide host EBS mounts through %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{"ExecStart=/bin/", "ExecStart=/usr/bin/aws", "AWS_ACCESS_KEY", "docker.sock", "node", "npm", "IPAddressDeny=any"} {

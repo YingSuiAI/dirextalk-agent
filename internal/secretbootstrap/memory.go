@@ -46,6 +46,30 @@ func (s *MemoryStore) Get(ctx context.Context, sessionID string) (Record, error)
 	return cloneRecord(record), nil
 }
 
+func (s *MemoryStore) FindUploaded(ctx context.Context, creatorClientID string, binding BindingV1, now time.Time) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var matched *Record
+	for _, record := range s.records {
+		if record.CreatorClientID != creatorClientID || record.Session.Binding() != binding ||
+			record.Session.Status != StatusUploaded || !now.Before(record.Session.ExpiresAt) {
+			continue
+		}
+		if matched != nil {
+			return Record{}, ErrStateConflict
+		}
+		value := cloneRecord(record)
+		matched = &value
+	}
+	if matched == nil {
+		return Record{}, ErrNotFound
+	}
+	return *matched, nil
+}
+
 func (s *MemoryStore) CommitUpload(ctx context.Context, sessionID string, expectedRevision uint64, uploadTokenHash [32]byte, envelope EnvelopeV1, now time.Time) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err

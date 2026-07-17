@@ -9,6 +9,7 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -31,6 +32,7 @@ type serverOptions struct {
 	cloudCoordinator   cloudapp.Coordinator
 	cloudDestroy       rpcapi.CloudDestroyCoordinator
 	cloudGoals         rpcapi.CloudGoalPlanner
+	cloudHealth        cloudstatus.HealthReader
 	workerService      *worker.Service
 	workerVerifier     rpcapi.WorkerIdentityVerifier
 	workerMaterializer rpcapi.WorkerIdentityMaterializer
@@ -65,6 +67,10 @@ func WithCloudGoals(planner rpcapi.CloudGoalPlanner) ServerOption {
 	return func(options *serverOptions) { options.cloudGoals = planner }
 }
 
+func WithCloudHealth(reader cloudstatus.HealthReader) ServerOption {
+	return func(options *serverOptions) { options.cloudHealth = reader }
+}
+
 func WithWorkerControl(service *worker.Service) ServerOption {
 	return func(options *serverOptions) { options.workerService = service }
 }
@@ -83,6 +89,12 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	if err := config.ValidateMountedSecretFile(keyFile); err != nil {
 		return nil, errors.New("TLS private key must be a protected mounted secret file")
 	}
+	options := serverOptions{}
+	for _, option := range optionValues {
+		if option != nil {
+			option(&options)
+		}
+	}
 	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
@@ -91,7 +103,12 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	if err != nil {
 		return nil, err
 	}
-	cloudStatuses, err := postgres.NewCloudStatusStore(store)
+	var cloudStatuses *postgres.CloudStatusStore
+	if options.cloudHealth != nil {
+		cloudStatuses, err = postgres.NewCloudStatusStore(store, options.cloudHealth)
+	} else {
+		cloudStatuses, err = postgres.NewCloudStatusStore(store)
+	}
 	if err != nil {
 		return nil, errors.New("cloud status persistence could not be initialized")
 	}
@@ -149,12 +166,6 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		grpc.ChainUnaryInterceptor(unary), grpc.ChainStreamInterceptor(stream),
 		grpc.MaxRecvMsgSize(4<<20), grpc.MaxSendMsgSize(4<<20),
 	)
-	options := serverOptions{}
-	for _, option := range optionValues {
-		if option != nil {
-			option(&options)
-		}
-	}
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))

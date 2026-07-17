@@ -69,13 +69,26 @@ type AWSNetworkRuleV1 struct {
 }
 
 type AWSEBSVolumeSpecV1 struct {
-	AvailabilityZone string `json:"availability_zone"`
-	SizeGiB          uint32 `json:"size_gib"`
-	VolumeType       string `json:"volume_type"`
-	IOPS             uint32 `json:"iops,omitempty"`
-	ThroughputMiBPS  uint32 `json:"throughput_mibps,omitempty"`
-	KMSKeyID         string `json:"kms_key_id"`
+	AvailabilityZone string               `json:"availability_zone"`
+	SizeGiB          uint32               `json:"size_gib"`
+	VolumeType       string               `json:"volume_type"`
+	IOPS             uint32               `json:"iops,omitempty"`
+	ThroughputMiBPS  uint32               `json:"throughput_mibps,omitempty"`
+	KMSKeyID         string               `json:"kms_key_id"`
+	SlotID           string               `json:"slot_id,omitempty"`
+	DeviceName       string               `json:"device_name,omitempty"`
+	MountPath        string               `json:"mount_path,omitempty"`
+	ReadOnly         bool                 `json:"read_only,omitempty"`
+	Persistent       bool                 `json:"persistent,omitempty"`
+	Disposition      AWSVolumeDisposition `json:"disposition,omitempty"`
 }
+
+type AWSVolumeDisposition string
+
+const (
+	AWSVolumeDeleteWithDeployment     AWSVolumeDisposition = "delete_with_deployment"
+	AWSVolumeRetainWithManagedService AWSVolumeDisposition = "retain_with_managed_service"
+)
 
 type AWSNetworkInterfaceSpecV1 struct {
 	SubnetID                string `json:"subnet_id"`
@@ -114,20 +127,26 @@ type AWSEBSSnapshotSpecV1 struct {
 }
 
 type AWSEC2InstanceSpecV1 struct {
-	ImageID                string                   `json:"image_id"`
-	ImageDigest            string                   `json:"image_digest"`
-	Architecture           recipe.Architecture      `json:"architecture"`
-	InstanceType           string                   `json:"instance_type"`
-	InstanceProfileName    string                   `json:"instance_profile_name"`
-	UserDataArtifactRef    string                   `json:"user_data_artifact_ref"`
-	UserDataArtifactDigest string                   `json:"user_data_artifact_digest"`
-	Bootstrap              AWSWorkerBootstrapSpecV1 `json:"bootstrap"`
-	RootDeviceName         string                   `json:"root_device_name"`
-	RootVolumeGiB          uint32                   `json:"root_volume_gib"`
-	RootKMSKeyID           string                   `json:"root_kms_key_id"`
-	DataDeviceName         string                   `json:"data_device_name,omitempty"`
-	Market                 AWSMarketType            `json:"market"`
-	EBSOptimized           bool                     `json:"ebs_optimized"`
+	ImageID                string                      `json:"image_id"`
+	ImageDigest            string                      `json:"image_digest"`
+	Architecture           recipe.Architecture         `json:"architecture"`
+	InstanceType           string                      `json:"instance_type"`
+	InstanceProfileName    string                      `json:"instance_profile_name"`
+	UserDataArtifactRef    string                      `json:"user_data_artifact_ref"`
+	UserDataArtifactDigest string                      `json:"user_data_artifact_digest"`
+	Bootstrap              AWSWorkerBootstrapSpecV1    `json:"bootstrap"`
+	RootDeviceName         string                      `json:"root_device_name"`
+	RootVolumeGiB          uint32                      `json:"root_volume_gib"`
+	RootKMSKeyID           string                      `json:"root_kms_key_id"`
+	DataDeviceName         string                      `json:"data_device_name,omitempty"`
+	DataVolumes            []AWSDataVolumeAttachmentV1 `json:"data_volumes,omitempty"`
+	Market                 AWSMarketType               `json:"market"`
+	EBSOptimized           bool                        `json:"ebs_optimized"`
+}
+
+type AWSDataVolumeAttachmentV1 struct {
+	ResourceID string `json:"resource_id"`
+	DeviceName string `json:"device_name"`
 }
 
 // AWSWorkerBootstrapSpecV1 contains only non-secret coordinates needed by the
@@ -141,6 +160,7 @@ type AWSWorkerBootstrapSpecV1 struct {
 	EnrollmentExpectedRevision int64                                   `json:"enrollment_expected_revision"`
 	InstallerTrust             *installerbootstrap.RootTrustMaterialV1 `json:"installer_trust,omitempty"`
 	InstallerArtifacts         []installerbootstrap.ArtifactSourceV1   `json:"installer_artifacts,omitempty"`
+	InstallerSecrets           []installerbootstrap.SecretSourceV1     `json:"installer_secrets,omitempty"`
 }
 
 type ProviderDependency struct {
@@ -234,10 +254,14 @@ func (spec *AWSResourceSpecV1) Clone() *AWSResourceSpecV1 {
 			trust.PublicKey = slices.Clone(trust.PublicKey)
 			trust.ConfigCBOR = slices.Clone(trust.ConfigCBOR)
 			trust.ArtifactManifest.Manifest.Artifacts = slices.Clone(trust.ArtifactManifest.Manifest.Artifacts)
+			trust.ArtifactManifest.Manifest.Secrets = slices.Clone(trust.ArtifactManifest.Manifest.Secrets)
+			trust.ArtifactManifest.Manifest.Volumes = slices.Clone(trust.ArtifactManifest.Manifest.Volumes)
 			trust.ArtifactManifest.Signature = slices.Clone(trust.ArtifactManifest.Signature)
 			value.Bootstrap.InstallerTrust = &trust
 		}
 		value.Bootstrap.InstallerArtifacts = slices.Clone(value.Bootstrap.InstallerArtifacts)
+		value.Bootstrap.InstallerSecrets = slices.Clone(value.Bootstrap.InstallerSecrets)
+		value.DataVolumes = slices.Clone(value.DataVolumes)
 		clone.Instance = &value
 	}
 	return &clone
@@ -347,6 +371,20 @@ func (spec AWSEBSVolumeSpecV1) validate() error {
 	if !awsZonePattern.MatchString(spec.AvailabilityZone) || spec.SizeGiB == 0 || spec.SizeGiB > 65_536 || spec.VolumeType != "gp3" || spec.IOPS < 3_000 || spec.IOPS > 80_000 || spec.ThroughputMiBPS < 125 || spec.ThroughputMiBPS > 2_000 || !awsKMSPattern.MatchString(spec.KMSKeyID) {
 		return fmt.Errorf("%w: encrypted gp3 volume scope is invalid", ErrInvalid)
 	}
+	declared := spec.SlotID != "" || spec.DeviceName != "" || spec.MountPath != "" || spec.ReadOnly || spec.Persistent || spec.Disposition != ""
+	if declared {
+		if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`).MatchString(spec.SlotID) ||
+			!regexp.MustCompile(`^/dev/sd[f-p]$`).MatchString(spec.DeviceName) ||
+			!strings.HasPrefix(spec.MountPath, "/") || spec.MountPath == "/" || path.Clean(spec.MountPath) != spec.MountPath || strings.Contains(spec.MountPath, "\\") ||
+			(spec.Disposition != AWSVolumeDeleteWithDeployment && spec.Disposition != AWSVolumeRetainWithManagedService) {
+			return fmt.Errorf("%w: EBS Recipe volume binding is invalid", ErrInvalid)
+		}
+		for _, denied := range []string{"/dev", "/proc", "/sys", "/run/secrets"} {
+			if spec.MountPath == denied || strings.HasPrefix(spec.MountPath, denied+"/") {
+				return fmt.Errorf("%w: EBS Recipe volume mount is reserved", ErrInvalid)
+			}
+		}
+	}
 	return nil
 }
 
@@ -413,6 +451,40 @@ func (spec AWSEC2InstanceSpecV1) validate() error {
 	if spec.DataDeviceName != "" && !regexp.MustCompile(`^/dev/sd[f-p]$`).MatchString(spec.DataDeviceName) {
 		return fmt.Errorf("%w: data device name is invalid", ErrInvalid)
 	}
+	if spec.DataDeviceName != "" && len(spec.DataVolumes) != 0 {
+		return fmt.Errorf("%w: legacy and typed data-volume attachments cannot be mixed", ErrInvalid)
+	}
+	if len(spec.DataVolumes) > 11 {
+		return fmt.Errorf("%w: too many data-volume attachments", ErrInvalid)
+	}
+	seenResources := make(map[string]struct{}, len(spec.DataVolumes))
+	seenDevices := make(map[string]struct{}, len(spec.DataVolumes))
+	for _, attachment := range spec.DataVolumes {
+		parsed, parseErr := uuid.Parse(strings.TrimSpace(attachment.ResourceID))
+		if parseErr != nil || parsed == uuid.Nil || !regexp.MustCompile(`^/dev/sd[f-p]$`).MatchString(attachment.DeviceName) {
+			return fmt.Errorf("%w: data-volume attachment is invalid", ErrInvalid)
+		}
+		if _, duplicate := seenResources[attachment.ResourceID]; duplicate {
+			return fmt.Errorf("%w: duplicate data-volume resource attachment", ErrInvalid)
+		}
+		if _, duplicate := seenDevices[attachment.DeviceName]; duplicate {
+			return fmt.Errorf("%w: duplicate data-volume device attachment", ErrInvalid)
+		}
+		seenResources[attachment.ResourceID] = struct{}{}
+		seenDevices[attachment.DeviceName] = struct{}{}
+	}
+	if len(spec.DataVolumes) != 0 {
+		if spec.Bootstrap.InstallerTrust == nil || len(spec.Bootstrap.InstallerTrust.ArtifactManifest.Manifest.Volumes) != len(spec.DataVolumes) {
+			return fmt.Errorf("%w: data-volume attachments require matching signed installer volumes", ErrInvalid)
+		}
+		for _, volume := range spec.Bootstrap.InstallerTrust.ArtifactManifest.Manifest.Volumes {
+			if _, ok := seenDevices[volume.DeviceName]; !ok {
+				return fmt.Errorf("%w: data-volume attachment is outside signed installer scope", ErrInvalid)
+			}
+		}
+	} else if spec.Bootstrap.InstallerTrust != nil && len(spec.Bootstrap.InstallerTrust.ArtifactManifest.Manifest.Volumes) != 0 {
+		return fmt.Errorf("%w: signed installer volume is not attached", ErrInvalid)
+	}
 	return nil
 }
 
@@ -441,7 +513,17 @@ func (spec AWSWorkerBootstrapSpecV1) validate() error {
 		}) != nil {
 			return fmt.Errorf("%w: Worker installer artifact scope is invalid", ErrInvalid)
 		}
-	} else if len(spec.InstallerArtifacts) != 0 {
+		if len(spec.InstallerSecrets) != 0 {
+			secretKey, keyErr := arn.Parse(spec.InstallerSecrets[0].KMSKeyARN)
+			if keyErr != nil || installerbootstrap.ValidateSecretSources(*spec.InstallerTrust, spec.InstallerSecrets, spec.DeploymentID, installerbootstrap.InstanceIdentityV1{
+				AccountID: secretKey.AccountID, Region: secretKey.Region, InstanceID: "i-00000000",
+			}) != nil {
+				return fmt.Errorf("%w: Worker installer secret scope is invalid", ErrInvalid)
+			}
+		} else if len(spec.InstallerTrust.ArtifactManifest.Manifest.Secrets) != 0 {
+			return fmt.Errorf("%w: Worker installer secret sources are required", ErrInvalid)
+		}
+	} else if len(spec.InstallerArtifacts) != 0 || len(spec.InstallerSecrets) != 0 {
 		return fmt.Errorf("%w: Worker installer artifacts require root trust", ErrInvalid)
 	}
 	return nil
@@ -491,12 +573,29 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 			return fmt.Errorf("%w: EBS snapshot requires exactly one source volume", ErrInvalid)
 		}
 	case TypeEC2:
-		if counts[TypeENI] != 1 || counts[TypeEBS] > 1 || len(dependencies) != counts[TypeENI]+counts[TypeEBS] {
-			return fmt.Errorf("%w: EC2 requires one ENI and at most one EBS volume", ErrInvalid)
+		if counts[TypeENI] != 1 || counts[TypeEBS] > 11 || len(dependencies) != counts[TypeENI]+counts[TypeEBS] {
+			return fmt.Errorf("%w: EC2 requires one ENI and at most 11 EBS volumes", ErrInvalid)
 		}
-		hasDataVolume := counts[TypeEBS] == 1
-		if spec.Instance == nil || hasDataVolume != (spec.Instance.DataDeviceName != "") {
+		if spec.Instance == nil {
+			return fmt.Errorf("%w: EC2 instance scope is required", ErrInvalid)
+		}
+		if spec.Instance.DataDeviceName != "" {
+			if counts[TypeEBS] != 1 || len(spec.Instance.DataVolumes) != 0 {
+				return fmt.Errorf("%w: legacy EC2 data device must match one EBS dependency", ErrInvalid)
+			}
+			break
+		}
+		if counts[TypeEBS] != len(spec.Instance.DataVolumes) {
 			return fmt.Errorf("%w: EC2 data device must match its EBS dependency", ErrInvalid)
+		}
+		dependenciesByID := make(map[string]Type, len(dependencies))
+		for _, dependency := range dependencies {
+			dependenciesByID[dependency.ResourceID] = dependency.Type
+		}
+		for _, attachment := range spec.Instance.DataVolumes {
+			if dependenciesByID[attachment.ResourceID] != TypeEBS {
+				return fmt.Errorf("%w: EC2 data-volume attachment is not an EBS dependency", ErrInvalid)
+			}
 		}
 	default:
 		return fmt.Errorf("%w: AWS provider resource type is not implemented", ErrInvalid)

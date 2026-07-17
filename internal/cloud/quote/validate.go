@@ -3,6 +3,7 @@ package quote
 import (
 	"fmt"
 	"math"
+	"path"
 	"reflect"
 	"regexp"
 	"sort"
@@ -21,6 +22,8 @@ var (
 	secretRefPattern    = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
 	currencyPattern     = regexp.MustCompile(`^[A-Z]{3}$`)
 	volumeTypePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+	volumeDevicePattern = regexp.MustCompile(`^/dev/sd[f-p]$`)
+	volumeKMSPattern    = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
 	credentialPattern   = regexp.MustCompile(`(?i)(?:AKIA|ASIA)[A-Z0-9]{16}|aws[_ -]?(?:secret[_ -]?access[_ -]?key|session[_ -]?token)|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|(?:^|[^A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,}|sk[-_][A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})`)
 )
 
@@ -45,6 +48,9 @@ func (s ScopeV1) Validate() error {
 		return fmt.Errorf("scope.recipe.maturity is invalid")
 	}
 	if err := validateResource(s.Resource); err != nil {
+		return err
+	}
+	if err := validateVolumeRetention(s.Resource.VolumeScopes, s.Retention); err != nil {
 		return err
 	}
 	if err := validateNetwork(s.Network); err != nil {
@@ -107,6 +113,102 @@ func validateResource(value ResourceScopeV1) error {
 	}
 	if err := recipe.ValidateDigest(value.WorkerImageDigest); err != nil {
 		return fmt.Errorf("scope.resource.worker_image_digest %w", err)
+	}
+	return validateVolumeScopes(value.VolumeScopes)
+}
+
+func validateVolumeScopes(values []VolumeScopeV1) error {
+	if len(values) > 11 {
+		return fmt.Errorf("scope.resource.volume_scopes supports at most 11 data volumes")
+	}
+	seenSlots := make(map[string]struct{}, len(values))
+	seenDevices := make(map[string]struct{}, len(values))
+	seenMounts := make(map[string]struct{}, len(values))
+	for index, value := range values {
+		name := fmt.Sprintf("scope.resource.volume_scopes[%d]", index)
+		if err := validateIdentifier(name+".slot_id", value.SlotID); err != nil {
+			return err
+		}
+		if _, duplicate := seenSlots[value.SlotID]; duplicate {
+			return fmt.Errorf("scope.resource.volume_scopes contains duplicate slot IDs")
+		}
+		seenSlots[value.SlotID] = struct{}{}
+		if value.SizeGiB == 0 || value.SizeGiB > 65_536 || value.VolumeType != "gp3" ||
+			value.IOPS < 3_000 || value.IOPS > 80_000 || value.ThroughputMiBPS < 125 || value.ThroughputMiBPS > 2_000 ||
+			!value.Encrypted || !volumeKMSPattern.MatchString(value.KMSKeyID) {
+			return fmt.Errorf("%s requires an encrypted gp3 volume with bounded size, performance, and KMS key", name)
+		}
+		if !volumeDevicePattern.MatchString(value.DeviceName) {
+			return fmt.Errorf("%s.device_name is invalid", name)
+		}
+		if _, duplicate := seenDevices[value.DeviceName]; duplicate {
+			return fmt.Errorf("scope.resource.volume_scopes contains duplicate devices")
+		}
+		seenDevices[value.DeviceName] = struct{}{}
+		if value.MountPath == "" || !strings.HasPrefix(value.MountPath, "/") || value.MountPath == "/" || path.Clean(value.MountPath) != value.MountPath || strings.Contains(value.MountPath, "\\") {
+			return fmt.Errorf("%s.mount_path must be a clean absolute Worker path", name)
+		}
+		for _, denied := range []string{"/dev", "/proc", "/sys", "/run/secrets"} {
+			if value.MountPath == denied || strings.HasPrefix(value.MountPath, denied+"/") {
+				return fmt.Errorf("%s.mount_path targets a reserved Worker path", name)
+			}
+		}
+		if _, duplicate := seenMounts[value.MountPath]; duplicate {
+			return fmt.Errorf("scope.resource.volume_scopes contains duplicate mount paths")
+		}
+		seenMounts[value.MountPath] = struct{}{}
+		if value.Disposition != VolumeDeleteWithDeployment && value.Disposition != VolumeRetainWithManagedService {
+			return fmt.Errorf("%s.disposition is invalid", name)
+		}
+	}
+	return nil
+}
+
+// ValidateVolumeScopes validates the closed approval-visible volume contract
+// without requiring a bound Recipe. Execution performs the stronger exact-slot
+// validation through ValidateVolumeScopesForRecipe.
+func ValidateVolumeScopes(values []VolumeScopeV1) error {
+	return validateVolumeScopes(values)
+}
+
+func validateVolumeRetention(values []VolumeScopeV1, retention RetentionScopeV1) error {
+	for _, value := range values {
+		if retention.Class == RetentionEphemeral && value.Disposition != VolumeDeleteWithDeployment {
+			return fmt.Errorf("ephemeral volume slots must be deleted with the deployment")
+		}
+		if retention.Class == RetentionManaged && value.Disposition != VolumeRetainWithManagedService {
+			return fmt.Errorf("managed volume slots must be retained with the managed service")
+		}
+	}
+	return nil
+}
+
+// ValidateVolumeScopesForRecipe proves that every Recipe volume slot has one
+// explicit approved data-volume binding. This is intentionally callable again
+// at execution time so a persisted Plan cannot silently map a persistent slot
+// onto the EC2 root disk.
+func ValidateVolumeScopesForRecipe(values []VolumeScopeV1, boundRecipe recipe.RecipeV1, retention RetentionScopeV1) error {
+	if err := validateVolumeScopes(values); err != nil {
+		return err
+	}
+	if err := validateVolumeRetention(values, retention); err != nil {
+		return err
+	}
+	if len(values) != len(boundRecipe.VolumeSlots) {
+		return fmt.Errorf("volume scope must bind every Recipe volume slot exactly once")
+	}
+	bySlot := make(map[string]VolumeScopeV1, len(values))
+	for _, value := range values {
+		bySlot[value.SlotID] = value
+	}
+	for _, slot := range boundRecipe.VolumeSlots {
+		value, ok := bySlot[slot.SlotID]
+		if !ok || value.MountPath != slot.MountPath || value.ReadOnly != slot.ReadOnly || value.Persistent != slot.Persistent {
+			return fmt.Errorf("volume scope does not match Recipe slot %q", slot.SlotID)
+		}
+		if slot.Persistent && (!slot.EncryptionRequired || !value.Encrypted || value.KMSKeyID == "") {
+			return fmt.Errorf("persistent Recipe slot %q requires an explicit encrypted KMS-backed EBS volume", slot.SlotID)
+		}
 	}
 	return nil
 }
@@ -251,7 +353,8 @@ func (r RequestV1) Validate() error {
 			!reflect.DeepEqual(base.Recipe, current.Recipe) || !reflect.DeepEqual(base.Network, current.Network) ||
 			!reflect.DeepEqual(base.SecretScope, current.SecretScope) || !reflect.DeepEqual(base.IntegrationScope, current.IntegrationScope) ||
 			!reflect.DeepEqual(base.Retention, current.Retention) || base.Resource.Region != current.Resource.Region ||
-			!reflect.DeepEqual(base.Resource.AvailabilityZones, current.Resource.AvailabilityZones) {
+			!reflect.DeepEqual(base.Resource.AvailabilityZones, current.Resource.AvailabilityZones) ||
+			!sameVolumeScopeIdentity(base.Resource.VolumeScopes, current.Resource.VolumeScopes) {
 			return fmt.Errorf("candidate scopes must share identity, Region, network, secret, integration, and retention scope")
 		}
 	}
@@ -260,8 +363,39 @@ func (r RequestV1) Validate() error {
 		if current.VCPU < previous.VCPU || current.MemoryMiB < previous.MemoryMiB || current.DiskGiB < previous.DiskGiB || current.GPUCount < previous.GPUCount || current.GPUMemoryMiB < previous.GPUMemoryMiB {
 			return fmt.Errorf("recommended/performance candidates cannot reduce resources")
 		}
+		if !volumeScopesMonotonic(previous.VolumeScopes, current.VolumeScopes) {
+			return fmt.Errorf("recommended/performance candidates cannot reduce data-volume resources")
+		}
 	}
 	return nil
+}
+
+func sameVolumeScopeIdentity(left, right []VolumeScopeV1) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		l, r := left[index], right[index]
+		l.SizeGiB, r.SizeGiB = 0, 0
+		l.IOPS, r.IOPS = 0, 0
+		l.ThroughputMiBPS, r.ThroughputMiBPS = 0, 0
+		if l != r {
+			return false
+		}
+	}
+	return true
+}
+
+func volumeScopesMonotonic(previous, current []VolumeScopeV1) bool {
+	if !sameVolumeScopeIdentity(previous, current) {
+		return false
+	}
+	for index := range previous {
+		if current[index].SizeGiB < previous[index].SizeGiB || current[index].IOPS < previous[index].IOPS || current[index].ThroughputMiBPS < previous[index].ThroughputMiBPS {
+			return false
+		}
+	}
+	return true
 }
 
 func (q QuoteV1) Validate() error {
