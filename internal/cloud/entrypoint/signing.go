@@ -102,6 +102,29 @@ func ScopeDigest(value ScopeV1) (string, error) {
 	return canonical.Digest(normalized)
 }
 
+// ScopeFactDigest returns the stable identity of independently read-back
+// entrypoint facts.  A plan hash deliberately includes the observation times
+// that were shown to the approving device.  Revalidation, however, must be
+// able to prove that a fresh AWS observation reports the *same* resource
+// facts; a later ObservedAt alone is not a replacement Worker, certificate, or
+// subnet.  This digest therefore excludes only volatile AWS observation
+// timestamps after validating the complete current scope.
+//
+// SucceededAt is intentionally retained: it is a durable execution fact, not
+// a timestamp emitted by a repeated provider read-back.
+func ScopeFactDigest(value ScopeV1) (string, error) {
+	normalized := NormalizeScope(value)
+	if err := validateScope(normalized); err != nil {
+		return "", err
+	}
+	normalized.Worker.ReadBack.ObservedAt = time.Time{}
+	normalized.Certificate.ObservedAt = time.Time{}
+	for index := range normalized.ALB.PublicSubnets {
+		normalized.ALB.PublicSubnets[index].ObservedAt = time.Time{}
+	}
+	return canonical.Digest(normalized)
+}
+
 // NewChallengeV1 creates the exact short-lived payload a device must sign.
 // It only accepts a separately ready entry plan; the original Worker approval
 // cannot be replayed as a public-entry approval.

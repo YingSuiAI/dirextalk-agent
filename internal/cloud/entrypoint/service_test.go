@@ -118,6 +118,48 @@ func TestServiceRechecksDeviceAtApproval(t *testing.T) {
 	}
 }
 
+func TestServiceAcceptsFreshReadBackWithSameFacts(t *testing.T) {
+	now := time.Date(2026, time.July, 17, 5, 0, 0, 0, time.UTC)
+	scope := validScope(now)
+	builder := &entryScopeBuilderFake{current: scope}
+	repository := newEntryRepositoryFake()
+	devices := cloudapproval.NewMemoryRegistry()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const signerKeyID = "device-0123456789abcdef01234567"
+	if err := devices.PutDeviceKey(cloudapproval.DeviceKeyV1{KeyID: signerKeyID, AgentInstanceID: scope.AgentInstanceID, OwnerID: scope.OwnerID,
+		Revision: 1, Status: cloudapproval.DeviceKeyActive, PublicKey: publicKey, NotBefore: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(scope.AgentInstanceID, repository, devices, builder, &entryNotifierFake{}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := task.MutationScope{ClientID: "message-server", CredentialID: "78787878-7878-4787-8787-787878787878"}
+	plan, err := service.CreatePlan(context.Background(), CreatePlanCommand{Caller: caller, IdempotencyKey: "67676767-6767-4767-8767-676767676767",
+		OwnerID: scope.OwnerID, DeploymentID: scope.Worker.DeploymentID, ExpectedDeploymentRevision: scope.Worker.DeploymentRevision, Draft: draftFromScope(scope)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The builder returns a fresh independently observed AWS state.  All
+	// approval-bound facts remain equal, only volatile observation timestamps
+	// advance.  This must not make a legitimate five-minute challenge unusable.
+	fresh := scope
+	fresh.Worker.ReadBack.ObservedAt = fresh.Worker.ReadBack.ObservedAt.Add(time.Minute)
+	fresh.Certificate.ObservedAt = fresh.Certificate.ObservedAt.Add(time.Minute)
+	for index := range fresh.ALB.PublicSubnets {
+		fresh.ALB.PublicSubnets[index].ObservedAt = fresh.ALB.PublicSubnets[index].ObservedAt.Add(time.Minute)
+	}
+	builder.current = fresh
+	if _, err := service.Prepare(context.Background(), PrepareCommand{Caller: caller, IdempotencyKey: "57575757-5757-4757-8757-575757575757",
+		OwnerID: scope.OwnerID, EntryPlanID: plan.EntryPlanID, ExpectedRevision: plan.Revision, SignerKeyID: signerKeyID}); err != nil {
+		t.Fatalf("Prepare() after fresh same-fact read-back error = %v", err)
+	}
+}
+
 func TestServiceDoesNotExposeBuilderErrorDetails(t *testing.T) {
 	now := time.Date(2026, time.July, 17, 5, 30, 0, 0, time.UTC)
 	scope := validScope(now)

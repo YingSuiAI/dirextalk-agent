@@ -309,11 +309,15 @@ func (service *Service) revalidate(ctx context.Context, scope ScopeV1) error {
 	if err != nil {
 		return mapBuildError(err)
 	}
-	want, err := ScopeDigest(scope)
+	// ScopeDigest includes the timestamp of the read-back shown in the signed
+	// plan.  A new AWS read-back necessarily has a newer timestamp, so compare
+	// the separately validated stable facts here rather than treating a fresh
+	// observation as a stale-plan conflict.
+	want, err := ScopeFactDigest(scope)
 	if err != nil {
 		return ErrInvalid
 	}
-	got, err := ScopeDigest(current)
+	got, err := ScopeFactDigest(current)
 	if err != nil {
 		return ErrRevisionConflict
 	}
