@@ -11,7 +11,6 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
-	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -58,6 +57,9 @@ func NewTrackedResourceManifestMirror(store *ResourceStore, remote resource.Mani
 }
 
 func (mirror *TrackedResourceManifestMirror) Put(ctx context.Context, manifest resource.Manifest) error {
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
+		return resource.ErrInvalid
+	}
 	expected := int64(0)
 	if current, err := mirror.store.GetResourceManifestRecord(ctx, manifest.DeploymentID); err == nil {
 		expected = current.Generation
@@ -145,6 +147,9 @@ func (mirror *TrackedResourceManifestMirror) ListExpired(ctx context.Context, be
 // DynamoDB before the caller exposes it as active. expectedGeneration is zero
 // for the first write. An exact retry returns the original generation.
 func (store *ResourceStore) PutResourceManifestPending(ctx context.Context, manifest resource.Manifest, expectedGeneration int64) (ResourceManifestRecord, error) {
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
+		return ResourceManifestRecord{}, resource.ErrInvalid
+	}
 	if err := store.validateManifest(manifest); err != nil || expectedGeneration < 0 {
 		return ResourceManifestRecord{}, resource.ErrInvalid
 	}
@@ -370,6 +375,9 @@ func decodeResourceManifest(encoded []byte) (resource.Manifest, error) {
 	if err := json.Unmarshal(encoded, &snapshot); err != nil || snapshot.SchemaVersion != resourceManifestSchemaV1 {
 		return resource.Manifest{}, errors.New("resource manifest snapshot is invalid")
 	}
+	if err := resource.NormalizeLegacyApprovalBindings(&snapshot.Manifest); err != nil {
+		return resource.Manifest{}, errors.New("resource manifest snapshot is invalid")
+	}
 	return snapshot.Manifest, nil
 }
 
@@ -427,6 +435,11 @@ func scanManifestRecord(row interface{ Scan(...any) error }) (ResourceManifestRe
 }
 
 func (store *ResourceStore) validateManifest(manifest resource.Manifest) error {
+	canonical := manifest
+	if err := resource.NormalizeLegacyApprovalBindings(&canonical); err != nil {
+		return resource.ErrInvalid
+	}
+	manifest = canonical
 	for _, value := range []string{manifest.ManifestID, manifest.AgentInstanceID, manifest.TaskID, manifest.DeploymentID} {
 		parsed, err := uuid.Parse(strings.TrimSpace(value))
 		if err != nil || parsed == uuid.Nil {
@@ -437,23 +450,15 @@ func (store *ResourceStore) validateManifest(manifest resource.Manifest) error {
 		security.ContainsLikelySecret(manifest.OwnerID) || manifest.Revision < 1 || manifest.UpdatedAt.IsZero() || len(manifest.Resources) == 0 {
 		return resource.ErrInvalid
 	}
-	if manifest.Managed || manifest.Retention == task.RetentionManaged {
-		if !manifest.DestroyDeadline.IsZero() || manifest.AutoDestroyApproved || manifest.AutoDestroyApprovalID != "" {
-			return resource.ErrInvalid
-		}
-	} else {
-		approval, err := uuid.Parse(manifest.AutoDestroyApprovalID)
-		if manifest.Retention != task.RetentionEphemeralAutoDestroy || !manifest.AutoDestroyApproved || approval == uuid.Nil || err != nil ||
-			manifest.DestroyDeadline.IsZero() || !resourceSHA256Pattern.MatchString(manifest.ApprovedPlanHash) {
-			return resource.ErrInvalid
-		}
+	if err := manifest.ValidateResourceApprovalScope(); err != nil {
+		return resource.ErrInvalid
 	}
 	for _, item := range manifest.Resources {
-		if item.AgentInstanceID != manifest.AgentInstanceID || item.OwnerID != manifest.OwnerID || item.TaskID != manifest.TaskID || item.DeploymentID != manifest.DeploymentID {
-			return resource.ErrInvalid
-		}
 		if err := store.validateResource(item); err != nil {
 			return err
+		}
+		if manifest.Managed && item.State != resource.StateRetainedManaged {
+			return resource.ErrInvalid
 		}
 	}
 	return nil

@@ -363,7 +363,8 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 		ManifestID: deploymentID, AgentInstanceID: instanceID, OwnerID: volume.OwnerID, TaskID: taskID,
 		DeploymentID: deploymentID, Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline,
 		AutoDestroyApproved: true, AutoDestroyApprovalID: approvalID, ApprovedPlanHash: volume.ApprovedPlanHash,
-		Resources: []resource.ResourceV1{volume, instance}, Revision: 2, UpdatedAt: now.Add(2 * time.Second),
+		ApprovalBindings: []resource.ApprovalBinding{{ApprovedPlanHash: volume.ApprovedPlanHash, ApprovalID: approvalID}},
+		Resources:        []resource.ResourceV1{volume, instance}, Revision: 2, UpdatedAt: now.Add(2 * time.Second),
 	}
 	record, err := store.PutResourceManifestPending(ctx, manifest, 0)
 	if err != nil {

@@ -100,10 +100,16 @@ func (store *DynamoManifestStore) Get(ctx context.Context, deploymentID string) 
 		return resource.Manifest{}, err
 	}
 	store.remember(manifest.DeploymentID, manifest.Revision, digest)
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
+		return resource.Manifest{}, ErrManifestStore
+	}
 	return manifest, nil
 }
 
 func (store *DynamoManifestStore) put(ctx context.Context, manifest resource.Manifest, expectedRevision *int64, expectedDigest string) error {
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
+		return err
+	}
 	encoded, digest, deadline, err := store.encode(manifest)
 	if err != nil {
 		return err
@@ -185,6 +191,9 @@ func (store *DynamoManifestStore) ListExpired(ctx context.Context, before time.T
 					return nil, encodeErr
 				}
 				store.remember(manifest.DeploymentID, manifest.Revision, digest)
+				if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
+					return nil, ErrManifestStore
+				}
 				result = append(result, manifest)
 			}
 		}
@@ -284,6 +293,11 @@ type manifestEnvelope struct {
 }
 
 func validateManifest(manifest resource.Manifest, agentInstanceID string) error {
+	canonical := manifest
+	if err := resource.NormalizeLegacyApprovalBindings(&canonical); err != nil {
+		return resource.ErrInvalid
+	}
+	manifest = canonical
 	for _, value := range []string{manifest.ManifestID, manifest.AgentInstanceID, manifest.TaskID, manifest.DeploymentID} {
 		parsed, err := uuid.Parse(strings.TrimSpace(value))
 		if err != nil || parsed == uuid.Nil {
@@ -294,44 +308,11 @@ func validateManifest(manifest resource.Manifest, agentInstanceID string) error 
 		manifest.Revision < 1 || manifest.UpdatedAt.IsZero() || len(manifest.Resources) == 0 || len(manifest.Resources) > maxManifestResources {
 		return resource.ErrInvalid
 	}
-	if manifest.Managed || manifest.Retention == task.RetentionManaged {
-		if !manifest.Managed || manifest.Retention != task.RetentionManaged || !manifest.DestroyDeadline.IsZero() || manifest.AutoDestroyApproved || manifest.AutoDestroyApprovalID != "" {
-			return resource.ErrInvalid
-		}
-	} else if manifest.Retention != task.RetentionEphemeralAutoDestroy || manifest.DestroyDeadline.IsZero() {
+	if err := manifest.ValidateResourceApprovalScope(); err != nil {
 		return resource.ErrInvalid
 	}
 	for _, item := range manifest.Resources {
-		if item.AgentInstanceID != manifest.AgentInstanceID || item.OwnerID != manifest.OwnerID || item.TaskID != manifest.TaskID || item.DeploymentID != manifest.DeploymentID || item.Retention != manifest.Retention {
-			return resource.ErrInvalid
-		}
-		if item.ApprovedPlanHash != manifest.ApprovedPlanHash {
-			return resource.ErrInvalid
-		}
-		expectedTags := map[string]string{
-			resource.TagAgentInstanceID: manifest.AgentInstanceID,
-			resource.TagOwnerID:         manifest.OwnerID,
-			resource.TagTaskID:          manifest.TaskID,
-			resource.TagDeploymentID:    manifest.DeploymentID,
-			resource.TagResourceID:      item.ResourceID,
-			resource.TagRetention:       string(manifest.Retention),
-		}
-		for key, expected := range expectedTags {
-			if expected == "" || item.Tags[key] != expected {
-				return resource.ErrInvalid
-			}
-		}
 		if manifest.Managed && item.State != resource.StateRetainedManaged {
-			return resource.ErrInvalid
-		}
-		if manifest.Managed {
-			if item.AutoDestroyApproved || !item.DestroyDeadline.IsZero() || item.Tags[resource.TagDestroyDeadline] != "managed" {
-				return resource.ErrInvalid
-			}
-			continue
-		}
-		if item.ApprovalID != manifest.AutoDestroyApprovalID || item.AutoDestroyApproved != manifest.AutoDestroyApproved ||
-			!item.DestroyDeadline.Equal(manifest.DestroyDeadline) || item.Tags[resource.TagDestroyDeadline] != manifest.DestroyDeadline.UTC().Truncate(time.Second).Format(time.RFC3339) {
 			return resource.ErrInvalid
 		}
 	}

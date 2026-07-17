@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
-	"github.com/google/uuid"
 )
 
 type ReapReport struct {
@@ -42,11 +41,16 @@ func (reaper *Reaper) Sweep(ctx context.Context) (ReapReport, error) {
 	report := ReapReport{}
 	for _, manifest := range manifests {
 		report.Examined++
+		if err := NormalizeLegacyApprovalBindings(&manifest); err != nil {
+			report.SkippedNotApproved++
+			continue
+		}
 		if manifest.Managed || manifest.Retention == task.RetentionManaged || containsManagedResource(manifest.Resources) {
 			report.SkippedManaged++
 			continue
 		}
-		if manifest.Retention != task.RetentionEphemeralAutoDestroy || !manifest.AutoDestroyApproved || !validUUID(manifest.AutoDestroyApprovalID) || !sha256Pattern.MatchString(manifest.ApprovedPlanHash) || manifest.DestroyDeadline.IsZero() || now.Before(manifest.DestroyDeadline) {
+		if manifest.Retention != task.RetentionEphemeralAutoDestroy || manifest.DestroyDeadline.IsZero() || now.Before(manifest.DestroyDeadline) ||
+			manifest.ValidateResourceApprovalScope() != nil {
 			report.SkippedNotApproved++
 			continue
 		}
@@ -103,7 +107,7 @@ func (reaper *Reaper) destroyManifest(ctx context.Context, manifest Manifest, no
 		resource.State = StateDestroying
 		resource.Intent = MutationIntent{
 			Operation:   MutationDestroy,
-			ClientToken: clientToken("reaper-destroy", manifest.AgentInstanceID, manifest.DeploymentID, resource.ResourceID, manifest.AutoDestroyApprovalID),
+			ClientToken: clientToken("reaper-destroy", manifest.AgentInstanceID, manifest.DeploymentID, resource.ResourceID, resource.ApprovalID),
 			RecordedAt:  now,
 		}
 		resource.Revision++
@@ -152,9 +156,4 @@ func containsManagedResource(resources []ResourceV1) bool {
 		}
 	}
 	return false
-}
-
-func validUUID(value string) bool {
-	parsed, err := uuid.Parse(value)
-	return err == nil && parsed != uuid.Nil
 }

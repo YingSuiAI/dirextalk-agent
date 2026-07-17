@@ -406,7 +406,8 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 		return resource.ErrInvalid
 	}
 	switch item.Type {
-	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP, resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot:
+	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP, resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot,
+		resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener, resource.TypeSecurityGroupRule:
 	default:
 		return resource.ErrInvalid
 	}

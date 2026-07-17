@@ -33,14 +33,15 @@ func (provider *entryOrderProvider) Delete(_ context.Context, _ Type, providerID
 
 func TestReaperUsesManifestDependenciesForPublicEntryGraph(t *testing.T) {
 	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
-	agentID, taskID, deploymentID, approvalID := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	agentID, taskID, deploymentID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	workerApprovalID, entryApprovalID := uuid.NewString(), uuid.NewString()
 	deadline := now.Add(-time.Minute)
-	planHash := "sha256:" + repeatHex('a')
-	newResource := func(kind Type, providerID string, dependencies ...string) ResourceV1 {
+	workerPlanHash, entryPlanHash := "sha256:"+repeatHex('a'), "sha256:"+repeatHex('b')
+	newResource := func(kind Type, providerID, planHash, approvalID string, dependencies ...string) ResourceV1 {
 		resourceID := uuid.NewString()
 		return ResourceV1{
 			ResourceID: resourceID, AgentInstanceID: agentID, OwnerID: "owner-1", TaskID: taskID, DeploymentID: deploymentID,
-			Type: kind, LogicalName: "ephemeral-entry", Region: "us-west-2", ApprovedPlanHash: planHash, ApprovalID: approvalID,
+			Type: kind, LogicalName: "ephemeral-entry", Region: "us-west-2", SpecDigest: "sha256:" + repeatHex('c'), ApprovedPlanHash: planHash, ApprovalID: approvalID,
 			ProviderID: providerID, DependsOn: dependencies, Retention: task.RetentionEphemeralAutoDestroy,
 			DestroyDeadline: deadline, AutoDestroyApproved: true, State: StateActive, Revision: 1, CreatedAt: now, UpdatedAt: now,
 			Tags: map[string]string{
@@ -50,13 +51,13 @@ func TestReaperUsesManifestDependenciesForPublicEntryGraph(t *testing.T) {
 		}
 	}
 
-	worker := newResource(TypeEC2, "worker")
-	albSecurityGroup := newResource(TypeSG, "alb-security-group")
-	workerSecurityGroup := newResource(TypeSG, "worker-security-group")
-	alb := newResource(TypeALB, "application-load-balancer", albSecurityGroup.ResourceID)
-	targetGroup := newResource(TypeTargetGroup, "target-group", worker.ResourceID)
-	listener := newResource(TypeListener, "https-listener", alb.ResourceID, targetGroup.ResourceID)
-	rule := newResource(TypeSecurityGroupRule, "worker-ingress-rule", albSecurityGroup.ResourceID, workerSecurityGroup.ResourceID)
+	worker := newResource(TypeEC2, "worker", workerPlanHash, workerApprovalID)
+	workerSecurityGroup := newResource(TypeSG, "worker-security-group", workerPlanHash, workerApprovalID)
+	albSecurityGroup := newResource(TypeSG, "alb-security-group", entryPlanHash, entryApprovalID)
+	alb := newResource(TypeALB, "application-load-balancer", entryPlanHash, entryApprovalID, albSecurityGroup.ResourceID)
+	targetGroup := newResource(TypeTargetGroup, "target-group", entryPlanHash, entryApprovalID, worker.ResourceID)
+	listener := newResource(TypeListener, "https-listener", entryPlanHash, entryApprovalID, alb.ResourceID, targetGroup.ResourceID)
+	rule := newResource(TypeSecurityGroupRule, "worker-ingress-rule", entryPlanHash, entryApprovalID, albSecurityGroup.ResourceID, workerSecurityGroup.ResourceID)
 	resources := []ResourceV1{worker, albSecurityGroup, workerSecurityGroup, alb, targetGroup, listener, rule}
 
 	provider := &entryOrderProvider{resources: make(map[string]ProviderObservation, len(resources))}
@@ -67,7 +68,11 @@ func TestReaperUsesManifestDependenciesForPublicEntryGraph(t *testing.T) {
 	manifest := Manifest{
 		ManifestID: deploymentID, AgentInstanceID: agentID, OwnerID: "owner-1", TaskID: taskID, DeploymentID: deploymentID,
 		Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline, AutoDestroyApproved: true,
-		AutoDestroyApprovalID: approvalID, ApprovedPlanHash: planHash, Resources: resources, Revision: 1, UpdatedAt: now,
+		ApprovalBindings: []ApprovalBinding{
+			{ApprovedPlanHash: workerPlanHash, ApprovalID: workerApprovalID},
+			{ApprovedPlanHash: entryPlanHash, ApprovalID: entryApprovalID},
+		},
+		Resources: resources, Revision: 1, UpdatedAt: now,
 	}
 	mirror.manifests[manifest.ManifestID] = manifest
 	reaper, err := NewReaper(provider, mirror)

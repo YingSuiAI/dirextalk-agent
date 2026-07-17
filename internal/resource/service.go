@@ -705,17 +705,13 @@ func manifestFrom(resources []ResourceV1, autoApproved bool, now time.Time) (Man
 		ManifestID: first.DeploymentID, AgentInstanceID: first.AgentInstanceID, OwnerID: first.OwnerID,
 		TaskID: first.TaskID, DeploymentID: first.DeploymentID, Retention: first.Retention,
 		DestroyDeadline: first.DestroyDeadline, AutoDestroyApproved: autoApproved || first.AutoDestroyApproved,
-		AutoDestroyApprovalID: first.ApprovalID, ApprovedPlanHash: first.ApprovedPlanHash,
 		Resources: resources, Revision: maxRevision(resources), UpdatedAt: now,
 	}
 	for _, resource := range resources {
 		if resource.AgentInstanceID != manifest.AgentInstanceID || resource.OwnerID != manifest.OwnerID || resource.TaskID != manifest.TaskID || resource.DeploymentID != manifest.DeploymentID {
 			return Manifest{}, fmt.Errorf("%w: manifest ownership is inconsistent", ErrInvalid)
 		}
-		if resource.ApprovedPlanHash != first.ApprovedPlanHash || resource.ApprovalID != first.ApprovalID {
-			return Manifest{}, fmt.Errorf("%w: manifest approval scope is inconsistent", ErrInvalid)
-		}
-		if resource.Retention != first.Retention && resource.State != StateRetainedManaged {
+		if resource.Retention != first.Retention || !resource.DestroyDeadline.Equal(first.DestroyDeadline) {
 			return Manifest{}, fmt.Errorf("%w: manifest retention scope is inconsistent", ErrInvalid)
 		}
 		if resource.Retention == task.RetentionManaged || resource.State == StateRetainedManaged {
@@ -723,17 +719,24 @@ func manifestFrom(resources []ResourceV1, autoApproved bool, now time.Time) (Man
 			manifest.Retention = task.RetentionManaged
 			manifest.DestroyDeadline = time.Time{}
 			manifest.AutoDestroyApproved = false
-			manifest.AutoDestroyApprovalID = ""
 		}
 		if resource.AutoDestroyApproved && manifest.Retention == task.RetentionEphemeralAutoDestroy {
 			manifest.AutoDestroyApproved = true
 		}
-		if manifest.Retention == task.RetentionEphemeralAutoDestroy && resource.DestroyDeadline.Before(manifest.DestroyDeadline) {
-			manifest.DestroyDeadline = resource.DestroyDeadline
-		}
 	}
 	if manifest.Retention == task.RetentionEphemeralAutoDestroy && autoApproved {
 		manifest.AutoDestroyApproved = true
+	}
+	manifest.ApprovalBindings = approvalBindingsFromResources(resources)
+	if len(manifest.ApprovalBindings) == 1 {
+		binding := manifest.ApprovalBindings[0]
+		manifest.ApprovedPlanHash = binding.ApprovedPlanHash
+		if manifest.Retention == task.RetentionEphemeralAutoDestroy {
+			manifest.AutoDestroyApprovalID = binding.ApprovalID
+		}
+	}
+	if err := manifest.ValidateResourceApprovalScope(); err != nil {
+		return Manifest{}, err
 	}
 	return manifest, nil
 }

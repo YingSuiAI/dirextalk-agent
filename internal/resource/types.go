@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -312,19 +313,193 @@ type Manifest struct {
 	AutoDestroyApproved   bool
 	AutoDestroyApprovalID string
 	ApprovedPlanHash      string
-	Managed               bool
-	Resources             []ResourceV1
-	Revision              int64
-	UpdatedAt             time.Time
+	// ApprovalBindings is the exact, deterministic set of plan/approval pairs
+	// that authorize resources in this deployment. A public entry can be added
+	// after the Worker and therefore legitimately carries a distinct device
+	// approval. The legacy top-level pair remains populated only for a single
+	// binding; it must never authorize a multi-binding manifest.
+	ApprovalBindings []ApprovalBinding `json:"ApprovalBindings,omitempty"`
+	Managed          bool
+	Resources        []ResourceV1
+	Revision         int64
+	UpdatedAt        time.Time
+}
+
+// ApprovalBinding binds one resource authorization source without exposing an
+// approval signature or any secret material in the cloud manifest.
+type ApprovalBinding struct {
+	ApprovedPlanHash string
+	ApprovalID       string
 }
 
 func (manifest Manifest) clone() Manifest {
+	manifest.ApprovalBindings = slices.Clone(manifest.ApprovalBindings)
 	source := manifest.Resources
 	manifest.Resources = make([]ResourceV1, len(source))
 	for index, resource := range source {
 		manifest.Resources[index] = resource.clone()
 	}
 	return manifest
+}
+
+// ValidateApprovalBindings proves that every manifest resource is explicitly
+// authorized by exactly one deterministic plan/approval pair. It deliberately
+// rejects a missing, unordered, duplicate, or legacy-top-level-only binding so
+// a Reaper cannot delete a resource by borrowing another resource's approval.
+func (manifest Manifest) ValidateApprovalBindings() error {
+	if len(manifest.ApprovalBindings) == 0 || len(manifest.ApprovalBindings) > 64 {
+		return ErrInvalid
+	}
+	bindings := make(map[string]struct{}, len(manifest.ApprovalBindings))
+	previous := ""
+	for _, binding := range manifest.ApprovalBindings {
+		if !sha256Pattern.MatchString(binding.ApprovedPlanHash) || !canonicalManifestUUID(binding.ApprovalID) {
+			return ErrInvalid
+		}
+		key := manifestApprovalBindingKey(binding)
+		if key <= previous {
+			return ErrInvalid
+		}
+		bindings[key] = struct{}{}
+		previous = key
+	}
+	for _, item := range manifest.Resources {
+		if !sha256Pattern.MatchString(item.ApprovedPlanHash) || !canonicalManifestUUID(item.ApprovalID) {
+			return ErrInvalid
+		}
+		if _, ok := bindings[manifestApprovalBindingKey(ApprovalBinding{ApprovedPlanHash: item.ApprovedPlanHash, ApprovalID: item.ApprovalID})]; !ok {
+			return ErrInvalid
+		}
+	}
+	if len(manifest.ApprovalBindings) == 1 {
+		binding := manifest.ApprovalBindings[0]
+		if manifest.ApprovedPlanHash != binding.ApprovedPlanHash {
+			return ErrInvalid
+		}
+		if manifest.Retention == task.RetentionEphemeralAutoDestroy && manifest.AutoDestroyApprovalID != binding.ApprovalID {
+			return ErrInvalid
+		}
+		if manifest.Retention == task.RetentionManaged && manifest.AutoDestroyApprovalID != "" {
+			return ErrInvalid
+		}
+		return nil
+	}
+	if manifest.ApprovedPlanHash != "" || manifest.AutoDestroyApprovalID != "" {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// NormalizeLegacyApprovalBindings performs the one safe compatibility bridge
+// for manifests written before ApprovalBindings existed. It can only derive a
+// single binding when every resource already exactly matches the legacy
+// top-level authorization. A mixed manifest has blank top-level fields and is
+// therefore never silently collapsed into a weaker authorization scope.
+func NormalizeLegacyApprovalBindings(manifest *Manifest) error {
+	if manifest == nil || len(manifest.Resources) == 0 {
+		return ErrInvalid
+	}
+	if len(manifest.ApprovalBindings) != 0 {
+		return nil
+	}
+	if !sha256Pattern.MatchString(manifest.ApprovedPlanHash) {
+		return ErrInvalid
+	}
+	approvalID := manifest.AutoDestroyApprovalID
+	if manifest.Retention == task.RetentionEphemeralAutoDestroy {
+		if !canonicalManifestUUID(approvalID) {
+			return ErrInvalid
+		}
+	} else if manifest.Retention == task.RetentionManaged {
+		if approvalID != "" || !canonicalManifestUUID(manifest.Resources[0].ApprovalID) {
+			return ErrInvalid
+		}
+		approvalID = manifest.Resources[0].ApprovalID
+	} else {
+		return ErrInvalid
+	}
+	for _, item := range manifest.Resources {
+		if item.ApprovedPlanHash != manifest.ApprovedPlanHash || item.ApprovalID != approvalID {
+			return ErrInvalid
+		}
+	}
+	manifest.ApprovalBindings = []ApprovalBinding{{ApprovedPlanHash: manifest.ApprovedPlanHash, ApprovalID: approvalID}}
+	return nil
+}
+
+// ValidateResourceApprovalScope validates the per-resource authorization and
+// retention facts that a durable manifest must preserve. Store adapters add
+// their own persistence/read-back checks on top of this closed contract.
+func (manifest Manifest) ValidateResourceApprovalScope() error {
+	if err := manifest.ValidateApprovalBindings(); err != nil {
+		return err
+	}
+	if manifest.Retention != task.RetentionEphemeralAutoDestroy && manifest.Retention != task.RetentionManaged {
+		return ErrInvalid
+	}
+	if manifest.Retention == task.RetentionEphemeralAutoDestroy {
+		if manifest.Managed || !manifest.AutoDestroyApproved || manifest.DestroyDeadline.IsZero() {
+			return ErrInvalid
+		}
+	} else if !manifest.Managed || manifest.AutoDestroyApproved || !manifest.DestroyDeadline.IsZero() {
+		return ErrInvalid
+	}
+	for _, item := range manifest.Resources {
+		if !canonicalManifestUUID(item.ResourceID) || !sha256Pattern.MatchString(item.SpecDigest) ||
+			item.AgentInstanceID != manifest.AgentInstanceID || item.OwnerID != manifest.OwnerID ||
+			item.TaskID != manifest.TaskID || item.DeploymentID != manifest.DeploymentID || item.Retention != manifest.Retention {
+			return ErrInvalid
+		}
+		expectedTags := map[string]string{
+			TagAgentInstanceID: manifest.AgentInstanceID,
+			TagOwnerID:         manifest.OwnerID,
+			TagTaskID:          manifest.TaskID,
+			TagDeploymentID:    manifest.DeploymentID,
+			TagResourceID:      item.ResourceID,
+			TagRetention:       string(manifest.Retention),
+		}
+		for key, expected := range expectedTags {
+			if expected == "" || item.Tags[key] != expected {
+				return ErrInvalid
+			}
+		}
+		if manifest.Retention == task.RetentionEphemeralAutoDestroy {
+			if !item.AutoDestroyApproved || !item.DestroyDeadline.Equal(manifest.DestroyDeadline) ||
+				item.Tags[TagDestroyDeadline] != manifest.DestroyDeadline.UTC().Truncate(time.Second).Format(time.RFC3339) {
+				return ErrInvalid
+			}
+			continue
+		}
+		if item.AutoDestroyApproved || !item.DestroyDeadline.IsZero() || item.Tags[TagDestroyDeadline] != "managed" {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+func approvalBindingsFromResources(resources []ResourceV1) []ApprovalBinding {
+	seen := make(map[string]ApprovalBinding, len(resources))
+	for _, item := range resources {
+		binding := ApprovalBinding{ApprovedPlanHash: item.ApprovedPlanHash, ApprovalID: item.ApprovalID}
+		seen[manifestApprovalBindingKey(binding)] = binding
+	}
+	bindings := make([]ApprovalBinding, 0, len(seen))
+	for _, binding := range seen {
+		bindings = append(bindings, binding)
+	}
+	sort.Slice(bindings, func(left, right int) bool {
+		return manifestApprovalBindingKey(bindings[left]) < manifestApprovalBindingKey(bindings[right])
+	})
+	return bindings
+}
+
+func manifestApprovalBindingKey(binding ApprovalBinding) string {
+	return binding.ApprovedPlanHash + "\x00" + binding.ApprovalID
+}
+
+func canonicalManifestUUID(value string) bool {
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed != uuid.Nil && parsed.String() == value
 }
 
 type ManifestMirror interface {

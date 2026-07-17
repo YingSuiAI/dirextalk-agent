@@ -197,6 +197,10 @@ func TestDynamoManifestStoreRejectsResourceApprovalScopeTampering(t *testing.T) 
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	agentID := uuid.NewString()
 	tests := map[string]func(*resource.Manifest){
+		"missing bindings for mismatched resource": func(value *resource.Manifest) {
+			value.ApprovalBindings = nil
+			value.Resources[0].ApprovedPlanHash = "sha256:" + strings.Repeat("b", 64)
+		},
 		"plan hash": func(value *resource.Manifest) {
 			value.Resources[0].ApprovedPlanHash = "sha256:" + strings.Repeat("b", 64)
 		},
@@ -218,6 +222,40 @@ func TestDynamoManifestStoreRejectsResourceApprovalScopeTampering(t *testing.T) 
 				t.Fatalf("tampered manifest error = %v", err)
 			}
 		})
+	}
+}
+
+func TestDynamoManifestStoreMirrorsMixedWorkerAndEntrypointApprovals(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	manifest := reaperManifest(agentID, now.Add(time.Hour), false)
+	worker := manifest.Resources[0]
+	entry := worker
+	entry.ResourceID, entry.Type, entry.LogicalName = uuid.NewString(), resource.TypeALB, "approved-entry"
+	entry.ProviderID, entry.DependsOn = "arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/app/dtx/example", []string{worker.ResourceID}
+	entry.ApprovedPlanHash, entry.ApprovalID = "sha256:"+strings.Repeat("b", 64), uuid.NewString()
+	entry.Tags = make(map[string]string, len(worker.Tags))
+	for key, value := range worker.Tags {
+		entry.Tags[key] = value
+	}
+	entry.Tags[resource.TagResourceID] = entry.ResourceID
+	manifest.Resources = []resource.ResourceV1{worker, entry}
+	manifest.ApprovalBindings = []resource.ApprovalBinding{
+		{ApprovedPlanHash: worker.ApprovedPlanHash, ApprovalID: worker.ApprovalID},
+		{ApprovedPlanHash: entry.ApprovedPlanHash, ApprovalID: entry.ApprovalID},
+	}
+	manifest.ApprovedPlanHash, manifest.AutoDestroyApprovalID = "", ""
+
+	store, err := NewDynamoManifestStore(newFakeDynamoDB(), "dtx-agent-resources", agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), manifest); err != nil {
+		t.Fatalf("mirror mixed approvals: %v", err)
+	}
+	observed, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil || len(observed.ApprovalBindings) != 2 || observed.ApprovedPlanHash != "" || observed.AutoDestroyApprovalID != "" {
+		t.Fatalf("mixed approval read-back = %+v err=%v", observed, err)
 	}
 }
 
@@ -248,7 +286,8 @@ func reaperManifest(agentID string, deadline time.Time, managed bool) resource.M
 	return resource.Manifest{
 		ManifestID: deploymentID, AgentInstanceID: agentID, OwnerID: "owner-1", TaskID: taskID, DeploymentID: deploymentID,
 		Retention: retention, DestroyDeadline: deadline, AutoDestroyApproved: autoApproved, AutoDestroyApprovalID: approval,
-		ApprovedPlanHash: digestFixture(), Managed: managed, Resources: []resource.ResourceV1{item}, Revision: 2, UpdatedAt: now,
+		ApprovedPlanHash: digestFixture(), ApprovalBindings: []resource.ApprovalBinding{{ApprovedPlanHash: digestFixture(), ApprovalID: approvalID}},
+		Managed: managed, Resources: []resource.ResourceV1{item}, Revision: 2, UpdatedAt: now,
 	}
 }
 

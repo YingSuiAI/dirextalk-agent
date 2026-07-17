@@ -134,6 +134,7 @@ func recoveryManifestFixture(agentInstanceID string) resource.Manifest {
 		ManifestID: deploymentID, AgentInstanceID: agentInstanceID, OwnerID: item.OwnerID, TaskID: taskID,
 		DeploymentID: deploymentID, Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline,
 		AutoDestroyApproved: true, AutoDestroyApprovalID: approvalID, ApprovedPlanHash: planHash,
-		Resources: []resource.ResourceV1{item}, Revision: 1, UpdatedAt: now,
+		ApprovalBindings: []resource.ApprovalBinding{{ApprovedPlanHash: planHash, ApprovalID: approvalID}},
+		Resources:        []resource.ResourceV1{item}, Revision: 1, UpdatedAt: now,
 	}
 }
