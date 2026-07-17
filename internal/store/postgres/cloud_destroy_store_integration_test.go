@@ -130,6 +130,7 @@ func TestCloudDestroyStorePersistsApprovalAndFencesLifecycle(t *testing.T) {
 
 	destroying := persisted
 	destroying.Status = clouddestroy.StatusDestroying
+	destroying.AutomaticAttempts = 1
 	destroying.UpdatedAt = persisted.UpdatedAt.Add(time.Second)
 	destroying, err = restarted.SaveDestroyOperation(ctx, destroying, persisted.Revision)
 	if err != nil || destroying.Revision != 3 {
@@ -140,6 +141,7 @@ func TestCloudDestroyStorePersistsApprovalAndFencesLifecycle(t *testing.T) {
 	stale.Status = clouddestroy.StatusDestroyBlocked
 	stale.ErrorCode = "AWS_READ_BACK_PENDING"
 	stale.BlockedReason = "provider read-back did not confirm absence"
+	stale.RequiresNewApproval = true
 	stale.UpdatedAt = destroying.UpdatedAt.Add(time.Second)
 	if _, err := restarted.SaveDestroyOperation(ctx, stale, persisted.Revision); !errors.Is(err, clouddestroy.ErrRevisionConflict) {
 		t.Fatalf("stale destroy transition error=%v", err)
@@ -153,21 +155,14 @@ func TestCloudDestroyStorePersistsApprovalAndFencesLifecycle(t *testing.T) {
 	retrying.Status = clouddestroy.StatusDestroying
 	retrying.ErrorCode = ""
 	retrying.BlockedReason = ""
+	retrying.RequiresNewApproval = false
 	retrying.UpdatedAt = blocked.UpdatedAt.Add(time.Second)
-	retrying, err = restarted.SaveDestroyOperation(ctx, retrying, blocked.Revision)
-	if err != nil || retrying.Revision != 5 {
-		t.Fatalf("blocked -> destroying=%#v err=%v", retrying, err)
-	}
-	verified := retrying
-	verified.Status = clouddestroy.StatusVerifiedDestroyed
-	verified.UpdatedAt = retrying.UpdatedAt.Add(time.Second)
-	verified, err = restarted.SaveDestroyOperation(ctx, verified, retrying.Revision)
-	if err != nil || verified.Revision != 6 {
-		t.Fatalf("destroying -> verified=%#v err=%v", verified, err)
+	if _, err = restarted.SaveDestroyOperation(ctx, retrying, blocked.Revision); !errors.Is(err, clouddestroy.ErrRevisionConflict) {
+		t.Fatalf("blocked operation resumed without fresh approval: %v", err)
 	}
 	pending, err = restarted.ListPendingDestroy(ctx, 16)
 	if err != nil || len(pending) != 0 {
-		t.Fatalf("verified operation remained pending: %#v err=%v", pending, err)
+		t.Fatalf("terminal blocked operation remained automatically pending: %#v err=%v", pending, err)
 	}
 }
 

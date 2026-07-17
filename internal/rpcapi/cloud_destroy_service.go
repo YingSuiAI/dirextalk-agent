@@ -95,9 +95,14 @@ func cloudDestroyResourceScopeToProto(item clouddestroy.ResourceScopeV1) *agentv
 }
 
 func cloudDestroyOperationToProto(value clouddestroy.OperationV1) *agentv1.CloudDestroyOperation {
-	return &agentv1.CloudDestroyOperation{OperationId: value.Challenge.OperationID, OwnerId: value.Challenge.Scope.OwnerID, DeploymentId: value.Challenge.Scope.DeploymentID,
+	result := &agentv1.CloudDestroyOperation{OperationId: value.Challenge.OperationID, OwnerId: value.Challenge.Scope.OwnerID, DeploymentId: value.Challenge.Scope.DeploymentID,
 		ApprovalId: value.Challenge.ApprovalID, ScopeDigest: value.Challenge.ScopeDigest, Status: cloudDestroyStatusToProto(value.Status),
-		BlockedReason: value.BlockedReason, ErrorCode: value.ErrorCode, Revision: value.Revision, CreatedAt: cloudStatusTimestamp(value.CreatedAt), UpdatedAt: cloudStatusTimestamp(value.UpdatedAt)}
+		BlockedReason: value.BlockedReason, ErrorCode: value.ErrorCode, AutomaticAttempts: value.AutomaticAttempts, RequiresNewApproval: value.RequiresNewApproval,
+		Revision: value.Revision, CreatedAt: cloudStatusTimestamp(value.CreatedAt), UpdatedAt: cloudStatusTimestamp(value.UpdatedAt)}
+	if value.NextAttemptAt != nil {
+		result.NextAttemptAt = cloudStatusTimestamp(*value.NextAttemptAt)
+	}
+	return result
 }
 
 func cloudDestroyStatusToProto(value clouddestroy.Status) agentv1.CloudDestroyOperationStatus {

@@ -232,6 +232,87 @@ func TestEphemeralDestroyControllerBlocksManualApprovalOnExactScopeDrift(t *test
 	fixture.requireNoLifecycleCalls(t)
 }
 
+func TestEphemeralDestroyControllerBoundsAutomaticRetryAndRequiresFreshApproval(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	prepareManualDestroyResource(&fixture.resources[0], fixture.plan, fixture.approval)
+	fixture.lifecycle.scheduled = append([]resource.ResourceV1(nil), fixture.resources...)
+	scope := manualDestroyScope(fixture)
+	repository := &fakeManualDestroyRepository{operation: manualDestroyOperation(t, scope)}
+	controller := fixture.controller(t)
+	if err := controller.ConfigureManualDestroy(repository, fakeManualScopeReader{scope: scope}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.operation.Status != clouddestroy.StatusDestroying || repository.operation.AutomaticAttempts != 1 || repository.operation.NextAttemptAt == nil {
+		t.Fatalf("first transient attempt=%#v", repository.operation)
+	}
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.lifecycle.destroyCalls != 1 {
+		t.Fatalf("retry ignored backoff: destroy calls=%d", fixture.lifecycle.destroyCalls)
+	}
+	for expected := int32(2); expected <= clouddestroy.MaxAutomaticAttempts; expected++ {
+		fixture.now = repository.operation.NextAttemptAt.UTC()
+		if err := controller.RunOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if repository.operation.AutomaticAttempts != expected {
+			t.Fatalf("attempt=%d, want %d", repository.operation.AutomaticAttempts, expected)
+		}
+	}
+	if repository.operation.Status != clouddestroy.StatusDestroyBlocked || !repository.operation.RequiresNewApproval || repository.operation.NextAttemptAt != nil {
+		t.Fatalf("exhausted operation=%#v", repository.operation)
+	}
+	if fixture.lifecycle.destroyCalls != int(clouddestroy.MaxAutomaticAttempts) {
+		t.Fatalf("automatic destroy calls=%d", fixture.lifecycle.destroyCalls)
+	}
+
+	verified := fixture.resources[0]
+	verified.State = resource.StateVerifiedDestroyed
+	verified.ReadBack.Exists = false
+	verified.ReadBack.ObservedAt = fixture.now.Add(time.Second)
+	fixture.lifecycle.destroyResults = []resource.DestroyResult{{Resources: []resource.ResourceV1{verified}}}
+	repository.operation = manualDestroyOperation(t, scope)
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.operation.Status != clouddestroy.StatusVerifiedDestroyed || repository.operation.RequiresNewApproval {
+		t.Fatalf("freshly approved remediation=%#v", repository.operation)
+	}
+}
+
+func TestEphemeralDestroyControllerRecoversFinalInFlightAttemptWithoutConsumingAnotherAttempt(t *testing.T) {
+	fixture := newEphemeralDestroyFixture(t)
+	prepareManualDestroyResource(&fixture.resources[0], fixture.plan, fixture.approval)
+	fixture.lifecycle.scheduled = append([]resource.ResourceV1(nil), fixture.resources...)
+	scope := manualDestroyScope(fixture)
+	operation := manualDestroyOperation(t, scope)
+	operation.Status = clouddestroy.StatusDestroying
+	operation.AutomaticAttempts = clouddestroy.MaxAutomaticAttempts
+	operation.Revision = 8
+	verified := fixture.resources[0]
+	verified.State = resource.StateVerifiedDestroyed
+	verified.ReadBack.Exists = false
+	verified.ReadBack.ObservedAt = fixture.now.Add(time.Second)
+	fixture.lifecycle.destroyResults = []resource.DestroyResult{{Resources: []resource.ResourceV1{verified}}}
+	repository := &fakeManualDestroyRepository{operation: operation}
+	controller := fixture.controller(t)
+	if err := controller.ConfigureManualDestroy(repository, fakeManualScopeReader{scope: scope}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := controller.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repository.operation.Status != clouddestroy.StatusVerifiedDestroyed || repository.operation.AutomaticAttempts != clouddestroy.MaxAutomaticAttempts {
+		t.Fatalf("recovered operation=%#v", repository.operation)
+	}
+}
+
 type ephemeralDestroyFixture struct {
 	agentID    string
 	now        time.Time

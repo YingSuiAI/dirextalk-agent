@@ -499,6 +499,9 @@ message CloudDestroyOperation {
   google.protobuf.Timestamp created_at = 9;
   google.protobuf.Timestamp updated_at = 10;
   string error_code = 11;
+  int32 automatic_attempts = 12;
+  google.protobuf.Timestamp next_attempt_at = 13;
+  bool requires_new_approval = 14;
 }
 
 message CreateCloudDeploymentDestroyChallengeRequest {

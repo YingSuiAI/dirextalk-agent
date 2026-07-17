@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	ScopeSchemaV1     = "dirextalk.agent.cloud-deployment-destroy-scope/v1"
-	SigningPayloadV1  = "dirextalk.agent.cloud-deployment-destroy-approval/v1"
-	ChallengeValidity = 5 * time.Minute
+	ScopeSchemaV1        = "dirextalk.agent.cloud-deployment-destroy-scope/v1"
+	SigningPayloadV1     = "dirextalk.agent.cloud-deployment-destroy-approval/v1"
+	ChallengeValidity    = 5 * time.Minute
+	MaxAutomaticAttempts = 3
 )
 
 var (
@@ -179,15 +180,18 @@ const (
 )
 
 type OperationV1 struct {
-	Challenge     ChallengeV1 `json:"challenge"`
-	Status        Status      `json:"status"`
-	Signature     []byte      `json:"-"`
-	ErrorCode     string      `json:"error_code,omitempty"`
-	BlockedReason string      `json:"blocked_reason,omitempty"`
-	Revision      int64       `json:"revision"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
-	ApprovedAt    *time.Time  `json:"approved_at,omitempty"`
+	Challenge           ChallengeV1 `json:"challenge"`
+	Status              Status      `json:"status"`
+	Signature           []byte      `json:"-"`
+	ErrorCode           string      `json:"error_code,omitempty"`
+	BlockedReason       string      `json:"blocked_reason,omitempty"`
+	AutomaticAttempts   int32       `json:"automatic_attempts"`
+	NextAttemptAt       *time.Time  `json:"next_attempt_at,omitempty"`
+	RequiresNewApproval bool        `json:"requires_new_approval"`
+	Revision            int64       `json:"revision"`
+	CreatedAt           time.Time   `json:"created_at"`
+	UpdatedAt           time.Time   `json:"updated_at"`
+	ApprovedAt          *time.Time  `json:"approved_at,omitempty"`
 }
 
 type Mutation struct {
@@ -375,16 +379,39 @@ func (signature SignatureV1) Validate() error {
 
 func ValidateOperation(value OperationV1) error {
 	if value.Challenge.Validate() != nil || value.Revision < 1 || value.CreatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) ||
-		len(value.ErrorCode) > 128 || len(value.BlockedReason) > 512 || security.ContainsLikelySecret(value.BlockedReason) {
+		len(value.ErrorCode) > 128 || len(value.BlockedReason) > 512 || security.ContainsLikelySecret(value.BlockedReason) ||
+		value.AutomaticAttempts < 0 || value.AutomaticAttempts > MaxAutomaticAttempts {
+		return ErrInvalid
+	}
+	if value.NextAttemptAt != nil && (value.NextAttemptAt.IsZero() || !value.NextAttemptAt.After(value.UpdatedAt)) {
 		return ErrInvalid
 	}
 	switch value.Status {
 	case StatusAwaitingApproval:
-		if len(value.Signature) != 0 || value.ApprovedAt != nil {
+		if len(value.Signature) != 0 || value.ApprovedAt != nil || value.AutomaticAttempts != 0 || value.NextAttemptAt != nil || value.RequiresNewApproval {
 			return ErrInvalid
 		}
-	case StatusApproved, StatusDestroying, StatusVerifiedDestroyed, StatusDestroyBlocked:
+	case StatusApproved:
+		if len(value.Signature) != ed25519.SignatureSize || value.ApprovedAt == nil || value.ApprovedAt.IsZero() || value.AutomaticAttempts != 0 || value.NextAttemptAt != nil || value.RequiresNewApproval {
+			return ErrInvalid
+		}
+	case StatusDestroying:
+		if len(value.Signature) != ed25519.SignatureSize || value.ApprovedAt == nil || value.ApprovedAt.IsZero() || value.RequiresNewApproval ||
+			value.AutomaticAttempts < 1 || strings.TrimSpace(value.BlockedReason) != "" ||
+			(value.NextAttemptAt == nil && strings.TrimSpace(value.ErrorCode) != "") ||
+			(value.NextAttemptAt != nil && strings.TrimSpace(value.ErrorCode) == "") {
+			return ErrInvalid
+		}
+	case StatusVerifiedDestroyed:
+		if len(value.Signature) != ed25519.SignatureSize || value.ApprovedAt == nil || value.ApprovedAt.IsZero() || value.NextAttemptAt != nil || value.RequiresNewApproval ||
+			value.AutomaticAttempts < 1 || strings.TrimSpace(value.ErrorCode) != "" || strings.TrimSpace(value.BlockedReason) != "" {
+			return ErrInvalid
+		}
+	case StatusDestroyBlocked:
 		if len(value.Signature) != ed25519.SignatureSize || value.ApprovedAt == nil || value.ApprovedAt.IsZero() {
+			return ErrInvalid
+		}
+		if value.NextAttemptAt != nil || !value.RequiresNewApproval || value.AutomaticAttempts < 1 || strings.TrimSpace(value.ErrorCode) == "" || strings.TrimSpace(value.BlockedReason) == "" {
 			return ErrInvalid
 		}
 	default:

@@ -21,6 +21,7 @@ var _ clouddestroy.Repository = (*Store)(nil)
 const cloudDestroyColumns = `operation_id, agent_instance_id, owner_id, deployment_id, plan_id, connection_id,
        challenge_id, approval_id, signer_key_id, expected_deployment_revision, scope_digest, scope_json,
        signing_payload, challenge_expires_at, signature, status, error_code, blocked_reason, revision,
+	   automatic_attempts, next_attempt_at, requires_new_approval,
        prepare_client_id, prepare_credential_id, prepare_idempotency_key, prepare_request_hash,
        approve_client_id, approve_credential_id, approve_idempotency_key, approve_request_hash,
        created_at, updated_at, approved_at`
@@ -218,8 +219,8 @@ func (store *Store) ListPendingDestroy(ctx context.Context, limit int) ([]cloudd
 		return nil, clouddestroy.ErrInvalid
 	}
 	rows, err := store.pool.Query(ctx, `SELECT `+cloudDestroyColumns+` FROM cloud_destroy_operations
-		WHERE agent_instance_id=$1 AND status IN ('approved','destroying','destroy_blocked')
-		ORDER BY updated_at, operation_id LIMIT $2`, store.instanceID, limit)
+		WHERE agent_instance_id=$1 AND status IN ('approved','destroying') AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+		ORDER BY COALESCE(next_attempt_at, updated_at), operation_id LIMIT $2`, store.instanceID, limit)
 	if err != nil {
 		return nil, clouddestroy.ErrUnavailable
 	}
@@ -255,9 +256,10 @@ func (store *Store) SaveDestroyOperation(ctx context.Context, next clouddestroy.
 		return clouddestroy.OperationV1{}, clouddestroy.ErrRevisionConflict
 	}
 	next.Revision = expectedRevision + 1
-	result, err := tx.Exec(ctx, `UPDATE cloud_destroy_operations SET status=$2,error_code=$3,blocked_reason=$4,revision=$5,updated_at=$6
-		WHERE operation_id=$1 AND revision=$7`, next.Challenge.OperationID, next.Status, nullableDestroyString(next.ErrorCode),
-		nullableDestroyString(next.BlockedReason), next.Revision, next.UpdatedAt.UTC(), expectedRevision)
+	result, err := tx.Exec(ctx, `UPDATE cloud_destroy_operations SET status=$2,error_code=$3,blocked_reason=$4,revision=$5,updated_at=$6,
+		automatic_attempts=$7,next_attempt_at=$8,requires_new_approval=$9 WHERE operation_id=$1 AND revision=$10`,
+		next.Challenge.OperationID, next.Status, nullableDestroyString(next.ErrorCode), nullableDestroyString(next.BlockedReason), next.Revision,
+		next.UpdatedAt.UTC(), next.AutomaticAttempts, nullableDestroyTime(next.NextAttemptAt), next.RequiresNewApproval, expectedRevision)
 	if err != nil || result.RowsAffected() != 1 {
 		return clouddestroy.OperationV1{}, clouddestroy.ErrRevisionConflict
 	}
@@ -286,8 +288,11 @@ func scanDestroyRow(row destroyScanner) (destroyRow, error) {
 	var ownerID, signerKeyID, scopeDigest string
 	var scopeJSON, signingPayload, signature, prepareHash, approveHash []byte
 	var expectedRevision, revision int64
+	var automaticAttempts int32
 	var status clouddestroy.Status
 	var errorCode, blockedReason, approveClientID *string
+	var nextAttemptAt *time.Time
+	var requiresNewApproval bool
 	var prepareClientID string
 	var prepareCredentialID, prepareIdempotencyKey uuid.UUID
 	var approveCredentialID, approveIdempotencyKey *uuid.UUID
@@ -296,6 +301,7 @@ func scanDestroyRow(row destroyScanner) (destroyRow, error) {
 	err := row.Scan(&operationID, &agentID, &ownerID, &deploymentID, &planID, &connectionID,
 		&challengeID, &approvalID, &signerKeyID, &expectedRevision, &scopeDigest, &scopeJSON,
 		&signingPayload, &challengeExpiresAt, &signature, &status, &errorCode, &blockedReason, &revision,
+		&automaticAttempts, &nextAttemptAt, &requiresNewApproval,
 		&prepareClientID, &prepareCredentialID, &prepareIdempotencyKey, &prepareHash,
 		&approveClientID, &approveCredentialID, &approveIdempotencyKey, &approveHash,
 		&createdAt, &updatedAt, &approvedAt)
@@ -313,7 +319,12 @@ func scanDestroyRow(row destroyScanner) (destroyRow, error) {
 		SignerKeyID: signerKeyID, Scope: scope, ScopeDigest: scopeDigest, IssuedAt: createdAt.UTC(), ExpiresAt: challengeExpiresAt.UTC(),
 		SigningCBOR: append([]byte(nil), signingPayload...), Revision: 1}
 	operation := clouddestroy.OperationV1{Challenge: challenge, Status: status, Signature: append([]byte(nil), signature...),
+		AutomaticAttempts: automaticAttempts, RequiresNewApproval: requiresNewApproval,
 		Revision: revision, CreatedAt: createdAt.UTC(), UpdatedAt: updatedAt.UTC(), ApprovedAt: approvedAt}
+	if nextAttemptAt != nil {
+		next := nextAttemptAt.UTC()
+		operation.NextAttemptAt = &next
+	}
 	if errorCode != nil {
 		operation.ErrorCode = *errorCode
 	}
@@ -363,12 +374,19 @@ func validDestroyTransition(current, next clouddestroy.Status) bool {
 	case clouddestroy.StatusApproved:
 		return next == clouddestroy.StatusDestroying || next == clouddestroy.StatusDestroyBlocked
 	case clouddestroy.StatusDestroying:
-		return next == clouddestroy.StatusVerifiedDestroyed || next == clouddestroy.StatusDestroyBlocked
+		return next == clouddestroy.StatusDestroying || next == clouddestroy.StatusVerifiedDestroyed || next == clouddestroy.StatusDestroyBlocked
 	case clouddestroy.StatusDestroyBlocked:
-		return next == clouddestroy.StatusDestroying || next == clouddestroy.StatusDestroyBlocked
+		return false
 	default:
 		return false
 	}
+}
+
+func nullableDestroyTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC()
 }
 
 func nullableDestroyString(value string) any {

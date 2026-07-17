@@ -196,11 +196,33 @@ func (controller *EphemeralDestroyController) runManualDestroy(ctx context.Conte
 }
 
 func (controller *EphemeralDestroyController) executeManualDestroy(ctx context.Context, operation clouddestroy.OperationV1) error {
+	if operation.Status == clouddestroy.StatusDestroyBlocked || operation.Status == clouddestroy.StatusVerifiedDestroyed {
+		return nil
+	}
+	now := controller.now().UTC()
+	if operation.NextAttemptAt != nil && now.Before(operation.NextAttemptAt.UTC()) {
+		return nil
+	}
+	wasApproved := operation.Status == clouddestroy.StatusApproved
+	recoveringInFlightAttempt := operation.Status == clouddestroy.StatusDestroying && operation.NextAttemptAt == nil && operation.ErrorCode == "" && operation.AutomaticAttempts > 0
+	next := operation
+	if !recoveringInFlightAttempt {
+		next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusDestroying, "", ""
+		next.AutomaticAttempts++
+		next.NextAttemptAt = nil
+		next.RequiresNewApproval = false
+		next.UpdatedAt = now
+		var err error
+		operation, err = controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
+		if err != nil {
+			return err
+		}
+	}
 	currentScope, err := controller.manualScopes.CurrentScope(ctx, operation.Challenge.Scope.OwnerID, operation.Challenge.Scope.DeploymentID)
 	if err != nil {
-		return controller.blockManualDestroy(ctx, operation, "scope_read_failed", "current resource scope could not be verified")
+		return controller.deferManualDestroy(ctx, operation, "scope_read_failed", "current resource scope could not be verified")
 	}
-	if operation.Status == clouddestroy.StatusApproved {
+	if wasApproved {
 		digest, digestErr := clouddestroy.ScopeDigest(currentScope)
 		if digestErr != nil || digest != operation.Challenge.ScopeDigest {
 			return controller.blockManualDestroy(ctx, operation, "scope_revision_changed", "deployment or resource scope changed after approval")
@@ -210,37 +232,28 @@ func (controller *EphemeralDestroyController) executeManualDestroy(ctx context.C
 	}
 	connection, err := controller.connections.LoadConnection(ctx, operation.Challenge.Scope.OwnerID, operation.Challenge.Scope.ConnectionID)
 	if err != nil || connection.ConnectionID != operation.Challenge.Scope.ConnectionID || connection.OwnerID != operation.Challenge.Scope.OwnerID {
-		return controller.blockManualDestroy(ctx, operation, "connection_unavailable", "approved cloud connection is unavailable")
+		return controller.deferManualDestroy(ctx, operation, "connection_unavailable", "approved cloud connection is unavailable")
 	}
 	launch, err := controller.launches.GetByDeployment(ctx, operation.Challenge.Scope.DeploymentID)
 	if err != nil || launch.Launch.OwnerID != operation.Challenge.Scope.OwnerID || launch.ConnectionID != connection.ConnectionID {
-		return controller.blockManualDestroy(ctx, operation, "secret_scope_unavailable", "deployment secret scope could not be verified")
+		return controller.deferManualDestroy(ctx, operation, "secret_scope_unavailable", "deployment secret scope could not be verified")
 	}
 	if len(launch.InstallerSecrets) != 0 {
 		if controller.secrets == nil || controller.secrets.Destroy(ctx, connection, launch) != nil {
-			return controller.blockManualDestroy(ctx, operation, "secret_destroy_blocked", "deployment secrets are not yet verified deleted")
+			return controller.deferManualDestroy(ctx, operation, "secret_destroy_blocked", "deployment secrets are not yet verified deleted")
 		}
 	}
 	lifecycle, err := controller.lifecycles.ForConnection(ctx, connection)
 	if err != nil || lifecycle == nil {
-		return controller.blockManualDestroy(ctx, operation, "provider_unavailable", "typed resource lifecycle is unavailable")
-	}
-	if operation.Status != clouddestroy.StatusDestroying {
-		next := operation
-		next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusDestroying, "", ""
-		next.UpdatedAt = controller.now().UTC()
-		operation, err = controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
-		if err != nil {
-			return err
-		}
+		return controller.deferManualDestroy(ctx, operation, "provider_unavailable", "typed resource lifecycle is unavailable")
 	}
 	scheduled, err := lifecycle.ScheduleDestroy(ctx, operation.Challenge.Scope.DeploymentID, operation.Challenge.Scope.OwnerID)
 	if err != nil {
 		code := "schedule_failed"
 		if errors.Is(err, resource.ErrManaged) {
-			code = "managed_resource_rejected"
+			return controller.blockManualDestroy(ctx, operation, "managed_resource_rejected", "managed resources require a separate destruction contract")
 		}
-		return controller.blockManualDestroy(ctx, operation, code, "resource destruction could not be scheduled")
+		return controller.deferManualDestroy(ctx, operation, code, "resource destruction could not be scheduled")
 	}
 	if !manualScheduledScopeMatches(operation.Challenge.Scope, scheduled) {
 		return controller.blockManualDestroy(ctx, operation, "scheduled_scope_mismatch", "scheduled resource graph does not match approval")
@@ -251,13 +264,15 @@ func (controller *EphemeralDestroyController) executeManualDestroy(ctx context.C
 		ApprovalID:   operation.Challenge.ApprovalID,
 	})
 	if err != nil && !errors.Is(err, resource.ErrDestroyBlocked) {
-		return controller.blockManualDestroy(ctx, operation, "provider_destroy_failed", "provider destruction did not complete")
+		return controller.deferManualDestroy(ctx, operation, "provider_destroy_failed", "provider destruction did not complete")
 	}
 	if result.Blocked || !manualResourcesVerifiedDestroyed(operation.Challenge.Scope, result.Resources) {
-		return controller.blockManualDestroy(ctx, operation, "provider_readback_blocked", "independent provider read-back has not verified destruction")
+		return controller.deferManualDestroy(ctx, operation, "provider_readback_blocked", "independent provider read-back has not verified destruction")
 	}
-	next := operation
+	next = operation
 	next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusVerifiedDestroyed, "", ""
+	next.NextAttemptAt = nil
+	next.RequiresNewApproval = false
 	next.UpdatedAt = controller.now().UTC()
 	_, err = controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
 	return err
@@ -269,9 +284,32 @@ func (controller *EphemeralDestroyController) blockManualDestroy(ctx context.Con
 	}
 	next := operation
 	next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusDestroyBlocked, code, reason
+	next.NextAttemptAt = nil
+	next.RequiresNewApproval = true
 	next.UpdatedAt = controller.now().UTC()
 	_, err := controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
 	return err
+}
+
+func (controller *EphemeralDestroyController) deferManualDestroy(ctx context.Context, operation clouddestroy.OperationV1, code, reason string) error {
+	if operation.AutomaticAttempts >= clouddestroy.MaxAutomaticAttempts {
+		return controller.blockManualDestroy(ctx, operation, code+"_retry_exhausted", reason+"; automatic retry budget exhausted and a fresh device approval is required")
+	}
+	next := operation
+	next.Status, next.ErrorCode, next.BlockedReason = clouddestroy.StatusDestroying, code, ""
+	retryAt := controller.now().UTC().Add(manualDestroyBackoff(operation.AutomaticAttempts))
+	next.NextAttemptAt = &retryAt
+	next.RequiresNewApproval = false
+	next.UpdatedAt = controller.now().UTC()
+	_, err := controller.manualDestroy.SaveDestroyOperation(ctx, next, operation.Revision)
+	return err
+}
+
+func manualDestroyBackoff(attempt int32) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	return 5 * time.Second * time.Duration(1<<(attempt-1))
 }
 
 func manualScopeIdentityMatches(approved, current clouddestroy.ScopeV1) bool {
