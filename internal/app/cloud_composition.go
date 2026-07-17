@@ -27,6 +27,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/healthprobe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/helperkey"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/pairing"
+	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
@@ -59,6 +61,10 @@ type CloudComposition struct {
 	RootHelperDeliveries       *helperkey.Service
 	WorkerOperations           *workeroperation.Service
 	RootHelperCapabilities     *productionRootHelperCapabilityIssuer
+	Pairing                    *pairingRuntime
+	PairingApprovals           *pairing.ApprovalService
+	PairingWorkerOperations    *pairingworker.Service
+	PairingReceiptVerifier     pairingWorkerReceiptVerifier
 	foundationLaunches         *foundationLaunchCompensator
 	healthProbeScheduler       *healthProbeScheduler
 	orphanRecovery             *orphanRecoveryController
@@ -447,6 +453,34 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	managedPreparationFacts := managedPreparationFactAdapter{cloud: facts, recipes: store, launches: store}
+	pairingWorkerStore, err := postgres.NewPairingWorkerOperationStore(store)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	pairingWorkerOperations, err := pairingworker.NewService(pairingWorkerStore, time.Now)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	pairingStore := store.Pairing()
+	pairingSessions, err := pairing.NewService(pairingStore, pairingworker.Executor{Dispatch: pairingworker.DurableDispatcher{
+		Operations: pairingWorkerOperations, Poll: 200 * time.Millisecond,
+	}}, time.Now)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	pairingRuntime, err := newPairingRuntime(agentInstanceID, pairingSessions, managedPreparationFacts, cloudStatuses)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	pairingApprovals, err := pairing.NewApprovalService(agentInstanceID, pairingStore, pairingDeviceAdapter{devices: store}, pairingRuntime, pairingRuntime, time.Now)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
 	managedPreparationScopes, err := newManagedPreparationScopeBuilder(
 		agentInstanceID, managedPreparationFacts, cloudStatuses, healthProbeStore,
 	)
@@ -633,6 +667,10 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		RootHelperDeliveries:       rootHelperDeliveries,
 		WorkerOperations:           workerOperations,
 		RootHelperCapabilities:     rootHelperCapabilities,
+		Pairing:                    pairingRuntime,
+		PairingApprovals:           pairingApprovals,
+		PairingWorkerOperations:    pairingWorkerOperations,
+		PairingReceiptVerifier:     pairingWorkerReceiptVerifier{keys: rootHelperStore},
 		ManagedPreparation:         managedPreparation,
 		foundationLaunches:         launchCompensator,
 		healthProbeScheduler:       healthProbeScheduler,

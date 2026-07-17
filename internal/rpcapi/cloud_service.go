@@ -33,6 +33,8 @@ type CloudControlService struct {
 	foundation             CloudFoundationCoordinator
 	managed                CloudManagedAcceptanceCoordinator
 	preparation            CloudManagedPreparationCoordinator
+	pairing                CloudPairingCoordinator
+	pairingApprovals       CloudPairingApprovalCoordinator
 	rootHelperKeyApprovals RootHelperKeyApprovalCoordinator
 	goalPlanner            CloudGoalPlanner
 	agentInstanceID        string
@@ -104,6 +106,12 @@ func (service *CloudControlService) WithManagedAcceptance(coordinator CloudManag
 }
 func (service *CloudControlService) WithManagedPreparation(coordinator CloudManagedPreparationCoordinator) *CloudControlService {
 	service.preparation = coordinator
+	return service
+}
+
+func (service *CloudControlService) WithPairing(coordinator CloudPairingCoordinator, approvals CloudPairingApprovalCoordinator) *CloudControlService {
+	service.pairing = coordinator
+	service.pairingApprovals = approvals
 	return service
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/helperkey"
+	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
@@ -28,25 +29,39 @@ type Server struct {
 }
 
 type serverOptions struct {
-	runtimeCoordinator     rpcapi.RuntimeCoordinator
-	runtimeFeatures        rpcapi.RuntimeFeatures
-	secretBootstrap        rpcapi.SecretBootstrapManager
-	cloudCoordinator       cloudapp.Coordinator
-	cloudDestroy           rpcapi.CloudDestroyCoordinator
-	cloudEntrypoint        rpcapi.CloudEntrypointCoordinator
-	cloudFoundation        rpcapi.CloudFoundationCoordinator
-	cloudManaged           rpcapi.CloudManagedAcceptanceCoordinator
-	cloudPreparation       rpcapi.CloudManagedPreparationCoordinator
-	cloudGoals             rpcapi.CloudGoalPlanner
-	cloudHealth            cloudstatus.HealthReader
-	workerService          *worker.Service
-	workerVerifier         rpcapi.WorkerIdentityVerifier
-	workerMaterializer     rpcapi.WorkerIdentityMaterializer
-	rootHelperApprovals    rpcapi.RootHelperKeyApprovalCoordinator
-	rootHelperDeliveries   *helperkey.Service
-	workerOperations       *workeroperation.Service
-	rootHelperCapabilities rpcapi.RootHelperCapabilityIssuer
-	agentInstanceID        string
+	runtimeCoordinator      rpcapi.RuntimeCoordinator
+	runtimeFeatures         rpcapi.RuntimeFeatures
+	secretBootstrap         rpcapi.SecretBootstrapManager
+	cloudCoordinator        cloudapp.Coordinator
+	cloudDestroy            rpcapi.CloudDestroyCoordinator
+	cloudEntrypoint         rpcapi.CloudEntrypointCoordinator
+	cloudFoundation         rpcapi.CloudFoundationCoordinator
+	cloudManaged            rpcapi.CloudManagedAcceptanceCoordinator
+	cloudPreparation        rpcapi.CloudManagedPreparationCoordinator
+	cloudPairing            rpcapi.CloudPairingCoordinator
+	cloudPairingApprovals   rpcapi.CloudPairingApprovalCoordinator
+	cloudGoals              rpcapi.CloudGoalPlanner
+	cloudHealth             cloudstatus.HealthReader
+	workerService           *worker.Service
+	workerVerifier          rpcapi.WorkerIdentityVerifier
+	workerMaterializer      rpcapi.WorkerIdentityMaterializer
+	rootHelperApprovals     rpcapi.RootHelperKeyApprovalCoordinator
+	rootHelperDeliveries    *helperkey.Service
+	workerOperations        *workeroperation.Service
+	rootHelperCapabilities  rpcapi.RootHelperCapabilityIssuer
+	pairingWorkerOperations *pairingworker.Service
+	pairingCapabilities     rpcapi.PairingWorkerCapabilityIssuer
+	pairingReceiptVerifier  rpcapi.PairingWorkerReceiptVerifier
+	agentInstanceID         string
+}
+
+func WithPairingWorkerControl(operations *pairingworker.Service, capabilities rpcapi.PairingWorkerCapabilityIssuer,
+	verifier rpcapi.PairingWorkerReceiptVerifier,
+) ServerOption {
+	return func(options *serverOptions) {
+		options.pairingWorkerOperations, options.pairingCapabilities, options.pairingReceiptVerifier =
+			operations, capabilities, verifier
+	}
 }
 
 type ServerOption func(*serverOptions)
@@ -75,6 +90,12 @@ func WithCloudDestroy(coordinator rpcapi.CloudDestroyCoordinator) ServerOption {
 
 func WithCloudEntrypoint(coordinator rpcapi.CloudEntrypointCoordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudEntrypoint = coordinator }
+}
+
+func WithCloudPairing(coordinator rpcapi.CloudPairingCoordinator, approvals rpcapi.CloudPairingApprovalCoordinator) ServerOption {
+	return func(options *serverOptions) {
+		options.cloudPairing, options.cloudPairingApprovals = coordinator, approvals
+	}
 }
 func WithCloudFoundation(coordinator rpcapi.CloudFoundationCoordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudFoundation = coordinator }
@@ -213,6 +234,10 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.CloudControlService_CreateCloudManagedPreparation_FullMethodName:         "cloud.approve",
 		agentv1.CloudControlService_ApproveCloudManagedPreparation_FullMethodName:        "cloud.approve",
 		agentv1.CloudControlService_GetCloudManagedPreparation_FullMethodName:            "cloud.read",
+		agentv1.CloudControlService_GetCloudPairing_FullMethodName:                       "cloud.read",
+		agentv1.CloudControlService_RetrieveCloudPairingPayload_FullMethodName:           "cloud.read",
+		agentv1.CloudControlService_CreateCloudPairingResumeChallenge_FullMethodName:     "cloud.approve",
+		agentv1.CloudControlService_ApproveCloudPairingResume_FullMethodName:             "cloud.approve",
 		agentv1.CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName:  "cloud.approve",
 		agentv1.CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName:          "cloud.approve",
 		agentv1.CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName:      "cloud.read",
@@ -242,7 +267,8 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	cloudControl := rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals, options.cloudEntrypoint).
 		WithFoundation(options.cloudFoundation).
 		WithManagedAcceptance(options.cloudManaged).
-		WithManagedPreparation(options.cloudPreparation)
+		WithManagedPreparation(options.cloudPreparation).
+		WithPairing(options.cloudPairing, options.cloudPairingApprovals)
 	if rootHelperEnabled {
 		cloudControl.WithRootHelperKeyApprovals(options.rootHelperApprovals)
 	}
@@ -254,6 +280,10 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 			options.workerService, options.workerOperations, options.rootHelperCapabilities))
 		agentv1.RegisterRootHelperBootstrapControlServiceServer(grpcServer, rpcapi.NewRootHelperBootstrapControlService(
 			options.workerService, options.rootHelperDeliveries, options.rootHelperCapabilities))
+		if options.pairingWorkerOperations != nil && options.pairingCapabilities != nil && options.pairingReceiptVerifier != nil {
+			agentv1.RegisterPairingWorkerOperationServiceServer(grpcServer, rpcapi.NewPairingWorkerOperationService(
+				options.workerService, options.pairingWorkerOperations, options.pairingCapabilities, options.pairingReceiptVerifier))
+		}
 	}
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthv1.HealthCheckResponse_SERVING)
@@ -275,6 +305,8 @@ func isWorkerSelfAuthenticatedMethod(fullMethod string) bool {
 		agentv1.WorkerServiceOperationService_Claim_FullMethodName,
 		agentv1.WorkerServiceOperationService_AcquireNext_FullMethodName,
 		agentv1.WorkerServiceOperationService_Complete_FullMethodName,
+		agentv1.PairingWorkerOperationService_AcquireNext_FullMethodName,
+		agentv1.PairingWorkerOperationService_Complete_FullMethodName,
 		agentv1.RootHelperBootstrapControlService_AcquirePending_FullMethodName,
 		agentv1.RootHelperBootstrapControlService_Current_FullMethodName,
 		agentv1.RootHelperBootstrapControlService_SubmitProof_FullMethodName,

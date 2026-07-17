@@ -72,14 +72,16 @@ type CanaryProof struct {
 }
 
 type Handler struct {
-	delivery installer.DeliveryV1
-	secrets  SecretAccess
-	keys     SigningKeyStore
-	runner   installer.CommandRunner
-	observer Observer
-	journal  RestartJournal
-	fence    DeliveryFence
-	now      func() time.Time
+	delivery       installer.DeliveryV1
+	secrets        SecretAccess
+	keys           SigningKeyStore
+	runner         installer.CommandRunner
+	observer       Observer
+	journal        RestartJournal
+	pairingJournal PairingJournal
+	pairingRunner  PairingCommandRunner
+	fence          DeliveryFence
+	now            func() time.Time
 
 	mu          sync.Mutex
 	possessions map[string]cachedPossession
@@ -116,9 +118,20 @@ func New(
 		installer.ValidateDeliveryTrust(delivery) != nil {
 		return nil, ErrInvalid
 	}
+	var pairingJournal PairingJournal = newMemoryPairingJournal()
+	if fileJournal, ok := journal.(*FileRestartJournal); ok {
+		var err error
+		pairingJournal, err = openPairingJournal(
+			fileJournal.path+".pairing", fileJournal.requireRootOwnership, fileJournal.parentSync,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &Handler{
 		delivery: delivery, secrets: secrets, keys: keys, runner: runner, observer: observer,
-		journal: journal, fence: fence, now: now,
+		journal: journal, pairingJournal: pairingJournal, pairingRunner: OSPairingCommandRunner{},
+		fence: fence, now: now,
 		possessions: make(map[string]cachedPossession), canaries: make(map[string]cachedCanary),
 		restarts: make(map[string]cachedRestart),
 	}, nil

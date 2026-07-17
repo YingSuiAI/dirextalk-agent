@@ -22,9 +22,11 @@ const (
 	LocalProtocolSchemaV1 = "dirextalk.agent.root-helper-local-protocol/v1"
 	DefaultSocketPath     = installer.DefaultSocketPath
 
-	ActionBootstrap = "root_helper.bootstrap"
-	ActionCanary    = "root_helper.canary"
-	ActionRestart   = "root_helper.restart"
+	ActionBootstrap     = "root_helper.bootstrap"
+	ActionCanary        = "root_helper.canary"
+	ActionRestart       = "root_helper.restart"
+	ActionPairingBegin  = "root_helper.pairing.begin"
+	ActionPairingResume = "root_helper.pairing.resume"
 
 	StatusSucceeded = "succeeded"
 	StatusRejected  = "rejected"
@@ -35,7 +37,7 @@ const (
 	ErrorNotReady     = "not_ready"
 
 	maxLocalRequestBytes  = 512 << 10
-	maxLocalResponseBytes = 64 << 10
+	maxLocalResponseBytes = 192 << 10
 )
 
 // LocalRequestV1 is an intentionally strict union. DeliveryCBOR is present on
@@ -47,23 +49,29 @@ type LocalRequestV1 struct {
 	DeliveryCBOR            []byte `json:"delivery_cbor"`
 	BootstrapCapabilityCBOR []byte `json:"bootstrap_capability_cbor,omitempty"`
 	RestartCapabilityCBOR   []byte `json:"restart_capability_cbor,omitempty"`
+	PairingCapabilityCBOR   []byte `json:"pairing_capability_cbor,omitempty"`
+	RecipientPublicKey      string `json:"recipient_public_key,omitempty"`
 }
 
 type LocalResponseV1 struct {
-	SchemaVersion       string `json:"schema_version"`
-	RequestID           string `json:"request_id"`
-	Action              string `json:"action"`
-	Status              string `json:"status"`
-	ErrorCode           string `json:"error_code,omitempty"`
-	PossessionProofCBOR []byte `json:"possession_proof_cbor,omitempty"`
-	CanaryProofCBOR     []byte `json:"canary_proof_cbor,omitempty"`
-	RestartReceiptCBOR  []byte `json:"restart_receipt_cbor,omitempty"`
+	SchemaVersion            string `json:"schema_version"`
+	RequestID                string `json:"request_id"`
+	Action                   string `json:"action"`
+	Status                   string `json:"status"`
+	ErrorCode                string `json:"error_code,omitempty"`
+	PossessionProofCBOR      []byte `json:"possession_proof_cbor,omitempty"`
+	CanaryProofCBOR          []byte `json:"canary_proof_cbor,omitempty"`
+	RestartReceiptCBOR       []byte `json:"restart_receipt_cbor,omitempty"`
+	PairingBeginReceiptCBOR  []byte `json:"pairing_begin_receipt_cbor,omitempty"`
+	PairingResumeReceiptCBOR []byte `json:"pairing_resume_receipt_cbor,omitempty"`
 }
 
 type LocalControl interface {
 	Bootstrap(context.Context, installer.SignedRootHelperBootstrapCapabilityV1) (PossessionProof, error)
 	Canary(context.Context, installer.SignedRootHelperBootstrapCapabilityV1) (CanaryProof, error)
 	Restart(context.Context, installer.SignedRootHelperRestartCapabilityV1) (workeroperation.RootHelperReceipt, error)
+	PairingBegin(context.Context, installer.SignedRootHelperPairingCapabilityV1, string) (PairingBeginReceiptV1, error)
+	PairingResume(context.Context, installer.SignedRootHelperPairingCapabilityV1) (PairingResumeReceiptV1, error)
 }
 
 type ControlFactory interface {
@@ -166,6 +174,30 @@ func (server *LocalServer) Handle(ctx context.Context, input io.Reader, output i
 			break
 		}
 		response.RestartReceiptCBOR, err = canonical.Marshal(value)
+	case ActionPairingBegin:
+		var capability installer.SignedRootHelperPairingCapabilityV1
+		if installer.DecodeCanonical(request.PairingCapabilityCBOR, &capability) != nil {
+			response.ErrorCode = ErrorInvalid
+			break
+		}
+		value, callErr := control.PairingBegin(ctx, capability, request.RecipientPublicKey)
+		if callErr != nil {
+			response.ErrorCode = localErrorCode(callErr)
+			break
+		}
+		response.PairingBeginReceiptCBOR, err = canonical.Marshal(value)
+	case ActionPairingResume:
+		var capability installer.SignedRootHelperPairingCapabilityV1
+		if installer.DecodeCanonical(request.PairingCapabilityCBOR, &capability) != nil {
+			response.ErrorCode = ErrorInvalid
+			break
+		}
+		value, callErr := control.PairingResume(ctx, capability)
+		if callErr != nil {
+			response.ErrorCode = localErrorCode(callErr)
+			break
+		}
+		response.PairingResumeReceiptCBOR, err = canonical.Marshal(value)
 	}
 	if err != nil {
 		response = LocalResponseV1{
@@ -204,11 +236,23 @@ func validateLocalRequest(value LocalRequestV1) error {
 	}
 	switch value.Action {
 	case ActionBootstrap, ActionCanary:
-		if len(value.BootstrapCapabilityCBOR) == 0 || len(value.RestartCapabilityCBOR) != 0 {
+		if len(value.BootstrapCapabilityCBOR) == 0 || len(value.RestartCapabilityCBOR) != 0 ||
+			len(value.PairingCapabilityCBOR) != 0 || value.RecipientPublicKey != "" {
 			return ErrInvalid
 		}
 	case ActionRestart:
-		if len(value.RestartCapabilityCBOR) == 0 || len(value.BootstrapCapabilityCBOR) != 0 {
+		if len(value.RestartCapabilityCBOR) == 0 || len(value.BootstrapCapabilityCBOR) != 0 ||
+			len(value.PairingCapabilityCBOR) != 0 || value.RecipientPublicKey != "" {
+			return ErrInvalid
+		}
+	case ActionPairingBegin:
+		if len(value.PairingCapabilityCBOR) == 0 || len(value.BootstrapCapabilityCBOR) != 0 ||
+			len(value.RestartCapabilityCBOR) != 0 || value.RecipientPublicKey == "" {
+			return ErrInvalid
+		}
+	case ActionPairingResume:
+		if len(value.PairingCapabilityCBOR) == 0 || len(value.BootstrapCapabilityCBOR) != 0 ||
+			len(value.RestartCapabilityCBOR) != 0 || value.RecipientPublicKey != "" {
 			return ErrInvalid
 		}
 	default:
@@ -231,6 +275,12 @@ func validateLocalResponse(value LocalResponseV1, request LocalRequestV1) error 
 	if len(value.RestartReceiptCBOR) != 0 {
 		results++
 	}
+	if len(value.PairingBeginReceiptCBOR) != 0 {
+		results++
+	}
+	if len(value.PairingResumeReceiptCBOR) != 0 {
+		results++
+	}
 	if value.Status == StatusRejected {
 		if value.ErrorCode == "" || results != 0 {
 			return ErrInvalid
@@ -251,6 +301,14 @@ func validateLocalResponse(value LocalResponseV1, request LocalRequestV1) error 
 		}
 	case ActionRestart:
 		if len(value.RestartReceiptCBOR) == 0 {
+			return ErrInvalid
+		}
+	case ActionPairingBegin:
+		if len(value.PairingBeginReceiptCBOR) == 0 {
+			return ErrInvalid
+		}
+	case ActionPairingResume:
+		if len(value.PairingResumeReceiptCBOR) == 0 {
 			return ErrInvalid
 		}
 	}
@@ -281,7 +339,7 @@ func (client *SocketClient) Bootstrap(ctx context.Context, delivery installer.De
 	if len(capability.Capability.HelperPublicKey) != ed25519.PublicKeySize {
 		return PossessionProof{}, ErrUnauthorized
 	}
-	request, err := newLocalRequest(ActionBootstrap, delivery, capability, nil)
+	request, err := newLocalRequest(ActionBootstrap, delivery, capability, nil, nil, "")
 	if err != nil {
 		return PossessionProof{}, err
 	}
@@ -311,7 +369,7 @@ func (client *SocketClient) Canary(ctx context.Context, delivery installer.Deliv
 	if len(capability.Capability.HelperPublicKey) != ed25519.PublicKeySize {
 		return CanaryProof{}, ErrUnauthorized
 	}
-	request, err := newLocalRequest(ActionCanary, delivery, capability, nil)
+	request, err := newLocalRequest(ActionCanary, delivery, capability, nil, nil, "")
 	if err != nil {
 		return CanaryProof{}, err
 	}
@@ -343,7 +401,7 @@ func (client *SocketClient) Restart(ctx context.Context, delivery installer.Deli
 		publicKeyDigest(helperPublicKey) != capability.Capability.HelperPublicKeyDigest {
 		return workeroperation.RootHelperReceipt{}, ErrUnauthorized
 	}
-	request, err := newLocalRequest(ActionRestart, delivery, nil, capability)
+	request, err := newLocalRequest(ActionRestart, delivery, nil, capability, nil, "")
 	if err != nil {
 		return workeroperation.RootHelperReceipt{}, err
 	}
@@ -361,19 +419,65 @@ func (client *SocketClient) Restart(ctx context.Context, delivery installer.Deli
 	return value, nil
 }
 
-func newLocalRequest(action string, delivery installer.DeliveryV1, bootstrap any, restart any) (LocalRequestV1, error) {
+func (client *SocketClient) PairingBegin(ctx context.Context, delivery installer.DeliveryV1, capability installer.SignedRootHelperPairingCapabilityV1, recipientPublicKey string, helperPublicKey ed25519.PublicKey) (PairingBeginReceiptV1, error) {
+	if len(helperPublicKey) != ed25519.PublicKeySize ||
+		publicKeyDigest(helperPublicKey) != capability.Capability.HelperPublicKeyDigest {
+		return PairingBeginReceiptV1{}, ErrUnauthorized
+	}
+	request, err := newLocalRequest(ActionPairingBegin, delivery, nil, nil, capability, recipientPublicKey)
+	if err != nil {
+		return PairingBeginReceiptV1{}, err
+	}
+	response, err := client.call(ctx, request)
+	if err != nil {
+		return PairingBeginReceiptV1{}, err
+	}
+	var value PairingBeginReceiptV1
+	if installer.DecodeCanonical(response.PairingBeginReceiptCBOR, &value) != nil ||
+		validatePairingBeginReceipt(value, capability.Capability, recipientPublicKey, helperPublicKey) != nil {
+		return PairingBeginReceiptV1{}, ErrUnauthorized
+	}
+	return value, nil
+}
+
+func (client *SocketClient) PairingResume(ctx context.Context, delivery installer.DeliveryV1, capability installer.SignedRootHelperPairingCapabilityV1, helperPublicKey ed25519.PublicKey) (PairingResumeReceiptV1, error) {
+	if len(helperPublicKey) != ed25519.PublicKeySize ||
+		publicKeyDigest(helperPublicKey) != capability.Capability.HelperPublicKeyDigest {
+		return PairingResumeReceiptV1{}, ErrUnauthorized
+	}
+	request, err := newLocalRequest(ActionPairingResume, delivery, nil, nil, capability, "")
+	if err != nil {
+		return PairingResumeReceiptV1{}, err
+	}
+	response, err := client.call(ctx, request)
+	if err != nil {
+		return PairingResumeReceiptV1{}, err
+	}
+	var value PairingResumeReceiptV1
+	if installer.DecodeCanonical(response.PairingResumeReceiptCBOR, &value) != nil ||
+		validatePairingResumeReceipt(value, capability.Capability, helperPublicKey) != nil {
+		return PairingResumeReceiptV1{}, ErrUnauthorized
+	}
+	return value, nil
+}
+
+func newLocalRequest(action string, delivery installer.DeliveryV1, bootstrap any, restart any, pairing any, recipientPublicKey string) (LocalRequestV1, error) {
 	deliveryCBOR, err := canonical.Marshal(delivery)
 	if err != nil {
 		return LocalRequestV1{}, ErrInvalid
 	}
 	request := LocalRequestV1{
 		SchemaVersion: LocalProtocolSchemaV1, RequestID: uuid.NewString(), Action: action, DeliveryCBOR: deliveryCBOR,
+		RecipientPublicKey: recipientPublicKey,
 	}
 	if bootstrap != nil {
 		request.BootstrapCapabilityCBOR, err = canonical.Marshal(bootstrap)
 	}
 	if restart != nil && err == nil {
 		request.RestartCapabilityCBOR, err = canonical.Marshal(restart)
+	}
+	if pairing != nil && err == nil {
+		request.PairingCapabilityCBOR, err = canonical.Marshal(pairing)
 	}
 	if err != nil || validateLocalRequest(request) != nil {
 		return LocalRequestV1{}, ErrInvalid

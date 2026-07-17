@@ -34,6 +34,7 @@ type recipeReferences struct {
 	secrets     map[string]struct{}
 	checkpoints map[string]struct{}
 	listeners   map[string]struct{}
+	commands    map[string]struct{}
 }
 
 func ValidMaturity(value Maturity) bool {
@@ -102,7 +103,7 @@ func (r RecipeV1) Validate() error {
 	if err := validateRestart(r.Restart, refs.checkpoints); err != nil {
 		return err
 	}
-	if err := validatePairing(r.Pairing); err != nil {
+	if err := validatePairing(r.Pairing, refs.commands); err != nil {
 		return err
 	}
 	if err := validateIntegrations(r.Integrations, refs); err != nil {
@@ -414,7 +415,7 @@ func validateInstall(value InstallContractV1, refs *recipeReferences) error {
 	if len(value.Steps) == 0 || len(value.Steps) > 64 {
 		return fmt.Errorf("install.steps must contain between 1 and 64 entries")
 	}
-	if err := validateInstallerCapability(value.Installer, *refs); err != nil {
+	if err := validateInstallerCapability(value.Installer, refs); err != nil {
 		return err
 	}
 	seenSteps := make(map[string]struct{}, len(value.Steps))
@@ -471,8 +472,9 @@ func validateInstall(value InstallContractV1, refs *recipeReferences) error {
 	return nil
 }
 
-func validateInstallerCapability(value *InstallerCapabilityV1, refs recipeReferences) error {
+func validateInstallerCapability(value *InstallerCapabilityV1, refs *recipeReferences) error {
 	if value == nil {
+		refs.commands = nil
 		return nil
 	}
 	if len(value.Artifacts) == 0 || len(value.Artifacts) > 128 || len(value.Commands) == 0 || len(value.Commands) > 128 {
@@ -541,6 +543,7 @@ func validateInstallerCapability(value *InstallerCapabilityV1, refs recipeRefere
 			return err
 		}
 	}
+	refs.commands = commands
 	return nil
 }
 
@@ -750,7 +753,7 @@ func validateRestart(value *RestartContractV1, checkpoints map[string]struct{}) 
 	return nil
 }
 
-func validatePairing(value *PairingContractV1) error {
+func validatePairing(value *PairingContractV1, commands map[string]struct{}) error {
 	if value == nil {
 		return nil
 	}
@@ -759,6 +762,18 @@ func validatePairing(value *PairingContractV1) error {
 	}
 	if err := validateIdentifier("pairing.resume_action", value.ResumeAction); err != nil {
 		return err
+	}
+	if err := validateIdentifier("pairing.begin_command_id", value.BeginCommandID); err != nil {
+		return err
+	}
+	if _, exists := commands[value.BeginCommandID]; !exists {
+		return fmt.Errorf("pairing.begin_command_id must reference a signed installer command")
+	}
+	if err := validateIdentifier("pairing.resume_command_id", value.ResumeCommandID); err != nil {
+		return err
+	}
+	if _, exists := commands[value.ResumeCommandID]; !exists {
+		return fmt.Errorf("pairing.resume_command_id must reference a signed installer command")
 	}
 	if value.PayloadDelivery != PairingPayloadOnDemandEncrypted {
 		return fmt.Errorf("pairing.payload_delivery must be on_demand_encrypted")

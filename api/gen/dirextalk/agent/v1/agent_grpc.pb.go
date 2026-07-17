@@ -609,6 +609,10 @@ const (
 	CloudControlService_CreateCloudManagedPreparation_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/CreateCloudManagedPreparation"
 	CloudControlService_ApproveCloudManagedPreparation_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudManagedPreparation"
 	CloudControlService_GetCloudManagedPreparation_FullMethodName            = "/dirextalk.agent.v1.CloudControlService/GetCloudManagedPreparation"
+	CloudControlService_GetCloudPairing_FullMethodName                       = "/dirextalk.agent.v1.CloudControlService/GetCloudPairing"
+	CloudControlService_RetrieveCloudPairingPayload_FullMethodName           = "/dirextalk.agent.v1.CloudControlService/RetrieveCloudPairingPayload"
+	CloudControlService_CreateCloudPairingResumeChallenge_FullMethodName     = "/dirextalk.agent.v1.CloudControlService/CreateCloudPairingResumeChallenge"
+	CloudControlService_ApproveCloudPairingResume_FullMethodName             = "/dirextalk.agent.v1.CloudControlService/ApproveCloudPairingResume"
 	CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/PrepareRootHelperKeyDeliveryApproval"
 	CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/ApproveRootHelperKeyDelivery"
 	CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetRootHelperKeyDeliveryApproval"
@@ -654,6 +658,10 @@ type CloudControlServiceClient interface {
 	CreateCloudManagedPreparation(ctx context.Context, in *CreateCloudManagedPreparationRequest, opts ...grpc.CallOption) (*CreateCloudManagedPreparationResponse, error)
 	ApproveCloudManagedPreparation(ctx context.Context, in *ApproveCloudManagedPreparationRequest, opts ...grpc.CallOption) (*ApproveCloudManagedPreparationResponse, error)
 	GetCloudManagedPreparation(ctx context.Context, in *GetCloudManagedPreparationRequest, opts ...grpc.CallOption) (*GetCloudManagedPreparationResponse, error)
+	GetCloudPairing(ctx context.Context, in *GetCloudPairingRequest, opts ...grpc.CallOption) (*GetCloudPairingResponse, error)
+	RetrieveCloudPairingPayload(ctx context.Context, in *RetrieveCloudPairingPayloadRequest, opts ...grpc.CallOption) (*RetrieveCloudPairingPayloadResponse, error)
+	CreateCloudPairingResumeChallenge(ctx context.Context, in *CreateCloudPairingResumeChallengeRequest, opts ...grpc.CallOption) (*CreateCloudPairingResumeChallengeResponse, error)
+	ApproveCloudPairingResume(ctx context.Context, in *ApproveCloudPairingResumeRequest, opts ...grpc.CallOption) (*ApproveCloudPairingResumeResponse, error)
 	PrepareRootHelperKeyDeliveryApproval(ctx context.Context, in *PrepareRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*PrepareRootHelperKeyDeliveryApprovalResponse, error)
 	ApproveRootHelperKeyDelivery(ctx context.Context, in *ApproveRootHelperKeyDeliveryRequest, opts ...grpc.CallOption) (*ApproveRootHelperKeyDeliveryResponse, error)
 	GetRootHelperKeyDeliveryApproval(ctx context.Context, in *GetRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*GetRootHelperKeyDeliveryApprovalResponse, error)
@@ -1027,6 +1035,46 @@ func (c *cloudControlServiceClient) GetCloudManagedPreparation(ctx context.Conte
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) GetCloudPairing(ctx context.Context, in *GetCloudPairingRequest, opts ...grpc.CallOption) (*GetCloudPairingResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudPairingResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudPairing_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) RetrieveCloudPairingPayload(ctx context.Context, in *RetrieveCloudPairingPayloadRequest, opts ...grpc.CallOption) (*RetrieveCloudPairingPayloadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RetrieveCloudPairingPayloadResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_RetrieveCloudPairingPayload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateCloudPairingResumeChallenge(ctx context.Context, in *CreateCloudPairingResumeChallengeRequest, opts ...grpc.CallOption) (*CreateCloudPairingResumeChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudPairingResumeChallengeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudPairingResumeChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveCloudPairingResume(ctx context.Context, in *ApproveCloudPairingResumeRequest, opts ...grpc.CallOption) (*ApproveCloudPairingResumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveCloudPairingResumeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveCloudPairingResume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cloudControlServiceClient) PrepareRootHelperKeyDeliveryApproval(ctx context.Context, in *PrepareRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*PrepareRootHelperKeyDeliveryApprovalResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PrepareRootHelperKeyDeliveryApprovalResponse)
@@ -1097,6 +1145,10 @@ type CloudControlServiceServer interface {
 	CreateCloudManagedPreparation(context.Context, *CreateCloudManagedPreparationRequest) (*CreateCloudManagedPreparationResponse, error)
 	ApproveCloudManagedPreparation(context.Context, *ApproveCloudManagedPreparationRequest) (*ApproveCloudManagedPreparationResponse, error)
 	GetCloudManagedPreparation(context.Context, *GetCloudManagedPreparationRequest) (*GetCloudManagedPreparationResponse, error)
+	GetCloudPairing(context.Context, *GetCloudPairingRequest) (*GetCloudPairingResponse, error)
+	RetrieveCloudPairingPayload(context.Context, *RetrieveCloudPairingPayloadRequest) (*RetrieveCloudPairingPayloadResponse, error)
+	CreateCloudPairingResumeChallenge(context.Context, *CreateCloudPairingResumeChallengeRequest) (*CreateCloudPairingResumeChallengeResponse, error)
+	ApproveCloudPairingResume(context.Context, *ApproveCloudPairingResumeRequest) (*ApproveCloudPairingResumeResponse, error)
 	PrepareRootHelperKeyDeliveryApproval(context.Context, *PrepareRootHelperKeyDeliveryApprovalRequest) (*PrepareRootHelperKeyDeliveryApprovalResponse, error)
 	ApproveRootHelperKeyDelivery(context.Context, *ApproveRootHelperKeyDeliveryRequest) (*ApproveRootHelperKeyDeliveryResponse, error)
 	GetRootHelperKeyDeliveryApproval(context.Context, *GetRootHelperKeyDeliveryApprovalRequest) (*GetRootHelperKeyDeliveryApprovalResponse, error)
@@ -1217,6 +1269,18 @@ func (UnimplementedCloudControlServiceServer) ApproveCloudManagedPreparation(con
 }
 func (UnimplementedCloudControlServiceServer) GetCloudManagedPreparation(context.Context, *GetCloudManagedPreparationRequest) (*GetCloudManagedPreparationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudManagedPreparation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudPairing(context.Context, *GetCloudPairingRequest) (*GetCloudPairingResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudPairing not implemented")
+}
+func (UnimplementedCloudControlServiceServer) RetrieveCloudPairingPayload(context.Context, *RetrieveCloudPairingPayloadRequest) (*RetrieveCloudPairingPayloadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RetrieveCloudPairingPayload not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudPairingResumeChallenge(context.Context, *CreateCloudPairingResumeChallengeRequest) (*CreateCloudPairingResumeChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudPairingResumeChallenge not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveCloudPairingResume(context.Context, *ApproveCloudPairingResumeRequest) (*ApproveCloudPairingResumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveCloudPairingResume not implemented")
 }
 func (UnimplementedCloudControlServiceServer) PrepareRootHelperKeyDeliveryApproval(context.Context, *PrepareRootHelperKeyDeliveryApprovalRequest) (*PrepareRootHelperKeyDeliveryApprovalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PrepareRootHelperKeyDeliveryApproval not implemented")
@@ -1896,6 +1960,78 @@ func _CloudControlService_GetCloudManagedPreparation_Handler(srv interface{}, ct
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_GetCloudPairing_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudPairingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudPairing(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudPairing_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudPairing(ctx, req.(*GetCloudPairingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_RetrieveCloudPairingPayload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RetrieveCloudPairingPayloadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).RetrieveCloudPairingPayload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_RetrieveCloudPairingPayload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).RetrieveCloudPairingPayload(ctx, req.(*RetrieveCloudPairingPayloadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateCloudPairingResumeChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudPairingResumeChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudPairingResumeChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudPairingResumeChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudPairingResumeChallenge(ctx, req.(*CreateCloudPairingResumeChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveCloudPairingResume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveCloudPairingResumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveCloudPairingResume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveCloudPairingResume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveCloudPairingResume(ctx, req.(*ApproveCloudPairingResumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CloudControlService_PrepareRootHelperKeyDeliveryApproval_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PrepareRootHelperKeyDeliveryApprovalRequest)
 	if err := dec(in); err != nil {
@@ -2100,6 +2236,22 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCloudManagedPreparation",
 			Handler:    _CloudControlService_GetCloudManagedPreparation_Handler,
+		},
+		{
+			MethodName: "GetCloudPairing",
+			Handler:    _CloudControlService_GetCloudPairing_Handler,
+		},
+		{
+			MethodName: "RetrieveCloudPairingPayload",
+			Handler:    _CloudControlService_RetrieveCloudPairingPayload_Handler,
+		},
+		{
+			MethodName: "CreateCloudPairingResumeChallenge",
+			Handler:    _CloudControlService_CreateCloudPairingResumeChallenge_Handler,
+		},
+		{
+			MethodName: "ApproveCloudPairingResume",
+			Handler:    _CloudControlService_ApproveCloudPairingResume_Handler,
 		},
 		{
 			MethodName: "PrepareRootHelperKeyDeliveryApproval",
@@ -3154,6 +3306,147 @@ var WorkerServiceOperationService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Complete",
 			Handler:    _WorkerServiceOperationService_Complete_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "dirextalk/agent/v1/agent.proto",
+}
+
+const (
+	PairingWorkerOperationService_AcquireNext_FullMethodName = "/dirextalk.agent.v1.PairingWorkerOperationService/AcquireNext"
+	PairingWorkerOperationService_Complete_FullMethodName    = "/dirextalk.agent.v1.PairingWorkerOperationService/Complete"
+)
+
+// PairingWorkerOperationServiceClient is the client API for PairingWorkerOperationService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type PairingWorkerOperationServiceClient interface {
+	AcquireNext(ctx context.Context, in *PairingWorkerOperationServiceAcquireNextRequest, opts ...grpc.CallOption) (*PairingWorkerOperationServiceAcquireNextResponse, error)
+	Complete(ctx context.Context, in *PairingWorkerOperationServiceCompleteRequest, opts ...grpc.CallOption) (*PairingWorkerOperationServiceCompleteResponse, error)
+}
+
+type pairingWorkerOperationServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewPairingWorkerOperationServiceClient(cc grpc.ClientConnInterface) PairingWorkerOperationServiceClient {
+	return &pairingWorkerOperationServiceClient{cc}
+}
+
+func (c *pairingWorkerOperationServiceClient) AcquireNext(ctx context.Context, in *PairingWorkerOperationServiceAcquireNextRequest, opts ...grpc.CallOption) (*PairingWorkerOperationServiceAcquireNextResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PairingWorkerOperationServiceAcquireNextResponse)
+	err := c.cc.Invoke(ctx, PairingWorkerOperationService_AcquireNext_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pairingWorkerOperationServiceClient) Complete(ctx context.Context, in *PairingWorkerOperationServiceCompleteRequest, opts ...grpc.CallOption) (*PairingWorkerOperationServiceCompleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PairingWorkerOperationServiceCompleteResponse)
+	err := c.cc.Invoke(ctx, PairingWorkerOperationService_Complete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PairingWorkerOperationServiceServer is the server API for PairingWorkerOperationService service.
+// All implementations must embed UnimplementedPairingWorkerOperationServiceServer
+// for forward compatibility.
+type PairingWorkerOperationServiceServer interface {
+	AcquireNext(context.Context, *PairingWorkerOperationServiceAcquireNextRequest) (*PairingWorkerOperationServiceAcquireNextResponse, error)
+	Complete(context.Context, *PairingWorkerOperationServiceCompleteRequest) (*PairingWorkerOperationServiceCompleteResponse, error)
+	mustEmbedUnimplementedPairingWorkerOperationServiceServer()
+}
+
+// UnimplementedPairingWorkerOperationServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedPairingWorkerOperationServiceServer struct{}
+
+func (UnimplementedPairingWorkerOperationServiceServer) AcquireNext(context.Context, *PairingWorkerOperationServiceAcquireNextRequest) (*PairingWorkerOperationServiceAcquireNextResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AcquireNext not implemented")
+}
+func (UnimplementedPairingWorkerOperationServiceServer) Complete(context.Context, *PairingWorkerOperationServiceCompleteRequest) (*PairingWorkerOperationServiceCompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Complete not implemented")
+}
+func (UnimplementedPairingWorkerOperationServiceServer) mustEmbedUnimplementedPairingWorkerOperationServiceServer() {
+}
+func (UnimplementedPairingWorkerOperationServiceServer) testEmbeddedByValue() {}
+
+// UnsafePairingWorkerOperationServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to PairingWorkerOperationServiceServer will
+// result in compilation errors.
+type UnsafePairingWorkerOperationServiceServer interface {
+	mustEmbedUnimplementedPairingWorkerOperationServiceServer()
+}
+
+func RegisterPairingWorkerOperationServiceServer(s grpc.ServiceRegistrar, srv PairingWorkerOperationServiceServer) {
+	// If the following call panics, it indicates UnimplementedPairingWorkerOperationServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&PairingWorkerOperationService_ServiceDesc, srv)
+}
+
+func _PairingWorkerOperationService_AcquireNext_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PairingWorkerOperationServiceAcquireNextRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PairingWorkerOperationServiceServer).AcquireNext(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PairingWorkerOperationService_AcquireNext_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PairingWorkerOperationServiceServer).AcquireNext(ctx, req.(*PairingWorkerOperationServiceAcquireNextRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PairingWorkerOperationService_Complete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PairingWorkerOperationServiceCompleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PairingWorkerOperationServiceServer).Complete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PairingWorkerOperationService_Complete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PairingWorkerOperationServiceServer).Complete(ctx, req.(*PairingWorkerOperationServiceCompleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// PairingWorkerOperationService_ServiceDesc is the grpc.ServiceDesc for PairingWorkerOperationService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var PairingWorkerOperationService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "dirextalk.agent.v1.PairingWorkerOperationService",
+	HandlerType: (*PairingWorkerOperationServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "AcquireNext",
+			Handler:    _PairingWorkerOperationService_AcquireNext_Handler,
+		},
+		{
+			MethodName: "Complete",
+			Handler:    _PairingWorkerOperationService_Complete_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

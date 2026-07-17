@@ -15,7 +15,15 @@ import (
 const (
 	RootHelperBootstrapCapabilitySchemaV1 = "dirextalk.agent.root-helper-bootstrap-capability/v1"
 	RootHelperRestartCapabilitySchemaV1   = "dirextalk.agent.root-helper-restart-capability/v1"
+	RootHelperPairingCapabilitySchemaV1   = "dirextalk.agent.root-helper-pairing-capability/v1"
 	maximumRootHelperCapabilityDuration   = 15 * time.Minute
+)
+
+type RootHelperOperationKind string
+
+const (
+	RootHelperOperationPairingBegin  RootHelperOperationKind = "pairing_begin"
+	RootHelperOperationPairingResume RootHelperOperationKind = "pairing_resume"
 )
 
 // RootHelperBootstrapCapabilityV1 is the complete, non-secret authority for
@@ -80,6 +88,77 @@ type RootHelperRestartGrantV1 struct {
 	DeploymentID                    string
 	OwnerID                         string
 	LifecycleRestartRef             string
+	ExecutionBundleDigest           string
+	ExpectedInstalledManifestDigest string
+	WorkerLeaseEpoch                int64
+	LeaseExpiresAt                  time.Time
+}
+
+// RootHelperPairingCapabilityV1 authorizes exactly one Recipe-declared command
+// in one pairing phase. Its signing domain is the OperationKind, so neither a
+// restart capability nor the opposite pairing phase can be substituted.
+type RootHelperPairingCapabilityV1 struct {
+	SchemaVersion        string                  `json:"schema_version"`
+	CapabilityID         string                  `json:"capability_id"`
+	OperationKind        RootHelperOperationKind `json:"operation_kind"`
+	TrustID              string                  `json:"trust_id"`
+	InstallerBinding     BindingV1               `json:"installer_binding"`
+	PlanDigest           string                  `json:"plan_digest"`
+	OperationID          string                  `json:"operation_id"`
+	SessionID            string                  `json:"session_id"`
+	TaskID               string                  `json:"task_id"`
+	StepID               string                  `json:"step_id"`
+	DeploymentID         string                  `json:"deployment_id"`
+	OwnerID              string                  `json:"owner_id"`
+	RecipeID             string                  `json:"recipe_id"`
+	RecipeDigest         string                  `json:"recipe_digest"`
+	RecipeRevision       int64                   `json:"recipe_revision"`
+	PayloadScopeRevision int64                   `json:"payload_scope_revision"`
+	// RecipientPublicKeyDigest is empty for resume. For begin it binds the
+	// untrusted socket request's raw X25519 recipient key before any command
+	// is eligible to run.
+	RecipientPublicKeyDigest string `json:"recipient_public_key_digest"`
+	// ExecutionEpoch is initialized exactly once when the durable operation is
+	// first acquired. It is deliberately independent from the transport lease.
+	ExecutionEpoch int64 `json:"execution_epoch"`
+	// PairingExpiresAt is the immutable session deadline. ExpiresAt remains the
+	// short-lived capability authorization deadline.
+	PairingExpiresAt                string `json:"pairing_expires_at"`
+	CommandID                       string `json:"command_id"`
+	ExecutionBundleDigest           string `json:"execution_bundle_digest"`
+	ExpectedInstalledManifestDigest string `json:"expected_installed_manifest_digest"`
+	HelperDeliveryID                string `json:"helper_delivery_id"`
+	HelperID                        string `json:"helper_id"`
+	HelperSignerKeyID               string `json:"helper_signer_key_id"`
+	HelperPublicKeyDigest           string `json:"helper_public_key_digest"`
+	InstanceID                      string `json:"instance_id"`
+	WorkerPrincipalID               string `json:"worker_principal_id"`
+	WorkerLeaseEpoch                int64  `json:"worker_lease_epoch"`
+	IssuedAt                        string `json:"issued_at"`
+	ExpiresAt                       string `json:"expires_at"`
+}
+
+type SignedRootHelperPairingCapabilityV1 struct {
+	Capability  RootHelperPairingCapabilityV1 `json:"capability"`
+	SignerKeyID string                        `json:"signer_key_id"`
+	Signature   []byte                        `json:"signature"`
+}
+
+type RootHelperPairingGrantV1 struct {
+	OperationID                     string
+	SessionID                       string
+	TaskID                          string
+	StepID                          string
+	DeploymentID                    string
+	OwnerID                         string
+	RecipeID                        string
+	RecipeDigest                    string
+	RecipeRevision                  int64
+	PayloadScopeRevision            int64
+	RecipientPublicKeyDigest        string
+	ExecutionEpoch                  int64
+	PairingExpiresAt                time.Time
+	CommandID                       string
 	ExecutionBundleDigest           string
 	ExpectedInstalledManifestDigest string
 	WorkerLeaseEpoch                int64
@@ -177,6 +256,71 @@ func (issuer *TrustIssuer) IssueRootHelperRestartCapability(
 	}, nil
 }
 
+func (issuer *TrustIssuer) IssueRootHelperPairingCapability(
+	delivery DeliveryV1,
+	helperBinding helperkey.DeviceBinding,
+	kind RootHelperOperationKind,
+	grant RootHelperPairingGrantV1,
+	now time.Time,
+) (SignedRootHelperPairingCapabilityV1, error) {
+	if err := ValidateDeliveryTrust(delivery); err != nil {
+		return SignedRootHelperPairingCapabilityV1{}, err
+	}
+	_, commandFound := findCommand(delivery.SignedPlan.Plan.Commands, grant.CommandID)
+	if (kind != RootHelperOperationPairingBegin && kind != RootHelperOperationPairingResume) ||
+		!commandFound ||
+		helperBinding.AgentInstanceID != delivery.Config.Binding.AgentInstanceID ||
+		helperBinding.DeploymentID != delivery.Config.Binding.DeploymentID ||
+		grant.DeploymentID != helperBinding.DeploymentID || !validRootHelperRestartIdentity(
+		grant.OperationID, grant.OwnerID, helperBinding.DeliveryID, helperBinding.HelperID,
+		helperBinding.SignerKeyID, helperBinding.InstanceID, helperBinding.WorkerPrincipalID,
+	) || !validPairingScope(grant.SessionID, grant.TaskID, grant.StepID, grant.RecipeID,
+		grant.RecipeDigest, grant.RecipeRevision, grant.PayloadScopeRevision) ||
+		!validPairingRecipientBinding(kind, grant.RecipientPublicKeyDigest) || grant.ExecutionEpoch < 1 ||
+		grant.PairingExpiresAt.IsZero() || !now.UTC().Before(grant.PairingExpiresAt.UTC()) ||
+		grant.WorkerLeaseEpoch < 1 || !digestPattern.MatchString(helperBinding.PublicKeyDigest) ||
+		!digestPattern.MatchString(grant.ExecutionBundleDigest) ||
+		!digestPattern.MatchString(grant.ExpectedInstalledManifestDigest) {
+		return SignedRootHelperPairingCapabilityV1{}, errorf(CodeInvalidRequest, "root helper pairing capability is invalid")
+	}
+	issuedAt, expiry, err := validateRootHelperLease(now, grant.LeaseExpiresAt)
+	if err != nil {
+		return SignedRootHelperPairingCapabilityV1{}, err
+	}
+	pairingExpiry := grant.PairingExpiresAt.UTC()
+	if expiry.After(pairingExpiry) {
+		return SignedRootHelperPairingCapabilityV1{}, errorf(CodeLeaseRejected, "root helper pairing capability exceeds pairing lifetime")
+	}
+	planDigest, _, err := rootHelperDeliveryDigests(delivery)
+	if err != nil {
+		return SignedRootHelperPairingCapabilityV1{}, err
+	}
+	capability := RootHelperPairingCapabilityV1{
+		SchemaVersion: RootHelperPairingCapabilitySchemaV1, OperationKind: kind,
+		CapabilityID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(delivery.TrustID+"\x00"+string(kind)+"\x00"+grant.OperationID+"\x00"+expiry.Format(time.RFC3339Nano))).String(),
+		TrustID:      delivery.TrustID, InstallerBinding: delivery.Config.Binding, PlanDigest: planDigest,
+		OperationID: grant.OperationID, SessionID: grant.SessionID, TaskID: grant.TaskID, StepID: grant.StepID,
+		DeploymentID: grant.DeploymentID, OwnerID: grant.OwnerID,
+		RecipeID: grant.RecipeID, RecipeDigest: grant.RecipeDigest, RecipeRevision: grant.RecipeRevision,
+		PayloadScopeRevision: grant.PayloadScopeRevision, RecipientPublicKeyDigest: grant.RecipientPublicKeyDigest,
+		ExecutionEpoch: grant.ExecutionEpoch, PairingExpiresAt: pairingExpiry.Format(time.RFC3339Nano),
+		CommandID: grant.CommandID, ExecutionBundleDigest: grant.ExecutionBundleDigest,
+		ExpectedInstalledManifestDigest: grant.ExpectedInstalledManifestDigest,
+		HelperDeliveryID:                helperBinding.DeliveryID, HelperID: helperBinding.HelperID,
+		HelperSignerKeyID: helperBinding.SignerKeyID, HelperPublicKeyDigest: helperBinding.PublicKeyDigest,
+		InstanceID: helperBinding.InstanceID, WorkerPrincipalID: helperBinding.WorkerPrincipalID,
+		WorkerLeaseEpoch: grant.WorkerLeaseEpoch,
+		IssuedAt:         issuedAt.Format(time.RFC3339Nano), ExpiresAt: expiry.Format(time.RFC3339Nano),
+	}
+	signature, err := issuer.signRootHelperCapability(delivery, string(kind), capability)
+	if err != nil {
+		return SignedRootHelperPairingCapabilityV1{}, err
+	}
+	return SignedRootHelperPairingCapabilityV1{
+		Capability: capability, SignerKeyID: delivery.SignedPlan.SignerKeyID, Signature: signature,
+	}, nil
+}
+
 func ValidateRootHelperBootstrapCapabilityAt(delivery DeliveryV1, signed SignedRootHelperBootstrapCapabilityV1, now time.Time) error {
 	value := signed.Capability
 	if value.SchemaVersion != RootHelperBootstrapCapabilitySchemaV1 || value.TrustID != delivery.TrustID ||
@@ -210,6 +354,63 @@ func ValidateRootHelperRestartCapabilityAt(delivery DeliveryV1, signed SignedRoo
 		return errorf(CodeCommandNotAllowed, "restart command is not declared by installer delivery")
 	}
 	return validateSignedRootHelperCapability(delivery, "restart", value, signed.SignerKeyID, signed.Signature, value.PlanDigest, "", now)
+}
+
+func validPairingScope(sessionID, taskID, stepID, recipeID, recipeDigest string, recipeRevision, payloadScopeRevision int64) bool {
+	session, sessionErr := uuid.Parse(sessionID)
+	task, taskErr := uuid.Parse(taskID)
+	return sessionErr == nil && session != uuid.Nil && session.String() == sessionID &&
+		taskErr == nil && task != uuid.Nil && task.String() == taskID &&
+		validPairingScopeID(stepID) && validPairingScopeID(recipeID) &&
+		digestPattern.MatchString(recipeDigest) && recipeRevision > 0 && payloadScopeRevision > 0
+}
+
+func validPairingScopeID(value string) bool {
+	return value != "" && len(value) <= 128 && strings.TrimSpace(value) == value &&
+		!strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validPairingRecipientBinding(kind RootHelperOperationKind, digest string) bool {
+	switch kind {
+	case RootHelperOperationPairingBegin:
+		return digestPattern.MatchString(digest)
+	case RootHelperOperationPairingResume:
+		return digest == ""
+	default:
+		return false
+	}
+}
+
+func ValidateRootHelperPairingCapabilityAt(delivery DeliveryV1, signed SignedRootHelperPairingCapabilityV1, expectedKind RootHelperOperationKind, now time.Time) error {
+	value := signed.Capability
+	if (expectedKind != RootHelperOperationPairingBegin && expectedKind != RootHelperOperationPairingResume) ||
+		value.SchemaVersion != RootHelperPairingCapabilitySchemaV1 || value.OperationKind != expectedKind ||
+		value.TrustID != delivery.TrustID || value.InstallerBinding != delivery.Config.Binding ||
+		value.DeploymentID != value.InstallerBinding.DeploymentID || value.WorkerLeaseEpoch < 1 ||
+		!digestPattern.MatchString(value.ExecutionBundleDigest) ||
+		!digestPattern.MatchString(value.ExpectedInstalledManifestDigest) ||
+		!digestPattern.MatchString(value.HelperPublicKeyDigest) ||
+		!validPairingScope(value.SessionID, value.TaskID, value.StepID, value.RecipeID,
+			value.RecipeDigest, value.RecipeRevision, value.PayloadScopeRevision) ||
+		!validPairingRecipientBinding(expectedKind, value.RecipientPublicKeyDigest) || value.ExecutionEpoch < 1 ||
+		!validRootHelperRestartIdentity(
+			value.OperationID, value.OwnerID, value.HelperDeliveryID, value.HelperID,
+			value.HelperSignerKeyID, value.InstanceID, value.WorkerPrincipalID,
+		) {
+		return errorf(CodeInvalidRequest, "root helper pairing capability binding is invalid")
+	}
+	if _, found := findCommand(delivery.SignedPlan.Plan.Commands, value.CommandID); !found {
+		return errorf(CodeCommandNotAllowed, "pairing command is not declared by installer delivery")
+	}
+	if err := validateSignedRootHelperCapability(delivery, string(expectedKind), value, signed.SignerKeyID, signed.Signature, value.PlanDigest, "", now); err != nil {
+		return err
+	}
+	pairingExpiry, pairingErr := parseCanonicalUTC(value.PairingExpiresAt)
+	capabilityExpiry, capabilityErr := parseCanonicalUTC(value.ExpiresAt)
+	if pairingErr != nil || capabilityErr != nil || !now.UTC().Before(pairingExpiry) || capabilityExpiry.After(pairingExpiry) {
+		return errorf(CodeLeaseRejected, "root helper pairing lifetime is invalid")
+	}
+	return nil
 }
 
 func (issuer *TrustIssuer) signRootHelperCapability(delivery DeliveryV1, domain string, value any) ([]byte, error) {
@@ -247,6 +448,8 @@ func validateSignedRootHelperCapability(delivery DeliveryV1, domain string, valu
 	case RootHelperBootstrapCapabilityV1:
 		issuedRaw, expiresRaw = typed.IssuedAt, typed.ExpiresAt
 	case RootHelperRestartCapabilityV1:
+		issuedRaw, expiresRaw = typed.IssuedAt, typed.ExpiresAt
+	case RootHelperPairingCapabilityV1:
 		issuedRaw, expiresRaw = typed.IssuedAt, typed.ExpiresAt
 	default:
 		return errorf(CodeInvalidRequest, "root helper capability type is invalid")

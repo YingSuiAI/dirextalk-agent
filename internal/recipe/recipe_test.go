@@ -81,6 +81,7 @@ func TestRecipeRequiresRetrievedContentDigestAlongsideArtifactDigest(t *testing.
 
 func TestRecipeInstallerCapabilityBindsExactCommandWithoutShellSurface(t *testing.T) {
 	value := validRecipe()
+	value.Pairing = nil
 	value.Sources[0].ID = "service-release"
 	root := "/usr/local/share/dirextalk-worker/artifacts"
 	value.Install.Installer = &InstallerCapabilityV1{
@@ -119,6 +120,26 @@ func TestRecipeInstallerCapabilityBindsExactCommandWithoutShellSurface(t *testin
 				t.Fatal("unsafe installer capability was accepted")
 			}
 		})
+	}
+}
+
+func TestRecipePairingCommandsMustReferenceSignedInstallerCommands(t *testing.T) {
+	value := validRecipe()
+	if err := value.Validate(); err != nil {
+		t.Fatalf("valid pairing command bindings rejected: %v", err)
+	}
+	for _, mutate := range []func(*RecipeV1){
+		func(recipe *RecipeV1) { recipe.Pairing.BeginCommandID = "undeclared-begin" },
+		func(recipe *RecipeV1) { recipe.Pairing.ResumeCommandID = "undeclared-resume" },
+		func(recipe *RecipeV1) { recipe.Install.Installer = nil },
+	} {
+		changed := value
+		pairing := *value.Pairing
+		changed.Pairing = &pairing
+		mutate(&changed)
+		if err := changed.Validate(); err == nil || !strings.Contains(err.Error(), "signed installer command") {
+			t.Fatalf("invalid pairing command binding error = %v", err)
+		}
 	}
 }
 
@@ -226,7 +247,7 @@ func TestRecipeGoldenDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "sha256:bde54b7df421ecfb44c832b0e6f3fd18029e96a654cc680fce89274bff9a52ac"
+	const want = "sha256:87fd41e13f93d45171cb1b8315a83982492cdad89e5474d3330e0c691c039f5f"
 	if got != want {
 		t.Fatalf("recipe digest = %q, want golden %q", got, want)
 	}
@@ -263,6 +284,16 @@ func validRecipe() RecipeV1 {
 				{ID: "install", Summary: "Install the digest-pinned service", TimeoutSeconds: 1200, Action: "artifact.install", Checkpoint: "installed", Inputs: []ActionInputV1{{Name: "artifact", Kind: ActionInputSource, Ref: "primary"}, {Name: "model_token", Kind: ActionInputSecretSlot, Ref: "model-token"}}},
 				{ID: "verify", Summary: "Verify the declared service", TimeoutSeconds: 300, Action: "service.verify", Checkpoint: "verified"},
 			},
+			Installer: &InstallerCapabilityV1{
+				Artifacts: []InstallerArtifactV1{{
+					Name: "service-installer", SourceID: "primary", SizeBytes: 4096,
+					TargetPath: "/usr/local/share/dirextalk-worker/artifacts/service-installer",
+				}},
+				Commands: []InstallerCommandV1{
+					{CommandID: "pairing-begin", Argv: []string{"/usr/local/share/dirextalk-worker/artifacts/service-installer", "pairing-begin"}, WorkingDirectory: "/usr/local/share/dirextalk-worker/artifacts", TimeoutSeconds: 60, ArtifactRefs: []string{"service-installer"}},
+					{CommandID: "pairing-resume", Argv: []string{"/usr/local/share/dirextalk-worker/artifacts/service-installer", "pairing-resume"}, WorkingDirectory: "/usr/local/share/dirextalk-worker/artifacts", TimeoutSeconds: 60, ArtifactRefs: []string{"service-installer"}},
+				},
+			},
 		},
 		Health: HealthContractV1{
 			Liveness:  ProbeV1{Kind: ProbeHTTP, Target: "/health/live"},
@@ -292,7 +323,11 @@ func validRecipe() RecipeV1 {
 			PublicIngress: PublicIngressV1{Mode: PublicIngressNone},
 		},
 		Restart: &RestartContractV1{Mode: RestartOnFailure, Action: "restart", MaxAttempts: 3, RecoveryCheckpoints: []string{"installed", "verified"}},
-		Pairing: &PairingContractV1{BeginAction: "pairing.begin", ResumeAction: "pairing.resume", PayloadDelivery: PairingPayloadOnDemandEncrypted, TimeoutSeconds: 86400},
+		Pairing: &PairingContractV1{
+			BeginAction: "pairing.begin", ResumeAction: "pairing.resume",
+			BeginCommandID: "pairing-begin", ResumeCommandID: "pairing-resume",
+			PayloadDelivery: PairingPayloadOnDemandEncrypted, TimeoutSeconds: 86400,
+		},
 		Integrations: []IntegrationDeclarationV1{
 			{ID: "mcp", Kind: IntegrationMCP, Transport: TransportMCPStreamableHTTP, ListenerID: "service", SecretSlotID: "integration-auth", AuthenticationRequired: true},
 			{ID: "web", Kind: IntegrationWeb, Transport: TransportWebHTTP, ListenerID: "service"},

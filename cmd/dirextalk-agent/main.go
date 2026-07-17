@@ -266,10 +266,13 @@ func serve() error {
 			app.WithCloudEntrypoint(cloudComposition.Entrypoint),
 			app.WithCloudFoundation(cloudComposition.FoundationLifecycle),
 			app.WithCloudManagedAcceptance(cloudComposition.ManagedAcceptance),
+			app.WithCloudPairing(cloudComposition.Pairing, cloudComposition.PairingApprovals),
 			app.WithCloudHealth(cloudComposition.HealthProbeReader),
 			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),
 			app.WithRootHelperControl(cloudComposition.RootHelperApprovals, cloudComposition.RootHelperDeliveries,
 				cloudComposition.WorkerOperations, cloudComposition.RootHelperCapabilities),
+			app.WithPairingWorkerControl(cloudComposition.PairingWorkerOperations, cloudComposition.RootHelperCapabilities,
+				cloudComposition.PairingReceiptVerifier),
 		)
 		if cloudComposition.ManagedPreparation != nil {
 			serverOptions = append(serverOptions, app.WithCloudManagedPreparation(cloudComposition.ManagedPreparation))

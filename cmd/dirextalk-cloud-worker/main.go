@@ -28,6 +28,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	installerroothelper "github.com/YingSuiAI/dirextalk-agent/internal/installer/roothelper"
+	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
@@ -178,14 +179,55 @@ func run() error {
 	}
 	defer maintenanceControl.Close()
 	slog.Info("cloud Worker entering typed maintenance", "deployment_id", launch.config.DeploymentID, "worker_id", launch.config.WorkerID)
-	err = (&workermaintenance.Service{
+	maintenance := &workermaintenance.Service{
 		Control: maintenanceControl, Root: rootControl, PollInterval: time.Second,
 		Lease: launch.config.LeaseDuration,
-	}).Run(ctx)
-	if errors.Is(err, context.Canceled) {
+	}
+	pairingClient := pairingworker.WorkerClient{
+		RPC: agentv1.NewPairingWorkerOperationServiceClient(connection), Root: rootSocket,
+		DeploymentID: launch.config.DeploymentID, WorkerID: launch.config.WorkerID,
+		Lease: launch.config.LeaseDuration, Session: append([]byte(nil), launch.config.IdentitySessionToken...),
+	}
+	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
+	defer cancelMaintenance()
+	errorsChannel := make(chan error, 2)
+	go func() { errorsChannel <- maintenance.Run(maintenanceCtx) }()
+	go func() { errorsChannel <- runPairingMaintenance(maintenanceCtx, pairingClient, time.Second) }()
+	first := <-errorsChannel
+	cancelMaintenance()
+	second := <-errorsChannel
+	clear(pairingClient.Session)
+	if errors.Is(first, context.Canceled) || errors.Is(first, context.DeadlineExceeded) {
+		first = nil
+	}
+	if errors.Is(second, context.Canceled) || errors.Is(second, context.DeadlineExceeded) {
+		second = nil
+	}
+	if first == nil && second == nil && ctx.Err() != nil {
 		return nil
 	}
-	return err
+	return errors.Join(first, second)
+}
+
+func runPairingMaintenance(ctx context.Context, client pairingworker.WorkerClient, interval time.Duration) error {
+	if ctx == nil || interval <= 0 {
+		return pairingworker.ErrInvalid
+	}
+	for {
+		err := client.RunNext(ctx)
+		code := status.Code(err)
+		if err != nil && code != codes.NotFound && code != codes.FailedPrecondition && code != codes.Unavailable &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 type runtimeIdentity struct {

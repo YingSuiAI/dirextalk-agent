@@ -977,6 +977,10 @@ service CloudControlService {
   rpc CreateCloudManagedPreparation(CreateCloudManagedPreparationRequest) returns (CreateCloudManagedPreparationResponse);
   rpc ApproveCloudManagedPreparation(ApproveCloudManagedPreparationRequest) returns (ApproveCloudManagedPreparationResponse);
   rpc GetCloudManagedPreparation(GetCloudManagedPreparationRequest) returns (GetCloudManagedPreparationResponse);
+  rpc GetCloudPairing(GetCloudPairingRequest) returns (GetCloudPairingResponse);
+  rpc RetrieveCloudPairingPayload(RetrieveCloudPairingPayloadRequest) returns (RetrieveCloudPairingPayloadResponse);
+  rpc CreateCloudPairingResumeChallenge(CreateCloudPairingResumeChallengeRequest) returns (CreateCloudPairingResumeChallengeResponse);
+  rpc ApproveCloudPairingResume(ApproveCloudPairingResumeRequest) returns (ApproveCloudPairingResumeResponse);
   rpc PrepareRootHelperKeyDeliveryApproval(PrepareRootHelperKeyDeliveryApprovalRequest) returns (PrepareRootHelperKeyDeliveryApprovalResponse);
   rpc ApproveRootHelperKeyDelivery(ApproveRootHelperKeyDeliveryRequest) returns (ApproveRootHelperKeyDeliveryResponse);
   rpc GetRootHelperKeyDeliveryApproval(GetRootHelperKeyDeliveryApprovalRequest) returns (GetRootHelperKeyDeliveryApprovalResponse);
@@ -1778,6 +1782,115 @@ message GetCloudManagedPreparationRequest {
 }
 message GetCloudManagedPreparationResponse { CloudManagedPreparationOperation operation = 1; }
 
+// Pairing payloads never enter Task/Event/Outbox/CloudDeployment projections.
+// They are generated only after an owner explicitly supplies a one-time
+// X25519 recipient and are returned as an authenticated ciphertext envelope.
+enum CloudPairingStatus {
+  CLOUD_PAIRING_STATUS_UNSPECIFIED = 0;
+  CLOUD_PAIRING_STATUS_WAITING_PAYLOAD = 1;
+  CLOUD_PAIRING_STATUS_PAYLOAD_READY = 2;
+  CLOUD_PAIRING_STATUS_WAITING_USER = 3;
+  CLOUD_PAIRING_STATUS_RESUMING = 4;
+  CLOUD_PAIRING_STATUS_SUCCEEDED = 5;
+  CLOUD_PAIRING_STATUS_TIMED_OUT = 6;
+  CLOUD_PAIRING_STATUS_FAILED = 7;
+}
+message CloudPairingSession {
+  string pairing_id = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string task_id = 4;
+  string step_id = 5;
+  string plan_id = 6;
+  string connection_id = 7;
+  string recipe_id = 8;
+  string recipe_digest = 9;
+  int64 recipe_revision = 10;
+  string begin_command_id = 11;
+  string resume_command_id = 12;
+  string execution_manifest_digest = 13;
+  CloudPairingStatus status = 14;
+  bool payload_ready = 15;
+  int64 revision = 16;
+  google.protobuf.Timestamp expires_at = 17;
+  google.protobuf.Timestamp created_at = 18;
+  google.protobuf.Timestamp updated_at = 19;
+  int64 deployment_revision = 20;
+  int64 payload_scope_revision = 21;
+}
+message GetCloudPairingRequest {
+  string owner_id = 1;
+  string pairing_id = 2;
+  string deployment_id = 3;
+}
+message GetCloudPairingResponse { CloudPairingSession pairing = 1; }
+message EncryptedPairingPayload {
+  string schema_version = 1;
+  string server_public_key = 2;
+  string nonce = 3;
+  string ciphertext = 4;
+  bytes associated_data_cbor = 5;
+  string payload_digest = 6;
+  google.protobuf.Timestamp expires_at = 7;
+}
+message RetrieveCloudPairingPayloadRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string pairing_id = 3;
+  string deployment_id = 4;
+  int64 expected_revision = 5;
+  string recipient_public_key = 6;
+}
+message RetrieveCloudPairingPayloadResponse {
+  CloudPairingSession pairing = 1;
+  EncryptedPairingPayload payload = 2;
+}
+message CloudPairingResumeScope {
+  string schema_version = 1;
+  string intent = 2;
+  string pairing_id = 3;
+  string owner_id = 4;
+  string deployment_id = 5;
+  int64 deployment_revision = 6;
+  string plan_id = 7;
+  string connection_id = 8;
+  string task_id = 9;
+  string step_id = 10;
+  string recipe_digest = 11;
+  string execution_manifest_digest = 12;
+  int64 pairing_revision = 13;
+}
+message CloudPairingResumeChallenge {
+  string schema_version = 1;
+  string challenge_id = 2;
+  string approval_id = 3;
+  string signer_key_id = 4;
+  CloudPairingResumeScope scope = 5;
+  string scope_digest = 6;
+  google.protobuf.Timestamp issued_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  bytes signing_payload_cbor = 9;
+}
+message CreateCloudPairingResumeChallengeRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string pairing_id = 3;
+  string deployment_id = 4;
+  int64 expected_pairing_revision = 5;
+  string signer_key_id = 6;
+}
+message CreateCloudPairingResumeChallengeResponse { CloudPairingResumeChallenge challenge = 1; }
+message ApproveCloudPairingResumeRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string pairing_id = 3;
+  string deployment_id = 4;
+  int64 expected_pairing_revision = 5;
+  string scope_digest = 6;
+  DeviceApprovalSignature approval = 7;
+}
+message ApproveCloudPairingResumeResponse { CloudPairingSession pairing = 1; }
+
 // Worker service operations are deployment-bound maintenance assignments.
 // They are deliberately independent of Deployment TaskID/StepID leases and
 // expose only closed, Recipe-bound capabilities.
@@ -1873,6 +1986,60 @@ service WorkerServiceOperationService {
   rpc Claim(WorkerServiceOperationServiceClaimRequest) returns (WorkerServiceOperationServiceClaimResponse);
   rpc AcquireNext(WorkerServiceOperationServiceAcquireNextRequest) returns (WorkerServiceOperationServiceAcquireNextResponse);
   rpc Complete(WorkerServiceOperationServiceCompleteRequest) returns (WorkerServiceOperationServiceCompleteResponse);
+}
+
+enum PairingWorkerOperationAction {
+  PAIRING_WORKER_OPERATION_ACTION_UNSPECIFIED = 0;
+  PAIRING_WORKER_OPERATION_ACTION_BEGIN = 1;
+  PAIRING_WORKER_OPERATION_ACTION_RESUME = 2;
+}
+message PairingWorkerOperationAssignment {
+  string operation_id = 1;
+  string session_id = 2;
+  string task_id = 3;
+  string step_id = 4;
+  string deployment_id = 5;
+  string owner_id = 6;
+  string recipe_id = 7;
+  string recipe_digest = 8;
+  int64 recipe_revision = 9;
+  int64 payload_scope_revision = 10;
+  string command_id = 11;
+  string execution_manifest_digest = 12;
+  PairingWorkerOperationAction action = 13;
+  string recipient_public_key = 14;
+  string worker_id = 15;
+  int64 lease_epoch = 16;
+  google.protobuf.Timestamp lease_expires_at = 17;
+  int64 revision = 18;
+  int64 deployment_revision = 19;
+}
+message PairingWorkerOperationServiceAcquireNextRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string idempotency_key = 3;
+  int32 lease_duration_seconds = 4;
+}
+message PairingWorkerOperationServiceAcquireNextResponse {
+  PairingWorkerOperationAssignment assignment = 1;
+  bytes installer_delivery_cbor = 2;
+  bytes signed_capability_cbor = 3;
+  bytes helper_public_key = 4;
+}
+message PairingWorkerOperationServiceCompleteRequest {
+  string operation_id = 1;
+  string deployment_id = 2;
+  string worker_id = 3;
+  int64 lease_epoch = 4;
+  int64 expected_revision = 5;
+  string idempotency_key = 6;
+  bytes encrypted_root_helper_receipt_cbor = 7;
+  string failure_code = 8;
+}
+message PairingWorkerOperationServiceCompleteResponse { int64 revision = 1; }
+service PairingWorkerOperationService {
+  rpc AcquireNext(PairingWorkerOperationServiceAcquireNextRequest) returns (PairingWorkerOperationServiceAcquireNextResponse);
+  rpc Complete(PairingWorkerOperationServiceCompleteRequest) returns (PairingWorkerOperationServiceCompleteResponse);
 }
 
 // Root-helper key approval is an owner-facing control-plane contract. The

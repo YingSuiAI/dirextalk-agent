@@ -3,19 +3,209 @@ package roothelper
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/ed25519"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	"github.com/YingSuiAI/dirextalk-agent/internal/helperkey"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeroperation"
 	"github.com/google/uuid"
 )
+
+func TestPairingBeginEncryptsBoundedOutputAndDurablyReplaysEnvelope(t *testing.T) {
+	fixture := newFixture(t)
+	bootstrapRootHelper(t, fixture)
+	payload := []byte("sensitive-pairing-code-123456")
+	pairingRunner := &pairingRunnerFake{output: bytes.Clone(payload)}
+	fixture.handler.pairingRunner = pairingRunner
+	recipientPrivate, err := ecdh.X25519().GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipientPublic := base64.RawURLEncoding.EncodeToString(recipientPrivate.PublicKey().Bytes())
+	operationID := uuid.NewString()
+	capability := issuePairingCapability(t, fixture, operationID, "pairing-begin", fixture.now.Add(5*time.Minute), recipientPublic)
+
+	first, err := fixture.handler.PairingBegin(context.Background(), capability, recipientPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := secretbootstrap.OpenRecipientEnvelope(recipientPrivate.Bytes(), first.Envelope, first.AssociatedData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(opened, payload) {
+		t.Fatalf("opened pairing payload = %q", opened)
+	}
+	clear(opened)
+	var aad pairingPayloadAADV1
+	if installer.DecodeCanonical(first.AssociatedData, &aad) != nil ||
+		aad.OperationKind != installer.RootHelperOperationPairingBegin ||
+		aad.SessionID != capability.Capability.SessionID || aad.TaskID != capability.Capability.TaskID ||
+		aad.StepID != capability.Capability.StepID || aad.RecipeID != capability.Capability.RecipeID ||
+		aad.RecipeDigest != capability.Capability.RecipeDigest ||
+		aad.RecipeRevision != capability.Capability.RecipeRevision ||
+		aad.PayloadScopeRevision != capability.Capability.PayloadScopeRevision ||
+		aad.RecipientPublicKeyDigest != capability.Capability.RecipientPublicKeyDigest ||
+		aad.ExecutionEpoch != capability.Capability.ExecutionEpoch ||
+		aad.PairingExpiresAt != capability.Capability.PairingExpiresAt {
+		t.Fatalf("pairing AAD lost signed scope: %#v", aad)
+	}
+	encoded, err := canonical.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, payload) {
+		t.Fatal("pairing receipt exposed plaintext")
+	}
+	journalBytes, err := os.ReadFile(fixture.journalPath + ".pairing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(journalBytes, payload) {
+		t.Fatal("pairing journal exposed plaintext")
+	}
+
+	// A response can be lost after root has journaled the receipt and the
+	// Worker lease expires. A fresh capability/transport lease must replay the
+	// original receipt, including its old transport lease, without rerunning.
+	reissued := issuePairingCapabilityWithLease(t, fixture, operationID, "pairing-begin", fixture.now.Add(6*time.Minute), recipientPublic,
+		16, 1, fixture.now.Add(10*time.Minute))
+	replayed, err := fixture.handler.PairingBegin(context.Background(), reissued, recipientPublic)
+	if err != nil || !reflect.DeepEqual(first, replayed) || pairingRunner.calls != 1 {
+		t.Fatalf("response-loss replay receipt=%#v calls=%d err=%v", replayed, pairingRunner.calls, err)
+	}
+
+	otherRecipient, _ := ecdh.X25519().GenerateKey(cryptorand.Reader)
+	if _, err := fixture.handler.PairingBegin(context.Background(), reissued,
+		base64.RawURLEncoding.EncodeToString(otherRecipient.PublicKey().Bytes())); !errors.Is(err, ErrUnauthorized) || pairingRunner.calls != 1 {
+		t.Fatalf("recipient substitution error = %v", err)
+	}
+
+	restarted, err := New(
+		fixture.delivery, fixture.secrets, fixture.keys, fixture.runner, fixture.observer,
+		fixture.journal, fixture.fence, func() time.Time { return fixture.clock },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedRunner := &pairingRunnerFake{output: []byte("must-not-run")}
+	restarted.pairingRunner = restartedRunner
+	afterRestart, err := restarted.PairingBegin(context.Background(), reissued, recipientPublic)
+	if err != nil || !reflect.DeepEqual(first, afterRestart) || restartedRunner.calls != 0 {
+		t.Fatalf("daemon restart replay receipt=%#v calls=%d err=%v", afterRestart, restartedRunner.calls, err)
+	}
+}
+
+func TestPairingBeginRejectsOutputOver64KiBAndResumeReturnsNoOutput(t *testing.T) {
+	fixture := newFixture(t)
+	bootstrapRootHelper(t, fixture)
+	recipientPrivate, _ := ecdh.X25519().GenerateKey(cryptorand.Reader)
+	recipientPublic := base64.RawURLEncoding.EncodeToString(recipientPrivate.PublicKey().Bytes())
+	fixture.handler.pairingRunner = &pairingRunnerFake{output: bytes.Repeat([]byte{'x'}, maxPairingPayloadBytes+1)}
+	begin := issuePairingCapability(t, fixture, uuid.NewString(), "pairing-begin", fixture.now.Add(5*time.Minute), recipientPublic)
+	if _, err := fixture.handler.PairingBegin(context.Background(), begin, recipientPublic); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("oversized pairing output error = %v", err)
+	}
+
+	resume := issuePairingCapability(t, fixture, uuid.NewString(), "pairing-resume", fixture.now.Add(5*time.Minute), "")
+	first, err := fixture.handler.PairingResume(context.Background(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := fixture.handler.PairingResume(context.Background(), resume)
+	if err != nil || !reflect.DeepEqual(first, replayed) || fixture.runner.calls != 1 {
+		t.Fatalf("resume replay receipt=%#v calls=%d err=%v", replayed, fixture.runner.calls, err)
+	}
+	encoded, _ := canonical.Marshal(first)
+	if bytes.Contains(encoded, []byte("stdout")) || bytes.Contains(encoded, []byte("payload")) ||
+		bytes.Contains(encoded, []byte("ciphertext")) {
+		t.Fatalf("resume receipt contains an output surface: %x", encoded)
+	}
+}
+
+func TestPairingCapabilityCannotCrossPairingPhase(t *testing.T) {
+	fixture := newFixture(t)
+	bootstrapRootHelper(t, fixture)
+	fixture.handler.pairingRunner = &pairingRunnerFake{output: []byte("must-not-run")}
+	recipientPrivate, _ := ecdh.X25519().GenerateKey(cryptorand.Reader)
+	recipientPublic := base64.RawURLEncoding.EncodeToString(recipientPrivate.PublicKey().Bytes())
+	begin := issuePairingCapability(t, fixture, uuid.NewString(), "pairing-begin", fixture.now.Add(5*time.Minute), recipientPublic)
+	resume := issuePairingCapability(t, fixture, uuid.NewString(), "pairing-resume", fixture.now.Add(5*time.Minute), "")
+
+	if _, err := fixture.handler.PairingResume(context.Background(), begin); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("begin capability used for resume: %v", err)
+	}
+	if _, err := fixture.handler.PairingBegin(context.Background(), resume, recipientPublic); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("resume capability used for begin: %v", err)
+	}
+	if fixture.runner.calls != 0 || fixture.handler.pairingRunner.(*pairingRunnerFake).calls != 0 {
+		t.Fatal("cross-phase capability reached a command runner")
+	}
+}
+
+func bootstrapRootHelper(t *testing.T, fixture *fixture) {
+	t.Helper()
+	capability, err := fixture.issuer.IssueRootHelperBootstrapCapability(
+		fixture.delivery, fixture.binding, fixture.publicKey, fixture.nonce, 2,
+		fixture.now.Add(5*time.Minute), fixture.now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.handler.Bootstrap(context.Background(), capability); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func issuePairingCapability(t *testing.T, fixture *fixture, operationID, commandID string, expiry time.Time, recipientPublicKey string) installer.SignedRootHelperPairingCapabilityV1 {
+	t.Helper()
+	return issuePairingCapabilityWithLease(t, fixture, operationID, commandID, expiry, recipientPublicKey,
+		15, 1, fixture.now.Add(10*time.Minute))
+}
+
+func issuePairingCapabilityWithLease(t *testing.T, fixture *fixture, operationID, commandID string, expiry time.Time,
+	recipientPublicKey string, leaseEpoch, executionEpoch int64, pairingExpiry time.Time,
+) installer.SignedRootHelperPairingCapabilityV1 {
+	t.Helper()
+	kind := installer.RootHelperOperationPairingBegin
+	if commandID == "pairing-resume" {
+		kind = installer.RootHelperOperationPairingResume
+	}
+	recipientDigest := ""
+	if kind == installer.RootHelperOperationPairingBegin {
+		recipientDigest = digestText(recipientPublicKey)
+	}
+	value, err := fixture.issuer.IssueRootHelperPairingCapability(
+		fixture.delivery, fixture.binding, kind, installer.RootHelperPairingGrantV1{
+			OperationID: operationID, DeploymentID: fixture.binding.DeploymentID, OwnerID: fixture.binding.OwnerID,
+			SessionID: operationID, TaskID: uuid.NewSHA1(uuid.NameSpaceOID, []byte(operationID+"\x00task")).String(), StepID: "pairing-step",
+			RecipeID: "recipe-pairing", RecipeDigest: fixture.delivery.Config.Binding.RecipeDigest,
+			RecipeRevision: 3, PayloadScopeRevision: 4,
+			RecipientPublicKeyDigest: recipientDigest, ExecutionEpoch: executionEpoch,
+			PairingExpiresAt: pairingExpiry,
+			CommandID:        commandID, ExecutionBundleDigest: digest('7'),
+			ExpectedInstalledManifestDigest: fixture.observer.installed, WorkerLeaseEpoch: leaseEpoch,
+			LeaseExpiresAt: expiry,
+		}, fixture.now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
 
 func TestRootHelperBoundaryBootstrapsCanariesRestartsAndReplays(t *testing.T) {
 	fixture := newFixture(t)
@@ -472,11 +662,23 @@ func newFixture(t *testing.T) *fixture {
 			TargetPath: installer.PreinstalledArtifactRoot + "/service-control",
 		}},
 		Network: installer.NetworkV1{OutboundHTTPSHosts: []string{"api.example.com"}},
-		Commands: []installer.CommandV1{{
-			CommandID: "restart-service", Argv: []string{installer.PreinstalledArtifactRoot + "/service-control", "restart"},
-			WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 120,
-			ArtifactRefs: []string{"service-control"},
-		}},
+		Commands: []installer.CommandV1{
+			{
+				CommandID: "restart-service", Argv: []string{installer.PreinstalledArtifactRoot + "/service-control", "restart"},
+				WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 120,
+				ArtifactRefs: []string{"service-control"},
+			},
+			{
+				CommandID: "pairing-begin", Argv: []string{installer.PreinstalledArtifactRoot + "/service-control", "pairing-begin"},
+				WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 120,
+				ArtifactRefs: []string{"service-control"},
+			},
+			{
+				CommandID: "pairing-resume", Argv: []string{installer.PreinstalledArtifactRoot + "/service-control", "pairing-resume"},
+				WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 120,
+				ArtifactRefs: []string{"service-control"},
+			},
+		},
 		ExpiresAt: now.Add(30 * time.Minute).Format(time.RFC3339Nano),
 	}
 	config := installer.DaemonConfigV1{
@@ -583,6 +785,17 @@ func (fake *keyStoreFake) ReadRootHelperSigningKey(context.Context) ([]byte, err
 type runnerFake struct {
 	calls int
 	last  installer.CommandExecution
+}
+
+type pairingRunnerFake struct {
+	calls  int
+	output []byte
+	err    error
+}
+
+func (fake *pairingRunnerFake) RunPairingBegin(context.Context, installer.CommandExecution) ([]byte, error) {
+	fake.calls++
+	return bytes.Clone(fake.output), fake.err
 }
 
 func (fake *runnerFake) Run(_ context.Context, execution installer.CommandExecution) error {

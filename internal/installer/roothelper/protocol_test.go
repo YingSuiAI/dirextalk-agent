@@ -3,6 +3,9 @@ package roothelper
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	cryptorand "crypto/rand"
+	"encoding/base64"
 	"errors"
 	"net"
 	"testing"
@@ -20,12 +23,17 @@ func TestLocalProtocolStrictDeliveryBindingAndDurableRestartReplay(t *testing.T)
 		t.Fatal(err)
 	}
 	factoryCalls := 0
+	pairingRunner := &pairingRunnerFake{output: []byte("pairing-secret")}
 	factory := ControlFactoryFunc(func(_ context.Context, delivery installer.DeliveryV1) (LocalControl, error) {
 		factoryCalls++
-		return New(
+		control, newErr := New(
 			delivery, fixture.secrets, fixture.keys, fixture.runner, fixture.observer,
 			fixture.journal, fixture.fence, func() time.Time { return fixture.clock },
 		)
+		if newErr == nil {
+			control.pairingRunner = pairingRunner
+		}
+		return control, newErr
 	})
 	server, err := NewLocalServer(material, factory)
 	if err != nil {
@@ -77,7 +85,27 @@ func TestLocalProtocolStrictDeliveryBindingAndDurableRestartReplay(t *testing.T)
 	if err != nil || fixture.runner.calls != 1 || !bytes.Equal(first.Signature, replayed.Signature) {
 		t.Fatalf("socket response-loss replay: err=%v executions=%d", err, fixture.runner.calls)
 	}
-	if factoryCalls != 6 {
+	recipientPrivate, _ := ecdh.X25519().GenerateKey(cryptorand.Reader)
+	recipientPublic := base64.RawURLEncoding.EncodeToString(recipientPrivate.PublicKey().Bytes())
+	begin := issuePairingCapability(t, fixture, uuid.NewString(), "pairing-begin", fixture.now.Add(5*time.Minute), recipientPublic)
+	firstBegin, err := client.PairingBegin(context.Background(), fixture.delivery, begin, recipientPublic, fixture.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedBegin, err := client.PairingBegin(context.Background(), fixture.delivery, begin, recipientPublic, fixture.publicKey)
+	if err != nil || pairingRunner.calls != 1 || !bytes.Equal(firstBegin.Signature, replayedBegin.Signature) {
+		t.Fatalf("pairing begin response-loss replay: err=%v executions=%d", err, pairingRunner.calls)
+	}
+	resume := issuePairingCapability(t, fixture, uuid.NewString(), "pairing-resume", fixture.now.Add(5*time.Minute), "")
+	firstResume, err := client.PairingResume(context.Background(), fixture.delivery, resume, fixture.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedResume, err := client.PairingResume(context.Background(), fixture.delivery, resume, fixture.publicKey)
+	if err != nil || fixture.runner.calls != 2 || !bytes.Equal(firstResume.Signature, replayedResume.Signature) {
+		t.Fatalf("pairing resume response-loss replay: err=%v executions=%d", err, fixture.runner.calls)
+	}
+	if factoryCalls != 10 {
 		t.Fatalf("dispatcher did not revalidate and reconstruct per request: calls=%d", factoryCalls)
 	}
 }

@@ -333,6 +333,8 @@ type PublicIngressV1 struct {
 type PairingContractV1 struct {
 	BeginAction     string                 `json:"begin_action"`
 	ResumeAction    string                 `json:"resume_action"`
+	BeginCommandID  string                 `json:"begin_command_id"`
+	ResumeCommandID string                 `json:"resume_command_id"`
 	PayloadDelivery PairingPayloadDelivery `json:"payload_delivery"`
 	TimeoutSeconds  uint32                 `json:"timeout_seconds"`
 }

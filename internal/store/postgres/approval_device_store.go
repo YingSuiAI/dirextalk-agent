@@ -224,6 +224,37 @@ func (store *Store) GetDeviceKey(ctx context.Context, keyID string) (cloudapprov
 	return cloneApprovalDevice(record.Device), nil
 }
 
+// GetCurrentDeviceKey supports compatibility APIs whose established public
+// request does not carry a signer key. It fails closed unless exactly one
+// active owner device is valid at the requested instant.
+func (store *Store) GetCurrentDeviceKey(ctx context.Context, ownerID string, now time.Time) (cloudapproval.DeviceKeyV1, error) {
+	if ctx == nil || strings.TrimSpace(ownerID) == "" || now.IsZero() {
+		return cloudapproval.DeviceKeyV1{}, ErrCloudFactInvalid
+	}
+	rows, err := store.pool.Query(ctx, `SELECT key_id FROM cloud_approval_devices
+		WHERE agent_instance_id=$1 AND owner_id=$2 AND status='active' AND revoked_at IS NULL
+		  AND not_before<=$3 AND expires_at>$3 ORDER BY key_id LIMIT 2`, store.instanceID, ownerID, now.UTC())
+	if err != nil {
+		return cloudapproval.DeviceKeyV1{}, fmt.Errorf("find current approval device: %w", err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return cloudapproval.DeviceKeyV1{}, fmt.Errorf("read current approval device: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return cloudapproval.DeviceKeyV1{}, fmt.Errorf("list current approval devices: %w", err)
+	}
+	if len(keys) != 1 {
+		return cloudapproval.DeviceKeyV1{}, cloudapproval.ErrDeviceNotFound
+	}
+	return store.GetDeviceKey(ctx, keys[0])
+}
+
 type approvalDeviceQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }

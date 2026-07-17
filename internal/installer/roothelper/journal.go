@@ -40,9 +40,11 @@ type restartJournalEntry struct {
 }
 
 type FileRestartJournal struct {
-	path    string
-	mu      sync.Mutex
-	entries map[string]restartJournalEntry
+	path                 string
+	requireRootOwnership bool
+	parentSync           func(string) error
+	mu                   sync.Mutex
+	entries              map[string]restartJournalEntry
 }
 
 func OpenRootOwnedRestartJournal(path string) (*FileRestartJournal, error) {
@@ -77,7 +79,10 @@ func openRestartJournalWithSync(name string, requireRootOwnership bool, parentSy
 	if requireRootOwnership && validateRootOwnedRestartJournalFile(clean) != nil {
 		return nil, ErrUnavailable
 	}
-	journal := &FileRestartJournal{path: clean, entries: make(map[string]restartJournalEntry)}
+	journal := &FileRestartJournal{
+		path: clean, requireRootOwnership: requireRootOwnership, parentSync: parentSync,
+		entries: make(map[string]restartJournalEntry),
+	}
 	if err := journal.load(); err != nil {
 		return nil, err
 	}
