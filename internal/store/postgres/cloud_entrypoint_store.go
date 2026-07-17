@@ -46,10 +46,17 @@ type entryPlanRow struct {
 }
 
 type entryOperationRow struct {
-	Operation   entrypoint.OperationV1
-	EntryPlanID string
-	Prepare     entrypoint.Mutation
-	Approve     *entrypoint.Mutation
+	Operation          entrypoint.OperationV1
+	EntryPlanID        string
+	OwnerID            string
+	DeploymentID       string
+	TaskID             string
+	OriginalPlanID     string
+	OriginalPlanHash   string
+	OriginalApprovalID string
+	ConnectionID       string
+	Prepare            entrypoint.Mutation
+	Approve            *entrypoint.Mutation
 }
 
 // CreateEntryPlan records the canonical public-entry scope but never creates a
@@ -384,6 +391,41 @@ func (store *Store) GetEntryOperation(ctx context.Context, ownerID, operationID 
 	return row.Operation, nil
 }
 
+// GetEntryPlanForOperation resolves the approved immutable entry scope for a
+// pending durable operation. It intentionally accepts no caller-owned lookup:
+// only the control-plane recovery loop receives operation identifiers from the
+// durable pending queue. The read locks both rows and rechecks every duplicated
+// ownership and scope binding before returning the plan.
+func (store *Store) GetEntryPlanForOperation(ctx context.Context, operationID string) (entrypoint.PlanV1, error) {
+	if store == nil || store.pool == nil || ctx == nil || !validEntryUUID(operationID) {
+		return entrypoint.PlanV1{}, entrypoint.ErrInvalid
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return entrypoint.PlanV1{}, entrypoint.ErrUnavailable
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	operation, err := readEntryOperationRow(ctx, tx, ` WHERE agent_instance_id=$1 AND operation_id=$2 FOR SHARE`, store.instanceID, operationID)
+	if err != nil {
+		return entrypoint.PlanV1{}, err
+	}
+	if !entryOperationRecoverable(operation.Operation.Status) {
+		return entrypoint.PlanV1{}, entrypoint.ErrUnavailable
+	}
+	plan, err := readEntryPlanRow(ctx, tx, ` WHERE agent_instance_id=$1 AND entry_plan_id=$2 FOR SHARE`, store.instanceID, operation.EntryPlanID)
+	if err != nil {
+		return entrypoint.PlanV1{}, err
+	}
+	if !entryPlanMatchesRecoveryOperation(store.instanceID, plan, operation) {
+		return entrypoint.PlanV1{}, entrypoint.ErrUnavailable
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return entrypoint.PlanV1{}, entrypoint.ErrUnavailable
+	}
+	return plan.Plan, nil
+}
+
 func (store *Store) ListPendingEntry(ctx context.Context, limit int) ([]entrypoint.OperationV1, error) {
 	if store == nil || store.pool == nil || ctx == nil || limit < 1 || limit > 256 {
 		return nil, entrypoint.ErrInvalid
@@ -574,7 +616,9 @@ func scanEntryOperationRow(row entryScanner) (entryOperationRow, error) {
 	}
 	var prepareDigest [32]byte
 	copy(prepareDigest[:], prepareHash)
-	result := entryOperationRow{Operation: operation, EntryPlanID: entryPlanID.String(),
+	result := entryOperationRow{Operation: operation, EntryPlanID: entryPlanID.String(), OwnerID: ownerID,
+		DeploymentID: deploymentID.String(), TaskID: taskID.String(), OriginalPlanID: originalPlanID.String(),
+		OriginalPlanHash: originalPlanHash, OriginalApprovalID: originalApprovalID.String(), ConnectionID: connectionID.String(),
 		Prepare: entrypoint.Mutation{Caller: task.MutationScope{ClientID: prepareClientID, CredentialID: prepareCredentialID.String()},
 			OwnerID: ownerID, IdempotencyKey: prepareIdempotencyKey.String(), RequestHash: prepareDigest}}
 	if result.Prepare.Validate() != nil {
@@ -596,6 +640,36 @@ func scanEntryOperationRow(row entryScanner) (entryOperationRow, error) {
 		return entryOperationRow{}, entrypoint.ErrUnavailable
 	}
 	return result, nil
+}
+
+func entryOperationRecoverable(status entrypoint.Status) bool {
+	switch status {
+	case entrypoint.StatusApproved, entrypoint.StatusProvisioning, entrypoint.StatusVerifying,
+		entrypoint.StatusDestroying, entrypoint.StatusDestroyBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+func entryPlanMatchesRecoveryOperation(instanceID uuid.UUID, plan entryPlanRow, operation entryOperationRow) bool {
+	if plan.Plan.Validate() != nil || plan.Plan.Status != entrypoint.PlanApproved ||
+		plan.Plan.Scope.AgentInstanceID != instanceID.String() || plan.Plan.Scope.OwnerID != operation.OwnerID ||
+		plan.Plan.EntryPlanID != operation.EntryPlanID {
+		return false
+	}
+	challenge := operation.Operation.Challenge
+	if challenge.EntryPlanID != plan.Plan.EntryPlanID || challenge.EntryPlanRevision != plan.Plan.Revision ||
+		challenge.PlanHash != plan.PlanHash || challenge.ScopeDigest != plan.Plan.ScopeDigest ||
+		plan.Plan.Scope.Worker.DeploymentID != operation.DeploymentID ||
+		plan.Plan.Scope.Worker.TaskID != operation.TaskID ||
+		plan.Plan.Scope.Worker.OriginalPlanID != operation.OriginalPlanID ||
+		plan.Plan.Scope.Worker.OriginalPlanHash != operation.OriginalPlanHash ||
+		plan.Plan.Scope.Worker.OriginalApprovalID != operation.OriginalApprovalID ||
+		plan.Plan.Scope.ConnectionID != operation.ConnectionID {
+		return false
+	}
+	return operation.Prepare.OwnerID == operation.OwnerID
 }
 
 func (store *Store) validateEntryPlanPrerequisites(ctx context.Context, query entryRowQuerier, scope entrypoint.ScopeV1) error {
