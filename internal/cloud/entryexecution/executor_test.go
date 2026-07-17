@@ -28,6 +28,14 @@ func TestRunOnceProvisionsClosedALBGraphAndActivates(t *testing.T) {
 	if got := fixture.provisioner.callCount(); got != 5 {
 		t.Fatalf("provision calls = %d, want 5", got)
 	}
+	for _, scope := range fixture.provisioner.scopes {
+		if scope.OwnerID != fixture.plan.Scope.OwnerID || scope.ConnectionID != fixture.plan.Scope.ConnectionID || scope.Region != fixture.plan.Scope.Region {
+			t.Fatalf("provision received an unsigned or mismatched scope: %#v", scope)
+		}
+	}
+	if fixture.resources.ownerID != fixture.plan.Scope.OwnerID || fixture.resources.deploymentID != fixture.plan.Scope.Worker.DeploymentID {
+		t.Fatalf("resource ledger lookup = (%q, %q), want signed owner/deployment", fixture.resources.ownerID, fixture.resources.deploymentID)
+	}
 	if got := fixture.scopes.calls; got != 7 { // approved gate + every provision + verification gate
 		t.Fatalf("scope revalidations = %d, want 7", got)
 	}
@@ -127,6 +135,20 @@ func TestRunOnceTreatsResponseLossAsRetryNotPublicFailure(t *testing.T) {
 	}
 	if got := fixture.operations.current().Status; got != entrypoint.StatusProvisioning {
 		t.Fatalf("operation status after response loss = %q, want provisioning for reconciliation", got)
+	}
+}
+
+func TestRunOnceRetriesUnavailableSignedProvisioner(t *testing.T) {
+	t.Parallel()
+	fixture := newExecutorFixture(t)
+	fixture.provisioner.errAt = map[int]error{1: entrypoint.ErrUnavailable}
+
+	err := fixture.executor(t).RunOnce(context.Background())
+	if !errors.Is(err, entrypoint.ErrUnavailable) {
+		t.Fatalf("RunOnce() error = %v, want temporary signed-provisioner failure", err)
+	}
+	if got := fixture.operations.current().Status; got != entrypoint.StatusProvisioning {
+		t.Fatalf("operation status after temporary provisioner failure = %q, want provisioning", got)
 	}
 }
 
@@ -255,11 +277,14 @@ func (fake *scopeRevalidatorFake) RevalidateScope(_ context.Context, _ entrypoin
 }
 
 type deploymentResourcesFake struct {
-	items []resource.ResourceV1
-	err   error
+	items        []resource.ResourceV1
+	err          error
+	ownerID      string
+	deploymentID string
 }
 
-func (fake *deploymentResourcesFake) ListDeployment(_ context.Context, _ string) ([]resource.ResourceV1, error) {
+func (fake *deploymentResourcesFake) ListDeployment(_ context.Context, ownerID, deploymentID string) ([]resource.ResourceV1, error) {
+	fake.ownerID, fake.deploymentID = ownerID, deploymentID
 	if fake.err != nil {
 		return nil, fake.err
 	}
@@ -272,6 +297,7 @@ type provisionerFake struct {
 	now        time.Time
 	byID       map[string]resource.ResourceV1
 	requests   []resource.ProvisionSpec
+	scopes     []entrypoint.ScopeV1
 	errAt      map[int]error
 	newCreates int
 	logicalIDs map[string]string
@@ -283,7 +309,8 @@ func newProvisionerFake(now time.Time) *provisionerFake {
 	return &provisionerFake{now: now, byID: map[string]resource.ResourceV1{}, logicalIDs: map[string]string{}}
 }
 
-func (fake *provisionerFake) Provision(_ context.Context, spec resource.ProvisionSpec, authorization resource.ProviderCreateAuthorization) (resource.ResourceV1, error) {
+func (fake *provisionerFake) Provision(_ context.Context, scope entrypoint.ScopeV1, spec resource.ProvisionSpec, authorization resource.ProviderCreateAuthorization) (resource.ResourceV1, error) {
+	fake.scopes = append(fake.scopes, scope)
 	fake.requests = append(fake.requests, spec)
 	call := len(fake.requests)
 	if err := spec.Validate(fake.now); err != nil {

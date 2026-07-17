@@ -51,13 +51,13 @@ type ScopeRevalidator interface {
 // the exact existing Worker security-group resource identity required by the
 // typed SG bridge; it is never a source of Worker URLs, logs or public IPs.
 type DeploymentResourceReader interface {
-	ListDeployment(context.Context, string) ([]resource.ResourceV1, error)
+	ListDeployment(context.Context, string, string) ([]resource.ResourceV1, error)
 }
 
 // ResourceProvisioner is deliberately the already-fenced typed provisioner.
 // It has no general AWS API and no shell capability.
 type ResourceProvisioner interface {
-	Provision(context.Context, resource.ProvisionSpec, resource.ProviderCreateAuthorization) (resource.ResourceV1, error)
+	Provision(context.Context, entrypoint.ScopeV1, resource.ProvisionSpec, resource.ProviderCreateAuthorization) (resource.ResourceV1, error)
 }
 
 // Runner is the injectable controller surface used by application composition.
@@ -233,11 +233,15 @@ func (executor *Executor) reconcile(ctx context.Context, operation entrypoint.Op
 			if err := executor.scopes.RevalidateScope(ctx, plan.Scope); err != nil {
 				return executor.failScope(ctx, operation, err)
 			}
-			created, provisionErr := executor.provision.Provision(ctx, spec, authorization)
+			created, provisionErr := executor.provision.Provision(ctx, plan.Scope, spec, authorization)
 			if provisionErr != nil {
 				if errors.Is(provisionErr, resource.ErrCreateAmbiguous) || errors.Is(provisionErr, resource.ErrRevisionConflict) ||
-					errors.Is(provisionErr, context.Canceled) || errors.Is(provisionErr, context.DeadlineExceeded) {
+					errors.Is(provisionErr, context.Canceled) || errors.Is(provisionErr, context.DeadlineExceeded) || errors.Is(provisionErr, entrypoint.ErrUnavailable) {
 					return provisionErr
+				}
+				if errors.Is(provisionErr, entrypoint.ErrReadBackRequired) || errors.Is(provisionErr, entrypoint.ErrRevisionConflict) ||
+					errors.Is(provisionErr, entrypoint.ErrUnsupportedEntry) || errors.Is(provisionErr, entrypoint.ErrInvalid) {
+					return executor.failScope(ctx, operation, provisionErr)
 				}
 				if errors.Is(provisionErr, resource.ErrCreateAuthorizationExpired) {
 					return executor.fail(ctx, operation, expiredCode(plan.Scope, executor.now()), summaryAuthorizationExpired)
@@ -279,7 +283,7 @@ func validOperationPlan(operation entrypoint.OperationV1, plan entrypoint.PlanV1
 }
 
 func (executor *Executor) bindWorkerResources(ctx context.Context, scope entrypoint.ScopeV1) (workerBindings, error) {
-	resources, err := executor.resources.ListDeployment(ctx, scope.Worker.DeploymentID)
+	resources, err := executor.resources.ListDeployment(ctx, scope.OwnerID, scope.Worker.DeploymentID)
 	if err != nil {
 		return workerBindings{}, err
 	}
@@ -456,7 +460,7 @@ func entryResourceID(agentInstanceID, operationID, logicalName string) string {
 }
 
 func (executor *Executor) verifyDurableGraph(ctx context.Context, scope entrypoint.ScopeV1, specs []resource.ProvisionSpec) error {
-	items, err := executor.resources.ListDeployment(ctx, scope.Worker.DeploymentID)
+	items, err := executor.resources.ListDeployment(ctx, scope.OwnerID, scope.Worker.DeploymentID)
 	if err != nil {
 		return err
 	}
