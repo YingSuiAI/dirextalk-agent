@@ -239,7 +239,7 @@ func TestAWSResourcePlanRejectsUnimplementedPublicEntryPoint(t *testing.T) {
 	}
 }
 
-func TestAWSResourcePlanCreatesDedicatedNoIngressNetworkAndApprovedPublicIPv4(t *testing.T) {
+func TestAWSResourcePlanRejectsWorkerPublicIPv4(t *testing.T) {
 	fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
 	plan := fixture.service.facts.(fakeFacts).plan
 	plan.NetworkScope.SecurityGroupMode = cloudapproval.SecurityGroupCreateDedicated
@@ -256,25 +256,8 @@ func TestAWSResourcePlanCreatesDedicatedNoIngressNetworkAndApprovedPublicIPv4(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	specs, err := builder.Build(plan, connection, fixture.service.recipes.(fakeRecipes).value, operation)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-	if len(specs) != 4 || specs[0].Type != resource.TypeSG || specs[1].Type != resource.TypeENI || specs[2].Type != resource.TypeEIP || specs[3].Type != resource.TypeEC2 {
-		t.Fatalf("unexpected resource topology: %#v", specs)
-	}
-	group := specs[0].AWS.SecurityGroup
-	if group == nil || len(group.Ingress) != 0 || len(group.Egress) != 3 {
-		t.Fatalf("dedicated security group is not closed to ingress with DNS/HTTPS-only egress: %#v", group)
-	}
-	if specs[1].AWS.NetworkInterface.ExistingSecurityGroupID != "" || len(specs[1].DependsOn) != 1 || specs[1].DependsOn[0] != specs[0].ResourceID {
-		t.Fatalf("ENI is not bound to the owned security group: %#v", specs[1])
-	}
-	if len(specs[2].DependsOn) != 1 || specs[2].DependsOn[0] != specs[1].ResourceID || specs[2].AWS.ElasticIP == nil {
-		t.Fatalf("Elastic IP is not bound to the exclusive ENI: %#v", specs[2])
-	}
-	if len(specs[3].DependsOn) != 1 || specs[3].DependsOn[0] != specs[1].ResourceID {
-		t.Fatalf("instance is not bound to the exclusive ENI: %#v", specs[3])
+	if _, err := builder.Build(plan, connection, fixture.service.recipes.(fakeRecipes).value, operation); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("public Worker error = %v, want ErrInvalid", err)
 	}
 }
 

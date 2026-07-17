@@ -144,7 +144,7 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 	}
 	placement, err := materializer.placements.Resolve(ctx, connection, cloudapp.ActivePlacementRequestV1{
 		OwnerID: request.Stage.Binding.OwnerID, ConnectionID: request.Stage.Binding.ConnectionID,
-		Placement: awsprovider.PlacementRequestV1{Requirements: requirements, PublicIPv4: true, RuntimeHoursPerMonth: cloudGoalRuntimeHours},
+		Placement: awsprovider.PlacementRequestV1{Requirements: requirements, PublicIPv4: false, RuntimeHoursPerMonth: cloudGoalRuntimeHours},
 	})
 	if err != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
@@ -226,9 +226,9 @@ func buildCloudGoalQuoteRequest(
 	secretScope []cloudquote.SecretScopeV1,
 ) (cloudquote.RequestV1, cloudapp.CreateQuoteCommand, error) {
 	if placement.Region != connection.Region || len(placement.Candidates) != 3 ||
-		placement.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours, PublicIPv4Hours: cloudGoalRuntimeHours}) ||
+		placement.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours}) ||
 		placement.Network.SecurityGroupMode != cloudquote.SecurityGroupCreateDedicated ||
-		placement.Network.SecurityGroupID != "" || !placement.Network.PublicIPv4 || placement.Network.EntryPoint != cloudquote.EntryPointNone ||
+		placement.Network.SecurityGroupID != "" || placement.Network.PublicIPv4 || placement.Network.EntryPoint != cloudquote.EntryPointNone ||
 		placement.Network.PublicExposure || len(placement.Network.IngressPorts) != 0 {
 		return cloudquote.RequestV1{}, cloudapp.CreateQuoteCommand{}, cloudapp.ErrInvalid
 	}
@@ -315,7 +315,7 @@ func cloudGoalPlacementRequirements(base recipe.ResourceRequirementsV1, candidat
 	if result.GPURequired {
 		result.GPUFamily = family
 	}
-	if (&awsprovider.PlacementRequestV1{Requirements: result, PublicIPv4: true, RuntimeHoursPerMonth: cloudGoalRuntimeHours}).Validate() != nil {
+	if (&awsprovider.PlacementRequestV1{Requirements: result, PublicIPv4: false, RuntimeHoursPerMonth: cloudGoalRuntimeHours}).Validate() != nil {
 		return recipe.ResourceRequirementsV1{}, cloudapp.ErrInvalid
 	}
 	return result, nil
@@ -330,7 +330,7 @@ func validateCloudGoalProviderQuote(
 	now time.Time,
 ) error {
 	if quoted.QuoteID != request.QuoteID || quoted.Validate() != nil || !now.Before(quoted.ValidUntil) ||
-		quoted.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours, PublicIPv4Hours: cloudGoalRuntimeHours}) {
+		quoted.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours}) {
 		return cloudapp.ErrInvalid
 	}
 	retention := cloudGoalRetention(request.Stage.Binding.Retention)
@@ -347,7 +347,7 @@ func validateCloudGoalProviderQuote(
 			candidate.Scope.Resource.VolumeIOPS != cloudGoalVolumeIOPS || candidate.Scope.Resource.VolumeThroughputMiBPS != cloudGoalVolumeThroughput ||
 			!candidate.Scope.Resource.VolumeEncrypted || candidate.Scope.Resource.PurchaseOption != cloudquote.PurchaseOnDemand ||
 			candidate.Scope.Network.SecurityGroupMode != cloudquote.SecurityGroupCreateDedicated || candidate.Scope.Network.SecurityGroupID != "" ||
-			!candidate.Scope.Network.PublicIPv4 || candidate.Scope.Network.EntryPoint != cloudquote.EntryPointNone || candidate.Scope.Network.PublicExposure ||
+			candidate.Scope.Network.PublicIPv4 || candidate.Scope.Network.EntryPoint != cloudquote.EntryPointNone || candidate.Scope.Network.PublicExposure ||
 			len(candidate.Scope.Network.IngressPorts) != 0 || len(candidate.Scope.IntegrationScope) != 0 ||
 			!slices.Equal(candidate.Scope.SecretScope, secretScope) || candidate.Scope.Retention != retention {
 			return cloudapp.ErrInvalid

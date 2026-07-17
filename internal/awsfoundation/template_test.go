@@ -166,7 +166,7 @@ func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {
 		old  string
 		new  string
 	}{
-		{name: "instance attribute readback removed", sid: "ObserveRegionalCompute", old: "- ec2:DescribeInstanceAttribute", new: "- ec2:DescribeAddresses"},
+		{name: "instance attribute readback removed", sid: "ObserveEC2", old: "- ec2:DescribeInstanceAttribute", new: "- ec2:DescribeAddresses"},
 		{name: "instance launch ownership removed", sid: "RunTaggedInstanceVolume", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
 		{name: "instance launch allows IMDSv1", sid: "RunTaggedInstanceVolume", old: "ec2:MetadataHttpTokens: required", new: "ec2:MetadataHttpTokens: optional"},
 		{name: "launch allows an unencrypted root", sid: "RunTaggedInstanceVolume", old: "ec2:Encrypted: 'true'", new: "ec2:Encrypted: 'false'"},

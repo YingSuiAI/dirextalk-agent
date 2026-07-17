@@ -34,7 +34,7 @@ var requiredTemplateResources = map[string]string{
 var templateAccountReadActions = map[string]struct{}{
 	"ec2:DescribeAddresses": {}, "ec2:DescribeAvailabilityZones": {}, "ec2:DescribeImages": {},
 	"ec2:DescribeInstanceAttribute": {}, "ec2:DescribeInstanceStatus": {}, "ec2:DescribeInstanceTypeOfferings": {}, "ec2:DescribeInstanceTypes": {},
-	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
+	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNatGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
 	"ec2:DescribeSecurityGroupRules": {}, "ec2:DescribeSnapshots": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeVpcEndpoints": {}, "ec2:DescribeVpcs": {},
 	"elasticloadbalancing:DescribeListeners": {}, "elasticloadbalancing:DescribeLoadBalancers": {}, "elasticloadbalancing:DescribeTags": {},
 	"elasticloadbalancing:DescribeTargetGroups": {}, "elasticloadbalancing:DescribeTargetHealth": {},

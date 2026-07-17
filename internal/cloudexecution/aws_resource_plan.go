@@ -54,6 +54,12 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		plan.NetworkScope.TLSRequired || plan.NetworkScope.AuthenticationRequired {
 		return nil, ErrInvalid
 	}
+	// The exclusive Worker is always private. Public ingress is a separately
+	// device-approved ALB operation after an independently read-back Worker
+	// succeeds, so an initial plan can never allocate an EIP.
+	if plan.NetworkScope.PublicIPv4 {
+		return nil, ErrInvalid
+	}
 	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, boundRecipe, cloudquote.RetentionScopeV1{
 		Class: cloudquote.RetentionClass(plan.RetentionScope.Class), AutoDestroy: plan.RetentionScope.AutoDestroy,
 		GracePeriodSeconds: plan.RetentionScope.GracePeriodSeconds, MaxLifetimeSeconds: plan.RetentionScope.MaxLifetimeSeconds,
@@ -144,18 +150,6 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	eni.ResourceID, eni.Type, eni.LogicalName, eni.SpecDigest, eni.AWS = eniID, resource.TypeENI, "worker-network-interface", eniDigest, eniAWS
 	eni.DependsOn = eniDependencies
 	result = append(result, eni)
-
-	if plan.NetworkScope.PublicIPv4 {
-		eipAWS := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, ElasticIP: &resource.AWSElasticIPSpecV1{Domain: "vpc"}}
-		eipDigest, digestErr := eipAWS.Digest(resource.TypeEIP)
-		if digestErr != nil {
-			return nil, ErrInvalid
-		}
-		eip := common
-		eip.ResourceID, eip.Type, eip.LogicalName = deterministicID(operation.DeploymentID, "eip"), resource.TypeEIP, "worker-public-ipv4"
-		eip.SpecDigest, eip.DependsOn, eip.AWS = eipDigest, []string{eniID}, eipAWS
-		result = append(result, eip)
-	}
 
 	instanceDependencies := []string{eniID}
 	attachments := make([]resource.AWSDataVolumeAttachmentV1, 0, len(plan.ResourceScope.VolumeScopes))

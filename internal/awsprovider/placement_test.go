@@ -18,6 +18,7 @@ type fakePlacementEC2 struct {
 	subnetPages   map[string]*ec2.DescribeSubnetsOutput
 	routePages    map[string]*ec2.DescribeRouteTablesOutput
 	gatewayPages  map[string]*ec2.DescribeInternetGatewaysOutput
+	natPages      map[string]*ec2.DescribeNatGatewaysOutput
 	typePages     map[string]*ec2.DescribeInstanceTypesOutput
 	offeringPages map[string]*ec2.DescribeInstanceTypeOfferingsOutput
 	zones         *ec2.DescribeAvailabilityZonesOutput
@@ -41,6 +42,10 @@ func (fake *fakePlacementEC2) DescribeRouteTables(_ context.Context, input *ec2.
 
 func (fake *fakePlacementEC2) DescribeInternetGateways(_ context.Context, input *ec2.DescribeInternetGatewaysInput, _ ...func(*ec2.Options)) (*ec2.DescribeInternetGatewaysOutput, error) {
 	return page(fake.gatewayPages, input.NextToken), nil
+}
+
+func (fake *fakePlacementEC2) DescribeNatGateways(_ context.Context, input *ec2.DescribeNatGatewaysInput, _ ...func(*ec2.Options)) (*ec2.DescribeNatGatewaysOutput, error) {
+	return page(fake.natPages, input.NextToken), nil
 }
 
 func (fake *fakePlacementEC2) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
@@ -93,6 +98,47 @@ func TestPlacementResolverUsesMainRouteOnlyWhenSubnetHasNoExplicitRouteTable(t *
 	if got.Network.SubnetID != testPlacementSubnet || !got.Network.PublicIPv4 {
 		t.Fatalf("main-route placement = %#v", got.Network)
 	}
+}
+
+func TestPlacementResolverRequiresPublicNATEgressForPrivateWorker(t *testing.T) {
+	request := testPlacementRequest()
+	request.PublicIPv4 = false
+
+	t.Run("rejects a private subnet without an active public NAT route", func(t *testing.T) {
+		fake := placementFixture()
+		fake.routePages[""].RouteTables[0].Routes = []ec2types.Route{{DestinationCidrBlock: aws.String("0.0.0.0/0"), NatGatewayId: aws.String("nat-0123456789abcdef0"), State: ec2types.RouteStateActive}}
+		resolver, err := newPlacementResolver(fake, testPlacementRegion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = resolver.Resolve(context.Background(), request)
+		if !errors.Is(err, ErrPlacementNetworkUnavailable) {
+			t.Fatalf("Resolve error = %v, want ErrPlacementNetworkUnavailable", err)
+		}
+	})
+
+	t.Run("accepts a private subnet only through an active public NAT with IGW egress", func(t *testing.T) {
+		fake := placementFixture()
+		const natSubnet = "subnet-0fedcba9876543210"
+		fake.routePages[""] = &ec2.DescribeRouteTablesOutput{RouteTables: []ec2types.RouteTable{
+			{VpcId: aws.String(testPlacementVPC), Associations: []ec2types.RouteTableAssociation{{SubnetId: aws.String(testPlacementSubnet)}},
+				Routes: []ec2types.Route{{DestinationCidrBlock: aws.String("0.0.0.0/0"), NatGatewayId: aws.String("nat-0123456789abcdef0"), State: ec2types.RouteStateActive}}},
+			{VpcId: aws.String(testPlacementVPC), Associations: []ec2types.RouteTableAssociation{{SubnetId: aws.String(natSubnet)}},
+				Routes: []ec2types.Route{{DestinationCidrBlock: aws.String("0.0.0.0/0"), GatewayId: aws.String(testPlacementIGW), State: ec2types.RouteStateActive}}},
+		}}
+		fake.natPages = map[string]*ec2.DescribeNatGatewaysOutput{"": {NatGateways: []ec2types.NatGateway{{NatGatewayId: aws.String("nat-0123456789abcdef0"), VpcId: aws.String(testPlacementVPC), SubnetId: aws.String(natSubnet), State: ec2types.NatGatewayStateAvailable, ConnectivityType: ec2types.ConnectivityTypePublic, NatGatewayAddresses: []ec2types.NatGatewayAddress{{PublicIp: aws.String("198.51.100.10")}}}}}}
+		resolver, err := newPlacementResolver(fake, testPlacementRegion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolver.Resolve(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Network.PublicIPv4 || got.Usage.PublicIPv4Hours != 0 || got.Network.SubnetID != testPlacementSubnet {
+			t.Fatalf("private NAT placement = %#v usage=%#v", got.Network, got.Usage)
+		}
+	})
 }
 
 func TestPlacementResolverRejectsInsufficientCandidateChain(t *testing.T) {
@@ -195,6 +241,7 @@ func placementFixture() *fakePlacementEC2 {
 		gatewayPages: map[string]*ec2.DescribeInternetGatewaysOutput{"": {InternetGateways: []ec2types.InternetGateway{{
 			InternetGatewayId: aws.String(testPlacementIGW), Attachments: []ec2types.InternetGatewayAttachment{{VpcId: aws.String(testPlacementVPC), State: ec2types.AttachmentStatusAttached}},
 		}}}},
+		natPages: map[string]*ec2.DescribeNatGatewaysOutput{"": {}},
 		typePages: map[string]*ec2.DescribeInstanceTypesOutput{"": {InstanceTypes: []ec2types.InstanceTypeInfo{
 			placementInstanceInfo("t3.small", 2, 4096), placementInstanceInfo("m7i.xlarge", 4, 16384), placementInstanceInfo("m7i.2xlarge", 8, 32768),
 		}}},

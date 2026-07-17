@@ -574,7 +574,7 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: ObserveRegionalCompute
+          - Sid: ObserveEC2
             Effect: Allow
             Action:
               - ec2:DescribeAddresses
@@ -586,6 +586,7 @@ Resources:
               - ec2:DescribeInstanceTypes
               - ec2:DescribeInstances
               - ec2:DescribeInternetGateways
+              - ec2:DescribeNatGateways
               - ec2:DescribeNetworkInterfaces
               - ec2:DescribeRouteTables
               - ec2:DescribeSecurityGroups

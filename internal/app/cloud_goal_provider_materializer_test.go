@@ -159,7 +159,7 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 		fixture.facts.quoteKeys[0] != fixture.request.Stage.OutputIdempotencyKey || fixture.facts.planKeys[0] != fixture.request.Stage.OutputIdempotencyKey {
 		t.Fatalf("operation keys quote=%v plan=%v", fixture.facts.quoteKeys, fixture.facts.planKeys)
 	}
-	if !fixture.placements.request.Placement.PublicIPv4 || fixture.placements.request.Placement.RuntimeHoursPerMonth != cloudGoalRuntimeHours ||
+	if fixture.placements.request.Placement.PublicIPv4 || fixture.placements.request.Placement.RuntimeHoursPerMonth != cloudGoalRuntimeHours ||
 		fixture.placements.request.Placement.Requirements.MinVCPU != 2 || fixture.placements.request.Placement.Requirements.MinMemoryMiB != 4096 ||
 		fixture.placements.request.Placement.Requirements.MinDiskGiB != 40 {
 		t.Fatalf("placement request=%#v", fixture.placements.request)
@@ -364,8 +364,8 @@ func cloudGoalProviderCandidates() []planning.ResourceCandidateV1 {
 func cloudGoalProviderPlacement() awsprovider.PlacementV1 {
 	result := awsprovider.PlacementV1{
 		Region: "us-east-1", AvailabilityZone: "us-east-1a",
-		Network: cloudquote.NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated, PublicIPv4: true, EntryPoint: cloudquote.EntryPointNone},
-		Usage:   cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours, PublicIPv4Hours: cloudGoalRuntimeHours},
+		Network: cloudquote.NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated, PublicIPv4: false, EntryPoint: cloudquote.EntryPointNone},
+		Usage:   cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours},
 	}
 	profiles := cloudGoalQuoteProfiles()
 	for index, candidate := range cloudGoalProviderCandidates() {

@@ -33,6 +33,7 @@ type PlacementEC2ReadAPI interface {
 	DescribeAvailabilityZones(context.Context, *ec2.DescribeAvailabilityZonesInput, ...func(*ec2.Options)) (*ec2.DescribeAvailabilityZonesOutput, error)
 	DescribeRouteTables(context.Context, *ec2.DescribeRouteTablesInput, ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error)
 	DescribeInternetGateways(context.Context, *ec2.DescribeInternetGatewaysInput, ...func(*ec2.Options)) (*ec2.DescribeInternetGatewaysOutput, error)
+	DescribeNatGateways(context.Context, *ec2.DescribeNatGatewaysInput, ...func(*ec2.Options)) (*ec2.DescribeNatGatewaysOutput, error)
 	DescribeInstanceTypes(context.Context, *ec2.DescribeInstanceTypesInput, ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error)
 	DescribeInstanceTypeOfferings(context.Context, *ec2.DescribeInstanceTypeOfferingsInput, ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 }
@@ -166,14 +167,17 @@ func (resolver *PlacementResolver) readNetworks(ctx context.Context, publicIPv4 
 			availableZones[name] = struct{}{}
 		}
 	}
-	var routes []ec2types.RouteTable
-	var gateways map[string]map[string]struct{}
-	if publicIPv4 {
-		routes, err = resolver.readRouteTables(ctx)
-		if err != nil {
-			return nil, err
-		}
-		gateways, err = resolver.readAttachedGateways(ctx)
+	routes, err := resolver.readRouteTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	gateways, err := resolver.readAttachedGateways(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var natGateways map[string]placementNATGateway
+	if !publicIPv4 {
+		natGateways, err = resolver.readPublicNATGateways(ctx, routes, gateways)
 		if err != nil {
 			return nil, err
 		}
@@ -187,6 +191,9 @@ func (resolver *PlacementResolver) readNetworks(ctx context.Context, publicIPv4 
 			continue
 		}
 		if publicIPv4 && !subnetHasEffectiveIGWRoute(subnetID, vpcID, routes, gateways) {
+			continue
+		}
+		if !publicIPv4 && !subnetHasEffectiveNATRoute(subnetID, vpcID, routes, natGateways) {
 			continue
 		}
 		result = append(result, placementNetwork{vpcID: vpcID, subnetID: subnetID, zone: zone, defaultVPC: isDefault})
@@ -286,6 +293,51 @@ func (resolver *PlacementResolver) readAttachedGateways(ctx context.Context) (ma
 	return result, err
 }
 
+type placementNATGateway struct {
+	vpcID    string
+	subnetID string
+}
+
+// readPublicNATGateways accepts only an available public NAT gateway with an
+// observed EIP and an independently verified IGW route from its own subnet.
+// A private Worker can therefore reach required HTTPS installation endpoints
+// without acquiring a public address itself.
+func (resolver *PlacementResolver) readPublicNATGateways(ctx context.Context, routes []ec2types.RouteTable, gateways map[string]map[string]struct{}) (map[string]placementNATGateway, error) {
+	result := make(map[string]placementNATGateway)
+	err := walkPlacementPages(func(token *string) (*string, error) {
+		output, err := resolver.client.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{Filter: []ec2types.Filter{{Name: aws.String("state"), Values: []string{string(ec2types.NatGatewayStateAvailable)}}}, MaxResults: aws.Int32(1000), NextToken: token})
+		if err != nil {
+			return nil, fmt.Errorf("DescribeNatGateways: %w", err)
+		}
+		if output == nil {
+			return nil, errors.New("DescribeNatGateways returned an empty response")
+		}
+		for _, value := range output.NatGateways {
+			id, vpcID, subnetID := aws.ToString(value.NatGatewayId), aws.ToString(value.VpcId), aws.ToString(value.SubnetId)
+			if id == "" || vpcID == "" || subnetID == "" || value.State != ec2types.NatGatewayStateAvailable || value.ConnectivityType != ec2types.ConnectivityTypePublic ||
+				!natGatewayHasPublicAddress(value) || !subnetHasEffectiveIGWRoute(subnetID, vpcID, routes, gateways) {
+				continue
+			}
+			candidate := placementNATGateway{vpcID: vpcID, subnetID: subnetID}
+			if existing, found := result[id]; found && existing != candidate {
+				return nil, fmt.Errorf("DescribeNatGateways returned conflicting facts for %s", id)
+			}
+			result[id] = candidate
+		}
+		return output.NextToken, nil
+	})
+	return result, err
+}
+
+func natGatewayHasPublicAddress(value ec2types.NatGateway) bool {
+	for _, address := range value.NatGatewayAddresses {
+		if aws.ToString(address.PublicIp) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func subnetHasEffectiveIGWRoute(subnetID, vpcID string, tables []ec2types.RouteTable, gateways map[string]map[string]struct{}) bool {
 	var explicit, main []ec2types.RouteTable
 	for _, table := range tables {
@@ -310,6 +362,38 @@ func subnetHasEffectiveIGWRoute(subnetID, vpcID string, tables []ec2types.RouteT
 			gatewayID := aws.ToString(route.GatewayId)
 			if aws.ToString(route.DestinationCidrBlock) == "0.0.0.0/0" && route.State == ec2types.RouteStateActive && strings.HasPrefix(gatewayID, "igw-") {
 				if _, ok := gateways[vpcID][gatewayID]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func subnetHasEffectiveNATRoute(subnetID, vpcID string, tables []ec2types.RouteTable, gateways map[string]placementNATGateway) bool {
+	var explicit, main []ec2types.RouteTable
+	for _, table := range tables {
+		if aws.ToString(table.VpcId) != vpcID {
+			continue
+		}
+		for _, association := range table.Associations {
+			if aws.ToString(association.SubnetId) == subnetID {
+				explicit = append(explicit, table)
+			}
+			if aws.ToBool(association.Main) {
+				main = append(main, table)
+			}
+		}
+	}
+	effective := explicit
+	if len(effective) == 0 {
+		effective = main
+	}
+	for _, table := range effective {
+		for _, route := range table.Routes {
+			natID := aws.ToString(route.NatGatewayId)
+			if aws.ToString(route.DestinationCidrBlock) == "0.0.0.0/0" && route.State == ec2types.RouteStateActive {
+				if gateway, ok := gateways[natID]; ok && gateway.vpcID == vpcID {
 					return true
 				}
 			}
