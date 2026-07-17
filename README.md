@@ -26,7 +26,7 @@ Production startup requires TLS certificate/key files, a PostgreSQL DSN, an immu
 
 ## Operation
 
-The control process has four commands: `migrate`, `bootstrap-service-key`, `bootstrap-approval-device`, and `serve`. All four use the same immutable `AGENT_INSTANCE_ID` and read the PostgreSQL DSN from `AGENT_DATABASE_URL_FILE`; the legacy plaintext `AGENT_DATABASE_URL` environment variable is deliberately ignored.
+The control process has five commands: `migrate`, `bootstrap-service-key`, `bootstrap-approval-device`, `healthcheck`, and `serve`. The first three and `serve` use the same immutable `AGENT_INSTANCE_ID` and read the PostgreSQL DSN from `AGENT_DATABASE_URL_FILE`; the legacy plaintext `AGENT_DATABASE_URL` environment variable is deliberately ignored.
 
 `serve` additionally requires:
 
@@ -36,6 +36,8 @@ The control process has four commands: `migrate`, `bootstrap-service-key`, `boot
 - `AGENT_MOUNTED_SECRETS_DIR`, whose protected files are addressed only as opaque `mounted:<name>` references.
 - `AGENT_MODEL_PROFILES_FILE`, a strict, secret-free JSON catalog that binds each public `profile_id` to one provider, model, HTTPS endpoint, mounted credential reference, context window, and maximum output-token limit.
 - Optional `AGENT_MCP_SERVERS_FILE`, containing trusted, secret-free HTTPS MCP endpoint metadata and optional mounted secret references.
+
+`healthcheck` is the image-local, no-database readiness command. It performs the standard unauthenticated gRPC health RPC through TLS 1.3, defaults to `127.0.0.1` on the `AGENT_GRPC_LISTEN` port, and accepts an optional `AGENT_GRPC_HEALTHCHECK_ADDRESS` only when it is an IP loopback address on that same port. `AGENT_GRPC_HEALTHCHECK_SERVER_NAME` is required and must be an exact DNS or IP SAN from `AGENT_TLS_CERT_FILE`; the command combines the system roots with that mounted public certificate chain and never reads the TLS private key or a service key. The production image invokes this command through its Docker `HEALTHCHECK` metadata.
 
 AWS control remains default-off. When enabled, `AGENT_AWS_REAPER_IMAGE_URI` must be an immutable prerelease reference with a registry digest and `AGENT_WORKER_CONTROL_ENDPOINT` must be a credential-free `grpcs://` endpoint. An optional protected `AGENT_WORKER_AMI_PUBLICATION_FILE` imports one independently attested Worker AMI publication at startup. The durable active-release catalog is scoped by Agent instance, AWS account, Region, and architecture; quoting fails closed when no matching active release exists, and callers cannot supply an AMI ID directly.
 

@@ -18,6 +18,7 @@ services:
       AGENT_INSTANCE_ID: ${AGENT_INSTANCE_ID:?set the stable Agent instance UUID}
       AGENT_DATABASE_URL_FILE: /run/secrets/agent_postgres_dsn
       AGENT_GRPC_LISTEN: :9443
+      AGENT_GRPC_HEALTHCHECK_SERVER_NAME: ${AGENT_GRPC_HEALTHCHECK_SERVER_NAME:?set the TLS certificate DNS/IP SAN used by the local image healthcheck}
       AGENT_TLS_CERT_FILE: /run/secrets/agent_tls_cert
       AGENT_TLS_KEY_FILE: /run/secrets/agent_tls_key
       AGENT_SERVICE_KEY_PEPPER_FILE: /run/secrets/agent_service_key_pepper

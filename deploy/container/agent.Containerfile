@@ -35,3 +35,4 @@ USER 65532:65532
 EXPOSE 9443
 ENTRYPOINT ["/usr/local/bin/dirextalk-agent"]
 CMD ["serve"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD ["/usr/local/bin/dirextalk-agent", "healthcheck"]

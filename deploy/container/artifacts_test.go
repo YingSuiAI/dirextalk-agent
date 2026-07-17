@@ -56,6 +56,30 @@ func TestWorkerArtifactPreservesExclusiveVMRuntimeBoundary(t *testing.T) {
 	}
 }
 
+func TestAgentArtifactProvidesNonRootTLSGrpcHealthcheck(t *testing.T) {
+	containerfile := readArtifact(t, "agent.Containerfile")
+	for _, required := range []string{
+		"FROM scratch",
+		"USER 65532:65532",
+		"ENTRYPOINT [\"/usr/local/bin/dirextalk-agent\"]",
+		"CMD [\"serve\"]",
+		"HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD [\"/usr/local/bin/dirextalk-agent\", \"healthcheck\"]",
+	} {
+		if !strings.Contains(containerfile, required) {
+			t.Fatalf("agent.Containerfile is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"USER 0:0", "aws-cli", "awscli", "nodejs", "npm ", "docker.sock", "dockerd"} {
+		if strings.Contains(strings.ToLower(containerfile), strings.ToLower(forbidden)) {
+			t.Fatalf("agent.Containerfile contains forbidden runtime surface %q", forbidden)
+		}
+	}
+	compose := readArtifact(t, "compose.yaml")
+	if !strings.Contains(compose, "AGENT_GRPC_HEALTHCHECK_SERVER_NAME: ${AGENT_GRPC_HEALTHCHECK_SERVER_NAME:?") {
+		t.Fatal("compose.yaml does not require the TLS server name for the image healthcheck")
+	}
+}
+
 func TestAllRuntimeArtifactsRequireImmutablePrereleaseMetadata(t *testing.T) {
 	for _, name := range []string{"agent.Containerfile", "worker.Containerfile", "reaper.Containerfile"} {
 		artifact := readArtifact(t, name)

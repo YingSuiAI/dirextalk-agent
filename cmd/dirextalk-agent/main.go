@@ -35,7 +35,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) != 1 {
-		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|bootstrap-approval-device|serve>")
+		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|bootstrap-approval-device|healthcheck|serve>")
 	}
 	switch arguments[0] {
 	case "migrate":
@@ -44,10 +44,12 @@ func run(arguments []string) error {
 		return bootstrapServiceKey()
 	case "bootstrap-approval-device":
 		return bootstrapApprovalDevice()
+	case "healthcheck":
+		return runHealthcheck()
 	case "serve":
 		return serve()
 	default:
-		return errors.New("unknown command; expected migrate, bootstrap-service-key, bootstrap-approval-device, or serve")
+		return errors.New("unknown command; expected migrate, bootstrap-service-key, bootstrap-approval-device, healthcheck, or serve")
 	}
 }
 

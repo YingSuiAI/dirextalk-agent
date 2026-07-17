@@ -7,7 +7,7 @@ shared with the legacy deployer, updater, or release scripts.
 
 | Image | Runtime boundary |
 |---|---|
-| `agent.Containerfile` | Static Agent binary and CA bundle in `scratch`; fixed UID/GID `65532`, no shell, AWS CLI, Node, package manager, Docker client, or Docker socket. |
+| `agent.Containerfile` | Static Agent binary and CA bundle in `scratch`; fixed UID/GID `65532`, no shell, AWS CLI, Node, package manager, Docker client, or Docker socket. The image-local Docker health check makes a TLS 1.3 standard gRPC health RPC only to the Agent's loopback listener. |
 | `worker.Containerfile` | Static Worker supervisor, binary digest sidecar, CA bundle, and fixed-AMI systemd assets in `scratch`; fixed UID/GID `65532`, no shell, Docker client/daemon/socket, AWS CLI, Node, or package manager. |
 | `reaper.Containerfile` | Static `lambda.norpc` Go binary on the AWS `provided.al2023` OS-only Lambda image. |
 
@@ -69,6 +69,17 @@ if ($Refs.Count -ne 3 -or $Refs.Where({ [string]::IsNullOrWhiteSpace($_) -or $_ 
 $BootstrapInputs = @($env:AGENT_POSTGRES_DSN, $env:AGENT_BOOTSTRAP_SERVICE_KEY, $env:AGENT_BOOTSTRAP_CLIENT_ID)
 if ($BootstrapInputs.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) { throw 'external PostgreSQL and bootstrap service-key inputs are required' }
 ```
+
+The Agent image defaults to `serve`; its existing migration and one-time
+bootstrap entry points remain subcommands, for example
+`docker compose ... run --rm agent migrate` through the Compose form below.
+Its image-level health command is `dirextalk-agent healthcheck`. It reads no
+database or private-key material, calls only the loopback gRPC listener, and
+requires `AGENT_GRPC_HEALTHCHECK_SERVER_NAME` to match a DNS or IP SAN in the
+mounted `AGENT_TLS_CERT_FILE`. It uses the system certificate roots plus that
+mounted public certificate chain. If a non-default listener is necessary,
+`AGENT_GRPC_HEALTHCHECK_ADDRESS` may contain only an IP loopback address using
+the exact `AGENT_GRPC_LISTEN` port.
 
 ## Immutable release operator flow
 
@@ -168,7 +179,10 @@ overridden explicitly. The bootstrap key value must use the service-key file
 format accepted by the Agent; never place it in `.env` or the Compose YAML.
 The host gRPC publish defaults to `127.0.0.1:9443`; set
 `AGENT_GRPC_BIND_ADDRESS` only when an explicitly reviewed network path needs a
-different bind. Callers on `compose.shared-postgres.yaml` should use the Docker
+different bind. `AGENT_GRPC_HEALTHCHECK_SERVER_NAME` is also required: supply a
+non-secret DNS or IP SAN from `AGENT_TLS_CERT_PEM`, so the inherited image
+health check validates the mounted TLS certificate instead of bypassing its
+identity. Callers on `compose.shared-postgres.yaml` should use the Docker
 network alias and do not require a public host listener.
 
 The Agent image variable uses the explicit
