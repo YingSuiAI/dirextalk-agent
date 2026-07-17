@@ -31,6 +31,7 @@ var (
 	awsZonePattern         = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
 	awsProfilePattern      = regexp.MustCompile(`^dtx-agent-[a-z0-9-]{1,54}-worker$`)
 	awsHTTPPathPattern     = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
+	awsHostnamePattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 	awsAccountIDPattern    = regexp.MustCompile(`^[0-9]{12}$`)
 	awsKMSPattern          = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
 	awsEndpointServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{2,253}[a-z0-9]$`)
@@ -135,6 +136,11 @@ type AWSListenerSpecV1 struct {
 	TargetGroupResourceID  string               `json:"target_group_resource_id"`
 	Port                   uint16               `json:"port"`
 	Protocol               AWSListenerProtocol  `json:"protocol"`
+	// Hostname is the exact user-approved public DNS name that must be covered
+	// by the existing ACM certificate. It is deliberately part of the typed
+	// listener spec so Provider read-back cannot substitute a different
+	// certificate with an unrelated SAN.
+	Hostname               string               `json:"hostname"`
 	CertificateARN         string               `json:"certificate_arn"`
 	TLSPolicy              AWSListenerTLSPolicy `json:"tls_policy"`
 }
@@ -530,7 +536,7 @@ func (spec AWSTargetGroupSpecV1) validate() error {
 func (spec AWSListenerSpecV1) validate() error {
 	if !validCanonicalResourceID(spec.LoadBalancerResourceID) || !validCanonicalResourceID(spec.TargetGroupResourceID) ||
 		spec.LoadBalancerResourceID == spec.TargetGroupResourceID || spec.Port != 443 || spec.Protocol != AWSListenerProtocolHTTPS ||
-		!validACMCertificateARN(spec.CertificateARN) || spec.TLSPolicy != AWSListenerTLSPolicyTLS13_12_2021_06 {
+		!validAWSHostname(spec.Hostname) || !validACMCertificateARN(spec.CertificateARN) || spec.TLSPolicy != AWSListenerTLSPolicyTLS13_12_2021_06 {
 		return fmt.Errorf("%w: HTTPS listener scope is invalid", ErrInvalid)
 	}
 	return nil
@@ -561,6 +567,10 @@ func validCanonicalResourceID(value string) bool {
 
 func validAWSHTTPPath(value string) bool {
 	return len(value) <= 512 && awsHTTPPathPattern.MatchString(value) && path.Clean(value) == value
+}
+
+func validAWSHostname(value string) bool {
+	return len(value) <= 253 && awsHostnamePattern.MatchString(value)
 }
 
 func validACMCertificateARN(value string) bool {

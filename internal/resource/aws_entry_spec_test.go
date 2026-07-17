@@ -82,12 +82,21 @@ func TestAWSALBEntrySpecsCloneAndDigestEveryApprovedInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	changedListener := listener.Clone()
-	changedListener.Listener.CertificateARN = "arn:aws:acm:us-east-1:123456789012:certificate/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	changedListener.Listener.Hostname = "other.example.test"
 	changedListenerDigest, err := changedListener.Digest(TypeListener)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if listenerDigest == changedListenerDigest {
+		t.Fatal("listener digest did not bind the approved hostname")
+	}
+	changedCertificate := listener.Clone()
+	changedCertificate.Listener.CertificateARN = "arn:aws:acm:us-east-1:123456789012:certificate/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	changedCertificateDigest, err := changedCertificate.Digest(TypeListener)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listenerDigest == changedCertificateDigest {
 		t.Fatal("listener digest did not bind the ACM certificate")
 	}
 }
@@ -113,6 +122,7 @@ func TestAWSALBEntrySpecsRejectUnsafeOrUnboundInputs(t *testing.T) {
 	}
 	tests[0].spec.ALB.SubnetIDs = tests[0].spec.ALB.SubnetIDs[:1]
 	tests[1].spec.TargetGroup.Registration.InstanceID = "i-not-an-approved-instance"
+	tests[2].spec.Listener.Hostname = "Service.Example.Test"
 	tests[2].spec.Listener.Port = 8443
 	tests[3].spec.SecurityGroupRule.SourceSecurityGroupResourceID = "sg-0123456789abcdef0"
 	for _, test := range tests {
@@ -169,6 +179,7 @@ func entryListenerSpec(loadBalancerResourceID, targetGroupResourceID string) *AW
 	return &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Listener: &AWSListenerSpecV1{
 		LoadBalancerResourceID: loadBalancerResourceID, TargetGroupResourceID: targetGroupResourceID,
 		Port: 443, Protocol: AWSListenerProtocolHTTPS,
+		Hostname:       "service.example.test",
 		CertificateARN: "arn:aws:acm:us-east-1:123456789012:certificate/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		TLSPolicy:      AWSListenerTLSPolicyTLS13_12_2021_06,
 	}}
