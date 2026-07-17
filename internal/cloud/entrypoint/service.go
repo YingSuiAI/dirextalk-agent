@@ -67,6 +67,12 @@ func (draft DraftV1) normalized() DraftV1 {
 	return draft
 }
 
+// NormalizeDraft returns the canonical, safe representation used when a
+// caller-provided draft is compared with an independently persisted quote.
+// The scope builder must not let spelling or ordering differences select a
+// different price-sensitive scope.
+func NormalizeDraft(draft DraftV1) DraftV1 { return draft.normalized() }
+
 func (draft DraftV1) Validate() error {
 	draft = draft.normalized()
 	if draft.Hostname == "" || draft.CertificateARN == "" || len(draft.PublicSubnetIDs) < 2 || draft.TargetPort == 0 || draft.TargetPort > 65535 ||

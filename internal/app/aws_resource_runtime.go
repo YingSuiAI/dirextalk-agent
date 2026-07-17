@@ -141,6 +141,22 @@ func (factory *awsResourceRuntimeFactory) WorkerIdentityVerifier(ctx context.Con
 	return verifier, nil
 }
 
+// EntrypointReadBack exposes only the independent AWS evidence API required
+// before a user can sign a public ALB entry scope. The application scope
+// builder cannot obtain generic provider mutation authority through this
+// adapter.
+func (factory *awsResourceRuntimeFactory) EntrypointReadBack(ctx context.Context, connection cloudapp.Connection) (awsprovider.EntryScopeReadBackProvider, error) {
+	provider, _, err := factory.Runtime(ctx, connection)
+	if err != nil {
+		return nil, err
+	}
+	reader, ok := provider.(awsprovider.EntryScopeReadBackProvider)
+	if !ok {
+		return nil, cloudapp.ErrUnavailable
+	}
+	return reader, nil
+}
+
 func (factory awsLifecycleFactory) ForConnection(ctx context.Context, connection cloudapp.Connection) (cloudexecution.ResourceLifecycle, error) {
 	if factory.repository == nil || factory.runtimes == nil {
 		return nil, cloudapp.ErrUnavailable
