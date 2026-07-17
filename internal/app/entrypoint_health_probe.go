@@ -48,8 +48,9 @@ type entrypointProbeRunner interface {
 }
 
 // entrypointProbeReader is intentionally narrower than resource.ProbeRepository.
-// The adapter can inspect an existing monitor only to fence its configuration;
-// it cannot write evidence or synthesize an external health result.
+// The adapter can inspect an existing monitor only to decide whether it owns the
+// exact independently approved readiness definition. It must never replace a
+// different, otherwise valid monitor because that would clear its evidence.
 type entrypointProbeReader interface {
 	GetProbe(context.Context, string) (resource.ProbeMonitorRecord, error)
 }
@@ -132,9 +133,12 @@ func (adapter *entrypointHealthProbeAdapter) configure(ctx context.Context, owne
 	if current.Interval == adapter.interval && reflect.DeepEqual(current.Suite, suite) {
 		return current, nil
 	}
-	return adapter.probes.Configure(ctx, resource.ProbeConfigureRequest{
-		OwnerID: ownerID, Suite: suite, Interval: adapter.interval, ExpectedRevision: current.Revision,
-	})
+	// A deployment has one durable monitor today. A valid monitor with a
+	// different suite or cadence may contain liveness/semantic evidence owned by
+	// another approved workflow. Do not use this entrypoint adapter to overwrite
+	// it (Configure clears evidence); leave the entry operation retryable until a
+	// dedicated multi-monitor model exists.
+	return resource.ProbeMonitorRecord{}, errEntrypointHealthUnavailable
 }
 
 func entrypointExternalHealthSuite(plan entrypoint.PlanV1) (healthprobe.SuiteV1, error) {

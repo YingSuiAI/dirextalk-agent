@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,54 +53,58 @@ func TestEntrypointHealthProbeBuildsSignedHTTPSReadinessMonitor(t *testing.T) {
 	}
 }
 
-func TestEntrypointHealthProbeUsesExistingMonitorRevisionAndRetriesCAS(t *testing.T) {
+func TestEntrypointHealthProbePreservesDifferentExistingMonitor(t *testing.T) {
 	plan := entrypointHealthPlan(t)
 	desired, err := entrypointExternalHealthSuite(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldSuite := desired
-	oldSuite.Probes = append([]healthprobe.SpecV1(nil), desired.Probes...)
-	oldSuite.Probes[0].TimeoutMillis++
-	oldSuite.Probes[0].Binding.ProbeDigest = ""
-	oldSuite.Probes[0], err = healthprobe.Bind(oldSuite.Probes[0])
-	if err != nil {
-		t.Fatal(err)
+
+	tests := []struct {
+		name     string
+		suite    healthprobe.SuiteV1
+		interval time.Duration
+	}{
+		{
+			name: "different suite",
+			suite: func() healthprobe.SuiteV1 {
+				other := desired
+				other.Probes = append([]healthprobe.SpecV1(nil), desired.Probes...)
+				other.Probes[0].TimeoutMillis++
+				other.Probes[0].Binding.ProbeDigest = ""
+				bound, bindErr := healthprobe.Bind(other.Probes[0])
+				if bindErr != nil {
+					t.Fatal(bindErr)
+				}
+				other.Probes[0] = bound
+				return other
+			}(),
+			interval: entrypointHealthProbeInterval,
+		},
+		{name: "different interval", suite: desired, interval: 2 * entrypointHealthProbeInterval},
 	}
-	old := entrypointProbeRecord(t, plan.Scope.OwnerID, oldSuite, 200, 7, entrypointHealthProbeInterval)
-	current := entrypointProbeRecord(t, plan.Scope.OwnerID, oldSuite, 200, 8, entrypointHealthProbeInterval)
-	monitors := &entrypointProbeMonitorFake{responses: []entrypointProbeMonitorResult{{record: old}, {record: current}}}
-	runner := &entrypointProbeRunnerFake{}
-	runner.configure = func(request resource.ProbeConfigureRequest) (resource.ProbeMonitorRecord, error) {
-		switch len(runner.configureRequests) {
-		case 1:
-			if request.ExpectedRevision != old.Revision {
-				t.Fatalf("first expected revision=%d want=%d", request.ExpectedRevision, old.Revision)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			original := entrypointProbeRecord(t, plan.Scope.OwnerID, test.suite, 200, 7, test.interval)
+			monitors := &entrypointProbeMonitorFake{responses: []entrypointProbeMonitorResult{{record: original}}}
+			runner := &entrypointProbeRunnerFake{}
+			adapter, err := newEntrypointHealthProbeAdapter(runner, monitors)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return resource.ProbeMonitorRecord{}, resource.ErrRevisionConflict
-		case 2:
-			if request.ExpectedRevision != current.Revision || request.Suite.Validate() != nil {
-				t.Fatalf("retry request=%+v", request)
+
+			_, err = adapter.ConfigureAndRun(context.Background(), plan)
+			if !errors.Is(err, entrypoint.ErrUnavailable) {
+				t.Fatalf("error=%v want retryable unavailable", err)
 			}
-			return entrypointProbeRecord(t, plan.Scope.OwnerID, request.Suite, 200, 9, request.Interval), nil
-		default:
-			t.Fatalf("unexpected Configure calls=%d", len(runner.configureRequests))
-			return resource.ProbeMonitorRecord{}, nil
-		}
-	}
-	runner.run = func(deploymentID string) (resource.ProbeMonitorRecord, error) {
-		if deploymentID != plan.Scope.Worker.DeploymentID {
-			t.Fatalf("run deployment=%q", deploymentID)
-		}
-		return entrypointProbeRecord(t, plan.Scope.OwnerID, desired, 200, 10, entrypointHealthProbeInterval), nil
-	}
-	adapter, err := newEntrypointHealthProbeAdapter(runner, monitors)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := adapter.ConfigureAndRun(context.Background(), plan)
-	if err != nil || result.State != entrypointHealthHealthy || result.Revision != 10 || len(runner.configureRequests) != 2 || monitors.calls != 2 {
-		t.Fatalf("result=%+v configs=%d monitor reads=%d error=%v", result, len(runner.configureRequests), monitors.calls, err)
+			if len(runner.configureRequests) != 0 || len(runner.runDeployments) != 0 || monitors.calls != 1 {
+				t.Fatalf("existing monitor was touched: configs=%d runs=%d reads=%d", len(runner.configureRequests), len(runner.runDeployments), monitors.calls)
+			}
+			if !reflect.DeepEqual(monitors.responses[0].record, original) {
+				t.Fatalf("existing monitor or evidence changed: got=%+v want=%+v", monitors.responses[0].record, original)
+			}
+		})
 	}
 }
 
