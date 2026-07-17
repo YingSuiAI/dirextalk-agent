@@ -70,6 +70,114 @@ func TestResourceStoreCreateIntentAcceptsWorkerApprovalSnapshotAfterPlanTransiti
 	}
 }
 
+func TestResourceStoreCreateIntentRejectsActiveDestroyOperation(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		wantReject bool
+	}{
+		{name: "awaiting approval does not fence create", status: "awaiting_approval"},
+		{name: "approved", status: "approved", wantReject: true},
+		{name: "destroying", status: "destroying", wantReject: true},
+		{name: "destroy blocked", status: "destroy_blocked", wantReject: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pool, baseStore, instanceID := newPlanningTestStore(t)
+			ctx := context.Background()
+			taskID, _ := createWorkerTask(t, baseStore)
+			deploymentID := uuid.NewString()
+			const ownerID = "owner-resource-destroy-fence"
+			seedWorkerIdentityBinding(t, pool, instanceID, ownerID, taskID, deploymentID, "i-0123456789abcdef0", "123456789012")
+			approvalID, approvalHash := workerApprovalSnapshot(t, ctx, pool, deploymentID)
+			insertDeploymentDestroyOperation(t, ctx, pool, instanceID, ownerID, deploymentID, test.status)
+
+			store, err := baseStore.NewResourceStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = store.CreateIntent(ctx, workerResourceIntentFixture(instanceID, ownerID, taskID, deploymentID, approvalHash, approvalID))
+			if test.wantReject {
+				if !errors.Is(err, resource.ErrInvalid) {
+					t.Fatalf("CreateIntent during %s error=%v, want resource.ErrInvalid", test.status, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CreateIntent during %s error=%v, want success", test.status, err)
+			}
+		})
+	}
+}
+
+func TestResourceStoreWithDeploymentFenceSerializesCallbacksAndReleases(t *testing.T) {
+	_, baseStore, _ := newPlanningTestStore(t)
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	deploymentID := uuid.NewString()
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.WithDeploymentFence(ctx, deploymentID, func(runCtx context.Context) error {
+			close(firstEntered)
+			select {
+			case <-releaseFirst:
+				return nil
+			case <-runCtx.Done():
+				return runCtx.Err()
+			}
+		})
+	}()
+	select {
+	case <-firstEntered:
+	case <-ctx.Done():
+		t.Fatalf("first deployment fence did not enter: %v", ctx.Err())
+	}
+
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- store.WithDeploymentFence(ctx, deploymentID, func(context.Context) error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("same deployment entered a second fence before the first released")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first deployment fence result: %v", err)
+	}
+	select {
+	case <-secondEntered:
+	case <-ctx.Done():
+		t.Fatalf("second deployment fence did not enter after release: %v", ctx.Err())
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second deployment fence result: %v", err)
+	}
+
+	callbackErr := errors.New("stop after fenced callback")
+	if err := store.WithDeploymentFence(ctx, deploymentID, func(context.Context) error { return callbackErr }); !errors.Is(err, callbackErr) {
+		t.Fatalf("callback error=%v, want %v", err, callbackErr)
+	}
+	runAfterError := false
+	if err := store.WithDeploymentFence(ctx, deploymentID, func(context.Context) error {
+		runAfterError = true
+		return nil
+	}); err != nil || !runAfterError {
+		t.Fatalf("deployment fence was not released after callback error: ran=%v err=%v", runAfterError, err)
+	}
+}
+
 func TestResourceStoreCreateIntentRejectsTamperedEntryOrigin(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -219,6 +327,58 @@ func workerApprovalSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 		t.Fatalf("load immutable Worker approval snapshot: %v", err)
 	}
 	return approvalID.String(), approvalHash
+}
+
+func insertDeploymentDestroyOperation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, instanceID, ownerID, deploymentID, status string) {
+	t.Helper()
+	var planID, connectionID uuid.UUID
+	var signerKeyID string
+	if err := pool.QueryRow(ctx, `
+		SELECT launch.plan_id, launch.connection_id, device.key_id
+		FROM cloud_launch_operations AS launch
+		JOIN cloud_approval_devices AS device
+		  ON device.agent_instance_id=launch.agent_instance_id AND device.owner_id=launch.owner_id
+		WHERE launch.deployment_id=$1
+		ORDER BY device.created_at, device.device_id
+		LIMIT 1`, deploymentID,
+	).Scan(&planID, &connectionID, &signerKeyID); err != nil {
+		t.Fatalf("load destroy fence prerequisites: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var signature []byte
+	var approveClient, approveCredential, approveIdempotency, approveRequestHash, approvedAt any
+	var errorCode, blockedReason any
+	if status != "awaiting_approval" {
+		signature = make([]byte, 64)
+		approveClient = "resource-store-destroy-approve"
+		approveCredential = uuid.New()
+		approveIdempotency = uuid.New()
+		approveRequestHash = make([]byte, 32)
+		approvedAt = now
+	}
+	if status == "destroy_blocked" {
+		errorCode, blockedReason = "AWS_READ_BACK_PENDING", "provider absence is not yet verified"
+	}
+	_, err := pool.Exec(ctx, `
+		INSERT INTO cloud_destroy_operations (
+			operation_id, agent_instance_id, owner_id, deployment_id, plan_id, connection_id,
+			challenge_id, approval_id, signer_key_id, expected_deployment_revision, scope_digest, scope_json,
+			signing_payload, challenge_expires_at, signature, status, error_code, blocked_reason, revision,
+			prepare_client_id, prepare_credential_id, prepare_idempotency_key, prepare_request_hash,
+			approve_client_id, approve_credential_id, approve_idempotency_key, approve_request_hash,
+			created_at, updated_at, approved_at
+		) VALUES (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,'{}'::jsonb,$11,$12,$13,$14,$15,$16,2,
+			'resource-store-destroy-prepare',$17,$18,$19,$20,$21,$22,$23,$24,$24,$25
+		)`,
+		uuid.New(), instanceID, ownerID, deploymentID, planID, connectionID, uuid.New(), uuid.New(), signerKeyID,
+		"sha256:"+strings.Repeat("d", 64), []byte{1}, now.Add(time.Minute), signature, status, errorCode, blockedReason,
+		uuid.New(), uuid.New(), make([]byte, 32),
+		approveClient, approveCredential, approveIdempotency, approveRequestHash, now, approvedAt,
+	)
+	if err != nil {
+		t.Fatalf("insert %s destroy operation: %v", status, err)
+	}
 }
 
 func advanceApprovedWorkerPlanSnapshot(t *testing.T, ctx context.Context, pool *pgxpool.Pool, deploymentID string) {

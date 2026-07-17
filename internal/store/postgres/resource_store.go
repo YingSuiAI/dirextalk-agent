@@ -28,12 +28,68 @@ type ResourceStore struct {
 }
 
 var _ resource.Repository = (*ResourceStore)(nil)
+var _ resource.DeploymentFencer = (*ResourceStore)(nil)
 
 func (store *Store) NewResourceStore() (*ResourceStore, error) {
 	if store == nil || store.pool == nil {
 		return nil, resource.ErrInvalid
 	}
 	return &ResourceStore{pool: store.pool, instanceID: store.instanceID}, nil
+}
+
+// WithDeploymentFence serializes an externally coordinated create/destroy
+// transition for one deployment. The advisory lock is session scoped, so it
+// deliberately owns a dedicated pool connection for the whole callback rather
+// than relying on a transaction connection that a caller cannot retain.
+//
+// The callback may use normal Store methods; it must not assume its database
+// work is part of this lock connection's transaction. On an unlock failure the
+// session is discarded so a lock-bearing connection can never return to the
+// pool.
+func (store *ResourceStore) WithDeploymentFence(ctx context.Context, deploymentID string, fn func(context.Context) error) (result error) {
+	if store == nil || store.pool == nil || ctx == nil || fn == nil {
+		return resource.ErrInvalid
+	}
+	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
+	if err != nil || deployment == uuid.Nil {
+		return resource.ErrInvalid
+	}
+
+	connection, err := store.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire deployment fence connection: %w", err)
+	}
+	lockKey := "dirextalk-agent:resource-deployment-fence:" + store.instanceID.String() + ":" + deployment.String()
+	if _, err := connection.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		connection.Release()
+		return fmt.Errorf("acquire deployment fence: %w", err)
+	}
+	defer func() {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var unlocked bool
+		unlockErr := connection.QueryRow(cleanupContext, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey).Scan(&unlocked)
+		if unlockErr == nil && unlocked {
+			connection.Release()
+			return
+		}
+
+		// pgxpool would otherwise make this session available for reuse while it
+		// may still own a session advisory lock. Hijack removes it from the pool;
+		// closing the physical connection makes PostgreSQL release every lock.
+		physical := connection.Hijack()
+		_ = physical.Close(cleanupContext)
+		if result == nil {
+			if unlockErr != nil {
+				result = fmt.Errorf("release deployment fence: %w", unlockErr)
+			} else {
+				result = fmt.Errorf("release deployment fence: advisory lock was not held")
+			}
+		}
+	}()
+
+	return fn(ctx)
 }
 
 func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.ResourceV1) (resource.ResourceV1, error) {
@@ -48,6 +104,9 @@ func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.Reso
 		return resource.ResourceV1{}, fmt.Errorf("begin resource intent: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.rejectCreateDuringDestroy(ctx, tx, item.DeploymentID); err != nil {
+		return resource.ResourceV1{}, err
+	}
 	if err := store.validateResourceIntentOrigin(ctx, tx, item); err != nil {
 		return resource.ResourceV1{}, err
 	}
@@ -65,6 +124,35 @@ func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.Reso
 		return store.Get(ctx, item.ResourceID)
 	}
 	return cloneResource(item), nil
+}
+
+// rejectCreateDuringDestroy is intentionally in the same transaction as the
+// intent insert. WithDeploymentFence prevents a concurrent approve/destroy
+// transition from crossing this read; this durable check still rejects retries
+// and callers that arrive after a destruction operation is already visible.
+func (store *ResourceStore) rejectCreateDuringDestroy(ctx context.Context, tx pgx.Tx, deploymentID string) error {
+	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
+	if err != nil || deployment == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	var found bool
+	err = tx.QueryRow(ctx, `
+		SELECT true
+		FROM cloud_destroy_operations
+		WHERE agent_instance_id=$1 AND deployment_id=$2
+		  AND status IN ('approved','destroying','destroy_blocked')
+		LIMIT 1
+		FOR KEY SHARE`, store.instanceID, deployment).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check deployment destruction state: %w", err)
+	}
+	if found {
+		return resource.ErrInvalid
+	}
+	return nil
 }
 
 // validateResourceIntentOrigin is the durable authorization boundary for a
