@@ -69,6 +69,57 @@ func TestProbeServiceRestartRecoverySeparatedEvidenceAndRevisionFence(t *testing
 	}
 }
 
+func TestProbeServicePersistsExactHTTPSStatusRequirement(t *testing.T) {
+	now := time.Date(2026, 7, 17, 5, 0, 0, 0, time.UTC)
+	engine, err := healthprobe.NewEngine(probeTestTransport{digest: probeTestDigest("response"), readyStatus: 201})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &probeMemoryRepository{}
+	service, err := NewProbeService(engine, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now }
+	suite := probeTestSuite(t)
+	for index := range suite.Probes {
+		if suite.Probes[index].Purpose != healthprobe.PurposeReadiness {
+			continue
+		}
+		suite.Probes[index].ExpectedStatusCode = 200
+		suite.Probes[index].Binding.ProbeDigest = ""
+		bound, bindErr := healthprobe.Bind(suite.Probes[index])
+		if bindErr != nil {
+			t.Fatal(bindErr)
+		}
+		suite.Probes[index] = bound
+	}
+	configured, err := service.Configure(context.Background(), ProbeConfigureRequest{
+		OwnerID: "owner-health", Suite: suite, Interval: time.Minute,
+	})
+	persistedExactStatus := false
+	for _, probe := range configured.Suite.Probes {
+		persistedExactStatus = persistedExactStatus || (probe.Purpose == healthprobe.PurposeReadiness && probe.ExpectedStatusCode == 200)
+	}
+	if err != nil || !persistedExactStatus {
+		t.Fatalf("configured=%+v error=%v", configured, err)
+	}
+	completed, err := service.ResumeDue(context.Background(), 1)
+	if err != nil || len(completed) != 1 || completed[0].Status != healthprobe.AggregateDegraded || completed[0].Evidence == nil {
+		t.Fatalf("completed=%+v error=%v", completed, err)
+	}
+	readinessFailedExactly := false
+	for _, probe := range completed[0].Evidence.Probes {
+		if probe.Purpose == healthprobe.PurposeReadiness && (probe.Status != healthprobe.StatusUnhealthy || probe.Attempts[0].FailureCode != healthprobe.FailureHTTPStatus || probe.Attempts[0].StatusCode != 201) {
+			t.Fatalf("strict readiness evidence=%+v", probe)
+		}
+		readinessFailedExactly = readinessFailedExactly || probe.Purpose == healthprobe.PurposeReadiness
+	}
+	if !readinessFailedExactly {
+		t.Fatal("readiness probe evidence was not persisted")
+	}
+}
+
 func probeTestSuite(t *testing.T) healthprobe.SuiteV1 {
 	t.Helper()
 	deploymentID := uuid.NewString()
@@ -96,12 +147,18 @@ func probeTestDigest(value string) string {
 	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
-type probeTestTransport struct{ digest string }
+type probeTestTransport struct {
+	digest      string
+	readyStatus int
+}
 
 func (transport probeTestTransport) Probe(_ context.Context, request healthprobe.Request) (healthprobe.Observation, error) {
 	status := 200
 	if strings.HasSuffix(request.Target, "/ready") {
-		status = 503
+		status = transport.readyStatus
+		if status == 0 {
+			status = 503
+		}
 	}
 	return healthprobe.Observation{StatusCode: status, SummaryDigest: transport.digest}, nil
 }

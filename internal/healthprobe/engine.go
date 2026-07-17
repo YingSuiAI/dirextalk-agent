@@ -121,7 +121,7 @@ func classifyAttempt(spec SpecV1, attempt uint32, observedAt time.Time, observat
 		result.FailureCode = FailureTransport
 		return result
 	}
-	if spec.Protocol == ProtocolHTTPS && (observation.StatusCode < 200 || observation.StatusCode > 299) {
+	if spec.Protocol == ProtocolHTTPS && !healthyHTTPStatus(spec, observation.StatusCode) {
 		result.FailureCode = FailureHTTPStatus
 		return result
 	}

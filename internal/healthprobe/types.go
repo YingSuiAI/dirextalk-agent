@@ -87,15 +87,19 @@ type BindingV1 struct {
 // SpecV1 deliberately has no method, headers, request body, credentials,
 // redirects, TLS override, proxy, shell, or generic options map.
 type SpecV1 struct {
-	SchemaVersion         string    `json:"schema_version"`
-	Binding               BindingV1 `json:"binding"`
-	Purpose               Purpose   `json:"purpose"`
-	Protocol              Protocol  `json:"protocol"`
-	Target                string    `json:"target"`
-	TimeoutMillis         uint32    `json:"timeout_millis"`
-	MaxAttempts           uint32    `json:"max_attempts"`
-	RetryDelayMillis      uint32    `json:"retry_delay_millis"`
-	ExpectedSummaryDigest string    `json:"expected_summary_digest,omitempty"`
+	SchemaVersion    string    `json:"schema_version"`
+	Binding          BindingV1 `json:"binding"`
+	Purpose          Purpose   `json:"purpose"`
+	Protocol         Protocol  `json:"protocol"`
+	Target           string    `json:"target"`
+	TimeoutMillis    uint32    `json:"timeout_millis"`
+	MaxAttempts      uint32    `json:"max_attempts"`
+	RetryDelayMillis uint32    `json:"retry_delay_millis"`
+	// ExpectedStatusCode optionally narrows HTTPS success from the backwards-
+	// compatible 2xx range to one exact successful HTTP status. It is bound
+	// into ProbeDigest and is never accepted for TCP probes.
+	ExpectedStatusCode    uint32 `json:"expected_status_code,omitempty"`
+	ExpectedSummaryDigest string `json:"expected_summary_digest,omitempty"`
 }
 
 type SuiteV1 struct {

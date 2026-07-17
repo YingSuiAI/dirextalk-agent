@@ -97,7 +97,7 @@ func validateProbeEvidence(spec SpecV1, evidence ProbeEvidence) error {
 		switch attempt.Status {
 		case StatusHealthy:
 			if attempt.FailureCode != FailureNone || !digestPattern.MatchString(attempt.SummaryDigest) ||
-				(spec.Protocol == ProtocolHTTPS && (attempt.StatusCode < 200 || attempt.StatusCode > 299)) ||
+				(spec.Protocol == ProtocolHTTPS && !healthyHTTPStatus(spec, attempt.StatusCode)) ||
 				(spec.Protocol == ProtocolTCP && attempt.StatusCode != 0) ||
 				(spec.Purpose == PurposeSemantic && attempt.SummaryDigest != spec.ExpectedSummaryDigest) {
 				return ErrInvalidEvidence
@@ -109,13 +109,13 @@ func validateProbeEvidence(spec SpecV1, evidence ProbeEvidence) error {
 			switch attempt.FailureCode {
 			case FailureHTTPStatus:
 				if spec.Protocol != ProtocolHTTPS || attempt.StatusCode < 100 || attempt.StatusCode > 599 ||
-					(attempt.StatusCode >= 200 && attempt.StatusCode <= 299) || !digestPattern.MatchString(attempt.SummaryDigest) {
+					healthyHTTPStatus(spec, attempt.StatusCode) || !digestPattern.MatchString(attempt.SummaryDigest) {
 					return ErrInvalidEvidence
 				}
 			case FailureSemanticMismatch:
 				if spec.Purpose != PurposeSemantic || !digestPattern.MatchString(attempt.SummaryDigest) ||
 					attempt.SummaryDigest == spec.ExpectedSummaryDigest ||
-					(spec.Protocol == ProtocolHTTPS && (attempt.StatusCode < 200 || attempt.StatusCode > 299)) ||
+					(spec.Protocol == ProtocolHTTPS && !healthyHTTPStatus(spec, attempt.StatusCode)) ||
 					(spec.Protocol == ProtocolTCP && attempt.StatusCode != 0) {
 					return ErrInvalidEvidence
 				}

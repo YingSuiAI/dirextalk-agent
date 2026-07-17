@@ -32,6 +32,7 @@ type digestDocumentV1 struct {
 	TimeoutMillis         uint32   `json:"timeout_millis"`
 	MaxAttempts           uint32   `json:"max_attempts"`
 	RetryDelayMillis      uint32   `json:"retry_delay_millis"`
+	ExpectedStatusCode    uint32   `json:"expected_status_code,omitempty"`
 	ExpectedSummaryDigest string   `json:"expected_summary_digest,omitempty"`
 }
 
@@ -82,7 +83,16 @@ func validateWithoutDigest(spec SpecV1) error {
 		return ErrInvalidSpec
 	}
 	if spec.Protocol == ProtocolHTTPS {
+		// An exact health contract remains a successful HTTP result. Allowing a
+		// 4xx/5xx status to be marked healthy would turn the status field into an
+		// availability bypass rather than a narrower 2xx contract.
+		if spec.ExpectedStatusCode != 0 && (spec.ExpectedStatusCode < 200 || spec.ExpectedStatusCode > 299) {
+			return ErrInvalidSpec
+		}
 		return validateHTTPS(spec.Target)
+	}
+	if spec.ExpectedStatusCode != 0 {
+		return ErrInvalidSpec
 	}
 	return validateTCP(spec.Target)
 }
@@ -93,8 +103,16 @@ func probeDigest(spec SpecV1) (string, error) {
 		PlanHash: spec.Binding.PlanHash, RecipeDigest: spec.Binding.RecipeDigest,
 		Purpose: spec.Purpose, Protocol: spec.Protocol, Target: spec.Target,
 		TimeoutMillis: spec.TimeoutMillis, MaxAttempts: spec.MaxAttempts, RetryDelayMillis: spec.RetryDelayMillis,
+		ExpectedStatusCode:    spec.ExpectedStatusCode,
 		ExpectedSummaryDigest: spec.ExpectedSummaryDigest,
 	})
+}
+
+func healthyHTTPStatus(spec SpecV1, statusCode int) bool {
+	if spec.ExpectedStatusCode != 0 {
+		return statusCode == int(spec.ExpectedStatusCode)
+	}
+	return statusCode >= 200 && statusCode <= 299
 }
 
 func validateHTTPS(target string) error {

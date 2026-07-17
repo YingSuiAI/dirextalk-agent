@@ -17,10 +17,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 )
 
 func TestProbeDigestBindsDeploymentPlanRecipeAndExecutableScope(t *testing.T) {
-	spec := mustBind(t, baseSpec(PurposeLiveness, ProtocolHTTPS, "https://probe.example.com/health/live"))
+	spec := baseSpec(PurposeLiveness, ProtocolHTTPS, "https://probe.example.com/health/live")
+	spec.ExpectedStatusCode = http.StatusOK
+	spec = mustBind(t, spec)
 	if err := spec.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +40,7 @@ func TestProbeDigestBindsDeploymentPlanRecipeAndExecutableScope(t *testing.T) {
 		{name: "timeout", edit: func(value *SpecV1) { value.TimeoutMillis++ }},
 		{name: "attempts", edit: func(value *SpecV1) { value.MaxAttempts++ }},
 		{name: "retry", edit: func(value *SpecV1) { value.RetryDelayMillis++ }},
+		{name: "expected status", edit: func(value *SpecV1) { value.ExpectedStatusCode = http.StatusCreated }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -45,6 +50,53 @@ func TestProbeDigestBindsDeploymentPlanRecipeAndExecutableScope(t *testing.T) {
 				t.Fatal("changed probe retained the old digest")
 			}
 		})
+	}
+}
+
+func TestEngineHonorsExactExpectedHTTPStatusCode(t *testing.T) {
+	strict := baseSpec(PurposeReadiness, ProtocolHTTPS, "https://probe.example.com/health/ready")
+	strict.ExpectedStatusCode = http.StatusOK
+	strict.MaxAttempts = 2
+	strict = mustBind(t, strict)
+	transport := &scriptedTransport{results: []scriptedResult{
+		{observation: Observation{StatusCode: http.StatusCreated, SummaryDigest: digestOfText("created")}},
+		{observation: Observation{StatusCode: http.StatusOK, SummaryDigest: digestOfText("ready")}},
+	}}
+	engine, err := newEngine(transport, &fakeClock{now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := engine.Run(context.Background(), strict)
+	if err != nil || !evidence.Healthy || len(evidence.Attempts) != 2 ||
+		evidence.Attempts[0].FailureCode != FailureHTTPStatus || evidence.Attempts[0].StatusCode != http.StatusCreated ||
+		evidence.Attempts[1].Status != StatusHealthy {
+		t.Fatalf("exact status evidence=%+v error=%v", evidence, err)
+	}
+
+	compatible := mustBind(t, baseSpec(PurposeReadiness, ProtocolHTTPS, "https://probe.example.com/health/compatible"))
+	compatibilityEngine, _ := newEngine(&scriptedTransport{results: []scriptedResult{{observation: Observation{
+		StatusCode: http.StatusCreated, SummaryDigest: digestOfText("created"),
+	}}}}, &fakeClock{now: time.Now().UTC()})
+	compatibleEvidence, err := compatibilityEngine.Run(context.Background(), compatible)
+	if err != nil || !compatibleEvidence.Healthy || compatibleEvidence.Attempts[0].Status != StatusHealthy {
+		t.Fatalf("default 2xx compatibility evidence=%+v error=%v", compatibleEvidence, err)
+	}
+}
+
+func TestDefaultExpectedStatusPreservesLegacyProbeDigest(t *testing.T) {
+	spec := mustBind(t, baseSpec(PurposeReadiness, ProtocolHTTPS, "https://probe.example.com/health/compatible"))
+	legacyDigest, err := canonical.Digest(legacyProbeDigestDocumentV1{
+		SchemaVersion: spec.SchemaVersion, DeploymentID: spec.Binding.DeploymentID,
+		PlanHash: spec.Binding.PlanHash, RecipeDigest: spec.Binding.RecipeDigest,
+		Purpose: spec.Purpose, Protocol: spec.Protocol, Target: spec.Target,
+		TimeoutMillis: spec.TimeoutMillis, MaxAttempts: spec.MaxAttempts, RetryDelayMillis: spec.RetryDelayMillis,
+		ExpectedSummaryDigest: spec.ExpectedSummaryDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Binding.ProbeDigest != legacyDigest {
+		t.Fatalf("default probe digest changed: got=%s want=%s", spec.Binding.ProbeDigest, legacyDigest)
 	}
 }
 
@@ -73,6 +125,27 @@ func TestProbeContractRejectsSSRFSecretsAndArbitraryRequestSurfaces(t *testing.T
 		if _, err := Bind(spec); !errors.Is(err, ErrInvalidSpec) {
 			t.Fatalf("Bind(%s) error = %v", test.target, err)
 		}
+	}
+	for _, test := range []struct {
+		name     string
+		protocol Protocol
+		status   uint32
+	}{
+		{name: "non-success status", protocol: ProtocolHTTPS, status: http.StatusMovedPermanently},
+		{name: "below success range", protocol: ProtocolHTTPS, status: http.StatusContinue},
+		{name: "tcp status", protocol: ProtocolTCP, status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := "https://probe.example.com/health"
+			if test.protocol == ProtocolTCP {
+				target = "probe.example.com:443"
+			}
+			spec := baseSpec(PurposeLiveness, test.protocol, target)
+			spec.ExpectedStatusCode = test.status
+			if _, err := Bind(spec); !errors.Is(err, ErrInvalidSpec) {
+				t.Fatalf("Bind(%+v) error = %v", test, err)
+			}
+		})
 	}
 	typeOfSpec := reflect.TypeOf(SpecV1{})
 	for index := 0; index < typeOfSpec.NumField(); index++ {
@@ -199,6 +272,28 @@ func TestPersistedEvidenceValidationRejectsWorkerTrustAndImpossibleStatus(t *tes
 	}
 }
 
+func TestPersistedEvidenceHonorsExactHTTPStatusCode(t *testing.T) {
+	spec := baseSpec(PurposeLiveness, ProtocolHTTPS, "https://probe.example.com/live")
+	spec.ExpectedStatusCode = http.StatusOK
+	spec.MaxAttempts = 1
+	spec = mustBind(t, spec)
+	suite := SuiteV1{SchemaVersion: SuiteSchemaV1, Probes: []SpecV1{spec}}
+	engine, _ := newEngine(&routeTransport{results: map[string]Observation{
+		spec.Target: {StatusCode: http.StatusCreated, SummaryDigest: digestOfText("created")},
+	}}, &fakeClock{now: time.Now().UTC()})
+	evidence, err := engine.RunSuite(context.Background(), suite)
+	if err != nil || evidence.Status != AggregateUnhealthy || evidence.Probes[0].Attempts[0].FailureCode != FailureHTTPStatus ||
+		ValidateSuiteEvidence(suite, evidence) != nil {
+		t.Fatalf("strict status evidence=%+v error=%v", evidence, err)
+	}
+
+	tampered := cloneSuiteEvidence(evidence)
+	tampered.Probes[0].Attempts[0].StatusCode = http.StatusOK
+	if !errors.Is(ValidateSuiteEvidence(suite, tampered), ErrInvalidEvidence) {
+		t.Fatal("expected HTTP 200 was accepted as an unhealthy HTTP-status observation")
+	}
+}
+
 func TestNetworkTransportPinsPublicDNSAndNeverWritesTCPData(t *testing.T) {
 	resolver := &fakeResolver{addresses: []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("8.8.8.8")}}
 	connection := &recordingConn{}
@@ -288,6 +383,23 @@ func digestOfText(value string) string {
 type scriptedResult struct {
 	observation Observation
 	err         error
+}
+
+// legacyProbeDigestDocumentV1 mirrors the pre-exact-status projection. It
+// protects persisted default-2xx definitions: adding an omitted field must not
+// invalidate their already-bound ProbeDigest after an Agent upgrade.
+type legacyProbeDigestDocumentV1 struct {
+	SchemaVersion         string   `json:"schema_version"`
+	DeploymentID          string   `json:"deployment_id"`
+	PlanHash              string   `json:"plan_hash"`
+	RecipeDigest          string   `json:"recipe_digest"`
+	Purpose               Purpose  `json:"purpose"`
+	Protocol              Protocol `json:"protocol"`
+	Target                string   `json:"target"`
+	TimeoutMillis         uint32   `json:"timeout_millis"`
+	MaxAttempts           uint32   `json:"max_attempts"`
+	RetryDelayMillis      uint32   `json:"retry_delay_millis"`
+	ExpectedSummaryDigest string   `json:"expected_summary_digest,omitempty"`
 }
 
 type scriptedTransport struct {
