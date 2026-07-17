@@ -1148,12 +1148,13 @@ message RevokeApprovalDeviceResponse { ApprovalDevice device = 1; }
 service AdminService {
   rpc CreateServiceKey(CreateServiceKeyRequest) returns (CreateServiceKeyResponse);
   rpc RevokeServiceKey(RevokeServiceKeyRequest) returns (RevokeServiceKeyResponse);
-  // Reserved for a future device-signed rotation protocol. Service Keys cannot
-  // register or revoke approval devices. The first device is installed only by
-  // the local one-time bootstrap command.
+  // Permanently disabled generic compatibility placeholder. Service Keys cannot
+  // register or revoke approval devices. A future device-signed rotation uses
+  // separate typed CloudControl prepare/submit operations; the first device is
+  // installed only by the local one-time bootstrap command.
   rpc RegisterApprovalDevice(RegisterApprovalDeviceRequest) returns (RegisterApprovalDeviceResponse);
-  // Reserved for a future device-signed rotation protocol; always fails closed
-  // in v1.
+  // Permanently disabled generic compatibility placeholder; always fails closed
+  // in v1. It cannot revoke the owner's only approval device.
   rpc RevokeApprovalDevice(RevokeApprovalDeviceRequest) returns (RevokeApprovalDeviceResponse);
 }
 

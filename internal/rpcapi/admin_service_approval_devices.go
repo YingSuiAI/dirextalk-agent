@@ -8,16 +8,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// RegisterApprovalDevice is reserved for a future device-signed rotation
-// protocol. Service Keys are authentication credentials, not user approval
-// authority, so this method is intentionally absent from the scope map and
-// also fails closed when called directly in-process.
+// RegisterApprovalDevice is a permanently disabled generic compatibility
+// placeholder. Service Keys are authentication credentials, not user approval
+// authority. A future device-signed rotation uses separate typed CloudControl
+// prepare/submit operations, so this method remains absent from the scope map
+// and fails closed when called directly in-process.
 func (service *AdminService) RegisterApprovalDevice(context.Context, *agentv1.RegisterApprovalDeviceRequest) (*agentv1.RegisterApprovalDeviceResponse, error) {
 	return nil, status.Error(codes.PermissionDenied, "remote approval-device administration is disabled; use the local first-device bootstrap")
 }
 
-// RevokeApprovalDevice remains reserved until the current device authorizes a
-// revision-bound rotation or revocation request.
+// RevokeApprovalDevice is permanently disabled: generic revocation could
+// remove the owner's only recovery path. A future typed rotation atomically
+// replaces an old device after dual proof; it does not enable this method.
 func (service *AdminService) RevokeApprovalDevice(context.Context, *agentv1.RevokeApprovalDeviceRequest) (*agentv1.RevokeApprovalDeviceResponse, error) {
-	return nil, status.Error(codes.PermissionDenied, "remote approval-device administration is disabled until device-signed rotation is implemented")
+	return nil, status.Error(codes.PermissionDenied, "generic remote approval-device administration is permanently disabled; use typed device rotation when available")
 }

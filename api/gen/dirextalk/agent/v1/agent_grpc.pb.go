@@ -2504,12 +2504,13 @@ const (
 type AdminServiceClient interface {
 	CreateServiceKey(ctx context.Context, in *CreateServiceKeyRequest, opts ...grpc.CallOption) (*CreateServiceKeyResponse, error)
 	RevokeServiceKey(ctx context.Context, in *RevokeServiceKeyRequest, opts ...grpc.CallOption) (*RevokeServiceKeyResponse, error)
-	// Reserved for a future device-signed rotation protocol. Service Keys cannot
-	// register or revoke approval devices. The first device is installed only by
-	// the local one-time bootstrap command.
+	// Permanently disabled generic compatibility placeholder. Service Keys cannot
+	// register or revoke approval devices. A future device-signed rotation uses
+	// separate typed CloudControl prepare/submit operations; the first device is
+	// installed only by the local one-time bootstrap command.
 	RegisterApprovalDevice(ctx context.Context, in *RegisterApprovalDeviceRequest, opts ...grpc.CallOption) (*RegisterApprovalDeviceResponse, error)
-	// Reserved for a future device-signed rotation protocol; always fails closed
-	// in v1.
+	// Permanently disabled generic compatibility placeholder; always fails closed
+	// in v1. It cannot revoke the owner's only approval device.
 	RevokeApprovalDevice(ctx context.Context, in *RevokeApprovalDeviceRequest, opts ...grpc.CallOption) (*RevokeApprovalDeviceResponse, error)
 }
 
@@ -2567,12 +2568,13 @@ func (c *adminServiceClient) RevokeApprovalDevice(ctx context.Context, in *Revok
 type AdminServiceServer interface {
 	CreateServiceKey(context.Context, *CreateServiceKeyRequest) (*CreateServiceKeyResponse, error)
 	RevokeServiceKey(context.Context, *RevokeServiceKeyRequest) (*RevokeServiceKeyResponse, error)
-	// Reserved for a future device-signed rotation protocol. Service Keys cannot
-	// register or revoke approval devices. The first device is installed only by
-	// the local one-time bootstrap command.
+	// Permanently disabled generic compatibility placeholder. Service Keys cannot
+	// register or revoke approval devices. A future device-signed rotation uses
+	// separate typed CloudControl prepare/submit operations; the first device is
+	// installed only by the local one-time bootstrap command.
 	RegisterApprovalDevice(context.Context, *RegisterApprovalDeviceRequest) (*RegisterApprovalDeviceResponse, error)
-	// Reserved for a future device-signed rotation protocol; always fails closed
-	// in v1.
+	// Permanently disabled generic compatibility placeholder; always fails closed
+	// in v1. It cannot revoke the owner's only approval device.
 	RevokeApprovalDevice(context.Context, *RevokeApprovalDeviceRequest) (*RevokeApprovalDeviceResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
