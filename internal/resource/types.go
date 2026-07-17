@@ -78,6 +78,12 @@ const (
 	TagResourceID      = "resource_id"
 	TagRetention       = "retention"
 	TagDestroyDeadline = "destroy_deadline"
+	// TagApprovedPlanHash and TagApprovalID bind a provider object to the
+	// exact device-approved operation that authorized it. They are deliberately
+	// non-secret so an otherwise unknown provider object can be recovered only
+	// after its durable approval origin is re-verified.
+	TagApprovedPlanHash = "approved_plan_hash"
+	TagApprovalID       = "approval_id"
 	// TagEmbeddedParentResourceID binds an AWS resource that is created as part
 	// of another provider mutation (currently an EC2 root EBS volume) to its
 	// parent while still giving it an independent ledger identity.
@@ -266,6 +272,7 @@ func (spec ProvisionSpec) mandatoryTags() map[string]string {
 		TagAgentInstanceID: strings.TrimSpace(spec.AgentInstanceID), TagOwnerID: strings.TrimSpace(spec.OwnerID),
 		TagTaskID: strings.TrimSpace(spec.TaskID), TagDeploymentID: strings.TrimSpace(spec.DeploymentID),
 		TagResourceID: strings.TrimSpace(spec.ResourceID), TagRetention: string(spec.Retention), TagDestroyDeadline: deadline,
+		TagApprovedPlanHash: strings.TrimSpace(spec.ApprovedPlanHash), TagApprovalID: strings.TrimSpace(spec.ApprovalID),
 	}
 }
 
@@ -451,12 +458,14 @@ func (manifest Manifest) ValidateResourceApprovalScope() error {
 			return ErrInvalid
 		}
 		expectedTags := map[string]string{
-			TagAgentInstanceID: manifest.AgentInstanceID,
-			TagOwnerID:         manifest.OwnerID,
-			TagTaskID:          manifest.TaskID,
-			TagDeploymentID:    manifest.DeploymentID,
-			TagResourceID:      item.ResourceID,
-			TagRetention:       string(manifest.Retention),
+			TagAgentInstanceID:  manifest.AgentInstanceID,
+			TagOwnerID:          manifest.OwnerID,
+			TagTaskID:           manifest.TaskID,
+			TagDeploymentID:     manifest.DeploymentID,
+			TagResourceID:       item.ResourceID,
+			TagRetention:        string(manifest.Retention),
+			TagApprovedPlanHash: item.ApprovedPlanHash,
+			TagApprovalID:       item.ApprovalID,
 		}
 		for key, expected := range expectedTags {
 			if expected == "" || item.Tags[key] != expected {

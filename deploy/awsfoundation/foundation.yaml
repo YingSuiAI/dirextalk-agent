@@ -722,8 +722,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: CreateImageFromOwnedBuilder
             Effect: Allow
@@ -820,8 +822,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: PassOnlyWorkerRole
             Effect: Allow
@@ -980,8 +984,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: CreateTaggedTargetGroup
             Effect: Allow
@@ -1003,8 +1009,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: CreateTLSListenerOnOwnedApplicationLoadBalancer
             Effect: Allow
@@ -1029,8 +1037,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: TagEntrypointResourcesOnCreate
             Effect: Allow
@@ -1058,8 +1068,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: MutateTargetsOnOwnedTargetGroup
             Effect: Allow
@@ -1111,8 +1123,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: TagIngressRuleOnCreate
             Effect: Allow
@@ -1135,8 +1149,10 @@ Resources:
                   - dirextalk:resource_id
                   - dirextalk:retention
                   - dirextalk:destroy_deadline
+                  - dtx:p
+                  - dtx:a
                   - dirextalk_embedded_parent
-                  - dirextalk_spec_digest
+                  - dtx:s
                   - dirextalk_client_token
           - Sid: RevokeIngressOnOwnedSecurityGroup
             Effect: Allow

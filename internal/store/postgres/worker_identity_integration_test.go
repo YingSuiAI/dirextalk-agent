@@ -231,6 +231,7 @@ func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, own
 	tags, _ := json.Marshal(map[string]string{
 		"agent_instance_id": instanceID, "owner_id": ownerID, "task_id": taskID, "deployment_id": deploymentID,
 		"resource_id": "placeholder", "retention": "ephemeral_auto_destroy", "destroy_deadline": now.Add(time.Hour).Format(time.RFC3339),
+		"approved_plan_hash": digest("c"), "approval_id": approvalID.String(),
 	})
 	resourceID := uuid.New()
 	var tagValues map[string]string

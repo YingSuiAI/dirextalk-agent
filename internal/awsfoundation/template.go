@@ -348,8 +348,8 @@ func controlPolicyFailsClosed(value any) bool {
 
 var entrypointTagKeys = []string{
 	"Name", "dirextalk:agent_instance_id", "dirextalk:owner_id", "dirextalk:task_id", "dirextalk:deployment_id",
-	"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dirextalk_embedded_parent",
-	"dirextalk_spec_digest", "dirextalk_client_token",
+	"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dtx:p", "dtx:a", "dirextalk_embedded_parent",
+	"dtx:s", "dirextalk_client_token",
 }
 
 func managedPolicyAttachesOnlyControlRole(resource map[string]any) bool {
@@ -642,8 +642,8 @@ func computeTagCondition(statement map[string]any, onCreate bool) bool {
 	tagKeys, ok := stringMap(condition["ForAllValues:StringEquals"])
 	return ok && len(tagKeys) == 1 && sameStrings(stringValues(tagKeys["aws:TagKeys"]), []string{
 		"Name", "dirextalk:agent_instance_id", "dirextalk:owner_id", "dirextalk:task_id", "dirextalk:deployment_id",
-		"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dirextalk_embedded_parent",
-		"dirextalk_spec_digest", "dirextalk_client_token",
+		"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dtx:p", "dtx:a", "dirextalk_embedded_parent",
+		"dtx:s", "dirextalk_client_token",
 	})
 }
 

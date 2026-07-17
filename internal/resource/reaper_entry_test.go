@@ -47,6 +47,7 @@ func TestReaperUsesManifestDependenciesForPublicEntryGraph(t *testing.T) {
 			Tags: map[string]string{
 				TagAgentInstanceID: agentID, TagOwnerID: "owner-1", TagTaskID: taskID, TagDeploymentID: deploymentID,
 				TagResourceID: resourceID, TagRetention: string(task.RetentionEphemeralAutoDestroy), TagDestroyDeadline: deadline.Format(time.RFC3339),
+				TagApprovedPlanHash: planHash, TagApprovalID: approvalID,
 			},
 		}
 	}

@@ -636,6 +636,7 @@ func embeddedRootVolumeResource(spec ProvisionSpec, intent MutationIntent, now t
 	rootSpec := ProvisionSpec{
 		ResourceID: resourceID, AgentInstanceID: spec.AgentInstanceID, OwnerID: spec.OwnerID,
 		TaskID: spec.TaskID, DeploymentID: spec.DeploymentID, Type: TypeEBS,
+		ApprovedPlanHash: spec.ApprovedPlanHash, ApprovalID: spec.ApprovalID,
 		Retention: spec.Retention, DestroyDeadline: spec.DestroyDeadline,
 	}
 	tags := rootSpec.mandatoryTags()
@@ -799,7 +800,7 @@ func orphanFromObservation(observation ProviderObservation, agentInstanceID stri
 	if !observation.Exists || !validType(observation.Type) || observation.Tags[TagAgentInstanceID] != agentInstanceID {
 		return ResourceV1{}, ErrInvalid
 	}
-	for _, key := range []string{TagResourceID, TagOwnerID, TagTaskID, TagDeploymentID, TagRetention, TagDestroyDeadline} {
+	for _, key := range []string{TagResourceID, TagOwnerID, TagTaskID, TagDeploymentID, TagRetention, TagDestroyDeadline, TagApprovedPlanHash, TagApprovalID} {
 		if strings.TrimSpace(observation.Tags[key]) == "" || security.ContainsLikelySecret(observation.Tags[key]) {
 			return ResourceV1{}, ErrInvalid
 		}
@@ -809,6 +810,13 @@ func orphanFromObservation(observation ProviderObservation, agentInstanceID stri
 		if err != nil || parsed == uuid.Nil {
 			return ResourceV1{}, ErrInvalid
 		}
+	}
+	if !sha256Pattern.MatchString(observation.Tags[TagApprovedPlanHash]) {
+		return ResourceV1{}, ErrInvalid
+	}
+	approvalID, err := uuid.Parse(observation.Tags[TagApprovalID])
+	if err != nil || approvalID == uuid.Nil {
+		return ResourceV1{}, ErrInvalid
 	}
 	retention := task.RetentionPolicy(observation.Tags[TagRetention])
 	if retention != task.RetentionEphemeralAutoDestroy && retention != task.RetentionManaged {
@@ -825,6 +833,7 @@ func orphanFromObservation(observation ProviderObservation, agentInstanceID stri
 	return ResourceV1{
 		ResourceID: observation.Tags[TagResourceID], AgentInstanceID: agentInstanceID,
 		OwnerID: observation.Tags[TagOwnerID], TaskID: observation.Tags[TagTaskID], DeploymentID: observation.Tags[TagDeploymentID],
+		ApprovedPlanHash: observation.Tags[TagApprovedPlanHash], ApprovalID: approvalID.String(),
 		Type: observation.Type, LogicalName: "recovered-" + observation.Tags[TagResourceID][:8], ProviderID: observation.ProviderID,
 		Retention: retention, DestroyDeadline: deadline, Tags: cloneMap(observation.Tags), State: StateOrphaned,
 		ReadBack: evidenceFrom(observation), Revision: 1, CreatedAt: now, UpdatedAt: now,

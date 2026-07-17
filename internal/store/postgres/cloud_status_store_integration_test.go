@@ -55,6 +55,12 @@ func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
 	first := createDeployment("owner-a", 1)
 	second := createDeployment("owner-a", 2)
 	foreign := createDeployment("owner-b", 3)
+	seedWorkerIdentityBinding(t, pool, instanceID, first.OwnerID, first.TaskID, first.DeploymentID, "i-00000001", "123456789012")
+	seedWorkerIdentityBinding(t, pool, instanceID, second.OwnerID, second.TaskID, second.DeploymentID, "i-00000002", "123456789013")
+	seedWorkerIdentityBinding(t, pool, instanceID, foreign.OwnerID, foreign.TaskID, foreign.DeploymentID, "i-00000003", "123456789014")
+	if _, err := pool.Exec(ctx, `DELETE FROM cloud_resources WHERE agent_instance_id=$1`, instanceID); err != nil {
+		t.Fatalf("remove fixture-only Worker resources: %v", err)
+	}
 
 	resourceStore, err := baseStore.NewResourceStore()
 	if err != nil {
@@ -65,9 +71,21 @@ func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
 	createResource := func(ownerID, deploymentID, taskID string, sequence int) resource.ResourceV1 {
 		t.Helper()
 		resourceID := uuid.NewString()
+		var approvedPlanHash string
+		var approvalID uuid.UUID
+		if err := pool.QueryRow(ctx, `
+			SELECT plan.plan_hash, launch.approval_id
+			FROM cloud_launch_operations AS launch
+			JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+			WHERE launch.agent_instance_id=$1 AND launch.owner_id=$2 AND launch.deployment_id=$3 AND launch.task_id=$4`,
+			instanceID, ownerID, deploymentID, taskID,
+		).Scan(&approvedPlanHash, &approvalID); err != nil {
+			t.Fatalf("load orphan approval origin: %v", err)
+		}
 		item := resource.ResourceV1{
 			ResourceID: resourceID, AgentInstanceID: instanceID, OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
 			Type: resource.TypeEC2, LogicalName: fmt.Sprintf("worker-%d", sequence), Region: "us-east-1",
+			ApprovedPlanHash: approvedPlanHash, ApprovalID: approvalID.String(),
 			Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline,
 			AutoDestroyApproved: true, State: resource.StateOrphaned,
 			ReadBack: resource.ReadBackEvidence{Exists: true, ProviderID: fmt.Sprintf("i-status-%d", sequence), ObservedAt: now, TagDigest: "sha256:" + strings.Repeat("c", 64)},
@@ -78,6 +96,7 @@ func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
 			resource.TagAgentInstanceID: instanceID, resource.TagOwnerID: ownerID, resource.TagTaskID: taskID,
 			resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
 			resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: approvedPlanHash, resource.TagApprovalID: approvalID.String(),
 		}
 		created, createErr := resourceStore.ImportOrphan(ctx, item)
 		if createErr != nil {
@@ -117,17 +136,9 @@ func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
 		resources.Resources[0].ReadBack.ProviderID != ownedResource.ProviderID || resources.Resources[0].Revision != ownedResource.Revision {
 		t.Fatalf("owner-filtered resources=%+v err=%v", resources, err)
 	}
-	if _, err := statuses.GetDeployment(ctx, first.OwnerID, first.DeploymentID); !errors.Is(err, cloudstatus.ErrNotFound) {
-		t.Fatalf("unlinked Worker was exposed as a CloudDeployment: %v", err)
-	}
-
-	// A CloudDeployment is not inferred from a Worker. It exists only when the
-	// immutable launch record durably binds the Worker to an approved Plan and
-	// CloudConnection. Seed those already-used production relations, then prove
-	// the read model survives reconstruction of the Agent store.
-	seedWorkerIdentityBinding(t, pool, instanceID, first.OwnerID, first.TaskID, first.DeploymentID, "i-00000001", "123456789012")
-	seedWorkerIdentityBinding(t, pool, instanceID, second.OwnerID, second.TaskID, second.DeploymentID, "i-00000002", "123456789013")
-	seedWorkerIdentityBinding(t, pool, instanceID, foreign.OwnerID, foreign.TaskID, foreign.DeploymentID, "i-00000003", "123456789014")
+	// A CloudDeployment exists only after the immutable launch record binds its
+	// Worker to an approved Plan and CloudConnection. The orphan import above
+	// uses that same durable origin instead of creating an unowned ledger fact.
 	var expectedPlanID, expectedConnectionID string
 	if err := pool.QueryRow(ctx, `
 		SELECT plan_id::text, connection_id::text

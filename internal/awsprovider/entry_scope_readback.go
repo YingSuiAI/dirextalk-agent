@@ -301,7 +301,7 @@ func verifiedEntryOwnershipTags(actual, expected map[string]string) (map[string]
 }
 
 func sameEntryOwnershipScope(instanceTags, securityGroupTags map[string]string) bool {
-	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagRetention, resource.TagDestroyDeadline} {
+	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagRetention, resource.TagDestroyDeadline, resource.TagApprovedPlanHash, resource.TagApprovalID} {
 		if instanceTags[key] == "" || instanceTags[key] != securityGroupTags[key] {
 			return false
 		}

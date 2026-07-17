@@ -118,6 +118,7 @@ func recoveryManifestFixture(agentInstanceID string) resource.Manifest {
 		resource.TagAgentInstanceID: agentInstanceID, resource.TagOwnerID: "owner-manifest-recovery",
 		resource.TagTaskID: taskID, resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
 		resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+		resource.TagApprovedPlanHash: planHash, resource.TagApprovalID: approvalID,
 	}
 	item := resource.ResourceV1{
 		ResourceID: resourceID, AgentInstanceID: agentInstanceID, OwnerID: "owner-manifest-recovery",

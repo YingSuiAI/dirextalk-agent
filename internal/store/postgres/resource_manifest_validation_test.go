@@ -42,6 +42,7 @@ func postgresMixedApprovalManifest(agentID string, now time.Time) resource.Manif
 				resource.TagAgentInstanceID: agentID, resource.TagOwnerID: "owner-manifest", resource.TagTaskID: taskID,
 				resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
 				resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+				resource.TagApprovedPlanHash: planHash, resource.TagApprovalID: approvalID,
 			},
 		}
 	}

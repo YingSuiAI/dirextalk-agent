@@ -29,10 +29,12 @@ var workerOwnershipTagKeys = []string{
 	resource.TagResourceID,
 	resource.TagRetention,
 	resource.TagDestroyDeadline,
+	resource.TagApprovedPlanHash,
+	resource.TagApprovalID,
 }
 
 // WorkerInstanceIdentityRequest permits one exact EC2 instance read. The map
-// must contain exactly the seven ResourceV1 ownership tags; arbitrary filters,
+// must contain exactly the nine ResourceV1 ownership-and-approval tags; arbitrary filters,
 // AWS operations, and SDK clients are intentionally not part of this contract.
 type WorkerInstanceIdentityRequest struct {
 	InstanceID            string

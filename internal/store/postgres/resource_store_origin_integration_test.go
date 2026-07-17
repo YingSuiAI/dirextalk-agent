@@ -1,0 +1,253 @@
+package postgres_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
+	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
+	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/google/uuid"
+)
+
+// The entry approval is intentionally not a cloud_approvals row. This
+// protects the migration-19 contract: a resource intent must use its exact
+// durable approval source, not fall back to the historical Worker approval.
+func TestResourceStoreCreateIntentAcceptsExactEntryApprovalOrigin(t *testing.T) {
+	fixture := seedEntryOperationPlanLookup(t)
+	operation := transitionEntryOperationToProvisioning(t, fixture)
+	store, err := fixture.store.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := fixture.pool.QueryRow(fixture.ctx, `SELECT EXISTS(SELECT 1 FROM cloud_approvals WHERE approval_id=$1)`, operation.Challenge.ApprovalID).Scan(&exists); err != nil {
+		t.Fatalf("read historical approval source: %v", err)
+	}
+	if exists {
+		t.Fatal("entry approval unexpectedly exists in cloud_approvals")
+	}
+	item := entryResourceIntentFixture(t, fixture, operation)
+	created, err := store.CreateIntent(fixture.ctx, item)
+	if err != nil {
+		t.Fatalf("create exact entry resource intent: %v", err)
+	}
+	if created.ResourceID != item.ResourceID || created.ApprovalID != operation.Challenge.ApprovalID || created.ApprovedPlanHash != operation.Challenge.PlanHash {
+		t.Fatalf("stored entry resource intent=%+v", created)
+	}
+}
+
+func TestResourceStoreCreateIntentRejectsTamperedEntryOrigin(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, fixture entryOperationPlanLookupFixture, item *resource.ResourceV1)
+	}{
+		{
+			name: "owner",
+			mutate: func(_ *testing.T, _ entryOperationPlanLookupFixture, item *resource.ResourceV1) {
+				item.OwnerID = "other-owner"
+				item.Tags[resource.TagOwnerID] = item.OwnerID
+			},
+		},
+		{
+			name: "task",
+			mutate: func(_ *testing.T, _ entryOperationPlanLookupFixture, item *resource.ResourceV1) {
+				item.TaskID = uuid.NewString()
+				item.Tags[resource.TagTaskID] = item.TaskID
+			},
+		},
+		{
+			name: "deployment",
+			mutate: func(_ *testing.T, _ entryOperationPlanLookupFixture, item *resource.ResourceV1) {
+				item.DeploymentID = uuid.NewString()
+				item.Tags[resource.TagDeploymentID] = item.DeploymentID
+			},
+		},
+		{
+			name: "approved plan hash",
+			mutate: func(_ *testing.T, _ entryOperationPlanLookupFixture, item *resource.ResourceV1) {
+				item.ApprovedPlanHash = entryDigest("9")
+				item.Tags[resource.TagApprovedPlanHash] = item.ApprovedPlanHash
+			},
+		},
+		{
+			name: "entry approval",
+			mutate: func(_ *testing.T, _ entryOperationPlanLookupFixture, item *resource.ResourceV1) {
+				item.ApprovalID = uuid.NewString()
+				item.Tags[resource.TagApprovalID] = item.ApprovalID
+			},
+		},
+		{
+			name: "connection",
+			mutate: func(t *testing.T, fixture entryOperationPlanLookupFixture, _ *resource.ResourceV1) {
+				t.Helper()
+				connectionID := uuid.New()
+				now := time.Now().UTC().Truncate(time.Microsecond)
+				if _, err := fixture.pool.Exec(fixture.ctx, `
+					INSERT INTO cloud_connections (
+						connection_id, agent_instance_id, owner_id, account_id, region, control_role_arn,
+						foundation_stack_id, credential_generation, status, revision, created_at, updated_at
+					) VALUES ($1,$2,$3,'210987654321','us-west-2',
+						'arn:aws:iam::210987654321:role/control','fixture-entry-connection',1,'active',1,$4,$4)`,
+					connectionID, fixture.plan.Scope.AgentInstanceID, fixture.ownerID, now); err != nil {
+					t.Fatalf("create mismatched connection: %v", err)
+				}
+				if _, err := fixture.pool.Exec(fixture.ctx, `UPDATE cloud_entry_operations SET connection_id=$2 WHERE operation_id=$1`, fixture.operation.Challenge.OperationID, connectionID); err != nil {
+					t.Fatalf("tamper entry operation connection: %v", err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := seedEntryOperationPlanLookup(t)
+			operation := transitionEntryOperationToProvisioning(t, fixture)
+			store, err := fixture.store.NewResourceStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := entryResourceIntentFixture(t, fixture, operation)
+			test.mutate(t, fixture, &item)
+			if _, err := store.CreateIntent(fixture.ctx, item); !errors.Is(err, resource.ErrInvalid) {
+				t.Fatalf("tampered %s origin error=%v, want resource.ErrInvalid", test.name, err)
+			}
+		})
+	}
+}
+
+func TestResourceStoreImportOrphanRequiresTaggedWorkerOrEntryOrigin(t *testing.T) {
+	t.Run("Worker launch history", func(t *testing.T) {
+		pool, baseStore, instanceID := newPlanningTestStore(t)
+		ctx := context.Background()
+		taskID, _ := createWorkerTask(t, baseStore)
+		deploymentID := uuid.NewString()
+		seedWorkerIdentityBinding(t, pool, instanceID, "owner-worker-store", taskID, deploymentID, "i-0123456789abcdef0", "123456789012")
+		var approvalID uuid.UUID
+		var planHash string
+		if err := pool.QueryRow(ctx, `
+			SELECT launch.approval_id, plan.plan_hash
+			FROM cloud_launch_operations AS launch
+			JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+			WHERE launch.deployment_id=$1`, deploymentID,
+		).Scan(&approvalID, &planHash); err != nil {
+			t.Fatalf("load Worker orphan origin: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM cloud_resources WHERE deployment_id=$1`, deploymentID); err != nil {
+			t.Fatalf("remove fixture Worker resource: %v", err)
+		}
+		store, err := baseStore.NewResourceStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := orphanResourceFixture(instanceID, "owner-worker-store", taskID, deploymentID, planHash, approvalID.String(), "i-orphan-worker")
+		if _, err := store.ImportOrphan(ctx, item); err != nil {
+			t.Fatalf("import Worker orphan with exact historical origin: %v", err)
+		}
+	})
+
+	t.Run("signed entry history without active connection", func(t *testing.T) {
+		fixture := seedEntryOperationPlanLookup(t)
+		operation := transitionEntryOperationToProvisioning(t, fixture)
+		if _, err := fixture.pool.Exec(fixture.ctx, `
+			UPDATE cloud_connections
+			SET status='destroyed', revision=revision+1, updated_at=clock_timestamp()
+			WHERE connection_id=(SELECT connection_id FROM cloud_entry_operations WHERE operation_id=$1)`, operation.Challenge.OperationID,
+		); err != nil {
+			t.Fatalf("retire entry connection after provisioning: %v", err)
+		}
+		store, err := fixture.store.NewResourceStore()
+		if err != nil {
+			t.Fatal(err)
+		}
+		item := orphanResourceFixture(
+			fixture.plan.Scope.AgentInstanceID, fixture.ownerID, fixture.plan.Scope.Worker.TaskID, fixture.plan.Scope.Worker.DeploymentID,
+			operation.Challenge.PlanHash, operation.Challenge.ApprovalID, "arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/app/orphan/0123456789abcdef",
+		)
+		item.Type, item.LogicalName = resource.TypeALB, "entry-orphan"
+		if _, err := store.ImportOrphan(fixture.ctx, item); err != nil {
+			t.Fatalf("import entry orphan after connection retirement: %v", err)
+		}
+
+		legacy := orphanResourceFixture(
+			fixture.plan.Scope.AgentInstanceID, fixture.ownerID, fixture.plan.Scope.Worker.TaskID, fixture.plan.Scope.Worker.DeploymentID,
+			operation.Challenge.PlanHash, operation.Challenge.ApprovalID, "arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/app/legacy/0123456789abcdef",
+		)
+		legacy.Type, legacy.LogicalName = resource.TypeALB, "legacy-entry-orphan"
+		delete(legacy.Tags, resource.TagApprovedPlanHash)
+		if _, err := store.ImportOrphan(fixture.ctx, legacy); !errors.Is(err, resource.ErrInvalid) {
+			t.Fatalf("old orphan without origin tag error=%v, want resource.ErrInvalid", err)
+		}
+	})
+}
+
+func orphanResourceFixture(agentID, ownerID, taskID, deploymentID, planHash, approvalID, providerID string) resource.ResourceV1 {
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	resourceID := uuid.NewString()
+	deadline := now.Add(time.Hour).Truncate(time.Second)
+	return resource.ResourceV1{
+		ResourceID: resourceID, AgentInstanceID: agentID, OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
+		Type: resource.TypeEC2, LogicalName: "recovered-resource", ApprovedPlanHash: planHash, ApprovalID: approvalID,
+		ProviderID: providerID, Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline, State: resource.StateOrphaned,
+		Tags: map[string]string{
+			resource.TagAgentInstanceID: agentID, resource.TagOwnerID: ownerID, resource.TagTaskID: taskID,
+			resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
+			resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: planHash, resource.TagApprovalID: approvalID,
+		},
+		ReadBack: resource.ReadBackEvidence{Exists: true, ProviderID: providerID, ObservedAt: now, TagDigest: entryDigest("7")},
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func transitionEntryOperationToProvisioning(t *testing.T, fixture entryOperationPlanLookupFixture) entrypoint.OperationV1 {
+	t.Helper()
+	next := fixture.operation
+	next.Status = entrypoint.StatusProvisioning
+	next.UpdatedAt = next.UpdatedAt.Add(time.Second)
+	operation, err := fixture.store.SaveEntryOperation(fixture.ctx, next, fixture.operation.Revision)
+	if err != nil {
+		t.Fatalf("transition entry operation to provisioning: %v", err)
+	}
+	return operation
+}
+
+func entryResourceIntentFixture(t *testing.T, fixture entryOperationPlanLookupFixture, operation entrypoint.OperationV1) resource.ResourceV1 {
+	t.Helper()
+	scope := fixture.plan.Scope
+	planHash, err := fixture.plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planHash != operation.Challenge.PlanHash {
+		t.Fatalf("entry plan hash=%s operation hash=%s", planHash, operation.Challenge.PlanHash)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	resourceID := uuid.NewString()
+	deadline := scope.Retention.DestroyDeadline.UTC()
+	return resource.ResourceV1{
+		ResourceID: resourceID, AgentInstanceID: scope.AgentInstanceID, OwnerID: scope.OwnerID,
+		TaskID: scope.Worker.TaskID, DeploymentID: scope.Worker.DeploymentID,
+		Type: resource.TypeALB, LogicalName: "entry-origin-guard", Region: scope.Region,
+		SpecDigest: entryDigest("8"), ApprovedPlanHash: planHash, ApprovalID: operation.Challenge.ApprovalID,
+		Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline, AutoDestroyApproved: true,
+		Tags: map[string]string{
+			resource.TagAgentInstanceID:  scope.AgentInstanceID,
+			resource.TagOwnerID:          scope.OwnerID,
+			resource.TagTaskID:           scope.Worker.TaskID,
+			resource.TagDeploymentID:     scope.Worker.DeploymentID,
+			resource.TagResourceID:       resourceID,
+			resource.TagRetention:        string(task.RetentionEphemeralAutoDestroy),
+			resource.TagDestroyDeadline:  deadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: planHash,
+			resource.TagApprovalID:       operation.Challenge.ApprovalID,
+		},
+		State: resource.StateProvisioning,
+		Intent: resource.MutationIntent{
+			Operation: resource.MutationCreate, ClientToken: strings.Repeat("a", 64), RecordedAt: now,
+		},
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+}

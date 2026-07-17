@@ -103,10 +103,10 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 			}
 		}
 	}
-	if rawTags[TagAgentInstanceID] != request.Tags[resource.TagAgentInstanceID] || rawTags[awsResourceIDTag] != request.ResourceID || rawTags[resource.TagAgentInstanceID] != "" || rawTags[TagRetention] != RetentionEphemeral {
+	if rawTags[TagAgentInstanceID] != request.Tags[resource.TagAgentInstanceID] || rawTags[awsResourceIDTag] != request.ResourceID || rawTags[TagApprovedPlanHash] != request.Tags[resource.TagApprovedPlanHash] || rawTags[TagApprovalID] != request.Tags[resource.TagApprovalID] || rawTags[resource.TagAgentInstanceID] != "" || rawTags[TagRetention] != RetentionEphemeral {
 		t.Fatalf("AWS ownership tags do not match Foundation policy: %#v", rawTags)
 	}
-	if rawRootTags[awsResourceIDTag] != rootResourceID || rawRootTags[embeddedParentTag] != request.ResourceID || rawRootTags[TagRetention] != RetentionEphemeral {
+	if rawRootTags[awsResourceIDTag] != rootResourceID || rawRootTags[embeddedParentTag] != request.ResourceID || rawRootTags[TagApprovedPlanHash] != request.Tags[resource.TagApprovedPlanHash] || rawRootTags[TagApprovalID] != request.Tags[resource.TagApprovalID] || rawRootTags[TagRetention] != RetentionEphemeral {
 		t.Fatalf("root EBS ownership tags do not bind its ledger: %#v", rawRootTags)
 	}
 	decoded, err := base64.StdEncoding.DecodeString(aws.ToString(input.UserData))
@@ -482,6 +482,7 @@ func validResourceTags(resourceID string) map[string]string {
 		resource.TagAgentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", resource.TagOwnerID: "owner-1",
 		resource.TagTaskID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", resource.TagDeploymentID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 		resource.TagResourceID: resourceID, resource.TagRetention: "ephemeral_auto_destroy", resource.TagDestroyDeadline: "2026-07-16T13:00:00Z",
+		resource.TagApprovedPlanHash: digestOf('a'), resource.TagApprovalID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
 	}
 }
 

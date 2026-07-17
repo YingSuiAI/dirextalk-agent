@@ -3,6 +3,7 @@ package awsreaper
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	"github.com/aws/smithy-go"
+	"github.com/google/uuid"
 )
 
 var (
@@ -23,16 +25,20 @@ var (
 )
 
 const (
-	awsTagAgentInstanceID = "dirextalk:agent_instance_id"
-	awsTagOwnerID         = "dirextalk:owner_id"
-	awsTagTaskID          = "dirextalk:task_id"
-	awsTagDeploymentID    = "dirextalk:deployment_id"
-	awsTagRetention       = "dirextalk:retention"
-	awsTagDestroyDeadline = "dirextalk:destroy_deadline"
-	awsTagResourceID      = "dirextalk:resource_id"
-	awsRetentionEphemeral = "ephemeral"
-	awsRetentionManaged   = "managed"
+	awsTagAgentInstanceID  = "dirextalk:agent_instance_id"
+	awsTagOwnerID          = "dirextalk:owner_id"
+	awsTagTaskID           = "dirextalk:task_id"
+	awsTagDeploymentID     = "dirextalk:deployment_id"
+	awsTagRetention        = "dirextalk:retention"
+	awsTagDestroyDeadline  = "dirextalk:destroy_deadline"
+	awsTagResourceID       = "dirextalk:resource_id"
+	awsTagApprovedPlanHash = "dtx:p"
+	awsTagApprovalID       = "dtx:a"
+	awsRetentionEphemeral  = "ephemeral"
+	awsRetentionManaged    = "managed"
 )
+
+var reaperPlanHashPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 type EC2API interface {
 	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
@@ -332,17 +338,24 @@ func (provider *EC2Provider) delete(ctx context.Context, kind resource.Type, pro
 func (provider *EC2Provider) verifyEphemeralOwnership(actual, expected map[string]string) error {
 	deadline, err := time.Parse(time.RFC3339, expected[resource.TagDestroyDeadline])
 	if err != nil || deadline.After(provider.now().UTC()) || expected[resource.TagAgentInstanceID] != provider.agentInstanceID ||
-		expected[resource.TagRetention] != string(task.RetentionEphemeralAutoDestroy) {
+		expected[resource.TagRetention] != string(task.RetentionEphemeralAutoDestroy) ||
+		!reaperPlanHashPattern.MatchString(expected[resource.TagApprovedPlanHash]) {
+		return ErrOwnershipMismatch
+	}
+	approvalID, err := uuid.Parse(expected[resource.TagApprovalID])
+	if err != nil || approvalID == uuid.Nil || approvalID.String() != expected[resource.TagApprovalID] {
 		return ErrOwnershipMismatch
 	}
 	expectedAWS := map[string]string{
-		awsTagAgentInstanceID: expected[resource.TagAgentInstanceID],
-		awsTagOwnerID:         expected[resource.TagOwnerID],
-		awsTagTaskID:          expected[resource.TagTaskID],
-		awsTagDeploymentID:    expected[resource.TagDeploymentID],
-		awsTagResourceID:      expected[resource.TagResourceID],
-		awsTagRetention:       awsRetentionEphemeral,
-		awsTagDestroyDeadline: deadline.UTC().Truncate(time.Second).Format(time.RFC3339),
+		awsTagAgentInstanceID:  expected[resource.TagAgentInstanceID],
+		awsTagOwnerID:          expected[resource.TagOwnerID],
+		awsTagTaskID:           expected[resource.TagTaskID],
+		awsTagDeploymentID:     expected[resource.TagDeploymentID],
+		awsTagResourceID:       expected[resource.TagResourceID],
+		awsTagRetention:        awsRetentionEphemeral,
+		awsTagDestroyDeadline:  deadline.UTC().Truncate(time.Second).Format(time.RFC3339),
+		awsTagApprovedPlanHash: expected[resource.TagApprovedPlanHash],
+		awsTagApprovalID:       approvalID.String(),
 	}
 	for key, value := range expectedAWS {
 		if value == "" || actual[key] != value {
@@ -375,7 +388,9 @@ func awsTagsToResourceTags(tags map[string]string) map[string]string {
 		resource.TagAgentInstanceID: tags[awsTagAgentInstanceID], resource.TagOwnerID: tags[awsTagOwnerID],
 		resource.TagTaskID: tags[awsTagTaskID], resource.TagDeploymentID: tags[awsTagDeploymentID],
 		resource.TagResourceID: tags[awsTagResourceID], resource.TagRetention: retention,
-		resource.TagDestroyDeadline: tags[awsTagDestroyDeadline],
+		resource.TagDestroyDeadline:  tags[awsTagDestroyDeadline],
+		resource.TagApprovedPlanHash: tags[awsTagApprovedPlanHash],
+		resource.TagApprovalID:       tags[awsTagApprovalID],
 	}
 }
 

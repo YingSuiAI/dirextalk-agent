@@ -20,6 +20,11 @@ type fakeEC2Reaper struct {
 	terminateCalls int
 }
 
+const (
+	reaperTestPlanHash   = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	reaperTestApprovalID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+)
+
 func (fake *fakeEC2Reaper) DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
 	return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{fake.instance}}}}, nil
 }
@@ -64,6 +69,7 @@ func TestEC2ProviderFailsClosedForManagedOrMismatchedTags(t *testing.T) {
 		"managed":             awsResourceTags(agentID, taskID, deploymentID, resourceID, time.Time{}, awsRetentionManaged),
 		"other agent":         awsResourceTags(uuid.NewString(), taskID, deploymentID, resourceID, now.Add(-time.Minute), awsRetentionEphemeral),
 		"missing resource id": withoutAWSTag(awsResourceTags(agentID, taskID, deploymentID, resourceID, now.Add(-time.Minute), awsRetentionEphemeral), awsTagResourceID),
+		"missing approval id": withoutAWSTag(awsResourceTags(agentID, taskID, deploymentID, resourceID, now.Add(-time.Minute), awsRetentionEphemeral), awsTagApprovalID),
 		"wrong resource id":   awsResourceTags(agentID, taskID, deploymentID, uuid.NewString(), now.Add(-time.Minute), awsRetentionEphemeral),
 	}
 	for name, tags := range tests {
@@ -98,6 +104,7 @@ func awsResourceTags(agentID, taskID, deploymentID, resourceID string, deadline 
 		awsTagAgentInstanceID: agentID, awsTagOwnerID: "owner-1", awsTagTaskID: taskID,
 		awsTagDeploymentID: deploymentID, awsTagRetention: retention,
 		awsTagDestroyDeadline: deadlineText, awsTagResourceID: resourceID,
+		awsTagApprovedPlanHash: reaperTestPlanHash, awsTagApprovalID: reaperTestApprovalID,
 	}
 	result := make([]ec2types.Tag, 0, len(values))
 	for key, value := range values {
@@ -111,5 +118,6 @@ func expectedResourceTags(agentID, taskID, deploymentID, resourceID string, dead
 		resource.TagAgentInstanceID: agentID, resource.TagOwnerID: "owner-1", resource.TagTaskID: taskID,
 		resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
 		resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.UTC().Format(time.RFC3339),
+		resource.TagApprovedPlanHash: reaperTestPlanHash, resource.TagApprovalID: reaperTestApprovalID,
 	}
 }

@@ -326,6 +326,7 @@ func entryReadBackOwnershipTags(resourceID string) map[string]string {
 		resource.TagAgentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", resource.TagOwnerID: "owner-1",
 		resource.TagTaskID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", resource.TagDeploymentID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 		resource.TagResourceID: resourceID, resource.TagRetention: "ephemeral_auto_destroy", resource.TagDestroyDeadline: "2026-07-17T10:00:00Z",
+		resource.TagApprovedPlanHash: digestOf('a'), resource.TagApprovalID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
 	}
 }
 

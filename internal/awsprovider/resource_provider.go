@@ -20,7 +20,7 @@ import (
 
 const (
 	resourceClientTokenTag = "dirextalk_client_token"
-	resourceSpecDigestTag  = "dirextalk_spec_digest"
+	resourceSpecDigestTag  = "dtx:s"
 	embeddedParentTag      = "dirextalk_embedded_parent"
 	awsResourceIDTag       = "dirextalk:resource_id"
 )
@@ -496,7 +496,7 @@ func (provider *EC2ResourceProvider) detachOwnedVolume(ctx context.Context, volu
 			return readErr
 		}
 		instanceTags := tagsFromEC2(instance.Tags)
-		for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID} {
+		for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagApprovedPlanHash, resource.TagApprovalID} {
 			if instanceTags[key] != expectedTags[key] {
 				return resource.ErrReadBack
 			}
@@ -540,12 +540,12 @@ func (provider *EC2ResourceProvider) validateCreate(request resource.ProviderCre
 }
 
 func containsMandatoryResourceTags(tags map[string]string, resourceID string) bool {
-	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagResourceID, resource.TagRetention, resource.TagDestroyDeadline} {
+	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagResourceID, resource.TagRetention, resource.TagDestroyDeadline, resource.TagApprovedPlanHash, resource.TagApprovalID} {
 		if strings.TrimSpace(tags[key]) == "" {
 			return false
 		}
 	}
-	return tags[resource.TagResourceID] == resourceID
+	return tags[resource.TagResourceID] == resourceID && digestPattern.MatchString(tags[resource.TagApprovedPlanHash]) && validAgentInstanceID(tags[resource.TagApprovalID])
 }
 
 func validResourceOwnershipTags(tags map[string]string, resourceID string, exact bool) bool {
@@ -657,6 +657,10 @@ func resourceTagToAWS(key, value string, all map[string]string) (string, string)
 			return TagDestroyDeadline, DestroyDeadlineNone
 		}
 		return TagDestroyDeadline, value
+	case resource.TagApprovedPlanHash:
+		return TagApprovedPlanHash, value
+	case resource.TagApprovalID:
+		return TagApprovalID, value
 	default:
 		return key, value
 	}
@@ -689,6 +693,10 @@ func awsTagToResource(key, value string) (string, string) {
 			return resource.TagDestroyDeadline, "managed"
 		}
 		return resource.TagDestroyDeadline, value
+	case TagApprovedPlanHash:
+		return resource.TagApprovedPlanHash, value
+	case TagApprovalID:
+		return resource.TagApprovalID, value
 	default:
 		return key, value
 	}

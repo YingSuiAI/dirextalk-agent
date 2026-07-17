@@ -15,6 +15,10 @@ const (
 	TagDeploymentID    = "dirextalk:deployment_id"
 	TagRetention       = "dirextalk:retention"
 	TagDestroyDeadline = "dirextalk:destroy_deadline"
+	// Compact keys keep the least-privilege IAM tag allowlist under AWS policy
+	// size limits while retaining an unambiguous Dirextalk namespace.
+	TagApprovedPlanHash = "dtx:p"
+	TagApprovalID       = "dtx:a"
 
 	RetentionEphemeral  = "ephemeral"
 	RetentionManaged    = "managed"

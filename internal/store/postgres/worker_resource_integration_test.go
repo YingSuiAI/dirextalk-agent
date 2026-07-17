@@ -273,28 +273,46 @@ func integrationInstallerDelivery(t *testing.T, issuer *installer.TrustIssuer, i
 }
 
 func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
-	_, baseStore, instanceID := newPlanningTestStore(t)
+	pool, baseStore, instanceID := newPlanningTestStore(t)
 	ctx := context.Background()
 	store, err := baseStore.NewResourceStore()
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	deploymentID, taskID := uuid.NewString(), uuid.NewString()
-	approvalID, approvedPlanHash := createApprovedResourcePlan(t, ctx, baseStore, instanceID, "owner-resource-store", now)
+	taskID, _ := createWorkerTask(t, baseStore)
+	deploymentID := uuid.NewString()
+	seedWorkerIdentityBinding(t, pool, instanceID, "owner-worker-store", taskID, deploymentID, "i-0123456789abcdef0", "123456789012")
+	var approvalID uuid.UUID
+	var approvedPlanHash string
+	if err := pool.QueryRow(ctx, `
+		SELECT launch.approval_id, plan.plan_hash
+		FROM cloud_launch_operations AS launch
+		JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+		WHERE launch.deployment_id=$1`, deploymentID).Scan(&approvalID, &approvedPlanHash); err != nil {
+		t.Fatalf("load Worker resource origin: %v", err)
+	}
+	// The worker-identity fixture includes a deliberately minimal EC2 ledger
+	// row for its own identity tests. This resource-store test starts before
+	// real Worker resources exist, so remove that fixture-only row while
+	// retaining the exact approved launch origin.
+	if _, err := pool.Exec(ctx, `DELETE FROM cloud_resources WHERE deployment_id=$1`, deploymentID); err != nil {
+		t.Fatalf("remove Worker identity fixture resource: %v", err)
+	}
 	deadline := now.Add(30 * time.Minute).Truncate(time.Second)
 	newItem := func(kind resource.Type, logicalName string, dependencies ...string) resource.ResourceV1 {
 		resourceID := uuid.NewString()
 		tags := map[string]string{
-			resource.TagAgentInstanceID: instanceID, resource.TagOwnerID: "owner-resource-store",
+			resource.TagAgentInstanceID: instanceID, resource.TagOwnerID: "owner-worker-store",
 			resource.TagTaskID: taskID, resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
 			resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: approvedPlanHash, resource.TagApprovalID: approvalID.String(),
 		}
 		return resource.ResourceV1{
-			ResourceID: resourceID, AgentInstanceID: instanceID, OwnerID: "owner-resource-store", TaskID: taskID,
+			ResourceID: resourceID, AgentInstanceID: instanceID, OwnerID: "owner-worker-store", TaskID: taskID,
 			DeploymentID: deploymentID, Type: kind, LogicalName: logicalName, Region: "us-west-2",
 			SpecDigest: "sha256:" + strings.Repeat("a", 64), ApprovedPlanHash: approvedPlanHash,
-			ApprovalID: approvalID, DependsOn: dependencies, Retention: task.RetentionEphemeralAutoDestroy,
+			ApprovalID: approvalID.String(), DependsOn: dependencies, Retention: task.RetentionEphemeralAutoDestroy,
 			DestroyDeadline: deadline, AutoDestroyApproved: true, Tags: tags, State: resource.StateProvisioning,
 			Intent:   resource.MutationIntent{Operation: resource.MutationCreate, ClientToken: strings.Repeat("c", 64), RecordedAt: now},
 			Revision: 1, CreatedAt: now, UpdatedAt: now,
@@ -362,8 +380,8 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 	manifest := resource.Manifest{
 		ManifestID: deploymentID, AgentInstanceID: instanceID, OwnerID: volume.OwnerID, TaskID: taskID,
 		DeploymentID: deploymentID, Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline,
-		AutoDestroyApproved: true, AutoDestroyApprovalID: approvalID, ApprovedPlanHash: volume.ApprovedPlanHash,
-		ApprovalBindings: []resource.ApprovalBinding{{ApprovedPlanHash: volume.ApprovedPlanHash, ApprovalID: approvalID}},
+		AutoDestroyApproved: true, AutoDestroyApprovalID: approvalID.String(), ApprovedPlanHash: volume.ApprovedPlanHash,
+		ApprovalBindings: []resource.ApprovalBinding{{ApprovedPlanHash: volume.ApprovedPlanHash, ApprovalID: approvalID.String()}},
 		Resources:        []resource.ResourceV1{volume, instance}, Revision: 2, UpdatedAt: now.Add(2 * time.Second),
 	}
 	record, err := store.PutResourceManifestPending(ctx, manifest, 0)

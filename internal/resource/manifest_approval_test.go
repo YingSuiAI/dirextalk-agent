@@ -89,6 +89,7 @@ func manifestApprovalResource(now time.Time, scope manifestApprovalScope, planHa
 		Tags: map[string]string{
 			TagAgentInstanceID: scope.agentID, TagOwnerID: "owner-manifest", TagTaskID: scope.taskID, TagDeploymentID: scope.deploymentID,
 			TagResourceID: resourceID, TagRetention: string(task.RetentionEphemeralAutoDestroy), TagDestroyDeadline: deadline.Format(time.RFC3339),
+			TagApprovedPlanHash: planHash, TagApprovalID: approvalID,
 		},
 	}
 }

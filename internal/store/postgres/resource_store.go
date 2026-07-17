@@ -40,18 +40,152 @@ func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.Reso
 	if err := store.validateResource(item); err != nil {
 		return resource.ResourceV1{}, err
 	}
-	inserted, err := store.insertResource(ctx, store.pool, item)
+	if item.State == resource.StateOrphaned {
+		return resource.ResourceV1{}, resource.ErrInvalid
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return resource.ResourceV1{}, fmt.Errorf("begin resource intent: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.validateResourceIntentOrigin(ctx, tx, item); err != nil {
+		return resource.ResourceV1{}, err
+	}
+	inserted, err := store.insertResource(ctx, tx, item)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return resource.ResourceV1{}, resource.ErrAlreadyExists
 		}
 		return resource.ResourceV1{}, fmt.Errorf("create resource intent: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return resource.ResourceV1{}, fmt.Errorf("commit resource intent: %w", err)
+	}
 	if !inserted {
 		return store.Get(ctx, item.ResourceID)
 	}
 	return cloneResource(item), nil
 }
+
+// validateResourceIntentOrigin is the durable authorization boundary for a
+// billable resource intent.  cloud_resources has two intentionally distinct
+// approval origins: the original Worker purchase approval, or a later
+// separately device-approved public-entry operation.  Do not weaken this to a
+// generic foreign key: entry_approval_id is deliberately not a cloud_approvals
+// row.  Both paths are locked in the insert transaction so a lifecycle state
+// change cannot race a new intent.
+func (store *ResourceStore) validateResourceIntentOrigin(ctx context.Context, tx pgx.Tx, item resource.ResourceV1) error {
+	taskID, err := uuid.Parse(item.TaskID)
+	if err != nil || taskID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	deploymentID, err := uuid.Parse(item.DeploymentID)
+	if err != nil || deploymentID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	approvalID, err := uuid.Parse(item.ApprovalID)
+	if err != nil || approvalID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+
+	if err := tx.QueryRow(ctx, workerResourceIntentOriginSQL,
+		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash, item.Region,
+	).Scan(new(uuid.UUID)); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verify Worker resource intent origin: %w", err)
+	}
+
+	if err := tx.QueryRow(ctx, entryResourceIntentOriginSQL,
+		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash, item.Region,
+	).Scan(new(uuid.UUID)); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verify entry resource intent origin: %w", err)
+	}
+	return resource.ErrInvalid
+}
+
+const workerResourceIntentOriginSQL = `
+	SELECT launch.operation_id
+	FROM cloud_launch_operations AS launch
+	JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
+	JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+	JOIN cloud_connections AS connection ON connection.connection_id=launch.connection_id
+	WHERE launch.agent_instance_id=$1
+	  AND launch.owner_id=$2
+	  AND launch.task_id=$3
+	  AND launch.deployment_id=$4
+	  AND launch.approval_id=$5
+	  AND launch.state='provisioning'
+	  AND approval.agent_instance_id=$1
+	  AND approval.owner_id=$2
+	  AND approval.plan_id=launch.plan_id
+	  AND approval.plan_hash=$6
+	  AND approval.plan_revision=plan.revision
+	  AND plan.agent_instance_id=$1
+	  AND plan.owner_id=$2
+	  AND plan.connection_id=launch.connection_id::text
+	  AND plan.plan_hash=$6
+	  AND plan.status='approved'
+	  AND connection.agent_instance_id=$1
+	  AND connection.owner_id=$2
+	  AND connection.region=$7
+	  AND connection.status='active'
+	FOR SHARE OF launch, approval, plan, connection`
+
+const entryResourceIntentOriginSQL = `
+	SELECT operation.operation_id
+	FROM cloud_entry_operations AS operation
+	JOIN cloud_entry_plans AS entry_plan ON entry_plan.entry_plan_id=operation.entry_plan_id
+	JOIN cloud_launch_operations AS launch ON launch.deployment_id=operation.deployment_id
+	JOIN cloud_plans AS original_plan ON original_plan.plan_id=operation.original_plan_id
+	JOIN cloud_approvals AS original_approval ON original_approval.approval_id=operation.original_approval_id
+	JOIN cloud_connections AS connection ON connection.connection_id=operation.connection_id
+	WHERE operation.agent_instance_id=$1
+	  AND operation.owner_id=$2
+	  AND operation.task_id=$3
+	  AND operation.deployment_id=$4
+	  AND operation.entry_approval_id=$5
+	  AND operation.entry_plan_hash=$6
+	  AND operation.status='provisioning'
+	  AND operation.signature_json IS NOT NULL
+	  AND operation.signature IS NOT NULL
+	  AND operation.approved_at IS NOT NULL
+	  AND entry_plan.agent_instance_id=$1
+	  AND entry_plan.owner_id=$2
+	  AND entry_plan.task_id=$3
+	  AND entry_plan.deployment_id=$4
+	  AND entry_plan.status='approved'
+	  AND entry_plan.revision=operation.expected_entry_plan_revision
+	  AND entry_plan.plan_hash=$6
+	  AND entry_plan.plan_hash=operation.entry_plan_hash
+	  AND entry_plan.original_plan_id=operation.original_plan_id
+	  AND entry_plan.original_plan_hash=operation.original_plan_hash
+	  AND entry_plan.original_approval_id=operation.original_approval_id
+	  AND entry_plan.connection_id=operation.connection_id
+	  AND launch.agent_instance_id=$1
+	  AND launch.owner_id=$2
+	  AND launch.task_id=$3
+	  AND launch.deployment_id=$4
+	  AND launch.plan_id=operation.original_plan_id
+	  AND launch.approval_id=operation.original_approval_id
+	  AND launch.connection_id=operation.connection_id
+	  AND original_plan.agent_instance_id=$1
+	  AND original_plan.owner_id=$2
+	  AND original_plan.connection_id=operation.connection_id::text
+	  AND original_plan.plan_hash=operation.original_plan_hash
+	  AND original_plan.status='approved'
+	  AND original_approval.agent_instance_id=$1
+	  AND original_approval.owner_id=$2
+	  AND original_approval.plan_id=operation.original_plan_id
+	  AND original_approval.plan_hash=operation.original_plan_hash
+	  AND original_approval.plan_revision=original_plan.revision
+	  AND connection.agent_instance_id=$1
+	  AND connection.owner_id=$2
+	  AND connection.region=$7
+	  AND connection.status='active'
+	FOR SHARE OF operation, entry_plan, launch, original_plan, original_approval, connection`
 
 func (store *ResourceStore) Get(ctx context.Context, resourceID string) (resource.ResourceV1, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(resourceID))
@@ -223,18 +357,143 @@ func (store *ResourceStore) ImportOrphan(ctx context.Context, item resource.Reso
 	if item.State != resource.StateOrphaned || store.validateResource(item) != nil {
 		return resource.ResourceV1{}, resource.ErrInvalid
 	}
-	inserted, err := store.insertResource(ctx, store.pool, item)
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return resource.ResourceV1{}, fmt.Errorf("begin orphan import: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.validateOrphanResourceOrigin(ctx, tx, item); err != nil {
+		return resource.ResourceV1{}, err
+	}
+	inserted, err := store.insertResource(ctx, tx, item)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return resource.ResourceV1{}, resource.ErrAlreadyExists
 		}
 		return resource.ResourceV1{}, fmt.Errorf("import orphan resource: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return resource.ResourceV1{}, fmt.Errorf("commit orphan import: %w", err)
+	}
 	if !inserted {
 		return resource.ResourceV1{}, resource.ErrAlreadyExists
 	}
 	return cloneResource(item), nil
 }
+
+// validateOrphanResourceOrigin keeps recovery from becoming a generic ledger
+// insert after the approval foreign key was removed for entry resources. The
+// provider tags carry the exact non-secret approval binding, so an orphan may
+// only be adopted after either its original Worker approval or its separately
+// signed Entry operation proves the full durable scope. Older resources without
+// those tags deliberately fail closed instead of being guessed into ownership.
+func (store *ResourceStore) validateOrphanResourceOrigin(ctx context.Context, tx pgx.Tx, item resource.ResourceV1) error {
+	taskID, err := uuid.Parse(item.TaskID)
+	if err != nil || taskID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	deploymentID, err := uuid.Parse(item.DeploymentID)
+	if err != nil || deploymentID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	approvalID, err := uuid.Parse(item.ApprovalID)
+	if err != nil || approvalID == uuid.Nil || !resourceSHA256Pattern.MatchString(item.ApprovedPlanHash) ||
+		item.Tags[resource.TagApprovedPlanHash] != item.ApprovedPlanHash || item.Tags[resource.TagApprovalID] != approvalID.String() {
+		return resource.ErrInvalid
+	}
+	if err := tx.QueryRow(ctx, workerOrphanResourceOriginSQL,
+		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash,
+	).Scan(new(uuid.UUID)); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verify Worker orphan resource origin: %w", err)
+	}
+	if err := tx.QueryRow(ctx, entryOrphanResourceOriginSQL,
+		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash,
+	).Scan(new(uuid.UUID)); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verify entry orphan resource origin: %w", err)
+	}
+	return resource.ErrInvalid
+}
+
+const workerOrphanResourceOriginSQL = `
+	SELECT launch.operation_id
+	FROM cloud_launch_operations AS launch
+	JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
+	JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+	JOIN cloud_connections AS connection ON connection.connection_id=launch.connection_id
+	WHERE launch.agent_instance_id=$1
+	  AND launch.owner_id=$2
+	  AND launch.task_id=$3
+	  AND launch.deployment_id=$4
+	  AND launch.approval_id=$5
+	  AND approval.agent_instance_id=$1
+	  AND approval.owner_id=$2
+	  AND approval.plan_id=launch.plan_id
+	  AND approval.plan_hash=$6
+	  AND approval.plan_revision=plan.revision
+	  AND plan.agent_instance_id=$1
+	  AND plan.owner_id=$2
+	  AND plan.connection_id=launch.connection_id::text
+	  AND plan.plan_hash=$6
+	  AND plan.status='approved'
+	  AND connection.agent_instance_id=$1
+	  AND connection.owner_id=$2
+	FOR SHARE OF launch, approval, plan, connection`
+
+const entryOrphanResourceOriginSQL = `
+	SELECT operation.operation_id
+	FROM cloud_entry_operations AS operation
+	JOIN cloud_entry_plans AS entry_plan ON entry_plan.entry_plan_id=operation.entry_plan_id
+	JOIN cloud_launch_operations AS launch ON launch.deployment_id=operation.deployment_id
+	JOIN cloud_plans AS original_plan ON original_plan.plan_id=operation.original_plan_id
+	JOIN cloud_approvals AS original_approval ON original_approval.approval_id=operation.original_approval_id
+	JOIN cloud_connections AS connection ON connection.connection_id=operation.connection_id
+	WHERE operation.agent_instance_id=$1
+	  AND operation.owner_id=$2
+	  AND operation.task_id=$3
+	  AND operation.deployment_id=$4
+	  AND operation.entry_approval_id=$5
+	  AND operation.entry_plan_hash=$6
+	  AND operation.status <> 'awaiting_approval'
+	  AND operation.status <> 'approved'
+	  AND operation.signature_json IS NOT NULL
+	  AND operation.signature IS NOT NULL
+	  AND operation.approved_at IS NOT NULL
+	  AND entry_plan.agent_instance_id=$1
+	  AND entry_plan.owner_id=$2
+	  AND entry_plan.task_id=$3
+	  AND entry_plan.deployment_id=$4
+	  AND entry_plan.status='approved'
+	  AND entry_plan.revision=operation.expected_entry_plan_revision
+	  AND entry_plan.plan_hash=$6
+	  AND entry_plan.plan_hash=operation.entry_plan_hash
+	  AND entry_plan.original_plan_id=operation.original_plan_id
+	  AND entry_plan.original_plan_hash=operation.original_plan_hash
+	  AND entry_plan.original_approval_id=operation.original_approval_id
+	  AND entry_plan.connection_id=operation.connection_id
+	  AND launch.agent_instance_id=$1
+	  AND launch.owner_id=$2
+	  AND launch.task_id=$3
+	  AND launch.deployment_id=$4
+	  AND launch.plan_id=operation.original_plan_id
+	  AND launch.approval_id=operation.original_approval_id
+	  AND launch.connection_id=operation.connection_id
+	  AND original_plan.agent_instance_id=$1
+	  AND original_plan.owner_id=$2
+	  AND original_plan.connection_id=operation.connection_id::text
+	  AND original_plan.plan_hash=operation.original_plan_hash
+	  AND original_plan.status='approved'
+	  AND original_approval.agent_instance_id=$1
+	  AND original_approval.owner_id=$2
+	  AND original_approval.plan_id=operation.original_plan_id
+	  AND original_approval.plan_hash=operation.original_plan_hash
+	  AND original_approval.plan_revision=original_plan.revision
+	  AND connection.agent_instance_id=$1
+	  AND connection.owner_id=$2
+	FOR SHARE OF operation, entry_plan, launch, original_plan, original_approval, connection`
 
 const resourceSelectSQL = `
 	SELECT resource_id, agent_instance_id, owner_id, task_id, deployment_id, resource_type,
@@ -424,12 +683,18 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 	} else if item.Retention != task.RetentionManaged || !item.DestroyDeadline.IsZero() || item.AutoDestroyApproved {
 		return resource.ErrInvalid
 	}
+	if !resourceSHA256Pattern.MatchString(item.ApprovedPlanHash) {
+		return resource.ErrInvalid
+	}
+	approval, err := uuid.Parse(item.ApprovalID)
+	if err != nil || approval == uuid.Nil {
+		return resource.ErrInvalid
+	}
 	if item.State != resource.StateOrphaned {
-		if !resourceSHA256Pattern.MatchString(item.SpecDigest) || !resourceSHA256Pattern.MatchString(item.ApprovedPlanHash) {
+		if !resourceSHA256Pattern.MatchString(item.SpecDigest) {
 			return resource.ErrInvalid
 		}
-		approval, err := uuid.Parse(item.ApprovalID)
-		if err != nil || approval == uuid.Nil || item.Region == "" {
+		if item.Region == "" {
 			return resource.ErrInvalid
 		}
 	}
@@ -484,7 +749,7 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 		}
 		seen[dependency] = struct{}{}
 	}
-	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagResourceID, resource.TagRetention, resource.TagDestroyDeadline} {
+	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagResourceID, resource.TagRetention, resource.TagDestroyDeadline, resource.TagApprovedPlanHash, resource.TagApprovalID} {
 		if item.Tags[key] == "" || security.ContainsLikelySecret(item.Tags[key]) {
 			return resource.ErrInvalid
 		}
@@ -495,7 +760,8 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 		}
 	}
 	if item.Tags[resource.TagAgentInstanceID] != item.AgentInstanceID || item.Tags[resource.TagOwnerID] != item.OwnerID || item.Tags[resource.TagTaskID] != item.TaskID ||
-		item.Tags[resource.TagDeploymentID] != item.DeploymentID || item.Tags[resource.TagResourceID] != item.ResourceID || item.Tags[resource.TagRetention] != string(item.Retention) {
+		item.Tags[resource.TagDeploymentID] != item.DeploymentID || item.Tags[resource.TagResourceID] != item.ResourceID || item.Tags[resource.TagRetention] != string(item.Retention) ||
+		item.Tags[resource.TagApprovedPlanHash] != item.ApprovedPlanHash || item.Tags[resource.TagApprovalID] != approval.String() {
 		return resource.ErrInvalid
 	}
 	expectedDeadline := "managed"

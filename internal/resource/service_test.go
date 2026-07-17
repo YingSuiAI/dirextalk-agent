@@ -623,7 +623,7 @@ func TestProvisionPersistsIntentReconcilesLostResponseAndMirrorsBeforeActive(t *
 	if len(manifest.Resources) != 1 || manifest.Resources[0].State != StateActive || !manifest.AutoDestroyApproved {
 		t.Fatalf("active manifest was not mirrored: %+v", manifest)
 	}
-	for _, key := range []string{TagAgentInstanceID, TagOwnerID, TagTaskID, TagDeploymentID, TagResourceID, TagRetention, TagDestroyDeadline} {
+	for _, key := range []string{TagAgentInstanceID, TagOwnerID, TagTaskID, TagDeploymentID, TagResourceID, TagRetention, TagDestroyDeadline, TagApprovedPlanHash, TagApprovalID} {
 		if active.Tags[key] == "" {
 			t.Errorf("mandatory tag %s missing", key)
 		}

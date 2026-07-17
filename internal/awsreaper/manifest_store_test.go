@@ -239,6 +239,8 @@ func TestDynamoManifestStoreMirrorsMixedWorkerAndEntrypointApprovals(t *testing.
 		entry.Tags[key] = value
 	}
 	entry.Tags[resource.TagResourceID] = entry.ResourceID
+	entry.Tags[resource.TagApprovedPlanHash] = entry.ApprovedPlanHash
+	entry.Tags[resource.TagApprovalID] = entry.ApprovalID
 	manifest.Resources = []resource.ResourceV1{worker, entry}
 	manifest.ApprovalBindings = []resource.ApprovalBinding{
 		{ApprovedPlanHash: worker.ApprovedPlanHash, ApprovalID: worker.ApprovalID},
@@ -272,7 +274,8 @@ func reaperManifest(agentID string, deadline time.Time, managed bool) resource.M
 	tags := map[string]string{
 		resource.TagAgentInstanceID: agentID, resource.TagOwnerID: "owner-1", resource.TagTaskID: taskID,
 		resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID, resource.TagRetention: string(retention),
-		resource.TagDestroyDeadline: deadline.UTC().Format(time.RFC3339),
+		resource.TagDestroyDeadline:  deadline.UTC().Format(time.RFC3339),
+		resource.TagApprovedPlanHash: digestFixture(), resource.TagApprovalID: approvalID,
 	}
 	if managed {
 		tags[resource.TagDestroyDeadline] = "managed"
