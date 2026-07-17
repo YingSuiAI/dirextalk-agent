@@ -60,6 +60,13 @@ type ResourceProvisioner interface {
 	Provision(context.Context, entrypoint.ScopeV1, resource.ProvisionSpec, resource.ProviderCreateAuthorization) (resource.ResourceV1, error)
 }
 
+// HealthVerifier independently proves the separately signed public HTTPS
+// route. An unhealthy route remains in verifying so DNS, target registration,
+// and TLS propagation can recover without declaring the service ready.
+type HealthVerifier interface {
+	Verify(context.Context, entrypoint.PlanV1) (bool, error)
+}
+
 // Runner is the injectable controller surface used by application composition.
 // NotifyEntrypoint satisfies entrypoint.Notifier and never blocks an approval
 // request on an executor scan.
@@ -77,6 +84,7 @@ type Config struct {
 	Scopes     ScopeRevalidator
 	Resources  DeploymentResourceReader
 	Provision  ResourceProvisioner
+	Health     HealthVerifier
 
 	BatchSize    int
 	PollInterval time.Duration
@@ -93,6 +101,7 @@ type Executor struct {
 	scopes     ScopeRevalidator
 	resources  DeploymentResourceReader
 	provision  ResourceProvisioner
+	health     HealthVerifier
 
 	batchSize    int
 	pollInterval time.Duration
@@ -102,7 +111,7 @@ type Executor struct {
 
 // NewExecutor creates a recoverable public-entry controller.
 func NewExecutor(config Config) (*Executor, error) {
-	if config.Operations == nil || config.Plans == nil || config.Scopes == nil || config.Resources == nil || config.Provision == nil {
+	if config.Operations == nil || config.Plans == nil || config.Scopes == nil || config.Resources == nil || config.Provision == nil || config.Health == nil {
 		return nil, entrypoint.ErrInvalid
 	}
 	if config.BatchSize == 0 {
@@ -121,7 +130,7 @@ func NewExecutor(config Config) (*Executor, error) {
 		config.Now = time.Now
 	}
 	return &Executor{
-		operations: config.Operations, plans: config.Plans, scopes: config.Scopes, resources: config.Resources, provision: config.Provision,
+		operations: config.Operations, plans: config.Plans, scopes: config.Scopes, resources: config.Resources, provision: config.Provision, health: config.Health,
 		batchSize: config.BatchSize, pollInterval: config.PollInterval, now: config.Now, wake: make(chan struct{}, 1),
 	}, nil
 }
@@ -188,7 +197,8 @@ func (executor *Executor) reconcile(ctx context.Context, operation entrypoint.Op
 	if err := operation.Validate(); err != nil {
 		return executor.fail(ctx, operation, entrypoint.ErrorCodeReadBackMismatch, summaryReadBackMismatch)
 	}
-	if operation.Status != entrypoint.StatusApproved && operation.Status != entrypoint.StatusProvisioning && operation.Status != entrypoint.StatusVerifying {
+	if operation.Status != entrypoint.StatusApproved && operation.Status != entrypoint.StatusProvisioning && operation.Status != entrypoint.StatusVerifying &&
+		operation.Status != entrypoint.StatusActive && operation.Status != entrypoint.StatusDestroying && operation.Status != entrypoint.StatusDestroyBlocked {
 		return nil
 	}
 	plan, err := executor.plans.ResolveApprovedPlan(ctx, operation.Challenge.OperationID)
@@ -199,7 +209,31 @@ func (executor *Executor) reconcile(ctx context.Context, operation entrypoint.Op
 		return executor.fail(ctx, operation, entrypoint.ErrorCodeReadBackMismatch, summaryReadBackMismatch)
 	}
 	if err := validOperationPlan(operation, plan); err != nil {
-		return executor.fail(ctx, operation, entrypoint.ErrorCodeReadBackMismatch, summaryReadBackMismatch)
+		if operation.Status == entrypoint.StatusApproved || operation.Status == entrypoint.StatusProvisioning || operation.Status == entrypoint.StatusVerifying {
+			return executor.fail(ctx, operation, entrypoint.ErrorCodeReadBackMismatch, summaryReadBackMismatch)
+		}
+		return executor.markDestroyBlocked(ctx, operation)
+	}
+
+	resources, resourcesErr := executor.resources.ListDeployment(ctx, plan.Scope.OwnerID, plan.Scope.Worker.DeploymentID)
+	if resourcesErr != nil {
+		return resourcesErr
+	}
+	if operation.Status == entrypoint.StatusActive {
+		if !deploymentDestroyObserved(resources, plan.Scope) {
+			return nil
+		}
+		return executor.reconcileDestruction(ctx, operation, plan, resources)
+	}
+	if operation.Status == entrypoint.StatusDestroying || operation.Status == entrypoint.StatusDestroyBlocked {
+		return executor.reconcileDestruction(ctx, operation, plan, resources)
+	}
+	if deploymentDestroyObserved(resources, plan.Scope) {
+		operation, err = executor.transition(ctx, operation, entrypoint.StatusDestroying)
+		if err != nil {
+			return err
+		}
+		return executor.reconcileDestruction(ctx, operation, plan, resources)
 	}
 
 	if operation.Status == entrypoint.StatusApproved {
@@ -268,10 +302,176 @@ func (executor *Executor) reconcile(ctx context.Context, operation entrypoint.Op
 			}
 			return executor.fail(ctx, operation, entrypoint.ErrorCodeVerificationFailed, summaryVerificationFailed)
 		}
+		healthy, healthErr := executor.health.Verify(ctx, plan)
+		if healthErr != nil {
+			if errors.Is(healthErr, entrypoint.ErrUnavailable) || errors.Is(healthErr, context.Canceled) || errors.Is(healthErr, context.DeadlineExceeded) {
+				return healthErr
+			}
+			return executor.fail(ctx, operation, entrypoint.ErrorCodeVerificationFailed, summaryVerificationFailed)
+		}
+		if !healthy {
+			// The persisted monitor records de-sensitized evidence. Retain a
+			// recoverable verification state until the independently probed TLS
+			// route returns the exact signed success status.
+			return nil
+		}
 		_, err = executor.transition(ctx, operation, entrypoint.StatusActive)
 		return err
 	}
 	return nil
+}
+
+// reconcileDestruction projects only the ledger's independently read-back
+// resource states into an entry operation. Generic manual/ephemeral destroy
+// owns all provider calls; this controller never recreates an entry once any
+// resource in its deployment has entered a destructive state.
+func (executor *Executor) reconcileDestruction(ctx context.Context, operation entrypoint.OperationV1, plan entrypoint.PlanV1, resources []resource.ResourceV1) error {
+	state, err := entryDestructionState(operation, plan, resources)
+	if err != nil {
+		return executor.markDestroyBlocked(ctx, operation)
+	}
+	if state == entryDestroyIdle {
+		return nil
+	}
+	if operation.Status == entrypoint.StatusActive {
+		operation, err = executor.transition(ctx, operation, entrypoint.StatusDestroying)
+		if err != nil {
+			return err
+		}
+	}
+	switch state {
+	case entryDestroyBlocked:
+		return executor.markDestroyBlocked(ctx, operation)
+	case entryDestroyCompleted:
+		if operation.Status == entrypoint.StatusDestroyBlocked {
+			operation, err = executor.transition(ctx, operation, entrypoint.StatusDestroying)
+			if err != nil {
+				return err
+			}
+		}
+		_, err = executor.transition(ctx, operation, entrypoint.StatusDestroyed)
+		return err
+	case entryDestroyInProgress:
+		if operation.Status == entrypoint.StatusDestroyBlocked {
+			_, err = executor.transition(ctx, operation, entrypoint.StatusDestroying)
+			return err
+		}
+		return nil
+	default:
+		return executor.markDestroyBlocked(ctx, operation)
+	}
+}
+
+type entryDestroyState uint8
+
+const (
+	entryDestroyIdle entryDestroyState = iota
+	entryDestroyInProgress
+	entryDestroyCompleted
+	entryDestroyBlocked
+)
+
+// deploymentDestroyObserved deliberately treats a destroyed/scheduled
+// resource anywhere in the exact deployment as a stop signal. It prevents a
+// recovery race from recreating an ALB while the generic lifecycle controller
+// is processing the same deployment.
+func deploymentDestroyObserved(resources []resource.ResourceV1, scope entrypoint.ScopeV1) bool {
+	for _, item := range resources {
+		if item.AgentInstanceID != scope.AgentInstanceID || item.OwnerID != scope.OwnerID || item.TaskID != scope.Worker.TaskID ||
+			item.DeploymentID != scope.Worker.DeploymentID {
+			continue
+		}
+		switch item.State {
+		case resource.StateDestroyScheduled, resource.StateDestroying, resource.StateDestroyBlocked, resource.StateVerifiedDestroyed:
+			return true
+		}
+	}
+	return false
+}
+
+// entryDestructionState accepts completion only when every deterministic
+// entry resource remains in the durable ledger and has an independently
+// observed absent read-back. A missing record is never silently considered
+// deleted: it can represent a lost fact or an orphaned billable resource.
+func entryDestructionState(operation entrypoint.OperationV1, plan entrypoint.PlanV1, resources []resource.ResourceV1) (entryDestroyState, error) {
+	if operation.Validate() != nil || plan.Validate() != nil || validOperationPlan(operation, plan) != nil {
+		return entryDestroyBlocked, entrypoint.ErrInvalid
+	}
+	planHash, err := plan.Hash()
+	if err != nil {
+		return entryDestroyBlocked, entrypoint.ErrInvalid
+	}
+	scope := plan.Scope
+	expected := map[string]resource.Type{
+		entryResourceID(scope.AgentInstanceID, operation.Challenge.OperationID, entrySecurityGroupLogicalName): resource.TypeSG,
+		entryResourceID(scope.AgentInstanceID, operation.Challenge.OperationID, entryBridgeLogicalName):        resource.TypeSecurityGroupRule,
+		entryResourceID(scope.AgentInstanceID, operation.Challenge.OperationID, entryTargetGroupLogicalName):   resource.TypeTargetGroup,
+		entryResourceID(scope.AgentInstanceID, operation.Challenge.OperationID, entryLoadBalancerLogicalName):  resource.TypeALB,
+		entryResourceID(scope.AgentInstanceID, operation.Challenge.OperationID, entryListenerLogicalName):      resource.TypeListener,
+	}
+	byID := make(map[string]resource.ResourceV1, len(resources))
+	for _, item := range resources {
+		if _, exists := byID[item.ResourceID]; exists {
+			return entryDestroyBlocked, entrypoint.ErrReadBackRequired
+		}
+		byID[item.ResourceID] = item
+	}
+
+	worker, found := byID[scope.Worker.WorkerResourceID]
+	if !found || !matchesDestroyingWorker(worker, scope) {
+		return entryDestroyBlocked, entrypoint.ErrReadBackRequired
+	}
+
+	completed := true
+	observedEntry := false
+	for resourceID, kind := range expected {
+		item, exists := byID[resourceID]
+		if !exists {
+			completed = false
+			continue
+		}
+		observedEntry = true
+		if !matchesEntryDestroyResource(item, scope, planHash, operation.Challenge.ApprovalID, kind) {
+			return entryDestroyBlocked, entrypoint.ErrReadBackRequired
+		}
+		switch item.State {
+		case resource.StateDestroyBlocked:
+			return entryDestroyBlocked, nil
+		case resource.StateVerifiedDestroyed:
+			if item.ReadBack.Exists {
+				return entryDestroyBlocked, entrypoint.ErrReadBackRequired
+			}
+		default:
+			completed = false
+		}
+	}
+	if worker.State == resource.StateDestroyBlocked {
+		return entryDestroyBlocked, nil
+	}
+	if worker.State != resource.StateVerifiedDestroyed || worker.ReadBack.Exists {
+		return entryDestroyInProgress, nil
+	}
+	if !observedEntry || !completed {
+		return entryDestroyBlocked, entrypoint.ErrReadBackRequired
+	}
+	if completed {
+		return entryDestroyCompleted, nil
+	}
+	return entryDestroyInProgress, nil
+}
+
+func matchesDestroyingWorker(item resource.ResourceV1, scope entrypoint.ScopeV1) bool {
+	return item.ResourceID == scope.Worker.WorkerResourceID && item.AgentInstanceID == scope.AgentInstanceID && item.OwnerID == scope.OwnerID &&
+		item.TaskID == scope.Worker.TaskID && item.DeploymentID == scope.Worker.DeploymentID && item.Type == resource.TypeEC2 && item.Region == scope.Region &&
+		item.SpecDigest == scope.Worker.WorkerSpecDigest && item.ApprovedPlanHash == scope.Worker.OriginalPlanHash &&
+		item.ApprovalID == scope.Worker.OriginalApprovalID && item.ProviderID == scope.Worker.InstanceID &&
+		item.ReadBack.ProviderID == scope.Worker.InstanceID && sameRetention(item, scope.Retention)
+}
+
+func matchesEntryDestroyResource(item resource.ResourceV1, scope entrypoint.ScopeV1, planHash, approvalID string, kind resource.Type) bool {
+	return item.AgentInstanceID == scope.AgentInstanceID && item.OwnerID == scope.OwnerID && item.TaskID == scope.Worker.TaskID &&
+		item.DeploymentID == scope.Worker.DeploymentID && item.Type == kind && item.Region == scope.Region &&
+		item.ApprovedPlanHash == planHash && item.ApprovalID == approvalID && sameRetention(item, scope.Retention)
 }
 
 func validOperationPlan(operation entrypoint.OperationV1, plan entrypoint.PlanV1) error {
@@ -498,6 +698,29 @@ func (executor *Executor) transition(ctx context.Context, operation entrypoint.O
 	return saved, err
 }
 
+func (executor *Executor) markDestroyBlocked(ctx context.Context, operation entrypoint.OperationV1) error {
+	if operation.Status == entrypoint.StatusActive {
+		next, err := executor.transition(ctx, operation, entrypoint.StatusDestroying)
+		if err != nil {
+			return err
+		}
+		operation = next
+	}
+	if operation.Status != entrypoint.StatusDestroying && operation.Status != entrypoint.StatusDestroyBlocked {
+		return nil
+	}
+	if operation.Status == entrypoint.StatusDestroyBlocked && operation.ErrorCode == entrypoint.ErrorCodeDestroyBlocked && operation.ErrorSummary == summaryDestroyBlocked {
+		return nil
+	}
+	next := operation
+	next.Status, next.ErrorCode, next.ErrorSummary, next.UpdatedAt = entrypoint.StatusDestroyBlocked, entrypoint.ErrorCodeDestroyBlocked, summaryDestroyBlocked, executor.timestamp()
+	_, err := executor.operations.SaveEntryOperation(ctx, next, operation.Revision)
+	if errors.Is(err, entrypoint.ErrRevisionConflict) || errors.Is(err, entrypoint.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 func (executor *Executor) failScope(ctx context.Context, operation entrypoint.OperationV1, err error) error {
 	if errors.Is(err, entrypoint.ErrWorkerNotReady) {
 		return executor.fail(ctx, operation, entrypoint.ErrorCodeWorkerNotReady, summaryWorkerNotReady)
@@ -548,6 +771,7 @@ const (
 	summaryAuthorizationExpired = "The approved entry authorization or quote expired before a new resource could be created."
 	summaryProvisioningFailed   = "The approved public entry could not be provisioned."
 	summaryVerificationFailed   = "The public entry resources could not be independently verified."
+	summaryDestroyBlocked       = "Approved entry resource destruction could not be independently verified."
 )
 
 var _ Runner = (*Executor)(nil)

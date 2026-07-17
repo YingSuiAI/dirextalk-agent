@@ -152,6 +152,112 @@ func TestRunOnceRetriesUnavailableSignedProvisioner(t *testing.T) {
 	}
 }
 
+func TestRunOnceKeepsVerificationPendingUntilExternalHealthIsHealthy(t *testing.T) {
+	t.Parallel()
+	fixture := newExecutorFixture(t)
+	fixture.health.healthy = false
+
+	if err := fixture.executor(t).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if got := fixture.operations.current().Status; got != entrypoint.StatusVerifying {
+		t.Fatalf("operation status = %q, want verifying while external health is pending", got)
+	}
+	if fixture.health.calls != 1 {
+		t.Fatalf("health checks = %d, want 1", fixture.health.calls)
+	}
+	if fixture.provisioner.callCount() != 5 {
+		t.Fatalf("pending health should retain the provisioned graph, calls=%d", fixture.provisioner.callCount())
+	}
+}
+
+func TestRunOnceProjectsVerifiedGenericDestroyIntoEntryDestroyed(t *testing.T) {
+	t.Parallel()
+	fixture := newExecutorFixture(t)
+	executor := fixture.executor(t)
+	if err := executor.RunOnce(context.Background()); err != nil {
+		t.Fatalf("activate entry: %v", err)
+	}
+	if fixture.operations.current().Status != entrypoint.StatusActive {
+		t.Fatalf("status before destroy = %q, want active", fixture.operations.current().Status)
+	}
+	fixture.markEntryGraphDestroyed()
+
+	if err := executor.RunOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile entry destruction: %v", err)
+	}
+	if operation := fixture.operations.current(); operation.Status != entrypoint.StatusDestroyed || operation.ErrorCode != entrypoint.ErrorCodeNone {
+		t.Fatalf("operation after verified destroy = %#v", operation)
+	}
+	if got := fixture.provisioner.callCount(); got != 5 {
+		t.Fatalf("destroy reconciliation recreated entry resources: provision calls=%d", got)
+	}
+}
+
+func TestRunOnceKeepsActiveEntryActiveWithoutDestroyEvidence(t *testing.T) {
+	t.Parallel()
+	fixture := newExecutorFixture(t)
+	executor := fixture.executor(t)
+	if err := executor.RunOnce(context.Background()); err != nil {
+		t.Fatalf("activate entry: %v", err)
+	}
+	if err := executor.RunOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile active entry: %v", err)
+	}
+	if operation := fixture.operations.current(); operation.Status != entrypoint.StatusActive || operation.ErrorCode != entrypoint.ErrorCodeNone {
+		t.Fatalf("active entry transitioned without destruction evidence: %#v", operation)
+	}
+}
+
+func TestRunOnceStopsProvisioningWhenDeploymentDestroyStarts(t *testing.T) {
+	t.Parallel()
+	fixture := newExecutorFixture(t)
+	worker := fixture.resources.items[0]
+	worker.State = resource.StateDestroyScheduled
+	worker.Revision++
+	fixture.resources.items[0] = worker
+
+	if err := fixture.executor(t).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	operation := fixture.operations.current()
+	if operation.Status != entrypoint.StatusDestroying || operation.ErrorCode != entrypoint.ErrorCodeNone {
+		t.Fatalf("operation after destroy race = %#v, want destroying", operation)
+	}
+	if got := fixture.provisioner.callCount(); got != 0 {
+		t.Fatalf("destroying deployment allowed entry resource creation: calls=%d", got)
+	}
+}
+
+func TestRunOnceProjectsEntryDestroyBlockedWithoutProviderRetry(t *testing.T) {
+	t.Parallel()
+	fixture := newExecutorFixture(t)
+	executor := fixture.executor(t)
+	if err := executor.RunOnce(context.Background()); err != nil {
+		t.Fatalf("activate entry: %v", err)
+	}
+	worker := fixture.resources.items[0]
+	worker.State = resource.StateDestroying
+	fixture.resources.items[0] = worker
+	for index := range fixture.resources.items {
+		if fixture.resources.items[index].ApprovalID == fixture.operations.current().Challenge.ApprovalID {
+			fixture.resources.items[index].State = resource.StateDestroyBlocked
+			break
+		}
+	}
+
+	if err := executor.RunOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile destroy blocked: %v", err)
+	}
+	operation := fixture.operations.current()
+	if operation.Status != entrypoint.StatusDestroyBlocked || operation.ErrorCode != entrypoint.ErrorCodeDestroyBlocked || operation.ErrorSummary != summaryDestroyBlocked {
+		t.Fatalf("operation after blocked destroy = %#v", operation)
+	}
+	if got := fixture.provisioner.callCount(); got != 5 {
+		t.Fatalf("blocked destruction triggered provider retry: calls=%d", got)
+	}
+}
+
 type executorFixture struct {
 	now         time.Time
 	plan        entrypoint.PlanV1
@@ -160,6 +266,7 @@ type executorFixture struct {
 	scopes      *scopeRevalidatorFake
 	resources   *deploymentResourcesFake
 	provisioner *provisionerFake
+	health      *healthVerifierFake
 }
 
 func newExecutorFixture(t *testing.T) *executorFixture {
@@ -185,7 +292,7 @@ func newExecutorFixture(t *testing.T) *executorFixture {
 		t.Fatalf("fixture operation invalid: %v", err)
 	}
 	fixture := &executorFixture{now: now, plan: plan, operations: &operationRepositoryFake{operation: operation}, plans: &planResolverFake{plan: plan},
-		scopes: &scopeRevalidatorFake{}, resources: &deploymentResourcesFake{}, provisioner: newProvisionerFake(now)}
+		scopes: &scopeRevalidatorFake{}, resources: &deploymentResourcesFake{}, provisioner: newProvisionerFake(now), health: &healthVerifierFake{healthy: true}}
 	fixture.resources.items = []resource.ResourceV1{fixture.workerResource(), fixture.workerSecurityGroup()}
 	fixture.provisioner.ledger = fixture.resources
 	return fixture
@@ -194,7 +301,7 @@ func newExecutorFixture(t *testing.T) *executorFixture {
 func (fixture *executorFixture) executor(t *testing.T) *Executor {
 	t.Helper()
 	executor, err := NewExecutor(Config{Operations: fixture.operations, Plans: fixture.plans, Scopes: fixture.scopes, Resources: fixture.resources,
-		Provision: fixture.provisioner, PollInterval: time.Second, Now: func() time.Time { return fixture.now.Add(10 * time.Second) }})
+		Provision: fixture.provisioner, Health: fixture.health, PollInterval: time.Second, Now: func() time.Time { return fixture.now.Add(10 * time.Second) }})
 	if err != nil {
 		t.Fatalf("NewExecutor() error = %v", err)
 	}
@@ -221,6 +328,18 @@ func (fixture *executorFixture) workerSecurityGroup() resource.ResourceV1 {
 		ProviderID: scope.Worker.SecurityGroupID, Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: scope.Retention.DestroyDeadline,
 		AutoDestroyApproved: true, Tags: fixture.tags(resourceID), State: resource.StateActive,
 		ReadBack: resource.ReadBackEvidence{Exists: true, ProviderID: scope.Worker.SecurityGroupID, ObservedAt: fixture.now.Add(time.Second), TagDigest: digest('d')}, Revision: 1}
+}
+
+func (fixture *executorFixture) markEntryGraphDestroyed() {
+	for index := range fixture.resources.items {
+		item := fixture.resources.items[index]
+		if item.ResourceID == fixture.plan.Scope.Worker.WorkerResourceID || item.ApprovalID == fixture.operations.current().Challenge.ApprovalID {
+			item.State = resource.StateVerifiedDestroyed
+			item.ReadBack.Exists = false
+			item.Revision++
+			fixture.resources.items[index] = item
+		}
+	}
 }
 
 func (fixture *executorFixture) tags(resourceID string) map[string]string {
@@ -274,6 +393,17 @@ type scopeRevalidatorFake struct {
 func (fake *scopeRevalidatorFake) RevalidateScope(_ context.Context, _ entrypoint.ScopeV1) error {
 	fake.calls++
 	return fake.err
+}
+
+type healthVerifierFake struct {
+	healthy bool
+	err     error
+	calls   int
+}
+
+func (fake *healthVerifierFake) Verify(_ context.Context, _ entrypoint.PlanV1) (bool, error) {
+	fake.calls++
+	return fake.healthy, fake.err
 }
 
 type deploymentResourcesFake struct {

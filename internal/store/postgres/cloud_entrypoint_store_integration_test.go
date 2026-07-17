@@ -163,6 +163,13 @@ func TestCloudEntryStorePersistsSeparateApprovalAndFencesTransitions(t *testing.
 	if err != nil || active.Revision != 5 {
 		t.Fatalf("verifying -> active=%#v err=%v", active, err)
 	}
+	pending, err = restarted.ListPendingEntry(ctx, 16)
+	if err != nil || len(pending) != 1 || pending[0].Challenge.OperationID != active.Challenge.OperationID || pending[0].Status != entrypoint.StatusActive {
+		t.Fatalf("active entry operation must remain in durable lifecycle queue: operations=%#v err=%v", pending, err)
+	}
+	if resolved, resolveErr := restarted.GetEntryPlanForOperation(ctx, active.Challenge.OperationID); resolveErr != nil || resolved.EntryPlanID != plan.EntryPlanID {
+		t.Fatalf("active entry operation plan resolve=%#v err=%v", resolved, resolveErr)
+	}
 	destroying := active
 	destroying.Status = entrypoint.StatusDestroying
 	destroying.UpdatedAt = active.UpdatedAt.Add(time.Second)
@@ -198,6 +205,9 @@ func TestCloudEntryStorePersistsSeparateApprovalAndFencesTransitions(t *testing.
 	pending, err = restarted.ListPendingEntry(ctx, 16)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("destroyed entry operation remained pending=%#v err=%v", pending, err)
+	}
+	if _, resolveErr := restarted.GetEntryPlanForOperation(ctx, destroyed.Challenge.OperationID); !errors.Is(resolveErr, entrypoint.ErrUnavailable) {
+		t.Fatalf("destroyed entry operation plan resolve error=%v", resolveErr)
 	}
 }
 

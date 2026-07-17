@@ -431,7 +431,7 @@ func (store *Store) ListPendingEntry(ctx context.Context, limit int) ([]entrypoi
 		return nil, entrypoint.ErrInvalid
 	}
 	rows, err := store.pool.Query(ctx, `SELECT `+cloudEntryOperationColumns+` FROM cloud_entry_operations
-		WHERE agent_instance_id=$1 AND status IN ('approved','provisioning','verifying','destroying','destroy_blocked')
+		WHERE agent_instance_id=$1 AND status IN ('approved','provisioning','verifying','active','destroying','destroy_blocked')
 		ORDER BY updated_at, operation_id LIMIT $2`, store.instanceID, limit)
 	if err != nil {
 		return nil, entrypoint.ErrUnavailable
@@ -644,7 +644,7 @@ func scanEntryOperationRow(row entryScanner) (entryOperationRow, error) {
 
 func entryOperationRecoverable(status entrypoint.Status) bool {
 	switch status {
-	case entrypoint.StatusApproved, entrypoint.StatusProvisioning, entrypoint.StatusVerifying,
+	case entrypoint.StatusApproved, entrypoint.StatusProvisioning, entrypoint.StatusVerifying, entrypoint.StatusActive,
 		entrypoint.StatusDestroying, entrypoint.StatusDestroyBlocked:
 		return true
 	default:

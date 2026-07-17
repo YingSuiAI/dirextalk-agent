@@ -19,7 +19,7 @@ const (
 
 var (
 	errEntrypointHealthInvalid     = errors.New("entrypoint health scope is invalid")
-	errEntrypointHealthUnavailable = errors.New("entrypoint health monitor is unavailable")
+	errEntrypointHealthUnavailable = entrypoint.ErrUnavailable
 )
 
 // entrypointHealthState is deliberately smaller than the ProbeService health

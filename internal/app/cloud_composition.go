@@ -219,6 +219,11 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	entryHealth, err := newEntrypointHealthProbeAdapter(healthProbes, healthProbeStore)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	healthProbeScheduler, err := newHealthProbeScheduler(healthProbes, 15*time.Second, time.Second, time.Minute)
 	if err != nil {
 		vault.Close()
@@ -313,6 +318,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		Scopes:       entrypointScopeRevalidator{builder: entryScopeBuilder},
 		Resources:    entrypointDeploymentResourceReader{statuses: cloudStatuses},
 		Provision:    entrypointScopedProvisioner{connections: store, provisioner: resourceProvisioner},
+		Health:       entryHealth,
 		PollInterval: 15 * time.Second,
 		Now:          time.Now,
 	})
