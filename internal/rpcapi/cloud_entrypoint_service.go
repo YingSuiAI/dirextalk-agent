@@ -3,6 +3,7 @@ package rpcapi
 import (
 	"context"
 	"crypto/ed25519"
+	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
@@ -138,8 +139,12 @@ func cloudEntrySignatureFromProto(value *agentv1.CloudEntryApprovalSignature) (e
 	if value == nil || value.GetExpiresAt() == nil || !value.GetExpiresAt().IsValid() || len(value.GetSignature()) != ed25519.SignatureSize || value.GetEntryPlanRevision() < 1 {
 		return entrypoint.SignatureV1{}, false
 	}
+	expiresAt := value.GetExpiresAt().AsTime().UTC()
+	if !expiresAt.After(time.Now().UTC()) {
+		return entrypoint.SignatureV1{}, false
+	}
 	result := entrypoint.SignatureV1{ApprovalID: value.GetApprovalId(), ChallengeID: value.GetChallengeId(), EntryPlanID: value.GetEntryPlanId(),
 		EntryPlanRevision: uint64(value.GetEntryPlanRevision()), PlanHash: value.GetPlanHash(), ScopeDigest: value.GetScopeDigest(),
-		SignerKeyID: value.GetSignerKeyId(), ExpiresAt: value.GetExpiresAt().AsTime().UTC(), Signature: append([]byte(nil), value.GetSignature()...)}
+		SignerKeyID: value.GetSignerKeyId(), ExpiresAt: expiresAt, Signature: append([]byte(nil), value.GetSignature()...)}
 	return result, result.Validate() == nil
 }
