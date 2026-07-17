@@ -37,6 +37,8 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 		return resource.ProbeMonitorRecord{}, resource.ErrInvalid
 	}
 	configuredAt = configuredAt.UTC()
+	monitorKind, _ := resource.NormalizeProbeMonitorKind(request.MonitorKind)
+	request.MonitorKind = monitorKind
 	deploymentID, _ := uuid.Parse(request.Suite.Probes[0].Binding.DeploymentID)
 	suiteJSON, err := json.Marshal(request.Suite)
 	if err != nil {
@@ -57,7 +59,7 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 		return resource.ProbeMonitorRecord{}, resource.ErrInvalid
 	}
 
-	current, loadErr := loadHealthMonitor(ctx, tx, store.instanceID, deploymentID, true)
+	current, loadErr := loadHealthMonitor(ctx, tx, store.instanceID, deploymentID, monitorKind, true)
 	if loadErr == nil {
 		currentJSON, marshalErr := json.Marshal(current.Suite)
 		if marshalErr != nil {
@@ -73,7 +75,7 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 			return resource.ProbeMonitorRecord{}, resource.ErrRevisionConflict
 		}
 		next := resource.ProbeMonitorRecord{
-			DeploymentID: deploymentID.String(), OwnerID: request.OwnerID, Suite: request.Suite, Interval: request.Interval,
+			DeploymentID: deploymentID.String(), MonitorKind: monitorKind, OwnerID: request.OwnerID, Suite: request.Suite, Interval: request.Interval,
 			Status: healthprobe.AggregatePending, NextRunAt: configuredAt, Revision: current.Revision + 1,
 			CreatedAt: current.CreatedAt, UpdatedAt: configuredAt,
 		}
@@ -82,11 +84,11 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 		}
 		result, updateErr := tx.Exec(ctx, `
 			UPDATE deployment_health_monitors SET
-				owner_id=$4, plan_hash=$5, recipe_digest=$6, suite_json=$7, interval_seconds=$8,
+				owner_id=$5, plan_hash=$6, recipe_digest=$7, suite_json=$8, interval_seconds=$9,
 				aggregate_status='pending', latest_evidence_json=NULL, latest_observed_at=NULL,
-				next_run_at=$9, revision=$10, updated_at=$11
-			WHERE deployment_id=$1 AND agent_instance_id=$2 AND revision=$3`,
-			deploymentID, store.instanceID, current.Revision, request.OwnerID, planHash, recipeDigest, suiteJSON,
+				next_run_at=$10, revision=$11, updated_at=$12
+			WHERE deployment_id=$1 AND agent_instance_id=$2 AND monitor_kind=$3 AND revision=$4`,
+			deploymentID, store.instanceID, monitorKind, current.Revision, request.OwnerID, planHash, recipeDigest, suiteJSON,
 			int64(request.Interval/time.Second), next.NextRunAt, next.Revision, next.UpdatedAt,
 		)
 		if updateErr != nil {
@@ -113,7 +115,7 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 		return resource.ProbeMonitorRecord{}, resource.ErrRevisionConflict
 	}
 	record := resource.ProbeMonitorRecord{
-		DeploymentID: deploymentID.String(), OwnerID: request.OwnerID, Suite: request.Suite, Interval: request.Interval,
+		DeploymentID: deploymentID.String(), MonitorKind: monitorKind, OwnerID: request.OwnerID, Suite: request.Suite, Interval: request.Interval,
 		Status: healthprobe.AggregatePending, NextRunAt: configuredAt, Revision: 1,
 		CreatedAt: configuredAt, UpdatedAt: configuredAt,
 	}
@@ -122,10 +124,10 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO deployment_health_monitors (
-			deployment_id,agent_instance_id,owner_id,plan_hash,recipe_digest,suite_json,interval_seconds,
+			deployment_id,monitor_kind,agent_instance_id,owner_id,plan_hash,recipe_digest,suite_json,interval_seconds,
 			aggregate_status,next_run_at,revision,created_at,updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,1,$8,$8)`,
-		deploymentID, store.instanceID, request.OwnerID, planHash, recipeDigest, suiteJSON,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,1,$9,$9)`,
+		deploymentID, monitorKind, store.instanceID, request.OwnerID, planHash, recipeDigest, suiteJSON,
 		int64(request.Interval/time.Second), configuredAt,
 	); err != nil {
 		if isUniqueViolation(err) {
@@ -146,11 +148,16 @@ func (store *HealthProbeStore) ConfigureProbe(ctx context.Context, request resou
 }
 
 func (store *HealthProbeStore) GetProbe(ctx context.Context, deploymentID string) (resource.ProbeMonitorRecord, error) {
+	return store.GetProbeMonitor(ctx, deploymentID, resource.ProbeMonitorService)
+}
+
+func (store *HealthProbeStore) GetProbeMonitor(ctx context.Context, deploymentID string, monitorKind resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(deploymentID))
-	if store == nil || store.pool == nil || err != nil || parsed == uuid.Nil || parsed.String() != deploymentID {
+	normalizedKind, validKind := resource.NormalizeProbeMonitorKind(monitorKind)
+	if store == nil || store.pool == nil || ctx == nil || err != nil || parsed == uuid.Nil || parsed.String() != deploymentID || !validKind {
 		return resource.ProbeMonitorRecord{}, resource.ErrInvalid
 	}
-	return loadHealthMonitor(ctx, store.pool, store.instanceID, parsed, false)
+	return loadHealthMonitor(ctx, store.pool, store.instanceID, parsed, normalizedKind, false)
 }
 
 func (store *HealthProbeStore) GetDeploymentHealth(ctx context.Context, ownerID, deploymentID string) (cloudstatus.HealthSummary, error) {
@@ -178,7 +185,8 @@ func (store *HealthProbeStore) GetDeploymentHealth(ctx context.Context, ownerID,
 // API and the event/outbox path so they cannot drift into separate public
 // facts.
 func healthSummaryForRecord(record resource.ProbeMonitorRecord) (cloudstatus.HealthSummary, error) {
-	if record.Validate() != nil {
+	monitorKind, valid := resource.NormalizeProbeMonitorKind(record.MonitorKind)
+	if record.Validate() != nil || !valid || monitorKind != resource.ProbeMonitorService {
 		return cloudstatus.HealthSummary{}, resource.ErrInvalid
 	}
 	summary := cloudstatus.HealthSummary{
@@ -245,7 +253,7 @@ func (store *HealthProbeStore) ListDueProbes(ctx context.Context, dueAt time.Tim
 	rows, err := store.pool.Query(ctx, healthMonitorSelectSQL+`
 		WHERE monitor.agent_instance_id=$1 AND monitor.next_run_at <= $2
 		  AND (service.state IS NULL OR service.state IN ('active','degraded'))
-		ORDER BY monitor.next_run_at, monitor.deployment_id LIMIT $3`, store.instanceID, dueAt.UTC(), limit)
+		ORDER BY monitor.next_run_at, monitor.deployment_id, monitor.monitor_kind LIMIT $3`, store.instanceID, dueAt.UTC(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list due health probes: %w", err)
 	}
@@ -282,7 +290,8 @@ func (store *HealthProbeStore) SaveExternalProbe(ctx context.Context, expected r
 		return resource.ProbeMonitorRecord{}, fmt.Errorf("begin health evidence write: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	current, err := loadHealthMonitor(ctx, tx, store.instanceID, deploymentID, true)
+	monitorKind, _ := resource.NormalizeProbeMonitorKind(expected.MonitorKind)
+	current, err := loadHealthMonitor(ctx, tx, store.instanceID, deploymentID, monitorKind, true)
 	if err != nil {
 		return resource.ProbeMonitorRecord{}, err
 	}
@@ -297,7 +306,7 @@ func (store *HealthProbeStore) SaveExternalProbe(ctx context.Context, expected r
 		return resource.ProbeMonitorRecord{}, resource.ErrInvalid
 	}
 	next := resource.ProbeMonitorRecord{
-		DeploymentID: current.DeploymentID, OwnerID: current.OwnerID, Suite: current.Suite, Interval: current.Interval,
+		DeploymentID: current.DeploymentID, MonitorKind: monitorKind, OwnerID: current.OwnerID, Suite: current.Suite, Interval: current.Interval,
 		Status: evidence.Status, Evidence: &evidence, NextRunAt: completedAt.Add(current.Interval),
 		Revision: current.Revision + 1, CreatedAt: current.CreatedAt, UpdatedAt: completedAt,
 	}
@@ -305,10 +314,10 @@ func (store *HealthProbeStore) SaveExternalProbe(ctx context.Context, expected r
 		return resource.ProbeMonitorRecord{}, resource.ErrInvalid
 	}
 	result, err := tx.Exec(ctx, `
-		UPDATE deployment_health_monitors SET aggregate_status=$4,latest_evidence_json=$5,
-			latest_observed_at=$6,next_run_at=$7,revision=$8,updated_at=$9
-		WHERE deployment_id=$1 AND agent_instance_id=$2 AND revision=$3`,
-		deploymentID, store.instanceID, current.Revision, next.Status, evidenceJSON,
+		UPDATE deployment_health_monitors SET aggregate_status=$5,latest_evidence_json=$6,
+			latest_observed_at=$7,next_run_at=$8,revision=$9,updated_at=$10
+		WHERE deployment_id=$1 AND agent_instance_id=$2 AND monitor_kind=$3 AND revision=$4`,
+		deploymentID, store.instanceID, monitorKind, current.Revision, next.Status, evidenceJSON,
 		evidence.ObservedAt, next.NextRunAt, next.Revision, next.UpdatedAt,
 	)
 	if err != nil {
@@ -328,10 +337,10 @@ func (store *HealthProbeStore) SaveExternalProbe(ctx context.Context, expected r
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO deployment_health_evidence (
-				evidence_id,deployment_id,agent_instance_id,purpose,plan_hash,recipe_digest,probe_digest,
+				evidence_id,deployment_id,monitor_kind,agent_instance_id,purpose,plan_hash,recipe_digest,probe_digest,
 				evidence_source,status,evidence_json,observed_at,health_revision,created_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-			evidenceID, deploymentID, store.instanceID, probe.Purpose, probe.Binding.PlanHash,
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+			evidenceID, deploymentID, monitorKind, store.instanceID, probe.Purpose, probe.Binding.PlanHash,
 			probe.Binding.RecipeDigest, probe.Binding.ProbeDigest, probe.Trust, probe.Status, encoded,
 			probe.ObservedAt, next.Revision, completedAt,
 		); err != nil {
@@ -351,7 +360,7 @@ func (store *HealthProbeStore) SaveExternalProbe(ctx context.Context, expected r
 }
 
 const healthMonitorSelectSQL = `
-	SELECT monitor.deployment_id,monitor.owner_id,monitor.suite_json,monitor.interval_seconds,
+	SELECT monitor.deployment_id,monitor.monitor_kind,monitor.owner_id,monitor.suite_json,monitor.interval_seconds,
 	       monitor.aggregate_status,monitor.latest_evidence_json,monitor.next_run_at,
 	       monitor.revision,monitor.created_at,monitor.updated_at
 	FROM deployment_health_monitors monitor
@@ -359,12 +368,12 @@ const healthMonitorSelectSQL = `
 
 type healthMonitorRow interface{ Scan(...any) error }
 
-func loadHealthMonitor(ctx context.Context, query rowQuerier, instanceID, deploymentID uuid.UUID, lock bool) (resource.ProbeMonitorRecord, error) {
-	suffix := ` WHERE monitor.agent_instance_id=$1 AND monitor.deployment_id=$2`
+func loadHealthMonitor(ctx context.Context, query rowQuerier, instanceID, deploymentID uuid.UUID, monitorKind resource.ProbeMonitorKind, lock bool) (resource.ProbeMonitorRecord, error) {
+	suffix := ` WHERE monitor.agent_instance_id=$1 AND monitor.deployment_id=$2 AND monitor.monitor_kind=$3`
 	if lock {
 		suffix += ` FOR UPDATE OF monitor`
 	}
-	record, err := scanHealthMonitor(query.QueryRow(ctx, healthMonitorSelectSQL+suffix, instanceID, deploymentID))
+	record, err := scanHealthMonitor(query.QueryRow(ctx, healthMonitorSelectSQL+suffix, instanceID, deploymentID, monitorKind))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return resource.ProbeMonitorRecord{}, resource.ErrNotFound
 	}
@@ -374,14 +383,16 @@ func loadHealthMonitor(ctx context.Context, query rowQuerier, instanceID, deploy
 func scanHealthMonitor(row healthMonitorRow) (resource.ProbeMonitorRecord, error) {
 	var record resource.ProbeMonitorRecord
 	var deploymentID uuid.UUID
+	var monitorKind string
 	var suiteJSON []byte
 	var intervalSeconds int64
 	var evidenceJSON []byte
-	if err := row.Scan(&deploymentID, &record.OwnerID, &suiteJSON, &intervalSeconds, &record.Status,
+	if err := row.Scan(&deploymentID, &monitorKind, &record.OwnerID, &suiteJSON, &intervalSeconds, &record.Status,
 		&evidenceJSON, &record.NextRunAt, &record.Revision, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return resource.ProbeMonitorRecord{}, err
 	}
 	record.DeploymentID = deploymentID.String()
+	record.MonitorKind = resource.ProbeMonitorKind(monitorKind)
 	record.Interval = time.Duration(intervalSeconds) * time.Second
 	if json.Unmarshal(suiteJSON, &record.Suite) != nil {
 		return resource.ProbeMonitorRecord{}, resource.ErrInvalid
@@ -420,7 +431,9 @@ func loadHealthBinding(ctx context.Context, query rowQuerier, instanceID, deploy
 }
 
 func sameHealthDefinition(left, right resource.ProbeMonitorRecord) bool {
-	if left.DeploymentID != right.DeploymentID || left.OwnerID != right.OwnerID || left.Interval != right.Interval {
+	leftKind, leftValid := resource.NormalizeProbeMonitorKind(left.MonitorKind)
+	rightKind, rightValid := resource.NormalizeProbeMonitorKind(right.MonitorKind)
+	if !leftValid || !rightValid || leftKind != rightKind || left.DeploymentID != right.DeploymentID || left.OwnerID != right.OwnerID || left.Interval != right.Interval {
 		return false
 	}
 	leftJSON, leftErr := json.Marshal(left.Suite)
@@ -429,6 +442,13 @@ func sameHealthDefinition(left, right resource.ProbeMonitorRecord) bool {
 }
 
 func appendHealthMonitorEvent(ctx context.Context, tx pgx.Tx, record resource.ProbeMonitorRecord) error {
+	monitorKind, valid := resource.NormalizeProbeMonitorKind(record.MonitorKind)
+	if !valid {
+		return resource.ErrInvalid
+	}
+	if monitorKind != resource.ProbeMonitorService {
+		return nil
+	}
 	summary, err := healthSummaryForRecord(record)
 	if err != nil {
 		return err
@@ -437,6 +457,13 @@ func appendHealthMonitorEvent(ctx context.Context, tx pgx.Tx, record resource.Pr
 }
 
 func updateManagedServiceHealth(ctx context.Context, tx pgx.Tx, deploymentID uuid.UUID, health resource.ProbeMonitorRecord) error {
+	monitorKind, valid := resource.NormalizeProbeMonitorKind(health.MonitorKind)
+	if !valid {
+		return resource.ErrInvalid
+	}
+	if monitorKind != resource.ProbeMonitorService {
+		return nil
+	}
 	var serviceID uuid.UUID
 	var ownerID, state string
 	var revision int64

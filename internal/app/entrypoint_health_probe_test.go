@@ -21,7 +21,7 @@ func TestEntrypointHealthProbeBuildsSignedHTTPSReadinessMonitor(t *testing.T) {
 	var configured healthprobe.SuiteV1
 	runner := &entrypointProbeRunnerFake{}
 	runner.configure = func(request resource.ProbeConfigureRequest) (resource.ProbeMonitorRecord, error) {
-		if request.OwnerID != plan.Scope.OwnerID || request.ExpectedRevision != 0 || request.Interval != entrypointHealthProbeInterval {
+		if request.OwnerID != plan.Scope.OwnerID || request.MonitorKind != resource.ProbeMonitorPublicEntry || request.ExpectedRevision != 0 || request.Interval != entrypointHealthProbeInterval {
 			t.Fatalf("configuration request=%+v", request)
 		}
 		if len(request.Suite.Probes) != 1 {
@@ -37,9 +37,9 @@ func TestEntrypointHealthProbeBuildsSignedHTTPSReadinessMonitor(t *testing.T) {
 		configured = request.Suite
 		return entrypointProbeRecord(t, request.OwnerID, request.Suite, 200, 1, request.Interval), nil
 	}
-	runner.run = func(deploymentID string) (resource.ProbeMonitorRecord, error) {
-		if deploymentID != plan.Scope.Worker.DeploymentID {
-			t.Fatalf("run deployment=%q", deploymentID)
+	runner.run = func(deploymentID string, monitorKind resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
+		if deploymentID != plan.Scope.Worker.DeploymentID || monitorKind != resource.ProbeMonitorPublicEntry {
+			t.Fatalf("run deployment=%q monitor=%q", deploymentID, monitorKind)
 		}
 		return entrypointProbeRecord(t, plan.Scope.OwnerID, configured, 200, 2, entrypointHealthProbeInterval), nil
 	}
@@ -48,12 +48,12 @@ func TestEntrypointHealthProbeBuildsSignedHTTPSReadinessMonitor(t *testing.T) {
 		t.Fatal(err)
 	}
 	healthy, err := adapter.Verify(context.Background(), plan)
-	if err != nil || !healthy || len(runner.configureRequests) != 1 || len(runner.runDeployments) != 1 {
-		t.Fatalf("healthy=%t config=%d runs=%v error=%v", healthy, len(runner.configureRequests), runner.runDeployments, err)
+	if err != nil || !healthy || len(runner.configureRequests) != 1 || len(runner.runMonitors) != 1 {
+		t.Fatalf("healthy=%t config=%d runs=%v error=%v", healthy, len(runner.configureRequests), runner.runMonitors, err)
 	}
 }
 
-func TestEntrypointHealthProbePreservesDifferentExistingMonitor(t *testing.T) {
+func TestEntrypointHealthProbeCoexistsWithDifferentServiceMonitor(t *testing.T) {
 	plan := entrypointHealthPlan(t)
 	desired, err := entrypointExternalHealthSuite(plan)
 	if err != nil {
@@ -87,24 +87,86 @@ func TestEntrypointHealthProbePreservesDifferentExistingMonitor(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			original := entrypointProbeRecord(t, plan.Scope.OwnerID, test.suite, 200, 7, test.interval)
-			monitors := &entrypointProbeMonitorFake{responses: []entrypointProbeMonitorResult{{record: original}}}
-			runner := &entrypointProbeRunnerFake{}
+			original.MonitorKind = resource.ProbeMonitorService
+			if err := original.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			records := map[resource.ProbeMonitorKind]resource.ProbeMonitorRecord{resource.ProbeMonitorService: original}
+			monitors := &entrypointProbeMonitorFake{get: func(_ string, monitorKind resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
+				record, ok := records[monitorKind]
+				if !ok {
+					return resource.ProbeMonitorRecord{}, resource.ErrNotFound
+				}
+				return record, nil
+			}}
+			runner := &entrypointProbeRunnerFake{
+				configure: func(request resource.ProbeConfigureRequest) (resource.ProbeMonitorRecord, error) {
+					if request.MonitorKind != resource.ProbeMonitorPublicEntry {
+						t.Fatalf("configured monitor=%q", request.MonitorKind)
+					}
+					record := entrypointProbeRecord(t, request.OwnerID, request.Suite, 200, 1, request.Interval)
+					records[request.MonitorKind] = record
+					return record, nil
+				},
+				run: func(_ string, monitorKind resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
+					if monitorKind != resource.ProbeMonitorPublicEntry {
+						t.Fatalf("ran monitor=%q", monitorKind)
+					}
+					record := entrypointProbeRecord(t, plan.Scope.OwnerID, desired, 200, 2, entrypointHealthProbeInterval)
+					records[monitorKind] = record
+					return record, nil
+				},
+			}
 			adapter, err := newEntrypointHealthProbeAdapter(runner, monitors)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			_, err = adapter.ConfigureAndRun(context.Background(), plan)
-			if !errors.Is(err, entrypoint.ErrUnavailable) {
-				t.Fatalf("error=%v want retryable unavailable", err)
+			result, err := adapter.ConfigureAndRun(context.Background(), plan)
+			if err != nil || result.State != entrypointHealthHealthy {
+				t.Fatalf("result=%+v error=%v", result, err)
 			}
-			if len(runner.configureRequests) != 0 || len(runner.runDeployments) != 0 || monitors.calls != 1 {
-				t.Fatalf("existing monitor was touched: configs=%d runs=%d reads=%d", len(runner.configureRequests), len(runner.runDeployments), monitors.calls)
+			if len(runner.configureRequests) != 1 || len(runner.runMonitors) != 1 || monitors.calls != 1 {
+				t.Fatalf("dedicated monitor use: configs=%d runs=%d reads=%d", len(runner.configureRequests), len(runner.runMonitors), monitors.calls)
 			}
-			if !reflect.DeepEqual(monitors.responses[0].record, original) {
-				t.Fatalf("existing monitor or evidence changed: got=%+v want=%+v", monitors.responses[0].record, original)
+			if !reflect.DeepEqual(records[resource.ProbeMonitorService], original) {
+				t.Fatal("existing service monitor changed")
 			}
 		})
+	}
+}
+
+func TestEntrypointHealthProbePreservesConflictingPublicEntryMonitor(t *testing.T) {
+	plan := entrypointHealthPlan(t)
+	desired, err := entrypointExternalHealthSuite(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting := desired
+	conflicting.Probes = append([]healthprobe.SpecV1(nil), desired.Probes...)
+	conflicting.Probes[0].TimeoutMillis++
+	conflicting.Probes[0].Binding.ProbeDigest = ""
+	conflicting.Probes[0], err = healthprobe.Bind(conflicting.Probes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := entrypointProbeRecord(t, plan.Scope.OwnerID, conflicting, 200, 7, entrypointHealthProbeInterval)
+	monitors := &entrypointProbeMonitorFake{responses: []entrypointProbeMonitorResult{{record: original}}}
+	runner := &entrypointProbeRunnerFake{}
+	adapter, err := newEntrypointHealthProbeAdapter(runner, monitors)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = adapter.ConfigureAndRun(context.Background(), plan)
+	if !errors.Is(err, entrypoint.ErrUnavailable) {
+		t.Fatalf("error=%v want retryable unavailable", err)
+	}
+	if len(runner.configureRequests) != 0 || len(runner.runMonitors) != 0 || monitors.calls != 1 {
+		t.Fatalf("conflicting monitor was touched: configs=%d runs=%d reads=%d", len(runner.configureRequests), len(runner.runMonitors), monitors.calls)
+	}
+	if !reflect.DeepEqual(monitors.responses[0].record, original) {
+		t.Fatalf("conflicting monitor or evidence changed: got=%+v want=%+v", monitors.responses[0].record, original)
 	}
 }
 
@@ -116,7 +178,7 @@ func TestEntrypointHealthProbeDoesNotTreatUnhealthyAsSuccess(t *testing.T) {
 		configured = request.Suite
 		return entrypointProbeRecord(t, request.OwnerID, request.Suite, 200, 1, request.Interval), nil
 	}
-	runner.run = func(string) (resource.ProbeMonitorRecord, error) {
+	runner.run = func(string, resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
 		// 201 is a 2xx response but fails the signed, exact HTTP 200 route.
 		return entrypointProbeRecord(t, plan.Scope.OwnerID, configured, 201, 2, entrypointHealthProbeInterval), nil
 	}
@@ -136,8 +198,8 @@ func TestEntrypointHealthProbeRejectsTamperedScopeAndHidesDiagnostics(t *testing
 	monitors := &entrypointProbeMonitorFake{err: errors.New("provider diagnostic https://api.example.com/health/ready token=" + secretCanary)}
 	adapter, _ := newEntrypointHealthProbeAdapter(runner, monitors)
 	_, err := adapter.ConfigureAndRun(context.Background(), tampered)
-	if !errors.Is(err, errEntrypointHealthInvalid) || strings.Contains(err.Error(), secretCanary) || strings.Contains(err.Error(), "api.example.com") || monitors.calls != 0 || len(runner.configureRequests) != 0 || len(runner.runDeployments) != 0 {
-		t.Fatalf("tampered scope error=%v monitor=%d config=%d runs=%d", err, monitors.calls, len(runner.configureRequests), len(runner.runDeployments))
+	if !errors.Is(err, errEntrypointHealthInvalid) || strings.Contains(err.Error(), secretCanary) || strings.Contains(err.Error(), "api.example.com") || monitors.calls != 0 || len(runner.configureRequests) != 0 || len(runner.runMonitors) != 0 {
+		t.Fatalf("tampered scope error=%v monitor=%d config=%d runs=%d", err, monitors.calls, len(runner.configureRequests), len(runner.runMonitors))
 	}
 
 	_, err = adapter.ConfigureAndRun(context.Background(), plan)
@@ -187,7 +249,7 @@ func entrypointProbeRecord(t *testing.T, ownerID string, suite healthprobe.Suite
 		t.Fatal(err)
 	}
 	record := resource.ProbeMonitorRecord{
-		DeploymentID: suite.Probes[0].Binding.DeploymentID, OwnerID: ownerID, Suite: suite, Interval: interval,
+		DeploymentID: suite.Probes[0].Binding.DeploymentID, MonitorKind: resource.ProbeMonitorPublicEntry, OwnerID: ownerID, Suite: suite, Interval: interval,
 		Status: evidence.Status, Evidence: &evidence, NextRunAt: evidence.ObservedAt.Add(interval), Revision: revision,
 		CreatedAt: evidence.ObservedAt.Add(-time.Millisecond), UpdatedAt: evidence.ObservedAt,
 	}
@@ -206,9 +268,9 @@ func (transport entrypointProbeTransport) Probe(context.Context, healthprobe.Req
 
 type entrypointProbeRunnerFake struct {
 	configure         func(resource.ProbeConfigureRequest) (resource.ProbeMonitorRecord, error)
-	run               func(string) (resource.ProbeMonitorRecord, error)
+	run               func(string, resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error)
 	configureRequests []resource.ProbeConfigureRequest
-	runDeployments    []string
+	runMonitors       []resource.ProbeMonitorKind
 }
 
 func (fake *entrypointProbeRunnerFake) Configure(_ context.Context, request resource.ProbeConfigureRequest) (resource.ProbeMonitorRecord, error) {
@@ -219,12 +281,12 @@ func (fake *entrypointProbeRunnerFake) Configure(_ context.Context, request reso
 	return fake.configure(request)
 }
 
-func (fake *entrypointProbeRunnerFake) RunStored(_ context.Context, deploymentID string) (resource.ProbeMonitorRecord, error) {
-	fake.runDeployments = append(fake.runDeployments, deploymentID)
+func (fake *entrypointProbeRunnerFake) RunStoredMonitor(_ context.Context, deploymentID string, monitorKind resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
+	fake.runMonitors = append(fake.runMonitors, monitorKind)
 	if fake.run == nil {
 		return resource.ProbeMonitorRecord{}, errors.New("missing probe RunStored result")
 	}
-	return fake.run(deploymentID)
+	return fake.run(deploymentID, monitorKind)
 }
 
 type entrypointProbeMonitorResult struct {
@@ -234,13 +296,17 @@ type entrypointProbeMonitorResult struct {
 
 type entrypointProbeMonitorFake struct {
 	responses []entrypointProbeMonitorResult
+	get       func(string, resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error)
 	err       error
 	calls     int
 }
 
-func (fake *entrypointProbeMonitorFake) GetProbe(_ context.Context, _ string) (resource.ProbeMonitorRecord, error) {
+func (fake *entrypointProbeMonitorFake) GetProbeMonitor(_ context.Context, deploymentID string, monitorKind resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error) {
 	index := fake.calls
 	fake.calls++
+	if fake.get != nil {
+		return fake.get(deploymentID, monitorKind)
+	}
 	if index < len(fake.responses) {
 		return fake.responses[index].record, fake.responses[index].err
 	}

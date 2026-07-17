@@ -16,10 +16,34 @@ const (
 	probePersistTimeout  = 5 * time.Second
 )
 
+type ProbeMonitorKind string
+
+const (
+	// ProbeMonitorService is the original deployment-wide liveness/readiness/
+	// semantic suite and remains the sole source of the public health summary.
+	ProbeMonitorService ProbeMonitorKind = "service"
+	// ProbeMonitorPublicEntry is the private, device-approved public-route
+	// readiness witness. It must not replace service evidence or drive Managed
+	// service health on its own.
+	ProbeMonitorPublicEntry ProbeMonitorKind = "public_entry"
+)
+
+func NormalizeProbeMonitorKind(kind ProbeMonitorKind) (ProbeMonitorKind, bool) {
+	switch kind {
+	case "", ProbeMonitorService:
+		return ProbeMonitorService, true
+	case ProbeMonitorPublicEntry:
+		return ProbeMonitorPublicEntry, true
+	default:
+		return "", false
+	}
+}
+
 // ProbeMonitorRecord is the durable health axis for one Deployment. It does
 // not contain Worker execution, outcome, or cloud-resource state.
 type ProbeMonitorRecord struct {
 	DeploymentID string
+	MonitorKind  ProbeMonitorKind
 	OwnerID      string
 	Suite        healthprobe.SuiteV1
 	Interval     time.Duration
@@ -33,6 +57,7 @@ type ProbeMonitorRecord struct {
 
 type ProbeConfigureRequest struct {
 	OwnerID          string
+	MonitorKind      ProbeMonitorKind
 	Suite            healthprobe.SuiteV1
 	Interval         time.Duration
 	ExpectedRevision int64
@@ -40,8 +65,9 @@ type ProbeConfigureRequest struct {
 
 func (request ProbeConfigureRequest) Validate() error {
 	owner := strings.TrimSpace(request.OwnerID)
-	if owner == "" || owner != request.OwnerID || len(owner) > 255 || security.ContainsLikelySecret(owner) ||
-		request.Suite.Validate() != nil || request.Interval < minimumProbeInterval || request.Interval > maximumProbeInterval ||
+	monitorKind, validKind := NormalizeProbeMonitorKind(request.MonitorKind)
+	if !validKind || owner == "" || owner != request.OwnerID || len(owner) > 255 || security.ContainsLikelySecret(owner) ||
+		!validProbeMonitorSuite(monitorKind, request.Suite) || request.Interval < minimumProbeInterval || request.Interval > maximumProbeInterval ||
 		request.Interval%time.Second != 0 || request.ExpectedRevision < 0 {
 		return ErrInvalid
 	}
@@ -54,6 +80,7 @@ func (request ProbeConfigureRequest) Validate() error {
 type ProbeRepository interface {
 	ConfigureProbe(context.Context, ProbeConfigureRequest, time.Time) (ProbeMonitorRecord, error)
 	GetProbe(context.Context, string) (ProbeMonitorRecord, error)
+	GetProbeMonitor(context.Context, string, ProbeMonitorKind) (ProbeMonitorRecord, error)
 	ListDueProbes(context.Context, time.Time, int) ([]ProbeMonitorRecord, error)
 	SaveExternalProbe(context.Context, ProbeMonitorRecord, healthprobe.ExternalEvidence, time.Time) (ProbeMonitorRecord, error)
 }
@@ -75,6 +102,7 @@ func (service *ProbeService) Configure(ctx context.Context, request ProbeConfigu
 	if service == nil || service.repository == nil || ctx == nil || request.Validate() != nil {
 		return ProbeMonitorRecord{}, ErrInvalid
 	}
+	request.MonitorKind, _ = NormalizeProbeMonitorKind(request.MonitorKind)
 	return service.repository.ConfigureProbe(ctx, request, service.now().UTC())
 }
 
@@ -82,10 +110,15 @@ func (service *ProbeService) Configure(ctx context.Context, request ProbeConfigu
 // uses that revision as a fence, so concurrent or late observations cannot
 // overwrite newer evidence.
 func (service *ProbeService) RunStored(ctx context.Context, deploymentID string) (ProbeMonitorRecord, error) {
-	if service == nil || service.repository == nil || service.engine == nil || ctx == nil || !validProbeUUID(deploymentID) {
+	return service.RunStoredMonitor(ctx, deploymentID, ProbeMonitorService)
+}
+
+func (service *ProbeService) RunStoredMonitor(ctx context.Context, deploymentID string, monitorKind ProbeMonitorKind) (ProbeMonitorRecord, error) {
+	normalizedKind, validKind := NormalizeProbeMonitorKind(monitorKind)
+	if service == nil || service.repository == nil || service.engine == nil || ctx == nil || !validKind || !validProbeUUID(deploymentID) {
 		return ProbeMonitorRecord{}, ErrInvalid
 	}
-	record, err := service.repository.GetProbe(ctx, deploymentID)
+	record, err := service.repository.GetProbeMonitor(ctx, deploymentID, normalizedKind)
 	if err != nil {
 		return ProbeMonitorRecord{}, err
 	}
@@ -111,7 +144,7 @@ func (service *ProbeService) ResumeDue(ctx context.Context, limit int) ([]ProbeM
 	}
 	completed := make([]ProbeMonitorRecord, 0, len(due))
 	for _, record := range due {
-		updated, runErr := service.RunStored(ctx, record.DeploymentID)
+		updated, runErr := service.RunStoredMonitor(ctx, record.DeploymentID, record.MonitorKind)
 		if runErr != nil {
 			return completed, runErr
 		}
@@ -122,8 +155,9 @@ func (service *ProbeService) ResumeDue(ctx context.Context, limit int) ([]ProbeM
 
 func (record ProbeMonitorRecord) Validate() error {
 	owner := strings.TrimSpace(record.OwnerID)
-	if !validProbeUUID(record.DeploymentID) || owner == "" || owner != record.OwnerID || len(owner) > 255 || security.ContainsLikelySecret(owner) ||
-		record.Suite.Validate() != nil || record.Interval < minimumProbeInterval || record.Interval > maximumProbeInterval ||
+	monitorKind, validKind := NormalizeProbeMonitorKind(record.MonitorKind)
+	if !validKind || !validProbeUUID(record.DeploymentID) || owner == "" || owner != record.OwnerID || len(owner) > 255 || security.ContainsLikelySecret(owner) ||
+		!validProbeMonitorSuite(monitorKind, record.Suite) || record.Interval < minimumProbeInterval || record.Interval > maximumProbeInterval ||
 		record.Interval%time.Second != 0 || record.NextRunAt.IsZero() || record.Revision < 1 ||
 		record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() || record.UpdatedAt.Before(record.CreatedAt) {
 		return ErrInvalid
@@ -149,6 +183,19 @@ func (record ProbeMonitorRecord) Validate() error {
 func validProbeUUID(value string) bool {
 	parsed, err := uuid.Parse(value)
 	return err == nil && parsed != uuid.Nil && parsed.String() == value
+}
+
+func validProbeMonitorSuite(kind ProbeMonitorKind, suite healthprobe.SuiteV1) bool {
+	if suite.Validate() != nil {
+		return false
+	}
+	if kind != ProbeMonitorPublicEntry {
+		return true
+	}
+	return len(suite.Probes) == 1 &&
+		suite.Probes[0].Purpose == healthprobe.PurposeReadiness &&
+		suite.Probes[0].Protocol == healthprobe.ProtocolHTTPS &&
+		suite.Probes[0].ExpectedStatusCode == 200
 }
 
 func cloneProbeMonitor(record ProbeMonitorRecord) ProbeMonitorRecord {

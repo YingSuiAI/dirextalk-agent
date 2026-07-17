@@ -44,7 +44,7 @@ type entrypointHealthResult struct {
 
 type entrypointProbeRunner interface {
 	Configure(context.Context, resource.ProbeConfigureRequest) (resource.ProbeMonitorRecord, error)
-	RunStored(context.Context, string) (resource.ProbeMonitorRecord, error)
+	RunStoredMonitor(context.Context, string, resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error)
 }
 
 // entrypointProbeReader is intentionally narrower than resource.ProbeRepository.
@@ -52,7 +52,7 @@ type entrypointProbeRunner interface {
 // exact independently approved readiness definition. It must never replace a
 // different, otherwise valid monitor because that would clear its evidence.
 type entrypointProbeReader interface {
-	GetProbe(context.Context, string) (resource.ProbeMonitorRecord, error)
+	GetProbeMonitor(context.Context, string, resource.ProbeMonitorKind) (resource.ProbeMonitorRecord, error)
 }
 
 // entrypointHealthProbeAdapter turns a separately approved public-entry scope
@@ -102,7 +102,7 @@ func (adapter *entrypointHealthProbeAdapter) ConfigureAndRun(ctx context.Context
 			}
 			return entrypointHealthResult{}, safeEntrypointHealthError(ctx, err)
 		}
-		record, err := adapter.probes.RunStored(ctx, plan.Scope.Worker.DeploymentID)
+		record, err := adapter.probes.RunStoredMonitor(ctx, plan.Scope.Worker.DeploymentID, resource.ProbeMonitorPublicEntry)
 		if err != nil {
 			if errors.Is(err, resource.ErrRevisionConflict) || errors.Is(err, resource.ErrNotFound) {
 				continue
@@ -120,9 +120,9 @@ func (adapter *entrypointHealthProbeAdapter) ConfigureAndRun(ctx context.Context
 
 func (adapter *entrypointHealthProbeAdapter) configure(ctx context.Context, ownerID string, suite healthprobe.SuiteV1) (resource.ProbeMonitorRecord, error) {
 	deploymentID := suite.Probes[0].Binding.DeploymentID
-	current, err := adapter.monitors.GetProbe(ctx, deploymentID)
+	current, err := adapter.monitors.GetProbeMonitor(ctx, deploymentID, resource.ProbeMonitorPublicEntry)
 	if errors.Is(err, resource.ErrNotFound) {
-		return adapter.probes.Configure(ctx, resource.ProbeConfigureRequest{OwnerID: ownerID, Suite: suite, Interval: adapter.interval})
+		return adapter.probes.Configure(ctx, resource.ProbeConfigureRequest{OwnerID: ownerID, MonitorKind: resource.ProbeMonitorPublicEntry, Suite: suite, Interval: adapter.interval})
 	}
 	if err != nil {
 		return resource.ProbeMonitorRecord{}, err
@@ -133,11 +133,8 @@ func (adapter *entrypointHealthProbeAdapter) configure(ctx context.Context, owne
 	if current.Interval == adapter.interval && reflect.DeepEqual(current.Suite, suite) {
 		return current, nil
 	}
-	// A deployment has one durable monitor today. A valid monitor with a
-	// different suite or cadence may contain liveness/semantic evidence owned by
-	// another approved workflow. Do not use this entrypoint adapter to overwrite
-	// it (Configure clears evidence); leave the entry operation retryable until a
-	// dedicated multi-monitor model exists.
+	// A different definition in this dedicated slot can only come from a
+	// conflicting public-entry approval. Never replace its evidence implicitly.
 	return resource.ProbeMonitorRecord{}, errEntrypointHealthUnavailable
 }
 
@@ -180,7 +177,8 @@ func entrypointExternalHealthSuite(plan entrypoint.PlanV1) (healthprobe.SuiteV1,
 }
 
 func entrypointMonitorMatchesBinding(record resource.ProbeMonitorRecord, ownerID string, expected healthprobe.SuiteV1) bool {
-	if record.Validate() != nil || record.OwnerID != ownerID || record.DeploymentID != expected.Probes[0].Binding.DeploymentID || len(record.Suite.Probes) == 0 {
+	monitorKind, validKind := resource.NormalizeProbeMonitorKind(record.MonitorKind)
+	if record.Validate() != nil || !validKind || monitorKind != resource.ProbeMonitorPublicEntry || record.OwnerID != ownerID || record.DeploymentID != expected.Probes[0].Binding.DeploymentID || len(record.Suite.Probes) == 0 {
 		return false
 	}
 	expectedBinding := expected.Probes[0].Binding

@@ -168,6 +168,42 @@ func TestHealthProbePostgresAtomicEvidenceEventsRestartAndRevisionFence(t *testi
 		t.Fatalf("untrusted Worker evidence error=%v", err)
 	}
 
+	entrySuite := postgresPublicEntryHealthSuite(t, deploymentID, planHash, recipeDigest)
+	entryConfigured, err := lifecycle.Configure(ctx, resource.ProbeConfigureRequest{
+		OwnerID: created.OwnerID, MonitorKind: resource.ProbeMonitorPublicEntry,
+		Suite: entrySuite, Interval: time.Minute,
+	})
+	if err != nil || entryConfigured.MonitorKind != resource.ProbeMonitorPublicEntry || entryConfigured.Revision != 1 {
+		t.Fatalf("public-entry monitor=%+v err=%v", entryConfigured, err)
+	}
+	entryObserved, err := lifecycle.RunStoredMonitor(ctx, deploymentID, resource.ProbeMonitorPublicEntry)
+	if err != nil || entryObserved.Revision != 2 || entryObserved.Status != healthprobe.AggregateHealthy || entryObserved.Evidence == nil {
+		t.Fatalf("public-entry evidence=%+v err=%v", entryObserved, err)
+	}
+	serviceAfterEntry, err := restartedStore.GetProbe(ctx, deploymentID)
+	if err != nil || !sameProbeRecordForTest(serviceAfterEntry, reloaded) {
+		t.Fatalf("service monitor changed after public-entry evidence: before=%+v after=%+v err=%v", reloaded, serviceAfterEntry, err)
+	}
+	var monitorCount, entryEvidenceCount int64
+	if err := pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM deployment_health_monitors WHERE deployment_id=$1),
+		  (SELECT count(*) FROM deployment_health_evidence WHERE deployment_id=$1 AND monitor_kind='public_entry')`,
+		deploymentID,
+	).Scan(&monitorCount, &entryEvidenceCount); err != nil {
+		t.Fatal(err)
+	}
+	if monitorCount != 2 || entryEvidenceCount != 1 {
+		t.Fatalf("multi-monitor rows=%d public-entry evidence=%d", monitorCount, entryEvidenceCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state,revision FROM managed_services WHERE service_id=$1`, serviceID).Scan(&managedState, &managedRevision); err != nil {
+		t.Fatal(err)
+	}
+	if managedState != "degraded" || managedRevision != 2 {
+		t.Fatalf("public-entry monitor changed Managed health: state=%s revision=%d", managedState, managedRevision)
+	}
+	assertHealthEventAndOutboxArePublicOnly(t, ctx, pool, deploymentID)
+
 	expectedDigest, err := healthprobe.EvidenceDigest(reloaded.Suite, *reloaded.Evidence)
 	if err != nil {
 		t.Fatal(err)
@@ -232,6 +268,29 @@ func postgresHealthSuite(t *testing.T, deploymentID, planHash, recipeDigest stri
 		bind(healthprobe.PurposeLiveness, healthCapabilityURLCanary),
 		bind(healthprobe.PurposeReadiness, "https://service.example.com/ready"),
 	}}
+}
+
+func postgresPublicEntryHealthSuite(t *testing.T, deploymentID, planHash, recipeDigest string) healthprobe.SuiteV1 {
+	t.Helper()
+	spec, err := healthprobe.Bind(healthprobe.SpecV1{
+		SchemaVersion: healthprobe.SchemaV1,
+		Binding:       healthprobe.BindingV1{DeploymentID: deploymentID, PlanHash: planHash, RecipeDigest: recipeDigest},
+		Purpose:       healthprobe.PurposeReadiness,
+		Protocol:      healthprobe.ProtocolHTTPS,
+		Target:        "https://public-entry.example.com/health/entry",
+		TimeoutMillis: 500,
+		MaxAttempts:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return healthprobe.SuiteV1{SchemaVersion: healthprobe.SuiteSchemaV1, Probes: []healthprobe.SpecV1{spec}}
+}
+
+func sameProbeRecordForTest(left, right resource.ProbeMonitorRecord) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func postgresHealthDigest(value string) string {

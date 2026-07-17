@@ -120,6 +120,41 @@ func TestProbeServicePersistsExactHTTPSStatusRequirement(t *testing.T) {
 	}
 }
 
+func TestPublicEntryMonitorAcceptsOnlyOneExactHTTPSReadinessProbe(t *testing.T) {
+	suite := probeTestSuite(t)
+	readinessSpec := suite.Probes[0]
+	readinessSpec.ExpectedStatusCode = 200
+	readinessSpec.Binding.ProbeDigest = ""
+	readinessSpec, err := healthprobe.Bind(readinessSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readiness := healthprobe.SuiteV1{SchemaVersion: healthprobe.SuiteSchemaV1, Probes: []healthprobe.SpecV1{readinessSpec}}
+	liveness := healthprobe.SuiteV1{SchemaVersion: healthprobe.SuiteSchemaV1, Probes: []healthprobe.SpecV1{suite.Probes[1]}}
+
+	for name, candidate := range map[string]healthprobe.SuiteV1{
+		"service suite": suite,
+		"liveness":      liveness,
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := ProbeConfigureRequest{
+				OwnerID: "owner-health", MonitorKind: ProbeMonitorPublicEntry,
+				Suite: candidate, Interval: time.Minute,
+			}
+			if !errors.Is(request.Validate(), ErrInvalid) {
+				t.Fatalf("public-entry monitor accepted %+v", candidate)
+			}
+		})
+	}
+	request := ProbeConfigureRequest{
+		OwnerID: "owner-health", MonitorKind: ProbeMonitorPublicEntry,
+		Suite: readiness, Interval: time.Minute,
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("exact public-entry readiness rejected: %v", err)
+	}
+}
+
 func probeTestSuite(t *testing.T) healthprobe.SuiteV1 {
 	t.Helper()
 	deploymentID := uuid.NewString()
@@ -173,15 +208,21 @@ func (repository *probeMemoryRepository) ConfigureProbe(_ context.Context, reque
 		return ProbeMonitorRecord{}, ErrInvalid
 	}
 	repository.record = ProbeMonitorRecord{
-		DeploymentID: request.Suite.Probes[0].Binding.DeploymentID, OwnerID: request.OwnerID,
+		DeploymentID: request.Suite.Probes[0].Binding.DeploymentID, MonitorKind: request.MonitorKind, OwnerID: request.OwnerID,
 		Suite: request.Suite, Interval: request.Interval, Status: healthprobe.AggregatePending,
 		NextRunAt: configuredAt, Revision: 1, CreatedAt: configuredAt, UpdatedAt: configuredAt,
 	}
 	return cloneProbeMonitor(repository.record), nil
 }
 
-func (repository *probeMemoryRepository) GetProbe(_ context.Context, deploymentID string) (ProbeMonitorRecord, error) {
-	if repository.record.DeploymentID != deploymentID {
+func (repository *probeMemoryRepository) GetProbe(ctx context.Context, deploymentID string) (ProbeMonitorRecord, error) {
+	return repository.GetProbeMonitor(ctx, deploymentID, ProbeMonitorService)
+}
+
+func (repository *probeMemoryRepository) GetProbeMonitor(_ context.Context, deploymentID string, monitorKind ProbeMonitorKind) (ProbeMonitorRecord, error) {
+	recordKind, _ := NormalizeProbeMonitorKind(repository.record.MonitorKind)
+	requestedKind, valid := NormalizeProbeMonitorKind(monitorKind)
+	if !valid || repository.record.DeploymentID != deploymentID || recordKind != requestedKind {
 		return ProbeMonitorRecord{}, ErrNotFound
 	}
 	return cloneProbeMonitor(repository.record), nil
