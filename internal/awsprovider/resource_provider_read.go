@@ -25,6 +25,14 @@ func (provider *EC2ResourceProvider) readBack(ctx context.Context, kind resource
 			return resource.ProviderObservation{}, resource.ErrReadBack
 		}
 		return observation(providerID, kind, tagsFromEC2(output.SecurityGroups[0].Tags), now), nil
+	case resource.TypeALB:
+		return provider.readBackApplicationLoadBalancer(ctx, providerID, now)
+	case resource.TypeTargetGroup:
+		return provider.readBackTargetGroup(ctx, providerID, now)
+	case resource.TypeListener:
+		return provider.readBackHTTPSListener(ctx, providerID, now)
+	case resource.TypeSecurityGroupRule:
+		return provider.readBackSecurityGroupRule(ctx, providerID, now)
 	case resource.TypeEBS:
 		output, err := provider.client.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []string{providerID}})
 		if err != nil {

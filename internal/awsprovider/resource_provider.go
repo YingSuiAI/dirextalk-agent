@@ -12,8 +12,10 @@ import (
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/acm"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	elbv2 "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 )
 
 const (
@@ -39,7 +41,10 @@ type EC2ResourceAPI interface {
 	AuthorizeSecurityGroupEgress(context.Context, *ec2.AuthorizeSecurityGroupEgressInput, ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupEgressOutput, error)
 	RevokeSecurityGroupIngress(context.Context, *ec2.RevokeSecurityGroupIngressInput, ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupIngressOutput, error)
 	RevokeSecurityGroupEgress(context.Context, *ec2.RevokeSecurityGroupEgressInput, ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupEgressOutput, error)
+	DescribeSecurityGroupRules(context.Context, *ec2.DescribeSecurityGroupRulesInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupRulesOutput, error)
 	DeleteSecurityGroup(context.Context, *ec2.DeleteSecurityGroupInput, ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
+	DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
+	DescribeRouteTables(context.Context, *ec2.DescribeRouteTablesInput, ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error)
 
 	CreateVolume(context.Context, *ec2.CreateVolumeInput, ...func(*ec2.Options)) (*ec2.CreateVolumeOutput, error)
 	DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error)
@@ -71,15 +76,60 @@ type EC2ResourceAPI interface {
 	CreateTags(context.Context, *ec2.CreateTagsInput, ...func(*ec2.Options)) (*ec2.CreateTagsOutput, error)
 }
 
+// ELBV2ResourceAPI is the deliberately closed Application Load Balancer
+// surface for a separately approved public entry point. It is not a generic
+// ELB client and never reaches Eino, MCP, or the public gRPC surface.
+type ELBV2ResourceAPI interface {
+	CreateLoadBalancer(context.Context, *elbv2.CreateLoadBalancerInput, ...func(*elbv2.Options)) (*elbv2.CreateLoadBalancerOutput, error)
+	DescribeLoadBalancers(context.Context, *elbv2.DescribeLoadBalancersInput, ...func(*elbv2.Options)) (*elbv2.DescribeLoadBalancersOutput, error)
+	DeleteLoadBalancer(context.Context, *elbv2.DeleteLoadBalancerInput, ...func(*elbv2.Options)) (*elbv2.DeleteLoadBalancerOutput, error)
+
+	CreateTargetGroup(context.Context, *elbv2.CreateTargetGroupInput, ...func(*elbv2.Options)) (*elbv2.CreateTargetGroupOutput, error)
+	DescribeTargetGroups(context.Context, *elbv2.DescribeTargetGroupsInput, ...func(*elbv2.Options)) (*elbv2.DescribeTargetGroupsOutput, error)
+	DeleteTargetGroup(context.Context, *elbv2.DeleteTargetGroupInput, ...func(*elbv2.Options)) (*elbv2.DeleteTargetGroupOutput, error)
+	RegisterTargets(context.Context, *elbv2.RegisterTargetsInput, ...func(*elbv2.Options)) (*elbv2.RegisterTargetsOutput, error)
+	DeregisterTargets(context.Context, *elbv2.DeregisterTargetsInput, ...func(*elbv2.Options)) (*elbv2.DeregisterTargetsOutput, error)
+	DescribeTargetHealth(context.Context, *elbv2.DescribeTargetHealthInput, ...func(*elbv2.Options)) (*elbv2.DescribeTargetHealthOutput, error)
+
+	CreateListener(context.Context, *elbv2.CreateListenerInput, ...func(*elbv2.Options)) (*elbv2.CreateListenerOutput, error)
+	DescribeListeners(context.Context, *elbv2.DescribeListenersInput, ...func(*elbv2.Options)) (*elbv2.DescribeListenersOutput, error)
+	DeleteListener(context.Context, *elbv2.DeleteListenerInput, ...func(*elbv2.Options)) (*elbv2.DeleteListenerOutput, error)
+	AddTags(context.Context, *elbv2.AddTagsInput, ...func(*elbv2.Options)) (*elbv2.AddTagsOutput, error)
+	DescribeTags(context.Context, *elbv2.DescribeTagsInput, ...func(*elbv2.Options)) (*elbv2.DescribeTagsOutput, error)
+}
+
+// ACMCertificateAPI only permits certificate read-back. The Agent never
+// creates, imports, renews, deletes, or edits ACM certificates or DNS.
+type ACMCertificateAPI interface {
+	DescribeCertificate(context.Context, *acm.DescribeCertificateInput, ...func(*acm.Options)) (*acm.DescribeCertificateOutput, error)
+}
+
 type EC2ResourceProvider struct {
-	client           EC2ResourceAPI
-	region           string
-	now              func() time.Time
-	pollInterval     time.Duration
-	workerAMIAccount string
-	workerAMIReader  WorkerAMIInspectionVerifier
-	workerArtifacts  WorkerArtifactBinder
-	workerSecrets    WorkerSecretBinder
+	client            EC2ResourceAPI
+	entryClient       ELBV2ResourceAPI
+	certificateClient ACMCertificateAPI
+	region            string
+	now               func() time.Time
+	pollInterval      time.Duration
+	workerAMIAccount  string
+	workerAMIReader   WorkerAMIInspectionVerifier
+	workerArtifacts   WorkerArtifactBinder
+	workerSecrets     WorkerSecretBinder
+}
+
+// WithEntryPointResourceClients enables the strictly typed public-entry
+// graph. Both clients are required: an HTTPS listener must prove its existing
+// ACM certificate before it can be created, and no fallback or inferred TLS
+// configuration is allowed.
+func WithEntryPointResourceClients(entry ELBV2ResourceAPI, certificates ACMCertificateAPI) EC2ResourceProviderOption {
+	return func(provider *EC2ResourceProvider) error {
+		if entry == nil || certificates == nil {
+			return ErrInvalidRequest
+		}
+		provider.entryClient = entry
+		provider.certificateClient = certificates
+		return nil
+	}
 }
 
 // WithWorkerArtifactBinder enables the post-launch, instance-principal S3
@@ -148,7 +198,9 @@ func NewEC2ResourceProviderFromConfig(config aws.Config, options ...EC2ResourceP
 	if !sdkRegionPattern.MatchString(config.Region) || config.Credentials == nil {
 		return nil, ErrInvalidRequest
 	}
-	return NewEC2ResourceProvider(ec2.NewFromConfig(config), config.Region, time.Now, options...)
+	configured := append([]EC2ResourceProviderOption(nil), options...)
+	configured = append(configured, WithEntryPointResourceClients(elbv2.NewFromConfig(config), acm.NewFromConfig(config)))
+	return NewEC2ResourceProvider(ec2.NewFromConfig(config), config.Region, time.Now, configured...)
 }
 
 // NewEC2ResourceProviderFromSource is the daily runtime factory. The caller
@@ -171,6 +223,14 @@ func (provider *EC2ResourceProvider) Create(ctx context.Context, request resourc
 	switch request.Type {
 	case resource.TypeSG:
 		return provider.createSecurityGroup(ctx, request)
+	case resource.TypeALB:
+		return provider.createApplicationLoadBalancer(ctx, request)
+	case resource.TypeTargetGroup:
+		return provider.createTargetGroup(ctx, request)
+	case resource.TypeListener:
+		return provider.createHTTPSListener(ctx, request)
+	case resource.TypeSecurityGroupRule:
+		return provider.createSecurityGroupRule(ctx, request)
 	case resource.TypeEBS:
 		return provider.createVolume(ctx, request)
 	case resource.TypeENI:
@@ -191,6 +251,9 @@ func (provider *EC2ResourceProvider) Create(ctx context.Context, request resourc
 func (provider *EC2ResourceProvider) FindByClientToken(ctx context.Context, kind resource.Type, region, clientToken string) (resource.ProviderObservation, bool, error) {
 	if provider == nil || provider.client == nil || region != provider.region || !providerClientTokenPattern.MatchString(clientToken) {
 		return resource.ProviderObservation{}, false, resource.ErrInvalid
+	}
+	if isEntryResourceType(kind) {
+		return provider.findEntryByClientToken(ctx, kind, clientToken)
 	}
 	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{clientToken}}}
 	if kind == resource.TypeEIP {
@@ -238,6 +301,9 @@ func (provider *EC2ResourceProvider) FindAllByClientToken(ctx context.Context, k
 	if provider == nil || provider.client == nil || region != provider.region || !providerClientTokenPattern.MatchString(clientToken) {
 		return nil, resource.ErrInvalid
 	}
+	if isEntryResourceType(kind) {
+		return provider.findAllEntryByTag(ctx, kind, resourceClientTokenTag, clientToken)
+	}
 	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{clientToken}}}
 	observations, err := provider.describeByFilters(ctx, kind, filters)
 	if err != nil {
@@ -267,6 +333,16 @@ func (provider *EC2ResourceProvider) ListOwned(ctx context.Context, agentInstanc
 		}
 		result = append(result, items...)
 	}
+	// EC2-only providers predate public entry resources and cannot have
+	// created them. Keep their historical recovery path usable; providers built
+	// from a real AWS config always carry the entry clients.
+	if provider.entryClient != nil {
+		entryItems, err := provider.listOwnedEntryResources(ctx, agentInstanceID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, entryItems...)
+	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Type != result[j].Type {
 			return result[i].Type < result[j].Type
@@ -291,6 +367,16 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 		return resource.ErrReadBack
 	}
 	switch kind {
+	case resource.TypeALB:
+		_, err = provider.entryClient.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(providerID)})
+	case resource.TypeTargetGroup:
+		if err = provider.deleteTargetGroup(ctx, providerID); err != nil {
+			return err
+		}
+	case resource.TypeListener:
+		_, err = provider.entryClient.DeleteListener(ctx, &elbv2.DeleteListenerInput{ListenerArn: aws.String(providerID)})
+	case resource.TypeSecurityGroupRule:
+		_, err = provider.client.RevokeSecurityGroupIngress(ctx, &ec2.RevokeSecurityGroupIngressInput{SecurityGroupRuleIds: []string{providerID}})
 	case resource.TypeEC2:
 		rootVolumeIDs, err := provider.instanceRootVolumes(ctx, providerID)
 		if err != nil {
@@ -366,7 +452,7 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 	default:
 		return resource.ErrInvalid
 	}
-	if err != nil && !isNotFound(kind, err) {
+	if err != nil && !isNotFound(kind, err) && !isEntryNotFound(kind, err) {
 		return providerError(ctx, err)
 	}
 	return provider.waitMissing(ctx, kind, providerID)
@@ -424,7 +510,7 @@ func (provider *EC2ResourceProvider) validateCreate(request resource.ProviderCre
 		return resource.ErrInvalid
 	}
 	for _, dependency := range request.Dependencies {
-		if !providerDependencyIDPattern.MatchString(dependency.ProviderID) {
+		if !provider.validDependencyProviderID(request.Type, dependency) {
 			return resource.ErrInvalid
 		}
 	}
