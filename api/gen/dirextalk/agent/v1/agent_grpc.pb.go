@@ -595,6 +595,11 @@ const (
 	CloudControlService_CreateCloudDeploymentDestroyChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateCloudDeploymentDestroyChallenge"
 	CloudControlService_ApproveCloudDeploymentDestroy_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/ApproveCloudDeploymentDestroy"
 	CloudControlService_GetCloudDestroyOperation_FullMethodName              = "/dirextalk.agent.v1.CloudControlService/GetCloudDestroyOperation"
+	CloudControlService_CreateCloudDeploymentEntryPlan_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/CreateCloudDeploymentEntryPlan"
+	CloudControlService_GetCloudEntryPlan_FullMethodName                     = "/dirextalk.agent.v1.CloudControlService/GetCloudEntryPlan"
+	CloudControlService_CreateCloudDeploymentEntryChallenge_FullMethodName   = "/dirextalk.agent.v1.CloudControlService/CreateCloudDeploymentEntryChallenge"
+	CloudControlService_ApproveCloudDeploymentEntry_FullMethodName           = "/dirextalk.agent.v1.CloudControlService/ApproveCloudDeploymentEntry"
+	CloudControlService_GetCloudEntryOperation_FullMethodName                = "/dirextalk.agent.v1.CloudControlService/GetCloudEntryOperation"
 )
 
 // CloudControlServiceClient is the client API for CloudControlService service.
@@ -623,6 +628,11 @@ type CloudControlServiceClient interface {
 	CreateCloudDeploymentDestroyChallenge(ctx context.Context, in *CreateCloudDeploymentDestroyChallengeRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentDestroyChallengeResponse, error)
 	ApproveCloudDeploymentDestroy(ctx context.Context, in *ApproveCloudDeploymentDestroyRequest, opts ...grpc.CallOption) (*ApproveCloudDeploymentDestroyResponse, error)
 	GetCloudDestroyOperation(ctx context.Context, in *GetCloudDestroyOperationRequest, opts ...grpc.CallOption) (*GetCloudDestroyOperationResponse, error)
+	CreateCloudDeploymentEntryPlan(ctx context.Context, in *CreateCloudDeploymentEntryPlanRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentEntryPlanResponse, error)
+	GetCloudEntryPlan(ctx context.Context, in *GetCloudEntryPlanRequest, opts ...grpc.CallOption) (*GetCloudEntryPlanResponse, error)
+	CreateCloudDeploymentEntryChallenge(ctx context.Context, in *CreateCloudDeploymentEntryChallengeRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentEntryChallengeResponse, error)
+	ApproveCloudDeploymentEntry(ctx context.Context, in *ApproveCloudDeploymentEntryRequest, opts ...grpc.CallOption) (*ApproveCloudDeploymentEntryResponse, error)
+	GetCloudEntryOperation(ctx context.Context, in *GetCloudEntryOperationRequest, opts ...grpc.CallOption) (*GetCloudEntryOperationResponse, error)
 }
 
 type cloudControlServiceClient struct {
@@ -853,6 +863,56 @@ func (c *cloudControlServiceClient) GetCloudDestroyOperation(ctx context.Context
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) CreateCloudDeploymentEntryPlan(ctx context.Context, in *CreateCloudDeploymentEntryPlanRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentEntryPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudDeploymentEntryPlanResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudDeploymentEntryPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudEntryPlan(ctx context.Context, in *GetCloudEntryPlanRequest, opts ...grpc.CallOption) (*GetCloudEntryPlanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudEntryPlanResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudEntryPlan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) CreateCloudDeploymentEntryChallenge(ctx context.Context, in *CreateCloudDeploymentEntryChallengeRequest, opts ...grpc.CallOption) (*CreateCloudDeploymentEntryChallengeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateCloudDeploymentEntryChallengeResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_CreateCloudDeploymentEntryChallenge_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveCloudDeploymentEntry(ctx context.Context, in *ApproveCloudDeploymentEntryRequest, opts ...grpc.CallOption) (*ApproveCloudDeploymentEntryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveCloudDeploymentEntryResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveCloudDeploymentEntry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetCloudEntryOperation(ctx context.Context, in *GetCloudEntryOperationRequest, opts ...grpc.CallOption) (*GetCloudEntryOperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudEntryOperationResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudEntryOperation_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CloudControlServiceServer is the server API for CloudControlService service.
 // All implementations must embed UnimplementedCloudControlServiceServer
 // for forward compatibility.
@@ -879,6 +939,11 @@ type CloudControlServiceServer interface {
 	CreateCloudDeploymentDestroyChallenge(context.Context, *CreateCloudDeploymentDestroyChallengeRequest) (*CreateCloudDeploymentDestroyChallengeResponse, error)
 	ApproveCloudDeploymentDestroy(context.Context, *ApproveCloudDeploymentDestroyRequest) (*ApproveCloudDeploymentDestroyResponse, error)
 	GetCloudDestroyOperation(context.Context, *GetCloudDestroyOperationRequest) (*GetCloudDestroyOperationResponse, error)
+	CreateCloudDeploymentEntryPlan(context.Context, *CreateCloudDeploymentEntryPlanRequest) (*CreateCloudDeploymentEntryPlanResponse, error)
+	GetCloudEntryPlan(context.Context, *GetCloudEntryPlanRequest) (*GetCloudEntryPlanResponse, error)
+	CreateCloudDeploymentEntryChallenge(context.Context, *CreateCloudDeploymentEntryChallengeRequest) (*CreateCloudDeploymentEntryChallengeResponse, error)
+	ApproveCloudDeploymentEntry(context.Context, *ApproveCloudDeploymentEntryRequest) (*ApproveCloudDeploymentEntryResponse, error)
+	GetCloudEntryOperation(context.Context, *GetCloudEntryOperationRequest) (*GetCloudEntryOperationResponse, error)
 	mustEmbedUnimplementedCloudControlServiceServer()
 }
 
@@ -954,6 +1019,21 @@ func (UnimplementedCloudControlServiceServer) ApproveCloudDeploymentDestroy(cont
 }
 func (UnimplementedCloudControlServiceServer) GetCloudDestroyOperation(context.Context, *GetCloudDestroyOperationRequest) (*GetCloudDestroyOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudDestroyOperation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudDeploymentEntryPlan(context.Context, *CreateCloudDeploymentEntryPlanRequest) (*CreateCloudDeploymentEntryPlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudDeploymentEntryPlan not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudEntryPlan(context.Context, *GetCloudEntryPlanRequest) (*GetCloudEntryPlanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudEntryPlan not implemented")
+}
+func (UnimplementedCloudControlServiceServer) CreateCloudDeploymentEntryChallenge(context.Context, *CreateCloudDeploymentEntryChallengeRequest) (*CreateCloudDeploymentEntryChallengeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateCloudDeploymentEntryChallenge not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveCloudDeploymentEntry(context.Context, *ApproveCloudDeploymentEntryRequest) (*ApproveCloudDeploymentEntryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveCloudDeploymentEntry not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudEntryOperation(context.Context, *GetCloudEntryOperationRequest) (*GetCloudEntryOperationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudEntryOperation not implemented")
 }
 func (UnimplementedCloudControlServiceServer) mustEmbedUnimplementedCloudControlServiceServer() {}
 func (UnimplementedCloudControlServiceServer) testEmbeddedByValue()                             {}
@@ -1372,6 +1452,96 @@ func _CloudControlService_GetCloudDestroyOperation_Handler(srv interface{}, ctx 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_CreateCloudDeploymentEntryPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudDeploymentEntryPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudDeploymentEntryPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudDeploymentEntryPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudDeploymentEntryPlan(ctx, req.(*CreateCloudDeploymentEntryPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudEntryPlan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudEntryPlanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudEntryPlan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudEntryPlan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudEntryPlan(ctx, req.(*GetCloudEntryPlanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_CreateCloudDeploymentEntryChallenge_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateCloudDeploymentEntryChallengeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).CreateCloudDeploymentEntryChallenge(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_CreateCloudDeploymentEntryChallenge_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).CreateCloudDeploymentEntryChallenge(ctx, req.(*CreateCloudDeploymentEntryChallengeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveCloudDeploymentEntry_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveCloudDeploymentEntryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveCloudDeploymentEntry(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveCloudDeploymentEntry_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveCloudDeploymentEntry(ctx, req.(*ApproveCloudDeploymentEntryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetCloudEntryOperation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudEntryOperationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudEntryOperation(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudEntryOperation_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudEntryOperation(ctx, req.(*GetCloudEntryOperationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CloudControlService_ServiceDesc is the grpc.ServiceDesc for CloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1466,6 +1636,26 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCloudDestroyOperation",
 			Handler:    _CloudControlService_GetCloudDestroyOperation_Handler,
+		},
+		{
+			MethodName: "CreateCloudDeploymentEntryPlan",
+			Handler:    _CloudControlService_CreateCloudDeploymentEntryPlan_Handler,
+		},
+		{
+			MethodName: "GetCloudEntryPlan",
+			Handler:    _CloudControlService_GetCloudEntryPlan_Handler,
+		},
+		{
+			MethodName: "CreateCloudDeploymentEntryChallenge",
+			Handler:    _CloudControlService_CreateCloudDeploymentEntryChallenge_Handler,
+		},
+		{
+			MethodName: "ApproveCloudDeploymentEntry",
+			Handler:    _CloudControlService_ApproveCloudDeploymentEntry_Handler,
+		},
+		{
+			MethodName: "GetCloudEntryOperation",
+			Handler:    _CloudControlService_GetCloudEntryOperation_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

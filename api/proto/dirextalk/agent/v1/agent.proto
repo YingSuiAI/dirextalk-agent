@@ -296,6 +296,10 @@ enum CloudResourceType {
   CLOUD_RESOURCE_TYPE_SECURITY_GROUP = 5;
   CLOUD_RESOURCE_TYPE_ENDPOINT = 6;
   CLOUD_RESOURCE_TYPE_SNAPSHOT = 7;
+  CLOUD_RESOURCE_TYPE_ALB = 8;
+  CLOUD_RESOURCE_TYPE_TARGET_GROUP = 9;
+  CLOUD_RESOURCE_TYPE_LISTENER = 10;
+  CLOUD_RESOURCE_TYPE_SECURITY_GROUP_RULE = 11;
 }
 
 enum CloudResourceStatus {
@@ -528,6 +532,345 @@ message GetCloudDestroyOperationResponse {
   CloudDestroyOperation operation = 1;
 }
 
+// CloudEntryPlanStatus is deliberately separate from the initial Worker Plan.
+// A public ALB entry always needs its own short-lived device approval after a
+// successful Worker deployment.
+enum CloudEntryPlanStatus {
+  CLOUD_ENTRY_PLAN_STATUS_UNSPECIFIED = 0;
+  CLOUD_ENTRY_PLAN_STATUS_DRAFT = 1;
+  CLOUD_ENTRY_PLAN_STATUS_READY_FOR_APPROVAL = 2;
+  CLOUD_ENTRY_PLAN_STATUS_APPROVED = 3;
+  CLOUD_ENTRY_PLAN_STATUS_EXPIRED = 4;
+  CLOUD_ENTRY_PLAN_STATUS_SUPERSEDED = 5;
+}
+
+enum CloudEntryOperationStatus {
+  CLOUD_ENTRY_OPERATION_STATUS_UNSPECIFIED = 0;
+  CLOUD_ENTRY_OPERATION_STATUS_AWAITING_APPROVAL = 1;
+  CLOUD_ENTRY_OPERATION_STATUS_APPROVED = 2;
+  CLOUD_ENTRY_OPERATION_STATUS_PROVISIONING = 3;
+  CLOUD_ENTRY_OPERATION_STATUS_VERIFYING = 4;
+  CLOUD_ENTRY_OPERATION_STATUS_ACTIVE = 5;
+  CLOUD_ENTRY_OPERATION_STATUS_FAILED = 6;
+  CLOUD_ENTRY_OPERATION_STATUS_DESTROYING = 7;
+  CLOUD_ENTRY_OPERATION_STATUS_DESTROYED = 8;
+  CLOUD_ENTRY_OPERATION_STATUS_DESTROY_BLOCKED = 9;
+}
+
+enum CloudEntryCertificateStatus {
+  CLOUD_ENTRY_CERTIFICATE_STATUS_UNSPECIFIED = 0;
+  CLOUD_ENTRY_CERTIFICATE_STATUS_ISSUED = 1;
+  CLOUD_ENTRY_CERTIFICATE_STATUS_PENDING_VALIDATION = 2;
+}
+
+enum CloudEntryKind {
+  CLOUD_ENTRY_KIND_UNSPECIFIED = 0;
+  CLOUD_ENTRY_KIND_ALB = 1;
+}
+
+enum CloudEntryALBScheme {
+  CLOUD_ENTRY_ALB_SCHEME_UNSPECIFIED = 0;
+  CLOUD_ENTRY_ALB_SCHEME_INTERNET_FACING = 1;
+}
+
+enum CloudEntryListenerProtocol {
+  CLOUD_ENTRY_LISTENER_PROTOCOL_UNSPECIFIED = 0;
+  CLOUD_ENTRY_LISTENER_PROTOCOL_HTTPS = 1;
+}
+
+enum CloudEntryTargetProtocol {
+  CLOUD_ENTRY_TARGET_PROTOCOL_UNSPECIFIED = 0;
+  CLOUD_ENTRY_TARGET_PROTOCOL_HTTP = 1;
+  CLOUD_ENTRY_TARGET_PROTOCOL_HTTPS = 2;
+}
+
+// The only acceptable source for a public ALB target is server-side AWS
+// read-back of the approved Worker. This enum intentionally has no Worker
+// URL, public IPv4, EIP, or VPC-endpoint alternative.
+enum CloudEntryTargetSource {
+  CLOUD_ENTRY_TARGET_SOURCE_UNSPECIFIED = 0;
+  CLOUD_ENTRY_TARGET_SOURCE_APPROVED_WORKER_READ_BACK = 1;
+}
+
+enum CloudEntryEC2State {
+  CLOUD_ENTRY_EC2_STATE_UNSPECIFIED = 0;
+  CLOUD_ENTRY_EC2_STATE_RUNNING = 1;
+}
+
+enum CloudEntryErrorCode {
+  CLOUD_ENTRY_ERROR_CODE_UNSPECIFIED = 0;
+  CLOUD_ENTRY_ERROR_CODE_WORKER_NOT_READY = 1;
+  CLOUD_ENTRY_ERROR_CODE_READ_BACK_MISMATCH = 2;
+  CLOUD_ENTRY_ERROR_CODE_CERTIFICATE_NOT_READY = 3;
+  CLOUD_ENTRY_ERROR_CODE_QUOTE_EXPIRED = 4;
+  CLOUD_ENTRY_ERROR_CODE_APPROVAL_REQUIRED = 5;
+  CLOUD_ENTRY_ERROR_CODE_PROVISION_FAILED = 6;
+  CLOUD_ENTRY_ERROR_CODE_DESTROY_BLOCKED = 7;
+}
+
+// CloudEntryCostScope is a device-visible price assumption. It is an
+// estimate and alert input, not a hard billing limit.
+message CloudEntryCostScope {
+  string quote_id = 1;
+  string quote_digest = 2;
+  string currency = 3;
+  google.protobuf.Timestamp quoted_at = 4;
+  google.protobuf.Timestamp valid_until = 5;
+  uint64 alb_hourly_estimate_micros = 6;
+  uint64 lcu_hourly_estimate_micros = 7;
+  uint32 estimated_lcu_milli_units = 8;
+  uint64 estimated_egress_mib = 9;
+  uint64 traffic_estimate_micros = 10;
+  uint64 maximum_launch_amount_micros = 11;
+  string assumptions_digest = 12;
+}
+
+// CloudEntryPlanDraft is the complete caller-provided public-entry intent.
+// It deliberately has no Worker target, Worker URL, public IP, EIP,
+// VPC-endpoint, security-group, credentials, headers, bodies, or secret
+// field. The service derives all Worker/AWS facts from its durable ledger and
+// independent read-back before returning a device-signable scope.
+//
+// Retention is not caller-provided: it is inherited exactly from the approved
+// successful Worker so a public entry cannot outlive the service it exposes.
+message CloudEntryPlanDraft {
+  string hostname = 1;
+  string certificate_arn = 2;
+  repeated string public_subnet_ids = 3;
+  uint32 target_port = 4;
+  string health_path = 5;
+
+  // First release uses exact HTTP 200 for both ALB target health and the
+  // independent external probe. The service rejects any other value.
+  uint32 expected_health_status_code = 6;
+  string recipe_health_contract_digest = 7;
+  string recipe_authentication_digest = 8;
+  CloudEntryCostScope cost = 9;
+}
+
+message CloudEntryAWSReadBack {
+  bool observed = 1;
+  bool exists = 2;
+  CloudEntryEC2State state = 3;
+  google.protobuf.Timestamp observed_at = 4;
+  string tag_digest = 5;
+}
+
+// CloudEntryWorkerReadBackScope is server-generated AWS evidence. It exposes
+// the exact instance/resource identities being approved but never a Worker
+// endpoint or an address.
+message CloudEntryWorkerReadBackScope {
+  string deployment_id = 1;
+  int64 deployment_revision = 2;
+  string task_id = 3;
+  string original_plan_id = 4;
+  string original_plan_hash = 5;
+  string original_approval_id = 6;
+  string worker_resource_id = 7;
+  int64 worker_resource_revision = 8;
+  string worker_spec_digest = 9;
+  string instance_id = 10;
+  string vpc_id = 11;
+  string subnet_id = 12;
+  string security_group_id = 13;
+  OutcomeStatus execution_outcome = 14;
+  google.protobuf.Timestamp succeeded_at = 15;
+  CloudEntryAWSReadBack read_back = 16;
+  RetentionPolicy retention_policy = 17;
+  bool auto_destroy_approved = 18;
+  google.protobuf.Timestamp destroy_deadline = 19;
+}
+
+// CloudEntryRecipeHealthBinding contains only Recipe contract digests. Recipe
+// content, integrations, service credentials and user data are never part of
+// this public API projection.
+message CloudEntryRecipeHealthBinding {
+  string recipe_digest = 1;
+  string health_contract_digest = 2;
+  string authentication_contract_digest = 3;
+}
+
+message CloudEntryCertificateScope {
+  string certificate_arn = 1;
+  string region = 2;
+  string hostname = 3;
+  repeated string subject_alternative_names = 4;
+  CloudEntryCertificateStatus status = 5;
+  string read_back_digest = 6;
+  google.protobuf.Timestamp observed_at = 7;
+}
+
+message CloudEntryPublicSubnetScope {
+  string subnet_id = 1;
+  string vpc_id = 2;
+  string availability_zone = 3;
+  bool public = 4;
+  string read_back_digest = 5;
+  google.protobuf.Timestamp observed_at = 6;
+}
+
+message CloudEntryALBScope {
+  CloudEntryALBScheme scheme = 1;
+  uint32 listener_port = 2;
+  CloudEntryListenerProtocol listener_protocol = 3;
+  string tls_policy = 4;
+  repeated string ingress_cidrs = 5;
+  CloudEntryTargetProtocol target_protocol = 6;
+  uint32 target_port = 7;
+  CloudEntryTargetSource target_source = 8;
+  repeated CloudEntryPublicSubnetScope public_subnets = 9;
+
+  // These attest the fixed first-release boundary rather than carrying an
+  // address. A public Worker address and elastic-IP attachment are prohibited.
+  bool worker_private_only = 10;
+  bool elastic_ip_prohibited = 11;
+}
+
+// CloudEntryHealthRouteScope is a path-only, credential-free health contract;
+// it cannot carry a full URL, request headers, or a response body.
+message CloudEntryHealthRouteScope {
+  string path = 1;
+  uint32 expected_status_code = 2;
+  string evidence_digest = 3;
+  bool no_credential_route = 4;
+}
+
+message CloudEntryAuthenticationScope {
+  bool required = 1;
+  string contract_digest = 2;
+}
+
+// CloudEntryRetentionScope is generated from the approved Worker retention
+// policy. The caller sees it before signing but cannot change it through a
+// public-entry request.
+message CloudEntryRetentionScope {
+  RetentionPolicy retention_policy = 1;
+  bool auto_destroy_approved = 2;
+  google.protobuf.Timestamp destroy_deadline = 3;
+}
+
+// CloudEntryApprovalScope is the complete server-generated, device-visible
+// scope. It contains no URL, credentials, headers, bodies, secret references,
+// Worker output, or user-supplied cloud target.
+message CloudEntryApprovalScope {
+  string schema_version = 1;
+  CloudEntryKind kind = 2;
+  string agent_instance_id = 3;
+  string owner_id = 4;
+  string connection_id = 5;
+  string region = 6;
+  CloudEntryWorkerReadBackScope worker = 7;
+  CloudEntryRecipeHealthBinding recipe = 8;
+  CloudEntryCertificateScope certificate = 9;
+  CloudEntryALBScope alb = 10;
+  CloudEntryHealthRouteScope health = 11;
+  CloudEntryAuthenticationScope authentication = 12;
+  CloudEntryCostScope cost = 13;
+  CloudEntryRetentionScope retention = 14;
+}
+
+message CloudEntryPlan {
+  string schema_version = 1;
+  string entry_plan_id = 2;
+  CloudEntryPlanStatus status = 3;
+  CloudEntryApprovalScope scope = 4;
+  string scope_digest = 5;
+  int64 revision = 6;
+  string plan_hash = 7;
+}
+
+message CloudEntryApprovalChallenge {
+  string operation_id = 1;
+  string challenge_id = 2;
+  string approval_id = 3;
+  string entry_plan_id = 4;
+  int64 entry_plan_revision = 5;
+  string plan_hash = 6;
+  string scope_digest = 7;
+  string signer_key_id = 8;
+  google.protobuf.Timestamp issued_at = 9;
+  google.protobuf.Timestamp expires_at = 10;
+  bytes signing_payload_cbor = 11;
+  int64 revision = 12;
+  CloudEntryApprovalScope scope = 13;
+}
+
+// CloudEntryApprovalSignature repeats each signed binding. The service must
+// still reload the challenge and validate all fields before accepting it.
+message CloudEntryApprovalSignature {
+  string approval_id = 1;
+  string challenge_id = 2;
+  string entry_plan_id = 3;
+  int64 entry_plan_revision = 4;
+  string plan_hash = 5;
+  string scope_digest = 6;
+  string signer_key_id = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  bytes signature = 9;
+}
+
+// CloudEntryOperation is an intentionally de-sensitized lifecycle projection.
+// Error summary is a fixed public summary and cannot contain provider output.
+message CloudEntryOperation {
+  string operation_id = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string entry_plan_id = 4;
+  string approval_id = 5;
+  string plan_hash = 6;
+  string scope_digest = 7;
+  CloudEntryOperationStatus status = 8;
+  CloudEntryErrorCode error_code = 9;
+  string error_summary = 10;
+  int64 revision = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+message CreateCloudDeploymentEntryPlanRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+
+  // Expected deployment revision; it fences the Worker facts from which the
+  // service derives the public-entry approval scope.
+  int64 expected_revision = 4;
+  CloudEntryPlanDraft draft = 5;
+}
+message CreateCloudDeploymentEntryPlanResponse { CloudEntryPlan plan = 1; }
+
+message GetCloudEntryPlanRequest {
+  string owner_id = 1;
+  string entry_plan_id = 2;
+}
+message GetCloudEntryPlanResponse { CloudEntryPlan plan = 1; }
+
+message CreateCloudDeploymentEntryChallengeRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string entry_plan_id = 3;
+  int64 expected_revision = 4;
+  string signer_key_id = 5;
+}
+message CreateCloudDeploymentEntryChallengeResponse {
+  CloudEntryApprovalChallenge challenge = 1;
+}
+
+message ApproveCloudDeploymentEntryRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string entry_plan_id = 3;
+  int64 expected_revision = 4;
+  CloudEntryApprovalSignature approval = 5;
+}
+message ApproveCloudDeploymentEntryResponse { CloudEntryOperation operation = 1; }
+
+message GetCloudEntryOperationRequest {
+  string owner_id = 1;
+  string operation_id = 2;
+}
+message GetCloudEntryOperationResponse { CloudEntryOperation operation = 1; }
+
 message CloudWorker {
   string deployment_id = 1;
   string owner_id = 2;
@@ -615,6 +958,11 @@ service CloudControlService {
   rpc CreateCloudDeploymentDestroyChallenge(CreateCloudDeploymentDestroyChallengeRequest) returns (CreateCloudDeploymentDestroyChallengeResponse);
   rpc ApproveCloudDeploymentDestroy(ApproveCloudDeploymentDestroyRequest) returns (ApproveCloudDeploymentDestroyResponse);
   rpc GetCloudDestroyOperation(GetCloudDestroyOperationRequest) returns (GetCloudDestroyOperationResponse);
+  rpc CreateCloudDeploymentEntryPlan(CreateCloudDeploymentEntryPlanRequest) returns (CreateCloudDeploymentEntryPlanResponse);
+  rpc GetCloudEntryPlan(GetCloudEntryPlanRequest) returns (GetCloudEntryPlanResponse);
+  rpc CreateCloudDeploymentEntryChallenge(CreateCloudDeploymentEntryChallengeRequest) returns (CreateCloudDeploymentEntryChallengeResponse);
+  rpc ApproveCloudDeploymentEntry(ApproveCloudDeploymentEntryRequest) returns (ApproveCloudDeploymentEntryResponse);
+  rpc GetCloudEntryOperation(GetCloudEntryOperationRequest) returns (GetCloudEntryOperationResponse);
 }
 
 message CreateSessionRequest {

@@ -1,6 +1,7 @@
 package rpcapi
 
 import (
+	"strings"
 	"testing"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
@@ -35,6 +36,9 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 		{message: &agentv1.HeartbeatRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.WorkerControlServiceRecordEvidenceRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.WorkerControlServiceCompleteRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CreateCloudDeploymentEntryPlanRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.CreateCloudDeploymentEntryChallengeRequest{}, revisionField: "expected_revision"},
+		{message: &agentv1.ApproveCloudDeploymentEntryRequest{}, revisionField: "expected_revision"},
 	}
 	for _, test := range tests {
 		descriptor := test.message.ProtoReflect().Descriptor()
@@ -44,6 +48,97 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 				assertFieldKind(t, descriptor, test.revisionField, protoreflect.Int64Kind)
 			}
 		})
+	}
+}
+
+func TestCloudEntryContractFencesUntrustedWorkerInputsAndBindsApproval(t *testing.T) {
+	draft := (&agentv1.CloudEntryPlanDraft{}).ProtoReflect().Descriptor()
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"hostname":                      1,
+		"certificate_arn":               2,
+		"public_subnet_ids":             3,
+		"target_port":                   4,
+		"health_path":                   5,
+		"expected_health_status_code":   6,
+		"recipe_health_contract_digest": 7,
+		"recipe_authentication_digest":  8,
+		"cost":                          9,
+	} {
+		field := draft.Fields().ByName(name)
+		if field == nil || field.Number() != number {
+			t.Fatalf("CloudEntryPlanDraft.%s field = %v, want number %d", name, field, number)
+		}
+	}
+	if draft.Fields().Len() != 9 {
+		t.Fatalf("CloudEntryPlanDraft must have exactly the server-fenced input fields, got %d", draft.Fields().Len())
+	}
+	for _, forbidden := range []protoreflect.Name{
+		"worker_url", "worker_public_ip", "public_ip", "eip", "vpc_endpoint", "endpoint", "security_group_id", "retention",
+	} {
+		if draft.Fields().ByName(forbidden) != nil {
+			t.Fatalf("CloudEntryPlanDraft must not accept caller-controlled %s", forbidden)
+		}
+	}
+
+	create := (&agentv1.CreateCloudDeploymentEntryPlanRequest{}).ProtoReflect().Descriptor()
+	assertFieldKind(t, create, "idempotency_key", protoreflect.StringKind)
+	assertFieldKind(t, create, "expected_revision", protoreflect.Int64Kind)
+	if field := create.Fields().ByName("draft"); field == nil || field.Kind() != protoreflect.MessageKind || field.Message().Name() != "CloudEntryPlanDraft" {
+		t.Fatalf("CreateCloudDeploymentEntryPlanRequest.draft must be CloudEntryPlanDraft: %v", field)
+	}
+
+	challenge := (&agentv1.CloudEntryApprovalChallenge{}).ProtoReflect().Descriptor()
+	signature := (&agentv1.CloudEntryApprovalSignature{}).ProtoReflect().Descriptor()
+	for _, descriptor := range []protoreflect.MessageDescriptor{challenge, signature} {
+		for _, name := range []protoreflect.Name{"approval_id", "challenge_id", "entry_plan_id", "entry_plan_revision", "plan_hash", "scope_digest", "signer_key_id", "expires_at"} {
+			if descriptor.Fields().ByName(name) == nil {
+				t.Fatalf("%s must bind %s", descriptor.Name(), name)
+			}
+		}
+	}
+	if field := challenge.Fields().ByName("scope"); field == nil || field.Kind() != protoreflect.MessageKind || field.Message().Name() != "CloudEntryApprovalScope" {
+		t.Fatalf("CloudEntryApprovalChallenge.scope must expose the complete signed scope: %v", field)
+	}
+	if field := (&agentv1.CloudEntryPlan{}).ProtoReflect().Descriptor().Fields().ByName("scope"); field == nil || field.Message().Name() != "CloudEntryApprovalScope" {
+		t.Fatalf("CloudEntryPlan.scope must expose the device-visible entry scope: %v", field)
+	}
+	if field := (&agentv1.CloudEntryApprovalScope{}).ProtoReflect().Descriptor().Fields().ByName("kind"); field == nil || field.Kind() != protoreflect.EnumKind || field.Enum().Name() != "CloudEntryKind" {
+		t.Fatalf("CloudEntryApprovalScope.kind must be a typed entry kind: %v", field)
+	}
+
+	targetSource := agentv1.File_dirextalk_agent_v1_agent_proto.Enums().ByName("CloudEntryTargetSource")
+	if targetSource == nil || targetSource.Values().Len() != 2 || targetSource.Values().ByName("CLOUD_ENTRY_TARGET_SOURCE_APPROVED_WORKER_READ_BACK") == nil {
+		t.Fatal("CloudEntryTargetSource must only permit approved Worker AWS read-back")
+	}
+}
+
+func TestCloudEntryProjectionsCannotCarrySensitiveTransportMaterial(t *testing.T) {
+	for _, message := range []proto.Message{
+		&agentv1.CloudEntryPlanDraft{},
+		&agentv1.CloudEntryAWSReadBack{},
+		&agentv1.CloudEntryWorkerReadBackScope{},
+		&agentv1.CloudEntryRecipeHealthBinding{},
+		&agentv1.CloudEntryCertificateScope{},
+		&agentv1.CloudEntryPublicSubnetScope{},
+		&agentv1.CloudEntryALBScope{},
+		&agentv1.CloudEntryHealthRouteScope{},
+		&agentv1.CloudEntryAuthenticationScope{},
+		&agentv1.CloudEntryRetentionScope{},
+		&agentv1.CloudEntryApprovalScope{},
+		&agentv1.CloudEntryPlan{},
+		&agentv1.CloudEntryApprovalChallenge{},
+		&agentv1.CloudEntryApprovalSignature{},
+		&agentv1.CloudEntryOperation{},
+	} {
+		descriptor := message.ProtoReflect().Descriptor()
+		for index := 0; index < descriptor.Fields().Len(); index++ {
+			name := string(descriptor.Fields().Get(index).Name())
+			for _, forbidden := range []string{"url", "headers", "body", "secret", "worker_public_ip", "public_ip", "eip", "endpoint"} {
+				if strings.Contains(name, forbidden) {
+					t.Fatalf("%s must not expose %q field %q", descriptor.Name(), forbidden, name)
+				}
+			}
+		}
 	}
 }
 
