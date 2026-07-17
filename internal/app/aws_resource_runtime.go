@@ -42,36 +42,9 @@ func newAWSResourceRuntimeFactory(agentInstanceID string, vault *awsfoundation.C
 }
 
 func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connection cloudapp.Connection) (resource.Provider, resource.ManifestMirror, error) {
-	config, foundation, err := factory.controlConfig(ctx, connection)
+	config, foundation, provider, err := factory.resourceProvider(ctx, connection)
 	if err != nil {
 		return nil, nil, err
-	}
-	amiReader, err := awsprovider.NewWorkerAMIAttestorFromConfig(config)
-	if err != nil {
-		return nil, nil, cloudapp.ErrUnavailable
-	}
-	iamClient := iam.NewFromConfig(config)
-	artifactBinder, err := awsprovider.NewWorkerArtifactSessionBinder(
-		iamClient, s3.NewFromConfig(config), factory.agentInstanceID,
-		foundation.Partition, connection.AccountID, connection.Region, foundation.WorkerRoleName, foundation.ArtifactBucketName,
-	)
-	if err != nil {
-		return nil, nil, cloudapp.ErrUnavailable
-	}
-	secretBinder, err := awsprovider.NewWorkerSecretSessionBinder(
-		iamClient, secretsmanager.NewFromConfig(config), factory.agentInstanceID,
-		foundation.Partition, connection.AccountID, connection.Region, foundation.WorkerRoleName,
-	)
-	if err != nil {
-		return nil, nil, cloudapp.ErrUnavailable
-	}
-	provider, err := awsprovider.NewEC2ResourceProviderFromConfig(config,
-		awsprovider.WithWorkerAMIInspection(connection.AccountID, amiReader),
-		awsprovider.WithWorkerArtifactBinder(artifactBinder),
-		awsprovider.WithWorkerSecretBinder(secretBinder),
-	)
-	if err != nil {
-		return nil, nil, cloudapp.ErrUnavailable
 	}
 	remoteMirror, err := newDynamoResourceManifest(config, foundation.ManifestTableName, factory.agentInstanceID)
 	if err != nil {
@@ -82,6 +55,50 @@ func (factory *awsResourceRuntimeFactory) Runtime(ctx context.Context, connectio
 		return nil, nil, cloudapp.ErrUnavailable
 	}
 	return provider, mirror, nil
+}
+
+// Provider returns a Connection-scoped typed AWS reader without constructing
+// a DynamoDB manifest client. Orphan discovery uses this read-only path so
+// DynamoDB cannot become an inventory or authorization source for imported
+// provider resources.
+func (factory *awsResourceRuntimeFactory) Provider(ctx context.Context, connection cloudapp.Connection) (resource.Provider, error) {
+	_, _, provider, err := factory.resourceProvider(ctx, connection)
+	return provider, err
+}
+
+func (factory *awsResourceRuntimeFactory) resourceProvider(ctx context.Context, connection cloudapp.Connection) (aws.Config, awsprovider.BootstrapIdentitySpec, resource.Provider, error) {
+	config, foundation, err := factory.controlConfig(ctx, connection)
+	if err != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, nil, err
+	}
+	amiReader, err := awsprovider.NewWorkerAMIAttestorFromConfig(config)
+	if err != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, nil, cloudapp.ErrUnavailable
+	}
+	iamClient := iam.NewFromConfig(config)
+	artifactBinder, err := awsprovider.NewWorkerArtifactSessionBinder(
+		iamClient, s3.NewFromConfig(config), factory.agentInstanceID,
+		foundation.Partition, connection.AccountID, connection.Region, foundation.WorkerRoleName, foundation.ArtifactBucketName,
+	)
+	if err != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, nil, cloudapp.ErrUnavailable
+	}
+	secretBinder, err := awsprovider.NewWorkerSecretSessionBinder(
+		iamClient, secretsmanager.NewFromConfig(config), factory.agentInstanceID,
+		foundation.Partition, connection.AccountID, connection.Region, foundation.WorkerRoleName,
+	)
+	if err != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, nil, cloudapp.ErrUnavailable
+	}
+	provider, err := awsprovider.NewEC2ResourceProviderFromConfig(config,
+		awsprovider.WithWorkerAMIInspection(connection.AccountID, amiReader),
+		awsprovider.WithWorkerArtifactBinder(artifactBinder),
+		awsprovider.WithWorkerSecretBinder(secretBinder),
+	)
+	if err != nil {
+		return aws.Config{}, awsprovider.BootstrapIdentitySpec{}, nil, cloudapp.ErrUnavailable
+	}
+	return config, foundation, provider, nil
 }
 
 func (factory *awsResourceRuntimeFactory) RemoteManifest(ctx context.Context, connection cloudapp.Connection) (recoverableManifestMirror, error) {

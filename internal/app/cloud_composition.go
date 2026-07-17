@@ -46,6 +46,7 @@ type CloudComposition struct {
 	HealthProbeReader          cloudstatus.HealthReader
 	foundationLaunches         *foundationLaunchCompensator
 	healthProbeScheduler       *healthProbeScheduler
+	orphanRecovery             *orphanRecoveryController
 	entryExecutor              entryexecution.Runner
 	agentInstanceID            string
 	cloudGoalStore             *postgres.Store
@@ -68,7 +69,7 @@ func (composition *CloudComposition) NewCloudGoalOutputAdapter(model planning.Cl
 // Recover resumes exact, pre-authorized Foundation operations and persists any
 // missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.entryExecutor == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
 	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
@@ -83,6 +84,9 @@ func (composition *CloudComposition) Recover(ctx context.Context) error {
 	if err := composition.Lifecycle.RunOnce(ctx); err != nil {
 		return err
 	}
+	if err := composition.orphanRecovery.RunOnce(ctx); err != nil {
+		return err
+	}
 	return composition.entryExecutor.RunOnce(ctx)
 }
 
@@ -93,21 +97,22 @@ func (composition *CloudComposition) Close() {
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.entryExecutor == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 6)
+	errorsChannel := make(chan error, 7)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
 	go func() { errorsChannel <- composition.ManifestRecovery.Run(runContext) }()
 	go func() { errorsChannel <- composition.healthProbeScheduler.Run(runContext) }()
+	go func() { errorsChannel <- composition.orphanRecovery.Run(runContext) }()
 	go func() { errorsChannel <- composition.entryExecutor.Run(runContext) }()
 	first := <-errorsChannel
 	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -243,6 +248,15 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	orphanRecovery, err := newOrphanRecoveryController(
+		agentInstanceID, store,
+		orphanRecoveryResourceFactory{repository: resourceStore, providers: runtimeFactory},
+		30*time.Second, 5*time.Second, 5*time.Minute, 2*time.Minute, time.Now,
+	)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
 	identityAuthorizer, err := newWorkerIdentityAuthorizer(agentInstanceID, store, store, resourceStore, workerStore, runtimeFactory)
 	if err != nil {
 		vault.Close()
@@ -366,6 +380,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		HealthProbeReader:    healthProbeStore,
 		foundationLaunches:   launchCompensator,
 		healthProbeScheduler: healthProbeScheduler,
+		orphanRecovery:       orphanRecovery,
 		entryExecutor:        entryExecutor,
 		agentInstanceID:      agentInstanceID,
 		cloudGoalStore:       store,
