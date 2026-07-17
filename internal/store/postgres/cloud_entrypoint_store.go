@@ -138,6 +138,9 @@ func (store *Store) CreateEntryPlan(ctx context.Context, mutation entrypoint.Mut
 		}
 		return existing.Plan, nil
 	}
+	if err := appendEntryPlanEvent(ctx, tx, mutation, plan, plan.Scope.Cost.QuotedAt); err != nil {
+		return entrypoint.PlanV1{}, entrypoint.ErrUnavailable
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return entrypoint.PlanV1{}, entrypoint.ErrUnavailable
 	}
@@ -249,6 +252,13 @@ func (store *Store) CreateEntryChallenge(ctx context.Context, mutation entrypoin
 			return entrypoint.ChallengeV1{}, entrypoint.ErrUnavailable
 		}
 		return existing.Operation.Challenge, nil
+	}
+	created, err := readEntryOperationRow(ctx, tx, ` WHERE operation_id=$1`, challenge.OperationID)
+	if err != nil {
+		return entrypoint.ChallengeV1{}, err
+	}
+	if err := appendEntryOperationEvent(ctx, tx, mutation, mutation.OwnerID, created.Operation); err != nil {
+		return entrypoint.ChallengeV1{}, entrypoint.ErrUnavailable
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return entrypoint.ChallengeV1{}, entrypoint.ErrUnavailable
@@ -374,6 +384,13 @@ func (store *Store) ApproveEntry(ctx context.Context, mutation entrypoint.Mutati
 	if err != nil {
 		return entrypoint.OperationV1{}, err
 	}
+	// The immutable entry-plan revision is the scope revision that the device
+	// signed and intentionally does not change when its status becomes approved.
+	// The operation event carries the plan ID, so consumers can refresh that
+	// projection without receiving two plan events at the same revision.
+	if err := appendEntryOperationEvent(ctx, tx, mutation, mutation.OwnerID, updated.Operation); err != nil {
+		return entrypoint.OperationV1{}, entrypoint.ErrUnavailable
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return entrypoint.OperationV1{}, entrypoint.ErrUnavailable
 	}
@@ -487,10 +504,104 @@ func (store *Store) SaveEntryOperation(ctx context.Context, next entrypoint.Oper
 	if err != nil {
 		return entrypoint.OperationV1{}, err
 	}
+	// Background reconciliation has no user request. Anchor its event to the
+	// durable prepare caller rather than inventing an unscoped system actor.
+	if err := appendEntryOperationEvent(ctx, tx, current.Prepare, current.OwnerID, updated.Operation); err != nil {
+		return entrypoint.OperationV1{}, entrypoint.ErrUnavailable
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return entrypoint.OperationV1{}, entrypoint.ErrUnavailable
 	}
 	return updated.Operation, nil
+}
+
+const (
+	entryPlanChangedEvent      = "cloud.entrypoint.plan.changed"
+	entryOperationChangedEvent = "cloud.entrypoint.operation.changed"
+)
+
+// Entry events are intentionally a compact status projection. The signed
+// scope, host, health route, certificate, CBOR, and device signature remain in
+// the private entrypoint records and are never copied to task_events/outbox.
+func appendEntryPlanEvent(ctx context.Context, tx pgx.Tx, actor entrypoint.Mutation, plan entrypoint.PlanV1, updatedAt time.Time) error {
+	if actor.Validate() != nil || actor.OwnerID != plan.Scope.OwnerID || plan.Validate() != nil || updatedAt.IsZero() {
+		return entrypoint.ErrInvalid
+	}
+	planID, err := uuid.Parse(plan.EntryPlanID)
+	if err != nil || planID == uuid.Nil {
+		return entrypoint.ErrInvalid
+	}
+	summary := struct {
+		EntryPlanID string                `json:"entry_plan_id"`
+		OwnerID     string                `json:"owner_id"`
+		Status      entrypoint.PlanStatus `json:"status"`
+		Revision    uint64                `json:"revision"`
+		UpdatedAt   time.Time             `json:"updated_at"`
+	}{
+		EntryPlanID: plan.EntryPlanID,
+		OwnerID:     plan.Scope.OwnerID,
+		Status:      plan.Status,
+		Revision:    plan.Revision,
+		UpdatedAt:   updatedAt.UTC(),
+	}
+	return appendCloudFactEvent(ctx, tx, planID, "entrypoint_plan", entryPlanChangedEvent, plan.Revision, summary)
+}
+
+func appendEntryOperationEvent(ctx context.Context, tx pgx.Tx, actor entrypoint.Mutation, ownerID string, operation entrypoint.OperationV1) error {
+	if actor.Validate() != nil || actor.OwnerID != ownerID || operation.Validate() != nil {
+		return entrypoint.ErrInvalid
+	}
+	operationID, err := uuid.Parse(operation.Challenge.OperationID)
+	if err != nil || operationID == uuid.Nil || operation.Revision < 1 {
+		return entrypoint.ErrInvalid
+	}
+	fixedSummary, ok := entryOperationEventErrorSummary(operation.ErrorCode)
+	if !ok {
+		return entrypoint.ErrInvalid
+	}
+	summary := struct {
+		OperationID  string               `json:"operation_id"`
+		EntryPlanID  string               `json:"entry_plan_id"`
+		OwnerID      string               `json:"owner_id"`
+		Status       entrypoint.Status    `json:"status"`
+		Revision     int64                `json:"revision"`
+		UpdatedAt    time.Time            `json:"updated_at"`
+		ErrorCode    entrypoint.ErrorCode `json:"error_code,omitempty"`
+		ErrorSummary string               `json:"error_summary,omitempty"`
+	}{
+		OperationID:  operation.Challenge.OperationID,
+		EntryPlanID:  operation.Challenge.EntryPlanID,
+		OwnerID:      ownerID,
+		Status:       operation.Status,
+		Revision:     operation.Revision,
+		UpdatedAt:    operation.UpdatedAt.UTC(),
+		ErrorCode:    operation.ErrorCode,
+		ErrorSummary: fixedSummary,
+	}
+	return appendCloudFactEvent(ctx, tx, operationID, "entrypoint_operation", entryOperationChangedEvent, uint64(operation.Revision), summary)
+}
+
+func entryOperationEventErrorSummary(code entrypoint.ErrorCode) (string, bool) {
+	switch code {
+	case entrypoint.ErrorCodeNone:
+		return "", true
+	case entrypoint.ErrorCodeWorkerNotReady:
+		return "worker readiness check failed", true
+	case entrypoint.ErrorCodeReadBackMismatch:
+		return "independent read-back mismatch", true
+	case entrypoint.ErrorCodeCertificateInvalid:
+		return "certificate validation failed", true
+	case entrypoint.ErrorCodeQuoteExpired:
+		return "quote expired", true
+	case entrypoint.ErrorCodeProvisioningFailed:
+		return "provisioning failed", true
+	case entrypoint.ErrorCodeVerificationFailed:
+		return "verification failed", true
+	case entrypoint.ErrorCodeDestroyBlocked:
+		return "destruction blocked", true
+	default:
+		return "", false
+	}
 }
 
 type entryRowQuerier interface {

@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -208,6 +210,190 @@ func TestCloudEntryStorePersistsSeparateApprovalAndFencesTransitions(t *testing.
 	}
 	if _, resolveErr := restarted.GetEntryPlanForOperation(ctx, destroyed.Challenge.OperationID); !errors.Is(resolveErr, entrypoint.ErrUnavailable) {
 		t.Fatalf("destroyed entry operation plan resolve error=%v", resolveErr)
+	}
+	assertEntryStoreEventProjection(t, ctx, pool, ownerID, plan, destroyed, challenge, scope, signed, blocked.ErrorSummary)
+}
+
+func assertEntryStoreEventProjection(t *testing.T, ctx context.Context, pool *pgxpool.Pool, ownerID string, plan entrypoint.PlanV1, operation entrypoint.OperationV1, challenge entrypoint.ChallengeV1, scope entrypoint.ScopeV1, signature []byte, rawErrorSummary string) {
+	t.Helper()
+	planID, err := uuid.Parse(plan.EntryPlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID, err := uuid.Parse(operation.Challenge.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT event.seq,event.event_type,event.aggregate_type,event.aggregate_id,event.revision,event.summary_json,
+		       outbox.topic,outbox.payload_json
+		FROM task_events event
+		JOIN outbox_events outbox ON outbox.event_seq=event.seq
+		WHERE event.aggregate_id IN ($1,$2)
+		ORDER BY event.seq`, planID, operationID)
+	if err != nil {
+		t.Fatalf("read entry event/outbox projection: %v", err)
+	}
+	defer rows.Close()
+	expected := []struct {
+		eventType     string
+		aggregateType string
+		aggregateID   string
+		status        string
+		revision      int64
+	}{
+		{"cloud.entrypoint.plan.changed", "entrypoint_plan", plan.EntryPlanID, string(entrypoint.PlanReadyForApproval), 1},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusAwaitingApproval), 1},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusApproved), 2},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusProvisioning), 3},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusVerifying), 4},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusActive), 5},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusDestroying), 6},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusDestroyBlocked), 7},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusDestroying), 8},
+		{"cloud.entrypoint.operation.changed", "entrypoint_operation", operation.Challenge.OperationID, string(entrypoint.StatusDestroyed), 9},
+	}
+	previousSequence := int64(0)
+	index := 0
+	for rows.Next() {
+		var sequence, revision int64
+		var eventType, aggregateType string
+		var aggregateID uuid.UUID
+		var summary, payload []byte
+		var topic string
+		if err := rows.Scan(&sequence, &eventType, &aggregateType, &aggregateID, &revision, &summary, &topic, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if index >= len(expected) {
+			t.Fatalf("unexpected additional entry event %q revision=%d", eventType, revision)
+		}
+		want := expected[index]
+		if sequence <= previousSequence || eventType != want.eventType || topic != want.eventType || aggregateType != want.aggregateType ||
+			aggregateID.String() != want.aggregateID || revision != want.revision {
+			t.Fatalf("entry event[%d] seq=%d type=%q topic=%q aggregate=%q/%q revision=%d, want %+v", index, sequence, eventType, topic, aggregateType, aggregateID, revision, want)
+		}
+		assertEntryEventSummary(t, summary, want, ownerID)
+		assertEntryOutboxPayload(t, payload, sequence, want, summary)
+		previousSequence = sequence
+		index++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if index != len(expected) {
+		t.Fatalf("entry event/outbox count=%d, want %d; public replays must not add duplicates", index, len(expected))
+	}
+	var eventCount, outboxCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM task_events WHERE aggregate_id IN ($1,$2)),
+		  (SELECT count(*) FROM outbox_events outbox JOIN task_events event ON event.seq=outbox.event_seq WHERE event.aggregate_id IN ($1,$2))`, planID, operationID,
+	).Scan(&eventCount, &outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != len(expected) || outboxCount != eventCount {
+		t.Fatalf("entry event/outbox rows events=%d outbox=%d, want %d", eventCount, outboxCount, len(expected))
+	}
+	var persisted string
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(string_agg(event.summary_json::text || E'\n' || outbox.payload_json::text, E'\n'),'')
+		FROM task_events event JOIN outbox_events outbox ON outbox.event_seq=event.seq
+		WHERE event.aggregate_id IN ($1,$2)`, planID, operationID,
+	).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{
+		scope.Certificate.Hostname,
+		scope.Health.Path,
+		scope.Certificate.CertificateARN,
+		challenge.PlanHash,
+		challenge.ScopeDigest,
+		base64.StdEncoding.EncodeToString(challenge.SigningCBOR),
+		base64.StdEncoding.EncodeToString(signature),
+		rawErrorSummary,
+	} {
+		if forbidden != "" && strings.Contains(persisted, forbidden) {
+			t.Fatalf("entry event/outbox leaked private value %q", forbidden)
+		}
+	}
+}
+
+func assertEntryEventSummary(t *testing.T, encoded []byte, expected struct {
+	eventType     string
+	aggregateType string
+	aggregateID   string
+	status        string
+	revision      int64
+}, ownerID string) {
+	t.Helper()
+	var summary map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &summary); err != nil {
+		t.Fatalf("decode entry event summary: %v", err)
+	}
+	allowed := map[string]bool{"owner_id": true, "status": true, "revision": true, "updated_at": true}
+	identifierField := "operation_id"
+	if expected.aggregateType == "entrypoint_plan" {
+		identifierField = "entry_plan_id"
+	} else {
+		allowed["entry_plan_id"] = true
+		if expected.status == string(entrypoint.StatusDestroyBlocked) {
+			allowed["error_code"], allowed["error_summary"] = true, true
+		}
+	}
+	allowed[identifierField] = true
+	for key := range summary {
+		if !allowed[key] {
+			t.Fatalf("entry summary contained disallowed field %q: %s", key, encoded)
+		}
+	}
+	var gotOwner, gotStatus, gotID string
+	var gotRevision int64
+	var updatedAt time.Time
+	if err := json.Unmarshal(summary["owner_id"], &gotOwner); err != nil ||
+		json.Unmarshal(summary["status"], &gotStatus) != nil ||
+		json.Unmarshal(summary[identifierField], &gotID) != nil ||
+		json.Unmarshal(summary["revision"], &gotRevision) != nil ||
+		json.Unmarshal(summary["updated_at"], &updatedAt) != nil || updatedAt.IsZero() {
+		t.Fatalf("invalid entry summary %s", encoded)
+	}
+	if gotOwner != ownerID || gotStatus != expected.status || gotID != expected.aggregateID || gotRevision != expected.revision {
+		t.Fatalf("entry summary owner=%q status=%q id=%q revision=%d, want owner=%q status=%q id=%q revision=%d", gotOwner, gotStatus, gotID, gotRevision, ownerID, expected.status, expected.aggregateID, expected.revision)
+	}
+	if expected.aggregateType == "entrypoint_operation" {
+		var planID string
+		if err := json.Unmarshal(summary["entry_plan_id"], &planID); err != nil || planID == "" {
+			t.Fatalf("operation summary omitted entry plan ID: %s", encoded)
+		}
+	}
+	if expected.status == string(entrypoint.StatusDestroyBlocked) {
+		var code, fixedSummary string
+		if err := json.Unmarshal(summary["error_code"], &code); err != nil ||
+			json.Unmarshal(summary["error_summary"], &fixedSummary) != nil || code != string(entrypoint.ErrorCodeDestroyBlocked) || fixedSummary != "destruction blocked" {
+			t.Fatalf("destroy blocked event summary=%s", encoded)
+		}
+	}
+}
+
+func assertEntryOutboxPayload(t *testing.T, encoded []byte, sequence int64, expected struct {
+	eventType     string
+	aggregateType string
+	aggregateID   string
+	status        string
+	revision      int64
+}, summary []byte) {
+	t.Helper()
+	var payload struct {
+		Seq           int64           `json:"seq"`
+		EventType     string          `json:"event_type"`
+		AggregateType string          `json:"aggregate_type"`
+		AggregateID   string          `json:"aggregate_id"`
+		Revision      int64           `json:"revision"`
+		Summary       json.RawMessage `json:"summary"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil || payload.Seq != sequence || payload.EventType != expected.eventType ||
+		payload.AggregateType != expected.aggregateType || payload.AggregateID != expected.aggregateID || payload.Revision != expected.revision ||
+		!bytes.Equal(payload.Summary, summary) {
+		t.Fatalf("invalid entry outbox payload=%s", encoded)
 	}
 }
 

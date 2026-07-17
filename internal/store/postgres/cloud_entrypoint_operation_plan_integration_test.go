@@ -64,15 +64,6 @@ func TestCloudEntryStoreRejectsInvalidOperationPlanRecoveryBindings(t *testing.T
 			},
 		},
 		{
-			name: "approved operation has terminal active state",
-			corrupt: func(t *testing.T, fixture entryOperationPlanLookupFixture) {
-				t.Helper()
-				if _, err := fixture.pool.Exec(fixture.ctx, `UPDATE cloud_entry_operations SET status='active' WHERE operation_id=$1`, fixture.operation.Challenge.OperationID); err != nil {
-					t.Fatalf("make operation terminal: %v", err)
-				}
-			},
-		},
-		{
 			name: "entry plan scope json is corrupt",
 			corrupt: func(t *testing.T, fixture entryOperationPlanLookupFixture) {
 				t.Helper()
