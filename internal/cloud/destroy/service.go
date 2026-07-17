@@ -210,6 +210,9 @@ func (service *Service) snapshot(ctx context.Context, ownerID, deploymentID stri
 			ReadBack:        ReadBackScopeV1{Observed: true, Exists: item.ReadBack.Exists, ProviderID: item.ReadBack.ProviderID, ObservedAt: item.ReadBack.ObservedAt, TagDigest: item.ReadBack.TagDigest},
 			DestroyDeadline: item.DestroyDeadline, AutoDestroyApproved: item.AutoDestroyApproved})
 	}
+	if err := validateScopeResourceGraph(scope.Resources); err != nil {
+		return ScopeV1{}, err
+	}
 	return NormalizeScope(scope), nil
 }
 
@@ -258,10 +261,6 @@ func deploymentRevision(workerRevision int64, resources []resource.ResourceV1) i
 		value += item.Revision
 	}
 	return value
-}
-
-func supportedResourceType(value resource.Type) bool {
-	return value == resource.TypeEC2 || value == resource.TypeEBS || value == resource.TypeENI || value == resource.TypeSG
 }
 
 func validUUID(value string) bool {

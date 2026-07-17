@@ -768,6 +768,88 @@ func TestEndpointAndSnapshotDestroyBeforeTheirDependencies(t *testing.T) {
 	}
 }
 
+func TestPublicEntrypointDestroyUsesClosedDependencyGraphAndRejectsManaged(t *testing.T) {
+	t.Run("destroys entry resources before exact dependencies", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		worker, err := fixture.service.Provision(context.Background(), fixture.spec(TypeEC2, "exclusive-worker"), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		workerSecurityGroup, err := fixture.service.Provision(context.Background(), fixture.spec(TypeSG, "worker-security-group"), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		albSecurityGroup, err := fixture.service.Provision(context.Background(), fixture.spec(TypeSG, "entry-security-group"), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		loadBalancer, err := fixture.service.Provision(context.Background(), fixture.spec(TypeALB, "public-entry", albSecurityGroup.ResourceID), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetGroup, err := fixture.service.Provision(context.Background(), fixture.spec(TypeTargetGroup, "worker-target", worker.ResourceID), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		listener, err := fixture.service.Provision(context.Background(), fixture.spec(TypeListener, "https-listener", loadBalancer.ResourceID, targetGroup.ResourceID), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		bridge, err := fixture.service.Provision(context.Background(), fixture.spec(TypeSecurityGroupRule, "worker-ingress-bridge", albSecurityGroup.ResourceID, workerSecurityGroup.ResourceID), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := fixture.service.Destroy(context.Background(), DestroyRequest{DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, ApprovalID: uuid.NewString()})
+		if err != nil || result.Blocked {
+			t.Fatalf("Destroy() result=%+v error=%v", result, err)
+		}
+		position := make(map[string]int, len(fixture.provider.deleteOrder))
+		for index, providerID := range fixture.provider.deleteOrder {
+			position[providerID] = index
+		}
+		for _, pair := range [][2]string{
+			{listener.ProviderID, loadBalancer.ProviderID}, {listener.ProviderID, targetGroup.ProviderID},
+			{targetGroup.ProviderID, worker.ProviderID}, {loadBalancer.ProviderID, albSecurityGroup.ProviderID},
+			{bridge.ProviderID, albSecurityGroup.ProviderID}, {bridge.ProviderID, workerSecurityGroup.ProviderID},
+		} {
+			if position[pair[0]] >= position[pair[1]] {
+				t.Fatalf("entry destroy order=%v: %s must precede %s", fixture.provider.deleteOrder, pair[0], pair[1])
+			}
+		}
+		for _, item := range result.Resources {
+			if item.State != StateVerifiedDestroyed || item.ReadBack.Exists {
+				t.Fatalf("entry resource not independently verified destroyed: %+v", item)
+			}
+		}
+	})
+
+	t.Run("managed entry remains fail closed", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		entry, err := fixture.service.Provision(context.Background(), fixture.spec(TypeALB, "managed-public-entry"), fixture.createAuthorization())
+		if err != nil {
+			t.Fatal(err)
+		}
+		contract := ManagedContractV1{
+			DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, AcceptanceApprovalID: uuid.NewString(),
+			Currency: "USD", CostAlertAmountMinor: 5_000, MonitorRef: "monitor://service/health",
+			MaintenanceRef: "runbook://service/maintenance", RestartRef: "runbook://service/restart",
+			BackupRef: "runbook://service/backup", RestoreRef: "runbook://service/restore",
+			UpgradeRef: "runbook://service/upgrade", RollbackRef: "runbook://service/rollback",
+			DestroyRef: "runbook://service/destroy", AcceptedAt: fixture.now,
+		}
+		if _, _, err := fixture.service.AcceptManaged(context.Background(), contract); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.service.Destroy(context.Background(), DestroyRequest{DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, ApprovalID: uuid.NewString()}); !errors.Is(err, ErrManaged) {
+			t.Fatalf("managed entry destroy error = %v, want ErrManaged", err)
+		}
+		if len(fixture.provider.deleteOrder) != 0 || !fixture.provider.resources[entry.ProviderID].Exists {
+			t.Fatalf("managed entry reached provider delete: order=%v observation=%+v", fixture.provider.deleteOrder, fixture.provider.resources[entry.ProviderID])
+		}
+	})
+}
+
 func TestManagedAcceptanceRequiresCompleteContractAndDisablesReaper(t *testing.T) {
 	fixture := newResourceFixture(t)
 	resource, err := fixture.service.Provision(context.Background(), fixture.spec(TypeEC2, "service"), fixture.createAuthorization())

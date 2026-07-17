@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -191,7 +192,7 @@ func (challenge ChallengeV1) Validate() error {
 		!strings.HasPrefix(challenge.ScopeDigest, "sha256:") {
 		return ErrInvalid
 	}
-	return nil
+	return validateScopeResourceGraph(challenge.Scope.Resources)
 }
 
 func NormalizeScope(scope ScopeV1) ScopeV1 {
@@ -206,7 +207,101 @@ func NormalizeScope(scope ScopeV1) ScopeV1 {
 	return scope
 }
 
-func ScopeDigest(scope ScopeV1) (string, error) { return canonical.Digest(NormalizeScope(scope)) }
+func ScopeDigest(scope ScopeV1) (string, error) {
+	if err := validateScopeResourceGraph(scope.Resources); err != nil {
+		return "", err
+	}
+	return canonical.Digest(NormalizeScope(scope))
+}
+
+// validateScopeResourceGraph closes the signed manual-destroy graph before it
+// reaches the typed resource lifecycle. It intentionally validates graph
+// identity only: the resource service remains the single source of truth for
+// dependency readiness, provider deletion, and read-back evidence.
+func validateScopeResourceGraph(resources []ResourceScopeV1) error {
+	if len(resources) == 0 {
+		return ErrInvalid
+	}
+	byID := make(map[string]ResourceScopeV1, len(resources))
+	for _, item := range resources {
+		parsed, err := uuid.Parse(strings.TrimSpace(item.ResourceID))
+		if err != nil || parsed == uuid.Nil || !supportedResourceType(item.Type) {
+			return ErrInvalid
+		}
+		if item.Retention == task.RetentionManaged || item.State == resource.StateRetainedManaged {
+			return ErrManaged
+		}
+		if item.Retention != task.RetentionEphemeralAutoDestroy {
+			return ErrInvalid
+		}
+		resourceID := parsed.String()
+		if _, duplicate := byID[resourceID]; duplicate {
+			return ErrInvalid
+		}
+		byID[resourceID] = item
+	}
+	for resourceID, item := range byID {
+		seen := make(map[string]struct{}, len(item.DependsOn))
+		for _, dependency := range item.DependsOn {
+			parsed, err := uuid.Parse(strings.TrimSpace(dependency))
+			if err != nil || parsed == uuid.Nil || parsed.String() == resourceID {
+				return ErrInvalid
+			}
+			dependencyID := parsed.String()
+			if _, duplicate := seen[dependencyID]; duplicate {
+				return ErrInvalid
+			}
+			if _, exists := byID[dependencyID]; !exists {
+				return ErrInvalid
+			}
+			seen[dependencyID] = struct{}{}
+		}
+	}
+
+	state := make(map[string]uint8, len(byID))
+	var visit func(string) error
+	visit = func(resourceID string) error {
+		switch state[resourceID] {
+		case 1:
+			return ErrInvalid
+		case 2:
+			return nil
+		}
+		state[resourceID] = 1
+		for _, dependency := range byID[resourceID].DependsOn {
+			parsed, err := uuid.Parse(strings.TrimSpace(dependency))
+			if err != nil {
+				return ErrInvalid
+			}
+			if err := visit(parsed.String()); err != nil {
+				return err
+			}
+		}
+		state[resourceID] = 2
+		return nil
+	}
+	resourceIDs := make([]string, 0, len(byID))
+	for resourceID := range byID {
+		resourceIDs = append(resourceIDs, resourceID)
+	}
+	sort.Strings(resourceIDs)
+	for _, resourceID := range resourceIDs {
+		if err := visit(resourceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func supportedResourceType(value resource.Type) bool {
+	switch value {
+	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeSG,
+		resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener, resource.TypeSecurityGroupRule:
+		return true
+	default:
+		return false
+	}
+}
 
 func (signature SignatureV1) Validate() error {
 	for _, value := range []string{signature.ApprovalID, signature.ChallengeID} {

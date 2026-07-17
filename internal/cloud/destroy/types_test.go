@@ -52,6 +52,109 @@ func TestSigningPayloadMatchesDartGolden(t *testing.T) {
 	}
 }
 
+func TestManualDestroyScopeAllowsOnlyClosedEntrypointGraph(t *testing.T) {
+	scope := entryDestroyScope()
+	digest, err := ScopeDigest(scope)
+	if err != nil {
+		t.Fatalf("entry resource graph rejected: %v", err)
+	}
+	challenge := ChallengeV1{
+		OperationID: "99999999-9999-4999-8999-999999999999",
+		ChallengeID: "88888888-8888-4888-8888-888888888888",
+		ApprovalID:  "77777777-7777-4777-8777-777777777777",
+		SignerKeyID: "cloud-device-0123456789abcdef01234567",
+		Scope:       scope,
+		ScopeDigest: digest,
+		IssuedAt:    time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC),
+		ExpiresAt:   time.Date(2026, 7, 17, 9, 5, 0, 0, time.UTC),
+		Revision:    1,
+	}
+	if _, err := challenge.SigningPayload(); err != nil {
+		t.Fatalf("entrypoint challenge rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ScopeV1)
+		want   error
+	}{
+		{
+			name: "unknown resource type",
+			mutate: func(value *ScopeV1) {
+				value.Resources[0].Type = resource.Type("unapproved_entry_resource")
+			},
+			want: ErrInvalid,
+		},
+		{
+			name: "known but unsupported resource type",
+			mutate: func(value *ScopeV1) {
+				value.Resources[0].Type = resource.TypeEndpoint
+			},
+			want: ErrInvalid,
+		},
+		{
+			name: "managed entry resource",
+			mutate: func(value *ScopeV1) {
+				value.Resources[0].Retention = task.RetentionManaged
+			},
+			want: ErrManaged,
+		},
+		{
+			name: "unknown dependency",
+			mutate: func(value *ScopeV1) {
+				value.Resources[3].DependsOn = []string{"ffffffff-ffff-4fff-8fff-ffffffffffff"}
+			},
+			want: ErrInvalid,
+		},
+		{
+			name: "cyclic dependency",
+			mutate: func(value *ScopeV1) {
+				value.Resources[4].DependsOn = []string{value.Resources[5].ResourceID}
+			},
+			want: ErrInvalid,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := cloneDestroyScope(scope)
+			test.mutate(&value)
+			if _, err := ScopeDigest(value); err != test.want {
+				t.Fatalf("ScopeDigest() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func entryDestroyScope() ScopeV1 {
+	scope := destroyGoldenScope()
+	template := scope.Resources[0]
+	newResource := func(resourceID string, kind resource.Type, providerID string, dependsOn ...string) ResourceScopeV1 {
+		value := template
+		value.ResourceID, value.Type, value.ProviderID = resourceID, kind, providerID
+		value.DependsOn = slices.Clone(dependsOn)
+		value.ReadBack.ProviderID = providerID
+		return value
+	}
+	worker := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", resource.TypeEC2, "i-0123456789abcdef0")
+	workerSecurityGroup := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", resource.TypeSG, "sg-0123456789abcdef0")
+	albSecurityGroup := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3", resource.TypeSG, "sg-0fedcba9876543210")
+	alb := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4", resource.TypeALB, "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/dtx/0123456789abcdef", albSecurityGroup.ResourceID)
+	targetGroup := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5", resource.TypeTargetGroup, "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/dtx/0123456789abcdef", worker.ResourceID)
+	listener := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6", resource.TypeListener, "arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/dtx/0123456789abcdef/0123456789abcdef", alb.ResourceID, targetGroup.ResourceID)
+	bridge := newResource("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7", resource.TypeSecurityGroupRule, "sgr-0123456789abcdef0", albSecurityGroup.ResourceID, workerSecurityGroup.ResourceID)
+	scope.Resources = []ResourceScopeV1{worker, workerSecurityGroup, albSecurityGroup, alb, targetGroup, listener, bridge}
+	return NormalizeScope(scope)
+}
+
+func cloneDestroyScope(scope ScopeV1) ScopeV1 {
+	clone := scope
+	clone.Resources = slices.Clone(scope.Resources)
+	for index := range clone.Resources {
+		clone.Resources[index].DependsOn = slices.Clone(scope.Resources[index].DependsOn)
+	}
+	return clone
+}
+
 func destroyGoldenScope() ScopeV1 {
 	resourceIDs := []string{
 		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
