@@ -921,6 +921,65 @@ func TestScopedReferencesCancellationAndWorkerTrust(t *testing.T) {
 	}
 }
 
+func TestAuthorizeMilestoneRequiresRegisteredExactCurrentLeaseStream(t *testing.T) {
+	fixture := newWorkerFixture(t)
+	defer fixture.enrollment.Destroy()
+	defer fixture.session.Destroy()
+	session := fixture.session.Reveal()
+	defer zero(session)
+
+	assignment, err := fixture.service.Claim(context.Background(), AuthenticatedRequest{
+		DeploymentID: fixture.deploymentID, WorkerID: fixture.workerID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: fixture.assignment.Revision, Credential: session,
+	}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := LeasedRequest{AuthenticatedRequest: AuthenticatedRequest{
+		DeploymentID: fixture.deploymentID, WorkerID: fixture.workerID, IdempotencyKey: uuid.NewString(),
+		ExpectedRevision: assignment.Revision, Credential: session,
+	}, LeaseEpoch: assignment.LeaseEpoch}
+	milestone := MilestoneRequest{SessionRequest: SessionRequest{
+		DeploymentID: fixture.deploymentID, WorkerID: fixture.workerID, Credential: session,
+	}, LeaseEpoch: assignment.LeaseEpoch}
+	if _, err := fixture.service.AuthorizeMilestone(context.Background(), milestone); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unregistered milestone stream error = %v, want ErrInvalid", err)
+	}
+
+	logReference := fmt.Sprintf("cloudwatch://agent-workers/d1/milestones-a%d-e%d", assignment.Attempt, assignment.LeaseEpoch)
+	registered, err := fixture.service.RecordLog(context.Background(), request, logReference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := fixture.service.AuthorizeMilestone(context.Background(), milestone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.DeploymentID != fixture.deploymentID || target.WorkerID != fixture.workerID || target.OwnerID != "project-owner" ||
+		target.LogReference != logReference || target.LogPrefix != "cloudwatch://agent-workers/d1" ||
+		target.Attempt != assignment.Attempt || target.LeaseEpoch != assignment.LeaseEpoch {
+		t.Fatalf("authorized milestone target = %+v", target)
+	}
+
+	milestone.LeaseEpoch++
+	if _, err := fixture.service.AuthorizeMilestone(context.Background(), milestone); !errors.Is(err, ErrStaleLease) {
+		t.Fatalf("stale milestone lease error = %v, want ErrStaleLease", err)
+	}
+	milestone.LeaseEpoch = assignment.LeaseEpoch
+	milestone.Credential = []byte("wrong-session")
+	if _, err := fixture.service.AuthorizeMilestone(context.Background(), milestone); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("foreign milestone session error = %v, want ErrInvalidCredential", err)
+	}
+	milestone.Credential = session
+	*fixture.now = fixture.now.Add(2 * time.Minute)
+	if _, err := fixture.service.AuthorizeMilestone(context.Background(), milestone); !errors.Is(err, ErrLeaseExpired) {
+		t.Fatalf("expired milestone lease error = %v, want ErrLeaseExpired", err)
+	}
+	if registered.Revision <= assignment.Revision {
+		t.Fatalf("log registration did not advance durable revision: %+v", registered)
+	}
+}
+
 func TestAccessScopeRejectsWildcardsAndRawSecretMaterial(t *testing.T) {
 	valid := AccessScope{ArtifactPrefix: "s3://b/d/a/", CheckpointPrefix: "s3://b/d/c/", EvidencePrefix: "s3://b/d/e/", LogPrefix: "cloudwatch://g/d"}
 	invalid := []AccessScope{

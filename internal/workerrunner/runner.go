@@ -35,6 +35,7 @@ type ControlClient interface {
 	Claim(context.Context, []byte, *agentv1.WorkerControlServiceClaimRequest) (*agentv1.WorkerControlServiceClaimResponse, error)
 	Heartbeat(context.Context, []byte, *agentv1.HeartbeatRequest) (*agentv1.HeartbeatResponse, error)
 	RecordEvidence(context.Context, []byte, *agentv1.WorkerControlServiceRecordEvidenceRequest) (*agentv1.WorkerControlServiceRecordEvidenceResponse, error)
+	EmitMilestone(context.Context, []byte, *agentv1.WorkerControlServiceEmitMilestoneRequest) (*agentv1.WorkerControlServiceEmitMilestoneResponse, error)
 	Complete(context.Context, []byte, *agentv1.WorkerControlServiceCompleteRequest) (*agentv1.WorkerControlServiceCompleteResponse, error)
 }
 
@@ -135,6 +136,18 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 	if err := lease.initializeInstallerGrants(assignment); err != nil {
 		return Result{}, err
 	}
+	if runner.Logs != nil {
+		if sessionSink, ok := runner.Logs.(sessionBoundLogSink); ok {
+			if err := sessionSink.BindSession(sessionToken); err != nil {
+				return Result{}, errors.New("initialize Worker milestone relay")
+			}
+			defer sessionSink.Close()
+		}
+		logRef, err := scopedLogRef(assignment.GetAccess(), assignment.GetAttempt(), assignment.GetLeaseEpoch())
+		if err != nil || lease.recordLog(executionContext, logRef) != nil {
+			return Result{}, errors.New("record Worker milestone log scope")
+		}
+	}
 	heartbeatContext, stopHeartbeat := context.WithCancel(executionContext)
 	heartbeatDone := make(chan error, 1)
 	go func() {
@@ -149,12 +162,6 @@ func (runner Runner) Run(ctx context.Context, config Config) (Result, error) {
 			stopHeartbeat()
 			<-heartbeatDone
 			return Result{}, err
-		}
-		logRef, err := scopedLogRef(assignment.GetAccess(), assignment.GetAttempt(), assignment.GetLeaseEpoch())
-		if err != nil || lease.recordLog(executionContext, logRef) != nil {
-			stopHeartbeat()
-			<-heartbeatDone
-			return Result{}, errors.New("record Worker milestone log scope")
 		}
 	}
 
@@ -359,7 +366,10 @@ func (runner Runner) emitLog(ctx context.Context, assignment *agentv1.WorkerAssi
 		Outcome:       outcome,
 		OccurredAt:    time.Now().UTC(),
 	}
-	if err := runner.Logs.Emit(ctx, event); err != nil {
+	_, err := retryCall(ctx, runner.retryDelay(), func() (struct{}, error) {
+		return struct{}{}, runner.Logs.Emit(ctx, event)
+	})
+	if err != nil {
 		return errors.New("write Worker milestone log")
 	}
 	return nil

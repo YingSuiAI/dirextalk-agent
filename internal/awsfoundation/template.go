@@ -89,6 +89,9 @@ func ValidateTemplate(raw []byte) error {
 				return fmt.Errorf("%w: %s role policy", err, logicalID)
 			}
 		case "AWS::IAM::Policy":
+			if logicalID != "ControlRuntimePolicy" || !inlinePolicyAttachesOnlyControlRole(resource) {
+				return fmt.Errorf("%w: %s inline policy attachment", ErrInvalidTemplate, logicalID)
+			}
 			properties, _ := stringMap(resource["Properties"])
 			if err := validateTemplatePolicy(properties["PolicyDocument"], false); err != nil {
 				return fmt.Errorf("%w: %s identity policy", err, logicalID)
@@ -160,12 +163,15 @@ func destroyableOnlyByStackDelete(resources map[string]any, name string) bool {
 
 func controlPolicyFailsClosed(value any) bool {
 	resource, ok := stringMap(value)
-	if !ok {
+	if !ok || !inlinePolicyAttachesOnlyControlRole(resource) {
 		return false
 	}
 	properties, _ := stringMap(resource["Properties"])
 	document, _ := stringMap(properties["PolicyDocument"])
-	statements, _ := anySlice(document["Statement"])
+	statements, ok := anySlice(document["Statement"])
+	if !ok || len(statements) != len(controlRuntimeStatementSIDs) {
+		return false
+	}
 	var workerAMI struct {
 		observe, terminate, createFromBuilder, createOutputs, tagOutputs bool
 		deregister, deleteSnapshot, artifactAccess                       bool
@@ -174,13 +180,24 @@ func controlPolicyFailsClosed(value any) bool {
 		ownedWorkerImage, launchNetworkInputs, createTaggedCompute       bool
 		useNetworkCreationInputs, useVPCForNetworkCreation               bool
 		ownedSnapshotVolume, tagComputeOnCreate, tagOnlyOwnedCompute     bool
-		deleteSecretPolicy                                               bool
+		deleteSecretPolicy, milestoneRelayLogs                           bool
 	}
+	seen := make(map[string]struct{}, len(statements))
 	for _, item := range statements {
-		statement, _ := stringMap(item)
+		statement, statementOK := stringMap(item)
+		if !statementOK || scalarString(statement["Effect"]) != "Allow" {
+			return false
+		}
 		actions := stringValues(statement["Action"])
 		condition := fmt.Sprint(statement["Condition"])
 		sid := scalarString(statement["Sid"])
+		if _, allowed := controlRuntimeStatementSIDs[sid]; !allowed {
+			return false
+		}
+		if _, duplicate := seen[sid]; duplicate {
+			return false
+		}
+		seen[sid] = struct{}{}
 		resources := templateResourceStrings(statement["Resource"])
 		switch sid {
 		case "CreateTaggedCompute":
@@ -246,8 +263,17 @@ func controlPolicyFailsClosed(value any) bool {
 				"s3:GetObjectTagging", "s3:GetObjectVersionTagging", "s3:PutObjectTagging", "s3:PutObjectVersionTagging",
 			}) && sameStrings(resources, []string{"${ArtifactBucket.Arn}/deployments/*/artifacts/*"}) && statement["Condition"] == nil
 		}
+		if sid == "WorkerMilestoneRelayLogs" {
+			workerAMI.milestoneRelayLogs = sameStrings(actions, []string{
+				"logs:CreateLogStream", "logs:PutLogEvents",
+			}) && sameStrings(resources, []string{"${WorkerLogGroup.Arn}:*"}) && statement["Condition"] == nil
+		}
 		for _, action := range actions {
 			switch {
+			case strings.HasPrefix(action, "logs:"):
+				if sid != "WorkerMilestoneRelayLogs" {
+					return false
+				}
 			case action == "ec2:DescribeInstanceAttribute":
 				workerAMI.observe = true
 			case strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:"):
@@ -380,7 +406,16 @@ func controlPolicyFailsClosed(value any) bool {
 		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
 		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs && workerAMI.createTaggedCompute && workerAMI.useNetworkCreationInputs &&
 		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute &&
-		workerAMI.deleteSecretPolicy
+		workerAMI.deleteSecretPolicy && workerAMI.milestoneRelayLogs
+}
+
+var controlRuntimeStatementSIDs = map[string]struct{}{
+	"ObserveEC2": {}, "CreateTaggedCompute": {}, "UseNetworkCreationInputs": {}, "UseVPCForNetworkCreation": {}, "UseOwnedVolumeForSnapshot": {},
+	"RunTaggedInstanceVolume": {}, "UseOwnedNetworkInterface": {}, "UsePublicBuilderBaseImage": {}, "UseOwnedWorkerImage": {}, "UseLaunchNetworkInputs": {},
+	"TagComputeOnCreate": {}, "CreateImageFromOwnedBuilder": {}, "CreateImageOutput": {}, "TagWorkerImageOutputs": {}, "MutateOnlyOwnedCompute": {},
+	"DestroyOwnedWorkerImage": {}, "TagOnlyOwnedCompute": {}, "PassOnlyWorkerRole": {}, "ReadExactWorkerRoleIdentity": {}, "FoundationArtifacts": {},
+	"BindExactInstallerArtifactVersions": {}, "FoundationEncryption": {}, "CreateTaggedDeploymentSecrets": {}, "MutateOnlyOwnedDeploymentSecrets": {}, "ResourceManifest": {},
+	"WorkerMilestoneRelayLogs": {},
 }
 
 var entrypointTagKeys = []string{
@@ -396,6 +431,19 @@ func managedPolicyAttachesOnlyControlRole(resource map[string]any) bool {
 	}
 	name, ok := stringMap(properties["ManagedPolicyName"])
 	if !ok || scalarString(name["Fn::Sub"]) != "${AWS::StackName}-control-entrypoint" || scalarString(properties["Path"]) != "/" {
+		return false
+	}
+	roles, ok := anySlice(properties["Roles"])
+	if !ok || len(roles) != 1 {
+		return false
+	}
+	role, ok := stringMap(roles[0])
+	return ok && len(role) == 1 && scalarString(role["Ref"]) == "ControlRoleName"
+}
+
+func inlinePolicyAttachesOnlyControlRole(resource map[string]any) bool {
+	properties, ok := stringMap(resource["Properties"])
+	if !ok || properties["Users"] != nil || properties["Groups"] != nil {
 		return false
 	}
 	roles, ok := anySlice(properties["Roles"])
@@ -722,7 +770,7 @@ func requiredParameters(parameters map[string]any) bool {
 
 func validateRoleResource(logicalID string, resource map[string]any) error {
 	properties, ok := stringMap(resource["Properties"])
-	if !ok {
+	if !ok || properties["ManagedPolicyArns"] != nil || properties["PermissionsBoundary"] != nil {
 		return ErrInvalidTemplate
 	}
 	if err := validateTemplatePolicy(properties["AssumeRolePolicyDocument"], false); err != nil {
@@ -732,7 +780,6 @@ func validateRoleResource(logicalID string, resource map[string]any) error {
 	if len(policies) == 0 {
 		return ErrInvalidTemplate
 	}
-	workerLogs := false
 	workerArtifacts := false
 	for _, item := range policies {
 		policy, ok := stringMap(item)
@@ -742,18 +789,17 @@ func validateRoleResource(logicalID string, resource map[string]any) error {
 		if logicalID == "WorkerRole" {
 			actions := templatePolicyActions(policy["PolicyDocument"])
 			for _, action := range actions {
-				if strings.HasPrefix(action, "iam:") || strings.HasPrefix(action, "ec2:") || strings.HasPrefix(action, "cloudformation:") || strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:") {
+				if strings.HasPrefix(action, "iam:") || strings.HasPrefix(action, "ec2:") || strings.HasPrefix(action, "cloudformation:") || strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:") || strings.HasPrefix(action, "logs:") {
 					return ErrInvalidTemplate
 				}
 				if action == "s3:GetObjectTagging" || action == "s3:GetObjectVersionTagging" || action == "s3:PutObjectTagging" || action == "s3:PutObjectVersionTagging" {
 					return ErrInvalidTemplate
 				}
 			}
-			workerLogs = workerLogs || hasExactWorkerLogStatement(policy["PolicyDocument"])
 			workerArtifacts = workerArtifacts || hasExactWorkerInstallerArtifactStatements(policy["PolicyDocument"])
 		}
 	}
-	if logicalID == "WorkerRole" && (!workerLogs || !workerArtifacts) {
+	if logicalID == "WorkerRole" && !workerArtifacts {
 		return ErrInvalidTemplate
 	}
 	return nil
@@ -817,25 +863,6 @@ func conditionSubEquals(statement map[string]any, operator, key, expected string
 	}
 	intrinsic, ok := stringMap(values[key])
 	return ok && scalarString(intrinsic["Fn::Sub"]) == expected
-}
-
-func hasExactWorkerLogStatement(value any) bool {
-	policy, ok := stringMap(value)
-	if !ok {
-		return false
-	}
-	statements, _ := anySlice(policy["Statement"])
-	for _, raw := range statements {
-		statement, ok := stringMap(raw)
-		if !ok || !sameStringSet(stringValues(statement["Action"]), []string{"logs:CreateLogStream", "logs:PutLogEvents"}) {
-			continue
-		}
-		resource, ok := stringMap(statement["Resource"])
-		if ok && scalarString(resource["Fn::Sub"]) == "${WorkerLogGroup.Arn}:log-stream:*" {
-			return true
-		}
-	}
-	return false
 }
 
 func sameStringSet(left, right []string) bool {

@@ -45,6 +45,7 @@ type serverOptions struct {
 	workerService           *worker.Service
 	workerVerifier          rpcapi.WorkerIdentityVerifier
 	workerMaterializer      rpcapi.WorkerIdentityMaterializer
+	workerMilestones        rpcapi.WorkerMilestoneWriter
 	rootHelperApprovals     rpcapi.RootHelperKeyApprovalCoordinator
 	rootHelperDeliveries    *helperkey.Service
 	workerOperations        *workeroperation.Service
@@ -126,6 +127,10 @@ func WithWorkerIdentity(verifier rpcapi.WorkerIdentityVerifier, materializer rpc
 		options.workerVerifier = verifier
 		options.workerMaterializer = materializer
 	}
+}
+
+func WithWorkerMilestoneWriter(writer rpcapi.WorkerMilestoneWriter) ServerOption {
+	return func(options *serverOptions) { options.workerMilestones = writer }
 }
 
 func WithRootHelperControl(approvals rpcapi.RootHelperKeyApprovalCoordinator, deliveries *helperkey.Service,
@@ -274,7 +279,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	}
 	agentv1.RegisterCloudControlServiceServer(grpcServer, cloudControl)
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
-	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer))
+	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer, options.workerMilestones))
 	if rootHelperEnabled {
 		agentv1.RegisterWorkerServiceOperationServiceServer(grpcServer, rpcapi.NewWorkerServiceOperationService(
 			options.workerService, options.workerOperations, options.rootHelperCapabilities))
@@ -300,6 +305,7 @@ func isWorkerSelfAuthenticatedMethod(fullMethod string) bool {
 		agentv1.WorkerControlService_Claim_FullMethodName,
 		agentv1.WorkerControlService_Heartbeat_FullMethodName,
 		agentv1.WorkerControlService_RecordEvidence_FullMethodName,
+		agentv1.WorkerControlService_EmitMilestone_FullMethodName,
 		agentv1.WorkerControlService_Complete_FullMethodName,
 		agentv1.WorkerServiceOperationService_Get_FullMethodName,
 		agentv1.WorkerServiceOperationService_Claim_FullMethodName,

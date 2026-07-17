@@ -269,6 +269,7 @@ func serve() error {
 			app.WithCloudPairing(cloudComposition.Pairing, cloudComposition.PairingApprovals),
 			app.WithCloudHealth(cloudComposition.HealthProbeReader),
 			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),
+			app.WithWorkerMilestoneWriter(cloudComposition.WorkerMilestones),
 			app.WithRootHelperControl(cloudComposition.RootHelperApprovals, cloudComposition.RootHelperDeliveries,
 				cloudComposition.WorkerOperations, cloudComposition.RootHelperCapabilities),
 			app.WithPairingWorkerControl(cloudComposition.PairingWorkerOperations, cloudComposition.RootHelperCapabilities,

@@ -50,6 +50,7 @@ type CloudComposition struct {
 	Lifecycle                  *cloudexecution.EphemeralDestroyController
 	WorkerIdentityVerifier     *workeridentity.Verifier
 	WorkerIdentityMaterializer *workerIdentityMaterializer
+	WorkerMilestones           *workerMilestoneWriter
 	FoundationConnections      *cloudapp.AWSConnectionService
 	ActiveQuotes               *cloudapp.AWSActiveQuoteEngine
 	ActivePlacements           *cloudapp.AWSActivePlacementResolver
@@ -329,6 +330,11 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		return nil, err
 	}
 	identityMaterializer, err := newWorkerIdentityMaterializer(store, store, workerStore, principalBinder)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	milestoneWriter, err := newWorkerMilestoneWriter(store, store, activePlacements, runtimeFactory, sdkWorkerMilestoneSinkFactory{}, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -658,7 +664,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	retainRootHelperDeriver = true
 	return &CloudComposition{
 		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, FoundationLifecycle: foundationLifecycle, ManagedAcceptance: managedAcceptance, Dispatcher: dispatcher, Lifecycle: lifecycle,
-		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer,
+		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer, WorkerMilestones: milestoneWriter,
 		FoundationConnections: connections, ActiveQuotes: activeQuotes, ActivePlacements: activePlacements, ProviderPlans: providerPlans,
 		ManifestRecovery:           manifestRecovery,
 		HealthProbes:               healthProbes,

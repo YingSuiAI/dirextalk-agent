@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -39,6 +40,7 @@ type workerControlBackend interface {
 	RecordArtifactObject(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
 	RecordEvidenceObject(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
 	RecordLog(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
+	AuthorizeMilestone(context.Context, worker.MilestoneRequest) (worker.MilestoneTarget, error)
 	Complete(context.Context, worker.CompleteRequest) (worker.Deployment, error)
 }
 
@@ -60,6 +62,12 @@ type WorkerIdentityVerifier interface {
 // reconcilable S3 objects and must never broaden Worker bucket permissions.
 type WorkerIdentityMaterializer interface {
 	MaterializeWorkerIdentity(context.Context, worker.IdentityChallenge, workeridentity.VerifiedIdentity) (worker.IdentityMaterialization, error)
+}
+
+// WorkerMilestoneWriter is the Agent-controlled CloudWatch boundary. Its
+// target comes from the durable Worker service, not from the Worker RPC.
+type WorkerMilestoneWriter interface {
+	EmitMilestone(context.Context, worker.MilestoneTarget, workerlog.EventV1) error
 }
 
 type domainWorkerBackend struct{ service *worker.Service }
@@ -122,6 +130,10 @@ func (backend domainWorkerBackend) RecordLog(ctx context.Context, request worker
 	return backend.service.RecordLog(ctx, request, ref)
 }
 
+func (backend domainWorkerBackend) AuthorizeMilestone(ctx context.Context, request worker.MilestoneRequest) (worker.MilestoneTarget, error) {
+	return backend.service.AuthorizeMilestone(ctx, request)
+}
+
 func (backend domainWorkerBackend) Complete(ctx context.Context, request worker.CompleteRequest) (worker.Deployment, error) {
 	return backend.service.Complete(ctx, request)
 }
@@ -132,25 +144,34 @@ type workerControlHandler struct {
 	identities   workerIdentityBackend
 	verifier     WorkerIdentityVerifier
 	materializer WorkerIdentityMaterializer
+	milestones   WorkerMilestoneWriter
 }
 
 // NewWorkerControlService constructs the self-authenticating Worker endpoint.
 // Its methods deliberately bypass Service Key authentication; each method
 // consumes its own one-time enrollment or scoped session credential.
-func NewWorkerControlService(service *worker.Service, verifier WorkerIdentityVerifier, materializer WorkerIdentityMaterializer) agentv1.WorkerControlServiceServer {
+func NewWorkerControlService(service *worker.Service, verifier WorkerIdentityVerifier, materializer WorkerIdentityMaterializer, milestones WorkerMilestoneWriter) agentv1.WorkerControlServiceServer {
 	if service == nil {
 		return newWorkerControlHandler(nil)
 	}
 	backend := domainWorkerBackend{service: service}
-	return newWorkerControlHandlerWithIdentity(backend, backend, verifier, materializer)
+	return newWorkerControlHandlerWithIdentityAndMilestones(backend, backend, verifier, materializer, milestones)
 }
 
 func newWorkerControlHandler(backend workerControlBackend) *workerControlHandler {
 	return &workerControlHandler{backend: backend}
 }
 
+func newWorkerControlHandlerWithMilestones(backend workerControlBackend, milestones WorkerMilestoneWriter) *workerControlHandler {
+	return &workerControlHandler{backend: backend, milestones: milestones}
+}
+
 func newWorkerControlHandlerWithIdentity(backend workerControlBackend, identities workerIdentityBackend, verifier WorkerIdentityVerifier, materializer WorkerIdentityMaterializer) *workerControlHandler {
 	return &workerControlHandler{backend: backend, identities: identities, verifier: verifier, materializer: materializer}
+}
+
+func newWorkerControlHandlerWithIdentityAndMilestones(backend workerControlBackend, identities workerIdentityBackend, verifier WorkerIdentityVerifier, materializer WorkerIdentityMaterializer, milestones WorkerMilestoneWriter) *workerControlHandler {
+	return &workerControlHandler{backend: backend, identities: identities, verifier: verifier, materializer: materializer, milestones: milestones}
 }
 
 func (service *workerControlHandler) CreateIdentityChallenge(ctx context.Context, request *agentv1.CreateIdentityChallengeRequest) (*agentv1.CreateIdentityChallengeResponse, error) {
@@ -389,6 +410,32 @@ func (service *workerControlHandler) RecordEvidence(ctx context.Context, request
 	return &agentv1.WorkerControlServiceRecordEvidenceResponse{Revision: deployment.Revision}, nil
 }
 
+func (service *workerControlHandler) EmitMilestone(ctx context.Context, request *agentv1.WorkerControlServiceEmitMilestoneRequest) (*agentv1.WorkerControlServiceEmitMilestoneResponse, error) {
+	cleanCtx, credential, err := workerCredentialFromContext(ctx, workerSessionAuthorizationScheme, workerSessionTokenPrefix)
+	if err != nil {
+		return nil, err
+	}
+	defer wipeWorkerBytes(credential)
+	if service.backend == nil || service.milestones == nil {
+		return nil, status.Error(codes.Unavailable, "Worker milestone relay is unavailable")
+	}
+	target, err := service.backend.AuthorizeMilestone(cleanCtx, worker.MilestoneRequest{
+		SessionRequest: worker.SessionRequest{DeploymentID: request.GetDeploymentId(), WorkerID: request.GetWorkerId(), Credential: credential},
+		LeaseEpoch:     request.GetLeaseEpoch(),
+	})
+	if err != nil {
+		return nil, workerPublicError(err)
+	}
+	event, err := workerMilestoneEventFromProto(request, target, time.Now().UTC())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "Worker milestone is invalid")
+	}
+	if err := service.milestones.EmitMilestone(cleanCtx, target, event); err != nil {
+		return nil, status.Error(codes.Unavailable, "Worker milestone relay is unavailable")
+	}
+	return &agentv1.WorkerControlServiceEmitMilestoneResponse{}, nil
+}
+
 func (service *workerControlHandler) Complete(ctx context.Context, request *agentv1.WorkerControlServiceCompleteRequest) (*agentv1.WorkerControlServiceCompleteResponse, error) {
 	cleanCtx, credential, err := workerCredentialFromContext(ctx, workerSessionAuthorizationScheme, workerSessionTokenPrefix)
 	if err != nil {
@@ -496,6 +543,62 @@ func workerLeasedRequest(deploymentID, workerID, idempotencyKey string, expected
 			ExpectedRevision: expectedRevision, Credential: credential,
 		},
 		LeaseEpoch: leaseEpoch,
+	}
+}
+
+func workerMilestoneEventFromProto(request *agentv1.WorkerControlServiceEmitMilestoneRequest, target worker.MilestoneTarget, occurredAt time.Time) (workerlog.EventV1, error) {
+	if request == nil || target.DeploymentID == "" || target.WorkerID == "" || target.Attempt < 1 || target.LeaseEpoch < 1 || occurredAt.IsZero() {
+		return workerlog.EventV1{}, errors.New("invalid Worker milestone")
+	}
+	kind, ok := workerMilestoneKindFromProto(request.GetKind())
+	if !ok {
+		return workerlog.EventV1{}, errors.New("invalid Worker milestone kind")
+	}
+	outcome, ok := workerMilestoneOutcomeFromProto(request.GetOutcome())
+	if !ok {
+		return workerlog.EventV1{}, errors.New("invalid Worker milestone outcome")
+	}
+	return workerlog.ValidateEvent(workerlog.EventV1{
+		SchemaVersion: workerlog.SchemaV1, EventID: request.GetEventId(),
+		DeploymentID: target.DeploymentID, WorkerID: target.WorkerID,
+		Attempt: target.Attempt, LeaseEpoch: target.LeaseEpoch,
+		Kind: kind, ActionID: request.GetActionId(), Outcome: outcome, OccurredAt: occurredAt.UTC(),
+	})
+}
+
+func workerMilestoneKindFromProto(value agentv1.WorkerMilestoneKind) (workerlog.Kind, bool) {
+	switch value {
+	case agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_STARTED:
+		return workerlog.KindExecutionStarted, true
+	case agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_STARTED:
+		return workerlog.KindActionStarted, true
+	case agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_SUCCEEDED:
+		return workerlog.KindActionSucceeded, true
+	case agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_FAILED:
+		return workerlog.KindActionFailed, true
+	case agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_FINISHED:
+		return workerlog.KindExecutionFinished, true
+	default:
+		return "", false
+	}
+}
+
+func workerMilestoneOutcomeFromProto(value agentv1.WorkerOutcome) (workerlog.Outcome, bool) {
+	switch value {
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_UNSPECIFIED:
+		return "", true
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED:
+		return workerlog.OutcomeSucceeded, true
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_FAILED:
+		return workerlog.OutcomeFailed, true
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_CANCELED:
+		return workerlog.OutcomeCanceled, true
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_TIMED_OUT:
+		return workerlog.OutcomeTimedOut, true
+	case agentv1.WorkerOutcome_WORKER_OUTCOME_INTERRUPTED:
+		return workerlog.OutcomeInterrupted, true
+	default:
+		return "", false
 	}
 }
 

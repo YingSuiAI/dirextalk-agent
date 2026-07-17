@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -19,16 +21,17 @@ import (
 )
 
 type workerBackendStub struct {
-	calls          int
-	enroll         func(context.Context, worker.EnrollRequest) (worker.Assignment, []byte, error)
-	current        func(context.Context, worker.SessionRequest) (worker.Assignment, error)
-	claim          func(context.Context, worker.AuthenticatedRequest, time.Duration) (worker.Assignment, error)
-	heartbeat      func(context.Context, worker.LeasedRequest, time.Duration) (worker.Heartbeat, error)
-	checkpoint     func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
-	recordArtifact func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
-	recordEvidence func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
-	recordLog      func(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
-	complete       func(context.Context, worker.CompleteRequest) (worker.Deployment, error)
+	calls              int
+	enroll             func(context.Context, worker.EnrollRequest) (worker.Assignment, []byte, error)
+	current            func(context.Context, worker.SessionRequest) (worker.Assignment, error)
+	claim              func(context.Context, worker.AuthenticatedRequest, time.Duration) (worker.Assignment, error)
+	heartbeat          func(context.Context, worker.LeasedRequest, time.Duration) (worker.Heartbeat, error)
+	checkpoint         func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	recordArtifact     func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	recordEvidence     func(context.Context, worker.LeasedRequest, worker.ObjectClaim) (worker.Deployment, error)
+	recordLog          func(context.Context, worker.LeasedRequest, string) (worker.Deployment, error)
+	authorizeMilestone func(context.Context, worker.MilestoneRequest) (worker.MilestoneTarget, error)
+	complete           func(context.Context, worker.CompleteRequest) (worker.Deployment, error)
 }
 
 func (stub *workerBackendStub) Enroll(ctx context.Context, request worker.EnrollRequest) (worker.Assignment, []byte, error) {
@@ -71,9 +74,27 @@ func (stub *workerBackendStub) RecordLog(ctx context.Context, request worker.Lea
 	return stub.recordLog(ctx, request, ref)
 }
 
+func (stub *workerBackendStub) AuthorizeMilestone(ctx context.Context, request worker.MilestoneRequest) (worker.MilestoneTarget, error) {
+	stub.calls++
+	return stub.authorizeMilestone(ctx, request)
+}
+
 func (stub *workerBackendStub) Complete(ctx context.Context, request worker.CompleteRequest) (worker.Deployment, error) {
 	stub.calls++
 	return stub.complete(ctx, request)
+}
+
+type workerMilestoneWriterStub struct {
+	calls  int
+	target worker.MilestoneTarget
+	event  workerlog.EventV1
+	err    error
+}
+
+func (stub *workerMilestoneWriterStub) EmitMilestone(_ context.Context, target worker.MilestoneTarget, event workerlog.EventV1) error {
+	stub.calls++
+	stub.target, stub.event = target, event
+	return stub.err
 }
 
 func TestWorkerControlRejectsMissingAmbiguousAndWrongCredentials(t *testing.T) {
@@ -184,6 +205,61 @@ func TestWorkerControlEnrollPreservesReplayTokenAndSanitizesDownstreamContext(t 
 		if !allZero(credential) {
 			t.Fatal("enrollment credential buffer was not cleared after backend call")
 		}
+	}
+}
+
+func TestWorkerControlRelaysOnlyAuthorizedTypedMilestones(t *testing.T) {
+	sessionToken := workerTestToken("dtxw-session", 0x71)
+	deploymentID, workerID := uuid.NewString(), uuid.NewString()
+	target := worker.MilestoneTarget{
+		DeploymentID: deploymentID, WorkerID: workerID, OwnerID: "owner-a",
+		LogPrefix:    "cloudwatch://dtx-agent-a/AROAABCDEFGHIJKLMNOP/i-0123456789abcdef0",
+		LogReference: "cloudwatch://dtx-agent-a/AROAABCDEFGHIJKLMNOP/i-0123456789abcdef0/milestones-a2-e9",
+		Attempt:      2, LeaseEpoch: 9,
+	}
+	backend := &workerBackendStub{authorizeMilestone: func(ctx context.Context, request worker.MilestoneRequest) (worker.MilestoneTarget, error) {
+		if values := metadata.ValueFromIncomingContext(ctx, "authorization"); len(values) != 0 {
+			t.Fatalf("authorization metadata reached milestone authorization: %v", values)
+		}
+		if request.DeploymentID != deploymentID || request.WorkerID != workerID || request.LeaseEpoch != 9 || string(request.Credential) != sessionToken {
+			t.Fatalf("milestone authorization request = %#v", request)
+		}
+		return target, nil
+	}}
+	writer := &workerMilestoneWriterStub{}
+	service := newWorkerControlHandlerWithMilestones(backend, writer)
+	request := &agentv1.WorkerControlServiceEmitMilestoneRequest{
+		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 9, EventId: uuid.NewString(),
+		Kind: agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_FAILED, ActionId: "install.openclaw",
+		Outcome: agentv1.WorkerOutcome_WORKER_OUTCOME_FAILED,
+	}
+	if _, err := service.EmitMilestone(workerAuthorizationContext("DTX-Worker-Session "+sessionToken), request); err != nil {
+		t.Fatal(err)
+	}
+	if writer.calls != 1 || writer.target != target || writer.event.SchemaVersion != workerlog.SchemaV1 || writer.event.EventID != request.EventId ||
+		writer.event.DeploymentID != target.DeploymentID || writer.event.WorkerID != target.WorkerID || writer.event.Attempt != target.Attempt ||
+		writer.event.LeaseEpoch != target.LeaseEpoch || writer.event.Kind != workerlog.KindActionFailed || writer.event.ActionID != "install.openclaw" ||
+		writer.event.Outcome != workerlog.OutcomeFailed || writer.event.OccurredAt.IsZero() {
+		t.Fatalf("milestone relay = target=%+v event=%+v", writer.target, writer.event)
+	}
+
+	request.Kind = agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_UNSPECIFIED
+	if _, err := service.EmitMilestone(workerAuthorizationContext("DTX-Worker-Session "+sessionToken), request); status.Code(err) != codes.InvalidArgument || writer.calls != 1 {
+		t.Fatalf("invalid milestone = (%s, writer calls %d), want (InvalidArgument, 1): %v", status.Code(err), writer.calls, err)
+	}
+	backend.authorizeMilestone = func(context.Context, worker.MilestoneRequest) (worker.MilestoneTarget, error) {
+		return worker.MilestoneTarget{}, worker.ErrStaleLease
+	}
+	request.Kind = agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_STARTED
+	request.ActionId, request.Outcome = "", agentv1.WorkerOutcome_WORKER_OUTCOME_UNSPECIFIED
+	if _, err := service.EmitMilestone(workerAuthorizationContext("DTX-Worker-Session "+sessionToken), request); status.Code(err) != codes.Aborted || writer.calls != 1 {
+		t.Fatalf("stale milestone = (%s, writer calls %d), want (Aborted, 1): %v", status.Code(err), writer.calls, err)
+	}
+	backend.authorizeMilestone = func(context.Context, worker.MilestoneRequest) (worker.MilestoneTarget, error) { return target, nil }
+	canary := "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	writer.err = errors.New(canary)
+	if _, err := service.EmitMilestone(workerAuthorizationContext("DTX-Worker-Session "+sessionToken), request); status.Code(err) != codes.Unavailable || strings.Contains(err.Error(), canary) {
+		t.Fatalf("writer failure = %v", err)
 	}
 }
 

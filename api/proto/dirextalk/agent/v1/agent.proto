@@ -1398,6 +1398,7 @@ service WorkerControlService {
   rpc Claim(WorkerControlServiceClaimRequest) returns (WorkerControlServiceClaimResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc RecordEvidence(WorkerControlServiceRecordEvidenceRequest) returns (WorkerControlServiceRecordEvidenceResponse);
+  rpc EmitMilestone(WorkerControlServiceEmitMilestoneRequest) returns (WorkerControlServiceEmitMilestoneResponse);
   rpc Complete(WorkerControlServiceCompleteRequest) returns (WorkerControlServiceCompleteResponse);
 }
 
@@ -2210,3 +2211,30 @@ service RootHelperBootstrapControlService {
   rpc ReconcileRevocation(ReconcileRevocationRequest) returns (ReconcileRevocationResponse);
   rpc ConfirmCanary(ConfirmCanaryRequest) returns (ConfirmCanaryResponse);
 }
+
+// Worker milestones are a closed, secret-free telemetry vocabulary. The
+// Worker never supplies a CloudWatch group, stream, timestamp, message, URL,
+// path, output, error, or credential: the Agent derives the target from the
+// authenticated durable lease and supplies its own receipt timestamp.
+enum WorkerMilestoneKind {
+  WORKER_MILESTONE_KIND_UNSPECIFIED = 0;
+  WORKER_MILESTONE_KIND_EXECUTION_STARTED = 1;
+  WORKER_MILESTONE_KIND_ACTION_STARTED = 2;
+  WORKER_MILESTONE_KIND_ACTION_SUCCEEDED = 3;
+  WORKER_MILESTONE_KIND_ACTION_FAILED = 4;
+  WORKER_MILESTONE_KIND_EXECUTION_FINISHED = 5;
+}
+
+// EmitMilestone is at-least-once untrusted telemetry. event_id stays stable
+// across a Worker retry, so duplicate CloudWatch entries are identifiable;
+// no deployment state is advanced by this call.
+message WorkerControlServiceEmitMilestoneRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  int64 lease_epoch = 3;
+  string event_id = 4;
+  WorkerMilestoneKind kind = 5;
+  string action_id = 6;
+  WorkerOutcome outcome = 7;
+}
+message WorkerControlServiceEmitMilestoneResponse {}

@@ -15,6 +15,7 @@ func TestWorkerSelfAuthenticationAllowlistIsExact(t *testing.T) {
 		agentv1.WorkerControlService_Claim_FullMethodName,
 		agentv1.WorkerControlService_Heartbeat_FullMethodName,
 		agentv1.WorkerControlService_RecordEvidence_FullMethodName,
+		agentv1.WorkerControlService_EmitMilestone_FullMethodName,
 		agentv1.WorkerControlService_Complete_FullMethodName,
 	}
 	for _, method := range allowed {

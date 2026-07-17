@@ -31,13 +31,11 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
-	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workermaintenance"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
-	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -141,15 +139,11 @@ func run() error {
 	}
 	var logs workerrunner.LogSink
 	if launch.method == identityMethod {
-		access := launch.config.IdentityAssignment.GetAccess()
-		if access == nil {
-			return errors.New("provider-verified Worker assignment has no log scope")
-		}
-		cloudwatchSink, err := workerlog.NewCloudWatchSink(cloudwatchlogs.NewFromConfig(awsConfiguration), access.GetLogGroup(), access.GetLogPrefix())
+		milestoneSink, err := workerrunner.NewGRPCMilestoneSink(control)
 		if err != nil {
-			return errors.New("initialize scoped Worker milestone logs")
+			return errors.New("initialize Agent-relayed Worker milestone logs")
 		}
-		logs = cloudwatchSink
+		logs = milestoneSink
 	}
 	runner := workerrunner.Runner{Control: control, Objects: objects, Registry: registry, Logs: logs}
 	slog.Info("cloud Worker starting typed execution", "deployment_id", launch.config.DeploymentID, "worker_id", launch.config.WorkerID)

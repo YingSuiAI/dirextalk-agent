@@ -45,3 +45,12 @@ type LogEventV1 struct {
 type LogSink interface {
 	Emit(context.Context, LogEventV1) error
 }
+
+// sessionBoundLogSink receives the short-lived Worker session only after
+// enrollment/identity verification. It is internal so direct test sinks never
+// gain a credential channel.
+type sessionBoundLogSink interface {
+	LogSink
+	BindSession([]byte) error
+	Close()
+}

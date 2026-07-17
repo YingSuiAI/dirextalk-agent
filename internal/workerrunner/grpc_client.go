@@ -48,6 +48,10 @@ func (client *GRPCControlClient) RecordEvidence(ctx context.Context, token []byt
 	return client.client.RecordEvidence(workerOutgoingContext(ctx, sessionAuthorizationScheme, token), request)
 }
 
+func (client *GRPCControlClient) EmitMilestone(ctx context.Context, token []byte, request *agentv1.WorkerControlServiceEmitMilestoneRequest) (*agentv1.WorkerControlServiceEmitMilestoneResponse, error) {
+	return client.client.EmitMilestone(workerOutgoingContext(ctx, sessionAuthorizationScheme, token), request)
+}
+
 func (client *GRPCControlClient) Complete(ctx context.Context, token []byte, request *agentv1.WorkerControlServiceCompleteRequest) (*agentv1.WorkerControlServiceCompleteResponse, error) {
 	return client.client.Complete(workerOutgoingContext(ctx, sessionAuthorizationScheme, token), request)
 }

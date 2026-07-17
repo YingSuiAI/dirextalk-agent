@@ -18,6 +18,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 	for _, forbidden := range [][]byte{
 		[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"), []byte("RunTaggedNetworkInterface"),
 		[]byte("AWS::Route53"), []byte("route53:"), []byte("acm:RequestCertificate"), []byte("acm:DeleteCertificate"), []byte("acm:ImportCertificate"),
+		[]byte("WorkerTypedMilestoneLogs"), []byte("${WorkerLogGroup.Arn}:log-stream:*"),
 	} {
 		if bytes.Contains(template, forbidden) {
 			t.Fatalf("template contains forbidden %q", forbidden)
@@ -35,7 +36,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("s3:ListBucketVersions"), []byte("s3:GetObjectVersion"), []byte("s3:DeleteObjectVersion"),
 		[]byte("WorkerInstallerArtifacts"), []byte("${ArtifactBucket.Arn}/deployments/*/artifacts/*"), []byte("s3:ExistingObjectTag/dirextalk:worker_principal"),
 		[]byte("BindExactInstallerArtifactVersions"), []byte("s3:GetObjectVersionTagging"), []byte("s3:PutObjectVersionTagging"),
-		[]byte("WorkerTypedMilestoneLogs"), []byte("${WorkerLogGroup.Arn}:log-stream:*"),
+		[]byte("WorkerMilestoneRelayLogs"), []byte("logs:PutLogEvents"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
 		[]byte("AWS::IAM::ManagedPolicy"), []byte("ControlEntrypointPolicy"), []byte("acm:DescribeCertificate"), []byte("secretsmanager:DeleteResourcePolicy"),
 		[]byte("elasticloadbalancing:CreateLoadBalancer"), []byte("elasticloadbalancing:CreateTargetGroup"), []byte("elasticloadbalancing:CreateListener"),
@@ -45,9 +46,6 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		if !bytes.Contains(template, required) {
 			t.Fatalf("template is missing %q", required)
 		}
-	}
-	if bytes.Contains(template, []byte("log-stream:${!aws:userid}")) {
-		t.Fatal("Worker log stream policy uses an invalid STS aws:userid stream name")
 	}
 }
 
@@ -158,21 +156,43 @@ func TestFoundationTemplateControlArtifactBinderIsVersionedAndNarrow(t *testing.
 	}
 }
 
-func TestFoundationTemplateWorkerLogsAreAppendOnlyAndGroupScoped(t *testing.T) {
+func TestFoundationTemplateWorkerLogsAreAgentRelayedAndControlScoped(t *testing.T) {
 	template := testFoundationTemplate(t)
-	for name, change := range map[string][2]string{
-		"read access":      {"- logs:PutLogEvents", "- logs:GetLogEvents"},
-		"all groups":       {"${WorkerLogGroup.Arn}:log-stream:*", "*"},
-		"invalid userid":   {"${WorkerLogGroup.Arn}:log-stream:*", "${WorkerLogGroup.Arn}:log-stream:${!aws:userid}"},
-		"missing creation": {"- logs:CreateLogStream\n", ""},
+	for name, mutation := range map[string][3]string{
+		"Worker gains log write":        {"WorkerEnvelopeKMS", "- kms:Decrypt", "- kms:Decrypt\n                  - logs:PutLogEvents"},
+		"Control loses log write":       {"WorkerMilestoneRelayLogs", "- logs:PutLogEvents", "- logs:GetLogEvents"},
+		"Control broadens log resource": {"WorkerMilestoneRelayLogs", "${WorkerLogGroup.Arn}:*", "*"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			mutated := mutateFoundationStatement(t, template, "WorkerTypedMilestoneLogs", change[0], change[1])
+			mutated := mutateFoundationStatement(t, template, mutation[0], mutation[1], mutation[2])
 			if err := ValidateTemplate(mutated); err == nil {
-				t.Fatalf("unsafe Worker log policy %s was accepted", name)
+				t.Fatalf("unsafe Worker relay policy %s was accepted", name)
 			}
 		})
 	}
+	t.Run("Worker gains a managed policy", func(t *testing.T) {
+		mutated := mutateFoundationResource(t, template, "WorkerRole", "      Policies:\n", "      ManagedPolicyArns:\n        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess\n      Policies:\n")
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatal("Worker managed policy with log authority was accepted")
+		}
+	})
+	t.Run("Control runtime attaches to Worker", func(t *testing.T) {
+		mutated := mutateFoundationResource(t, template, "ControlRuntimePolicy", "Ref: ControlRoleName", "Ref: WorkerRoleName")
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatal("Control runtime policy attached to Worker was accepted")
+		}
+	})
+	t.Run("Control gains an extra log statement", func(t *testing.T) {
+		marker := []byte("\n\n  # Keep public entry-point authority")
+		addition := []byte("\n          - Sid: ExtraLogWrite\n            Effect: Allow\n            Action:\n              - logs:PutLogEvents\n            Resource:\n              Fn::Sub: ${ReaperLogGroup.Arn}:*\n")
+		mutated := bytes.Replace(template, marker, append(addition, marker...), 1)
+		if bytes.Equal(mutated, template) {
+			t.Fatal("control policy insertion marker not found")
+		}
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatal("extra Control log statement was accepted")
+		}
+	})
 }
 
 func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {

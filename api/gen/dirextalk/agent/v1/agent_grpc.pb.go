@@ -2727,6 +2727,7 @@ const (
 	WorkerControlService_Claim_FullMethodName                   = "/dirextalk.agent.v1.WorkerControlService/Claim"
 	WorkerControlService_Heartbeat_FullMethodName               = "/dirextalk.agent.v1.WorkerControlService/Heartbeat"
 	WorkerControlService_RecordEvidence_FullMethodName          = "/dirextalk.agent.v1.WorkerControlService/RecordEvidence"
+	WorkerControlService_EmitMilestone_FullMethodName           = "/dirextalk.agent.v1.WorkerControlService/EmitMilestone"
 	WorkerControlService_Complete_FullMethodName                = "/dirextalk.agent.v1.WorkerControlService/Complete"
 )
 
@@ -2746,6 +2747,7 @@ type WorkerControlServiceClient interface {
 	Claim(ctx context.Context, in *WorkerControlServiceClaimRequest, opts ...grpc.CallOption) (*WorkerControlServiceClaimResponse, error)
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	RecordEvidence(ctx context.Context, in *WorkerControlServiceRecordEvidenceRequest, opts ...grpc.CallOption) (*WorkerControlServiceRecordEvidenceResponse, error)
+	EmitMilestone(ctx context.Context, in *WorkerControlServiceEmitMilestoneRequest, opts ...grpc.CallOption) (*WorkerControlServiceEmitMilestoneResponse, error)
 	Complete(ctx context.Context, in *WorkerControlServiceCompleteRequest, opts ...grpc.CallOption) (*WorkerControlServiceCompleteResponse, error)
 }
 
@@ -2827,6 +2829,16 @@ func (c *workerControlServiceClient) RecordEvidence(ctx context.Context, in *Wor
 	return out, nil
 }
 
+func (c *workerControlServiceClient) EmitMilestone(ctx context.Context, in *WorkerControlServiceEmitMilestoneRequest, opts ...grpc.CallOption) (*WorkerControlServiceEmitMilestoneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorkerControlServiceEmitMilestoneResponse)
+	err := c.cc.Invoke(ctx, WorkerControlService_EmitMilestone_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerControlServiceClient) Complete(ctx context.Context, in *WorkerControlServiceCompleteRequest, opts ...grpc.CallOption) (*WorkerControlServiceCompleteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WorkerControlServiceCompleteResponse)
@@ -2853,6 +2865,7 @@ type WorkerControlServiceServer interface {
 	Claim(context.Context, *WorkerControlServiceClaimRequest) (*WorkerControlServiceClaimResponse, error)
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	RecordEvidence(context.Context, *WorkerControlServiceRecordEvidenceRequest) (*WorkerControlServiceRecordEvidenceResponse, error)
+	EmitMilestone(context.Context, *WorkerControlServiceEmitMilestoneRequest) (*WorkerControlServiceEmitMilestoneResponse, error)
 	Complete(context.Context, *WorkerControlServiceCompleteRequest) (*WorkerControlServiceCompleteResponse, error)
 	mustEmbedUnimplementedWorkerControlServiceServer()
 }
@@ -2884,6 +2897,9 @@ func (UnimplementedWorkerControlServiceServer) Heartbeat(context.Context, *Heart
 }
 func (UnimplementedWorkerControlServiceServer) RecordEvidence(context.Context, *WorkerControlServiceRecordEvidenceRequest) (*WorkerControlServiceRecordEvidenceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RecordEvidence not implemented")
+}
+func (UnimplementedWorkerControlServiceServer) EmitMilestone(context.Context, *WorkerControlServiceEmitMilestoneRequest) (*WorkerControlServiceEmitMilestoneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EmitMilestone not implemented")
 }
 func (UnimplementedWorkerControlServiceServer) Complete(context.Context, *WorkerControlServiceCompleteRequest) (*WorkerControlServiceCompleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Complete not implemented")
@@ -3035,6 +3051,24 @@ func _WorkerControlService_RecordEvidence_Handler(srv interface{}, ctx context.C
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerControlService_EmitMilestone_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorkerControlServiceEmitMilestoneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerControlServiceServer).EmitMilestone(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerControlService_EmitMilestone_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerControlServiceServer).EmitMilestone(ctx, req.(*WorkerControlServiceEmitMilestoneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerControlService_Complete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(WorkerControlServiceCompleteRequest)
 	if err := dec(in); err != nil {
@@ -3087,6 +3121,10 @@ var WorkerControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RecordEvidence",
 			Handler:    _WorkerControlService_RecordEvidence_Handler,
+		},
+		{
+			MethodName: "EmitMilestone",
+			Handler:    _WorkerControlService_EmitMilestone_Handler,
 		},
 		{
 			MethodName: "Complete",

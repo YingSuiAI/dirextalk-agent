@@ -53,6 +53,44 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 	}
 }
 
+func TestWorkerMilestoneRelayContractIsClosedAndAtLeastOnce(t *testing.T) {
+	descriptor := (&agentv1.WorkerControlServiceEmitMilestoneRequest{}).ProtoReflect().Descriptor()
+	for name, number := range map[protoreflect.Name]struct {
+		number protoreflect.FieldNumber
+		kind   protoreflect.Kind
+	}{
+		"deployment_id": {1, protoreflect.StringKind},
+		"worker_id":     {2, protoreflect.StringKind},
+		"lease_epoch":   {3, protoreflect.Int64Kind},
+		"event_id":      {4, protoreflect.StringKind},
+		"kind":          {5, protoreflect.EnumKind},
+		"action_id":     {6, protoreflect.StringKind},
+		"outcome":       {7, protoreflect.EnumKind},
+	} {
+		field := descriptor.Fields().ByName(name)
+		if field == nil || field.Number() != number.number || field.Kind() != number.kind {
+			t.Fatalf("Worker milestone field %s = %v, want number=%d kind=%s", name, field, number.number, number.kind)
+		}
+	}
+	if descriptor.Fields().Len() != 7 {
+		t.Fatalf("Worker milestone relay accepts %d fields, want only 7 closed fields", descriptor.Fields().Len())
+	}
+	if outcome := descriptor.Fields().ByName("outcome"); outcome == nil || outcome.Enum().Name() != "WorkerOutcome" {
+		t.Fatalf("Worker milestone outcome must reuse the canonical WorkerOutcome enum: %v", outcome)
+	}
+	for index := 0; index < descriptor.Fields().Len(); index++ {
+		name := string(descriptor.Fields().Get(index).Name())
+		for _, forbidden := range []string{"log_group", "log_prefix", "stream", "timestamp", "message", "error", "path", "url", "output", "secret", "credential"} {
+			if strings.Contains(name, forbidden) {
+				t.Fatalf("Worker milestone relay must not accept %q field %q", forbidden, name)
+			}
+		}
+	}
+	if agentv1.File_dirextalk_agent_v1_agent_proto.Services().ByName("WorkerControlService").Methods().ByName("EmitMilestone") == nil {
+		t.Fatal("WorkerControlService must expose the closed Agent relay")
+	}
+}
+
 func TestFoundationApprovalContractIsIndependentAndFullyFenced(t *testing.T) {
 	scope := (&agentv1.AwsFoundationOperationScope{}).ProtoReflect().Descriptor()
 	for _, required := range []protoreflect.Name{"agent_instance_id", "owner_id", "action", "connection_id", "expected_connection_revision", "account_id", "region",

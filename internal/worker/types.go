@@ -114,11 +114,15 @@ func (scope AccessScope) permitsS3(ref, prefix string) bool {
 }
 
 func (scope AccessScope) permitsLog(ref string, attempt int32, leaseEpoch int64) bool {
-	if attempt < 1 || leaseEpoch < 1 || security.ContainsLikelySecret(ref) {
-		return false
+	expected, ok := scope.logReference(attempt, leaseEpoch)
+	return ok && strings.TrimSpace(ref) == expected
+}
+
+func (scope AccessScope) logReference(attempt int32, leaseEpoch int64) (string, bool) {
+	if attempt < 1 || leaseEpoch < 1 || security.ContainsLikelySecret(scope.LogPrefix) {
+		return "", false
 	}
-	expected := fmt.Sprintf("%s/milestones-a%d-e%d", strings.TrimSuffix(scope.LogPrefix, "/"), attempt, leaseEpoch)
-	return strings.TrimSpace(ref) == expected
+	return fmt.Sprintf("%s/milestones-a%d-e%d", strings.TrimSuffix(scope.LogPrefix, "/"), attempt, leaseEpoch), true
 }
 
 type Enrollment struct {
@@ -415,6 +419,27 @@ type SessionRequest struct {
 type LeasedRequest struct {
 	AuthenticatedRequest
 	LeaseEpoch int64
+}
+
+// MilestoneRequest is a read-only lease check for secret-free, untrusted
+// telemetry. It intentionally has no idempotency or revision fence because a
+// relay retry may duplicate an event without changing deployment state.
+type MilestoneRequest struct {
+	SessionRequest
+	LeaseEpoch int64
+}
+
+// MilestoneTarget is derived only from the authenticated durable deployment.
+// It contains the exact log stream already registered for this lease, never a
+// Worker-supplied CloudWatch destination.
+type MilestoneTarget struct {
+	DeploymentID string
+	WorkerID     string
+	OwnerID      string
+	LogPrefix    string
+	LogReference string
+	Attempt      int32
+	LeaseEpoch   int64
 }
 
 type CompleteRequest struct {

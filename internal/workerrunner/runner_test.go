@@ -33,6 +33,8 @@ type runnerControlFake struct {
 	heartbeatEpoch  int64
 	checkpoints     []string
 	logs            []string
+	milestones      []*agentv1.WorkerControlServiceEmitMilestoneRequest
+	milestoneErr    error
 	completion      *agentv1.WorkerControlServiceCompleteRequest
 }
 
@@ -137,6 +139,19 @@ func (fake *runnerControlFake) RecordEvidence(_ context.Context, _ []byte, reque
 	fake.revision++
 	fake.checkpoints = append(fake.checkpoints, object.GetRef())
 	return &agentv1.WorkerControlServiceRecordEvidenceResponse{Revision: fake.revision}, nil
+}
+
+func (fake *runnerControlFake) EmitMilestone(_ context.Context, token []byte, request *agentv1.WorkerControlServiceEmitMilestoneRequest) (*agentv1.WorkerControlServiceEmitMilestoneResponse, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(token) < 32 || request.GetDeploymentId() != fake.assignment.GetDeploymentId() || request.GetWorkerId() != fake.assignment.GetWorkerId() || request.GetLeaseEpoch() != 9 {
+		return nil, errors.New("invalid milestone relay")
+	}
+	fake.milestones = append(fake.milestones, proto.Clone(request).(*agentv1.WorkerControlServiceEmitMilestoneRequest))
+	if fake.milestoneErr != nil {
+		return nil, fake.milestoneErr
+	}
+	return &agentv1.WorkerControlServiceEmitMilestoneResponse{}, nil
 }
 
 func (fake *runnerControlFake) Complete(_ context.Context, _ []byte, request *agentv1.WorkerControlServiceCompleteRequest) (*agentv1.WorkerControlServiceCompleteResponse, error) {
@@ -249,6 +264,40 @@ func TestRunnerWritesOnlyTypedMilestonesBeforeDurableCompletion(t *testing.T) {
 	}
 }
 
+func TestRunnerRelaysTypedMilestonesThroughWorkerSession(t *testing.T) {
+	runner, config, control, _ := runnerFixture(t, validNoopBundle(t, 0))
+	sink, err := NewGRPCMilestoneSink(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.Logs = sink
+	result, err := runner.Run(t.Context(), config)
+	if err != nil || result.Outcome != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("Run() = (%#v, %v)", result, err)
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	wantKinds := []agentv1.WorkerMilestoneKind{
+		agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_STARTED,
+		agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_STARTED,
+		agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_SUCCEEDED,
+		agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_FINISHED,
+	}
+	if len(control.logs) != 1 || len(control.milestones) != len(wantKinds) {
+		t.Fatalf("registered logs=%#v milestones=%#v", control.logs, control.milestones)
+	}
+	for index, milestone := range control.milestones {
+		if milestone.GetKind() != wantKinds[index] || milestone.GetDeploymentId() != config.DeploymentID || milestone.GetWorkerId() != config.WorkerID ||
+			milestone.GetLeaseEpoch() != 9 || milestone.GetEventId() == "" {
+			t.Fatalf("milestone[%d] = %#v", index, milestone)
+		}
+	}
+	if control.milestones[1].GetActionId() != "smoke" || control.milestones[2].GetActionId() != "smoke" ||
+		control.milestones[3].GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
+		t.Fatalf("milestone action/outcome binding = %#v", control.milestones)
+	}
+}
+
 func TestRunnerFailsClosedBeforeActionWhenMilestoneLogIsUnavailable(t *testing.T) {
 	runner, config, control, objects := runnerFixture(t, validNoopBundle(t, 0))
 	runner.Logs = &logSinkFake{failAt: 1}
@@ -259,8 +308,8 @@ func TestRunnerFailsClosedBeforeActionWhenMilestoneLogIsUnavailable(t *testing.T
 	}
 	control.mu.Lock()
 	defer control.mu.Unlock()
-	if len(control.logs) != 0 || len(control.checkpoints) != 0 || control.completion != nil || len(objects.objects) != 2 {
-		t.Fatalf("unlogged execution crossed action boundary: logs=%#v checkpoints=%#v completion=%#v objects=%d", control.logs, control.checkpoints, control.completion, len(objects.objects))
+	if len(control.logs) != 1 || len(control.checkpoints) != 0 || control.completion != nil || len(objects.objects) != 2 {
+		t.Fatalf("unavailable milestone relay crossed action boundary: logs=%#v checkpoints=%#v completion=%#v objects=%d", control.logs, control.checkpoints, control.completion, len(objects.objects))
 	}
 }
 

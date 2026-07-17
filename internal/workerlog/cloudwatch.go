@@ -73,20 +73,37 @@ type Sink struct {
 }
 
 func NewCloudWatchSink(client LogsAPI, group, prefix string) (*Sink, error) {
-	group = strings.TrimSpace(group)
-	prefix = strings.TrimSpace(prefix)
-	if client == nil || !logGroupPattern.MatchString(group) || !logPrefixPattern.MatchString(prefix) ||
-		security.ContainsLikelySecret(group) || security.ContainsLikelySecret(prefix) {
+	if client == nil {
+		return nil, errors.New("invalid Worker CloudWatch scope")
+	}
+	group, prefix, err := scopedLogScope(group, prefix)
+	if err != nil {
 		return nil, errors.New("invalid Worker CloudWatch scope")
 	}
 	return &Sink{client: client, group: group, prefix: prefix, streams: make(map[string]struct{})}, nil
+}
+
+// ValidateScope accepts only the principal-derived CloudWatch group and stream
+// prefix used by the Agent-controlled milestone relay.
+func ValidateScope(group, prefix string) error {
+	_, _, err := scopedLogScope(group, prefix)
+	return err
+}
+
+func scopedLogScope(group, prefix string) (string, string, error) {
+	group, prefix = strings.TrimSpace(group), strings.TrimSpace(prefix)
+	if !logGroupPattern.MatchString(group) || !logPrefixPattern.MatchString(prefix) ||
+		security.ContainsLikelySecret(group) || security.ContainsLikelySecret(prefix) {
+		return "", "", errors.New("invalid Worker CloudWatch scope")
+	}
+	return group, prefix, nil
 }
 
 func (sink *Sink) Emit(ctx context.Context, event EventV1) error {
 	if sink == nil || ctx == nil {
 		return errors.New("Worker CloudWatch sink is unavailable")
 	}
-	normalized, err := normalizeEvent(event)
+	normalized, err := ValidateEvent(event)
 	if err != nil {
 		return err
 	}
@@ -122,6 +139,13 @@ func (sink *Sink) Emit(ctx context.Context, event EventV1) error {
 		return errors.New("write Worker log event")
 	}
 	return nil
+}
+
+// ValidateEvent normalizes the closed Worker telemetry vocabulary before it
+// crosses a CloudWatch client boundary. It is shared by the Agent relay so a
+// malformed Worker RPC cannot reach a provider client.
+func ValidateEvent(event EventV1) (EventV1, error) {
+	return normalizeEvent(event)
 }
 
 func normalizeEvent(event EventV1) (EventV1, error) {

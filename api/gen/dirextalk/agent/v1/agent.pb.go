@@ -2082,6 +2082,68 @@ func (RootHelperKeyDeliveryState) EnumDescriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{36}
 }
 
+// Worker milestones are a closed, secret-free telemetry vocabulary. The
+// Worker never supplies a CloudWatch group, stream, timestamp, message, URL,
+// path, output, error, or credential: the Agent derives the target from the
+// authenticated durable lease and supplies its own receipt timestamp.
+type WorkerMilestoneKind int32
+
+const (
+	WorkerMilestoneKind_WORKER_MILESTONE_KIND_UNSPECIFIED        WorkerMilestoneKind = 0
+	WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_STARTED  WorkerMilestoneKind = 1
+	WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_STARTED     WorkerMilestoneKind = 2
+	WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_SUCCEEDED   WorkerMilestoneKind = 3
+	WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_FAILED      WorkerMilestoneKind = 4
+	WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_FINISHED WorkerMilestoneKind = 5
+)
+
+// Enum value maps for WorkerMilestoneKind.
+var (
+	WorkerMilestoneKind_name = map[int32]string{
+		0: "WORKER_MILESTONE_KIND_UNSPECIFIED",
+		1: "WORKER_MILESTONE_KIND_EXECUTION_STARTED",
+		2: "WORKER_MILESTONE_KIND_ACTION_STARTED",
+		3: "WORKER_MILESTONE_KIND_ACTION_SUCCEEDED",
+		4: "WORKER_MILESTONE_KIND_ACTION_FAILED",
+		5: "WORKER_MILESTONE_KIND_EXECUTION_FINISHED",
+	}
+	WorkerMilestoneKind_value = map[string]int32{
+		"WORKER_MILESTONE_KIND_UNSPECIFIED":        0,
+		"WORKER_MILESTONE_KIND_EXECUTION_STARTED":  1,
+		"WORKER_MILESTONE_KIND_ACTION_STARTED":     2,
+		"WORKER_MILESTONE_KIND_ACTION_SUCCEEDED":   3,
+		"WORKER_MILESTONE_KIND_ACTION_FAILED":      4,
+		"WORKER_MILESTONE_KIND_EXECUTION_FINISHED": 5,
+	}
+)
+
+func (x WorkerMilestoneKind) Enum() *WorkerMilestoneKind {
+	p := new(WorkerMilestoneKind)
+	*p = x
+	return p
+}
+
+func (x WorkerMilestoneKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WorkerMilestoneKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_agent_proto_enumTypes[37].Descriptor()
+}
+
+func (WorkerMilestoneKind) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_agent_proto_enumTypes[37]
+}
+
+func (x WorkerMilestoneKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WorkerMilestoneKind.Descriptor instead.
+func (WorkerMilestoneKind) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{37}
+}
+
 type Task struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	TaskId          string                 `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
@@ -20065,6 +20127,137 @@ func (x *RootHelperBootstrapControlServiceCurrentResponse) GetDelivery() *RootHe
 	return nil
 }
 
+// EmitMilestone is at-least-once untrusted telemetry. event_id stays stable
+// across a Worker retry, so duplicate CloudWatch entries are identifiable;
+// no deployment state is advanced by this call.
+type WorkerControlServiceEmitMilestoneRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId  string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	LeaseEpoch    int64                  `protobuf:"varint,3,opt,name=lease_epoch,json=leaseEpoch,proto3" json:"lease_epoch,omitempty"`
+	EventId       string                 `protobuf:"bytes,4,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	Kind          WorkerMilestoneKind    `protobuf:"varint,5,opt,name=kind,proto3,enum=dirextalk.agent.v1.WorkerMilestoneKind" json:"kind,omitempty"`
+	ActionId      string                 `protobuf:"bytes,6,opt,name=action_id,json=actionId,proto3" json:"action_id,omitempty"`
+	Outcome       WorkerOutcome          `protobuf:"varint,7,opt,name=outcome,proto3,enum=dirextalk.agent.v1.WorkerOutcome" json:"outcome,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) Reset() {
+	*x = WorkerControlServiceEmitMilestoneRequest{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[225]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerControlServiceEmitMilestoneRequest) ProtoMessage() {}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[225]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerControlServiceEmitMilestoneRequest.ProtoReflect.Descriptor instead.
+func (*WorkerControlServiceEmitMilestoneRequest) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{225}
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetLeaseEpoch() int64 {
+	if x != nil {
+		return x.LeaseEpoch
+	}
+	return 0
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetEventId() string {
+	if x != nil {
+		return x.EventId
+	}
+	return ""
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetKind() WorkerMilestoneKind {
+	if x != nil {
+		return x.Kind
+	}
+	return WorkerMilestoneKind_WORKER_MILESTONE_KIND_UNSPECIFIED
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetActionId() string {
+	if x != nil {
+		return x.ActionId
+	}
+	return ""
+}
+
+func (x *WorkerControlServiceEmitMilestoneRequest) GetOutcome() WorkerOutcome {
+	if x != nil {
+		return x.Outcome
+	}
+	return WorkerOutcome_WORKER_OUTCOME_UNSPECIFIED
+}
+
+type WorkerControlServiceEmitMilestoneResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkerControlServiceEmitMilestoneResponse) Reset() {
+	*x = WorkerControlServiceEmitMilestoneResponse{}
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[226]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkerControlServiceEmitMilestoneResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkerControlServiceEmitMilestoneResponse) ProtoMessage() {}
+
+func (x *WorkerControlServiceEmitMilestoneResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_agent_proto_msgTypes[226]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkerControlServiceEmitMilestoneResponse.ProtoReflect.Descriptor instead.
+func (*WorkerControlServiceEmitMilestoneResponse) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_agent_proto_rawDescGZIP(), []int{226}
+}
+
 var File_dirextalk_agent_v1_agent_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
@@ -21760,7 +21953,17 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"y\n" +
 	"0RootHelperBootstrapControlServiceCurrentResponse\x12E\n" +
-	"\bdelivery\x18\x01 \x01(\v2).dirextalk.agent.v1.RootHelperKeyDeliveryR\bdelivery*\xb3\x02\n" +
+	"\bdelivery\x18\x01 \x01(\v2).dirextalk.agent.v1.RootHelperKeyDeliveryR\bdelivery\"\xbf\x02\n" +
+	"(WorkerControlServiceEmitMilestoneRequest\x12#\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x1f\n" +
+	"\vlease_epoch\x18\x03 \x01(\x03R\n" +
+	"leaseEpoch\x12\x19\n" +
+	"\bevent_id\x18\x04 \x01(\tR\aeventId\x12;\n" +
+	"\x04kind\x18\x05 \x01(\x0e2'.dirextalk.agent.v1.WorkerMilestoneKindR\x04kind\x12\x1b\n" +
+	"\taction_id\x18\x06 \x01(\tR\bactionId\x12;\n" +
+	"\aoutcome\x18\a \x01(\x0e2!.dirextalk.agent.v1.WorkerOutcomeR\aoutcome\"+\n" +
+	")WorkerControlServiceEmitMilestoneResponse*\xb3\x02\n" +
 	"\x0fExecutionStatus\x12 \n" +
 	"\x1cEXECUTION_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16EXECUTION_STATUS_DRAFT\x10\x01\x12\x1d\n" +
@@ -21987,7 +22190,14 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"/ROOT_HELPER_KEY_DELIVERY_STATE_VERIFIED_REVOKED\x10\x05\x12(\n" +
 	"$ROOT_HELPER_KEY_DELIVERY_STATE_READY\x10\x06\x12)\n" +
 	"%ROOT_HELPER_KEY_DELIVERY_STATE_FAILED\x10\a\x12*\n" +
-	"&ROOT_HELPER_KEY_DELIVERY_STATE_REVOKED\x10\b2\xb1\x04\n" +
+	"&ROOT_HELPER_KEY_DELIVERY_STATE_REVOKED\x10\b*\x96\x02\n" +
+	"\x13WorkerMilestoneKind\x12%\n" +
+	"!WORKER_MILESTONE_KIND_UNSPECIFIED\x10\x00\x12+\n" +
+	"'WORKER_MILESTONE_KIND_EXECUTION_STARTED\x10\x01\x12(\n" +
+	"$WORKER_MILESTONE_KIND_ACTION_STARTED\x10\x02\x12*\n" +
+	"&WORKER_MILESTONE_KIND_ACTION_SUCCEEDED\x10\x03\x12'\n" +
+	"#WORKER_MILESTONE_KIND_ACTION_FAILED\x10\x04\x12,\n" +
+	"(WORKER_MILESTONE_KIND_EXECUTION_FINISHED\x10\x052\xb1\x04\n" +
 	"\vTaskService\x12[\n" +
 	"\n" +
 	"CreateTask\x12%.dirextalk.agent.v1.CreateTaskRequest\x1a&.dirextalk.agent.v1.CreateTaskResponse\x12R\n" +
@@ -22058,7 +22268,7 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\x10CreateServiceKey\x12+.dirextalk.agent.v1.CreateServiceKeyRequest\x1a,.dirextalk.agent.v1.CreateServiceKeyResponse\x12m\n" +
 	"\x10RevokeServiceKey\x12+.dirextalk.agent.v1.RevokeServiceKeyRequest\x1a,.dirextalk.agent.v1.RevokeServiceKeyResponse\x12\x7f\n" +
 	"\x16RegisterApprovalDevice\x121.dirextalk.agent.v1.RegisterApprovalDeviceRequest\x1a2.dirextalk.agent.v1.RegisterApprovalDeviceResponse\x12y\n" +
-	"\x14RevokeApprovalDevice\x12/.dirextalk.agent.v1.RevokeApprovalDeviceRequest\x1a0.dirextalk.agent.v1.RevokeApprovalDeviceResponse2\xf2\a\n" +
+	"\x14RevokeApprovalDevice\x12/.dirextalk.agent.v1.RevokeApprovalDeviceRequest\x1a0.dirextalk.agent.v1.RevokeApprovalDeviceResponse2\x81\t\n" +
 	"\x14WorkerControlService\x12\x82\x01\n" +
 	"\x17CreateIdentityChallenge\x122.dirextalk.agent.v1.CreateIdentityChallengeRequest\x1a3.dirextalk.agent.v1.CreateIdentityChallengeResponse\x12\x7f\n" +
 	"\x16EnrollVerifiedIdentity\x121.dirextalk.agent.v1.EnrollVerifiedIdentityRequest\x1a2.dirextalk.agent.v1.EnrollVerifiedIdentityResponse\x12O\n" +
@@ -22066,7 +22276,8 @@ const file_dirextalk_agent_v1_agent_proto_rawDesc = "" +
 	"\x14GetCurrentAssignment\x12C.dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentRequest\x1aD.dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse\x12t\n" +
 	"\x05Claim\x124.dirextalk.agent.v1.WorkerControlServiceClaimRequest\x1a5.dirextalk.agent.v1.WorkerControlServiceClaimResponse\x12X\n" +
 	"\tHeartbeat\x12$.dirextalk.agent.v1.HeartbeatRequest\x1a%.dirextalk.agent.v1.HeartbeatResponse\x12\x8f\x01\n" +
-	"\x0eRecordEvidence\x12=.dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest\x1a>.dirextalk.agent.v1.WorkerControlServiceRecordEvidenceResponse\x12}\n" +
+	"\x0eRecordEvidence\x12=.dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest\x1a>.dirextalk.agent.v1.WorkerControlServiceRecordEvidenceResponse\x12\x8c\x01\n" +
+	"\rEmitMilestone\x12<.dirextalk.agent.v1.WorkerControlServiceEmitMilestoneRequest\x1a=.dirextalk.agent.v1.WorkerControlServiceEmitMilestoneResponse\x12}\n" +
 	"\bComplete\x127.dirextalk.agent.v1.WorkerControlServiceCompleteRequest\x1a8.dirextalk.agent.v1.WorkerControlServiceCompleteResponse2\xd8\x04\n" +
 	"\x1dWorkerServiceOperationService\x12\x80\x01\n" +
 	"\x03Get\x12;.dirextalk.agent.v1.WorkerServiceOperationServiceGetRequest\x1a<.dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse\x12\x86\x01\n" +
@@ -22095,8 +22306,8 @@ func file_dirextalk_agent_v1_agent_proto_rawDescGZIP() []byte {
 	return file_dirextalk_agent_v1_agent_proto_rawDescData
 }
 
-var file_dirextalk_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 37)
-var file_dirextalk_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 225)
+var file_dirextalk_agent_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 38)
+var file_dirextalk_agent_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 227)
 var file_dirextalk_agent_v1_agent_proto_goTypes = []any{
 	(ExecutionStatus)(0),                                            // 0: dirextalk.agent.v1.ExecutionStatus
 	(OutcomeStatus)(0),                                              // 1: dirextalk.agent.v1.OutcomeStatus
@@ -22135,716 +22346,723 @@ var file_dirextalk_agent_v1_agent_proto_goTypes = []any{
 	(PairingWorkerOperationAction)(0),                               // 34: dirextalk.agent.v1.PairingWorkerOperationAction
 	(RootHelperKeyDeliveryApprovalStatus)(0),                        // 35: dirextalk.agent.v1.RootHelperKeyDeliveryApprovalStatus
 	(RootHelperKeyDeliveryState)(0),                                 // 36: dirextalk.agent.v1.RootHelperKeyDeliveryState
-	(*Task)(nil),                                                    // 37: dirextalk.agent.v1.Task
-	(*Step)(nil),                                                    // 38: dirextalk.agent.v1.Step
-	(*Event)(nil),                                                   // 39: dirextalk.agent.v1.Event
-	(*CreateTaskRequest)(nil),                                       // 40: dirextalk.agent.v1.CreateTaskRequest
-	(*CreateTaskResponse)(nil),                                      // 41: dirextalk.agent.v1.CreateTaskResponse
-	(*GetTaskRequest)(nil),                                          // 42: dirextalk.agent.v1.GetTaskRequest
-	(*GetTaskResponse)(nil),                                         // 43: dirextalk.agent.v1.GetTaskResponse
-	(*ListTasksRequest)(nil),                                        // 44: dirextalk.agent.v1.ListTasksRequest
-	(*ListTasksResponse)(nil),                                       // 45: dirextalk.agent.v1.ListTasksResponse
-	(*CancelTaskRequest)(nil),                                       // 46: dirextalk.agent.v1.CancelTaskRequest
-	(*CancelTaskResponse)(nil),                                      // 47: dirextalk.agent.v1.CancelTaskResponse
-	(*ListStepsRequest)(nil),                                        // 48: dirextalk.agent.v1.ListStepsRequest
-	(*ListStepsResponse)(nil),                                       // 49: dirextalk.agent.v1.ListStepsResponse
-	(*WatchEventsRequest)(nil),                                      // 50: dirextalk.agent.v1.WatchEventsRequest
-	(*WatchEventsResponse)(nil),                                     // 51: dirextalk.agent.v1.WatchEventsResponse
-	(*RuntimeCapabilities)(nil),                                     // 52: dirextalk.agent.v1.RuntimeCapabilities
-	(*RuntimeServiceGetCapabilitiesRequest)(nil),                    // 53: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
-	(*RuntimeServiceGetCapabilitiesResponse)(nil),                   // 54: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
-	(*ModelProfile)(nil),                                            // 55: dirextalk.agent.v1.ModelProfile
-	(*RuntimeConfigSpec)(nil),                                       // 56: dirextalk.agent.v1.RuntimeConfigSpec
-	(*RuntimeConfig)(nil),                                           // 57: dirextalk.agent.v1.RuntimeConfig
-	(*GetRuntimeConfigRequest)(nil),                                 // 58: dirextalk.agent.v1.GetRuntimeConfigRequest
-	(*GetRuntimeConfigResponse)(nil),                                // 59: dirextalk.agent.v1.GetRuntimeConfigResponse
-	(*PutRuntimeConfigRequest)(nil),                                 // 60: dirextalk.agent.v1.PutRuntimeConfigRequest
-	(*PutRuntimeConfigResponse)(nil),                                // 61: dirextalk.agent.v1.PutRuntimeConfigResponse
-	(*ChatRequest)(nil),                                             // 62: dirextalk.agent.v1.ChatRequest
-	(*RuntimeStepSummary)(nil),                                      // 63: dirextalk.agent.v1.RuntimeStepSummary
-	(*RuntimeAssistantMessage)(nil),                                 // 64: dirextalk.agent.v1.RuntimeAssistantMessage
-	(*ChatResponse)(nil),                                            // 65: dirextalk.agent.v1.ChatResponse
-	(*StreamChatRequest)(nil),                                       // 66: dirextalk.agent.v1.StreamChatRequest
-	(*ChatDelta)(nil),                                               // 67: dirextalk.agent.v1.ChatDelta
-	(*ToolExecutionSummary)(nil),                                    // 68: dirextalk.agent.v1.ToolExecutionSummary
-	(*ChatDone)(nil),                                                // 69: dirextalk.agent.v1.ChatDone
-	(*StreamChatResponse)(nil),                                      // 70: dirextalk.agent.v1.StreamChatResponse
-	(*CloudCapabilities)(nil),                                       // 71: dirextalk.agent.v1.CloudCapabilities
-	(*CloudControlServiceGetCapabilitiesRequest)(nil),               // 72: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
-	(*CloudControlServiceGetCapabilitiesResponse)(nil),              // 73: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
-	(*CloudResourceReadBack)(nil),                                   // 74: dirextalk.agent.v1.CloudResourceReadBack
-	(*CloudResourceStateCount)(nil),                                 // 75: dirextalk.agent.v1.CloudResourceStateCount
-	(*CloudReadBackSummary)(nil),                                    // 76: dirextalk.agent.v1.CloudReadBackSummary
-	(*CloudResourceSummary)(nil),                                    // 77: dirextalk.agent.v1.CloudResourceSummary
-	(*CloudHealthProbeCount)(nil),                                   // 78: dirextalk.agent.v1.CloudHealthProbeCount
-	(*CloudHealthSummary)(nil),                                      // 79: dirextalk.agent.v1.CloudHealthSummary
-	(*CloudDeployment)(nil),                                         // 80: dirextalk.agent.v1.CloudDeployment
-	(*CloudResource)(nil),                                           // 81: dirextalk.agent.v1.CloudResource
-	(*CloudDestroyResourceScope)(nil),                               // 82: dirextalk.agent.v1.CloudDestroyResourceScope
-	(*CloudDeploymentDestroyScope)(nil),                             // 83: dirextalk.agent.v1.CloudDeploymentDestroyScope
-	(*CloudDeploymentDestroyChallenge)(nil),                         // 84: dirextalk.agent.v1.CloudDeploymentDestroyChallenge
-	(*CloudDestroyOperation)(nil),                                   // 85: dirextalk.agent.v1.CloudDestroyOperation
-	(*CreateCloudDeploymentDestroyChallengeRequest)(nil),            // 86: dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeRequest
-	(*CreateCloudDeploymentDestroyChallengeResponse)(nil),           // 87: dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeResponse
-	(*ApproveCloudDeploymentDestroyRequest)(nil),                    // 88: dirextalk.agent.v1.ApproveCloudDeploymentDestroyRequest
-	(*ApproveCloudDeploymentDestroyResponse)(nil),                   // 89: dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse
-	(*GetCloudDestroyOperationRequest)(nil),                         // 90: dirextalk.agent.v1.GetCloudDestroyOperationRequest
-	(*GetCloudDestroyOperationResponse)(nil),                        // 91: dirextalk.agent.v1.GetCloudDestroyOperationResponse
-	(*CloudEntryCostScope)(nil),                                     // 92: dirextalk.agent.v1.CloudEntryCostScope
-	(*CloudEntryPlanDraft)(nil),                                     // 93: dirextalk.agent.v1.CloudEntryPlanDraft
-	(*CloudEntryAWSReadBack)(nil),                                   // 94: dirextalk.agent.v1.CloudEntryAWSReadBack
-	(*CloudEntryWorkerReadBackScope)(nil),                           // 95: dirextalk.agent.v1.CloudEntryWorkerReadBackScope
-	(*CloudEntryRecipeHealthBinding)(nil),                           // 96: dirextalk.agent.v1.CloudEntryRecipeHealthBinding
-	(*CloudEntryCertificateScope)(nil),                              // 97: dirextalk.agent.v1.CloudEntryCertificateScope
-	(*CloudEntryPublicSubnetScope)(nil),                             // 98: dirextalk.agent.v1.CloudEntryPublicSubnetScope
-	(*CloudEntryALBScope)(nil),                                      // 99: dirextalk.agent.v1.CloudEntryALBScope
-	(*CloudEntryHealthRouteScope)(nil),                              // 100: dirextalk.agent.v1.CloudEntryHealthRouteScope
-	(*CloudEntryAuthenticationScope)(nil),                           // 101: dirextalk.agent.v1.CloudEntryAuthenticationScope
-	(*CloudEntryRetentionScope)(nil),                                // 102: dirextalk.agent.v1.CloudEntryRetentionScope
-	(*CloudEntryApprovalScope)(nil),                                 // 103: dirextalk.agent.v1.CloudEntryApprovalScope
-	(*CloudEntryPlan)(nil),                                          // 104: dirextalk.agent.v1.CloudEntryPlan
-	(*CloudEntryApprovalChallenge)(nil),                             // 105: dirextalk.agent.v1.CloudEntryApprovalChallenge
-	(*CloudEntryApprovalSignature)(nil),                             // 106: dirextalk.agent.v1.CloudEntryApprovalSignature
-	(*CloudEntryOperation)(nil),                                     // 107: dirextalk.agent.v1.CloudEntryOperation
-	(*CreateCloudDeploymentEntryPlanRequest)(nil),                   // 108: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanRequest
-	(*CreateCloudDeploymentEntryPlanResponse)(nil),                  // 109: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanResponse
-	(*GetCloudEntryPlanRequest)(nil),                                // 110: dirextalk.agent.v1.GetCloudEntryPlanRequest
-	(*GetCloudEntryPlanResponse)(nil),                               // 111: dirextalk.agent.v1.GetCloudEntryPlanResponse
-	(*CreateCloudDeploymentEntryChallengeRequest)(nil),              // 112: dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeRequest
-	(*CreateCloudDeploymentEntryChallengeResponse)(nil),             // 113: dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeResponse
-	(*ApproveCloudDeploymentEntryRequest)(nil),                      // 114: dirextalk.agent.v1.ApproveCloudDeploymentEntryRequest
-	(*ApproveCloudDeploymentEntryResponse)(nil),                     // 115: dirextalk.agent.v1.ApproveCloudDeploymentEntryResponse
-	(*GetCloudEntryOperationRequest)(nil),                           // 116: dirextalk.agent.v1.GetCloudEntryOperationRequest
-	(*GetCloudEntryOperationResponse)(nil),                          // 117: dirextalk.agent.v1.GetCloudEntryOperationResponse
-	(*CloudWorker)(nil),                                             // 118: dirextalk.agent.v1.CloudWorker
-	(*GetCloudDeploymentRequest)(nil),                               // 119: dirextalk.agent.v1.GetCloudDeploymentRequest
-	(*GetCloudDeploymentResponse)(nil),                              // 120: dirextalk.agent.v1.GetCloudDeploymentResponse
-	(*ListCloudDeploymentsRequest)(nil),                             // 121: dirextalk.agent.v1.ListCloudDeploymentsRequest
-	(*ListCloudDeploymentsResponse)(nil),                            // 122: dirextalk.agent.v1.ListCloudDeploymentsResponse
-	(*GetCloudResourceRequest)(nil),                                 // 123: dirextalk.agent.v1.GetCloudResourceRequest
-	(*GetCloudResourceResponse)(nil),                                // 124: dirextalk.agent.v1.GetCloudResourceResponse
-	(*ListCloudResourcesRequest)(nil),                               // 125: dirextalk.agent.v1.ListCloudResourcesRequest
-	(*ListCloudResourcesResponse)(nil),                              // 126: dirextalk.agent.v1.ListCloudResourcesResponse
-	(*GetCloudWorkerRequest)(nil),                                   // 127: dirextalk.agent.v1.GetCloudWorkerRequest
-	(*GetCloudWorkerResponse)(nil),                                  // 128: dirextalk.agent.v1.GetCloudWorkerResponse
-	(*ListCloudWorkersRequest)(nil),                                 // 129: dirextalk.agent.v1.ListCloudWorkersRequest
-	(*ListCloudWorkersResponse)(nil),                                // 130: dirextalk.agent.v1.ListCloudWorkersResponse
-	(*CreateSessionRequest)(nil),                                    // 131: dirextalk.agent.v1.CreateSessionRequest
-	(*SecretBootstrapSession)(nil),                                  // 132: dirextalk.agent.v1.SecretBootstrapSession
-	(*CreateSessionResponse)(nil),                                   // 133: dirextalk.agent.v1.CreateSessionResponse
-	(*SecretBootstrapServiceGetSessionRequest)(nil),                 // 134: dirextalk.agent.v1.SecretBootstrapServiceGetSessionRequest
-	(*SecretBootstrapServiceGetSessionResponse)(nil),                // 135: dirextalk.agent.v1.SecretBootstrapServiceGetSessionResponse
-	(*UploadEncryptedRequest)(nil),                                  // 136: dirextalk.agent.v1.UploadEncryptedRequest
-	(*UploadEncryptedResponse)(nil),                                 // 137: dirextalk.agent.v1.UploadEncryptedResponse
-	(*CompleteRequest)(nil),                                         // 138: dirextalk.agent.v1.CompleteRequest
-	(*CompleteResponse)(nil),                                        // 139: dirextalk.agent.v1.CompleteResponse
-	(*CreateServiceKeyRequest)(nil),                                 // 140: dirextalk.agent.v1.CreateServiceKeyRequest
-	(*ServiceKeyDelivery)(nil),                                      // 141: dirextalk.agent.v1.ServiceKeyDelivery
-	(*CreateServiceKeyResponse)(nil),                                // 142: dirextalk.agent.v1.CreateServiceKeyResponse
-	(*RevokeServiceKeyRequest)(nil),                                 // 143: dirextalk.agent.v1.RevokeServiceKeyRequest
-	(*RevokeServiceKeyResponse)(nil),                                // 144: dirextalk.agent.v1.RevokeServiceKeyResponse
-	(*ApprovalDevice)(nil),                                          // 145: dirextalk.agent.v1.ApprovalDevice
-	(*RegisterApprovalDeviceRequest)(nil),                           // 146: dirextalk.agent.v1.RegisterApprovalDeviceRequest
-	(*RegisterApprovalDeviceResponse)(nil),                          // 147: dirextalk.agent.v1.RegisterApprovalDeviceResponse
-	(*RevokeApprovalDeviceRequest)(nil),                             // 148: dirextalk.agent.v1.RevokeApprovalDeviceRequest
-	(*RevokeApprovalDeviceResponse)(nil),                            // 149: dirextalk.agent.v1.RevokeApprovalDeviceResponse
-	(*EnrollRequest)(nil),                                           // 150: dirextalk.agent.v1.EnrollRequest
-	(*EnrollResponse)(nil),                                          // 151: dirextalk.agent.v1.EnrollResponse
-	(*CreateIdentityChallengeRequest)(nil),                          // 152: dirextalk.agent.v1.CreateIdentityChallengeRequest
-	(*WorkerIdentityChallenge)(nil),                                 // 153: dirextalk.agent.v1.WorkerIdentityChallenge
-	(*CreateIdentityChallengeResponse)(nil),                         // 154: dirextalk.agent.v1.CreateIdentityChallengeResponse
-	(*WorkerIdentityProof)(nil),                                     // 155: dirextalk.agent.v1.WorkerIdentityProof
-	(*EnrollVerifiedIdentityRequest)(nil),                           // 156: dirextalk.agent.v1.EnrollVerifiedIdentityRequest
-	(*EnrollVerifiedIdentityResponse)(nil),                          // 157: dirextalk.agent.v1.EnrollVerifiedIdentityResponse
-	(*WorkerAccessScope)(nil),                                       // 158: dirextalk.agent.v1.WorkerAccessScope
-	(*WorkerBundleReference)(nil),                                   // 159: dirextalk.agent.v1.WorkerBundleReference
-	(*WorkerInstallerBinding)(nil),                                  // 160: dirextalk.agent.v1.WorkerInstallerBinding
-	(*WorkerInstallerLeaseGrant)(nil),                               // 161: dirextalk.agent.v1.WorkerInstallerLeaseGrant
-	(*WorkerAssignment)(nil),                                        // 162: dirextalk.agent.v1.WorkerAssignment
-	(*WorkerControlServiceGetCurrentAssignmentRequest)(nil),         // 163: dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentRequest
-	(*WorkerControlServiceGetCurrentAssignmentResponse)(nil),        // 164: dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse
-	(*WorkerControlServiceClaimRequest)(nil),                        // 165: dirextalk.agent.v1.WorkerControlServiceClaimRequest
-	(*WorkerControlServiceClaimResponse)(nil),                       // 166: dirextalk.agent.v1.WorkerControlServiceClaimResponse
-	(*HeartbeatRequest)(nil),                                        // 167: dirextalk.agent.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),                                       // 168: dirextalk.agent.v1.HeartbeatResponse
-	(*WorkerObjectClaim)(nil),                                       // 169: dirextalk.agent.v1.WorkerObjectClaim
-	(*WorkerControlServiceRecordEvidenceRequest)(nil),               // 170: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest
-	(*WorkerControlServiceRecordEvidenceResponse)(nil),              // 171: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceResponse
-	(*WorkerControlServiceCompleteRequest)(nil),                     // 172: dirextalk.agent.v1.WorkerControlServiceCompleteRequest
-	(*WorkerControlServiceCompleteResponse)(nil),                    // 173: dirextalk.agent.v1.WorkerControlServiceCompleteResponse
-	(*CreateCloudGoalRequest)(nil),                                  // 174: dirextalk.agent.v1.CreateCloudGoalRequest
-	(*CloudGoalPlanning)(nil),                                       // 175: dirextalk.agent.v1.CloudGoalPlanning
-	(*CreateCloudGoalResponse)(nil),                                 // 176: dirextalk.agent.v1.CreateCloudGoalResponse
-	(*CloudDialogueScopeV1)(nil),                                    // 177: dirextalk.agent.v1.CloudDialogueScopeV1
-	(*CloudManagedLifecycleContract)(nil),                           // 178: dirextalk.agent.v1.CloudManagedLifecycleContract
-	(*CloudManagedAcceptanceResource)(nil),                          // 179: dirextalk.agent.v1.CloudManagedAcceptanceResource
-	(*CloudManagedHealthProbe)(nil),                                 // 180: dirextalk.agent.v1.CloudManagedHealthProbe
-	(*CloudManagedHealthContract)(nil),                              // 181: dirextalk.agent.v1.CloudManagedHealthContract
-	(*CloudManagedVolumeSlot)(nil),                                  // 182: dirextalk.agent.v1.CloudManagedVolumeSlot
-	(*CloudManagedDataSlot)(nil),                                    // 183: dirextalk.agent.v1.CloudManagedDataSlot
-	(*CloudManagedSecretSlot)(nil),                                  // 184: dirextalk.agent.v1.CloudManagedSecretSlot
-	(*CloudManagedCompatibilityService)(nil),                        // 185: dirextalk.agent.v1.CloudManagedCompatibilityService
-	(*CloudManagedCompatibilityBackup)(nil),                         // 186: dirextalk.agent.v1.CloudManagedCompatibilityBackup
-	(*CloudManagedCompatibilityRestore)(nil),                        // 187: dirextalk.agent.v1.CloudManagedCompatibilityRestore
-	(*CloudManagedCompatibilityRecipe)(nil),                         // 188: dirextalk.agent.v1.CloudManagedCompatibilityRecipe
-	(*CloudManagedCompatibilityAcceptance)(nil),                     // 189: dirextalk.agent.v1.CloudManagedCompatibilityAcceptance
-	(*CloudManagedAcceptanceScope)(nil),                             // 190: dirextalk.agent.v1.CloudManagedAcceptanceScope
-	(*CloudManagedAcceptanceChallenge)(nil),                         // 191: dirextalk.agent.v1.CloudManagedAcceptanceChallenge
-	(*CloudManagedAcceptanceOperation)(nil),                         // 192: dirextalk.agent.v1.CloudManagedAcceptanceOperation
-	(*CreateCloudManagedAcceptanceChallengeRequest)(nil),            // 193: dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeRequest
-	(*CreateCloudManagedAcceptanceChallengeResponse)(nil),           // 194: dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeResponse
-	(*ApproveCloudManagedAcceptanceRequest)(nil),                    // 195: dirextalk.agent.v1.ApproveCloudManagedAcceptanceRequest
-	(*ApproveCloudManagedAcceptanceResponse)(nil),                   // 196: dirextalk.agent.v1.ApproveCloudManagedAcceptanceResponse
-	(*GetCloudManagedAcceptanceOperationRequest)(nil),               // 197: dirextalk.agent.v1.GetCloudManagedAcceptanceOperationRequest
-	(*GetCloudManagedAcceptanceOperationResponse)(nil),              // 198: dirextalk.agent.v1.GetCloudManagedAcceptanceOperationResponse
-	(*CloudManagedPreparationResourceFact)(nil),                     // 199: dirextalk.agent.v1.CloudManagedPreparationResourceFact
-	(*CloudManagedPreparationRestart)(nil),                          // 200: dirextalk.agent.v1.CloudManagedPreparationRestart
-	(*CloudManagedPreparationVolume)(nil),                           // 201: dirextalk.agent.v1.CloudManagedPreparationVolume
-	(*CloudManagedPreparationScope)(nil),                            // 202: dirextalk.agent.v1.CloudManagedPreparationScope
-	(*CloudManagedPreparationChallenge)(nil),                        // 203: dirextalk.agent.v1.CloudManagedPreparationChallenge
-	(*CloudManagedPreparationStep)(nil),                             // 204: dirextalk.agent.v1.CloudManagedPreparationStep
-	(*CloudManagedPreparationResult)(nil),                           // 205: dirextalk.agent.v1.CloudManagedPreparationResult
-	(*CloudManagedPreparationOperation)(nil),                        // 206: dirextalk.agent.v1.CloudManagedPreparationOperation
-	(*CreateCloudManagedPreparationRequest)(nil),                    // 207: dirextalk.agent.v1.CreateCloudManagedPreparationRequest
-	(*CreateCloudManagedPreparationResponse)(nil),                   // 208: dirextalk.agent.v1.CreateCloudManagedPreparationResponse
-	(*ApproveCloudManagedPreparationRequest)(nil),                   // 209: dirextalk.agent.v1.ApproveCloudManagedPreparationRequest
-	(*ApproveCloudManagedPreparationResponse)(nil),                  // 210: dirextalk.agent.v1.ApproveCloudManagedPreparationResponse
-	(*GetCloudManagedPreparationRequest)(nil),                       // 211: dirextalk.agent.v1.GetCloudManagedPreparationRequest
-	(*GetCloudManagedPreparationResponse)(nil),                      // 212: dirextalk.agent.v1.GetCloudManagedPreparationResponse
-	(*CloudPairingSession)(nil),                                     // 213: dirextalk.agent.v1.CloudPairingSession
-	(*GetCloudPairingRequest)(nil),                                  // 214: dirextalk.agent.v1.GetCloudPairingRequest
-	(*GetCloudPairingResponse)(nil),                                 // 215: dirextalk.agent.v1.GetCloudPairingResponse
-	(*EncryptedPairingPayload)(nil),                                 // 216: dirextalk.agent.v1.EncryptedPairingPayload
-	(*RetrieveCloudPairingPayloadRequest)(nil),                      // 217: dirextalk.agent.v1.RetrieveCloudPairingPayloadRequest
-	(*RetrieveCloudPairingPayloadResponse)(nil),                     // 218: dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse
-	(*CloudPairingResumeScope)(nil),                                 // 219: dirextalk.agent.v1.CloudPairingResumeScope
-	(*CloudPairingResumeChallenge)(nil),                             // 220: dirextalk.agent.v1.CloudPairingResumeChallenge
-	(*CreateCloudPairingResumeChallengeRequest)(nil),                // 221: dirextalk.agent.v1.CreateCloudPairingResumeChallengeRequest
-	(*CreateCloudPairingResumeChallengeResponse)(nil),               // 222: dirextalk.agent.v1.CreateCloudPairingResumeChallengeResponse
-	(*ApproveCloudPairingResumeRequest)(nil),                        // 223: dirextalk.agent.v1.ApproveCloudPairingResumeRequest
-	(*ApproveCloudPairingResumeResponse)(nil),                       // 224: dirextalk.agent.v1.ApproveCloudPairingResumeResponse
-	(*WorkerServiceOperationAssignment)(nil),                        // 225: dirextalk.agent.v1.WorkerServiceOperationAssignment
-	(*WorkerServiceOperationRootHelperReceipt)(nil),                 // 226: dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt
-	(*WorkerServiceOperation)(nil),                                  // 227: dirextalk.agent.v1.WorkerServiceOperation
-	(*WorkerServiceOperationServiceGetRequest)(nil),                 // 228: dirextalk.agent.v1.WorkerServiceOperationServiceGetRequest
-	(*WorkerServiceOperationServiceGetResponse)(nil),                // 229: dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse
-	(*WorkerServiceOperationServiceClaimRequest)(nil),               // 230: dirextalk.agent.v1.WorkerServiceOperationServiceClaimRequest
-	(*WorkerServiceOperationServiceClaimResponse)(nil),              // 231: dirextalk.agent.v1.WorkerServiceOperationServiceClaimResponse
-	(*WorkerServiceOperationServiceAcquireNextRequest)(nil),         // 232: dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextRequest
-	(*WorkerServiceOperationServiceAcquireNextResponse)(nil),        // 233: dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextResponse
-	(*WorkerServiceOperationServiceCompleteRequest)(nil),            // 234: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteRequest
-	(*WorkerServiceOperationServiceCompleteResponse)(nil),           // 235: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteResponse
-	(*PairingWorkerOperationAssignment)(nil),                        // 236: dirextalk.agent.v1.PairingWorkerOperationAssignment
-	(*PairingWorkerOperationServiceAcquireNextRequest)(nil),         // 237: dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextRequest
-	(*PairingWorkerOperationServiceAcquireNextResponse)(nil),        // 238: dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextResponse
-	(*PairingWorkerOperationServiceCompleteRequest)(nil),            // 239: dirextalk.agent.v1.PairingWorkerOperationServiceCompleteRequest
-	(*PairingWorkerOperationServiceCompleteResponse)(nil),           // 240: dirextalk.agent.v1.PairingWorkerOperationServiceCompleteResponse
-	(*RootHelperKeySecretPlan)(nil),                                 // 241: dirextalk.agent.v1.RootHelperKeySecretPlan
-	(*RootHelperKeySecretCoordinate)(nil),                           // 242: dirextalk.agent.v1.RootHelperKeySecretCoordinate
-	(*RootHelperKeyDeviceBinding)(nil),                              // 243: dirextalk.agent.v1.RootHelperKeyDeviceBinding
-	(*RootHelperKeyDeliveryApproval)(nil),                           // 244: dirextalk.agent.v1.RootHelperKeyDeliveryApproval
-	(*PrepareRootHelperKeyDeliveryApprovalRequest)(nil),             // 245: dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalRequest
-	(*PrepareRootHelperKeyDeliveryApprovalResponse)(nil),            // 246: dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalResponse
-	(*ApproveRootHelperKeyDeliveryRequest)(nil),                     // 247: dirextalk.agent.v1.ApproveRootHelperKeyDeliveryRequest
-	(*ApproveRootHelperKeyDeliveryResponse)(nil),                    // 248: dirextalk.agent.v1.ApproveRootHelperKeyDeliveryResponse
-	(*GetRootHelperKeyDeliveryApprovalRequest)(nil),                 // 249: dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalRequest
-	(*GetRootHelperKeyDeliveryApprovalResponse)(nil),                // 250: dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalResponse
-	(*RootHelperKeyDelivery)(nil),                                   // 251: dirextalk.agent.v1.RootHelperKeyDelivery
-	(*SubmitProofRequest)(nil),                                      // 252: dirextalk.agent.v1.SubmitProofRequest
-	(*SubmitProofResponse)(nil),                                     // 253: dirextalk.agent.v1.SubmitProofResponse
-	(*ReconcileRevocationRequest)(nil),                              // 254: dirextalk.agent.v1.ReconcileRevocationRequest
-	(*ReconcileRevocationResponse)(nil),                             // 255: dirextalk.agent.v1.ReconcileRevocationResponse
-	(*ConfirmCanaryRequest)(nil),                                    // 256: dirextalk.agent.v1.ConfirmCanaryRequest
-	(*ConfirmCanaryResponse)(nil),                                   // 257: dirextalk.agent.v1.ConfirmCanaryResponse
-	(*RootHelperBootstrapControlServiceAcquirePendingRequest)(nil),  // 258: dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingRequest
-	(*RootHelperBootstrapControlServiceAcquirePendingResponse)(nil), // 259: dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingResponse
-	(*RootHelperBootstrapControlServiceCurrentRequest)(nil),         // 260: dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentRequest
-	(*RootHelperBootstrapControlServiceCurrentResponse)(nil),        // 261: dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentResponse
-	(*timestamppb.Timestamp)(nil),                                   // 262: google.protobuf.Timestamp
-	(*DeviceApprovalSignature)(nil),                                 // 263: dirextalk.agent.v1.DeviceApprovalSignature
-	(*PreviewAwsIdentityRequest)(nil),                               // 264: dirextalk.agent.v1.PreviewAwsIdentityRequest
-	(*CreateCloudQuoteRequest)(nil),                                 // 265: dirextalk.agent.v1.CreateCloudQuoteRequest
-	(*GetCloudQuoteRequest)(nil),                                    // 266: dirextalk.agent.v1.GetCloudQuoteRequest
-	(*CreateCloudPlanRequest)(nil),                                  // 267: dirextalk.agent.v1.CreateCloudPlanRequest
-	(*GetCloudPlanRequest)(nil),                                     // 268: dirextalk.agent.v1.GetCloudPlanRequest
-	(*ListCloudPlansRequest)(nil),                                   // 269: dirextalk.agent.v1.ListCloudPlansRequest
-	(*CreateApprovalChallengeRequest)(nil),                          // 270: dirextalk.agent.v1.CreateApprovalChallengeRequest
-	(*ApproveCloudPlanRequest)(nil),                                 // 271: dirextalk.agent.v1.ApproveCloudPlanRequest
-	(*EstablishAwsConnectionRequest)(nil),                           // 272: dirextalk.agent.v1.EstablishAwsConnectionRequest
-	(*CreateAwsFoundationOperationChallengeRequest)(nil),            // 273: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
-	(*ApproveAwsFoundationOperationRequest)(nil),                    // 274: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
-	(*GetAwsFoundationOperationRequest)(nil),                        // 275: dirextalk.agent.v1.GetAwsFoundationOperationRequest
-	(*GetCloudConnectionRequest)(nil),                               // 276: dirextalk.agent.v1.GetCloudConnectionRequest
-	(*ListCloudConnectionsRequest)(nil),                             // 277: dirextalk.agent.v1.ListCloudConnectionsRequest
-	(*PreviewAwsIdentityResponse)(nil),                              // 278: dirextalk.agent.v1.PreviewAwsIdentityResponse
-	(*CreateCloudQuoteResponse)(nil),                                // 279: dirextalk.agent.v1.CreateCloudQuoteResponse
-	(*GetCloudQuoteResponse)(nil),                                   // 280: dirextalk.agent.v1.GetCloudQuoteResponse
-	(*CreateCloudPlanResponse)(nil),                                 // 281: dirextalk.agent.v1.CreateCloudPlanResponse
-	(*GetCloudPlanResponse)(nil),                                    // 282: dirextalk.agent.v1.GetCloudPlanResponse
-	(*ListCloudPlansResponse)(nil),                                  // 283: dirextalk.agent.v1.ListCloudPlansResponse
-	(*CreateApprovalChallengeResponse)(nil),                         // 284: dirextalk.agent.v1.CreateApprovalChallengeResponse
-	(*ApproveCloudPlanResponse)(nil),                                // 285: dirextalk.agent.v1.ApproveCloudPlanResponse
-	(*EstablishAwsConnectionResponse)(nil),                          // 286: dirextalk.agent.v1.EstablishAwsConnectionResponse
-	(*CreateAwsFoundationOperationChallengeResponse)(nil),           // 287: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
-	(*ApproveAwsFoundationOperationResponse)(nil),                   // 288: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
-	(*GetAwsFoundationOperationResponse)(nil),                       // 289: dirextalk.agent.v1.GetAwsFoundationOperationResponse
-	(*GetCloudConnectionResponse)(nil),                              // 290: dirextalk.agent.v1.GetCloudConnectionResponse
-	(*ListCloudConnectionsResponse)(nil),                            // 291: dirextalk.agent.v1.ListCloudConnectionsResponse
+	(WorkerMilestoneKind)(0),                                        // 37: dirextalk.agent.v1.WorkerMilestoneKind
+	(*Task)(nil),                                                    // 38: dirextalk.agent.v1.Task
+	(*Step)(nil),                                                    // 39: dirextalk.agent.v1.Step
+	(*Event)(nil),                                                   // 40: dirextalk.agent.v1.Event
+	(*CreateTaskRequest)(nil),                                       // 41: dirextalk.agent.v1.CreateTaskRequest
+	(*CreateTaskResponse)(nil),                                      // 42: dirextalk.agent.v1.CreateTaskResponse
+	(*GetTaskRequest)(nil),                                          // 43: dirextalk.agent.v1.GetTaskRequest
+	(*GetTaskResponse)(nil),                                         // 44: dirextalk.agent.v1.GetTaskResponse
+	(*ListTasksRequest)(nil),                                        // 45: dirextalk.agent.v1.ListTasksRequest
+	(*ListTasksResponse)(nil),                                       // 46: dirextalk.agent.v1.ListTasksResponse
+	(*CancelTaskRequest)(nil),                                       // 47: dirextalk.agent.v1.CancelTaskRequest
+	(*CancelTaskResponse)(nil),                                      // 48: dirextalk.agent.v1.CancelTaskResponse
+	(*ListStepsRequest)(nil),                                        // 49: dirextalk.agent.v1.ListStepsRequest
+	(*ListStepsResponse)(nil),                                       // 50: dirextalk.agent.v1.ListStepsResponse
+	(*WatchEventsRequest)(nil),                                      // 51: dirextalk.agent.v1.WatchEventsRequest
+	(*WatchEventsResponse)(nil),                                     // 52: dirextalk.agent.v1.WatchEventsResponse
+	(*RuntimeCapabilities)(nil),                                     // 53: dirextalk.agent.v1.RuntimeCapabilities
+	(*RuntimeServiceGetCapabilitiesRequest)(nil),                    // 54: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
+	(*RuntimeServiceGetCapabilitiesResponse)(nil),                   // 55: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
+	(*ModelProfile)(nil),                                            // 56: dirextalk.agent.v1.ModelProfile
+	(*RuntimeConfigSpec)(nil),                                       // 57: dirextalk.agent.v1.RuntimeConfigSpec
+	(*RuntimeConfig)(nil),                                           // 58: dirextalk.agent.v1.RuntimeConfig
+	(*GetRuntimeConfigRequest)(nil),                                 // 59: dirextalk.agent.v1.GetRuntimeConfigRequest
+	(*GetRuntimeConfigResponse)(nil),                                // 60: dirextalk.agent.v1.GetRuntimeConfigResponse
+	(*PutRuntimeConfigRequest)(nil),                                 // 61: dirextalk.agent.v1.PutRuntimeConfigRequest
+	(*PutRuntimeConfigResponse)(nil),                                // 62: dirextalk.agent.v1.PutRuntimeConfigResponse
+	(*ChatRequest)(nil),                                             // 63: dirextalk.agent.v1.ChatRequest
+	(*RuntimeStepSummary)(nil),                                      // 64: dirextalk.agent.v1.RuntimeStepSummary
+	(*RuntimeAssistantMessage)(nil),                                 // 65: dirextalk.agent.v1.RuntimeAssistantMessage
+	(*ChatResponse)(nil),                                            // 66: dirextalk.agent.v1.ChatResponse
+	(*StreamChatRequest)(nil),                                       // 67: dirextalk.agent.v1.StreamChatRequest
+	(*ChatDelta)(nil),                                               // 68: dirextalk.agent.v1.ChatDelta
+	(*ToolExecutionSummary)(nil),                                    // 69: dirextalk.agent.v1.ToolExecutionSummary
+	(*ChatDone)(nil),                                                // 70: dirextalk.agent.v1.ChatDone
+	(*StreamChatResponse)(nil),                                      // 71: dirextalk.agent.v1.StreamChatResponse
+	(*CloudCapabilities)(nil),                                       // 72: dirextalk.agent.v1.CloudCapabilities
+	(*CloudControlServiceGetCapabilitiesRequest)(nil),               // 73: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
+	(*CloudControlServiceGetCapabilitiesResponse)(nil),              // 74: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
+	(*CloudResourceReadBack)(nil),                                   // 75: dirextalk.agent.v1.CloudResourceReadBack
+	(*CloudResourceStateCount)(nil),                                 // 76: dirextalk.agent.v1.CloudResourceStateCount
+	(*CloudReadBackSummary)(nil),                                    // 77: dirextalk.agent.v1.CloudReadBackSummary
+	(*CloudResourceSummary)(nil),                                    // 78: dirextalk.agent.v1.CloudResourceSummary
+	(*CloudHealthProbeCount)(nil),                                   // 79: dirextalk.agent.v1.CloudHealthProbeCount
+	(*CloudHealthSummary)(nil),                                      // 80: dirextalk.agent.v1.CloudHealthSummary
+	(*CloudDeployment)(nil),                                         // 81: dirextalk.agent.v1.CloudDeployment
+	(*CloudResource)(nil),                                           // 82: dirextalk.agent.v1.CloudResource
+	(*CloudDestroyResourceScope)(nil),                               // 83: dirextalk.agent.v1.CloudDestroyResourceScope
+	(*CloudDeploymentDestroyScope)(nil),                             // 84: dirextalk.agent.v1.CloudDeploymentDestroyScope
+	(*CloudDeploymentDestroyChallenge)(nil),                         // 85: dirextalk.agent.v1.CloudDeploymentDestroyChallenge
+	(*CloudDestroyOperation)(nil),                                   // 86: dirextalk.agent.v1.CloudDestroyOperation
+	(*CreateCloudDeploymentDestroyChallengeRequest)(nil),            // 87: dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeRequest
+	(*CreateCloudDeploymentDestroyChallengeResponse)(nil),           // 88: dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeResponse
+	(*ApproveCloudDeploymentDestroyRequest)(nil),                    // 89: dirextalk.agent.v1.ApproveCloudDeploymentDestroyRequest
+	(*ApproveCloudDeploymentDestroyResponse)(nil),                   // 90: dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse
+	(*GetCloudDestroyOperationRequest)(nil),                         // 91: dirextalk.agent.v1.GetCloudDestroyOperationRequest
+	(*GetCloudDestroyOperationResponse)(nil),                        // 92: dirextalk.agent.v1.GetCloudDestroyOperationResponse
+	(*CloudEntryCostScope)(nil),                                     // 93: dirextalk.agent.v1.CloudEntryCostScope
+	(*CloudEntryPlanDraft)(nil),                                     // 94: dirextalk.agent.v1.CloudEntryPlanDraft
+	(*CloudEntryAWSReadBack)(nil),                                   // 95: dirextalk.agent.v1.CloudEntryAWSReadBack
+	(*CloudEntryWorkerReadBackScope)(nil),                           // 96: dirextalk.agent.v1.CloudEntryWorkerReadBackScope
+	(*CloudEntryRecipeHealthBinding)(nil),                           // 97: dirextalk.agent.v1.CloudEntryRecipeHealthBinding
+	(*CloudEntryCertificateScope)(nil),                              // 98: dirextalk.agent.v1.CloudEntryCertificateScope
+	(*CloudEntryPublicSubnetScope)(nil),                             // 99: dirextalk.agent.v1.CloudEntryPublicSubnetScope
+	(*CloudEntryALBScope)(nil),                                      // 100: dirextalk.agent.v1.CloudEntryALBScope
+	(*CloudEntryHealthRouteScope)(nil),                              // 101: dirextalk.agent.v1.CloudEntryHealthRouteScope
+	(*CloudEntryAuthenticationScope)(nil),                           // 102: dirextalk.agent.v1.CloudEntryAuthenticationScope
+	(*CloudEntryRetentionScope)(nil),                                // 103: dirextalk.agent.v1.CloudEntryRetentionScope
+	(*CloudEntryApprovalScope)(nil),                                 // 104: dirextalk.agent.v1.CloudEntryApprovalScope
+	(*CloudEntryPlan)(nil),                                          // 105: dirextalk.agent.v1.CloudEntryPlan
+	(*CloudEntryApprovalChallenge)(nil),                             // 106: dirextalk.agent.v1.CloudEntryApprovalChallenge
+	(*CloudEntryApprovalSignature)(nil),                             // 107: dirextalk.agent.v1.CloudEntryApprovalSignature
+	(*CloudEntryOperation)(nil),                                     // 108: dirextalk.agent.v1.CloudEntryOperation
+	(*CreateCloudDeploymentEntryPlanRequest)(nil),                   // 109: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanRequest
+	(*CreateCloudDeploymentEntryPlanResponse)(nil),                  // 110: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanResponse
+	(*GetCloudEntryPlanRequest)(nil),                                // 111: dirextalk.agent.v1.GetCloudEntryPlanRequest
+	(*GetCloudEntryPlanResponse)(nil),                               // 112: dirextalk.agent.v1.GetCloudEntryPlanResponse
+	(*CreateCloudDeploymentEntryChallengeRequest)(nil),              // 113: dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeRequest
+	(*CreateCloudDeploymentEntryChallengeResponse)(nil),             // 114: dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeResponse
+	(*ApproveCloudDeploymentEntryRequest)(nil),                      // 115: dirextalk.agent.v1.ApproveCloudDeploymentEntryRequest
+	(*ApproveCloudDeploymentEntryResponse)(nil),                     // 116: dirextalk.agent.v1.ApproveCloudDeploymentEntryResponse
+	(*GetCloudEntryOperationRequest)(nil),                           // 117: dirextalk.agent.v1.GetCloudEntryOperationRequest
+	(*GetCloudEntryOperationResponse)(nil),                          // 118: dirextalk.agent.v1.GetCloudEntryOperationResponse
+	(*CloudWorker)(nil),                                             // 119: dirextalk.agent.v1.CloudWorker
+	(*GetCloudDeploymentRequest)(nil),                               // 120: dirextalk.agent.v1.GetCloudDeploymentRequest
+	(*GetCloudDeploymentResponse)(nil),                              // 121: dirextalk.agent.v1.GetCloudDeploymentResponse
+	(*ListCloudDeploymentsRequest)(nil),                             // 122: dirextalk.agent.v1.ListCloudDeploymentsRequest
+	(*ListCloudDeploymentsResponse)(nil),                            // 123: dirextalk.agent.v1.ListCloudDeploymentsResponse
+	(*GetCloudResourceRequest)(nil),                                 // 124: dirextalk.agent.v1.GetCloudResourceRequest
+	(*GetCloudResourceResponse)(nil),                                // 125: dirextalk.agent.v1.GetCloudResourceResponse
+	(*ListCloudResourcesRequest)(nil),                               // 126: dirextalk.agent.v1.ListCloudResourcesRequest
+	(*ListCloudResourcesResponse)(nil),                              // 127: dirextalk.agent.v1.ListCloudResourcesResponse
+	(*GetCloudWorkerRequest)(nil),                                   // 128: dirextalk.agent.v1.GetCloudWorkerRequest
+	(*GetCloudWorkerResponse)(nil),                                  // 129: dirextalk.agent.v1.GetCloudWorkerResponse
+	(*ListCloudWorkersRequest)(nil),                                 // 130: dirextalk.agent.v1.ListCloudWorkersRequest
+	(*ListCloudWorkersResponse)(nil),                                // 131: dirextalk.agent.v1.ListCloudWorkersResponse
+	(*CreateSessionRequest)(nil),                                    // 132: dirextalk.agent.v1.CreateSessionRequest
+	(*SecretBootstrapSession)(nil),                                  // 133: dirextalk.agent.v1.SecretBootstrapSession
+	(*CreateSessionResponse)(nil),                                   // 134: dirextalk.agent.v1.CreateSessionResponse
+	(*SecretBootstrapServiceGetSessionRequest)(nil),                 // 135: dirextalk.agent.v1.SecretBootstrapServiceGetSessionRequest
+	(*SecretBootstrapServiceGetSessionResponse)(nil),                // 136: dirextalk.agent.v1.SecretBootstrapServiceGetSessionResponse
+	(*UploadEncryptedRequest)(nil),                                  // 137: dirextalk.agent.v1.UploadEncryptedRequest
+	(*UploadEncryptedResponse)(nil),                                 // 138: dirextalk.agent.v1.UploadEncryptedResponse
+	(*CompleteRequest)(nil),                                         // 139: dirextalk.agent.v1.CompleteRequest
+	(*CompleteResponse)(nil),                                        // 140: dirextalk.agent.v1.CompleteResponse
+	(*CreateServiceKeyRequest)(nil),                                 // 141: dirextalk.agent.v1.CreateServiceKeyRequest
+	(*ServiceKeyDelivery)(nil),                                      // 142: dirextalk.agent.v1.ServiceKeyDelivery
+	(*CreateServiceKeyResponse)(nil),                                // 143: dirextalk.agent.v1.CreateServiceKeyResponse
+	(*RevokeServiceKeyRequest)(nil),                                 // 144: dirextalk.agent.v1.RevokeServiceKeyRequest
+	(*RevokeServiceKeyResponse)(nil),                                // 145: dirextalk.agent.v1.RevokeServiceKeyResponse
+	(*ApprovalDevice)(nil),                                          // 146: dirextalk.agent.v1.ApprovalDevice
+	(*RegisterApprovalDeviceRequest)(nil),                           // 147: dirextalk.agent.v1.RegisterApprovalDeviceRequest
+	(*RegisterApprovalDeviceResponse)(nil),                          // 148: dirextalk.agent.v1.RegisterApprovalDeviceResponse
+	(*RevokeApprovalDeviceRequest)(nil),                             // 149: dirextalk.agent.v1.RevokeApprovalDeviceRequest
+	(*RevokeApprovalDeviceResponse)(nil),                            // 150: dirextalk.agent.v1.RevokeApprovalDeviceResponse
+	(*EnrollRequest)(nil),                                           // 151: dirextalk.agent.v1.EnrollRequest
+	(*EnrollResponse)(nil),                                          // 152: dirextalk.agent.v1.EnrollResponse
+	(*CreateIdentityChallengeRequest)(nil),                          // 153: dirextalk.agent.v1.CreateIdentityChallengeRequest
+	(*WorkerIdentityChallenge)(nil),                                 // 154: dirextalk.agent.v1.WorkerIdentityChallenge
+	(*CreateIdentityChallengeResponse)(nil),                         // 155: dirextalk.agent.v1.CreateIdentityChallengeResponse
+	(*WorkerIdentityProof)(nil),                                     // 156: dirextalk.agent.v1.WorkerIdentityProof
+	(*EnrollVerifiedIdentityRequest)(nil),                           // 157: dirextalk.agent.v1.EnrollVerifiedIdentityRequest
+	(*EnrollVerifiedIdentityResponse)(nil),                          // 158: dirextalk.agent.v1.EnrollVerifiedIdentityResponse
+	(*WorkerAccessScope)(nil),                                       // 159: dirextalk.agent.v1.WorkerAccessScope
+	(*WorkerBundleReference)(nil),                                   // 160: dirextalk.agent.v1.WorkerBundleReference
+	(*WorkerInstallerBinding)(nil),                                  // 161: dirextalk.agent.v1.WorkerInstallerBinding
+	(*WorkerInstallerLeaseGrant)(nil),                               // 162: dirextalk.agent.v1.WorkerInstallerLeaseGrant
+	(*WorkerAssignment)(nil),                                        // 163: dirextalk.agent.v1.WorkerAssignment
+	(*WorkerControlServiceGetCurrentAssignmentRequest)(nil),         // 164: dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentRequest
+	(*WorkerControlServiceGetCurrentAssignmentResponse)(nil),        // 165: dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse
+	(*WorkerControlServiceClaimRequest)(nil),                        // 166: dirextalk.agent.v1.WorkerControlServiceClaimRequest
+	(*WorkerControlServiceClaimResponse)(nil),                       // 167: dirextalk.agent.v1.WorkerControlServiceClaimResponse
+	(*HeartbeatRequest)(nil),                                        // 168: dirextalk.agent.v1.HeartbeatRequest
+	(*HeartbeatResponse)(nil),                                       // 169: dirextalk.agent.v1.HeartbeatResponse
+	(*WorkerObjectClaim)(nil),                                       // 170: dirextalk.agent.v1.WorkerObjectClaim
+	(*WorkerControlServiceRecordEvidenceRequest)(nil),               // 171: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest
+	(*WorkerControlServiceRecordEvidenceResponse)(nil),              // 172: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceResponse
+	(*WorkerControlServiceCompleteRequest)(nil),                     // 173: dirextalk.agent.v1.WorkerControlServiceCompleteRequest
+	(*WorkerControlServiceCompleteResponse)(nil),                    // 174: dirextalk.agent.v1.WorkerControlServiceCompleteResponse
+	(*CreateCloudGoalRequest)(nil),                                  // 175: dirextalk.agent.v1.CreateCloudGoalRequest
+	(*CloudGoalPlanning)(nil),                                       // 176: dirextalk.agent.v1.CloudGoalPlanning
+	(*CreateCloudGoalResponse)(nil),                                 // 177: dirextalk.agent.v1.CreateCloudGoalResponse
+	(*CloudDialogueScopeV1)(nil),                                    // 178: dirextalk.agent.v1.CloudDialogueScopeV1
+	(*CloudManagedLifecycleContract)(nil),                           // 179: dirextalk.agent.v1.CloudManagedLifecycleContract
+	(*CloudManagedAcceptanceResource)(nil),                          // 180: dirextalk.agent.v1.CloudManagedAcceptanceResource
+	(*CloudManagedHealthProbe)(nil),                                 // 181: dirextalk.agent.v1.CloudManagedHealthProbe
+	(*CloudManagedHealthContract)(nil),                              // 182: dirextalk.agent.v1.CloudManagedHealthContract
+	(*CloudManagedVolumeSlot)(nil),                                  // 183: dirextalk.agent.v1.CloudManagedVolumeSlot
+	(*CloudManagedDataSlot)(nil),                                    // 184: dirextalk.agent.v1.CloudManagedDataSlot
+	(*CloudManagedSecretSlot)(nil),                                  // 185: dirextalk.agent.v1.CloudManagedSecretSlot
+	(*CloudManagedCompatibilityService)(nil),                        // 186: dirextalk.agent.v1.CloudManagedCompatibilityService
+	(*CloudManagedCompatibilityBackup)(nil),                         // 187: dirextalk.agent.v1.CloudManagedCompatibilityBackup
+	(*CloudManagedCompatibilityRestore)(nil),                        // 188: dirextalk.agent.v1.CloudManagedCompatibilityRestore
+	(*CloudManagedCompatibilityRecipe)(nil),                         // 189: dirextalk.agent.v1.CloudManagedCompatibilityRecipe
+	(*CloudManagedCompatibilityAcceptance)(nil),                     // 190: dirextalk.agent.v1.CloudManagedCompatibilityAcceptance
+	(*CloudManagedAcceptanceScope)(nil),                             // 191: dirextalk.agent.v1.CloudManagedAcceptanceScope
+	(*CloudManagedAcceptanceChallenge)(nil),                         // 192: dirextalk.agent.v1.CloudManagedAcceptanceChallenge
+	(*CloudManagedAcceptanceOperation)(nil),                         // 193: dirextalk.agent.v1.CloudManagedAcceptanceOperation
+	(*CreateCloudManagedAcceptanceChallengeRequest)(nil),            // 194: dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeRequest
+	(*CreateCloudManagedAcceptanceChallengeResponse)(nil),           // 195: dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeResponse
+	(*ApproveCloudManagedAcceptanceRequest)(nil),                    // 196: dirextalk.agent.v1.ApproveCloudManagedAcceptanceRequest
+	(*ApproveCloudManagedAcceptanceResponse)(nil),                   // 197: dirextalk.agent.v1.ApproveCloudManagedAcceptanceResponse
+	(*GetCloudManagedAcceptanceOperationRequest)(nil),               // 198: dirextalk.agent.v1.GetCloudManagedAcceptanceOperationRequest
+	(*GetCloudManagedAcceptanceOperationResponse)(nil),              // 199: dirextalk.agent.v1.GetCloudManagedAcceptanceOperationResponse
+	(*CloudManagedPreparationResourceFact)(nil),                     // 200: dirextalk.agent.v1.CloudManagedPreparationResourceFact
+	(*CloudManagedPreparationRestart)(nil),                          // 201: dirextalk.agent.v1.CloudManagedPreparationRestart
+	(*CloudManagedPreparationVolume)(nil),                           // 202: dirextalk.agent.v1.CloudManagedPreparationVolume
+	(*CloudManagedPreparationScope)(nil),                            // 203: dirextalk.agent.v1.CloudManagedPreparationScope
+	(*CloudManagedPreparationChallenge)(nil),                        // 204: dirextalk.agent.v1.CloudManagedPreparationChallenge
+	(*CloudManagedPreparationStep)(nil),                             // 205: dirextalk.agent.v1.CloudManagedPreparationStep
+	(*CloudManagedPreparationResult)(nil),                           // 206: dirextalk.agent.v1.CloudManagedPreparationResult
+	(*CloudManagedPreparationOperation)(nil),                        // 207: dirextalk.agent.v1.CloudManagedPreparationOperation
+	(*CreateCloudManagedPreparationRequest)(nil),                    // 208: dirextalk.agent.v1.CreateCloudManagedPreparationRequest
+	(*CreateCloudManagedPreparationResponse)(nil),                   // 209: dirextalk.agent.v1.CreateCloudManagedPreparationResponse
+	(*ApproveCloudManagedPreparationRequest)(nil),                   // 210: dirextalk.agent.v1.ApproveCloudManagedPreparationRequest
+	(*ApproveCloudManagedPreparationResponse)(nil),                  // 211: dirextalk.agent.v1.ApproveCloudManagedPreparationResponse
+	(*GetCloudManagedPreparationRequest)(nil),                       // 212: dirextalk.agent.v1.GetCloudManagedPreparationRequest
+	(*GetCloudManagedPreparationResponse)(nil),                      // 213: dirextalk.agent.v1.GetCloudManagedPreparationResponse
+	(*CloudPairingSession)(nil),                                     // 214: dirextalk.agent.v1.CloudPairingSession
+	(*GetCloudPairingRequest)(nil),                                  // 215: dirextalk.agent.v1.GetCloudPairingRequest
+	(*GetCloudPairingResponse)(nil),                                 // 216: dirextalk.agent.v1.GetCloudPairingResponse
+	(*EncryptedPairingPayload)(nil),                                 // 217: dirextalk.agent.v1.EncryptedPairingPayload
+	(*RetrieveCloudPairingPayloadRequest)(nil),                      // 218: dirextalk.agent.v1.RetrieveCloudPairingPayloadRequest
+	(*RetrieveCloudPairingPayloadResponse)(nil),                     // 219: dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse
+	(*CloudPairingResumeScope)(nil),                                 // 220: dirextalk.agent.v1.CloudPairingResumeScope
+	(*CloudPairingResumeChallenge)(nil),                             // 221: dirextalk.agent.v1.CloudPairingResumeChallenge
+	(*CreateCloudPairingResumeChallengeRequest)(nil),                // 222: dirextalk.agent.v1.CreateCloudPairingResumeChallengeRequest
+	(*CreateCloudPairingResumeChallengeResponse)(nil),               // 223: dirextalk.agent.v1.CreateCloudPairingResumeChallengeResponse
+	(*ApproveCloudPairingResumeRequest)(nil),                        // 224: dirextalk.agent.v1.ApproveCloudPairingResumeRequest
+	(*ApproveCloudPairingResumeResponse)(nil),                       // 225: dirextalk.agent.v1.ApproveCloudPairingResumeResponse
+	(*WorkerServiceOperationAssignment)(nil),                        // 226: dirextalk.agent.v1.WorkerServiceOperationAssignment
+	(*WorkerServiceOperationRootHelperReceipt)(nil),                 // 227: dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt
+	(*WorkerServiceOperation)(nil),                                  // 228: dirextalk.agent.v1.WorkerServiceOperation
+	(*WorkerServiceOperationServiceGetRequest)(nil),                 // 229: dirextalk.agent.v1.WorkerServiceOperationServiceGetRequest
+	(*WorkerServiceOperationServiceGetResponse)(nil),                // 230: dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse
+	(*WorkerServiceOperationServiceClaimRequest)(nil),               // 231: dirextalk.agent.v1.WorkerServiceOperationServiceClaimRequest
+	(*WorkerServiceOperationServiceClaimResponse)(nil),              // 232: dirextalk.agent.v1.WorkerServiceOperationServiceClaimResponse
+	(*WorkerServiceOperationServiceAcquireNextRequest)(nil),         // 233: dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextRequest
+	(*WorkerServiceOperationServiceAcquireNextResponse)(nil),        // 234: dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextResponse
+	(*WorkerServiceOperationServiceCompleteRequest)(nil),            // 235: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteRequest
+	(*WorkerServiceOperationServiceCompleteResponse)(nil),           // 236: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteResponse
+	(*PairingWorkerOperationAssignment)(nil),                        // 237: dirextalk.agent.v1.PairingWorkerOperationAssignment
+	(*PairingWorkerOperationServiceAcquireNextRequest)(nil),         // 238: dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextRequest
+	(*PairingWorkerOperationServiceAcquireNextResponse)(nil),        // 239: dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextResponse
+	(*PairingWorkerOperationServiceCompleteRequest)(nil),            // 240: dirextalk.agent.v1.PairingWorkerOperationServiceCompleteRequest
+	(*PairingWorkerOperationServiceCompleteResponse)(nil),           // 241: dirextalk.agent.v1.PairingWorkerOperationServiceCompleteResponse
+	(*RootHelperKeySecretPlan)(nil),                                 // 242: dirextalk.agent.v1.RootHelperKeySecretPlan
+	(*RootHelperKeySecretCoordinate)(nil),                           // 243: dirextalk.agent.v1.RootHelperKeySecretCoordinate
+	(*RootHelperKeyDeviceBinding)(nil),                              // 244: dirextalk.agent.v1.RootHelperKeyDeviceBinding
+	(*RootHelperKeyDeliveryApproval)(nil),                           // 245: dirextalk.agent.v1.RootHelperKeyDeliveryApproval
+	(*PrepareRootHelperKeyDeliveryApprovalRequest)(nil),             // 246: dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalRequest
+	(*PrepareRootHelperKeyDeliveryApprovalResponse)(nil),            // 247: dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalResponse
+	(*ApproveRootHelperKeyDeliveryRequest)(nil),                     // 248: dirextalk.agent.v1.ApproveRootHelperKeyDeliveryRequest
+	(*ApproveRootHelperKeyDeliveryResponse)(nil),                    // 249: dirextalk.agent.v1.ApproveRootHelperKeyDeliveryResponse
+	(*GetRootHelperKeyDeliveryApprovalRequest)(nil),                 // 250: dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalRequest
+	(*GetRootHelperKeyDeliveryApprovalResponse)(nil),                // 251: dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalResponse
+	(*RootHelperKeyDelivery)(nil),                                   // 252: dirextalk.agent.v1.RootHelperKeyDelivery
+	(*SubmitProofRequest)(nil),                                      // 253: dirextalk.agent.v1.SubmitProofRequest
+	(*SubmitProofResponse)(nil),                                     // 254: dirextalk.agent.v1.SubmitProofResponse
+	(*ReconcileRevocationRequest)(nil),                              // 255: dirextalk.agent.v1.ReconcileRevocationRequest
+	(*ReconcileRevocationResponse)(nil),                             // 256: dirextalk.agent.v1.ReconcileRevocationResponse
+	(*ConfirmCanaryRequest)(nil),                                    // 257: dirextalk.agent.v1.ConfirmCanaryRequest
+	(*ConfirmCanaryResponse)(nil),                                   // 258: dirextalk.agent.v1.ConfirmCanaryResponse
+	(*RootHelperBootstrapControlServiceAcquirePendingRequest)(nil),  // 259: dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingRequest
+	(*RootHelperBootstrapControlServiceAcquirePendingResponse)(nil), // 260: dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingResponse
+	(*RootHelperBootstrapControlServiceCurrentRequest)(nil),         // 261: dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentRequest
+	(*RootHelperBootstrapControlServiceCurrentResponse)(nil),        // 262: dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentResponse
+	(*WorkerControlServiceEmitMilestoneRequest)(nil),                // 263: dirextalk.agent.v1.WorkerControlServiceEmitMilestoneRequest
+	(*WorkerControlServiceEmitMilestoneResponse)(nil),               // 264: dirextalk.agent.v1.WorkerControlServiceEmitMilestoneResponse
+	(*timestamppb.Timestamp)(nil),                                   // 265: google.protobuf.Timestamp
+	(*DeviceApprovalSignature)(nil),                                 // 266: dirextalk.agent.v1.DeviceApprovalSignature
+	(*PreviewAwsIdentityRequest)(nil),                               // 267: dirextalk.agent.v1.PreviewAwsIdentityRequest
+	(*CreateCloudQuoteRequest)(nil),                                 // 268: dirextalk.agent.v1.CreateCloudQuoteRequest
+	(*GetCloudQuoteRequest)(nil),                                    // 269: dirextalk.agent.v1.GetCloudQuoteRequest
+	(*CreateCloudPlanRequest)(nil),                                  // 270: dirextalk.agent.v1.CreateCloudPlanRequest
+	(*GetCloudPlanRequest)(nil),                                     // 271: dirextalk.agent.v1.GetCloudPlanRequest
+	(*ListCloudPlansRequest)(nil),                                   // 272: dirextalk.agent.v1.ListCloudPlansRequest
+	(*CreateApprovalChallengeRequest)(nil),                          // 273: dirextalk.agent.v1.CreateApprovalChallengeRequest
+	(*ApproveCloudPlanRequest)(nil),                                 // 274: dirextalk.agent.v1.ApproveCloudPlanRequest
+	(*EstablishAwsConnectionRequest)(nil),                           // 275: dirextalk.agent.v1.EstablishAwsConnectionRequest
+	(*CreateAwsFoundationOperationChallengeRequest)(nil),            // 276: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
+	(*ApproveAwsFoundationOperationRequest)(nil),                    // 277: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
+	(*GetAwsFoundationOperationRequest)(nil),                        // 278: dirextalk.agent.v1.GetAwsFoundationOperationRequest
+	(*GetCloudConnectionRequest)(nil),                               // 279: dirextalk.agent.v1.GetCloudConnectionRequest
+	(*ListCloudConnectionsRequest)(nil),                             // 280: dirextalk.agent.v1.ListCloudConnectionsRequest
+	(*PreviewAwsIdentityResponse)(nil),                              // 281: dirextalk.agent.v1.PreviewAwsIdentityResponse
+	(*CreateCloudQuoteResponse)(nil),                                // 282: dirextalk.agent.v1.CreateCloudQuoteResponse
+	(*GetCloudQuoteResponse)(nil),                                   // 283: dirextalk.agent.v1.GetCloudQuoteResponse
+	(*CreateCloudPlanResponse)(nil),                                 // 284: dirextalk.agent.v1.CreateCloudPlanResponse
+	(*GetCloudPlanResponse)(nil),                                    // 285: dirextalk.agent.v1.GetCloudPlanResponse
+	(*ListCloudPlansResponse)(nil),                                  // 286: dirextalk.agent.v1.ListCloudPlansResponse
+	(*CreateApprovalChallengeResponse)(nil),                         // 287: dirextalk.agent.v1.CreateApprovalChallengeResponse
+	(*ApproveCloudPlanResponse)(nil),                                // 288: dirextalk.agent.v1.ApproveCloudPlanResponse
+	(*EstablishAwsConnectionResponse)(nil),                          // 289: dirextalk.agent.v1.EstablishAwsConnectionResponse
+	(*CreateAwsFoundationOperationChallengeResponse)(nil),           // 290: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
+	(*ApproveAwsFoundationOperationResponse)(nil),                   // 291: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
+	(*GetAwsFoundationOperationResponse)(nil),                       // 292: dirextalk.agent.v1.GetAwsFoundationOperationResponse
+	(*GetCloudConnectionResponse)(nil),                              // 293: dirextalk.agent.v1.GetCloudConnectionResponse
+	(*ListCloudConnectionsResponse)(nil),                            // 294: dirextalk.agent.v1.ListCloudConnectionsResponse
 }
 var file_dirextalk_agent_v1_agent_proto_depIdxs = []int32{
 	0,   // 0: dirextalk.agent.v1.Task.execution_status:type_name -> dirextalk.agent.v1.ExecutionStatus
 	1,   // 1: dirextalk.agent.v1.Task.outcome_status:type_name -> dirextalk.agent.v1.OutcomeStatus
 	2,   // 2: dirextalk.agent.v1.Task.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	262, // 3: dirextalk.agent.v1.Task.created_at:type_name -> google.protobuf.Timestamp
-	262, // 4: dirextalk.agent.v1.Task.updated_at:type_name -> google.protobuf.Timestamp
+	265, // 3: dirextalk.agent.v1.Task.created_at:type_name -> google.protobuf.Timestamp
+	265, // 4: dirextalk.agent.v1.Task.updated_at:type_name -> google.protobuf.Timestamp
 	3,   // 5: dirextalk.agent.v1.Step.executor_kind:type_name -> dirextalk.agent.v1.ExecutorKind
 	0,   // 6: dirextalk.agent.v1.Step.execution_status:type_name -> dirextalk.agent.v1.ExecutionStatus
 	1,   // 7: dirextalk.agent.v1.Step.outcome_status:type_name -> dirextalk.agent.v1.OutcomeStatus
-	262, // 8: dirextalk.agent.v1.Step.created_at:type_name -> google.protobuf.Timestamp
-	262, // 9: dirextalk.agent.v1.Step.updated_at:type_name -> google.protobuf.Timestamp
-	262, // 10: dirextalk.agent.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
+	265, // 8: dirextalk.agent.v1.Step.created_at:type_name -> google.protobuf.Timestamp
+	265, // 9: dirextalk.agent.v1.Step.updated_at:type_name -> google.protobuf.Timestamp
+	265, // 10: dirextalk.agent.v1.Event.occurred_at:type_name -> google.protobuf.Timestamp
 	2,   // 11: dirextalk.agent.v1.CreateTaskRequest.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	37,  // 12: dirextalk.agent.v1.CreateTaskResponse.task:type_name -> dirextalk.agent.v1.Task
-	37,  // 13: dirextalk.agent.v1.GetTaskResponse.task:type_name -> dirextalk.agent.v1.Task
-	37,  // 14: dirextalk.agent.v1.ListTasksResponse.tasks:type_name -> dirextalk.agent.v1.Task
-	37,  // 15: dirextalk.agent.v1.CancelTaskResponse.task:type_name -> dirextalk.agent.v1.Task
-	38,  // 16: dirextalk.agent.v1.ListStepsResponse.steps:type_name -> dirextalk.agent.v1.Step
-	39,  // 17: dirextalk.agent.v1.WatchEventsResponse.event:type_name -> dirextalk.agent.v1.Event
-	52,  // 18: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.RuntimeCapabilities
+	38,  // 12: dirextalk.agent.v1.CreateTaskResponse.task:type_name -> dirextalk.agent.v1.Task
+	38,  // 13: dirextalk.agent.v1.GetTaskResponse.task:type_name -> dirextalk.agent.v1.Task
+	38,  // 14: dirextalk.agent.v1.ListTasksResponse.tasks:type_name -> dirextalk.agent.v1.Task
+	38,  // 15: dirextalk.agent.v1.CancelTaskResponse.task:type_name -> dirextalk.agent.v1.Task
+	39,  // 16: dirextalk.agent.v1.ListStepsResponse.steps:type_name -> dirextalk.agent.v1.Step
+	40,  // 17: dirextalk.agent.v1.WatchEventsResponse.event:type_name -> dirextalk.agent.v1.Event
+	53,  // 18: dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.RuntimeCapabilities
 	4,   // 19: dirextalk.agent.v1.ModelProfile.provider:type_name -> dirextalk.agent.v1.ModelProvider
-	55,  // 20: dirextalk.agent.v1.RuntimeConfigSpec.model_profile:type_name -> dirextalk.agent.v1.ModelProfile
-	56,  // 21: dirextalk.agent.v1.RuntimeConfig.spec:type_name -> dirextalk.agent.v1.RuntimeConfigSpec
-	262, // 22: dirextalk.agent.v1.RuntimeConfig.updated_at:type_name -> google.protobuf.Timestamp
-	57,  // 23: dirextalk.agent.v1.GetRuntimeConfigResponse.config:type_name -> dirextalk.agent.v1.RuntimeConfig
-	56,  // 24: dirextalk.agent.v1.PutRuntimeConfigRequest.spec:type_name -> dirextalk.agent.v1.RuntimeConfigSpec
-	57,  // 25: dirextalk.agent.v1.PutRuntimeConfigResponse.config:type_name -> dirextalk.agent.v1.RuntimeConfig
-	177, // 26: dirextalk.agent.v1.ChatRequest.cloud_dialogue_scope:type_name -> dirextalk.agent.v1.CloudDialogueScopeV1
+	56,  // 20: dirextalk.agent.v1.RuntimeConfigSpec.model_profile:type_name -> dirextalk.agent.v1.ModelProfile
+	57,  // 21: dirextalk.agent.v1.RuntimeConfig.spec:type_name -> dirextalk.agent.v1.RuntimeConfigSpec
+	265, // 22: dirextalk.agent.v1.RuntimeConfig.updated_at:type_name -> google.protobuf.Timestamp
+	58,  // 23: dirextalk.agent.v1.GetRuntimeConfigResponse.config:type_name -> dirextalk.agent.v1.RuntimeConfig
+	57,  // 24: dirextalk.agent.v1.PutRuntimeConfigRequest.spec:type_name -> dirextalk.agent.v1.RuntimeConfigSpec
+	58,  // 25: dirextalk.agent.v1.PutRuntimeConfigResponse.config:type_name -> dirextalk.agent.v1.RuntimeConfig
+	178, // 26: dirextalk.agent.v1.ChatRequest.cloud_dialogue_scope:type_name -> dirextalk.agent.v1.CloudDialogueScopeV1
 	5,   // 27: dirextalk.agent.v1.RuntimeStepSummary.kind:type_name -> dirextalk.agent.v1.RuntimeStepKind
-	64,  // 28: dirextalk.agent.v1.ChatResponse.message:type_name -> dirextalk.agent.v1.RuntimeAssistantMessage
-	63,  // 29: dirextalk.agent.v1.ChatResponse.steps:type_name -> dirextalk.agent.v1.RuntimeStepSummary
-	177, // 30: dirextalk.agent.v1.StreamChatRequest.cloud_dialogue_scope:type_name -> dirextalk.agent.v1.CloudDialogueScopeV1
-	65,  // 31: dirextalk.agent.v1.ChatDone.response:type_name -> dirextalk.agent.v1.ChatResponse
-	67,  // 32: dirextalk.agent.v1.StreamChatResponse.delta:type_name -> dirextalk.agent.v1.ChatDelta
-	68,  // 33: dirextalk.agent.v1.StreamChatResponse.tool:type_name -> dirextalk.agent.v1.ToolExecutionSummary
-	69,  // 34: dirextalk.agent.v1.StreamChatResponse.done:type_name -> dirextalk.agent.v1.ChatDone
-	71,  // 35: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.CloudCapabilities
-	262, // 36: dirextalk.agent.v1.CloudResourceReadBack.observed_at:type_name -> google.protobuf.Timestamp
+	65,  // 28: dirextalk.agent.v1.ChatResponse.message:type_name -> dirextalk.agent.v1.RuntimeAssistantMessage
+	64,  // 29: dirextalk.agent.v1.ChatResponse.steps:type_name -> dirextalk.agent.v1.RuntimeStepSummary
+	178, // 30: dirextalk.agent.v1.StreamChatRequest.cloud_dialogue_scope:type_name -> dirextalk.agent.v1.CloudDialogueScopeV1
+	66,  // 31: dirextalk.agent.v1.ChatDone.response:type_name -> dirextalk.agent.v1.ChatResponse
+	68,  // 32: dirextalk.agent.v1.StreamChatResponse.delta:type_name -> dirextalk.agent.v1.ChatDelta
+	69,  // 33: dirextalk.agent.v1.StreamChatResponse.tool:type_name -> dirextalk.agent.v1.ToolExecutionSummary
+	70,  // 34: dirextalk.agent.v1.StreamChatResponse.done:type_name -> dirextalk.agent.v1.ChatDone
+	72,  // 35: dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse.capabilities:type_name -> dirextalk.agent.v1.CloudCapabilities
+	265, // 36: dirextalk.agent.v1.CloudResourceReadBack.observed_at:type_name -> google.protobuf.Timestamp
 	7,   // 37: dirextalk.agent.v1.CloudResourceStateCount.status:type_name -> dirextalk.agent.v1.CloudResourceStatus
-	262, // 38: dirextalk.agent.v1.CloudReadBackSummary.last_observed_at:type_name -> google.protobuf.Timestamp
+	265, // 38: dirextalk.agent.v1.CloudReadBackSummary.last_observed_at:type_name -> google.protobuf.Timestamp
 	7,   // 39: dirextalk.agent.v1.CloudResourceSummary.status:type_name -> dirextalk.agent.v1.CloudResourceStatus
-	75,  // 40: dirextalk.agent.v1.CloudResourceSummary.state_counts:type_name -> dirextalk.agent.v1.CloudResourceStateCount
-	76,  // 41: dirextalk.agent.v1.CloudResourceSummary.read_back:type_name -> dirextalk.agent.v1.CloudReadBackSummary
+	76,  // 40: dirextalk.agent.v1.CloudResourceSummary.state_counts:type_name -> dirextalk.agent.v1.CloudResourceStateCount
+	77,  // 41: dirextalk.agent.v1.CloudResourceSummary.read_back:type_name -> dirextalk.agent.v1.CloudReadBackSummary
 	10,  // 42: dirextalk.agent.v1.CloudHealthProbeCount.kind:type_name -> dirextalk.agent.v1.CloudHealthProbeKind
 	9,   // 43: dirextalk.agent.v1.CloudHealthSummary.status:type_name -> dirextalk.agent.v1.CloudHealthStatus
-	262, // 44: dirextalk.agent.v1.CloudHealthSummary.observed_at:type_name -> google.protobuf.Timestamp
-	262, // 45: dirextalk.agent.v1.CloudHealthSummary.next_due_at:type_name -> google.protobuf.Timestamp
-	78,  // 46: dirextalk.agent.v1.CloudHealthSummary.probe_counts:type_name -> dirextalk.agent.v1.CloudHealthProbeCount
+	265, // 44: dirextalk.agent.v1.CloudHealthSummary.observed_at:type_name -> google.protobuf.Timestamp
+	265, // 45: dirextalk.agent.v1.CloudHealthSummary.next_due_at:type_name -> google.protobuf.Timestamp
+	79,  // 46: dirextalk.agent.v1.CloudHealthSummary.probe_counts:type_name -> dirextalk.agent.v1.CloudHealthProbeCount
 	11,  // 47: dirextalk.agent.v1.CloudHealthSummary.evidence_type:type_name -> dirextalk.agent.v1.CloudHealthEvidenceType
 	0,   // 48: dirextalk.agent.v1.CloudDeployment.execution_status:type_name -> dirextalk.agent.v1.ExecutionStatus
 	1,   // 49: dirextalk.agent.v1.CloudDeployment.outcome_status:type_name -> dirextalk.agent.v1.OutcomeStatus
-	77,  // 50: dirextalk.agent.v1.CloudDeployment.resources:type_name -> dirextalk.agent.v1.CloudResourceSummary
-	262, // 51: dirextalk.agent.v1.CloudDeployment.created_at:type_name -> google.protobuf.Timestamp
-	262, // 52: dirextalk.agent.v1.CloudDeployment.updated_at:type_name -> google.protobuf.Timestamp
-	79,  // 53: dirextalk.agent.v1.CloudDeployment.health:type_name -> dirextalk.agent.v1.CloudHealthSummary
+	78,  // 50: dirextalk.agent.v1.CloudDeployment.resources:type_name -> dirextalk.agent.v1.CloudResourceSummary
+	265, // 51: dirextalk.agent.v1.CloudDeployment.created_at:type_name -> google.protobuf.Timestamp
+	265, // 52: dirextalk.agent.v1.CloudDeployment.updated_at:type_name -> google.protobuf.Timestamp
+	80,  // 53: dirextalk.agent.v1.CloudDeployment.health:type_name -> dirextalk.agent.v1.CloudHealthSummary
 	6,   // 54: dirextalk.agent.v1.CloudResource.type:type_name -> dirextalk.agent.v1.CloudResourceType
 	2,   // 55: dirextalk.agent.v1.CloudResource.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	262, // 56: dirextalk.agent.v1.CloudResource.destroy_deadline:type_name -> google.protobuf.Timestamp
+	265, // 56: dirextalk.agent.v1.CloudResource.destroy_deadline:type_name -> google.protobuf.Timestamp
 	7,   // 57: dirextalk.agent.v1.CloudResource.status:type_name -> dirextalk.agent.v1.CloudResourceStatus
-	74,  // 58: dirextalk.agent.v1.CloudResource.read_back:type_name -> dirextalk.agent.v1.CloudResourceReadBack
-	262, // 59: dirextalk.agent.v1.CloudResource.created_at:type_name -> google.protobuf.Timestamp
-	262, // 60: dirextalk.agent.v1.CloudResource.updated_at:type_name -> google.protobuf.Timestamp
+	75,  // 58: dirextalk.agent.v1.CloudResource.read_back:type_name -> dirextalk.agent.v1.CloudResourceReadBack
+	265, // 59: dirextalk.agent.v1.CloudResource.created_at:type_name -> google.protobuf.Timestamp
+	265, // 60: dirextalk.agent.v1.CloudResource.updated_at:type_name -> google.protobuf.Timestamp
 	6,   // 61: dirextalk.agent.v1.CloudDestroyResourceScope.type:type_name -> dirextalk.agent.v1.CloudResourceType
 	2,   // 62: dirextalk.agent.v1.CloudDestroyResourceScope.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
 	7,   // 63: dirextalk.agent.v1.CloudDestroyResourceScope.status:type_name -> dirextalk.agent.v1.CloudResourceStatus
-	74,  // 64: dirextalk.agent.v1.CloudDestroyResourceScope.read_back:type_name -> dirextalk.agent.v1.CloudResourceReadBack
-	262, // 65: dirextalk.agent.v1.CloudDestroyResourceScope.destroy_deadline:type_name -> google.protobuf.Timestamp
-	82,  // 66: dirextalk.agent.v1.CloudDeploymentDestroyScope.resources:type_name -> dirextalk.agent.v1.CloudDestroyResourceScope
-	83,  // 67: dirextalk.agent.v1.CloudDeploymentDestroyChallenge.scope:type_name -> dirextalk.agent.v1.CloudDeploymentDestroyScope
-	262, // 68: dirextalk.agent.v1.CloudDeploymentDestroyChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	75,  // 64: dirextalk.agent.v1.CloudDestroyResourceScope.read_back:type_name -> dirextalk.agent.v1.CloudResourceReadBack
+	265, // 65: dirextalk.agent.v1.CloudDestroyResourceScope.destroy_deadline:type_name -> google.protobuf.Timestamp
+	83,  // 66: dirextalk.agent.v1.CloudDeploymentDestroyScope.resources:type_name -> dirextalk.agent.v1.CloudDestroyResourceScope
+	84,  // 67: dirextalk.agent.v1.CloudDeploymentDestroyChallenge.scope:type_name -> dirextalk.agent.v1.CloudDeploymentDestroyScope
+	265, // 68: dirextalk.agent.v1.CloudDeploymentDestroyChallenge.expires_at:type_name -> google.protobuf.Timestamp
 	12,  // 69: dirextalk.agent.v1.CloudDestroyOperation.status:type_name -> dirextalk.agent.v1.CloudDestroyOperationStatus
-	262, // 70: dirextalk.agent.v1.CloudDestroyOperation.created_at:type_name -> google.protobuf.Timestamp
-	262, // 71: dirextalk.agent.v1.CloudDestroyOperation.updated_at:type_name -> google.protobuf.Timestamp
-	262, // 72: dirextalk.agent.v1.CloudDestroyOperation.next_attempt_at:type_name -> google.protobuf.Timestamp
-	84,  // 73: dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudDeploymentDestroyChallenge
-	263, // 74: dirextalk.agent.v1.ApproveCloudDeploymentDestroyRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	85,  // 75: dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse.operation:type_name -> dirextalk.agent.v1.CloudDestroyOperation
-	80,  // 76: dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse.deployment:type_name -> dirextalk.agent.v1.CloudDeployment
-	85,  // 77: dirextalk.agent.v1.GetCloudDestroyOperationResponse.operation:type_name -> dirextalk.agent.v1.CloudDestroyOperation
-	262, // 78: dirextalk.agent.v1.CloudEntryCostScope.quoted_at:type_name -> google.protobuf.Timestamp
-	262, // 79: dirextalk.agent.v1.CloudEntryCostScope.valid_until:type_name -> google.protobuf.Timestamp
-	92,  // 80: dirextalk.agent.v1.CloudEntryPlanDraft.cost:type_name -> dirextalk.agent.v1.CloudEntryCostScope
+	265, // 70: dirextalk.agent.v1.CloudDestroyOperation.created_at:type_name -> google.protobuf.Timestamp
+	265, // 71: dirextalk.agent.v1.CloudDestroyOperation.updated_at:type_name -> google.protobuf.Timestamp
+	265, // 72: dirextalk.agent.v1.CloudDestroyOperation.next_attempt_at:type_name -> google.protobuf.Timestamp
+	85,  // 73: dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudDeploymentDestroyChallenge
+	266, // 74: dirextalk.agent.v1.ApproveCloudDeploymentDestroyRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	86,  // 75: dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse.operation:type_name -> dirextalk.agent.v1.CloudDestroyOperation
+	81,  // 76: dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse.deployment:type_name -> dirextalk.agent.v1.CloudDeployment
+	86,  // 77: dirextalk.agent.v1.GetCloudDestroyOperationResponse.operation:type_name -> dirextalk.agent.v1.CloudDestroyOperation
+	265, // 78: dirextalk.agent.v1.CloudEntryCostScope.quoted_at:type_name -> google.protobuf.Timestamp
+	265, // 79: dirextalk.agent.v1.CloudEntryCostScope.valid_until:type_name -> google.protobuf.Timestamp
+	93,  // 80: dirextalk.agent.v1.CloudEntryPlanDraft.cost:type_name -> dirextalk.agent.v1.CloudEntryCostScope
 	21,  // 81: dirextalk.agent.v1.CloudEntryAWSReadBack.state:type_name -> dirextalk.agent.v1.CloudEntryEC2State
-	262, // 82: dirextalk.agent.v1.CloudEntryAWSReadBack.observed_at:type_name -> google.protobuf.Timestamp
+	265, // 82: dirextalk.agent.v1.CloudEntryAWSReadBack.observed_at:type_name -> google.protobuf.Timestamp
 	1,   // 83: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.execution_outcome:type_name -> dirextalk.agent.v1.OutcomeStatus
-	262, // 84: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.succeeded_at:type_name -> google.protobuf.Timestamp
-	94,  // 85: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.read_back:type_name -> dirextalk.agent.v1.CloudEntryAWSReadBack
+	265, // 84: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.succeeded_at:type_name -> google.protobuf.Timestamp
+	95,  // 85: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.read_back:type_name -> dirextalk.agent.v1.CloudEntryAWSReadBack
 	2,   // 86: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	262, // 87: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.destroy_deadline:type_name -> google.protobuf.Timestamp
+	265, // 87: dirextalk.agent.v1.CloudEntryWorkerReadBackScope.destroy_deadline:type_name -> google.protobuf.Timestamp
 	15,  // 88: dirextalk.agent.v1.CloudEntryCertificateScope.status:type_name -> dirextalk.agent.v1.CloudEntryCertificateStatus
-	262, // 89: dirextalk.agent.v1.CloudEntryCertificateScope.observed_at:type_name -> google.protobuf.Timestamp
-	262, // 90: dirextalk.agent.v1.CloudEntryPublicSubnetScope.observed_at:type_name -> google.protobuf.Timestamp
+	265, // 89: dirextalk.agent.v1.CloudEntryCertificateScope.observed_at:type_name -> google.protobuf.Timestamp
+	265, // 90: dirextalk.agent.v1.CloudEntryPublicSubnetScope.observed_at:type_name -> google.protobuf.Timestamp
 	17,  // 91: dirextalk.agent.v1.CloudEntryALBScope.scheme:type_name -> dirextalk.agent.v1.CloudEntryALBScheme
 	18,  // 92: dirextalk.agent.v1.CloudEntryALBScope.listener_protocol:type_name -> dirextalk.agent.v1.CloudEntryListenerProtocol
 	19,  // 93: dirextalk.agent.v1.CloudEntryALBScope.target_protocol:type_name -> dirextalk.agent.v1.CloudEntryTargetProtocol
 	20,  // 94: dirextalk.agent.v1.CloudEntryALBScope.target_source:type_name -> dirextalk.agent.v1.CloudEntryTargetSource
-	98,  // 95: dirextalk.agent.v1.CloudEntryALBScope.public_subnets:type_name -> dirextalk.agent.v1.CloudEntryPublicSubnetScope
+	99,  // 95: dirextalk.agent.v1.CloudEntryALBScope.public_subnets:type_name -> dirextalk.agent.v1.CloudEntryPublicSubnetScope
 	2,   // 96: dirextalk.agent.v1.CloudEntryRetentionScope.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
-	262, // 97: dirextalk.agent.v1.CloudEntryRetentionScope.destroy_deadline:type_name -> google.protobuf.Timestamp
+	265, // 97: dirextalk.agent.v1.CloudEntryRetentionScope.destroy_deadline:type_name -> google.protobuf.Timestamp
 	16,  // 98: dirextalk.agent.v1.CloudEntryApprovalScope.kind:type_name -> dirextalk.agent.v1.CloudEntryKind
-	95,  // 99: dirextalk.agent.v1.CloudEntryApprovalScope.worker:type_name -> dirextalk.agent.v1.CloudEntryWorkerReadBackScope
-	96,  // 100: dirextalk.agent.v1.CloudEntryApprovalScope.recipe:type_name -> dirextalk.agent.v1.CloudEntryRecipeHealthBinding
-	97,  // 101: dirextalk.agent.v1.CloudEntryApprovalScope.certificate:type_name -> dirextalk.agent.v1.CloudEntryCertificateScope
-	99,  // 102: dirextalk.agent.v1.CloudEntryApprovalScope.alb:type_name -> dirextalk.agent.v1.CloudEntryALBScope
-	100, // 103: dirextalk.agent.v1.CloudEntryApprovalScope.health:type_name -> dirextalk.agent.v1.CloudEntryHealthRouteScope
-	101, // 104: dirextalk.agent.v1.CloudEntryApprovalScope.authentication:type_name -> dirextalk.agent.v1.CloudEntryAuthenticationScope
-	92,  // 105: dirextalk.agent.v1.CloudEntryApprovalScope.cost:type_name -> dirextalk.agent.v1.CloudEntryCostScope
-	102, // 106: dirextalk.agent.v1.CloudEntryApprovalScope.retention:type_name -> dirextalk.agent.v1.CloudEntryRetentionScope
+	96,  // 99: dirextalk.agent.v1.CloudEntryApprovalScope.worker:type_name -> dirextalk.agent.v1.CloudEntryWorkerReadBackScope
+	97,  // 100: dirextalk.agent.v1.CloudEntryApprovalScope.recipe:type_name -> dirextalk.agent.v1.CloudEntryRecipeHealthBinding
+	98,  // 101: dirextalk.agent.v1.CloudEntryApprovalScope.certificate:type_name -> dirextalk.agent.v1.CloudEntryCertificateScope
+	100, // 102: dirextalk.agent.v1.CloudEntryApprovalScope.alb:type_name -> dirextalk.agent.v1.CloudEntryALBScope
+	101, // 103: dirextalk.agent.v1.CloudEntryApprovalScope.health:type_name -> dirextalk.agent.v1.CloudEntryHealthRouteScope
+	102, // 104: dirextalk.agent.v1.CloudEntryApprovalScope.authentication:type_name -> dirextalk.agent.v1.CloudEntryAuthenticationScope
+	93,  // 105: dirextalk.agent.v1.CloudEntryApprovalScope.cost:type_name -> dirextalk.agent.v1.CloudEntryCostScope
+	103, // 106: dirextalk.agent.v1.CloudEntryApprovalScope.retention:type_name -> dirextalk.agent.v1.CloudEntryRetentionScope
 	13,  // 107: dirextalk.agent.v1.CloudEntryPlan.status:type_name -> dirextalk.agent.v1.CloudEntryPlanStatus
-	103, // 108: dirextalk.agent.v1.CloudEntryPlan.scope:type_name -> dirextalk.agent.v1.CloudEntryApprovalScope
-	262, // 109: dirextalk.agent.v1.CloudEntryApprovalChallenge.issued_at:type_name -> google.protobuf.Timestamp
-	262, // 110: dirextalk.agent.v1.CloudEntryApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	103, // 111: dirextalk.agent.v1.CloudEntryApprovalChallenge.scope:type_name -> dirextalk.agent.v1.CloudEntryApprovalScope
-	262, // 112: dirextalk.agent.v1.CloudEntryApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
+	104, // 108: dirextalk.agent.v1.CloudEntryPlan.scope:type_name -> dirextalk.agent.v1.CloudEntryApprovalScope
+	265, // 109: dirextalk.agent.v1.CloudEntryApprovalChallenge.issued_at:type_name -> google.protobuf.Timestamp
+	265, // 110: dirextalk.agent.v1.CloudEntryApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	104, // 111: dirextalk.agent.v1.CloudEntryApprovalChallenge.scope:type_name -> dirextalk.agent.v1.CloudEntryApprovalScope
+	265, // 112: dirextalk.agent.v1.CloudEntryApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
 	14,  // 113: dirextalk.agent.v1.CloudEntryOperation.status:type_name -> dirextalk.agent.v1.CloudEntryOperationStatus
 	22,  // 114: dirextalk.agent.v1.CloudEntryOperation.error_code:type_name -> dirextalk.agent.v1.CloudEntryErrorCode
-	262, // 115: dirextalk.agent.v1.CloudEntryOperation.created_at:type_name -> google.protobuf.Timestamp
-	262, // 116: dirextalk.agent.v1.CloudEntryOperation.updated_at:type_name -> google.protobuf.Timestamp
-	93,  // 117: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanRequest.draft:type_name -> dirextalk.agent.v1.CloudEntryPlanDraft
-	104, // 118: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudEntryPlan
-	104, // 119: dirextalk.agent.v1.GetCloudEntryPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudEntryPlan
-	105, // 120: dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudEntryApprovalChallenge
-	106, // 121: dirextalk.agent.v1.ApproveCloudDeploymentEntryRequest.approval:type_name -> dirextalk.agent.v1.CloudEntryApprovalSignature
-	107, // 122: dirextalk.agent.v1.ApproveCloudDeploymentEntryResponse.operation:type_name -> dirextalk.agent.v1.CloudEntryOperation
-	107, // 123: dirextalk.agent.v1.GetCloudEntryOperationResponse.operation:type_name -> dirextalk.agent.v1.CloudEntryOperation
+	265, // 115: dirextalk.agent.v1.CloudEntryOperation.created_at:type_name -> google.protobuf.Timestamp
+	265, // 116: dirextalk.agent.v1.CloudEntryOperation.updated_at:type_name -> google.protobuf.Timestamp
+	94,  // 117: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanRequest.draft:type_name -> dirextalk.agent.v1.CloudEntryPlanDraft
+	105, // 118: dirextalk.agent.v1.CreateCloudDeploymentEntryPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudEntryPlan
+	105, // 119: dirextalk.agent.v1.GetCloudEntryPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudEntryPlan
+	106, // 120: dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudEntryApprovalChallenge
+	107, // 121: dirextalk.agent.v1.ApproveCloudDeploymentEntryRequest.approval:type_name -> dirextalk.agent.v1.CloudEntryApprovalSignature
+	108, // 122: dirextalk.agent.v1.ApproveCloudDeploymentEntryResponse.operation:type_name -> dirextalk.agent.v1.CloudEntryOperation
+	108, // 123: dirextalk.agent.v1.GetCloudEntryOperationResponse.operation:type_name -> dirextalk.agent.v1.CloudEntryOperation
 	8,   // 124: dirextalk.agent.v1.CloudWorker.status:type_name -> dirextalk.agent.v1.CloudWorkerStatus
-	262, // 125: dirextalk.agent.v1.CloudWorker.lease_expires_at:type_name -> google.protobuf.Timestamp
-	262, // 126: dirextalk.agent.v1.CloudWorker.last_heartbeat_at:type_name -> google.protobuf.Timestamp
-	262, // 127: dirextalk.agent.v1.CloudWorker.created_at:type_name -> google.protobuf.Timestamp
-	262, // 128: dirextalk.agent.v1.CloudWorker.updated_at:type_name -> google.protobuf.Timestamp
-	80,  // 129: dirextalk.agent.v1.GetCloudDeploymentResponse.deployment:type_name -> dirextalk.agent.v1.CloudDeployment
-	80,  // 130: dirextalk.agent.v1.ListCloudDeploymentsResponse.deployments:type_name -> dirextalk.agent.v1.CloudDeployment
-	81,  // 131: dirextalk.agent.v1.GetCloudResourceResponse.resource:type_name -> dirextalk.agent.v1.CloudResource
-	81,  // 132: dirextalk.agent.v1.ListCloudResourcesResponse.resources:type_name -> dirextalk.agent.v1.CloudResource
-	118, // 133: dirextalk.agent.v1.GetCloudWorkerResponse.worker:type_name -> dirextalk.agent.v1.CloudWorker
-	118, // 134: dirextalk.agent.v1.ListCloudWorkersResponse.workers:type_name -> dirextalk.agent.v1.CloudWorker
-	262, // 135: dirextalk.agent.v1.SecretBootstrapSession.created_at:type_name -> google.protobuf.Timestamp
-	262, // 136: dirextalk.agent.v1.SecretBootstrapSession.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 125: dirextalk.agent.v1.CloudWorker.lease_expires_at:type_name -> google.protobuf.Timestamp
+	265, // 126: dirextalk.agent.v1.CloudWorker.last_heartbeat_at:type_name -> google.protobuf.Timestamp
+	265, // 127: dirextalk.agent.v1.CloudWorker.created_at:type_name -> google.protobuf.Timestamp
+	265, // 128: dirextalk.agent.v1.CloudWorker.updated_at:type_name -> google.protobuf.Timestamp
+	81,  // 129: dirextalk.agent.v1.GetCloudDeploymentResponse.deployment:type_name -> dirextalk.agent.v1.CloudDeployment
+	81,  // 130: dirextalk.agent.v1.ListCloudDeploymentsResponse.deployments:type_name -> dirextalk.agent.v1.CloudDeployment
+	82,  // 131: dirextalk.agent.v1.GetCloudResourceResponse.resource:type_name -> dirextalk.agent.v1.CloudResource
+	82,  // 132: dirextalk.agent.v1.ListCloudResourcesResponse.resources:type_name -> dirextalk.agent.v1.CloudResource
+	119, // 133: dirextalk.agent.v1.GetCloudWorkerResponse.worker:type_name -> dirextalk.agent.v1.CloudWorker
+	119, // 134: dirextalk.agent.v1.ListCloudWorkersResponse.workers:type_name -> dirextalk.agent.v1.CloudWorker
+	265, // 135: dirextalk.agent.v1.SecretBootstrapSession.created_at:type_name -> google.protobuf.Timestamp
+	265, // 136: dirextalk.agent.v1.SecretBootstrapSession.expires_at:type_name -> google.protobuf.Timestamp
 	23,  // 137: dirextalk.agent.v1.SecretBootstrapSession.status:type_name -> dirextalk.agent.v1.SecretBootstrapSessionStatus
-	262, // 138: dirextalk.agent.v1.CreateSessionResponse.expires_at:type_name -> google.protobuf.Timestamp
-	132, // 139: dirextalk.agent.v1.CreateSessionResponse.session:type_name -> dirextalk.agent.v1.SecretBootstrapSession
-	132, // 140: dirextalk.agent.v1.SecretBootstrapServiceGetSessionResponse.session:type_name -> dirextalk.agent.v1.SecretBootstrapSession
-	132, // 141: dirextalk.agent.v1.UploadEncryptedResponse.session:type_name -> dirextalk.agent.v1.SecretBootstrapSession
-	262, // 142: dirextalk.agent.v1.CreateServiceKeyRequest.expires_at:type_name -> google.protobuf.Timestamp
-	262, // 143: dirextalk.agent.v1.CreateServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
-	141, // 144: dirextalk.agent.v1.CreateServiceKeyResponse.delivery:type_name -> dirextalk.agent.v1.ServiceKeyDelivery
-	262, // 145: dirextalk.agent.v1.RevokeServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 138: dirextalk.agent.v1.CreateSessionResponse.expires_at:type_name -> google.protobuf.Timestamp
+	133, // 139: dirextalk.agent.v1.CreateSessionResponse.session:type_name -> dirextalk.agent.v1.SecretBootstrapSession
+	133, // 140: dirextalk.agent.v1.SecretBootstrapServiceGetSessionResponse.session:type_name -> dirextalk.agent.v1.SecretBootstrapSession
+	133, // 141: dirextalk.agent.v1.UploadEncryptedResponse.session:type_name -> dirextalk.agent.v1.SecretBootstrapSession
+	265, // 142: dirextalk.agent.v1.CreateServiceKeyRequest.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 143: dirextalk.agent.v1.CreateServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
+	142, // 144: dirextalk.agent.v1.CreateServiceKeyResponse.delivery:type_name -> dirextalk.agent.v1.ServiceKeyDelivery
+	265, // 145: dirextalk.agent.v1.RevokeServiceKeyResponse.expires_at:type_name -> google.protobuf.Timestamp
 	24,  // 146: dirextalk.agent.v1.ApprovalDevice.status:type_name -> dirextalk.agent.v1.ApprovalDeviceStatus
-	262, // 147: dirextalk.agent.v1.ApprovalDevice.not_before:type_name -> google.protobuf.Timestamp
-	262, // 148: dirextalk.agent.v1.ApprovalDevice.expires_at:type_name -> google.protobuf.Timestamp
-	262, // 149: dirextalk.agent.v1.ApprovalDevice.revoked_at:type_name -> google.protobuf.Timestamp
-	262, // 150: dirextalk.agent.v1.RegisterApprovalDeviceRequest.not_before:type_name -> google.protobuf.Timestamp
-	262, // 151: dirextalk.agent.v1.RegisterApprovalDeviceRequest.expires_at:type_name -> google.protobuf.Timestamp
-	145, // 152: dirextalk.agent.v1.RegisterApprovalDeviceResponse.device:type_name -> dirextalk.agent.v1.ApprovalDevice
-	145, // 153: dirextalk.agent.v1.RevokeApprovalDeviceResponse.device:type_name -> dirextalk.agent.v1.ApprovalDevice
-	162, // 154: dirextalk.agent.v1.EnrollResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
-	262, // 155: dirextalk.agent.v1.WorkerIdentityChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	153, // 156: dirextalk.agent.v1.CreateIdentityChallengeResponse.challenge:type_name -> dirextalk.agent.v1.WorkerIdentityChallenge
-	155, // 157: dirextalk.agent.v1.EnrollVerifiedIdentityRequest.proof:type_name -> dirextalk.agent.v1.WorkerIdentityProof
-	162, // 158: dirextalk.agent.v1.EnrollVerifiedIdentityResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
-	160, // 159: dirextalk.agent.v1.WorkerInstallerLeaseGrant.binding:type_name -> dirextalk.agent.v1.WorkerInstallerBinding
-	262, // 160: dirextalk.agent.v1.WorkerInstallerLeaseGrant.issued_at:type_name -> google.protobuf.Timestamp
-	262, // 161: dirextalk.agent.v1.WorkerInstallerLeaseGrant.expires_at:type_name -> google.protobuf.Timestamp
-	262, // 162: dirextalk.agent.v1.WorkerAssignment.lease_expires_at:type_name -> google.protobuf.Timestamp
-	158, // 163: dirextalk.agent.v1.WorkerAssignment.access:type_name -> dirextalk.agent.v1.WorkerAccessScope
-	159, // 164: dirextalk.agent.v1.WorkerAssignment.recipe_bundle:type_name -> dirextalk.agent.v1.WorkerBundleReference
-	159, // 165: dirextalk.agent.v1.WorkerAssignment.execution_bundle:type_name -> dirextalk.agent.v1.WorkerBundleReference
-	161, // 166: dirextalk.agent.v1.WorkerAssignment.installer_lease_grants:type_name -> dirextalk.agent.v1.WorkerInstallerLeaseGrant
-	162, // 167: dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
-	162, // 168: dirextalk.agent.v1.WorkerControlServiceClaimResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
-	262, // 169: dirextalk.agent.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
-	161, // 170: dirextalk.agent.v1.HeartbeatResponse.installer_lease_grants:type_name -> dirextalk.agent.v1.WorkerInstallerLeaseGrant
+	265, // 147: dirextalk.agent.v1.ApprovalDevice.not_before:type_name -> google.protobuf.Timestamp
+	265, // 148: dirextalk.agent.v1.ApprovalDevice.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 149: dirextalk.agent.v1.ApprovalDevice.revoked_at:type_name -> google.protobuf.Timestamp
+	265, // 150: dirextalk.agent.v1.RegisterApprovalDeviceRequest.not_before:type_name -> google.protobuf.Timestamp
+	265, // 151: dirextalk.agent.v1.RegisterApprovalDeviceRequest.expires_at:type_name -> google.protobuf.Timestamp
+	146, // 152: dirextalk.agent.v1.RegisterApprovalDeviceResponse.device:type_name -> dirextalk.agent.v1.ApprovalDevice
+	146, // 153: dirextalk.agent.v1.RevokeApprovalDeviceResponse.device:type_name -> dirextalk.agent.v1.ApprovalDevice
+	163, // 154: dirextalk.agent.v1.EnrollResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
+	265, // 155: dirextalk.agent.v1.WorkerIdentityChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	154, // 156: dirextalk.agent.v1.CreateIdentityChallengeResponse.challenge:type_name -> dirextalk.agent.v1.WorkerIdentityChallenge
+	156, // 157: dirextalk.agent.v1.EnrollVerifiedIdentityRequest.proof:type_name -> dirextalk.agent.v1.WorkerIdentityProof
+	163, // 158: dirextalk.agent.v1.EnrollVerifiedIdentityResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
+	161, // 159: dirextalk.agent.v1.WorkerInstallerLeaseGrant.binding:type_name -> dirextalk.agent.v1.WorkerInstallerBinding
+	265, // 160: dirextalk.agent.v1.WorkerInstallerLeaseGrant.issued_at:type_name -> google.protobuf.Timestamp
+	265, // 161: dirextalk.agent.v1.WorkerInstallerLeaseGrant.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 162: dirextalk.agent.v1.WorkerAssignment.lease_expires_at:type_name -> google.protobuf.Timestamp
+	159, // 163: dirextalk.agent.v1.WorkerAssignment.access:type_name -> dirextalk.agent.v1.WorkerAccessScope
+	160, // 164: dirextalk.agent.v1.WorkerAssignment.recipe_bundle:type_name -> dirextalk.agent.v1.WorkerBundleReference
+	160, // 165: dirextalk.agent.v1.WorkerAssignment.execution_bundle:type_name -> dirextalk.agent.v1.WorkerBundleReference
+	162, // 166: dirextalk.agent.v1.WorkerAssignment.installer_lease_grants:type_name -> dirextalk.agent.v1.WorkerInstallerLeaseGrant
+	163, // 167: dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
+	163, // 168: dirextalk.agent.v1.WorkerControlServiceClaimResponse.assignment:type_name -> dirextalk.agent.v1.WorkerAssignment
+	265, // 169: dirextalk.agent.v1.HeartbeatResponse.lease_expires_at:type_name -> google.protobuf.Timestamp
+	162, // 170: dirextalk.agent.v1.HeartbeatResponse.installer_lease_grants:type_name -> dirextalk.agent.v1.WorkerInstallerLeaseGrant
 	25,  // 171: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest.kind:type_name -> dirextalk.agent.v1.WorkerEvidenceKind
-	169, // 172: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest.object:type_name -> dirextalk.agent.v1.WorkerObjectClaim
+	170, // 172: dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest.object:type_name -> dirextalk.agent.v1.WorkerObjectClaim
 	26,  // 173: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.outcome:type_name -> dirextalk.agent.v1.WorkerOutcome
-	169, // 174: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.result_object:type_name -> dirextalk.agent.v1.WorkerObjectClaim
+	170, // 174: dirextalk.agent.v1.WorkerControlServiceCompleteRequest.result_object:type_name -> dirextalk.agent.v1.WorkerObjectClaim
 	2,   // 175: dirextalk.agent.v1.CreateCloudGoalRequest.retention_policy:type_name -> dirextalk.agent.v1.RetentionPolicy
 	27,  // 176: dirextalk.agent.v1.CloudGoalPlanning.state:type_name -> dirextalk.agent.v1.CloudGoalPlanningState
-	37,  // 177: dirextalk.agent.v1.CreateCloudGoalResponse.task:type_name -> dirextalk.agent.v1.Task
-	175, // 178: dirextalk.agent.v1.CreateCloudGoalResponse.planning:type_name -> dirextalk.agent.v1.CloudGoalPlanning
+	38,  // 177: dirextalk.agent.v1.CreateCloudGoalResponse.task:type_name -> dirextalk.agent.v1.Task
+	176, // 178: dirextalk.agent.v1.CreateCloudGoalResponse.planning:type_name -> dirextalk.agent.v1.CloudGoalPlanning
 	6,   // 179: dirextalk.agent.v1.CloudManagedAcceptanceResource.type:type_name -> dirextalk.agent.v1.CloudResourceType
-	180, // 180: dirextalk.agent.v1.CloudManagedHealthContract.liveness:type_name -> dirextalk.agent.v1.CloudManagedHealthProbe
-	180, // 181: dirextalk.agent.v1.CloudManagedHealthContract.readiness:type_name -> dirextalk.agent.v1.CloudManagedHealthProbe
-	180, // 182: dirextalk.agent.v1.CloudManagedHealthContract.semantic:type_name -> dirextalk.agent.v1.CloudManagedHealthProbe
-	186, // 183: dirextalk.agent.v1.CloudManagedCompatibilityService.backups:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityBackup
-	187, // 184: dirextalk.agent.v1.CloudManagedCompatibilityService.restores:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityRestore
-	262, // 185: dirextalk.agent.v1.CloudManagedAcceptanceScope.health_observed_at:type_name -> google.protobuf.Timestamp
-	178, // 186: dirextalk.agent.v1.CloudManagedAcceptanceScope.lifecycle:type_name -> dirextalk.agent.v1.CloudManagedLifecycleContract
-	179, // 187: dirextalk.agent.v1.CloudManagedAcceptanceScope.resources:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceResource
-	181, // 188: dirextalk.agent.v1.CloudManagedAcceptanceScope.health:type_name -> dirextalk.agent.v1.CloudManagedHealthContract
-	182, // 189: dirextalk.agent.v1.CloudManagedAcceptanceScope.volume_slots:type_name -> dirextalk.agent.v1.CloudManagedVolumeSlot
-	183, // 190: dirextalk.agent.v1.CloudManagedAcceptanceScope.data_slots:type_name -> dirextalk.agent.v1.CloudManagedDataSlot
-	184, // 191: dirextalk.agent.v1.CloudManagedAcceptanceScope.secret_slots:type_name -> dirextalk.agent.v1.CloudManagedSecretSlot
-	190, // 192: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.scope:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceScope
-	262, // 193: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.issued_at:type_name -> google.protobuf.Timestamp
-	262, // 194: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	185, // 195: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.compatibility_service:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityService
-	188, // 196: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.compatibility_recipe:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityRecipe
-	191, // 197: dirextalk.agent.v1.CloudManagedAcceptanceOperation.challenge:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceChallenge
+	181, // 180: dirextalk.agent.v1.CloudManagedHealthContract.liveness:type_name -> dirextalk.agent.v1.CloudManagedHealthProbe
+	181, // 181: dirextalk.agent.v1.CloudManagedHealthContract.readiness:type_name -> dirextalk.agent.v1.CloudManagedHealthProbe
+	181, // 182: dirextalk.agent.v1.CloudManagedHealthContract.semantic:type_name -> dirextalk.agent.v1.CloudManagedHealthProbe
+	187, // 183: dirextalk.agent.v1.CloudManagedCompatibilityService.backups:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityBackup
+	188, // 184: dirextalk.agent.v1.CloudManagedCompatibilityService.restores:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityRestore
+	265, // 185: dirextalk.agent.v1.CloudManagedAcceptanceScope.health_observed_at:type_name -> google.protobuf.Timestamp
+	179, // 186: dirextalk.agent.v1.CloudManagedAcceptanceScope.lifecycle:type_name -> dirextalk.agent.v1.CloudManagedLifecycleContract
+	180, // 187: dirextalk.agent.v1.CloudManagedAcceptanceScope.resources:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceResource
+	182, // 188: dirextalk.agent.v1.CloudManagedAcceptanceScope.health:type_name -> dirextalk.agent.v1.CloudManagedHealthContract
+	183, // 189: dirextalk.agent.v1.CloudManagedAcceptanceScope.volume_slots:type_name -> dirextalk.agent.v1.CloudManagedVolumeSlot
+	184, // 190: dirextalk.agent.v1.CloudManagedAcceptanceScope.data_slots:type_name -> dirextalk.agent.v1.CloudManagedDataSlot
+	185, // 191: dirextalk.agent.v1.CloudManagedAcceptanceScope.secret_slots:type_name -> dirextalk.agent.v1.CloudManagedSecretSlot
+	191, // 192: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.scope:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceScope
+	265, // 193: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.issued_at:type_name -> google.protobuf.Timestamp
+	265, // 194: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	186, // 195: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.compatibility_service:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityService
+	189, // 196: dirextalk.agent.v1.CloudManagedAcceptanceChallenge.compatibility_recipe:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityRecipe
+	192, // 197: dirextalk.agent.v1.CloudManagedAcceptanceOperation.challenge:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceChallenge
 	28,  // 198: dirextalk.agent.v1.CloudManagedAcceptanceOperation.status:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceOperationStatus
-	262, // 199: dirextalk.agent.v1.CloudManagedAcceptanceOperation.created_at:type_name -> google.protobuf.Timestamp
-	262, // 200: dirextalk.agent.v1.CloudManagedAcceptanceOperation.updated_at:type_name -> google.protobuf.Timestamp
-	185, // 201: dirextalk.agent.v1.CloudManagedAcceptanceOperation.compatibility_service:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityService
-	188, // 202: dirextalk.agent.v1.CloudManagedAcceptanceOperation.compatibility_recipe:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityRecipe
-	189, // 203: dirextalk.agent.v1.CloudManagedAcceptanceOperation.compatibility_acceptance:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityAcceptance
-	191, // 204: dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceChallenge
-	263, // 205: dirextalk.agent.v1.ApproveCloudManagedAcceptanceRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	192, // 206: dirextalk.agent.v1.ApproveCloudManagedAcceptanceResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceOperation
-	192, // 207: dirextalk.agent.v1.GetCloudManagedAcceptanceOperationResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceOperation
-	199, // 208: dirextalk.agent.v1.CloudManagedPreparationVolume.source_volume:type_name -> dirextalk.agent.v1.CloudManagedPreparationResourceFact
-	199, // 209: dirextalk.agent.v1.CloudManagedPreparationScope.ec2:type_name -> dirextalk.agent.v1.CloudManagedPreparationResourceFact
-	199, // 210: dirextalk.agent.v1.CloudManagedPreparationScope.source_volumes:type_name -> dirextalk.agent.v1.CloudManagedPreparationResourceFact
-	200, // 211: dirextalk.agent.v1.CloudManagedPreparationScope.restart:type_name -> dirextalk.agent.v1.CloudManagedPreparationRestart
-	201, // 212: dirextalk.agent.v1.CloudManagedPreparationScope.volumes:type_name -> dirextalk.agent.v1.CloudManagedPreparationVolume
-	202, // 213: dirextalk.agent.v1.CloudManagedPreparationChallenge.scope:type_name -> dirextalk.agent.v1.CloudManagedPreparationScope
-	262, // 214: dirextalk.agent.v1.CloudManagedPreparationChallenge.issued_at:type_name -> google.protobuf.Timestamp
-	262, // 215: dirextalk.agent.v1.CloudManagedPreparationChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 199: dirextalk.agent.v1.CloudManagedAcceptanceOperation.created_at:type_name -> google.protobuf.Timestamp
+	265, // 200: dirextalk.agent.v1.CloudManagedAcceptanceOperation.updated_at:type_name -> google.protobuf.Timestamp
+	186, // 201: dirextalk.agent.v1.CloudManagedAcceptanceOperation.compatibility_service:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityService
+	189, // 202: dirextalk.agent.v1.CloudManagedAcceptanceOperation.compatibility_recipe:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityRecipe
+	190, // 203: dirextalk.agent.v1.CloudManagedAcceptanceOperation.compatibility_acceptance:type_name -> dirextalk.agent.v1.CloudManagedCompatibilityAcceptance
+	192, // 204: dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceChallenge
+	266, // 205: dirextalk.agent.v1.ApproveCloudManagedAcceptanceRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	193, // 206: dirextalk.agent.v1.ApproveCloudManagedAcceptanceResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceOperation
+	193, // 207: dirextalk.agent.v1.GetCloudManagedAcceptanceOperationResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedAcceptanceOperation
+	200, // 208: dirextalk.agent.v1.CloudManagedPreparationVolume.source_volume:type_name -> dirextalk.agent.v1.CloudManagedPreparationResourceFact
+	200, // 209: dirextalk.agent.v1.CloudManagedPreparationScope.ec2:type_name -> dirextalk.agent.v1.CloudManagedPreparationResourceFact
+	200, // 210: dirextalk.agent.v1.CloudManagedPreparationScope.source_volumes:type_name -> dirextalk.agent.v1.CloudManagedPreparationResourceFact
+	201, // 211: dirextalk.agent.v1.CloudManagedPreparationScope.restart:type_name -> dirextalk.agent.v1.CloudManagedPreparationRestart
+	202, // 212: dirextalk.agent.v1.CloudManagedPreparationScope.volumes:type_name -> dirextalk.agent.v1.CloudManagedPreparationVolume
+	203, // 213: dirextalk.agent.v1.CloudManagedPreparationChallenge.scope:type_name -> dirextalk.agent.v1.CloudManagedPreparationScope
+	265, // 214: dirextalk.agent.v1.CloudManagedPreparationChallenge.issued_at:type_name -> google.protobuf.Timestamp
+	265, // 215: dirextalk.agent.v1.CloudManagedPreparationChallenge.expires_at:type_name -> google.protobuf.Timestamp
 	30,  // 216: dirextalk.agent.v1.CloudManagedPreparationStep.status:type_name -> dirextalk.agent.v1.CloudManagedPreparationStepStatus
-	262, // 217: dirextalk.agent.v1.CloudManagedPreparationStep.started_at:type_name -> google.protobuf.Timestamp
-	262, // 218: dirextalk.agent.v1.CloudManagedPreparationStep.completed_at:type_name -> google.protobuf.Timestamp
-	262, // 219: dirextalk.agent.v1.CloudManagedPreparationResult.fresh_health_observed_at:type_name -> google.protobuf.Timestamp
-	262, // 220: dirextalk.agent.v1.CloudManagedPreparationResult.cost_observed_at:type_name -> google.protobuf.Timestamp
-	262, // 221: dirextalk.agent.v1.CloudManagedPreparationResult.stack_observed_at:type_name -> google.protobuf.Timestamp
-	203, // 222: dirextalk.agent.v1.CloudManagedPreparationOperation.challenge:type_name -> dirextalk.agent.v1.CloudManagedPreparationChallenge
+	265, // 217: dirextalk.agent.v1.CloudManagedPreparationStep.started_at:type_name -> google.protobuf.Timestamp
+	265, // 218: dirextalk.agent.v1.CloudManagedPreparationStep.completed_at:type_name -> google.protobuf.Timestamp
+	265, // 219: dirextalk.agent.v1.CloudManagedPreparationResult.fresh_health_observed_at:type_name -> google.protobuf.Timestamp
+	265, // 220: dirextalk.agent.v1.CloudManagedPreparationResult.cost_observed_at:type_name -> google.protobuf.Timestamp
+	265, // 221: dirextalk.agent.v1.CloudManagedPreparationResult.stack_observed_at:type_name -> google.protobuf.Timestamp
+	204, // 222: dirextalk.agent.v1.CloudManagedPreparationOperation.challenge:type_name -> dirextalk.agent.v1.CloudManagedPreparationChallenge
 	29,  // 223: dirextalk.agent.v1.CloudManagedPreparationOperation.status:type_name -> dirextalk.agent.v1.CloudManagedPreparationStatus
-	204, // 224: dirextalk.agent.v1.CloudManagedPreparationOperation.steps:type_name -> dirextalk.agent.v1.CloudManagedPreparationStep
-	262, // 225: dirextalk.agent.v1.CloudManagedPreparationOperation.created_at:type_name -> google.protobuf.Timestamp
-	262, // 226: dirextalk.agent.v1.CloudManagedPreparationOperation.updated_at:type_name -> google.protobuf.Timestamp
-	262, // 227: dirextalk.agent.v1.CloudManagedPreparationOperation.approved_at:type_name -> google.protobuf.Timestamp
-	205, // 228: dirextalk.agent.v1.CloudManagedPreparationOperation.result:type_name -> dirextalk.agent.v1.CloudManagedPreparationResult
-	203, // 229: dirextalk.agent.v1.CreateCloudManagedPreparationResponse.challenge:type_name -> dirextalk.agent.v1.CloudManagedPreparationChallenge
-	263, // 230: dirextalk.agent.v1.ApproveCloudManagedPreparationRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	206, // 231: dirextalk.agent.v1.ApproveCloudManagedPreparationResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedPreparationOperation
-	206, // 232: dirextalk.agent.v1.GetCloudManagedPreparationResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedPreparationOperation
+	205, // 224: dirextalk.agent.v1.CloudManagedPreparationOperation.steps:type_name -> dirextalk.agent.v1.CloudManagedPreparationStep
+	265, // 225: dirextalk.agent.v1.CloudManagedPreparationOperation.created_at:type_name -> google.protobuf.Timestamp
+	265, // 226: dirextalk.agent.v1.CloudManagedPreparationOperation.updated_at:type_name -> google.protobuf.Timestamp
+	265, // 227: dirextalk.agent.v1.CloudManagedPreparationOperation.approved_at:type_name -> google.protobuf.Timestamp
+	206, // 228: dirextalk.agent.v1.CloudManagedPreparationOperation.result:type_name -> dirextalk.agent.v1.CloudManagedPreparationResult
+	204, // 229: dirextalk.agent.v1.CreateCloudManagedPreparationResponse.challenge:type_name -> dirextalk.agent.v1.CloudManagedPreparationChallenge
+	266, // 230: dirextalk.agent.v1.ApproveCloudManagedPreparationRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	207, // 231: dirextalk.agent.v1.ApproveCloudManagedPreparationResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedPreparationOperation
+	207, // 232: dirextalk.agent.v1.GetCloudManagedPreparationResponse.operation:type_name -> dirextalk.agent.v1.CloudManagedPreparationOperation
 	31,  // 233: dirextalk.agent.v1.CloudPairingSession.status:type_name -> dirextalk.agent.v1.CloudPairingStatus
-	262, // 234: dirextalk.agent.v1.CloudPairingSession.expires_at:type_name -> google.protobuf.Timestamp
-	262, // 235: dirextalk.agent.v1.CloudPairingSession.created_at:type_name -> google.protobuf.Timestamp
-	262, // 236: dirextalk.agent.v1.CloudPairingSession.updated_at:type_name -> google.protobuf.Timestamp
-	213, // 237: dirextalk.agent.v1.GetCloudPairingResponse.pairing:type_name -> dirextalk.agent.v1.CloudPairingSession
-	262, // 238: dirextalk.agent.v1.EncryptedPairingPayload.expires_at:type_name -> google.protobuf.Timestamp
-	213, // 239: dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse.pairing:type_name -> dirextalk.agent.v1.CloudPairingSession
-	216, // 240: dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse.payload:type_name -> dirextalk.agent.v1.EncryptedPairingPayload
-	219, // 241: dirextalk.agent.v1.CloudPairingResumeChallenge.scope:type_name -> dirextalk.agent.v1.CloudPairingResumeScope
-	262, // 242: dirextalk.agent.v1.CloudPairingResumeChallenge.issued_at:type_name -> google.protobuf.Timestamp
-	262, // 243: dirextalk.agent.v1.CloudPairingResumeChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	220, // 244: dirextalk.agent.v1.CreateCloudPairingResumeChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudPairingResumeChallenge
-	263, // 245: dirextalk.agent.v1.ApproveCloudPairingResumeRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	213, // 246: dirextalk.agent.v1.ApproveCloudPairingResumeResponse.pairing:type_name -> dirextalk.agent.v1.CloudPairingSession
+	265, // 234: dirextalk.agent.v1.CloudPairingSession.expires_at:type_name -> google.protobuf.Timestamp
+	265, // 235: dirextalk.agent.v1.CloudPairingSession.created_at:type_name -> google.protobuf.Timestamp
+	265, // 236: dirextalk.agent.v1.CloudPairingSession.updated_at:type_name -> google.protobuf.Timestamp
+	214, // 237: dirextalk.agent.v1.GetCloudPairingResponse.pairing:type_name -> dirextalk.agent.v1.CloudPairingSession
+	265, // 238: dirextalk.agent.v1.EncryptedPairingPayload.expires_at:type_name -> google.protobuf.Timestamp
+	214, // 239: dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse.pairing:type_name -> dirextalk.agent.v1.CloudPairingSession
+	217, // 240: dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse.payload:type_name -> dirextalk.agent.v1.EncryptedPairingPayload
+	220, // 241: dirextalk.agent.v1.CloudPairingResumeChallenge.scope:type_name -> dirextalk.agent.v1.CloudPairingResumeScope
+	265, // 242: dirextalk.agent.v1.CloudPairingResumeChallenge.issued_at:type_name -> google.protobuf.Timestamp
+	265, // 243: dirextalk.agent.v1.CloudPairingResumeChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	221, // 244: dirextalk.agent.v1.CreateCloudPairingResumeChallengeResponse.challenge:type_name -> dirextalk.agent.v1.CloudPairingResumeChallenge
+	266, // 245: dirextalk.agent.v1.ApproveCloudPairingResumeRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	214, // 246: dirextalk.agent.v1.ApproveCloudPairingResumeResponse.pairing:type_name -> dirextalk.agent.v1.CloudPairingSession
 	32,  // 247: dirextalk.agent.v1.WorkerServiceOperationAssignment.action:type_name -> dirextalk.agent.v1.WorkerServiceOperationAction
-	262, // 248: dirextalk.agent.v1.WorkerServiceOperationAssignment.lease_expires_at:type_name -> google.protobuf.Timestamp
+	265, // 248: dirextalk.agent.v1.WorkerServiceOperationAssignment.lease_expires_at:type_name -> google.protobuf.Timestamp
 	32,  // 249: dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt.action:type_name -> dirextalk.agent.v1.WorkerServiceOperationAction
-	262, // 250: dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt.observed_at:type_name -> google.protobuf.Timestamp
-	225, // 251: dirextalk.agent.v1.WorkerServiceOperation.assignment:type_name -> dirextalk.agent.v1.WorkerServiceOperationAssignment
+	265, // 250: dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt.observed_at:type_name -> google.protobuf.Timestamp
+	226, // 251: dirextalk.agent.v1.WorkerServiceOperation.assignment:type_name -> dirextalk.agent.v1.WorkerServiceOperationAssignment
 	33,  // 252: dirextalk.agent.v1.WorkerServiceOperation.state:type_name -> dirextalk.agent.v1.WorkerServiceOperationState
-	226, // 253: dirextalk.agent.v1.WorkerServiceOperation.receipt:type_name -> dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt
-	262, // 254: dirextalk.agent.v1.WorkerServiceOperation.created_at:type_name -> google.protobuf.Timestamp
-	262, // 255: dirextalk.agent.v1.WorkerServiceOperation.updated_at:type_name -> google.protobuf.Timestamp
-	227, // 256: dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse.operation:type_name -> dirextalk.agent.v1.WorkerServiceOperation
-	225, // 257: dirextalk.agent.v1.WorkerServiceOperationServiceClaimResponse.assignment:type_name -> dirextalk.agent.v1.WorkerServiceOperationAssignment
-	225, // 258: dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextResponse.assignment:type_name -> dirextalk.agent.v1.WorkerServiceOperationAssignment
-	226, // 259: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteRequest.receipt:type_name -> dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt
-	227, // 260: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteResponse.operation:type_name -> dirextalk.agent.v1.WorkerServiceOperation
+	227, // 253: dirextalk.agent.v1.WorkerServiceOperation.receipt:type_name -> dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt
+	265, // 254: dirextalk.agent.v1.WorkerServiceOperation.created_at:type_name -> google.protobuf.Timestamp
+	265, // 255: dirextalk.agent.v1.WorkerServiceOperation.updated_at:type_name -> google.protobuf.Timestamp
+	228, // 256: dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse.operation:type_name -> dirextalk.agent.v1.WorkerServiceOperation
+	226, // 257: dirextalk.agent.v1.WorkerServiceOperationServiceClaimResponse.assignment:type_name -> dirextalk.agent.v1.WorkerServiceOperationAssignment
+	226, // 258: dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextResponse.assignment:type_name -> dirextalk.agent.v1.WorkerServiceOperationAssignment
+	227, // 259: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteRequest.receipt:type_name -> dirextalk.agent.v1.WorkerServiceOperationRootHelperReceipt
+	228, // 260: dirextalk.agent.v1.WorkerServiceOperationServiceCompleteResponse.operation:type_name -> dirextalk.agent.v1.WorkerServiceOperation
 	34,  // 261: dirextalk.agent.v1.PairingWorkerOperationAssignment.action:type_name -> dirextalk.agent.v1.PairingWorkerOperationAction
-	262, // 262: dirextalk.agent.v1.PairingWorkerOperationAssignment.lease_expires_at:type_name -> google.protobuf.Timestamp
-	236, // 263: dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextResponse.assignment:type_name -> dirextalk.agent.v1.PairingWorkerOperationAssignment
-	241, // 264: dirextalk.agent.v1.RootHelperKeyDeviceBinding.secret_plan:type_name -> dirextalk.agent.v1.RootHelperKeySecretPlan
-	242, // 265: dirextalk.agent.v1.RootHelperKeyDeviceBinding.secret:type_name -> dirextalk.agent.v1.RootHelperKeySecretCoordinate
-	243, // 266: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.binding:type_name -> dirextalk.agent.v1.RootHelperKeyDeviceBinding
+	265, // 262: dirextalk.agent.v1.PairingWorkerOperationAssignment.lease_expires_at:type_name -> google.protobuf.Timestamp
+	237, // 263: dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextResponse.assignment:type_name -> dirextalk.agent.v1.PairingWorkerOperationAssignment
+	242, // 264: dirextalk.agent.v1.RootHelperKeyDeviceBinding.secret_plan:type_name -> dirextalk.agent.v1.RootHelperKeySecretPlan
+	243, // 265: dirextalk.agent.v1.RootHelperKeyDeviceBinding.secret:type_name -> dirextalk.agent.v1.RootHelperKeySecretCoordinate
+	244, // 266: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.binding:type_name -> dirextalk.agent.v1.RootHelperKeyDeviceBinding
 	35,  // 267: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.status:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApprovalStatus
-	262, // 268: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.created_at:type_name -> google.protobuf.Timestamp
-	262, // 269: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.updated_at:type_name -> google.protobuf.Timestamp
-	244, // 270: dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalResponse.approval:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApproval
-	244, // 271: dirextalk.agent.v1.ApproveRootHelperKeyDeliveryResponse.approval:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApproval
-	244, // 272: dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalResponse.approval:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApproval
-	243, // 273: dirextalk.agent.v1.RootHelperKeyDelivery.binding:type_name -> dirextalk.agent.v1.RootHelperKeyDeviceBinding
+	265, // 268: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.created_at:type_name -> google.protobuf.Timestamp
+	265, // 269: dirextalk.agent.v1.RootHelperKeyDeliveryApproval.updated_at:type_name -> google.protobuf.Timestamp
+	245, // 270: dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalResponse.approval:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApproval
+	245, // 271: dirextalk.agent.v1.ApproveRootHelperKeyDeliveryResponse.approval:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApproval
+	245, // 272: dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalResponse.approval:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryApproval
+	244, // 273: dirextalk.agent.v1.RootHelperKeyDelivery.binding:type_name -> dirextalk.agent.v1.RootHelperKeyDeviceBinding
 	36,  // 274: dirextalk.agent.v1.RootHelperKeyDelivery.state:type_name -> dirextalk.agent.v1.RootHelperKeyDeliveryState
-	262, // 275: dirextalk.agent.v1.RootHelperKeyDelivery.proof_observed_at:type_name -> google.protobuf.Timestamp
-	262, // 276: dirextalk.agent.v1.RootHelperKeyDelivery.revoked_at:type_name -> google.protobuf.Timestamp
-	262, // 277: dirextalk.agent.v1.RootHelperKeyDelivery.ready_at:type_name -> google.protobuf.Timestamp
-	262, // 278: dirextalk.agent.v1.RootHelperKeyDelivery.created_at:type_name -> google.protobuf.Timestamp
-	262, // 279: dirextalk.agent.v1.RootHelperKeyDelivery.updated_at:type_name -> google.protobuf.Timestamp
-	251, // 280: dirextalk.agent.v1.SubmitProofResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
-	251, // 281: dirextalk.agent.v1.ReconcileRevocationResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
-	262, // 282: dirextalk.agent.v1.ConfirmCanaryRequest.observed_at:type_name -> google.protobuf.Timestamp
-	251, // 283: dirextalk.agent.v1.ConfirmCanaryResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
-	251, // 284: dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
-	251, // 285: dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
-	40,  // 286: dirextalk.agent.v1.TaskService.CreateTask:input_type -> dirextalk.agent.v1.CreateTaskRequest
-	42,  // 287: dirextalk.agent.v1.TaskService.GetTask:input_type -> dirextalk.agent.v1.GetTaskRequest
-	44,  // 288: dirextalk.agent.v1.TaskService.ListTasks:input_type -> dirextalk.agent.v1.ListTasksRequest
-	46,  // 289: dirextalk.agent.v1.TaskService.CancelTask:input_type -> dirextalk.agent.v1.CancelTaskRequest
-	48,  // 290: dirextalk.agent.v1.TaskService.ListSteps:input_type -> dirextalk.agent.v1.ListStepsRequest
-	50,  // 291: dirextalk.agent.v1.TaskService.WatchEvents:input_type -> dirextalk.agent.v1.WatchEventsRequest
-	53,  // 292: dirextalk.agent.v1.RuntimeService.GetCapabilities:input_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
-	58,  // 293: dirextalk.agent.v1.RuntimeService.GetRuntimeConfig:input_type -> dirextalk.agent.v1.GetRuntimeConfigRequest
-	60,  // 294: dirextalk.agent.v1.RuntimeService.PutRuntimeConfig:input_type -> dirextalk.agent.v1.PutRuntimeConfigRequest
-	62,  // 295: dirextalk.agent.v1.RuntimeService.Chat:input_type -> dirextalk.agent.v1.ChatRequest
-	66,  // 296: dirextalk.agent.v1.RuntimeService.StreamChat:input_type -> dirextalk.agent.v1.StreamChatRequest
-	72,  // 297: dirextalk.agent.v1.CloudControlService.GetCapabilities:input_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
-	174, // 298: dirextalk.agent.v1.CloudControlService.CreateCloudGoal:input_type -> dirextalk.agent.v1.CreateCloudGoalRequest
-	264, // 299: dirextalk.agent.v1.CloudControlService.PreviewAwsIdentity:input_type -> dirextalk.agent.v1.PreviewAwsIdentityRequest
-	265, // 300: dirextalk.agent.v1.CloudControlService.CreateCloudQuote:input_type -> dirextalk.agent.v1.CreateCloudQuoteRequest
-	266, // 301: dirextalk.agent.v1.CloudControlService.GetCloudQuote:input_type -> dirextalk.agent.v1.GetCloudQuoteRequest
-	267, // 302: dirextalk.agent.v1.CloudControlService.CreateCloudPlan:input_type -> dirextalk.agent.v1.CreateCloudPlanRequest
-	268, // 303: dirextalk.agent.v1.CloudControlService.GetCloudPlan:input_type -> dirextalk.agent.v1.GetCloudPlanRequest
-	269, // 304: dirextalk.agent.v1.CloudControlService.ListCloudPlans:input_type -> dirextalk.agent.v1.ListCloudPlansRequest
-	270, // 305: dirextalk.agent.v1.CloudControlService.CreateApprovalChallenge:input_type -> dirextalk.agent.v1.CreateApprovalChallengeRequest
-	271, // 306: dirextalk.agent.v1.CloudControlService.ApproveCloudPlan:input_type -> dirextalk.agent.v1.ApproveCloudPlanRequest
-	272, // 307: dirextalk.agent.v1.CloudControlService.EstablishAwsConnection:input_type -> dirextalk.agent.v1.EstablishAwsConnectionRequest
-	273, // 308: dirextalk.agent.v1.CloudControlService.CreateAwsFoundationOperationChallenge:input_type -> dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
-	274, // 309: dirextalk.agent.v1.CloudControlService.ApproveAwsFoundationOperation:input_type -> dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
-	275, // 310: dirextalk.agent.v1.CloudControlService.GetAwsFoundationOperation:input_type -> dirextalk.agent.v1.GetAwsFoundationOperationRequest
-	276, // 311: dirextalk.agent.v1.CloudControlService.GetCloudConnection:input_type -> dirextalk.agent.v1.GetCloudConnectionRequest
-	277, // 312: dirextalk.agent.v1.CloudControlService.ListCloudConnections:input_type -> dirextalk.agent.v1.ListCloudConnectionsRequest
-	119, // 313: dirextalk.agent.v1.CloudControlService.GetCloudDeployment:input_type -> dirextalk.agent.v1.GetCloudDeploymentRequest
-	121, // 314: dirextalk.agent.v1.CloudControlService.ListCloudDeployments:input_type -> dirextalk.agent.v1.ListCloudDeploymentsRequest
-	123, // 315: dirextalk.agent.v1.CloudControlService.GetCloudResource:input_type -> dirextalk.agent.v1.GetCloudResourceRequest
-	125, // 316: dirextalk.agent.v1.CloudControlService.ListCloudResources:input_type -> dirextalk.agent.v1.ListCloudResourcesRequest
-	127, // 317: dirextalk.agent.v1.CloudControlService.GetCloudWorker:input_type -> dirextalk.agent.v1.GetCloudWorkerRequest
-	129, // 318: dirextalk.agent.v1.CloudControlService.ListCloudWorkers:input_type -> dirextalk.agent.v1.ListCloudWorkersRequest
-	86,  // 319: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentDestroyChallenge:input_type -> dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeRequest
-	88,  // 320: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentDestroy:input_type -> dirextalk.agent.v1.ApproveCloudDeploymentDestroyRequest
-	90,  // 321: dirextalk.agent.v1.CloudControlService.GetCloudDestroyOperation:input_type -> dirextalk.agent.v1.GetCloudDestroyOperationRequest
-	108, // 322: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryPlan:input_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryPlanRequest
-	110, // 323: dirextalk.agent.v1.CloudControlService.GetCloudEntryPlan:input_type -> dirextalk.agent.v1.GetCloudEntryPlanRequest
-	112, // 324: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryChallenge:input_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeRequest
-	114, // 325: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentEntry:input_type -> dirextalk.agent.v1.ApproveCloudDeploymentEntryRequest
-	116, // 326: dirextalk.agent.v1.CloudControlService.GetCloudEntryOperation:input_type -> dirextalk.agent.v1.GetCloudEntryOperationRequest
-	193, // 327: dirextalk.agent.v1.CloudControlService.CreateCloudManagedAcceptanceChallenge:input_type -> dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeRequest
-	195, // 328: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedAcceptance:input_type -> dirextalk.agent.v1.ApproveCloudManagedAcceptanceRequest
-	197, // 329: dirextalk.agent.v1.CloudControlService.GetCloudManagedAcceptanceOperation:input_type -> dirextalk.agent.v1.GetCloudManagedAcceptanceOperationRequest
-	207, // 330: dirextalk.agent.v1.CloudControlService.CreateCloudManagedPreparation:input_type -> dirextalk.agent.v1.CreateCloudManagedPreparationRequest
-	209, // 331: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedPreparation:input_type -> dirextalk.agent.v1.ApproveCloudManagedPreparationRequest
-	211, // 332: dirextalk.agent.v1.CloudControlService.GetCloudManagedPreparation:input_type -> dirextalk.agent.v1.GetCloudManagedPreparationRequest
-	214, // 333: dirextalk.agent.v1.CloudControlService.GetCloudPairing:input_type -> dirextalk.agent.v1.GetCloudPairingRequest
-	217, // 334: dirextalk.agent.v1.CloudControlService.RetrieveCloudPairingPayload:input_type -> dirextalk.agent.v1.RetrieveCloudPairingPayloadRequest
-	221, // 335: dirextalk.agent.v1.CloudControlService.CreateCloudPairingResumeChallenge:input_type -> dirextalk.agent.v1.CreateCloudPairingResumeChallengeRequest
-	223, // 336: dirextalk.agent.v1.CloudControlService.ApproveCloudPairingResume:input_type -> dirextalk.agent.v1.ApproveCloudPairingResumeRequest
-	245, // 337: dirextalk.agent.v1.CloudControlService.PrepareRootHelperKeyDeliveryApproval:input_type -> dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalRequest
-	247, // 338: dirextalk.agent.v1.CloudControlService.ApproveRootHelperKeyDelivery:input_type -> dirextalk.agent.v1.ApproveRootHelperKeyDeliveryRequest
-	249, // 339: dirextalk.agent.v1.CloudControlService.GetRootHelperKeyDeliveryApproval:input_type -> dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalRequest
-	131, // 340: dirextalk.agent.v1.SecretBootstrapService.CreateSession:input_type -> dirextalk.agent.v1.CreateSessionRequest
-	134, // 341: dirextalk.agent.v1.SecretBootstrapService.GetSession:input_type -> dirextalk.agent.v1.SecretBootstrapServiceGetSessionRequest
-	136, // 342: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:input_type -> dirextalk.agent.v1.UploadEncryptedRequest
-	138, // 343: dirextalk.agent.v1.SecretBootstrapService.Complete:input_type -> dirextalk.agent.v1.CompleteRequest
-	140, // 344: dirextalk.agent.v1.AdminService.CreateServiceKey:input_type -> dirextalk.agent.v1.CreateServiceKeyRequest
-	143, // 345: dirextalk.agent.v1.AdminService.RevokeServiceKey:input_type -> dirextalk.agent.v1.RevokeServiceKeyRequest
-	146, // 346: dirextalk.agent.v1.AdminService.RegisterApprovalDevice:input_type -> dirextalk.agent.v1.RegisterApprovalDeviceRequest
-	148, // 347: dirextalk.agent.v1.AdminService.RevokeApprovalDevice:input_type -> dirextalk.agent.v1.RevokeApprovalDeviceRequest
-	152, // 348: dirextalk.agent.v1.WorkerControlService.CreateIdentityChallenge:input_type -> dirextalk.agent.v1.CreateIdentityChallengeRequest
-	156, // 349: dirextalk.agent.v1.WorkerControlService.EnrollVerifiedIdentity:input_type -> dirextalk.agent.v1.EnrollVerifiedIdentityRequest
-	150, // 350: dirextalk.agent.v1.WorkerControlService.Enroll:input_type -> dirextalk.agent.v1.EnrollRequest
-	163, // 351: dirextalk.agent.v1.WorkerControlService.GetCurrentAssignment:input_type -> dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentRequest
-	165, // 352: dirextalk.agent.v1.WorkerControlService.Claim:input_type -> dirextalk.agent.v1.WorkerControlServiceClaimRequest
-	167, // 353: dirextalk.agent.v1.WorkerControlService.Heartbeat:input_type -> dirextalk.agent.v1.HeartbeatRequest
-	170, // 354: dirextalk.agent.v1.WorkerControlService.RecordEvidence:input_type -> dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest
-	172, // 355: dirextalk.agent.v1.WorkerControlService.Complete:input_type -> dirextalk.agent.v1.WorkerControlServiceCompleteRequest
-	228, // 356: dirextalk.agent.v1.WorkerServiceOperationService.Get:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceGetRequest
-	230, // 357: dirextalk.agent.v1.WorkerServiceOperationService.Claim:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceClaimRequest
-	232, // 358: dirextalk.agent.v1.WorkerServiceOperationService.AcquireNext:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextRequest
-	234, // 359: dirextalk.agent.v1.WorkerServiceOperationService.Complete:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceCompleteRequest
-	237, // 360: dirextalk.agent.v1.PairingWorkerOperationService.AcquireNext:input_type -> dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextRequest
-	239, // 361: dirextalk.agent.v1.PairingWorkerOperationService.Complete:input_type -> dirextalk.agent.v1.PairingWorkerOperationServiceCompleteRequest
-	258, // 362: dirextalk.agent.v1.RootHelperBootstrapControlService.AcquirePending:input_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingRequest
-	260, // 363: dirextalk.agent.v1.RootHelperBootstrapControlService.Current:input_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentRequest
-	252, // 364: dirextalk.agent.v1.RootHelperBootstrapControlService.SubmitProof:input_type -> dirextalk.agent.v1.SubmitProofRequest
-	254, // 365: dirextalk.agent.v1.RootHelperBootstrapControlService.ReconcileRevocation:input_type -> dirextalk.agent.v1.ReconcileRevocationRequest
-	256, // 366: dirextalk.agent.v1.RootHelperBootstrapControlService.ConfirmCanary:input_type -> dirextalk.agent.v1.ConfirmCanaryRequest
-	41,  // 367: dirextalk.agent.v1.TaskService.CreateTask:output_type -> dirextalk.agent.v1.CreateTaskResponse
-	43,  // 368: dirextalk.agent.v1.TaskService.GetTask:output_type -> dirextalk.agent.v1.GetTaskResponse
-	45,  // 369: dirextalk.agent.v1.TaskService.ListTasks:output_type -> dirextalk.agent.v1.ListTasksResponse
-	47,  // 370: dirextalk.agent.v1.TaskService.CancelTask:output_type -> dirextalk.agent.v1.CancelTaskResponse
-	49,  // 371: dirextalk.agent.v1.TaskService.ListSteps:output_type -> dirextalk.agent.v1.ListStepsResponse
-	51,  // 372: dirextalk.agent.v1.TaskService.WatchEvents:output_type -> dirextalk.agent.v1.WatchEventsResponse
-	54,  // 373: dirextalk.agent.v1.RuntimeService.GetCapabilities:output_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
-	59,  // 374: dirextalk.agent.v1.RuntimeService.GetRuntimeConfig:output_type -> dirextalk.agent.v1.GetRuntimeConfigResponse
-	61,  // 375: dirextalk.agent.v1.RuntimeService.PutRuntimeConfig:output_type -> dirextalk.agent.v1.PutRuntimeConfigResponse
-	65,  // 376: dirextalk.agent.v1.RuntimeService.Chat:output_type -> dirextalk.agent.v1.ChatResponse
-	70,  // 377: dirextalk.agent.v1.RuntimeService.StreamChat:output_type -> dirextalk.agent.v1.StreamChatResponse
-	73,  // 378: dirextalk.agent.v1.CloudControlService.GetCapabilities:output_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
-	176, // 379: dirextalk.agent.v1.CloudControlService.CreateCloudGoal:output_type -> dirextalk.agent.v1.CreateCloudGoalResponse
-	278, // 380: dirextalk.agent.v1.CloudControlService.PreviewAwsIdentity:output_type -> dirextalk.agent.v1.PreviewAwsIdentityResponse
-	279, // 381: dirextalk.agent.v1.CloudControlService.CreateCloudQuote:output_type -> dirextalk.agent.v1.CreateCloudQuoteResponse
-	280, // 382: dirextalk.agent.v1.CloudControlService.GetCloudQuote:output_type -> dirextalk.agent.v1.GetCloudQuoteResponse
-	281, // 383: dirextalk.agent.v1.CloudControlService.CreateCloudPlan:output_type -> dirextalk.agent.v1.CreateCloudPlanResponse
-	282, // 384: dirextalk.agent.v1.CloudControlService.GetCloudPlan:output_type -> dirextalk.agent.v1.GetCloudPlanResponse
-	283, // 385: dirextalk.agent.v1.CloudControlService.ListCloudPlans:output_type -> dirextalk.agent.v1.ListCloudPlansResponse
-	284, // 386: dirextalk.agent.v1.CloudControlService.CreateApprovalChallenge:output_type -> dirextalk.agent.v1.CreateApprovalChallengeResponse
-	285, // 387: dirextalk.agent.v1.CloudControlService.ApproveCloudPlan:output_type -> dirextalk.agent.v1.ApproveCloudPlanResponse
-	286, // 388: dirextalk.agent.v1.CloudControlService.EstablishAwsConnection:output_type -> dirextalk.agent.v1.EstablishAwsConnectionResponse
-	287, // 389: dirextalk.agent.v1.CloudControlService.CreateAwsFoundationOperationChallenge:output_type -> dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
-	288, // 390: dirextalk.agent.v1.CloudControlService.ApproveAwsFoundationOperation:output_type -> dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
-	289, // 391: dirextalk.agent.v1.CloudControlService.GetAwsFoundationOperation:output_type -> dirextalk.agent.v1.GetAwsFoundationOperationResponse
-	290, // 392: dirextalk.agent.v1.CloudControlService.GetCloudConnection:output_type -> dirextalk.agent.v1.GetCloudConnectionResponse
-	291, // 393: dirextalk.agent.v1.CloudControlService.ListCloudConnections:output_type -> dirextalk.agent.v1.ListCloudConnectionsResponse
-	120, // 394: dirextalk.agent.v1.CloudControlService.GetCloudDeployment:output_type -> dirextalk.agent.v1.GetCloudDeploymentResponse
-	122, // 395: dirextalk.agent.v1.CloudControlService.ListCloudDeployments:output_type -> dirextalk.agent.v1.ListCloudDeploymentsResponse
-	124, // 396: dirextalk.agent.v1.CloudControlService.GetCloudResource:output_type -> dirextalk.agent.v1.GetCloudResourceResponse
-	126, // 397: dirextalk.agent.v1.CloudControlService.ListCloudResources:output_type -> dirextalk.agent.v1.ListCloudResourcesResponse
-	128, // 398: dirextalk.agent.v1.CloudControlService.GetCloudWorker:output_type -> dirextalk.agent.v1.GetCloudWorkerResponse
-	130, // 399: dirextalk.agent.v1.CloudControlService.ListCloudWorkers:output_type -> dirextalk.agent.v1.ListCloudWorkersResponse
-	87,  // 400: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentDestroyChallenge:output_type -> dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeResponse
-	89,  // 401: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentDestroy:output_type -> dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse
-	91,  // 402: dirextalk.agent.v1.CloudControlService.GetCloudDestroyOperation:output_type -> dirextalk.agent.v1.GetCloudDestroyOperationResponse
-	109, // 403: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryPlan:output_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryPlanResponse
-	111, // 404: dirextalk.agent.v1.CloudControlService.GetCloudEntryPlan:output_type -> dirextalk.agent.v1.GetCloudEntryPlanResponse
-	113, // 405: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryChallenge:output_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeResponse
-	115, // 406: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentEntry:output_type -> dirextalk.agent.v1.ApproveCloudDeploymentEntryResponse
-	117, // 407: dirextalk.agent.v1.CloudControlService.GetCloudEntryOperation:output_type -> dirextalk.agent.v1.GetCloudEntryOperationResponse
-	194, // 408: dirextalk.agent.v1.CloudControlService.CreateCloudManagedAcceptanceChallenge:output_type -> dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeResponse
-	196, // 409: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedAcceptance:output_type -> dirextalk.agent.v1.ApproveCloudManagedAcceptanceResponse
-	198, // 410: dirextalk.agent.v1.CloudControlService.GetCloudManagedAcceptanceOperation:output_type -> dirextalk.agent.v1.GetCloudManagedAcceptanceOperationResponse
-	208, // 411: dirextalk.agent.v1.CloudControlService.CreateCloudManagedPreparation:output_type -> dirextalk.agent.v1.CreateCloudManagedPreparationResponse
-	210, // 412: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedPreparation:output_type -> dirextalk.agent.v1.ApproveCloudManagedPreparationResponse
-	212, // 413: dirextalk.agent.v1.CloudControlService.GetCloudManagedPreparation:output_type -> dirextalk.agent.v1.GetCloudManagedPreparationResponse
-	215, // 414: dirextalk.agent.v1.CloudControlService.GetCloudPairing:output_type -> dirextalk.agent.v1.GetCloudPairingResponse
-	218, // 415: dirextalk.agent.v1.CloudControlService.RetrieveCloudPairingPayload:output_type -> dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse
-	222, // 416: dirextalk.agent.v1.CloudControlService.CreateCloudPairingResumeChallenge:output_type -> dirextalk.agent.v1.CreateCloudPairingResumeChallengeResponse
-	224, // 417: dirextalk.agent.v1.CloudControlService.ApproveCloudPairingResume:output_type -> dirextalk.agent.v1.ApproveCloudPairingResumeResponse
-	246, // 418: dirextalk.agent.v1.CloudControlService.PrepareRootHelperKeyDeliveryApproval:output_type -> dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalResponse
-	248, // 419: dirextalk.agent.v1.CloudControlService.ApproveRootHelperKeyDelivery:output_type -> dirextalk.agent.v1.ApproveRootHelperKeyDeliveryResponse
-	250, // 420: dirextalk.agent.v1.CloudControlService.GetRootHelperKeyDeliveryApproval:output_type -> dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalResponse
-	133, // 421: dirextalk.agent.v1.SecretBootstrapService.CreateSession:output_type -> dirextalk.agent.v1.CreateSessionResponse
-	135, // 422: dirextalk.agent.v1.SecretBootstrapService.GetSession:output_type -> dirextalk.agent.v1.SecretBootstrapServiceGetSessionResponse
-	137, // 423: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:output_type -> dirextalk.agent.v1.UploadEncryptedResponse
-	139, // 424: dirextalk.agent.v1.SecretBootstrapService.Complete:output_type -> dirextalk.agent.v1.CompleteResponse
-	142, // 425: dirextalk.agent.v1.AdminService.CreateServiceKey:output_type -> dirextalk.agent.v1.CreateServiceKeyResponse
-	144, // 426: dirextalk.agent.v1.AdminService.RevokeServiceKey:output_type -> dirextalk.agent.v1.RevokeServiceKeyResponse
-	147, // 427: dirextalk.agent.v1.AdminService.RegisterApprovalDevice:output_type -> dirextalk.agent.v1.RegisterApprovalDeviceResponse
-	149, // 428: dirextalk.agent.v1.AdminService.RevokeApprovalDevice:output_type -> dirextalk.agent.v1.RevokeApprovalDeviceResponse
-	154, // 429: dirextalk.agent.v1.WorkerControlService.CreateIdentityChallenge:output_type -> dirextalk.agent.v1.CreateIdentityChallengeResponse
-	157, // 430: dirextalk.agent.v1.WorkerControlService.EnrollVerifiedIdentity:output_type -> dirextalk.agent.v1.EnrollVerifiedIdentityResponse
-	151, // 431: dirextalk.agent.v1.WorkerControlService.Enroll:output_type -> dirextalk.agent.v1.EnrollResponse
-	164, // 432: dirextalk.agent.v1.WorkerControlService.GetCurrentAssignment:output_type -> dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse
-	166, // 433: dirextalk.agent.v1.WorkerControlService.Claim:output_type -> dirextalk.agent.v1.WorkerControlServiceClaimResponse
-	168, // 434: dirextalk.agent.v1.WorkerControlService.Heartbeat:output_type -> dirextalk.agent.v1.HeartbeatResponse
-	171, // 435: dirextalk.agent.v1.WorkerControlService.RecordEvidence:output_type -> dirextalk.agent.v1.WorkerControlServiceRecordEvidenceResponse
-	173, // 436: dirextalk.agent.v1.WorkerControlService.Complete:output_type -> dirextalk.agent.v1.WorkerControlServiceCompleteResponse
-	229, // 437: dirextalk.agent.v1.WorkerServiceOperationService.Get:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse
-	231, // 438: dirextalk.agent.v1.WorkerServiceOperationService.Claim:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceClaimResponse
-	233, // 439: dirextalk.agent.v1.WorkerServiceOperationService.AcquireNext:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextResponse
-	235, // 440: dirextalk.agent.v1.WorkerServiceOperationService.Complete:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceCompleteResponse
-	238, // 441: dirextalk.agent.v1.PairingWorkerOperationService.AcquireNext:output_type -> dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextResponse
-	240, // 442: dirextalk.agent.v1.PairingWorkerOperationService.Complete:output_type -> dirextalk.agent.v1.PairingWorkerOperationServiceCompleteResponse
-	259, // 443: dirextalk.agent.v1.RootHelperBootstrapControlService.AcquirePending:output_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingResponse
-	261, // 444: dirextalk.agent.v1.RootHelperBootstrapControlService.Current:output_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentResponse
-	253, // 445: dirextalk.agent.v1.RootHelperBootstrapControlService.SubmitProof:output_type -> dirextalk.agent.v1.SubmitProofResponse
-	255, // 446: dirextalk.agent.v1.RootHelperBootstrapControlService.ReconcileRevocation:output_type -> dirextalk.agent.v1.ReconcileRevocationResponse
-	257, // 447: dirextalk.agent.v1.RootHelperBootstrapControlService.ConfirmCanary:output_type -> dirextalk.agent.v1.ConfirmCanaryResponse
-	367, // [367:448] is the sub-list for method output_type
-	286, // [286:367] is the sub-list for method input_type
-	286, // [286:286] is the sub-list for extension type_name
-	286, // [286:286] is the sub-list for extension extendee
-	0,   // [0:286] is the sub-list for field type_name
+	265, // 275: dirextalk.agent.v1.RootHelperKeyDelivery.proof_observed_at:type_name -> google.protobuf.Timestamp
+	265, // 276: dirextalk.agent.v1.RootHelperKeyDelivery.revoked_at:type_name -> google.protobuf.Timestamp
+	265, // 277: dirextalk.agent.v1.RootHelperKeyDelivery.ready_at:type_name -> google.protobuf.Timestamp
+	265, // 278: dirextalk.agent.v1.RootHelperKeyDelivery.created_at:type_name -> google.protobuf.Timestamp
+	265, // 279: dirextalk.agent.v1.RootHelperKeyDelivery.updated_at:type_name -> google.protobuf.Timestamp
+	252, // 280: dirextalk.agent.v1.SubmitProofResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
+	252, // 281: dirextalk.agent.v1.ReconcileRevocationResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
+	265, // 282: dirextalk.agent.v1.ConfirmCanaryRequest.observed_at:type_name -> google.protobuf.Timestamp
+	252, // 283: dirextalk.agent.v1.ConfirmCanaryResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
+	252, // 284: dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
+	252, // 285: dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentResponse.delivery:type_name -> dirextalk.agent.v1.RootHelperKeyDelivery
+	37,  // 286: dirextalk.agent.v1.WorkerControlServiceEmitMilestoneRequest.kind:type_name -> dirextalk.agent.v1.WorkerMilestoneKind
+	26,  // 287: dirextalk.agent.v1.WorkerControlServiceEmitMilestoneRequest.outcome:type_name -> dirextalk.agent.v1.WorkerOutcome
+	41,  // 288: dirextalk.agent.v1.TaskService.CreateTask:input_type -> dirextalk.agent.v1.CreateTaskRequest
+	43,  // 289: dirextalk.agent.v1.TaskService.GetTask:input_type -> dirextalk.agent.v1.GetTaskRequest
+	45,  // 290: dirextalk.agent.v1.TaskService.ListTasks:input_type -> dirextalk.agent.v1.ListTasksRequest
+	47,  // 291: dirextalk.agent.v1.TaskService.CancelTask:input_type -> dirextalk.agent.v1.CancelTaskRequest
+	49,  // 292: dirextalk.agent.v1.TaskService.ListSteps:input_type -> dirextalk.agent.v1.ListStepsRequest
+	51,  // 293: dirextalk.agent.v1.TaskService.WatchEvents:input_type -> dirextalk.agent.v1.WatchEventsRequest
+	54,  // 294: dirextalk.agent.v1.RuntimeService.GetCapabilities:input_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesRequest
+	59,  // 295: dirextalk.agent.v1.RuntimeService.GetRuntimeConfig:input_type -> dirextalk.agent.v1.GetRuntimeConfigRequest
+	61,  // 296: dirextalk.agent.v1.RuntimeService.PutRuntimeConfig:input_type -> dirextalk.agent.v1.PutRuntimeConfigRequest
+	63,  // 297: dirextalk.agent.v1.RuntimeService.Chat:input_type -> dirextalk.agent.v1.ChatRequest
+	67,  // 298: dirextalk.agent.v1.RuntimeService.StreamChat:input_type -> dirextalk.agent.v1.StreamChatRequest
+	73,  // 299: dirextalk.agent.v1.CloudControlService.GetCapabilities:input_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesRequest
+	175, // 300: dirextalk.agent.v1.CloudControlService.CreateCloudGoal:input_type -> dirextalk.agent.v1.CreateCloudGoalRequest
+	267, // 301: dirextalk.agent.v1.CloudControlService.PreviewAwsIdentity:input_type -> dirextalk.agent.v1.PreviewAwsIdentityRequest
+	268, // 302: dirextalk.agent.v1.CloudControlService.CreateCloudQuote:input_type -> dirextalk.agent.v1.CreateCloudQuoteRequest
+	269, // 303: dirextalk.agent.v1.CloudControlService.GetCloudQuote:input_type -> dirextalk.agent.v1.GetCloudQuoteRequest
+	270, // 304: dirextalk.agent.v1.CloudControlService.CreateCloudPlan:input_type -> dirextalk.agent.v1.CreateCloudPlanRequest
+	271, // 305: dirextalk.agent.v1.CloudControlService.GetCloudPlan:input_type -> dirextalk.agent.v1.GetCloudPlanRequest
+	272, // 306: dirextalk.agent.v1.CloudControlService.ListCloudPlans:input_type -> dirextalk.agent.v1.ListCloudPlansRequest
+	273, // 307: dirextalk.agent.v1.CloudControlService.CreateApprovalChallenge:input_type -> dirextalk.agent.v1.CreateApprovalChallengeRequest
+	274, // 308: dirextalk.agent.v1.CloudControlService.ApproveCloudPlan:input_type -> dirextalk.agent.v1.ApproveCloudPlanRequest
+	275, // 309: dirextalk.agent.v1.CloudControlService.EstablishAwsConnection:input_type -> dirextalk.agent.v1.EstablishAwsConnectionRequest
+	276, // 310: dirextalk.agent.v1.CloudControlService.CreateAwsFoundationOperationChallenge:input_type -> dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
+	277, // 311: dirextalk.agent.v1.CloudControlService.ApproveAwsFoundationOperation:input_type -> dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
+	278, // 312: dirextalk.agent.v1.CloudControlService.GetAwsFoundationOperation:input_type -> dirextalk.agent.v1.GetAwsFoundationOperationRequest
+	279, // 313: dirextalk.agent.v1.CloudControlService.GetCloudConnection:input_type -> dirextalk.agent.v1.GetCloudConnectionRequest
+	280, // 314: dirextalk.agent.v1.CloudControlService.ListCloudConnections:input_type -> dirextalk.agent.v1.ListCloudConnectionsRequest
+	120, // 315: dirextalk.agent.v1.CloudControlService.GetCloudDeployment:input_type -> dirextalk.agent.v1.GetCloudDeploymentRequest
+	122, // 316: dirextalk.agent.v1.CloudControlService.ListCloudDeployments:input_type -> dirextalk.agent.v1.ListCloudDeploymentsRequest
+	124, // 317: dirextalk.agent.v1.CloudControlService.GetCloudResource:input_type -> dirextalk.agent.v1.GetCloudResourceRequest
+	126, // 318: dirextalk.agent.v1.CloudControlService.ListCloudResources:input_type -> dirextalk.agent.v1.ListCloudResourcesRequest
+	128, // 319: dirextalk.agent.v1.CloudControlService.GetCloudWorker:input_type -> dirextalk.agent.v1.GetCloudWorkerRequest
+	130, // 320: dirextalk.agent.v1.CloudControlService.ListCloudWorkers:input_type -> dirextalk.agent.v1.ListCloudWorkersRequest
+	87,  // 321: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentDestroyChallenge:input_type -> dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeRequest
+	89,  // 322: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentDestroy:input_type -> dirextalk.agent.v1.ApproveCloudDeploymentDestroyRequest
+	91,  // 323: dirextalk.agent.v1.CloudControlService.GetCloudDestroyOperation:input_type -> dirextalk.agent.v1.GetCloudDestroyOperationRequest
+	109, // 324: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryPlan:input_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryPlanRequest
+	111, // 325: dirextalk.agent.v1.CloudControlService.GetCloudEntryPlan:input_type -> dirextalk.agent.v1.GetCloudEntryPlanRequest
+	113, // 326: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryChallenge:input_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeRequest
+	115, // 327: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentEntry:input_type -> dirextalk.agent.v1.ApproveCloudDeploymentEntryRequest
+	117, // 328: dirextalk.agent.v1.CloudControlService.GetCloudEntryOperation:input_type -> dirextalk.agent.v1.GetCloudEntryOperationRequest
+	194, // 329: dirextalk.agent.v1.CloudControlService.CreateCloudManagedAcceptanceChallenge:input_type -> dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeRequest
+	196, // 330: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedAcceptance:input_type -> dirextalk.agent.v1.ApproveCloudManagedAcceptanceRequest
+	198, // 331: dirextalk.agent.v1.CloudControlService.GetCloudManagedAcceptanceOperation:input_type -> dirextalk.agent.v1.GetCloudManagedAcceptanceOperationRequest
+	208, // 332: dirextalk.agent.v1.CloudControlService.CreateCloudManagedPreparation:input_type -> dirextalk.agent.v1.CreateCloudManagedPreparationRequest
+	210, // 333: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedPreparation:input_type -> dirextalk.agent.v1.ApproveCloudManagedPreparationRequest
+	212, // 334: dirextalk.agent.v1.CloudControlService.GetCloudManagedPreparation:input_type -> dirextalk.agent.v1.GetCloudManagedPreparationRequest
+	215, // 335: dirextalk.agent.v1.CloudControlService.GetCloudPairing:input_type -> dirextalk.agent.v1.GetCloudPairingRequest
+	218, // 336: dirextalk.agent.v1.CloudControlService.RetrieveCloudPairingPayload:input_type -> dirextalk.agent.v1.RetrieveCloudPairingPayloadRequest
+	222, // 337: dirextalk.agent.v1.CloudControlService.CreateCloudPairingResumeChallenge:input_type -> dirextalk.agent.v1.CreateCloudPairingResumeChallengeRequest
+	224, // 338: dirextalk.agent.v1.CloudControlService.ApproveCloudPairingResume:input_type -> dirextalk.agent.v1.ApproveCloudPairingResumeRequest
+	246, // 339: dirextalk.agent.v1.CloudControlService.PrepareRootHelperKeyDeliveryApproval:input_type -> dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalRequest
+	248, // 340: dirextalk.agent.v1.CloudControlService.ApproveRootHelperKeyDelivery:input_type -> dirextalk.agent.v1.ApproveRootHelperKeyDeliveryRequest
+	250, // 341: dirextalk.agent.v1.CloudControlService.GetRootHelperKeyDeliveryApproval:input_type -> dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalRequest
+	132, // 342: dirextalk.agent.v1.SecretBootstrapService.CreateSession:input_type -> dirextalk.agent.v1.CreateSessionRequest
+	135, // 343: dirextalk.agent.v1.SecretBootstrapService.GetSession:input_type -> dirextalk.agent.v1.SecretBootstrapServiceGetSessionRequest
+	137, // 344: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:input_type -> dirextalk.agent.v1.UploadEncryptedRequest
+	139, // 345: dirextalk.agent.v1.SecretBootstrapService.Complete:input_type -> dirextalk.agent.v1.CompleteRequest
+	141, // 346: dirextalk.agent.v1.AdminService.CreateServiceKey:input_type -> dirextalk.agent.v1.CreateServiceKeyRequest
+	144, // 347: dirextalk.agent.v1.AdminService.RevokeServiceKey:input_type -> dirextalk.agent.v1.RevokeServiceKeyRequest
+	147, // 348: dirextalk.agent.v1.AdminService.RegisterApprovalDevice:input_type -> dirextalk.agent.v1.RegisterApprovalDeviceRequest
+	149, // 349: dirextalk.agent.v1.AdminService.RevokeApprovalDevice:input_type -> dirextalk.agent.v1.RevokeApprovalDeviceRequest
+	153, // 350: dirextalk.agent.v1.WorkerControlService.CreateIdentityChallenge:input_type -> dirextalk.agent.v1.CreateIdentityChallengeRequest
+	157, // 351: dirextalk.agent.v1.WorkerControlService.EnrollVerifiedIdentity:input_type -> dirextalk.agent.v1.EnrollVerifiedIdentityRequest
+	151, // 352: dirextalk.agent.v1.WorkerControlService.Enroll:input_type -> dirextalk.agent.v1.EnrollRequest
+	164, // 353: dirextalk.agent.v1.WorkerControlService.GetCurrentAssignment:input_type -> dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentRequest
+	166, // 354: dirextalk.agent.v1.WorkerControlService.Claim:input_type -> dirextalk.agent.v1.WorkerControlServiceClaimRequest
+	168, // 355: dirextalk.agent.v1.WorkerControlService.Heartbeat:input_type -> dirextalk.agent.v1.HeartbeatRequest
+	171, // 356: dirextalk.agent.v1.WorkerControlService.RecordEvidence:input_type -> dirextalk.agent.v1.WorkerControlServiceRecordEvidenceRequest
+	263, // 357: dirextalk.agent.v1.WorkerControlService.EmitMilestone:input_type -> dirextalk.agent.v1.WorkerControlServiceEmitMilestoneRequest
+	173, // 358: dirextalk.agent.v1.WorkerControlService.Complete:input_type -> dirextalk.agent.v1.WorkerControlServiceCompleteRequest
+	229, // 359: dirextalk.agent.v1.WorkerServiceOperationService.Get:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceGetRequest
+	231, // 360: dirextalk.agent.v1.WorkerServiceOperationService.Claim:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceClaimRequest
+	233, // 361: dirextalk.agent.v1.WorkerServiceOperationService.AcquireNext:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextRequest
+	235, // 362: dirextalk.agent.v1.WorkerServiceOperationService.Complete:input_type -> dirextalk.agent.v1.WorkerServiceOperationServiceCompleteRequest
+	238, // 363: dirextalk.agent.v1.PairingWorkerOperationService.AcquireNext:input_type -> dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextRequest
+	240, // 364: dirextalk.agent.v1.PairingWorkerOperationService.Complete:input_type -> dirextalk.agent.v1.PairingWorkerOperationServiceCompleteRequest
+	259, // 365: dirextalk.agent.v1.RootHelperBootstrapControlService.AcquirePending:input_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingRequest
+	261, // 366: dirextalk.agent.v1.RootHelperBootstrapControlService.Current:input_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentRequest
+	253, // 367: dirextalk.agent.v1.RootHelperBootstrapControlService.SubmitProof:input_type -> dirextalk.agent.v1.SubmitProofRequest
+	255, // 368: dirextalk.agent.v1.RootHelperBootstrapControlService.ReconcileRevocation:input_type -> dirextalk.agent.v1.ReconcileRevocationRequest
+	257, // 369: dirextalk.agent.v1.RootHelperBootstrapControlService.ConfirmCanary:input_type -> dirextalk.agent.v1.ConfirmCanaryRequest
+	42,  // 370: dirextalk.agent.v1.TaskService.CreateTask:output_type -> dirextalk.agent.v1.CreateTaskResponse
+	44,  // 371: dirextalk.agent.v1.TaskService.GetTask:output_type -> dirextalk.agent.v1.GetTaskResponse
+	46,  // 372: dirextalk.agent.v1.TaskService.ListTasks:output_type -> dirextalk.agent.v1.ListTasksResponse
+	48,  // 373: dirextalk.agent.v1.TaskService.CancelTask:output_type -> dirextalk.agent.v1.CancelTaskResponse
+	50,  // 374: dirextalk.agent.v1.TaskService.ListSteps:output_type -> dirextalk.agent.v1.ListStepsResponse
+	52,  // 375: dirextalk.agent.v1.TaskService.WatchEvents:output_type -> dirextalk.agent.v1.WatchEventsResponse
+	55,  // 376: dirextalk.agent.v1.RuntimeService.GetCapabilities:output_type -> dirextalk.agent.v1.RuntimeServiceGetCapabilitiesResponse
+	60,  // 377: dirextalk.agent.v1.RuntimeService.GetRuntimeConfig:output_type -> dirextalk.agent.v1.GetRuntimeConfigResponse
+	62,  // 378: dirextalk.agent.v1.RuntimeService.PutRuntimeConfig:output_type -> dirextalk.agent.v1.PutRuntimeConfigResponse
+	66,  // 379: dirextalk.agent.v1.RuntimeService.Chat:output_type -> dirextalk.agent.v1.ChatResponse
+	71,  // 380: dirextalk.agent.v1.RuntimeService.StreamChat:output_type -> dirextalk.agent.v1.StreamChatResponse
+	74,  // 381: dirextalk.agent.v1.CloudControlService.GetCapabilities:output_type -> dirextalk.agent.v1.CloudControlServiceGetCapabilitiesResponse
+	177, // 382: dirextalk.agent.v1.CloudControlService.CreateCloudGoal:output_type -> dirextalk.agent.v1.CreateCloudGoalResponse
+	281, // 383: dirextalk.agent.v1.CloudControlService.PreviewAwsIdentity:output_type -> dirextalk.agent.v1.PreviewAwsIdentityResponse
+	282, // 384: dirextalk.agent.v1.CloudControlService.CreateCloudQuote:output_type -> dirextalk.agent.v1.CreateCloudQuoteResponse
+	283, // 385: dirextalk.agent.v1.CloudControlService.GetCloudQuote:output_type -> dirextalk.agent.v1.GetCloudQuoteResponse
+	284, // 386: dirextalk.agent.v1.CloudControlService.CreateCloudPlan:output_type -> dirextalk.agent.v1.CreateCloudPlanResponse
+	285, // 387: dirextalk.agent.v1.CloudControlService.GetCloudPlan:output_type -> dirextalk.agent.v1.GetCloudPlanResponse
+	286, // 388: dirextalk.agent.v1.CloudControlService.ListCloudPlans:output_type -> dirextalk.agent.v1.ListCloudPlansResponse
+	287, // 389: dirextalk.agent.v1.CloudControlService.CreateApprovalChallenge:output_type -> dirextalk.agent.v1.CreateApprovalChallengeResponse
+	288, // 390: dirextalk.agent.v1.CloudControlService.ApproveCloudPlan:output_type -> dirextalk.agent.v1.ApproveCloudPlanResponse
+	289, // 391: dirextalk.agent.v1.CloudControlService.EstablishAwsConnection:output_type -> dirextalk.agent.v1.EstablishAwsConnectionResponse
+	290, // 392: dirextalk.agent.v1.CloudControlService.CreateAwsFoundationOperationChallenge:output_type -> dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
+	291, // 393: dirextalk.agent.v1.CloudControlService.ApproveAwsFoundationOperation:output_type -> dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
+	292, // 394: dirextalk.agent.v1.CloudControlService.GetAwsFoundationOperation:output_type -> dirextalk.agent.v1.GetAwsFoundationOperationResponse
+	293, // 395: dirextalk.agent.v1.CloudControlService.GetCloudConnection:output_type -> dirextalk.agent.v1.GetCloudConnectionResponse
+	294, // 396: dirextalk.agent.v1.CloudControlService.ListCloudConnections:output_type -> dirextalk.agent.v1.ListCloudConnectionsResponse
+	121, // 397: dirextalk.agent.v1.CloudControlService.GetCloudDeployment:output_type -> dirextalk.agent.v1.GetCloudDeploymentResponse
+	123, // 398: dirextalk.agent.v1.CloudControlService.ListCloudDeployments:output_type -> dirextalk.agent.v1.ListCloudDeploymentsResponse
+	125, // 399: dirextalk.agent.v1.CloudControlService.GetCloudResource:output_type -> dirextalk.agent.v1.GetCloudResourceResponse
+	127, // 400: dirextalk.agent.v1.CloudControlService.ListCloudResources:output_type -> dirextalk.agent.v1.ListCloudResourcesResponse
+	129, // 401: dirextalk.agent.v1.CloudControlService.GetCloudWorker:output_type -> dirextalk.agent.v1.GetCloudWorkerResponse
+	131, // 402: dirextalk.agent.v1.CloudControlService.ListCloudWorkers:output_type -> dirextalk.agent.v1.ListCloudWorkersResponse
+	88,  // 403: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentDestroyChallenge:output_type -> dirextalk.agent.v1.CreateCloudDeploymentDestroyChallengeResponse
+	90,  // 404: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentDestroy:output_type -> dirextalk.agent.v1.ApproveCloudDeploymentDestroyResponse
+	92,  // 405: dirextalk.agent.v1.CloudControlService.GetCloudDestroyOperation:output_type -> dirextalk.agent.v1.GetCloudDestroyOperationResponse
+	110, // 406: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryPlan:output_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryPlanResponse
+	112, // 407: dirextalk.agent.v1.CloudControlService.GetCloudEntryPlan:output_type -> dirextalk.agent.v1.GetCloudEntryPlanResponse
+	114, // 408: dirextalk.agent.v1.CloudControlService.CreateCloudDeploymentEntryChallenge:output_type -> dirextalk.agent.v1.CreateCloudDeploymentEntryChallengeResponse
+	116, // 409: dirextalk.agent.v1.CloudControlService.ApproveCloudDeploymentEntry:output_type -> dirextalk.agent.v1.ApproveCloudDeploymentEntryResponse
+	118, // 410: dirextalk.agent.v1.CloudControlService.GetCloudEntryOperation:output_type -> dirextalk.agent.v1.GetCloudEntryOperationResponse
+	195, // 411: dirextalk.agent.v1.CloudControlService.CreateCloudManagedAcceptanceChallenge:output_type -> dirextalk.agent.v1.CreateCloudManagedAcceptanceChallengeResponse
+	197, // 412: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedAcceptance:output_type -> dirextalk.agent.v1.ApproveCloudManagedAcceptanceResponse
+	199, // 413: dirextalk.agent.v1.CloudControlService.GetCloudManagedAcceptanceOperation:output_type -> dirextalk.agent.v1.GetCloudManagedAcceptanceOperationResponse
+	209, // 414: dirextalk.agent.v1.CloudControlService.CreateCloudManagedPreparation:output_type -> dirextalk.agent.v1.CreateCloudManagedPreparationResponse
+	211, // 415: dirextalk.agent.v1.CloudControlService.ApproveCloudManagedPreparation:output_type -> dirextalk.agent.v1.ApproveCloudManagedPreparationResponse
+	213, // 416: dirextalk.agent.v1.CloudControlService.GetCloudManagedPreparation:output_type -> dirextalk.agent.v1.GetCloudManagedPreparationResponse
+	216, // 417: dirextalk.agent.v1.CloudControlService.GetCloudPairing:output_type -> dirextalk.agent.v1.GetCloudPairingResponse
+	219, // 418: dirextalk.agent.v1.CloudControlService.RetrieveCloudPairingPayload:output_type -> dirextalk.agent.v1.RetrieveCloudPairingPayloadResponse
+	223, // 419: dirextalk.agent.v1.CloudControlService.CreateCloudPairingResumeChallenge:output_type -> dirextalk.agent.v1.CreateCloudPairingResumeChallengeResponse
+	225, // 420: dirextalk.agent.v1.CloudControlService.ApproveCloudPairingResume:output_type -> dirextalk.agent.v1.ApproveCloudPairingResumeResponse
+	247, // 421: dirextalk.agent.v1.CloudControlService.PrepareRootHelperKeyDeliveryApproval:output_type -> dirextalk.agent.v1.PrepareRootHelperKeyDeliveryApprovalResponse
+	249, // 422: dirextalk.agent.v1.CloudControlService.ApproveRootHelperKeyDelivery:output_type -> dirextalk.agent.v1.ApproveRootHelperKeyDeliveryResponse
+	251, // 423: dirextalk.agent.v1.CloudControlService.GetRootHelperKeyDeliveryApproval:output_type -> dirextalk.agent.v1.GetRootHelperKeyDeliveryApprovalResponse
+	134, // 424: dirextalk.agent.v1.SecretBootstrapService.CreateSession:output_type -> dirextalk.agent.v1.CreateSessionResponse
+	136, // 425: dirextalk.agent.v1.SecretBootstrapService.GetSession:output_type -> dirextalk.agent.v1.SecretBootstrapServiceGetSessionResponse
+	138, // 426: dirextalk.agent.v1.SecretBootstrapService.UploadEncrypted:output_type -> dirextalk.agent.v1.UploadEncryptedResponse
+	140, // 427: dirextalk.agent.v1.SecretBootstrapService.Complete:output_type -> dirextalk.agent.v1.CompleteResponse
+	143, // 428: dirextalk.agent.v1.AdminService.CreateServiceKey:output_type -> dirextalk.agent.v1.CreateServiceKeyResponse
+	145, // 429: dirextalk.agent.v1.AdminService.RevokeServiceKey:output_type -> dirextalk.agent.v1.RevokeServiceKeyResponse
+	148, // 430: dirextalk.agent.v1.AdminService.RegisterApprovalDevice:output_type -> dirextalk.agent.v1.RegisterApprovalDeviceResponse
+	150, // 431: dirextalk.agent.v1.AdminService.RevokeApprovalDevice:output_type -> dirextalk.agent.v1.RevokeApprovalDeviceResponse
+	155, // 432: dirextalk.agent.v1.WorkerControlService.CreateIdentityChallenge:output_type -> dirextalk.agent.v1.CreateIdentityChallengeResponse
+	158, // 433: dirextalk.agent.v1.WorkerControlService.EnrollVerifiedIdentity:output_type -> dirextalk.agent.v1.EnrollVerifiedIdentityResponse
+	152, // 434: dirextalk.agent.v1.WorkerControlService.Enroll:output_type -> dirextalk.agent.v1.EnrollResponse
+	165, // 435: dirextalk.agent.v1.WorkerControlService.GetCurrentAssignment:output_type -> dirextalk.agent.v1.WorkerControlServiceGetCurrentAssignmentResponse
+	167, // 436: dirextalk.agent.v1.WorkerControlService.Claim:output_type -> dirextalk.agent.v1.WorkerControlServiceClaimResponse
+	169, // 437: dirextalk.agent.v1.WorkerControlService.Heartbeat:output_type -> dirextalk.agent.v1.HeartbeatResponse
+	172, // 438: dirextalk.agent.v1.WorkerControlService.RecordEvidence:output_type -> dirextalk.agent.v1.WorkerControlServiceRecordEvidenceResponse
+	264, // 439: dirextalk.agent.v1.WorkerControlService.EmitMilestone:output_type -> dirextalk.agent.v1.WorkerControlServiceEmitMilestoneResponse
+	174, // 440: dirextalk.agent.v1.WorkerControlService.Complete:output_type -> dirextalk.agent.v1.WorkerControlServiceCompleteResponse
+	230, // 441: dirextalk.agent.v1.WorkerServiceOperationService.Get:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceGetResponse
+	232, // 442: dirextalk.agent.v1.WorkerServiceOperationService.Claim:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceClaimResponse
+	234, // 443: dirextalk.agent.v1.WorkerServiceOperationService.AcquireNext:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceAcquireNextResponse
+	236, // 444: dirextalk.agent.v1.WorkerServiceOperationService.Complete:output_type -> dirextalk.agent.v1.WorkerServiceOperationServiceCompleteResponse
+	239, // 445: dirextalk.agent.v1.PairingWorkerOperationService.AcquireNext:output_type -> dirextalk.agent.v1.PairingWorkerOperationServiceAcquireNextResponse
+	241, // 446: dirextalk.agent.v1.PairingWorkerOperationService.Complete:output_type -> dirextalk.agent.v1.PairingWorkerOperationServiceCompleteResponse
+	260, // 447: dirextalk.agent.v1.RootHelperBootstrapControlService.AcquirePending:output_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceAcquirePendingResponse
+	262, // 448: dirextalk.agent.v1.RootHelperBootstrapControlService.Current:output_type -> dirextalk.agent.v1.RootHelperBootstrapControlServiceCurrentResponse
+	254, // 449: dirextalk.agent.v1.RootHelperBootstrapControlService.SubmitProof:output_type -> dirextalk.agent.v1.SubmitProofResponse
+	256, // 450: dirextalk.agent.v1.RootHelperBootstrapControlService.ReconcileRevocation:output_type -> dirextalk.agent.v1.ReconcileRevocationResponse
+	258, // 451: dirextalk.agent.v1.RootHelperBootstrapControlService.ConfirmCanary:output_type -> dirextalk.agent.v1.ConfirmCanaryResponse
+	370, // [370:452] is the sub-list for method output_type
+	288, // [288:370] is the sub-list for method input_type
+	288, // [288:288] is the sub-list for extension type_name
+	288, // [288:288] is the sub-list for extension extendee
+	0,   // [0:288] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_agent_proto_init() }
@@ -22864,8 +23082,8 @@ func file_dirextalk_agent_v1_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_agent_proto_rawDesc), len(file_dirextalk_agent_v1_agent_proto_rawDesc)),
-			NumEnums:      37,
-			NumMessages:   225,
+			NumEnums:      38,
+			NumMessages:   227,
 			NumExtensions: 0,
 			NumServices:   9,
 		},

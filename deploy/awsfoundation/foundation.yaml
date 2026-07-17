@@ -388,18 +388,6 @@ Resources:
                   ArnLike:
                     kms:EncryptionContext:SecretARN:
                       Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
-              # Workers can append untrusted typed milestones anywhere in the
-              # one single-tenant Agent log group, but cannot read, delete, or
-              # mutate the group. The exact assigned stream is still bound by
-              # the provider-verified role id and EC2 instance id. CloudWatch
-              # IAM cannot transform aws:userid's ':' into a legal stream name.
-              - Sid: WorkerTypedMilestoneLogs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  Fn::Sub: ${WorkerLogGroup.Arn}:log-stream:*
       Tags:
         - Key: dirextalk:agent_instance_id
           Value:
@@ -970,17 +958,16 @@ Resources:
               - dynamodb:UpdateItem
             Resource:
               Fn::GetAtt: [ManifestTable, Arn]
-          - Sid: WorkerAndReaperLogs
+          - Sid: WorkerMilestoneRelayLogs
+            # Workers have no CloudWatch Logs permission. The Agent receives
+            # fixed, session-authenticated milestones and derives the exact
+            # lease-fenced stream before writing with this Control Role.
             Effect: Allow
             Action:
               - logs:CreateLogStream
-              - logs:DescribeLogStreams
-              - logs:FilterLogEvents
-              - logs:GetLogEvents
               - logs:PutLogEvents
             Resource:
-              - Fn::Sub: ${WorkerLogGroup.Arn}:*
-              - Fn::Sub: ${ReaperLogGroup.Arn}:*
+              Fn::Sub: ${WorkerLogGroup.Arn}:*
 
   # Keep public entry-point authority in a separate managed policy. The
   # existing runtime policy is already close to the IAM inline-policy quota;

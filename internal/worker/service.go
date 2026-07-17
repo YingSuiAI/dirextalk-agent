@@ -525,6 +525,48 @@ func (service *Service) RecordLog(ctx context.Context, request LeasedRequest, re
 	return service.record(ctx, request, "log", ref, nil, nil)
 }
 
+// AuthorizeMilestone re-checks the Worker session and current lease without
+// changing deployment state. A milestone can reach the Agent relay only after
+// this lease has already recorded its exact CloudWatch reference as untrusted
+// evidence. That prevents a Worker from selecting another deployment's stream
+// or reviving a prior attempt through a delayed retry.
+func (service *Service) AuthorizeMilestone(ctx context.Context, request MilestoneRequest) (MilestoneTarget, error) {
+	if service == nil || ctx == nil {
+		return MilestoneTarget{}, ErrInvalid
+	}
+	if err := validateIdentity(request.DeploymentID, request.WorkerID, request.Credential); err != nil {
+		return MilestoneTarget{}, err
+	}
+	if request.LeaseEpoch < 1 {
+		return MilestoneTarget{}, fmt.Errorf("%w: lease_epoch must be positive", ErrInvalid)
+	}
+	deployment, err := service.repository.Get(ctx, request.DeploymentID)
+	if err != nil {
+		return MilestoneTarget{}, err
+	}
+	lease := LeasedRequest{
+		AuthenticatedRequest: AuthenticatedRequest{DeploymentID: request.DeploymentID, WorkerID: request.WorkerID, Credential: request.Credential},
+		LeaseEpoch:           request.LeaseEpoch,
+	}
+	if err := service.authenticateLease(&deployment, lease, service.now().UTC()); err != nil {
+		return MilestoneTarget{}, err
+	}
+	logReference, ok := deployment.Access.logReference(deployment.Lease.Attempt, deployment.Lease.Epoch)
+	if !ok || !deployment.Access.permitsLog(logReference, deployment.Lease.Attempt, deployment.Lease.Epoch) {
+		return MilestoneTarget{}, ErrInvalid
+	}
+	for _, evidence := range deployment.Evidence {
+		if evidence.Kind == "log" && evidence.Ref == logReference && evidence.Attempt == deployment.Lease.Attempt && evidence.LeaseEpoch == deployment.Lease.Epoch {
+			return MilestoneTarget{
+				DeploymentID: deployment.DeploymentID, WorkerID: deployment.WorkerID, OwnerID: deployment.OwnerID,
+				LogPrefix: deployment.Access.LogPrefix, LogReference: logReference,
+				Attempt: deployment.Lease.Attempt, LeaseEpoch: deployment.Lease.Epoch,
+			}, nil
+		}
+	}
+	return MilestoneTarget{}, fmt.Errorf("%w: current milestone stream is not registered", ErrInvalid)
+}
+
 func (service *Service) Complete(ctx context.Context, request CompleteRequest) (Deployment, error) {
 	if err := validateIdentity(request.DeploymentID, request.WorkerID, request.Credential); err != nil {
 		return Deployment{}, err
