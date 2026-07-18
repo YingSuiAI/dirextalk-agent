@@ -38,6 +38,18 @@ func TestServiceOperationScopeRequiresExactUsageAndEndpointCost(t *testing.T) {
 		t.Fatalf("valid V2 service operation quote request: %v", err)
 	}
 
+	legacySecrets := request
+	legacySecrets.Scopes = append([]ScopeV1(nil), request.Scopes...)
+	for index := range legacySecrets.Scopes {
+		operations := *request.Scopes[index].ServiceOperations
+		operations.PrivateEndpoints = append([]PrivateEndpointOperationSpecV1(nil), operations.PrivateEndpoints...)
+		operations.PrivateEndpoints[0].Service = PrivateEndpointServiceSecretsManager
+		legacySecrets.Scopes[index].ServiceOperations = &operations
+	}
+	if err := legacySecrets.Validate(); err == nil {
+		t.Fatal("legacy omitted endpoint type accepted a non-S3 Interface service")
+	}
+
 	wrongUsage := request
 	wrongUsage.Usage.PrivateEndpointDataMiB++
 	if err := wrongUsage.Validate(); err == nil {
@@ -61,5 +73,60 @@ func TestServiceOperationScopeRequiresExactUsageAndEndpointCost(t *testing.T) {
 	candidate.HourlyEstimateMicros, candidate.MonthlyEstimateMicros, candidate.MaximumLaunchAmountMicros = 3, 3, 3
 	if err := validateCosts(candidate); err != nil {
 		t.Fatalf("endpoint cost item was rejected: %v", err)
+	}
+}
+
+func TestNoNATServiceOperationsBindExactGatewayAndSecretsInterfaceUsage(t *testing.T) {
+	request := quoteRequest(t, quoteRecipe(t), PurchaseOnDemand)
+	for index := range request.Scopes {
+		scope := &request.Scopes[index]
+		scope.SchemaVersion = ScopeSchemaV2
+		scope.Network = NetworkScopeV1{
+			VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
+			SecurityGroupMode: SecurityGroupCreateDedicated, EntryPoint: EntryPointNone,
+			RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://agent.example.com:443",
+			PrivateConnectivity: PrivateConnectivityNoNATEndpointsV1,
+		}
+		scope.ServiceOperations = &ServiceOperationScopeV1{PrivateEndpoints: []PrivateEndpointOperationSpecV1{
+			{OperationKey: "worker-s3-gateway", Service: PrivateEndpointServiceS3, EndpointType: PrivateEndpointTypeGateway},
+			{OperationKey: "worker-secretsmanager-interface", Service: PrivateEndpointServiceSecretsManager, EndpointType: PrivateEndpointTypeInterface,
+				SecurityGroupSource: EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
+		}}
+	}
+	request.Usage.PrivateEndpointHours = 730
+	request.Usage.PrivateEndpointDataMiB = 1
+	request.Usage.SnapshotGiBMonths = 0
+	if err := request.Validate(); err != nil {
+		t.Fatalf("valid no-NAT endpoint request: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*RequestV1)
+	}{
+		{name: "route table", mutate: func(value *RequestV1) { value.Scopes[0].Network.RouteTableID = "" }},
+		{name: "control port", mutate: func(value *RequestV1) {
+			value.Scopes[0].Network.ControlPlaneEndpoint = "grpcs://agent.example.com:7443"
+		}},
+		{name: "gateway usage", mutate: func(value *RequestV1) { value.Scopes[0].ServiceOperations.PrivateEndpoints[0].MonthlyHours = 1 }},
+		{name: "interface service", mutate: func(value *RequestV1) {
+			value.Scopes[0].ServiceOperations.PrivateEndpoints[1].Service = PrivateEndpointServiceS3
+		}},
+		{name: "usage sum", mutate: func(value *RequestV1) { value.Usage.PrivateEndpointHours++ }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			copy := request
+			copy.Scopes = append([]ScopeV1(nil), request.Scopes...)
+			for index := range copy.Scopes {
+				operations := *request.Scopes[index].ServiceOperations
+				operations.PrivateEndpoints = append([]PrivateEndpointOperationSpecV1(nil), operations.PrivateEndpoints...)
+				copy.Scopes[index].ServiceOperations = &operations
+			}
+			test.mutate(&copy)
+			if err := copy.Validate(); err == nil {
+				t.Fatal("drifted no-NAT endpoint request was accepted")
+			}
+		})
 	}
 }

@@ -242,21 +242,27 @@ type managedAcceptanceRuntimeFactory interface {
 	Runtime(context.Context, cloudapp.Connection) (resource.Provider, resource.ManifestMirror, error)
 }
 
+type managedAcceptanceBindingCoordinator interface {
+	EnsureManagedKnowledgeBinding(context.Context, cloudmanaged.ScopeV1, string) error
+}
+
 type managedAcceptanceResourceAcceptor struct {
 	connections managedAcceptanceConnectionReader
 	resources   resource.Repository
 	runtimes    managedAcceptanceRuntimeFactory
+	bindings    managedAcceptanceBindingCoordinator
 }
 
 func newManagedAcceptanceResourceAcceptor(
 	connections managedAcceptanceConnectionReader,
 	resources resource.Repository,
 	runtimes managedAcceptanceRuntimeFactory,
+	bindings managedAcceptanceBindingCoordinator,
 ) (*managedAcceptanceResourceAcceptor, error) {
-	if connections == nil || resources == nil || runtimes == nil {
+	if connections == nil || resources == nil || runtimes == nil || bindings == nil {
 		return nil, cloudmanaged.ErrInvalid
 	}
-	return &managedAcceptanceResourceAcceptor{connections: connections, resources: resources, runtimes: runtimes}, nil
+	return &managedAcceptanceResourceAcceptor{connections: connections, resources: resources, runtimes: runtimes, bindings: bindings}, nil
 }
 
 func (a *managedAcceptanceResourceAcceptor) AcceptManaged(
@@ -285,7 +291,13 @@ func (a *managedAcceptanceResourceAcceptor) AcceptManaged(
 		return resource.ManagedServiceV1{}, err
 	}
 	managedService, _, err := service.AcceptManaged(ctx, managedResourceContract(scope, approvalID, approvedAt))
-	return managedService, err
+	if err != nil {
+		return resource.ManagedServiceV1{}, err
+	}
+	if err := a.bindings.EnsureManagedKnowledgeBinding(ctx, scope, managedService.ServiceID); err != nil {
+		return resource.ManagedServiceV1{}, err
+	}
+	return managedService, nil
 }
 
 func (a *managedAcceptanceResourceAcceptor) ReplayManaged(
@@ -297,7 +309,14 @@ func (a *managedAcceptanceResourceAcceptor) ReplayManaged(
 	if a == nil || ctx == nil || scope.Validate() != nil || approvalID != scope.AcceptanceID || approvedAt.IsZero() {
 		return resource.ManagedServiceV1{}, false, cloudmanaged.ErrInvalid
 	}
-	return resource.FindExactManagedReplay(ctx, a.resources, managedResourceContract(scope, approvalID, approvedAt))
+	managedService, replayed, err := resource.FindExactManagedReplay(ctx, a.resources, managedResourceContract(scope, approvalID, approvedAt))
+	if err != nil || !replayed {
+		return managedService, replayed, err
+	}
+	if err := a.bindings.EnsureManagedKnowledgeBinding(ctx, scope, managedService.ServiceID); err != nil {
+		return resource.ManagedServiceV1{}, false, err
+	}
+	return managedService, true, nil
 }
 
 func managedResourceContract(scope cloudmanaged.ScopeV1, approvalID string, approvedAt time.Time) resource.ManagedContractV1 {

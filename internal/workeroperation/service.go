@@ -9,7 +9,7 @@ import (
 
 const (
 	minLease = 5 * time.Second
-	maxLease = 30 * time.Minute
+	maxLease = 65 * time.Minute
 )
 
 type Repository interface {
@@ -43,9 +43,26 @@ type CreateRestartRequest struct {
 }
 
 func (service *Service) CreateRestart(ctx context.Context, request CreateRestartRequest) (Operation, error) {
-	mutation, err := NewMutation(request.IdempotencyKey, 0, fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s\nrestart",
-		request.OperationID, request.DeploymentID, request.OwnerID, request.LifecycleRestartRef,
-		request.ExecutionBundleDigest, request.ExpectedInstalledManifestDigest))
+	return service.CreateLifecycle(ctx, CreateLifecycleRequest{
+		OperationID: request.OperationID, DeploymentID: request.DeploymentID, OwnerID: request.OwnerID,
+		Action: ActionRestart, LifecycleRef: request.LifecycleRestartRef,
+		ExecutionBundleDigest:           request.ExecutionBundleDigest,
+		ExpectedInstalledManifestDigest: request.ExpectedInstalledManifestDigest,
+		IdempotencyKey:                  request.IdempotencyKey,
+	})
+}
+
+type CreateLifecycleRequest struct {
+	OperationID, DeploymentID, OwnerID, LifecycleRef, ExecutionBundleDigest, ExpectedInstalledManifestDigest, IdempotencyKey string
+	Action                                                                                                                   Action
+	ExpectedDeploymentRevision, ExpectedManagedServiceRevision, ExpectedKnowledgeBindingRevision                             int64
+}
+
+func (service *Service) CreateLifecycle(ctx context.Context, request CreateLifecycleRequest) (Operation, error) {
+	mutation, err := NewMutation(request.IdempotencyKey, 0, fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s\n%s\n%d\n%d\n%d",
+		request.OperationID, request.DeploymentID, request.OwnerID, request.LifecycleRef,
+		request.ExecutionBundleDigest, request.ExpectedInstalledManifestDigest, request.Action,
+		request.ExpectedDeploymentRevision, request.ExpectedManagedServiceRevision, request.ExpectedKnowledgeBindingRevision))
 	if err != nil {
 		return Operation{}, err
 	}
@@ -53,10 +70,13 @@ func (service *Service) CreateRestart(ctx context.Context, request CreateRestart
 	operation := Operation{
 		SchemaVersion: SchemaV1, OperationID: strings.TrimSpace(request.OperationID),
 		DeploymentID: strings.TrimSpace(request.DeploymentID), OwnerID: strings.TrimSpace(request.OwnerID),
-		Action: ActionRestart, LifecycleRestartRef: strings.TrimSpace(request.LifecycleRestartRef),
-		ExecutionBundleDigest:           strings.TrimSpace(request.ExecutionBundleDigest),
-		ExpectedInstalledManifestDigest: strings.TrimSpace(request.ExpectedInstalledManifestDigest),
-		State:                           StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now,
+		Action: request.Action, LifecycleRestartRef: strings.TrimSpace(request.LifecycleRef),
+		ExecutionBundleDigest:            strings.TrimSpace(request.ExecutionBundleDigest),
+		ExpectedInstalledManifestDigest:  strings.TrimSpace(request.ExpectedInstalledManifestDigest),
+		ExpectedDeploymentRevision:       request.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   request.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: request.ExpectedKnowledgeBindingRevision,
+		State:                            StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := operation.Validate(); err != nil {
 		return Operation{}, err
@@ -201,6 +221,9 @@ func (service *Service) Complete(ctx context.Context, request CompleteRequest) (
 			if !identifierPattern.MatchString(request.FailureCode) {
 				return ErrInvalid
 			}
+			if requiresSignedGenerationObservation(operation.Action) {
+				return ErrSignedObservationRequired
+			}
 			operation.State = StateFailed
 			operation.FailureCode = request.FailureCode
 		} else {
@@ -220,12 +243,24 @@ func (service *Service) Complete(ctx context.Context, request CompleteRequest) (
 	})
 }
 
+func requiresSignedGenerationObservation(action Action) bool {
+	switch action {
+	case ActionRestore, ActionUpgrade, ActionRollback:
+		return true
+	default:
+		return false
+	}
+}
+
 func assignment(operation Operation) Assignment {
 	return Assignment{
 		OperationID: operation.OperationID, DeploymentID: operation.DeploymentID, OwnerID: operation.OwnerID,
 		Action: operation.Action, LifecycleRestartRef: operation.LifecycleRestartRef,
 		ExecutionBundleDigest: operation.ExecutionBundleDigest, WorkerID: operation.WorkerID,
-		ExpectedInstalledManifestDigest: operation.ExpectedInstalledManifestDigest,
-		LeaseEpoch:                      operation.LeaseEpoch, LeaseExpiresAt: operation.LeaseExpiresAt, Revision: operation.Revision,
+		ExpectedInstalledManifestDigest:  operation.ExpectedInstalledManifestDigest,
+		ExpectedDeploymentRevision:       operation.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   operation.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: operation.ExpectedKnowledgeBindingRevision,
+		LeaseEpoch:                       operation.LeaseEpoch, LeaseExpiresAt: operation.LeaseExpiresAt, Revision: operation.Revision,
 	}
 }

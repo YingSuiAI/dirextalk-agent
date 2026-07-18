@@ -104,6 +104,9 @@ message CloudNetworkScope {
   bool authentication_required = 9;
   CloudSecurityGroupMode security_group_mode = 10;
   bool public_ipv4 = 11;
+  string route_table_id = 12;
+  string control_plane_endpoint = 13;
+  string private_connectivity = 14;
 }
 
 message CloudSecretScope {
@@ -128,12 +131,20 @@ message CloudRetentionScope {
 enum CloudPrivateEndpointService {
   CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED = 0;
   CLOUD_PRIVATE_ENDPOINT_SERVICE_S3 = 1;
+  CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER = 2;
+}
+
+enum CloudPrivateEndpointType {
+  CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED = 0;
+  CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY = 1;
+  CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE = 2;
 }
 
 enum CloudEndpointSecurityGroupSource {
   CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED = 0;
   CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING = 1;
   CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED = 2;
+  CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER = 3;
 }
 
 enum CloudSnapshotOperationDisposition {
@@ -149,6 +160,7 @@ message CloudPrivateEndpointOperation {
   bool private_dns_enabled = 4;
   uint32 monthly_hours = 5;
   uint64 data_mib_per_month = 6;
+  CloudPrivateEndpointType endpoint_type = 7;
 }
 
 message CloudSnapshotOperation {

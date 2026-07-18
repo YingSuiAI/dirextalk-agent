@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	awsIDPattern           = regexp.MustCompile(`^(?:ami|vpc|subnet|sg|eni|vol)-[0-9a-f]{8,17}$`)
+	awsIDPattern           = regexp.MustCompile(`^(?:ami|vpc|subnet|sg|eni|vol|rtb)-[0-9a-f]{8,17}$`)
 	awsInstanceIDPattern   = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
 	awsInstanceTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
 	awsZonePattern         = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
@@ -34,7 +34,7 @@ var (
 	awsHostnamePattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 	awsAccountIDPattern    = regexp.MustCompile(`^[0-9]{12}$`)
 	awsKMSPattern          = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
-	awsEndpointServiceName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{2,253}[a-z0-9]$`)
+	awsEndpointServiceName = regexp.MustCompile(`^com\.amazonaws\.[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+\.(?:s3|secretsmanager)$`)
 )
 
 type AWSMarketType string
@@ -148,9 +148,9 @@ type AWSListenerSpecV1 struct {
 type AWSSecurityGroupRuleDirection string
 
 const (
-	// AWSSecurityGroupRuleDirectionIngress only allows the explicit ALB-to-
-	// Worker ingress bridge. Public CIDR ingress remains part of the separately
-	// approved ALB security-group spec; it cannot be smuggled into a rule.
+	// AWSSecurityGroupRuleDirectionIngress allows only an explicit approved
+	// resource-to-resource security-group bridge, such as ALB-to-Worker or
+	// Worker-to-private-endpoint. A caller cannot smuggle a CIDR into this rule.
 	AWSSecurityGroupRuleDirectionIngress AWSSecurityGroupRuleDirection = "ingress"
 )
 
@@ -213,15 +213,25 @@ type AWSElasticIPSpecV1 struct {
 	Domain string `json:"domain"`
 }
 
-// AWSVPCEndpointSpecV1 deliberately supports only private interface
-// endpoints. Security groups are either an exact approved existing group or
-// one typed ResourceV1 dependency; endpoint creation never mutates ingress.
+type AWSVPCEndpointType string
+
+const (
+	AWSVPCEndpointTypeGateway   AWSVPCEndpointType = "gateway"
+	AWSVPCEndpointTypeInterface AWSVPCEndpointType = "interface"
+)
+
+// AWSVPCEndpointSpecV1 keeps an empty EndpointType as the frozen legacy
+// Interface shape. New plans use an explicit type and exactly one signed
+// subnet or route-table binding.
 type AWSVPCEndpointSpecV1 struct {
-	VPCID                   string   `json:"vpc_id"`
-	ServiceName             string   `json:"service_name"`
-	SubnetIDs               []string `json:"subnet_ids"`
-	ExistingSecurityGroupID string   `json:"existing_security_group_id,omitempty"`
-	PrivateDNSEnabled       bool     `json:"private_dns_enabled"`
+	VPCID                   string             `json:"vpc_id"`
+	ServiceName             string             `json:"service_name"`
+	SubnetIDs               []string           `json:"subnet_ids,omitempty"`
+	ExistingSecurityGroupID string             `json:"existing_security_group_id,omitempty"`
+	PrivateDNSEnabled       bool               `json:"private_dns_enabled"`
+	EndpointType            AWSVPCEndpointType `json:"endpoint_type,omitempty"`
+	SubnetID                string             `json:"subnet_id,omitempty"`
+	RouteTableIDs           []string           `json:"route_table_ids,omitempty"`
 }
 
 type AWSSnapshotDisposition string
@@ -371,6 +381,7 @@ func (spec *AWSResourceSpecV1) Clone() *AWSResourceSpecV1 {
 	if spec.Endpoint != nil {
 		value := *spec.Endpoint
 		value.SubnetIDs = slices.Clone(value.SubnetIDs)
+		value.RouteTableIDs = slices.Clone(value.RouteTableIDs)
 		clone.Endpoint = &value
 	}
 	if spec.Snapshot != nil {
@@ -487,7 +498,7 @@ func (spec *AWSResourceSpecV1) Digest(kind Type) (string, error) {
 }
 
 func (spec AWSSecurityGroupSpecV1) validate() error {
-	if !strings.HasPrefix(spec.VPCID, "vpc-") || !awsIDPattern.MatchString(spec.VPCID) || strings.TrimSpace(spec.Description) == "" || len(spec.Description) > 255 || security.ContainsLikelySecret(spec.Description) || len(spec.Ingress) > 32 || len(spec.Egress) == 0 || len(spec.Egress) > 32 {
+	if !strings.HasPrefix(spec.VPCID, "vpc-") || !awsIDPattern.MatchString(spec.VPCID) || strings.TrimSpace(spec.Description) == "" || len(spec.Description) > 255 || security.ContainsLikelySecret(spec.Description) || len(spec.Ingress) > 32 || len(spec.Egress) > 32 {
 		return fmt.Errorf("%w: security group scope is invalid", ErrInvalid)
 	}
 	for _, set := range [][]AWSNetworkRuleV1{spec.Ingress, spec.Egress} {
@@ -643,24 +654,61 @@ func (spec AWSElasticIPSpecV1) validate() error {
 
 func (spec AWSVPCEndpointSpecV1) validate() error {
 	if !strings.HasPrefix(spec.VPCID, "vpc-") || !awsIDPattern.MatchString(spec.VPCID) ||
-		!awsEndpointServiceName.MatchString(spec.ServiceName) || !strings.Contains(spec.ServiceName, ".") ||
-		security.ContainsLikelySecret(spec.ServiceName) || len(spec.SubnetIDs) == 0 || len(spec.SubnetIDs) > 16 {
-		return fmt.Errorf("%w: private interface endpoint scope is invalid", ErrInvalid)
+		!awsEndpointServiceName.MatchString(spec.ServiceName) || security.ContainsLikelySecret(spec.ServiceName) {
+		return fmt.Errorf("%w: private endpoint scope is invalid", ErrInvalid)
 	}
-	seen := make(map[string]struct{}, len(spec.SubnetIDs))
-	for _, subnetID := range spec.SubnetIDs {
-		if !strings.HasPrefix(subnetID, "subnet-") || !awsIDPattern.MatchString(subnetID) {
-			return fmt.Errorf("%w: endpoint subnet is invalid", ErrInvalid)
+	switch spec.EffectiveEndpointType() {
+	case AWSVPCEndpointTypeGateway:
+		if spec.EndpointType != AWSVPCEndpointTypeGateway || !strings.HasSuffix(spec.ServiceName, ".s3") || len(spec.RouteTableIDs) != 1 ||
+			spec.SubnetID != "" || len(spec.SubnetIDs) != 0 || spec.ExistingSecurityGroupID != "" || spec.PrivateDNSEnabled {
+			return fmt.Errorf("%w: S3 gateway endpoint scope is invalid", ErrInvalid)
 		}
-		if _, duplicate := seen[subnetID]; duplicate {
-			return fmt.Errorf("%w: duplicate endpoint subnet", ErrInvalid)
+		if routeTableID := spec.RouteTableIDs[0]; !strings.HasPrefix(routeTableID, "rtb-") || !awsIDPattern.MatchString(routeTableID) {
+			return fmt.Errorf("%w: gateway endpoint route table is invalid", ErrInvalid)
 		}
-		seen[subnetID] = struct{}{}
-	}
-	if spec.ExistingSecurityGroupID != "" && (!strings.HasPrefix(spec.ExistingSecurityGroupID, "sg-") || !awsIDPattern.MatchString(spec.ExistingSecurityGroupID)) {
-		return fmt.Errorf("%w: endpoint existing security group is invalid", ErrInvalid)
+	case AWSVPCEndpointTypeInterface:
+		if len(spec.RouteTableIDs) != 0 {
+			return fmt.Errorf("%w: interface endpoint cannot bind route tables", ErrInvalid)
+		}
+		if spec.EndpointType == "" {
+			if !strings.HasSuffix(spec.ServiceName, ".s3") || len(spec.SubnetIDs) == 0 || len(spec.SubnetIDs) > 16 || spec.SubnetID != "" {
+				return fmt.Errorf("%w: legacy interface endpoint subnets are invalid", ErrInvalid)
+			}
+			seen := make(map[string]struct{}, len(spec.SubnetIDs))
+			for _, subnetID := range spec.SubnetIDs {
+				if !validAWSSubnetID(subnetID) {
+					return fmt.Errorf("%w: endpoint subnet is invalid", ErrInvalid)
+				}
+				if _, duplicate := seen[subnetID]; duplicate {
+					return fmt.Errorf("%w: duplicate endpoint subnet", ErrInvalid)
+				}
+				seen[subnetID] = struct{}{}
+			}
+		} else if spec.EndpointType != AWSVPCEndpointTypeInterface || !strings.HasSuffix(spec.ServiceName, ".secretsmanager") ||
+			!validAWSSubnetID(spec.SubnetID) || len(spec.SubnetIDs) != 0 || spec.ExistingSecurityGroupID != "" || !spec.PrivateDNSEnabled {
+			return fmt.Errorf("%w: Secrets Manager interface endpoint scope is invalid", ErrInvalid)
+		}
+		if spec.ExistingSecurityGroupID != "" && (!strings.HasPrefix(spec.ExistingSecurityGroupID, "sg-") || !awsIDPattern.MatchString(spec.ExistingSecurityGroupID)) {
+			return fmt.Errorf("%w: endpoint existing security group is invalid", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: endpoint type is invalid", ErrInvalid)
 	}
 	return nil
+}
+
+func (spec AWSVPCEndpointSpecV1) EffectiveEndpointType() AWSVPCEndpointType {
+	if spec.EndpointType == "" {
+		return AWSVPCEndpointTypeInterface
+	}
+	return spec.EndpointType
+}
+
+func (spec AWSVPCEndpointSpecV1) EffectiveSubnetIDs() []string {
+	if spec.EndpointType == AWSVPCEndpointTypeInterface {
+		return []string{spec.SubnetID}
+	}
+	return slices.Clone(spec.SubnetIDs)
 }
 
 func (spec AWSEBSSnapshotSpecV1) validate() error {
@@ -837,17 +885,31 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 			return fmt.Errorf("%w: Elastic IP requires exactly one ENI", ErrInvalid)
 		}
 	case TypeEndpoint:
-		existing := spec.Endpoint != nil && spec.Endpoint.ExistingSecurityGroupID != ""
+		if spec.Endpoint == nil {
+			return fmt.Errorf("%w: endpoint scope is required", ErrInvalid)
+		}
+		if spec.Endpoint.EffectiveEndpointType() == AWSVPCEndpointTypeGateway {
+			if len(dependencies) != 0 {
+				return fmt.Errorf("%w: gateway endpoint does not accept dependencies", ErrInvalid)
+			}
+			break
+		}
+		existing := spec.Endpoint.ExistingSecurityGroupID != ""
 		owned := len(dependencies) == 1 && counts[TypeSG] == 1
-		if existing == owned {
-			return fmt.Errorf("%w: interface endpoint requires an existing or one owned security group", ErrInvalid)
+		if spec.Endpoint.EndpointType == AWSVPCEndpointTypeInterface {
+			if !owned || existing {
+				return fmt.Errorf("%w: explicit interface endpoint requires its dedicated security group", ErrInvalid)
+			}
+		} else if existing == owned {
+			return fmt.Errorf("%w: legacy interface endpoint requires an existing or one owned security group", ErrInvalid)
 		}
 	case TypeSnapshot:
 		if len(dependencies) != 1 || counts[TypeEBS] != 1 || spec.Snapshot == nil {
 			return fmt.Errorf("%w: EBS snapshot requires exactly one source volume", ErrInvalid)
 		}
 	case TypeEC2:
-		if counts[TypeENI] != 1 || counts[TypeEBS] > 11 || len(dependencies) != counts[TypeENI]+counts[TypeEBS] {
+		if counts[TypeENI] != 1 || counts[TypeEBS] > 11 || (counts[TypeEndpoint] != 0 && counts[TypeEndpoint] != 2) ||
+			len(dependencies) != counts[TypeENI]+counts[TypeEBS]+counts[TypeEndpoint] {
 			return fmt.Errorf("%w: EC2 requires one ENI and at most 11 EBS volumes", ErrInvalid)
 		}
 		if spec.Instance == nil {

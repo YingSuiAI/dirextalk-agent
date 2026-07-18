@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Dirextalk immutable first-party artifact CloudFront edge in us-east-1
+
+Parameters:
+  DomainName:
+    Type: String
+    AllowedValues:
+      - artifacts.y1.dirextalk.ai
+  HostedZoneId:
+    Type: String
+    AllowedPattern: '^Z[A-Z0-9]{6,31}$'
+  OriginBucketName:
+    Type: String
+    AllowedPattern: '^dtx-y1-artifacts-[0-9]{12}-ap-northeast-3$'
+  OriginBucketRegionalDomainName:
+    Type: String
+    AllowedPattern: '^dtx-y1-artifacts-[0-9]{12}-ap-northeast-3\.s3\.ap-northeast-3\.amazonaws\.com$'
+
+Resources:
+  ArtifactCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: managed_by
+          Value: dirextalk-agent
+        - Key: component
+          Value: artifact-origin-edge
+        - Key: retention
+          Value: managed_retained
+
+  ArtifactOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-oac
+        Description: Exact OAC for artifacts.y1.dirextalk.ai
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ArtifactCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub ${AWS::StackName}-immutable-v1
+        Comment: Immutable SHA-addressed artifacts; no request forwarding or compression variants
+        DefaultTTL: 31536000
+        MaxTTL: 31536000
+        MinTTL: 86400
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          EnableAcceptEncodingBrotli: false
+          EnableAcceptEncodingGzip: false
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+
+  ArtifactDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Ref DomainName
+        Comment: Dirextalk immutable first-party artifacts
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 0
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: !Ref ArtifactCachePolicy
+          Compress: false
+          TargetOriginId: ArtifactS3Origin
+          ViewerProtocolPolicy: https-only
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Origins:
+          - DomainName: !Ref OriginBucketRegionalDomainName
+            Id: ArtifactS3Origin
+            OriginAccessControlId: !GetAtt ArtifactOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        PriceClass: PriceClass_200
+        ViewerCertificate:
+          AcmCertificateArn: !Ref ArtifactCertificate
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+      Tags:
+        - Key: managed_by
+          Value: dirextalk-agent
+        - Key: component
+          Value: artifact-origin-edge
+        - Key: retention
+          Value: managed_retained
+
+  ArtifactAliasA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ArtifactDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  ArtifactAliasAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt ArtifactDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+
+Outputs:
+  DistributionId:
+    Value: !Ref ArtifactDistribution
+  DistributionArn:
+    Value: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ArtifactDistribution}
+  DistributionDomainName:
+    Value: !GetAtt ArtifactDistribution.DomainName
+  AliasDomainName:
+    Value: !Ref DomainName
+  OriginBucketName:
+    Value: !Ref OriginBucketName

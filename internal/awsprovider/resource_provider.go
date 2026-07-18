@@ -28,7 +28,7 @@ const (
 var logicalNameSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
 var (
 	providerClientTokenPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
-	providerDependencyIDPattern = regexp.MustCompile(`^(?:sg|eni|vol|snap)-[0-9a-f]{8,17}$`)
+	providerDependencyIDPattern = regexp.MustCompile(`^(?:sg|eni|vol|snap|vpce)-[0-9a-f]{8,17}$`)
 )
 
 // EC2ResourceAPI is the deliberately closed AWS mutation/read-back surface
@@ -270,6 +270,43 @@ func (provider *EC2ResourceProvider) Create(ctx context.Context, request resourc
 	}
 }
 
+// VerifyCreateReadBack binds reconciliation to the original typed endpoint
+// spec. The generic Provider ReadBack contract is tag-oriented for historical
+// resources; endpoint recovery must additionally reject shape drift before a
+// durable intent can become active.
+func (provider *EC2ResourceProvider) VerifyCreateReadBack(ctx context.Context, request resource.ProviderCreateRequest, providerID string) (resource.ProviderObservation, error) {
+	if err := provider.validateCreate(request); err != nil || providerID == "" {
+		return resource.ProviderObservation{}, resource.ErrInvalid
+	}
+	if request.Type != resource.TypeEndpoint {
+		return provider.readBack(ctx, request.Type, providerID)
+	}
+	spec := request.AWS.Endpoint
+	securityGroupID := ""
+	if spec.EffectiveEndpointType() == resource.AWSVPCEndpointTypeInterface {
+		securityGroupID = spec.ExistingSecurityGroupID
+		if securityGroupID == "" {
+			securityGroupID = dependencyID(request.Dependencies, resource.TypeSG)
+		}
+	}
+	if err := provider.waitReady(ctx, resource.TypeEndpoint, providerID); err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	value, err := provider.vpcEndpoint(ctx, providerID)
+	if err != nil {
+		return resource.ProviderObservation{}, err
+	}
+	if !provider.vpcEndpointMatches(value, spec, securityGroupID, provider.readyTags(request)) {
+		return resource.ProviderObservation{}, resource.ErrReadBack
+	}
+	if spec.EffectiveEndpointType() == resource.AWSVPCEndpointTypeGateway {
+		if err := provider.validateGatewayEndpointRoute(ctx, spec.RouteTableIDs[0], providerID, true); err != nil {
+			return resource.ProviderObservation{}, err
+		}
+	}
+	return provider.readBack(ctx, request.Type, providerID)
+}
+
 func (provider *EC2ResourceProvider) FindByClientToken(ctx context.Context, kind resource.Type, region, clientToken string) (resource.ProviderObservation, bool, error) {
 	if provider == nil || provider.client == nil || region != provider.region || !providerClientTokenPattern.MatchString(clientToken) {
 		return resource.ProviderObservation{}, false, resource.ErrInvalid
@@ -391,6 +428,19 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 	if !containsTags(observed.Tags, expectedTags) {
 		return resource.ErrReadBack
 	}
+	var gatewayRouteTableIDs []string
+	if kind == resource.TypeEndpoint {
+		endpoint, endpointErr := provider.vpcEndpoint(ctx, providerID)
+		if endpointErr != nil {
+			return endpointErr
+		}
+		if endpoint.VpcEndpointType == ec2types.VpcEndpointTypeGateway {
+			if len(endpoint.RouteTableIds) != 1 {
+				return resource.ErrReadBack
+			}
+			gatewayRouteTableIDs = append([]string(nil), endpoint.RouteTableIds...)
+		}
+	}
 	switch kind {
 	case resource.TypeALB:
 		_, err = provider.entryClient.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(providerID)})
@@ -480,7 +530,15 @@ func (provider *EC2ResourceProvider) Delete(ctx context.Context, kind resource.T
 	if err != nil && !isNotFound(kind, err) && !isEntryNotFound(kind, err) {
 		return providerError(ctx, err)
 	}
-	return provider.waitMissing(ctx, kind, providerID)
+	if err := provider.waitMissing(ctx, kind, providerID); err != nil {
+		return err
+	}
+	for _, routeTableID := range gatewayRouteTableIDs {
+		if err := provider.validateGatewayEndpointRoute(ctx, routeTableID, providerID, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (provider *EC2ResourceProvider) detachOwnedVolume(ctx context.Context, volumeID string, expectedTags map[string]string) error {

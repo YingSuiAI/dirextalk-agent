@@ -261,9 +261,20 @@ func (service *Service) provision(ctx context.Context, spec ProvisionSpec, autho
 	if strings.TrimSpace(observation.ProviderID) == "" {
 		return stored.clone(), ErrReadBack
 	}
-	observation, err = service.provider.ReadBack(ctx, stored.Type, observation.ProviderID, stored.Region)
+	readBackRequest := ProviderCreateRequest{
+		ResourceID: stored.ResourceID, Type: stored.Type, LogicalName: stored.LogicalName, Region: stored.Region,
+		SpecDigest: stored.SpecDigest, ClientToken: stored.Intent.ClientToken, Tags: cloneMap(stored.Tags),
+		Dependencies: providerDependencies, AWS: spec.AWS.Clone(),
+	}
+	if exact, ok := service.provider.(interface {
+		VerifyCreateReadBack(context.Context, ProviderCreateRequest, string) (ProviderObservation, error)
+	}); ok {
+		observation, err = exact.VerifyCreateReadBack(ctx, readBackRequest, observation.ProviderID)
+	} else {
+		observation, err = service.provider.ReadBack(ctx, stored.Type, observation.ProviderID, stored.Region)
+	}
 	if err != nil {
-		return stored.clone(), fmt.Errorf("provider read-back after create: %w", err)
+		return service.reconcileProvisionCandidates(ctx, stored, fmt.Errorf("provider read-back after create: %w", err), true)
 	}
 	if err := verifyObservation(stored, observation); err != nil {
 		return stored.clone(), err

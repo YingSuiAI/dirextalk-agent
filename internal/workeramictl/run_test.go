@@ -29,7 +29,7 @@ func TestRunBuildAttestsAndWritesExclusiveCanonicalManifest(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "publication.json")
 	var stdout, stderr bytes.Buffer
 
-	code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", output}, &stdout, &stderr, cloud.dependencies())
+	code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", output}, &stdout, &stderr, cloud.dependencies())
 	if code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("Run(build) = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -64,7 +64,7 @@ func TestRunBuildAttestsAndWritesExclusiveCanonicalManifest(t *testing.T) {
 
 	cloud = newFakeCloud(fixture.image, fixture.evidence)
 	stderr.Reset()
-	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
 		t.Fatalf("exact final replay failed: %q", stderr.String())
 	}
 	if cloud.buildCalls != 0 || cloud.verifyCalls != 1 || cloud.attestCalls != 1 || cloud.destroyCalls != 0 {
@@ -76,9 +76,65 @@ func TestRunBuildAttestsAndWritesExclusiveCanonicalManifest(t *testing.T) {
 	}
 }
 
+func TestRunPrepareWritesProtectedStrictV2AndLegacyBuildNeedsExplicitFlag(t *testing.T) {
+	fixture := newBuildFixture(t)
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	cloud.prepareEnvironment = PrepareEnvironmentV2{
+		FoundationStackName: "dtx-agent-abc-foundation", FoundationStackID: "arn:aws:cloudformation:us-east-1:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555",
+		FoundationVPCID: "vpc-0123456789abcdef0", FoundationRouteTableID: "rtb-0123456789abcdef0", PrivateSubnetID: "subnet-0123456789abcdef0",
+		ZeroIngressSecurityGroupID: "sg-0123456789abcdef0", ArtifactBucket: "dtx-worker-artifacts-test",
+		ArtifactKMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/11111111-1111-4111-8111-111111111111",
+		S3PrefixListID:    "pl-0123456789abcdef0", BaseAMIID: "ami-0123456789abcdef0", BaseAMIOwnerID: "099720109477", RootDeviceName: "/dev/sda1",
+	}
+	output := filepath.Join(t.TempDir(), "build-v2.json")
+	var stderr bytes.Buffer
+	args := []string{"prepare", "--account-id", fixture.image.AccountID, "--region", fixture.image.Region, "--agent-instance-id", fixture.image.AgentInstanceID,
+		"--release-manifest", fixture.releasePath, "--rootfs-archive", fixture.archivePath, "--output", output}
+	if code := Run(context.Background(), args, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+		t.Fatalf("Run(prepare) = %d, stderr=%q", code, stderr.String())
+	}
+	if cloud.identityReads != 1 || cloud.prepareCalls != 1 {
+		t.Fatalf("prepare calls = identity %d resolver %d", cloud.identityReads, cloud.prepareCalls)
+	}
+	info, err := os.Stat(output)
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("prepared request permissions = %v, %v", info, err)
+	}
+	raw, err := os.ReadFile(output)
+	if err != nil || bytes.Contains(raw, []byte("0.0.0.0/0")) || bytes.Contains(raw, []byte("allow_test")) {
+		t.Fatalf("prepared request contains legacy/public network input: %q, %v", raw, err)
+	}
+	prepared, err := parseBuildRequest(output, false)
+	if err != nil || prepared.request.NetworkMode != workerami.NetworkModeS3GatewayV2 || prepared.request.FoundationStackID != cloud.prepareEnvironment.FoundationStackID {
+		t.Fatalf("parse prepared request = %#v, %v", prepared, err)
+	}
+	unsafeV2 := bytes.Replace(raw, []byte("{"), []byte(`{"approved_https_cidrs":["0.0.0.0/0"],"allow_test_https_internet_egress":true,`), 1)
+	if _, err := parseBuildRequest(writeBytes(t, "unsafe-v2.json", unsafeV2), false); err == nil {
+		t.Fatal("v2 accepted caller-selected public/test egress fields")
+	}
+	publicationPath := filepath.Join(t.TempDir(), "publication-v2.json")
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"build", "--request", output, "--output", publicationPath}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+		t.Fatalf("Run(build v2) = %d, stderr=%q", code, stderr.String())
+	}
+	reachability, err := readBuilderReachabilityEvidence(builderReachabilityEvidencePath(publicationPath))
+	if err != nil || reachability.Validate() != nil || cloud.reachabilityCleanupVerifyCalls == 0 {
+		t.Fatalf("v2 reachability evidence = %#v, %v; verifies=%d", reachability, err, cloud.reachabilityCleanupVerifyCalls)
+	}
+	buildCalls := cloud.buildCalls
+
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "legacy.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+		t.Fatal("build-request v1 was accepted without explicit compatibility flag")
+	}
+	if cloud.buildCalls != buildCalls {
+		t.Fatalf("legacy rejection reached build: %#v", cloud)
+	}
+}
+
 func TestRunBuildRecoversSameIntentAfterProcessCrash(t *testing.T) {
 	fixture := newBuildFixture(t)
-	prepared, err := parseBuildRequest(fixture.requestPath)
+	prepared, err := parseBuildRequest(fixture.requestPath, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +159,7 @@ func TestRunBuildRecoversSameIntentAfterProcessCrash(t *testing.T) {
 
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 	var stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
 		t.Fatalf("same-intent recovery failed: %q", stderr.String())
 	}
 	if cloud.buildCalls != 1 || cloud.attestCalls != 1 {
@@ -124,7 +180,7 @@ func TestRunBuildFailureRetainsIntentAndBuilderProviderIDs(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "publication.json")
 	var stdout, stderr bytes.Buffer
 
-	code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", output}, &stdout, &stderr, cloud.dependencies())
+	code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", output}, &stdout, &stderr, cloud.dependencies())
 	if code == 0 || strings.Contains(stdout.String()+stderr.String(), "SHOULD_NOT_ESCAPE") {
 		t.Fatalf("Run(build failure) = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
@@ -142,7 +198,7 @@ func TestRunBuildFailureRetainsIntentAndBuilderProviderIDs(t *testing.T) {
 
 func TestRunBuildRejectsDifferentRequestForExistingIntent(t *testing.T) {
 	fixture := newBuildFixture(t)
-	prepared, err := parseBuildRequest(fixture.requestPath)
+	prepared, err := parseBuildRequest(fixture.requestPath, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +218,7 @@ func TestRunBuildRejectsDifferentRequestForExistingIntent(t *testing.T) {
 	changedPath := writeJSON(t, "changed-build.json", changed)
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 	var stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"build", "--request", changedPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", changedPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
 		t.Fatal("different request reused an existing build intent")
 	}
 	if cloud.loadCalls != 0 || cloud.buildCalls != 0 {
@@ -172,7 +228,7 @@ func TestRunBuildRejectsDifferentRequestForExistingIntent(t *testing.T) {
 
 func TestRunBuildVerifiesFinalThenRemovesCrashLeftIntent(t *testing.T) {
 	fixture := newBuildFixture(t)
-	prepared, err := parseBuildRequest(fixture.requestPath)
+	prepared, err := parseBuildRequest(fixture.requestPath, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +248,7 @@ func TestRunBuildVerifiesFinalThenRemovesCrashLeftIntent(t *testing.T) {
 	}
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 	var stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
 		t.Fatalf("final+intent replay failed: %q", stderr.String())
 	}
 	if cloud.buildCalls != 0 || cloud.verifyCalls != 1 || cloud.attestCalls != 1 {
@@ -214,7 +270,7 @@ func TestRunBuildRejectsRootFSDigestOrStrictJSONBeforeAWS(t *testing.T) {
 	duplicate := bytes.Replace(requestBytes, []byte(`"account_id":"123456789012"`), []byte(`"account_id":"123456789012","account_id":"123456789012"`), 1)
 	duplicatePath := writeBytes(t, "duplicate.json", duplicate)
 	var stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"build", "--request", duplicatePath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", duplicatePath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
 		t.Fatal("build accepted a duplicate JSON field")
 	}
 	if cloud.loadCalls != 0 || cloud.buildCalls != 0 {
@@ -225,7 +281,7 @@ func TestRunBuildRejectsRootFSDigestOrStrictJSONBeforeAWS(t *testing.T) {
 		t.Fatal(err)
 	}
 	stderr.Reset()
-	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
 		t.Fatal("build accepted changed rootfs bytes")
 	}
 	if cloud.loadCalls != 0 || cloud.buildCalls != 0 {
@@ -254,7 +310,7 @@ func TestRunBuildRejectsReleaseWorkerDigestNotBoundToArchive(t *testing.T) {
 
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 	var stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
 		t.Fatal("build accepted a release Worker digest not present in the rootfs archive")
 	}
 	if cloud.loadCalls != 0 || cloud.buildCalls != 0 {
@@ -267,7 +323,7 @@ func TestRunRejectsCallerAccountMismatchBeforeMutation(t *testing.T) {
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 	cloud.identity = CallerIdentityV1{AccountID: "999999999999", Region: fixture.image.Region}
 	var stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
 		t.Fatal("build accepted mismatched caller account")
 	}
 	if cloud.buildCalls != 0 || cloud.attestCalls != 0 {
@@ -335,7 +391,7 @@ func TestRunNeverEchoesSecretCanariesOrProviderErrors(t *testing.T) {
 	secretPath := writeBytes(t, "secret.json", input)
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
 	var stdout, stderr bytes.Buffer
-	_ = Run(context.Background(), []string{"build", "--request", secretPath, "--output", filepath.Join(t.TempDir(), "out.json")}, &stdout, &stderr, cloud.dependencies())
+	_ = Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", secretPath, "--output", filepath.Join(t.TempDir(), "out.json")}, &stdout, &stderr, cloud.dependencies())
 	if strings.Contains(stdout.String()+stderr.String(), canary) || strings.Contains(stdout.String()+stderr.String(), "aws_secret_access_key") {
 		t.Fatalf("input secret leaked: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -344,7 +400,7 @@ func TestRunNeverEchoesSecretCanariesOrProviderErrors(t *testing.T) {
 	cloud.loadErr = errors.New("provider raw error contains " + canary)
 	stdout.Reset()
 	stderr.Reset()
-	_ = Run(context.Background(), []string{"build", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, &stdout, &stderr, cloud.dependencies())
+	_ = Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", filepath.Join(t.TempDir(), "out.json")}, &stdout, &stderr, cloud.dependencies())
 	if strings.Contains(stdout.String()+stderr.String(), canary) {
 		t.Fatalf("provider error leaked: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -526,20 +582,24 @@ func builderCleanupEvidenceForRequest(t *testing.T, request workerami.BuildReque
 }
 
 type fakeCloud struct {
-	identity           CallerIdentityV1
-	loadErr            error
-	buildErr           error
-	image              workerami.ImageManifestV1
-	evidence           awsprovider.WorkerAMIAttestationV1
-	loadCalls          int
-	identityReads      int
-	buildCalls         int
-	verifyCalls        int
-	destroyCalls       int
-	attestCalls        int
-	absenceCalls       int
-	cleanupVerifyCalls int
-	cleanupEvidence    workerami.BuilderCleanupEvidenceV1
+	identity                       CallerIdentityV1
+	loadErr                        error
+	buildErr                       error
+	image                          workerami.ImageManifestV1
+	evidence                       awsprovider.WorkerAMIAttestationV1
+	loadCalls                      int
+	identityReads                  int
+	buildCalls                     int
+	verifyCalls                    int
+	destroyCalls                   int
+	attestCalls                    int
+	absenceCalls                   int
+	cleanupVerifyCalls             int
+	reachabilityCleanupVerifyCalls int
+	cleanupEvidence                workerami.BuilderCleanupEvidenceV1
+	prepareEnvironment             PrepareEnvironmentV2
+	prepareErr                     error
+	prepareCalls                   int
 }
 
 func newFakeCloud(image workerami.ImageManifestV1, evidence awsprovider.WorkerAMIAttestationV1) *fakeCloud {
@@ -559,6 +619,7 @@ func (cloud *fakeCloud) dependencies() Dependencies {
 		NewService:         func(aws.Config, awsadapter.Config) (AMIService, error) { return fakeAMIService{cloud: cloud}, nil },
 		NewAttestor:        func(aws.Config) (AMIAttestor, error) { return fakeAttestor{cloud: cloud}, nil },
 		NewAbsenceVerifier: func(aws.Config) (AMIAbsenceVerifier, error) { return fakeAbsenceVerifier{cloud: cloud}, nil },
+		NewPrepareResolver: func(aws.Config) (PrepareEnvironmentResolver, error) { return fakePrepareResolver{cloud: cloud}, nil },
 	}
 }
 
@@ -584,6 +645,22 @@ func (service fakeAMIService) Build(_ context.Context, request workerami.BuildRe
 		return workerami.ImageManifestV1{}, errors.New("cleanup evidence not persisted")
 	}
 	service.cloud.cleanupEvidence = evidence
+	if request.NetworkMode == workerami.NetworkModeS3GatewayV2 {
+		buildDigest, digestErr := workerami.BuildDigest(request)
+		if digestErr != nil {
+			return workerami.ImageManifestV1{}, digestErr
+		}
+		reachability := workerami.BuilderReachabilityEvidenceV2{SchemaVersion: workerami.BuilderReachabilitySchemaV2, AgentInstanceID: request.AgentInstanceID,
+			AccountID: request.AccountID, Region: request.Region, BuildDigest: buildDigest, VPCID: request.FoundationVPCID, RouteTableID: request.FoundationRouteTableID,
+			SecurityGroupID: request.ZeroIngressSGID, S3PrefixListID: request.S3PrefixListID, ArtifactBucket: request.ArtifactBucket, ArtifactKey: request.ArtifactKey,
+			VPCEndpointID: "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
+		if request.ExistingBuilderReachabilityEvidence != nil {
+			reachability = *request.ExistingBuilderReachabilityEvidence
+		}
+		if request.RecordBuilderReachabilityEvidence == nil || request.RecordBuilderReachabilityEvidence(reachability) != nil {
+			return workerami.ImageManifestV1{}, errors.New("reachability evidence not persisted")
+		}
+	}
 	if service.cloud.buildErr != nil {
 		return workerami.ImageManifestV1{}, service.cloud.buildErr
 	}
@@ -622,6 +699,14 @@ func (service fakeAMIService) VerifyBuilderCleanup(_ context.Context, evidence w
 	return nil
 }
 
+func (service fakeAMIService) VerifyBuilderReachabilityCleanup(_ context.Context, evidence workerami.BuilderReachabilityEvidenceV2) error {
+	service.cloud.reachabilityCleanupVerifyCalls++
+	if evidence.Validate() != nil {
+		return errors.New("unexpected builder reachability evidence")
+	}
+	return nil
+}
+
 func (service fakeAMIService) Destroy(_ context.Context, manifest workerami.ImageManifestV1) error {
 	service.cloud.destroyCalls++
 	if manifest != service.cloud.image {
@@ -638,6 +723,16 @@ func (attestor fakeAttestor) AttestWorkerAMI(_ context.Context, _ awsprovider.Wo
 }
 
 type fakeAbsenceVerifier struct{ cloud *fakeCloud }
+
+type fakePrepareResolver struct{ cloud *fakeCloud }
+
+func (resolver fakePrepareResolver) Resolve(_ context.Context, request PrepareEnvironmentRequestV2) (PrepareEnvironmentV2, error) {
+	resolver.cloud.prepareCalls++
+	if request.AccountID != resolver.cloud.identity.AccountID || request.Region != resolver.cloud.identity.Region {
+		return PrepareEnvironmentV2{}, errors.New("unexpected prepare scope")
+	}
+	return resolver.cloud.prepareEnvironment, resolver.cloud.prepareErr
+}
 
 func (verifier fakeAbsenceVerifier) VerifyAbsent(_ context.Context, manifest workerami.ImageManifestV1) error {
 	verifier.cloud.absenceCalls++

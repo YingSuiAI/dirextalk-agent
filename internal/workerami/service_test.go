@@ -59,6 +59,35 @@ func TestBuildPublishesFixedAMIAndRecoversIdempotently(t *testing.T) {
 	}
 }
 
+func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testing.T) {
+	request := validBuildRequest(t)
+	request.NetworkMode = NetworkModeS3GatewayV2
+	request.FoundationStackName = "dtx-agent-abc-foundation"
+	request.FoundationStackID = "arn:aws:cloudformation:us-west-2:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555"
+	request.FoundationVPCID = "vpc-0123456789abcdef0"
+	request.FoundationRouteTableID = "rtb-0123456789abcdef0"
+	request.S3PrefixListID = "pl-0123456789abcdef0"
+	request.RecordBuilderReachabilityEvidence = func(evidence BuilderReachabilityEvidenceV2) error {
+		if evidence.Validate() != nil {
+			t.Fatalf("reachability evidence = %#v", evidence)
+		}
+		return nil
+	}
+	provider := newFakeProvider(request)
+	provider.supportReachability = true
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if err != nil || manifest.ImageID == "" {
+		t.Fatalf("Build(v2) = %#v, %v", manifest, err)
+	}
+	if provider.reachabilityPresent || !provider.reachabilityRecorded {
+		t.Fatalf("reachability lifecycle incomplete: %#v", provider.calls)
+	}
+	terminateIndex, cleanupIndex := callIndex(provider.calls, "terminate-builder"), callIndex(provider.calls, "cleanup-reachability")
+	if terminateIndex < 0 || cleanupIndex <= terminateIndex {
+		t.Fatalf("builder was not terminated before reachability cleanup: %#v", provider.calls)
+	}
+}
+
 func TestBuildRecoversLostMutationResponses(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -528,6 +557,7 @@ func validBuildRequest(t *testing.T) BuildRequestV1 {
 		ArtifactBucket: "dtx-agent-worker-artifacts", ArtifactKey: "worker-ami/releases/rootfs.tar",
 		ArtifactKMSKeyARN:   "arn:aws:kms:us-west-2:123456789012:key/11111111-2222-4333-8444-555555555555",
 		BuilderInstanceType: "m7i.large", RootDeviceName: "/dev/sda1", Timeout: 5 * time.Minute,
+		NetworkMode:                  NetworkModeLegacyV1,
 		RecordBuilderCleanupEvidence: func(BuilderCleanupEvidenceV1) error { return nil },
 	}
 }
@@ -583,17 +613,20 @@ type fakeProvider struct {
 	findImageMissAt                 map[int]bool
 	findImageErrorAt                map[int]bool
 
-	findArtifactCalls   int
-	findBuilderCalls    int
-	findImageCalls      int
-	launchCalls         int
-	createCalls         int
-	terminateCalls      int
-	deleteArtifactCalls int
-	deregisterCalls     int
-	deleteSnapshotCalls int
-	builderVolumeFound  bool
-	builderNetworkFound bool
+	findArtifactCalls    int
+	findBuilderCalls     int
+	findImageCalls       int
+	launchCalls          int
+	createCalls          int
+	terminateCalls       int
+	deleteArtifactCalls  int
+	deregisterCalls      int
+	deleteSnapshotCalls  int
+	builderVolumeFound   bool
+	builderNetworkFound  bool
+	supportReachability  bool
+	reachabilityPresent  bool
+	reachabilityRecorded bool
 }
 
 func newFakeProvider(request BuildRequestV1) *fakeProvider {
@@ -610,6 +643,43 @@ func (provider *fakeProvider) ValidateEnvironment(_ context.Context, input Build
 		input.Architecture != provider.request.ReleaseManifest.Architecture || input.RootDeviceName != provider.request.RootDeviceName ||
 		input.PrivateSubnetID != provider.request.PrivateSubnetID || input.ZeroIngressSGID != provider.request.ZeroIngressSGID {
 		return errors.New("environment mismatch")
+	}
+	return nil
+}
+
+func (provider *fakeProvider) PrepareBuilderReachability(_ context.Context, request BuilderReachabilityV2, existing *BuilderReachabilityEvidenceV2, recorder func(BuilderReachabilityEvidenceV2) error) (BuilderReachabilityEvidenceV2, error) {
+	provider.calls = append(provider.calls, "prepare-reachability")
+	if !provider.supportReachability {
+		return BuilderReachabilityEvidenceV2{}, errors.New("unexpected reachability preparation")
+	}
+	evidence := BuilderReachabilityEvidenceV2{SchemaVersion: BuilderReachabilitySchemaV2, AgentInstanceID: request.AgentInstanceID, AccountID: request.AccountID,
+		Region: request.Region, BuildDigest: request.BuildDigest, VPCID: request.VPCID, RouteTableID: request.RouteTableID, SecurityGroupID: request.SecurityGroupID,
+		S3PrefixListID: request.S3PrefixListID, ArtifactBucket: request.ArtifactBucket, ArtifactKey: request.ArtifactKey,
+		VPCEndpointID: "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
+	if existing != nil && *existing != evidence {
+		return BuilderReachabilityEvidenceV2{}, ErrOwnershipMismatch
+	}
+	provider.reachabilityPresent = true
+	if recorder == nil || recorder(evidence) != nil {
+		return BuilderReachabilityEvidenceV2{}, ErrCleanupFailed
+	}
+	provider.reachabilityRecorded = true
+	return evidence, nil
+}
+
+func (provider *fakeProvider) CleanupBuilderReachability(_ context.Context, evidence BuilderReachabilityEvidenceV2, _ func(BuilderReachabilityEvidenceV2) error) error {
+	provider.calls = append(provider.calls, "cleanup-reachability")
+	if !provider.supportReachability || evidence.Validate() != nil || provider.builder.State != BuilderTerminated {
+		return errors.New("unsafe reachability cleanup")
+	}
+	provider.reachabilityPresent = false
+	return nil
+}
+
+func (provider *fakeProvider) VerifyBuilderReachabilityAbsent(_ context.Context, evidence BuilderReachabilityEvidenceV2) error {
+	provider.calls = append(provider.calls, "verify-reachability-absent")
+	if !provider.supportReachability || evidence.Validate() != nil || provider.reachabilityPresent {
+		return errors.New("reachability remains")
 	}
 	return nil
 }
@@ -675,6 +745,9 @@ func (provider *fakeProvider) LaunchBuilder(_ context.Context, launch LaunchBuil
 	provider.calls = append(provider.calls, "launch-builder")
 	provider.launchCalls++
 	provider.launch = launch
+	if provider.supportReachability && !provider.reachabilityRecorded {
+		return BuilderObservationV1{}, errors.New("reachability was not persisted before launch")
+	}
 	provider.builderFound = true
 	provider.builder = BuilderObservationV1{
 		InstanceID: "i-0123456789abcdef0", Name: launch.Name, State: BuilderRunning,

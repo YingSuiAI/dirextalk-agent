@@ -940,6 +940,90 @@ message ListCloudWorkersResponse {
   string next_page_token = 2;
 }
 
+enum ManagedKnowledgeLifecycleAction {
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_UNSPECIFIED = 0;
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_STOP = 1;
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_BACKUP = 2;
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_RESTORE = 3;
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_UPGRADE = 4;
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_ROLLBACK = 5;
+  MANAGED_KNOWLEDGE_LIFECYCLE_ACTION_DESTROY = 6;
+}
+enum ManagedKnowledgeLifecycleStatus {
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_AWAITING_APPROVAL = 1;
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_SCHEDULED = 2;
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_RUNNING = 3;
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_SUCCEEDED = 4;
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_FAILED = 5;
+  MANAGED_KNOWLEDGE_LIFECYCLE_STATUS_DESTROY_BLOCKED = 6;
+}
+message ManagedKnowledgeLifecycleScope {
+  string schema_version = 1;
+  string agent_instance_id = 2;
+  string owner_id = 3;
+  string deployment_id = 4;
+  string managed_service_id = 5;
+  string knowledge_binding_id = 6;
+  int64 deployment_revision = 7;
+  int64 managed_service_revision = 8;
+  int64 knowledge_binding_revision = 9;
+  string recipe_digest = 10;
+  ManagedKnowledgeLifecycleAction action = 11;
+  string lifecycle_ref = 12;
+  string execution_bundle_digest = 13;
+  string installed_manifest_digest = 14;
+}
+message ManagedKnowledgeLifecycleChallenge {
+  string operation_id = 1;
+  string challenge_id = 2;
+  string approval_id = 3;
+  string signer_key_id = 4;
+  ManagedKnowledgeLifecycleScope scope = 5;
+  string scope_digest = 6;
+  google.protobuf.Timestamp issued_at = 7;
+  google.protobuf.Timestamp expires_at = 8;
+  bytes signing_cbor = 9;
+  int64 revision = 10;
+}
+message ManagedKnowledgeLifecycleOperation {
+  ManagedKnowledgeLifecycleChallenge challenge = 1;
+  ManagedKnowledgeLifecycleStatus status = 2;
+  string worker_operation_id = 3;
+  string error_code = 4;
+  bool requires_new_approval = 5;
+  int64 revision = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  google.protobuf.Timestamp approved_at = 9;
+}
+message PrepareManagedKnowledgeLifecycleRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string managed_service_id = 4;
+  string knowledge_binding_id = 5;
+  string signer_key_id = 6;
+  int64 expected_deployment_revision = 7;
+  ManagedKnowledgeLifecycleAction action = 8;
+}
+message PrepareManagedKnowledgeLifecycleResponse { ManagedKnowledgeLifecycleChallenge challenge = 1; }
+message ApproveManagedKnowledgeLifecycleRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string deployment_id = 3;
+  string operation_id = 4;
+  string scope_digest = 5;
+  int64 expected_revision = 6;
+  DeviceApprovalSignature approval = 7;
+}
+message ApproveManagedKnowledgeLifecycleResponse { ManagedKnowledgeLifecycleOperation operation = 1; }
+message GetManagedKnowledgeLifecycleRequest {
+  string owner_id = 1;
+  string operation_id = 2;
+}
+message GetManagedKnowledgeLifecycleResponse { ManagedKnowledgeLifecycleOperation operation = 1; }
+
 service CloudControlService {
   rpc GetCapabilities(CloudControlServiceGetCapabilitiesRequest) returns (CloudControlServiceGetCapabilitiesResponse);
   rpc CreateCloudGoal(CreateCloudGoalRequest) returns (CreateCloudGoalResponse);
@@ -986,6 +1070,9 @@ service CloudControlService {
   rpc PrepareRootHelperKeyDeliveryApproval(PrepareRootHelperKeyDeliveryApprovalRequest) returns (PrepareRootHelperKeyDeliveryApprovalResponse);
   rpc ApproveRootHelperKeyDelivery(ApproveRootHelperKeyDeliveryRequest) returns (ApproveRootHelperKeyDeliveryResponse);
   rpc GetRootHelperKeyDeliveryApproval(GetRootHelperKeyDeliveryApprovalRequest) returns (GetRootHelperKeyDeliveryApprovalResponse);
+  rpc PrepareManagedKnowledgeLifecycle(PrepareManagedKnowledgeLifecycleRequest) returns (PrepareManagedKnowledgeLifecycleResponse);
+  rpc ApproveManagedKnowledgeLifecycle(ApproveManagedKnowledgeLifecycleRequest) returns (ApproveManagedKnowledgeLifecycleResponse);
+  rpc GetManagedKnowledgeLifecycle(GetManagedKnowledgeLifecycleRequest) returns (GetManagedKnowledgeLifecycleResponse);
 }
 
 message CreateSessionRequest {
@@ -1904,6 +1991,12 @@ message ApproveCloudPairingResumeResponse { CloudPairingSession pairing = 1; }
 enum WorkerServiceOperationAction {
   WORKER_SERVICE_OPERATION_ACTION_UNSPECIFIED = 0;
   WORKER_SERVICE_OPERATION_ACTION_RESTART = 1;
+  WORKER_SERVICE_OPERATION_ACTION_STOP = 2;
+  WORKER_SERVICE_OPERATION_ACTION_BACKUP = 3;
+  WORKER_SERVICE_OPERATION_ACTION_RESTORE = 4;
+  WORKER_SERVICE_OPERATION_ACTION_UPGRADE = 5;
+  WORKER_SERVICE_OPERATION_ACTION_ROLLBACK = 6;
+  WORKER_SERVICE_OPERATION_ACTION_DESTROY = 7;
 }
 enum WorkerServiceOperationState {
   WORKER_SERVICE_OPERATION_STATE_UNSPECIFIED = 0;
@@ -1924,6 +2017,9 @@ message WorkerServiceOperationAssignment {
   google.protobuf.Timestamp lease_expires_at = 9;
   int64 revision = 10;
   string expected_installed_manifest_digest = 11;
+  int64 expected_deployment_revision = 12;
+  int64 expected_managed_service_revision = 13;
+  int64 expected_knowledge_binding_revision = 14;
 }
 // This is an authenticated root-helper receipt, not untrusted Worker Evidence.
 message WorkerServiceOperationRootHelperReceipt {
@@ -1941,6 +2037,9 @@ message WorkerServiceOperationRootHelperReceipt {
   string helper_id = 12;
   string signer_key_id = 13;
   bytes signature = 14;
+  int64 expected_deployment_revision = 15;
+  int64 expected_managed_service_revision = 16;
+  int64 expected_knowledge_binding_revision = 17;
 }
 message WorkerServiceOperation {
   WorkerServiceOperationAssignment assignment = 1;

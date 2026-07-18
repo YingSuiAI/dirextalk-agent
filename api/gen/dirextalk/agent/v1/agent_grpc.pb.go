@@ -618,6 +618,9 @@ const (
 	CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName  = "/dirextalk.agent.v1.CloudControlService/PrepareRootHelperKeyDeliveryApproval"
 	CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/ApproveRootHelperKeyDelivery"
 	CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/GetRootHelperKeyDeliveryApproval"
+	CloudControlService_PrepareManagedKnowledgeLifecycle_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/PrepareManagedKnowledgeLifecycle"
+	CloudControlService_ApproveManagedKnowledgeLifecycle_FullMethodName      = "/dirextalk.agent.v1.CloudControlService/ApproveManagedKnowledgeLifecycle"
+	CloudControlService_GetManagedKnowledgeLifecycle_FullMethodName          = "/dirextalk.agent.v1.CloudControlService/GetManagedKnowledgeLifecycle"
 )
 
 // CloudControlServiceClient is the client API for CloudControlService service.
@@ -669,6 +672,9 @@ type CloudControlServiceClient interface {
 	PrepareRootHelperKeyDeliveryApproval(ctx context.Context, in *PrepareRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*PrepareRootHelperKeyDeliveryApprovalResponse, error)
 	ApproveRootHelperKeyDelivery(ctx context.Context, in *ApproveRootHelperKeyDeliveryRequest, opts ...grpc.CallOption) (*ApproveRootHelperKeyDeliveryResponse, error)
 	GetRootHelperKeyDeliveryApproval(ctx context.Context, in *GetRootHelperKeyDeliveryApprovalRequest, opts ...grpc.CallOption) (*GetRootHelperKeyDeliveryApprovalResponse, error)
+	PrepareManagedKnowledgeLifecycle(ctx context.Context, in *PrepareManagedKnowledgeLifecycleRequest, opts ...grpc.CallOption) (*PrepareManagedKnowledgeLifecycleResponse, error)
+	ApproveManagedKnowledgeLifecycle(ctx context.Context, in *ApproveManagedKnowledgeLifecycleRequest, opts ...grpc.CallOption) (*ApproveManagedKnowledgeLifecycleResponse, error)
+	GetManagedKnowledgeLifecycle(ctx context.Context, in *GetManagedKnowledgeLifecycleRequest, opts ...grpc.CallOption) (*GetManagedKnowledgeLifecycleResponse, error)
 }
 
 type cloudControlServiceClient struct {
@@ -1129,6 +1135,36 @@ func (c *cloudControlServiceClient) GetRootHelperKeyDeliveryApproval(ctx context
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) PrepareManagedKnowledgeLifecycle(ctx context.Context, in *PrepareManagedKnowledgeLifecycleRequest, opts ...grpc.CallOption) (*PrepareManagedKnowledgeLifecycleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PrepareManagedKnowledgeLifecycleResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_PrepareManagedKnowledgeLifecycle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ApproveManagedKnowledgeLifecycle(ctx context.Context, in *ApproveManagedKnowledgeLifecycleRequest, opts ...grpc.CallOption) (*ApproveManagedKnowledgeLifecycleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApproveManagedKnowledgeLifecycleResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ApproveManagedKnowledgeLifecycle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) GetManagedKnowledgeLifecycle(ctx context.Context, in *GetManagedKnowledgeLifecycleRequest, opts ...grpc.CallOption) (*GetManagedKnowledgeLifecycleResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetManagedKnowledgeLifecycleResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetManagedKnowledgeLifecycle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CloudControlServiceServer is the server API for CloudControlService service.
 // All implementations must embed UnimplementedCloudControlServiceServer
 // for forward compatibility.
@@ -1178,6 +1214,9 @@ type CloudControlServiceServer interface {
 	PrepareRootHelperKeyDeliveryApproval(context.Context, *PrepareRootHelperKeyDeliveryApprovalRequest) (*PrepareRootHelperKeyDeliveryApprovalResponse, error)
 	ApproveRootHelperKeyDelivery(context.Context, *ApproveRootHelperKeyDeliveryRequest) (*ApproveRootHelperKeyDeliveryResponse, error)
 	GetRootHelperKeyDeliveryApproval(context.Context, *GetRootHelperKeyDeliveryApprovalRequest) (*GetRootHelperKeyDeliveryApprovalResponse, error)
+	PrepareManagedKnowledgeLifecycle(context.Context, *PrepareManagedKnowledgeLifecycleRequest) (*PrepareManagedKnowledgeLifecycleResponse, error)
+	ApproveManagedKnowledgeLifecycle(context.Context, *ApproveManagedKnowledgeLifecycleRequest) (*ApproveManagedKnowledgeLifecycleResponse, error)
+	GetManagedKnowledgeLifecycle(context.Context, *GetManagedKnowledgeLifecycleRequest) (*GetManagedKnowledgeLifecycleResponse, error)
 	mustEmbedUnimplementedCloudControlServiceServer()
 }
 
@@ -1322,6 +1361,15 @@ func (UnimplementedCloudControlServiceServer) ApproveRootHelperKeyDelivery(conte
 }
 func (UnimplementedCloudControlServiceServer) GetRootHelperKeyDeliveryApproval(context.Context, *GetRootHelperKeyDeliveryApprovalRequest) (*GetRootHelperKeyDeliveryApprovalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRootHelperKeyDeliveryApproval not implemented")
+}
+func (UnimplementedCloudControlServiceServer) PrepareManagedKnowledgeLifecycle(context.Context, *PrepareManagedKnowledgeLifecycleRequest) (*PrepareManagedKnowledgeLifecycleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PrepareManagedKnowledgeLifecycle not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ApproveManagedKnowledgeLifecycle(context.Context, *ApproveManagedKnowledgeLifecycleRequest) (*ApproveManagedKnowledgeLifecycleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApproveManagedKnowledgeLifecycle not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetManagedKnowledgeLifecycle(context.Context, *GetManagedKnowledgeLifecycleRequest) (*GetManagedKnowledgeLifecycleResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetManagedKnowledgeLifecycle not implemented")
 }
 func (UnimplementedCloudControlServiceServer) mustEmbedUnimplementedCloudControlServiceServer() {}
 func (UnimplementedCloudControlServiceServer) testEmbeddedByValue()                             {}
@@ -2154,6 +2202,60 @@ func _CloudControlService_GetRootHelperKeyDeliveryApproval_Handler(srv interface
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_PrepareManagedKnowledgeLifecycle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PrepareManagedKnowledgeLifecycleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).PrepareManagedKnowledgeLifecycle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_PrepareManagedKnowledgeLifecycle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).PrepareManagedKnowledgeLifecycle(ctx, req.(*PrepareManagedKnowledgeLifecycleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ApproveManagedKnowledgeLifecycle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApproveManagedKnowledgeLifecycleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ApproveManagedKnowledgeLifecycle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ApproveManagedKnowledgeLifecycle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ApproveManagedKnowledgeLifecycle(ctx, req.(*ApproveManagedKnowledgeLifecycleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_GetManagedKnowledgeLifecycle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetManagedKnowledgeLifecycleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetManagedKnowledgeLifecycle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetManagedKnowledgeLifecycle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetManagedKnowledgeLifecycle(ctx, req.(*GetManagedKnowledgeLifecycleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CloudControlService_ServiceDesc is the grpc.ServiceDesc for CloudControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2340,6 +2442,18 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRootHelperKeyDeliveryApproval",
 			Handler:    _CloudControlService_GetRootHelperKeyDeliveryApproval_Handler,
+		},
+		{
+			MethodName: "PrepareManagedKnowledgeLifecycle",
+			Handler:    _CloudControlService_PrepareManagedKnowledgeLifecycle_Handler,
+		},
+		{
+			MethodName: "ApproveManagedKnowledgeLifecycle",
+			Handler:    _CloudControlService_ApproveManagedKnowledgeLifecycle_Handler,
+		},
+		{
+			MethodName: "GetManagedKnowledgeLifecycle",
+			Handler:    _CloudControlService_GetManagedKnowledgeLifecycle_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

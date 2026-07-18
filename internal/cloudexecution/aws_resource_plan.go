@@ -23,8 +23,10 @@ import (
 // device signature. The first validation slice supports either an approved
 // existing security group or an exclusive no-ingress security group, one
 // exclusive ENI, an optional outbound-only Elastic IP, and one exclusive EC2
-// instance. Data volumes are explicit EBS ledger resources and are never
-// silently folded into the Worker root disk.
+// instance. The no-NAT v2 path additionally materializes the exact signed S3
+// Gateway and Secrets Manager Interface endpoints before the Worker. Data
+// volumes are explicit EBS ledger resources and are never silently folded into
+// the Worker root disk.
 type AWSResourcePlanBuilder struct {
 	agentInstanceID string
 }
@@ -58,6 +60,14 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	// device-approved ALB operation after an independently read-back Worker
 	// succeeds, so an initial plan can never allocate an EIP.
 	if plan.NetworkScope.PublicIPv4 {
+		return nil, ErrInvalid
+	}
+	privateEndpoints := plan.NetworkScope.PrivateConnectivity == cloudapproval.PrivateConnectivityNoNATEndpointsV1
+	if plan.NetworkScope.PrivateConnectivity != "" && !privateEndpoints {
+		return nil, ErrInvalid
+	}
+	if privateEndpoints && (plan.NetworkScope.ControlPlaneEndpoint != operation.Launch.ControlPlaneTarget ||
+		plan.NetworkScope.RouteTableID == "" || !validPrivateWorkerEndpointOperations(plan.ServiceOperations)) {
 		return nil, ErrInvalid
 	}
 	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, boundRecipe, cloudquote.RetentionScopeV1{
@@ -94,7 +104,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		ApprovedPlanHash: operation.ApprovedPlanHash, ApprovalID: operation.Launch.ApprovalID,
 		Retention: retention, DestroyDeadline: deadline, AutoDestroyApproved: autoDestroy,
 	}
-	result := make([]resource.ProvisionSpec, 0, 4+len(plan.ResourceScope.VolumeScopes))
+	result := make([]resource.ProvisionSpec, 0, 9+len(plan.ResourceScope.VolumeScopes))
 	securityGroupID := plan.NetworkScope.SecurityGroupID
 	securityGroupMode := plan.NetworkScope.SecurityGroupMode
 	if securityGroupMode == "" && securityGroupID != "" {
@@ -130,6 +140,82 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		group.ResourceID, group.Type, group.LogicalName, group.SpecDigest, group.AWS = groupID, resource.TypeSG, "worker-security-group", groupDigest, groupAWS
 		result = append(result, group)
 		eniDependencies = []string{groupID}
+		if privateEndpoints {
+			endpointGroupID := deterministicID(operation.DeploymentID, "endpoint-security-group")
+			endpointGroupAWS := &resource.AWSResourceSpecV1{
+				SchemaVersion: resource.AWSResourceSpecSchemaV1,
+				SecurityGroup: &resource.AWSSecurityGroupSpecV1{
+					VPCID:       plan.NetworkScope.VPCID,
+					Description: "Dirextalk Worker private endpoints " + operation.DeploymentID,
+				},
+			}
+			endpointGroupDigest, digestErr := endpointGroupAWS.Digest(resource.TypeSG)
+			if digestErr != nil {
+				return nil, ErrInvalid
+			}
+			endpointGroup := common
+			endpointGroup.ResourceID, endpointGroup.Type, endpointGroup.LogicalName = endpointGroupID, resource.TypeSG, "worker-endpoint-security-group"
+			endpointGroup.SpecDigest, endpointGroup.AWS = endpointGroupDigest, endpointGroupAWS
+			result = append(result, endpointGroup)
+
+			ruleID := deterministicID(operation.DeploymentID, "endpoint-security-group-rule")
+			ruleAWS := &resource.AWSResourceSpecV1{
+				SchemaVersion: resource.AWSResourceSpecSchemaV1,
+				SecurityGroupRule: &resource.AWSSecurityGroupRuleSpecV1{
+					Direction: resource.AWSSecurityGroupRuleDirectionIngress,
+					Protocol:  "tcp", FromPort: 443, ToPort: 443,
+					SourceSecurityGroupResourceID: groupID,
+					TargetSecurityGroupResourceID: endpointGroupID,
+				},
+			}
+			ruleDigest, digestErr := ruleAWS.Digest(resource.TypeSecurityGroupRule)
+			if digestErr != nil {
+				return nil, ErrInvalid
+			}
+			rule := common
+			rule.ResourceID, rule.Type, rule.LogicalName = ruleID, resource.TypeSecurityGroupRule, "worker-to-private-endpoint-https"
+			rule.SpecDigest, rule.DependsOn, rule.AWS = ruleDigest, []string{groupID, endpointGroupID}, ruleAWS
+			result = append(result, rule)
+
+			gatewayID := deterministicID(operation.DeploymentID, "endpoint:s3-gateway")
+			gatewayAWS := &resource.AWSResourceSpecV1{
+				SchemaVersion: resource.AWSResourceSpecSchemaV1,
+				Endpoint: &resource.AWSVPCEndpointSpecV1{
+					VPCID:         plan.NetworkScope.VPCID,
+					ServiceName:   "com.amazonaws." + plan.ResourceScope.Region + ".s3",
+					EndpointType:  resource.AWSVPCEndpointTypeGateway,
+					RouteTableIDs: []string{plan.NetworkScope.RouteTableID},
+				},
+			}
+			gatewayDigest, digestErr := gatewayAWS.Digest(resource.TypeEndpoint)
+			if digestErr != nil {
+				return nil, ErrInvalid
+			}
+			gateway := common
+			gateway.ResourceID, gateway.Type, gateway.LogicalName = gatewayID, resource.TypeEndpoint, "worker-s3-gateway-endpoint"
+			gateway.SpecDigest, gateway.AWS = gatewayDigest, gatewayAWS
+			result = append(result, gateway)
+
+			interfaceID := deterministicID(operation.DeploymentID, "endpoint:secretsmanager-interface")
+			interfaceAWS := &resource.AWSResourceSpecV1{
+				SchemaVersion: resource.AWSResourceSpecSchemaV1,
+				Endpoint: &resource.AWSVPCEndpointSpecV1{
+					VPCID:             plan.NetworkScope.VPCID,
+					ServiceName:       "com.amazonaws." + plan.ResourceScope.Region + ".secretsmanager",
+					EndpointType:      resource.AWSVPCEndpointTypeInterface,
+					SubnetID:          plan.NetworkScope.SubnetID,
+					PrivateDNSEnabled: true,
+				},
+			}
+			interfaceDigest, digestErr := interfaceAWS.Digest(resource.TypeEndpoint)
+			if digestErr != nil {
+				return nil, ErrInvalid
+			}
+			interfaceEndpoint := common
+			interfaceEndpoint.ResourceID, interfaceEndpoint.Type, interfaceEndpoint.LogicalName = interfaceID, resource.TypeEndpoint, "worker-secretsmanager-interface-endpoint"
+			interfaceEndpoint.SpecDigest, interfaceEndpoint.DependsOn, interfaceEndpoint.AWS = interfaceDigest, []string{endpointGroupID}, interfaceAWS
+			result = append(result, interfaceEndpoint)
+		}
 	default:
 		return nil, ErrInvalid
 	}
@@ -152,6 +238,12 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	result = append(result, eni)
 
 	instanceDependencies := []string{eniID}
+	if privateEndpoints {
+		instanceDependencies = append(instanceDependencies,
+			deterministicID(operation.DeploymentID, "endpoint:s3-gateway"),
+			deterministicID(operation.DeploymentID, "endpoint:secretsmanager-interface"),
+		)
+	}
 	attachments := make([]resource.AWSDataVolumeAttachmentV1, 0, len(plan.ResourceScope.VolumeScopes))
 	for _, volume := range plan.ResourceScope.VolumeScopes {
 		volumeID := deterministicID(operation.DeploymentID, "volume:"+volume.SlotID)
@@ -208,6 +300,24 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	instance.SpecDigest, instance.DependsOn, instance.AWS = instanceDigest, instanceDependencies, instanceAWS
 	result = append(result, instance)
 	return result, nil
+}
+
+func validPrivateWorkerEndpointOperations(value *cloudapproval.ServiceOperationScopeV1) bool {
+	if value == nil || len(value.PrivateEndpoints) != 2 || len(value.Snapshots) != 0 {
+		return false
+	}
+	var gateway, secrets bool
+	for _, endpoint := range value.PrivateEndpoints {
+		switch {
+		case endpoint.Service == cloudapproval.PrivateEndpointServiceS3 && endpoint.EndpointType == cloudapproval.PrivateEndpointTypeGateway:
+			gateway = endpoint.SecurityGroupSource == "" && !endpoint.PrivateDNSEnabled && endpoint.MonthlyHours == 0 && endpoint.DataMiBPerMonth == 0
+		case endpoint.Service == cloudapproval.PrivateEndpointServiceSecretsManager && endpoint.EndpointType == cloudapproval.PrivateEndpointTypeInterface:
+			secrets = endpoint.SecurityGroupSource == cloudapproval.EndpointSecurityGroupEndpointDedicatedFromWorker && endpoint.PrivateDNSEnabled && endpoint.MonthlyHours > 0 && endpoint.DataMiBPerMonth > 0
+		default:
+			return false
+		}
+	}
+	return gateway && secrets
 }
 
 func resourceInstallerTrust(operation Operation) (*installerbootstrap.RootTrustMaterialV1, error) {

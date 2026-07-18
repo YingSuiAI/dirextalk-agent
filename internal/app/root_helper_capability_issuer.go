@@ -14,6 +14,7 @@ import (
 )
 
 const rootHelperCapabilityLifetime = 5 * time.Minute
+const rootHelperLifecycleTimeoutGrace = 30 * time.Second
 
 type rootHelperWorkerDeploymentReader interface {
 	Get(context.Context, string) (worker.Deployment, error)
@@ -24,24 +25,33 @@ type rootHelperCapabilityKeyReader interface {
 	CurrentReadyRootHelper(context.Context, string, string) (helperkey.Record, error)
 }
 
+type managedKnowledgeLifecycleExecutionFencer interface {
+	FenceManagedKnowledgeLifecycleExecution(context.Context, workeroperation.Assignment, time.Time) error
+}
+
 // productionRootHelperCapabilityIssuer derives every short-lived privileged
 // grant from the original immutable InstallerDelivery and live Agent-owned
 // deployment/helper records. Neither a Worker nor a public caller can supply
 // installer trust, helper trust, or installed-manifest expectations.
 type productionRootHelperCapabilityIssuer struct {
-	workers rootHelperWorkerDeploymentReader
-	helpers rootHelperCapabilityKeyReader
-	issuer  *installer.TrustIssuer
-	now     func() time.Time
+	workers   rootHelperWorkerDeploymentReader
+	helpers   rootHelperCapabilityKeyReader
+	issuer    *installer.TrustIssuer
+	lifecycle managedKnowledgeLifecycleExecutionFencer
+	now       func() time.Time
 }
 
 func newProductionRootHelperCapabilityIssuer(workers rootHelperWorkerDeploymentReader,
 	helpers rootHelperCapabilityKeyReader, issuer *installer.TrustIssuer,
-	now func() time.Time) (*productionRootHelperCapabilityIssuer, error) {
+	now func() time.Time, lifecycle ...managedKnowledgeLifecycleExecutionFencer) (*productionRootHelperCapabilityIssuer, error) {
 	if workers == nil || helpers == nil || issuer == nil || now == nil {
 		return nil, workeroperation.ErrInvalid
 	}
-	return &productionRootHelperCapabilityIssuer{workers: workers, helpers: helpers, issuer: issuer, now: now}, nil
+	result := &productionRootHelperCapabilityIssuer{workers: workers, helpers: helpers, issuer: issuer, now: now}
+	if len(lifecycle) > 0 {
+		result.lifecycle = lifecycle[0]
+	}
+	return result, nil
 }
 
 func (value *productionRootHelperCapabilityIssuer) IssueBootstrapCapability(ctx context.Context,
@@ -77,7 +87,7 @@ func (value *productionRootHelperCapabilityIssuer) IssueRestartCapability(ctx co
 ) (installer.DeliveryV1, installer.SignedRootHelperRestartCapabilityV1, error) {
 	if value == nil || ctx == nil || assignment.DeploymentID != operation.DeploymentID ||
 		assignment.OwnerID != operation.OwnerID || assignment.WorkerID != operation.WorkerID ||
-		operation.Action != workeroperation.ActionRestart || operation.LeaseEpoch < 1 ||
+		!operation.Action.Valid() || operation.LeaseEpoch < 1 ||
 		operation.LeaseExpiresAt.IsZero() {
 		return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, workeroperation.ErrInvalid
 	}
@@ -95,20 +105,43 @@ func (value *productionRootHelperCapabilityIssuer) IssueRestartCapability(ctx co
 		return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, workeroperation.ErrInvalid
 	}
 	now := value.now().UTC().Truncate(time.Microsecond)
-	expiresAt := now.Add(rootHelperCapabilityLifetime)
-	if operation.LeaseExpiresAt.Before(expiresAt) {
-		expiresAt = operation.LeaseExpiresAt
+	if operation.Action != workeroperation.ActionRestart {
+		if value.lifecycle == nil || deployment.Revision != operation.ExpectedDeploymentRevision ||
+			value.lifecycle.FenceManagedKnowledgeLifecycleExecution(ctx, operation, now) != nil {
+			return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, workeroperation.ErrRevisionConflict
+		}
+	}
+	commandTimeout, found := declaredRootHelperCommandTimeout(delivery, operation.LifecycleRestartRef)
+	if !found {
+		return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, workeroperation.ErrInvalid
+	}
+	expiresAt := now.Add(commandTimeout + rootHelperLifecycleTimeoutGrace)
+	if !expiresAt.Before(operation.LeaseExpiresAt) && !expiresAt.Equal(operation.LeaseExpiresAt) {
+		return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, workeroperation.ErrLeaseExpired
 	}
 	signed, err := value.issuer.IssueRootHelperRestartCapability(delivery, helper.Binding, installer.RootHelperRestartGrantV1{
 		OperationID: operation.OperationID, DeploymentID: operation.DeploymentID, OwnerID: operation.OwnerID,
+		Action:              string(operation.Action),
 		LifecycleRestartRef: operation.LifecycleRestartRef, ExecutionBundleDigest: operation.ExecutionBundleDigest,
-		ExpectedInstalledManifestDigest: operation.ExpectedInstalledManifestDigest,
-		WorkerLeaseEpoch:                operation.LeaseEpoch, LeaseExpiresAt: expiresAt,
+		ExpectedInstalledManifestDigest:  operation.ExpectedInstalledManifestDigest,
+		ExpectedDeploymentRevision:       operation.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   operation.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: operation.ExpectedKnowledgeBindingRevision,
+		WorkerLeaseEpoch:                 operation.LeaseEpoch, LeaseExpiresAt: expiresAt,
 	}, now)
 	if err != nil {
 		return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, workeroperation.ErrInvalid
 	}
 	return delivery, signed, nil
+}
+
+func declaredRootHelperCommandTimeout(delivery installer.DeliveryV1, commandID string) (time.Duration, bool) {
+	for _, command := range delivery.SignedPlan.Plan.Commands {
+		if command.CommandID == commandID && command.TimeoutSeconds > 0 {
+			return time.Duration(command.TimeoutSeconds) * time.Second, true
+		}
+	}
+	return 0, false
 }
 
 func (value *productionRootHelperCapabilityIssuer) authoritativeDelivery(ctx context.Context,

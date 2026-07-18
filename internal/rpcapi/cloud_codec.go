@@ -80,6 +80,8 @@ func cloudNetworkScopeFromProto(value *agentv1.CloudNetworkScope) cloudquote.Net
 		EntryPoint: cloudEntryPointFromProto(value.GetEntryPoint()), PublicExposure: value.GetPublicExposure(),
 		IngressPorts: value.GetIngressPorts(), Hostname: value.GetHostname(), TLSRequired: value.GetTlsRequired(),
 		AuthenticationRequired: value.GetAuthenticationRequired(),
+		RouteTableID:           value.GetRouteTableId(), ControlPlaneEndpoint: value.GetControlPlaneEndpoint(),
+		PrivateConnectivity: cloudquote.PrivateConnectivityMode(value.GetPrivateConnectivity()),
 	}
 }
 
@@ -174,6 +176,7 @@ func cloudNetworkScopeToProto(value cloudquote.NetworkScopeV1) *agentv1.CloudNet
 		VpcId: value.VPCID, SubnetId: value.SubnetID, SecurityGroupMode: cloudSecurityGroupModeToProto(value.SecurityGroupMode), SecurityGroupId: value.SecurityGroupID, PublicIpv4: value.PublicIPv4,
 		EntryPoint: cloudEntryPointToProto(value.EntryPoint), PublicExposure: value.PublicExposure, IngressPorts: value.IngressPorts,
 		Hostname: value.Hostname, TlsRequired: value.TLSRequired, AuthenticationRequired: value.AuthenticationRequired,
+		RouteTableId: value.RouteTableID, ControlPlaneEndpoint: value.ControlPlaneEndpoint, PrivateConnectivity: string(value.PrivateConnectivity),
 	}
 }
 
@@ -236,6 +239,7 @@ func cloudServiceOperationsFromProto(value *agentv1.CloudServiceOperationScope) 
 			OperationKey: endpoint.GetOperationKey(), Service: cloudPrivateEndpointServiceFromProto(endpoint.GetService()),
 			SecurityGroupSource: cloudEndpointSecurityGroupSourceFromProto(endpoint.GetSecurityGroupSource()),
 			PrivateDNSEnabled:   endpoint.GetPrivateDnsEnabled(), MonthlyHours: endpoint.GetMonthlyHours(), DataMiBPerMonth: endpoint.GetDataMibPerMonth(),
+			EndpointType: cloudPrivateEndpointTypeFromProto(endpoint.GetEndpointType()),
 		})
 	}
 	for _, snapshot := range value.GetSnapshots() {
@@ -258,6 +262,7 @@ func cloudServiceOperationsToProto(value *cloudquote.ServiceOperationScopeV1) *a
 			OperationKey: endpoint.OperationKey, Service: cloudPrivateEndpointServiceToProto(endpoint.Service),
 			SecurityGroupSource: cloudEndpointSecurityGroupSourceToProto(endpoint.SecurityGroupSource),
 			PrivateDnsEnabled:   endpoint.PrivateDNSEnabled, MonthlyHours: endpoint.MonthlyHours, DataMibPerMonth: endpoint.DataMiBPerMonth,
+			EndpointType: cloudPrivateEndpointTypeToProto(endpoint.EndpointType),
 		})
 	}
 	for _, snapshot := range value.Snapshots {
@@ -271,17 +276,47 @@ func cloudServiceOperationsToProto(value *cloudquote.ServiceOperationScopeV1) *a
 }
 
 func cloudPrivateEndpointServiceFromProto(value agentv1.CloudPrivateEndpointService) cloudquote.PrivateEndpointServiceV1 {
-	if value == agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3 {
+	switch value {
+	case agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3:
 		return cloudquote.PrivateEndpointServiceS3
+	case agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER:
+		return cloudquote.PrivateEndpointServiceSecretsManager
+	default:
+		return ""
 	}
-	return ""
 }
 
 func cloudPrivateEndpointServiceToProto(value cloudquote.PrivateEndpointServiceV1) agentv1.CloudPrivateEndpointService {
-	if value == cloudquote.PrivateEndpointServiceS3 {
+	switch value {
+	case cloudquote.PrivateEndpointServiceS3:
 		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3
+	case cloudquote.PrivateEndpointServiceSecretsManager:
+		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER
+	default:
+		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED
 	}
-	return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED
+}
+
+func cloudPrivateEndpointTypeFromProto(value agentv1.CloudPrivateEndpointType) cloudquote.PrivateEndpointTypeV1 {
+	switch value {
+	case agentv1.CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY:
+		return cloudquote.PrivateEndpointTypeGateway
+	case agentv1.CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE:
+		return cloudquote.PrivateEndpointTypeInterface
+	default:
+		return ""
+	}
+}
+
+func cloudPrivateEndpointTypeToProto(value cloudquote.PrivateEndpointTypeV1) agentv1.CloudPrivateEndpointType {
+	switch value {
+	case cloudquote.PrivateEndpointTypeGateway:
+		return agentv1.CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY
+	case cloudquote.PrivateEndpointTypeInterface:
+		return agentv1.CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE
+	default:
+		return agentv1.CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED
+	}
 }
 
 func cloudEndpointSecurityGroupSourceFromProto(value agentv1.CloudEndpointSecurityGroupSource) cloudquote.EndpointSecurityGroupSourceV1 {
@@ -290,6 +325,8 @@ func cloudEndpointSecurityGroupSourceFromProto(value agentv1.CloudEndpointSecuri
 		return cloudquote.EndpointSecurityGroupPlanExisting
 	case agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED:
 		return cloudquote.EndpointSecurityGroupWorkerDedicated
+	case agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER:
+		return cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker
 	default:
 		return ""
 	}
@@ -301,6 +338,8 @@ func cloudEndpointSecurityGroupSourceToProto(value cloudquote.EndpointSecurityGr
 		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING
 	case cloudquote.EndpointSecurityGroupWorkerDedicated:
 		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED
+	case cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker:
+		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER
 	default:
 		return agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED
 	}
@@ -483,6 +522,8 @@ func approvalNetworkScopeToProto(value cloudapproval.NetworkScopeV1) *agentv1.Cl
 		EntryPoint: cloudquote.EntryPointKind(value.EntryPoint), PublicExposure: value.PublicExposure,
 		IngressPorts: value.IngressPorts, Hostname: value.Hostname, TLSRequired: value.TLSRequired,
 		AuthenticationRequired: value.AuthenticationRequired,
+		RouteTableID:           value.RouteTableID, ControlPlaneEndpoint: value.ControlPlaneEndpoint,
+		PrivateConnectivity: cloudquote.PrivateConnectivityMode(value.PrivateConnectivity),
 	})
 }
 

@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "framing": "uint32-big-endian byte length followed by UTF-8 JSON",
+  "vectors": [
+    {
+      "name": "stage-chunk-zero",
+      "request": {
+        "version": 1,
+        "operation_id": "01000000-0000-4000-8000-000000000000",
+        "idempotency_key": "02000000-0000-4000-8000-000000000000",
+        "operation": "stage_chunk",
+        "body": {
+          "owner_id": "owner:attachment-vector",
+          "binding_id": "03000000-0000-4000-8000-000000000000",
+          "source_id": "04000000-0000-4000-8000-000000000000",
+          "upload_id": "05000000-0000-4000-8000-000000000000",
+          "chunk_id": "06000000-0000-4000-8000-000000000000",
+          "revision_id": "07000000-0000-4000-8000-000000000000",
+          "offset_bytes": 0,
+          "chunk_index": 0,
+          "declared_size_bytes": 11,
+          "content_base64": "aGVsbG8g",
+          "content_size": 6,
+          "content_sha256": "5e3235a8346e5a4585f8c58562f5052b8fe26a3bb122e1e96c76784964dfc461"
+        }
+      },
+      "response_result": {
+        "owner_id": "owner:attachment-vector",
+        "binding_id": "03000000-0000-4000-8000-000000000000",
+        "source_id": "04000000-0000-4000-8000-000000000000",
+        "upload_id": "05000000-0000-4000-8000-000000000000",
+        "chunk_id": "06000000-0000-4000-8000-000000000000",
+        "revision_id": "07000000-0000-4000-8000-000000000000",
+        "offset_bytes": 0,
+        "chunk_index": 0,
+        "declared_size_bytes": 11,
+        "content_size": 6,
+        "content_sha256": "5e3235a8346e5a4585f8c58562f5052b8fe26a3bb122e1e96c76784964dfc461",
+        "staged": true
+      }
+    },
+    {
+      "name": "stage-chunk-one",
+      "request": {
+        "version": 1,
+        "operation_id": "11000000-0000-4000-8000-000000000000",
+        "idempotency_key": "12000000-0000-4000-8000-000000000000",
+        "operation": "stage_chunk",
+        "body": {
+          "owner_id": "owner:attachment-vector",
+          "binding_id": "03000000-0000-4000-8000-000000000000",
+          "source_id": "04000000-0000-4000-8000-000000000000",
+          "upload_id": "05000000-0000-4000-8000-000000000000",
+          "chunk_id": "16000000-0000-4000-8000-000000000000",
+          "revision_id": "07000000-0000-4000-8000-000000000000",
+          "offset_bytes": 6,
+          "chunk_index": 1,
+          "declared_size_bytes": 11,
+          "content_base64": "d29ybGQ=",
+          "content_size": 5,
+          "content_sha256": "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7"
+        }
+      },
+      "response_result": {
+        "owner_id": "owner:attachment-vector",
+        "binding_id": "03000000-0000-4000-8000-000000000000",
+        "source_id": "04000000-0000-4000-8000-000000000000",
+        "upload_id": "05000000-0000-4000-8000-000000000000",
+        "chunk_id": "16000000-0000-4000-8000-000000000000",
+        "revision_id": "07000000-0000-4000-8000-000000000000",
+        "offset_bytes": 6,
+        "chunk_index": 1,
+        "declared_size_bytes": 11,
+        "content_size": 5,
+        "content_sha256": "486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7",
+        "staged": true
+      }
+    },
+    {
+      "name": "commit-attachment",
+      "request": {
+        "version": 1,
+        "operation_id": "21000000-0000-4000-8000-000000000000",
+        "idempotency_key": "22000000-0000-4000-8000-000000000000",
+        "operation": "commit_attachment",
+        "body": {
+          "owner_id": "owner:attachment-vector",
+          "binding_id": "03000000-0000-4000-8000-000000000000",
+          "source_id": "04000000-0000-4000-8000-000000000000",
+          "upload_id": "05000000-0000-4000-8000-000000000000",
+          "revision_id": "07000000-0000-4000-8000-000000000000",
+          "title": "Greeting",
+          "media_type": "text/plain",
+          "chunk_count": 2,
+          "content_size": 11,
+          "content_sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        }
+      },
+      "response_result": {
+        "owner_id": "owner:attachment-vector",
+        "binding_id": "03000000-0000-4000-8000-000000000000",
+        "point_id": "b524a5e2-82f3-57b8-b802-58794177a402",
+        "source_id": "04000000-0000-4000-8000-000000000000",
+        "upload_id": "05000000-0000-4000-8000-000000000000",
+        "revision_id": "07000000-0000-4000-8000-000000000000",
+        "kind": "attachment",
+        "chunk_count": 2,
+        "content_size": 11,
+        "content_sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+        "indexed_segment_count": 1
+      }
+    },
+    {
+      "name": "store-memory",
+      "request": {
+        "version": 1,
+        "operation_id": "99c5df5f-0786-46f8-bd17-99d6df701660",
+        "idempotency_key": "c00f0c6b-cd41-4a38-98c0-c8afb254b98d",
+        "operation": "store_memory",
+        "body": {
+          "owner_id": "owner:semantic-probe",
+          "binding_id": "d4bc902d-b728-4d4e-ab72-bcefb3eec8c9",
+          "memory_id": "91b749a1-133f-4b4e-9481-8b4655aad290",
+          "revision_id": "35e1e7e5-d476-4720-9b17-05690ecef520",
+          "content": "dirextalk retained knowledge semantic probe cedar",
+          "content_size": 49,
+          "content_sha256": "3a564f59a7ebf95f51dc5287a7ba6c73bb75e4f16aae3690a01bac3d9e1ea837"
+        }
+      },
+      "response": {
+        "version": 1,
+        "operation_id": "99c5df5f-0786-46f8-bd17-99d6df701660",
+        "ok": true,
+        "result": {
+          "owner_id": "owner:semantic-probe",
+          "binding_id": "d4bc902d-b728-4d4e-ab72-bcefb3eec8c9",
+          "point_id": "eb886927-4108-5556-9f64-9c883de47203",
+          "source_id": "91b749a1-133f-4b4e-9481-8b4655aad290",
+          "revision_id": "35e1e7e5-d476-4720-9b17-05690ecef520",
+          "kind": "memory",
+          "content_size": 49,
+          "content_sha256": "3a564f59a7ebf95f51dc5287a7ba6c73bb75e4f16aae3690a01bac3d9e1ea837",
+          "indexed_segment_count": 1
+        }
+      }
+    },
+    {
+      "name": "persistence-status",
+      "request": {
+        "version": 1,
+        "operation_id": "fbbf1564-4c4c-4d91-b88b-33e03437e674",
+        "operation": "status",
+        "body": {
+          "owner_id": "owner:semantic-probe",
+          "binding_id": "d4bc902d-b728-4d4e-ab72-bcefb3eec8c9",
+          "challenge": {
+            "point_id": "eb886927-4108-5556-9f64-9c883de47203",
+            "source_id": "91b749a1-133f-4b4e-9481-8b4655aad290",
+            "revision_id": "35e1e7e5-d476-4720-9b17-05690ecef520",
+            "content_size": 49,
+            "content_sha256": "3a564f59a7ebf95f51dc5287a7ba6c73bb75e4f16aae3690a01bac3d9e1ea837"
+          }
+        }
+      },
+      "response_result_subset": {
+        "owner_id": "owner:semantic-probe",
+        "binding_id": "d4bc902d-b728-4d4e-ab72-bcefb3eec8c9",
+        "ready": true,
+        "persistence": {
+          "point_id": "eb886927-4108-5556-9f64-9c883de47203",
+          "source_id": "91b749a1-133f-4b4e-9481-8b4655aad290",
+          "revision_id": "35e1e7e5-d476-4720-9b17-05690ecef520",
+          "content_size": 49,
+          "content_sha256": "3a564f59a7ebf95f51dc5287a7ba6c73bb75e4f16aae3690a01bac3d9e1ea837",
+          "verified": true
+        }
+      }
+    }
+  ]
+}

@@ -19,6 +19,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -162,6 +164,19 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	knowledgeCatalog := knowledge.DefaultCatalog()
+	knowledgeRepository, err := knowledge.NewPostgresRepository(pool, serverConfig.InstanceID, knowledgeCatalog)
+	if err != nil {
+		return errors.New("could not initialize Knowledge persistence")
+	}
+	knowledgeWorkerBroker, err := knowledgeworker.NewBroker(time.Now)
+	if err != nil {
+		return errors.New("could not initialize Knowledge Worker relay")
+	}
+	knowledgeService, err := knowledge.NewService(knowledgeRepository, knowledgeWorkerBroker, knowledgeCatalog, time.Now)
+	if err != nil {
+		return errors.New("could not initialize Knowledge service")
+	}
 	secretStore, err := store.NewSecretBootstrapStore(masterKey)
 	if err != nil {
 		return errors.New("could not initialize secret bootstrap persistence")
@@ -215,6 +230,7 @@ func serve() error {
 		}
 		var cloudErr error
 		cloudOptions := make([]app.CloudCompositionOption, 0, 1)
+		cloudOptions = append(cloudOptions, app.WithManagedKnowledgeBinding(knowledgeService))
 		if serverConfig.EnableManagedPreparationAWS {
 			cloudOptions = append(cloudOptions, app.WithManagedPreparationAWS())
 		}
@@ -257,6 +273,8 @@ func serve() error {
 	}
 	serverOptions := []app.ServerOption{
 		app.WithRuntime(runtimeComposition.Coordinator, runtimeComposition.Features),
+		app.WithKnowledge(knowledgeService),
+		app.WithKnowledgeWorkerRelay(knowledgeWorkerBroker),
 		app.WithCloudGoals(runtimeComposition.CloudGoals),
 		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
 		app.WithWorkerControl(workerService),
@@ -268,6 +286,7 @@ func serve() error {
 			app.WithCloudEntrypoint(cloudComposition.Entrypoint),
 			app.WithCloudFoundation(cloudComposition.FoundationLifecycle),
 			app.WithCloudManagedAcceptance(cloudComposition.ManagedAcceptance),
+			app.WithManagedKnowledgeLifecycle(cloudComposition.ManagedKnowledgeLifecycle),
 			app.WithCloudPairing(cloudComposition.Pairing, cloudComposition.PairingApprovals),
 			app.WithCloudHealth(cloudComposition.HealthProbeReader),
 			app.WithWorkerIdentity(cloudComposition.WorkerIdentityVerifier, cloudComposition.WorkerIdentityMaterializer),

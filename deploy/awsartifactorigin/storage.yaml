@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Dirextalk retained immutable first-party artifact storage in Osaka
+
+Parameters:
+  EdgeDistributionArn:
+    Type: String
+    Default: ""
+    AllowedPattern: '^$|^arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]{8,32}$'
+
+Conditions:
+  HasEdgeDistribution: !Not [!Equals [!Ref EdgeDistributionArn, ""]]
+
+Resources:
+  ArtifactKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Dirextalk y1 immutable artifact origin
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - !If
+            - HasEdgeDistribution
+            - Sid: AllowExactCloudFrontDistributionDecrypt
+              Effect: Allow
+              Principal:
+                Service: cloudfront.amazonaws.com
+              Action:
+                - kms:Decrypt
+                - kms:DescribeKey
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  AWS:SourceArn: !Ref EdgeDistributionArn
+            - !Ref AWS::NoValue
+      Tags:
+        - Key: managed_by
+          Value: dirextalk-agent
+        - Key: component
+          Value: artifact-origin-storage
+        - Key: retention
+          Value: managed_retained
+
+  ArtifactKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/dtx-y1-artifact-origin
+      TargetKeyId: !Ref ArtifactKey
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub dtx-y1-artifacts-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt ArtifactKey.Arn
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: managed_by
+          Value: dirextalk-agent
+        - Key: component
+          Value: artifact-origin-storage
+        - Key: retention
+          Value: managed_retained
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub ${ArtifactBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: DenyIncorrectEncryptionHeader
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${ArtifactBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyIncorrectKMSKey
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${ArtifactBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt ArtifactKey.Arn
+          - Sid: DenyArtifactDeletion
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+            Resource: !Sub ${ArtifactBucket.Arn}/*
+          - !If
+            - HasEdgeDistribution
+            - Sid: AllowExactCloudFrontDistributionRead
+              Effect: Allow
+              Principal:
+                Service: cloudfront.amazonaws.com
+              Action: s3:GetObject
+              Resource: !Sub ${ArtifactBucket.Arn}/*
+              Condition:
+                StringEquals:
+                  AWS:SourceArn: !Ref EdgeDistributionArn
+            - !Ref AWS::NoValue
+
+Outputs:
+  BucketName:
+    Value: !Ref ArtifactBucket
+  BucketRegionalDomainName:
+    Value: !GetAtt ArtifactBucket.RegionalDomainName
+  KMSKeyArn:
+    Value: !GetAtt ArtifactKey.Arn
+  EdgeDistributionArn:
+    Condition: HasEdgeDistribution
+    Value: !Ref EdgeDistributionArn

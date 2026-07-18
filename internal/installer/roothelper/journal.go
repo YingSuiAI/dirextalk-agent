@@ -22,6 +22,7 @@ const (
 
 type RestartJournal interface {
 	Begin(string, string) (workeroperation.RootHelperReceipt, bool, error)
+	BeginRecovery(string, string) (workeroperation.RootHelperReceipt, bool, error)
 	Complete(string, string, workeroperation.RootHelperReceipt) error
 }
 
@@ -140,7 +141,10 @@ func (journal *FileRestartJournal) apply(record restartJournalRecord) error {
 		}
 		journal.entries[record.CapabilityID] = restartJournalEntry{digest: record.RequestDigest, state: record.State}
 	case restartJournalTerminal:
-		if !found || current.state != restartJournalRunning || len(record.Receipt.Signature) == 0 {
+		if !found || len(record.Receipt.Signature) == 0 ||
+			(current.state != restartJournalRunning &&
+				(current.state != restartJournalTerminal ||
+					!sameRecoveryReceipt(current.receipt, record.Receipt))) {
 			return ErrInvalid
 		}
 		journal.entries[record.CapabilityID] = restartJournalEntry{
@@ -153,6 +157,14 @@ func (journal *FileRestartJournal) apply(record restartJournalRecord) error {
 }
 
 func (journal *FileRestartJournal) Begin(capabilityID, requestDigest string) (workeroperation.RootHelperReceipt, bool, error) {
+	return journal.begin(capabilityID, requestDigest, false)
+}
+
+func (journal *FileRestartJournal) BeginRecovery(capabilityID, requestDigest string) (workeroperation.RootHelperReceipt, bool, error) {
+	return journal.begin(capabilityID, requestDigest, true)
+}
+
+func (journal *FileRestartJournal) begin(capabilityID, requestDigest string, resumeRunning bool) (workeroperation.RootHelperReceipt, bool, error) {
 	if journal == nil || capabilityID == "" || requestDigest == "" {
 		return workeroperation.RootHelperReceipt{}, false, ErrInvalid
 	}
@@ -164,6 +176,9 @@ func (journal *FileRestartJournal) Begin(capabilityID, requestDigest string) (wo
 		}
 		if current.state == restartJournalTerminal {
 			return cloneReceipt(current.receipt), true, nil
+		}
+		if resumeRunning {
+			return workeroperation.RootHelperReceipt{}, false, nil
 		}
 		return workeroperation.RootHelperReceipt{}, false, ErrUnavailable
 	}
@@ -185,7 +200,10 @@ func (journal *FileRestartJournal) Complete(capabilityID, requestDigest string, 
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	current, found := journal.entries[capabilityID]
-	if !found || current.digest != requestDigest || current.state != restartJournalRunning {
+	if !found || current.digest != requestDigest ||
+		(current.state != restartJournalRunning &&
+			(current.state != restartJournalTerminal ||
+				!sameRecoveryReceipt(current.receipt, receipt))) {
 		return ErrUnauthorized
 	}
 	record := restartJournalRecord{
@@ -199,6 +217,20 @@ func (journal *FileRestartJournal) Complete(capabilityID, requestDigest string, 
 		digest: requestDigest, state: restartJournalTerminal, receipt: cloneReceipt(receipt),
 	}
 	return nil
+}
+
+func sameRecoveryReceipt(left, right workeroperation.RootHelperReceipt) bool {
+	return isGenerationRecoveryAction(string(left.Action)) && left.SchemaVersion == right.SchemaVersion &&
+		left.OperationID == right.OperationID && left.DeploymentID == right.DeploymentID &&
+		left.OwnerID == right.OwnerID && left.Action == right.Action &&
+		left.LifecycleRestartRef == right.LifecycleRestartRef &&
+		left.ExecutionBundleDigest == right.ExecutionBundleDigest &&
+		left.InstallManifestDigest == right.InstallManifestDigest &&
+		left.RestartObservationDigest == right.RestartObservationDigest &&
+		left.ExpectedDeploymentRevision == right.ExpectedDeploymentRevision &&
+		left.ExpectedManagedServiceRevision == right.ExpectedManagedServiceRevision &&
+		left.ExpectedKnowledgeBindingRevision == right.ExpectedKnowledgeBindingRevision &&
+		left.HelperID == right.HelperID && left.SignerKeyID == right.SignerKeyID
 }
 
 func (journal *FileRestartJournal) append(record restartJournalRecord) error {

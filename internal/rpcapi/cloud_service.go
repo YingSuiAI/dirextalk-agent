@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
 	cloudmanaged "github.com/YingSuiAI/dirextalk-agent/internal/cloud/managed"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/managedlifecycle"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
@@ -33,6 +34,7 @@ type CloudControlService struct {
 	entrypoint             CloudEntrypointCoordinator
 	foundation             CloudFoundationCoordinator
 	managed                CloudManagedAcceptanceCoordinator
+	managedLifecycle       ManagedKnowledgeLifecycleCoordinator
 	preparation            CloudManagedPreparationCoordinator
 	pairing                CloudPairingCoordinator
 	pairingApprovals       CloudPairingApprovalCoordinator
@@ -56,6 +58,11 @@ type CloudManagedAcceptanceCoordinator interface {
 	Prepare(context.Context, cloudmanaged.PrepareCommand) (cloudmanaged.ChallengeV1, error)
 	Approve(context.Context, cloudmanaged.ApproveCommand) (cloudmanaged.OperationV1, error)
 	Get(context.Context, string, string) (cloudmanaged.OperationV1, error)
+}
+type ManagedKnowledgeLifecycleCoordinator interface {
+	Prepare(context.Context, managedlifecycle.PrepareCommand) (managedlifecycle.ChallengeV1, error)
+	Approve(context.Context, managedlifecycle.ApproveCommand) (managedlifecycle.OperationV1, error)
+	Get(context.Context, string, string) (managedlifecycle.OperationV1, error)
 }
 type CloudManagedPreparationCoordinator interface {
 	Prepare(context.Context, serviceoperation.PrepareCommand) (serviceoperation.ChallengeV1, error)
@@ -106,6 +113,10 @@ func (service *CloudControlService) WithFoundation(coordinator CloudFoundationCo
 }
 func (service *CloudControlService) WithManagedAcceptance(coordinator CloudManagedAcceptanceCoordinator) *CloudControlService {
 	service.managed = coordinator
+	return service
+}
+func (service *CloudControlService) WithManagedKnowledgeLifecycle(coordinator ManagedKnowledgeLifecycleCoordinator) *CloudControlService {
+	service.managedLifecycle = coordinator
 	return service
 }
 

@@ -3,6 +3,7 @@ package quote
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"path"
 	"reflect"
 	"regexp"
@@ -18,7 +19,7 @@ var (
 	availabilityPattern = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
 	instanceTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
 	amiPattern          = regexp.MustCompile(`^ami-[0-9a-f]{8,17}$`)
-	awsIDPattern        = regexp.MustCompile(`^(?:vpc|subnet|sg)-[0-9a-f]{8,17}$`)
+	awsIDPattern        = regexp.MustCompile(`^(?:vpc|subnet|sg|rtb)-[0-9a-f]{8,17}$`)
 	secretRefPattern    = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
 	currencyPattern     = regexp.MustCompile(`^[A-Z]{3}$`)
 	volumeTypePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
@@ -239,6 +240,20 @@ func validateNetwork(value NetworkScopeV1) error {
 	if err := validatePorts(value.IngressPorts); err != nil {
 		return err
 	}
+	if value.PrivateConnectivity == "" {
+		if value.RouteTableID != "" || value.ControlPlaneEndpoint != "" {
+			return fmt.Errorf("scope.network private connectivity fields require an explicit mode")
+		}
+	} else if value.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 {
+		if !awsIDPattern.MatchString(value.RouteTableID) || !strings.HasPrefix(value.RouteTableID, "rtb-") ||
+			value.PublicIPv4 || mode != SecurityGroupCreateDedicated || value.SecurityGroupID != "" ||
+			value.EntryPoint != EntryPointNone || value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired ||
+			ValidatePrivateControlPlaneEndpoint(value.ControlPlaneEndpoint) != nil {
+			return fmt.Errorf("scope.network no-NAT private connectivity scope is invalid")
+		}
+	} else {
+		return fmt.Errorf("scope.network private_connectivity is invalid")
+	}
 	if value.EntryPoint == EntryPointNone {
 		if value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired {
 			return fmt.Errorf("scope.network with no entry point cannot declare public exposure")
@@ -252,6 +267,21 @@ func validateNetwork(value NetworkScopeV1) error {
 		return fmt.Errorf("public scope.network requires ports, hostname, TLS, and authentication")
 	}
 	return validateText("scope.network.hostname", value.Hostname, 1, 253)
+}
+
+// ValidatePrivateControlPlaneEndpoint is shared by placement and execution.
+// The endpoint is public signed metadata only; user-info, query state and
+// non-443 targets are rejected before they enter a device signature.
+func ValidatePrivateControlPlaneEndpoint(raw string) error {
+	if strings.TrimSpace(raw) != raw || len(raw) == 0 || len(raw) > 1024 {
+		return fmt.Errorf("control plane endpoint is invalid")
+	}
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Scheme != "grpcs" || endpoint.Hostname() == "" || endpoint.Port() != "443" || endpoint.Opaque != "" ||
+		(endpoint.Path != "" && endpoint.Path != "/") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || credentialPattern.MatchString(raw) {
+		return fmt.Errorf("control plane endpoint must be credential-free grpcs on port 443")
+	}
+	return nil
 }
 
 func normalizedSecurityGroupMode(value NetworkScopeV1) SecurityGroupMode {
@@ -528,14 +558,14 @@ func validateCandidate(value CandidateV1, _ string) error {
 
 func validateCosts(value CandidateV1) error {
 	minimum := 7
-	if value.Scope.ServiceOperations != nil && len(value.Scope.ServiceOperations.PrivateEndpoints) != 0 {
+	if hasPricedPrivateEndpoint(value.Scope.ServiceOperations) {
 		minimum++
 	}
 	if len(value.CostItems) < minimum || len(value.CostItems) > 32 {
 		return fmt.Errorf("candidate must include compute, EBS, IPv4, logs, snapshot, entry, and traffic estimates")
 	}
 	required := map[CostCategory]bool{CostEBS: false, CostPublicIPv4: false, CostLogs: false, CostSnapshot: false, CostEntry: false, CostTraffic: false}
-	if value.Scope.ServiceOperations != nil && len(value.Scope.ServiceOperations.PrivateEndpoints) != 0 {
+	if hasPricedPrivateEndpoint(value.Scope.ServiceOperations) {
 		required[CostPrivateEndpoint] = false
 	}
 	compute := CostComputeOnDemand
@@ -580,6 +610,18 @@ func validateCosts(value CandidateV1) error {
 		return fmt.Errorf("candidate aggregate estimates do not equal exact cost-item sums")
 	}
 	return nil
+}
+
+func hasPricedPrivateEndpoint(scope *ServiceOperationScopeV1) bool {
+	if scope == nil {
+		return false
+	}
+	for _, endpoint := range scope.PrivateEndpoints {
+		if EffectivePrivateEndpointType(endpoint.EndpointType) == PrivateEndpointTypeInterface {
+			return true
+		}
+	}
+	return false
 }
 
 func validateUsage(value UsageV1) error {

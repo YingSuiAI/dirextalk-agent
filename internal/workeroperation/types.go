@@ -21,7 +21,13 @@ import (
 const (
 	SchemaV1 = "dirextalk.agent.worker-service-operation/v1"
 
-	ActionRestart Action = "restart"
+	ActionRestart  Action = "restart"
+	ActionStop     Action = "stop"
+	ActionBackup   Action = "backup"
+	ActionRestore  Action = "restore"
+	ActionUpgrade  Action = "upgrade"
+	ActionRollback Action = "rollback"
+	ActionDestroy  Action = "destroy"
 
 	StatePending   State = "pending"
 	StateLeased    State = "leased"
@@ -30,14 +36,15 @@ const (
 )
 
 var (
-	ErrInvalid             = errors.New("worker service operation is invalid")
-	ErrNotFound            = errors.New("worker service operation was not found")
-	ErrRevisionConflict    = errors.New("worker service operation revision conflict")
-	ErrIdempotencyConflict = errors.New("worker service operation idempotency conflict")
-	ErrLeaseActive         = errors.New("worker service operation lease is active")
-	ErrStaleLease          = errors.New("worker service operation lease is stale")
-	ErrLeaseExpired        = errors.New("worker service operation lease expired")
-	ErrTerminal            = errors.New("worker service operation is terminal")
+	ErrInvalid                   = errors.New("worker service operation is invalid")
+	ErrNotFound                  = errors.New("worker service operation was not found")
+	ErrRevisionConflict          = errors.New("worker service operation revision conflict")
+	ErrIdempotencyConflict       = errors.New("worker service operation idempotency conflict")
+	ErrLeaseActive               = errors.New("worker service operation lease is active")
+	ErrStaleLease                = errors.New("worker service operation lease is stale")
+	ErrLeaseExpired              = errors.New("worker service operation lease expired")
+	ErrTerminal                  = errors.New("worker service operation is terminal")
+	ErrSignedObservationRequired = errors.New("worker service operation requires a signed root observation")
 
 	digestPattern     = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -46,58 +53,76 @@ var (
 type Action string
 type State string
 
+func (value Action) Valid() bool {
+	switch value {
+	case ActionRestart, ActionStop, ActionBackup, ActionRestore, ActionUpgrade, ActionRollback, ActionDestroy:
+		return true
+	default:
+		return false
+	}
+}
+
 type Operation struct {
-	SchemaVersion                   string
-	OperationID                     string
-	DeploymentID                    string
-	OwnerID                         string
-	Action                          Action
-	LifecycleRestartRef             string
-	ExecutionBundleDigest           string
-	ExpectedInstalledManifestDigest string
-	State                           State
-	WorkerID                        string
-	LeaseEpoch                      int64
-	LeaseExpiresAt                  time.Time
-	Receipt                         *RootHelperReceipt
-	FailureCode                     string
-	Revision                        int64
-	CreatedAt                       time.Time
-	UpdatedAt                       time.Time
+	SchemaVersion                    string
+	OperationID                      string
+	DeploymentID                     string
+	OwnerID                          string
+	Action                           Action
+	LifecycleRestartRef              string
+	ExecutionBundleDigest            string
+	ExpectedInstalledManifestDigest  string
+	ExpectedDeploymentRevision       int64
+	ExpectedManagedServiceRevision   int64
+	ExpectedKnowledgeBindingRevision int64
+	State                            State
+	WorkerID                         string
+	LeaseEpoch                       int64
+	LeaseExpiresAt                   time.Time
+	Receipt                          *RootHelperReceipt
+	FailureCode                      string
+	Revision                         int64
+	CreatedAt                        time.Time
+	UpdatedAt                        time.Time
 }
 
 type Assignment struct {
-	OperationID                     string
-	DeploymentID                    string
-	OwnerID                         string
-	Action                          Action
-	LifecycleRestartRef             string
-	ExecutionBundleDigest           string
-	ExpectedInstalledManifestDigest string
-	WorkerID                        string
-	LeaseEpoch                      int64
-	LeaseExpiresAt                  time.Time
-	Revision                        int64
+	OperationID                      string
+	DeploymentID                     string
+	OwnerID                          string
+	Action                           Action
+	LifecycleRestartRef              string
+	ExecutionBundleDigest            string
+	ExpectedInstalledManifestDigest  string
+	ExpectedDeploymentRevision       int64
+	ExpectedManagedServiceRevision   int64
+	ExpectedKnowledgeBindingRevision int64
+	WorkerID                         string
+	LeaseEpoch                       int64
+	LeaseExpiresAt                   time.Time
+	Revision                         int64
 }
 
 // RootHelperReceipt is a signed, terminal receipt from the authenticated
 // privileged helper. It is not Worker Evidence and must never be projected as
 // an untrusted_worker_claim.
 type RootHelperReceipt struct {
-	SchemaVersion            string
-	OperationID              string
-	DeploymentID             string
-	OwnerID                  string
-	Action                   Action
-	LifecycleRestartRef      string
-	ExecutionBundleDigest    string
-	LeaseEpoch               int64
-	InstallManifestDigest    string
-	RestartObservationDigest string
-	ObservedAt               time.Time
-	HelperID                 string
-	SignerKeyID              string
-	Signature                []byte
+	SchemaVersion                    string
+	OperationID                      string
+	DeploymentID                     string
+	OwnerID                          string
+	Action                           Action
+	LifecycleRestartRef              string
+	ExecutionBundleDigest            string
+	LeaseEpoch                       int64
+	InstallManifestDigest            string
+	RestartObservationDigest         string
+	ExpectedDeploymentRevision       int64
+	ExpectedManagedServiceRevision   int64
+	ExpectedKnowledgeBindingRevision int64
+	ObservedAt                       time.Time
+	HelperID                         string
+	SignerKeyID                      string
+	Signature                        []byte
 }
 
 func (value Operation) Clone() Operation {
@@ -112,9 +137,10 @@ func (value Operation) Clone() Operation {
 
 func (value Operation) Validate() error {
 	if value.SchemaVersion != SchemaV1 || !validUUID(value.OperationID) || !validUUID(value.DeploymentID) ||
-		!validOwner(value.OwnerID) || value.Action != ActionRestart ||
+		!validOwner(value.OwnerID) || !value.Action.Valid() ||
 		!identifierPattern.MatchString(value.LifecycleRestartRef) || !digestPattern.MatchString(value.ExecutionBundleDigest) ||
-		!digestPattern.MatchString(value.ExpectedInstalledManifestDigest) ||
+		!digestPattern.MatchString(value.ExpectedInstalledManifestDigest) || !validExpectedRevisions(value.Action,
+		value.ExpectedDeploymentRevision, value.ExpectedManagedServiceRevision, value.ExpectedKnowledgeBindingRevision) ||
 		value.Revision < 1 || value.CreatedAt.IsZero() || value.UpdatedAt.Before(value.CreatedAt) {
 		return ErrInvalid
 	}
@@ -148,9 +174,12 @@ func (value Operation) Validate() error {
 func (value RootHelperReceipt) ValidateFor(operation Operation) error {
 	if value.SchemaVersion != SchemaV1 || value.OperationID != operation.OperationID ||
 		value.DeploymentID != operation.DeploymentID || value.OwnerID != operation.OwnerID ||
-		value.Action != ActionRestart || value.LifecycleRestartRef != operation.LifecycleRestartRef ||
+		value.Action != operation.Action || !value.Action.Valid() || value.LifecycleRestartRef != operation.LifecycleRestartRef ||
 		value.ExecutionBundleDigest != operation.ExecutionBundleDigest || value.LeaseEpoch != operation.LeaseEpoch ||
 		value.InstallManifestDigest != operation.ExpectedInstalledManifestDigest ||
+		value.ExpectedDeploymentRevision != operation.ExpectedDeploymentRevision ||
+		value.ExpectedManagedServiceRevision != operation.ExpectedManagedServiceRevision ||
+		value.ExpectedKnowledgeBindingRevision != operation.ExpectedKnowledgeBindingRevision ||
 		!digestPattern.MatchString(value.RestartObservationDigest) ||
 		value.ObservedAt.IsZero() || !identifierPattern.MatchString(value.HelperID) ||
 		!identifierPattern.MatchString(value.SignerKeyID) || len(value.Signature) != ed25519.SignatureSize {
@@ -160,13 +189,15 @@ func (value RootHelperReceipt) ValidateFor(operation Operation) error {
 }
 
 func (value RootHelperReceipt) signingPayload() ([]byte, error) {
-	if value.SchemaVersion != SchemaV1 || value.Action != ActionRestart || value.ObservedAt.IsZero() {
+	if value.SchemaVersion != SchemaV1 || !value.Action.Valid() || value.ObservedAt.IsZero() {
 		return nil, ErrInvalid
 	}
 	fields := []string{
 		value.SchemaVersion, value.OperationID, value.DeploymentID, value.OwnerID, string(value.Action),
 		value.LifecycleRestartRef, value.ExecutionBundleDigest, fmt.Sprint(value.LeaseEpoch),
 		value.InstallManifestDigest, value.RestartObservationDigest,
+		fmt.Sprint(value.ExpectedDeploymentRevision), fmt.Sprint(value.ExpectedManagedServiceRevision),
+		fmt.Sprint(value.ExpectedKnowledgeBindingRevision),
 		value.ObservedAt.UTC().Format(time.RFC3339Nano), value.HelperID, value.SignerKeyID,
 	}
 	var payload bytes.Buffer
@@ -178,6 +209,13 @@ func (value RootHelperReceipt) signingPayload() ([]byte, error) {
 		_, _ = payload.WriteString(field)
 	}
 	return payload.Bytes(), nil
+}
+
+func validExpectedRevisions(action Action, deployment, service, binding int64) bool {
+	if action == ActionRestart {
+		return deployment == 0 && service == 0 && binding == 0
+	}
+	return deployment > 0 && service > 0 && binding > 0
 }
 
 func SignReceipt(value RootHelperReceipt, privateKey ed25519.PrivateKey) (RootHelperReceipt, error) {

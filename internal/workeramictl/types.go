@@ -16,7 +16,9 @@ import (
 
 const (
 	BuildRequestSchemaV1        = "dirextalk.agent.worker-ami-build-request/v1"
+	BuildRequestSchemaV2        = "dirextalk.agent.worker-ami-build-request/v2"
 	BuildIntentSchemaV1         = "dirextalk.agent.worker-ami-build-intent/v1"
+	BuildIntentSchemaV2         = "dirextalk.agent.worker-ami-build-intent/v2"
 	DestroyRequestSchemaV2      = "dirextalk.agent.worker-ami-destroy-request/v2"
 	PublicationManifestSchemaV1 = workerrelease.PublicationSchemaV1
 
@@ -53,6 +55,63 @@ type BuildRequestFileV1 struct {
 	ApprovedHTTPSCIDRs           []string `json:"approved_https_cidrs"`
 	ApprovedHTTPSPrefixListIDs   []string `json:"approved_https_prefix_list_ids"`
 	AllowTestHTTPSInternetEgress bool     `json:"allow_test_https_internet_egress"`
+}
+
+// BuildRequestFileV2 is emitted only by the read-only prepare command. It
+// contains no caller-selected network destinations: all Foundation and
+// Canonical base-image facts are independently read back and digest-bound.
+type BuildRequestFileV2 struct {
+	SchemaVersion              string `json:"schema_version"`
+	AccountID                  string `json:"account_id"`
+	Region                     string `json:"region"`
+	AgentInstanceID            string `json:"agent_instance_id"`
+	ReleaseManifestPath        string `json:"release_manifest_path"`
+	ReleaseManifestDigest      string `json:"release_manifest_digest"`
+	RootFSArchivePath          string `json:"rootfs_archive_path"`
+	WorkerRootFSDigest         string `json:"worker_rootfs_digest"`
+	WorkerBinaryDigest         string `json:"worker_binary_digest"`
+	WorkerRootFSSize           int64  `json:"worker_rootfs_size"`
+	FoundationStackName        string `json:"foundation_stack_name"`
+	FoundationStackID          string `json:"foundation_stack_id"`
+	FoundationVPCID            string `json:"foundation_vpc_id"`
+	FoundationRouteTableID     string `json:"foundation_route_table_id"`
+	PrivateSubnetID            string `json:"private_subnet_id"`
+	ZeroIngressSecurityGroupID string `json:"zero_ingress_security_group_id"`
+	ArtifactBucket             string `json:"artifact_bucket"`
+	ArtifactKey                string `json:"artifact_key"`
+	ArtifactKMSKeyARN          string `json:"artifact_kms_key_arn"`
+	S3PrefixListID             string `json:"s3_prefix_list_id"`
+	BaseAMIID                  string `json:"base_ami_id"`
+	BaseAMIOwnerID             string `json:"base_ami_owner_id"`
+	BuilderInstanceType        string `json:"builder_instance_type"`
+	RootDeviceName             string `json:"root_device_name"`
+	TimeoutSeconds             int64  `json:"timeout_seconds"`
+	NetworkMode                string `json:"network_mode"`
+}
+
+type PrepareEnvironmentRequestV2 struct {
+	AccountID       string
+	Region          string
+	AgentInstanceID string
+}
+
+type PrepareEnvironmentV2 struct {
+	FoundationStackName        string
+	FoundationStackID          string
+	FoundationVPCID            string
+	FoundationRouteTableID     string
+	PrivateSubnetID            string
+	ZeroIngressSecurityGroupID string
+	ArtifactBucket             string
+	ArtifactKMSKeyARN          string
+	S3PrefixListID             string
+	BaseAMIID                  string
+	BaseAMIOwnerID             string
+	RootDeviceName             string
+}
+
+type PrepareEnvironmentResolver interface {
+	Resolve(context.Context, PrepareEnvironmentRequestV2) (PrepareEnvironmentV2, error)
 }
 
 type DestroyRequestFileV2 struct {
@@ -98,6 +157,7 @@ type AMIService interface {
 	Build(context.Context, workerami.BuildRequestV1) (workerami.ImageManifestV1, error)
 	Verify(context.Context, workerami.ImageManifestV1) error
 	VerifyBuilderCleanup(context.Context, workerami.BuilderCleanupEvidenceV1) error
+	VerifyBuilderReachabilityCleanup(context.Context, workerami.BuilderReachabilityEvidenceV2) error
 	Destroy(context.Context, workerami.ImageManifestV1) error
 }
 
@@ -115,11 +175,12 @@ type Dependencies struct {
 	NewService         func(aws.Config, awsadapter.Config) (AMIService, error)
 	NewAttestor        func(aws.Config) (AMIAttestor, error)
 	NewAbsenceVerifier func(aws.Config) (AMIAbsenceVerifier, error)
+	NewPrepareResolver func(aws.Config) (PrepareEnvironmentResolver, error)
 }
 
 func (dependencies Dependencies) valid() bool {
 	return dependencies.LoadConfig != nil && dependencies.NewIdentityReader != nil && dependencies.NewService != nil &&
-		dependencies.NewAttestor != nil && dependencies.NewAbsenceVerifier != nil
+		dependencies.NewAttestor != nil && dependencies.NewAbsenceVerifier != nil && dependencies.NewPrepareResolver != nil
 }
 
 type preparedBuild struct {

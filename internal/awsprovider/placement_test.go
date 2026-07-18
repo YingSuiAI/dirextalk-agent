@@ -22,6 +22,8 @@ type fakePlacementEC2 struct {
 	typePages     map[string]*ec2.DescribeInstanceTypesOutput
 	offeringPages map[string]*ec2.DescribeInstanceTypeOfferingsOutput
 	zones         *ec2.DescribeAvailabilityZonesOutput
+	gatewayCalls  int
+	natCalls      int
 }
 
 func (fake *fakePlacementEC2) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
@@ -41,10 +43,12 @@ func (fake *fakePlacementEC2) DescribeRouteTables(_ context.Context, input *ec2.
 }
 
 func (fake *fakePlacementEC2) DescribeInternetGateways(_ context.Context, input *ec2.DescribeInternetGatewaysInput, _ ...func(*ec2.Options)) (*ec2.DescribeInternetGatewaysOutput, error) {
+	fake.gatewayCalls++
 	return page(fake.gatewayPages, input.NextToken), nil
 }
 
 func (fake *fakePlacementEC2) DescribeNatGateways(_ context.Context, input *ec2.DescribeNatGatewaysInput, _ ...func(*ec2.Options)) (*ec2.DescribeNatGatewaysOutput, error) {
+	fake.natCalls++
 	return page(fake.natPages, input.NextToken), nil
 }
 
@@ -141,6 +145,77 @@ func TestPlacementResolverRequiresPublicNATEgressForPrivateWorker(t *testing.T) 
 	})
 }
 
+func TestPlacementResolverBindsExactNoNATRouteTableWithoutReadingEgressGateways(t *testing.T) {
+	for _, association := range []ec2types.RouteTableAssociation{
+		{SubnetId: aws.String(testPlacementSubnet)},
+		{Main: aws.Bool(true)},
+	} {
+		name := "explicit"
+		if aws.ToBool(association.Main) {
+			name = "main"
+		}
+		t.Run(name, func(t *testing.T) {
+			fake := placementFixture()
+			fake.routePages[""].RouteTables = []ec2types.RouteTable{{
+				RouteTableId: aws.String(testPlacementRouteTable), VpcId: aws.String(testPlacementVPC), Associations: []ec2types.RouteTableAssociation{association},
+				Routes: []ec2types.Route{{DestinationCidrBlock: aws.String("10.0.0.0/16"), GatewayId: aws.String("local"), State: ec2types.RouteStateActive}},
+			}}
+			resolver, err := newPlacementResolver(fake, testPlacementRegion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolver.Resolve(context.Background(), testPrivateEndpointPlacementRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Network.RouteTableID != testPlacementRouteTable || got.Network.ControlPlaneEndpoint != "grpcs://agent.example.com:443" ||
+				got.Network.PrivateConnectivity != cloudquote.PrivateConnectivityNoNATEndpointsV1 || got.Network.PublicIPv4 ||
+				got.Usage.PrivateEndpointHours != 730 || got.Usage.PrivateEndpointDataMiB != 1 || fake.gatewayCalls != 0 || fake.natCalls != 0 {
+				t.Fatalf("private placement=%#v usage=%#v gateway_calls=%d nat_calls=%d", got.Network, got.Usage, fake.gatewayCalls, fake.natCalls)
+			}
+		})
+	}
+}
+
+func TestPlacementResolverRejectsAnyNoNATNonlocalOrIPv6Path(t *testing.T) {
+	tests := []struct {
+		name       string
+		route      ec2types.Route
+		ipv6Subnet bool
+	}{
+		{name: "NAT", route: ec2types.Route{DestinationCidrBlock: aws.String("0.0.0.0/0"), NatGatewayId: aws.String("nat-0123456789abcdef0"), State: ec2types.RouteStateActive}},
+		{name: "IGW", route: ec2types.Route{DestinationCidrBlock: aws.String("0.0.0.0/0"), GatewayId: aws.String(testPlacementIGW), State: ec2types.RouteStateActive}},
+		{name: "transit", route: ec2types.Route{DestinationCidrBlock: aws.String("0.0.0.0/0"), TransitGatewayId: aws.String("tgw-0123456789abcdef0"), State: ec2types.RouteStateActive}},
+		{name: "peering", route: ec2types.Route{DestinationCidrBlock: aws.String("0.0.0.0/0"), VpcPeeringConnectionId: aws.String("pcx-0123456789abcdef0"), State: ec2types.RouteStateActive}},
+		{name: "ENI", route: ec2types.Route{DestinationCidrBlock: aws.String("0.0.0.0/0"), NetworkInterfaceId: aws.String("eni-0123456789abcdef0"), State: ec2types.RouteStateActive}},
+		{name: "IPv6 route", route: ec2types.Route{DestinationIpv6CidrBlock: aws.String("::/0"), EgressOnlyInternetGatewayId: aws.String("eigw-0123456789abcdef0"), State: ec2types.RouteStateActive}},
+		{name: "IPv6 subnet", ipv6Subnet: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := placementFixture()
+			routes := []ec2types.Route{{DestinationCidrBlock: aws.String("10.0.0.0/16"), GatewayId: aws.String("local"), State: ec2types.RouteStateActive}}
+			if test.route.State != "" {
+				routes = append(routes, test.route)
+			}
+			fake.routePages[""].RouteTables = []ec2types.RouteTable{{
+				RouteTableId: aws.String(testPlacementRouteTable), VpcId: aws.String(testPlacementVPC),
+				Associations: []ec2types.RouteTableAssociation{{SubnetId: aws.String(testPlacementSubnet)}}, Routes: routes,
+			}}
+			if test.ipv6Subnet {
+				fake.subnetPages[""].Subnets[0].Ipv6CidrBlockAssociationSet = []ec2types.SubnetIpv6CidrBlockAssociation{{Ipv6CidrBlock: aws.String("2001:db8::/64")}}
+			}
+			resolver, err := newPlacementResolver(fake, testPlacementRegion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resolver.Resolve(context.Background(), testPrivateEndpointPlacementRequest()); !errors.Is(err, ErrPlacementNetworkUnavailable) {
+				t.Fatalf("error = %v, want ErrPlacementNetworkUnavailable", err)
+			}
+		})
+	}
+}
+
 func TestPlacementResolverRejectsInsufficientCandidateChain(t *testing.T) {
 	fake := placementFixture()
 	fake.typePages = map[string]*ec2.DescribeInstanceTypesOutput{"": {InstanceTypes: []ec2types.InstanceTypeInfo{
@@ -210,11 +285,12 @@ func TestPlacementResolverDeterministicallyResolvesThreeCandidatesAcrossUnordere
 }
 
 const (
-	testPlacementRegion = "us-east-1"
-	testPlacementZone   = "us-east-1b"
-	testPlacementVPC    = "vpc-0123456789abcdef0"
-	testPlacementSubnet = "subnet-0123456789abcdef0"
-	testPlacementIGW    = "igw-0123456789abcdef0"
+	testPlacementRegion     = "us-east-1"
+	testPlacementZone       = "us-east-1b"
+	testPlacementVPC        = "vpc-0123456789abcdef0"
+	testPlacementSubnet     = "subnet-0123456789abcdef0"
+	testPlacementRouteTable = "rtb-0123456789abcdef0"
+	testPlacementIGW        = "igw-0123456789abcdef0"
 )
 
 func testPlacementRequest() PlacementRequestV1 {
@@ -222,6 +298,15 @@ func testPlacementRequest() PlacementRequestV1 {
 		Requirements: recipe.ResourceRequirementsV1{MinVCPU: 2, MinMemoryMiB: 4096, MinDiskGiB: 40, Architecture: recipe.ArchitectureAMD64},
 		PublicIPv4:   true, RuntimeHoursPerMonth: 730,
 	}
+}
+
+func testPrivateEndpointPlacementRequest() PlacementRequestV1 {
+	request := testPlacementRequest()
+	request.PublicIPv4 = false
+	request.PrivateConnectivity = cloudquote.PrivateConnectivityNoNATEndpointsV1
+	request.ControlPlaneEndpoint = "grpcs://agent.example.com:443"
+	request.PrivateEndpointDataMiB = 1
+	return request
 }
 
 func placementFixture() *fakePlacementEC2 {

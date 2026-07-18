@@ -35,6 +35,14 @@ type fakeEC2 struct {
 	describeSnapshotsFn             func(*ec2.DescribeSnapshotsInput) (*ec2.DescribeSnapshotsOutput, error)
 	describeSubnetsFn               func(*ec2.DescribeSubnetsInput) (*ec2.DescribeSubnetsOutput, error)
 	describeSecurityGroupsFn        func(*ec2.DescribeSecurityGroupsInput) (*ec2.DescribeSecurityGroupsOutput, error)
+	describeSecurityGroupRulesFn    func(*ec2.DescribeSecurityGroupRulesInput) (*ec2.DescribeSecurityGroupRulesOutput, error)
+	describePrefixListsFn           func(*ec2.DescribePrefixListsInput) (*ec2.DescribePrefixListsOutput, error)
+	describeRouteTablesFn           func(*ec2.DescribeRouteTablesInput) (*ec2.DescribeRouteTablesOutput, error)
+	describeVpcEndpointsFn          func(*ec2.DescribeVpcEndpointsInput) (*ec2.DescribeVpcEndpointsOutput, error)
+	createVpcEndpointFn             func(*ec2.CreateVpcEndpointInput) (*ec2.CreateVpcEndpointOutput, error)
+	deleteVpcEndpointsFn            func(*ec2.DeleteVpcEndpointsInput) (*ec2.DeleteVpcEndpointsOutput, error)
+	authorizeSecurityGroupEgressFn  func(*ec2.AuthorizeSecurityGroupEgressInput) (*ec2.AuthorizeSecurityGroupEgressOutput, error)
+	revokeSecurityGroupEgressFn     func(*ec2.RevokeSecurityGroupEgressInput) (*ec2.RevokeSecurityGroupEgressOutput, error)
 	describeInstanceTypeOfferingsFn func(*ec2.DescribeInstanceTypeOfferingsInput) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
 	runInstancesFn                  func(*ec2.RunInstancesInput) (*ec2.RunInstancesOutput, error)
 	describeInstancesFn             func(*ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error)
@@ -58,6 +66,54 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 }
 func (f *fakeEC2) DescribeSecurityGroups(_ context.Context, in *ec2.DescribeSecurityGroupsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
 	return f.describeSecurityGroupsFn(in)
+}
+func (f *fakeEC2) DescribeSecurityGroupRules(_ context.Context, in *ec2.DescribeSecurityGroupRulesInput, _ ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+	if f.describeSecurityGroupRulesFn == nil {
+		return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+	}
+	return f.describeSecurityGroupRulesFn(in)
+}
+func (f *fakeEC2) DescribePrefixLists(_ context.Context, in *ec2.DescribePrefixListsInput, _ ...func(*ec2.Options)) (*ec2.DescribePrefixListsOutput, error) {
+	if f.describePrefixListsFn == nil {
+		return &ec2.DescribePrefixListsOutput{}, nil
+	}
+	return f.describePrefixListsFn(in)
+}
+func (f *fakeEC2) DescribeRouteTables(_ context.Context, in *ec2.DescribeRouteTablesInput, _ ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error) {
+	if f.describeRouteTablesFn == nil {
+		return &ec2.DescribeRouteTablesOutput{}, nil
+	}
+	return f.describeRouteTablesFn(in)
+}
+func (f *fakeEC2) DescribeVpcEndpoints(_ context.Context, in *ec2.DescribeVpcEndpointsInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcEndpointsOutput, error) {
+	if f.describeVpcEndpointsFn == nil {
+		return &ec2.DescribeVpcEndpointsOutput{}, nil
+	}
+	return f.describeVpcEndpointsFn(in)
+}
+func (f *fakeEC2) CreateVpcEndpoint(_ context.Context, in *ec2.CreateVpcEndpointInput, _ ...func(*ec2.Options)) (*ec2.CreateVpcEndpointOutput, error) {
+	if f.createVpcEndpointFn == nil {
+		return nil, errors.New("unexpected CreateVpcEndpoint")
+	}
+	return f.createVpcEndpointFn(in)
+}
+func (f *fakeEC2) DeleteVpcEndpoints(_ context.Context, in *ec2.DeleteVpcEndpointsInput, _ ...func(*ec2.Options)) (*ec2.DeleteVpcEndpointsOutput, error) {
+	if f.deleteVpcEndpointsFn == nil {
+		return nil, errors.New("unexpected DeleteVpcEndpoints")
+	}
+	return f.deleteVpcEndpointsFn(in)
+}
+func (f *fakeEC2) AuthorizeSecurityGroupEgress(_ context.Context, in *ec2.AuthorizeSecurityGroupEgressInput, _ ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupEgressOutput, error) {
+	if f.authorizeSecurityGroupEgressFn == nil {
+		return nil, errors.New("unexpected AuthorizeSecurityGroupEgress")
+	}
+	return f.authorizeSecurityGroupEgressFn(in)
+}
+func (f *fakeEC2) RevokeSecurityGroupEgress(_ context.Context, in *ec2.RevokeSecurityGroupEgressInput, _ ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupEgressOutput, error) {
+	if f.revokeSecurityGroupEgressFn == nil {
+		return nil, errors.New("unexpected RevokeSecurityGroupEgress")
+	}
+	return f.revokeSecurityGroupEgressFn(in)
 }
 func (f *fakeEC2) DescribeInstanceTypeOfferings(_ context.Context, in *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
 	return f.describeInstanceTypeOfferingsFn(in)

@@ -58,8 +58,49 @@ func TestServiceRejectsMismatchedRootProofBeforeRPC(t *testing.T) {
 	}
 }
 
+func TestServiceDurablyReportsClosedRootHelperFailure(t *testing.T) {
+	control := &controlFake{delivery: helperDelivery(agentv1.RootHelperKeyDeliveryState_ROOT_HELPER_KEY_DELIVERY_STATE_READY, 7)}
+	root := &rootFake{restartErr: ErrUnavailable}
+	service := &Service{Control: control, Root: root, PollInterval: time.Second, Lease: time.Minute, newKey: func() string { return "acquire-key" }}
+	if result, err := service.RunOnce(context.Background()); err != nil || result != ResultProgressed {
+		t.Fatalf("result=%s err=%v", result, err)
+	}
+	if control.failureCode != "root_helper_failed" || control.completed != 1 {
+		t.Fatalf("failure=%q completed=%d", control.failureCode, control.completed)
+	}
+}
+
+func TestServiceKeepsGenerationSwapFailureLeasedForSignedRecovery(t *testing.T) {
+	for _, action := range []agentv1.WorkerServiceOperationAction{
+		agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTORE,
+		agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_UPGRADE,
+		agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_ROLLBACK,
+	} {
+		t.Run(action.String(), func(t *testing.T) {
+			control := &controlFake{
+				delivery: helperDelivery(agentv1.RootHelperKeyDeliveryState_ROOT_HELPER_KEY_DELIVERY_STATE_READY, 8),
+				action:   action,
+			}
+			root := &rootFake{restartErr: ErrUnavailable}
+			service := &Service{
+				Control: control, Root: root, PollInterval: time.Second, Lease: time.Minute,
+				newKey: func() string { return "recovery-acquire-key" },
+			}
+			if result, err := service.RunOnce(context.Background()); !errors.Is(err, ErrUnavailable) ||
+				result != ResultIdle {
+				t.Fatalf("recovery result=%s err=%v", result, err)
+			}
+			if root.restarts != 1 || control.completed != 0 || control.failureCode != "" {
+				t.Fatalf("recovery restart=%d complete=%d failure=%q",
+					root.restarts, control.completed, control.failureCode)
+			}
+		})
+	}
+}
+
 type controlFake struct {
 	delivery     *agentv1.RootHelperKeyDelivery
+	action       agentv1.WorkerServiceOperationAction
 	submitted    int
 	reconciled   int
 	confirmed    int
@@ -67,6 +108,7 @@ type controlFake struct {
 	got          int
 	completeErr  error
 	getSucceeded bool
+	failureCode  string
 }
 
 func (fake *controlFake) CurrentRootHelper(context.Context) (*agentv1.RootHelperKeyDelivery, error) {
@@ -92,14 +134,21 @@ func (fake *controlFake) ConfirmRootHelperCanary(context.Context, *agentv1.RootH
 func (fake *controlFake) AcquireNextOperation(context.Context, string, time.Duration) (*agentv1.WorkerServiceOperationServiceAcquireNextResponse, error) {
 	return &agentv1.WorkerServiceOperationServiceAcquireNextResponse{
 		Assignment: &agentv1.WorkerServiceOperationAssignment{
-			OperationId: "operation", Revision: 3, LeaseEpoch: 1,
+			OperationId: "operation", Revision: 3, LeaseEpoch: 1, Action: fake.action,
 		}, InstallerDeliveryCbor: []byte{1}, SignedCapabilityCbor: []byte{2},
 	}, nil
 }
-func (fake *controlFake) CompleteOperation(context.Context, *agentv1.WorkerServiceOperationAssignment, workeroperation.RootHelperReceipt, string) (*agentv1.WorkerServiceOperation, error) {
+func (fake *controlFake) CompleteOperation(_ context.Context, _ *agentv1.WorkerServiceOperationAssignment, _ workeroperation.RootHelperReceipt, failureCode, _ string) (*agentv1.WorkerServiceOperation, error) {
 	fake.completed++
+	fake.failureCode = failureCode
 	if fake.completeErr != nil {
 		return nil, fake.completeErr
+	}
+	if failureCode != "" {
+		return &agentv1.WorkerServiceOperation{
+			State:       agentv1.WorkerServiceOperationState_WORKER_SERVICE_OPERATION_STATE_FAILED,
+			FailureCode: failureCode,
+		}, nil
 	}
 	return &agentv1.WorkerServiceOperation{State: agentv1.WorkerServiceOperationState_WORKER_SERVICE_OPERATION_STATE_SUCCEEDED}, nil
 }
@@ -114,6 +163,7 @@ func (fake *controlFake) GetOperation(context.Context, string) (*agentv1.WorkerS
 type rootFake struct {
 	wrongProof bool
 	restarts   int
+	restartErr error
 }
 
 func (fake *rootFake) Bootstrap(context.Context, []byte, []byte) (roothelper.PossessionProof, error) {
@@ -135,7 +185,7 @@ func (fake *rootFake) Canary(context.Context, []byte, []byte) (roothelper.Canary
 }
 func (fake *rootFake) Restart(context.Context, []byte, []byte, []byte) (workeroperation.RootHelperReceipt, error) {
 	fake.restarts++
-	return workeroperation.RootHelperReceipt{}, nil
+	return workeroperation.RootHelperReceipt{}, fake.restartErr
 }
 
 func helperDelivery(state agentv1.RootHelperKeyDeliveryState, revision int64) *agentv1.RootHelperKeyDelivery {

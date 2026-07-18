@@ -63,6 +63,8 @@ func BuildPlan(agentInstanceID, planID string, priced cloudquote.QuoteV1, candid
 			PublicExposure: candidate.Scope.Network.PublicExposure, IngressPorts: candidate.Scope.Network.IngressPorts,
 			Hostname: candidate.Scope.Network.Hostname, TLSRequired: candidate.Scope.Network.TLSRequired,
 			AuthenticationRequired: candidate.Scope.Network.AuthenticationRequired,
+			RouteTableID:           candidate.Scope.Network.RouteTableID, ControlPlaneEndpoint: candidate.Scope.Network.ControlPlaneEndpoint,
+			PrivateConnectivity: cloudapproval.PrivateConnectivityMode(candidate.Scope.Network.PrivateConnectivity),
 		},
 		RetentionScope: cloudapproval.RetentionScopeV1{
 			Class: cloudapproval.RetentionClass(candidate.Scope.Retention.Class), AutoDestroy: candidate.Scope.Retention.AutoDestroy,

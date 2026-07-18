@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeprofile"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/publicweb"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
@@ -79,7 +80,9 @@ func NewEinoCloudGoalPlanningModel(
 }
 
 func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Context, input CloudGoalResearchInput) ([]recipe.SourceV1, error) {
-	prompt, err := encodeCloudGoalModelPrompt("research_official_sources", input.Request, struct{}{})
+	prompt, err := encodeCloudGoalModelPrompt("research_official_sources", input.Request, struct {
+		OfficialProfiles []knowledgeprofile.ResearchHint `json:"official_profiles,omitempty"`
+	}{OfficialProfiles: knowledgeprofile.ResearchHints()})
 	if err != nil {
 		return nil, ErrCloudGoalModelUnavailable
 	}
@@ -101,9 +104,15 @@ func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Con
 }
 
 func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Context, input CloudGoalRecipeInput) (recipe.RecipeV1, error) {
+	profileRecipe, profileMatched := knowledgeProfileRecipe(input.Request.Binding.RecipeID, input.Evidence)
+	var officialProfile *recipe.RecipeV1
+	if profileMatched {
+		officialProfile = &profileRecipe
+	}
 	prompt, err := encodeCloudGoalModelPrompt("draft_experimental_recipe", input.Request, struct {
-		Evidence []OfficialSourceEvidence `json:"official_source_evidence"`
-	}{Evidence: input.Evidence.Evidence})
+		Evidence        []OfficialSourceEvidence `json:"official_source_evidence"`
+		OfficialProfile *recipe.RecipeV1         `json:"official_profile_recipe,omitempty"`
+	}{Evidence: input.Evidence.Evidence, OfficialProfile: officialProfile})
 	if err != nil {
 		return recipe.RecipeV1{}, ErrCloudGoalModelUnavailable
 	}
@@ -126,7 +135,20 @@ func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Con
 	if err != nil {
 		return recipe.RecipeV1{}, ErrCloudGoalModelUnavailable
 	}
+	if profileMatched {
+		return profileRecipe, nil
+	}
 	return decoded.Recipe, nil
+}
+
+func knowledgeProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet) (recipe.RecipeV1, bool) {
+	values := make([]knowledgeprofile.Evidence, 0, len(evidence.Evidence))
+	for _, item := range evidence.Evidence {
+		values = append(values, knowledgeprofile.Evidence{
+			URL: item.URL, RetrievedAt: item.RetrievedAt, ContentDigest: item.ContentDigest,
+		})
+	}
+	return knowledgeprofile.BindExperimentalRecipe(recipeID, values)
 }
 
 func (model *EinoCloudGoalPlanningModel) ProposeResourceCandidates(ctx context.Context, input CloudGoalCandidateInput) ([]ResourceCandidateV1, error) {

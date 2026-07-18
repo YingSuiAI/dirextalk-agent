@@ -109,11 +109,15 @@ func (control *GRPCControl) AcquireNextOperation(ctx context.Context, idempotenc
 }
 
 func (control *GRPCControl) CompleteOperation(ctx context.Context, assignment *agentv1.WorkerServiceOperationAssignment,
-	receipt workeroperation.RootHelperReceipt, idempotencyKey string) (*agentv1.WorkerServiceOperation, error) {
+	receipt workeroperation.RootHelperReceipt, failureCode, idempotencyKey string) (*agentv1.WorkerServiceOperation, error) {
+	var converted *agentv1.WorkerServiceOperationRootHelperReceipt
+	if failureCode == "" {
+		converted = receiptToProto(receipt)
+	}
 	response, err := control.operations.Complete(control.authorize(ctx), &agentv1.WorkerServiceOperationServiceCompleteRequest{
 		OperationId: assignment.GetOperationId(), DeploymentId: control.deploymentID, WorkerId: control.workerID,
 		LeaseEpoch: assignment.GetLeaseEpoch(), IdempotencyKey: idempotencyKey, ExpectedRevision: assignment.GetRevision(),
-		Receipt: receiptToProto(receipt),
+		Receipt: converted, FailureCode: failureCode,
 	})
 	if err != nil {
 		return nil, publicError(err)
@@ -136,12 +140,32 @@ func (control *GRPCControl) authorize(ctx context.Context) context.Context {
 }
 
 func receiptToProto(value workeroperation.RootHelperReceipt) *agentv1.WorkerServiceOperationRootHelperReceipt {
+	action := agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_UNSPECIFIED
+	switch value.Action {
+	case workeroperation.ActionRestart:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART
+	case workeroperation.ActionStop:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_STOP
+	case workeroperation.ActionBackup:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_BACKUP
+	case workeroperation.ActionRestore:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTORE
+	case workeroperation.ActionUpgrade:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_UPGRADE
+	case workeroperation.ActionRollback:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_ROLLBACK
+	case workeroperation.ActionDestroy:
+		action = agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_DESTROY
+	}
 	return &agentv1.WorkerServiceOperationRootHelperReceipt{
 		SchemaVersion: value.SchemaVersion, OperationId: value.OperationID, DeploymentId: value.DeploymentID,
-		OwnerId: value.OwnerID, Action: agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART,
+		OwnerId: value.OwnerID, Action: action,
 		LifecycleRestartRef: value.LifecycleRestartRef, ExecutionBundleDigest: value.ExecutionBundleDigest,
 		LeaseEpoch: value.LeaseEpoch, InstallManifestDigest: value.InstallManifestDigest,
-		RestartObservationDigest: value.RestartObservationDigest, ObservedAt: timestamppb.New(value.ObservedAt),
+		ExpectedDeploymentRevision:       value.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   value.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: value.ExpectedKnowledgeBindingRevision,
+		RestartObservationDigest:         value.RestartObservationDigest, ObservedAt: timestamppb.New(value.ObservedAt),
 		HelperId: value.HelperID, SignerKeyId: value.SignerKeyID, Signature: append([]byte(nil), value.Signature...),
 	}
 }

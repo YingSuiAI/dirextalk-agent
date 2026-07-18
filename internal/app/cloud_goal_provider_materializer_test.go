@@ -163,6 +163,9 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 		t.Fatalf("operation keys quote=%v plan=%v task=%v", fixture.facts.quoteKeys, fixture.facts.planKeys, fixture.facts.planTaskIDs)
 	}
 	if fixture.placements.request.Placement.PublicIPv4 || fixture.placements.request.Placement.RuntimeHoursPerMonth != cloudGoalRuntimeHours ||
+		fixture.placements.request.Placement.PrivateConnectivity != cloudquote.PrivateConnectivityNoNATEndpointsV1 ||
+		fixture.placements.request.Placement.ControlPlaneEndpoint != "grpcs://agent.example.com:443" ||
+		fixture.placements.request.Placement.PrivateEndpointDataMiB != cloudGoalEndpointDataMiB ||
 		fixture.placements.request.Placement.Requirements.MinVCPU != 2 || fixture.placements.request.Placement.Requirements.MinMemoryMiB != 4096 ||
 		fixture.placements.request.Placement.Requirements.MinDiskGiB != 40 {
 		t.Fatalf("placement request=%#v", fixture.placements.request)
@@ -176,6 +179,13 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 	readHash, _ := readPlan.Hash()
 	if returnedHash != readHash {
 		t.Fatal("returned Plan does not match independently persisted hash")
+	}
+	for _, candidate := range materialized.Quote.Candidates {
+		if candidate.Scope.SchemaVersion != cloudquote.ScopeSchemaV2 || candidate.Scope.Network.RouteTableID != "rtb-0123456789abcdef0" ||
+			candidate.Scope.Network.ControlPlaneEndpoint != "grpcs://agent.example.com:443" || candidate.Scope.ServiceOperations == nil ||
+			!sameCloudGoalEndpointOperations(*candidate.Scope.ServiceOperations) {
+			t.Fatalf("private endpoint scope=%#v", candidate.Scope)
+		}
 	}
 }
 
@@ -349,7 +359,7 @@ func newCloudGoalProviderFixture(t *testing.T) *cloudGoalProviderFixture {
 	quotes := &cloudGoalQuoteFake{now: now}
 	facts := newCloudGoalFactsFake()
 	secrets := &cloudGoalSecretLocatorFake{}
-	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, func() time.Time { return now })
+	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, "grpcs://agent.example.com:443", func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,8 +377,12 @@ func cloudGoalProviderCandidates() []planning.ResourceCandidateV1 {
 func cloudGoalProviderPlacement() awsprovider.PlacementV1 {
 	result := awsprovider.PlacementV1{
 		Region: "us-east-1", AvailabilityZone: "us-east-1a",
-		Network: cloudquote.NetworkScopeV1{VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated, PublicIPv4: false, EntryPoint: cloudquote.EntryPointNone},
-		Usage:   cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours},
+		Network: cloudquote.NetworkScopeV1{
+			VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated,
+			PublicIPv4: false, EntryPoint: cloudquote.EntryPointNone, RouteTableID: "rtb-0123456789abcdef0",
+			ControlPlaneEndpoint: "grpcs://agent.example.com:443", PrivateConnectivity: cloudquote.PrivateConnectivityNoNATEndpointsV1,
+		},
+		Usage: cloudGoalUsage(),
 	}
 	profiles := cloudGoalQuoteProfiles()
 	for index, candidate := range cloudGoalProviderCandidates() {
@@ -399,7 +413,7 @@ func cloudGoalPricingSnapshot(now time.Time, scopes []cloudquote.ScopeV1) cloudq
 		snapshot.Offerings = append(snapshot.Offerings, cloudquote.OfferingV1{CandidateID: profile, Region: scope.Resource.Region, InstanceType: scope.Resource.InstanceType, Architecture: scope.Resource.Architecture, PurchaseOption: scope.Resource.PurchaseOption, AvailabilityZones: append([]string(nil), scope.Resource.AvailabilityZones...)})
 		snapshot.Quotas = append(snapshot.Quotas, cloudquote.CandidateQuotaV1{CandidateID: profile, Quota: cloudquote.QuotaEvidenceV1{ServiceCode: "ec2", QuotaCode: "L-1216C47A", LimitUnits: 64, UsedUnits: 1, RequiredUnits: uint64(2 << index)}})
 		var items []cloudquote.CostItemV1
-		for _, category := range []cloudquote.CostCategory{cloudquote.CostComputeOnDemand, cloudquote.CostEBS, cloudquote.CostPublicIPv4, cloudquote.CostLogs, cloudquote.CostSnapshot, cloudquote.CostEntry, cloudquote.CostTraffic} {
+		for _, category := range []cloudquote.CostCategory{cloudquote.CostComputeOnDemand, cloudquote.CostEBS, cloudquote.CostPublicIPv4, cloudquote.CostLogs, cloudquote.CostSnapshot, cloudquote.CostEntry, cloudquote.CostTraffic, cloudquote.CostPrivateEndpoint} {
 			items = append(items, cloudquote.CostItemV1{Category: category, Description: string(category), SourceID: string(profile) + "-" + string(category), HourlyEstimateMicros: uint64(index+1) * 1000, MonthlyEstimateMicros: uint64(index+1) * 730000, MaximumLaunchAmountMicros: uint64(index+1) * 1000})
 		}
 		snapshot.Prices = append(snapshot.Prices, cloudquote.CandidatePriceV1{CandidateID: profile, CostItems: items})

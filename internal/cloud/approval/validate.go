@@ -21,6 +21,7 @@ var (
 	vpcPattern           = regexp.MustCompile(`^vpc-[0-9a-f]{8,17}$`)
 	subnetPattern        = regexp.MustCompile(`^subnet-[0-9a-f]{8,17}$`)
 	securityGroupPattern = regexp.MustCompile(`^sg-[0-9a-f]{8,17}$`)
+	routeTablePattern    = regexp.MustCompile(`^rtb-[0-9a-f]{8,17}$`)
 	secretRefPattern     = regexp.MustCompile(`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
 	volumeTypePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
 	credentialPattern    = regexp.MustCompile(`(?i)(?:AKIA|ASIA)[A-Z0-9]{16}|aws[_ -]?(?:secret[_ -]?access[_ -]?key|session[_ -]?token)|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|(?:^|[^A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{20,}|sk[-_][A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})`)
@@ -214,6 +215,19 @@ func validateNetworkScope(value NetworkScopeV1) error {
 			return fmt.Errorf("network_scope.ingress_ports contains duplicates")
 		}
 		seenPorts[port] = struct{}{}
+	}
+	if value.PrivateConnectivity == "" {
+		if value.RouteTableID != "" || value.ControlPlaneEndpoint != "" {
+			return fmt.Errorf("network_scope private connectivity fields require an explicit mode")
+		}
+	} else if value.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 {
+		if !routeTablePattern.MatchString(value.RouteTableID) || value.PublicIPv4 || mode != SecurityGroupCreateDedicated || value.SecurityGroupID != "" ||
+			value.EntryPoint != EntryPointNone || value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired ||
+			cloudquote.ValidatePrivateControlPlaneEndpoint(value.ControlPlaneEndpoint) != nil {
+			return fmt.Errorf("network_scope no-NAT private connectivity scope is invalid")
+		}
+	} else {
+		return fmt.Errorf("network_scope.private_connectivity is invalid")
 	}
 	if value.EntryPoint == EntryPointNone {
 		if value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired {
@@ -438,7 +452,7 @@ func validateVolumeDisposition(values []VolumeScopeV1, retention RetentionScopeV
 func validateServiceOperations(value ServiceOperationScopeV1, resource ResourceScopeV1, network NetworkScopeV1, retention RetentionScopeV1) error {
 	return cloudquote.ValidateServiceOperations(value,
 		cloudquote.ResourceScopeV1{VolumeScopes: append([]cloudquote.VolumeScopeV1(nil), resource.VolumeScopes...)},
-		cloudquote.NetworkScopeV1{SecurityGroupMode: cloudquote.SecurityGroupMode(network.SecurityGroupMode), SecurityGroupID: network.SecurityGroupID},
+		cloudquote.NetworkScopeV1{SecurityGroupMode: cloudquote.SecurityGroupMode(network.SecurityGroupMode), SecurityGroupID: network.SecurityGroupID, PrivateConnectivity: cloudquote.PrivateConnectivityMode(network.PrivateConnectivity)},
 		cloudquote.RetentionScopeV1{Class: cloudquote.RetentionClass(retention.Class), AutoDestroy: retention.AutoDestroy, GracePeriodSeconds: retention.GracePeriodSeconds, MaxLifetimeSeconds: retention.MaxLifetimeSeconds},
 	)
 }

@@ -14,7 +14,7 @@ import (
 )
 
 func (provider *PricingProvider) readCosts(ctx context.Context, ec2Client PricingEC2ReadAPI, catalog *priceCatalog, query cloudquote.PricingQueryV1, candidate cloudquote.PricingCandidateQueryV1, offeredZones []string, capturedAt time.Time) ([]cloudquote.CostItemV1, error) {
-	items := make([]cloudquote.CostItemV1, 0, 12)
+	items := make([]cloudquote.CostItemV1, 0, 14)
 	compute, err := readComputeCost(ctx, ec2Client, catalog, query.Region, candidate, offeredZones, query.Usage, capturedAt)
 	if err != nil {
 		return nil, err
@@ -32,6 +32,12 @@ func (provider *PricingProvider) readCosts(ctx context.Context, ec2Client Pricin
 		return nil, err
 	}
 	items = append(items, ipv4)
+
+	privateEndpoints, err := readPrivateEndpointCosts(ctx, catalog, query.Region, candidate, query.Usage)
+	if err != nil {
+		return nil, err
+	}
+	items = append(items, privateEndpoints...)
 
 	logs, err := readLogCosts(ctx, catalog, query.Region, candidate, query.Usage)
 	if err != nil {
@@ -249,6 +255,90 @@ func readIPv4Cost(ctx context.Context, catalog *priceCatalog, region string, can
 		return cloudquote.CostItemV1{}, err
 	}
 	return cloudquote.CostItemV1{Category: cloudquote.CostPublicIPv4, Description: "public IPv4 address hours", SourceID: rate.sourceID, HourlyEstimateMicros: hourly, MonthlyEstimateMicros: monthly, MaximumLaunchAmountMicros: hourly}, nil
+}
+
+func readPrivateEndpointCosts(ctx context.Context, catalog *priceCatalog, region string, candidate cloudquote.PricingCandidateQueryV1, usage cloudquote.UsageV1) ([]cloudquote.CostItemV1, error) {
+	if len(candidate.PrivateEndpoints) == 0 {
+		return nil, nil
+	}
+	if len(candidate.PrivateEndpoints) > 4 {
+		return nil, errors.New("private endpoint pricing scope exceeds the supported limit")
+	}
+
+	var pricedCount, totalHours, totalData uint64
+	label := ""
+	for _, endpoint := range candidate.PrivateEndpoints {
+		endpointLabel := ""
+		switch {
+		case endpoint.EndpointType == cloudquote.PrivateEndpointTypeGateway && endpoint.Service == cloudquote.PrivateEndpointServiceS3:
+			if endpoint.MonthlyHours != 0 || endpoint.DataMiBPerMonth != 0 {
+				return nil, errors.New("S3 Gateway endpoint pricing usage must be zero")
+			}
+			continue
+		case endpoint.EndpointType == cloudquote.PrivateEndpointTypeInterface && endpoint.Service == cloudquote.PrivateEndpointServiceSecretsManager:
+			if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth == 0 || endpoint.DataMiBPerMonth > 1<<50 {
+				return nil, errors.New("Secrets Manager Interface endpoint pricing usage is invalid")
+			}
+			endpointLabel = "Secrets Manager Interface endpoint"
+		case endpoint.EndpointType == "" && endpoint.Service == cloudquote.PrivateEndpointServiceS3:
+			if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth > 1<<50 {
+				return nil, errors.New("legacy S3 Interface endpoint pricing usage is invalid")
+			}
+			endpointLabel = "S3 Interface endpoint"
+		default:
+			return nil, errors.New("private endpoint pricing scope is unsupported")
+		}
+
+		var err error
+		pricedCount++
+		totalHours, err = checkedSum(totalHours, uint64(endpoint.MonthlyHours))
+		if err != nil {
+			return nil, err
+		}
+		totalData, err = checkedSum(totalData, endpoint.DataMiBPerMonth)
+		if err != nil {
+			return nil, err
+		}
+		if label == "" {
+			label = endpointLabel
+		} else if label != endpointLabel {
+			label = "Interface VPC endpoint"
+		}
+	}
+	if pricedCount == 0 {
+		return nil, nil
+	}
+
+	filters := map[string]string{
+		"regionCode": region, "productFamily": "VpcEndpoint", "group": "VPCE:VpcEndpoint", "operation": "VpcEndpoint",
+	}
+	hourlyRate, err := catalog.rate(ctx, rateSpec{serviceCode: "AmazonVPC", unit: "Hrs", filters: filters})
+	if err != nil {
+		return nil, fmt.Errorf("Interface VPC endpoint hours: %w", err)
+	}
+	dataRate, err := catalog.rate(ctx, rateSpec{serviceCode: "AmazonVPC", unit: "GB", filters: filters})
+	if err != nil {
+		return nil, fmt.Errorf("Interface VPC endpoint data: %w", err)
+	}
+	hourly, err := scaleMicros(hourlyRate.unitMicros, pricedCount, 1)
+	if err != nil {
+		return nil, err
+	}
+	monthly, err := scaleMicros(hourlyRate.unitMicros, totalHours, 1)
+	if err != nil {
+		return nil, err
+	}
+	data, err := monthlyCost(cloudquote.CostPrivateEndpoint, label+" data processed", dataRate, totalData, 1024, runtimeDenominator(usage), false)
+	if err != nil {
+		return nil, err
+	}
+	return []cloudquote.CostItemV1{
+		{
+			Category: cloudquote.CostPrivateEndpoint, Description: label + " hours", SourceID: hourlyRate.sourceID,
+			HourlyEstimateMicros: hourly, MonthlyEstimateMicros: monthly, MaximumLaunchAmountMicros: hourly,
+		},
+		data,
+	}, nil
 }
 
 func readLogCosts(ctx context.Context, catalog *priceCatalog, region string, candidate cloudquote.PricingCandidateQueryV1, usage cloudquote.UsageV1) ([]cloudquote.CostItemV1, error) {

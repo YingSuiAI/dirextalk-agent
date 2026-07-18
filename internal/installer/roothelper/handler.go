@@ -243,7 +243,13 @@ func (handler *Handler) Restart(ctx context.Context, signed installer.SignedRoot
 		if cached.digest != digest {
 			return workeroperation.RootHelperReceipt{}, ErrUnauthorized
 		}
-		return cloneReceipt(cached.value), nil
+		if cached.value.LeaseEpoch == signed.Capability.WorkerLeaseEpoch {
+			return cloneReceipt(cached.value), nil
+		}
+		if !isGenerationRecoveryAction(signed.Capability.Action) {
+			return workeroperation.RootHelperReceipt{}, ErrUnauthorized
+		}
+		delete(handler.restarts, journalID)
 	}
 	capability := signed.Capability
 	privateKey, err := handler.keys.ReadRootHelperSigningKey(ctx)
@@ -261,14 +267,38 @@ func (handler *Handler) Restart(ctx context.Context, signed installer.SignedRoot
 	if err != nil || installedDigest != capability.ExpectedInstalledManifestDigest {
 		return workeroperation.RootHelperReceipt{}, ErrUnavailable
 	}
-	if replayed, found, err := handler.journal.Begin(journalID, digest); err != nil {
+	begin := handler.journal.Begin
+	if isGenerationRecoveryAction(capability.Action) {
+		begin = handler.journal.BeginRecovery
+	}
+	if replayed, found, err := begin(journalID, digest); err != nil {
 		return workeroperation.RootHelperReceipt{}, err
 	} else if found {
-		if validateRestartReceipt(replayed, capability, ed25519.PublicKey(privateKey[ed25519.PublicKeySize:])) != nil {
+		publicKey := ed25519.PublicKey(privateKey[ed25519.PublicKeySize:])
+		if validateRestartReceipt(replayed, capability, publicKey) == nil {
+			handler.restarts[journalID] = cachedRestart{digest: digest, value: cloneReceipt(replayed)}
+			return replayed, nil
+		}
+		previousCapability := capability
+		previousCapability.WorkerLeaseEpoch = replayed.LeaseEpoch
+		if !isGenerationRecoveryAction(capability.Action) ||
+			validateRestartReceipt(replayed, previousCapability, publicKey) != nil {
 			return workeroperation.RootHelperReceipt{}, ErrUnauthorized
 		}
-		handler.restarts[journalID] = cachedRestart{digest: digest, value: cloneReceipt(replayed)}
-		return replayed, nil
+		observationDigest, observationErr := handler.observer.RestartObservationDigest(ctx, handler.delivery, command)
+		if observationErr != nil || observationDigest != replayed.RestartObservationDigest {
+			return workeroperation.RootHelperReceipt{}, ErrUnavailable
+		}
+		refreshed, signErr := signRestartReceipt(capability, installedDigest, observationDigest,
+			privateKey, handler.now().UTC())
+		if signErr != nil || validateRestartReceipt(refreshed, capability, publicKey) != nil {
+			return workeroperation.RootHelperReceipt{}, ErrUnavailable
+		}
+		if err := handler.journal.Complete(journalID, digest, refreshed); err != nil {
+			return workeroperation.RootHelperReceipt{}, err
+		}
+		handler.restarts[journalID] = cachedRestart{digest: digest, value: cloneReceipt(refreshed)}
+		return refreshed, nil
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, capability.ExpiresAt)
 	if err != nil {
@@ -295,14 +325,8 @@ func (handler *Handler) Restart(ctx context.Context, signed installer.SignedRoot
 	if err != nil {
 		return workeroperation.RootHelperReceipt{}, ErrUnavailable
 	}
-	receipt, err := workeroperation.SignReceipt(workeroperation.RootHelperReceipt{
-		SchemaVersion: workeroperation.SchemaV1, OperationID: capability.OperationID,
-		DeploymentID: capability.DeploymentID, OwnerID: capability.OwnerID,
-		Action: workeroperation.ActionRestart, LifecycleRestartRef: capability.LifecycleRestartRef,
-		ExecutionBundleDigest: capability.ExecutionBundleDigest, LeaseEpoch: capability.WorkerLeaseEpoch,
-		InstallManifestDigest: installedDigest, RestartObservationDigest: observationDigest,
-		ObservedAt: handler.now().UTC(), HelperID: capability.HelperID, SignerKeyID: capability.HelperSignerKeyID,
-	}, privateKey)
+	receipt, err := signRestartReceipt(capability, installedDigest, observationDigest,
+		privateKey, handler.now().UTC())
 	if err != nil {
 		return workeroperation.RootHelperReceipt{}, ErrInvalid
 	}
@@ -316,16 +340,44 @@ func (handler *Handler) Restart(ctx context.Context, signed installer.SignedRoot
 	return receipt, nil
 }
 
+func signRestartReceipt(capability installer.RootHelperRestartCapabilityV1, installedDigest, observationDigest string,
+	privateKey ed25519.PrivateKey, observedAt time.Time,
+) (workeroperation.RootHelperReceipt, error) {
+	return workeroperation.SignReceipt(workeroperation.RootHelperReceipt{
+		SchemaVersion: workeroperation.SchemaV1, OperationID: capability.OperationID,
+		DeploymentID: capability.DeploymentID, OwnerID: capability.OwnerID,
+		Action: workeroperation.Action(capability.Action), LifecycleRestartRef: capability.LifecycleRestartRef,
+		ExecutionBundleDigest: capability.ExecutionBundleDigest, LeaseEpoch: capability.WorkerLeaseEpoch,
+		InstallManifestDigest: installedDigest, RestartObservationDigest: observationDigest,
+		ExpectedDeploymentRevision:       capability.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   capability.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: capability.ExpectedKnowledgeBindingRevision,
+		ObservedAt:                       observedAt, HelperID: capability.HelperID, SignerKeyID: capability.HelperSignerKeyID,
+	}, privateKey)
+}
+
 // restartJournalDigest intentionally excludes capability freshness fields.
-// A response-lost AcquireNext may reissue a fresh signed capability for the
-// same still-leased operation; that must replay the terminal receipt rather
-// than execute the command again. Lease epoch and every execution binding
-// remain included, so a newly leased attempt fails closed.
+// Generation-changing recovery also excludes the transport lease epoch: after
+// a crash or expired lease, the same signed operation must be able to resume
+// its durable installer journal. Every owner, deployment, action, revision,
+// artifact, and command binding remains in the digest.
 func restartJournalDigest(value installer.RootHelperRestartCapabilityV1) (string, error) {
 	value.CapabilityID = ""
 	value.IssuedAt = ""
 	value.ExpiresAt = ""
+	if isGenerationRecoveryAction(value.Action) {
+		value.WorkerLeaseEpoch = 0
+	}
 	return canonical.Digest(value)
+}
+
+func isGenerationRecoveryAction(action string) bool {
+	switch workeroperation.Action(action) {
+	case workeroperation.ActionRestore, workeroperation.ActionUpgrade, workeroperation.ActionRollback:
+		return true
+	default:
+		return false
+	}
 }
 
 func declaredCommand(delivery installer.DeliveryV1, commandID string) (installer.CommandV1, bool) {
@@ -382,10 +434,13 @@ func deliveryFenceValue(signed installer.SignedRootHelperBootstrapCapabilityV1) 
 func validateRestartReceipt(receipt workeroperation.RootHelperReceipt, capability installer.RootHelperRestartCapabilityV1, publicKey ed25519.PublicKey) error {
 	if err := receipt.ValidateFor(workeroperation.Operation{
 		OperationID: capability.OperationID, DeploymentID: capability.DeploymentID, OwnerID: capability.OwnerID,
-		Action: workeroperation.ActionRestart, LifecycleRestartRef: capability.LifecycleRestartRef,
-		ExecutionBundleDigest:           capability.ExecutionBundleDigest,
-		ExpectedInstalledManifestDigest: capability.ExpectedInstalledManifestDigest,
-		LeaseEpoch:                      capability.WorkerLeaseEpoch,
+		Action: workeroperation.Action(capability.Action), LifecycleRestartRef: capability.LifecycleRestartRef,
+		ExecutionBundleDigest:            capability.ExecutionBundleDigest,
+		ExpectedInstalledManifestDigest:  capability.ExpectedInstalledManifestDigest,
+		ExpectedDeploymentRevision:       capability.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   capability.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: capability.ExpectedKnowledgeBindingRevision,
+		LeaseEpoch:                       capability.WorkerLeaseEpoch,
 	}); err != nil {
 		return err
 	}

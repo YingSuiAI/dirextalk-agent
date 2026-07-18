@@ -58,6 +58,29 @@ func TestLocalObserverRequiresSecretAndVolumeReadBackBeforeFullManifestDigest(t 
 	}
 }
 
+func TestLocalObserverBindsKnowledgeLifecycleReceiptToExactDataGeneration(t *testing.T) {
+	fixture := newFixture(t)
+	plan := fixture.delivery.SignedPlan.Plan
+	plan.Commands[0].CommandID = "knowledge-backup-v1"
+	delivery, err := fixture.issuer.Issue(plan, fixture.delivery.Config, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := &observerGenerationInspector{digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	observer := LocalObserver{
+		Artifacts: &observerInspector{}, KnowledgeGeneration: generation,
+		Now: func() time.Time { return fixture.now },
+	}
+	digest, err := observer.RestartObservationDigest(context.Background(), delivery, plan.Commands[0])
+	if err != nil || digest != generation.digest || generation.calls != 1 {
+		t.Fatalf("generation digest=%q calls=%d error=%v", digest, generation.calls, err)
+	}
+	observer.KnowledgeGeneration = nil
+	if _, err := observer.RestartObservationDigest(context.Background(), delivery, plan.Commands[0]); err != ErrUnavailable {
+		t.Fatalf("missing generation observer error=%v", err)
+	}
+}
+
 type observerInspector struct{ calls int }
 
 func (inspector *observerInspector) Verify(context.Context, installer.ArtifactV1) error {
@@ -78,4 +101,14 @@ func (inspector *observerStateInspector) VerifySecret(context.Context, installer
 func (inspector *observerStateInspector) VerifyVolume(context.Context, installer.VolumeV1) error {
 	inspector.volumes++
 	return nil
+}
+
+type observerGenerationInspector struct {
+	digest string
+	calls  int
+}
+
+func (inspector *observerGenerationInspector) CurrentGeneration(context.Context) (string, error) {
+	inspector.calls++
+	return inspector.digest, nil
 }

@@ -54,6 +54,9 @@ func (p PlanV1) PricingScope() cloudquote.ScopeV1 {
 			Hostname:               p.NetworkScope.Hostname,
 			TLSRequired:            p.NetworkScope.TLSRequired,
 			AuthenticationRequired: p.NetworkScope.AuthenticationRequired,
+			RouteTableID:           p.NetworkScope.RouteTableID,
+			ControlPlaneEndpoint:   p.NetworkScope.ControlPlaneEndpoint,
+			PrivateConnectivity:    cloudquote.PrivateConnectivityMode(p.NetworkScope.PrivateConnectivity),
 		},
 		Retention: cloudquote.RetentionScopeV1{
 			Class:              cloudquote.RetentionClass(p.RetentionScope.Class),

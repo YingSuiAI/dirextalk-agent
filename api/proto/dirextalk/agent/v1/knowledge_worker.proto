@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// KnowledgeWorkerControlService is an outbound-only Worker data plane. A
+// session-authenticated Worker long-polls over the existing TLS connection,
+// executes one closed operation through its local Unix-socket adapter, and
+// returns bounded evidence. Request content is never persisted by this
+// transport or written to Agent events/logs.
+service KnowledgeWorkerControlService {
+  rpc AcquireKnowledgeOperation(AcquireKnowledgeOperationRequest) returns (AcquireKnowledgeOperationResponse);
+  rpc CompleteKnowledgeOperation(CompleteKnowledgeOperationRequest) returns (CompleteKnowledgeOperationResponse);
+}
+
+message AcquireKnowledgeOperationRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  uint32 lease_duration_seconds = 3;
+}
+
+message AcquireKnowledgeOperationResponse {
+  KnowledgeWorkerOperation operation = 1;
+}
+
+message KnowledgeWorkerBinding {
+  string owner_id = 1;
+  string binding_id = 2;
+  string deployment_id = 3;
+  string managed_service_id = 4;
+  string recipe_digest = 5;
+  string embedding_profile_id = 6;
+}
+
+message KnowledgeWorkerStageChunk {
+  string source_id = 1;
+  string upload_id = 2;
+  string media_type = 3;
+  int64 declared_size_bytes = 4;
+  int64 offset_bytes = 5;
+  int32 chunk_ordinal = 6;
+  bytes chunk = 7;
+  string chunk_sha256 = 8;
+  string title = 9;
+}
+
+message KnowledgeWorkerCommitAttachment {
+  string source_id = 1;
+  string upload_id = 2;
+  string media_type = 3;
+  int64 declared_size_bytes = 4;
+  int32 chunk_count = 5;
+  string content_sha256 = 6;
+  string title = 7;
+}
+
+message KnowledgeWorkerStoreMemory {
+  string source_id = 1;
+  bytes content = 2;
+  string content_sha256 = 3;
+  string title = 4;
+}
+
+message KnowledgeWorkerDeleteSource {
+  string source_id = 1;
+}
+
+message KnowledgeWorkerSearch {
+  string query = 1;
+  int32 limit = 2;
+  repeated string source_ids = 3;
+}
+
+message KnowledgeWorkerStatus {
+  // Optional exact ready-source evidence. The Worker derives the adapter's
+  // opaque revision UUID from the binding/source fence; callers never supply
+  // adapter identifiers or backend configuration.
+  string source_id = 1;
+  int64 content_size = 2;
+  string content_sha256 = 3;
+  string point_id = 4;
+}
+
+message KnowledgeWorkerOperation {
+  string operation_id = 1;
+  string lease_id = 2;
+  google.protobuf.Timestamp lease_expires_at = 3;
+  KnowledgeWorkerBinding binding = 4;
+  oneof request {
+    KnowledgeWorkerStageChunk stage_chunk = 10;
+    KnowledgeWorkerCommitAttachment commit_attachment = 11;
+    KnowledgeWorkerStoreMemory store_memory = 12;
+    KnowledgeWorkerDeleteSource delete_source = 13;
+    KnowledgeWorkerSearch search = 14;
+    KnowledgeWorkerStatus status = 15;
+  }
+}
+
+message KnowledgeWorkerSearchMatch {
+  string source_id = 1;
+  string chunk_ref = 2;
+  double score = 3;
+}
+
+enum KnowledgeWorkerBackendStatus {
+  KNOWLEDGE_WORKER_BACKEND_STATUS_UNSPECIFIED = 0;
+  KNOWLEDGE_WORKER_BACKEND_STATUS_READY = 1;
+  KNOWLEDGE_WORKER_BACKEND_STATUS_DEGRADED = 2;
+  KNOWLEDGE_WORKER_BACKEND_STATUS_UNAVAILABLE = 3;
+}
+
+message KnowledgeWorkerResult {
+  bool acknowledged = 1;
+  int64 size_bytes = 2;
+  string content_sha256 = 3;
+  repeated KnowledgeWorkerSearchMatch matches = 4;
+  KnowledgeWorkerBackendStatus backend_status = 5;
+  // Closed, de-sensitized adapter code. An empty value means success.
+  string error_code = 6;
+  // Exact retained-backend evidence for committed content. It is stored only
+  // as Agent metadata and is never projected as document content.
+  string point_id = 7;
+  int32 indexed_segment_count = 8;
+}
+
+message CompleteKnowledgeOperationRequest {
+  string deployment_id = 1;
+  string worker_id = 2;
+  string operation_id = 3;
+  string lease_id = 4;
+  KnowledgeWorkerResult result = 5;
+}
+
+message CompleteKnowledgeOperationResponse {}

@@ -1,0 +1,115 @@
+{
+  "schema_version": "dirextalk.artifact-origin.catalog/v1",
+  "artifacts": [
+    {
+      "id": "qdrant-linux-amd64",
+      "name": "qdrant-x86_64-unknown-linux-musl.tar.gz",
+      "sha256": "b4faedcdf8c9577bf1c8f2ab9b454636b87e056c116c99d49bd4f9fb2e634285",
+      "size_bytes": 30745357,
+      "media_type": "application/gzip",
+      "source_url": "https://github.com/qdrant/qdrant/releases/download/v1.18.3/qdrant-x86_64-unknown-linux-musl.tar.gz",
+      "source_revision": "v1.18.3@db8fa43fcb6aedec1e739487e17a99731b74590a",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "multilingual-e5-small-onnx",
+      "name": "model.onnx",
+      "sha256": "ca456c06b3a9505ddfd9131408916dd79290368331e7d76bb621f1cba6bc8665",
+      "size_bytes": 470268510,
+      "media_type": "application/octet-stream",
+      "source_url": "https://huggingface.co/intfloat/multilingual-e5-small/resolve/0e60b8d9d2166d80387f86e3b48ec9ced55f4d15/onnx/model.onnx",
+      "source_revision": "0e60b8d9d2166d80387f86e3b48ec9ced55f4d15",
+      "license": "MIT"
+    },
+    {
+      "id": "multilingual-e5-small-tokenizer",
+      "name": "tokenizer.json",
+      "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+      "size_bytes": 17082730,
+      "media_type": "application/json",
+      "source_url": "https://huggingface.co/intfloat/multilingual-e5-small/resolve/0e60b8d9d2166d80387f86e3b48ec9ced55f4d15/tokenizer.json",
+      "source_revision": "0e60b8d9d2166d80387f86e3b48ec9ced55f4d15",
+      "license": "MIT"
+    },
+    {
+      "id": "multilingual-e5-small-config",
+      "name": "config.json",
+      "sha256": "69137736cab8b8903a07fe8afaafdda25aac55415a12a55d1bffa9f581abf959",
+      "size_bytes": 655,
+      "media_type": "application/json",
+      "source_url": "https://huggingface.co/intfloat/multilingual-e5-small/resolve/0e60b8d9d2166d80387f86e3b48ec9ced55f4d15/config.json",
+      "source_revision": "0e60b8d9d2166d80387f86e3b48ec9ced55f4d15",
+      "license": "MIT"
+    },
+    {
+      "id": "multilingual-e5-small-tokenizer-config",
+      "name": "tokenizer_config.json",
+      "sha256": "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
+      "size_bytes": 443,
+      "media_type": "application/json",
+      "source_url": "https://huggingface.co/intfloat/multilingual-e5-small/resolve/0e60b8d9d2166d80387f86e3b48ec9ced55f4d15/tokenizer_config.json",
+      "source_revision": "0e60b8d9d2166d80387f86e3b48ec9ced55f4d15",
+      "license": "MIT"
+    },
+    {
+      "id": "multilingual-e5-small-special-tokens",
+      "name": "special_tokens_map.json",
+      "sha256": "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7",
+      "size_bytes": 167,
+      "media_type": "application/json",
+      "source_url": "https://huggingface.co/intfloat/multilingual-e5-small/resolve/0e60b8d9d2166d80387f86e3b48ec9ced55f4d15/special_tokens_map.json",
+      "source_revision": "0e60b8d9d2166d80387f86e3b48ec9ced55f4d15",
+      "license": "MIT"
+    },
+    {
+      "id": "knowledge-installer-linux-amd64",
+      "name": "dirextalk-knowledge-installer",
+      "sha256": "ddfd0578bec82f1051ded9c49f90ce552b6284b4b0a30f09c12a663d79feae86",
+      "size_bytes": 7376597,
+      "media_type": "application/octet-stream",
+      "source_url": "https://github.com/YingSuiAI/dirextalk-agent",
+      "source_revision": "dirextalk-knowledge-v1@78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3",
+      "license": "Proprietary"
+    },
+    {
+      "id": "multilingual-e5-small-bundle",
+      "name": "multilingual-e5-small.tar.gz",
+      "sha256": "ccf5b7e718151700b91a8fc632628a75a5756ddc18452e888e6f8950c0a5d198",
+      "size_bytes": 299428899,
+      "media_type": "application/gzip",
+      "source_url": "https://github.com/YingSuiAI/dirextalk-agent",
+      "source_revision": "dirextalk-knowledge-v1@78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3",
+      "license": "MIT"
+    },
+    {
+      "id": "knowledge-adapter-bundle",
+      "name": "dirextalk-knowledge-adapter.tar.gz",
+      "sha256": "61ef32ad69a4fed9fbf7444d34358f433dae9cbbb8ff47bc34b6871bad03eeb5",
+      "size_bytes": 43111084,
+      "media_type": "application/gzip",
+      "source_url": "https://github.com/YingSuiAI/dirextalk-agent",
+      "source_revision": "dirextalk-knowledge-v1@78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3",
+      "license": "Proprietary"
+    },
+    {
+      "id": "knowledge-provenance-v1",
+      "name": "provenance-v1.json",
+      "sha256": "58e3b6217b30cecb46908ccf87900fbbed331acb825d8380ad0fab43a32072c2",
+      "size_bytes": 1090,
+      "media_type": "application/json",
+      "source_url": "https://github.com/YingSuiAI/dirextalk-agent",
+      "source_revision": "dirextalk-knowledge-v1@78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3",
+      "license": "Proprietary"
+    },
+    {
+      "id": "knowledge-release-manifest-v1",
+      "name": "dirextalk-knowledge-release.v1.json",
+      "sha256": "78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3",
+      "size_bytes": 2429,
+      "media_type": "application/json",
+      "source_url": "https://github.com/YingSuiAI/dirextalk-agent",
+      "source_revision": "sha256:78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3",
+      "license": "Proprietary"
+    }
+  ]
+}

@@ -145,6 +145,7 @@ type RecipeV1 struct {
 type SourceV1 struct {
 	ID             string                `json:"id,omitempty"`
 	URL            string                `json:"url"`
+	ArtifactURL    string                `json:"artifact_url,omitempty"`
 	Version        string                `json:"version"`
 	Commit         string                `json:"commit"`
 	ArtifactDigest string                `json:"artifact_digest"`
@@ -154,6 +155,15 @@ type SourceV1 struct {
 	Official       bool                  `json:"official"`
 	Kind           SourceKind            `json:"kind,omitempty"`
 	Repository     *RepositoryIdentityV1 `json:"repository,omitempty"`
+}
+
+// ResolvedArtifactURL keeps official-source research evidence separate from
+// the immutable bytes installed by a Recipe. Legacy Recipes use URL for both.
+func (source SourceV1) ResolvedArtifactURL() string {
+	if source.ArtifactURL != "" {
+		return source.ArtifactURL
+	}
+	return source.URL
 }
 
 // RepositoryIdentityV1 identifies source ownership without embedding a clone

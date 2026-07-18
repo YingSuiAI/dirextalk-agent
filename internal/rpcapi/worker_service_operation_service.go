@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeroperation"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -115,6 +116,14 @@ func (service *workerServiceOperationHandler) AcquireNext(ctx context.Context, r
 	}
 	delivery, signed, err := service.capabilities.IssueRestartCapability(cleanCtx, session, value)
 	if err != nil {
+		if errors.Is(err, workeroperation.ErrRevisionConflict) {
+			_, _ = service.operations.Complete(cleanCtx, workeroperation.CompleteRequest{
+				OperationID: value.OperationID, DeploymentID: value.DeploymentID, WorkerID: value.WorkerID,
+				LeaseEpoch:       value.LeaseEpoch,
+				IdempotencyKey:   uuid.NewSHA1(uuid.NameSpaceOID, []byte(value.OperationID+":authorization-scope-drift")).String(),
+				ExpectedRevision: value.Revision, FailureCode: "authorization_scope_drift",
+			})
+		}
 		return nil, status.Error(codes.FailedPrecondition, "root-helper restart capability is unavailable")
 	}
 	deliveryCBOR, capabilityCBOR, err := encodeRestartCapabilityEnvelope(delivery, signed, service.now().UTC())
@@ -174,7 +183,8 @@ func (service *workerServiceOperationHandler) authorize(ctx context.Context, dep
 }
 
 func workerServiceOperationAssignmentToProto(value workeroperation.Assignment) (*agentv1.WorkerServiceOperationAssignment, error) {
-	if value.Action != workeroperation.ActionRestart || value.LeaseExpiresAt.IsZero() {
+	action, err := workerServiceOperationActionToProto(value.Action)
+	if err != nil || value.LeaseExpiresAt.IsZero() {
 		return nil, workeroperation.ErrInvalid
 	}
 	expiresAt := timestamppb.New(value.LeaseExpiresAt)
@@ -183,10 +193,13 @@ func workerServiceOperationAssignmentToProto(value workeroperation.Assignment) (
 	}
 	return &agentv1.WorkerServiceOperationAssignment{
 		OperationId: value.OperationID, DeploymentId: value.DeploymentID, OwnerId: value.OwnerID,
-		Action:              agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART,
+		Action:              action,
 		LifecycleRestartRef: value.LifecycleRestartRef, ExecutionBundleDigest: value.ExecutionBundleDigest,
-		ExpectedInstalledManifestDigest: value.ExpectedInstalledManifestDigest,
-		WorkerId:                        value.WorkerID, LeaseEpoch: value.LeaseEpoch, LeaseExpiresAt: expiresAt, Revision: value.Revision,
+		ExpectedInstalledManifestDigest:  value.ExpectedInstalledManifestDigest,
+		ExpectedDeploymentRevision:       value.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   value.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: value.ExpectedKnowledgeBindingRevision,
+		WorkerId:                         value.WorkerID, LeaseEpoch: value.LeaseEpoch, LeaseExpiresAt: expiresAt, Revision: value.Revision,
 	}, nil
 }
 
@@ -194,13 +207,20 @@ func workerServiceOperationToProto(value workeroperation.Operation) (*agentv1.Wo
 	if value.Validate() != nil {
 		return nil, workeroperation.ErrInvalid
 	}
+	action, err := workerServiceOperationActionToProto(value.Action)
+	if err != nil {
+		return nil, err
+	}
 	result := &agentv1.WorkerServiceOperation{
 		Assignment: &agentv1.WorkerServiceOperationAssignment{
 			OperationId: value.OperationID, DeploymentId: value.DeploymentID, OwnerId: value.OwnerID,
-			Action:              agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART,
+			Action:              action,
 			LifecycleRestartRef: value.LifecycleRestartRef, ExecutionBundleDigest: value.ExecutionBundleDigest,
-			ExpectedInstalledManifestDigest: value.ExpectedInstalledManifestDigest,
-			WorkerId:                        value.WorkerID, LeaseEpoch: value.LeaseEpoch, Revision: value.Revision,
+			ExpectedInstalledManifestDigest:  value.ExpectedInstalledManifestDigest,
+			ExpectedDeploymentRevision:       value.ExpectedDeploymentRevision,
+			ExpectedManagedServiceRevision:   value.ExpectedManagedServiceRevision,
+			ExpectedKnowledgeBindingRevision: value.ExpectedKnowledgeBindingRevision,
+			WorkerId:                         value.WorkerID, LeaseEpoch: value.LeaseEpoch, Revision: value.Revision,
 		},
 		FailureCode: value.FailureCode, CreatedAt: timestamppb.New(value.CreatedAt), UpdatedAt: timestamppb.New(value.UpdatedAt),
 	}
@@ -252,28 +272,81 @@ func encodeRestartCapabilityEnvelope(delivery installer.DeliveryV1,
 }
 
 func workerServiceOperationReceiptFromProto(value *agentv1.WorkerServiceOperationRootHelperReceipt) (workeroperation.RootHelperReceipt, error) {
-	if value == nil || value.GetAction() != agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART ||
+	if value == nil ||
 		value.GetObservedAt() == nil || value.GetObservedAt().CheckValid() != nil {
 		return workeroperation.RootHelperReceipt{}, workeroperation.ErrInvalid
 	}
+	action, err := workerServiceOperationActionFromProto(value.GetAction())
+	if err != nil {
+		return workeroperation.RootHelperReceipt{}, err
+	}
 	return workeroperation.RootHelperReceipt{
 		SchemaVersion: value.GetSchemaVersion(), OperationID: value.GetOperationId(), DeploymentID: value.GetDeploymentId(),
-		OwnerID: value.GetOwnerId(), Action: workeroperation.ActionRestart, LifecycleRestartRef: value.GetLifecycleRestartRef(),
+		OwnerID: value.GetOwnerId(), Action: action, LifecycleRestartRef: value.GetLifecycleRestartRef(),
 		ExecutionBundleDigest: value.GetExecutionBundleDigest(), LeaseEpoch: value.GetLeaseEpoch(),
 		InstallManifestDigest: value.GetInstallManifestDigest(), RestartObservationDigest: value.GetRestartObservationDigest(),
-		ObservedAt: value.GetObservedAt().AsTime(), HelperID: value.GetHelperId(), SignerKeyID: value.GetSignerKeyId(),
+		ExpectedDeploymentRevision:       value.GetExpectedDeploymentRevision(),
+		ExpectedManagedServiceRevision:   value.GetExpectedManagedServiceRevision(),
+		ExpectedKnowledgeBindingRevision: value.GetExpectedKnowledgeBindingRevision(),
+		ObservedAt:                       value.GetObservedAt().AsTime(), HelperID: value.GetHelperId(), SignerKeyID: value.GetSignerKeyId(),
 		Signature: append([]byte(nil), value.GetSignature()...),
 	}, nil
 }
 
 func workerServiceOperationReceiptToProto(value workeroperation.RootHelperReceipt) *agentv1.WorkerServiceOperationRootHelperReceipt {
+	action, _ := workerServiceOperationActionToProto(value.Action)
 	return &agentv1.WorkerServiceOperationRootHelperReceipt{
 		SchemaVersion: value.SchemaVersion, OperationId: value.OperationID, DeploymentId: value.DeploymentID,
-		OwnerId: value.OwnerID, Action: agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART,
+		OwnerId: value.OwnerID, Action: action,
 		LifecycleRestartRef: value.LifecycleRestartRef, ExecutionBundleDigest: value.ExecutionBundleDigest,
 		LeaseEpoch: value.LeaseEpoch, InstallManifestDigest: value.InstallManifestDigest,
-		RestartObservationDigest: value.RestartObservationDigest, ObservedAt: timestamppb.New(value.ObservedAt),
+		ExpectedDeploymentRevision:       value.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   value.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: value.ExpectedKnowledgeBindingRevision,
+		RestartObservationDigest:         value.RestartObservationDigest, ObservedAt: timestamppb.New(value.ObservedAt),
 		HelperId: value.HelperID, SignerKeyId: value.SignerKeyID, Signature: append([]byte(nil), value.Signature...),
+	}
+}
+
+func workerServiceOperationActionToProto(value workeroperation.Action) (agentv1.WorkerServiceOperationAction, error) {
+	switch value {
+	case workeroperation.ActionRestart:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART, nil
+	case workeroperation.ActionStop:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_STOP, nil
+	case workeroperation.ActionBackup:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_BACKUP, nil
+	case workeroperation.ActionRestore:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTORE, nil
+	case workeroperation.ActionUpgrade:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_UPGRADE, nil
+	case workeroperation.ActionRollback:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_ROLLBACK, nil
+	case workeroperation.ActionDestroy:
+		return agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_DESTROY, nil
+	default:
+		return 0, workeroperation.ErrInvalid
+	}
+}
+
+func workerServiceOperationActionFromProto(value agentv1.WorkerServiceOperationAction) (workeroperation.Action, error) {
+	switch value {
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTART:
+		return workeroperation.ActionRestart, nil
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_STOP:
+		return workeroperation.ActionStop, nil
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_BACKUP:
+		return workeroperation.ActionBackup, nil
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTORE:
+		return workeroperation.ActionRestore, nil
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_UPGRADE:
+		return workeroperation.ActionUpgrade, nil
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_ROLLBACK:
+		return workeroperation.ActionRollback, nil
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_DESTROY:
+		return workeroperation.ActionDestroy, nil
+	default:
+		return "", workeroperation.ErrInvalid
 	}
 }
 
@@ -289,6 +362,8 @@ func workerServiceOperationPublicError(err error) error {
 		return status.Error(codes.AlreadyExists, "Worker service operation conflicts with an earlier request")
 	case errors.Is(err, workeroperation.ErrLeaseActive), errors.Is(err, workeroperation.ErrLeaseExpired), errors.Is(err, workeroperation.ErrTerminal):
 		return status.Error(codes.FailedPrecondition, "Worker service operation state does not permit this operation")
+	case errors.Is(err, workeroperation.ErrSignedObservationRequired):
+		return status.Error(codes.FailedPrecondition, "signed root observation is required for generation recovery")
 	default:
 		return status.Error(codes.Unavailable, "Worker service operation is unavailable")
 	}

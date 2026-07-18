@@ -42,9 +42,12 @@ type PlacementEC2ReadAPI interface {
 // usage assumptions. Identity, Recipe digest, retention, and secrets are bound
 // by the application coordinator after this read-only step.
 type PlacementRequestV1 struct {
-	Requirements         recipe.ResourceRequirementsV1
-	PublicIPv4           bool
-	RuntimeHoursPerMonth uint32
+	Requirements           recipe.ResourceRequirementsV1
+	PublicIPv4             bool
+	RuntimeHoursPerMonth   uint32
+	PrivateConnectivity    cloudquote.PrivateConnectivityMode
+	ControlPlaneEndpoint   string
+	PrivateEndpointDataMiB uint64
 }
 
 func (request PlacementRequestV1) Validate() error {
@@ -99,7 +102,7 @@ func (resolver *PlacementResolver) Resolve(ctx context.Context, request Placemen
 	if resolver == nil || resolver.client == nil || ctx == nil || request.Validate() != nil {
 		return PlacementV1{}, ErrInvalidRequest
 	}
-	networks, err := resolver.readNetworks(ctx, request.PublicIPv4)
+	networks, err := resolver.readNetworks(ctx, request)
 	if err != nil {
 		return PlacementV1{}, err
 	}
@@ -123,11 +126,17 @@ func (resolver *PlacementResolver) Resolve(ctx context.Context, request Placemen
 		if request.PublicIPv4 {
 			usage.PublicIPv4Hours = request.RuntimeHoursPerMonth
 		}
+		if request.PrivateConnectivity == cloudquote.PrivateConnectivityNoNATEndpointsV1 {
+			usage.PrivateEndpointHours = request.RuntimeHoursPerMonth
+			usage.PrivateEndpointDataMiB = request.PrivateEndpointDataMiB
+		}
 		return PlacementV1{
 			Region: resolver.region, AvailabilityZone: network.zone,
 			Network: cloudquote.NetworkScopeV1{
 				VPCID: network.vpcID, SubnetID: network.subnetID, SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated,
 				PublicIPv4: request.PublicIPv4, EntryPoint: cloudquote.EntryPointNone,
+				RouteTableID: network.routeTableID, ControlPlaneEndpoint: request.ControlPlaneEndpoint,
+				PrivateConnectivity: request.PrivateConnectivity,
 			},
 			Usage: usage, Candidates: candidates,
 		}, nil
@@ -136,13 +145,14 @@ func (resolver *PlacementResolver) Resolve(ctx context.Context, request Placemen
 }
 
 type placementNetwork struct {
-	vpcID      string
-	subnetID   string
-	zone       string
-	defaultVPC bool
+	vpcID        string
+	subnetID     string
+	zone         string
+	routeTableID string
+	defaultVPC   bool
 }
 
-func (resolver *PlacementResolver) readNetworks(ctx context.Context, publicIPv4 bool) ([]placementNetwork, error) {
+func (resolver *PlacementResolver) readNetworks(ctx context.Context, request PlacementRequestV1) ([]placementNetwork, error) {
 	vpcs, err := resolver.readVPCs(ctx)
 	if err != nil {
 		return nil, err
@@ -171,12 +181,16 @@ func (resolver *PlacementResolver) readNetworks(ctx context.Context, publicIPv4 
 	if err != nil {
 		return nil, err
 	}
-	gateways, err := resolver.readAttachedGateways(ctx)
-	if err != nil {
-		return nil, err
+	privateEndpointsOnly := request.PrivateConnectivity == cloudquote.PrivateConnectivityNoNATEndpointsV1
+	var gateways map[string]map[string]struct{}
+	if !privateEndpointsOnly {
+		gateways, err = resolver.readAttachedGateways(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var natGateways map[string]placementNATGateway
-	if !publicIPv4 {
+	if !request.PublicIPv4 && !privateEndpointsOnly {
 		natGateways, err = resolver.readPublicNATGateways(ctx, routes, gateways)
 		if err != nil {
 			return nil, err
@@ -187,16 +201,25 @@ func (resolver *PlacementResolver) readNetworks(ctx context.Context, publicIPv4 
 		vpcID, subnetID, zone := aws.ToString(subnet.VpcId), aws.ToString(subnet.SubnetId), aws.ToString(subnet.AvailabilityZone)
 		isDefault, vpcOK := vpcs[vpcID]
 		_, zoneOK := availableZones[zone]
-		if !vpcOK || !zoneOK || subnet.State != ec2types.SubnetStateAvailable || subnetID == "" || aws.ToInt32(subnet.AvailableIpAddressCount) < 1 || aws.ToBool(subnet.Ipv6Native) {
+		if !vpcOK || !zoneOK || subnet.State != ec2types.SubnetStateAvailable || subnetID == "" || aws.ToInt32(subnet.AvailableIpAddressCount) < 1 ||
+			(privateEndpointsOnly && subnetHasIPv6(subnet)) {
 			continue
 		}
-		if publicIPv4 && !subnetHasEffectiveIGWRoute(subnetID, vpcID, routes, gateways) {
+		routeTableID := ""
+		if request.PublicIPv4 && !subnetHasEffectiveIGWRoute(subnetID, vpcID, routes, gateways) {
 			continue
 		}
-		if !publicIPv4 && !subnetHasEffectiveNATRoute(subnetID, vpcID, routes, natGateways) {
+		if !request.PublicIPv4 && !privateEndpointsOnly && !subnetHasEffectiveNATRoute(subnetID, vpcID, routes, natGateways) {
 			continue
 		}
-		result = append(result, placementNetwork{vpcID: vpcID, subnetID: subnetID, zone: zone, defaultVPC: isDefault})
+		if privateEndpointsOnly {
+			table, ok := effectiveSubnetRouteTable(subnetID, vpcID, routes)
+			if !ok || !routeTableHasOnlyLocalIPv4(table) {
+				continue
+			}
+			routeTableID = aws.ToString(table.RouteTableId)
+		}
+		result = append(result, placementNetwork{vpcID: vpcID, subnetID: subnetID, zone: zone, routeTableID: routeTableID, defaultVPC: isDefault})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].defaultVPC != result[j].defaultVPC {
@@ -211,6 +234,64 @@ func (resolver *PlacementResolver) readNetworks(ctx context.Context, publicIPv4 
 		return result[i].subnetID < result[j].subnetID
 	})
 	return result, nil
+}
+
+func subnetHasIPv6(value ec2types.Subnet) bool {
+	if aws.ToBool(value.Ipv6Native) || aws.ToBool(value.AssignIpv6AddressOnCreation) {
+		return true
+	}
+	for _, association := range value.Ipv6CidrBlockAssociationSet {
+		if aws.ToString(association.Ipv6CidrBlock) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveSubnetRouteTable(subnetID, vpcID string, tables []ec2types.RouteTable) (ec2types.RouteTable, bool) {
+	explicit := make(map[string]ec2types.RouteTable)
+	main := make(map[string]ec2types.RouteTable)
+	for _, table := range tables {
+		if aws.ToString(table.VpcId) != vpcID || !regexp.MustCompile(`^rtb-[0-9a-f]{8,17}$`).MatchString(aws.ToString(table.RouteTableId)) {
+			continue
+		}
+		for _, association := range table.Associations {
+			if aws.ToString(association.SubnetId) == subnetID {
+				explicit[aws.ToString(table.RouteTableId)] = table
+			}
+			if aws.ToBool(association.Main) {
+				main[aws.ToString(table.RouteTableId)] = table
+			}
+		}
+	}
+	selected := explicit
+	if len(selected) == 0 {
+		selected = main
+	}
+	if len(selected) != 1 {
+		return ec2types.RouteTable{}, false
+	}
+	for _, table := range selected {
+		return table, true
+	}
+	return ec2types.RouteTable{}, false
+}
+
+func routeTableHasOnlyLocalIPv4(table ec2types.RouteTable) bool {
+	hasLocal := false
+	for _, route := range table.Routes {
+		if route.State != ec2types.RouteStateActive || aws.ToString(route.DestinationIpv6CidrBlock) != "" || aws.ToString(route.DestinationPrefixListId) != "" {
+			return false
+		}
+		if aws.ToString(route.GatewayId) != "local" || aws.ToString(route.DestinationCidrBlock) == "" ||
+			aws.ToString(route.NatGatewayId) != "" || aws.ToString(route.TransitGatewayId) != "" || aws.ToString(route.VpcPeeringConnectionId) != "" ||
+			aws.ToString(route.NetworkInterfaceId) != "" || aws.ToString(route.InstanceId) != "" || aws.ToString(route.EgressOnlyInternetGatewayId) != "" ||
+			aws.ToString(route.CarrierGatewayId) != "" || aws.ToString(route.LocalGatewayId) != "" || aws.ToString(route.CoreNetworkArn) != "" {
+			return false
+		}
+		hasLocal = true
+	}
+	return hasLocal
 }
 
 func (resolver *PlacementResolver) readVPCs(ctx context.Context) (map[string]bool, error) {
@@ -595,6 +676,18 @@ func validatePlacementRequest(request PlacementRequestV1) error {
 			return ErrInvalidRequest
 		}
 	} else if requirements.MinGPUMemoryMiB != 0 || requirements.GPUFamily != "" {
+		return ErrInvalidRequest
+	}
+	switch request.PrivateConnectivity {
+	case "":
+		if request.ControlPlaneEndpoint != "" || request.PrivateEndpointDataMiB != 0 {
+			return ErrInvalidRequest
+		}
+	case cloudquote.PrivateConnectivityNoNATEndpointsV1:
+		if request.PublicIPv4 || request.PrivateEndpointDataMiB == 0 || request.PrivateEndpointDataMiB > 1<<50 || cloudquote.ValidatePrivateControlPlaneEndpoint(request.ControlPlaneEndpoint) != nil {
+			return ErrInvalidRequest
+		}
+	default:
 		return ErrInvalidRequest
 	}
 	return nil

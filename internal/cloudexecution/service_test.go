@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,40 @@ func TestLaunchApprovedPlanFailsClosedBeforeMutationWithoutMatchingConnection(t 
 	}
 }
 
+func TestPrepareApprovedPrivatePlanRejectsUnsignedControlTargetBeforeIntent(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	facts := fixture.service.facts.(fakeFacts)
+	plan := facts.plan
+	plan.Status, plan.Revision, plan.SchemaVersion = cloudapproval.PlanReadyForConfirmation, 1, cloudapproval.PlanSchemaV2
+	plan.NetworkScope = cloudapproval.NetworkScopeV1{
+		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
+		SecurityGroupMode: cloudapproval.SecurityGroupCreateDedicated, EntryPoint: cloudapproval.EntryPointNone,
+		RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://agent.example.com:443",
+		PrivateConnectivity: cloudapproval.PrivateConnectivityNoNATEndpointsV1,
+	}
+	plan.ServiceOperations = privateEndpointOperationScope()
+	var err error
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := cloudapproval.NewApprovalV1(plan, facts.approval.ApprovalID, strings.Repeat("d", 48), "device-1", now.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
+	fixture.service.facts = fakeFacts{plan: plan, approval: approval}
+	fixture.request.ControlPlaneTarget = "grpcs://different.example.com:443"
+
+	if _, err := fixture.service.PrepareApprovedPlan(context.Background(), fixture.caller, fixture.request); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid", err)
+	}
+	if fixture.service.operations.(*memoryOperations).value != nil {
+		t.Fatal("mismatched control target reached durable intent mutation")
+	}
+}
+
 func TestCompileBundlesNeverFallsBackToUnknownAction(t *testing.T) {
 	value := launchRecipe(time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
 	value.Install.Steps[0].Action = "shell.run"
@@ -117,6 +152,47 @@ func TestCompileBundlesCarriesStableCapabilityWithoutLeaseGrant(t *testing.T) {
 	if bytes.Contains(compiled.ExecutionBytes, []byte("lease_grant")) || !bytes.Contains(compiled.ExecutionBytes, []byte(`"command_id":"install-service"`)) ||
 		!bytes.Contains(compiled.ExecutionBytes, []byte(`"trust_id":"`+delivery.TrustID+`"`)) {
 		t.Fatal("execution bundle omitted stable delivery or embedded lease grant")
+	}
+}
+
+func TestInstallerResolutionUsesArtifactURLNotResearchEvidenceURL(t *testing.T) {
+	now := time.Date(2026, 7, 18, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x7a}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	configureInstallerLaunch(t, fixture, issuer, now, time.Hour, 5*time.Minute, cloudapproval.RetentionScopeV1{
+		Class: cloudapproval.RetentionEphemeral, AutoDestroy: true, GracePeriodSeconds: 60, MaxLifetimeSeconds: 86_400,
+	})
+	value := fixture.service.recipes.(fakeRecipes).value
+	value.Sources[0].ArtifactURL = "https://artifacts.example.com/sha256/" + strings.TrimPrefix(value.Sources[0].ArtifactDigest, "sha256:") + "/service-installer"
+	digest, err := value.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := fixture.service.facts.(fakeFacts)
+	plan := facts.plan
+	plan.Status, plan.Revision, plan.Recipe.Digest = cloudapproval.PlanReadyForConfirmation, 1, digest
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := cloudapproval.NewApprovalV1(plan, facts.approval.ApprovalID, strings.Repeat("f", 48), "device-1", now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
+	fixture.service.facts = fakeFacts{plan: plan, approval: approval}
+	fixture.service.recipes = fakeRecipes{value: value}
+	resolver := &capturingArtifactResolver{}
+	fixture.service.artifactResolver = resolver
+	if _, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	if len(resolver.requests) != 1 || resolver.requests[0].SourceURL != value.Sources[0].ArtifactURL || resolver.requests[0].SourceURL == value.Sources[0].URL {
+		t.Fatalf("artifact resolution request = %+v", resolver.requests)
 	}
 }
 
@@ -213,6 +289,72 @@ func TestAWSResourcePlanUsesOnlyApprovedExistingSecurityGroup(t *testing.T) {
 	if len(specs[1].DependsOn) != 1 || specs[1].DependsOn[0] != specs[0].ResourceID {
 		t.Fatal("instance is not bound to its exclusive ENI")
 	}
+}
+
+func TestAWSResourcePlanBuildsExactNoNATEndpointGraphBeforeWorker(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	plan := fixture.service.facts.(fakeFacts).plan
+	plan.SchemaVersion = cloudapproval.PlanSchemaV2
+	plan.NetworkScope = cloudapproval.NetworkScopeV1{
+		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
+		SecurityGroupMode: cloudapproval.SecurityGroupCreateDedicated, EntryPoint: cloudapproval.EntryPointNone,
+		RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://agent.example.com:443",
+		PrivateConnectivity: cloudapproval.PrivateConnectivityNoNATEndpointsV1,
+	}
+	plan.ServiceOperations = privateEndpointOperationScope()
+	connection := fixture.connections.value
+	operation := Operation{
+		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: fixture.service.facts.(fakeFacts).approval.PlanHash, DeploymentID: uuid.NewString()},
+		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
+		CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}
+	operation.Launch.ControlPlaneTarget = plan.NetworkScope.ControlPlaneEndpoint
+	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := builder.Build(plan, connection, fixture.service.recipes.(fakeRecipes).value, operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []resource.Type{resource.TypeSG, resource.TypeSG, resource.TypeSecurityGroupRule, resource.TypeEndpoint, resource.TypeEndpoint, resource.TypeENI, resource.TypeEC2}
+	if len(specs) != len(wantTypes) {
+		t.Fatalf("spec count = %d, want %d: %#v", len(specs), len(wantTypes), specs)
+	}
+	for index, want := range wantTypes {
+		if specs[index].Type != want {
+			t.Fatalf("spec[%d].Type = %q, want %q", index, specs[index].Type, want)
+		}
+	}
+	workerGroup, endpointGroup, rule := specs[0], specs[1], specs[2]
+	if len(endpointGroup.AWS.SecurityGroup.Egress) != 0 || !slices.Equal(rule.DependsOn, []string{workerGroup.ResourceID, endpointGroup.ResourceID}) ||
+		rule.AWS.SecurityGroupRule.FromPort != 443 || rule.AWS.SecurityGroupRule.ToPort != 443 {
+		t.Fatalf("endpoint security topology = group %#v rule %#v", endpointGroup, rule)
+	}
+	gateway, secrets, eni, instance := specs[3], specs[4], specs[5], specs[6]
+	if gateway.AWS.Endpoint.EndpointType != resource.AWSVPCEndpointTypeGateway ||
+		!slices.Equal(gateway.AWS.Endpoint.RouteTableIDs, []string{plan.NetworkScope.RouteTableID}) || len(gateway.DependsOn) != 0 {
+		t.Fatalf("gateway endpoint = %#v", gateway)
+	}
+	if secrets.AWS.Endpoint.EndpointType != resource.AWSVPCEndpointTypeInterface || secrets.AWS.Endpoint.SubnetID != plan.NetworkScope.SubnetID ||
+		!secrets.AWS.Endpoint.PrivateDNSEnabled || !slices.Equal(secrets.DependsOn, []string{endpointGroup.ResourceID}) {
+		t.Fatalf("Secrets Manager endpoint = %#v", secrets)
+	}
+	if !slices.Equal(eni.DependsOn, []string{workerGroup.ResourceID}) ||
+		!slices.Equal(instance.DependsOn, []string{eni.ResourceID, gateway.ResourceID, secrets.ResourceID}) ||
+		instance.AWS.Instance.Bootstrap.ControlPlaneEndpoint != plan.NetworkScope.ControlPlaneEndpoint {
+		t.Fatalf("Worker endpoint readiness graph: eni=%#v instance=%#v", eni, instance)
+	}
+}
+
+func privateEndpointOperationScope() *cloudapproval.ServiceOperationScopeV1 {
+	return &cloudapproval.ServiceOperationScopeV1{PrivateEndpoints: []cloudapproval.PrivateEndpointOperationSpecV1{
+		{OperationKey: "worker-s3-gateway", Service: cloudapproval.PrivateEndpointServiceS3, EndpointType: cloudapproval.PrivateEndpointTypeGateway},
+		{OperationKey: "worker-secretsmanager-interface", Service: cloudapproval.PrivateEndpointServiceSecretsManager, EndpointType: cloudapproval.PrivateEndpointTypeInterface,
+			SecurityGroupSource: cloudapproval.EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
+	}}
 }
 
 func TestAWSResourcePlanRejectsUnimplementedPublicEntryPoint(t *testing.T) {
@@ -715,6 +857,15 @@ func (content *fakeInstallerSecretContent) Commit(_ context.Context, verify func
 type fakeArtifactResolver struct{}
 
 func (fakeArtifactResolver) Resolve(context.Context, InstallerArtifactResolveRequest) (InstallerArtifactContent, error) {
+	return &fakeArtifactContent{reader: bytes.NewReader(bytes.Repeat([]byte{0x61}, 32))}, nil
+}
+
+type capturingArtifactResolver struct {
+	requests []InstallerArtifactResolveRequest
+}
+
+func (resolver *capturingArtifactResolver) Resolve(_ context.Context, request InstallerArtifactResolveRequest) (InstallerArtifactContent, error) {
+	resolver.requests = append(resolver.requests, request)
 	return &fakeArtifactContent{reader: bytes.NewReader(bytes.Repeat([]byte{0x61}, 32))}, nil
 }
 

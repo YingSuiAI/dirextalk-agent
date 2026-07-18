@@ -12,6 +12,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/helperkey"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -37,6 +38,7 @@ type serverOptions struct {
 	cloudEntrypoint         rpcapi.CloudEntrypointCoordinator
 	cloudFoundation         rpcapi.CloudFoundationCoordinator
 	cloudManaged            rpcapi.CloudManagedAcceptanceCoordinator
+	cloudManagedLifecycle   rpcapi.ManagedKnowledgeLifecycleCoordinator
 	cloudPreparation        rpcapi.CloudManagedPreparationCoordinator
 	cloudPairing            rpcapi.CloudPairingCoordinator
 	cloudPairingApprovals   rpcapi.CloudPairingApprovalCoordinator
@@ -53,6 +55,8 @@ type serverOptions struct {
 	pairingWorkerOperations *pairingworker.Service
 	pairingCapabilities     rpcapi.PairingWorkerCapabilityIssuer
 	pairingReceiptVerifier  rpcapi.PairingWorkerReceiptVerifier
+	knowledgeCoordinator    rpcapi.KnowledgeCoordinator
+	knowledgeWorkerBroker   *knowledgeworker.Broker
 	agentInstanceID         string
 }
 
@@ -72,6 +76,14 @@ func WithRuntime(coordinator rpcapi.RuntimeCoordinator, features rpcapi.RuntimeF
 		options.runtimeCoordinator = coordinator
 		options.runtimeFeatures = features
 	}
+}
+
+func WithKnowledge(coordinator rpcapi.KnowledgeCoordinator) ServerOption {
+	return func(options *serverOptions) { options.knowledgeCoordinator = coordinator }
+}
+
+func WithKnowledgeWorkerRelay(broker *knowledgeworker.Broker) ServerOption {
+	return func(options *serverOptions) { options.knowledgeWorkerBroker = broker }
 }
 
 func WithSecretBootstrap(manager rpcapi.SecretBootstrapManager, agentInstanceID string) ServerOption {
@@ -104,6 +116,9 @@ func WithCloudFoundation(coordinator rpcapi.CloudFoundationCoordinator) ServerOp
 
 func WithCloudManagedAcceptance(coordinator rpcapi.CloudManagedAcceptanceCoordinator) ServerOption {
 	return func(options *serverOptions) { options.cloudManaged = coordinator }
+}
+func WithManagedKnowledgeLifecycle(coordinator rpcapi.ManagedKnowledgeLifecycleCoordinator) ServerOption {
+	return func(options *serverOptions) { options.cloudManagedLifecycle = coordinator }
 }
 
 func WithCloudManagedPreparation(coordinator rpcapi.CloudManagedPreparationCoordinator) ServerOption {
@@ -248,12 +263,18 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.CloudControlService_PrepareRootHelperKeyDeliveryApproval_FullMethodName:  "cloud.approve",
 		agentv1.CloudControlService_ApproveRootHelperKeyDelivery_FullMethodName:          "cloud.approve",
 		agentv1.CloudControlService_GetRootHelperKeyDeliveryApproval_FullMethodName:      "cloud.read",
+		agentv1.CloudControlService_PrepareManagedKnowledgeLifecycle_FullMethodName:      "cloud.approve",
+		agentv1.CloudControlService_ApproveManagedKnowledgeLifecycle_FullMethodName:      "cloud.approve",
+		agentv1.CloudControlService_GetManagedKnowledgeLifecycle_FullMethodName:          "cloud.read",
 		agentv1.SecretBootstrapService_CreateSession_FullMethodName:                      "secret.bootstrap",
 		agentv1.SecretBootstrapService_GetSession_FullMethodName:                         "secret.bootstrap",
 		agentv1.SecretBootstrapService_UploadEncrypted_FullMethodName:                    "secret.bootstrap",
 		agentv1.SecretBootstrapService_Complete_FullMethodName:                           "secret.bootstrap",
 		agentv1.AdminService_CreateServiceKey_FullMethodName:                             "admin.credentials",
 		agentv1.AdminService_RevokeServiceKey_FullMethodName:                             "admin.credentials",
+	}
+	for method, scope := range knowledgeServiceScopes() {
+		scopes[method] = scope
 	}
 	serviceKeyScopes := auth.StaticScopeResolver(scopes)
 	resolver := auth.ScopeResolver(func(fullMethod string) (string, bool) {
@@ -271,9 +292,11 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))
+	agentv1.RegisterKnowledgeServiceServer(grpcServer, rpcapi.NewKnowledgeService(options.knowledgeCoordinator))
 	cloudControl := rpcapi.NewCloudControlServiceWithGoals(options.cloudCoordinator, options.agentInstanceID, cloudStatuses, options.cloudDestroy, options.cloudGoals, options.cloudEntrypoint).
 		WithFoundation(options.cloudFoundation).
 		WithManagedAcceptance(options.cloudManaged).
+		WithManagedKnowledgeLifecycle(options.cloudManagedLifecycle).
 		WithManagedPreparation(options.cloudPreparation).
 		WithPairing(options.cloudPairing, options.cloudPairingApprovals)
 	if rootHelperEnabled {
@@ -282,6 +305,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	agentv1.RegisterCloudControlServiceServer(grpcServer, cloudControl)
 	agentv1.RegisterSecretBootstrapServiceServer(grpcServer, rpcapi.NewSecretBootstrapService(options.secretBootstrap, options.agentInstanceID))
 	agentv1.RegisterWorkerControlServiceServer(grpcServer, rpcapi.NewWorkerControlService(options.workerService, options.workerVerifier, options.workerMaterializer, options.workerMilestones))
+	agentv1.RegisterKnowledgeWorkerControlServiceServer(grpcServer, rpcapi.NewKnowledgeWorkerControlService(options.workerService, options.knowledgeWorkerBroker))
 	if rootHelperEnabled {
 		agentv1.RegisterWorkerServiceOperationServiceServer(grpcServer, rpcapi.NewWorkerServiceOperationService(
 			options.workerService, options.workerOperations, options.rootHelperCapabilities))
@@ -298,6 +322,22 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	return &Server{grpc: grpcServer, health: healthServer}, nil
 }
 
+func knowledgeServiceScopes() map[string]string {
+	return map[string]string{
+		agentv1.KnowledgeService_GetKnowledgeCapabilities_FullMethodName:        "knowledge.read",
+		agentv1.KnowledgeService_GetKnowledgeConfig_FullMethodName:              "knowledge.read",
+		agentv1.KnowledgeService_PutKnowledgeConfig_FullMethodName:              "knowledge.write",
+		agentv1.KnowledgeService_ListKnowledgeSources_FullMethodName:            "knowledge.read",
+		agentv1.KnowledgeService_StartKnowledgeAttachmentUpload_FullMethodName:  "knowledge.write",
+		agentv1.KnowledgeService_AppendKnowledgeAttachmentChunk_FullMethodName:  "knowledge.write",
+		agentv1.KnowledgeService_CommitKnowledgeAttachmentUpload_FullMethodName: "knowledge.write",
+		agentv1.KnowledgeService_CreateKnowledgeMemory_FullMethodName:           "knowledge.write",
+		agentv1.KnowledgeService_DeleteKnowledgeSource_FullMethodName:           "knowledge.write",
+		agentv1.KnowledgeService_SearchKnowledge_FullMethodName:                 "knowledge.search",
+		agentv1.KnowledgeService_GetKnowledgeStatus_FullMethodName:              "knowledge.read",
+	}
+}
+
 func isWorkerSelfAuthenticatedMethod(fullMethod string) bool {
 	switch fullMethod {
 	case agentv1.WorkerControlService_CreateIdentityChallenge_FullMethodName,
@@ -309,6 +349,8 @@ func isWorkerSelfAuthenticatedMethod(fullMethod string) bool {
 		agentv1.WorkerControlService_RecordEvidence_FullMethodName,
 		agentv1.WorkerControlService_EmitMilestone_FullMethodName,
 		agentv1.WorkerControlService_Complete_FullMethodName,
+		agentv1.KnowledgeWorkerControlService_AcquireKnowledgeOperation_FullMethodName,
+		agentv1.KnowledgeWorkerControlService_CompleteKnowledgeOperation_FullMethodName,
 		agentv1.WorkerServiceOperationService_Get_FullMethodName,
 		agentv1.WorkerServiceOperationService_Claim_FullMethodName,
 		agentv1.WorkerServiceOperationService_AcquireNext_FullMethodName,

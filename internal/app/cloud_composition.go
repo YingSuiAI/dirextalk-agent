@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	cloudfoundation "github.com/YingSuiAI/dirextalk-agent/internal/cloud/foundation"
 	cloudmanaged "github.com/YingSuiAI/dirextalk-agent/internal/cloud/managed"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/managedlifecycle"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
@@ -27,6 +28,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/healthprobe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/helperkey"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/pairing"
 	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
@@ -45,6 +47,7 @@ type CloudComposition struct {
 	Entrypoint                 *entrypoint.Service
 	FoundationLifecycle        *cloudfoundation.Service
 	ManagedAcceptance          *cloudmanaged.Service
+	ManagedKnowledgeLifecycle  *managedlifecycle.Service
 	ManagedPreparation         *serviceoperation.Service
 	Dispatcher                 *cloudexecution.Dispatcher
 	Lifecycle                  *cloudexecution.EphemeralDestroyController
@@ -83,6 +86,7 @@ type CloudCompositionOption func(*cloudCompositionOptions)
 
 type cloudCompositionOptions struct {
 	enableManagedPreparationAWS bool
+	knowledge                   managedKnowledgeConfigCoordinator
 }
 
 // WithManagedPreparationAWS enables the public ManagedPreparation API and its
@@ -90,6 +94,13 @@ type cloudCompositionOptions struct {
 // existing AWS-control gate.
 func WithManagedPreparationAWS() CloudCompositionOption {
 	return func(options *cloudCompositionOptions) { options.enableManagedPreparationAWS = true }
+}
+
+// WithManagedKnowledgeBinding makes a succeeded Managed acceptance include
+// the exact retained Knowledge config binding. The coordinator still ignores
+// every non-retained Recipe.
+func WithManagedKnowledgeBinding(coordinator *knowledge.Service) CloudCompositionOption {
+	return func(options *cloudCompositionOptions) { options.knowledge = coordinator }
 }
 
 // NewCloudGoalOutputAdapter composes the durable provider path only after a
@@ -108,7 +119,7 @@ func (composition *CloudComposition) NewCloudGoalOutputAdapter(model planning.Cl
 // Recover resumes exact, pre-authorized Foundation operations and persists any
 // missing post-Foundation launch handoff before accepting new cloud mutations.
 func (composition *CloudComposition) Recover(ctx context.Context) error {
-	if composition == nil || composition.FoundationConnections == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
+	if composition == nil || composition.FoundationConnections == nil || composition.FoundationLifecycle == nil || composition.ManagedKnowledgeLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.Lifecycle == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
 		return errors.New("Foundation recovery is unavailable")
 	}
 	if err := composition.FoundationConnections.RecoverPendingFoundationOperations(ctx, 64); err != nil {
@@ -132,6 +143,9 @@ func (composition *CloudComposition) Recover(ctx context.Context) error {
 	if err := composition.managedAcceptanceExecutor.RunOnce(ctx); err != nil {
 		return err
 	}
+	if err := composition.ManagedKnowledgeLifecycle.ReconcileOnce(ctx, 64); err != nil {
+		return err
+	}
 	if err := composition.orphanRecovery.RunOnce(ctx); err != nil {
 		return err
 	}
@@ -150,12 +164,12 @@ func (composition *CloudComposition) Close() {
 }
 
 func (composition *CloudComposition) Run(ctx context.Context) error {
-	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.FoundationLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
+	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.FoundationLifecycle == nil || composition.ManagedKnowledgeLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errorsChannel := make(chan error, 10)
+	errorsChannel := make(chan error, 11)
 	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
 	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
 	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
@@ -166,9 +180,10 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	go func() { errorsChannel <- composition.foundationExecutor.Run(runContext) }()
 	go func() { errorsChannel <- composition.managedAcceptanceExecutor.Run(runContext) }()
 	go func() { errorsChannel <- composition.managedPreparationRecovery.Run(runContext) }()
+	go func() { errorsChannel <- composition.ManagedKnowledgeLifecycle.Run(runContext, time.Second) }()
 	first := <-errorsChannel
 	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
+	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -193,6 +208,9 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		if option != nil {
 			option(&options)
 		}
+	}
+	if options.knowledge == nil {
+		return nil, errors.New("cloud composition requires the Knowledge binding coordinator")
 	}
 	facts, err := postgres.NewCloudAdapter(store)
 	if err != nil {
@@ -251,7 +269,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, manager, time.Now)
+	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, manager, workerControlTarget, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -451,8 +469,20 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		closeRootHelper()
 		return nil, err
 	}
+	managedLifecycleStore, err := postgres.NewManagedKnowledgeLifecycleStore(store)
+	if err != nil {
+		closeRootHelper()
+		return nil, err
+	}
+	managedKnowledgeLifecycle, err := managedlifecycle.NewService(
+		agentInstanceID, managedLifecycleStore, approvalReads, managedLifecycleStore, time.Now,
+	)
+	if err != nil || managedKnowledgeLifecycle.ConfigureWorkerOperations(workerOperations) != nil {
+		closeRootHelper()
+		return nil, errors.New("managed Knowledge lifecycle composition is invalid")
+	}
 	rootHelperCapabilities, err := newProductionRootHelperCapabilityIssuer(
-		workerStore, rootHelperStore, installerIssuer, time.Now,
+		workerStore, rootHelperStore, installerIssuer, time.Now, managedLifecycleStore,
 	)
 	if err != nil {
 		closeRootHelper()
@@ -627,7 +657,12 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	managedAcceptor, err := newManagedAcceptanceResourceAcceptor(store, resourceStore, runtimeFactory)
+	managedKnowledge, err := newManagedKnowledgeBinder(agentInstanceID, store, options.knowledge)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	managedAcceptor, err := newManagedAcceptanceResourceAcceptor(store, resourceStore, runtimeFactory, managedKnowledge)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -663,7 +698,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	}
 	retainRootHelperDeriver = true
 	return &CloudComposition{
-		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, FoundationLifecycle: foundationLifecycle, ManagedAcceptance: managedAcceptance, Dispatcher: dispatcher, Lifecycle: lifecycle,
+		Coordinator: coordinator, DestroyCoordinator: destroyCoordinator, Entrypoint: entryService, FoundationLifecycle: foundationLifecycle, ManagedAcceptance: managedAcceptance, ManagedKnowledgeLifecycle: managedKnowledgeLifecycle, Dispatcher: dispatcher, Lifecycle: lifecycle,
 		WorkerIdentityVerifier: identityVerifier, WorkerIdentityMaterializer: identityMaterializer, WorkerMilestones: milestoneWriter,
 		FoundationConnections: connections, ActiveQuotes: activeQuotes, ActivePlacements: activePlacements, ProviderPlans: providerPlans,
 		ManifestRecovery:           manifestRecovery,

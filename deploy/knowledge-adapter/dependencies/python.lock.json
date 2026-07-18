@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "python": "3.12",
+  "platform": "manylinux_x86_64",
+  "packages": [
+    {
+      "name": "numpy",
+      "version": "2.5.1",
+      "filename": "numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "size": 16672469,
+      "sha256": "59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca"
+    },
+    {
+      "name": "onnxruntime",
+      "version": "1.27.0",
+      "filename": "onnxruntime-1.27.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "size": 18658316,
+      "sha256": "7c65a7438632d55dfbc8a02ee60bd6cf7dd9d1ba05a43d4b851452f32338e194"
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.23.1",
+      "filename": "tokenizers-0.23.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "size": 3346235,
+      "sha256": "5075b405006415ea148a992d093699c66eb01952bf59f4d5727089a98bda45a4"
+    }
+  ]
+}

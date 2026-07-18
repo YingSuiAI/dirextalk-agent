@@ -47,6 +47,13 @@ const (
 	SecurityGroupCreateDedicated SecurityGroupMode = "create_dedicated"
 )
 
+// PrivateConnectivityMode is an explicit opt-in because the zero value is the
+// historical placement contract (public IPv4 or public NAT egress). The
+// no-NAT mode is fully bound into Quote/Plan/Approval hashes.
+type PrivateConnectivityMode string
+
+const PrivateConnectivityNoNATEndpointsV1 PrivateConnectivityMode = "no_nat_endpoints_v1"
+
 type RetentionClass string
 
 const (
@@ -136,17 +143,20 @@ type ResourceScopeV1 struct {
 }
 
 type NetworkScopeV1 struct {
-	VPCID                  string            `json:"vpc_id"`
-	SubnetID               string            `json:"subnet_id"`
-	SecurityGroupMode      SecurityGroupMode `json:"security_group_mode"`
-	SecurityGroupID        string            `json:"security_group_id,omitempty"`
-	PublicIPv4             bool              `json:"public_ipv4"`
-	EntryPoint             EntryPointKind    `json:"entry_point"`
-	PublicExposure         bool              `json:"public_exposure"`
-	IngressPorts           []uint32          `json:"ingress_ports,omitempty"`
-	Hostname               string            `json:"hostname,omitempty"`
-	TLSRequired            bool              `json:"tls_required"`
-	AuthenticationRequired bool              `json:"authentication_required"`
+	VPCID                  string                  `json:"vpc_id"`
+	SubnetID               string                  `json:"subnet_id"`
+	SecurityGroupMode      SecurityGroupMode       `json:"security_group_mode"`
+	SecurityGroupID        string                  `json:"security_group_id,omitempty"`
+	PublicIPv4             bool                    `json:"public_ipv4"`
+	EntryPoint             EntryPointKind          `json:"entry_point"`
+	PublicExposure         bool                    `json:"public_exposure"`
+	IngressPorts           []uint32                `json:"ingress_ports,omitempty"`
+	Hostname               string                  `json:"hostname,omitempty"`
+	TLSRequired            bool                    `json:"tls_required"`
+	AuthenticationRequired bool                    `json:"authentication_required"`
+	RouteTableID           string                  `json:"route_table_id,omitempty"`
+	ControlPlaneEndpoint   string                  `json:"control_plane_endpoint,omitempty"`
+	PrivateConnectivity    PrivateConnectivityMode `json:"private_connectivity,omitempty"`
 }
 
 type SecretScopeV1 struct {
@@ -306,6 +316,7 @@ type PrivateEndpointPricingV1 struct {
 	Service         PrivateEndpointServiceV1 `json:"service"`
 	MonthlyHours    uint32                   `json:"monthly_hours"`
 	DataMiBPerMonth uint64                   `json:"data_mib_per_month"`
+	EndpointType    PrivateEndpointTypeV1    `json:"endpoint_type,omitempty"`
 }
 
 type PricingSnapshotV1 struct {

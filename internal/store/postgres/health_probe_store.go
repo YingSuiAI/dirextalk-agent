@@ -464,18 +464,30 @@ func updateManagedServiceHealth(ctx context.Context, tx pgx.Tx, deploymentID uui
 	if monitorKind != resource.ProbeMonitorService {
 		return nil
 	}
-	var serviceID uuid.UUID
+	var serviceID, agentInstanceID uuid.UUID
 	var ownerID, state string
 	var revision int64
 	err := tx.QueryRow(ctx, `
-		SELECT service_id,owner_id,state,revision FROM managed_services
+		SELECT service_id,agent_instance_id,owner_id,state,revision FROM managed_services
 		WHERE deployment_id=$1 FOR UPDATE`, deploymentID,
-	).Scan(&serviceID, &ownerID, &state, &revision)
+	).Scan(&serviceID, &agentInstanceID, &ownerID, &state, &revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("lock managed service health: %w", err)
+	}
+	var lifecycleReserved bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM managed_knowledge_lifecycle_operations
+		WHERE agent_instance_id=$1 AND managed_service_id=$2
+		  AND execution_fenced_at IS NOT NULL AND reservation_released_at IS NULL
+		  AND status IN ('scheduled','running')
+	)`, agentInstanceID, serviceID).Scan(&lifecycleReserved); err != nil {
+		return fmt.Errorf("read managed service lifecycle reservation: %w", err)
+	}
+	if lifecycleReserved {
+		return nil
 	}
 	if state != "active" && state != "degraded" {
 		return nil

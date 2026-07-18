@@ -174,6 +174,68 @@ func TestAWSPrivateEndpointAndSnapshotSpecsBindDependenciesAndRetention(t *testi
 	}
 }
 
+func TestAWSNoNATEndpointSpecsEnforceMutuallyExclusiveGatewayAndInterfaceShapes(t *testing.T) {
+	t.Parallel()
+	gateway := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Endpoint: &AWSVPCEndpointSpecV1{
+		VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.s3",
+		EndpointType: AWSVPCEndpointTypeGateway, RouteTableIDs: []string{"rtb-0123456789abcdef0"},
+	}}
+	if err := gateway.Validate(TypeEndpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAWSDependencies(TypeEndpoint, nil, gateway); err != nil {
+		t.Fatal(err)
+	}
+	gatewayWithGroup := gateway.Clone()
+	gatewayWithGroup.Endpoint.ExistingSecurityGroupID = "sg-0123456789abcdef0"
+	if err := gatewayWithGroup.Validate(TypeEndpoint); err == nil {
+		t.Fatal("Gateway endpoint accepted a security group")
+	}
+
+	interfaceEndpoint := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, Endpoint: &AWSVPCEndpointSpecV1{
+		VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.secretsmanager",
+		EndpointType: AWSVPCEndpointTypeInterface, SubnetID: "subnet-0123456789abcdef0", PrivateDNSEnabled: true,
+	}}
+	group := ProviderDependency{ResourceID: "endpoint-group", Type: TypeSG, ProviderID: "sg-0123456789abcdef0"}
+	if err := interfaceEndpoint.Validate(TypeEndpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAWSDependencies(TypeEndpoint, []ProviderDependency{group}, interfaceEndpoint); err != nil {
+		t.Fatal(err)
+	}
+	interfaceWithRoute := interfaceEndpoint.Clone()
+	interfaceWithRoute.Endpoint.RouteTableIDs = []string{"rtb-0123456789abcdef0"}
+	if err := interfaceWithRoute.Validate(TypeEndpoint); err == nil {
+		t.Fatal("Interface endpoint accepted a route table")
+	}
+	if err := ValidateAWSDependencies(TypeEndpoint, nil, interfaceEndpoint); err == nil {
+		t.Fatal("explicit Interface endpoint accepted no dedicated security group")
+	}
+
+	endpointGroup := &AWSResourceSpecV1{SchemaVersion: AWSResourceSpecSchemaV1, SecurityGroup: &AWSSecurityGroupSpecV1{
+		VPCID: "vpc-0123456789abcdef0", Description: "stateful endpoint ingress only",
+	}}
+	if err := endpointGroup.Validate(TypeSG); err != nil {
+		t.Fatalf("endpoint security group with no explicit egress rejected: %v", err)
+	}
+}
+
+func TestAWSEC2DependenciesAllowExactlyBothPrivateEndpoints(t *testing.T) {
+	t.Parallel()
+	valid := []ProviderDependency{
+		{ResourceID: "eni-resource", Type: TypeENI, ProviderID: "eni-0123456789abcdef0"},
+		{ResourceID: "volume-resource", Type: TypeEBS, ProviderID: "vol-0123456789abcdef0"},
+		{ResourceID: "s3-endpoint", Type: TypeEndpoint, ProviderID: "vpce-0123456789abcdef0"},
+		{ResourceID: "secrets-endpoint", Type: TypeEndpoint, ProviderID: "vpce-0fedcba9876543210"},
+	}
+	if err := ValidateAWSDependencies(TypeEC2, valid, workerInstanceSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateAWSDependencies(TypeEC2, valid[:3], workerInstanceSpec()); err == nil {
+		t.Fatal("EC2 accepted only one of the required private endpoints")
+	}
+}
+
 func TestAWSReplacementVolumeBindsExactlyOneSnapshotResource(t *testing.T) {
 	t.Parallel()
 	const snapshotResourceID = "33333333-3333-4333-8333-333333333333"

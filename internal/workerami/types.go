@@ -16,6 +16,9 @@ import (
 const (
 	ImageManifestSchemaV1          = "dirextalk.agent.worker-ami/v1"
 	BuilderCleanupEvidenceSchemaV1 = "dirextalk.agent.worker-ami-builder-cleanup/v1"
+	BuilderReachabilitySchemaV2    = "dirextalk.agent.worker-ami-builder-reachability/v2"
+	NetworkModeLegacyV1            = "legacy-preconfigured-https/v1"
+	NetworkModeS3GatewayV2         = "transient-s3-gateway/v2"
 
 	TagAgentInstanceID       = "dirextalk:agent_instance_id"
 	TagReleaseManifestDigest = "dirextalk:release_manifest_digest"
@@ -47,28 +50,36 @@ type RootFSArtifactV1 struct {
 // private routing, zero ingress, and the base image are independently checked
 // by Provider.ValidateEnvironment before any mutation.
 type BuildRequestV1 struct {
-	ReleaseManifest       releaseartifact.ReleaseManifestV1
-	ReleaseManifestDigest string
-	RootFS                RootFSArtifactV1
-	Region                string
-	AccountID             string
-	AgentInstanceID       string
-	BaseAMIID             string
-	BaseAMIOwnerID        string
-	PrivateSubnetID       string
-	ZeroIngressSGID       string
-	ArtifactBucket        string
-	ArtifactKey           string
-	ArtifactKMSKeyARN     string
-	BuilderInstanceType   string
-	RootDeviceName        string
-	Timeout               time.Duration
+	ReleaseManifest        releaseartifact.ReleaseManifestV1
+	ReleaseManifestDigest  string
+	RootFS                 RootFSArtifactV1
+	Region                 string
+	AccountID              string
+	AgentInstanceID        string
+	BaseAMIID              string
+	BaseAMIOwnerID         string
+	PrivateSubnetID        string
+	ZeroIngressSGID        string
+	ArtifactBucket         string
+	ArtifactKey            string
+	ArtifactKMSKeyARN      string
+	BuilderInstanceType    string
+	RootDeviceName         string
+	Timeout                time.Duration
+	NetworkMode            string
+	FoundationStackName    string
+	FoundationStackID      string
+	FoundationVPCID        string
+	FoundationRouteTableID string
+	S3PrefixListID         string
 
 	// ExistingBuilderCleanupEvidence resumes an interrupted cleanup. The
 	// recorder must durably persist the exact provider IDs before the builder
 	// is terminated; it is deliberately excluded from the build identity.
-	ExistingBuilderCleanupEvidence *BuilderCleanupEvidenceV1
-	RecordBuilderCleanupEvidence   func(BuilderCleanupEvidenceV1) error
+	ExistingBuilderCleanupEvidence      *BuilderCleanupEvidenceV1
+	RecordBuilderCleanupEvidence        func(BuilderCleanupEvidenceV1) error
+	ExistingBuilderReachabilityEvidence *BuilderReachabilityEvidenceV2
+	RecordBuilderReachabilityEvidence   func(BuilderReachabilityEvidenceV2) error
 }
 
 // BuildEnvironmentV1 is a read-only preflight request. Implementations must
@@ -76,17 +87,63 @@ type BuildRequestV1 struct {
 // subnet cannot assign a public address, the security group has no ingress,
 // and the base AMI matches Architecture and RootDeviceName.
 type BuildEnvironmentV1 struct {
-	Region              string
-	AccountID           string
-	Architecture        string
-	BaseAMIID           string
-	BaseAMIOwnerID      string
-	PrivateSubnetID     string
-	ZeroIngressSGID     string
-	ArtifactBucket      string
-	ArtifactKMSKeyARN   string
-	BuilderInstanceType string
-	RootDeviceName      string
+	Region                 string
+	AccountID              string
+	AgentInstanceID        string
+	Architecture           string
+	BaseAMIID              string
+	BaseAMIOwnerID         string
+	PrivateSubnetID        string
+	ZeroIngressSGID        string
+	ArtifactBucket         string
+	ArtifactKMSKeyARN      string
+	BuilderInstanceType    string
+	RootDeviceName         string
+	NetworkMode            string
+	FoundationStackName    string
+	FoundationStackID      string
+	FoundationVPCID        string
+	FoundationRouteTableID string
+	S3PrefixListID         string
+	ExpectedVPCEndpointID  string
+}
+
+// BuilderReachabilityV2 is the exact transient network capability required by
+// a builder with no IAM profile: one regional S3 Gateway endpoint on one
+// Foundation route table and one TCP/443 egress rule to the matching AWS
+// managed S3 prefix list. No CIDR or arbitrary service name is accepted.
+type BuilderReachabilityV2 struct {
+	AgentInstanceID string
+	AccountID       string
+	Region          string
+	BuildDigest     string
+	VPCID           string
+	RouteTableID    string
+	SecurityGroupID string
+	S3PrefixListID  string
+	ArtifactBucket  string
+	ArtifactKey     string
+	Tags            map[string]string
+}
+
+// BuilderReachabilityEvidenceV2 is written after each provider ID is
+// recovered and before a builder is launched. SecurityGroupRuleID may be empty
+// only while recovering an interrupted endpoint-first preparation; a complete
+// evidence record is required before launch.
+type BuilderReachabilityEvidenceV2 struct {
+	SchemaVersion       string `json:"schema_version"`
+	AgentInstanceID     string `json:"agent_instance_id"`
+	AccountID           string `json:"account_id"`
+	Region              string `json:"region"`
+	BuildDigest         string `json:"build_digest"`
+	VPCID               string `json:"vpc_id"`
+	RouteTableID        string `json:"route_table_id"`
+	SecurityGroupID     string `json:"security_group_id"`
+	S3PrefixListID      string `json:"s3_prefix_list_id"`
+	ArtifactBucket      string `json:"artifact_bucket"`
+	ArtifactKey         string `json:"artifact_key"`
+	VPCEndpointID       string `json:"vpc_endpoint_id"`
+	SecurityGroupRuleID string `json:"security_group_rule_id,omitempty"`
 }
 
 // ArtifactObjectV1 identifies one immutable, versioned, SSE-KMS rootfs object.
@@ -257,6 +314,9 @@ type ImageManifestV1 struct {
 // It intentionally has no arbitrary EC2, S3, IAM, shell, or tag passthrough.
 type Provider interface {
 	ValidateEnvironment(context.Context, BuildEnvironmentV1) error
+	PrepareBuilderReachability(context.Context, BuilderReachabilityV2, *BuilderReachabilityEvidenceV2, func(BuilderReachabilityEvidenceV2) error) (BuilderReachabilityEvidenceV2, error)
+	CleanupBuilderReachability(context.Context, BuilderReachabilityEvidenceV2, func(BuilderReachabilityEvidenceV2) error) error
+	VerifyBuilderReachabilityAbsent(context.Context, BuilderReachabilityEvidenceV2) error
 
 	FindArtifact(context.Context, ArtifactObjectV1) (ArtifactVersionV1, bool, error)
 	PutArtifact(context.Context, ArtifactObjectV1, io.Reader) (ArtifactVersionV1, error)

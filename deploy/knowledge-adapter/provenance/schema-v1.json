@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dirextalk.ai/schemas/knowledge-provenance-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "qdrant", "model", "adapter_bundle"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "qdrant": {"$ref": "#/$defs/artifact"},
+    "adapter_bundle": {"$ref": "#/$defs/artifact"},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "revision", "files"],
+      "properties": {
+        "repository": {"const": "intfloat/multilingual-e5-small"},
+        "revision": {"pattern": "^[0-9a-f]{40}$"},
+        "files": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/file"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "size": {"type": "integer", "minimum": 1},
+        "sha256": {"pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "size", "sha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "size": {"type": "integer", "minimum": 1},
+        "sha256": {"pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

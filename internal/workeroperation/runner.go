@@ -13,13 +13,17 @@ type RootHelper interface {
 }
 
 type RestartCapability struct {
-	OperationID                     string
-	DeploymentID                    string
-	OwnerID                         string
-	LifecycleRestartRef             string
-	ExecutionBundleDigest           string
-	ExpectedInstalledManifestDigest string
-	LeaseEpoch                      int64
+	OperationID                      string
+	DeploymentID                     string
+	OwnerID                          string
+	Action                           Action
+	LifecycleRestartRef              string
+	ExecutionBundleDigest            string
+	ExpectedInstalledManifestDigest  string
+	ExpectedDeploymentRevision       int64
+	ExpectedManagedServiceRevision   int64
+	ExpectedKnowledgeBindingRevision int64
+	LeaseEpoch                       int64
 }
 
 type RunnerControl interface {
@@ -34,6 +38,10 @@ type Runner struct {
 }
 
 func (runner Runner) RunRestart(ctx context.Context, request ClaimRequest) (Operation, error) {
+	return runner.RunLifecycle(ctx, request)
+}
+
+func (runner Runner) RunLifecycle(ctx context.Context, request ClaimRequest) (Operation, error) {
 	current, err := runner.Control.Get(ctx, request.OperationID)
 	if err != nil {
 		return Operation{}, err
@@ -47,9 +55,13 @@ func (runner Runner) RunRestart(ctx context.Context, request ClaimRequest) (Oper
 	}
 	receipt, err := runner.Helper.Restart(ctx, RestartCapability{
 		OperationID: assignment.OperationID, DeploymentID: assignment.DeploymentID, OwnerID: assignment.OwnerID,
+		Action:              assignment.Action,
 		LifecycleRestartRef: assignment.LifecycleRestartRef, ExecutionBundleDigest: assignment.ExecutionBundleDigest,
-		ExpectedInstalledManifestDigest: assignment.ExpectedInstalledManifestDigest,
-		LeaseEpoch:                      assignment.LeaseEpoch,
+		ExpectedInstalledManifestDigest:  assignment.ExpectedInstalledManifestDigest,
+		ExpectedDeploymentRevision:       assignment.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   assignment.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: assignment.ExpectedKnowledgeBindingRevision,
+		LeaseEpoch:                       assignment.LeaseEpoch,
 	})
 	if err != nil {
 		return runner.Control.Complete(ctx, CompleteRequest{

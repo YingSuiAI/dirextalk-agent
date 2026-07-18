@@ -17,9 +17,10 @@ import (
 )
 
 type capabilityIssuerStub struct {
-	issuer   *installer.TrustIssuer
-	delivery installer.DeliveryV1
-	now      time.Time
+	issuer     *installer.TrustIssuer
+	delivery   installer.DeliveryV1
+	now        time.Time
+	restartErr error
 }
 
 func newCapabilityIssuerStub(t *testing.T, agentID, deploymentID string, now time.Time) *capabilityIssuerStub {
@@ -71,6 +72,9 @@ func (stub *capabilityIssuerStub) IssueBootstrapCapability(_ context.Context, _ 
 
 func (stub *capabilityIssuerStub) IssueRestartCapability(_ context.Context, _ worker.Assignment,
 	operation workeroperation.Assignment) (installer.DeliveryV1, installer.SignedRootHelperRestartCapabilityV1, error) {
+	if stub.restartErr != nil {
+		return installer.DeliveryV1{}, installer.SignedRootHelperRestartCapabilityV1{}, stub.restartErr
+	}
 	signed, err := stub.issuer.IssueRootHelperRestartCapability(stub.delivery, helperkey.DeviceBinding{
 		AgentInstanceID: stub.delivery.Config.Binding.AgentInstanceID, DeploymentID: operation.DeploymentID,
 		DeliveryID: uuid.NewString(), HelperID: helperkey.DefaultHelperID, SignerKeyID: "root-key-1",

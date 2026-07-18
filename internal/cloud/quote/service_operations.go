@@ -12,14 +12,23 @@ import (
 type PrivateEndpointServiceV1 string
 
 const (
-	PrivateEndpointServiceS3 PrivateEndpointServiceV1 = "s3"
+	PrivateEndpointServiceS3             PrivateEndpointServiceV1 = "s3"
+	PrivateEndpointServiceSecretsManager PrivateEndpointServiceV1 = "secretsmanager"
+)
+
+type PrivateEndpointTypeV1 string
+
+const (
+	PrivateEndpointTypeGateway   PrivateEndpointTypeV1 = "gateway"
+	PrivateEndpointTypeInterface PrivateEndpointTypeV1 = "interface"
 )
 
 type EndpointSecurityGroupSourceV1 string
 
 const (
-	EndpointSecurityGroupPlanExisting    EndpointSecurityGroupSourceV1 = "plan_existing"
-	EndpointSecurityGroupWorkerDedicated EndpointSecurityGroupSourceV1 = "worker_dedicated"
+	EndpointSecurityGroupPlanExisting                EndpointSecurityGroupSourceV1 = "plan_existing"
+	EndpointSecurityGroupWorkerDedicated             EndpointSecurityGroupSourceV1 = "worker_dedicated"
+	EndpointSecurityGroupEndpointDedicatedFromWorker EndpointSecurityGroupSourceV1 = "endpoint_dedicated_from_worker"
 )
 
 type SnapshotOperationDispositionV1 string
@@ -44,6 +53,9 @@ type PrivateEndpointOperationSpecV1 struct {
 	PrivateDNSEnabled   bool                          `json:"private_dns_enabled"`
 	MonthlyHours        uint32                        `json:"monthly_hours"`
 	DataMiBPerMonth     uint64                        `json:"data_mib_per_month"`
+	// EndpointType is omitted only by the frozen V2 compatibility contract,
+	// where an empty value continues to mean an Interface endpoint.
+	EndpointType PrivateEndpointTypeV1 `json:"endpoint_type,omitempty"`
 }
 
 type SnapshotOperationSpecV1 struct {
@@ -81,6 +93,7 @@ func ValidateServiceOperations(value ServiceOperationScopeV1, resource ResourceS
 		return fmt.Errorf("service_operations exceed the supported operation budget")
 	}
 	seenKeys := make(map[string]struct{}, len(value.PrivateEndpoints)+len(value.Snapshots))
+	var gatewayS3, interfaceSecrets int
 	for index, endpoint := range value.PrivateEndpoints {
 		name := fmt.Sprintf("service_operations.private_endpoints[%d]", index)
 		if err := validateIdentifier(name+".operation_key", endpoint.OperationKey); err != nil {
@@ -90,24 +103,48 @@ func ValidateServiceOperations(value ServiceOperationScopeV1, resource ResourceS
 			return fmt.Errorf("service_operations contain duplicate operation keys")
 		}
 		seenKeys[endpoint.OperationKey] = struct{}{}
-		if endpoint.Service != PrivateEndpointServiceS3 {
+		if endpoint.Service != PrivateEndpointServiceS3 && endpoint.Service != PrivateEndpointServiceSecretsManager {
 			return fmt.Errorf("%s.service is not in the approved endpoint allowlist", name)
 		}
-		switch endpoint.SecurityGroupSource {
-		case EndpointSecurityGroupPlanExisting:
-			if normalizedSecurityGroupMode(network) != SecurityGroupExisting || network.SecurityGroupID == "" {
-				return fmt.Errorf("%s.security_group_source requires the exact plan existing security group", name)
+		typeValue := EffectivePrivateEndpointType(endpoint.EndpointType)
+		switch typeValue {
+		case PrivateEndpointTypeGateway:
+			if network.PrivateConnectivity != PrivateConnectivityNoNATEndpointsV1 || endpoint.Service != PrivateEndpointServiceS3 ||
+				endpoint.SecurityGroupSource != "" || endpoint.PrivateDNSEnabled || endpoint.MonthlyHours != 0 || endpoint.DataMiBPerMonth != 0 {
+				return fmt.Errorf("%s gateway endpoint scope is invalid", name)
 			}
-		case EndpointSecurityGroupWorkerDedicated:
-			if normalizedSecurityGroupMode(network) != SecurityGroupCreateDedicated || network.SecurityGroupID != "" {
-				return fmt.Errorf("%s.security_group_source requires the plan worker dedicated security group", name)
+			gatewayS3++
+		case PrivateEndpointTypeInterface:
+			switch endpoint.SecurityGroupSource {
+			case EndpointSecurityGroupPlanExisting:
+				if endpoint.EndpointType != "" || endpoint.Service != PrivateEndpointServiceS3 ||
+					normalizedSecurityGroupMode(network) != SecurityGroupExisting || network.SecurityGroupID == "" {
+					return fmt.Errorf("%s.security_group_source requires the exact plan existing security group", name)
+				}
+			case EndpointSecurityGroupWorkerDedicated:
+				if endpoint.EndpointType != "" || endpoint.Service != PrivateEndpointServiceS3 ||
+					normalizedSecurityGroupMode(network) != SecurityGroupCreateDedicated || network.SecurityGroupID != "" {
+					return fmt.Errorf("%s.security_group_source requires the plan worker dedicated security group", name)
+				}
+			case EndpointSecurityGroupEndpointDedicatedFromWorker:
+				if endpoint.EndpointType != PrivateEndpointTypeInterface || network.PrivateConnectivity != PrivateConnectivityNoNATEndpointsV1 ||
+					normalizedSecurityGroupMode(network) != SecurityGroupCreateDedicated || network.SecurityGroupID != "" ||
+					endpoint.Service != PrivateEndpointServiceSecretsManager || !endpoint.PrivateDNSEnabled {
+					return fmt.Errorf("%s endpoint-dedicated security group scope is invalid", name)
+				}
+				interfaceSecrets++
+			default:
+				return fmt.Errorf("%s.security_group_source is invalid", name)
+			}
+			if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth == 0 || endpoint.DataMiBPerMonth > 1<<50 {
+				return fmt.Errorf("%s usage assumptions are invalid", name)
 			}
 		default:
-			return fmt.Errorf("%s.security_group_source is invalid", name)
+			return fmt.Errorf("%s.endpoint_type is invalid", name)
 		}
-		if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth > 1<<50 {
-			return fmt.Errorf("%s usage assumptions are invalid", name)
-		}
+	}
+	if network.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 && (len(value.PrivateEndpoints) != 2 || gatewayS3 != 1 || interfaceSecrets != 1) {
+		return fmt.Errorf("service_operations must contain exactly the S3 Gateway and Secrets Manager Interface endpoints")
 	}
 	slots := make(map[string]VolumeScopeV1, len(resource.VolumeScopes))
 	for _, slot := range resource.VolumeScopes {
@@ -158,6 +195,9 @@ func validateServiceOperationUsage(scope *ServiceOperationScopeV1, resource Reso
 	var expectedHours uint64
 	var expectedData uint64
 	for _, endpoint := range scope.PrivateEndpoints {
+		if EffectivePrivateEndpointType(endpoint.EndpointType) != PrivateEndpointTypeInterface {
+			continue
+		}
 		var ok bool
 		if expectedHours, ok = checkedAdd(expectedHours, uint64(endpoint.MonthlyHours)); !ok {
 			return fmt.Errorf("private endpoint hourly usage overflows")
@@ -212,8 +252,17 @@ func NormalizeServiceOperations(value *ServiceOperationScopeV1) *ServiceOperatio
 // PrivateEndpointServiceName derives the only provider-facing name supported
 // by the v2 contract. Region validation belongs to the enclosing scope.
 func PrivateEndpointServiceName(region string, service PrivateEndpointServiceV1) (string, error) {
-	if !regionPattern.MatchString(region) || service != PrivateEndpointServiceS3 {
+	if !regionPattern.MatchString(region) || (service != PrivateEndpointServiceS3 && service != PrivateEndpointServiceSecretsManager) {
 		return "", fmt.Errorf("private endpoint service scope is invalid")
 	}
-	return "com.amazonaws." + region + ".s3", nil
+	return "com.amazonaws." + region + "." + string(service), nil
+}
+
+// EffectivePrivateEndpointType preserves the frozen V2 contract: endpoint
+// specs written before endpoint_type existed were Interface endpoints.
+func EffectivePrivateEndpointType(value PrivateEndpointTypeV1) PrivateEndpointTypeV1 {
+	if value == "" {
+		return PrivateEndpointTypeInterface
+	}
+	return value
 }

@@ -35,6 +35,13 @@ var (
 	instanceIDPattern    = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
 	volumeIDPattern      = regexp.MustCompile(`^vol-[0-9a-f]{8,17}$`)
 	networkIDPattern     = regexp.MustCompile(`^eni-[0-9a-f]{8,17}$`)
+	vpcPattern           = regexp.MustCompile(`^vpc-[0-9a-f]{8,17}$`)
+	routeTablePattern    = regexp.MustCompile(`^rtb-[0-9a-f]{8,17}$`)
+	prefixListPattern    = regexp.MustCompile(`^pl-[0-9a-f]{8,17}$`)
+	endpointPattern      = regexp.MustCompile(`^vpce-[0-9a-f]{8,17}$`)
+	securityRulePattern  = regexp.MustCompile(`^sgr-[0-9a-f]{8,17}$`)
+	stackNamePattern     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,127}$`)
+	stackIDPattern       = regexp.MustCompile(`^arn:(aws|aws-cn|aws-us-gov):cloudformation:([^:]+):([0-9]{12}):stack/([A-Za-z][A-Za-z0-9-]{0,127})/[0-9a-fA-F-]{36}$`)
 	bucketPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 	kmsARNPattern        = regexp.MustCompile(`^arn:(aws|aws-cn|aws-us-gov):kms:([^:]+):([0-9]{12}):key/([0-9a-fA-F-]{36}|mrk-[0-9a-f]{32})$`)
 )
@@ -52,23 +59,29 @@ type validatedBuild struct {
 }
 
 type buildIdentityV1 struct {
-	SchemaVersion         string `json:"schema_version"`
-	ReleaseManifestDigest string `json:"release_manifest_digest"`
-	WorkerRootFSDigest    string `json:"worker_rootfs_digest"`
-	WorkerBinaryDigest    string `json:"worker_binary_digest"`
-	Architecture          string `json:"architecture"`
-	Region                string `json:"region"`
-	AccountID             string `json:"account_id"`
-	AgentInstanceID       string `json:"agent_instance_id"`
-	BaseAMIID             string `json:"base_ami_id"`
-	BaseAMIOwnerID        string `json:"base_ami_owner_id"`
-	PrivateSubnetID       string `json:"private_subnet_id"`
-	ZeroIngressSGID       string `json:"zero_ingress_security_group_id"`
-	ArtifactBucket        string `json:"artifact_bucket"`
-	ArtifactKey           string `json:"artifact_key"`
-	ArtifactKMSKeyARN     string `json:"artifact_kms_key_arn"`
-	BuilderInstanceType   string `json:"builder_instance_type"`
-	RootDeviceName        string `json:"root_device_name"`
+	SchemaVersion          string `json:"schema_version"`
+	ReleaseManifestDigest  string `json:"release_manifest_digest"`
+	WorkerRootFSDigest     string `json:"worker_rootfs_digest"`
+	WorkerBinaryDigest     string `json:"worker_binary_digest"`
+	Architecture           string `json:"architecture"`
+	Region                 string `json:"region"`
+	AccountID              string `json:"account_id"`
+	AgentInstanceID        string `json:"agent_instance_id"`
+	BaseAMIID              string `json:"base_ami_id"`
+	BaseAMIOwnerID         string `json:"base_ami_owner_id"`
+	PrivateSubnetID        string `json:"private_subnet_id"`
+	ZeroIngressSGID        string `json:"zero_ingress_security_group_id"`
+	ArtifactBucket         string `json:"artifact_bucket"`
+	ArtifactKey            string `json:"artifact_key"`
+	ArtifactKMSKeyARN      string `json:"artifact_kms_key_arn"`
+	BuilderInstanceType    string `json:"builder_instance_type"`
+	RootDeviceName         string `json:"root_device_name"`
+	NetworkMode            string `json:"network_mode"`
+	FoundationStackName    string `json:"foundation_stack_name,omitempty"`
+	FoundationStackID      string `json:"foundation_stack_id,omitempty"`
+	FoundationVPCID        string `json:"foundation_vpc_id,omitempty"`
+	FoundationRouteTableID string `json:"foundation_route_table_id,omitempty"`
+	S3PrefixListID         string `json:"s3_prefix_list_id,omitempty"`
 }
 
 func validateBuildRequest(input BuildRequestV1) (validatedBuild, error) {
@@ -95,6 +108,18 @@ func validateBuildRequest(input BuildRequestV1) (validatedBuild, error) {
 	if manifest.Architecture != "amd64" && manifest.Architecture != "arm64" {
 		return validatedBuild{}, ErrInvalidInput
 	}
+	networkMode := input.NetworkMode
+	if networkMode == NetworkModeS3GatewayV2 {
+		stackMatch := stackIDPattern.FindStringSubmatch(input.FoundationStackID)
+		if manifest.Architecture != "amd64" || input.BaseAMIOwnerID != "099720109477" || !stackNamePattern.MatchString(input.FoundationStackName) ||
+			len(stackMatch) != 5 || stackMatch[2] != input.Region || stackMatch[3] != input.AccountID || stackMatch[4] != input.FoundationStackName ||
+			!vpcPattern.MatchString(input.FoundationVPCID) || !routeTablePattern.MatchString(input.FoundationRouteTableID) || !prefixListPattern.MatchString(input.S3PrefixListID) {
+			return validatedBuild{}, ErrInvalidInput
+		}
+	} else if networkMode != NetworkModeLegacyV1 || input.FoundationStackName != "" || input.FoundationStackID != "" || input.FoundationVPCID != "" || input.FoundationRouteTableID != "" || input.S3PrefixListID != "" {
+		return validatedBuild{}, ErrInvalidInput
+	}
+	input.NetworkMode = networkMode
 
 	identity := buildIdentityV1{
 		SchemaVersion: ImageManifestSchemaV1, ReleaseManifestDigest: manifestDigest,
@@ -103,6 +128,8 @@ func validateBuildRequest(input BuildRequestV1) (validatedBuild, error) {
 		AgentInstanceID: input.AgentInstanceID, BaseAMIID: input.BaseAMIID, BaseAMIOwnerID: input.BaseAMIOwnerID, PrivateSubnetID: input.PrivateSubnetID,
 		ZeroIngressSGID: input.ZeroIngressSGID, ArtifactBucket: input.ArtifactBucket, ArtifactKey: input.ArtifactKey,
 		ArtifactKMSKeyARN: input.ArtifactKMSKeyARN, BuilderInstanceType: input.BuilderInstanceType, RootDeviceName: input.RootDeviceName,
+		NetworkMode: input.NetworkMode, FoundationStackName: input.FoundationStackName, FoundationStackID: input.FoundationStackID,
+		FoundationVPCID: input.FoundationVPCID, FoundationRouteTableID: input.FoundationRouteTableID, S3PrefixListID: input.S3PrefixListID,
 	}
 	buildDigest, err := canonical.Digest(identity)
 	if err != nil || !digestPattern.MatchString(buildDigest) {
@@ -117,14 +144,61 @@ func validateBuildRequest(input BuildRequestV1) (validatedBuild, error) {
 	builderTags[tagBuildDigest] = buildDigest
 	builderTags[tagComponent] = "worker-ami-builder"
 	input.ReleaseManifest = manifest
+	expectedEndpointID := ""
+	if input.ExistingBuilderReachabilityEvidence != nil {
+		expectedEndpointID = input.ExistingBuilderReachabilityEvidence.VPCEndpointID
+	}
 	return validatedBuild{
 		request:     input,
 		object:      ArtifactObjectV1{Bucket: input.ArtifactBucket, Key: input.ArtifactKey, KMSKeyARN: input.ArtifactKMSKeyARN, Digest: manifest.WorkerRootFSDigest, Size: input.RootFS.Manifest.Size},
-		environment: BuildEnvironmentV1{Region: input.Region, AccountID: input.AccountID, Architecture: manifest.Architecture, BaseAMIID: input.BaseAMIID, BaseAMIOwnerID: input.BaseAMIOwnerID, PrivateSubnetID: input.PrivateSubnetID, ZeroIngressSGID: input.ZeroIngressSGID, ArtifactBucket: input.ArtifactBucket, ArtifactKMSKeyARN: input.ArtifactKMSKeyARN, BuilderInstanceType: input.BuilderInstanceType, RootDeviceName: input.RootDeviceName},
+		environment: BuildEnvironmentV1{Region: input.Region, AccountID: input.AccountID, AgentInstanceID: input.AgentInstanceID, Architecture: manifest.Architecture, BaseAMIID: input.BaseAMIID, BaseAMIOwnerID: input.BaseAMIOwnerID, PrivateSubnetID: input.PrivateSubnetID, ZeroIngressSGID: input.ZeroIngressSGID, ArtifactBucket: input.ArtifactBucket, ArtifactKMSKeyARN: input.ArtifactKMSKeyARN, BuilderInstanceType: input.BuilderInstanceType, RootDeviceName: input.RootDeviceName, NetworkMode: input.NetworkMode, FoundationStackName: input.FoundationStackName, FoundationStackID: input.FoundationStackID, FoundationVPCID: input.FoundationVPCID, FoundationRouteTableID: input.FoundationRouteTableID, S3PrefixListID: input.S3PrefixListID, ExpectedVPCEndpointID: expectedEndpointID},
 		buildDigest: buildDigest, builderName: "dtx-worker-ami-builder-" + suffix,
 		imageName: "dtx-worker-ami-" + suffix, clientToken: "dtx-worker-ami-" + strings.TrimPrefix(buildDigest, "sha256:")[:32],
 		artifactTags: artifactTags, builderTags: builderTags,
 	}, nil
+}
+
+func reachabilityForBuild(validated validatedBuild) BuilderReachabilityV2 {
+	suffix := strings.TrimPrefix(validated.buildDigest, "sha256:")[:20]
+	return BuilderReachabilityV2{
+		AgentInstanceID: validated.request.AgentInstanceID, AccountID: validated.request.AccountID, Region: validated.request.Region,
+		BuildDigest: validated.buildDigest, VPCID: validated.request.FoundationVPCID, RouteTableID: validated.request.FoundationRouteTableID,
+		SecurityGroupID: validated.request.ZeroIngressSGID, S3PrefixListID: validated.request.S3PrefixListID,
+		ArtifactBucket: validated.request.ArtifactBucket, ArtifactKey: validated.request.ArtifactKey,
+		Tags: map[string]string{"Name": "dtx-worker-ami-s3-" + suffix, TagAgentInstanceID: validated.request.AgentInstanceID, "dirextalk:resource_id": validated.buildDigest, "dirextalk:retention": "ephemeral"},
+	}
+}
+
+func (evidence BuilderReachabilityEvidenceV2) normalized(requireComplete bool) (BuilderReachabilityEvidenceV2, error) {
+	if evidence.SchemaVersion != BuilderReachabilitySchemaV2 || !validCanonicalUUID(evidence.AgentInstanceID) || !accountPattern.MatchString(evidence.AccountID) ||
+		!regionPattern.MatchString(evidence.Region) || !digestPattern.MatchString(evidence.BuildDigest) || !vpcPattern.MatchString(evidence.VPCID) ||
+		!routeTablePattern.MatchString(evidence.RouteTableID) || !securityGroupPattern.MatchString(evidence.SecurityGroupID) ||
+		!prefixListPattern.MatchString(evidence.S3PrefixListID) || !validBucket(evidence.ArtifactBucket) || !validArtifactKey(evidence.ArtifactKey) || !endpointPattern.MatchString(evidence.VPCEndpointID) ||
+		(requireComplete && !securityRulePattern.MatchString(evidence.SecurityGroupRuleID)) || (!requireComplete && evidence.SecurityGroupRuleID != "" && !securityRulePattern.MatchString(evidence.SecurityGroupRuleID)) {
+		return BuilderReachabilityEvidenceV2{}, ErrInvalidInput
+	}
+	return evidence, nil
+}
+
+func (evidence BuilderReachabilityEvidenceV2) Validate() error {
+	_, err := evidence.normalized(true)
+	return err
+}
+
+func (evidence BuilderReachabilityEvidenceV2) ValidatePartial() error {
+	_, err := evidence.normalized(false)
+	return err
+}
+
+func validateReachabilityEvidenceForBuild(evidence BuilderReachabilityEvidenceV2, validated validatedBuild, requireComplete bool) (BuilderReachabilityEvidenceV2, error) {
+	normalized, err := evidence.normalized(requireComplete)
+	if err != nil || normalized.AgentInstanceID != validated.request.AgentInstanceID || normalized.AccountID != validated.request.AccountID ||
+		normalized.Region != validated.request.Region || normalized.BuildDigest != validated.buildDigest || normalized.VPCID != validated.request.FoundationVPCID ||
+		normalized.RouteTableID != validated.request.FoundationRouteTableID || normalized.SecurityGroupID != validated.request.ZeroIngressSGID ||
+		normalized.S3PrefixListID != validated.request.S3PrefixListID || normalized.ArtifactBucket != validated.request.ArtifactBucket || normalized.ArtifactKey != validated.request.ArtifactKey {
+		return BuilderReachabilityEvidenceV2{}, ErrOwnershipMismatch
+	}
+	return normalized, nil
 }
 
 // BuildDigest returns the deterministic, de-secreted identity also applied to

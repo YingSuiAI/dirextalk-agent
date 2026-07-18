@@ -130,6 +130,90 @@ func TestPricingProviderRejectsAmbiguousOrMalformedCatalogPrices(t *testing.T) {
 	}
 }
 
+func TestPricingProviderPricesOnlyBillablePrivateEndpoints(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		endpoints []cloudquote.PrivateEndpointPricingV1
+		wantLabel string
+	}{
+		{
+			name: "S3 Gateway is free and Secrets Manager Interface is priced",
+			endpoints: []cloudquote.PrivateEndpointPricingV1{
+				{Service: cloudquote.PrivateEndpointServiceS3, EndpointType: cloudquote.PrivateEndpointTypeGateway},
+				{Service: cloudquote.PrivateEndpointServiceSecretsManager, EndpointType: cloudquote.PrivateEndpointTypeInterface, MonthlyHours: 720, DataMiBPerMonth: 1024},
+			},
+			wantLabel: "Secrets Manager Interface endpoint",
+		},
+		{
+			name: "legacy omitted type remains an S3 Interface endpoint",
+			endpoints: []cloudquote.PrivateEndpointPricingV1{
+				{Service: cloudquote.PrivateEndpointServiceS3, MonthlyHours: 720, DataMiBPerMonth: 1024},
+			},
+			wantLabel: "S3 Interface endpoint",
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 7, 19, 8, 30, 0, 0, time.UTC)
+			prices := &fakePriceList{}
+			provider, err := NewPricingProvider(fakePricingFactory{clients: PricingReadClients{
+				EC2: &fakePricingEC2{now: now, vcpus: map[string]int32{"m7i.large": 2}}, PriceList: prices,
+				ServiceQuotas: &fakeServiceQuotas{}, CloudWatch: &fakeQuotaCloudWatch{},
+			}}, func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := pricingCandidate(cloudquote.CandidateEconomic, "m7i.large", cloudquote.PurchaseOnDemand, cloudquote.EntryPointNone, false, 10)
+			candidate.PrivateEndpoints = test.endpoints
+			snapshot, err := provider.Price(context.Background(), cloudquote.PricingQueryV1{
+				Region: "us-east-1", Zones: []string{"us-east-1a"},
+				Usage:      cloudquote.UsageV1{RuntimeHoursPerMonth: 720, PrivateEndpointHours: 720, PrivateEndpointDataMiB: 1024},
+				Candidates: []cloudquote.PricingCandidateQueryV1{candidate},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			price := findPriceForTest(snapshot, cloudquote.CandidateEconomic)
+			items := make([]cloudquote.CostItemV1, 0, 2)
+			for _, item := range price.CostItems {
+				if item.Category == cloudquote.CostPrivateEndpoint {
+					items = append(items, item)
+				}
+			}
+			if len(items) != 2 {
+				t.Fatalf("private endpoint cost items = %#v, want exactly hours and data", items)
+			}
+			for _, item := range items {
+				if !strings.Contains(item.Description, test.wantLabel) || strings.Contains(item.Description, "Gateway") {
+					t.Fatalf("unexpected private endpoint cost description %q", item.Description)
+				}
+			}
+			var hours, data cloudquote.CostItemV1
+			for _, item := range items {
+				if strings.HasSuffix(item.Description, " hours") {
+					hours = item
+				}
+				if strings.HasSuffix(item.Description, " data processed") {
+					data = item
+				}
+			}
+			if hours.HourlyEstimateMicros != 10_000 || hours.MonthlyEstimateMicros != 7_200_000 || hours.MaximumLaunchAmountMicros != 10_000 {
+				t.Fatalf("endpoint-hours cost = %#v", hours)
+			}
+			if data.HourlyEstimateMicros != 28 || data.MonthlyEstimateMicros != 20_000 || data.MaximumLaunchAmountMicros != 28 {
+				t.Fatalf("endpoint-data cost = %#v", data)
+			}
+			if prices.privateEndpointCalls != 2 {
+				t.Fatalf("PrivateLink catalog calls = %d, want one hourly and one data lookup", prices.privateEndpointCalls)
+			}
+		})
+	}
+}
+
 func TestQuotaCodeClassificationCoversAcceleratorAndTrainingFamilies(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -219,7 +303,10 @@ func (*fakeQuotaCloudWatch) GetMetricStatistics(context.Context, *cloudwatch.Get
 	return &cloudwatch.GetMetricStatisticsOutput{}, nil
 }
 
-type fakePriceList struct{ malformed bool }
+type fakePriceList struct {
+	malformed            bool
+	privateEndpointCalls int
+}
 
 func (f *fakePriceList) GetProducts(_ context.Context, input *pricing.GetProductsInput, _ ...func(*pricing.Options)) (*pricing.GetProductsOutput, error) {
 	if f.malformed {
@@ -229,6 +316,16 @@ func (f *fakePriceList) GetProducts(_ context.Context, input *pricing.GetProduct
 	rate, unit, kind := "0.090000", "GB", "traffic"
 	switch aws.ToString(input.ServiceCode) {
 	case "AmazonVPC":
+		if filters["group"] == "VPCE:VpcEndpoint" {
+			if filters["regionCode"] != "us-east-1" || filters["productFamily"] != "VpcEndpoint" || filters["operation"] != "VpcEndpoint" {
+				return &pricing.GetProductsOutput{}, nil
+			}
+			f.privateEndpointCalls++
+			return &pricing.GetProductsOutput{PriceList: []string{
+				priceListJSON("private-endpoint-hours", "0.010000", "Hrs"),
+				priceListJSON("private-endpoint-data", "0.020000", "GB"),
+			}}, nil
+		}
 		rate, unit, kind = "0.005000", "Hrs", "ipv4"
 	case "AmazonCloudWatch":
 		if filters["group"] == "Amazon CloudWatch Standard Storage pricing current" {

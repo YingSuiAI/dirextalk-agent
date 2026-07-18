@@ -70,6 +70,48 @@ type builderCleanupState struct {
 	recorder func(BuilderCleanupEvidenceV1) error
 }
 
+type builderReachabilityState struct {
+	evidence BuilderReachabilityEvidenceV2
+	recorder func(BuilderReachabilityEvidenceV2) error
+}
+
+func newBuilderReachabilityState(validated validatedBuild) (*builderReachabilityState, error) {
+	state := &builderReachabilityState{recorder: validated.request.RecordBuilderReachabilityEvidence}
+	if validated.request.NetworkMode != NetworkModeS3GatewayV2 {
+		return state, nil
+	}
+	if state.recorder == nil {
+		return nil, ErrInvalidInput
+	}
+	if validated.request.ExistingBuilderReachabilityEvidence == nil {
+		return state, nil
+	}
+	evidence, err := validateReachabilityEvidenceForBuild(*validated.request.ExistingBuilderReachabilityEvidence, validated, false)
+	if err != nil {
+		return nil, err
+	}
+	state.evidence = evidence
+	return state, nil
+}
+
+func (state *builderReachabilityState) capture(evidence BuilderReachabilityEvidenceV2, validated validatedBuild) error {
+	validatedEvidence, err := validateReachabilityEvidenceForBuild(evidence, validated, false)
+	if err != nil {
+		return err
+	}
+	if state.evidence.SchemaVersion != "" && state.evidence.VPCEndpointID != validatedEvidence.VPCEndpointID {
+		return ErrOwnershipMismatch
+	}
+	if state.evidence.SecurityGroupRuleID != "" && validatedEvidence.SecurityGroupRuleID != state.evidence.SecurityGroupRuleID {
+		return ErrOwnershipMismatch
+	}
+	state.evidence = validatedEvidence
+	if state.recorder != nil && state.recorder(validatedEvidence) != nil {
+		return ErrCleanupFailed
+	}
+	return nil
+}
+
 func newBuilderCleanupState(validated validatedBuild) (*builderCleanupState, error) {
 	state := &builderCleanupState{recorder: validated.request.RecordBuilderCleanupEvidence}
 	if validated.request.ExistingBuilderCleanupEvidence == nil {
@@ -140,6 +182,10 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 	if validationErr != nil {
 		return ImageManifestV1{}, validationErr
 	}
+	reachabilityState, validationErr := newBuilderReachabilityState(validated)
+	if validationErr != nil {
+		return ImageManifestV1{}, validationErr
+	}
 	archive, validationErr := openValidatedArchive(validated.request.RootFS)
 	if validationErr != nil {
 		return ImageManifestV1{}, validationErr
@@ -161,7 +207,7 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), service.cleanupTimeout)
 		defer cleanupCancel()
-		cleanupErr := service.cleanup(cleanupCtx, validated, cleanupState, builderID, artifactVersion)
+		cleanupErr := service.cleanup(cleanupCtx, validated, cleanupState, reachabilityState, builderID, artifactVersion)
 		if imageMutationAttempted && (err != nil || cleanupErr != nil) {
 			if imageCleanupErr := service.cleanupBuildImage(cleanupCtx, validated); imageCleanupErr != nil {
 				cleanupErr = errors.Join(cleanupErr, imageCleanupErr)
@@ -252,6 +298,17 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 		if userDataErr != nil {
 			return ImageManifestV1{}, userDataErr
 		}
+		if validated.request.NetworkMode == NetworkModeS3GatewayV2 {
+			evidence, prepareErr := service.provider.PrepareBuilderReachability(buildCtx, reachabilityForBuild(validated), reachabilityEvidencePointer(reachabilityState.evidence), func(observed BuilderReachabilityEvidenceV2) error {
+				return reachabilityState.capture(observed, validated)
+			})
+			if prepareErr != nil {
+				return ImageManifestV1{}, operationError(buildCtx)
+			}
+			if _, validationErr = validateReachabilityEvidenceForBuild(evidence, validated, true); validationErr != nil || reachabilityState.capture(evidence, validated) != nil {
+				return ImageManifestV1{}, ErrReadBackMismatch
+			}
+		}
 		launch := LaunchBuilderV1{
 			Name: validated.builderName, ClientToken: validated.clientToken, BaseAMIID: validated.request.BaseAMIID,
 			PrivateSubnetID: validated.request.PrivateSubnetID, ZeroIngressSGID: validated.request.ZeroIngressSGID,
@@ -283,6 +340,16 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 		// A running builder whose exact versioned input disappeared cannot be
 		// repaired by uploading a different version behind its existing URL.
 		return ImageManifestV1{}, ErrBuildFailed
+	} else if builderObservation.State != BuilderStopped && validated.request.NetworkMode == NetworkModeS3GatewayV2 {
+		evidence, prepareErr := service.provider.PrepareBuilderReachability(buildCtx, reachabilityForBuild(validated), reachabilityEvidencePointer(reachabilityState.evidence), func(observed BuilderReachabilityEvidenceV2) error {
+			return reachabilityState.capture(observed, validated)
+		})
+		if prepareErr != nil {
+			return ImageManifestV1{}, operationError(buildCtx)
+		}
+		if _, validationErr = validateReachabilityEvidenceForBuild(evidence, validated, true); validationErr != nil || reachabilityState.capture(evidence, validated) != nil {
+			return ImageManifestV1{}, ErrReadBackMismatch
+		}
 	}
 
 	builderObservation, err = service.waitBuilderStopped(buildCtx, validated, builderObservation)
@@ -416,8 +483,17 @@ func (service *Service) reconcileImageByName(ctx context.Context, validated vali
 	return ImageObservationV1{}, false, nil
 }
 
-func (service *Service) cleanup(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, builderID, artifactVersion string) error {
+func reachabilityEvidencePointer(evidence BuilderReachabilityEvidenceV2) *BuilderReachabilityEvidenceV2 {
+	if evidence.SchemaVersion == "" {
+		return nil
+	}
+	copy := evidence
+	return &copy
+}
+
+func (service *Service) cleanup(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, reachabilityState *builderReachabilityState, builderID, artifactVersion string) error {
 	failed := false
+	builderTerminated := true
 	if builderID == "" {
 		observation, found, providerErr := service.provider.FindBuilder(ctx, BuilderLookupV1{
 			Name: validated.builderName, BuildDigest: validated.buildDigest,
@@ -450,12 +526,37 @@ func (service *Service) cleanup(ctx context.Context, validated validatedBuild, c
 	}
 	if builderID != "" && service.terminateBuilder(ctx, validated, cleanupState, builderID) != nil {
 		failed = true
+		builderTerminated = false
+	}
+	if validated.request.NetworkMode == NetworkModeS3GatewayV2 && reachabilityState != nil && reachabilityState.evidence.SchemaVersion != "" {
+		if !builderTerminated || service.provider.CleanupBuilderReachability(ctx, reachabilityState.evidence, func(observed BuilderReachabilityEvidenceV2) error {
+			return reachabilityState.capture(observed, validated)
+		}) != nil || service.provider.VerifyBuilderReachabilityAbsent(ctx, reachabilityState.evidence) != nil {
+			failed = true
+		}
 	}
 	if artifactVersion != "" && service.deleteArtifact(ctx, validated.object, artifactVersion) != nil {
 		failed = true
 	}
 	if failed {
 		return ErrCleanupFailed
+	}
+	return nil
+}
+
+// VerifyBuilderReachabilityCleanup independently proves that the exact
+// transient endpoint, security-group rule, and endpoint-created route recorded
+// before launch are absent. It is used by build resume and release cleanup.
+func (service *Service) VerifyBuilderReachabilityCleanup(ctx context.Context, input BuilderReachabilityEvidenceV2) error {
+	if ctx == nil || service == nil || service.provider == nil {
+		return ErrInvalidInput
+	}
+	evidence, err := input.normalized(true)
+	if err != nil {
+		return err
+	}
+	if err := service.provider.VerifyBuilderReachabilityAbsent(ctx, evidence); err != nil {
+		return operationError(ctx)
 	}
 	return nil
 }

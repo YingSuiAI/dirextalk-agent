@@ -191,6 +191,25 @@ type fakeProvider struct {
 	now               time.Time
 }
 
+type exactReadBackProvider struct {
+	*fakeProvider
+	requests    []ProviderCreateRequest
+	providerIDs []string
+	verifyErr   error
+}
+
+func (provider *exactReadBackProvider) VerifyCreateReadBack(ctx context.Context, request ProviderCreateRequest, providerID string) (ProviderObservation, error) {
+	request.Tags = cloneMap(request.Tags)
+	request.Dependencies = append([]ProviderDependency(nil), request.Dependencies...)
+	request.AWS = request.AWS.Clone()
+	provider.requests = append(provider.requests, request)
+	provider.providerIDs = append(provider.providerIDs, providerID)
+	if provider.verifyErr != nil {
+		return ProviderObservation{}, provider.verifyErr
+	}
+	return provider.ReadBack(ctx, request.Type, providerID, request.Region)
+}
+
 func newFakeProvider(now time.Time) *fakeProvider {
 	return &fakeProvider{
 		resources: make(map[string]ProviderObservation), byToken: make(map[string]string),
@@ -694,6 +713,52 @@ func TestProvisionPersistsIntentReconcilesLostResponseAndMirrorsBeforeActive(t *
 		if active.Tags[key] == "" {
 			t.Errorf("mandatory tag %s missing", key)
 		}
+	}
+}
+
+func TestProvisionUsesTypedExactReadBackWhenProviderSupportsIt(t *testing.T) {
+	fixture := newResourceFixture(t)
+	exact := &exactReadBackProvider{fakeProvider: fixture.provider}
+	service, err := NewService(fixture.repository, exact, fixture.mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return fixture.now }
+	fixture.provider.responseLost = true
+	spec := fixture.spec(TypeEBS, "exact-read-back-volume")
+
+	created, err := service.Provision(context.Background(), spec, fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.State != StateActive || len(exact.requests) != 1 || !slicesEqual(exact.providerIDs, []string{created.ProviderID}) {
+		t.Fatalf("exact read-back calls=%d provider_ids=%v resource=%+v", len(exact.requests), exact.providerIDs, created)
+	}
+	request := exact.requests[0]
+	if request.ResourceID != spec.ResourceID || request.Type != spec.Type || request.LogicalName != spec.LogicalName || request.Region != spec.Region ||
+		request.SpecDigest != spec.SpecDigest || request.ClientToken == "" || !reflect.DeepEqual(request.Tags, spec.mandatoryTags()) {
+		t.Fatalf("exact read-back request = %+v", request)
+	}
+}
+
+func TestProvisionPersistsProviderCandidateWhenExactReadBackFails(t *testing.T) {
+	fixture := newResourceFixture(t)
+	exact := &exactReadBackProvider{fakeProvider: fixture.provider, verifyErr: ErrReadBack}
+	service, err := NewService(fixture.repository, exact, fixture.mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return fixture.now }
+	spec := fixture.spec(TypeEBS, "drifted-exact-read-back-volume")
+
+	created, err := service.Provision(context.Background(), spec, fixture.createAuthorization())
+	if !errors.Is(err, ErrCreateAmbiguous) || created.State != StateProvisioning || len(exact.providerIDs) != 1 ||
+		!slicesEqual(created.ProviderCandidateIDs, exact.providerIDs) {
+		t.Fatalf("candidate recovery resource=%+v error=%v exact_ids=%v", created, err, exact.providerIDs)
+	}
+	manifest := fixture.mirror.manifests[fixture.deploymentID]
+	if len(manifest.Resources) != 1 || !slicesEqual(manifest.Resources[0].ProviderCandidateIDs, exact.providerIDs) {
+		t.Fatalf("candidate IDs were not mirrored for cleanup: %+v", manifest)
 	}
 }
 

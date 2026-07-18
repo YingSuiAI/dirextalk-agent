@@ -67,8 +67,70 @@ Worker checkpoint, artifact, claim, and successful-result submissions use `Worke
 
 External health persistence supports two closed monitor kinds per Deployment. The original `service` monitor owns the liveness/readiness/semantic suite, public `CloudHealthSummary`, events, and Managed health transitions. The separately device-approved `public_entry` monitor stores only the exact signed HTTPS readiness route used by entry activation. Definitions, revisions, schedules, and evidence histories are independently fenced by `(deployment_id, monitor_kind)`, so configuring or running entry readiness cannot replace service evidence. The public-entry monitor is private control-plane evidence and is never projected as deployment or Managed service health.
 
+### Managed Knowledge lifecycle v1
+
+`CloudControlService.PrepareManagedKnowledgeLifecycle` and
+`ApproveManagedKnowledgeLifecycle` require `cloud.approve`;
+`GetManagedKnowledgeLifecycle` requires `cloud.read`. The authenticated owner
+must match the request. Prepare derives and signs over the current Deployment,
+Managed service, Knowledge binding, Recipe digest, execution bundle, installed
+manifest, closed action, and their revisions. Actions are limited to `stop`,
+`backup`, `restore`, `upgrade`, `rollback`, and `destroy`; no request or Worker
+message carries argv, environment, paths, or an arbitrary command.
+
+Approve reconstructs the deterministic payload, verifies the current owner
+device, and atomically rechecks authoritative scope before scheduling one
+Worker operation. Caller/credential-bound idempotency, one active operation per
+Managed service, Worker lease, root-helper capability/journal, result, and
+receipt all fence the exact action. Successful completion advances Managed
+state; successful destroy also disables the exact Knowledge binding. A failed
+destroy is terminal `destroy_blocked` for that approval and requires a newly
+prepared, current-scope device approval.
+
+The maintenance runner uses a separate fixed 65-minute lifecycle lease; it
+does not widen the general Worker lease. Immediately before capability
+issuance, PostgreSQL serializes a durable execution reservation against the
+signed Managed-service and Knowledge-binding revisions. While reserved, public
+Knowledge config updates fail closed. Terminal completion atomically CASes both
+reserved revisions, applies the result, and releases the reservation; no stale
+binding or service revision can be discovered only after a privileged command.
+Health evidence continues to persist during execution, but health reconciliation
+cannot mutate the reserved Managed-service state or revision.
+
+Migration 41 adds a positive `data_epoch` and optional backend-generation
+digest to each Knowledge binding. At the execution fence, `backup` and
+`upgrade` snapshot the exact source/upload/chunk metadata catalog and bind its
+canonical digest to the eventual Worker-observed backend generation;
+`restore` and `rollback` bind the newest retained generation before privileged
+execution. The normalized snapshot and generation rows contain metadata only:
+IDs, status, media type/title, byte counts, content/chunk digests, backend point
+IDs, offsets, ordinals, revisions, and timestamps. PostgreSQL never stores
+document or query content, staged chunk bytes, vectors, API keys, TLS keys, or
+other runtime secrets.
+
+All Knowledge mutations, including an otherwise exact idempotent replay, lock
+the binding and reject an active lifecycle execution reservation. A successful
+restore or rollback must return the fenced generation. In the same PostgreSQL
+transaction, the Agent revalidates the snapshot digest, replaces the live
+metadata catalog, increments the data epoch, updates receiving uploads to the
+new binding revision, CASes the binding and Managed-service revisions/state,
+records the operation outcome, and releases the reservation. A failure rolls
+back the complete catalog/binding/service reconciliation rather than exposing
+a backend generation with mismatched control-plane metadata.
+
+After `restore`, `rollback`, or `upgrade` crosses its execution fence, an
+unsigned Worker failure is recovery-pending and cannot terminalize the Managed
+operation or release its mutation reservation. A signed observation of the
+fenced target generation completes the action. For restore/rollback, a signed
+observation of the recovered pre-swap generation instead closes the operation
+as failed with `recovered_original_generation`, keeps the service active, binds
+the observed generation, and releases the reservation atomically. When a
+terminal root-helper receipt survives a Worker lease rotation, the helper must
+re-observe the identical generation and re-sign the receipt at the new lease
+epoch; it must not execute the installer command again.
+
 P0 Task/Admin and P1 Runtime/planning behavior are implemented. When typed cloud configuration is present and the explicit default-off AWS-control gate is enabled, `CloudControlService` advertises AWS/direct-STS/Worker/Reaper first-validation capabilities and supports encrypted identity preview, quotes, plans, approval challenges, device-signed approval, connection establishment, and read-only deployment/resource/Worker status. `WorkerControlService` supports STS/IMDS-bound production enrollment plus lease-fenced claim, heartbeat, checkpoint/evidence, closed Agent-relayed milestones, cancellation, and completion.
 
 Worker release publication is deliberately outside the public gRPC contract. The closed Go operator tools produce an independently attested `dirextalk.agent.worker-ami-publication/v1` document. If `AGENT_WORKER_AMI_PUBLICATION_FILE` is configured, `serve` validates the bounded regular non-symlink file, requires its `agent_instance_id` to match the running instance, and imports it into the durable active-release catalog. Catalog identity is Agent instance plus AWS account, Region, and architecture. Exact imports are idempotent, superseded evidence remains auditable, and quote preparation fails unavailable when no matching active release exists. The server always replaces candidate AMI fields with the active catalog evidence; a caller, Service Key, Eino tool, or Skill cannot select an AMI ID or activate a release.
 
-The release operator path also is not a production Foundation-onboarding approval mechanism. It uses the standard AWS SDK credential chain and must run only in a separately authorized operator context. A successful RecipeDraft, locally green P2 test, or catalog import still does not prove a real service deployment: the real ECR/AMI acceptance, typed service actions and secrets, production installer capability/LeaseGrant delivery and root materialization, probes, Managed lifecycle, and remaining recovery invariants are explicit gates.
+The release operator path also is not a production Foundation-onboarding approval mechanism. It uses the standard AWS SDK credential chain and must run only in a separately authorized operator context. A successful RecipeDraft, locally green P2 test, or catalog import still does not prove a real service deployment: the real ECR/AMI acceptance, typed service secrets, production installer capability/LeaseGrant delivery and root materialization, probes, product façade/client cutover, and remaining recovery invariants are explicit gates.

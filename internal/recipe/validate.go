@@ -118,6 +118,7 @@ func validateSources(sources []SourceV1, refs *recipeReferences) error {
 	}
 	refs.sources = make(map[string]struct{}, len(sources))
 	seenURLs := make(map[string]struct{}, len(sources))
+	seenArtifactURLs := make(map[string]struct{}, len(sources))
 	for index, source := range sources {
 		prefix := fmt.Sprintf("sources[%d]", index)
 		if source.ID != "" {
@@ -137,6 +138,15 @@ func validateSources(sources []SourceV1, refs *recipeReferences) error {
 			return fmt.Errorf("%s.url is duplicated", prefix)
 		}
 		seenURLs[source.URL] = struct{}{}
+		artifactURL := source.ResolvedArtifactURL()
+		artifactTarget, err := validateSourceURL(artifactURL)
+		if err != nil || artifactTarget.RawQuery != "" || artifactTarget.ForceQuery || (artifactTarget.Port() != "" && artifactTarget.Port() != "443") {
+			return fmt.Errorf("%s.artifact_url must be an absolute public HTTPS URL without query, fragment, credentials, or a non-443 port", prefix)
+		}
+		if _, exists := seenArtifactURLs[artifactURL]; exists {
+			return fmt.Errorf("%s.artifact_url is duplicated", prefix)
+		}
+		seenArtifactURLs[artifactURL] = struct{}{}
 		if err := validateText(prefix+".version", source.Version, 1, 128); err != nil {
 			return err
 		}

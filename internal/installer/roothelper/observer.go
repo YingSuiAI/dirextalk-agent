@@ -6,6 +6,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeprofile"
 )
 
 const restartObservationSchemaV1 = "dirextalk.agent.root-helper-restart-observation/v1"
@@ -14,14 +15,19 @@ const restartObservationSchemaV1 = "dirextalk.agent.root-helper-restart-observat
 // cannot supply either digest. Artifact verification reads and hashes the
 // installed root-owned files before the signed manifest digest is returned.
 type LocalObserver struct {
-	Artifacts installer.ArtifactInspector
-	State     InstalledStateInspector
-	Now       func() time.Time
+	Artifacts           installer.ArtifactInspector
+	State               InstalledStateInspector
+	KnowledgeGeneration KnowledgeGenerationInspector
+	Now                 func() time.Time
 }
 
 type InstalledStateInspector interface {
 	VerifySecret(context.Context, installer.SecretV1) error
 	VerifyVolume(context.Context, installer.VolumeV1) error
+}
+
+type KnowledgeGenerationInspector interface {
+	CurrentGeneration(context.Context) (string, error)
 }
 
 func (observer LocalObserver) InstalledManifestDigest(ctx context.Context, delivery installer.DeliveryV1) (string, error) {
@@ -70,6 +76,18 @@ func (observer LocalObserver) RestartObservationDigest(ctx context.Context, deli
 	commandDigest, err := canonical.Digest(command)
 	if err != nil || commandDigest != declaredDigest {
 		return "", ErrUnauthorized
+	}
+	switch command.CommandID {
+	case knowledgeprofile.BackupCommandID, knowledgeprofile.RestoreCommandID,
+		knowledgeprofile.UpgradeCommandID, knowledgeprofile.RollbackCommandID:
+		if observer.KnowledgeGeneration == nil {
+			return "", ErrUnavailable
+		}
+		generation, generationErr := observer.KnowledgeGeneration.CurrentGeneration(ctx)
+		if generationErr != nil {
+			return "", ErrUnavailable
+		}
+		return generation, nil
 	}
 	planDigest, err := canonical.Digest(delivery.SignedPlan.Plan)
 	if err != nil {

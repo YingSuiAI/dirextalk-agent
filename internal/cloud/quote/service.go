@@ -152,6 +152,7 @@ func pricingQuery(request RequestV1) PricingQueryV1 {
 			for _, endpoint := range scope.ServiceOperations.PrivateEndpoints {
 				candidate.PrivateEndpoints = append(candidate.PrivateEndpoints, PrivateEndpointPricingV1{
 					Service: endpoint.Service, MonthlyHours: endpoint.MonthlyHours, DataMiBPerMonth: endpoint.DataMiBPerMonth,
+					EndpointType: endpoint.EndpointType,
 				})
 			}
 		}

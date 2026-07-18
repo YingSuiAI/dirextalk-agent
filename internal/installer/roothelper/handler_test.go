@@ -626,6 +626,71 @@ func TestDeliveryFenceCrashWindowAllowsFreshRetryForStableBinding(t *testing.T) 
 	}
 }
 
+func TestGenerationRecoveryRetriesAfterObservationFailureAndSignsOnlyRecoveredState(t *testing.T) {
+	fixture := newFixture(t)
+	bootstrap, err := fixture.issuer.IssueRootHelperBootstrapCapability(
+		fixture.delivery, fixture.binding, fixture.publicKey, fixture.nonce, 1,
+		fixture.now.Add(5*time.Minute), fixture.now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.handler.Bootstrap(context.Background(), bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.handler.Canary(context.Background(), bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	fixture.observer.observation = ""
+	restart, err := fixture.issuer.IssueRootHelperRestartCapability(
+		fixture.delivery, fixture.binding, installer.RootHelperRestartGrantV1{
+			OperationID: uuid.NewString(), DeploymentID: fixture.binding.DeploymentID,
+			OwnerID: fixture.binding.OwnerID, Action: string(workeroperation.ActionRestore),
+			LifecycleRestartRef: "restart-service", ExecutionBundleDigest: digest('8'),
+			ExpectedInstalledManifestDigest: fixture.observer.installed,
+			ExpectedDeploymentRevision:      7, ExpectedManagedServiceRevision: 11,
+			ExpectedKnowledgeBindingRevision: 13, WorkerLeaseEpoch: 1,
+			LeaseExpiresAt: fixture.now.Add(5 * time.Minute),
+		}, fixture.now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.handler.Restart(context.Background(), restart); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing root observation error=%v", err)
+	}
+	fixture.observer.observation = digest('9')
+	receipt, err := fixture.handler.Restart(context.Background(), restart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.RestartObservationDigest != fixture.observer.observation || fixture.runner.calls != 2 {
+		t.Fatalf("recovery receipt=%+v command calls=%d", receipt, fixture.runner.calls)
+	}
+	released, err := fixture.issuer.IssueRootHelperRestartCapability(
+		fixture.delivery, fixture.binding, installer.RootHelperRestartGrantV1{
+			OperationID: restart.Capability.OperationID, DeploymentID: fixture.binding.DeploymentID,
+			OwnerID: fixture.binding.OwnerID, Action: string(workeroperation.ActionRestore),
+			LifecycleRestartRef: "restart-service", ExecutionBundleDigest: digest('8'),
+			ExpectedInstalledManifestDigest: fixture.observer.installed,
+			ExpectedDeploymentRevision:      7, ExpectedManagedServiceRevision: 11,
+			ExpectedKnowledgeBindingRevision: 13, WorkerLeaseEpoch: 2,
+			LeaseExpiresAt: fixture.now.Add(5 * time.Minute),
+		}, fixture.now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := fixture.handler.Restart(context.Background(), released)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.LeaseEpoch != 2 || refreshed.RestartObservationDigest != receipt.RestartObservationDigest ||
+		fixture.runner.calls != 2 || bytes.Equal(refreshed.Signature, receipt.Signature) {
+		t.Fatalf("lease-refreshed recovery receipt=%+v command calls=%d", refreshed, fixture.runner.calls)
+	}
+}
+
 type fixture struct {
 	now         time.Time
 	clock       time.Time

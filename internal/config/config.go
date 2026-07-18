@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"regexp"
 	"runtime"
 	"strings"
 
+	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/google/uuid"
 )
 
@@ -122,9 +122,8 @@ func LoadServer() (Server, error) {
 		if server.AWSReaperImageURI == "" {
 			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI is required when AWS cloud control is enabled")
 		}
-		endpoint, endpointErr := url.Parse(server.WorkerControlEndpoint)
-		if endpointErr != nil || endpoint.Scheme != "grpcs" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
-			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT must be a credential-free grpcs endpoint when AWS cloud control is enabled")
+		if cloudquote.ValidatePrivateControlPlaneEndpoint(server.WorkerControlEndpoint) != nil {
+			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT must be a credential-free grpcs endpoint with explicit port 443 when AWS cloud control is enabled")
 		}
 	}
 	return server, nil

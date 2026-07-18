@@ -3,6 +3,7 @@ package awsprovider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -281,9 +282,22 @@ func (provider *EC2ResourceProvider) createElasticIP(ctx context.Context, reques
 
 func (provider *EC2ResourceProvider) createVpcEndpoint(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {
 	spec := request.AWS.Endpoint
-	securityGroupID := spec.ExistingSecurityGroupID
-	if securityGroupID == "" {
-		securityGroupID = dependencyID(request.Dependencies, resource.TypeSG)
+	expectedServiceName := "com.amazonaws." + provider.region + ".s3"
+	if spec.EffectiveEndpointType() == resource.AWSVPCEndpointTypeInterface {
+		expectedServiceName = "com.amazonaws." + provider.region + ".secretsmanager"
+		if spec.EndpointType == "" {
+			expectedServiceName = spec.ServiceName
+		}
+	}
+	if spec.ServiceName != expectedServiceName {
+		return resource.ProviderObservation{}, resource.ErrInvalid
+	}
+	securityGroupID := ""
+	if spec.EffectiveEndpointType() == resource.AWSVPCEndpointTypeInterface {
+		securityGroupID = spec.ExistingSecurityGroupID
+		if securityGroupID == "" {
+			securityGroupID = dependencyID(request.Dependencies, resource.TypeSG)
+		}
 	}
 	filters := []ec2types.Filter{{Name: aws.String("tag:" + resourceClientTokenTag), Values: []string{request.ClientToken}}}
 	values, err := provider.vpcEndpointsByFilters(ctx, filters)
@@ -291,13 +305,37 @@ func (provider *EC2ResourceProvider) createVpcEndpoint(ctx context.Context, requ
 		return resource.ProviderObservation{}, err
 	}
 	if len(values) == 0 {
-		output, createErr := provider.client.CreateVpcEndpoint(ctx, &ec2.CreateVpcEndpointInput{
-			VpcId: aws.String(spec.VPCID), ServiceName: aws.String(spec.ServiceName), ClientToken: aws.String(request.ClientToken),
-			VpcEndpointType: ec2types.VpcEndpointTypeInterface, IpAddressType: ec2types.IpAddressTypeIpv4,
-			SubnetIds: append([]string(nil), spec.SubnetIDs...), SecurityGroupIds: []string{securityGroupID},
-			PrivateDnsEnabled: aws.Bool(spec.PrivateDNSEnabled),
-			TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeVpcEndpoint, Tags: ec2Tags(provider.readyTags(request))}},
+		if err := provider.validateVpcEndpointInputs(ctx, spec, securityGroupID); err != nil {
+			return resource.ProviderObservation{}, err
+		}
+		conflicts, conflictErr := provider.vpcEndpointsByFilters(ctx, []ec2types.Filter{
+			{Name: aws.String("vpc-id"), Values: []string{spec.VPCID}},
+			{Name: aws.String("service-name"), Values: []string{spec.ServiceName}},
 		})
+		if conflictErr != nil {
+			return resource.ProviderObservation{}, conflictErr
+		}
+		if len(conflicts) != 0 {
+			return resource.ProviderObservation{}, resource.ErrAlreadyExists
+		}
+		input := &ec2.CreateVpcEndpointInput{
+			VpcId: aws.String(spec.VPCID), ServiceName: aws.String(spec.ServiceName), ClientToken: aws.String(request.ClientToken),
+			TagSpecifications: []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeVpcEndpoint, Tags: ec2Tags(provider.readyTags(request))}},
+		}
+		switch spec.EffectiveEndpointType() {
+		case resource.AWSVPCEndpointTypeGateway:
+			input.VpcEndpointType = ec2types.VpcEndpointTypeGateway
+			input.RouteTableIds = append([]string(nil), spec.RouteTableIDs...)
+		case resource.AWSVPCEndpointTypeInterface:
+			input.VpcEndpointType = ec2types.VpcEndpointTypeInterface
+			input.IpAddressType = ec2types.IpAddressTypeIpv4
+			input.SubnetIds = spec.EffectiveSubnetIDs()
+			input.SecurityGroupIds = []string{securityGroupID}
+			input.PrivateDnsEnabled = aws.Bool(spec.PrivateDNSEnabled)
+		default:
+			return resource.ProviderObservation{}, resource.ErrInvalid
+		}
+		output, createErr := provider.client.CreateVpcEndpoint(ctx, input)
 		if createErr == nil && output != nil && output.VpcEndpoint != nil && aws.ToString(output.VpcEndpoint.VpcEndpointId) != "" {
 			values = []ec2types.VpcEndpoint{*output.VpcEndpoint}
 		} else {
@@ -321,13 +359,105 @@ func (provider *EC2ResourceProvider) createVpcEndpoint(ctx context.Context, requ
 	if err != nil {
 		return resource.ProviderObservation{}, err
 	}
-	if aws.ToString(value.VpcId) != spec.VPCID || aws.ToString(value.ServiceName) != spec.ServiceName || value.VpcEndpointType != ec2types.VpcEndpointTypeInterface ||
-		value.IpAddressType != ec2types.IpAddressTypeIpv4 || aws.ToBool(value.PrivateDnsEnabled) != spec.PrivateDNSEnabled ||
-		!sameStringSet(value.SubnetIds, spec.SubnetIDs) || len(value.Groups) != 1 || aws.ToString(value.Groups[0].GroupId) != securityGroupID ||
-		!containsTags(tagsFromEC2(value.Tags), provider.readyTags(request)) {
+	if !provider.vpcEndpointMatches(value, spec, securityGroupID, provider.readyTags(request)) {
 		return resource.ProviderObservation{}, resource.ErrReadBack
 	}
+	if spec.EffectiveEndpointType() == resource.AWSVPCEndpointTypeGateway {
+		if err := provider.validateGatewayEndpointRoute(ctx, spec.RouteTableIDs[0], endpointID, true); err != nil {
+			return resource.ProviderObservation{}, err
+		}
+	}
 	return provider.readBack(ctx, resource.TypeEndpoint, endpointID)
+}
+
+func (provider *EC2ResourceProvider) validateVpcEndpointInputs(ctx context.Context, spec *resource.AWSVPCEndpointSpecV1, securityGroupID string) error {
+	switch spec.EffectiveEndpointType() {
+	case resource.AWSVPCEndpointTypeGateway:
+		output, err := provider.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{RouteTableIds: append([]string(nil), spec.RouteTableIDs...)})
+		if err != nil {
+			return providerError(ctx, err)
+		}
+		if output == nil || len(output.RouteTables) != 1 || aws.ToString(output.RouteTables[0].RouteTableId) != spec.RouteTableIDs[0] || aws.ToString(output.RouteTables[0].VpcId) != spec.VPCID ||
+			!routeTableHasOnlyLocalIPv4(output.RouteTables[0]) {
+			return resource.ErrReadBack
+		}
+	case resource.AWSVPCEndpointTypeInterface:
+		expectedSubnetIDs := spec.EffectiveSubnetIDs()
+		subnets, err := provider.client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{SubnetIds: expectedSubnetIDs})
+		if err != nil {
+			return providerError(ctx, err)
+		}
+		groups, groupErr := provider.client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{GroupIds: []string{securityGroupID}})
+		if groupErr != nil {
+			return providerError(ctx, groupErr)
+		}
+		if subnets == nil || len(subnets.Subnets) != len(expectedSubnetIDs) ||
+			groups == nil || len(groups.SecurityGroups) != 1 || aws.ToString(groups.SecurityGroups[0].GroupId) != securityGroupID || aws.ToString(groups.SecurityGroups[0].VpcId) != spec.VPCID {
+			return resource.ErrReadBack
+		}
+		seenSubnets := make(map[string]struct{}, len(subnets.Subnets))
+		for _, subnet := range subnets.Subnets {
+			subnetID := aws.ToString(subnet.SubnetId)
+			if !slices.Contains(expectedSubnetIDs, subnetID) || aws.ToString(subnet.VpcId) != spec.VPCID || subnet.State != ec2types.SubnetStateAvailable {
+				return resource.ErrReadBack
+			}
+			seenSubnets[subnetID] = struct{}{}
+		}
+		if len(seenSubnets) != len(expectedSubnetIDs) {
+			return resource.ErrReadBack
+		}
+	default:
+		return resource.ErrInvalid
+	}
+	return nil
+}
+
+func (provider *EC2ResourceProvider) validateGatewayEndpointRoute(ctx context.Context, routeTableID, endpointID string, expected bool) error {
+	output, err := provider.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{RouteTableIds: []string{routeTableID}})
+	if err != nil {
+		return providerError(ctx, err)
+	}
+	if output == nil || len(output.RouteTables) != 1 || aws.ToString(output.RouteTables[0].RouteTableId) != routeTableID {
+		return resource.ErrReadBack
+	}
+	matched := 0
+	hasLocal := false
+	for _, route := range output.RouteTables[0].Routes {
+		if aws.ToString(route.GatewayId) == "local" {
+			if !routeTableHasOnlyLocalIPv4(ec2types.RouteTable{Routes: []ec2types.Route{route}}) {
+				return resource.ErrReadBack
+			}
+			hasLocal = true
+			continue
+		}
+		if aws.ToString(route.GatewayId) == endpointID && aws.ToString(route.DestinationPrefixListId) != "" && route.State == ec2types.RouteStateActive &&
+			route.DestinationCidrBlock == nil && route.DestinationIpv6CidrBlock == nil {
+			matched++
+			continue
+		}
+		return resource.ErrReadBack
+	}
+	if !hasLocal || (expected && matched != 1) || (!expected && matched != 0) {
+		return resource.ErrReadBack
+	}
+	return nil
+}
+
+func (provider *EC2ResourceProvider) vpcEndpointMatches(value ec2types.VpcEndpoint, spec *resource.AWSVPCEndpointSpecV1, securityGroupID string, tags map[string]string) bool {
+	if aws.ToString(value.VpcId) != spec.VPCID || aws.ToString(value.ServiceName) != spec.ServiceName || !containsTags(tagsFromEC2(value.Tags), tags) {
+		return false
+	}
+	switch spec.EffectiveEndpointType() {
+	case resource.AWSVPCEndpointTypeGateway:
+		return value.VpcEndpointType == ec2types.VpcEndpointTypeGateway && sameStringSet(value.RouteTableIds, spec.RouteTableIDs) &&
+			len(value.SubnetIds) == 0 && len(value.Groups) == 0 && !aws.ToBool(value.PrivateDnsEnabled)
+	case resource.AWSVPCEndpointTypeInterface:
+		return value.VpcEndpointType == ec2types.VpcEndpointTypeInterface && value.IpAddressType == ec2types.IpAddressTypeIpv4 &&
+			aws.ToBool(value.PrivateDnsEnabled) == spec.PrivateDNSEnabled && sameStringSet(value.SubnetIds, spec.EffectiveSubnetIDs()) &&
+			len(value.RouteTableIds) == 0 && len(value.Groups) == 1 && aws.ToString(value.Groups[0].GroupId) == securityGroupID
+	default:
+		return false
+	}
 }
 
 func (provider *EC2ResourceProvider) createSnapshot(ctx context.Context, request resource.ProviderCreateRequest) (resource.ProviderObservation, error) {

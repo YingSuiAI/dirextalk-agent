@@ -79,6 +79,32 @@ func TestRecipeRequiresRetrievedContentDigestAlongsideArtifactDigest(t *testing.
 	}
 }
 
+func TestRecipeSeparatesResearchEvidenceFromImmutableArtifactURL(t *testing.T) {
+	value := validRecipe()
+	evidenceURL := value.Sources[0].URL
+	artifactURL := "https://artifacts.example.com/sha256/" + strings.TrimPrefix(value.Sources[0].ArtifactDigest, "sha256:") + "/service.tar.gz"
+	value.Sources[0].ArtifactURL = artifactURL
+	if err := value.Validate(); err != nil {
+		t.Fatalf("separate artifact URL rejected: %v", err)
+	}
+	if value.Sources[0].ResolvedArtifactURL() != artifactURL || value.Sources[0].URL != evidenceURL {
+		t.Fatalf("source URL projection changed: %+v", value.Sources[0])
+	}
+
+	for _, invalid := range []string{
+		"https://127.0.0.1/service.tar.gz",
+		"https://artifacts.example.com/service.tar.gz?token=opaque",
+		"https://artifacts.example.com:8443/service.tar.gz",
+	} {
+		changed := value
+		changed.Sources = append([]SourceV1(nil), value.Sources...)
+		changed.Sources[0].ArtifactURL = invalid
+		if err := changed.Validate(); err == nil {
+			t.Fatalf("unsafe artifact URL %q was accepted", invalid)
+		}
+	}
+}
+
 func TestRecipeInstallerCapabilityBindsExactCommandWithoutShellSurface(t *testing.T) {
 	value := validRecipe()
 	value.Pairing = nil

@@ -11,7 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerami/awsadapter"
 )
 
-const usage = "usage: dirextalk-worker-ami <build|verify|destroy> [options]\n"
+const usage = "usage: dirextalk-worker-ami <prepare|build|verify|destroy> [options]\n"
 
 // Run executes one closed Worker AMI release operation. It never writes AWS
 // provider errors or request contents; all externally visible failures are
@@ -29,6 +29,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		return 2
 	}
 	switch args[0] {
+	case "prepare":
+		return runPrepare(ctx, args[1:], stderr, dependencies)
 	case "build":
 		return runBuild(ctx, args[1:], stderr, dependencies)
 	case "verify":
@@ -46,11 +48,12 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 	flags.SetOutput(io.Discard)
 	requestPath := flags.String("request", "", "strict de-secreted build request JSON")
 	outputPath := flags.String("output", "", "new publication manifest JSON")
+	allowLegacyV1 := flags.Bool("allow-legacy-v1", false, "explicit compatibility for build-request v1")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || !validLocalPath(*requestPath) || !validLocalPath(*outputPath) {
 		_, _ = io.WriteString(stderr, usage)
 		return 2
 	}
-	prepared, err := parseBuildRequest(*requestPath)
+	prepared, err := parseBuildRequest(*requestPath, *allowLegacyV1)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: invalid build request\n")
 		return 1
@@ -63,6 +66,11 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 	cleanupEvidence, hasCleanupEvidence, err := prepareBuilderCleanupEvidence(*outputPath, &prepared)
 	if err != nil || (hasFinal && !hasCleanupEvidence) {
 		_, _ = io.WriteString(stderr, "worker-ami: builder cleanup evidence conflicts with existing state\n")
+		return 1
+	}
+	reachabilityEvidence, hasReachabilityEvidence, err := prepareBuilderReachabilityEvidence(*outputPath, &prepared)
+	if err != nil || (prepared.request.NetworkMode == workerami.NetworkModeS3GatewayV2 && hasFinal && !hasReachabilityEvidence) {
+		_, _ = io.WriteString(stderr, "worker-ami: builder reachability evidence conflicts with existing state\n")
 		return 1
 	}
 	config, err := loadAndConfirmIdentity(ctx, dependencies, prepared.request.AccountID, prepared.request.Region)
@@ -81,7 +89,7 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		return 1
 	}
 	if hasFinal {
-		if service.VerifyBuilderCleanup(ctx, cleanupEvidence) != nil || verifyPublication(ctx, existing, service, attestor) != nil {
+		if service.VerifyBuilderCleanup(ctx, cleanupEvidence) != nil || (prepared.request.NetworkMode == workerami.NetworkModeS3GatewayV2 && service.VerifyBuilderReachabilityCleanup(ctx, reachabilityEvidence) != nil) || verifyPublication(ctx, existing, service, attestor) != nil {
 			_, _ = io.WriteString(stderr, "worker-ami: existing publication verification failed\n")
 			return 1
 		}
@@ -106,6 +114,13 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 	if err != nil || !builderCleanupEvidenceMatchesPrepared(cleanupEvidence, prepared) || service.VerifyBuilderCleanup(ctx, cleanupEvidence) != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: builder cleanup absence read-back failed\n")
 		return 1
+	}
+	if prepared.request.NetworkMode == workerami.NetworkModeS3GatewayV2 {
+		reachabilityEvidence, err = readBuilderReachabilityEvidence(builderReachabilityEvidencePath(*outputPath))
+		if err != nil || !builderReachabilityEvidenceMatchesPrepared(reachabilityEvidence, prepared) || service.VerifyBuilderReachabilityCleanup(ctx, reachabilityEvidence) != nil {
+			_, _ = io.WriteString(stderr, "worker-ami: builder reachability absence read-back failed\n")
+			return 1
+		}
 	}
 	attestCtx, attestCancel := context.WithTimeout(ctx, 5*time.Minute)
 	publication, err := attestManifest(attestCtx, manifest, attestor)
@@ -312,6 +327,35 @@ func prepareBuilderCleanupEvidence(outputPath string, prepared *preparedBuild) (
 			return errInvalidInput
 		}
 		return ensureBuilderCleanupEvidence(path, observed)
+	}
+	return evidence, exists, nil
+}
+
+func prepareBuilderReachabilityEvidence(outputPath string, prepared *preparedBuild) (workerami.BuilderReachabilityEvidenceV2, bool, error) {
+	if prepared == nil {
+		return workerami.BuilderReachabilityEvidenceV2{}, false, errInvalidInput
+	}
+	if prepared.request.NetworkMode != workerami.NetworkModeS3GatewayV2 {
+		return workerami.BuilderReachabilityEvidenceV2{}, false, nil
+	}
+	path := builderReachabilityEvidencePath(outputPath)
+	exists, err := regularFileExists(path)
+	if err != nil {
+		return workerami.BuilderReachabilityEvidenceV2{}, false, errOutput
+	}
+	var evidence workerami.BuilderReachabilityEvidenceV2
+	if exists {
+		evidence, err = readBuilderReachabilityEvidence(path)
+		if err != nil || !builderReachabilityEvidenceMatchesPrepared(evidence, *prepared) {
+			return workerami.BuilderReachabilityEvidenceV2{}, false, errInvalidInput
+		}
+		prepared.request.ExistingBuilderReachabilityEvidence = &evidence
+	}
+	prepared.request.RecordBuilderReachabilityEvidence = func(observed workerami.BuilderReachabilityEvidenceV2) error {
+		if !builderReachabilityEvidenceMatchesPrepared(observed, *prepared) {
+			return errInvalidInput
+		}
+		return persistBuilderReachabilityEvidence(path, observed)
 	}
 	return evidence, exists, nil
 }

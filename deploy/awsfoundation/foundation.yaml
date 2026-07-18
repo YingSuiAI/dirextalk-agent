@@ -64,6 +64,26 @@ Resources:
         - Key: dirextalk:component
           Value: foundation-release
 
+  ReleasePrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: ReleaseVPC
+      Tags:
+        - Key: dirextalk:agent_instance_id
+          Value:
+            Ref: AgentInstanceId
+        - Key: dirextalk:component
+          Value: foundation-release
+
+  ReleasePrivateRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: ReleasePrivateSubnet
+      RouteTableId:
+        Ref: ReleasePrivateRouteTable
+
   ReleaseZeroIngressSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -631,8 +651,10 @@ Resources:
               - ec2:DescribeInternetGateways
               - ec2:DescribeNatGateways
               - ec2:DescribeNetworkInterfaces
+              - ec2:DescribePrefixLists
               - ec2:DescribeRouteTables
               - ec2:DescribeSecurityGroups
+              - ec2:DescribeSecurityGroupRules
               - ec2:DescribeSnapshots
               - ec2:DescribeSubnets
               - ec2:DescribeVolumes
@@ -659,7 +681,7 @@ Resources:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
-          - Sid: UseNetworkCreationInputs
+          - Sid: UseNetworkInputs
             Effect: Allow
             Action:
               - ec2:CreateNetworkInterface
@@ -667,13 +689,19 @@ Resources:
             Resource:
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
-          - Sid: UseVPCForNetworkCreation
+          - Sid: UseVPCInputs
             Effect: Allow
             Action:
               - ec2:CreateSecurityGroup
               - ec2:CreateVpcEndpoint
             Resource:
               Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*
+          - Sid: UseRouteTableInputs
+            Effect: Allow
+            Action:
+              - ec2:CreateVpcEndpoint
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/*
           - Sid: UseOwnedVolumeForSnapshot
             Effect: Allow
             Action:
@@ -742,13 +770,14 @@ Resources:
             Action:
               - ec2:CreateTags
             Resource:
-              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
                   Ref: AgentInstanceId
                 ec2:CreateAction:
                   - AllocateAddress
+                  - AuthorizeSecurityGroupEgress
                   - CreateNetworkInterface
                   - CreateSecurityGroup
                   - CreateSnapshot
@@ -825,7 +854,7 @@ Resources:
               # Each exact action above supports only the tracked EC2 ledger
               # types. The resource-type wildcard avoids the fixed IAM inline
               # policy quota while the ownership tag remains mandatory.
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
             Condition:
               StringEquals:
@@ -848,7 +877,7 @@ Resources:
             Resource:
               # AWS documents this resource shape for CreateTags. Both the
               # existing and requested ownership values are still exact.
-              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
@@ -1029,9 +1058,9 @@ Resources:
                   - dirextalk:destroy_deadline
                   - dtx:p
                   - dtx:a
-                  - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk_entry_ready
           - Sid: CreateTaggedTargetGroup
             Effect: Allow
             Action:
@@ -1054,9 +1083,9 @@ Resources:
                   - dirextalk:destroy_deadline
                   - dtx:p
                   - dtx:a
-                  - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk_entry_ready
           - Sid: CreateTLSListenerOnOwnedApplicationLoadBalancer
             Effect: Allow
             Action:
@@ -1082,9 +1111,9 @@ Resources:
                   - dirextalk:destroy_deadline
                   - dtx:p
                   - dtx:a
-                  - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk_entry_ready
           - Sid: TagEntrypointResourcesOnCreate
             Effect: Allow
             Action:
@@ -1113,9 +1142,9 @@ Resources:
                   - dirextalk:destroy_deadline
                   - dtx:p
                   - dtx:a
-                  - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk_entry_ready
           - Sid: MutateTargetsOnOwnedTargetGroup
             Effect: Allow
             Action:
@@ -1168,9 +1197,9 @@ Resources:
                   - dirextalk:destroy_deadline
                   - dtx:p
                   - dtx:a
-                  - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk_entry_ready
           - Sid: TagIngressRuleOnCreate
             Effect: Allow
             Action:
@@ -1194,9 +1223,9 @@ Resources:
                   - dirextalk:destroy_deadline
                   - dtx:p
                   - dtx:a
-                  - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk_entry_ready
           - Sid: RevokeIngressOnOwnedSecurityGroup
             Effect: Allow
             Action:
@@ -1209,9 +1238,15 @@ Resources:
                   Ref: AgentInstanceId
 
 Outputs:
+  ReleaseVPCId:
+    Value:
+      Ref: ReleaseVPC
   ReleasePrivateSubnetId:
     Value:
       Ref: ReleasePrivateSubnet
+  ReleasePrivateRouteTableId:
+    Value:
+      Ref: ReleasePrivateRouteTable
   ReleaseZeroIngressSecurityGroupId:
     Value:
       Fn::GetAtt: [ReleaseZeroIngressSecurityGroup, GroupId]

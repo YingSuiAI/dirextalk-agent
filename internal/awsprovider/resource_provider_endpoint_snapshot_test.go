@@ -3,6 +3,7 @@ package awsprovider
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -81,6 +82,120 @@ func TestEC2ResourceProviderRecoversPrivateEndpointAndSnapshotAndVerifiesDelete(
 	}
 }
 
+func TestEC2ResourceProviderCreatesExactNoNATEndpointTypesAndRejectsDrift(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	t.Run("Secrets Manager Interface", func(t *testing.T) {
+		client := &endpointSnapshotEC2Fake{endpointID: "vpce-0123456789abcdef0"}
+		provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Endpoint: &resource.AWSVPCEndpointSpecV1{
+			VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.secretsmanager",
+			EndpointType: resource.AWSVPCEndpointTypeInterface, SubnetID: "subnet-0123456789abcdef0", PrivateDNSEnabled: true,
+		}}
+		request := endpointSnapshotRequest(t, resource.TypeEndpoint, "11111111-1111-4111-8111-111111111111", "dtx-secrets-0123456789", spec,
+			[]resource.ProviderDependency{{ResourceID: "22222222-2222-4222-8222-222222222222", Type: resource.TypeSG, ProviderID: "sg-0123456789abcdef0"}})
+		if _, err := provider.Create(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		input := client.endpointInput
+		if input.VpcEndpointType != ec2types.VpcEndpointTypeInterface || !aws.ToBool(input.PrivateDnsEnabled) ||
+			!slices.Equal(input.SubnetIds, []string{spec.Endpoint.SubnetID}) || !slices.Equal(input.SecurityGroupIds, []string{request.Dependencies[0].ProviderID}) ||
+			len(input.RouteTableIds) != 0 || input.PolicyDocument != nil {
+			t.Fatalf("Interface endpoint input = %#v", input)
+		}
+		client.endpoint.SubnetIds = []string{"subnet-0bbbbbbbbbbbbbbbb"}
+		if _, err := provider.VerifyCreateReadBack(context.Background(), request, client.endpointID); !errors.Is(err, resource.ErrReadBack) {
+			t.Fatalf("drift error = %v, want ErrReadBack", err)
+		}
+	})
+
+	t.Run("S3 Gateway", func(t *testing.T) {
+		client := &endpointSnapshotEC2Fake{endpointID: "vpce-0fedcba9876543210"}
+		provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time { return now }, WithEC2ResourcePollInterval(time.Nanosecond))
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Endpoint: &resource.AWSVPCEndpointSpecV1{
+			VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.s3",
+			EndpointType: resource.AWSVPCEndpointTypeGateway, RouteTableIDs: []string{"rtb-0123456789abcdef0"},
+		}}
+		request := endpointSnapshotRequest(t, resource.TypeEndpoint, "33333333-3333-4333-8333-333333333333", "dtx-gateway-0123456789", spec, nil)
+		observation, err := provider.Create(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := client.endpointInput
+		if input.VpcEndpointType != ec2types.VpcEndpointTypeGateway || !slices.Equal(input.RouteTableIds, spec.Endpoint.RouteTableIDs) ||
+			len(input.SubnetIds) != 0 || len(input.SecurityGroupIds) != 0 || input.PrivateDnsEnabled != nil || input.PolicyDocument != nil {
+			t.Fatalf("Gateway endpoint input = %#v", input)
+		}
+		recovered, err := provider.Create(context.Background(), request)
+		if err != nil || recovered.ProviderID != observation.ProviderID || client.endpointCreateCalls != 1 {
+			t.Fatalf("Gateway token recovery = %#v error=%v create_calls=%d", recovered, err, client.endpointCreateCalls)
+		}
+		client.omitLocalRoute = true
+		if _, err := provider.VerifyCreateReadBack(context.Background(), request, client.endpointID); !errors.Is(err, resource.ErrReadBack) {
+			t.Fatalf("missing local route error = %v, want ErrReadBack", err)
+		}
+		client.omitLocalRoute = false
+		if err := provider.Delete(context.Background(), resource.TypeEndpoint, observation.ProviderID, "us-east-1", observation.Tags); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestEC2ResourceProviderPreservesLegacyMultiSubnetS3InterfaceEndpoint(t *testing.T) {
+	client := &endpointSnapshotEC2Fake{endpointID: "vpce-0123456789abcdef0"}
+	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time {
+		return time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	}, WithEC2ResourcePollInterval(time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Endpoint: &resource.AWSVPCEndpointSpecV1{
+		VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.s3",
+		SubnetIDs: []string{"subnet-0123456789abcdef0", "subnet-0fedcba9876543210"}, PrivateDNSEnabled: true,
+	}}
+	request := endpointSnapshotRequest(t, resource.TypeEndpoint, "11111111-1111-4111-8111-111111111111", "dtx-legacy-0123456789", spec,
+		[]resource.ProviderDependency{{ResourceID: "22222222-2222-4222-8222-222222222222", Type: resource.TypeSG, ProviderID: "sg-0123456789abcdef0"}})
+	if _, err := provider.Create(context.Background(), request); err != nil {
+		t.Fatalf("legacy multi-subnet S3 Interface endpoint: %v", err)
+	}
+	if !slices.Equal(client.endpointInput.SubnetIds, spec.Endpoint.SubnetIDs) {
+		t.Fatalf("legacy subnets = %v, want %v", client.endpointInput.SubnetIds, spec.Endpoint.SubnetIDs)
+	}
+}
+
+func TestEC2ResourceProviderRejectsConflictingUntaggedPrivateEndpoint(t *testing.T) {
+	base := &endpointSnapshotEC2Fake{endpointID: "vpce-0123456789abcdef0"}
+	base.endpoint = &ec2types.VpcEndpoint{
+		VpcEndpointId: aws.String(base.endpointID), VpcId: aws.String("vpc-0123456789abcdef0"),
+		ServiceName: aws.String("com.amazonaws.us-east-1.secretsmanager"), VpcEndpointType: ec2types.VpcEndpointTypeInterface,
+		State: ec2types.StateAvailable,
+	}
+	client := &endpointConflictEC2Fake{endpointSnapshotEC2Fake: base}
+	provider, err := NewEC2ResourceProvider(client, "us-east-1", func() time.Time {
+		return time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	}, WithEC2ResourcePollInterval(time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Endpoint: &resource.AWSVPCEndpointSpecV1{
+		VPCID: "vpc-0123456789abcdef0", ServiceName: "com.amazonaws.us-east-1.secretsmanager",
+		EndpointType: resource.AWSVPCEndpointTypeInterface, SubnetID: "subnet-0123456789abcdef0", PrivateDNSEnabled: true,
+	}}
+	request := endpointSnapshotRequest(t, resource.TypeEndpoint, "11111111-1111-4111-8111-111111111111", "dtx-conflict-01234567", spec,
+		[]resource.ProviderDependency{{ResourceID: "22222222-2222-4222-8222-222222222222", Type: resource.TypeSG, ProviderID: "sg-0123456789abcdef0"}})
+	if _, err := provider.Create(context.Background(), request); !errors.Is(err, resource.ErrAlreadyExists) {
+		t.Fatalf("conflict error = %v, want ErrAlreadyExists", err)
+	}
+	if base.endpointCreateCalls != 0 {
+		t.Fatalf("conflicting endpoint triggered %d create calls", base.endpointCreateCalls)
+	}
+}
+
 func endpointSnapshotRequest(t *testing.T, kind resource.Type, resourceID, token string, spec *resource.AWSResourceSpecV1, dependencies []resource.ProviderDependency) resource.ProviderCreateRequest {
 	t.Helper()
 	digest, err := spec.Digest(kind)
@@ -103,6 +218,36 @@ type endpointSnapshotEC2Fake struct {
 	snapshotInput                            *ec2.CreateSnapshotInput
 	endpoint                                 *ec2types.VpcEndpoint
 	snapshot                                 *ec2types.Snapshot
+	omitLocalRoute                           bool
+}
+
+type endpointConflictEC2Fake struct {
+	*endpointSnapshotEC2Fake
+}
+
+func (fake *endpointConflictEC2Fake) DescribeVpcEndpoints(_ context.Context, input *ec2.DescribeVpcEndpointsInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcEndpointsOutput, error) {
+	if fake.endpoint == nil {
+		return &ec2.DescribeVpcEndpointsOutput{}, nil
+	}
+	for _, filter := range input.Filters {
+		name := aws.ToString(filter.Name)
+		if len(filter.Values) != 1 {
+			return &ec2.DescribeVpcEndpointsOutput{}, nil
+		}
+		switch name {
+		case "vpc-id":
+			if filter.Values[0] != aws.ToString(fake.endpoint.VpcId) {
+				return &ec2.DescribeVpcEndpointsOutput{}, nil
+			}
+		case "service-name":
+			if filter.Values[0] != aws.ToString(fake.endpoint.ServiceName) {
+				return &ec2.DescribeVpcEndpointsOutput{}, nil
+			}
+		default:
+			return &ec2.DescribeVpcEndpointsOutput{}, nil
+		}
+	}
+	return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []ec2types.VpcEndpoint{*fake.endpoint}}, nil
 }
 
 func (fake *endpointSnapshotEC2Fake) CreateVpcEndpoint(_ context.Context, input *ec2.CreateVpcEndpointInput, _ ...func(*ec2.Options)) (*ec2.CreateVpcEndpointOutput, error) {
@@ -115,8 +260,11 @@ func (fake *endpointSnapshotEC2Fake) CreateVpcEndpoint(_ context.Context, input 
 	fake.endpoint = &ec2types.VpcEndpoint{
 		VpcEndpointId: aws.String(fake.endpointID), VpcId: input.VpcId, ServiceName: input.ServiceName,
 		VpcEndpointType: input.VpcEndpointType, State: ec2types.StateAvailable, SubnetIds: append([]string(nil), input.SubnetIds...),
-		Groups:            []ec2types.SecurityGroupIdentifier{{GroupId: aws.String(input.SecurityGroupIds[0])}},
+		RouteTableIds:     append([]string(nil), input.RouteTableIds...),
 		PrivateDnsEnabled: input.PrivateDnsEnabled, IpAddressType: input.IpAddressType, Tags: tags,
+	}
+	if len(input.SecurityGroupIds) == 1 {
+		fake.endpoint.Groups = []ec2types.SecurityGroupIdentifier{{GroupId: aws.String(input.SecurityGroupIds[0])}}
 	}
 	if fake.endpointCreateError != nil {
 		err := fake.endpointCreateError
@@ -186,8 +334,42 @@ func (fake *endpointSnapshotEC2Fake) AuthorizeSecurityGroupIngress(context.Conte
 	return &ec2.AuthorizeSecurityGroupIngressOutput{}, nil
 }
 
-func (fake *endpointSnapshotEC2Fake) DescribeSecurityGroups(context.Context, *ec2.DescribeSecurityGroupsInput, ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
-	return &ec2.DescribeSecurityGroupsOutput{}, nil
+func (fake *endpointSnapshotEC2Fake) DescribeSecurityGroups(_ context.Context, input *ec2.DescribeSecurityGroupsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSecurityGroupsOutput, error) {
+	if len(input.GroupIds) != 1 {
+		return &ec2.DescribeSecurityGroupsOutput{}, nil
+	}
+	return &ec2.DescribeSecurityGroupsOutput{SecurityGroups: []ec2types.SecurityGroup{{
+		GroupId: aws.String(input.GroupIds[0]), VpcId: aws.String("vpc-0123456789abcdef0"),
+	}}}, nil
+}
+
+func (fake *endpointSnapshotEC2Fake) DescribeSubnets(_ context.Context, input *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if len(input.SubnetIds) == 0 {
+		return &ec2.DescribeSubnetsOutput{}, nil
+	}
+	result := make([]ec2types.Subnet, 0, len(input.SubnetIds))
+	for _, subnetID := range input.SubnetIds {
+		result = append(result, ec2types.Subnet{
+			SubnetId: aws.String(subnetID), VpcId: aws.String("vpc-0123456789abcdef0"), State: ec2types.SubnetStateAvailable,
+		})
+	}
+	return &ec2.DescribeSubnetsOutput{Subnets: result}, nil
+}
+
+func (fake *endpointSnapshotEC2Fake) DescribeRouteTables(_ context.Context, input *ec2.DescribeRouteTablesInput, _ ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error) {
+	if len(input.RouteTableIds) != 1 {
+		return &ec2.DescribeRouteTablesOutput{}, nil
+	}
+	var routes []ec2types.Route
+	if !fake.omitLocalRoute {
+		routes = append(routes, ec2types.Route{DestinationCidrBlock: aws.String("10.0.0.0/16"), GatewayId: aws.String("local"), State: ec2types.RouteStateActive})
+	}
+	if fake.endpoint != nil && fake.endpoint.VpcEndpointType == ec2types.VpcEndpointTypeGateway && fake.endpoint.State != ec2types.StateDeleted {
+		routes = append(routes, ec2types.Route{DestinationPrefixListId: aws.String("pl-0123456789abcdef0"), GatewayId: fake.endpoint.VpcEndpointId, State: ec2types.RouteStateActive})
+	}
+	return &ec2.DescribeRouteTablesOutput{RouteTables: []ec2types.RouteTable{{
+		RouteTableId: aws.String(input.RouteTableIds[0]), VpcId: aws.String("vpc-0123456789abcdef0"), Routes: routes,
+	}}}, nil
 }
 
 func (fake *endpointSnapshotEC2Fake) DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {

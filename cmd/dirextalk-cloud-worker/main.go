@@ -28,6 +28,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	installerroothelper "github.com/YingSuiAI/dirextalk-agent/internal/installer/roothelper"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeadapter"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/pairingworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
@@ -45,12 +47,13 @@ import (
 )
 
 const (
-	workerBootstrapSchema = installerbootstrap.UserDataSchemaV1
-	identityMethod        = "aws_sts_sigv4"
-	maxUserDataBytes      = 32 << 10
-	localTokenMode        = "token"
-	workerRuntimeUID      = 65532
-	workerRuntimeGID      = 65532
+	workerBootstrapSchema     = installerbootstrap.UserDataSchemaV1
+	identityMethod            = "aws_sts_sigv4"
+	maxUserDataBytes          = 32 << 10
+	localTokenMode            = "token"
+	workerRuntimeUID          = 65532
+	workerRuntimeGID          = 65532
+	maintenanceLifecycleLease = 65 * time.Minute
 )
 
 var (
@@ -173,34 +176,43 @@ func run() error {
 	}
 	defer maintenanceControl.Close()
 	slog.Info("cloud Worker entering typed maintenance", "deployment_id", launch.config.DeploymentID, "worker_id", launch.config.WorkerID)
-	maintenance := &workermaintenance.Service{
-		Control: maintenanceControl, Root: rootControl, PollInterval: time.Second,
-		Lease: launch.config.LeaseDuration,
-	}
+	maintenance := newWorkerMaintenanceService(maintenanceControl, rootControl)
 	pairingClient := pairingworker.WorkerClient{
 		RPC: agentv1.NewPairingWorkerOperationServiceClient(connection), Root: rootSocket,
 		DeploymentID: launch.config.DeploymentID, WorkerID: launch.config.WorkerID,
 		Lease: launch.config.LeaseDuration, Session: append([]byte(nil), launch.config.IdentitySessionToken...),
 	}
+	knowledgeClient := &knowledgeworker.WorkerClient{
+		RPC: agentv1.NewKnowledgeWorkerControlServiceClient(connection), Adapter: knowledgeadapter.NewClient(),
+		DeploymentID: launch.config.DeploymentID, WorkerID: launch.config.WorkerID,
+		Lease: min(launch.config.LeaseDuration, 60*time.Second), Session: append([]byte(nil), launch.config.IdentitySessionToken...),
+	}
+	defer knowledgeClient.Close()
 	maintenanceCtx, cancelMaintenance := context.WithCancel(ctx)
 	defer cancelMaintenance()
-	errorsChannel := make(chan error, 2)
+	errorsChannel := make(chan error, 3)
 	go func() { errorsChannel <- maintenance.Run(maintenanceCtx) }()
 	go func() { errorsChannel <- runPairingMaintenance(maintenanceCtx, pairingClient, time.Second) }()
-	first := <-errorsChannel
+	go func() { errorsChannel <- runKnowledgeMaintenance(maintenanceCtx, knowledgeClient, time.Second) }()
+	results := []error{<-errorsChannel}
 	cancelMaintenance()
-	second := <-errorsChannel
+	results = append(results, <-errorsChannel, <-errorsChannel)
 	clear(pairingClient.Session)
-	if errors.Is(first, context.Canceled) || errors.Is(first, context.DeadlineExceeded) {
-		first = nil
+	for index, result := range results {
+		if errors.Is(result, context.Canceled) || errors.Is(result, context.DeadlineExceeded) {
+			results[index] = nil
+		}
 	}
-	if errors.Is(second, context.Canceled) || errors.Is(second, context.DeadlineExceeded) {
-		second = nil
-	}
-	if first == nil && second == nil && ctx.Err() != nil {
+	if errors.Join(results...) == nil && ctx.Err() != nil {
 		return nil
 	}
-	return errors.Join(first, second)
+	return errors.Join(results...)
+}
+
+func newWorkerMaintenanceService(control workermaintenance.Control, root workermaintenance.RootControl) *workermaintenance.Service {
+	return &workermaintenance.Service{
+		Control: control, Root: root, PollInterval: time.Second, Lease: maintenanceLifecycleLease,
+	}
 }
 
 func runPairingMaintenance(ctx context.Context, client pairingworker.WorkerClient, interval time.Duration) error {
@@ -211,6 +223,27 @@ func runPairingMaintenance(ctx context.Context, client pairingworker.WorkerClien
 		err := client.RunNext(ctx)
 		code := status.Code(err)
 		if err != nil && code != codes.NotFound && code != codes.FailedPrecondition && code != codes.Unavailable &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func runKnowledgeMaintenance(ctx context.Context, client *knowledgeworker.WorkerClient, interval time.Duration) error {
+	if ctx == nil || client == nil || interval <= 0 {
+		return knowledgeworker.ErrInvalid
+	}
+	for {
+		err := client.RunNext(ctx)
+		code := status.Code(err)
+		if err != nil && code != codes.NotFound && code != codes.FailedPrecondition && code != codes.Unavailable && code != codes.Aborted &&
 			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}

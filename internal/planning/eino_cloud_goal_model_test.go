@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
+	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeprofile"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/publicweb"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
@@ -106,6 +107,59 @@ func TestEinoCloudGoalPlanningModelRejectsUnfetchedAndSecretBearingCapture(t *te
 	_, err = model.ResearchOfficialSources(t.Context(), CloudGoalResearchInput{Request: planningModelStage(cloudskill.StepResearchOfficialSources, recipeValue.RecipeID)})
 	if !errors.Is(err, ErrCloudGoalModelUnavailable) || len(store.completed) != 0 {
 		t.Fatalf("secret capture error=%v completed=%d", err, len(store.completed))
+	}
+}
+
+func TestEinoCloudGoalPlanningModelCanonicalizesExactRetainedKnowledgeEvidence(t *testing.T) {
+	request := planningModelStage(cloudskill.StepDraftRecipe, "knowledge-recipe-model")
+	hints := knowledgeprofile.ResearchHints()
+	values := make([]OfficialSourceEvidence, 0, len(hints))
+	profileEvidence := make([]knowledgeprofile.Evidence, 0, len(hints))
+	retrieved := time.Date(2026, 7, 19, 2, 0, 0, 0, time.UTC)
+	for index, hint := range hints {
+		item := OfficialSourceEvidence{
+			TaskID: request.Attempt.TaskID, ToolCallID: "knowledge-fetch-" + string(rune('a'+index)), URL: hint.ResearchURL,
+			RetrievedAt: retrieved, ContentDigest: "sha256:" + knowledgeprofile.ManifestSHA256,
+		}
+		values = append(values, item)
+		profileEvidence = append(profileEvidence, knowledgeprofile.Evidence{URL: item.URL, RetrievedAt: item.RetrievedAt, ContentDigest: item.ContentDigest})
+	}
+	evidence, err := BuildOfficialSourceEvidenceSet(request.Attempt.TaskID, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, matched := knowledgeprofile.BindExperimentalRecipe(request.Binding.RecipeID, profileEvidence)
+	if !matched {
+		t.Fatal("fixed Knowledge evidence did not match profile")
+	}
+	modelAuthored := want
+	modelAuthored.Name = "Model-authored alternate valid name"
+	raw := planningModelPlanRaw(t, modelAuthored)
+	requestID, err := CloudGoalModelRequestID(request.Binding, request.Attempt.TaskID, request.Step.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &cloudGoalModelStoreFake{
+		config: planningModelRuntimeConfig(),
+		completed: map[string]runtimeapi.RuntimeResponseSnapshot{
+			requestID: {SchemaVersion: runtimeapi.RuntimeResponseSnapshotSchemaV1, Result: runtimeapi.ChatResult{Message: modelapi.Message{Role: modelapi.RoleAssistant, Content: string(raw)}}},
+		},
+	}
+	engine := &cloudGoalModelEngineFake{}
+	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
+		return cloudGoalModelClientFake{}, nil
+	}), runtimeapi.SecretResolver(runtimeapiSecretResolverFake{}), &cloudGoalModelToolsFake{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := model.DraftExperimentalRecipe(t.Context(), CloudGoalRecipeInput{Request: request, Evidence: evidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDigest, wantErr := want.Digest()
+	gotDigest, gotErr := got.Digest()
+	if wantErr != nil || gotErr != nil || gotDigest != wantDigest || got.Name == modelAuthored.Name || engine.calls != 0 {
+		t.Fatalf("canonical Recipe mismatch: got=%q digest=%q want=%q err=%v/%v calls=%d", got.Name, gotDigest, wantDigest, wantErr, gotErr, engine.calls)
 	}
 }
 

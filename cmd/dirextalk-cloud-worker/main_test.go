@@ -15,6 +15,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workermaintenance"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
 	"github.com/google/uuid"
 )
@@ -53,6 +54,26 @@ func TestLoadLaunchUsesStrictSecretFreeIMDSContract(t *testing.T) {
 		t.Fatal("production IMDS bootstrap selected token enrollment")
 	}
 }
+
+func TestMaintenanceLifecycleUsesClosedLongLeaseWithoutWideningGeneralWorkerLease(t *testing.T) {
+	t.Setenv("DIREXTALK_WORKER_LEASE_SECONDS", "1800")
+	bootstrap := validBootstrap()
+	raw, _ := json.Marshal(bootstrap)
+	launch, err := loadLaunch(context.Background(), staticUserData(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	maintenance := newWorkerMaintenanceService((*workerMaintenanceControlFake)(nil), (*workerMaintenanceRootFake)(nil))
+	if launch.config.LeaseDuration != 30*time.Minute {
+		t.Fatalf("general Worker lease=%s", launch.config.LeaseDuration)
+	}
+	if maintenance.Lease != 65*time.Minute {
+		t.Fatalf("maintenance lifecycle lease=%s", maintenance.Lease)
+	}
+}
+
+type workerMaintenanceControlFake struct{ workermaintenance.Control }
+type workerMaintenanceRootFake struct{ workermaintenance.RootControl }
 
 func TestWorkerRuntimeRequiresFixedUnprivilegedIdentity(t *testing.T) {
 	for _, identity := range []runtimeIdentity{

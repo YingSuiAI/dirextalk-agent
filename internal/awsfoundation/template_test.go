@@ -28,7 +28,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("AWS::S3::Bucket"), []byte("AWS::KMS::Key"), []byte("AWS::DynamoDB::Table"), []byte("AWS::Logs::LogGroup"),
 		[]byte("AWS::SecretsManager"), []byte("AWS::Events::Rule"), []byte("AWS::Lambda::Function"), []byte("WorkerInstanceProfile"),
 		[]byte("ec2:AuthorizeSecurityGroupEgress"), []byte("ec2:RevokeSecurityGroupIngress"), []byte("ec2:RevokeSecurityGroupEgress"),
-		[]byte("ec2:CreateSnapshot"), []byte("ec2:DescribeVpcEndpoints"), []byte("ec2:DescribeInstanceAttribute"), []byte("TagComputeOnCreate"), []byte("TagOnlyOwnedCompute"),
+		[]byte("ec2:CreateSnapshot"), []byte("ec2:DescribeVpcEndpoints"), []byte("ec2:DescribePrefixLists"), []byte("ec2:DescribeInstanceAttribute"), []byte("TagComputeOnCreate"), []byte("TagOnlyOwnedCompute"),
 		[]byte("RunTaggedInstanceVolume"),
 		[]byte("UseOwnedNetworkInterface"), []byte("UsePublicBuilderBaseImage"), []byte("UseOwnedWorkerImage"), []byte("UseLaunchNetworkInputs"),
 		[]byte("CreateImageFromOwnedBuilder"), []byte("CreateImageOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
@@ -54,8 +54,9 @@ func TestFoundationTemplateProvidesClosedAMIReleaseEnvironment(t *testing.T) {
 	for _, required := range [][]byte{
 		[]byte("ReleaseVPC"), []byte("AWS::EC2::VPC"),
 		[]byte("ReleasePrivateSubnet"), []byte("MapPublicIpOnLaunch: false"),
+		[]byte("ReleasePrivateRouteTable"), []byte("AWS::EC2::RouteTable"), []byte("AWS::EC2::SubnetRouteTableAssociation"),
 		[]byte("ReleaseZeroIngressSecurityGroup"), []byte("SecurityGroupIngress: []"), []byte("CidrIp: 127.0.0.1/32"),
-		[]byte("ReleasePrivateSubnetId"), []byte("ReleaseZeroIngressSecurityGroupId"),
+		[]byte("ReleaseVPCId"), []byte("ReleasePrivateSubnetId"), []byte("ReleasePrivateRouteTableId"), []byte("ReleaseZeroIngressSecurityGroupId"),
 	} {
 		if !bytes.Contains(template, required) {
 			t.Fatalf("Foundation template does not bind the fixed AMI release environment marker %q", required)
@@ -64,6 +65,23 @@ func TestFoundationTemplateProvidesClosedAMIReleaseEnvironment(t *testing.T) {
 	if err := ValidateTemplate(template); err != nil {
 		t.Fatalf("ValidateTemplate() error = %v", err)
 	}
+	t.Run("route table association drift", func(t *testing.T) {
+		mutated := mutateFoundationResource(t, template, "ReleasePrivateRouteTableAssociation", "Ref: ReleasePrivateRouteTable", "Ref: ReleaseVPC")
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatal("private subnet accepted the wrong route-table association")
+		}
+	})
+	t.Run("Internet gateway added", func(t *testing.T) {
+		marker := []byte("  ReleaseVPC:\n")
+		addition := []byte("  ForbiddenInternetGateway:\n    Type: AWS::EC2::InternetGateway\n\n")
+		mutated := bytes.Replace(template, marker, append(addition, marker...), 1)
+		if bytes.Equal(mutated, template) {
+			t.Fatal("release VPC insertion marker not found")
+		}
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatal("Foundation accepted an Internet gateway in the zero-route environment")
+		}
+	})
 }
 
 func TestFoundationTemplateReaperEntrypointPermissionsAreMinimumScoped(t *testing.T) {
@@ -204,6 +222,8 @@ func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {
 		new  string
 	}{
 		{name: "instance attribute readback removed", sid: "ObserveEC2", old: "- ec2:DescribeInstanceAttribute", new: "- ec2:DescribeAddresses"},
+		{name: "S3 prefix-list readback removed", sid: "ObserveEC2", old: "- ec2:DescribePrefixLists", new: "- ec2:DescribeAddresses"},
+		{name: "security-group rule readback removed", sid: "ObserveEC2", old: "- ec2:DescribeSecurityGroupRules", new: "- ec2:DescribeSecurityGroups"},
 		{name: "instance launch ownership removed", sid: "RunTaggedInstanceVolume", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
 		{name: "instance launch allows IMDSv1", sid: "RunTaggedInstanceVolume", old: "ec2:MetadataHttpTokens: required", new: "ec2:MetadataHttpTokens: optional"},
 		{name: "launch allows an unencrypted root", sid: "RunTaggedInstanceVolume", old: "ec2:Encrypted: 'true'", new: "ec2:Encrypted: 'false'"},
@@ -277,7 +297,7 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 		resources []string
 	}{
 		{
-			sid:     "UseNetworkCreationInputs",
+			sid:     "UseNetworkInputs",
 			actions: []string{"ec2:CreateNetworkInterface", "ec2:CreateVpcEndpoint"},
 			resources: []string{
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*",
@@ -285,10 +305,17 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 			},
 		},
 		{
-			sid:     "UseVPCForNetworkCreation",
+			sid:     "UseVPCInputs",
 			actions: []string{"ec2:CreateSecurityGroup", "ec2:CreateVpcEndpoint"},
 			resources: []string{
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*",
+			},
+		},
+		{
+			sid:     "UseRouteTableInputs",
+			actions: []string{"ec2:CreateVpcEndpoint"},
+			resources: []string{
+				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/*",
 			},
 		},
 	} {
@@ -306,13 +333,13 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 	}
 
 	tagging := assertStatement("TagComputeOnCreate", []string{"ec2:CreateTags"}, []string{
-		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*",
 	})
 	condition, _ := stringMap(tagging["Condition"])
 	equals, _ := stringMap(condition["StringEquals"])
 	if !conditionRefEquals(tagging, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
 		!sameStrings(stringValues(equals["ec2:CreateAction"]), []string{
-			"AllocateAddress", "CreateNetworkInterface", "CreateSecurityGroup", "CreateSnapshot", "CreateVolume", "CreateVpcEndpoint", "RunInstances",
+			"AllocateAddress", "AuthorizeSecurityGroupEgress", "CreateNetworkInterface", "CreateSecurityGroup", "CreateSnapshot", "CreateVolume", "CreateVpcEndpoint", "RunInstances",
 		}) {
 		t.Fatal("tag-on-create permission does not cover the exact supported EC2 create actions")
 	}
@@ -320,7 +347,7 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 		t.Fatal("tag-on-create permission does not restrict ownership, tag keys, and create actions")
 	}
 	ownedTagging := assertStatement("TagOnlyOwnedCompute", []string{"ec2:CreateTags"}, []string{
-		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*",
 	})
 	if !computeTagCondition(ownedTagging, false) {
 		t.Fatal("direct CreateTags is not restricted to an already-owned resource and the runtime tag allowlist")
@@ -337,9 +364,12 @@ func TestFoundationTemplateEC2CreationPermissionsFailClosed(t *testing.T) {
 	}{
 		{name: "new resource loses request ownership", sid: "CreateTaggedCompute", old: "aws:RequestTag/dirextalk:agent_instance_id", replacement: "ec2:ResourceTag/dirextalk:agent_instance_id"},
 		{name: "new resource statement absorbs a subnet dependency", sid: "CreateTaggedCompute", old: ":vpc-endpoint/*", replacement: ":subnet/*"},
-		{name: "network dependency receives a new-resource condition", sid: "UseNetworkCreationInputs", old: "            Resource:", replacement: "            Condition:\n              StringEquals:\n                aws:RequestTag/dirextalk:agent_instance_id:\n                  Ref: AgentInstanceId\n            Resource:"},
+		{name: "network dependency receives a new-resource condition", sid: "UseNetworkInputs", old: "            Resource:", replacement: "            Condition:\n              StringEquals:\n                aws:RequestTag/dirextalk:agent_instance_id:\n                  Ref: AgentInstanceId\n            Resource:"},
+		{name: "route table dependency receives a new-resource condition", sid: "UseRouteTableInputs", old: "            Resource:", replacement: "            Condition:\n              StringEquals:\n                aws:RequestTag/dirextalk:agent_instance_id:\n                  Ref: AgentInstanceId\n            Resource:"},
+		{name: "route table dependency scope is broadened", sid: "UseRouteTableInputs", old: ":route-table/*", replacement: ":*"},
 		{name: "snapshot accepts an unowned source volume", sid: "UseOwnedVolumeForSnapshot", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:RequestTag/dirextalk:agent_instance_id"},
 		{name: "elastic ip tagging is omitted", sid: "TagComputeOnCreate", old: "                  - AllocateAddress\n", replacement: ""},
+		{name: "transient S3 egress rule tagging is omitted", sid: "TagComputeOnCreate", old: "                  - AuthorizeSecurityGroupEgress\n", replacement: ""},
 		{name: "unlisted create action may tag", sid: "TagComputeOnCreate", old: "                  - AllocateAddress", replacement: "                  - ModifyVolume"},
 		{name: "tag key allowlist is broadened", sid: "TagComputeOnCreate", old: "                  - dirextalk_client_token", replacement: "                  - unrestricted_tag_key"},
 		{name: "direct tagging loses existing ownership", sid: "TagOnlyOwnedCompute", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:ResourceTag/unrelated"},
@@ -401,12 +431,26 @@ func TestFoundationTemplateControlEntrypointPolicyIsMinimumScoped(t *testing.T) 
 		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:loadbalancer/app/*",
 		"arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/app/*",
 	})
-	assertStatement("AuthorizeTaggedIngressOnOwnedSecurityGroup", []string{"ec2:AuthorizeSecurityGroupIngress"}, []string{
+	authorizeIngress := assertStatement("AuthorizeTaggedIngressOnOwnedSecurityGroup", []string{"ec2:AuthorizeSecurityGroupIngress"}, []string{
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
 	})
-	assertStatement("TagIngressRuleOnCreate", []string{"ec2:CreateTags"}, []string{
+	tagIngressRule := assertStatement("TagIngressRuleOnCreate", []string{"ec2:CreateTags"}, []string{
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*",
 	})
+	for sid, statement := range map[string]map[string]any{
+		"AuthorizeTaggedIngressOnOwnedSecurityGroup": authorizeIngress,
+		"TagIngressRuleOnCreate":                     tagIngressRule,
+	} {
+		condition, _ := stringMap(statement["Condition"])
+		tagCondition, _ := stringMap(condition["ForAllValues:StringEquals"])
+		found := false
+		for _, key := range stringValues(tagCondition["aws:TagKeys"]) {
+			found = found || key == "dirextalk_entry_ready"
+		}
+		if !found {
+			t.Fatalf("%s cannot authorize the provider's exact ready-tagged security-group rule", sid)
+		}
+	}
 	assertStatement("RevokeIngressOnOwnedSecurityGroup", []string{"ec2:RevokeSecurityGroupIngress"}, []string{
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
 	})
@@ -480,7 +524,7 @@ func TestControlRuntimeInlinePolicyFitsIAMRoleQuota(t *testing.T) {
 	// IAM counts non-whitespace policy bytes and limits aggregate role inline
 	// policy size to 10,240 bytes. Intrinsics are still unresolved here, so
 	// leave headroom for expanded partition, Region, account, and resource ARNs.
-	if len(document) > 9_500 {
+	if len(document) > 9_800 {
 		t.Fatalf("Control Runtime inline policy is too large before intrinsic expansion: %d bytes", len(document))
 	}
 }

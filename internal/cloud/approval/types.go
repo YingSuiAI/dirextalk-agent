@@ -15,18 +15,25 @@ type VolumeDisposition = cloudquote.VolumeDisposition
 type ServiceOperationScopeV1 = cloudquote.ServiceOperationScopeV1
 type PrivateEndpointOperationSpecV1 = cloudquote.PrivateEndpointOperationSpecV1
 type PrivateEndpointServiceV1 = cloudquote.PrivateEndpointServiceV1
+type PrivateEndpointTypeV1 = cloudquote.PrivateEndpointTypeV1
 type EndpointSecurityGroupSourceV1 = cloudquote.EndpointSecurityGroupSourceV1
+type PrivateConnectivityMode = cloudquote.PrivateConnectivityMode
 type SnapshotOperationSpecV1 = cloudquote.SnapshotOperationSpecV1
 type SnapshotOperationDispositionV1 = cloudquote.SnapshotOperationDispositionV1
 
 const (
-	VolumeDeleteWithDeployment           = cloudquote.VolumeDeleteWithDeployment
-	VolumeRetainWithManagedService       = cloudquote.VolumeRetainWithManagedService
-	PrivateEndpointServiceS3             = cloudquote.PrivateEndpointServiceS3
-	EndpointSecurityGroupPlanExisting    = cloudquote.EndpointSecurityGroupPlanExisting
-	EndpointSecurityGroupWorkerDedicated = cloudquote.EndpointSecurityGroupWorkerDedicated
-	SnapshotDeleteWithDeployment         = cloudquote.SnapshotDeleteWithDeployment
-	SnapshotRetainWithManagedService     = cloudquote.SnapshotRetainWithManagedService
+	VolumeDeleteWithDeployment                       = cloudquote.VolumeDeleteWithDeployment
+	VolumeRetainWithManagedService                   = cloudquote.VolumeRetainWithManagedService
+	PrivateEndpointServiceS3                         = cloudquote.PrivateEndpointServiceS3
+	PrivateEndpointServiceSecretsManager             = cloudquote.PrivateEndpointServiceSecretsManager
+	PrivateEndpointTypeGateway                       = cloudquote.PrivateEndpointTypeGateway
+	PrivateEndpointTypeInterface                     = cloudquote.PrivateEndpointTypeInterface
+	EndpointSecurityGroupPlanExisting                = cloudquote.EndpointSecurityGroupPlanExisting
+	EndpointSecurityGroupWorkerDedicated             = cloudquote.EndpointSecurityGroupWorkerDedicated
+	EndpointSecurityGroupEndpointDedicatedFromWorker = cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker
+	PrivateConnectivityNoNATEndpointsV1              = cloudquote.PrivateConnectivityNoNATEndpointsV1
+	SnapshotDeleteWithDeployment                     = cloudquote.SnapshotDeleteWithDeployment
+	SnapshotRetainWithManagedService                 = cloudquote.SnapshotRetainWithManagedService
 )
 
 const (
@@ -142,17 +149,20 @@ type ResourceScopeV1 struct {
 }
 
 type NetworkScopeV1 struct {
-	VPCID                  string            `json:"vpc_id"`
-	SubnetID               string            `json:"subnet_id"`
-	SecurityGroupMode      SecurityGroupMode `json:"security_group_mode"`
-	SecurityGroupID        string            `json:"security_group_id,omitempty"`
-	PublicIPv4             bool              `json:"public_ipv4"`
-	EntryPoint             EntryPointKind    `json:"entry_point"`
-	PublicExposure         bool              `json:"public_exposure"`
-	IngressPorts           []uint32          `json:"ingress_ports,omitempty"`
-	Hostname               string            `json:"hostname,omitempty"`
-	TLSRequired            bool              `json:"tls_required"`
-	AuthenticationRequired bool              `json:"authentication_required"`
+	VPCID                  string                  `json:"vpc_id"`
+	SubnetID               string                  `json:"subnet_id"`
+	SecurityGroupMode      SecurityGroupMode       `json:"security_group_mode"`
+	SecurityGroupID        string                  `json:"security_group_id,omitempty"`
+	PublicIPv4             bool                    `json:"public_ipv4"`
+	EntryPoint             EntryPointKind          `json:"entry_point"`
+	PublicExposure         bool                    `json:"public_exposure"`
+	IngressPorts           []uint32                `json:"ingress_ports,omitempty"`
+	Hostname               string                  `json:"hostname,omitempty"`
+	TLSRequired            bool                    `json:"tls_required"`
+	AuthenticationRequired bool                    `json:"authentication_required"`
+	RouteTableID           string                  `json:"route_table_id,omitempty"`
+	ControlPlaneEndpoint   string                  `json:"control_plane_endpoint,omitempty"`
+	PrivateConnectivity    PrivateConnectivityMode `json:"private_connectivity,omitempty"`
 }
 
 type SecretReferenceV1 struct {

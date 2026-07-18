@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer/roothelper"
+	knowledgeinstaller "github.com/YingSuiAI/dirextalk-agent/internal/knowledgeinstaller"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
@@ -107,7 +108,9 @@ func runDaemon() error {
 	}
 	keys := roothelper.NewRootOwnedSigningKeyFile()
 	observer := roothelper.LocalObserver{
-		Artifacts: inspector, State: roothelper.NewRootOwnedInstalledStateInspector(trust.InstalledState), Now: time.Now,
+		Artifacts: inspector, State: roothelper.NewRootOwnedInstalledStateInspector(trust.InstalledState),
+		KnowledgeGeneration: knowledgeinstaller.GenerationObserver{Paths: knowledgeinstaller.ProductionPaths()},
+		Now:                 time.Now,
 	}
 	helperServer, err := roothelper.NewLocalServer(rootTrust, roothelper.ControlFactoryFunc(
 		func(_ context.Context, delivery installer.DeliveryV1) (roothelper.LocalControl, error) {

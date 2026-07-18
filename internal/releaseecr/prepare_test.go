@@ -281,6 +281,16 @@ func TestPrepareRejectsRepositoryDriftAndFailedReadBackBeforeLogin(t *testing.T)
 				{Key: aws.String("artifact"), Value: aws.String("agent")},
 			}}
 		}},
+		{name: "legacy ownership tags without managed retention", setup: func(client *fakeECR) {
+			for _, spec := range FixedRepositories() {
+				client.repositories[spec.Name] = validRepository(spec.Name)
+			}
+			client.repositoryTags = map[string][]ecrtypes.Tag{RepositoryAgent: {
+				{Key: aws.String("managed_by"), Value: aws.String("dirextalk-agent")},
+				{Key: aws.String("component"), Value: aws.String("release-registry")},
+				{Key: aws.String("artifact"), Value: aws.String("agent")},
+			}}
+		}},
 		{name: "ownership tag changed", setup: func(client *fakeECR) {
 			for _, spec := range FixedRepositories() {
 				client.repositories[spec.Name] = validRepository(spec.Name)
@@ -467,6 +477,7 @@ func validRepositoryTags(name string) []ecrtypes.Tag {
 		{Key: aws.String("managed_by"), Value: aws.String("dirextalk-agent")},
 		{Key: aws.String("component"), Value: aws.String("release-registry")},
 		{Key: aws.String("artifact"), Value: aws.String(artifact)},
+		{Key: aws.String("retention"), Value: aws.String(ManagedRetention)},
 	}
 }
 

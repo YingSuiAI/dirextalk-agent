@@ -144,16 +144,20 @@ func (preparer *Preparer) Prepare(ctx context.Context) (prepared PreparedV1, err
 }
 
 func (preparer *Preparer) verifyIdentity(ctx context.Context) (string, error) {
-	output, err := preparer.clients.STS.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	return verifyExpectedIdentity(ctx, preparer.options.ExpectedAccountID, preparer.clients.STS)
+}
+
+func verifyExpectedIdentity(ctx context.Context, expectedAccountID string, client STSAPI) (string, error) {
+	output, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return "", redactedAWSFailure(ctx)
 	}
-	if output == nil || aws.ToString(output.Account) != preparer.options.ExpectedAccountID || aws.ToString(output.UserId) == "" {
+	if output == nil || aws.ToString(output.Account) != expectedAccountID || aws.ToString(output.UserId) == "" {
 		return "", ErrIdentityMismatch
 	}
 	identityARN, err := arn.Parse(aws.ToString(output.Arn))
 	if err != nil || (identityARN.Service != "iam" && identityARN.Service != "sts") ||
-		identityARN.AccountID != preparer.options.ExpectedAccountID || identityARN.Partition == "" {
+		identityARN.AccountID != expectedAccountID || identityARN.Partition == "" {
 		return "", ErrIdentityMismatch
 	}
 	return identityARN.Partition, nil
@@ -239,17 +243,19 @@ func repositoryTags(spec RepositorySpec) []ecrtypes.Tag {
 		{Key: aws.String("managed_by"), Value: aws.String("dirextalk-agent")},
 		{Key: aws.String("component"), Value: aws.String("release-registry")},
 		{Key: aws.String("artifact"), Value: aws.String(spec.Component)},
+		{Key: aws.String("retention"), Value: aws.String(ManagedRetention)},
 	}
 }
 
 func exactRepositoryTags(tags []ecrtypes.Tag, spec RepositorySpec) bool {
-	if len(tags) != 3 {
+	if len(tags) != 4 {
 		return false
 	}
 	wanted := map[string]string{
 		"managed_by": "dirextalk-agent",
 		"component":  "release-registry",
 		"artifact":   spec.Component,
+		"retention":  ManagedRetention,
 	}
 	for _, tag := range tags {
 		key := aws.ToString(tag.Key)

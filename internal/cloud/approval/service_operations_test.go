@@ -89,6 +89,55 @@ func TestPlanV1RejectsServiceOperationFields(t *testing.T) {
 	}
 }
 
+func TestPrivateNetworkFactsChangePlanHashAndSigningPayload(t *testing.T) {
+	plan := validPlan()
+	plan.SchemaVersion = PlanSchemaV2
+	plan.NetworkScope = NetworkScopeV1{
+		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
+		SecurityGroupMode: SecurityGroupCreateDedicated, EntryPoint: EntryPointNone,
+		RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://agent.example.com:443",
+		PrivateConnectivity: PrivateConnectivityNoNATEndpointsV1,
+	}
+	plan.ServiceOperations = &ServiceOperationScopeV1{PrivateEndpoints: []PrivateEndpointOperationSpecV1{
+		{OperationKey: "worker-s3-gateway", Service: PrivateEndpointServiceS3, EndpointType: PrivateEndpointTypeGateway},
+		{OperationKey: "worker-secretsmanager-interface", Service: PrivateEndpointServiceSecretsManager, EndpointType: PrivateEndpointTypeInterface,
+			SecurityGroupSource: EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
+	}}
+	if err := refreshServiceOperationScopeDigest(&plan); err != nil {
+		t.Fatal(err)
+	}
+	baselineHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := NewApprovalV1(plan, "approval-private", "challenge-private", "device-private", plan.Quote.ValidUntil.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselinePayload, err := approval.SigningPayload()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	drifted := cloneServiceOperationPlan(plan)
+	drifted.NetworkScope.RouteTableID = "rtb-0bbbbbbbbbbbbbbbb"
+	if err := refreshServiceOperationScopeDigest(&drifted); err != nil {
+		t.Fatal(err)
+	}
+	driftedHash, err := drifted.Hash()
+	if err != nil || driftedHash == baselineHash {
+		t.Fatalf("route table drift hash=%q baseline=%q err=%v", driftedHash, baselineHash, err)
+	}
+	driftedApproval, err := NewApprovalV1(drifted, "approval-private", "challenge-private", "device-private", drifted.Quote.ValidUntil.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	driftedPayload, err := driftedApproval.SigningPayload()
+	if err != nil || string(driftedPayload) == string(baselinePayload) {
+		t.Fatal("route table drift did not change the device signing payload")
+	}
+}
+
 func serviceOperationPlan(t *testing.T) PlanV1 {
 	t.Helper()
 	plan := validPlan()

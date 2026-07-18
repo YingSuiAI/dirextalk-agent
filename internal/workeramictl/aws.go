@@ -12,14 +12,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 )
 
 var (
-	accountPattern = regexp.MustCompile(`^[0-9]{12}$`)
-	regionPattern  = regexp.MustCompile(`^[a-z]{2}(?:-gov)?-[a-z]+-[1-9][0-9]*$`)
+	accountPattern         = regexp.MustCompile(`^[0-9]{12}$`)
+	regionPattern          = regexp.MustCompile(`^[a-z]{2}(?:-gov)?-[a-z]+-[1-9][0-9]*$`)
+	vpcIDPattern           = regexp.MustCompile(`^vpc-[0-9a-f]{8,32}$`)
+	routeTableIDPattern    = regexp.MustCompile(`^rtb-[0-9a-f]{8,32}$`)
+	subnetIDPattern        = regexp.MustCompile(`^subnet-[0-9a-f]{8,32}$`)
+	securityGroupIDPattern = regexp.MustCompile(`^sg-[0-9a-f]{8,32}$`)
+	prefixListIDPattern    = regexp.MustCompile(`^pl-[0-9a-f]{8,32}$`)
 )
 
 type stsIdentityAPI interface {
@@ -143,6 +149,12 @@ func DefaultDependencies() Dependencies {
 				return nil, errCloudOperation
 			}
 			return &sdkAbsenceVerifier{client: ec2.NewFromConfig(config), region: config.Region}, nil
+		},
+		NewPrepareResolver: func(config aws.Config) (PrepareEnvironmentResolver, error) {
+			if !regionPattern.MatchString(config.Region) || config.Credentials == nil {
+				return nil, errCloudOperation
+			}
+			return &sdkPrepareResolver{cloudformation: cloudformation.NewFromConfig(config), ec2: ec2.NewFromConfig(config), region: config.Region}, nil
 		},
 	}
 }

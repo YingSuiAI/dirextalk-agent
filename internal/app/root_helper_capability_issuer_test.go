@@ -29,6 +29,20 @@ type capabilityHelperReaderFake struct {
 	ready   helperkey.Record
 }
 
+type lifecycleExecutionFencerFake struct {
+	err   error
+	calls int
+	value workeroperation.Assignment
+}
+
+func (fake *lifecycleExecutionFencerFake) FenceManagedKnowledgeLifecycleExecution(
+	_ context.Context, value workeroperation.Assignment, _ time.Time,
+) error {
+	fake.calls++
+	fake.value = value
+	return fake.err
+}
+
 func (fake capabilityHelperReaderFake) Get(context.Context, string) (helperkey.Record, error) {
 	return fake.current.Clone(), nil
 }
@@ -75,7 +89,7 @@ func TestProductionRootHelperCapabilityIssuerRecoversExactResponsesAndFencesDrif
 		OwnerID: fixture.deployment.OwnerID, Action: workeroperation.ActionRestart,
 		LifecycleRestartRef: "restart-service", ExecutionBundleDigest: workerDigest(fixture.deployment.ExecutionBundle.SHA256),
 		ExpectedInstalledManifestDigest: manifestDigest, WorkerID: fixture.deployment.WorkerID,
-		LeaseEpoch: 3, LeaseExpiresAt: fixture.now.Add(time.Minute), Revision: 2,
+		LeaseEpoch: 3, LeaseExpiresAt: fixture.now.Add(12 * time.Minute), Revision: 2,
 	}
 	_, firstRestart, err := issuer.IssueRestartCapability(context.Background(), session, operation)
 	if err != nil {
@@ -89,8 +103,12 @@ func TestProductionRootHelperCapabilityIssuerRecoversExactResponsesAndFencesDrif
 	secondRestartCBOR, _ := canonical.Marshal(secondRestart)
 	if !bytes.Equal(firstRestartCBOR, secondRestartCBOR) ||
 		firstRestart.Capability.ExpectedInstalledManifestDigest != manifestDigest ||
-		firstRestart.Capability.HelperPublicKeyDigest != fixture.ready.Binding.PublicKeyDigest {
+		firstRestart.Capability.HelperPublicKeyDigest != fixture.ready.Binding.PublicKeyDigest ||
+		firstRestart.Capability.ExpiresAt != fixture.now.Add(10*time.Minute+rootHelperLifecycleTimeoutGrace).Format(time.RFC3339Nano) {
 		t.Fatal("restart response-loss retry changed its installed-manifest or helper trust fence")
+	}
+	if err := installer.ValidateRootHelperRestartCapabilityAt(firstDelivery, firstRestart, fixture.now.Add(6*time.Minute)); err != nil {
+		t.Fatalf("declared ten-minute command lost authorization after five minutes: %v", err)
 	}
 
 	crossDeployment := operation
@@ -105,7 +123,7 @@ func TestProductionRootHelperCapabilityIssuerRecoversExactResponsesAndFencesDrif
 	}
 	expired := operation
 	expired.LeaseExpiresAt = fixture.now
-	if _, _, err := issuer.IssueRestartCapability(context.Background(), session, expired); !errors.Is(err, workeroperation.ErrInvalid) {
+	if _, _, err := issuer.IssueRestartCapability(context.Background(), session, expired); !errors.Is(err, workeroperation.ErrLeaseExpired) {
 		t.Fatalf("expired restart lease err=%v", err)
 	}
 }
@@ -130,6 +148,51 @@ func TestProductionRootHelperBootstrapRejectsCrossDeploymentAndStaleRecord(t *te
 	stale.Revision--
 	if _, _, err := issuer.IssueBootstrapCapability(context.Background(), session, stale); !errors.Is(err, helperkey.ErrConflict) {
 		t.Fatalf("stale helper revision err=%v", err)
+	}
+}
+
+func TestProductionLifecycleCapabilityCarriesAndFencesSignedRevisionsBeforeIssuance(t *testing.T) {
+	fixture := newRootHelperCapabilityIssuerFixture(t)
+	fencer := &lifecycleExecutionFencerFake{}
+	issuer, err := newProductionRootHelperCapabilityIssuer(
+		capabilityWorkerReaderFake{fixture.deployment},
+		capabilityHelperReaderFake{current: fixture.grant, ready: fixture.ready},
+		fixture.trust, func() time.Time { return fixture.now }, fencer,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestDigest, _ := canonical.Digest(fixture.delivery.ArtifactManifest.Manifest)
+	session := worker.Assignment{
+		DeploymentID: fixture.deployment.DeploymentID, OwnerID: fixture.deployment.OwnerID,
+		WorkerID: fixture.deployment.WorkerID,
+	}
+	operation := workeroperation.Assignment{
+		OperationID: uuid.NewString(), DeploymentID: fixture.deployment.DeploymentID,
+		OwnerID: fixture.deployment.OwnerID, Action: workeroperation.ActionBackup,
+		LifecycleRestartRef: "restart-service", ExecutionBundleDigest: workerDigest(fixture.deployment.ExecutionBundle.SHA256),
+		ExpectedInstalledManifestDigest: manifestDigest, WorkerID: fixture.deployment.WorkerID,
+		ExpectedDeploymentRevision: fixture.deployment.Revision, ExpectedManagedServiceRevision: 4,
+		ExpectedKnowledgeBindingRevision: 2, LeaseEpoch: 3, LeaseExpiresAt: fixture.now.Add(12 * time.Minute), Revision: 2,
+	}
+	_, signed, err := issuer.IssueRestartCapability(context.Background(), session, operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fencer.calls != 1 || fencer.value.OperationID != operation.OperationID ||
+		signed.Capability.ExpectedDeploymentRevision != operation.ExpectedDeploymentRevision ||
+		signed.Capability.ExpectedManagedServiceRevision != operation.ExpectedManagedServiceRevision ||
+		signed.Capability.ExpectedKnowledgeBindingRevision != operation.ExpectedKnowledgeBindingRevision {
+		t.Fatalf("fence=%#v capability=%#v", fencer.value, signed.Capability)
+	}
+	drifted := operation
+	drifted.ExpectedDeploymentRevision--
+	if _, _, err := issuer.IssueRestartCapability(context.Background(), session, drifted); !errors.Is(err, workeroperation.ErrRevisionConflict) {
+		t.Fatalf("deployment drift err=%v", err)
+	}
+	fencer.err = workeroperation.ErrRevisionConflict
+	if _, _, err := issuer.IssueRestartCapability(context.Background(), session, operation); !errors.Is(err, workeroperation.ErrRevisionConflict) {
+		t.Fatalf("service/binding drift err=%v", err)
 	}
 }
 
@@ -161,7 +224,7 @@ func newRootHelperCapabilityIssuerFixture(t *testing.T) rootHelperCapabilityIssu
 		Commands: []installer.CommandV1{{
 			CommandID:        "restart-service",
 			Argv:             []string{installer.PreinstalledArtifactRoot + "/service-control", "restart"},
-			WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 60,
+			WorkingDirectory: installer.PreinstalledArtifactRoot, TimeoutSeconds: 600,
 			ArtifactRefs: []string{"service-control"},
 		}},
 		Network:   installer.NetworkV1{OutboundHTTPSHosts: []string{"api.example.com"}},

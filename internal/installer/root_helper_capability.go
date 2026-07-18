@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	RootHelperBootstrapCapabilitySchemaV1 = "dirextalk.agent.root-helper-bootstrap-capability/v1"
-	RootHelperRestartCapabilitySchemaV1   = "dirextalk.agent.root-helper-restart-capability/v1"
-	RootHelperPairingCapabilitySchemaV1   = "dirextalk.agent.root-helper-pairing-capability/v1"
-	maximumRootHelperCapabilityDuration   = 15 * time.Minute
+	RootHelperBootstrapCapabilitySchemaV1        = "dirextalk.agent.root-helper-bootstrap-capability/v1"
+	RootHelperRestartCapabilitySchemaV1          = "dirextalk.agent.root-helper-restart-capability/v1"
+	RootHelperPairingCapabilitySchemaV1          = "dirextalk.agent.root-helper-pairing-capability/v1"
+	maximumRootHelperCapabilityDuration          = 15 * time.Minute
+	maximumRootHelperLifecycleCapabilityDuration = 65 * time.Minute
 )
 
 type RootHelperOperationKind string
@@ -55,26 +56,30 @@ type SignedRootHelperBootstrapCapabilityV1 struct {
 // the original InstallerDelivery. It intentionally has no argv, environment,
 // path, unit, shell fragment, or provider passthrough.
 type RootHelperRestartCapabilityV1 struct {
-	SchemaVersion                   string    `json:"schema_version"`
-	CapabilityID                    string    `json:"capability_id"`
-	TrustID                         string    `json:"trust_id"`
-	InstallerBinding                BindingV1 `json:"installer_binding"`
-	PlanDigest                      string    `json:"plan_digest"`
-	OperationID                     string    `json:"operation_id"`
-	DeploymentID                    string    `json:"deployment_id"`
-	OwnerID                         string    `json:"owner_id"`
-	LifecycleRestartRef             string    `json:"lifecycle_restart_ref"`
-	ExecutionBundleDigest           string    `json:"execution_bundle_digest"`
-	ExpectedInstalledManifestDigest string    `json:"expected_installed_manifest_digest"`
-	HelperDeliveryID                string    `json:"helper_delivery_id"`
-	HelperID                        string    `json:"helper_id"`
-	HelperSignerKeyID               string    `json:"helper_signer_key_id"`
-	HelperPublicKeyDigest           string    `json:"helper_public_key_digest"`
-	InstanceID                      string    `json:"instance_id"`
-	WorkerPrincipalID               string    `json:"worker_principal_id"`
-	WorkerLeaseEpoch                int64     `json:"worker_lease_epoch"`
-	IssuedAt                        string    `json:"issued_at"`
-	ExpiresAt                       string    `json:"expires_at"`
+	SchemaVersion                    string    `json:"schema_version"`
+	CapabilityID                     string    `json:"capability_id"`
+	TrustID                          string    `json:"trust_id"`
+	InstallerBinding                 BindingV1 `json:"installer_binding"`
+	PlanDigest                       string    `json:"plan_digest"`
+	OperationID                      string    `json:"operation_id"`
+	DeploymentID                     string    `json:"deployment_id"`
+	OwnerID                          string    `json:"owner_id"`
+	Action                           string    `json:"action"`
+	LifecycleRestartRef              string    `json:"lifecycle_restart_ref"`
+	ExecutionBundleDigest            string    `json:"execution_bundle_digest"`
+	ExpectedInstalledManifestDigest  string    `json:"expected_installed_manifest_digest"`
+	ExpectedDeploymentRevision       int64     `json:"expected_deployment_revision"`
+	ExpectedManagedServiceRevision   int64     `json:"expected_managed_service_revision"`
+	ExpectedKnowledgeBindingRevision int64     `json:"expected_knowledge_binding_revision"`
+	HelperDeliveryID                 string    `json:"helper_delivery_id"`
+	HelperID                         string    `json:"helper_id"`
+	HelperSignerKeyID                string    `json:"helper_signer_key_id"`
+	HelperPublicKeyDigest            string    `json:"helper_public_key_digest"`
+	InstanceID                       string    `json:"instance_id"`
+	WorkerPrincipalID                string    `json:"worker_principal_id"`
+	WorkerLeaseEpoch                 int64     `json:"worker_lease_epoch"`
+	IssuedAt                         string    `json:"issued_at"`
+	ExpiresAt                        string    `json:"expires_at"`
 }
 
 type SignedRootHelperRestartCapabilityV1 struct {
@@ -84,14 +89,18 @@ type SignedRootHelperRestartCapabilityV1 struct {
 }
 
 type RootHelperRestartGrantV1 struct {
-	OperationID                     string
-	DeploymentID                    string
-	OwnerID                         string
-	LifecycleRestartRef             string
-	ExecutionBundleDigest           string
-	ExpectedInstalledManifestDigest string
-	WorkerLeaseEpoch                int64
-	LeaseExpiresAt                  time.Time
+	OperationID                      string
+	DeploymentID                     string
+	OwnerID                          string
+	Action                           string
+	LifecycleRestartRef              string
+	ExecutionBundleDigest            string
+	ExpectedInstalledManifestDigest  string
+	ExpectedDeploymentRevision       int64
+	ExpectedManagedServiceRevision   int64
+	ExpectedKnowledgeBindingRevision int64
+	WorkerLeaseEpoch                 int64
+	LeaseExpiresAt                   time.Time
 }
 
 // RootHelperPairingCapabilityV1 authorizes exactly one Recipe-declared command
@@ -180,7 +189,7 @@ func (issuer *TrustIssuer) IssueRootHelperBootstrapCapability(
 		binding.DeploymentID != delivery.Config.Binding.DeploymentID {
 		return SignedRootHelperBootstrapCapabilityV1{}, errorf(CodeInvalidRequest, "root helper bootstrap capability crosses installer binding")
 	}
-	issuedAt, expiry, err := validateRootHelperLease(now, expiresAt)
+	issuedAt, expiry, err := validateRootHelperLease(now, expiresAt, maximumRootHelperCapabilityDuration)
 	if err != nil {
 		return SignedRootHelperBootstrapCapabilityV1{}, err
 	}
@@ -214,7 +223,11 @@ func (issuer *TrustIssuer) IssueRootHelperRestartCapability(
 	if err := ValidateDeliveryTrust(delivery); err != nil {
 		return SignedRootHelperRestartCapabilityV1{}, err
 	}
+	if grant.Action == "" {
+		grant.Action = "restart"
+	}
 	if _, found := findCommand(delivery.SignedPlan.Plan.Commands, grant.LifecycleRestartRef); !found ||
+		!validRootHelperLifecycleAction(grant.Action) ||
 		helperBinding.AgentInstanceID != delivery.Config.Binding.AgentInstanceID ||
 		helperBinding.DeploymentID != delivery.Config.Binding.DeploymentID ||
 		grant.DeploymentID != helperBinding.DeploymentID || !validRootHelperRestartIdentity(
@@ -223,10 +236,12 @@ func (issuer *TrustIssuer) IssueRootHelperRestartCapability(
 	) || grant.WorkerLeaseEpoch < 1 ||
 		!digestPattern.MatchString(helperBinding.PublicKeyDigest) ||
 		!digestPattern.MatchString(grant.ExecutionBundleDigest) ||
-		!digestPattern.MatchString(grant.ExpectedInstalledManifestDigest) {
+		!digestPattern.MatchString(grant.ExpectedInstalledManifestDigest) ||
+		!validRootHelperLifecycleRevisions(grant.Action, grant.ExpectedDeploymentRevision,
+			grant.ExpectedManagedServiceRevision, grant.ExpectedKnowledgeBindingRevision) {
 		return SignedRootHelperRestartCapabilityV1{}, errorf(CodeInvalidRequest, "root helper restart capability is invalid")
 	}
-	issuedAt, expiry, err := validateRootHelperLease(now, grant.LeaseExpiresAt)
+	issuedAt, expiry, err := validateRootHelperLease(now, grant.LeaseExpiresAt, maximumRootHelperLifecycleCapabilityDuration)
 	if err != nil {
 		return SignedRootHelperRestartCapabilityV1{}, err
 	}
@@ -238,10 +253,13 @@ func (issuer *TrustIssuer) IssueRootHelperRestartCapability(
 		SchemaVersion: RootHelperRestartCapabilitySchemaV1,
 		CapabilityID:  uuid.NewSHA1(uuid.NameSpaceOID, []byte(delivery.TrustID+"\x00restart\x00"+grant.OperationID+"\x00"+expiry.Format(time.RFC3339Nano))).String(),
 		TrustID:       delivery.TrustID, InstallerBinding: delivery.Config.Binding, PlanDigest: planDigest,
-		OperationID: grant.OperationID, DeploymentID: grant.DeploymentID, OwnerID: grant.OwnerID,
+		OperationID: grant.OperationID, DeploymentID: grant.DeploymentID, OwnerID: grant.OwnerID, Action: grant.Action,
 		LifecycleRestartRef: grant.LifecycleRestartRef, ExecutionBundleDigest: grant.ExecutionBundleDigest,
-		ExpectedInstalledManifestDigest: grant.ExpectedInstalledManifestDigest,
-		HelperDeliveryID:                helperBinding.DeliveryID, HelperID: helperBinding.HelperID,
+		ExpectedInstalledManifestDigest:  grant.ExpectedInstalledManifestDigest,
+		ExpectedDeploymentRevision:       grant.ExpectedDeploymentRevision,
+		ExpectedManagedServiceRevision:   grant.ExpectedManagedServiceRevision,
+		ExpectedKnowledgeBindingRevision: grant.ExpectedKnowledgeBindingRevision,
+		HelperDeliveryID:                 helperBinding.DeliveryID, HelperID: helperBinding.HelperID,
 		HelperSignerKeyID: helperBinding.SignerKeyID, HelperPublicKeyDigest: helperBinding.PublicKeyDigest,
 		InstanceID:        helperBinding.InstanceID,
 		WorkerPrincipalID: helperBinding.WorkerPrincipalID, WorkerLeaseEpoch: grant.WorkerLeaseEpoch,
@@ -283,7 +301,7 @@ func (issuer *TrustIssuer) IssueRootHelperPairingCapability(
 		!digestPattern.MatchString(grant.ExpectedInstalledManifestDigest) {
 		return SignedRootHelperPairingCapabilityV1{}, errorf(CodeInvalidRequest, "root helper pairing capability is invalid")
 	}
-	issuedAt, expiry, err := validateRootHelperLease(now, grant.LeaseExpiresAt)
+	issuedAt, expiry, err := validateRootHelperLease(now, grant.LeaseExpiresAt, maximumRootHelperCapabilityDuration)
 	if err != nil {
 		return SignedRootHelperPairingCapabilityV1{}, err
 	}
@@ -341,8 +359,10 @@ func ValidateRootHelperRestartCapabilityAt(delivery DeliveryV1, signed SignedRoo
 	value := signed.Capability
 	if value.SchemaVersion != RootHelperRestartCapabilitySchemaV1 || value.TrustID != delivery.TrustID ||
 		value.InstallerBinding != delivery.Config.Binding || value.DeploymentID != value.InstallerBinding.DeploymentID ||
-		value.WorkerLeaseEpoch < 1 || !digestPattern.MatchString(value.ExecutionBundleDigest) ||
+		value.WorkerLeaseEpoch < 1 || !validRootHelperLifecycleAction(value.Action) || !digestPattern.MatchString(value.ExecutionBundleDigest) ||
 		!digestPattern.MatchString(value.ExpectedInstalledManifestDigest) ||
+		!validRootHelperLifecycleRevisions(value.Action, value.ExpectedDeploymentRevision,
+			value.ExpectedManagedServiceRevision, value.ExpectedKnowledgeBindingRevision) ||
 		!digestPattern.MatchString(value.HelperPublicKeyDigest) ||
 		!validRootHelperRestartIdentity(
 			value.OperationID, value.OwnerID, value.HelperDeliveryID, value.HelperID,
@@ -354,6 +374,22 @@ func ValidateRootHelperRestartCapabilityAt(delivery DeliveryV1, signed SignedRoo
 		return errorf(CodeCommandNotAllowed, "restart command is not declared by installer delivery")
 	}
 	return validateSignedRootHelperCapability(delivery, "restart", value, signed.SignerKeyID, signed.Signature, value.PlanDigest, "", now)
+}
+
+func validRootHelperLifecycleAction(value string) bool {
+	switch value {
+	case "restart", "stop", "backup", "restore", "upgrade", "rollback", "destroy":
+		return true
+	default:
+		return false
+	}
+}
+
+func validRootHelperLifecycleRevisions(action string, deployment, service, binding int64) bool {
+	if action == "restart" {
+		return deployment == 0 && service == 0 && binding == 0
+	}
+	return deployment > 0 && service > 0 && binding > 0
 }
 
 func validPairingScope(sessionID, taskID, stepID, recipeID, recipeDigest string, recipeRevision, payloadScopeRevision int64) bool {
@@ -444,11 +480,13 @@ func validateSignedRootHelperCapability(delivery DeliveryV1, domain string, valu
 		return errorf(CodeInvalidSignature, "root helper capability trust is invalid")
 	}
 	var issuedRaw, expiresRaw string
+	maximumDuration := maximumRootHelperCapabilityDuration
 	switch typed := value.(type) {
 	case RootHelperBootstrapCapabilityV1:
 		issuedRaw, expiresRaw = typed.IssuedAt, typed.ExpiresAt
 	case RootHelperRestartCapabilityV1:
 		issuedRaw, expiresRaw = typed.IssuedAt, typed.ExpiresAt
+		maximumDuration = maximumRootHelperLifecycleCapabilityDuration
 	case RootHelperPairingCapabilityV1:
 		issuedRaw, expiresRaw = typed.IssuedAt, typed.ExpiresAt
 	default:
@@ -458,7 +496,7 @@ func validateSignedRootHelperCapability(delivery DeliveryV1, domain string, valu
 	expiresAt, expiresErr := parseCanonicalUTC(expiresRaw)
 	current := now.UTC()
 	if issuedErr != nil || expiresErr != nil || !issuedAt.Before(expiresAt) ||
-		expiresAt.Sub(issuedAt) > maximumRootHelperCapabilityDuration ||
+		expiresAt.Sub(issuedAt) > maximumDuration ||
 		current.Before(issuedAt) || !current.Before(expiresAt) {
 		return errorf(CodeLeaseRejected, "root helper capability lease is invalid")
 	}
@@ -491,10 +529,10 @@ func rootHelperDeliveryDigests(delivery DeliveryV1) (string, string, error) {
 	return planDigest, manifestDigest, nil
 }
 
-func validateRootHelperLease(now, expiresAt time.Time) (time.Time, time.Time, error) {
+func validateRootHelperLease(now, expiresAt time.Time, maximumDuration time.Duration) (time.Time, time.Time, error) {
 	issued := now.UTC()
 	expiry := expiresAt.UTC()
-	if now.IsZero() || expiresAt.IsZero() || !issued.Before(expiry) || expiry.Sub(issued) > maximumRootHelperCapabilityDuration {
+	if now.IsZero() || expiresAt.IsZero() || maximumDuration <= 0 || !issued.Before(expiry) || expiry.Sub(issued) > maximumDuration {
 		return time.Time{}, time.Time{}, errorf(CodeLeaseRejected, "root helper capability lease is invalid")
 	}
 	return issued, expiry, nil

@@ -20,11 +20,14 @@ import (
 )
 
 const (
-	cloudGoalRuntimeHours     = uint32(730)
-	cloudGoalDestroyGrace     = uint32(30 * 60)
-	cloudGoalMaximumLifetime  = uint64(24 * 60 * 60)
-	cloudGoalVolumeIOPS       = uint32(3000)
-	cloudGoalVolumeThroughput = uint32(125)
+	cloudGoalRuntimeHours       = uint32(730)
+	cloudGoalEndpointDataMiB    = uint64(1)
+	cloudGoalDestroyGrace       = uint32(30 * 60)
+	cloudGoalMaximumLifetime    = uint64(24 * 60 * 60)
+	cloudGoalVolumeIOPS         = uint32(3000)
+	cloudGoalVolumeThroughput   = uint32(125)
+	cloudGoalS3EndpointKey      = "worker-s3-gateway"
+	cloudGoalSecretsEndpointKey = "worker-secretsmanager-interface"
 )
 
 type cloudGoalConnectionLoader interface {
@@ -57,13 +60,14 @@ var ErrCloudGoalSecretsNotReady = planning.ErrCloudGoalSecretsNotReady
 // coordinator. Its only provider operations are active-Connection placement
 // discovery and price read-back; PostgreSQL remains the Quote/Plan fact source.
 type cloudGoalProviderPlanMaterializer struct {
-	agentInstanceID string
-	connections     cloudGoalConnectionLoader
-	placements      cloudGoalPlacementPlanner
-	quotes          cloudGoalQuotePlanner
-	facts           cloudGoalProviderFacts
-	secrets         cloudGoalSecretSessionLocator
-	now             func() time.Time
+	agentInstanceID       string
+	workerControlEndpoint string
+	connections           cloudGoalConnectionLoader
+	placements            cloudGoalPlacementPlanner
+	quotes                cloudGoalQuotePlanner
+	facts                 cloudGoalProviderFacts
+	secrets               cloudGoalSecretSessionLocator
+	now                   func() time.Time
 }
 
 func newCloudGoalProviderPlanMaterializer(
@@ -73,14 +77,17 @@ func newCloudGoalProviderPlanMaterializer(
 	quotes cloudGoalQuotePlanner,
 	facts cloudGoalProviderFacts,
 	secrets cloudGoalSecretSessionLocator,
+	workerControlEndpoint string,
 	now func() time.Time,
 ) (*cloudGoalProviderPlanMaterializer, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil || parsed.String() != agentInstanceID || connections == nil || placements == nil || quotes == nil || facts == nil || secrets == nil || now == nil {
+	if err != nil || parsed == uuid.Nil || parsed.String() != agentInstanceID || connections == nil || placements == nil || quotes == nil || facts == nil || secrets == nil || now == nil ||
+		cloudquote.ValidatePrivateControlPlaneEndpoint(workerControlEndpoint) != nil {
 		return nil, cloudapp.ErrInvalid
 	}
 	return &cloudGoalProviderPlanMaterializer{
-		agentInstanceID: agentInstanceID, connections: connections, placements: placements, quotes: quotes, facts: facts, secrets: secrets, now: now,
+		agentInstanceID: agentInstanceID, workerControlEndpoint: workerControlEndpoint,
+		connections: connections, placements: placements, quotes: quotes, facts: facts, secrets: secrets, now: now,
 	}, nil
 }
 
@@ -129,7 +136,7 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 ) (cloudquote.QuoteV1, error) {
 	quoted, err := materializer.facts.LoadQuote(ctx, request.Stage.Binding.OwnerID, request.QuoteID)
 	if err == nil {
-		if validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, secretScope, quoted, now) != nil {
+		if validateCloudGoalProviderQuote(materializer.agentInstanceID, materializer.workerControlEndpoint, connection, request, secretScope, quoted, now) != nil {
 			return cloudquote.QuoteV1{}, cloudapp.ErrInvalid
 		}
 		return quoted, nil
@@ -144,17 +151,22 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 	}
 	placement, err := materializer.placements.Resolve(ctx, connection, cloudapp.ActivePlacementRequestV1{
 		OwnerID: request.Stage.Binding.OwnerID, ConnectionID: request.Stage.Binding.ConnectionID,
-		Placement: awsprovider.PlacementRequestV1{Requirements: requirements, PublicIPv4: false, RuntimeHoursPerMonth: cloudGoalRuntimeHours},
+		Placement: awsprovider.PlacementRequestV1{
+			Requirements: requirements, PublicIPv4: false, RuntimeHoursPerMonth: cloudGoalRuntimeHours,
+			PrivateConnectivity:    cloudquote.PrivateConnectivityNoNATEndpointsV1,
+			ControlPlaneEndpoint:   materializer.workerControlEndpoint,
+			PrivateEndpointDataMiB: cloudGoalEndpointDataMiB,
+		},
 	})
 	if err != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
 	}
-	quoteRequest, command, err := buildCloudGoalQuoteRequest(materializer.agentInstanceID, connection, request, placement, secretScope)
+	quoteRequest, command, err := buildCloudGoalQuoteRequest(materializer.agentInstanceID, materializer.workerControlEndpoint, connection, request, placement, secretScope)
 	if err != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrInvalid
 	}
 	created, err := materializer.quotes.Quote(ctx, connection, quoteRequest, request.Draft.Recipe)
-	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, secretScope, created, now) != nil {
+	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, materializer.workerControlEndpoint, connection, request, secretScope, created, now) != nil {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
 	}
 	requestDigest, err := command.Digest()
@@ -165,7 +177,7 @@ func (materializer *cloudGoalProviderPlanMaterializer) loadOrCreateQuote(
 		return cloudquote.QuoteV1{}, err
 	}
 	readBack, err := materializer.facts.LoadQuote(ctx, request.Stage.Binding.OwnerID, request.QuoteID)
-	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, connection, request, secretScope, readBack, now) != nil || !sameCloudGoalQuote(created, readBack) {
+	if err != nil || validateCloudGoalProviderQuote(materializer.agentInstanceID, materializer.workerControlEndpoint, connection, request, secretScope, readBack, now) != nil || !sameCloudGoalQuote(created, readBack) {
 		return cloudquote.QuoteV1{}, cloudapp.ErrUnavailable
 	}
 	return readBack, nil
@@ -220,16 +232,19 @@ func buildCloudGoalPlan(agentInstanceID string, request planning.ProviderPlanMat
 
 func buildCloudGoalQuoteRequest(
 	agentInstanceID string,
+	workerControlEndpoint string,
 	connection cloudapp.Connection,
 	request planning.ProviderPlanMaterializationRequest,
 	placement awsprovider.PlacementV1,
 	secretScope []cloudquote.SecretScopeV1,
 ) (cloudquote.RequestV1, cloudapp.CreateQuoteCommand, error) {
 	if placement.Region != connection.Region || len(placement.Candidates) != 3 ||
-		placement.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours}) ||
+		placement.Usage != cloudGoalUsage() ||
 		placement.Network.SecurityGroupMode != cloudquote.SecurityGroupCreateDedicated ||
 		placement.Network.SecurityGroupID != "" || placement.Network.PublicIPv4 || placement.Network.EntryPoint != cloudquote.EntryPointNone ||
-		placement.Network.PublicExposure || len(placement.Network.IngressPorts) != 0 {
+		placement.Network.PublicExposure || len(placement.Network.IngressPorts) != 0 || placement.Network.RouteTableID == "" ||
+		placement.Network.PrivateConnectivity != cloudquote.PrivateConnectivityNoNATEndpointsV1 ||
+		placement.Network.ControlPlaneEndpoint != workerControlEndpoint {
 		return cloudquote.RequestV1{}, cloudapp.CreateQuoteCommand{}, cloudapp.ErrInvalid
 	}
 	retention := cloudGoalRetention(request.Stage.Binding.Retention)
@@ -244,6 +259,7 @@ func buildCloudGoalQuoteRequest(
 		byProfile[candidate.Profile] = candidate
 	}
 	requestValue := cloudquote.RequestV1{QuoteID: request.QuoteID, Usage: placement.Usage}
+	serviceOperations := cloudGoalEndpointOperations()
 	for _, profile := range cloudGoalQuoteProfiles() {
 		candidate, found := byProfile[profile]
 		expected, expectedFound := cloudGoalCandidateForProfile(request.Candidates, profile)
@@ -253,7 +269,7 @@ func buildCloudGoalQuoteRequest(
 			return cloudquote.RequestV1{}, cloudapp.CreateQuoteCommand{}, cloudapp.ErrInvalid
 		}
 		requestValue.Scopes = append(requestValue.Scopes, cloudquote.ScopeV1{
-			SchemaVersion: cloudquote.ScopeSchemaV1, AgentInstanceID: agentInstanceID,
+			SchemaVersion: cloudquote.ScopeSchemaV2, AgentInstanceID: agentInstanceID,
 			OwnerID: request.Stage.Binding.OwnerID, ConnectionID: request.Stage.Binding.ConnectionID,
 			Recipe: cloudquote.RecipeBindingV1{RecipeID: request.Draft.RecipeID, Digest: request.Draft.Digest, Maturity: recipe.MaturityExperimental},
 			Resource: cloudquote.ResourceScopeV1{
@@ -265,6 +281,7 @@ func buildCloudGoalQuoteRequest(
 				VolumeEncrypted: true, PurchaseOption: cloudquote.PurchaseOnDemand,
 			},
 			Network: placement.Network, SecretScope: append([]cloudquote.SecretScopeV1(nil), secretScope...), Retention: retention,
+			ServiceOperations: &serviceOperations,
 		})
 	}
 	command := cloudapp.CreateQuoteCommand{IdempotencyKey: request.Stage.OutputIdempotencyKey, Scopes: requestValue.Scopes, Usage: requestValue.Usage}
@@ -323,6 +340,7 @@ func cloudGoalPlacementRequirements(base recipe.ResourceRequirementsV1, candidat
 
 func validateCloudGoalProviderQuote(
 	agentInstanceID string,
+	workerControlEndpoint string,
 	connection cloudapp.Connection,
 	request planning.ProviderPlanMaterializationRequest,
 	secretScope []cloudquote.SecretScopeV1,
@@ -330,7 +348,7 @@ func validateCloudGoalProviderQuote(
 	now time.Time,
 ) error {
 	if quoted.QuoteID != request.QuoteID || quoted.Validate() != nil || !now.Before(quoted.ValidUntil) ||
-		quoted.Usage != (cloudquote.UsageV1{RuntimeHoursPerMonth: cloudGoalRuntimeHours}) {
+		quoted.Usage != cloudGoalUsage() {
 		return cloudapp.ErrInvalid
 	}
 	retention := cloudGoalRetention(request.Stage.Binding.Retention)
@@ -338,6 +356,7 @@ func validateCloudGoalProviderQuote(
 		candidate, found := quoted.Candidate(profile)
 		planningCandidate, planningFound := cloudGoalCandidateForProfile(request.Candidates, profile)
 		if !found || !planningFound || candidate.Scope.AgentInstanceID != agentInstanceID || candidate.Scope.OwnerID != connection.OwnerID ||
+			candidate.Scope.SchemaVersion != cloudquote.ScopeSchemaV2 ||
 			candidate.Scope.ConnectionID != connection.ConnectionID || candidate.Scope.Recipe.RecipeID != request.Draft.RecipeID ||
 			candidate.Scope.Recipe.Digest != request.Draft.Digest || candidate.Scope.Recipe.Maturity != recipe.MaturityExperimental ||
 			candidate.Scope.Resource.CandidateID != profile || candidate.Scope.Resource.Region != connection.Region ||
@@ -348,8 +367,11 @@ func validateCloudGoalProviderQuote(
 			!candidate.Scope.Resource.VolumeEncrypted || candidate.Scope.Resource.PurchaseOption != cloudquote.PurchaseOnDemand ||
 			candidate.Scope.Network.SecurityGroupMode != cloudquote.SecurityGroupCreateDedicated || candidate.Scope.Network.SecurityGroupID != "" ||
 			candidate.Scope.Network.PublicIPv4 || candidate.Scope.Network.EntryPoint != cloudquote.EntryPointNone || candidate.Scope.Network.PublicExposure ||
+			candidate.Scope.Network.RouteTableID == "" || candidate.Scope.Network.PrivateConnectivity != cloudquote.PrivateConnectivityNoNATEndpointsV1 ||
+			candidate.Scope.Network.ControlPlaneEndpoint != workerControlEndpoint ||
 			len(candidate.Scope.Network.IngressPorts) != 0 || len(candidate.Scope.IntegrationScope) != 0 ||
-			!slices.Equal(candidate.Scope.SecretScope, secretScope) || candidate.Scope.Retention != retention {
+			!slices.Equal(candidate.Scope.SecretScope, secretScope) || candidate.Scope.Retention != retention ||
+			candidate.Scope.ServiceOperations == nil || !sameCloudGoalEndpointOperations(*candidate.Scope.ServiceOperations) {
 			return cloudapp.ErrInvalid
 		}
 		if planningCandidate.GPURequired && (candidate.Scope.Resource.GPUCount == 0 || candidate.Scope.Resource.GPUMemoryMiB < planningCandidate.GPUMemoryMiB) {
@@ -357,6 +379,38 @@ func validateCloudGoalProviderQuote(
 		}
 	}
 	return nil
+}
+
+func cloudGoalUsage() cloudquote.UsageV1 {
+	return cloudquote.UsageV1{
+		RuntimeHoursPerMonth:   cloudGoalRuntimeHours,
+		PrivateEndpointHours:   cloudGoalRuntimeHours,
+		PrivateEndpointDataMiB: cloudGoalEndpointDataMiB,
+	}
+}
+
+func cloudGoalEndpointOperations() cloudquote.ServiceOperationScopeV1 {
+	return cloudquote.ServiceOperationScopeV1{PrivateEndpoints: []cloudquote.PrivateEndpointOperationSpecV1{
+		{
+			OperationKey: cloudGoalS3EndpointKey,
+			Service:      cloudquote.PrivateEndpointServiceS3,
+			EndpointType: cloudquote.PrivateEndpointTypeGateway,
+		},
+		{
+			OperationKey:        cloudGoalSecretsEndpointKey,
+			Service:             cloudquote.PrivateEndpointServiceSecretsManager,
+			EndpointType:        cloudquote.PrivateEndpointTypeInterface,
+			SecurityGroupSource: cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker,
+			PrivateDNSEnabled:   true,
+			MonthlyHours:        cloudGoalRuntimeHours,
+			DataMiBPerMonth:     cloudGoalEndpointDataMiB,
+		},
+	}}
+}
+
+func sameCloudGoalEndpointOperations(actual cloudquote.ServiceOperationScopeV1) bool {
+	expected := cloudGoalEndpointOperations()
+	return slices.Equal(actual.PrivateEndpoints, expected.PrivateEndpoints) && len(actual.Snapshots) == 0
 }
 
 func validateCloudGoalProviderPlan(

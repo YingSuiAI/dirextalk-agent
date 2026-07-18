@@ -326,12 +326,13 @@ func (service *Service) resolveInstallerArtifacts(ctx context.Context, value rec
 	for index := range compiled.InstallerArtifacts {
 		artifact := &compiled.InstallerArtifacts[index]
 		source, ok := sources[artifact.SourceID]
-		if !ok || artifact.SourceID == "" || !source.Official || source.ArtifactDigest != artifact.SHA256 || source.URL == "" {
+		artifactURL := source.ResolvedArtifactURL()
+		if !ok || artifact.SourceID == "" || !source.Official || source.ArtifactDigest != artifact.SHA256 || artifactURL == "" {
 			_ = cleanupInstallerArtifacts(compiled.InstallerArtifacts)
 			return ErrNotReady
 		}
 		content, err := service.artifactResolver.Resolve(ctx, InstallerArtifactResolveRequest{
-			SourceID: artifact.SourceID, SourceURL: source.URL, Official: source.Official,
+			SourceID: artifact.SourceID, SourceURL: artifactURL, Official: source.Official,
 			SHA256: artifact.SHA256, SizeBytes: artifact.SizeBytes, TargetPath: artifact.TargetPath,
 			RecipeDigest: artifact.RecipeDigest,
 		})
@@ -414,6 +415,10 @@ func (service *Service) prepare(ctx context.Context, caller cloudapp.MutationSco
 	approval, err := service.facts.LoadApproval(ctx, request.OwnerID, request.ApprovalID)
 	if err != nil || !matchesDurableApproval(plan, approval) {
 		return Operation{}, cloudapproval.PlanV1{}, cloudapproval.ApprovalV1{}, recipe.RecipeV1{}, ErrNotReady
+	}
+	if plan.NetworkScope.PrivateConnectivity == cloudapproval.PrivateConnectivityNoNATEndpointsV1 &&
+		request.ControlPlaneTarget != plan.NetworkScope.ControlPlaneEndpoint {
+		return Operation{}, cloudapproval.PlanV1{}, cloudapproval.ApprovalV1{}, recipe.RecipeV1{}, ErrInvalid
 	}
 	boundRecipe, err := service.recipes.ResolveRecipe(ctx, request.OwnerID, plan.Recipe.RecipeID, plan.Recipe.Digest)
 	if err != nil {

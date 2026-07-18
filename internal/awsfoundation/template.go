@@ -13,34 +13,44 @@ import (
 var ErrInvalidTemplate = errors.New("invalid AWS foundation template")
 
 var requiredTemplateResources = map[string]string{
-	"ReleaseVPC":                      "AWS::EC2::VPC",
-	"ReleasePrivateSubnet":            "AWS::EC2::Subnet",
-	"ReleaseZeroIngressSecurityGroup": "AWS::EC2::SecurityGroup",
-	"FoundationKey":                   "AWS::KMS::Key",
-	"ArtifactBucket":                  "AWS::S3::Bucket",
-	"ArtifactBucketPolicy":            "AWS::S3::BucketPolicy",
-	"ManifestTable":                   "AWS::DynamoDB::Table",
-	"WorkerLogGroup":                  "AWS::Logs::LogGroup",
-	"ReaperLogGroup":                  "AWS::Logs::LogGroup",
-	"SecretNamespaceMarker":           "AWS::SecretsManager::Secret",
-	"WorkerRole":                      "AWS::IAM::Role",
-	"WorkerInstanceProfile":           "AWS::IAM::InstanceProfile",
-	"ReaperRole":                      "AWS::IAM::Role",
-	"ReaperFunction":                  "AWS::Lambda::Function",
-	"ReaperSchedule":                  "AWS::Events::Rule",
-	"ReaperInvokePermission":          "AWS::Lambda::Permission",
-	"ReaperErrorAlarm":                "AWS::CloudWatch::Alarm",
-	"ControlRuntimePolicy":            "AWS::IAM::Policy",
-	"ControlEntrypointPolicy":         "AWS::IAM::ManagedPolicy",
+	"ReleaseVPC":                          "AWS::EC2::VPC",
+	"ReleasePrivateSubnet":                "AWS::EC2::Subnet",
+	"ReleasePrivateRouteTable":            "AWS::EC2::RouteTable",
+	"ReleasePrivateRouteTableAssociation": "AWS::EC2::SubnetRouteTableAssociation",
+	"ReleaseZeroIngressSecurityGroup":     "AWS::EC2::SecurityGroup",
+	"FoundationKey":                       "AWS::KMS::Key",
+	"ArtifactBucket":                      "AWS::S3::Bucket",
+	"ArtifactBucketPolicy":                "AWS::S3::BucketPolicy",
+	"ManifestTable":                       "AWS::DynamoDB::Table",
+	"WorkerLogGroup":                      "AWS::Logs::LogGroup",
+	"ReaperLogGroup":                      "AWS::Logs::LogGroup",
+	"SecretNamespaceMarker":               "AWS::SecretsManager::Secret",
+	"WorkerRole":                          "AWS::IAM::Role",
+	"WorkerInstanceProfile":               "AWS::IAM::InstanceProfile",
+	"ReaperRole":                          "AWS::IAM::Role",
+	"ReaperFunction":                      "AWS::Lambda::Function",
+	"ReaperSchedule":                      "AWS::Events::Rule",
+	"ReaperInvokePermission":              "AWS::Lambda::Permission",
+	"ReaperErrorAlarm":                    "AWS::CloudWatch::Alarm",
+	"ControlRuntimePolicy":                "AWS::IAM::Policy",
+	"ControlEntrypointPolicy":             "AWS::IAM::ManagedPolicy",
 }
 
 var templateAccountReadActions = map[string]struct{}{
 	"ec2:DescribeAddresses": {}, "ec2:DescribeAvailabilityZones": {}, "ec2:DescribeImages": {},
 	"ec2:DescribeInstanceAttribute": {}, "ec2:DescribeInstanceStatus": {}, "ec2:DescribeInstanceTypeOfferings": {}, "ec2:DescribeInstanceTypes": {},
-	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNatGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
+	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNatGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribePrefixLists": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
 	"ec2:DescribeSecurityGroupRules": {}, "ec2:DescribeSnapshots": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeVpcEndpoints": {}, "ec2:DescribeVpcs": {},
 	"elasticloadbalancing:DescribeListeners": {}, "elasticloadbalancing:DescribeLoadBalancers": {}, "elasticloadbalancing:DescribeTags": {},
 	"elasticloadbalancing:DescribeTargetGroups": {}, "elasticloadbalancing:DescribeTargetHealth": {},
+}
+
+var controlObserveEC2Actions = []string{
+	"ec2:DescribeAddresses", "ec2:DescribeAvailabilityZones", "ec2:DescribeImages", "ec2:DescribeInstanceAttribute",
+	"ec2:DescribeInstanceStatus", "ec2:DescribeInstanceTypeOfferings", "ec2:DescribeInstanceTypes", "ec2:DescribeInstances",
+	"ec2:DescribeInternetGateways", "ec2:DescribeNatGateways", "ec2:DescribeNetworkInterfaces", "ec2:DescribePrefixLists",
+	"ec2:DescribeRouteTables", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeSnapshots",
+	"ec2:DescribeSubnets", "ec2:DescribeVolumes", "ec2:DescribeVpcEndpoints", "ec2:DescribeVpcs",
 }
 
 func ValidateTemplate(raw []byte) error {
@@ -143,14 +153,34 @@ func validReleaseEnvironment(resources map[string]any) bool {
 	subnetProperties, subnetPropertiesOK := stringMap(subnet["Properties"])
 	group, groupOK := stringMap(resources["ReleaseZeroIngressSecurityGroup"])
 	groupProperties, groupPropertiesOK := stringMap(group["Properties"])
+	routeTable, routeTableOK := stringMap(resources["ReleasePrivateRouteTable"])
+	routeTableProperties, routeTablePropertiesOK := stringMap(routeTable["Properties"])
+	association, associationOK := stringMap(resources["ReleasePrivateRouteTableAssociation"])
+	associationProperties, associationPropertiesOK := stringMap(association["Properties"])
 	vpcRef, vpcRefOK := stringMap(subnetProperties["VpcId"])
 	groupVPCRef, groupVPCRefOK := stringMap(groupProperties["VpcId"])
+	routeVPCRef, routeVPCRefOK := stringMap(routeTableProperties["VpcId"])
+	associationSubnetRef, associationSubnetRefOK := stringMap(associationProperties["SubnetId"])
+	associationRouteRef, associationRouteRefOK := stringMap(associationProperties["RouteTableId"])
 	ingress, ingressOK := anySlice(groupProperties["SecurityGroupIngress"])
 	egress, egressOK := anySlice(groupProperties["SecurityGroupEgress"])
-	if !vpcOK || !vpcPropertiesOK || !subnetOK || !subnetPropertiesOK || !groupOK || !groupPropertiesOK || !vpcRefOK || !groupVPCRefOK || !ingressOK || !egressOK ||
+	if !vpcOK || !vpcPropertiesOK || !subnetOK || !subnetPropertiesOK || !groupOK || !groupPropertiesOK || !routeTableOK || !routeTablePropertiesOK ||
+		!associationOK || !associationPropertiesOK || !vpcRefOK || !groupVPCRefOK || !routeVPCRefOK || !associationSubnetRefOK || !associationRouteRefOK || !ingressOK || !egressOK ||
 		scalarString(vpcProperties["CidrBlock"]) != "10.255.0.0/24" || scalarString(subnetProperties["CidrBlock"]) != "10.255.0.0/26" ||
-		vpcRef["Ref"] != "ReleaseVPC" || groupVPCRef["Ref"] != "ReleaseVPC" || subnetProperties["MapPublicIpOnLaunch"] != false || len(ingress) != 0 || len(egress) != 1 {
+		vpcRef["Ref"] != "ReleaseVPC" || groupVPCRef["Ref"] != "ReleaseVPC" || routeVPCRef["Ref"] != "ReleaseVPC" ||
+		associationSubnetRef["Ref"] != "ReleasePrivateSubnet" || associationRouteRef["Ref"] != "ReleasePrivateRouteTable" ||
+		subnetProperties["MapPublicIpOnLaunch"] != false || len(ingress) != 0 || len(egress) != 1 {
 		return false
+	}
+	for _, value := range resources {
+		resource, ok := stringMap(value)
+		if !ok {
+			return false
+		}
+		switch scalarString(resource["Type"]) {
+		case "AWS::EC2::InternetGateway", "AWS::EC2::NatGateway", "AWS::EC2::VPCGatewayAttachment", "AWS::EC2::Route", "AWS::EC2::EgressOnlyInternetGateway":
+			return false
+		}
 	}
 	rule, ok := stringMap(egress[0])
 	return ok && scalarString(rule["IpProtocol"]) == "-1" && scalarString(rule["CidrIp"]) == "127.0.0.1/32"
@@ -179,6 +209,7 @@ func controlPolicyFailsClosed(value any) bool {
 		launchInstanceVolume, ownedNetworkInput, publicBaseImage         bool
 		ownedWorkerImage, launchNetworkInputs, createTaggedCompute       bool
 		useNetworkCreationInputs, useVPCForNetworkCreation               bool
+		useRouteTableInputs                                              bool
 		ownedSnapshotVolume, tagComputeOnCreate, tagOnlyOwnedCompute     bool
 		deleteSecretPolicy, milestoneRelayLogs                           bool
 	}
@@ -200,6 +231,11 @@ func controlPolicyFailsClosed(value any) bool {
 		seen[sid] = struct{}{}
 		resources := templateResourceStrings(statement["Resource"])
 		switch sid {
+		case "ObserveEC2":
+			if !sameStrings(actions, controlObserveEC2Actions) || !sameStrings(resources, []string{"*"}) || statement["Condition"] != nil {
+				return false
+			}
+			workerAMI.observe = true
 		case "CreateTaggedCompute":
 			if !sameStrings(actions, []string{
 				"ec2:AllocateAddress", "ec2:CreateNetworkInterface", "ec2:CreateSecurityGroup",
@@ -215,7 +251,7 @@ func controlPolicyFailsClosed(value any) bool {
 				return false
 			}
 			workerAMI.createTaggedCompute = true
-		case "UseNetworkCreationInputs":
+		case "UseNetworkInputs":
 			if !sameStrings(actions, []string{"ec2:CreateNetworkInterface", "ec2:CreateVpcEndpoint"}) ||
 				!sameStrings(resources, []string{
 					"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*",
@@ -224,12 +260,18 @@ func controlPolicyFailsClosed(value any) bool {
 				return false
 			}
 			workerAMI.useNetworkCreationInputs = true
-		case "UseVPCForNetworkCreation":
+		case "UseVPCInputs":
 			if !sameStrings(actions, []string{"ec2:CreateSecurityGroup", "ec2:CreateVpcEndpoint"}) ||
 				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*"}) || statement["Condition"] != nil {
 				return false
 			}
 			workerAMI.useVPCForNetworkCreation = true
+		case "UseRouteTableInputs":
+			if !sameStrings(actions, []string{"ec2:CreateVpcEndpoint"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/*"}) || statement["Condition"] != nil {
+				return false
+			}
+			workerAMI.useRouteTableInputs = true
 		case "UseOwnedVolumeForSnapshot":
 			if !sameStrings(actions, []string{"ec2:CreateSnapshot"}) ||
 				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*"}) ||
@@ -239,14 +281,14 @@ func controlPolicyFailsClosed(value any) bool {
 			workerAMI.ownedSnapshotVolume = true
 		case "TagComputeOnCreate":
 			if !sameStrings(actions, []string{"ec2:CreateTags"}) ||
-				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*"}) ||
 				!computeTagCondition(statement, true) {
 				return false
 			}
 			workerAMI.tagComputeOnCreate = true
 		case "TagOnlyOwnedCompute":
 			if !sameStrings(actions, []string{"ec2:CreateTags"}) ||
-				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*"}) ||
+				!sameStrings(resources, []string{"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*"}) ||
 				!computeTagCondition(statement, false) {
 				return false
 			}
@@ -274,8 +316,6 @@ func controlPolicyFailsClosed(value any) bool {
 				if sid != "WorkerMilestoneRelayLogs" {
 					return false
 				}
-			case action == "ec2:DescribeInstanceAttribute":
-				workerAMI.observe = true
 			case strings.HasPrefix(action, "elasticloadbalancing:") || strings.HasPrefix(action, "acm:") || strings.HasPrefix(action, "route53:"):
 				return false
 			case action == "ec2:RunInstances":
@@ -374,7 +414,7 @@ func controlPolicyFailsClosed(value any) bool {
 				}
 			case action == "ec2:AllocateAddress" || strings.HasPrefix(action, "ec2:Create"):
 				switch sid {
-				case "CreateTaggedCompute", "UseNetworkCreationInputs", "UseVPCForNetworkCreation", "UseOwnedVolumeForSnapshot":
+				case "CreateTaggedCompute", "UseNetworkInputs", "UseVPCInputs", "UseRouteTableInputs", "UseOwnedVolumeForSnapshot":
 				default:
 					return false
 				}
@@ -405,12 +445,12 @@ func controlPolicyFailsClosed(value any) bool {
 	return workerAMI.observe && workerAMI.terminate && workerAMI.createFromBuilder && workerAMI.createOutputs && workerAMI.tagOutputs && workerAMI.installerArtifactBinding &&
 		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
 		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs && workerAMI.createTaggedCompute && workerAMI.useNetworkCreationInputs &&
-		workerAMI.useVPCForNetworkCreation && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute &&
+		workerAMI.useVPCForNetworkCreation && workerAMI.useRouteTableInputs && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute &&
 		workerAMI.deleteSecretPolicy && workerAMI.milestoneRelayLogs
 }
 
 var controlRuntimeStatementSIDs = map[string]struct{}{
-	"ObserveEC2": {}, "CreateTaggedCompute": {}, "UseNetworkCreationInputs": {}, "UseVPCForNetworkCreation": {}, "UseOwnedVolumeForSnapshot": {},
+	"ObserveEC2": {}, "CreateTaggedCompute": {}, "UseNetworkInputs": {}, "UseVPCInputs": {}, "UseRouteTableInputs": {}, "UseOwnedVolumeForSnapshot": {},
 	"RunTaggedInstanceVolume": {}, "UseOwnedNetworkInterface": {}, "UsePublicBuilderBaseImage": {}, "UseOwnedWorkerImage": {}, "UseLaunchNetworkInputs": {},
 	"TagComputeOnCreate": {}, "CreateImageFromOwnedBuilder": {}, "CreateImageOutput": {}, "TagWorkerImageOutputs": {}, "MutateOnlyOwnedCompute": {},
 	"DestroyOwnedWorkerImage": {}, "TagOnlyOwnedCompute": {}, "PassOnlyWorkerRole": {}, "ReadExactWorkerRoleIdentity": {}, "FoundationArtifacts": {},
@@ -420,8 +460,8 @@ var controlRuntimeStatementSIDs = map[string]struct{}{
 
 var entrypointTagKeys = []string{
 	"Name", "dirextalk:agent_instance_id", "dirextalk:owner_id", "dirextalk:task_id", "dirextalk:deployment_id",
-	"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dtx:p", "dtx:a", "dirextalk_embedded_parent",
-	"dtx:s", "dirextalk_client_token",
+	"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dtx:p", "dtx:a",
+	"dtx:s", "dirextalk_client_token", "dirextalk_entry_ready",
 }
 
 func managedPolicyAttachesOnlyControlRole(resource map[string]any) bool {
@@ -717,7 +757,7 @@ func computeTagCondition(statement map[string]any, onCreate bool) bool {
 	}
 	if onCreate {
 		if !sameStrings(stringValues(equals["ec2:CreateAction"]), []string{
-			"AllocateAddress", "CreateNetworkInterface", "CreateSecurityGroup", "CreateSnapshot", "CreateVolume", "CreateVpcEndpoint", "RunInstances",
+			"AllocateAddress", "AuthorizeSecurityGroupEgress", "CreateNetworkInterface", "CreateSecurityGroup", "CreateSnapshot", "CreateVolume", "CreateVpcEndpoint", "RunInstances",
 		}) {
 			return false
 		}

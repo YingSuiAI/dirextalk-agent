@@ -30,7 +30,7 @@ type Control interface {
 	ReconcileRootHelperRevocation(context.Context, *agentv1.RootHelperKeyDelivery, string) (*agentv1.RootHelperKeyDelivery, error)
 	ConfirmRootHelperCanary(context.Context, *agentv1.RootHelperKeyDelivery, roothelper.CanaryProof, string) (*agentv1.RootHelperKeyDelivery, error)
 	AcquireNextOperation(context.Context, string, time.Duration) (*agentv1.WorkerServiceOperationServiceAcquireNextResponse, error)
-	CompleteOperation(context.Context, *agentv1.WorkerServiceOperationAssignment, workeroperation.RootHelperReceipt, string) (*agentv1.WorkerServiceOperation, error)
+	CompleteOperation(context.Context, *agentv1.WorkerServiceOperationAssignment, workeroperation.RootHelperReceipt, string, string) (*agentv1.WorkerServiceOperation, error)
 	GetOperation(context.Context, string) (*agentv1.WorkerServiceOperation, error)
 }
 
@@ -158,10 +158,33 @@ func (service *Service) restart(ctx context.Context, current *agentv1.RootHelper
 	receipt, err := service.Root.Restart(ctx, envelope.GetInstallerDeliveryCbor(), envelope.GetSignedCapabilityCbor(),
 		append([]byte(nil), current.GetPublicKey()...))
 	if err != nil {
-		return ResultIdle, err
+		if requiresSignedGenerationRecovery(assignment.GetAction()) {
+			// A restore/rollback/upgrade error can occur after the durable
+			// generation was swapped. Keep the lease (and therefore the
+			// control-plane reservation) active so the same fixed operation
+			// can resume until the root helper signs the observed target or
+			// recovered generation.
+			return ResultIdle, ErrUnavailable
+		}
+		operation, completeErr := service.Control.CompleteOperation(ctx, assignment, workeroperation.RootHelperReceipt{},
+			"root_helper_failed", stableKey(assignment.GetOperationId(), "complete-failed"))
+		if completeErr != nil {
+			recovered, getErr := service.Control.GetOperation(ctx, assignment.GetOperationId())
+			if getErr == nil &&
+				recovered.GetState() == agentv1.WorkerServiceOperationState_WORKER_SERVICE_OPERATION_STATE_FAILED &&
+				recovered.GetFailureCode() == "root_helper_failed" {
+				return ResultProgressed, nil
+			}
+			return ResultIdle, completeErr
+		}
+		if operation.GetState() != agentv1.WorkerServiceOperationState_WORKER_SERVICE_OPERATION_STATE_FAILED ||
+			operation.GetFailureCode() != "root_helper_failed" {
+			return ResultIdle, ErrInvalid
+		}
+		return ResultProgressed, nil
 	}
 	completeKey := stableKey(assignment.GetOperationId(), "complete")
-	operation, err := service.Control.CompleteOperation(ctx, assignment, receipt, completeKey)
+	operation, err := service.Control.CompleteOperation(ctx, assignment, receipt, "", completeKey)
 	if err == nil {
 		if operation.GetState() != agentv1.WorkerServiceOperationState_WORKER_SERVICE_OPERATION_STATE_SUCCEEDED {
 			return ResultIdle, ErrInvalid
@@ -175,6 +198,17 @@ func (service *Service) restart(ctx context.Context, current *agentv1.RootHelper
 		return ResultProgressed, nil
 	}
 	return ResultIdle, err
+}
+
+func requiresSignedGenerationRecovery(action agentv1.WorkerServiceOperationAction) bool {
+	switch action {
+	case agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_RESTORE,
+		agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_UPGRADE,
+		agentv1.WorkerServiceOperationAction_WORKER_SERVICE_OPERATION_ACTION_ROLLBACK:
+		return true
+	default:
+		return false
+	}
 }
 
 func (service *Service) validate() error {
@@ -196,7 +230,7 @@ func (service *Service) validate() error {
 	if service.newKey == nil {
 		service.newKey = uuid.NewString
 	}
-	if service.pollInterval() < 100*time.Millisecond || service.lease() < 5*time.Second || service.lease() > 15*time.Minute {
+	if service.pollInterval() < 100*time.Millisecond || service.lease() < 5*time.Second || service.lease() > 65*time.Minute {
 		return ErrInvalid
 	}
 	return nil
@@ -211,7 +245,7 @@ func (service *Service) pollInterval() time.Duration {
 
 func (service *Service) lease() time.Duration {
 	if service.Lease == 0 {
-		return 60 * time.Second
+		return 65 * time.Minute
 	}
 	return service.Lease
 }

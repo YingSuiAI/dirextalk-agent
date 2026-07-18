@@ -1,0 +1,247 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// Knowledge is an Agent-owned, owner-scoped binding to one deployed Managed
+// service. Provider endpoints, model dimensions, collection names, and
+// credentials are intentionally absent from this public contract.
+service KnowledgeService {
+  rpc GetKnowledgeCapabilities(GetKnowledgeCapabilitiesRequest) returns (GetKnowledgeCapabilitiesResponse);
+  rpc GetKnowledgeConfig(GetKnowledgeConfigRequest) returns (GetKnowledgeConfigResponse);
+  rpc PutKnowledgeConfig(PutKnowledgeConfigRequest) returns (PutKnowledgeConfigResponse);
+  rpc ListKnowledgeSources(ListKnowledgeSourcesRequest) returns (ListKnowledgeSourcesResponse);
+  rpc StartKnowledgeAttachmentUpload(StartKnowledgeAttachmentUploadRequest) returns (StartKnowledgeAttachmentUploadResponse);
+  rpc AppendKnowledgeAttachmentChunk(AppendKnowledgeAttachmentChunkRequest) returns (AppendKnowledgeAttachmentChunkResponse);
+  rpc CommitKnowledgeAttachmentUpload(CommitKnowledgeAttachmentUploadRequest) returns (CommitKnowledgeAttachmentUploadResponse);
+  rpc CreateKnowledgeMemory(CreateKnowledgeMemoryRequest) returns (CreateKnowledgeMemoryResponse);
+  rpc DeleteKnowledgeSource(DeleteKnowledgeSourceRequest) returns (DeleteKnowledgeSourceResponse);
+  rpc SearchKnowledge(SearchKnowledgeRequest) returns (SearchKnowledgeResponse);
+  rpc GetKnowledgeStatus(GetKnowledgeStatusRequest) returns (GetKnowledgeStatusResponse);
+}
+
+message KnowledgeCapabilities {
+  bool config = 1;
+  bool attachment_upload = 2;
+  bool memory = 3;
+  bool search = 4;
+  repeated string embedding_profile_ids = 5;
+  int64 max_attachment_size_bytes = 6;
+  int32 max_attachment_chunk_bytes = 7;
+  int32 max_search_results = 8;
+}
+
+message GetKnowledgeCapabilitiesRequest { string owner_id = 1; }
+message GetKnowledgeCapabilitiesResponse { KnowledgeCapabilities capabilities = 1; }
+
+message KnowledgeConfigSpec {
+  string deployment_id = 1;
+  string managed_service_id = 2;
+  string recipe_digest = 3;
+
+  // Selects one immutable server-owned embedding implementation. Provider,
+  // endpoint, model dimensions, and credential references are not selectable.
+  string embedding_profile_id = 4;
+  bool enabled = 5;
+}
+
+message KnowledgeConfig {
+  string owner_id = 1;
+  string binding_id = 2;
+  KnowledgeConfigSpec spec = 3;
+  int64 revision = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message GetKnowledgeConfigRequest {
+  string owner_id = 1;
+  string binding_id = 2;
+}
+message GetKnowledgeConfigResponse { KnowledgeConfig config = 1; }
+
+message PutKnowledgeConfigRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string binding_id = 3;
+  KnowledgeConfigSpec spec = 4;
+  int64 expected_revision = 5;
+}
+message PutKnowledgeConfigResponse { KnowledgeConfig config = 1; }
+
+enum KnowledgeSourceKind {
+  KNOWLEDGE_SOURCE_KIND_UNSPECIFIED = 0;
+  KNOWLEDGE_SOURCE_KIND_ATTACHMENT = 1;
+  KNOWLEDGE_SOURCE_KIND_MEMORY = 2;
+}
+
+enum KnowledgeSourceStatus {
+  KNOWLEDGE_SOURCE_STATUS_UNSPECIFIED = 0;
+  KNOWLEDGE_SOURCE_STATUS_UPLOADING = 1;
+  KNOWLEDGE_SOURCE_STATUS_READY = 2;
+  KNOWLEDGE_SOURCE_STATUS_DELETING = 3;
+  KNOWLEDGE_SOURCE_STATUS_DELETED = 4;
+  KNOWLEDGE_SOURCE_STATUS_FAILED = 5;
+}
+
+message KnowledgeSource {
+  string owner_id = 1;
+  string binding_id = 2;
+  string source_id = 3;
+  KnowledgeSourceKind kind = 4;
+  KnowledgeSourceStatus status = 5;
+  string media_type = 6;
+  int64 size_bytes = 7;
+  string content_sha256 = 8;
+  int32 chunk_count = 9;
+  int64 revision = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  string title = 13;
+
+  // Closed, de-secreted failure classification. Backend diagnostics are never
+  // projected through this field.
+  string error_code = 14;
+}
+
+message ListKnowledgeSourcesRequest {
+  string owner_id = 1;
+  string binding_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+message ListKnowledgeSourcesResponse {
+  repeated KnowledgeSource sources = 1;
+  string next_page_token = 2;
+}
+
+enum KnowledgeUploadStatus {
+  KNOWLEDGE_UPLOAD_STATUS_UNSPECIFIED = 0;
+  KNOWLEDGE_UPLOAD_STATUS_RECEIVING = 1;
+  KNOWLEDGE_UPLOAD_STATUS_COMMITTED = 2;
+  KNOWLEDGE_UPLOAD_STATUS_FAILED = 3;
+}
+
+message KnowledgeAttachmentUpload {
+  string owner_id = 1;
+  string binding_id = 2;
+  string source_id = 3;
+  string upload_id = 4;
+  KnowledgeUploadStatus status = 5;
+  string media_type = 6;
+  int64 declared_size_bytes = 7;
+  int64 received_size_bytes = 8;
+  int32 next_chunk_ordinal = 9;
+  int64 revision = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+  int64 binding_revision = 13;
+}
+
+message StartKnowledgeAttachmentUploadRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string binding_id = 3;
+  string source_id = 4;
+  string upload_id = 5;
+  string media_type = 6;
+  int64 declared_size_bytes = 7;
+  int64 expected_binding_revision = 8;
+  string title = 9;
+}
+message StartKnowledgeAttachmentUploadResponse { KnowledgeAttachmentUpload upload = 1; }
+
+message AppendKnowledgeAttachmentChunkRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string binding_id = 3;
+  string upload_id = 4;
+  int64 expected_upload_revision = 5;
+  int64 offset_bytes = 6;
+  int32 chunk_ordinal = 7;
+  bytes chunk = 8;
+  string chunk_sha256 = 9;
+}
+message AppendKnowledgeAttachmentChunkResponse { KnowledgeAttachmentUpload upload = 1; }
+
+message CommitKnowledgeAttachmentUploadRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string binding_id = 3;
+  string upload_id = 4;
+  int64 expected_upload_revision = 5;
+  string content_sha256 = 6;
+}
+message CommitKnowledgeAttachmentUploadResponse {
+  KnowledgeAttachmentUpload upload = 1;
+  KnowledgeSource source = 2;
+}
+
+message CreateKnowledgeMemoryRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string binding_id = 3;
+  string source_id = 4;
+  int64 expected_binding_revision = 5;
+  bytes content = 6;
+  string content_sha256 = 7;
+  string title = 8;
+}
+message CreateKnowledgeMemoryResponse { KnowledgeSource source = 1; }
+
+message DeleteKnowledgeSourceRequest {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string binding_id = 3;
+  string source_id = 4;
+  int64 expected_binding_revision = 5;
+  int64 expected_source_revision = 6;
+}
+message DeleteKnowledgeSourceResponse { KnowledgeSource source = 1; }
+
+message SearchKnowledgeRequest {
+  string owner_id = 1;
+  string binding_id = 2;
+  int64 expected_binding_revision = 3;
+  string query = 4;
+  int32 limit = 5;
+  repeated string source_ids = 6;
+}
+
+message KnowledgeSearchMatch {
+  string source_id = 1;
+  string chunk_ref = 2;
+  double score = 3;
+}
+message SearchKnowledgeResponse {
+  repeated KnowledgeSearchMatch matches = 1;
+  int64 binding_revision = 2;
+}
+
+enum KnowledgeBackendStatus {
+  KNOWLEDGE_BACKEND_STATUS_UNSPECIFIED = 0;
+  KNOWLEDGE_BACKEND_STATUS_UNAVAILABLE = 1;
+  KNOWLEDGE_BACKEND_STATUS_READY = 2;
+  KNOWLEDGE_BACKEND_STATUS_DEGRADED = 3;
+}
+
+message KnowledgeStatus {
+  string owner_id = 1;
+  string binding_id = 2;
+  bool enabled = 3;
+  KnowledgeBackendStatus backend_status = 4;
+  int32 ready_source_count = 5;
+  int32 uploading_source_count = 6;
+  int32 failed_source_count = 7;
+  int64 binding_revision = 8;
+  google.protobuf.Timestamp checked_at = 9;
+}
+
+message GetKnowledgeStatusRequest {
+  string owner_id = 1;
+  string binding_id = 2;
+}
+message GetKnowledgeStatusResponse { KnowledgeStatus status = 1; }

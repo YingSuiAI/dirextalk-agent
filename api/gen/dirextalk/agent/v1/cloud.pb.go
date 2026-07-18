@@ -337,8 +337,9 @@ func (CloudPlanStatus) EnumDescriptor() ([]byte, []int) {
 type CloudPrivateEndpointService int32
 
 const (
-	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED CloudPrivateEndpointService = 0
-	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3          CloudPrivateEndpointService = 1
+	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED     CloudPrivateEndpointService = 0
+	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3              CloudPrivateEndpointService = 1
+	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER CloudPrivateEndpointService = 2
 )
 
 // Enum value maps for CloudPrivateEndpointService.
@@ -346,10 +347,12 @@ var (
 	CloudPrivateEndpointService_name = map[int32]string{
 		0: "CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED",
 		1: "CLOUD_PRIVATE_ENDPOINT_SERVICE_S3",
+		2: "CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER",
 	}
 	CloudPrivateEndpointService_value = map[string]int32{
-		"CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED": 0,
-		"CLOUD_PRIVATE_ENDPOINT_SERVICE_S3":          1,
+		"CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED":     0,
+		"CLOUD_PRIVATE_ENDPOINT_SERVICE_S3":              1,
+		"CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER": 2,
 	}
 )
 
@@ -380,12 +383,62 @@ func (CloudPrivateEndpointService) EnumDescriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{6}
 }
 
+type CloudPrivateEndpointType int32
+
+const (
+	CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED CloudPrivateEndpointType = 0
+	CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY     CloudPrivateEndpointType = 1
+	CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE   CloudPrivateEndpointType = 2
+)
+
+// Enum value maps for CloudPrivateEndpointType.
+var (
+	CloudPrivateEndpointType_name = map[int32]string{
+		0: "CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED",
+		1: "CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY",
+		2: "CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE",
+	}
+	CloudPrivateEndpointType_value = map[string]int32{
+		"CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED": 0,
+		"CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY":     1,
+		"CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE":   2,
+	}
+)
+
+func (x CloudPrivateEndpointType) Enum() *CloudPrivateEndpointType {
+	p := new(CloudPrivateEndpointType)
+	*p = x
+	return p
+}
+
+func (x CloudPrivateEndpointType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CloudPrivateEndpointType) Descriptor() protoreflect.EnumDescriptor {
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[7].Descriptor()
+}
+
+func (CloudPrivateEndpointType) Type() protoreflect.EnumType {
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[7]
+}
+
+func (x CloudPrivateEndpointType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CloudPrivateEndpointType.Descriptor instead.
+func (CloudPrivateEndpointType) EnumDescriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{7}
+}
+
 type CloudEndpointSecurityGroupSource int32
 
 const (
-	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED      CloudEndpointSecurityGroupSource = 0
-	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING    CloudEndpointSecurityGroupSource = 1
-	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED CloudEndpointSecurityGroupSource = 2
+	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED                    CloudEndpointSecurityGroupSource = 0
+	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING                  CloudEndpointSecurityGroupSource = 1
+	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED               CloudEndpointSecurityGroupSource = 2
+	CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER CloudEndpointSecurityGroupSource = 3
 )
 
 // Enum value maps for CloudEndpointSecurityGroupSource.
@@ -394,11 +447,13 @@ var (
 		0: "CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED",
 		1: "CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING",
 		2: "CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED",
+		3: "CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER",
 	}
 	CloudEndpointSecurityGroupSource_value = map[string]int32{
-		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED":      0,
-		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING":    1,
-		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED": 2,
+		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED":                    0,
+		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING":                  1,
+		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED":               2,
+		"CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER": 3,
 	}
 )
 
@@ -413,11 +468,11 @@ func (x CloudEndpointSecurityGroupSource) String() string {
 }
 
 func (CloudEndpointSecurityGroupSource) Descriptor() protoreflect.EnumDescriptor {
-	return file_dirextalk_agent_v1_cloud_proto_enumTypes[7].Descriptor()
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[8].Descriptor()
 }
 
 func (CloudEndpointSecurityGroupSource) Type() protoreflect.EnumType {
-	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[7]
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[8]
 }
 
 func (x CloudEndpointSecurityGroupSource) Number() protoreflect.EnumNumber {
@@ -426,7 +481,7 @@ func (x CloudEndpointSecurityGroupSource) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CloudEndpointSecurityGroupSource.Descriptor instead.
 func (CloudEndpointSecurityGroupSource) EnumDescriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{7}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{8}
 }
 
 type CloudSnapshotOperationDisposition int32
@@ -462,11 +517,11 @@ func (x CloudSnapshotOperationDisposition) String() string {
 }
 
 func (CloudSnapshotOperationDisposition) Descriptor() protoreflect.EnumDescriptor {
-	return file_dirextalk_agent_v1_cloud_proto_enumTypes[8].Descriptor()
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[9].Descriptor()
 }
 
 func (CloudSnapshotOperationDisposition) Type() protoreflect.EnumType {
-	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[8]
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[9]
 }
 
 func (x CloudSnapshotOperationDisposition) Number() protoreflect.EnumNumber {
@@ -475,7 +530,7 @@ func (x CloudSnapshotOperationDisposition) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CloudSnapshotOperationDisposition.Descriptor instead.
 func (CloudSnapshotOperationDisposition) EnumDescriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{8}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{9}
 }
 
 type AwsFoundationOperationAction int32
@@ -517,11 +572,11 @@ func (x AwsFoundationOperationAction) String() string {
 }
 
 func (AwsFoundationOperationAction) Descriptor() protoreflect.EnumDescriptor {
-	return file_dirextalk_agent_v1_cloud_proto_enumTypes[9].Descriptor()
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[10].Descriptor()
 }
 
 func (AwsFoundationOperationAction) Type() protoreflect.EnumType {
-	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[9]
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[10]
 }
 
 func (x AwsFoundationOperationAction) Number() protoreflect.EnumNumber {
@@ -530,7 +585,7 @@ func (x AwsFoundationOperationAction) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AwsFoundationOperationAction.Descriptor instead.
 func (AwsFoundationOperationAction) EnumDescriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{9}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{10}
 }
 
 type AwsFoundationOperationStatus int32
@@ -581,11 +636,11 @@ func (x AwsFoundationOperationStatus) String() string {
 }
 
 func (AwsFoundationOperationStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_dirextalk_agent_v1_cloud_proto_enumTypes[10].Descriptor()
+	return file_dirextalk_agent_v1_cloud_proto_enumTypes[11].Descriptor()
 }
 
 func (AwsFoundationOperationStatus) Type() protoreflect.EnumType {
-	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[10]
+	return &file_dirextalk_agent_v1_cloud_proto_enumTypes[11]
 }
 
 func (x AwsFoundationOperationStatus) Number() protoreflect.EnumNumber {
@@ -594,7 +649,7 @@ func (x AwsFoundationOperationStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use AwsFoundationOperationStatus.Descriptor instead.
 func (AwsFoundationOperationStatus) EnumDescriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{10}
+	return file_dirextalk_agent_v1_cloud_proto_rawDescGZIP(), []int{11}
 }
 
 type CloudRecipeBinding struct {
@@ -998,6 +1053,9 @@ type CloudNetworkScope struct {
 	AuthenticationRequired bool                   `protobuf:"varint,9,opt,name=authentication_required,json=authenticationRequired,proto3" json:"authentication_required,omitempty"`
 	SecurityGroupMode      CloudSecurityGroupMode `protobuf:"varint,10,opt,name=security_group_mode,json=securityGroupMode,proto3,enum=dirextalk.agent.v1.CloudSecurityGroupMode" json:"security_group_mode,omitempty"`
 	PublicIpv4             bool                   `protobuf:"varint,11,opt,name=public_ipv4,json=publicIpv4,proto3" json:"public_ipv4,omitempty"`
+	RouteTableId           string                 `protobuf:"bytes,12,opt,name=route_table_id,json=routeTableId,proto3" json:"route_table_id,omitempty"`
+	ControlPlaneEndpoint   string                 `protobuf:"bytes,13,opt,name=control_plane_endpoint,json=controlPlaneEndpoint,proto3" json:"control_plane_endpoint,omitempty"`
+	PrivateConnectivity    string                 `protobuf:"bytes,14,opt,name=private_connectivity,json=privateConnectivity,proto3" json:"private_connectivity,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -1107,6 +1165,27 @@ func (x *CloudNetworkScope) GetPublicIpv4() bool {
 		return x.PublicIpv4
 	}
 	return false
+}
+
+func (x *CloudNetworkScope) GetRouteTableId() string {
+	if x != nil {
+		return x.RouteTableId
+	}
+	return ""
+}
+
+func (x *CloudNetworkScope) GetControlPlaneEndpoint() string {
+	if x != nil {
+		return x.ControlPlaneEndpoint
+	}
+	return ""
+}
+
+func (x *CloudNetworkScope) GetPrivateConnectivity() string {
+	if x != nil {
+		return x.PrivateConnectivity
+	}
+	return ""
 }
 
 type CloudSecretScope struct {
@@ -1305,6 +1384,7 @@ type CloudPrivateEndpointOperation struct {
 	PrivateDnsEnabled   bool                             `protobuf:"varint,4,opt,name=private_dns_enabled,json=privateDnsEnabled,proto3" json:"private_dns_enabled,omitempty"`
 	MonthlyHours        uint32                           `protobuf:"varint,5,opt,name=monthly_hours,json=monthlyHours,proto3" json:"monthly_hours,omitempty"`
 	DataMibPerMonth     uint64                           `protobuf:"varint,6,opt,name=data_mib_per_month,json=dataMibPerMonth,proto3" json:"data_mib_per_month,omitempty"`
+	EndpointType        CloudPrivateEndpointType         `protobuf:"varint,7,opt,name=endpoint_type,json=endpointType,proto3,enum=dirextalk.agent.v1.CloudPrivateEndpointType" json:"endpoint_type,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -1379,6 +1459,13 @@ func (x *CloudPrivateEndpointOperation) GetDataMibPerMonth() uint64 {
 		return x.DataMibPerMonth
 	}
 	return 0
+}
+
+func (x *CloudPrivateEndpointOperation) GetEndpointType() CloudPrivateEndpointType {
+	if x != nil {
+		return x.EndpointType
+	}
+	return CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED
 }
 
 type CloudSnapshotOperation struct {
@@ -5042,7 +5129,7 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\n" +
 	"persistent\x18\v \x01(\bR\n" +
 	"persistent\x12 \n" +
-	"\vdisposition\x18\f \x01(\tR\vdisposition\"\x80\x04\n" +
+	"\vdisposition\x18\f \x01(\tR\vdisposition\"\x8f\x05\n" +
 	"\x11CloudNetworkScope\x12\x15\n" +
 	"\x06vpc_id\x18\x01 \x01(\tR\x05vpcId\x12\x1b\n" +
 	"\tsubnet_id\x18\x02 \x01(\tR\bsubnetId\x12*\n" +
@@ -5057,7 +5144,10 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x13security_group_mode\x18\n" +
 	" \x01(\x0e2*.dirextalk.agent.v1.CloudSecurityGroupModeR\x11securityGroupMode\x12\x1f\n" +
 	"\vpublic_ipv4\x18\v \x01(\bR\n" +
-	"publicIpv4\"g\n" +
+	"publicIpv4\x12$\n" +
+	"\x0eroute_table_id\x18\f \x01(\tR\frouteTableId\x124\n" +
+	"\x16control_plane_endpoint\x18\r \x01(\tR\x14controlPlaneEndpoint\x121\n" +
+	"\x14private_connectivity\x18\x0e \x01(\tR\x13privateConnectivity\"g\n" +
 	"\x10CloudSecretScope\x12\x1d\n" +
 	"\n" +
 	"secret_ref\x18\x01 \x01(\tR\tsecretRef\x12\x18\n" +
@@ -5071,14 +5161,15 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x0fretention_class\x18\x01 \x01(\x0e2'.dirextalk.agent.v1.CloudRetentionClassR\x0eretentionClass\x12!\n" +
 	"\fauto_destroy\x18\x02 \x01(\bR\vautoDestroy\x120\n" +
 	"\x14grace_period_seconds\x18\x03 \x01(\rR\x12gracePeriodSeconds\x120\n" +
-	"\x14max_lifetime_seconds\x18\x04 \x01(\x04R\x12maxLifetimeSeconds\"\xfb\x02\n" +
+	"\x14max_lifetime_seconds\x18\x04 \x01(\x04R\x12maxLifetimeSeconds\"\xce\x03\n" +
 	"\x1dCloudPrivateEndpointOperation\x12#\n" +
 	"\roperation_key\x18\x01 \x01(\tR\foperationKey\x12I\n" +
 	"\aservice\x18\x02 \x01(\x0e2/.dirextalk.agent.v1.CloudPrivateEndpointServiceR\aservice\x12h\n" +
 	"\x15security_group_source\x18\x03 \x01(\x0e24.dirextalk.agent.v1.CloudEndpointSecurityGroupSourceR\x13securityGroupSource\x12.\n" +
 	"\x13private_dns_enabled\x18\x04 \x01(\bR\x11privateDnsEnabled\x12#\n" +
 	"\rmonthly_hours\x18\x05 \x01(\rR\fmonthlyHours\x12+\n" +
-	"\x12data_mib_per_month\x18\x06 \x01(\x04R\x0fdataMibPerMonth\"\xb8\x02\n" +
+	"\x12data_mib_per_month\x18\x06 \x01(\x04R\x0fdataMibPerMonth\x12Q\n" +
+	"\rendpoint_type\x18\a \x01(\x0e2,.dirextalk.agent.v1.CloudPrivateEndpointTypeR\fendpointType\"\xb8\x02\n" +
 	"\x16CloudSnapshotOperation\x12#\n" +
 	"\roperation_key\x18\x01 \x01(\tR\foperationKey\x121\n" +
 	"\x15source_volume_slot_id\x18\x02 \x01(\tR\x12sourceVolumeSlotId\x129\n" +
@@ -5441,14 +5532,20 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"(CLOUD_PLAN_STATUS_READY_FOR_CONFIRMATION\x10\x03\x12\x1e\n" +
 	"\x1aCLOUD_PLAN_STATUS_APPROVED\x10\x04\x12\x1d\n" +
 	"\x19CLOUD_PLAN_STATUS_EXPIRED\x10\x05\x12 \n" +
-	"\x1cCLOUD_PLAN_STATUS_SUPERSEDED\x10\x06*t\n" +
+	"\x1cCLOUD_PLAN_STATUS_SUPERSEDED\x10\x06*\xa8\x01\n" +
 	"\x1bCloudPrivateEndpointService\x12.\n" +
 	"*CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED\x10\x00\x12%\n" +
-	"!CLOUD_PRIVATE_ENDPOINT_SERVICE_S3\x10\x01*\xcb\x01\n" +
+	"!CLOUD_PRIVATE_ENDPOINT_SERVICE_S3\x10\x01\x122\n" +
+	".CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER\x10\x02*\x9b\x01\n" +
+	"\x18CloudPrivateEndpointType\x12+\n" +
+	"'CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED\x10\x00\x12'\n" +
+	"#CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY\x10\x01\x12)\n" +
+	"%CLOUD_PRIVATE_ENDPOINT_TYPE_INTERFACE\x10\x02*\x94\x02\n" +
 	" CloudEndpointSecurityGroupSource\x124\n" +
 	"0CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_UNSPECIFIED\x10\x00\x126\n" +
 	"2CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_PLAN_EXISTING\x10\x01\x129\n" +
-	"5CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED\x10\x02*\xe0\x01\n" +
+	"5CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_WORKER_DEDICATED\x10\x02\x12G\n" +
+	"CCLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER\x10\x03*\xe0\x01\n" +
 	"!CloudSnapshotOperationDisposition\x124\n" +
 	"0CLOUD_SNAPSHOT_OPERATION_DISPOSITION_UNSPECIFIED\x10\x00\x12?\n" +
 	";CLOUD_SNAPSHOT_OPERATION_DISPOSITION_DELETE_WITH_DEPLOYMENT\x10\x01\x12D\n" +
@@ -5481,7 +5578,7 @@ func file_dirextalk_agent_v1_cloud_proto_rawDescGZIP() []byte {
 	return file_dirextalk_agent_v1_cloud_proto_rawDescData
 }
 
-var file_dirextalk_agent_v1_cloud_proto_enumTypes = make([]protoimpl.EnumInfo, 11)
+var file_dirextalk_agent_v1_cloud_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
 var file_dirextalk_agent_v1_cloud_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_dirextalk_agent_v1_cloud_proto_goTypes = []any{
 	(CloudCandidateProfile)(0),                            // 0: dirextalk.agent.v1.CloudCandidateProfile
@@ -5491,151 +5588,153 @@ var file_dirextalk_agent_v1_cloud_proto_goTypes = []any{
 	(CloudRetentionClass)(0),                              // 4: dirextalk.agent.v1.CloudRetentionClass
 	(CloudPlanStatus)(0),                                  // 5: dirextalk.agent.v1.CloudPlanStatus
 	(CloudPrivateEndpointService)(0),                      // 6: dirextalk.agent.v1.CloudPrivateEndpointService
-	(CloudEndpointSecurityGroupSource)(0),                 // 7: dirextalk.agent.v1.CloudEndpointSecurityGroupSource
-	(CloudSnapshotOperationDisposition)(0),                // 8: dirextalk.agent.v1.CloudSnapshotOperationDisposition
-	(AwsFoundationOperationAction)(0),                     // 9: dirextalk.agent.v1.AwsFoundationOperationAction
-	(AwsFoundationOperationStatus)(0),                     // 10: dirextalk.agent.v1.AwsFoundationOperationStatus
-	(*CloudRecipeBinding)(nil),                            // 11: dirextalk.agent.v1.CloudRecipeBinding
-	(*CloudResourceScope)(nil),                            // 12: dirextalk.agent.v1.CloudResourceScope
-	(*CloudVolumeScope)(nil),                              // 13: dirextalk.agent.v1.CloudVolumeScope
-	(*CloudNetworkScope)(nil),                             // 14: dirextalk.agent.v1.CloudNetworkScope
-	(*CloudSecretScope)(nil),                              // 15: dirextalk.agent.v1.CloudSecretScope
-	(*CloudIntegrationScope)(nil),                         // 16: dirextalk.agent.v1.CloudIntegrationScope
-	(*CloudRetentionScope)(nil),                           // 17: dirextalk.agent.v1.CloudRetentionScope
-	(*CloudPrivateEndpointOperation)(nil),                 // 18: dirextalk.agent.v1.CloudPrivateEndpointOperation
-	(*CloudSnapshotOperation)(nil),                        // 19: dirextalk.agent.v1.CloudSnapshotOperation
-	(*CloudServiceOperationScope)(nil),                    // 20: dirextalk.agent.v1.CloudServiceOperationScope
-	(*CloudQuoteScope)(nil),                               // 21: dirextalk.agent.v1.CloudQuoteScope
-	(*CloudUsageEstimate)(nil),                            // 22: dirextalk.agent.v1.CloudUsageEstimate
-	(*CloudSpotQualification)(nil),                        // 23: dirextalk.agent.v1.CloudSpotQualification
-	(*CloudCostItem)(nil),                                 // 24: dirextalk.agent.v1.CloudCostItem
-	(*CloudQuotaEvidence)(nil),                            // 25: dirextalk.agent.v1.CloudQuotaEvidence
-	(*CloudQuoteCandidate)(nil),                           // 26: dirextalk.agent.v1.CloudQuoteCandidate
-	(*CloudQuote)(nil),                                    // 27: dirextalk.agent.v1.CloudQuote
-	(*CloudPlan)(nil),                                     // 28: dirextalk.agent.v1.CloudPlan
-	(*DeviceApprovalSignature)(nil),                       // 29: dirextalk.agent.v1.DeviceApprovalSignature
-	(*ApprovalChallenge)(nil),                             // 30: dirextalk.agent.v1.ApprovalChallenge
-	(*AwsBootstrapIdentity)(nil),                          // 31: dirextalk.agent.v1.AwsBootstrapIdentity
-	(*CloudConnection)(nil),                               // 32: dirextalk.agent.v1.CloudConnection
-	(*GetCloudConnectionRequest)(nil),                     // 33: dirextalk.agent.v1.GetCloudConnectionRequest
-	(*GetCloudConnectionResponse)(nil),                    // 34: dirextalk.agent.v1.GetCloudConnectionResponse
-	(*ListCloudConnectionsRequest)(nil),                   // 35: dirextalk.agent.v1.ListCloudConnectionsRequest
-	(*ListCloudConnectionsResponse)(nil),                  // 36: dirextalk.agent.v1.ListCloudConnectionsResponse
-	(*PreviewAwsIdentityRequest)(nil),                     // 37: dirextalk.agent.v1.PreviewAwsIdentityRequest
-	(*PreviewAwsIdentityResponse)(nil),                    // 38: dirextalk.agent.v1.PreviewAwsIdentityResponse
-	(*CreateCloudQuoteRequest)(nil),                       // 39: dirextalk.agent.v1.CreateCloudQuoteRequest
-	(*CreateCloudQuoteResponse)(nil),                      // 40: dirextalk.agent.v1.CreateCloudQuoteResponse
-	(*GetCloudQuoteRequest)(nil),                          // 41: dirextalk.agent.v1.GetCloudQuoteRequest
-	(*GetCloudQuoteResponse)(nil),                         // 42: dirextalk.agent.v1.GetCloudQuoteResponse
-	(*CreateCloudPlanRequest)(nil),                        // 43: dirextalk.agent.v1.CreateCloudPlanRequest
-	(*CreateCloudPlanResponse)(nil),                       // 44: dirextalk.agent.v1.CreateCloudPlanResponse
-	(*GetCloudPlanRequest)(nil),                           // 45: dirextalk.agent.v1.GetCloudPlanRequest
-	(*GetCloudPlanResponse)(nil),                          // 46: dirextalk.agent.v1.GetCloudPlanResponse
-	(*ListCloudPlansRequest)(nil),                         // 47: dirextalk.agent.v1.ListCloudPlansRequest
-	(*ListCloudPlansResponse)(nil),                        // 48: dirextalk.agent.v1.ListCloudPlansResponse
-	(*CreateApprovalChallengeRequest)(nil),                // 49: dirextalk.agent.v1.CreateApprovalChallengeRequest
-	(*CreateApprovalChallengeResponse)(nil),               // 50: dirextalk.agent.v1.CreateApprovalChallengeResponse
-	(*ApproveCloudPlanRequest)(nil),                       // 51: dirextalk.agent.v1.ApproveCloudPlanRequest
-	(*ApproveCloudPlanResponse)(nil),                      // 52: dirextalk.agent.v1.ApproveCloudPlanResponse
-	(*EstablishAwsConnectionRequest)(nil),                 // 53: dirextalk.agent.v1.EstablishAwsConnectionRequest
-	(*EstablishAwsConnectionResponse)(nil),                // 54: dirextalk.agent.v1.EstablishAwsConnectionResponse
-	(*AwsFoundationReleaseEnvironment)(nil),               // 55: dirextalk.agent.v1.AwsFoundationReleaseEnvironment
-	(*AwsFoundationOperationScope)(nil),                   // 56: dirextalk.agent.v1.AwsFoundationOperationScope
-	(*AwsFoundationOperationChallenge)(nil),               // 57: dirextalk.agent.v1.AwsFoundationOperationChallenge
-	(*AwsFoundationOperation)(nil),                        // 58: dirextalk.agent.v1.AwsFoundationOperation
-	(*CreateAwsFoundationOperationChallengeRequest)(nil),  // 59: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
-	(*CreateAwsFoundationOperationChallengeResponse)(nil), // 60: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
-	(*ApproveAwsFoundationOperationRequest)(nil),          // 61: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
-	(*ApproveAwsFoundationOperationResponse)(nil),         // 62: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
-	(*GetAwsFoundationOperationRequest)(nil),              // 63: dirextalk.agent.v1.GetAwsFoundationOperationRequest
-	(*GetAwsFoundationOperationResponse)(nil),             // 64: dirextalk.agent.v1.GetAwsFoundationOperationResponse
-	(*timestamppb.Timestamp)(nil),                         // 65: google.protobuf.Timestamp
+	(CloudPrivateEndpointType)(0),                         // 7: dirextalk.agent.v1.CloudPrivateEndpointType
+	(CloudEndpointSecurityGroupSource)(0),                 // 8: dirextalk.agent.v1.CloudEndpointSecurityGroupSource
+	(CloudSnapshotOperationDisposition)(0),                // 9: dirextalk.agent.v1.CloudSnapshotOperationDisposition
+	(AwsFoundationOperationAction)(0),                     // 10: dirextalk.agent.v1.AwsFoundationOperationAction
+	(AwsFoundationOperationStatus)(0),                     // 11: dirextalk.agent.v1.AwsFoundationOperationStatus
+	(*CloudRecipeBinding)(nil),                            // 12: dirextalk.agent.v1.CloudRecipeBinding
+	(*CloudResourceScope)(nil),                            // 13: dirextalk.agent.v1.CloudResourceScope
+	(*CloudVolumeScope)(nil),                              // 14: dirextalk.agent.v1.CloudVolumeScope
+	(*CloudNetworkScope)(nil),                             // 15: dirextalk.agent.v1.CloudNetworkScope
+	(*CloudSecretScope)(nil),                              // 16: dirextalk.agent.v1.CloudSecretScope
+	(*CloudIntegrationScope)(nil),                         // 17: dirextalk.agent.v1.CloudIntegrationScope
+	(*CloudRetentionScope)(nil),                           // 18: dirextalk.agent.v1.CloudRetentionScope
+	(*CloudPrivateEndpointOperation)(nil),                 // 19: dirextalk.agent.v1.CloudPrivateEndpointOperation
+	(*CloudSnapshotOperation)(nil),                        // 20: dirextalk.agent.v1.CloudSnapshotOperation
+	(*CloudServiceOperationScope)(nil),                    // 21: dirextalk.agent.v1.CloudServiceOperationScope
+	(*CloudQuoteScope)(nil),                               // 22: dirextalk.agent.v1.CloudQuoteScope
+	(*CloudUsageEstimate)(nil),                            // 23: dirextalk.agent.v1.CloudUsageEstimate
+	(*CloudSpotQualification)(nil),                        // 24: dirextalk.agent.v1.CloudSpotQualification
+	(*CloudCostItem)(nil),                                 // 25: dirextalk.agent.v1.CloudCostItem
+	(*CloudQuotaEvidence)(nil),                            // 26: dirextalk.agent.v1.CloudQuotaEvidence
+	(*CloudQuoteCandidate)(nil),                           // 27: dirextalk.agent.v1.CloudQuoteCandidate
+	(*CloudQuote)(nil),                                    // 28: dirextalk.agent.v1.CloudQuote
+	(*CloudPlan)(nil),                                     // 29: dirextalk.agent.v1.CloudPlan
+	(*DeviceApprovalSignature)(nil),                       // 30: dirextalk.agent.v1.DeviceApprovalSignature
+	(*ApprovalChallenge)(nil),                             // 31: dirextalk.agent.v1.ApprovalChallenge
+	(*AwsBootstrapIdentity)(nil),                          // 32: dirextalk.agent.v1.AwsBootstrapIdentity
+	(*CloudConnection)(nil),                               // 33: dirextalk.agent.v1.CloudConnection
+	(*GetCloudConnectionRequest)(nil),                     // 34: dirextalk.agent.v1.GetCloudConnectionRequest
+	(*GetCloudConnectionResponse)(nil),                    // 35: dirextalk.agent.v1.GetCloudConnectionResponse
+	(*ListCloudConnectionsRequest)(nil),                   // 36: dirextalk.agent.v1.ListCloudConnectionsRequest
+	(*ListCloudConnectionsResponse)(nil),                  // 37: dirextalk.agent.v1.ListCloudConnectionsResponse
+	(*PreviewAwsIdentityRequest)(nil),                     // 38: dirextalk.agent.v1.PreviewAwsIdentityRequest
+	(*PreviewAwsIdentityResponse)(nil),                    // 39: dirextalk.agent.v1.PreviewAwsIdentityResponse
+	(*CreateCloudQuoteRequest)(nil),                       // 40: dirextalk.agent.v1.CreateCloudQuoteRequest
+	(*CreateCloudQuoteResponse)(nil),                      // 41: dirextalk.agent.v1.CreateCloudQuoteResponse
+	(*GetCloudQuoteRequest)(nil),                          // 42: dirextalk.agent.v1.GetCloudQuoteRequest
+	(*GetCloudQuoteResponse)(nil),                         // 43: dirextalk.agent.v1.GetCloudQuoteResponse
+	(*CreateCloudPlanRequest)(nil),                        // 44: dirextalk.agent.v1.CreateCloudPlanRequest
+	(*CreateCloudPlanResponse)(nil),                       // 45: dirextalk.agent.v1.CreateCloudPlanResponse
+	(*GetCloudPlanRequest)(nil),                           // 46: dirextalk.agent.v1.GetCloudPlanRequest
+	(*GetCloudPlanResponse)(nil),                          // 47: dirextalk.agent.v1.GetCloudPlanResponse
+	(*ListCloudPlansRequest)(nil),                         // 48: dirextalk.agent.v1.ListCloudPlansRequest
+	(*ListCloudPlansResponse)(nil),                        // 49: dirextalk.agent.v1.ListCloudPlansResponse
+	(*CreateApprovalChallengeRequest)(nil),                // 50: dirextalk.agent.v1.CreateApprovalChallengeRequest
+	(*CreateApprovalChallengeResponse)(nil),               // 51: dirextalk.agent.v1.CreateApprovalChallengeResponse
+	(*ApproveCloudPlanRequest)(nil),                       // 52: dirextalk.agent.v1.ApproveCloudPlanRequest
+	(*ApproveCloudPlanResponse)(nil),                      // 53: dirextalk.agent.v1.ApproveCloudPlanResponse
+	(*EstablishAwsConnectionRequest)(nil),                 // 54: dirextalk.agent.v1.EstablishAwsConnectionRequest
+	(*EstablishAwsConnectionResponse)(nil),                // 55: dirextalk.agent.v1.EstablishAwsConnectionResponse
+	(*AwsFoundationReleaseEnvironment)(nil),               // 56: dirextalk.agent.v1.AwsFoundationReleaseEnvironment
+	(*AwsFoundationOperationScope)(nil),                   // 57: dirextalk.agent.v1.AwsFoundationOperationScope
+	(*AwsFoundationOperationChallenge)(nil),               // 58: dirextalk.agent.v1.AwsFoundationOperationChallenge
+	(*AwsFoundationOperation)(nil),                        // 59: dirextalk.agent.v1.AwsFoundationOperation
+	(*CreateAwsFoundationOperationChallengeRequest)(nil),  // 60: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest
+	(*CreateAwsFoundationOperationChallengeResponse)(nil), // 61: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse
+	(*ApproveAwsFoundationOperationRequest)(nil),          // 62: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest
+	(*ApproveAwsFoundationOperationResponse)(nil),         // 63: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse
+	(*GetAwsFoundationOperationRequest)(nil),              // 64: dirextalk.agent.v1.GetAwsFoundationOperationRequest
+	(*GetAwsFoundationOperationResponse)(nil),             // 65: dirextalk.agent.v1.GetAwsFoundationOperationResponse
+	(*timestamppb.Timestamp)(nil),                         // 66: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_cloud_proto_depIdxs = []int32{
 	0,  // 0: dirextalk.agent.v1.CloudResourceScope.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
 	1,  // 1: dirextalk.agent.v1.CloudResourceScope.purchase_option:type_name -> dirextalk.agent.v1.CloudPurchaseOption
-	13, // 2: dirextalk.agent.v1.CloudResourceScope.volume_scopes:type_name -> dirextalk.agent.v1.CloudVolumeScope
+	14, // 2: dirextalk.agent.v1.CloudResourceScope.volume_scopes:type_name -> dirextalk.agent.v1.CloudVolumeScope
 	2,  // 3: dirextalk.agent.v1.CloudNetworkScope.entry_point:type_name -> dirextalk.agent.v1.CloudEntryPointKind
 	3,  // 4: dirextalk.agent.v1.CloudNetworkScope.security_group_mode:type_name -> dirextalk.agent.v1.CloudSecurityGroupMode
 	4,  // 5: dirextalk.agent.v1.CloudRetentionScope.retention_class:type_name -> dirextalk.agent.v1.CloudRetentionClass
 	6,  // 6: dirextalk.agent.v1.CloudPrivateEndpointOperation.service:type_name -> dirextalk.agent.v1.CloudPrivateEndpointService
-	7,  // 7: dirextalk.agent.v1.CloudPrivateEndpointOperation.security_group_source:type_name -> dirextalk.agent.v1.CloudEndpointSecurityGroupSource
-	8,  // 8: dirextalk.agent.v1.CloudSnapshotOperation.disposition:type_name -> dirextalk.agent.v1.CloudSnapshotOperationDisposition
-	18, // 9: dirextalk.agent.v1.CloudServiceOperationScope.private_endpoints:type_name -> dirextalk.agent.v1.CloudPrivateEndpointOperation
-	19, // 10: dirextalk.agent.v1.CloudServiceOperationScope.snapshots:type_name -> dirextalk.agent.v1.CloudSnapshotOperation
-	11, // 11: dirextalk.agent.v1.CloudQuoteScope.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
-	12, // 12: dirextalk.agent.v1.CloudQuoteScope.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
-	14, // 13: dirextalk.agent.v1.CloudQuoteScope.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
-	15, // 14: dirextalk.agent.v1.CloudQuoteScope.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
-	16, // 15: dirextalk.agent.v1.CloudQuoteScope.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
-	17, // 16: dirextalk.agent.v1.CloudQuoteScope.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
-	20, // 17: dirextalk.agent.v1.CloudQuoteScope.service_operations:type_name -> dirextalk.agent.v1.CloudServiceOperationScope
-	65, // 18: dirextalk.agent.v1.CloudSpotQualification.checkpoint_verified_at:type_name -> google.protobuf.Timestamp
-	65, // 19: dirextalk.agent.v1.CloudSpotQualification.interruption_tested_at:type_name -> google.protobuf.Timestamp
-	0,  // 20: dirextalk.agent.v1.CloudQuoteCandidate.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	21, // 21: dirextalk.agent.v1.CloudQuoteCandidate.scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	25, // 22: dirextalk.agent.v1.CloudQuoteCandidate.quotas:type_name -> dirextalk.agent.v1.CloudQuotaEvidence
-	24, // 23: dirextalk.agent.v1.CloudQuoteCandidate.cost_items:type_name -> dirextalk.agent.v1.CloudCostItem
-	65, // 24: dirextalk.agent.v1.CloudQuote.quoted_at:type_name -> google.protobuf.Timestamp
-	65, // 25: dirextalk.agent.v1.CloudQuote.valid_until:type_name -> google.protobuf.Timestamp
-	26, // 26: dirextalk.agent.v1.CloudQuote.candidates:type_name -> dirextalk.agent.v1.CloudQuoteCandidate
-	22, // 27: dirextalk.agent.v1.CloudQuote.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	23, // 28: dirextalk.agent.v1.CloudQuote.spot_evidence:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	11, // 29: dirextalk.agent.v1.CloudPlan.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
-	0,  // 30: dirextalk.agent.v1.CloudPlan.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	65, // 31: dirextalk.agent.v1.CloudPlan.quote_valid_until:type_name -> google.protobuf.Timestamp
-	12, // 32: dirextalk.agent.v1.CloudPlan.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
-	14, // 33: dirextalk.agent.v1.CloudPlan.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
-	15, // 34: dirextalk.agent.v1.CloudPlan.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
-	16, // 35: dirextalk.agent.v1.CloudPlan.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
-	17, // 36: dirextalk.agent.v1.CloudPlan.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
-	5,  // 37: dirextalk.agent.v1.CloudPlan.status:type_name -> dirextalk.agent.v1.CloudPlanStatus
-	20, // 38: dirextalk.agent.v1.CloudPlan.service_operations:type_name -> dirextalk.agent.v1.CloudServiceOperationScope
-	65, // 39: dirextalk.agent.v1.DeviceApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
-	65, // 40: dirextalk.agent.v1.ApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	65, // 41: dirextalk.agent.v1.CloudConnection.created_at:type_name -> google.protobuf.Timestamp
-	65, // 42: dirextalk.agent.v1.CloudConnection.updated_at:type_name -> google.protobuf.Timestamp
-	32, // 43: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	32, // 44: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
-	31, // 45: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
-	65, // 46: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
-	65, // 47: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
-	21, // 48: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	22, // 49: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
-	23, // 50: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
-	27, // 51: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	27, // 52: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
-	0,  // 53: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
-	21, // 54: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
-	28, // 55: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	28, // 56: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	28, // 57: dirextalk.agent.v1.ListCloudPlansResponse.plans:type_name -> dirextalk.agent.v1.CloudPlan
-	30, // 58: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
-	29, // 59: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	28, // 60: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
-	29, // 61: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	32, // 62: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
-	9,  // 63: dirextalk.agent.v1.AwsFoundationOperationScope.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
-	55, // 64: dirextalk.agent.v1.AwsFoundationOperationScope.release_environment:type_name -> dirextalk.agent.v1.AwsFoundationReleaseEnvironment
-	65, // 65: dirextalk.agent.v1.AwsFoundationOperationScope.identity_observed_at:type_name -> google.protobuf.Timestamp
-	65, // 66: dirextalk.agent.v1.AwsFoundationOperationScope.identity_expires_at:type_name -> google.protobuf.Timestamp
-	56, // 67: dirextalk.agent.v1.AwsFoundationOperationChallenge.scope:type_name -> dirextalk.agent.v1.AwsFoundationOperationScope
-	65, // 68: dirextalk.agent.v1.AwsFoundationOperationChallenge.expires_at:type_name -> google.protobuf.Timestamp
-	9,  // 69: dirextalk.agent.v1.AwsFoundationOperation.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
-	10, // 70: dirextalk.agent.v1.AwsFoundationOperation.status:type_name -> dirextalk.agent.v1.AwsFoundationOperationStatus
-	65, // 71: dirextalk.agent.v1.AwsFoundationOperation.created_at:type_name -> google.protobuf.Timestamp
-	65, // 72: dirextalk.agent.v1.AwsFoundationOperation.updated_at:type_name -> google.protobuf.Timestamp
-	9,  // 73: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
-	57, // 74: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse.challenge:type_name -> dirextalk.agent.v1.AwsFoundationOperationChallenge
-	29, // 75: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
-	9,  // 76: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
-	58, // 77: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse.operation:type_name -> dirextalk.agent.v1.AwsFoundationOperation
-	58, // 78: dirextalk.agent.v1.GetAwsFoundationOperationResponse.operation:type_name -> dirextalk.agent.v1.AwsFoundationOperation
-	79, // [79:79] is the sub-list for method output_type
-	79, // [79:79] is the sub-list for method input_type
-	79, // [79:79] is the sub-list for extension type_name
-	79, // [79:79] is the sub-list for extension extendee
-	0,  // [0:79] is the sub-list for field type_name
+	8,  // 7: dirextalk.agent.v1.CloudPrivateEndpointOperation.security_group_source:type_name -> dirextalk.agent.v1.CloudEndpointSecurityGroupSource
+	7,  // 8: dirextalk.agent.v1.CloudPrivateEndpointOperation.endpoint_type:type_name -> dirextalk.agent.v1.CloudPrivateEndpointType
+	9,  // 9: dirextalk.agent.v1.CloudSnapshotOperation.disposition:type_name -> dirextalk.agent.v1.CloudSnapshotOperationDisposition
+	19, // 10: dirextalk.agent.v1.CloudServiceOperationScope.private_endpoints:type_name -> dirextalk.agent.v1.CloudPrivateEndpointOperation
+	20, // 11: dirextalk.agent.v1.CloudServiceOperationScope.snapshots:type_name -> dirextalk.agent.v1.CloudSnapshotOperation
+	12, // 12: dirextalk.agent.v1.CloudQuoteScope.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
+	13, // 13: dirextalk.agent.v1.CloudQuoteScope.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
+	15, // 14: dirextalk.agent.v1.CloudQuoteScope.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
+	16, // 15: dirextalk.agent.v1.CloudQuoteScope.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
+	17, // 16: dirextalk.agent.v1.CloudQuoteScope.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
+	18, // 17: dirextalk.agent.v1.CloudQuoteScope.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
+	21, // 18: dirextalk.agent.v1.CloudQuoteScope.service_operations:type_name -> dirextalk.agent.v1.CloudServiceOperationScope
+	66, // 19: dirextalk.agent.v1.CloudSpotQualification.checkpoint_verified_at:type_name -> google.protobuf.Timestamp
+	66, // 20: dirextalk.agent.v1.CloudSpotQualification.interruption_tested_at:type_name -> google.protobuf.Timestamp
+	0,  // 21: dirextalk.agent.v1.CloudQuoteCandidate.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	22, // 22: dirextalk.agent.v1.CloudQuoteCandidate.scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	26, // 23: dirextalk.agent.v1.CloudQuoteCandidate.quotas:type_name -> dirextalk.agent.v1.CloudQuotaEvidence
+	25, // 24: dirextalk.agent.v1.CloudQuoteCandidate.cost_items:type_name -> dirextalk.agent.v1.CloudCostItem
+	66, // 25: dirextalk.agent.v1.CloudQuote.quoted_at:type_name -> google.protobuf.Timestamp
+	66, // 26: dirextalk.agent.v1.CloudQuote.valid_until:type_name -> google.protobuf.Timestamp
+	27, // 27: dirextalk.agent.v1.CloudQuote.candidates:type_name -> dirextalk.agent.v1.CloudQuoteCandidate
+	23, // 28: dirextalk.agent.v1.CloudQuote.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	24, // 29: dirextalk.agent.v1.CloudQuote.spot_evidence:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	12, // 30: dirextalk.agent.v1.CloudPlan.recipe:type_name -> dirextalk.agent.v1.CloudRecipeBinding
+	0,  // 31: dirextalk.agent.v1.CloudPlan.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	66, // 32: dirextalk.agent.v1.CloudPlan.quote_valid_until:type_name -> google.protobuf.Timestamp
+	13, // 33: dirextalk.agent.v1.CloudPlan.resource:type_name -> dirextalk.agent.v1.CloudResourceScope
+	15, // 34: dirextalk.agent.v1.CloudPlan.network:type_name -> dirextalk.agent.v1.CloudNetworkScope
+	16, // 35: dirextalk.agent.v1.CloudPlan.secret_scope:type_name -> dirextalk.agent.v1.CloudSecretScope
+	17, // 36: dirextalk.agent.v1.CloudPlan.integration_scope:type_name -> dirextalk.agent.v1.CloudIntegrationScope
+	18, // 37: dirextalk.agent.v1.CloudPlan.retention:type_name -> dirextalk.agent.v1.CloudRetentionScope
+	5,  // 38: dirextalk.agent.v1.CloudPlan.status:type_name -> dirextalk.agent.v1.CloudPlanStatus
+	21, // 39: dirextalk.agent.v1.CloudPlan.service_operations:type_name -> dirextalk.agent.v1.CloudServiceOperationScope
+	66, // 40: dirextalk.agent.v1.DeviceApprovalSignature.expires_at:type_name -> google.protobuf.Timestamp
+	66, // 41: dirextalk.agent.v1.ApprovalChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	66, // 42: dirextalk.agent.v1.CloudConnection.created_at:type_name -> google.protobuf.Timestamp
+	66, // 43: dirextalk.agent.v1.CloudConnection.updated_at:type_name -> google.protobuf.Timestamp
+	33, // 44: dirextalk.agent.v1.GetCloudConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	33, // 45: dirextalk.agent.v1.ListCloudConnectionsResponse.connections:type_name -> dirextalk.agent.v1.CloudConnection
+	32, // 46: dirextalk.agent.v1.PreviewAwsIdentityResponse.identity:type_name -> dirextalk.agent.v1.AwsBootstrapIdentity
+	66, // 47: dirextalk.agent.v1.PreviewAwsIdentityResponse.observed_at:type_name -> google.protobuf.Timestamp
+	66, // 48: dirextalk.agent.v1.PreviewAwsIdentityResponse.expires_at:type_name -> google.protobuf.Timestamp
+	22, // 49: dirextalk.agent.v1.CreateCloudQuoteRequest.scopes:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	23, // 50: dirextalk.agent.v1.CreateCloudQuoteRequest.usage:type_name -> dirextalk.agent.v1.CloudUsageEstimate
+	24, // 51: dirextalk.agent.v1.CreateCloudQuoteRequest.spot_qualification:type_name -> dirextalk.agent.v1.CloudSpotQualification
+	28, // 52: dirextalk.agent.v1.CreateCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	28, // 53: dirextalk.agent.v1.GetCloudQuoteResponse.quote:type_name -> dirextalk.agent.v1.CloudQuote
+	0,  // 54: dirextalk.agent.v1.CreateCloudPlanRequest.candidate_profile:type_name -> dirextalk.agent.v1.CloudCandidateProfile
+	22, // 55: dirextalk.agent.v1.CreateCloudPlanRequest.current_scope:type_name -> dirextalk.agent.v1.CloudQuoteScope
+	29, // 56: dirextalk.agent.v1.CreateCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	29, // 57: dirextalk.agent.v1.GetCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	29, // 58: dirextalk.agent.v1.ListCloudPlansResponse.plans:type_name -> dirextalk.agent.v1.CloudPlan
+	31, // 59: dirextalk.agent.v1.CreateApprovalChallengeResponse.challenge:type_name -> dirextalk.agent.v1.ApprovalChallenge
+	30, // 60: dirextalk.agent.v1.ApproveCloudPlanRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	29, // 61: dirextalk.agent.v1.ApproveCloudPlanResponse.plan:type_name -> dirextalk.agent.v1.CloudPlan
+	30, // 62: dirextalk.agent.v1.EstablishAwsConnectionRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	33, // 63: dirextalk.agent.v1.EstablishAwsConnectionResponse.connection:type_name -> dirextalk.agent.v1.CloudConnection
+	10, // 64: dirextalk.agent.v1.AwsFoundationOperationScope.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	56, // 65: dirextalk.agent.v1.AwsFoundationOperationScope.release_environment:type_name -> dirextalk.agent.v1.AwsFoundationReleaseEnvironment
+	66, // 66: dirextalk.agent.v1.AwsFoundationOperationScope.identity_observed_at:type_name -> google.protobuf.Timestamp
+	66, // 67: dirextalk.agent.v1.AwsFoundationOperationScope.identity_expires_at:type_name -> google.protobuf.Timestamp
+	57, // 68: dirextalk.agent.v1.AwsFoundationOperationChallenge.scope:type_name -> dirextalk.agent.v1.AwsFoundationOperationScope
+	66, // 69: dirextalk.agent.v1.AwsFoundationOperationChallenge.expires_at:type_name -> google.protobuf.Timestamp
+	10, // 70: dirextalk.agent.v1.AwsFoundationOperation.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	11, // 71: dirextalk.agent.v1.AwsFoundationOperation.status:type_name -> dirextalk.agent.v1.AwsFoundationOperationStatus
+	66, // 72: dirextalk.agent.v1.AwsFoundationOperation.created_at:type_name -> google.protobuf.Timestamp
+	66, // 73: dirextalk.agent.v1.AwsFoundationOperation.updated_at:type_name -> google.protobuf.Timestamp
+	10, // 74: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeRequest.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	58, // 75: dirextalk.agent.v1.CreateAwsFoundationOperationChallengeResponse.challenge:type_name -> dirextalk.agent.v1.AwsFoundationOperationChallenge
+	30, // 76: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest.approval:type_name -> dirextalk.agent.v1.DeviceApprovalSignature
+	10, // 77: dirextalk.agent.v1.ApproveAwsFoundationOperationRequest.action:type_name -> dirextalk.agent.v1.AwsFoundationOperationAction
+	59, // 78: dirextalk.agent.v1.ApproveAwsFoundationOperationResponse.operation:type_name -> dirextalk.agent.v1.AwsFoundationOperation
+	59, // 79: dirextalk.agent.v1.GetAwsFoundationOperationResponse.operation:type_name -> dirextalk.agent.v1.AwsFoundationOperation
+	80, // [80:80] is the sub-list for method output_type
+	80, // [80:80] is the sub-list for method input_type
+	80, // [80:80] is the sub-list for extension type_name
+	80, // [80:80] is the sub-list for extension extendee
+	0,  // [0:80] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_cloud_proto_init() }
@@ -5648,7 +5747,7 @@ func file_dirextalk_agent_v1_cloud_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_dirextalk_agent_v1_cloud_proto_rawDesc), len(file_dirextalk_agent_v1_cloud_proto_rawDesc)),
-			NumEnums:      11,
+			NumEnums:      12,
 			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   0,

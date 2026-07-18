@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
@@ -44,6 +45,33 @@ type preparedRequestIdentityV1 struct {
 	ApprovedHTTPSCIDRs           []string `json:"approved_https_cidrs"`
 	ApprovedHTTPSPrefixListIDs   []string `json:"approved_https_prefix_list_ids"`
 	AllowTestHTTPSInternetEgress bool     `json:"allow_test_https_internet_egress"`
+}
+
+type preparedRequestIdentityV2 struct {
+	SchemaVersion              string `json:"schema_version"`
+	AccountID                  string `json:"account_id"`
+	Region                     string `json:"region"`
+	AgentInstanceID            string `json:"agent_instance_id"`
+	ReleaseManifestDigest      string `json:"release_manifest_digest"`
+	WorkerRootFSDigest         string `json:"worker_rootfs_digest"`
+	WorkerBinaryDigest         string `json:"worker_binary_digest"`
+	WorkerRootFSSize           int64  `json:"worker_rootfs_size"`
+	FoundationStackName        string `json:"foundation_stack_name"`
+	FoundationStackID          string `json:"foundation_stack_id"`
+	FoundationVPCID            string `json:"foundation_vpc_id"`
+	FoundationRouteTableID     string `json:"foundation_route_table_id"`
+	PrivateSubnetID            string `json:"private_subnet_id"`
+	ZeroIngressSecurityGroupID string `json:"zero_ingress_security_group_id"`
+	ArtifactBucket             string `json:"artifact_bucket"`
+	ArtifactKey                string `json:"artifact_key"`
+	ArtifactKMSKeyARN          string `json:"artifact_kms_key_arn"`
+	S3PrefixListID             string `json:"s3_prefix_list_id"`
+	BaseAMIID                  string `json:"base_ami_id"`
+	BaseAMIOwnerID             string `json:"base_ami_owner_id"`
+	BuilderInstanceType        string `json:"builder_instance_type"`
+	RootDeviceName             string `json:"root_device_name"`
+	TimeoutSeconds             int64  `json:"timeout_seconds"`
+	NetworkMode                string `json:"network_mode"`
 }
 
 func decodeStrictJSON(input []byte, output any) error {
@@ -168,13 +196,30 @@ func validLocalPath(path string) bool {
 	return filepath.Clean(path) == path
 }
 
-func parseBuildRequest(path string) (preparedBuild, error) {
+func parseBuildRequest(path string, allowLegacyV1 bool) (preparedBuild, error) {
 	input, err := readBoundedRegularFile(path, maxControlJSONBytes)
 	if err != nil {
 		return preparedBuild{}, errInvalidInput
 	}
 	requestContentDigest := sha256Bytes(input)
 	defer clear(input)
+	if err := rejectDuplicateJSONKeys(input); err != nil {
+		return preparedBuild{}, errInvalidInput
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(input, &envelope) != nil {
+		return preparedBuild{}, errInvalidInput
+	}
+	var schema string
+	if json.Unmarshal(envelope["schema_version"], &schema) != nil {
+		return preparedBuild{}, errInvalidInput
+	}
+	if schema == BuildRequestSchemaV2 {
+		return parseBuildRequestV2(input, requestContentDigest)
+	}
+	if schema != BuildRequestSchemaV1 || !allowLegacyV1 {
+		return preparedBuild{}, errInvalidInput
+	}
 	var requestFile BuildRequestFileV1
 	if err := decodeStrictJSON(input, &requestFile); err != nil || requestFile.SchemaVersion != BuildRequestSchemaV1 ||
 		!validLocalPath(requestFile.ReleaseManifestPath) || !validLocalPath(requestFile.RootFSArchivePath) ||
@@ -208,7 +253,7 @@ func parseBuildRequest(path string) (preparedBuild, error) {
 		BaseAMIID: requestFile.BaseAMIID, BaseAMIOwnerID: requestFile.BaseAMIOwnerID,
 		PrivateSubnetID: requestFile.PrivateSubnetID, ZeroIngressSGID: requestFile.ZeroIngressSecurityGroupID,
 		ArtifactBucket: requestFile.ArtifactBucket, ArtifactKey: requestFile.ArtifactKey, ArtifactKMSKeyARN: requestFile.ArtifactKMSKeyARN,
-		BuilderInstanceType: requestFile.BuilderInstanceType, RootDeviceName: requestFile.RootDeviceName, Timeout: requestFile.timeout(),
+		BuilderInstanceType: requestFile.BuilderInstanceType, RootDeviceName: requestFile.RootDeviceName, Timeout: requestFile.timeout(), NetworkMode: workerami.NetworkModeLegacyV1,
 	}
 	adapterConfig := awsadapter.Config{
 		Region: requestFile.Region, AccountID: requestFile.AccountID,
@@ -238,6 +283,68 @@ func parseBuildRequest(path string) (preparedBuild, error) {
 		WorkerBinaryDigest: rootFSManifest.BinaryDigest, WorkerRootFSSize: rootFSManifest.Size,
 	}
 	return preparedBuild{request: build, adapterConfig: adapterConfig, intent: intent}, nil
+}
+
+func parseBuildRequestV2(input []byte, requestContentDigest string) (preparedBuild, error) {
+	var requestFile BuildRequestFileV2
+	if err := decodeStrictJSON(input, &requestFile); err != nil || requestFile.SchemaVersion != BuildRequestSchemaV2 ||
+		!validLocalPath(requestFile.ReleaseManifestPath) || !validLocalPath(requestFile.RootFSArchivePath) || requestFile.TimeoutSeconds < 300 || requestFile.TimeoutSeconds > 7200 ||
+		requestFile.NetworkMode != workerami.NetworkModeS3GatewayV2 {
+		return preparedBuild{}, errInvalidInput
+	}
+	releaseInput, err := readBoundedRegularFile(requestFile.ReleaseManifestPath, releaseartifact.MaxJSONBytes)
+	if err != nil {
+		return preparedBuild{}, errInvalidInput
+	}
+	releaseManifest, err := releaseartifact.ParseJSON(releaseInput)
+	clear(releaseInput)
+	if err != nil || releaseManifest.Architecture != "amd64" {
+		return preparedBuild{}, errInvalidInput
+	}
+	releaseDigest, err := releaseManifest.Digest()
+	if err != nil || releaseDigest != requestFile.ReleaseManifestDigest {
+		return preparedBuild{}, errInvalidInput
+	}
+	rootFSManifest, err := inspectRootFSArchive(requestFile.RootFSArchivePath, releaseManifest)
+	if err != nil || rootFSManifest.RootFSDigest != requestFile.WorkerRootFSDigest || rootFSManifest.BinaryDigest != requestFile.WorkerBinaryDigest || rootFSManifest.Size != requestFile.WorkerRootFSSize {
+		return preparedBuild{}, errInvalidInput
+	}
+	build := buildRequestFromV2(requestFile, releaseManifest, rootFSManifest)
+	if _, err := workerami.BuildDigest(build); err != nil {
+		return preparedBuild{}, errInvalidInput
+	}
+	identity := preparedRequestIdentityV2{
+		SchemaVersion: requestFile.SchemaVersion, AccountID: requestFile.AccountID, Region: requestFile.Region, AgentInstanceID: requestFile.AgentInstanceID,
+		ReleaseManifestDigest: releaseDigest, WorkerRootFSDigest: rootFSManifest.RootFSDigest, WorkerBinaryDigest: rootFSManifest.BinaryDigest, WorkerRootFSSize: rootFSManifest.Size,
+		FoundationStackName: requestFile.FoundationStackName, FoundationStackID: requestFile.FoundationStackID, FoundationVPCID: requestFile.FoundationVPCID,
+		FoundationRouteTableID: requestFile.FoundationRouteTableID, PrivateSubnetID: requestFile.PrivateSubnetID,
+		ZeroIngressSecurityGroupID: requestFile.ZeroIngressSecurityGroupID, ArtifactBucket: requestFile.ArtifactBucket, ArtifactKey: requestFile.ArtifactKey,
+		ArtifactKMSKeyARN: requestFile.ArtifactKMSKeyARN, S3PrefixListID: requestFile.S3PrefixListID, BaseAMIID: requestFile.BaseAMIID,
+		BaseAMIOwnerID: requestFile.BaseAMIOwnerID, BuilderInstanceType: requestFile.BuilderInstanceType, RootDeviceName: requestFile.RootDeviceName,
+		TimeoutSeconds: requestFile.TimeoutSeconds, NetworkMode: requestFile.NetworkMode,
+	}
+	preparedDigest, err := canonical.Digest(identity)
+	if err != nil || !digestPattern.MatchString(preparedDigest) {
+		return preparedBuild{}, errInvalidInput
+	}
+	intent := BuildIntentV1{SchemaVersion: BuildIntentSchemaV2, RequestContentDigest: requestContentDigest, PreparedRequestDigest: preparedDigest,
+		AccountID: requestFile.AccountID, Region: requestFile.Region, AgentInstanceID: requestFile.AgentInstanceID, ReleaseManifestDigest: releaseDigest,
+		WorkerRootFSDigest: rootFSManifest.RootFSDigest, WorkerBinaryDigest: rootFSManifest.BinaryDigest, WorkerRootFSSize: rootFSManifest.Size}
+	return preparedBuild{request: build, adapterConfig: awsadapter.Config{Region: requestFile.Region, AccountID: requestFile.AccountID}, intent: intent}, nil
+}
+
+func buildRequestFromV2(request BuildRequestFileV2, release releaseartifact.ReleaseManifestV1, rootFS workerrootfs.ManifestV1) workerami.BuildRequestV1 {
+	return workerami.BuildRequestV1{
+		ReleaseManifest: release, ReleaseManifestDigest: request.ReleaseManifestDigest,
+		RootFS: workerami.RootFSArtifactV1{ArchivePath: request.RootFSArchivePath, Manifest: rootFS},
+		Region: request.Region, AccountID: request.AccountID, AgentInstanceID: request.AgentInstanceID,
+		BaseAMIID: request.BaseAMIID, BaseAMIOwnerID: request.BaseAMIOwnerID, PrivateSubnetID: request.PrivateSubnetID,
+		ZeroIngressSGID: request.ZeroIngressSecurityGroupID, ArtifactBucket: request.ArtifactBucket, ArtifactKey: request.ArtifactKey,
+		ArtifactKMSKeyARN: request.ArtifactKMSKeyARN, BuilderInstanceType: request.BuilderInstanceType, RootDeviceName: request.RootDeviceName,
+		Timeout: time.Duration(request.TimeoutSeconds) * time.Second, NetworkMode: request.NetworkMode,
+		FoundationStackName: request.FoundationStackName, FoundationStackID: request.FoundationStackID, FoundationVPCID: request.FoundationVPCID,
+		FoundationRouteTableID: request.FoundationRouteTableID, S3PrefixListID: request.S3PrefixListID,
+	}
 }
 
 func sha256Bytes(input []byte) string {
@@ -367,6 +474,10 @@ func builderCleanupEvidencePath(outputPath string) string {
 	return outputPath + ".builder-cleanup"
 }
 
+func builderReachabilityEvidencePath(outputPath string) string {
+	return outputPath + ".builder-reachability"
+}
+
 func canonicalBuilderCleanupEvidenceJSON(evidence workerami.BuilderCleanupEvidenceV1) ([]byte, error) {
 	if evidence.Validate() != nil {
 		return nil, errInvalidInput
@@ -429,8 +540,108 @@ func builderCleanupEvidenceMatchesPublication(evidence workerami.BuilderCleanupE
 		evidence.WorkerRootFSDigest == image.WorkerRootFSDigest && evidence.WorkerBinaryDigest == image.WorkerBinaryDigest
 }
 
+func canonicalBuilderReachabilityEvidenceJSON(evidence workerami.BuilderReachabilityEvidenceV2) ([]byte, error) {
+	if evidence.ValidatePartial() != nil {
+		return nil, errInvalidInput
+	}
+	encoded, err := json.Marshal(evidence)
+	if err != nil {
+		return nil, errOutput
+	}
+	return encoded, nil
+}
+
+func readBuilderReachabilityEvidence(path string) (workerami.BuilderReachabilityEvidenceV2, error) {
+	input, err := readBoundedRegularFile(path, maxControlJSONBytes)
+	if err != nil {
+		return workerami.BuilderReachabilityEvidenceV2{}, errInvalidInput
+	}
+	defer clear(input)
+	var evidence workerami.BuilderReachabilityEvidenceV2
+	if decodeStrictJSON(input, &evidence) != nil || evidence.ValidatePartial() != nil {
+		return workerami.BuilderReachabilityEvidenceV2{}, errInvalidInput
+	}
+	return evidence, nil
+}
+
+func persistBuilderReachabilityEvidence(path string, expected workerami.BuilderReachabilityEvidenceV2) error {
+	encoded, err := canonicalBuilderReachabilityEvidenceJSON(expected)
+	if err != nil {
+		return err
+	}
+	exists, err := regularFileExists(path)
+	if err != nil {
+		return errInvalidInput
+	}
+	if !exists {
+		if writeErr := writeExclusiveFile(path, encoded); writeErr == nil {
+			return nil
+		}
+	}
+	actual, readErr := readBuilderReachabilityEvidence(path)
+	if readErr != nil || !sameBuilderReachabilityScope(actual, expected) || actual.VPCEndpointID != expected.VPCEndpointID {
+		return errInvalidInput
+	}
+	if actual.SecurityGroupRuleID == expected.SecurityGroupRuleID || (actual.SecurityGroupRuleID != "" && expected.SecurityGroupRuleID == "") {
+		return nil
+	}
+	if actual.SecurityGroupRuleID != "" || expected.SecurityGroupRuleID == "" {
+		return errInvalidInput
+	}
+	temporaryFile, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".new-*")
+	if err != nil {
+		return errOutput
+	}
+	temporary := temporaryFile.Name()
+	keepTemporary := false
+	defer func() {
+		_ = temporaryFile.Close()
+		if !keepTemporary {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if temporaryFile.Chmod(0o600) != nil {
+		return errOutput
+	}
+	if _, err := temporaryFile.Write(append(encoded, '\n')); err != nil || temporaryFile.Sync() != nil || temporaryFile.Close() != nil {
+		return errOutput
+	}
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Mode()&os.ModeSymlink != 0 {
+		return errInvalidInput
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return errOutput
+	}
+	keepTemporary = true
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return errOutput
+	}
+	err = directory.Sync()
+	_ = directory.Close()
+	if err != nil {
+		return errOutput
+	}
+	return nil
+}
+
+func sameBuilderReachabilityScope(left, right workerami.BuilderReachabilityEvidenceV2) bool {
+	return left.SchemaVersion == right.SchemaVersion && left.AgentInstanceID == right.AgentInstanceID && left.AccountID == right.AccountID &&
+		left.Region == right.Region && left.BuildDigest == right.BuildDigest && left.VPCID == right.VPCID && left.RouteTableID == right.RouteTableID &&
+		left.SecurityGroupID == right.SecurityGroupID && left.S3PrefixListID == right.S3PrefixListID && left.ArtifactBucket == right.ArtifactBucket && left.ArtifactKey == right.ArtifactKey
+}
+
+func builderReachabilityEvidenceMatchesPrepared(evidence workerami.BuilderReachabilityEvidenceV2, prepared preparedBuild) bool {
+	buildDigest, err := workerami.BuildDigest(prepared.request)
+	return err == nil && evidence.ValidatePartial() == nil && evidence.AgentInstanceID == prepared.request.AgentInstanceID && evidence.AccountID == prepared.request.AccountID &&
+		evidence.Region == prepared.request.Region && evidence.BuildDigest == buildDigest && evidence.VPCID == prepared.request.FoundationVPCID &&
+		evidence.RouteTableID == prepared.request.FoundationRouteTableID && evidence.SecurityGroupID == prepared.request.ZeroIngressSGID &&
+		evidence.S3PrefixListID == prepared.request.S3PrefixListID && evidence.ArtifactBucket == prepared.request.ArtifactBucket && evidence.ArtifactKey == prepared.request.ArtifactKey
+}
+
 func canonicalBuildIntentJSON(intent BuildIntentV1) ([]byte, error) {
-	if intent.SchemaVersion != BuildIntentSchemaV1 || !digestPattern.MatchString(intent.RequestContentDigest) ||
+	if (intent.SchemaVersion != BuildIntentSchemaV1 && intent.SchemaVersion != BuildIntentSchemaV2) || !digestPattern.MatchString(intent.RequestContentDigest) ||
 		!digestPattern.MatchString(intent.PreparedRequestDigest) || !digestPattern.MatchString(intent.ReleaseManifestDigest) ||
 		!digestPattern.MatchString(intent.WorkerRootFSDigest) || !digestPattern.MatchString(intent.WorkerBinaryDigest) ||
 		!accountPattern.MatchString(intent.AccountID) || !regionPattern.MatchString(intent.Region) ||
