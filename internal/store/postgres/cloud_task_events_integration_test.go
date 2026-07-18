@@ -161,6 +161,10 @@ func createReadyCloudTaskPlan(t *testing.T, ctx context.Context, store *postgres
 		t.Fatal(err)
 	}
 	plan.Quote.QuoteID, plan.Quote.Digest, plan.Quote.ValidUntil = quoted.QuoteID, digest, quoted.ValidUntil
+	plan.Quote.ScopeDigest, err = plan.PricingScopeDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	scope := task.MutationScope{ClientID: "cloud-task-event-plan", CredentialID: uuid.NewString()}
 	if _, err := store.CreateQuote(ctx, scope, postgres.CreateQuoteCommand{IdempotencyKey: uuid.NewString(), Quote: quoted}); err != nil {
 		t.Fatal(err)

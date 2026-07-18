@@ -265,13 +265,13 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 	fixture.snapshotID, fixture.replacementID, _ = serviceoperation.DeriveVolumeResourceIDs(fixture.operationID, fixture.sourceID, "data")
 	if _, err := pool.Exec(ctx, `INSERT INTO worker_deployments
 		(deployment_id,agent_instance_id,owner_id,task_id,step_id,control_plane_endpoint,recipe_bundle_ref,recipe_bundle_sha256,
-		 execution_bundle_ref,execution_bundle_sha256,execution_timeout_seconds,state,outcome,artifact_prefix,checkpoint_prefix,
-		 evidence_prefix,log_prefix,enrollment_digest,enrollment_expires_at,revision,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,'grpcs://agent.example:8443','s3://bucket/recipe',$6,'s3://bucket/execution',$7,300,
+		 execution_bundle_ref,execution_bundle_sha256,execution_timeout_seconds,worker_id,state,outcome,artifact_prefix,checkpoint_prefix,
+		 evidence_prefix,log_prefix,enrollment_digest,enrollment_expires_at,session_digest,enrollment_consumed_at,revision,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'grpcs://agent.example:8443','s3://bucket/recipe',$6,'s3://bucket/execution',$7,300,$8,
 		 'finished','succeeded','s3://bucket/artifacts/','s3://bucket/checkpoints/','s3://bucket/evidence/',
-		 'cloudwatch://managed-preparation/logs',$8,$9,1,$10,$10)`,
+		 'cloudwatch://managed-preparation/logs',$9,$10,$11,$12,1,$13,$13)`,
 		fixture.deploymentID, instanceID, fixture.ownerID, taskID, stepID, bytes.Repeat([]byte{1}, 32),
-		bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 32), now.Add(time.Hour), now); err != nil {
+		bytes.Repeat([]byte{2}, 32), uuid.NewString(), bytes.Repeat([]byte{3}, 32), now.Add(time.Hour), bytes.Repeat([]byte{4}, 32), now, now); err != nil {
 		t.Fatal(err)
 	}
 	ec2TagDigest, sourceTagDigest := managedPreparationDigest("1"), managedPreparationDigest("2")
@@ -310,7 +310,7 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 		},
 		SourceVolumes: []serviceoperation.ResourceFactV1{{
 			ResourceID: fixture.sourceID, ProviderID: fixture.sourceProviderID, Revision: 1,
-			SpecDigest: managedPreparationDigest("3"), TagDigest: sourceTagDigest,
+			SpecDigest: sourceSpecDigest, TagDigest: sourceTagDigest,
 		}},
 		Restart: serviceoperation.RestartReferenceV1{
 			OperationID:             uuid.NewSHA1(uuid.MustParse(fixture.operationID), []byte("restart")).String(),
@@ -339,7 +339,10 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 		OperationID: fixture.operationID, SignerKeyID: "worker-identity-device-123456789012",
 		Scope: scope, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(4 * time.Minute),
 	}
-	challenge.ScopeDigest, _ = serviceoperation.SigningPayloadDigest(challenge)
+	challenge.ScopeDigest, err = serviceoperation.SigningPayloadDigest(challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fixture.scopeDigest = challenge.ScopeDigest
 	challengeJSON, _ := json.Marshal(challenge)
 	if _, err := pool.Exec(ctx, `
@@ -391,7 +394,7 @@ func seedManagedPreparationV2ResourceLedger(t *testing.T) managedPreparationReso
 	challenge.SchemaVersion = serviceoperation.ChallengeSchemaV2
 	challenge.Scope.SchemaVersion = serviceoperation.ScopeSchemaV2
 	challenge.Scope.Volumes[0].SnapshotOperationKey = "managed-snapshot-data"
-	challenge.Scope.Volumes[0].SnapshotSourceVolumeScopeDigest = managedPreparationDigest("v")
+	challenge.Scope.Volumes[0].SnapshotSourceVolumeScopeDigest = managedPreparationDigest("f")
 	challenge.Scope.Volumes[0].SnapshotMaxRetentionSeconds = 3_600
 	challenge.IssuedAt = fixture.now.Add(-time.Minute).UTC().Truncate(time.Microsecond)
 	challenge.ExpiresAt = challenge.IssuedAt.Add(4 * time.Minute)
@@ -436,8 +439,8 @@ func seedManagedPreparationV2ResourceLedger(t *testing.T) managedPreparationReso
 		t.Fatal(err)
 	}
 	if _, err := fixture.pool.Exec(ctx, `
-		UPDATE cloud_resources SET retention='managed',destroy_deadline=NULL,auto_destroy_approved=false,tags=$2,updated_at=$3
-		WHERE resource_id=$1`, fixture.sourceID, sourceTagsJSON, fixture.now); err != nil {
+		UPDATE cloud_resources SET retention=$2,destroy_deadline=NULL,auto_destroy_approved=false,tags=$3,updated_at=$4
+		WHERE resource_id=$1`, fixture.sourceID, string(task.RetentionManaged), sourceTagsJSON, fixture.now); err != nil {
 		t.Fatal(err)
 	}
 	return fixture

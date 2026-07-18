@@ -125,8 +125,8 @@ func seedManagedServiceReadFact(
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO cloud_quotes
 		(quote_id,agent_instance_id,owner_id,connection_id,quote_digest,quote_json,quote_cbor,revision,quoted_at,valid_until)
-		VALUES($1,$2,$3,$4,$5,'{}',$6,1,$7,$7+interval '15 minutes')`,
-		quoteID, instanceID, ownerID, connectionID, digest, []byte{1}, createdAt); err != nil {
+		VALUES($1,$2,$3,$4,$5,'{}',$6,1,$7,$8)`,
+		quoteID, instanceID, ownerID, connectionID, digest, []byte{1}, createdAt, createdAt.Add(15*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	planJSON, err := json.Marshal(map[string]any{"plan_id": planID})

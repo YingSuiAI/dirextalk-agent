@@ -348,6 +348,8 @@ func insertDeploymentDestroyOperation(t *testing.T, ctx context.Context, pool *p
 	var signature []byte
 	var approveClient, approveCredential, approveIdempotency, approveRequestHash, approvedAt any
 	var errorCode, blockedReason any
+	automaticAttempts := 0
+	requiresNewApproval := false
 	if status != "awaiting_approval" {
 		signature = make([]byte, 64)
 		approveClient = "resource-store-destroy-approve"
@@ -356,8 +358,12 @@ func insertDeploymentDestroyOperation(t *testing.T, ctx context.Context, pool *p
 		approveRequestHash = make([]byte, 32)
 		approvedAt = now
 	}
+	if status == "destroying" || status == "destroy_blocked" {
+		automaticAttempts = 1
+	}
 	if status == "destroy_blocked" {
 		errorCode, blockedReason = "AWS_READ_BACK_PENDING", "provider absence is not yet verified"
+		requiresNewApproval = true
 	}
 	_, err := pool.Exec(ctx, `
 		INSERT INTO cloud_destroy_operations (
@@ -366,15 +372,15 @@ func insertDeploymentDestroyOperation(t *testing.T, ctx context.Context, pool *p
 			signing_payload, challenge_expires_at, signature, status, error_code, blocked_reason, revision,
 			prepare_client_id, prepare_credential_id, prepare_idempotency_key, prepare_request_hash,
 			approve_client_id, approve_credential_id, approve_idempotency_key, approve_request_hash,
-			created_at, updated_at, approved_at
+			created_at, updated_at, approved_at, automatic_attempts, requires_new_approval
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,'{}'::jsonb,$11,$12,$13,$14,$15,$16,2,
-			'resource-store-destroy-prepare',$17,$18,$19,$20,$21,$22,$23,$24,$24,$25
+			'resource-store-destroy-prepare',$17,$18,$19,$20,$21,$22,$23,$24,$24,$25,$26,$27
 		)`,
 		uuid.New(), instanceID, ownerID, deploymentID, planID, connectionID, uuid.New(), uuid.New(), signerKeyID,
 		"sha256:"+strings.Repeat("d", 64), []byte{1}, now.Add(time.Minute), signature, status, errorCode, blockedReason,
 		uuid.New(), uuid.New(), make([]byte, 32),
-		approveClient, approveCredential, approveIdempotency, approveRequestHash, now, approvedAt,
+		approveClient, approveCredential, approveIdempotency, approveRequestHash, now, approvedAt, automaticAttempts, requiresNewApproval,
 	)
 	if err != nil {
 		t.Fatalf("insert %s destroy operation: %v", status, err)

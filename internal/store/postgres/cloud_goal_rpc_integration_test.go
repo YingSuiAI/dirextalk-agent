@@ -92,7 +92,7 @@ func TestCloudGoalRPCPersistsOnePlanningTaskAndOutboxSequence(t *testing.T) {
 		)`, created.GetTask().GetTaskId(), ownerID).Scan(&outboxRows); err != nil {
 		t.Fatal(err)
 	}
-	if taskRows != 1 || sessionRows != 1 || persistedConnection != connectionID || persistedTask != created.GetTask().GetTaskId() || eventRows != 3 || outboxRows != 3 {
+	if taskRows != 1 || sessionRows != 1 || persistedConnection != connectionID || persistedTask != created.GetTask().GetTaskId() || eventRows != 4 || outboxRows != 4 {
 		t.Fatalf("durable Goal facts task=%d session=%d connection=%q task_id=%q events=%d outbox=%d", taskRows, sessionRows, persistedConnection, persistedTask, eventRows, outboxRows)
 	}
 	dispatchable, err := store.ListDispatchableCloudGoals(ctx, 10)

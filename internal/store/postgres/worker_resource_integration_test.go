@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -499,15 +500,44 @@ func TestApprovePlanAcceptsChallengeIssuedWithinAllowedClockSkew(t *testing.T) {
 
 type recordingManifestMirror struct {
 	revisions []int64
+	manifests map[string]resource.Manifest
 }
 
 func (mirror *recordingManifestMirror) Put(_ context.Context, manifest resource.Manifest) error {
+	stored, err := cloneRecordingManifest(manifest)
+	if err != nil {
+		return err
+	}
 	mirror.revisions = append(mirror.revisions, manifest.Revision)
+	if mirror.manifests == nil {
+		mirror.manifests = make(map[string]resource.Manifest)
+	}
+	mirror.manifests[manifest.DeploymentID] = stored
 	return nil
+}
+
+func (mirror *recordingManifestMirror) Get(_ context.Context, deploymentID string) (resource.Manifest, error) {
+	stored, ok := mirror.manifests[deploymentID]
+	if !ok {
+		return resource.Manifest{}, resource.ErrNotFound
+	}
+	return cloneRecordingManifest(stored)
 }
 
 func (*recordingManifestMirror) ListExpired(context.Context, time.Time) ([]resource.Manifest, error) {
 	return nil, nil
+}
+
+func cloneRecordingManifest(manifest resource.Manifest) (resource.Manifest, error) {
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		return resource.Manifest{}, err
+	}
+	var cloned resource.Manifest
+	if err := json.Unmarshal(encoded, &cloned); err != nil {
+		return resource.Manifest{}, err
+	}
+	return cloned, nil
 }
 
 func createApprovedResourcePlan(

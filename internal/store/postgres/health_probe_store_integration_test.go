@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -273,13 +274,14 @@ func postgresHealthSuite(t *testing.T, deploymentID, planHash, recipeDigest stri
 func postgresPublicEntryHealthSuite(t *testing.T, deploymentID, planHash, recipeDigest string) healthprobe.SuiteV1 {
 	t.Helper()
 	spec, err := healthprobe.Bind(healthprobe.SpecV1{
-		SchemaVersion: healthprobe.SchemaV1,
-		Binding:       healthprobe.BindingV1{DeploymentID: deploymentID, PlanHash: planHash, RecipeDigest: recipeDigest},
-		Purpose:       healthprobe.PurposeReadiness,
-		Protocol:      healthprobe.ProtocolHTTPS,
-		Target:        "https://public-entry.example.com/health/entry",
-		TimeoutMillis: 500,
-		MaxAttempts:   1,
+		SchemaVersion:      healthprobe.SchemaV1,
+		Binding:            healthprobe.BindingV1{DeploymentID: deploymentID, PlanHash: planHash, RecipeDigest: recipeDigest},
+		Purpose:            healthprobe.PurposeReadiness,
+		Protocol:           healthprobe.ProtocolHTTPS,
+		Target:             "https://public-entry.example.com/health/entry",
+		TimeoutMillis:      500,
+		MaxAttempts:        1,
+		ExpectedStatusCode: http.StatusOK,
 	})
 	if err != nil {
 		t.Fatal(err)

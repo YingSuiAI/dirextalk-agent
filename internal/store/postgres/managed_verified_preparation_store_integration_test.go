@@ -21,14 +21,14 @@ func TestVerifiedPreparationPostgresExactReplayRevisionGuardAndOwnerScope(t *tes
 	value := postgresVerifiedPreparationFixture(t, instanceID, now)
 	if _, err := pool.Exec(ctx, `INSERT INTO worker_deployments
 		(deployment_id,agent_instance_id,owner_id,task_id,step_id,control_plane_endpoint,recipe_bundle_ref,recipe_bundle_sha256,
-		 execution_bundle_ref,execution_bundle_sha256,execution_timeout_seconds,state,outcome,artifact_prefix,checkpoint_prefix,
-		 evidence_prefix,log_prefix,enrollment_digest,enrollment_expires_at,revision,created_at,updated_at)
-		VALUES($1,$2,$3,$4,$5,'grpcs://agent.example:8443','s3://bucket/recipe',$6,'s3://bucket/execution',$7,300,
+		 execution_bundle_ref,execution_bundle_sha256,execution_timeout_seconds,worker_id,state,outcome,artifact_prefix,checkpoint_prefix,
+		 evidence_prefix,log_prefix,enrollment_digest,enrollment_expires_at,session_digest,enrollment_consumed_at,revision,created_at,updated_at)
+		VALUES($1,$2,$3,$4,$5,'grpcs://agent.example:8443','s3://bucket/recipe',$6,'s3://bucket/execution',$7,300,$8,
 		 'finished','succeeded','s3://bucket/artifacts/','s3://bucket/checkpoints/','s3://bucket/evidence/',
-		 'cloudwatch://managed/logs',$8,$9,$10,$11,$11)`,
+		 'cloudwatch://managed/logs',$9,$10,$11,$12,$13,$14,$14)`,
 		value.DeploymentID, instanceID, value.OwnerID, taskID, stepID, bytes.Repeat([]byte{1}, 32),
-		bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{3}, 32), now.Add(time.Hour),
-		value.ExpectedDeploymentRevision, now); err != nil {
+		bytes.Repeat([]byte{2}, 32), uuid.NewString(), bytes.Repeat([]byte{3}, 32), now.Add(time.Hour),
+		bytes.Repeat([]byte{4}, 32), now, value.ExpectedDeploymentRevision, now); err != nil {
 		t.Fatal(err)
 	}
 	mutation := managed.Mutation{

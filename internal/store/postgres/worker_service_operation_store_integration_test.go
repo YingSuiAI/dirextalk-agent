@@ -20,13 +20,13 @@ func TestWorkerServiceOperationPostgresPersistsLeaseAndExactReplay(t *testing.T)
 	deploymentID := uuid.NewString()
 	if _, err := pool.Exec(ctx, `INSERT INTO worker_deployments
 		(deployment_id,agent_instance_id,owner_id,task_id,step_id,control_plane_endpoint,recipe_bundle_ref,recipe_bundle_sha256,
-		 execution_bundle_ref,execution_bundle_sha256,execution_timeout_seconds,state,outcome,artifact_prefix,checkpoint_prefix,
-		 evidence_prefix,log_prefix,enrollment_digest,enrollment_expires_at,revision,created_at,updated_at)
+		 execution_bundle_ref,execution_bundle_sha256,execution_timeout_seconds,worker_id,state,outcome,artifact_prefix,checkpoint_prefix,
+		 evidence_prefix,log_prefix,enrollment_digest,enrollment_expires_at,session_digest,enrollment_consumed_at,revision,created_at,updated_at)
 		VALUES($1,$2,'owner-worker-operation',$3,$4,'grpcs://agent.example:8443','s3://bucket/recipe',$5,
-		 's3://bucket/execution',$6,300,'finished','succeeded','s3://bucket/artifacts/','s3://bucket/checkpoints/',
-		 's3://bucket/evidence/','cloudwatch://worker-operation/logs',$7,$8,1,$9,$9)`,
+		 's3://bucket/execution',$6,300,$7,'finished','succeeded','s3://bucket/artifacts/','s3://bucket/checkpoints/',
+		 's3://bucket/evidence/','cloudwatch://worker-operation/logs',$8,$9,$10,$11,1,$12,$12)`,
 		deploymentID, instanceID, taskID, stepID, bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32),
-		bytes.Repeat([]byte{3}, 32), now.Add(time.Hour), now); err != nil {
+		uuid.NewString(), bytes.Repeat([]byte{3}, 32), now.Add(time.Hour), bytes.Repeat([]byte{4}, 32), now, now); err != nil {
 		t.Fatal(err)
 	}
 	repository, err := postgres.NewWorkerServiceOperationStore(store)
@@ -66,7 +66,8 @@ func TestWorkerServiceOperationPostgresPersistsLeaseAndExactReplay(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.Revision != claimed.Revision || recovered.LeaseEpoch != claimed.LeaseEpoch {
+	if recovered.OperationID != claimed.OperationID || recovered.DeploymentID != deploymentID ||
+		recovered.Revision != claimed.Revision || recovered.LeaseEpoch != claimed.LeaseEpoch {
 		t.Fatalf("active recovery=%#v claimed=%#v", recovered, claimed)
 	}
 
@@ -89,7 +90,8 @@ func TestWorkerServiceOperationPostgresPersistsLeaseAndExactReplay(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acquireReplay.Revision != recovered.Revision || acquireReplay.LeaseEpoch != recovered.LeaseEpoch ||
+	if acquireReplay.OperationID != recovered.OperationID || acquireReplay.DeploymentID != deploymentID ||
+		acquireReplay.Revision != recovered.Revision || acquireReplay.LeaseEpoch != recovered.LeaseEpoch ||
 		!acquireReplay.LeaseExpiresAt.Equal(recovered.LeaseExpiresAt) {
 		t.Fatalf("acquire replay=%#v recovered=%#v", acquireReplay, recovered)
 	}

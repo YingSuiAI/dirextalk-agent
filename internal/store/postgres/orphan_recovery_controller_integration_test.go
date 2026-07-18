@@ -21,17 +21,17 @@ func TestOrphanRecoveryControllerPersistsRetryAndDeduplicatesSafeAlerts(t *testi
 	unsafeRole := "arn:aws:iam::123456789012:role/unsafe-role-canary"
 	unsafeStack := "unsafe-foundation-stack-canary"
 	for _, connection := range []struct {
-		id, status string
+		id, status, region string
 	}{
-		{id: activeID, status: "active"},
-		{id: inactiveID, status: "degraded"},
+		{id: activeID, status: "active", region: "us-west-2"},
+		{id: inactiveID, status: "degraded", region: "us-east-1"},
 	} {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO cloud_connections
 				(connection_id, agent_instance_id, owner_id, account_id, region, control_role_arn,
 				 foundation_stack_id, credential_generation, status, revision, created_at, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8,1,$9,$9)`,
-			connection.id, instanceID, "owner-orphan-recovery", "123456789012", "us-west-2", unsafeRole, unsafeStack, connection.status, now); err != nil {
+			connection.id, instanceID, "owner-orphan-recovery", "123456789012", connection.region, unsafeRole, unsafeStack, connection.status, now); err != nil {
 			t.Fatalf("insert %s connection: %v", connection.status, err)
 		}
 	}

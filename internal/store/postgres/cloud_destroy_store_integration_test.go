@@ -264,6 +264,7 @@ func exerciseConcurrentDestroyReplay(
 
 	destroying := operations[0]
 	destroying.Status = clouddestroy.StatusDestroying
+	destroying.AutomaticAttempts = 1
 	destroying.UpdatedAt = destroying.UpdatedAt.Add(time.Second)
 	destroying, err := store.SaveDestroyOperation(ctx, destroying, operations[0].Revision)
 	if err != nil {

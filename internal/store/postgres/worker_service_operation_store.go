@@ -153,9 +153,11 @@ func (store *WorkerServiceOperationStore) AcquireNext(ctx context.Context, selec
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// Serialize discovery per deployment so two polling Workers cannot both
-	// observe the same oldest pending/expired assignment.
+	// observe the same oldest pending/expired assignment. PostgreSQL text values
+	// cannot contain NUL, and the fixed-width UUID prefix makes ':' an unambiguous
+	// separator for the deployment UUID.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		store.instanceID.String()+"\x00"+selection.DeploymentID); err != nil {
+		store.instanceID.String()+":"+selection.DeploymentID); err != nil {
 		return workeroperation.Operation{}, fmt.Errorf("lock worker service operation deployment: %w", err)
 	}
 	if replayed, found, err := readWorkerAcquireReplay(ctx, tx, store.instanceID, selection); err != nil {
