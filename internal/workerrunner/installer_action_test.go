@@ -180,6 +180,70 @@ func TestRunnerReadsRenewedInstallerGrantBeforeEveryLongMultiStepAction(t *testi
 	}
 }
 
+func TestLeaseStateSnapshotsGrantValidationTimeAfterLock(t *testing.T) {
+	_, config, control, _ := runnerFixture(t, validNoopBundle(t, 0))
+	renewedAt := time.Now().UTC().Truncate(time.Millisecond)
+	assignment := proto.Clone(control.assignment).(*agentv1.WorkerAssignment)
+	assignment.Revision, assignment.LeaseEpoch = 3, 9
+	assignment.LeaseExpiresAt = timestamppb.New(renewedAt.Add(config.LeaseDuration))
+	delivery, grant := workerInstallerDelivery(t, assignment, renewedAt)
+	assignment.InstallerLeaseGrants = []*agentv1.WorkerInstallerLeaseGrant{installerGrantProto(t, grant)}
+	action := ActionV1{
+		ID: "install", Kind: installer.ActionExecute, TimeoutSeconds: 2,
+		Installer: &InstallerExecuteInputV1{CommandID: grant.Grant.CommandID, Delivery: delivery},
+	}
+	for _, test := range []struct {
+		name          string
+		currentAction bool
+	}{
+		{name: "initial bundle"},
+		{name: "current action", currentAction: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := &leaseState{epoch: assignment.GetLeaseEpoch()}
+			if err := state.initializeInstallerGrants(assignment); err != nil {
+				t.Fatal(err)
+			}
+			clockObservedLock := false
+			validationClock := func() time.Time {
+				if state.mu.TryLock() {
+					state.mu.Unlock()
+					return renewedAt.Add(-time.Second)
+				}
+				clockObservedLock = true
+				return renewedAt
+			}
+			var (
+				boundGrant *installer.SignedLeaseGrantV1
+				err        error
+			)
+			if test.currentAction {
+				current := action
+				input := *current.Installer
+				input.LeaseGrant = &grant
+				current.Installer = &input
+				var bound ActionV1
+				bound, err = state.bindCurrentInstallerAction(current, validationClock)
+				if bound.Installer != nil {
+					boundGrant = bound.Installer.LeaseGrant
+				}
+			} else {
+				var bound ExecutionBundleV1
+				bound, err = state.bindInstallerBundle(ExecutionBundleV1{Actions: []ActionV1{action}}, assignment, validationClock)
+				if len(bound.Actions) == 1 && bound.Actions[0].Installer != nil {
+					boundGrant = bound.Actions[0].Installer.LeaseGrant
+				}
+			}
+			if err != nil {
+				t.Fatalf("bind renewed grant after lock: %v", err)
+			}
+			if !clockObservedLock || boundGrant == nil || !bytes.Equal(boundGrant.Signature, grant.Signature) {
+				t.Fatalf("renewed grant was not validated from one locked snapshot: %#v", boundGrant)
+			}
+		})
+	}
+}
+
 func TestExecutionBundleRejectsEmbeddedLeaseGrant(t *testing.T) {
 	recipeDigest := sha256.Sum256([]byte("recipe"))
 	raw := []byte(`{"schema_version":1,"recipe_sha256":"` + hex.EncodeToString(recipeDigest[:]) + `","actions":[{"id":"install","kind":"installer.execute","timeout_seconds":1,"installer":{"command_id":"install-service","delivery":{},"lease_grant":{}}}]}`)

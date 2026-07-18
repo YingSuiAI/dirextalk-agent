@@ -260,7 +260,7 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 	if err != nil {
 		return nil, nil, err
 	}
-	bundle, err = lease.bindInstallerBundle(bundle, assignment, time.Now().UTC())
+	bundle, err = lease.bindInstallerBundle(bundle, assignment, time.Now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -272,7 +272,7 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		return nil, nil, err
 	}
 	for actionIndex := startIndex; actionIndex < len(bundle.Actions); actionIndex++ {
-		action, err := lease.bindCurrentInstallerAction(bundle.Actions[actionIndex], time.Now().UTC())
+		action, err := lease.bindCurrentInstallerAction(bundle.Actions[actionIndex], time.Now)
 		if err != nil {
 			return completed, nil, err
 		}

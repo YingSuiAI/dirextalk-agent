@@ -195,37 +195,38 @@ func (state *leaseState) replaceInstallerGrantsLocked(
 	return nil
 }
 
-func (state *leaseState) bindInstallerBundle(bundle ExecutionBundleV1, assignment *agentv1.WorkerAssignment, now time.Time) (ExecutionBundleV1, error) {
-	if state == nil || assignment == nil {
+func (state *leaseState) bindInstallerBundle(bundle ExecutionBundleV1, assignment *agentv1.WorkerAssignment, now func() time.Time) (ExecutionBundleV1, error) {
+	if state == nil || assignment == nil || now == nil {
 		return ExecutionBundleV1{}, ErrInvalidBundle
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	return bindInstallerGrantSet(
 		bundle, assignment.GetDeploymentId(), assignment.GetTaskId(), assignment.GetRecipeBundle().GetSha256(),
-		state.epoch, state.leaseExpiresAt, state.installerGrants, now,
+		state.epoch, state.leaseExpiresAt, state.installerGrants, now().UTC(),
 	)
 }
 
 // bindCurrentInstallerAction reads and validates the current grant while the
 // heartbeat state is locked. The returned action owns a copy, so a concurrent
 // heartbeat can rotate the durable lease without mutating an in-flight request.
-func (state *leaseState) bindCurrentInstallerAction(action ActionV1, now time.Time) (ActionV1, error) {
+func (state *leaseState) bindCurrentInstallerAction(action ActionV1, now func() time.Time) (ActionV1, error) {
 	if action.Kind != installer.ActionExecute {
 		return action, nil
 	}
-	if state == nil || action.Installer == nil || action.Installer.LeaseGrant == nil {
+	if state == nil || action.Installer == nil || action.Installer.LeaseGrant == nil || now == nil {
 		return ActionV1{}, ErrInvalidBundle
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if !now.UTC().Before(state.leaseExpiresAt) {
+	validationTime := now().UTC()
+	if !validationTime.Before(state.leaseExpiresAt) {
 		return ActionV1{}, ErrInvalidBundle
 	}
 	grant, found := state.installerGrants[action.Installer.CommandID]
 	if !found || grant.Grant.LeaseEpoch != state.epoch ||
 		grant.Grant.ExpiresAt != state.leaseExpiresAt.UTC().Format(time.RFC3339Nano) ||
-		installer.ValidateLeaseGrantAt(action.Installer.Delivery, grant, action.Installer.CommandID, now.UTC()) != nil {
+		installer.ValidateLeaseGrantAt(action.Installer.Delivery, grant, action.Installer.CommandID, validationTime) != nil {
 		return ActionV1{}, ErrInvalidBundle
 	}
 	grant = cloneInstallerLeaseGrant(grant)
