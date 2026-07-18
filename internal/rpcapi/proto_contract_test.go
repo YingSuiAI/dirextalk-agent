@@ -330,6 +330,63 @@ func TestCloudStatusContractSeparatesAxesAndRequiresOwnerFilters(t *testing.T) {
 	}
 }
 
+func TestCloudManagedServiceReadContractIsOwnerScopedAndClosed(t *testing.T) {
+	get := (&agentv1.GetCloudManagedServiceRequest{}).ProtoReflect().Descriptor()
+	if get.Fields().Len() != 2 {
+		t.Fatalf("GetCloudManagedServiceRequest accepts %d fields, want only owner and service IDs", get.Fields().Len())
+	}
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"owner_id":   1,
+		"service_id": 2,
+	} {
+		field := get.Fields().ByName(name)
+		if field == nil || field.Number() != number || field.Kind() != protoreflect.StringKind {
+			t.Fatalf("GetCloudManagedServiceRequest.%s=%v, want string field %d", name, field, number)
+		}
+	}
+	for _, forbidden := range []protoreflect.Name{"deployment_id", "operation_id", "approval_id", "contract", "provider_id", "secret_ref"} {
+		if get.Fields().ByName(forbidden) != nil {
+			t.Fatalf("GetCloudManagedServiceRequest must not accept %s", forbidden)
+		}
+	}
+	list := (&agentv1.ListCloudManagedServicesRequest{}).ProtoReflect().Descriptor()
+	if list.Fields().Len() != 3 {
+		t.Fatalf("ListCloudManagedServicesRequest accepts %d fields, want only owner and cursor pagination", list.Fields().Len())
+	}
+	for name, number := range map[protoreflect.Name]protoreflect.FieldNumber{
+		"owner_id":   1,
+		"page_size":  2,
+		"page_token": 3,
+	} {
+		field := list.Fields().ByName(name)
+		if field == nil || field.Number() != number {
+			t.Fatalf("ListCloudManagedServicesRequest.%s=%v, want field %d", name, field, number)
+		}
+	}
+	assertFieldKind(t, list, "owner_id", protoreflect.StringKind)
+	assertFieldKind(t, list, "page_size", protoreflect.Int32Kind)
+	assertFieldKind(t, list, "page_token", protoreflect.StringKind)
+	for _, forbidden := range []protoreflect.Name{"deployment_id", "operation_id", "approval_id", "contract", "provider_id", "secret_ref"} {
+		if list.Fields().ByName(forbidden) != nil {
+			t.Fatalf("ListCloudManagedServicesRequest must not accept %s", forbidden)
+		}
+	}
+	response := (&agentv1.ListCloudManagedServicesResponse{}).ProtoReflect().Descriptor()
+	service := response.Fields().ByName("services")
+	if service == nil || !service.IsList() || service.Kind() != protoreflect.MessageKind || service.Message().Name() != "CloudManagedCompatibilityService" {
+		t.Fatalf("ListCloudManagedServicesResponse.services must reuse CloudManagedCompatibilityService: %v", service)
+	}
+	if next := response.Fields().ByName("next_page_token"); next == nil || next.Number() != 2 || next.Kind() != protoreflect.StringKind {
+		t.Fatalf("ListCloudManagedServicesResponse.next_page_token=%v", next)
+	}
+	control := agentv1.File_dirextalk_agent_v1_agent_proto.Services().ByName("CloudControlService")
+	for _, name := range []protoreflect.Name{"GetCloudManagedService", "ListCloudManagedServices"} {
+		if control == nil || control.Methods().ByName(name) == nil {
+			t.Fatalf("CloudControlService must expose %s", name)
+		}
+	}
+}
+
 func assertFieldKind(t *testing.T, descriptor protoreflect.MessageDescriptor, name protoreflect.Name, kind protoreflect.Kind) {
 	t.Helper()
 	field := descriptor.Fields().ByName(name)

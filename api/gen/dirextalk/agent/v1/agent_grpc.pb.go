@@ -606,6 +606,8 @@ const (
 	CloudControlService_CreateCloudManagedAcceptanceChallenge_FullMethodName = "/dirextalk.agent.v1.CloudControlService/CreateCloudManagedAcceptanceChallenge"
 	CloudControlService_ApproveCloudManagedAcceptance_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/ApproveCloudManagedAcceptance"
 	CloudControlService_GetCloudManagedAcceptanceOperation_FullMethodName    = "/dirextalk.agent.v1.CloudControlService/GetCloudManagedAcceptanceOperation"
+	CloudControlService_GetCloudManagedService_FullMethodName                = "/dirextalk.agent.v1.CloudControlService/GetCloudManagedService"
+	CloudControlService_ListCloudManagedServices_FullMethodName              = "/dirextalk.agent.v1.CloudControlService/ListCloudManagedServices"
 	CloudControlService_CreateCloudManagedPreparation_FullMethodName         = "/dirextalk.agent.v1.CloudControlService/CreateCloudManagedPreparation"
 	CloudControlService_ApproveCloudManagedPreparation_FullMethodName        = "/dirextalk.agent.v1.CloudControlService/ApproveCloudManagedPreparation"
 	CloudControlService_GetCloudManagedPreparation_FullMethodName            = "/dirextalk.agent.v1.CloudControlService/GetCloudManagedPreparation"
@@ -655,6 +657,8 @@ type CloudControlServiceClient interface {
 	CreateCloudManagedAcceptanceChallenge(ctx context.Context, in *CreateCloudManagedAcceptanceChallengeRequest, opts ...grpc.CallOption) (*CreateCloudManagedAcceptanceChallengeResponse, error)
 	ApproveCloudManagedAcceptance(ctx context.Context, in *ApproveCloudManagedAcceptanceRequest, opts ...grpc.CallOption) (*ApproveCloudManagedAcceptanceResponse, error)
 	GetCloudManagedAcceptanceOperation(ctx context.Context, in *GetCloudManagedAcceptanceOperationRequest, opts ...grpc.CallOption) (*GetCloudManagedAcceptanceOperationResponse, error)
+	GetCloudManagedService(ctx context.Context, in *GetCloudManagedServiceRequest, opts ...grpc.CallOption) (*GetCloudManagedServiceResponse, error)
+	ListCloudManagedServices(ctx context.Context, in *ListCloudManagedServicesRequest, opts ...grpc.CallOption) (*ListCloudManagedServicesResponse, error)
 	CreateCloudManagedPreparation(ctx context.Context, in *CreateCloudManagedPreparationRequest, opts ...grpc.CallOption) (*CreateCloudManagedPreparationResponse, error)
 	ApproveCloudManagedPreparation(ctx context.Context, in *ApproveCloudManagedPreparationRequest, opts ...grpc.CallOption) (*ApproveCloudManagedPreparationResponse, error)
 	GetCloudManagedPreparation(ctx context.Context, in *GetCloudManagedPreparationRequest, opts ...grpc.CallOption) (*GetCloudManagedPreparationResponse, error)
@@ -1005,6 +1009,26 @@ func (c *cloudControlServiceClient) GetCloudManagedAcceptanceOperation(ctx conte
 	return out, nil
 }
 
+func (c *cloudControlServiceClient) GetCloudManagedService(ctx context.Context, in *GetCloudManagedServiceRequest, opts ...grpc.CallOption) (*GetCloudManagedServiceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCloudManagedServiceResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_GetCloudManagedService_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudControlServiceClient) ListCloudManagedServices(ctx context.Context, in *ListCloudManagedServicesRequest, opts ...grpc.CallOption) (*ListCloudManagedServicesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListCloudManagedServicesResponse)
+	err := c.cc.Invoke(ctx, CloudControlService_ListCloudManagedServices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cloudControlServiceClient) CreateCloudManagedPreparation(ctx context.Context, in *CreateCloudManagedPreparationRequest, opts ...grpc.CallOption) (*CreateCloudManagedPreparationResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateCloudManagedPreparationResponse)
@@ -1142,6 +1166,8 @@ type CloudControlServiceServer interface {
 	CreateCloudManagedAcceptanceChallenge(context.Context, *CreateCloudManagedAcceptanceChallengeRequest) (*CreateCloudManagedAcceptanceChallengeResponse, error)
 	ApproveCloudManagedAcceptance(context.Context, *ApproveCloudManagedAcceptanceRequest) (*ApproveCloudManagedAcceptanceResponse, error)
 	GetCloudManagedAcceptanceOperation(context.Context, *GetCloudManagedAcceptanceOperationRequest) (*GetCloudManagedAcceptanceOperationResponse, error)
+	GetCloudManagedService(context.Context, *GetCloudManagedServiceRequest) (*GetCloudManagedServiceResponse, error)
+	ListCloudManagedServices(context.Context, *ListCloudManagedServicesRequest) (*ListCloudManagedServicesResponse, error)
 	CreateCloudManagedPreparation(context.Context, *CreateCloudManagedPreparationRequest) (*CreateCloudManagedPreparationResponse, error)
 	ApproveCloudManagedPreparation(context.Context, *ApproveCloudManagedPreparationRequest) (*ApproveCloudManagedPreparationResponse, error)
 	GetCloudManagedPreparation(context.Context, *GetCloudManagedPreparationRequest) (*GetCloudManagedPreparationResponse, error)
@@ -1260,6 +1286,12 @@ func (UnimplementedCloudControlServiceServer) ApproveCloudManagedAcceptance(cont
 }
 func (UnimplementedCloudControlServiceServer) GetCloudManagedAcceptanceOperation(context.Context, *GetCloudManagedAcceptanceOperationRequest) (*GetCloudManagedAcceptanceOperationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCloudManagedAcceptanceOperation not implemented")
+}
+func (UnimplementedCloudControlServiceServer) GetCloudManagedService(context.Context, *GetCloudManagedServiceRequest) (*GetCloudManagedServiceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetCloudManagedService not implemented")
+}
+func (UnimplementedCloudControlServiceServer) ListCloudManagedServices(context.Context, *ListCloudManagedServicesRequest) (*ListCloudManagedServicesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListCloudManagedServices not implemented")
 }
 func (UnimplementedCloudControlServiceServer) CreateCloudManagedPreparation(context.Context, *CreateCloudManagedPreparationRequest) (*CreateCloudManagedPreparationResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateCloudManagedPreparation not implemented")
@@ -1906,6 +1938,42 @@ func _CloudControlService_GetCloudManagedAcceptanceOperation_Handler(srv interfa
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudControlService_GetCloudManagedService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCloudManagedServiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).GetCloudManagedService(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_GetCloudManagedService_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).GetCloudManagedService(ctx, req.(*GetCloudManagedServiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudControlService_ListCloudManagedServices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListCloudManagedServicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudControlServiceServer).ListCloudManagedServices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudControlService_ListCloudManagedServices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudControlServiceServer).ListCloudManagedServices(ctx, req.(*ListCloudManagedServicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CloudControlService_CreateCloudManagedPreparation_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateCloudManagedPreparationRequest)
 	if err := dec(in); err != nil {
@@ -2224,6 +2292,14 @@ var CloudControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCloudManagedAcceptanceOperation",
 			Handler:    _CloudControlService_GetCloudManagedAcceptanceOperation_Handler,
+		},
+		{
+			MethodName: "GetCloudManagedService",
+			Handler:    _CloudControlService_GetCloudManagedService_Handler,
+		},
+		{
+			MethodName: "ListCloudManagedServices",
+			Handler:    _CloudControlService_ListCloudManagedServices_Handler,
 		},
 		{
 			MethodName: "CreateCloudManagedPreparation",

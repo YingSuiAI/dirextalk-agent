@@ -32,6 +32,28 @@ type cloudStatusReaderStub struct {
 	lastQuery      cloudstatus.ListQuery
 }
 
+type cloudManagedServiceReaderStub struct {
+	ownerID   string
+	service   cloudstatus.ManagedService
+	page      cloudstatus.ManagedServicePage
+	lastQuery cloudstatus.ListQuery
+}
+
+func (stub *cloudManagedServiceReaderStub) GetManagedService(_ context.Context, ownerID, serviceID string) (cloudstatus.ManagedService, error) {
+	if ownerID != stub.ownerID || serviceID != stub.service.ServiceID {
+		return cloudstatus.ManagedService{}, cloudstatus.ErrNotFound
+	}
+	return stub.service, nil
+}
+
+func (stub *cloudManagedServiceReaderStub) ListManagedServices(_ context.Context, query cloudstatus.ListQuery) (cloudstatus.ManagedServicePage, error) {
+	stub.lastQuery = query
+	if query.OwnerID != stub.ownerID {
+		return cloudstatus.ManagedServicePage{}, cloudstatus.ErrNotFound
+	}
+	return stub.page, nil
+}
+
 func (stub *cloudStatusReaderStub) ListPlans(_ context.Context, query cloudstatus.ListQuery) (cloudstatus.PlanPage, error) {
 	stub.lastQuery = query
 	if query.OwnerID != stub.ownerID {
@@ -358,5 +380,65 @@ func TestCloudStatusListsPropagateOwnerFilterAndCursor(t *testing.T) {
 		deployments.GetDeployments()[0].GetPlanId() != planID || deployments.GetDeployments()[0].GetConnectionId() != connectionID ||
 		stub.lastQuery.OwnerID != "owner-a" || stub.lastQuery.PageSize != 17 || stub.lastQuery.PageToken != "deployment-page" {
 		t.Fatalf("deployment list response=%+v query=%+v", deployments, stub.lastQuery)
+	}
+}
+
+func TestCloudManagedServiceReadsAreOwnerScopedPaginatedAndDeSecreted(t *testing.T) {
+	createdAt := time.Date(2026, 7, 18, 7, 0, 0, 0, time.UTC)
+	serviceID, deploymentID := uuid.NewString(), uuid.NewString()
+	item := cloudstatus.ManagedService{
+		ServiceID: serviceID, DeploymentID: deploymentID, RecipeID: "managed-recipe-v1", Name: "Managed service",
+		ServiceStatus: "active", IntegrationStatus: "not_requested", Revision: 7,
+		CreatedAt: createdAt, UpdatedAt: createdAt.Add(time.Minute),
+		Backups: []cloudstatus.ManagedServiceBackup{{
+			BackupID: uuid.NewString(), ServiceID: serviceID, DeploymentID: deploymentID, Status: "available",
+			RetentionPolicy: "manual", Revision: 3, CreatedAt: createdAt, UpdatedAt: createdAt.Add(time.Minute),
+		}},
+		Restores: []cloudstatus.ManagedServiceRestore{{
+			RestoreID: uuid.NewString(), RestorePlanID: uuid.NewString(), ServiceID: serviceID, DeploymentID: deploymentID,
+			BackupID: uuid.NewString(), Status: "succeeded", Revision: 4, CreatedAt: createdAt, UpdatedAt: createdAt.Add(time.Minute),
+		}},
+	}
+	reader := &cloudManagedServiceReaderStub{
+		ownerID: "owner-managed-read", service: item,
+		page: cloudstatus.ManagedServicePage{Services: []cloudstatus.ManagedService{item}, NextPageToken: "next-managed-service-page"},
+	}
+	service := NewCloudControlService(nil, uuid.NewString()).WithManagedServiceReader(reader)
+	get, err := service.GetCloudManagedService(context.Background(), &agentv1.GetCloudManagedServiceRequest{
+		OwnerId: reader.ownerID, ServiceId: serviceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := get.GetService()
+	if got.GetServiceId() != serviceID || got.GetDeploymentId() != deploymentID || got.GetServiceStatus() != "active" ||
+		got.GetRevision() != 7 || len(got.GetBackups()) != 1 || len(got.GetRestores()) != 1 {
+		t.Fatalf("managed service projection=%+v", got)
+	}
+	if got.GetBackups()[0].GetImageId() != "" || len(got.GetBackups()[0].GetSnapshotIds()) != 0 ||
+		len(got.GetRestores()[0].GetOriginalVolumeIds()) != 0 || len(got.GetRestores()[0].GetReplacementVolumeIds()) != 0 {
+		t.Fatalf("managed read leaked provider identifiers: %+v", got)
+	}
+	payload, err := protojson.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"imageId", "snapshotIds", "originalVolumeIds", "replacementVolumeIds", "secret", "provider"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("managed service read contains forbidden %q: %s", forbidden, payload)
+		}
+	}
+	if _, err := service.GetCloudManagedService(context.Background(), &agentv1.GetCloudManagedServiceRequest{
+		OwnerId: "other-owner", ServiceId: serviceID,
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("cross-owner managed service status code=%s err=%v", status.Code(err), err)
+	}
+	page, err := service.ListCloudManagedServices(context.Background(), &agentv1.ListCloudManagedServicesRequest{
+		OwnerId: reader.ownerID, PageSize: 13, PageToken: "managed-service-page",
+	})
+	if err != nil || len(page.GetServices()) != 1 || page.GetServices()[0].GetServiceId() != serviceID ||
+		page.GetNextPageToken() != "next-managed-service-page" || reader.lastQuery.OwnerID != reader.ownerID ||
+		reader.lastQuery.PageSize != 13 || reader.lastQuery.PageToken != "managed-service-page" {
+		t.Fatalf("managed list response=%+v query=%+v err=%v", page, reader.lastQuery, err)
 	}
 }

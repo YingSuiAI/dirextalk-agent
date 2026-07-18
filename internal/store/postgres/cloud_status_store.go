@@ -10,8 +10,10 @@ import (
 	"time"
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
+	cloudmanaged "github.com/YingSuiAI/dirextalk-agent/internal/cloud/managed"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -24,6 +26,7 @@ const (
 	cloudStatusDeploymentCursor = "deployment"
 	cloudStatusWorkerCursor     = "worker"
 	cloudStatusResourceCursor   = "resource"
+	cloudStatusManagedCursor    = "managed_service"
 )
 
 type CloudStatusStore struct {
@@ -470,6 +473,213 @@ func (store *CloudStatusStore) ListDeploymentResources(ctx context.Context, owne
 	}
 	defer rows.Close()
 	return scanResources(rows)
+}
+
+const cloudManagedServiceReadSQL = `
+	SELECT managed.service_id::text, managed.deployment_id::text, managed.owner_id, managed.state,
+		managed.revision, managed.created_at, managed.updated_at,
+		acceptance.operation_id::text, acceptance.challenge_json
+	FROM managed_services AS managed
+	JOIN cloud_managed_acceptance_operations AS acceptance
+	  ON acceptance.agent_instance_id=managed.agent_instance_id
+	 AND acceptance.owner_id=managed.owner_id
+	 AND acceptance.deployment_id=managed.deployment_id
+	 AND acceptance.operation_id::text=managed.contract_json->>'AcceptanceApprovalID'
+`
+
+// GetManagedService returns only a service that has both a durable successful
+// acceptance operation and an explicitly visible managed-service state. The
+// accepted contract itself is never projected: it contains private operation
+// references and is used only to bind the persisted acceptance operation.
+func (store *CloudStatusStore) GetManagedService(ctx context.Context, ownerID, serviceID string) (cloudstatus.ManagedService, error) {
+	owner, parsedService, err := validateOwnedManagedServiceID(ownerID, serviceID)
+	if err != nil {
+		return cloudstatus.ManagedService{}, err
+	}
+	item, err := scanManagedServiceStatus(store.pool.QueryRow(ctx, cloudManagedServiceReadSQL+`
+		WHERE managed.service_id=$1 AND managed.owner_id=$2 AND managed.agent_instance_id=$3
+		  AND managed.state IN ('active','degraded','stopped')
+		  AND acceptance.status='succeeded'`, parsedService, owner, store.instanceID), store.instanceID)
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, cloudstatus.ErrNotFound) {
+		return cloudstatus.ManagedService{}, cloudstatus.ErrNotFound
+	}
+	if err != nil {
+		return cloudstatus.ManagedService{}, fmt.Errorf("get owned managed service status: %w", err)
+	}
+	return item, nil
+}
+
+// ListManagedServices has a dedicated owner-bound cursor domain. It lists the
+// same completed-and-visible fact set as GetManagedService, so a token cannot
+// traverse into a pending, failed, destroyed, or another owner's service.
+func (store *CloudStatusStore) ListManagedServices(ctx context.Context, query cloudstatus.ListQuery) (cloudstatus.ManagedServicePage, error) {
+	owner, err := validateManagedServiceOwner(query.OwnerID)
+	if err != nil || query.Validate() != nil || strings.TrimSpace(query.DeploymentID) != "" {
+		return cloudstatus.ManagedServicePage{}, cloudstatus.ErrInvalid
+	}
+	pageSize := statusPageSize(query.PageSize)
+	cursor, err := decodeCloudOwnedStatusCursor(query.PageToken, cloudStatusManagedCursor, owner)
+	if err != nil {
+		return cloudstatus.ManagedServicePage{}, cloudstatus.ErrInvalid
+	}
+	arguments := []any{store.instanceID, owner}
+	where := `
+		WHERE managed.agent_instance_id=$1 AND managed.owner_id=$2
+		  AND managed.state IN ('active','degraded','stopped')
+		  AND EXISTS (
+			SELECT 1 FROM cloud_managed_acceptance_operations AS acceptance
+			WHERE acceptance.agent_instance_id=managed.agent_instance_id
+			  AND acceptance.owner_id=managed.owner_id
+			  AND acceptance.deployment_id=managed.deployment_id
+			  AND acceptance.operation_id::text=managed.contract_json->>'AcceptanceApprovalID'
+			  AND acceptance.status='succeeded'
+		  )`
+	if cursor != nil {
+		arguments = append(arguments, cursor.CreatedAt, cursor.ID)
+		where += ` AND (managed.created_at, managed.service_id) > ($3, $4)`
+	}
+	arguments = append(arguments, pageSize+1)
+	rows, err := store.pool.Query(ctx, `SELECT managed.service_id, managed.created_at FROM managed_services AS managed`+where+
+		fmt.Sprintf(` ORDER BY managed.created_at, managed.service_id LIMIT $%d`, len(arguments)), arguments...)
+	if err != nil {
+		return cloudstatus.ManagedServicePage{}, fmt.Errorf("list owned managed service links: %w", err)
+	}
+	defer rows.Close()
+	type managedServiceLink struct {
+		id        uuid.UUID
+		createdAt time.Time
+	}
+	links := make([]managedServiceLink, 0, pageSize+1)
+	for rows.Next() {
+		var link managedServiceLink
+		if err := rows.Scan(&link.id, &link.createdAt); err != nil || link.id == uuid.Nil || link.createdAt.IsZero() {
+			if err == nil {
+				err = errors.New("invalid persisted managed service link")
+			}
+			return cloudstatus.ManagedServicePage{}, fmt.Errorf("scan owned managed service link: %w", err)
+		}
+		link.createdAt = link.createdAt.UTC()
+		links = append(links, link)
+	}
+	if err := rows.Err(); err != nil {
+		return cloudstatus.ManagedServicePage{}, fmt.Errorf("iterate owned managed service links: %w", err)
+	}
+	visible := links
+	result := cloudstatus.ManagedServicePage{Services: make([]cloudstatus.ManagedService, 0, min(len(links), pageSize))}
+	if len(links) > pageSize {
+		visible = links[:pageSize]
+		last := visible[pageSize-1]
+		result.NextPageToken, err = encodeCloudOwnedStatusCursor(cloudStatusManagedCursor, owner, last.createdAt, last.id.String())
+		if err != nil {
+			return cloudstatus.ManagedServicePage{}, err
+		}
+	}
+	for _, link := range visible {
+		item, readErr := store.GetManagedService(ctx, owner, link.id.String())
+		if readErr != nil {
+			return cloudstatus.ManagedServicePage{}, readErr
+		}
+		if !item.CreatedAt.Equal(link.createdAt) {
+			return cloudstatus.ManagedServicePage{}, errors.New("managed service link does not match persisted fact")
+		}
+		result.Services = append(result.Services, item)
+	}
+	return result, nil
+}
+
+type managedServiceStatusScanner interface{ Scan(...any) error }
+
+func scanManagedServiceStatus(scanner managedServiceStatusScanner, instanceID uuid.UUID) (cloudstatus.ManagedService, error) {
+	var (
+		serviceID, deploymentID, ownerID, serviceState, operationID string
+		revision                                                    int64
+		createdAt, updatedAt                                        time.Time
+		challengeJSON                                               []byte
+	)
+	if err := scanner.Scan(&serviceID, &deploymentID, &ownerID, &serviceState, &revision, &createdAt, &updatedAt, &operationID, &challengeJSON); err != nil {
+		return cloudstatus.ManagedService{}, err
+	}
+	if !validCanonicalStatusUUID(serviceID) || !validCanonicalStatusUUID(deploymentID) || !validCanonicalStatusUUID(operationID) ||
+		!managedServiceVisibleState(serviceState) || revision < 1 || createdAt.IsZero() || updatedAt.Before(createdAt) {
+		return cloudstatus.ManagedService{}, cloudstatus.ErrInvalid
+	}
+	if expected := uuid.NewSHA1(uuid.NameSpaceOID, []byte(deploymentID)).String(); serviceID != expected {
+		return cloudstatus.ManagedService{}, cloudstatus.ErrInvalid
+	}
+	var challenge cloudmanaged.ChallengeV1
+	if json.Unmarshal(challengeJSON, &challenge) != nil {
+		return cloudstatus.ManagedService{}, cloudstatus.ErrInvalid
+	}
+	if _, err := challenge.SigningPayload(); err != nil ||
+		challenge.Scope.AgentInstanceID != instanceID.String() || challenge.Scope.OwnerID != ownerID ||
+		challenge.Scope.DeploymentID != deploymentID || challenge.Scope.ServiceID != serviceID ||
+		challenge.Scope.AcceptanceID != operationID || challenge.ApprovalID != operationID ||
+		challenge.Service.ServiceID != serviceID || challenge.Service.DeploymentID != deploymentID ||
+		!validManagedServiceReadText(challenge.Service.RecipeID) {
+		return cloudstatus.ManagedService{}, cloudstatus.ErrInvalid
+	}
+	return managedServiceProjection(challenge.Service, serviceState, revision, createdAt.UTC(), updatedAt.UTC()), nil
+}
+
+func managedServiceProjection(snapshot cloudmanaged.CompatibilityServiceV1, state string, revision int64, createdAt, updatedAt time.Time) cloudstatus.ManagedService {
+	result := cloudstatus.ManagedService{
+		ServiceID: snapshot.ServiceID, DeploymentID: snapshot.DeploymentID, RecipeID: snapshot.RecipeID, Name: snapshot.Name,
+		ServiceStatus: state, IntegrationStatus: snapshot.Integration, Revision: revision, CreatedAt: createdAt, UpdatedAt: updatedAt,
+		Backups:  make([]cloudstatus.ManagedServiceBackup, 0, len(snapshot.Backups)),
+		Restores: make([]cloudstatus.ManagedServiceRestore, 0, len(snapshot.Restores)),
+	}
+	for _, backup := range snapshot.Backups {
+		result.Backups = append(result.Backups, cloudstatus.ManagedServiceBackup{
+			BackupID: backup.BackupID, ServiceID: backup.ServiceID, DeploymentID: backup.DeploymentID,
+			Status: backup.Status, RetentionPolicy: backup.RetentionPolicy, Revision: backup.Revision,
+			CreatedAt: time.UnixMilli(backup.CreatedAt).UTC(), UpdatedAt: time.UnixMilli(backup.UpdatedAt).UTC(),
+		})
+	}
+	for _, restore := range snapshot.Restores {
+		result.Restores = append(result.Restores, cloudstatus.ManagedServiceRestore{
+			RestoreID: restore.RestoreID, RestorePlanID: restore.RestorePlanID, ServiceID: restore.ServiceID,
+			DeploymentID: restore.DeploymentID, BackupID: restore.BackupID, Status: restore.Status, Revision: restore.Revision,
+			CreatedAt: time.UnixMilli(restore.CreatedAt).UTC(), UpdatedAt: time.UnixMilli(restore.UpdatedAt).UTC(),
+		})
+	}
+	return result
+}
+
+func validateOwnedManagedServiceID(ownerID, rawServiceID string) (string, uuid.UUID, error) {
+	owner, err := validateManagedServiceOwner(ownerID)
+	if err != nil {
+		return "", uuid.Nil, cloudstatus.ErrInvalid
+	}
+	serviceID, err := uuid.Parse(rawServiceID)
+	if err != nil || serviceID == uuid.Nil || rawServiceID != serviceID.String() {
+		return "", uuid.Nil, cloudstatus.ErrInvalid
+	}
+	return owner, serviceID, nil
+}
+
+func validateManagedServiceOwner(ownerID string) (string, error) {
+	if err := cloudstatus.ValidateOwnerID(ownerID); err != nil || strings.TrimSpace(ownerID) != ownerID {
+		return "", cloudstatus.ErrInvalid
+	}
+	return ownerID, nil
+}
+
+func validCanonicalStatusUUID(value string) bool {
+	id, err := uuid.Parse(value)
+	return err == nil && id != uuid.Nil && value == id.String()
+}
+
+func managedServiceVisibleState(value string) bool {
+	switch value {
+	case "active", "degraded", "stopped":
+		return true
+	default:
+		return false
+	}
+}
+
+func validManagedServiceReadText(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && len(value) <= 255 && !security.ContainsLikelySecret(value)
 }
 
 type cloudStatusCursor struct {

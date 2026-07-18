@@ -141,6 +141,60 @@ type ResourcePage struct {
 	NextPageToken string
 }
 
+// ManagedService is the public, de-secreted compatibility read model for an
+// accepted managed service. It intentionally has no managed contract
+// references, provider identifiers, image identifiers, or volume/snapshot
+// identifiers.
+type ManagedService struct {
+	ServiceID         string
+	DeploymentID      string
+	RecipeID          string
+	Name              string
+	ServiceStatus     string
+	IntegrationStatus string
+	Revision          int64
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	Backups           []ManagedServiceBackup
+	Restores          []ManagedServiceRestore
+}
+
+type ManagedServiceBackup struct {
+	BackupID        string
+	ServiceID       string
+	DeploymentID    string
+	Status          string
+	RetentionPolicy string
+	Revision        int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ManagedServiceRestore struct {
+	RestoreID     string
+	RestorePlanID string
+	ServiceID     string
+	DeploymentID  string
+	BackupID      string
+	Status        string
+	Revision      int64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type ManagedServicePage struct {
+	Services      []ManagedService
+	NextPageToken string
+}
+
+// ManagedServiceReader reads only durable Agent-managed facts. The concrete
+// implementation must prove the owner, managed-service/deployment binding,
+// completed acceptance operation, and an explicitly visible service state.
+type ManagedServiceReader interface {
+	GetManagedService(context.Context, string, string) (ManagedService, error)
+	ListManagedServices(context.Context, ListQuery) (ManagedServicePage, error)
+}
+
 type Reader interface {
 	ListPlans(context.Context, ListQuery) (PlanPage, error)
 	GetConnection(context.Context, string, string) (Connection, error)

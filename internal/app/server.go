@@ -236,6 +236,8 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.CloudControlService_CreateCloudManagedAcceptanceChallenge_FullMethodName: "cloud.approve",
 		agentv1.CloudControlService_ApproveCloudManagedAcceptance_FullMethodName:         "cloud.approve",
 		agentv1.CloudControlService_GetCloudManagedAcceptanceOperation_FullMethodName:    "cloud.read",
+		agentv1.CloudControlService_GetCloudManagedService_FullMethodName:                "cloud.read",
+		agentv1.CloudControlService_ListCloudManagedServices_FullMethodName:              "cloud.read",
 		agentv1.CloudControlService_CreateCloudManagedPreparation_FullMethodName:         "cloud.approve",
 		agentv1.CloudControlService_ApproveCloudManagedPreparation_FullMethodName:        "cloud.approve",
 		agentv1.CloudControlService_GetCloudManagedPreparation_FullMethodName:            "cloud.read",

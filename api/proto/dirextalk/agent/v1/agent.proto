@@ -974,6 +974,8 @@ service CloudControlService {
   rpc CreateCloudManagedAcceptanceChallenge(CreateCloudManagedAcceptanceChallengeRequest) returns (CreateCloudManagedAcceptanceChallengeResponse);
   rpc ApproveCloudManagedAcceptance(ApproveCloudManagedAcceptanceRequest) returns (ApproveCloudManagedAcceptanceResponse);
   rpc GetCloudManagedAcceptanceOperation(GetCloudManagedAcceptanceOperationRequest) returns (GetCloudManagedAcceptanceOperationResponse);
+  rpc GetCloudManagedService(GetCloudManagedServiceRequest) returns (GetCloudManagedServiceResponse);
+  rpc ListCloudManagedServices(ListCloudManagedServicesRequest) returns (ListCloudManagedServicesResponse);
   rpc CreateCloudManagedPreparation(CreateCloudManagedPreparationRequest) returns (CreateCloudManagedPreparationResponse);
   rpc ApproveCloudManagedPreparation(ApproveCloudManagedPreparationRequest) returns (ApproveCloudManagedPreparationResponse);
   rpc GetCloudManagedPreparation(GetCloudManagedPreparationRequest) returns (GetCloudManagedPreparationResponse);
@@ -2241,3 +2243,24 @@ message WorkerControlServiceEmitMilestoneRequest {
   WorkerOutcome outcome = 7;
 }
 message WorkerControlServiceEmitMilestoneResponse {}
+
+// CloudManagedCompatibilityService is reused for the compatibility façade.
+// Read responses intentionally omit provider identifiers and managed contract
+// references even though the legacy-shaped nested messages have fields for
+// those private facts.
+message GetCloudManagedServiceRequest {
+  string owner_id = 1;
+  string service_id = 2;
+}
+message GetCloudManagedServiceResponse {
+  CloudManagedCompatibilityService service = 1;
+}
+message ListCloudManagedServicesRequest {
+  string owner_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+message ListCloudManagedServicesResponse {
+  repeated CloudManagedCompatibilityService services = 1;
+  string next_page_token = 2;
+}

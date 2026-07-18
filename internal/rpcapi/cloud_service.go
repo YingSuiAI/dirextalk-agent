@@ -28,6 +28,7 @@ type CloudControlService struct {
 	agentv1.UnimplementedCloudControlServiceServer
 	coordinator            cloudapp.Coordinator
 	statusReader           cloudstatus.Reader
+	managedServiceReader   cloudstatus.ManagedServiceReader
 	destroyer              CloudDestroyCoordinator
 	entrypoint             CloudEntrypointCoordinator
 	foundation             CloudFoundationCoordinator
@@ -77,6 +78,9 @@ func NewCloudControlService(coordinator cloudapp.Coordinator, agentInstanceID st
 	service := &CloudControlService{coordinator: coordinator, agentInstanceID: agentInstanceID}
 	if len(statusReaders) > 0 {
 		service.statusReader = statusReaders[0]
+		if managedReader, ok := statusReaders[0].(cloudstatus.ManagedServiceReader); ok {
+			service.managedServiceReader = managedReader
+		}
 	}
 	return service
 }
@@ -102,6 +106,14 @@ func (service *CloudControlService) WithFoundation(coordinator CloudFoundationCo
 }
 func (service *CloudControlService) WithManagedAcceptance(coordinator CloudManagedAcceptanceCoordinator) *CloudControlService {
 	service.managed = coordinator
+	return service
+}
+
+// WithManagedServiceReader is intentionally separate from the acceptance
+// coordinator: compatibility reads must not expose approval snapshots or
+// acquire a mutation capability.
+func (service *CloudControlService) WithManagedServiceReader(reader cloudstatus.ManagedServiceReader) *CloudControlService {
+	service.managedServiceReader = reader
 	return service
 }
 func (service *CloudControlService) WithManagedPreparation(coordinator CloudManagedPreparationCoordinator) *CloudControlService {
