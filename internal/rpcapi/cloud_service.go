@@ -199,6 +199,9 @@ func (service *CloudControlService) CreateCloudQuote(ctx context.Context, reques
 	if err != nil {
 		return nil, err
 	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
 	if service.coordinator == nil {
 		return nil, cloudUnavailable()
 	}
@@ -236,6 +239,9 @@ func (service *CloudControlService) CreateCloudPlan(ctx context.Context, request
 	if err != nil {
 		return nil, err
 	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
 	if service.coordinator == nil {
 		return nil, cloudUnavailable()
 	}
@@ -264,6 +270,9 @@ func (service *CloudControlService) GetCloudPlan(ctx context.Context, request *a
 func (service *CloudControlService) CreateApprovalChallenge(ctx context.Context, request *agentv1.CreateApprovalChallengeRequest) (*agentv1.CreateApprovalChallengeResponse, error) {
 	scope, err := cloudMutationScope(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
 		return nil, err
 	}
 	if service.coordinator == nil {
@@ -331,6 +340,9 @@ func (service *CloudControlService) ApproveCloudPlan(ctx context.Context, reques
 	if err != nil {
 		return nil, err
 	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
 	if service.coordinator == nil {
 		return nil, cloudUnavailable()
 	}
@@ -351,6 +363,9 @@ func (service *CloudControlService) ApproveCloudPlan(ctx context.Context, reques
 func (service *CloudControlService) EstablishAwsConnection(ctx context.Context, request *agentv1.EstablishAwsConnectionRequest) (*agentv1.EstablishAwsConnectionResponse, error) {
 	scope, err := cloudMutationScope(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
 		return nil, err
 	}
 	if service.coordinator == nil {
@@ -405,4 +420,15 @@ func cloudApprovalFromProto(value *agentv1.DeviceApprovalSignature) (cloudapp.Ap
 
 func cloudUnavailable() error {
 	return status.Error(codes.Unavailable, "cloud control is not configured")
+}
+
+func (service *CloudControlService) requireWorkerControlPrivateLink(_ context.Context) error {
+	if service == nil || service.coordinator == nil {
+		return nil
+	}
+	readiness, ok := service.coordinator.(cloudapp.WorkerControlPrivateLinkCapability)
+	if ok && !readiness.WorkerControlPrivateLinkReady() {
+		return publicError(cloudapp.ErrCapabilityNotReady)
+	}
+	return nil
 }

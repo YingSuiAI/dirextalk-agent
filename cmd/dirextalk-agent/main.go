@@ -17,6 +17,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledge"
@@ -215,6 +216,7 @@ func serve() error {
 		return errors.New("could not initialize Worker control")
 	}
 	var cloudComposition *app.CloudComposition
+	var cloudCoordinator cloudapp.Coordinator
 	if serverConfig.EnableAWSControl {
 		if serverConfig.WorkerAMIPublicationFile != "" {
 			release, releaseErr := workerrelease.LoadPublicationFile(serverConfig.WorkerAMIPublicationFile)
@@ -229,25 +231,34 @@ func serve() error {
 			}
 		}
 		var cloudErr error
-		cloudOptions := make([]app.CloudCompositionOption, 0, 1)
-		cloudOptions = append(cloudOptions, app.WithManagedKnowledgeBinding(knowledgeService))
-		if serverConfig.EnableManagedPreparationAWS {
-			cloudOptions = append(cloudOptions, app.WithManagedPreparationAWS())
+		if serverConfig.WorkerControlEndpointServiceName == "" {
+			cloudCoordinator, cloudErr = app.NewStagedAWSControl(serverConfig.InstanceID, secretManager, store)
+		} else {
+			cloudOptions := make([]app.CloudCompositionOption, 0, 2)
+			cloudOptions = append(cloudOptions, app.WithManagedKnowledgeBinding(knowledgeService))
+			if serverConfig.EnableManagedPreparationAWS {
+				cloudOptions = append(cloudOptions, app.WithManagedPreparationAWS())
+			}
+			cloudComposition, cloudErr = app.NewCloudComposition(
+				store, secretManager, workerStore, workerService, installerIssuer, serverConfig.InstanceID, masterKey,
+				serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint, serverConfig.WorkerControlEndpointServiceName,
+				cloudOptions...,
+			)
+			if cloudErr == nil {
+				cloudCoordinator = cloudComposition.Coordinator
+			}
 		}
-		cloudComposition, cloudErr = app.NewCloudComposition(
-			store, secretManager, workerStore, workerService, installerIssuer, serverConfig.InstanceID, masterKey,
-			serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint, serverConfig.WorkerControlEndpointServiceName,
-			cloudOptions...,
-		)
 		if cloudErr != nil {
 			return errors.New("could not initialize typed AWS cloud control")
 		}
-		defer cloudComposition.Close()
-		foundationRecoveryContext, stopFoundationRecovery := context.WithTimeout(context.Background(), 2*time.Minute)
-		cloudErr = cloudComposition.Recover(foundationRecoveryContext)
-		stopFoundationRecovery()
-		if cloudErr != nil {
-			return errors.New("could not safely recover pending AWS Foundation operations")
+		if cloudComposition != nil {
+			defer cloudComposition.Close()
+			foundationRecoveryContext, stopFoundationRecovery := context.WithTimeout(context.Background(), 2*time.Minute)
+			cloudErr = cloudComposition.Recover(foundationRecoveryContext)
+			stopFoundationRecovery()
+			if cloudErr != nil {
+				return errors.New("could not safely recover pending AWS Foundation operations")
+			}
 		}
 	}
 	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 1)
@@ -279,9 +290,11 @@ func serve() error {
 		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
 		app.WithWorkerControl(workerService),
 	}
+	if cloudCoordinator != nil {
+		serverOptions = append(serverOptions, app.WithCloudControl(cloudCoordinator))
+	}
 	if cloudComposition != nil {
 		serverOptions = append(serverOptions,
-			app.WithCloudControl(cloudComposition.Coordinator),
 			app.WithCloudDestroy(cloudComposition.DestroyCoordinator),
 			app.WithCloudEntrypoint(cloudComposition.Entrypoint),
 			app.WithCloudFoundation(cloudComposition.FoundationLifecycle),

@@ -180,6 +180,54 @@ func TestLoadServerKeepsManagedPreparationAWSBehindIndependentExplicitGate(t *te
 	}
 }
 
+func TestLoadServerStagesWorkerControlPrivateLinkWithoutChangingInstanceIdentity(t *testing.T) {
+	setValidServerEnvironment(t)
+	instanceID := os.Getenv("AGENT_INSTANCE_ID")
+	t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
+	t.Setenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS", "false")
+	t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.y1.dirextalk.ai:443")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "")
+
+	staged, err := LoadServer()
+	if err != nil || !staged.EnableAWSControl || staged.EnableManagedPreparationAWS ||
+		staged.WorkerControlEndpointServiceName != "" || staged.InstanceID != instanceID {
+		t.Fatalf("staged LoadServer() config=%#v error=%v", staged, err)
+	}
+
+	t.Setenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS", "true")
+	if _, err := LoadServer(); err == nil || !strings.Contains(err.Error(), "AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME") {
+		t.Fatalf("Managed preparation accepted an absent Worker Control service: %v", err)
+	}
+
+	t.Setenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS", "false")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
+	ready, err := LoadServer()
+	if err != nil || ready.InstanceID != instanceID {
+		t.Fatalf("ready LoadServer() instance=%q error=%v", ready.InstanceID, err)
+	}
+}
+
+func TestLoadServerRejectsMalformedWorkerControlServiceDuringStagedUpgrade(t *testing.T) {
+	for _, serviceName := range []string{
+		"com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
+		"com.amazonaws.vpce.ap-northeast-3.vpce-svc-ABCDEF01234567890",
+		"com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef",
+	} {
+		t.Run(serviceName, func(t *testing.T) {
+			setValidServerEnvironment(t)
+			t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
+			t.Setenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS", "false")
+			t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
+			t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.y1.dirextalk.ai:443")
+			t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", serviceName)
+			if _, err := LoadServer(); err == nil || !strings.Contains(err.Error(), "AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME") {
+				t.Fatalf("service %q error=%v", serviceName, err)
+			}
+		})
+	}
+}
+
 func TestLoadServerRejectsInvalidAWSControlFlagOrMissingImage(t *testing.T) {
 	setValidServerEnvironment(t)
 	t.Setenv("AGENT_ENABLE_AWS_CONTROL", "yes")

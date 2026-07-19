@@ -119,6 +119,8 @@ func publicError(err error) error {
 		return status.Error(codes.PermissionDenied, "authenticated client is not authorized for this cloud entity")
 	case errors.Is(err, cloudapp.ErrQuoteExpired):
 		return status.Error(codes.FailedPrecondition, "cloud quote expired or approved scope changed")
+	case errors.Is(err, cloudapp.ErrCapabilityNotReady):
+		return status.Error(codes.FailedPrecondition, "worker-control PrivateLink capability is not ready")
 	case errors.Is(err, cloudapp.ErrUnavailable):
 		return status.Error(codes.Unavailable, "cloud provider is unavailable")
 	default:

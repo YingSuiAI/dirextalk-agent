@@ -40,16 +40,17 @@ type ConnectionEstablisher interface {
 // Skills. It creates facts and delegates typed provider mutations; it never
 // receives an approval signing key or an AWS SDK client.
 type Service struct {
-	agentInstanceID string
-	facts           CloudFactRepository
-	recipes         RecipeResolver
-	quotes          QuoteEngine
-	approvals       ApprovalEngine
-	identity        IdentityPreviewer
-	connections     ConnectionEstablisher
-	launcher        DeploymentLauncher
-	capabilities    Capabilities
-	now             func() time.Time
+	agentInstanceID    string
+	facts              CloudFactRepository
+	recipes            RecipeResolver
+	quotes             QuoteEngine
+	approvals          ApprovalEngine
+	identity           IdentityPreviewer
+	connections        ConnectionEstablisher
+	launcher           DeploymentLauncher
+	capabilities       Capabilities
+	workerControlReady bool
+	now                func() time.Time
 }
 
 type ServiceOption func(*Service) error
@@ -71,7 +72,7 @@ func NewService(agentInstanceID string, facts CloudFactRepository, recipes Recip
 	}
 	service := &Service{
 		agentInstanceID: agentInstanceID, facts: facts, recipes: recipes, quotes: quotes, approvals: approvals,
-		identity: identity, connections: connections, capabilities: capabilities, now: now,
+		identity: identity, connections: connections, capabilities: capabilities, workerControlReady: true, now: now,
 	}
 	for _, option := range options {
 		if option == nil || option(service) != nil {
@@ -81,7 +82,27 @@ func NewService(agentInstanceID string, facts CloudFactRepository, recipes Recip
 	return service, nil
 }
 
+// NewStagedAWSService exposes only the read-only identity preview required to
+// prepare a Foundation. Quote, approval, Foundation, launch, and provider
+// mutation paths stay closed until the immutable Worker Control PrivateLink
+// endpoint/service pair is present and the full cloud composition is rebuilt.
+func NewStagedAWSService(agentInstanceID string, identity IdentityPreviewer) (*Service, error) {
+	parsed, err := uuid.Parse(agentInstanceID)
+	if err != nil || parsed == uuid.Nil || identity == nil {
+		return nil, ErrInvalid
+	}
+	return &Service{
+		agentInstanceID: agentInstanceID,
+		identity:        identity,
+		capabilities:    Capabilities{AWS: true, DirectSTS: true},
+	}, nil
+}
+
 func (service *Service) Capabilities(context.Context) Capabilities { return service.capabilities }
+
+func (service *Service) WorkerControlPrivateLinkReady() bool {
+	return service != nil && service.workerControlReady
+}
 
 func (service *Service) PreviewAWSIdentity(ctx context.Context, scope MutationScope, sessionID string, expectedRevision uint64, region string) (AWSIdentityEvidence, error) {
 	if service == nil || service.identity == nil || scope.Validate() != nil {
@@ -91,6 +112,9 @@ func (service *Service) PreviewAWSIdentity(ctx context.Context, scope MutationSc
 }
 
 func (service *Service) CreateQuote(ctx context.Context, scope MutationScope, command CreateQuoteCommand) (cloudquote.QuoteV1, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return cloudquote.QuoteV1{}, err
+	}
 	if service == nil || ctx == nil || scope.Validate() != nil || command.Validate() != nil {
 		return cloudquote.QuoteV1{}, ErrInvalid
 	}
@@ -129,6 +153,9 @@ func (service *Service) CreateQuote(ctx context.Context, scope MutationScope, co
 }
 
 func (service *Service) GetQuote(ctx context.Context, ownerID, quoteID string) (cloudquote.QuoteV1, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return cloudquote.QuoteV1{}, err
+	}
 	if service == nil || ctx == nil {
 		return cloudquote.QuoteV1{}, ErrInvalid
 	}
@@ -136,6 +163,9 @@ func (service *Service) GetQuote(ctx context.Context, ownerID, quoteID string) (
 }
 
 func (service *Service) CreatePlan(ctx context.Context, scope MutationScope, command CreatePlanCommand) (cloudapproval.PlanV1, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return cloudapproval.PlanV1{}, err
+	}
 	if service == nil || ctx == nil || scope.Validate() != nil || command.Validate() != nil {
 		return cloudapproval.PlanV1{}, ErrInvalid
 	}
@@ -155,6 +185,9 @@ func (service *Service) CreatePlan(ctx context.Context, scope MutationScope, com
 }
 
 func (service *Service) GetPlan(ctx context.Context, ownerID, planID string) (cloudapproval.PlanV1, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return cloudapproval.PlanV1{}, err
+	}
 	if service == nil || ctx == nil {
 		return cloudapproval.PlanV1{}, ErrInvalid
 	}
@@ -162,6 +195,9 @@ func (service *Service) GetPlan(ctx context.Context, ownerID, planID string) (cl
 }
 
 func (service *Service) CreateApprovalChallenge(ctx context.Context, scope MutationScope, command CreateChallengeCommand) (Challenge, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return Challenge{}, err
+	}
 	if service == nil || ctx == nil || scope.Validate() != nil || command.Validate() != nil {
 		return Challenge{}, ErrInvalid
 	}
@@ -197,6 +233,9 @@ func (service *Service) CreateApprovalChallenge(ctx context.Context, scope Mutat
 }
 
 func (service *Service) ApprovePlan(ctx context.Context, scope MutationScope, command ApprovePlanCommand) (cloudapproval.PlanV1, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return cloudapproval.PlanV1{}, err
+	}
 	if service == nil || ctx == nil || scope.Validate() != nil || command.Validate() != nil {
 		return cloudapproval.PlanV1{}, ErrInvalid
 	}
@@ -259,6 +298,9 @@ func (service *Service) ApprovePlan(ctx context.Context, scope MutationScope, co
 }
 
 func (service *Service) EstablishAWSConnection(ctx context.Context, scope MutationScope, command EstablishConnectionCommand) (Connection, error) {
+	if err := service.workerControlCapabilityError(); err != nil {
+		return Connection{}, err
+	}
 	if service == nil || service.connections == nil {
 		return Connection{}, ErrUnavailable
 	}
@@ -272,6 +314,13 @@ func (service *Service) EstablishAWSConnection(ctx context.Context, scope Mutati
 		}
 	}
 	return connection, nil
+}
+
+func (service *Service) workerControlCapabilityError() error {
+	if service != nil && !service.workerControlReady {
+		return ErrCapabilityNotReady
+	}
+	return nil
 }
 
 func deterministicApprovalID(agentInstanceID string, scope MutationScope, idempotencyKey string) string {

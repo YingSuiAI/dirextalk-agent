@@ -14,6 +14,9 @@ func (service *CloudControlService) CreateAwsFoundationOperationChallenge(ctx co
 	if err != nil {
 		return nil, err
 	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
 	if service.foundation == nil {
 		return nil, cloudUnavailable()
 	}
@@ -33,6 +36,9 @@ func (service *CloudControlService) CreateAwsFoundationOperationChallenge(ctx co
 func (service *CloudControlService) ApproveAwsFoundationOperation(ctx context.Context, request *agentv1.ApproveAwsFoundationOperationRequest) (*agentv1.ApproveAwsFoundationOperationResponse, error) {
 	caller, err := cloudMutationScope(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
 		return nil, err
 	}
 	if service.foundation == nil {

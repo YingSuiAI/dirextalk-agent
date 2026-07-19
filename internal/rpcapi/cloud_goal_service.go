@@ -23,6 +23,9 @@ func (service *CloudControlService) CreateCloudGoal(ctx context.Context, request
 	if _, err := mutationScope(ctx); err != nil {
 		return nil, err
 	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
 	if service == nil || service.goalPlanner == nil || service.statusReader == nil {
 		return nil, cloudStatusUnavailable()
 	}

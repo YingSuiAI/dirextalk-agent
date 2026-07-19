@@ -104,6 +104,18 @@ func WithManagedKnowledgeBinding(coordinator *knowledge.Service) CloudCompositio
 	return func(options *cloudCompositionOptions) { options.knowledge = coordinator }
 }
 
+// NewStagedAWSControl exposes only bootstrap identity inspection while the
+// operator-owned Worker Control PrivateLink service name is not yet known.
+// It deliberately constructs no quote materializer, Foundation mutator,
+// Worker launcher, provider mutation path, or recovery loop.
+func NewStagedAWSControl(agentInstanceID string, manager *secretbootstrap.Manager, store *postgres.Store) (cloudapp.Coordinator, error) {
+	identity, err := cloudapp.NewAWSController(agentInstanceID, manager, awsprovider.NewSDKFactory(), store, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	return cloudapp.NewStagedAWSService(agentInstanceID, identity)
+}
+
 // NewCloudGoalOutputAdapter composes the durable provider path only after a
 // real model/research implementation is supplied. Startup intentionally does
 // not install a stub model or fabricate planning output.

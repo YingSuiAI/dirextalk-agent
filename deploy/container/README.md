@@ -225,9 +225,18 @@ The Agent image variable uses the explicit
 `*_IMMUTABLE_PRERELEASE_WITH_DIGEST` name. The full three-image preflight above
 is required for AWS validation/release work; local P0/P1 validation needs only
 the Agent image. `AGENT_ENABLE_AWS_CONTROL` defaults to `false`, so the Reaper
-image and Worker control endpoint may be omitted. Enabling AWS control makes
-both mandatory and applies the immutable-prerelease validation. Keep the gate
-off until the P2 blockers in `docs/delivery-tracker.md` are closed.
+image and Worker control endpoint may be omitted. Enabling AWS control requires
+the immutable Reaper image and exact
+`grpcs://worker-control.y1.dirextalk.ai:443` endpoint. For the initial operator
+reconciliation only, leave `AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME` empty
+and `AGENT_ENABLE_MANAGED_PREPARATION_AWS=false`; the Agent starts with
+identity preview but all Worker-Control-dependent mutation and signing paths
+fail with a capability-not-ready precondition. After reconciliation, set the
+exact `com.amazonaws.vpce.ap-northeast-3.vpce-svc-<17 lowercase hex>` service
+name and recreate the Agent container without changing `AGENT_INSTANCE_ID` or
+its database. Keep Managed preparation false until that restart succeeds. Keep
+the AWS gate off until the P2 blockers in `docs/delivery-tracker.md` are
+closed.
 
 After a Worker AMI has been built and verified, mount its publication read-only
 and set `AGENT_WORKER_AMI_PUBLICATION_FILE` to that container path. Startup

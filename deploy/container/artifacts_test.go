@@ -128,6 +128,19 @@ func TestAgentArtifactProvidesNonRootTLSGrpcHealthcheck(t *testing.T) {
 	}
 }
 
+func TestAgentComposeExposesStagedAWSControlGates(t *testing.T) {
+	compose := readArtifact(t, "compose.yaml")
+	for _, required := range []string{
+		"AGENT_ENABLE_AWS_CONTROL: ${AGENT_ENABLE_AWS_CONTROL:-false}",
+		"AGENT_ENABLE_MANAGED_PREPARATION_AWS: ${AGENT_ENABLE_MANAGED_PREPARATION_AWS:-false}",
+		"AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME: ${AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME:-}",
+	} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("compose.yaml is missing staged AWS control boundary %q", required)
+		}
+	}
+}
+
 func TestAllRuntimeArtifactsRequireImmutablePrereleaseMetadata(t *testing.T) {
 	for _, name := range []string{"agent.Containerfile", "worker.Containerfile", "reaper.Containerfile"} {
 		artifact := readArtifact(t, name)

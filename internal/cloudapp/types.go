@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	ErrInvalid          = errors.New("invalid cloud control request")
-	ErrNotFound         = errors.New("cloud control entity not found")
-	ErrForbidden        = errors.New("cloud control caller is not authorized for this entity")
-	ErrRevisionConflict = errors.New("cloud control revision conflict")
-	ErrApprovalRequired = errors.New("valid device approval is required")
-	ErrQuoteExpired     = errors.New("cloud quote expired or scope changed")
-	ErrUnavailable      = errors.New("cloud provider unavailable")
+	ErrInvalid            = errors.New("invalid cloud control request")
+	ErrNotFound           = errors.New("cloud control entity not found")
+	ErrForbidden          = errors.New("cloud control caller is not authorized for this entity")
+	ErrRevisionConflict   = errors.New("cloud control revision conflict")
+	ErrApprovalRequired   = errors.New("valid device approval is required")
+	ErrQuoteExpired       = errors.New("cloud quote expired or scope changed")
+	ErrCapabilityNotReady = errors.New("worker-control PrivateLink capability is not ready")
+	ErrUnavailable        = errors.New("cloud provider unavailable")
 )
 
 type MutationScope struct {
@@ -34,6 +35,12 @@ type Capabilities struct {
 	DirectSTS bool
 	Worker    bool
 	Reaper    bool
+}
+
+// WorkerControlPrivateLinkCapability is the process-local readiness seam for
+// every operation whose signed or provider scope contains worker_control.
+type WorkerControlPrivateLinkCapability interface {
+	WorkerControlPrivateLinkReady() bool
 }
 
 type AWSIdentity struct {

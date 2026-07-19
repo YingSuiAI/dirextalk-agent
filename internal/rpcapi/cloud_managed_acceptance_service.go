@@ -9,12 +9,15 @@ import (
 )
 
 func (service *CloudControlService) CreateCloudManagedAcceptanceChallenge(ctx context.Context, request *agentv1.CreateCloudManagedAcceptanceChallengeRequest) (*agentv1.CreateCloudManagedAcceptanceChallengeResponse, error) {
-	if service.managed == nil {
-		return nil, cloudUnavailable()
-	}
 	caller, err := cloudMutationScope(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
+	if service.managed == nil {
+		return nil, cloudUnavailable()
 	}
 	value, err := service.managed.Prepare(ctx, managed.PrepareCommand{ClientID: caller.ClientID, CredentialID: caller.CredentialID,
 		IdempotencyKey: request.GetIdempotencyKey(), OwnerID: request.GetOwnerId(), DeploymentID: request.GetDeploymentId(),
@@ -29,12 +32,15 @@ func (service *CloudControlService) CreateCloudManagedAcceptanceChallenge(ctx co
 	return &agentv1.CreateCloudManagedAcceptanceChallengeResponse{Challenge: challenge}, nil
 }
 func (service *CloudControlService) ApproveCloudManagedAcceptance(ctx context.Context, request *agentv1.ApproveCloudManagedAcceptanceRequest) (*agentv1.ApproveCloudManagedAcceptanceResponse, error) {
-	if service.managed == nil {
-		return nil, cloudUnavailable()
-	}
 	caller, err := cloudMutationScope(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
+	if service.managed == nil {
+		return nil, cloudUnavailable()
 	}
 	approval, err := cloudApprovalFromProto(request.GetApproval())
 	if err != nil {

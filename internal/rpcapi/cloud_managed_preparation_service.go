@@ -11,12 +11,15 @@ import (
 )
 
 func (service *CloudControlService) CreateCloudManagedPreparation(ctx context.Context, request *agentv1.CreateCloudManagedPreparationRequest) (*agentv1.CreateCloudManagedPreparationResponse, error) {
-	if service.preparation == nil {
-		return nil, cloudUnavailable()
-	}
 	caller, err := cloudMutationScope(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
+	if service.preparation == nil {
+		return nil, cloudUnavailable()
 	}
 	if request == nil {
 		return nil, publicError(serviceoperation.ErrInvalid)
@@ -37,12 +40,15 @@ func (service *CloudControlService) CreateCloudManagedPreparation(ctx context.Co
 }
 
 func (service *CloudControlService) ApproveCloudManagedPreparation(ctx context.Context, request *agentv1.ApproveCloudManagedPreparationRequest) (*agentv1.ApproveCloudManagedPreparationResponse, error) {
-	if service.preparation == nil {
-		return nil, cloudUnavailable()
-	}
 	caller, err := cloudMutationScope(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
+	if service.preparation == nil {
+		return nil, cloudUnavailable()
 	}
 	if request == nil || request.GetApproval() == nil || request.GetApproval().GetApprovalId() != request.GetOperationId() ||
 		len(request.GetApproval().GetSignature()) != ed25519.SignatureSize || request.GetApproval().GetExpiresAt() == nil ||

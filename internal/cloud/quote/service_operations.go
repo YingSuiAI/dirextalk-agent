@@ -21,6 +21,7 @@ const (
 const (
 	WorkerControlPrivateLinkRegion   = "ap-northeast-3"
 	WorkerControlPrivateLinkHostname = "worker-control.y1.dirextalk.ai"
+	WorkerControlPrivateLinkEndpoint = "grpcs://worker-control.y1.dirextalk.ai:443"
 )
 
 var workerControlPrivateLinkServicePattern = regexp.MustCompile(`^com\.amazonaws\.vpce\.ap-northeast-3\.vpce-svc-[0-9a-f]{17}$`)
@@ -285,7 +286,7 @@ func PrivateEndpointServiceName(region string, service PrivateEndpointServiceV1)
 // consumer identity. It deliberately rejects an arbitrary endpoint service or
 // hostname before either can enter a quote, plan, approval, or provider call.
 func ValidateWorkerControlPrivateLink(endpoint, serviceName string) error {
-	if endpoint != "grpcs://"+WorkerControlPrivateLinkHostname+":443" || !workerControlPrivateLinkServicePattern.MatchString(serviceName) {
+	if endpoint != WorkerControlPrivateLinkEndpoint || !workerControlPrivateLinkServicePattern.MatchString(serviceName) {
 		return fmt.Errorf("worker control PrivateLink identity is invalid")
 	}
 	return nil

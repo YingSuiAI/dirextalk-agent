@@ -31,6 +31,12 @@ type cloudCoordinatorStub struct {
 	challenge     cloudapp.Challenge
 }
 
+type stagedRPCIdentity struct{}
+
+func (stagedRPCIdentity) PreviewIdentity(context.Context, string, string, uint64, string) (cloudapp.AWSIdentityEvidence, error) {
+	return cloudapp.AWSIdentityEvidence{}, nil
+}
+
 func (stub *cloudCoordinatorStub) Capabilities(context.Context) cloudapp.Capabilities {
 	return cloudapp.Capabilities{AWS: true, DirectSTS: true, Worker: true, Reaper: true}
 }
@@ -101,6 +107,60 @@ func TestCloudControlServiceMapsCallerAndKeepsAgentInstanceServerOwned(t *testin
 		response.GetTargetId() == "" || response.GetIdentity().GetRegion() != "us-east-1" ||
 		response.GetObservedAt().AsTime().Nanosecond() != 123000000 || !response.GetObservedAt().AsTime().Before(response.GetExpiresAt().AsTime()) {
 		t.Fatalf("preview evidence response=%#v", response)
+	}
+}
+
+func TestStagedWorkerControlCapabilityFailsClosedAcrossCloudMutationSurfaces(t *testing.T) {
+	coordinator, err := cloudapp.NewStagedAWSService(uuid.NewString(), stagedRPCIdentity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCloudControlService(coordinator, uuid.NewString())
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	operations := []struct {
+		name string
+		call func() error
+	}{
+		{name: "quote", call: func() error {
+			_, err := service.CreateCloudQuote(ctx, &agentv1.CreateCloudQuoteRequest{})
+			return err
+		}},
+		{name: "plan", call: func() error {
+			_, err := service.CreateCloudPlan(ctx, &agentv1.CreateCloudPlanRequest{})
+			return err
+		}},
+		{name: "cloud Goal plan", call: func() error {
+			_, err := service.CreateCloudGoal(ctx, &agentv1.CreateCloudGoalRequest{})
+			return err
+		}},
+		{name: "approval", call: func() error {
+			_, err := service.ApproveCloudPlan(ctx, &agentv1.ApproveCloudPlanRequest{})
+			return err
+		}},
+		{name: "Foundation", call: func() error {
+			_, err := service.CreateAwsFoundationOperationChallenge(ctx, &agentv1.CreateAwsFoundationOperationChallengeRequest{})
+			return err
+		}},
+		{name: "Managed preparation", call: func() error {
+			_, err := service.CreateCloudManagedPreparation(ctx, &agentv1.CreateCloudManagedPreparationRequest{})
+			return err
+		}},
+		{name: "Managed acceptance", call: func() error {
+			_, err := service.CreateCloudManagedAcceptanceChallenge(ctx, &agentv1.CreateCloudManagedAcceptanceChallengeRequest{})
+			return err
+		}},
+		{name: "Managed lifecycle", call: func() error {
+			_, err := service.PrepareManagedKnowledgeLifecycle(ctx, &agentv1.PrepareManagedKnowledgeLifecycleRequest{})
+			return err
+		}},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			err := operation.call()
+			if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "worker-control PrivateLink capability is not ready" {
+				t.Fatalf("error=%v, want stable capability-not-ready FailedPrecondition", err)
+			}
+		})
 	}
 }
 

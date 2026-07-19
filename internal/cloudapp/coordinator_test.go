@@ -82,6 +82,57 @@ func (engine *coordinatorApprovals) Verify(context.Context, cloudapproval.Approv
 	return engine.verifyErr
 }
 
+type stagedIdentityPreviewer struct{ calls int }
+
+func (previewer *stagedIdentityPreviewer) PreviewIdentity(context.Context, string, string, uint64, string) (AWSIdentityEvidence, error) {
+	previewer.calls++
+	return AWSIdentityEvidence{}, nil
+}
+
+func TestStagedAWSServiceExposesOnlyIdentityPreviewBeforeWorkerControlPrivateLinkIsReady(t *testing.T) {
+	identity := &stagedIdentityPreviewer{}
+	service, err := NewStagedAWSService(testAgentID, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := service.Capabilities(context.Background())
+	if !capabilities.AWS || !capabilities.DirectSTS || capabilities.Worker || capabilities.Reaper {
+		t.Fatalf("staged capabilities=%#v", capabilities)
+	}
+	scope := MutationScope{ClientID: "message-server", CredentialID: testCredentialID}
+	if _, err := service.PreviewAWSIdentity(context.Background(), scope, "session", 1, "ap-northeast-3"); err != nil || identity.calls != 1 {
+		t.Fatalf("identity preview calls=%d error=%v", identity.calls, err)
+	}
+	operations := []struct {
+		name string
+		call func() error
+	}{
+		{name: "quote", call: func() error {
+			_, err := service.CreateQuote(context.Background(), scope, CreateQuoteCommand{})
+			return err
+		}},
+		{name: "plan", call: func() error {
+			_, err := service.CreatePlan(context.Background(), scope, CreatePlanCommand{})
+			return err
+		}},
+		{name: "approval", call: func() error {
+			_, err := service.ApprovePlan(context.Background(), scope, ApprovePlanCommand{})
+			return err
+		}},
+		{name: "Foundation", call: func() error {
+			_, err := service.EstablishAWSConnection(context.Background(), scope, EstablishConnectionCommand{})
+			return err
+		}},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			if err := operation.call(); !errors.Is(err, ErrCapabilityNotReady) {
+				t.Fatalf("error=%v, want capability not ready", err)
+			}
+		})
+	}
+}
+
 func TestCoordinatorChallengeApprovalIDIsStableAndCallerBound(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 8, 0, 0, 0, time.UTC)
 	plan := coordinatorPlan(now)

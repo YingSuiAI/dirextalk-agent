@@ -124,8 +124,13 @@ func LoadServer() (Server, error) {
 		if server.AWSReaperImageURI == "" {
 			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI is required when AWS cloud control is enabled")
 		}
-		if cloudquote.ValidateWorkerControlPrivateLink(server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil {
+		if server.WorkerControlEndpoint != cloudquote.WorkerControlPrivateLinkEndpoint ||
+			(server.WorkerControlEndpointServiceName != "" &&
+				cloudquote.ValidateWorkerControlPrivateLink(server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil) {
 			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT and AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME must be the frozen worker-control.y1.dirextalk.ai:443 and ap-northeast-3 PrivateLink service when AWS cloud control is enabled")
+		}
+		if server.EnableManagedPreparationAWS && server.WorkerControlEndpointServiceName == "" {
+			return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS requires AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")
 		}
 	}
 	return server, nil

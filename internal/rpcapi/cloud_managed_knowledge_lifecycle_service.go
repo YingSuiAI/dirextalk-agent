@@ -16,6 +16,9 @@ func (service *CloudControlService) PrepareManagedKnowledgeLifecycle(ctx context
 	if err != nil {
 		return nil, err
 	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
+		return nil, err
+	}
 	if service.managedLifecycle == nil || request == nil {
 		return nil, managedKnowledgeLifecyclePublicError(managedlifecycle.ErrInvalid)
 	}
@@ -43,6 +46,9 @@ func (service *CloudControlService) PrepareManagedKnowledgeLifecycle(ctx context
 func (service *CloudControlService) ApproveManagedKnowledgeLifecycle(ctx context.Context, request *agentv1.ApproveManagedKnowledgeLifecycleRequest) (*agentv1.ApproveManagedKnowledgeLifecycleResponse, error) {
 	caller, err := cloudMutationScope(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := service.requireWorkerControlPrivateLink(ctx); err != nil {
 		return nil, err
 	}
 	if service.managedLifecycle == nil || request == nil || request.GetApproval() == nil {
