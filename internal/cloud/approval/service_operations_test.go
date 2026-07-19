@@ -92,15 +92,19 @@ func TestPlanV1RejectsServiceOperationFields(t *testing.T) {
 func TestPrivateNetworkFactsChangePlanHashAndSigningPayload(t *testing.T) {
 	plan := validPlan()
 	plan.SchemaVersion = PlanSchemaV2
+	plan.ResourceScope.Region = cloudquote.WorkerControlPrivateLinkRegion
+	plan.ResourceScope.AvailabilityZones = []string{"ap-northeast-3a"}
 	plan.NetworkScope = NetworkScopeV1{
 		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
 		SecurityGroupMode: SecurityGroupCreateDedicated, EntryPoint: EntryPointNone,
-		RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://agent.example.com:443",
+		RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://worker-control.y1.dirextalk.ai:443",
 		PrivateConnectivity: PrivateConnectivityNoNATEndpointsV1,
 	}
 	plan.ServiceOperations = &ServiceOperationScopeV1{PrivateEndpoints: []PrivateEndpointOperationSpecV1{
 		{OperationKey: "worker-s3-gateway", Service: PrivateEndpointServiceS3, EndpointType: PrivateEndpointTypeGateway},
 		{OperationKey: "worker-secretsmanager-interface", Service: PrivateEndpointServiceSecretsManager, EndpointType: PrivateEndpointTypeInterface,
+			SecurityGroupSource: EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
+		{OperationKey: "worker-worker-control-interface", Service: PrivateEndpointServiceWorkerControl, ServiceName: "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", EndpointType: PrivateEndpointTypeInterface,
 			SecurityGroupSource: EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
 	}}
 	if err := refreshServiceOperationScopeDigest(&plan); err != nil {

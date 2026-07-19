@@ -23,19 +23,20 @@ type Common struct {
 
 type Server struct {
 	Common
-	ListenAddress               string
-	TLSCertFile                 string
-	TLSKeyFile                  string
-	PepperFile                  string
-	MasterKeyFile               string
-	MountedSecretsDir           string
-	ModelProfilesFile           string
-	MCPServersFile              string
-	EnableAWSControl            bool
-	EnableManagedPreparationAWS bool
-	AWSReaperImageURI           string
-	WorkerControlEndpoint       string
-	WorkerAMIPublicationFile    string
+	ListenAddress                    string
+	TLSCertFile                      string
+	TLSKeyFile                       string
+	PepperFile                       string
+	MasterKeyFile                    string
+	MountedSecretsDir                string
+	ModelProfilesFile                string
+	MCPServersFile                   string
+	EnableAWSControl                 bool
+	EnableManagedPreparationAWS      bool
+	AWSReaperImageURI                string
+	WorkerControlEndpoint            string
+	WorkerControlEndpointServiceName string
+	WorkerAMIPublicationFile         string
 }
 
 func LoadCommon() (Common, error) {
@@ -64,16 +65,17 @@ func LoadServer() (Server, error) {
 	}
 	server := Server{
 		Common: common, ListenAddress: strings.TrimSpace(os.Getenv("AGENT_GRPC_LISTEN")),
-		TLSCertFile:              strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
-		TLSKeyFile:               strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
-		PepperFile:               strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
-		MasterKeyFile:            strings.TrimSpace(os.Getenv("AGENT_MASTER_KEY_FILE")),
-		MountedSecretsDir:        strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
-		ModelProfilesFile:        strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
-		MCPServersFile:           strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
-		AWSReaperImageURI:        strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
-		WorkerControlEndpoint:    strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
-		WorkerAMIPublicationFile: strings.TrimSpace(os.Getenv("AGENT_WORKER_AMI_PUBLICATION_FILE")),
+		TLSCertFile:                      strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
+		TLSKeyFile:                       strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
+		PepperFile:                       strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
+		MasterKeyFile:                    strings.TrimSpace(os.Getenv("AGENT_MASTER_KEY_FILE")),
+		MountedSecretsDir:                strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
+		ModelProfilesFile:                strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
+		MCPServersFile:                   strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
+		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
+		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
+		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
+		WorkerAMIPublicationFile:         strings.TrimSpace(os.Getenv("AGENT_WORKER_AMI_PUBLICATION_FILE")),
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_ENABLE_AWS_CONTROL"))) {
 	case "", "false":
@@ -122,8 +124,8 @@ func LoadServer() (Server, error) {
 		if server.AWSReaperImageURI == "" {
 			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI is required when AWS cloud control is enabled")
 		}
-		if cloudquote.ValidatePrivateControlPlaneEndpoint(server.WorkerControlEndpoint) != nil {
-			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT must be a credential-free grpcs endpoint with explicit port 443 when AWS cloud control is enabled")
+		if cloudquote.ValidateWorkerControlPrivateLink(server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil {
+			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT and AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME must be the frozen worker-control.y1.dirextalk.ai:443 and ap-northeast-3 PrivateLink service when AWS cloud control is enabled")
 		}
 	}
 	return server, nil

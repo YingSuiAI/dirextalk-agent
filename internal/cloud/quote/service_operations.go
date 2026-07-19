@@ -2,6 +2,7 @@ package quote
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
@@ -14,7 +15,15 @@ type PrivateEndpointServiceV1 string
 const (
 	PrivateEndpointServiceS3             PrivateEndpointServiceV1 = "s3"
 	PrivateEndpointServiceSecretsManager PrivateEndpointServiceV1 = "secretsmanager"
+	PrivateEndpointServiceWorkerControl  PrivateEndpointServiceV1 = "worker_control"
 )
+
+const (
+	WorkerControlPrivateLinkRegion   = "ap-northeast-3"
+	WorkerControlPrivateLinkHostname = "worker-control.y1.dirextalk.ai"
+)
+
+var workerControlPrivateLinkServicePattern = regexp.MustCompile(`^com\.amazonaws\.vpce\.ap-northeast-3\.vpce-svc-[0-9a-f]{17}$`)
 
 type PrivateEndpointTypeV1 string
 
@@ -47,8 +56,12 @@ type ServiceOperationScopeV1 struct {
 }
 
 type PrivateEndpointOperationSpecV1 struct {
-	OperationKey        string                        `json:"operation_key"`
-	Service             PrivateEndpointServiceV1      `json:"service"`
+	OperationKey string                   `json:"operation_key"`
+	Service      PrivateEndpointServiceV1 `json:"service"`
+	// ServiceName is populated only for the operator-frozen PrivateLink
+	// worker-control service. AWS-managed service names remain derived from
+	// the regional allowlist and cannot be supplied by callers.
+	ServiceName         string                        `json:"service_name,omitempty"`
 	SecurityGroupSource EndpointSecurityGroupSourceV1 `json:"security_group_source"`
 	PrivateDNSEnabled   bool                          `json:"private_dns_enabled"`
 	MonthlyHours        uint32                        `json:"monthly_hours"`
@@ -93,7 +106,7 @@ func ValidateServiceOperations(value ServiceOperationScopeV1, resource ResourceS
 		return fmt.Errorf("service_operations exceed the supported operation budget")
 	}
 	seenKeys := make(map[string]struct{}, len(value.PrivateEndpoints)+len(value.Snapshots))
-	var gatewayS3, interfaceSecrets int
+	var gatewayS3, interfaceSecrets, interfaceWorkerControl int
 	for index, endpoint := range value.PrivateEndpoints {
 		name := fmt.Sprintf("service_operations.private_endpoints[%d]", index)
 		if err := validateIdentifier(name+".operation_key", endpoint.OperationKey); err != nil {
@@ -103,14 +116,14 @@ func ValidateServiceOperations(value ServiceOperationScopeV1, resource ResourceS
 			return fmt.Errorf("service_operations contain duplicate operation keys")
 		}
 		seenKeys[endpoint.OperationKey] = struct{}{}
-		if endpoint.Service != PrivateEndpointServiceS3 && endpoint.Service != PrivateEndpointServiceSecretsManager {
+		if endpoint.Service != PrivateEndpointServiceS3 && endpoint.Service != PrivateEndpointServiceSecretsManager && endpoint.Service != PrivateEndpointServiceWorkerControl {
 			return fmt.Errorf("%s.service is not in the approved endpoint allowlist", name)
 		}
 		typeValue := EffectivePrivateEndpointType(endpoint.EndpointType)
 		switch typeValue {
 		case PrivateEndpointTypeGateway:
 			if network.PrivateConnectivity != PrivateConnectivityNoNATEndpointsV1 || endpoint.Service != PrivateEndpointServiceS3 ||
-				endpoint.SecurityGroupSource != "" || endpoint.PrivateDNSEnabled || endpoint.MonthlyHours != 0 || endpoint.DataMiBPerMonth != 0 {
+				endpoint.ServiceName != "" || endpoint.SecurityGroupSource != "" || endpoint.PrivateDNSEnabled || endpoint.MonthlyHours != 0 || endpoint.DataMiBPerMonth != 0 {
 				return fmt.Errorf("%s gateway endpoint scope is invalid", name)
 			}
 			gatewayS3++
@@ -118,21 +131,31 @@ func ValidateServiceOperations(value ServiceOperationScopeV1, resource ResourceS
 			switch endpoint.SecurityGroupSource {
 			case EndpointSecurityGroupPlanExisting:
 				if endpoint.EndpointType != "" || endpoint.Service != PrivateEndpointServiceS3 ||
-					normalizedSecurityGroupMode(network) != SecurityGroupExisting || network.SecurityGroupID == "" {
+					endpoint.ServiceName != "" || normalizedSecurityGroupMode(network) != SecurityGroupExisting || network.SecurityGroupID == "" {
 					return fmt.Errorf("%s.security_group_source requires the exact plan existing security group", name)
 				}
 			case EndpointSecurityGroupWorkerDedicated:
 				if endpoint.EndpointType != "" || endpoint.Service != PrivateEndpointServiceS3 ||
-					normalizedSecurityGroupMode(network) != SecurityGroupCreateDedicated || network.SecurityGroupID != "" {
+					endpoint.ServiceName != "" || normalizedSecurityGroupMode(network) != SecurityGroupCreateDedicated || network.SecurityGroupID != "" {
 					return fmt.Errorf("%s.security_group_source requires the plan worker dedicated security group", name)
 				}
 			case EndpointSecurityGroupEndpointDedicatedFromWorker:
 				if endpoint.EndpointType != PrivateEndpointTypeInterface || network.PrivateConnectivity != PrivateConnectivityNoNATEndpointsV1 ||
 					normalizedSecurityGroupMode(network) != SecurityGroupCreateDedicated || network.SecurityGroupID != "" ||
-					endpoint.Service != PrivateEndpointServiceSecretsManager || !endpoint.PrivateDNSEnabled {
+					(endpoint.Service != PrivateEndpointServiceSecretsManager && endpoint.Service != PrivateEndpointServiceWorkerControl) || !endpoint.PrivateDNSEnabled {
 					return fmt.Errorf("%s endpoint-dedicated security group scope is invalid", name)
 				}
-				interfaceSecrets++
+				if endpoint.Service == PrivateEndpointServiceSecretsManager {
+					if endpoint.ServiceName != "" {
+						return fmt.Errorf("%s Secrets Manager service name must be derived", name)
+					}
+					interfaceSecrets++
+				} else {
+					if resource.Region != WorkerControlPrivateLinkRegion || ValidateWorkerControlPrivateLink(network.ControlPlaneEndpoint, endpoint.ServiceName) != nil {
+						return fmt.Errorf("%s worker-control service identity is invalid", name)
+					}
+					interfaceWorkerControl++
+				}
 			default:
 				return fmt.Errorf("%s.security_group_source is invalid", name)
 			}
@@ -143,8 +166,8 @@ func ValidateServiceOperations(value ServiceOperationScopeV1, resource ResourceS
 			return fmt.Errorf("%s.endpoint_type is invalid", name)
 		}
 	}
-	if network.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 && (len(value.PrivateEndpoints) != 2 || gatewayS3 != 1 || interfaceSecrets != 1) {
-		return fmt.Errorf("service_operations must contain exactly the S3 Gateway and Secrets Manager Interface endpoints")
+	if network.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 && (len(value.PrivateEndpoints) != 3 || gatewayS3 != 1 || interfaceSecrets != 1 || interfaceWorkerControl != 1) {
+		return fmt.Errorf("service_operations must contain exactly the S3 Gateway, Secrets Manager Interface, and Worker Control Interface endpoints")
 	}
 	slots := make(map[string]VolumeScopeV1, len(resource.VolumeScopes))
 	for _, slot := range resource.VolumeScopes {
@@ -256,6 +279,16 @@ func PrivateEndpointServiceName(region string, service PrivateEndpointServiceV1)
 		return "", fmt.Errorf("private endpoint service scope is invalid")
 	}
 	return "com.amazonaws." + region + "." + string(service), nil
+}
+
+// ValidateWorkerControlPrivateLink freezes the only Agent-owned PrivateLink
+// consumer identity. It deliberately rejects an arbitrary endpoint service or
+// hostname before either can enter a quote, plan, approval, or provider call.
+func ValidateWorkerControlPrivateLink(endpoint, serviceName string) error {
+	if endpoint != "grpcs://"+WorkerControlPrivateLinkHostname+":443" || !workerControlPrivateLinkServicePattern.MatchString(serviceName) {
+		return fmt.Errorf("worker control PrivateLink identity is invalid")
+	}
+	return nil
 }
 
 // EffectivePrivateEndpointType preserves the frozen V2 contract: endpoint

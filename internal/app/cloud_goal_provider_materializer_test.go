@@ -164,8 +164,8 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 	}
 	if fixture.placements.request.Placement.PublicIPv4 || fixture.placements.request.Placement.RuntimeHoursPerMonth != cloudGoalRuntimeHours ||
 		fixture.placements.request.Placement.PrivateConnectivity != cloudquote.PrivateConnectivityNoNATEndpointsV1 ||
-		fixture.placements.request.Placement.ControlPlaneEndpoint != "grpcs://agent.example.com:443" ||
-		fixture.placements.request.Placement.PrivateEndpointDataMiB != cloudGoalEndpointDataMiB ||
+		fixture.placements.request.Placement.ControlPlaneEndpoint != "grpcs://worker-control.y1.dirextalk.ai:443" ||
+		fixture.placements.request.Placement.PrivateEndpointDataMiB != 2*cloudGoalEndpointDataMiB ||
 		fixture.placements.request.Placement.Requirements.MinVCPU != 2 || fixture.placements.request.Placement.Requirements.MinMemoryMiB != 4096 ||
 		fixture.placements.request.Placement.Requirements.MinDiskGiB != 40 {
 		t.Fatalf("placement request=%#v", fixture.placements.request)
@@ -182,8 +182,8 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 	}
 	for _, candidate := range materialized.Quote.Candidates {
 		if candidate.Scope.SchemaVersion != cloudquote.ScopeSchemaV2 || candidate.Scope.Network.RouteTableID != "rtb-0123456789abcdef0" ||
-			candidate.Scope.Network.ControlPlaneEndpoint != "grpcs://agent.example.com:443" || candidate.Scope.ServiceOperations == nil ||
-			!sameCloudGoalEndpointOperations(*candidate.Scope.ServiceOperations) {
+			candidate.Scope.Network.ControlPlaneEndpoint != "grpcs://worker-control.y1.dirextalk.ai:443" || candidate.Scope.ServiceOperations == nil ||
+			!sameCloudGoalEndpointOperations(*candidate.Scope.ServiceOperations, "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0") {
 			t.Fatalf("private endpoint scope=%#v", candidate.Scope)
 		}
 	}
@@ -353,13 +353,13 @@ func newCloudGoalProviderFixture(t *testing.T) *cloudGoalProviderFixture {
 		Draft:      planning.RecipeDraft{RecipeID: recipeValue.RecipeID, Recipe: recipeValue, Digest: digest, Revision: 1},
 		Candidates: cloudGoalProviderCandidates(), QuoteID: quoteID, PlanID: planID,
 	}
-	connection := cloudapp.Connection{ConnectionID: connectionID, OwnerID: "owner-1", AccountID: "123456789012", Region: "us-east-1", Status: "active", Revision: 1}
+	connection := cloudapp.Connection{ConnectionID: connectionID, OwnerID: "owner-1", AccountID: "123456789012", Region: cloudquote.WorkerControlPrivateLinkRegion, Status: "active", Revision: 1}
 	connections := &cloudGoalConnectionFake{connection: connection}
 	placements := &cloudGoalPlacementFake{placement: cloudGoalProviderPlacement()}
 	quotes := &cloudGoalQuoteFake{now: now}
 	facts := newCloudGoalFactsFake()
 	secrets := &cloudGoalSecretLocatorFake{}
-	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, "grpcs://agent.example.com:443", func() time.Time { return now })
+	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,11 +376,11 @@ func cloudGoalProviderCandidates() []planning.ResourceCandidateV1 {
 
 func cloudGoalProviderPlacement() awsprovider.PlacementV1 {
 	result := awsprovider.PlacementV1{
-		Region: "us-east-1", AvailabilityZone: "us-east-1a",
+		Region: cloudquote.WorkerControlPrivateLinkRegion, AvailabilityZone: "ap-northeast-3a",
 		Network: cloudquote.NetworkScopeV1{
 			VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0", SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated,
 			PublicIPv4: false, EntryPoint: cloudquote.EntryPointNone, RouteTableID: "rtb-0123456789abcdef0",
-			ControlPlaneEndpoint: "grpcs://agent.example.com:443", PrivateConnectivity: cloudquote.PrivateConnectivityNoNATEndpointsV1,
+			ControlPlaneEndpoint: "grpcs://worker-control.y1.dirextalk.ai:443", PrivateConnectivity: cloudquote.PrivateConnectivityNoNATEndpointsV1,
 		},
 		Usage: cloudGoalUsage(),
 	}
@@ -388,7 +388,7 @@ func cloudGoalProviderPlacement() awsprovider.PlacementV1 {
 	for index, candidate := range cloudGoalProviderCandidates() {
 		result.Candidates = append(result.Candidates, awsprovider.PlacementCandidateV1{
 			Profile: profiles[index], InstanceType: []string{"m7i.large", "m7i.xlarge", "m7i.2xlarge"}[index], Architecture: candidate.Architecture,
-			VCPU: candidate.VCPU, MemoryMiB: candidate.MemoryMiB, DiskGiB: candidate.DiskGiB, AvailabilityZones: []string{"us-east-1a"},
+			VCPU: candidate.VCPU, MemoryMiB: candidate.MemoryMiB, DiskGiB: candidate.DiskGiB, AvailabilityZones: []string{"ap-northeast-3a"},
 		})
 	}
 	return result

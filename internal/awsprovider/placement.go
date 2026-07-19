@@ -29,6 +29,7 @@ var (
 // has no RunInstances, CreateSecurityGroup, AllocateAddress, or other mutation.
 type PlacementEC2ReadAPI interface {
 	DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error)
+	DescribeVpcAttribute(context.Context, *ec2.DescribeVpcAttributeInput, ...func(*ec2.Options)) (*ec2.DescribeVpcAttributeOutput, error)
 	DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
 	DescribeAvailabilityZones(context.Context, *ec2.DescribeAvailabilityZonesInput, ...func(*ec2.Options)) (*ec2.DescribeAvailabilityZonesOutput, error)
 	DescribeRouteTables(context.Context, *ec2.DescribeRouteTablesInput, ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error)
@@ -127,7 +128,7 @@ func (resolver *PlacementResolver) Resolve(ctx context.Context, request Placemen
 			usage.PublicIPv4Hours = request.RuntimeHoursPerMonth
 		}
 		if request.PrivateConnectivity == cloudquote.PrivateConnectivityNoNATEndpointsV1 {
-			usage.PrivateEndpointHours = request.RuntimeHoursPerMonth
+			usage.PrivateEndpointHours = 2 * request.RuntimeHoursPerMonth
 			usage.PrivateEndpointDataMiB = request.PrivateEndpointDataMiB
 		}
 		return PlacementV1{
@@ -306,13 +307,22 @@ func (resolver *PlacementResolver) readVPCs(ctx context.Context) (map[string]boo
 		}
 		for _, value := range output.Vpcs {
 			id := aws.ToString(value.VpcId)
-			if id != "" && value.State == ec2types.VpcStateAvailable {
+			if id != "" && value.State == ec2types.VpcStateAvailable && resolver.vpcPrivateDNSReady(ctx, id) {
 				result[id] = result[id] || aws.ToBool(value.IsDefault)
 			}
 		}
 		return output.NextToken, nil
 	})
 	return result, err
+}
+
+func (resolver *PlacementResolver) vpcPrivateDNSReady(ctx context.Context, vpcID string) bool {
+	support, err := resolver.client.DescribeVpcAttribute(ctx, &ec2.DescribeVpcAttributeInput{VpcId: aws.String(vpcID), Attribute: ec2types.VpcAttributeNameEnableDnsSupport})
+	if err != nil || support == nil || aws.ToString(support.VpcId) != vpcID || support.EnableDnsSupport == nil || !aws.ToBool(support.EnableDnsSupport.Value) {
+		return false
+	}
+	hostnames, err := resolver.client.DescribeVpcAttribute(ctx, &ec2.DescribeVpcAttributeInput{VpcId: aws.String(vpcID), Attribute: ec2types.VpcAttributeNameEnableDnsHostnames})
+	return err == nil && hostnames != nil && aws.ToString(hostnames.VpcId) == vpcID && hostnames.EnableDnsHostnames != nil && aws.ToBool(hostnames.EnableDnsHostnames.Value)
 }
 
 func (resolver *PlacementResolver) readSubnets(ctx context.Context) ([]ec2types.Subnet, error) {

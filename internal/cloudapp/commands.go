@@ -71,6 +71,20 @@ func (command CreateQuoteCommand) Validate() error {
 	if err := request.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
+	// Worker Control PrivateLink is operator-owned configuration, not caller
+	// input. The internal Cloud Goal materializer obtains the frozen pair from
+	// Server configuration and persists its independently read-back quote; the
+	// public quote command must never become an opaque endpoint-service tunnel.
+	for _, scope := range validationScopes {
+		if scope.ServiceOperations == nil {
+			continue
+		}
+		for _, endpoint := range scope.ServiceOperations.PrivateEndpoints {
+			if endpoint.Service == cloudquote.PrivateEndpointServiceWorkerControl {
+				return ErrInvalid
+			}
+		}
+	}
 	return nil
 }
 

@@ -132,6 +132,7 @@ enum CloudPrivateEndpointService {
   CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED = 0;
   CLOUD_PRIVATE_ENDPOINT_SERVICE_S3 = 1;
   CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER = 2;
+  CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL = 3;
 }
 
 enum CloudPrivateEndpointType {
@@ -161,6 +162,7 @@ message CloudPrivateEndpointOperation {
   uint32 monthly_hours = 5;
   uint64 data_mib_per_month = 6;
   CloudPrivateEndpointType endpoint_type = 7;
+  string service_name = 8;
 }
 
 message CloudSnapshotOperation {

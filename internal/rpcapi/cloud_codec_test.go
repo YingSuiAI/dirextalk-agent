@@ -73,6 +73,8 @@ func TestCloudPrivateEndpointCodecAndDescriptorPinAppendedFields(t *testing.T) {
 		{OperationKey: "worker-s3-gateway", Service: cloudquote.PrivateEndpointServiceS3, EndpointType: cloudquote.PrivateEndpointTypeGateway},
 		{OperationKey: "worker-secretsmanager-interface", Service: cloudquote.PrivateEndpointServiceSecretsManager, EndpointType: cloudquote.PrivateEndpointTypeInterface,
 			SecurityGroupSource: cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
+		{OperationKey: "worker-worker-control-interface", Service: cloudquote.PrivateEndpointServiceWorkerControl, ServiceName: "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", EndpointType: cloudquote.PrivateEndpointTypeInterface,
+			SecurityGroupSource: cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
 	}}
 	if got := cloudServiceOperationsFromProto(cloudServiceOperationsToProto(operations)); !reflect.DeepEqual(got, operations) {
 		t.Fatalf("private endpoint operations changed through codec: %#v", got)
@@ -86,8 +88,10 @@ func TestCloudPrivateEndpointCodecAndDescriptorPinAppendedFields(t *testing.T) {
 		}
 	}
 	endpointType := (&agentv1.CloudPrivateEndpointOperation{}).ProtoReflect().Descriptor().Fields().ByName("endpoint_type")
-	if endpointType == nil || endpointType.Number() != 7 ||
+	serviceName := (&agentv1.CloudPrivateEndpointOperation{}).ProtoReflect().Descriptor().Fields().ByName("service_name")
+	if endpointType == nil || endpointType.Number() != 7 || serviceName == nil || serviceName.Number() != 8 ||
 		agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER.Number() != 2 ||
+		agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL.Number() != 3 ||
 		agentv1.CloudEndpointSecurityGroupSource_CLOUD_ENDPOINT_SECURITY_GROUP_SOURCE_ENDPOINT_DEDICATED_FROM_WORKER.Number() != 3 {
 		t.Fatal("appended private endpoint descriptor numbers changed")
 	}

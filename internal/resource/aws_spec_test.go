@@ -227,12 +227,13 @@ func TestAWSEC2DependenciesAllowExactlyBothPrivateEndpoints(t *testing.T) {
 		{ResourceID: "volume-resource", Type: TypeEBS, ProviderID: "vol-0123456789abcdef0"},
 		{ResourceID: "s3-endpoint", Type: TypeEndpoint, ProviderID: "vpce-0123456789abcdef0"},
 		{ResourceID: "secrets-endpoint", Type: TypeEndpoint, ProviderID: "vpce-0fedcba9876543210"},
+		{ResourceID: "worker-control-endpoint", Type: TypeEndpoint, ProviderID: "vpce-0a1b2c3d4e5f67890"},
 	}
 	if err := ValidateAWSDependencies(TypeEC2, valid, workerInstanceSpec()); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateAWSDependencies(TypeEC2, valid[:3], workerInstanceSpec()); err == nil {
-		t.Fatal("EC2 accepted only one of the required private endpoints")
+	if err := ValidateAWSDependencies(TypeEC2, valid[:4], workerInstanceSpec()); err == nil {
+		t.Fatal("EC2 accepted an incomplete private endpoint graph")
 	}
 }
 

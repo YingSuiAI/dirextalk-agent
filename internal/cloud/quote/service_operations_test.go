@@ -81,20 +81,24 @@ func TestNoNATServiceOperationsBindExactGatewayAndSecretsInterfaceUsage(t *testi
 	for index := range request.Scopes {
 		scope := &request.Scopes[index]
 		scope.SchemaVersion = ScopeSchemaV2
+		scope.Resource.Region = WorkerControlPrivateLinkRegion
+		scope.Resource.AvailabilityZones = []string{"ap-northeast-3a"}
 		scope.Network = NetworkScopeV1{
 			VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
 			SecurityGroupMode: SecurityGroupCreateDedicated, EntryPoint: EntryPointNone,
-			RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://agent.example.com:443",
+			RouteTableID: "rtb-0123456789abcdef0", ControlPlaneEndpoint: "grpcs://worker-control.y1.dirextalk.ai:443",
 			PrivateConnectivity: PrivateConnectivityNoNATEndpointsV1,
 		}
 		scope.ServiceOperations = &ServiceOperationScopeV1{PrivateEndpoints: []PrivateEndpointOperationSpecV1{
 			{OperationKey: "worker-s3-gateway", Service: PrivateEndpointServiceS3, EndpointType: PrivateEndpointTypeGateway},
 			{OperationKey: "worker-secretsmanager-interface", Service: PrivateEndpointServiceSecretsManager, EndpointType: PrivateEndpointTypeInterface,
 				SecurityGroupSource: EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
+			{OperationKey: "worker-worker-control-interface", Service: PrivateEndpointServiceWorkerControl, ServiceName: "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", EndpointType: PrivateEndpointTypeInterface,
+				SecurityGroupSource: EndpointSecurityGroupEndpointDedicatedFromWorker, PrivateDNSEnabled: true, MonthlyHours: 730, DataMiBPerMonth: 1},
 		}}
 	}
-	request.Usage.PrivateEndpointHours = 730
-	request.Usage.PrivateEndpointDataMiB = 1
+	request.Usage.PrivateEndpointHours = 1460
+	request.Usage.PrivateEndpointDataMiB = 2
 	request.Usage.SnapshotGiBMonths = 0
 	if err := request.Validate(); err != nil {
 		t.Fatalf("valid no-NAT endpoint request: %v", err)
@@ -106,7 +110,7 @@ func TestNoNATServiceOperationsBindExactGatewayAndSecretsInterfaceUsage(t *testi
 	}{
 		{name: "route table", mutate: func(value *RequestV1) { value.Scopes[0].Network.RouteTableID = "" }},
 		{name: "control port", mutate: func(value *RequestV1) {
-			value.Scopes[0].Network.ControlPlaneEndpoint = "grpcs://agent.example.com:7443"
+			value.Scopes[0].Network.ControlPlaneEndpoint = "grpcs://worker-control.y1.dirextalk.ai:7443"
 		}},
 		{name: "gateway usage", mutate: func(value *RequestV1) { value.Scopes[0].ServiceOperations.PrivateEndpoints[0].MonthlyHours = 1 }},
 		{name: "interface service", mutate: func(value *RequestV1) {

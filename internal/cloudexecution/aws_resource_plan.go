@@ -24,19 +24,21 @@ import (
 // existing security group or an exclusive no-ingress security group, one
 // exclusive ENI, an optional outbound-only Elastic IP, and one exclusive EC2
 // instance. The no-NAT v2 path additionally materializes the exact signed S3
-// Gateway and Secrets Manager Interface endpoints before the Worker. Data
+// Gateway, Secrets Manager Interface, and operator-frozen Worker Control
+// Interface endpoints before the Worker. Data
 // volumes are explicit EBS ledger resources and are never silently folded into
 // the Worker root disk.
 type AWSResourcePlanBuilder struct {
-	agentInstanceID string
+	agentInstanceID          string
+	workerControlServiceName string
 }
 
-func NewAWSResourcePlanBuilder(agentInstanceID string) (*AWSResourcePlanBuilder, error) {
+func NewAWSResourcePlanBuilder(agentInstanceID, workerControlServiceName string) (*AWSResourcePlanBuilder, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil {
+	if err != nil || parsed == uuid.Nil || cloudquote.ValidateWorkerControlPrivateLink("grpcs://"+cloudquote.WorkerControlPrivateLinkHostname+":443", workerControlServiceName) != nil {
 		return nil, ErrInvalid
 	}
-	return &AWSResourcePlanBuilder{agentInstanceID: parsed.String()}, nil
+	return &AWSResourcePlanBuilder{agentInstanceID: parsed.String(), workerControlServiceName: workerControlServiceName}, nil
 }
 
 func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connection cloudapp.Connection, boundRecipe recipe.RecipeV1, operation Operation) ([]resource.ProvisionSpec, error) {
@@ -67,7 +69,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		return nil, ErrInvalid
 	}
 	if privateEndpoints && (plan.NetworkScope.ControlPlaneEndpoint != operation.Launch.ControlPlaneTarget ||
-		plan.NetworkScope.RouteTableID == "" || !validPrivateWorkerEndpointOperations(plan.ServiceOperations)) {
+		plan.NetworkScope.RouteTableID == "" || !validPrivateWorkerEndpointOperations(plan.ServiceOperations, builder.workerControlServiceName)) {
 		return nil, ErrInvalid
 	}
 	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, boundRecipe, cloudquote.RetentionScopeV1{
@@ -215,6 +217,24 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 			interfaceEndpoint.ResourceID, interfaceEndpoint.Type, interfaceEndpoint.LogicalName = interfaceID, resource.TypeEndpoint, "worker-secretsmanager-interface-endpoint"
 			interfaceEndpoint.SpecDigest, interfaceEndpoint.DependsOn, interfaceEndpoint.AWS = interfaceDigest, []string{endpointGroupID}, interfaceAWS
 			result = append(result, interfaceEndpoint)
+
+			workerControlID := deterministicID(operation.DeploymentID, "endpoint:worker-control-interface")
+			workerControlAWS := &resource.AWSResourceSpecV1{
+				SchemaVersion: resource.AWSResourceSpecSchemaV1,
+				Endpoint: &resource.AWSVPCEndpointSpecV1{
+					VPCID: plan.NetworkScope.VPCID, ServiceName: builder.workerControlServiceName,
+					EndpointType: resource.AWSVPCEndpointTypeInterface, SubnetID: plan.NetworkScope.SubnetID,
+					PrivateDNSEnabled: true,
+				},
+			}
+			workerControlDigest, digestErr := workerControlAWS.Digest(resource.TypeEndpoint)
+			if digestErr != nil {
+				return nil, ErrInvalid
+			}
+			workerControlEndpoint := common
+			workerControlEndpoint.ResourceID, workerControlEndpoint.Type, workerControlEndpoint.LogicalName = workerControlID, resource.TypeEndpoint, "worker-worker-control-interface-endpoint"
+			workerControlEndpoint.SpecDigest, workerControlEndpoint.DependsOn, workerControlEndpoint.AWS = workerControlDigest, []string{endpointGroupID}, workerControlAWS
+			result = append(result, workerControlEndpoint)
 		}
 	default:
 		return nil, ErrInvalid
@@ -242,6 +262,7 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		instanceDependencies = append(instanceDependencies,
 			deterministicID(operation.DeploymentID, "endpoint:s3-gateway"),
 			deterministicID(operation.DeploymentID, "endpoint:secretsmanager-interface"),
+			deterministicID(operation.DeploymentID, "endpoint:worker-control-interface"),
 		)
 	}
 	attachments := make([]resource.AWSDataVolumeAttachmentV1, 0, len(plan.ResourceScope.VolumeScopes))
@@ -302,22 +323,24 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	return result, nil
 }
 
-func validPrivateWorkerEndpointOperations(value *cloudapproval.ServiceOperationScopeV1) bool {
-	if value == nil || len(value.PrivateEndpoints) != 2 || len(value.Snapshots) != 0 {
+func validPrivateWorkerEndpointOperations(value *cloudapproval.ServiceOperationScopeV1, workerControlServiceName string) bool {
+	if value == nil || len(value.PrivateEndpoints) != 3 || len(value.Snapshots) != 0 {
 		return false
 	}
-	var gateway, secrets bool
+	var gateway, secrets, workerControl bool
 	for _, endpoint := range value.PrivateEndpoints {
 		switch {
 		case endpoint.Service == cloudapproval.PrivateEndpointServiceS3 && endpoint.EndpointType == cloudapproval.PrivateEndpointTypeGateway:
 			gateway = endpoint.SecurityGroupSource == "" && !endpoint.PrivateDNSEnabled && endpoint.MonthlyHours == 0 && endpoint.DataMiBPerMonth == 0
 		case endpoint.Service == cloudapproval.PrivateEndpointServiceSecretsManager && endpoint.EndpointType == cloudapproval.PrivateEndpointTypeInterface:
-			secrets = endpoint.SecurityGroupSource == cloudapproval.EndpointSecurityGroupEndpointDedicatedFromWorker && endpoint.PrivateDNSEnabled && endpoint.MonthlyHours > 0 && endpoint.DataMiBPerMonth > 0
+			secrets = endpoint.ServiceName == "" && endpoint.SecurityGroupSource == cloudapproval.EndpointSecurityGroupEndpointDedicatedFromWorker && endpoint.PrivateDNSEnabled && endpoint.MonthlyHours > 0 && endpoint.DataMiBPerMonth > 0
+		case endpoint.Service == cloudapproval.PrivateEndpointServiceWorkerControl && endpoint.EndpointType == cloudapproval.PrivateEndpointTypeInterface:
+			workerControl = endpoint.ServiceName == workerControlServiceName && endpoint.SecurityGroupSource == cloudapproval.EndpointSecurityGroupEndpointDedicatedFromWorker && endpoint.PrivateDNSEnabled && endpoint.MonthlyHours > 0 && endpoint.DataMiBPerMonth > 0
 		default:
 			return false
 		}
 	}
-	return gateway && secrets
+	return gateway && secrets && workerControl
 }
 
 func resourceInstallerTrust(operation Operation) (*installerbootstrap.RootTrustMaterialV1, error) {

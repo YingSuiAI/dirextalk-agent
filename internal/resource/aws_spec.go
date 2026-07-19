@@ -25,16 +25,17 @@ const (
 )
 
 var (
-	awsIDPattern           = regexp.MustCompile(`^(?:ami|vpc|subnet|sg|eni|vol|rtb)-[0-9a-f]{8,17}$`)
-	awsInstanceIDPattern   = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
-	awsInstanceTypePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
-	awsZonePattern         = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
-	awsProfilePattern      = regexp.MustCompile(`^dtx-agent-[a-z0-9-]{1,54}-worker$`)
-	awsHTTPPathPattern     = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
-	awsHostnamePattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
-	awsAccountIDPattern    = regexp.MustCompile(`^[0-9]{12}$`)
-	awsKMSPattern          = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
-	awsEndpointServiceName = regexp.MustCompile(`^com\.amazonaws\.[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+\.(?:s3|secretsmanager)$`)
+	awsIDPattern                        = regexp.MustCompile(`^(?:ami|vpc|subnet|sg|eni|vol|rtb)-[0-9a-f]{8,17}$`)
+	awsInstanceIDPattern                = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	awsInstanceTypePattern              = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*\.[a-z0-9]+$`)
+	awsZonePattern                      = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+[a-z]$`)
+	awsProfilePattern                   = regexp.MustCompile(`^dtx-agent-[a-z0-9-]{1,54}-worker$`)
+	awsHTTPPathPattern                  = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
+	awsHostnamePattern                  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	awsAccountIDPattern                 = regexp.MustCompile(`^[0-9]{12}$`)
+	awsKMSPattern                       = regexp.MustCompile(`^(?:alias/[A-Za-z0-9/_-]{1,240}|arn:(?:aws|aws-cn|aws-us-gov):kms:[a-z0-9-]+:[0-9]{12}:(?:key/[0-9a-f-]{36}|alias/[A-Za-z0-9/_-]{1,240}))$`)
+	awsEndpointServiceName              = regexp.MustCompile(`^com\.amazonaws\.[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+\.(?:s3|secretsmanager)$`)
+	awsWorkerControlEndpointServiceName = regexp.MustCompile(`^com\.amazonaws\.vpce\.ap-northeast-3\.vpce-svc-[0-9a-f]{17}$`)
 )
 
 type AWSMarketType string
@@ -654,7 +655,7 @@ func (spec AWSElasticIPSpecV1) validate() error {
 
 func (spec AWSVPCEndpointSpecV1) validate() error {
 	if !strings.HasPrefix(spec.VPCID, "vpc-") || !awsIDPattern.MatchString(spec.VPCID) ||
-		!awsEndpointServiceName.MatchString(spec.ServiceName) || security.ContainsLikelySecret(spec.ServiceName) {
+		(!awsEndpointServiceName.MatchString(spec.ServiceName) && !awsWorkerControlEndpointServiceName.MatchString(spec.ServiceName)) || security.ContainsLikelySecret(spec.ServiceName) {
 		return fmt.Errorf("%w: private endpoint scope is invalid", ErrInvalid)
 	}
 	switch spec.EffectiveEndpointType() {
@@ -684,7 +685,7 @@ func (spec AWSVPCEndpointSpecV1) validate() error {
 				}
 				seen[subnetID] = struct{}{}
 			}
-		} else if spec.EndpointType != AWSVPCEndpointTypeInterface || !strings.HasSuffix(spec.ServiceName, ".secretsmanager") ||
+		} else if spec.EndpointType != AWSVPCEndpointTypeInterface || (!strings.HasSuffix(spec.ServiceName, ".secretsmanager") && !awsWorkerControlEndpointServiceName.MatchString(spec.ServiceName)) ||
 			!validAWSSubnetID(spec.SubnetID) || len(spec.SubnetIDs) != 0 || spec.ExistingSecurityGroupID != "" || !spec.PrivateDNSEnabled {
 			return fmt.Errorf("%w: Secrets Manager interface endpoint scope is invalid", ErrInvalid)
 		}
@@ -908,7 +909,7 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 			return fmt.Errorf("%w: EBS snapshot requires exactly one source volume", ErrInvalid)
 		}
 	case TypeEC2:
-		if counts[TypeENI] != 1 || counts[TypeEBS] > 11 || (counts[TypeEndpoint] != 0 && counts[TypeEndpoint] != 2) ||
+		if counts[TypeENI] != 1 || counts[TypeEBS] > 11 || (counts[TypeEndpoint] != 0 && counts[TypeEndpoint] != 3) ||
 			len(dependencies) != counts[TypeENI]+counts[TypeEBS]+counts[TypeEndpoint] {
 			return fmt.Errorf("%w: EC2 requires one ENI and at most 11 EBS volumes", ErrInvalid)
 		}

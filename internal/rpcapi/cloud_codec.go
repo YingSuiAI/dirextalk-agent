@@ -237,6 +237,7 @@ func cloudServiceOperationsFromProto(value *agentv1.CloudServiceOperationScope) 
 	for _, endpoint := range value.GetPrivateEndpoints() {
 		result.PrivateEndpoints = append(result.PrivateEndpoints, cloudquote.PrivateEndpointOperationSpecV1{
 			OperationKey: endpoint.GetOperationKey(), Service: cloudPrivateEndpointServiceFromProto(endpoint.GetService()),
+			ServiceName:         endpoint.GetServiceName(),
 			SecurityGroupSource: cloudEndpointSecurityGroupSourceFromProto(endpoint.GetSecurityGroupSource()),
 			PrivateDNSEnabled:   endpoint.GetPrivateDnsEnabled(), MonthlyHours: endpoint.GetMonthlyHours(), DataMiBPerMonth: endpoint.GetDataMibPerMonth(),
 			EndpointType: cloudPrivateEndpointTypeFromProto(endpoint.GetEndpointType()),
@@ -260,6 +261,7 @@ func cloudServiceOperationsToProto(value *cloudquote.ServiceOperationScopeV1) *a
 	for _, endpoint := range value.PrivateEndpoints {
 		result.PrivateEndpoints = append(result.PrivateEndpoints, &agentv1.CloudPrivateEndpointOperation{
 			OperationKey: endpoint.OperationKey, Service: cloudPrivateEndpointServiceToProto(endpoint.Service),
+			ServiceName:         endpoint.ServiceName,
 			SecurityGroupSource: cloudEndpointSecurityGroupSourceToProto(endpoint.SecurityGroupSource),
 			PrivateDnsEnabled:   endpoint.PrivateDNSEnabled, MonthlyHours: endpoint.MonthlyHours, DataMibPerMonth: endpoint.DataMiBPerMonth,
 			EndpointType: cloudPrivateEndpointTypeToProto(endpoint.EndpointType),
@@ -281,6 +283,8 @@ func cloudPrivateEndpointServiceFromProto(value agentv1.CloudPrivateEndpointServ
 		return cloudquote.PrivateEndpointServiceS3
 	case agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER:
 		return cloudquote.PrivateEndpointServiceSecretsManager
+	case agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL:
+		return cloudquote.PrivateEndpointServiceWorkerControl
 	default:
 		return ""
 	}
@@ -292,6 +296,8 @@ func cloudPrivateEndpointServiceToProto(value cloudquote.PrivateEndpointServiceV
 		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3
 	case cloudquote.PrivateEndpointServiceSecretsManager:
 		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER
+	case cloudquote.PrivateEndpointServiceWorkerControl:
+		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL
 	default:
 		return agentv1.CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED
 	}

@@ -340,6 +340,7 @@ const (
 	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED     CloudPrivateEndpointService = 0
 	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_S3              CloudPrivateEndpointService = 1
 	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER CloudPrivateEndpointService = 2
+	CloudPrivateEndpointService_CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL  CloudPrivateEndpointService = 3
 )
 
 // Enum value maps for CloudPrivateEndpointService.
@@ -348,11 +349,13 @@ var (
 		0: "CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED",
 		1: "CLOUD_PRIVATE_ENDPOINT_SERVICE_S3",
 		2: "CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER",
+		3: "CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL",
 	}
 	CloudPrivateEndpointService_value = map[string]int32{
 		"CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED":     0,
 		"CLOUD_PRIVATE_ENDPOINT_SERVICE_S3":              1,
 		"CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER": 2,
+		"CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL":  3,
 	}
 )
 
@@ -1385,6 +1388,7 @@ type CloudPrivateEndpointOperation struct {
 	MonthlyHours        uint32                           `protobuf:"varint,5,opt,name=monthly_hours,json=monthlyHours,proto3" json:"monthly_hours,omitempty"`
 	DataMibPerMonth     uint64                           `protobuf:"varint,6,opt,name=data_mib_per_month,json=dataMibPerMonth,proto3" json:"data_mib_per_month,omitempty"`
 	EndpointType        CloudPrivateEndpointType         `protobuf:"varint,7,opt,name=endpoint_type,json=endpointType,proto3,enum=dirextalk.agent.v1.CloudPrivateEndpointType" json:"endpoint_type,omitempty"`
+	ServiceName         string                           `protobuf:"bytes,8,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -1466,6 +1470,13 @@ func (x *CloudPrivateEndpointOperation) GetEndpointType() CloudPrivateEndpointTy
 		return x.EndpointType
 	}
 	return CloudPrivateEndpointType_CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED
+}
+
+func (x *CloudPrivateEndpointOperation) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
 }
 
 type CloudSnapshotOperation struct {
@@ -5161,7 +5172,7 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x0fretention_class\x18\x01 \x01(\x0e2'.dirextalk.agent.v1.CloudRetentionClassR\x0eretentionClass\x12!\n" +
 	"\fauto_destroy\x18\x02 \x01(\bR\vautoDestroy\x120\n" +
 	"\x14grace_period_seconds\x18\x03 \x01(\rR\x12gracePeriodSeconds\x120\n" +
-	"\x14max_lifetime_seconds\x18\x04 \x01(\x04R\x12maxLifetimeSeconds\"\xce\x03\n" +
+	"\x14max_lifetime_seconds\x18\x04 \x01(\x04R\x12maxLifetimeSeconds\"\xf1\x03\n" +
 	"\x1dCloudPrivateEndpointOperation\x12#\n" +
 	"\roperation_key\x18\x01 \x01(\tR\foperationKey\x12I\n" +
 	"\aservice\x18\x02 \x01(\x0e2/.dirextalk.agent.v1.CloudPrivateEndpointServiceR\aservice\x12h\n" +
@@ -5169,7 +5180,8 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"\x13private_dns_enabled\x18\x04 \x01(\bR\x11privateDnsEnabled\x12#\n" +
 	"\rmonthly_hours\x18\x05 \x01(\rR\fmonthlyHours\x12+\n" +
 	"\x12data_mib_per_month\x18\x06 \x01(\x04R\x0fdataMibPerMonth\x12Q\n" +
-	"\rendpoint_type\x18\a \x01(\x0e2,.dirextalk.agent.v1.CloudPrivateEndpointTypeR\fendpointType\"\xb8\x02\n" +
+	"\rendpoint_type\x18\a \x01(\x0e2,.dirextalk.agent.v1.CloudPrivateEndpointTypeR\fendpointType\x12!\n" +
+	"\fservice_name\x18\b \x01(\tR\vserviceName\"\xb8\x02\n" +
 	"\x16CloudSnapshotOperation\x12#\n" +
 	"\roperation_key\x18\x01 \x01(\tR\foperationKey\x121\n" +
 	"\x15source_volume_slot_id\x18\x02 \x01(\tR\x12sourceVolumeSlotId\x129\n" +
@@ -5532,11 +5544,12 @@ const file_dirextalk_agent_v1_cloud_proto_rawDesc = "" +
 	"(CLOUD_PLAN_STATUS_READY_FOR_CONFIRMATION\x10\x03\x12\x1e\n" +
 	"\x1aCLOUD_PLAN_STATUS_APPROVED\x10\x04\x12\x1d\n" +
 	"\x19CLOUD_PLAN_STATUS_EXPIRED\x10\x05\x12 \n" +
-	"\x1cCLOUD_PLAN_STATUS_SUPERSEDED\x10\x06*\xa8\x01\n" +
+	"\x1cCLOUD_PLAN_STATUS_SUPERSEDED\x10\x06*\xdb\x01\n" +
 	"\x1bCloudPrivateEndpointService\x12.\n" +
 	"*CLOUD_PRIVATE_ENDPOINT_SERVICE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!CLOUD_PRIVATE_ENDPOINT_SERVICE_S3\x10\x01\x122\n" +
-	".CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER\x10\x02*\x9b\x01\n" +
+	".CLOUD_PRIVATE_ENDPOINT_SERVICE_SECRETS_MANAGER\x10\x02\x121\n" +
+	"-CLOUD_PRIVATE_ENDPOINT_SERVICE_WORKER_CONTROL\x10\x03*\x9b\x01\n" +
 	"\x18CloudPrivateEndpointType\x12+\n" +
 	"'CLOUD_PRIVATE_ENDPOINT_TYPE_UNSPECIFIED\x10\x00\x12'\n" +
 	"#CLOUD_PRIVATE_ENDPOINT_TYPE_GATEWAY\x10\x01\x12)\n" +

@@ -115,7 +115,7 @@ func TestLoadServerRequiresCredentialFreeGRPCSWorkerControlEndpointForAWS(t *tes
 		"non grpcs":       {endpoint: "https://worker-control.internal:9444"},
 		"embedded secret": {endpoint: "grpcs://worker:secret@worker-control.internal:9444"},
 		"non-443 port":    {endpoint: "grpcs://worker-control.internal:9444"},
-		"valid":           {endpoint: "grpcs://worker-control.internal:443", valid: true},
+		"valid":           {endpoint: "grpcs://worker-control.y1.dirextalk.ai:443", valid: true},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -123,6 +123,7 @@ func TestLoadServerRequiresCredentialFreeGRPCSWorkerControlEndpointForAWS(t *tes
 			t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
 			t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
 			t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", test.endpoint)
+			t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
 
 			server, err := LoadServer()
 			if !test.valid {
@@ -141,7 +142,8 @@ func TestLoadServerRequiresCredentialFreeGRPCSWorkerControlEndpointForAWS(t *tes
 func TestLoadServerKeepsAWSControlFailClosedUnlessExplicitlyEnabled(t *testing.T) {
 	setValidServerEnvironment(t)
 	t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
-	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.internal:443")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.y1.dirextalk.ai:443")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
 
 	server, err := LoadServer()
 	if err != nil || server.EnableAWSControl {
@@ -158,7 +160,8 @@ func TestLoadServerKeepsAWSControlFailClosedUnlessExplicitlyEnabled(t *testing.T
 func TestLoadServerKeepsManagedPreparationAWSBehindIndependentExplicitGate(t *testing.T) {
 	setValidServerEnvironment(t)
 	t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
-	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.internal:443")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://worker-control.y1.dirextalk.ai:443")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
 
 	server, err := LoadServer()
 	if err != nil || server.EnableManagedPreparationAWS {

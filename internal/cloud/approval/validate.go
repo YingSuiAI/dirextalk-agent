@@ -451,8 +451,8 @@ func validateVolumeDisposition(values []VolumeScopeV1, retention RetentionScopeV
 
 func validateServiceOperations(value ServiceOperationScopeV1, resource ResourceScopeV1, network NetworkScopeV1, retention RetentionScopeV1) error {
 	return cloudquote.ValidateServiceOperations(value,
-		cloudquote.ResourceScopeV1{VolumeScopes: append([]cloudquote.VolumeScopeV1(nil), resource.VolumeScopes...)},
-		cloudquote.NetworkScopeV1{SecurityGroupMode: cloudquote.SecurityGroupMode(network.SecurityGroupMode), SecurityGroupID: network.SecurityGroupID, PrivateConnectivity: cloudquote.PrivateConnectivityMode(network.PrivateConnectivity)},
+		cloudquote.ResourceScopeV1{Region: resource.Region, VolumeScopes: append([]cloudquote.VolumeScopeV1(nil), resource.VolumeScopes...)},
+		cloudquote.NetworkScopeV1{SecurityGroupMode: cloudquote.SecurityGroupMode(network.SecurityGroupMode), SecurityGroupID: network.SecurityGroupID, ControlPlaneEndpoint: network.ControlPlaneEndpoint, PrivateConnectivity: cloudquote.PrivateConnectivityMode(network.PrivateConnectivity)},
 		cloudquote.RetentionScopeV1{Class: cloudquote.RetentionClass(retention.Class), AutoDestroy: retention.AutoDestroy, GracePeriodSeconds: retention.GracePeriodSeconds, MaxLifetimeSeconds: retention.MaxLifetimeSeconds},
 	)
 }

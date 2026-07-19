@@ -26,6 +26,7 @@ const (
 	VolumeRetainWithManagedService                   = cloudquote.VolumeRetainWithManagedService
 	PrivateEndpointServiceS3                         = cloudquote.PrivateEndpointServiceS3
 	PrivateEndpointServiceSecretsManager             = cloudquote.PrivateEndpointServiceSecretsManager
+	PrivateEndpointServiceWorkerControl              = cloudquote.PrivateEndpointServiceWorkerControl
 	PrivateEndpointTypeGateway                       = cloudquote.PrivateEndpointTypeGateway
 	PrivateEndpointTypeInterface                     = cloudquote.PrivateEndpointTypeInterface
 	EndpointSecurityGroupPlanExisting                = cloudquote.EndpointSecurityGroupPlanExisting

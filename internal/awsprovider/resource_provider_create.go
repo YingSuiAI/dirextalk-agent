@@ -288,6 +288,9 @@ func (provider *EC2ResourceProvider) createVpcEndpoint(ctx context.Context, requ
 		if spec.EndpointType == "" {
 			expectedServiceName = spec.ServiceName
 		}
+		if strings.HasPrefix(spec.ServiceName, "com.amazonaws.vpce.") {
+			expectedServiceName = spec.ServiceName
+		}
 	}
 	if spec.ServiceName != expectedServiceName {
 		return resource.ProviderObservation{}, resource.ErrInvalid

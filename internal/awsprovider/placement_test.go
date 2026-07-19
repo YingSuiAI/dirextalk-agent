@@ -15,6 +15,7 @@ import (
 
 type fakePlacementEC2 struct {
 	vpcPages      map[string]*ec2.DescribeVpcsOutput
+	vpcDNS        map[string]bool
 	subnetPages   map[string]*ec2.DescribeSubnetsOutput
 	routePages    map[string]*ec2.DescribeRouteTablesOutput
 	gatewayPages  map[string]*ec2.DescribeInternetGatewaysOutput
@@ -28,6 +29,21 @@ type fakePlacementEC2 struct {
 
 func (fake *fakePlacementEC2) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
 	return page(fake.vpcPages, input.NextToken), nil
+}
+
+func (fake *fakePlacementEC2) DescribeVpcAttribute(_ context.Context, input *ec2.DescribeVpcAttributeInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcAttributeOutput, error) {
+	ready := true
+	if fake.vpcDNS != nil {
+		ready = fake.vpcDNS[aws.ToString(input.VpcId)]
+	}
+	value := &ec2types.AttributeBooleanValue{Value: aws.Bool(ready)}
+	result := &ec2.DescribeVpcAttributeOutput{VpcId: input.VpcId}
+	if input.Attribute == ec2types.VpcAttributeNameEnableDnsSupport {
+		result.EnableDnsSupport = value
+	} else {
+		result.EnableDnsHostnames = value
+	}
+	return result, nil
 }
 
 func (fake *fakePlacementEC2) DescribeSubnets(_ context.Context, input *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
@@ -170,10 +186,22 @@ func TestPlacementResolverBindsExactNoNATRouteTableWithoutReadingEgressGateways(
 			}
 			if got.Network.RouteTableID != testPlacementRouteTable || got.Network.ControlPlaneEndpoint != "grpcs://agent.example.com:443" ||
 				got.Network.PrivateConnectivity != cloudquote.PrivateConnectivityNoNATEndpointsV1 || got.Network.PublicIPv4 ||
-				got.Usage.PrivateEndpointHours != 730 || got.Usage.PrivateEndpointDataMiB != 1 || fake.gatewayCalls != 0 || fake.natCalls != 0 {
+				got.Usage.PrivateEndpointHours != 1460 || got.Usage.PrivateEndpointDataMiB != 1 || fake.gatewayCalls != 0 || fake.natCalls != 0 {
 				t.Fatalf("private placement=%#v usage=%#v gateway_calls=%d nat_calls=%d", got.Network, got.Usage, fake.gatewayCalls, fake.natCalls)
 			}
 		})
+	}
+}
+
+func TestPlacementResolverRejectsNoNATVPCWithoutPrivateDNS(t *testing.T) {
+	fake := placementFixture()
+	fake.vpcDNS = map[string]bool{testPlacementVPC: false}
+	resolver, err := newPlacementResolver(fake, testPlacementRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(context.Background(), testPrivateEndpointPlacementRequest()); !errors.Is(err, ErrPlacementNetworkUnavailable) {
+		t.Fatalf("error = %v, want ErrPlacementNetworkUnavailable", err)
 	}
 }
 

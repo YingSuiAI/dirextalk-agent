@@ -236,7 +236,7 @@ func serve() error {
 		}
 		cloudComposition, cloudErr = app.NewCloudComposition(
 			store, secretManager, workerStore, workerService, installerIssuer, serverConfig.InstanceID, masterKey,
-			serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint,
+			serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint, serverConfig.WorkerControlEndpointServiceName,
 			cloudOptions...,
 		)
 		if cloudErr != nil {
