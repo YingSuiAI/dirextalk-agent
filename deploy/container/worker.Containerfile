@@ -26,7 +26,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     && chmod 0555 /out/dirextalk-cloud-worker \
     && chmod 0555 /out/dirextalk-worker-installer \
     && chmod 0444 /out/dirextalk-cloud-worker.sha256 \
-    && chmod 0444 /out/dirextalk-worker-installer.sha256
+    && chmod 0444 /out/dirextalk-worker-installer.sha256 \
+    && mkdir -p /out/worker-rootfs-dirs/etc/ssl/certs \
+        /out/worker-rootfs-dirs/usr/local/bin \
+        /out/worker-rootfs-dirs/usr/local/share/dirextalk-worker/ami \
+        /out/worker-rootfs-dirs/var/lib/dirextalk-worker
 
 FROM scratch
 ARG VERSION
@@ -34,6 +38,7 @@ ARG REVISION
 LABEL org.opencontainers.image.title="Dirextalk Cloud Worker" \
       org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.revision="$REVISION"
+COPY --from=build --chmod=0755 /out/worker-rootfs-dirs/ /
 COPY --from=build --chmod=0444 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chmod=0555 /out/dirextalk-cloud-worker /usr/local/bin/dirextalk-cloud-worker
 COPY --from=build --chmod=0555 /out/dirextalk-worker-installer /usr/local/bin/dirextalk-worker-installer

@@ -86,6 +86,24 @@ func TestWorkerArtifactPreservesExclusiveVMRuntimeBoundary(t *testing.T) {
 	}
 }
 
+func TestWorkerArtifactBootstrapsTraversableRootfsDirectories(t *testing.T) {
+	containerfile := readArtifact(t, "worker.Containerfile")
+	for _, required := range []string{
+		"mkdir -p /out/worker-rootfs-dirs/etc/ssl/certs",
+		"/out/worker-rootfs-dirs/usr/local/share/dirextalk-worker/ami",
+		"/out/worker-rootfs-dirs/var/lib/dirextalk-worker",
+		"COPY --from=build --chmod=0755 /out/worker-rootfs-dirs/ /",
+	} {
+		if !strings.Contains(containerfile, required) {
+			t.Fatalf("worker.Containerfile is missing traversable rootfs directory bootstrap %q", required)
+		}
+	}
+	if strings.Index(containerfile, "COPY --from=build --chmod=0755 /out/worker-rootfs-dirs/ /") >
+		strings.Index(containerfile, "COPY --from=build --chmod=0444 /etc/ssl/certs/ca-certificates.crt") {
+		t.Fatal("worker rootfs directory bootstrap follows the restrictive certificate copy")
+	}
+}
+
 func TestAgentArtifactProvidesNonRootTLSGrpcHealthcheck(t *testing.T) {
 	containerfile := readArtifact(t, "agent.Containerfile")
 	for _, required := range []string{
