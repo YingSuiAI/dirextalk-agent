@@ -42,4 +42,4 @@ git diff --check
 
 Run PostgreSQL and real-AWS tests only through their explicit integration/release lanes. Real cloud tests require an authorized disposable account and must finish with independent resource read-back.
 
-Use `rg` first. IDEA is optional for PSI-level Go work; CodeGraph is only for unresolved cross-file flows. Never expose run-configuration environment values.
+IDE run configurations are optional local tooling. Never expose their environment values.
