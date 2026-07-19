@@ -136,7 +136,10 @@ func TestPricingProviderPricesOnlyBillablePrivateEndpoints(t *testing.T) {
 	tests := []struct {
 		name      string
 		endpoints []cloudquote.PrivateEndpointPricingV1
+		usage     cloudquote.UsageV1
 		wantLabel string
+		wantHours cloudquote.CostItemV1
+		wantData  cloudquote.CostItemV1
 	}{
 		{
 			name: "S3 Gateway is free and Secrets Manager Interface is priced",
@@ -144,14 +147,32 @@ func TestPricingProviderPricesOnlyBillablePrivateEndpoints(t *testing.T) {
 				{Service: cloudquote.PrivateEndpointServiceS3, EndpointType: cloudquote.PrivateEndpointTypeGateway},
 				{Service: cloudquote.PrivateEndpointServiceSecretsManager, EndpointType: cloudquote.PrivateEndpointTypeInterface, MonthlyHours: 720, DataMiBPerMonth: 1024},
 			},
+			usage:     cloudquote.UsageV1{RuntimeHoursPerMonth: 720, PrivateEndpointHours: 720, PrivateEndpointDataMiB: 1024},
 			wantLabel: "Secrets Manager Interface endpoint",
+			wantHours: cloudquote.CostItemV1{HourlyEstimateMicros: 10_000, MonthlyEstimateMicros: 7_200_000, MaximumLaunchAmountMicros: 10_000},
+			wantData:  cloudquote.CostItemV1{HourlyEstimateMicros: 28, MonthlyEstimateMicros: 20_000, MaximumLaunchAmountMicros: 28},
+		},
+		{
+			name: "no-NAT graph prices both Interface endpoints",
+			endpoints: []cloudquote.PrivateEndpointPricingV1{
+				{Service: cloudquote.PrivateEndpointServiceS3, EndpointType: cloudquote.PrivateEndpointTypeGateway},
+				{Service: cloudquote.PrivateEndpointServiceSecretsManager, EndpointType: cloudquote.PrivateEndpointTypeInterface, MonthlyHours: 730, DataMiBPerMonth: 1},
+				{Service: cloudquote.PrivateEndpointServiceWorkerControl, EndpointType: cloudquote.PrivateEndpointTypeInterface, MonthlyHours: 730, DataMiBPerMonth: 1},
+			},
+			usage:     cloudquote.UsageV1{RuntimeHoursPerMonth: 730, PrivateEndpointHours: 1460, PrivateEndpointDataMiB: 2},
+			wantLabel: "Interface VPC endpoint",
+			wantHours: cloudquote.CostItemV1{HourlyEstimateMicros: 20_000, MonthlyEstimateMicros: 14_600_000, MaximumLaunchAmountMicros: 20_000},
+			wantData:  cloudquote.CostItemV1{MonthlyEstimateMicros: 39},
 		},
 		{
 			name: "legacy omitted type remains an S3 Interface endpoint",
 			endpoints: []cloudquote.PrivateEndpointPricingV1{
 				{Service: cloudquote.PrivateEndpointServiceS3, MonthlyHours: 720, DataMiBPerMonth: 1024},
 			},
+			usage:     cloudquote.UsageV1{RuntimeHoursPerMonth: 720, PrivateEndpointHours: 720, PrivateEndpointDataMiB: 1024},
 			wantLabel: "S3 Interface endpoint",
+			wantHours: cloudquote.CostItemV1{HourlyEstimateMicros: 10_000, MonthlyEstimateMicros: 7_200_000, MaximumLaunchAmountMicros: 10_000},
+			wantData:  cloudquote.CostItemV1{HourlyEstimateMicros: 28, MonthlyEstimateMicros: 20_000, MaximumLaunchAmountMicros: 28},
 		},
 	}
 	for _, test := range tests {
@@ -171,7 +192,7 @@ func TestPricingProviderPricesOnlyBillablePrivateEndpoints(t *testing.T) {
 			candidate.PrivateEndpoints = test.endpoints
 			snapshot, err := provider.Price(context.Background(), cloudquote.PricingQueryV1{
 				Region: "us-east-1", Zones: []string{"us-east-1a"},
-				Usage:      cloudquote.UsageV1{RuntimeHoursPerMonth: 720, PrivateEndpointHours: 720, PrivateEndpointDataMiB: 1024},
+				Usage:      test.usage,
 				Candidates: []cloudquote.PricingCandidateQueryV1{candidate},
 			})
 			if err != nil {
@@ -201,14 +222,65 @@ func TestPricingProviderPricesOnlyBillablePrivateEndpoints(t *testing.T) {
 					data = item
 				}
 			}
-			if hours.HourlyEstimateMicros != 10_000 || hours.MonthlyEstimateMicros != 7_200_000 || hours.MaximumLaunchAmountMicros != 10_000 {
+			if hours.HourlyEstimateMicros != test.wantHours.HourlyEstimateMicros ||
+				hours.MonthlyEstimateMicros != test.wantHours.MonthlyEstimateMicros ||
+				hours.MaximumLaunchAmountMicros != test.wantHours.MaximumLaunchAmountMicros {
 				t.Fatalf("endpoint-hours cost = %#v", hours)
 			}
-			if data.HourlyEstimateMicros != 28 || data.MonthlyEstimateMicros != 20_000 || data.MaximumLaunchAmountMicros != 28 {
+			if data.HourlyEstimateMicros != test.wantData.HourlyEstimateMicros ||
+				data.MonthlyEstimateMicros != test.wantData.MonthlyEstimateMicros ||
+				data.MaximumLaunchAmountMicros != test.wantData.MaximumLaunchAmountMicros {
 				t.Fatalf("endpoint-data cost = %#v", data)
 			}
 			if prices.privateEndpointCalls != 2 {
 				t.Fatalf("PrivateLink catalog calls = %d, want one hourly and one data lookup", prices.privateEndpointCalls)
+			}
+		})
+	}
+}
+
+func TestPricingProviderRejectsPrivateEndpointPricingTampering(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 19, 8, 30, 0, 0, time.UTC)
+	base := pricingCandidate(cloudquote.CandidateEconomic, "m7i.large", cloudquote.PurchaseOnDemand, cloudquote.EntryPointNone, false, 10)
+	base.PrivateEndpoints = []cloudquote.PrivateEndpointPricingV1{
+		{Service: cloudquote.PrivateEndpointServiceS3, EndpointType: cloudquote.PrivateEndpointTypeGateway},
+		{Service: cloudquote.PrivateEndpointServiceSecretsManager, EndpointType: cloudquote.PrivateEndpointTypeInterface, MonthlyHours: 730, DataMiBPerMonth: 1},
+		{Service: cloudquote.PrivateEndpointServiceWorkerControl, EndpointType: cloudquote.PrivateEndpointTypeInterface, MonthlyHours: 730, DataMiBPerMonth: 1},
+	}
+	baseUsage := cloudquote.UsageV1{RuntimeHoursPerMonth: 730, PrivateEndpointHours: 1460, PrivateEndpointDataMiB: 2}
+	tests := []struct {
+		name      string
+		mutate    func(*cloudquote.PricingCandidateQueryV1, *cloudquote.UsageV1)
+		wantError string
+	}{
+		{name: "service", mutate: func(candidate *cloudquote.PricingCandidateQueryV1, _ *cloudquote.UsageV1) {
+			candidate.PrivateEndpoints[2].Service = cloudquote.PrivateEndpointServiceS3
+		}, wantError: "private endpoint pricing scope is unsupported"},
+		{name: "aggregate cost usage", mutate: func(candidate *cloudquote.PricingCandidateQueryV1, _ *cloudquote.UsageV1) {
+			candidate.PrivateEndpoints[2].MonthlyHours--
+		}, wantError: "private endpoint pricing usage does not match the endpoint scope"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := base
+			candidate.PrivateEndpoints = append([]cloudquote.PrivateEndpointPricingV1(nil), base.PrivateEndpoints...)
+			usage := baseUsage
+			test.mutate(&candidate, &usage)
+			provider, err := NewPricingProvider(fakePricingFactory{clients: PricingReadClients{
+				EC2: &fakePricingEC2{now: now, vcpus: map[string]int32{"m7i.large": 2}}, PriceList: &fakePriceList{},
+				ServiceQuotas: &fakeServiceQuotas{}, CloudWatch: &fakeQuotaCloudWatch{},
+			}}, func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Price(context.Background(), cloudquote.PricingQueryV1{
+				Region: "us-east-1", Zones: []string{"us-east-1a"}, Usage: usage,
+				Candidates: []cloudquote.PricingCandidateQueryV1{candidate},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("tampered private endpoint pricing scope error = %v, want %q", err, test.wantError)
 			}
 		})
 	}

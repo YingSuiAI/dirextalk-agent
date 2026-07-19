@@ -259,6 +259,9 @@ func readIPv4Cost(ctx context.Context, catalog *priceCatalog, region string, can
 
 func readPrivateEndpointCosts(ctx context.Context, catalog *priceCatalog, region string, candidate cloudquote.PricingCandidateQueryV1, usage cloudquote.UsageV1) ([]cloudquote.CostItemV1, error) {
 	if len(candidate.PrivateEndpoints) == 0 {
+		if usage.PrivateEndpointHours != 0 || usage.PrivateEndpointDataMiB != 0 {
+			return nil, errors.New("private endpoint pricing usage does not match the endpoint scope")
+		}
 		return nil, nil
 	}
 	if len(candidate.PrivateEndpoints) > 4 {
@@ -275,11 +278,15 @@ func readPrivateEndpointCosts(ctx context.Context, catalog *priceCatalog, region
 				return nil, errors.New("S3 Gateway endpoint pricing usage must be zero")
 			}
 			continue
-		case endpoint.EndpointType == cloudquote.PrivateEndpointTypeInterface && endpoint.Service == cloudquote.PrivateEndpointServiceSecretsManager:
-			if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth == 0 || endpoint.DataMiBPerMonth > 1<<50 {
-				return nil, errors.New("Secrets Manager Interface endpoint pricing usage is invalid")
-			}
+		case endpoint.EndpointType == cloudquote.PrivateEndpointTypeInterface &&
+			(endpoint.Service == cloudquote.PrivateEndpointServiceSecretsManager || endpoint.Service == cloudquote.PrivateEndpointServiceWorkerControl):
 			endpointLabel = "Secrets Manager Interface endpoint"
+			if endpoint.Service == cloudquote.PrivateEndpointServiceWorkerControl {
+				endpointLabel = "Worker Control Interface endpoint"
+			}
+			if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth == 0 || endpoint.DataMiBPerMonth > 1<<50 {
+				return nil, fmt.Errorf("%s pricing usage is invalid", endpointLabel)
+			}
 		case endpoint.EndpointType == "" && endpoint.Service == cloudquote.PrivateEndpointServiceS3:
 			if endpoint.MonthlyHours == 0 || endpoint.MonthlyHours > 744 || endpoint.DataMiBPerMonth > 1<<50 {
 				return nil, errors.New("legacy S3 Interface endpoint pricing usage is invalid")
@@ -304,6 +311,9 @@ func readPrivateEndpointCosts(ctx context.Context, catalog *priceCatalog, region
 		} else if label != endpointLabel {
 			label = "Interface VPC endpoint"
 		}
+	}
+	if totalHours != uint64(usage.PrivateEndpointHours) || totalData != usage.PrivateEndpointDataMiB {
+		return nil, errors.New("private endpoint pricing usage does not match the endpoint scope")
 	}
 	if pricedCount == 0 {
 		return nil, nil
