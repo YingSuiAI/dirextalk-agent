@@ -1,6 +1,5 @@
-# syntax=docker/dockerfile:1.7
-
-FROM --platform=linux/amd64 docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135 AS build
+ARG GO_BUILD_BASE
+FROM --platform=linux/amd64 ${GO_BUILD_BASE} AS build
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG VERSION

@@ -12,16 +12,18 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseecr"
+	"github.com/YingSuiAI/dirextalk-agent/internal/releaseprocess"
 	"github.com/YingSuiAI/dirextalk-agent/internal/releasepublish"
 )
 
 const (
-	usageMessage   = "agent image release usage error\n"
-	prepareMessage = "agent image preparation failed\n"
-	publishMessage = "agent image publication failed\n"
-	outputMessage  = "agent image release output failed\n"
-	sessionMessage = "agent image release session failed\n"
-	cleanupMessage = "agent image release session cleanup failed\n"
+	usageMessage       = "agent image release usage error\n"
+	prepareMessage     = "agent image preparation failed\n"
+	publishMessage     = "agent image publication failed\n"
+	outputMessage      = "agent image release output failed\n"
+	sessionMessage     = "agent image release session failed\n"
+	cleanupMessage     = "agent image release session cleanup failed\n"
+	prepareHelpMessage = "usage: dirextalk-agent-imagectl prepare --region <region> --account-id <12-digit-id> [--builder-mode direct] --session-output <path>\n"
 )
 
 var (
@@ -29,13 +31,24 @@ var (
 	writeECRSession       = releaseecr.WriteSessionFile
 	cleanupECRSession     = releaseecr.CleanupSession
 	cleanupECRSessionFile = releaseecr.CleanupSessionFile
-	publishAgent          = releasepublish.PublishAgent
+	activateECRBuilder    = releaseecr.ActivateSessionBuilder
+	beginECRPreparation   = func(path string, session releaseecr.SessionV1) (sessionPreparation, error) {
+		return releaseecr.BeginSessionPreparation(path, session)
+	}
+	publishAgent = releasepublish.PublishAgent
 )
 
 type imageReleaseSession interface {
 	DockerConfigDir() string
 	RegistryHost() string
+	BuilderName() string
+	BuildSourcesVerified() bool
 	Close() error
+}
+
+type sessionPreparation interface {
+	Ready() error
+	Abort() error
 }
 
 var claimECRSession = func(path string) (imageReleaseSession, error) {
@@ -43,7 +56,10 @@ var claimECRSession = func(path string) (imageReleaseSession, error) {
 }
 
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := releaseprocess.Context()
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
 func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
@@ -65,12 +81,17 @@ func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int 
 }
 
 func runPrepare(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
+	if len(arguments) == 1 && arguments[0] == "--help" {
+		_, _ = io.WriteString(stdout, prepareHelpMessage)
+		return 0
+	}
 	flags := flag.NewFlagSet("prepare", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	options := releaseecr.Options{}
 	sessionOutput := ""
 	flags.StringVar(&options.Region, "region", "", "")
 	flags.StringVar(&options.ExpectedAccountID, "account-id", "", "")
+	flags.StringVar(&options.BuilderMode, "builder-mode", "", "")
 	flags.StringVar(&sessionOutput, "session-output", "", "")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || options.Region == "" || options.ExpectedAccountID == "" || sessionOutput == "" {
 		_, _ = io.WriteString(stderr, usageMessage)
@@ -81,10 +102,32 @@ func runPrepare(ctx context.Context, arguments []string, stdout, stderr io.Write
 		_, _ = io.WriteString(stderr, prepareMessage)
 		return 1
 	}
-	if err := writeECRSession(sessionOutput, prepared.Session); err != nil {
-		_ = cleanupECRSession(prepared.Session)
-		_, _ = io.WriteString(stderr, prepareMessage)
-		return 1
+	if prepared.Session.BuilderMode == "" {
+		if err := writeECRSession(sessionOutput, prepared.Session); err != nil {
+			_ = cleanupECRSession(prepared.Session)
+			_, _ = io.WriteString(stderr, prepareMessage)
+			return 1
+		}
+	} else {
+		preparation, err := beginECRPreparation(sessionOutput, prepared.Session)
+		if err != nil {
+			_ = cleanupECRSession(prepared.Session)
+			_, _ = io.WriteString(stderr, prepareMessage)
+			return 1
+		}
+		if err := activateECRBuilder(ctx, prepared.Session); err != nil {
+			if cleanupErr := preparation.Abort(); cleanupErr != nil {
+				_, _ = io.WriteString(stderr, sessionMessage)
+				return 1
+			}
+			_, _ = io.WriteString(stderr, prepareMessage)
+			return 1
+		}
+		if err := preparation.Ready(); err != nil {
+			_ = preparation.Abort()
+			_, _ = io.WriteString(stderr, sessionMessage)
+			return 1
+		}
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(false)
@@ -115,6 +158,8 @@ func runPublish(ctx context.Context, arguments []string, stdout, stderr io.Write
 	}
 	request.DockerConfigDir = session.DockerConfigDir()
 	request.RegistryHost = session.RegistryHost()
+	request.BuilderName = session.BuilderName()
+	request.BuildSourcesVerified = session.BuildSourcesVerified()
 	request.AgentRepository = request.RegistryHost + "/" + releaseecr.RepositoryAgent
 	result, publishErr, cleanupErr := publishWithSession(ctx, request, session)
 	if cleanupErr != nil {

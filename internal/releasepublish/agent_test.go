@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/releaseecr"
 )
 
 func TestPublishAgentBuildsOnlyAgentImageAndReturnsImmutableReceipt(t *testing.T) {
@@ -75,13 +78,62 @@ func TestPublishAgentRejectsExistingImmutableTagWithDifferentDigest(t *testing.T
 	}
 }
 
+func TestDirectBuilderIsExplicitForBuildAndRegistryOperations(t *testing.T) {
+	builder := "dirextalk-release-" + strings.Repeat("a", 32)
+	request := validAgentRequest(t.TempDir())
+	request.BuilderName = builder
+	build := agentPushByDigestArguments(request, testRevision, filepath.Join(t.TempDir(), "metadata.json"))
+	if len(build) < 4 || build[0] != "buildx" || build[1] != "--builder" || build[2] != builder || build[3] != "build" {
+		t.Fatalf("build does not explicitly select private builder: %#v", build)
+	}
+	inspect := buildxArguments(builder, "imagetools", "inspect", "example")
+	if !slices.Equal(inspect[:5], []string{"buildx", "--builder", builder, "imagetools", "inspect"}) {
+		t.Fatalf("registry operation does not explicitly select private builder: %#v", inspect)
+	}
+}
+
+func TestPublishAgentRejectsUntrustedBuilderNameBeforeGitOrDocker(t *testing.T) {
+	runner := &fakeRunner{repositoryRoot: t.TempDir(), digests: []string{digestOf('a')}}
+	request := validAgentRequest(t.TempDir())
+	request.BuilderName = "foreign-builder"
+	if _, err := testPublisher(t, runner.repositoryRoot, t.TempDir(), runner, nil).publishAgent(context.Background(), request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("untrusted builder error = %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("untrusted builder reached tools: %#v", runner.commands)
+	}
+}
+
 func validAgentRequest(outputRoot string) AgentRequest {
-	registryHost := "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+	registryHost := "123456789012.dkr.ecr.ap-northeast-3.amazonaws.com"
 	return AgentRequest{
-		ReleaseTag:      "v0.1.0-alpha-" + testRevision[:12],
-		Architecture:    "amd64",
-		AgentRepository: registryHost + "/dirextalk-agent",
-		DockerConfigDir: filepath.Join(outputRoot, "docker-session"),
-		RegistryHost:    registryHost,
+		ReleaseTag:           "v0.1.0-alpha-" + testRevision[:12],
+		Architecture:         "amd64",
+		AgentRepository:      registryHost + "/dirextalk-agent",
+		DockerConfigDir:      filepath.Join(outputRoot, "docker-session"),
+		RegistryHost:         registryHost,
+		BuildSourcesVerified: true,
+	}
+}
+
+func TestAgentBuildUsesVerifiedPrivateSourcesAndRejectsNonAMD64(t *testing.T) {
+	request := validAgentRequest(t.TempDir())
+	references, err := releaseecr.PrivateBuildSourceReferences(request.RegistryHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(agentPushByDigestArguments(request, testRevision, "/tmp/metadata"), "\n")
+	for _, required := range []string{
+		"--platform\nlinux/amd64",
+		"--build-arg\nBUILDKIT_SYNTAX=" + references.Frontend,
+		"--build-arg\nGO_BUILD_BASE=" + references.GoBuildBase,
+	} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("agent build lacks %q: %s", required, joined)
+		}
+	}
+	request.Architecture = "arm64"
+	if _, err := normalizeAgentRequest(request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("arm64 request error = %v", err)
 	}
 }

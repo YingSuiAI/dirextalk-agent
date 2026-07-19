@@ -17,11 +17,13 @@ const AgentResultSchemaV1 = "dirextalk.agent.agent-image-release/v1"
 // it is a directory reference rather than credentials and is never emitted in
 // a result or receipt.
 type AgentRequest struct {
-	ReleaseTag      string
-	Architecture    string
-	AgentRepository string
-	DockerConfigDir string
-	RegistryHost    string
+	ReleaseTag           string
+	Architecture         string
+	AgentRepository      string
+	DockerConfigDir      string
+	RegistryHost         string
+	BuilderName          string
+	BuildSourcesVerified bool
 }
 
 // AgentResult is the safe Agent-image release receipt. It deliberately has no
@@ -99,7 +101,7 @@ func (tool publisher) publishAgent(ctx context.Context, input AgentRequest) (Age
 	if err != nil {
 		return AgentResult{}, err
 	}
-	if err := tool.reconcileImmutableTag(ctx, repositoryRoot, request.AgentRepository, request.ReleaseTag, digest); err != nil {
+	if err := tool.reconcileImmutableTag(ctx, repositoryRoot, request.AgentRepository, request.ReleaseTag, digest, request.BuilderName); err != nil {
 		return AgentResult{}, err
 	}
 	confirmedRevision, err := tool.validateRepository(ctx, repositoryRoot)
@@ -121,18 +123,24 @@ func (tool publisher) publishAgent(ctx context.Context, input AgentRequest) (Age
 
 func normalizeAgentRequest(input AgentRequest) (AgentRequest, error) {
 	request := AgentRequest{
-		ReleaseTag:      strings.TrimSpace(input.ReleaseTag),
-		Architecture:    strings.TrimSpace(input.Architecture),
-		AgentRepository: strings.TrimSpace(input.AgentRepository),
-		DockerConfigDir: strings.TrimSpace(input.DockerConfigDir),
-		RegistryHost:    strings.TrimSpace(input.RegistryHost),
+		ReleaseTag:           strings.TrimSpace(input.ReleaseTag),
+		Architecture:         strings.TrimSpace(input.Architecture),
+		AgentRepository:      strings.TrimSpace(input.AgentRepository),
+		DockerConfigDir:      strings.TrimSpace(input.DockerConfigDir),
+		RegistryHost:         strings.TrimSpace(input.RegistryHost),
+		BuilderName:          strings.TrimSpace(input.BuilderName),
+		BuildSourcesVerified: input.BuildSourcesVerified,
 	}
 	if request.ReleaseTag == "" || request.AgentRepository == "" || request.RegistryHost == "" ||
-		(request.Architecture != "amd64" && request.Architecture != "arm64") ||
+		request.Architecture != "amd64" || !request.BuildSourcesVerified ||
 		strings.ContainsAny(request.RegistryHost, "/:@ \t\r\n") || containsSpaceOrControl(request.ReleaseTag) ||
 		containsSpaceOrControl(request.AgentRepository) || secretLike(request.ReleaseTag) || secretLike(request.AgentRepository) ||
 		!filepath.IsAbs(request.DockerConfigDir) || filepath.Clean(request.DockerConfigDir) != request.DockerConfigDir ||
+		(request.BuilderName != "" && !builderNamePattern.MatchString(request.BuilderName)) ||
 		request.AgentRepository != request.RegistryHost+"/"+releaseecr.RepositoryAgent {
+		return AgentRequest{}, ErrInvalidInput
+	}
+	if _, err := releaseecr.PrivateBuildSourceReferences(request.RegistryHost); err != nil {
 		return AgentRequest{}, ErrInvalidInput
 	}
 	return request, nil
@@ -149,14 +157,16 @@ func validateAgentTagAndRepository(request AgentRequest, revision string) error 
 }
 
 func agentPushByDigestArguments(request AgentRequest, revision, metadata string) []string {
-	return []string{
-		"buildx", "build",
+	arguments := buildxArguments(request.BuilderName,
+		"build",
 		"--file", "deploy/container/agent.Containerfile",
-		"--platform", "linux/" + request.Architecture,
-		"--build-arg", "VERSION=" + request.ReleaseTag,
-		"--build-arg", "REVISION=" + revision,
+		"--platform", "linux/"+request.Architecture,
+	)
+	arguments = append(arguments, privateSourceBuildArguments(request.RegistryHost, "deploy/container/agent.Containerfile")...)
+	return append(arguments,
+		"--build-arg", "VERSION="+request.ReleaseTag,
+		"--build-arg", "REVISION="+revision,
 		"--metadata-file", metadata,
-		"--output", "type=image,name=" + request.AgentRepository + ",push-by-digest=true,push=true",
-		".",
-	}
+		"--output", "type=image,name="+request.AgentRepository+",push-by-digest=true,push=true",
+		".")
 }

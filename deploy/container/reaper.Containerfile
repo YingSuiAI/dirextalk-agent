@@ -1,6 +1,6 @@
-# syntax=docker/dockerfile:1.7
-
-FROM --platform=linux/amd64 docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135 AS build
+ARG GO_BUILD_BASE
+ARG REAPER_RUNTIME_BASE
+FROM --platform=linux/amd64 ${GO_BUILD_BASE} AS build
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 ARG VERSION
@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -tags lambda.norpc,netgo,osusergo -ldflags='-s -w -buildid=' \
     -o /out/bootstrap ./cmd/dirextalk-aws-reaper
 
-FROM --platform=linux/amd64 public.ecr.aws/lambda/provided:al2023@sha256:f91e5c83528080b2e41d22536d413042e451e67968c7473c4f7e77a627c944bc
+FROM --platform=linux/amd64 ${REAPER_RUNTIME_BASE}
 ARG VERSION
 ARG REVISION
 LABEL org.opencontainers.image.title="Dirextalk AWS Reaper" \

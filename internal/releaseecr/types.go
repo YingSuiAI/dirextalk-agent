@@ -19,10 +19,12 @@ const (
 	SessionSchemaV1        = "dirextalk.agent.ecr-docker-session/v1"
 	ManagedReceiptSchemaV1 = "dirextalk.agent.ecr-managed-verification/v1"
 	ManagedRetention       = "managed_retained"
+	BuilderModeDirect      = "direct"
 
-	RepositoryAgent  = "dirextalk-agent"
-	RepositoryWorker = "dirextalk-cloud-worker"
-	RepositoryReaper = "dirextalk-aws-reaper"
+	RepositoryAgent       = "dirextalk-agent"
+	RepositoryWorker      = "dirextalk-cloud-worker"
+	RepositoryReaper      = "dirextalk-aws-reaper"
+	RepositoryBuildSource = "dirextalk-build-sources"
 )
 
 var (
@@ -35,6 +37,11 @@ var (
 	ErrDockerLogin            = errors.New("Docker ECR login failed")
 	ErrSession                = errors.New("ECR Docker session rejected")
 	ErrSessionCleanup         = errors.New("ECR Docker session cleanup failed")
+	ErrBuilder                = errors.New("release BuildKit builder failed")
+	ErrBuilderCollision       = errors.New("release BuildKit builder collision")
+	ErrBuildSource            = errors.New("release build source rejected")
+	ErrBuildSourceMissing     = errors.New("release build source missing")
+	ErrBuildSourceMismatch    = errors.New("release build source mismatch")
 	ErrReleaseManifestBinding = errors.New("release manifest does not bind the managed ECR repositories")
 	ErrReleaseImageBinding    = errors.New("release image tag and digest binding drift")
 )
@@ -65,6 +72,7 @@ func AgentRepositories() []RepositorySpec {
 type Options struct {
 	Region            string
 	ExpectedAccountID string
+	BuilderMode       string
 	Now               func() time.Time
 }
 
@@ -142,11 +150,14 @@ type ResultV1 struct {
 // private directory that contains Docker's short-lived ECR authorization; the
 // descriptor never contains the authorization token or config.json bytes.
 type SessionV1 struct {
-	SchemaVersion   string `json:"schema_version"`
-	SessionID       string `json:"session_id"`
-	RegistryHost    string `json:"registry_host"`
-	DockerConfigDir string `json:"docker_config_dir"`
-	ExpiresAt       string `json:"expires_at"`
+	SchemaVersion        string `json:"schema_version"`
+	SessionID            string `json:"session_id"`
+	RegistryHost         string `json:"registry_host"`
+	DockerConfigDir      string `json:"docker_config_dir"`
+	ExpiresAt            string `json:"expires_at"`
+	BuilderMode          string `json:"builder_mode,omitempty"`
+	BuilderName          string `json:"builder_name,omitempty"`
+	BuildSourcesVerified bool   `json:"build_sources_verified,omitempty"`
 }
 
 type PreparedV1 struct {

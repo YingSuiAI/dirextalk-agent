@@ -13,6 +13,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseecr"
+	"github.com/YingSuiAI/dirextalk-agent/internal/releaseprocess"
 )
 
 const (
@@ -22,6 +23,8 @@ const (
 	cleanupMessage      = "ecr session cleanup failed\n"
 	verifyMessage       = "ecr managed verification failed\n"
 	verifyOutputMessage = "ecr managed verification output failed\n"
+	sourceMessage       = "ecr build source operation failed\n"
+	prepareHelpMessage  = "usage: dirextalk-ecrctl prepare --region <region> --account-id <12-digit-id> [--builder-mode direct] --session-output <path>\n"
 )
 
 var (
@@ -29,12 +32,27 @@ var (
 	writeECRSession       = releaseecr.WriteSessionFile
 	cleanupECRSession     = releaseecr.CleanupSession
 	cleanupECRSessionFile = releaseecr.CleanupSessionFile
-	verifyManagedECR      = releaseecr.VerifyManagedDefault
-	writeManagedReceipt   = writeNewManagedReceipt
+	activateECRBuilder    = releaseecr.ActivateSessionBuilder
+	beginECRPreparation   = func(path string, session releaseecr.SessionV1) (sessionPreparation, error) {
+		return releaseecr.BeginSessionPreparation(path, session)
+	}
+	verifyManagedECR    = releaseecr.VerifyManagedDefault
+	writeManagedReceipt = writeNewManagedReceipt
+	prepareBuildSources = releaseecr.PrepareBuildSourcesDefault
+	verifyBuildSources  = releaseecr.VerifyBuildSourcesDefault
+	seedBuildSources    = releaseecr.SeedBuildSourcesDefault
 )
 
+type sessionPreparation interface {
+	Ready() error
+	Abort() error
+}
+
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := releaseprocess.Context()
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
 func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
@@ -48,9 +66,22 @@ func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int 
 	if arguments[0] == "verify-managed" {
 		return runVerifyManaged(ctx, arguments[1:], stdout, stderr)
 	}
+	if arguments[0] == "sources-prepare" {
+		return runBuildSources(ctx, arguments[1:], stdout, stderr, prepareBuildSources)
+	}
+	if arguments[0] == "sources-verify" {
+		return runBuildSources(ctx, arguments[1:], stdout, stderr, verifyBuildSources)
+	}
+	if arguments[0] == "sources-seed" {
+		return runBuildSources(ctx, arguments[1:], stdout, stderr, seedBuildSources)
+	}
 	if arguments[0] != "prepare" {
 		_, _ = io.WriteString(stderr, usageMessage)
 		return 2
+	}
+	if len(arguments) == 2 && arguments[1] == "--help" {
+		_, _ = io.WriteString(stdout, prepareHelpMessage)
+		return 0
 	}
 	flags := flag.NewFlagSet("prepare", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -58,6 +89,7 @@ func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int 
 	sessionOutput := ""
 	flags.StringVar(&options.Region, "region", "", "")
 	flags.StringVar(&options.ExpectedAccountID, "account-id", "", "")
+	flags.StringVar(&options.BuilderMode, "builder-mode", "", "")
 	flags.StringVar(&sessionOutput, "session-output", "", "")
 	if err := flags.Parse(arguments[1:]); err != nil || flags.NArg() != 0 || options.Region == "" || options.ExpectedAccountID == "" || sessionOutput == "" {
 		_, _ = io.WriteString(stderr, usageMessage)
@@ -68,15 +100,64 @@ func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int 
 		_, _ = io.WriteString(stderr, prepareMessage)
 		return 1
 	}
-	if err := writeECRSession(sessionOutput, prepared.Session); err != nil {
-		_ = cleanupECRSession(prepared.Session)
-		_, _ = io.WriteString(stderr, prepareMessage)
-		return 1
+	if prepared.Session.BuilderMode == "" {
+		if err := writeECRSession(sessionOutput, prepared.Session); err != nil {
+			_ = cleanupECRSession(prepared.Session)
+			_, _ = io.WriteString(stderr, prepareMessage)
+			return 1
+		}
+	} else {
+		preparation, err := beginECRPreparation(sessionOutput, prepared.Session)
+		if err != nil {
+			_ = cleanupECRSession(prepared.Session)
+			_, _ = io.WriteString(stderr, prepareMessage)
+			return 1
+		}
+		if err := activateECRBuilder(ctx, prepared.Session); err != nil {
+			if cleanupErr := preparation.Abort(); cleanupErr != nil {
+				_, _ = io.WriteString(stderr, cleanupMessage)
+				return 1
+			}
+			_, _ = io.WriteString(stderr, prepareMessage)
+			return 1
+		}
+		if err := preparation.Ready(); err != nil {
+			_ = preparation.Abort()
+			_, _ = io.WriteString(stderr, cleanupMessage)
+			return 1
+		}
 	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(prepared.Result); err != nil {
 		_ = cleanupECRSessionFile(sessionOutput)
+		_, _ = io.WriteString(stderr, outputMessage)
+		return 1
+	}
+	return 0
+}
+
+type buildSourceOperation func(context.Context, releaseecr.BuildSourceOptions) (releaseecr.BuildSourceResultV1, error)
+
+func runBuildSources(ctx context.Context, arguments []string, stdout, stderr io.Writer, operation buildSourceOperation) int {
+	flags := flag.NewFlagSet("build-sources", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	options := releaseecr.BuildSourceOptions{}
+	flags.StringVar(&options.Region, "region", "", "")
+	flags.StringVar(&options.ExpectedAccountID, "account-id", "", "")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 ||
+		options.Region == "" || options.ExpectedAccountID == "" || operation == nil {
+		_, _ = io.WriteString(stderr, usageMessage)
+		return 2
+	}
+	result, err := operation(ctx, options)
+	if err != nil {
+		_, _ = io.WriteString(stderr, sourceMessage)
+		return 1
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(result); err != nil {
 		_, _ = io.WriteString(stderr, outputMessage)
 		return 1
 	}

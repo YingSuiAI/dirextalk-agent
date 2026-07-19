@@ -75,6 +75,55 @@ func TestRunRejectsCredentialFlagsWithoutCallingAWS(t *testing.T) {
 	}
 }
 
+func TestRunBuildSourceCommandsAreSeparateClosedSurfaces(t *testing.T) {
+	const sourceAccount = "123456789012"
+	const sourceRegion = "ap-northeast-3"
+	originalPrepare, originalVerify, originalSeed := prepareBuildSources, verifyBuildSources, seedBuildSources
+	t.Cleanup(func() {
+		prepareBuildSources, verifyBuildSources, seedBuildSources = originalPrepare, originalVerify, originalSeed
+	})
+	want := releaseecr.BuildSourceResultV1{
+		SchemaVersion: releaseecr.BuildSourceResultSchemaV1, AccountID: sourceAccount, Region: sourceRegion,
+		RegistryHost: sourceAccount + ".dkr.ecr." + sourceRegion + ".amazonaws.com", Repository: releaseecr.RepositoryBuildSource,
+	}
+	calls := map[string]int{}
+	operation := func(name string) buildSourceOperation {
+		return func(_ context.Context, options releaseecr.BuildSourceOptions) (releaseecr.BuildSourceResultV1, error) {
+			calls[name]++
+			if options.Region != sourceRegion || options.ExpectedAccountID != sourceAccount {
+				t.Fatalf("%s options = %#v", name, options)
+			}
+			return want, nil
+		}
+	}
+	prepareBuildSources = operation("prepare")
+	verifyBuildSources = operation("verify")
+	seedBuildSources = operation("seed")
+	for _, command := range []string{"sources-prepare", "sources-verify", "sources-seed"} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), []string{command, "--region", sourceRegion, "--account-id", sourceAccount}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+			t.Fatalf("%s code=%d stdout=%q stderr=%q", command, code, stdout.String(), stderr.String())
+		}
+		var result releaseecr.BuildSourceResultV1
+		if json.Unmarshal(stdout.Bytes(), &result) != nil || result.Repository != releaseecr.RepositoryBuildSource {
+			t.Fatalf("%s result = %#v", command, result)
+		}
+	}
+	if !reflect.DeepEqual(calls, map[string]int{"prepare": 1, "verify": 1, "seed": 1}) {
+		t.Fatalf("source command calls = %#v", calls)
+	}
+	called := false
+	seedBuildSources = func(context.Context, releaseecr.BuildSourceOptions) (releaseecr.BuildSourceResultV1, error) {
+		called = true
+		return want, nil
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(context.Background(), []string{"sources-seed", "--region", sourceRegion, "--account-id", sourceAccount, "--repository", "attacker/repo"}, &stdout, &stderr); code != 2 ||
+		called || stdout.Len() != 0 || stderr.String() != usageMessage {
+		t.Fatalf("override code=%d called=%t stdout=%q stderr=%q", code, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunRedactsPreparationError(t *testing.T) {
 	original := prepareECR
 	t.Cleanup(func() { prepareECR = original })

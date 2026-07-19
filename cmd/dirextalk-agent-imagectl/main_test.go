@@ -53,6 +53,68 @@ func TestRunPrepareUsesAgentOnlyPreparerAndKeepsSessionOutOfReceipt(t *testing.T
 	}
 }
 
+func TestRunPrepareActivatesDirectBuilderOnlyAfterDurableSessionHandoff(t *testing.T) {
+	originalPrepare, originalBegin, originalActivate, originalCleanup := prepareAgentECR, beginECRPreparation, activateECRBuilder, cleanupECRSessionFile
+	t.Cleanup(func() {
+		prepareAgentECR, beginECRPreparation, activateECRBuilder, cleanupECRSessionFile = originalPrepare, originalBegin, originalActivate, originalCleanup
+	})
+	session := releaseecr.SessionV1{
+		SessionID: strings.Repeat("a", 32), DockerConfigDir: "C:/private/session",
+		BuilderMode: releaseecr.BuilderModeDirect, BuilderName: "dirextalk-release-" + strings.Repeat("a", 32),
+	}
+	events := []string{}
+	prepareAgentECR = func(_ context.Context, options releaseecr.Options) (releaseecr.PreparedV1, error) {
+		if options.BuilderMode != releaseecr.BuilderModeDirect {
+			t.Fatalf("builder mode = %q", options.BuilderMode)
+		}
+		events = append(events, "authenticated")
+		return releaseecr.PreparedV1{Result: releaseecr.ResultV1{SchemaVersion: releaseecr.AgentResultSchemaV1}, Session: session}, nil
+	}
+	preparation := &fakeSessionPreparation{ready: func() error {
+		events = append(events, "ready")
+		return nil
+	}}
+	beginECRPreparation = func(string, releaseecr.SessionV1) (sessionPreparation, error) {
+		events = append(events, "durable-session")
+		return preparation, nil
+	}
+	activateECRBuilder = func(_ context.Context, got releaseecr.SessionV1) error {
+		if got != session {
+			t.Fatalf("activation session = %#v", got)
+		}
+		events = append(events, "builder")
+		return nil
+	}
+	var stdout, stderr bytes.Buffer
+	arguments := []string{"prepare", "--region", "eu-west-2", "--account-id", "123456789012", "--session-output", "C:/protected/session.json", "--builder-mode", "direct"}
+	if code := run(context.Background(), arguments, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if strings.Join(events, ",") != "authenticated,durable-session,builder,ready" ||
+		strings.Contains(stdout.String(), session.DockerConfigDir) || strings.Contains(stdout.String(), session.BuilderName) {
+		t.Fatalf("unsafe activation order/output: events=%#v output=%q", events, stdout.String())
+	}
+}
+
+type fakeSessionPreparation struct {
+	ready func() error
+	abort func() error
+}
+
+func (preparation *fakeSessionPreparation) Ready() error {
+	if preparation.ready != nil {
+		return preparation.ready()
+	}
+	return nil
+}
+
+func (preparation *fakeSessionPreparation) Abort() error {
+	if preparation.abort != nil {
+		return preparation.abort()
+	}
+	return nil
+}
+
 func TestRunPublishDerivesFixedAgentRepositoryAndCleansSession(t *testing.T) {
 	originalClaim, originalPublish := claimECRSession, publishAgent
 	t.Cleanup(func() { claimECRSession, publishAgent = originalClaim, originalPublish })
@@ -109,15 +171,42 @@ func TestRunPublishFailsClosedWhenSessionCleanupFails(t *testing.T) {
 	}
 }
 
+func TestRunPublishCancellationStillCleansDirectBuilderSession(t *testing.T) {
+	originalClaim, originalPublish := claimECRSession, publishAgent
+	t.Cleanup(func() { claimECRSession, publishAgent = originalClaim, originalPublish })
+	session := &fakeImageSession{
+		dockerConfigDir: "C:/private/session", registryHost: "123456789012.dkr.ecr.eu-west-2.amazonaws.com",
+		builderName: "dirextalk-release-" + strings.Repeat("a", 32),
+	}
+	claimECRSession = func(string) (imageReleaseSession, error) { return session, nil }
+	publishAgent = func(ctx context.Context, request releasepublish.AgentRequest) (releasepublish.AgentResult, error) {
+		if request.BuilderName != session.builderName {
+			t.Fatalf("direct builder not bound to publish: %#v", request)
+		}
+		return releasepublish.AgentResult{}, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	arguments := []string{"publish", "--release-tag", "v0.1.0-alpha-0123456789ab", "--architecture", "amd64", "--ecr-session", "C:/protected/session.json"}
+	if code := run(ctx, arguments, &stdout, &stderr); code != 1 || session.closeCalls != 1 ||
+		stdout.Len() != 0 || stderr.String() != publishMessage {
+		t.Fatalf("cancel cleanup = code %d closes %d stdout %q stderr %q", code, session.closeCalls, stdout.String(), stderr.String())
+	}
+}
+
 type fakeImageSession struct {
 	dockerConfigDir string
 	registryHost    string
+	builderName     string
 	closeErr        error
 	closeCalls      int
 }
 
-func (session *fakeImageSession) DockerConfigDir() string { return session.dockerConfigDir }
-func (session *fakeImageSession) RegistryHost() string    { return session.registryHost }
+func (session *fakeImageSession) DockerConfigDir() string    { return session.dockerConfigDir }
+func (session *fakeImageSession) RegistryHost() string       { return session.registryHost }
+func (session *fakeImageSession) BuilderName() string        { return session.builderName }
+func (session *fakeImageSession) BuildSourcesVerified() bool { return true }
 func (session *fakeImageSession) Close() error {
 	session.closeCalls++
 	return session.closeErr

@@ -13,8 +13,8 @@ claim a managed deployment.
 
 - Run from a clean Agent repository root on the exact Git revision represented
   by the prerelease tag.
-- Use a supported Docker Buildx installation capable of `linux/amd64` (or the
-  requested supported architecture) image builds.
+- Use a supported Docker Buildx installation capable of `linux/amd64` image
+  builds. Other architectures are rejected.
 - Supply the intended AWS Region and account ID explicitly. The Go AWS SDK
   default credential chain performs the identity check; the tool accepts no
   access key, secret key, token, profile path, or AWS CLI input.
@@ -27,6 +27,7 @@ claim a managed deployment.
 dirextalk-agent-imagectl prepare \
   --region <aws-region> \
   --account-id <12-digit-account-id> \
+  --builder-mode direct \
   --session-output <protected-local-session-path>
 
 dirextalk-agent-imagectl publish \
@@ -41,6 +42,24 @@ AES-256 ECR encryption, and exact ownership tags. Its stdout is a safe
 preparation receipt; the short-lived Docker authorization remains only in the
 protected session directory.
 
+`--builder-mode direct` first read-verifies the separately prepared and seeded
+`dirextalk-build-sources` repository. It then creates a task-owned
+`docker-container` builder inside the fresh `DOCKER_CONFIG`, using only the
+verified private BuildKit child digest.
+It reads the existing Docker Desktop proxy endpoint, accepts only the
+credential-free `http.docker.internal` HTTP endpoint with matching HTTP/HTTPS
+configuration, injects it only into the task-owned builder process, and proves
+the private frontend and Go-base resolver path before returning the session. The endpoint is
+not persisted in the session descriptor, marker, receipt, or repository.
+Build and registry operations name that builder explicitly. Session cleanup
+removes and reads back the builder container and state volume before removing
+the authorization directory, including after publication failure or
+cancellation. A pre-existing builder/container/volume with the derived name
+fails closed and is never adopted. Omitting the flag can still prepare the
+legacy embedded-builder session shape, but the closed private-source publisher
+rejects that unverified session; current release publication requires direct
+mode.
+
 `publish` derives the repository from the authenticated registry host and has
 no repository, Worker, Reaper, rootfs, or AMI flag. It uploads the Agent image
 by digest first, creates the immutable prerelease tag only after that upload,
@@ -48,7 +67,8 @@ and reads the tag back. Its stdout receipt includes the exact
 `<repository>:<tag>@sha256:<digest>` image reference. It rejects a dirty or
 changing Git checkout, a tag not bound to the current revision, an existing
 tag with a different digest, credential-shaped coordinates, and any attempt to
-override the fixed Agent repository.
+override the fixed Agent repository. Publication is `linux/amd64` only and
+injects the verified private frontend and Go-base references on every build.
 
 If publication does not consume the session, clean it explicitly:
 

@@ -60,6 +60,66 @@ func TestDockerSessionIsPrivateOneTimeAndRemovedAfterClaim(t *testing.T) {
 	}
 }
 
+func TestCrashedPreparationRemainsCleanupOnlyUntilReadyMarkerExists(t *testing.T) {
+	session, err := newDockerSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(session.DockerConfigDir) })
+	session.RegistryHost = registryHost(testAccount, BuildSourceRegion)
+	session.ExpiresAt = testNow.Add(time.Hour).Format(time.RFC3339Nano)
+	session.BuilderMode = BuilderModeDirect
+	session.BuilderName = directBuilderName(session.SessionID)
+	session.BuildSourcesVerified = true
+	descriptor := filepath.Join(t.TempDir(), "release-session.json")
+	preparation, err := BeginSessionPreparation(descriptor, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := releaseSessionLock(preparation.lock); err != nil {
+		t.Fatal(err)
+	}
+	preparation.lock = nil
+	if _, err := ClaimSessionFile(descriptor, func() time.Time { return testNow }); !errors.Is(err, ErrSession) {
+		t.Fatalf("crashed preparation became publishable: %v", err)
+	}
+	if err := CleanupSessionFile(descriptor); err != nil {
+		t.Fatalf("crashed preparation was not recoverable: %v", err)
+	}
+}
+
+func TestSessionLockRejectsSymlinkWithoutChangingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reparse-point behavior is cross-compiled separately")
+	}
+	session, err := newDockerSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(session.DockerConfigDir) })
+	session.RegistryHost = registryHost(testAccount, testRegion)
+	session.ExpiresAt = testNow.Add(time.Hour).Format(time.RFC3339Nano)
+	root := t.TempDir()
+	descriptor := filepath.Join(root, "release-session.json")
+	if err := WriteSessionFile(descriptor, session); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, descriptor+sessionLockSuffix); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimSessionFile(descriptor, func() time.Time { return testNow }); !errors.Is(err, ErrSession) {
+		t.Fatalf("symlink lock accepted: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("symlink target changed: mode=%v err=%v", info.Mode().Perm(), err)
+	}
+}
+
 func TestCleanupSessionFileRemovesUnconsumedSession(t *testing.T) {
 	parent := t.TempDir()
 	session, err := newDockerSession()
@@ -78,6 +138,60 @@ func TestCleanupSessionFileRemovesUnconsumedSession(t *testing.T) {
 	}
 	if _, err := os.Lstat(session.DockerConfigDir); !os.IsNotExist(err) {
 		t.Fatalf("Docker config remains: %v", err)
+	}
+}
+
+func TestSessionPreparationFenceBlocksPublishAndCleanupUntilReady(t *testing.T) {
+	session, err := newDockerSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(session.DockerConfigDir) })
+	session.RegistryHost = registryHost(testAccount, BuildSourceRegion)
+	session.ExpiresAt = testNow.Add(time.Hour).Format(time.RFC3339Nano)
+	session.BuilderMode = BuilderModeDirect
+	session.BuilderName = directBuilderName(session.SessionID)
+	session.BuildSourcesVerified = true
+	descriptor := filepath.Join(t.TempDir(), "release-session.json")
+	preparation, err := BeginSessionPreparation(descriptor, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimSessionFile(descriptor, func() time.Time { return testNow }); !errors.Is(err, ErrSession) {
+		t.Fatalf("publish crossed preparation fence: %v", err)
+	}
+	if err := CleanupSessionFile(descriptor); !errors.Is(err, ErrSession) {
+		t.Fatalf("cleanup crossed preparation fence: %v", err)
+	}
+	if err := preparation.Ready(); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := ClaimSessionFile(descriptor, func() time.Time { return testNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDirectSessionRequiresVerifiedOsakaBuildSourceBinding(t *testing.T) {
+	session, err := newDockerSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(session.DockerConfigDir) })
+	session.RegistryHost = registryHost(testAccount, BuildSourceRegion)
+	session.ExpiresAt = testNow.Add(time.Hour).Format(time.RFC3339Nano)
+	session.BuilderMode = BuilderModeDirect
+	session.BuilderName = directBuilderName(session.SessionID)
+	if err := validateSession(session, testNow); !errors.Is(err, ErrSession) {
+		t.Fatalf("unverified direct session error = %v", err)
+	}
+	session.BuildSourcesVerified = true
+	session.RegistryHost = registryHost(testAccount, "us-east-1")
+	if err := validateSession(session, testNow); !errors.Is(err, ErrSession) {
+		t.Fatalf("non-Osaka direct session error = %v", err)
 	}
 }
 

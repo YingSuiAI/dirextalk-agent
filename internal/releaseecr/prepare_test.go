@@ -125,6 +125,14 @@ func (client *fakeECR) GetAuthorizationToken(_ context.Context, input *ecr.GetAu
 	}}}, nil
 }
 
+func (client *fakeECR) BatchGetImage(context.Context, *ecr.BatchGetImageInput, ...func(*ecr.Options)) (*ecr.BatchGetImageOutput, error) {
+	return nil, errors.New("unexpected build source image read")
+}
+
+func (client *fakeECR) DescribeImages(context.Context, *ecr.DescribeImagesInput, ...func(*ecr.Options)) (*ecr.DescribeImagesOutput, error) {
+	return nil, errors.New("unexpected build source detail read")
+}
+
 type recordedCommand struct {
 	executable      string
 	arguments       []string
@@ -212,6 +220,35 @@ func TestPrepareExistingRepositoriesIsIdempotent(t *testing.T) {
 	prepareSuccess(t, preparer)
 	if len(ecrClient.createCalls) != 0 || len(ecrClient.describeCalls) != 3 || len(ecrClient.listTagCalls) != 3 {
 		t.Fatalf("idempotent prepare mutated repositories: create=%d describe=%#v list_tags=%#v", len(ecrClient.createCalls), ecrClient.describeCalls, ecrClient.listTagCalls)
+	}
+}
+
+func TestPrepareDirectBuilderModeBindsOnlyDeterministicSessionMetadata(t *testing.T) {
+	options := validOptions()
+	options.BuilderMode = BuilderModeDirect
+	options.Region = BuildSourceRegion
+	preparer, err := New(options, Clients{Region: BuildSourceRegion, STS: validSTS(), ECR: &fakeECR{
+		authorizationHost: registryHost(testAccount, BuildSourceRegion),
+		repositories: map[string]ecrtypes.Repository{
+			RepositoryAgent:  validRepositoryIn(RepositoryAgent, BuildSourceRegion),
+			RepositoryWorker: validRepositoryIn(RepositoryWorker, BuildSourceRegion),
+			RepositoryReaper: validRepositoryIn(RepositoryReaper, BuildSourceRegion),
+		},
+	}}, &fakeRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceVerifyCalls := 0
+	preparer.verifySources = func(context.Context, buildSourceReadAPI, string, string, string, string) error {
+		sourceVerifyCalls++
+		return nil
+	}
+	prepared := prepareSuccess(t, preparer)
+	if prepared.Session.BuilderMode != BuilderModeDirect ||
+		prepared.Session.BuilderName != directBuilderName(prepared.Session.SessionID) ||
+		!prepared.Session.BuildSourcesVerified || sourceVerifyCalls != 1 ||
+		strings.Contains(prepared.Session.BuilderName, prepared.Session.DockerConfigDir) {
+		t.Fatalf("direct builder session binding = %#v", prepared.Session)
 	}
 }
 
@@ -390,6 +427,9 @@ func TestDockerEnvironmentDoesNotForwardAWSCredentialsOrInheritedConfig(t *testi
 	t.Setenv("AWS_SESSION_TOKEN", "provider-session")
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "C:/secret/credentials")
 	t.Setenv("DOCKER_CONFIG", "C:/user-home/.docker")
+	t.Setenv("BUILDX_BUILDER", "foreign-builder")
+	t.Setenv("HTTP_PROXY", "http://foreign-proxy")
+	t.Setenv("HTTPS_PROXY", "http://foreign-proxy")
 	t.Setenv("PATH", "C:/safe-bin")
 	environment := safeDockerEnvironment("C:/private-release-session")
 	if !slices.Contains(environment, "PATH=C:/safe-bin") {
@@ -401,6 +441,9 @@ func TestDockerEnvironmentDoesNotForwardAWSCredentialsOrInheritedConfig(t *testi
 		}
 		if value == "DOCKER_CONFIG=C:/user-home/.docker" {
 			t.Fatalf("inherited Docker config reached login: %#v", environment)
+		}
+		if strings.HasPrefix(value, "BUILDX_") || strings.HasPrefix(value, "HTTP_PROXY=") || strings.HasPrefix(value, "HTTPS_PROXY=") {
+			t.Fatalf("inherited builder/proxy configuration reached private session: %q", value)
 		}
 	}
 	if !slices.Contains(environment, "DOCKER_CONFIG=C:/private-release-session") {
@@ -459,10 +502,14 @@ func validSTS() *fakeSTS {
 }
 
 func validRepository(name string) ecrtypes.Repository {
-	host := registryHost(testAccount, testRegion)
+	return validRepositoryIn(name, testRegion)
+}
+
+func validRepositoryIn(name, region string) ecrtypes.Repository {
+	host := registryHost(testAccount, region)
 	return ecrtypes.Repository{
 		RegistryId: aws.String(testAccount), RepositoryName: aws.String(name),
-		RepositoryArn: aws.String("arn:aws:ecr:" + testRegion + ":" + testAccount + ":repository/" + name),
+		RepositoryArn: aws.String("arn:aws:ecr:" + region + ":" + testAccount + ":repository/" + name),
 		RepositoryUri: aws.String(host + "/" + name), ImageTagMutability: ecrtypes.ImageTagMutabilityImmutable,
 		ImageScanningConfiguration: &ecrtypes.ImageScanningConfiguration{ScanOnPush: true},
 		EncryptionConfiguration:    &ecrtypes.EncryptionConfiguration{EncryptionType: ecrtypes.EncryptionTypeAes256},

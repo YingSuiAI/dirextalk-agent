@@ -19,6 +19,8 @@ const (
 	dockerConfigName    = "config.json"
 	sessionMarkerName   = ".dirextalk-session"
 	sessionClaimSuffix  = ".claim"
+	sessionLockSuffix   = ".lock"
+	sessionReadySuffix  = ".ready"
 	maxSessionFileBytes = 64 << 10
 )
 
@@ -28,21 +30,34 @@ var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // Close removes both credentials and handoff. A failed credential-directory
 // removal releases the claim and may be retried through CleanupSessionFile.
 type SessionLease struct {
-	session    SessionV1
-	descriptor string
-	claim      string
-	closed     bool
-	removeAll  func(string) error
-	remove     func(string) error
+	session        SessionV1
+	descriptor     string
+	claim          string
+	closed         bool
+	removeAll      func(string) error
+	remove         func(string) error
+	cleanupBuilder func(SessionV1) error
+	lock           *os.File
 }
 
 func (lease *SessionLease) DockerConfigDir() string { return lease.session.DockerConfigDir }
 func (lease *SessionLease) RegistryHost() string    { return lease.session.RegistryHost }
+func (lease *SessionLease) BuilderName() string     { return lease.session.BuilderName }
+func (lease *SessionLease) BuildSourcesVerified() bool {
+	return lease.session.BuildSourcesVerified
+}
 
 func (lease *SessionLease) Close() error {
 	if lease == nil || lease.closed {
 		return ErrSessionCleanup
 	}
+	releaseLock := true
+	defer func() {
+		if releaseLock {
+			_ = releaseSessionLock(lease.lock)
+			lease.lock = nil
+		}
+	}()
 	removeAll := lease.removeAll
 	if removeAll == nil {
 		removeAll = os.RemoveAll
@@ -50,6 +65,14 @@ func (lease *SessionLease) Close() error {
 	remove := lease.remove
 	if remove == nil {
 		remove = os.Remove
+	}
+	cleanupBuilder := lease.cleanupBuilder
+	if cleanupBuilder == nil {
+		cleanupBuilder = cleanupSessionBuilder
+	}
+	if err := cleanupBuilder(lease.session); err != nil {
+		_ = remove(lease.claim)
+		return ErrSessionCleanup
 	}
 	if err := removeAll(lease.session.DockerConfigDir); err != nil {
 		// Keep the de-secreted descriptor for an explicit cleanup retry, but
@@ -65,6 +88,17 @@ func (lease *SessionLease) Close() error {
 		if err := remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return ErrSessionCleanup
 		}
+	}
+	if err := releaseSessionLock(lease.lock); err != nil {
+		return ErrSessionCleanup
+	}
+	releaseLock = false
+	lease.lock = nil
+	if err := remove(lease.descriptor + sessionLockSuffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ErrSessionCleanup
+	}
+	if err := remove(lease.descriptor + sessionReadySuffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ErrSessionCleanup
 	}
 	lease.closed = true
 	return nil
@@ -119,6 +153,76 @@ func WriteSessionFile(name string, session SessionV1) error {
 	return writePrivateFile(absolute, payload)
 }
 
+type SessionPreparation struct {
+	session    SessionV1
+	descriptor string
+	lock       *os.File
+	finished   bool
+}
+
+func BeginSessionPreparation(name string, session SessionV1) (*SessionPreparation, error) {
+	if err := validateSession(session, time.Time{}); err != nil {
+		return nil, err
+	}
+	absolute, err := cleanAbsolutePath(name)
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireSessionLock(absolute)
+	if err != nil {
+		return nil, ErrSession
+	}
+	if err := WriteSessionFile(absolute, session); err != nil {
+		_ = releaseSessionLock(lock)
+		_ = os.Remove(absolute + sessionLockSuffix)
+		return nil, err
+	}
+	return &SessionPreparation{session: session, descriptor: absolute, lock: lock}, nil
+}
+
+func (preparation *SessionPreparation) Ready() error {
+	if preparation == nil || preparation.finished {
+		return ErrSession
+	}
+	if err := writePrivateFile(preparation.descriptor+sessionReadySuffix, []byte(preparation.session.SessionID)); err != nil {
+		return ErrSession
+	}
+	if err := releaseSessionLock(preparation.lock); err != nil {
+		return ErrSession
+	}
+	preparation.lock = nil
+	preparation.finished = true
+	return nil
+}
+
+func (preparation *SessionPreparation) Abort() error {
+	if preparation == nil || preparation.finished {
+		return ErrSessionCleanup
+	}
+	if err := cleanupSessionBuilder(preparation.session); err != nil {
+		_ = releaseSessionLock(preparation.lock)
+		preparation.lock = nil
+		return ErrSessionCleanup
+	}
+	for _, name := range []string{preparation.session.DockerConfigDir, preparation.descriptor} {
+		if err := os.RemoveAll(name); err != nil {
+			_ = releaseSessionLock(preparation.lock)
+			preparation.lock = nil
+			return ErrSessionCleanup
+		}
+	}
+	_ = os.Remove(preparation.descriptor + sessionReadySuffix)
+	if err := releaseSessionLock(preparation.lock); err != nil {
+		return ErrSessionCleanup
+	}
+	preparation.lock = nil
+	if err := os.Remove(preparation.descriptor + sessionLockSuffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return ErrSessionCleanup
+	}
+	preparation.finished = true
+	return nil
+}
+
 func ClaimSessionFile(name string, now func() time.Time) (*SessionLease, error) {
 	if now == nil {
 		return nil, ErrSession
@@ -142,6 +246,9 @@ func CleanupSession(session SessionV1) error {
 	if err := validateSessionDirectory(session); err != nil {
 		return ErrSessionCleanup
 	}
+	if err := cleanupSessionBuilder(session); err != nil {
+		return ErrSessionCleanup
+	}
 	if err := os.RemoveAll(session.DockerConfigDir); err != nil {
 		return ErrSessionCleanup
 	}
@@ -157,6 +264,16 @@ func claimSessionFile(name string, now time.Time, requireFresh bool) (*SessionLe
 		return nil, err
 	}
 	claim := absolute + sessionClaimSuffix
+	sessionLock, err := acquireSessionLock(absolute)
+	if err != nil {
+		return nil, ErrSession
+	}
+	releaseLock := true
+	defer func() {
+		if releaseLock {
+			_ = releaseSessionLock(sessionLock)
+		}
+	}()
 	lock, err := os.OpenFile(claim, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, ErrSession
@@ -194,13 +311,62 @@ func claimSessionFile(name string, now time.Time, requireFresh bool) (*SessionLe
 	if err := validateSession(session, validationTime); err != nil {
 		return fail()
 	}
-	return &SessionLease{session: session, descriptor: absolute, claim: claim}, nil
+	if requireFresh {
+		ready, readyErr := os.ReadFile(absolute + sessionReadySuffix)
+		if readyErr == nil && string(ready) != session.SessionID {
+			return fail()
+		}
+		if session.BuilderMode == BuilderModeDirect && readyErr != nil {
+			return fail()
+		}
+	}
+	releaseLock = false
+	return &SessionLease{session: session, descriptor: absolute, claim: claim, lock: sessionLock}, nil
+}
+
+func acquireSessionLock(descriptor string) (*os.File, error) {
+	name := descriptor + sessionLockSuffix
+	file, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		file, err = openExistingSessionLock(name)
+	}
+	if err != nil || file == nil {
+		return nil, ErrSession
+	}
+	if err := tryLockSessionFile(file); err != nil {
+		_ = file.Close()
+		return nil, ErrSession
+	}
+	return file, nil
+}
+
+func releaseSessionLock(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	unlockErr := unlockSessionFile(file)
+	closeErr := file.Close()
+	if unlockErr != nil {
+		return unlockErr
+	}
+	return closeErr
 }
 
 func validateSession(session SessionV1, now time.Time) error {
 	if session.SchemaVersion != SessionSchemaV1 || !sessionIDPattern.MatchString(session.SessionID) ||
 		session.RegistryHost == "" || strings.ContainsAny(session.RegistryHost, "/:@ \t\r\n") {
 		return ErrSession
+	}
+	if (session.BuilderMode == "" && session.BuilderName != "") ||
+		(session.BuilderMode == BuilderModeDirect && session.BuilderName != directBuilderName(session.SessionID)) ||
+		(session.BuilderMode != "" && session.BuilderMode != BuilderModeDirect) ||
+		(session.BuilderMode == BuilderModeDirect) != session.BuildSourcesVerified {
+		return ErrSession
+	}
+	if session.BuilderMode == BuilderModeDirect {
+		if _, err := PrivateBuildSourceReferences(session.RegistryHost); err != nil {
+			return ErrSession
+		}
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, session.ExpiresAt)
 	if err != nil || expiresAt.Location() != time.UTC || expiresAt.Format(time.RFC3339Nano) != session.ExpiresAt ||

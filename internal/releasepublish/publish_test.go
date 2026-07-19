@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseartifact"
+	"github.com/YingSuiAI/dirextalk-agent/internal/releaseecr"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrootfs"
 )
 
@@ -649,16 +650,60 @@ func testPublisher(t *testing.T, repositoryRoot, outputRoot string, runner *fake
 }
 
 func validRequest(outputRoot string) Request {
+	registryHost := "123456789012.dkr.ecr.ap-northeast-3.amazonaws.com"
 	return Request{
-		ReleaseTag:       "v0.1.0-alpha-" + testRevision[:12],
-		Architecture:     "amd64",
-		AgentRepository:  "ghcr.io/yingsuiai/dirextalk-agent",
-		WorkerRepository: "ghcr.io/yingsuiai/dirextalk-cloud-worker",
-		ReaperRepository: "ghcr.io/yingsuiai/dirextalk-aws-reaper",
-		ManifestOutput:   filepath.Join(outputRoot, "release.json"),
-		RootFSOutput:     filepath.Join(outputRoot, "worker-rootfs.tar"),
-		DockerConfigDir:  filepath.Join(outputRoot, "docker-session"),
-		RegistryHost:     "ghcr.io",
+		ReleaseTag:           "v0.1.0-alpha-" + testRevision[:12],
+		Architecture:         "amd64",
+		AgentRepository:      registryHost + "/dirextalk-agent",
+		WorkerRepository:     registryHost + "/dirextalk-cloud-worker",
+		ReaperRepository:     registryHost + "/dirextalk-aws-reaper",
+		ManifestOutput:       filepath.Join(outputRoot, "release.json"),
+		RootFSOutput:         filepath.Join(outputRoot, "worker-rootfs.tar"),
+		DockerConfigDir:      filepath.Join(outputRoot, "docker-session"),
+		RegistryHost:         registryHost,
+		BuildSourcesVerified: true,
+	}
+}
+
+func TestEveryBuildPathUsesVerifiedPrivateLinuxAMD64Sources(t *testing.T) {
+	request := validRequest(t.TempDir())
+	references, err := releaseecr.PrivateBuildSourceReferences(request.RegistryHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string][]string{
+		"worker-export": workerExportArguments(request, testRevision, "/tmp/rootfs", "/tmp/metadata"),
+		"agent-push":    pushByDigestArguments(request, testRevision, "deploy/container/agent.Containerfile", request.AgentRepository, "/tmp/metadata"),
+		"worker-push":   pushByDigestArguments(request, testRevision, "deploy/container/worker.Containerfile", request.WorkerRepository, "/tmp/metadata"),
+		"reaper-push":   pushByDigestArguments(request, testRevision, "deploy/container/reaper.Containerfile", request.ReaperRepository, "/tmp/metadata"),
+	}
+	for name, arguments := range cases {
+		joined := strings.Join(arguments, "\n")
+		for _, required := range []string{
+			"--platform\nlinux/amd64",
+			"--build-arg\nBUILDKIT_SYNTAX=" + references.Frontend,
+			"--build-arg\nGO_BUILD_BASE=" + references.GoBuildBase,
+		} {
+			if !strings.Contains(joined, required) {
+				t.Fatalf("%s lacks %q: %#v", name, required, arguments)
+			}
+		}
+		if strings.Contains(joined, "docker.io/") || strings.Contains(joined, "public.ecr.aws/") {
+			t.Fatalf("%s contains external source: %#v", name, arguments)
+		}
+		hasRuntime := strings.Contains(joined, "REAPER_RUNTIME_BASE="+references.ReaperRuntime)
+		if hasRuntime != (name == "reaper-push") {
+			t.Fatalf("%s reaper runtime binding = %t", name, hasRuntime)
+		}
+	}
+	request.Architecture = "arm64"
+	if _, err := normalizeRequest(request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("arm64 request error = %v", err)
+	}
+	request = validRequest(t.TempDir())
+	request.BuildSourcesVerified = false
+	if _, err := normalizeRequest(request); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("unverified source request error = %v", err)
 	}
 }
 

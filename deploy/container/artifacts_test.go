@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-func TestAllContainerBasesUseReviewedLinuxAMD64Digests(t *testing.T) {
-	const goBuilder = "FROM --platform=linux/amd64 docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135 AS build"
-	const lambdaRuntime = "FROM --platform=linux/amd64 public.ecr.aws/lambda/provided:al2023@sha256:f91e5c83528080b2e41d22536d413042e451e67968c7473c4f7e77a627c944bc"
+func TestAllContainerBasesRequireClosedPrivateBuildArguments(t *testing.T) {
+	const goBuilder = "FROM --platform=linux/amd64 ${GO_BUILD_BASE} AS build"
+	const lambdaRuntime = "FROM --platform=linux/amd64 ${REAPER_RUNTIME_BASE}"
 
 	tests := map[string][]string{
 		"agent.Containerfile":  {goBuilder, "FROM scratch"},
@@ -25,8 +25,38 @@ func TestAllContainerBasesUseReviewedLinuxAMD64Digests(t *testing.T) {
 			}
 		}
 		if !reflect.DeepEqual(bases, expected) {
-			t.Fatalf("%s base images = %q, want reviewed immutable bases %q", name, bases, expected)
+			t.Fatalf("%s base images = %q, want required private build arguments %q", name, bases, expected)
 		}
+		artifact := readArtifact(t, name)
+		if strings.Contains(artifact, "# syntax=") || strings.Contains(artifact, "docker.io/") ||
+			strings.Contains(artifact, "public.ecr.aws/") || !strings.Contains(artifact, "ARG GO_BUILD_BASE") {
+			t.Fatalf("%s contains an external/default source or lacks GO_BUILD_BASE", name)
+		}
+		if name == "reaper.Containerfile" && !strings.Contains(artifact, "ARG REAPER_RUNTIME_BASE") {
+			t.Fatalf("%s lacks REAPER_RUNTIME_BASE", name)
+		}
+		assertExactNoDefaultARG(t, name, artifact, "GO_BUILD_BASE")
+		if name == "reaper.Containerfile" {
+			assertExactNoDefaultARG(t, name, artifact, "REAPER_RUNTIME_BASE")
+		}
+	}
+}
+
+func assertExactNoDefaultARG(t *testing.T, name, artifact, argument string) {
+	t.Helper()
+	want := "ARG " + argument
+	count := 0
+	for _, raw := range strings.Split(artifact, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, want) {
+			if line != want {
+				t.Fatalf("%s source argument %s has a default or suffix: %q", name, argument, line)
+			}
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%s exact %q declarations = %d", name, want, count)
 	}
 }
 

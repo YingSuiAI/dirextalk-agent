@@ -24,12 +24,13 @@ var (
 )
 
 type Preparer struct {
-	options      Options
-	clients      Clients
-	runner       CommandRunner
-	repositories []RepositorySpec
-	resultSchema string
-	newSession   func() (SessionV1, error)
+	options       Options
+	clients       Clients
+	runner        CommandRunner
+	repositories  []RepositorySpec
+	resultSchema  string
+	newSession    func() (SessionV1, error)
+	verifySources func(context.Context, buildSourceReadAPI, string, string, string, string) error
 }
 
 func New(options Options, clients Clients, runner CommandRunner) (*Preparer, error) {
@@ -46,6 +47,8 @@ func NewAgent(options Options, clients Clients, runner CommandRunner) (*Preparer
 
 func newPreparer(options Options, clients Clients, runner CommandRunner, repositories []RepositorySpec, resultSchema string) (*Preparer, error) {
 	if !regionPattern.MatchString(options.Region) || !accountPattern.MatchString(options.ExpectedAccountID) ||
+		(options.BuilderMode != "" && options.BuilderMode != BuilderModeDirect) ||
+		(options.BuilderMode == BuilderModeDirect && options.Region != BuildSourceRegion) ||
 		options.Now == nil || clients.STS == nil || clients.ECR == nil || runner == nil || len(repositories) == 0 || resultSchema == "" {
 		return nil, ErrInvalidInput
 	}
@@ -55,6 +58,7 @@ func newPreparer(options Options, clients Clients, runner CommandRunner, reposit
 	return &Preparer{
 		options: options, clients: clients, runner: runner,
 		repositories: append([]RepositorySpec(nil), repositories...), resultSchema: resultSchema, newSession: newDockerSession,
+		verifySources: verifyBuildSources,
 	}, nil
 }
 
@@ -80,7 +84,9 @@ func prepareDefault(ctx context.Context, options Options, factory preparerFactor
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	if !regionPattern.MatchString(options.Region) || !accountPattern.MatchString(options.ExpectedAccountID) {
+	if !regionPattern.MatchString(options.Region) || !accountPattern.MatchString(options.ExpectedAccountID) ||
+		(options.BuilderMode != "" && options.BuilderMode != BuilderModeDirect) ||
+		(options.BuilderMode == BuilderModeDirect && options.Region != BuildSourceRegion) {
 		return PreparedV1{}, ErrInvalidInput
 	}
 	awsConfig, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(options.Region))
@@ -117,6 +123,16 @@ func (preparer *Preparer) Prepare(ctx context.Context) (prepared PreparedV1, err
 			Component: spec.Component, Name: spec.Name, URI: aws.ToString(repository.RepositoryUri), Created: created,
 		})
 	}
+	if preparer.options.BuilderMode == BuilderModeDirect {
+		sourceClient, ok := preparer.clients.ECR.(buildSourceReadAPI)
+		if !ok {
+			return PreparedV1{}, ErrBuildSource
+		}
+		if err := preparer.verifySources(ctx, sourceClient, partition, preparer.options.ExpectedAccountID,
+			preparer.options.Region, registryHost); err != nil {
+			return PreparedV1{}, err
+		}
+	}
 	session, err := preparer.newSession()
 	if err != nil {
 		return PreparedV1{}, err
@@ -133,6 +149,11 @@ func (preparer *Preparer) Prepare(ctx context.Context) (prepared PreparedV1, err
 	}
 	session.RegistryHost = registryHost
 	session.ExpiresAt = expiresAt.UTC().Format(time.RFC3339Nano)
+	if preparer.options.BuilderMode == BuilderModeDirect {
+		session.BuilderMode = BuilderModeDirect
+		session.BuilderName = directBuilderName(session.SessionID)
+		session.BuildSourcesVerified = true
+	}
 	if err := validateSession(session, preparer.options.Now().UTC()); err != nil {
 		return PreparedV1{}, err
 	}

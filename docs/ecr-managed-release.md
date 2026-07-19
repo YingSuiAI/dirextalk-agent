@@ -5,6 +5,12 @@ The fixed private repositories `dirextalk-agent`,
 release infrastructure. Publisher-session cleanup, a failed publication, and
 Worker AMI cleanup never remove a repository or image.
 
+The separate Osaka (`ap-northeast-3`) `dirextalk-build-sources` repository is retained build
+infrastructure, not a release-output repository. It is excluded from the
+three-repository release manifest and uses the exact tags
+`managed_by=dirextalk-agent`, `component=release-registry`,
+`artifact=build-sources`, and `retention=managed_retained`.
+
 ## Repository contract
 
 `dirextalk-ecrctl prepare` preserves its v1 receipt shape and creates only the

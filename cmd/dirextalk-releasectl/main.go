@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseecr"
+	"github.com/YingSuiAI/dirextalk-agent/internal/releaseprocess"
 	"github.com/YingSuiAI/dirextalk-agent/internal/releasepublish"
 )
 
@@ -24,6 +25,8 @@ var publishRelease = releasepublish.Publish
 type releaseSession interface {
 	DockerConfigDir() string
 	RegistryHost() string
+	BuilderName() string
+	BuildSourcesVerified() bool
 	Close() error
 }
 
@@ -32,7 +35,10 @@ var claimECRSession = func(path string) (releaseSession, error) {
 }
 
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := releaseprocess.Context()
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
 func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int {
@@ -63,6 +69,8 @@ func run(ctx context.Context, arguments []string, stdout, stderr io.Writer) int 
 	}
 	request.DockerConfigDir = session.DockerConfigDir()
 	request.RegistryHost = session.RegistryHost()
+	request.BuilderName = session.BuilderName()
+	request.BuildSourcesVerified = session.BuildSourcesVerified()
 	result, publishErr, cleanupErr := publishWithSession(ctx, request, session)
 	if cleanupErr != nil {
 		_, _ = io.WriteString(stderr, sessionMessage)

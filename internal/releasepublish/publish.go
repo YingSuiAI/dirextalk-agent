@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseartifact"
+	"github.com/YingSuiAI/dirextalk-agent/internal/releaseecr"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrootfs"
 )
 
@@ -41,26 +42,29 @@ const (
 )
 
 var (
-	revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	tagPattern      = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-(?:alpha|beta|rc)(?:[0-9A-Za-z.-]*)-([0-9a-f]{12})$`)
-	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	awsKeyPattern   = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:akia|asia)[a-z0-9]{16}(?:$|[^a-z0-9])`)
-	apiKeyPattern   = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:sk-[a-z0-9_-]{12,}|ghp_[a-z0-9]{12,}|github_pat_[a-z0-9_]{12,}|xox[bp]-[a-z0-9-]{12,})(?:$|[^a-z0-9])`)
+	revisionPattern    = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	tagPattern         = regexp.MustCompile(`^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-(?:alpha|beta|rc)(?:[0-9A-Za-z.-]*)-([0-9a-f]{12})$`)
+	digestPattern      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	awsKeyPattern      = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:akia|asia)[a-z0-9]{16}(?:$|[^a-z0-9])`)
+	apiKeyPattern      = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:sk-[a-z0-9_-]{12,}|ghp_[a-z0-9]{12,}|github_pat_[a-z0-9_]{12,}|xox[bp]-[a-z0-9-]{12,})(?:$|[^a-z0-9])`)
+	builderNamePattern = regexp.MustCompile(`^dirextalk-release-[0-9a-f]{32}$`)
 )
 
 // Request contains public release coordinates plus a trusted, de-secreted
 // Docker session binding supplied by the release CLI. DockerConfigDir locates
 // the private short-lived config; credential bytes are never accepted here.
 type Request struct {
-	ReleaseTag       string
-	Architecture     string
-	AgentRepository  string
-	WorkerRepository string
-	ReaperRepository string
-	ManifestOutput   string
-	RootFSOutput     string
-	DockerConfigDir  string
-	RegistryHost     string
+	ReleaseTag           string
+	Architecture         string
+	AgentRepository      string
+	WorkerRepository     string
+	ReaperRepository     string
+	ManifestOutput       string
+	RootFSOutput         string
+	DockerConfigDir      string
+	RegistryHost         string
+	BuilderName          string
+	BuildSourcesVerified bool
 }
 
 // Result is safe for stdout and logs. It omits registry repositories and all
@@ -190,7 +194,7 @@ func (tool publisher) publish(ctx context.Context, input Request) (result Result
 		if err != nil {
 			return Result{}, err
 		}
-		if err := tool.reconcileImmutableTag(ctx, repositoryRoot, image.repository, request.ReleaseTag, digest); err != nil {
+		if err := tool.reconcileImmutableTag(ctx, repositoryRoot, image.repository, request.ReleaseTag, digest, request.BuilderName); err != nil {
 			return Result{}, err
 		}
 		digests[image.name] = digest
@@ -246,20 +250,23 @@ func (tool publisher) publish(ctx context.Context, input Request) (result Result
 
 func normalizeRequest(input Request) (Request, error) {
 	request := Request{
-		ReleaseTag:       strings.TrimSpace(input.ReleaseTag),
-		Architecture:     strings.TrimSpace(input.Architecture),
-		AgentRepository:  strings.TrimSpace(input.AgentRepository),
-		WorkerRepository: strings.TrimSpace(input.WorkerRepository),
-		ReaperRepository: strings.TrimSpace(input.ReaperRepository),
-		ManifestOutput:   strings.TrimSpace(input.ManifestOutput),
-		RootFSOutput:     strings.TrimSpace(input.RootFSOutput),
-		DockerConfigDir:  strings.TrimSpace(input.DockerConfigDir),
-		RegistryHost:     strings.TrimSpace(input.RegistryHost),
+		ReleaseTag:           strings.TrimSpace(input.ReleaseTag),
+		Architecture:         strings.TrimSpace(input.Architecture),
+		AgentRepository:      strings.TrimSpace(input.AgentRepository),
+		WorkerRepository:     strings.TrimSpace(input.WorkerRepository),
+		ReaperRepository:     strings.TrimSpace(input.ReaperRepository),
+		ManifestOutput:       strings.TrimSpace(input.ManifestOutput),
+		RootFSOutput:         strings.TrimSpace(input.RootFSOutput),
+		DockerConfigDir:      strings.TrimSpace(input.DockerConfigDir),
+		RegistryHost:         strings.TrimSpace(input.RegistryHost),
+		BuilderName:          strings.TrimSpace(input.BuilderName),
+		BuildSourcesVerified: input.BuildSourcesVerified,
 	}
 	if request.ReleaseTag == "" || request.ManifestOutput == "" || request.RootFSOutput == "" ||
-		(request.Architecture != "amd64" && request.Architecture != "arm64") ||
+		request.Architecture != "amd64" || !request.BuildSourcesVerified ||
 		request.RegistryHost == "" || strings.ContainsAny(request.RegistryHost, "/:@ \t\r\n") ||
-		!filepath.IsAbs(request.DockerConfigDir) || filepath.Clean(request.DockerConfigDir) != request.DockerConfigDir {
+		!filepath.IsAbs(request.DockerConfigDir) || filepath.Clean(request.DockerConfigDir) != request.DockerConfigDir ||
+		(request.BuilderName != "" && !builderNamePattern.MatchString(request.BuilderName)) {
 		return Request{}, ErrInvalidInput
 	}
 	for _, value := range []string{request.ReleaseTag, request.AgentRepository, request.WorkerRepository, request.ReaperRepository} {
@@ -271,6 +278,9 @@ func normalizeRequest(input Request) (Request, error) {
 		if !strings.HasPrefix(repository, request.RegistryHost+"/") {
 			return Request{}, ErrInvalidInput
 		}
+	}
+	if _, err := releaseecr.PrivateBuildSourceReferences(request.RegistryHost); err != nil {
+		return Request{}, ErrInvalidInput
 	}
 	return request, nil
 }
@@ -408,29 +418,34 @@ func prepareMetadataFile(path string) error {
 }
 
 func workerExportArguments(request Request, revision, destination, metadata string) []string {
-	return []string{
-		"buildx", "build",
+	arguments := buildxArguments(request.BuilderName,
+		"build",
 		"--file", "deploy/container/worker.Containerfile",
-		"--platform", "linux/" + request.Architecture,
-		"--build-arg", "VERSION=" + request.ReleaseTag,
-		"--build-arg", "REVISION=" + revision,
-		"--tag", request.WorkerRepository + ":" + request.ReleaseTag,
+		"--platform", "linux/"+request.Architecture,
+	)
+	arguments = append(arguments, privateSourceBuildArguments(request.RegistryHost, "deploy/container/worker.Containerfile")...)
+	return append(arguments,
+		"--build-arg", "VERSION="+request.ReleaseTag,
+		"--build-arg", "REVISION="+revision,
+		"--tag", request.WorkerRepository+":"+request.ReleaseTag,
 		"--metadata-file", metadata,
-		"--output", "type=local,dest=" + destination,
-		".",
-	}
+		"--output", "type=local,dest="+destination,
+		".")
 }
 
 func pushByDigestArguments(request Request, revision, containerfile, repository, metadata string) []string {
-	arguments := []string{
-		"buildx", "build",
+	arguments := buildxArguments(request.BuilderName,
+		"build",
 		"--file", containerfile,
-		"--platform", "linux/" + request.Architecture,
-		"--build-arg", "VERSION=" + request.ReleaseTag,
-		"--build-arg", "REVISION=" + revision,
+		"--platform", "linux/"+request.Architecture,
+	)
+	arguments = append(arguments, privateSourceBuildArguments(request.RegistryHost, containerfile)...)
+	arguments = append(arguments,
+		"--build-arg", "VERSION="+request.ReleaseTag,
+		"--build-arg", "REVISION="+revision,
 		"--metadata-file", metadata,
-		"--output", "type=image,name=" + repository + ",push-by-digest=true,push=true",
-	}
+		"--output", "type=image,name="+repository+",push-by-digest=true,push=true",
+	)
 	// Lambda rejects BuildKit's default provenance index for image functions;
 	// publish the Reaper as a single runnable image manifest.
 	if containerfile == "deploy/container/reaper.Containerfile" {
@@ -439,12 +454,27 @@ func pushByDigestArguments(request Request, revision, containerfile, repository,
 	return append(arguments, ".")
 }
 
-func (tool publisher) reconcileImmutableTag(ctx context.Context, repositoryRoot, repository, tag, expectedDigest string) error {
+func privateSourceBuildArguments(registryHost, containerfile string) []string {
+	sources, err := releaseecr.PrivateBuildSourceReferences(registryHost)
+	if err != nil {
+		return nil
+	}
+	arguments := []string{
+		"--build-arg", "BUILDKIT_SYNTAX=" + sources.Frontend,
+		"--build-arg", "GO_BUILD_BASE=" + sources.GoBuildBase,
+	}
+	if containerfile == "deploy/container/reaper.Containerfile" {
+		arguments = append(arguments, "--build-arg", "REAPER_RUNTIME_BASE="+sources.ReaperRuntime)
+	}
+	return arguments
+}
+
+func (tool publisher) reconcileImmutableTag(ctx context.Context, repositoryRoot, repository, tag, expectedDigest, builderName string) error {
 	if !digestPattern.MatchString(expectedDigest) {
 		return ErrMetadata
 	}
 	reference := repository + ":" + tag
-	observed, found, err := tool.inspectRegistryDigest(ctx, repositoryRoot, reference)
+	observed, found, err := tool.inspectRegistryDigest(ctx, repositoryRoot, reference, builderName)
 	if err != nil {
 		return err
 	}
@@ -459,8 +489,8 @@ func (tool publisher) reconcileImmutableTag(ctx context.Context, repositoryRoot,
 	// is the only non-content-addressed mutation; always read it back, including
 	// after a lost command response.
 	_, createErr := tool.runner.Run(ctx, repositoryRoot, "docker",
-		"buildx", "imagetools", "create", "--prefer-index=false", "--tag", reference, repository+"@"+expectedDigest)
-	observed, found, err = tool.inspectRegistryDigest(ctx, repositoryRoot, reference)
+		buildxArguments(builderName, "imagetools", "create", "--prefer-index=false", "--tag", reference, repository+"@"+expectedDigest)...)
+	observed, found, err = tool.inspectRegistryDigest(ctx, repositoryRoot, reference, builderName)
 	if err != nil {
 		return err
 	}
@@ -476,9 +506,9 @@ func (tool publisher) reconcileImmutableTag(ctx context.Context, repositoryRoot,
 	return nil
 }
 
-func (tool publisher) inspectRegistryDigest(ctx context.Context, repositoryRoot, reference string) (string, bool, error) {
+func (tool publisher) inspectRegistryDigest(ctx context.Context, repositoryRoot, reference, builderName string) (string, bool, error) {
 	output, err := tool.runner.Run(ctx, repositoryRoot, "docker",
-		"buildx", "imagetools", "inspect", "--format", "{{json .Manifest}}", reference)
+		buildxArguments(builderName, "imagetools", "inspect", "--format", "{{json .Manifest}}", reference)...)
 	if err != nil {
 		return "", false, nil
 	}
@@ -487,6 +517,14 @@ func (tool publisher) inspectRegistryDigest(ctx context.Context, repositoryRoot,
 		return "", true, err
 	}
 	return digest, true, nil
+}
+
+func buildxArguments(builderName string, arguments ...string) []string {
+	result := []string{"buildx"}
+	if builderName != "" {
+		result = append(result, "--builder", builderName)
+	}
+	return append(result, arguments...)
 }
 
 func immutableReference(repository, tag, digest string) string {

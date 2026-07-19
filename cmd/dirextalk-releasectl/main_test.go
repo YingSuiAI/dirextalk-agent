@@ -23,15 +23,16 @@ func TestRunPublishEmitsOnlySafeResult(t *testing.T) {
 		return lease, nil
 	}
 	wantRequest := releasepublish.Request{
-		ReleaseTag:       "v0.1.0-alpha-0123456789ab",
-		Architecture:     "amd64",
-		AgentRepository:  "ghcr.io/yingsuiai/dirextalk-agent",
-		WorkerRepository: "ghcr.io/yingsuiai/dirextalk-cloud-worker",
-		ReaperRepository: "ghcr.io/yingsuiai/dirextalk-aws-reaper",
-		ManifestOutput:   "C:/outside/release.json",
-		RootFSOutput:     "C:/outside/worker.tar",
-		DockerConfigDir:  lease.dockerConfigDir,
-		RegistryHost:     lease.registryHost,
+		ReleaseTag:           "v0.1.0-alpha-0123456789ab",
+		Architecture:         "amd64",
+		AgentRepository:      "ghcr.io/yingsuiai/dirextalk-agent",
+		WorkerRepository:     "ghcr.io/yingsuiai/dirextalk-cloud-worker",
+		ReaperRepository:     "ghcr.io/yingsuiai/dirextalk-aws-reaper",
+		ManifestOutput:       "C:/outside/release.json",
+		RootFSOutput:         "C:/outside/worker.tar",
+		DockerConfigDir:      lease.dockerConfigDir,
+		RegistryHost:         lease.registryHost,
+		BuildSourcesVerified: true,
 	}
 	wantResult := releasepublish.Result{
 		SchemaVersion:      "dirextalk.agent.release-manifest/v1",
@@ -186,8 +187,10 @@ type fakeReleaseSession struct {
 	closeErr        error
 }
 
-func (session *fakeReleaseSession) DockerConfigDir() string { return session.dockerConfigDir }
-func (session *fakeReleaseSession) RegistryHost() string    { return session.registryHost }
+func (session *fakeReleaseSession) DockerConfigDir() string    { return session.dockerConfigDir }
+func (session *fakeReleaseSession) RegistryHost() string       { return session.registryHost }
+func (session *fakeReleaseSession) BuilderName() string        { return "" }
+func (session *fakeReleaseSession) BuildSourcesVerified() bool { return true }
 func (session *fakeReleaseSession) Close() error {
 	session.closeCalls++
 	return session.closeErr

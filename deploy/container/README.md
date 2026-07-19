@@ -11,13 +11,13 @@ shared with the legacy deployer, updater, or release scripts.
 | `worker.Containerfile` | Static Worker supervisor, binary digest sidecar, CA bundle, and fixed-AMI systemd assets in `scratch`; fixed UID/GID `65532`, no shell, Docker client/daemon/socket, AWS CLI, Node, or package manager. |
 | `reaper.Containerfile` | Static `lambda.norpc` Go binary on the AWS `provided.al2023` OS-only Lambda image. |
 
-Every external base is locked to the reviewed official `linux/amd64` child
-manifest, not only to a mutable tag. The current pins are
-`docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135`
-and
-`public.ecr.aws/lambda/provided:al2023@sha256:f91e5c83528080b2e41d22536d413042e451e67968c7473c4f7e77a627c944bc`.
-Changing either digest requires resolving the official registry manifest and
-updating the container artifact boundary test in the same review.
+Every build source is locked to the reviewed official `linux/amd64` child
+manifest in the canonical Go catalog. Release builds consume only the
+digest-bound copies in the retained private `dirextalk-build-sources`
+repository. The Containerfiles have no external registry literal, syntax
+directive, mutable default, or fallback: the publisher supplies
+`BUILDKIT_SYNTAX`, `GO_BUILD_BASE`, and, for Reaper,
+`REAPER_RUNTIME_BASE` from a verified ECR session.
 
 The first-validation Worker supervisor is deliberately non-root. The current
 typed `worker.noop` action needs no elevated privilege. A later service-install
@@ -31,16 +31,8 @@ available; it must not be inferred from the presence of the log group.
 
 ## Build
 
-Build from the repository root. These commands create local images only and do
-not push them:
-
-```powershell
-$Tag = "v0.1.0-alpha.20260716.1-$((git rev-parse --short=12 HEAD))"
-$Revision = git rev-parse HEAD
-docker buildx build --load --platform linux/amd64 --build-arg "VERSION=$Tag" --build-arg "REVISION=$Revision" -f deploy/container/agent.Containerfile -t "dirextalk-agent-local:$Tag" .
-docker buildx build --load --platform linux/amd64 --build-arg "VERSION=$Tag" --build-arg "REVISION=$Revision" -f deploy/container/worker.Containerfile -t "dirextalk-worker-local:$Tag" .
-docker buildx build --load --platform linux/amd64 --provenance=false --build-arg "VERSION=$Tag" --build-arg "REVISION=$Revision" -f deploy/container/reaper.Containerfile -t "dirextalk-reaper-local:$Tag" .
-```
+Build through the closed release commands below. Direct Containerfile builds
+are intentionally incomplete without the verified private-source arguments.
 
 The first-validation artifact set is intentionally `linux/amd64` only. ARM64
 must not be published until every external base is separately pinned to its
@@ -100,7 +92,7 @@ $Out = Join-Path ([IO.Path]::GetTempPath()) "dirextalk-release-$Tag"
 New-Item -ItemType Directory -Path $Out -ErrorAction Stop | Out-Null
 $Session = Join-Path $Out "ecr-session.json"
 
-$PreparedJSON = & go run ./cmd/dirextalk-ecrctl prepare --region $Region --account-id $AccountID --session-output $Session
+$PreparedJSON = & go run ./cmd/dirextalk-ecrctl prepare --region $Region --account-id $AccountID --builder-mode direct --session-output $Session
 if ($LASTEXITCODE -ne 0) { throw 'ECR preparation failed' }
 $Prepared = $PreparedJSON | ConvertFrom-Json
 $AgentRepository = ($Prepared.repositories | Where-Object component -eq 'agent').uri
@@ -118,9 +110,28 @@ if ($LASTEXITCODE -ne 0) { throw 'immutable release publication failed' }
 if ($LASTEXITCODE -ne 0) { throw 'release manifest verification failed' }
 ```
 
-`prepare` creates or strictly reads back only `dirextalk-agent`,
+Before the first release in the Osaka (`ap-northeast-3`) release Region, an authorized operator uses the
+three explicit build-source surfaces:
+
+```powershell
+go run ./cmd/dirextalk-ecrctl sources-prepare --region $Region --account-id $AccountID
+go run ./cmd/dirextalk-ecrctl sources-seed --region $Region --account-id $AccountID
+go run ./cmd/dirextalk-ecrctl sources-verify --region $Region --account-id $AccountID
+```
+
+`sources-prepare` creates and strictly reads back only the separate retained
+source repository. `sources-seed` is the only surface that downloads and
+uploads the closed catalog; it verifies the raw child manifest, media type,
+config platform, every blob digest, digest-preserving ECR upload, immutable
+tag, and independent ECR readback. `sources-verify` is read-only. None of the
+three commands accepts a repository, tag, digest, source URL, credential, or
+local-path override.
+
+Release `prepare` creates or strictly reads back only `dirextalk-agent`,
 `dirextalk-cloud-worker`, and `dirextalk-aws-reaper`, then writes a private,
-short-lived, single-use Docker session descriptor. `publish` claims that
+short-lived, single-use Docker session descriptor. Direct preparation also
+read-verifies the already seeded source repository and never creates or seeds
+it. `publish` claims that
 session and removes both the temporary Docker authorization directory and the
 descriptor on success or failure. If a prepared session is abandoned before
 publication, remove it with:
@@ -128,6 +139,31 @@ publication, remove it with:
 ```powershell
 go run ./cmd/dirextalk-ecrctl cleanup --session $Session
 ```
+
+`--builder-mode direct` creates a private-session-scoped `docker-container`
+builder from the verified private BuildKit child digest; it neither imports
+the operator's normal Docker
+configuration nor forwards inherited proxy, AWS, or `BUILDX_*` environment
+variables. It accepts only the current credential-free Docker-internal proxy
+discovered through Docker read-back and binds that value only to the
+task-owned builder. The publisher selects it explicitly, and cleanup must
+complete external container/volume read-back before the single-use ECR session
+can be removed.
+A failed source verification or activation preflight is a release blocker, not
+authorization to bypass the private source or cleanup contract.
+
+The opt-in live resolver lane is:
+
+```text
+AGENT_TEST_DIRECT_BUILDER=1 \
+AGENT_TEST_DIRECT_BUILDER_ACCOUNT_ID=<12-digit-Osaka-ECR-account> \
+go test ./internal/releaseecr -run '^TestDirectBuilderLivePrivateBuildSources$' -count=1 -v
+```
+
+It uses the SDK default credential chain, read-verifies the preseeded source
+catalog, and exercises the same direct builder. Because release preparation
+may create missing fixed release repositories, run it only with explicit
+authority for the intended account.
 
 This cleanup does not delete ECR repositories. They are retained Managed
 release infrastructure and need an explicit owner and lifecycle outside a
