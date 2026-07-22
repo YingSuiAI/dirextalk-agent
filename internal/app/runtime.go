@@ -15,6 +15,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/scheduling"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -31,6 +32,7 @@ type RuntimeComposition struct {
 type runtimeCompositionOptions struct {
 	cloudGoalOutput       planning.CloudGoalOutputAdapter
 	cloudGoalMaterializer planning.ProviderPlanMaterializer
+	localRunBudget        *scheduling.RunBudget
 }
 
 // WithCloudGoalMaterializer enables the production queued planning path. The
@@ -48,6 +50,19 @@ func WithCloudGoalMaterializer(materializer planning.ProviderPlanMaterializer) R
 }
 
 type RuntimeCompositionOption func(*runtimeCompositionOptions) error
+
+// WithLocalRunBudget shares one process-local capacity envelope between
+// interactive runtime calls and background planning. Durable tasks remain
+// queued in PostgreSQL when the background lane has no capacity.
+func WithLocalRunBudget(budget *scheduling.RunBudget) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || budget == nil {
+			return errors.New("local Agent run budget is unavailable")
+		}
+		options.localRunBudget = budget
+		return nil
+	}
+}
 
 // WithCloudGoalOutputAdapter enables queued Cloud Goal progression. The
 // adapter is deliberately the only provider-specific output seam: it must
@@ -79,6 +94,18 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	}
 	if options.cloudGoalOutput != nil && options.cloudGoalMaterializer != nil {
 		return RuntimeComposition{}, errors.New("cloud Goal output composition is ambiguous")
+	}
+	var runtimeAdmission runtimeapp.Admission
+	var cloudGoalAdmission planning.CloudGoalAdmission
+	if options.localRunBudget != nil {
+		runtimeAdmission, err = options.localRunBudget.Admission(scheduling.RunInteractive)
+		if err != nil {
+			return RuntimeComposition{}, errors.New("interactive Agent run admission is unavailable")
+		}
+		cloudGoalAdmission, err = options.localRunBudget.Admission(scheduling.RunBackground)
+		if err != nil {
+			return RuntimeComposition{}, errors.New("background Agent run admission is unavailable")
+		}
 	}
 	modelProfiles, err := modelapi.LoadProfileCatalog(modelProfilesFile)
 	if err != nil {
@@ -152,6 +179,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		PollInterval:  15 * time.Second,
 		LeaseDuration: 5 * time.Minute,
 		BatchSize:     64,
+		Admission:     cloudGoalAdmission,
 	})
 	if err != nil {
 		return RuntimeComposition{}, errors.New("cloud Goal dispatcher is unavailable")
@@ -164,7 +192,11 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime executor is unavailable")
 	}
-	coordinator, err := runtimeapp.NewService(store, executor)
+	coordinatorOptions := make([]runtimeapp.ServiceOption, 0, 1)
+	if runtimeAdmission != nil {
+		coordinatorOptions = append(coordinatorOptions, runtimeapp.WithAdmission(runtimeAdmission))
+	}
+	coordinator, err := runtimeapp.NewService(store, executor, coordinatorOptions...)
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}

@@ -133,6 +133,46 @@ func TestCloudGoalDispatcherWithoutOutputAdapterLeavesQueueUntouched(t *testing.
 	}
 }
 
+func TestCloudGoalDispatcherLeavesWorkUnleasedWhenLocalCapacityIsExhausted(t *testing.T) {
+	now := time.Date(2026, time.July, 17, 5, 0, 0, 0, time.UTC)
+	queue, tasks, facts, output, agentID := newCloudGoalDispatcherFixture(now)
+	admission := &cloudGoalAdmissionFake{}
+	dispatcher, err := NewCloudGoalDispatcher(agentID, queue, tasks, facts, output, CloudGoalDispatcherConfig{
+		PollInterval: time.Second, LeaseDuration: 6 * time.Second, BatchSize: 8, Admission: admission, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.RunOnce(context.Background()); err != nil {
+		t.Fatalf("capacity-deferred RunOnce: %v", err)
+	}
+	if tasks.steps[0].LeaseEpoch != 0 || len(output.requests) != 0 || admission.acquired != 0 || admission.released != 0 {
+		t.Fatalf("capacity denial leased work: step=%#v requests=%d admission=%#v", tasks.steps[0], len(output.requests), admission)
+	}
+
+	admission.allowed = true
+	if err := dispatcher.RunOnce(context.Background()); err != nil {
+		t.Fatalf("admitted RunOnce: %v", err)
+	}
+	if tasks.steps[0].LeaseEpoch != 1 || len(output.requests) != 1 || admission.acquired != 1 || admission.released != 1 {
+		t.Fatalf("admitted work did not release capacity: step=%#v requests=%d admission=%#v", tasks.steps[0], len(output.requests), admission)
+	}
+}
+
+type cloudGoalAdmissionFake struct {
+	allowed  bool
+	acquired int
+	released int
+}
+
+func (admission *cloudGoalAdmissionFake) TryAcquire() (func(), bool) {
+	if admission == nil || !admission.allowed {
+		return nil, false
+	}
+	admission.acquired++
+	return func() { admission.released++ }, true
+}
+
 type cloudGoalQueueFake struct {
 	work       CloudGoalDispatch
 	draft      RecipeDraft

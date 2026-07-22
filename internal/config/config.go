@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
@@ -15,6 +16,15 @@ import (
 )
 
 var immutableOCIImagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)(?:[.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$`)
+
+const (
+	defaultMaxActiveLocalRuns     = 2
+	defaultMaxBackgroundLocalRuns = 1
+	defaultGoMemoryLimitMiB       = 768
+	maximumConfiguredLocalRuns    = 32
+	minimumGoMemoryLimitMiB       = 256
+	maximumGoMemoryLimitMiB       = 64 * 1024
+)
 
 type Common struct {
 	InstanceID  string
@@ -37,6 +47,9 @@ type Server struct {
 	WorkerControlEndpoint            string
 	WorkerControlEndpointServiceName string
 	WorkerAMIPublicationFile         string
+	MaxActiveLocalRuns               int
+	MaxBackgroundLocalRuns           int
+	GoMemoryLimitBytes               int64
 }
 
 func LoadCommon() (Common, error) {
@@ -77,6 +90,28 @@ func LoadServer() (Server, error) {
 		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
 		WorkerAMIPublicationFile:         strings.TrimSpace(os.Getenv("AGENT_WORKER_AMI_PUBLICATION_FILE")),
 	}
+	server.MaxActiveLocalRuns, err = boundedEnvironmentInteger(
+		"AGENT_MAX_ACTIVE_LOCAL_RUNS", defaultMaxActiveLocalRuns, 1, maximumConfiguredLocalRuns,
+	)
+	if err != nil {
+		return Server{}, err
+	}
+	server.MaxBackgroundLocalRuns, err = boundedEnvironmentInteger(
+		"AGENT_MAX_BACKGROUND_LOCAL_RUNS", defaultMaxBackgroundLocalRuns, 0, maximumConfiguredLocalRuns,
+	)
+	if err != nil {
+		return Server{}, err
+	}
+	if server.MaxBackgroundLocalRuns > server.MaxActiveLocalRuns {
+		return Server{}, errors.New("AGENT_MAX_BACKGROUND_LOCAL_RUNS must not exceed AGENT_MAX_ACTIVE_LOCAL_RUNS")
+	}
+	memoryLimitMiB, err := boundedEnvironmentInteger(
+		"AGENT_GO_MEMORY_LIMIT_MIB", defaultGoMemoryLimitMiB, minimumGoMemoryLimitMiB, maximumGoMemoryLimitMiB,
+	)
+	if err != nil {
+		return Server{}, err
+	}
+	server.GoMemoryLimitBytes = int64(memoryLimitMiB) * 1024 * 1024
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_ENABLE_AWS_CONTROL"))) {
 	case "", "false":
 		server.EnableAWSControl = false
@@ -134,6 +169,18 @@ func LoadServer() (Server, error) {
 		}
 	}
 	return server, nil
+}
+
+func boundedEnvironmentInteger(name string, fallback, minimum, maximum int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be an integer from %d through %d", name, minimum, maximum)
+	}
+	return value, nil
 }
 
 func ReadKeyMaterial(path string) ([]byte, error) {

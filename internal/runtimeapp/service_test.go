@@ -73,6 +73,84 @@ func TestServiceChatCommitsConversationAndReplaysCompletedResponse(t *testing.T)
 	}
 }
 
+func TestServiceCapacityDenialReleasesDurableClaimAndCompletedReplayBypassesAdmission(t *testing.T) {
+	store := newRuntimeStoreFake()
+	executor := &executorFake{chat: func(context.Context, runtimeapi.ChatRequest) (runtimeapi.ChatResult, error) {
+		return runtimeResultWithPrivateFields(), nil
+	}}
+	admission := &admissionFake{}
+	service, err := NewService(store, executor, WithAdmission(admission))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validChatRequest()
+	scope := validScope()
+
+	if _, err := service.Chat(context.Background(), scope, request); !errors.Is(err, ErrCapacityExhausted) {
+		t.Fatalf("capacity denial error = %v", err)
+	}
+	store.mu.Lock()
+	releases, epoch := store.releaseCalls, store.epoch
+	store.mu.Unlock()
+	if releases != 1 || epoch != 1 || executor.chatCalls.Load() != 0 {
+		t.Fatalf("denied run releases=%d epoch=%d executor_calls=%d", releases, epoch, executor.chatCalls.Load())
+	}
+
+	admission.allowed.Store(true)
+	first, err := service.Chat(context.Background(), scope, request)
+	if err != nil {
+		t.Fatalf("admitted retry: %v", err)
+	}
+	if admission.acquired.Load() != 1 || admission.released.Load() != 1 || executor.chatCalls.Load() != 1 {
+		t.Fatalf("admission acquired=%d released=%d executor_calls=%d", admission.acquired.Load(), admission.released.Load(), executor.chatCalls.Load())
+	}
+
+	admission.allowed.Store(false)
+	replayed, err := service.Chat(context.Background(), scope, request)
+	if err != nil || !reflect.DeepEqual(first, replayed) {
+		t.Fatalf("completed replay result=%#v error=%v", replayed, err)
+	}
+	if admission.acquired.Load() != 1 || executor.chatCalls.Load() != 1 {
+		t.Fatalf("completed replay consumed capacity: acquired=%d executor_calls=%d", admission.acquired.Load(), executor.chatCalls.Load())
+	}
+}
+
+func TestServiceStreamCapacityDenialReleasesDurableClaimWithoutEmitting(t *testing.T) {
+	store := newRuntimeStoreFake()
+	executor := &executorFake{}
+	service, err := NewService(store, executor, WithAdmission(&admissionFake{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted := 0
+	err = service.Stream(context.Background(), validScope(), validChatRequest(), func(runtimeapi.StreamEvent) error {
+		emitted++
+		return nil
+	})
+	if !errors.Is(err, ErrCapacityExhausted) {
+		t.Fatalf("capacity denial error = %v", err)
+	}
+	store.mu.Lock()
+	releases, epoch := store.releaseCalls, store.epoch
+	store.mu.Unlock()
+	if releases != 1 || epoch != 1 || emitted != 0 || executor.streamCalls.Load() != 0 {
+		t.Fatalf("denied stream releases=%d epoch=%d emitted=%d executor_calls=%d", releases, epoch, emitted, executor.streamCalls.Load())
+	}
+}
+
+func TestServiceCapacityDenialSurfacesRedactedDurabilityFailureWhenClaimCannotBeReleased(t *testing.T) {
+	store := newRuntimeStoreFake()
+	store.releaseErr = errors.New(testSecretCanary)
+	service, err := NewService(store, &executorFake{}, WithAdmission(&admissionFake{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Chat(context.Background(), validScope(), validChatRequest())
+	if !errors.Is(err, ErrDurabilityUnavailable) || errors.Is(err, ErrCapacityExhausted) || strings.Contains(err.Error(), testSecretCanary) {
+		t.Fatalf("claim release error was not stable/redacted: %v", err)
+	}
+}
+
 func TestServiceBindsStatelessModeBeforeExecutionAndReplaysWithoutConfig(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -369,6 +447,23 @@ type executorFake struct {
 	stream      func(context.Context, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) (runtimeapi.ChatResult, error)
 }
 
+type admissionFake struct {
+	allowed  atomic.Bool
+	acquired atomic.Int32
+	released atomic.Int32
+}
+
+func (admission *admissionFake) TryAcquire() (func(), bool) {
+	if admission == nil || !admission.allowed.Load() {
+		return nil, false
+	}
+	admission.acquired.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() { admission.released.Add(1) })
+	}, true
+}
+
 func (executor *executorFake) Chat(ctx context.Context, request runtimeapi.ChatRequest) (runtimeapi.ChatResult, error) {
 	executor.chatCalls.Add(1)
 	if executor.chat == nil {
@@ -401,6 +496,7 @@ type runtimeStoreFake struct {
 	beforeComplete func(runtimeapi.CompleteRuntimeRequestCommand)
 	completeErr    error
 	renewErr       error
+	releaseErr     error
 	expiresAt      time.Time
 	renewCalls     int
 	releaseCalls   int
@@ -478,6 +574,9 @@ func (store *runtimeStoreFake) ReleaseRuntimeRequest(_ context.Context, _ runtim
 	store.releaseCalls++
 	if !store.inProgress || command.LeaseEpoch != store.epoch {
 		return runtimeapi.ErrRuntimeStaleLease
+	}
+	if store.releaseErr != nil {
+		return store.releaseErr
 	}
 	store.expiresAt = time.Now()
 	return nil

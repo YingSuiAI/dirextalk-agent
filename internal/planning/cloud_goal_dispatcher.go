@@ -65,6 +65,10 @@ type CloudGoalOutputAdapter interface {
 	ExecuteCloudGoalStage(context.Context, CloudGoalStageRequest) (CloudGoalStageOutput, error)
 }
 
+type CloudGoalAdmission interface {
+	TryAcquire() (release func(), ok bool)
+}
+
 type CloudGoalStageRequest struct {
 	Binding              Binding
 	Caller               task.MutationScope
@@ -83,6 +87,7 @@ type CloudGoalDispatcherConfig struct {
 	PollInterval  time.Duration
 	LeaseDuration time.Duration
 	BatchSize     int
+	Admission     CloudGoalAdmission
 	ReportError   func(error)
 	Now           func() time.Time
 }
@@ -138,11 +143,37 @@ func (dispatcher *CloudGoalDispatcher) RunOnce(ctx context.Context) error {
 	}
 	var result error
 	for _, item := range items {
-		if err := dispatcher.dispatchOne(ctx, item); err != nil {
-			result = errors.Join(result, err)
+		release, admitted, admissionErr := acquireCloudGoalCapacity(dispatcher.config.Admission)
+		if admissionErr != nil {
+			result = errors.Join(result, admissionErr)
+			break
+		}
+		if !admitted {
+			break
+		}
+		dispatchErr := func() error {
+			defer release()
+			return dispatcher.dispatchOne(ctx, item)
+		}()
+		if dispatchErr != nil {
+			result = errors.Join(result, dispatchErr)
 		}
 	}
 	return result
+}
+
+func acquireCloudGoalCapacity(admission CloudGoalAdmission) (func(), bool, error) {
+	if admission == nil {
+		return func() {}, true, nil
+	}
+	release, ok := admission.TryAcquire()
+	if !ok {
+		return nil, false, nil
+	}
+	if release == nil {
+		return nil, false, ErrCloudGoalDispatchInvalid
+	}
+	return release, true, nil
 }
 
 func (dispatcher *CloudGoalDispatcher) Run(ctx context.Context) error {

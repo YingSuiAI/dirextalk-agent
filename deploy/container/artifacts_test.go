@@ -141,6 +141,22 @@ func TestAgentComposeExposesStagedAWSControlGates(t *testing.T) {
 	}
 }
 
+func TestAgentComposePinsTwoCoreTwoGiBControlPlaneBudget(t *testing.T) {
+	compose := readArtifact(t, "compose.yaml")
+	for _, required := range []string{
+		`cpus: "${AGENT_CONTAINER_CPUS:-1.50}"`,
+		`mem_limit: "${AGENT_CONTAINER_MEMORY_LIMIT:-1024m}"`,
+		"pids_limit: 256",
+		"AGENT_MAX_ACTIVE_LOCAL_RUNS: ${AGENT_MAX_ACTIVE_LOCAL_RUNS:-2}",
+		"AGENT_MAX_BACKGROUND_LOCAL_RUNS: ${AGENT_MAX_BACKGROUND_LOCAL_RUNS:-1}",
+		"AGENT_GO_MEMORY_LIMIT_MIB: ${AGENT_GO_MEMORY_LIMIT_MIB:-768}",
+	} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("compose.yaml is missing 2C2G control-plane budget %q", required)
+		}
+	}
+}
+
 func TestAllRuntimeArtifactsRequireImmutablePrereleaseMetadata(t *testing.T) {
 	for _, name := range []string{"agent.Containerfile", "worker.Containerfile", "reaper.Containerfile"} {
 		artifact := readArtifact(t, name)

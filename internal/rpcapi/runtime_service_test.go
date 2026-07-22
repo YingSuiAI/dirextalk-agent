@@ -10,6 +10,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -234,6 +235,13 @@ func TestRuntimeResponsesNeverExposeReasoningToolArgumentsOrToolResults(t *testi
 	done := runtimeStreamResponse(requestID, "conversation-1", runtimeapi.StreamEvent{Kind: runtimeapi.StreamEventDone, Result: &result})
 	if done.GetDone() == nil || strings.Join(done.GetDone().GetResponse().GetRelatedTaskIds(), ",") != "task-a,task-b" || strings.Join(done.GetDone().GetResponse().GetRelatedPlanIds(), ",") != "plan-a,plan-z" {
 		t.Fatalf("stream Done lost stable related IDs: %#v", done)
+	}
+}
+
+func TestRuntimeCapacityExhaustionIsRetryableAndRedacted(t *testing.T) {
+	err := publicRuntimeError(runtimeapp.ErrCapacityExhausted)
+	if status.Code(err) != codes.ResourceExhausted || strings.Contains(err.Error(), "memory") || strings.Contains(err.Error(), "limit") {
+		t.Fatalf("capacity error=%v code=%s", err, status.Code(err))
 	}
 }
 

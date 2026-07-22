@@ -12,6 +12,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -409,6 +410,8 @@ func publicRuntimeError(err error) error {
 		return status.Error(codes.FailedPrecondition, "runtime request cannot continue in its current state")
 	case errors.Is(err, modelapi.ErrProviderUnavailable), errors.Is(err, modelapi.ErrSecretUnavailable):
 		return status.Error(codes.Unavailable, "model provider is unavailable")
+	case errors.Is(err, runtimeapp.ErrCapacityExhausted):
+		return status.Error(codes.ResourceExhausted, "local Agent capacity is temporarily exhausted")
 	default:
 		return status.Error(codes.Internal, "runtime operation failed")
 	}

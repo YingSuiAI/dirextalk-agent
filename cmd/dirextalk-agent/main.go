@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeworker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/scheduling"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -135,6 +136,19 @@ func serve() error {
 	serverConfig, err := config.LoadServer()
 	if err != nil {
 		return err
+	}
+	effectiveMemoryLimit, restoreMemoryLimit, err := applyGoMemoryLimit(serverConfig.GoMemoryLimitBytes)
+	if err != nil {
+		return err
+	}
+	defer restoreMemoryLimit()
+	runBudget, err := scheduling.NewRunBudget(scheduling.RunBudgetLimits{
+		MaxActive:      serverConfig.MaxActiveLocalRuns,
+		MaxInteractive: serverConfig.MaxActiveLocalRuns,
+		MaxBackground:  serverConfig.MaxBackgroundLocalRuns,
+	})
+	if err != nil {
+		return errors.New("could not initialize local Agent run budget")
 	}
 	pepper, err := config.ReadKeyMaterial(serverConfig.PepperFile)
 	if err != nil {
@@ -261,7 +275,8 @@ func serve() error {
 			}
 		}
 	}
-	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 1)
+	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 2)
+	runtimeOptions = append(runtimeOptions, app.WithLocalRunBudget(runBudget))
 	if cloudComposition != nil {
 		runtimeOptions = append(runtimeOptions, app.WithCloudGoalMaterializer(cloudComposition.ProviderPlans))
 	}
@@ -354,7 +369,13 @@ func serve() error {
 			slog.Warn("forced gRPC shutdown after grace period", "error", safeError(shutdownErr))
 		}
 	}()
-	slog.Info("dirextalk-agent gRPC server ready", "listen", serverConfig.ListenAddress, "instance_id", serverConfig.InstanceID)
+	slog.Info("dirextalk-agent gRPC server ready",
+		"listen", serverConfig.ListenAddress,
+		"instance_id", serverConfig.InstanceID,
+		"max_active_local_runs", serverConfig.MaxActiveLocalRuns,
+		"max_background_local_runs", serverConfig.MaxBackgroundLocalRuns,
+		"go_memory_limit_mib", effectiveMemoryLimit/(1024*1024),
+	)
 	err = grpcServer.Serve(listener)
 	select {
 	case <-stopped:

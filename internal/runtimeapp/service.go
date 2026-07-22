@@ -25,6 +25,7 @@ var (
 	ErrInvalidDependencies   = errors.New("runtime application dependencies are invalid")
 	ErrDurabilityUnavailable = errors.New("runtime durability is unavailable")
 	ErrExecutionFailed       = errors.New("runtime execution failed")
+	ErrCapacityExhausted     = errors.New("local Agent run capacity is exhausted")
 )
 
 // Store is the persistence boundary required by Service. PostgreSQL owns the
@@ -47,17 +48,44 @@ type Executor interface {
 	Stream(context.Context, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) (runtimeapi.ChatResult, error)
 }
 
+type Admission interface {
+	TryAcquire() (release func(), ok bool)
+}
+
 type Service struct {
 	store        Store
 	executor     Executor
+	admission    Admission
 	requestLease time.Duration
 }
 
-func NewService(store Store, executor Executor) (*Service, error) {
+type serviceOptions struct {
+	admission Admission
+}
+
+type ServiceOption func(*serviceOptions) error
+
+func WithAdmission(admission Admission) ServiceOption {
+	return func(options *serviceOptions) error {
+		if options == nil || admission == nil {
+			return ErrInvalidDependencies
+		}
+		options.admission = admission
+		return nil
+	}
+}
+
+func NewService(store Store, executor Executor, optionSet ...ServiceOption) (*Service, error) {
 	if store == nil || executor == nil {
 		return nil, ErrInvalidDependencies
 	}
-	return &Service{store: store, executor: executor, requestLease: defaultRequestLease}, nil
+	options := serviceOptions{}
+	for _, option := range optionSet {
+		if option == nil || option(&options) != nil {
+			return nil, ErrInvalidDependencies
+		}
+	}
+	return &Service{store: store, executor: executor, admission: options.admission, requestLease: defaultRequestLease}, nil
 }
 
 func (service *Service) LoadRuntimeConfig(ctx context.Context, ownerID string) (runtimeapi.RuntimeConfig, error) {
@@ -96,6 +124,14 @@ func (service *Service) Chat(ctx context.Context, scope runtimeapi.MutationScope
 	if claim.Completed {
 		return publicResult(claim.Response.Result), nil
 	}
+	releaseCapacity, err := service.acquireCapacity()
+	if err != nil {
+		if releaseErr := service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch); releaseErr != nil {
+			return runtimeapi.ChatResult{}, stableDurabilityError(releaseErr)
+		}
+		return runtimeapi.ChatResult{}, err
+	}
+	defer releaseCapacity()
 	request, err = service.bindMemoryMode(ctx, scope, request, claim.LeaseEpoch)
 	if err != nil {
 		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
@@ -136,6 +172,14 @@ func (service *Service) Stream(ctx context.Context, scope runtimeapi.MutationSco
 		}
 		return nil
 	}
+	releaseCapacity, err := service.acquireCapacity()
+	if err != nil {
+		if releaseErr := service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch); releaseErr != nil {
+			return stableDurabilityError(releaseErr)
+		}
+		return err
+	}
+	defer releaseCapacity()
 	request, err = service.bindMemoryMode(ctx, scope, request, claim.LeaseEpoch)
 	if err != nil {
 		service.releaseRequest(ctx, scope, request.RequestID, claim.LeaseEpoch)
@@ -187,6 +231,23 @@ func (service *Service) Stream(ctx context.Context, scope runtimeapi.MutationSco
 	return nil
 }
 
+func (service *Service) acquireCapacity() (func(), error) {
+	if service == nil {
+		return nil, ErrInvalidDependencies
+	}
+	if service.admission == nil {
+		return func() {}, nil
+	}
+	release, ok := service.admission.TryAcquire()
+	if !ok {
+		return nil, ErrCapacityExhausted
+	}
+	if release == nil {
+		return nil, ErrInvalidDependencies
+	}
+	return release, nil
+}
+
 func (service *Service) claim(ctx context.Context, scope runtimeapi.MutationScope, request runtimeapi.ChatRequest) (runtimeapi.RuntimeRequestClaim, time.Duration, error) {
 	if err := scope.Validate(); err != nil {
 		return runtimeapi.RuntimeRequestClaim{}, 0, stableDurabilityError(err)
@@ -235,10 +296,10 @@ func (service *Service) guardRequest(ctx context.Context, scope runtimeapi.Mutat
 	})
 }
 
-func (service *Service) releaseRequest(ctx context.Context, scope runtimeapi.MutationScope, requestID string, leaseEpoch int64) {
+func (service *Service) releaseRequest(ctx context.Context, scope runtimeapi.MutationScope, requestID string, leaseEpoch int64) error {
 	releaseCtx, cancel := bestEffortContext(ctx)
 	defer cancel()
-	_ = service.store.ReleaseRuntimeRequest(releaseCtx, scope, runtimeapi.ReleaseRuntimeRequestCommand{
+	return service.store.ReleaseRuntimeRequest(releaseCtx, scope, runtimeapi.ReleaseRuntimeRequestCommand{
 		RequestID: requestID, LeaseEpoch: leaseEpoch,
 	})
 }

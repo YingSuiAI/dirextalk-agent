@@ -241,6 +241,57 @@ func TestLoadServerRejectsInvalidAWSControlFlagOrMissingImage(t *testing.T) {
 	}
 }
 
+func TestLoadServerAppliesBoundedTwoCoreTwoGiBLocalRunDefaults(t *testing.T) {
+	setValidServerEnvironment(t)
+	server, err := LoadServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.MaxActiveLocalRuns != 2 || server.MaxBackgroundLocalRuns != 1 || server.GoMemoryLimitBytes != 768*1024*1024 {
+		t.Fatalf("default local budget = active:%d background:%d memory:%d", server.MaxActiveLocalRuns, server.MaxBackgroundLocalRuns, server.GoMemoryLimitBytes)
+	}
+
+	t.Setenv("AGENT_MAX_ACTIVE_LOCAL_RUNS", "4")
+	t.Setenv("AGENT_MAX_BACKGROUND_LOCAL_RUNS", "2")
+	t.Setenv("AGENT_GO_MEMORY_LIMIT_MIB", "1536")
+	server, err = LoadServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.MaxActiveLocalRuns != 4 || server.MaxBackgroundLocalRuns != 2 || server.GoMemoryLimitBytes != 1536*1024*1024 {
+		t.Fatalf("configured local budget = %#v", server)
+	}
+}
+
+func TestLoadServerRejectsUnsafeLocalRunBudget(t *testing.T) {
+	tests := map[string]struct {
+		name  string
+		value string
+	}{
+		"zero active":         {name: "AGENT_MAX_ACTIVE_LOCAL_RUNS", value: "0"},
+		"negative background": {name: "AGENT_MAX_BACKGROUND_LOCAL_RUNS", value: "-1"},
+		"small heap":          {name: "AGENT_GO_MEMORY_LIMIT_MIB", value: "255"},
+		"malformed":           {name: "AGENT_MAX_ACTIVE_LOCAL_RUNS", value: "many"},
+	}
+	for label, test := range tests {
+		t.Run(label, func(t *testing.T) {
+			setValidServerEnvironment(t)
+			t.Setenv(test.name, test.value)
+			if _, err := LoadServer(); err == nil || !strings.Contains(err.Error(), test.name) {
+				t.Fatalf("%s=%q error=%v", test.name, test.value, err)
+			}
+		})
+	}
+	t.Run("background exceeds total", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		t.Setenv("AGENT_MAX_ACTIVE_LOCAL_RUNS", "1")
+		t.Setenv("AGENT_MAX_BACKGROUND_LOCAL_RUNS", "2")
+		if _, err := LoadServer(); err == nil || !strings.Contains(err.Error(), "must not exceed") {
+			t.Fatalf("background/total error=%v", err)
+		}
+	})
+}
+
 func TestValidateMountedSecretFileRejectsLoosePermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not expose Unix permission bits")
