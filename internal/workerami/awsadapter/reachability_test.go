@@ -141,6 +141,32 @@ func TestReachabilityRejectsAmbiguityAndRedactsAccessDenial(t *testing.T) {
 	}
 }
 
+func TestValidS3EndpointAcceptsDocumentedAndWireStateCasing(t *testing.T) {
+	request := validReachabilityRequest()
+	endpoint := validEndpoint(request)
+	for _, state := range []ec2types.State{
+		ec2types.StateAvailable,
+		ec2types.State("available"),
+		ec2types.StatePending,
+		ec2types.State("pending"),
+		ec2types.StateDeleting,
+		ec2types.State("deleting"),
+		ec2types.StateDeleted,
+		ec2types.State("deleted"),
+	} {
+		endpoint.State = state
+		if !validS3Endpoint(endpoint, request) {
+			t.Fatalf("validS3Endpoint(%q) = false", state)
+		}
+	}
+	for _, state := range []ec2types.State{"", "failed", "rejected", "partial", "available "} {
+		endpoint.State = state
+		if validS3Endpoint(endpoint, request) {
+			t.Fatalf("validS3Endpoint(%q) = true", state)
+		}
+	}
+}
+
 func validReachabilityRequest() workerami.BuilderReachabilityV2 {
 	buildDigest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	return workerami.BuilderReachabilityV2{AgentInstanceID: "11111111-1111-4111-8111-111111111111", AccountID: testAccount, Region: testRegion,
@@ -151,7 +177,7 @@ func validReachabilityRequest() workerami.BuilderReachabilityV2 {
 
 func validEndpoint(request workerami.BuilderReachabilityV2) ec2types.VpcEndpoint {
 	return ec2types.VpcEndpoint{VpcEndpointId: aws.String("vpce-0123456789abcdef0"), VpcId: aws.String(request.VPCID), ServiceName: aws.String("com.amazonaws." + request.Region + ".s3"),
-		VpcEndpointType: ec2types.VpcEndpointTypeGateway, State: ec2types.StateAvailable, RouteTableIds: []string{request.RouteTableID},
+		VpcEndpointType: ec2types.VpcEndpointTypeGateway, State: ec2types.State("available"), RouteTableIds: []string{request.RouteTableID},
 		PolicyDocument: aws.String(s3EndpointPolicy(request.Region, request.ArtifactBucket, request.ArtifactKey)), Tags: toTags(request.Tags)}
 }
 

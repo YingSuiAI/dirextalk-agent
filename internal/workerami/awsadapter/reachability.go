@@ -134,11 +134,12 @@ func (adapter *Adapter) CleanupBuilderReachability(ctx context.Context, evidence
 		if !validS3Endpoint(endpoint, request) {
 			return workerami.ErrOwnershipMismatch
 		}
-		if endpoint.State != ec2types.StateDeleting && endpoint.State != ec2types.StateDeleted {
+		if state := normalizedS3EndpointState(endpoint.State); state != "deleting" && state != "deleted" {
 			output, deleteErr := adapter.ec2.DeleteVpcEndpoints(ctx, &ec2.DeleteVpcEndpointsInput{VpcEndpointIds: []string{evidence.VPCEndpointID}})
 			if deleteErr != nil {
 				current, stillFound, observeErr := adapter.findS3Endpoint(ctx, request, evidence.VPCEndpointID)
-				if observeErr != nil || stillFound && current.State != ec2types.StateDeleting && current.State != ec2types.StateDeleted {
+				currentState := normalizedS3EndpointState(current.State)
+				if observeErr != nil || stillFound && currentState != "deleting" && currentState != "deleted" {
 					return providerError(ctx, deleteErr)
 				}
 			} else if output == nil || len(output.Unsuccessful) != 0 {
@@ -236,11 +237,24 @@ func (adapter *Adapter) findS3Endpoint(ctx context.Context, request workerami.Bu
 func validS3Endpoint(endpoint ec2types.VpcEndpoint, request workerami.BuilderReachabilityV2) bool {
 	if !endpointPattern.MatchString(stringValue(endpoint.VpcEndpointId)) || stringValue(endpoint.VpcId) != request.VPCID || endpoint.VpcEndpointType != ec2types.VpcEndpointTypeGateway ||
 		stringValue(endpoint.ServiceName) != "com.amazonaws."+request.Region+".s3" || len(endpoint.RouteTableIds) != 1 || endpoint.RouteTableIds[0] != request.RouteTableID ||
-		(endpoint.State != ec2types.StateAvailable && endpoint.State != ec2types.StatePending && endpoint.State != ec2types.StateDeleting && endpoint.State != ec2types.StateDeleted) ||
+		!validS3EndpointState(endpoint.State) ||
 		!equalTags(tagsToMap(endpoint.Tags), request.Tags) {
 		return false
 	}
 	return equalJSONDocument(stringValue(endpoint.PolicyDocument), s3EndpointPolicy(request.Region, request.ArtifactBucket, request.ArtifactKey))
+}
+
+func validS3EndpointState(state ec2types.State) bool {
+	switch normalizedS3EndpointState(state) {
+	case "available", "pending", "deleting", "deleted":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedS3EndpointState(state ec2types.State) string {
+	return strings.ToLower(string(state))
 }
 
 func (adapter *Adapter) waitS3EgressRuleAbsent(ctx context.Context, request workerami.BuilderReachabilityV2, ruleID string) error {
