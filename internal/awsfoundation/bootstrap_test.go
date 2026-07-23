@@ -166,6 +166,50 @@ func TestBootstrapExistingSourceKeyRequiresFreshAdminRemediation(t *testing.T) {
 	}
 }
 
+func TestBootstrapClassifiesProviderAvailabilitySeparatelyFromPermissionDenial(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		provider error
+		want     error
+	}{
+		{name: "provider unavailable", provider: awsprovider.ErrProviderUnavailable, want: ErrFoundationBootstrap},
+		{name: "permission denied", provider: awsprovider.ErrPermissionDenied, want: ErrFoundationPermissionDenied},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vault, err := NewCredentialVault(NewMemoryCredentialStore(), bytes.Repeat([]byte{0x63}, 32), rand.Reader, func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer vault.Close()
+			provider := &fakeBootstrapProvider{
+				identity: awsprovider.CallerIdentity{
+					Partition: "aws", AccountID: "123456789012", ARN: "arn:aws:iam::123456789012:root",
+					UserID: "123456789012", Region: "us-east-1",
+				},
+				ensureErr: test.provider,
+			}
+			bootstrapper, err := NewBootstrapper(&fakeBootstrapFactory{provider: provider}, vault, testFoundationTemplate(t), func() time.Time { return now })
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := []byte(`{"AccessKeyId":"AKIAQRSTUVWXYZABCDEF","SecretAccessKey":"uploaded-root-secret-value-1234567890"}`)
+			_, err = bootstrapper.Establish(context.Background(), payload, EstablishRequest{
+				AgentInstanceID: "agent-01", Region: "us-east-1", ConfirmedAccountID: "123456789012",
+				AdminAuthorization: AdminAuthorization{
+					SessionID: "bootstrap-session-01", AccountID: "123456789012", Region: "us-east-1",
+					VerifiedAt: now, ExpiresAt: now.Add(time.Minute),
+				},
+				ReaperImageURI: "123456789012.dkr.ecr.us-east-1.amazonaws.com/reaper:v0.1.0-alpha.1@sha256:" + strings.Repeat("7", 64),
+			})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error=%v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestBootstrapRejectsForbiddenMutableImageTagsBeforeAWS(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	vault, _ := NewCredentialVault(NewMemoryCredentialStore(), bytes.Repeat([]byte{0x61}, 32), rand.Reader, func() time.Time { return now })

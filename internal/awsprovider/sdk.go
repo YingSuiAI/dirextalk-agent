@@ -203,14 +203,21 @@ func (provider *SDKProvider) GetCallerIdentity(ctx context.Context) (CallerIdent
 }
 
 func (provider *SDKProvider) EnsureBootstrapIdentity(ctx context.Context, spec BootstrapIdentitySpec) (SourceCredentials, error) {
-	if err := provider.UpdateBootstrapPolicies(ctx, spec); err != nil {
+	if err := validateBootstrapSpec(spec, provider.region); err != nil {
 		return SourceCredentials{}, err
 	}
 	sourcePolicy, err := json.Marshal(spec.SourceUserPolicy)
 	if err != nil {
 		return SourceCredentials{}, ErrInvalidRequest
 	}
+	// IAM validates trust-policy principal ARNs at role creation time. Create
+	// the keyless source user first so the control role can bind that exact
+	// principal. The source user receives no usable credential until every
+	// bootstrap role and policy has been established successfully.
 	if err := provider.ensureSourceUser(ctx, spec.SourceUserName, string(sourcePolicy), iamTagSet(spec.Tags)); err != nil {
+		return SourceCredentials{}, err
+	}
+	if err := provider.UpdateBootstrapPolicies(ctx, spec); err != nil {
 		return SourceCredentials{}, err
 	}
 	return provider.createInitialSourceAccessKey(ctx, spec.SourceUserName)

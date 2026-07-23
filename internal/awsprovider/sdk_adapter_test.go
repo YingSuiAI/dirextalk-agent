@@ -48,6 +48,7 @@ func TestStaticAWSConfigUsesOnlyUploadedCredentials(t *testing.T) {
 
 func TestSDKProviderCreatesOnlyDeterministicBootstrapIdentity(t *testing.T) {
 	clients, fakeIAM, _ := completeFakeClients()
+	fakeIAM.rejectRoleBeforeUser = true
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	provider, err := awsprovider.NewSDKProvider(clients, "us-east-1", func() time.Time { return now }, awsprovider.WithFoundationStackPollInterval(time.Nanosecond))
 	if err != nil {
@@ -64,6 +65,11 @@ func TestSDKProviderCreatesOnlyDeterministicBootstrapIdentity(t *testing.T) {
 	defer credential.Wipe()
 	if len(fakeIAM.createRoleInputs) != 2 || len(fakeIAM.putRolePolicyInputs) != 2 || len(fakeIAM.createUserInputs) != 1 || len(fakeIAM.putUserPolicyInputs) != 1 || len(fakeIAM.deleteAccessKeyInputs) != 0 || len(fakeIAM.createAccessKeyInputs) != 1 {
 		t.Fatalf("unexpected IAM calls: roles=%d rolePolicies=%d users=%d userPolicies=%d deleteKeys=%d createKeys=%d", len(fakeIAM.createRoleInputs), len(fakeIAM.putRolePolicyInputs), len(fakeIAM.createUserInputs), len(fakeIAM.putUserPolicyInputs), len(fakeIAM.deleteAccessKeyInputs), len(fakeIAM.createAccessKeyInputs))
+	}
+	if len(fakeIAM.operationOrder) < 4 || fakeIAM.operationOrder[0] != "create-user" ||
+		fakeIAM.operationOrder[1] != "put-user-policy" ||
+		fakeIAM.operationOrder[len(fakeIAM.operationOrder)-1] != "create-access-key" {
+		t.Fatalf("unsafe bootstrap order: %v", fakeIAM.operationOrder)
 	}
 	if got := aws.ToString(fakeIAM.createUserInputs[0].UserName); got != spec.SourceUserName {
 		t.Fatalf("source user = %q", got)
@@ -345,10 +351,13 @@ type fakeIAM struct {
 	createAccessKeyOutput *iam.CreateAccessKeyOutput
 	createAccessKeyErr    error
 	createdKeyOnError     string
+	rejectRoleBeforeUser  bool
+	operationOrder        []string
 }
 
 func (client *fakeIAM) CreateUser(_ context.Context, input *iam.CreateUserInput, _ ...func(*iam.Options)) (*iam.CreateUserOutput, error) {
 	client.createUserInputs = append(client.createUserInputs, input)
+	client.operationOrder = append(client.operationOrder, "create-user")
 	return &iam.CreateUserOutput{}, nil
 }
 func (client *fakeIAM) TagUser(context.Context, *iam.TagUserInput, ...func(*iam.Options)) (*iam.TagUserOutput, error) {
@@ -356,10 +365,15 @@ func (client *fakeIAM) TagUser(context.Context, *iam.TagUserInput, ...func(*iam.
 }
 func (client *fakeIAM) PutUserPolicy(_ context.Context, input *iam.PutUserPolicyInput, _ ...func(*iam.Options)) (*iam.PutUserPolicyOutput, error) {
 	client.putUserPolicyInputs = append(client.putUserPolicyInputs, input)
+	client.operationOrder = append(client.operationOrder, "put-user-policy")
 	return &iam.PutUserPolicyOutput{}, nil
 }
 func (client *fakeIAM) CreateRole(_ context.Context, input *iam.CreateRoleInput, _ ...func(*iam.Options)) (*iam.CreateRoleOutput, error) {
 	client.createRoleInputs = append(client.createRoleInputs, input)
+	client.operationOrder = append(client.operationOrder, "create-role")
+	if client.rejectRoleBeforeUser && len(client.createUserInputs) == 0 {
+		return nil, &smithy.GenericAPIError{Code: "MalformedPolicyDocument", Message: "invalid principal"}
+	}
 	return &iam.CreateRoleOutput{}, nil
 }
 func (client *fakeIAM) UpdateAssumeRolePolicy(context.Context, *iam.UpdateAssumeRolePolicyInput, ...func(*iam.Options)) (*iam.UpdateAssumeRolePolicyOutput, error) {
@@ -381,6 +395,7 @@ func (client *fakeIAM) DeleteAccessKey(_ context.Context, input *iam.DeleteAcces
 }
 func (client *fakeIAM) CreateAccessKey(_ context.Context, input *iam.CreateAccessKeyInput, _ ...func(*iam.Options)) (*iam.CreateAccessKeyOutput, error) {
 	client.createAccessKeyInputs = append(client.createAccessKeyInputs, input)
+	client.operationOrder = append(client.operationOrder, "create-access-key")
 	if client.createAccessKeyErr != nil {
 		if client.createdKeyOnError != "" {
 			client.listOutput.AccessKeyMetadata = append(client.listOutput.AccessKeyMetadata, iamtypes.AccessKeyMetadata{AccessKeyId: aws.String(client.createdKeyOnError)})

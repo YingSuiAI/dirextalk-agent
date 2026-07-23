@@ -120,10 +120,13 @@ func (bootstrapper *Bootstrapper) Establish(ctx context.Context, payload []byte,
 			}
 			source, err := provider.EnsureBootstrapIdentity(ctx, spec)
 			if err != nil {
-				if errors.Is(err, awsprovider.ErrSourceCredentialRemediationRequired) {
+				switch {
+				case errors.Is(err, awsprovider.ErrSourceCredentialRemediationRequired):
 					establishErr = ErrAdminAuthorizationRequired
-				} else {
+				case errors.Is(err, awsprovider.ErrPermissionDenied):
 					establishErr = ErrFoundationPermissionDenied
+				default:
+					establishErr = ErrFoundationBootstrap
 				}
 				return err
 			}
