@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestAllContainerBasesRequireClosedPrivateBuildArguments(t *testing.T) {
@@ -123,20 +125,63 @@ func TestAgentArtifactProvidesNonRootTLSGrpcHealthcheck(t *testing.T) {
 		}
 	}
 	compose := readArtifact(t, "compose.yaml")
-	if !strings.Contains(compose, "AGENT_GRPC_HEALTHCHECK_SERVER_NAME: ${AGENT_GRPC_HEALTHCHECK_SERVER_NAME:?") {
-		t.Fatal("compose.yaml does not require the TLS server name for the image healthcheck")
+	if strings.Contains(compose, "environment:") {
+		t.Fatal("compose.yaml must not inject Agent runtime configuration through environment")
+	}
+	for _, required := range []string{
+		"source: ${AGENT_CONFIG_PATH:?set the host Agent YAML config path}",
+		"target: /etc/dirextalk-agent/config.yaml",
+	} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("compose.yaml is missing read-only YAML config mount %q", required)
+		}
 	}
 }
 
-func TestAgentComposeExposesStagedAWSControlGates(t *testing.T) {
-	compose := readArtifact(t, "compose.yaml")
-	for _, required := range []string{
-		"AGENT_ENABLE_AWS_CONTROL: ${AGENT_ENABLE_AWS_CONTROL:-false}",
-		"AGENT_ENABLE_MANAGED_PREPARATION_AWS: ${AGENT_ENABLE_MANAGED_PREPARATION_AWS:-false}",
-		"AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME: ${AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME:-}",
+func TestAgentComposeUsesYamlConfigAndHostFileSecrets(t *testing.T) {
+	raw := readArtifact(t, "compose.yaml")
+	var document map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &document); err != nil {
+		t.Fatalf("compose.yaml is not valid YAML: %v", err)
+	}
+	services := asMap(t, document["services"], "services")
+	if len(services) != 1 {
+		t.Fatalf("external PostgreSQL compose must define exactly one service, got %d", len(services))
+	}
+	agent := asMap(t, services["agent"], "agent")
+	if _, ok := agent["environment"]; ok {
+		t.Fatal("agent must receive runtime settings from the mounted YAML config, not Compose environment")
+	}
+	for _, mount := range []struct {
+		target  string
+		varName string
+	}{
+		{target: "/etc/dirextalk-agent/config.yaml", varName: "AGENT_CONFIG_PATH"},
+		{target: "/run/dirextalk/config/model-profiles.json", varName: "AGENT_MODEL_PROFILES_PATH"},
+		{target: "/run/dirextalk/mounted-secrets", varName: "AGENT_MOUNTED_SECRETS_DIR_PATH"},
 	} {
-		if !strings.Contains(compose, required) {
-			t.Fatalf("compose.yaml is missing staged AWS control boundary %q", required)
+		assertReadOnlyBindMount(t, agent, mount.target, mount.varName)
+	}
+
+	secrets := asMap(t, document["secrets"], "secrets")
+	for _, name := range []string{"agent_postgres_dsn", "agent_tls_cert", "agent_tls_key", "agent_service_key_pepper", "agent_master_key", "agent_bootstrap_service_key"} {
+		secret := asMap(t, secrets[name], "secrets."+name)
+		file := stringValue(t, secret["file"], "secrets."+name+".file")
+		if !strings.HasPrefix(file, "${") {
+			t.Fatalf("secret %s must use a host file path, got %q", name, file)
+		}
+		if _, ok := secret["environment"]; ok {
+			t.Fatalf("secret %s must not source bytes from an environment variable", name)
+		}
+	}
+	for _, forbidden := range []string{
+		"AGENT_INSTANCE_ID:", "AGENT_DATABASE_URL_FILE:", "AGENT_GRPC_LISTEN:",
+		"AGENT_TLS_CERT_FILE:", "AGENT_TLS_KEY_FILE:", "AGENT_SERVICE_KEY_PEPPER_FILE:",
+		"AGENT_MASTER_KEY_FILE:", "AGENT_BOOTSTRAP_SERVICE_KEY_FILE:",
+		"AGENT_ENABLE_AWS_CONTROL:", "AGENT_ENABLE_MANAGED_PREPARATION_AWS:",
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("compose.yaml contains obsolete runtime environment variable %q", forbidden)
 		}
 	}
 }

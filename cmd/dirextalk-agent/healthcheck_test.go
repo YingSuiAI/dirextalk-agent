@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
@@ -37,31 +39,25 @@ func TestHealthcheckUsesLocalTLSGrpcServingStatus(t *testing.T) {
 		_ = listener.Close()
 	})
 
-	t.Setenv("AGENT_GRPC_LISTEN", listener.Addr().String())
-	t.Setenv("AGENT_GRPC_HEALTHCHECK_SERVER_NAME", "agent-health.test")
-	t.Setenv("AGENT_TLS_CERT_FILE", certificateFile)
-	if err := run([]string{"healthcheck"}); err != nil {
+	cfg := config.Config{Server: config.Server{ListenAddress: listener.Addr().String(), TLSCertFile: certificateFile}, HealthcheckServerName: "agent-health.test"}
+	if err := runHealthcheck(cfg); err != nil {
 		t.Fatalf("healthy local TLS gRPC server: %v", err)
 	}
 
 	healthServer.SetServingStatus("", healthv1.HealthCheckResponse_NOT_SERVING)
-	if err := runHealthcheck(); err == nil {
+	if err := runHealthcheck(cfg); err == nil {
 		t.Fatal("non-serving local gRPC health status was accepted")
 	}
 }
 
 func TestHealthcheckRejectsNonLoopbackEndpoint(t *testing.T) {
-	t.Setenv("AGENT_GRPC_LISTEN", ":9443")
-	t.Setenv("AGENT_GRPC_HEALTHCHECK_ADDRESS", "192.0.2.10:9443")
-	if _, err := healthcheckConfigFromEnvironment(); err == nil {
+	if _, err := healthcheckConfigFromConfig(config.Config{Server: config.Server{ListenAddress: ":9443"}, HealthcheckAddress: "192.0.2.10:9443", HealthcheckServerName: "agent-health.test"}); err == nil {
 		t.Fatal("healthcheck accepted a non-loopback endpoint")
 	}
 }
 
 func TestHealthcheckRejectsNonCanonicalTLSName(t *testing.T) {
-	t.Setenv("AGENT_GRPC_LISTEN", ":9443")
-	t.Setenv("AGENT_GRPC_HEALTHCHECK_SERVER_NAME", " agent-health.test")
-	if _, err := healthcheckConfigFromEnvironment(); err == nil {
+	if _, err := healthcheckConfigFromConfig(config.Config{Server: config.Server{ListenAddress: ":9443"}, HealthcheckServerName: " agent-health.test"}); err == nil {
 		t.Fatal("healthcheck accepted a whitespace-padded TLS server name")
 	}
 }

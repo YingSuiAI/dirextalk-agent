@@ -1,0 +1,161 @@
+name: dirextalk-agent-local
+
+# Explicit local validation stack.  Runtime settings (including the instance
+# id, listen address, TLS paths, and feature gates) belong in the caller's
+# YAML config; Compose supplies only image, path, and port inputs.
+
+x-agent-hardening: &agent-hardening
+  user: "65532:65532"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=1777
+
+services:
+  postgres:
+    image: ${DIREXTALK_POSTGRES_18_IMAGE_IMMUTABLE_WITH_DIGEST:?set an immutable PostgreSQL 18 image reference}
+    environment:
+      POSTGRES_DB: ${AGENT_POSTGRES_DB:-dirextalk_agent}
+      POSTGRES_USER: ${AGENT_POSTGRES_USER:-dirextalk_agent}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - source: postgres_password
+        target: postgres_password
+        mode: 0400
+    volumes:
+      - agent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  migrate:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:?set an immutable Agent prerelease image reference}
+    <<: *agent-hardening
+    command: ["migrate"]
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${AGENT_CONFIG_PATH:?set the host Agent YAML config path}
+        target: /etc/dirextalk-agent/config.yaml
+        read_only: true
+    secrets:
+      - source: agent_postgres_dsn
+        target: agent_database_url
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bootstrap-service-key:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:?set an immutable Agent prerelease image reference}
+    <<: *agent-hardening
+    command: ["bootstrap-service-key"]
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${AGENT_CONFIG_PATH:?set the host Agent YAML config path}
+        target: /etc/dirextalk-agent/config.yaml
+        read_only: true
+    secrets:
+      - source: agent_postgres_dsn
+        target: agent_database_url
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_service_key_pepper
+        target: agent_service_key_pepper
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_bootstrap_service_key
+        target: agent_bootstrap_service_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  agent:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:?set an immutable Agent prerelease image reference}
+    <<: *agent-hardening
+    command: ["serve"]
+    restart: unless-stopped
+    ports:
+      - "${AGENT_GRPC_BIND_ADDRESS:-127.0.0.1}:${AGENT_GRPC_PORT:-9443}:9443"
+    volumes:
+      - type: bind
+        source: ${AGENT_CONFIG_PATH:?set the host Agent YAML config path}
+        target: /etc/dirextalk-agent/config.yaml
+        read_only: true
+      - type: bind
+        source: ${AGENT_MODEL_PROFILES_PATH:?set the host model-profile catalog path}
+        target: /run/dirextalk/config/model-profiles.json
+        read_only: true
+      - type: bind
+        source: ${AGENT_MOUNTED_SECRETS_DIR_PATH:?set the protected host runtime-secret directory}
+        target: /run/dirextalk/mounted-secrets
+        read_only: true
+    secrets:
+      - source: agent_postgres_dsn
+        target: agent_database_url
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_tls_cert
+        target: agent_tls_cert
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_tls_key
+        target: agent_tls_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_service_key_pepper
+        target: agent_service_key_pepper
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_master_key
+        target: agent_master_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+      - source: agent_bootstrap_service_key
+        target: agent_bootstrap_service_key
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    depends_on:
+      bootstrap-service-key:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+volumes:
+  agent_postgres_data:
+    name: ${AGENT_POSTGRES_VOLUME_NAME:-dirextalk-agent-postgres-data}
+
+secrets:
+  postgres_password:
+    file: ${AGENT_POSTGRES_PASSWORD_FILE:?set the host PostgreSQL password file path}
+  agent_postgres_dsn:
+    file: ${AGENT_POSTGRES_DSN_FILE:?set the host Agent PostgreSQL DSN file path}
+  agent_tls_cert:
+    file: ${AGENT_TLS_CERT_FILE_PATH:?set the host Agent TLS certificate file path}
+  agent_tls_key:
+    file: ${AGENT_TLS_KEY_FILE_PATH:?set the host Agent TLS private-key file path}
+  agent_service_key_pepper:
+    file: ${AGENT_SERVICE_KEY_PEPPER_FILE_PATH:?set the host Agent service-key pepper file path}
+  agent_master_key:
+    file: ${AGENT_MASTER_KEY_FILE_PATH:?set the host Agent master-key file path}
+  agent_bootstrap_service_key:
+    file: ${AGENT_BOOTSTRAP_SERVICE_KEY_FILE_PATH:?set the host bootstrap service-key file path}

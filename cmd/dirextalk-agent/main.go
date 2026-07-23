@@ -37,30 +37,67 @@ func main() {
 }
 
 func run(arguments []string) error {
-	if len(arguments) != 1 {
-		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|bootstrap-approval-device|healthcheck|serve>")
+	configPath, command, err := parseArguments(arguments)
+	if err != nil {
+		return err
 	}
-	switch arguments[0] {
+	if !validCommand(command) {
+		return errors.New("unknown command; expected migrate, bootstrap-service-key, bootstrap-approval-device, healthcheck, or serve")
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	switch command {
 	case "migrate":
-		return migrate()
+		return migrate(cfg)
 	case "bootstrap-service-key":
-		return bootstrapServiceKey()
+		return bootstrapServiceKey(cfg)
 	case "bootstrap-approval-device":
-		return bootstrapApprovalDevice()
+		return bootstrapApprovalDevice(cfg)
 	case "healthcheck":
-		return runHealthcheck()
+		return runHealthcheck(cfg)
 	case "serve":
-		return serve()
+		return serve(cfg)
 	default:
 		return errors.New("unknown command; expected migrate, bootstrap-service-key, bootstrap-approval-device, healthcheck, or serve")
 	}
 }
 
-func migrate() error {
-	common, err := config.LoadCommon()
-	if err != nil {
+func validCommand(command string) bool {
+	switch command {
+	case "migrate", "bootstrap-service-key", "bootstrap-approval-device", "healthcheck", "serve":
+		return true
+	default:
+		return false
+	}
+}
+
+const defaultConfigPath = "/etc/dirextalk-agent/config.yaml"
+
+func parseArguments(arguments []string) (string, string, error) {
+	if len(arguments) == 1 {
+		path := strings.TrimSpace(os.Getenv("AGENT_CONFIG_FILE"))
+		if path == "" {
+			path = defaultConfigPath
+		}
+		return path, arguments[0], nil
+	}
+	if len(arguments) == 3 && arguments[0] == "--config" && strings.TrimSpace(arguments[1]) != "" {
+		return strings.TrimSpace(arguments[1]), arguments[2], nil
+	}
+	if len(arguments) == 2 && strings.HasPrefix(arguments[0], "--config=") && strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")) != "" {
+		return strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")), arguments[1], nil
+	}
+	return "", "", errors.New("usage: dirextalk-agent [--config PATH] <migrate|bootstrap-service-key|bootstrap-approval-device|healthcheck|serve>")
+}
+
+func migrate(cfg config.Config) error {
+	if err := config.ValidateCommon(&cfg); err != nil {
 		return err
 	}
+	common := cfg.Common
+	var err error
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	pool, err := postgres.Open(ctx, common.DatabaseURL)
@@ -75,16 +112,16 @@ func migrate() error {
 	return nil
 }
 
-func bootstrapServiceKey() error {
-	common, err := config.LoadCommon()
-	if err != nil {
+func bootstrapServiceKey(cfg config.Config) error {
+	if err := config.ValidateCommon(&cfg); err != nil {
 		return err
 	}
-	pepperPath := strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE"))
-	keyPath := strings.TrimSpace(os.Getenv("AGENT_BOOTSTRAP_SERVICE_KEY_FILE"))
-	clientID := strings.TrimSpace(os.Getenv("AGENT_BOOTSTRAP_CLIENT_ID"))
+	common := cfg.Common
+	pepperPath := strings.TrimSpace(cfg.PepperFile)
+	keyPath := strings.TrimSpace(cfg.BootstrapServiceKeyFile)
+	clientID := strings.TrimSpace(cfg.BootstrapClientID)
 	if pepperPath == "" || keyPath == "" || clientID == "" {
-		return errors.New("AGENT_SERVICE_KEY_PEPPER_FILE, AGENT_BOOTSTRAP_SERVICE_KEY_FILE, and AGENT_BOOTSTRAP_CLIENT_ID are required")
+		return errors.New("service_key_pepper_file, bootstrap_service_key_file, and bootstrap_client_id are required")
 	}
 	pepper, err := config.ReadKeyMaterial(pepperPath)
 	if err != nil {
@@ -103,7 +140,7 @@ func bootstrapServiceKey() error {
 		return err
 	}
 	defer clear(secret)
-	scopes := splitScopes(os.Getenv("AGENT_BOOTSTRAP_SCOPES"))
+	scopes := splitScopes(cfg.BootstrapScopes)
 	if len(scopes) == 0 {
 		scopes = []string{"admin"}
 	}
@@ -131,11 +168,13 @@ func bootstrapServiceKey() error {
 	return nil
 }
 
-func serve() error {
-	serverConfig, err := config.LoadServer()
-	if err != nil {
+func serve(cfg config.Config) error {
+	if err := config.ValidateServer(&cfg); err != nil {
 		return err
 	}
+	serverConfig := cfg.Server
+	serverConfig.Common = cfg.Common
+	var err error
 	pepper, err := config.ReadKeyMaterial(serverConfig.PepperFile)
 	if err != nil {
 		return err
@@ -147,7 +186,7 @@ func serve() error {
 	}
 	defer clear(masterKey)
 	if len(masterKey) != 32 {
-		return errors.New("AGENT_MASTER_KEY_FILE must contain exactly 32 bytes")
+		return errors.New("master_key_file must contain exactly 32 bytes")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	pool, err := postgres.Open(ctx, serverConfig.DatabaseURL)

@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' \
     -o /out/usr/local/bin/dirextalk-agent ./cmd/dirextalk-agent
 RUN install -d -m 0755 /out/etc/ssl/certs \
+    && install -d -m 0755 /out/etc/dirextalk-agent \
     && install -d -m 1777 /out/tmp \
     && cp /etc/ssl/certs/ca-certificates.crt /out/etc/ssl/certs/ca-certificates.crt
 

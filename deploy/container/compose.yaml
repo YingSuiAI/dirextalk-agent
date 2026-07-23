@@ -1,42 +1,40 @@
 name: dirextalk-agent
 
+# Runtime settings belong in the caller-supplied YAML config.  Compose only
+# supplies the immutable image, host paths, and published port.
+x-agent-hardening: &agent-hardening
+  user: "65532:65532"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=1777
+
 services:
   agent:
     image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:?set a prerelease tag plus @sha256 digest; latest and v1.0.3 are forbidden}
+    <<: *agent-hardening
     command: ["serve"]
-    user: "65532:65532"
-    read_only: true
     restart: unless-stopped
-    cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,mode=1777
     ports:
       - "${AGENT_GRPC_BIND_ADDRESS:-127.0.0.1}:${AGENT_GRPC_PORT:-9443}:9443"
-    environment:
-      AGENT_INSTANCE_ID: ${AGENT_INSTANCE_ID:?set the stable Agent instance UUID}
-      AGENT_DATABASE_URL_FILE: /run/secrets/agent_postgres_dsn
-      AGENT_GRPC_LISTEN: :9443
-      AGENT_GRPC_HEALTHCHECK_SERVER_NAME: ${AGENT_GRPC_HEALTHCHECK_SERVER_NAME:?set the TLS certificate DNS/IP SAN used by the local image healthcheck}
-      AGENT_TLS_CERT_FILE: /run/secrets/agent_tls_cert
-      AGENT_TLS_KEY_FILE: /run/secrets/agent_tls_key
-      AGENT_SERVICE_KEY_PEPPER_FILE: /run/secrets/agent_service_key_pepper
-      AGENT_MASTER_KEY_FILE: /run/secrets/agent_master_key
-      AGENT_BOOTSTRAP_SERVICE_KEY_FILE: /run/secrets/agent_bootstrap_service_key
-      AGENT_BOOTSTRAP_CLIENT_ID: ${AGENT_BOOTSTRAP_CLIENT_ID:?set the non-secret initial caller id}
-      AGENT_BOOTSTRAP_SCOPES: ${AGENT_BOOTSTRAP_SCOPES:-admin}
-      AGENT_MOUNTED_SECRETS_DIR: /run/dirextalk/mounted-secrets
-      AGENT_MODEL_PROFILES_FILE: /run/dirextalk/config/model-profiles.json
-      AGENT_ENABLE_AWS_CONTROL: ${AGENT_ENABLE_AWS_CONTROL:-false}
-      AGENT_ENABLE_MANAGED_PREPARATION_AWS: ${AGENT_ENABLE_MANAGED_PREPARATION_AWS:-false}
-      AGENT_AWS_REAPER_IMAGE_URI: ${DIREXTALK_REAPER_IMAGE_IMMUTABLE_PRERELEASE_WITH_DIGEST:-}
-      AGENT_WORKER_CONTROL_ENDPOINT: ${AGENT_WORKER_CONTROL_ENDPOINT:-}
-      AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME: ${AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME:-}
-      AGENT_WORKER_AMI_PUBLICATION_FILE: ${AGENT_WORKER_AMI_PUBLICATION_FILE:-}
+    volumes:
+      - type: bind
+        source: ${AGENT_CONFIG_PATH:?set the host Agent YAML config path}
+        target: /etc/dirextalk-agent/config.yaml
+        read_only: true
+      - type: bind
+        source: ${AGENT_MODEL_PROFILES_PATH:?set the host model profile catalog path}
+        target: /run/dirextalk/config/model-profiles.json
+        read_only: true
+      - type: bind
+        source: ${AGENT_MOUNTED_SECRETS_DIR_PATH:?set the protected host runtime-secret directory}
+        target: /run/dirextalk/mounted-secrets
+        read_only: true
     secrets:
       - source: agent_postgres_dsn
-        target: agent_postgres_dsn
+        target: agent_database_url
         uid: "65532"
         gid: "65532"
         mode: 0400
@@ -65,26 +63,16 @@ services:
         uid: "65532"
         gid: "65532"
         mode: 0400
-    volumes:
-      - type: bind
-        source: ${AGENT_MODEL_PROFILES_PATH:?set the host model profile catalog path}
-        target: /run/dirextalk/config/model-profiles.json
-        read_only: true
-      - type: bind
-        source: ${AGENT_MOUNTED_SECRETS_DIR_PATH:?set the protected host runtime-secret directory}
-        target: /run/dirextalk/mounted-secrets
-        read_only: true
-
 secrets:
   agent_postgres_dsn:
-    environment: AGENT_POSTGRES_DSN
+    file: ${AGENT_POSTGRES_DSN_FILE:?set the host Agent PostgreSQL DSN file path}
   agent_tls_cert:
-    environment: AGENT_TLS_CERT_PEM
+    file: ${AGENT_TLS_CERT_FILE_PATH:?set the host Agent TLS certificate file path}
   agent_tls_key:
-    environment: AGENT_TLS_KEY_PEM
+    file: ${AGENT_TLS_KEY_FILE_PATH:?set the host Agent TLS private-key file path}
   agent_service_key_pepper:
-    environment: AGENT_SERVICE_KEY_PEPPER
+    file: ${AGENT_SERVICE_KEY_PEPPER_FILE_PATH:?set the host Agent service-key pepper file path}
   agent_master_key:
-    environment: AGENT_MASTER_KEY
+    file: ${AGENT_MASTER_KEY_FILE_PATH:?set the host Agent master-key file path}
   agent_bootstrap_service_key:
-    environment: AGENT_BOOTSTRAP_SERVICE_KEY
+    file: ${AGENT_BOOTSTRAP_SERVICE_KEY_FILE_PATH:?set the host bootstrap service-key file path}

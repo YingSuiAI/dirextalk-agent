@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -27,12 +26,12 @@ var ed25519SubjectPublicKeyInfoPrefix = []byte{
 	0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
 }
 
-func bootstrapApprovalDevice() error {
-	common, err := config.LoadCommon()
-	if err != nil {
+func bootstrapApprovalDevice(cfg config.Config) error {
+	if err := config.ValidateCommon(&cfg); err != nil {
 		return err
 	}
-	command, err := approvalDeviceBootstrapCommandFromEnvironment(common.InstanceID, time.Now().UTC())
+	common := cfg.Common
+	command, err := approvalDeviceBootstrapCommand(cfg, common.InstanceID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
@@ -64,30 +63,30 @@ func bootstrapApprovalDevice() error {
 	return nil
 }
 
-func approvalDeviceBootstrapCommandFromEnvironment(instanceID string, now time.Time) (postgres.RegisterApprovalDeviceCommand, error) {
+func approvalDeviceBootstrapCommand(cfg config.Config, instanceID string, now time.Time) (postgres.RegisterApprovalDeviceCommand, error) {
 	parsedInstanceID, err := uuid.Parse(instanceID)
 	if err != nil || parsedInstanceID == uuid.Nil || parsedInstanceID.String() != instanceID {
-		return postgres.RegisterApprovalDeviceCommand{}, errors.New("AGENT_INSTANCE_ID must be a canonical UUID")
+		return postgres.RegisterApprovalDeviceCommand{}, errors.New("instance_id must be a canonical UUID")
 	}
-	ownerID := os.Getenv("AGENT_APPROVAL_DEVICE_OWNER_ID")
-	keyID := os.Getenv("AGENT_APPROVAL_DEVICE_KEY_ID")
+	ownerID := cfg.ApprovalDeviceOwnerID
+	keyID := cfg.ApprovalDeviceKeyID
 	if !validApprovalDeviceBootstrapIdentifier(ownerID, 255) || !validApprovalDeviceBootstrapIdentifier(keyID, 128) {
-		return postgres.RegisterApprovalDeviceCommand{}, errors.New("AGENT_APPROVAL_DEVICE_OWNER_ID and AGENT_APPROVAL_DEVICE_KEY_ID must be canonical non-control identifiers")
+		return postgres.RegisterApprovalDeviceCommand{}, errors.New("approval_device_owner_id and approval_device_key_id must be canonical non-control identifiers")
 	}
-	idempotencyKey := os.Getenv("AGENT_APPROVAL_DEVICE_IDEMPOTENCY_KEY")
+	idempotencyKey := cfg.ApprovalDeviceIdempotencyKey
 	parsedIdempotencyKey, err := uuid.Parse(idempotencyKey)
 	if err != nil || parsedIdempotencyKey == uuid.Nil || parsedIdempotencyKey.String() != idempotencyKey {
-		return postgres.RegisterApprovalDeviceCommand{}, errors.New("AGENT_APPROVAL_DEVICE_IDEMPOTENCY_KEY must be a canonical UUID")
+		return postgres.RegisterApprovalDeviceCommand{}, errors.New("approval_device_idempotency_key must be a canonical UUID")
 	}
 	if now.IsZero() {
 		return postgres.RegisterApprovalDeviceCommand{}, errors.New("approval-device bootstrap clock is invalid")
 	}
 	now = now.UTC()
-	expiresAt, err := time.Parse(time.RFC3339, os.Getenv("AGENT_APPROVAL_DEVICE_EXPIRES_AT"))
+	expiresAt, err := time.Parse(time.RFC3339, cfg.ApprovalDeviceExpiresAt)
 	if err != nil || !now.Before(expiresAt) {
-		return postgres.RegisterApprovalDeviceCommand{}, errors.New("AGENT_APPROVAL_DEVICE_EXPIRES_AT must be a future RFC3339 timestamp")
+		return postgres.RegisterApprovalDeviceCommand{}, errors.New("approval_device_expires_at must be a future RFC3339 timestamp")
 	}
-	publicKeyFile := strings.TrimSpace(os.Getenv("AGENT_APPROVAL_DEVICE_PUBLIC_KEY_FILE"))
+	publicKeyFile := strings.TrimSpace(cfg.ApprovalDevicePublicKeyFile)
 	publicKeyMaterial, err := config.ReadKeyMaterial(publicKeyFile)
 	if err != nil {
 		return postgres.RegisterApprovalDeviceCommand{}, errors.New("could not read mounted approval-device public key")
@@ -100,7 +99,7 @@ func approvalDeviceBootstrapCommandFromEnvironment(instanceID string, now time.T
 	canonicalKeyID := approvalDeviceKeyID(publicKey)
 	if keyID != canonicalKeyID {
 		clear(publicKey)
-		return postgres.RegisterApprovalDeviceCommand{}, errors.New("AGENT_APPROVAL_DEVICE_KEY_ID does not match the canonical Ed25519 public-key identity")
+		return postgres.RegisterApprovalDeviceCommand{}, errors.New("approval_device_key_id does not match the canonical Ed25519 public-key identity")
 	}
 	return postgres.RegisterApprovalDeviceCommand{
 		IdempotencyKey: idempotencyKey,

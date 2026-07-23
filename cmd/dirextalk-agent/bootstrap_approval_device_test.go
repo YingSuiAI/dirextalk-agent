@@ -9,8 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/google/uuid"
 )
+
+func approvalDeviceBootstrapCommandFixture(instanceID string, now time.Time) (postgres.RegisterApprovalDeviceCommand, error) {
+	cfg := config.Config{ApprovalDeviceOwnerID: os.Getenv("AGENT_APPROVAL_DEVICE_OWNER_ID"), ApprovalDeviceKeyID: os.Getenv("AGENT_APPROVAL_DEVICE_KEY_ID"), ApprovalDevicePublicKeyFile: os.Getenv("AGENT_APPROVAL_DEVICE_PUBLIC_KEY_FILE"), ApprovalDeviceIdempotencyKey: os.Getenv("AGENT_APPROVAL_DEVICE_IDEMPOTENCY_KEY"), ApprovalDeviceExpiresAt: os.Getenv("AGENT_APPROVAL_DEVICE_EXPIRES_AT")}
+	return approvalDeviceBootstrapCommand(cfg, instanceID, now)
+}
 
 func TestApprovalDeviceBootstrapCommandReadsOnlyMountedPublicKey(t *testing.T) {
 	now := time.Date(2026, time.July, 16, 10, 0, 0, 0, time.UTC)
@@ -26,7 +33,7 @@ func TestApprovalDeviceBootstrapCommandReadsOnlyMountedPublicKey(t *testing.T) {
 	t.Setenv("AGENT_APPROVAL_DEVICE_IDEMPOTENCY_KEY", idempotencyKey)
 	t.Setenv("AGENT_APPROVAL_DEVICE_EXPIRES_AT", now.Add(24*time.Hour).Format(time.RFC3339))
 
-	command, err := approvalDeviceBootstrapCommandFromEnvironment(instanceID, now)
+	command, err := approvalDeviceBootstrapCommandFixture(instanceID, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +60,7 @@ func TestApprovalDeviceBootstrapCommandAcceptsFlutterRFC8410SPKI(t *testing.T) {
 	}
 	setValidApprovalDeviceBootstrapEnvironment(t, path, now, publicKey)
 
-	command, err := approvalDeviceBootstrapCommandFromEnvironment(uuid.NewString(), now)
+	command, err := approvalDeviceBootstrapCommandFixture(uuid.NewString(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +90,7 @@ func TestApprovalDeviceBootstrapCommandRejectsNonEd25519SPKI(t *testing.T) {
 				t.Fatal(err)
 			}
 			setValidApprovalDeviceBootstrapEnvironment(t, path, now, publicKey)
-			if _, err := approvalDeviceBootstrapCommandFromEnvironment(uuid.NewString(), now); err == nil {
+			if _, err := approvalDeviceBootstrapCommandFixture(uuid.NewString(), now); err == nil {
 				t.Fatal("non-Ed25519 SubjectPublicKeyInfo was accepted")
 			}
 		})
@@ -111,7 +118,7 @@ func TestApprovalDeviceBootstrapCommandRejectsUntrustedShape(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv(test.key, test.value)
-			if _, err := approvalDeviceBootstrapCommandFromEnvironment(uuid.NewString(), now); err == nil {
+			if _, err := approvalDeviceBootstrapCommandFixture(uuid.NewString(), now); err == nil {
 				t.Fatal("invalid approval-device bootstrap input was accepted")
 			}
 		})

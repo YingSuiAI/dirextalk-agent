@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
@@ -29,8 +30,8 @@ type healthcheckConfig struct {
 // through the same TLS boundary as callers. It intentionally accepts only a
 // loopback endpoint, so the image health probe cannot become an arbitrary
 // outbound gRPC client.
-func runHealthcheck() error {
-	configuration, err := healthcheckConfigFromEnvironment()
+func runHealthcheck(cfg config.Config) error {
+	configuration, err := healthcheckConfigFromConfig(cfg)
 	if err != nil {
 		return err
 	}
@@ -62,42 +63,39 @@ func runHealthcheck() error {
 	return nil
 }
 
-func healthcheckConfigFromEnvironment() (healthcheckConfig, error) {
-	listenAddress := strings.TrimSpace(os.Getenv("AGENT_GRPC_LISTEN"))
+func healthcheckConfigFromConfig(cfg config.Config) (healthcheckConfig, error) {
+	listenAddress := strings.TrimSpace(cfg.ListenAddress)
 	if listenAddress == "" {
 		listenAddress = ":9443"
 	}
 	listenPort, err := healthcheckPort(listenAddress)
 	if err != nil {
-		return healthcheckConfig{}, fmt.Errorf("AGENT_GRPC_LISTEN must contain a non-zero TCP port for healthcheck: %w", err)
+		return healthcheckConfig{}, fmt.Errorf("grpc_listen must contain a non-zero TCP port for healthcheck: %w", err)
 	}
-
-	address := strings.TrimSpace(os.Getenv("AGENT_GRPC_HEALTHCHECK_ADDRESS"))
+	address := strings.TrimSpace(cfg.HealthcheckAddress)
 	if address == "" {
 		address = net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || port == "" {
-		return healthcheckConfig{}, errors.New("AGENT_GRPC_HEALTHCHECK_ADDRESS must be a loopback TCP address")
+		return healthcheckConfig{}, errors.New("grpc_healthcheck_address must be a loopback TCP address")
 	}
 	healthPort, err := healthcheckPort(address)
 	if err != nil || healthPort != listenPort {
-		return healthcheckConfig{}, errors.New("AGENT_GRPC_HEALTHCHECK_ADDRESS must use the AGENT_GRPC_LISTEN port")
+		return healthcheckConfig{}, errors.New("grpc_healthcheck_address must use the grpc_listen port")
 	}
 	parsedHost := net.ParseIP(host)
 	if parsedHost == nil || !parsedHost.IsLoopback() {
-		return healthcheckConfig{}, errors.New("AGENT_GRPC_HEALTHCHECK_ADDRESS must use an IP loopback host")
+		return healthcheckConfig{}, errors.New("grpc_healthcheck_address must use an IP loopback host")
 	}
-
-	serverName := os.Getenv("AGENT_GRPC_HEALTHCHECK_SERVER_NAME")
-	if !validHealthcheckServerName(serverName) {
-		return healthcheckConfig{}, errors.New("AGENT_GRPC_HEALTHCHECK_SERVER_NAME must be a DNS name or IP SAN without whitespace")
+	if !validHealthcheckServerName(cfg.HealthcheckServerName) {
+		return healthcheckConfig{}, errors.New("grpc_healthcheck_server_name must be a DNS name or IP SAN without whitespace")
 	}
-	certificateFile := strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE"))
+	certificateFile := strings.TrimSpace(cfg.TLSCertFile)
 	if certificateFile == "" {
-		return healthcheckConfig{}, errors.New("AGENT_TLS_CERT_FILE is required for healthcheck")
+		return healthcheckConfig{}, errors.New("tls_cert_file is required for healthcheck")
 	}
-	return healthcheckConfig{address: address, serverName: serverName, certificateFile: certificateFile}, nil
+	return healthcheckConfig{address: address, serverName: cfg.HealthcheckServerName, certificateFile: certificateFile}, nil
 }
 
 func healthcheckPort(address string) (int, error) {
@@ -135,14 +133,14 @@ func validHealthcheckServerName(value string) bool {
 func healthcheckRootCAs(certificateFile string) (*x509.CertPool, error) {
 	certificates, err := os.ReadFile(certificateFile)
 	if err != nil {
-		return nil, errors.New("could not read AGENT_TLS_CERT_FILE for healthcheck")
+		return nil, errors.New("could not read tls_cert_file for healthcheck")
 	}
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
 	}
 	if !pool.AppendCertsFromPEM(certificates) {
-		return nil, errors.New("AGENT_TLS_CERT_FILE must contain PEM certificate data for healthcheck")
+		return nil, errors.New("tls_cert_file must contain PEM certificate data for healthcheck")
 	}
 	return pool, nil
 }

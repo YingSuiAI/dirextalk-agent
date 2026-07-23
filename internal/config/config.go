@@ -5,135 +5,219 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/google/uuid"
+	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 var immutableOCIImagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)(?:[.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$`)
 
 type Common struct {
-	InstanceID  string
-	DatabaseURL string
+	InstanceID  string `yaml:"instance_id" mapstructure:"instance_id"`
+	DatabaseURL string `yaml:"-"`
 }
 
 type Server struct {
 	Common
-	ListenAddress                    string
-	TLSCertFile                      string
-	TLSKeyFile                       string
-	PepperFile                       string
-	MasterKeyFile                    string
-	MountedSecretsDir                string
-	ModelProfilesFile                string
-	MCPServersFile                   string
-	EnableAWSControl                 bool
-	EnableManagedPreparationAWS      bool
-	AWSReaperImageURI                string
-	WorkerControlEndpoint            string
-	WorkerControlEndpointServiceName string
-	WorkerAMIPublicationFile         string
+	ListenAddress                    string `yaml:"grpc_listen" mapstructure:"grpc_listen"`
+	TLSCertFile                      string `yaml:"tls_cert_file" mapstructure:"tls_cert_file"`
+	TLSKeyFile                       string `yaml:"tls_key_file" mapstructure:"tls_key_file"`
+	PepperFile                       string `yaml:"service_key_pepper_file" mapstructure:"service_key_pepper_file"`
+	MasterKeyFile                    string `yaml:"master_key_file" mapstructure:"master_key_file"`
+	MountedSecretsDir                string `yaml:"mounted_secrets_dir" mapstructure:"mounted_secrets_dir"`
+	ModelProfilesFile                string `yaml:"model_profiles_file" mapstructure:"model_profiles_file"`
+	MCPServersFile                   string `yaml:"mcp_servers_file" mapstructure:"mcp_servers_file"`
+	EnableAWSControl                 bool   `yaml:"enable_aws_control" mapstructure:"enable_aws_control"`
+	EnableManagedPreparationAWS      bool   `yaml:"enable_managed_preparation_aws" mapstructure:"enable_managed_preparation_aws"`
+	AWSReaperImageURI                string `yaml:"aws_reaper_image_uri" mapstructure:"aws_reaper_image_uri"`
+	WorkerControlEndpoint            string `yaml:"worker_control_endpoint" mapstructure:"worker_control_endpoint"`
+	WorkerControlEndpointServiceName string `yaml:"worker_control_endpoint_service_name" mapstructure:"worker_control_endpoint_service_name"`
+	WorkerAMIPublicationFile         string `yaml:"worker_ami_publication_file" mapstructure:"worker_ami_publication_file"`
 }
 
-func LoadCommon() (Common, error) {
-	databaseURLFile := strings.TrimSpace(os.Getenv("AGENT_DATABASE_URL_FILE"))
-	common := Common{
-		InstanceID: strings.TrimSpace(os.Getenv("AGENT_INSTANCE_ID")),
-	}
-	if _, err := uuid.Parse(common.InstanceID); err != nil {
-		return Common{}, errors.New("AGENT_INSTANCE_ID must be a UUID")
-	}
-	if databaseURLFile == "" {
-		return Common{}, errors.New("AGENT_DATABASE_URL_FILE is required")
-	}
-	databaseURL, err := ReadMountedSecretText(databaseURLFile)
-	if err != nil {
-		return Common{}, fmt.Errorf("read AGENT_DATABASE_URL_FILE: %w", err)
-	}
-	common.DatabaseURL = databaseURL
-	return common, nil
+// Config is the complete non-secret Agent process configuration. Secret
+// material is represented only by mounted-file paths.
+type Config struct {
+	Common                       `yaml:",inline" mapstructure:",squash"`
+	Server                       `yaml:",inline" mapstructure:",squash"`
+	DatabaseURLFile              string `yaml:"database_url_file" mapstructure:"database_url_file"`
+	BootstrapServiceKeyFile      string `yaml:"bootstrap_service_key_file" mapstructure:"bootstrap_service_key_file"`
+	BootstrapClientID            string `yaml:"bootstrap_client_id" mapstructure:"bootstrap_client_id"`
+	BootstrapScopes              string `yaml:"bootstrap_scopes" mapstructure:"bootstrap_scopes"`
+	ApprovalDeviceOwnerID        string `yaml:"approval_device_owner_id" mapstructure:"approval_device_owner_id"`
+	ApprovalDeviceKeyID          string `yaml:"approval_device_key_id" mapstructure:"approval_device_key_id"`
+	ApprovalDeviceIdempotencyKey string `yaml:"approval_device_idempotency_key" mapstructure:"approval_device_idempotency_key"`
+	ApprovalDeviceExpiresAt      string `yaml:"approval_device_expires_at" mapstructure:"approval_device_expires_at"`
+	ApprovalDevicePublicKeyFile  string `yaml:"approval_device_public_key_file" mapstructure:"approval_device_public_key_file"`
+	HealthcheckAddress           string `yaml:"grpc_healthcheck_address" mapstructure:"grpc_healthcheck_address"`
+	HealthcheckServerName        string `yaml:"grpc_healthcheck_server_name" mapstructure:"grpc_healthcheck_server_name"`
 }
 
-func LoadServer() (Server, error) {
-	common, err := LoadCommon()
+// Load reads a strict YAML file through Viper. Environment variables are
+// intentionally not bound; AGENT_CONFIG_FILE is handled by the command only
+// to select the file path.
+func Load(path string) (Config, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return Config{}, errors.New("config path is required")
+	}
+	contents, err := os.ReadFile(path)
 	if err != nil {
-		return Server{}, err
+		return Config{}, fmt.Errorf("read config file: %w", err)
 	}
-	server := Server{
-		Common: common, ListenAddress: strings.TrimSpace(os.Getenv("AGENT_GRPC_LISTEN")),
-		TLSCertFile:                      strings.TrimSpace(os.Getenv("AGENT_TLS_CERT_FILE")),
-		TLSKeyFile:                       strings.TrimSpace(os.Getenv("AGENT_TLS_KEY_FILE")),
-		PepperFile:                       strings.TrimSpace(os.Getenv("AGENT_SERVICE_KEY_PEPPER_FILE")),
-		MasterKeyFile:                    strings.TrimSpace(os.Getenv("AGENT_MASTER_KEY_FILE")),
-		MountedSecretsDir:                strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
-		ModelProfilesFile:                strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
-		MCPServersFile:                   strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
-		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
-		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
-		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
-		WorkerAMIPublicationFile:         strings.TrimSpace(os.Getenv("AGENT_WORKER_AMI_PUBLICATION_FILE")),
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(bytes.NewReader(contents)); err != nil {
+		return Config{}, fmt.Errorf("read config through viper: %w", err)
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_ENABLE_AWS_CONTROL"))) {
-	case "", "false":
-		server.EnableAWSControl = false
-	case "true":
-		server.EnableAWSControl = true
-	default:
-		return Server{}, errors.New("AGENT_ENABLE_AWS_CONTROL must be true or false")
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return Config{}, fmt.Errorf("viper config decode: %w", err)
 	}
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS"))) {
-	case "", "false":
-		server.EnableManagedPreparationAWS = false
-	case "true":
-		server.EnableManagedPreparationAWS = true
-	default:
-		return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS must be true or false")
+	var strictCfg Config
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&strictCfg); err != nil {
+		return Config{}, fmt.Errorf("strict config decode: %w", err)
 	}
-	if server.EnableManagedPreparationAWS && !server.EnableAWSControl {
-		return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS requires AGENT_ENABLE_AWS_CONTROL=true")
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Config{}, errors.New("config file must contain one YAML document")
+		}
+		return Config{}, fmt.Errorf("strict config decode: %w", err)
 	}
-	if server.ListenAddress == "" {
-		server.ListenAddress = ":9443"
+	return cfg, nil
+}
+
+func ValidateCommon(cfg *Config) error {
+	parsedInstanceID, err := uuid.Parse(cfg.InstanceID)
+	if err != nil || parsedInstanceID == uuid.Nil || parsedInstanceID.String() != cfg.InstanceID {
+		return errors.New("instance_id must be a UUID")
 	}
-	if server.TLSCertFile == "" || server.TLSKeyFile == "" {
-		return Server{}, errors.New("AGENT_TLS_CERT_FILE and AGENT_TLS_KEY_FILE are required")
+	if strings.TrimSpace(cfg.DatabaseURLFile) == "" {
+		return errors.New("database_url_file is required")
 	}
-	if server.PepperFile == "" {
-		return Server{}, errors.New("AGENT_SERVICE_KEY_PEPPER_FILE is required")
+	databaseURL, err := ReadMountedSecretText(cfg.DatabaseURLFile)
+	if err != nil {
+		return fmt.Errorf("read database_url_file: %w", err)
 	}
-	if server.MountedSecretsDir == "" {
-		return Server{}, errors.New("AGENT_MOUNTED_SECRETS_DIR is required")
+	cfg.DatabaseURL = databaseURL
+	return nil
+}
+
+func ValidateServer(cfg *Config) error {
+	if err := ValidateCommon(cfg); err != nil {
+		return err
 	}
-	if server.ModelProfilesFile == "" {
-		return Server{}, errors.New("AGENT_MODEL_PROFILES_FILE is required")
+	if cfg.ListenAddress == "" {
+		cfg.ListenAddress = ":9443"
 	}
-	if server.MasterKeyFile == "" {
-		return Server{}, errors.New("AGENT_MASTER_KEY_FILE is required")
+	if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+		return errors.New("tls_cert_file and tls_key_file are required")
 	}
-	if server.AWSReaperImageURI != "" {
-		lower := strings.ToLower(server.AWSReaperImageURI)
-		if !immutableOCIImagePattern.MatchString(server.AWSReaperImageURI) || strings.Contains(lower, ":latest@") || strings.Contains(lower, ":v1.0.3@") {
-			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI must be an immutable digest-pinned prerelease image")
+	if cfg.PepperFile == "" || cfg.MountedSecretsDir == "" || cfg.ModelProfilesFile == "" || cfg.MasterKeyFile == "" {
+		return errors.New("tls, mounted-secrets, model-profiles, and master-key paths are required")
+	}
+	if err := validateMountedSecretIsolation(cfg); err != nil {
+		return err
+	}
+	if cfg.AWSReaperImageURI != "" {
+		lower := strings.ToLower(cfg.AWSReaperImageURI)
+		if !immutableOCIImagePattern.MatchString(cfg.AWSReaperImageURI) || strings.Contains(lower, ":latest@") || strings.Contains(lower, ":v1.0.3@") {
+			return errors.New("aws_reaper_image_uri must be an immutable digest-pinned prerelease image")
 		}
 	}
-	if server.EnableAWSControl {
-		if server.AWSReaperImageURI == "" {
-			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI is required when AWS cloud control is enabled")
+	if cfg.EnableManagedPreparationAWS && !cfg.EnableAWSControl {
+		return errors.New("enable_managed_preparation_aws requires enable_aws_control=true")
+	}
+	if cfg.EnableAWSControl {
+		if cfg.AWSReaperImageURI == "" {
+			return errors.New("aws_reaper_image_uri is required when AWS cloud control is enabled")
 		}
-		if server.WorkerControlEndpoint != cloudquote.WorkerControlPrivateLinkEndpoint ||
-			(server.WorkerControlEndpointServiceName != "" &&
-				cloudquote.ValidateWorkerControlPrivateLink(server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil) {
-			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT and AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME must be the frozen worker-control.y1.dirextalk.ai:443 and ap-northeast-3 PrivateLink service when AWS cloud control is enabled")
+		if cfg.WorkerControlEndpoint != cloudquote.WorkerControlPrivateLinkEndpoint || (cfg.WorkerControlEndpointServiceName != "" && cloudquote.ValidateWorkerControlPrivateLink(cfg.WorkerControlEndpoint, cfg.WorkerControlEndpointServiceName) != nil) {
+			return errors.New("worker_control_endpoint and worker_control_endpoint_service_name must be the frozen worker-control.y1.dirextalk.ai:443 and ap-northeast-3 PrivateLink service when AWS cloud control is enabled")
 		}
-		if server.EnableManagedPreparationAWS && server.WorkerControlEndpointServiceName == "" {
-			return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS requires AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")
+		if cfg.EnableManagedPreparationAWS && cfg.WorkerControlEndpointServiceName == "" {
+			return errors.New("enable_managed_preparation_aws requires worker_control_endpoint_service_name")
 		}
 	}
-	return server, nil
+	return nil
+}
+
+func validateMountedSecretIsolation(cfg *Config) error {
+	mountedDir, err := canonicalPath(cfg.MountedSecretsDir)
+	if err != nil {
+		return fmt.Errorf("canonicalize mounted_secrets_dir: %w", err)
+	}
+	info, err := os.Stat(mountedDir)
+	if err != nil || !info.IsDir() {
+		return errors.New("mounted_secrets_dir must resolve to a directory")
+	}
+	cfg.MountedSecretsDir = mountedDir
+	core := []struct {
+		name string
+		path *string
+	}{
+		{name: "database_url_file", path: &cfg.DatabaseURLFile},
+		{name: "tls_cert_file", path: &cfg.TLSCertFile},
+		{name: "tls_key_file", path: &cfg.TLSKeyFile},
+		{name: "service_key_pepper_file", path: &cfg.PepperFile},
+		{name: "master_key_file", path: &cfg.MasterKeyFile},
+	}
+	if strings.TrimSpace(cfg.BootstrapServiceKeyFile) != "" {
+		core = append(core, struct {
+			name string
+			path *string
+		}{name: "bootstrap_service_key_file", path: &cfg.BootstrapServiceKeyFile})
+	}
+	for _, item := range core {
+		resolved, resolveErr := canonicalPath(*item.path)
+		if resolveErr != nil {
+			return fmt.Errorf("canonicalize %s: %w", item.name, resolveErr)
+		}
+		fileInfo, statErr := os.Stat(resolved)
+		if statErr != nil || !fileInfo.Mode().IsRegular() {
+			return fmt.Errorf("%s must resolve to a regular file", item.name)
+		}
+		if pathsOverlap(mountedDir, resolved) {
+			return fmt.Errorf("%s must not overlap mounted_secrets_dir", item.name)
+		}
+		*item.path = resolved
+	}
+	return nil
+}
+
+func canonicalPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("path is required")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func pathsOverlap(left, right string) bool {
+	inside := func(parent, child string) bool {
+		rel, err := filepath.Rel(parent, child)
+		return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	return left == right || inside(left, right) || inside(right, left)
 }
 
 func ReadKeyMaterial(path string) ([]byte, error) {

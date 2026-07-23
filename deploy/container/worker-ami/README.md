@@ -122,8 +122,8 @@ same publication. `verify` repeats the AWS read-back and attestation, while
 `destroy` requires an explicit account/image-digest confirmation and reports
 success only after the AMI and snapshot are absent.
 
-The resulting publication can be mounted as
-`AGENT_WORKER_AMI_PUBLICATION_FILE`. Agent startup strictly validates it and
+The resulting publication can be mounted through
+`worker_ami_publication_file`. Agent startup strictly validates it and
 imports it into a durable active-release catalog keyed by Agent instance, AWS
 account, Region, and architecture. Quote preparation uses only that catalog and
 fails closed when no matching publication exists; a client or Skill cannot
@@ -132,14 +132,15 @@ provide its own AMI.
 These tools use the standard AWS SDK credential chain and are described in the
 [container operator flow](../README.md#immutable-release-operator-flow). They
 have not yet been executed against the authorized real ECR/EC2 environment, so
-P2 real-cloud acceptance remains incomplete and `AGENT_ENABLE_AWS_CONTROL` must
-stay off for production launches. Base container images also still require
-digest pinning. Do not substitute runtime downloads, mutable S3 keys, `latest`,
-`v1.0.3`, or a manually edited AMI.
+P2 real-cloud acceptance remains incomplete and `enable_aws_control` must
+stay off for production launches. The current `linux/amd64` build inputs are
+already pinned to reviewed child-manifest digests; real publication and AMI
+acceptance remain the unresolved gates. Do not substitute runtime downloads,
+mutable S3 keys, `latest`, `v1.0.3`, or a manually edited AMI.
 
 The Worker/root bridge executes and checkpoints an exact signed command. The
 provider emits the exact trust and artifact-source fields; bootstrap safely
 materializes them before socket activation; claim, recovery, and heartbeat
-rotate grants without extending the durable lease. Deployment secret
-resolution, persistent-volume mounts, durable external-probe results, and
-optional separately typed copy/unpack/mount/service helpers remain required.
+rotate grants without extending the durable lease. Deployment-secret delivery,
+persistent-volume mounts, and durable external-probe evidence are implemented
+locally; their real-cloud and product workflow acceptance remains required.

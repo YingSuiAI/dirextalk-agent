@@ -1,0 +1,28 @@
+# Copy to /etc/dirextalk-agent/config.yaml and replace deployment-specific
+# identifiers and mounted-file paths. This example contains no secret values.
+instance_id: 00000000-0000-4000-8000-000000000000
+database_url_file: /run/secrets/agent_database_url
+grpc_listen: ":9443"
+tls_cert_file: /run/secrets/agent_tls_cert
+tls_key_file: /run/secrets/agent_tls_key
+service_key_pepper_file: /run/secrets/agent_service_key_pepper
+master_key_file: /run/secrets/agent_master_key
+mounted_secrets_dir: /run/dirextalk/mounted-secrets
+model_profiles_file: /run/dirextalk/config/model-profiles.json
+mcp_servers_file: ""
+enable_aws_control: false
+enable_managed_preparation_aws: false
+aws_reaper_image_uri: ""
+worker_control_endpoint: ""
+worker_control_endpoint_service_name: ""
+worker_ami_publication_file: ""
+bootstrap_service_key_file: /run/secrets/agent_bootstrap_service_key
+bootstrap_client_id: ""
+bootstrap_scopes: "admin"
+approval_device_owner_id: ""
+approval_device_key_id: ""
+approval_device_idempotency_key: ""
+approval_device_expires_at: ""
+approval_device_public_key_file: /run/secrets/agent_approval_device_public_key
+grpc_healthcheck_address: ""
+grpc_healthcheck_server_name: agent-health.test
