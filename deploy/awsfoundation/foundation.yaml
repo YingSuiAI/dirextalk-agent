@@ -451,6 +451,17 @@ Resources:
                   - dynamodb:UpdateItem
                 Resource:
                   Fn::GetAtt: [ManifestTable, Arn]
+              - Sid: ReadManifestKMS
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                Resource:
+                  Fn::GetAtt: [FoundationKey, Arn]
+                Condition:
+                  StringEquals:
+                    kms:ViaService:
+                      Fn::Sub: dynamodb.${AWS::Region}.${AWS::URLSuffix}
               - Sid: ObserveOwnedResources
                 Effect: Allow
                 Action:
@@ -547,7 +558,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  Fn::Sub: ${ReaperLogGroup.Arn}:log-stream:*
+                  Fn::GetAtt: [ReaperLogGroup, Arn]
       Tags:
         - Key: dirextalk:agent_instance_id
           Value:
@@ -996,7 +1007,7 @@ Resources:
               - logs:CreateLogStream
               - logs:PutLogEvents
             Resource:
-              Fn::Sub: ${WorkerLogGroup.Arn}:*
+              Fn::GetAtt: [WorkerLogGroup, Arn]
 
   # Keep public entry-point authority in a separate managed policy. The
   # existing runtime policy is already close to the IAM inline-policy quota;

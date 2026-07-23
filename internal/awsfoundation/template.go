@@ -310,7 +310,7 @@ func controlPolicyFailsClosed(value any) bool {
 		if sid == "WorkerMilestoneRelayLogs" {
 			workerAMI.milestoneRelayLogs = sameStrings(actions, []string{
 				"logs:CreateLogStream", "logs:PutLogEvents",
-			}) && sameStrings(resources, []string{"${WorkerLogGroup.Arn}:*"}) && statement["Condition"] == nil
+			}) && sameStrings(resources, []string{"getatt:WorkerLogGroup:Arn"}) && statement["Condition"] == nil
 		}
 		for _, action := range actions {
 			switch {
@@ -1041,7 +1041,7 @@ func reaperFailsClosed(value any) bool {
 	}
 	document, _ := stringMap(policy["PolicyDocument"])
 	statements, ok := anySlice(document["Statement"])
-	if !ok || len(statements) != 8 {
+	if !ok || len(statements) != 9 {
 		return false
 	}
 	seen := make(map[string]struct{}, len(statements))
@@ -1064,6 +1064,11 @@ func reaperFailsClosed(value any) bool {
 		case "ReadManifest":
 			if !sameStrings(actions, []string{"dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"}) ||
 				!sameStrings(resources, []string{"getatt:ManifestTable:Arn"}) || statement["Condition"] != nil {
+				return false
+			}
+		case "ReadManifestKMS":
+			if !sameStrings(actions, []string{"kms:Decrypt", "kms:DescribeKey"}) ||
+				!sameStrings(resources, []string{"getatt:FoundationKey:Arn"}) || !reaperManifestKMSCondition(statement) {
 				return false
 			}
 		case "ObserveOwnedResources":
@@ -1117,14 +1122,27 @@ func reaperFailsClosed(value any) bool {
 			}
 		case "ReaperLogs":
 			if !sameStrings(actions, []string{"logs:CreateLogStream", "logs:PutLogEvents"}) ||
-				!sameStrings(resources, []string{"${ReaperLogGroup.Arn}:log-stream:*"}) || statement["Condition"] != nil {
+				!sameStrings(resources, []string{"getatt:ReaperLogGroup:Arn"}) || statement["Condition"] != nil {
 				return false
 			}
 		default:
 			return false
 		}
 	}
-	return len(seen) == 8
+	return len(seen) == 9
+}
+
+func reaperManifestKMSCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 1 {
+		return false
+	}
+	values, ok := stringMap(condition["StringEquals"])
+	if !ok || len(values) != 1 {
+		return false
+	}
+	viaService, ok := stringMap(values["kms:ViaService"])
+	return ok && scalarString(viaService["Fn::Sub"]) == "dynamodb.${AWS::Region}.${AWS::URLSuffix}"
 }
 
 func reaperEphemeralCondition(statement map[string]any, tagPrefix string) bool {

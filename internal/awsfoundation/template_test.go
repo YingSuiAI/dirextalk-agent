@@ -113,8 +113,13 @@ func TestFoundationTemplateReaperEntrypointPermissionsAreMinimumScoped(t *testin
 	}) || !sameStrings(templateResourceStrings(observe["Resource"]), []string{"*"}) || observe["Condition"] != nil {
 		t.Fatalf("Reaper entrypoint observation is not read-only and account-scoped: %#v", observe)
 	}
-	if len(statements) != 8 {
-		t.Fatalf("Reaper statements = %d, want 8", len(statements))
+	kms, ok := statements["ReadManifestKMS"]
+	if !ok || !sameStrings(stringValues(kms["Action"]), []string{"kms:Decrypt", "kms:DescribeKey"}) ||
+		!sameStrings(templateResourceStrings(kms["Resource"]), []string{"getatt:FoundationKey:Arn"}) || !reaperManifestKMSCondition(kms) {
+		t.Fatalf("Reaper manifest KMS access is not Foundation-key and DynamoDB scoped: %#v", kms)
+	}
+	if len(statements) != 9 {
+		t.Fatalf("Reaper statements = %d, want 9", len(statements))
 	}
 
 	template := testFoundationTemplate(t)
@@ -122,6 +127,7 @@ func TestFoundationTemplateReaperEntrypointPermissionsAreMinimumScoped(t *testin
 		"ELB deletion loses ephemeral tag": {"DestroyExpiredEphemeralLoadBalancerAndListener", "aws:ResourceTag/dirextalk:retention: ephemeral", "aws:ResourceTag/dirextalk:retention: managed"},
 		"target group deletion broadens":   {"DestroyExpiredEphemeralTargetGroup", "targetgroup/*", "*"},
 		"ingress revoke loses ownership":   {"RevokeExpiredEphemeralIngressRule", "ec2:ResourceTag/dirextalk:agent_instance_id", "ec2:ResourceTag/unrelated"},
+		"manifest decrypt leaves DynamoDB": {"ReadManifestKMS", "dynamodb.${AWS::Region}.${AWS::URLSuffix}", "kms.${AWS::Region}.${AWS::URLSuffix}"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := ValidateTemplate(mutateReaperStatement(t, template, change[0], change[1], change[2])); err == nil {
@@ -179,7 +185,7 @@ func TestFoundationTemplateWorkerLogsAreAgentRelayedAndControlScoped(t *testing.
 	for name, mutation := range map[string][3]string{
 		"Worker gains log write":        {"WorkerEnvelopeKMS", "- kms:Decrypt", "- kms:Decrypt\n                  - logs:PutLogEvents"},
 		"Control loses log write":       {"WorkerMilestoneRelayLogs", "- logs:PutLogEvents", "- logs:GetLogEvents"},
-		"Control broadens log resource": {"WorkerMilestoneRelayLogs", "${WorkerLogGroup.Arn}:*", "*"},
+		"Control broadens log resource": {"WorkerMilestoneRelayLogs", "Fn::GetAtt: [WorkerLogGroup, Arn]", "Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mutated := mutateFoundationStatement(t, template, mutation[0], mutation[1], mutation[2])
