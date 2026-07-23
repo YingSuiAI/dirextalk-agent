@@ -25,9 +25,11 @@ type managedECRFake struct {
 	repositories  map[string]ecrtypes.Repository
 	tags          map[string][]ecrtypes.Tag
 	images        map[string][]ecrtypes.ImageDetail
+	policies      map[string]string
 	describeCalls []string
 	tagCalls      []string
 	imageCalls    []ecr.DescribeImagesInput
+	policyCalls   []string
 	err           error
 }
 
@@ -76,6 +78,23 @@ func (client *managedECRFake) DescribeImages(_ context.Context, input *ecr.Descr
 	return &ecr.DescribeImagesOutput{ImageDetails: append([]ecrtypes.ImageDetail(nil), details...)}, nil
 }
 
+func (client *managedECRFake) GetRepositoryPolicy(_ context.Context, input *ecr.GetRepositoryPolicyInput, _ ...func(*ecr.Options)) (*ecr.GetRepositoryPolicyOutput, error) {
+	if client.err != nil {
+		return nil, client.err
+	}
+	if input == nil || aws.ToString(input.RegistryId) != testAccount || aws.ToString(input.RepositoryName) != RepositoryReaper {
+		return nil, errors.New("invalid policy input with provider detail")
+	}
+	client.policyCalls = append(client.policyCalls, RepositoryReaper)
+	policy := client.policies[RepositoryReaper]
+	if policy == "" {
+		return nil, &ecrtypes.RepositoryPolicyNotFoundException{Message: aws.String("missing policy with provider detail")}
+	}
+	return &ecr.GetRepositoryPolicyOutput{
+		RegistryId: aws.String(testAccount), RepositoryName: aws.String(RepositoryReaper), PolicyText: aws.String(policy),
+	}, nil
+}
+
 func TestVerifyManagedReadsOnlyFixedRepositoriesAndAttestsReleaseManifest(t *testing.T) {
 	manifest := validManagedManifest()
 	client := validManagedECR(manifest)
@@ -98,8 +117,9 @@ func TestVerifyManagedReadsOnlyFixedRepositoriesAndAttestsReleaseManifest(t *tes
 		t.Fatalf("managed receipt = %#v", receipt)
 	}
 	wantNames := []string{RepositoryAgent, RepositoryWorker, RepositoryReaper}
-	if !slices.Equal(client.describeCalls, wantNames) || !slices.Equal(client.tagCalls, wantNames) || len(client.imageCalls) != len(wantNames) {
-		t.Fatalf("read scope: describe=%#v tags=%#v images=%#v", client.describeCalls, client.tagCalls, client.imageCalls)
+	if !slices.Equal(client.describeCalls, wantNames) || !slices.Equal(client.tagCalls, wantNames) || len(client.imageCalls) != len(wantNames) ||
+		!slices.Equal(client.policyCalls, []string{RepositoryReaper}) {
+		t.Fatalf("read scope: describe=%#v tags=%#v images=%#v policies=%#v", client.describeCalls, client.tagCalls, client.imageCalls, client.policyCalls)
 	}
 	for index, repository := range receipt.Repositories {
 		spec := FixedRepositories()[index]
@@ -159,6 +179,9 @@ func TestVerifyManagedFailsClosedOnIdentityRegionManifestRepositoryTagAndImageDr
 			repository.ImageTagMutability = ecrtypes.ImageTagMutabilityMutable
 			client.repositories[RepositoryWorker] = repository
 		}, want: ErrRepositoryDrift},
+		{name: "Reaper Lambda policy missing", options: validManagedOptions(manifest), region: testRegion, sts: validSTS(), mutate: func(client *managedECRFake) {
+			delete(client.policies, RepositoryReaper)
+		}, want: ErrRepositoryDrift},
 		{name: "image wrong repository", options: validManagedOptions(manifest), region: testRegion, sts: validSTS(), mutate: func(client *managedECRFake) {
 			client.images[RepositoryAgent][0].RepositoryName = aws.String(RepositoryWorker)
 		}, want: ErrReleaseImageBinding},
@@ -194,8 +217,8 @@ func TestVerifyManagedFailsClosedOnIdentityRegionManifestRepositoryTagAndImageDr
 			if _, err := verifier.Verify(context.Background()); !errors.Is(err, test.want) {
 				t.Fatalf("Verify error = %v, want %v", err, test.want)
 			}
-			if test.wantNoECR && (len(client.describeCalls) != 0 || len(client.tagCalls) != 0 || len(client.imageCalls) != 0) {
-				t.Fatalf("precondition failure reached ECR: %#v %#v %#v", client.describeCalls, client.tagCalls, client.imageCalls)
+			if test.wantNoECR && (len(client.describeCalls) != 0 || len(client.tagCalls) != 0 || len(client.imageCalls) != 0 || len(client.policyCalls) != 0) {
+				t.Fatalf("precondition failure reached ECR: %#v %#v %#v %#v", client.describeCalls, client.tagCalls, client.imageCalls, client.policyCalls)
 			}
 		})
 	}
@@ -249,8 +272,16 @@ func validManagedManifest() releaseartifact.ReleaseManifestV1 {
 }
 
 func validManagedECR(manifest releaseartifact.ReleaseManifestV1) *managedECRFake {
+	policy, err := json.Marshal(map[string]any{
+		"Version":   "2012-10-17",
+		"Statement": []any{reaperLambdaPolicyStatement("aws", testAccount, testRegion)},
+	})
+	if err != nil {
+		panic(err)
+	}
 	client := &managedECRFake{
 		repositories: make(map[string]ecrtypes.Repository), tags: make(map[string][]ecrtypes.Tag), images: make(map[string][]ecrtypes.ImageDetail),
+		policies: map[string]string{RepositoryReaper: string(policy)},
 	}
 	for _, spec := range FixedRepositories() {
 		client.repositories[spec.Name] = validRepository(spec.Name)

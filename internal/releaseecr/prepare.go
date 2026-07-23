@@ -119,6 +119,12 @@ func (preparer *Preparer) Prepare(ctx context.Context) (prepared PreparedV1, err
 		if ensureErr != nil {
 			return PreparedV1{}, ensureErr
 		}
+		if spec.Name == RepositoryReaper {
+			if err := ensureReaperLambdaRepositoryPolicy(ctx, preparer.clients.ECR, partition,
+				preparer.options.ExpectedAccountID, preparer.options.Region); err != nil {
+				return PreparedV1{}, err
+			}
+		}
 		results = append(results, RepositoryResultV1{
 			Component: spec.Component, Name: spec.Name, URI: aws.ToString(repository.RepositoryUri), Created: created,
 		})

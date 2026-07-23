@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -46,6 +47,10 @@ type fakeECR struct {
 	err                 error
 	createErrAfterStore error
 	lastTokenPointer    *string
+	repositoryPolicy    string
+	getPolicyCalls      int
+	setPolicyCalls      int
+	policyReadBackDrift bool
 }
 
 func (client *fakeECR) DescribeRepositories(_ context.Context, input *ecr.DescribeRepositoriesInput, _ ...func(*ecr.Options)) (*ecr.DescribeRepositoriesOutput, error) {
@@ -108,6 +113,39 @@ func (client *fakeECR) ListTagsForResource(_ context.Context, input *ecr.ListTag
 	return nil, errors.New("unknown repository ARN")
 }
 
+func (client *fakeECR) GetRepositoryPolicy(_ context.Context, input *ecr.GetRepositoryPolicyInput, _ ...func(*ecr.Options)) (*ecr.GetRepositoryPolicyOutput, error) {
+	if client.err != nil {
+		return nil, client.err
+	}
+	if input == nil || aws.ToString(input.RegistryId) != testAccount || aws.ToString(input.RepositoryName) != RepositoryReaper {
+		return nil, errors.New("bad repository policy read")
+	}
+	client.getPolicyCalls++
+	if client.repositoryPolicy == "" {
+		return nil, &ecrtypes.RepositoryPolicyNotFoundException{Message: aws.String("repository policy missing")}
+	}
+	policy := client.repositoryPolicy
+	if client.policyReadBackDrift && client.setPolicyCalls > 0 {
+		policy = `{"Version":"2012-10-17","Statement":[]}`
+	}
+	return &ecr.GetRepositoryPolicyOutput{
+		RegistryId: aws.String(testAccount), RepositoryName: aws.String(RepositoryReaper), PolicyText: aws.String(policy),
+	}, nil
+}
+
+func (client *fakeECR) SetRepositoryPolicy(_ context.Context, input *ecr.SetRepositoryPolicyInput, _ ...func(*ecr.Options)) (*ecr.SetRepositoryPolicyOutput, error) {
+	if client.err != nil {
+		return nil, client.err
+	}
+	if input == nil || aws.ToString(input.RegistryId) != testAccount || aws.ToString(input.RepositoryName) != RepositoryReaper ||
+		aws.ToString(input.PolicyText) == "" {
+		return nil, errors.New("bad repository policy write")
+	}
+	client.setPolicyCalls++
+	client.repositoryPolicy = aws.ToString(input.PolicyText)
+	return &ecr.SetRepositoryPolicyOutput{}, nil
+}
+
 func (client *fakeECR) GetAuthorizationToken(_ context.Context, input *ecr.GetAuthorizationTokenInput, _ ...func(*ecr.Options)) (*ecr.GetAuthorizationTokenOutput, error) {
 	client.authorizationCalls++
 	if input == nil || !slices.Equal(input.RegistryIds, []string{testAccount}) {
@@ -131,6 +169,19 @@ func (client *fakeECR) BatchGetImage(context.Context, *ecr.BatchGetImageInput, .
 
 func (client *fakeECR) DescribeImages(context.Context, *ecr.DescribeImagesInput, ...func(*ecr.Options)) (*ecr.DescribeImagesOutput, error) {
 	return nil, errors.New("unexpected build source detail read")
+}
+
+func validReaperRepositoryPolicy(t *testing.T) string {
+	t.Helper()
+	document := map[string]any{
+		"Version":   "2012-10-17",
+		"Statement": []any{reaperLambdaPolicyStatement("aws", testAccount, testRegion)},
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 type recordedCommand struct {
@@ -171,6 +222,9 @@ func TestPrepareCreatesFixedRepositoriesReadsBackAndLogsInWithoutPasswordArgv(t 
 	}
 	if len(ecrClient.createCalls) != 3 || len(ecrClient.describeCalls) != 6 || len(ecrClient.listTagCalls) != 3 || ecrClient.authorizationCalls != 1 {
 		t.Fatalf("unexpected AWS calls: create=%d describe=%#v list_tags=%#v auth=%d", len(ecrClient.createCalls), ecrClient.describeCalls, ecrClient.listTagCalls, ecrClient.authorizationCalls)
+	}
+	if ecrClient.getPolicyCalls != 2 || ecrClient.setPolicyCalls != 1 {
+		t.Fatalf("Reaper repository policy calls: get=%d set=%d", ecrClient.getPolicyCalls, ecrClient.setPolicyCalls)
 	}
 	for _, input := range ecrClient.createCalls {
 		if input.ImageTagMutability != ecrtypes.ImageTagMutabilityImmutable || input.ImageScanningConfiguration == nil || !input.ImageScanningConfiguration.ScanOnPush ||
@@ -215,11 +269,55 @@ func TestPrepareExistingRepositoriesIsIdempotent(t *testing.T) {
 	for _, spec := range FixedRepositories() {
 		repositories[spec.Name] = validRepository(spec.Name)
 	}
-	ecrClient := &fakeECR{repositories: repositories}
+	ecrClient := &fakeECR{repositories: repositories, repositoryPolicy: validReaperRepositoryPolicy(t)}
 	preparer := newTestPreparer(t, validSTS(), ecrClient, &fakeRunner{})
 	prepareSuccess(t, preparer)
-	if len(ecrClient.createCalls) != 0 || len(ecrClient.describeCalls) != 3 || len(ecrClient.listTagCalls) != 3 {
-		t.Fatalf("idempotent prepare mutated repositories: create=%d describe=%#v list_tags=%#v", len(ecrClient.createCalls), ecrClient.describeCalls, ecrClient.listTagCalls)
+	if len(ecrClient.createCalls) != 0 || len(ecrClient.describeCalls) != 3 || len(ecrClient.listTagCalls) != 3 ||
+		ecrClient.getPolicyCalls != 1 || ecrClient.setPolicyCalls != 0 {
+		t.Fatalf("idempotent prepare mutated repositories: create=%d describe=%#v list_tags=%#v policy_get=%d policy_set=%d",
+			len(ecrClient.createCalls), ecrClient.describeCalls, ecrClient.listTagCalls, ecrClient.getPolicyCalls, ecrClient.setPolicyCalls)
+	}
+}
+
+func TestPrepareRepairsReaperPolicyPreservesUnrelatedStatementsAndVerifiesReadBack(t *testing.T) {
+	repositories := make(map[string]ecrtypes.Repository)
+	for _, spec := range FixedRepositories() {
+		repositories[spec.Name] = validRepository(spec.Name)
+	}
+	extra := map[string]any{
+		"Sid": "UnrelatedRead", "Effect": "Allow",
+		"Principal": map[string]any{"AWS": "arn:aws:iam::" + testAccount + ":root"},
+		"Action":    []any{"ecr:DescribeImages"},
+	}
+	drifted := reaperLambdaPolicyStatement("aws", testAccount, testRegion)
+	drifted["Condition"] = map[string]any{"StringEquals": map[string]any{"aws:SourceAccount": "999999999999"}}
+	encoded, err := json.Marshal(map[string]any{"Version": "2012-10-17", "Statement": []any{extra, drifted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeECR{repositories: repositories, repositoryPolicy: string(encoded)}
+	preparer := newTestPreparer(t, validSTS(), client, &fakeRunner{})
+	prepareSuccess(t, preparer)
+	if client.setPolicyCalls != 1 || client.getPolicyCalls != 2 {
+		t.Fatalf("policy repair calls: get=%d set=%d", client.getPolicyCalls, client.setPolicyCalls)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(client.repositoryPolicy), &document); err != nil {
+		t.Fatal(err)
+	}
+	statements, ok := document["Statement"].([]any)
+	if !ok || len(statements) != 2 || !reflect.DeepEqual(statements[0], extra) ||
+		!exactlyOneExpectedPolicy(statements, reaperLambdaPolicyStatement("aws", testAccount, testRegion)) {
+		t.Fatalf("repaired policy = %#v", document)
+	}
+
+	client = &fakeECR{repositories: repositories, policyReadBackDrift: true}
+	preparer = newTestPreparer(t, validSTS(), client, &fakeRunner{})
+	if _, err := preparer.Prepare(context.Background()); !errors.Is(err, ErrRepositoryDrift) {
+		t.Fatalf("read-back drift error = %v", err)
+	}
+	if client.authorizationCalls != 0 {
+		t.Fatal("policy read-back drift reached registry authentication")
 	}
 }
 

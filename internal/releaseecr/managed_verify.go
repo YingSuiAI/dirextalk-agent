@@ -90,6 +90,12 @@ func (verifier *ManagedVerifier) Verify(ctx context.Context) (ManagedReceiptV1, 
 		if err := verifier.readImageBinding(ctx, binding); err != nil {
 			return ManagedReceiptV1{}, err
 		}
+		if binding.spec.Name == RepositoryReaper {
+			if err := verifyReaperLambdaRepositoryPolicy(ctx, verifier.clients.ECR, partition,
+				verifier.options.ExpectedAccountID, verifier.options.Region); err != nil {
+				return ManagedReceiptV1{}, err
+			}
+		}
 		repositories = append(repositories, ManagedRepositoryReceiptV1{
 			Component:   binding.spec.Component,
 			Name:        binding.spec.Name,
