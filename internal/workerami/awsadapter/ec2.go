@@ -475,7 +475,8 @@ func builderState(state *ec2types.InstanceState) (workerami.BuilderState, bool) 
 }
 
 func (adapter *Adapter) imageObservation(image ec2types.Image) (workerami.ImageObservationV1, error) {
-	if !imagePattern.MatchString(stringValue(image.ImageId)) || stringValue(image.OwnerId) != adapter.account || image.RootDeviceType != ec2types.DeviceTypeEbs || len(image.BlockDeviceMappings) != 1 || image.BlockDeviceMappings[0].Ebs == nil || stringValue(image.BlockDeviceMappings[0].DeviceName) != stringValue(image.RootDeviceName) || !snapshotPattern.MatchString(stringValue(image.BlockDeviceMappings[0].Ebs.SnapshotId)) {
+	rootSnapshotID, validRoot := workerImageRootSnapshotID(image)
+	if !imagePattern.MatchString(stringValue(image.ImageId)) || stringValue(image.OwnerId) != adapter.account || image.RootDeviceType != ec2types.DeviceTypeEbs || !validRoot {
 		return workerami.ImageObservationV1{}, workerami.ErrReadBackMismatch
 	}
 	state, ok := imageState(image.State)
@@ -499,7 +500,23 @@ func (adapter *Adapter) imageObservation(image ec2types.Image) (workerami.ImageO
 	if err != nil {
 		return workerami.ImageObservationV1{}, workerami.ErrReadBackMismatch
 	}
-	return workerami.ImageObservationV1{ImageID: stringValue(image.ImageId), Name: stringValue(image.Name), AccountID: adapter.account, Region: adapter.region, Architecture: architecture, RootDeviceName: stringValue(image.RootDeviceName), RootSnapshotID: stringValue(image.BlockDeviceMappings[0].Ebs.SnapshotId), State: state, Tags: tags, CreatedAt: created}, nil
+	return workerami.ImageObservationV1{ImageID: stringValue(image.ImageId), Name: stringValue(image.Name), AccountID: adapter.account, Region: adapter.region, Architecture: architecture, RootDeviceName: stringValue(image.RootDeviceName), RootSnapshotID: rootSnapshotID, State: state, Tags: tags, CreatedAt: created}, nil
+}
+
+func workerImageRootSnapshotID(image ec2types.Image) (string, bool) {
+	rootDeviceName := stringValue(image.RootDeviceName)
+	if !validBaseImageMappings(image, rootDeviceName) || !validCanonicalRootStorage(image) {
+		return "", false
+	}
+	for _, mapping := range image.BlockDeviceMappings {
+		if stringValue(mapping.DeviceName) == rootDeviceName {
+			if mapping.Ebs == nil || !aws.ToBool(mapping.Ebs.Encrypted) {
+				return "", false
+			}
+			return stringValue(mapping.Ebs.SnapshotId), true
+		}
+	}
+	return "", false
 }
 
 func imageState(state ec2types.ImageState) (workerami.ImageState, bool) {

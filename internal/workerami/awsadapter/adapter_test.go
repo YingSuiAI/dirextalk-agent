@@ -518,6 +518,10 @@ func TestObserveBuilderDependenciesUsesExactIndependentDescribeReadBack(t *testi
 func TestCreateAndObserveImageBindImageAndEncryptedSnapshot(t *testing.T) {
 	create := validCreateFixture()
 	image := validPublishedImage(create)
+	image.BlockDeviceMappings = append(image.BlockDeviceMappings,
+		ec2types.BlockDeviceMapping{DeviceName: aws.String("/dev/sdb"), VirtualName: aws.String("ephemeral0")},
+		ec2types.BlockDeviceMapping{DeviceName: aws.String("/dev/sdc"), VirtualName: aws.String("ephemeral1")},
+	)
 	ec2Client := &fakeEC2{}
 	ec2Client.createImageFn = func(in *ec2.CreateImageInput) (*ec2.CreateImageOutput, error) {
 		if aws.ToString(in.InstanceId) != create.BuilderInstanceID || aws.ToString(in.Name) != create.Name || !aws.ToBool(in.NoReboot) || len(in.TagSpecifications) != 2 || in.TagSpecifications[0].ResourceType != ec2types.ResourceTypeImage || in.TagSpecifications[1].ResourceType != ec2types.ResourceTypeSnapshot {
@@ -539,6 +543,44 @@ func TestCreateAndObserveImageBindImageAndEncryptedSnapshot(t *testing.T) {
 	snapshot, found, err := adapter.ObserveSnapshot(context.Background(), observation.RootSnapshotID)
 	if err != nil || !found || !snapshot.Encrypted {
 		t.Fatalf("ObserveSnapshot() = %#v, %v, %v", snapshot, found, err)
+	}
+}
+
+func TestImageObservationRejectsAdditionalEBSOrUnsafeRootStorage(t *testing.T) {
+	create := validCreateFixture()
+	image := validPublishedImage(create)
+	image.BlockDeviceMappings = append(image.BlockDeviceMappings,
+		ec2types.BlockDeviceMapping{DeviceName: aws.String("/dev/sdb"), VirtualName: aws.String("ephemeral0")},
+	)
+	adapter := newTestAdapter(t, &fakeEC2{}, &fakeS3{}, nil)
+	tests := []struct {
+		name   string
+		mutate func(*ec2types.Image)
+	}{
+		{name: "additional EBS", mutate: func(current *ec2types.Image) {
+			current.BlockDeviceMappings[1].VirtualName = nil
+			current.BlockDeviceMappings[1].Ebs = &ec2types.EbsBlockDevice{
+				SnapshotId: aws.String("snap-11111111111111111"), VolumeType: ec2types.VolumeTypeGp3,
+				VolumeSize: aws.Int32(8), DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true),
+			}
+		}},
+		{name: "unencrypted root", mutate: func(current *ec2types.Image) { current.BlockDeviceMappings[0].Ebs.Encrypted = aws.Bool(false) }},
+		{name: "wrong root storage", mutate: func(current *ec2types.Image) { current.BlockDeviceMappings[0].Ebs.VolumeType = ec2types.VolumeTypeGp2 }},
+		{name: "retained root", mutate: func(current *ec2types.Image) {
+			current.BlockDeviceMappings[0].Ebs.DeleteOnTermination = aws.Bool(false)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := image
+			changed.BlockDeviceMappings = append([]ec2types.BlockDeviceMapping(nil), image.BlockDeviceMappings...)
+			rootEBS := *image.BlockDeviceMappings[0].Ebs
+			changed.BlockDeviceMappings[0].Ebs = &rootEBS
+			test.mutate(&changed)
+			if _, err := adapter.imageObservation(changed); !errors.Is(err, workerami.ErrReadBackMismatch) {
+				t.Fatalf("imageObservation() = %v", err)
+			}
+		})
 	}
 }
 
@@ -678,7 +720,9 @@ func validCreateFixture() workerami.CreateImageV1 {
 	return workerami.CreateImageV1{Name: "dtx-worker-ami-aaaaaaaaaaaaaaaaaaaa", BuilderInstanceID: "i-0123456789abcdef0", RootDeviceName: "/dev/sda1", ImageTags: tags, SnapshotTags: cloneMap(tags), NoReboot: true, EncryptedRootRequired: true, SingleRootSnapshotOnly: true}
 }
 func validPublishedImage(create workerami.CreateImageV1) ec2types.Image {
-	return ec2types.Image{ImageId: aws.String("ami-0fedcba9876543210"), Name: aws.String(create.Name), OwnerId: aws.String(testAccount), Architecture: ec2types.ArchitectureValuesX8664, RootDeviceType: ec2types.DeviceTypeEbs, RootDeviceName: aws.String(create.RootDeviceName), State: ec2types.ImageStatePending, CreationDate: aws.String("2026-07-17T00:00:00Z"), Tags: toTags(create.ImageTags), BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String(create.RootDeviceName), Ebs: &ec2types.EbsBlockDevice{SnapshotId: aws.String("snap-0fedcba9876543210")}}}}
+	return ec2types.Image{ImageId: aws.String("ami-0fedcba9876543210"), Name: aws.String(create.Name), OwnerId: aws.String(testAccount), Architecture: ec2types.ArchitectureValuesX8664, RootDeviceType: ec2types.DeviceTypeEbs, RootDeviceName: aws.String(create.RootDeviceName), State: ec2types.ImageStatePending, CreationDate: aws.String("2026-07-17T00:00:00Z"), Tags: toTags(create.ImageTags), BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String(create.RootDeviceName), Ebs: &ec2types.EbsBlockDevice{
+		SnapshotId: aws.String("snap-0fedcba9876543210"), VolumeType: ec2types.VolumeTypeGp3, VolumeSize: aws.Int32(8), DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true),
+	}}}}
 }
 func cloneMap(input map[string]string) map[string]string {
 	output := make(map[string]string, len(input))
