@@ -83,6 +83,31 @@ func TestSDKProviderCreatesOnlyDeterministicBootstrapIdentity(t *testing.T) {
 	}
 }
 
+func TestSDKProviderRetriesIAMPrincipalPropagationBeforeCreatingKey(t *testing.T) {
+	clients, fakeIAM, _ := completeFakeClients()
+	propagating := &smithy.GenericAPIError{Code: "MalformedPolicyDocument", Message: "Invalid principal in policy"}
+	fakeIAM.createRoleErrors = []error{propagating, propagating}
+	provider, err := awsprovider.NewSDKProvider(clients, "us-east-1", time.Now, awsprovider.WithFoundationStackPollInterval(time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := awsfoundation.BuildSpec(awsfoundation.SpecInput{AgentInstanceID: "agent-01", Partition: "aws", AccountID: "123456789012", Region: "us-east-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := provider.EnsureBootstrapIdentity(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("ensure identity after IAM propagation: %v", err)
+	}
+	defer credential.Wipe()
+	if len(fakeIAM.createRoleInputs) != 4 || len(fakeIAM.createAccessKeyInputs) != 1 {
+		t.Fatalf("IAM propagation did not converge before key creation: roleCalls=%d keyCalls=%d", len(fakeIAM.createRoleInputs), len(fakeIAM.createAccessKeyInputs))
+	}
+	if fakeIAM.operationOrder[len(fakeIAM.operationOrder)-1] != "create-access-key" {
+		t.Fatalf("source key was not the final bootstrap mutation: %v", fakeIAM.operationOrder)
+	}
+}
+
 func TestSDKProviderExistingSourceKeyRequiresRemediationWithoutMutation(t *testing.T) {
 	clients, fakeIAM, _ := completeFakeClients()
 	oldKeyID := "AKIAOLDOLDOLDOLDOLD0"
@@ -201,6 +226,44 @@ func TestSDKProviderRecoversLostCreateStackResponseByExactReadBack(t *testing.T)
 	fakeCFN.describeOutput = &complete
 	if _, err := provider.CreateFoundationStack(context.Background(), request); !errors.Is(err, awsprovider.ErrReadBackMismatch) {
 		t.Fatalf("mismatch error = %v", err)
+	}
+}
+
+func TestSDKProviderRetriesCloudFormationRolePropagationWithSameToken(t *testing.T) {
+	clients, _, fakeCFN := completeFakeClients()
+	now := time.Date(2026, 7, 23, 4, 0, 0, 0, time.UTC)
+	provider, err := awsprovider.NewSDKProvider(clients, "us-east-1", func() time.Time { return now }, awsprovider.WithFoundationStackPollInterval(time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(template)
+	request := awsprovider.FoundationStackRequest{
+		StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
+		FoundationRoleARN: "arn:aws:iam::123456789012:role/dtx-agent-0123456789ab-foundation",
+		ClientToken:       "dtx-0123456789abcdef", TemplateBody: string(template), TemplateSHA256: "sha256:" + hex.EncodeToString(sum[:]),
+		Parameters: map[string]string{"AgentInstanceId": "agent-01"},
+		Tags:       []awsprovider.Tag{{Key: awsprovider.TagAgentInstanceID, Value: "agent-01"}}, TerminationProtect: true,
+	}
+	propagating := &smithy.GenericAPIError{Code: "ValidationException", Message: "Role " + request.FoundationRoleARN + " is invalid or cannot be assumed"}
+	fakeCFN.createErrors = []error{propagating, propagating, nil}
+	fakeCFN.createOutputs = []*cloudformation.CreateStackOutput{nil, nil, {StackId: aws.String("arn:aws:cloudformation:us-east-1:123456789012:stack/dtx-agent-0123456789ab-foundation/stack-id")}}
+	fakeCFN.describeOutput = stackReadBack(request, cloudformationtypes.StackStatusCreateComplete)
+	fakeCFN.templateOutput = &cloudformation.GetTemplateOutput{TemplateBody: aws.String(string(template))}
+	receipt, err := provider.CreateFoundationStack(context.Background(), request)
+	if err != nil {
+		t.Fatalf("create after role propagation: %v", err)
+	}
+	if fakeCFN.createCalls != 3 || receipt.Status != awsprovider.FoundationStackReadyStatus {
+		t.Fatalf("CloudFormation propagation did not converge: calls=%d receipt=%#v", fakeCFN.createCalls, receipt)
+	}
+	for index, input := range fakeCFN.createInputs {
+		if aws.ToString(input.ClientRequestToken) != request.ClientToken {
+			t.Fatalf("retry %d changed client token", index)
+		}
 	}
 }
 
@@ -352,6 +415,7 @@ type fakeIAM struct {
 	createAccessKeyErr    error
 	createdKeyOnError     string
 	rejectRoleBeforeUser  bool
+	createRoleErrors      []error
 	operationOrder        []string
 }
 
@@ -373,6 +437,10 @@ func (client *fakeIAM) CreateRole(_ context.Context, input *iam.CreateRoleInput,
 	client.operationOrder = append(client.operationOrder, "create-role")
 	if client.rejectRoleBeforeUser && len(client.createUserInputs) == 0 {
 		return nil, &smithy.GenericAPIError{Code: "MalformedPolicyDocument", Message: "invalid principal"}
+	}
+	index := len(client.createRoleInputs) - 1
+	if index < len(client.createRoleErrors) && client.createRoleErrors[index] != nil {
+		return nil, client.createRoleErrors[index]
 	}
 	return &iam.CreateRoleOutput{}, nil
 }
@@ -419,8 +487,12 @@ func (client *fakeIAM) DeleteRole(context.Context, *iam.DeleteRoleInput, ...func
 
 type fakeCFN struct {
 	createInput      *cloudformation.CreateStackInput
+	createInputs     []*cloudformation.CreateStackInput
 	createOutput     *cloudformation.CreateStackOutput
+	createOutputs    []*cloudformation.CreateStackOutput
 	createErr        error
+	createErrors     []error
+	createCalls      int
 	describeOutput   *cloudformation.DescribeStacksOutput
 	describeOutputs  []*cloudformation.DescribeStacksOutput
 	describeCalls    int
@@ -434,6 +506,16 @@ type fakeCFN struct {
 
 func (client *fakeCFN) CreateStack(_ context.Context, input *cloudformation.CreateStackInput, _ ...func(*cloudformation.Options)) (*cloudformation.CreateStackOutput, error) {
 	client.createInput = input
+	client.createInputs = append(client.createInputs, input)
+	index := client.createCalls
+	client.createCalls++
+	if index < len(client.createErrors) {
+		var output *cloudformation.CreateStackOutput
+		if index < len(client.createOutputs) {
+			output = client.createOutputs[index]
+		}
+		return output, client.createErrors[index]
+	}
 	return client.createOutput, client.createErr
 }
 func (client *fakeCFN) UpdateStack(_ context.Context, input *cloudformation.UpdateStackInput, _ ...func(*cloudformation.Options)) (*cloudformation.UpdateStackOutput, error) {

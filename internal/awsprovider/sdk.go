@@ -37,6 +37,8 @@ var (
 	digestPattern     = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
+const awsPropagationRetryAttempts = 7
+
 type STSAPI interface {
 	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
 }
@@ -254,12 +256,22 @@ func (provider *SDKProvider) UpdateBootstrapPolicies(ctx context.Context, spec B
 }
 
 func (provider *SDKProvider) ensureRole(ctx context.Context, roleName, description, trustPolicy, policyName, policy string, tags []iamtypes.Tag) error {
-	_, err := provider.clients.IAM.CreateRole(ctx, &iam.CreateRoleInput{RoleName: aws.String(roleName), Description: aws.String(description), AssumeRolePolicyDocument: aws.String(trustPolicy), MaxSessionDuration: aws.Int32(3600), Tags: tags})
-	if err != nil && !apiCode(err, "EntityAlreadyExists") {
-		return providerError(ctx, err)
+	createInput := &iam.CreateRoleInput{RoleName: aws.String(roleName), Description: aws.String(description), AssumeRolePolicyDocument: aws.String(trustPolicy), MaxSessionDuration: aws.Int32(3600), Tags: tags}
+	if err := provider.retryIAMPrincipalPropagation(ctx, func() error {
+		_, err := provider.clients.IAM.CreateRole(ctx, createInput)
+		if apiCode(err, "EntityAlreadyExists") {
+			return nil
+		}
+		return err
+	}); err != nil {
+		return err
 	}
-	if _, err := provider.clients.IAM.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{RoleName: aws.String(roleName), PolicyDocument: aws.String(trustPolicy)}); err != nil {
-		return providerError(ctx, err)
+	updateInput := &iam.UpdateAssumeRolePolicyInput{RoleName: aws.String(roleName), PolicyDocument: aws.String(trustPolicy)}
+	if err := provider.retryIAMPrincipalPropagation(ctx, func() error {
+		_, err := provider.clients.IAM.UpdateAssumeRolePolicy(ctx, updateInput)
+		return err
+	}); err != nil {
+		return err
 	}
 	if _, err := provider.clients.IAM.TagRole(ctx, &iam.TagRoleInput{RoleName: aws.String(roleName), Tags: tags}); err != nil {
 		return providerError(ctx, err)
@@ -268,6 +280,22 @@ func (provider *SDKProvider) ensureRole(ctx context.Context, roleName, descripti
 		return providerError(ctx, err)
 	}
 	return nil
+}
+
+func (provider *SDKProvider) retryIAMPrincipalPropagation(ctx context.Context, mutate func() error) error {
+	for attempt := 0; attempt < awsPropagationRetryAttempts; attempt++ {
+		err := mutate()
+		if err == nil {
+			return nil
+		}
+		if !iamPrincipalPropagationError(err) || attempt == awsPropagationRetryAttempts-1 {
+			return providerError(ctx, err)
+		}
+		if err := waitForContext(ctx, provider.stackPollInterval); err != nil {
+			return err
+		}
+	}
+	return ErrProviderUnavailable
 }
 
 func (provider *SDKProvider) ensureSourceUser(ctx context.Context, userName, policy string, tags []iamtypes.Tag) error {
@@ -344,11 +372,25 @@ func (provider *SDKProvider) CreateFoundationStack(ctx context.Context, request 
 	for _, key := range keys {
 		parameters = append(parameters, cloudformationtypes.Parameter{ParameterKey: aws.String(key), ParameterValue: aws.String(request.Parameters[key])})
 	}
-	output, err := provider.clients.CloudFormation.CreateStack(ctx, &cloudformation.CreateStackInput{
+	input := &cloudformation.CreateStackInput{
 		StackName: aws.String(request.StackName), TemplateBody: aws.String(request.TemplateBody), ClientRequestToken: aws.String(request.ClientToken),
 		Capabilities: []cloudformationtypes.Capability{cloudformationtypes.CapabilityCapabilityNamedIam}, RoleARN: aws.String(request.FoundationRoleARN),
 		OnFailure: cloudformationtypes.OnFailureDoNothing, EnableTerminationProtection: aws.Bool(request.TerminationProtect), Parameters: parameters, Tags: cloudFormationTagSet(request.Tags),
-	})
+	}
+	var output *cloudformation.CreateStackOutput
+	var err error
+	for attempt := 0; attempt < awsPropagationRetryAttempts; attempt++ {
+		output, err = provider.clients.CloudFormation.CreateStack(ctx, input)
+		if err == nil || !cloudFormationRolePropagationError(err) {
+			break
+		}
+		if attempt == awsPropagationRetryAttempts-1 {
+			return FoundationStackReceipt{}, providerError(ctx, err)
+		}
+		if waitErr := waitForContext(ctx, provider.stackPollInterval); waitErr != nil {
+			return FoundationStackReceipt{}, waitErr
+		}
+	}
 	if err == nil && output != nil && aws.ToString(output.StackId) != "" && !validStackARN(aws.ToString(output.StackId), request) {
 		return FoundationStackReceipt{}, ErrReadBackMismatch
 	}
@@ -780,6 +822,26 @@ func sortedMapKeys(values map[string]string) []string {
 func apiCode(err error, code string) bool {
 	var apiErr smithy.APIError
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == code
+}
+
+func iamPrincipalPropagationError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "MalformedPolicyDocument" {
+		return false
+	}
+	message := strings.ToLower(apiErr.ErrorMessage())
+	return strings.Contains(message, "principal") &&
+		(strings.Contains(message, "invalid") || strings.Contains(message, "does not exist"))
+}
+
+func cloudFormationRolePropagationError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || (apiErr.ErrorCode() != "ValidationError" && apiErr.ErrorCode() != "ValidationException") {
+		return false
+	}
+	message := strings.ToLower(apiErr.ErrorMessage())
+	return strings.Contains(message, "role") &&
+		(strings.Contains(message, "cannot be assumed") || strings.Contains(message, "is invalid"))
 }
 
 func providerError(ctx context.Context, err error) error {
