@@ -59,6 +59,33 @@ func TestBuildPublishesFixedAMIAndRecoversIdempotently(t *testing.T) {
 	}
 }
 
+func TestBuildRecoversExistingImageFromTerminatedEC2Tombstone(t *testing.T) {
+	request := validBuildRequest(t)
+	var cleanupEvidence BuilderCleanupEvidenceV1
+	request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
+		cleanupEvidence = evidence
+		return nil
+	}
+	provider := newFakeProvider(request)
+	service := newTestService(t, provider)
+	manifest, err := service.Build(context.Background(), request)
+	if err != nil || cleanupEvidence.Validate() != nil {
+		t.Fatalf("initial Build() = %#v, %v evidence=%#v", manifest, err, cleanupEvidence)
+	}
+
+	request.ExistingBuilderCleanupEvidence = &cleanupEvidence
+	provider.returnTerminatedTombstone = true
+	provider.calls = nil
+	recovered, err := service.Build(context.Background(), request)
+	if err != nil || !reflect.DeepEqual(recovered, manifest) {
+		t.Fatalf("recovered Build() = %#v, %v", recovered, err)
+	}
+	if callIndex(provider.calls, "find-builder") >= 0 || callIndex(provider.calls, "find-image") < 0 ||
+		callIndex(provider.calls, "observe-builder") < 0 || provider.terminateCalls != 1 {
+		t.Fatalf("recovery did not prefer the immutable image or safely consume the tombstone: %#v", provider.calls)
+	}
+}
+
 func TestValidateArtifactVersionAcceptsS3OpaqueVersionIDs(t *testing.T) {
 	for _, versionID := range []string{
 		".xFS947QbFLl7aLGAJ2QDxLmB42kVOe3",
@@ -638,20 +665,21 @@ type fakeProvider struct {
 	findImageMissAt                 map[int]bool
 	findImageErrorAt                map[int]bool
 
-	findArtifactCalls    int
-	findBuilderCalls     int
-	findImageCalls       int
-	launchCalls          int
-	createCalls          int
-	terminateCalls       int
-	deleteArtifactCalls  int
-	deregisterCalls      int
-	deleteSnapshotCalls  int
-	builderVolumeFound   bool
-	builderNetworkFound  bool
-	supportReachability  bool
-	reachabilityPresent  bool
-	reachabilityRecorded bool
+	findArtifactCalls         int
+	findBuilderCalls          int
+	findImageCalls            int
+	launchCalls               int
+	createCalls               int
+	terminateCalls            int
+	deleteArtifactCalls       int
+	deregisterCalls           int
+	deleteSnapshotCalls       int
+	builderVolumeFound        bool
+	builderNetworkFound       bool
+	supportReachability       bool
+	reachabilityPresent       bool
+	reachabilityRecorded      bool
+	returnTerminatedTombstone bool
 }
 
 func newFakeProvider(request BuildRequestV1) *fakeProvider {
@@ -763,6 +791,9 @@ func (provider *fakeProvider) FindBuilder(_ context.Context, lookup BuilderLooku
 	if provider.builderFound && lookup.Name != provider.builder.Name {
 		return BuilderObservationV1{}, false, errors.New("lookup mismatch")
 	}
+	if provider.returnTerminatedTombstone && provider.builder.State == BuilderTerminated {
+		return terminatedBuilderTombstone(provider.builder), true, nil
+	}
 	return provider.builder, provider.builderFound, nil
 }
 
@@ -798,6 +829,9 @@ func (provider *fakeProvider) ObserveBuilder(_ context.Context, instanceID strin
 	}
 	if provider.builder.State == BuilderRunning {
 		provider.builder.State = BuilderStopped
+	}
+	if provider.returnTerminatedTombstone && provider.builder.State == BuilderTerminated {
+		return terminatedBuilderTombstone(provider.builder), true, nil
 	}
 	return provider.builder, true, nil
 }
@@ -921,6 +955,14 @@ func (provider *fakeProvider) validBuilder(validated validatedBuild) BuilderObse
 		RootDeviceName: validated.request.RootDeviceName, RootVolumeID: "vol-0123456789abcdef0",
 		NetworkInterfaceIDs: []string{"eni-0123456789abcdef0"}, Tags: cloneTags(validated.builderTags),
 	}
+}
+
+func terminatedBuilderTombstone(builder BuilderObservationV1) BuilderObservationV1 {
+	builder.PrivateSubnetID = ""
+	builder.ZeroIngressSGID = ""
+	builder.RootVolumeID = ""
+	builder.NetworkInterfaceIDs = nil
+	return builder
 }
 
 var _ Provider = (*fakeProvider)(nil)

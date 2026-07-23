@@ -375,17 +375,30 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 	privateSubnetID := stringValue(instance.SubnetId)
 	instanceType := string(instance.InstanceType)
 	rootDeviceName := stringValue(instance.RootDeviceName)
-	if !instancePattern.MatchString(instanceID) || !imagePattern.MatchString(baseAMIID) || privateSubnetID == "" || instanceType == "" || rootDeviceName == "" || !ok || len(instance.SecurityGroups) != 1 {
-		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
-	}
-	zeroIngressSGID := stringValue(instance.SecurityGroups[0].GroupId)
-	if zeroIngressSGID == "" {
+	if !instancePattern.MatchString(instanceID) || !imagePattern.MatchString(baseAMIID) || instanceType == "" || rootDeviceName == "" || !ok {
 		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 	}
 	tags := tagsToMap(instance.Tags)
 	name := tags["Name"]
 	delete(tags, "Name")
 	if tags == nil || !validBuilderTags(name, tags) {
+		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+	}
+	if state == workerami.BuilderTerminated && privateSubnetID == "" && len(instance.SecurityGroups) == 0 {
+		if launchResponse || instance.RootDeviceType != ec2types.DeviceTypeEbs || instance.IamInstanceProfile != nil || instance.KeyName != nil ||
+			stringValue(instance.PublicIpAddress) != "" || stringValue(instance.PublicDnsName) != "" || len(instance.NetworkInterfaces) != 0 || len(instance.BlockDeviceMappings) != 0 {
+			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+		}
+		return workerami.BuilderObservationV1{
+			InstanceID: instanceID, Name: name, State: state, BaseAMIID: baseAMIID,
+			InstanceType: instanceType, RootDeviceName: rootDeviceName, Tags: tags,
+		}, nil
+	}
+	if privateSubnetID == "" || len(instance.SecurityGroups) != 1 {
+		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+	}
+	zeroIngressSGID := stringValue(instance.SecurityGroups[0].GroupId)
+	if zeroIngressSGID == "" {
 		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 	}
 	var rootVolumeID string

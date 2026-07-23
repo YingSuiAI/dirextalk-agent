@@ -223,31 +223,6 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 		}
 	}()
 
-	builderObservation, builderFound, providerErr := service.provider.FindBuilder(buildCtx, BuilderLookupV1{
-		Name: validated.builderName, BuildDigest: validated.buildDigest,
-		AccountID: validated.request.AccountID, Region: validated.request.Region,
-	})
-	if providerErr != nil {
-		return ImageManifestV1{}, operationError(buildCtx)
-	}
-	if builderFound {
-		if validationErr = validateBuilderObservation(builderObservation, validated); validationErr != nil {
-			return ImageManifestV1{}, validationErr
-		}
-		builderID = builderObservation.InstanceID
-	}
-
-	artifactObservation, artifactFound, providerErr := service.provider.FindArtifact(buildCtx, validated.object)
-	if providerErr != nil {
-		return ImageManifestV1{}, operationError(buildCtx)
-	}
-	if artifactFound {
-		if validationErr = validateArtifactVersion(artifactObservation); validationErr != nil {
-			return ImageManifestV1{}, validationErr
-		}
-		artifactVersion = artifactObservation.VersionID
-	}
-
 	imageObservation, imageFound, providerErr := service.provider.FindImage(buildCtx, ImageLookupV1{
 		Name: validated.imageName, AccountID: validated.request.AccountID, Region: validated.request.Region,
 	})
@@ -263,6 +238,36 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 			return ImageManifestV1{}, err
 		}
 		return service.readBackBuild(buildCtx, validated, imageObservation)
+	}
+
+	builderObservation, builderFound, providerErr := service.provider.FindBuilder(buildCtx, BuilderLookupV1{
+		Name: validated.builderName, BuildDigest: validated.buildDigest,
+		AccountID: validated.request.AccountID, Region: validated.request.Region,
+	})
+	if providerErr != nil {
+		return ImageManifestV1{}, operationError(buildCtx)
+	}
+	if builderFound {
+		if builderObservation.State == BuilderTerminated && cleanupState.evidence.SchemaVersion != "" {
+			validationErr = validateTerminatedBuilderForCleanup(builderObservation, cleanupState.evidence)
+		} else {
+			validationErr = validateBuilderObservation(builderObservation, validated)
+		}
+		if validationErr != nil {
+			return ImageManifestV1{}, validationErr
+		}
+		builderID = builderObservation.InstanceID
+	}
+
+	artifactObservation, artifactFound, providerErr := service.provider.FindArtifact(buildCtx, validated.object)
+	if providerErr != nil {
+		return ImageManifestV1{}, operationError(buildCtx)
+	}
+	if artifactFound {
+		if validationErr = validateArtifactVersion(artifactObservation); validationErr != nil {
+			return ImageManifestV1{}, validationErr
+		}
+		artifactVersion = artifactObservation.VersionID
 	}
 
 	if builderFound && builderObservation.State == BuilderTerminated {
@@ -665,36 +670,45 @@ func (service *Service) terminateBuilder(ctx context.Context, validated validate
 		}
 		return nil
 	}
+	if observation.State == BuilderTerminated {
+		if cleanupState.evidence.SchemaVersion == "" {
+			if validateBuilderObservation(observation, validated) != nil || cleanupState.capture(observation, validated) != nil {
+				return ErrCleanupFailed
+			}
+		} else if validateTerminatedBuilderForCleanup(observation, cleanupState.evidence) != nil {
+			return ErrCleanupFailed
+		}
+		if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
+			return ErrCleanupFailed
+		}
+		return nil
+	}
 	if validateBuilderObservation(observation, validated) != nil {
 		return ErrCleanupFailed
 	}
-	if observation.State != BuilderTerminated {
-		if err := cleanupState.capture(observation, validated); err != nil {
-			return ErrCleanupFailed
-		}
-	} else if cleanupState.evidence.SchemaVersion == "" {
-		if err := cleanupState.capture(observation, validated); err != nil {
-			return ErrCleanupFailed
-		}
-	} else if cleanupState.evidence.BuilderInstanceID != builderID {
+	if err := cleanupState.capture(observation, validated); err != nil {
 		return ErrCleanupFailed
 	}
-	if observation.State != BuilderTerminated {
-		_ = service.provider.TerminateBuilder(ctx, builderID)
-		for {
-			observation, found, providerErr = service.provider.ObserveBuilder(ctx, builderID)
-			if providerErr != nil {
+	_ = service.provider.TerminateBuilder(ctx, builderID)
+	for {
+		observation, found, providerErr = service.provider.ObserveBuilder(ctx, builderID)
+		if providerErr != nil {
+			return ErrCleanupFailed
+		}
+		if !found {
+			break
+		}
+		if observation.State == BuilderTerminated {
+			if validateTerminatedBuilderForCleanup(observation, cleanupState.evidence) != nil {
 				return ErrCleanupFailed
 			}
-			if !found || observation.State == BuilderTerminated {
-				break
-			}
-			if validateBuilderObservation(observation, validated) != nil {
-				return ErrCleanupFailed
-			}
-			if service.pause(ctx) != nil {
-				return ErrCleanupFailed
-			}
+			break
+		}
+		if validateBuilderObservation(observation, validated) != nil {
+			return ErrCleanupFailed
+		}
+		if service.pause(ctx) != nil {
+			return ErrCleanupFailed
 		}
 	}
 	if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {

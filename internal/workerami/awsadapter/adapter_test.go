@@ -440,6 +440,39 @@ func TestFindBuilderPaginatesAndRejectsAmbiguousOrUnsafeReadBack(t *testing.T) {
 	})
 }
 
+func TestObserveBuilderAcceptsOnlyExactTerminatedEC2Tombstone(t *testing.T) {
+	launch := validLaunchFixture()
+	tombstone := observedInstance(launch)
+	tombstone.State.Name = ec2types.InstanceStateNameTerminated
+	tombstone.SubnetId = nil
+	tombstone.SecurityGroups = nil
+	tombstone.NetworkInterfaces = nil
+	tombstone.BlockDeviceMappings = nil
+
+	observe := func(instance ec2types.Instance) (workerami.BuilderObservationV1, bool, error) {
+		ec2Client := &fakeEC2{describeInstancesFn: func(*ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{instance}}}}, nil
+		}}
+		return newTestAdapter(t, ec2Client, &fakeS3{}, nil).ObserveBuilder(context.Background(), aws.ToString(instance.InstanceId))
+	}
+	observation, found, err := observe(tombstone)
+	if err != nil || !found || observation.State != workerami.BuilderTerminated || observation.Name != launch.Name ||
+		observation.PrivateSubnetID != "" || observation.ZeroIngressSGID != "" || observation.RootVolumeID != "" || len(observation.NetworkInterfaceIDs) != 0 {
+		t.Fatalf("ObserveBuilder(tombstone) = %#v, %v, %v", observation, found, err)
+	}
+
+	partial := tombstone
+	partial.SecurityGroups = []ec2types.GroupIdentifier{{GroupId: aws.String(testSG)}}
+	if _, _, err := observe(partial); !errors.Is(err, workerami.ErrReadBackMismatch) {
+		t.Fatalf("partial terminated topology = %v", err)
+	}
+	active := tombstone
+	active.State = &ec2types.InstanceState{Name: ec2types.InstanceStateNameStopped}
+	if _, _, err := observe(active); !errors.Is(err, workerami.ErrReadBackMismatch) {
+		t.Fatalf("active topology-free instance = %v", err)
+	}
+}
+
 func TestObserveBuilderDependenciesUsesExactIndependentDescribeReadBack(t *testing.T) {
 	const volumeID = "vol-0123456789abcdef0"
 	const networkID = "eni-0123456789abcdef0"
