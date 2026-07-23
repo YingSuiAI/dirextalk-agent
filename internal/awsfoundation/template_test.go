@@ -567,6 +567,10 @@ func TestFoundationTemplateValidatorRejectsBrokerOrWildcardRoleAction(t *testing
 	if err := ValidateTemplate(wrongArchitecture); err == nil {
 		t.Fatal("a Reaper architecture that disagrees with the first-validation release was accepted")
 	}
+	mutableImageParameter := bytes.Replace(template, []byte(reaperDigestOnlyAllowedPattern), []byte(`^[A-Za-z0-9][A-Za-z0-9._:/-]*:[A-Za-z0-9._-]+$`), 1)
+	if err := ValidateTemplate(mutableImageParameter); err == nil {
+		t.Fatal("a mutable Reaper image parameter was accepted")
+	}
 	withoutOwnershipCondition := bytes.Replace(template, []byte("aws:RequestTag/dirextalk:agent_instance_id:"), []byte("aws:RequestTag/unrelated:"), 1)
 	if err := ValidateTemplate(withoutOwnershipCondition); err == nil {
 		t.Fatal("control mutation without mandatory ownership tag was accepted")

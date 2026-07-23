@@ -205,6 +205,19 @@ func validImmutableImage(value string) bool {
 	return !strings.Contains(lower, ":latest@") && !strings.Contains(lower, ":v1.0.3@")
 }
 
+func lambdaImageURI(value string) string {
+	digestOffset := strings.LastIndex(value, "@sha256:")
+	if digestOffset <= 0 {
+		return ""
+	}
+	repositoryAndTag := value[:digestOffset]
+	tagOffset := strings.LastIndex(repositoryAndTag, ":")
+	if tagOffset <= strings.LastIndex(repositoryAndTag, "/") {
+		return ""
+	}
+	return repositoryAndTag[:tagOffset] + value[digestOffset:]
+}
+
 func foundationStackRequest(spec awsprovider.BootstrapIdentitySpec, reaperImageURI, templateBody, templateHash, action, operationID string) awsprovider.FoundationStackRequest {
 	roleARN := "arn:" + spec.Partition + ":iam::" + spec.AccountID + ":role/" + spec.FoundationRoleName
 	tokenHash := sha256.Sum256([]byte(strings.Join([]string{spec.AgentInstanceID, spec.AccountID, spec.Region, templateHash, reaperImageURI, action, operationID}, "\x00")))
@@ -218,7 +231,7 @@ func foundationStackRequest(spec awsprovider.BootstrapIdentitySpec, reaperImageU
 			"ManifestTableName": spec.ManifestTableName, "WorkerLogGroupName": spec.WorkerLogGroupName,
 			"ReaperLogGroupName": spec.ReaperLogGroupName, "ReaperFunctionName": spec.ReaperFunctionName,
 			"ReaperScheduleName": spec.ReaperScheduleName, "SecretNamespace": spec.SecretNamespace,
-			"ReaperImageUri": reaperImageURI,
+			"ReaperImageUri": lambdaImageURI(reaperImageURI),
 		},
 		Tags: spec.Tags, TerminationProtect: true,
 	}

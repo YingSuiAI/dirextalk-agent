@@ -29,7 +29,7 @@ Parameters:
     Type: String
   ReaperImageUri:
     Type: String
-    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)([.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$'
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$'
 
 Resources:
   # Fixed, Foundation-owned AMI build environment. It has no Internet gateway,

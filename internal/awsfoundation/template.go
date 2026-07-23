@@ -12,6 +12,8 @@ import (
 
 var ErrInvalidTemplate = errors.New("invalid AWS foundation template")
 
+const reaperDigestOnlyAllowedPattern = `^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$`
+
 var requiredTemplateResources = map[string]string{
 	"ReleaseVPC":                          "AWS::EC2::VPC",
 	"ReleasePrivateSubnet":                "AWS::EC2::Subnet",
@@ -805,7 +807,7 @@ func requiredParameters(parameters map[string]any) bool {
 		}
 	}
 	reaper, ok := stringMap(parameters["ReaperImageUri"])
-	return ok && strings.Contains(scalarString(reaper["AllowedPattern"]), "@sha256:")
+	return ok && scalarString(reaper["AllowedPattern"]) == reaperDigestOnlyAllowedPattern
 }
 
 func validateRoleResource(logicalID string, resource map[string]any) error {

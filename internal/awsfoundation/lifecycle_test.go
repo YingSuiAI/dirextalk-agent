@@ -91,3 +91,17 @@ func TestFoundationLifecycleClientTokenBindsActionAndApprovedOperation(t *testin
 		t.Fatalf("tokens first=%q replay=%q operation=%q action=%q", first.ClientToken, replay.ClientToken, otherOperation.ClientToken, otherAction.ClientToken)
 	}
 }
+
+func TestFoundationStackUsesDigestOnlyLambdaImageReference(t *testing.T) {
+	spec, err := BuildSpec(SpecInput{AgentInstanceID: "agent-test", Partition: "aws", AccountID: "123456789012", Region: "us-east-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("b", 64)
+	image := "123456789012.dkr.ecr.us-east-1.amazonaws.com/reaper:v2.0.0-rc.1@" + digest
+	request := foundationStackRequest(spec, image, "template", "sha256:"+strings.Repeat("a", 64), string(LifecycleEstablish), "operation-a")
+	want := "123456789012.dkr.ecr.us-east-1.amazonaws.com/reaper@" + digest
+	if got := request.Parameters["ReaperImageUri"]; got != want {
+		t.Fatalf("ReaperImageUri = %q, want %q", got, want)
+	}
+}
