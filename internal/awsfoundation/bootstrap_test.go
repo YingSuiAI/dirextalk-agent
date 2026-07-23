@@ -261,8 +261,8 @@ func TestBootstrapResumesPersistedSameOperationWithoutRotatingSourceKey(t *testi
 	if err != nil {
 		t.Fatalf("resume establish: %v", err)
 	}
-	if result.SourceCredentialGeneration != 1 || provider.ensureCalls != 1 || provider.stackCalls != 2 {
-		t.Fatalf("resume result=%#v ensure=%d stack=%d", result, provider.ensureCalls, provider.stackCalls)
+	if result.SourceCredentialGeneration != 1 || provider.ensureCalls != 1 || provider.policyUpdateCalls != 1 || provider.stackCalls != 2 {
+		t.Fatalf("resume result=%#v ensure=%d policyUpdates=%d stack=%d", result, provider.ensureCalls, provider.policyUpdateCalls, provider.stackCalls)
 	}
 	if provider.stackRequest.ClientToken != firstToken {
 		t.Fatalf("resume ClientToken changed: %q != %q", provider.stackRequest.ClientToken, firstToken)

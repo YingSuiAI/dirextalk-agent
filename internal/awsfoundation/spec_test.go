@@ -154,6 +154,38 @@ func TestFoundationExecutionPolicyManagesOnlyExactControlEntrypointPolicy(t *tes
 	}
 }
 
+func TestFoundationExecutionPolicyScopesSecretsKMSValidation(t *testing.T) {
+	input := SpecInput{
+		AgentInstanceID: "019f5e2d-5350-7073-87d9-3ba4fdbc6818",
+		Partition:       "aws",
+		AccountID:       "123456789012",
+		Region:          "us-east-1",
+	}
+	spec, err := BuildSpec(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secretKMS *awsprovider.PolicyStatement
+	for index := range spec.FoundationExecutionPolicy.Statement {
+		if spec.FoundationExecutionPolicy.Statement[index].SID == "FoundationSecretsKMS" {
+			secretKMS = &spec.FoundationExecutionPolicy.Statement[index]
+			break
+		}
+	}
+	if secretKMS == nil ||
+		!sameStringSet(secretKMS.Action, []string{"kms:Decrypt", "kms:GenerateDataKey"}) ||
+		!sameStringSet(secretKMS.Resource, []string{"arn:aws:kms:us-east-1:123456789012:key/*"}) {
+		t.Fatalf("Secrets Manager KMS authority = %#v", secretKMS)
+	}
+	stringEquals := secretKMS.Condition["StringEquals"]
+	arnLike := secretKMS.Condition["ArnLike"]
+	if stringEquals["aws:ResourceTag/"+awsprovider.TagAgentInstanceID] != input.AgentInstanceID ||
+		stringEquals["kms:ViaService"] != "secretsmanager.us-east-1.amazonaws.com" ||
+		arnLike["kms:EncryptionContext:SecretARN"] != "arn:aws:secretsmanager:us-east-1:123456789012:secret:"+spec.SecretNamespace+"*" {
+		t.Fatalf("Secrets Manager KMS conditions = %#v", secretKMS.Condition)
+	}
+}
+
 func TestValidatePolicyRejectsBroadPrivilege(t *testing.T) {
 	tests := []awsprovider.PolicyDocument{
 		{Version: policyVersion, Statement: []awsprovider.PolicyStatement{{Effect: "Allow", Action: []string{"*"}, Resource: []string{"*"}}}},

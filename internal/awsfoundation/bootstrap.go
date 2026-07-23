@@ -137,6 +137,20 @@ func (bootstrapper *Bootstrapper) Establish(ctx context.Context, payload []byte,
 				return err
 			}
 			generation = record.Generation
+		} else {
+			lifecycle, ok := provider.(awsprovider.FoundationLifecycleProvider)
+			if !ok {
+				establishErr = ErrFoundationBootstrap
+				return establishErr
+			}
+			if err := lifecycle.UpdateBootstrapPolicies(ctx, spec); err != nil {
+				if errors.Is(err, awsprovider.ErrPermissionDenied) {
+					establishErr = ErrFoundationPermissionDenied
+				} else {
+					establishErr = ErrFoundationBootstrap
+				}
+				return err
+			}
 		}
 		stackRequest := foundationStackRequest(spec, request.ReaperImageURI, bootstrapper.templateBody, bootstrapper.templateHash, string(LifecycleEstablish), request.AdminAuthorization.SessionID)
 		receipt, err := provider.CreateFoundationStack(ctx, stackRequest)

@@ -118,9 +118,14 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 	account := input.AccountID
 	partition := input.Partition
 	region := input.Region
+	dnsSuffix := "amazonaws.com"
+	if partition == "aws-cn" {
+		dnsSuffix = "amazonaws.com.cn"
+	}
 	requestTag := map[string]map[string]string{"StringEquals": {"aws:RequestTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}
 	controlARN := iamARN(input, "role/"+spec.ControlRoleName)
 	entrypointPolicyARN := iamARN(input, "policy/"+spec.StackName+"-control-entrypoint")
+	foundationKeyARN := fmt.Sprintf("arn:%s:kms:%s:%s:key/*", partition, region, account)
 	return identityPolicy(
 		statement("FoundationReleaseNetworkCreate", []string{
 			"ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateSecurityGroup", "ec2:CreateTags",
@@ -161,9 +166,18 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 			fmt.Sprintf("arn:%s:s3:::%s", partition, spec.ArtifactBucketName), fmt.Sprintf("arn:%s:s3:::%s/*", partition, spec.ArtifactBucketName),
 		}, nil),
 		statement("FoundationKMSCreate", []string{"kms:CreateKey"}, []string{"*"}, requestTag),
-		statement("FoundationKMSKeys", []string{"kms:DescribeKey", "kms:EnableKeyRotation", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:TagResource", "kms:UntagResource"}, []string{fmt.Sprintf("arn:%s:kms:%s:%s:key/*", partition, region, account)}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
-		statement("FoundationKMSGrants", []string{"kms:CreateGrant"}, []string{fmt.Sprintf("arn:%s:kms:%s:%s:key/*", partition, region, account)}, map[string]map[string]string{"Bool": {"kms:GrantIsForAWSResource": "true"}, "StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
-		statement("FoundationKMSAlias", []string{"kms:CreateAlias", "kms:DeleteAlias"}, []string{fmt.Sprintf("arn:%s:kms:%s:%s:alias/%s", partition, region, account, spec.StackName), fmt.Sprintf("arn:%s:kms:%s:%s:key/*", partition, region, account)}, nil),
+		statement("FoundationKMSKeys", []string{"kms:DescribeKey", "kms:EnableKeyRotation", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:TagResource", "kms:UntagResource"}, []string{foundationKeyARN}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
+		statement("FoundationKMSGrants", []string{"kms:CreateGrant"}, []string{foundationKeyARN}, map[string]map[string]string{"Bool": {"kms:GrantIsForAWSResource": "true"}, "StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
+		statement("FoundationSecretsKMS", []string{"kms:Decrypt", "kms:GenerateDataKey"}, []string{foundationKeyARN}, map[string]map[string]string{
+			"StringEquals": {
+				"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID,
+				"kms:ViaService": "secretsmanager." + region + "." + dnsSuffix,
+			},
+			"ArnLike": {
+				"kms:EncryptionContext:SecretARN": fmt.Sprintf("arn:%s:secretsmanager:%s:%s:secret:%s*", partition, region, account, spec.SecretNamespace),
+			},
+		}),
+		statement("FoundationKMSAlias", []string{"kms:CreateAlias", "kms:DeleteAlias"}, []string{fmt.Sprintf("arn:%s:kms:%s:%s:alias/%s", partition, region, account, spec.StackName), foundationKeyARN}, nil),
 		statement("FoundationDynamoDB", []string{"dynamodb:CreateTable", "dynamodb:DeleteTable", "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:UpdateContinuousBackups", "dynamodb:TagResource", "dynamodb:UntagResource"}, []string{fmt.Sprintf("arn:%s:dynamodb:%s:%s:table/%s", partition, region, account, spec.ManifestTableName)}, nil),
 		statement("FoundationLogs", []string{"logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:TagResource", "logs:UntagResource"}, []string{fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s*", partition, region, account, spec.WorkerLogGroupName), fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s*", partition, region, account, spec.ReaperLogGroupName)}, nil),
 		statement("FoundationLogsRead", []string{"logs:DescribeLogGroups"}, []string{"*"}, nil),
