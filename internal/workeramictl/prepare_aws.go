@@ -233,7 +233,13 @@ func hasExactFoundationTags(tags []ec2types.Tag, agentInstanceID string) bool {
 	values := make(map[string]string, len(tags))
 	for _, tag := range tags {
 		key := aws.ToString(tag.Key)
-		if key == "" || values[key] != "" {
+		if key == "" {
+			return false
+		}
+		if strings.HasPrefix(key, "aws:") {
+			continue
+		}
+		if _, exists := values[key]; exists {
 			return false
 		}
 		values[key] = aws.ToString(tag.Value)

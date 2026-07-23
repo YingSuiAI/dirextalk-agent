@@ -145,9 +145,18 @@ func TestValidateFoundationVPCRequiresExactOutputAndFoundationFacts(t *testing.T
 	valid := ec2types.Vpc{VpcId: aws.String(vpcID), State: ec2types.VpcStateAvailable, CidrBlock: aws.String("10.255.0.0/24"),
 		InstanceTenancy: ec2types.TenancyDefault, IsDefault: aws.Bool(false), Tags: []ec2types.Tag{
 			{Key: aws.String("dirextalk:agent_instance_id"), Value: aws.String(agentID)}, {Key: aws.String("dirextalk:component"), Value: aws.String("foundation-release")},
+			{Key: aws.String("aws:cloudformation:stack-name"), Value: aws.String("dtx-agent-abc-foundation")},
+			{Key: aws.String("aws:cloudformation:logical-id"), Value: aws.String("ReleaseVPC")},
+			{Key: aws.String("aws:cloudformation:stack-id"), Value: aws.String("arn:aws:cloudformation:us-east-1:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555")},
 		}}
 	if err := validateFoundationVPC([]ec2types.Vpc{valid}, vpcID, agentID); err != nil {
 		t.Fatalf("validateFoundationVPC() = %v", err)
+	}
+	withExtraTag := valid
+	withExtraTag.Tags = append([]ec2types.Tag(nil), valid.Tags...)
+	withExtraTag.Tags = append(withExtraTag.Tags, ec2types.Tag{Key: aws.String("environment"), Value: aws.String("production")})
+	if err := validateFoundationVPC([]ec2types.Vpc{withExtraTag}, vpcID, agentID); err == nil {
+		t.Fatal("VPC with an extra non-AWS tag was accepted")
 	}
 	valid.VpcId = aws.String("vpc-11111111111111111")
 	if err := validateFoundationVPC([]ec2types.Vpc{valid}, vpcID, agentID); err == nil {
