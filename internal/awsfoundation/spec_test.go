@@ -214,6 +214,42 @@ func TestFoundationExecutionPolicyScopesSecretsKMSValidation(t *testing.T) {
 	}
 }
 
+func TestFoundationExecutionPolicyIncludesConfiguredResourceProviderActions(t *testing.T) {
+	spec, err := BuildSpec(SpecInput{
+		AgentInstanceID: "019f5e2d-5350-7073-87d9-3ba4fdbc6818",
+		Partition:       "aws",
+		AccountID:       "123456789012",
+		Region:          "us-east-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := make(map[string]bool)
+	for _, action := range SortedPolicyActions(spec.FoundationExecutionPolicy) {
+		actions[action] = true
+	}
+	required := []string{
+		"cloudwatch:ListTagsForResource",
+		"dynamodb:ListTagsOfResource",
+		"ec2:ReplaceRouteTableAssociation",
+		"events:ListTargetsByRule",
+		"iam:ListAttachedRolePolicies",
+		"kms:GetKeyRotationStatus",
+		"kms:ListAliases",
+		"lambda:GetPolicy",
+		"logs:ListTagsForResource",
+		"s3:GetBucketOwnershipControls",
+		"s3:GetBucketVersioning",
+		"s3:PutBucketOwnershipControls",
+		"s3:PutBucketVersioning",
+	}
+	for _, action := range required {
+		if !actions[action] {
+			t.Fatalf("Foundation resource-provider action is missing: %s", action)
+		}
+	}
+}
+
 func TestValidatePolicyRejectsBroadPrivilege(t *testing.T) {
 	tests := []awsprovider.PolicyDocument{
 		{Version: policyVersion, Statement: []awsprovider.PolicyStatement{{Effect: "Allow", Action: []string{"*"}, Resource: []string{"*"}}}},

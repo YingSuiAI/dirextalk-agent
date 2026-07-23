@@ -147,15 +147,16 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 		statement("FoundationReleaseNetworkConfigure", []string{
 			"ec2:ModifyVpcAttribute", "ec2:ModifySubnetAttribute",
 			"ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress",
-			"ec2:AssociateRouteTable", "ec2:DisassociateRouteTable",
+			"ec2:AssociateRouteTable", "ec2:DisassociateRouteTable", "ec2:ReplaceRouteTableAssociation",
 		}, releaseNetworkARNs, resourceTag),
 		statement("FoundationReleaseNetworkDelete", []string{
 			"ec2:DeleteVpc", "ec2:DeleteSubnet", "ec2:DeleteSecurityGroup", "ec2:DeleteRouteTable",
 		}, releaseNetworkARNs, resourceTag),
 		statement("FoundationReleaseNetworkRead", []string{
-			"ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeRouteTables",
+			"ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups",
+			"ec2:DescribeRouteTables", "ec2:DescribeNetworkAcls", "ec2:DescribeInstances",
 		}, []string{"*"}, nil),
-		statement("FoundationIAM", []string{"iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:GetInstanceProfile", "iam:ListInstanceProfilesForRole", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:PassRole"}, []string{
+		statement("FoundationIAM", []string{"iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:GetInstanceProfile", "iam:ListInstanceProfilesForRole", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:PassRole"}, []string{
 			iamARN(input, "role/"+spec.ControlRoleName), iamARN(input, "role/"+spec.WorkerRoleName), iamARN(input, "role/"+spec.ReaperRoleName),
 			iamARN(input, "instance-profile/"+spec.WorkerProfileName),
 		}, nil),
@@ -167,11 +168,12 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 			"iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListEntitiesForPolicy",
 		}, []string{entrypointPolicyARN}, nil),
 		statement("FoundationAttachControlEntrypointManagedPolicy", []string{"iam:AttachRolePolicy", "iam:DetachRolePolicy"}, []string{controlARN, entrypointPolicyARN}, nil),
-		statement("FoundationS3", []string{"s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration", "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock", "s3:ListBucket", "s3:DeleteObject", "s3:GetObject", "s3:PutObject"}, []string{
+		statement("FoundationS3", []string{"s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:TagResource", "s3:UntagResource", "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls", "s3:GetBucketVersioning", "s3:PutBucketVersioning", "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration", "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock", "s3:ListBucket", "s3:DeleteObject", "s3:GetObject", "s3:PutObject"}, []string{
 			fmt.Sprintf("arn:%s:s3:::%s", partition, spec.ArtifactBucketName), fmt.Sprintf("arn:%s:s3:::%s/*", partition, spec.ArtifactBucketName),
 		}, nil),
 		statement("FoundationKMSCreate", []string{"kms:CreateKey"}, []string{"*"}, requestTag),
-		statement("FoundationKMSKeys", []string{"kms:DescribeKey", "kms:EnableKeyRotation", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:TagResource", "kms:UntagResource"}, []string{foundationKeyARN}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
+		statement("FoundationKMSKeys", []string{"kms:DescribeKey", "kms:EnableKeyRotation", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus", "kms:ListResourceTags", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion", "kms:TagResource", "kms:UntagResource"}, []string{foundationKeyARN}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
+		statement("FoundationKMSRead", []string{"kms:ListAliases"}, []string{"*"}, nil),
 		statement("FoundationKMSGrants", []string{"kms:CreateGrant"}, []string{foundationKeyARN}, map[string]map[string]string{"Bool": {"kms:GrantIsForAWSResource": "true"}, "StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
 		statement("FoundationSecretsKMS", []string{"kms:Decrypt", "kms:GenerateDataKey"}, []string{foundationKeyARN}, map[string]map[string]string{
 			"StringEquals": {
@@ -183,13 +185,13 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 			},
 		}),
 		statement("FoundationKMSAlias", []string{"kms:CreateAlias", "kms:DeleteAlias"}, []string{fmt.Sprintf("arn:%s:kms:%s:%s:alias/%s", partition, region, account, spec.StackName), foundationKeyARN}, nil),
-		statement("FoundationDynamoDB", []string{"dynamodb:CreateTable", "dynamodb:DeleteTable", "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:UpdateContinuousBackups", "dynamodb:TagResource", "dynamodb:UntagResource"}, []string{fmt.Sprintf("arn:%s:dynamodb:%s:%s:table/%s", partition, region, account, spec.ManifestTableName)}, nil),
-		statement("FoundationLogs", []string{"logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:TagResource", "logs:UntagResource"}, []string{fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s*", partition, region, account, spec.WorkerLogGroupName), fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s*", partition, region, account, spec.ReaperLogGroupName)}, nil),
+		statement("FoundationDynamoDB", []string{"dynamodb:CreateTable", "dynamodb:DeleteTable", "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeContributorInsights", "dynamodb:DescribeKinesisStreamingDestination", "dynamodb:DescribeTimeToLive", "dynamodb:GetResourcePolicy", "dynamodb:ListTagsOfResource", "dynamodb:UpdateContinuousBackups", "dynamodb:TagResource", "dynamodb:UntagResource"}, []string{fmt.Sprintf("arn:%s:dynamodb:%s:%s:table/%s", partition, region, account, spec.ManifestTableName)}, nil),
+		statement("FoundationLogs", []string{"logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutRetentionPolicy", "logs:DeleteRetentionPolicy", "logs:ListTagsForResource", "logs:TagResource", "logs:UntagResource"}, []string{fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s*", partition, region, account, spec.WorkerLogGroupName), fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s*", partition, region, account, spec.ReaperLogGroupName)}, nil),
 		statement("FoundationLogsRead", []string{"logs:DescribeLogGroups"}, []string{"*"}, nil),
-		statement("FoundationLambda", []string{"lambda:CreateFunction", "lambda:DeleteFunction", "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:AddPermission", "lambda:RemovePermission", "lambda:TagResource", "lambda:UntagResource"}, []string{fmt.Sprintf("arn:%s:lambda:%s:%s:function:%s", partition, region, account, spec.ReaperFunctionName)}, nil),
-		statement("FoundationEvents", []string{"events:PutRule", "events:DeleteRule", "events:DescribeRule", "events:EnableRule", "events:DisableRule", "events:PutTargets", "events:RemoveTargets", "events:TagResource", "events:UntagResource"}, []string{fmt.Sprintf("arn:%s:events:%s:%s:rule/%s", partition, region, account, spec.ReaperScheduleName)}, nil),
+		statement("FoundationLambda", []string{"lambda:CreateFunction", "lambda:DeleteFunction", "lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:GetPolicy", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:AddPermission", "lambda:RemovePermission", "lambda:TagResource", "lambda:UntagResource"}, []string{fmt.Sprintf("arn:%s:lambda:%s:%s:function:%s", partition, region, account, spec.ReaperFunctionName)}, nil),
+		statement("FoundationEvents", []string{"events:PutRule", "events:DeleteRule", "events:DescribeRule", "events:ListTargetsByRule", "events:ListTagsForResource", "events:EnableRule", "events:DisableRule", "events:PutTargets", "events:RemoveTargets", "events:TagResource", "events:UntagResource"}, []string{fmt.Sprintf("arn:%s:events:%s:%s:rule/%s", partition, region, account, spec.ReaperScheduleName)}, nil),
 		statement("FoundationAlarm", []string{"cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms"}, []string{fmt.Sprintf("arn:%s:cloudwatch:%s:%s:alarm:%s", partition, region, account, spec.ReaperAlarmName)}, nil),
-		statement("FoundationAlarmRead", []string{"cloudwatch:DescribeAlarms"}, []string{"*"}, nil),
+		statement("FoundationAlarmRead", []string{"cloudwatch:DescribeAlarms", "cloudwatch:ListTagsForResource"}, []string{"*"}, nil),
 		statement("FoundationSecretsCreate", []string{"secretsmanager:CreateSecret"}, []string{fmt.Sprintf("arn:%s:secretsmanager:%s:%s:secret:%s*", partition, region, account, spec.SecretNamespace)}, requestTag),
 		statement("FoundationSecretsManage", []string{"secretsmanager:DeleteSecret", "secretsmanager:DescribeSecret", "secretsmanager:GetResourcePolicy", "secretsmanager:PutResourcePolicy", "secretsmanager:TagResource", "secretsmanager:UntagResource"}, []string{fmt.Sprintf("arn:%s:secretsmanager:%s:%s:secret:%s*", partition, region, account, spec.SecretNamespace)}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
 	)
@@ -198,9 +200,10 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 var accountReadActions = map[string]struct{}{
 	"ec2:DescribeInstances": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeNetworkInterfaces": {},
 	"ec2:DescribeAddresses": {}, "ec2:DescribeSecurityGroups": {}, "ec2:DescribeSnapshots": {}, "ec2:DescribeVpcEndpoints": {},
-	"ec2:DescribeVpcs": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeRouteTables": {},
+	"ec2:DescribeVpcs": {}, "ec2:DescribeVpcAttribute": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeNetworkAcls": {},
 	"logs:DescribeLogGroups":    {},
-	"cloudwatch:DescribeAlarms": {},
+	"cloudwatch:DescribeAlarms": {}, "cloudwatch:ListTagsForResource": {},
+	"kms:ListAliases": {},
 }
 
 // ValidatePolicy rejects wildcard actions and unbounded resources. AWS KMS
