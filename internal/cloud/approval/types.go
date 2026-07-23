@@ -33,6 +33,7 @@ const (
 	EndpointSecurityGroupWorkerDedicated             = cloudquote.EndpointSecurityGroupWorkerDedicated
 	EndpointSecurityGroupEndpointDedicatedFromWorker = cloudquote.EndpointSecurityGroupEndpointDedicatedFromWorker
 	PrivateConnectivityNoNATEndpointsV1              = cloudquote.PrivateConnectivityNoNATEndpointsV1
+	PrivateConnectivityDirectPublicTLSV1             = cloudquote.PrivateConnectivityDirectPublicTLSV1
 	SnapshotDeleteWithDeployment                     = cloudquote.SnapshotDeleteWithDeployment
 	SnapshotRetainWithManagedService                 = cloudquote.SnapshotRetainWithManagedService
 )

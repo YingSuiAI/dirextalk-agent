@@ -275,7 +275,7 @@ func TestAWSResourcePlanUsesOnlyApprovedExistingSecurityGroup(t *testing.T) {
 		CreatedAt: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 7, 16, 10, 0, 1, 0, time.UTC),
 	}
 	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
-	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", cloudapproval.PrivateConnectivityNoNATEndpointsV1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestAWSResourcePlanBuildsExactNoNATEndpointGraphBeforeWorker(t *testing.T) 
 	}
 	operation.Launch.ControlPlaneTarget = plan.NetworkScope.ControlPlaneEndpoint
 	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
-	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", cloudapproval.PrivateConnectivityNoNATEndpointsV1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,6 +359,64 @@ func TestAWSResourcePlanBuildsExactNoNATEndpointGraphBeforeWorker(t *testing.T) 
 	}
 }
 
+func TestAWSResourcePlanBuildsNoIngressDirectPublicTLSGraph(t *testing.T) {
+	now := time.Date(2026, 7, 23, 10, 0, 0, 0, time.UTC)
+	fixture := newLaunchFixture(t, now)
+	plan := fixture.service.facts.(fakeFacts).plan
+	plan.SchemaVersion = cloudapproval.PlanSchemaV1
+	plan.NetworkScope = cloudapproval.NetworkScopeV1{
+		VPCID: "vpc-0123456789abcdef0", SubnetID: "subnet-0123456789abcdef0",
+		SecurityGroupMode: cloudapproval.SecurityGroupCreateDedicated, PublicIPv4: true,
+		EntryPoint: cloudapproval.EntryPointNone, ControlPlaneEndpoint: "grpcs://demo2.dirextalk.ai:443",
+		PrivateConnectivity: cloudapproval.PrivateConnectivityDirectPublicTLSV1,
+	}
+	plan.ServiceOperations = nil
+	connection := fixture.connections.value
+	operation := Operation{
+		Intent: Intent{Launch: fixture.request, ConnectionID: connection.ConnectionID, ApprovedPlanHash: fixture.service.facts.(fakeFacts).approval.PlanHash, DeploymentID: uuid.NewString()},
+		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
+		CreatedAt: now, UpdatedAt: now.Add(time.Second),
+	}
+	operation.Launch.ControlPlaneTarget = plan.NetworkScope.ControlPlaneEndpoint
+	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, plan.NetworkScope.ControlPlaneEndpoint, "", cloudapproval.PrivateConnectivityDirectPublicTLSV1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs, err := builder.Build(plan, connection, fixture.service.recipes.(fakeRecipes).value, operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []resource.Type{resource.TypeSG, resource.TypeENI, resource.TypeEIP, resource.TypeEC2}
+	if len(specs) != len(wantTypes) {
+		t.Fatalf("spec count=%d, want %d: %#v", len(specs), len(wantTypes), specs)
+	}
+	for index, want := range wantTypes {
+		if specs[index].Type != want {
+			t.Fatalf("spec[%d].Type=%q, want %q", index, specs[index].Type, want)
+		}
+	}
+	group, eni, eip, instance := specs[0], specs[1], specs[2], specs[3]
+	if len(group.AWS.SecurityGroup.Ingress) != 0 || !reflect.DeepEqual(group.AWS.SecurityGroup.Egress, []resource.AWSNetworkRuleV1{
+		{Protocol: "tcp", FromPort: 53, ToPort: 53, CIDRv4: "0.0.0.0/0"},
+		{Protocol: "udp", FromPort: 53, ToPort: 53, CIDRv4: "0.0.0.0/0"},
+		{Protocol: "tcp", FromPort: 443, ToPort: 443, CIDRv4: "0.0.0.0/0"},
+	}) {
+		t.Fatalf("Worker security group=%#v", group.AWS.SecurityGroup)
+	}
+	if !slices.Equal(eni.DependsOn, []string{group.ResourceID}) || !slices.Equal(eip.DependsOn, []string{eni.ResourceID}) ||
+		!slices.Equal(instance.DependsOn, []string{eni.ResourceID, eip.ResourceID}) ||
+		instance.AWS.Instance.Bootstrap.ControlPlaneEndpoint != plan.NetworkScope.ControlPlaneEndpoint {
+		t.Fatalf("direct public TLS graph: eni=%#v eip=%#v instance=%#v", eni, eip, instance)
+	}
+
+	drifted := operation
+	drifted.Launch.ControlPlaneTarget = "grpcs://different.dirextalk.ai:443"
+	if _, err := builder.Build(plan, connection, fixture.service.recipes.(fakeRecipes).value, drifted); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("endpoint drift error=%v, want ErrInvalid", err)
+	}
+}
+
 func privateEndpointOperationScope() *cloudapproval.ServiceOperationScopeV1 {
 	return &cloudapproval.ServiceOperationScopeV1{PrivateEndpoints: []cloudapproval.PrivateEndpointOperationSpecV1{
 		{OperationKey: "worker-s3-gateway", Service: cloudapproval.PrivateEndpointServiceS3, EndpointType: cloudapproval.PrivateEndpointTypeGateway},
@@ -384,7 +442,7 @@ func TestAWSResourcePlanRejectsUnimplementedPublicEntryPoint(t *testing.T) {
 		State:  StateBootstrapReady, TaskID: uuid.NewString(), Bootstrap: BootstrapArtifact{SHA256: sha256.Sum256([]byte("launch"))},
 	}
 	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
-	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", cloudapproval.PrivateConnectivityNoNATEndpointsV1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +464,7 @@ func TestAWSResourcePlanRejectsWorkerPublicIPv4(t *testing.T) {
 		CreatedAt: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 7, 16, 10, 0, 1, 0, time.UTC),
 	}
 	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
-	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", cloudapproval.PrivateConnectivityNoNATEndpointsV1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +485,7 @@ func TestAWSResourcePlanCreatesSeparateEncryptedEBSForPersistentRecipeSlot(t *te
 	}
 	operation.Bootstrap.Reference = "s3://agent-bucket/deployments/" + operation.DeploymentID + "/launch/config.json"
 	bindOperationInstallerVolume(t, &operation, plan, approval, now)
-	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0")
+	builder, err := NewAWSResourcePlanBuilder(plan.AgentInstanceID, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", cloudapproval.PrivateConnectivityNoNATEndpointsV1)
 	if err != nil {
 		t.Fatal(err)
 	}

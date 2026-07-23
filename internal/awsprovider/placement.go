@@ -693,6 +693,10 @@ func validatePlacementRequest(request PlacementRequestV1) error {
 		if request.ControlPlaneEndpoint != "" || request.PrivateEndpointDataMiB != 0 {
 			return ErrInvalidRequest
 		}
+	case cloudquote.PrivateConnectivityDirectPublicTLSV1:
+		if !request.PublicIPv4 || request.PrivateEndpointDataMiB != 0 || cloudquote.ValidateDirectPublicControlPlaneEndpoint(request.ControlPlaneEndpoint) != nil {
+			return ErrInvalidRequest
+		}
 	case cloudquote.PrivateConnectivityNoNATEndpointsV1:
 		if request.PublicIPv4 || request.PrivateEndpointDataMiB == 0 || request.PrivateEndpointDataMiB > 1<<50 || cloudquote.ValidatePrivateControlPlaneEndpoint(request.ControlPlaneEndpoint) != nil {
 			return ErrInvalidRequest

@@ -416,8 +416,7 @@ func (service *Service) prepare(ctx context.Context, caller cloudapp.MutationSco
 	if err != nil || !matchesDurableApproval(plan, approval) {
 		return Operation{}, cloudapproval.PlanV1{}, cloudapproval.ApprovalV1{}, recipe.RecipeV1{}, ErrNotReady
 	}
-	if plan.NetworkScope.PrivateConnectivity == cloudapproval.PrivateConnectivityNoNATEndpointsV1 &&
-		request.ControlPlaneTarget != plan.NetworkScope.ControlPlaneEndpoint {
+	if plan.NetworkScope.PrivateConnectivity != "" && request.ControlPlaneTarget != plan.NetworkScope.ControlPlaneEndpoint {
 		return Operation{}, cloudapproval.PlanV1{}, cloudapproval.ApprovalV1{}, recipe.RecipeV1{}, ErrInvalid
 	}
 	boundRecipe, err := service.recipes.ResolveRecipe(ctx, request.OwnerID, plan.Recipe.RecipeID, plan.Recipe.Digest)

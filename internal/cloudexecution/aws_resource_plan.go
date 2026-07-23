@@ -30,15 +30,20 @@ import (
 // the Worker root disk.
 type AWSResourcePlanBuilder struct {
 	agentInstanceID          string
+	workerControlEndpoint    string
 	workerControlServiceName string
+	connectivityMode         cloudapproval.PrivateConnectivityMode
 }
 
-func NewAWSResourcePlanBuilder(agentInstanceID, workerControlServiceName string) (*AWSResourcePlanBuilder, error) {
+func NewAWSResourcePlanBuilder(agentInstanceID, workerControlEndpoint, workerControlServiceName string, connectivityMode cloudapproval.PrivateConnectivityMode) (*AWSResourcePlanBuilder, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil || cloudquote.ValidateWorkerControlPrivateLink("grpcs://"+cloudquote.WorkerControlPrivateLinkHostname+":443", workerControlServiceName) != nil {
+	if err != nil || parsed == uuid.Nil || cloudquote.ValidateWorkerControlTransport(connectivityMode, workerControlEndpoint, workerControlServiceName) != nil {
 		return nil, ErrInvalid
 	}
-	return &AWSResourcePlanBuilder{agentInstanceID: parsed.String(), workerControlServiceName: workerControlServiceName}, nil
+	return &AWSResourcePlanBuilder{
+		agentInstanceID: parsed.String(), workerControlEndpoint: workerControlEndpoint,
+		workerControlServiceName: workerControlServiceName, connectivityMode: connectivityMode,
+	}, nil
 }
 
 func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connection cloudapp.Connection, boundRecipe recipe.RecipeV1, operation Operation) ([]resource.ProvisionSpec, error) {
@@ -58,18 +63,23 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 		plan.NetworkScope.TLSRequired || plan.NetworkScope.AuthenticationRequired {
 		return nil, ErrInvalid
 	}
-	// The exclusive Worker is always private. Public ingress is a separately
-	// device-approved ALB operation after an independently read-back Worker
-	// succeeds, so an initial plan can never allocate an EIP.
-	if plan.NetworkScope.PublicIPv4 {
-		return nil, ErrInvalid
-	}
 	privateEndpoints := plan.NetworkScope.PrivateConnectivity == cloudapproval.PrivateConnectivityNoNATEndpointsV1
-	if plan.NetworkScope.PrivateConnectivity != "" && !privateEndpoints {
+	directPublicTLS := plan.NetworkScope.PrivateConnectivity == cloudapproval.PrivateConnectivityDirectPublicTLSV1
+	legacyConnectivity := plan.NetworkScope.PrivateConnectivity == ""
+	if !legacyConnectivity && (plan.NetworkScope.PrivateConnectivity != builder.connectivityMode || (!privateEndpoints && !directPublicTLS) ||
+		plan.NetworkScope.ControlPlaneEndpoint != builder.workerControlEndpoint || plan.NetworkScope.ControlPlaneEndpoint != operation.Launch.ControlPlaneTarget) {
 		return nil, ErrInvalid
 	}
-	if privateEndpoints && (plan.NetworkScope.ControlPlaneEndpoint != operation.Launch.ControlPlaneTarget ||
-		plan.NetworkScope.RouteTableID == "" || !validPrivateWorkerEndpointOperations(plan.ServiceOperations, builder.workerControlServiceName)) {
+	// Existing V1 plans predate the signed control-endpoint field. They remain
+	// restart-readable, but cannot gain the new outbound public address.
+	if legacyConnectivity && (plan.NetworkScope.PublicIPv4 || plan.NetworkScope.ControlPlaneEndpoint != "" || plan.NetworkScope.RouteTableID != "") {
+		return nil, ErrInvalid
+	}
+	if privateEndpoints && (plan.NetworkScope.PublicIPv4 || plan.NetworkScope.RouteTableID == "" || !validPrivateWorkerEndpointOperations(plan.ServiceOperations, builder.workerControlServiceName)) {
+		return nil, ErrInvalid
+	}
+	if directPublicTLS && (!plan.NetworkScope.PublicIPv4 || plan.NetworkScope.RouteTableID != "" || plan.ServiceOperations != nil ||
+		cloudquote.ValidateDirectPublicControlPlaneEndpoint(plan.NetworkScope.ControlPlaneEndpoint) != nil) {
 		return nil, ErrInvalid
 	}
 	if err := cloudquote.ValidateVolumeScopesForRecipe(plan.ResourceScope.VolumeScopes, boundRecipe, cloudquote.RetentionScopeV1{
@@ -256,8 +266,22 @@ func (builder *AWSResourcePlanBuilder) Build(plan cloudapproval.PlanV1, connecti
 	eni.ResourceID, eni.Type, eni.LogicalName, eni.SpecDigest, eni.AWS = eniID, resource.TypeENI, "worker-network-interface", eniDigest, eniAWS
 	eni.DependsOn = eniDependencies
 	result = append(result, eni)
+	if directPublicTLS {
+		eipAWS := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, ElasticIP: &resource.AWSElasticIPSpecV1{Domain: "vpc"}}
+		eipDigest, digestErr := eipAWS.Digest(resource.TypeEIP)
+		if digestErr != nil {
+			return nil, ErrInvalid
+		}
+		eip := common
+		eip.ResourceID, eip.Type, eip.LogicalName = deterministicID(operation.DeploymentID, "eip"), resource.TypeEIP, "worker-outbound-public-ipv4"
+		eip.SpecDigest, eip.DependsOn, eip.AWS = eipDigest, []string{eniID}, eipAWS
+		result = append(result, eip)
+	}
 
 	instanceDependencies := []string{eniID}
+	if directPublicTLS {
+		instanceDependencies = append(instanceDependencies, deterministicID(operation.DeploymentID, "eip"))
+	}
 	if privateEndpoints {
 		instanceDependencies = append(instanceDependencies,
 			deterministicID(operation.DeploymentID, "endpoint:s3-gateway"),

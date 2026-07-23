@@ -245,7 +245,7 @@ func serve() error {
 			}
 		}
 		var cloudErr error
-		if serverConfig.WorkerControlEndpointServiceName == "" {
+		if serverConfig.StagedWorkerControl {
 			cloudCoordinator, cloudErr = app.NewStagedAWSControl(serverConfig.InstanceID, secretManager, store)
 		} else {
 			cloudOptions := make([]app.CloudCompositionOption, 0, 2)
@@ -256,6 +256,7 @@ func serve() error {
 			cloudComposition, cloudErr = app.NewCloudComposition(
 				store, secretManager, workerStore, workerService, installerIssuer, serverConfig.InstanceID, masterKey,
 				serverConfig.AWSReaperImageURI, serverConfig.WorkerControlEndpoint, serverConfig.WorkerControlEndpointServiceName,
+				serverConfig.WorkerConnectivityMode,
 				cloudOptions...,
 			)
 			if cloudErr == nil {

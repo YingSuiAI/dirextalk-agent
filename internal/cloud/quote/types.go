@@ -48,11 +48,17 @@ const (
 )
 
 // PrivateConnectivityMode is an explicit opt-in because the zero value is the
-// historical placement contract (public IPv4 or public NAT egress). The
-// no-NAT mode is fully bound into Quote/Plan/Approval hashes.
+// historical placement contract. Every current mode is fully bound into the
+// Quote, Plan, and device Approval hashes.
 type PrivateConnectivityMode string
 
-const PrivateConnectivityNoNATEndpointsV1 PrivateConnectivityMode = "no_nat_endpoints_v1"
+const (
+	PrivateConnectivityNoNATEndpointsV1 PrivateConnectivityMode = "no_nat_endpoints_v1"
+	// PrivateConnectivityDirectPublicTLSV1 gives an exclusive no-ingress
+	// Worker one outbound-only public IPv4 address. Its control destination is
+	// an exact credential-free grpcs endpoint in the signed network scope.
+	PrivateConnectivityDirectPublicTLSV1 PrivateConnectivityMode = "direct_public_tls_v1"
+)
 
 type RetentionClass string
 

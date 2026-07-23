@@ -220,6 +220,12 @@ func validateNetworkScope(value NetworkScopeV1) error {
 		if value.RouteTableID != "" || value.ControlPlaneEndpoint != "" {
 			return fmt.Errorf("network_scope private connectivity fields require an explicit mode")
 		}
+	} else if value.PrivateConnectivity == PrivateConnectivityDirectPublicTLSV1 {
+		if value.RouteTableID != "" || !value.PublicIPv4 || mode != SecurityGroupCreateDedicated || value.SecurityGroupID != "" ||
+			value.EntryPoint != EntryPointNone || value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired ||
+			cloudquote.ValidateDirectPublicControlPlaneEndpoint(value.ControlPlaneEndpoint) != nil {
+			return fmt.Errorf("network_scope direct public TLS connectivity scope is invalid")
+		}
 	} else if value.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 {
 		if !routeTablePattern.MatchString(value.RouteTableID) || value.PublicIPv4 || mode != SecurityGroupCreateDedicated || value.SecurityGroupID != "" ||
 			value.EntryPoint != EntryPointNone || value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired ||

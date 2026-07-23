@@ -3,6 +3,7 @@ package quote
 import (
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"path"
 	"reflect"
@@ -244,6 +245,12 @@ func validateNetwork(value NetworkScopeV1) error {
 		if value.RouteTableID != "" || value.ControlPlaneEndpoint != "" {
 			return fmt.Errorf("scope.network private connectivity fields require an explicit mode")
 		}
+	} else if value.PrivateConnectivity == PrivateConnectivityDirectPublicTLSV1 {
+		if value.RouteTableID != "" || !value.PublicIPv4 || mode != SecurityGroupCreateDedicated || value.SecurityGroupID != "" ||
+			value.EntryPoint != EntryPointNone || value.PublicExposure || len(value.IngressPorts) != 0 || value.Hostname != "" || value.TLSRequired || value.AuthenticationRequired ||
+			ValidateDirectPublicControlPlaneEndpoint(value.ControlPlaneEndpoint) != nil {
+			return fmt.Errorf("scope.network direct public TLS connectivity scope is invalid")
+		}
 	} else if value.PrivateConnectivity == PrivateConnectivityNoNATEndpointsV1 {
 		if !awsIDPattern.MatchString(value.RouteTableID) || !strings.HasPrefix(value.RouteTableID, "rtb-") ||
 			value.PublicIPv4 || mode != SecurityGroupCreateDedicated || value.SecurityGroupID != "" ||
@@ -269,10 +276,10 @@ func validateNetwork(value NetworkScopeV1) error {
 	return validateText("scope.network.hostname", value.Hostname, 1, 253)
 }
 
-// ValidatePrivateControlPlaneEndpoint is shared by placement and execution.
-// The endpoint is public signed metadata only; user-info, query state and
-// non-443 targets are rejected before they enter a device signature.
-func ValidatePrivateControlPlaneEndpoint(raw string) error {
+// ValidateControlPlaneEndpoint is shared by placement and execution. The
+// endpoint is public signed metadata only; user-info, query state and non-443
+// targets are rejected before they enter a device signature.
+func ValidateControlPlaneEndpoint(raw string) error {
 	if strings.TrimSpace(raw) != raw || len(raw) == 0 || len(raw) > 1024 {
 		return fmt.Errorf("control plane endpoint is invalid")
 	}
@@ -280,6 +287,25 @@ func ValidatePrivateControlPlaneEndpoint(raw string) error {
 	if err != nil || endpoint.Scheme != "grpcs" || endpoint.Hostname() == "" || endpoint.Port() != "443" || endpoint.Opaque != "" ||
 		(endpoint.Path != "" && endpoint.Path != "/") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || credentialPattern.MatchString(raw) {
 		return fmt.Errorf("control plane endpoint must be credential-free grpcs on port 443")
+	}
+	return nil
+}
+
+// ValidatePrivateControlPlaneEndpoint preserves the frozen no-NAT contract.
+func ValidatePrivateControlPlaneEndpoint(raw string) error {
+	return ValidateControlPlaneEndpoint(raw)
+}
+
+// ValidateDirectPublicControlPlaneEndpoint additionally requires a public DNS
+// name. IP literals and local-only names are not portable signed destinations.
+func ValidateDirectPublicControlPlaneEndpoint(raw string) error {
+	if err := ValidateControlPlaneEndpoint(raw); err != nil {
+		return err
+	}
+	endpoint, _ := url.Parse(raw)
+	hostname := strings.ToLower(endpoint.Hostname())
+	if hostname == "localhost" || !strings.Contains(hostname, ".") || strings.HasSuffix(hostname, ".local") || strings.HasSuffix(hostname, ".internal") || net.ParseIP(hostname) != nil {
+		return fmt.Errorf("direct public control plane endpoint must use a public DNS name")
 	}
 	return nil
 }

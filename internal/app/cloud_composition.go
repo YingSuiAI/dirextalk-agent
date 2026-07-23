@@ -212,8 +212,8 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	return first
 }
 
-func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, installerIssuer *installer.TrustIssuer, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget, workerControlServiceName string, optionValues ...CloudCompositionOption) (*CloudComposition, error) {
-	if store == nil || manager == nil || workerStore == nil || workerService == nil || installerIssuer == nil || len(masterKey) != 32 || reaperImageURI == "" || cloudquote.ValidateWorkerControlPrivateLink(workerControlTarget, workerControlServiceName) != nil {
+func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, installerIssuer *installer.TrustIssuer, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget, workerControlServiceName string, workerConnectivityMode cloudquote.PrivateConnectivityMode, optionValues ...CloudCompositionOption) (*CloudComposition, error) {
+	if store == nil || manager == nil || workerStore == nil || workerService == nil || installerIssuer == nil || len(masterKey) != 32 || reaperImageURI == "" || cloudquote.ValidateWorkerControlTransport(workerConnectivityMode, workerControlTarget, workerControlServiceName) != nil {
 		return nil, errors.New("cloud composition requires durable stores, master key, and immutable Reaper image")
 	}
 	options := cloudCompositionOptions{}
@@ -282,7 +282,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, manager, workerControlTarget, workerControlServiceName, time.Now)
+	providerPlans, err := newCloudGoalProviderPlanMaterializer(agentInstanceID, store, activePlacements, activeQuotes, facts, manager, workerControlTarget, workerControlServiceName, workerConnectivityMode, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -375,7 +375,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	resourcePlans, err := cloudexecution.NewAWSResourcePlanBuilder(agentInstanceID, workerControlServiceName)
+	resourcePlans, err := cloudexecution.NewAWSResourcePlanBuilder(agentInstanceID, workerControlTarget, workerControlServiceName, workerConnectivityMode)
 	if err != nil {
 		vault.Close()
 		return nil, err

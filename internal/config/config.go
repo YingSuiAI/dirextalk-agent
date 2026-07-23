@@ -46,6 +46,8 @@ type Server struct {
 	AWSReaperImageURI                string
 	WorkerControlEndpoint            string
 	WorkerControlEndpointServiceName string
+	WorkerConnectivityMode           cloudquote.PrivateConnectivityMode
+	StagedWorkerControl              bool
 	WorkerAMIPublicationFile         string
 	MaxActiveLocalRuns               int
 	MaxBackgroundLocalRuns           int
@@ -88,7 +90,11 @@ func LoadServer() (Server, error) {
 		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
 		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
 		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
+		WorkerConnectivityMode:           cloudquote.PrivateConnectivityMode(strings.TrimSpace(os.Getenv("AGENT_WORKER_CONNECTIVITY_MODE"))),
 		WorkerAMIPublicationFile:         strings.TrimSpace(os.Getenv("AGENT_WORKER_AMI_PUBLICATION_FILE")),
+	}
+	if server.WorkerConnectivityMode == "" {
+		server.WorkerConnectivityMode = cloudquote.PrivateConnectivityNoNATEndpointsV1
 	}
 	server.MaxActiveLocalRuns, err = boundedEnvironmentInteger(
 		"AGENT_MAX_ACTIVE_LOCAL_RUNS", defaultMaxActiveLocalRuns, 1, maximumConfiguredLocalRuns,
@@ -159,12 +165,24 @@ func LoadServer() (Server, error) {
 		if server.AWSReaperImageURI == "" {
 			return Server{}, errors.New("AGENT_AWS_REAPER_IMAGE_URI is required when AWS cloud control is enabled")
 		}
-		if server.WorkerControlEndpoint != cloudquote.WorkerControlPrivateLinkEndpoint ||
-			(server.WorkerControlEndpointServiceName != "" &&
-				cloudquote.ValidateWorkerControlPrivateLink(server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil) {
-			return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT and AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME must be the frozen worker-control.y1.dirextalk.ai:443 and ap-northeast-3 PrivateLink service when AWS cloud control is enabled")
+		switch server.WorkerConnectivityMode {
+		case cloudquote.PrivateConnectivityNoNATEndpointsV1:
+			if server.WorkerControlEndpoint != cloudquote.WorkerControlPrivateLinkEndpoint {
+				return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT must be the frozen worker-control.y1.dirextalk.ai:443 PrivateLink endpoint")
+			}
+			if server.WorkerControlEndpointServiceName == "" {
+				server.StagedWorkerControl = true
+			} else if cloudquote.ValidateWorkerControlTransport(server.WorkerConnectivityMode, server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil {
+				return Server{}, errors.New("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME must be the frozen ap-northeast-3 PrivateLink service")
+			}
+		case cloudquote.PrivateConnectivityDirectPublicTLSV1:
+			if cloudquote.ValidateWorkerControlTransport(server.WorkerConnectivityMode, server.WorkerControlEndpoint, server.WorkerControlEndpointServiceName) != nil {
+				return Server{}, errors.New("direct public Worker control requires a credential-free public grpcs DNS endpoint on port 443 and no endpoint-service name")
+			}
+		default:
+			return Server{}, errors.New("AGENT_WORKER_CONNECTIVITY_MODE must be no_nat_endpoints_v1 or direct_public_tls_v1")
 		}
-		if server.EnableManagedPreparationAWS && server.WorkerControlEndpointServiceName == "" {
+		if server.EnableManagedPreparationAWS && server.StagedWorkerControl {
 			return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS requires AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")
 		}
 	}

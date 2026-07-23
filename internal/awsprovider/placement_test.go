@@ -120,6 +120,40 @@ func TestPlacementResolverUsesMainRouteOnlyWhenSubnetHasNoExplicitRouteTable(t *
 	}
 }
 
+func TestPlacementResolverBindsDirectPublicTLSWorkerToIGWSubnet(t *testing.T) {
+	fake := placementFixture()
+	resolver, err := newPlacementResolver(fake, testPlacementRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testPlacementRequest()
+	request.PrivateConnectivity = cloudquote.PrivateConnectivityDirectPublicTLSV1
+	request.ControlPlaneEndpoint = "grpcs://demo2.dirextalk.ai:443"
+
+	got, err := resolver.Resolve(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Network.PrivateConnectivity != cloudquote.PrivateConnectivityDirectPublicTLSV1 ||
+		got.Network.ControlPlaneEndpoint != request.ControlPlaneEndpoint || !got.Network.PublicIPv4 || got.Network.RouteTableID != "" ||
+		got.Network.SecurityGroupMode != cloudquote.SecurityGroupCreateDedicated || got.Network.SecurityGroupID != "" ||
+		got.Network.EntryPoint != cloudquote.EntryPointNone || got.Network.PublicExposure || len(got.Network.IngressPorts) != 0 ||
+		got.Usage.RuntimeHoursPerMonth != 730 || got.Usage.PublicIPv4Hours != 730 || got.Usage.PrivateEndpointHours != 0 ||
+		got.Usage.PrivateEndpointDataMiB != 0 || fake.gatewayCalls == 0 || fake.natCalls != 0 {
+		t.Fatalf("direct public TLS placement=%#v usage=%#v gateway_calls=%d nat_calls=%d", got.Network, got.Usage, fake.gatewayCalls, fake.natCalls)
+	}
+}
+
+func TestPlacementRequestRejectsDirectPublicTLSWithoutPublicIPv4(t *testing.T) {
+	request := testPlacementRequest()
+	request.PrivateConnectivity = cloudquote.PrivateConnectivityDirectPublicTLSV1
+	request.ControlPlaneEndpoint = "grpcs://demo2.dirextalk.ai:443"
+	request.PublicIPv4 = false
+	if err := request.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Validate() error=%v, want ErrInvalidRequest", err)
+	}
+}
+
 func TestPlacementResolverRequiresPublicNATEgressForPrivateWorker(t *testing.T) {
 	request := testPlacementRequest()
 	request.PublicIPv4 = false

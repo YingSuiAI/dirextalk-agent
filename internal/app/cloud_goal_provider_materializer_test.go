@@ -189,6 +189,50 @@ func TestCloudGoalProviderMaterializerUsesActiveConnectionAndPersistsThreeCandid
 	}
 }
 
+func TestCloudGoalProviderMaterializerSignsDirectPublicTLSIntoQuoteAndPlan(t *testing.T) {
+	fixture := newCloudGoalProviderFixture(t)
+	const endpoint = "grpcs://demo2.dirextalk.ai:443"
+	placement := cloudGoalProviderPlacement()
+	placement.Network.PublicIPv4 = true
+	placement.Network.RouteTableID = ""
+	placement.Network.ControlPlaneEndpoint = endpoint
+	placement.Network.PrivateConnectivity = cloudquote.PrivateConnectivityDirectPublicTLSV1
+	placement.Usage = cloudGoalUsage(cloudquote.PrivateConnectivityDirectPublicTLSV1)
+	fixture.placements.placement = placement
+	materializer, err := newCloudGoalProviderPlanMaterializer(
+		fixture.request.AgentInstanceID, fixture.connections, fixture.placements, fixture.quotes, fixture.facts, fixture.secrets,
+		endpoint, "", cloudquote.PrivateConnectivityDirectPublicTLSV1, func() time.Time { return fixture.quotes.now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.materializer = materializer
+
+	materialized, err := fixture.materializer.MaterializeProviderPlan(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("error=%v placement_calls=%d quote_calls=%d quote_error=%v quote=%#v", err, fixture.placements.resolveCalls, fixture.quotes.calls, fixture.quotes.err, fixture.quotes.quote)
+	}
+	placementRequest := fixture.placements.request.Placement
+	if !placementRequest.PublicIPv4 || placementRequest.PrivateConnectivity != cloudquote.PrivateConnectivityDirectPublicTLSV1 ||
+		placementRequest.ControlPlaneEndpoint != endpoint || placementRequest.PrivateEndpointDataMiB != 0 ||
+		placementRequest.RuntimeHoursPerMonth != cloudGoalRuntimeHours {
+		t.Fatalf("direct public TLS placement request=%#v", placementRequest)
+	}
+	if materialized.Quote.Usage != cloudGoalUsage(cloudquote.PrivateConnectivityDirectPublicTLSV1) ||
+		materialized.Plan.NetworkScope.ControlPlaneEndpoint != endpoint || !materialized.Plan.NetworkScope.PublicIPv4 ||
+		materialized.Plan.NetworkScope.PrivateConnectivity != cloudapproval.PrivateConnectivityDirectPublicTLSV1 ||
+		materialized.Plan.NetworkScope.RouteTableID != "" || materialized.Plan.ServiceOperations != nil {
+		t.Fatalf("materialized direct public TLS Quote=%#v Plan=%#v", materialized.Quote.Usage, materialized.Plan)
+	}
+	for _, candidate := range materialized.Quote.Candidates {
+		if candidate.Scope.SchemaVersion != cloudquote.ScopeSchemaV1 || candidate.Scope.Network.ControlPlaneEndpoint != endpoint ||
+			!candidate.Scope.Network.PublicIPv4 || candidate.Scope.Network.PrivateConnectivity != cloudquote.PrivateConnectivityDirectPublicTLSV1 ||
+			candidate.Scope.Network.RouteTableID != "" || candidate.Scope.ServiceOperations != nil {
+			t.Fatalf("direct public TLS candidate scope=%#v", candidate.Scope)
+		}
+	}
+}
+
 func TestCloudGoalProviderMaterializerRecoversQuoteOnlyResponseLossWithoutRepricing(t *testing.T) {
 	fixture := newCloudGoalProviderFixture(t)
 	fixture.facts.failQuoteResponseOnce = true
@@ -359,7 +403,7 @@ func newCloudGoalProviderFixture(t *testing.T) *cloudGoalProviderFixture {
 	quotes := &cloudGoalQuoteFake{now: now}
 	facts := newCloudGoalFactsFake()
 	secrets := &cloudGoalSecretLocatorFake{}
-	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", func() time.Time { return now })
+	materializer, err := newCloudGoalProviderPlanMaterializer(agentID, connections, placements, quotes, facts, secrets, "grpcs://worker-control.y1.dirextalk.ai:443", "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0", cloudquote.PrivateConnectivityNoNATEndpointsV1, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +426,7 @@ func cloudGoalProviderPlacement() awsprovider.PlacementV1 {
 			PublicIPv4: false, EntryPoint: cloudquote.EntryPointNone, RouteTableID: "rtb-0123456789abcdef0",
 			ControlPlaneEndpoint: "grpcs://worker-control.y1.dirextalk.ai:443", PrivateConnectivity: cloudquote.PrivateConnectivityNoNATEndpointsV1,
 		},
-		Usage: cloudGoalUsage(),
+		Usage: cloudGoalUsage(cloudquote.PrivateConnectivityNoNATEndpointsV1),
 	}
 	profiles := cloudGoalQuoteProfiles()
 	for index, candidate := range cloudGoalProviderCandidates() {
@@ -413,7 +457,11 @@ func cloudGoalPricingSnapshot(now time.Time, scopes []cloudquote.ScopeV1) cloudq
 		snapshot.Offerings = append(snapshot.Offerings, cloudquote.OfferingV1{CandidateID: profile, Region: scope.Resource.Region, InstanceType: scope.Resource.InstanceType, Architecture: scope.Resource.Architecture, PurchaseOption: scope.Resource.PurchaseOption, AvailabilityZones: append([]string(nil), scope.Resource.AvailabilityZones...)})
 		snapshot.Quotas = append(snapshot.Quotas, cloudquote.CandidateQuotaV1{CandidateID: profile, Quota: cloudquote.QuotaEvidenceV1{ServiceCode: "ec2", QuotaCode: "L-1216C47A", LimitUnits: 64, UsedUnits: 1, RequiredUnits: uint64(2 << index)}})
 		var items []cloudquote.CostItemV1
-		for _, category := range []cloudquote.CostCategory{cloudquote.CostComputeOnDemand, cloudquote.CostEBS, cloudquote.CostPublicIPv4, cloudquote.CostLogs, cloudquote.CostSnapshot, cloudquote.CostEntry, cloudquote.CostTraffic, cloudquote.CostPrivateEndpoint} {
+		categories := []cloudquote.CostCategory{cloudquote.CostComputeOnDemand, cloudquote.CostEBS, cloudquote.CostPublicIPv4, cloudquote.CostLogs, cloudquote.CostSnapshot, cloudquote.CostEntry, cloudquote.CostTraffic}
+		if scope.ServiceOperations != nil {
+			categories = append(categories, cloudquote.CostPrivateEndpoint)
+		}
+		for _, category := range categories {
 			items = append(items, cloudquote.CostItemV1{Category: category, Description: string(category), SourceID: string(profile) + "-" + string(category), HourlyEstimateMicros: uint64(index+1) * 1000, MonthlyEstimateMicros: uint64(index+1) * 730000, MaximumLaunchAmountMicros: uint64(index+1) * 1000})
 		}
 		snapshot.Prices = append(snapshot.Prices, cloudquote.CandidatePriceV1{CandidateID: profile, CostItems: items})

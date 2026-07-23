@@ -208,6 +208,53 @@ func TestLoadServerStagesWorkerControlPrivateLinkWithoutChangingInstanceIdentity
 	}
 }
 
+func TestLoadServerEnablesDirectPublicTLSWithoutPrivateLinkStaging(t *testing.T) {
+	setValidServerEnvironment(t)
+	t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
+	t.Setenv("AGENT_ENABLE_MANAGED_PREPARATION_AWS", "true")
+	t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
+	t.Setenv("AGENT_WORKER_CONNECTIVITY_MODE", "direct_public_tls_v1")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", "grpcs://demo2.dirextalk.ai:443")
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "")
+
+	server, err := LoadServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !server.EnableAWSControl || !server.EnableManagedPreparationAWS || server.StagedWorkerControl ||
+		server.WorkerConnectivityMode != "direct_public_tls_v1" || server.WorkerControlEndpoint != "grpcs://demo2.dirextalk.ai:443" ||
+		server.WorkerControlEndpointServiceName != "" {
+		t.Fatalf("direct public TLS config=%#v", server)
+	}
+}
+
+func TestLoadServerRejectsUnsafeDirectPublicTLSIdentity(t *testing.T) {
+	tests := map[string]struct {
+		endpoint    string
+		serviceName string
+	}{
+		"private hostname": {endpoint: "grpcs://worker-control.internal:443"},
+		"non TLS port":     {endpoint: "grpcs://demo2.dirextalk.ai:9443"},
+		"service injection": {
+			endpoint:    "grpcs://demo2.dirextalk.ai:443",
+			serviceName: "com.amazonaws.vpce.ap-northeast-3.vpce-svc-0123456789abcdef0",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			setValidServerEnvironment(t)
+			t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
+			t.Setenv("AGENT_AWS_REAPER_IMAGE_URI", "registry.example/reaper:v0.1.0-alpha.1@sha256:"+strings.Repeat("d", 64))
+			t.Setenv("AGENT_WORKER_CONNECTIVITY_MODE", "direct_public_tls_v1")
+			t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT", test.endpoint)
+			t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", test.serviceName)
+			if _, err := LoadServer(); err == nil || !strings.Contains(err.Error(), "direct public Worker control") {
+				t.Fatalf("endpoint=%q service=%q error=%v", test.endpoint, test.serviceName, err)
+			}
+		})
+	}
+}
+
 func TestLoadServerRejectsMalformedWorkerControlServiceDuringStagedUpgrade(t *testing.T) {
 	for _, serviceName := range []string{
 		"com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
