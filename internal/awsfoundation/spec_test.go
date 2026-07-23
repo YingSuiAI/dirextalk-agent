@@ -57,6 +57,10 @@ func TestBuildSpecIsDeterministicAndLeastPrivilege(t *testing.T) {
 			t.Fatalf("policy %d: %v", index, err)
 		}
 	}
+	executionJSON, err := json.Marshal(first.FoundationExecutionPolicy)
+	if err != nil || len(executionJSON) > 10_240 {
+		t.Fatalf("Foundation execution policy exceeds IAM inline-role quota: bytes=%d error=%v", len(executionJSON), err)
+	}
 	if len(first.SourceUserPolicy.Statement) != 1 || len(first.SourceUserPolicy.Statement[0].Action) != 1 || first.SourceUserPolicy.Statement[0].Action[0] != "sts:AssumeRole" {
 		t.Fatalf("source policy = %#v", first.SourceUserPolicy)
 	}
@@ -90,7 +94,14 @@ func TestFoundationExecutionPolicyOwnsOnlyTaggedReleaseNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wanted := map[string]bool{"FoundationReleaseNetworkCreate": false, "FoundationReleaseNetworkConfigure": false, "FoundationReleaseNetworkDelete": false}
+	wanted := map[string]bool{
+		"FoundationReleaseVPCCreate":          false,
+		"FoundationReleaseNetworkCreate":      false,
+		"FoundationReleaseNetworkCreateInVPC": false,
+		"FoundationReleaseNetworkTag":         false,
+		"FoundationReleaseNetworkConfigure":   false,
+		"FoundationReleaseNetworkDelete":      false,
+	}
 	for _, statement := range spec.FoundationExecutionPolicy.Statement {
 		if _, ok := wanted[statement.SID]; !ok {
 			continue
@@ -109,6 +120,23 @@ func TestFoundationExecutionPolicyOwnsOnlyTaggedReleaseNetwork(t *testing.T) {
 		if !found {
 			t.Fatalf("missing %s", sid)
 		}
+	}
+	var create, parent *awsprovider.PolicyStatement
+	for index := range spec.FoundationExecutionPolicy.Statement {
+		statement := &spec.FoundationExecutionPolicy.Statement[index]
+		switch statement.SID {
+		case "FoundationReleaseNetworkCreate":
+			create = statement
+		case "FoundationReleaseNetworkCreateInVPC":
+			parent = statement
+		}
+	}
+	ownershipKey := awsprovider.TagAgentInstanceID
+	if create == nil || create.Condition["StringEquals"]["aws:RequestTag/"+ownershipKey] == "" ||
+		parent == nil || parent.Condition["StringEquals"]["aws:ResourceTag/"+ownershipKey] == "" ||
+		!sameStringSet(create.Action, []string{"ec2:CreateSubnet", "ec2:CreateSecurityGroup", "ec2:CreateRouteTable"}) ||
+		!sameStringSet(parent.Resource, []string{"arn:aws:ec2:us-east-1:123456789012:vpc/*"}) {
+		t.Fatalf("release network create boundary is invalid: create=%#v parent=%#v", create, parent)
 	}
 }
 

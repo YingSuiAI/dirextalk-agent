@@ -123,32 +123,37 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 		dnsSuffix = "amazonaws.com.cn"
 	}
 	requestTag := map[string]map[string]string{"StringEquals": {"aws:RequestTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}
+	resourceTag := map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}
 	controlARN := iamARN(input, "role/"+spec.ControlRoleName)
 	entrypointPolicyARN := iamARN(input, "policy/"+spec.StackName+"-control-entrypoint")
 	foundationKeyARN := fmt.Sprintf("arn:%s:kms:%s:%s:key/*", partition, region, account)
+	releaseVPCARN := fmt.Sprintf("arn:%s:ec2:%s:%s:vpc/*", partition, region, account)
+	releaseSubnetARN := fmt.Sprintf("arn:%s:ec2:%s:%s:subnet/*", partition, region, account)
+	releaseSecurityGroupARN := fmt.Sprintf("arn:%s:ec2:%s:%s:security-group/*", partition, region, account)
+	releaseRouteTableARN := fmt.Sprintf("arn:%s:ec2:%s:%s:route-table/*", partition, region, account)
+	releaseNetworkARNs := []string{releaseVPCARN, releaseSubnetARN, releaseSecurityGroupARN, releaseRouteTableARN}
 	return identityPolicy(
+		statement("FoundationReleaseVPCCreate", []string{"ec2:CreateVpc"}, []string{releaseVPCARN}, requestTag),
 		statement("FoundationReleaseNetworkCreate", []string{
-			"ec2:CreateVpc", "ec2:CreateSubnet", "ec2:CreateSecurityGroup", "ec2:CreateTags",
-		}, []string{
-			fmt.Sprintf("arn:%s:ec2:%s:%s:vpc/*", partition, region, account),
-			fmt.Sprintf("arn:%s:ec2:%s:%s:subnet/*", partition, region, account),
-			fmt.Sprintf("arn:%s:ec2:%s:%s:security-group/*", partition, region, account),
-		}, requestTag),
+			"ec2:CreateSubnet", "ec2:CreateSecurityGroup", "ec2:CreateRouteTable",
+		}, []string{releaseSubnetARN, releaseSecurityGroupARN, releaseRouteTableARN}, requestTag),
+		// EC2 separately authorizes the existing parent VPC when a subnet,
+		// route table, or security group is created. That parent has no request
+		// tag; it must already carry this Agent's ownership tag.
+		statement("FoundationReleaseNetworkCreateInVPC", []string{
+			"ec2:CreateSubnet", "ec2:CreateSecurityGroup", "ec2:CreateRouteTable",
+		}, []string{releaseVPCARN}, resourceTag),
+		statement("FoundationReleaseNetworkTag", []string{"ec2:CreateTags"}, releaseNetworkARNs, requestTag),
 		statement("FoundationReleaseNetworkConfigure", []string{
 			"ec2:ModifyVpcAttribute", "ec2:ModifySubnetAttribute",
-		}, []string{
-			fmt.Sprintf("arn:%s:ec2:%s:%s:vpc/*", partition, region, account),
-			fmt.Sprintf("arn:%s:ec2:%s:%s:subnet/*", partition, region, account),
-		}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
+			"ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress",
+			"ec2:AssociateRouteTable", "ec2:DisassociateRouteTable",
+		}, releaseNetworkARNs, resourceTag),
 		statement("FoundationReleaseNetworkDelete", []string{
-			"ec2:DeleteVpc", "ec2:DeleteSubnet", "ec2:DeleteSecurityGroup",
-		}, []string{
-			fmt.Sprintf("arn:%s:ec2:%s:%s:vpc/*", partition, region, account),
-			fmt.Sprintf("arn:%s:ec2:%s:%s:subnet/*", partition, region, account),
-			fmt.Sprintf("arn:%s:ec2:%s:%s:security-group/*", partition, region, account),
-		}, map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}),
+			"ec2:DeleteVpc", "ec2:DeleteSubnet", "ec2:DeleteSecurityGroup", "ec2:DeleteRouteTable",
+		}, releaseNetworkARNs, resourceTag),
 		statement("FoundationReleaseNetworkRead", []string{
-			"ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups",
+			"ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeRouteTables",
 		}, []string{"*"}, nil),
 		statement("FoundationIAM", []string{"iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:TagRole", "iam:UntagRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:GetInstanceProfile", "iam:ListInstanceProfilesForRole", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:PassRole"}, []string{
 			iamARN(input, "role/"+spec.ControlRoleName), iamARN(input, "role/"+spec.WorkerRoleName), iamARN(input, "role/"+spec.ReaperRoleName),
@@ -193,7 +198,7 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 var accountReadActions = map[string]struct{}{
 	"ec2:DescribeInstances": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeNetworkInterfaces": {},
 	"ec2:DescribeAddresses": {}, "ec2:DescribeSecurityGroups": {}, "ec2:DescribeSnapshots": {}, "ec2:DescribeVpcEndpoints": {},
-	"ec2:DescribeVpcs": {}, "ec2:DescribeSubnets": {},
+	"ec2:DescribeVpcs": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeRouteTables": {},
 	"logs:DescribeLogGroups":    {},
 	"cloudwatch:DescribeAlarms": {},
 }
