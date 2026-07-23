@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseartifact"
@@ -369,8 +370,8 @@ func validImageName(value string) bool {
 	return len(value) <= 128 && strings.HasPrefix(value, "dtx-worker-ami-") && idPattern.MatchString(value) && !containsSecretLike(value)
 }
 
-func validOpaqueID(value string) bool {
-	return idPattern.MatchString(value) && !containsSecretLike(value)
+func validS3VersionID(value string) bool {
+	return value != "" && value != "null" && len(value) <= 1024 && utf8.ValidString(value) && !containsSpaceOrControl(value)
 }
 
 func containsSpaceOrControl(value string) bool {
@@ -437,7 +438,7 @@ func cloneTags(input map[string]string) map[string]string {
 }
 
 func validateArtifactVersion(version ArtifactVersionV1) error {
-	if !validOpaqueID(version.VersionID) {
+	if !validS3VersionID(version.VersionID) {
 		return ErrReadBackMismatch
 	}
 	return nil

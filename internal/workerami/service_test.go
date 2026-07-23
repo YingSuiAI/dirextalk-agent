@@ -59,6 +59,31 @@ func TestBuildPublishesFixedAMIAndRecoversIdempotently(t *testing.T) {
 	}
 }
 
+func TestValidateArtifactVersionAcceptsS3OpaqueVersionIDs(t *testing.T) {
+	for _, versionID := range []string{
+		".xFS947QbFLl7aLGAJ2QDxLmB42kVOe3",
+		"3/L4kqtJl40Nr8X8gdRQBpUMLUo",
+		"\u7248\u672c-1",
+		strings.Repeat(".", 1024),
+	} {
+		if err := validateArtifactVersion(ArtifactVersionV1{VersionID: versionID}); err != nil {
+			t.Fatalf("validateArtifactVersion(%q) = %v", versionID, err)
+		}
+	}
+	for _, versionID := range []string{
+		"",
+		"null",
+		"version id",
+		"version\nid",
+		string([]byte{0xff}),
+		strings.Repeat("a", 1025),
+	} {
+		if err := validateArtifactVersion(ArtifactVersionV1{VersionID: versionID}); err == nil {
+			t.Fatalf("validateArtifactVersion(%q) accepted invalid S3 version ID", versionID)
+		}
+	}
+}
+
 func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testing.T) {
 	request := validBuildRequest(t)
 	request.NetworkMode = NetworkModeS3GatewayV2
@@ -255,11 +280,11 @@ func TestBuildRejectsTamperBeforeUnsafeMutation(t *testing.T) {
 		})
 	}
 
-	t.Run("foreign artifact version", func(t *testing.T) {
+	t.Run("invalid artifact version", func(t *testing.T) {
 		request := validBuildRequest(t)
 		provider := newFakeProvider(request)
 		provider.artifactFound = true
-		provider.artifact.VersionID = "X-Amz-Credential=foreign"
+		provider.artifact.VersionID = "foreign\nversion"
 		service := newTestService(t, provider)
 		if _, err := service.Build(context.Background(), request); !errors.Is(err, ErrReadBackMismatch) || !errors.Is(err, ErrCleanupFailed) {
 			t.Fatalf("Build() error = %v", err)
