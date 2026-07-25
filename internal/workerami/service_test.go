@@ -140,6 +140,7 @@ func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testi
 	}
 	provider := newFakeProvider(request)
 	provider.supportReachability = true
+	provider.returnStoppingTombstoneAfterTerminate = true
 	manifest, err := newTestService(t, provider).Build(context.Background(), request)
 	if err != nil || manifest.ImageID == "" {
 		t.Fatalf("Build(v2) = %#v, %v", manifest, err)
@@ -433,6 +434,35 @@ func TestBuildPersistsAndIndependentlyReadsBackBuilderDependencies(t *testing.T)
 	}
 	if err := newTestService(t, provider).VerifyBuilderCleanup(context.Background(), recorded); err != nil {
 		t.Fatalf("VerifyBuilderCleanup() = %v", err)
+	}
+}
+
+func TestStoppingBuilderCleanupRequiresExactPersistedProviderIDs(t *testing.T) {
+	request := validBuildRequest(t)
+	validated, err := validateBuildRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := newFakeProvider(request)
+	observation := provider.validBuilder(validated)
+	evidence, err := builderCleanupEvidenceFromObservation(observation, validated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation.State = BuilderStopping
+	observation.RootVolumeID = ""
+	observation.NetworkInterfaceIDs = nil
+	if err := validateStoppingBuilderForCleanup(observation, evidence); err != nil {
+		t.Fatalf("detached stopping observation = %v", err)
+	}
+	observation.RootVolumeID = "vol-00000000000000000"
+	if err := validateStoppingBuilderForCleanup(observation, evidence); !errors.Is(err, ErrOwnershipMismatch) {
+		t.Fatalf("mismatched stopping volume = %v", err)
+	}
+	observation.RootVolumeID = ""
+	observation.Tags[TagAgentInstanceID] = "22222222-2222-4222-8222-222222222222"
+	if err := validateStoppingBuilderForCleanup(observation, evidence); !errors.Is(err, ErrOwnershipMismatch) {
+		t.Fatalf("mismatched stopping tags = %v", err)
 	}
 }
 
@@ -788,22 +818,23 @@ type fakeProvider struct {
 	findImageMissAt                 map[int]bool
 	findImageErrorAt                map[int]bool
 
-	findArtifactCalls         int
-	findBuilderCalls          int
-	findImageCalls            int
-	launchCalls               int
-	createCalls               int
-	terminateCalls            int
-	deleteArtifactCalls       int
-	deregisterCalls           int
-	deleteSnapshotCalls       int
-	snapshotPendingReads      int
-	builderVolumeFound        bool
-	builderNetworkFound       bool
-	supportReachability       bool
-	reachabilityPresent       bool
-	reachabilityRecorded      bool
-	returnTerminatedTombstone bool
+	findArtifactCalls                     int
+	findBuilderCalls                      int
+	findImageCalls                        int
+	launchCalls                           int
+	createCalls                           int
+	terminateCalls                        int
+	deleteArtifactCalls                   int
+	deregisterCalls                       int
+	deleteSnapshotCalls                   int
+	snapshotPendingReads                  int
+	builderVolumeFound                    bool
+	builderNetworkFound                   bool
+	supportReachability                   bool
+	reachabilityPresent                   bool
+	reachabilityRecorded                  bool
+	returnTerminatedTombstone             bool
+	returnStoppingTombstoneAfterTerminate bool
 }
 
 func newFakeProvider(request BuildRequestV1) *fakeProvider {
@@ -958,6 +989,11 @@ func (provider *fakeProvider) ObserveBuilder(_ context.Context, instanceID strin
 	if provider.returnTerminatedTombstone && provider.builder.State == BuilderTerminated {
 		return terminatedBuilderTombstone(provider.builder), true, nil
 	}
+	if provider.returnStoppingTombstoneAfterTerminate && provider.builder.State == BuilderStopping {
+		observation := terminatedBuilderTombstone(provider.builder)
+		provider.builder.State = BuilderTerminated
+		return observation, true, nil
+	}
 	return provider.builder, true, nil
 }
 
@@ -967,7 +1003,11 @@ func (provider *fakeProvider) TerminateBuilder(_ context.Context, instanceID str
 	if instanceID != provider.builder.InstanceID {
 		return errors.New("instance mismatch")
 	}
-	provider.builder.State = BuilderTerminated
+	if provider.returnStoppingTombstoneAfterTerminate {
+		provider.builder.State = BuilderStopping
+	} else {
+		provider.builder.State = BuilderTerminated
+	}
 	return nil
 }
 

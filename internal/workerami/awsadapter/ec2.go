@@ -385,15 +385,10 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 	if tags == nil || !validBuilderTags(name, tags) {
 		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
 	}
-	if state == workerami.BuilderTerminated && privateSubnetID == "" && len(instance.SecurityGroups) == 0 {
-		if launchResponse || instance.RootDeviceType != ec2types.DeviceTypeEbs || instance.IamInstanceProfile != nil || instance.KeyName != nil ||
-			stringValue(instance.PublicIpAddress) != "" || stringValue(instance.PublicDnsName) != "" || len(instance.NetworkInterfaces) != 0 || len(instance.BlockDeviceMappings) != 0 {
-			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
-		}
-		return workerami.BuilderObservationV1{
-			InstanceID: instanceID, Name: name, State: state, BaseAMIID: baseAMIID,
-			InstanceType: instanceType, RootDeviceName: rootDeviceName, Tags: tags,
-		}, nil
+	topologyIncomplete := privateSubnetID == "" || len(instance.SecurityGroups) != 1 ||
+		len(instance.NetworkInterfaces) != 1 || len(instance.BlockDeviceMappings) != 1
+	if !launchResponse && (state == workerami.BuilderTerminated || state == workerami.BuilderStopping && topologyIncomplete) {
+		return detachedBuilderObservation(instance, instanceID, name, state, baseAMIID, privateSubnetID, instanceType, rootDeviceName, tags)
 	}
 	if privateSubnetID == "" || len(instance.SecurityGroups) != 1 {
 		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
@@ -459,6 +454,60 @@ func (adapter *Adapter) builderObservation(ctx context.Context, instance ec2type
 	}
 	if (launchResponse || state == workerami.BuilderTerminated) && len(instance.BlockDeviceMappings) == 1 && instance.BlockDeviceMappings[0].Ebs != nil && volumePattern.MatchString(stringValue(instance.BlockDeviceMappings[0].Ebs.VolumeId)) {
 		rootVolumeID = stringValue(instance.BlockDeviceMappings[0].Ebs.VolumeId)
+	}
+	return workerami.BuilderObservationV1{
+		InstanceID: instanceID, Name: name, State: state, BaseAMIID: baseAMIID,
+		PrivateSubnetID: privateSubnetID, ZeroIngressSGID: zeroIngressSGID,
+		InstanceType: instanceType, RootDeviceName: rootDeviceName, RootVolumeID: rootVolumeID,
+		NetworkInterfaceIDs: networkInterfaceIDs, Tags: tags,
+	}, nil
+}
+
+// detachedBuilderObservation accepts only the topology fields EC2 may retain
+// while a proved builder is shutting down. The service still binds every
+// returned provider ID to durable cleanup evidence before any further delete.
+func detachedBuilderObservation(instance ec2types.Instance, instanceID, name string, state workerami.BuilderState, baseAMIID, privateSubnetID, instanceType, rootDeviceName string, tags map[string]string) (workerami.BuilderObservationV1, error) {
+	if state != workerami.BuilderStopping && state != workerami.BuilderTerminated ||
+		instance.RootDeviceType != ec2types.DeviceTypeEbs || instance.IamInstanceProfile != nil || instance.KeyName != nil ||
+		stringValue(instance.PublicIpAddress) != "" || stringValue(instance.PublicDnsName) != "" ||
+		instance.InstanceLifecycle != "" || instance.SpotInstanceRequestId != nil ||
+		len(instance.SecurityGroups) > 1 || len(instance.NetworkInterfaces) > 1 || len(instance.BlockDeviceMappings) > 1 {
+		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+	}
+	if privateSubnetID != "" && !subnetPattern.MatchString(privateSubnetID) {
+		return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+	}
+	zeroIngressSGID := ""
+	if len(instance.SecurityGroups) == 1 {
+		zeroIngressSGID = stringValue(instance.SecurityGroups[0].GroupId)
+		if !securityGroupPattern.MatchString(zeroIngressSGID) {
+			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+		}
+	}
+	var networkInterfaceIDs []string
+	if len(instance.NetworkInterfaces) == 1 {
+		network := instance.NetworkInterfaces[0]
+		networkID := stringValue(network.NetworkInterfaceId)
+		if !networkPattern.MatchString(networkID) || network.Association != nil ||
+			privateSubnetID != "" && stringValue(network.SubnetId) != "" && stringValue(network.SubnetId) != privateSubnetID ||
+			len(network.Groups) > 1 || len(network.Groups) == 1 && zeroIngressSGID != "" && stringValue(network.Groups[0].GroupId) != zeroIngressSGID {
+			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+		}
+		for _, address := range network.PrivateIpAddresses {
+			if address.Association != nil {
+				return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+			}
+		}
+		networkInterfaceIDs = []string{networkID}
+	}
+	rootVolumeID := ""
+	if len(instance.BlockDeviceMappings) == 1 {
+		mapping := instance.BlockDeviceMappings[0]
+		if stringValue(mapping.DeviceName) != rootDeviceName || mapping.Ebs == nil ||
+			!aws.ToBool(mapping.Ebs.DeleteOnTermination) || !volumePattern.MatchString(stringValue(mapping.Ebs.VolumeId)) {
+			return workerami.BuilderObservationV1{}, workerami.ErrReadBackMismatch
+		}
+		rootVolumeID = stringValue(mapping.Ebs.VolumeId)
 	}
 	return workerami.BuilderObservationV1{
 		InstanceID: instanceID, Name: name, State: state, BaseAMIID: baseAMIID,

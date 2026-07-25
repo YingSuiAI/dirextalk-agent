@@ -746,11 +746,17 @@ func (service *Service) ensureBuilderTerminated(ctx context.Context, validated v
 		}
 		return nil
 	}
-	if validateBuilderObservation(observation, validated) != nil {
-		return ErrCleanupFailed
-	}
-	if err := cleanupState.capture(observation, validated); err != nil {
-		return ErrCleanupFailed
+	if observation.State == BuilderStopping && cleanupState.evidence.SchemaVersion != "" {
+		if validateStoppingBuilderForCleanup(observation, cleanupState.evidence) != nil {
+			return ErrCleanupFailed
+		}
+	} else {
+		if validateBuilderObservation(observation, validated) != nil {
+			return ErrCleanupFailed
+		}
+		if err := cleanupState.capture(observation, validated); err != nil {
+			return ErrCleanupFailed
+		}
 	}
 	_ = service.provider.TerminateBuilder(ctx, builderID)
 	for {
@@ -767,7 +773,11 @@ func (service *Service) ensureBuilderTerminated(ctx context.Context, validated v
 			}
 			break
 		}
-		if validateBuilderObservation(observation, validated) != nil {
+		if observation.State == BuilderStopping {
+			if validateStoppingBuilderForCleanup(observation, cleanupState.evidence) != nil {
+				return ErrCleanupFailed
+			}
+		} else if validateBuilderObservation(observation, validated) != nil {
 			return ErrCleanupFailed
 		}
 		if service.pause(ctx) != nil {

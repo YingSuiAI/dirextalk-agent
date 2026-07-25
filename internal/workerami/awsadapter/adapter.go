@@ -35,6 +35,7 @@ var (
 	snapshotPattern           = regexp.MustCompile(`^snap-[0-9a-f]{8,32}$`)
 	prefixPattern             = regexp.MustCompile(`^pl-[0-9a-f]{8,32}$`)
 	vpcPattern                = regexp.MustCompile(`^vpc-[0-9a-f]{8,32}$`)
+	subnetPattern             = regexp.MustCompile(`^subnet-[0-9a-f]{8,32}$`)
 	routeTablePattern         = regexp.MustCompile(`^rtb-[0-9a-f]{8,32}$`)
 	securityGroupPattern      = regexp.MustCompile(`^sg-[0-9a-f]{8,32}$`)
 	endpointPattern           = regexp.MustCompile(`^vpce-[0-9a-f]{8,32}$`)

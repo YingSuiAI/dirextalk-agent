@@ -482,6 +482,14 @@ func validateTerminatedBuilderForCleanup(observation BuilderObservationV1, evide
 	return nil
 }
 
+func validateStoppingBuilderForCleanup(observation BuilderObservationV1, evidence BuilderCleanupEvidenceV1) error {
+	if observation.State != BuilderStopping {
+		return ErrOwnershipMismatch
+	}
+	observation.State = BuilderTerminated
+	return validateTerminatedBuilderForCleanup(observation, evidence)
+}
+
 func imageManifestFromObservation(observation ImageObservationV1, expected validatedBuild) (ImageManifestV1, error) {
 	if err := validateImageObservation(observation, expected, true); err != nil {
 		return ImageManifestV1{}, err
