@@ -174,11 +174,31 @@ func TestAttestWorkerAMIFailsClosedOnReplacedOrInvalidImage(t *testing.T) {
 		}},
 		{name: "additional non-root mapping", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
 			fake.images.Images[0].BlockDeviceMappings = append(fake.images.Images[0].BlockDeviceMappings, ec2types.BlockDeviceMapping{
-				DeviceName: aws.String("/dev/sdb"), Ebs: &ec2types.EbsBlockDevice{SnapshotId: aws.String("snap-22222222222222222"), Encrypted: aws.Bool(true)},
+				DeviceName: aws.String("/dev/sdd"), Ebs: &ec2types.EbsBlockDevice{
+					SnapshotId: aws.String("snap-22222222222222222"), Encrypted: aws.Bool(true), VolumeType: ec2types.VolumeTypeGp3,
+					VolumeSize: aws.Int32(8), DeleteOnTermination: aws.Bool(true),
+				},
 			})
+		}},
+		{name: "duplicate ephemeral device", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
+			fake.images.Images[0].BlockDeviceMappings = append(fake.images.Images[0].BlockDeviceMappings, ec2types.BlockDeviceMapping{
+				DeviceName: aws.String("/dev/sdb"), VirtualName: aws.String("ephemeral2"),
+			})
+		}},
+		{name: "invalid ephemeral name", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
+			fake.images.Images[0].BlockDeviceMappings[1].VirtualName = aws.String("swap")
 		}},
 		{name: "unencrypted root mapping", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
 			fake.images.Images[0].BlockDeviceMappings[0].Ebs.Encrypted = aws.Bool(false)
+		}},
+		{name: "wrong root volume type", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
+			fake.images.Images[0].BlockDeviceMappings[0].Ebs.VolumeType = ec2types.VolumeTypeGp2
+		}},
+		{name: "zero root volume size", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
+			fake.images.Images[0].BlockDeviceMappings[0].Ebs.VolumeSize = aws.Int32(0)
+		}},
+		{name: "retained root volume", mutate: func(fake *workerAMIAttestationEC2Fake, _ WorkerAMIAttestationRequest) {
+			fake.images.Images[0].BlockDeviceMappings[0].Ebs.DeleteOnTermination = aws.Bool(false)
 		}},
 		{name: "wrong release tag", wantSnapshotCalls: 1, mutate: func(fake *workerAMIAttestationEC2Fake, request WorkerAMIAttestationRequest) {
 			setEC2Tag(fake.images.Images[0].Tags, TagReleaseManifestDigest, differentDigest(request.ReleaseManifestDigest))
@@ -316,8 +336,15 @@ func validWorkerAMIAttestationFake(request WorkerAMIAttestationRequest) *workerA
 		images: ec2.DescribeImagesOutput{Images: []ec2types.Image{{
 			ImageId: aws.String(request.AMIID), OwnerId: aws.String(request.AccountID), State: ec2types.ImageStateAvailable,
 			Architecture: ec2types.ArchitectureValuesX8664, RootDeviceName: aws.String(request.RootDeviceName), RootDeviceType: ec2types.DeviceTypeEbs,
-			BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String(request.RootDeviceName), Ebs: &ec2types.EbsBlockDevice{SnapshotId: aws.String(snapshotID), Encrypted: aws.Bool(true)}}},
-			Tags:                tags,
+			BlockDeviceMappings: []ec2types.BlockDeviceMapping{
+				{DeviceName: aws.String(request.RootDeviceName), Ebs: &ec2types.EbsBlockDevice{
+					SnapshotId: aws.String(snapshotID), Encrypted: aws.Bool(true), VolumeType: ec2types.VolumeTypeGp3,
+					VolumeSize: aws.Int32(8), DeleteOnTermination: aws.Bool(true),
+				}},
+				{DeviceName: aws.String("/dev/sdb"), VirtualName: aws.String("ephemeral0")},
+				{DeviceName: aws.String("/dev/sdc"), VirtualName: aws.String("ephemeral1")},
+			},
+			Tags: tags,
 		}}},
 		snapshots: ec2.DescribeSnapshotsOutput{Snapshots: []ec2types.Snapshot{{
 			SnapshotId: aws.String(snapshotID), OwnerId: aws.String(request.AccountID), State: ec2types.SnapshotStateCompleted,

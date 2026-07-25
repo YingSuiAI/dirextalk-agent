@@ -313,8 +313,7 @@ func inspectApprovedWorkerAMI(output *ec2.DescribeImagesOutput, request WorkerAM
 	}
 	if aws.ToString(image.ImageId) != request.AMIID || aws.ToString(image.OwnerId) != request.AccountID ||
 		image.State != ec2types.ImageStateAvailable || image.Architecture != wantedArchitecture ||
-		aws.ToString(image.RootDeviceName) != request.RootDeviceName || image.RootDeviceType != ec2types.DeviceTypeEbs ||
-		len(image.BlockDeviceMappings) != 1 {
+		aws.ToString(image.RootDeviceName) != request.RootDeviceName || image.RootDeviceType != ec2types.DeviceTypeEbs {
 		return ec2types.Image{}, "", workerAMIArtifactBinding{}, false
 	}
 	artifacts, ok := workerAMIArtifactTags(image.Tags, request.AgentInstanceID)
@@ -322,13 +321,53 @@ func inspectApprovedWorkerAMI(output *ec2.DescribeImagesOutput, request WorkerAM
 		return ec2types.Image{}, "", workerAMIArtifactBinding{}, false
 	}
 
-	mapping := image.BlockDeviceMappings[0]
-	if aws.ToString(mapping.DeviceName) != request.RootDeviceName || mapping.Ebs == nil ||
-		!aws.ToBool(mapping.Ebs.Encrypted) || !workerSnapshotIDPattern.MatchString(aws.ToString(mapping.Ebs.SnapshotId)) {
+	snapshotID, ok := approvedWorkerRootSnapshotID(image.BlockDeviceMappings, request.RootDeviceName)
+	if !ok {
 		return ec2types.Image{}, "", workerAMIArtifactBinding{}, false
 	}
-	snapshotID := aws.ToString(mapping.Ebs.SnapshotId)
 	return image, snapshotID, artifacts, true
+}
+
+func approvedWorkerRootSnapshotID(mappings []ec2types.BlockDeviceMapping, rootDeviceName string) (string, bool) {
+	seenDevices := make(map[string]struct{}, len(mappings))
+	snapshotID := ""
+	for _, mapping := range mappings {
+		deviceName := aws.ToString(mapping.DeviceName)
+		if !workerRootDevicePattern.MatchString(deviceName) || aws.ToString(mapping.NoDevice) != "" {
+			return "", false
+		}
+		if _, duplicate := seenDevices[deviceName]; duplicate {
+			return "", false
+		}
+		seenDevices[deviceName] = struct{}{}
+		if deviceName == rootDeviceName {
+			if snapshotID != "" || mapping.Ebs == nil || aws.ToString(mapping.VirtualName) != "" ||
+				!aws.ToBool(mapping.Ebs.Encrypted) || mapping.Ebs.VolumeType != ec2types.VolumeTypeGp3 ||
+				aws.ToInt32(mapping.Ebs.VolumeSize) <= 0 || !aws.ToBool(mapping.Ebs.DeleteOnTermination) ||
+				!workerSnapshotIDPattern.MatchString(aws.ToString(mapping.Ebs.SnapshotId)) {
+				return "", false
+			}
+			snapshotID = aws.ToString(mapping.Ebs.SnapshotId)
+			continue
+		}
+		if mapping.Ebs != nil || !validWorkerEphemeralName(aws.ToString(mapping.VirtualName)) {
+			return "", false
+		}
+	}
+	return snapshotID, snapshotID != ""
+}
+
+func validWorkerEphemeralName(value string) bool {
+	const prefix = "ephemeral"
+	if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
+		return false
+	}
+	for _, digit := range value[len(prefix):] {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func exactApprovedWorkerSnapshot(output *ec2.DescribeSnapshotsOutput, expectedID string, request WorkerAMIInspectionRequest, expected workerAMIArtifactBinding) bool {
