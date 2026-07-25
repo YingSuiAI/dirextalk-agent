@@ -14,8 +14,8 @@ const (
 	bundleName  = "agent_migrations.sql"
 	beginMarker = "-- dirextalk-agent migration begin "
 	endMarker   = "-- dirextalk-agent migration end "
-	// CurrentVersion is the latest virtual migration represented in the bundle.
-	CurrentVersion = int64(41)
+	// CurrentVersion is the Core v1 schema baseline version.
+	CurrentVersion = int64(1)
 )
 
 // Migration is one virtual migration extracted from the embedded bundle.
@@ -29,8 +29,7 @@ type Migration struct {
 //go:embed agent_migrations.sql
 var bundle embed.FS
 
-// Files exposes the historical virtual migration files to existing callers.
-// The physical source is the single embedded agent_migrations.sql bundle.
+// Files exposes the virtual migration files from the embedded bundle.
 var Files migrationFS
 
 var ordered []Migration
@@ -54,7 +53,7 @@ func init() {
 
 // ParseBundle extracts the ordered virtual migrations from raw. Marker lines
 // and separators are excluded; every returned Script retains its source bytes.
-// Input must contain exactly contiguous versions 1 through 41.
+// Input must contain exactly contiguous versions 1 through CurrentVersion.
 func ParseBundle(raw []byte) ([]Migration, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("migration bundle is empty")

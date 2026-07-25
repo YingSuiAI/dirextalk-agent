@@ -11,6 +11,8 @@
 *.out
 *.exe
 *.test
+/dirextalk-agent
+/dirextalk-extension-runner
 bin/
 dist/
 coverage/

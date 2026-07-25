@@ -1,77 +1,71 @@
-# Dirextalk Agent delivery status
+# Core v1 delivery tracker
 
-## Purpose
+This tracker describes the current independent Agent contract and its
+verification. External product work is not included.
 
-Dirextalk Agent is an independent, reusable, single-tenant control service for
-durable AI tasks and typed cloud workloads. This document records the current
-product state and the next acceptance work; detailed historical handoffs and
-closed checkpoints are intentionally not retained here.
+## Implemented Core v1
 
-## Fixed product boundary
+- Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
+- TLS 1.3 gRPC server with protected `DTX-Agent-Token` authentication,
+  optional health/reflection, and capability/instance discovery.
+- PostgreSQL-backed model profiles, conversations, Tasks, events, schedules,
+  confirmation records, and fenced recovery paths.
+- Eino-adapted model calls inside the durable conversation and Task execution
+  paths, without moving Task recovery or tool ledgers into an opaque graph.
+- Core MCP/Skill lifecycle RPCs and isolated extension-runner composition.
+- Current-only extension execution: the obsolete in-process/legacy sandbox
+  surface is removed, and execution uses the descriptor-only Linux boundary.
+- Core Knowledge uploads, mounts, memory, indexing/search composition.
+- Typed Core AWS credentials, plans, and confirmation-bound change composition.
+- Versioned Core Protobufs and Core-focused contract tests.
 
-- One Agent instance owns one project and one PostgreSQL database/role. It may
-  reuse a PostgreSQL 18 server, never another service's database, schema,
-  credentials, or migration ledger.
-- The public boundary is versioned Protobuf/gRPC. Caller services use scoped,
-  pairwise Service Keys; user-facing authentication and transports remain
-  outside Agent.
-- The control container is non-root and has no shell, Docker socket, arbitrary
-  provider API, or arbitrary credential capability. Privileged work is limited
-  to an exclusive Cloud Worker VM and a closed signed-command protocol.
-- Device approval is mandatory for spending, network exposure, secret delivery,
-  managed acceptance, and destruction. Service Keys cannot perform those
-  approvals.
-- AWS is the only current cloud provider. The supported execution kinds are
-  `CONTROL_PLANE` and `CLOUD_WORKER`; multi-tenancy, multi-cloud, EKS,
-  SageMaker, distributed training, Connect, and vNext Run are out of scope.
+## Verification status
 
-## Delivered capability
+The Core acceptance suite covers the ten scenarios listed in the [Core v1
+specification](core-v1-development-spec.md). Local verification uses:
 
-| Area | Current state |
-| --- | --- |
-| Task kernel | TLS gRPC authentication, durable Tasks/Steps, idempotency, revisions, leases, cancellation, outbox events, and cursor resume are implemented. |
-| Runtime | Eino-backed persisted `Chat`/`StreamChat`, server-owned model profiles, context control, mounted secret references, optional trusted HTTP MCP metadata, and restricted Cloud Goal planning are implemented. |
-| Cloud planning | Encrypted one-time AWS bootstrap, STS identity preview, typed price/quota evidence, deterministic plans, device-signed approvals, and Foundation lifecycle contracts are implemented behind an explicit gate. |
-| Worker and lifecycle | Typed EC2/EBS/network resource ledger, fenced Worker enrollment/checkpoints, scoped artifacts, health evidence, DynamoDB expiry manifests, Reaper, recovery, and approved destroy flows are implemented and locally/fake-provider tested. |
-| Managed Knowledge | Controlled Knowledge configuration, attachment/memory/search operations, deterministic Worker profile, backup/restore/upgrade/rollback/destroy, and cross-store recovery fencing are implemented locally. |
-| Packaging | Repository-local Agent, Worker, Reaper, deterministic rootfs, ECR release, and Worker AMI operator tooling are implemented. Their real AWS publication and acceptance have not been executed. |
+```text
+go test ./...
+go vet ./...
+go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner
+buf lint
+git diff --check
+```
 
-## Current delivery priorities
+Set `AGENT_TEST_POSTGRES_DSN` for opt-in PostgreSQL integration tests; Knowledge
+integration also accepts `DIREXTALK_TEST_DATABASE_URL`.
 
-1. **Real-cloud release evidence.** From a clean revision and authorized
-   disposable AWS account, publish immutable Agent/Worker/Reaper artifacts,
-   build/attest/verify/destroy a Worker AMI, import the publication, and prove
-   cleanup with independent read-back. Until then,
-   `enable_aws_control` remains off for production use.
-2. **Product façade/client cutover.** Complete the remaining Message Server
-   and Flutter Cloud/Knowledge/attachment contracts, exact event projections,
-   cursor recovery, and user workflows. Agent remains directly consumable via
-   gRPC regardless of that façade work.
-3. **End-to-end acceptance.** In an authorized account, prove the complete
-   encrypted bootstrap → quote → approval → Worker → monitored lifecycle →
-   approved destruction path. Do not claim an OpenClaw or knowledge-node
-   deployment before that evidence exists.
+The opt-in Linux isolation acceptance passed both in a privileged cgroup-v2
+test environment and in a non-root delegated systemd user scope. It verifies
+the detached root, hidden host/config paths, denied network, exact secret
+exposure, descendant creation, cancellation through `cgroup.kill`, the
+`populated 0` read-back, workspace cleanup, and zero process/cgroup residue.
 
-## Verification policy
+The final local acceptance run completed 435 tests across 24 packages in both
+normal and race modes. Vet, both command builds, Buf lint, deterministic
+Protobuf generation, formatting, module tidiness, and diff checks also passed.
 
-- Local changes require affected unit/contract tests, `go vet`, command builds,
-  Buf lint when protobuf changes, and `git diff --check`.
-- PostgreSQL integration tests are opt-in through `AGENT_TEST_POSTGRES_DSN` and
-  must clean up their own database/role artifacts.
-- AWS mutation, release, and destructive checks require explicit authority and
-  independent resource read-back. Fake-provider coverage is not a production
-  acceptance substitute.
-- Migration sources retain their original virtual versions and checksums. Any
-  schema change must preserve replay/partial-upgrade behavior or provide a
-  separately tested compatibility transition.
+On 2026-07-25, an explicitly authorized real AWS Core lifecycle ran in
+`us-east-1` through the production typed provider and Agent confirmation/durable
+Task path. It created exactly one CloudFormation stack containing one tagged
+idle SQS queue; independent stack, resource, and tag read-back succeeded. The
+stack was deleted through Agent confirmation/Task, deletion was independently
+verified, and a post-run prefix audit found zero active stacks or queues. This
+delivery evidence is separate from the Agent runtime boundary.
 
-## Documentation map
+## Maintenance policy
 
-- [Architecture](architecture.md): runtime and trust boundaries.
-- [API contract](api-contract.md): public gRPC and security semantics.
-- [Container deployment](../deploy/container/README.md): configuration and
-  Compose operation.
-- [Agent image release](agent-image-release.md),
-  [artifact origin](artifact-origin-release.md),
-  [managed ECR verification](ecr-managed-release.md), and
-  [Worker AMI release](worker-ami-release.md): current operator runbooks.
+Core v1 has no known open acceptance defect. Future fixes or hardening remain
+within the current contract. New behavior must first be reflected in the
+versioned Protobuf, migrations, focused tests, and the Core specification.
+
+## Product boundary
+
+Product adapters, REST, admin UI, multi-user/RBAC, clusters, pools,
+graph/DAG authoring, task priority, and deployment automation are not part of
+the Agent runtime. The real-account AWS lifecycle above is delivery validation,
+separate from these runtime and product boundaries.
+
+See [the Core v1 specification](core-v1-development-spec.md),
+[architecture](architecture.md), and [API contract](api-contract.md) for the
+stable boundaries.

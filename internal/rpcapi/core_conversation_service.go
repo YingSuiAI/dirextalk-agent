@@ -1,0 +1,233 @@
+package rpcapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"strconv"
+	"strings"
+)
+
+type CoreConversationService struct {
+	agentv1.UnimplementedConversationServiceServer
+	service *coreconversation.Service
+}
+
+func NewCoreConversationService(service *coreconversation.Service) (*CoreConversationService, error) {
+	if service == nil {
+		return nil, errors.New("conversation service required")
+	}
+	return &CoreConversationService{service: service}, nil
+}
+func mapErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, coreconversation.ErrInvalid) {
+		return status.Error(codes.InvalidArgument, "invalid conversation request")
+	}
+	if errors.Is(err, coreconversation.ErrConflict) {
+		return status.Error(codes.Aborted, "conversation conflict")
+	}
+	if errors.Is(err, coreconversation.ErrInFlight) {
+		return status.Error(codes.Aborted, "request in flight")
+	}
+	if errors.Is(err, coreconversation.ErrChatFailed) {
+		return status.Error(codes.FailedPrecondition, "chat failed")
+	}
+	if errors.Is(err, coreconversation.ErrDeleted) {
+		return status.Error(codes.NotFound, "conversation not found")
+	}
+	return status.Error(codes.Internal, "conversation operation failed")
+}
+func convProto(c coreconversation.Conversation) *agentv1.CoreConversation {
+	return &agentv1.CoreConversation{ConversationId: c.ID, Title: c.Title, Revision: int64(c.Revision), CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt)}
+}
+func msgProto(m coreconversation.Message, seq int64, conversationID ...string) *agentv1.CoreConversationMessage {
+	payload := (*structpb.Struct)(nil)
+	if raw, e := json.Marshal(m); e == nil {
+		var value map[string]any
+		if json.Unmarshal(raw, &value) == nil {
+			payload, _ = structpb.NewStruct(value)
+		}
+	}
+	id := ""
+	if len(conversationID) > 0 {
+		id = conversationID[0]
+	}
+	return &agentv1.CoreConversationMessage{MessageId: m.ID, ConversationId: id, Sequence: seq, Role: string(m.Role), Content: m.Content, ModelProfileId: m.ModelProfileID, Payload: payload, RelatedTaskIds: m.RelatedTaskIDs, ToolSummaries: m.ToolSummaries, CreatedAt: timestamppb.New(m.CreatedAt)}
+}
+func extensionCommands(in []*agentv1.CoreExtensionSelection) []coreconversation.ExtensionSelection {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]coreconversation.ExtensionSelection, 0, len(in))
+	for _, x := range in {
+		if x == nil {
+			continue
+		}
+		out = append(out, coreconversation.ExtensionSelection{
+			Kind:         coreconversation.ExtensionKind(x.GetKind()),
+			ID:           x.GetId(),
+			Version:      x.GetPinnedVersion(),
+			Digest:       x.GetDigest(),
+			AllowedTools: append([]string(nil), x.GetAllowedTools()...),
+		})
+	}
+	return out
+}
+func validateRPCChatRequest(extensions []*agentv1.CoreExtensionSelection, knowledge []string) error {
+	if len(knowledge) > 0 {
+		return status.Error(codes.InvalidArgument, "knowledge references are unavailable")
+	}
+	if len(extensions) > 0 {
+		return status.Error(codes.InvalidArgument, "extension selections are unavailable")
+	}
+	return nil
+}
+func summaryList(summary string) []string {
+	if summary == "" {
+		return nil
+	}
+	return []string{summary}
+}
+func (s *CoreConversationService) Create(ctx context.Context, r *agentv1.ConversationServiceCreateRequest) (*agentv1.ConversationServiceCreateResponse, error) {
+	key := r.GetIdempotencyKey()
+	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation:"+key)).String()
+	c := coreconversation.Conversation{ID: id, Title: r.GetTitle(), Revision: 1}
+	out, e := s.service.CreateConversation(ctx, c, key)
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceCreateResponse{Conversation: convProto(out)}, nil
+}
+func (s *CoreConversationService) Get(ctx context.Context, r *agentv1.ConversationServiceGetRequest) (*agentv1.ConversationServiceGetResponse, error) {
+	c, e := s.service.GetConversation(ctx, r.GetConversationId())
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	out := &agentv1.ConversationServiceGetResponse{Conversation: convProto(c)}
+	start := 0
+	if token := strings.TrimSpace(r.GetPageToken()); token != "" {
+		var e error
+		start, e = strconv.Atoi(token)
+		if e != nil || start < 0 || start > len(c.Messages) {
+			return nil, status.Error(codes.InvalidArgument, "invalid page token")
+		}
+	}
+	end := len(c.Messages)
+	if size := int(r.GetPageSize()); size > 0 {
+		if size > 1000 {
+			return nil, status.Error(codes.InvalidArgument, "invalid page size")
+		}
+		if end > start+size {
+			end = start + size
+		}
+	}
+	for i := start; i < end; i++ {
+		out.Messages = append(out.Messages, msgProto(c.Messages[i], int64(i+1), c.ID))
+	}
+	if end < len(c.Messages) {
+		out.NextPageToken = strconv.Itoa(end)
+	}
+	return out, nil
+}
+func (s *CoreConversationService) List(ctx context.Context, r *agentv1.ConversationServiceListRequest) (*agentv1.ConversationServiceListResponse, error) {
+	cs, next, e := s.service.ListConversations(ctx, r.GetPageToken(), int(r.GetPageSize()))
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	out := &agentv1.ConversationServiceListResponse{NextPageToken: next}
+	for _, c := range cs {
+		out.Conversations = append(out.Conversations, convProto(c))
+	}
+	return out, nil
+}
+func (s *CoreConversationService) Delete(ctx context.Context, r *agentv1.ConversationServiceDeleteRequest) (*agentv1.ConversationServiceDeleteResponse, error) {
+	if e := s.service.DeleteConversation(ctx, r.GetConversationId(), uint64(r.GetExpectedRevision()), r.GetIdempotencyKey()); e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceDeleteResponse{}, nil
+}
+func (s *CoreConversationService) Chat(ctx context.Context, r *agentv1.ConversationServiceChatRequest) (*agentv1.ConversationServiceChatResponse, error) {
+	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
+		return nil, e
+	}
+	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), Extensions: extensionCommands(r.GetExtensions())}
+	if r.ExpectedRevision != nil {
+		x := uint64(r.GetExpectedRevision())
+		cmd.ExpectedRevision = &x
+	}
+	res, e := s.service.Chat(ctx, cmd)
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceChatResponse{Conversation: &agentv1.CoreConversation{ConversationId: res.ConversationID, Revision: int64(res.Revision)}, Message: msgProto(res.Message, int64(res.Revision), res.ConversationID), RelatedTaskIds: res.RelatedTaskIDs}, nil
+}
+func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStreamChatRequest, stream agentv1.ConversationService_StreamChatServer) error {
+	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
+		return e
+	}
+	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), Extensions: extensionCommands(r.GetExtensions())}
+	if r.ExpectedRevision != nil {
+		x := uint64(r.GetExpectedRevision())
+		cmd.ExpectedRevision = &x
+	}
+	ch, e := s.service.StreamChat(stream.Context(), cmd)
+	if e != nil {
+		return mapErr(e)
+	}
+	for ev := range ch {
+		var out *agentv1.ConversationServiceStreamChatResponse
+		switch ev.Kind {
+		case coreconversation.EventStarted:
+			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Status: "started"}}}
+		case coreconversation.EventDelta:
+			out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Delta{Delta: &agentv1.CoreStreamChatDelta{Text: ev.Text}}}
+		case coreconversation.EventToolCall:
+			if ev.ToolCall != nil {
+				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Name: ev.ToolCall.Name, Status: "started"}}}
+			}
+		case coreconversation.EventToolResult:
+			if ev.ToolResult != nil {
+				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Name: ev.ToolResult.ToolName, Status: "completed", RelatedTaskIds: ev.ToolResult.RelatedTaskIDs, ToolSummaries: summaryList(ev.ToolResult.Summary)}}}
+			}
+		case coreconversation.EventDone:
+			if ev.Response != nil {
+				results := make([]*agentv1.CoreToolResult, 0, len(ev.Response.ToolResults))
+				for _, tr := range ev.Response.ToolResults {
+					results = append(results, &agentv1.CoreToolResult{ToolName: tr.ToolName, Summary: tr.Summary, RelatedTaskIds: tr.RelatedTaskIDs, ToolSummaries: summaryList(tr.Summary)})
+				}
+				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Done{Done: &agentv1.CoreStreamChatDone{Message: msgProto(ev.Response.Message, int64(ev.Response.Revision), ev.Response.ConversationID), RelatedTaskIds: ev.Response.RelatedTaskIDs, ToolResults: results}}}
+			}
+		case coreconversation.EventError:
+			return mapStreamError(ev.ErrCode)
+		}
+		if out != nil {
+			if e := stream.Send(out); e != nil {
+				return e
+			}
+		}
+	}
+	return nil
+}
+
+func mapStreamError(code string) error {
+	switch code {
+	case "conflict":
+		return status.Error(codes.Aborted, "conversation conflict")
+	case "in_flight":
+		return status.Error(codes.Aborted, "request in flight")
+	case "claim_failed", "execution_failed":
+		return status.Error(codes.FailedPrecondition, "chat failed")
+	default:
+		return status.Error(codes.FailedPrecondition, "chat failed")
+	}
+}

@@ -14,8 +14,7 @@ import (
 	"strings"
 	"time"
 
-	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
-	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
 
 const (
@@ -92,19 +91,19 @@ type configuredServer struct {
 	transport string
 }
 
-// Provider implements runtime.ToolProvider for a fixed trusted server set.
+// Provider implements ToolProvider for a fixed trusted server set.
 // It keeps neither resolved credentials nor model-provided routing state.
 type Provider struct {
 	servers []configuredServer
-	secrets runtimeapi.SecretResolver
+	secrets SecretResolver
 	policy  EndpointPolicy
 	client  *http.Client
 	timeout time.Duration
 }
 
-var _ runtimeapi.ToolProvider = (*Provider)(nil)
+var _ ToolProvider = (*Provider)(nil)
 
-func New(configs []ServerConfig, secrets runtimeapi.SecretResolver, optionValues ...Option) (*Provider, error) {
+func New(configs []ServerConfig, secrets SecretResolver, optionValues ...Option) (*Provider, error) {
 	opts := options{timeout: defaultTimeout}
 	for _, option := range optionValues {
 		if option != nil {
@@ -173,11 +172,11 @@ func normalizeServerConfig(config ServerConfig) (configuredServer, error) {
 	return configuredServer{id: id, endpoint: endpoint, secretRef: secretRef, transport: transport}, nil
 }
 
-func (p *Provider) Tools(ctx context.Context, request runtimeapi.ToolRequest) ([]runtimeapi.Tool, error) {
+func (p *Provider) Tools(ctx context.Context) ([]Tool, error) {
 	if p == nil || p.client == nil || p.policy == nil {
 		return nil, ErrInvalidConfig
 	}
-	tools := make([]runtimeapi.Tool, 0)
+	tools := make([]Tool, 0)
 	exposedNames := make(map[string]struct{})
 	for _, server := range p.servers {
 		session, err := p.initialize(ctx, server)
@@ -200,19 +199,19 @@ func (p *Provider) Tools(ctx context.Context, request runtimeapi.ToolRequest) ([
 			remoteName := remote.Name
 			toolName := exposedName
 			toolSession := session
-			tools = append(tools, runtimeapi.Tool{
-				Definition: modelapi.Tool{
+			tools = append(tools, Tool{
+				Definition: coremodel.Tool{
 					Name:        toolName,
 					Description: remote.Description,
 					InputSchema: cloneSchema(remote.InputSchema),
 				},
-				Run: func(callCtx context.Context, invocation runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
+				Run: func(callCtx context.Context, invocation ToolInvocation) (ToolResult, error) {
 					if strings.TrimSpace(invocation.Name) != toolName {
-						return runtimeapi.ToolResult{}, ErrUnsafeToolArguments
+						return ToolResult{}, ErrUnsafeToolArguments
 					}
 					arguments, err := validateToolArguments(invocation.Arguments)
 					if err != nil {
-						return runtimeapi.ToolResult{}, err
+						return ToolResult{}, err
 					}
 					return toolSession.callTool(callCtx, remoteName, arguments)
 				},

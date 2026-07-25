@@ -1,104 +1,72 @@
 # Dirextalk Agent
 
-Dirextalk Agent is a reusable, single-tenant control service for persistent AI
-tasks and typed cloud workloads. It exposes versioned gRPC, persists durable
-facts in PostgreSQL, runs Eino only through typed tools, and delegates
-privileged execution to an exclusive Cloud Worker VM.
+Dirextalk Agent is a private, single-user service that owns durable agent data
+for one Dirextalk deployment. It exposes versioned TLS gRPC, stores state in
+PostgreSQL, and runs background work through the durable Core Task path.
 
-It is independent of Matrix, ProductCore, Flutter, and the legacy deployer.
-Other services integrate directly over TLS gRPC with a scoped pairwise Service
-Key and retain their own user-facing transport and authentication.
+## Core v1 capabilities
 
-## What it provides
+- Conversations and server-owned model profiles through an Eino model
+  boundary.
+- Durable Tasks, events, cancellation, leases, schedules, and recovery.
+- Generic user confirmations for operations that need explicit approval.
+- MCP and Skills with pinned revisions and isolated extension-runner execution.
+- Agent-owned Knowledge sources, uploads, indexing, and semantic search.
+- Typed AWS credentials, plans, and confirmed cloud changes.
 
-- Durable Tasks, Steps, idempotency, revision/lease fencing, cancellation, and
-  resumable events.
-- Persisted AI conversations with `RuntimeService.Chat` and `StreamChat`,
-  server-owned model profiles, mounted secret references, and restricted
-  planning tools.
-- Typed AWS identity, quote, plan, approval, Foundation, Worker, resource,
-  lifecycle, and recovery capabilities behind a default-off control gate.
-- Controlled Knowledge configuration, ingestion, search, and retained
-  lifecycle operations through the exclusive Worker boundary.
+The service is not a REST API, admin console, cluster, pool, graph editor, or
+multi-user control plane. Product clients use their own business server; that
+server is the future proxy to this Agent instance.
 
-See [the API contract](docs/api-contract.md) and
-[architecture](docs/architecture.md) for the public and security boundaries.
+## Authentication and configuration
 
-## Configuration
-
-The process reads a strict YAML configuration through Viper. Its default path
-is `/etc/dirextalk-agent/config.yaml`; use `--config <path>` for a different
-location. `AGENT_CONFIG_FILE` remains a compatibility-only path override. No
-operational `AGENT_*` setting is required by the service itself.
-
-Start from
-[deploy/container/config/config.example.yaml](deploy/container/config/config.example.yaml).
-The file contains identifiers, feature gates, and mounted-file paths only;
-never place a DSN, TLS private key, service key, model credential, or other
-secret value in it. The runtime model-secret directory must be distinct from
-the Docker secret directory so a `mounted:<name>` model reference cannot resolve
-database, TLS, pepper, or master-key files.
-
-The commands are:
+The process reads strict YAML from `/etc/dirextalk-agent/config.yaml` or the
+path supplied with `--config`. YAML contains identifiers, feature gates, and
+protected file paths, never credential values. The Core gRPC server uses TLS
+1.3 and one deployment-generated token file:
 
 ```text
 dirextalk-agent [--config PATH] migrate
-dirextalk-agent [--config PATH] bootstrap-service-key
-dirextalk-agent [--config PATH] bootstrap-approval-device
-dirextalk-agent [--config PATH] healthcheck
 dirextalk-agent [--config PATH] serve
 ```
 
-`migrate` and `bootstrap-service-key` must complete before `serve`. The same
-immutable `instance_id` and Agent-owned PostgreSQL database/role must be used
-for every command. On Linux, mounted secret files must be regular and not
-group/world-readable.
-
-## Docker Compose
-
-Two deployment forms are provided; neither runs a local Worker or Reaper,
-because those have exclusive VM and AWS Lambda boundaries.
-
-- `deploy/container/compose.local.yaml` is the local multi-container stack:
-  PostgreSQL 18 → migration → idempotent service-key bootstrap → Agent. Supply
-  immutable image references, host paths to the non-secret YAML config, and
-  host secret-file paths, then run:
-
-  ```text
-  docker compose -f deploy/container/compose.local.yaml config --quiet
-  docker compose -f deploy/container/compose.local.yaml up -d
-  ```
-
-- `deploy/container/compose.yaml` keeps the production-style external
-  PostgreSQL boundary. Run migration and bootstrap explicitly, then start the
-  Agent. Add `compose.shared-postgres.yaml` only to join an existing database
-  network; it does not own or change that PostgreSQL container.
-
-Detailed mount, secret, and release guidance is in
-[deploy/container/README.md](deploy/container/README.md).
+`migrate` applies the Agent-owned PostgreSQL schema. `serve` starts the Core
+gRPC server, worker pool, scheduler, and enabled domain compositions. Token
+rotation is an atomic replacement of the protected file followed by restart;
+there is no remote token-management API.
 
 ## Development
 
-Requirements: Go 1.26, Buf, Protobuf compiler, and PostgreSQL 18 only for the
-opt-in integration lanes.
+Requirements are Go, Buf/protobuf tooling, and PostgreSQL for opt-in
+integration tests.
 
 ```text
-buf generate
 go test ./...
 go vet ./...
-go build ./cmd/...
+go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner
 buf lint
 ```
 
-`AGENT_TEST_POSTGRES_DSN` enables PostgreSQL integration checks. Real AWS
-tests, image publication, AMI operations, and destructive resource checks need
-separate authorization and independent read-back.
+Set `AGENT_TEST_POSTGRES_DSN` for normal PostgreSQL integration tests; Knowledge
+integration also accepts `DIREXTALK_TEST_DATABASE_URL`. The authorized real AWS
+lane requires `DIREXTALK_REAL_AWS_ACCEPTANCE=1`,
+`DIREXTALK_COREV1_TEST_DSN`, `DIREXTALK_REAL_AWS_CREDENTIAL_CSV`, and
+`DIREXTALK_REAL_AWS_ACCOUNT_ID`; `DIREXTALK_REAL_AWS_REGION` is optional and
+defaults to `us-east-1`.
 
-## Delivery status
+The Linux extension isolation lane is opt-in because it needs a delegated
+cgroup-v2 subtree and user/mount namespace support. Set
+`DIREXTALK_EXTENSION_RUNNER_INTEGRATION=1` and point
+`DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT` at that subtree. The acceptance test
+covers the detached filesystem, denied network, explicit secret visibility,
+descendant cancellation, and verified cgroup removal.
 
-The durable task/runtime and first-validation AWS/Worker/Knowledge code paths
-are implemented and locally or fake-provider tested. Real ECR publication,
-Worker AMI build/verification/destruction, and end-to-end AWS product
-acceptance have not been run; keep AWS control off in production until those
-gates close. The concise current status and priorities are in
-[docs/delivery-tracker.md](docs/delivery-tracker.md).
+The authorized AWS lane completed on 2026-07-25: the production typed provider
+and Agent confirmation/Task path created and independently read back exactly
+one tagged idle SQS queue in one CloudFormation stack, then confirmed and
+deleted it; independent deletion verification and a post-run prefix audit found
+zero active stacks or queues.
+
+See [the API contract](docs/api-contract.md),
+[architecture](docs/architecture.md), and the
+[Core v1 development specification](docs/core-v1-development-spec.md).

@@ -2,45 +2,34 @@ package migrations
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"testing"
 )
 
-// HistoricalChecksumManifestDigest is the SHA-256 of the ordered
-// "<version>:<script-sha256>\n" records from the pre-bundle migration files.
-const historicalChecksumManifestDigest = "787e61101e075b8d6072f0bdc19f200fd0b475dcaefce77eaa3a52d244947a6a"
-
-func TestBundlePreservesOrderedVirtualSources(t *testing.T) {
+func TestBundleContainsOnlyCoreV1Baseline(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 41 {
-		t.Fatalf("got %d migrations, want 41", len(entries))
+	if len(entries) != 1 || entries[0] != "000001_core_v1_baseline.up.sql" {
+		t.Fatalf("entries=%v, want the Core v1 baseline only", entries)
 	}
-	for index, entry := range entries {
-		wantVersion := int64(index + 1)
-		version, err := migrationVersion(entry)
-		if err != nil || version != wantVersion {
-			t.Fatalf("entry %q has version %d, want %d (err=%v)", entry, version, wantVersion, err)
-		}
-		script, err := Files.ReadFile(entry)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(script) == 0 || script[len(script)-1] != '\n' {
-			t.Fatalf("entry %q lost its source newline", entry)
-		}
+	migration := Ordered()[0]
+	if migration.Version != CurrentVersion {
+		t.Fatalf("version=%d, want %d", migration.Version, CurrentVersion)
 	}
-}
-
-func TestBundlePreservesHistoricalChecksums(t *testing.T) {
-	digest := sha256.New()
-	for _, migration := range Ordered() {
-		scriptChecksum := sha256.Sum256(migration.Script)
-		_, _ = fmt.Fprintf(digest, "%d:%x\n", migration.Version, scriptChecksum)
+	if len(migration.Script) == 0 || migration.Script[len(migration.Script)-1] != '\n' {
+		t.Fatal("baseline script lost its source newline")
 	}
-	if got := hex.EncodeToString(digest.Sum(nil)); got != historicalChecksumManifestDigest {
-		t.Fatalf("historical migration checksum manifest changed: got %s, want %s", got, historicalChecksumManifestDigest)
+	for _, needle := range []string{
+		"CREATE TABLE agent_instance_metadata",
+		"CREATE TABLE core_model_profiles",
+		"CREATE TABLE core_tasks",
+		"CREATE TABLE core_confirmations",
+		"CREATE TABLE core_knowledge_sources",
+		"CREATE TABLE core_extension_installations",
+		"CREATE TABLE core_aws_credentials",
+		"CREATE TABLE core_task_execution_snapshots",
+	} {
+		if !bytes.Contains(migration.Script, []byte(needle)) {
+			t.Fatalf("baseline missing %q", needle)
+		}
 	}
 }
 
@@ -49,8 +38,7 @@ func TestParseBundleRejectsMalformedMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := []byte(beginMarker + "000001_core.up.sql\n")
-	second := []byte(beginMarker + "000002_task_execution.up.sql\n")
+	first := []byte(beginMarker + "000001_core_v1_baseline.up.sql\n")
 	cases := []struct {
 		name   string
 		mutate func([]byte) []byte
@@ -58,27 +46,28 @@ func TestParseBundleRejectsMalformedMarkers(t *testing.T) {
 		{
 			name: "duplicate",
 			mutate: func(input []byte) []byte {
-				return bytes.Replace(input, second, first, 1)
+				end := []byte(endMarker + "000001_core_v1_baseline.up.sql\n")
+				return bytes.Replace(input, end, append(first, end...), 1)
 			},
 		},
 		{
 			name: "noncontiguous",
 			mutate: func(input []byte) []byte {
-				return bytes.Replace(input, first, []byte(beginMarker+"000003_runtime.up.sql\n"), 1)
+				return bytes.Replace(input, first, []byte(beginMarker+"000002_future.up.sql\n"), 1)
 			},
 		},
 		{
 			name: "missing-end",
 			mutate: func(input []byte) []byte {
-				marker := []byte(endMarker + "000001_core.up.sql\n")
+				marker := []byte(endMarker + "000001_core_v1_baseline.up.sql\n")
 				return bytes.Replace(input, marker, nil, 1)
 			},
 		},
 		{
 			name: "mismatched-end",
 			mutate: func(input []byte) []byte {
-				firstEnd := []byte(endMarker + "000001_core.up.sql\n")
-				return bytes.Replace(input, firstEnd, []byte(endMarker+"000002_task_execution.up.sql\n"), 1)
+				marker := []byte(endMarker + "000001_core_v1_baseline.up.sql\n")
+				return bytes.Replace(input, marker, []byte(endMarker+"000002_future.up.sql\n"), 1)
 			},
 		},
 	}

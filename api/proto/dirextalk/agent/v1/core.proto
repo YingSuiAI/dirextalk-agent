@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+// AgentService exposes only the safe, instance-level discovery surface.
+service AgentService {
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+  rpc GetInstanceInfo(GetInstanceInfoRequest) returns (GetInstanceInfoResponse);
+}
+
+message GetCapabilitiesRequest {}
+
+message AgentCapability {
+  string name = 1;
+  bool enabled = 2;
+}
+
+message GetCapabilitiesResponse {
+  string api_version = 1;
+  repeated AgentCapability capabilities = 2;
+}
+
+message GetInstanceInfoRequest {}
+
+message GetInstanceInfoResponse {
+  string instance_id = 1;
+  string api_version = 2;
+}

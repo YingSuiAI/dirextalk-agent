@@ -1,0 +1,88 @@
+//go:build linux
+
+package extensionrunner
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"os"
+
+	"golang.org/x/sys/unix"
+)
+
+// VerifyResultFilesFD performs the production result handoff without
+// reconstructing a host path. openat2 makes every component stay beneath the
+// already-authorized task workspace and rejects symlinks and magic links.
+func VerifyResultFilesFD(workspaceFD int, registered []string) ([]ResultFile, error) {
+	files, err := collectResultFilesFD(workspaceFD, registered, true)
+	return files, err
+}
+
+func CollectAvailableResultFilesFD(workspaceFD int, registered []string) ([]ResultFile, error) {
+	return collectResultFilesFD(workspaceFD, registered, false)
+}
+
+func collectResultFilesFD(workspaceFD int, registered []string, requireAll bool) ([]ResultFile, error) {
+	if workspaceFD < 0 {
+		return nil, ErrInvalid
+	}
+	files := make([]ResultFile, 0, len(registered))
+	var result error
+	for _, rel := range registered {
+		if !safeRelativeSlash(rel) {
+			if requireAll {
+				return files, ErrInvalid
+			}
+			result = errors.Join(result, ErrInvalid)
+			continue
+		}
+		how := &unix.OpenHow{
+			// O_NONBLOCK makes opening an attacker-controlled FIFO or device
+			// non-blocking; Fstat below accepts only an exact regular file.
+			Flags:   uint64(unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC | unix.O_NOFOLLOW),
+			Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS,
+		}
+		fd, err := unix.Openat2(workspaceFD, rel, how)
+		if err != nil {
+			if !requireAll && err == unix.ENOENT {
+				continue
+			}
+			if requireAll {
+				return files, ErrInvalid
+			}
+			result = errors.Join(result, ErrInvalid)
+			continue
+		}
+		var stat unix.Stat_t
+		if err = unix.Fstat(fd, &stat); err != nil ||
+			stat.Mode&unix.S_IFMT != unix.S_IFREG ||
+			stat.Size < 0 ||
+			stat.Size > MaxOutputBytes {
+			_ = unix.Close(fd)
+			if requireAll {
+				return files, ErrInvalid
+			}
+			result = errors.Join(result, ErrInvalid)
+			continue
+		}
+		file := os.NewFile(uintptr(fd), rel)
+		hash := sha256.New()
+		n, readErr := io.Copy(hash, io.LimitReader(file, MaxOutputBytes+1))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || n != stat.Size || n > MaxOutputBytes {
+			if requireAll {
+				return files, ErrInvalid
+			}
+			result = errors.Join(result, ErrInvalid)
+			continue
+		}
+		files = append(files, ResultFile{
+			Path:   rel,
+			SHA256: hex.EncodeToString(hash.Sum(nil)),
+			Size:   n,
+		})
+	}
+	return files, result
+}
