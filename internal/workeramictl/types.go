@@ -158,6 +158,7 @@ type AMIService interface {
 	Verify(context.Context, workerami.ImageManifestV1) error
 	VerifyBuilderCleanup(context.Context, workerami.BuilderCleanupEvidenceV1) error
 	VerifyBuilderReachabilityCleanup(context.Context, workerami.BuilderReachabilityEvidenceV2) error
+	VerifyBuilderReachabilityAttemptCleanup(context.Context, workerami.BuilderReachabilityEvidenceV2) error
 	Destroy(context.Context, workerami.ImageManifestV1) error
 }
 

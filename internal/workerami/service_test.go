@@ -140,6 +140,37 @@ func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testi
 	}
 }
 
+func TestVerifyBuilderReachabilityAttemptCleanupAcceptsTokenOnlyEvidence(t *testing.T) {
+	request := validBuildRequest(t)
+	request.NetworkMode = NetworkModeS3GatewayV2
+	request.FoundationStackName = "dtx-agent-abc-foundation"
+	request.FoundationStackID = "arn:aws:cloudformation:us-west-2:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555"
+	request.FoundationVPCID = "vpc-0123456789abcdef0"
+	request.FoundationRouteTableID = "rtb-0123456789abcdef0"
+	request.S3PrefixListID = "pl-0123456789abcdef0"
+	request.RecordBuilderReachabilityEvidence = func(BuilderReachabilityEvidenceV2) error { return nil }
+	validated, err := validateBuildRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := reachabilityForBuild(validated)
+	evidence := BuilderReachabilityEvidenceV2{
+		SchemaVersion: BuilderReachabilitySchemaV2, AgentInstanceID: scope.AgentInstanceID, AccountID: scope.AccountID,
+		Region: scope.Region, BuildDigest: scope.BuildDigest, VPCID: scope.VPCID, RouteTableID: scope.RouteTableID,
+		SecurityGroupID: scope.SecurityGroupID, S3PrefixListID: scope.S3PrefixListID, ArtifactBucket: scope.ArtifactBucket,
+		ArtifactKey: scope.ArtifactKey, VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
+	}
+	provider := newFakeProvider(request)
+	provider.supportReachability = true
+	service := newTestService(t, provider)
+	if err := service.VerifyBuilderReachabilityAttemptCleanup(context.Background(), evidence); err != nil {
+		t.Fatalf("VerifyBuilderReachabilityAttemptCleanup(token-only) = %v", err)
+	}
+	if err := service.VerifyBuilderReachabilityCleanup(context.Background(), evidence); err == nil {
+		t.Fatal("final cleanup verification accepted token-only evidence")
+	}
+}
+
 func TestBuildRecoversLostMutationResponses(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -731,7 +762,7 @@ func (provider *fakeProvider) CleanupBuilderReachability(_ context.Context, evid
 
 func (provider *fakeProvider) VerifyBuilderReachabilityAbsent(_ context.Context, evidence BuilderReachabilityEvidenceV2) error {
 	provider.calls = append(provider.calls, "verify-reachability-absent")
-	if !provider.supportReachability || evidence.Validate() != nil || provider.reachabilityPresent {
+	if !provider.supportReachability || evidence.ValidatePartial() != nil || provider.reachabilityPresent {
 		return errors.New("reachability remains")
 	}
 	return nil

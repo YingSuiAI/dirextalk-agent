@@ -106,10 +106,10 @@ func (state *builderReachabilityState) capture(evidence BuilderReachabilityEvide
 			return ErrOwnershipMismatch
 		}
 	}
-	state.evidence = validatedEvidence
 	if state.recorder != nil && state.recorder(validatedEvidence) != nil {
 		return ErrCleanupFailed
 	}
+	state.evidence = validatedEvidence
 	return nil
 }
 
@@ -554,10 +554,21 @@ func (service *Service) cleanup(ctx context.Context, validated validatedBuild, c
 // transient endpoint, security-group rule, and endpoint-created route recorded
 // before launch are absent. It is used by build resume and release cleanup.
 func (service *Service) VerifyBuilderReachabilityCleanup(ctx context.Context, input BuilderReachabilityEvidenceV2) error {
+	return service.verifyBuilderReachabilityCleanup(ctx, input, true)
+}
+
+// VerifyBuilderReachabilityAttemptCleanup accepts an interrupted partial
+// record so a retry can prove that an old attempt is absent before rotating
+// its provider idempotency token.
+func (service *Service) VerifyBuilderReachabilityAttemptCleanup(ctx context.Context, input BuilderReachabilityEvidenceV2) error {
+	return service.verifyBuilderReachabilityCleanup(ctx, input, false)
+}
+
+func (service *Service) verifyBuilderReachabilityCleanup(ctx context.Context, input BuilderReachabilityEvidenceV2, requireComplete bool) error {
 	if ctx == nil || service == nil || service.provider == nil {
 		return ErrInvalidInput
 	}
-	evidence, err := input.normalized(true)
+	evidence, err := input.normalized(requireComplete)
 	if err != nil {
 		return err
 	}

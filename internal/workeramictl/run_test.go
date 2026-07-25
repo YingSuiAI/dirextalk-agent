@@ -173,6 +173,103 @@ func TestRunBuildRecoversSameIntentAfterProcessCrash(t *testing.T) {
 	}
 }
 
+func TestRunBuildRotatesReachabilityEvidenceOnlyAfterAbsenceProof(t *testing.T) {
+	fixture := newBuildFixture(t)
+	requestPath := writeV2BuildRequestForFixture(t, fixture)
+	prepared, err := parseBuildRequest(requestPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "publication.json")
+	if err := ensureBuildIntent(output, prepared.intent); err != nil {
+		t.Fatal(err)
+	}
+	buildDigest, err := workerami.BuildDigest(prepared.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := workerami.BuilderReachabilityEvidenceV2{
+		SchemaVersion: workerami.BuilderReachabilitySchemaV2, AgentInstanceID: prepared.request.AgentInstanceID,
+		AccountID: prepared.request.AccountID, Region: prepared.request.Region, BuildDigest: buildDigest,
+		VPCID: prepared.request.FoundationVPCID, RouteTableID: prepared.request.FoundationRouteTableID,
+		SecurityGroupID: prepared.request.ZeroIngressSGID, S3PrefixListID: prepared.request.S3PrefixListID,
+		ArtifactBucket: prepared.request.ArtifactBucket, ArtifactKey: prepared.request.ArtifactKey,
+		VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
+		VPCEndpointID:          "vpce-aaaaaaaaaaaaaaaaa", SecurityGroupRuleID: "sgr-aaaaaaaaaaaaaaaaa",
+	}
+	if err := persistBuilderReachabilityEvidence(builderReachabilityEvidencePath(output), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"build", "--request", requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+		t.Fatalf("Run(build stale reachability) = %d, stderr=%q", code, stderr.String())
+	}
+	if cloud.existingReachabilityInputs != 0 || cloud.reachabilityCleanupVerifyCalls < 2 {
+		t.Fatalf("stale reachability evidence was reused: %#v", cloud)
+	}
+	current, err := readBuilderReachabilityEvidence(builderReachabilityEvidencePath(output))
+	if err != nil || current.VPCEndpointID == stale.VPCEndpointID {
+		t.Fatalf("reachability attempt was not replaced: %#v, %v", current, err)
+	}
+}
+
+func TestRunBuildRejectsConcurrentOutputOwnerBeforeAWS(t *testing.T) {
+	fixture := newBuildFixture(t)
+	output := filepath.Join(t.TempDir(), "publication.json")
+	lock, err := acquireBuildOutputLock(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = releaseBuildOutputLock(lock) }()
+
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"build", "--allow-legacy-v1", "--request", fixture.requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+		t.Fatal("concurrent build acquired an already locked output")
+	}
+	if cloud.loadCalls != 0 || cloud.buildCalls != 0 {
+		t.Fatalf("concurrent output reached AWS: %#v", cloud)
+	}
+}
+
+func TestBuildOutputLockRejectsSymlinkAndLoosePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX ownership and mode checks")
+	}
+	directory := t.TempDir()
+	output := filepath.Join(directory, "publication.json")
+	lockPath := output + buildOutputLockSuffix
+	target := filepath.Join(directory, "target")
+	if err := os.WriteFile(target, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if lock, err := acquireBuildOutputLock(output); err == nil {
+		_ = releaseBuildOutputLock(lock)
+		t.Fatal("symlink build lock was accepted")
+	}
+	if input, err := os.ReadFile(target); err != nil || string(input) != "unchanged" {
+		t.Fatalf("symlink target changed: %q, %v", input, err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(lockPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if lock, err := acquireBuildOutputLock(output); err == nil {
+		_ = releaseBuildOutputLock(lock)
+		t.Fatal("loosely permissioned build lock was accepted")
+	}
+}
+
 func TestRunBuildFailureRetainsIntentAndBuilderProviderIDs(t *testing.T) {
 	fixture := newBuildFixture(t)
 	cloud := newFakeCloud(fixture.image, fixture.evidence)
@@ -471,6 +568,29 @@ func newBuildFixture(t *testing.T) buildFixture {
 	return buildFixture{requestPath: requestPath, releasePath: releasePath, archivePath: archivePath, image: image, evidence: evidence}
 }
 
+func writeV2BuildRequestForFixture(t *testing.T, fixture buildFixture) string {
+	t.Helper()
+	legacy, err := parseBuildRequest(fixture.requestPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := BuildRequestFileV2{
+		SchemaVersion: BuildRequestSchemaV2, AccountID: legacy.request.AccountID, Region: legacy.request.Region,
+		AgentInstanceID: fixture.image.AgentInstanceID, ReleaseManifestPath: fixture.releasePath,
+		ReleaseManifestDigest: legacy.request.ReleaseManifestDigest, RootFSArchivePath: fixture.archivePath,
+		WorkerRootFSDigest: legacy.request.RootFS.Manifest.RootFSDigest, WorkerBinaryDigest: legacy.request.RootFS.Manifest.BinaryDigest,
+		WorkerRootFSSize: legacy.request.RootFS.Manifest.Size, FoundationStackName: "dtx-agent-abc-foundation",
+		FoundationStackID: "arn:aws:cloudformation:us-east-1:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555",
+		FoundationVPCID:   "vpc-0123456789abcdef0", FoundationRouteTableID: "rtb-0123456789abcdef0",
+		PrivateSubnetID: legacy.request.PrivateSubnetID, ZeroIngressSecurityGroupID: legacy.request.ZeroIngressSGID,
+		ArtifactBucket: legacy.request.ArtifactBucket, ArtifactKey: legacy.request.ArtifactKey, ArtifactKMSKeyARN: legacy.request.ArtifactKMSKeyARN,
+		S3PrefixListID: "pl-0123456789abcdef0", BaseAMIID: legacy.request.BaseAMIID, BaseAMIOwnerID: legacy.request.BaseAMIOwnerID,
+		BuilderInstanceType: legacy.request.BuilderInstanceType, RootDeviceName: legacy.request.RootDeviceName,
+		TimeoutSeconds: int64(legacy.request.Timeout / time.Second), NetworkMode: workerami.NetworkModeS3GatewayV2,
+	}
+	return writeJSON(t, "build-v2.json", request)
+}
+
 func populateBuildRootFS(t *testing.T, root string) {
 	t.Helper()
 	worker := []byte("deterministic-cloud-worker-binary")
@@ -596,6 +716,7 @@ type fakeCloud struct {
 	absenceCalls                   int
 	cleanupVerifyCalls             int
 	reachabilityCleanupVerifyCalls int
+	existingReachabilityInputs     int
 	cleanupEvidence                workerami.BuilderCleanupEvidenceV1
 	prepareEnvironment             PrepareEnvironmentV2
 	prepareErr                     error
@@ -655,6 +776,7 @@ func (service fakeAMIService) Build(_ context.Context, request workerami.BuildRe
 			SecurityGroupID: request.ZeroIngressSGID, S3PrefixListID: request.S3PrefixListID, ArtifactBucket: request.ArtifactBucket, ArtifactKey: request.ArtifactKey,
 			VPCEndpointID: "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
 		if request.ExistingBuilderReachabilityEvidence != nil {
+			service.cloud.existingReachabilityInputs++
 			reachability = *request.ExistingBuilderReachabilityEvidence
 		}
 		if request.RecordBuilderReachabilityEvidence == nil || request.RecordBuilderReachabilityEvidence(reachability) != nil {
@@ -703,6 +825,14 @@ func (service fakeAMIService) VerifyBuilderReachabilityCleanup(_ context.Context
 	service.cloud.reachabilityCleanupVerifyCalls++
 	if evidence.Validate() != nil {
 		return errors.New("unexpected builder reachability evidence")
+	}
+	return nil
+}
+
+func (service fakeAMIService) VerifyBuilderReachabilityAttemptCleanup(_ context.Context, evidence workerami.BuilderReachabilityEvidenceV2) error {
+	service.cloud.reachabilityCleanupVerifyCalls++
+	if evidence.ValidatePartial() != nil {
+		return errors.New("unexpected builder reachability attempt evidence")
 	}
 	return nil
 }

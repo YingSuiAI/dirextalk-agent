@@ -58,6 +58,12 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		_, _ = io.WriteString(stderr, "worker-ami: invalid build request\n")
 		return 1
 	}
+	outputLock, err := acquireBuildOutputLock(*outputPath)
+	if err != nil {
+		_, _ = io.WriteString(stderr, "worker-ami: build output is already in use\n")
+		return 1
+	}
+	defer func() { _ = releaseBuildOutputLock(outputLock) }()
 	existing, hasFinal, err := prepareBuildFiles(*outputPath, prepared)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: build intent conflicts with existing state\n")
@@ -82,6 +88,16 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 	if err != nil || service == nil {
 		_, _ = io.WriteString(stderr, "worker-ami: Worker AMI build failed\n")
 		return 1
+	}
+	if !hasFinal && hasReachabilityEvidence && prepared.request.NetworkMode == workerami.NetworkModeS3GatewayV2 &&
+		service.VerifyBuilderReachabilityAttemptCleanup(ctx, reachabilityEvidence) == nil {
+		if removeBuilderReachabilityEvidence(builderReachabilityEvidencePath(*outputPath), reachabilityEvidence) != nil {
+			_, _ = io.WriteString(stderr, "worker-ami: stale builder reachability evidence cleanup failed\n")
+			return 1
+		}
+		prepared.request.ExistingBuilderReachabilityEvidence = nil
+		reachabilityEvidence = workerami.BuilderReachabilityEvidenceV2{}
+		hasReachabilityEvidence = false
 	}
 	attestor, err := dependencies.NewAttestor(config)
 	if err != nil || attestor == nil {

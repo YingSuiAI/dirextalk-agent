@@ -1,6 +1,7 @@
 package workeramictl
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,5 +56,30 @@ func TestPersistBuilderReachabilityEvidenceUpgradesPartialStateAtomically(t *tes
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
 		t.Fatalf("temporary recovery files leaked: %#v, %v", entries, err)
+	}
+}
+
+func TestRemoveBuilderReachabilityEvidenceRequiresExactState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "publication.json.builder-reachability")
+	evidence := workerami.BuilderReachabilityEvidenceV2{
+		SchemaVersion: workerami.BuilderReachabilitySchemaV2, AgentInstanceID: "11111111-1111-4111-8111-111111111111",
+		AccountID: "123456789012", Region: "us-west-2", BuildDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		VPCID: "vpc-0123456789abcdef0", RouteTableID: "rtb-0123456789abcdef0", SecurityGroupID: "sg-0123456789abcdef0",
+		S3PrefixListID: "pl-0123456789abcdef0", ArtifactBucket: "dtx-worker-artifacts", ArtifactKey: "worker-ami/releases/rootfs.tar",
+		VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
+	}
+	if err := persistBuilderReachabilityEvidence(path, evidence); err != nil {
+		t.Fatal(err)
+	}
+	conflict := evidence
+	conflict.VPCEndpointClientToken = "dtx-worker-ami-s3-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := removeBuilderReachabilityEvidence(path, conflict); err == nil {
+		t.Fatal("conflicting evidence removed the persisted attempt")
+	}
+	if err := removeBuilderReachabilityEvidence(path, evidence); err != nil {
+		t.Fatalf("remove exact evidence: %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reachability evidence survived exact removal: %v", err)
 	}
 }

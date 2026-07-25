@@ -619,6 +619,27 @@ func persistBuilderReachabilityEvidence(path string, expected workerami.BuilderR
 		return errOutput
 	}
 	keepTemporary = true
+	if syncParentDirectory(path) != nil {
+		return errOutput
+	}
+	return nil
+}
+
+func removeBuilderReachabilityEvidence(path string, expected workerami.BuilderReachabilityEvidenceV2) error {
+	actual, err := readBuilderReachabilityEvidence(path)
+	if err != nil || actual != expected {
+		return errInvalidInput
+	}
+	if err := os.Remove(path); err != nil {
+		return errOutput
+	}
+	if syncParentDirectory(path) != nil {
+		return errOutput
+	}
+	return nil
+}
+
+func syncParentDirectory(path string) error {
 	directory, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return errOutput
