@@ -28,6 +28,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 )
@@ -87,6 +88,12 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize conversation RPC: %w", err)
 	}
+	// Reclaim accepted/running durable turns after the process has rebuilt its
+	// service graph. Recovery is best-effort only for an empty legacy schema;
+	// a configured Core schema must surface storage errors during startup.
+	if err := conversation.RecoverTurns(processCtx); err != nil && !errors.Is(err, coreconversation.ErrInvalid) {
+		return fmt.Errorf("recover conversation turns: %w", err)
+	}
 	taskStore := postgres.NewCoreTaskStore(store)
 	taskService := rpcapi.NewCoreTaskService(taskStore)
 	scheduleStore := postgres.NewCoreScheduleStore(store)
@@ -128,6 +135,21 @@ func serveCore(cfg config.Config) error {
 		}
 		return fmt.Errorf("initialize Core Extension composition: %w", err)
 	}
+	if extensionComposition != nil {
+		conversation.SetExtensionResolver(extensionComposition.conversationResolver)
+	}
+	workloadStore := postgres.NewCoreWorkloadStore(store)
+	workloadDomain, err := coreworkload.NewService(workloadStore, time.Now)
+	if err != nil {
+		return fmt.Errorf("initialize Workload composition: %w", err)
+	}
+	workloadService, err := rpcapi.NewWorkloadService(workloadDomain)
+	if err != nil {
+		return fmt.Errorf("initialize Workload RPC: %w", err)
+	}
+	// No production provider is configured yet. The service is registered for
+	// planning/confirmation only; no WORKLOAD task handler or capability is
+	// advertised until an explicit typed provider composition is supplied.
 	if knowledgeComposition != nil {
 		taskExecutor.SetPinnedContextResolvers(knowledgeComposition.pinned, knowledgeComposition.attachments)
 	}
@@ -163,6 +185,12 @@ func serveCore(cfg config.Config) error {
 			}
 			return fmt.Errorf("register Core Extension task handler: %w", err)
 		}
+		if extensionComposition.conversationToolHandler == nil {
+			return fmt.Errorf("conversation tool handler is unavailable")
+		}
+		if err := taskExecutor.RegisterHandler(coretask.TaskKindConversationTool, extensionComposition.conversationToolHandler); err != nil {
+			return fmt.Errorf("register conversation tool task handler: %w", err)
+		}
 	}
 	workerPool, err := coreruntime.NewWorkerPool(taskStore, taskExecutor, cfg.CoreTaskMaxConcurrency, cfg.CoreTaskLeaseTTL)
 	if err != nil {
@@ -182,13 +210,14 @@ func serveCore(cfg config.Config) error {
 		InstanceID: cfg.InstanceID, ServiceToken: token, TLSCertFile: cfg.TLSCertFile,
 		TLSKeyFile: cfg.TLSKeyFile, EnableHealth: cfg.EnableHealthService,
 		EnableReflection: cfg.EnableReflection, ModelProfileService: modelService,
-		ConversationService: conversationService, TaskService: taskService, ScheduleService: scheduleService, ConfirmationService: confirmationService,
+		ConversationService: conversationService, ConversationExtensionsReady: extensionComposition != nil, TaskService: taskService, ScheduleService: scheduleService, ConfirmationService: confirmationService,
 		KnowledgeService: func() agentv1.CoreKnowledgeServiceServer {
 			if knowledgeComposition == nil {
 				return nil
 			}
 			return knowledgeComposition.service
 		}(),
+		WorkloadService: workloadService,
 		CloudControlService: func() agentv1.CoreCloudControlServiceServer {
 			if awsComposition == nil {
 				return nil
@@ -232,6 +261,9 @@ func serveCore(cfg config.Config) error {
 		extensionCleanup = extensionComposition.artifactCleaner
 	}
 	return runCoreLifecycle(processCtx, listener, coreServer, scheduleLoop, workerPool, cfg.CoreShutdownGrace, func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+		_ = conversation.CloseContext(closeCtx)
+		closeCancel()
 		if knowledgeComposition != nil {
 			knowledgeComposition.Close()
 		}

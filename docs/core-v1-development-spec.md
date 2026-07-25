@@ -1,5 +1,11 @@
 # Dirextalk Agent Core v1 development specification
 
+> The approved, not-yet-implemented Message Server, workload, SSM/ECS, and
+> Compose extension is defined in
+> [`message-server-integration-development-contract.md`](message-server-integration-development-contract.md).
+> This file continues to describe the current Core baseline until those gates
+> pass.
+
 This document is the current product and implementation boundary for the
 independent Agent service. The versioned Protobuf in
 `api/proto/dirextalk/agent/v1` and the PostgreSQL migrations are the executable

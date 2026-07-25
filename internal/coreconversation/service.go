@@ -8,18 +8,48 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
 type Service struct {
-	store      Store
-	models     ModelRunner
-	extensions ExtensionResolver
-	snapshots  SnapshotProfileResolver
-	now        func() time.Time
-	leaseTTL   time.Duration
+	store           Store
+	models          ModelRunner
+	extensions      ExtensionResolver
+	snapshots       SnapshotProfileResolver
+	now             func() time.Time
+	leaseTTL        time.Duration
+	turns           TurnStore
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	workers         sync.WaitGroup
+	cancelMu        sync.Mutex
+	cancelSignals   map[string]chan struct{}
+	runtimeMu       sync.Mutex
+	runtime         map[string]*turnRuntime
+}
+
+// SetExtensionResolver wires the production resolver after composition has
+// validated the runner/confirmation graph. Basic conversation remains usable
+// when the graph is intentionally disabled.
+func (s *Service) SetExtensionResolver(resolver ExtensionResolver) {
+	if s == nil {
+		return
+	}
+	if resolver == nil {
+		s.extensions = noopExtensions{}
+		return
+	}
+	s.extensions = resolver
+}
+
+type turnRuntime struct {
+	cancel chan struct{}
+	wake   chan struct{}
+	done   chan struct{}
 }
 
 // Orchestrator is the public name used by callers that embed the chat flow.
@@ -32,7 +62,12 @@ func NewService(store Store, models ModelRunner, extensions ExtensionResolver, p
 	if extensions == nil {
 		extensions = noopExtensions{}
 	}
-	return &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 2 * time.Minute}, nil
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
+	s := &Service{store: store, models: models, extensions: extensions, snapshots: profiles, now: func() time.Time { return time.Now().UTC() }, leaseTTL: 2 * time.Minute, lifecycleCtx: lifecycleCtx, lifecycleCancel: lifecycleCancel, cancelSignals: map[string]chan struct{}{}, runtime: map[string]*turnRuntime{}}
+	if turns, ok := store.(TurnStore); ok {
+		s.turns = turns
+	}
+	return s, nil
 }
 
 func NewOrchestrator(store Store, models ModelRunner, extensions ExtensionResolver, profiles SnapshotProfileResolver) (*Orchestrator, error) {
@@ -43,6 +78,44 @@ type noopExtensions struct{}
 
 func (noopExtensions) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
 	return nil, nil
+}
+
+func snapshotForResolved(ext ResolvedExtension) ExtensionExecutionSnapshot {
+	snap := ext.Snapshot
+	if snap.Selection.ID == "" {
+		snap.Selection = ext.Selection
+	}
+	if snap.ContentDigest == "" {
+		snap.ContentDigest = snap.Selection.Digest
+	}
+	if snap.VersionID == "" {
+		snap.VersionID = snap.Selection.Version
+	}
+	if len(snap.ToolNames) == 0 {
+		snap.ToolNames = append([]string(nil), snap.Selection.AllowedTools...)
+	}
+	return snap
+}
+
+func snapshotSelections(in []ExtensionExecutionSnapshot) []ExtensionSelection {
+	out := make([]ExtensionSelection, 0, len(in))
+	for _, s := range in {
+		out = append(out, s.Selection)
+	}
+	return out
+}
+
+func validateUniqueSnapshotTools(in []ExtensionExecutionSnapshot) error {
+	seen := map[string]struct{}{}
+	for _, ext := range in {
+		for _, name := range ext.ToolNames {
+			if _, exists := seen[name]; exists {
+				return ErrConflict
+			}
+			seen[name] = struct{}{}
+		}
+	}
+	return nil
 }
 func leaseTTL(c ChatCommand, d time.Duration) time.Duration {
 	if c.LeaseTTL > 0 {
@@ -231,6 +304,12 @@ func (s *Service) executeToolHeartbeat(ctx context.Context, req ToolExecutionReq
 func (s *Service) Chat(ctx context.Context, cmd ChatCommand) (ChatResponse, error) {
 	if err := cmd.Validate(); err != nil {
 		return ChatResponse{}, err
+	}
+	// Extensions are durable-turn-only. Keeping unary Chat extension-free
+	// prevents a caller from creating an execution history without the durable
+	// confirmation/recovery ledger.
+	if len(cmd.Extensions) > 0 {
+		return ChatResponse{}, ErrExtensionsUnsupported
 	}
 	fp, _ := cmd.Fingerprint()
 	now := s.clock()
@@ -547,6 +626,9 @@ func (s *Service) StreamChat(ctx context.Context, cmd ChatCommand) (<-chan Strea
 	if err := cmd.Validate(); err != nil {
 		return nil, err
 	}
+	if len(cmd.Extensions) > 0 {
+		return nil, ErrExtensionsUnsupported
+	}
 	ch := make(chan StreamEvent, 16)
 	go func() {
 		defer close(ch)
@@ -679,4 +761,598 @@ func (s *Service) ListConversations(ctx context.Context, cursor string, limit in
 		return nil, "", ErrInvalid
 	}
 	return s.store.ListConversations(ctx, cursor, limit)
+}
+
+// StartTurn durably accepts a prompt before starting any model work. The
+// execution goroutine intentionally uses a background context; disconnecting
+// the initiating RPC therefore cannot abandon an accepted turn.
+func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, error) {
+	if s.turns == nil {
+		return Turn{}, ErrInvalid
+	}
+	if !validUUID(cmd.RequestID) || !validUUID(cmd.ProfileID) || (cmd.ConversationID != "" && !validUUID(cmd.ConversationID)) {
+		return Turn{}, ErrInvalid
+	}
+	if err := validateText(cmd.Prompt, MaxContentBytes); err != nil {
+		return Turn{}, err
+	}
+	if cmd.ConversationID == "" {
+		// Derive a stable private conversation identity from the request UUID so
+		// an idempotent retry binds the same conversation before execution.
+		cmd.ConversationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation:"+cmd.RequestID)).String()
+	}
+	if lookup, ok := s.turns.(TurnRequestLookup); ok {
+		if existing, lookupErr := lookup.GetTurnByRequestID(ctx, cmd.RequestID); lookupErr == nil {
+			// Replays are checked against the immutable snapshot already bound to
+			// the request. Never resolve the current profile for this path.
+			check := cmd
+			check.ProfileSnapshot = existing.ProfileSnapshot
+			check.ExtensionSnapshots = append([]ExtensionExecutionSnapshot(nil), existing.ExtensionSnapshots...)
+			if len(check.Extensions) == 0 {
+				check.Extensions = snapshotSelections(existing.ExtensionSnapshots)
+			}
+			if err := check.Validate(); err != nil {
+				return Turn{}, err
+			}
+			if existing.RequestFingerprint != check.Fingerprint() {
+				return Turn{}, ErrConflict
+			}
+			if existing.State == TurnAccepted || existing.State == TurnRunning {
+				s.startTurnSupervisor(existing.ID, nil)
+			}
+			return existing, nil
+		} else if !errors.Is(lookupErr, ErrConflict) {
+			return Turn{}, lookupErr
+		}
+	}
+	if cmd.ProfileSnapshot.ProfileID == "" {
+		if s.snapshots == nil {
+			return Turn{}, ErrInvalid
+		}
+		snapshot, err := s.snapshots.ResolveProfileSnapshot(ctx, cmd.ProfileID)
+		if err != nil {
+			return Turn{}, err
+		}
+		cmd.ProfileSnapshot = snapshot
+	}
+	if len(cmd.Extensions) > 0 && len(cmd.ExtensionSnapshots) == 0 {
+		if s.extensions == nil {
+			return Turn{}, ErrInvalid
+		}
+		resolved, err := s.extensions.ResolveExtensions(ctx, append([]ExtensionSelection(nil), cmd.Extensions...))
+		if err != nil {
+			return Turn{}, err
+		}
+		if len(resolved) != len(cmd.Extensions) {
+			return Turn{}, ErrConflict
+		}
+		cmd.ExtensionSnapshots = make([]ExtensionExecutionSnapshot, 0, len(resolved))
+		for _, ext := range resolved {
+			snap := snapshotForResolved(ext)
+			if snap.Selection.ID == "" || snap.Selection.ID != ext.Selection.ID || snap.Selection.Version != ext.Selection.Version || snap.Selection.Digest != ext.Selection.Digest {
+				return Turn{}, ErrConflict
+			}
+			cmd.ExtensionSnapshots = append(cmd.ExtensionSnapshots, snap)
+		}
+		if err := validateUniqueSnapshotTools(cmd.ExtensionSnapshots); err != nil {
+			return Turn{}, err
+		}
+	}
+	if err := cmd.Validate(); err != nil {
+		return Turn{}, err
+	}
+	turn, err := s.turns.StartTurn(ctx, cmd)
+	if err != nil {
+		return Turn{}, err
+	}
+	if turn.State == TurnAccepted || turn.State == TurnRunning {
+		s.startTurnSupervisor(turn.ID, nil)
+	}
+	return turn, nil
+}
+
+func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
+	if s.turns == nil || !validUUID(id) {
+		return Turn{}, ErrInvalid
+	}
+	return s.turns.GetTurn(ctx, id)
+}
+
+// RecoverTurns is called after process startup. It only resumes accepted or
+// leased turns and never creates a new request identity.
+func (s *Service) RecoverTurns(ctx context.Context) error {
+	if s.turns == nil {
+		return ErrInvalid
+	}
+	turns, err := s.turns.ListRecoverableTurns(ctx)
+	if err != nil {
+		return err
+	}
+	for _, turn := range turns {
+		s.startTurnSupervisor(turn.ID, ctx)
+	}
+	return nil
+}
+
+func (s *Service) CancelTurn(ctx context.Context, cmd TurnCancelCommand) (Turn, error) {
+	if s.turns == nil || !validUUID(cmd.TurnID) || !validUUID(cmd.RequestID) || cmd.ExpectedRevision == 0 {
+		return Turn{}, ErrInvalid
+	}
+	turn, err := s.turns.RequestTurnCancel(ctx, cmd)
+	if err == nil {
+		s.runtimeMu.Lock()
+		if runtime := s.runtime[cmd.TurnID]; runtime != nil {
+			select {
+			case runtime.wake <- struct{}{}:
+			default:
+			}
+			select {
+			case <-runtime.cancel:
+			default:
+				close(runtime.cancel)
+			}
+		}
+		s.runtimeMu.Unlock()
+		s.cancelMu.Lock()
+		if signal := s.cancelSignals[cmd.TurnID]; signal != nil {
+			select {
+			case <-signal:
+			default:
+				close(signal)
+			}
+		}
+		s.cancelMu.Unlock()
+	}
+	if err == nil && turn.State == TurnAccepted {
+		s.startTurnSupervisor(turn.ID, nil)
+	}
+	if err == nil && turn.State == TurnRunning {
+		s.startTurnSupervisor(turn.ID, nil)
+	}
+	return turn, err
+}
+
+func (s *Service) runTurnSupervisor(ctx context.Context, id string) {
+	backoff := time.Second
+	var wake <-chan struct{}
+	s.runtimeMu.Lock()
+	if runtime := s.runtime[id]; runtime != nil {
+		wake = runtime.wake
+	}
+	s.runtimeMu.Unlock()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		turn, err := s.turns.GetTurn(ctx, id)
+		if err != nil {
+			if errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrDeleted) {
+				return
+			}
+			if !waitTurnSupervisor(ctx, backoff, wake) {
+				return
+			}
+			backoff = nextTurnSupervisorBackoff(backoff)
+			continue
+		}
+		if turn.State == TurnCompleted || turn.State == TurnCanceled || turn.State == TurnFailed {
+			return
+		}
+		if turn.State == TurnWaitingConfirmation {
+			if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
+				attempt, observeErr := recovery.ObserveConversationTool(ctx, id)
+				if observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
+					_ = recovery.ResumeConversationTurn(ctx, id)
+					continue
+				}
+			}
+			if !waitTurnSupervisor(ctx, backoff, wake) {
+				return
+			}
+			backoff = nextTurnSupervisorBackoff(backoff)
+			continue
+		}
+		if turn.CancelRequested {
+			if cancelStore, ok := s.turns.(TurnCancelStore); ok {
+				if _, cancelErr := cancelStore.MarkTurnCanceledRequested(ctx, id); cancelErr == nil {
+					return
+				}
+			}
+			if !waitTurnSupervisor(ctx, backoff, wake) {
+				return
+			}
+			backoff = nextTurnSupervisorBackoff(backoff)
+			continue
+		}
+		if turn.DispatchState == "uncertain" {
+			if uncertainStore, ok := s.turns.(TurnUncertainStore); ok {
+				if _, uncertainErr := uncertainStore.FailTurnUncertain(ctx, id, "provider_uncertain", "model dispatch outcome is unknown"); uncertainErr == nil {
+					return
+				}
+			}
+			if !waitTurnSupervisor(ctx, backoff, wake) {
+				return
+			}
+			backoff = nextTurnSupervisorBackoff(backoff)
+			continue
+		}
+		s.executeTurn(ctx, id)
+		if !waitTurnSupervisor(ctx, backoff, wake) {
+			return
+		}
+		backoff = nextTurnSupervisorBackoff(backoff)
+	}
+}
+
+func nextTurnSupervisorBackoff(backoff time.Duration) time.Duration {
+	if backoff < 10*time.Second {
+		backoff *= 2
+		if backoff > 10*time.Second {
+			return 10 * time.Second
+		}
+	}
+	return backoff
+}
+
+func waitTurnSupervisor(ctx context.Context, backoff time.Duration, wake <-chan struct{}) bool {
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-wake:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Service) startTurnSupervisor(id string, parent context.Context) {
+	s.runtimeMu.Lock()
+	if existing := s.runtime[id]; existing != nil {
+		select {
+		case existing.wake <- struct{}{}:
+		default:
+		}
+		s.runtimeMu.Unlock()
+		return
+	}
+	runtime := &turnRuntime{cancel: make(chan struct{}), wake: make(chan struct{}, 1), done: make(chan struct{})}
+	s.runtime[id] = runtime
+	s.runtimeMu.Unlock()
+	if parent == nil {
+		parent = s.lifecycleCtx
+	}
+	ctx, cancel := context.WithCancel(parent)
+	s.workers.Add(1)
+	go func() {
+		defer s.workers.Done()
+		defer cancel()
+		defer close(runtime.done)
+		defer func() { s.runtimeMu.Lock(); delete(s.runtime, id); s.runtimeMu.Unlock() }()
+		stop := make(chan struct{})
+		go func() {
+			select {
+			case <-s.lifecycleCtx.Done():
+				cancel()
+			case <-stop:
+			}
+		}()
+		s.runTurnSupervisor(ctx, id)
+		close(stop)
+	}()
+}
+
+// Close fences all turn workers before the caller closes the database pool.
+func (s *Service) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return s.CloseContext(ctx)
+}
+
+func (s *Service) CloseContext(ctx context.Context) error {
+	if s.lifecycleCancel != nil {
+		s.lifecycleCancel()
+	}
+	done := make(chan struct{})
+	go func() { s.workers.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) WatchTurnEvents(ctx context.Context, id string, after int64, limit int) (<-chan TurnEvent, error) {
+	if s.turns == nil || !validUUID(id) || after < 0 {
+		return nil, ErrInvalid
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	if _, err := s.turns.GetTurn(ctx, id); err != nil {
+		return nil, err
+	}
+	out := make(chan TurnEvent, 16)
+	go func() {
+		defer close(out)
+		cursor := after
+		if first, last, err := s.turns.TurnEventBounds(ctx, id); err != nil {
+			select {
+			case out <- TurnEvent{TurnID: id, Err: err}:
+			case <-ctx.Done():
+			}
+			return
+		} else if first > 0 && cursor < first-1 {
+			select {
+			case out <- TurnEvent{TurnID: id, ReplayGap: true, FirstSequence: first, LastSequence: last}:
+			case <-ctx.Done():
+				return
+			}
+			cursor = first - 1
+		}
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			events, err := s.turns.LoadTurnEvents(ctx, id, cursor, limit)
+			if err != nil {
+				select {
+				case out <- TurnEvent{TurnID: id, Err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			for _, event := range events {
+				select {
+				case out <- event:
+					if event.Sequence > cursor {
+						cursor = event.Sequence
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+			turn, err := s.turns.GetTurn(ctx, id)
+			if err != nil {
+				select {
+				case out <- TurnEvent{TurnID: id, Err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			if turn.State == TurnCompleted || turn.State == TurnCanceled || turn.State == TurnFailed {
+				if _, last, boundsErr := s.turns.TurnEventBounds(ctx, id); boundsErr != nil {
+					select {
+					case out <- TurnEvent{TurnID: id, Err: boundsErr}:
+					case <-ctx.Done():
+					}
+					return
+				} else if cursor >= last {
+					return
+				}
+			}
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (s *Service) executeTurn(ctx context.Context, id string) {
+	if s.turns == nil {
+		return
+	}
+	lease, err := s.turns.ClaimTurn(ctx, id, s.clock(), s.leaseTTL)
+	if err != nil {
+		return
+	}
+	if lease.Turn.State == TurnCompleted || lease.Turn.State == TurnCanceled || lease.Turn.State == TurnFailed {
+		return
+	}
+	if lease.Turn.CancelRequested {
+		if lease.LeaseID == "" {
+			if cancelStore, ok := s.turns.(TurnCancelStore); ok {
+				_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
+			}
+		} else {
+			_, _ = s.turns.MarkTurnCanceled(ctx, lease)
+		}
+		return
+	}
+	if started, appendErr := s.turns.AppendTurnEvent(ctx, id, TurnEvent{Kind: TurnEventStarted, CreatedAt: s.clock()}); appendErr == nil {
+		lease.Turn.LastSequence = started.Sequence
+	}
+	turn := lease.Turn
+	conv, err := s.store.LoadConversation(ctx, turn.ConversationID)
+	if err != nil {
+		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
+	}
+	if turn.ExpectedRevision != nil && conv.Revision != *turn.ExpectedRevision {
+		_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
+		return
+	}
+	// A completed/denied conversation-tool attempt is part of the next model
+	// round's input. It is reconstructed from the bounded Agent-side result;
+	// the intermediate assistant/tool messages are not exposed as Message
+	// Server history until the final turn commit.
+	if recovery, ok := s.turns.(ConversationToolRecoveryStore); ok {
+		if attempt, observeErr := recovery.ObserveConversationTool(ctx, id); observeErr == nil && (attempt.State == "completed" || attempt.State == "denied" || attempt.State == "canceled") {
+			content := attempt.SafeSummary
+			if len(attempt.Result) > 0 {
+				var stored coretask.Result
+				if json.Unmarshal(attempt.Result, &stored) == nil {
+					if stored.Text != "" {
+						content = stored.Text
+					} else if len(stored.JSON) > 0 {
+						content = string(stored.JSON)
+					}
+				}
+			}
+			if attempt.State != "completed" && content == "" {
+				content = "tool call denied"
+			}
+			assistant := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "", ToolCalls: []ToolCall{{ID: attempt.CallID, Name: attempt.ToolName, Arguments: `{}`}}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: turn.ProfileID}
+			tool := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{{CallID: attempt.CallID, ToolName: attempt.ToolName, Content: content, IsError: attempt.State != "completed"}}, CreatedAt: nextMessageTime(conv, s.clock().Add(time.Nanosecond)), ModelProfileID: turn.ProfileID}
+			conv.Messages = append(conv.Messages, assistant, tool)
+			_ = recovery.ResumeConversationTurn(ctx, id)
+			turn.State = TurnAccepted
+		}
+	}
+	dispatchStore, durableDispatch := s.turns.(TurnDispatchStore)
+	child, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cancelSignal := make(chan struct{})
+	s.cancelMu.Lock()
+	s.cancelSignals[id] = cancelSignal
+	s.cancelMu.Unlock()
+	defer func() { s.cancelMu.Lock(); delete(s.cancelSignals, id); s.cancelMu.Unlock() }()
+	resultCh := make(chan struct {
+		result ModelRunResult
+		err    error
+	}, 1)
+	var replay ModelRunResult
+	var replayed bool
+	if durableDispatch {
+		replay, replayed, err = dispatchStore.LoadTurnModelResult(ctx, turn.ID)
+		if err != nil {
+			return
+		}
+		if !replayed {
+			if _, err = dispatchStore.PrepareTurnModel(ctx, lease); err != nil {
+				if current, getErr := s.turns.GetTurn(ctx, turn.ID); getErr == nil && current.DispatchState == "dispatched" {
+					_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+					_, _ = s.turns.FailTurn(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+				}
+				return
+			}
+		}
+	}
+	if replayed {
+		resultCh <- struct {
+			result ModelRunResult
+			err    error
+		}{replay, nil}
+	} else {
+		go func() {
+			profile := turn.ProfileSnapshot.Profile()
+			result, runErr := s.models.Run(child, ModelRunRequest{Conversation: conv.Snapshot(), Profile: ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}, Snapshot: turn.ProfileSnapshot, ProfileSnapshot: turn.ProfileSnapshot, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)})
+			resultCh <- struct {
+				result ModelRunResult
+				err    error
+			}{result, runErr}
+		}()
+	}
+	interval := s.leaseTTL / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+	heartbeat := time.NewTicker(interval)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case out := <-resultCh:
+			if out.err != nil {
+				if t, e := s.turns.GetTurn(ctx, id); e == nil && t.CancelRequested {
+					if cancelStore, ok := s.turns.(TurnCancelStore); ok {
+						_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
+					}
+				} else {
+					if durableDispatch {
+						_ = dispatchStore.MarkTurnModelUncertain(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+					}
+					_, _ = s.turns.FailTurn(ctx, lease, "provider_uncertain", "model dispatch outcome is unknown")
+				}
+				return
+			}
+			if t, e := s.turns.GetTurn(ctx, id); e == nil && t.CancelRequested {
+				if cancelStore, ok := s.turns.(TurnCancelStore); ok {
+					_, _ = cancelStore.MarkTurnCanceledRequested(ctx, id)
+				}
+				return
+			}
+			if len(out.result.ToolCalls) != 0 || len(out.result.Message.ToolCalls) != 0 {
+				calls := out.result.ToolCalls
+				if len(calls) == 0 {
+					calls = out.result.Message.ToolCalls
+				}
+				toolStore, ok := s.turns.(ConversationToolStore)
+				if !ok || len(turn.ExtensionSnapshots) == 0 {
+					_, _ = s.turns.FailTurn(ctx, lease, "extensions_unavailable", "conversation tool store is unavailable")
+					return
+				}
+				call := calls[0]
+				var bound ExtensionExecutionSnapshot
+				for _, candidate := range turn.ExtensionSnapshots {
+					if containsTool(candidate.ToolNames, call.Name) {
+						if bound.Selection.ID != "" {
+							_, _ = s.turns.FailTurn(ctx, lease, "tool_conflict", "tool name is not uniquely bound")
+							return
+						}
+						bound = candidate
+					}
+				}
+				if bound.Selection.ID == "" {
+					_, _ = s.turns.FailTurn(ctx, lease, "tool_unavailable", "requested tool is not in the accepted snapshot")
+					return
+				}
+				args, argsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
+				if argsErr != nil {
+					_, _ = s.turns.FailTurn(ctx, lease, "invalid_tool_arguments", "tool arguments are invalid")
+					return
+				}
+				argsDigest := digest(string(args))
+				attemptID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-tool:"+turn.RequestID+":"+call.ID)).String()
+				round := uint32(0)
+				if recovery, recoveryOK := s.turns.(ConversationToolRecoveryStore); recoveryOK {
+					if previous, previousErr := recovery.ObserveConversationTool(ctx, id); previousErr == nil {
+						round = previous.Round + 1
+					}
+				}
+				attemptID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("conversation-tool:%s:%d:%s", turn.RequestID, round, call.ID))).String()
+				attempt, _, _, prepErr := toolStore.PrepareConversationTool(ctx, PrepareToolCommand{Lease: lease, Round: round, Call: call, Snapshot: bound, CanonicalArguments: args, ArgumentsDigest: argsDigest, SafeSummary: "conversation tool call " + call.Name, IdempotencyKey: attemptID, ExpiresAt: s.clock().Add(10 * time.Minute)})
+				if prepErr != nil {
+					_, _ = s.turns.FailTurn(ctx, lease, "tool_prepare_failed", "conversation tool preparation failed")
+					return
+				}
+				_, _ = s.turns.AppendTurnEvent(ctx, id, TurnEvent{Kind: TurnEventWaitingConfirmation, ConfirmationID: attempt.ConfirmationID, AttemptID: attempt.ID, ExecutionID: attempt.ExecutionID, Status: attempt.State})
+				return
+			}
+			if durableDispatch && !replayed {
+				if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+					return
+				}
+			}
+			m := out.result.Message
+			userTime := nextMessageTime(conv, s.clock())
+			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Nanosecond)
+			if m.ID == "" {
+				m.ID = uuid.NewString()
+			}
+			if err := m.Validate(); err != nil {
+				_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_result", "model returned invalid message")
+				return
+			}
+			conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
+			conv.Revision++
+			conv.UpdatedAt = s.clock()
+			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID}
+			_, _ = s.turns.CommitTurn(ctx, lease, response)
+			return
+		case <-heartbeat.C:
+			t, e := s.turns.GetTurn(ctx, id)
+			if e == nil && t.CancelRequested {
+				cancel()
+			}
+			lease, err = s.turns.RenewTurn(ctx, id, lease.LeaseID, lease.Epoch, s.clock(), s.leaseTTL)
+			if err != nil {
+				cancel()
+			}
+		case <-cancelSignal:
+			cancel()
+		}
+	}
 }

@@ -84,6 +84,27 @@ type ExtensionSelection struct {
 	AllowedTools []string      `json:"allowed_tools,omitempty"`
 }
 
+// ExtensionExecutionSnapshot is the immutable, redacted binding captured at
+// durable turn acceptance. It deliberately contains only identifiers and
+// digests (plus bounded Skill instructions); executable closures and secret
+// values never cross the persistence boundary.
+type ExtensionExecutionSnapshot struct {
+	Selection            ExtensionSelection `json:"selection"`
+	InstallationID       string             `json:"installation_id"`
+	VersionID            string             `json:"version_id"`
+	InstallationRevision uint64             `json:"installation_revision"`
+	Source               string             `json:"source"`
+	ContentDigest        string             `json:"content_digest"`
+	ArtifactDigest       string             `json:"artifact_digest"`
+	ToolSchemaDigest     string             `json:"tool_schema_digest,omitempty"`
+	NetworkBindingDigest string             `json:"network_binding_digest,omitempty"`
+	SecretBindingDigest  string             `json:"secret_binding_digest,omitempty"`
+	ToolNames            []string           `json:"tool_names,omitempty"`
+	SkillInstructions    string             `json:"skill_instructions,omitempty"`
+	RequiresConfirmation bool               `json:"requires_confirmation"`
+	ReadOnly             bool               `json:"read_only"`
+}
+
 type ExtensionKind string
 
 const (
@@ -194,11 +215,12 @@ type AtomicCompletion struct {
 }
 
 type ModelRunRequest struct {
-	Conversation    Conversation
-	Profile         ResolvedProfile
-	Snapshot        coremodel.ExecutionSnapshot
-	ProfileSnapshot coremodel.ExecutionSnapshot
-	Extensions      []ResolvedExtension
+	Conversation       Conversation
+	Profile            ResolvedProfile
+	Snapshot           coremodel.ExecutionSnapshot
+	ProfileSnapshot    coremodel.ExecutionSnapshot
+	Extensions         []ResolvedExtension
+	ExtensionSnapshots []ExtensionExecutionSnapshot
 }
 type ModelRunResult struct {
 	Message        Message
@@ -217,6 +239,14 @@ type ResolvedProfile struct {
 type ResolvedExtension struct {
 	Selection ExtensionSelection
 	Execute   func(context.Context, ToolExecutionRequest) (ToolResult, error)
+	Snapshot  ExtensionExecutionSnapshot
+}
+
+// ExtensionSnapshotResolver may resolve an already-pinned snapshot to an
+// executable dispatcher without consulting mutable active installation state.
+// It is intentionally optional so the basic conversation path remains usable.
+type ExtensionSnapshotResolver interface {
+	ResolveExtensionSnapshot(context.Context, ExtensionExecutionSnapshot) (ResolvedExtension, error)
 }
 type ToolExecutionRequest struct {
 	RequestID       string
@@ -374,13 +404,14 @@ type ToolCompletion struct {
 }
 
 var (
-	ErrInvalid      = errors.New("invalid conversation request")
-	ErrConflict     = errors.New("conversation conflict")
-	ErrInFlight     = errors.New("chat request in flight")
-	ErrCanceled     = errors.New("chat canceled")
-	ErrLeaseExpired = errors.New("chat lease expired")
-	ErrDeleted      = errors.New("conversation deleted")
-	ErrChatFailed   = errors.New("chat failed")
+	ErrInvalid               = errors.New("invalid conversation request")
+	ErrConflict              = errors.New("conversation conflict")
+	ErrInFlight              = errors.New("chat request in flight")
+	ErrCanceled              = errors.New("chat canceled")
+	ErrLeaseExpired          = errors.New("chat lease expired")
+	ErrDeleted               = errors.New("conversation deleted")
+	ErrChatFailed            = errors.New("chat failed")
+	ErrExtensionsUnsupported = errors.New("conversation extensions require durable turn")
 )
 
 func validUUID(s string) bool {
@@ -392,6 +423,33 @@ func validateText(s string, max int) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func canonicalJSON(raw string, max int) ([]byte, error) {
+	if len(raw) == 0 || len(raw) > max || !json.Valid([]byte(raw)) {
+		return nil, ErrInvalid
+	}
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return nil, ErrInvalid
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return nil, ErrInvalid
+	}
+	out, err := json.Marshal(value)
+	if err != nil || len(out) > max {
+		return nil, ErrInvalid
+	}
+	return out, nil
+}
+
+func containsTool(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }
 func (c ToolCall) Validate() error {
 	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.Name) == "" || len(c.ID) > MaxToolCallIDBytes || len(c.Name) > MaxToolNameBytes || len(c.ExecutionID) > MaxToolCallIDBytes || len(c.Arguments) > MaxToolArgumentsBytes || !utf8.ValidString(c.ID) || !utf8.ValidString(c.Name) || !utf8.ValidString(c.ExecutionID) || !utf8.ValidString(c.Arguments) {

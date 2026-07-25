@@ -38,6 +38,23 @@ message CoreModelProfile {
   int64 revision = 13;
   google.protobuf.Timestamp created_at = 14;
   google.protobuf.Timestamp updated_at = 15;
+  string client_profile_id = 16;
+}
+
+message CoreModelProfileSyncEntry {
+  string client_profile_id = 1;
+  optional int64 expected_revision = 2;
+  string display_name = 3;
+  CoreModelProvider provider = 4;
+  string base_url = 5;
+  string model = 6;
+  string system_prompt = 7;
+  optional string api_key = 8;
+  optional double temperature = 9;
+  optional double top_p = 10;
+  int32 max_output_tokens = 11;
+  int32 context_window = 12;
+  string reasoning_effort = 13;
 }
 
 message ModelProfileServiceCreateRequest {
@@ -105,6 +122,16 @@ message ModelProfileServiceTestConnectionResponse {
   string error_code = 2;
 }
 
+message ModelProfileServiceSyncRequest {
+  string idempotency_key = 1;
+  string default_client_profile_id = 2;
+  repeated CoreModelProfileSyncEntry entries = 3;
+}
+message ModelProfileServiceSyncResponse {
+  repeated CoreModelProfile profiles = 1;
+  string default_client_profile_id = 2;
+}
+
 service ModelProfileService {
   rpc Create(ModelProfileServiceCreateRequest) returns (ModelProfileServiceCreateResponse);
   rpc Get(ModelProfileServiceGetRequest) returns (ModelProfileServiceGetResponse);
@@ -112,4 +139,5 @@ service ModelProfileService {
   rpc Update(ModelProfileServiceUpdateRequest) returns (ModelProfileServiceUpdateResponse);
   rpc Delete(ModelProfileServiceDeleteRequest) returns (ModelProfileServiceDeleteResponse);
   rpc TestConnection(ModelProfileServiceTestConnectionRequest) returns (ModelProfileServiceTestConnectionResponse);
+  rpc Sync(ModelProfileServiceSyncRequest) returns (ModelProfileServiceSyncResponse);
 }

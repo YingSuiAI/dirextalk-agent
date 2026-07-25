@@ -17,21 +17,23 @@ import (
 )
 
 type CoreServerConfig struct {
-	InstanceID          string
-	ServiceToken        string
-	TLSCertFile         string
-	TLSKeyFile          string
-	EnableHealth        bool
-	EnableReflection    bool
-	ModelProfileService agentv1.ModelProfileServiceServer
-	ConversationService agentv1.ConversationServiceServer
-	TaskService         agentv1.TaskServiceServer
-	ScheduleService     agentv1.ScheduleServiceServer
-	ConfirmationService agentv1.ConfirmationServiceServer
-	MCPService          agentv1.MCPServiceServer
-	SkillService        agentv1.SkillServiceServer
-	KnowledgeService    agentv1.CoreKnowledgeServiceServer
-	CloudControlService agentv1.CoreCloudControlServiceServer
+	InstanceID                  string
+	ServiceToken                string
+	TLSCertFile                 string
+	TLSKeyFile                  string
+	EnableHealth                bool
+	EnableReflection            bool
+	ModelProfileService         agentv1.ModelProfileServiceServer
+	ConversationService         agentv1.ConversationServiceServer
+	ConversationExtensionsReady bool
+	TaskService                 agentv1.TaskServiceServer
+	ScheduleService             agentv1.ScheduleServiceServer
+	ConfirmationService         agentv1.ConfirmationServiceServer
+	MCPService                  agentv1.MCPServiceServer
+	SkillService                agentv1.SkillServiceServer
+	KnowledgeService            agentv1.CoreKnowledgeServiceServer
+	CloudControlService         agentv1.CoreCloudControlServiceServer
+	WorkloadService             agentv1.WorkloadServiceServer
 }
 
 type CoreServer struct {
@@ -54,6 +56,9 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 	}
 	if config.ConversationService != nil {
 		capabilityNames = append(capabilityNames, "conversation")
+		if config.ConversationExtensionsReady {
+			capabilityNames = append(capabilityNames, "conversation.extensions")
+		}
 	}
 	if config.TaskService != nil {
 		capabilityNames = append(capabilityNames, "task")
@@ -113,6 +118,12 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 	}
 	if config.CloudControlService != nil {
 		agentv1.RegisterCoreCloudControlServiceServer(grpcServer, config.CloudControlService)
+	}
+	// Workload registration is intentionally capability-neutral: target
+	// capabilities are advertised only by a composition that has a usable
+	// provider, never merely because this endpoint is registered.
+	if config.WorkloadService != nil {
+		agentv1.RegisterWorkloadServiceServer(grpcServer, config.WorkloadService)
 	}
 	var healthServer *health.Server
 	if config.EnableHealth {

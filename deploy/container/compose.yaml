@@ -1,0 +1,104 @@
+name: dirextalk-agent-core
+
+x-core-hardening: &core-hardening
+  user: "65532:65532"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=1777
+
+services:
+  secret-init:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    entrypoint: ["sh"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_READ_SEARCH", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - -ec
+      - >-
+        install -d -m 0700 /out /out-config;
+        install -m 0400 /run/secrets/database_url /out/database_url;
+        install -m 0400 /run/secrets/tls_cert /out/tls_cert;
+        install -m 0400 /run/secrets/tls_key /out/tls_key;
+        install -m 0400 /run/secrets/service_token /out/service_token;
+        install -m 0444 /bootstrap/config.yaml /out-config/config.yaml;
+        chown 65532:65532 /out /out/* /out-config /out-config/config.yaml
+    secrets:
+      - source: database_url
+        target: database_url
+      - source: tls_cert
+        target: tls_cert
+      - source: tls_key
+        target: tls_key
+      - source: service_token
+        target: service_token
+    volumes:
+      - type: bind
+        source: ${DIREXTALK_AGENT_CONFIG_FILE:?set the host Core YAML config path}
+        target: /bootstrap/config.yaml
+        read_only: true
+      - agent_secret_material:/out
+      - agent_config_material:/out-config
+    networks: [agent_private]
+    restart: "no"
+
+  migrate:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    <<: *core-hardening
+    command: ["migrate"]
+    restart: "no"
+    volumes:
+      - agent_config_material:/etc/dirextalk-agent:ro
+      - agent_secret_material:/run/secrets:ro
+    networks: [agent_private, agent_database]
+    depends_on:
+      secret-init:
+        condition: service_completed_successfully
+
+  core:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    <<: *core-hardening
+    command: ["serve"]
+    environment:
+      AGENT_HEALTHCHECK_SERVER_NAME: ${DIREXTALK_HEALTHCHECK_SERVER_NAME:-localhost}
+    restart: unless-stopped
+    expose: ["9443"]
+    volumes:
+      - agent_config_material:/etc/dirextalk-agent:ro
+      - agent_secret_material:/run/secrets:ro
+    networks: [agent_private, agent_database, agent_caller, agent_egress]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+networks:
+  agent_private:
+    name: ${DIREXTALK_AGENT_NETWORK_NAME:-dirextalk-agent-private}
+    internal: true
+  agent_database:
+    name: ${DIREXTALK_AGENT_DATABASE_NETWORK_NAME:-dirextalk-agent-database}
+    external: true
+  agent_caller:
+    name: ${DIREXTALK_AGENT_CALLER_NETWORK_NAME:-dirextalk-agent-caller}
+    external: true
+  agent_egress:
+    name: ${DIREXTALK_AGENT_EGRESS_NETWORK_NAME:-dirextalk-agent-egress}
+
+secrets:
+  database_url:
+    file: ${DIREXTALK_DATABASE_URL_FILE:?set the Agent database URL file}
+  tls_cert:
+    file: ${DIREXTALK_TLS_CERT_FILE:?set the TLS certificate file}
+  tls_key:
+    file: ${DIREXTALK_TLS_KEY_FILE:?set the TLS private-key file}
+  service_token:
+    file: ${DIREXTALK_SERVICE_TOKEN_FILE:?set the Agent service token file}
+
+volumes:
+  agent_secret_material:
+    name: ${DIREXTALK_AGENT_SECRET_VOLUME:-dirextalk-agent-secret-material}
+  agent_config_material:
+    name: ${DIREXTALK_AGENT_CONFIG_VOLUME:-dirextalk-agent-config-material}

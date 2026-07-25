@@ -1,0 +1,66 @@
+// dirextalk-core-runner is a non-root, local-only workload supervisor.  It
+// intentionally has no Agent DB, TCP listener, Docker socket, host mounts, or
+// Agent credential inputs. Execution-root/cgroup wiring is a later composition
+// hook; this binary currently supplies the authenticated receipt boundary.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/runner"
+	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+)
+
+func main() {
+	if len(os.Args) == 2 && os.Args[1] == "__sandbox-child-v1" {
+		if err := extensionrunner.SandboxChildV1(); err != nil {
+			die("sandbox child failed")
+		}
+		return
+	}
+	if len(os.Args) < 2 || os.Args[1] != "serve" {
+		die("usage: dirextalk-core-runner serve --socket --agent-uid")
+	}
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	socket := fs.String("socket", "", "")
+	uid := fs.String("agent-uid", "", "")
+	installRoot := fs.String("install-root", "", "")
+	workspaceRoot := fs.String("workspace-root", "", "")
+	cgroupRoot := fs.String("cgroup-root", "", "")
+	staticShell := fs.String("static-shell", "", "")
+	stateRoot := fs.String("state-root", "", "")
+	if fs.Parse(os.Args[2:]) != nil || fs.NArg() != 0 {
+		die("invalid flags")
+	}
+	n, e := strconv.ParseUint(*uid, 10, 32)
+	if e != nil || n == 0 || uint32(n) == uint32(os.Geteuid()) || !filepath.IsAbs(*socket) || filepath.Clean(*socket) != *socket || !absoluteClean(*installRoot) || !absoluteClean(*workspaceRoot) || !absoluteClean(*cgroupRoot) || !absoluteClean(*staticShell) || !absoluteClean(*stateRoot) {
+		die("invalid runner identity")
+	}
+	l, e := runner.Listen(*socket, uint32(os.Geteuid()))
+	if e != nil {
+		die("unsafe socket")
+	}
+	defer l.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	executor := runner.LinuxExecutor{InstallRoot: *installRoot, WorkspaceRoot: *workspaceRoot, CgroupRoot: *cgroupRoot, StaticShell: *staticShell}
+	supervisor, e := runner.NewPersistentSupervisor(uint32(n), *stateRoot, executor)
+	if e != nil {
+		die("unsafe state root")
+	}
+	if e = supervisor.Serve(ctx, l); e != nil {
+		die("runner stopped")
+	}
+}
+
+func absoluteClean(v string) bool {
+	return v != "" && filepath.IsAbs(v) && filepath.Clean(v) == v && v != "/"
+}
+
+func die(s string) { _, _ = fmt.Fprintln(os.Stderr, s); os.Exit(2) }

@@ -1,0 +1,273 @@
+name: dirextalk-agent-core-local
+
+x-core-hardening: &core-hardening
+  user: "65532:65532"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=1777
+
+x-runner-hardening: &runner-hardening
+  user: "65531:65531"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=1777
+
+x-core-runner-hardening: &core-runner-hardening
+  user: "65530:65530"
+  read_only: true
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=1777
+
+services:
+  postgres:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+      - /run/postgresql:rw,noexec,nosuid,nodev,mode=2775
+    environment:
+      POSTGRES_DB: ${DIREXTALK_POSTGRES_DB:-dirextalk_agent}
+      POSTGRES_USER: ${DIREXTALK_POSTGRES_USER:-dirextalk_agent}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - agent_postgres_secret_material:/run/secrets:ro
+      - agent_postgres_data:/var/lib/postgresql
+    networks: [agent_private]
+    depends_on:
+      secret-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  migrate:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    <<: *core-hardening
+    command: ["migrate"]
+    restart: "no"
+    volumes:
+      - agent_config_material:/etc/dirextalk-agent:ro
+      - agent_secret_material:/run/secrets:ro
+    networks: [agent_private]
+    depends_on:
+      secret-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  secret-init:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    entrypoint: ["sh"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_READ_SEARCH", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - -ec
+      - >-
+        install -d -m 0700 /out /out-config;
+        install -d -m 0750 /out-postgres;
+        install -m 0400 /run/secrets/database_url /out/database_url;
+        install -m 0400 /run/secrets/tls_cert /out/tls_cert;
+        install -m 0400 /run/secrets/tls_key /out/tls_key;
+        install -m 0400 /run/secrets/service_token /out/service_token;
+        install -m 0444 /bootstrap/config.yaml /out-config/config.yaml;
+        install -m 0440 /run/secrets/postgres_password /out-postgres/postgres_password;
+        chown 65532:65532 /out /out/*;
+        chown 65532:65532 /out-config /out-config/config.yaml;
+        chown 999:0 /out-postgres/postgres_password;
+        chown 999:0 /out-postgres
+    secrets:
+      - source: database_url
+        target: database_url
+      - source: tls_cert
+        target: tls_cert
+      - source: tls_key
+        target: tls_key
+      - source: service_token
+        target: service_token
+      - source: postgres_password
+        target: postgres_password
+    volumes:
+      - type: bind
+        source: ${DIREXTALK_AGENT_CONFIG_FILE:?set the host Core YAML config path}
+        target: /bootstrap/config.yaml
+        read_only: true
+      - agent_secret_material:/out
+      - agent_postgres_secret_material:/out-postgres
+      - agent_config_material:/out-config
+    networks: [agent_private]
+    restart: "no"
+
+  extension-runner:
+    image: ${DIREXTALK_EXTENSION_RUNNER_IMAGE_IMMUTABLE:?set the immutable extension runner image reference}
+    <<: *runner-hardening
+    profiles: ["extensions"]
+    group_add: ["65532"]
+    command:
+      - serve
+      - --socket
+      - /run/dirextalk-agent/extension-runner.sock
+      - --agent-uid
+      - "65532"
+      - --install-root
+      - /var/lib/dirextalk-agent/extension-install
+      - --workspace-root
+      - /var/lib/dirextalk-agent/extension-workspaces
+      - --cgroup-root
+      - /sys/fs/cgroup/dirextalk-agent
+      - --state-root
+      - /var/lib/dirextalk-agent/extension-state
+    volumes:
+      - agent_extension_socket:/run/dirextalk-agent
+      - agent_extension_install:/var/lib/dirextalk-agent/extension-install
+      - agent_runner_workspaces:/var/lib/dirextalk-agent/extension-workspaces
+      - agent_extension_state:/var/lib/dirextalk-agent/extension-state
+      - type: bind
+        source: ${DIREXTALK_EXTENSION_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for the runner}
+        target: /sys/fs/cgroup/dirextalk-agent
+    networks: [agent_private]
+    depends_on:
+      extension-socket-init:
+        condition: service_completed_successfully
+
+  extension-socket-init:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    entrypoint: ["sh"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    profiles: ["extensions"]
+    command:
+      - -ec
+      - >-
+        install -d -m 3770 /socket;
+        chown 65531:65532 /socket;
+        chmod 0770 /socket
+    volumes:
+      - agent_extension_socket:/socket
+    network_mode: "none"
+    restart: "no"
+
+  # Deliberately profile-gated until core_serve composition wires the Provider.
+  # No database, secrets, host filesystem, Docker socket, or network reaches it.
+  core-runner:
+    image: ${DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE:?set the immutable Core Runner image reference}
+    <<: *core-runner-hardening
+    profiles: ["core-runner"]
+    group_add: ["65532"]
+    command: ["serve", "--socket", "/run/dirextalk-core-runner/runner.sock", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/sys/fs/cgroup/dirextalk-core-runner", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
+    volumes:
+      - core_runner_socket:/run/dirextalk-core-runner
+      - core_runner_installs:/var/lib/dirextalk-core-runner/installs
+      - core_runner_workspaces:/var/lib/dirextalk-core-runner/workspaces
+      - core_runner_state:/var/lib/dirextalk-core-runner/state
+      - type: bind
+        source: ${DIREXTALK_CORE_RUNNER_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for Core Runner}
+        target: /sys/fs/cgroup/dirextalk-core-runner
+    network_mode: "none"
+    depends_on:
+      core-runner-socket-init:
+        condition: service_completed_successfully
+
+  core-runner-socket-init:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    entrypoint: ["sh"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER"]
+    security_opt: ["no-new-privileges:true"]
+    profiles: ["core-runner"]
+    command: ["-ec", "install -d -m 3770 /socket; chown 65530:65532 /socket; chmod 3770 /socket"]
+    volumes: ["core_runner_socket:/socket"]
+    network_mode: "none"
+    restart: "no"
+
+  core:
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    <<: *core-hardening
+    command: ["serve"]
+    environment:
+      AGENT_HEALTHCHECK_SERVER_NAME: ${DIREXTALK_HEALTHCHECK_SERVER_NAME:-localhost}
+    restart: unless-stopped
+    expose: ["9443"]
+    volumes:
+      - agent_config_material:/etc/dirextalk-agent:ro
+      - agent_extension_socket:/run/dirextalk-agent:ro
+      - agent_extension_staging:/var/lib/dirextalk-agent/extension-staging
+      - agent_extension_workspaces:/var/lib/dirextalk-agent/extension-workspaces
+      - agent_secret_material:/run/secrets:ro
+      - core_runner_socket:/run/dirextalk-core-runner
+    networks: [agent_private, agent_caller, agent_egress]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      secret-init:
+        condition: service_completed_successfully
+
+networks:
+  agent_private:
+    name: ${DIREXTALK_AGENT_NETWORK_NAME:-dirextalk-agent-private}
+    internal: true
+  # Core needs outbound HTTPS for configured model/AWS authorities. Keep this
+  # network off Postgres and the extension runner; neither receives egress.
+  agent_egress:
+    name: ${DIREXTALK_AGENT_EGRESS_NETWORK_NAME:-dirextalk-agent-egress}
+  agent_caller:
+    name: ${DIREXTALK_AGENT_CALLER_NETWORK_NAME:-dirextalk-agent-caller}
+    internal: true
+
+volumes:
+  agent_postgres_data:
+    name: ${DIREXTALK_AGENT_POSTGRES_VOLUME:-dirextalk-agent-postgres-data}
+  agent_extension_socket:
+    name: ${DIREXTALK_AGENT_SOCKET_VOLUME:-dirextalk-agent-extension-socket}
+  agent_extension_install:
+    name: ${DIREXTALK_AGENT_INSTALL_VOLUME:-dirextalk-agent-extension-install}
+  agent_extension_staging:
+    name: ${DIREXTALK_AGENT_STAGING_VOLUME:-dirextalk-agent-extension-staging}
+  agent_extension_workspaces:
+    name: ${DIREXTALK_AGENT_WORKSPACE_VOLUME:-dirextalk-agent-extension-workspaces}
+  agent_runner_workspaces:
+    name: ${DIREXTALK_AGENT_RUNNER_WORKSPACE_VOLUME:-dirextalk-agent-runner-workspaces}
+  agent_extension_state:
+    name: ${DIREXTALK_AGENT_RUNNER_STATE_VOLUME:-dirextalk-agent-extension-state}
+  agent_secret_material:
+    name: ${DIREXTALK_AGENT_SECRET_VOLUME:-dirextalk-agent-secret-material}
+  agent_postgres_secret_material:
+    name: ${DIREXTALK_AGENT_POSTGRES_SECRET_VOLUME:-dirextalk-agent-postgres-secret-material}
+  agent_config_material:
+    name: ${DIREXTALK_AGENT_CONFIG_VOLUME:-dirextalk-agent-config-material}
+  core_runner_socket:
+    name: ${DIREXTALK_CORE_RUNNER_SOCKET_VOLUME:-dirextalk-agent-core-runner-socket}
+  core_runner_installs:
+    name: ${DIREXTALK_CORE_RUNNER_INSTALL_VOLUME:-dirextalk-agent-core-runner-installs}
+  core_runner_workspaces:
+    name: ${DIREXTALK_CORE_RUNNER_WORKSPACE_VOLUME:-dirextalk-agent-core-runner-workspaces}
+  core_runner_state:
+    name: ${DIREXTALK_CORE_RUNNER_STATE_VOLUME:-dirextalk-agent-core-runner-state}
+
+secrets:
+  postgres_password:
+    file: ${DIREXTALK_POSTGRES_PASSWORD_FILE:?set the PostgreSQL password file}
+  database_url:
+    file: ${DIREXTALK_DATABASE_URL_FILE:?set the Agent database URL file}
+  tls_cert:
+    file: ${DIREXTALK_TLS_CERT_FILE:?set the TLS certificate file}
+  tls_key:
+    file: ${DIREXTALK_TLS_KEY_FILE:?set the TLS private-key file}
+  service_token:
+    file: ${DIREXTALK_SERVICE_TOKEN_FILE:?set the Agent service token file}

@@ -1,0 +1,20 @@
+# Non-secret Core configuration. Every *_file value is a read-only mounted
+# file; never replace these paths with secret values.
+instance_id: 00000000-0000-4000-8000-000000000000
+database_url_file: /run/secrets/database_url
+grpc_listen: ":9443"
+tls_cert_file: /run/secrets/tls_cert
+tls_key_file: /run/secrets/tls_key
+service_token_file: /run/secrets/service_token
+enable_health_service: true
+enable_reflection: false
+core_task_max_concurrency: 4
+core_task_lease_ttl: 30s
+core_schedule_sweep_interval: 1s
+core_shutdown_grace: 30s
+core_extension_enabled: false
+core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
+core_extension_workspace_root: /var/lib/dirextalk-agent/extension-workspaces
+core_extension_runner_socket: /run/dirextalk-agent/extension-runner.sock
+core_extension_runner_uid: 65531
+core_knowledge_enabled: false

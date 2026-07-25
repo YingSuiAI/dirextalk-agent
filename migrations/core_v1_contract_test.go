@@ -6,12 +6,21 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 1 {
-		t.Fatalf("CurrentVersion = %d, want 1", CurrentVersion)
+	if CurrentVersion != 4 {
+		t.Fatalf("CurrentVersion = %d, want 4", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 1 || entries[0] != "000001_core_v1_baseline.up.sql" {
+	if len(entries) != 4 || entries[0] != "000001_core_v1_baseline.up.sql" || entries[1] != "000002_model_profile_sync.up.sql" || entries[2] != "000003_core_conversation_turns.up.sql" || entries[3] != "000004_core_workloads.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
+	}
+	turns, err := Files.ReadFile(entries[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"CREATE TABLE core_conversation_turns", "CREATE TABLE core_conversation_turn_events", "core_conversation_turn_events_replay_idx", "dispatch_state", "cancel_request_fingerprint", "state IN ('accepted','running','completed','canceled','failed')"} {
+		if !strings.Contains(string(turns), needle) {
+			t.Errorf("turn migration missing %q", needle)
+		}
 	}
 	script, err := Files.ReadFile(entries[0])
 	if err != nil {
@@ -46,6 +55,15 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	} {
 		if strings.Contains(string(script), forbidden) {
 			t.Errorf("baseline contains removed legacy schema %q", forbidden)
+		}
+	}
+	workloads, err := Files.ReadFile(entries[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"core_workload_plans", "core_workloads", "core_workload_operations", "core_workload_events", "core_workload_idempotency", "owner_id", "target_identity_json", "actual_snapshot_json", "desired_plan_json", "dispatch_lease_until", "core_tasks_task_kind_chk", "CORE_RUNNER", "AWS_EC2_SSM", "AWS_ECS", "rejected", "expired", "canceled", "uncertain"} {
+		if !strings.Contains(string(workloads), needle) {
+			t.Errorf("workload migration missing %q", needle)
 		}
 	}
 }

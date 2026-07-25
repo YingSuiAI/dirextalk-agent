@@ -14,8 +14,8 @@ const (
 	bundleName  = "agent_migrations.sql"
 	beginMarker = "-- dirextalk-agent migration begin "
 	endMarker   = "-- dirextalk-agent migration end "
-	// CurrentVersion is the Core v1 schema baseline version.
-	CurrentVersion = int64(1)
+	// CurrentVersion is the latest Core v1 schema migration version.
+	CurrentVersion = int64(4)
 )
 
 // Migration is one virtual migration extracted from the embedded bundle.

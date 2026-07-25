@@ -13,6 +13,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/source"
@@ -24,14 +25,135 @@ import (
 )
 
 type coreExtensionComposition struct {
-	mcpService       agentv1.MCPServiceServer
-	skillService     agentv1.SkillServiceServer
-	taskHandler      coreruntime.TaskHandler
-	lifecycleHandler coreruntime.TaskHandler
-	executionHandler coreruntime.TaskHandler
-	toolDispatcher   coreruntime.ToolDispatcher
-	skillResolver    coreruntime.SkillInstructionResolver
-	artifactCleaner  *postgres.CoreExtensionArtifactCleaner
+	mcpService              agentv1.MCPServiceServer
+	skillService            agentv1.SkillServiceServer
+	taskHandler             coreruntime.TaskHandler
+	lifecycleHandler        coreruntime.TaskHandler
+	executionHandler        coreruntime.TaskHandler
+	toolDispatcher          coreruntime.ToolDispatcher
+	skillResolver           coreruntime.SkillInstructionResolver
+	artifactCleaner         *postgres.CoreExtensionArtifactCleaner
+	conversationToolHandler coreruntime.TaskHandler
+	conversationResolver    coreconversation.ExtensionResolver
+}
+
+type conversationExtensionResolver struct{ store extensionGetter }
+
+func (r conversationExtensionResolver) ResolveExtensions(ctx context.Context, selections []coreconversation.ExtensionSelection) ([]coreconversation.ResolvedExtension, error) {
+	if r.store == nil {
+		return nil, coreextension.ErrInvalid
+	}
+	out := make([]coreconversation.ResolvedExtension, 0, len(selections))
+	for _, selection := range selections {
+		installation, err := r.store.Get(ctx, selection.ID)
+		if err != nil || installation.State != coreextension.StateInstalled {
+			return nil, coreextension.ErrConflict
+		}
+		var version *coreextension.VersionRecord
+		for i := range installation.Versions {
+			candidate := &installation.Versions[i]
+			if candidate.VersionID == selection.Version || extensionVersionPin(*candidate) == selection.Version {
+				version = candidate
+				break
+			}
+		}
+		if version == nil || version.ContentDigest != selection.Digest || installation.ActiveVersionID != version.VersionID {
+			return nil, coreextension.ErrConflict
+		}
+		tools := make([]string, 0, len(version.Tools))
+		for _, tool := range version.Tools {
+			tools = append(tools, tool.Name)
+		}
+		toolSchema := toolSchemaDigest(version.Tools)
+		out = append(out, coreconversation.ResolvedExtension{Selection: selection, Snapshot: coreconversation.ExtensionExecutionSnapshot{Selection: selection, InstallationID: installation.ID, VersionID: version.VersionID, InstallationRevision: uint64(installation.Revision), Source: string(installation.Source), ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, ToolSchemaDigest: toolSchema, NetworkBindingDigest: version.NetworkSchemaDigest, SecretBindingDigest: version.SecretSchemaDigest, ToolNames: tools, RequiresConfirmation: true}})
+	}
+	return out, nil
+}
+
+func toolSchemaDigest(tools []coreextension.Tool) string {
+	b, _ := json.Marshal(tools)
+	return digestBytes(b)
+}
+
+func extensionVersionPin(v coreextension.VersionRecord) string {
+	if strings.TrimSpace(v.Pin.RegistryVersion) != "" {
+		return strings.TrimSpace(v.Pin.RegistryVersion)
+	}
+	return strings.TrimSpace(v.Pin.GitCommit)
+}
+
+func conversationToolTaskHandler(store *postgres.CoreConversationStore, coord *postgres.PostgresExtensionExecutionCoordinator, local *execution.LocalExecutor, remote *execution.RemoteExecutor, skillReader skillArtifactReader) coreruntime.TaskHandler {
+	return func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
+		if store == nil || coord == nil {
+			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+		}
+		attempt, err := store.BeginConversationTool(ctx, task)
+		if err != nil {
+			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+		}
+		invocation, err := coord.ResolveConversationInvocation(ctx, task)
+		if err != nil {
+			_ = store.FinishConversationTool(ctx, task, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
+			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+		}
+		var result coretask.Result
+		switch {
+		case invocation.Local != nil:
+			if local == nil {
+				err = coreextension.ErrInvalid
+			} else if payload := task.Spec.Payload.ConversationTool; payload != nil {
+				var toolResult coretask.Result
+				toolResult, err = local.CallTool(ctx, *invocation.Local, payload.ToolName, invocation.Local.Stdin)
+				if err == nil {
+					result = toolResult
+				}
+			} else {
+				result, err = local.ExecuteTask(ctx, *invocation.Local)
+			}
+		case invocation.Remote != nil:
+			if remote == nil {
+				err = coreextension.ErrInvalid
+			} else {
+				result, err = remote.ExecuteBoundExact(ctx, invocation.Remote.Endpoint, invocation.Remote.InstallationID, invocation.Remote.VersionID, invocation.Remote.Purpose, invocation.Remote.BindingDigest, invocation.Remote.Tool, invocation.Remote.Input)
+			}
+		case invocation.Skill != nil:
+			if invocation.Skill.Entry.Executable {
+				if local == nil {
+					err = coreextension.ErrInvalid
+				} else {
+					var status extensionrunner.StatusV1
+					status, err = local.Execute(ctx, execution.LocalInvocation{TaskID: invocation.Skill.TaskID, TaskFence: invocation.Skill.TaskFence, InstallationID: invocation.Skill.InstallationID, VersionID: invocation.Skill.VersionID, InstallDigest: invocation.Skill.InstallDigest, ContentDigest: invocation.Skill.ContentDigest, ArtifactDigest: invocation.Skill.ArtifactDigest, EntryPath: invocation.Skill.Entry.RelativePath, Argv: invocation.Skill.Entry.Argv, Workspace: invocation.Skill.Workspace, Timeout: 10 * time.Minute, Secrets: invocation.Skill.Secrets, Stdin: invocation.Skill.Input})
+					if err == nil {
+						result = coretask.Result{Text: string(status.Stdout), Summary: "isolated skill execution"}
+					}
+				}
+			} else if skillReader == nil {
+				err = coreextension.ErrInvalid
+			} else {
+				result, err = (execution.SkillExecutor{Reader: skillReader, Digest: invocation.Skill.InstallDigest}).Execute(ctx, invocation.Skill.Entry)
+			}
+		default:
+			err = coreextension.ErrInvalid
+		}
+		if err != nil {
+			_ = store.FinishConversationTool(ctx, task, "uncertain", nil, "tool_uncertain", "tool dispatch outcome is unknown")
+			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+		}
+		if result.Validate() != nil {
+			_ = store.FinishConversationTool(ctx, task, "failed", nil, "tool_result_invalid", "tool returned an invalid result")
+			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+		}
+		raw, _ := json.Marshal(result)
+		if len(raw) > coretask.MaxResultBytes {
+			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
+		}
+		if err = store.FinishConversationTool(ctx, task, "completed", raw, "", ""); err != nil {
+			_ = store.FinishConversationTool(ctx, task, "uncertain", nil, "tool_uncertain", "tool completion outcome is unknown")
+			return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
+		}
+		_ = attempt
+		return coreruntime.ManagedOutcome{Result: result, TerminalOwned: true}
+	}
 }
 
 type pinnedExtensionDispatcher struct {
@@ -249,7 +371,15 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	// digest-addressed publication store. The Agent never reads the staging
 	// tree as an execution fallback.
 	executionHandler := (&execution.Handler{Coordinator: execCoord, Local: local, Remote: remote, SkillReader: runner}).Handle
+	conversationStore, err := postgres.NewCoreConversationStore(store)
+	if err != nil {
+		return nil, err
+	}
+	conversationToolHandler := conversationToolTaskHandler(conversationStore, execCoord, local, remote, runner)
 	dispatch := func(ctx context.Context, task coretask.Task) coreruntime.ManagedOutcome {
+		if task.Spec.Kind == coretask.TaskKindConversationTool {
+			return conversationToolHandler(ctx, task)
+		}
 		if task.Spec.Payload.Extension == nil {
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
@@ -262,5 +392,5 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
 	}
-	return &coreExtensionComposition{mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+	return &coreExtensionComposition{mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
 }

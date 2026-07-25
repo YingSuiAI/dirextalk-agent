@@ -33,6 +33,9 @@ func mapErr(err error) error {
 	if errors.Is(err, coreconversation.ErrInvalid) {
 		return status.Error(codes.InvalidArgument, "invalid conversation request")
 	}
+	if errors.Is(err, coreconversation.ErrExtensionsUnsupported) {
+		return status.Error(codes.InvalidArgument, "conversation extensions require durable turn")
+	}
 	if errors.Is(err, coreconversation.ErrConflict) {
 		return status.Error(codes.Aborted, "conversation conflict")
 	}
@@ -42,10 +45,43 @@ func mapErr(err error) error {
 	if errors.Is(err, coreconversation.ErrChatFailed) {
 		return status.Error(codes.FailedPrecondition, "chat failed")
 	}
+	if errors.Is(err, coreconversation.ErrCanceled) {
+		return status.Error(codes.Canceled, "conversation turn canceled")
+	}
 	if errors.Is(err, coreconversation.ErrDeleted) {
 		return status.Error(codes.NotFound, "conversation not found")
 	}
 	return status.Error(codes.Internal, "conversation operation failed")
+}
+
+func turnProto(t coreconversation.Turn) *agentv1.CoreConversationTurn {
+	out := &agentv1.CoreConversationTurn{TurnId: t.ID, RequestId: t.RequestID, ConversationId: t.ConversationID, Message: t.Prompt, ModelProfileId: t.ProfileID, Revision: int64(t.Revision), State: string(t.State), TerminalCode: t.TerminalCode, TerminalSummary: t.TerminalSummary, LastSequence: t.LastSequence, CreatedAt: timestamppb.New(t.CreatedAt), UpdatedAt: timestamppb.New(t.UpdatedAt)}
+	if t.ExpectedRevision != nil {
+		out.ExpectedRevision = int64(*t.ExpectedRevision)
+	}
+	if t.Response != nil {
+		sequence := uint64(t.Response.Revision)
+		if sequence > uint64(1<<63-1) {
+			sequence = uint64(1<<63 - 1)
+		}
+		out.Result = msgProto(t.Response.Message, int64(sequence), t.Response.ConversationID)
+	}
+	return out
+}
+
+func turnEventProto(e coreconversation.TurnEvent) *agentv1.ConversationServiceWatchTurnEventsResponse {
+	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, AttemptId: e.AttemptID, ExecutionId: e.ExecutionID, Status: e.Status}
+	if e.ToolResult != nil {
+		out.ToolResult = &agentv1.CoreToolResult{ToolName: e.ToolResult.ToolName, Summary: e.ToolResult.Summary, RelatedTaskIds: e.ToolResult.RelatedTaskIDs, ToolSummaries: summaryList(e.ToolResult.Summary)}
+	}
+	if e.Message != nil {
+		conversationID := e.TurnID
+		if e.Response != nil {
+			conversationID = e.Response.ConversationID
+		}
+		out.Message = msgProto(*e.Message, e.Sequence, conversationID)
+	}
+	return &agentv1.ConversationServiceWatchTurnEventsResponse{Event: out}
 }
 func convProto(c coreconversation.Conversation) *agentv1.CoreConversation {
 	return &agentv1.CoreConversation{ConversationId: c.ID, Title: c.Title, Revision: int64(c.Revision), CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt)}
@@ -230,4 +266,54 @@ func mapStreamError(code string) error {
 	default:
 		return status.Error(codes.FailedPrecondition, "chat failed")
 	}
+}
+
+func (s *CoreConversationService) StartTurn(ctx context.Context, r *agentv1.ConversationServiceStartTurnRequest) (*agentv1.ConversationServiceStartTurnResponse, error) {
+	cmd := coreconversation.TurnStartCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), Extensions: extensionCommands(r.GetExtensions())}
+	if r.ExpectedRevision != nil {
+		x := uint64(r.GetExpectedRevision())
+		cmd.ExpectedRevision = &x
+	}
+	// The domain binds the immutable profile snapshot before acceptance. The
+	// existing service resolver is intentionally reused only at this boundary.
+	if cmd.ProfileID == "" {
+		return nil, status.Error(codes.InvalidArgument, "model profile is required")
+	}
+	turn, e := s.service.StartTurn(ctx, cmd)
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceStartTurnResponse{Turn: turnProto(turn)}, nil
+}
+
+func (s *CoreConversationService) GetTurn(ctx context.Context, r *agentv1.ConversationServiceGetTurnRequest) (*agentv1.ConversationServiceGetTurnResponse, error) {
+	turn, e := s.service.GetTurn(ctx, r.GetTurnId())
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceGetTurnResponse{Turn: turnProto(turn)}, nil
+}
+
+func (s *CoreConversationService) WatchTurnEvents(r *agentv1.ConversationServiceWatchTurnEventsRequest, stream agentv1.ConversationService_WatchTurnEventsServer) error {
+	ch, e := s.service.WatchTurnEvents(stream.Context(), r.GetTurnId(), r.GetAfterSequence(), int(r.GetLimit()))
+	if e != nil {
+		return mapErr(e)
+	}
+	for event := range ch {
+		if event.Err != nil {
+			return mapErr(event.Err)
+		}
+		if e := stream.Send(turnEventProto(event)); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func (s *CoreConversationService) CancelTurn(ctx context.Context, r *agentv1.ConversationServiceCancelTurnRequest) (*agentv1.ConversationServiceCancelTurnResponse, error) {
+	turn, e := s.service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: r.GetIdempotencyKey(), TurnID: r.GetTurnId(), ExpectedRevision: uint64(r.GetExpectedRevision())})
+	if e != nil {
+		return nil, mapErr(e)
+	}
+	return &agentv1.ConversationServiceCancelTurnResponse{Turn: turnProto(turn)}, nil
 }

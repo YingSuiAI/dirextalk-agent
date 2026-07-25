@@ -58,7 +58,7 @@ func (s *CoreConfirmationStore) SweepExpired(ctx context.Context, now time.Time,
 		if (c.State != coreconfirmation.StatePending && c.State != coreconfirmation.StateConfirmed) || c.ExpiresAt.After(now.UTC()) {
 			continue
 		}
-		if _, err = terminalizeExpiredTx(ctx, tx, c, now.UTC(), coreconfirmation.ReasonExpired); err != nil {
+		if _, err = terminalizeExpiredTx(ctx, tx, s.store.instanceID, c, now.UTC(), coreconfirmation.ReasonExpired); err != nil {
 			return 0, err
 		}
 		count++
@@ -183,7 +183,17 @@ func statusForTaskEvent(changeStatus string) string {
 		return "failed"
 	}
 }
-func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, at time.Time, reason string) (coreconfirmation.Confirmation, error) {
+func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur coreconfirmation.Confirmation, at time.Time, reason string) (coreconfirmation.Confirmation, error) {
+	if cur.Binding.OperationDomain == "workload:apply" || cur.Binding.OperationDomain == "workload:destroy" {
+		status := "expired"
+		if reason == coreconfirmation.ReasonUserRejected {
+			status = "rejected"
+		}
+		if reason == "canceled" {
+			status = "canceled"
+		}
+		return terminalizeWorkloadBeforeDispatchTx(ctx, tx, ownerID, cur, "expired", status, "failed", reason, reason, at)
+	}
 	if _, e := tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,updated_at=$2,terminal_code=$3,terminal_reason=$3 WHERE confirmation_id=$1`, cur.ConfirmationID, at, reason); e != nil {
 		return cur, e
 	}
@@ -206,6 +216,9 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.C
 			return cur, e
 		}
 	}
+	if e := terminalizeConversationToolTx(ctx, tx, cur, "denied", reason, at); e != nil {
+		return cur, e
+	}
 	awsStatus, awsStage := "failed", "failed"
 	if reason == coreconfirmation.ReasonUserRejected {
 		awsStatus, awsStage = "canceled", "canceled"
@@ -216,9 +229,55 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.C
 	cur.State, cur.Revision, cur.UpdatedAt, cur.TerminalCode, cur.TerminalReason = coreconfirmation.StateExpired, cur.Revision+1, at, reason, reason
 	return cur, nil
 }
+
+// terminalizeWorkloadBeforeDispatchTx is deliberately narrower than generic
+// confirmation termination: it can only touch the owner-scoped prepared,
+// claimless workload before any provider dispatch. Actual snapshots are never
+// written on this path.
+func terminalizeWorkloadBeforeDispatchTx(ctx context.Context, tx pgx.Tx, ownerID any, cur coreconfirmation.Confirmation, confirmationState, operationState, taskState, code, summary string, at time.Time) (coreconfirmation.Confirmation, error) {
+	cur, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 FOR UPDATE`, cur.ConfirmationID))
+	if err != nil {
+		return cur, err
+	}
+	if cur.State != coreconfirmation.StatePending && cur.State != coreconfirmation.StateConfirmed {
+		return cur, coreconfirmation.ErrConflict
+	}
+	var taskStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM core_tasks WHERE task_id=$1 FOR UPDATE`, cur.TaskID).Scan(&taskStatus); err != nil {
+		return cur, err
+	}
+	var operationID, opStatus, dispatchState, claim string
+	if err = tx.QueryRow(ctx, `SELECT operation_id::text,status,dispatch_state,COALESCE(dispatch_claim::text,'') FROM core_workload_operations WHERE owner_id=$1 AND confirmation_id=$2 FOR UPDATE`, ownerID, cur.ConfirmationID).Scan(&operationID, &opStatus, &dispatchState, &claim); err != nil {
+		return cur, coreconfirmation.ErrConflict
+	}
+	if taskStatus != "waiting_user" || opStatus != "waiting_user" || dispatchState != "prepared" || claim != "" {
+		return cur, coreconfirmation.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_confirmations SET state=$2,terminal_code=$3,terminal_reason=$3,terminal_note=$4,revision=revision+1,updated_at=$5 WHERE confirmation_id=$1`, cur.ConfirmationID, confirmationState, code, summary, at); err != nil {
+		return cur, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_tasks SET status=$2,attempt=GREATEST(attempt,1),failure_code=$3,failure_summary=$4,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$5 WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, taskState, code, summary, at); err != nil {
+		return cur, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_workload_operations SET status=$2,dispatch_state='terminal',failure_code=$3,failure_summary=$4,revision=revision+1,updated_at=$5 WHERE owner_id=$1 AND operation_id=$6 AND status='waiting_user' AND dispatch_state='prepared' AND dispatch_claim IS NULL`, ownerID, operationState, code, summary, at, operationID); err != nil {
+		return cur, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_confirmation_reservations SET active=false WHERE confirmation_id=$1`, cur.ConfirmationID); err != nil {
+		return cur, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at) SELECT task_id,progress_sequence,$2,attempt,$3,'confirmation_terminal',$4,$5,$6 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), taskState, code, summary, at); err != nil {
+		return cur, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_workload_events(owner_id,operation_id,sequence,kind,status,message,at) SELECT $1,$2,COALESCE(MAX(sequence),0)+1,'terminal',$3,$4,$5 FROM core_workload_events WHERE owner_id=$1 AND operation_id=$2`, ownerID, operationID, operationState, summary, at); err != nil {
+		return cur, err
+	}
+	cur.State, cur.Revision, cur.UpdatedAt, cur.TerminalCode, cur.TerminalReason, cur.TerminalNote = coreconfirmation.State(confirmationState), cur.Revision+1, at, code, code, summary
+	return cur, nil
+}
+
 func (s *CoreConfirmationStore) staleAndReplay(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, op, key string, dig coreconfirmation.Digest, at time.Time) (coreconfirmation.Confirmation, error) {
 	var e error
-	cur, e = terminalizeExpiredTx(ctx, tx, cur, at, coreconfirmation.ReasonStale)
+	cur, e = terminalizeExpiredTx(ctx, tx, s.store.instanceID, cur, at, coreconfirmation.ReasonStale)
 	if e != nil {
 		return cur, e
 	}
@@ -312,6 +371,29 @@ func (s *CoreConfirmationStore) putReplay(ctx context.Context, tx pgx.Tx, op, ke
 
 const confirmationSelect = `SELECT confirmation_id,binding_json,task_id,state,revision,created_at,updated_at,expires_at,terminal_reason,terminal_code,terminal_note FROM core_confirmations`
 
+// terminalizeConversationToolTx is deliberately called while the confirmation
+// and task rows are locked by their owning lifecycle mutation. It makes a
+// rejected/expired/canceled approval incapable of later reaching a runner and
+// releases the turn for a bounded next model round.
+func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, attemptState, reason string, at time.Time) error {
+	if cur.Binding.OperationDomain != "conversation_tool" {
+		return nil
+	}
+	var turnID string
+	if err := tx.QueryRow(ctx, `SELECT turn_id::text FROM core_conversation_tool_attempts WHERE task_id=$1 AND attempt_id=$2 FOR UPDATE`, cur.TaskID, cur.Binding.TargetID).Scan(&turnID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core_conversation_tool_attempts SET state=$2,result_json=jsonb_build_object('status',$2,'code',$3),updated_at=$4 WHERE task_id=$1 AND attempt_id=$5 AND state IN ('waiting_confirmation','prepared')`, cur.TaskID, attemptState, reason, at.UTC(), cur.Binding.TargetID); err != nil {
+		return err
+	}
+	// A user response is a durable wake: no worker holds this turn lease while
+	// waiting, so clearing it cannot race a provider dispatch.
+	if _, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE turn_id=$1 AND state='waiting_confirmation' AND cancel_requested=false`, turnID, at.UTC()); err != nil {
+		return err
+	}
+	return nil
+}
+
 // terminalizeConfirmationForTaskTx compensates pending/confirmed work while
 // preserving consumed provider reservations for reconciliation.
 func terminalizeConfirmationForTaskTx(ctx context.Context, tx pgx.Tx, taskID, reason string, at time.Time) error {
@@ -336,12 +418,20 @@ func terminalizeConfirmationForTaskTx(ctx context.Context, tx pgx.Tx, taskID, re
 			return err
 		}
 	}
+	if err = terminalizeConversationToolTx(ctx, tx, cur, "canceled", reason, at); err != nil {
+		return err
+	}
 	if cur.Binding.OperationDomain == "aws" {
 		status, stage := "canceled", "canceled"
 		if reason == "task_timed_out" {
 			status, stage = "failed", "failed"
 		}
 		_, err = tx.Exec(ctx, `UPDATE core_aws_changes SET status=$2,stage=$3,error_code=$4,error_summary=$4,revision=revision+1,updated_at=$5 WHERE confirmation_id=$1`, cur.ConfirmationID, status, stage, reason, at.UTC())
+	}
+	if cur.Binding.OperationDomain == "workload:apply" || cur.Binding.OperationDomain == "workload:destroy" {
+		if _, err = tx.Exec(ctx, `UPDATE core_workload_operations SET status='canceled',revision=revision+1,failure_code='task_canceled',failure_summary='task canceled before dispatch',updated_at=$2 WHERE confirmation_id=$1 AND status='waiting_user'`, cur.ConfirmationID, at.UTC()); err != nil {
+			return err
+		}
 	}
 	return err
 }

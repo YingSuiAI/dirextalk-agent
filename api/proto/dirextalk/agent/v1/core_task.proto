@@ -23,6 +23,8 @@ enum CoreTaskKind {
   CORE_TASK_KIND_EXTENSION = 2;
   CORE_TASK_KIND_KNOWLEDGE_INDEX = 3;
   CORE_TASK_KIND_AWS_CHANGE = 4;
+  CORE_TASK_KIND_WORKLOAD = 5;
+  CORE_TASK_KIND_CONVERSATION_TOOL = 6;
 }
 
 message CoreExtensionSelection {
@@ -33,6 +35,32 @@ message CoreExtensionSelection {
   repeated string allowed_tools = 5;
 }
 
+message CoreWorkloadTaskPayload {
+  string workload_id = 1;
+  string plan_id = 2;
+  string operation_id = 3;
+  int64 plan_revision = 4;
+  string plan_digest = 5;
+  string target_kind = 6;
+  string confirmation_id = 7;
+  google.protobuf.Struct execution_snapshot = 8;
+}
+message CoreConversationToolTaskPayload {
+  string turn_id = 1;
+  string attempt_id = 2;
+  uint32 round = 3;
+  string call_id = 4;
+  string extension_snapshot_digest = 5;
+  string installation_id = 6;
+  string version_id = 7;
+  uint64 installation_revision = 8;
+  string tool_name = 9;
+  string tool_schema_digest = 10;
+  string arguments_digest = 11;
+  string confirmation_id = 12;
+  string safe_summary = 13;
+}
+
 message CoreTaskTemplate {
   string goal = 1;
   string conversation_id = 2;
@@ -41,6 +69,7 @@ message CoreTaskTemplate {
   repeated CoreExtensionSelection extensions = 5;
   repeated string knowledge_refs = 6;
   int64 timeout_seconds = 8;
+  CoreWorkloadTaskPayload workload = 11;
 }
 
 message CoreTask {
@@ -64,6 +93,8 @@ message CoreTask {
   google.protobuf.Timestamp created_at = 21;
   google.protobuf.Timestamp updated_at = 22;
   CoreTaskKind kind = 23;
+  CoreWorkloadTaskPayload workload = 24;
+  CoreConversationToolTaskPayload conversation_tool = 25;
 }
 
 message TaskServiceCreateTaskRequest {

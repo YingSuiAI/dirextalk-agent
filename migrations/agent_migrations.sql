@@ -813,3 +813,208 @@ CREATE TABLE core_extension_artifact_cleanup (
 CREATE UNIQUE INDEX core_extension_artifact_cleanup_live_idx ON core_extension_artifact_cleanup(installation_id,version_id,artifact_digest) WHERE state IN ('pending','running','failed');
 CREATE INDEX core_extension_artifact_cleanup_due_idx ON core_extension_artifact_cleanup(state,next_attempt_at,cleanup_id);
 -- dirextalk-agent migration end 000001_core_v1_baseline.up.sql
+-- dirextalk-agent migration begin 000002_model_profile_sync.up.sql
+ALTER TABLE core_model_profiles
+    ADD COLUMN client_profile_id text;
+
+ALTER TABLE core_model_profiles
+    ADD CONSTRAINT core_model_profiles_client_profile_id_len
+    CHECK (client_profile_id IS NULL OR length(client_profile_id) BETWEEN 1 AND 256);
+
+ALTER TABLE core_model_profiles
+    ADD CONSTRAINT core_model_profiles_client_profile_id_uq UNIQUE (client_profile_id);
+
+CREATE TABLE core_model_profile_defaults (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    default_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+-- dirextalk-agent migration end 000002_model_profile_sync.up.sql
+-- dirextalk-agent migration begin 000003_core_conversation_turns.up.sql
+-- Durable ordinary model turns. The request binding and profile snapshot are
+-- committed before the accepted event is visible to callers.
+-- Compatibility marker: state IN ('accepted','running','completed','canceled','failed')
+CREATE TABLE core_conversation_turns (
+    turn_id uuid PRIMARY KEY,
+    request_id uuid NOT NULL UNIQUE,
+    request_fingerprint text NOT NULL CHECK (request_fingerprint ~ '^[a-f0-9]{64}$'),
+    conversation_id uuid REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    prompt text NOT NULL CHECK (length(prompt) BETWEEN 1 AND 1048576),
+    profile_id uuid NOT NULL,
+    expected_revision bigint CHECK (expected_revision IS NULL OR expected_revision > 0),
+    profile_snapshot_json jsonb NOT NULL CHECK (jsonb_typeof(profile_snapshot_json) = 'object' AND pg_column_size(profile_snapshot_json) <= 1048576),
+    profile_snapshot_digest text NOT NULL CHECK (profile_snapshot_digest ~ '^[a-f0-9]{64}$'),
+    extension_snapshot_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(extension_snapshot_json) = 'array' AND pg_column_size(extension_snapshot_json) <= 1048576),
+    extension_snapshot_digest text NOT NULL DEFAULT '' CHECK ((jsonb_array_length(extension_snapshot_json) = 0 AND extension_snapshot_digest = '') OR (jsonb_array_length(extension_snapshot_json) > 0 AND extension_snapshot_digest ~ '^[a-f0-9]{64}$')),
+    state text NOT NULL CHECK (state IN ('accepted','running','waiting_confirmation','completed','canceled','failed')),
+    cancel_requested boolean NOT NULL DEFAULT false,
+    cancel_request_id uuid,
+    cancel_request_fingerprint text CHECK (cancel_request_fingerprint IS NULL OR cancel_request_fingerprint ~ '^[a-f0-9]{64}$'),
+    lease_id uuid,
+    lease_epoch bigint NOT NULL DEFAULT 1 CHECK (lease_epoch > 0),
+    lease_expires_at timestamptz,
+    response_json jsonb CHECK (response_json IS NULL OR (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 1048576)),
+    terminal_code text NOT NULL DEFAULT '' CHECK (length(terminal_code) <= 128),
+    terminal_summary text NOT NULL DEFAULT '' CHECK (length(terminal_summary) <= 4096),
+    dispatch_state text NOT NULL DEFAULT '' CHECK (dispatch_state IN ('','prepared','dispatched','completed','uncertain')),
+    dispatch_epoch bigint NOT NULL DEFAULT 0 CHECK (dispatch_epoch >= 0),
+    dispatch_result_json jsonb CHECK (dispatch_result_json IS NULL OR (jsonb_typeof(dispatch_result_json) = 'object' AND pg_column_size(dispatch_result_json) <= 1048576)),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    last_sequence bigint NOT NULL DEFAULT 0 CHECK (last_sequence >= 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK ((state = 'completed') = (response_json IS NOT NULL)),
+    CHECK (state <> 'failed' OR (length(terminal_code) > 0 AND length(terminal_summary) > 0)),
+    CHECK (state IN ('accepted','running','completed') OR response_json IS NULL),
+    CHECK ((state = 'running' AND NOT cancel_requested) = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL)),
+    CHECK (state IN ('accepted','running','waiting_confirmation') OR lease_id IS NULL),
+    CHECK (cancel_requested = (cancel_request_id IS NOT NULL)),
+    CHECK (cancel_requested = (cancel_request_fingerprint IS NOT NULL)),
+    CHECK ((dispatch_state = 'completed') = (dispatch_result_json IS NOT NULL)),
+    CHECK (dispatch_state <> 'uncertain' OR dispatch_result_json IS NULL)
+);
+CREATE INDEX core_conversation_turns_recovery_idx
+    ON core_conversation_turns (state, lease_expires_at, turn_id)
+    WHERE state IN ('accepted','running');
+
+CREATE TABLE core_conversation_turn_events (
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    sequence bigint NOT NULL CHECK (sequence > 0),
+    kind text NOT NULL CHECK (length(kind) BETWEEN 1 AND 64),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 1048576),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (turn_id, sequence)
+);
+CREATE INDEX core_conversation_turn_events_replay_idx
+    ON core_conversation_turn_events (turn_id, sequence);
+
+-- Durable extension rounds/attempts are separate from the public turn event
+-- stream. Canonical arguments may be retained only in the Agent database;
+-- RPC/event projections use the digest and safe summary columns.
+CREATE TABLE core_conversation_model_rounds (
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    round integer NOT NULL CHECK (round >= 0 AND round <= 100),
+    input_digest text NOT NULL CHECK (input_digest ~ '^[a-f0-9]{64}$'),
+    state text NOT NULL CHECK (state IN ('prepared','dispatched','completed','uncertain')),
+    response_json jsonb CHECK (response_json IS NULL OR (jsonb_typeof(response_json)='object' AND pg_column_size(response_json) <= 1048576)),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (turn_id, round),
+    CHECK ((state = 'completed') = (response_json IS NOT NULL))
+);
+CREATE TABLE core_conversation_tool_attempts (
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    attempt_id uuid PRIMARY KEY,
+    task_id uuid NOT NULL UNIQUE REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    round integer NOT NULL CHECK (round >= 0 AND round <= 100),
+    call_id uuid NOT NULL,
+    execution_id uuid NOT NULL,
+    extension_snapshot_digest text NOT NULL CHECK (extension_snapshot_digest ~ '^[a-f0-9]{64}$'),
+    installation_id uuid NOT NULL,
+    version_id uuid NOT NULL,
+    installation_revision bigint NOT NULL CHECK (installation_revision > 0),
+    tool_name text NOT NULL CHECK (length(tool_name) BETWEEN 1 AND 256),
+    tool_schema_digest text NOT NULL CHECK (tool_schema_digest ~ '^[a-f0-9]{64}$'),
+    arguments_digest text NOT NULL CHECK (arguments_digest ~ '^[a-f0-9]{64}$'),
+    arguments_json jsonb NOT NULL CHECK (jsonb_typeof(arguments_json)='object' AND pg_column_size(arguments_json) <= 262144),
+    confirmation_id uuid,
+    state text NOT NULL CHECK (state IN ('prepared','waiting_confirmation','dispatched','completed','denied','canceled','uncertain')),
+    result_json jsonb CHECK (result_json IS NULL OR (jsonb_typeof(result_json)='object' AND pg_column_size(result_json) <= 1048576)),
+    safe_summary text NOT NULL DEFAULT '' CHECK (length(safe_summary) <= 4096),
+    lease_epoch bigint NOT NULL DEFAULT 1 CHECK (lease_epoch > 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (turn_id, round, call_id),
+    CHECK ((state IN ('completed','denied','canceled')) = (result_json IS NOT NULL))
+);
+-- dirextalk-agent migration end 000003_core_conversation_turns.up.sql
+-- dirextalk-agent migration begin 000004_core_workloads.up.sql
+ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_task_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool'));
+
+CREATE TABLE core_workload_plans (
+    plan_id uuid PRIMARY KEY,
+    owner_id uuid NOT NULL,
+    create_idempotency_key uuid NOT NULL,
+    create_request_hash text NOT NULL CHECK (create_request_hash ~ '^[a-f0-9]{64}$'),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    digest text NOT NULL CHECK (digest ~ '^[a-f0-9]{64}$'),
+    summary text NOT NULL CHECK (length(summary) BETWEEN 1 AND 4096),
+    plan_json jsonb NOT NULL CHECK (jsonb_typeof(plan_json) = 'object' AND pg_column_size(plan_json) <= 1048576),
+    target_kind text NOT NULL CHECK (target_kind IN ('CORE_RUNNER','AWS_EC2_SSM','AWS_ECS')),
+    target_identity_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(target_identity_json)='object'),
+    resource_limits_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(resource_limits_json)='object'),
+    secret_grant_refs_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(secret_grant_refs_json)='array'),
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE UNIQUE INDEX core_workload_plans_digest_idx ON core_workload_plans(owner_id,digest);
+CREATE UNIQUE INDEX core_workload_plans_create_idempotency_idx ON core_workload_plans(owner_id,create_idempotency_key);
+CREATE TABLE core_workloads (
+    workload_id uuid NOT NULL,
+    owner_id uuid NOT NULL,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    plan_id uuid NOT NULL REFERENCES core_workload_plans(plan_id) ON DELETE RESTRICT,
+    plan_digest text NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    target_kind text NOT NULL CHECK (target_kind IN ('CORE_RUNNER','AWS_EC2_SSM','AWS_ECS')),
+    actual_snapshot_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(actual_snapshot_json)='object'),
+    state text NOT NULL CHECK (state IN ('pending','ready','failed','destroyed','uncertain')),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(owner_id, workload_id)
+);
+
+CREATE TABLE core_workload_operations (
+    operation_id uuid PRIMARY KEY,
+    owner_id uuid NOT NULL,
+    workload_id uuid NOT NULL,
+    plan_id uuid NOT NULL REFERENCES core_workload_plans(plan_id) ON DELETE RESTRICT,
+    operation text NOT NULL CHECK (operation IN ('apply','destroy')),
+    plan_revision bigint NOT NULL CHECK (plan_revision > 0),
+    plan_digest text NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    target_kind text NOT NULL CHECK (target_kind IN ('CORE_RUNNER','AWS_EC2_SSM','AWS_ECS')),
+    desired_plan_json jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(desired_plan_json)='object'),
+    expected_actual_revision bigint NOT NULL DEFAULT 0 CHECK (expected_actual_revision >= 0),
+    expected_actual_digest text NOT NULL DEFAULT '',
+    task_id uuid NOT NULL UNIQUE REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    confirmation_id uuid NOT NULL UNIQUE REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
+    status text NOT NULL CHECK (status IN ('waiting_user','running','succeeded','failed','rejected','expired','canceled','uncertain')),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    failure_code text NOT NULL DEFAULT '',
+    failure_summary text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX core_workload_operations_workload_idx ON core_workload_operations(workload_id,updated_at,operation_id);
+CREATE UNIQUE INDEX core_workload_operations_live_idx ON core_workload_operations(owner_id,workload_id) WHERE status IN ('waiting_user','running');
+ALTER TABLE core_workload_operations ADD COLUMN dispatch_state text NOT NULL DEFAULT 'prepared' CHECK (dispatch_state IN ('prepared','dispatched','readback','terminal','uncertain'));
+ALTER TABLE core_workload_operations ADD COLUMN dispatch_attempt integer NOT NULL DEFAULT 0 CHECK (dispatch_attempt >= 0);
+ALTER TABLE core_workload_operations ADD COLUMN dispatch_epoch bigint NOT NULL DEFAULT 0 CHECK (dispatch_epoch >= 0);
+ALTER TABLE core_workload_operations ADD COLUMN dispatch_claim uuid;
+ALTER TABLE core_workload_operations ADD COLUMN dispatch_lease_until timestamptz;
+ALTER TABLE core_workload_operations ADD COLUMN dispatch_error text NOT NULL DEFAULT '' CHECK (length(dispatch_error) <= 4096);
+ALTER TABLE core_workload_operations ADD COLUMN completion_fingerprint text NOT NULL DEFAULT '' CHECK (completion_fingerprint='' OR completion_fingerprint ~ '^[a-f0-9]{64}$');
+ALTER TABLE core_workload_operations ADD COLUMN completion_result_json jsonb CHECK (completion_result_json IS NULL OR (jsonb_typeof(completion_result_json)='object' AND pg_column_size(completion_result_json) <= 1048576));
+CREATE TABLE core_workload_events (
+    owner_id uuid NOT NULL,
+    operation_id uuid NOT NULL REFERENCES core_workload_operations(operation_id) ON DELETE RESTRICT,
+    sequence bigint NOT NULL CHECK (sequence > 0),
+    kind text NOT NULL,
+    status text NOT NULL,
+    message text NOT NULL DEFAULT '',
+    readback_json jsonb,
+    at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(operation_id,sequence)
+);
+CREATE TABLE core_workload_idempotency (
+    owner_id uuid NOT NULL,
+    operation text NOT NULL CHECK (operation IN ('plan','request_apply','request_destroy','cancel')),
+    idempotency_key uuid NOT NULL,
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    plan_id uuid,
+    operation_id uuid,
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json)='object'),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(owner_id,operation,idempotency_key)
+);
+CREATE INDEX core_workload_idempotency_plan_idx ON core_workload_idempotency(owner_id,plan_id);
+-- dirextalk-agent migration end 000004_core_workloads.up.sql

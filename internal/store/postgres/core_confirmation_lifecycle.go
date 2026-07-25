@@ -232,11 +232,15 @@ func (s *CoreConfirmationStore) Confirm(ctx context.Context, c coreconfirmation.
 	if _, e = tx.Exec(ctx, `UPDATE core_confirmations SET state='confirmed',revision=revision+1,updated_at=$2 WHERE confirmation_id=$1`, c.ConfirmationID, c.At.UTC()); e != nil {
 		return cur, e
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='queued',available_at=$2,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, c.At.UTC()); e != nil {
-		return cur, e
-	}
-	if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'queued','confirmation_confirmed','confirmation confirmed',$3 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), c.At.UTC()); e != nil {
-		return cur, e
+	// Workload confirmations are consumed by the fenced Workload handler;
+	// confirming only changes approval state and must not enqueue or execute.
+	if !strings.HasPrefix(cur.Binding.OperationDomain, "workload:") {
+		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='queued',available_at=$2,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, c.At.UTC()); e != nil {
+			return cur, e
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'queued','confirmation_confirmed','confirmation confirmed',$3 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), c.At.UTC()); e != nil {
+			return cur, e
+		}
 	}
 	if e = projectAWSConfirmationTx(ctx, tx, cur, "running", "confirmed", "", "", "confirmed", c.At.UTC()); e != nil {
 		return cur, e
@@ -290,6 +294,19 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 	if ts != "waiting_user" {
 		return cur, coreconfirmation.ErrConflict
 	}
+	if strings.HasPrefix(cur.Binding.OperationDomain, "workload:") {
+		cur, e = terminalizeWorkloadBeforeDispatchTx(ctx, tx, s.store.instanceID, cur, "rejected", "rejected", "canceled", "user_rejected", strings.TrimSpace(c.Reason), c.At.UTC())
+		if e != nil {
+			return cur, e
+		}
+		if e = s.putReplay(ctx, tx, "reject", c.IdempotencyKey, c.RequestDigest, cur); e != nil {
+			return cur, e
+		}
+		if e = tx.Commit(ctx); e != nil {
+			return cur, e
+		}
+		return cur, nil
+	}
 	if _, e = tx.Exec(ctx, `UPDATE core_confirmations SET state='rejected',revision=revision+1,updated_at=$2,terminal_code='user_rejected',terminal_reason='user_rejected',terminal_note=$3 WHERE confirmation_id=$1`, c.ConfirmationID, c.At.UTC(), strings.TrimSpace(c.Reason)); e != nil {
 		return cur, e
 	}
@@ -300,6 +317,9 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 		return cur, e
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,error_code,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'canceled','confirmation_rejected','confirmation rejected','user_rejected',$3 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), c.At.UTC()); e != nil {
+		return cur, e
+	}
+	if e = terminalizeConversationToolTx(ctx, tx, cur, "denied", coreconfirmation.ReasonUserRejected, c.At.UTC()); e != nil {
 		return cur, e
 	}
 	if cur.Binding.OperationDomain == "extension" {
@@ -330,7 +350,7 @@ func (s *CoreConfirmationStore) expireReplay(ctx context.Context, tx pgx.Tx, cur
 		key, dig, at = x.IdempotencyKey, x.RequestDigest, x.At.UTC()
 	}
 	var e error
-	cur, e = terminalizeExpiredTx(ctx, tx, cur, at, reason)
+	cur, e = terminalizeExpiredTx(ctx, tx, s.store.instanceID, cur, at, reason)
 	if e != nil {
 		return cur, e
 	}
@@ -377,7 +397,7 @@ func (s *CoreConfirmationStore) Consume(ctx context.Context, c coreconfirmation.
 		return cur, coreconfirmation.ErrTaskFenceConflict
 	}
 	if !cur.ExpiresAt.After(c.At.UTC()) {
-		cur, e = terminalizeExpiredTx(ctx, tx, cur, c.At.UTC(), coreconfirmation.ReasonExpired)
+		cur, e = terminalizeExpiredTx(ctx, tx, s.store.instanceID, cur, c.At.UTC(), coreconfirmation.ReasonExpired)
 		if e != nil {
 			return cur, e
 		}
@@ -436,7 +456,7 @@ func (s *CoreConfirmationStore) Expire(ctx context.Context, c coreconfirmation.E
 	if cur.Revision != c.ExpectedRevision || (cur.State != coreconfirmation.StatePending && cur.State != coreconfirmation.StateConfirmed) {
 		return cur, coreconfirmation.ErrConflict
 	}
-	cur, e = terminalizeExpiredTx(ctx, tx, cur, c.At.UTC(), c.Reason)
+	cur, e = terminalizeExpiredTx(ctx, tx, s.store.instanceID, cur, c.At.UTC(), c.Reason)
 	if e != nil {
 		return cur, e
 	}

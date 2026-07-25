@@ -23,12 +23,12 @@ func main() {
 }
 
 func run(arguments []string) error {
-	configPath, command, err := parseArguments(arguments)
+	configPath, command, serverName, err := parseArguments(arguments)
 	if err != nil {
 		return err
 	}
-	if command != "migrate" && command != "serve" {
-		return errors.New("unknown command; expected migrate or serve")
+	if command != "migrate" && command != "serve" && command != "healthcheck" {
+		return errors.New("unknown command; expected migrate, serve, or healthcheck")
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -39,22 +39,34 @@ func run(arguments []string) error {
 		return migrate(cfg)
 	case "serve":
 		return serveCore(cfg)
+	case "healthcheck":
+		return runHealthcheck(cfg, serverName)
 	default:
-		return errors.New("unknown command; expected migrate or serve")
+		return errors.New("unknown command; expected migrate, serve, or healthcheck")
 	}
 }
 
-func parseArguments(arguments []string) (string, string, error) {
+func parseArguments(arguments []string) (string, string, string, error) {
+	serverName := strings.TrimSpace(os.Getenv("AGENT_HEALTHCHECK_SERVER_NAME"))
+	if serverName == "" {
+		serverName = "localhost"
+	}
 	if len(arguments) == 1 {
-		return defaultConfigPath, arguments[0], nil
+		return defaultConfigPath, arguments[0], serverName, nil
+	}
+	if len(arguments) == 3 && arguments[0] == "healthcheck" && arguments[1] == "--server-name" && strings.TrimSpace(arguments[2]) != "" {
+		return defaultConfigPath, arguments[0], strings.TrimSpace(arguments[2]), nil
 	}
 	if len(arguments) == 3 && arguments[0] == "--config" && strings.TrimSpace(arguments[1]) != "" {
-		return strings.TrimSpace(arguments[1]), arguments[2], nil
+		return strings.TrimSpace(arguments[1]), arguments[2], serverName, nil
 	}
 	if len(arguments) == 2 && strings.HasPrefix(arguments[0], "--config=") && strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")) != "" {
-		return strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")), arguments[1], nil
+		return strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")), arguments[1], serverName, nil
 	}
-	return "", "", errors.New("usage: dirextalk-agent [--config PATH] <migrate|serve>")
+	if len(arguments) == 5 && arguments[0] == "--config" && strings.TrimSpace(arguments[1]) != "" && arguments[2] == "healthcheck" && arguments[3] == "--server-name" && strings.TrimSpace(arguments[4]) != "" {
+		return strings.TrimSpace(arguments[1]), arguments[2], strings.TrimSpace(arguments[4]), nil
+	}
+	return "", "", "", errors.New("usage: dirextalk-agent [--config PATH] <migrate|serve|healthcheck [--server-name NAME]>")
 }
 
 func migrate(cfg config.Config) error {

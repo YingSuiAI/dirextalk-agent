@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -111,6 +112,9 @@ func NewValidatedPostgresExtensionExecutionCoordinator(s *Store, workspaceRoot s
 }
 
 func (c *PostgresExtensionExecutionCoordinator) Resolve(ctx context.Context, task coretask.Task) (execution.Invocation, error) {
+	if task.Spec.Kind == coretask.TaskKindConversationTool {
+		return c.ResolveConversationInvocation(ctx, task)
+	}
 	if c == nil || c.store == nil || task.ID == "" || task.Spec.Kind != coretask.TaskKindExtension || task.Spec.Payload.Extension == nil || task.Status != coretask.StatusRunning || task.Lease == nil {
 		return execution.Invocation{}, coretask.ErrInvalid
 	}
@@ -212,6 +216,113 @@ func (c *PostgresExtensionExecutionCoordinator) Resolve(ctx context.Context, tas
 			if c.WorkspaceRoot == "" {
 				return execution.Invocation{}, coretask.ErrInvalid
 			}
+			skill.Workspace = filepath.Join(c.WorkspaceRoot, task.ID)
+		}
+		return execution.Invocation{Kind: coreextension.KindSkill, Skill: skill}, nil
+	}
+	return execution.Invocation{}, coretask.ErrConflict
+}
+
+// ResolveConversationInvocation resolves a conversation_tool task directly
+// from its durable task/attempt/turn fences. It never converts the task into
+// the legacy extension task shape and never consults the mutable active
+// version pointer.
+func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ctx context.Context, task coretask.Task) (execution.Invocation, error) {
+	if c == nil || c.store == nil || task.Spec.Kind != coretask.TaskKindConversationTool || task.Spec.Payload.ConversationTool == nil || task.Status != coretask.StatusRunning || task.Lease == nil {
+		return execution.Invocation{}, coretask.ErrInvalid
+	}
+	p := task.Spec.Payload.ConversationTool
+	if !coretask.ValidUUID(p.AttemptID) || p.TurnID == "" || p.InstallationID == "" || p.VersionID == "" {
+		return execution.Invocation{}, coretask.ErrInvalid
+	}
+	var status, holder string
+	var attempt, epoch, revision int64
+	var expires time.Time
+	if err := c.store.pool.QueryRow(ctx, `SELECT status,attempt,lease_epoch,lease_holder,lease_expires_at,revision FROM core_tasks WHERE task_id=$1`, task.ID).Scan(&status, &attempt, &epoch, &holder, &expires, &revision); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return execution.Invocation{}, coretask.ErrNotFound
+		}
+		return execution.Invocation{}, err
+	}
+	if status != string(coretask.StatusRunning) || uint32(attempt) != task.Attempt || uint64(epoch) != task.LeaseEpoch || holder != task.Lease.Holder || revision != int64(task.Revision) || expires.Before(time.Now().UTC()) {
+		return execution.Invocation{}, coretask.ErrLeaseConflict
+	}
+	var turnSnapshot []byte
+	if err := c.store.pool.QueryRow(ctx, `SELECT extension_snapshot_json FROM core_conversation_turns WHERE turn_id=$1`, p.TurnID).Scan(&turnSnapshot); err != nil {
+		return execution.Invocation{}, coretask.ErrNotFound
+	}
+	var snapshots []coreconversation.ExtensionExecutionSnapshot
+	if json.Unmarshal(turnSnapshot, &snapshots) != nil {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	var pinned *coreconversation.ExtensionExecutionSnapshot
+	for i := range snapshots {
+		if snapshots[i].InstallationID == p.InstallationID && snapshots[i].VersionID == p.VersionID {
+			if pinned != nil {
+				return execution.Invocation{}, coretask.ErrConflict
+			}
+			pinned = &snapshots[i]
+		}
+	}
+	if pinned == nil || pinned.ContentDigest != p.ExtensionSnapshotDigest || pinned.ToolSchemaDigest != p.ToolSchemaDigest || pinned.InstallationRevision != p.InstallationRevision {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	var attemptState, confirmationID, toolName, argsDigest, schemaDigest, contentDigest, artifactDigest string
+	var argsJSON []byte
+	var attemptEpoch int64
+	if err := c.store.pool.QueryRow(ctx, `SELECT state,confirmation_id,tool_name,tool_schema_digest,arguments_digest,arguments_json,extension_snapshot_digest,installation_revision FROM core_conversation_tool_attempts WHERE attempt_id=$1 AND turn_id=$2`, p.AttemptID, p.TurnID).Scan(&attemptState, &confirmationID, &toolName, &schemaDigest, &argsDigest, &argsJSON, &contentDigest, &attemptEpoch); err != nil {
+		return execution.Invocation{}, coretask.ErrNotFound
+	}
+	if attemptState != "dispatched" || attemptEpoch != int64(p.InstallationRevision) || toolName != p.ToolName || schemaDigest != p.ToolSchemaDigest || argsDigest != p.ArgumentsDigest || contentDigest != p.ExtensionSnapshotDigest || !json.Valid(argsJSON) {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	if confirmationID != "" {
+		var confirmationState string
+		var bindingRaw []byte
+		if err := c.store.pool.QueryRow(ctx, `SELECT state,binding_json FROM core_confirmations WHERE confirmation_id=$1`, confirmationID).Scan(&confirmationState, &bindingRaw); err != nil || confirmationState != "consumed" {
+			return execution.Invocation{}, execution.ErrNotConfirmed
+		}
+		var binding map[string]any
+		if json.Unmarshal(bindingRaw, &binding) != nil || binding["operation_domain"] != "conversation_tool" || binding["target_id"] != p.AttemptID {
+			return execution.Invocation{}, coretask.ErrConflict
+		}
+	}
+	var versionRaw []byte
+	if err := c.store.pool.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2`, p.InstallationID, p.VersionID).Scan(&versionRaw); err != nil {
+		return execution.Invocation{}, coretask.ErrNotFound
+	}
+	var version coreextension.VersionRecord
+	if json.Unmarshal(versionRaw, &version) != nil || version.ContentDigest == "" || version.ContentDigest != pinned.ContentDigest || version.ArtifactDigest != pinned.ArtifactDigest {
+		return execution.Invocation{}, coretask.ErrConflict
+	}
+	contentDigest, artifactDigest = version.ContentDigest, version.ArtifactDigest
+	if version.Execution.Stdio != nil {
+		if c.WorkspaceRoot == "" {
+			return execution.Invocation{}, coretask.ErrInvalid
+		}
+		return execution.Invocation{Kind: coreextension.KindMCP, Local: &execution.LocalInvocation{TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: p.VersionID, InstallDigest: artifactDigest, ContentDigest: contentDigest, ArtifactDigest: artifactDigest, EntryPath: version.Execution.Stdio.RelativePath, Argv: append([]string(nil), version.Execution.Stdio.Argv...), Workspace: filepath.Join(c.WorkspaceRoot, task.ID), Timeout: 10 * time.Minute, Secrets: secretBindings(p.InstallationID, p.VersionID, version), Stdin: append([]byte(nil), argsJSON...)}}, nil
+	}
+	if version.Execution.Remote != nil {
+		if toolName == "" {
+			return execution.Invocation{}, coretask.ErrConflict
+		}
+		binding := ""
+		for _, g := range version.SecretGrants {
+			if g.ReferenceID == version.Execution.Remote.CredentialReferenceID {
+				binding = g.BindingDigest
+			}
+		}
+		if binding == "" {
+			return execution.Invocation{}, execution.ErrSecretBinding
+		}
+		return execution.Invocation{Kind: coreextension.KindMCP, Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: p.VersionID, Purpose: string(coreextension.SecretPurposeMCPCredential), BindingDigest: binding, Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...)}}, nil
+	}
+	if version.Execution.Skill != nil {
+		if version.Execution.Skill.Executable && c.WorkspaceRoot == "" {
+			return execution.Invocation{}, coretask.ErrInvalid
+		}
+		skill := &execution.SkillInvocation{Entry: *version.Execution.Skill, InstallDigest: artifactDigest, Input: append(json.RawMessage(nil), argsJSON...), TaskID: task.ID, TaskFence: execution.StableRunID(task.ID, fmt.Sprintf("%d", task.Attempt), fmt.Sprintf("%d", task.LeaseEpoch)), InstallationID: p.InstallationID, VersionID: p.VersionID, ContentDigest: contentDigest, ArtifactDigest: artifactDigest, Secrets: secretBindings(p.InstallationID, p.VersionID, version)}
+		if version.Execution.Skill.Executable {
 			skill.Workspace = filepath.Join(c.WorkspaceRoot, task.ID)
 		}
 		return execution.Invocation{Kind: coreextension.KindSkill, Skill: skill}, nil

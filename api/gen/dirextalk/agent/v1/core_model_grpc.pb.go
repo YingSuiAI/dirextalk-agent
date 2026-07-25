@@ -25,6 +25,7 @@ const (
 	ModelProfileService_Update_FullMethodName         = "/dirextalk.agent.v1.ModelProfileService/Update"
 	ModelProfileService_Delete_FullMethodName         = "/dirextalk.agent.v1.ModelProfileService/Delete"
 	ModelProfileService_TestConnection_FullMethodName = "/dirextalk.agent.v1.ModelProfileService/TestConnection"
+	ModelProfileService_Sync_FullMethodName           = "/dirextalk.agent.v1.ModelProfileService/Sync"
 )
 
 // ModelProfileServiceClient is the client API for ModelProfileService service.
@@ -37,6 +38,7 @@ type ModelProfileServiceClient interface {
 	Update(ctx context.Context, in *ModelProfileServiceUpdateRequest, opts ...grpc.CallOption) (*ModelProfileServiceUpdateResponse, error)
 	Delete(ctx context.Context, in *ModelProfileServiceDeleteRequest, opts ...grpc.CallOption) (*ModelProfileServiceDeleteResponse, error)
 	TestConnection(ctx context.Context, in *ModelProfileServiceTestConnectionRequest, opts ...grpc.CallOption) (*ModelProfileServiceTestConnectionResponse, error)
+	Sync(ctx context.Context, in *ModelProfileServiceSyncRequest, opts ...grpc.CallOption) (*ModelProfileServiceSyncResponse, error)
 }
 
 type modelProfileServiceClient struct {
@@ -107,6 +109,16 @@ func (c *modelProfileServiceClient) TestConnection(ctx context.Context, in *Mode
 	return out, nil
 }
 
+func (c *modelProfileServiceClient) Sync(ctx context.Context, in *ModelProfileServiceSyncRequest, opts ...grpc.CallOption) (*ModelProfileServiceSyncResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ModelProfileServiceSyncResponse)
+	err := c.cc.Invoke(ctx, ModelProfileService_Sync_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ModelProfileServiceServer is the server API for ModelProfileService service.
 // All implementations must embed UnimplementedModelProfileServiceServer
 // for forward compatibility.
@@ -117,6 +129,7 @@ type ModelProfileServiceServer interface {
 	Update(context.Context, *ModelProfileServiceUpdateRequest) (*ModelProfileServiceUpdateResponse, error)
 	Delete(context.Context, *ModelProfileServiceDeleteRequest) (*ModelProfileServiceDeleteResponse, error)
 	TestConnection(context.Context, *ModelProfileServiceTestConnectionRequest) (*ModelProfileServiceTestConnectionResponse, error)
+	Sync(context.Context, *ModelProfileServiceSyncRequest) (*ModelProfileServiceSyncResponse, error)
 	mustEmbedUnimplementedModelProfileServiceServer()
 }
 
@@ -144,6 +157,9 @@ func (UnimplementedModelProfileServiceServer) Delete(context.Context, *ModelProf
 }
 func (UnimplementedModelProfileServiceServer) TestConnection(context.Context, *ModelProfileServiceTestConnectionRequest) (*ModelProfileServiceTestConnectionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TestConnection not implemented")
+}
+func (UnimplementedModelProfileServiceServer) Sync(context.Context, *ModelProfileServiceSyncRequest) (*ModelProfileServiceSyncResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Sync not implemented")
 }
 func (UnimplementedModelProfileServiceServer) mustEmbedUnimplementedModelProfileServiceServer() {}
 func (UnimplementedModelProfileServiceServer) testEmbeddedByValue()                             {}
@@ -274,6 +290,24 @@ func _ModelProfileService_TestConnection_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ModelProfileService_Sync_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ModelProfileServiceSyncRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModelProfileServiceServer).Sync(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModelProfileService_Sync_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModelProfileServiceServer).Sync(ctx, req.(*ModelProfileServiceSyncRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ModelProfileService_ServiceDesc is the grpc.ServiceDesc for ModelProfileService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -304,6 +338,10 @@ var ModelProfileService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TestConnection",
 			Handler:    _ModelProfileService_TestConnection_Handler,
+		},
+		{
+			MethodName: "Sync",
+			Handler:    _ModelProfileService_Sync_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

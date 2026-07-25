@@ -38,6 +38,7 @@ func TestCoreServerRegistersAgentHealthAndOptionalReflection(t *testing.T) {
 		ConfirmationService: &testConfirmationService{}, MCPService: &testMCPService{},
 		SkillService: &testSkillService{}, KnowledgeService: &testKnowledgeService{},
 		CloudControlService: &testCloudControlService{},
+		WorkloadService:     &testWorkloadService{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +55,7 @@ func TestCoreServerRegistersAgentHealthAndOptionalReflection(t *testing.T) {
 		"dirextalk.agent.v1.SkillService",
 		"dirextalk.agent.v1.CoreKnowledgeService",
 		"dirextalk.agent.v1.CoreCloudControlService",
+		"dirextalk.agent.v1.WorkloadService",
 		"grpc.health.v1.Health",
 		"grpc.reflection.v1.ServerReflection",
 	} {
@@ -89,6 +91,9 @@ type testKnowledgeService struct {
 }
 type testCloudControlService struct {
 	agentv1.UnimplementedCoreCloudControlServiceServer
+}
+type testWorkloadService struct {
+	agentv1.UnimplementedWorkloadServiceServer
 }
 
 func TestCoreServerBufconnTLSAuthAndCoreCapabilities(t *testing.T) {

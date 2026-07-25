@@ -372,6 +372,29 @@ type reexecProcess struct {
 	killErr       error
 }
 
+// PersistentIdentity is the minimum durable evidence a higher-level
+// supervisor may persist. It intentionally carries no host paths except the
+// deployment-owned cgroup and never exposes credentials or output.
+type PersistentIdentity struct {
+	PID       int
+	StartTime uint64
+	Cgroup    string
+}
+
+// PersistentIdentity is available only while the process has not been reaped.
+// StartTime comes from /proc/<pid>/stat and prevents PID-reuse acceptance.
+func (p *reexecProcess) PersistentIdentity() (PersistentIdentity, error) {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return PersistentIdentity{}, ErrUnavailable
+	}
+	pid := p.cmd.Process.Pid
+	start, err := processStartTime(pid)
+	if err != nil {
+		return PersistentIdentity{}, ErrUnavailable
+	}
+	return PersistentIdentity{PID: pid, StartTime: start, Cgroup: p.cgroup}, nil
+}
+
 func (p *reexecProcess) Wait() ([]byte, []byte, string, error) {
 	p.beginWait()
 	<-p.waitDone

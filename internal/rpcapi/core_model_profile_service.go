@@ -102,6 +102,38 @@ func (s *ModelProfileService) TestConnection(ctx context.Context, req *agentv1.M
 	return &agentv1.ModelProfileServiceTestConnectionResponse{Reachable: result.OK, ErrorCode: result.ErrorCode}, nil
 }
 
+func (s *ModelProfileService) Sync(ctx context.Context, req *agentv1.ModelProfileServiceSyncRequest) (*agentv1.ModelProfileServiceSyncResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	cmd := coremodel.SyncProfileCommand{IdempotencyKey: req.IdempotencyKey, DefaultClientProfileID: req.DefaultClientProfileId, Entries: make([]coremodel.SyncProfileEntry, 0, len(req.Entries))}
+	for _, entry := range req.Entries {
+		if entry == nil {
+			return nil, grpcProfileError(coremodel.ErrInvalidProfile)
+		}
+		provider, err := fromProtoProvider(entry.Provider)
+		if err != nil {
+			return nil, grpcProfileError(err)
+		}
+		var key *string
+		if entry.ApiKey != nil {
+			value := *entry.ApiKey
+			key = &value
+		}
+		e := coremodel.SyncProfileEntry{ClientProfileID: entry.ClientProfileId, ExpectedRevision: entry.ExpectedRevision, DisplayName: entry.DisplayName, Provider: provider, BaseURL: entry.BaseUrl, Model: entry.Model, SystemPrompt: entry.SystemPrompt, APIKey: key, Temperature: entry.Temperature, TopP: entry.TopP, MaxOutputTokens: int(entry.MaxOutputTokens), ContextWindow: int(entry.ContextWindow), ReasoningEffort: entry.ReasoningEffort}
+		cmd.Entries = append(cmd.Entries, e)
+	}
+	result, err := s.profiles.Sync(ctx, cmd)
+	if err != nil {
+		return nil, grpcProfileError(err)
+	}
+	out := &agentv1.ModelProfileServiceSyncResponse{DefaultClientProfileId: result.DefaultClientProfileID, Profiles: make([]*agentv1.CoreModelProfile, 0, len(result.Profiles))}
+	for _, p := range result.Profiles {
+		out.Profiles = append(out.Profiles, publicProfileProto(p))
+	}
+	return out, nil
+}
+
 func createSpec(req *agentv1.ModelProfileServiceCreateRequest) (coremodel.ProfileSpec, error) {
 	provider, err := fromProtoProvider(req.Provider)
 	if err != nil {
@@ -206,7 +238,7 @@ func fromProtoProvider(v agentv1.CoreModelProvider) (coremodel.ModelProvider, er
 	}
 }
 func publicProfileProto(p coremodel.PublicProfile) *agentv1.CoreModelProfile {
-	out := &agentv1.CoreModelProfile{ProfileId: p.ID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision}
+	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision}
 	if p.Temperature != nil {
 		v := *p.Temperature
 		out.Temperature = &v
@@ -247,6 +279,8 @@ func grpcProfileError(err error) error {
 		return status.Error(codes.Aborted, "profile revision conflict")
 	case errors.Is(err, coremodel.ErrProfileInUse):
 		return status.Error(codes.FailedPrecondition, "model profile is in use")
+	case errors.Is(err, coremodel.ErrSyncConflict):
+		return status.Error(codes.AlreadyExists, "model profile sync conflict")
 	case errors.Is(err, coremodel.ErrConnectionTestFailed):
 		return status.Error(codes.Unavailable, "connection test unavailable")
 	default:

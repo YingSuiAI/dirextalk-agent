@@ -25,6 +25,13 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 var geminiModelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,256}$`)
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
+func ValidateClientProfileID(id string) error {
+	if !validText(strings.TrimSpace(id), 256, true, false) {
+		return fmt.Errorf("%w: invalid client profile id", ErrInvalidProfile)
+	}
+	return nil
+}
+
 func validText(value string, max int, required bool, multiline bool) bool {
 	if !utf8.ValidString(value) || len(value) > max || (required && strings.TrimSpace(value) == "") {
 		return false

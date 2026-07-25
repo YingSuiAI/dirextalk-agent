@@ -20,6 +20,7 @@ const (
 
 type Profile struct {
 	ID              string
+	ClientProfileID string
 	DisplayName     string
 	Provider        ModelProvider
 	BaseURL         string
@@ -124,8 +125,39 @@ type ProfileSpec struct {
 	TopPClear          bool
 }
 
+// SyncProfileEntry is a complete client-owned profile projection. A nil APIKey
+// preserves an existing configured key; a non-nil key is write-only rotation.
+type SyncProfileEntry struct {
+	ClientProfileID  string
+	ExpectedRevision *int64
+	DisplayName      string
+	Provider         ModelProvider
+	BaseURL          string
+	Model            string
+	SystemPrompt     string
+	APIKey           *string
+	Temperature      *float64
+	TopP             *float64
+	MaxOutputTokens  int
+	ContextWindow    int
+	ReasoningEffort  string
+}
+
+type SyncProfileCommand struct {
+	IdempotencyKey         string
+	DefaultClientProfileID string
+	Entries                []SyncProfileEntry
+}
+
+type SyncProfileResult struct {
+	Profiles               []PublicProfile `json:"profiles"`
+	DefaultClientProfileID string          `json:"default_client_profile_id"`
+	Replay                 bool            `json:"-"`
+}
+
 type PublicProfile struct {
 	ID               string        `json:"id"`
+	ClientProfileID  string        `json:"client_profile_id,omitempty"`
 	DisplayName      string        `json:"display_name"`
 	Provider         ModelProvider `json:"provider"`
 	BaseURL          string        `json:"base_url"`
@@ -152,7 +184,7 @@ func (p Profile) Public() PublicProfile {
 		value := *p.TopP
 		topP = &value
 	}
-	return PublicProfile{ID: p.ID, DisplayName: p.DisplayName, Provider: p.Provider,
+	return PublicProfile{ID: p.ID, ClientProfileID: p.ClientProfileID, DisplayName: p.DisplayName, Provider: p.Provider,
 		BaseURL: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt,
 		Temperature: temperature, TopP: topP, MaxOutputTokens: p.MaxOutputTokens,
 		ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort,

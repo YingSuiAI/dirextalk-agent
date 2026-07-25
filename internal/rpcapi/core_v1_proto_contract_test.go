@@ -9,12 +9,13 @@ import (
 
 func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	want := map[string][]string{
-		"ModelProfileService": {"Create", "Get", "List", "Update", "Delete", "TestConnection"},
+		"ModelProfileService": {"Create", "Get", "List", "Update", "Delete", "TestConnection", "Sync"},
 		"ConversationService": {"Create", "Get", "List", "Delete", "Chat", "StreamChat"},
 		"TaskService":         {"CreateTask", "GetTask", "ListTasks", "CancelTask", "RetryTask", "DeleteTask", "WatchTaskEvents"},
 		"ScheduleService":     {"Create", "Get", "List", "Update", "Pause", "Resume", "TriggerNow", "Delete"},
+		"WorkloadService":     {"Plan", "Get", "List", "Quote", "RequestApply", "RequestDestroy"},
 	}
-	files := []protoreflect.FileDescriptor{agentv1.File_dirextalk_agent_v1_core_model_proto, agentv1.File_dirextalk_agent_v1_core_conversation_proto, agentv1.File_dirextalk_agent_v1_core_task_proto, agentv1.File_dirextalk_agent_v1_core_schedule_proto}
+	files := []protoreflect.FileDescriptor{agentv1.File_dirextalk_agent_v1_core_model_proto, agentv1.File_dirextalk_agent_v1_core_conversation_proto, agentv1.File_dirextalk_agent_v1_core_task_proto, agentv1.File_dirextalk_agent_v1_core_schedule_proto, agentv1.File_dirextalk_agent_v1_core_workload_proto}
 	for name, methods := range want {
 		var service protoreflect.ServiceDescriptor
 		for _, file := range files {
@@ -35,6 +36,13 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	profile := (&agentv1.CoreModelProfile{}).ProtoReflect().Descriptor()
 	if profile.Fields().ByName("api_key") != nil {
 		t.Fatal("profile response exposes api key")
+	}
+	if profile.Fields().ByName("client_profile_id") == nil {
+		t.Fatal("profile client_profile_id missing")
+	}
+	syncEntry := (&agentv1.CoreModelProfileSyncEntry{}).ProtoReflect().Descriptor()
+	if f := syncEntry.Fields().ByName("api_key"); f == nil || !f.HasOptionalKeyword() {
+		t.Fatal("sync api_key must be optional/write-only")
 	}
 	if got := (&agentv1.CoreModelProfile{}).ProtoReflect().Descriptor().Fields().ByName("provider").Enum().Values().Len(); got != 4 {
 		t.Fatalf("provider values=%d, want 4", got)

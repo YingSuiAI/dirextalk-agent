@@ -23,6 +23,7 @@ var (
 	ErrInvalidPageSize       = errors.New("invalid profile page size")
 	ErrConnectionTestFailed  = errors.New("model connection test failed")
 	ErrProfileRepository     = errors.New("model profile repository unavailable")
+	ErrSyncConflict          = errors.New("model profile sync conflict")
 )
 
 type CreateProfileCommand struct {
@@ -64,6 +65,7 @@ type ProfileRepository interface {
 	DeleteProfile(context.Context, string, string, string, int64) (MutationSnapshot, error)
 	ResolveProfile(context.Context, string) (Profile, error)
 	RunConnectionTest(context.Context, string, string, string, func(Profile) ConnectionTestResult) (ConnectionTestResult, bool, error)
+	SyncProfiles(context.Context, string, string, SyncProfileCommand) (SyncProfileResult, error)
 }
 
 type Service struct {
@@ -246,6 +248,70 @@ func (s *Service) DeleteProfile(ctx context.Context, cmd DeleteProfileCommand) (
 	return s.Delete(ctx, cmd)
 }
 
+func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfileResult, error) {
+	if err := validateIdempotencyKey(cmd.IdempotencyKey); err != nil {
+		return SyncProfileResult{}, err
+	}
+	if len(cmd.Entries) > 100 {
+		return SyncProfileResult{}, ErrInvalidProfile
+	}
+	seen := make(map[string]struct{}, len(cmd.Entries))
+	for i := range cmd.Entries {
+		e := &cmd.Entries[i]
+		e.ClientProfileID = strings.TrimSpace(e.ClientProfileID)
+		if err := ValidateClientProfileID(e.ClientProfileID); err != nil {
+			return SyncProfileResult{}, err
+		}
+		if _, ok := seen[e.ClientProfileID]; ok {
+			return SyncProfileResult{}, ErrSyncConflict
+		}
+		seen[e.ClientProfileID] = struct{}{}
+		if e.ExpectedRevision != nil && *e.ExpectedRevision < 1 {
+			return SyncProfileResult{}, ErrRevisionConflict
+		}
+		if e.APIKey != nil && *e.APIKey == "" {
+			return SyncProfileResult{}, ErrAPIKeyUnavailable
+		}
+		candidate := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID,
+			DisplayName: e.DisplayName, Provider: e.Provider, BaseURL: e.BaseURL, Model: e.Model,
+			APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature,
+			TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort}
+		if _, err := validateStoredProfile(candidate); err != nil && e.APIKey != nil {
+			return SyncProfileResult{}, err
+		}
+	}
+	if cmd.DefaultClientProfileID != "" {
+		cmd.DefaultClientProfileID = strings.TrimSpace(cmd.DefaultClientProfileID)
+		if _, ok := seen[cmd.DefaultClientProfileID]; !ok {
+			// The repository also accepts an already persisted profile as the default.
+			if err := ValidateClientProfileID(cmd.DefaultClientProfileID); err != nil {
+				return SyncProfileResult{}, err
+			}
+		}
+	}
+	digest, err := syncProfileDigest(cmd)
+	if err != nil {
+		return SyncProfileResult{}, err
+	}
+	result, err := s.repo.SyncProfiles(ctx, cmd.IdempotencyKey, digest, cmd)
+	if err != nil {
+		return SyncProfileResult{}, safeServiceError(err)
+	}
+	return result, nil
+}
+
+func valueOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// SyncProfileID returns the stable Core UUID assigned to a new client profile.
+func SyncProfileID(clientProfileID string) string {
+	return deterministicProfileID("sync:"+clientProfileID, "")
+}
+
 func (s *Service) ResolveProfile(ctx context.Context, id string) (Profile, error) {
 	if err := validateUUID(id); err != nil {
 		return Profile{}, err
@@ -323,7 +389,7 @@ func categorizeConnectionError(ctx context.Context, err error) string {
 }
 func safeServiceError(err error) error {
 	switch {
-	case errors.Is(err, ErrInvalidProfile), errors.Is(err, ErrInvalidIdempotencyKey), errors.Is(err, ErrAPIKeyUnavailable), errors.Is(err, ErrIdempotencyConflict), errors.Is(err, ErrRevisionConflict), errors.Is(err, ErrProfileNotFound), errors.Is(err, ErrProfileInUse), errors.Is(err, ErrInvalidCursor), errors.Is(err, ErrInvalidPageSize):
+	case errors.Is(err, ErrInvalidProfile), errors.Is(err, ErrInvalidIdempotencyKey), errors.Is(err, ErrAPIKeyUnavailable), errors.Is(err, ErrIdempotencyConflict), errors.Is(err, ErrRevisionConflict), errors.Is(err, ErrProfileNotFound), errors.Is(err, ErrProfileInUse), errors.Is(err, ErrInvalidCursor), errors.Is(err, ErrInvalidPageSize), errors.Is(err, ErrSyncConflict):
 		return err
 	default:
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -400,6 +466,36 @@ func profileSpecDigest(op, id string, revision int64, spec ProfileSpec) (string,
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
 }
+
+func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
+	canonical := struct {
+		Default string `json:"default_client_profile_id"`
+		Entries []any  `json:"entries"`
+	}{Default: cmd.DefaultClientProfileID}
+	for _, e := range cmd.Entries {
+		keyHash := ""
+		if e.APIKey != nil {
+			sum := sha256.Sum256([]byte(*e.APIKey))
+			keyHash = hex.EncodeToString(sum[:])
+		}
+		canonical.Entries = append(canonical.Entries, struct {
+			ClientID     string        `json:"client_profile_id"`
+			Expected     *int64        `json:"expected_revision,omitempty"`
+			DisplayName  string        `json:"display_name"`
+			Provider     ModelProvider `json:"provider"`
+			BaseURL      string        `json:"base_url"`
+			Model        string        `json:"model"`
+			SystemPrompt string        `json:"system_prompt"`
+			APIKeySHA256 string        `json:"api_key_sha256,omitempty"`
+			Temperature  *float64      `json:"temperature,omitempty"`
+			TopP         *float64      `json:"top_p,omitempty"`
+			Max          int           `json:"max_output_tokens"`
+			Context      int           `json:"context_window"`
+			Reasoning    string        `json:"reasoning_effort"`
+		}{e.ClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.BaseURL, e.Model, e.SystemPrompt, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
+	}
+	return profileDigest("sync", canonical)
+}
 func redactDigestValue(value any) any {
 	b, _ := json.Marshal(value)
 	var v any
@@ -453,6 +549,10 @@ type MemoryProfileRepository struct {
 		Digest string
 		Result MutationSnapshot
 	}
+	syncIdempotency map[string]struct {
+		Digest string
+		Result SyncProfileResult
+	}
 	connectionTests map[string]struct {
 		Digest string
 		Result ConnectionTestResult
@@ -464,6 +564,9 @@ func NewMemoryProfileRepository() *MemoryProfileRepository {
 	return &MemoryProfileRepository{profiles: map[string]Profile{}, deleted: map[string]PublicProfile{}, idempotency: map[string]struct {
 		Digest string
 		Result MutationSnapshot
+	}{}, syncIdempotency: map[string]struct {
+		Digest string
+		Result SyncProfileResult
 	}{}, connectionTests: map[string]struct {
 		Digest string
 		Result ConnectionTestResult
@@ -653,4 +756,85 @@ func (r *MemoryProfileRepository) SetActiveReferences(id string, count int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.refs[id] = count
+}
+
+func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest string, cmd SyncProfileCommand) (SyncProfileResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rec, ok := r.syncIdempotency[key]; ok {
+		if rec.Digest != digest {
+			return SyncProfileResult{}, ErrIdempotencyConflict
+		}
+		out := rec.Result
+		out.Replay = true
+		out.Profiles = make([]PublicProfile, len(rec.Result.Profiles))
+		for i, p := range rec.Result.Profiles {
+			out.Profiles[i] = clonePublicProfile(p)
+		}
+		return out, nil
+	}
+	byClient := make(map[string]string, len(r.profiles))
+	for id, p := range r.profiles {
+		if p.ClientProfileID != "" {
+			byClient[p.ClientProfileID] = id
+		}
+	}
+	work := make(map[string]Profile, len(r.profiles))
+	for id, p := range r.profiles {
+		work[id] = cloneProfile(p)
+	}
+	out := SyncProfileResult{DefaultClientProfileID: cmd.DefaultClientProfileID, Profiles: make([]PublicProfile, 0, len(cmd.Entries))}
+	for _, e := range cmd.Entries {
+		id, exists := byClient[e.ClientProfileID]
+		if exists {
+			p := work[id]
+			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
+				return SyncProfileResult{}, ErrRevisionConflict
+			}
+			p.DisplayName, p.Provider, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.BaseURL, e.Model, e.SystemPrompt
+			p.Temperature, p.TopP = cloneFloat(e.Temperature), cloneFloat(e.TopP)
+			p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort = e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort
+			if e.APIKey != nil {
+				p.APIKey = *e.APIKey
+			}
+			p.Revision++
+			work[id] = p
+		} else {
+			if e.ExpectedRevision != nil {
+				return SyncProfileResult{}, ErrRevisionConflict
+			}
+			p := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: cloneFloat(e.Temperature), TopP: cloneFloat(e.TopP), MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			id = p.ID
+			byClient[e.ClientProfileID] = id
+			work[id] = p
+			exists = true
+		}
+		p := work[id]
+		if e.APIKey == nil && p.APIKey == "" {
+			return SyncProfileResult{}, ErrAPIKeyUnavailable
+		}
+		p, err := validateStoredProfile(p)
+		if err != nil || p.APIKey == "" {
+			if err != nil {
+				return SyncProfileResult{}, err
+			}
+			return SyncProfileResult{}, ErrAPIKeyUnavailable
+		}
+		p.UpdatedAt = time.Now().UTC()
+		work[id] = p
+		out.Profiles = append(out.Profiles, p.Public())
+	}
+	if out.DefaultClientProfileID != "" {
+		if _, ok := byClient[out.DefaultClientProfileID]; !ok {
+			return SyncProfileResult{}, ErrProfileNotFound
+		}
+	}
+	for id, p := range work {
+		r.profiles[id] = p
+	}
+	r.syncIdempotency[key] = struct {
+		Digest string
+		Result SyncProfileResult
+	}{digest, out}
+	return out, nil
 }

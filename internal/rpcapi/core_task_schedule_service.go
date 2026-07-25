@@ -308,7 +308,11 @@ func scheduleFromProto(id, name string, t *agentv1.CoreTaskTemplate, tr *agentv1
 	}()}, nil
 }
 func coreTaskProto(t coretask.Task) *agentv1.CoreTask {
-	return &agentv1.CoreTask{TaskId: t.ID, Goal: t.Spec.Goal, ConversationId: t.Spec.ConversationID, ModelProfileId: t.Spec.ModelProfileID, AttachmentRefs: t.Spec.AttachmentRefs, Extensions: extensionsProto(t.Spec.Extensions), KnowledgeRefs: t.Spec.KnowledgeRefs, TimeoutSeconds: t.Spec.TimeoutSeconds, Status: statusProto(t.Status), Attempt: t.Attempt, LeaseEpoch: t.LeaseEpoch, AvailableAt: timestampOrNil(t.AvailableAt), RetryOfTaskId: t.RetryOfTaskID, Result: resultStruct(t.Result), FailureCode: t.FailureCode, FailureSummary: t.FailureSummary, Revision: int64(t.Revision), CreatedAt: timestampOrNil(t.CreatedAt), UpdatedAt: timestampOrNil(t.UpdatedAt), Kind: taskKindProto(t.Spec.Kind)}
+	var workload *agentv1.CoreWorkloadTaskPayload
+	if p := t.Spec.Payload.Workload; p != nil {
+		workload = &agentv1.CoreWorkloadTaskPayload{WorkloadId: p.WorkloadID, PlanId: p.PlanID, OperationId: p.OperationID, PlanRevision: int64(p.PlanRevision), PlanDigest: p.PlanDigest, TargetKind: p.TargetKind, ConfirmationId: p.ConfirmationID, ExecutionSnapshot: rawJSONStruct(p.ExecutionSnapshot)}
+	}
+	return &agentv1.CoreTask{TaskId: t.ID, Goal: t.Spec.Goal, ConversationId: t.Spec.ConversationID, ModelProfileId: t.Spec.ModelProfileID, AttachmentRefs: t.Spec.AttachmentRefs, Extensions: extensionsProto(t.Spec.Extensions), KnowledgeRefs: t.Spec.KnowledgeRefs, TimeoutSeconds: t.Spec.TimeoutSeconds, Status: statusProto(t.Status), Attempt: t.Attempt, LeaseEpoch: t.LeaseEpoch, AvailableAt: timestampOrNil(t.AvailableAt), RetryOfTaskId: t.RetryOfTaskID, Result: resultStruct(t.Result), FailureCode: t.FailureCode, FailureSummary: t.FailureSummary, Revision: int64(t.Revision), CreatedAt: timestampOrNil(t.CreatedAt), UpdatedAt: timestampOrNil(t.UpdatedAt), Kind: taskKindProto(t.Spec.Kind), Workload: workload}
 }
 func taskKindProto(k coretask.TaskKind) agentv1.CoreTaskKind {
 	switch k {
@@ -318,6 +322,8 @@ func taskKindProto(k coretask.TaskKind) agentv1.CoreTaskKind {
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_KNOWLEDGE_INDEX
 	case coretask.TaskKindAWSChange:
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_AWS_CHANGE
+	case coretask.TaskKindWorkload:
+		return agentv1.CoreTaskKind_CORE_TASK_KIND_WORKLOAD
 	case coretask.TaskKindAgent, "":
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_AGENT
 	default:

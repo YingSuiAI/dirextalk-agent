@@ -84,3 +84,43 @@ func TestModelProfileRPCTestConnectionIdempotent(t *testing.T) {
 		t.Fatalf("changed profile idempotency code=%v err=%v", status.Code(err), err)
 	}
 }
+
+func TestModelProfileRPCSyncPresenceAndOrder(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	domain, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, _ := NewModelProfileService(domain)
+	first, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey:         "a0000000-0000-4000-8000-000000000040",
+		DefaultClientProfileId: "two",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{
+			{ClientProfileId: "one", DisplayName: "One", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("one-secret")},
+			{ClientProfileId: "two", DisplayName: "Two", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("two-secret")},
+		},
+	})
+	if err != nil || len(first.Profiles) != 2 || first.Profiles[0].ClientProfileId != "one" || first.DefaultClientProfileId != "two" {
+		t.Fatalf("sync=%+v err=%v", first, err)
+	}
+	if strings.Contains(first.String(), "secret") {
+		t.Fatal("sync response leaked API key")
+	}
+	second, err := service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000041", DefaultClientProfileId: "two",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(1), DisplayName: "Two v2", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model"}},
+	})
+	if err != nil || len(second.Profiles) != 1 || second.Profiles[0].Revision != 2 {
+		t.Fatalf("preserve sync=%+v err=%v", second, err)
+	}
+	_, err = service.Sync(context.Background(), &agentv1.ModelProfileServiceSyncRequest{
+		IdempotencyKey: "a0000000-0000-4000-8000-000000000042", DefaultClientProfileId: "two",
+		Entries: []*agentv1.CoreModelProfileSyncEntry{{ClientProfileId: "two", ExpectedRevision: int64PtrRPC(2), DisplayName: "Two v3", Provider: agentv1.CoreModelProvider_CORE_MODEL_PROVIDER_OPENAI_COMPATIBLE, Model: "model", ApiKey: stringPtrRPC("")}},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty present key code=%v err=%v", status.Code(err), err)
+	}
+}
+
+func stringPtrRPC(v string) *string { return &v }
+func int64PtrRPC(v int64) *int64    { return &v }

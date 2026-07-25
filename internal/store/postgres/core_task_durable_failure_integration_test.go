@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -33,14 +34,22 @@ func TestCorePostgresUnsupportedTaskDurableFailure(t *testing.T) {
 }
 
 func corePG18Fixture(t *testing.T) (context.Context, *Store, string, func()) {
-	return corePGFixture(t, corePG18DSN)
+	dsn := strings.TrimSpace(os.Getenv("AGENT_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		dsn = corePG18DSN
+	}
+	return corePGFixture(t, dsn)
 }
 
 func corePGFixture(t *testing.T, dsn string) (context.Context, *Store, string, func()) {
 	t.Helper()
+	strictDSN := strings.TrimSpace(os.Getenv("AGENT_TEST_POSTGRES_DSN")) != ""
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	adminConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
+		if strictDSN {
+			t.Fatalf("Postgres DSN parse failed: %v", err)
+		}
 		t.Skipf("PG18 unavailable: %v", err)
 	}
 	admin, err := pgxpool.NewWithConfig(ctx, adminConfig)
@@ -53,6 +62,9 @@ func corePGFixture(t *testing.T, dsn string) (context.Context, *Store, string, f
 			admin.Close()
 		}
 		cancel()
+		if strictDSN {
+			t.Fatalf("Postgres DSN unavailable: %v", firstNonNil(err, pingErr))
+		}
 		t.Skipf("PG18 unavailable: %v", firstNonNil(err, pingErr))
 	}
 	schema := "dtx_core_" + strings.ReplaceAll(uuid.NewString(), "-", "")

@@ -1,7 +1,10 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -243,6 +246,169 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 		t.Fatalf("update parameters = %#v, err=%v", updated, err)
 	}
 }
+
+func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
+	dsn := os.Getenv("AGENT_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("AGENT_TEST_POSTGRES_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	adminConfig, err := pgxpool.ParseConfig(strings.TrimSpace(dsn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminConfig.MaxConns = 2
+	adminPool, err := pgxpool.NewWithConfig(ctx, adminConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := "dtx_agent_profile_sync_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	quotedSchema := pgx.Identifier{schema}.Sanitize()
+	if _, err = adminPool.Exec(ctx, "CREATE SCHEMA "+quotedSchema); err != nil {
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	config, err := pgxpool.ParseConfig(strings.TrimSpace(dsn))
+	if err != nil {
+		_ = dropProfileIntegrationSchema(adminPool, quotedSchema)
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	if config.ConnConfig.RuntimeParams == nil {
+		config.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		_ = dropProfileIntegrationSchema(adminPool, quotedSchema)
+		adminPool.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		if err := dropProfileIntegrationSchemaWithContext(cleanupCtx, adminPool, quotedSchema); err != nil {
+			t.Errorf("drop schema: %v", err)
+		}
+		adminPool.Close()
+	})
+	instanceID := uuid.NewString()
+	if err := ApplyMigrations(ctx, pool, instanceID); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(pool, instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.SyncProfiles(ctx, uuid.NewString(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", coremodel.SyncProfileCommand{
+		DefaultClientProfileID: "one",
+		Entries:                []coremodel.SyncProfileEntry{syncStoreEntry("one", "One", "one-secret"), syncStoreEntry("two", "Two", "two-secret")},
+	})
+	if err != nil || len(created.Profiles) != 2 || created.Profiles[0].ClientProfileID != "one" || created.Profiles[1].ClientProfileID != "two" {
+		t.Fatalf("create sync=%+v err=%v", created, err)
+	}
+	if strings.Contains(fmt.Sprint(created), "one-secret") || strings.Contains(fmt.Sprint(created), "two-secret") {
+		t.Fatal("sync response leaked API key")
+	}
+	updated, err := store.SyncProfiles(ctx, uuid.NewString(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", coremodel.SyncProfileCommand{DefaultClientProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(1), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore("rotated")}}})
+	if err != nil || len(updated.Profiles) != 1 || updated.Profiles[0].Revision != 2 {
+		t.Fatalf("update sync=%+v err=%v", updated, err)
+	}
+	resolved, err := store.ResolveProfile(ctx, updated.Profiles[0].ID)
+	if err != nil || resolved.APIKey != "rotated" {
+		t.Fatalf("rotated key=%q err=%v", resolved.APIKey, err)
+	}
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", coremodel.SyncProfileCommand{DefaultClientProfileID: "missing", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	if !errors.Is(err, coremodel.ErrProfileNotFound) {
+		t.Fatalf("invalid default err=%v", err)
+	}
+	var defaultID string
+	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
+		t.Fatalf("default changed after failed batch: default=%q err=%v", defaultID, err)
+	}
+	_, err = store.SyncProfiles(ctx, uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", coremodel.SyncProfileCommand{DefaultClientProfileID: "one", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}, {ClientProfileID: "two", ExpectedRevision: int64PtrStore(99), DisplayName: "stale", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
+	if !errors.Is(err, coremodel.ErrRevisionConflict) {
+		t.Fatalf("stale sync err=%v", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
+		t.Fatalf("default changed after stale batch: default=%q err=%v", defaultID, err)
+	}
+	one, _ := store.GetProfile(ctx, created.Profiles[0].ID)
+	if one.Revision != 1 || one.DisplayName != "One" {
+		t.Fatalf("stale batch changed one=%+v", one)
+	}
+	replayCommand := coremodel.SyncProfileCommand{DefaultClientProfileID: "two", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "two", ExpectedRevision: int64PtrStore(2), DisplayName: "Two rotated", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}}
+	replayKey := uuid.NewString()
+	replay, err := store.SyncProfiles(ctx, replayKey, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", replayCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err = store.SyncProfiles(ctx, replayKey, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", replayCommand)
+	if err != nil || !replay.Replay {
+		t.Fatalf("replay=%+v err=%v", replay, err)
+	}
+	keyChanged := replayCommand
+	keyChanged.Entries = append([]coremodel.SyncProfileEntry(nil), replayCommand.Entries...)
+	keyChanged.Entries[0].APIKey = stringPtrStore("changed-secret")
+	if _, err = store.SyncProfiles(ctx, replayKey, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", keyChanged); !errors.Is(err, coremodel.ErrIdempotencyConflict) {
+		t.Fatalf("API-key-only digest conflict err=%v", err)
+	}
+	replayCommand.Entries[0].DisplayName = "different"
+	if _, err = store.SyncProfiles(ctx, replayKey, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", replayCommand); !errors.Is(err, coremodel.ErrIdempotencyConflict) {
+		t.Fatalf("digest conflict err=%v", err)
+	}
+	var replayJSON []byte
+	if err = pool.QueryRow(ctx, `SELECT response_json FROM core_mutation_replays WHERE operation=$1 AND idempotency_key=$2`, profileSyncOp, replayKey).Scan(&replayJSON); err != nil {
+		t.Fatalf("read replay response: %v", err)
+	}
+	// "Two rotated" is an intentionally public display name in this replay;
+	// only the exact fixture secrets (and an API-key field) prove a leak.
+	if bytes.Contains(replayJSON, []byte("one-secret")) || bytes.Contains(replayJSON, []byte("two-secret")) || bytes.Contains(replayJSON, []byte("changed-secret")) || bytes.Contains(replayJSON, []byte(`"api_key":`)) {
+		t.Fatalf("replay response contains secret material: %s", replayJSON)
+	}
+	left, right := replayCommand, replayCommand
+	left.IdempotencyKey, right.IdempotencyKey = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	left.Entries = append([]coremodel.SyncProfileEntry(nil), replayCommand.Entries...)
+	right.Entries = append([]coremodel.SyncProfileEntry(nil), replayCommand.Entries...)
+	left.Entries[0].ExpectedRevision, right.Entries[0].ExpectedRevision = int64PtrStore(3), int64PtrStore(3)
+	left.Entries[0].DisplayName, right.Entries[0].DisplayName = "left", "right"
+	results := make(chan error, 2)
+	go func() {
+		_, e := store.SyncProfiles(ctx, left.IdempotencyKey, "1111111111111111111111111111111111111111111111111111111111111111", left)
+		results <- e
+	}()
+	go func() {
+		_, e := store.SyncProfiles(ctx, right.IdempotencyKey, "2222222222222222222222222222222222222222222222222222222222222222", right)
+		results <- e
+	}()
+	var success, conflict int
+	for i := 0; i < 2; i++ {
+		e := <-results
+		if e == nil {
+			success++
+		} else if errors.Is(e, coremodel.ErrRevisionConflict) {
+			conflict++
+		} else {
+			t.Errorf("overlap error=%v", e)
+		}
+	}
+	if success != 1 || conflict != 1 {
+		t.Fatalf("overlap success=%d conflict=%d", success, conflict)
+	}
+	profiles, _, err := store.ListProfiles(ctx, "", 10)
+	if err != nil || len(profiles) != 2 {
+		t.Fatalf("missing profile lost: len=%d err=%v", len(profiles), err)
+	}
+}
+
+func syncStoreEntry(id, name, key string) coremodel.SyncProfileEntry {
+	return coremodel.SyncProfileEntry{ClientProfileID: id, DisplayName: name, Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: stringPtrStore(key)}
+}
+func stringPtrStore(v string) *string { return &v }
+func int64PtrStore(v int64) *int64    { return &v }
 
 func nowUTC() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }
 

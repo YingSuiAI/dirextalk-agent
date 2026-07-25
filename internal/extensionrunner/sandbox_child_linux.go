@@ -196,9 +196,17 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.CloseRange(3, ^uint(0), unix.CLOSE_RANGE_UNSHARE); err != nil {
 		return sandboxChildFailure("close-fds", err)
 	}
-	argv := make([]string, 1, 1+len(bootstrap.Request.Argv))
-	argv[0] = "/app/entry"
-	argv = append(argv, bootstrap.Request.Argv...)
+	// /app/entry may be a BusyBox multi-call binary.  Exec selects its applet
+	// from argv[0], so the first admitted argument is the executable name, not
+	// a positional argument passed after the binary path.
+	argv0 := "/app/entry"
+	args := bootstrap.Request.Argv
+	if len(args) > 0 {
+		argv0, args = args[0], args[1:]
+	}
+	argv := make([]string, 1, 1+len(args))
+	argv[0] = argv0
+	argv = append(argv, args...)
 	if err := unix.Exec("/app/entry", argv, []string{}); err != nil {
 		return sandboxChildFailure("exec", err)
 	}

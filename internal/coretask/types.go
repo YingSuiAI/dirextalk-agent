@@ -31,11 +31,27 @@ const (
 type TaskKind string
 
 const (
-	TaskKindAgent          TaskKind = "agent"
-	TaskKindExtension      TaskKind = "extension"
-	TaskKindKnowledgeIndex TaskKind = "knowledge_index"
-	TaskKindAWSChange      TaskKind = "aws_change"
+	TaskKindAgent            TaskKind = "agent"
+	TaskKindExtension        TaskKind = "extension"
+	TaskKindKnowledgeIndex   TaskKind = "knowledge_index"
+	TaskKindAWSChange        TaskKind = "aws_change"
+	TaskKindWorkload         TaskKind = "workload"
+	TaskKindConversationTool TaskKind = "conversation_tool"
 )
+
+// WorkloadTaskPayload is the immutable execution fence for a workload
+// operation.  It deliberately contains identifiers and digests only; provider
+// credentials and secret values remain behind their typed provider boundary.
+type WorkloadTaskPayload struct {
+	WorkloadID        string          `json:"workload_id"`
+	PlanID            string          `json:"plan_id"`
+	OperationID       string          `json:"operation_id"`
+	PlanRevision      uint64          `json:"plan_revision"`
+	PlanDigest        string          `json:"plan_digest"`
+	TargetKind        string          `json:"target_kind"`
+	ConfirmationID    string          `json:"confirmation_id"`
+	ExecutionSnapshot json.RawMessage `json:"execution_snapshot,omitempty"`
+}
 
 type ExtensionOperation string
 
@@ -64,6 +80,25 @@ type ExtensionTaskPayload struct {
 	CanonicalInputJSON json.RawMessage    `json:"input_json,omitempty"`
 }
 
+// ConversationToolTaskPayload is the exact durable handoff from a turn to
+// the common task/runner path. It contains only IDs and digests; arguments
+// are represented by their digest and a bounded safe summary.
+type ConversationToolTaskPayload struct {
+	TurnID                  string `json:"turn_id"`
+	AttemptID               string `json:"attempt_id"`
+	Round                   uint32 `json:"round"`
+	CallID                  string `json:"call_id"`
+	ExtensionSnapshotDigest string `json:"extension_snapshot_digest"`
+	InstallationID          string `json:"installation_id"`
+	VersionID               string `json:"version_id"`
+	InstallationRevision    uint64 `json:"installation_revision"`
+	ToolName                string `json:"tool_name"`
+	ToolSchemaDigest        string `json:"tool_schema_digest"`
+	ArgumentsDigest         string `json:"arguments_digest"`
+	ConfirmationID          string `json:"confirmation_id,omitempty"`
+	SafeSummary             string `json:"safe_summary,omitempty"`
+}
+
 type KnowledgeIndexTaskPayload struct {
 	SourceIDs              []string `json:"source_ids"`
 	ExpectedSourceRevision []uint64 `json:"expected_source_revisions"`
@@ -76,9 +111,11 @@ type AWSChangeTaskPayload struct {
 
 // TaskPayload is a closed union; exactly one branch must match Kind.
 type TaskPayload struct {
-	Extension      *ExtensionTaskPayload      `json:"extension,omitempty"`
-	KnowledgeIndex *KnowledgeIndexTaskPayload `json:"knowledge_index,omitempty"`
-	AWSChange      *AWSChangeTaskPayload      `json:"aws_change,omitempty"`
+	ConversationTool *ConversationToolTaskPayload `json:"conversation_tool,omitempty"`
+	Extension        *ExtensionTaskPayload        `json:"extension,omitempty"`
+	KnowledgeIndex   *KnowledgeIndexTaskPayload   `json:"knowledge_index,omitempty"`
+	AWSChange        *AWSChangeTaskPayload        `json:"aws_change,omitempty"`
+	Workload         *WorkloadTaskPayload         `json:"workload,omitempty"`
 }
 
 var (
@@ -86,6 +123,7 @@ var (
 	ErrConflict         = errors.New("coretask: conflict")
 	ErrRevisionConflict = errors.New("coretask: revision conflict")
 	ErrLeaseConflict    = errors.New("coretask: lease conflict")
+	ErrDispatchStarted  = errors.New("coretask: workload dispatch already started")
 	ErrNotFound         = errors.New("coretask: not found")
 	ErrTerminal         = errors.New("coretask: terminal task")
 	ErrTimedOut         = errors.New("task_timed_out")
@@ -263,6 +301,12 @@ func normalizePayload(s *TaskSpec) error {
 	if s.Payload.AWSChange != nil {
 		count++
 	}
+	if s.Payload.Workload != nil {
+		count++
+	}
+	if s.Payload.ConversationTool != nil {
+		count++
+	}
 	switch s.Kind {
 	case TaskKindAgent:
 		if count != 0 {
@@ -303,6 +347,14 @@ func normalizePayload(s *TaskSpec) error {
 			p.CanonicalInputJSON = canonical
 			p.ToolName = strings.TrimSpace(p.ToolName)
 		}
+	case TaskKindConversationTool:
+		if count != 1 || s.Payload.ConversationTool == nil {
+			return ErrInvalid
+		}
+		p := s.Payload.ConversationTool
+		if !ValidUUID(p.TurnID) || !ValidUUID(p.AttemptID) || !ValidUUID(p.CallID) || p.Round > 100 || !ValidUUID(p.InstallationID) || !ValidUUID(p.VersionID) || p.InstallationRevision == 0 || strings.TrimSpace(p.ToolName) == "" || !ValidDigest(p.ExtensionSnapshotDigest) || !ValidDigest(p.ToolSchemaDigest) || !ValidDigest(p.ArgumentsDigest) || len([]byte(p.SafeSummary)) > MaxSummaryBytes {
+			return ErrInvalid
+		}
 	case TaskKindKnowledgeIndex:
 		if count != 1 || s.Payload.KnowledgeIndex == nil {
 			return ErrInvalid
@@ -330,10 +382,47 @@ func normalizePayload(s *TaskSpec) error {
 			return ErrInvalid
 		}
 		s.Payload.AWSChange.ChangeID = strings.TrimSpace(s.Payload.AWSChange.ChangeID)
+	case TaskKindWorkload:
+		if count != 1 || s.Payload.Workload == nil {
+			return ErrInvalid
+		}
+		p := s.Payload.Workload
+		if !ValidUUID(strings.TrimSpace(p.WorkloadID)) || !ValidUUID(strings.TrimSpace(p.PlanID)) || !ValidUUID(strings.TrimSpace(p.OperationID)) || !ValidUUID(strings.TrimSpace(p.ConfirmationID)) || p.PlanRevision == 0 || !ValidDigest(p.PlanDigest) || !validWorkloadTarget(p.TargetKind) || len(p.ExecutionSnapshot) > MaxResultBytes || (len(p.ExecutionSnapshot) > 0 && !json.Valid(p.ExecutionSnapshot)) {
+			return ErrInvalid
+		}
+		p.WorkloadID = strings.TrimSpace(p.WorkloadID)
+		p.PlanID = strings.TrimSpace(p.PlanID)
+		p.OperationID = strings.TrimSpace(p.OperationID)
+		p.ConfirmationID = strings.TrimSpace(p.ConfirmationID)
+		p.PlanDigest = strings.TrimSpace(p.PlanDigest)
+		if len(p.ExecutionSnapshot) > 0 {
+			var v any
+			if json.Unmarshal(p.ExecutionSnapshot, &v) != nil {
+				return ErrInvalid
+			}
+			p.ExecutionSnapshot, _ = json.Marshal(v)
+		}
 	default:
 		return ErrInvalid
 	}
 	return nil
+}
+
+func ValidDigest(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validWorkloadTarget(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "CORE_RUNNER", "AWS_EC2_SSM", "AWS_ECS":
+		return true
+	default:
+		return false
+	}
 }
 
 func containsForbiddenInput(v any) bool {

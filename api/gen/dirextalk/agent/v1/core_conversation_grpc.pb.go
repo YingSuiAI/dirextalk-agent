@@ -19,12 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ConversationService_Create_FullMethodName     = "/dirextalk.agent.v1.ConversationService/Create"
-	ConversationService_Get_FullMethodName        = "/dirextalk.agent.v1.ConversationService/Get"
-	ConversationService_List_FullMethodName       = "/dirextalk.agent.v1.ConversationService/List"
-	ConversationService_Delete_FullMethodName     = "/dirextalk.agent.v1.ConversationService/Delete"
-	ConversationService_Chat_FullMethodName       = "/dirextalk.agent.v1.ConversationService/Chat"
-	ConversationService_StreamChat_FullMethodName = "/dirextalk.agent.v1.ConversationService/StreamChat"
+	ConversationService_Create_FullMethodName          = "/dirextalk.agent.v1.ConversationService/Create"
+	ConversationService_Get_FullMethodName             = "/dirextalk.agent.v1.ConversationService/Get"
+	ConversationService_List_FullMethodName            = "/dirextalk.agent.v1.ConversationService/List"
+	ConversationService_Delete_FullMethodName          = "/dirextalk.agent.v1.ConversationService/Delete"
+	ConversationService_Chat_FullMethodName            = "/dirextalk.agent.v1.ConversationService/Chat"
+	ConversationService_StreamChat_FullMethodName      = "/dirextalk.agent.v1.ConversationService/StreamChat"
+	ConversationService_StartTurn_FullMethodName       = "/dirextalk.agent.v1.ConversationService/StartTurn"
+	ConversationService_GetTurn_FullMethodName         = "/dirextalk.agent.v1.ConversationService/GetTurn"
+	ConversationService_WatchTurnEvents_FullMethodName = "/dirextalk.agent.v1.ConversationService/WatchTurnEvents"
+	ConversationService_CancelTurn_FullMethodName      = "/dirextalk.agent.v1.ConversationService/CancelTurn"
 )
 
 // ConversationServiceClient is the client API for ConversationService service.
@@ -37,6 +41,10 @@ type ConversationServiceClient interface {
 	Delete(ctx context.Context, in *ConversationServiceDeleteRequest, opts ...grpc.CallOption) (*ConversationServiceDeleteResponse, error)
 	Chat(ctx context.Context, in *ConversationServiceChatRequest, opts ...grpc.CallOption) (*ConversationServiceChatResponse, error)
 	StreamChat(ctx context.Context, in *ConversationServiceStreamChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ConversationServiceStreamChatResponse], error)
+	StartTurn(ctx context.Context, in *ConversationServiceStartTurnRequest, opts ...grpc.CallOption) (*ConversationServiceStartTurnResponse, error)
+	GetTurn(ctx context.Context, in *ConversationServiceGetTurnRequest, opts ...grpc.CallOption) (*ConversationServiceGetTurnResponse, error)
+	WatchTurnEvents(ctx context.Context, in *ConversationServiceWatchTurnEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ConversationServiceWatchTurnEventsResponse], error)
+	CancelTurn(ctx context.Context, in *ConversationServiceCancelTurnRequest, opts ...grpc.CallOption) (*ConversationServiceCancelTurnResponse, error)
 }
 
 type conversationServiceClient struct {
@@ -116,6 +124,55 @@ func (c *conversationServiceClient) StreamChat(ctx context.Context, in *Conversa
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ConversationService_StreamChatClient = grpc.ServerStreamingClient[ConversationServiceStreamChatResponse]
 
+func (c *conversationServiceClient) StartTurn(ctx context.Context, in *ConversationServiceStartTurnRequest, opts ...grpc.CallOption) (*ConversationServiceStartTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConversationServiceStartTurnResponse)
+	err := c.cc.Invoke(ctx, ConversationService_StartTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *conversationServiceClient) GetTurn(ctx context.Context, in *ConversationServiceGetTurnRequest, opts ...grpc.CallOption) (*ConversationServiceGetTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConversationServiceGetTurnResponse)
+	err := c.cc.Invoke(ctx, ConversationService_GetTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *conversationServiceClient) WatchTurnEvents(ctx context.Context, in *ConversationServiceWatchTurnEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ConversationServiceWatchTurnEventsResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &ConversationService_ServiceDesc.Streams[1], ConversationService_WatchTurnEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ConversationServiceWatchTurnEventsRequest, ConversationServiceWatchTurnEventsResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ConversationService_WatchTurnEventsClient = grpc.ServerStreamingClient[ConversationServiceWatchTurnEventsResponse]
+
+func (c *conversationServiceClient) CancelTurn(ctx context.Context, in *ConversationServiceCancelTurnRequest, opts ...grpc.CallOption) (*ConversationServiceCancelTurnResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConversationServiceCancelTurnResponse)
+	err := c.cc.Invoke(ctx, ConversationService_CancelTurn_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ConversationServiceServer is the server API for ConversationService service.
 // All implementations must embed UnimplementedConversationServiceServer
 // for forward compatibility.
@@ -126,6 +183,10 @@ type ConversationServiceServer interface {
 	Delete(context.Context, *ConversationServiceDeleteRequest) (*ConversationServiceDeleteResponse, error)
 	Chat(context.Context, *ConversationServiceChatRequest) (*ConversationServiceChatResponse, error)
 	StreamChat(*ConversationServiceStreamChatRequest, grpc.ServerStreamingServer[ConversationServiceStreamChatResponse]) error
+	StartTurn(context.Context, *ConversationServiceStartTurnRequest) (*ConversationServiceStartTurnResponse, error)
+	GetTurn(context.Context, *ConversationServiceGetTurnRequest) (*ConversationServiceGetTurnResponse, error)
+	WatchTurnEvents(*ConversationServiceWatchTurnEventsRequest, grpc.ServerStreamingServer[ConversationServiceWatchTurnEventsResponse]) error
+	CancelTurn(context.Context, *ConversationServiceCancelTurnRequest) (*ConversationServiceCancelTurnResponse, error)
 	mustEmbedUnimplementedConversationServiceServer()
 }
 
@@ -153,6 +214,18 @@ func (UnimplementedConversationServiceServer) Chat(context.Context, *Conversatio
 }
 func (UnimplementedConversationServiceServer) StreamChat(*ConversationServiceStreamChatRequest, grpc.ServerStreamingServer[ConversationServiceStreamChatResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamChat not implemented")
+}
+func (UnimplementedConversationServiceServer) StartTurn(context.Context, *ConversationServiceStartTurnRequest) (*ConversationServiceStartTurnResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartTurn not implemented")
+}
+func (UnimplementedConversationServiceServer) GetTurn(context.Context, *ConversationServiceGetTurnRequest) (*ConversationServiceGetTurnResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetTurn not implemented")
+}
+func (UnimplementedConversationServiceServer) WatchTurnEvents(*ConversationServiceWatchTurnEventsRequest, grpc.ServerStreamingServer[ConversationServiceWatchTurnEventsResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method WatchTurnEvents not implemented")
+}
+func (UnimplementedConversationServiceServer) CancelTurn(context.Context, *ConversationServiceCancelTurnRequest) (*ConversationServiceCancelTurnResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelTurn not implemented")
 }
 func (UnimplementedConversationServiceServer) mustEmbedUnimplementedConversationServiceServer() {}
 func (UnimplementedConversationServiceServer) testEmbeddedByValue()                             {}
@@ -276,6 +349,71 @@ func _ConversationService_StreamChat_Handler(srv interface{}, stream grpc.Server
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type ConversationService_StreamChatServer = grpc.ServerStreamingServer[ConversationServiceStreamChatResponse]
 
+func _ConversationService_StartTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConversationServiceStartTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConversationServiceServer).StartTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConversationService_StartTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConversationServiceServer).StartTurn(ctx, req.(*ConversationServiceStartTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ConversationService_GetTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConversationServiceGetTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConversationServiceServer).GetTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConversationService_GetTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConversationServiceServer).GetTurn(ctx, req.(*ConversationServiceGetTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ConversationService_WatchTurnEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ConversationServiceWatchTurnEventsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(ConversationServiceServer).WatchTurnEvents(m, &grpc.GenericServerStream[ConversationServiceWatchTurnEventsRequest, ConversationServiceWatchTurnEventsResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ConversationService_WatchTurnEventsServer = grpc.ServerStreamingServer[ConversationServiceWatchTurnEventsResponse]
+
+func _ConversationService_CancelTurn_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConversationServiceCancelTurnRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConversationServiceServer).CancelTurn(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConversationService_CancelTurn_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConversationServiceServer).CancelTurn(ctx, req.(*ConversationServiceCancelTurnRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ConversationService_ServiceDesc is the grpc.ServiceDesc for ConversationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -303,11 +441,28 @@ var ConversationService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Chat",
 			Handler:    _ConversationService_Chat_Handler,
 		},
+		{
+			MethodName: "StartTurn",
+			Handler:    _ConversationService_StartTurn_Handler,
+		},
+		{
+			MethodName: "GetTurn",
+			Handler:    _ConversationService_GetTurn_Handler,
+		},
+		{
+			MethodName: "CancelTurn",
+			Handler:    _ConversationService_CancelTurn_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "StreamChat",
 			Handler:       _ConversationService_StreamChat_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchTurnEvents",
+			Handler:       _ConversationService_WatchTurnEvents_Handler,
 			ServerStreams: true,
 		},
 	},
