@@ -134,6 +134,9 @@ func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testi
 	if provider.reachabilityPresent || !provider.reachabilityRecorded {
 		t.Fatalf("reachability lifecycle incomplete: %#v", provider.calls)
 	}
+	if provider.launch.ClientToken != "dtx-worker-ami-ec2-11111111-2222-4333-8444-555555555555" {
+		t.Fatalf("builder launch did not bind the persisted attempt: %q", provider.launch.ClientToken)
+	}
 	terminateIndex, cleanupIndex := callIndex(provider.calls, "terminate-builder"), callIndex(provider.calls, "cleanup-reachability")
 	if terminateIndex < 0 || cleanupIndex <= terminateIndex {
 		t.Fatalf("builder was not terminated before reachability cleanup: %#v", provider.calls)
@@ -739,7 +742,8 @@ func (provider *fakeProvider) PrepareBuilderReachability(_ context.Context, requ
 	evidence := BuilderReachabilityEvidenceV2{SchemaVersion: BuilderReachabilitySchemaV2, AgentInstanceID: request.AgentInstanceID, AccountID: request.AccountID,
 		Region: request.Region, BuildDigest: request.BuildDigest, VPCID: request.VPCID, RouteTableID: request.RouteTableID, SecurityGroupID: request.SecurityGroupID,
 		S3PrefixListID: request.S3PrefixListID, ArtifactBucket: request.ArtifactBucket, ArtifactKey: request.ArtifactKey,
-		VPCEndpointID: "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
+		VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
+		VPCEndpointID:          "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
 	if existing != nil && *existing != evidence {
 		return BuilderReachabilityEvidenceV2{}, ErrOwnershipMismatch
 	}

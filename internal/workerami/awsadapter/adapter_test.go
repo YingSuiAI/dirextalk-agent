@@ -367,6 +367,25 @@ func TestLaunchBuilderProducesSinglePrivateHardenedInstance(t *testing.T) {
 	}
 }
 
+func TestValidLaunchAcceptsOnlyLegacyOrPersistedAttemptTokens(t *testing.T) {
+	launch := validLaunchFixture()
+	for _, token := range []string{
+		"dtx-worker-ami-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"dtx-worker-ami-ec2-11111111-2222-4333-8444-555555555555",
+	} {
+		launch.ClientToken = token
+		if !validLaunch(launch) {
+			t.Fatalf("validLaunch(%q) = false", token)
+		}
+	}
+	for _, token := range []string{"", "dtx-worker-ami-ec2-11111111-2222-3333-8444-555555555555", "caller-selected"} {
+		launch.ClientToken = token
+		if validLaunch(launch) {
+			t.Fatalf("validLaunch(%q) = true", token)
+		}
+	}
+}
+
 func TestEC2MutationsRecoverLostResponsesFromExactReadBack(t *testing.T) {
 	secretError := errors.New("transport response lost credential=SHOULD_NOT_ESCAPE")
 	t.Run("builder", func(t *testing.T) {

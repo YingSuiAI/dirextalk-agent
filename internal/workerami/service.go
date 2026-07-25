@@ -3,6 +3,7 @@ package workerami
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -315,8 +316,12 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 				return ImageManifestV1{}, ErrReadBackMismatch
 			}
 		}
+		launchClientToken, tokenErr := builderLaunchClientToken(validated, reachabilityState)
+		if tokenErr != nil {
+			return ImageManifestV1{}, tokenErr
+		}
 		launch := LaunchBuilderV1{
-			Name: validated.builderName, ClientToken: validated.clientToken, BaseAMIID: validated.request.BaseAMIID,
+			Name: validated.builderName, ClientToken: launchClientToken, BaseAMIID: validated.request.BaseAMIID,
 			PrivateSubnetID: validated.request.PrivateSubnetID, ZeroIngressSGID: validated.request.ZeroIngressSGID,
 			InstanceType: validated.request.BuilderInstanceType, RootDeviceName: validated.request.RootDeviceName,
 			UserData: userData, Tags: cloneTags(validated.builderTags), AssociatePublicIPAddress: false,
@@ -495,6 +500,18 @@ func reachabilityEvidencePointer(evidence BuilderReachabilityEvidenceV2) *Builde
 	}
 	copy := evidence
 	return &copy
+}
+
+func builderLaunchClientToken(validated validatedBuild, reachabilityState *builderReachabilityState) (string, error) {
+	if validated.request.NetworkMode != NetworkModeS3GatewayV2 || reachabilityState == nil ||
+		reachabilityState.evidence.VPCEndpointClientToken == "" {
+		return validated.clientToken, nil
+	}
+	token := reachabilityState.evidence.VPCEndpointClientToken
+	if !endpointTokenPattern.MatchString(token) {
+		return "", ErrReadBackMismatch
+	}
+	return "dtx-worker-ami-ec2-" + strings.TrimPrefix(token, "dtx-worker-ami-s3-"), nil
 }
 
 func (service *Service) cleanup(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, reachabilityState *builderReachabilityState, builderID, artifactVersion string) error {

@@ -294,7 +294,8 @@ func (adapter *Adapter) DeleteSnapshot(ctx context.Context, snapshotID string) e
 }
 
 func validLaunch(launch workerami.LaunchBuilderV1) bool {
-	return launch.Name != "" && launch.ClientToken != "" && imagePattern.MatchString(launch.BaseAMIID) && launch.PrivateSubnetID != "" && launch.ZeroIngressSGID != "" && launch.InstanceType != "" && launch.RootDeviceName != "" && launch.UserData != "" &&
+	return launch.Name != "" && (legacyLaunchTokenPattern.MatchString(launch.ClientToken) || attemptLaunchTokenPattern.MatchString(launch.ClientToken)) &&
+		imagePattern.MatchString(launch.BaseAMIID) && launch.PrivateSubnetID != "" && launch.ZeroIngressSGID != "" && launch.InstanceType != "" && launch.RootDeviceName != "" && launch.UserData != "" &&
 		!launch.AssociatePublicIPAddress && !launch.AttachIAMInstanceProfile && launch.EncryptedRootVolumeRequired && launch.DeleteRootVolumeOnTermination && launch.IMDSv2Required && launch.InstanceInitiatedStop && validBuilderTags(launch.Name, launch.Tags)
 }
 
