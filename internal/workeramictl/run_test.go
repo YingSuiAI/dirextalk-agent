@@ -215,6 +215,65 @@ func TestRunBuildRotatesReachabilityEvidenceOnlyAfterAbsenceProof(t *testing.T) 
 	}
 }
 
+func TestRunBuildRotatesCompletedBuilderEvidenceBeforeNewV2Attempt(t *testing.T) {
+	fixture := newBuildFixture(t)
+	requestPath := writeV2BuildRequestForFixture(t, fixture)
+	prepared, err := parseBuildRequest(requestPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "publication.json")
+	if err := ensureBuildIntent(output, prepared.intent); err != nil {
+		t.Fatal(err)
+	}
+	stale := builderCleanupEvidenceForRequest(t, prepared.request)
+	if err := ensureBuilderCleanupEvidence(builderCleanupEvidencePath(output), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"build", "--request", requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+		t.Fatalf("Run(build stale builder) = %d, stderr=%q", code, stderr.String())
+	}
+	if cloud.existingCleanupInputs != 0 || cloud.cleanupVerifyCalls < 2 {
+		t.Fatalf("completed builder attempt was reused: %#v", cloud)
+	}
+	if current, err := readBuilderCleanupEvidence(builderCleanupEvidencePath(output)); err != nil || current.Validate() != nil {
+		t.Fatalf("new builder cleanup evidence was not persisted: %#v, %v", current, err)
+	}
+}
+
+func TestRunBuildRejectsUnverifiedV2BuilderWithoutAttemptEvidence(t *testing.T) {
+	fixture := newBuildFixture(t)
+	requestPath := writeV2BuildRequestForFixture(t, fixture)
+	prepared, err := parseBuildRequest(requestPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "publication.json")
+	if err := ensureBuildIntent(output, prepared.intent); err != nil {
+		t.Fatal(err)
+	}
+	stale := builderCleanupEvidenceForRequest(t, prepared.request)
+	if err := ensureBuilderCleanupEvidence(builderCleanupEvidencePath(output), stale); err != nil {
+		t.Fatal(err)
+	}
+
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	cloud.cleanupVerifyErr = errors.New("dependency still present")
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"build", "--request", requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code == 0 {
+		t.Fatal("unverified builder without attempt evidence was accepted")
+	}
+	if cloud.buildCalls != 0 || cloud.cleanupVerifyCalls != 1 {
+		t.Fatalf("incomplete recovery reached build: %#v", cloud)
+	}
+	if current, err := readBuilderCleanupEvidence(builderCleanupEvidencePath(output)); err != nil || !equalBuilderCleanupEvidence(current, stale) {
+		t.Fatalf("recovery evidence changed: %#v, %v", current, err)
+	}
+}
+
 func TestRunBuildRejectsConcurrentOutputOwnerBeforeAWS(t *testing.T) {
 	fixture := newBuildFixture(t)
 	output := filepath.Join(t.TempDir(), "publication.json")
@@ -717,6 +776,8 @@ type fakeCloud struct {
 	cleanupVerifyCalls             int
 	reachabilityCleanupVerifyCalls int
 	existingReachabilityInputs     int
+	existingCleanupInputs          int
+	cleanupVerifyErr               error
 	cleanupEvidence                workerami.BuilderCleanupEvidenceV1
 	prepareEnvironment             PrepareEnvironmentV2
 	prepareErr                     error
@@ -760,6 +821,7 @@ func (service fakeAMIService) Build(_ context.Context, request workerami.BuildRe
 		return workerami.ImageManifestV1{}, err
 	}
 	if request.ExistingBuilderCleanupEvidence != nil {
+		service.cloud.existingCleanupInputs++
 		evidence = *request.ExistingBuilderCleanupEvidence
 	}
 	if request.RecordBuilderCleanupEvidence == nil || request.RecordBuilderCleanupEvidence(evidence) != nil {
@@ -774,7 +836,8 @@ func (service fakeAMIService) Build(_ context.Context, request workerami.BuildRe
 		reachability := workerami.BuilderReachabilityEvidenceV2{SchemaVersion: workerami.BuilderReachabilitySchemaV2, AgentInstanceID: request.AgentInstanceID,
 			AccountID: request.AccountID, Region: request.Region, BuildDigest: buildDigest, VPCID: request.FoundationVPCID, RouteTableID: request.FoundationRouteTableID,
 			SecurityGroupID: request.ZeroIngressSGID, S3PrefixListID: request.S3PrefixListID, ArtifactBucket: request.ArtifactBucket, ArtifactKey: request.ArtifactKey,
-			VPCEndpointID: "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
+			VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
+			VPCEndpointID:          "vpce-0123456789abcdef0", SecurityGroupRuleID: "sgr-0123456789abcdef0"}
 		if request.ExistingBuilderReachabilityEvidence != nil {
 			service.cloud.existingReachabilityInputs++
 			reachability = *request.ExistingBuilderReachabilityEvidence
@@ -818,7 +881,7 @@ func (service fakeAMIService) VerifyBuilderCleanup(_ context.Context, evidence w
 		evidence.WorkerRootFSDigest != service.cloud.image.WorkerRootFSDigest || evidence.WorkerBinaryDigest != service.cloud.image.WorkerBinaryDigest {
 		return errors.New("unexpected builder cleanup evidence")
 	}
-	return nil
+	return service.cloud.cleanupVerifyErr
 }
 
 func (service fakeAMIService) VerifyBuilderReachabilityCleanup(_ context.Context, evidence workerami.BuilderReachabilityEvidenceV2) error {

@@ -89,15 +89,39 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		_, _ = io.WriteString(stderr, "worker-ami: Worker AMI build failed\n")
 		return 1
 	}
-	if !hasFinal && hasReachabilityEvidence && prepared.request.NetworkMode == workerami.NetworkModeS3GatewayV2 &&
-		service.VerifyBuilderReachabilityAttemptCleanup(ctx, reachabilityEvidence) == nil {
-		if removeBuilderReachabilityEvidence(builderReachabilityEvidencePath(*outputPath), reachabilityEvidence) != nil {
-			_, _ = io.WriteString(stderr, "worker-ami: stale builder reachability evidence cleanup failed\n")
+	if !hasFinal && prepared.request.NetworkMode == workerami.NetworkModeS3GatewayV2 {
+		builderAbsent := !hasCleanupEvidence
+		if hasCleanupEvidence {
+			builderAbsent = service.VerifyBuilderCleanup(ctx, cleanupEvidence) == nil
+		}
+		reachabilityAbsent := !hasReachabilityEvidence
+		if builderAbsent && hasReachabilityEvidence {
+			reachabilityAbsent = service.VerifyBuilderReachabilityAttemptCleanup(ctx, reachabilityEvidence) == nil
+		}
+		if hasCleanupEvidence && !builderAbsent && !hasReachabilityEvidence {
+			_, _ = io.WriteString(stderr, "worker-ami: builder recovery evidence is incomplete\n")
 			return 1
 		}
-		prepared.request.ExistingBuilderReachabilityEvidence = nil
-		reachabilityEvidence = workerami.BuilderReachabilityEvidenceV2{}
-		hasReachabilityEvidence = false
+		if builderAbsent && reachabilityAbsent {
+			if hasReachabilityEvidence {
+				if removeBuilderReachabilityEvidence(builderReachabilityEvidencePath(*outputPath), reachabilityEvidence) != nil {
+					_, _ = io.WriteString(stderr, "worker-ami: stale builder reachability evidence cleanup failed\n")
+					return 1
+				}
+				prepared.request.ExistingBuilderReachabilityEvidence = nil
+				reachabilityEvidence = workerami.BuilderReachabilityEvidenceV2{}
+				hasReachabilityEvidence = false
+			}
+			if hasCleanupEvidence {
+				if removeBuilderCleanupEvidence(builderCleanupEvidencePath(*outputPath), cleanupEvidence) != nil {
+					_, _ = io.WriteString(stderr, "worker-ami: stale builder cleanup evidence removal failed\n")
+					return 1
+				}
+				prepared.request.ExistingBuilderCleanupEvidence = nil
+				cleanupEvidence = workerami.BuilderCleanupEvidenceV1{}
+				hasCleanupEvidence = false
+			}
+		}
 	}
 	attestor, err := dependencies.NewAttestor(config)
 	if err != nil || attestor == nil {

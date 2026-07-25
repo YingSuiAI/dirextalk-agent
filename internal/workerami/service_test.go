@@ -150,6 +150,14 @@ func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testi
 	if provider.launch.ClientToken != "dtx-worker-ami-ec2-11111111-2222-4333-8444-555555555555" {
 		t.Fatalf("builder launch did not bind the persisted attempt: %q", provider.launch.ClientToken)
 	}
+	validated, err := validateBuildRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedBuilderName := "dtx-worker-ami-builder-11111111-2222-4333-8444-555555555555-" + strings.TrimPrefix(validated.buildDigest, "sha256:")[:20]
+	if provider.launch.Name != expectedBuilderName {
+		t.Fatalf("builder name did not bind the persisted attempt: %q", provider.launch.Name)
+	}
 	terminateIndex, cleanupIndex := callIndex(provider.calls, "terminate-builder"), callIndex(provider.calls, "cleanup-reachability")
 	if terminateIndex < 0 || cleanupIndex <= terminateIndex {
 		t.Fatalf("builder was not terminated before reachability cleanup: %#v", provider.calls)
@@ -521,6 +529,10 @@ func TestBuildRetainsReachabilityWhenBuilderTerminationCannotBeProven(t *testing
 	provider.request = request
 	provider.calls = nil
 	provider.builderFound = true
+	validated, err = bindBuilderAttemptIdentity(validated, &builderReachabilityState{evidence: evidence})
+	if err != nil {
+		t.Fatal(err)
+	}
 	provider.builder = provider.validBuilder(validated)
 	provider.builder.Tags[TagAgentInstanceID] = "22222222-2222-4222-8222-222222222222"
 

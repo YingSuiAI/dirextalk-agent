@@ -525,6 +525,20 @@ func equalBuilderCleanupEvidence(left, right workerami.BuilderCleanupEvidenceV1)
 		left.BuilderNetworkInterfaceIDs[0] == right.BuilderNetworkInterfaceIDs[0]
 }
 
+func removeBuilderCleanupEvidence(path string, expected workerami.BuilderCleanupEvidenceV1) error {
+	actual, err := readBuilderCleanupEvidence(path)
+	if err != nil || !equalBuilderCleanupEvidence(actual, expected) {
+		return errInvalidInput
+	}
+	if err := os.Remove(path); err != nil {
+		return errOutput
+	}
+	if syncParentDirectory(path) != nil {
+		return errOutput
+	}
+	return nil
+}
+
 func builderCleanupEvidenceMatchesPrepared(evidence workerami.BuilderCleanupEvidenceV1, prepared preparedBuild) bool {
 	buildDigest, err := workerami.BuildDigest(prepared.request)
 	return err == nil && evidence.Validate() == nil && evidence.AgentInstanceID == prepared.request.AgentInstanceID &&

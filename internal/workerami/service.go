@@ -241,6 +241,21 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 		}
 		return service.readBackBuild(buildCtx, validated, imageObservation)
 	}
+	if validated.request.NetworkMode == NetworkModeS3GatewayV2 {
+		evidence, prepareErr := service.provider.PrepareBuilderReachability(buildCtx, reachabilityForBuild(validated), reachabilityEvidencePointer(reachabilityState.evidence), func(observed BuilderReachabilityEvidenceV2) error {
+			return reachabilityState.capture(observed, validated)
+		})
+		if prepareErr != nil {
+			return ImageManifestV1{}, operationError(buildCtx)
+		}
+		if _, validationErr = validateReachabilityEvidenceForBuild(evidence, validated, true); validationErr != nil || reachabilityState.capture(evidence, validated) != nil {
+			return ImageManifestV1{}, ErrReadBackMismatch
+		}
+		validated, validationErr = bindBuilderAttemptIdentity(validated, reachabilityState)
+		if validationErr != nil {
+			return ImageManifestV1{}, validationErr
+		}
+	}
 
 	builderObservation, builderFound, providerErr := service.provider.FindBuilder(buildCtx, BuilderLookupV1{
 		Name: validated.builderName, BuildDigest: validated.buildDigest,
@@ -305,17 +320,6 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 		if userDataErr != nil {
 			return ImageManifestV1{}, userDataErr
 		}
-		if validated.request.NetworkMode == NetworkModeS3GatewayV2 {
-			evidence, prepareErr := service.provider.PrepareBuilderReachability(buildCtx, reachabilityForBuild(validated), reachabilityEvidencePointer(reachabilityState.evidence), func(observed BuilderReachabilityEvidenceV2) error {
-				return reachabilityState.capture(observed, validated)
-			})
-			if prepareErr != nil {
-				return ImageManifestV1{}, operationError(buildCtx)
-			}
-			if _, validationErr = validateReachabilityEvidenceForBuild(evidence, validated, true); validationErr != nil || reachabilityState.capture(evidence, validated) != nil {
-				return ImageManifestV1{}, ErrReadBackMismatch
-			}
-		}
 		launchClientToken, tokenErr := builderLaunchClientToken(validated, reachabilityState)
 		if tokenErr != nil {
 			return ImageManifestV1{}, tokenErr
@@ -351,16 +355,6 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 		// A running builder whose exact versioned input disappeared cannot be
 		// repaired by uploading a different version behind its existing URL.
 		return ImageManifestV1{}, ErrBuildFailed
-	} else if builderObservation.State != BuilderStopped && validated.request.NetworkMode == NetworkModeS3GatewayV2 {
-		evidence, prepareErr := service.provider.PrepareBuilderReachability(buildCtx, reachabilityForBuild(validated), reachabilityEvidencePointer(reachabilityState.evidence), func(observed BuilderReachabilityEvidenceV2) error {
-			return reachabilityState.capture(observed, validated)
-		})
-		if prepareErr != nil {
-			return ImageManifestV1{}, operationError(buildCtx)
-		}
-		if _, validationErr = validateReachabilityEvidenceForBuild(evidence, validated, true); validationErr != nil || reachabilityState.capture(evidence, validated) != nil {
-			return ImageManifestV1{}, ErrReadBackMismatch
-		}
 	}
 
 	builderObservation, err = service.waitBuilderStopped(buildCtx, validated, builderObservation)
@@ -535,6 +529,20 @@ func builderLaunchClientToken(validated validatedBuild, reachabilityState *build
 		return "", ErrReadBackMismatch
 	}
 	return "dtx-worker-ami-ec2-" + strings.TrimPrefix(token, "dtx-worker-ami-s3-"), nil
+}
+
+func bindBuilderAttemptIdentity(validated validatedBuild, reachabilityState *builderReachabilityState) (validatedBuild, error) {
+	if validated.request.NetworkMode != NetworkModeS3GatewayV2 || reachabilityState == nil {
+		return validated, ErrInvalidInput
+	}
+	token := reachabilityState.evidence.VPCEndpointClientToken
+	if !endpointTokenPattern.MatchString(token) {
+		return validated, ErrReadBackMismatch
+	}
+	attemptID := strings.TrimPrefix(token, "dtx-worker-ami-s3-")
+	buildSuffix := strings.TrimPrefix(validated.buildDigest, "sha256:")[:20]
+	validated.builderName = "dtx-worker-ami-builder-" + attemptID + "-" + buildSuffix
+	return validated, nil
 }
 
 func (service *Service) cleanup(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, reachabilityState *builderReachabilityState, builderID, artifactVersion string) error {
