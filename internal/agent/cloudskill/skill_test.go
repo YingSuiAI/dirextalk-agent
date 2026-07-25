@@ -89,6 +89,56 @@ func TestProviderExposesOnlyTypedResearchStatusAndRecipeDraftTools(t *testing.T)
 	}
 }
 
+func TestPlanningDraftSchemaCommunicatesRecipeAndCapacityBounds(t *testing.T) {
+	t.Parallel()
+
+	schema := PlanningDraftInputSchema()
+	recipeSchema := schemaProperty(schema, "recipe")
+	sources := schemaProperty(recipeSchema, "sources")
+	if sources["minItems"] != 1 || sources["maxItems"] != 16 {
+		t.Fatalf("source bounds = %#v", sources)
+	}
+	source := schemaItems(sources)
+	if !reflect.DeepEqual(schemaProperty(source, "official")["enum"], []bool{true}) ||
+		schemaProperty(source, "content_digest")["pattern"] != `^sha256:[a-f0-9]{64}$` {
+		t.Fatalf("source constraints = %#v", source)
+	}
+	checkpoints := schemaProperty(schemaProperty(recipeSchema, "install"), "checkpoint_names")
+	if checkpoints["minItems"] != 1 || checkpoints["maxItems"] != 32 {
+		t.Fatalf("checkpoint bounds = %#v", checkpoints)
+	}
+	economy := schemaProperty(schema, "economy")
+	if !reflect.DeepEqual(schemaProperty(economy, "architecture")["enum"], []string{"amd64", "arm64"}) ||
+		schemaProperty(economy, "vcpu")["minimum"] != 1 {
+		t.Fatalf("candidate constraints = %#v", economy)
+	}
+}
+
+func TestDecodePlanningDraftClassifiesSchemaRecipeAndCandidateFailures(t *testing.T) {
+	t.Parallel()
+
+	if _, err := DecodePlanningDraft(json.RawMessage(`{"unknown":true}`), expectedBinding()); !errors.Is(err, ErrPlanningDraftSchemaInvalid) {
+		t.Fatalf("schema error = %v", err)
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(validPlanDraftArguments(t)), &input); err != nil {
+		t.Fatal(err)
+	}
+	input["recipe"].(map[string]any)["name"] = ""
+	raw, _ := json.Marshal(input)
+	if _, err := DecodePlanningDraft(raw, expectedBinding()); !errors.Is(err, ErrPlanningDraftRecipeInvalid) {
+		t.Fatalf("recipe error = %v", err)
+	}
+	if err := json.Unmarshal([]byte(validPlanDraftArguments(t)), &input); err != nil {
+		t.Fatal(err)
+	}
+	input["economy"].(map[string]any)["vcpu"] = float64(0)
+	raw, _ = json.Marshal(input)
+	if _, err := DecodePlanningDraft(raw, expectedBinding()); !errors.Is(err, ErrPlanningDraftCandidatesInvalid) {
+		t.Fatalf("candidate error = %v", err)
+	}
+}
+
 func TestSubmitPlanDraftBindsExperimentalIdentityAndReturnsOnlySafeSummary(t *testing.T) {
 	t.Parallel()
 

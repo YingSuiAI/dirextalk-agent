@@ -110,6 +110,45 @@ func TestEinoCloudGoalPlanningModelRejectsUnfetchedAndSecretBearingCapture(t *te
 	}
 }
 
+func TestEinoCloudGoalPlanningModelRepairsRejectedCaptureWithinOneDurableRequest(t *testing.T) {
+	recipeValue := validRecipe()
+	recipeValue.RecipeID = "recipe-model-repair"
+	request := planningModelStage(cloudskill.StepDraftRecipe, recipeValue.RecipeID)
+	evidence, err := BuildOfficialSourceEvidenceSet(request.Attempt.TaskID, []OfficialSourceEvidence{{
+		TaskID: request.Attempt.TaskID, ToolCallID: "official-fetch-1", URL: recipeValue.Sources[0].URL,
+		RetrievedAt: recipeValue.Sources[0].RetrievedAt, ContentDigest: recipeValue.Sources[0].ContentDigest,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &cloudGoalModelStoreFake{config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot)}
+	engine := &cloudGoalModelEngineFake{
+		source: recipeValue.Sources[0], planRaw: planningModelPlanRaw(t, recipeValue),
+		rejectedPlanRaw: json.RawMessage(`{"recipe":{}}`),
+	}
+	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
+		return cloudGoalModelClientFake{}, nil
+	}), runtimeapi.SecretResolver(runtimeapiSecretResolverFake{}), &cloudGoalModelToolsFake{source: recipeValue.Sources[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	drafted, err := model.DraftExperimentalRecipe(t.Context(), CloudGoalRecipeInput{Request: request, Evidence: evidence})
+	if err != nil || drafted.RecipeID != recipeValue.RecipeID {
+		t.Fatalf("repaired draft=%#v err=%v", drafted, err)
+	}
+	if engine.calls != 1 || len(engine.captureResults) != 2 || !engine.captureResults[0].IsError || engine.captureResults[1].IsError {
+		t.Fatalf("model calls=%d capture results=%#v", engine.calls, engine.captureResults)
+	}
+	if strings.Contains(engine.captureResults[0].Content, string(engine.rejectedPlanRaw)) ||
+		!strings.Contains(engine.captureResults[0].Content, "planning_recipe_invalid") {
+		t.Fatalf("rejection was not bounded and actionable: %q", engine.captureResults[0].Content)
+	}
+	if len(store.completed) != 1 || store.releaseCalls != 0 {
+		t.Fatalf("completed=%d releases=%d", len(store.completed), store.releaseCalls)
+	}
+}
+
 func TestEinoCloudGoalPlanningModelCanonicalizesExactRetainedKnowledgeEvidence(t *testing.T) {
 	request := planningModelStage(cloudskill.StepDraftRecipe, "knowledge-recipe-model")
 	hints := knowledgeprofile.ResearchHints()
@@ -329,12 +368,14 @@ func (fake *cloudGoalModelToolsFake) ToolsWithLease(_ context.Context, scope run
 }
 
 type cloudGoalModelEngineFake struct {
-	source    recipe.SourceV1
-	planRaw   json.RawMessage
-	skipFetch bool
-	calls     int
-	delay     time.Duration
-	canceled  chan struct{}
+	source          recipe.SourceV1
+	planRaw         json.RawMessage
+	rejectedPlanRaw json.RawMessage
+	captureResults  []runtimeapi.ToolExecution
+	skipFetch       bool
+	calls           int
+	delay           time.Duration
+	canceled        chan struct{}
 }
 
 func (fake *cloudGoalModelEngineFake) Generate(ctx context.Context, request runtimeapi.EngineRequest) (runtimeapi.EngineResult, error) {
@@ -363,10 +404,20 @@ func (fake *cloudGoalModelEngineFake) Generate(ctx context.Context, request runt
 		encoded, _ := json.Marshal(map[string]any{"sources": []recipe.SourceV1{fake.source}})
 		raw = encoded
 	}
-	_, err := request.InvokeTool(ctx, modelapi.ToolCall{ID: "capture-1", Type: "function", Function: modelapi.FunctionCall{Name: captureName, Arguments: string(raw)}})
+	if len(fake.rejectedPlanRaw) != 0 && captureName == captureExperimentalPlanTool {
+		rejected, err := request.InvokeTool(ctx, modelapi.ToolCall{ID: "capture-rejected", Type: "function", Function: modelapi.FunctionCall{
+			Name: captureName, Arguments: string(fake.rejectedPlanRaw),
+		}})
+		if err != nil {
+			return runtimeapi.EngineResult{}, err
+		}
+		fake.captureResults = append(fake.captureResults, rejected)
+	}
+	captured, err := request.InvokeTool(ctx, modelapi.ToolCall{ID: "capture-1", Type: "function", Function: modelapi.FunctionCall{Name: captureName, Arguments: string(raw)}})
 	if err != nil {
 		return runtimeapi.EngineResult{}, err
 	}
+	fake.captureResults = append(fake.captureResults, captured)
 	return runtimeapi.EngineResult{Message: modelapi.Message{Role: modelapi.RoleAssistant, Content: "captured"}}, nil
 }
 

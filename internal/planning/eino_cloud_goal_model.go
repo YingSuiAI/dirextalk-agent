@@ -24,12 +24,13 @@ import (
 )
 
 const (
-	cloudGoalModelVersion       = "cloud-goal-planning-model-v1"
-	cloudGoalModelRequestLease  = 4 * time.Minute
-	cloudGoalModelMaxSteps      = 24
-	cloudGoalModelMaxCapture    = 256 << 10
-	captureOfficialSourcesTool  = "capture_official_sources"
-	captureExperimentalPlanTool = "capture_experimental_plan"
+	cloudGoalModelVersion        = "cloud-goal-planning-model-v1"
+	cloudGoalModelRequestLease   = 4 * time.Minute
+	cloudGoalModelMaxSteps       = 24
+	cloudGoalModelMaxCapture     = 256 << 10
+	cloudGoalModelMaxSubmissions = 3
+	captureOfficialSourcesTool   = "capture_official_sources"
+	captureExperimentalPlanTool  = "capture_experimental_plan"
 )
 
 var ErrCloudGoalModelUnavailable = errors.New("durable cloud Goal planning model is unavailable")
@@ -90,11 +91,14 @@ func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Con
 	raw, err := model.runCapture(ctx, input.Request, prompt, captureOfficialSourcesTool, cloudskill.OfficialSourceDraftInputSchema(), true,
 		func(raw json.RawMessage, fetched map[string]publicweb.Evidence, replay bool) error {
 			sources, decodeErr := cloudskill.DecodeOfficialSourceDraft(raw)
-			if decodeErr != nil || validateOfficialSourceClaims(sources) != nil {
-				return ErrCloudGoalModelUnavailable
+			if decodeErr != nil {
+				return captureValidationFailure("official_sources_schema_invalid")
+			}
+			if validateOfficialSourceClaims(sources) != nil {
+				return captureValidationFailure("official_sources_claims_invalid")
 			}
 			if !replay && !sourcesMatchFetchedEvidence(sources, fetched) {
-				return ErrCloudGoalModelUnavailable
+				return captureValidationFailure("official_sources_evidence_mismatch")
 			}
 			return nil
 		})
@@ -121,11 +125,21 @@ func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Con
 	raw, err := model.runCapture(ctx, input.Request, prompt, captureExperimentalPlanTool, cloudskill.PlanningDraftInputSchema(), true,
 		func(raw json.RawMessage, fetched map[string]publicweb.Evidence, replay bool) error {
 			decoded, decodeErr := cloudskill.DecodePlanningDraft(raw, binding)
-			if decodeErr != nil || validateRecipeForEvidence(input.Request.Binding, decoded.Recipe, input.Evidence) != nil {
-				return ErrCloudGoalModelUnavailable
+			if decodeErr != nil {
+				switch {
+				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftSchemaInvalid):
+					return captureValidationFailure("planning_draft_schema_invalid")
+				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftCandidatesInvalid):
+					return captureValidationFailure("planning_candidates_invalid")
+				default:
+					return captureValidationFailure("planning_recipe_invalid")
+				}
+			}
+			if validateRecipeForEvidence(input.Request.Binding, decoded.Recipe, input.Evidence) != nil {
+				return captureValidationFailure("recipe_evidence_binding_invalid")
 			}
 			if !replay && !boundEvidenceWasFetched(input.Evidence, fetched) {
-				return ErrCloudGoalModelUnavailable
+				return captureValidationFailure("required_evidence_not_fetched")
 			}
 			return nil
 		})
@@ -164,11 +178,18 @@ func (model *EinoCloudGoalPlanningModel) ProposeResourceCandidates(ctx context.C
 		func(raw json.RawMessage, _ map[string]publicweb.Evidence, _ bool) error {
 			decoded, decodeErr := cloudskill.DecodePlanningDraft(raw, binding)
 			if decodeErr != nil {
-				return ErrCloudGoalModelUnavailable
+				switch {
+				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftSchemaInvalid):
+					return captureValidationFailure("resource_candidates_schema_invalid")
+				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftCandidatesInvalid):
+					return captureValidationFailure("resource_candidates_invalid")
+				default:
+					return captureValidationFailure("approved_recipe_invalid")
+				}
 			}
 			digest, digestErr := decoded.Recipe.Digest()
 			if digestErr != nil || digest != input.Draft.Digest || !reflect.DeepEqual(decoded.Recipe, input.Draft.Recipe) {
-				return ErrCloudGoalModelUnavailable
+				return captureValidationFailure("approved_recipe_changed")
 			}
 			return nil
 		})
@@ -195,6 +216,12 @@ func (model *EinoCloudGoalPlanningModel) ProposeResourceCandidates(ctx context.C
 }
 
 type captureValidator func(json.RawMessage, map[string]publicweb.Evidence, bool) error
+
+type captureValidationFailure string
+
+func (failure captureValidationFailure) Error() string {
+	return string(failure)
+}
 
 func (model *EinoCloudGoalPlanningModel) runCapture(
 	ctx context.Context,
@@ -287,7 +314,10 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	}
 	capture := &planningCapture{}
 	definitions = append(definitions, modelapi.Tool{
-		Name: captureName, Description: "Submit the complete validated planning output exactly once after using every required official-source tool.", InputSchema: captureSchema,
+		Name: captureName,
+		Description: "Submit the complete planning output after using every required official-source tool. " +
+			"If the server rejects it, correct the full output and resubmit until accepted.",
+		InputSchema: captureSchema,
 	})
 	fetched := make(map[string]publicweb.Evidence)
 	result, err := model.engine.Generate(executionCtx, runtimeapi.EngineRequest{
@@ -298,7 +328,7 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 		},
 		Tools: definitions, MaxSteps: min(config.MaxSteps, cloudGoalModelMaxSteps),
 		InvokeTool: func(runCtx context.Context, call modelapi.ToolCall) (runtimeapi.ToolExecution, error) {
-			return invokeCloudGoalModelTool(runCtx, toolRequest, call, captureName, capture, available, fetched)
+			return invokeCloudGoalModelTool(runCtx, toolRequest, call, captureName, capture, available, fetched, validate)
 		},
 	})
 	executionErr := executionCtx.Err()
@@ -310,11 +340,11 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	}
 	raw, ok := capture.value()
 	if !ok {
-		reportCloudGoalModelFailure(request, "capture_missing")
+		reportCloudGoalModelFailure(request, capture.failureReason("capture_missing"))
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	if validate(raw, fetched, false) != nil {
-		reportCloudGoalModelFailure(request, "capture_invalid")
+		reportCloudGoalModelFailure(request, "accepted_capture_became_invalid")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	canonical := modelapi.Message{Role: modelapi.RoleAssistant, Content: string(raw)}
@@ -340,25 +370,40 @@ func reportCloudGoalModelFailure(request CloudGoalStageRequest, reason string) {
 }
 
 type planningCapture struct {
-	mu  sync.Mutex
-	raw json.RawMessage
+	mu            sync.Mutex
+	raw           json.RawMessage
+	submissions   int
+	lastRejection string
 }
 
-func (capture *planningCapture) set(raw string) error {
+func (capture *planningCapture) submit(
+	raw string,
+	fetched map[string]publicweb.Evidence,
+	validate captureValidator,
+) (bool, string, error) {
 	if capture == nil || len(raw) == 0 || len(raw) > cloudGoalModelMaxCapture || !json.Valid([]byte(raw)) || security.ContainsLikelySecret(raw) {
-		return ErrCloudGoalModelUnavailable
+		return false, "", ErrCloudGoalModelUnavailable
 	}
 	compact := &bytes.Buffer{}
 	if err := json.Compact(compact, []byte(raw)); err != nil {
-		return ErrCloudGoalModelUnavailable
+		return false, "", ErrCloudGoalModelUnavailable
 	}
+	canonical := append(json.RawMessage(nil), compact.Bytes()...)
+	validationErr := validate(canonical, fetched, false)
+	rejection := captureValidationFailureCode(validationErr)
+
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	if len(capture.raw) != 0 {
-		return ErrCloudGoalModelUnavailable
+	if len(capture.raw) != 0 || capture.submissions >= cloudGoalModelMaxSubmissions {
+		return false, "", ErrCloudGoalModelUnavailable
 	}
-	capture.raw = append(json.RawMessage(nil), compact.Bytes()...)
-	return nil
+	capture.submissions++
+	if validationErr != nil {
+		capture.lastRejection = rejection
+		return false, rejection, nil
+	}
+	capture.raw = canonical
+	return true, "", nil
 }
 
 func (capture *planningCapture) value() (json.RawMessage, bool) {
@@ -370,6 +415,43 @@ func (capture *planningCapture) value() (json.RawMessage, bool) {
 	return append(json.RawMessage(nil), capture.raw...), len(capture.raw) != 0
 }
 
+func (capture *planningCapture) failureReason(fallback string) string {
+	if capture == nil {
+		return fallback
+	}
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	if capture.lastRejection == "" {
+		return fallback
+	}
+	return "capture_rejected_" + capture.lastRejection
+}
+
+func captureValidationFailureCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var failure captureValidationFailure
+	if errors.As(err, &failure) {
+		switch failure {
+		case "official_sources_schema_invalid",
+			"official_sources_claims_invalid",
+			"official_sources_evidence_mismatch",
+			"planning_draft_schema_invalid",
+			"planning_recipe_invalid",
+			"planning_candidates_invalid",
+			"recipe_evidence_binding_invalid",
+			"required_evidence_not_fetched",
+			"resource_candidates_schema_invalid",
+			"resource_candidates_invalid",
+			"approved_recipe_invalid",
+			"approved_recipe_changed":
+			return failure.Error()
+		}
+	}
+	return "capture_contract_invalid"
+}
+
 func invokeCloudGoalModelTool(
 	ctx context.Context,
 	request runtimeapi.ToolRequest,
@@ -378,14 +460,32 @@ func invokeCloudGoalModelTool(
 	capture *planningCapture,
 	available map[string]runtimeapi.Tool,
 	fetched map[string]publicweb.Evidence,
+	validate captureValidator,
 ) (runtimeapi.ToolExecution, error) {
 	name := strings.TrimSpace(call.Function.Name)
 	if strings.TrimSpace(call.ID) == "" || len(call.ID) > 255 || security.ContainsLikelySecret(call.ID) || name == "" || !json.Valid([]byte(call.Function.Arguments)) {
 		return runtimeapi.ToolExecution{}, ErrCloudGoalModelUnavailable
 	}
 	if name == captureName {
-		if err := capture.set(call.Function.Arguments); err != nil {
+		accepted, rejection, err := capture.submit(call.Function.Arguments, fetched, validate)
+		if err != nil {
 			return runtimeapi.ToolExecution{}, err
+		}
+		if !accepted {
+			content, marshalErr := json.Marshal(struct {
+				Accepted    bool   `json:"accepted"`
+				Error       string `json:"error"`
+				Instruction string `json:"instruction"`
+			}{
+				Accepted: false,
+				Error:    rejection,
+				Instruction: "Correct the complete output against the tool schema and exact prompt evidence, " +
+					"then submit it again.",
+			})
+			if marshalErr != nil {
+				return runtimeapi.ToolExecution{}, ErrCloudGoalModelUnavailable
+			}
+			return runtimeapi.ToolExecution{ToolCallID: call.ID, Name: name, Content: string(content), IsError: true}, nil
 		}
 		return runtimeapi.ToolExecution{ToolCallID: call.ID, Name: name, Content: `{"accepted":true}`}, nil
 	}
@@ -445,7 +545,8 @@ func cloudGoalPlanningSystemPrompt(captureName string, withOfficialFetch bool) s
 	}
 	return "You are Dirextalk's provider-neutral background planning model. " + fetchInstruction +
 		" Never request or emit credentials, never approve spending, never provision resources, and never emit shell commands outside typed Recipe action fields. " +
-		"Call " + captureName + " exactly once with the complete result. All identity, Region, price, network and retention decisions remain server-owned."
+		"Call " + captureName + " with the complete result. Stop only after it returns accepted=true; when it returns accepted=false, correct the full output and resubmit. " +
+		"All identity, Region, price, network and retention decisions remain server-owned."
 }
 
 func cloudSkillBinding(binding Binding) cloudskill.Binding {

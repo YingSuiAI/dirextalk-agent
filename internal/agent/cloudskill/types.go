@@ -6,21 +6,25 @@ package cloudskill
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 )
 
 var (
-	ErrInvalidDependencies        = errors.New("invalid cloud dispatcher dependencies")
-	ErrMissingCallScope           = errors.New("cloud dispatcher call scope is missing")
-	ErrInvalidCallScope           = errors.New("cloud dispatcher call scope is invalid")
-	ErrInvocationScopeMismatch    = errors.New("cloud dispatcher invocation does not match its trusted scope")
-	ErrInvalidArguments           = errors.New("cloud dispatcher arguments are invalid")
-	ErrResearchAlreadyStarted     = errors.New("a different research goal already exists for this request")
-	ErrInvalidPortResponse        = errors.New("cloud dispatcher port returned an invalid response")
-	ErrModelVisibleResultTooLarge = errors.New("cloud dispatcher result is too large")
-	ErrPlanDraftNotReady          = errors.New("cloud dispatcher research task is not ready for a plan draft")
+	ErrInvalidDependencies            = errors.New("invalid cloud dispatcher dependencies")
+	ErrMissingCallScope               = errors.New("cloud dispatcher call scope is missing")
+	ErrInvalidCallScope               = errors.New("cloud dispatcher call scope is invalid")
+	ErrInvocationScopeMismatch        = errors.New("cloud dispatcher invocation does not match its trusted scope")
+	ErrInvalidArguments               = errors.New("cloud dispatcher arguments are invalid")
+	ErrResearchAlreadyStarted         = errors.New("a different research goal already exists for this request")
+	ErrInvalidPortResponse            = errors.New("cloud dispatcher port returned an invalid response")
+	ErrModelVisibleResultTooLarge     = errors.New("cloud dispatcher result is too large")
+	ErrPlanDraftNotReady              = errors.New("cloud dispatcher research task is not ready for a plan draft")
+	ErrPlanningDraftSchemaInvalid     = fmt.Errorf("%w: planning draft schema is invalid", ErrInvalidArguments)
+	ErrPlanningDraftRecipeInvalid     = fmt.Errorf("%w: planning Recipe is invalid", ErrInvalidArguments)
+	ErrPlanningDraftCandidatesInvalid = fmt.Errorf("%w: planning candidates are invalid", ErrInvalidArguments)
 )
 
 const (

@@ -293,14 +293,14 @@ func decodePlanDraft(raw json.RawMessage, binding Binding) (decodedPlanDraft, er
 	}
 	var input planDraftInputV1
 	if err := decodeStrict(raw, &input); err != nil {
-		return decodedPlanDraft{}, err
+		return decodedPlanDraft{}, ErrPlanningDraftSchemaInvalid
 	}
 	boundRecipe := input.Recipe.bind(binding.RecipeID)
 	if boundRecipe.SchemaVersion != recipe.SchemaV1 || boundRecipe.Maturity != recipe.MaturityExperimental || boundRecipe.ManagedAcceptance != nil {
-		return decodedPlanDraft{}, ErrInvalidArguments
+		return decodedPlanDraft{}, ErrPlanningDraftRecipeInvalid
 	}
 	if err := boundRecipe.Validate(); err != nil {
-		return decodedPlanDraft{}, ErrInvalidArguments
+		return decodedPlanDraft{}, ErrPlanningDraftRecipeInvalid
 	}
 	candidates := []ResourceCandidateDraftV1{
 		candidateFromInput("economy", input.Economy),
@@ -308,7 +308,10 @@ func decodePlanDraft(raw json.RawMessage, binding Binding) (decodedPlanDraft, er
 		candidateFromInput("performance", input.Performance),
 	}
 	if err := validateCandidateDrafts(candidates, boundRecipe.Requirements); err != nil {
-		return decodedPlanDraft{}, err
+		if errors.Is(err, task.ErrRawSecret) {
+			return decodedPlanDraft{}, err
+		}
+		return decodedPlanDraft{}, ErrPlanningDraftCandidatesInvalid
 	}
 	return decodedPlanDraft{recipe: boundRecipe, candidates: candidates}, nil
 }
@@ -437,7 +440,98 @@ func emptyInputSchema() map[string]any {
 }
 
 func submitPlanDraftInputSchema() map[string]any {
-	return schemaForType(reflect.TypeOf(planDraftInputV1{}))
+	schema := schemaForType(reflect.TypeOf(planDraftInputV1{}))
+	recipeSchema := schemaProperty(schema, "recipe")
+	recipeSchema["description"] = "A secret-free experimental Recipe using only typed Worker actions."
+	constrainString(schemaProperty(recipeSchema, "name"), 1, 160)
+
+	sources := schemaProperty(recipeSchema, "sources")
+	sources["minItems"], sources["maxItems"] = 1, 16
+	source := schemaItems(sources)
+	source["description"] = "An official source copied exactly from fetched evidence."
+	constrainString(schemaProperty(source, "url"), 1, 2048)
+	schemaProperty(source, "url")["pattern"] = `^https://`
+	constrainString(schemaProperty(source, "version"), 1, 128)
+	schemaProperty(source, "commit")["pattern"] = `^[A-Fa-f0-9]{7,64}$`
+	schemaProperty(source, "artifact_digest")["pattern"] = `^sha256:[a-f0-9]{64}$`
+	schemaProperty(source, "content_digest")["pattern"] = `^sha256:[a-f0-9]{64}$`
+	constrainString(schemaProperty(source, "license"), 1, 128)
+	schemaProperty(source, "official")["enum"] = []bool{true}
+	schemaProperty(source, "kind")["enum"] = []string{"repository", "documentation", "release"}
+
+	requirements := schemaProperty(recipeSchema, "requirements")
+	constrainInteger(schemaProperty(requirements, "min_vcpu"), 1, 1024)
+	constrainInteger(schemaProperty(requirements, "min_memory_mib"), 1, 64*1024*1024)
+	constrainInteger(schemaProperty(requirements, "min_disk_gib"), 1, 64*1024)
+	schemaProperty(requirements, "architecture")["enum"] = []string{"amd64", "arm64"}
+
+	install := schemaProperty(recipeSchema, "install")
+	constrainInteger(schemaProperty(install, "timeout_seconds"), 1, 24*60*60)
+	checkpoints := schemaProperty(install, "checkpoint_names")
+	checkpoints["minItems"], checkpoints["maxItems"] = 1, 32
+	constrainString(schemaItems(checkpoints), 1, 128)
+	steps := schemaProperty(install, "steps")
+	steps["minItems"], steps["maxItems"] = 1, 64
+	step := schemaItems(steps)
+	constrainString(schemaProperty(step, "id"), 1, 128)
+	constrainString(schemaProperty(step, "summary"), 1, 512)
+	constrainInteger(schemaProperty(step, "timeout_seconds"), 1, 24*60*60)
+	constrainString(schemaProperty(step, "action"), 1, 128)
+
+	health := schemaProperty(recipeSchema, "health")
+	for _, name := range []string{"liveness", "readiness", "semantic"} {
+		probe := schemaProperty(health, name)
+		schemaProperty(probe, "kind")["enum"] = []string{"http", "tcp", "action"}
+		constrainString(schemaProperty(probe, "target"), 1, 512)
+		constrainInteger(schemaProperty(probe, "timeout_seconds"), 1, 300)
+	}
+	lifecycle := schemaProperty(recipeSchema, "lifecycle")
+	for _, name := range []string{"start", "stop", "maintenance", "restart", "upgrade", "rollback", "backup", "restore", "destroy"} {
+		action := schemaProperty(lifecycle, name)
+		constrainString(action, 1, 128)
+		action["pattern"] = `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`
+	}
+
+	for _, name := range []string{"economy", "recommended", "performance"} {
+		candidate := schemaProperty(schema, name)
+		candidate["description"] = "A provider-neutral capacity candidate satisfying the Recipe minimums."
+		schemaProperty(candidate, "architecture")["enum"] = []string{"amd64", "arm64"}
+		constrainInteger(schemaProperty(candidate, "vcpu"), 1, 1024)
+		constrainInteger(schemaProperty(candidate, "memory_mib"), 1, 64*1024*1024)
+		constrainInteger(schemaProperty(candidate, "disk_gib"), 1, 64*1024)
+		constrainInteger(schemaProperty(candidate, "gpu_memory_mib"), 1, 16*1024*1024)
+		constrainString(schemaProperty(candidate, "gpu_family"), 1, 128)
+		constrainString(schemaProperty(candidate, "rationale"), 1, 512)
+	}
+	return schema
+}
+
+func schemaProperty(schema map[string]any, name string) map[string]any {
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		panic("generated object schema has no properties")
+	}
+	property, ok := properties[name].(map[string]any)
+	if !ok {
+		panic("generated object schema is missing property " + name)
+	}
+	return property
+}
+
+func schemaItems(schema map[string]any) map[string]any {
+	items, ok := schema["items"].(map[string]any)
+	if !ok {
+		panic("generated array schema has no items")
+	}
+	return items
+}
+
+func constrainString(schema map[string]any, minimum, maximum int) {
+	schema["minLength"], schema["maxLength"] = minimum, maximum
+}
+
+func constrainInteger(schema map[string]any, minimum, maximum int) {
+	schema["minimum"], schema["maximum"] = minimum, maximum
 }
 
 func schemaForType(value reflect.Type) map[string]any {
