@@ -39,6 +39,7 @@ var (
 	securityGroupPattern = regexp.MustCompile(`^sg-[0-9a-f]{8,32}$`)
 	endpointPattern      = regexp.MustCompile(`^vpce-[0-9a-f]{8,32}$`)
 	securityRulePattern  = regexp.MustCompile(`^sgr-[0-9a-f]{8,32}$`)
+	endpointTokenPattern = regexp.MustCompile(`^dtx-worker-ami-s3-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
 type EC2API interface {

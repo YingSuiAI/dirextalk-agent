@@ -99,11 +99,12 @@ func (state *builderReachabilityState) capture(evidence BuilderReachabilityEvide
 	if err != nil {
 		return err
 	}
-	if state.evidence.SchemaVersion != "" && state.evidence.VPCEndpointID != validatedEvidence.VPCEndpointID {
-		return ErrOwnershipMismatch
-	}
-	if state.evidence.SecurityGroupRuleID != "" && validatedEvidence.SecurityGroupRuleID != state.evidence.SecurityGroupRuleID {
-		return ErrOwnershipMismatch
+	if state.evidence.SchemaVersion != "" {
+		if state.evidence.VPCEndpointClientToken != validatedEvidence.VPCEndpointClientToken ||
+			(state.evidence.VPCEndpointID != "" && state.evidence.VPCEndpointID != validatedEvidence.VPCEndpointID) ||
+			(state.evidence.SecurityGroupRuleID != "" && state.evidence.SecurityGroupRuleID != validatedEvidence.SecurityGroupRuleID) {
+			return ErrOwnershipMismatch
+		}
 	}
 	state.evidence = validatedEvidence
 	if state.recorder != nil && state.recorder(validatedEvidence) != nil {

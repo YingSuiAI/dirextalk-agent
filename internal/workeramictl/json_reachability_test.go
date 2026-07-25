@@ -16,12 +16,17 @@ func TestPersistBuilderReachabilityEvidenceUpgradesPartialStateAtomically(t *tes
 		AccountID: "123456789012", Region: "us-west-2", BuildDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		VPCID: "vpc-0123456789abcdef0", RouteTableID: "rtb-0123456789abcdef0", SecurityGroupID: "sg-0123456789abcdef0",
 		S3PrefixListID: "pl-0123456789abcdef0", ArtifactBucket: "dtx-worker-artifacts", ArtifactKey: "worker-ami/releases/rootfs.tar",
-		VPCEndpointID: "vpce-0123456789abcdef0",
+		VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
 	}
 	if err := persistBuilderReachabilityEvidence(path, partial); err != nil {
-		t.Fatalf("persist partial evidence: %v", err)
+		t.Fatalf("persist token evidence: %v", err)
 	}
-	full := partial
+	endpoint := partial
+	endpoint.VPCEndpointID = "vpce-0123456789abcdef0"
+	if err := persistBuilderReachabilityEvidence(path, endpoint); err != nil {
+		t.Fatalf("upgrade to endpoint evidence: %v", err)
+	}
+	full := endpoint
 	full.SecurityGroupRuleID = "sgr-0123456789abcdef0"
 	if err := persistBuilderReachabilityEvidence(path, full); err != nil {
 		t.Fatalf("upgrade to complete evidence: %v", err)
@@ -35,12 +40,17 @@ func TestPersistBuilderReachabilityEvidenceUpgradesPartialStateAtomically(t *tes
 		t.Fatalf("evidence mode = %v, %v", info, err)
 	}
 	if err := persistBuilderReachabilityEvidence(path, partial); err != nil {
-		t.Fatalf("endpoint-first replay after complete evidence: %v", err)
+		t.Fatalf("token-first replay after complete evidence: %v", err)
 	}
 	conflict := full
 	conflict.VPCEndpointID = "vpce-11111111111111111"
 	if err := persistBuilderReachabilityEvidence(path, conflict); err == nil {
 		t.Fatal("conflicting endpoint evidence was accepted")
+	}
+	conflict = full
+	conflict.VPCEndpointClientToken = "dtx-worker-ami-s3-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := persistBuilderReachabilityEvidence(path, conflict); err == nil {
+		t.Fatal("conflicting attempt token was accepted")
 	}
 	entries, err := os.ReadDir(directory)
 	if err != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(path) {

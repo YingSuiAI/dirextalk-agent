@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/google/uuid"
 )
 
 const (
@@ -26,11 +27,23 @@ func (adapter *Adapter) PrepareBuilderReachability(ctx context.Context, request 
 	}
 	evidence := adapter.baseReachabilityEvidence(request)
 	if existing != nil {
-		if !sameReachabilityScope(*existing, evidence) || !endpointPattern.MatchString(existing.VPCEndpointID) ||
+		if !sameReachabilityScope(*existing, evidence) ||
+			(existing.VPCEndpointClientToken != "" && !endpointTokenPattern.MatchString(existing.VPCEndpointClientToken)) ||
+			(existing.VPCEndpointID != "" && !endpointPattern.MatchString(existing.VPCEndpointID)) ||
 			(existing.SecurityGroupRuleID != "" && !securityRulePattern.MatchString(existing.SecurityGroupRuleID)) {
 			return workerami.BuilderReachabilityEvidenceV2{}, workerami.ErrOwnershipMismatch
 		}
 		evidence = *existing
+	}
+	if evidence.VPCEndpointClientToken == "" && evidence.VPCEndpointID == "" {
+		attemptID, err := uuid.NewRandom()
+		if err != nil {
+			return workerami.BuilderReachabilityEvidenceV2{}, workerami.ErrProviderOperation
+		}
+		evidence.VPCEndpointClientToken = "dtx-worker-ami-s3-" + attemptID.String()
+		if recorder(evidence) != nil {
+			return workerami.BuilderReachabilityEvidenceV2{}, workerami.ErrCleanupFailed
+		}
 	}
 
 	endpoint, found, err := adapter.findS3Endpoint(ctx, request, evidence.VPCEndpointID)
@@ -38,8 +51,11 @@ func (adapter *Adapter) PrepareBuilderReachability(ctx context.Context, request 
 		return workerami.BuilderReachabilityEvidenceV2{}, err
 	}
 	if !found {
+		if !endpointTokenPattern.MatchString(evidence.VPCEndpointClientToken) {
+			return workerami.BuilderReachabilityEvidenceV2{}, workerami.ErrReadBackMismatch
+		}
 		output, createErr := adapter.ec2.CreateVpcEndpoint(ctx, &ec2.CreateVpcEndpointInput{
-			ClientToken: aws.String("dtx-worker-ami-s3-" + strings.TrimPrefix(request.BuildDigest, "sha256:")[:32]),
+			ClientToken: aws.String(evidence.VPCEndpointClientToken),
 			VpcId:       aws.String(request.VPCID), VpcEndpointType: ec2types.VpcEndpointTypeGateway,
 			ServiceName: aws.String("com.amazonaws." + request.Region + ".s3"), RouteTableIds: []string{request.RouteTableID},
 			PolicyDocument:    aws.String(s3EndpointPolicy(request.Region, request.ArtifactBucket, request.ArtifactKey)),
@@ -134,8 +150,17 @@ func (adapter *Adapter) CleanupBuilderReachability(ctx context.Context, evidence
 		if !validS3Endpoint(endpoint, request) {
 			return workerami.ErrOwnershipMismatch
 		}
+		recoveredEndpointID := stringValue(endpoint.VpcEndpointId)
+		if evidence.VPCEndpointID == "" {
+			evidence.VPCEndpointID = recoveredEndpointID
+			if recorder(evidence) != nil {
+				return workerami.ErrCleanupFailed
+			}
+		} else if evidence.VPCEndpointID != recoveredEndpointID {
+			return workerami.ErrOwnershipMismatch
+		}
 		if state := normalizedS3EndpointState(endpoint.State); state != "deleting" && state != "deleted" {
-			output, deleteErr := adapter.ec2.DeleteVpcEndpoints(ctx, &ec2.DeleteVpcEndpointsInput{VpcEndpointIds: []string{evidence.VPCEndpointID}})
+			output, deleteErr := adapter.ec2.DeleteVpcEndpoints(ctx, &ec2.DeleteVpcEndpointsInput{VpcEndpointIds: []string{recoveredEndpointID}})
 			if deleteErr != nil {
 				current, stillFound, observeErr := adapter.findS3Endpoint(ctx, request, evidence.VPCEndpointID)
 				currentState := normalizedS3EndpointState(current.State)

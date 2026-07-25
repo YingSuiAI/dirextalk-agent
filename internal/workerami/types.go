@@ -126,24 +126,25 @@ type BuilderReachabilityV2 struct {
 	Tags            map[string]string
 }
 
-// BuilderReachabilityEvidenceV2 is written after each provider ID is
-// recovered and before a builder is launched. SecurityGroupRuleID may be empty
-// only while recovering an interrupted endpoint-first preparation; a complete
-// evidence record is required before launch.
+// BuilderReachabilityEvidenceV2 is written before each cloud mutation and
+// after each provider ID is recovered. A fresh attempt persists its client
+// token before CreateVpcEndpoint; the endpoint and rule IDs are then added
+// monotonically. A complete evidence record is required before launch.
 type BuilderReachabilityEvidenceV2 struct {
-	SchemaVersion       string `json:"schema_version"`
-	AgentInstanceID     string `json:"agent_instance_id"`
-	AccountID           string `json:"account_id"`
-	Region              string `json:"region"`
-	BuildDigest         string `json:"build_digest"`
-	VPCID               string `json:"vpc_id"`
-	RouteTableID        string `json:"route_table_id"`
-	SecurityGroupID     string `json:"security_group_id"`
-	S3PrefixListID      string `json:"s3_prefix_list_id"`
-	ArtifactBucket      string `json:"artifact_bucket"`
-	ArtifactKey         string `json:"artifact_key"`
-	VPCEndpointID       string `json:"vpc_endpoint_id"`
-	SecurityGroupRuleID string `json:"security_group_rule_id,omitempty"`
+	SchemaVersion          string `json:"schema_version"`
+	AgentInstanceID        string `json:"agent_instance_id"`
+	AccountID              string `json:"account_id"`
+	Region                 string `json:"region"`
+	BuildDigest            string `json:"build_digest"`
+	VPCID                  string `json:"vpc_id"`
+	RouteTableID           string `json:"route_table_id"`
+	SecurityGroupID        string `json:"security_group_id"`
+	S3PrefixListID         string `json:"s3_prefix_list_id"`
+	ArtifactBucket         string `json:"artifact_bucket"`
+	ArtifactKey            string `json:"artifact_key"`
+	VPCEndpointClientToken string `json:"vpc_endpoint_client_token,omitempty"`
+	VPCEndpointID          string `json:"vpc_endpoint_id,omitempty"`
+	SecurityGroupRuleID    string `json:"security_group_rule_id,omitempty"`
 }
 
 // ArtifactObjectV1 identifies one immutable, versioned, SSE-KMS rootfs object.

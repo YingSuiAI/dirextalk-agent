@@ -41,6 +41,7 @@ var (
 	prefixListPattern    = regexp.MustCompile(`^pl-[0-9a-f]{8,17}$`)
 	endpointPattern      = regexp.MustCompile(`^vpce-[0-9a-f]{8,17}$`)
 	securityRulePattern  = regexp.MustCompile(`^sgr-[0-9a-f]{8,17}$`)
+	endpointTokenPattern = regexp.MustCompile(`^dtx-worker-ami-s3-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	stackNamePattern     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]{0,127}$`)
 	stackIDPattern       = regexp.MustCompile(`^arn:(aws|aws-cn|aws-us-gov):cloudformation:([^:]+):([0-9]{12}):stack/([A-Za-z][A-Za-z0-9-]{0,127})/[0-9a-fA-F-]{36}$`)
 	bucketPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
@@ -174,8 +175,13 @@ func (evidence BuilderReachabilityEvidenceV2) normalized(requireComplete bool) (
 	if evidence.SchemaVersion != BuilderReachabilitySchemaV2 || !validCanonicalUUID(evidence.AgentInstanceID) || !accountPattern.MatchString(evidence.AccountID) ||
 		!regionPattern.MatchString(evidence.Region) || !digestPattern.MatchString(evidence.BuildDigest) || !vpcPattern.MatchString(evidence.VPCID) ||
 		!routeTablePattern.MatchString(evidence.RouteTableID) || !securityGroupPattern.MatchString(evidence.SecurityGroupID) ||
-		!prefixListPattern.MatchString(evidence.S3PrefixListID) || !validBucket(evidence.ArtifactBucket) || !validArtifactKey(evidence.ArtifactKey) || !endpointPattern.MatchString(evidence.VPCEndpointID) ||
-		(requireComplete && !securityRulePattern.MatchString(evidence.SecurityGroupRuleID)) || (!requireComplete && evidence.SecurityGroupRuleID != "" && !securityRulePattern.MatchString(evidence.SecurityGroupRuleID)) {
+		!prefixListPattern.MatchString(evidence.S3PrefixListID) || !validBucket(evidence.ArtifactBucket) || !validArtifactKey(evidence.ArtifactKey) ||
+		(evidence.VPCEndpointClientToken != "" && !endpointTokenPattern.MatchString(evidence.VPCEndpointClientToken)) ||
+		(evidence.VPCEndpointID != "" && !endpointPattern.MatchString(evidence.VPCEndpointID)) ||
+		(evidence.SecurityGroupRuleID != "" && !securityRulePattern.MatchString(evidence.SecurityGroupRuleID)) ||
+		(evidence.VPCEndpointID == "" && evidence.VPCEndpointClientToken == "") ||
+		(evidence.VPCEndpointID == "" && evidence.SecurityGroupRuleID != "") ||
+		(requireComplete && (!endpointPattern.MatchString(evidence.VPCEndpointID) || !securityRulePattern.MatchString(evidence.SecurityGroupRuleID))) {
 		return BuilderReachabilityEvidenceV2{}, ErrInvalidInput
 	}
 	return evidence, nil

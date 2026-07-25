@@ -30,7 +30,7 @@ func TestReachabilityRecoversLostResponsesPersistsIDsAndCleansInOrder(t *testing
 		calls = append(calls, "create-endpoint")
 		if aws.ToString(input.VpcId) != request.VPCID || len(input.RouteTableIds) != 1 || input.RouteTableIds[0] != request.RouteTableID ||
 			aws.ToString(input.ServiceName) != "com.amazonaws."+request.Region+".s3" || input.VpcEndpointType != ec2types.VpcEndpointTypeGateway ||
-			strings.Contains(aws.ToString(input.PolicyDocument), "s3:*") {
+			!endpointTokenPattern.MatchString(aws.ToString(input.ClientToken)) || strings.Contains(aws.ToString(input.PolicyDocument), "s3:*") {
 			t.Fatalf("unsafe endpoint input: %#v", input)
 		}
 		endpointPresent = true
@@ -80,14 +80,29 @@ func TestReachabilityRecoversLostResponsesPersistsIDsAndCleansInOrder(t *testing
 	adapter := newTestAdapter(t, client, &fakeS3{}, nil)
 	var recorded []workerami.BuilderReachabilityEvidenceV2
 	evidence, err := adapter.PrepareBuilderReachability(context.Background(), request, nil, func(current workerami.BuilderReachabilityEvidenceV2) error {
+		switch {
+		case current.VPCEndpointID == "":
+			calls = append(calls, "record-token")
+		case current.SecurityGroupRuleID == "":
+			calls = append(calls, "record-endpoint")
+		default:
+			calls = append(calls, "record-rule")
+		}
 		recorded = append(recorded, current)
 		return nil
 	})
 	if err != nil || evidence.Validate() != nil {
 		t.Fatalf("PrepareBuilderReachability() = %#v, %v", evidence, err)
 	}
-	if len(recorded) < 2 || recorded[0].VPCEndpointID == "" || recorded[0].SecurityGroupRuleID != "" || recorded[len(recorded)-1].SecurityGroupRuleID == "" {
-		t.Fatalf("provider IDs were not persisted endpoint-first: %#v", recorded)
+	if len(recorded) < 3 || !endpointTokenPattern.MatchString(recorded[0].VPCEndpointClientToken) ||
+		recorded[0].VPCEndpointID != "" || recorded[0].SecurityGroupRuleID != "" ||
+		recorded[1].VPCEndpointClientToken != recorded[0].VPCEndpointClientToken || recorded[1].VPCEndpointID == "" ||
+		recorded[1].SecurityGroupRuleID != "" || recorded[len(recorded)-1].SecurityGroupRuleID == "" {
+		t.Fatalf("attempt token and provider IDs were not persisted monotonically: %#v", recorded)
+	}
+	if callOrder(calls, "record-token") >= callOrder(calls, "create-endpoint") ||
+		callOrder(calls, "record-endpoint") >= callOrder(calls, "authorize-rule") {
+		t.Fatalf("cloud mutation preceded durable recovery evidence: %#v", calls)
 	}
 	if err := adapter.CleanupBuilderReachability(context.Background(), evidence, func(workerami.BuilderReachabilityEvidenceV2) error { return nil }); err != nil {
 		t.Fatalf("CleanupBuilderReachability() = %v", err)
@@ -96,6 +111,110 @@ func TestReachabilityRecoversLostResponsesPersistsIDsAndCleansInOrder(t *testing
 		t.Fatalf("reachability survived cleanup: endpoint=%v rule=%v", endpointPresent, rulePresent)
 	}
 	if callOrder(calls, "revoke-rule") >= callOrder(calls, "delete-endpoint") || callOrder(calls, "delete-endpoint") >= lastCallOrder(calls, "observe-route") {
+		t.Fatalf("cleanup/read-back order = %#v", calls)
+	}
+}
+
+func TestReachabilityResumesPersistedAttemptTokenAndRecoversLostCreateResponse(t *testing.T) {
+	request := validReachabilityRequest()
+	tokenOnly := newReachabilityAttemptEvidence(t, request)
+	endpoint := validEndpoint(request)
+	endpointPresent := false
+	client := &fakeEC2{}
+	client.describeVpcEndpointsFn = func(*ec2.DescribeVpcEndpointsInput) (*ec2.DescribeVpcEndpointsOutput, error) {
+		if endpointPresent {
+			return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []ec2types.VpcEndpoint{endpoint}}, nil
+		}
+		return &ec2.DescribeVpcEndpointsOutput{}, nil
+	}
+	client.createVpcEndpointFn = func(input *ec2.CreateVpcEndpointInput) (*ec2.CreateVpcEndpointOutput, error) {
+		if aws.ToString(input.ClientToken) != tokenOnly.VPCEndpointClientToken {
+			t.Fatalf("CreateVpcEndpoint token = %q", aws.ToString(input.ClientToken))
+		}
+		endpointPresent = true
+		return nil, errors.New("response lost")
+	}
+	client.describeSecurityGroupRulesFn = func(*ec2.DescribeSecurityGroupRulesInput) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+		return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+	}
+	client.describeRouteTablesFn = func(*ec2.DescribeRouteTablesInput) (*ec2.DescribeRouteTablesOutput, error) {
+		return &ec2.DescribeRouteTablesOutput{RouteTables: []ec2types.RouteTable{{
+			RouteTableId: aws.String(request.RouteTableID), VpcId: aws.String(request.VPCID),
+			Routes: []ec2types.Route{
+				{DestinationCidrBlock: aws.String("10.255.0.0/24"), GatewayId: aws.String("local"), State: ec2types.RouteStateActive},
+				{DestinationPrefixListId: aws.String(request.S3PrefixListID), GatewayId: endpoint.VpcEndpointId, State: ec2types.RouteStateActive},
+			},
+		}}}, nil
+	}
+	client.authorizeSecurityGroupEgressFn = func(*ec2.AuthorizeSecurityGroupEgressInput) (*ec2.AuthorizeSecurityGroupEgressOutput, error) {
+		return &ec2.AuthorizeSecurityGroupEgressOutput{SecurityGroupRules: []ec2types.SecurityGroupRule{validRule(request)}}, nil
+	}
+	adapter := newTestAdapter(t, client, &fakeS3{}, nil)
+	var persisted workerami.BuilderReachabilityEvidenceV2
+	evidence, err := adapter.PrepareBuilderReachability(context.Background(), request, &tokenOnly, func(current workerami.BuilderReachabilityEvidenceV2) error {
+		persisted = current
+		return nil
+	})
+	if err != nil || evidence.Validate() != nil || persisted != evidence || evidence.VPCEndpointClientToken != tokenOnly.VPCEndpointClientToken {
+		t.Fatalf("resumed evidence = %#v persisted=%#v err=%v", evidence, persisted, err)
+	}
+}
+
+func TestCleanupReachabilityRecoversEndpointFromTokenOnlyEvidence(t *testing.T) {
+	request := validReachabilityRequest()
+	tokenOnly := newReachabilityAttemptEvidence(t, request)
+	endpoint := validEndpoint(request)
+	endpointPresent := true
+	var calls []string
+	client := &fakeEC2{}
+	client.describeSecurityGroupRulesFn = func(input *ec2.DescribeSecurityGroupRulesInput) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+		calls = append(calls, "observe-rule")
+		if len(input.SecurityGroupRuleIds) != 0 {
+			t.Fatalf("unexpected security group rule IDs: %#v", input.SecurityGroupRuleIds)
+		}
+		return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+	}
+	client.describeVpcEndpointsFn = func(input *ec2.DescribeVpcEndpointsInput) (*ec2.DescribeVpcEndpointsOutput, error) {
+		calls = append(calls, "observe-endpoint")
+		if len(input.VpcEndpointIds) > 0 && input.VpcEndpointIds[0] != aws.ToString(endpoint.VpcEndpointId) {
+			t.Fatalf("unexpected endpoint IDs: %#v", input.VpcEndpointIds)
+		}
+		if !endpointPresent {
+			return &ec2.DescribeVpcEndpointsOutput{}, nil
+		}
+		return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []ec2types.VpcEndpoint{endpoint}}, nil
+	}
+	client.deleteVpcEndpointsFn = func(input *ec2.DeleteVpcEndpointsInput) (*ec2.DeleteVpcEndpointsOutput, error) {
+		calls = append(calls, "delete-endpoint")
+		if len(input.VpcEndpointIds) != 1 || input.VpcEndpointIds[0] != aws.ToString(endpoint.VpcEndpointId) {
+			t.Fatalf("delete input = %#v", input)
+		}
+		endpointPresent = false
+		return &ec2.DeleteVpcEndpointsOutput{}, nil
+	}
+	client.describeRouteTablesFn = func(*ec2.DescribeRouteTablesInput) (*ec2.DescribeRouteTablesOutput, error) {
+		calls = append(calls, "observe-route")
+		return &ec2.DescribeRouteTablesOutput{RouteTables: []ec2types.RouteTable{{
+			RouteTableId: aws.String(request.RouteTableID),
+			VpcId:        aws.String(request.VPCID),
+			Routes:       []ec2types.Route{{DestinationCidrBlock: aws.String("10.255.0.0/24"), GatewayId: aws.String("local"), State: ec2types.RouteStateActive}},
+		}}}, nil
+	}
+	adapter := newTestAdapter(t, client, &fakeS3{}, nil)
+	var recorded []workerami.BuilderReachabilityEvidenceV2
+	if err := adapter.CleanupBuilderReachability(context.Background(), tokenOnly, func(current workerami.BuilderReachabilityEvidenceV2) error {
+		calls = append(calls, "record-endpoint")
+		recorded = append(recorded, current)
+		return nil
+	}); err != nil {
+		t.Fatalf("CleanupBuilderReachability() = %v", err)
+	}
+	if endpointPresent || len(recorded) != 1 || recorded[0].VPCEndpointID != aws.ToString(endpoint.VpcEndpointId) ||
+		recorded[0].VPCEndpointClientToken != tokenOnly.VPCEndpointClientToken {
+		t.Fatalf("cleanup did not persist recovered endpoint: present=%v recorded=%#v", endpointPresent, recorded)
+	}
+	if callOrder(calls, "record-endpoint") >= callOrder(calls, "delete-endpoint") ||
+		callOrder(calls, "delete-endpoint") >= lastCallOrder(calls, "observe-route") {
 		t.Fatalf("cleanup/read-back order = %#v", calls)
 	}
 }
@@ -184,6 +303,16 @@ func validEndpoint(request workerami.BuilderReachabilityV2) ec2types.VpcEndpoint
 func validRule(request workerami.BuilderReachabilityV2) ec2types.SecurityGroupRule {
 	return ec2types.SecurityGroupRule{SecurityGroupRuleId: aws.String("sgr-0123456789abcdef0"), GroupId: aws.String(request.SecurityGroupID), IsEgress: aws.Bool(true),
 		IpProtocol: aws.String("tcp"), FromPort: aws.Int32(443), ToPort: aws.Int32(443), PrefixListId: aws.String(request.S3PrefixListID), Tags: toTags(request.Tags)}
+}
+
+func newReachabilityAttemptEvidence(t *testing.T, request workerami.BuilderReachabilityV2) workerami.BuilderReachabilityEvidenceV2 {
+	t.Helper()
+	evidence := (&Adapter{region: request.Region, account: request.AccountID}).baseReachabilityEvidence(request)
+	evidence.VPCEndpointClientToken = "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555"
+	if evidence.ValidatePartial() != nil {
+		t.Fatalf("invalid token-only evidence: %#v", evidence)
+	}
+	return evidence
 }
 
 func callOrder(calls []string, target string) int {

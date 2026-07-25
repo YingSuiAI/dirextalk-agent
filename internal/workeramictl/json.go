@@ -579,13 +579,18 @@ func persistBuilderReachabilityEvidence(path string, expected workerami.BuilderR
 		}
 	}
 	actual, readErr := readBuilderReachabilityEvidence(path)
-	if readErr != nil || !sameBuilderReachabilityScope(actual, expected) || actual.VPCEndpointID != expected.VPCEndpointID {
+	if readErr != nil || !sameBuilderReachabilityScope(actual, expected) {
 		return errInvalidInput
 	}
-	if actual.SecurityGroupRuleID == expected.SecurityGroupRuleID || (actual.SecurityGroupRuleID != "" && expected.SecurityGroupRuleID == "") {
+	actualProgress, expectedProgress := builderReachabilityProgress(actual), builderReachabilityProgress(expected)
+	if expectedProgress <= actualProgress &&
+		(expected.VPCEndpointID == "" || expected.VPCEndpointID == actual.VPCEndpointID) &&
+		(expected.SecurityGroupRuleID == "" || expected.SecurityGroupRuleID == actual.SecurityGroupRuleID) {
 		return nil
 	}
-	if actual.SecurityGroupRuleID != "" || expected.SecurityGroupRuleID == "" {
+	if expectedProgress != actualProgress+1 ||
+		(actual.VPCEndpointID != "" && actual.VPCEndpointID != expected.VPCEndpointID) ||
+		(actual.SecurityGroupRuleID != "" && actual.SecurityGroupRuleID != expected.SecurityGroupRuleID) {
 		return errInvalidInput
 	}
 	temporaryFile, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".new-*")
@@ -629,7 +634,18 @@ func persistBuilderReachabilityEvidence(path string, expected workerami.BuilderR
 func sameBuilderReachabilityScope(left, right workerami.BuilderReachabilityEvidenceV2) bool {
 	return left.SchemaVersion == right.SchemaVersion && left.AgentInstanceID == right.AgentInstanceID && left.AccountID == right.AccountID &&
 		left.Region == right.Region && left.BuildDigest == right.BuildDigest && left.VPCID == right.VPCID && left.RouteTableID == right.RouteTableID &&
-		left.SecurityGroupID == right.SecurityGroupID && left.S3PrefixListID == right.S3PrefixListID && left.ArtifactBucket == right.ArtifactBucket && left.ArtifactKey == right.ArtifactKey
+		left.SecurityGroupID == right.SecurityGroupID && left.S3PrefixListID == right.S3PrefixListID && left.ArtifactBucket == right.ArtifactBucket &&
+		left.ArtifactKey == right.ArtifactKey && left.VPCEndpointClientToken == right.VPCEndpointClientToken
+}
+
+func builderReachabilityProgress(evidence workerami.BuilderReachabilityEvidenceV2) int {
+	if evidence.VPCEndpointID == "" {
+		return 0
+	}
+	if evidence.SecurityGroupRuleID == "" {
+		return 1
+	}
+	return 2
 }
 
 func builderReachabilityEvidenceMatchesPrepared(evidence workerami.BuilderReachabilityEvidenceV2, prepared preparedBuild) bool {
