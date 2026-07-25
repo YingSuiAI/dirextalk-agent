@@ -59,6 +59,19 @@ func TestBuildPublishesFixedAMIAndRecoversIdempotently(t *testing.T) {
 	}
 }
 
+func TestBuildWaitsForSnapshotCompletionAfterAMIBecomesAvailable(t *testing.T) {
+	request := validBuildRequest(t)
+	provider := newFakeProvider(request)
+	provider.snapshotPendingReads = 3
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if err != nil || manifest.RootSnapshotID == "" {
+		t.Fatalf("Build() = %#v, %v", manifest, err)
+	}
+	if provider.snapshotPendingReads != 0 || callCount(provider.calls, "observe-snapshot") != 4 {
+		t.Fatalf("snapshot completion was not reconciled: pending=%d calls=%#v", provider.snapshotPendingReads, provider.calls)
+	}
+}
+
 func TestBuildRecoversExistingImageFromTerminatedEC2Tombstone(t *testing.T) {
 	request := validBuildRequest(t)
 	var cleanupEvidence BuilderCleanupEvidenceV1
@@ -673,6 +686,16 @@ func callIndex(calls []string, target string) int {
 	return -1
 }
 
+func callCount(calls []string, target string) int {
+	count := 0
+	for _, call := range calls {
+		if call == target {
+			count++
+		}
+	}
+	return count
+}
+
 type fakeProvider struct {
 	request BuildRequestV1
 	calls   []string
@@ -708,6 +731,7 @@ type fakeProvider struct {
 	deleteArtifactCalls       int
 	deregisterCalls           int
 	deleteSnapshotCalls       int
+	snapshotPendingReads      int
 	builderVolumeFound        bool
 	builderNetworkFound       bool
 	supportReachability       bool
@@ -959,7 +983,12 @@ func (provider *fakeProvider) ObserveSnapshot(_ context.Context, snapshotID stri
 	if !provider.snapshotFound || snapshotID != provider.snapshot.SnapshotID {
 		return SnapshotObservationV1{}, false, nil
 	}
-	return provider.snapshot, true, nil
+	observation := provider.snapshot
+	if provider.snapshotPendingReads > 0 {
+		provider.snapshotPendingReads--
+		observation.State = SnapshotPending
+	}
+	return observation, true, nil
 }
 
 func (provider *fakeProvider) DeregisterImage(_ context.Context, imageID string) error {

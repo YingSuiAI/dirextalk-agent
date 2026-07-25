@@ -544,7 +544,3 @@ func manifestTags(manifest ImageManifestV1) map[string]string {
 		TagWorkerRootFSDigest: manifest.WorkerRootFSDigest, TagWorkerBinaryDigest: manifest.WorkerBinaryDigest,
 	}
 }
-
-func validateSnapshotForBuild(observation SnapshotObservationV1, manifest ImageManifestV1) error {
-	return validateSnapshotObservation(observation, manifest, true)
-}

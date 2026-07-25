@@ -414,14 +414,37 @@ func (service *Service) readBackBuild(ctx context.Context, validated validatedBu
 	if err != nil {
 		return ImageManifestV1{}, err
 	}
-	snapshot, found, providerErr := service.provider.ObserveSnapshot(ctx, manifest.RootSnapshotID)
-	if providerErr != nil {
-		return ImageManifestV1{}, operationError(ctx)
-	}
-	if !found || validateSnapshotForBuild(snapshot, manifest) != nil {
-		return ImageManifestV1{}, ErrReadBackMismatch
+	if err := service.waitSnapshotCompleted(ctx, manifest); err != nil {
+		return ImageManifestV1{}, err
 	}
 	return manifest, nil
+}
+
+func (service *Service) waitSnapshotCompleted(ctx context.Context, manifest ImageManifestV1) error {
+	for {
+		snapshot, found, providerErr := service.provider.ObserveSnapshot(ctx, manifest.RootSnapshotID)
+		if providerErr != nil {
+			return operationError(ctx)
+		}
+		if !found {
+			return ErrReadBackMismatch
+		}
+		if err := validateSnapshotObservation(snapshot, manifest, false); err != nil {
+			return err
+		}
+		switch snapshot.State {
+		case SnapshotCompleted:
+			return nil
+		case SnapshotFailed:
+			return ErrBuildFailed
+		case SnapshotPending:
+		default:
+			return ErrReadBackMismatch
+		}
+		if err := service.pause(ctx); err != nil {
+			return err
+		}
+	}
 }
 
 func (service *Service) waitBuilderStopped(ctx context.Context, validated validatedBuild, observation BuilderObservationV1) (BuilderObservationV1, error) {
