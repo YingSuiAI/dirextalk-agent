@@ -59,8 +59,12 @@ func TestCloudGoalDispatcherDoesNotCompleteStaleOutputAndRecoversWithNextLeaseEp
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dispatcher.RunOnce(context.Background()); !errors.Is(err, ErrCloudGoalOutputAdapterFailed) {
-		t.Fatalf("first output error=%v", err)
+	dispatchErr := dispatcher.RunOnce(context.Background())
+	if !errors.Is(dispatchErr, ErrCloudGoalOutputAdapterFailed) {
+		t.Fatalf("first output error=%v", dispatchErr)
+	}
+	if !strings.Contains(dispatchErr.Error(), queue.work.Task.TaskID) {
+		t.Fatalf("first output error does not identify task %q: %v", queue.work.Task.TaskID, dispatchErr)
 	}
 	if len(tasks.completed) != 0 || tasks.steps[0].LeaseEpoch != 1 || tasks.steps[0].ExecutionStatus != task.ExecutionRunning {
 		t.Fatalf("failed output advanced Task: completed=%d step=%#v", len(tasks.completed), tasks.steps[0])

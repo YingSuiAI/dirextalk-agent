@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -180,6 +181,9 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		LeaseDuration: 5 * time.Minute,
 		BatchSize:     64,
 		Admission:     cloudGoalAdmission,
+		ReportError: func(err error) {
+			slog.Warn("cloud Goal dispatcher failed", "error", err)
+		},
 	})
 	if err != nil {
 		return RuntimeComposition{}, errors.New("cloud Goal dispatcher is unavailable")

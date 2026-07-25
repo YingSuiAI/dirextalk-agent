@@ -156,7 +156,7 @@ func (dispatcher *CloudGoalDispatcher) RunOnce(ctx context.Context) error {
 			return dispatcher.dispatchOne(ctx, item)
 		}()
 		if dispatchErr != nil {
-			result = errors.Join(result, dispatchErr)
+			result = errors.Join(result, fmt.Errorf("cloud Goal task %s: %w", item.Task.TaskID, dispatchErr))
 		}
 	}
 	return result

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -223,11 +224,13 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	}
 	claim, err := model.store.BeginRuntimeRequest(ctx, runtimeScope, runtimeapi.RuntimeRequestCommand{Request: chatRequest, LeaseDuration: requestLease})
 	if err != nil {
+		reportCloudGoalModelFailure(request, "request_claim_failed")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	if claim.Completed {
 		raw := json.RawMessage(claim.Response.Result.Message.Content)
 		if validate(raw, nil, true) != nil {
+			reportCloudGoalModelFailure(request, "completed_capture_invalid")
 			return nil, ErrCloudGoalModelUnavailable
 		}
 		return append(json.RawMessage(nil), raw...), nil
@@ -256,14 +259,17 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 		RequestID: modelRequestID, LeaseEpoch: claim.LeaseEpoch, MemoryDisabled: true,
 	})
 	if err != nil || !bound {
+		reportCloudGoalModelFailure(request, "memory_mode_binding_failed")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	config, err := model.store.LoadRuntimeConfig(executionCtx, request.Binding.OwnerID)
 	if err != nil || runtimeapi.ValidateRuntimeConfig(config) != nil {
+		reportCloudGoalModelFailure(request, "runtime_config_invalid")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	client, err := model.models.CreateModel(executionCtx, config.ModelProfile, model.secrets)
 	if err != nil || client == nil {
+		reportCloudGoalModelFailure(request, "model_client_unavailable")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 
@@ -273,6 +279,7 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	if withOfficialFetch {
 		tools, toolErr := model.tools.ToolsWithLease(executionCtx, runtimeScope, claim.LeaseEpoch, toolRequest)
 		if toolErr != nil || len(tools) != 1 || tools[0].Definition.Name != publicweb.ToolName || tools[0].Run == nil {
+			reportCloudGoalModelFailure(request, "official_fetch_tool_unavailable")
 			return nil, ErrCloudGoalModelUnavailable
 		}
 		available[publicweb.ToolName] = tools[0]
@@ -298,10 +305,16 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	renewErr := leaseGuard.Stop()
 	leaseGuard = nil
 	if renewErr != nil || executionErr != nil || err != nil || result.Message.Role != modelapi.RoleAssistant {
+		reportCloudGoalModelFailure(request, "model_execution_failed")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	raw, ok := capture.value()
-	if !ok || validate(raw, fetched, false) != nil {
+	if !ok {
+		reportCloudGoalModelFailure(request, "capture_missing")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	if validate(raw, fetched, false) != nil {
+		reportCloudGoalModelFailure(request, "capture_invalid")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	canonical := modelapi.Message{Role: modelapi.RoleAssistant, Content: string(raw)}
@@ -309,10 +322,21 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 		RequestID: modelRequestID, LeaseEpoch: claim.LeaseEpoch, Result: runtimeapi.ChatResult{Message: canonical},
 	})
 	if err != nil || snapshot.Result.Message.Content != canonical.Content {
+		reportCloudGoalModelFailure(request, "capture_persistence_failed")
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	completed = true
 	return append(json.RawMessage(nil), raw...), nil
+}
+
+func reportCloudGoalModelFailure(request CloudGoalStageRequest, reason string) {
+	slog.Warn(
+		"cloud Goal planning model failed",
+		"task_id", request.Attempt.TaskID,
+		"step_id", request.Step.StepID,
+		"stage", request.Step.Name,
+		"reason", reason,
+	)
 }
 
 type planningCapture struct {
