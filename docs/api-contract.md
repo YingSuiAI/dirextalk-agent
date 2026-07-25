@@ -1,136 +1,89 @@
-# API Contract
+# Core v1 API contract
 
-The canonical contract is `api/proto/dirextalk/agent/v1/agent.proto`.
+The canonical public contract is the versioned Protobuf under
+[`api/proto/dirextalk/agent/v1`](../api/proto/dirextalk/agent/v1). Generated Go
+files are derived artifacts; the `.proto` files are the review surface.
 
-- Every mutation accepts a UUID idempotency key.
-- Revision-protected mutations reject stale expected revisions.
-- `WatchEvents` resumes strictly after the supplied durable sequence.
-- Ordinary service authentication cannot authorize cloud spending or destructive transitions.
-- Secret material is accepted only by the encrypted bootstrap service and never appears in events or summaries.
-- Enum zero values are invalid/unknown and must fail closed when used in mutations.
+## Services
 
-## P0 authentication
+The Core server may register these services, subject to configuration gates:
 
-Calls use `authorization: DTX-Service-Key <key_id>.<secret>`. `key_id` is 1–128 ASCII letters, digits, `_`, or `-`; `secret` is exactly 32 random bytes encoded as unpadded base64url. PostgreSQL stores only an HMAC-SHA256 digest made with the mounted server pepper. Authentication performs a constant-time digest comparison, checks active/expiry state and method scope, and removes the authorization metadata before invoking unary or streaming handlers.
+- `AgentService` for capabilities and instance information;
+- `ModelProfileService` and `ConversationService`;
+- `TaskService` and `ScheduleService`;
+- `ConfirmationService`;
+- `MCPService` and `SkillService`;
+- `CoreKnowledgeService`;
+- `CoreCloudControlService`.
 
-Every idempotency record is namespaced by operation, authenticated client ID, authenticated credential ID, and UUID key. Reusing a key with an equivalent canonical request returns the original versioned response snapshot; changing the request in the same caller namespace returns `ALREADY_EXISTS`. A different pairwise caller may independently reuse the UUID.
+Health and reflection are optional server features. No REST API, admin UI, or
+multi-user authorization surface is part of Core v1.
 
-`AdminService.CreateServiceKey` generates a fresh random secret. The response never has a plaintext secret field: it contains a `ServiceKeyDelivery` encrypted to the request's X25519 public key with HKDF-SHA256 and AES-256-GCM. `associated_data` binds the operation, caller credential/client, idempotency key, returned credential/key, requested client/scopes/expiry, and recipient key. The encrypted delivery is the only response material persisted for exact replay. Revocation uses `expected_revision`; overlapping keys remain valid independently until their own expiry or revocation.
+## Transport and authentication
 
-A Service Key, including one with `admin`, can never create or revoke an approval-device trust anchor. `AdminService.RegisterApprovalDevice` and `RevokeApprovalDevice` are permanently disabled generic compatibility placeholders: they are absent from the Service Key scope map and fail closed if invoked in-process. They must not implement the separate frozen rotation contract below. An operator installs only an owner's first device through the local `bootstrap-approval-device` command. That command reads either a raw Ed25519 public key or strict RFC 8410 Ed25519 SubjectPublicKeyInfo from a protected mounted file, requires the Flutter-compatible key ID `cloud-device-` plus the first 24 lowercase SHA-256 hex characters of the raw key, binds the immutable Agent instance, owner, validity, and UUID idempotency key, returns an exact replay for the same input, and atomically rejects any alias or second device for that owner.
+The server uses TLS 1.3. A deployment-generated token is read from the
+protected `service_token_file`; the token value is never stored in PostgreSQL
+or returned by an API. Calls carry:
 
-### Approval-device rotation v1 (frozen, not yet remotely enabled)
+```text
+authorization: DTX-Agent-Token <unpadded-base64url-32-byte-token>
+```
 
-Approval-device rotation is a trust-anchor replacement, not generic remote administration. The initial device remains local-bootstrap only. Every `(agent_instance_id, owner_id)` has exactly one active device; v1 has no remote operation that can revoke that last device. Its only remote revocation is the atomic replacement of the old active device by a proved new device. Lost-device recovery needs a separately defined local trust-anchor procedure and cannot be recovered by a Service Key.
+The server compares the token in constant time and strips authorization
+metadata before invoking a handler. Rotation is an atomic file replacement
+followed by restart. There is no remote token-management API, caller scope,
+role, device, or multi-tenant model.
 
-The future public flow consists of `PrepareApprovalDeviceRotation` and `SubmitApprovalDeviceRotation`; these names describe the frozen contract, not enabled RPCs. A caller may carry the request only with the future `cloud.approve` capability. It is never authorization: the Agent derives the owner from its authenticated façade, and accepts the transition only after both device signatures verify. It rejects a caller-provided owner that differs from that derived owner.
+## Mutation invariants
 
-`Prepare` takes a UUID idempotency key, the current `old_key_id` and `old_key_revision`, the candidate's raw 32-byte Ed25519 public key, and its requested validity interval. The Agent recomputes the candidate key ID as `cloud-device-` plus the first 24 lowercase hex characters of SHA-256 over the raw key; aliases, non-Ed25519 keys, a candidate that is not currently valid (`new_not_before <= database time < new_expires_at`), stale revisions, and any owner without exactly one current active device fail closed. The Agent creates a one-time, database-clock, five-minute `rotation_id`; caller clocks do not set `issued_at` or `expires_at`.
+- Mutations use UUID idempotency keys where defined by the Protobuf.
+- Revision-bearing mutations require the caller's expected revision; stale
+  writes fail without changing state.
+- Durable Task events and results are fenced by Task revision, attempt, and
+  lease epoch. `WatchEvents` resumes strictly after its supplied sequence.
+- Stored credentials and other secret values are write-only from ordinary
+  read/list RPCs. Responses expose configuration status or fingerprints, not
+  secret bytes.
+- Unknown enum values, malformed UUIDs, invalid digests, and unsupported
+  combinations fail closed as `INVALID_ARGUMENT` or `FAILED_PRECONDITION`.
 
-The old device signs deterministic RFC 8949 CBOR with these exact fields: `payload_schema` (`dirextalk.agent.approval-device.rotation/v1`), `agent_instance_id`, `owner_id`, `rotation_id`, `old_key_id`, `old_key_revision`, `new_key_id`, `new_public_key` (the raw 32-byte key), `new_not_before`, `new_expires_at`, `issued_at`, and `expires_at`. The candidate device proves possession by signing a distinct deterministic-CBOR document with: `payload_schema` (`dirextalk.agent.approval-device.rotation-proof/v1`), `agent_instance_id`, `owner_id`, `rotation_id`, and `rotation_payload_digest` (the lower-case `sha256:<64-hex>` digest of the exact old-device CBOR). Timestamp normalization, deterministic-map ordering, integer encoding, and signature transport follow the existing Approval-v1 rules; signatures and private keys are never fields of either signed document.
+## Core workflows
 
-`Submit` takes its own UUID idempotency key and supplies the immutable `rotation_id`, the old-device signature, and the candidate-device proof. In one durable transaction the Agent reloads and locks the old device, rechecks Agent/owner/key/revision/status/validity against database time, reconstructs both canonical documents, verifies both Ed25519 signatures, consumes the unexpired rotation exactly once, marks the old key revoked, inserts the candidate as revision `1` and active, writes the ordinary device audit facts, and stores one exact response snapshot for idempotent replay. A concurrent or changed replay, a consumed/expired rotation, a changed candidate key, an old-key signature after revocation, or any state that would create zero or multiple active devices fails closed. A Plan approval and a rotation must serialize on the signer device so a revoked key cannot approve a Plan after its replacement commits.
+`TaskService` creates, reads, lists, cancels, retries, deletes, and watches
+durable Tasks. Tasks can reference a model profile, conversation, attachments,
+Knowledge sources, and pinned MCP/Skill selections. `ScheduleService` creates
+one independent Task per one-time or Cron occurrence; it is not a graph or
+priority scheduler.
 
-The future implementation requires deterministic Go/Dart vectors for both documents, PostgreSQL concurrency/replay coverage, and an explicit no-store owner façade. The existing Admin methods remain `PERMISSION_DENIED` even after that separate flow is implemented. `SecretBootstrapService.Complete` remains independently `UNIMPLEMENTED` until its typed destination contract binds session revision, owner, purpose, target, destination, expiry, and signer identity; device rotation never authorizes secret consumption or delivery.
+`ConversationService` provides durable `Chat` and streaming `StreamChat` over
+server-owned model profiles. Model calls, extension calls, Knowledge context,
+and attachment reads use the Task execution snapshot when background work is
+required.
 
-Approval-v1 is Go-owned deterministic CBOR. `CreateApprovalChallenge` returns the exact unsigned bytes a device signs; the server later reconstructs those bytes from durable Plan, Quote, challenge, and device facts before accepting the signature. The language-neutral encoding, domain separation, field projection, normalization, timestamp rules, and fixed signature vectors live in `internal/cloud/approval/testdata/v1/README.md`; changing them requires a new contract version.
+`ConfirmationService` is the common explicit-confirmation boundary. MCP/Skill
+installation, upgrade, and removal, plus AWS operations that create, update,
+expose, spend, or destroy resources, must bind a confirmation to the exact
+target revision and content/parameter digests before side effects.
 
-`SecretBootstrapService.Complete` is also reserved and always returns `UNIMPLEMENTED` after caller authentication. It performs no session lookup, consumption, secret delivery, or persistence until a device signature covers session revision, owner, purpose, target, destination, expiry, and signer identity. Typed AWS bootstrap consumption remains inside its separately approved application command.
+`MCPService` and `SkillService` use pinned source versions and artifact/content
+digests. Local stdio and Skill execution can occur only through the separate
+Linux extension runner and its isolated namespaces. Remote MCP uses the exact
+confirmed HTTPS endpoint. Secret resolution requires the exact installation,
+version, reference, declared purpose, and binding digest; an empty or mismatched
+purpose fails closed. Cancellation is reported as complete only after the
+runner proves the delegated cgroup is empty and removed. The Agent never falls
+back to in-process third-party execution.
 
-## P0 task and event facts
+`CoreKnowledgeService` owns mounts, uploads, memory sources, status, indexing,
+and search for this Agent instance. Search and Task context are bound to exact
+source revisions and index bindings.
 
-Task creation and cancellation atomically persist their idempotency response, entity changes, durable event, and identical Outbox payload. A Task may include an internal Step DAG; unknown dependencies, duplicate IDs, self edges, and multi-node cycles are rejected before persistence. Lease acquisition, renewal, checkpoint, completion, expiry reacquisition, and cancellation all fence by worker, attempt, and monotonically increasing `lease_epoch`; stale workers cannot commit results.
+`CoreCloudControlService` exposes typed AWS credentials, `TestCredentialIdentity`
+identity checks, plans, quotes, and confirmed changes. It does not expose arbitrary AWS SDK calls or
+let model/tool arguments bypass confirmation.
 
-Task event `summary_json` schema version 1 contains the complete de-secreted projection: task/owner IDs, execution/outcome/retention, current step, approved plan, revision, timestamps, and actor client/credential IDs. Cancellation adds only a redacted reason. Step summaries are independently versioned. `WatchEvents(after_seq)` emits facts strictly after the durable global sequence and supports reconnect after server/store restart.
+## Contract changes
 
-### Cloud dialogue Task projection v1
-
-Only a server-created Cloud Goal session (`cloud-goal-<request-id>`) produces the additional `cloud.task.changed` and `cloud.step.changed` facts. Their aggregate types are respectively `cloud_task` and `cloud_step`; the existing generic `agent.task.*` and `agent.step.*` facts remain unchanged.
-
-Both Cloud summaries have exactly the following stable fields: `schema_version`, `task_id`, optional `step_id`, `owner_id`, `execution_status`, `outcome_status`, `current_stage`, optional `related_plan_id`, optional fixed `error_code`, `revision`, and `updated_at`. `current_stage` is limited to `research`, `recipe`, `quote`, `waiting_user`, `ready_for_confirmation`, or `finished`. `error_code` is limited to `task_failed`, `task_canceled`, `task_timed_out`, or `task_interrupted`.
-
-The projection never contains a goal prompt, cloud/provider resource identifier, connection ID, URL, credential reference, Worker identifier, checkpoint, result reference, log, or user-controlled error text. A related Plan is written to the existing Task only during the final successful planning Step after the same Agent instance, owner, AWS Connection, and durable `cloud_plans.task_id` binding have been verified. A Cloud Goal Plan cannot be attached to a different Task of the same owner/Connection. The Task mutation and Cloud facts use the same database transaction and Cloud Outbox envelope; idempotent replays return before a second projection event is appended.
-
-## P1 runtime contract
-
-`RuntimeService` implements `GetRuntimeConfig`, `PutRuntimeConfig`, `Chat`, and server-streaming `StreamChat`. Runtime methods require `runtime.read`, `runtime.write`, or `runtime.chat` as appropriate. `GetCapabilities` lists configured model profile IDs. `PutRuntimeConfig` selects one server-owned `profile_id`; provider, model, endpoint, mounted `secret_ref`, context window, and output ceiling are catalog-bound and cannot be recombined by a Service Key. Only bounded temperature, top-p, and configured output-limit overrides are accepted. `GetRuntimeConfig` returns de-secreted profile metadata and never credential bytes. Configuration also stores a project profile subordinate to the immutable base policy, bounded context/memory/step limits, enabled tool names, and knowledge/MCP/Recipe references; raw credential material is rejected before persistence.
-
-`Chat` and `StreamChat` bind the UUID idempotency key to owner, conversation, input, requested memory mode, and expected conversation revision in the authenticated caller namespace. After the request lease is fenced, the coordinator persists the effective memory mode before model or tool execution; disabling memory is sticky across recovery. A stateless completion has revision zero and creates no conversation row. An exact completed retry returns the original versioned response without loading current model configuration or re-running model/tools. A changed payload returns `ALREADY_EXISTS`, and a stale conversation revision returns `ABORTED`. Conversation messages and the completed response snapshot commit atomically.
-
-Every model round is compacted against the server-owned profile's context window minus its output allowance, using a conservative byte budget that includes tool definitions and request overhead. The immutable system policy and newest user message are mandatory, while assistant tool calls and their tool results are retained or removed as complete groups; an oversized mandatory input fails before secret resolution or provider traffic. Public responses contain only validated, durable `related_task_ids`/`related_plan_ids`; `StreamChatResponse` exposes content `delta` and de-secreted `tool` progress without those references, then emits them in final `done` only after the durable transaction commits.
-
-The native `cloud-dispatcher` exposes typed research, status, Recipe read, and plan-draft submission tools. Trusted owner/connection/Recipe/retention fields cannot be selected by model arguments. Each Recipe source carries both an artifact digest and the exact content digest, URL, and retrieval time returned by `official_source_fetch`. Submission fails before any Task step advances unless those provenance fields match a completed durable tool receipt from the same caller/request and can be bound to the concrete research Task. A valid submission persists an `experimental` Recipe digest, advances the fixed three-step control-plane Task, and records economy, recommended, and performance candidates. Candidate output is provider-neutral. AWS connection, live quote, approval, and launch happen only through authenticated CloudControl RPCs and never through model-selected arguments.
-
-Optional MCP tools are loaded from a trusted, secret-free server configuration file. Only HTTPS Streamable HTTP endpoints are accepted; authentication is resolved from mounted secret references at request time. MCP and cloud-dispatcher tools share the durable caller/request/tool-call idempotency boundary.
-
-Worker checkpoint, artifact, claim, and successful-result submissions use `WorkerObjectClaim`: an exact deployment-scoped S3 reference plus SHA-256, byte size, and media type. The Worker uploads an immutable object with SHA-256 checksum metadata and KMS encryption, then accepts the upload only after an exact `HeadObject` read-back; a lost `PutObject` response is reconciled through the same read-back. The control plane fences the claim by the current lease and persists it as `untrusted_worker_claim`, never as readiness evidence. Legacy bare references remain accepted only by the internal domain compatibility path; public Worker RPCs require typed claims for S3 objects. The Worker has no direct CloudWatch Logs permission. Before its first milestone it records the exact lease-bound log reference as durable untrusted evidence, then `EmitMilestone` carries only a closed event ID/kind/action/outcome vocabulary over the Worker session. Agent rechecks the current session, lease, owner, deployment, durable reference, Connection, and Foundation binding, derives the group/stream and receipt timestamp, and writes through its Control Role. A stable event ID is reused for bounded retries, so telemetry is at-least-once and never advances deployment state. The RPC has no group, stream, timestamp, message, URL, path, output, error, credential, or secret field; undeclared or raw secret material remains rejected.
-
-External health persistence supports two closed monitor kinds per Deployment. The original `service` monitor owns the liveness/readiness/semantic suite, public `CloudHealthSummary`, events, and Managed health transitions. The separately device-approved `public_entry` monitor stores only the exact signed HTTPS readiness route used by entry activation. Definitions, revisions, schedules, and evidence histories are independently fenced by `(deployment_id, monitor_kind)`, so configuring or running entry readiness cannot replace service evidence. The public-entry monitor is private control-plane evidence and is never projected as deployment or Managed service health.
-
-### Managed Knowledge lifecycle v1
-
-`CloudControlService.PrepareManagedKnowledgeLifecycle` and
-`ApproveManagedKnowledgeLifecycle` require `cloud.approve`;
-`GetManagedKnowledgeLifecycle` requires `cloud.read`. The authenticated owner
-must match the request. Prepare derives and signs over the current Deployment,
-Managed service, Knowledge binding, Recipe digest, execution bundle, installed
-manifest, closed action, and their revisions. Actions are limited to `stop`,
-`backup`, `restore`, `upgrade`, `rollback`, and `destroy`; no request or Worker
-message carries argv, environment, paths, or an arbitrary command.
-
-Approve reconstructs the deterministic payload, verifies the current owner
-device, and atomically rechecks authoritative scope before scheduling one
-Worker operation. Caller/credential-bound idempotency, one active operation per
-Managed service, Worker lease, root-helper capability/journal, result, and
-receipt all fence the exact action. Successful completion advances Managed
-state; successful destroy also disables the exact Knowledge binding. A failed
-destroy is terminal `destroy_blocked` for that approval and requires a newly
-prepared, current-scope device approval.
-
-The maintenance runner uses a separate fixed 65-minute lifecycle lease; it
-does not widen the general Worker lease. Immediately before capability
-issuance, PostgreSQL serializes a durable execution reservation against the
-signed Managed-service and Knowledge-binding revisions. While reserved, public
-Knowledge config updates fail closed. Terminal completion atomically CASes both
-reserved revisions, applies the result, and releases the reservation; no stale
-binding or service revision can be discovered only after a privileged command.
-Health evidence continues to persist during execution, but health reconciliation
-cannot mutate the reserved Managed-service state or revision.
-
-Migration 41 adds a positive `data_epoch` and optional backend-generation
-digest to each Knowledge binding. At the execution fence, `backup` and
-`upgrade` snapshot the exact source/upload/chunk metadata catalog and bind its
-canonical digest to the eventual Worker-observed backend generation;
-`restore` and `rollback` bind the newest retained generation before privileged
-execution. The normalized snapshot and generation rows contain metadata only:
-IDs, status, media type/title, byte counts, content/chunk digests, backend point
-IDs, offsets, ordinals, revisions, and timestamps. PostgreSQL never stores
-document or query content, staged chunk bytes, vectors, API keys, TLS keys, or
-other runtime secrets.
-
-All Knowledge mutations, including an otherwise exact idempotent replay, lock
-the binding and reject an active lifecycle execution reservation. A successful
-restore or rollback must return the fenced generation. In the same PostgreSQL
-transaction, the Agent revalidates the snapshot digest, replaces the live
-metadata catalog, increments the data epoch, updates receiving uploads to the
-new binding revision, CASes the binding and Managed-service revisions/state,
-records the operation outcome, and releases the reservation. A failure rolls
-back the complete catalog/binding/service reconciliation rather than exposing
-a backend generation with mismatched control-plane metadata.
-
-After `restore`, `rollback`, or `upgrade` crosses its execution fence, an
-unsigned Worker failure is recovery-pending and cannot terminalize the Managed
-operation or release its mutation reservation. A signed observation of the
-fenced target generation completes the action. For restore/rollback, a signed
-observation of the recovered pre-swap generation instead closes the operation
-as failed with `recovered_original_generation`, keeps the service active, binds
-the observed generation, and releases the reservation atomically. When a
-terminal root-helper receipt survives a Worker lease rotation, the helper must
-re-observe the identical generation and re-sign the receipt at the new lease
-epoch; it must not execute the installer command again.
-
-P0 Task/Admin and P1 Runtime/planning behavior are implemented. When typed cloud configuration is present and the explicit default-off AWS-control gate is enabled, `CloudControlService` advertises AWS/direct-STS/Worker/Reaper first-validation capabilities and supports encrypted identity preview, quotes, plans, approval challenges, device-signed approval, connection establishment, and read-only deployment/resource/Worker status. `WorkerControlService` supports STS/IMDS-bound production enrollment plus lease-fenced claim, heartbeat, checkpoint/evidence, closed Agent-relayed milestones, cancellation, and completion.
-
-Worker release publication is deliberately outside the public gRPC contract. The closed Go operator tools produce an independently attested `dirextalk.agent.worker-ami-publication/v1` document. If `AGENT_WORKER_AMI_PUBLICATION_FILE` is configured, `serve` validates the bounded regular non-symlink file, requires its `agent_instance_id` to match the running instance, and imports it into the durable active-release catalog. Catalog identity is Agent instance plus AWS account, Region, and architecture. Exact imports are idempotent, superseded evidence remains auditable, and quote preparation fails unavailable when no matching active release exists. The server always replaces candidate AMI fields with the active catalog evidence; a caller, Service Key, Eino tool, or Skill cannot select an AMI ID or activate a release.
-
-The release operator path also is not a production Foundation-onboarding approval mechanism. It uses the standard AWS SDK credential chain and must run only in a separately authorized operator context. A successful RecipeDraft, locally green P2 test, or catalog import still does not prove a real service deployment: the real ECR/AMI acceptance, typed service secrets, production installer capability/LeaseGrant delivery and root materialization, probes, product façade/client cutover, and remaining recovery invariants are explicit gates.
+Core v1 has no public-API or database compatibility requirement. Any Protobuf
+change must update the corresponding documentation and focused contract tests
+in the same change.

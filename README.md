@@ -1,75 +1,72 @@
 # Dirextalk Agent
 
-Dirextalk Agent is a reusable, single-tenant control service for persistent AI tasks and typed cloud workloads. It exposes a versioned gRPC API, stores durable facts in PostgreSQL, and uses Eino with typed tools to prepare deployment plans. Privileged execution runs only in an exclusive Cloud Worker VM and never in the control container.
+Dirextalk Agent is a private, single-user service that owns durable agent data
+for one Dirextalk deployment. It exposes versioned TLS gRPC, stores state in
+PostgreSQL, and runs background work through the durable Core Task path.
 
-The control container does not depend on Matrix or ProductCore and does not run arbitrary user commands. Projects integrate through a pairwise service key and keep their own user-facing transport and authentication.
+## Core v1 capabilities
 
-## Current delivery
+- Conversations and server-owned model profiles through an Eino model
+  boundary.
+- Durable Tasks, events, cancellation, leases, schedules, and recovery.
+- Generic user confirmations for operations that need explicit approval.
+- MCP and Skills with pinned revisions and isolated extension-runner execution.
+- Agent-owned Knowledge sources, uploads, indexing, and semantic search.
+- Typed AWS credentials, plans, and confirmed cloud changes.
 
-P0 provides service-key authentication, durable Task/Step state, idempotency, revision and lease fencing, and cursor-resumable events. P1 adds persisted runtime configuration and conversations, `RuntimeService.Chat`/`StreamChat`, the native Eino runtime, mounted model-secret references, optional Streamable HTTP MCP configuration, and the planning-only `cloud-dispatcher` Skill.
+The service is not a REST API, admin console, cluster, pool, graph editor, or
+multi-user control plane. Product clients use their own business server; that
+server is the future proxy to this Agent instance.
 
-The P2 first-validation build adds encrypted one-time AWS bootstrap, typed live pricing and quota evidence, device-signed plans, deterministic Foundation contracts, direct STS control, durable EC2 mutation intents, STS/IMDS-bound Worker enrollment, Task/Worker checkpoint synchronization, scoped artifacts, resource manifests, automatic ephemeral cleanup, and the AWS-side Reaper. Agent, Worker, and Reaper container definitions are repository-local and contain no Node, AWS CLI, or Docker socket dependency. Closed Go operator tools now prepare the fixed immutable ECR repositories, publish digest-bound prerelease images plus a deterministic Worker rootfs, and build, attest, verify, or destroy a fixed Worker AMI with AWS read-back.
+## Authentication and configuration
 
-This build is locally and fake-provider testable. AWS mutations remain fail-closed unless `AGENT_ENABLE_AWS_CONTROL=true` is explicitly configured. An approved Recipe can now keep small official-source research evidence separate from an exact queryless installable artifact URL, publish the verified bytes as a versioned SSE-KMS S3 object, bind their digest and target into EC2 user-data, materialize them atomically as root before enabling the installer socket, and execute only a signed `command_id`. Worker heartbeats rotate installer grants to the exact durable lease, so long multi-step installs do not outlive or lose their authorization. The retained Knowledge profile binds deterministic installer/model/adapter/provenance artifacts, an encrypted persistent volume, a Qdrant SecretSlot, and fixed install, probe, stop, backup, restore, upgrade, rollback, and destroy operations without putting large binaries into model research. Managed acceptance creates or idempotently reads back the exact immutable Knowledge config before succeeding. Post-Managed stop/backup/restore/upgrade/rollback/destroy require exact owner/device approval, travel through the closed Worker/root-helper action protocol, and persist receipt-bound outcomes; a failed destroy becomes `destroy_blocked` and requires fresh approval. The root daemon has the package, filesystem, mount, systemd, and network abilities expected inside an exclusive VM; the signed artifact/command and AWS resource/network scope remain the control boundary, not a false domain sandbox. Persistent data volumes, deployment-scoped secrets, local journaled recovery, and separately fenced service/public-entry external-probe evidence are implemented locally, but the release and AMI paths have not yet been executed against the authorized real ECR/EC2 environment, and broader Managed/client cutover remains incomplete. This repository therefore still does not claim a real OpenClaw or knowledge-node deployment. Detailed progress is tracked in [docs/delivery-tracker.md](docs/delivery-tracker.md).
+The process reads strict YAML from `/etc/dirextalk-agent/config.yaml` or the
+path supplied with `--config`. YAML contains identifiers, feature gates, and
+protected file paths, never credential values. The Core gRPC server uses TLS
+1.3 and one deployment-generated token file:
 
-Knowledge backup and upgrade now bind the exact normalized PostgreSQL metadata
-catalog to the Worker-observed backend generation. Restore and rollback verify
-that generation, then atomically restore the catalog, advance the data epoch,
-reconcile the Knowledge binding and Managed service, and release their execution
-reservation. PostgreSQL retains identifiers, status, sizes, digests, offsets,
-counts, revisions, and timestamps only; document/query content, vectors, staged
-bytes, API keys, and TLS secrets remain outside it. Every new mutation and exact
-idempotent replay is fenced while the lifecycle reservation is active.
-After a generation-changing installer crash, an unsigned failure cannot release
-that fence. A signed target-generation observation completes normally; a signed
-pre-swap observation closes restore/rollback as failed with
-`recovered_original_generation` while preserving the recovered live service.
-If the Worker lease rotated after a terminal root receipt, the helper
-re-observes the same generation and re-signs that receipt for the current lease
-without running the installer again.
+```text
+dirextalk-agent [--config PATH] migrate
+dirextalk-agent [--config PATH] serve
+```
+
+`migrate` applies the Agent-owned PostgreSQL schema. `serve` starts the Core
+gRPC server, worker pool, scheduler, and enabled domain compositions. Token
+rotation is an atomic replacement of the protected file followed by restart;
+there is no remote token-management API.
 
 ## Development
 
-Requirements: Go 1.26, Buf, Protobuf compiler, and the workspace PostgreSQL 18 service for integration tests.
+Requirements are Go, Buf/protobuf tooling, and PostgreSQL for opt-in
+integration tests.
 
-```powershell
-buf generate
+```text
 go test ./...
-go build ./cmd/...
+go vet ./...
+go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner
+buf lint
 ```
 
-For a release-preparation path that builds and publishes only the Agent
-container (without Worker/Reaper/rootfs/AMI artifacts), see
-[docs/agent-image-release.md](docs/agent-image-release.md). It intentionally
-does not provide remote-host ECR pull credentials.
+Set `AGENT_TEST_POSTGRES_DSN` for normal PostgreSQL integration tests; Knowledge
+integration also accepts `DIREXTALK_TEST_DATABASE_URL`. The authorized real AWS
+lane requires `DIREXTALK_REAL_AWS_ACCEPTANCE=1`,
+`DIREXTALK_COREV1_TEST_DSN`, `DIREXTALK_REAL_AWS_CREDENTIAL_CSV`, and
+`DIREXTALK_REAL_AWS_ACCOUNT_ID`; `DIREXTALK_REAL_AWS_REGION` is optional and
+defaults to `us-east-1`.
 
-Production startup requires TLS certificate/key files, a PostgreSQL DSN, an immutable instance ID, a service-key pepper file, and an initial service-key file. Secret values must be mounted as files rather than supplied in command arguments.
+The Linux extension isolation lane is opt-in because it needs a delegated
+cgroup-v2 subtree and user/mount namespace support. Set
+`DIREXTALK_EXTENSION_RUNNER_INTEGRATION=1` and point
+`DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT` at that subtree. The acceptance test
+covers the detached filesystem, denied network, explicit secret visibility,
+descendant cancellation, and verified cgroup removal.
 
-## Operation
+The authorized AWS lane completed on 2026-07-25: the production typed provider
+and Agent confirmation/Task path created and independently read back exactly
+one tagged idle SQS queue in one CloudFormation stack, then confirmed and
+deleted it; independent deletion verification and a post-run prefix audit found
+zero active stacks or queues.
 
-The control process has five commands: `migrate`, `bootstrap-service-key`, `bootstrap-approval-device`, `healthcheck`, and `serve`. The first three and `serve` use the same immutable `AGENT_INSTANCE_ID` and read the PostgreSQL DSN from `AGENT_DATABASE_URL_FILE`; the legacy plaintext `AGENT_DATABASE_URL` environment variable is deliberately ignored.
-
-`serve` additionally requires:
-
-- `AGENT_GRPC_LISTEN` (defaults to `:9443`).
-- `AGENT_TLS_CERT_FILE` and a protected `AGENT_TLS_KEY_FILE`.
-- `AGENT_SERVICE_KEY_PEPPER_FILE` containing at least 32 bytes of random material.
-- `AGENT_MOUNTED_SECRETS_DIR`, whose protected files are addressed only as opaque `mounted:<name>` references.
-- `AGENT_MODEL_PROFILES_FILE`, a strict, secret-free JSON catalog that binds each public `profile_id` to one provider, model, HTTPS endpoint, mounted credential reference, context window, and maximum output-token limit.
-- Optional `AGENT_MCP_SERVERS_FILE`, containing trusted, secret-free HTTPS MCP endpoint metadata and optional mounted secret references.
-
-`healthcheck` is the image-local, no-database readiness command. It performs the standard unauthenticated gRPC health RPC through TLS 1.3, defaults to `127.0.0.1` on the `AGENT_GRPC_LISTEN` port, and accepts an optional `AGENT_GRPC_HEALTHCHECK_ADDRESS` only when it is an IP loopback address on that same port. `AGENT_GRPC_HEALTHCHECK_SERVER_NAME` is required and must be an exact DNS or IP SAN from `AGENT_TLS_CERT_FILE`; the command combines the system roots with that mounted public certificate chain and never reads the TLS private key or a service key. The production image invokes this command through its Docker `HEALTHCHECK` metadata.
-
-AWS control remains default-off. When enabled, `AGENT_AWS_REAPER_IMAGE_URI` must be an immutable prerelease reference with a registry digest and `AGENT_WORKER_CONTROL_ENDPOINT` must be exactly `grpcs://worker-control.y1.dirextalk.ai:443`. During the operator's initial PrivateLink bootstrap only, `AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME` may be empty while `AGENT_ENABLE_MANAGED_PREPARATION_AWS=false`; that process exposes read-only AWS identity preview but fails quote, plan, approval, Foundation, Managed, Worker-launch, and provider-mutation paths with a capability-not-ready precondition. After reconciliation, configure the operator-frozen `ap-northeast-3` `com.amazonaws.vpce.ap-northeast-3.vpce-svc-<17 lowercase hex>` service and restart the same Agent instance against the same database. The exact endpoint/service pair is then signed into the private Worker graph; callers cannot provide an opaque endpoint service. An optional protected `AGENT_WORKER_AMI_PUBLICATION_FILE` imports one independently attested Worker AMI publication at startup. The durable active-release catalog is scoped by Agent instance, AWS account, Region, and architecture; quoting fails closed when no matching active release exists, and callers cannot supply an AMI ID directly.
-
-Callers select a configured model by `profile_id`; they cannot choose or recombine its endpoint and credential reference. A minimal catalog is `{"schema_version":1,"profiles":[{"profile_id":"deepseek-v4","provider":"deepseek","model":"deepseekv4-pro","base_url":"https://api.deepseek.com/v1","secret_ref":"mounted:deepseek-token","context_window":65536,"max_output_tokens":8192}]}`. Keep credential bytes only in the referenced mounted file.
-
-`bootstrap-service-key` additionally requires a protected `AGENT_BOOTSTRAP_SERVICE_KEY_FILE`, `AGENT_BOOTSTRAP_CLIENT_ID`, and optional comma-separated `AGENT_BOOTSTRAP_SCOPES`. The key file contains `key_id.<32-byte-base64url-secret>`. Generate it outside the process, mount it read-only, and never place its value in shell history, Compose YAML, logs, or source control.
-
-`bootstrap-approval-device` is the one-time, local trust-anchor command for an owner's first approval device. It requires `AGENT_APPROVAL_DEVICE_OWNER_ID`, `AGENT_APPROVAL_DEVICE_KEY_ID`, a canonical UUID `AGENT_APPROVAL_DEVICE_IDEMPOTENCY_KEY`, a future RFC3339 `AGENT_APPROVAL_DEVICE_EXPIRES_AT`, and `AGENT_APPROVAL_DEVICE_PUBLIC_KEY_FILE` pointing to a protected read-only file. The file may contain the exact 32-byte raw Ed25519 public key (binary or unpadded base64url) or the strict RFC 8410 Ed25519 SubjectPublicKeyInfo exported by Flutter (DER or standard base64); other algorithms, parameters, private keys, and trailing fields are rejected. `AGENT_APPROVAL_DEVICE_KEY_ID` must equal `cloud-device-` plus the first 24 lowercase hexadecimal characters of SHA-256 over that raw public key, exactly matching Flutter; aliases fail closed. An exact rerun is idempotent; any different second device for that owner is rejected. Service Keys cannot call the reserved remote register/revoke RPCs.
-
-On Linux, DSN, TLS private key, pepper, and bootstrap key files must be regular files without group/world permission bits. Run `migrate` before bootstrap or serve; startup rejects a database owned by another `agent_instance_id` or a migration whose recorded checksum differs.
-
-PostgreSQL integration checks are opt-in through `AGENT_TEST_POSTGRES_DSN`. The P1 lane verifies the complete TLS gRPC/Eino/planning flow against PostgreSQL 18, including official-source evidence, structured Task references, exact replay, restart recovery, event cursors, secret canaries, stateless completion, and database/role cleanup.
-
-The Agent requires an independent logical database and role, not an independent PostgreSQL process. A Dirextalk deployment should reuse the existing Message Server PostgreSQL 18 server/container and create a separate Agent database and least-privilege role. Agent and Message Server must not share a database, schema, role, migration ledger, or credentials. No PostgreSQL 16 or second PostgreSQL container is required.
+See [the API contract](docs/api-contract.md),
+[architecture](docs/architecture.md), and the
+[Core v1 development specification](docs/core-v1-development-spec.md).

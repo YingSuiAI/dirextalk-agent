@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+import "dirextalk/agent/v1/core_task.proto";
+
+message CoreConversation {
+  string conversation_id = 1;
+  string title = 2;
+  int64 revision = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message CoreConversationMessage {
+  string message_id = 1;
+  string conversation_id = 2;
+  int64 sequence = 3;
+  string role = 4;
+  string content = 5;
+  string model_profile_id = 6;
+  google.protobuf.Struct payload = 7;
+  repeated string related_task_ids = 8;
+  repeated string tool_summaries = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message ConversationServiceCreateRequest {
+  string idempotency_key = 1;
+  string title = 2;
+}
+message ConversationServiceCreateResponse { CoreConversation conversation = 1; }
+message ConversationServiceGetRequest { string conversation_id = 1; string page_token = 2; int32 page_size = 3; }
+message ConversationServiceGetResponse { CoreConversation conversation = 1; repeated CoreConversationMessage messages = 2; string next_page_token = 3; }
+message ConversationServiceListRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+message ConversationServiceListResponse {
+  repeated CoreConversation conversations = 1;
+  string next_page_token = 2;
+}
+message ConversationServiceDeleteRequest {
+  string idempotency_key = 1;
+  string conversation_id = 2;
+  int64 expected_revision = 3;
+}
+message ConversationServiceDeleteResponse {}
+
+message ConversationServiceChatRequest {
+  string idempotency_key = 1;
+  string conversation_id = 2;
+  string message = 3;
+  string model_profile_id = 4;
+  repeated CoreExtensionSelection extensions = 5;
+  repeated string knowledge_refs = 6;
+  optional int64 expected_revision = 7;
+}
+message ConversationServiceChatResponse {
+  CoreConversation conversation = 1;
+  CoreConversationMessage message = 2;
+  repeated string related_task_ids = 3;
+}
+
+message ConversationServiceStreamChatRequest {
+  string idempotency_key = 1;
+  string conversation_id = 2;
+  string message = 3;
+  string model_profile_id = 4;
+  repeated CoreExtensionSelection extensions = 5;
+  repeated string knowledge_refs = 6;
+  optional int64 expected_revision = 7;
+}
+message CoreStreamChatDelta { string text = 1; }
+message CoreStreamChatToolProgress {
+  string name = 1;
+  string status = 2;
+  repeated string related_task_ids = 3;
+  repeated string tool_summaries = 4;
+}
+message CoreToolResult {
+  string tool_name = 1;
+  string summary = 2;
+  repeated string related_task_ids = 3;
+  repeated string tool_summaries = 4;
+}
+message CoreStreamChatDone {
+  CoreConversationMessage message = 1;
+  repeated string related_task_ids = 2;
+  repeated CoreToolResult tool_results = 3;
+}
+message ConversationServiceStreamChatResponse {
+  oneof event {
+    CoreStreamChatDelta delta = 1;
+    CoreStreamChatToolProgress tool = 2;
+    CoreStreamChatDone done = 3;
+  }
+}
+
+service ConversationService {
+  rpc Create(ConversationServiceCreateRequest) returns (ConversationServiceCreateResponse);
+  rpc Get(ConversationServiceGetRequest) returns (ConversationServiceGetResponse);
+  rpc List(ConversationServiceListRequest) returns (ConversationServiceListResponse);
+  rpc Delete(ConversationServiceDeleteRequest) returns (ConversationServiceDeleteResponse);
+  rpc Chat(ConversationServiceChatRequest) returns (ConversationServiceChatResponse);
+  rpc StreamChat(ConversationServiceStreamChatRequest) returns (stream ConversationServiceStreamChatResponse);
+}

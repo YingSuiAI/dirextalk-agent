@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum CoreKnowledgeSourceKind {
+  CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED = 0;
+  CORE_KNOWLEDGE_SOURCE_KIND_MOUNT = 1;
+  CORE_KNOWLEDGE_SOURCE_KIND_UPLOAD = 2;
+  CORE_KNOWLEDGE_SOURCE_KIND_MEMORY = 3;
+}
+
+enum CoreKnowledgeSourceStatus {
+  CORE_KNOWLEDGE_SOURCE_STATUS_UNSPECIFIED = 0;
+  CORE_KNOWLEDGE_SOURCE_STATUS_UPLOADING = 1;
+  CORE_KNOWLEDGE_SOURCE_STATUS_READY = 2;
+  CORE_KNOWLEDGE_SOURCE_STATUS_INDEXING = 3;
+  CORE_KNOWLEDGE_SOURCE_STATUS_FAILED = 4;
+  CORE_KNOWLEDGE_SOURCE_STATUS_DELETING = 5;
+  CORE_KNOWLEDGE_SOURCE_STATUS_CLEANUP_PENDING = 6;
+  CORE_KNOWLEDGE_SOURCE_STATUS_DELETED = 7;
+}
+
+message CoreKnowledgeSource {
+  string source_id = 1;
+  CoreKnowledgeSourceKind kind = 2;
+  CoreKnowledgeSourceStatus status = 3;
+  string title = 4;
+  string relative_path = 5;
+  string digest = 6;
+  int64 size_bytes = 7;
+  string media_type = 8;
+  int64 revision = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+  string error_code = 12;
+}
+
+message CoreKnowledgeTaskReference { string task_id = 1; }
+message CoreKnowledgeUploadSession {
+  string upload_id = 1;
+  string source_id = 2;
+  int64 received_size_bytes = 3;
+  int32 next_ordinal = 4;
+  int64 revision = 5;
+}
+
+message CoreKnowledgeServiceCreateMountRequest {
+  string idempotency_key = 1;
+  string source_id = 2;
+  string title = 3;
+  string relative_path = 4;
+  string digest = 5;
+  int64 size_bytes = 6;
+  string media_type = 7;
+}
+message CoreKnowledgeServiceCreateMountResponse { CoreKnowledgeSource source = 1; }
+
+message CoreKnowledgeUploadMetadata {
+  string idempotency_key = 1;
+  string upload_id = 2;
+  string source_id = 3;
+  string title = 4;
+  string relative_path = 5;
+  string media_type = 6;
+  int64 declared_size_bytes = 7;
+  string content_sha256 = 8;
+}
+message CoreKnowledgeUploadChunk {
+  string idempotency_key = 1;
+  string upload_id = 2;
+  int32 ordinal = 3;
+  int64 offset_bytes = 4;
+  bytes data = 5;
+  string chunk_sha256 = 6;
+}
+message CoreKnowledgeServiceUploadRequest {
+  oneof part {
+    CoreKnowledgeUploadMetadata metadata = 1;
+    CoreKnowledgeUploadChunk chunk = 2;
+  }
+}
+message CoreKnowledgeServiceUploadResponse {
+
+  CoreKnowledgeUploadSession session = 3;
+  CoreKnowledgeSource source = 1;
+  CoreKnowledgeTaskReference index_task = 2;
+}
+message CoreKnowledgeServiceCommitUploadRequest {
+  string idempotency_key = 1;
+  string upload_id = 2;
+  int64 expected_revision = 3;
+  string content_sha256 = 4;
+}
+message CoreKnowledgeServiceCommitUploadResponse {
+  CoreKnowledgeSource source = 1;
+  CoreKnowledgeTaskReference index_task = 2;
+  CoreKnowledgeUploadSession session = 3;
+}
+message CoreKnowledgeServiceAbortUploadRequest {
+  string idempotency_key = 1;
+  string upload_id = 2;
+  int64 expected_revision = 3;
+}
+message CoreKnowledgeServiceAbortUploadResponse {}
+
+message CoreKnowledgeServiceCreateMemoryRequest {
+  string idempotency_key = 1;
+  string source_id = 2;
+  string title = 3;
+  string content = 4;
+  string content_sha256 = 5;
+  string media_type = 6;
+}
+message CoreKnowledgeServiceCreateMemoryResponse { CoreKnowledgeSource source = 1; }
+
+message CoreKnowledgeServiceListSourcesRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  CoreKnowledgeSourceKind kind = 3;
+  CoreKnowledgeSourceStatus status = 4;
+}
+message CoreKnowledgeServiceListSourcesResponse {
+  repeated CoreKnowledgeSource sources = 1;
+  string next_page_token = 2;
+}
+message CoreKnowledgeServiceGetSourceRequest { string source_id = 1; }
+message CoreKnowledgeServiceGetSourceResponse { CoreKnowledgeSource source = 1; }
+message CoreKnowledgeServiceDeleteSourceRequest {
+  string idempotency_key = 1;
+  string source_id = 2;
+  int64 expected_revision = 3;
+}
+message CoreKnowledgeServiceDeleteSourceResponse { CoreKnowledgeSource source = 1; }
+
+message CoreKnowledgeServiceGetStatusRequest {}
+message CoreKnowledgeServiceGetStatusResponse {
+  int32 ready_count = 1;
+  int32 uploading_count = 2;
+  int32 indexing_count = 3;
+  int32 failed_count = 4;
+  int32 cleanup_pending_count = 5;
+  google.protobuf.Timestamp checked_at = 6;
+}
+
+message CoreKnowledgeServiceIndexRequest {
+  string idempotency_key = 1;
+  repeated string source_ids = 2;
+}
+message CoreKnowledgeServiceIndexResponse { CoreKnowledgeTaskReference task = 1; }
+
+message CoreKnowledgeServiceSearchRequest {
+  string query = 1;
+  repeated string source_ids = 2;
+  int32 limit = 3;
+  string page_token = 4;
+}
+message CoreKnowledgeSearchMatch {
+  string source_id = 1;
+  string chunk_ref = 2;
+  string snippet = 3;
+  double score = 4;
+}
+message CoreKnowledgeServiceSearchResponse {
+  repeated CoreKnowledgeSearchMatch matches = 1;
+  string next_page_token = 2;
+}
+
+service CoreKnowledgeService {
+  rpc CreateMount(CoreKnowledgeServiceCreateMountRequest) returns (CoreKnowledgeServiceCreateMountResponse);
+  rpc Upload(stream CoreKnowledgeServiceUploadRequest) returns (CoreKnowledgeServiceUploadResponse);
+  rpc CommitUpload(CoreKnowledgeServiceCommitUploadRequest) returns (CoreKnowledgeServiceCommitUploadResponse);
+  rpc AbortUpload(CoreKnowledgeServiceAbortUploadRequest) returns (CoreKnowledgeServiceAbortUploadResponse);
+  rpc CreateMemory(CoreKnowledgeServiceCreateMemoryRequest) returns (CoreKnowledgeServiceCreateMemoryResponse);
+  rpc ListSources(CoreKnowledgeServiceListSourcesRequest) returns (CoreKnowledgeServiceListSourcesResponse);
+  rpc GetSource(CoreKnowledgeServiceGetSourceRequest) returns (CoreKnowledgeServiceGetSourceResponse);
+  rpc DeleteSource(CoreKnowledgeServiceDeleteSourceRequest) returns (CoreKnowledgeServiceDeleteSourceResponse);
+  rpc GetStatus(CoreKnowledgeServiceGetStatusRequest) returns (CoreKnowledgeServiceGetStatusResponse);
+  rpc Index(CoreKnowledgeServiceIndexRequest) returns (CoreKnowledgeServiceIndexResponse);
+  rpc Search(CoreKnowledgeServiceSearchRequest) returns (CoreKnowledgeServiceSearchResponse);
+}

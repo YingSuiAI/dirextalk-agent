@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
-
-	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 )
 
 const testCredential = "mcp-secret-canary-123456789"
@@ -55,9 +53,7 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 		t.Fatalf("new provider: %v", err)
 	}
 
-	tools, err := provider.Tools(context.Background(), runtimeapi.ToolRequest{
-		RequestID: "request-1", OwnerID: "owner-1", ConversationID: "conversation-1",
-	})
+	tools, err := provider.Tools(context.Background())
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
@@ -71,9 +67,7 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 		t.Fatalf("missing input schema: %#v", tools[0].Definition.InputSchema)
 	}
 
-	result, err := tools[0].Run(context.Background(), runtimeapi.ToolInvocation{
-		RequestID: "request-1", OwnerID: "owner-1", ConversationID: "conversation-1",
-		ToolCallID: "call-1", Name: tools[0].Definition.Name,
+	result, err := tools[0].Run(context.Background(), ToolInvocation{Name: tools[0].Definition.Name,
 		Arguments: json.RawMessage(`{"query":"durable tasks"}`),
 	})
 	if err != nil {
@@ -138,7 +132,7 @@ func TestProviderCancellationAndTimeout(t *testing.T) {
 			}
 			ctx, cancel := test.ctx()
 			defer cancel()
-			_, err = provider.Tools(ctx, runtimeapi.ToolRequest{RequestID: "request"})
+			_, err = provider.Tools(ctx)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("got %v, want %v", err, test.want)
 			}
@@ -163,7 +157,7 @@ func TestProviderErrorsNeverExposeCredentialOrProviderDetails(t *testing.T) {
 			t.Fatalf("new provider: %v", err)
 		}
 
-		_, err = provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+		_, err = provider.Tools(context.Background())
 		assertProviderErrorRedacted(t, err)
 		resolver.assertReturnedBuffersZeroed(t)
 	})
@@ -189,7 +183,7 @@ func TestProviderErrorsNeverExposeCredentialOrProviderDetails(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
-		_, err = provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+		_, err = provider.Tools(context.Background())
 		assertProviderErrorRedacted(t, err)
 		resolver.assertReturnedBuffersZeroed(t)
 	})
@@ -219,7 +213,7 @@ func TestProviderRejectsUnsafeEndpointsRedirectsAndTransports(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
-		_, err = provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+		_, err = provider.Tools(context.Background())
 		if !errors.Is(err, ErrEndpointDenied) {
 			t.Fatalf("expected endpoint denial, got %v", err)
 		}
@@ -246,7 +240,7 @@ func TestProviderRejectsUnsafeEndpointsRedirectsAndTransports(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new provider: %v", err)
 		}
-		_, err = provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+		_, err = provider.Tools(context.Background())
 		if !errors.Is(err, ErrProviderUnavailable) {
 			t.Fatalf("expected redirect failure, got %v", err)
 		}
@@ -318,7 +312,7 @@ func TestProviderRejectsDuplicateToolsInvalidSchemasAndRawCredentialArguments(t 
 			server := httptest.NewTLSServer(http.HandlerFunc(harness.handle))
 			defer server.Close()
 			provider := newTestProvider(t, server, nil)
-			_, err := provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+			_, err := provider.Tools(context.Background())
 			if !errors.Is(err, ErrInvalidToolDefinition) {
 				t.Fatalf("expected invalid tool definition, got %v", err)
 			}
@@ -336,12 +330,12 @@ func TestProviderRejectsDuplicateToolsInvalidSchemasAndRawCredentialArguments(t 
 		server := httptest.NewTLSServer(http.HandlerFunc(harness.handle))
 		defer server.Close()
 		provider := newTestProvider(t, server, nil)
-		tools, err := provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+		tools, err := provider.Tools(context.Background())
 		if err != nil {
 			t.Fatalf("list tools: %v", err)
 		}
-		_, err = tools[0].Run(context.Background(), runtimeapi.ToolInvocation{
-			RequestID: "request", ToolCallID: "call", Name: tools[0].Definition.Name,
+		_, err = tools[0].Run(context.Background(), ToolInvocation{
+			Name:      tools[0].Definition.Name,
 			Arguments: json.RawMessage(`{"query":"ok","secret_ref":"attacker-controlled","authorization":"Bearer raw"}`),
 		})
 		if !errors.Is(err, ErrUnsafeToolArguments) {
@@ -375,12 +369,12 @@ func TestProviderRedactsAndBoundsToolResults(t *testing.T) {
 	defer server.Close()
 	resolver := &recordingResolver{value: []byte(testCredential)}
 	provider := newTestProvider(t, server, resolver)
-	tools, err := provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+	tools, err := provider.Tools(context.Background())
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	result, err := tools[0].Run(context.Background(), runtimeapi.ToolInvocation{
-		RequestID: "request", ToolCallID: "call", Name: tools[0].Definition.Name,
+	result, err := tools[0].Run(context.Background(), ToolInvocation{
+		Name:      tools[0].Definition.Name,
 		Arguments: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -416,13 +410,13 @@ func TestProviderBoundsProtocolResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new provider: %v", err)
 	}
-	_, err = provider.Tools(context.Background(), runtimeapi.ToolRequest{RequestID: "request"})
+	_, err = provider.Tools(context.Background())
 	if !errors.Is(err, ErrResponseTooLarge) {
 		t.Fatalf("expected response size error, got %v", err)
 	}
 }
 
-func newTestProvider(t *testing.T, server *httptest.Server, resolver runtimeapi.SecretResolver) *Provider {
+func newTestProvider(t *testing.T, server *httptest.Server, resolver SecretResolver) *Provider {
 	t.Helper()
 	secretRef := ""
 	if resolver != nil {

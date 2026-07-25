@@ -6,8 +6,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io/fs"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -17,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const currentSchemaVersion int64 = 41
+const currentSchemaVersion int64 = migrations.CurrentVersion
 
 type Store struct {
 	pool       *pgxpool.Pool
@@ -95,11 +93,7 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, instanceID string)
 		return fmt.Errorf("iterate migration versions: %w", err)
 	}
 
-	entries, err := fs.Glob(migrations.Files, "*.up.sql")
-	if err != nil {
-		return fmt.Errorf("list migrations: %w", err)
-	}
-	sort.Strings(entries)
+	entries := migrations.Entries()
 	for _, entry := range entries {
 		version, err := migrationVersion(entry)
 		if err != nil {

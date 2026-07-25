@@ -1,0 +1,452 @@
+package coreextension
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	coreconfirmation "github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/google/uuid"
+)
+
+type rejectCoordinator struct{}
+
+func (rejectCoordinator) RequestLifecycle(context.Context, LifecycleRequest) (MutationResult, error) {
+	return MutationResult{}, errors.New("reject")
+}
+
+func testInspection(t *testing.T, kind Kind, source Source) (Candidate, Inspection) {
+	t.Helper()
+	d := strings.Repeat("a", 64)
+	pin := SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: d}
+	if source == SourceGitHub {
+		pin = SourcePin{GitCommit: strings.Repeat("b", 40), GitSHA256: d}
+	}
+	transport := TransportStdioStatic
+	exec := ExecutionDescriptor{Stdio: &StaticEntry{RelativePath: "bin/run", Digest: d, Argv: []string{"run"}}}
+	if kind == KindSkill {
+		transport = TransportSkillStatic
+		exec = ExecutionDescriptor{Skill: &SkillEntry{RelativePath: "scripts/main", Digest: d}}
+	}
+	c := Candidate{ID: "pkg", Kind: kind, Source: source, Name: "pkg", Pin: pin, Transport: transport}
+	i := Inspection{Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d, Execution: exec}
+	return c, i
+}
+
+func TestSourceMatrixAndSecretRedaction(t *testing.T) {
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s := SecretInput{ReferenceID: uuid.NewString(), Purpose: SecretPurposeMCPCredential, Value: "top-secret"}
+	if strings.Contains(s.String(), s.Value) || strings.Contains(s.GoString(), s.Value) {
+		t.Fatal("secret leaked")
+	}
+}
+
+func TestAllSourceMatrices(t *testing.T) {
+	for _, source := range []Source{SourceOfficialRegistry, SourceSmithery, SourceGlama, SourceGitHub} {
+		c, i := testInspection(t, KindMCP, source)
+		if err := i.Validate(); err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, i := testInspection(t, KindSkill, SourceSkillsSh)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGitHubSkillSourceMatrix(t *testing.T) {
+	c, i := testInspection(t, KindSkill, SourceGitHub)
+	if c.Source != SourceGitHub || c.Kind != KindSkill || c.Transport != TransportSkillStatic {
+		t.Fatal("github skill matrix lost")
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoteRequiresExactGrantAndCredential(t *testing.T) {
+	d := strings.Repeat("a", 64)
+	ref := uuid.NewString()
+	c := Candidate{ID: "remote", Kind: KindMCP, Source: SourceOfficialRegistry, Name: "remote", Pin: SourcePin{RegistryVersion: "1", RegistrySHA256: d}, Transport: TransportStreamableHTTP}
+	e := ExecutionDescriptor{Remote: &RemoteEndpoint{URL: "https://example.com/mcp", CredentialReferenceID: ref}}
+	i := Inspection{Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d, Execution: e, NetworkGrants: []NetworkGrant{{Scheme: "https", Host: "example.com", Port: 443, PathPrefix: "/mcp", Digest: d}}, SecretGrants: []SecretGrantDescriptor{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, BindingDigest: d}}}
+	if err := i.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	i.NetworkGrants[0].PathPrefix = "/other"
+	if i.Validate() == nil {
+		t.Fatal("grant drift accepted")
+	}
+}
+
+func TestMemoryRepositoryReplayAndImmutableVersions(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
+	r := NewMemoryRepository(func() time.Time { return now })
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	m := Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i}
+	a, err := r.CreateMutation(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.CreateMutation(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Installation.ID != b.Installation.ID || a.TaskID != b.TaskID {
+		t.Fatal("idempotent replay changed result")
+	}
+	b.Installation.Versions[0].ContentDigest = strings.Repeat("b", 64)
+	got, err := r.Get(context.Background(), a.Installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Versions[0].ContentDigest != i.ContentDigest {
+		t.Fatal("repository version mutated through projection")
+	}
+}
+
+func TestLifecycleAtomicFailureLeavesRepositoryEmpty(t *testing.T) {
+	r := NewMemoryRepository()
+	r.SetRequestFailpoint(func() error { return errors.New("failpoint") })
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	_, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i})
+	if err == nil {
+		t.Fatal("expected coordinator failure")
+	}
+	if _, err := r.List(context.Background(), ListQuery{}); !errors.Is(err, nil) {
+		t.Fatal(err)
+	}
+	p, _ := r.List(context.Background(), ListQuery{})
+	if len(p.Installations) != 0 {
+		t.Fatal("failed proposal mutated repository")
+	}
+}
+
+func installForLifecycle(t *testing.T, r *MemoryRepository, kind Kind, source Source) (MutationResult, Installation) {
+	t.Helper()
+	c, i := testInspection(t, kind, source)
+	res, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Get(context.Background(), res.Installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res, got
+}
+
+func completeInstall(t *testing.T, r *MemoryRepository, res MutationResult, success bool) Installation {
+	t.Helper()
+	rec, _ := r.GetLifecycleRecord(context.Background(), res.Installation.ID)
+	if _, err := r.ConfirmLifecycle(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: res.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: res.TaskID, State: "running", Attempt: 1, LeaseEpoch: 1, Revision: 2})
+	if _, err := r.ConsumeLifecycle(context.Background(), coreconfirmation.ConsumeCommand{ConfirmationID: res.ConfirmationID, IdempotencyKey: uuid.NewString(), TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 2, ExpectedTaskRevision: 2, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTerminalTaskFence(res.TaskID, 1, 2, 3)
+	out, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: res.Installation.ID, Operation: OperationInstall, ConfirmationID: res.ConfirmationID, TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, AcquiredTaskRevision: 2, TerminalAttempt: 1, TerminalLeaseEpoch: 2, TerminalTaskRevision: 3, ExpectedRevision: 1, OutcomeDigest: strings.Repeat("c", 64), Success: success})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestLifecycleRecordContainsBindingAndFences(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	rec, err := r.GetLifecycleRecord(context.Background(), res.Installation.ID)
+	if err != nil || rec.TaskID != res.TaskID || rec.ConfirmationID != res.ConfirmationID || rec.Binding.ParameterDigest == "" || rec.RequestDigest == "" {
+		t.Fatalf("record: %#v %v", rec, err)
+	}
+}
+func TestLifecycleInstallSuccessActivatesProposal(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	out := completeInstall(t, r, res, true)
+	if out.State != StateInstalled || out.ActiveVersionID == "" || out.ProposedVersionID != "" {
+		t.Fatalf("outcome: %#v", out)
+	}
+}
+func TestLifecycleInstallFailureClearsProposal(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	out := completeInstall(t, r, res, false)
+	if out.State != StateFailed || out.ProposedVersionID != "" {
+		t.Fatalf("outcome: %#v", out)
+	}
+}
+func TestLifecycleCompletionExactReplay(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	first := completeInstall(t, r, res, true)
+	second, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: res.Installation.ID, Operation: OperationInstall, ConfirmationID: res.ConfirmationID, TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, AcquiredTaskRevision: 2, TerminalAttempt: 1, TerminalLeaseEpoch: 2, TerminalTaskRevision: 3, ExpectedRevision: 1, OutcomeDigest: strings.Repeat("c", 64), Success: true})
+	if err != nil || second.State != first.State {
+		t.Fatalf("replay: %#v %v", second, err)
+	}
+}
+func TestLifecycleCompletionChangedReplayConflicts(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	_ = completeInstall(t, r, res, true)
+	_, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: res.Installation.ID, Operation: OperationInstall, ConfirmationID: res.ConfirmationID, TaskID: res.TaskID, Attempt: 2, LeaseEpoch: 1, TerminalAttempt: 1, TerminalLeaseEpoch: 2, ExpectedRevision: 1, OutcomeDigest: strings.Repeat("c", 64), Success: true})
+	if err == nil {
+		t.Fatalf("expected conflict: %v", err)
+	}
+}
+func TestLifecycleStaleFenceRejected(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: res.TaskID, State: "running", Attempt: 2, LeaseEpoch: 1, Revision: 1})
+	_, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: res.Installation.ID, Operation: OperationInstall, ConfirmationID: res.ConfirmationID, TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, TerminalAttempt: 1, TerminalLeaseEpoch: 2, ExpectedRevision: 1, OutcomeDigest: strings.Repeat("c", 64), Success: true})
+	if err == nil {
+		t.Fatalf("stale accepted: %v", err)
+	}
+}
+func TestConcurrentUpdateCAS(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	_ = completeInstall(t, r, res, true)
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	i.Candidate = c
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	n := 0
+	for j := 0; j < 2; j++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, e := r.UpdateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), InstallationID: res.Installation.ID, ExpectedRevision: 2, Candidate: c, Inspection: i}, StateUpdating)
+			if e == nil {
+				mu.Lock()
+				n++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if n != 1 {
+		t.Fatalf("cas successes=%d", n)
+	}
+}
+func TestUninstallUsesActiveVersionAndClearsVersions(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	_ = completeInstall(t, r, res, true)
+	cur, _ := r.Get(context.Background(), res.Installation.ID)
+	u, err := r.RemoveMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), InstallationID: cur.ID, ExpectedRevision: cur.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := r.GetLifecycleRecord(context.Background(), u.Installation.ID)
+	if _, err := r.ConfirmLifecycle(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: u.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: u.TaskID, State: "running", Attempt: 1, LeaseEpoch: 1, Revision: 4})
+	if _, err := r.ConsumeLifecycle(context.Background(), coreconfirmation.ConsumeCommand{ConfirmationID: u.ConfirmationID, IdempotencyKey: uuid.NewString(), TaskID: u.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 2, ExpectedTaskRevision: 4, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTerminalTaskFence(u.TaskID, 1, 2, 5)
+	out, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: cur.ID, Operation: OperationUninstall, ConfirmationID: u.ConfirmationID, TaskID: u.TaskID, Attempt: 1, LeaseEpoch: 1, AcquiredTaskRevision: 4, TerminalAttempt: 1, TerminalLeaseEpoch: 2, TerminalTaskRevision: 5, ExpectedRevision: u.Installation.Revision, OutcomeDigest: strings.Repeat("d", 64), Success: true})
+	if err != nil || out.State != StateRemoved || len(out.Versions) == 0 || out.ActiveVersionID != "" || out.ProposedVersionID != "" || len(out.SecretGrants) != 0 || len(out.NetworkGrants) != 0 {
+		t.Fatalf("uninstall: %#v %v", out, err)
+	}
+}
+func TestCandidateIdentityDescriptionMismatchRejected(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	_ = completeInstall(t, r, res, true)
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	c.Description = "changed"
+	i.Candidate = c
+	_, err := r.UpdateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), InstallationID: res.Installation.ID, ExpectedRevision: 2, Candidate: c, Inspection: i}, StateUpdating)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("identity drift accepted: %v", err)
+	}
+}
+
+func TestLifecycleReplayDoesNotInvokeFailpoint(t *testing.T) {
+	r := NewMemoryRepository()
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	m := Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i}
+	first, err := r.CreateMutation(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetRequestFailpoint(func() error { return errors.New("must not run on replay") })
+	replay, err := r.CreateMutation(context.Background(), m)
+	if err != nil || replay.TaskID != first.TaskID {
+		t.Fatalf("replay callback: %#v %v", replay, err)
+	}
+}
+
+func TestLifecycleRejectsEveryZeroFence(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	rec, _ := r.GetLifecycleRecord(context.Background(), res.Installation.ID)
+	if _, err := r.ConfirmLifecycle(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: res.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: res.TaskID, State: "running", Attempt: 1, LeaseEpoch: 1, Revision: 2})
+	if _, err := r.ConsumeLifecycle(context.Background(), coreconfirmation.ConsumeCommand{ConfirmationID: res.ConfirmationID, IdempotencyKey: uuid.NewString(), TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 2, ExpectedTaskRevision: 0, Binding: rec.Binding}); err == nil {
+		t.Fatal("zero task revision accepted")
+	}
+	if _, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: res.Installation.ID, Operation: OperationInstall, ConfirmationID: res.ConfirmationID, TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 1, OutcomeDigest: strings.Repeat("e", 64), Success: true}); err == nil {
+		t.Fatal("zero completion fences accepted")
+	}
+}
+
+func TestConsumeAfterExpiryFailsTaskWithoutReservation(t *testing.T) {
+	now := time.Now().UTC()
+	r := NewMemoryRepository(func() time.Time { return now })
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	rec, _ := r.GetLifecycleRecord(context.Background(), res.Installation.ID)
+	if _, err := r.ConfirmLifecycle(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: res.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Hour)
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: res.TaskID, State: "running", Attempt: 1, LeaseEpoch: 1, Revision: 3})
+	consume := coreconfirmation.ConsumeCommand{ConfirmationID: res.ConfirmationID, IdempotencyKey: uuid.NewString(), TaskID: res.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 2, ExpectedTaskRevision: 3, Binding: rec.Binding}
+	expired, err := r.ConsumeLifecycle(context.Background(), consume)
+	if !errors.Is(err, coreconfirmation.ErrExpired) || expired.State != coreconfirmation.StateExpired {
+		t.Fatalf("expiry: %v", err)
+	}
+	replayed, err := r.ConsumeLifecycle(context.Background(), consume)
+	if !errors.Is(err, coreconfirmation.ErrExpired) || replayed.State != coreconfirmation.StateExpired {
+		t.Fatalf("expiry replay: %#v %v", replayed, err)
+	}
+	consume.Binding.TargetRevision++
+	if _, err := r.ConsumeLifecycle(context.Background(), consume); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("expiry changed replay: %v", err)
+	}
+	if _, ok := r.reservations[res.ConfirmationID]; ok {
+		t.Fatal("expired confirmation reserved")
+	}
+	task, _ := r.GetTask(res.TaskID)
+	if task.State != "failed" || task.FailureCode != coreconfirmation.ReasonExpired {
+		t.Fatalf("task: %#v", task)
+	}
+}
+
+func TestCrossKindAndDuplicateSecretGrantsRejected(t *testing.T) {
+	d := strings.Repeat("a", 64)
+	ref := uuid.NewString()
+	c, i := testInspection(t, KindSkill, SourceGitHub)
+	i.SecretGrants = []SecretGrantDescriptor{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, BindingDigest: d, Configured: true}}
+	i.Candidate = c
+	r := NewMemoryRepository()
+	if _, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, SecretInputs: []SecretInput{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, Value: "x"}}}); err == nil {
+		t.Fatal("cross-kind secret accepted")
+	}
+	i.SecretGrants = []SecretGrantDescriptor{{ReferenceID: ref, Purpose: SecretPurposeSkillSecret, BindingDigest: d, Configured: true}, {ReferenceID: ref, Purpose: SecretPurposeSkillSecret, BindingDigest: d, Configured: true}}
+	if _, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, SecretInputs: []SecretInput{{ReferenceID: ref, Purpose: SecretPurposeSkillSecret, Value: "x"}}}); err == nil {
+		t.Fatal("duplicate grant accepted")
+	}
+}
+
+func TestUninstallClearsActiveGrantsButRetainsVersionGrantHistory(t *testing.T) {
+	ref := uuid.NewString()
+	c, i := testInspection(t, KindMCP, SourceOfficialRegistry)
+	secret := "history-secret"
+	i.SecretGrants = []SecretGrantDescriptor{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, BindingDigest: SecretInput{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, Value: secret}.Fingerprint(), Configured: true}}
+	r := NewMemoryRepository()
+	res, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, SecretInputs: []SecretInput{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, Value: secret}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed := completeInstall(t, r, res, true)
+	cur, _ := r.Get(context.Background(), installed.ID)
+	u, err := r.RemoveMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), InstallationID: cur.ID, ExpectedRevision: cur.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := r.GetLifecycleRecord(context.Background(), u.Installation.ID)
+	if _, err = r.ConfirmLifecycle(context.Background(), coreconfirmation.ConfirmCommand{ConfirmationID: u.ConfirmationID, IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTaskFence(coreconfirmation.TaskFence{TaskID: u.TaskID, State: "running", Attempt: 1, LeaseEpoch: 1, Revision: 4})
+	if _, err = r.ConsumeLifecycle(context.Background(), coreconfirmation.ConsumeCommand{ConfirmationID: u.ConfirmationID, IdempotencyKey: uuid.NewString(), TaskID: u.TaskID, Attempt: 1, LeaseEpoch: 1, ExpectedRevision: 2, ExpectedTaskRevision: 4, Binding: rec.Binding}); err != nil {
+		t.Fatal(err)
+	}
+	r.SetTerminalTaskFence(u.TaskID, 1, 2, 5)
+	out, err := r.CompleteLifecycle(context.Background(), Completion{InstallationID: u.Installation.ID, Operation: OperationUninstall, ConfirmationID: u.ConfirmationID, TaskID: u.TaskID, Attempt: 1, LeaseEpoch: 1, AcquiredTaskRevision: 4, TerminalAttempt: 1, TerminalLeaseEpoch: 2, TerminalTaskRevision: 5, ExpectedRevision: u.Installation.Revision, OutcomeDigest: strings.Repeat("f", 64), Success: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.SecretGrants) != 0 || len(out.Versions) == 0 || len(out.Versions[0].SecretGrants) == 0 {
+		t.Fatalf("history grants lost: %#v", out)
+	}
+}
+
+type testAdapter struct {
+	inspection Inspection
+	artifact   FetchArtifact
+}
+
+func (a testAdapter) Search(context.Context, SearchQuery) (Page, error) { return Page{}, nil }
+func (a testAdapter) Inspect(context.Context, InspectRequest) (Inspection, error) {
+	return a.inspection, nil
+}
+func (a testAdapter) Fetch(context.Context, Candidate) (FetchArtifact, error) { return a.artifact, nil }
+
+type testArtifacts struct{ removed int }
+
+func (s *testArtifacts) Materialize(context.Context, FetchArtifact) (ArtifactReceipt, error) {
+	return ArtifactReceipt{RelativePath: "artifacts/x", Digest: digestBytes([]byte("artifact"))}, nil
+}
+func (s *testArtifacts) Remove(context.Context, ArtifactReceipt) error { s.removed++; return nil }
+
+func TestServerSideInspectFetchAndArtifactReceipt(t *testing.T) {
+	d := digestBytes([]byte("artifact"))
+	c := Candidate{ID: "pkg", Kind: KindMCP, Source: SourceOfficialRegistry, Name: "pkg", Pin: SourcePin{RegistryVersion: "1", RegistrySHA256: d}, Transport: TransportStdioStatic}
+	ins := Inspection{Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d, Execution: ExecutionDescriptor{Stdio: &StaticEntry{RelativePath: "bin/run", Digest: d, Argv: []string{"run"}}}}
+	a := testAdapter{inspection: ins, artifact: FetchArtifact{Candidate: c, Content: []byte("artifact"), ContentDigest: d, Inspection: ins}}
+	reg := NewRegistry()
+	if err := reg.Register(SourceOfficialRegistry, a); err != nil {
+		t.Fatal(err)
+	}
+	r := NewMemoryRepository()
+	r.SetSourceRegistry(reg)
+	r.SetArtifactStore(&testArtifacts{})
+	caller := ins
+	caller.ContentDigest = strings.Repeat("b", 64)
+	res, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: caller})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := r.Get(context.Background(), res.Installation.ID)
+	if got.Versions[0].ArtifactPath != "artifacts/x" || got.Versions[0].ArtifactDigest != d {
+		t.Fatalf("artifact receipt: %#v", got.Versions[0])
+	}
+}
+func TestRemoteSecretFingerprintMismatchRejected(t *testing.T) {
+	d := strings.Repeat("a", 64)
+	ref := uuid.NewString()
+	c := Candidate{ID: "remote", Kind: KindMCP, Source: SourceOfficialRegistry, Name: "remote", Pin: SourcePin{RegistryVersion: "1", RegistrySHA256: d}, Transport: TransportStreamableHTTP}
+	i := Inspection{Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d, Execution: ExecutionDescriptor{Remote: &RemoteEndpoint{URL: "https://example.com/mcp", CredentialReferenceID: ref}}, NetworkGrants: []NetworkGrant{{Scheme: "https", Host: "example.com", Port: 443, PathPrefix: "/mcp", Digest: d}}, SecretGrants: []SecretGrantDescriptor{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, BindingDigest: d, Configured: true}}}
+	r := NewMemoryRepository()
+	_, err := r.CreateMutation(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, SecretInputs: []SecretInput{{ReferenceID: ref, Purpose: SecretPurposeMCPCredential, Value: "different"}}})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("secret drift accepted: %v", err)
+	}
+}

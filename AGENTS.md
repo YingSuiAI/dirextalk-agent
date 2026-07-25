@@ -1,34 +1,76 @@
 # Dirextalk Agent
 
-This repository owns the reusable, single-tenant Dirextalk Agent service: Eino runtime, durable tasks, cloud plans, AWS control, Worker protocol, recipes, and managed-resource lifecycle.
+Dirextalk Agent is a private, single-user service for conversations, durable
+tasks, schedules, model API access, MCP, Skills, Knowledge, and typed AWS
+operations. It runs outside the owning product's business server and owns all
+Agent data.
 
-`docs/delivery-tracker.md` is the authoritative goal and progress ledger. Read its fixed decisions and the current highest-priority incomplete stage before implementation. Check an item only after its observable capability and stage checks pass; do not create competing task plans in other repositories.
+## Source of truth
 
-## Boundaries
+- [docs/core-v1-development-spec.md](docs/core-v1-development-spec.md) is the
+  approved Core v1 product and implementation target.
+- [docs/delivery-tracker.md](docs/delivery-tracker.md) records the current
+  implementation gap and delivery order.
+- Versioned Protobuf under `api/proto/dirextalk/agent/v1` is the implemented
+  public API. It may be changed while establishing Core v1; update its contract
+  documentation in the same change.
+- `migrations` is the sole Agent database schema authority.
 
-- The canonical public API is versioned Protobuf/gRPC under `api/proto/dirextalk/agent/v1`.
-- One deployment serves one project and one Agent-owned PostgreSQL database/role. It may share the same PostgreSQL 18 server or container with Message Server, but never its database, schema, role, or migrations. `agent_instance_id` is immutable and is part of every cloud-resource ownership tag.
-- The control service is one non-root process/container. It may use typed AWS SDK clients but must never execute user shell commands or expose arbitrary AWS APIs to an LLM.
-- Root automation runs only inside an exclusive Cloud Worker VM. Workers never receive IAM, EC2, EBS, or foundation-control credentials.
-- Service keys authenticate caller services only. Spending, network exposure, secret delivery, managed acceptance, and destruction require a separately verified device approval.
-- Secrets enter only through mounted secret files or the encrypted bootstrap protocol. Never place secret material in prompts, ordinary gRPC messages, logs, events, tests, fixtures, command arguments, or Git.
-- Keep this repository independent from Matrix, ProductCore, Flutter routes, MXIDs, Dirextalk rooms, deployer scripts, updater logic, Connect, and vNext Run contracts.
-- Use Go and CloudFormation YAML. Do not add Node/npm, AWS CLI orchestration, local MCP daemons, Docker socket access, or raw provider passthrough.
+## Core v1 boundaries
 
-## Structure
+- One Agent instance serves one user and belongs to exactly one Dirextalk
+  product deployment. It is never shared between old and vNext products.
+- Core v1 changes only this repository. Message Server, Flutter, vNext Server,
+  and vNext Client adapters are deferred.
+- Keep Go, Eino, PostgreSQL, and Protobuf/gRPC as the primary stack.
+- Agent owns conversations, Tasks, events, results, schedules, model profiles,
+  prompts, MCP/Skill installations, Knowledge metadata, and AWS configuration.
+- TLS gRPC plus one deployment-generated service token file authenticates the
+  future business-server proxy. The token is not stored in PostgreSQL; rotation
+  is an atomic file replacement plus restart. Do not add remote token
+  management, multi-user RBAC, or caller scopes.
+- Agent is a trusted private service and may persist plaintext user-supplied
+  model, MCP, and AWS credentials. Do not return stored secret values from
+  ordinary read/list APIs or place them in test fixtures or Git.
+- MCP and Skill installation, upgrade, and removal require a revision- and
+  digest-bound user confirmation. Third-party code runs through the separate
+  Linux extension runner under another UID and namespaces, with a task
+  workspace and only explicitly granted secrets; never fall back to in-process
+  execution when isolation is unavailable.
+- AWS calls use typed SDK clients. Any operation that creates, updates, exposes,
+  spends, or destroys enters the common user-confirmation flow before mutation.
+- Do not add Agent clusters, Agent Pools, Graph/DAG authoring, multi-tenancy,
+  task priority, REST public APIs, or a standalone admin UI.
 
-- `cmd/dirextalk-agent`: control service and migration entry point.
-- `cmd/dirextalk-cloud-worker`: exclusive VM Worker.
-- `cmd/dirextalk-aws-reaper`: AWS-side expiry safety net.
-- `internal/task`: task, step, lease, idempotency, and event domain.
-- `internal/agent`: generic Eino runtime and native skills.
-- `internal/cloud`, `internal/awsprovider`, `internal/awsfoundation`: typed cloud control.
-- `internal/worker`, `internal/recipe`: Worker protocol and validated recipes.
-- `migrations`: the only Agent database schema authority.
+## Configuration and migrations
 
-## Work And Verification
+- Process configuration remains strict YAML loaded through Viper. The default
+  path is `/etc/dirextalk-agent/config.yaml`.
+- Process YAML may name the protected `service_token_file`; it never contains
+  the token value.
+- Mutable user configuration and credentials belong in the Agent-owned
+  PostgreSQL database, not process YAML.
+- Core v1 has no legacy database or public API compatibility requirement. A
+  clean schema baseline may replace legacy migrations, but once the Core v1
+  baseline is committed its versions and checksums become immutable.
+- Large installed packages, task workspaces, uploaded files, and generated
+  artifacts live under the configured Agent data directory; PostgreSQL stores
+  their relative paths and digests.
 
-Implement one observable workflow at a time. Add boundary-first tests for authentication, approvals, persistence, concurrency, billing mutations, and public contracts; batch internal scaffolding. At stage close run the affected tests, build all commands, inspect the accumulated diff once, and update `docs/delivery-tracker.md`.
+## Working rules
+
+1. Work on one observable Core v1 workflow at a time and preserve unrelated
+   user changes.
+2. Read the affected code, Protobuf, migration, and Core v1 contract before
+   changing behavior.
+3. Use the durable Task/event path for model, MCP, Skill, Knowledge, and AWS
+   background work rather than creating parallel execution histories.
+4. Add boundary-first tests for authentication, idempotency, persistence,
+   scheduling, cancellation, confirmation, restricted execution, and recovery.
+5. Update the Core v1 spec, delivery tracker, API contract, and operational
+   documentation whenever behavior changes.
+6. Real AWS mutation checks require an authorized disposable account and
+   independent resource read-back.
 
 Typical checks:
 
@@ -39,7 +81,3 @@ go build ./cmd/...
 buf lint
 git diff --check
 ```
-
-Run PostgreSQL and real-AWS tests only through their explicit integration/release lanes. Real cloud tests require an authorized disposable account and must finish with independent resource read-back.
-
-IDE run configurations are optional local tooling. Never expose their environment values.

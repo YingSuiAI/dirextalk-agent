@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-
-	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 )
 
 type clientSession struct {
@@ -140,23 +138,23 @@ func (s *clientSession) listTools(ctx context.Context) ([]remoteTool, error) {
 	return nil, ErrProtocol
 }
 
-func (s *clientSession) callTool(ctx context.Context, name string, arguments map[string]any) (runtimeapi.ToolResult, error) {
+func (s *clientSession) callTool(ctx context.Context, name string, arguments map[string]any) (ToolResult, error) {
 	result, _, err := s.request(ctx, "tools/call", map[string]any{
 		"name": name, "arguments": arguments,
 	}, true)
 	if err != nil {
-		return runtimeapi.ToolResult{}, err
+		return ToolResult{}, err
 	}
 	return decodeCallToolResult(result)
 }
 
-func decodeCallToolResult(data json.RawMessage) (runtimeapi.ToolResult, error) {
+func decodeCallToolResult(data json.RawMessage) (ToolResult, error) {
 	var result struct {
 		Content []json.RawMessage `json:"content"`
 		IsError bool              `json:"isError"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil || result.Content == nil {
-		return runtimeapi.ToolResult{}, ErrProtocol
+		return ToolResult{}, ErrProtocol
 	}
 	texts := make([]string, 0, len(result.Content))
 	for _, rawContent := range result.Content {
@@ -165,13 +163,13 @@ func decodeCallToolResult(data json.RawMessage) (runtimeapi.ToolResult, error) {
 			Text string `json:"text"`
 		}
 		if err := json.Unmarshal(rawContent, &content); err != nil {
-			return runtimeapi.ToolResult{}, ErrProtocol
+			return ToolResult{}, ErrProtocol
 		}
 		if content.Type == "text" {
 			texts = append(texts, content.Text)
 		}
 	}
-	return runtimeapi.ToolResult{
+	return ToolResult{
 		Content: sanitizeToolResult(strings.Join(texts, "\n")),
 		IsError: result.IsError,
 	}, nil

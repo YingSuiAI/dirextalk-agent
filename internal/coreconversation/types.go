@@ -1,0 +1,619 @@
+// Package coreconversation contains the Core v1 conversation domain boundary.
+package coreconversation
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/google/uuid"
+)
+
+const (
+	MaxMessages              = 1000
+	MaxContentBytes          = 1 << 20
+	MaxToolArgumentsBytes    = 256 << 10
+	MaxToolResultsBytes      = 1 << 20
+	MaxToolCallIDBytes       = 256
+	MaxToolNameBytes         = 256
+	MaxToolCallsPerMessage   = 64
+	MaxToolResultsPerMessage = 64
+	MaxRelatedTaskIDs        = 32
+	MaxSummaryBytes          = 4096
+)
+
+type Role string
+
+const (
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
+)
+
+type ToolCall struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Arguments   string `json:"arguments"`
+	ExecutionID string `json:"execution_id,omitempty"`
+}
+type ToolResult struct {
+	CallID         string   `json:"call_id"`
+	ToolName       string   `json:"tool_name,omitempty"`
+	Content        string   `json:"content"`
+	IsError        bool     `json:"is_error,omitempty"`
+	RelatedTaskIDs []string `json:"related_task_ids,omitempty"`
+	Summary        string   `json:"summary,omitempty"`
+}
+
+type Message struct {
+	ID             string       `json:"id"`
+	Role           Role         `json:"role"`
+	Content        string       `json:"content,omitempty"`
+	ToolCalls      []ToolCall   `json:"tool_calls,omitempty"`
+	ToolResults    []ToolResult `json:"tool_results,omitempty"`
+	CreatedAt      time.Time    `json:"created_at"`
+	ModelProfileID string       `json:"model_profile_id"`
+	RelatedTaskIDs []string     `json:"related_task_ids,omitempty"`
+	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
+}
+
+type Conversation struct {
+	ID        string     `json:"id"`
+	Title     string     `json:"title,omitempty"`
+	Revision  uint64     `json:"revision"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	Messages  []Message  `json:"messages"`
+}
+
+type ExtensionSelection struct {
+	Kind         ExtensionKind `json:"kind"`
+	ID           string        `json:"id"`
+	Version      string        `json:"version"`
+	Digest       string        `json:"digest"`
+	AllowedTools []string      `json:"allowed_tools,omitempty"`
+}
+
+type ExtensionKind string
+
+const (
+	ExtensionMCP       ExtensionKind = "mcp"
+	ExtensionSkill     ExtensionKind = "skill"
+	ExtensionKnowledge ExtensionKind = "knowledge"
+)
+
+type ChatCommand struct {
+	RequestID        string               `json:"request_id"`
+	ConversationID   string               `json:"conversation_id,omitempty"`
+	Prompt           string               `json:"prompt"`
+	ProfileID        string               `json:"profile_id"`
+	Extensions       []ExtensionSelection `json:"extensions,omitempty"`
+	ExpectedRevision *uint64              `json:"expected_revision,omitempty"`
+	LeaseTTL         time.Duration        `json:"-"`
+}
+
+type ChatResponse struct {
+	RequestID      string       `json:"request_id"`
+	ConversationID string       `json:"conversation_id"`
+	Revision       uint64       `json:"revision"`
+	Message        Message      `json:"message"`
+	Done           bool         `json:"done"`
+	ModelProfileID string       `json:"model_profile_id"`
+	RelatedTaskIDs []string     `json:"related_task_ids,omitempty"`
+	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
+	ToolResults    []ToolResult `json:"tool_results,omitempty"`
+}
+
+type StreamEventKind string
+
+const (
+	EventStarted    StreamEventKind = "started"
+	EventDelta      StreamEventKind = "delta"
+	EventToolCall   StreamEventKind = "tool_call"
+	EventToolResult StreamEventKind = "tool_result"
+	EventDone       StreamEventKind = "done"
+	EventError      StreamEventKind = "error"
+)
+
+type StreamEvent struct {
+	Kind           StreamEventKind `json:"kind"`
+	RequestID      string          `json:"request_id"`
+	ConversationID string          `json:"conversation_id"`
+	Text           string          `json:"text,omitempty"`
+	ToolCall       *ToolCall       `json:"tool_call,omitempty"`
+	ToolResult     *ToolResult     `json:"tool_result,omitempty"`
+	Response       *ChatResponse   `json:"response,omitempty"`
+	Err            string          `json:"error,omitempty"`
+	ErrCode        string          `json:"error_code,omitempty"`
+	ErrSummary     string          `json:"error_summary,omitempty"`
+}
+
+type ClaimStatus string
+
+const (
+	ClaimNew       ClaimStatus = "new"
+	ClaimInFlight  ClaimStatus = "in_flight"
+	ClaimCompleted ClaimStatus = "completed"
+	ClaimConflict  ClaimStatus = "conflict"
+	ClaimReclaimed ClaimStatus = "reclaimed"
+	ClaimFailed    ClaimStatus = "failed"
+)
+
+type ChatLease struct {
+	RequestID, Fingerprint, ConversationID string
+	LeaseID                                string
+	ExpiresAt                              time.Time
+	Status                                 ClaimStatus
+	Epoch                                  uint64
+	ProfileID                              string
+	Extensions                             []ExtensionSelection
+	Response                               *ChatResponse
+	FailureCode                            string
+	FailureSummary                         string
+	ProfileSnapshot                        coremodel.ExecutionSnapshot `json:"-"`
+	ProfileSnapshotDigest                  string                      `json:"-"`
+}
+
+func (l ChatLease) String() string {
+	type redacted struct {
+		RequestID, Fingerprint, ConversationID string
+		LeaseID                                string
+		ExpiresAt                              time.Time
+		Status                                 ClaimStatus
+		Epoch                                  uint64
+		ProfileID                              string
+		ProfileSnapshotDigest                  string
+	}
+	return fmt.Sprintf("%+v", redacted{l.RequestID, l.Fingerprint, l.ConversationID, l.LeaseID, l.ExpiresAt, l.Status, l.Epoch, l.ProfileID, l.ProfileSnapshotDigest})
+}
+
+func (l ChatLease) GoString() string { return l.String() }
+
+type ChatStart struct {
+	Command      ChatCommand
+	Fingerprint  string
+	Lease        ChatLease
+	Conversation Conversation
+}
+type AtomicCompletion struct {
+	RequestID, LeaseID, Fingerprint string
+	ExpectedRevision                uint64
+	Conversation                    Conversation
+	Response                        ChatResponse
+	Epoch                           uint64
+}
+
+type ModelRunRequest struct {
+	Conversation    Conversation
+	Profile         ResolvedProfile
+	Snapshot        coremodel.ExecutionSnapshot
+	ProfileSnapshot coremodel.ExecutionSnapshot
+	Extensions      []ResolvedExtension
+}
+type ModelRunResult struct {
+	Message        Message
+	ToolCalls      []ToolCall
+	Done           bool
+	RelatedTaskIDs []string
+	ToolSummaries  []string
+}
+type ResolvedProfile struct {
+	ID           string
+	DisplayName  string
+	Provider     string
+	Model        string
+	SystemPrompt string
+}
+type ResolvedExtension struct {
+	Selection ExtensionSelection
+	Execute   func(context.Context, ToolExecutionRequest) (ToolResult, error)
+}
+type ToolExecutionRequest struct {
+	RequestID       string
+	ToolCallID      string
+	ExecutionID     string
+	ArgsDigest      string
+	ExtensionDigest string
+	Call            ToolCall
+}
+
+type ConversationStore interface {
+	CreateConversation(context.Context, Conversation, string) error
+	LoadConversation(context.Context, string) (Conversation, error)
+	ListConversations(context.Context, string, int) ([]Conversation, string, error)
+	SaveConversation(context.Context, Conversation, uint64) error
+	DeleteConversation(context.Context, string, uint64) error
+}
+type CreateConversationCommand struct {
+	RequestID    string
+	Conversation Conversation
+	Fingerprint  string
+}
+type DeleteConversationCommand struct {
+	RequestID        string
+	ConversationID   string
+	ExpectedRevision uint64
+	Fingerprint      string
+}
+type ConversationMutationResponse struct {
+	Conversation Conversation
+	RequestID    string
+	Deleted      bool
+}
+type ConversationMutationStore interface {
+	CreateConversationMutation(context.Context, CreateConversationCommand) (ConversationMutationResponse, error)
+	DeleteConversationMutation(context.Context, DeleteConversationCommand) (ConversationMutationResponse, error)
+}
+
+func (c CreateConversationCommand) Validate() error {
+	if !validUUID(c.RequestID) || !validUUID(c.Conversation.ID) || c.Conversation.Revision == 0 || len(c.Conversation.Messages) != 0 || len(c.Conversation.Title) > 512 || !utf8.ValidString(c.Conversation.Title) || c.Conversation.DeletedAt != nil || c.Fingerprint == "" || c.Fingerprint != digestConversation(c.Conversation) {
+		return ErrInvalid
+	}
+	return nil
+}
+func (c DeleteConversationCommand) Validate() error {
+	if !validUUID(c.RequestID) || !validUUID(c.ConversationID) || c.ExpectedRevision == 0 || c.Fingerprint == "" || c.Fingerprint != digest(fmt.Sprintf("%s:%d", c.ConversationID, c.ExpectedRevision)) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+type ChatLedger interface {
+	ClaimChat(context.Context, string, string, string, string, []ExtensionSelection, time.Time, time.Duration) (ChatLease, error)
+	RenewChat(context.Context, string, string, uint64, time.Time, time.Duration) (ChatLease, error)
+	ReleaseChat(context.Context, string, string, uint64) error
+	FailChat(context.Context, string, string, uint64, string, string) error
+}
+type ChatProfileSnapshotBinder interface {
+	BindChatProfileSnapshot(context.Context, string, string, uint64, string, coremodel.ExecutionSnapshot) (ChatLease, error)
+}
+type ToolExecutionLedger interface {
+	ClaimToolExecution(context.Context, string, string, string, string, time.Time, time.Duration) (ToolLease, error)
+	MarkToolDispatched(context.Context, string, string, string, uint64) error
+	CompleteToolExecution(context.Context, ToolCompletion) (ToolResult, error)
+	TerminalizeToolUncertain(context.Context, string, string, string, uint64, string, uint64, string, string) error
+	RenewToolExecution(context.Context, string, string, string, uint64, time.Time, time.Duration) (ToolLease, error)
+	ReleaseToolExecution(context.Context, string, string, string, uint64) error
+}
+type Store interface {
+	ConversationStore
+	ConversationMutationStore
+	ChatLedger
+	ToolExecutionLedger
+	CommitChatCompletion(context.Context, AtomicCompletion) (ChatResponse, error)
+	LoadModelStep(context.Context, string, string, string, uint64, string, int) (ModelRunResult, bool, error)
+	RecordModelStep(context.Context, string, string, string, uint64, string, int, ModelRunResult) error
+}
+type ModelRunner interface {
+	Run(context.Context, ModelRunRequest) (ModelRunResult, error)
+}
+type StreamingModelRunner interface {
+	Stream(context.Context, ModelRunRequest, func(ModelDelta) error) (ModelRunResult, error)
+}
+type ModelDelta struct {
+	Text     string
+	ToolCall *ToolCall
+}
+type ExtensionResolver interface {
+	ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)
+}
+
+// SnapshotProfileResolver is used only to bind a new request. Recovery uses
+// the immutable snapshot persisted on its ChatLease.
+type SnapshotProfileResolver interface {
+	ResolveProfileSnapshot(context.Context, string) (coremodel.ExecutionSnapshot, error)
+}
+
+// CoreModelProfileResolver adapts the model domain resolver to the
+// conversation snapshot boundary without exposing credentials in public
+// conversation values.
+type CoreModelProfileResolver struct {
+	Resolver interface {
+		ResolveProfile(context.Context, string) (coremodel.Profile, error)
+	}
+}
+
+func AdaptProfileResolver(r interface {
+	ResolveProfile(context.Context, string) (coremodel.Profile, error)
+}) CoreModelProfileResolver {
+	return CoreModelProfileResolver{Resolver: r}
+}
+
+func (a CoreModelProfileResolver) ResolveProfileSnapshot(ctx context.Context, id string) (coremodel.ExecutionSnapshot, error) {
+	if a.Resolver == nil {
+		return coremodel.ExecutionSnapshot{}, ErrInvalid
+	}
+	p, err := a.Resolver.ResolveProfile(ctx, id)
+	if err != nil {
+		return coremodel.ExecutionSnapshot{}, err
+	}
+	s := coremodel.SnapshotFromProfile(p)
+	if err := s.Validate(); err != nil {
+		return coremodel.ExecutionSnapshot{}, err
+	}
+	return s, nil
+}
+
+type ToolClaimStatus string
+
+const (
+	ToolClaimNew        ToolClaimStatus = "new"
+	ToolClaimInFlight   ToolClaimStatus = "in_flight"
+	ToolClaimCompleted  ToolClaimStatus = "completed"
+	ToolClaimConflict   ToolClaimStatus = "conflict"
+	ToolClaimReclaimed  ToolClaimStatus = "reclaimed"
+	ToolClaimDispatched ToolClaimStatus = "dispatched"
+	ToolClaimUncertain  ToolClaimStatus = "uncertain"
+)
+
+type ToolLease struct {
+	RequestID, ToolCallID, LeaseID string
+	Epoch                          uint64
+	ExpiresAt                      time.Time
+	Status                         ToolClaimStatus
+	Result                         *ToolResult
+	ExecutionID                    string
+	ArgsDigest                     string
+	ExtensionDigest                string
+}
+type ToolCompletion struct {
+	RequestID, ToolCallID, LeaseID string
+	Epoch                          uint64
+	ArgsDigest, ExtensionDigest    string
+	Result                         ToolResult
+}
+
+var (
+	ErrInvalid      = errors.New("invalid conversation request")
+	ErrConflict     = errors.New("conversation conflict")
+	ErrInFlight     = errors.New("chat request in flight")
+	ErrCanceled     = errors.New("chat canceled")
+	ErrLeaseExpired = errors.New("chat lease expired")
+	ErrDeleted      = errors.New("conversation deleted")
+	ErrChatFailed   = errors.New("chat failed")
+)
+
+func validUUID(s string) bool {
+	id, err := uuid.Parse(s)
+	return err == nil && id != uuid.Nil && strings.ToLower(s) == id.String()
+}
+func validateText(s string, max int) error {
+	if strings.TrimSpace(s) == "" || len(s) > max || !utf8.ValidString(s) {
+		return ErrInvalid
+	}
+	return nil
+}
+func (c ToolCall) Validate() error {
+	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.Name) == "" || len(c.ID) > MaxToolCallIDBytes || len(c.Name) > MaxToolNameBytes || len(c.ExecutionID) > MaxToolCallIDBytes || len(c.Arguments) > MaxToolArgumentsBytes || !utf8.ValidString(c.ID) || !utf8.ValidString(c.Name) || !utf8.ValidString(c.ExecutionID) || !utf8.ValidString(c.Arguments) {
+		return ErrInvalid
+	}
+	var v any
+	if err := json.Unmarshal([]byte(c.Arguments), &v); err != nil {
+		return fmt.Errorf("%w: tool arguments", ErrInvalid)
+	}
+	if _, ok := v.(map[string]any); !ok {
+		return fmt.Errorf("%w: tool arguments must be object", ErrInvalid)
+	}
+	return nil
+}
+func (r ToolResult) Validate() error {
+	if strings.TrimSpace(r.CallID) == "" || !utf8.ValidString(r.CallID) {
+		return ErrInvalid
+	}
+	if len(r.ToolName) > MaxToolNameBytes || !utf8.ValidString(r.ToolName) {
+		return ErrInvalid
+	}
+	if err := validateText(r.Content, MaxToolResultsBytes); err != nil {
+		return err
+	}
+	if len(r.RelatedTaskIDs) > MaxRelatedTaskIDs || len(r.Summary) > MaxSummaryBytes || !utf8.ValidString(r.Summary) {
+		return ErrInvalid
+	}
+	for _, id := range r.RelatedTaskIDs {
+		if !validUUID(id) {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+func (m Message) Validate() error {
+	if !validUUID(m.ID) || m.CreatedAt.IsZero() || m.CreatedAt.Location() != time.UTC || !validUUID(m.ModelProfileID) || len(m.ToolCalls) > MaxToolCallsPerMessage || len(m.ToolResults) > MaxToolResultsPerMessage {
+		return ErrInvalid
+	}
+	if len(m.RelatedTaskIDs) > MaxRelatedTaskIDs || len(m.ToolSummaries) > MaxRelatedTaskIDs {
+		return ErrInvalid
+	}
+	for _, id := range m.RelatedTaskIDs {
+		if !validUUID(id) {
+			return ErrInvalid
+		}
+	}
+	for _, s := range m.ToolSummaries {
+		if len(s) > MaxSummaryBytes || !utf8.ValidString(s) || strings.TrimSpace(s) == "" {
+			return ErrInvalid
+		}
+	}
+	switch m.Role {
+	case RoleSystem, RoleUser, RoleAssistant, RoleTool:
+	default:
+		return ErrInvalid
+	}
+	if len(m.Content) > MaxContentBytes {
+		return ErrInvalid
+	}
+	if m.Role != RoleTool && len(m.ToolResults) > 0 {
+		return ErrInvalid
+	}
+	for _, c := range m.ToolCalls {
+		if m.Role != RoleAssistant || c.Validate() != nil {
+			return ErrInvalid
+		}
+	}
+	for _, r := range m.ToolResults {
+		if r.Validate() != nil {
+			return ErrInvalid
+		}
+	}
+	if m.Content == "" && len(m.ToolCalls) == 0 && len(m.ToolResults) == 0 {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func (c Conversation) ValidateForPersistence() error {
+	if !validUUID(c.ID) || len(c.Title) > 512 || !utf8.ValidString(c.Title) || c.Revision == 0 || len(c.Messages) > MaxMessages || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() || c.CreatedAt.Location() != time.UTC || c.UpdatedAt.Location() != time.UTC || c.UpdatedAt.Before(c.CreatedAt) {
+		return ErrInvalid
+	}
+	if c.DeletedAt != nil && (c.DeletedAt.IsZero() || c.DeletedAt.Location() != time.UTC || c.DeletedAt.Before(c.UpdatedAt)) {
+		return ErrInvalid
+	}
+	seen := map[string]bool{}
+	knownCalls := map[string]bool{}
+	var previous time.Time
+	for _, m := range c.Messages {
+		if m.Validate() != nil || seen[m.ID] {
+			return ErrInvalid
+		}
+		seen[m.ID] = true
+		if !previous.IsZero() && !m.CreatedAt.After(previous) {
+			return ErrInvalid
+		}
+		previous = m.CreatedAt
+		for _, call := range m.ToolCalls {
+			knownCalls[call.ID] = true
+		}
+		for _, result := range m.ToolResults {
+			if !knownCalls[result.CallID] {
+				return ErrInvalid
+			}
+		}
+	}
+	return nil
+}
+
+func (c Conversation) Delete(expectedRevision uint64, now time.Time) (Conversation, error) {
+	if err := c.ValidateForPersistence(); err != nil {
+		return Conversation{}, err
+	}
+	if c.DeletedAt != nil || c.Revision != expectedRevision {
+		return Conversation{}, ErrConflict
+	}
+	now = now.UTC()
+	c.DeletedAt = &now
+	c.Revision++
+	c.UpdatedAt = now
+	return c, nil
+}
+func (c Conversation) Validate() error {
+	if c.DeletedAt != nil {
+		return ErrDeleted
+	}
+	return c.ValidateForPersistence()
+}
+func (s ExtensionSelection) Validate() error {
+	if !validUUID(s.ID) || (s.Kind != ExtensionMCP && s.Kind != ExtensionSkill && s.Kind != ExtensionKnowledge) || strings.TrimSpace(s.Version) == "" || strings.TrimSpace(s.Digest) == "" || !utf8.ValidString(s.Version) || !utf8.ValidString(s.Digest) {
+		return ErrInvalid
+	}
+	for _, t := range s.AllowedTools {
+		if strings.TrimSpace(t) == "" {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+func (c ChatCommand) Validate() error {
+	if !validUUID(c.RequestID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || !validUUID(c.ProfileID) {
+		return ErrInvalid
+	}
+	if err := validateText(c.Prompt, MaxContentBytes); err != nil {
+		return err
+	}
+	for _, e := range c.Extensions {
+		if e.Validate() != nil {
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+func (c ChatCommand) Fingerprint() (string, error) {
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	type normalized struct {
+		ConversationID, Prompt, ProfileID string
+		Extensions                        []ExtensionSelection
+		ExpectedRevision                  *uint64
+	}
+	exts := append([]ExtensionSelection(nil), c.Extensions...)
+	for i := range exts {
+		exts[i].AllowedTools = append([]string(nil), exts[i].AllowedTools...)
+		sort.Strings(exts[i].AllowedTools)
+	}
+	sort.Slice(exts, func(i, j int) bool {
+		if exts[i].Kind != exts[j].Kind {
+			return exts[i].Kind < exts[j].Kind
+		}
+		if exts[i].ID != exts[j].ID {
+			return exts[i].ID < exts[j].ID
+		}
+		return exts[i].Version < exts[j].Version
+	})
+	uniq := exts[:0]
+	for _, e := range exts {
+		if len(uniq) == 0 || uniq[len(uniq)-1].Kind != e.Kind || uniq[len(uniq)-1].ID != e.ID || uniq[len(uniq)-1].Version != e.Version || uniq[len(uniq)-1].Digest != e.Digest {
+			uniq = append(uniq, e)
+		}
+	}
+	n := normalized{c.ConversationID, c.Prompt, c.ProfileID, uniq, c.ExpectedRevision}
+	b, err := json.Marshal(n)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:]), nil
+}
+
+func (c ChatCommand) NormalizedExtensions() []ExtensionSelection {
+	exts := append([]ExtensionSelection(nil), c.Extensions...)
+	for i := range exts {
+		exts[i].AllowedTools = append([]string(nil), exts[i].AllowedTools...)
+		sort.Strings(exts[i].AllowedTools)
+	}
+	sort.Slice(exts, func(i, j int) bool {
+		if exts[i].Kind != exts[j].Kind {
+			return exts[i].Kind < exts[j].Kind
+		}
+		if exts[i].ID != exts[j].ID {
+			return exts[i].ID < exts[j].ID
+		}
+		return exts[i].Version < exts[j].Version
+	})
+	uniq := exts[:0]
+	for _, e := range exts {
+		if len(uniq) == 0 || uniq[len(uniq)-1].Kind != e.Kind || uniq[len(uniq)-1].ID != e.ID || uniq[len(uniq)-1].Version != e.Version || uniq[len(uniq)-1].Digest != e.Digest {
+			uniq = append(uniq, e)
+		}
+	}
+	return uniq
+}
+
+func (c Conversation) Snapshot() Conversation {
+	out := c
+	out.Messages = append([]Message(nil), c.Messages...)
+	for i := range out.Messages {
+		out.Messages[i].ToolCalls = append([]ToolCall(nil), out.Messages[i].ToolCalls...)
+		out.Messages[i].ToolResults = append([]ToolResult(nil), out.Messages[i].ToolResults...)
+	}
+	return out
+}
