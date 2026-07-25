@@ -547,11 +547,13 @@ func (service *Service) cleanup(ctx context.Context, validated validatedBuild, c
 		})
 		if providerErr != nil {
 			failed = true
+			builderTerminated = false
 		} else if found {
 			if validateBuilderObservation(observation, validated) != nil {
 				// A deterministic-name collision without the exact build binding
 				// is not ours to terminate.
 				failed = true
+				builderTerminated = false
 			} else {
 				builderID = observation.InstanceID
 			}
@@ -570,7 +572,7 @@ func (service *Service) cleanup(ctx context.Context, validated validatedBuild, c
 			}
 		}
 	}
-	if builderID != "" && service.terminateBuilder(ctx, validated, cleanupState, builderID) != nil {
+	if builderID != "" && service.ensureBuilderTerminated(ctx, validated, cleanupState, builderID) != nil {
 		failed = true
 		builderTerminated = false
 	}
@@ -582,6 +584,10 @@ func (service *Service) cleanup(ctx context.Context, validated validatedBuild, c
 		}
 	}
 	if artifactVersion != "" && service.deleteArtifact(ctx, validated.object, artifactVersion) != nil {
+		failed = true
+	}
+	if builderTerminated && cleanupState != nil && cleanupState.evidence.SchemaVersion != "" &&
+		service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
 		failed = true
 	}
 	if failed {
@@ -705,7 +711,10 @@ func cleanupManifestFromObservation(observation ImageObservationV1, expected val
 	}.normalized()
 }
 
-func (service *Service) terminateBuilder(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, builderID string) error {
+// ensureBuilderTerminated establishes the safety boundary for revoking the
+// builder's temporary network and artifact access. Dependency deletion is
+// verified separately after those capabilities have been removed.
+func (service *Service) ensureBuilderTerminated(ctx context.Context, validated validatedBuild, cleanupState *builderCleanupState, builderID string) error {
 	if cleanupState == nil {
 		return ErrCleanupFailed
 	}
@@ -717,9 +726,6 @@ func (service *Service) terminateBuilder(ctx context.Context, validated validate
 		if cleanupState.evidence.SchemaVersion == "" || cleanupState.evidence.BuilderInstanceID != builderID {
 			return ErrCleanupFailed
 		}
-		if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
-			return ErrCleanupFailed
-		}
 		return nil
 	}
 	if observation.State == BuilderTerminated {
@@ -728,9 +734,6 @@ func (service *Service) terminateBuilder(ctx context.Context, validated validate
 				return ErrCleanupFailed
 			}
 		} else if validateTerminatedBuilderForCleanup(observation, cleanupState.evidence) != nil {
-			return ErrCleanupFailed
-		}
-		if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
 			return ErrCleanupFailed
 		}
 		return nil
@@ -762,9 +765,6 @@ func (service *Service) terminateBuilder(ctx context.Context, validated validate
 		if service.pause(ctx) != nil {
 			return ErrCleanupFailed
 		}
-	}
-	if service.waitBuilderDependenciesAbsent(ctx, cleanupState.evidence) != nil {
-		return ErrCleanupFailed
 	}
 	return nil
 }

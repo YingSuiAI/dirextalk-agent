@@ -456,12 +456,20 @@ func TestBuildDoesNotTerminateBuilderWhenProviderIDsCannotBePersisted(t *testing
 
 func TestBuildFailsClosedAndRetainsEvidenceWhenDependencyReadBackFails(t *testing.T) {
 	request := validBuildRequest(t)
+	request.NetworkMode = NetworkModeS3GatewayV2
+	request.FoundationStackName = "dtx-agent-abc-foundation"
+	request.FoundationStackID = "arn:aws:cloudformation:us-west-2:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555"
+	request.FoundationVPCID = "vpc-0123456789abcdef0"
+	request.FoundationRouteTableID = "rtb-0123456789abcdef0"
+	request.S3PrefixListID = "pl-0123456789abcdef0"
+	request.RecordBuilderReachabilityEvidence = func(BuilderReachabilityEvidenceV2) error { return nil }
 	var recorded BuilderCleanupEvidenceV1
 	request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
 		recorded = evidence
 		return nil
 	}
 	provider := newFakeProvider(request)
+	provider.supportReachability = true
 	provider.failBuilderVolumeReadBack = true
 
 	manifest, err := newTestService(t, provider).Build(context.Background(), request)
@@ -474,8 +482,54 @@ func TestBuildFailsClosedAndRetainsEvidenceWhenDependencyReadBackFails(t *testin
 	if provider.builder.State != BuilderTerminated || !provider.builderVolumeFound {
 		t.Fatalf("unexpected cleanup state: builder=%#v volume_found=%v", provider.builder, provider.builderVolumeFound)
 	}
+	if provider.reachabilityPresent || provider.artifactFound || provider.deleteArtifactCalls != 1 {
+		t.Fatalf("revocable capabilities survived dependency read-back failure: %#v", provider.calls)
+	}
+	terminateIndex := callIndex(provider.calls, "terminate-builder")
+	reachabilityIndex := callIndex(provider.calls, "cleanup-reachability")
+	artifactIndex := callIndex(provider.calls, "delete-artifact")
+	volumeIndex := callIndex(provider.calls, "observe-builder-volume")
+	if terminateIndex < 0 || reachabilityIndex <= terminateIndex || artifactIndex <= reachabilityIndex || volumeIndex <= artifactIndex {
+		t.Fatalf("cleanup phases ran out of order: %#v", provider.calls)
+	}
 	if err := newTestService(t, provider).VerifyBuilderCleanup(context.Background(), recorded); !errors.Is(err, ErrProviderOperation) {
 		t.Fatalf("VerifyBuilderCleanup(read-back denied) = %v", err)
+	}
+}
+
+func TestBuildRetainsReachabilityWhenBuilderTerminationCannotBeProven(t *testing.T) {
+	request := validBuildRequest(t)
+	request.NetworkMode = NetworkModeS3GatewayV2
+	request.FoundationStackName = "dtx-agent-abc-foundation"
+	request.FoundationStackID = "arn:aws:cloudformation:us-west-2:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555"
+	request.FoundationVPCID = "vpc-0123456789abcdef0"
+	request.FoundationRouteTableID = "rtb-0123456789abcdef0"
+	request.S3PrefixListID = "pl-0123456789abcdef0"
+	request.RecordBuilderReachabilityEvidence = func(BuilderReachabilityEvidenceV2) error { return nil }
+
+	validated, err := validateBuildRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := newFakeProvider(request)
+	provider.supportReachability = true
+	evidence, err := provider.PrepareBuilderReachability(context.Background(), reachabilityForBuild(validated), nil, request.RecordBuilderReachabilityEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ExistingBuilderReachabilityEvidence = &evidence
+	provider.request = request
+	provider.calls = nil
+	provider.builderFound = true
+	provider.builder = provider.validBuilder(validated)
+	provider.builder.Tags[TagAgentInstanceID] = "22222222-2222-4222-8222-222222222222"
+
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if !errors.Is(err, ErrOwnershipMismatch) || !errors.Is(err, ErrCleanupFailed) || manifest != (ImageManifestV1{}) {
+		t.Fatalf("Build() = %#v, %v", manifest, err)
+	}
+	if !provider.reachabilityPresent || callIndex(provider.calls, "cleanup-reachability") >= 0 || provider.terminateCalls != 0 {
+		t.Fatalf("reachability was revoked without terminal-state proof: %#v", provider.calls)
 	}
 }
 
