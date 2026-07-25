@@ -334,8 +334,21 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	executionErr := executionCtx.Err()
 	renewErr := leaseGuard.Stop()
 	leaseGuard = nil
-	if renewErr != nil || executionErr != nil || err != nil || result.Message.Role != modelapi.RoleAssistant {
-		reportCloudGoalModelFailure(request, "model_execution_failed")
+	failureReason := ""
+	switch {
+	case renewErr != nil:
+		failureReason = "request_lease_renewal_failed"
+	case executionErr != nil:
+		failureReason = "model_execution_context_failed"
+	case errors.Is(err, runtimeapi.ErrStepLimit):
+		failureReason = "model_step_limit_exceeded"
+	case err != nil:
+		failureReason = "model_generation_failed"
+	case result.Message.Role != modelapi.RoleAssistant:
+		failureReason = "model_response_role_invalid"
+	}
+	if failureReason != "" {
+		reportCloudGoalModelFailure(request, capture.failureReason(failureReason))
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	raw, ok := capture.value()
@@ -424,7 +437,7 @@ func (capture *planningCapture) failureReason(fallback string) string {
 	if capture.lastRejection == "" {
 		return fallback
 	}
-	return "capture_rejected_" + capture.lastRejection
+	return fallback + "_after_" + capture.lastRejection
 }
 
 func captureValidationFailureCode(err error) string {

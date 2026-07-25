@@ -149,6 +149,16 @@ func TestEinoCloudGoalPlanningModelRepairsRejectedCaptureWithinOneDurableRequest
 	}
 }
 
+func TestPlanningCaptureFailureReasonKeepsOnlyFixedValidationCode(t *testing.T) {
+	capture := &planningCapture{lastRejection: "planning_recipe_invalid"}
+	if got := capture.failureReason("model_step_limit_exceeded"); got != "model_step_limit_exceeded_after_planning_recipe_invalid" {
+		t.Fatalf("failure reason = %q", got)
+	}
+	if got := (*planningCapture)(nil).failureReason("capture_missing"); got != "capture_missing" {
+		t.Fatalf("nil capture failure reason = %q", got)
+	}
+}
+
 func TestEinoCloudGoalPlanningModelCanonicalizesExactRetainedKnowledgeEvidence(t *testing.T) {
 	request := planningModelStage(cloudskill.StepDraftRecipe, "knowledge-recipe-model")
 	hints := knowledgeprofile.ResearchHints()
