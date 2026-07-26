@@ -584,6 +584,14 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 	if uncertainTask.FailureCode != "extension_execution_uncertain" {
 		t.Fatalf("task failure=%q", uncertainTask.FailureCode)
 	}
+	preflight := coreextension.Mutation{IdempotencyKey: uuid.NewString(), InstallationID: installed.ID, ExpectedRevision: installed.Revision, Candidate: candidate, Inspection: inspection, ArtifactPath: filepath.Join(t.TempDir(), "preflight-update"), ArtifactDigest: strings.Repeat("b", 64)}
+	if _, err = ext.UpdateMutation(ctx, preflight, coreextension.StateUpdating); !errors.Is(err, coreextension.ErrConflict) {
+		t.Fatalf("update bypassed active uncertain reservation: %v", err)
+	}
+	preflight.IdempotencyKey = uuid.NewString()
+	if _, err = ext.RemoveMutation(ctx, preflight); !errors.Is(err, coreextension.ErrConflict) {
+		t.Fatalf("remove bypassed active uncertain reservation: %v", err)
+	}
 	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: execution.ConfirmationID, TaskID: execution.TaskID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
 
 	type lifecycleResult struct {
@@ -611,7 +619,7 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 	go func() {
 		defer wg.Done()
 		<-start
-		out, e := cs.AcknowledgeExtensionExecutionUncertain(ctx, ackCommand)
+		_, e := cs.AcknowledgeExtensionExecutionUncertain(ctx, ackCommand)
 		results <- lifecycleResult{name: "ack", err: e}
 	}()
 	close(start)
