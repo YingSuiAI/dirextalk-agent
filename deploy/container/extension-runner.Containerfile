@@ -9,7 +9,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-extension-runner ./cmd/dirextalk-extension-runner
 RUN install -d -m 0770 -o 65531 -g 65532 /out/run/dirextalk-agent \
     && install -d -m 0700 -o 65531 -g 65531 /out/var/lib/dirextalk-agent/extension-install \
-    /out/var/lib/dirextalk-agent/extension-workspaces /out/var/lib/dirextalk-agent/extension-state
+    /out/var/lib/dirextalk-agent/extension-workspaces /out/var/lib/dirextalk-agent/extension-state \
+    && install -d -m 0755 /out/cgroup
 
 FROM scratch
 ARG VERSION=dev

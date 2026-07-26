@@ -9,7 +9,8 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-core-runner ./cmd/dirextalk-core-runner \
     && install -D -m 0555 -o 65530 -g 65530 /bin/busybox.static /out/usr/local/libexec/dirextalk-core-shell \
-    && install -d -m 0700 -o 65530 -g 65530 /out/var/lib/dirextalk-core-runner/installs /out/var/lib/dirextalk-core-runner/workspaces /out/var/lib/dirextalk-core-runner/state
+    && install -d -m 0700 -o 65530 -g 65530 /out/var/lib/dirextalk-core-runner/installs /out/var/lib/dirextalk-core-runner/workspaces /out/var/lib/dirextalk-core-runner/state \
+    && install -d -m 0755 /out/cgroup
 FROM scratch
 COPY --from=build /out/ /
 USER 65530:65530

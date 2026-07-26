@@ -153,7 +153,10 @@ func validateTrustedDir(p string) error {
 	return nil
 }
 func validateCgroup(p string) error {
-	if !filepath.IsAbs(p) || filepath.Clean(p) != p || p == "/sys/fs/cgroup" || !strings.HasPrefix(p, "/sys/fs/cgroup/") {
+	// Compose mounts only the deployment-created delegated cgroup-v2 subtree
+	// here.  Do not accept a broader cgroup path: the runner must never gain
+	// visibility of the daemon or host cgroup root.
+	if p != "/cgroup" {
 		return fmt.Errorf("invalid cgroup root")
 	}
 	var st unix.Stat_t

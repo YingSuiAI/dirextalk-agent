@@ -95,6 +95,7 @@ type composeIsolationConfig struct {
 		Profiles    []string `yaml:"profiles"`
 		NetworkMode string   `yaml:"network_mode"`
 		Ports       []any    `yaml:"ports"`
+		Command     []string `yaml:"command"`
 		Healthcheck struct {
 			Test []string `yaml:"test"`
 		} `yaml:"healthcheck"`
@@ -173,6 +174,12 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 			test := config.Services[service].Healthcheck.Test
 			if len(test) < 4 || test[0] != "CMD" || test[2] != "probe" {
 				t.Fatalf("stack %d %s is missing its runner readiness probe: %v", i, service, test)
+			}
+		}
+		for _, service := range []string{"extension-socket-init", "core-runner-socket-init"} {
+			command := strings.Join(config.Services[service].Command, " ")
+			if !strings.Contains(command, "chmod 3770 /socket") {
+				t.Fatalf("stack %d %s does not preserve setgid/sticky socket mode: %q", i, service, command)
 			}
 		}
 		if len(config.Services["extension-runner"].Profiles) != 1 || config.Services["extension-runner"].Profiles[0] != "extensions" {

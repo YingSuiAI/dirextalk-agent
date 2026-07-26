@@ -127,7 +127,7 @@ services:
       - --workspace-root
       - /var/lib/dirextalk-agent/extension-workspaces
       - --cgroup-root
-      - /sys/fs/cgroup/dirextalk-agent
+      - /cgroup
       - --state-root
       - /var/lib/dirextalk-agent/extension-state
     volumes:
@@ -139,7 +139,7 @@ services:
       - agent_extension_state:/var/lib/dirextalk-agent/extension-state
       - type: bind
         source: ${DIREXTALK_EXTENSION_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for the runner}
-        target: /sys/fs/cgroup/dirextalk-agent
+        target: /cgroup
     healthcheck:
       test: ["CMD", "/usr/local/bin/dirextalk-extension-runner", "probe", "--socket", "${DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET:?set the extension runner socket path}", "--runner-uid", "${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}"]
       interval: 5s
@@ -156,7 +156,9 @@ services:
     entrypoint: ["sh"]
     user: "0:0"
     cap_drop: ["ALL"]
-    cap_add: ["CHOWN", "FOWNER"]
+    # Preserve the setgid bit after assigning the shared runner/Agent group;
+    # the socket listener rejects a writable directory without setgid+sticky.
+    cap_add: ["CHOWN", "FOWNER", "FSETID"]
     security_opt: ["no-new-privileges:true"]
     profiles: ["extensions"]
     command:
@@ -164,7 +166,7 @@ services:
       - >-
         install -d -m 3770 /socket;
         chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:65532 /socket;
-        chmod 0770 /socket
+        chmod 3770 /socket
     volumes:
       - agent_extension_socket:/socket
     network_mode: "none"
@@ -177,7 +179,7 @@ services:
     <<: *core-runner-hardening
     profiles: ["core-runner"]
     group_add: ["65532"]
-    command: ["serve", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/sys/fs/cgroup/dirextalk-core-runner", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
+    command: ["serve", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/cgroup", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
     volumes:
       - type: volume
         source: core_runner_socket
@@ -187,7 +189,7 @@ services:
       - core_runner_state:/var/lib/dirextalk-core-runner/state
       - type: bind
         source: ${DIREXTALK_CORE_RUNNER_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for Core Runner}
-        target: /sys/fs/cgroup/dirextalk-core-runner
+        target: /cgroup
     healthcheck:
       test: ["CMD", "/usr/local/bin/dirextalk-core-runner", "probe", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}"]
       interval: 5s
@@ -204,7 +206,9 @@ services:
     entrypoint: ["sh"]
     user: "0:0"
     cap_drop: ["ALL"]
-    cap_add: ["CHOWN", "FOWNER"]
+    # Preserve the setgid bit after assigning the shared runner/Agent group;
+    # the socket listener rejects a writable directory without setgid+sticky.
+    cap_add: ["CHOWN", "FOWNER", "FSETID"]
     security_opt: ["no-new-privileges:true"]
     profiles: ["core-runner"]
     command: ["-ec", "install -d -m 3770 /socket; chown ${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:?set the Core Runner UID}:65532 /socket; chmod 3770 /socket"]
