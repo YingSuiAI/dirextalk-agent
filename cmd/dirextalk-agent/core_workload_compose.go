@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
@@ -51,8 +52,9 @@ func applyCoreWorkloadReadiness(server *app.CoreServerConfig, composition *coreW
 }
 
 // composeCoreWorkload keeps planning available independently of execution
-// routes. Local runner readiness is proven synchronously; AWS construction is
-// static only and performs no STS, EC2, SSM, ECS, or ELB calls.
+// routes. Local runner readiness is proven synchronously. AWS routes are
+// advertised only after an explicit configured target passes typed identity
+// and prerequisite readbacks.
 func composeCoreWorkload(cfg config.Config, store *postgres.Store, domains ...*coreworkload.Service) (*coreWorkloadComposition, error) {
 	deps := coreWorkloadComposeDeps{
 		runnerTransport: func(c config.Config) (runner.Transport, error) {
@@ -116,18 +118,31 @@ func composeCoreWorkloadWithDeps(cfg config.Config, store *postgres.Store, domai
 		if err != nil {
 			return nil, err
 		}
-		routes[coreworkload.TargetAWSEC2SSM] = ssmProvider
-		comp.awsSSMReady = true
-		if cfg.InstanceID != "" {
-			if deps.ecsFactory == nil {
-				return nil, coreworkload.ErrInvalid
+		if readinessAWSConfigured(cfg.CoreAWSSSMReadiness, coreworkload.TargetAWSEC2SSM) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if h, resolveErr := deps.credentialResolver.ResolveCredential(ctx, cfg.CoreAWSSSMReadiness.CredentialReference); resolveErr == nil && h.ReferenceID == cfg.CoreAWSSSMReadiness.CredentialReference {
+				probeErr := ssmProvider.Probe(ctx, cfg.CoreAWSSSMReadiness.Target, h)
+				if probeErr == nil {
+					routes[coreworkload.TargetAWSEC2SSM] = ssmProvider
+					comp.awsSSMReady = true
+				}
 			}
+			cancel()
+		}
+		if deps.ecsFactory != nil && readinessAWSConfigured(cfg.CoreAWSECSReadiness, coreworkload.TargetAWSECS) {
 			ecsProvider, ecsErr := ecs.NewProvider(deps.ecsFactory, deps.credentialResolver, deps.secretResolver, ecs.WithAgentInstanceID(cfg.InstanceID))
 			if ecsErr != nil {
 				return nil, ecsErr
 			}
-			routes[coreworkload.TargetAWSECS] = ecsProvider
-			comp.awsECSReady = true
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if h, resolveErr := deps.credentialResolver.ResolveCredential(ctx, cfg.CoreAWSECSReadiness.CredentialReference); resolveErr == nil && h.ReferenceID == cfg.CoreAWSECSReadiness.CredentialReference {
+				probeErr := ecsProvider.Probe(ctx, cfg.CoreAWSECSReadiness.Target, h)
+				if probeErr == nil {
+					routes[coreworkload.TargetAWSECS] = ecsProvider
+					comp.awsECSReady = true
+				}
+			}
+			cancel()
 		}
 	}
 	if len(routes) == 0 {
@@ -147,4 +162,8 @@ func composeCoreWorkloadWithDeps(cfg config.Config, store *postgres.Store, domai
 	}
 	comp.service, comp.taskHandler, comp.ready = service, handler, true
 	return comp, nil
+}
+
+func readinessAWSConfigured(readiness *config.AWSWorkloadReadiness, kind coreworkload.TargetKind) bool {
+	return readiness != nil && coreworkload.ValidUUID(strings.TrimSpace(readiness.CredentialReference)) && readiness.Target.ValidateProviderTarget(kind) == nil
 }

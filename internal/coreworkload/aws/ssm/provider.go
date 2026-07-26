@@ -87,6 +87,22 @@ func NewProvider(factory Factory, creds workaws.CredentialResolver, secrets work
 	return p, nil
 }
 
+// Probe proves that one explicitly configured SSM target is usable. It is a
+// startup/readiness check only: no command is submitted and no secret value is
+// returned. Callers must provide the exact durable credential handle and target
+// binding; there is no default-target or account-wide scan.
+func (p *Provider) Probe(ctx context.Context, target coreworkload.TargetSettings, h workaws.CredentialHandle) error {
+	if p == nil || p.factory == nil || h.Validate() != nil || target.ValidateProviderTarget(coreworkload.TargetAWSEC2SSM) != nil || h.Region != target.Region || h.AccountID != target.AccountID {
+		return workaws.ErrPrecondition
+	}
+	clients, err := p.factory.New(h)
+	if err != nil || clients.STS == nil || clients.EC2 == nil || clients.SSM == nil {
+		return workaws.ErrProvider
+	}
+	plan := coreworkload.Plan{TargetKind: coreworkload.TargetAWSEC2SSM, Target: target}
+	return p.verify(ctx, h, clients, plan)
+}
+
 func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
 	h, clients, err := p.prepare(ctx, plan, op)
 	if err != nil {
@@ -197,11 +213,11 @@ func (p *Provider) verify(ctx context.Context, h workaws.CredentialHandle, cl Cl
 		return workaws.ErrPrecondition
 	}
 	out, e := cl.EC2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{plan.Target.InstanceID}})
-	if e != nil || out == nil || len(out.Reservations) != 1 || len(out.Reservations[0].Instances) != 1 {
+	if e != nil || out == nil || aws.ToString(out.NextToken) != "" || len(out.Reservations) != 1 || len(out.Reservations[0].Instances) != 1 {
 		return workaws.ErrPrecondition
 	}
 	in := out.Reservations[0].Instances[0]
-	if in.InstanceId == nil || aws.ToString(in.InstanceId) != plan.Target.InstanceID || in.State == nil || in.State.Name != ec2types.InstanceStateNameRunning {
+	if in.InstanceId == nil || aws.ToString(in.InstanceId) != plan.Target.InstanceID || in.State == nil || in.State.Name != ec2types.InstanceStateNameRunning || aws.ToString(in.PlatformDetails) != "Linux/UNIX" {
 		return workaws.ErrPrecondition
 	}
 	tags := map[string]string{}
@@ -214,7 +230,7 @@ func (p *Provider) verify(ctx context.Context, h workaws.CredentialHandle, cl Cl
 		}
 	}
 	si, e := cl.SSM.DescribeInstanceInformation(ctx, &ssm.DescribeInstanceInformationInput{Filters: []ssmtypes.InstanceInformationStringFilter{{Key: aws.String("InstanceIds"), Values: []string{plan.Target.InstanceID}}}})
-	if e != nil || si == nil || len(si.InstanceInformationList) != 1 || si.InstanceInformationList[0].PingStatus != ssmtypes.PingStatusOnline {
+	if e != nil || si == nil || aws.ToString(si.NextToken) != "" || len(si.InstanceInformationList) != 1 || aws.ToString(si.InstanceInformationList[0].InstanceId) != plan.Target.InstanceID || si.InstanceInformationList[0].PingStatus != ssmtypes.PingStatusOnline {
 		return workaws.ErrPrecondition
 	}
 	return nil

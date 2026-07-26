@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/google/uuid"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -22,37 +23,47 @@ import (
 // Config is the complete non-secret Agent process configuration. Secret
 // material is represented only by mounted-file paths.
 type Config struct {
-	InstanceID                      string        `yaml:"instance_id" mapstructure:"instance_id"`
-	DatabaseURL                     string        `yaml:"-" mapstructure:"-"`
-	DatabaseURLFile                 string        `yaml:"database_url_file" mapstructure:"database_url_file"`
-	ListenAddress                   string        `yaml:"grpc_listen" mapstructure:"grpc_listen"`
-	TLSCertFile                     string        `yaml:"tls_cert_file" mapstructure:"tls_cert_file"`
-	TLSKeyFile                      string        `yaml:"tls_key_file" mapstructure:"tls_key_file"`
-	ServiceTokenFile                string        `yaml:"service_token_file" mapstructure:"service_token_file"`
-	EnableHealthService             bool          `yaml:"enable_health_service" mapstructure:"enable_health_service"`
-	EnableReflection                bool          `yaml:"enable_reflection" mapstructure:"enable_reflection"`
-	CoreTaskMaxConcurrency          int           `yaml:"core_task_max_concurrency" mapstructure:"core_task_max_concurrency"`
-	CoreTaskLeaseTTL                time.Duration `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
-	CoreScheduleSweepInterval       time.Duration `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
-	CoreShutdownGrace               time.Duration `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
-	CoreAWSEnabled                  bool          `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
-	CoreExtensionEnabled            bool          `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
-	CoreExtensionStagingRoot        string        `yaml:"core_extension_staging_root" mapstructure:"core_extension_staging_root"`
-	CoreExtensionWorkspaceRoot      string        `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
-	CoreExtensionRunnerSocket       string        `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
-	CoreExtensionRunnerUID          uint32        `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
-	CoreWorkloadEnabled             bool          `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
-	CoreWorkloadRunnerSocket        string        `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
-	CoreWorkloadRunnerUID           uint32        `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
-	CoreKnowledgeEnabled            bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
-	CoreKnowledgeContentRoot        string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
-	CoreKnowledgeMountRoot          string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
-	CoreKnowledgeContentQuotaBytes  int64         `yaml:"core_knowledge_content_quota_bytes" mapstructure:"core_knowledge_content_quota_bytes"`
-	CoreKnowledgeEmbeddingProfileID string        `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
-	CoreKnowledgeQdrantEndpoint     string        `yaml:"core_knowledge_qdrant_endpoint" mapstructure:"core_knowledge_qdrant_endpoint"`
-	CoreKnowledgeQdrantCollection   string        `yaml:"core_knowledge_qdrant_collection" mapstructure:"core_knowledge_qdrant_collection"`
-	CoreKnowledgeQdrantDimension    int           `yaml:"core_knowledge_qdrant_dimension" mapstructure:"core_knowledge_qdrant_dimension"`
-	CoreKnowledgeSweepInterval      time.Duration `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
+	InstanceID                      string                `yaml:"instance_id" mapstructure:"instance_id"`
+	DatabaseURL                     string                `yaml:"-" mapstructure:"-"`
+	DatabaseURLFile                 string                `yaml:"database_url_file" mapstructure:"database_url_file"`
+	ListenAddress                   string                `yaml:"grpc_listen" mapstructure:"grpc_listen"`
+	TLSCertFile                     string                `yaml:"tls_cert_file" mapstructure:"tls_cert_file"`
+	TLSKeyFile                      string                `yaml:"tls_key_file" mapstructure:"tls_key_file"`
+	ServiceTokenFile                string                `yaml:"service_token_file" mapstructure:"service_token_file"`
+	EnableHealthService             bool                  `yaml:"enable_health_service" mapstructure:"enable_health_service"`
+	EnableReflection                bool                  `yaml:"enable_reflection" mapstructure:"enable_reflection"`
+	CoreTaskMaxConcurrency          int                   `yaml:"core_task_max_concurrency" mapstructure:"core_task_max_concurrency"`
+	CoreTaskLeaseTTL                time.Duration         `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
+	CoreScheduleSweepInterval       time.Duration         `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
+	CoreShutdownGrace               time.Duration         `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
+	CoreAWSEnabled                  bool                  `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
+	CoreAWSSSMReadiness             *AWSWorkloadReadiness `yaml:"core_aws_ssm_readiness" mapstructure:"core_aws_ssm_readiness"`
+	CoreAWSECSReadiness             *AWSWorkloadReadiness `yaml:"core_aws_ecs_readiness" mapstructure:"core_aws_ecs_readiness"`
+	CoreExtensionEnabled            bool                  `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
+	CoreExtensionStagingRoot        string                `yaml:"core_extension_staging_root" mapstructure:"core_extension_staging_root"`
+	CoreExtensionWorkspaceRoot      string                `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
+	CoreExtensionRunnerSocket       string                `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
+	CoreExtensionRunnerUID          uint32                `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
+	CoreWorkloadEnabled             bool                  `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
+	CoreWorkloadRunnerSocket        string                `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
+	CoreWorkloadRunnerUID           uint32                `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
+	CoreKnowledgeEnabled            bool                  `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
+	CoreKnowledgeContentRoot        string                `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
+	CoreKnowledgeMountRoot          string                `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
+	CoreKnowledgeContentQuotaBytes  int64                 `yaml:"core_knowledge_content_quota_bytes" mapstructure:"core_knowledge_content_quota_bytes"`
+	CoreKnowledgeEmbeddingProfileID string                `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
+	CoreKnowledgeQdrantEndpoint     string                `yaml:"core_knowledge_qdrant_endpoint" mapstructure:"core_knowledge_qdrant_endpoint"`
+	CoreKnowledgeQdrantCollection   string                `yaml:"core_knowledge_qdrant_collection" mapstructure:"core_knowledge_qdrant_collection"`
+	CoreKnowledgeQdrantDimension    int                   `yaml:"core_knowledge_qdrant_dimension" mapstructure:"core_knowledge_qdrant_dimension"`
+	CoreKnowledgeSweepInterval      time.Duration         `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
+}
+
+// AWSWorkloadReadiness is non-secret, explicit startup proof configuration.
+// Credentials are resolved from the Agent database by reference only; a
+// missing or stale target leaves the capability disabled.
+type AWSWorkloadReadiness struct {
+	CredentialReference string                      `yaml:"credential_reference" mapstructure:"credential_reference"`
+	Target              coreworkload.TargetSettings `yaml:"target" mapstructure:"target"`
 }
 
 const (

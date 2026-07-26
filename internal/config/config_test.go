@@ -40,6 +40,36 @@ func TestLoadRejectsUnknownYAMLFields(t *testing.T) {
 	}
 }
 
+func TestLoadAWSReadinessUsesExplicitSnakeCaseTargetSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := `core_aws_ssm_readiness:
+  credential_reference: 00000000-0000-4000-8000-000000000001
+  target:
+    region: ap-northeast-3
+    account_id: "123456789012"
+    instance_id: i-0123456789abcdef0
+    identity:
+      kind: AWS_EC2_SSM
+      region: ap-northeast-3
+      account_id: "123456789012"
+      instance_id: i-0123456789abcdef0
+    ec2_document_version: "1"
+    ec2_systemd_service: dirextalk-agent.service
+    required_instance_tags:
+      managed: "true"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreAWSSSMReadiness == nil || cfg.CoreAWSSSMReadiness.Target.EC2SystemdService != "dirextalk-agent.service" || cfg.CoreAWSSSMReadiness.Target.Identity.InstanceID == "" {
+		t.Fatalf("readiness schema not decoded: %#v", cfg.CoreAWSSSMReadiness)
+	}
+}
+
 func TestValidateCoreRequiresTokenAndBounds(t *testing.T) {
 	cfg := validCoreConfig(t)
 	if err := ValidateCore(&cfg); err != nil {

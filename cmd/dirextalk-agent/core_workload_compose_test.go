@@ -93,14 +93,14 @@ func composeDomain(t *testing.T) *coreworkload.Service {
 	return domain
 }
 
-func TestComposeCoreWorkloadProductionRoutesIndependentAndNoAWSCalls(t *testing.T) {
+func TestComposeCoreWorkloadAWSRoutesRequireExplicitReadiness(t *testing.T) {
 	deps, ssmFactory, ecsFactory, probes := composeDeps(t, nil)
 	comp, err := composeCoreWorkloadWithDeps(config.Config{CoreAWSEnabled: true, InstanceID: "agent-instance"}, nil, []*coreworkload.Service{composeDomain(t)}, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if comp == nil || !comp.awsSSMReady || !comp.awsECSReady || comp.coreRunnerReady {
-		t.Fatalf("independent AWS routes not composed: %#v", comp)
+	if comp != nil {
+		t.Fatalf("AWS routes composed without readiness proof: %#v", comp)
 	}
 	if *probes != 0 || ssmFactory.calls != 0 || ecsFactory.calls != 0 {
 		t.Fatalf("startup made provider calls: probe=%d ssm=%d ecs=%d", *probes, ssmFactory.calls, ecsFactory.calls)
@@ -112,14 +112,14 @@ func TestComposeCoreWorkloadProductionRoutesIndependentAndNoAWSCalls(t *testing.
 	}
 }
 
-func TestComposeCoreWorkloadRunnerProbeDoesNotGateAWSRoutes(t *testing.T) {
+func TestComposeCoreWorkloadRunnerProbeDoesNotEnableUnconfiguredAWSRoutes(t *testing.T) {
 	deps, _, _, probes := composeDeps(t, errors.New("runner unavailable"))
 	comp, err := composeCoreWorkloadWithDeps(config.Config{CoreWorkloadEnabled: true, CoreAWSEnabled: true, CoreWorkloadRunnerSocket: "/tmp/runner.sock", CoreWorkloadRunnerUID: 65530, InstanceID: "agent-instance"}, nil, []*coreworkload.Service{composeDomain(t)}, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if comp == nil || comp.coreRunnerReady || !comp.awsSSMReady || !comp.awsECSReady || *probes != 1 {
-		t.Fatalf("runner probe incorrectly gated AWS routes: comp=%#v probes=%d", comp, *probes)
+	if comp != nil || *probes != 1 {
+		t.Fatalf("runner probe unexpectedly enabled unconfigured AWS routes: comp=%#v probes=%d", comp, *probes)
 	}
 	deps, _, _, probes = composeDeps(t, errors.New("runner unavailable"))
 	comp, err = composeCoreWorkloadWithDeps(config.Config{CoreWorkloadEnabled: true, CoreWorkloadRunnerSocket: "/tmp/runner.sock", CoreWorkloadRunnerUID: 65530}, nil, []*coreworkload.Service{composeDomain(t)}, deps)

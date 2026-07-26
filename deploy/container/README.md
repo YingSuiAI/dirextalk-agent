@@ -128,7 +128,8 @@ but non-delegated `/sys/fs/cgroup` is not sufficient.
 
 The passed transient systemd delegated-cgroup isolation test is not a
 two-Compose end-to-end or real workload acceptance. Typed SSM/ECS workload
-routes are now composed when `core_aws_enabled` is true; startup makes no AWS
-calls and advertises each capability independently. Two-Compose E2E, live AWS
-workload acceptance, and live Core Runner workload acceptance are still
-pending.
+routes are composed behind `core_aws_enabled` only when their explicit
+`core_aws_*_readiness` target block passes typed STS/account and resource
+readbacks; missing or stale proof keeps the capability disabled and no broad
+AWS scan is performed. Two-Compose E2E, live AWS workload acceptance, and live
+Core Runner workload acceptance are still pending.

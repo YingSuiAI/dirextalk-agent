@@ -23,4 +23,42 @@ core_extension_runner_uid: 65531
 core_workload_enabled: false
 core_workload_runner_socket: /run/dirextalk-core-runner/runner.sock
 core_workload_runner_uid: 65530
+# AWS workload capability remains disabled unless each block names one exact,
+# durable credential reference and target. Startup proves STS/account plus the
+# configured instance/cluster prerequisites; no account-wide target scan is
+# performed. Credential material never belongs in this file.
+# core_aws_ssm_readiness:
+#   credential_reference: 00000000-0000-4000-8000-000000000001
+#   target:
+#     region: ap-northeast-3
+#     account_id: "000000000000"
+#     instance_id: i-0123456789abcdef0
+#     identity:
+#       kind: AWS_EC2_SSM
+#       account_id: "000000000000"
+#       region: ap-northeast-3
+#       instance_id: i-0123456789abcdef0
+#     ec2_document_version: "1"
+#     ec2_systemd_service: dirextalk-agent.service
+#     required_instance_tags:
+#       dirextalk-managed: "true"
+# core_aws_ecs_readiness:
+#   credential_reference: 00000000-0000-4000-8000-000000000001
+#   target:
+#     region: ap-northeast-3
+#     account_id: "000000000000"
+#     ecs_cluster_arn: arn:aws:ecs:ap-northeast-3:000000000000:cluster/example
+#     ecs_service_name: dirextalk-agent
+#     ecs_task_family: dirextalk-agent
+#     identity:
+#       kind: AWS_ECS
+#       account_id: "000000000000"
+#       region: ap-northeast-3
+#       cluster: arn:aws:ecs:ap-northeast-3:000000000000:cluster/example
+#       service: dirextalk-agent
+#       task_definition_revision: "1"
+#     ecs_platform_version: "1.4.0"
+#     ecs_subnet_ids: [subnet-0123456789abcdef0]
+#     ecs_security_group_ids: [sg-0123456789abcdef0]
+#     ecs_desired_count: 1
 core_knowledge_enabled: false

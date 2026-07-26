@@ -56,47 +56,47 @@ type ResourceLimits struct {
 }
 
 type TargetSettings struct {
-	Identity             TargetIdentity    `json:"identity,omitempty"`
-	Region               string            `json:"region,omitempty"`
-	AccountID            string            `json:"account_id,omitempty"`
-	Cluster              string            `json:"cluster,omitempty"`
-	Service              string            `json:"service,omitempty"`
-	InstanceID           string            `json:"instance_id,omitempty"`
+	Identity             TargetIdentity    `json:"identity,omitempty" yaml:"identity,omitempty" mapstructure:"identity"`
+	Region               string            `json:"region,omitempty" yaml:"region,omitempty" mapstructure:"region"`
+	AccountID            string            `json:"account_id,omitempty" yaml:"account_id,omitempty" mapstructure:"account_id"`
+	Cluster              string            `json:"cluster,omitempty" yaml:"cluster,omitempty" mapstructure:"cluster"`
+	Service              string            `json:"service,omitempty" yaml:"service,omitempty" mapstructure:"service"`
+	InstanceID           string            `json:"instance_id,omitempty" yaml:"instance_id,omitempty" mapstructure:"instance_id"`
 	Ports                []int32           `json:"ports,omitempty"`
 	PortDetails          []Port            `json:"port_details,omitempty"`
 	NetworkGrantDetails  []NetworkGrant    `json:"network_grant_details,omitempty"`
 	Labels               map[string]string `json:"labels,omitempty"`
-	EC2DocumentVersion   string            `json:"ec2_document_version,omitempty"`
-	EC2SystemdService    string            `json:"ec2_systemd_service,omitempty"`
-	RequiredInstanceTags map[string]string `json:"required_instance_tags,omitempty"`
-	ECSClusterARN        string            `json:"ecs_cluster_arn,omitempty"`
-	ECSServiceName       string            `json:"ecs_service_name,omitempty"`
-	ECSTaskFamily        string            `json:"ecs_task_family,omitempty"`
-	ECSPlatformVersion   string            `json:"ecs_platform_version,omitempty"`
-	ECSSubnetIDs         []string          `json:"ecs_subnet_ids,omitempty"`
-	ECSSecurityGroupIDs  []string          `json:"ecs_security_group_ids,omitempty"`
-	ECSAssignPublicIP    bool              `json:"ecs_assign_public_ip,omitempty"`
-	ECSTargetGroupARN    string            `json:"ecs_target_group_arn,omitempty"`
-	ECSTargetGroupPort   uint32            `json:"ecs_target_group_port,omitempty"`
-	ECSTaskRoleARN       string            `json:"ecs_task_role_arn,omitempty"`
-	ECSExecutionRoleARN  string            `json:"ecs_execution_role_arn,omitempty"`
-	ECSDesiredCount      int64             `json:"ecs_desired_count,omitempty"`
-	ECSImageURI          string            `json:"ecs_image_uri,omitempty"`
+	EC2DocumentVersion   string            `json:"ec2_document_version,omitempty" yaml:"ec2_document_version,omitempty" mapstructure:"ec2_document_version"`
+	EC2SystemdService    string            `json:"ec2_systemd_service,omitempty" yaml:"ec2_systemd_service,omitempty" mapstructure:"ec2_systemd_service"`
+	RequiredInstanceTags map[string]string `json:"required_instance_tags,omitempty" yaml:"required_instance_tags,omitempty" mapstructure:"required_instance_tags"`
+	ECSClusterARN        string            `json:"ecs_cluster_arn,omitempty" yaml:"ecs_cluster_arn,omitempty" mapstructure:"ecs_cluster_arn"`
+	ECSServiceName       string            `json:"ecs_service_name,omitempty" yaml:"ecs_service_name,omitempty" mapstructure:"ecs_service_name"`
+	ECSTaskFamily        string            `json:"ecs_task_family,omitempty" yaml:"ecs_task_family,omitempty" mapstructure:"ecs_task_family"`
+	ECSPlatformVersion   string            `json:"ecs_platform_version,omitempty" yaml:"ecs_platform_version,omitempty" mapstructure:"ecs_platform_version"`
+	ECSSubnetIDs         []string          `json:"ecs_subnet_ids,omitempty" yaml:"ecs_subnet_ids,omitempty" mapstructure:"ecs_subnet_ids"`
+	ECSSecurityGroupIDs  []string          `json:"ecs_security_group_ids,omitempty" yaml:"ecs_security_group_ids,omitempty" mapstructure:"ecs_security_group_ids"`
+	ECSAssignPublicIP    bool              `json:"ecs_assign_public_ip,omitempty" yaml:"ecs_assign_public_ip,omitempty" mapstructure:"ecs_assign_public_ip"`
+	ECSTargetGroupARN    string            `json:"ecs_target_group_arn,omitempty" yaml:"ecs_target_group_arn,omitempty" mapstructure:"ecs_target_group_arn"`
+	ECSTargetGroupPort   uint32            `json:"ecs_target_group_port,omitempty" yaml:"ecs_target_group_port,omitempty" mapstructure:"ecs_target_group_port"`
+	ECSTaskRoleARN       string            `json:"ecs_task_role_arn,omitempty" yaml:"ecs_task_role_arn,omitempty" mapstructure:"ecs_task_role_arn"`
+	ECSExecutionRoleARN  string            `json:"ecs_execution_role_arn,omitempty" yaml:"ecs_execution_role_arn,omitempty" mapstructure:"ecs_execution_role_arn"`
+	ECSDesiredCount      int64             `json:"ecs_desired_count,omitempty" yaml:"ecs_desired_count,omitempty" mapstructure:"ecs_desired_count"`
+	ECSImageURI          string            `json:"ecs_image_uri,omitempty" yaml:"ecs_image_uri,omitempty" mapstructure:"ecs_image_uri"`
 }
 
 // TargetIdentity is the provider-safe, exact identity used for readback
 // fencing. It contains no arbitrary provider payload or credentials.
 type TargetIdentity struct {
-	Kind                   TargetKind `json:"kind"`
+	Kind                   TargetKind `json:"kind" yaml:"kind" mapstructure:"kind"`
 	CoreRunnerID           string     `json:"core_runner_id,omitempty"`
 	CoreRunnerService      string     `json:"core_runner_service,omitempty"`
 	ImageDigest            string     `json:"image_digest,omitempty"`
-	AccountID              string     `json:"account_id,omitempty"`
-	Region                 string     `json:"region,omitempty"`
-	InstanceID             string     `json:"instance_id,omitempty"`
-	Cluster                string     `json:"cluster,omitempty"`
-	Service                string     `json:"service,omitempty"`
-	TaskDefinitionRevision string     `json:"task_definition_revision,omitempty"`
+	AccountID              string     `json:"account_id,omitempty" yaml:"account_id,omitempty" mapstructure:"account_id"`
+	Region                 string     `json:"region,omitempty" yaml:"region,omitempty" mapstructure:"region"`
+	InstanceID             string     `json:"instance_id,omitempty" yaml:"instance_id,omitempty" mapstructure:"instance_id"`
+	Cluster                string     `json:"cluster,omitempty" yaml:"cluster,omitempty" mapstructure:"cluster"`
+	Service                string     `json:"service,omitempty" yaml:"service,omitempty" mapstructure:"service"`
+	TaskDefinitionRevision string     `json:"task_definition_revision,omitempty" yaml:"task_definition_revision,omitempty" mapstructure:"task_definition_revision"`
 	DesiredCount           int64      `json:"desired_count,omitempty"`
 	Endpoint               string     `json:"endpoint,omitempty"`
 }
@@ -556,6 +556,16 @@ func (t TargetSettings) ValidateCanonicalTarget(kind TargetKind) error {
 		}
 	}
 	return nil
+}
+
+// ValidateProviderTarget validates the complete typed target contract before
+// a provider is constructed or probed.  Readiness configuration uses this
+// boundary so a partial target remains disabled instead of being advertised.
+func (t TargetSettings) ValidateProviderTarget(kind TargetKind) error {
+	if err := t.ValidateCanonicalTarget(kind); err != nil {
+		return err
+	}
+	return validateTargetSettings(kind, t)
 }
 
 func validPlatformVersion(v string) bool {

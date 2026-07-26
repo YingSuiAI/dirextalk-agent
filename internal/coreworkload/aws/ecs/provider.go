@@ -31,6 +31,7 @@ type ELBClient interface {
 	DescribeTargetGroups(context.Context, *elasticloadbalancingv2.DescribeTargetGroupsInput, ...func(*elasticloadbalancingv2.Options)) (*elasticloadbalancingv2.DescribeTargetGroupsOutput, error)
 }
 type ECSClient interface {
+	DescribeClusters(context.Context, *ecs.DescribeClustersInput, ...func(*ecs.Options)) (*ecs.DescribeClustersOutput, error)
 	RegisterTaskDefinition(context.Context, *ecs.RegisterTaskDefinitionInput, ...func(*ecs.Options)) (*ecs.RegisterTaskDefinitionOutput, error)
 	DescribeTaskDefinition(context.Context, *ecs.DescribeTaskDefinitionInput, ...func(*ecs.Options)) (*ecs.DescribeTaskDefinitionOutput, error)
 	CreateService(context.Context, *ecs.CreateServiceInput, ...func(*ecs.Options)) (*ecs.CreateServiceOutput, error)
@@ -107,6 +108,24 @@ func NewProvider(f Factory, c workaws.CredentialResolver, s workaws.SecretResolv
 		}
 	}
 	return p, nil
+}
+
+// Probe proves that one explicitly configured ECS target is usable. It only
+// performs typed identity and prerequisite readbacks; it never mutates a
+// cluster, service, task definition, or load balancer.
+func (p *Provider) Probe(ctx context.Context, target coreworkload.TargetSettings, h workaws.CredentialHandle) error {
+	if p == nil || p.factory == nil || h.Validate() != nil || target.ValidateProviderTarget(coreworkload.TargetAWSECS) != nil || h.Region != target.Region || h.AccountID != target.AccountID {
+		return workaws.ErrPrecondition
+	}
+	clients, err := p.factory.New(h)
+	if err != nil || clients.STS == nil || clients.EC2 == nil || clients.ECS == nil {
+		return workaws.ErrProvider
+	}
+	if target.ECSTargetGroupARN != "" && clients.ELB == nil {
+		return workaws.ErrProvider
+	}
+	plan := coreworkload.Plan{TargetKind: coreworkload.TargetAWSECS, Target: target}
+	return p.verify(ctx, h, clients, plan)
 }
 
 func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
@@ -268,12 +287,31 @@ func (p *Provider) verify(ctx context.Context, h workaws.CredentialHandle, cl Cl
 	if plan.Target.ECSClusterARN == "" || !strings.HasPrefix(plan.Target.ECSClusterARN, "arn:aws:ecs:") {
 		return workaws.ErrPrecondition
 	}
+	clusters, e := cl.ECS.DescribeClusters(ctx, &ecs.DescribeClustersInput{Clusters: []string{plan.Target.ECSClusterARN}})
+	if e != nil || clusters == nil || len(clusters.Failures) != 0 || len(clusters.Clusters) != 1 || aws.ToString(clusters.Clusters[0].ClusterArn) != plan.Target.ECSClusterARN || clusters.Clusters[0].Status == nil || aws.ToString(clusters.Clusters[0].Status) != "ACTIVE" {
+		return workaws.ErrPrecondition
+	}
 	subs, e := cl.EC2.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{SubnetIds: plan.Target.ECSSubnetIDs})
-	if e != nil || subs == nil || len(subs.Subnets) != len(plan.Target.ECSSubnetIDs) {
+	if e != nil || subs == nil || aws.ToString(subs.NextToken) != "" || !sameIDs(plan.Target.ECSSubnetIDs, func() []string {
+		ids := make([]string, 0, len(subs.Subnets))
+		for _, subnet := range subs.Subnets {
+			if subnet.State != ec2types.SubnetStateAvailable {
+				return nil
+			}
+			ids = append(ids, aws.ToString(subnet.SubnetId))
+		}
+		return ids
+	}()) {
 		return workaws.ErrPrecondition
 	}
 	sg, e := cl.EC2.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{GroupIds: plan.Target.ECSSecurityGroupIDs})
-	if e != nil || sg == nil || len(sg.SecurityGroups) != len(plan.Target.ECSSecurityGroupIDs) {
+	if e != nil || sg == nil || aws.ToString(sg.NextToken) != "" || !sameIDs(plan.Target.ECSSecurityGroupIDs, func() []string {
+		ids := make([]string, 0, len(sg.SecurityGroups))
+		for _, group := range sg.SecurityGroups {
+			ids = append(ids, aws.ToString(group.GroupId))
+		}
+		return ids
+	}()) {
 		return workaws.ErrPrecondition
 	}
 	if plan.Target.ECSTargetGroupARN != "" && cl.ELB == nil {
@@ -281,11 +319,77 @@ func (p *Provider) verify(ctx context.Context, h workaws.CredentialHandle, cl Cl
 	}
 	if plan.Target.ECSTargetGroupARN != "" && cl.ELB != nil {
 		tg, e := cl.ELB.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{TargetGroupArns: []string{plan.Target.ECSTargetGroupARN}})
-		if e != nil || tg == nil || len(tg.TargetGroups) != 1 {
+		if e != nil || tg == nil || aws.ToString(tg.NextMarker) != "" || len(tg.TargetGroups) != 1 || aws.ToString(tg.TargetGroups[0].TargetGroupArn) != plan.Target.ECSTargetGroupARN || tg.TargetGroups[0].TargetType != elbv2types.TargetTypeEnumIp || (tg.TargetGroups[0].Protocol != elbv2types.ProtocolEnumHttp && tg.TargetGroups[0].Protocol != elbv2types.ProtocolEnumHttps && tg.TargetGroups[0].Protocol != elbv2types.ProtocolEnumTcp && tg.TargetGroups[0].Protocol != elbv2types.ProtocolEnumTls) || (plan.Target.ECSTargetGroupPort > 0 && (tg.TargetGroups[0].Port == nil || uint32(aws.ToInt32(tg.TargetGroups[0].Port)) != plan.Target.ECSTargetGroupPort || !portConfigured(plan.Target, plan.Target.ECSTargetGroupPort))) {
 			return workaws.ErrPrecondition
 		}
 	}
+	taskDefinition := plan.Target.ECSTaskFamily
+	if revision := strings.TrimSpace(plan.Target.Identity.TaskDefinitionRevision); revision != "" {
+		taskDefinition += ":" + revision
+	}
+	td, e := cl.ECS.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: aws.String(taskDefinition)})
+	if e != nil || td == nil || td.TaskDefinition == nil || aws.ToString(td.TaskDefinition.Family) != plan.Target.ECSTaskFamily || td.TaskDefinition.Status != ecstypes.TaskDefinitionStatusActive {
+		return workaws.ErrPrecondition
+	}
+	if revision := strings.TrimSpace(plan.Target.Identity.TaskDefinitionRevision); revision != "" && strconv.FormatInt(int64(td.TaskDefinition.Revision), 10) != revision {
+		return workaws.ErrPrecondition
+	}
+	if plan.Target.ECSTargetGroupARN != "" && (len(td.TaskDefinition.ContainerDefinitions) != 1 || aws.ToString(td.TaskDefinition.ContainerDefinitions[0].Name) != "workload" || !taskDefinitionHasPort(td.TaskDefinition.ContainerDefinitions[0], plan.Target.ECSTargetGroupPort)) {
+		return workaws.ErrPrecondition
+	}
 	return nil
+}
+
+func portConfigured(target coreworkload.TargetSettings, port uint32) bool {
+	for _, p := range target.PortDetails {
+		if p.Port == port {
+			return true
+		}
+	}
+	for _, p := range target.Ports {
+		if p == int32(port) {
+			return true
+		}
+	}
+	return false
+}
+
+func taskDefinitionHasPort(container ecstypes.ContainerDefinition, port uint32) bool {
+	if port == 0 {
+		return false
+	}
+	for _, mapping := range container.PortMappings {
+		if mapping.ContainerPort != nil && mapping.HostPort != nil && mapping.Protocol == ecstypes.TransportProtocolTcp && uint32(aws.ToInt32(mapping.ContainerPort)) == port && uint32(aws.ToInt32(mapping.HostPort)) == port {
+			return true
+		}
+	}
+	return false
+}
+
+func sameIDs(want, got []string) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(want))
+	for _, id := range want {
+		if id == "" {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != len(want) {
+		return false
+	}
+	for _, id := range got {
+		if _, ok := seen[id]; !ok {
+			return false
+		}
+	}
+	gotSeen := make(map[string]struct{}, len(got))
+	for _, id := range got {
+		gotSeen[id] = struct{}{}
+	}
+	return len(gotSeen) == len(got) && len(gotSeen) == len(seen)
 }
 func (p *Provider) register(ctx context.Context, cl ECSClient, h workaws.CredentialHandle, plan coreworkload.Plan) (*ecs.RegisterTaskDefinitionOutput, error) {
 	cpu := strconv.FormatInt(plan.ResourceLimits.CPU, 10)
