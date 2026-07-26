@@ -19,11 +19,12 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
 
 const (
-	cloudGoalModelVersion         = "cloud-goal-planning-model-v3"
+	cloudGoalModelVersion         = "cloud-goal-planning-model-v4"
 	cloudGoalModelRequestLease    = 4 * time.Minute
 	cloudGoalModelMaxSteps        = 24
 	cloudGoalModelMaxCapture      = 256 << 10
@@ -82,12 +83,15 @@ func NewEinoCloudGoalPlanningModel(
 }
 
 func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Context, input CloudGoalResearchInput) ([]recipe.SourceV1, error) {
-	var officialProfiles []knowledgeprofile.ResearchHint
-	if knowledgeprofile.IsRetainedRecipeID(input.Request.Binding.RecipeID) {
+	var officialProfiles any
+	switch {
+	case knowledgeprofile.IsRetainedRecipeID(input.Request.Binding.RecipeID):
 		officialProfiles = knowledgeprofile.ResearchHints()
+	case workerprofile.IsDiagnosticRecipeID(input.Request.Binding.RecipeID):
+		officialProfiles = workerprofile.ResearchHints()
 	}
 	prompt, err := encodeCloudGoalModelPrompt("research_official_sources", input.Request, struct {
-		OfficialProfiles []knowledgeprofile.ResearchHint `json:"official_profiles,omitempty"`
+		OfficialProfiles any `json:"official_profiles,omitempty"`
 	}{OfficialProfiles: officialProfiles})
 	if err != nil {
 		return nil, ErrCloudGoalModelUnavailable
@@ -113,7 +117,7 @@ func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Con
 }
 
 func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Context, input CloudGoalRecipeInput) (recipe.RecipeV1, error) {
-	profileRecipe, profileMatched := knowledgeProfileRecipe(input.Request.Binding.RecipeID, input.Evidence)
+	profileRecipe, profileMatched := serverProfileRecipe(input.Request.Binding.RecipeID, input.Evidence)
 	if profileMatched {
 		return profileRecipe, nil
 	}
@@ -163,6 +167,26 @@ func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Con
 	return decoded, nil
 }
 
+func serverProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet) (recipe.RecipeV1, bool) {
+	if value, matched := workerProfileRecipe(recipeID, evidence); matched {
+		return value, true
+	}
+	return knowledgeProfileRecipe(recipeID, evidence)
+}
+
+func workerProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet) (recipe.RecipeV1, bool) {
+	if !workerprofile.IsDiagnosticRecipeID(recipeID) {
+		return recipe.RecipeV1{}, false
+	}
+	values := make([]workerprofile.Evidence, 0, len(evidence.Evidence))
+	for _, item := range evidence.Evidence {
+		values = append(values, workerprofile.Evidence{
+			URL: item.URL, RetrievedAt: item.RetrievedAt, ContentDigest: item.ContentDigest,
+		})
+	}
+	return workerprofile.BindExperimentalRecipe(recipeID, values)
+}
+
 func knowledgeProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet) (recipe.RecipeV1, bool) {
 	if !knowledgeprofile.IsRetainedRecipeID(recipeID) {
 		return recipe.RecipeV1{}, false
@@ -181,6 +205,20 @@ func (model *EinoCloudGoalPlanningModel) ProposeResourceCandidates(ctx context.C
 	if input.Draft.Revision < 1 || input.Draft.Recipe.Validate() != nil || digestErr != nil ||
 		digest != input.Draft.Digest {
 		return nil, ErrCloudGoalModelUnavailable
+	}
+	if fixed, matched := workerprofile.ResourceCandidates(input.Draft.Recipe); matched {
+		result := make([]ResourceCandidateV1, 0, len(fixed))
+		for _, candidate := range fixed {
+			result = append(result, ResourceCandidateV1{
+				Tier: CandidateTier(candidate.Tier), Architecture: candidate.Architecture,
+				VCPU: candidate.VCPU, MemoryMiB: candidate.MemoryMiB, DiskGiB: candidate.DiskGiB,
+				Rationale: candidate.Rationale,
+			})
+		}
+		if ValidateCandidatesAgainstRecipe(result, input.Draft.Recipe.Requirements) != nil {
+			return nil, ErrCloudGoalModelUnavailable
+		}
+		return result, nil
 	}
 	prompt, err := encodeCloudGoalModelPrompt("propose_resource_candidates", input.Request, struct {
 		RecipeDigest string                        `json:"recipe_digest"`

@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
 
@@ -228,6 +229,50 @@ func TestEinoCloudGoalPlanningModelDoesNotSelectKnowledgeProfileFromGenericEvide
 	}
 	if _, matched := knowledgeProfileRecipe(request.Binding.RecipeID, evidence); matched {
 		t.Fatal("generic Recipe ID activated the retained Knowledge profile")
+	}
+}
+
+func TestEinoCloudGoalPlanningModelUsesExplicitWorkerDiagnosticProfileWithoutRecipeOrCandidateModelCalls(t *testing.T) {
+	recipeID := workerprofile.RecipeIDPrefix + strings.Repeat("b", 32)
+	request := planningModelStage(cloudskill.StepDraftRecipe, recipeID)
+	evidence, err := BuildOfficialSourceEvidenceSet(request.Attempt.TaskID, []OfficialSourceEvidence{{
+		TaskID: request.Attempt.TaskID, ToolCallID: "worker-profile-fetch",
+		URL: workerprofile.SourceURL, RetrievedAt: time.Date(2026, 7, 26, 1, 0, 0, 0, time.UTC),
+		ContentDigest: "sha256:" + strings.Repeat("d", 64),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &cloudGoalModelStoreFake{
+		config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot),
+	}
+	engine := &cloudGoalModelEngineFake{}
+	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
+		return cloudGoalModelClientFake{}, nil
+	}), runtimeapi.SecretResolver(runtimeapiSecretResolverFake{}), &cloudGoalModelToolsFake{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := model.DraftExperimentalRecipe(t.Context(), CloudGoalRecipeInput{Request: request, Evidence: evidence})
+	if err != nil || value.RecipeID != recipeID || len(value.Install.Steps) != 1 ||
+		value.Install.Steps[0].Action != "worker.noop" || value.Install.Installer != nil {
+		t.Fatalf("diagnostic Recipe=%#v err=%v", value, err)
+	}
+	digest, err := value.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateRequest := planningModelStage(cloudskill.StepPrepareResourceCandidates, recipeID)
+	candidateRequest.Binding.RequestID = request.Binding.RequestID
+	candidateRequest.Binding.ConversationID = request.Binding.ConversationID
+	candidateRequest.Attempt.TaskID, candidateRequest.Step.TaskID = request.Attempt.TaskID, request.Attempt.TaskID
+	candidates, err := model.ProposeResourceCandidates(t.Context(), CloudGoalCandidateInput{
+		Request: candidateRequest,
+		Draft:   RecipeDraft{RecipeID: recipeID, Recipe: value, Digest: digest, Revision: 1},
+	})
+	if err != nil || len(candidates) != 3 || candidates[0].VCPU != 1 ||
+		candidates[0].MemoryMiB != 1024 || candidates[0].DiskGiB != 8 || engine.calls != 0 {
+		t.Fatalf("diagnostic candidates=%#v err=%v model_calls=%d", candidates, err, engine.calls)
 	}
 }
 
