@@ -50,6 +50,25 @@ func TestRetainedKnowledgeRecipeBindsSmallResearchManifestToExactArtifacts(t *te
 	}
 }
 
+func TestRetainedRecipeIDRequiresReservedPrefixAndUniqueHexSuffix(t *testing.T) {
+	t.Parallel()
+	valid := RetainedRecipeIDPrefix + strings.Repeat("a", 32)
+	if !IsRetainedRecipeID(valid) {
+		t.Fatalf("reserved Recipe ID was rejected: %q", valid)
+	}
+	for _, invalid := range []string{
+		"knowledge-recipe-1",
+		RetainedRecipeIDPrefix,
+		RetainedRecipeIDPrefix + strings.Repeat("A", 32),
+		RetainedRecipeIDPrefix + strings.Repeat("g", 32),
+		RetainedRecipeIDPrefix + strings.Repeat("a", 31),
+	} {
+		if IsRetainedRecipeID(invalid) {
+			t.Fatalf("non-reserved Recipe ID was accepted: %q", invalid)
+		}
+	}
+}
+
 func TestRetainedKnowledgeRecipeRejectsUnfetchedOrDriftedManifest(t *testing.T) {
 	t.Parallel()
 	hints := ResearchHints()

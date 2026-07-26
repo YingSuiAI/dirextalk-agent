@@ -53,6 +53,9 @@ func TestEinoCloudGoalPlanningModelDurablyReplaysOfficialResearchRecipeAndCandid
 	if tools.scope.ClientID != research.Caller.ClientID || tools.scope.CredentialID != research.Caller.CredentialID || tools.parentLease != 1 || tools.request.RequestID != researchRequestID {
 		t.Fatalf("trusted tool scope drifted: %#v epoch=%d request=%#v", tools.scope, tools.parentLease, tools.request)
 	}
+	if strings.Contains(store.requests[0].Request.Messages[0].Content, "official_profiles") {
+		t.Fatal("generic cloud Goal received the retained Knowledge profile hints")
+	}
 
 	evidence, err := BuildOfficialSourceEvidenceSetWithClaims(research.Attempt.TaskID, []OfficialSourceEvidence{{
 		TaskID: research.Attempt.TaskID, ToolCallID: "official-fetch-1", URL: sources[0].URL,
@@ -163,7 +166,7 @@ func TestPlanningCaptureFailureReasonKeepsOnlyFixedValidationCode(t *testing.T) 
 }
 
 func TestEinoCloudGoalPlanningModelCanonicalizesExactRetainedKnowledgeEvidence(t *testing.T) {
-	request := planningModelStage(cloudskill.StepDraftRecipe, "knowledge-recipe-model")
+	request := planningModelStage(cloudskill.StepDraftRecipe, knowledgeprofile.RetainedRecipeIDPrefix+strings.Repeat("a", 32))
 	hints := knowledgeprofile.ResearchHints()
 	values := make([]OfficialSourceEvidence, 0, len(hints))
 	profileEvidence := make([]knowledgeprofile.Evidence, 0, len(hints))
@@ -205,6 +208,26 @@ func TestEinoCloudGoalPlanningModelCanonicalizesExactRetainedKnowledgeEvidence(t
 	gotDigest, gotErr := got.Digest()
 	if wantErr != nil || gotErr != nil || gotDigest != wantDigest || got.Name == modelAuthored.Name || engine.calls != 0 {
 		t.Fatalf("canonical Recipe mismatch: got=%q digest=%q want=%q err=%v/%v calls=%d", got.Name, gotDigest, wantDigest, wantErr, gotErr, engine.calls)
+	}
+}
+
+func TestEinoCloudGoalPlanningModelDoesNotSelectKnowledgeProfileFromGenericEvidence(t *testing.T) {
+	request := planningModelStage(cloudskill.StepDraftRecipe, "generic-recipe-model")
+	hints := knowledgeprofile.ResearchHints()
+	values := make([]OfficialSourceEvidence, 0, len(hints))
+	retrieved := time.Date(2026, 7, 19, 2, 0, 0, 0, time.UTC)
+	for index, hint := range hints {
+		values = append(values, OfficialSourceEvidence{
+			TaskID: request.Attempt.TaskID, ToolCallID: "knowledge-fetch-" + string(rune('a'+index)),
+			URL: hint.ResearchURL, RetrievedAt: retrieved, ContentDigest: "sha256:" + knowledgeprofile.ManifestSHA256,
+		})
+	}
+	evidence, err := BuildOfficialSourceEvidenceSet(request.Attempt.TaskID, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, matched := knowledgeProfileRecipe(request.Binding.RecipeID, evidence); matched {
+		t.Fatal("generic Recipe ID activated the retained Knowledge profile")
 	}
 }
 

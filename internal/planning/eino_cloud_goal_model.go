@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	cloudGoalModelVersion         = "cloud-goal-planning-model-v2"
+	cloudGoalModelVersion         = "cloud-goal-planning-model-v3"
 	cloudGoalModelRequestLease    = 4 * time.Minute
 	cloudGoalModelMaxSteps        = 24
 	cloudGoalModelMaxCapture      = 256 << 10
@@ -82,9 +82,13 @@ func NewEinoCloudGoalPlanningModel(
 }
 
 func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Context, input CloudGoalResearchInput) ([]recipe.SourceV1, error) {
+	var officialProfiles []knowledgeprofile.ResearchHint
+	if knowledgeprofile.IsRetainedRecipeID(input.Request.Binding.RecipeID) {
+		officialProfiles = knowledgeprofile.ResearchHints()
+	}
 	prompt, err := encodeCloudGoalModelPrompt("research_official_sources", input.Request, struct {
 		OfficialProfiles []knowledgeprofile.ResearchHint `json:"official_profiles,omitempty"`
-	}{OfficialProfiles: knowledgeprofile.ResearchHints()})
+	}{OfficialProfiles: officialProfiles})
 	if err != nil {
 		return nil, ErrCloudGoalModelUnavailable
 	}
@@ -160,6 +164,9 @@ func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Con
 }
 
 func knowledgeProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet) (recipe.RecipeV1, bool) {
+	if !knowledgeprofile.IsRetainedRecipeID(recipeID) {
+		return recipe.RecipeV1{}, false
+	}
 	values := make([]knowledgeprofile.Evidence, 0, len(evidence.Evidence))
 	for _, item := range evidence.Evidence {
 		values = append(values, knowledgeprofile.Evidence{

@@ -26,6 +26,10 @@ const (
 	ManifestSHA256     = "78a75a2974a6282f90cb749b373c4c48959ec9c348d2e2f4f15ea0a6abf5e4e3"
 	ManifestName       = "dirextalk-knowledge-release.v1.json"
 	Origin             = "https://artifacts.y1.dirextalk.ai"
+	// RetainedRecipeIDPrefix is the server-bound opt-in selector for the fixed
+	// Knowledge profile. The suffix is a lowercase, hyphenless UUID so every
+	// Goal still receives a unique Recipe identity.
+	RetainedRecipeIDPrefix = "dirextalk-retained-knowledge-v1-"
 
 	InstallerCommandID     = "knowledge-install-v1"
 	RestartCommandID       = "knowledge-restart-v1"
@@ -39,6 +43,19 @@ const (
 	VolumeSlotID           = "knowledge-data"
 	SecretSlotID           = "qdrant-api-key"
 )
+
+func IsRetainedRecipeID(value string) bool {
+	if !strings.HasPrefix(value, RetainedRecipeIDPrefix) ||
+		len(value) != len(RetainedRecipeIDPrefix)+32 {
+		return false
+	}
+	for _, character := range value[len(RetainedRecipeIDPrefix):] {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 //go:embed release.v1.json
 var releaseBytes []byte
