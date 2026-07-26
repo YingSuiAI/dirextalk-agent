@@ -206,13 +206,17 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if validatePublishedBundles(published, compiled, secretRefs) != nil {
 		return service.fail(ctx, operation, fmt.Errorf("%w: published bundle validation failed", ErrUnavailable))
 	}
-	if len(operation.InstallerArtifacts) == 0 && len(published.InstallerArtifacts) != 0 {
-		operation.InstallerArtifacts = append([]installerbootstrap.ArtifactSourceV1(nil), published.InstallerArtifacts...)
+	if len(operation.InstallerArtifacts) == 0 {
+		if len(published.InstallerArtifacts) != 0 {
+			operation.InstallerArtifacts = append([]installerbootstrap.ArtifactSourceV1(nil), published.InstallerArtifacts...)
+		}
 	} else if !reflect.DeepEqual(operation.InstallerArtifacts, published.InstallerArtifacts) {
 		return Operation{}, ErrRevisionConflict
 	}
-	if len(operation.InstallerSecrets) == 0 && len(published.InstallerSecrets) != 0 {
-		operation.InstallerSecrets = append([]installerbootstrap.SecretSourceV1(nil), published.InstallerSecrets...)
+	if len(operation.InstallerSecrets) == 0 {
+		if len(published.InstallerSecrets) != 0 {
+			operation.InstallerSecrets = append([]installerbootstrap.SecretSourceV1(nil), published.InstallerSecrets...)
+		}
 	} else if !reflect.DeepEqual(operation.InstallerSecrets, published.InstallerSecrets) {
 		return Operation{}, ErrRevisionConflict
 	}

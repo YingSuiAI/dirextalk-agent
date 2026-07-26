@@ -66,6 +66,19 @@ func TestLaunchApprovedPlanCreatesOneDurableWorkerAndReplaysTerminalOperation(t 
 	}
 }
 
+func TestLaunchApprovedPlanTreatsNilAndEmptyPublishedInstallerSourcesEqually(t *testing.T) {
+	fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
+	fixture.bundles.productionEmptyInstallerArtifacts = true
+
+	operation, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request)
+	if err != nil {
+		t.Fatalf("LaunchApprovedPlan() error = %v", err)
+	}
+	if operation.State != StateActive || fixture.workers.calls != 1 {
+		t.Fatalf("operation = %#v, Worker calls = %d", operation, fixture.workers.calls)
+	}
+}
+
 func TestLaunchApprovedPlanFailsClosedBeforeMutationWithoutMatchingConnection(t *testing.T) {
 	fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
 	fixture.connections.err = cloudapp.ErrNotFound
@@ -910,8 +923,9 @@ func (tasks *fakeTasks) Create(context.Context, task.MutationScope, task.CreateC
 }
 
 type fakeBundles struct {
-	calls    int
-	compiled CompiledBundles
+	calls                             int
+	compiled                          CompiledBundles
+	productionEmptyInstallerArtifacts bool
 }
 
 type fakeInstallerSecretResolver struct {
@@ -996,6 +1010,9 @@ func (publisher *fakeBundles) PublishBundles(ctx context.Context, connection clo
 	recipeDigest, executionDigest := sha256.Sum256(recipeBytes), sha256.Sum256(executionBytes)
 	base := "s3://agent-bucket/workers/" + deploymentID + "/"
 	var installerArtifacts []installerbootstrap.ArtifactSourceV1
+	if publisher.productionEmptyInstallerArtifacts {
+		installerArtifacts = make([]installerbootstrap.ArtifactSourceV1, 0)
+	}
 	if compiled.InstallerRootTrust != nil {
 		for _, artifact := range compiled.InstallerRootTrust.ArtifactManifest.Manifest.Artifacts {
 			installerArtifacts = append(installerArtifacts, installerbootstrap.ArtifactSourceV1{
