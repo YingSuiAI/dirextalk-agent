@@ -42,6 +42,17 @@ from the generated `.env`; do not reuse an `.env` between stacks. The generated
 Core Runner image variable is `DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE` (default
 `dirextalk-core-runner:local`).
 
+Runner containers also receive per-stack systemd cgroup parents through
+`DIREXTALK_EXTENSION_CGROUP_PARENT` and `DIREXTALK_CORE_RUNNER_CGROUP_PARENT`.
+Bootstrap derives safe `<stack>-extension.slice` and
+`<stack>-core-runner.slice` defaults; explicit values must be single-line
+`[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?\.slice` names. Native Linux E2E hosts should use the systemd
+cgroup driver with those delegated slices. The default profile-disabled stack
+still renders safely without starting either runner.
+If an existing protected environment predates these parent variables, bootstrap
+replays the migration with a protected journal and backups; interrupted runs
+complete or restore the environment before normal validation and reuse.
+
 The optional isolated surfaces are strict, immutable bootstrap controls:
 `DIREXTALK_CORE_EXTENSION_ENABLED` and `DIREXTALK_CORE_WORKLOAD_ENABLED` accept
 only `true` or `false` and default to `false`; runner UIDs default to `65531`

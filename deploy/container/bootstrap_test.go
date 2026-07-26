@@ -70,13 +70,27 @@ func TestBootstrapLocalRejectsInvalidIsolationControls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string]string{
-		"DIREXTALK_CORE_EXTENSION_ENABLED":      "yes",
-		"DIREXTALK_CORE_WORKLOAD_ENABLED":       "1",
-		"DIREXTALK_CORE_EXTENSION_RUNNER_UID":   "0",
-		"DIREXTALK_CORE_WORKLOAD_RUNNER_UID":    "65532",
-		"DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET": "relative.sock",
-	} {
+	invalid := []struct {
+		name  string
+		value string
+	}{
+		{"DIREXTALK_CORE_EXTENSION_ENABLED", "yes"},
+		{"DIREXTALK_CORE_WORKLOAD_ENABLED", "1"},
+		{"DIREXTALK_CORE_EXTENSION_RUNNER_UID", "0"},
+		{"DIREXTALK_CORE_WORKLOAD_RUNNER_UID", "65532"},
+		{"DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET", "relative.sock"},
+		{"DIREXTALK_EXTENSION_CGROUP_PARENT", "../bad.slice"},
+		{"DIREXTALK_CORE_RUNNER_CGROUP_PARENT", ".slice"},
+		{"DIREXTALK_EXTENSION_CGROUP_PARENT", "-bad.slice"},
+		{"DIREXTALK_CORE_RUNNER_CGROUP_PARENT", "bad-.slice"},
+		{"DIREXTALK_EXTENSION_CGROUP_PARENT", ".bad.slice"},
+		{"DIREXTALK_CORE_RUNNER_CGROUP_PARENT", "bad_.slice"},
+		{"DIREXTALK_EXTENSION_CGROUP_PARENT", "bad\n.slice"},
+		{"DIREXTALK_CORE_RUNNER_CGROUP_PARENT", "good.slice\nDIREXTALK_AGENT_STACK_NAME=hijack"},
+		{"DIREXTALK_EXTENSION_CGROUP_PARENT", "good.slice\rDIREXTALK_AGENT_STACK_NAME=hijack"},
+	}
+	for _, control := range invalid {
+		name, value := control.name, control.value
 		out := filepath.Join(t.TempDir(), "protected")
 		cmd := exec.Command(script, out)
 		cmd.Env = append(os.Environ(), name+"="+value)
@@ -92,11 +106,12 @@ func TestBootstrapLocalRejectsInvalidIsolationControls(t *testing.T) {
 type composeIsolationConfig struct {
 	Name     string `yaml:"name"`
 	Services map[string]struct {
-		Profiles    []string `yaml:"profiles"`
-		NetworkMode string   `yaml:"network_mode"`
-		Ports       []any    `yaml:"ports"`
-		Command     []string `yaml:"command"`
-		Healthcheck struct {
+		Profiles     []string `yaml:"profiles"`
+		NetworkMode  string   `yaml:"network_mode"`
+		CgroupParent string   `yaml:"cgroup_parent"`
+		Ports        []any    `yaml:"ports"`
+		Command      []string `yaml:"command"`
+		Healthcheck  struct {
 			Test []string `yaml:"test"`
 		} `yaml:"healthcheck"`
 		Volumes []struct {
@@ -197,6 +212,11 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 			t.Fatalf("network %q is shared between isolated stacks: %q", key, first.Name)
 		}
 	}
+	if configs[0].Services["extension-runner"].CgroupParent == "" || configs[0].Services["core-runner"].CgroupParent == "" ||
+		configs[0].Services["extension-runner"].CgroupParent == configs[1].Services["extension-runner"].CgroupParent ||
+		configs[0].Services["core-runner"].CgroupParent == configs[1].Services["core-runner"].CgroupParent {
+		t.Fatal("runner cgroup parents are not distinct per stack")
+	}
 	for key, first := range configs[0].Volumes {
 		if second, ok := configs[1].Volumes[key]; ok && first.Name == second.Name {
 			t.Fatalf("volume %q is shared between isolated stacks: %q", key, first.Name)
@@ -256,6 +276,196 @@ func TestBootstrapLocalReusesCompleteSetFromAnotherWorkingDirectory(t *testing.T
 		}
 		if !bytes.Equal(before[name], after) {
 			t.Fatalf("complete artifact %s changed during reuse", name)
+		}
+	}
+}
+
+func TestBootstrapLocalMigratesLegacyEnvironmentWithoutRotatingIdentityOrVolumes(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, "legacy")
+	script, err := filepath.Abs(filepath.Join("scripts", "bootstrap-local.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_AGENT_STACK_NAME=legacy-stack"}); err != nil {
+		t.Fatalf("initial bootstrap: %v (%s)", err, output)
+	}
+	beforeInstance := mustRead(t, filepath.Join(out, "instance-id"))
+	beforePassword := mustRead(t, filepath.Join(out, "postgres-password"))
+	beforeEnv := string(mustRead(t, filepath.Join(out, ".env")))
+	if !strings.Contains(beforeEnv, "DIREXTALK_EXTENSION_CGROUP_PARENT=legacy-stack-extension.slice\n") || !strings.Contains(beforeEnv, "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=legacy-stack-core-runner.slice\n") {
+		t.Fatal("bootstrap did not derive expected legacy stack parents")
+	}
+	legacyEnv := strings.ReplaceAll(beforeEnv, "DIREXTALK_EXTENSION_CGROUP_PARENT=legacy-stack-extension.slice\n", "")
+	legacyEnv = strings.ReplaceAll(legacyEnv, "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=legacy-stack-core-runner.slice\n", "")
+	if err := os.Chmod(filepath.Join(out, ".env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, ".env"), []byte(legacyEnv), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(out, ".env"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	manifestCmd := exec.Command("sh", "-ec", "{ printf '%s\\n' '# dirextalk-bootstrap-manifest-v1'; sha256sum postgres-password database-url service-token instance-id tls-key tls-cert tls-ca config.yaml .env; } > .manifest.tmp; chmod 0400 .manifest.tmp; mv .manifest.tmp .manifest")
+	manifestCmd.Dir = out
+	if output, err := manifestCmd.CombinedOutput(); err != nil {
+		t.Fatalf("legacy manifest: %v (%s)", err, output)
+	}
+	if output, err := runBootstrap(t, script, out, t.TempDir(), nil); err != nil {
+		t.Fatalf("legacy migration: %v (%s)", err, output)
+	}
+	if got := mustRead(t, filepath.Join(out, "instance-id")); !bytes.Equal(got, beforeInstance) {
+		t.Fatal("legacy migration rotated instance identity")
+	}
+	if got := mustRead(t, filepath.Join(out, "postgres-password")); !bytes.Equal(got, beforePassword) {
+		t.Fatal("legacy migration rotated PostgreSQL password")
+	}
+	finalEnv := string(mustRead(t, filepath.Join(out, ".env")))
+	for _, line := range []string{"DIREXTALK_AGENT_POSTGRES_VOLUME=legacy-stack-postgres-data\n", "DIREXTALK_EXTENSION_CGROUP_PARENT=legacy-stack-extension.slice\n", "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=legacy-stack-core-runner.slice\n"} {
+		if !strings.Contains(finalEnv, line) {
+			t.Fatalf("migrated environment missing %q", line)
+		}
+	}
+}
+
+func TestBootstrapLocalRecoversInterruptedCgroupParentMigration(t *testing.T) {
+	script, err := filepath.Abs(filepath.Join("scripts", "bootstrap-local.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failpoint := range []string{"after-env-replace", "before-manifest-mktemp", "after-manifest-hash"} {
+		t.Run(failpoint, func(t *testing.T) {
+			root := t.TempDir()
+			out := filepath.Join(root, "replay")
+			if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_AGENT_STACK_NAME=replay-stack"}); err != nil {
+				t.Fatalf("initial bootstrap: %v (%s)", err, output)
+			}
+			beforeInstance := mustRead(t, filepath.Join(out, "instance-id"))
+			beforePassword := mustRead(t, filepath.Join(out, "postgres-password"))
+			beforeEnv := string(mustRead(t, filepath.Join(out, ".env")))
+			legacyEnv := strings.ReplaceAll(beforeEnv, "DIREXTALK_EXTENSION_CGROUP_PARENT=replay-stack-extension.slice\n", "")
+			legacyEnv = strings.ReplaceAll(legacyEnv, "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=replay-stack-core-runner.slice\n", "")
+			if err := os.Chmod(filepath.Join(out, ".env"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(out, ".env"), []byte(legacyEnv), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(out, ".env"), 0o400); err != nil {
+				t.Fatal(err)
+			}
+			manifestCmd := exec.Command("sh", "-ec", "{ printf '%s\\n' '# dirextalk-bootstrap-manifest-v1'; sha256sum postgres-password database-url service-token instance-id tls-key tls-cert tls-ca config.yaml .env; } > .manifest.tmp; chmod 0400 .manifest.tmp; mv .manifest.tmp .manifest")
+			manifestCmd.Dir = out
+			if output, err := manifestCmd.CombinedOutput(); err != nil {
+				t.Fatalf("legacy manifest: %v (%s)", err, output)
+			}
+			if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_BOOTSTRAP_MIGRATION_FAILPOINT=" + failpoint}); err == nil {
+				t.Fatalf("failpoint %s unexpectedly succeeded: %s", failpoint, output)
+			}
+			if _, err := os.Stat(filepath.Join(out, ".cgroup-parent-migration")); err != nil {
+				t.Fatalf("failpoint %s did not leave the migration journal: %v", failpoint, err)
+			}
+			if failpoint == "after-env-replace" {
+				corruptEnv := strings.Replace(string(mustRead(t, filepath.Join(out, ".env"))), "DIREXTALK_AGENT_STACK_NAME=replay-stack\n", "DIREXTALK_AGENT_STACK_NAME=corrupted?\n", 1)
+				if err := os.Chmod(filepath.Join(out, ".env"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(out, ".env"), []byte(corruptEnv), 0o400); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(filepath.Join(out, ".env"), 0o400); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_AGENT_STACK_NAME=ignored-after-recovery"}); err != nil {
+				t.Fatalf("recovery: %v (%s)", err, output)
+			}
+			if got := mustRead(t, filepath.Join(out, "instance-id")); !bytes.Equal(got, beforeInstance) {
+				t.Fatal("recovery rotated instance identity")
+			}
+			if got := mustRead(t, filepath.Join(out, "postgres-password")); !bytes.Equal(got, beforePassword) {
+				t.Fatal("recovery rotated PostgreSQL password")
+			}
+			finalEnv := string(mustRead(t, filepath.Join(out, ".env")))
+			if !strings.Contains(finalEnv, "DIREXTALK_AGENT_POSTGRES_VOLUME=replay-stack-postgres-data\n") ||
+				!strings.Contains(finalEnv, "DIREXTALK_EXTENSION_CGROUP_PARENT=replay-stack-extension.slice\n") ||
+				!strings.Contains(finalEnv, "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=replay-stack-core-runner.slice\n") {
+				t.Fatal("recovery did not preserve the stack volume and complete both cgroup parent assignments")
+			}
+			for _, name := range []string{".cgroup-parent-migration", ".cgroup-parent-migration.tmp", ".env.migrate-backup", ".env.migrate.tmp", ".manifest.migrate-backup", ".manifest.migrate.tmp"} {
+				if _, err := os.Stat(filepath.Join(out, name)); !os.IsNotExist(err) {
+					t.Fatalf("recovery left migration artifact %s: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBootstrapLocalRecoversInterruptedRollbackBeforeClearingJournal(t *testing.T) {
+	script, err := filepath.Abs(filepath.Join("scripts", "bootstrap-local.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	out := filepath.Join(root, "rollback")
+	if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_AGENT_STACK_NAME=rollback-stack"}); err != nil {
+		t.Fatalf("initial bootstrap: %v (%s)", err, output)
+	}
+	beforeInstance := mustRead(t, filepath.Join(out, "instance-id"))
+	beforePassword := mustRead(t, filepath.Join(out, "postgres-password"))
+	beforeEnv := string(mustRead(t, filepath.Join(out, ".env")))
+	legacyEnv := strings.ReplaceAll(beforeEnv, "DIREXTALK_EXTENSION_CGROUP_PARENT=rollback-stack-extension.slice\n", "")
+	legacyEnv = strings.ReplaceAll(legacyEnv, "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=rollback-stack-core-runner.slice\n", "")
+	if err := os.Chmod(filepath.Join(out, ".env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, ".env"), []byte(legacyEnv), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(out, ".env"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	manifestCmd := exec.Command("sh", "-ec", "{ printf '%s\\n' '# dirextalk-bootstrap-manifest-v1'; sha256sum postgres-password database-url service-token instance-id tls-key tls-cert tls-ca config.yaml .env; } > .manifest.tmp; chmod 0400 .manifest.tmp; mv .manifest.tmp .manifest")
+	manifestCmd.Dir = out
+	if output, err := manifestCmd.CombinedOutput(); err != nil {
+		t.Fatalf("legacy manifest: %v (%s)", err, output)
+	}
+	if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_BOOTSTRAP_MIGRATION_FAILPOINT=after-env-replace"}); err == nil {
+		t.Fatalf("after-env-replace failpoint unexpectedly succeeded: %s", output)
+	}
+	corruptEnv := strings.Replace(string(mustRead(t, filepath.Join(out, ".env"))), "DIREXTALK_AGENT_STACK_NAME=rollback-stack\n", "DIREXTALK_AGENT_STACK_NAME=corrupted?\n", 1)
+	if err := os.Chmod(filepath.Join(out, ".env"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, ".env"), []byte(corruptEnv), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(out, ".env"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := runBootstrap(t, script, out, t.TempDir(), []string{"DIREXTALK_BOOTSTRAP_MIGRATION_FAILPOINT=after-env-restore"}); err == nil {
+		t.Fatalf("after-env-restore failpoint unexpectedly succeeded: %s", output)
+	}
+	if _, err := os.Stat(filepath.Join(out, ".cgroup-parent-migration")); err != nil {
+		t.Fatalf("rollback failpoint did not retain the migration journal: %v", err)
+	}
+	rolledBackEnv := string(mustRead(t, filepath.Join(out, ".env")))
+	if strings.Contains(rolledBackEnv, "DIREXTALK_EXTENSION_CGROUP_PARENT=") || strings.Contains(rolledBackEnv, "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=") {
+		t.Fatal("rollback failpoint did not restore the old environment before manifest restore")
+	}
+	if output, err := runBootstrap(t, script, out, t.TempDir(), nil); err != nil {
+		t.Fatalf("rollback recovery: %v (%s)", err, output)
+	}
+	if got := mustRead(t, filepath.Join(out, "instance-id")); !bytes.Equal(got, beforeInstance) {
+		t.Fatal("rollback recovery rotated instance identity")
+	}
+	if got := mustRead(t, filepath.Join(out, "postgres-password")); !bytes.Equal(got, beforePassword) {
+		t.Fatal("rollback recovery rotated PostgreSQL password")
+	}
+	for _, name := range []string{".cgroup-parent-migration", ".cgroup-parent-migration.tmp", ".env.migrate-backup", ".env.migrate.tmp", ".manifest.migrate-backup", ".manifest.migrate.tmp"} {
+		if _, err := os.Stat(filepath.Join(out, name)); !os.IsNotExist(err) {
+			t.Fatalf("rollback recovery left migration artifact %s: %v", name, err)
 		}
 	}
 }

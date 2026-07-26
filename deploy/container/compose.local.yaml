@@ -115,6 +115,7 @@ services:
     image: ${DIREXTALK_EXTENSION_RUNNER_IMAGE_IMMUTABLE:?set the immutable extension runner image reference}
     <<: *runner-hardening
     profiles: ["extensions"]
+    cgroup_parent: ${DIREXTALK_EXTENSION_CGROUP_PARENT:-${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}-extension.slice}
     group_add: ["65532"]
     command:
       - serve
@@ -178,6 +179,7 @@ services:
     image: ${DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE:?set the immutable Core Runner image reference}
     <<: *core-runner-hardening
     profiles: ["core-runner"]
+    cgroup_parent: ${DIREXTALK_CORE_RUNNER_CGROUP_PARENT:-${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}-core-runner.slice}
     group_add: ["65532"]
     command: ["serve", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/cgroup", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
     volumes:

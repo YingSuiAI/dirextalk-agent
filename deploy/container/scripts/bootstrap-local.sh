@@ -55,6 +55,17 @@ validate_socket() {
   esac
 }
 
+validate_cgroup_parent() {
+  name=$1
+  value=$2
+  [ -n "$value" ] || return 0
+  control_bytes=$(printf '%s' "$value" | od -An -v -t x1)
+  if printf '%s\n' "$control_bytes" | grep -Eq '(^|[[:space:]])(0[0-9a-f]|1[0-9a-f]|7f)([[:space:]]|$)'; then
+    die "${name} must not contain control bytes"
+  fi
+  printf '%s\n' "$value" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?\.slice$' || die "${name} must be a safe systemd slice name"
+}
+
 validate_stack_name() {
   name=$1
   value=$2
@@ -78,10 +89,14 @@ extension_runner_dir=${extension_runner_socket%/*}
 workload_runner_dir=${workload_runner_socket%/*}
 extension_runner_uid=${DIREXTALK_CORE_EXTENSION_RUNNER_UID:-65531}
 workload_runner_uid=${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:-65530}
+extension_cgroup_parent=${DIREXTALK_EXTENSION_CGROUP_PARENT:-}
+workload_cgroup_parent=${DIREXTALK_CORE_RUNNER_CGROUP_PARENT:-}
 validate_socket DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET "$extension_runner_socket"
 validate_socket DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET "$workload_runner_socket"
 validate_uid DIREXTALK_CORE_EXTENSION_RUNNER_UID "$extension_runner_uid"
 validate_uid DIREXTALK_CORE_WORKLOAD_RUNNER_UID "$workload_runner_uid"
+validate_cgroup_parent DIREXTALK_EXTENSION_CGROUP_PARENT "$extension_cgroup_parent"
+validate_cgroup_parent DIREXTALK_CORE_RUNNER_CGROUP_PARENT "$workload_cgroup_parent"
 
 umask 077
 case "$out_input" in
@@ -109,6 +124,32 @@ is_regular_protected_file() {
   [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c '%a' "$file" 2>/dev/null || echo 0)" = 400 ]
 }
 
+is_migration_artifact_name() {
+  case "$1" in
+    .cgroup-parent-migration|.cgroup-parent-migration.tmp|.env.migrate-backup|.env.migrate.tmp|.manifest.migrate-backup|.manifest.migrate.tmp) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sync_path() {
+  path=$1
+  if command -v sync >/dev/null 2>&1; then
+    sync -f "$path" 2>/dev/null || true
+  fi
+}
+
+sync_directory() {
+  dir=$1
+  if command -v sync >/dev/null 2>&1; then
+    sync -f "$dir" 2>/dev/null || true
+  fi
+}
+
+migration_failpoint() {
+  [ "${DIREXTALK_BOOTSTRAP_MIGRATION_FAILPOINT:-}" = "$1" ] || return 0
+  exit 86
+}
+
 validate_manifest() {
   dir=$1
   manifest=$dir/.manifest
@@ -130,7 +171,7 @@ validate_complete() {
   [ "$(stat -c '%a' "$dir" 2>/dev/null || echo 0)" = 700 ] || return 1
   for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
     [ -e "$entry" ] || continue
-    is_expected_name "$(basename "$entry")" || return 1
+    is_expected_name "$(basename "$entry")" || is_migration_artifact_name "$(basename "$entry")" || return 1
   done
   for name in $required_files; do
     is_regular_protected_file "$dir/$name" || return 1
@@ -186,10 +227,186 @@ validate_complete() {
     DIREXTALK_CORE_EXTENSION_RUNNER_UID DIREXTALK_CORE_WORKLOAD_RUNNER_UID; do
     grep -Eq "^${name}=.+$" "$dir/.env" || return 1
   done
+  for name in DIREXTALK_EXTENSION_CGROUP_PARENT DIREXTALK_CORE_RUNNER_CGROUP_PARENT; do
+    value=$(sed -n "s/^${name}=//p" "$dir/.env" | tail -n 1)
+    [ -z "$value" ] || validate_cgroup_parent "$name" "$value" >/dev/null 2>&1 || return 1
+  done
   grep -Eq '^core_extension_enabled: (true|false)$' "$dir/config.yaml" || return 1
   grep -Eq '^core_workload_enabled: (true|false)$' "$dir/config.yaml" || return 1
   grep -Eq '^core_extension_runner_uid: [1-9][0-9]*$' "$dir/config.yaml" || return 1
   grep -Eq '^core_workload_runner_uid: [1-9][0-9]*$' "$dir/config.yaml" || return 1
+}
+
+write_migration_marker() {
+  dir=$1
+  phase=$2
+  marker_tmp=$dir/.cgroup-parent-migration.tmp
+  rm -f "$marker_tmp"
+  {
+    printf '%s\n' '# dirextalk-cgroup-parent-migration-v1'
+    printf 'phase=%s\n' "$phase"
+  } > "$marker_tmp" || { rm -f "$marker_tmp"; return 1; }
+  chmod 0400 "$marker_tmp" || { rm -f "$marker_tmp"; return 1; }
+  sync_path "$marker_tmp"
+  mv -f "$marker_tmp" "$dir/.cgroup-parent-migration" || { rm -f "$marker_tmp"; return 1; }
+  sync_directory "$dir"
+}
+
+validate_migration_marker() {
+  marker=$1
+  is_regular_protected_file "$marker" || return 1
+  [ "$(sed -n '1p' "$marker")" = "# dirextalk-cgroup-parent-migration-v1" ] || return 1
+  phase=$(sed -n 's/^phase=//p' "$marker" | tail -n 1)
+  case "$phase" in
+    prepared|env-replaced) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+copy_protected_atomic() {
+  source=$1
+  target=$2
+  target_tmp=$3
+  rm -f "$target_tmp"
+  cp "$source" "$target_tmp" || { rm -f "$target_tmp"; return 1; }
+  chmod 0400 "$target_tmp" || { rm -f "$target_tmp"; return 1; }
+  sync_path "$target_tmp"
+  mv -f "$target_tmp" "$target" || { rm -f "$target_tmp"; return 1; }
+  sync_directory "$(dirname "$target")"
+}
+
+write_manifest_atomic() {
+  dir=$1
+  manifest_tmp=$dir/.manifest.migrate.tmp
+  migration_failpoint before-manifest-mktemp
+  rm -f "$manifest_tmp"
+  (
+    cd "$dir" || exit 1
+    { printf '%s\n' '# dirextalk-bootstrap-manifest-v1'; sha256sum $required_files; } > "$manifest_tmp"
+  ) || { rm -f "$manifest_tmp"; return 1; }
+  migration_failpoint after-manifest-hash
+  chmod 0400 "$manifest_tmp" || { rm -f "$manifest_tmp"; return 1; }
+  sync_path "$manifest_tmp"
+  mv -f "$manifest_tmp" "$dir/.manifest" || { rm -f "$manifest_tmp"; return 1; }
+  sync_directory "$dir"
+}
+
+clear_migration_artifacts() {
+  dir=$1
+  rm -f "$dir/.cgroup-parent-migration" "$dir/.cgroup-parent-migration.tmp" \
+    "$dir/.env.migrate-backup" "$dir/.env.migrate.tmp" \
+    "$dir/.manifest.migrate-backup" "$dir/.manifest.migrate.tmp"
+  sync_directory "$dir"
+}
+
+recover_cgroup_parent_migration() {
+  dir=$1
+  marker=$dir/.cgroup-parent-migration
+  env_backup=$dir/.env.migrate-backup
+  manifest_backup=$dir/.manifest.migrate-backup
+  marker_tmp=$dir/.cgroup-parent-migration.tmp
+  env_tmp=$dir/.env.migrate.tmp
+  manifest_tmp=$dir/.manifest.migrate.tmp
+  [ -e "$marker" ] || [ -e "$env_backup" ] || [ -e "$manifest_backup" ] || [ -e "$marker_tmp" ] || [ -e "$env_tmp" ] || [ -e "$manifest_tmp" ] || return 0
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  owner_uid=$(id -u)
+  [ "$(stat -c '%u' "$dir" 2>/dev/null || echo -1)" = "$owner_uid" ] || return 1
+  if [ -e "$marker" ]; then
+    validate_migration_marker "$marker" || return 1
+    [ "$(stat -c '%u' "$marker" 2>/dev/null || echo -1)" = "$owner_uid" ] || return 1
+  fi
+  if [ -e "$env_backup" ] || [ -e "$manifest_backup" ]; then
+    if [ ! -e "$env_backup" ] || [ ! -e "$manifest_backup" ]; then
+      if validate_manifest "$dir"; then
+        clear_migration_artifacts "$dir"
+        return 0
+      fi
+      return 1
+    fi
+    is_regular_protected_file "$env_backup" || return 1
+    is_regular_protected_file "$manifest_backup" || return 1
+    [ "$(stat -c '%u' "$env_backup" 2>/dev/null || echo -1)" = "$owner_uid" ] || return 1
+    [ "$(stat -c '%u' "$manifest_backup" 2>/dev/null || echo -1)" = "$owner_uid" ] || return 1
+    [ -f "$dir/.env" ] && [ ! -L "$dir/.env" ] || return 1
+    current_env_hash=$(sha256sum "$dir/.env" | awk '{print $1}') || return 1
+    backup_env_hash=$(sha256sum "$env_backup" | awk '{print $1}') || return 1
+    if [ "$current_env_hash" = "$backup_env_hash" ]; then
+      if validate_manifest "$dir"; then
+        clear_migration_artifacts "$dir"
+        return 0
+      fi
+      copy_protected_atomic "$manifest_backup" "$dir/.manifest" "$manifest_tmp" || return 1
+      validate_manifest "$dir" || return 1
+      clear_migration_artifacts "$dir"
+      return 0
+    fi
+    if write_manifest_atomic "$dir" && validate_manifest "$dir" && (validate_complete "$dir"); then
+      clear_migration_artifacts "$dir"
+      return 0
+    fi
+    copy_protected_atomic "$env_backup" "$dir/.env" "$env_tmp" || return 1
+    migration_failpoint after-env-restore
+    copy_protected_atomic "$manifest_backup" "$dir/.manifest" "$manifest_tmp" || return 1
+    validate_manifest "$dir" || return 1
+    clear_migration_artifacts "$dir"
+    return 0
+  fi
+  if [ -e "$marker" ]; then
+    return 1
+  fi
+  if validate_manifest "$dir"; then
+    rm -f "$marker_tmp" "$env_tmp" "$manifest_tmp"
+    sync_directory "$dir"
+    return 0
+  fi
+  return 1
+}
+
+migrate_cgroup_parents() {
+  dir=$1
+  validate_complete "$dir" || return 1
+  owner_uid=$(id -u)
+  [ "$(stat -c '%u' "$dir" 2>/dev/null || echo -1)" = "$owner_uid" ] || return 1
+  for name in $required_files .manifest; do
+    [ "$(stat -c '%u' "$dir/$name" 2>/dev/null || echo -1)" = "$owner_uid" ] || return 1
+  done
+  stack_name=$(sed -n 's/^DIREXTALK_AGENT_STACK_NAME=//p' "$dir/.env" | tail -n 1)
+  validate_stack_name DIREXTALK_AGENT_STACK_NAME "$stack_name" >/dev/null 2>&1 || return 1
+  extension_parent=$(sed -n 's/^DIREXTALK_EXTENSION_CGROUP_PARENT=//p' "$dir/.env" | tail -n 1)
+  workload_parent=$(sed -n 's/^DIREXTALK_CORE_RUNNER_CGROUP_PARENT=//p' "$dir/.env" | tail -n 1)
+  [ -n "$extension_parent" ] || extension_parent=${stack_name}-extension.slice
+  [ -n "$workload_parent" ] || workload_parent=${stack_name}-core-runner.slice
+  validate_cgroup_parent DIREXTALK_EXTENSION_CGROUP_PARENT "$extension_parent"
+  validate_cgroup_parent DIREXTALK_CORE_RUNNER_CGROUP_PARENT "$workload_parent"
+  [ -n "$(sed -n 's/^DIREXTALK_EXTENSION_CGROUP_PARENT=//p' "$dir/.env" | tail -n 1)" ] && have_extension=1 || have_extension=0
+  [ -n "$(sed -n 's/^DIREXTALK_CORE_RUNNER_CGROUP_PARENT=//p' "$dir/.env" | tail -n 1)" ] && have_workload=1 || have_workload=0
+  [ "$have_extension$have_workload" = 11 ] && return 0
+  [ "$(stat -c '%a' "$dir/.env" 2>/dev/null || echo 0)" = 400 ] || return 1
+  [ "$(stat -c '%a' "$dir/.manifest" 2>/dev/null || echo 0)" = 400 ] || return 1
+  copy_protected_atomic "$dir/.env" "$dir/.env.migrate-backup" "$dir/.env.migrate.tmp" || return 1
+  copy_protected_atomic "$dir/.manifest" "$dir/.manifest.migrate-backup" "$dir/.manifest.migrate.tmp" || return 1
+  write_migration_marker "$dir" prepared || return 1
+  env_tmp=$dir/.env.migrate.tmp
+  rm -f "$env_tmp"
+  awk -v extension_parent="$extension_parent" -v workload_parent="$workload_parent" '
+    BEGIN { extension_seen = 0; workload_seen = 0 }
+    /^DIREXTALK_EXTENSION_CGROUP_PARENT=/ { print "DIREXTALK_EXTENSION_CGROUP_PARENT=" extension_parent; extension_seen = 1; next }
+    /^DIREXTALK_CORE_RUNNER_CGROUP_PARENT=/ { print "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=" workload_parent; workload_seen = 1; next }
+    { print }
+    END {
+      if (!extension_seen) print "DIREXTALK_EXTENSION_CGROUP_PARENT=" extension_parent
+      if (!workload_seen) print "DIREXTALK_CORE_RUNNER_CGROUP_PARENT=" workload_parent
+    }
+  ' "$dir/.env" > "$env_tmp" || { rm -f "$env_tmp"; return 1; }
+  chmod 0400 "$env_tmp" || { rm -f "$env_tmp"; return 1; }
+  sync_path "$env_tmp"
+  mv -f "$env_tmp" "$dir/.env" || { rm -f "$env_tmp"; return 1; }
+  sync_directory "$dir"
+  migration_failpoint after-env-replace
+  write_migration_marker "$dir" env-replaced || return 1
+  write_manifest_atomic "$dir" || return 1
+  validate_manifest "$dir" && validate_complete "$dir" || return 1
+  clear_migration_artifacts "$dir"
 }
 
 if ! mkdir "$lock" 2>/dev/null; then
@@ -205,11 +422,16 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 if [ -e "$out" ] || [ -L "$out" ]; then
-  if validate_complete "$out"; then
-    echo "reused complete local protected files and Compose environment in $out" >&2
+  recover_cgroup_parent_migration "$out" || die "protected Compose migration recovery failed; refusing in-place regeneration: $out"
+  if ! validate_complete "$out"; then
+    migrate_cgroup_parents "$out" || die "output target exists but is incomplete or inconsistent; refusing in-place regeneration: $out"
+    validate_complete "$out" || die "migrated protected Compose environment failed validation: $out"
+    echo "migrated existing protected Compose environment with per-runner cgroup parents in $out" >&2
     exit 0
   fi
-  die "output target exists but is incomplete or inconsistent; refusing in-place regeneration: $out"
+  migrate_cgroup_parents "$out" || die "failed to validate existing protected Compose environment: $out"
+  echo "reused complete local protected files and Compose environment in $out" >&2
+  exit 0
 fi
 
 stage=$(mktemp -d "$out_parent/.${out_base}.staging.XXXXXX")
@@ -221,8 +443,14 @@ stack_name=${DIREXTALK_AGENT_STACK_NAME:-dirextalk-agent-$instance_short}
 validate_stack_name DIREXTALK_AGENT_STACK_NAME "$stack_name"
 extension_cgroup_root=${DIREXTALK_EXTENSION_CGROUP_ROOT:-/sys/fs/cgroup/$stack_name-extension}
 core_runner_cgroup_root=${DIREXTALK_CORE_RUNNER_CGROUP_ROOT:-/sys/fs/cgroup/$stack_name-core-runner}
+extension_cgroup_parent=${extension_cgroup_parent:-${stack_name}-extension.slice}
+workload_cgroup_parent=${workload_cgroup_parent:-${stack_name}-core-runner.slice}
 validate_socket DIREXTALK_EXTENSION_CGROUP_ROOT "$extension_cgroup_root"
 validate_socket DIREXTALK_CORE_RUNNER_CGROUP_ROOT "$core_runner_cgroup_root"
+validate_cgroup_parent DIREXTALK_EXTENSION_CGROUP_PARENT "$extension_cgroup_parent"
+validate_cgroup_parent DIREXTALK_CORE_RUNNER_CGROUP_PARENT "$workload_cgroup_parent"
+[ "$core_extension_enabled" = false ] || [ -n "$extension_cgroup_parent" ] || die "DIREXTALK_EXTENSION_CGROUP_PARENT is required when extensions are enabled"
+[ "$core_workload_enabled" = false ] || [ -n "$workload_cgroup_parent" ] || die "DIREXTALK_CORE_RUNNER_CGROUP_PARENT is required when Core Runner is enabled"
 password=$(openssl rand -hex 24)
 token=""
 while [ "$(printf '%s' "$token" | wc -c)" -ne 43 ]; do
@@ -295,6 +523,8 @@ DIREXTALK_CORE_RUNNER_WORKSPACE_VOLUME=${stack_name}-core-runner-workspaces
 DIREXTALK_CORE_RUNNER_STATE_VOLUME=${stack_name}-core-runner-state
 DIREXTALK_EXTENSION_CGROUP_ROOT=$extension_cgroup_root
 DIREXTALK_CORE_RUNNER_CGROUP_ROOT=$core_runner_cgroup_root
+DIREXTALK_EXTENSION_CGROUP_PARENT=$extension_cgroup_parent
+DIREXTALK_CORE_RUNNER_CGROUP_PARENT=$workload_cgroup_parent
 DIREXTALK_CORE_EXTENSION_ENABLED=$core_extension_enabled
 DIREXTALK_CORE_WORKLOAD_ENABLED=$core_workload_enabled
 DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET=$extension_runner_socket
