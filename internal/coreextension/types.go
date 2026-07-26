@@ -606,5 +606,9 @@ type SecretReceipt struct {
 	Fingerprint string
 }
 type SecretStore interface {
+	// Bind MUST be pure and side-effect-free: it validates inputs and returns
+	// receipts only. Implementations must not persist plaintext, fingerprints,
+	// staged secrets, or perform external mutation. Durable secret staging and
+	// promotion are owned exclusively by the lifecycle repository transaction.
 	Bind(context.Context, []SecretInput) ([]SecretReceipt, error)
 }

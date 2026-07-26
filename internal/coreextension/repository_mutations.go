@@ -3,6 +3,7 @@ package coreextension
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"time"
 
 	coreconfirmation "github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -19,70 +20,34 @@ func (r *MemoryRepository) replayLocked(key, d string) (MutationResult, error, b
 	return MutationResult{}, nil, false
 }
 
-func (r *MemoryRepository) prepareMutation(ctx context.Context, m Mutation) (Mutation, error) {
-	r.mu.Lock()
-	reg, artifacts, secrets := r.registry, r.artifactStore, r.secretStore
-	r.mu.Unlock()
-	if reg == nil {
-		return m, nil
+// equalInspection deliberately uses exact, ordered value equality. The
+// reviewed inspection is a confirmation boundary: changing a descriptor,
+// digest, or grant order is a different reviewed plan. Secret grant equality
+// excludes Configured: it is a caller-facing status flag, not a source-owned
+// authorization fact. Secret values are never present here; later binding
+// validates the descriptor digest against the submitted secret fingerprint.
+func equalInspection(a, b Inspection) bool {
+	return equalCandidate(a.Candidate, b.Candidate) &&
+		a.ContentDigest == b.ContentDigest &&
+		a.ManifestDigest == b.ManifestDigest &&
+		a.ExecutionDigest == b.ExecutionDigest &&
+		a.NetworkSchemaDigest == b.NetworkSchemaDigest &&
+		a.SecretSchemaDigest == b.SecretSchemaDigest &&
+		reflect.DeepEqual(a.Execution, b.Execution) &&
+		reflect.DeepEqual(a.NetworkGrants, b.NetworkGrants) &&
+		equalSecretGrantDescriptors(a.SecretGrants, b.SecretGrants)
+}
+
+func equalSecretGrantDescriptors(a, b []SecretGrantDescriptor) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	if artifacts == nil {
-		return Mutation{}, ErrInvalid
-	}
-	a, err := reg.Adapter(m.Candidate.Source)
-	if err != nil {
-		return Mutation{}, err
-	}
-	inspected, err := a.Inspect(ctx, InspectRequest{Kind: m.Candidate.Kind, Source: m.Candidate.Source, ID: m.Candidate.ID, Pin: m.Candidate.Pin})
-	if err != nil {
-		return Mutation{}, err
-	}
-	if !equalCandidate(m.Candidate, inspected.Candidate) {
-		return Mutation{}, ErrConflict
-	}
-	fetched, err := a.Fetch(ctx, inspected.Candidate)
-	if err != nil || fetched.Validate() != nil || !equalCandidate(m.Candidate, fetched.Candidate) || fetched.Inspection.ContentDigest != inspected.ContentDigest {
-		return Mutation{}, ErrConflict
-	}
-	receipt, err := artifacts.Materialize(ctx, fetched)
-	if err != nil {
-		return Mutation{}, err
-	}
-	if !validDigest(receipt.Digest) || receipt.Digest != fetched.ContentDigest || receipt.RelativePath == "" {
-		_ = artifacts.Remove(context.WithoutCancel(ctx), receipt)
-		return Mutation{}, ErrInvalid
-	}
-	m.Inspection = fetched.Inspection
-	m.ArtifactPath, m.ArtifactDigest = receipt.RelativePath, receipt.Digest
-	if len(m.SecretInputs) > 0 {
-		if secrets == nil {
-			_ = artifacts.Remove(context.WithoutCancel(ctx), receipt)
-			return Mutation{}, ErrInvalid
-		}
-		receipts, err := secrets.Bind(ctx, m.SecretInputs)
-		if err != nil {
-			_ = artifacts.Remove(context.WithoutCancel(ctx), receipt)
-			return Mutation{}, err
-		}
-		if len(receipts) != len(m.SecretInputs) {
-			_ = artifacts.Remove(context.WithoutCancel(ctx), receipt)
-			return Mutation{}, ErrConflict
-		}
-		for _, input := range m.SecretInputs {
-			matched := false
-			for _, sr := range receipts {
-				if sr.ReferenceID == input.ReferenceID && sr.Purpose == input.Purpose && sr.Fingerprint == input.Fingerprint() {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				_ = artifacts.Remove(context.WithoutCancel(ctx), receipt)
-				return Mutation{}, ErrConflict
-			}
+	for i := range a {
+		if a[i].ReferenceID != b[i].ReferenceID || a[i].Purpose != b[i].Purpose || a[i].BindingDigest != b[i].BindingDigest {
+			return false
 		}
 	}
-	return m, nil
+	return true
 }
 func (r *MemoryRepository) CreateMutation(ctx context.Context, m Mutation) (MutationResult, error) {
 	rawDigest := mutationDigest(m)
@@ -92,11 +57,6 @@ func (r *MemoryRepository) CreateMutation(ctx context.Context, m Mutation) (Muta
 		return x, e
 	}
 	r.mu.Unlock()
-	var err error
-	m, err = r.prepareMutation(ctx, m)
-	if err != nil {
-		return MutationResult{}, err
-	}
 	if !validUUID(m.IdempotencyKey) || m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) {
 		return MutationResult{}, ErrInvalid
 	}
@@ -139,11 +99,6 @@ func (r *MemoryRepository) UpdateMutation(ctx context.Context, m Mutation, state
 	}
 	r.mu.Unlock()
 	if state == StateUpdating {
-		var err error
-		m, err = r.prepareMutation(ctx, m)
-		if err != nil {
-			return MutationResult{}, err
-		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

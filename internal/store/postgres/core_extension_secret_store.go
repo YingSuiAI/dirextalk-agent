@@ -11,27 +11,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// CoreExtensionSecretStore separates pure SecretStore receipt validation from
+// lifecycle-owned durable secret rows. Bind is intentionally read/write-free.
+// Durable staging is implemented only inside the lifecycle store transaction
+// that owns installation/version state; no independent staging API exists.
 type CoreExtensionSecretStore struct{ store *Store }
 
 func NewCoreExtensionSecretStore(s *Store) *CoreExtensionSecretStore {
 	return &CoreExtensionSecretStore{store: s}
 }
-func (s *CoreExtensionSecretStore) Stage(ctx context.Context, installationID, versionID string, in []coreextension.SecretInput) error {
-	tx, e := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback(ctx)
-	for _, v := range in {
-		if e = v.Validate(); e != nil {
-			return e
-		}
-		if _, e = tx.Exec(ctx, `INSERT INTO core_extension_secret_revisions(revision_id,installation_id,version_id,reference_id,purpose,secret_value,fingerprint,state) VALUES($1,$2,$3,$4,$5,$6,$7,'staged')`, uuid.New(), installationID, versionID, v.ReferenceID, string(v.Purpose), []byte(v.Value), v.Fingerprint()); e != nil {
-			return e
-		}
-	}
-	return tx.Commit(ctx)
-}
+
+// Bind satisfies coreextension.SecretStore and must remain pure: no database
+// write, external mutation, or plaintext persistence is permitted here.
 func (s *CoreExtensionSecretStore) Bind(ctx context.Context, in []coreextension.SecretInput) ([]coreextension.SecretReceipt, error) {
 	out := make([]coreextension.SecretReceipt, 0, len(in))
 	for _, v := range in {

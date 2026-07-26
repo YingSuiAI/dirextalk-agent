@@ -123,6 +123,31 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 	if s.registry == nil || s.artifacts == nil || s.secrets == nil {
 		return Mutation{}, ArtifactReceipt{}, ErrInvalid
 	}
+	if !validUUID(m.IdempotencyKey) || m.Candidate.Validate() != nil || m.Inspection.Validate() != nil || !equalCandidate(m.Candidate, m.Inspection.Candidate) {
+		return Mutation{}, ArtifactReceipt{}, ErrInvalid
+	}
+	// This is pure validation only. The source-owned descriptor schema is
+	// checked before fetch; it is bound to actual secret inputs only after the
+	// reviewed source plan has been fenced below.
+	bound, e := bindSecretGrants(m.Inspection.SecretGrants, m.SecretInputs)
+	if e != nil {
+		return Mutation{}, ArtifactReceipt{}, e
+	}
+	if m.InstallationID != "" || m.ExpectedRevision != 0 {
+		if !validUUID(m.InstallationID) || m.ExpectedRevision < 1 {
+			return Mutation{}, ArtifactReceipt{}, ErrInvalid
+		}
+		i, err := s.repo.Get(ctx, m.InstallationID)
+		if err != nil {
+			return Mutation{}, ArtifactReceipt{}, err
+		}
+		if i.Revision != m.ExpectedRevision {
+			return Mutation{}, ArtifactReceipt{}, ErrRevisionConflict
+		}
+		if m.Candidate.Kind != i.Kind || m.Candidate.Source != i.Source || m.Candidate.ID != i.CandidateID || m.Candidate.Name != i.Name || m.Candidate.Description != i.Description || m.Candidate.Transport != i.Transport {
+			return Mutation{}, ArtifactReceipt{}, ErrInvalid
+		}
+	}
 	a, e := s.registry.Adapter(m.Candidate.Source)
 	if e != nil {
 		return m, ArtifactReceipt{}, e
@@ -131,34 +156,52 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
-	if !equalCandidate(in.Candidate, m.Candidate) {
+	if in.Validate() != nil || !equalInspection(m.Inspection, in) {
 		return m, ArtifactReceipt{}, ErrConflict
 	}
-	m.Candidate = in.Candidate
-	m.Inspection = in
-	bound, e := bindSecretGrants(in.SecretGrants, m.SecretInputs)
-	if e != nil {
-		return m, ArtifactReceipt{}, e
-	}
-	m.Inspection.SecretGrants = bound
-	f, e := a.Fetch(ctx, m.Candidate)
+	f, e := a.Fetch(ctx, in.Candidate)
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
 	if e = f.Validate(); e != nil {
-		return m, ArtifactReceipt{}, e
+		return m, ArtifactReceipt{}, ErrConflict
 	}
-	if f.ContentDigest != in.ContentDigest {
+	if !equalCandidate(f.Candidate, in.Candidate) || !equalInspection(f.Inspection, in) || f.ContentDigest != in.ContentDigest {
 		return m, ArtifactReceipt{}, ErrConflict
 	}
 	receipt, e := s.artifacts.Materialize(ctx, f)
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
+	if !validDigest(receipt.Digest) || receipt.Digest != f.ContentDigest || receipt.RelativePath == "" {
+		_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)
+		return Mutation{}, ArtifactReceipt{}, ErrInvalid
+	}
 	m.ArtifactPath, m.ArtifactDigest = receipt.RelativePath, receipt.Digest
-	if _, e = s.secrets.Bind(ctx, m.SecretInputs); e != nil {
+	m.Candidate = in.Candidate
+	m.Inspection = in
+	m.Inspection.SecretGrants = bound
+	receipts, e := s.secrets.Bind(ctx, m.SecretInputs)
+	if e != nil {
 		_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)
 		return Mutation{}, ArtifactReceipt{}, e
+	}
+	if len(receipts) != len(m.SecretInputs) {
+		_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)
+		return Mutation{}, ArtifactReceipt{}, ErrConflict
+	}
+	for _, input := range m.SecretInputs {
+		found := false
+		for _, got := range receipts {
+			if got.ReferenceID == input.ReferenceID && got.Purpose == input.Purpose && got.Fingerprint == input.Fingerprint() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)
+			return Mutation{}, ArtifactReceipt{}, ErrConflict
+		}
 	}
 	return m, receipt, nil
 }

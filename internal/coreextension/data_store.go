@@ -2,16 +2,12 @@ package coreextension
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"github.com/google/uuid"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 // FileArtifactStore materializes verified fetched bytes under the Agent data
@@ -54,31 +50,21 @@ func (s *FileArtifactStore) Remove(_ context.Context, r ArtifactReceipt) error {
 	return err
 }
 
-// FingerprintSecretStore records only receipt metadata; plaintext values never
-// cross this boundary or reach PostgreSQL.
-type FingerprintSecretStore struct {
-	mu       sync.Mutex
-	receipts map[string]SecretReceipt
-}
+// FingerprintSecretStore is deliberately stateless: Bind is a pure receipt
+// validator and cannot leave durable secret state behind when a later install
+// precondition or repository write fails. Plaintext never crosses this
+// boundary or reaches PostgreSQL.
+type FingerprintSecretStore struct{}
 
-func NewFingerprintSecretStore() *FingerprintSecretStore {
-	return &FingerprintSecretStore{receipts: map[string]SecretReceipt{}}
-}
+func NewFingerprintSecretStore() *FingerprintSecretStore { return &FingerprintSecretStore{} }
 func (s *FingerprintSecretStore) Bind(_ context.Context, in []SecretInput) ([]SecretReceipt, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	out := make([]SecretReceipt, 0, len(in))
 	for _, v := range in {
 		if err := v.Validate(); err != nil {
 			return nil, err
 		}
-		h := sha256.Sum256([]byte(v.Value))
-		r := SecretReceipt{ReferenceID: v.ReferenceID, Purpose: v.Purpose, Fingerprint: hex.EncodeToString(h[:])}
-		s.receipts[v.ReferenceID] = r
-		out = append(out, r)
+		out = append(out, SecretReceipt{ReferenceID: v.ReferenceID, Purpose: v.Purpose, Fingerprint: v.Fingerprint()})
 	}
 	return out, nil
 }
-func (s *FingerprintSecretStore) String() string {
-	return fmt.Sprintf("FingerprintSecretStore{receipts:%d}", len(s.receipts))
-}
+func (s *FingerprintSecretStore) String() string { return "FingerprintSecretStore{}" }
