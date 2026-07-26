@@ -1,16 +1,19 @@
 # Dirextalk Agent Core v1 development specification
 
-> The approved, not-yet-implemented Message Server, production SSM/ECS, and
-> Compose extension is defined in
-> [`message-server-integration-development-contract.md`](message-server-integration-development-contract.md).
-> This file continues to describe the current Core baseline until those gates
-> pass.
+> Source behavior for the Message Server adapter, typed workload providers, and
+> isolated Compose assets is implemented at the companion integration revisions
+> recorded below. Production activation and live verification remain separate
+> release gates; capability advertisement stays disabled until its exact
+> readiness proof is present.
 
 This document is the current product and implementation boundary for the
 independent Agent service. The versioned Protobuf in
 `api/proto/dirextalk/agent/v1` and the PostgreSQL migrations are the executable
 contract. A public or schema change updates this document and its contract tests
 together.
+
+Source behavior follows the `Agent Core v1 source contract`; production
+activation and live verification remain separate release gates.
 
 ## Product boundary
 
@@ -44,8 +47,11 @@ revision.
 Its `WORKLOAD` Task handler is registered when at least one exact target route
 is available. `workload.core_runner` requires the local authenticated readiness
 proof; `workload.aws_ssm` and `workload.aws_ecs` are advertised independently
-when their typed production routes can be constructed. AWS startup performs no
-provider calls; credential, ARN, and target checks remain per operation.
+only after an explicit readiness target is configured and the typed provider
+proves its STS/account binding plus exact target prerequisites. Missing or
+stale readiness configuration keeps the capability disabled; there is no
+implicit default target or broad scan. Per-operation credential, ARN, and
+target checks remain a second fence.
 
 ## Acceptance scenarios
 
@@ -126,8 +132,17 @@ Confirmation is a generic durable flow for operations requiring explicit user
 approval. The binding includes operation domain, target identity/revision,
 source/content or parameter digests, network grants, secret grants, Task, and
 expiry. Confirm/reject is revision- and idempotency-protected. MCP/Skill
-installation, upgrade, removal, and AWS mutations that create, update,
-expose, spend, or destroy must pass this boundary before side effects.
+installation, upgrade, removal, and execution, plus AWS mutations that create,
+update, expose, spend, or destroy must pass this boundary before side effects.
+Extension execution records the owner, installation kind/revision, immutable
+version/manifest/execution/permission digests, selected tool/command, canonical
+input digest, and secret/network grant descriptors. Execute requests create only
+a durable `waiting_user` Task; exact confirmed binding consumption is the sole
+transition to runnable work. If the worker is reclaimed after consumption
+without an exact idempotent side-effect receipt, the Task is terminalized with
+the sanitized `extension_execution_uncertain`/reconciliation-required marker;
+the consumed reservation and installation execution fence remain active, so
+retry and new proposals stay blocked until explicit operational reconciliation.
 
 ### MCP and Skills
 
@@ -152,12 +167,10 @@ and change requests are exposed through `CoreCloudControlService`. Provider call
 and durable fencing. Confirmation is mandatory for mutating or spend/exposure
 operations; model and extension tools cannot bypass it.
 
-On 2026-07-25, an explicitly authorized real AWS Core lifecycle ran in
-`us-east-1` through the production typed provider and Agent confirmation/durable
-Task path. It created exactly one CloudFormation stack containing one tagged
-idle SQS queue; independent stack, resource, and tag read-back succeeded. The
-stack was deleted through Agent confirmation/Task, deletion was independently
-verified, and a post-run prefix audit found zero active stacks or queues.
+Fake-provider lifecycle tests and source-level typed-provider checks cover
+confirmation, read-back, and cleanup. No live AWS workload lifecycle is claimed
+by this document; a real run requires an explicitly configured target, owner
+confirmation, independent read-back, and a zero-residue audit.
 
 ## Security and data rules
 
@@ -180,6 +193,8 @@ graph authoring, product adapters, or standalone admin UI is specified.
 No behavior is promised beyond the current Protobuf, Core composition, and
 focused tests.
 
-Two-Compose end-to-end acceptance and live AWS workload acceptance remain
-pending. The passed non-root delegated-cgroup isolation lane is not a claim
-that live Core Runner mode is released.
+Two isolated Compose projects, real DeepSeek conversation, extension
+installation/execution, and live AWS workload acceptance are release evidence
+gates rather than fabricated production-readiness claims. Until those gates are
+completed against the configured targets, Core Runner and AWS capabilities stay
+disabled by readiness policy.

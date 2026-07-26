@@ -1,8 +1,9 @@
 # Message Server and workload integration contract
 
-Status: approved implementation target, not current behavior  
+Status: source implementation recorded; production activation and live
+verification remain gated
 Approved: 2026-07-25  
-Agent baseline: `11eed51e2a9e6431f28039a542f2424f290e6fff`
+Implemented source behavior follows the `Agent Core v1 source contract`.
 
 The cross-repository product contract is owned by the Message Server document
 `docs/agent-core-integration-development-contract.md` in the companion
@@ -25,12 +26,12 @@ not owned here.
 
 ## Conversation and extension correctness
 
-The current production composition rejects every non-empty Chat/StreamChat
-`extensions` and `knowledge_refs`, and constructs the conversation service
-without a production extension resolver. This is a release-blocking defect for
-this integration.
+The source composition now accepts exact installed MCP/Skill selections and
+resolves them through the Core-owned extension boundary. Production capability
+advertisement remains readiness-gated until the configured Core/Runner path is
+live-verified.
 
-The corrected path must:
+The implemented path:
 
 1. accept exact installed MCP/Skill selections;
 2. resolve installation, pinned version, content/artifact digest, allowed tool
@@ -147,7 +148,15 @@ A confirmation binds:
 Confirming does not execute inline. It consumes the confirmation into a durable
 Task. Rejection/expiry is terminal. A changed plan requires a new confirmation.
 Unknown execution outcomes are fenced and reported as uncertain, never blindly
-replayed.
+replayed. If a worker is reclaimed after confirmation consumption without an
+exact idempotent side-effect receipt, Core records the sanitized
+`extension_execution_uncertain` marker, keeps the consumed reservation and
+installation fence active, and blocks retry or a new proposal. The owner-only
+`AcknowledgeExtensionExecutionUncertain` action accepts only the exact
+confirmation/task/installation/revision fences plus
+`acknowledged_unknown_no_retry`; it records reconciliation, releases the
+reservation, and leaves the Task failed. It never retries or silently reports
+success.
 
 ## Workload API
 
@@ -172,7 +181,11 @@ network and secret grants, resource limits, and expiry. Apply/destroy return
 the created confirmation and durable Task identity.
 
 There is no interactive terminal RPC. The model may help construct a plan, but
-model/tool output cannot confirm or bypass it.
+model/tool output cannot confirm or bypass it. Terminal read-back is provided by
+the owner-only read actions `agent.core.workloads.operations.get`,
+`agent.core.workloads.operations.events` (exact `{events}` envelope), and
+`agent.core.workloads.actual.get`; these are read-only and a missing actual is
+never destroy success.
 
 Workloads use a distinct `WORKLOAD` Task kind and payload; they do not overload
 the current CloudFormation-only `AWS_CHANGE` kind. The payload pins workload,
@@ -192,7 +205,7 @@ events/read-back, and owns the single terminal transition.
 Arbitrary installation commands execute only through a separate Runner
 identity. They never execute in the Core API/migration process.
 
-The first implementation favors functionality but still requires:
+The implemented Core Runner path enforces:
 
 - a separate non-root UID and non-privileged process/container boundary;
 - detached root, isolated namespaces, seccomp, and a task cgroup-v2;
@@ -268,8 +281,12 @@ composition is usable. At minimum:
 - `workload.aws_ssm` only when the AWS provider supports the required calls;
 - `workload.aws_ecs` only when the AWS provider supports the required calls.
 
-Registration alone is not readiness. Configuration-disabled or partially
-wired services report disabled.
+Registration alone is not readiness. Configuration-disabled or partially wired
+services report disabled. AWS SSM/ECS capabilities additionally require an
+explicit readiness block naming one exact durable credential reference and
+target, plus typed-provider proof of STS/account binding and target
+prerequisites. Without that configured live target and proof, the capability
+remains disabled; there is no default target or broad account scan.
 
 ## Deployment assets
 
@@ -306,4 +323,6 @@ Focused checks must prove:
 
 Real provider acceptance is performed only with explicit account, region,
 budget and owner confirmations. Evidence records immutable revisions and
-proves cleanup independently.
+proves cleanup independently. Two isolated Compose projects and real DeepSeek,
+extension, and workload runs are release evidence, not a claim that production
+readiness or live AWS acceptance has already completed.

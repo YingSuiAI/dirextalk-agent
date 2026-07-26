@@ -1,5 +1,9 @@
 # Core v1 API contract
 
+Source behavior follows the `Agent Core v1 source contract`. Live production
+activation is still readiness-gated; this contract does not claim that Compose,
+Core Runner, or AWS live acceptance has completed.
+
 The canonical public contract is the versioned Protobuf under
 [`api/proto/dirextalk/agent/v1`](../api/proto/dirextalk/agent/v1). Generated Go
 files are derived artifacts; the `.proto` files are the review surface.
@@ -62,18 +66,34 @@ and attachment reads use the Task execution snapshot when background work is
 required.
 
 `ConfirmationService` is the common explicit-confirmation boundary. MCP/Skill
-installation, upgrade, and removal, plus AWS operations that create, update,
-expose, spend, or destroy resources, must bind a confirmation to the exact
-target revision and content/parameter digests before side effects.
+installation, upgrade, removal, and execution, plus AWS operations that create,
+update, expose, spend, or destroy resources, must bind a confirmation to the
+exact target revision and content/parameter digests before side effects.
 
 `MCPService` and `SkillService` use pinned source versions and artifact/content
-digests. Local stdio and Skill execution can occur only through the separate
+digests. Extension execution returns both durable `confirmation_id` and
+non-runnable `task_id`; only exact confirmed binding consumption may queue the
+task. The binding records owner, installation kind/revision, immutable
+version/manifest/execution/permission digests, selected tool/command, canonical
+input digest, and secret/network descriptors. Local stdio and Skill execution can occur only through the separate
 Linux extension runner and its isolated namespaces. Remote MCP uses the exact
 confirmed HTTPS endpoint. Secret resolution requires the exact installation,
 version, reference, declared purpose, and binding digest; an empty or mismatched
 purpose fails closed. Cancellation is reported as complete only after the
 runner proves the delegated cgroup is empty and removed. The Agent never falls
 back to in-process third-party execution.
+
+If a worker is reclaimed after confirmation consumption without an exact
+idempotent side-effect receipt, the Task is terminalized with the sanitized
+`extension_execution_uncertain`/reconciliation-required marker while the
+consumed reservation and installation fence remain active. It is not retryable
+or automatically released; operational reconciliation is required.
+The owner-only `ConfirmationService.AcknowledgeExtensionExecutionUncertain`
+operation accepts only `acknowledged_unknown_no_retry` and exact confirmation,
+Task, installation, and revision fences. It records a durable reconciliation
+event, marks the consumed reservation released, and leaves the Task failed;
+replays with the same idempotency digest return the same readback and a
+different digest is an idempotency conflict.
 
 `CoreKnowledgeService` owns mounts, uploads, memory sources, status, indexing,
 and search for this Agent instance. Search and Task context are bound to exact
@@ -92,9 +112,31 @@ probe, including its bounded userns/tmpfs/seccomp/cgroup exercise. Supervisor
 restart recovery persists `cleanup_required` before exact cgroup reaping;
 cleanup uncertainty fails closed and does not create a successful destroy.
 
-Typed SSM/ECS registry execution is wired behind `core_aws_enabled`; startup
-only constructs clients and resolvers, while credential verification, strict
-ARN target binding, and AWS identity/read-back checks happen per operation.
+Owner-only terminal read-back uses three read-only ProductCore actions:
+
+- `agent.core.workloads.operations.get` returns the current operation projection;
+- `agent.core.workloads.operations.events` returns the exact `{events}` envelope
+  and accepts an optional `after_sequence`; and
+- `agent.core.workloads.actual.get` returns the current sparse workload snapshot.
+
+An operation read-back is bound to its workload identity and may point to a
+legal successor snapshot. A missing actual snapshot is an error, never proof of
+successful destroy. These reads do not mutate, confirm, retry, or release an
+operation.
+
+Typed SSM/ECS registry execution is wired behind `core_aws_enabled`. A
+capability is advertised only when its optional `core_aws_ssm_readiness` or
+`core_aws_ecs_readiness` block names one exact durable credential reference and
+target and the typed provider proves STS/account binding plus the configured
+resource prerequisites at startup. Missing, partial, stale, or failed proof
+keeps that capability disabled; there is no default target or account-wide
+scan. Per-operation credential, ARN target binding, identity, and read-back
+checks remain a second fence.
+
+The SSM proof requires the exact running Linux instance, its online managed
+SSM record, and configured tags. The ECS proof requires the exact ACTIVE
+cluster, available configured subnets/security groups, optional target-group
+ARN/port, and an ACTIVE configured task-family revision.
 Workload secret grants accept legacy UUID references or canonical Secrets
 Manager/SSM ARNs; ARN grants bind confirmation to a versioned ARN-plus-purpose
 digest, and AWS execution rejects UUID application references. Credential
