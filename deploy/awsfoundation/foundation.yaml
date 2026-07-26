@@ -669,6 +669,7 @@ Resources:
               - ec2:DescribeSnapshots
               - ec2:DescribeSubnets
               - ec2:DescribeVolumes
+              - ec2:DescribeVpcAttribute
               - ec2:DescribeVpcEndpoints
               - ec2:DescribeVpcs
             Resource: '*'

@@ -228,6 +228,7 @@ func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {
 		new  string
 	}{
 		{name: "instance attribute readback removed", sid: "ObserveEC2", old: "- ec2:DescribeInstanceAttribute", new: "- ec2:DescribeAddresses"},
+		{name: "VPC DNS attribute readback removed", sid: "ObserveEC2", old: "- ec2:DescribeVpcAttribute", new: "- ec2:DescribeVpcs"},
 		{name: "S3 prefix-list readback removed", sid: "ObserveEC2", old: "- ec2:DescribePrefixLists", new: "- ec2:DescribeAddresses"},
 		{name: "security-group rule readback removed", sid: "ObserveEC2", old: "- ec2:DescribeSecurityGroupRules", new: "- ec2:DescribeSecurityGroups"},
 		{name: "instance launch ownership removed", sid: "RunTaggedInstanceVolume", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
