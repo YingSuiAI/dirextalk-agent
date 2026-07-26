@@ -35,6 +35,29 @@ deploy/container/scripts/readiness.sh "$PWD/deploy/container/compose.local.yaml"
 The bootstrap output and every path written to `.env` are absolute, so the
 Compose command may subsequently be run from another directory.
 
+Each bootstrap creates a unique stack namespace (`DIREXTALK_AGENT_STACK_NAME`,
+default `dirextalk-agent-<instance-id-prefix>`) and derives every local network,
+named volume, and delegated cgroup root from it. Compose requires those names
+from the generated `.env`; do not reuse an `.env` between stacks. The generated
+Core Runner image variable is `DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE` (default
+`dirextalk-core-runner:local`).
+
+The optional isolated surfaces are strict, immutable bootstrap controls:
+`DIREXTALK_CORE_EXTENSION_ENABLED` and `DIREXTALK_CORE_WORKLOAD_ENABLED` accept
+only `true` or `false` and default to `false`; runner UIDs default to `65531`
+and `65530`; runner sockets default to
+`/run/dirextalk-agent/extension-runner.sock` and
+`/run/dirextalk-core-runner/runner.sock`. Invalid values are rejected before
+any output directory is created. The selected values are written to both the
+non-secret Core YAML and the hashed `.manifest` artifact. Enabling a surface
+does not implicitly select a Compose profile: start `extensions` and
+`core-runner` explicitly after provisioning their delegated cgroup roots. Each
+runner has a scratch-image healthcheck: Core Runner uses its nonce-backed UDS
+readiness probe; the extension runner uses its nonce-bound UDS readiness
+protocol plus ownership checks. Wait for both runner healthchecks before
+starting or recreating Core when the corresponding profile
+is enabled; the default profile-disabled stack remains unaffected.
+
 Bootstrap also writes `instance-id` as a protected, newline-terminated
 artifact and exposes its absolute path as `DIREXTALK_AGENT_INSTANCE_ID_FILE`.
 The Message Server two-project local harness uses that artifact together with
@@ -43,8 +66,9 @@ and authenticated caller without copying secret values into YAML.
 
 The stack has no published Core port. Core joins internal `agent_private` and
 `agent_caller` networks plus `agent_egress` for configured model/AWS HTTPS
-authorities. PostgreSQL and the extension runner remain on the private network
-only; a future Message Server joins `agent_caller`, never the database network.
+authorities. PostgreSQL remains on the private network only. Both extension and
+Core Runner use `network_mode: none`; a future Message Server joins
+`agent_caller`, never the database network.
 PostgreSQL is not shared with a business service, and no data directory or
 Docker socket is mounted.
 

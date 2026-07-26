@@ -23,7 +23,7 @@ func main() {
 }
 
 func run(arguments []string) error {
-	configPath, command, serverName, err := parseArguments(arguments)
+	configPath, command, healthOptions, err := parseArguments(arguments)
 	if err != nil {
 		return err
 	}
@@ -40,33 +40,70 @@ func run(arguments []string) error {
 	case "serve":
 		return serveCore(cfg)
 	case "healthcheck":
-		return runHealthcheck(cfg, serverName)
+		return runHealthcheckOptions(cfg, healthOptions)
 	default:
 		return errors.New("unknown command; expected migrate, serve, or healthcheck")
 	}
 }
 
-func parseArguments(arguments []string) (string, string, string, error) {
-	serverName := strings.TrimSpace(os.Getenv("AGENT_HEALTHCHECK_SERVER_NAME"))
-	if serverName == "" {
-		serverName = "localhost"
+type healthcheckOptions struct {
+	serverName       string
+	expectInstanceID string
+	requiredCaps     []string
+}
+
+func parseArguments(arguments []string) (string, string, healthcheckOptions, error) {
+	options := healthcheckOptions{serverName: strings.TrimSpace(os.Getenv("AGENT_HEALTHCHECK_SERVER_NAME"))}
+	if options.serverName == "" {
+		options.serverName = "localhost"
 	}
-	if len(arguments) == 1 {
-		return defaultConfigPath, arguments[0], serverName, nil
+	args := append([]string(nil), arguments...)
+	configPath := defaultConfigPath
+	if len(args) >= 2 && args[0] == "--config" {
+		if strings.TrimSpace(args[1]) == "" {
+			return "", "", options, errors.New("usage: dirextalk-agent [--config PATH] <migrate|serve|healthcheck>")
+		}
+		configPath = strings.TrimSpace(args[1])
+		args = args[2:]
+	} else if len(args) >= 1 && strings.HasPrefix(args[0], "--config=") {
+		if strings.TrimSpace(strings.TrimPrefix(args[0], "--config=")) == "" {
+			return "", "", options, errors.New("usage: dirextalk-agent [--config PATH] <migrate|serve|healthcheck>")
+		}
+		configPath = strings.TrimSpace(strings.TrimPrefix(args[0], "--config="))
+		args = args[1:]
 	}
-	if len(arguments) == 3 && arguments[0] == "healthcheck" && arguments[1] == "--server-name" && strings.TrimSpace(arguments[2]) != "" {
-		return defaultConfigPath, arguments[0], strings.TrimSpace(arguments[2]), nil
+	if len(args) == 0 {
+		return "", "", options, errors.New("usage: dirextalk-agent [--config PATH] <migrate|serve|healthcheck>")
 	}
-	if len(arguments) == 3 && arguments[0] == "--config" && strings.TrimSpace(arguments[1]) != "" {
-		return strings.TrimSpace(arguments[1]), arguments[2], serverName, nil
+	command := args[0]
+	args = args[1:]
+	if command != "healthcheck" {
+		if len(args) != 0 {
+			return "", "", options, errors.New("unexpected command arguments")
+		}
+		return configPath, command, options, nil
 	}
-	if len(arguments) == 2 && strings.HasPrefix(arguments[0], "--config=") && strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")) != "" {
-		return strings.TrimSpace(strings.TrimPrefix(arguments[0], "--config=")), arguments[1], serverName, nil
+	for len(args) > 0 {
+		if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+			return "", "", options, errors.New("healthcheck option requires a value")
+		}
+		value := strings.TrimSpace(args[1])
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return "", "", options, errors.New("healthcheck option contains invalid characters")
+		}
+		switch args[0] {
+		case "--server-name":
+			options.serverName = value
+		case "--expect-instance-id":
+			options.expectInstanceID = value
+		case "--require-capability":
+			options.requiredCaps = append(options.requiredCaps, value)
+		default:
+			return "", "", options, errors.New("unknown healthcheck option")
+		}
+		args = args[2:]
 	}
-	if len(arguments) == 5 && arguments[0] == "--config" && strings.TrimSpace(arguments[1]) != "" && arguments[2] == "healthcheck" && arguments[3] == "--server-name" && strings.TrimSpace(arguments[4]) != "" {
-		return strings.TrimSpace(arguments[1]), arguments[2], strings.TrimSpace(arguments[4]), nil
-	}
-	return "", "", "", errors.New("usage: dirextalk-agent [--config PATH] <migrate|serve|healthcheck [--server-name NAME]>")
+	return configPath, command, options, nil
 }
 
 func migrate(cfg config.Config) error {

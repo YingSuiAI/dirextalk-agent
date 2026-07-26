@@ -4,6 +4,8 @@ package extensionrunner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,6 +20,46 @@ import (
 type Client struct {
 	path string
 	uid  uint32
+}
+
+// Probe verifies socket identity, peer UID, and the runner's nonce-bound
+// readiness response without submitting an execution request.
+func (c *Client) Probe(ctx context.Context) error {
+	if c == nil || ctx == nil {
+		return ErrDenied
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	fd, before, err := c.connect(ctx, deadline)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	after, err := socketIdentity(c.path, c.uid)
+	if err != nil || before != after {
+		return ErrDenied
+	}
+	var nonceBytes [32]byte
+	if _, err := rand.Read(nonceBytes[:]); err != nil {
+		return ErrDenied
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes[:])
+	payload, err := EncodeProbeRequest(ProbeRequest{Op: "probe", Version: ProbeProtocolV1, Nonce: nonce})
+	nSent, sendErr := unix.SendmsgN(fd, payload, nil, nil, 0)
+	if err != nil || sendErr != nil || nSent != len(payload) {
+		return ErrDenied
+	}
+	if err := waitFD(ctx, fd, unix.POLLIN, deadline); err != nil {
+		return err
+	}
+	buf := make([]byte, MaxV2PacketBytes)
+	n, err := unix.Read(fd, buf)
+	if err != nil || n <= 0 || DecodeProbeResponse(buf[:n], nonce) != nil {
+		return ErrDenied
+	}
+	return nil
 }
 
 const runnerTransportFinalizationGrace = 30 * time.Second

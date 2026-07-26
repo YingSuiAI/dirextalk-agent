@@ -37,6 +37,29 @@ func TestReadStatusV1DatagramRejectsNonCanonicalAndMismatchedStatus(t *testing.T
 	}
 }
 
+func TestProbeProtocolBindsNonceAndVersion(t *testing.T) {
+	request, err := EncodeProbeRequest(ProbeRequest{Op: "probe", Version: ProbeProtocolV1, Nonce: "nonce"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeProbeRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	response, err := EncodeProbeResponse(ProbeResponse{Ready: true, Version: ProbeProtocolV1, Nonce: "nonce"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := DecodeProbeResponse(response, "nonce"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DecodeProbeResponse(response, "wrong"); err == nil {
+		t.Fatal("probe accepted a mismatched nonce")
+	}
+	if _, err := DecodeProbeRequest([]byte(`{"op":"probe","version":"wrong","nonce":"nonce"}`)); err == nil {
+		t.Fatal("probe accepted a mismatched version")
+	}
+}
+
 func TestValidateStatusV1AcceptsReplayTombstoneOnly(t *testing.T) {
 	request := clientProtocolRequest()
 	if err := ValidateStatusV1(request, StatusV1{RunID: request.RunID, Phase: PhaseTombstone, Error: ErrorReplay}); err != nil {

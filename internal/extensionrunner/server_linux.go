@@ -29,6 +29,7 @@ func (a UIDAllowlist) Allow(uid uint32) bool { _, ok := a[uid]; return ok }
 type Server struct {
 	Listener        UnixListener
 	Authorizer      PeerAuthorizer
+	RunnerUID       uint32
 	Runner          Runner
 	Registry        *RunRegistry
 	PublicationRoot string
@@ -108,7 +109,7 @@ func (s Server) ServeV2(ctx context.Context) error {
 func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 	defer conn.Close()
 	uid, err := peerUID(conn)
-	if err != nil || !s.Authorizer.Allow(uid) {
+	if err != nil {
 		return
 	}
 	buf := make([]byte, MaxV2PacketBytes)
@@ -123,14 +124,35 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 		return
 	}
 	packet := buf[:n]
+	probePeer := false
+	var envelope struct {
+		Op string `json:"op"`
+	}
 	if len(bytes.TrimSpace(packet)) > 0 && bytes.TrimSpace(packet)[0] == '{' {
-		var envelope struct {
-			Op string `json:"op"`
-		}
 		if json.Unmarshal(packet, &envelope) != nil {
 			return
 		}
+		probePeer = envelope.Op == "probe"
+	}
+	if !s.allowPeer(uid, probePeer) {
+		return
+	}
+	if len(bytes.TrimSpace(packet)) > 0 && bytes.TrimSpace(packet)[0] == '{' {
 		switch envelope.Op {
+		case "probe":
+			if len(fds) != 0 {
+				return
+			}
+			q, probeErr := DecodeProbeRequest(packet)
+			if probeErr != nil {
+				return
+			}
+			ready := s.ready(ctx)
+			payload, encodeErr := EncodeProbeResponse(ProbeResponse{Ready: ready, Version: ProbeProtocolV1, Nonce: q.Nonce})
+			if encodeErr == nil {
+				_, _ = conn.Write(payload)
+			}
+			return
 		case "publish_v1":
 			resp := s.publish(packet, fds)
 			writePublicationResponse(conn, resp, -1)
@@ -197,6 +219,41 @@ func (s Server) serveV2Connection(ctx context.Context, conn *net.UnixConn) {
 	if n, writeErr := conn.Write(payload); writeErr != nil || n != len(payload) {
 		return
 	}
+}
+
+func (s Server) allowPeer(uid uint32, probe bool) bool {
+	if s.Authorizer != nil && s.Authorizer.Allow(uid) {
+		return true
+	}
+	return probe && s.RunnerUID != 0 && uid == s.RunnerUID
+}
+
+func (s Server) ready(ctx context.Context) bool {
+	if s.Runner.V2Backend == nil || s.Runner.V2Backend.Probe(ctx) != nil {
+		return false
+	}
+	if s.Registry == nil || !safeRunnerRoot(s.PublicationRoot) {
+		return false
+	}
+	if resolver, ok := s.Runner.InstallResolver.(DiskInstallResolver); ok && !safeRunnerRoot(resolver.Root) {
+		return false
+	}
+	if resolver, ok := s.Runner.WorkspaceResolver.(DiskWorkspaceResolver); ok && !safeRunnerRoot(resolver.Root) {
+		return false
+	}
+	return true
+}
+
+func safeRunnerRoot(path string) bool {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint32(st.Uid) == uint32(os.Geteuid())
 }
 
 func writePublicationResponse(conn *net.UnixConn, response any, fd int) {

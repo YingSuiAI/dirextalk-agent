@@ -1,4 +1,4 @@
-name: dirextalk-agent-core-local
+name: ${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}
 
 x-core-hardening: &core-hardening
   user: "65532:65532"
@@ -9,7 +9,7 @@ x-core-hardening: &core-hardening
     - /tmp:rw,noexec,nosuid,nodev,mode=1777
 
 x-runner-hardening: &runner-hardening
-  user: "65531:65531"
+  user: "${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}"
   read_only: true
   cap_drop: ["ALL"]
   security_opt: ["no-new-privileges:true"]
@@ -17,7 +17,7 @@ x-runner-hardening: &runner-hardening
     - /tmp:rw,noexec,nosuid,nodev,mode=1777
 
 x-core-runner-hardening: &core-runner-hardening
-  user: "65530:65530"
+  user: "${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:?set the Core Runner UID}:${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:?set the Core Runner UID}"
   read_only: true
   cap_drop: ["ALL"]
   security_opt: ["no-new-privileges:true"]
@@ -119,7 +119,7 @@ services:
     command:
       - serve
       - --socket
-      - /run/dirextalk-agent/extension-runner.sock
+      - ${DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET:?set the extension runner socket path}
       - --agent-uid
       - "65532"
       - --install-root
@@ -131,14 +131,22 @@ services:
       - --state-root
       - /var/lib/dirextalk-agent/extension-state
     volumes:
-      - agent_extension_socket:/run/dirextalk-agent
+      - type: volume
+        source: agent_extension_socket
+        target: ${DIREXTALK_CORE_EXTENSION_RUNNER_DIR:?set the extension runner socket directory}
       - agent_extension_install:/var/lib/dirextalk-agent/extension-install
       - agent_runner_workspaces:/var/lib/dirextalk-agent/extension-workspaces
       - agent_extension_state:/var/lib/dirextalk-agent/extension-state
       - type: bind
         source: ${DIREXTALK_EXTENSION_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for the runner}
         target: /sys/fs/cgroup/dirextalk-agent
-    networks: [agent_private]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/dirextalk-extension-runner", "probe", "--socket", "${DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET:?set the extension runner socket path}", "--runner-uid", "${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    network_mode: "none"
     depends_on:
       extension-socket-init:
         condition: service_completed_successfully
@@ -155,7 +163,7 @@ services:
       - -ec
       - >-
         install -d -m 3770 /socket;
-        chown 65531:65532 /socket;
+        chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:65532 /socket;
         chmod 0770 /socket
     volumes:
       - agent_extension_socket:/socket
@@ -169,15 +177,23 @@ services:
     <<: *core-runner-hardening
     profiles: ["core-runner"]
     group_add: ["65532"]
-    command: ["serve", "--socket", "/run/dirextalk-core-runner/runner.sock", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/sys/fs/cgroup/dirextalk-core-runner", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
+    command: ["serve", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/sys/fs/cgroup/dirextalk-core-runner", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
     volumes:
-      - core_runner_socket:/run/dirextalk-core-runner
+      - type: volume
+        source: core_runner_socket
+        target: ${DIREXTALK_CORE_WORKLOAD_RUNNER_DIR:?set the Core Runner socket directory}
       - core_runner_installs:/var/lib/dirextalk-core-runner/installs
       - core_runner_workspaces:/var/lib/dirextalk-core-runner/workspaces
       - core_runner_state:/var/lib/dirextalk-core-runner/state
       - type: bind
         source: ${DIREXTALK_CORE_RUNNER_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for Core Runner}
         target: /sys/fs/cgroup/dirextalk-core-runner
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/dirextalk-core-runner", "probe", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     network_mode: "none"
     depends_on:
       core-runner-socket-init:
@@ -191,7 +207,7 @@ services:
     cap_add: ["CHOWN", "FOWNER"]
     security_opt: ["no-new-privileges:true"]
     profiles: ["core-runner"]
-    command: ["-ec", "install -d -m 3770 /socket; chown 65530:65532 /socket; chmod 3770 /socket"]
+    command: ["-ec", "install -d -m 3770 /socket; chown ${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:?set the Core Runner UID}:65532 /socket; chmod 3770 /socket"]
     volumes: ["core_runner_socket:/socket"]
     network_mode: "none"
     restart: "no"
@@ -206,12 +222,22 @@ services:
     expose: ["9443"]
     volumes:
       - agent_config_material:/etc/dirextalk-agent:ro
-      - agent_extension_socket:/run/dirextalk-agent:ro
+      - type: volume
+        source: agent_extension_socket
+        target: ${DIREXTALK_CORE_EXTENSION_RUNNER_DIR:?set the extension runner socket directory}
       - agent_extension_staging:/var/lib/dirextalk-agent/extension-staging
       - agent_extension_workspaces:/var/lib/dirextalk-agent/extension-workspaces
       - agent_secret_material:/run/secrets:ro
-      - core_runner_socket:/run/dirextalk-core-runner
+      - type: volume
+        source: core_runner_socket
+        target: ${DIREXTALK_CORE_WORKLOAD_RUNNER_DIR:?set the Core Runner socket directory}
     networks: [agent_private, agent_caller, agent_egress]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/dirextalk-agent", "healthcheck", "--expect-instance-id", "${DIREXTALK_AGENT_EXPECTED_INSTANCE_ID:?set the expected Agent instance ID}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -220,45 +246,45 @@ services:
 
 networks:
   agent_private:
-    name: ${DIREXTALK_AGENT_NETWORK_NAME:-dirextalk-agent-private}
+    name: ${DIREXTALK_AGENT_NETWORK_NAME:?set a unique per-stack private network name}
     internal: true
   # Core needs outbound HTTPS for configured model/AWS authorities. Keep this
   # network off Postgres and the extension runner; neither receives egress.
   agent_egress:
-    name: ${DIREXTALK_AGENT_EGRESS_NETWORK_NAME:-dirextalk-agent-egress}
+    name: ${DIREXTALK_AGENT_EGRESS_NETWORK_NAME:?set a unique per-stack egress network name}
   agent_caller:
-    name: ${DIREXTALK_AGENT_CALLER_NETWORK_NAME:-dirextalk-agent-caller}
+    name: ${DIREXTALK_AGENT_CALLER_NETWORK_NAME:?set a unique per-stack caller network name}
     internal: true
 
 volumes:
   agent_postgres_data:
-    name: ${DIREXTALK_AGENT_POSTGRES_VOLUME:-dirextalk-agent-postgres-data}
+    name: ${DIREXTALK_AGENT_POSTGRES_VOLUME:?set a unique per-stack PostgreSQL volume name}
   agent_extension_socket:
-    name: ${DIREXTALK_AGENT_SOCKET_VOLUME:-dirextalk-agent-extension-socket}
+    name: ${DIREXTALK_AGENT_SOCKET_VOLUME:?set a unique per-stack extension socket volume name}
   agent_extension_install:
-    name: ${DIREXTALK_AGENT_INSTALL_VOLUME:-dirextalk-agent-extension-install}
+    name: ${DIREXTALK_AGENT_INSTALL_VOLUME:?set a unique per-stack extension install volume name}
   agent_extension_staging:
-    name: ${DIREXTALK_AGENT_STAGING_VOLUME:-dirextalk-agent-extension-staging}
+    name: ${DIREXTALK_AGENT_STAGING_VOLUME:?set a unique per-stack extension staging volume name}
   agent_extension_workspaces:
-    name: ${DIREXTALK_AGENT_WORKSPACE_VOLUME:-dirextalk-agent-extension-workspaces}
+    name: ${DIREXTALK_AGENT_WORKSPACE_VOLUME:?set a unique per-stack extension workspace volume name}
   agent_runner_workspaces:
-    name: ${DIREXTALK_AGENT_RUNNER_WORKSPACE_VOLUME:-dirextalk-agent-runner-workspaces}
+    name: ${DIREXTALK_AGENT_RUNNER_WORKSPACE_VOLUME:?set a unique per-stack runner workspace volume name}
   agent_extension_state:
-    name: ${DIREXTALK_AGENT_RUNNER_STATE_VOLUME:-dirextalk-agent-extension-state}
+    name: ${DIREXTALK_AGENT_RUNNER_STATE_VOLUME:?set a unique per-stack extension state volume name}
   agent_secret_material:
-    name: ${DIREXTALK_AGENT_SECRET_VOLUME:-dirextalk-agent-secret-material}
+    name: ${DIREXTALK_AGENT_SECRET_VOLUME:?set a unique per-stack secret volume name}
   agent_postgres_secret_material:
-    name: ${DIREXTALK_AGENT_POSTGRES_SECRET_VOLUME:-dirextalk-agent-postgres-secret-material}
+    name: ${DIREXTALK_AGENT_POSTGRES_SECRET_VOLUME:?set a unique per-stack PostgreSQL secret volume name}
   agent_config_material:
-    name: ${DIREXTALK_AGENT_CONFIG_VOLUME:-dirextalk-agent-config-material}
+    name: ${DIREXTALK_AGENT_CONFIG_VOLUME:?set a unique per-stack config volume name}
   core_runner_socket:
-    name: ${DIREXTALK_CORE_RUNNER_SOCKET_VOLUME:-dirextalk-agent-core-runner-socket}
+    name: ${DIREXTALK_CORE_RUNNER_SOCKET_VOLUME:?set a unique per-stack Core Runner socket volume name}
   core_runner_installs:
-    name: ${DIREXTALK_CORE_RUNNER_INSTALL_VOLUME:-dirextalk-agent-core-runner-installs}
+    name: ${DIREXTALK_CORE_RUNNER_INSTALL_VOLUME:?set a unique per-stack Core Runner install volume name}
   core_runner_workspaces:
-    name: ${DIREXTALK_CORE_RUNNER_WORKSPACE_VOLUME:-dirextalk-agent-core-runner-workspaces}
+    name: ${DIREXTALK_CORE_RUNNER_WORKSPACE_VOLUME:?set a unique per-stack Core Runner workspace volume name}
   core_runner_state:
-    name: ${DIREXTALK_CORE_RUNNER_STATE_VOLUME:-dirextalk-agent-core-runner-state}
+    name: ${DIREXTALK_CORE_RUNNER_STATE_VOLUME:?set a unique per-stack Core Runner state volume name}
 
 secrets:
   postgres_password:

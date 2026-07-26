@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -300,6 +301,11 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	runner, err := extensionrunner.NewClient(cfg.CoreExtensionRunnerSocket, cfg.CoreExtensionRunnerUID)
 	if err != nil {
 		return nil, err
+	}
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelProbe()
+	if err := runner.Probe(probeCtx); err != nil {
+		return nil, fmt.Errorf("extension runner readiness: %w", err)
 	}
 	registry := coreextension.NewRegistry()
 	adapters := []struct {

@@ -4,6 +4,8 @@ package extensionrunner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +39,9 @@ func unavailableAt(stage string) error {
 }
 
 func (b LinuxBackend) Probe(ctx context.Context) error {
-	_ = ctx
+	if ctx == nil {
+		return unavailableAt("validate/probe")
+	}
 	if b.CgroupRoot == "" || !filepath.IsAbs(b.CgroupRoot) {
 		return unavailableAt("validate/probe")
 	}
@@ -45,14 +49,173 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 	if unix.Statfs(b.CgroupRoot, &fs) != nil || fs.Type != unix.CGROUP2_SUPER_MAGIC {
 		return unavailableAt("validate/probe")
 	}
-	procs, e := os.OpenFile(filepath.Join(b.CgroupRoot, "cgroup.procs"), os.O_WRONLY, 0)
+	controllers, e := os.ReadFile(filepath.Join(b.CgroupRoot, "cgroup.controllers"))
+	if e != nil || !hasController(string(controllers), "cpu") || !hasController(string(controllers), "memory") || !hasController(string(controllers), "pids") {
+		return unavailableAt("validate/probe")
+	}
+	for _, name := range []string{"cpu", "memory", "pids"} {
+		if !hasController(string(mustReadFile(filepath.Join(b.CgroupRoot, "cgroup.subtree_control"))), name) {
+			return unavailableAt("validate/probe")
+		}
+	}
+	nameBytes := make([]byte, 16)
+	if _, e = rand.Read(nameBytes); e != nil {
+		return unavailableAt("validate/probe")
+	}
+	child := filepath.Join(b.CgroupRoot, "dirextalk-probe-"+hex.EncodeToString(nameBytes))
+	if e = os.Mkdir(child, 0o700); e != nil {
+		return unavailableAt("validate/probe")
+	}
+	cleaned := false
+	defer func() {
+		if !cleaned {
+			_ = os.Remove(child)
+		}
+	}()
+	for file, value := range map[string]string{"memory.max": "16777216", "pids.max": "8", "cpu.max": "10000 100000"} {
+		if e = writeCgroup(filepath.Join(child, file), value); e != nil {
+			return unavailableAt("validate/probe")
+		}
+	}
+	self := b.ReexecPath
+	if self == "" {
+		self, e = os.Executable()
+	}
+	if e != nil || self == "" {
+		return unavailableAt("validate/probe")
+	}
+	releaseR, releaseW, e := os.Pipe()
 	if e != nil {
 		return unavailableAt("validate/probe")
 	}
-	if e = procs.Close(); e != nil {
+	command := exec.CommandContext(ctx, self, "__probe-child-v1")
+	command.ExtraFiles = []*os.File{releaseR}
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	if e = command.Start(); e != nil {
+		releaseR.Close()
+		releaseW.Close()
 		return unavailableAt("validate/probe")
 	}
+	releaseR.Close()
+	pid := strconv.Itoa(command.Process.Pid)
+	if e = writeCgroup(filepath.Join(child, "cgroup.procs"), pid); e != nil {
+		_ = command.Process.Kill()
+		releaseW.Close()
+		_ = command.Wait()
+		return unavailableAt("validate/probe")
+	}
+	_, _ = releaseW.Write([]byte{1})
+	releaseW.Close()
+	if e = command.Wait(); e != nil {
+		return unavailableAt("validate/probe")
+	}
+	procs, e := os.ReadFile(filepath.Join(child, "cgroup.procs"))
+	if e != nil || len(strings.TrimSpace(string(procs))) != 0 {
+		return unavailableAt("validate/probe")
+	}
+	if e = os.Remove(child); e != nil {
+		return unavailableAt("validate/probe")
+	}
+	cleaned = true
+	return b.probeSandbox(ctx)
+}
+
+func (b LinuxBackend) probeSandbox(ctx context.Context) error {
+	root, err := os.MkdirTemp("", "dirextalk-runner-probe-")
+	if err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	defer os.RemoveAll(root)
+	installRoot := filepath.Join(root, "installs")
+	workspaceRoot := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(filepath.Join(installRoot, "probe"), 0o700); err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	self := b.ReexecPath
+	if self == "" {
+		self, err = os.Executable()
+		if err != nil {
+			return unavailableAt("sandbox/probe")
+		}
+	}
+	entry := filepath.Join(installRoot, "probe", "entry")
+	source, err := os.ReadFile(self)
+	if err != nil || os.WriteFile(entry, source, 0o500) != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	digest := DigestBytes(source)
+	manifest := []ManifestEntry{{Path: "entry", SHA256: digest, Size: int64(len(source))}}
+	manifestDigest := ManifestDigest(manifest)
+	if err := os.Rename(filepath.Join(installRoot, "probe"), filepath.Join(installRoot, manifestDigest)); err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	install, err := OpenAdmittedInstall(filepath.Join(installRoot), manifestDigest, manifest)
+	if err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	defer install.Close()
+	workspace, err := unix.Open(workspaceRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	defer unix.Close(workspace)
+	runID, taskID, fence, err := probeIDs()
+	if err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	request := RequestV2{RunID: runID, TaskID: taskID, TaskFence: fence, InstallDigest: manifestDigest, Entry: "entry", Argv: []string{"entry", "__sandbox-probe-v1"}, TimeoutMS: 2000, Limits: LimitsV2{CPUSeconds: 1, MemoryBytes: 16 << 20, Processes: 8, FileBytes: 16 << 20, OpenFiles: 64}}
+	if err := ValidateRequestV2(request); err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	process, err := b.startV2(ctx, SandboxInvocationV2{Request: request, Install: install, WorkspaceFD: workspace, StdinFD: -1})
+	if err != nil {
+		return unavailableAt("sandbox/probe")
+	}
+	if _, _, _, err := process.Wait(); err != nil {
+		return unavailableAt("sandbox/probe")
+	}
 	return nil
+}
+
+func probeIDs() (string, string, string, error) {
+	ids := make([]string, 3)
+	for i := range ids {
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", "", "", err
+		}
+		raw[6] = (raw[6] & 0x0f) | 0x40
+		raw[8] = (raw[8] & 0x3f) | 0x80
+		ids[i] = fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
+	}
+	return ids[0], ids[1], ids[2], nil
+}
+
+func mustReadFile(path string) []byte {
+	b, _ := os.ReadFile(path)
+	return b
+}
+
+func writeCgroup(path, value string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(value)
+	return err
+}
+
+func hasController(value, want string) bool {
+	for _, item := range strings.Fields(value) {
+		if item == want || item == "+"+want {
+			return true
+		}
+	}
+	return false
 }
 
 type bootstrapV1 struct {
@@ -74,6 +237,10 @@ func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	if b.Probe(ctx) != nil || inv.Install == nil || inv.WorkspaceFD < 0 {
 		return nil, unavailableAt("validate/probe")
 	}
+	return b.startV2(ctx, inv)
+}
+
+func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Process, error) {
 	self := b.ReexecPath
 	if self == "" {
 		self = "/proc/self/exe"

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"golang.org/x/sys/unix"
@@ -30,6 +31,17 @@ func main() {
 		if err := extensionrunner.SandboxCommandV1(); err != nil {
 			die("sandbox command failed")
 		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "__probe-child-v1" {
+		probeChild()
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "__sandbox-probe-v1" {
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "probe" {
+		probe()
 		return
 	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
@@ -73,10 +85,45 @@ func main() {
 	if err != nil {
 		die("registry: " + err.Error())
 	}
-	s := extensionrunner.Server{Listener: listener, Authorizer: extensionrunner.UIDAllowlist{uint32(uid64): {}}, Runner: r, Registry: registry, PublicationRoot: *installRoot}
+	s := extensionrunner.Server{Listener: listener, Authorizer: extensionrunner.UIDAllowlist{uint32(uid64): {}}, RunnerUID: uint32(os.Geteuid()), Runner: r, Registry: registry, PublicationRoot: *installRoot}
 	if err := s.ServeV2(ctx); err != nil {
 		slog.Error("extension runner stopped", "error", err)
 		os.Exit(1)
+	}
+}
+
+func probeChild() {
+	gate := os.NewFile(uintptr(3), "probe-release")
+	if gate == nil {
+		os.Exit(2)
+	}
+	var release [1]byte
+	if n, err := gate.Read(release[:]); err != nil || n != 1 || release[0] != 1 {
+		os.Exit(2)
+	}
+}
+
+// probe validates the exact runner socket, peer UID, and nonce-bound readiness
+// response without submitting an execution request.
+func probe() {
+	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
+	socket := fs.String("socket", "", "")
+	uid := fs.String("runner-uid", "", "")
+	if fs.Parse(os.Args[2:]) != nil || fs.NArg() != 0 || *socket == "" || *uid == "" {
+		die("invalid probe flags")
+	}
+	wantUID, err := strconv.ParseUint(*uid, 10, 32)
+	if err != nil || uint32(wantUID) == 0 || !filepath.IsAbs(*socket) || filepath.Clean(*socket) != *socket {
+		die("probe unavailable")
+	}
+	client, err := extensionrunner.NewClient(*socket, uint32(wantUID))
+	if err != nil {
+		die("probe unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Probe(ctx); err != nil {
+		die("probe unavailable")
 	}
 }
 func allSet(fs *flag.FlagSet, names ...string) bool {

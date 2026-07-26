@@ -50,6 +50,22 @@ func TestHealthcheckAuthenticatesAndVerifiesCoreDiscovery(t *testing.T) {
 	if err := runHealthcheck(cfg, "wrong.example"); err == nil {
 		t.Fatal("readiness accepted a mismatched TLS SNI")
 	}
+	if err := runHealthcheckOptions(cfg, healthcheckOptions{expectInstanceID: "wrong"}); err == nil {
+		t.Fatal("readiness accepted a mismatched expected instance ID")
+	}
+	if err := runHealthcheckOptions(cfg, healthcheckOptions{requiredCaps: []string{"workload.core_runner"}}); err == nil {
+		t.Fatal("readiness accepted a missing required capability")
+	}
+}
+
+func TestParseHealthcheckOptions(t *testing.T) {
+	_, command, options, err := parseArguments([]string{"--config", "/etc/agent.yaml", "healthcheck", "--expect-instance-id", "id", "--require-capability", "mcp", "--require-capability", "skill"})
+	if err != nil || command != "healthcheck" || options.expectInstanceID != "id" || len(options.requiredCaps) != 2 {
+		t.Fatalf("healthcheck options parse failed: command=%q options=%+v err=%v", command, options, err)
+	}
+	if _, _, _, err := parseArguments([]string{"healthcheck", "--require-capability", ""}); err == nil {
+		t.Fatal("empty required capability accepted")
+	}
 }
 
 type readinessAgentService struct {

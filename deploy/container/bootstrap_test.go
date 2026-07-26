@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func runBootstrap(t *testing.T, script, output, cwd string, env []string, args ...string) ([]byte, error) {
@@ -38,7 +40,7 @@ func TestBootstrapLocalWritesCanonicalTokenAndAbsoluteEnvironment(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(env), "DIREXTALK_AGENT_CONFIG_FILE="+out+"/config.yaml\n") || !strings.Contains(string(env), "DIREXTALK_AGENT_CALLER_NETWORK_NAME=dirextalk-agent-caller\n") {
+	if !strings.Contains(string(env), "DIREXTALK_AGENT_CONFIG_FILE="+out+"/config.yaml\n") || !strings.Contains(string(env), "DIREXTALK_AGENT_CALLER_NETWORK_NAME=") {
 		t.Fatalf("bootstrap environment is not absolute/caller-boundary aware: %s", env)
 	}
 	instanceID, err := os.ReadFile(filepath.Join(out, "instance-id"))
@@ -61,6 +63,162 @@ func TestBootstrapLocalWritesCanonicalTokenAndAbsoluteEnvironment(t *testing.T) 
 	if _, err := os.Stat(filepath.Join(out, ".manifest")); err != nil {
 		t.Fatalf("bootstrap must write a complete-set manifest: %v", err)
 	}
+}
+
+func TestBootstrapLocalRejectsInvalidIsolationControls(t *testing.T) {
+	script, err := filepath.Abs(filepath.Join("scripts", "bootstrap-local.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"DIREXTALK_CORE_EXTENSION_ENABLED":      "yes",
+		"DIREXTALK_CORE_WORKLOAD_ENABLED":       "1",
+		"DIREXTALK_CORE_EXTENSION_RUNNER_UID":   "0",
+		"DIREXTALK_CORE_WORKLOAD_RUNNER_UID":    "65532",
+		"DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET": "relative.sock",
+	} {
+		out := filepath.Join(t.TempDir(), "protected")
+		cmd := exec.Command(script, out)
+		cmd.Env = append(os.Environ(), name+"="+value)
+		if output, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("invalid %s=%q unexpectedly succeeded: %s", name, value, output)
+		}
+		if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+			t.Fatalf("invalid %s left output target: %v", name, statErr)
+		}
+	}
+}
+
+type composeIsolationConfig struct {
+	Name     string `yaml:"name"`
+	Services map[string]struct {
+		Profiles    []string `yaml:"profiles"`
+		NetworkMode string   `yaml:"network_mode"`
+		Ports       []any    `yaml:"ports"`
+		Healthcheck struct {
+			Test []string `yaml:"test"`
+		} `yaml:"healthcheck"`
+		Volumes []struct {
+			Type   string `yaml:"type"`
+			Source string `yaml:"source"`
+			Target string `yaml:"target"`
+		} `yaml:"volumes"`
+	} `yaml:"services"`
+	Networks map[string]struct {
+		Name string `yaml:"name"`
+	} `yaml:"networks"`
+	Volumes map[string]struct {
+		Name string `yaml:"name"`
+	} `yaml:"volumes"`
+}
+
+func renderLocalCompose(t *testing.T, out string) composeIsolationConfig {
+	t.Helper()
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("docker is required for Compose isolation verification")
+	}
+	compose := "compose.local.yaml"
+	cmd := exec.Command(docker, "compose", "--env-file", filepath.Join(out, ".env"), "-f", compose, "--profile", "extensions", "--profile", "core-runner", "config")
+	cmd.Dir = "."
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("compose config: %v", err)
+	}
+	var config composeIsolationConfig
+	if err := yaml.Unmarshal(output, &config); err != nil {
+		t.Fatalf("decode compose config: %v", err)
+	}
+	return config
+}
+
+func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
+	script, err := filepath.Abs(filepath.Join("scripts", "bootstrap-local.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	outputs := make([]string, 2)
+	configs := make([]composeIsolationConfig, 2)
+	for i, stack := range []string{"e2e-stack-a", "e2e-stack-b"} {
+		out := filepath.Join(root, stack)
+		outputs[i] = out
+		env := append(os.Environ(),
+			"DIREXTALK_AGENT_STACK_NAME="+stack,
+			"DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=core-runner:test",
+			"DIREXTALK_EXTENSION_CGROUP_ROOT="+filepath.Join(root, stack, "extension-cgroup"),
+			"DIREXTALK_CORE_RUNNER_CGROUP_ROOT="+filepath.Join(root, stack, "core-runner-cgroup"),
+		)
+		cmd := exec.Command(script, out)
+		cmd.Env = env
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("bootstrap %s: %v (%s)", stack, err, output)
+		}
+		configs[i] = renderLocalCompose(t, out)
+	}
+	for i, config := range configs {
+		if len(config.Services) != 8 {
+			t.Fatalf("stack %d should define exactly eight services, got %d", i, len(config.Services))
+		}
+		if _, ok := config.Services["postgres"]; !ok {
+			t.Fatalf("stack %d is missing its Agent-owned Postgres service", i)
+		}
+		if len(config.Services["postgres"].Ports) != 0 || len(config.Services["core"].Ports) != 0 {
+			t.Fatalf("stack %d unexpectedly publishes a host port", i)
+		}
+		if config.Services["extension-runner"].NetworkMode != "none" || config.Services["core-runner"].NetworkMode != "none" {
+			t.Fatalf("stack %d runner network isolation is not explicit", i)
+		}
+		for _, service := range []string{"extension-runner", "core-runner"} {
+			test := config.Services[service].Healthcheck.Test
+			if len(test) < 4 || test[0] != "CMD" || test[2] != "probe" {
+				t.Fatalf("stack %d %s is missing its runner readiness probe: %v", i, service, test)
+			}
+		}
+		if len(config.Services["extension-runner"].Profiles) != 1 || config.Services["extension-runner"].Profiles[0] != "extensions" {
+			t.Fatalf("stack %d extension profile is not explicit", i)
+		}
+		if len(config.Services["core-runner"].Profiles) != 1 || config.Services["core-runner"].Profiles[0] != "core-runner" {
+			t.Fatalf("stack %d Core Runner profile is not explicit", i)
+		}
+	}
+	if configs[0].Name == "" || configs[0].Name == configs[1].Name {
+		t.Fatalf("Compose project identity is not isolated: %q vs %q", configs[0].Name, configs[1].Name)
+	}
+	for key, first := range configs[0].Networks {
+		if second, ok := configs[1].Networks[key]; ok && first.Name == second.Name {
+			t.Fatalf("network %q is shared between isolated stacks: %q", key, first.Name)
+		}
+	}
+	for key, first := range configs[0].Volumes {
+		if second, ok := configs[1].Volumes[key]; ok && first.Name == second.Name {
+			t.Fatalf("volume %q is shared between isolated stacks: %q", key, first.Name)
+		}
+	}
+	for _, service := range []string{"extension-runner", "core-runner"} {
+		first, second := configs[0].Services[service], configs[1].Services[service]
+		if len(first.Volumes) == 0 || len(second.Volumes) == 0 {
+			t.Fatalf("%s has no socket volume", service)
+		}
+	}
+	if configs[0].Volumes["agent_extension_socket"].Name == configs[1].Volumes["agent_extension_socket"].Name ||
+		configs[0].Volumes["core_runner_socket"].Name == configs[1].Volumes["core_runner_socket"].Name {
+		t.Fatal("runner socket volumes are shared between stacks")
+	}
+	for _, service := range []string{"extension-runner", "core-runner"} {
+		findBind := func(config composeIsolationConfig) string {
+			for _, volume := range config.Services[service].Volumes {
+				if volume.Type == "bind" {
+					return volume.Source
+				}
+			}
+			return ""
+		}
+		if findBind(configs[0]) == "" || findBind(configs[0]) == findBind(configs[1]) {
+			t.Fatalf("%s cgroup root is shared or missing", service)
+		}
+	}
+	_ = outputs
 }
 
 func TestBootstrapLocalReusesCompleteSetFromAnotherWorkingDirectory(t *testing.T) {

@@ -16,10 +16,72 @@ out_input=${1:-}
 core_image=${2:-dirextalk-agent-core:local}
 runner_image=${3:-dirextalk-extension-runner:local}
 postgres_image=${4:-docker.io/library/postgres:18@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a}
+core_runner_image=${DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE:-dirextalk-core-runner:local}
 tls_server_name=${5:-localhost}
 case "$tls_server_name" in
   *[!A-Za-z0-9.-]*|""|.*|*-|.*-*) echo "invalid TLS server name" >&2; exit 2 ;;
 esac
+
+parse_bool() {
+  name=$1
+  value=$2
+  case "$value" in
+    true|false) printf '%s' "$value" ;;
+    *) die "${name} must be exactly true or false" ;;
+  esac
+}
+
+validate_uid() {
+  name=$1
+  value=$2
+  case "$value" in
+    ''|*[!0-9]*) die "${name} must be a positive decimal UID" ;;
+    0*) die "${name} must be a positive decimal UID" ;;
+  esac
+  [ "$value" != "65532" ] || die "${name} must differ from the Agent UID 65532"
+}
+
+validate_socket() {
+  name=$1
+  value=$2
+  case "$value" in
+    /*) ;;
+    *) die "${name} must be an absolute Unix socket path" ;;
+  esac
+  case "$value" in
+    *'//'*) die "${name} must be a clean Unix socket path" ;;
+    *'..'*) die "${name} must be a clean Unix socket path" ;;
+    */) die "${name} must be a clean Unix socket path" ;;
+  esac
+}
+
+validate_stack_name() {
+  name=$1
+  value=$2
+  case "$value" in
+    [a-z0-9]*) ;;
+    *) die "${name} must start with a lowercase letter or digit" ;;
+  esac
+  case "$value" in
+    *[!a-z0-9_-]*) die "${name} may contain only lowercase letters, digits, '_' or '-'" ;;
+  esac
+  # The longest derived Docker resource is <stack>-postgres-secret-material;
+  # keep every generated name within Docker's 63-character limit.
+  [ "${#value}" -le 38 ] || die "${name} is too long"
+}
+
+core_extension_enabled=$(parse_bool DIREXTALK_CORE_EXTENSION_ENABLED "${DIREXTALK_CORE_EXTENSION_ENABLED:-false}")
+core_workload_enabled=$(parse_bool DIREXTALK_CORE_WORKLOAD_ENABLED "${DIREXTALK_CORE_WORKLOAD_ENABLED:-false}")
+extension_runner_socket=${DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET:-/run/dirextalk-agent/extension-runner.sock}
+workload_runner_socket=${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:-/run/dirextalk-core-runner/runner.sock}
+extension_runner_dir=${extension_runner_socket%/*}
+workload_runner_dir=${workload_runner_socket%/*}
+extension_runner_uid=${DIREXTALK_CORE_EXTENSION_RUNNER_UID:-65531}
+workload_runner_uid=${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:-65530}
+validate_socket DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET "$extension_runner_socket"
+validate_socket DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET "$workload_runner_socket"
+validate_uid DIREXTALK_CORE_EXTENSION_RUNNER_UID "$extension_runner_uid"
+validate_uid DIREXTALK_CORE_WORKLOAD_RUNNER_UID "$workload_runner_uid"
 
 umask 077
 case "$out_input" in
@@ -106,6 +168,28 @@ validate_complete() {
   grep -Fqx "DIREXTALK_TLS_CA_FILE=$expected_root/tls-ca" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_SERVICE_TOKEN_FILE=$expected_root/service-token" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_AGENT_INSTANCE_ID_FILE=$expected_root/instance-id" "$dir/.env" || return 1
+  grep -Eq '^DIREXTALK_AGENT_EXPECTED_INSTANCE_ID=[0-9a-f-]+$' "$dir/.env" || return 1
+  grep -Eq '^DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=.+$' "$dir/.env" || return 1
+  stack_name=$(sed -n 's/^DIREXTALK_AGENT_STACK_NAME=//p' "$dir/.env" | tail -n 1)
+  validate_stack_name DIREXTALK_AGENT_STACK_NAME "$stack_name" >/dev/null 2>&1 || return 1
+  for name in \
+    DIREXTALK_AGENT_NETWORK_NAME DIREXTALK_AGENT_EGRESS_NETWORK_NAME DIREXTALK_AGENT_CALLER_NETWORK_NAME \
+    DIREXTALK_AGENT_POSTGRES_VOLUME DIREXTALK_AGENT_SOCKET_VOLUME DIREXTALK_AGENT_INSTALL_VOLUME \
+    DIREXTALK_AGENT_STAGING_VOLUME DIREXTALK_AGENT_WORKSPACE_VOLUME DIREXTALK_AGENT_RUNNER_WORKSPACE_VOLUME \
+    DIREXTALK_AGENT_RUNNER_STATE_VOLUME DIREXTALK_AGENT_SECRET_VOLUME DIREXTALK_AGENT_POSTGRES_SECRET_VOLUME \
+    DIREXTALK_AGENT_CONFIG_VOLUME DIREXTALK_CORE_RUNNER_SOCKET_VOLUME DIREXTALK_CORE_RUNNER_INSTALL_VOLUME \
+    DIREXTALK_CORE_RUNNER_WORKSPACE_VOLUME DIREXTALK_CORE_RUNNER_STATE_VOLUME \
+    DIREXTALK_EXTENSION_CGROUP_ROOT DIREXTALK_CORE_RUNNER_CGROUP_ROOT \
+    DIREXTALK_CORE_EXTENSION_ENABLED DIREXTALK_CORE_WORKLOAD_ENABLED \
+    DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET \
+    DIREXTALK_CORE_EXTENSION_RUNNER_DIR DIREXTALK_CORE_WORKLOAD_RUNNER_DIR \
+    DIREXTALK_CORE_EXTENSION_RUNNER_UID DIREXTALK_CORE_WORKLOAD_RUNNER_UID; do
+    grep -Eq "^${name}=.+$" "$dir/.env" || return 1
+  done
+  grep -Eq '^core_extension_enabled: (true|false)$' "$dir/config.yaml" || return 1
+  grep -Eq '^core_workload_enabled: (true|false)$' "$dir/config.yaml" || return 1
+  grep -Eq '^core_extension_runner_uid: [1-9][0-9]*$' "$dir/config.yaml" || return 1
+  grep -Eq '^core_workload_runner_uid: [1-9][0-9]*$' "$dir/config.yaml" || return 1
 }
 
 if ! mkdir "$lock" 2>/dev/null; then
@@ -132,6 +216,13 @@ stage=$(mktemp -d "$out_parent/.${out_base}.staging.XXXXXX")
 
 instance_id=$(openssl rand -hex 16)
 instance_id=$(printf '%s' "$instance_id" | awk '{printf "%.8s-%.4s-4%.3s-8%.3s-%.12s", $0, substr($0,9), substr($0,13), substr($0,16), substr($0,20)}')
+instance_short=${instance_id%%-*}
+stack_name=${DIREXTALK_AGENT_STACK_NAME:-dirextalk-agent-$instance_short}
+validate_stack_name DIREXTALK_AGENT_STACK_NAME "$stack_name"
+extension_cgroup_root=${DIREXTALK_EXTENSION_CGROUP_ROOT:-/sys/fs/cgroup/$stack_name-extension}
+core_runner_cgroup_root=${DIREXTALK_CORE_RUNNER_CGROUP_ROOT:-/sys/fs/cgroup/$stack_name-core-runner}
+validate_socket DIREXTALK_EXTENSION_CGROUP_ROOT "$extension_cgroup_root"
+validate_socket DIREXTALK_CORE_RUNNER_CGROUP_ROOT "$core_runner_cgroup_root"
 password=$(openssl rand -hex 24)
 token=""
 while [ "$(printf '%s' "$token" | wc -c)" -ne 43 ]; do
@@ -159,16 +250,20 @@ tls_key_file: /run/secrets/tls_key
 service_token_file: /run/secrets/service_token
 enable_health_service: true
 enable_reflection: false
-core_extension_enabled: false
 core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
 core_extension_workspace_root: /var/lib/dirextalk-agent/extension-workspaces
-core_extension_runner_socket: /run/dirextalk-agent/extension-runner.sock
-core_extension_runner_uid: 65531
+core_extension_enabled: $core_extension_enabled
+core_extension_runner_socket: $extension_runner_socket
+core_extension_runner_uid: $extension_runner_uid
+core_workload_enabled: $core_workload_enabled
+core_workload_runner_socket: $workload_runner_socket
+core_workload_runner_uid: $workload_runner_uid
 EOF
 
 cat > "$stage/.env" <<EOF
 DIREXTALK_AGENT_IMAGE_IMMUTABLE=$core_image
 DIREXTALK_EXTENSION_RUNNER_IMAGE_IMMUTABLE=$runner_image
+DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=$core_runner_image
 DIREXTALK_POSTGRES_IMAGE_IMMUTABLE=$postgres_image
 DIREXTALK_AGENT_CONFIG_FILE=$out/config.yaml
 DIREXTALK_POSTGRES_PASSWORD_FILE=$out/postgres-password
@@ -177,10 +272,37 @@ DIREXTALK_TLS_CERT_FILE=$out/tls-cert
 DIREXTALK_TLS_KEY_FILE=$out/tls-key
 DIREXTALK_TLS_CA_FILE=$out/tls-ca
 DIREXTALK_SERVICE_TOKEN_FILE=$out/service-token
-DIREXTALK_EXTENSION_CGROUP_ROOT=/sys/fs/cgroup/dirextalk-agent
 DIREXTALK_HEALTHCHECK_SERVER_NAME=$tls_server_name
-DIREXTALK_AGENT_CALLER_NETWORK_NAME=dirextalk-agent-caller
 DIREXTALK_AGENT_INSTANCE_ID_FILE=$out/instance-id
+DIREXTALK_AGENT_EXPECTED_INSTANCE_ID=$instance_id
+DIREXTALK_AGENT_STACK_NAME=$stack_name
+DIREXTALK_AGENT_NETWORK_NAME=${stack_name}-private
+DIREXTALK_AGENT_EGRESS_NETWORK_NAME=${stack_name}-egress
+DIREXTALK_AGENT_CALLER_NETWORK_NAME=${stack_name}-caller
+DIREXTALK_AGENT_POSTGRES_VOLUME=${stack_name}-postgres-data
+DIREXTALK_AGENT_SOCKET_VOLUME=${stack_name}-extension-socket
+DIREXTALK_AGENT_INSTALL_VOLUME=${stack_name}-extension-install
+DIREXTALK_AGENT_STAGING_VOLUME=${stack_name}-extension-staging
+DIREXTALK_AGENT_WORKSPACE_VOLUME=${stack_name}-extension-workspaces
+DIREXTALK_AGENT_RUNNER_WORKSPACE_VOLUME=${stack_name}-extension-runner-workspaces
+DIREXTALK_AGENT_RUNNER_STATE_VOLUME=${stack_name}-extension-runner-state
+DIREXTALK_AGENT_SECRET_VOLUME=${stack_name}-secret-material
+DIREXTALK_AGENT_POSTGRES_SECRET_VOLUME=${stack_name}-postgres-secret-material
+DIREXTALK_AGENT_CONFIG_VOLUME=${stack_name}-config-material
+DIREXTALK_CORE_RUNNER_SOCKET_VOLUME=${stack_name}-core-runner-socket
+DIREXTALK_CORE_RUNNER_INSTALL_VOLUME=${stack_name}-core-runner-installs
+DIREXTALK_CORE_RUNNER_WORKSPACE_VOLUME=${stack_name}-core-runner-workspaces
+DIREXTALK_CORE_RUNNER_STATE_VOLUME=${stack_name}-core-runner-state
+DIREXTALK_EXTENSION_CGROUP_ROOT=$extension_cgroup_root
+DIREXTALK_CORE_RUNNER_CGROUP_ROOT=$core_runner_cgroup_root
+DIREXTALK_CORE_EXTENSION_ENABLED=$core_extension_enabled
+DIREXTALK_CORE_WORKLOAD_ENABLED=$core_workload_enabled
+DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET=$extension_runner_socket
+DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET=$workload_runner_socket
+DIREXTALK_CORE_EXTENSION_RUNNER_DIR=$extension_runner_dir
+DIREXTALK_CORE_WORKLOAD_RUNNER_DIR=$workload_runner_dir
+DIREXTALK_CORE_EXTENSION_RUNNER_UID=$extension_runner_uid
+DIREXTALK_CORE_WORKLOAD_RUNNER_UID=$workload_runner_uid
 EOF
 
 for name in $required_files; do

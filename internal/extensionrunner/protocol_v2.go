@@ -7,6 +7,78 @@ import (
 	"io"
 )
 
+const ProbeProtocolV1 = "dirextalk.extension.runner.probe.v1"
+
+type ProbeRequest struct {
+	Op      string `json:"op"`
+	Version string `json:"version"`
+	Nonce   string `json:"nonce"`
+}
+
+type ProbeResponse struct {
+	Ready   bool   `json:"ready"`
+	Version string `json:"version"`
+	Nonce   string `json:"nonce"`
+}
+
+func EncodeProbeRequest(r ProbeRequest) ([]byte, error) {
+	if r.Op != "probe" || r.Version != ProbeProtocolV1 || r.Nonce == "" || len(r.Nonce) > 128 {
+		return nil, ErrProtocol
+	}
+	b, err := json.Marshal(r)
+	if err != nil || len(b) > MaxV2PacketBytes {
+		return nil, ErrProtocol
+	}
+	return b, nil
+}
+
+func DecodeProbeRequest(b []byte) (ProbeRequest, error) {
+	var r ProbeRequest
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&r) != nil || r.Op != "probe" || r.Version != ProbeProtocolV1 || r.Nonce == "" || len(r.Nonce) > 128 {
+		return ProbeRequest{}, ErrProtocol
+	}
+	var extra any
+	if dec.Decode(&extra) != io.EOF {
+		return ProbeRequest{}, ErrProtocol
+	}
+	canonical, err := json.Marshal(r)
+	if err != nil || !bytes.Equal(canonical, b) {
+		return ProbeRequest{}, ErrProtocol
+	}
+	return r, nil
+}
+
+func EncodeProbeResponse(r ProbeResponse) ([]byte, error) {
+	if r.Version != ProbeProtocolV1 || r.Nonce == "" || len(r.Nonce) > 128 {
+		return nil, ErrProtocol
+	}
+	b, err := json.Marshal(r)
+	if err != nil || len(b) > MaxV2PacketBytes {
+		return nil, ErrProtocol
+	}
+	return b, nil
+}
+
+func DecodeProbeResponse(b []byte, wantNonce string) error {
+	var r ProbeResponse
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&r) != nil || r.Version != ProbeProtocolV1 || r.Nonce != wantNonce || !r.Ready {
+		return ErrProtocol
+	}
+	var extra any
+	if dec.Decode(&extra) != io.EOF {
+		return ErrProtocol
+	}
+	canonical, err := json.Marshal(r)
+	if err != nil || !bytes.Equal(canonical, b) {
+		return ErrProtocol
+	}
+	return nil
+}
+
 // EncodeRequestV2 returns one complete length-prefixed seqpacket datagram.
 func EncodeRequestV2(r RequestV2) ([]byte, error) {
 	if err := ValidateRequestV2(r); err != nil {

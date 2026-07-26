@@ -27,6 +27,14 @@ const coreAPIVersion = "v1"
 // token file, and verifies the instance, API version, and minimum Core
 // capabilities exposed by AgentService.
 func runHealthcheck(cfg config.Config, serverNames ...string) error {
+	options := healthcheckOptions{serverName: ""}
+	if len(serverNames) > 0 {
+		options.serverName = serverNames[0]
+	}
+	return runHealthcheckOptions(cfg, options)
+}
+
+func runHealthcheckOptions(cfg config.Config, options healthcheckOptions) error {
 	address, err := healthcheckAddress(cfg.ListenAddress)
 	if err != nil {
 		return err
@@ -50,8 +58,8 @@ func runHealthcheck(cfg config.Config, serverNames ...string) error {
 	if serverName == "" {
 		serverName = "localhost"
 	}
-	if len(serverNames) > 0 && strings.TrimSpace(serverNames[0]) != "" {
-		serverName = strings.TrimSpace(serverNames[0])
+	if strings.TrimSpace(options.serverName) != "" {
+		serverName = strings.TrimSpace(options.serverName)
 	}
 	if !validHealthcheckServerName(serverName) {
 		return errors.New("healthcheck server name must be a DNS name or IP SAN")
@@ -75,7 +83,11 @@ func runHealthcheck(cfg config.Config, serverNames ...string) error {
 	if err != nil {
 		return fmt.Errorf("read Agent instance readiness: %w", err)
 	}
-	if info.GetInstanceId() != cfg.InstanceID {
+	expectedInstanceID := cfg.InstanceID
+	if options.expectInstanceID != "" {
+		expectedInstanceID = options.expectInstanceID
+	}
+	if info.GetInstanceId() != expectedInstanceID {
 		return fmt.Errorf("Agent instance mismatch: got %q", info.GetInstanceId())
 	}
 	if info.GetApiVersion() != coreAPIVersion {
@@ -94,7 +106,14 @@ func runHealthcheck(cfg config.Config, serverNames ...string) error {
 			enabled[capability.GetName()] = true
 		}
 	}
-	for _, required := range []string{"agent.info", "model.profile", "conversation"} {
+	requiredCapabilities := []string{"agent.info", "model.profile", "conversation"}
+	requiredCapabilities = append(requiredCapabilities, options.requiredCaps...)
+	seen := make(map[string]struct{}, len(requiredCapabilities))
+	for _, required := range requiredCapabilities {
+		if _, ok := seen[required]; ok {
+			continue
+		}
+		seen[required] = struct{}{}
 		if !enabled[required] {
 			return fmt.Errorf("required Agent capability %q is not enabled", required)
 		}

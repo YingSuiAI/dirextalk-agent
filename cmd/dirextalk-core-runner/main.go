@@ -8,12 +8,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
+	"strconv"
+	"time"
+
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/runner"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
-	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 )
 
@@ -28,6 +30,10 @@ func main() {
 		if err := extensionrunner.SandboxCommandV1(); err != nil {
 			die("sandbox command failed")
 		}
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "probe" {
+		probe()
 		return
 	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
@@ -62,6 +68,23 @@ func main() {
 	}
 	if e = supervisor.Serve(ctx, l); e != nil {
 		die("runner stopped")
+	}
+}
+
+func probe() {
+	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
+	socket := fs.String("socket", "", "")
+	if fs.Parse(os.Args[2:]) != nil || fs.NArg() != 0 || *socket == "" {
+		die("invalid probe flags")
+	}
+	transport, err := runner.NewSocketTransport(*socket, uint32(os.Geteuid()))
+	if err != nil {
+		die("probe unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := transport.Probe(ctx); err != nil {
+		die("probe unavailable")
 	}
 }
 
