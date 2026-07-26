@@ -79,6 +79,26 @@ func TestRecipeRequiresRetrievedContentDigestAlongsideArtifactDigest(t *testing.
 	}
 }
 
+func TestEqualSourceClaimsComparesRepositoryValues(t *testing.T) {
+	left := validRecipe().Sources[:1]
+	left[0].Kind = SourceRepository
+	left[0].Repository = &RepositoryIdentityV1{
+		Host: "example.com", Namespace: "official", Name: "knowledge-node",
+	}
+	right := append([]SourceV1(nil), left...)
+	repositoryCopy := *left[0].Repository
+	right[0].Repository = &repositoryCopy
+	right[0].RetrievedAt = left[0].RetrievedAt.In(time.FixedZone("same-instant", 8*60*60))
+
+	if !EqualSourceClaims(left, right) {
+		t.Fatal("equal decoded repository claims were treated as different")
+	}
+	right[0].Repository.Name = "different"
+	if EqualSourceClaims(left, right) {
+		t.Fatal("repository claim drift was treated as equal")
+	}
+}
+
 func TestRecipeSeparatesResearchEvidenceFromImmutableArtifactURL(t *testing.T) {
 	value := validRecipe()
 	evidenceURL := value.Sources[0].URL

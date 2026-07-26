@@ -328,6 +328,9 @@ func integrationRecipe(recipeID string) recipe.RecipeV1 {
 		Sources: []recipe.SourceV1{{
 			URL: "https://example.com/official/knowledge-node", Version: "v1.0.0", Commit: "abcdef0123456789",
 			ArtifactDigest: "sha256:" + strings.Repeat("a", 64), ContentDigest: "sha256:" + strings.Repeat("b", 64), License: "Apache-2.0", RetrievedAt: time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC), Official: true,
+			Kind: recipe.SourceRepository, Repository: &recipe.RepositoryIdentityV1{
+				Host: "example.com", Namespace: "official", Name: "knowledge-node",
+			},
 		}},
 		Requirements: recipe.ResourceRequirementsV1{MinVCPU: 2, MinMemoryMiB: 4096, MinDiskGiB: 40, Architecture: recipe.ArchitectureAMD64},
 		Install:      recipe.InstallContractV1{RootRequired: true, TimeoutSeconds: 1800, CheckpointNames: []string{"installed"}, Steps: []recipe.InstallStepV1{{ID: "install", Summary: "Install the digest-locked artifact", TimeoutSeconds: 1200}}},

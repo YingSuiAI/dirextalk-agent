@@ -548,7 +548,7 @@ func validateEvidenceSet(taskID string, set OfficialSourceEvidenceSet) error {
 		built, err = BuildOfficialSourceEvidenceSet(taskID, set.Evidence)
 	}
 	if err != nil || built.Digest != set.Digest || !slices.Equal(built.Evidence, set.Evidence) ||
-		!slices.Equal(built.Sources, set.Sources) {
+		!recipe.EqualSourceClaims(built.Sources, set.Sources) {
 		return ErrCloudGoalOutputInvalid
 	}
 	return nil

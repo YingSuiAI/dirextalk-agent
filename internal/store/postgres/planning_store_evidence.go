@@ -151,7 +151,7 @@ func (store *Store) BindOfficialSourceEvidence(
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrInvalid
 	}
 	actual, err := planning.BuildOfficialSourceEvidenceSetWithClaims(command.TaskID, bound, boundSources)
-	if err != nil || !slices.Equal(actual.Evidence, wanted.Evidence) || !slices.Equal(actual.Sources, wanted.Sources) ||
+	if err != nil || !slices.Equal(actual.Evidence, wanted.Evidence) || !recipe.EqualSourceClaims(actual.Sources, wanted.Sources) ||
 		actual.Digest != wanted.Digest {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrIdempotencyConflict
 	}
@@ -224,7 +224,7 @@ func decodeOfficialEvidenceSnapshot(encoded []byte) (planning.OfficialSourceEvid
 		built, err = planning.BuildOfficialSourceEvidenceSet(snapshot.Set.Evidence[0].TaskID, snapshot.Set.Evidence)
 	}
 	if err != nil || built.Digest != snapshot.Set.Digest || !slices.Equal(built.Evidence, snapshot.Set.Evidence) ||
-		!slices.Equal(built.Sources, snapshot.Set.Sources) {
+		!recipe.EqualSourceClaims(built.Sources, snapshot.Set.Sources) {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
 	}
 	return snapshot.Set, nil
