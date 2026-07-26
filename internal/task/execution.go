@@ -60,6 +60,21 @@ type StepDefinition struct {
 	DependsOnStepIDs []string
 }
 
+// MaterializeStepID returns the task-scoped runtime ID for one declared step.
+// Step declarations may be reused across tasks; runtime IDs must remain
+// globally unique because task_steps.step_id is a primary key.
+func MaterializeStepID(taskID, declarationID string) (string, error) {
+	parsedTaskID, err := uuid.Parse(strings.TrimSpace(taskID))
+	if err != nil || parsedTaskID == uuid.Nil {
+		return "", fmt.Errorf("%w: task_id must be a UUID", ErrInvalid)
+	}
+	parsedDeclarationID, err := uuid.Parse(strings.TrimSpace(declarationID))
+	if err != nil || parsedDeclarationID == uuid.Nil {
+		return "", fmt.Errorf("%w: step declaration id must be a UUID", ErrInvalid)
+	}
+	return uuid.NewSHA1(parsedTaskID, []byte(parsedDeclarationID.String())).String(), nil
+}
+
 type Attempt struct {
 	TaskID     string
 	StepID     string

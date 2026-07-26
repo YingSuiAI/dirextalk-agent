@@ -46,6 +46,13 @@ func TestLaunchApprovedPlanCreatesOneDurableWorkerAndReplaysTerminalOperation(t 
 	if !fixture.bootstraps.destroyedAfterCall {
 		t.Fatal("enrollment credential was not wiped after bootstrap publication")
 	}
+	wantStepID, err := task.MaterializeStepID(first.TaskID, first.TaskStepID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.workers.request.StepID != wantStepID || fixture.workers.request.StepID == first.TaskStepID {
+		t.Fatalf("Worker step id = %q, want materialized task step %q", fixture.workers.request.StepID, wantStepID)
+	}
 
 	replayed, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request)
 	if err != nil {
@@ -68,6 +75,17 @@ func TestLaunchApprovedPlanFailsClosedBeforeMutationWithoutMatchingConnection(t 
 	}
 	if fixture.tasks.calls+fixture.bundles.calls+fixture.workers.calls+fixture.bootstraps.calls+fixture.resources.calls != 0 {
 		t.Fatal("a cloud mutation ran before connection verification")
+	}
+}
+
+func TestLaunchApprovedPlanSurfacesFailurePersistenceConflict(t *testing.T) {
+	fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
+	fixture.connections.err = cloudapp.ErrNotFound
+	fixture.service.operations.(*memoryOperations).saveErr = ErrRevisionConflict
+
+	_, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request)
+	if !errors.Is(err, ErrNotReady) || !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("error = %v, want both ErrNotReady and ErrRevisionConflict", err)
 	}
 }
 
@@ -1009,10 +1027,14 @@ func (credential *fakeCredential) Destroy() {
 	credential.destroyed = true
 }
 
-type fakeWorkers struct{ calls int }
+type fakeWorkers struct {
+	calls   int
+	request worker.CreateDeploymentRequest
+}
 
 func (workers *fakeWorkers) CreateDeployment(_ context.Context, _ WorkerCreateMutation, request worker.CreateDeploymentRequest) (worker.Deployment, SensitiveCredential, error) {
 	workers.calls++
+	workers.request = request
 	return worker.Deployment{DeploymentID: request.DeploymentID, TaskID: request.TaskID, StepID: request.StepID, Revision: 1}, &fakeCredential{value: bytes.Repeat([]byte{0x42}, 48)}, nil
 }
 
@@ -1046,7 +1068,10 @@ func (resources *fakeResources) Provision(_ context.Context, _ cloudapp.Connecti
 	return resource.ResourceV1{ResourceID: spec.ResourceID}, nil
 }
 
-type memoryOperations struct{ value *Operation }
+type memoryOperations struct {
+	value   *Operation
+	saveErr error
+}
 
 func (repository *memoryOperations) Begin(_ context.Context, intent Intent) (Operation, bool, error) {
 	if repository.value != nil {
@@ -1060,6 +1085,9 @@ func (repository *memoryOperations) Begin(_ context.Context, intent Intent) (Ope
 	return value, true, nil
 }
 func (repository *memoryOperations) Save(_ context.Context, value Operation, expected int64) (Operation, error) {
+	if repository.saveErr != nil {
+		return Operation{}, repository.saveErr
+	}
 	if repository.value == nil || repository.value.Revision != expected {
 		return Operation{}, ErrRevisionConflict
 	}

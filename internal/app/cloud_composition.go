@@ -6,6 +6,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	awsfoundationassets "github.com/YingSuiAI/dirextalk-agent/deploy/awsfoundation"
@@ -36,6 +39,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretresolver"
+	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
@@ -180,36 +184,67 @@ func (composition *CloudComposition) Run(ctx context.Context) error {
 	if composition == nil || composition.Dispatcher == nil || composition.Lifecycle == nil || composition.FoundationLifecycle == nil || composition.ManagedKnowledgeLifecycle == nil || composition.foundationExecutor == nil || composition.foundationLaunches == nil || composition.ManifestRecovery == nil || composition.HealthProbes == nil || composition.healthProbeScheduler == nil || composition.orphanRecovery == nil || composition.entryExecutor == nil || composition.managedAcceptanceExecutor == nil || composition.managedPreparationRecovery == nil || ctx == nil {
 		return errors.New("cloud dispatcher is unavailable")
 	}
-	runContext, cancel := context.WithCancel(ctx)
-	defer cancel()
-	errorsChannel := make(chan error, 11)
-	go func() { errorsChannel <- composition.Dispatcher.Run(runContext) }()
-	go func() { errorsChannel <- composition.Lifecycle.Run(runContext) }()
-	go func() { errorsChannel <- composition.foundationLaunches.Run(runContext) }()
-	go func() { errorsChannel <- composition.ManifestRecovery.Run(runContext) }()
-	go func() { errorsChannel <- composition.healthProbeScheduler.Run(runContext) }()
-	go func() { errorsChannel <- composition.orphanRecovery.Run(runContext) }()
-	go func() { errorsChannel <- composition.entryExecutor.Run(runContext) }()
-	go func() { errorsChannel <- composition.foundationExecutor.Run(runContext) }()
-	go func() { errorsChannel <- composition.managedAcceptanceExecutor.Run(runContext) }()
-	go func() { errorsChannel <- composition.managedPreparationRecovery.Run(runContext) }()
-	go func() { errorsChannel <- composition.ManagedKnowledgeLifecycle.Run(runContext, time.Second) }()
-	first := <-errorsChannel
-	cancel()
-	runErrors := []error{first, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel, <-errorsChannel}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	components := []cloudRuntimeComponent{
+		{name: "launch-dispatcher", run: composition.Dispatcher.Run},
+		{name: "ephemeral-destroy", run: composition.Lifecycle.Run},
+		{name: "foundation-launch-handoff", run: composition.foundationLaunches.Run},
+		{name: "resource-manifest-recovery", run: composition.ManifestRecovery.Run},
+		{name: "health-probe-scheduler", run: composition.healthProbeScheduler.Run},
+		{name: "orphan-recovery", run: composition.orphanRecovery.Run},
+		{name: "entrypoint-executor", run: composition.entryExecutor.Run},
+		{name: "foundation-executor", run: composition.foundationExecutor.Run},
+		{name: "managed-acceptance", run: composition.managedAcceptanceExecutor.Run},
+		{name: "managed-preparation-recovery", run: composition.managedPreparationRecovery.Run},
+		{name: "managed-knowledge-lifecycle", run: func(runCtx context.Context) error {
+			return composition.ManagedKnowledgeLifecycle.Run(runCtx, time.Second)
+		}},
 	}
-	var result error
-	for _, runErr := range runErrors {
-		if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
-			result = errors.Join(result, runErr)
+	var group sync.WaitGroup
+	group.Add(len(components))
+	for _, component := range components {
+		component := component
+		go func() {
+			defer group.Done()
+			superviseCloudRuntimeComponent(ctx, component)
+		}()
+	}
+	<-ctx.Done()
+	group.Wait()
+	return ctx.Err()
+}
+
+type cloudRuntimeComponent struct {
+	name string
+	run  func(context.Context) error
+}
+
+func superviseCloudRuntimeComponent(ctx context.Context, component cloudRuntimeComponent) {
+	const restartDelay = 5 * time.Second
+	for ctx.Err() == nil {
+		err := component.run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		message := "component exited without an error"
+		if err != nil {
+			message = security.RedactText(strings.TrimSpace(err.Error()))
+			if message == "" {
+				message = "component stopped"
+			} else if len(message) > 512 {
+				message = message[:512]
+			}
+		}
+		slog.Warn("cloud runtime component stopped; retrying", "component", component.name, "error", message)
+		timer := time.NewTimer(restartDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
 		}
 	}
-	if result != nil {
-		return result
-	}
-	return first
 }
 
 func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager, workerStore *postgres.WorkerStore, workerService *worker.Service, installerIssuer *installer.TrustIssuer, agentInstanceID string, masterKey []byte, reaperImageURI, workerControlTarget, workerControlServiceName string, workerConnectivityMode cloudquote.PrivateConnectivityMode, optionValues ...CloudCompositionOption) (*CloudComposition, error) {

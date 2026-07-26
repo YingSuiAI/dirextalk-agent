@@ -132,6 +132,10 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if err != nil {
 		return service.fail(ctx, operation, err)
 	}
+	taskStepID, err := task.MaterializeStepID(createdTask.TaskID, intent.TaskStepID)
+	if err != nil {
+		return service.fail(ctx, operation, ErrUnavailable)
+	}
 	if operation.TaskID == "" || operation.State == StateIntent || operation.State == StateFailedRetriable {
 		operation.TaskID = createdTask.TaskID
 		operation.State = StateTaskReady
@@ -196,11 +200,11 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if cleanupErr != nil {
 		return service.fail(ctx, operation, ErrUnavailable)
 	}
-	if err != nil || validatePublishedBundles(published, compiled, secretRefs) != nil {
-		if err == nil {
-			err = ErrUnavailable
-		}
+	if err != nil {
 		return service.fail(ctx, operation, err)
+	}
+	if validatePublishedBundles(published, compiled, secretRefs) != nil {
+		return service.fail(ctx, operation, fmt.Errorf("%w: published bundle validation failed", ErrUnavailable))
 	}
 	if len(operation.InstallerArtifacts) == 0 && len(published.InstallerArtifacts) != 0 {
 		operation.InstallerArtifacts = append([]installerbootstrap.ArtifactSourceV1(nil), published.InstallerArtifacts...)
@@ -226,7 +230,7 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 		ClientID: "internal.cloud-launcher", CredentialID: deterministicID(service.agentInstanceID, "worker-control"),
 		IdempotencyKey: deterministicID(intent.OperationID, "worker-create"),
 	}, worker.CreateDeploymentRequest{
-		DeploymentID: intent.DeploymentID, OwnerID: request.OwnerID, TaskID: createdTask.TaskID, StepID: intent.TaskStepID,
+		DeploymentID: intent.DeploymentID, OwnerID: request.OwnerID, TaskID: createdTask.TaskID, StepID: taskStepID,
 		ControlPlaneEndpoint: request.ControlPlaneTarget, RecipeBundle: published.Recipe, ExecutionBundle: published.Execution,
 		ExecutionTimeout:  time.Duration(boundRecipe.Install.TimeoutSeconds) * time.Second,
 		InstallerDelivery: cloneDelivery(operation.InstallerDelivery), InstallerCommandIDs: append([]string(nil), operation.InstallerCommandIDs...),
@@ -235,7 +239,7 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if err != nil {
 		return service.fail(ctx, operation, err)
 	}
-	if deployment.DeploymentID != intent.DeploymentID || deployment.TaskID != createdTask.TaskID || deployment.StepID != intent.TaskStepID {
+	if deployment.DeploymentID != intent.DeploymentID || deployment.TaskID != createdTask.TaskID || deployment.StepID != taskStepID {
 		credential.Destroy()
 		return service.fail(ctx, operation, ErrRevisionConflict)
 	}
@@ -472,12 +476,15 @@ func (service *Service) save(ctx context.Context, operation Operation) (Operatio
 func (service *Service) fail(ctx context.Context, operation Operation, cause error) (Operation, error) {
 	operation.State = StateFailedRetriable
 	operation.RedactedError = safeError(cause)
+	mapped := mapDependencyError(cause)
 	if operation.Revision > 0 {
-		if stored, err := service.save(ctx, operation); err == nil {
-			operation = stored
+		stored, err := service.save(ctx, operation)
+		if err != nil {
+			return operation, errors.Join(mapped, err)
 		}
+		operation = stored
 	}
-	return operation, mapDependencyError(cause)
+	return operation, mapped
 }
 
 func validateLaunchRequest(request LaunchRequest) error {
@@ -620,7 +627,7 @@ func mapDependencyError(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, ErrInvalid), errors.Is(err, ErrUnsupportedRecipe):
+	case errors.Is(err, ErrInvalid), errors.Is(err, ErrUnsupportedRecipe), errors.Is(err, ErrRevisionConflict), errors.Is(err, ErrUnavailable):
 		return err
 	case errors.Is(err, ErrNotReady):
 		return ErrNotReady

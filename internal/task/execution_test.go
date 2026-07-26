@@ -72,6 +72,30 @@ func TestCreateCommandValidatesAtomicStepDAG(t *testing.T) {
 	}
 }
 
+func TestMaterializeStepIDIsStableAndTaskScoped(t *testing.T) {
+	taskID := uuid.NewString()
+	declarationID := uuid.NewString()
+
+	first, err := MaterializeStepID(taskID, declarationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := MaterializeStepID(taskID, declarationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherTask, err := MaterializeStepID(uuid.NewString(), declarationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != replayed || first == otherTask || first == declarationID {
+		t.Fatalf("materialized ids first=%q replayed=%q other_task=%q declaration=%q", first, replayed, otherTask, declarationID)
+	}
+	if _, err := MaterializeStepID("invalid", declarationID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid task error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestCreateDigestBindsDAGButNotDeclarationOrder(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package cloudexecution
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
@@ -52,6 +53,7 @@ func (dispatcher *Dispatcher) Run(ctx context.Context) error {
 		if err := dispatcher.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			// A failed batch remains durable and is retried on the next bounded
 			// tick. Do not terminate the control process for provider downtime.
+			slog.Warn("cloud launch batch failed", "error", safeError(err))
 		}
 		select {
 		case <-ctx.Done():

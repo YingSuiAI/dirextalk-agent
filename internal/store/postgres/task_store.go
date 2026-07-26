@@ -454,10 +454,14 @@ func appendTaskEvent(ctx context.Context, tx pgx.Tx, item task.Task, caller idem
 }
 
 func insertStepDAG(ctx context.Context, tx pgx.Tx, taskID uuid.UUID, definitions []task.StepDefinition) error {
-	persistedIDs := make(map[string]uuid.UUID, len(definitions))
+	persistedIDs := make(map[string]string, len(definitions))
 	for _, definition := range definitions {
 		declarationID, _ := uuid.Parse(definition.StepID)
-		persistedIDs[declarationID.String()] = uuid.NewSHA1(taskID, []byte(declarationID.String()))
+		stepID, err := task.MaterializeStepID(taskID.String(), declarationID.String())
+		if err != nil {
+			return fmt.Errorf("materialize task step id: %w", err)
+		}
+		persistedIDs[declarationID.String()] = stepID
 	}
 	for _, definition := range definitions {
 		declarationID, _ := uuid.Parse(definition.StepID)
