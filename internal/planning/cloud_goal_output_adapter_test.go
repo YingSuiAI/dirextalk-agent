@@ -315,7 +315,7 @@ func (fake *persistentOutputRepositoryFake) BindOfficialSourceEvidence(_ context
 	for index, source := range command.Sources {
 		values = append(values, OfficialSourceEvidence{TaskID: command.TaskID, ToolCallID: "official-receipt-" + string(rune('a'+index)), URL: source.URL, RetrievedAt: source.RetrievedAt, ContentDigest: source.ContentDigest})
 	}
-	set, err := BuildOfficialSourceEvidenceSet(command.TaskID, values)
+	set, err := BuildOfficialSourceEvidenceSetWithClaims(command.TaskID, values, command.Sources)
 	if err != nil {
 		return OfficialSourceEvidenceSet{}, err
 	}

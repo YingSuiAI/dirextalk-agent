@@ -8,6 +8,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/publicweb"
+	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -97,6 +98,7 @@ func (store *Store) BindOfficialSourceEvidence(
 	}
 	selected := make([]planning.OfficialSourceEvidence, 0, len(command.Sources))
 	selectedRequestIDs := make(map[string]string, len(command.Sources))
+	selectedSources := make(map[string]recipe.SourceV1, len(command.Sources))
 	usedToolCalls := make(map[string]struct{}, len(command.Sources))
 	for _, source := range command.Sources {
 		matched := false
@@ -110,6 +112,7 @@ func (store *Store) BindOfficialSourceEvidence(
 				RetrievedAt: receipt.evidence.RetrievedAt, ContentDigest: receipt.evidence.ContentDigest,
 			})
 			selectedRequestIDs[receipt.toolCallID] = receipt.requestID
+			selectedSources[source.URL] = source
 			usedToolCalls[receipt.toolCallID] = struct{}{}
 			matched = true
 			break
@@ -121,32 +124,35 @@ func (store *Store) BindOfficialSourceEvidence(
 
 	for _, evidence := range selected {
 		requestID, ok := selectedRequestIDs[evidence.ToolCallID]
-		if !ok || requestID == "" {
+		source, sourceFound := selectedSources[evidence.URL]
+		sourceJSON, marshalErr := json.Marshal(source)
+		if !ok || requestID == "" || !sourceFound || marshalErr != nil {
 			return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO planning_official_source_evidence
 			    (session_id, task_id, caller_client_id, caller_credential_id, request_id,
-			     tool_call_id, source_url, retrieved_at, content_digest)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			     tool_call_id, source_url, retrieved_at, content_digest, source_claim)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			ON CONFLICT DO NOTHING`,
 			session.SessionID, command.TaskID, caller.ClientID, caller.CredentialID, requestID,
-			evidence.ToolCallID, evidence.URL, evidence.RetrievedAt, evidence.ContentDigest,
+			evidence.ToolCallID, evidence.URL, evidence.RetrievedAt, evidence.ContentDigest, sourceJSON,
 		); err != nil {
 			return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
 		}
 	}
 
-	bound, err := loadBoundOfficialSourceEvidence(ctx, tx, session.SessionID, command.TaskID)
+	bound, boundSources, err := loadBoundOfficialSourceEvidence(ctx, tx, session.SessionID, command.TaskID)
 	if err != nil {
 		return planning.OfficialSourceEvidenceSet{}, err
 	}
-	wanted, err := planning.BuildOfficialSourceEvidenceSet(command.TaskID, selected)
+	wanted, err := planning.BuildOfficialSourceEvidenceSetWithClaims(command.TaskID, selected, command.Sources)
 	if err != nil {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrInvalid
 	}
-	actual, err := planning.BuildOfficialSourceEvidenceSet(command.TaskID, bound)
-	if err != nil || !slices.Equal(actual.Evidence, wanted.Evidence) || actual.Digest != wanted.Digest {
+	actual, err := planning.BuildOfficialSourceEvidenceSetWithClaims(command.TaskID, bound, boundSources)
+	if err != nil || !slices.Equal(actual.Evidence, wanted.Evidence) || !slices.Equal(actual.Sources, wanted.Sources) ||
+		actual.Digest != wanted.Digest {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrIdempotencyConflict
 	}
 	if err := setScopedIdempotencyResponse(ctx, tx, caller, bindOfficialEvidenceOperation, command.IdempotencyKey, officialEvidenceSnapshot{
@@ -186,14 +192,19 @@ func (store *Store) GetOfficialSourceEvidence(
 	if session.Binding != binding || session.TaskID != taskID {
 		return planning.OfficialSourceEvidenceSet{}, false, planning.ErrIdempotencyConflict
 	}
-	values, err := loadBoundOfficialSourceEvidence(ctx, store.pool, session.SessionID, taskID)
+	values, sources, err := loadBoundOfficialSourceEvidence(ctx, store.pool, session.SessionID, taskID)
 	if err != nil {
 		return planning.OfficialSourceEvidenceSet{}, false, err
 	}
 	if len(values) == 0 {
 		return planning.OfficialSourceEvidenceSet{}, false, nil
 	}
-	set, err := planning.BuildOfficialSourceEvidenceSet(taskID, values)
+	var set planning.OfficialSourceEvidenceSet
+	if len(sources) == len(values) {
+		set, err = planning.BuildOfficialSourceEvidenceSetWithClaims(taskID, values, sources)
+	} else {
+		set, err = planning.BuildOfficialSourceEvidenceSet(taskID, values)
+	}
 	if err != nil {
 		return planning.OfficialSourceEvidenceSet{}, false, planning.ErrPersistence
 	}
@@ -205,8 +216,15 @@ func decodeOfficialEvidenceSnapshot(encoded []byte) (planning.OfficialSourceEvid
 	if err := json.Unmarshal(encoded, &snapshot); err != nil || snapshot.SchemaVersion != officialEvidenceSnapshotSchemaV1 || len(snapshot.Set.Evidence) == 0 {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
 	}
-	built, err := planning.BuildOfficialSourceEvidenceSet(snapshot.Set.Evidence[0].TaskID, snapshot.Set.Evidence)
-	if err != nil || built.Digest != snapshot.Set.Digest || !slices.Equal(built.Evidence, snapshot.Set.Evidence) {
+	var built planning.OfficialSourceEvidenceSet
+	var err error
+	if len(snapshot.Set.Sources) > 0 {
+		built, err = planning.BuildOfficialSourceEvidenceSetWithClaims(snapshot.Set.Evidence[0].TaskID, snapshot.Set.Evidence, snapshot.Set.Sources)
+	} else {
+		built, err = planning.BuildOfficialSourceEvidenceSet(snapshot.Set.Evidence[0].TaskID, snapshot.Set.Evidence)
+	}
+	if err != nil || built.Digest != snapshot.Set.Digest || !slices.Equal(built.Evidence, snapshot.Set.Evidence) ||
+		!slices.Equal(built.Sources, snapshot.Set.Sources) {
 		return planning.OfficialSourceEvidenceSet{}, planning.ErrPersistence
 	}
 	return snapshot.Set, nil
@@ -266,27 +284,39 @@ func loadBoundOfficialSourceEvidence(
 	ctx context.Context,
 	query planningQuerier,
 	sessionID, taskID string,
-) ([]planning.OfficialSourceEvidence, error) {
+) ([]planning.OfficialSourceEvidence, []recipe.SourceV1, error) {
 	rows, err := query.Query(ctx, `
-		SELECT tool_call_id, source_url, retrieved_at, content_digest
+		SELECT tool_call_id, source_url, retrieved_at, content_digest, source_claim
 		FROM planning_official_source_evidence
 		WHERE session_id=$1 AND task_id=$2
 		ORDER BY source_url, content_digest`, sessionID, taskID)
 	if err != nil {
-		return nil, planning.ErrPersistence
+		return nil, nil, planning.ErrPersistence
 	}
 	defer rows.Close()
 	values := make([]planning.OfficialSourceEvidence, 0)
+	sources := make([]recipe.SourceV1, 0)
 	for rows.Next() {
 		value := planning.OfficialSourceEvidence{TaskID: taskID}
-		if err := rows.Scan(&value.ToolCallID, &value.URL, &value.RetrievedAt, &value.ContentDigest); err != nil {
-			return nil, planning.ErrPersistence
+		var sourceJSON []byte
+		if err := rows.Scan(&value.ToolCallID, &value.URL, &value.RetrievedAt, &value.ContentDigest, &sourceJSON); err != nil {
+			return nil, nil, planning.ErrPersistence
 		}
 		value.RetrievedAt = value.RetrievedAt.UTC()
 		values = append(values, value)
+		if len(sourceJSON) > 0 {
+			var source recipe.SourceV1
+			if err := json.Unmarshal(sourceJSON, &source); err != nil {
+				return nil, nil, planning.ErrPersistence
+			}
+			sources = append(sources, source)
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, planning.ErrPersistence
+		return nil, nil, planning.ErrPersistence
 	}
-	return values, nil
+	if len(sources) != 0 && len(sources) != len(values) {
+		return nil, nil, planning.ErrPersistence
+	}
+	return values, sources, nil
 }

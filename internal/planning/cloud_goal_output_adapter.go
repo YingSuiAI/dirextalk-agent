@@ -540,8 +540,15 @@ func validateOfficialSourceClaims(sources []recipe.SourceV1) error {
 }
 
 func validateEvidenceSet(taskID string, set OfficialSourceEvidenceSet) error {
-	built, err := BuildOfficialSourceEvidenceSet(taskID, set.Evidence)
-	if err != nil || built.Digest != set.Digest || !slices.Equal(built.Evidence, set.Evidence) {
+	var built OfficialSourceEvidenceSet
+	var err error
+	if len(set.Sources) > 0 {
+		built, err = BuildOfficialSourceEvidenceSetWithClaims(taskID, set.Evidence, set.Sources)
+	} else {
+		built, err = BuildOfficialSourceEvidenceSet(taskID, set.Evidence)
+	}
+	if err != nil || built.Digest != set.Digest || !slices.Equal(built.Evidence, set.Evidence) ||
+		!slices.Equal(built.Sources, set.Sources) {
 		return ErrCloudGoalOutputInvalid
 	}
 	return nil

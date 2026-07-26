@@ -56,6 +56,13 @@ func ValidateDigest(value string) error {
 	return nil
 }
 
+// ValidateSources validates the complete source-claim collection without
+// requiring callers to manufacture an otherwise unrelated Recipe.
+func ValidateSources(sources []SourceV1) error {
+	refs := recipeReferences{}
+	return validateSources(sources, &refs)
+}
+
 func (r RecipeV1) Validate() error {
 	if r.SchemaVersion != SchemaV1 {
 		return fmt.Errorf("schema_version must be %q", SchemaV1)

@@ -84,7 +84,9 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 		IdempotencyKey: evidenceKey, Binding: command.Binding, TaskID: session.TaskID, Sources: recipeValue.Sources,
 	}
 	evidenceSet, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, evidenceCommand)
-	if err != nil || len(evidenceSet.Evidence) != 1 || !strings.HasPrefix(evidenceSet.ResultRef(), "planning://official-source-evidence/sha256:") {
+	if err != nil || len(evidenceSet.Evidence) != 1 || len(evidenceSet.Sources) != 1 ||
+		!reflect.DeepEqual(evidenceSet.Sources, recipeValue.Sources) ||
+		!strings.HasPrefix(evidenceSet.ResultRef(), "planning://official-source-evidence/sha256:") {
 		t.Fatalf("bind official evidence failed: count=%d ref=%q err=%T", len(evidenceSet.Evidence), evidenceSet.ResultRef(), err)
 	}
 	wantEvidenceRequestID, err := planning.CloudGoalModelRequestID(command.Binding, session.TaskID, cloudskill.StepResearchOfficialSources)
@@ -94,6 +96,14 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	var boundEvidenceRequestID string
 	if err := pool.QueryRow(context.Background(), `SELECT request_id FROM planning_official_source_evidence`).Scan(&boundEvidenceRequestID); err != nil || boundEvidenceRequestID != wantEvidenceRequestID {
 		t.Fatalf("official evidence request binding=%q want=%q err=%T", boundEvidenceRequestID, wantEvidenceRequestID, err)
+	}
+	var sourceClaim []byte
+	if err := pool.QueryRow(context.Background(), `SELECT source_claim FROM planning_official_source_evidence`).Scan(&sourceClaim); err != nil {
+		t.Fatalf("read persisted source claim: %v", err)
+	}
+	var persistedSource recipe.SourceV1
+	if json.Unmarshal(sourceClaim, &persistedSource) != nil || !reflect.DeepEqual(persistedSource, recipeValue.Sources[0]) {
+		t.Fatalf("persisted source claim drifted: %#v", persistedSource)
 	}
 	replayedEvidence, err := restarted.BindOfficialSourceEvidence(context.Background(), scope, evidenceCommand)
 	if err != nil || !reflect.DeepEqual(evidenceSet, replayedEvidence) {

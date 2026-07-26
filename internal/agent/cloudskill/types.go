@@ -122,6 +122,45 @@ func (input RecipeDraftInputV1) bind(recipeID string) recipe.RecipeV1 {
 	}
 }
 
+// RecipeBehaviorDraftInputV1 is the background planner's model-owned Recipe
+// surface. Source provenance is deliberately absent and is injected from the
+// durable research projection by trusted code.
+type RecipeBehaviorDraftInputV1 struct {
+	Name         string                            `json:"name"`
+	Requirements recipe.ResourceRequirementsV1     `json:"requirements"`
+	Install      recipe.InstallContractV1          `json:"install"`
+	Health       recipe.HealthContractV1           `json:"health"`
+	Lifecycle    recipe.LifecycleContractV1        `json:"lifecycle"`
+	VolumeSlots  []recipe.VolumeSlotRequirementV1  `json:"volume_slots,omitempty"`
+	DataSlots    []recipe.DataSlotRequirementV1    `json:"data_slots,omitempty"`
+	SecretSlots  []recipe.SecretSlotRequirementV1  `json:"secret_slots,omitempty"`
+	Restart      *recipe.RestartContractV1         `json:"restart,omitempty"`
+	Network      *recipe.NetworkContractV1         `json:"network,omitempty"`
+	Pairing      *recipe.PairingContractV1         `json:"pairing,omitempty"`
+	Integrations []recipe.IntegrationDeclarationV1 `json:"integrations,omitempty"`
+}
+
+func (input RecipeBehaviorDraftInputV1) bind(recipeID string, sources []recipe.SourceV1) recipe.RecipeV1 {
+	return recipe.RecipeV1{
+		SchemaVersion: recipe.SchemaV1,
+		RecipeID:      recipeID,
+		Name:          input.Name,
+		Maturity:      recipe.MaturityExperimental,
+		Sources:       append([]recipe.SourceV1(nil), sources...),
+		Requirements:  input.Requirements,
+		Install:       input.Install,
+		Health:        input.Health,
+		Lifecycle:     input.Lifecycle,
+		VolumeSlots:   input.VolumeSlots,
+		DataSlots:     input.DataSlots,
+		SecretSlots:   input.SecretSlots,
+		Restart:       input.Restart,
+		Network:       input.Network,
+		Pairing:       input.Pairing,
+		Integrations:  input.Integrations,
+	}
+}
+
 // ResourceCandidateDraftV1 deliberately contains no provider, Region,
 // instance type, price, connection or approval field. Provider-backed quote
 // selection happens later under a separately approved command.

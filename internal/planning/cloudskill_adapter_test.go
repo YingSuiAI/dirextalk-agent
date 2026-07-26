@@ -336,7 +336,7 @@ func (stub *adapterRepositoryStub) BindOfficialSourceEvidence(_ context.Context,
 			URL: source.URL, RetrievedAt: source.RetrievedAt, ContentDigest: source.ContentDigest,
 		})
 	}
-	return BuildOfficialSourceEvidenceSet(command.TaskID, values)
+	return BuildOfficialSourceEvidenceSetWithClaims(command.TaskID, values, command.Sources)
 }
 
 func (stub *adapterRepositoryStub) SaveRecipeDraft(_ context.Context, scope task.MutationScope, command SaveRecipeDraftCommand) (RecipeDraft, error) {

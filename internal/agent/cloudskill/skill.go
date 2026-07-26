@@ -270,6 +270,12 @@ type planDraftInputV1 struct {
 	Performance candidateDraftInputV1 `json:"performance"`
 }
 
+type resourceCandidateSetDraftInputV1 struct {
+	Economy     candidateDraftInputV1 `json:"economy"`
+	Recommended candidateDraftInputV1 `json:"recommended"`
+	Performance candidateDraftInputV1 `json:"performance"`
+}
+
 type officialSourceDraftInputV1 struct {
 	Sources []recipe.SourceV1 `json:"sources"`
 }
@@ -323,6 +329,22 @@ func PlanningDraftInputSchema() map[string]any {
 	return submitPlanDraftInputSchema()
 }
 
+// RecipeBehaviorDraftInputSchema is the narrower background-planning contract.
+// Durable source claims are never exposed as model-writable fields.
+func RecipeBehaviorDraftInputSchema() map[string]any {
+	schema := schemaForType(reflect.TypeOf(RecipeBehaviorDraftInputV1{}))
+	constrainRecipeDraftSchema(schema, false)
+	return schema
+}
+
+// ResourceCandidateDraftInputSchema prevents the capacity stage from
+// restating or mutating the already persisted Recipe.
+func ResourceCandidateDraftInputSchema() map[string]any {
+	schema := schemaForType(reflect.TypeOf(resourceCandidateSetDraftInputV1{}))
+	constrainCandidateSetSchema(schema)
+	return schema
+}
+
 // OfficialSourceDraftInputSchema is the closed capture schema for researched
 // source claims. The caller must still bind every claim to a completed,
 // server-produced official_source_fetch receipt before persistence.
@@ -349,6 +371,80 @@ func DecodePlanningDraft(raw json.RawMessage, binding Binding) (DecodedPlanningD
 	return DecodedPlanningDraft{
 		Recipe: decoded.recipe, Candidates: append([]ResourceCandidateDraftV1(nil), decoded.candidates...),
 	}, nil
+}
+
+func DecodeRecipeBehaviorDraft(raw json.RawMessage, binding Binding, sources []recipe.SourceV1) (recipe.RecipeV1, error) {
+	if security.ContainsLikelySecret(string(raw)) {
+		return recipe.RecipeV1{}, task.ErrRawSecret
+	}
+	if recipe.ValidateSources(sources) != nil {
+		return recipe.RecipeV1{}, ErrPlanningDraftRecipeInvalid
+	}
+	var input RecipeBehaviorDraftInputV1
+	if err := decodeStrict(raw, &input); err != nil {
+		return recipe.RecipeV1{}, ErrPlanningDraftSchemaInvalid
+	}
+	bound := input.bind(binding.RecipeID, sources)
+	if bound.Validate() != nil || validateBackgroundExecutionActions(bound) != nil {
+		return recipe.RecipeV1{}, ErrPlanningDraftRecipeInvalid
+	}
+	return bound, nil
+}
+
+func validateBackgroundExecutionActions(value recipe.RecipeV1) error {
+	commands := make(map[string]recipe.InstallerCommandV1)
+	if value.Install.Installer != nil {
+		for _, command := range value.Install.Installer.Commands {
+			commands[command.CommandID] = command
+		}
+	}
+	selectedCommands := make(map[string]struct{})
+	for _, step := range value.Install.Steps {
+		switch step.Action {
+		case "worker.noop":
+			if len(step.Inputs) != 0 {
+				return ErrPlanningDraftRecipeInvalid
+			}
+		case "installer.execute":
+			if value.Install.Installer == nil || len(step.Inputs) != 1 ||
+				step.Inputs[0].Name != "command_id" || step.Inputs[0].Kind != recipe.ActionInputConfig {
+				return ErrPlanningDraftRecipeInvalid
+			}
+			command, found := commands[step.Inputs[0].Ref]
+			if !found || command.TimeoutSeconds != step.TimeoutSeconds {
+				return ErrPlanningDraftRecipeInvalid
+			}
+			if _, duplicate := selectedCommands[command.CommandID]; duplicate {
+				return ErrPlanningDraftRecipeInvalid
+			}
+			selectedCommands[command.CommandID] = struct{}{}
+		default:
+			return ErrPlanningDraftRecipeInvalid
+		}
+	}
+	return nil
+}
+
+func DecodeResourceCandidateDraft(raw json.RawMessage, requirements recipe.ResourceRequirementsV1) ([]ResourceCandidateDraftV1, error) {
+	if security.ContainsLikelySecret(string(raw)) {
+		return nil, task.ErrRawSecret
+	}
+	var input resourceCandidateSetDraftInputV1
+	if err := decodeStrict(raw, &input); err != nil {
+		return nil, ErrPlanningDraftSchemaInvalid
+	}
+	candidates := []ResourceCandidateDraftV1{
+		candidateFromInput("economy", input.Economy),
+		candidateFromInput("recommended", input.Recommended),
+		candidateFromInput("performance", input.Performance),
+	}
+	if err := validateCandidateDrafts(candidates, requirements); err != nil {
+		if errors.Is(err, task.ErrRawSecret) {
+			return nil, err
+		}
+		return nil, ErrPlanningDraftCandidatesInvalid
+	}
+	return candidates, nil
 }
 
 func candidateFromInput(tier string, input candidateDraftInputV1) ResourceCandidateDraftV1 {
@@ -443,21 +539,29 @@ func submitPlanDraftInputSchema() map[string]any {
 	schema := schemaForType(reflect.TypeOf(planDraftInputV1{}))
 	recipeSchema := schemaProperty(schema, "recipe")
 	recipeSchema["description"] = "A secret-free experimental Recipe using only typed Worker actions."
+	constrainRecipeDraftSchema(recipeSchema, true)
+	constrainCandidateSetSchema(schema)
+	return schema
+}
+
+func constrainRecipeDraftSchema(recipeSchema map[string]any, includeSources bool) {
 	constrainString(schemaProperty(recipeSchema, "name"), 1, 160)
 
-	sources := schemaProperty(recipeSchema, "sources")
-	sources["minItems"], sources["maxItems"] = 1, 16
-	source := schemaItems(sources)
-	source["description"] = "An official source copied exactly from fetched evidence."
-	constrainString(schemaProperty(source, "url"), 1, 2048)
-	schemaProperty(source, "url")["pattern"] = `^https://`
-	constrainString(schemaProperty(source, "version"), 1, 128)
-	schemaProperty(source, "commit")["pattern"] = `^[A-Fa-f0-9]{7,64}$`
-	schemaProperty(source, "artifact_digest")["pattern"] = `^sha256:[a-f0-9]{64}$`
-	schemaProperty(source, "content_digest")["pattern"] = `^sha256:[a-f0-9]{64}$`
-	constrainString(schemaProperty(source, "license"), 1, 128)
-	schemaProperty(source, "official")["enum"] = []bool{true}
-	schemaProperty(source, "kind")["enum"] = []string{"repository", "documentation", "release"}
+	if includeSources {
+		sources := schemaProperty(recipeSchema, "sources")
+		sources["minItems"], sources["maxItems"] = 1, 16
+		source := schemaItems(sources)
+		source["description"] = "An official source copied exactly from fetched evidence."
+		constrainString(schemaProperty(source, "url"), 1, 2048)
+		schemaProperty(source, "url")["pattern"] = `^https://`
+		constrainString(schemaProperty(source, "version"), 1, 128)
+		schemaProperty(source, "commit")["pattern"] = `^[A-Fa-f0-9]{7,64}$`
+		schemaProperty(source, "artifact_digest")["pattern"] = `^sha256:[a-f0-9]{64}$`
+		schemaProperty(source, "content_digest")["pattern"] = `^sha256:[a-f0-9]{64}$`
+		constrainString(schemaProperty(source, "license"), 1, 128)
+		schemaProperty(source, "official")["enum"] = []bool{true}
+		schemaProperty(source, "kind")["enum"] = []string{"repository", "documentation", "release"}
+	}
 
 	requirements := schemaProperty(recipeSchema, "requirements")
 	constrainInteger(schemaProperty(requirements, "min_vcpu"), 1, 1024)
@@ -477,6 +581,7 @@ func submitPlanDraftInputSchema() map[string]any {
 	constrainString(schemaProperty(step, "summary"), 1, 512)
 	constrainInteger(schemaProperty(step, "timeout_seconds"), 1, 24*60*60)
 	constrainString(schemaProperty(step, "action"), 1, 128)
+	schemaProperty(step, "action")["enum"] = []string{"worker.noop", "installer.execute"}
 
 	health := schemaProperty(recipeSchema, "health")
 	for _, name := range []string{"liveness", "readiness", "semantic"} {
@@ -491,7 +596,9 @@ func submitPlanDraftInputSchema() map[string]any {
 		constrainString(action, 1, 128)
 		action["pattern"] = `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`
 	}
+}
 
+func constrainCandidateSetSchema(schema map[string]any) {
 	for _, name := range []string{"economy", "recommended", "performance"} {
 		candidate := schemaProperty(schema, name)
 		candidate["description"] = "A provider-neutral capacity candidate satisfying the Recipe minimums."
@@ -503,7 +610,6 @@ func submitPlanDraftInputSchema() map[string]any {
 		constrainString(schemaProperty(candidate, "gpu_family"), 1, 128)
 		constrainString(schemaProperty(candidate, "rationale"), 1, 512)
 	}
-	return schema
 }
 
 func schemaProperty(schema map[string]any, name string) map[string]any {

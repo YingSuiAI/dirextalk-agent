@@ -269,7 +269,11 @@ type OfficialSourceEvidence struct {
 
 type OfficialSourceEvidenceSet struct {
 	Evidence []OfficialSourceEvidence
-	Digest   string
+	// Sources are the complete, structurally validated claims accepted during
+	// research. They are injected into later Recipe drafts by trusted code so
+	// the model never has to reproduce provenance fields.
+	Sources []recipe.SourceV1
+	Digest  string
 }
 
 func (set OfficialSourceEvidenceSet) ResultRef() string {
@@ -294,12 +298,18 @@ func (command BindOfficialSourceEvidenceCommand) Validate() error {
 		return fmt.Errorf("%w: official-source evidence binding is invalid", ErrInvalid)
 	}
 	seen := make(map[string]struct{}, len(command.Sources))
+	if err := recipe.ValidateSources(command.Sources); err != nil {
+		return fmt.Errorf("%w: official-source claims are invalid", ErrInvalid)
+	}
 	for _, source := range command.Sources {
 		parsed, err := url.Parse(source.URL)
 		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" ||
 			source.URL != strings.TrimSpace(source.URL) || source.RetrievedAt.IsZero() || source.RetrievedAt != source.RetrievedAt.UTC() ||
 			recipe.ValidateDigest(source.ContentDigest) != nil {
 			return fmt.Errorf("%w: official-source evidence claim is invalid", ErrInvalid)
+		}
+		if !source.Official {
+			return fmt.Errorf("%w: official-source evidence claim is not official", ErrInvalid)
 		}
 		if _, exists := seen[source.URL]; exists {
 			return fmt.Errorf("%w: official-source evidence URL is duplicated", ErrInvalid)
@@ -359,6 +369,39 @@ func BuildOfficialSourceEvidenceSet(taskID string, values []OfficialSourceEviden
 	}
 	digest := sha256.Sum256(encoded)
 	return OfficialSourceEvidenceSet{Evidence: canonical, Digest: fmt.Sprintf("sha256:%x", digest[:])}, nil
+}
+
+// BuildOfficialSourceEvidenceSetWithClaims binds complete source claims to the
+// receipt-derived evidence set. The public evidence digest intentionally
+// remains compatible with v1; the final Recipe digest binds every source
+// field before approval or execution.
+func BuildOfficialSourceEvidenceSetWithClaims(
+	taskID string,
+	values []OfficialSourceEvidence,
+	sources []recipe.SourceV1,
+) (OfficialSourceEvidenceSet, error) {
+	set, err := BuildOfficialSourceEvidenceSet(taskID, values)
+	if err != nil || recipe.ValidateSources(sources) != nil || len(sources) != len(set.Evidence) {
+		return OfficialSourceEvidenceSet{}, ErrInvalid
+	}
+	canonical := append([]recipe.SourceV1(nil), sources...)
+	slices.SortFunc(canonical, func(left, right recipe.SourceV1) int {
+		if compared := strings.Compare(left.URL, right.URL); compared != 0 {
+			return compared
+		}
+		return strings.Compare(left.ContentDigest, right.ContentDigest)
+	})
+	for index, source := range canonical {
+		evidence := set.Evidence[index]
+		source.RetrievedAt = source.RetrievedAt.UTC().Truncate(time.Microsecond)
+		canonical[index] = source
+		if !source.Official || source.URL != evidence.URL || source.ContentDigest != evidence.ContentDigest ||
+			!source.RetrievedAt.Equal(evidence.RetrievedAt) {
+			return OfficialSourceEvidenceSet{}, ErrInvalid
+		}
+	}
+	set.Sources = canonical
+	return set, nil
 }
 
 type SaveRecipeDraftCommand struct {

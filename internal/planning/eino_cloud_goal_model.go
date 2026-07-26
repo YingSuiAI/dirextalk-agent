@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -24,13 +23,14 @@ import (
 )
 
 const (
-	cloudGoalModelVersion        = "cloud-goal-planning-model-v1"
-	cloudGoalModelRequestLease   = 4 * time.Minute
-	cloudGoalModelMaxSteps       = 24
-	cloudGoalModelMaxCapture     = 256 << 10
-	cloudGoalModelMaxSubmissions = 3
-	captureOfficialSourcesTool   = "capture_official_sources"
-	captureExperimentalPlanTool  = "capture_experimental_plan"
+	cloudGoalModelVersion         = "cloud-goal-planning-model-v2"
+	cloudGoalModelRequestLease    = 4 * time.Minute
+	cloudGoalModelMaxSteps        = 24
+	cloudGoalModelMaxCapture      = 256 << 10
+	cloudGoalModelMaxSubmissions  = 3
+	captureOfficialSourcesTool    = "capture_official_sources"
+	captureExperimentalRecipeTool = "capture_experimental_recipe"
+	captureResourceCandidatesTool = "capture_resource_candidates"
 )
 
 var ErrCloudGoalModelUnavailable = errors.New("durable cloud Goal planning model is unavailable")
@@ -110,32 +110,38 @@ func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Con
 
 func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Context, input CloudGoalRecipeInput) (recipe.RecipeV1, error) {
 	profileRecipe, profileMatched := knowledgeProfileRecipe(input.Request.Binding.RecipeID, input.Evidence)
-	var officialProfile *recipe.RecipeV1
 	if profileMatched {
-		officialProfile = &profileRecipe
+		return profileRecipe, nil
+	}
+	if validateEvidenceSet(input.Request.Attempt.TaskID, input.Evidence) != nil ||
+		len(input.Evidence.Sources) != len(input.Evidence.Evidence) {
+		return recipe.RecipeV1{}, ErrCloudGoalModelUnavailable
 	}
 	prompt, err := encodeCloudGoalModelPrompt("draft_experimental_recipe", input.Request, struct {
-		Evidence        []OfficialSourceEvidence `json:"official_source_evidence"`
-		OfficialProfile *recipe.RecipeV1         `json:"official_profile_recipe,omitempty"`
-	}{Evidence: input.Evidence.Evidence, OfficialProfile: officialProfile})
+		Evidence []OfficialSourceEvidence `json:"official_source_evidence"`
+		Sources  []recipe.SourceV1        `json:"server_bound_sources"`
+		Actions  []string                 `json:"supported_install_actions"`
+	}{
+		Evidence: input.Evidence.Evidence,
+		Sources:  input.Evidence.Sources,
+		Actions:  []string{"worker.noop", "installer.execute"},
+	})
 	if err != nil {
 		return recipe.RecipeV1{}, ErrCloudGoalModelUnavailable
 	}
 	binding := cloudSkillBinding(input.Request.Binding)
-	raw, err := model.runCapture(ctx, input.Request, prompt, captureExperimentalPlanTool, cloudskill.PlanningDraftInputSchema(), true,
+	raw, err := model.runCapture(ctx, input.Request, prompt, captureExperimentalRecipeTool, cloudskill.RecipeBehaviorDraftInputSchema(), true,
 		func(raw json.RawMessage, fetched map[string]publicweb.Evidence, replay bool) error {
-			decoded, decodeErr := cloudskill.DecodePlanningDraft(raw, binding)
+			decoded, decodeErr := cloudskill.DecodeRecipeBehaviorDraft(raw, binding, input.Evidence.Sources)
 			if decodeErr != nil {
 				switch {
 				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftSchemaInvalid):
-					return captureValidationFailure("planning_draft_schema_invalid")
-				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftCandidatesInvalid):
-					return captureValidationFailure("planning_candidates_invalid")
+					return captureValidationFailure("planning_recipe_schema_invalid")
 				default:
 					return captureValidationFailure("planning_recipe_invalid")
 				}
 			}
-			if validateRecipeForEvidence(input.Request.Binding, decoded.Recipe, input.Evidence) != nil {
+			if validateRecipeForEvidence(input.Request.Binding, decoded, input.Evidence) != nil {
 				return captureValidationFailure("recipe_evidence_binding_invalid")
 			}
 			if !replay && !boundEvidenceWasFetched(input.Evidence, fetched) {
@@ -146,14 +152,11 @@ func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Con
 	if err != nil {
 		return recipe.RecipeV1{}, err
 	}
-	decoded, err := cloudskill.DecodePlanningDraft(raw, binding)
+	decoded, err := cloudskill.DecodeRecipeBehaviorDraft(raw, binding, input.Evidence.Sources)
 	if err != nil {
 		return recipe.RecipeV1{}, ErrCloudGoalModelUnavailable
 	}
-	if profileMatched {
-		return profileRecipe, nil
-	}
-	return decoded.Recipe, nil
+	return decoded, nil
 }
 
 func knowledgeProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet) (recipe.RecipeV1, bool) {
@@ -167,41 +170,46 @@ func knowledgeProfileRecipe(recipeID string, evidence OfficialSourceEvidenceSet)
 }
 
 func (model *EinoCloudGoalPlanningModel) ProposeResourceCandidates(ctx context.Context, input CloudGoalCandidateInput) ([]ResourceCandidateV1, error) {
+	digest, digestErr := input.Draft.Recipe.Digest()
+	if input.Draft.Revision < 1 || input.Draft.Recipe.Validate() != nil || digestErr != nil ||
+		digest != input.Draft.Digest {
+		return nil, ErrCloudGoalModelUnavailable
+	}
 	prompt, err := encodeCloudGoalModelPrompt("propose_resource_candidates", input.Request, struct {
-		Recipe recipe.RecipeV1 `json:"experimental_recipe"`
-	}{Recipe: input.Draft.Recipe})
+		RecipeDigest string                        `json:"recipe_digest"`
+		Requirements recipe.ResourceRequirementsV1 `json:"requirements"`
+	}{
+		RecipeDigest: input.Draft.Digest,
+		Requirements: input.Draft.Recipe.Requirements,
+	})
 	if err != nil {
 		return nil, ErrCloudGoalModelUnavailable
 	}
-	binding := cloudSkillBinding(input.Request.Binding)
-	raw, err := model.runCapture(ctx, input.Request, prompt, captureExperimentalPlanTool, cloudskill.PlanningDraftInputSchema(), false,
+	raw, err := model.runCapture(ctx, input.Request, prompt, captureResourceCandidatesTool, cloudskill.ResourceCandidateDraftInputSchema(), false,
 		func(raw json.RawMessage, _ map[string]publicweb.Evidence, _ bool) error {
-			decoded, decodeErr := cloudskill.DecodePlanningDraft(raw, binding)
+			decoded, decodeErr := cloudskill.DecodeResourceCandidateDraft(raw, input.Draft.Recipe.Requirements)
 			if decodeErr != nil {
 				switch {
 				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftSchemaInvalid):
 					return captureValidationFailure("resource_candidates_schema_invalid")
-				case errors.Is(decodeErr, cloudskill.ErrPlanningDraftCandidatesInvalid):
-					return captureValidationFailure("resource_candidates_invalid")
 				default:
-					return captureValidationFailure("approved_recipe_invalid")
+					return captureValidationFailure("resource_candidates_invalid")
 				}
 			}
-			digest, digestErr := decoded.Recipe.Digest()
-			if digestErr != nil || digest != input.Draft.Digest || !reflect.DeepEqual(decoded.Recipe, input.Draft.Recipe) {
-				return captureValidationFailure("approved_recipe_changed")
+			if len(decoded) != 3 {
+				return captureValidationFailure("resource_candidates_invalid")
 			}
 			return nil
 		})
 	if err != nil {
 		return nil, err
 	}
-	decoded, err := cloudskill.DecodePlanningDraft(raw, binding)
+	decoded, err := cloudskill.DecodeResourceCandidateDraft(raw, input.Draft.Recipe.Requirements)
 	if err != nil {
 		return nil, ErrCloudGoalModelUnavailable
 	}
-	result := make([]ResourceCandidateV1, 0, len(decoded.Candidates))
-	for _, candidate := range decoded.Candidates {
+	result := make([]ResourceCandidateV1, 0, len(decoded))
+	for _, candidate := range decoded {
 		result = append(result, ResourceCandidateV1{
 			Tier: CandidateTier(candidate.Tier), Architecture: candidate.Architecture,
 			VCPU: candidate.VCPU, MemoryMiB: candidate.MemoryMiB, DiskGiB: candidate.DiskGiB,
@@ -451,6 +459,7 @@ func captureValidationFailureCode(err error) string {
 			"official_sources_claims_invalid",
 			"official_sources_evidence_mismatch",
 			"planning_draft_schema_invalid",
+			"planning_recipe_schema_invalid",
 			"planning_recipe_invalid",
 			"planning_candidates_invalid",
 			"recipe_evidence_binding_invalid",

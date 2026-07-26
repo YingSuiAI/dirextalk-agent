@@ -114,6 +114,57 @@ func TestPlanningDraftSchemaCommunicatesRecipeAndCapacityBounds(t *testing.T) {
 	}
 }
 
+func TestBackgroundPlanningSchemasDoNotLetModelRestateTrustedArtifacts(t *testing.T) {
+	t.Parallel()
+
+	recipeSchema := RecipeBehaviorDraftInputSchema()
+	recipeProperties := recipeSchema["properties"].(map[string]any)
+	if recipeProperties["sources"] != nil || recipeProperties["recipe_id"] != nil ||
+		recipeProperties["schema_version"] != nil || recipeProperties["maturity"] != nil {
+		t.Fatalf("background Recipe schema exposed server-bound fields: %#v", recipeProperties)
+	}
+	step := schemaItems(schemaProperty(schemaProperty(recipeSchema, "install"), "steps"))
+	if !reflect.DeepEqual(schemaProperty(step, "action")["enum"], []string{"worker.noop", "installer.execute"}) {
+		t.Fatalf("background action registry is not closed: %#v", schemaProperty(step, "action"))
+	}
+
+	candidateSchema := ResourceCandidateDraftInputSchema()
+	candidateProperties := candidateSchema["properties"].(map[string]any)
+	if len(candidateProperties) != 3 || candidateProperties["recipe"] != nil ||
+		candidateProperties["economy"] == nil || candidateProperties["recommended"] == nil ||
+		candidateProperties["performance"] == nil {
+		t.Fatalf("candidate schema can restate Recipe fields: %#v", candidateProperties)
+	}
+}
+
+func TestBackgroundPlanningDecodersInjectSourcesAndRejectUnsupportedActions(t *testing.T) {
+	t.Parallel()
+
+	base := validRecipeDraft()
+	base.Install.Steps[0].Action = "worker.noop"
+	raw, err := json.Marshal(RecipeBehaviorDraftInputV1{
+		Name: base.Name, Requirements: base.Requirements, Install: base.Install,
+		Health: base.Health, Lifecycle: base.Lifecycle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRecipeBehaviorDraft(raw, expectedBinding(), base.Sources)
+	if err != nil || !reflect.DeepEqual(decoded.Sources, base.Sources) || decoded.RecipeID != expectedBinding().RecipeID {
+		t.Fatalf("server-bound Recipe decode=%#v err=%v", decoded, err)
+	}
+
+	unsupported := base
+	unsupported.Install.Steps[0].Action = "invented.action"
+	raw, _ = json.Marshal(RecipeBehaviorDraftInputV1{
+		Name: unsupported.Name, Requirements: unsupported.Requirements, Install: unsupported.Install,
+		Health: unsupported.Health, Lifecycle: unsupported.Lifecycle,
+	})
+	if _, err := DecodeRecipeBehaviorDraft(raw, expectedBinding(), unsupported.Sources); !errors.Is(err, ErrPlanningDraftRecipeInvalid) {
+		t.Fatalf("unsupported background action error=%v", err)
+	}
+}
+
 func TestDecodePlanningDraftClassifiesSchemaRecipeAndCandidateFailures(t *testing.T) {
 	t.Parallel()
 

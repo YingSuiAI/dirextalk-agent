@@ -22,9 +22,12 @@ import (
 func TestEinoCloudGoalPlanningModelDurablyReplaysOfficialResearchRecipeAndCandidates(t *testing.T) {
 	recipeValue := validRecipe()
 	recipeValue.RecipeID = "recipe-model-1"
-	planRaw := planningModelPlanRaw(t, recipeValue)
+	planRaw := planningModelRecipeRaw(t, recipeValue)
 	store := &cloudGoalModelStoreFake{config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot)}
-	engine := &cloudGoalModelEngineFake{source: recipeValue.Sources[0], planRaw: planRaw}
+	engine := &cloudGoalModelEngineFake{
+		source: recipeValue.Sources[0], planRaw: planRaw,
+		candidateRaw: planningModelCandidatesRaw(t),
+	}
 	tools := &cloudGoalModelToolsFake{source: recipeValue.Sources[0]}
 	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
 		return cloudGoalModelClientFake{}, nil
@@ -51,10 +54,10 @@ func TestEinoCloudGoalPlanningModelDurablyReplaysOfficialResearchRecipeAndCandid
 		t.Fatalf("trusted tool scope drifted: %#v epoch=%d request=%#v", tools.scope, tools.parentLease, tools.request)
 	}
 
-	evidence, err := BuildOfficialSourceEvidenceSet(research.Attempt.TaskID, []OfficialSourceEvidence{{
+	evidence, err := BuildOfficialSourceEvidenceSetWithClaims(research.Attempt.TaskID, []OfficialSourceEvidence{{
 		TaskID: research.Attempt.TaskID, ToolCallID: "official-fetch-1", URL: sources[0].URL,
 		RetrievedAt: sources[0].RetrievedAt, ContentDigest: sources[0].ContentDigest,
-	}})
+	}}, sources)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +93,7 @@ func TestEinoCloudGoalPlanningModelRejectsUnfetchedAndSecretBearingCapture(t *te
 	recipeValue := validRecipe()
 	recipeValue.RecipeID = "recipe-model-2"
 	store := &cloudGoalModelStoreFake{config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot)}
-	engine := &cloudGoalModelEngineFake{source: recipeValue.Sources[0], planRaw: planningModelPlanRaw(t, recipeValue), skipFetch: true}
+	engine := &cloudGoalModelEngineFake{source: recipeValue.Sources[0], planRaw: planningModelRecipeRaw(t, recipeValue), skipFetch: true}
 	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
 		return cloudGoalModelClientFake{}, nil
 	}), runtimeapi.SecretResolver(runtimeapiSecretResolverFake{}), &cloudGoalModelToolsFake{source: recipeValue.Sources[0]})
@@ -114,16 +117,16 @@ func TestEinoCloudGoalPlanningModelRepairsRejectedCaptureWithinOneDurableRequest
 	recipeValue := validRecipe()
 	recipeValue.RecipeID = "recipe-model-repair"
 	request := planningModelStage(cloudskill.StepDraftRecipe, recipeValue.RecipeID)
-	evidence, err := BuildOfficialSourceEvidenceSet(request.Attempt.TaskID, []OfficialSourceEvidence{{
+	evidence, err := BuildOfficialSourceEvidenceSetWithClaims(request.Attempt.TaskID, []OfficialSourceEvidence{{
 		TaskID: request.Attempt.TaskID, ToolCallID: "official-fetch-1", URL: recipeValue.Sources[0].URL,
 		RetrievedAt: recipeValue.Sources[0].RetrievedAt, ContentDigest: recipeValue.Sources[0].ContentDigest,
-	}})
+	}}, recipeValue.Sources)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &cloudGoalModelStoreFake{config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot)}
 	engine := &cloudGoalModelEngineFake{
-		source: recipeValue.Sources[0], planRaw: planningModelPlanRaw(t, recipeValue),
+		source: recipeValue.Sources[0], planRaw: planningModelRecipeRaw(t, recipeValue),
 		rejectedPlanRaw: json.RawMessage(`{"recipe":{}}`),
 	}
 	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
@@ -141,7 +144,7 @@ func TestEinoCloudGoalPlanningModelRepairsRejectedCaptureWithinOneDurableRequest
 		t.Fatalf("model calls=%d capture results=%#v", engine.calls, engine.captureResults)
 	}
 	if strings.Contains(engine.captureResults[0].Content, string(engine.rejectedPlanRaw)) ||
-		!strings.Contains(engine.captureResults[0].Content, "planning_recipe_invalid") {
+		!strings.Contains(engine.captureResults[0].Content, "planning_recipe_schema_invalid") {
 		t.Fatalf("rejection was not bounded and actionable: %q", engine.captureResults[0].Content)
 	}
 	if len(store.completed) != 1 || store.releaseCalls != 0 {
@@ -183,16 +186,9 @@ func TestEinoCloudGoalPlanningModelCanonicalizesExactRetainedKnowledgeEvidence(t
 	}
 	modelAuthored := want
 	modelAuthored.Name = "Model-authored alternate valid name"
-	raw := planningModelPlanRaw(t, modelAuthored)
-	requestID, err := CloudGoalModelRequestID(request.Binding, request.Attempt.TaskID, request.Step.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
 	store := &cloudGoalModelStoreFake{
-		config: planningModelRuntimeConfig(),
-		completed: map[string]runtimeapi.RuntimeResponseSnapshot{
-			requestID: {SchemaVersion: runtimeapi.RuntimeResponseSnapshotSchemaV1, Result: runtimeapi.ChatResult{Message: modelapi.Message{Role: modelapi.RoleAssistant, Content: string(raw)}}},
-		},
+		config:    planningModelRuntimeConfig(),
+		completed: make(map[string]runtimeapi.RuntimeResponseSnapshot),
 	}
 	engine := &cloudGoalModelEngineFake{}
 	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
@@ -229,7 +225,7 @@ func TestEinoCloudGoalPlanningModelRenewsSyntheticRequestAcrossSlowModelAndTool(
 				completed: make(map[string]runtimeapi.RuntimeResponseSnapshot),
 			}
 			engine := &cloudGoalModelEngineFake{
-				source: recipeValue.Sources[0], planRaw: planningModelPlanRaw(t, recipeValue), delay: testCase.modelWait,
+				source: recipeValue.Sources[0], planRaw: planningModelRecipeRaw(t, recipeValue), delay: testCase.modelWait,
 			}
 			tools := &cloudGoalModelToolsFake{source: recipeValue.Sources[0], delay: testCase.toolWait}
 			model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
@@ -275,7 +271,7 @@ func TestEinoCloudGoalPlanningModelRenewalFailureCancelsAndNeverCompletes(t *tes
 		renewErr: errors.New(renewalCanary),
 	}
 	engine := &cloudGoalModelEngineFake{
-		source: recipeValue.Sources[0], planRaw: planningModelPlanRaw(t, recipeValue),
+		source: recipeValue.Sources[0], planRaw: planningModelRecipeRaw(t, recipeValue),
 		delay: time.Second, canceled: canceled,
 	}
 	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
@@ -380,6 +376,7 @@ func (fake *cloudGoalModelToolsFake) ToolsWithLease(_ context.Context, scope run
 type cloudGoalModelEngineFake struct {
 	source          recipe.SourceV1
 	planRaw         json.RawMessage
+	candidateRaw    json.RawMessage
 	rejectedPlanRaw json.RawMessage
 	captureResults  []runtimeapi.ToolExecution
 	skipFetch       bool
@@ -413,8 +410,10 @@ func (fake *cloudGoalModelEngineFake) Generate(ctx context.Context, request runt
 	if captureName == captureOfficialSourcesTool {
 		encoded, _ := json.Marshal(map[string]any{"sources": []recipe.SourceV1{fake.source}})
 		raw = encoded
+	} else if captureName == captureResourceCandidatesTool {
+		raw = fake.candidateRaw
 	}
-	if len(fake.rejectedPlanRaw) != 0 && captureName == captureExperimentalPlanTool {
+	if len(fake.rejectedPlanRaw) != 0 && captureName == captureExperimentalRecipeTool {
 		rejected, err := request.InvokeTool(ctx, modelapi.ToolCall{ID: "capture-rejected", Type: "function", Function: modelapi.FunctionCall{
 			Name: captureName, Arguments: string(fake.rejectedPlanRaw),
 		}})
@@ -469,13 +468,29 @@ func planningModelStage(stage, recipeID string) CloudGoalStageRequest {
 	}
 }
 
-func planningModelPlanRaw(t *testing.T, value recipe.RecipeV1) json.RawMessage {
+func planningModelRecipeRaw(t *testing.T, value recipe.RecipeV1) json.RawMessage {
 	t.Helper()
-	recipeInput := cloudskill.RecipeDraftInputV1{
-		Name: value.Name, Sources: value.Sources, Requirements: value.Requirements, Install: value.Install,
+	value.Install.Steps = append([]recipe.InstallStepV1(nil), value.Install.Steps...)
+	for index := range value.Install.Steps {
+		if value.Install.Steps[index].Action == "" {
+			value.Install.Steps[index].Action = "worker.noop"
+			value.Install.Steps[index].Inputs = nil
+		}
+	}
+	recipeInput := cloudskill.RecipeBehaviorDraftInputV1{
+		Name: value.Name, Requirements: value.Requirements, Install: value.Install,
 		Health: value.Health, Lifecycle: value.Lifecycle, VolumeSlots: value.VolumeSlots, DataSlots: value.DataSlots,
 		SecretSlots: value.SecretSlots, Restart: value.Restart, Network: value.Network, Pairing: value.Pairing, Integrations: value.Integrations,
 	}
+	encoded, err := json.Marshal(recipeInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func planningModelCandidatesRaw(t *testing.T) json.RawMessage {
+	t.Helper()
 	candidates := validCandidates()
 	candidate := func(value ResourceCandidateV1) map[string]any {
 		return map[string]any{
@@ -484,7 +499,7 @@ func planningModelPlanRaw(t *testing.T, value recipe.RecipeV1) json.RawMessage {
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{
-		"recipe": recipeInput, "economy": candidate(candidates[0]), "recommended": candidate(candidates[1]), "performance": candidate(candidates[2]),
+		"economy": candidate(candidates[0]), "recommended": candidate(candidates[1]), "performance": candidate(candidates[2]),
 	})
 	if err != nil {
 		t.Fatal(err)
