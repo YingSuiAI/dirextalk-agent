@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -348,31 +349,27 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	installed, _ = ext.Get(ctx, res.Installation.ID)
 	key := uuid.NewString()
 	input := json.RawMessage(`{"x":1}`)
-	var active coreextension.VersionRecord
-	for _, version := range installed.Versions {
-		if version.VersionID == installed.ActiveVersionID {
-			active = version
-			break
-		}
-	}
-	spec := coretask.TaskSpec{Kind: coretask.TaskKindExtension, Goal: "execute", IdempotencyKey: key, Payload: coretask.TaskPayload{Extension: &coretask.ExtensionTaskPayload{Operation: coretask.ExtensionOperationExecuteTool, InstallationID: installed.ID, ExpectedRevision: uint64(installed.Revision), Version: active.Pin.RegistryVersion, Digest: active.ContentDigest, ArtifactDigest: active.ArtifactDigest, ToolName: "echo", CanonicalInputJSON: input}}}
-	digest, _ := coretask.CanonicalMutationDigest(spec)
-	ts := NewCoreTaskStore(store)
-	task, e := ts.CreateTask(ctx, coretask.CreateTaskCommand{Spec: spec, Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest}})
-	if e != nil {
-		t.Fatal(e)
-	}
-	claimed, _, e := ts.ClaimNextDue(ctx, "exec-test", time.Now().UTC(), time.Minute, 2)
-	if e != nil {
-		t.Fatal(e)
-	}
-	_ = task
-	// The task owns its immutable version snapshot; a concurrent lifecycle
-	// projection change must not invalidate the already-claimed execution.
-	if _, e = pool.Exec(ctx, `UPDATE core_extension_installations SET state='updating',revision=revision+1,updated_at=clock_timestamp() WHERE installation_id=$1`, installed.ID); e != nil {
-		t.Fatal(e)
-	}
 	coord, e := NewValidatedPostgresExtensionExecutionCoordinator(store, t.TempDir())
+	if e != nil {
+		t.Fatal(e)
+	}
+	execution, e := coord.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: key})
+	if e != nil || execution.TaskID == "" || execution.ConfirmationID == "" {
+		t.Fatalf("execution proposal=%#v err=%v", execution, e)
+	}
+	if _, e = coord.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
+		t.Fatalf("concurrent execution proposal was accepted: %v", e)
+	}
+	binding, e := cs.ReadTargetBinding(ctx, execution.ConfirmationID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	confirmed, e := cs.Confirm(ctx, coreconfirmation.ConfirmCommand{ConfirmationID: execution.ConfirmationID, IdempotencyKey: uuid.NewString(), RequestDigest: coreconfirmation.Digest(strings.Repeat("e", 64)), ExpectedRevision: 1, Binding: binding, At: time.Now().UTC()})
+	if e != nil || confirmed.State != coreconfirmation.StateConfirmed {
+		t.Fatalf("execution confirmation=%#v err=%v", confirmed, e)
+	}
+	ts := NewCoreTaskStore(store)
+	claimed, _, e := ts.ClaimNextDue(ctx, "exec-test", time.Now().UTC(), time.Minute, 2)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -394,5 +391,267 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	}
 	if _, e = coord2.Complete(ctx, claimed, coretask.Result{Text: "different"}); !errors.Is(e, coretask.ErrLeaseConflict) {
 		t.Fatalf("conflicting replay error=%v", e)
+	}
+	// Crash after consumption: reclaiming the task under a new lease must not
+	// redispatch the one-shot capability. The task is durably marked uncertain
+	// while the consumed reservation remains active and blocks new proposals.
+	second, e := coord2.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()})
+	if e != nil {
+		t.Fatal(e)
+	}
+	secondBinding, e := cs.ReadTargetBinding(ctx, second.ConfirmationID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = cs.Confirm(ctx, coreconfirmation.ConfirmCommand{ConfirmationID: second.ConfirmationID, IdempotencyKey: uuid.NewString(), RequestDigest: coreconfirmation.Digest(strings.Repeat("f", 64)), ExpectedRevision: 1, Binding: secondBinding, At: time.Now().UTC()}); e != nil {
+		t.Fatal(e)
+	}
+	secondTask, _, e := ts.ClaimNextDue(ctx, "exec-test-2", time.Now().UTC(), time.Minute, 2)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = coord.Resolve(ctx, secondTask); e != nil {
+		var confState string
+		var resActive bool
+		_ = pool.QueryRow(ctx, `SELECT state FROM core_confirmations WHERE confirmation_id=$1`, second.ConfirmationID).Scan(&confState)
+		_ = pool.QueryRow(ctx, `SELECT active FROM core_confirmation_reservations WHERE confirmation_id=$1`, second.ConfirmationID).Scan(&resActive)
+		t.Fatalf("second resolve: %v task=%+v ext=%+v lease=%+v conf=%s active=%v", e, secondTask, secondTask.Spec.Payload.Extension, secondTask.Lease, confState, resActive)
+	}
+	reclaimed, _, e := ts.ClaimNextDue(ctx, "exec-test-reclaimed", time.Now().UTC().Add(2*time.Minute), time.Minute, 2)
+	if e != nil || reclaimed.ID != secondTask.ID {
+		t.Fatalf("reclaim claim=%+v err=%v", reclaimed, e)
+	}
+	if _, e = coord.Resolve(ctx, reclaimed); e == nil {
+		t.Fatal("reclaimed consumed execution was redispatched")
+	}
+	var taskStatus, failureCode string
+	var activeReservation, released bool
+	if e = pool.QueryRow(ctx, `SELECT status,failure_code FROM core_tasks WHERE task_id=$1`, secondTask.ID).Scan(&taskStatus, &failureCode); e != nil {
+		t.Fatal(e)
+	}
+	if taskStatus != "failed" || failureCode != "extension_execution_uncertain" {
+		t.Fatalf("uncertain task status=%s code=%s", taskStatus, failureCode)
+	}
+	if e = pool.QueryRow(ctx, `SELECT active FROM core_confirmation_reservations WHERE confirmation_id=$1`, second.ConfirmationID).Scan(&activeReservation); e != nil {
+		t.Fatal(e)
+	}
+	if e = pool.QueryRow(ctx, `SELECT consumed_released FROM core_confirmations WHERE confirmation_id=$1`, second.ConfirmationID).Scan(&released); e != nil {
+		t.Fatal(e)
+	}
+	if !activeReservation || released {
+		t.Fatalf("uncertain reservation was released: active=%v released=%v", activeReservation, released)
+	}
+	if _, e = coord2.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()}); !errors.Is(e, coreextension.ErrConflict) {
+		t.Fatalf("proposal bypassed uncertain reservation: %v", e)
+	}
+	uncertainTask, e := ts.GetTask(ctx, secondTask.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	uncertainConfirmation, e := cs.Get(ctx, second.ConfirmationID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: second.ConfirmationID, TaskID: secondTask.ID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
+	ack, e := cs.AcknowledgeExtensionExecutionUncertain(ctx, ackCommand)
+	if e != nil || !ack.ReservationReleased || ack.Task.FailureCode != "extension_execution_uncertain" {
+		t.Fatalf("ack=%+v err=%v", ack, e)
+	}
+	replayedAck, e := cs.AcknowledgeExtensionExecutionUncertain(ctx, ackCommand)
+	if e != nil || replayedAck.Task.ID != ack.Task.ID {
+		t.Fatalf("ack replay=%+v err=%v", replayedAck, e)
+	}
+	conflictingAck := ackCommand
+	conflictingAck.ExpectedTaskRevision++
+	if _, e = cs.AcknowledgeExtensionExecutionUncertain(ctx, conflictingAck); !errors.Is(e, coreconfirmation.ErrIdempotencyConflict) {
+		t.Fatalf("ack idempotency conflict=%v", e)
+	}
+	var concurrent sync.WaitGroup
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		concurrent.Add(1)
+		go func() {
+			defer concurrent.Done()
+			_, reqErr := coord2.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: input, IdempotencyKey: uuid.NewString()})
+			results <- reqErr
+		}()
+	}
+	concurrent.Wait()
+	close(results)
+	accepted := 0
+	conflicts := 0
+	for reqErr := range results {
+		if reqErr == nil {
+			accepted++
+		} else if errors.Is(reqErr, coreextension.ErrConflict) {
+			conflicts++
+		}
+	}
+	if accepted != 1 || conflicts != 1 {
+		t.Fatalf("concurrent proposals accepted=%d conflicts=%d", accepted, conflicts)
+	}
+}
+
+func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("AGENT_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("AGENT_TEST_POSTGRES_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := "dtx_ext_race_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+	cfg, _ := pgxpool.ParseConfig(dsn)
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	instance := uuid.NewString()
+	if err = ApplyMigrations(ctx, pool, instance); err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(pool, instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := NewCoreExtensionStore(store)
+	cs := NewCoreConfirmationStore(store)
+	candidate, inspection := extensionFixture()
+	m := coreextension.Mutation{IdempotencyKey: uuid.NewString(), Candidate: candidate, Inspection: inspection, ArtifactPath: filepath.Join(t.TempDir(), "bundle"), ArtifactDigest: strings.Repeat("f", 64)}
+	proposal, err := ext.CreateMutation(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := ext.Get(ctx, proposal.Installation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmAndConsume(ctx, t, cs, pool, proposal, installed, 1)
+	if _, err = ext.CompleteLifecycle(ctx, coreextension.Completion{InstallationID: proposal.Installation.ID, Operation: coreextension.OperationInstall, ConfirmationID: proposal.ConfirmationID, TaskID: proposal.TaskID, Attempt: 1, LeaseEpoch: 1, AcquiredTaskRevision: 2, TerminalAttempt: 1, TerminalLeaseEpoch: 1, TerminalTaskRevision: 3, ExpectedRevision: 1, OutcomeDigest: strings.Repeat("a", 64), Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	installed, _ = ext.Get(ctx, proposal.Installation.ID)
+	pinEchoToolCatalog(ctx, t, pool, installed.ID, installed.ActiveVersionID)
+	installed, _ = ext.Get(ctx, proposal.Installation.ID)
+	coord, err := NewValidatedPostgresExtensionExecutionCoordinator(store, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := coord.RequestTask(ctx, coreextension.ExecuteRequest{InstallationID: installed.ID, ExpectedRevision: installed.Revision, ToolName: "echo", Input: json.RawMessage(`{"x":1}`), IdempotencyKey: uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := cs.ReadTargetBinding(ctx, execution.ConfirmationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = cs.Confirm(ctx, coreconfirmation.ConfirmCommand{ConfirmationID: execution.ConfirmationID, IdempotencyKey: uuid.NewString(), RequestDigest: coreconfirmation.Digest(strings.Repeat("e", 64)), ExpectedRevision: 1, Binding: binding, At: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	ts := NewCoreTaskStore(store)
+	claimed, _, err := ts.ClaimNextDue(ctx, "race-owner", time.Now().UTC(), time.Minute, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = coord.Resolve(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, _, err := ts.ClaimNextDue(ctx, "race-reclaimer", time.Now().UTC().Add(2*time.Minute), time.Minute, 2)
+	if err != nil || reclaimed.ID != claimed.ID {
+		t.Fatalf("reclaim claim=%+v err=%v", reclaimed, err)
+	}
+	if _, err = coord.Resolve(ctx, reclaimed); err == nil {
+		t.Fatal("uncertain execution unexpectedly redispatched")
+	}
+	uncertainTask, err := ts.GetTask(ctx, execution.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncertainConfirmation, err := cs.Get(ctx, execution.ConfirmationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uncertainTask.FailureCode != "extension_execution_uncertain" {
+		t.Fatalf("task failure=%q", uncertainTask.FailureCode)
+	}
+	ackCommand := coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: execution.ConfirmationID, TaskID: execution.TaskID, InstallationID: installed.ID, ExpectedTaskRevision: int64(uncertainTask.Revision), ExpectedConfirmationRevision: uncertainConfirmation.Revision, Resolution: coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry, IdempotencyKey: uuid.NewString()}
+
+	type lifecycleResult struct {
+		name string
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan lifecycleResult, 3)
+	var wg sync.WaitGroup
+	updateMutation := func(name string, remove bool) {
+		defer wg.Done()
+		<-start
+		mutation := coreextension.Mutation{IdempotencyKey: uuid.NewString(), InstallationID: installed.ID, ExpectedRevision: installed.Revision, Candidate: candidate, Inspection: inspection, ArtifactPath: filepath.Join(t.TempDir(), name), ArtifactDigest: strings.Repeat("b", 64)}
+		if remove {
+			_, e := ext.RemoveMutation(ctx, mutation)
+			results <- lifecycleResult{name: name, err: e}
+			return
+		}
+		_, e := ext.UpdateMutation(ctx, mutation, coreextension.StateUpdating)
+		results <- lifecycleResult{name: name, err: e}
+	}
+	wg.Add(3)
+	go updateMutation("update", false)
+	go updateMutation("remove", true)
+	go func() {
+		defer wg.Done()
+		<-start
+		out, e := cs.AcknowledgeExtensionExecutionUncertain(ctx, ackCommand)
+		results <- lifecycleResult{name: "ack", err: e}
+	}()
+	close(start)
+	wg.Wait()
+	close(results)
+	var ackOK, lifecycleSuccess int
+	for result := range results {
+		if result.name == "ack" {
+			if result.err != nil {
+				t.Fatalf("ack race failed: %v", result.err)
+			}
+			ackOK++
+			continue
+		}
+		if result.err == nil {
+			lifecycleSuccess++
+			var released bool
+			if err = pool.QueryRow(ctx, `SELECT consumed_released FROM core_confirmations WHERE confirmation_id=$1`, execution.ConfirmationID).Scan(&released); err != nil {
+				t.Fatal(err)
+			}
+			if !released {
+				t.Fatalf("%s lifecycle committed before acknowledgement", result.name)
+			}
+			continue
+		}
+		if !errors.Is(result.err, coreextension.ErrConflict) && !errors.Is(result.err, coreextension.ErrRevisionConflict) {
+			t.Fatalf("%s unexpected race error: %v", result.name, result.err)
+		}
+	}
+	if ackOK != 1 || lifecycleSuccess > 1 {
+		t.Fatalf("ack=%d lifecycle_success=%d", ackOK, lifecycleSuccess)
+	}
+	if lifecycleSuccess == 0 {
+		current, e := ext.Get(ctx, installed.ID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		fresh := coreextension.Mutation{IdempotencyKey: uuid.NewString(), InstallationID: current.ID, ExpectedRevision: current.Revision, Candidate: candidate, Inspection: inspection, ArtifactPath: filepath.Join(t.TempDir(), "fresh"), ArtifactDigest: strings.Repeat("c", 64)}
+		if _, e = ext.UpdateMutation(ctx, fresh, coreextension.StateUpdating); e != nil {
+			t.Fatalf("fresh lifecycle after ack: %v", e)
+		}
 	}
 }

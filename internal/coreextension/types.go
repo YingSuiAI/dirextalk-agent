@@ -576,7 +576,10 @@ type ExecuteRequest struct {
 	Input            json.RawMessage
 	IdempotencyKey   string
 }
-type ExecuteResult struct{ TaskID string }
+type ExecuteResult struct {
+	TaskID         string
+	ConfirmationID string
+}
 
 type SourceAdapter interface {
 	Search(context.Context, SearchQuery) (Page, error)

@@ -56,36 +56,51 @@ func (s *CoreTaskStore) CreateTask(ctx context.Context, c coretask.CreateTaskCom
 		return coretask.Task{}, coretask.ErrInvalid
 	}
 	return s.mutateTask(ctx, coreTaskCreateOp, c.Mutation, func(tx pgx.Tx) (coretask.Task, error) {
-		spec, _ := c.Spec.Normalize()
-		at := spec.AvailableAt
-		if at.IsZero() {
-			at = time.Now().UTC()
-		}
-		id := coreTaskID(spec.IdempotencyKey)
-		att, ext, know := coreTaskJSONBytes(spec.AttachmentRefs), coreTaskJSONBytes(spec.Extensions), coreTaskJSONBytes(spec.KnowledgeRefs)
-		payload, _ := json.Marshal(spec.Payload)
-		snapshot, err := resolveTaskSnapshotTx(ctx, tx, spec)
-		if err != nil {
-			return coretask.Task{}, err
-		}
-		snapshotRaw, _ := json.Marshal(snapshot)
-		_, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,'queued',1,$10,1,$11,$11,$12,$13)`, id, spec.Goal, spec.ConversationID, spec.ModelProfileID, spec.IdempotencyKey, att, ext, know, spec.TimeoutSeconds, at.UTC(), time.Now().UTC(), string(spec.Kind), payload)
-		if err != nil {
-			return coretask.Task{}, err
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, id, snapshotRaw, snapshot.Digest); err != nil {
-			return coretask.Task{}, err
-		}
-		if spec.Kind == coretask.TaskKindAgent {
-			if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('task',$1,$2)`, id, spec.ModelProfileID); err != nil {
-				return coretask.Task{}, err
-			}
-		}
-		if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,0,'queued','created','task queued',$3)`, id, uuid.New(), time.Now().UTC()); err != nil {
-			return coretask.Task{}, err
-		}
-		return s.taskTx(ctx, tx, id, false)
+		return s.createTaskTx(ctx, tx, c.Spec, string(coretask.StatusQueued))
 	})
+}
+
+// createTaskTx is shared by ordinary task creation and confirmation-bound
+// extension execution. The caller owns the transaction and chooses the
+// initial status; waiting_user is never visible as queued to the scheduler.
+func (s *CoreTaskStore) createTaskTx(ctx context.Context, tx pgx.Tx, rawSpec coretask.TaskSpec, status string) (coretask.Task, error) {
+	spec, err := rawSpec.Normalize()
+	if err != nil || (status != string(coretask.StatusQueued) && status != string(coretask.StatusWaitingUser)) {
+		return coretask.Task{}, coretask.ErrInvalid
+	}
+	at := spec.AvailableAt
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	id := coreTaskID(spec.IdempotencyKey)
+	att, ext, know := coreTaskJSONBytes(spec.AttachmentRefs), coreTaskJSONBytes(spec.Extensions), coreTaskJSONBytes(spec.KnowledgeRefs)
+	payload, _ := json.Marshal(spec.Payload)
+	snapshot, err := resolveTaskSnapshotTx(ctx, tx, spec)
+	if err != nil {
+		return coretask.Task{}, err
+	}
+	snapshotRaw, _ := json.Marshal(snapshot)
+	now := time.Now().UTC()
+	_, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,$10,1,$11,1,$12,$12,$13,$14)`, id, spec.Goal, spec.ConversationID, spec.ModelProfileID, spec.IdempotencyKey, att, ext, know, spec.TimeoutSeconds, status, at.UTC(), now, string(spec.Kind), payload)
+	if err != nil {
+		return coretask.Task{}, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, id, snapshotRaw, snapshot.Digest); err != nil {
+		return coretask.Task{}, err
+	}
+	if spec.Kind == coretask.TaskKindAgent {
+		if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('task',$1,$2)`, id, spec.ModelProfileID); err != nil {
+			return coretask.Task{}, err
+		}
+	}
+	phase, message := "created", "task queued"
+	if status == string(coretask.StatusWaitingUser) {
+		phase, message = "confirmation", "waiting for owner confirmation"
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,0,$3,$4,$5,$6)`, id, uuid.New(), status, phase, message, now); err != nil {
+		return coretask.Task{}, err
+	}
+	return s.taskTx(ctx, tx, id, false)
 }
 
 func (s *CoreTaskStore) GetTask(ctx context.Context, id string) (coretask.Task, error) {

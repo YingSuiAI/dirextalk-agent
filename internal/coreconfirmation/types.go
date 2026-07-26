@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -35,6 +36,36 @@ const (
 	StateRejected  State = "rejected"
 	StateExpired   State = "expired"
 )
+
+type ExtensionUncertainResolution string
+
+const ExtensionUncertainAcknowledgedUnknownNoRetry ExtensionUncertainResolution = "acknowledged_unknown_no_retry"
+
+// AcknowledgeExtensionExecutionUncertainCommand is the owner-only, explicit
+// acknowledgement for a consumed extension execution whose provider outcome
+// cannot be proven. It never retries or dispatches work.
+type AcknowledgeExtensionExecutionUncertainCommand struct {
+	ConfirmationID               string
+	TaskID                       string
+	InstallationID               string
+	ExpectedTaskRevision         int64
+	ExpectedConfirmationRevision int64
+	Resolution                   ExtensionUncertainResolution
+	IdempotencyKey               string
+}
+
+type AcknowledgeExtensionExecutionUncertainResult struct {
+	Confirmation        Confirmation
+	Task                coretask.Task
+	Resolution          ExtensionUncertainResolution
+	ReservationReleased bool
+}
+
+// ExtensionUncertainAcknowledger is optional so deployments without the
+// extension execution store do not accidentally advertise reconciliation.
+type ExtensionUncertainAcknowledger interface {
+	AcknowledgeExtensionExecutionUncertain(context.Context, AcknowledgeExtensionExecutionUncertainCommand) (AcknowledgeExtensionExecutionUncertainResult, error)
+}
 
 const (
 	ReasonUserRejected = "user_rejected"
@@ -69,15 +100,24 @@ func (d Digest) Valid() bool {
 // Binding is the immutable operation snapshot revalidated before confirmation
 // and consumption.
 type Binding struct {
+	// OwnerID identifies the single Agent owner/instance that authorized this
+	// operation. It is a stable identity descriptor, never a secret.
+	OwnerID           string
 	OperationDomain   string
 	TargetID          string
 	TargetRevision    int64
+	TargetKind        string
 	SourceVersion     string
 	SourceCommit      string
 	ContentDigest     Digest
+	ManifestDigest    Digest
+	ExecutionDigest   Digest
+	PermissionDigest  Digest
 	ParameterDigest   Digest
 	NetworkDigest     Digest
 	SecretGrantDigest Digest
+	SelectedTool      string
+	SelectedCommand   []string
 	NetworkGrants     []string
 	SecretGrants      []SecretGrant
 }
@@ -101,15 +141,28 @@ const (
 )
 
 func (b Binding) normalized() (Binding, error) {
+	b.OwnerID = strings.TrimSpace(b.OwnerID)
 	b.OperationDomain = strings.TrimSpace(b.OperationDomain)
 	b.TargetID = strings.TrimSpace(b.TargetID)
 	b.SourceVersion = strings.TrimSpace(b.SourceVersion)
 	b.SourceCommit = strings.TrimSpace(b.SourceCommit)
+	b.TargetKind = strings.TrimSpace(b.TargetKind)
+	b.SelectedTool = strings.TrimSpace(b.SelectedTool)
 	if b.OperationDomain == "" || b.TargetID == "" || b.TargetRevision < 1 || (b.SourceVersion == "" && b.SourceCommit == "") {
 		return Binding{}, ErrInvalid
 	}
 	for _, d := range []Digest{b.ContentDigest, b.ParameterDigest, b.NetworkDigest, b.SecretGrantDigest} {
 		if !d.Valid() {
+			return Binding{}, ErrInvalid
+		}
+	}
+	for _, d := range []Digest{b.ManifestDigest, b.ExecutionDigest, b.PermissionDigest} {
+		if d != "" && !d.Valid() {
+			return Binding{}, ErrInvalid
+		}
+	}
+	for _, command := range b.SelectedCommand {
+		if command == "" || strings.ContainsAny(command, "\r\n\x00") {
 			return Binding{}, ErrInvalid
 		}
 	}
@@ -185,9 +238,11 @@ func (b Binding) Equal(other Binding) bool {
 	if errA != nil || errB != nil {
 		return false
 	}
-	return a.OperationDomain == c.OperationDomain && a.TargetID == c.TargetID && a.TargetRevision == c.TargetRevision &&
+	return a.OwnerID == c.OwnerID && a.OperationDomain == c.OperationDomain && a.TargetID == c.TargetID && a.TargetRevision == c.TargetRevision && a.TargetKind == c.TargetKind &&
 		a.SourceVersion == c.SourceVersion && a.SourceCommit == c.SourceCommit && a.ContentDigest == c.ContentDigest &&
+		a.ManifestDigest == c.ManifestDigest && a.ExecutionDigest == c.ExecutionDigest && a.PermissionDigest == c.PermissionDigest &&
 		a.ParameterDigest == c.ParameterDigest && a.NetworkDigest == c.NetworkDigest && a.SecretGrantDigest == c.SecretGrantDigest &&
+		a.SelectedTool == c.SelectedTool && equalStrings(a.SelectedCommand, c.SelectedCommand) &&
 		equalStrings(a.NetworkGrants, c.NetworkGrants) && equalSecretGrants(a.SecretGrants, c.SecretGrants)
 }
 
@@ -283,11 +338,14 @@ type ConsumeCommand struct {
 }
 
 type TaskFence struct {
-	TaskID     string
-	State      string
-	Attempt    uint32
-	LeaseEpoch uint64
-	Revision   int64
+	TaskID         string
+	State          string
+	FailureCode    string
+	InstallationID string
+	ConfirmationID string
+	Attempt        uint32
+	LeaseEpoch     uint64
+	Revision       int64
 }
 
 type ReleaseReservationCommand struct {
@@ -328,6 +386,7 @@ type Page struct {
 func cloneConfirmation(in Confirmation) Confirmation {
 	in.Binding.NetworkGrants = append([]string(nil), in.Binding.NetworkGrants...)
 	in.Binding.SecretGrants = append([]SecretGrant(nil), in.Binding.SecretGrants...)
+	in.Binding.SelectedCommand = append([]string(nil), in.Binding.SelectedCommand...)
 	return in
 }
 
@@ -389,4 +448,12 @@ func releaseDigest(command ReleaseReservationCommand) Digest {
 		AcquiredAttempt, AcquiredLeaseEpoch, TerminalAttempt, TerminalLeaseEpoch uint64
 		ExpectedTaskRevision                                                     int64
 	}{command.ConfirmationID, command.TaskID, uint64(command.AcquiredAttempt), uint64(command.AcquiredLeaseEpoch), uint64(command.TerminalAttempt), uint64(command.TerminalLeaseEpoch), command.ExpectedTaskRevision})
+}
+
+func AcknowledgeExtensionExecutionUncertainDigest(command AcknowledgeExtensionExecutionUncertainCommand) Digest {
+	return canonicalDigest(struct {
+		ConfirmationID, TaskID, InstallationID             string
+		ExpectedTaskRevision, ExpectedConfirmationRevision int64
+		Resolution                                         ExtensionUncertainResolution
+	}{command.ConfirmationID, command.TaskID, command.InstallationID, command.ExpectedTaskRevision, command.ExpectedConfirmationRevision, command.Resolution})
 }

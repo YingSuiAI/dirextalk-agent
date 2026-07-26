@@ -48,13 +48,13 @@ func TestConfirmationProtoDescriptorContract(t *testing.T) {
 			t.Fatal("secret value field leaked")
 		}
 	}
-	for _, name := range []string{"Get", "List", "Confirm", "Reject"} {
+	for _, name := range []string{"Get", "List", "Confirm", "Reject", "AcknowledgeExtensionExecutionUncertain"} {
 		if file.Services().ByName("ConfirmationService").Methods().ByName(protoreflect.Name(name)) == nil {
 			t.Fatalf("missing rpc %s", name)
 		}
 	}
 	service := file.Services().ByName("ConfirmationService")
-	if service.Methods().Len() != 4 {
+	if service.Methods().Len() != 5 {
 		t.Fatalf("confirmation service unexpectedly has %d methods", service.Methods().Len())
 	}
 	confirm := file.Messages().ByName("ConfirmationServiceConfirmRequest")

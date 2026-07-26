@@ -9,10 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
-	s := TaskSpec{Kind: TaskKindExtension, Goal: "run", IdempotencyKey: testID, Payload: TaskPayload{Extension: &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, InstallationID: testID2, ExpectedRevision: 2, Version: "1.0.0", Digest: strings.Repeat("a", 64), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"z":1,"a":2}`)}}}
+	s := TaskSpec{Kind: TaskKindExtension, Goal: "run", IdempotencyKey: testID, Payload: TaskPayload{Extension: &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, InstallationID: testID2, ExpectedRevision: 2, Version: "1.0.0", Digest: strings.Repeat("a", 64), ConfirmationID: uuid.NewString(), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"z":1,"a":2}`)}}}
 	n, err := s.Normalize()
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +34,7 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := n
-	changed.Payload.Extension = &ExtensionTaskPayload{Operation: n.Payload.Extension.Operation, InstallationID: n.Payload.Extension.InstallationID, ExpectedRevision: n.Payload.Extension.ExpectedRevision, Version: n.Payload.Extension.Version, Digest: n.Payload.Extension.Digest, ToolName: "other", CanonicalInputJSON: append([]byte(nil), n.Payload.Extension.CanonicalInputJSON...)}
+	changed.Payload.Extension = &ExtensionTaskPayload{Operation: n.Payload.Extension.Operation, InstallationID: n.Payload.Extension.InstallationID, ExpectedRevision: n.Payload.Extension.ExpectedRevision, Version: n.Payload.Extension.Version, Digest: n.Payload.Extension.Digest, ConfirmationID: n.Payload.Extension.ConfirmationID, ToolName: "other", CanonicalInputJSON: append([]byte(nil), n.Payload.Extension.CanonicalInputJSON...)}
 	d1, _ := n.MutationDigest()
 	d2, _ := changed.MutationDigest()
 	if d1 == d2 {

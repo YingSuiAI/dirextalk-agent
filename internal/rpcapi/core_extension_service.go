@@ -298,7 +298,7 @@ func (s *MCPService) ExecuteTool(ctx context.Context, r *agentv1.MCPServiceExecu
 	if e != nil {
 		return nil, extErr(e)
 	}
-	return &agentv1.MCPServiceExecuteToolResponse{TaskId: x.TaskID}, nil
+	return &agentv1.MCPServiceExecuteToolResponse{TaskId: x.TaskID, ConfirmationId: x.ConfirmationID}, nil
 }
 
 // SkillService delegates to the same narrow implementation while preserving
@@ -381,7 +381,7 @@ func (s *SkillService) Execute(ctx context.Context, r *agentv1.SkillServiceExecu
 	if e != nil {
 		return nil, extErr(e)
 	}
-	return &agentv1.SkillServiceExecuteResponse{TaskId: x.TaskID}, nil
+	return &agentv1.SkillServiceExecuteResponse{TaskId: x.TaskID, ConfirmationId: x.ConfirmationID}, nil
 }
 
 var _ = time.Time{}

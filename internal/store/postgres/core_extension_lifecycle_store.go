@@ -112,6 +112,9 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension:`+key); e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("extension advisory lock: %w", e)
 	}
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension_installation:`+i.ID); e != nil {
+		return coreextension.MutationResult{}, fmt.Errorf("extension installation advisory lock: %w", e)
+	}
 	var hash string
 	var raw []byte
 	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_extension_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, op, key).Scan(&hash, &raw)
@@ -133,6 +136,19 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 		return coreextension.MutationResult{}, e
 	}
 	if activeLifecycle {
+		return coreextension.MutationResult{}, coreextension.ErrConflict
+	}
+	var activeUncertainReservation bool
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM core_confirmations c
+		JOIN core_confirmation_reservations r ON r.confirmation_id = c.confirmation_id
+		WHERE c.target_id=$1 AND c.operation_domain='extension.execute'
+		  AND c.state='consumed' AND c.consumed_released=false AND r.active=true
+	)`, i.ID).Scan(&activeUncertainReservation); e != nil {
+		return coreextension.MutationResult{}, e
+	}
+	if activeUncertainReservation {
 		return coreextension.MutationResult{}, coreextension.ErrConflict
 	}
 	var previousCandidate, previousNetwork, previousSecrets []byte

@@ -333,7 +333,7 @@ func normalizePayload(s *TaskSpec) error {
 			}
 			p.ConfirmationID = strings.TrimSpace(p.ConfirmationID)
 		} else {
-			if p.ExpectedRevision == 0 || p.ConfirmationID != "" || len(p.CanonicalInputJSON) == 0 || len(p.CanonicalInputJSON) > MaxCanonicalInputBytes || !json.Valid(p.CanonicalInputJSON) {
+			if p.ExpectedRevision == 0 || (p.ConfirmationID != "" && !ValidUUID(strings.TrimSpace(p.ConfirmationID))) || len(p.CanonicalInputJSON) == 0 || len(p.CanonicalInputJSON) > MaxCanonicalInputBytes || !json.Valid(p.CanonicalInputJSON) {
 				return ErrInvalid
 			}
 			var v any

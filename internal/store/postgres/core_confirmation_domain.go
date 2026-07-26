@@ -8,6 +8,8 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -323,6 +325,24 @@ func confirmationBindingMatchesTx(
 			return false, nil
 		}
 	}
+	if cur.Binding.OperationDomain == "extension.execute" {
+		var currentRaw []byte
+		if err := tx.QueryRow(ctx, `SELECT binding_json FROM core_confirmation_current_bindings WHERE operation_domain=$1 AND target_id=$2 FOR UPDATE`, cur.Binding.OperationDomain, cur.Binding.TargetID).Scan(&currentRaw); err != nil {
+			return false, coreconfirmation.ErrBindingUnavailable
+		}
+		var recorded coreconfirmation.Binding
+		if json.Unmarshal(currentRaw, &recorded) != nil || !cur.Binding.Equal(recorded) {
+			return false, nil
+		}
+		current, err := extensionExecutionBindingTx(ctx, tx, cur)
+		if err != nil {
+			return false, err
+		}
+		if !cur.Binding.Equal(current) {
+			return false, nil
+		}
+		return true, nil
+	}
 	if resolve == nil {
 		if err := tx.QueryRow(ctx, `SELECT binding_json FROM core_confirmation_current_bindings WHERE operation_domain=$1 AND target_id=$2 FOR UPDATE`, cur.Binding.OperationDomain, cur.Binding.TargetID).Scan(&raw); err != nil {
 			return false, coreconfirmation.ErrBindingUnavailable
@@ -333,6 +353,42 @@ func confirmationBindingMatchesTx(
 		}
 	}
 	return true, nil
+}
+
+// extensionExecutionBindingTx rehydrates the immutable execution proposal
+// from the task payload and the currently installed version. It is evaluated
+// while the confirmation transaction holds the target rows, so an update or
+// uninstall cannot race owner confirmation.
+func extensionExecutionBindingTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation) (coreconfirmation.Binding, error) {
+	var payloadRaw []byte
+	if err := tx.QueryRow(ctx, `SELECT payload_json FROM core_tasks WHERE task_id=$1 FOR UPDATE`, cur.TaskID).Scan(&payloadRaw); err != nil {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
+	}
+	var payload coretask.TaskPayload
+	if json.Unmarshal(payloadRaw, &payload) != nil || payload.Extension == nil || payload.Extension.Operation != coretask.ExtensionOperationExecuteTool && payload.Extension.Operation != coretask.ExtensionOperationExecuteSkill {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
+	}
+	var kind, transport, state, activeID string
+	var revision int64
+	if err := tx.QueryRow(ctx, `SELECT kind,transport,state,revision,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, payload.Extension.InstallationID).Scan(&kind, &transport, &state, &revision, &activeID); err != nil {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
+	}
+	if state != string(coreextension.StateInstalled) || revision != int64(payload.Extension.ExpectedRevision) || activeID == "" {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
+	}
+	var versionRaw []byte
+	if err := tx.QueryRow(ctx, `SELECT version_json FROM core_extension_versions WHERE installation_id=$1 AND version_id=$2 FOR UPDATE`, payload.Extension.InstallationID, activeID).Scan(&versionRaw); err != nil {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
+	}
+	var version coreextension.VersionRecord
+	if json.Unmarshal(versionRaw, &version) != nil {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
+	}
+	if versionPin(version) != payload.Extension.Version {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
+	}
+	installation := coreextension.Installation{ID: payload.Extension.InstallationID, Kind: coreextension.Kind(kind), Transport: coreextension.Transport(transport), Revision: revision}
+	return extensionExecutionBinding(cur.Binding.OwnerID, installation, version, payload.Extension.ToolName, payload.Extension.CanonicalInputJSON)
 }
 
 func (s *CoreConfirmationStore) replay(ctx context.Context, tx pgx.Tx, op, key string, dig coreconfirmation.Digest) (coreconfirmation.Confirmation, bool, error) {

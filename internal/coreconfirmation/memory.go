@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -20,14 +21,19 @@ type replay struct {
 // MemoryRepository is a race-safe reference implementation used by domain
 // tests and by callers before the PostgreSQL adapter exists.
 type MemoryRepository struct {
-	mu             sync.Mutex
-	now            func() time.Time
-	items          map[string]Confirmation
-	order          []string
-	replays        map[string]replay
+	mu               sync.Mutex
+	now              func() time.Time
+	items            map[string]Confirmation
+	order            []string
+	replays          map[string]replay
+	uncertainReplays map[string]struct {
+		digest Digest
+		value  AcknowledgeExtensionExecutionUncertainResult
+	}
 	taskFences     map[string]TaskFence
 	targetBindings map[string]Binding
 	reservations   map[string]Reservation
+	taskEvents     map[string]int64
 }
 
 func NewMemoryRepository(now ...func() time.Time) *MemoryRepository {
@@ -35,7 +41,63 @@ func NewMemoryRepository(now ...func() time.Time) *MemoryRepository {
 	if len(now) > 0 && now[0] != nil {
 		clock = now[0]
 	}
-	return &MemoryRepository{now: clock, items: make(map[string]Confirmation), replays: make(map[string]replay), taskFences: make(map[string]TaskFence), targetBindings: make(map[string]Binding), reservations: make(map[string]Reservation)}
+	return &MemoryRepository{now: clock, items: make(map[string]Confirmation), replays: make(map[string]replay), uncertainReplays: make(map[string]struct {
+		digest Digest
+		value  AcknowledgeExtensionExecutionUncertainResult
+	}), taskFences: make(map[string]TaskFence), targetBindings: make(map[string]Binding), reservations: make(map[string]Reservation), taskEvents: make(map[string]int64)}
+}
+
+func (r *MemoryRepository) AcknowledgeExtensionExecutionUncertain(_ context.Context, command AcknowledgeExtensionExecutionUncertainCommand) (AcknowledgeExtensionExecutionUncertainResult, error) {
+	if !validateUUID(command.ConfirmationID) || !validateUUID(command.TaskID) || !validateUUID(command.InstallationID) || !validateUUID(command.IdempotencyKey) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != ExtensionUncertainAcknowledgedUnknownNoRetry {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrInvalid
+	}
+	digest := AcknowledgeExtensionExecutionUncertainDigest(command)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := "extension_execution_uncertain_ack:" + command.IdempotencyKey
+	if previous, ok := r.uncertainReplays[key]; ok {
+		if previous.digest != digest {
+			return AcknowledgeExtensionExecutionUncertainResult{}, ErrIdempotencyConflict
+		}
+		return previous.value, nil
+	}
+	c, ok := r.items[command.ConfirmationID]
+	if !ok {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrNotFound
+	}
+	if c.TaskID != command.TaskID || c.Binding.OperationDomain != "extension.execute" || c.Binding.TargetID != command.InstallationID || c.Binding.OwnerID == "" || c.State != StateConsumed || c.Revision != command.ExpectedConfirmationRevision {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrConflict
+	}
+	fence, ok := r.taskFences[command.TaskID]
+	if !ok || fence.State != "failed" || fence.FailureCode != "extension_execution_uncertain" || fence.Revision != command.ExpectedTaskRevision {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrTaskFenceConflict
+	}
+	if fence.InstallationID == "" || fence.ConfirmationID == "" {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrBindingUnavailable
+	}
+	if fence.InstallationID != command.InstallationID || fence.ConfirmationID != command.ConfirmationID {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrConflict
+	}
+	reservation, ok := r.reservations[command.ConfirmationID]
+	if !ok || !reservation.Active || reservation.TaskID != command.TaskID || reservation.AcquiredAttempt != fence.Attempt || reservation.AcquiredLeaseEpoch >= fence.LeaseEpoch || reservation.TaskRevision >= command.ExpectedTaskRevision {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrConflict
+	}
+	reservation.Active = false
+	r.reservations[command.ConfirmationID] = reservation
+	c.Revision++
+	c.UpdatedAt = r.now().UTC()
+	c.TerminalCode = "acknowledged_unknown_no_retry"
+	c.TerminalReason = "acknowledged_unknown_no_retry"
+	r.items[c.ConfirmationID] = c
+	fence.Revision++
+	r.taskFences[command.TaskID] = fence
+	r.taskEvents[command.TaskID]++
+	result := AcknowledgeExtensionExecutionUncertainResult{Confirmation: cloneConfirmation(c), Task: coretask.Task{ID: command.TaskID, Status: coretask.StatusFailed, Revision: uint64(fence.Revision), FailureCode: "extension_execution_uncertain"}, Resolution: command.Resolution, ReservationReleased: true}
+	r.uncertainReplays[key] = struct {
+		digest Digest
+		value  AcknowledgeExtensionExecutionUncertainResult
+	}{digest: digest, value: result}
+	return result, nil
 }
 
 func (r *MemoryRepository) ReadTargetBinding(_ context.Context, confirmationID string) (Binding, error) {

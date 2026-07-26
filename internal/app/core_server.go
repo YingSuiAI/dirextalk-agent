@@ -17,26 +17,27 @@ import (
 )
 
 type CoreServerConfig struct {
-	InstanceID                  string
-	ServiceToken                string
-	TLSCertFile                 string
-	TLSKeyFile                  string
-	EnableHealth                bool
-	EnableReflection            bool
-	ModelProfileService         agentv1.ModelProfileServiceServer
-	ConversationService         agentv1.ConversationServiceServer
-	ConversationExtensionsReady bool
-	TaskService                 agentv1.TaskServiceServer
-	ScheduleService             agentv1.ScheduleServiceServer
-	ConfirmationService         agentv1.ConfirmationServiceServer
-	MCPService                  agentv1.MCPServiceServer
-	SkillService                agentv1.SkillServiceServer
-	KnowledgeService            agentv1.CoreKnowledgeServiceServer
-	CloudControlService         agentv1.CoreCloudControlServiceServer
-	WorkloadService             agentv1.WorkloadServiceServer
-	CoreRunnerReady             bool
-	AWSWorkloadSSMReady         bool
-	AWSWorkloadECSReady         bool
+	InstanceID                            string
+	ServiceToken                          string
+	TLSCertFile                           string
+	TLSKeyFile                            string
+	EnableHealth                          bool
+	EnableReflection                      bool
+	ModelProfileService                   agentv1.ModelProfileServiceServer
+	ConversationService                   agentv1.ConversationServiceServer
+	ConversationExtensionsReady           bool
+	TaskService                           agentv1.TaskServiceServer
+	ScheduleService                       agentv1.ScheduleServiceServer
+	ConfirmationService                   agentv1.ConfirmationServiceServer
+	ExtensionExecutionReconciliationReady bool
+	MCPService                            agentv1.MCPServiceServer
+	SkillService                          agentv1.SkillServiceServer
+	KnowledgeService                      agentv1.CoreKnowledgeServiceServer
+	CloudControlService                   agentv1.CoreCloudControlServiceServer
+	WorkloadService                       agentv1.WorkloadServiceServer
+	CoreRunnerReady                       bool
+	AWSWorkloadSSMReady                   bool
+	AWSWorkloadECSReady                   bool
 }
 
 type CoreServer struct {
@@ -71,6 +72,9 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 	}
 	if config.ConfirmationService != nil {
 		capabilityNames = append(capabilityNames, "confirmation")
+		if config.ExtensionExecutionReconciliationReady {
+			capabilityNames = append(capabilityNames, "extension.execution_reconciliation")
+		}
 	}
 	if config.MCPService != nil {
 		capabilityNames = append(capabilityNames, "mcp")

@@ -26,6 +26,13 @@ type Tool struct {
 type Coordinator interface {
 	CreateTask(context.Context, ExecuteRequest) (string, error)
 }
+
+// ConfirmationCoordinator is the durable execution boundary. Implementations
+// must persist a waiting_user task and its exact confirmation binding in one
+// transaction; no runnable task may be returned before owner confirmation.
+type ConfirmationCoordinator interface {
+	RequestTask(context.Context, ExecuteRequest) (ExecuteResult, error)
+}
 type ToolRuntime interface {
 	ListTools(context.Context, Installation, VersionRecord) ([]Tool, error)
 	CallTool(context.Context, Installation, VersionRecord, string, []byte) (string, error)
@@ -277,9 +284,9 @@ func (s *service) Execute(ctx context.Context, r ExecuteRequest) (ExecuteResult,
 	if !validUUID(r.IdempotencyKey) || !validUUID(r.InstallationID) || r.ExpectedRevision < 1 {
 		return ExecuteResult{}, ErrInvalid
 	}
-	if s.coordinator == nil {
+	coordinator, ok := s.coordinator.(ConfirmationCoordinator)
+	if s.coordinator == nil || !ok {
 		return ExecuteResult{}, ErrNotFound
 	}
-	id, e := s.coordinator.CreateTask(ctx, r)
-	return ExecuteResult{TaskID: id}, e
+	return coordinator.RequestTask(ctx, r)
 }

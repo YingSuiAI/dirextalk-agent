@@ -108,7 +108,7 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize confirmation expiry sweeper: %w", err)
 	}
 	confirmationExpiry := composeConfirmationExpiryLoop(confirmationSweeper, cfg.CoreScheduleSweepInterval)
-	confirmationService, err := rpcapi.NewCoreConfirmationService(confirmationDomain)
+	confirmationService, err := rpcapi.NewCoreConfirmationService(confirmationDomain, confirmationStore)
 	if err != nil {
 		return fmt.Errorf("initialize confirmation RPC: %w", err)
 	}
@@ -216,7 +216,7 @@ func serveCore(cfg config.Config) error {
 		InstanceID: cfg.InstanceID, ServiceToken: token, TLSCertFile: cfg.TLSCertFile,
 		TLSKeyFile: cfg.TLSKeyFile, EnableHealth: cfg.EnableHealthService,
 		EnableReflection: cfg.EnableReflection, ModelProfileService: modelService,
-		ConversationService: conversationService, ConversationExtensionsReady: extensionComposition != nil, TaskService: taskService, ScheduleService: scheduleService, ConfirmationService: confirmationService,
+		ConversationService: conversationService, ConversationExtensionsReady: extensionComposition != nil, TaskService: taskService, ScheduleService: scheduleService, ConfirmationService: confirmationService, ExtensionExecutionReconciliationReady: extensionComposition != nil,
 		KnowledgeService: func() agentv1.CoreKnowledgeServiceServer {
 			if knowledgeComposition == nil {
 				return nil
