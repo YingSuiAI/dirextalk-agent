@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	cloudGoalModelVersion         = "cloud-goal-planning-model-v4"
+	cloudGoalModelVersion         = "cloud-goal-planning-model-v5"
 	cloudGoalModelRequestLease    = 4 * time.Minute
 	cloudGoalModelMaxSteps        = 24
 	cloudGoalModelMaxCapture      = 256 << 10
@@ -83,18 +83,15 @@ func NewEinoCloudGoalPlanningModel(
 }
 
 func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Context, input CloudGoalResearchInput) ([]recipe.SourceV1, error) {
-	var officialProfiles any
-	switch {
-	case knowledgeprofile.IsRetainedRecipeID(input.Request.Binding.RecipeID):
-		officialProfiles = knowledgeprofile.ResearchHints()
-	case workerprofile.IsDiagnosticRecipeID(input.Request.Binding.RecipeID):
-		officialProfiles = workerprofile.ResearchHints()
-	}
+	officialProfiles := serverOwnedResearchHints(input.Request.Binding.RecipeID)
 	prompt, err := encodeCloudGoalModelPrompt("research_official_sources", input.Request, struct {
-		OfficialProfiles any `json:"official_profiles,omitempty"`
+		OfficialProfiles []serverOwnedResearchHint `json:"official_profiles,omitempty"`
 	}{OfficialProfiles: officialProfiles})
 	if err != nil {
 		return nil, ErrCloudGoalModelUnavailable
+	}
+	if len(officialProfiles) > 0 {
+		return model.researchServerOwnedProfile(ctx, input.Request, prompt, officialProfiles)
 	}
 	raw, err := model.runCapture(ctx, input.Request, prompt, captureOfficialSourcesTool, cloudskill.OfficialSourceDraftInputSchema(), true,
 		func(raw json.RawMessage, fetched map[string]publicweb.Evidence, replay bool) error {
@@ -114,6 +111,207 @@ func (model *EinoCloudGoalPlanningModel) ResearchOfficialSources(ctx context.Con
 		return nil, err
 	}
 	return cloudskill.DecodeOfficialSourceDraft(raw)
+}
+
+type serverOwnedResearchHint struct {
+	SourceID       string                       `json:"source_id"`
+	ResearchURL    string                       `json:"research_url"`
+	ArtifactURL    string                       `json:"artifact_url"`
+	ArtifactDigest string                       `json:"artifact_digest"`
+	Version        string                       `json:"version"`
+	Commit         string                       `json:"commit"`
+	License        string                       `json:"license"`
+	Kind           recipe.SourceKind            `json:"kind"`
+	Repository     *recipe.RepositoryIdentityV1 `json:"repository,omitempty"`
+}
+
+func serverOwnedResearchHints(recipeID string) []serverOwnedResearchHint {
+	var result []serverOwnedResearchHint
+	switch {
+	case knowledgeprofile.IsRetainedRecipeID(recipeID):
+		for _, hint := range knowledgeprofile.ResearchHints() {
+			result = append(result, serverOwnedResearchHint{
+				SourceID: hint.SourceID, ResearchURL: hint.ResearchURL, ArtifactURL: hint.ArtifactURL,
+				ArtifactDigest: hint.ArtifactDigest, Version: hint.Version, Commit: hint.Commit,
+				License: hint.License, Kind: hint.Kind,
+			})
+		}
+	case workerprofile.IsDiagnosticRecipeID(recipeID):
+		for _, hint := range workerprofile.ResearchHints() {
+			result = append(result, serverOwnedResearchHint{
+				SourceID: hint.SourceID, ResearchURL: hint.ResearchURL, ArtifactURL: hint.ArtifactURL,
+				ArtifactDigest: hint.ArtifactDigest, Version: hint.Version, Commit: hint.Commit,
+				License: hint.License, Kind: hint.Kind, Repository: hint.Repository,
+			})
+		}
+	}
+	return result
+}
+
+func (model *EinoCloudGoalPlanningModel) researchServerOwnedProfile(
+	ctx context.Context,
+	request CloudGoalStageRequest,
+	prompt string,
+	hints []serverOwnedResearchHint,
+) ([]recipe.SourceV1, error) {
+	if model == nil || ctx == nil || validateCloudGoalModelStageRequest(request) != nil ||
+		strings.TrimSpace(prompt) == "" || len(hints) == 0 {
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	modelRequestID, err := CloudGoalModelRequestID(request.Binding, request.Attempt.TaskID, request.Step.Name)
+	if err != nil {
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	runtimeScope := runtimeapi.MutationScope{ClientID: request.Caller.ClientID, CredentialID: request.Caller.CredentialID}
+	chatRequest := runtimeapi.ChatRequest{
+		RequestID: modelRequestID, OwnerID: request.Binding.OwnerID, ConversationID: request.Binding.ConversationID,
+		Messages: []modelapi.Message{{Role: modelapi.RoleUser, Content: prompt}}, MemoryDisabled: true,
+	}
+	requestLease := model.requestLease
+	if requestLease <= 0 {
+		requestLease = cloudGoalModelRequestLease
+	}
+	claim, err := model.store.BeginRuntimeRequest(ctx, runtimeScope, runtimeapi.RuntimeRequestCommand{
+		Request: chatRequest, LeaseDuration: requestLease,
+	})
+	if err != nil {
+		reportCloudGoalModelFailure(request, "profile_request_claim_failed")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	if claim.Completed {
+		sources, decodeErr := cloudskill.DecodeOfficialSourceDraft(json.RawMessage(claim.Response.Result.Message.Content))
+		if decodeErr != nil || validateOfficialSourceClaims(sources) != nil ||
+			!sourcesMatchServerOwnedHints(sources, hints) {
+			reportCloudGoalModelFailure(request, "completed_profile_capture_invalid")
+			return nil, ErrCloudGoalModelUnavailable
+		}
+		return sources, nil
+	}
+
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = model.store.ReleaseRuntimeRequest(releaseCtx, runtimeScope, runtimeapi.ReleaseRuntimeRequestCommand{
+			RequestID: modelRequestID, LeaseEpoch: claim.LeaseEpoch,
+		})
+	}()
+	executionCtx, leaseGuard := runtimeapp.StartLeaseRenewalGuard(ctx, requestLease, func(renewCtx context.Context, extension time.Duration) error {
+		_, renewErr := model.store.RenewRuntimeRequest(renewCtx, runtimeScope, runtimeapi.RenewRuntimeRequestCommand{
+			RequestID: modelRequestID, LeaseEpoch: claim.LeaseEpoch, LeaseDuration: extension,
+		})
+		return renewErr
+	})
+	if leaseGuard == nil {
+		reportCloudGoalModelFailure(request, "profile_lease_guard_unavailable")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	defer func() {
+		if leaseGuard != nil {
+			_ = leaseGuard.Stop()
+		}
+	}()
+	bound, err := model.store.BindRuntimeRequestMemoryMode(executionCtx, runtimeScope, runtimeapi.BindRuntimeRequestMemoryModeCommand{
+		RequestID: modelRequestID, LeaseEpoch: claim.LeaseEpoch, MemoryDisabled: true,
+	})
+	if err != nil || !bound {
+		reportCloudGoalModelFailure(request, "profile_memory_mode_binding_failed")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	toolRequest := runtimeapi.ToolRequest{
+		RequestID: modelRequestID, OwnerID: request.Binding.OwnerID, ConversationID: request.Binding.ConversationID,
+	}
+	tools, err := model.tools.ToolsWithLease(executionCtx, runtimeScope, claim.LeaseEpoch, toolRequest)
+	if err != nil || len(tools) != 1 || tools[0].Definition.Name != publicweb.ToolName || tools[0].Run == nil {
+		reportCloudGoalModelFailure(request, "profile_official_fetch_unavailable")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	namespace, err := uuid.Parse(modelRequestID)
+	if err != nil {
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	sources := make([]recipe.SourceV1, 0, len(hints))
+	fetched := make(map[string]publicweb.Evidence, len(hints))
+	for _, hint := range hints {
+		arguments, marshalErr := json.Marshal(struct {
+			URL string `json:"url"`
+		}{URL: hint.ResearchURL})
+		if marshalErr != nil {
+			return nil, ErrCloudGoalModelUnavailable
+		}
+		toolCallID := uuid.NewSHA1(namespace, []byte("server-profile-source\x00"+hint.ResearchURL)).String()
+		result, runErr := tools[0].Run(executionCtx, runtimeapi.ToolInvocation{
+			RequestID: modelRequestID, OwnerID: request.Binding.OwnerID, ConversationID: request.Binding.ConversationID,
+			ToolCallID: toolCallID, Name: publicweb.ToolName, Arguments: arguments,
+		})
+		if runErr != nil || result.IsError {
+			reportCloudGoalModelFailure(request, "profile_official_fetch_failed")
+			return nil, ErrCloudGoalModelUnavailable
+		}
+		evidence, parseErr := publicweb.ParseEvidenceResult(result.Content)
+		if parseErr != nil || evidence.URL != hint.ResearchURL {
+			reportCloudGoalModelFailure(request, "profile_official_fetch_invalid")
+			return nil, ErrCloudGoalModelUnavailable
+		}
+		fetched[evidence.URL] = evidence
+		sources = append(sources, recipe.SourceV1{
+			ID: hint.SourceID, URL: hint.ResearchURL, ArtifactURL: hint.ArtifactURL,
+			Version: hint.Version, Commit: hint.Commit, ArtifactDigest: hint.ArtifactDigest,
+			ContentDigest: evidence.ContentDigest, License: hint.License, RetrievedAt: evidence.RetrievedAt,
+			Official: true, Kind: hint.Kind, Repository: hint.Repository,
+		})
+	}
+	executionErr := executionCtx.Err()
+	renewErr := leaseGuard.Stop()
+	leaseGuard = nil
+	if renewErr != nil || executionErr != nil || validateOfficialSourceClaims(sources) != nil ||
+		!sourcesMatchFetchedEvidence(sources, fetched) || !sourcesMatchServerOwnedHints(sources, hints) {
+		reportCloudGoalModelFailure(request, "profile_capture_invalid")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	raw, err := json.Marshal(struct {
+		Sources []recipe.SourceV1 `json:"sources"`
+	}{Sources: sources})
+	if err != nil || len(raw) > cloudGoalModelMaxCapture || security.ContainsLikelySecret(string(raw)) {
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	canonical := modelapi.Message{Role: modelapi.RoleAssistant, Content: string(raw)}
+	snapshot, err := model.store.CompleteRuntimeRequest(ctx, runtimeScope, runtimeapi.CompleteRuntimeRequestCommand{
+		RequestID: modelRequestID, LeaseEpoch: claim.LeaseEpoch, Result: runtimeapi.ChatResult{Message: canonical},
+	})
+	if err != nil || snapshot.Result.Message.Content != canonical.Content {
+		reportCloudGoalModelFailure(request, "profile_capture_persistence_failed")
+		return nil, ErrCloudGoalModelUnavailable
+	}
+	completed = true
+	return sources, nil
+}
+
+func sourcesMatchServerOwnedHints(sources []recipe.SourceV1, hints []serverOwnedResearchHint) bool {
+	if len(sources) != len(hints) {
+		return false
+	}
+	for index, source := range sources {
+		hint := hints[index]
+		if source.ID != hint.SourceID || source.URL != hint.ResearchURL || source.ArtifactURL != hint.ArtifactURL ||
+			source.Version != hint.Version || source.Commit != hint.Commit || source.ArtifactDigest != hint.ArtifactDigest ||
+			source.License != hint.License || source.Kind != hint.Kind || !source.Official ||
+			source.RetrievedAt.IsZero() || recipe.ValidateDigest(source.ContentDigest) != nil ||
+			!sameRepositoryIdentity(source.Repository, hint.Repository) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRepositoryIdentity(left, right *recipe.RepositoryIdentityV1) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func (model *EinoCloudGoalPlanningModel) DraftExperimentalRecipe(ctx context.Context, input CloudGoalRecipeInput) (recipe.RecipeV1, error) {

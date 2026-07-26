@@ -276,6 +276,41 @@ func TestEinoCloudGoalPlanningModelUsesExplicitWorkerDiagnosticProfileWithoutRec
 	}
 }
 
+func TestEinoCloudGoalPlanningModelFetchesServerOwnedProfileWithoutModelGeneration(t *testing.T) {
+	recipeID := workerprofile.RecipeIDPrefix + strings.Repeat("c", 32)
+	request := planningModelStage(cloudskill.StepResearchOfficialSources, recipeID)
+	source := recipe.SourceV1{
+		ID: workerprofile.SourceID, URL: workerprofile.SourceURL, ArtifactURL: workerprofile.ArtifactURL,
+		Version: workerprofile.Version, Commit: workerprofile.Commit,
+		ArtifactDigest: workerprofile.ArtifactDigest, ContentDigest: "sha256:" + strings.Repeat("e", 64),
+		License: "Proprietary", RetrievedAt: time.Date(2026, 7, 26, 1, 0, 0, 0, time.UTC),
+		Official: true, Kind: recipe.SourceRepository,
+		Repository: &recipe.RepositoryIdentityV1{
+			Host: "github.com", Namespace: "YingSuiAI", Name: "dirextalk-agent",
+		},
+	}
+	store := &cloudGoalModelStoreFake{
+		config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot),
+	}
+	engine := &cloudGoalModelEngineFake{}
+	tools := &cloudGoalModelToolsFake{source: source}
+	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
+		return cloudGoalModelClientFake{}, nil
+	}), runtimeapi.SecretResolver(runtimeapiSecretResolverFake{}), tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := model.ResearchOfficialSources(t.Context(), CloudGoalResearchInput{Request: request})
+	if err != nil || len(sources) != 1 || sources[0].ArtifactDigest != workerprofile.ArtifactDigest ||
+		engine.calls != 0 || tools.runCalls != 1 || len(store.completed) != 1 {
+		t.Fatalf("profile research=%#v err=%v model=%d tools=%d completed=%d", sources, err, engine.calls, tools.runCalls, len(store.completed))
+	}
+	replayed, err := model.ResearchOfficialSources(t.Context(), CloudGoalResearchInput{Request: request})
+	if err != nil || len(replayed) != 1 || engine.calls != 0 || tools.runCalls != 1 {
+		t.Fatalf("profile replay=%#v err=%v model=%d tools=%d", replayed, err, engine.calls, tools.runCalls)
+	}
+}
+
 func TestEinoCloudGoalPlanningModelRenewsSyntheticRequestAcrossSlowModelAndTool(t *testing.T) {
 	for _, testCase := range []struct {
 		name      string
@@ -418,6 +453,7 @@ type cloudGoalModelToolsFake struct {
 	parentLease int64
 	request     runtimeapi.ToolRequest
 	delay       time.Duration
+	runCalls    int
 }
 
 func (fake *cloudGoalModelToolsFake) ToolsWithLease(_ context.Context, scope runtimeapi.MutationScope, parentLease int64, request runtimeapi.ToolRequest) ([]runtimeapi.Tool, error) {
@@ -425,6 +461,7 @@ func (fake *cloudGoalModelToolsFake) ToolsWithLease(_ context.Context, scope run
 	return []runtimeapi.Tool{{
 		Definition: modelapi.Tool{Name: publicweb.ToolName, InputSchema: map[string]any{"type": "object"}},
 		Run: func(ctx context.Context, _ runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
+			fake.runCalls++
 			if fake.delay > 0 {
 				select {
 				case <-ctx.Done():
