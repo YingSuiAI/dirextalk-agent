@@ -246,7 +246,7 @@ func readOffering(ctx context.Context, client PricingEC2ReadAPI, query cloudquot
 
 func readInstanceVCPU(ctx context.Context, client PricingEC2ReadAPI, instanceType string, architecture recipe.Architecture) (uint64, error) {
 	output, err := client.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{
-		InstanceTypes: []ec2types.InstanceType{ec2types.InstanceType(instanceType)}, MaxResults: aws.Int32(100),
+		InstanceTypes: []ec2types.InstanceType{ec2types.InstanceType(instanceType)},
 	})
 	if err != nil {
 		return 0, fmt.Errorf("DescribeInstanceTypes: %w", err)

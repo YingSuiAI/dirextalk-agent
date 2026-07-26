@@ -353,6 +353,9 @@ func (f *fakePricingEC2) DescribeSpotPriceHistory(_ context.Context, input *ec2.
 
 func (f *fakePricingEC2) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
 	f.instanceTypeCalls++
+	if len(input.InstanceTypes) != 1 || input.MaxResults != nil || input.NextToken != nil || len(input.Filters) != 0 {
+		return nil, fmt.Errorf("DescribeInstanceTypes explicit lookup cannot include pagination or filters")
+	}
 	instance := string(input.InstanceTypes[0])
 	vcpus := f.vcpus[instance]
 	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: []ec2types.InstanceTypeInfo{{
