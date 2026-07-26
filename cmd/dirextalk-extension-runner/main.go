@@ -26,6 +26,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == "__sandbox-command-v1" {
+		if err := extensionrunner.SandboxCommandV1(); err != nil {
+			die("sandbox command failed")
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		die("usage: dirextalk-extension-runner serve --socket ... --agent-uid ... --install-root ... --workspace-root ... --cgroup-root ...")
 	}

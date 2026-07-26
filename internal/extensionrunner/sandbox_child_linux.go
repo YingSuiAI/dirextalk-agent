@@ -9,10 +9,19 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
+
+const coreResultMaxBytes = 16 << 20
+
+var coreResultPathRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$`)
 
 const (
 	sandboxBootstrapFD = 3
@@ -21,6 +30,10 @@ const (
 	sandboxEntryFD     = 6
 	sandboxWorkspaceFD = 7
 	sandboxStdinFD     = 8
+	// Core mode forbids stdin and secret descriptors, so its two manager-only
+	// descriptors occupy the otherwise-unused fd 8 and 9 slots.
+	sandboxManagerFD = 8
+	sandboxResultFD  = 9
 )
 
 // sandboxChildStageError intentionally discards the underlying error. The
@@ -161,7 +174,14 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.Chdir("/work"); err != nil {
 		return sandboxChildFailure("root-switch", err)
 	}
-	for _, fd := range []int{sandboxBootstrapFD, sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD} {
+	closeAfterRoot := []int{sandboxBootstrapFD, sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
+	if bootstrap.CoreTmpfsBytes > 0 {
+		// The manager retains only bootstrap/result/immutable-manager fds. The
+		// old host workspace and all mount handles are closed before it starts
+		// the command.
+		closeAfterRoot = []int{sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
+	}
+	for _, fd := range closeAfterRoot {
 		_ = unix.Close(fd)
 	}
 	if bootstrap.HasStdin {
@@ -176,6 +196,9 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	}
 	for i := 0; i < bootstrap.SecretCount; i++ {
 		_ = unix.Close(sandboxStdinFD + btoi(bootstrap.HasStdin) + i)
+	}
+	if bootstrap.CoreTmpfsBytes > 0 {
+		return runSandboxManager(bootstrap)
 	}
 	if err := verifySandboxStandardFDs(); err != nil {
 		return sandboxChildFailure("close-fds", err)
@@ -199,18 +222,113 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	// /app/entry may be a BusyBox multi-call binary.  Exec selects its applet
 	// from argv[0], so the first admitted argument is the executable name, not
 	// a positional argument passed after the binary path.
-	argv0 := "/app/entry"
-	args := bootstrap.Request.Argv
-	if len(args) > 0 {
-		argv0, args = args[0], args[1:]
-	}
-	argv := make([]string, 1, 1+len(args))
-	argv[0] = argv0
-	argv = append(argv, args...)
+	argv := sandboxExecArgv(bootstrap.Request.Argv)
 	if err := unix.Exec("/app/entry", argv, []string{}); err != nil {
 		return sandboxChildFailure("exec", err)
 	}
 	return nil
+}
+
+func runSandboxManager(bootstrap bootstrapV1) error {
+	// The manager deliberately retains only its sealed bootstrap, immutable
+	// reexec image and result memfd. The command receives only bootstrap fd 3.
+	if bootstrap.CoreTmpfsBytes <= 0 {
+		return sandboxChildFailure("manager", ErrDenied)
+	}
+	if err := clearSandboxCapabilities(); err != nil {
+		return sandboxChildFailure("capabilities", err)
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return sandboxChildFailure("no-new-privs", err)
+	}
+	boot, err := unix.Dup(sandboxBootstrapFD)
+	if err != nil {
+		return sandboxChildFailure("manager", err)
+	}
+	bootFile := os.NewFile(uintptr(boot), "sandbox-bootstrap")
+	cmd := exec.Command("/run/manager", "__sandbox-command-v1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	// The inherited manager descriptor is not visible after chroot, so bind it
+	// through /proc/self/fd before descriptors are normalized by the command.
+	cmd.ExtraFiles = []*os.File{bootFile}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if cmd.Run() != nil {
+		_ = bootFile.Close()
+		return sandboxChildFailure("command", ErrDenied)
+	}
+	_ = bootFile.Close()
+	if bootstrap.CoreResultPath != "" {
+		if err := exportSandboxResult(sandboxResultFD, bootstrap.CoreResultPath); err != nil {
+			return sandboxChildFailure("result-export", err)
+		}
+	}
+	return nil
+}
+
+func runSandboxCommand(bootstrap bootstrapV1) error {
+	if err := applySandboxRlimits(bootstrap.Request.Limits); err != nil {
+		return sandboxChildFailure("rlimits", err)
+	}
+	if err := clearSandboxCapabilities(); err != nil {
+		return sandboxChildFailure("capabilities", err)
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return sandboxChildFailure("no-new-privs", err)
+	}
+	if err := installSandboxSeccomp(); err != nil {
+		return sandboxChildFailure("seccomp", err)
+	}
+	if err := unix.CloseRange(4, ^uint(0), unix.CLOSE_RANGE_UNSHARE); err != nil {
+		return sandboxChildFailure("close-fds", err)
+	}
+	return unix.Exec("/app/entry", sandboxExecArgv(bootstrap.Request.Argv), []string{})
+}
+
+func sandboxExecArgv(args []string) []string {
+	if len(args) == 0 {
+		return []string{"/app/entry"}
+	}
+	return append([]string(nil), args...)
+}
+
+func exportSandboxResult(resultFD int, name string) error {
+	if resultFD < 0 || !coreResultPathRE.MatchString(name) || filepath.IsAbs(name) || name == "." || name == ".." {
+		return ErrDenied
+	}
+	root, err := unix.Open("/work", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(root)
+	fd, err := unix.Openat2(root, name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC | unix.O_NOFOLLOW, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS})
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Size <= 0 || st.Size > coreResultMaxBytes {
+		return ErrDenied
+	}
+	if err = unix.Ftruncate(resultFD, 0); err != nil {
+		return err
+	}
+	buf := make([]byte, 64<<10)
+	var off int64
+	for off < st.Size {
+		n, er := unix.Pread(fd, buf, off)
+		if er != nil || n <= 0 {
+			return ErrDenied
+		}
+		if written, ew := unix.Pwrite(resultFD, buf[:n], off); ew != nil || written != n {
+			return ErrDenied
+		}
+		off += int64(n)
+	}
+	if err = unix.Ftruncate(resultFD, st.Size); err != nil || unix.Fsync(resultFD) != nil {
+		return ErrDenied
+	}
+	_, err = unix.FcntlInt(uintptr(resultFD), unix.F_ADD_SEALS, unix.F_SEAL_SEAL|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_WRITE)
+	return err
 }
 
 func btoi(v bool) int {

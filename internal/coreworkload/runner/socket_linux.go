@@ -4,6 +4,8 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"golang.org/x/sys/unix"
 )
 
@@ -30,6 +33,58 @@ func NewSocketTransport(path string, runnerUID uint32) (*SocketTransport, error)
 		return nil, e
 	}
 	return &SocketTransport{path: path, runnerUID: runnerUID}, nil
+}
+
+// Probe verifies the protected endpoint and authenticated peer identity
+// without sending a workload request.
+func (t *SocketTransport) Probe(ctx context.Context) error {
+	if t == nil {
+		return ErrDenied
+	}
+	if _, err := socketID(t.path, t.runnerUID); err != nil {
+		return err
+	}
+	c, err := (&net.Dialer{}).DialContext(ctx, "unixpacket", t.path)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.Close()
+		case <-done:
+		}
+	}()
+	uc, ok := c.(*net.UnixConn)
+	if !ok || peerUID(uc) != t.runnerUID {
+		return ErrDenied
+	}
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return ErrDenied
+	}
+	want := base64.RawURLEncoding.EncodeToString(nonce[:])
+	raw, err := json.Marshal(ProbeRequest{Version: ProtocolV1, Probe: "ready", Nonce: want})
+	if err != nil || len(raw) > MaxPacketBytes {
+		return ErrDenied
+	}
+	if _, err = c.Write(raw); err != nil {
+		return err
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	b := make([]byte, MaxPacketBytes)
+	n, err := c.Read(b)
+	if err != nil || n == 0 {
+		return ErrDenied
+	}
+	var out ProbeResponse
+	if json.Unmarshal(b[:n], &out) != nil || out.Version != ProtocolV1 || out.Nonce != want || !out.Ready {
+		return ErrDenied
+	}
+	return nil
 }
 func (t *SocketTransport) Call(ctx context.Context, q Request) (Receipt, error) {
 	if q.Validate() != nil {
@@ -133,6 +188,7 @@ type Supervisor struct {
 	store    *ReceiptStore
 	mu       sync.Mutex
 	receipts map[string]Receipt
+	ready    bool
 }
 
 func NewPersistentSupervisor(agentUID uint32, stateRoot string, executor Executor) (*Supervisor, error) {
@@ -151,6 +207,12 @@ func NewSupervisor(agentUID uint32, executors ...Executor) *Supervisor {
 	return s
 }
 func (s *Supervisor) Serve(ctx context.Context, l *net.UnixListener) error {
+	if err := s.reconcileStartup(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.ready = true
+	s.mu.Unlock()
 	go func() { <-ctx.Done(); _ = l.Close() }()
 	for {
 		c, e := l.AcceptUnix()
@@ -173,17 +235,39 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 	if e != nil || n == 0 {
 		return
 	}
+	var probe ProbeRequest
+	if json.Unmarshal(b[:n], &probe) == nil && probe.Probe != "" {
+		s.mu.Lock()
+		ready := s.ready && probe.Version == ProtocolV1 && len(probe.Nonce) >= 32
+		s.mu.Unlock()
+		if !ready || s.store != nil && s.store.Sync() != nil {
+			return
+		}
+		raw, _ := json.Marshal(ProbeResponse{Version: ProtocolV1, Nonce: probe.Nonce, Ready: true})
+		_, _ = c.Write(raw)
+		return
+	}
 	var q Request
 	if json.Unmarshal(b[:n], &q) != nil || q.Validate() != nil {
 		return
 	}
-	// Closing the client connection (including its deadline/cancel path) is the
-	// cancellation signal for a running workload. The executor propagates this
-	// to extensionrunner, which kills/reaps the cgroup descendants.
+	s.mu.Lock()
+	ready := s.ready
+	s.mu.Unlock()
+	if !ready {
+		return
+	}
+	// A socket context governs dispatch only. Persistent lifetime enforcement
+	// is deliberately detached: a successful Apply must outlive its response.
 	execCtx, cancel := context.WithCancel(parent)
 	defer cancel()
-	go func() { probe := make([]byte, 1); _, _ = c.Read(probe); cancel() }()
 	s.mu.Lock()
+	// The watcher can fail-close between admission and this serialized point.
+	// No journal or provider side effect may cross that transition.
+	if !s.ready {
+		s.mu.Unlock()
+		return
+	}
 	key := q.Key()
 	lifecycleKey := q.LifecycleKey()
 	// Persistent services have one durable record for all three verbs.  The
@@ -255,14 +339,24 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 					out.Action, out.Digest, out.ApplyDigest, out.At = "apply", q.Digest(), q.Digest(), time.Now().UTC()
 					if s.store != nil && s.store.Put(lifecycleKey, out) != nil {
 						// Ready receipt durability is the commit point.  If it cannot
-						// be recorded, tear down synchronously rather than leaving a
-						// service that a restart might redispatch.
-						_, _ = pe.DestroyPersistent(context.Background(), q, out)
+						// be recorded, persist cleanup before the deterministic reap.
+						if s.store.ReplaceIntent(OperationIntent{Request: q, State: "cleanup_required", Receipt: out}) != nil {
+							s.ready = false
+							s.mu.Unlock()
+							return
+						}
+						ir, ok := s.executor.(intentReaper)
+						if !ok || ir.ReapIntent(context.Background(), q) != nil {
+							s.ready = false
+							s.mu.Unlock()
+							return
+						}
 						_ = s.store.ReplaceIntent(OperationIntent{Request: q, State: "unknown", Receipt: out})
 						s.mu.Unlock()
 						return
 					}
 					s.receipts[lifecycleKey] = out
+					go s.watchPersistent(q, out)
 					if s.store != nil {
 						_ = s.store.ReplaceIntent(OperationIntent{Request: q, State: "ready", Receipt: out})
 					}
@@ -280,6 +374,14 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 			} else if base.Destroyed {
 				out = base
 			} else {
+				if s.store != nil {
+					if e := s.store.MarkCleanupRequired(lifecycleKey, base); e != nil {
+						s.ready = false
+						s.mu.Unlock()
+						return
+					}
+					_ = s.store.ReplaceIntent(OperationIntent{Request: q, State: "cleanup_required", Receipt: base})
+				}
 				out, executionErr = pe.DestroyPersistent(execCtx, q, base)
 				if executionErr == nil && out.State == "destroyed" {
 					out.WorkloadID, out.PlanDigest, out.DispatchClaim, out.DispatchEpoch, out.OperationID, out.PlanRevision, out.Service = q.WorkloadID, q.PlanDigest, q.DispatchClaim, q.DispatchEpoch, q.OperationID, q.PlanRevision, q.Service
@@ -297,8 +399,9 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 		}
 		if executionErr != nil {
 			if s.store != nil && q.Action != "read" {
-				_ = s.store.ReplaceIntent(OperationIntent{Request: q, State: "unknown"})
+				_ = s.store.ReplaceIntent(OperationIntent{Request: q, State: "cleanup_required"})
 			}
+			s.ready = false
 			s.mu.Unlock()
 			return
 		}
@@ -352,4 +455,113 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 }
 func sameLifecycleRequest(q Request, r Receipt) bool {
 	return r.WorkloadID == q.WorkloadID && r.PlanDigest == q.PlanDigest && r.PlanRevision == q.PlanRevision && r.Service == q.Service
+}
+
+// restartReaper is deliberately narrower than the execution interface: only
+// the production executor knows how to prove ownership and reap a cgroup.
+type restartReaper interface {
+	ReapPersistent(context.Context, Receipt) error
+}
+type intentReaper interface {
+	ReapIntent(context.Context, Request) error
+}
+
+func (s *Supervisor) reconcileStartup() error {
+	if probe, ok := s.executor.(interface{ Probe() error }); ok && probe.Probe() != nil {
+		return ErrDenied
+	}
+	if s.store == nil {
+		return nil
+	}
+	intents, err := s.store.ListIntents()
+	if err != nil {
+		return err
+	}
+	ir, productionIntent := s.executor.(intentReaper)
+	for _, in := range intents {
+		if in.State == "destroyed" || in.State == "unknown" {
+			continue
+		}
+		if !productionIntent {
+			return ErrDenied
+		}
+		// Persist the obligation before touching the exact deterministic cgroup.
+		if in.State != "cleanup_required" {
+			in.State = "cleanup_required"
+			if err := s.store.ReplaceIntent(in); err != nil {
+				return err
+			}
+		}
+		if err := ir.ReapIntent(context.Background(), in.Request); err != nil {
+			return err
+		}
+		in.State = "unknown"
+		if err := s.store.ReplaceIntent(in); err != nil {
+			return err
+		}
+	}
+	all, err := s.store.List()
+	if err != nil {
+		return err
+	}
+	reaper, production := s.executor.(restartReaper)
+	for _, r := range all {
+		if (r.State != "ready" && r.State != "cleanup_required") || r.Destroyed {
+			continue
+		}
+		if !production {
+			return ErrDenied
+		}
+		key := Request{WorkloadID: r.WorkloadID, PlanDigest: r.PlanDigest, Service: r.Service}.LifecycleKey()
+		if key == "::" || s.store.MarkCleanupRequired(key, r) != nil {
+			return ErrDenied
+		}
+		if err := reaper.ReapPersistent(context.Background(), r); err != nil {
+			return err
+		}
+		if key == "::" || s.store.MarkUnknown(key, r) != nil {
+			return ErrDenied
+		}
+		s.mu.Lock()
+		r.State = "unknown"
+		s.receipts[key] = r
+		s.mu.Unlock()
+	}
+	return s.store.Sync()
+}
+
+// watchPersistent turns a vanished managed service into durable uncertainty.
+// It never writes a destroy receipt because neither a timeout nor an output
+// overrun is a fenced Destroy operation.
+func (s *Supervisor) watchPersistent(q Request, receipt Receipt) {
+	for {
+		time.Sleep(100 * time.Millisecond)
+		if extensionrunner.ValidatePersistentIdentity(extensionrunner.PersistentIdentity{PID: receipt.PID, StartTime: receipt.StartTime, Cgroup: receipt.Cgroup}) == nil {
+			continue
+		}
+		key := q.LifecycleKey()
+		s.mu.Lock()
+		current, ok := s.receipts[key]
+		if ok && current.State == "ready" && current.Digest == receipt.Digest {
+			if s.store != nil && s.store.MarkCleanupRequired(key, current) != nil {
+				s.ready = false
+				s.mu.Unlock()
+				return
+			}
+			reaper, production := s.executor.(restartReaper)
+			if !production || reaper.ReapPersistent(context.Background(), current) != nil {
+				s.ready = false
+				s.mu.Unlock()
+				return
+			}
+			if s.store == nil || s.store.MarkUnknown(key, current) == nil {
+				current.State = "unknown"
+				s.receipts[key] = current
+			} else {
+				s.ready = false
+			}
+		}
+		s.mu.Unlock()
+		return
+	}
 }

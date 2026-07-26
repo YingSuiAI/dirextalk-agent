@@ -216,6 +216,21 @@ type Operation struct {
 	CompletionFingerprint string          `json:"completion_fingerprint,omitempty"`
 }
 
+// TaskFence is the exact generic WorkerPool lease presented to a workload
+// handler. Workload execution must never mint or replace this lease.
+type TaskFence struct {
+	TaskID     string
+	Holder     string
+	Attempt    uint32
+	LeaseEpoch uint64
+	Revision   uint64
+	ExpiresAt  time.Time
+}
+
+func (f TaskFence) Valid(now time.Time) bool {
+	return ValidUUID(f.TaskID) && f.Holder != "" && f.Attempt > 0 && f.LeaseEpoch > 0 && f.Revision > 0 && !f.ExpiresAt.IsZero() && f.ExpiresAt.After(now.UTC())
+}
+
 type Event struct {
 	OperationID string          `json:"operation_id"`
 	Sequence    uint64          `json:"sequence"`

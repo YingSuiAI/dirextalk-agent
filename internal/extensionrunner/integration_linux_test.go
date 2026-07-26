@@ -52,7 +52,7 @@ func TestLinuxIsolationIntegrationOptIn(t *testing.T) {
 	}
 	defer unix.Close(secretFD)
 	request := integrationRequest(digest)
-	request.Argv = []string{hostSentinel}
+	request.Argv = []string{"/app/entry", hostSentinel}
 	request.Secrets = []SecretFD{{Name: "allowed", Index: 0, Size: int64(len(secret)), SHA256: DigestBytes(secret)}}
 	request.ResultFiles = []string{"result.json"}
 	status, err := runner.RunV2(context.Background(), request, []int{secretFD}, NewRunRegistry())
@@ -93,7 +93,7 @@ func TestLinuxIsolationIntegrationOptIn(t *testing.T) {
 	cancelRequest.RunID = "44444444-4444-4444-8444-444444444444"
 	cancelRequest.TaskID = "55555555-5555-4555-8555-555555555555"
 	cancelRequest.TaskFence = "66666666-6666-4666-8666-666666666666"
-	cancelRequest.Argv = []string{"loop"}
+	cancelRequest.Argv = []string{"/app/entry", "loop"}
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan StatusV1, 1)
 	errCh := make(chan error, 1)

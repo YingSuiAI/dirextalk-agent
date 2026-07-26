@@ -131,6 +131,69 @@ func TestCoreWorkloadPostgresAtomicLifecycle(t *testing.T) {
 	}
 }
 
+func TestCoreWorkloadPostgresFencedTaskIDIsolation(t *testing.T) {
+	ctx, store, _, cleanup := corePG18Fixture(t)
+	defer cleanup()
+	ws := NewCoreWorkloadStore(store)
+	plan, err := ws.CreatePlan(ctx, coreworkload.PlanInput{IdempotencyKey: uuid.NewString(), Summary: "fence isolation", TargetKind: coreworkload.TargetCoreRunner, Target: pgWorkloadTarget(), CommandSteps: []string{"run"}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1, err := ws.RequestOperation(ctx, coreworkload.RequestCommand{PlanID: plan.ID, Kind: coreworkload.OperationApply, IdempotencyKey: uuid.NewString(), ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := ws.RequestOperation(ctx, coreworkload.RequestCommand{PlanID: plan.ID, Kind: coreworkload.OperationApply, IdempotencyKey: uuid.NewString(), ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ws.Confirm(ctx, r1.Confirmation.ConfirmationID, r1.Confirmation.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ws.Confirm(ctx, r2.Confirmation.ConfirmationID, r2.Confirmation.Revision); err != nil {
+		t.Fatal(err)
+	}
+	holder := uuid.NewString()
+	at := time.Now().UTC().Add(time.Hour)
+	for _, taskID := range []string{r1.Task.ID, r2.Task.ID} {
+		if _, err = store.pool.Exec(ctx, `UPDATE core_tasks SET status='running',attempt=1,lease_epoch=7,lease_holder=$2,lease_expires_at=$3,revision=2 WHERE task_id=$1`, taskID, holder, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f1 := coreworkload.TaskFence{TaskID: r1.Task.ID, Holder: holder, Attempt: 1, LeaseEpoch: 7, Revision: 2, ExpiresAt: at}
+	f2 := f1
+	f2.TaskID = r2.Task.ID
+	if _, _, err = ws.ConsumeFenced(ctx, r1.Operation.ID, r1.Confirmation.ConfirmationID, plan.Digest, r1.Operation.Revision, f2); !errors.Is(err, coreworkload.ErrRevisionConflict) {
+		t.Fatalf("cross consume err=%v", err)
+	}
+	run, _, err := ws.ConsumeFenced(ctx, r1.Operation.ID, r1.Confirmation.ConfirmationID, plan.Digest, r1.Operation.Revision, f1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ws.RenewDispatchLeaseFenced(ctx, run.ID, run.DispatchClaim, run.DispatchEpoch, f2); !errors.Is(err, coreworkload.ErrRevisionConflict) {
+		t.Fatalf("cross renew err=%v", err)
+	}
+	if _, err = ws.RecoverClaimFenced(ctx, run.ID, "", f2); !errors.Is(err, coreworkload.ErrRevisionConflict) {
+		t.Fatalf("cross recover err=%v", err)
+	}
+	rb := coreworkload.Readback{TargetKind: plan.TargetKind, WorkloadID: run.WorkloadID, State: "ready", Identity: plan.Target.Identity, At: time.Now().UTC()}
+	if _, _, err = ws.CompleteDispatchFenced(ctx, run.ID, run.TaskID, run.DispatchClaim, run.DispatchEpoch, "", rb, "", f2); !errors.Is(err, coreworkload.ErrRevisionConflict) {
+		t.Fatalf("cross complete err=%v", err)
+	}
+	if _, err = ws.RenewDispatchLeaseFenced(ctx, run.ID, run.DispatchClaim, run.DispatchEpoch, f1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = ws.CompleteDispatchFenced(ctx, run.ID, run.TaskID, run.DispatchClaim, run.DispatchEpoch, "", rb, "", f1); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = ws.ConsumeFenced(ctx, r2.Operation.ID, r2.Confirmation.ConfirmationID, plan.Digest, r2.Operation.Revision, f1); !errors.Is(err, coreworkload.ErrRevisionConflict) {
+		t.Fatalf("second cross consume err=%v", err)
+	}
+	if _, _, err = ws.ConsumeFenced(ctx, r2.Operation.ID, r2.Confirmation.ConfirmationID, plan.Digest, r2.Operation.Revision, f2); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCoreWorkloadPostgresReplayConflictAndExpiry(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()

@@ -196,6 +196,33 @@ func TestCPUAccountingFailureCannotSucceed(t *testing.T) {
 	}
 }
 
+func TestPersistentOutputBudgetIsSharedAndDoesNotRetainRawBytes(t *testing.T) {
+	budget := &outputBudget{limit: 8}
+	stdout := &boundedBuffer{budget: budget}
+	stderr := &boundedBuffer{budget: budget}
+	if n, err := stdout.Write([]byte("1234")); err != nil || n != 4 {
+		t.Fatalf("stdout write n=%d err=%v", n, err)
+	}
+	if n, err := stderr.Write([]byte("5678")); err != nil || n != 4 {
+		t.Fatalf("stderr write n=%d err=%v", n, err)
+	}
+	if stdout.Exceeded() || stderr.Exceeded() {
+		t.Fatal("exact combined budget was marked exceeded")
+	}
+	if got := len(stdout.Snapshot()) + len(stderr.Snapshot()); got != 0 {
+		t.Fatalf("persistent raw output retained %d bytes", got)
+	}
+	if n, err := stdout.Write([]byte("x")); err != nil || n != 1 {
+		t.Fatalf("first excess write n=%d err=%v", n, err)
+	}
+	if !stdout.Exceeded() || !stderr.Exceeded() {
+		t.Fatal("first byte over shared budget was not signalled")
+	}
+	if used, _ := budget.snapshot(); used != 8 {
+		t.Fatalf("budget used=%d want 8", used)
+	}
+}
+
 func TestReexecWaitContextReturnsCleanupFailureInsteadOfCancellation(t *testing.T) {
 	cgroup := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cgroup, "cpu.stat"), []byte("usage_usec 0\n"), 0o600); err != nil {

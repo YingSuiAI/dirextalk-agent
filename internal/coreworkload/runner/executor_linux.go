@@ -5,6 +5,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"debug/elf"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"golang.org/x/sys/unix"
 )
@@ -49,6 +51,12 @@ func (e LinuxExecutor) ApplyPersistent(ctx context.Context, q Request) (Receipt,
 	if err := e.runInstall(ctx, q); err != nil {
 		return Receipt{}, err
 	}
+	staged := true
+	defer func() {
+		if staged {
+			_ = e.removeWorkspace(q)
+		}
+	}()
 	service, err := e.readWorkspaceService(q)
 	if err != nil {
 		return Receipt{}, ErrDenied
@@ -57,6 +65,12 @@ func (e LinuxExecutor) ApplyPersistent(ctx context.Context, q Request) (Receipt,
 	if err != nil {
 		return Receipt{}, ErrDenied
 	}
+	published := true
+	defer func() {
+		if published {
+			_ = e.removeBundle(digest)
+		}
+	}()
 	defer install.Close()
 	workspace, err := (extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}).ResolveWorkspace(q.OperationID, q.DispatchClaim)
 	if err != nil {
@@ -64,27 +78,89 @@ func (e LinuxExecutor) ApplyPersistent(ctx context.Context, q Request) (Receipt,
 	}
 	defer unix.Close(workspace)
 	r := e.request(q, digest, argv)
-	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, time.Millisecond)
+	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
 	if err != nil {
 		return Receipt{}, ErrDenied
 	}
 	id := p.Identity()
-	if !e.identityOwned(id) || e.exceedsDisk(q) {
+	if !e.identityOwned(id) {
 		_ = p.Destroy(context.Background())
 		return Receipt{}, ErrDenied
 	}
+	// The child now holds the immutable mount. Unlink bundle first, then the
+	// exact staging workspace; a crash in either window is intent-recoverable.
+	if err := e.removeBundle(digest); err != nil {
+		_ = p.Destroy(context.Background())
+		return Receipt{}, ErrDenied
+	}
+	published = false
+	if err := e.removeWorkspace(q); err != nil {
+		_ = p.Destroy(context.Background())
+		return Receipt{}, ErrDenied
+	}
+	staged = false
 	// The rlimit only covers the writable sandbox view. Keep a separate
 	// aggregate accounting guard over the runner-owned workspace and bundle so
 	// a long-lived service cannot grow either side after admission.
-	go e.monitorDisk(q, p)
+	// The manager owns the persistent lifetime, not the request connection.
+	go e.monitorPersistent(context.Background(), q, digest, p)
 	return Receipt{State: "ready", ServiceDigest: digest, PID: id.PID, StartTime: id.StartTime, Cgroup: id.Cgroup}, nil
+}
+
+// ReapIntent closes the pre-receipt crash window. RunID is the validated
+// operation UUID and therefore maps to exactly one child cgroup.
+func (e LinuxExecutor) ReapIntent(_ context.Context, q Request) error {
+	if q.Validate() != nil || !coreworkload.ValidUUID(q.OperationID) {
+		return ErrDenied
+	}
+	path := filepath.Join(e.CgroupRoot, q.OperationID)
+	if filepath.Dir(path) != e.CgroupRoot {
+		return ErrDenied
+	}
+	if err := extensionrunner.DestroyPersistentCgroup(context.Background(), path); err != nil {
+		return err
+	}
+	stage := filepath.Join(e.WorkspaceRoot, q.OperationID, q.DispatchClaim)
+	if _, err := os.Stat(stage); err == nil {
+		service, err := e.readWorkspaceService(q)
+		// Result validation precedes publication. A missing, partial, or
+		// invalid service therefore cannot name a bundle; clear only staging.
+		if err == nil {
+			digest, digestErr := e.serviceDigest(service)
+			if digestErr == nil {
+				if err := e.removeBundle(digest); err != nil {
+					return ErrDenied
+				}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return ErrDenied
+	}
+	if err := e.removeWorkspace(q); err != nil {
+		return ErrDenied
+	}
+	return nil
+}
+
+func (e LinuxExecutor) serviceDigest(service []byte) (string, error) {
+	shell, err := os.ReadFile(e.StaticShell)
+	if err != nil {
+		return "", ErrDenied
+	}
+	if isELF(service) {
+		return extensionrunner.ManifestDigest([]extensionrunner.ManifestEntry{{Path: "entry", SHA256: extensionrunner.DigestBytes(service), Size: int64(len(service))}}), nil
+	}
+	if !bytes.HasPrefix(service, []byte("#!")) {
+		return "", ErrDenied
+	}
+	return extensionrunner.ManifestDigest([]extensionrunner.ManifestEntry{{Path: "entry", SHA256: extensionrunner.DigestBytes(shell), Size: int64(len(shell))}, {Path: "service", SHA256: extensionrunner.DigestBytes(service), Size: int64(len(service))}}), nil
 }
 
 func (e LinuxExecutor) ReadPersistent(_ context.Context, q Request, prior Receipt) (Receipt, error) {
 	if prior.Destroyed || prior.State != "ready" || prior.ServiceDigest == "" || !e.identityOwned(extensionrunner.PersistentIdentity{PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}) {
 		return Receipt{State: "unknown"}, nil
 	}
-	if err := extensionrunner.ValidatePersistentIdentity(extensionrunner.PersistentIdentity{PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}); err != nil || e.exceedsDisk(q) || !e.admittedDigest(prior.ServiceDigest) {
+	if err := extensionrunner.ValidatePersistentIdentity(extensionrunner.PersistentIdentity{PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}); err != nil {
 		return Receipt{State: "unknown"}, nil
 	}
 	return Receipt{State: "ready", ServiceDigest: prior.ServiceDigest, PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}, nil
@@ -95,19 +171,95 @@ func (e LinuxExecutor) DestroyPersistent(ctx context.Context, q Request, prior R
 		return Receipt{State: "destroyed", ServiceDigest: prior.ServiceDigest, PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}, nil
 	}
 	id := extensionrunner.PersistentIdentity{PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}
-	if prior.State != "ready" || !e.identityOwned(id) || !e.admittedDigest(prior.ServiceDigest) {
+	if prior.State != "ready" || !e.identityOwned(id) {
 		return Receipt{}, ErrDenied
 	}
 	if err := extensionrunner.DestroyPersistentIdentity(ctx, id); err != nil {
-		return Receipt{}, ErrDenied
-	}
-	if err := e.removeWorkspace(q); err != nil {
 		return Receipt{}, ErrDenied
 	}
 	if err := e.removeBundle(prior.ServiceDigest); err != nil {
 		return Receipt{}, ErrDenied
 	}
 	return Receipt{State: "destroyed", ServiceDigest: prior.ServiceDigest, PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}, nil
+}
+
+// ReapPersistent is used only during supervisor restart reconciliation.  It
+// checks the exact PID/start-time/cgroup identity before asking the sandbox to
+// kill descendants, wait populated=0 and remove the cgroup.
+func (e LinuxExecutor) ReapPersistent(_ context.Context, prior Receipt) error {
+	id := extensionrunner.PersistentIdentity{PID: prior.PID, StartTime: prior.StartTime, Cgroup: prior.Cgroup}
+	if (prior.State != "ready" && prior.State != "cleanup_required") || prior.Destroyed || !e.identityOwned(id) {
+		return ErrDenied
+	}
+	if err := extensionrunner.DestroyPersistentIdentity(context.Background(), id); err != nil {
+		return ErrDenied
+	}
+	if err := e.removeBundle(prior.ServiceDigest); err != nil {
+		return ErrDenied
+	}
+	return nil
+}
+
+// Probe validates all static roots before the socket advertises readiness.
+// The dynamic tmpfs/cgroup proof remains inside RunCoreResultV1 during Apply;
+// callers keep capability disabled if that full proof cannot run.
+func (e LinuxExecutor) Probe() error {
+	if !absolutePrivateDir(e.InstallRoot) || !absolutePrivateDir(e.WorkspaceRoot) || !absolutePrivateDir(e.CgroupRoot) || e.publishShell() != nil {
+		return ErrDenied
+	}
+	// Exercise the exact ephemeral Core result path before advertising a
+	// runner: user namespace mounts, seccomp, cgroup attach/cleanup and sealed
+	// result extraction all happen below. Nothing is retained after this call.
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return ErrDenied
+	}
+	id := hex.EncodeToString(token[:])
+	q := Request{Action: "apply", WorkloadID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], OperationID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], PlanDigest: strings.Repeat("0", 64), PlanRevision: 1, DispatchClaim: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], DispatchEpoch: 1, CommandSteps: []string{"printf '#!/bin/sh\\nexit 0\\n' > readiness-service"}, Service: "readiness-service", Limits: coreworkload.ResourceLimits{CPU: 1, MemoryMB: 16, Processes: 8, DiskMB: 16, TimeoutS: 1, OutputMB: 1}}
+	if q.Validate() != nil {
+		return ErrDenied
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.runInstall(ctx, q); err != nil {
+		return ErrDenied
+	}
+	defer e.removeWorkspace(q)
+	service, err := e.readWorkspaceService(q)
+	if err != nil {
+		return ErrDenied
+	}
+	digest, install, argv, err := e.publishService(service)
+	if err != nil {
+		return ErrDenied
+	}
+	defer install.Close()
+	defer e.removeBundle(digest)
+	workspace, err := (extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}).ResolveWorkspace(q.OperationID, q.DispatchClaim)
+	if err != nil {
+		return ErrDenied
+	}
+	defer unix.Close(workspace)
+	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
+	if err != nil || !e.identityOwned(p.Identity()) {
+		return ErrDenied
+	}
+	if p.Destroy(context.Background()) != nil {
+		return ErrDenied
+	}
+	return nil
+}
+
+func absolutePrivateDir(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	st, err := os.Stat(path)
+	if err != nil || !st.IsDir() || st.Mode().Perm()&0o077 != 0 {
+		return false
+	}
+	owner, ok := st.Sys().(*syscall.Stat_t)
+	return ok && uint32(owner.Uid) == uint32(os.Geteuid())
 }
 
 func (e LinuxExecutor) validLimits(q Request) bool {
@@ -129,8 +281,24 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 	d := extensionrunner.ManifestDigest(m)
 	r := e.request(q, d, []string{"sh", "-eu", "-c", "set -eu\n" + strings.Join(q.CommandSteps, "\n") + "\n"})
 	r.ResultFiles = []string{q.Service}
-	status, err := (extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: e.InstallRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}, V2Backend: extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}}).RunV2(ctx, r, nil, extensionrunner.NewRunRegistry())
-	if err != nil || status.Error != extensionrunner.ErrorNone || status.ExitCode == nil || *status.ExitCode != 0 || int64(len(status.Stdout)+len(status.Stderr)) > q.Limits.OutputMB*1024*1024 || e.exceedsDisk(q) {
+	install, err := (extensionrunner.DiskInstallResolver{Root: e.InstallRoot}).ResolveInstall(d)
+	if err != nil {
+		return ErrDenied
+	}
+	defer install.Close()
+	workspace, err := (extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}).ResolveWorkspace(q.OperationID, q.DispatchClaim)
+	if err != nil {
+		return ErrDenied
+	}
+	defer unix.Close(workspace)
+	service, err := extensionrunner.RunCoreResultV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, q.Limits.DiskMB*1024*1024, q.Service)
+	if err != nil || len(service) == 0 {
+		return ErrDenied
+	}
+	// The private tmpfs was destroyed with the manager. Publish only the
+	// validated sealed export into the runner-owned staging workspace.
+	path := filepath.Join(e.WorkspaceRoot, q.OperationID, q.DispatchClaim, q.Service)
+	if err := os.WriteFile(path, service, 0600); err != nil {
 		return ErrDenied
 	}
 	return nil
@@ -251,19 +419,19 @@ func (e LinuxExecutor) admittedDigest(d string) bool {
 func (e LinuxExecutor) identityOwned(id extensionrunner.PersistentIdentity) bool {
 	return id.PID > 0 && id.StartTime > 0 && filepath.Dir(id.Cgroup) == e.CgroupRoot && filepath.Base(id.Cgroup) != ""
 }
-func (e LinuxExecutor) exceedsDisk(q Request) bool {
-	n, err := treeBytes(e.WorkspaceRoot)
-	if err != nil {
-		return true
-	}
-	m, err := treeBytes(e.InstallRoot)
-	return err != nil || n+m > q.Limits.DiskMB*1024*1024
-}
-func (e LinuxExecutor) monitorDisk(q Request, p *extensionrunner.PersistentServiceV1) {
+func (e LinuxExecutor) monitorPersistent(_ context.Context, q Request, digest string, p *extensionrunner.PersistentServiceV1) {
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()
-	for range tick.C {
-		if e.exceedsDisk(q) {
+	deadline := time.NewTimer(time.Duration(q.Limits.TimeoutS) * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case <-deadline.C:
+			_ = p.Destroy(context.Background())
+			return
+		case <-tick.C:
+		}
+		if p.OutputExceeded() || p.OutputBytes() > q.Limits.OutputMB*1024*1024 {
 			_ = p.Destroy(context.Background())
 			return
 		}
@@ -274,19 +442,6 @@ func (e LinuxExecutor) monitorDisk(q Request, p *extensionrunner.PersistentServi
 			return
 		}
 	}
-}
-func treeBytes(root string) (int64, error) {
-	var n int64
-	err := filepath.Walk(root, func(_ string, i os.FileInfo, e error) error {
-		if e != nil {
-			return e
-		}
-		if i.Mode().IsRegular() {
-			n += i.Size()
-		}
-		return nil
-	})
-	return n, err
 }
 func (e LinuxExecutor) removeWorkspace(q Request) error {
 	return os.RemoveAll(filepath.Join(e.WorkspaceRoot, q.OperationID, q.DispatchClaim))

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
 type Service struct {
@@ -138,7 +139,13 @@ func NewHandler(store Store, provider Provider) (*Handler, error) {
 	}
 	return &Handler{store: store, provider: provider}, nil
 }
-func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, expectedRevision uint64) (Operation, error) {
+func (h *Handler) GetOperation(ctx context.Context, id string) (Operation, error) {
+	if h == nil || h.store == nil || !ValidUUID(id) {
+		return Operation{}, ErrInvalid
+	}
+	return h.store.GetOperation(ctx, id)
+}
+func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, expectedRevision uint64, fences ...TaskFence) (Operation, error) {
 	if !ValidUUID(operationID) || !ValidDigest(planDigest) || expectedRevision == 0 {
 		return Operation{}, ErrInvalid
 	}
@@ -156,11 +163,25 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 	if plan.Digest != planDigest || plan.Revision != op.PlanRevision {
 		return Operation{}, ErrStale
 	}
-	op, task, e := h.store.Consume(ctx, op.ID, op.ConfirmationID, planDigest, expectedRevision)
+	var opTask coretask.Task
+	var fence *TaskFence
+	if len(fences) > 1 {
+		return Operation{}, ErrInvalid
+	}
+	if len(fences) == 1 {
+		fence = &fences[0]
+		if !fence.Valid(time.Time{}) {
+			return Operation{}, ErrRevisionConflict
+		}
+	}
+	op, opTask, e = h.consume(ctx, op.ID, op.ConfirmationID, planDigest, expectedRevision, fence)
 	if e != nil {
 		return Operation{}, e
 	}
-	if task.Status != "running" || task.Attempt != 1 || task.LeaseEpoch == 0 || task.Lease == nil || task.Revision == 0 {
+	if opTask.Status != "running" || opTask.Attempt == 0 || opTask.LeaseEpoch == 0 || opTask.Lease == nil || opTask.Revision == 0 {
+		return Operation{}, ErrRevisionConflict
+	}
+	if fence != nil && !sameTaskFence(opTask, *fence) {
 		return Operation{}, ErrRevisionConflict
 	}
 	if _, e = h.store.AppendEvent(ctx, op.ID, Event{Kind: "dispatched", Status: OperationRunning, Message: "provider dispatch claimed"}); e != nil {
@@ -178,7 +199,7 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 			case <-providerCtx.Done():
 				return
 			case <-ticker.C:
-				if _, err := h.store.RenewDispatchLease(providerCtx, op.ID, op.DispatchClaim, op.DispatchEpoch); err != nil {
+				if _, err := h.renewDispatchLease(providerCtx, op.ID, op.DispatchClaim, op.DispatchEpoch, fence); err != nil {
 					select {
 					case renewErr <- err:
 					default:
@@ -202,7 +223,7 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 		return Operation{}, renewFailure
 	default:
 	}
-	if op, e = h.store.RenewDispatchLease(ctx, op.ID, op.DispatchClaim, op.DispatchEpoch); e != nil {
+	if op, e = h.renewDispatchLease(ctx, op.ID, op.DispatchClaim, op.DispatchEpoch, fence); e != nil {
 		return Operation{}, e
 	}
 	e = providerErr
@@ -221,7 +242,7 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 			if _, ae := h.store.AppendEvent(ctx, op.ID, Event{Kind: "uncertain", Status: OperationUncertain, Message: readText, Readback: mustJSON(recovered)}); ae != nil {
 				return Operation{}, ae
 			}
-			out, _, ce := h.store.CompleteDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, "provider_uncertain", recovered, readText)
+			out, _, ce := h.completeDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, "provider_uncertain", recovered, readText, fence)
 			if ce != nil {
 				return Operation{}, ce
 			}
@@ -234,7 +255,7 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 		if recovered.WorkloadID == "" || recovered.WorkloadID != op.WorkloadID || recovered.TargetKind != op.TargetKind || !targetIdentityEqual(recovered.Identity, plan.Target.Identity, plan.TargetKind) || (op.Kind == OperationApply && recovered.State != "ready") || (op.Kind == OperationDestroy && recovered.State != "destroyed") {
 			code = "provider_uncertain"
 		}
-		out, _, ce := h.store.CompleteDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, code, recovered, code)
+		out, _, ce := h.completeDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, code, recovered, code, fence)
 		if ce != nil {
 			return Operation{}, ce
 		}
@@ -246,7 +267,7 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 		if _, ae := h.store.AppendEvent(ctx, op.ID, Event{Kind: "uncertain", Status: OperationUncertain, Message: errText}); ae != nil {
 			return Operation{}, ae
 		}
-		out, _, ce := h.store.CompleteDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, "provider_uncertain", SanitizeReadback(readback), errText)
+		out, _, ce := h.completeDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, "provider_uncertain", SanitizeReadback(readback), errText, fence)
 		if ce != nil {
 			return Operation{}, ce
 		}
@@ -263,17 +284,68 @@ func (h *Handler) Handle(ctx context.Context, operationID, planDigest string, ex
 	if readback.WorkloadID == "" || readback.WorkloadID != op.WorkloadID || readback.TargetKind != op.TargetKind || !targetIdentityEqual(readback.Identity, plan.Target.Identity, plan.TargetKind) || (op.Kind == OperationApply && readback.State != "ready") || (op.Kind == OperationDestroy && readback.State != "destroyed") {
 		code = "provider_uncertain"
 	}
-	out, _, e := h.store.CompleteDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, code, readback, code)
+	out, _, e := h.completeDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, code, readback, code, fence)
 	return out, e
+}
+
+func sameTaskFence(task coretask.Task, f TaskFence) bool {
+	return task.ID == f.TaskID && task.Attempt == f.Attempt && task.LeaseEpoch == f.LeaseEpoch && task.Revision == f.Revision && task.Lease != nil && task.Lease.Holder == f.Holder && !task.Lease.ExpiresAt.Before(f.ExpiresAt)
+}
+
+func (h *Handler) consume(ctx context.Context, id, confirmationID, digest string, expected uint64, fence *TaskFence) (Operation, coretask.Task, error) {
+	if fence != nil {
+		if s, ok := h.store.(FencedStore); ok {
+			return s.ConsumeFenced(ctx, id, confirmationID, digest, expected, *fence)
+		}
+	}
+	return h.store.Consume(ctx, id, confirmationID, digest, expected)
+}
+
+func (h *Handler) renewDispatchLease(ctx context.Context, id, claim string, epoch uint64, fence *TaskFence) (Operation, error) {
+	if fence != nil {
+		if s, ok := h.store.(FencedStore); ok {
+			return s.RenewDispatchLeaseFenced(ctx, id, claim, epoch, *fence)
+		}
+	}
+	return h.store.RenewDispatchLease(ctx, id, claim, epoch)
+}
+
+func (h *Handler) completeDispatch(ctx context.Context, id, taskID, claim string, epoch uint64, code string, readback Readback, summary string, fence *TaskFence) (Operation, coretask.Task, error) {
+	if fence != nil {
+		if s, ok := h.store.(FencedStore); ok {
+			return s.CompleteDispatchFenced(ctx, id, taskID, claim, epoch, code, readback, summary, *fence)
+		}
+	}
+	return h.store.CompleteDispatch(ctx, id, taskID, claim, epoch, code, readback, summary)
 }
 
 // Recover reconciles a previously dispatched/uncertain operation by reading
 // the provider. It never redispatches an unknown mutation.
-func (h *Handler) Recover(ctx context.Context, operationID string) (Operation, error) {
+func (h *Handler) Recover(ctx context.Context, operationID string, fences ...TaskFence) (Operation, error) {
 	if !ValidUUID(operationID) {
 		return Operation{}, ErrInvalid
 	}
-	op, err := h.store.RecoverClaim(ctx, operationID, "")
+	if len(fences) > 1 {
+		return Operation{}, ErrInvalid
+	}
+	var fence *TaskFence
+	if len(fences) == 1 {
+		fence = &fences[0]
+		if !fence.Valid(time.Time{}) {
+			return Operation{}, ErrRevisionConflict
+		}
+	}
+	var op Operation
+	var err error
+	if fence != nil {
+		if s, ok := h.store.(FencedStore); ok {
+			op, err = s.RecoverClaimFenced(ctx, operationID, "", *fence)
+		} else {
+			op, err = h.store.RecoverClaim(ctx, operationID, "")
+		}
+	} else {
+		op, err = h.store.RecoverClaim(ctx, operationID, "")
+	}
 	if err != nil {
 		if err == ErrRevisionConflict {
 			return h.store.GetOperation(ctx, operationID)
@@ -297,7 +369,7 @@ func (h *Handler) Recover(ctx context.Context, operationID string) (Operation, e
 		if _, err = h.store.AppendEvent(ctx, op.ID, Event{Kind: "recovered_uncertain", Status: OperationUncertain, Message: errText, Readback: mustJSON(rb)}); err != nil {
 			return Operation{}, err
 		}
-		out, _, completeErr := h.store.CompleteDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, "provider_uncertain", rb, errText)
+		out, _, completeErr := h.completeDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, "provider_uncertain", rb, errText, fence)
 		if completeErr != nil {
 			return Operation{}, completeErr
 		}
@@ -310,7 +382,7 @@ func (h *Handler) Recover(ctx context.Context, operationID string) (Operation, e
 	if rb.WorkloadID == "" || rb.WorkloadID != op.WorkloadID || rb.TargetKind != op.TargetKind || !targetIdentityEqual(rb.Identity, plan.Target.Identity, plan.TargetKind) || (op.Kind == OperationApply && rb.State != "ready") || (op.Kind == OperationDestroy && rb.State != "destroyed") {
 		code = "provider_uncertain"
 	}
-	out, _, err := h.store.CompleteDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, code, rb, code)
+	out, _, err := h.completeDispatch(ctx, op.ID, op.TaskID, op.DispatchClaim, op.DispatchEpoch, code, rb, code, fence)
 	return out, err
 }
 

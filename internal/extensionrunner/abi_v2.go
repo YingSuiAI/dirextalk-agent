@@ -18,6 +18,9 @@ const (
 
 // RequestV2 is the only request understood by the deployed seqpacket server.
 // Host paths and environment values are intentionally absent from this type.
+// Argv is the complete exec argv, including argv[0]. An empty value uses
+// /app/entry as argv[0]; callers that need positional arguments must include
+// the executable name as the first element.
 type RequestV2 struct {
 	RunID         string     `json:"run_id"`
 	TaskID        string     `json:"task_id"`

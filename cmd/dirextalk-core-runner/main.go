@@ -1,7 +1,7 @@
 // dirextalk-core-runner is a non-root, local-only workload supervisor.  It
 // intentionally has no Agent DB, TCP listener, Docker socket, host mounts, or
-// Agent credential inputs. Execution-root/cgroup wiring is a later composition
-// hook; this binary currently supplies the authenticated receipt boundary.
+// Agent credential inputs. It owns the isolated persistent executor and its
+// authenticated receipt boundary only.
 package main
 
 import (
@@ -21,6 +21,12 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "__sandbox-child-v1" {
 		if err := extensionrunner.SandboxChildV1(); err != nil {
 			die("sandbox child failed")
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "__sandbox-command-v1" {
+		if err := extensionrunner.SandboxCommandV1(); err != nil {
+			die("sandbox command failed")
 		}
 		return
 	}

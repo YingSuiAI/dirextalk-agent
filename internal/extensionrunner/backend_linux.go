@@ -56,16 +56,18 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 }
 
 type bootstrapV1 struct {
-	Request     RequestV2 `json:"request"`
-	SecretCount int       `json:"secret_count"`
-	HasStdin    bool      `json:"has_stdin"`
-	RootDev     uint64    `json:"root_dev"`
-	RootIno     uint64    `json:"root_ino"`
-	EntryDev    uint64    `json:"entry_dev"`
-	EntryIno    uint64    `json:"entry_ino"`
-	EntryMode   uint32    `json:"entry_mode"`
-	EntrySize   int64     `json:"entry_size"`
-	EntrySHA256 string    `json:"entry_sha256"`
+	Request        RequestV2 `json:"request"`
+	SecretCount    int       `json:"secret_count"`
+	HasStdin       bool      `json:"has_stdin"`
+	RootDev        uint64    `json:"root_dev"`
+	RootIno        uint64    `json:"root_ino"`
+	EntryDev       uint64    `json:"entry_dev"`
+	EntryIno       uint64    `json:"entry_ino"`
+	EntryMode      uint32    `json:"entry_mode"`
+	EntrySize      int64     `json:"entry_size"`
+	EntrySHA256    string    `json:"entry_sha256"`
+	CoreTmpfsBytes int64     `json:"core_tmpfs_bytes,omitempty"`
+	CoreResultPath string    `json:"core_result_path,omitempty"`
 }
 
 func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Process, error) {
@@ -91,16 +93,18 @@ func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		return nil, unavailableAt("reexec")
 	}
 	bs, err := json.Marshal(bootstrapV1{
-		Request:     inv.Request,
-		SecretCount: len(inv.SecretFDs),
-		HasStdin:    inv.StdinFD >= 0,
-		RootDev:     inv.Install.RootDev,
-		RootIno:     inv.Install.RootIno,
-		EntryDev:    inv.Install.EntryDev,
-		EntryIno:    inv.Install.EntryIno,
-		EntryMode:   inv.Install.EntryMode,
-		EntrySize:   inv.Install.EntrySize,
-		EntrySHA256: inv.Install.EntrySHA256,
+		Request:        inv.Request,
+		SecretCount:    len(inv.SecretFDs),
+		HasStdin:       inv.StdinFD >= 0,
+		RootDev:        inv.Install.RootDev,
+		RootIno:        inv.Install.RootIno,
+		EntryDev:       inv.Install.EntryDev,
+		EntryIno:       inv.Install.EntryIno,
+		EntryMode:      inv.Install.EntryMode,
+		EntrySize:      inv.Install.EntrySize,
+		EntrySHA256:    inv.Install.EntrySHA256,
+		CoreTmpfsBytes: inv.CoreTmpfsBytes,
+		CoreResultPath: inv.CoreResultPath,
 	})
 	if err != nil {
 		return nil, unavailableAt("bootstrap")
@@ -134,7 +138,16 @@ func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		}
 		return os.NewFile(uintptr(dup), name), nil
 	}
-	files := make([]*os.File, 0, 5+len(inv.SecretFDs)+1)
+	// Core mode is selected solely by a non-zero tmpfs size. CoreResultFD has
+	// the normal Go zero value (also a valid descriptor), so it must not make
+	// an ordinary extension invocation opt in accidentally.
+	if inv.CoreTmpfsBytes < 0 || inv.CoreTmpfsBytes > 1<<40 || (inv.CoreTmpfsBytes == 0 && inv.CoreResultPath != "") || (inv.CoreTmpfsBytes > 0 && inv.CoreResultPath != "" && inv.CoreResultFD < 0) {
+		return nil, unavailableAt("core_mode")
+	}
+	if inv.CoreTmpfsBytes > 0 && (inv.StdinFD >= 0 || len(inv.SecretFDs) != 0) {
+		return nil, unavailableAt("core_mode")
+	}
+	files := make([]*os.File, 0, 7+len(inv.SecretFDs))
 	for _, item := range []struct {
 		fd   int
 		name string
@@ -148,6 +161,23 @@ func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 			return nil, unavailableAt("extra_files")
 		}
 		files = append(files, f)
+	}
+	if inv.CoreTmpfsBytes > 0 {
+		manager, e := os.Open(self)
+		if e != nil {
+			return nil, unavailableAt("manager_fd")
+		}
+		files = append(files, manager)
+		if inv.CoreResultPath != "" && inv.CoreResultFD < 0 {
+			return nil, unavailableAt("result_fd")
+		}
+		if inv.CoreResultPath != "" {
+			result, e := extra(inv.CoreResultFD, "core-result")
+			if e != nil {
+				return nil, unavailableAt("result_fd")
+			}
+			files = append(files, result)
+		}
 	}
 	if inv.StdinFD >= 0 {
 		f, e := extra(inv.StdinFD, "stdin")
@@ -182,6 +212,12 @@ func (b LinuxBackend) StartV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	cmd.Env = []string{}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET, Unshareflags: 0, UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}}, GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}}, GidMappingsEnableSetgroups: false, Setpgid: true, Pdeathsig: syscall.SIGKILL, PidFD: &pidfd}
 	var out, er boundedBuffer
+	if inv.PersistentOutputLimit > 0 {
+		budget := &outputBudget{limit: inv.PersistentOutputLimit}
+		// Persistent workloads never return their process output.  Do not
+		// retain raw bytes in the runner merely to enforce the quota.
+		out.budget, er.budget = budget, budget
+	}
 	cmd.Stdout = &out
 	cmd.Stderr = &er
 	if err = cmd.Start(); err != nil {
@@ -332,7 +368,46 @@ func killCgroup(ops cgroupOps, path string) error {
 	return nil
 }
 
-type boundedBuffer struct{ b []byte }
+type boundedBuffer struct {
+	mu       sync.RWMutex
+	b        []byte
+	limit    int
+	exceeded bool
+	budget   *outputBudget
+}
+
+// outputBudget serializes the two pipe readers.  A single reservation is the
+// only authority for persistent stdout+stderr, so simultaneous writes cannot
+// each consume the full quota.
+type outputBudget struct {
+	mu       sync.Mutex
+	limit    int64
+	used     int64
+	exceeded bool
+}
+
+func (b *outputBudget) reserve(n int) bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n < 0 || b.used > b.limit-int64(n) {
+		b.exceeded = true
+		return false
+	}
+	b.used += int64(n)
+	return true
+}
+
+func (b *outputBudget) snapshot() (int64, bool) {
+	if b == nil {
+		return 0, false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.used, b.exceeded
+}
 
 var (
 	errCPULimitExceeded = errors.New("extension CPU limit exceeded")
@@ -340,15 +415,63 @@ var (
 )
 
 func (x *boundedBuffer) Write(p []byte) (int, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.budget != nil {
+		if !x.budget.reserve(len(p)) {
+			x.exceeded = true
+		}
+		// Persistent output is intentionally not an exported artifact.
+		return len(p), nil
+	}
+	limit := x.limit
+	if limit <= 0 {
+		limit = MaxOutputBytes
+	}
+	if len(x.b)+len(p) > limit {
+		x.exceeded = true
+	}
 	n := len(p)
-	if len(x.b) < MaxOutputBytes {
-		k := MaxOutputBytes - len(x.b)
+	if len(x.b) < limit {
+		k := limit - len(x.b)
 		if k > len(p) {
 			k = len(p)
 		}
 		x.b = append(x.b, p[:k]...)
 	}
 	return n, nil
+}
+
+func (x *boundedBuffer) SetLimit(limit int) {
+	if limit <= 0 {
+		limit = MaxOutputBytes
+	}
+	x.mu.Lock()
+	x.limit = limit
+	if len(x.b) > limit {
+		x.b = x.b[:limit]
+		x.exceeded = true
+	}
+	x.mu.Unlock()
+}
+
+func (x *boundedBuffer) Snapshot() []byte {
+	if x == nil {
+		return nil
+	}
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	return append([]byte(nil), x.b...)
+}
+func (x *boundedBuffer) Exceeded() bool {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	exceeded := x.exceeded
+	if x.budget != nil {
+		_, budgetExceeded := x.budget.snapshot()
+		exceeded = exceeded || budgetExceeded
+	}
+	return exceeded
 }
 
 type reexecProcess struct {
@@ -411,7 +534,7 @@ func (p *reexecProcess) WaitContext(ctx context.Context) ([]byte, []byte, string
 		if errors.Is(errors.Join(killErr, p.waitErr), errCgroupCleanup) {
 			return p.waitResult(errors.Join(killErr, p.waitErr))
 		}
-		return append([]byte(nil), p.out.b...), append([]byte(nil), p.err.b...), "failed", ctx.Err()
+		return p.out.Snapshot(), p.err.Snapshot(), "failed", ctx.Err()
 	}
 }
 func (p *reexecProcess) beginWait() {
@@ -436,8 +559,8 @@ func (p *reexecProcess) beginWait() {
 	})
 }
 func (p *reexecProcess) waitResult(err error) ([]byte, []byte, string, error) {
-	stdout := append([]byte(nil), p.out.b...)
-	stderr := append([]byte(nil), p.err.b...)
+	stdout := p.out.Snapshot()
+	stderr := p.err.Snapshot()
 	if p.cpuExceeded.Load() {
 		return stdout, stderr, "cpu_limit", errors.Join(err, errCPULimitExceeded)
 	}
@@ -448,6 +571,32 @@ func (p *reexecProcess) waitResult(err error) ([]byte, []byte, string, error) {
 		return stdout, stderr, "failed", err
 	}
 	return stdout, stderr, "succeeded", nil
+}
+
+// OutputBytes reports the retained stdout+stderr bytes for a persistent
+// service. The underlying buffers are bounded by MaxOutputBytes per stream.
+func (p *reexecProcess) OutputBytes() int64 {
+	if p == nil {
+		return 0
+	}
+	if p.out != nil && p.out.budget != nil {
+		used, _ := p.out.budget.snapshot()
+		return used
+	}
+	return int64(len(p.out.Snapshot()) + len(p.err.Snapshot()))
+}
+func (p *reexecProcess) OutputExceeded() bool {
+	return p != nil && (p.out.Exceeded() || p.err.Exceeded())
+}
+func (p *reexecProcess) SetOutputLimit(limit int64) {
+	if p == nil || limit <= 0 || limit > 1<<40 {
+		return
+	}
+	// Retained for compatibility with existing callers.  It cannot make a
+	// running persistent process safe; StartPersistentServiceV1 supplies the
+	// shared budget before StartV2 instead.
+	p.out.SetLimit(int(limit))
+	p.err.SetLimit(int(limit))
 }
 
 func (p *reexecProcess) stopCPUMonitor() {
@@ -550,4 +699,15 @@ func SandboxChildV1() error {
 		return sandboxChildFailure("bootstrap", err)
 	}
 	return runSandboxChild(bootstrap)
+}
+
+// SandboxCommandV1 is reachable only from the manager's immutable reexec
+// descriptor. It receives only the sealed bootstrap and applies the untrusted
+// command restrictions immediately before exec.
+func SandboxCommandV1() error {
+	bootstrap, err := readSandboxBootstrap(sandboxBootstrapFD)
+	if err != nil {
+		return sandboxChildFailure("bootstrap", err)
+	}
+	return runSandboxCommand(bootstrap)
 }

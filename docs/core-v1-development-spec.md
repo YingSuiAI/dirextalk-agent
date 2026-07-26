@@ -1,6 +1,6 @@
 # Dirextalk Agent Core v1 development specification
 
-> The approved, not-yet-implemented Message Server, workload, SSM/ECS, and
+> The approved, not-yet-implemented Message Server, production SSM/ECS, and
 > Compose extension is defined in
 > [`message-server-integration-development-contract.md`](message-server-integration-development-contract.md).
 > This file continues to describe the current Core baseline until those gates
@@ -39,6 +39,10 @@ All mutation RPCs follow the Protobuf's UUID idempotency and expected-revision
 rules. Ordinary reads never return stored secret values. Task events and
 results are durable, redacted, resumable, and fenced by lease epoch and
 revision.
+
+`WorkloadService` remains available for durable planning and confirmation.
+Its `WORKLOAD` Task handler and `workload.core_runner` capability are enabled
+only after the local Core Runner completes its authenticated readiness proof.
 
 ## Acceptance scenarios
 
@@ -92,6 +96,26 @@ Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and
 uncertain outcomes. Core v1 does not expose Eino graphs as a user-authored
 workflow surface.
+
+Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
+local runner receives only a descriptor request bound to the dispatch; it
+never receives Agent credentials, raw secrets, or a database connection.
+
+### Core Runner
+
+The optional local Core Runner runs as a distinct non-root UID (`65530` in the
+Compose example; Agent UID `65532`). It uses a protected Unix packet socket,
+exact peer credentials, and a v1 cryptographic nonce probe. Readiness includes
+static-root validation plus a bounded real user-namespace/tmpfs/seccomp/cgroup
+result-manager exercise; the capability remains absent when that proof fails.
+
+Install commands export only a sealed descriptor result. Persistent services
+receive zero raw host output and their sole writable area is the exact bounded
+tmpfs. Before a ready receipt, supervisor intents and receipts are fsynced.
+Restart reconciliation records `cleanup_required`, kills/reaps the exact
+operation cgroup, proves `populated 0` and removal, then records `unknown`.
+Any cleanup uncertainty blocks the runner and capability rather than
+redispatching work.
 
 ### Confirmation
 
@@ -152,3 +176,7 @@ No REST public API, multi-user RBAC, Agent clusters or pools, task priority,
 graph authoring, product adapters, or standalone admin UI is specified.
 No behavior is promised beyond the current Protobuf, Core composition, and
 focused tests.
+
+Production SSM/ECS registry wiring, two-Compose end-to-end acceptance, and
+real Core Runner workload acceptance remain pending. The passed non-root
+delegated-cgroup isolation lane is not a claim that live Core mode is released.

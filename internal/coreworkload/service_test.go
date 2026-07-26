@@ -341,3 +341,96 @@ func TestWorkloadRenewFailurePreventsCompletion(t *testing.T) {
 		t.Fatalf("operation terminalized after renew failure: %+v", op)
 	}
 }
+
+type fencedProvider struct{ apply, read int }
+
+func (p *fencedProvider) Apply(_ context.Context, plan Plan, op Operation) (Readback, error) {
+	p.apply++
+	return Readback{TargetKind: plan.TargetKind, WorkloadID: op.WorkloadID, State: "ready", Identity: plan.Target.Identity, At: time.Now().UTC()}, nil
+}
+func (p *fencedProvider) Destroy(context.Context, Plan, Operation) (Readback, error) {
+	return Readback{}, errors.New("unused")
+}
+func (p *fencedProvider) Read(_ context.Context, plan Plan, op Operation) (Readback, error) {
+	p.read++
+	return Readback{TargetKind: plan.TargetKind, WorkloadID: op.WorkloadID, State: "ready", Identity: plan.Target.Identity, At: time.Now().UTC()}, nil
+}
+
+func TestWorkloadFencedHandlerPreservesWorkerLease(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	st := NewMemoryStore(func() time.Time { return now })
+	svc, _ := NewService(st, func() time.Time { return now })
+	pl, err := svc.CreatePlan(context.Background(), testPlanInput(uuid.NewString()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.RequestApply(context.Background(), pl.ID, "", uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Confirm(context.Background(), r.Confirmation.ConfirmationID, r.Confirmation.Revision); err != nil {
+		t.Fatal(err)
+	}
+	holder := "worker-holder"
+	fence := TaskFence{TaskID: r.Task.ID, Holder: holder, Attempt: 1, LeaseEpoch: 7, Revision: r.Task.Revision + 1, ExpiresAt: now.Add(time.Minute)}
+	st.mu.Lock()
+	task := st.tasks[r.Task.ID]
+	task.Status, task.Attempt, task.LeaseEpoch, task.Revision = coretask.StatusRunning, 1, fence.LeaseEpoch, fence.Revision
+	task.Lease = &coretask.Lease{TaskID: task.ID, Attempt: 1, Epoch: fence.LeaseEpoch, Holder: holder, ExpiresAt: fence.ExpiresAt}
+	st.tasks[task.ID] = task
+	st.mu.Unlock()
+	p := &fencedProvider{}
+	h, _ := NewHandler(st, p)
+	done, err := h.Handle(context.Background(), r.Operation.ID, pl.Digest, r.Operation.Revision, fence)
+	if err != nil || done.Status != OperationSucceeded || p.apply != 1 {
+		t.Fatalf("done=%+v err=%v apply=%d", done, err, p.apply)
+	}
+	got := st.tasks[r.Task.ID]
+	if got.Lease == nil || got.Lease.Holder != holder {
+		t.Fatalf("worker lease replaced: %+v", got.Lease)
+	}
+}
+
+func TestWorkloadFencedRecoveryReadsWithoutApplyAfterReclaim(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	st := NewMemoryStore(func() time.Time { return now })
+	svc, _ := NewService(st, func() time.Time { return now })
+	pl, err := svc.CreatePlan(context.Background(), testPlanInput(uuid.NewString()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.RequestApply(context.Background(), pl.ID, "", uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Confirm(context.Background(), r.Confirmation.ConfirmationID, r.Confirmation.Revision); err != nil {
+		t.Fatal(err)
+	}
+	old := TaskFence{TaskID: r.Task.ID, Holder: "old", Attempt: 1, LeaseEpoch: 1, Revision: r.Task.Revision + 1, ExpiresAt: now.Add(time.Minute)}
+	st.mu.Lock()
+	task := st.tasks[r.Task.ID]
+	task.Status, task.Attempt, task.LeaseEpoch, task.Revision = coretask.StatusRunning, 1, old.LeaseEpoch, old.Revision
+	task.Lease = &coretask.Lease{TaskID: task.ID, Attempt: 1, Epoch: old.LeaseEpoch, Holder: old.Holder, ExpiresAt: old.ExpiresAt}
+	st.tasks[task.ID] = task
+	st.mu.Unlock()
+	if _, _, err = st.ConsumeFenced(context.Background(), r.Operation.ID, r.Confirmation.ConfirmationID, pl.Digest, r.Operation.Revision, old); err != nil {
+		t.Fatal(err)
+	}
+	p := &fencedProvider{}
+	h, _ := NewHandler(st, p)
+	successor := old
+	successor.Holder, successor.LeaseEpoch, successor.Revision = "successor", old.LeaseEpoch+1, old.Revision+1
+	st.mu.Lock()
+	task = st.tasks[r.Task.ID]
+	task.LeaseEpoch, task.Revision = successor.LeaseEpoch, successor.Revision
+	task.Lease = &coretask.Lease{TaskID: task.ID, Attempt: 1, Epoch: successor.LeaseEpoch, Holder: successor.Holder, ExpiresAt: successor.ExpiresAt}
+	st.tasks[task.ID] = task
+	st.mu.Unlock()
+	if _, _, err = st.CompleteDispatch(context.Background(), r.Operation.ID, r.Task.ID, "stale", old.LeaseEpoch, "", Readback{}, ""); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("stale completion err=%v", err)
+	}
+	recovered, err := h.Recover(context.Background(), r.Operation.ID, successor)
+	if err != nil || recovered.Status != OperationSucceeded || p.apply != 0 || p.read != 1 {
+		t.Fatalf("recovered=%+v err=%v apply=%d read=%d", recovered, err, p.apply, p.read)
+	}
+}

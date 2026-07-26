@@ -34,6 +34,7 @@ type CoreServerConfig struct {
 	KnowledgeService            agentv1.CoreKnowledgeServiceServer
 	CloudControlService         agentv1.CoreCloudControlServiceServer
 	WorkloadService             agentv1.WorkloadServiceServer
+	CoreRunnerReady             bool
 }
 
 type CoreServer struct {
@@ -80,6 +81,9 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 	}
 	if config.CloudControlService != nil {
 		capabilityNames = append(capabilityNames, "aws.control")
+	}
+	if config.CoreRunnerReady {
+		capabilityNames = append(capabilityNames, "workload.core_runner")
 	}
 	agentService, err := rpcapi.NewAgentService(config.InstanceID, capabilityNames...)
 	if err != nil {

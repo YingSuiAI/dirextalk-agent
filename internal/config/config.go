@@ -41,6 +41,9 @@ type Config struct {
 	CoreExtensionWorkspaceRoot      string        `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
 	CoreExtensionRunnerSocket       string        `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
 	CoreExtensionRunnerUID          uint32        `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
+	CoreWorkloadEnabled             bool          `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
+	CoreWorkloadRunnerSocket        string        `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
+	CoreWorkloadRunnerUID           uint32        `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
 	CoreKnowledgeEnabled            bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
 	CoreKnowledgeContentRoot        string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
 	CoreKnowledgeMountRoot          string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
@@ -115,6 +118,9 @@ func ValidateCore(cfg *Config) error {
 	if err := ValidateCoreExtension(cfg); err != nil {
 		return err
 	}
+	if err := ValidateCoreWorkload(cfg); err != nil {
+		return err
+	}
 	if strings.TrimSpace(cfg.ListenAddress) == "" {
 		cfg.ListenAddress = ":9443"
 	}
@@ -153,6 +159,25 @@ func ValidateCore(cfg *Config) error {
 		case "tls_key_file":
 			cfg.TLSKeyFile = resolved
 		}
+	}
+	return nil
+}
+
+// ValidateCoreWorkload validates only the explicit local Core Runner
+// composition. Disabled mode remains planning/confirmation-only.
+func ValidateCoreWorkload(cfg *Config) error {
+	if cfg == nil || !cfg.CoreWorkloadEnabled {
+		return nil
+	}
+	if cfg.CoreWorkloadRunnerUID == 0 {
+		return errors.New("core_workload_runner_uid must be positive")
+	}
+	if runtime.GOOS != "windows" && cfg.CoreWorkloadRunnerUID == uint32(os.Geteuid()) {
+		return errors.New("core_workload_runner_uid must differ from Agent uid")
+	}
+	value := strings.TrimSpace(cfg.CoreWorkloadRunnerSocket)
+	if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value {
+		return errors.New("core_workload_runner_socket must be an absolute clean path")
 	}
 	return nil
 }

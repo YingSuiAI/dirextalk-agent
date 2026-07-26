@@ -26,17 +26,48 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD int) (in
 		unix.Close(rootFD)
 		return -1, sandboxChildFailure("layout", err)
 	}
+	if bootstrap.CoreTmpfsBytes > 0 {
+		if err := mountSandboxFile(sandboxManagerFD, rootFD, "run/manager", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY); err != nil {
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("manager-mount", err)
+		}
+	}
 	if err := mountSandboxTree(installFD, rootFD, "app", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "app-clone", "app-remount", "app-bind"); err != nil {
 		unix.Close(rootFD)
 		return -1, err
 	}
-	if err := mountSandboxTree(workspaceFD, rootFD, "work", sandboxMountBaseAttrs|unix.MOUNT_ATTR_NOEXEC, "work-clone", "work-remount", "work-bind"); err != nil {
+	if bootstrap.CoreTmpfsBytes > 0 {
+		work, e := newSandboxTmpfs(bootstrap.CoreTmpfsBytes, 0o700, sandboxMountBaseAttrs|unix.MOUNT_ATTR_NOEXEC)
+		if e != nil {
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("work-tmpfs", e)
+		}
+		workTarget, openErr := openSandboxDirAt(rootFD, "work")
+		if openErr == nil {
+			e = moveSandboxMount(work, workTarget)
+			unix.Close(workTarget)
+		}
+		if openErr != nil || e != nil {
+			unix.Close(work)
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("work-tmpfs", e)
+		}
+		unix.Close(work)
+	} else if err := mountSandboxTree(workspaceFD, rootFD, "work", sandboxMountBaseAttrs|unix.MOUNT_ATTR_NOEXEC, "work-clone", "work-remount", "work-bind"); err != nil {
 		unix.Close(rootFD)
 		return -1, err
 	}
 	if err := mountSandboxSecrets(rootFD, bootstrap); err != nil {
 		unix.Close(rootFD)
 		return -1, err
+	}
+	if bootstrap.CoreTmpfsBytes > 0 {
+		// Make only the root tmpfs mount read-only. /work is a distinct tmpfs
+		// mount, so it remains the sole writable location.
+		if err := unix.MountSetattr(rootFD, "", unix.AT_EMPTY_PATH, &unix.MountAttr{Attr_set: sandboxMountBaseAttrs | unix.MOUNT_ATTR_RDONLY}); err != nil {
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("root-remount", err)
+		}
 	}
 	return rootFD, nil
 }
@@ -67,7 +98,14 @@ func createSandboxLayout(rootFD int) error {
 		return err
 	}
 	defer unix.Close(runFD)
-	return unix.Mkdirat(runFD, "secrets", 0o700)
+	if err := unix.Mkdirat(runFD, "secrets", 0o700); err != nil {
+		return err
+	}
+	fd, err := unix.Openat(runFD, "manager", unix.O_RDONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o500)
+	if err == nil {
+		err = unix.Close(fd)
+	}
+	return err
 }
 
 func openSandboxDirAt(parentFD int, name string) (int, error) {
@@ -127,6 +165,23 @@ func mountSandboxTree(sourceFD, rootFD int, target string, attrs uint64, cloneSt
 		return sandboxChildFailure(moveStage, err)
 	}
 	return nil
+}
+
+func mountSandboxFile(sourceFD, rootFD int, target string, attrs uint64) error {
+	targetFD, err := unix.Openat(rootFD, target, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(targetFD)
+	tree, err := unix.OpenTree(sourceFD, "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+	if err != nil {
+		return err
+	}
+	defer unix.Close(tree)
+	if err = unix.MountSetattr(tree, "", uint(unix.AT_EMPTY_PATH), &unix.MountAttr{Attr_set: attrs}); err != nil {
+		return err
+	}
+	return unix.MoveMount(tree, "", targetFD, "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
 }
 
 func setSandboxMountAttrs(mountFD int, attrs uint64) error {

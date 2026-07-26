@@ -27,7 +27,7 @@ type ReceiptStore struct {
 // without treating a stale Apply operation as replayable.
 type OperationIntent struct {
 	Request Request `json:"request"`
-	State   string  `json:"state"` // applying, ready, destroying, destroyed, unknown
+	State   string  `json:"state"` // applying, ready, destroying, destroyed, unknown, cleanup_required
 	Receipt Receipt `json:"receipt,omitempty"`
 }
 
@@ -44,7 +44,7 @@ func (s *ReceiptStore) GetIntent(key string) (OperationIntent, bool, error) {
 	return in, true, nil
 }
 func (s *ReceiptStore) PutIntent(in OperationIntent) error {
-	if in.Request.Validate() != nil || (in.State != "applying" && in.State != "ready" && in.State != "destroying" && in.State != "destroyed" && in.State != "unknown") {
+	if in.Request.Validate() != nil || !validJournalState(in.State) {
 		return ErrDenied
 	}
 	b, e := json.Marshal(in)
@@ -54,7 +54,7 @@ func (s *ReceiptStore) PutIntent(in OperationIntent) error {
 	return s.writeFile(intentName(in.Request.Key()), b, false)
 }
 func (s *ReceiptStore) ReplaceIntent(in OperationIntent) error {
-	if in.Request.Validate() != nil {
+	if in.Request.Validate() != nil || !validJournalState(in.State) {
 		return ErrDenied
 	}
 	b, e := json.Marshal(in)
@@ -62,6 +62,9 @@ func (s *ReceiptStore) ReplaceIntent(in OperationIntent) error {
 		return ErrDenied
 	}
 	return s.writeFile(intentName(in.Request.Key()), b, true)
+}
+func validJournalState(v string) bool {
+	return v == "applying" || v == "ready" || v == "destroying" || v == "destroyed" || v == "unknown" || v == "cleanup_required"
 }
 
 func (s *ReceiptStore) readFile(name string) ([]byte, bool, error) {
@@ -254,4 +257,102 @@ func (s *ReceiptStore) Replace(key string, oldDigest string, r Receipt) error {
 		_ = d.Close()
 	}
 	return err
+}
+
+// List returns only validated lifecycle receipts.  A malformed journal is a
+// readiness failure, never something a restarted runner may silently skip.
+func (s *ReceiptStore) List() (map[string]Receipt, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return nil, ErrDenied
+	}
+	out := make(map[string]Receipt)
+	for _, entry := range entries {
+		name := entry.Name()
+		if len(name) == 76 && name[:7] == "intent-" && filepath.Ext(name) == ".json" {
+			continue
+		}
+		if len(name) != 69 || filepath.Ext(name) != ".json" {
+			return nil, ErrDenied
+		}
+		b, ok, err := s.readFile(name)
+		if err != nil || !ok {
+			return nil, ErrDenied
+		}
+		var r Receipt
+		if json.Unmarshal(b, &r) != nil || r.Digest == "" {
+			return nil, ErrDenied
+		}
+		out[name] = r
+	}
+	return out, nil
+}
+
+func (s *ReceiptStore) ListIntents() ([]OperationIntent, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return nil, ErrDenied
+	}
+	out := make([]OperationIntent, 0)
+	for _, entry := range entries {
+		name := entry.Name()
+		if len(name) == 69 && filepath.Ext(name) == ".json" {
+			continue
+		}
+		if len(name) != 76 || name[:7] != "intent-" || filepath.Ext(name) != ".json" {
+			return nil, ErrDenied
+		}
+		b, ok, err := s.readFile(name)
+		if err != nil || !ok {
+			return nil, ErrDenied
+		}
+		var in OperationIntent
+		if json.Unmarshal(b, &in) != nil || in.Request.Validate() != nil || !validJournalState(in.State) {
+			return nil, ErrDenied
+		}
+		out = append(out, in)
+	}
+	return out, nil
+}
+
+// MarkUnknown is the only restart/liveness transition.  It intentionally
+// cannot manufacture a destroyed tombstone.
+func (s *ReceiptStore) MarkUnknown(key string, old Receipt) error {
+	if (old.State != "ready" && old.State != "cleanup_required") || old.Destroyed || old.Digest == "" {
+		return ErrDenied
+	}
+	unknown := old
+	unknown.State = "unknown"
+	unknown.Destroyed = false
+	b, err := json.Marshal(unknown)
+	if err != nil || len(b) == 0 || len(b) > MaxPacketBytes {
+		return ErrDenied
+	}
+	return s.writeFile(receiptName(key), b, true)
+}
+
+func (s *ReceiptStore) MarkCleanupRequired(key string, old Receipt) error {
+	if old.Destroyed || old.Digest == "" {
+		return ErrDenied
+	}
+	r := old
+	r.State = "cleanup_required"
+	b, err := json.Marshal(r)
+	if err != nil {
+		return ErrDenied
+	}
+	return s.writeFile(receiptName(key), b, true)
+}
+
+func (s *ReceiptStore) Sync() error {
+	d, err := os.Open(s.root)
+	if err != nil {
+		return ErrDenied
+	}
+	err = d.Sync()
+	_ = d.Close()
+	if err != nil {
+		return ErrDenied
+	}
+	return nil
 }

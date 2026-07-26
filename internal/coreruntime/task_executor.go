@@ -9,6 +9,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 )
 
 type TaskExecutor struct {
@@ -21,6 +22,7 @@ type TaskExecutor struct {
 	skillInstructions SkillInstructionResolver
 	mu                sync.RWMutex
 	handlers          map[coretask.TaskKind]TaskHandler
+	workload          *coreworkload.Handler
 }
 
 // SnapshotProfileResolver reconstructs a provider client from an immutable
@@ -97,8 +99,13 @@ func (e *TaskExecutor) SetSkillInstructionResolver(s SkillInstructionResolver) {
 	e.skillInstructions = s
 }
 
+// SetWorkloadHandler wires the fenced Core Runner/AWS workload domain
+// handler. The handler owns the operation terminal transition; the generic
+// task worker must not write a second terminal state.
+func (e *TaskExecutor) SetWorkloadHandler(h *coreworkload.Handler) { e.workload = h }
+
 func (e *TaskExecutor) RegisterHandler(kind coretask.TaskKind, handler TaskHandler) error {
-	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindAWSChange) || handler == nil {
+	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindAWSChange && kind != coretask.TaskKindWorkload) || handler == nil {
 		return errors.New("invalid task handler")
 	}
 	e.mu.Lock()
@@ -121,6 +128,9 @@ func (e *TaskExecutor) ExecuteManaged(ctx context.Context, task coretask.Task) (
 		kind = coretask.TaskKindAgent
 	}
 	if kind != coretask.TaskKindAgent {
+		if kind == coretask.TaskKindWorkload && e.workload != nil {
+			return e.executeWorkload(execCtx, task), nil
+		}
 		e.mu.RLock()
 		h := e.handlers[kind]
 		e.mu.RUnlock()
@@ -141,6 +151,51 @@ func (e *TaskExecutor) ExecuteManaged(ctx context.Context, task coretask.Task) (
 	}
 	result, err, fence := e.executeAgentManaged(execCtx, task)
 	return ManagedOutcome{Result: result, Err: err, Fence: fence}, nil
+}
+
+func (e *TaskExecutor) executeWorkload(ctx context.Context, task coretask.Task) ManagedOutcome {
+	p := task.Spec.Payload.Workload
+	if p == nil {
+		return ManagedOutcome{Err: errors.New("workload task payload is missing"), TerminalOwned: true}
+	}
+	if task.Lease == nil || task.Lease.TaskID != task.ID || task.Attempt == 0 || task.LeaseEpoch == 0 || task.Revision == 0 || task.Lease.Attempt != task.Attempt || task.Lease.Epoch != task.LeaseEpoch || task.Lease.ExpiresAt.IsZero() || !task.Lease.ExpiresAt.After(time.Now().UTC()) {
+		return ManagedOutcome{Err: coretask.ErrLeaseConflict, TerminalOwned: true}
+	}
+	fence := coreworkload.TaskFence{TaskID: task.ID, Holder: task.Lease.Holder, Attempt: task.Attempt, LeaseEpoch: task.LeaseEpoch, Revision: task.Revision, ExpiresAt: task.Lease.ExpiresAt}
+	current, err := e.workload.GetOperation(ctx, p.OperationID)
+	if err != nil || current.TaskID != fence.TaskID || current.WorkloadID != p.WorkloadID || current.PlanID != p.PlanID || current.PlanRevision != p.PlanRevision || current.PlanDigest != p.PlanDigest || current.TargetKind != coreworkload.TargetKind(p.TargetKind) || current.ConfirmationID != p.ConfirmationID {
+		if err == nil {
+			err = coreworkload.ErrStale
+		}
+		return ManagedOutcome{Err: err}
+	}
+	if current.Status == coreworkload.OperationRunning {
+		op, recoverErr := e.workload.Recover(ctx, p.OperationID, fence)
+		if recoverErr != nil {
+			return ManagedOutcome{Err: recoverErr, TerminalOwned: true}
+		}
+		return ManagedOutcome{TerminalOwned: isWorkloadTerminal(op.Status)}
+	}
+	op, err := e.workload.Handle(ctx, p.OperationID, p.PlanDigest, current.Revision, fence)
+	if err != nil {
+		if current, getErr := e.workload.GetOperation(ctx, p.OperationID); getErr == nil {
+			switch current.Status {
+			case coreworkload.OperationSucceeded, coreworkload.OperationFailed, coreworkload.OperationRejected, coreworkload.OperationExpired, coreworkload.OperationCanceled, coreworkload.OperationUncertain:
+				return ManagedOutcome{Err: err, TerminalOwned: true}
+			}
+		}
+		return ManagedOutcome{Err: err}
+	}
+	return ManagedOutcome{TerminalOwned: isWorkloadTerminal(op.Status)}
+}
+
+func isWorkloadTerminal(status coreworkload.OperationStatus) bool {
+	switch status {
+	case coreworkload.OperationSucceeded, coreworkload.OperationFailed, coreworkload.OperationRejected, coreworkload.OperationExpired, coreworkload.OperationCanceled, coreworkload.OperationUncertain:
+		return true
+	default:
+		return false
+	}
 }
 
 func taskExecutionContext(ctx context.Context, task coretask.Task) (context.Context, context.CancelFunc) {

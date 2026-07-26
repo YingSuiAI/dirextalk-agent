@@ -33,6 +33,26 @@ func TestSandboxChildFailureUsesOnlySafeStage(t *testing.T) {
 	}
 }
 
+func TestSandboxExecArgvPreservesArgv0AndPositionalArguments(t *testing.T) {
+	if got := sandboxExecArgv(nil); len(got) != 1 || got[0] != "/app/entry" {
+		t.Fatalf("empty argv = %#v, want default argv0", got)
+	}
+	input := []string{"sh", "-eu", "/app/service"}
+	got := sandboxExecArgv(input)
+	if len(got) != len(input) {
+		t.Fatalf("argv length = %d, want %d", len(got), len(input))
+	}
+	for i := range input {
+		if got[i] != input[i] {
+			t.Fatalf("argv[%d] = %q, want %q", i, got[i], input[i])
+		}
+	}
+	got[0] = "changed"
+	if input[0] != "sh" {
+		t.Fatal("argv helper aliased caller input")
+	}
+}
+
 func TestSandboxChildFailurePreservesSafeNestedStage(t *testing.T) {
 	raw := errors.New("operation failed: /run/secrets/production-token")
 	err := sandboxChildFailure("mounts", sandboxChildFailure("app-bind", raw))

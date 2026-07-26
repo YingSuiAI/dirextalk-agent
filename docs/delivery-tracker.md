@@ -18,6 +18,10 @@ verification. External product work is not included.
 - Core Knowledge uploads, mounts, memory, indexing/search composition.
 - Typed Core AWS credentials, plans, and confirmation-bound change composition.
 - Versioned Core Protobufs and Core-focused contract tests.
+- `WorkloadService` planning/confirmation and a fenced `WORKLOAD` Task path.
+- Optional Core Runner protocol: nonce/full readiness, descriptor-only sealed
+  result export, exact tmpfs writable quota, zero persistent raw output, and
+  restart `cleanup_required` reconciliation.
 
 ## Verification status
 
@@ -55,9 +59,17 @@ delivery evidence is separate from the Agent runtime boundary.
 
 ## Maintenance policy
 
-Core v1 has no known open acceptance defect. Future fixes or hardening remain
-within the current contract. New behavior must first be reflected in the
-versioned Protobuf, migrations, focused tests, and the Core specification.
+Runner-focused verification passed without credentials: `go test -race
+./internal/coreworkload/runner ./internal/extensionrunner`, focused Core Runner
+and Agent command/config/app tests, `go build ./cmd/...`, `git diff --check`,
+and `TestLinuxIsolationIntegrationOptIn` in a transient non-root delegated
+systemd user scope. This is extension-isolation lane evidence only.
+
+Production SSM/ECS registry wiring, two-Compose E2E, and real Core Runner
+workload acceptance remain pending. Until those are complete, runtime probe
+failure intentionally leaves `workload.core_runner` disabled while planning
+RPCs remain available. New behavior must first be reflected in the versioned
+Protobuf, migrations, focused tests, and the Core specification.
 
 ## Product boundary
 

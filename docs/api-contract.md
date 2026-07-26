@@ -15,6 +15,7 @@ The Core server may register these services, subject to configuration gates:
 - `MCPService` and `SkillService`;
 - `CoreKnowledgeService`;
 - `CoreCloudControlService`.
+- `WorkloadService` for durable workload planning and operations.
 
 Health and reflection are optional server features. No REST API, admin UI, or
 multi-user authorization surface is part of Core v1.
@@ -81,6 +82,19 @@ source revisions and index bindings.
 `CoreCloudControlService` exposes typed AWS credentials, `TestCredentialIdentity`
 identity checks, plans, quotes, and confirmed changes. It does not expose arbitrary AWS SDK calls or
 let model/tool arguments bypass confirmation.
+
+`WorkloadService` plans and confirms work durably. Its `WORKLOAD` Task handler
+uses the normal revision/attempt/lease-epoch fence. The optional local Core
+Runner is not a public transport: it accepts descriptor-only Unix packets,
+exports sealed results, and has no raw secret or Agent credential channel.
+`workload.core_runner` is advertised only after a nonce-backed full readiness
+probe, including its bounded userns/tmpfs/seccomp/cgroup exercise. Supervisor
+restart recovery persists `cleanup_required` before exact cgroup reaping;
+cleanup uncertainty fails closed and does not create a successful destroy.
+
+Production SSM/ECS registry execution, two-Compose E2E, and live Core Runner
+workload acceptance are pending; the documented isolation lane is not a live
+Core-mode release claim.
 
 ## Contract changes
 

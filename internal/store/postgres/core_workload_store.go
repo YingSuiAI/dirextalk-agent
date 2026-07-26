@@ -116,6 +116,37 @@ func (s *CoreWorkloadStore) RenewDispatchLease(ctx context.Context, id, claim st
 	return s.GetOperation(ctx, id)
 }
 
+// RenewDispatchLeaseFenced renews only the workload operation dispatch lease.
+// The generic WorkerPool remains the sole writer of core_tasks lease fields.
+func (s *CoreWorkloadStore) RenewDispatchLeaseFenced(ctx context.Context, id, claim string, epoch uint64, fence coreworkload.TaskFence) (coreworkload.Operation, error) {
+	now := time.Now().UTC()
+	if !fence.Valid(now) {
+		return coreworkload.Operation{}, coreworkload.ErrRevisionConflict
+	}
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return coreworkload.Operation{}, err
+	}
+	defer tx.Rollback(ctx)
+	var taskID string
+	if err = tx.QueryRow(ctx, `SELECT task_id::text FROM core_workload_operations WHERE owner_id=$1 AND operation_id=$2 AND task_id=$5 AND dispatch_claim=$3::uuid AND dispatch_epoch=$4 AND status='running' AND dispatch_lease_until>$6 FOR UPDATE`, s.store.instanceID, id, claim, epoch, fence.TaskID, now).Scan(&taskID); err != nil {
+		return coreworkload.Operation{}, coreworkload.ErrRevisionConflict
+	}
+	var rev, attempt, taskEpoch int64
+	var holder string
+	var leaseUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT revision,attempt,lease_epoch,lease_holder,lease_expires_at FROM core_tasks WHERE task_id=$1 AND status='running' FOR UPDATE`, taskID).Scan(&rev, &attempt, &taskEpoch, &holder, &leaseUntil); err != nil || uint64(rev) != fence.Revision || uint32(attempt) != fence.Attempt || uint64(taskEpoch) != fence.LeaseEpoch || holder != fence.Holder || leaseUntil == nil || !leaseUntil.After(now) {
+		return coreworkload.Operation{}, coreworkload.ErrRevisionConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_workload_operations SET dispatch_lease_until=$5,revision=revision+1,updated_at=$5 WHERE owner_id=$1 AND operation_id=$2 AND task_id=$7 AND dispatch_claim=$3::uuid AND dispatch_epoch=$4 AND dispatch_lease_until>$6`, s.store.instanceID, id, claim, epoch, now.Add(30*time.Second), now, fence.TaskID); err != nil {
+		return coreworkload.Operation{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return coreworkload.Operation{}, err
+	}
+	return s.GetOperation(ctx, id)
+}
+
 func mustJSONWorkload(v any) []byte { b, _ := json.Marshal(v); return b }
 
 func NewCoreWorkloadStore(s *Store) *CoreWorkloadStore { return &CoreWorkloadStore{store: s} }
@@ -581,6 +612,67 @@ func (s *CoreWorkloadStore) Consume(ctx context.Context, id, confirmationID, dig
 	op.DispatchLeaseUntil = now.Add(30 * time.Second)
 	return op, coretask.Task{ID: op.TaskID, Status: coretask.StatusRunning, Revision: 2, Attempt: 1, LeaseEpoch: 1, Lease: &coretask.Lease{TaskID: op.TaskID, Attempt: 1, Epoch: 1, Holder: "workload-handler", ExpiresAt: now.Add(time.Hour)}}, nil
 }
+
+// ConsumeFenced binds confirmation consumption to the already claimed
+// generic task lease. It does not rewrite the task lease or task revision.
+func (s *CoreWorkloadStore) ConsumeFenced(ctx context.Context, id, confirmationID, digest string, expected uint64, fence coreworkload.TaskFence) (coreworkload.Operation, coretask.Task, error) {
+	now := time.Now().UTC()
+	if !fence.Valid(now) {
+		return coreworkload.Operation{}, coretask.Task{}, coreworkload.ErrRevisionConflict
+	}
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return coreworkload.Operation{}, coretask.Task{}, err
+	}
+	defer tx.Rollback(ctx)
+	var op coreworkload.Operation
+	var kind, target, status string
+	if err = tx.QueryRow(ctx, `SELECT operation_id::text,workload_id::text,plan_id::text,operation,plan_revision,plan_digest,target_kind,task_id::text,confirmation_id::text,status,revision,created_at,updated_at,dispatch_state,dispatch_attempt,dispatch_epoch,COALESCE(dispatch_claim::text,''),COALESCE(dispatch_lease_until,'epoch'::timestamptz) FROM core_workload_operations WHERE owner_id=$1 AND operation_id=$2 FOR UPDATE`, s.store.instanceID, id).Scan(&op.ID, &op.WorkloadID, &op.PlanID, &kind, &op.PlanRevision, &op.PlanDigest, &target, &op.TaskID, &op.ConfirmationID, &status, &op.Revision, &op.CreatedAt, &op.UpdatedAt, &op.DispatchState, &op.DispatchAttempt, &op.DispatchEpoch, &op.DispatchClaim, &op.DispatchLeaseUntil); err != nil {
+		return op, coretask.Task{}, coreworkload.ErrNotFound
+	}
+	op.Kind, op.TargetKind, op.Status = coreworkload.OperationKind(kind), coreworkload.TargetKind(target), coreworkload.OperationStatus(status)
+	var taskRevision int64
+	var taskStatus, holder string
+	var taskAttempt, taskEpoch int64
+	var taskLeaseUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT revision,status,attempt,lease_epoch,lease_holder,lease_expires_at FROM core_tasks WHERE task_id=$1 FOR UPDATE`, op.TaskID).Scan(&taskRevision, &taskStatus, &taskAttempt, &taskEpoch, &holder, &taskLeaseUntil); err != nil {
+		return op, coretask.Task{}, err
+	}
+	var cstate string
+	var expiresAt time.Time
+	if err = tx.QueryRow(ctx, `SELECT state,expires_at FROM core_confirmations WHERE confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&cstate, &expiresAt); err != nil {
+		return op, coretask.Task{}, err
+	}
+	if op.TaskID != fence.TaskID || op.ConfirmationID != confirmationID || op.PlanDigest != digest || op.Revision != expected || op.Status != coreworkload.OperationWaitingUser || cstate != "confirmed" || !expiresAt.After(now) || taskStatus != "running" || taskAttempt != int64(fence.Attempt) || taskEpoch != int64(fence.LeaseEpoch) || int(taskRevision) != int(fence.Revision) || holder != fence.Holder || taskLeaseUntil == nil || !taskLeaseUntil.After(now) {
+		return op, coretask.Task{}, coreworkload.ErrRevisionConflict
+	}
+	claim := uuid.New()
+	if _, err = tx.Exec(ctx, `UPDATE core_confirmations SET state='consumed',revision=revision+1,updated_at=$2 WHERE confirmation_id=$1 AND state='confirmed'`, confirmationID, now); err != nil {
+		return op, coretask.Task{}, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core_workload_operations SET status='running',dispatch_state='dispatched',dispatch_attempt=dispatch_attempt+1,dispatch_epoch=$3,dispatch_claim=$4,dispatch_lease_until=$5,revision=revision+1,updated_at=$6 WHERE owner_id=$1 AND operation_id=$2 AND task_id=$8 AND status='waiting_user' AND revision=$7`, s.store.instanceID, id, fence.LeaseEpoch, claim, now.Add(30*time.Second), now, expected, fence.TaskID)
+	if err != nil {
+		return op, coretask.Task{}, err
+	}
+	if tag.RowsAffected() != 1 {
+		return op, coretask.Task{}, coreworkload.ErrRevisionConflict
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_workload_events(owner_id,operation_id,sequence,kind,status,at) SELECT $1,$2,COALESCE(MAX(sequence),0)+1,'consumed','running',$3 FROM core_workload_events WHERE owner_id=$1 AND operation_id=$2`, s.store.instanceID, id, now); err != nil {
+		return op, coretask.Task{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return op, coretask.Task{}, err
+	}
+	updated, err := s.GetOperation(ctx, id)
+	if err != nil {
+		return op, coretask.Task{}, err
+	}
+	t, err := NewCoreTaskStore(s.store).GetTask(ctx, fence.TaskID)
+	if err != nil {
+		return op, coretask.Task{}, err
+	}
+	return updated, t, nil
+}
 func (s *CoreWorkloadStore) AppendEvent(ctx context.Context, id string, e coreworkload.Event) (coreworkload.Event, error) {
 	if !coreworkload.ValidUUID(id) {
 		return coreworkload.Event{}, coreworkload.ErrInvalid
@@ -611,6 +703,17 @@ func (s *CoreWorkloadStore) AppendEvent(ctx context.Context, id string, e corewo
 	return e, nil
 }
 func (s *CoreWorkloadStore) CompleteDispatch(ctx context.Context, id, taskID, claim string, epoch uint64, code string, readback coreworkload.Readback, summary string) (coreworkload.Operation, coretask.Task, error) {
+	return s.completeDispatch(ctx, id, taskID, claim, epoch, code, readback, summary, nil)
+}
+
+func (s *CoreWorkloadStore) CompleteDispatchFenced(ctx context.Context, id, taskID, claim string, epoch uint64, code string, readback coreworkload.Readback, summary string, fence coreworkload.TaskFence) (coreworkload.Operation, coretask.Task, error) {
+	if !fence.Valid(time.Now().UTC()) {
+		return coreworkload.Operation{}, coretask.Task{}, coreworkload.ErrRevisionConflict
+	}
+	return s.completeDispatch(ctx, id, taskID, claim, epoch, code, readback, summary, &fence)
+}
+
+func (s *CoreWorkloadStore) completeDispatch(ctx context.Context, id, taskID, claim string, epoch uint64, code string, readback coreworkload.Readback, summary string, fence *coreworkload.TaskFence) (coreworkload.Operation, coretask.Task, error) {
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return coreworkload.Operation{}, coretask.Task{}, err
@@ -658,7 +761,13 @@ func (s *CoreWorkloadStore) CompleteDispatch(ctx context.Context, id, taskID, cl
 		}
 		return op, fullTask, nil
 	}
-	if claim == "" || claim != op.DispatchClaim || epoch != op.DispatchEpoch || !op.DispatchLeaseUntil.After(time.Now().UTC()) || taskStatus != "running" || holder != "workload-handler" || leaseEpoch != int64(epoch) || taskLeaseUntil == nil || !taskLeaseUntil.After(time.Now().UTC()) {
+	validTask := taskStatus == "running" && leaseEpoch == int64(epoch) && taskLeaseUntil != nil && taskLeaseUntil.After(time.Now().UTC())
+	if fence == nil {
+		validTask = validTask && holder == "workload-handler"
+	} else {
+		validTask = validTask && uint64(taskRevision) == fence.Revision && taskAttempt == int(fence.Attempt) && holder == fence.Holder && leaseEpoch == int64(fence.LeaseEpoch) && taskID == fence.TaskID
+	}
+	if claim == "" || claim != op.DispatchClaim || epoch != op.DispatchEpoch || !op.DispatchLeaseUntil.After(time.Now().UTC()) || !validTask {
 		return op, coretask.Task{}, coreworkload.ErrRevisionConflict
 	}
 	now := time.Now().UTC()
@@ -688,7 +797,8 @@ func (s *CoreWorkloadStore) CompleteDispatch(ctx context.Context, id, taskID, cl
 		dispatchState = "uncertain"
 	}
 	safeCode, safeSummary := coreworkload.SafeFailure(code, summary)
-	tag, err := tx.Exec(ctx, `UPDATE core_workload_operations SET status=$3,dispatch_state=$4,dispatch_lease_until=NULL,dispatch_error=$5,completion_fingerprint=$6,completion_result_json=$7,revision=revision+1,failure_code=$8,failure_summary=$9,updated_at=$10 WHERE owner_id=$1 AND operation_id=$2 AND status='running' AND revision=$11 AND dispatch_claim=$12::uuid AND dispatch_epoch=$13 AND dispatch_lease_until>$14`, s.store.instanceID, id, status, dispatchState, safeSummary, fingerprint, rb, safeCode, safeSummary, now, op.Revision, claim, epoch, now)
+	boundTaskID := taskID
+	tag, err := tx.Exec(ctx, `UPDATE core_workload_operations SET status=$3,dispatch_state=$4,dispatch_lease_until=NULL,dispatch_error=$5,completion_fingerprint=$6,completion_result_json=$7,revision=revision+1,failure_code=$8,failure_summary=$9,updated_at=$10 WHERE owner_id=$1 AND operation_id=$2 AND task_id=$15 AND status='running' AND revision=$11 AND dispatch_claim=$12::uuid AND dispatch_epoch=$13 AND dispatch_lease_until>$14`, s.store.instanceID, id, status, dispatchState, safeSummary, fingerprint, rb, safeCode, safeSummary, now, op.Revision, claim, epoch, now, boundTaskID)
 	if err != nil {
 		return op, coretask.Task{}, err
 	}
@@ -824,4 +934,57 @@ func (s *CoreWorkloadStore) RecoverClaim(ctx context.Context, id, requestedClaim
 	}
 	op.DispatchState, op.DispatchEpoch, op.DispatchClaim, op.DispatchLeaseUntil, op.Revision, op.UpdatedAt = "uncertain", op.DispatchEpoch+1, claim.String(), now.Add(30*time.Second), op.Revision+1, now
 	return op, nil
+}
+
+// RecoverClaimFenced advances only the operation recovery claim while binding
+// it to the successor WorkerPool lease. The provider path is read-only.
+func (s *CoreWorkloadStore) RecoverClaimFenced(ctx context.Context, id, requestedClaim string, fence coreworkload.TaskFence) (coreworkload.Operation, error) {
+	now := time.Now().UTC()
+	if !fence.Valid(now) {
+		return coreworkload.Operation{}, coreworkload.ErrRevisionConflict
+	}
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return coreworkload.Operation{}, err
+	}
+	defer tx.Rollback(ctx)
+	var op coreworkload.Operation
+	var kind, target, status string
+	if err = tx.QueryRow(ctx, `SELECT operation_id::text,workload_id::text,plan_id::text,operation,plan_revision,plan_digest,target_kind,task_id::text,confirmation_id::text,status,revision,created_at,updated_at,dispatch_state,dispatch_attempt,dispatch_epoch,COALESCE(dispatch_claim::text,''),COALESCE(dispatch_lease_until,'epoch'::timestamptz) FROM core_workload_operations WHERE owner_id=$1 AND operation_id=$2 FOR UPDATE`, s.store.instanceID, id).Scan(&op.ID, &op.WorkloadID, &op.PlanID, &kind, &op.PlanRevision, &op.PlanDigest, &target, &op.TaskID, &op.ConfirmationID, &status, &op.Revision, &op.CreatedAt, &op.UpdatedAt, &op.DispatchState, &op.DispatchAttempt, &op.DispatchEpoch, &op.DispatchClaim, &op.DispatchLeaseUntil); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return op, coreworkload.ErrNotFound
+		}
+		return op, err
+	}
+	op.Kind, op.TargetKind, op.Status = coreworkload.OperationKind(kind), coreworkload.TargetKind(target), coreworkload.OperationStatus(status)
+	var taskRevision, taskAttempt, taskEpoch int64
+	var taskStatus, holder string
+	var taskLeaseUntil *time.Time
+	if err = tx.QueryRow(ctx, `SELECT revision,status,attempt,lease_epoch,lease_holder,lease_expires_at FROM core_tasks WHERE task_id=$1 FOR UPDATE`, op.TaskID).Scan(&taskRevision, &taskStatus, &taskAttempt, &taskEpoch, &holder, &taskLeaseUntil); err != nil {
+		return op, err
+	}
+	if op.TaskID != fence.TaskID || taskStatus != "running" || uint64(taskRevision) != fence.Revision || uint32(taskAttempt) != fence.Attempt || uint64(taskEpoch) != fence.LeaseEpoch || holder != fence.Holder || taskLeaseUntil == nil || !taskLeaseUntil.After(now) {
+		return op, coreworkload.ErrRevisionConflict
+	}
+	if op.Status != coreworkload.OperationRunning || (op.DispatchState != "dispatched" && op.DispatchState != "uncertain") {
+		return op, nil
+	}
+	if requestedClaim != "" && requestedClaim == op.DispatchClaim && op.DispatchLeaseUntil.After(now) {
+		return op, nil
+	}
+	claim := uuid.New()
+	tag, err := tx.Exec(ctx, `UPDATE core_workload_operations SET dispatch_state='uncertain',dispatch_claim=$3,dispatch_lease_until=$4,dispatch_epoch=$5,revision=revision+1,updated_at=$6 WHERE owner_id=$1 AND operation_id=$2 AND task_id=$8 AND status='running' AND (dispatch_state='dispatched' OR dispatch_state='uncertain') AND revision=$7`, s.store.instanceID, id, claim, now.Add(30*time.Second), fence.LeaseEpoch, now, op.Revision, fence.TaskID)
+	if err != nil {
+		return op, err
+	}
+	if tag.RowsAffected() != 1 {
+		return op, coreworkload.ErrRevisionConflict
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO core_workload_events(owner_id,operation_id,sequence,kind,status,message,at) SELECT $1,$2,COALESCE(MAX(sequence),0)+1,'recovery_claim','running','read-only recovery claimed dispatch fence',$3 FROM core_workload_events WHERE owner_id=$1 AND operation_id=$2`, s.store.instanceID, id, now); err != nil {
+		return op, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return op, err
+	}
+	return s.GetOperation(ctx, id)
 }

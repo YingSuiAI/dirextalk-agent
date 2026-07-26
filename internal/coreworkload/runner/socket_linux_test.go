@@ -4,10 +4,12 @@ package runner
 
 import (
 	"context"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/google/uuid"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 type fakeExecutor struct{ calls []Request }
@@ -80,6 +82,90 @@ func TestSocketTransportRoundTrip(t *testing.T) {
 	result, err := client.Call(context.Background(), request)
 	if err != nil || result.State != "unknown" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestProbeRequiresNonceBackedSupervisorResponse(t *testing.T) {
+	d := t.TempDir()
+	_ = os.Chmod(d, 0700)
+	p := filepath.Join(d, "runner.sock")
+	l, err := Listen(p, uint32(os.Geteuid()))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer l.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = NewSupervisor(uint32(os.Geteuid())).Serve(ctx, l) }()
+	client, err := NewSocketTransport(p, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.Probe(context.Background()); err != nil {
+		t.Fatalf("supervisor probe: %v", err)
+	}
+}
+
+func TestProbeRejectsInertSameUIDListener(t *testing.T) {
+	d := t.TempDir()
+	_ = os.Chmod(d, 0700)
+	p := filepath.Join(d, "runner.sock")
+	l, err := Listen(p, uint32(os.Geteuid()))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer l.Close()
+	go func() {
+		c, e := l.AcceptUnix()
+		if e == nil {
+			defer c.Close()
+			b := make([]byte, MaxPacketBytes)
+			_, _ = c.Read(b)
+		}
+	}()
+	client, err := NewSocketTransport(p, uint32(os.Geteuid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err = client.Probe(ctx); err == nil {
+		t.Fatal("inert listener passed probe")
+	}
+}
+
+func TestReapIntentClearsPartialStagingWithoutTouchingBundles(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"work", "cg", "install"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, op := runPlan(t)
+	q := Request{Action: "apply", WorkloadID: op.WorkloadID, OperationID: op.ID, PlanDigest: plan.Digest, PlanRevision: plan.Revision, DispatchClaim: uuid.NewString(), DispatchEpoch: 1, CommandSteps: []string{"x"}, Service: "service", Limits: coreworkload.ResourceLimits{CPU: 1, MemoryMB: 1, Processes: 1, DiskMB: 1, TimeoutS: 1, OutputMB: 1}}
+	if q.Validate() != nil {
+		t.Fatal("invalid fixture")
+	}
+	stage := filepath.Join(root, "work", q.OperationID, q.DispatchClaim)
+	if err := os.MkdirAll(stage, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, "service"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(root, "install", "unrelated")
+	if err := os.Mkdir(unrelated, 0700); err != nil {
+		t.Fatal(err)
+	}
+	e := LinuxExecutor{InstallRoot: filepath.Join(root, "install"), WorkspaceRoot: filepath.Join(root, "work"), CgroupRoot: filepath.Join(root, "cg"), StaticShell: "/bin/sh"}
+	if err := e.ReapIntent(context.Background(), q); err != nil {
+		t.Fatalf("reap partial: %v", err)
+	}
+	if _, err := os.Stat(stage); !os.IsNotExist(err) {
+		t.Fatalf("staging remains: %v", err)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatalf("unrelated bundle removed: %v", err)
 	}
 }
 

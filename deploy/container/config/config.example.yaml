@@ -17,4 +17,10 @@ core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
 core_extension_workspace_root: /var/lib/dirextalk-agent/extension-workspaces
 core_extension_runner_socket: /run/dirextalk-agent/extension-runner.sock
 core_extension_runner_uid: 65531
+# Keep disabled until the core-runner Compose profile has a private socket and
+# genuinely delegated cgroup-v2 subtree. Runner UID is 65530; Agent UID is 65532.
+# A failed runner nonce/full readiness probe keeps workload.core_runner absent.
+core_workload_enabled: false
+core_workload_runner_socket: /run/dirextalk-core-runner/runner.sock
+core_workload_runner_uid: 65530
 core_knowledge_enabled: false

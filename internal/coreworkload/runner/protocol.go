@@ -16,7 +16,24 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 )
 
-const MaxPacketBytes = 64 << 10
+const (
+	MaxPacketBytes = 64 << 10
+	ProtocolV1     = 1
+)
+
+// ProbeRequest and ProbeResponse are private Unix-socket messages.  They are
+// intentionally not part of the Agent gRPC contract: the random nonce proves
+// that the process which passed SO_PEERCRED actually owns this supervisor.
+type ProbeRequest struct {
+	Version int    `json:"version"`
+	Probe   string `json:"probe"`
+	Nonce   string `json:"nonce"`
+}
+type ProbeResponse struct {
+	Version int    `json:"version"`
+	Nonce   string `json:"nonce"`
+	Ready   bool   `json:"ready"`
+}
 
 var (
 	ErrDenied = errors.New("core runner request denied")

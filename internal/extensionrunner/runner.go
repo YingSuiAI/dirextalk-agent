@@ -9,6 +9,54 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// RunCoreResultV1 is the internal Core Runner install path. Unlike RunV2 it
+// never exposes a host workspace to the command: the Linux child receives a
+// private tmpfs /work and only the trusted manager can fill this sealed memfd.
+func RunCoreResultV1(ctx context.Context, backend LinuxBackend, invocation SandboxInvocationV2, tmpfsBytes int64, resultPath string) ([]byte, error) {
+	if tmpfsBytes <= 0 || resultPath == "" || invocation.Install == nil || invocation.WorkspaceFD < 0 {
+		return nil, ErrDenied
+	}
+	fd, err := unix.MemfdCreate("core-result", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(fd)
+	if err = unix.Ftruncate(fd, coreResultMaxBytes); err != nil {
+		return nil, err
+	}
+	invocation.CoreTmpfsBytes, invocation.CoreResultPath, invocation.CoreResultFD = tmpfsBytes, resultPath, fd
+	p, err := backend.StartV2(ctx, invocation)
+	if err != nil {
+		return nil, err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, time.Duration(invocation.Request.TimeoutMS)*time.Millisecond)
+	defer cancel()
+	if waiter, ok := p.(interface {
+		WaitContext(context.Context) ([]byte, []byte, string, error)
+	}); ok {
+		_, _, _, err = waiter.WaitContext(waitCtx)
+	} else {
+		_, _, _, err = p.Wait()
+	}
+	if err != nil {
+		return nil, err
+	}
+	seals, err := unix.FcntlInt(uintptr(fd), unix.F_GET_SEALS, 0)
+	required := unix.F_SEAL_SEAL | unix.F_SEAL_SHRINK | unix.F_SEAL_GROW | unix.F_SEAL_WRITE
+	if err != nil || seals&required != required {
+		return nil, ErrDenied
+	}
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Size <= 0 || st.Size > coreResultMaxBytes {
+		return nil, ErrDenied
+	}
+	b := make([]byte, st.Size)
+	if n, e := unix.Pread(fd, b, 0); e != nil || n != len(b) {
+		return nil, ErrDenied
+	}
+	return b, nil
+}
+
 type Runner struct {
 	InstallResolver   InstallResolver
 	WorkspaceResolver WorkspaceResolver

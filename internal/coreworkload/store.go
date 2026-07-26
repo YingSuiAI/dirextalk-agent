@@ -61,6 +61,17 @@ type Store interface {
 	RecoverClaim(context.Context, string, string) (Operation, error)
 }
 
+// FencedStore is the production workload boundary. The legacy Store methods
+// remain for existing direct domain tests/adapters; production handlers use
+// these methods to bind every mutation to the already-claimed generic task
+// lease without creating a second lease.
+type FencedStore interface {
+	ConsumeFenced(context.Context, string, string, string, uint64, TaskFence) (Operation, coretask.Task, error)
+	CompleteDispatchFenced(context.Context, string, string, string, uint64, string, Readback, string, TaskFence) (Operation, coretask.Task, error)
+	RenewDispatchLeaseFenced(context.Context, string, string, uint64, TaskFence) (Operation, error)
+	RecoverClaimFenced(context.Context, string, string, TaskFence) (Operation, error)
+}
+
 func (s *MemoryStore) CancelOperation(_ context.Context, opID, key string, expected uint64) (Operation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -387,6 +398,47 @@ func (s *MemoryStore) Consume(_ context.Context, opID, confirmationID, planDiges
 	s.events[opID] = append(s.events[opID], Event{OperationID: opID, Sequence: uint64(len(s.events[opID]) + 1), Kind: "consumed", Status: OperationRunning, At: now})
 	return op, t, nil
 }
+
+// ConsumeFenced consumes confirmation exactly once against the generic
+// WorkerPool lease. It deliberately leaves the task lease/revision untouched;
+// the WorkerPool renewer remains the sole owner of that lease.
+func (s *MemoryStore) ConsumeFenced(_ context.Context, opID, confirmationID, planDigest string, expected uint64, fence TaskFence) (Operation, coretask.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	if !fence.Valid(now) {
+		return Operation{}, coretask.Task{}, ErrRevisionConflict
+	}
+	op, ok := s.operations[opID]
+	if !ok {
+		return Operation{}, coretask.Task{}, ErrNotFound
+	}
+	t, ok := s.tasks[op.TaskID]
+	if !ok {
+		return Operation{}, coretask.Task{}, ErrNotFound
+	}
+	c, ok := s.confirmations[confirmationID]
+	if !ok {
+		return Operation{}, coretask.Task{}, ErrNotFound
+	}
+	if op.ConfirmationID != confirmationID || op.PlanDigest != planDigest || op.Revision != expected || op.Status != OperationWaitingUser || c.State != coreconfirmation.StateConfirmed || !c.ExpiresAt.After(now) || !sameTaskFence(t, fence) {
+		return Operation{}, coretask.Task{}, ErrRevisionConflict
+	}
+	op.Status = OperationRunning
+	op.DispatchState = "dispatched"
+	op.DispatchAttempt++
+	op.DispatchEpoch = fence.LeaseEpoch
+	op.DispatchClaim = uuid.NewString()
+	op.DispatchLeaseUntil = now.Add(30 * time.Second)
+	op.Revision++
+	op.UpdatedAt = now
+	c.State = coreconfirmation.StateConsumed
+	c.Revision++
+	c.UpdatedAt = now
+	s.operations[opID], s.confirmations[confirmationID] = op, c
+	s.events[opID] = append(s.events[opID], Event{OperationID: opID, Sequence: uint64(len(s.events[opID]) + 1), Kind: "consumed", Status: OperationRunning, At: now})
+	return op, t, nil
+}
 func (s *MemoryStore) AppendEvent(_ context.Context, id string, e Event) (Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -401,7 +453,7 @@ func (s *MemoryStore) AppendEvent(_ context.Context, id string, e Event) (Event,
 	s.events[id] = append(s.events[id], e)
 	return e, nil
 }
-func (s *MemoryStore) completeLocked(_ context.Context, id, taskID, code string, readback Readback, summary string, claim string, epoch uint64) (Operation, coretask.Task, error) {
+func (s *MemoryStore) completeLocked(_ context.Context, id, taskID, code string, readback Readback, summary string, claim string, epoch uint64, fence *TaskFence) (Operation, coretask.Task, error) {
 	op, ok := s.operations[id]
 	if !ok {
 		return Operation{}, coretask.Task{}, ErrNotFound
@@ -418,7 +470,13 @@ func (s *MemoryStore) completeLocked(_ context.Context, id, taskID, code string,
 		}
 		return Operation{}, coretask.Task{}, ErrRevisionConflict
 	}
-	if claim == "" || op.DispatchClaim != claim || op.DispatchEpoch != epoch || !op.DispatchLeaseUntil.After(now) || t.Status != coretask.StatusRunning || t.Lease == nil || t.Lease.Holder != "workload-handler" || t.Lease.Epoch != epoch || !t.Lease.ExpiresAt.After(now) {
+	validTask := t.Status == coretask.StatusRunning && t.Lease != nil && t.Lease.Epoch == epoch && t.Lease.ExpiresAt.After(now)
+	if fence == nil {
+		validTask = validTask && t.Lease.Holder == "workload-handler"
+	} else {
+		validTask = validTask && sameTaskFence(t, *fence)
+	}
+	if claim == "" || op.DispatchClaim != claim || op.DispatchEpoch != epoch || !op.DispatchLeaseUntil.After(now) || !validTask {
 		return Operation{}, coretask.Task{}, ErrRevisionConflict
 	}
 	if code == "" {
@@ -495,7 +553,16 @@ func (s *MemoryStore) CompleteDispatch(ctx context.Context, id, taskID, claim st
 	if !ok {
 		return Operation{}, coretask.Task{}, ErrNotFound
 	}
-	return s.completeLocked(ctx, id, taskID, code, readback, summary, claim, epoch)
+	return s.completeLocked(ctx, id, taskID, code, readback, summary, claim, epoch, nil)
+}
+
+func (s *MemoryStore) CompleteDispatchFenced(ctx context.Context, id, taskID, claim string, epoch uint64, code string, readback Readback, summary string, fence TaskFence) (Operation, coretask.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !fence.Valid(s.now().UTC()) {
+		return Operation{}, coretask.Task{}, ErrRevisionConflict
+	}
+	return s.completeLocked(ctx, id, taskID, code, readback, summary, claim, epoch, &fence)
 }
 func (s *MemoryStore) RenewDispatchLease(_ context.Context, id, claim string, epoch uint64) (Operation, error) {
 	s.mu.Lock()
@@ -520,6 +587,28 @@ func (s *MemoryStore) RenewDispatchLease(_ context.Context, id, claim string, ep
 	t.Revision++
 	s.operations[id] = op
 	s.tasks[t.ID] = t
+	return op, nil
+}
+
+func (s *MemoryStore) RenewDispatchLeaseFenced(_ context.Context, id, claim string, epoch uint64, fence TaskFence) (Operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	if !fence.Valid(now) {
+		return Operation{}, ErrRevisionConflict
+	}
+	op, ok := s.operations[id]
+	if !ok {
+		return Operation{}, ErrNotFound
+	}
+	t, ok := s.tasks[op.TaskID]
+	if !ok || !sameTaskFence(t, fence) || op.DispatchClaim != claim || op.DispatchEpoch != epoch || op.Status != OperationRunning || !op.DispatchLeaseUntil.After(now) {
+		return Operation{}, ErrRevisionConflict
+	}
+	op.DispatchLeaseUntil = now.Add(30 * time.Second)
+	op.UpdatedAt = now
+	op.Revision++
+	s.operations[id] = op
 	return op, nil
 }
 
@@ -563,5 +652,40 @@ func (s *MemoryStore) RecoverClaim(_ context.Context, id, requestedClaim string)
 	events := s.events[id]
 	events = append(events, Event{OperationID: id, Sequence: uint64(len(events) + 1), Kind: "recovery_claim", Status: OperationRunning, Message: "read-only recovery claimed dispatch fence", At: op.UpdatedAt})
 	s.events[id] = events
+	return op, nil
+}
+
+func (s *MemoryStore) RecoverClaimFenced(_ context.Context, id, requestedClaim string, fence TaskFence) (Operation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now().UTC()
+	if !fence.Valid(now) {
+		return Operation{}, ErrRevisionConflict
+	}
+	op, ok := s.operations[id]
+	if !ok {
+		return Operation{}, ErrNotFound
+	}
+	t, ok := s.tasks[op.TaskID]
+	if !ok || !sameTaskFence(t, fence) {
+		return Operation{}, ErrRevisionConflict
+	}
+	if op.Status != OperationRunning || (op.DispatchState != "dispatched" && op.DispatchState != "uncertain") {
+		return op, nil
+	}
+	if requestedClaim != "" && requestedClaim == op.DispatchClaim && op.DispatchLeaseUntil.After(now) {
+		return op, nil
+	}
+	// The generic task lease has already been reclaimed to this exact fence.
+	// A successor may therefore take the read-only recovery claim even if the
+	// old operation dispatch lease has not yet elapsed.
+	op.DispatchState = "uncertain"
+	op.DispatchEpoch = fence.LeaseEpoch
+	op.DispatchClaim = uuid.NewString()
+	op.DispatchLeaseUntil = now.Add(30 * time.Second)
+	op.Revision++
+	op.UpdatedAt = now
+	s.operations[id] = op
+	s.events[id] = append(s.events[id], Event{OperationID: id, Sequence: uint64(len(s.events[id]) + 1), Kind: "recovery_claim", Status: OperationRunning, Message: "read-only recovery claimed dispatch fence", At: now})
 	return op, nil
 }

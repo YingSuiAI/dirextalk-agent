@@ -39,6 +39,16 @@ type SandboxInvocationV2 struct {
 	WorkspaceFD int
 	StdinFD     int
 	SecretFDs   []int
+	// PersistentOutputLimit is an internal persistent-service-only budget.
+	// When non-zero LinuxBackend discards raw stdout/stderr and accounts both
+	// streams against this one shared limit from process start.
+	PersistentOutputLimit int64
+	// CoreTmpfsBytes and CoreResultPath select the internal Core-only manager
+	// mode. They are never serialized in RequestV2 and therefore cannot be
+	// selected by an extension caller.
+	CoreTmpfsBytes int64
+	CoreResultPath string
+	CoreResultFD   int
 }
 
 // V2Backend is the descriptor-only backend boundary.

@@ -74,3 +74,24 @@ is included in the baseline so this seam is explicit; enabling it remains a
 separate workload-runner integration acceptance. The runner never receives a
 host socket or Core database volume. With the `extensions` profile,
 `extension-socket-init` repairs socket ownership before the Runner starts.
+
+## Core Runner seam
+
+`core_workload_enabled` stays `false` by default. Enabling it requires the
+`core-runner` Compose profile, immutable Core Runner image, private socket
+volume, and a cgroup-v2 subtree delegated to runner UID `65530`; Core runs as
+UID `65532` and must use the matching socket and `core_workload_runner_uid`.
+The runner has no network, database, Docker socket, Agent secrets, or host
+mounts beyond that delegated cgroup subtree.
+
+Core advertises `workload.core_runner` only after the runner's nonce-backed
+full readiness probe succeeds. The proof exercises its user namespace, exact
+tmpfs writable quota, seccomp, cgroup create/attach/reap, and sealed result
+path. A failure leaves workload planning RPCs registered but execution handler
+and capability disabled. Configure a genuinely delegated subtree; a mounted
+but non-delegated `/sys/fs/cgroup` is not sufficient.
+
+The passed transient systemd delegated-cgroup isolation test is not a
+two-Compose end-to-end or real workload acceptance. Production SSM/ECS
+registry wiring, two-Compose E2E, and live Core Runner workload acceptance are
+still pending.

@@ -143,13 +143,19 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("initialize Workload composition: %w", err)
 	}
-	workloadService, err := rpcapi.NewWorkloadService(workloadDomain)
+	workloadComposition, err := composeCoreWorkload(cfg, store, workloadDomain)
+	if err != nil {
+		return fmt.Errorf("initialize Core Workload composition: %w", err)
+	}
+	var workloadService agentv1.WorkloadServiceServer
+	workloadService, err = rpcapi.NewWorkloadService(workloadDomain)
 	if err != nil {
 		return fmt.Errorf("initialize Workload RPC: %w", err)
 	}
-	// No production provider is configured yet. The service is registered for
-	// planning/confirmation only; no WORKLOAD task handler or capability is
-	// advertised until an explicit typed provider composition is supplied.
+	if workloadComposition != nil {
+		workloadService = workloadComposition.service
+		taskExecutor.SetWorkloadHandler(workloadComposition.taskHandler)
+	}
 	if knowledgeComposition != nil {
 		taskExecutor.SetPinnedContextResolvers(knowledgeComposition.pinned, knowledgeComposition.attachments)
 	}
@@ -218,6 +224,7 @@ func serveCore(cfg config.Config) error {
 			return knowledgeComposition.service
 		}(),
 		WorkloadService: workloadService,
+		CoreRunnerReady: workloadComposition != nil && workloadComposition.ready,
 		CloudControlService: func() agentv1.CoreCloudControlServiceServer {
 			if awsComposition == nil {
 				return nil
