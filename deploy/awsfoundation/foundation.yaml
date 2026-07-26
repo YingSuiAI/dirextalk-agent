@@ -1013,6 +1013,28 @@ Resources:
             Resource:
               Fn::GetAtt: [WorkerLogGroup, Arn]
 
+  # S3 authorizes x-amz-tagging on PutObject separately. Keep that permission
+  # out of the quota-bound runtime policy and restrict it to the two immutable
+  # control-artifact paths whose initial uploads always carry ownership tags.
+  ControlArtifactTagPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName:
+        Fn::Sub: ${AWS::StackName}-control-artifact-tags
+      Path: /
+      Roles:
+        - Ref: ControlRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TagPublishedControlArtifacts
+            Effect: Allow
+            Action:
+              - s3:PutObjectTagging
+            Resource:
+              - Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/bundles/*
+              - Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/launch/*
+
   # Keep public entry-point authority in a separate managed policy. The
   # existing runtime policy is already close to the IAM inline-policy quota;
   # this policy attaches only to the same fixed Control Role and is closed to

@@ -35,6 +35,7 @@ var requiredTemplateResources = map[string]string{
 	"ReaperInvokePermission":              "AWS::Lambda::Permission",
 	"ReaperErrorAlarm":                    "AWS::CloudWatch::Alarm",
 	"ControlRuntimePolicy":                "AWS::IAM::Policy",
+	"ControlArtifactTagPolicy":            "AWS::IAM::ManagedPolicy",
 	"ControlEntrypointPolicy":             "AWS::IAM::ManagedPolicy",
 }
 
@@ -113,7 +114,16 @@ func ValidateTemplate(raw []byte) error {
 				return fmt.Errorf("%w: %s identity policy", err, logicalID)
 			}
 		case "AWS::IAM::ManagedPolicy":
-			if logicalID != "ControlEntrypointPolicy" || !managedPolicyAttachesOnlyControlRole(resource) {
+			expectedName := ""
+			switch logicalID {
+			case "ControlArtifactTagPolicy":
+				expectedName = "${AWS::StackName}-control-artifact-tags"
+			case "ControlEntrypointPolicy":
+				expectedName = "${AWS::StackName}-control-entrypoint"
+			default:
+				return fmt.Errorf("%w: %s managed policy attachment", ErrInvalidTemplate, logicalID)
+			}
+			if !managedPolicyAttachesOnlyControlRole(resource, expectedName) {
 				return fmt.Errorf("%w: %s managed policy attachment", ErrInvalidTemplate, logicalID)
 			}
 			properties, _ := stringMap(resource["Properties"])
@@ -145,6 +155,9 @@ func ValidateTemplate(raw []byte) error {
 	}
 	if !controlPolicyFailsClosed(resources["ControlRuntimePolicy"]) {
 		return fmt.Errorf("%w: Control Role mutation is not ownership-tag scoped", ErrInvalidTemplate)
+	}
+	if !controlArtifactTagPolicyFailsClosed(resources["ControlArtifactTagPolicy"]) {
+		return fmt.Errorf("%w: Control Role artifact tagging is not deployment-path scoped", ErrInvalidTemplate)
 	}
 	if !controlEntrypointPolicyFailsClosed(resources["ControlEntrypointPolicy"]) || !noEntrypointActionsOutsideControlPolicy(resources) {
 		return fmt.Errorf("%w: Control Role entry-point policy is not minimally scoped", ErrInvalidTemplate)
@@ -474,13 +487,13 @@ var entrypointTagKeys = []string{
 	"dtx:s", "dirextalk_client_token", "dirextalk_entry_ready",
 }
 
-func managedPolicyAttachesOnlyControlRole(resource map[string]any) bool {
+func managedPolicyAttachesOnlyControlRole(resource map[string]any, expectedName string) bool {
 	properties, ok := stringMap(resource["Properties"])
-	if !ok || properties["Users"] != nil || properties["Groups"] != nil {
+	if !ok || expectedName == "" || properties["Users"] != nil || properties["Groups"] != nil {
 		return false
 	}
 	name, ok := stringMap(properties["ManagedPolicyName"])
-	if !ok || scalarString(name["Fn::Sub"]) != "${AWS::StackName}-control-entrypoint" || scalarString(properties["Path"]) != "/" {
+	if !ok || scalarString(name["Fn::Sub"]) != expectedName || scalarString(properties["Path"]) != "/" {
 		return false
 	}
 	roles, ok := anySlice(properties["Roles"])
@@ -489,6 +502,27 @@ func managedPolicyAttachesOnlyControlRole(resource map[string]any) bool {
 	}
 	role, ok := stringMap(roles[0])
 	return ok && len(role) == 1 && scalarString(role["Ref"]) == "ControlRoleName"
+}
+
+func controlArtifactTagPolicyFailsClosed(value any) bool {
+	resource, ok := stringMap(value)
+	if !ok || !managedPolicyAttachesOnlyControlRole(resource, "${AWS::StackName}-control-artifact-tags") {
+		return false
+	}
+	properties, _ := stringMap(resource["Properties"])
+	document, _ := stringMap(properties["PolicyDocument"])
+	statements, ok := anySlice(document["Statement"])
+	if !ok || len(statements) != 1 {
+		return false
+	}
+	statement, ok := stringMap(statements[0])
+	return ok && scalarString(statement["Sid"]) == "TagPublishedControlArtifacts" &&
+		scalarString(statement["Effect"]) == "Allow" &&
+		sameStrings(stringValues(statement["Action"]), []string{"s3:PutObjectTagging"}) &&
+		sameStrings(templateResourceStrings(statement["Resource"]), []string{
+			"${ArtifactBucket.Arn}/deployments/*/bundles/*",
+			"${ArtifactBucket.Arn}/deployments/*/launch/*",
+		}) && statement["Condition"] == nil
 }
 
 func inlinePolicyAttachesOnlyControlRole(resource map[string]any) bool {
@@ -506,7 +540,7 @@ func inlinePolicyAttachesOnlyControlRole(resource map[string]any) bool {
 
 func controlEntrypointPolicyFailsClosed(value any) bool {
 	resource, ok := stringMap(value)
-	if !ok || !managedPolicyAttachesOnlyControlRole(resource) {
+	if !ok || !managedPolicyAttachesOnlyControlRole(resource, "${AWS::StackName}-control-entrypoint") {
 		return false
 	}
 	properties, _ := stringMap(resource["Properties"])

@@ -37,6 +37,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("s3:ListBucketVersions"), []byte("s3:GetObjectVersion"), []byte("s3:DeleteObjectVersion"),
 		[]byte("WorkerInstallerArtifacts"), []byte("${ArtifactBucket.Arn}/deployments/*/artifacts/*"), []byte("s3:ExistingObjectTag/dirextalk:worker_principal"),
 		[]byte("BindExactInstallerArtifactVersions"), []byte("s3:GetObjectVersionTagging"), []byte("s3:PutObjectVersionTagging"),
+		[]byte("ControlArtifactTagPolicy"), []byte("TagPublishedControlArtifacts"), []byte("${AWS::StackName}-control-artifact-tags"),
 		[]byte("WorkerMilestoneRelayLogs"), []byte("logs:PutLogEvents"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
 		[]byte("AWS::IAM::ManagedPolicy"), []byte("ControlEntrypointPolicy"), []byte("acm:DescribeCertificate"), []byte("secretsmanager:DeleteResourcePolicy"),
@@ -179,6 +180,38 @@ func TestFoundationTemplateControlArtifactBinderIsVersionedAndNarrow(t *testing.
 			}
 		})
 	}
+}
+
+func TestFoundationTemplateControlArtifactTagPolicyIsMinimumScoped(t *testing.T) {
+	statements := controlManagedPolicyStatements(t, "ControlArtifactTagPolicy")
+	statement, ok := statements["TagPublishedControlArtifacts"]
+	if !ok || len(statements) != 1 ||
+		!sameStrings(stringValues(statement["Action"]), []string{"s3:PutObjectTagging"}) ||
+		!sameStrings(templateResourceStrings(statement["Resource"]), []string{
+			"${ArtifactBucket.Arn}/deployments/*/bundles/*",
+			"${ArtifactBucket.Arn}/deployments/*/launch/*",
+		}) || statement["Condition"] != nil {
+		t.Fatalf("control artifact tag policy is not path-scoped: %#v", statement)
+	}
+
+	template := testFoundationTemplate(t)
+	for name, mutation := range map[string][3]string{
+		"action changes":       {"TagPublishedControlArtifacts", "- s3:PutObjectTagging", "- s3:PutObject"},
+		"bundle path broadens": {"TagPublishedControlArtifacts", "deployments/*/bundles/*", "deployments/*"},
+		"launch path changes":  {"TagPublishedControlArtifacts", "deployments/*/launch/*", "deployments/*/artifacts/*"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateTemplate(mutateFoundationStatement(t, template, mutation[0], mutation[1], mutation[2])); err == nil {
+				t.Fatalf("unsafe control artifact tag mutation %s was accepted", name)
+			}
+		})
+	}
+	t.Run("attachment changes", func(t *testing.T) {
+		mutated := mutateFoundationResource(t, template, "ControlArtifactTagPolicy", "Ref: ControlRoleName", "Ref: WorkerRoleName")
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatal("control artifact tag policy attached to Worker")
+		}
+	})
 }
 
 func TestFoundationTemplateWorkerLogsAreAgentRelayedAndControlScoped(t *testing.T) {
@@ -564,6 +597,23 @@ func TestControlEntrypointManagedPolicyFitsIAMQuota(t *testing.T) {
 	}
 }
 
+func TestControlArtifactTagManagedPolicyFitsIAMQuota(t *testing.T) {
+	var root map[string]any
+	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	resources, _ := stringMap(root["Resources"])
+	policy, _ := stringMap(resources["ControlArtifactTagPolicy"])
+	properties, _ := stringMap(policy["Properties"])
+	document, err := json.Marshal(properties["PolicyDocument"])
+	if err != nil {
+		t.Fatalf("marshal control artifact tag policy: %v", err)
+	}
+	if len(document) > 6_144 {
+		t.Fatalf("Control Artifact Tag managed policy exceeds IAM policy quota: %d bytes", len(document))
+	}
+}
+
 func TestFoundationTemplateValidatorRejectsBrokerOrWildcardRoleAction(t *testing.T) {
 	template := testFoundationTemplate(t)
 	withGateway := bytes.Replace(template, []byte("Type: AWS::CloudWatch::Alarm"), []byte("Type: AWS::ApiGateway::RestApi"), 1)
@@ -628,13 +678,17 @@ func controlRuntimeStatements(t *testing.T) map[string]map[string]any {
 }
 
 func controlEntrypointStatements(t *testing.T) map[string]map[string]any {
+	return controlManagedPolicyStatements(t, "ControlEntrypointPolicy")
+}
+
+func controlManagedPolicyStatements(t *testing.T, logicalID string) map[string]map[string]any {
 	t.Helper()
 	var root map[string]any
 	if err := yaml.Unmarshal(testFoundationTemplate(t), &root); err != nil {
 		t.Fatalf("decode template: %v", err)
 	}
 	resources, _ := stringMap(root["Resources"])
-	policy, _ := stringMap(resources["ControlEntrypointPolicy"])
+	policy, _ := stringMap(resources[logicalID])
 	properties, _ := stringMap(policy["Properties"])
 	document, _ := stringMap(properties["PolicyDocument"])
 	items, _ := anySlice(document["Statement"])
@@ -642,14 +696,14 @@ func controlEntrypointStatements(t *testing.T) map[string]map[string]any {
 	for _, item := range items {
 		statement, ok := stringMap(item)
 		if !ok {
-			t.Fatal("control entrypoint policy contains a non-object statement")
+			t.Fatalf("%s contains a non-object statement", logicalID)
 		}
 		sid := scalarString(statement["Sid"])
 		if sid == "" {
-			t.Fatal("control entrypoint policy contains a statement without Sid")
+			t.Fatalf("%s contains a statement without Sid", logicalID)
 		}
 		if _, duplicate := statements[sid]; duplicate {
-			t.Fatalf("control entrypoint policy contains duplicate Sid %s", sid)
+			t.Fatalf("%s contains duplicate Sid %s", logicalID, sid)
 		}
 		statements[sid] = statement
 	}
