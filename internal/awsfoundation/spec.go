@@ -126,6 +126,7 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 	resourceTag := map[string]map[string]string{"StringEquals": {"aws:ResourceTag/" + awsprovider.TagAgentInstanceID: input.AgentInstanceID}}
 	controlARN := iamARN(input, "role/"+spec.ControlRoleName)
 	entrypointPolicyARN := iamARN(input, "policy/"+spec.StackName+"-control-entrypoint")
+	artifactTagPolicyARN := iamARN(input, "policy/"+spec.StackName+"-control-artifact-tags")
 	foundationKeyARN := fmt.Sprintf("arn:%s:kms:%s:%s:key/*", partition, region, account)
 	releaseVPCARN := fmt.Sprintf("arn:%s:ec2:%s:%s:vpc/*", partition, region, account)
 	releaseSubnetARN := fmt.Sprintf("arn:%s:ec2:%s:%s:subnet/*", partition, region, account)
@@ -160,14 +161,16 @@ func foundationExecutionPolicy(input SpecInput, spec awsprovider.BootstrapIdenti
 			iamARN(input, "role/"+spec.ControlRoleName), iamARN(input, "role/"+spec.WorkerRoleName), iamARN(input, "role/"+spec.ReaperRoleName),
 			iamARN(input, "instance-profile/"+spec.WorkerProfileName),
 		}, nil),
-		// The Foundation stack owns one deterministic customer-managed policy
+		// The Foundation stack owns two deterministic customer-managed policies
 		// because the accumulated runtime inline policy is near IAM's aggregate
 		// inline quota. These actions cannot create or attach any other policy.
-		statement("FoundationControlEntrypointManagedPolicy", []string{
+		statement("FoundationControlManagedPolicies", []string{
 			"iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion",
 			"iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListEntitiesForPolicy",
-		}, []string{entrypointPolicyARN}, nil),
-		statement("FoundationAttachControlEntrypointManagedPolicy", []string{"iam:AttachRolePolicy", "iam:DetachRolePolicy"}, []string{controlARN, entrypointPolicyARN}, nil),
+		}, []string{artifactTagPolicyARN, entrypointPolicyARN}, nil),
+		statement("FoundationAttachControlManagedPolicies", []string{"iam:AttachRolePolicy", "iam:DetachRolePolicy"}, []string{
+			artifactTagPolicyARN, controlARN, entrypointPolicyARN,
+		}, nil),
 		statement("FoundationS3", []string{"s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy", "s3:GetBucketTagging", "s3:PutBucketTagging", "s3:TagResource", "s3:UntagResource", "s3:GetBucketOwnershipControls", "s3:PutBucketOwnershipControls", "s3:GetBucketVersioning", "s3:PutBucketVersioning", "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration", "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock", "s3:ListBucket", "s3:DeleteObject", "s3:GetObject", "s3:PutObject"}, []string{
 			fmt.Sprintf("arn:%s:s3:::%s", partition, spec.ArtifactBucketName), fmt.Sprintf("arn:%s:s3:::%s/*", partition, spec.ArtifactBucketName),
 		}, nil),

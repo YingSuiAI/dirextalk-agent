@@ -140,7 +140,7 @@ func TestFoundationExecutionPolicyOwnsOnlyTaggedReleaseNetwork(t *testing.T) {
 	}
 }
 
-func TestFoundationExecutionPolicyManagesOnlyExactControlEntrypointPolicy(t *testing.T) {
+func TestFoundationExecutionPolicyManagesOnlyExactControlManagedPolicies(t *testing.T) {
 	input := SpecInput{
 		AgentInstanceID: "019f5e2d-5350-7073-87d9-3ba4fdbc6818",
 		Partition:       "aws",
@@ -151,26 +151,27 @@ func TestFoundationExecutionPolicyManagesOnlyExactControlEntrypointPolicy(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyARN := "arn:aws:iam::123456789012:policy/" + spec.StackName + "-control-entrypoint"
+	artifactTagPolicyARN := "arn:aws:iam::123456789012:policy/" + spec.StackName + "-control-artifact-tags"
+	entrypointPolicyARN := "arn:aws:iam::123456789012:policy/" + spec.StackName + "-control-entrypoint"
 	controlARN := "arn:aws:iam::123456789012:role/" + spec.ControlRoleName
 	var policyStatement, attachmentStatement *awsprovider.PolicyStatement
 	for index := range spec.FoundationExecutionPolicy.Statement {
 		statement := &spec.FoundationExecutionPolicy.Statement[index]
 		switch statement.SID {
-		case "FoundationControlEntrypointManagedPolicy":
+		case "FoundationControlManagedPolicies":
 			policyStatement = statement
-		case "FoundationAttachControlEntrypointManagedPolicy":
+		case "FoundationAttachControlManagedPolicies":
 			attachmentStatement = statement
 		}
 	}
 	if policyStatement == nil || !sameStringSet(policyStatement.Action, []string{
 		"iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion",
 		"iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyVersions", "iam:ListEntitiesForPolicy",
-	}) || !sameStringSet(policyStatement.Resource, []string{policyARN}) {
+	}) || !sameStringSet(policyStatement.Resource, []string{artifactTagPolicyARN, entrypointPolicyARN}) {
 		t.Fatalf("managed policy authority = %#v", policyStatement)
 	}
 	if attachmentStatement == nil || !sameStringSet(attachmentStatement.Action, []string{"iam:AttachRolePolicy", "iam:DetachRolePolicy"}) ||
-		!sameStringSet(attachmentStatement.Resource, []string{controlARN, policyARN}) {
+		!sameStringSet(attachmentStatement.Resource, []string{artifactTagPolicyARN, controlARN, entrypointPolicyARN}) {
 		t.Fatalf("managed policy attachment authority = %#v", attachmentStatement)
 	}
 	for _, statement := range spec.FoundationExecutionPolicy.Statement {
