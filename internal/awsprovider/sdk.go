@@ -411,7 +411,14 @@ func (provider *SDKProvider) UpdateFoundationStack(ctx context.Context, request 
 	if err != nil {
 		return FoundationStackReceipt{}, err
 	}
-	if current.Status != string(cloudformationtypes.StackStatusCreateComplete) && current.Status != string(cloudformationtypes.StackStatusUpdateComplete) {
+	switch cloudformationtypes.StackStatus(current.Status) {
+	case cloudformationtypes.StackStatusCreateComplete,
+		cloudformationtypes.StackStatusUpdateComplete,
+		cloudformationtypes.StackStatusUpdateRollbackComplete:
+		// UPDATE_ROLLBACK_COMPLETE is a stable, updateable stack state. It
+		// preserves the last known-good Foundation after a failed revision and
+		// must remain eligible for the durable operation retry path.
+	default:
 		return FoundationStackReceipt{}, ErrFoundationStackFailed
 	}
 	parameters := make([]cloudformationtypes.Parameter, 0, len(request.Parameters))

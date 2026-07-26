@@ -267,6 +267,41 @@ func TestSDKProviderRetriesCloudFormationRolePropagationWithSameToken(t *testing
 	}
 }
 
+func TestSDKProviderRetriesUpdateAfterCompleteRollback(t *testing.T) {
+	clients, _, fakeCFN := completeFakeClients()
+	now := time.Date(2026, 7, 26, 3, 0, 0, 0, time.UTC)
+	provider, err := awsprovider.NewSDKProvider(clients, "us-east-1", func() time.Time { return now }, awsprovider.WithFoundationStackPollInterval(time.Nanosecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(template)
+	request := awsprovider.FoundationStackRequest{
+		StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
+		FoundationRoleARN: "arn:aws:iam::123456789012:role/dtx-agent-0123456789ab-foundation",
+		ClientToken:       "dtx-0123456789abcdef", TemplateBody: string(template), TemplateSHA256: "sha256:" + hex.EncodeToString(sum[:]),
+		Parameters: map[string]string{"AgentInstanceId": "agent-01"},
+		Tags:       []awsprovider.Tag{{Key: awsprovider.TagAgentInstanceID, Value: "agent-01"}}, TerminationProtect: true,
+	}
+	fakeCFN.describeOutputs = []*cloudformation.DescribeStacksOutput{
+		stackReadBack(request, cloudformationtypes.StackStatusUpdateRollbackComplete),
+		stackReadBack(request, cloudformationtypes.StackStatusUpdateInProgress),
+		stackReadBack(request, cloudformationtypes.StackStatusUpdateComplete),
+	}
+	fakeCFN.templateOutput = &cloudformation.GetTemplateOutput{TemplateBody: aws.String(string(template))}
+
+	receipt, err := provider.UpdateFoundationStack(context.Background(), request)
+	if err != nil {
+		t.Fatalf("retry update after rollback: %v", err)
+	}
+	if fakeCFN.updateInput == nil || receipt.Status != awsprovider.FoundationStackUpdatedStatus {
+		t.Fatalf("rollback recovery did not submit and verify update: input=%#v receipt=%#v", fakeCFN.updateInput, receipt)
+	}
+}
+
 func TestSDKProviderRejectsFoundationFailureAndReturnsContextTimeoutForRetry(t *testing.T) {
 	clients, _, fakeCFN := completeFakeClients()
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
