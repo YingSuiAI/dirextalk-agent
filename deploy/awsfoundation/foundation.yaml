@@ -651,6 +651,7 @@ Resources:
           - Sid: ObserveEC2
             Effect: Allow
             Action:
+              - cloudwatch:GetMetricStatistics
               - ec2:DescribeAddresses
               - ec2:DescribeAvailabilityZones
               - ec2:DescribeImages
@@ -672,6 +673,8 @@ Resources:
               - ec2:DescribeVpcAttribute
               - ec2:DescribeVpcEndpoints
               - ec2:DescribeVpcs
+              - pricing:GetProducts
+              - servicequotas:GetServiceQuota
             Resource: '*'
           - Sid: CreateTaggedCompute
             Effect: Allow

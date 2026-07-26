@@ -39,20 +39,24 @@ var requiredTemplateResources = map[string]string{
 }
 
 var templateAccountReadActions = map[string]struct{}{
-	"ec2:DescribeAddresses": {}, "ec2:DescribeAvailabilityZones": {}, "ec2:DescribeImages": {},
+	"cloudwatch:GetMetricStatistics": {},
+	"ec2:DescribeAddresses":          {}, "ec2:DescribeAvailabilityZones": {}, "ec2:DescribeImages": {},
 	"ec2:DescribeInstanceAttribute": {}, "ec2:DescribeInstanceStatus": {}, "ec2:DescribeInstanceTypeOfferings": {}, "ec2:DescribeInstanceTypes": {},
 	"ec2:DescribeInstances": {}, "ec2:DescribeInternetGateways": {}, "ec2:DescribeNatGateways": {}, "ec2:DescribeNetworkInterfaces": {}, "ec2:DescribePrefixLists": {}, "ec2:DescribeRouteTables": {}, "ec2:DescribeSecurityGroups": {},
 	"ec2:DescribeSecurityGroupRules": {}, "ec2:DescribeSnapshots": {}, "ec2:DescribeSubnets": {}, "ec2:DescribeVolumes": {}, "ec2:DescribeVpcAttribute": {}, "ec2:DescribeVpcEndpoints": {}, "ec2:DescribeVpcs": {},
 	"elasticloadbalancing:DescribeListeners": {}, "elasticloadbalancing:DescribeLoadBalancers": {}, "elasticloadbalancing:DescribeTags": {},
 	"elasticloadbalancing:DescribeTargetGroups": {}, "elasticloadbalancing:DescribeTargetHealth": {},
+	"pricing:GetProducts": {}, "servicequotas:GetServiceQuota": {},
 }
 
 var controlObserveEC2Actions = []string{
+	"cloudwatch:GetMetricStatistics",
 	"ec2:DescribeAddresses", "ec2:DescribeAvailabilityZones", "ec2:DescribeImages", "ec2:DescribeInstanceAttribute",
 	"ec2:DescribeInstanceStatus", "ec2:DescribeInstanceTypeOfferings", "ec2:DescribeInstanceTypes", "ec2:DescribeInstances",
 	"ec2:DescribeInternetGateways", "ec2:DescribeNatGateways", "ec2:DescribeNetworkInterfaces", "ec2:DescribePrefixLists",
 	"ec2:DescribeRouteTables", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeSnapshots",
 	"ec2:DescribeSubnets", "ec2:DescribeVolumes", "ec2:DescribeVpcAttribute", "ec2:DescribeVpcEndpoints", "ec2:DescribeVpcs",
+	"pricing:GetProducts", "servicequotas:GetServiceQuota",
 }
 
 func ValidateTemplate(raw []byte) error {
@@ -314,6 +318,10 @@ func controlPolicyFailsClosed(value any) bool {
 		}
 		for _, action := range actions {
 			switch {
+			case action == "cloudwatch:GetMetricStatistics" || action == "pricing:GetProducts" || action == "servicequotas:GetServiceQuota":
+				if sid != "ObserveEC2" {
+					return false
+				}
 			case strings.HasPrefix(action, "logs:"):
 				if sid != "WorkerMilestoneRelayLogs" {
 					return false
