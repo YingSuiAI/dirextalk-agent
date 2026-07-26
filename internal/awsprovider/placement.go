@@ -298,7 +298,7 @@ func routeTableHasOnlyLocalIPv4(table ec2types.RouteTable) bool {
 func (resolver *PlacementResolver) readVPCs(ctx context.Context) (map[string]bool, error) {
 	result := make(map[string]bool)
 	err := walkPlacementPages(func(token *string) (*string, error) {
-		output, err := resolver.client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{Filters: []ec2types.Filter{{Name: aws.String("state"), Values: []string{"available"}}}, MaxResults: aws.Int32(1000), NextToken: token})
+		output, err := resolver.client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{Filters: []ec2types.Filter{{Name: aws.String("state"), Values: []string{"available"}}}, MaxResults: aws.Int32(placementPageLimit), NextToken: token})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeVpcs: %w", err)
 		}
@@ -328,7 +328,7 @@ func (resolver *PlacementResolver) vpcPrivateDNSReady(ctx context.Context, vpcID
 func (resolver *PlacementResolver) readSubnets(ctx context.Context) ([]ec2types.Subnet, error) {
 	var result []ec2types.Subnet
 	err := walkPlacementPages(func(token *string) (*string, error) {
-		output, err := resolver.client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{Filters: []ec2types.Filter{{Name: aws.String("state"), Values: []string{"available"}}}, MaxResults: aws.Int32(1000), NextToken: token})
+		output, err := resolver.client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{Filters: []ec2types.Filter{{Name: aws.String("state"), Values: []string{"available"}}}, MaxResults: aws.Int32(placementPageLimit), NextToken: token})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeSubnets: %w", err)
 		}
@@ -344,7 +344,7 @@ func (resolver *PlacementResolver) readSubnets(ctx context.Context) ([]ec2types.
 func (resolver *PlacementResolver) readRouteTables(ctx context.Context) ([]ec2types.RouteTable, error) {
 	var result []ec2types.RouteTable
 	err := walkPlacementPages(func(token *string) (*string, error) {
-		output, err := resolver.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{MaxResults: aws.Int32(1000), NextToken: token})
+		output, err := resolver.client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{MaxResults: aws.Int32(placementPageLimit), NextToken: token})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeRouteTables: %w", err)
 		}
@@ -360,7 +360,7 @@ func (resolver *PlacementResolver) readRouteTables(ctx context.Context) ([]ec2ty
 func (resolver *PlacementResolver) readAttachedGateways(ctx context.Context) (map[string]map[string]struct{}, error) {
 	result := make(map[string]map[string]struct{})
 	err := walkPlacementPages(func(token *string) (*string, error) {
-		output, err := resolver.client.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{Filters: []ec2types.Filter{{Name: aws.String("attachment.state"), Values: []string{"available"}}}, MaxResults: aws.Int32(1000), NextToken: token})
+		output, err := resolver.client.DescribeInternetGateways(ctx, &ec2.DescribeInternetGatewaysInput{Filters: []ec2types.Filter{{Name: aws.String("attachment.state"), Values: []string{"available"}}}, MaxResults: aws.Int32(placementPageLimit), NextToken: token})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeInternetGateways: %w", err)
 		}
@@ -396,7 +396,7 @@ type placementNATGateway struct {
 func (resolver *PlacementResolver) readPublicNATGateways(ctx context.Context, routes []ec2types.RouteTable, gateways map[string]map[string]struct{}) (map[string]placementNATGateway, error) {
 	result := make(map[string]placementNATGateway)
 	err := walkPlacementPages(func(token *string) (*string, error) {
-		output, err := resolver.client.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{Filter: []ec2types.Filter{{Name: aws.String("state"), Values: []string{string(ec2types.NatGatewayStateAvailable)}}}, MaxResults: aws.Int32(1000), NextToken: token})
+		output, err := resolver.client.DescribeNatGateways(ctx, &ec2.DescribeNatGatewaysInput{Filter: []ec2types.Filter{{Name: aws.String("state"), Values: []string{string(ec2types.NatGatewayStateAvailable)}}}, MaxResults: aws.Int32(placementPageLimit), NextToken: token})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeNatGateways: %w", err)
 		}
@@ -513,7 +513,7 @@ func (resolver *PlacementResolver) readInstanceTypes(ctx context.Context, requir
 		output, err := resolver.client.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{Filters: []ec2types.Filter{
 			{Name: aws.String("bare-metal"), Values: []string{"false"}}, {Name: aws.String("current-generation"), Values: []string{"true"}},
 			{Name: aws.String("processor-info.supported-architecture"), Values: []string{wantedArchitecture}},
-		}, MaxResults: aws.Int32(100), NextToken: token})
+		}, MaxResults: aws.Int32(placementPageLimit), NextToken: token})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeInstanceTypes: %w", err)
 		}
@@ -589,7 +589,7 @@ func (resolver *PlacementResolver) readOfferings(ctx context.Context, zones []st
 	result := make(map[string]map[string]struct{}, len(zones))
 	err := walkPlacementPages(func(token *string) (*string, error) {
 		output, err := resolver.client.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
-			LocationType: ec2types.LocationTypeAvailabilityZone, Filters: []ec2types.Filter{{Name: aws.String("location"), Values: zones}}, MaxResults: aws.Int32(1000), NextToken: token,
+			LocationType: ec2types.LocationTypeAvailabilityZone, Filters: []ec2types.Filter{{Name: aws.String("location"), Values: zones}}, MaxResults: aws.Int32(placementPageLimit), NextToken: token,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("DescribeInstanceTypeOfferings: %w", err)

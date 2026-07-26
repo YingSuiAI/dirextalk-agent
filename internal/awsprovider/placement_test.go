@@ -28,6 +28,9 @@ type fakePlacementEC2 struct {
 }
 
 func (fake *fakePlacementEC2) DescribeVpcs(_ context.Context, input *ec2.DescribeVpcsInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	return page(fake.vpcPages, input.NextToken), nil
 }
 
@@ -47,6 +50,9 @@ func (fake *fakePlacementEC2) DescribeVpcAttribute(_ context.Context, input *ec2
 }
 
 func (fake *fakePlacementEC2) DescribeSubnets(_ context.Context, input *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	return page(fake.subnetPages, input.NextToken), nil
 }
 
@@ -55,25 +61,47 @@ func (fake *fakePlacementEC2) DescribeAvailabilityZones(_ context.Context, _ *ec
 }
 
 func (fake *fakePlacementEC2) DescribeRouteTables(_ context.Context, input *ec2.DescribeRouteTablesInput, _ ...func(*ec2.Options)) (*ec2.DescribeRouteTablesOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	return page(fake.routePages, input.NextToken), nil
 }
 
 func (fake *fakePlacementEC2) DescribeInternetGateways(_ context.Context, input *ec2.DescribeInternetGatewaysInput, _ ...func(*ec2.Options)) (*ec2.DescribeInternetGatewaysOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	fake.gatewayCalls++
 	return page(fake.gatewayPages, input.NextToken), nil
 }
 
 func (fake *fakePlacementEC2) DescribeNatGateways(_ context.Context, input *ec2.DescribeNatGatewaysInput, _ ...func(*ec2.Options)) (*ec2.DescribeNatGatewaysOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	fake.natCalls++
 	return page(fake.natPages, input.NextToken), nil
 }
 
 func (fake *fakePlacementEC2) DescribeInstanceTypes(_ context.Context, input *ec2.DescribeInstanceTypesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	return page(fake.typePages, input.NextToken), nil
 }
 
 func (fake *fakePlacementEC2) DescribeInstanceTypeOfferings(_ context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+	if err := validatePlacementPageSize(input.MaxResults); err != nil {
+		return nil, err
+	}
 	return page(fake.offeringPages, input.NextToken), nil
+}
+
+func validatePlacementPageSize(value *int32) error {
+	if aws.ToInt32(value) != placementPageLimit {
+		return errors.New("placement API page size exceeds the shared provider-safe limit")
+	}
+	return nil
 }
 
 func page[T any](pages map[string]*T, token *string) *T {
