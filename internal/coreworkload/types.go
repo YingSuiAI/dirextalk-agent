@@ -306,6 +306,41 @@ func planInputDigest(p Plan) string {
 }
 func PlanInputDigest(p Plan) string { return planInputDigest(p) }
 
+// CanonicalAWSSecretARN accepts only reference-only Secrets Manager and SSM
+// Parameter Store ARNs. It intentionally does not resolve or read values.
+func CanonicalAWSSecretARN(v string) (string, bool) {
+	if v == "" || v != strings.TrimSpace(v) || strings.ContainsAny(v, "\r\n\x00 \t") {
+		return "", false
+	}
+	parts := strings.SplitN(v, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || (parts[1] != "aws" && parts[1] != "aws-us-gov" && parts[1] != "aws-cn") || (parts[2] != "secretsmanager" && parts[2] != "ssm") || parts[3] == "" || len(parts[4]) != 12 || strings.ContainsAny(parts[3]+parts[4], "\r\n\x00 \t") || strings.Contains(parts[5], "//") {
+		return "", false
+	}
+	for _, r := range parts[4] {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	if parts[2] == "secretsmanager" && !strings.HasPrefix(parts[5], "secret:") || parts[2] == "ssm" && !strings.HasPrefix(parts[5], "parameter/") {
+		return "", false
+	}
+	return v, true
+}
+
+// SecretGrantBindingDigest is the stable confirmation binding for an ARN
+// reference. Legacy UUID references retain their historical digest behavior.
+func SecretGrantBindingDigest(reference string, purpose coreconfirmation.SecretPurpose) string {
+	arn, ok := CanonicalAWSSecretARN(reference)
+	if !ok {
+		return ""
+	}
+	return canonicalDigest(struct {
+		Version string
+		ARN     string
+		Purpose coreconfirmation.SecretPurpose
+	}{"aws-secret-binding-v1", arn, purpose})
+}
+
 func RedactText(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return ""
@@ -386,7 +421,14 @@ func (p Plan) Normalize() (Plan, error) {
 		}
 	}
 	for _, ref := range p.SecretGrantRefs {
-		if !ValidUUID(ref.ReferenceID) || !ref.BindingDigest.Valid() || !validSecretPurpose(ref.Purpose) {
+		arnRef := false
+		if _, ok := CanonicalAWSSecretARN(ref.ReferenceID); ok {
+			arnRef = true
+		}
+		if (!ValidUUID(ref.ReferenceID) && !arnRef) || !ref.BindingDigest.Valid() || !validSecretPurpose(ref.Purpose) {
+			return Plan{}, ErrInvalid
+		}
+		if arnRef && string(ref.BindingDigest) != SecretGrantBindingDigest(ref.ReferenceID, ref.Purpose) {
 			return Plan{}, ErrInvalid
 		}
 	}

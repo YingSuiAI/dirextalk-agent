@@ -212,7 +212,7 @@ func serveCore(cfg config.Config) error {
 		}
 		return fmt.Errorf("initialize schedule loop: %w", err)
 	}
-	coreServer, err := app.NewCoreServer(app.CoreServerConfig{
+	serverConfig := app.CoreServerConfig{
 		InstanceID: cfg.InstanceID, ServiceToken: token, TLSCertFile: cfg.TLSCertFile,
 		TLSKeyFile: cfg.TLSKeyFile, EnableHealth: cfg.EnableHealthService,
 		EnableReflection: cfg.EnableReflection, ModelProfileService: modelService,
@@ -224,7 +224,6 @@ func serveCore(cfg config.Config) error {
 			return knowledgeComposition.service
 		}(),
 		WorkloadService: workloadService,
-		CoreRunnerReady: workloadComposition != nil && workloadComposition.ready,
 		CloudControlService: func() agentv1.CoreCloudControlServiceServer {
 			if awsComposition == nil {
 				return nil
@@ -243,7 +242,9 @@ func serveCore(cfg config.Config) error {
 			}
 			return extensionComposition.skillService
 		}(),
-	})
+	}
+	applyCoreWorkloadReadiness(&serverConfig, workloadComposition)
+	coreServer, err := app.NewCoreServer(serverConfig)
 	if err != nil {
 		if knowledgeComposition != nil {
 			knowledgeComposition.Close()

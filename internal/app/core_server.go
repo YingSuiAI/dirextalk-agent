@@ -35,6 +35,8 @@ type CoreServerConfig struct {
 	CloudControlService         agentv1.CoreCloudControlServiceServer
 	WorkloadService             agentv1.WorkloadServiceServer
 	CoreRunnerReady             bool
+	AWSWorkloadSSMReady         bool
+	AWSWorkloadECSReady         bool
 }
 
 type CoreServer struct {
@@ -84,6 +86,12 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 	}
 	if config.CoreRunnerReady {
 		capabilityNames = append(capabilityNames, "workload.core_runner")
+	}
+	if config.AWSWorkloadSSMReady {
+		capabilityNames = append(capabilityNames, "workload.aws_ssm")
+	}
+	if config.AWSWorkloadECSReady {
+		capabilityNames = append(capabilityNames, "workload.aws_ecs")
 	}
 	agentService, err := rpcapi.NewAgentService(config.InstanceID, capabilityNames...)
 	if err != nil {

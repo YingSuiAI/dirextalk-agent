@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
@@ -89,11 +88,11 @@ func NewProvider(factory Factory, creds workaws.CredentialResolver, secrets work
 }
 
 func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
-	_, clients, err := p.prepare(ctx, plan, op)
+	h, clients, err := p.prepare(ctx, plan, op)
 	if err != nil {
 		return coreworkload.Readback{}, err
 	}
-	if err = p.verify(ctx, clients, plan); err != nil {
+	if err = p.verify(ctx, h, clients, plan); err != nil {
 		return coreworkload.Readback{}, err
 	}
 	if len(plan.CommandSteps) == 0 {
@@ -108,11 +107,11 @@ func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op corewor
 	return p.readback(ctx, clients, plan, op, "ready")
 }
 func (p *Provider) Destroy(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
-	_, clients, err := p.prepare(ctx, plan, op)
+	h, clients, err := p.prepare(ctx, plan, op)
 	if err != nil {
 		return coreworkload.Readback{}, err
 	}
-	if err = p.verify(ctx, clients, plan); err != nil {
+	if err = p.verify(ctx, h, clients, plan); err != nil {
 		return coreworkload.Readback{}, err
 	}
 	if _, err = p.command(ctx, clients.SSM, plan.Target.InstanceID, plan, []string{"systemctl stop " + plan.Target.EC2SystemdService, "systemctl disable " + plan.Target.EC2SystemdService}, "destroy"); err != nil {
@@ -124,11 +123,11 @@ func (p *Provider) Destroy(ctx context.Context, plan coreworkload.Plan, op corew
 	return p.readback(ctx, clients, plan, op, "destroyed")
 }
 func (p *Provider) Read(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
-	_, clients, err := p.prepare(ctx, plan, op)
+	h, clients, err := p.prepare(ctx, plan, op)
 	if err != nil {
 		return coreworkload.Readback{}, err
 	}
-	if err = p.verify(ctx, clients, plan); err != nil {
+	if err = p.verify(ctx, h, clients, plan); err != nil {
 		return coreworkload.Readback{}, err
 	}
 	state := "ready"
@@ -189,27 +188,12 @@ func workawsCredential(plan coreworkload.Plan) (string, error) {
 	return ref, nil
 }
 func workawsResolve(ctx context.Context, p coreworkload.Plan, r workaws.SecretResolver) error {
-	return resolveApplicationRefs(ctx, p, r)
-}
-func resolveApplicationRefs(ctx context.Context, p coreworkload.Plan, r workaws.SecretResolver) error {
-	for _, g := range p.SecretGrantRefs {
-		if string(g.Purpose) == "AWS_CREDENTIAL" || string(g.Purpose) == "aws_credential" {
-			continue
-		}
-		if r == nil {
-			return workaws.ErrPrecondition
-		}
-		v, e := r.ResolveSecretReference(ctx, g.ReferenceID)
-		if e != nil || !(strings.HasPrefix(v, "arn:aws:secretsmanager:") || strings.HasPrefix(v, "arn:aws:ssm:")) {
-			return workaws.ErrPrecondition
-		}
-	}
-	return nil
+	return workaws.ResolveApplicationRefs(ctx, p, r)
 }
 
-func (p *Provider) verify(ctx context.Context, cl Clients, plan coreworkload.Plan) error {
+func (p *Provider) verify(ctx context.Context, h workaws.CredentialHandle, cl Clients, plan coreworkload.Plan) error {
 	identity, e := cl.STS.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if e != nil || identity == nil || aws.ToString(identity.Account) != plan.Target.AccountID {
+	if e != nil || identity == nil || aws.ToString(identity.Account) != plan.Target.AccountID || aws.ToString(identity.Arn) != h.PrincipalARN {
 		return workaws.ErrPrecondition
 	}
 	out, e := cl.EC2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{plan.Target.InstanceID}})

@@ -92,8 +92,16 @@ probe, including its bounded userns/tmpfs/seccomp/cgroup exercise. Supervisor
 restart recovery persists `cleanup_required` before exact cgroup reaping;
 cleanup uncertainty fails closed and does not create a successful destroy.
 
-Production SSM/ECS registry execution, two-Compose E2E, and live Core Runner
-workload acceptance are pending; the documented isolation lane is not a live
+Typed SSM/ECS registry execution is wired behind `core_aws_enabled`; startup
+only constructs clients and resolvers, while credential verification, strict
+ARN target binding, and AWS identity/read-back checks happen per operation.
+Workload secret grants accept legacy UUID references or canonical Secrets
+Manager/SSM ARNs; ARN grants bind confirmation to a versioned ARN-plus-purpose
+digest, and AWS execution rejects UUID application references. Credential
+resolution requires the current verified revision and exact stored principal
+ARN, which must match STS before any resource call.
+Two-Compose E2E, live AWS workload acceptance, and live Core Runner workload
+acceptance remain pending; the documented isolation lane is not a live
 Core-mode release claim.
 
 ## Contract changes

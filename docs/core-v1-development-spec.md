@@ -41,8 +41,11 @@ results are durable, redacted, resumable, and fenced by lease epoch and
 revision.
 
 `WorkloadService` remains available for durable planning and confirmation.
-Its `WORKLOAD` Task handler and `workload.core_runner` capability are enabled
-only after the local Core Runner completes its authenticated readiness proof.
+Its `WORKLOAD` Task handler is registered when at least one exact target route
+is available. `workload.core_runner` requires the local authenticated readiness
+proof; `workload.aws_ssm` and `workload.aws_ecs` are advertised independently
+when their typed production routes can be constructed. AWS startup performs no
+provider calls; credential, ARN, and target checks remain per operation.
 
 ## Acceptance scenarios
 
@@ -177,6 +180,6 @@ graph authoring, product adapters, or standalone admin UI is specified.
 No behavior is promised beyond the current Protobuf, Core composition, and
 focused tests.
 
-Production SSM/ECS registry wiring, two-Compose end-to-end acceptance, and
-real Core Runner workload acceptance remain pending. The passed non-root
-delegated-cgroup isolation lane is not a claim that live Core mode is released.
+Two-Compose end-to-end acceptance and live AWS workload acceptance remain
+pending. The passed non-root delegated-cgroup isolation lane is not a claim
+that live Core Runner mode is released.

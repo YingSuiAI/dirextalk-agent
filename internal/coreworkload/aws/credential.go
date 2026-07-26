@@ -4,11 +4,16 @@ package aws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
+	"github.com/google/uuid"
 )
 
 var (
@@ -24,14 +29,24 @@ var (
 type CredentialHandle struct {
 	ReferenceID                                string
 	Region, AccountID                          string
+	PrincipalARN                               string
 	AccessKeyID, SecretAccessKey, SessionToken string
 }
 
 func (h CredentialHandle) Validate() error {
-	if strings.TrimSpace(h.ReferenceID) == "" || strings.TrimSpace(h.Region) == "" || strings.TrimSpace(h.AccountID) == "" || h.AccessKeyID == "" || h.SecretAccessKey == "" {
+	if strings.TrimSpace(h.ReferenceID) == "" || strings.TrimSpace(h.Region) == "" || strings.TrimSpace(h.AccountID) == "" || strings.TrimSpace(h.PrincipalARN) == "" || h.AccessKeyID == "" || h.SecretAccessKey == "" {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func (h CredentialHandle) String() string   { return "[redacted-coreworkload-credential]" }
+func (h CredentialHandle) GoString() string { return "aws.CredentialHandle{[redacted]}" }
+func (h CredentialHandle) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ReferenceID, Region, AccountID, PrincipalARN string
+		HasAccessKey, HasSecretKey, HasSessionToken  bool
+	}{h.ReferenceID, h.Region, h.AccountID, h.PrincipalARN, h.AccessKeyID != "", h.SecretAccessKey != "", h.SessionToken != ""})
 }
 
 type CredentialResolver interface {
@@ -39,6 +54,135 @@ type CredentialResolver interface {
 }
 type SecretResolver interface {
 	ResolveSecretReference(context.Context, string) (string, error)
+}
+
+// CredentialStore is the narrow durable read seam used by the production
+// resolver. Implementations must materialize secret bytes only for this call.
+type CredentialStore interface {
+	GetCredential(context.Context, string) (coreaws.Credentials, error)
+}
+
+// DurableCredentialResolver resolves one exact, verified credential revision
+// for an operation. It deliberately does not cache, serialize, or log the
+// returned secret material.
+type DurableCredentialResolver struct{ store CredentialStore }
+
+type PostgresCredentialResolver = DurableCredentialResolver
+
+func NewCredentialResolver(store CredentialStore) (*DurableCredentialResolver, error) {
+	if store == nil {
+		return nil, ErrInvalid
+	}
+	return &DurableCredentialResolver{store: store}, nil
+}
+
+func NewPostgresCredentialResolver(store CredentialStore) (*DurableCredentialResolver, error) {
+	return NewCredentialResolver(store)
+}
+
+func (r *DurableCredentialResolver) ResolveCredential(ctx context.Context, ref string) (CredentialHandle, error) {
+	if r == nil || r.store == nil || !canonicalUUID(ref) {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	c, err := r.store.GetCredential(ctx, ref)
+	if err != nil || c.ID != ref || c.Revision <= 0 || c.VerifiedRevision != c.Revision || strings.TrimSpace(c.Region) == "" || strings.TrimSpace(c.AccountID) == "" || strings.TrimSpace(c.UserARN) == "" {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	access, secret, session := c.StoredSecretBytes()
+	h := CredentialHandle{ReferenceID: ref, Region: c.Region, AccountID: c.AccountID, PrincipalARN: c.UserARN, AccessKeyID: string(access), SecretAccessKey: string(secret), SessionToken: string(session)}
+	if err := h.Validate(); err != nil {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	return h, nil
+}
+
+func canonicalUUID(v string) bool {
+	u, err := uuid.Parse(strings.TrimSpace(v))
+	return err == nil && u != uuid.Nil && u.String() == v
+}
+
+// CanonicalSecretReference is an ARN-only resolver. A lookup function may
+// translate a durable reference ID to an ARN, but plaintext values are never
+// accepted or returned.
+type CanonicalSecretReference struct {
+	Lookup func(context.Context, string) (string, error)
+}
+
+func (r CanonicalSecretReference) ResolveSecretReference(ctx context.Context, ref string) (string, error) {
+	if _, ok := coreworkload.CanonicalAWSSecretARN(ref); !ok {
+		return "", ErrPrecondition
+	}
+	if r.Lookup == nil {
+		return canonicalSecretARN(ref)
+	}
+	value, err := r.Lookup(ctx, ref)
+	if err != nil {
+		return "", ErrPrecondition
+	}
+	return canonicalSecretARN(value)
+}
+
+// ResolveSecretReferenceExact is optional provider binding evidence. The
+// reference, purpose, and digest are checked before the ARN is released.
+func (r CanonicalSecretReference) ResolveSecretReferenceExact(ctx context.Context, ref string, purpose coreconfirmation.SecretPurpose, binding coreconfirmation.Digest) (string, error) {
+	if !binding.Valid() || !validSecretPurpose(purpose) || string(binding) != coreworkload.SecretGrantBindingDigest(ref, purpose) {
+		return "", ErrPrecondition
+	}
+	return r.ResolveSecretReference(ctx, ref)
+}
+
+type ParsedSecretARN struct{ Partition, Service, Region, Account, Resource string }
+
+var arnPattern = regexp.MustCompile(`^arn:([a-z0-9-]+):(secretsmanager|ssm):([a-z0-9-]+):([0-9]{12}):(.+)$`)
+
+func canonicalSecretARN(v string) (string, error) {
+	if canonical, ok := coreworkload.CanonicalAWSSecretARN(v); !ok {
+		return "", ErrPrecondition
+	} else {
+		v = canonical
+	}
+	if v != strings.TrimSpace(v) {
+		return "", ErrPrecondition
+	}
+	m := arnPattern.FindStringSubmatch(v)
+	if m == nil || strings.ContainsAny(v, "\r\n\x00 \t") || strings.Contains(m[5], "//") {
+		return "", ErrPrecondition
+	}
+	if m[1] != "aws" && m[1] != "aws-us-gov" && m[1] != "aws-cn" {
+		return "", ErrPrecondition
+	}
+	if m[2] == "secretsmanager" && !strings.HasPrefix(m[5], "secret:") || m[2] == "ssm" && !strings.HasPrefix(m[5], "parameter/") {
+		return "", ErrPrecondition
+	}
+	return fmt.Sprintf("arn:%s:%s:%s:%s:%s", m[1], m[2], m[3], m[4], m[5]), nil
+}
+
+func ParseSecretARN(v string) (ParsedSecretARN, error) {
+	canonical, err := canonicalSecretARN(v)
+	if err != nil {
+		return ParsedSecretARN{}, err
+	}
+	m := arnPattern.FindStringSubmatch(canonical)
+	return ParsedSecretARN{Partition: m[1], Service: m[2], Region: m[3], Account: m[4], Resource: m[5]}, nil
+}
+
+func ValidateSecretARNForTarget(v, region, account string) error {
+	p, err := ParseSecretARN(v)
+	if err != nil || p.Region != strings.TrimSpace(region) || p.Account != strings.TrimSpace(account) || p.Partition != ExpectedAWSPartition(region) {
+		return ErrPrecondition
+	}
+	return nil
+}
+
+func ExpectedAWSPartition(region string) string {
+	region = strings.TrimSpace(region)
+	if strings.HasPrefix(region, "cn-") {
+		return "aws-cn"
+	}
+	if strings.HasPrefix(region, "us-gov-") {
+		return "aws-us-gov"
+	}
+	return "aws"
 }
 
 func credentialRef(plan coreworkload.Plan) (string, error) {
@@ -60,20 +204,54 @@ func credentialRef(plan coreworkload.Plan) (string, error) {
 
 func resolveApplicationRefs(ctx context.Context, plan coreworkload.Plan, resolver SecretResolver) error {
 	for _, grant := range plan.SecretGrantRefs {
+		if !validSecretPurpose(grant.Purpose) {
+			return ErrPrecondition
+		}
 		if grant.Purpose == coreconfirmation.SecretPurposeAWSCredential {
 			continue
+		}
+		if _, ok := coreworkload.CanonicalAWSSecretARN(grant.ReferenceID); !ok {
+			return ErrPrecondition
 		}
 		if resolver == nil {
 			return ErrPrecondition
 		}
-		arn, err := resolver.ResolveSecretReference(ctx, grant.ReferenceID)
-		if err != nil || !validSecretARN(arn) {
+		if !grant.BindingDigest.Valid() {
+			return ErrPrecondition
+		}
+		var arn string
+		var err error
+		if exact, ok := resolver.(interface {
+			ResolveSecretReferenceExact(context.Context, string, coreconfirmation.SecretPurpose, coreconfirmation.Digest) (string, error)
+		}); ok {
+			arn, err = exact.ResolveSecretReferenceExact(ctx, grant.ReferenceID, grant.Purpose, grant.BindingDigest)
+		} else {
+			arn, err = resolver.ResolveSecretReference(ctx, grant.ReferenceID)
+		}
+		if err != nil || !validSecretARN(arn) || ValidateSecretARNForTarget(arn, plan.Target.Region, plan.Target.AccountID) != nil {
 			return ErrPrecondition
 		}
 	}
 	return nil
 }
 
-func validSecretARN(v string) bool {
-	return strings.HasPrefix(strings.TrimSpace(v), "arn:aws:secretsmanager:") || strings.HasPrefix(strings.TrimSpace(v), "arn:aws:ssm:")
+func ResolveApplicationRefs(ctx context.Context, plan coreworkload.Plan, resolver SecretResolver) error {
+	return resolveApplicationRefs(ctx, plan, resolver)
 }
+
+func validSecretARN(v string) bool {
+	_, err := canonicalSecretARN(v)
+	return err == nil
+}
+
+func validSecretPurpose(v coreconfirmation.SecretPurpose) bool {
+	switch v {
+	case coreconfirmation.SecretPurposeModelAPIKey, coreconfirmation.SecretPurposeMCPCredential, coreconfirmation.SecretPurposeSkillSecret, coreconfirmation.SecretPurposeAWSCredential, coreconfirmation.SecretPurposeOtherExtensionSecret:
+		return true
+	default:
+		return false
+	}
+}
+
+var _ CredentialResolver = (*DurableCredentialResolver)(nil)
+var _ SecretResolver = CanonicalSecretReference{}

@@ -3,6 +3,8 @@ package coreworkload
 import (
 	"context"
 	"errors"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"strings"
 	"testing"
 	"time"
 )
@@ -34,5 +36,23 @@ func TestCanonicalTargetRejectsProviderIdentityDrift(t *testing.T) {
 	target := TargetSettings{Region: "us-east-1", AccountID: "123456789012", InstanceID: "i-123", Identity: TargetIdentity{Kind: TargetAWSEC2SSM, Region: "us-west-2", AccountID: "123456789012", InstanceID: "i-123"}}
 	if err := target.ValidateCanonicalTarget(TargetAWSEC2SSM); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("expected canonical mismatch, got %v", err)
+	}
+}
+
+func TestSecretGrantRefsAllowLegacyUUIDOrExactAWSARNBinding(t *testing.T) {
+	now := time.Now().UTC().Add(time.Hour)
+	arn := "arn:aws:ssm:us-east-1:123456789012:parameter/app/token"
+	base := Plan{Revision: 1, Summary: "secret", TargetKind: TargetCoreRunner, Target: TargetSettings{Identity: TargetIdentity{Kind: TargetCoreRunner, CoreRunnerID: "runner", CoreRunnerService: "svc"}}, CommandSteps: []string{"true"}, ExpiresAt: now}
+	base.SecretGrantRefs = []SecretGrantRef{{ReferenceID: arn, Purpose: coreconfirmation.SecretPurposeModelAPIKey, BindingDigest: coreconfirmation.Digest(SecretGrantBindingDigest(arn, coreconfirmation.SecretPurposeModelAPIKey))}}
+	if _, err := base.Normalize(); err != nil {
+		t.Fatalf("canonical ARN plan rejected: %v", err)
+	}
+	base.SecretGrantRefs[0].BindingDigest = coreconfirmation.Digest(strings.Repeat("a", 64))
+	if _, err := base.Normalize(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("arbitrary ARN binding accepted: %v", err)
+	}
+	base.SecretGrantRefs = []SecretGrantRef{{ReferenceID: "11111111-1111-4111-8111-111111111111", Purpose: coreconfirmation.SecretPurposeModelAPIKey, BindingDigest: coreconfirmation.Digest(strings.Repeat("a", 64))}}
+	if _, err := base.Normalize(); err != nil {
+		t.Fatalf("legacy UUID secret reference rejected: %v", err)
 	}
 }

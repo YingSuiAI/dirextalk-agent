@@ -133,6 +133,39 @@ func TestCoreServerBufconnTLSAuthAndCoreCapabilities(t *testing.T) {
 	}
 }
 
+func TestCoreServerAdvertisesIndependentWorkloadCapabilities(t *testing.T) {
+	certFile, keyFile := writeCoreTestCertificate(t)
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	server, err := NewCoreServer(CoreServerConfig{InstanceID: "00000000-0000-4000-8000-000000000000", ServiceToken: token, TLSCertFile: certFile, TLSKeyFile: keyFile, AWSWorkloadSSMReady: true, AWSWorkloadECSReady: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lis := bufconn.Listen(1 << 20)
+	go func() { _ = server.Serve(lis) }()
+	defer server.Stop()
+	conn, err := grpc.DialContext(context.Background(), "bufnet", grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }), grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	caps, err := agentv1.NewAgentServiceClient(conn).GetCapabilities(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", "DTX-Agent-Token "+token)), &agentv1.GetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := map[string]bool{}
+	for _, capability := range caps.GetCapabilities() {
+		enabled[capability.GetName()] = capability.GetEnabled()
+	}
+	for _, name := range []string{"workload.aws_ssm", "workload.aws_ecs"} {
+		if !enabled[name] {
+			t.Fatalf("capability %q missing or disabled: %v", name, enabled)
+		}
+	}
+	if enabled["workload.core_runner"] {
+		t.Fatal("core runner capability advertised without runner readiness")
+	}
+}
+
 func TestCoreServerTLSAuthHealthReflectionAndTokenRotation(t *testing.T) {
 	certFile, keyFile := writeCoreTestCertificate(t)
 	firstToken := base64.RawURLEncoding.EncodeToString(make([]byte, 32))

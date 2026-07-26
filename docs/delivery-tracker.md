@@ -65,11 +65,14 @@ and Agent command/config/app tests, `go build ./cmd/...`, `git diff --check`,
 and `TestLinuxIsolationIntegrationOptIn` in a transient non-root delegated
 systemd user scope. This is extension-isolation lane evidence only.
 
-Production SSM/ECS registry wiring, two-Compose E2E, and real Core Runner
-workload acceptance remain pending. Until those are complete, runtime probe
-failure intentionally leaves `workload.core_runner` disabled while planning
-RPCs remain available. New behavior must first be reflected in the versioned
-Protobuf, migrations, focused tests, and the Core specification.
+Production SSM/ECS registry wiring is implemented with independent
+`workload.aws_ssm`/`workload.aws_ecs` capabilities, durable verified-credential
+and strict reference-only ARN adapters, and exact target multiplexer routing.
+Startup performs no AWS calls; missing credentials/resources remain
+per-operation preconditions. Two-Compose E2E, live AWS workload acceptance,
+and real Core Runner workload acceptance remain pending. Runtime probe failure
+continues to leave `workload.core_runner` disabled while planning RPCs remain
+available.
 
 ## Product boundary
 

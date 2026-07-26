@@ -92,6 +92,8 @@ and capability disabled. Configure a genuinely delegated subtree; a mounted
 but non-delegated `/sys/fs/cgroup` is not sufficient.
 
 The passed transient systemd delegated-cgroup isolation test is not a
-two-Compose end-to-end or real workload acceptance. Production SSM/ECS
-registry wiring, two-Compose E2E, and live Core Runner workload acceptance are
-still pending.
+two-Compose end-to-end or real workload acceptance. Typed SSM/ECS workload
+routes are now composed when `core_aws_enabled` is true; startup makes no AWS
+calls and advertises each capability independently. Two-Compose E2E, live AWS
+workload acceptance, and live Core Runner workload acceptance are still
+pending.

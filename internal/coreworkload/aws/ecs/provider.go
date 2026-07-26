@@ -114,7 +114,7 @@ func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op corewor
 	if e != nil {
 		return coreworkload.Readback{}, e
 	}
-	if e = p.verify(ctx, cl, plan); e != nil {
+	if e = p.verify(ctx, h, cl, plan); e != nil {
 		return coreworkload.Readback{}, e
 	}
 	td, e := p.register(ctx, cl.ECS, h, plan)
@@ -137,11 +137,11 @@ func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op corewor
 	return p.Read(ctx, plan, op)
 }
 func (p *Provider) Destroy(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
-	_, cl, e := p.prepare(ctx, plan, op)
+	h, cl, e := p.prepare(ctx, plan, op)
 	if e != nil {
 		return coreworkload.Readback{}, e
 	}
-	if e = p.verify(ctx, cl, plan); e != nil {
+	if e = p.verify(ctx, h, cl, plan); e != nil {
 		return coreworkload.Readback{}, e
 	}
 	out, e := cl.ECS.DescribeServices(ctx, &ecs.DescribeServicesInput{Cluster: aws.String(plan.Target.ECSClusterARN), Services: []string{plan.Target.ECSServiceName}, Include: []ecstypes.ServiceField{ecstypes.ServiceFieldTags}})
@@ -166,11 +166,11 @@ func (p *Provider) Destroy(ctx context.Context, plan coreworkload.Plan, op corew
 	return p.Read(ctx, plan, op)
 }
 func (p *Provider) Read(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {
-	_, cl, e := p.prepare(ctx, plan, op)
+	h, cl, e := p.prepare(ctx, plan, op)
 	if e != nil {
 		return coreworkload.Readback{}, e
 	}
-	if e = p.verify(ctx, cl, plan); e != nil {
+	if e = p.verify(ctx, h, cl, plan); e != nil {
 		return coreworkload.Readback{}, e
 	}
 	out, e := cl.ECS.DescribeServices(ctx, &ecs.DescribeServicesInput{Cluster: aws.String(plan.Target.ECSClusterARN), Services: []string{plan.Target.ECSServiceName}, Include: []ecstypes.ServiceField{ecstypes.ServiceFieldTags}})
@@ -258,23 +258,11 @@ func credRef(plan coreworkload.Plan) (string, error) {
 	return r, nil
 }
 func resolveSecrets(ctx context.Context, p coreworkload.Plan, r workaws.SecretResolver) error {
-	for _, g := range p.SecretGrantRefs {
-		if string(g.Purpose) == "AWS_CREDENTIAL" || string(g.Purpose) == "aws_credential" {
-			continue
-		}
-		if r == nil {
-			return workaws.ErrPrecondition
-		}
-		v, e := r.ResolveSecretReference(ctx, g.ReferenceID)
-		if e != nil || !(strings.HasPrefix(v, "arn:aws:secretsmanager:") || strings.HasPrefix(v, "arn:aws:ssm:")) {
-			return workaws.ErrPrecondition
-		}
-	}
-	return nil
+	return workaws.ResolveApplicationRefs(ctx, p, r)
 }
-func (p *Provider) verify(ctx context.Context, cl Clients, plan coreworkload.Plan) error {
+func (p *Provider) verify(ctx context.Context, h workaws.CredentialHandle, cl Clients, plan coreworkload.Plan) error {
 	identity, e := cl.STS.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if e != nil || identity == nil || aws.ToString(identity.Account) != plan.Target.AccountID {
+	if e != nil || identity == nil || aws.ToString(identity.Account) != plan.Target.AccountID || aws.ToString(identity.Arn) != h.PrincipalARN {
 		return workaws.ErrPrecondition
 	}
 	if plan.Target.ECSClusterARN == "" || !strings.HasPrefix(plan.Target.ECSClusterARN, "arn:aws:ecs:") {
