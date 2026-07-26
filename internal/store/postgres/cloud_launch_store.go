@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -47,7 +48,7 @@ func (store *Store) Begin(ctx context.Context, intent cloudexecution.Intent) (cl
 	existing, readErr := readCloudLaunch(ctx, tx, ` WHERE operation_id=$1 FOR UPDATE`, intent.OperationID)
 	if readErr == nil {
 		if !sameLaunchIntent(existing.Intent, intent) {
-			return cloudexecution.Operation{}, false, cloudexecution.ErrRevisionConflict
+			return cloudexecution.Operation{}, false, fmt.Errorf("%w: launch intent changed", cloudexecution.ErrRevisionConflict)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return cloudexecution.Operation{}, false, cloudexecution.ErrUnavailable
@@ -93,15 +94,21 @@ func (store *Store) Save(ctx context.Context, next cloudexecution.Operation, exp
 	if err != nil {
 		return cloudexecution.Operation{}, err
 	}
-	if current.Revision != expectedRevision || !sameLaunchIntent(current.Intent, next.Intent) || !validLaunchTransition(current, next) {
-		return cloudexecution.Operation{}, cloudexecution.ErrRevisionConflict
+	if current.Revision != expectedRevision {
+		return cloudexecution.Operation{}, fmt.Errorf("%w: expected launch revision is stale", cloudexecution.ErrRevisionConflict)
+	}
+	if !sameLaunchIntent(current.Intent, next.Intent) {
+		return cloudexecution.Operation{}, fmt.Errorf("%w: launch intent changed", cloudexecution.ErrRevisionConflict)
+	}
+	if !validLaunchTransition(current, next) {
+		return cloudexecution.Operation{}, fmt.Errorf("%w: invalid launch state transition", cloudexecution.ErrRevisionConflict)
 	}
 	next.Revision = expectedRevision + 1
 	if next.CreatedAt.IsZero() {
 		next.CreatedAt = current.CreatedAt
 	}
 	if next.UpdatedAt.Before(current.UpdatedAt) {
-		return cloudexecution.Operation{}, cloudexecution.ErrRevisionConflict
+		return cloudexecution.Operation{}, fmt.Errorf("%w: launch update time moved backwards", cloudexecution.ErrRevisionConflict)
 	}
 	if err := validateLaunchOperation(next); err != nil {
 		return cloudexecution.Operation{}, err
@@ -120,7 +127,7 @@ func (store *Store) Save(ctx context.Context, next cloudexecution.Operation, exp
 		return cloudexecution.Operation{}, cloudexecution.ErrUnavailable
 	}
 	if result.RowsAffected() != 1 {
-		return cloudexecution.Operation{}, cloudexecution.ErrRevisionConflict
+		return cloudexecution.Operation{}, fmt.Errorf("%w: conditional launch update lost", cloudexecution.ErrRevisionConflict)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return cloudexecution.Operation{}, cloudexecution.ErrUnavailable

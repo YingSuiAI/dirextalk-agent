@@ -221,7 +221,7 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 		operation.State = StateBundlesReady
 		operation, err = service.save(ctx, operation)
 		if err != nil {
-			return Operation{}, err
+			return Operation{}, fmt.Errorf("persist bundles-ready state: %w", err)
 		}
 	}
 
