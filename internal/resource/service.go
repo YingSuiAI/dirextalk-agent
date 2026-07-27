@@ -33,6 +33,8 @@ type managedReplayRepository interface {
 	GetManaged(context.Context, string) (ManagedServiceV1, []ResourceV1, error)
 }
 
+const providerCreateVisibilityWindow = 10 * time.Minute
+
 // FindExactManagedReplay performs a read-only recovery check for the crash
 // window after the managed service/resource transaction commits but before its
 // caller durably records success.
@@ -185,6 +187,21 @@ func (service *Service) provision(ctx context.Context, spec ProvisionSpec, autho
 		}
 		storedRoot = &created
 	}
+	if storedRoot != nil && !stored.Intent.ProviderCreateStartedAt.IsZero() && storedRoot.Intent.ProviderCreateStartedAt.IsZero() {
+		// RunInstances creates the root EBS volume inside the parent provider
+		// mutation. Inherit the parent's irreversible-boundary fence so a
+		// crash before embedded read-back cannot make the volume look as if its
+		// provider mutation never started.
+		storedRoot.Intent.ProviderCreateStartedAt = stored.Intent.ProviderCreateStartedAt
+		savedRoot, saveErr := service.save(ctx, *storedRoot)
+		if saveErr != nil {
+			return stored.clone(), saveErr
+		}
+		storedRoot = &savedRoot
+		if mirrorErr := service.mirrorProvisionFence(ctx, *storedRoot); mirrorErr != nil {
+			return stored.clone(), mirrorErr
+		}
+	}
 	if (stored.State == StateActive || stored.State == StateRetainedManaged) &&
 		(storedRoot == nil || storedRoot.State == StateActive || storedRoot.State == StateRetainedManaged) {
 		return stored.clone(), nil
@@ -240,6 +257,14 @@ func (service *Service) provision(ctx context.Context, spec ProvisionSpec, autho
 					return latest.clone(), ErrCreateAmbiguous
 				}
 				return stored.clone(), err
+			}
+			if storedRoot != nil && storedRoot.Intent.ProviderCreateStartedAt.IsZero() {
+				storedRoot.Intent.ProviderCreateStartedAt = createStartedAt
+				savedRoot, saveErr := service.save(ctx, *storedRoot)
+				if saveErr != nil {
+					return stored.clone(), saveErr
+				}
+				storedRoot = &savedRoot
 			}
 			if mirrorErr := service.mirrorProvisionFence(ctx, stored); mirrorErr != nil {
 				return stored.clone(), mirrorErr
@@ -557,12 +582,14 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 		return DestroyResult{}, err
 	}
 	byID := make(map[string]ResourceV1, len(resources))
+	createFences := make(map[string]MutationIntent, len(resources))
 	dependents := make(map[string][]string, len(resources))
 	for _, resource := range resources {
 		if resource.OwnerID != request.OwnerID {
 			return DestroyResult{}, fmt.Errorf("%w: resource owner mismatch", ErrInvalid)
 		}
 		byID[resource.ResourceID] = resource
+		createFences[resource.ResourceID] = resource.Intent
 		for _, dependency := range resource.DependsOn {
 			dependents[dependency] = append(dependents[dependency], resource.ResourceID)
 		}
@@ -583,6 +610,21 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 			byID[resourceID] = resource
 			blocked = true
 			continue
+		}
+		if providerlessCreateNeedsDestroyReconciliation(resource) {
+			var handled, reconcileBlocked bool
+			resource, handled, reconcileBlocked, err = service.reconcileProviderlessCreateForDestroy(ctx, resource, createFences)
+			if err != nil {
+				return DestroyResult{}, err
+			}
+			byID[resourceID] = resource
+			if handled {
+				if err := service.putManifest(ctx, mapValues(byID), false); err != nil {
+					return DestroyResult{}, err
+				}
+				blocked = blocked || reconcileBlocked
+				continue
+			}
 		}
 		resource.State = StateDestroying
 		resource.BlockedReason = ""
@@ -631,6 +673,119 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 		return DestroyResult{}, err
 	}
 	return DestroyResult{Resources: cloneResources(final), Blocked: blocked}, nil
+}
+
+func providerlessCreateNeedsDestroyReconciliation(item ResourceV1) bool {
+	if item.ProviderID != "" || item.Intent.Operation != MutationCreate {
+		return false
+	}
+	switch item.State {
+	case StateProvisioning, StateDestroyScheduled, StateDestroyBlocked:
+		return true
+	default:
+		return false
+	}
+}
+
+func (service *Service) reconcileProviderlessCreateForDestroy(
+	ctx context.Context,
+	item ResourceV1,
+	createFences map[string]MutationIntent,
+) (ResourceV1, bool, bool, error) {
+	if strings.TrimSpace(item.Intent.ClientToken) == "" {
+		return item.clone(), false, false, fmt.Errorf("%w: providerless create intent has no client token", ErrInvalid)
+	}
+	startedAt, err := effectiveProviderCreateStartedAt(item, createFences)
+	if err != nil {
+		return item.clone(), false, false, err
+	}
+	if startedAt.IsZero() {
+		verified, verifyErr := service.markProviderlessCreateAbsent(ctx, item)
+		return verified, true, false, verifyErr
+	}
+
+	observations, err := service.findProviderlessCreateCandidates(ctx, item)
+	if err != nil {
+		return item.clone(), false, false, fmt.Errorf("reconcile providerless create before destroy: %w", err)
+	}
+	if len(observations) > 0 {
+		persisted, persistErr := service.persistProviderCandidates(ctx, item, observations)
+		return persisted, false, false, persistErr
+	}
+	if service.now().UTC().Before(startedAt.Add(providerCreateVisibilityWindow)) {
+		const reason = "provider create result is still within the reconciliation safety window"
+		if item.State != StateDestroyScheduled || item.BlockedReason != reason {
+			item.State = StateDestroyScheduled
+			item.BlockedReason = reason
+			item, err = service.save(ctx, item)
+			if err != nil {
+				return item.clone(), false, false, err
+			}
+		}
+		return item.clone(), true, true, nil
+	}
+	verified, err := service.markProviderlessCreateAbsent(ctx, item)
+	return verified, true, false, err
+}
+
+func effectiveProviderCreateStartedAt(item ResourceV1, createFences map[string]MutationIntent) (time.Time, error) {
+	startedAt := item.Intent.ProviderCreateStartedAt
+	parentID := strings.TrimSpace(item.Tags[TagEmbeddedParentResourceID])
+	if parentID == "" {
+		return startedAt, nil
+	}
+	parent, ok := createFences[parentID]
+	if !ok || parent.Operation != MutationCreate || parent.ClientToken == "" || parent.ClientToken != item.Intent.ClientToken {
+		return time.Time{}, fmt.Errorf("%w: embedded resource create fence is inconsistent", ErrInvalid)
+	}
+	if parent.ProviderCreateStartedAt.After(startedAt) {
+		startedAt = parent.ProviderCreateStartedAt
+	}
+	return startedAt, nil
+}
+
+func (service *Service) findProviderlessCreateCandidates(ctx context.Context, item ResourceV1) ([]ProviderObservation, error) {
+	byToken, tokenErr := service.provider.FindAllByClientToken(ctx, item.Type, item.Region, item.Intent.ClientToken)
+	owned, ownedErr := service.provider.ListOwned(ctx, item.AgentInstanceID, item.OwnerID)
+	if tokenErr != nil || ownedErr != nil {
+		return nil, errors.Join(tokenErr, ownedErr)
+	}
+
+	byID := make(map[string]ProviderObservation)
+	add := func(observation ProviderObservation) error {
+		if err := verifyObservation(item, observation); err != nil {
+			return err
+		}
+		byID[observation.ProviderID] = observation
+		return nil
+	}
+	for _, observation := range byToken {
+		if err := add(observation); err != nil {
+			return nil, err
+		}
+	}
+	for _, observation := range owned {
+		if observation.Type != item.Type || observation.Tags[TagResourceID] != item.ResourceID {
+			continue
+		}
+		if err := add(observation); err != nil {
+			return nil, err
+		}
+	}
+	result := make([]ProviderObservation, 0, len(byID))
+	for _, observation := range byID {
+		result = append(result, observation)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ProviderID < result[j].ProviderID })
+	return result, nil
+}
+
+func (service *Service) markProviderlessCreateAbsent(ctx context.Context, item ResourceV1) (ResourceV1, error) {
+	item.State = StateVerifiedDestroyed
+	item.ProviderCandidateIDs = nil
+	item.ReadBack = ReadBackEvidence{Exists: false, ObservedAt: service.now().UTC()}
+	item.BlockedReason = ""
+	return service.save(ctx, item)
 }
 
 // RecoverOwned re-imports tagged provider resources that survived loss of the

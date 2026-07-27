@@ -180,6 +180,10 @@ type fakeProvider struct {
 	responseLost      bool
 	hiddenFinds       int
 	hiddenAllFinds    int
+	findAllCount      int
+	findAllErr        error
+	listOwnedCount    int
+	listOwnedErr      error
 	findBarrier       chan struct{}
 	findArrivals      int
 	ambiguousByToken  map[string][]string
@@ -275,7 +279,9 @@ func TestProvisionTypedEC2TracksRootEBSBeforeLaunchAndMirrorsItForReaper(t *test
 		parent, parentErr := fixture.repository.Get(context.Background(), request.ResourceID)
 		root, rootErr := fixture.repository.Get(context.Background(), rootID)
 		if parentErr != nil || rootErr != nil || parent.State != StateProvisioning || root.State != StateProvisioning ||
-			parent.Intent.ClientToken == "" || parent.Intent.ProviderCreateStartedAt.IsZero() || root.Intent.ClientToken != parent.Intent.ClientToken {
+			parent.Intent.ClientToken == "" || parent.Intent.ProviderCreateStartedAt.IsZero() ||
+			root.Intent.ClientToken != parent.Intent.ClientToken || root.Intent.ProviderCreateStartedAt.IsZero() ||
+			!root.Intent.ProviderCreateStartedAt.Equal(parent.Intent.ProviderCreateStartedAt) {
 			return errors.New("RunInstances reached provider before parent and root-volume intents were durable")
 		}
 		return nil
@@ -411,6 +417,10 @@ func (provider *fakeProvider) FindByClientToken(_ context.Context, _ Type, _ str
 func (provider *fakeProvider) FindAllByClientToken(_ context.Context, _ Type, _ string, token string) ([]ProviderObservation, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
+	provider.findAllCount++
+	if provider.findAllErr != nil {
+		return nil, provider.findAllErr
+	}
 	if provider.hiddenAllFinds > 0 {
 		provider.hiddenAllFinds--
 		return nil, nil
@@ -572,6 +582,10 @@ func (provider *fakeProvider) Delete(_ context.Context, _ Type, providerID, _ st
 func (provider *fakeProvider) ListOwned(_ context.Context, agentInstanceID, ownerID string) ([]ProviderObservation, error) {
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
+	provider.listOwnedCount++
+	if provider.listOwnedErr != nil {
+		return nil, provider.listOwnedErr
+	}
 	result := make([]ProviderObservation, 0)
 	for _, observation := range provider.resources {
 		if observation.Exists && observation.Tags[TagAgentInstanceID] == agentInstanceID && (provider.ignoreOwnerFilter || observation.Tags[TagOwnerID] == ownerID) {
@@ -673,6 +687,39 @@ func (fixture resourceFixture) createAuthorization() ProviderCreateAuthorization
 		ApprovalExpiresAt: fixture.now.Add(10 * time.Minute),
 		QuoteValidUntil:   fixture.now.Add(15 * time.Minute),
 	}
+}
+
+func (fixture resourceFixture) seedProviderlessProvisioning(
+	t *testing.T,
+	kind Type,
+	logicalName string,
+	createStartedAt time.Time,
+	dependencies ...string,
+) ResourceV1 {
+	t.Helper()
+	spec := fixture.spec(kind, logicalName, dependencies...)
+	recordedAt := fixture.now.Add(-20 * time.Minute)
+	if !createStartedAt.IsZero() && !createStartedAt.After(recordedAt) {
+		recordedAt = createStartedAt.Add(-time.Minute)
+	}
+	item := ResourceV1{
+		ResourceID: spec.ResourceID, AgentInstanceID: spec.AgentInstanceID, OwnerID: spec.OwnerID,
+		TaskID: spec.TaskID, DeploymentID: spec.DeploymentID, Type: spec.Type, LogicalName: spec.LogicalName,
+		Region: spec.Region, SpecDigest: spec.SpecDigest, ApprovedPlanHash: spec.ApprovedPlanHash,
+		ApprovalID: spec.ApprovalID, DependsOn: append([]string(nil), spec.DependsOn...),
+		Retention: spec.Retention, DestroyDeadline: spec.DestroyDeadline, AutoDestroyApproved: spec.AutoDestroyApproved,
+		Tags: spec.mandatoryTags(), State: StateProvisioning,
+		Intent: MutationIntent{
+			Operation: MutationCreate, ClientToken: clientToken("seed-create", spec.ResourceID),
+			RecordedAt: recordedAt, ProviderCreateStartedAt: createStartedAt,
+		},
+		Revision: 1, CreatedAt: recordedAt, UpdatedAt: recordedAt,
+	}
+	stored, err := fixture.repository.CreateIntent(context.Background(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func TestProvisionPersistsIntentReconcilesLostResponseAndMirrorsBeforeActive(t *testing.T) {
@@ -841,6 +888,158 @@ func TestDestroyUsesReverseDependenciesAndBlocksUntilReadBack(t *testing.T) {
 			t.Fatalf("destroy was not independently read back: %+v", resource)
 		}
 	}
+}
+
+func TestScheduleDestroyFencesProviderlessProvisioning(t *testing.T) {
+	fixture := newResourceFixture(t)
+	pending := fixture.seedProviderlessProvisioning(t, TypeEC2, "pending-worker", time.Time{})
+	active, err := fixture.service.Provision(context.Background(), fixture.spec(TypeEIP, "active-address"), fixture.createAuthorization())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	scheduled, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := statesByID(scheduled)
+	if states[pending.ResourceID] != StateDestroyScheduled || states[active.ResourceID] != StateDestroyScheduled {
+		t.Fatalf("destroy scheduling did not fence both create paths: %v", states)
+	}
+	stored, err := fixture.repository.Get(context.Background(), pending.ResourceID)
+	if err != nil || stored.State != StateDestroyScheduled || stored.Intent.Operation != MutationCreate {
+		t.Fatalf("providerless create fence was not durable: resource=%+v error=%v", stored, err)
+	}
+}
+
+func TestDestroyReconcilesProviderlessCreateWithoutLeakingCloudResources(t *testing.T) {
+	request := func(fixture resourceFixture) DestroyRequest {
+		return DestroyRequest{DeploymentID: fixture.deploymentID, OwnerID: fixture.ownerID, ApprovalID: uuid.NewString()}
+	}
+
+	t.Run("provider boundary never crossed", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		pending := fixture.seedProviderlessProvisioning(t, TypeEC2, "never-created-worker", time.Time{})
+		if _, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.service.Destroy(context.Background(), request(fixture))
+		if err != nil || result.Blocked {
+			t.Fatalf("destroy result=%+v error=%v", result, err)
+		}
+		stored, err := fixture.repository.Get(context.Background(), pending.ResourceID)
+		if err != nil || stored.State != StateVerifiedDestroyed || stored.ReadBack.Exists || stored.ReadBack.ObservedAt.IsZero() ||
+			fixture.provider.findAllCount != 0 || fixture.provider.listOwnedCount != 0 || len(fixture.provider.deleteOrder) != 0 {
+			t.Fatalf("never-started create cleanup resource=%+v provider=%+v error=%v", stored, fixture.provider, err)
+		}
+	})
+
+	t.Run("recent provider boundary waits for visibility", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		pending := fixture.seedProviderlessProvisioning(t, TypeEC2, "recent-create-worker", fixture.now.Add(-time.Minute))
+		if _, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.service.Destroy(context.Background(), request(fixture))
+		if err != nil || !result.Blocked {
+			t.Fatalf("recent ambiguous create result=%+v error=%v", result, err)
+		}
+		stored, err := fixture.repository.Get(context.Background(), pending.ResourceID)
+		if err != nil || stored.State != StateDestroyScheduled || stored.Intent.Operation != MutationCreate ||
+			stored.BlockedReason == "" || fixture.provider.findAllCount != 1 || fixture.provider.listOwnedCount != 1 {
+			t.Fatalf("recent create was not safely deferred: resource=%+v error=%v", stored, err)
+		}
+	})
+
+	t.Run("mature provider boundary has two-path absence evidence", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		pending := fixture.seedProviderlessProvisioning(t, TypeEC2, "absent-worker", fixture.now.Add(-11*time.Minute))
+		if _, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.service.Destroy(context.Background(), request(fixture))
+		if err != nil || result.Blocked {
+			t.Fatalf("mature absent create result=%+v error=%v", result, err)
+		}
+		stored, err := fixture.repository.Get(context.Background(), pending.ResourceID)
+		if err != nil || stored.State != StateVerifiedDestroyed || stored.ReadBack.Exists ||
+			fixture.provider.findAllCount != 1 || fixture.provider.listOwnedCount != 1 || len(fixture.provider.deleteOrder) != 0 {
+			t.Fatalf("mature absence was not verified: resource=%+v error=%v", stored, err)
+		}
+	})
+
+	t.Run("pending resource tags recover a candidate missing its ready token", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		pending := fixture.seedProviderlessProvisioning(t, TypeEC2, "pending-tag-worker", fixture.now.Add(-11*time.Minute))
+		providerID := "i-pending-by-resource-tags"
+		fixture.provider.resources[providerID] = ProviderObservation{
+			ProviderID: providerID, Type: pending.Type, Exists: true, Tags: cloneMap(pending.Tags), ObservedAt: fixture.now,
+		}
+		if _, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.service.Destroy(context.Background(), request(fixture))
+		if err != nil || result.Blocked {
+			t.Fatalf("candidate cleanup result=%+v error=%v", result, err)
+		}
+		stored, err := fixture.repository.Get(context.Background(), pending.ResourceID)
+		if err != nil || stored.State != StateVerifiedDestroyed || stored.ReadBack.Exists ||
+			!slicesEqual(stored.ProviderCandidateIDs, []string{providerID}) ||
+			!slicesEqual(fixture.provider.deleteOrder, []string{providerID}) || fixture.provider.resources[providerID].Exists {
+			t.Fatalf("pending-tag candidate leaked: resource=%+v deletes=%v error=%v", stored, fixture.provider.deleteOrder, err)
+		}
+	})
+
+	t.Run("provider query failure never becomes absence proof", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		pending := fixture.seedProviderlessProvisioning(t, TypeEC2, "query-failure-worker", fixture.now.Add(-11*time.Minute))
+		fixture.provider.findAllErr = errors.New("simulated provider list outage")
+		if _, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		_, err := fixture.service.Destroy(context.Background(), request(fixture))
+		if err == nil {
+			t.Fatal("provider query failure was accepted as absence")
+		}
+		stored, getErr := fixture.repository.Get(context.Background(), pending.ResourceID)
+		if getErr != nil || stored.State != StateDestroyScheduled || !stored.ReadBack.ObservedAt.IsZero() ||
+			len(fixture.provider.deleteOrder) != 0 {
+			t.Fatalf("query failure changed durable destruction evidence: resource=%+v error=%v", stored, getErr)
+		}
+	})
+
+	t.Run("legacy embedded root inherits the parent provider fence", func(t *testing.T) {
+		fixture := newResourceFixture(t)
+		parent := fixture.seedProviderlessProvisioning(t, TypeEC2, "legacy-parent", fixture.now.Add(-11*time.Minute))
+		parent.State = StateVerifiedDestroyed
+		parent.ReadBack = ReadBackEvidence{Exists: false, ObservedAt: fixture.now}
+		parent, err := fixture.service.save(context.Background(), parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := fixture.seedProviderlessProvisioning(t, TypeEBS, "legacy-root", time.Time{})
+		root.Tags[TagEmbeddedParentResourceID] = parent.ResourceID
+		root.Intent.ClientToken = parent.Intent.ClientToken
+		root, err = fixture.service.save(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		providerID := "vol-legacy-pending-root"
+		fixture.provider.resources[providerID] = ProviderObservation{
+			ProviderID: providerID, Type: root.Type, Exists: true, Tags: cloneMap(root.Tags), ObservedAt: fixture.now,
+		}
+		if _, err := fixture.service.ScheduleDestroy(context.Background(), fixture.deploymentID, fixture.ownerID); err != nil {
+			t.Fatal(err)
+		}
+		result, err := fixture.service.Destroy(context.Background(), request(fixture))
+		if err != nil || result.Blocked || !slicesEqual(fixture.provider.deleteOrder, []string{providerID}) {
+			t.Fatalf("legacy embedded root cleanup result=%+v deletes=%v error=%v", result, fixture.provider.deleteOrder, err)
+		}
+		stored, err := fixture.repository.Get(context.Background(), root.ResourceID)
+		if err != nil || stored.State != StateVerifiedDestroyed || stored.ReadBack.Exists {
+			t.Fatalf("legacy embedded root remains live: resource=%+v error=%v", stored, err)
+		}
+	})
 }
 
 func TestEndpointAndSnapshotDestroyBeforeTheirDependencies(t *testing.T) {

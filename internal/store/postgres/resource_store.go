@@ -1060,12 +1060,21 @@ func (store *ResourceStore) validateResource(item resource.ResourceV1) error {
 	if item.State == resource.StateVerifiedDestroyed && (item.ReadBack.Exists || item.ReadBack.ObservedAt.IsZero()) {
 		return resource.ErrInvalid
 	}
-	if item.State == resource.StateActive || item.State == resource.StateDestroyScheduled || item.State == resource.StateRetainedManaged || item.State == resource.StateOrphaned {
+	if item.State == resource.StateActive || item.State == resource.StateRetainedManaged || item.State == resource.StateOrphaned {
 		if item.ProviderID == "" || !item.ReadBack.Exists || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.ProviderID != item.ProviderID {
 			return resource.ErrInvalid
 		}
 	}
-	if item.State == resource.StateDestroying && item.ProviderID == "" {
+	if item.State == resource.StateDestroyScheduled {
+		if item.ProviderID == "" {
+			if item.Intent.Operation != resource.MutationCreate || item.ReadBack.Exists || item.ReadBack.ProviderID != "" {
+				return resource.ErrInvalid
+			}
+		} else if !item.ReadBack.Exists || item.ReadBack.ObservedAt.IsZero() || item.ReadBack.ProviderID != item.ProviderID {
+			return resource.ErrInvalid
+		}
+	}
+	if item.State == resource.StateDestroying && item.ProviderID == "" && len(item.ProviderCandidateIDs) == 0 {
 		return resource.ErrInvalid
 	}
 	if item.State == resource.StateRetainedManaged && item.Retention != task.RetentionManaged {

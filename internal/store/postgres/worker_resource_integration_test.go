@@ -486,6 +486,107 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 	}
 }
 
+func TestResourcePostgresPersistsProviderlessDestroyFences(t *testing.T) {
+	pool, baseStore, instanceID := newPlanningTestStore(t)
+	ctx := context.Background()
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	taskID, _ := createWorkerTask(t, baseStore)
+	deploymentID := uuid.NewString()
+	ownerID := "owner-providerless-destroy"
+	seedWorkerIdentityBinding(t, pool, instanceID, ownerID, taskID, deploymentID, "i-0123456789abcdef0", "123456789012")
+
+	var approvalID uuid.UUID
+	var approvedPlanHash string
+	if err := pool.QueryRow(ctx, `
+		SELECT launch.approval_id, approval.plan_hash
+		FROM cloud_launch_operations AS launch
+		JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
+		WHERE launch.deployment_id=$1`, deploymentID).Scan(&approvalID, &approvedPlanHash); err != nil {
+		t.Fatalf("load providerless destroy approval origin: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM cloud_resources WHERE deployment_id=$1`, deploymentID); err != nil {
+		t.Fatalf("remove Worker identity fixture resource: %v", err)
+	}
+
+	deadline := now.Add(30 * time.Minute).Truncate(time.Second)
+	newItem := func(logicalName string) resource.ResourceV1 {
+		resourceID := uuid.NewString()
+		return resource.ResourceV1{
+			ResourceID: resourceID, AgentInstanceID: instanceID, OwnerID: ownerID, TaskID: taskID,
+			DeploymentID: deploymentID, Type: resource.TypeEC2, LogicalName: logicalName, Region: "us-west-2",
+			SpecDigest: "sha256:" + strings.Repeat("a", 64), ApprovedPlanHash: approvedPlanHash,
+			ApprovalID: approvalID.String(), Retention: task.RetentionEphemeralAutoDestroy,
+			DestroyDeadline: deadline, AutoDestroyApproved: true,
+			Tags: map[string]string{
+				resource.TagAgentInstanceID: instanceID, resource.TagOwnerID: ownerID,
+				resource.TagTaskID: taskID, resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
+				resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: deadline.Format(time.RFC3339),
+				resource.TagApprovedPlanHash: approvedPlanHash, resource.TagApprovalID: approvalID.String(),
+			},
+			State: resource.StateProvisioning,
+			Intent: resource.MutationIntent{
+				Operation: resource.MutationCreate, ClientToken: strings.Repeat("c", 64), RecordedAt: now,
+			},
+			Revision: 1, CreatedAt: now, UpdatedAt: now,
+		}
+	}
+
+	scheduled, err := store.CreateIntent(ctx, newItem("scheduled-providerless-worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduled.State = resource.StateDestroyScheduled
+	scheduled.Intent.ProviderCreateStartedAt = now.Add(100 * time.Millisecond)
+	scheduled.Revision = 2
+	scheduled.UpdatedAt = now.Add(100 * time.Millisecond)
+	scheduled, err = store.Save(ctx, scheduled, 1)
+	if err != nil {
+		t.Fatalf("persist providerless destroy schedule: %v", err)
+	}
+	if scheduled.ProviderID != "" || scheduled.Intent.Operation != resource.MutationCreate {
+		t.Fatalf("providerless destroy schedule lost create lineage: %+v", scheduled)
+	}
+
+	candidateOnly, err := store.CreateIntent(ctx, newItem("candidate-only-worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateOnly.State = resource.StateDestroying
+	candidateOnly.ProviderCandidateIDs = []string{"i-candidate-only"}
+	candidateOnly.Intent = resource.MutationIntent{
+		Operation: resource.MutationDestroy, ClientToken: strings.Repeat("d", 64), RecordedAt: now.Add(time.Second),
+	}
+	candidateOnly.Revision = 2
+	candidateOnly.UpdatedAt = now.Add(time.Second)
+	candidateOnly, err = store.Save(ctx, candidateOnly, 1)
+	if err != nil {
+		t.Fatalf("persist candidate-only destroy mutation: %v", err)
+	}
+	reloaded, err := store.Get(ctx, candidateOnly.ResourceID)
+	if err != nil || reloaded.ProviderID != "" || !slices.Equal(reloaded.ProviderCandidateIDs, candidateOnly.ProviderCandidateIDs) ||
+		reloaded.State != resource.StateDestroying {
+		t.Fatalf("candidate-only destroy reload=%+v error=%v", reloaded, err)
+	}
+
+	unidentified, err := store.CreateIntent(ctx, newItem("unidentified-worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unidentified.State = resource.StateDestroying
+	unidentified.Intent = resource.MutationIntent{
+		Operation: resource.MutationDestroy, ClientToken: strings.Repeat("e", 64), RecordedAt: now.Add(2 * time.Second),
+	}
+	unidentified.Revision = 2
+	unidentified.UpdatedAt = now.Add(2 * time.Second)
+	if _, err := store.Save(ctx, unidentified, 1); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("destroying without provider or candidate id error=%v, want ErrRevisionConflict", err)
+	}
+}
+
 func TestApprovePlanAcceptsChallengeIssuedWithinAllowedClockSkew(t *testing.T) {
 	_, store, instanceID := newPlanningTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
