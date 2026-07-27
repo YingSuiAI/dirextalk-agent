@@ -909,9 +909,10 @@ func ValidateAWSDependencies(kind Type, dependencies []ProviderDependency, spec 
 			return fmt.Errorf("%w: EBS snapshot requires exactly one source volume", ErrInvalid)
 		}
 	case TypeEC2:
-		if counts[TypeENI] != 1 || counts[TypeEBS] > 11 || (counts[TypeEndpoint] != 0 && counts[TypeEndpoint] != 3) ||
-			len(dependencies) != counts[TypeENI]+counts[TypeEBS]+counts[TypeEndpoint] {
-			return fmt.Errorf("%w: EC2 requires one ENI and at most 11 EBS volumes", ErrInvalid)
+		if counts[TypeENI] != 1 || counts[TypeEIP] > 1 || counts[TypeEBS] > 11 ||
+			(counts[TypeEndpoint] != 0 && counts[TypeEndpoint] != 3) ||
+			len(dependencies) != counts[TypeENI]+counts[TypeEIP]+counts[TypeEBS]+counts[TypeEndpoint] {
+			return fmt.Errorf("%w: EC2 requires one ENI, at most one EIP, and at most 11 EBS volumes", ErrInvalid)
 		}
 		if spec.Instance == nil {
 			return fmt.Errorf("%w: EC2 instance scope is required", ErrInvalid)

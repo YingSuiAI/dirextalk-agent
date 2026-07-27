@@ -71,9 +71,19 @@ func TestAWSDependenciesEnforceSingleWorkerTopology(t *testing.T) {
 	if err := ValidateAWSDependencies(TypeEC2, valid, workerInstanceSpec()); err != nil {
 		t.Fatal(err)
 	}
+	withEIP := append(append([]ProviderDependency(nil), valid...), ProviderDependency{
+		ResourceID: "eip-resource", Type: TypeEIP, ProviderID: "eipalloc-0123456789abcdef0",
+	})
+	if err := ValidateAWSDependencies(TypeEC2, withEIP, workerInstanceSpec()); err != nil {
+		t.Fatalf("direct-public Worker EIP ordering dependency rejected: %v", err)
+	}
 	invalid := append(valid, ProviderDependency{ResourceID: "other-eni", Type: TypeENI, ProviderID: "eni-11111111111111111"})
 	if err := ValidateAWSDependencies(TypeEC2, invalid, workerInstanceSpec()); err == nil {
 		t.Fatal("multiple Worker ENIs unexpectedly validated")
+	}
+	multipleEIPs := append(withEIP, ProviderDependency{ResourceID: "other-eip", Type: TypeEIP, ProviderID: "eipalloc-11111111111111111"})
+	if err := ValidateAWSDependencies(TypeEC2, multipleEIPs, workerInstanceSpec()); err == nil {
+		t.Fatal("multiple Worker EIP ordering dependencies unexpectedly validated")
 	}
 }
 
