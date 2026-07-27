@@ -181,6 +181,54 @@ func TestPlanningStoreRecoversResearchAndPersistsSecretFreeDraft(t *testing.T) {
 	assertPlanningCanaryAbsent(t, pool, canary)
 }
 
+func TestPlanningStoreAllowsRecipeReuseAcrossIndependentSessions(t *testing.T) {
+	pool, store, _ := newPlanningTestStore(t)
+	scope := task.MutationScope{ClientID: "planning-recipe-reuse", CredentialID: uuid.NewString()}
+	first := integrationResearchCommand()
+	first.Binding.OwnerID = "owner-recipe-reuse"
+	first.Binding.RecipeID = "reusable-diagnostic-recipe"
+	first.Binding.ConversationID = "recipe-reuse-first"
+	first.Create.OwnerID = first.Binding.OwnerID
+	first.Create.IdempotencyKey = first.Binding.RequestID
+
+	second := integrationResearchCommand()
+	second.Binding.OwnerID = first.Binding.OwnerID
+	second.Binding.RecipeID = first.Binding.RecipeID
+	second.Binding.ConversationID = "recipe-reuse-second"
+	second.Create.OwnerID = second.Binding.OwnerID
+	second.Create.IdempotencyKey = second.Binding.RequestID
+
+	for _, command := range []planning.ResearchCommand{first, second} {
+		if _, err := store.ClaimResearch(context.Background(), scope, command); err != nil {
+			t.Fatalf("claim independent Recipe session failed (%T)", err)
+		}
+		value := integrationRecipe(command.Binding.RecipeID)
+		if _, err := store.SaveRecipeDraft(context.Background(), scope, planning.SaveRecipeDraftCommand{
+			IdempotencyKey: uuid.NewString(), Binding: command.Binding, Recipe: value,
+		}); err != nil {
+			t.Fatalf("save reusable Recipe draft failed (%T)", err)
+		}
+	}
+
+	var rows int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM planning_recipe_drafts
+		WHERE owner_id=$1 AND recipe_id=$2`, first.Binding.OwnerID, first.Binding.RecipeID).Scan(&rows); err != nil {
+		t.Fatalf("count reusable Recipe drafts failed (%T)", err)
+	}
+	if rows != 2 {
+		t.Fatalf("reusable Recipe draft rows = %d, want 2", rows)
+	}
+	digest, err := integrationRecipe(first.Binding.RecipeID).Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := store.ResolveRecipe(context.Background(), first.Binding.OwnerID, first.Binding.RecipeID, digest)
+	if err != nil || resolved.RecipeID != first.Binding.RecipeID {
+		t.Fatalf("resolve reusable Recipe failed: id=%q err=%T", resolved.RecipeID, err)
+	}
+}
+
 func persistOfficialSourceReceipt(t *testing.T, store *postgres.Store, scope task.MutationScope, binding planning.Binding, taskID string, source recipe.SourceV1) {
 	t.Helper()
 	requestID, err := planning.CloudGoalModelRequestID(binding, taskID, cloudskill.StepResearchOfficialSources)
