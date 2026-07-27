@@ -58,6 +58,8 @@ func (provider *EC2ResourceProvider) validDependencyProviderID(kind resource.Typ
 			return validEntryEC2ID(dependency.ProviderID, "eni-")
 		case resource.TypeEBS:
 			return validEntryEC2ID(dependency.ProviderID, "vol-")
+		case resource.TypeEIP:
+			return validEntryEC2ID(dependency.ProviderID, "eipalloc-")
 		case resource.TypeSnapshot:
 			return validEntryEC2ID(dependency.ProviderID, "snap-")
 		default:
