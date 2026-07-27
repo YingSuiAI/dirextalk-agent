@@ -272,7 +272,11 @@ func serve() error {
 			cloudErr = cloudComposition.Recover(foundationRecoveryContext)
 			stopFoundationRecovery()
 			if cloudErr != nil {
-				return errors.New("could not safely recover pending AWS Foundation operations")
+				// Every cloud mutation is fenced by its durable operation row,
+				// and each runtime recovery component is supervised independently.
+				// Keep the local control plane available while the failed
+				// component retries the exact persisted operation.
+				slog.Warn("initial AWS cloud recovery deferred", "error", safeError(cloudErr))
 			}
 		}
 	}
