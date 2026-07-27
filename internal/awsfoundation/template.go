@@ -35,6 +35,7 @@ var requiredTemplateResources = map[string]string{
 	"ReaperInvokePermission":              "AWS::Lambda::Permission",
 	"ReaperErrorAlarm":                    "AWS::CloudWatch::Alarm",
 	"ControlRuntimePolicy":                "AWS::IAM::Policy",
+	"ControlEncryptionPolicy":             "AWS::IAM::ManagedPolicy",
 	"ControlArtifactTagPolicy":            "AWS::IAM::ManagedPolicy",
 	"ControlEntrypointPolicy":             "AWS::IAM::ManagedPolicy",
 }
@@ -116,6 +117,8 @@ func ValidateTemplate(raw []byte) error {
 		case "AWS::IAM::ManagedPolicy":
 			expectedName := ""
 			switch logicalID {
+			case "ControlEncryptionPolicy":
+				expectedName = "${AWS::StackName}-control-encryption"
 			case "ControlArtifactTagPolicy":
 				expectedName = "${AWS::StackName}-control-artifact-tags"
 			case "ControlEntrypointPolicy":
@@ -155,6 +158,9 @@ func ValidateTemplate(raw []byte) error {
 	}
 	if !controlPolicyFailsClosed(resources["ControlRuntimePolicy"]) {
 		return fmt.Errorf("%w: Control Role mutation is not ownership-tag scoped", ErrInvalidTemplate)
+	}
+	if !controlEncryptionPolicyFailsClosed(resources["ControlEncryptionPolicy"]) {
+		return fmt.Errorf("%w: Control Role KMS authority is not Foundation-key scoped", ErrInvalidTemplate)
 	}
 	if !controlArtifactTagPolicyFailsClosed(resources["ControlArtifactTagPolicy"]) {
 		return fmt.Errorf("%w: Control Role artifact tagging is not deployment-path scoped", ErrInvalidTemplate)
@@ -477,7 +483,7 @@ var controlRuntimeStatementSIDs = map[string]struct{}{
 	"RunTaggedInstanceVolume": {}, "UseOwnedNetworkInterface": {}, "UsePublicBuilderBaseImage": {}, "UseOwnedWorkerImage": {}, "UseLaunchNetworkInputs": {},
 	"TagComputeOnCreate": {}, "CreateImageFromOwnedBuilder": {}, "CreateImageOutput": {}, "TagWorkerImageOutputs": {}, "MutateOnlyOwnedCompute": {},
 	"DestroyOwnedWorkerImage": {}, "TagOnlyOwnedCompute": {}, "PassOnlyWorkerRole": {}, "ReadExactWorkerRoleIdentity": {}, "FoundationArtifacts": {},
-	"BindExactInstallerArtifactVersions": {}, "FoundationEncryption": {}, "CreateTaggedDeploymentSecrets": {}, "MutateOnlyOwnedDeploymentSecrets": {}, "ResourceManifest": {},
+	"BindExactInstallerArtifactVersions": {}, "CreateTaggedDeploymentSecrets": {}, "MutateOnlyOwnedDeploymentSecrets": {}, "ResourceManifest": {},
 	"WorkerMilestoneRelayLogs": {},
 }
 
@@ -502,6 +508,46 @@ func managedPolicyAttachesOnlyControlRole(resource map[string]any, expectedName 
 	}
 	role, ok := stringMap(roles[0])
 	return ok && len(role) == 1 && scalarString(role["Ref"]) == "ControlRoleName"
+}
+
+func controlEncryptionPolicyFailsClosed(value any) bool {
+	resource, ok := stringMap(value)
+	if !ok || !managedPolicyAttachesOnlyControlRole(resource, "${AWS::StackName}-control-encryption") {
+		return false
+	}
+	properties, _ := stringMap(resource["Properties"])
+	document, _ := stringMap(properties["PolicyDocument"])
+	items, ok := anySlice(document["Statement"])
+	if !ok || len(items) != 2 {
+		return false
+	}
+	seenData, seenGrant := false, false
+	for _, item := range items {
+		statement, statementOK := stringMap(item)
+		if !statementOK || scalarString(statement["Effect"]) != "Allow" ||
+			!sameStrings(templateResourceStrings(statement["Resource"]), []string{"getatt:FoundationKey:Arn"}) {
+			return false
+		}
+		switch scalarString(statement["Sid"]) {
+		case "FoundationEncryptionData":
+			if seenData || !sameStrings(stringValues(statement["Action"]), []string{
+				"kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey",
+				"kms:GenerateDataKeyWithoutPlaintext", "kms:ReEncryptFrom", "kms:ReEncryptTo",
+			}) || statement["Condition"] != nil {
+				return false
+			}
+			seenData = true
+		case "FoundationEncryptionGrant":
+			if seenGrant || !sameStrings(stringValues(statement["Action"]), []string{"kms:CreateGrant"}) ||
+				!kmsGrantIsForAWSResourceCondition(statement) {
+				return false
+			}
+			seenGrant = true
+		default:
+			return false
+		}
+	}
+	return seenData && seenGrant
 }
 
 func controlArtifactTagPolicyFailsClosed(value any) bool {
@@ -784,6 +830,15 @@ func singleRefCondition(statement map[string]any, operator, key, ref string) boo
 	}
 	reference, ok := stringMap(values[key])
 	return ok && len(reference) == 1 && scalarString(reference["Ref"]) == ref
+}
+
+func kmsGrantIsForAWSResourceCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 1 {
+		return false
+	}
+	values, ok := stringMap(condition["Bool"])
+	return ok && len(values) == 1 && scalarString(values["kms:GrantIsForAWSResource"]) == "true"
 }
 
 func computeTagCondition(statement map[string]any, onCreate bool) bool {

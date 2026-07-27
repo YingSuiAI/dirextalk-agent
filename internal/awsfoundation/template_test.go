@@ -182,6 +182,36 @@ func TestFoundationTemplateControlArtifactBinderIsVersionedAndNarrow(t *testing.
 	}
 }
 
+func TestFoundationTemplateControlEBSKMSPermissionsAreScoped(t *testing.T) {
+	statements := controlManagedPolicyStatements(t, "ControlEncryptionPolicy")
+	data, dataOK := statements["FoundationEncryptionData"]
+	grant, grantOK := statements["FoundationEncryptionGrant"]
+	if !dataOK || !sameStrings(stringValues(data["Action"]), []string{
+		"kms:Decrypt", "kms:DescribeKey", "kms:Encrypt", "kms:GenerateDataKey",
+		"kms:GenerateDataKeyWithoutPlaintext", "kms:ReEncryptFrom", "kms:ReEncryptTo",
+	}) || !sameStrings(templateResourceStrings(data["Resource"]), []string{"getatt:FoundationKey:Arn"}) || data["Condition"] != nil {
+		t.Fatalf("control KMS data permissions are not Foundation-key scoped: %#v", data)
+	}
+	if !grantOK || !sameStrings(stringValues(grant["Action"]), []string{"kms:CreateGrant"}) ||
+		!sameStrings(templateResourceStrings(grant["Resource"]), []string{"getatt:FoundationKey:Arn"}) ||
+		!kmsGrantIsForAWSResourceCondition(grant) {
+		t.Fatalf("control KMS grant permission is not AWS-resource scoped: %#v", grant)
+	}
+
+	template := testFoundationTemplate(t)
+	for name, mutation := range map[string][3]string{
+		"missing EBS data-key permission": {"FoundationEncryptionData", "- kms:GenerateDataKeyWithoutPlaintext", "- kms:GenerateDataKey"},
+		"grant loses AWS resource fence":  {"FoundationEncryptionGrant", "kms:GrantIsForAWSResource", "kms:GrantIsForUnrelatedResource"},
+		"grant gains direct decrypt":      {"FoundationEncryptionGrant", "- kms:CreateGrant", "- kms:CreateGrant\n              - kms:Decrypt"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateTemplate(mutateFoundationStatement(t, template, mutation[0], mutation[1], mutation[2])); err == nil {
+				t.Fatalf("unsafe control KMS mutation %s was accepted", name)
+			}
+		})
+	}
+}
+
 func TestFoundationTemplateControlArtifactTagPolicyIsMinimumScoped(t *testing.T) {
 	statements := controlManagedPolicyStatements(t, "ControlArtifactTagPolicy")
 	statement, ok := statements["TagPublishedControlArtifacts"]

@@ -954,16 +954,6 @@ Resources:
               - s3:PutObjectVersionTagging
             Resource:
               Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/artifacts/*
-          - Sid: FoundationEncryption
-            Effect: Allow
-            Action:
-              - kms:CreateGrant
-              - kms:Decrypt
-              - kms:DescribeKey
-              - kms:Encrypt
-              - kms:GenerateDataKey
-            Resource:
-              Fn::GetAtt: [FoundationKey, Arn]
           - Sid: CreateTaggedDeploymentSecrets
             Effect: Allow
             Action:
@@ -1012,6 +1002,39 @@ Resources:
               - logs:PutLogEvents
             Resource:
               Fn::GetAtt: [WorkerLogGroup, Arn]
+
+  ControlEncryptionPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName:
+        Fn::Sub: ${AWS::StackName}-control-encryption
+      Path: /
+      Roles:
+        - Ref: ControlRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: FoundationEncryptionData
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+            Resource:
+              Fn::GetAtt: [FoundationKey, Arn]
+          - Sid: FoundationEncryptionGrant
+            Effect: Allow
+            Action:
+              - kms:CreateGrant
+            Resource:
+              Fn::GetAtt: [FoundationKey, Arn]
+            Condition:
+              Bool:
+                kms:GrantIsForAWSResource: 'true'
 
   # S3 authorizes x-amz-tagging on PutObject separately. Keep that permission
   # out of the quota-bound runtime policy and restrict it to the two immutable
