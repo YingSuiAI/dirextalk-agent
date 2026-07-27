@@ -787,7 +787,8 @@ func (store *Store) validateEntryPlanPrerequisites(ctx context.Context, query en
 	var launchAgent, approvalAgent, connectionAgent, workerAgent, resourceAgent uuid.UUID
 	var launchOwner, approvalOwner, connectionOwner, workerOwner, resourceOwner string
 	var launchTaskID, launchPlanID, launchApprovalID, launchConnectionID uuid.UUID
-	var originalPlanHash, originalPlanStatus, approvalPlanHash, connectionRegion, connectionStatus string
+	var currentPlanHash, originalPlanStatus, approvalPlanHash, connectionRegion, connectionStatus string
+	var currentPlanRevision, approvalPlanRevision int64
 	var approvalPlanID uuid.UUID
 	var workerTaskID uuid.UUID
 	var workerState, workerOutcome string
@@ -802,8 +803,8 @@ func (store *Store) validateEntryPlanPrerequisites(ctx context.Context, query en
 	var resourceReadBackProviderID, resourceReadBackTagDigest string
 	err := query.QueryRow(ctx, `SELECT
 		launch.agent_instance_id, launch.owner_id, launch.task_id, launch.plan_id, launch.approval_id, launch.connection_id,
-		plan.plan_hash, plan.status,
-		approval.agent_instance_id, approval.owner_id, approval.plan_id, approval.plan_hash,
+		plan.plan_hash, plan.status, plan.revision,
+		approval.agent_instance_id, approval.owner_id, approval.plan_id, approval.plan_hash, approval.plan_revision,
 		connection.agent_instance_id, connection.owner_id, connection.region, connection.status,
 		worker.agent_instance_id, worker.owner_id, worker.task_id, worker.state, worker.outcome, worker.revision, worker.provider_instance_id,
 		resource.agent_instance_id, resource.owner_id, resource.task_id, resource.deployment_id, resource.resource_type,
@@ -817,10 +818,10 @@ func (store *Store) validateEntryPlanPrerequisites(ctx context.Context, query en
 		JOIN worker_deployments worker ON worker.deployment_id=launch.deployment_id
 		JOIN cloud_resources resource ON resource.resource_id=$2
 		WHERE launch.deployment_id=$1
-		FOR SHARE OF launch, plan, connection, worker, resource`, scope.Worker.DeploymentID, scope.Worker.WorkerResourceID).Scan(
+		FOR SHARE OF launch, plan, approval, connection, worker, resource`, scope.Worker.DeploymentID, scope.Worker.WorkerResourceID).Scan(
 		&launchAgent, &launchOwner, &launchTaskID, &launchPlanID, &launchApprovalID, &launchConnectionID,
-		&originalPlanHash, &originalPlanStatus,
-		&approvalAgent, &approvalOwner, &approvalPlanID, &approvalPlanHash,
+		&currentPlanHash, &originalPlanStatus, &currentPlanRevision,
+		&approvalAgent, &approvalOwner, &approvalPlanID, &approvalPlanHash, &approvalPlanRevision,
 		&connectionAgent, &connectionOwner, &connectionRegion, &connectionStatus,
 		&workerAgent, &workerOwner, &workerTaskID, &workerState, &workerOutcome, &workerRevision, &workerInstanceID,
 		&resourceAgent, &resourceOwner, &resourceTaskID, &resourceDeploymentID, &resourceType,
@@ -837,8 +838,8 @@ func (store *Store) validateEntryPlanPrerequisites(ctx context.Context, query en
 		launchOwner != scope.OwnerID || approvalOwner != scope.OwnerID || connectionOwner != scope.OwnerID || workerOwner != scope.OwnerID || resourceOwner != scope.OwnerID ||
 		launchTaskID.String() != scope.Worker.TaskID || workerTaskID.String() != scope.Worker.TaskID || resourceTaskID.String() != scope.Worker.TaskID ||
 		launchPlanID.String() != scope.Worker.OriginalPlanID || approvalPlanID != launchPlanID || launchApprovalID.String() != scope.Worker.OriginalApprovalID ||
-		launchConnectionID.String() != scope.ConnectionID || originalPlanHash != scope.Worker.OriginalPlanHash || originalPlanStatus != "approved" ||
-		approvalPlanHash != scope.Worker.OriginalPlanHash ||
+		launchConnectionID.String() != scope.ConnectionID || currentPlanHash == scope.Worker.OriginalPlanHash || originalPlanStatus != "approved" ||
+		currentPlanRevision != approvalPlanRevision+1 || approvalPlanHash != scope.Worker.OriginalPlanHash ||
 		connectionRegion != scope.Region || connectionStatus != "active" || workerState != "finished" || workerOutcome != string(entrypoint.WorkerOutcomeSucceeded) ||
 		workerRevision != scope.Worker.DeploymentRevision || workerInstanceID == nil || *workerInstanceID != scope.Worker.InstanceID ||
 		resourceDeploymentID.String() != scope.Worker.DeploymentID || resourceType != "ec2" || resourceRegion != scope.Region ||

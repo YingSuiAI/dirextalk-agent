@@ -250,16 +250,21 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 		deadline: now.Add(time.Hour).Truncate(time.Second), now: now,
 	}
 	seedWorkerIdentityBinding(t, pool, instanceID, fixture.ownerID, taskID, fixture.deploymentID, fixture.instanceProviderID, "123456789012")
+	var currentPlanHash string
 	if err := pool.QueryRow(ctx, `
-		SELECT launch.connection_id::text,launch.plan_id::text,approval.plan_hash,approval.approval_id::text,
+		SELECT launch.connection_id::text,launch.plan_id::text,approval.plan_hash,plan.plan_hash,approval.approval_id::text,
 		       resources.resource_id::text
 		FROM cloud_launch_operations AS launch
+		JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
 		JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
 		JOIN cloud_resources AS resources ON resources.deployment_id=launch.deployment_id AND resources.resource_type='ec2'
 		WHERE launch.deployment_id=$1`,
 		fixture.deploymentID,
-	).Scan(&fixture.connectionID, &fixture.planID, &fixture.planHash, &fixture.originalApprovalID, &fixture.ec2ID); err != nil {
+	).Scan(&fixture.connectionID, &fixture.planID, &fixture.planHash, &currentPlanHash, &fixture.originalApprovalID, &fixture.ec2ID); err != nil {
 		t.Fatal(err)
+	}
+	if currentPlanHash == fixture.planHash {
+		t.Fatal("fixture must distinguish current Plan hash from signed approval hash")
 	}
 	fixture.sourceID = uuid.NewString()
 	fixture.snapshotID, fixture.replacementID, _ = serviceoperation.DeriveVolumeResourceIDs(fixture.operationID, fixture.sourceID, "data")
@@ -302,7 +307,7 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 		PreparationOperationID: fixture.operationID, OwnerID: fixture.ownerID, AgentInstanceID: instanceID,
 		DeploymentID: fixture.deploymentID, DeploymentRevision: 1,
 		ConnectionID: fixture.connectionID, ConnectionRevision: 1,
-		PlanID: fixture.planID, PlanRevision: 2, PlanHash: fixture.planHash,
+		PlanID: fixture.planID, PlanRevision: 1, PlanHash: fixture.planHash,
 		RecipeID: "managed-preparation-fixture", RecipeRevision: 1, RecipeDigest: managedPreparationDigest("4"),
 		EC2: serviceoperation.ResourceFactV1{
 			ResourceID: fixture.ec2ID, ProviderID: fixture.instanceProviderID, Revision: 1,
@@ -352,7 +357,7 @@ func seedManagedPreparationResourceLedger(t *testing.T) managedPreparationResour
 			challenge_json,signature,status,current_phase,revision,prepare_client_id,prepare_credential_id,
 			prepare_idempotency_key,prepare_request_hash,approve_client_id,approve_credential_id,approve_idempotency_key,
 			approve_request_hash,approved_at,created_at,updated_at
-		) VALUES ($1,$2,$3,$4,1,$5,1,$6,2,$7,'managed-preparation-fixture',1,$8,$9,$10,$11,$12,
+		) VALUES ($1,$2,$3,$4,1,$5,1,$6,1,$7,'managed-preparation-fixture',1,$8,$9,$10,$11,$12,
 		          $13,'running','backup',3,'message-server',$14,$15,$16,'message-server',$17,$18,$19,$20,$20,$20)`,
 		fixture.operationID, instanceID, fixture.ownerID, fixture.deploymentID, fixture.connectionID, fixture.planID,
 		fixture.planHash, scope.RecipeDigest, challenge.ScopeDigest, challenge.ChallengeID, challenge.SignerKeyID,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -138,6 +139,7 @@ func (controller *EphemeralDestroyController) Run(ctx context.Context) error {
 		if err := controller.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			// Facts and provider failures remain durable and are retried on the
 			// next poll. One bad deployment must not stop lifecycle monitoring.
+			slog.Warn("cloud lifecycle reconciliation batch failed", "error", safeError(err))
 		}
 		select {
 		case <-ctx.Done():

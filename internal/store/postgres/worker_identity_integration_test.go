@@ -200,7 +200,7 @@ func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, own
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_plans (plan_id,agent_instance_id,owner_id,connection_id,quote_id,quote_digest,quote_scope_digest,plan_hash,status,plan_json,plan_cbor,revision,created_at,updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'approved','{}',decode('01','hex'),2,$9,$9)`,
-		planID, instanceID, ownerID, connectionID.String(), quoteID, digest("a"), digest("b"), digest("c"), now); err != nil {
+		planID, instanceID, ownerID, connectionID.String(), quoteID, digest("a"), digest("b"), digest("f"), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `
@@ -211,14 +211,14 @@ func seedWorkerIdentityBinding(t *testing.T, pool *pgxpool.Pool, instanceID, own
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_approval_challenges (challenge_row_id,challenge_id,agent_instance_id,owner_id,plan_id,plan_revision,plan_hash,connection_id,recipe_digest,quote_id,quote_digest,quote_scope_digest,quote_candidate_id,device_id,signer_key_id,issued_at,expires_at,consumed_at,revision,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,2,$6,$7,$8,$9,$10,$11,'recommended',$12,$13,$14,$15,$16,2,$16,$16)`,
+		VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8,$9,$10,$11,'recommended',$12,$13,$14,$15,$16,2,$16,$16)`,
 		challengeRowID, challengeID, instanceID, ownerID, planID, digest("c"), connectionID.String(), digest("d"), quoteID,
 		digest("a"), digest("b"), deviceID, keyID, now.Add(-time.Minute), now.Add(4*time.Minute), now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO cloud_approvals (approval_id,agent_instance_id,owner_id,plan_id,plan_revision,plan_hash,quote_id,quote_digest,challenge_row_id,signer_key_id,approval_json,signing_payload,signature,revision,approved_at)
-		VALUES ($1,$2,$3,$4,2,$5,$6,$7,$8,$9,'{}',decode('01','hex'),decode(repeat('01',64),'hex'),1,$10)`,
+		VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,'{}',decode('01','hex'),decode(repeat('01',64),'hex'),1,$10)`,
 		approvalID, instanceID, ownerID, planID, digest("c"), quoteID, digest("a"), challengeRowID, keyID, now); err != nil {
 		t.Fatal(err)
 	}

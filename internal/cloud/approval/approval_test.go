@@ -154,6 +154,44 @@ func TestApprovalVerifyAndCurrentPlanBinding(t *testing.T) {
 	}
 }
 
+func TestApprovalValidatesApprovedSuccessorWithoutConfusingCurrentPlanHash(t *testing.T) {
+	ready := validPlan()
+	approval, err := NewApprovalV1(ready, "approval-1", "challenge-1", "device-key-1", ready.Quote.ValidUntil.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := ready
+	approved.Status = PlanApproved
+	approved.Revision++
+	currentHash, err := approved.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentHash == approval.PlanHash {
+		t.Fatal("approved successor unexpectedly reused the signed revision hash")
+	}
+	if err := approval.ValidateApprovedPlan(approved); err != nil {
+		t.Fatalf("ValidateApprovedPlan() error = %v", err)
+	}
+
+	for _, mutate := range []struct {
+		name string
+		fn   func(*PlanV1)
+	}{
+		{name: "status", fn: func(plan *PlanV1) { plan.Status = PlanReadyForConfirmation }},
+		{name: "revision", fn: func(plan *PlanV1) { plan.Revision++ }},
+		{name: "retention", fn: func(plan *PlanV1) { plan.RetentionScope.GracePeriodSeconds++ }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			changed := approved
+			mutate.fn(&changed)
+			if err := approval.ValidateApprovedPlan(changed); err == nil {
+				t.Fatalf("ValidateApprovedPlan() accepted %s drift", mutate.name)
+			}
+		})
+	}
+}
+
 func TestApprovalContractContainsNoPrivateKeyField(t *testing.T) {
 	typeOf := reflect.TypeOf(ApprovalV1{})
 	for i := 0; i < typeOf.NumField(); i++ {

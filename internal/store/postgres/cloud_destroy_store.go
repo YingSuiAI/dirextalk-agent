@@ -76,7 +76,7 @@ func (store *Store) CreateDestroyChallenge(ctx context.Context, mutation cloudde
 		prepare_client_id, prepare_credential_id, prepare_idempotency_key, prepare_request_hash,
 		created_at, updated_at
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,$16,$17,$18,$19,$20,$20)
-	ON CONFLICT (prepare_client_id, prepare_credential_id, prepare_idempotency_key) DO NOTHING`,
+	ON CONFLICT DO NOTHING`,
 		challenge.OperationID, store.instanceID, challenge.Scope.OwnerID, challenge.Scope.DeploymentID,
 		challenge.Scope.PlanID, challenge.Scope.ConnectionID, challenge.ChallengeID, challenge.ApprovalID,
 		challenge.SignerKeyID, challenge.Scope.DeploymentRevision, challenge.ScopeDigest, scopeJSON,
@@ -91,6 +91,9 @@ func (store *Store) CreateDestroyChallenge(ctx context.Context, mutation cloudde
 	if result.RowsAffected() == 0 {
 		existing, readErr = readDestroyRow(ctx, tx, ` WHERE prepare_client_id=$1 AND prepare_credential_id=$2 AND prepare_idempotency_key=$3 FOR UPDATE`,
 			mutation.Caller.ClientID, mutation.Caller.CredentialID, mutation.IdempotencyKey)
+		if errors.Is(readErr, clouddestroy.ErrNotFound) {
+			return clouddestroy.ChallengeV1{}, clouddestroy.ErrIdempotencyConflict
+		}
 		if readErr != nil {
 			return clouddestroy.ChallengeV1{}, readErr
 		}

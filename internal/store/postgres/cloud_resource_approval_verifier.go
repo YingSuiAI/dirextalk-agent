@@ -60,9 +60,9 @@ func (store *Store) verifyOriginalDestroyLineage(ctx context.Context, tx pgx.Tx,
 		WHERE launch.agent_instance_id=$1 AND launch.owner_id=$2 AND launch.task_id=$3
 		  AND launch.deployment_id=$4 AND launch.connection_id=$5 AND launch.plan_id=$6
 		  AND plan.agent_instance_id=$1 AND plan.owner_id=$2 AND plan.plan_id=$6
-		  AND plan.plan_hash=$7 AND plan.status='approved'
+		  AND plan.connection_id=launch.connection_id::text AND plan.status='approved'
 		  AND approval.agent_instance_id=$1 AND approval.owner_id=$2 AND approval.plan_id=$6
-		  AND approval.plan_hash=$7
+		  AND approval.plan_hash=$7 AND plan.revision=approval.plan_revision+1
 		FOR SHARE OF launch, plan, approval`,
 		store.instanceID, proof.OwnerID, proof.TaskID, proof.DeploymentID, proof.ConnectionID,
 		proof.OriginalPlanID, proof.OriginalPlanHash).Scan(&approvalID)

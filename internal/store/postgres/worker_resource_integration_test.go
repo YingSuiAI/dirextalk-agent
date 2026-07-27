@@ -287,9 +287,9 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 	var approvalID uuid.UUID
 	var approvedPlanHash string
 	if err := pool.QueryRow(ctx, `
-		SELECT launch.approval_id, plan.plan_hash
+		SELECT launch.approval_id, approval.plan_hash
 		FROM cloud_launch_operations AS launch
-		JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+		JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
 		WHERE launch.deployment_id=$1`, deploymentID).Scan(&approvalID, &approvedPlanHash); err != nil {
 		t.Fatalf("load Worker resource origin: %v", err)
 	}

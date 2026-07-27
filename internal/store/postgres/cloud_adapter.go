@@ -75,6 +75,11 @@ func (adapter *CloudAdapter) LoadApproval(ctx context.Context, ownerID, approval
 	return result, mapCloudFactError(err)
 }
 
+func (adapter *CloudAdapter) LoadDeploymentApproval(ctx context.Context, ownerID, deploymentID string) (cloudapproval.ApprovalV1, error) {
+	result, err := adapter.store.GetDeploymentApproval(ctx, ownerID, deploymentID)
+	return result, mapCloudFactError(err)
+}
+
 func (adapter *CloudAdapter) RegisterApprovalDevice(ctx context.Context, scope cloudapp.MutationScope, command cloudapp.RegisterApprovalDeviceCommand) (cloudapproval.DeviceKeyV1, error) {
 	result, err := adapter.store.RegisterApprovalDevice(ctx, taskScope(scope), RegisterApprovalDeviceCommand{
 		IdempotencyKey: command.IdempotencyKey,

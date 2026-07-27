@@ -114,6 +114,11 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if operation.State == StateActive {
 		return operation, nil
 	}
+	if operation.TaskID != "" {
+		if err := service.requireOpenTask(ctx, operation); err != nil {
+			return operation, err
+		}
+	}
 	intent := operation.Intent
 	connection, err := service.connections.LoadConnection(ctx, request.OwnerID, plan.ConnectionID)
 	if err != nil || connection.Status != "active" || connection.OwnerID != request.OwnerID || connection.ConnectionID != plan.ConnectionID || connection.Region != plan.ResourceScope.Region {
@@ -145,6 +150,9 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 		}
 	} else if operation.TaskID != createdTask.TaskID {
 		return Operation{}, ErrRevisionConflict
+	}
+	if err := service.requireOpenTask(ctx, operation); err != nil {
+		return operation, err
 	}
 
 	delivery := operation.InstallerDelivery
@@ -192,6 +200,9 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	for _, reference := range plan.SecretScope {
 		secretRefs = append(secretRefs, reference.SecretRef)
 	}
+	if err := service.requireOpenTask(ctx, operation); err != nil {
+		return operation, err
+	}
 	published, err := service.bundles.PublishBundles(ctx, connection, intent.DeploymentID, compiled, secretRefs)
 	cleanupErr := cleanupInstallerArtifacts(compiled.InstallerArtifacts)
 	if cleanupErr == nil {
@@ -230,6 +241,9 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	}
 
 	workerID := deterministicID(intent.DeploymentID, "worker")
+	if err := service.requireOpenTask(ctx, operation); err != nil {
+		return operation, err
+	}
 	deployment, credential, err := service.workers.CreateDeployment(ctx, WorkerCreateMutation{
 		ClientID: "internal.cloud-launcher", CredentialID: deterministicID(service.agentInstanceID, "worker-control"),
 		IdempotencyKey: deterministicID(intent.OperationID, "worker-create"),
@@ -243,21 +257,32 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	if err != nil {
 		return service.fail(ctx, operation, err)
 	}
+	if credential == nil {
+		return service.fail(ctx, operation, ErrUnavailable)
+	}
+	credentialPending := true
+	defer func() {
+		if credentialPending {
+			credential.Destroy()
+		}
+	}()
 	if deployment.DeploymentID != intent.DeploymentID || deployment.TaskID != createdTask.TaskID || deployment.StepID != taskStepID {
-		credential.Destroy()
 		return service.fail(ctx, operation, ErrRevisionConflict)
 	}
 	if operation.State == StateBundlesReady || operation.State == StateFailedRetriable {
 		operation.State = StateWorkerRegistered
 		operation, err = service.save(ctx, operation)
 		if err != nil {
-			credential.Destroy()
 			return Operation{}, err
 		}
 	}
 
+	if err := service.requireOpenTask(ctx, operation); err != nil {
+		return operation, err
+	}
 	credentialBytes := credential.Reveal()
 	credential.Destroy()
+	credentialPending = false
 	bootstrap, bootstrapErr := service.bootstraps.PublishBootstrap(ctx, connection, BootstrapRequest{
 		DeploymentID: intent.DeploymentID, WorkerID: workerID, ControlPlaneTarget: request.ControlPlaneTarget,
 		Launch: published.Launch, EnrollmentCredential: credentialBytes, EnrollmentRevision: deployment.Revision,
@@ -298,6 +323,9 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 		QuoteValidUntil:   approval.QuoteValidUntil,
 	}
 	for _, spec := range provisionSpecs {
+		if err := service.requireOpenTask(ctx, operation); err != nil {
+			return operation, err
+		}
 		created, provisionErr := service.resources.Provision(ctx, connection, spec, createAuthorization)
 		if provisionErr != nil {
 			return service.fail(ctx, operation, provisionErr)
@@ -308,6 +336,23 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 	operation.State = StateActive
 	operation.RedactedError = ""
 	return service.save(ctx, operation)
+}
+
+func (service *Service) requireOpenTask(ctx context.Context, operation Operation) error {
+	if service == nil || service.tasks == nil || strings.TrimSpace(operation.TaskID) == "" {
+		return ErrInvalid
+	}
+	value, err := service.tasks.Get(ctx, operation.TaskID)
+	if err != nil {
+		return mapDependencyError(err)
+	}
+	if value.TaskID != operation.TaskID || value.OwnerID != operation.Launch.OwnerID {
+		return ErrRevisionConflict
+	}
+	if value.ExecutionStatus == task.ExecutionFinished {
+		return ErrTaskTerminal
+	}
+	return nil
 }
 
 func (service *Service) resolveInstallerArtifacts(ctx context.Context, value recipe.RecipeV1, compiled *CompiledBundles) error {
@@ -509,17 +554,8 @@ func validateLaunchRequest(request LaunchRequest) error {
 }
 
 func matchesDurableApproval(plan cloudapproval.PlanV1, approval cloudapproval.ApprovalV1) bool {
-	if plan.Status != cloudapproval.PlanApproved || approval.OwnerID != plan.OwnerID || approval.PlanID != plan.PlanID || approval.PlanRevision+1 != plan.Revision {
-		return false
-	}
-	signedPlan := plan
-	signedPlan.Status = cloudapproval.PlanReadyForConfirmation
-	signedPlan.Revision = approval.PlanRevision
-	validationTime := approval.ExpiresAt
-	if approval.QuoteValidUntil.Before(validationTime) {
-		validationTime = approval.QuoteValidUntil
-	}
-	return approval.ValidateAgainstPlan(signedPlan, validationTime.Add(-time.Nanosecond)) == nil
+	return approval.OwnerID == plan.OwnerID && approval.PlanID == plan.PlanID &&
+		approval.ValidateApprovedPlan(plan) == nil
 }
 
 func validatePublishedBundles(published PublishedBundles, compiled CompiledBundles, secretRefs []string) error {

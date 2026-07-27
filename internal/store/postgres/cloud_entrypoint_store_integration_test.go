@@ -402,12 +402,13 @@ func seedEntryScope(t *testing.T, ctx context.Context, pool *pgxpool.Pool, insta
 	var planID, approvalID, connectionID, resourceID, quoteID uuid.UUID
 	var planHash, resourceSpecDigest, quoteDigest string
 	var quotedAt, validUntil, destroyDeadline time.Time
-	if err := pool.QueryRow(ctx, `SELECT launch.plan_id, plan.plan_hash, launch.approval_id, launch.connection_id,
+	if err := pool.QueryRow(ctx, `SELECT launch.plan_id, approval.plan_hash, launch.approval_id, launch.connection_id,
 		resource.resource_id, resource.spec_digest, resource.destroy_deadline,
 		quote.quote_id, quote.quote_digest, quote.quoted_at, quote.valid_until
 		FROM cloud_launch_operations launch
 		JOIN cloud_resources resource ON resource.deployment_id=launch.deployment_id AND resource.resource_type='ec2'
 		JOIN cloud_plans plan ON plan.plan_id=launch.plan_id
+		JOIN cloud_approvals approval ON approval.approval_id=launch.approval_id
 		JOIN cloud_quotes quote ON quote.quote_id=plan.quote_id
 		WHERE launch.deployment_id=$1`, deploymentID).Scan(
 		&planID, &planHash, &approvalID, &connectionID, &resourceID, &resourceSpecDigest, &destroyDeadline,

@@ -67,7 +67,7 @@ func TestPrepareBuildsManualChallengeForVerifiedMixedApprovalGraph(t *testing.T)
 func TestNewServiceRequiresResourceApprovalVerifier(t *testing.T) {
 	fixture := newMixedDestroyFixture(t)
 	if _, err := NewService(fixture.agentID, fixture.repository, mixedDeviceRepository{device: fixture.device}, fixture.reader,
-		mixedPlanReader{plan: fixture.plan}, nil, mixedNotifier{}, func() time.Time { return fixture.now }); !errors.Is(err, ErrInvalid) {
+		mixedPlanReader{plan: fixture.plan, approval: fixture.approval}, nil, mixedNotifier{}, func() time.Time { return fixture.now }); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("NewService() error = %v, want ErrInvalid", err)
 	}
 }
@@ -77,6 +77,7 @@ type mixedDestroyFixture struct {
 	agentID    string
 	ownerID    string
 	plan       cloudapproval.PlanV1
+	approval   cloudapproval.ApprovalV1
 	deployment cloudstatus.Deployment
 	resources  map[string]resource.ResourceV1
 	entry      resource.ResourceV1
@@ -91,16 +92,29 @@ func newMixedDestroyFixture(t *testing.T) *mixedDestroyFixture {
 	now := time.Date(2026, 7, 17, 11, 0, 0, 0, time.UTC)
 	agentID, ownerID, planID, connectionID := uuid.NewString(), "mixed-owner", uuid.NewString(), uuid.NewString()
 	deploymentID, taskID := uuid.NewString(), uuid.NewString()
-	plan := mixedApprovedPlan(t, now, agentID, ownerID, planID, connectionID)
-	planHash, err := plan.Hash()
+	ready := mixedReadyPlan(t, now, agentID, ownerID, planID, connectionID)
+	approval, err := cloudapproval.NewApprovalV1(
+		ready, uuid.NewString(), strings.Repeat("c", 48), "mixed-destroy-device", now.Add(5*time.Minute),
+	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	plan := ready
+	plan.Status = cloudapproval.PlanApproved
+	plan.Revision++
+	planHash := approval.PlanHash
+	currentPlanHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentPlanHash == planHash {
+		t.Fatal("approved fixture must distinguish current Plan hash from signed approval hash")
 	}
 	deadline := now.Add(time.Hour)
 	workerResource := resource.ResourceV1{
 		ResourceID: uuid.NewString(), AgentInstanceID: agentID, OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
 		Type: resource.TypeEC2, LogicalName: "exclusive-worker", Region: "us-east-1", SpecDigest: mixedDigest("1"),
-		ApprovedPlanHash: planHash, ApprovalID: uuid.NewString(), ProviderID: "i-0123456789abcdef0",
+		ApprovedPlanHash: planHash, ApprovalID: approval.ApprovalID, ProviderID: "i-0123456789abcdef0",
 		Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: deadline, AutoDestroyApproved: true, State: resource.StateActive,
 		ReadBack: resource.ReadBackEvidence{Exists: true, ProviderID: "i-0123456789abcdef0", ObservedAt: now.Add(time.Second), TagDigest: mixedDigest("2")}, Revision: 1,
 	}
@@ -121,7 +135,7 @@ func newMixedDestroyFixture(t *testing.T) *mixedDestroyFixture {
 	private := ed25519.NewKeyFromSeed([]byte(strings.Repeat("m", ed25519.SeedSize)))
 	device := cloudapproval.DeviceKeyV1{KeyID: "mixed-destroy-device", AgentInstanceID: agentID, OwnerID: ownerID, Revision: 1,
 		Status: cloudapproval.DeviceKeyActive, PublicKey: private.Public().(ed25519.PublicKey), NotBefore: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
-	return &mixedDestroyFixture{now: now, agentID: agentID, ownerID: ownerID, plan: plan, deployment: deployment, resources: resources,
+	return &mixedDestroyFixture{now: now, agentID: agentID, ownerID: ownerID, plan: plan, approval: approval, deployment: deployment, resources: resources,
 		entry: entry, reader: reader, verifier: verifier, device: device, repository: &mixedDestroyRepository{}}
 }
 
@@ -133,7 +147,7 @@ func (fixture *mixedDestroyFixture) command() PrepareCommand {
 func (fixture *mixedDestroyFixture) service(t *testing.T) *Service {
 	t.Helper()
 	service, err := NewService(fixture.agentID, fixture.repository, mixedDeviceRepository{device: fixture.device}, fixture.reader,
-		mixedPlanReader{plan: fixture.plan}, fixture.verifier, mixedNotifier{}, func() time.Time { return fixture.now })
+		mixedPlanReader{plan: fixture.plan, approval: fixture.approval}, fixture.verifier, mixedNotifier{}, func() time.Time { return fixture.now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,10 +160,10 @@ func mixedProof(agentID, ownerID, taskID, deploymentID, connectionID, planID, pl
 		ApprovalID: item.ApprovalID, Retention: item.Retention, DestroyDeadline: item.DestroyDeadline, AutoDestroy: item.AutoDestroyApproved, State: item.State}
 }
 
-func mixedApprovedPlan(t *testing.T, now time.Time, agentID, ownerID, planID, connectionID string) cloudapproval.PlanV1 {
+func mixedReadyPlan(t *testing.T, now time.Time, agentID, ownerID, planID, connectionID string) cloudapproval.PlanV1 {
 	t.Helper()
 	plan := cloudapproval.PlanV1{
-		SchemaVersion: cloudapproval.PlanSchemaV1, AgentInstanceID: agentID, OwnerID: ownerID, PlanID: planID, Revision: 1, Status: cloudapproval.PlanApproved, ConnectionID: connectionID,
+		SchemaVersion: cloudapproval.PlanSchemaV1, AgentInstanceID: agentID, OwnerID: ownerID, PlanID: planID, Revision: 1, Status: cloudapproval.PlanReadyForConfirmation, ConnectionID: connectionID,
 		Recipe: cloudapproval.RecipeBindingV1{RecipeID: "mixed-recipe", Digest: mixedDigest("a"), Maturity: recipe.MaturityExperimental},
 		Quote:  cloudapproval.QuoteBindingV1{QuoteID: "mixed-quote", Digest: mixedDigest("b"), CandidateID: "recommended", ValidUntil: now.Add(time.Hour)},
 		ResourceScope: cloudapproval.ResourceScopeV1{Region: "us-east-1", AvailabilityZones: []string{"us-east-1a"}, InstanceType: "m7i.xlarge",
@@ -205,10 +219,17 @@ func (*mixedStatusReader) ListResources(context.Context, cloudstatus.ListQuery) 
 	return cloudstatus.ResourcePage{}, cloudstatus.ErrNotFound
 }
 
-type mixedPlanReader struct{ plan cloudapproval.PlanV1 }
+type mixedPlanReader struct {
+	plan     cloudapproval.PlanV1
+	approval cloudapproval.ApprovalV1
+}
 
 func (reader mixedPlanReader) LoadPlan(context.Context, string, string) (cloudapproval.PlanV1, error) {
 	return reader.plan, nil
+}
+
+func (reader mixedPlanReader) LoadDeploymentApproval(context.Context, string, string) (cloudapproval.ApprovalV1, error) {
+	return reader.approval, nil
 }
 
 type mixedResourceVerifier struct {

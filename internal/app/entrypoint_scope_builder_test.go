@@ -145,9 +145,14 @@ func newEntrypointScopeBuilderFixture(t *testing.T) entrypointScopeBuilderFixtur
 		t.Fatal(err)
 	}
 	plan.Status = cloudapproval.PlanApproved
-	planHash, err := plan.Hash()
+	plan.Revision++
+	currentPlanHash, err := plan.Hash()
 	if err != nil {
 		t.Fatal(err)
+	}
+	planHash := unsigned.PlanHash
+	if currentPlanHash == planHash {
+		t.Fatal("approved fixture must distinguish current Plan hash from the device-signed Plan hash")
 	}
 	workerID, groupID := uuid.NewString(), uuid.NewString()
 	deadline := now.Add(30 * time.Minute)

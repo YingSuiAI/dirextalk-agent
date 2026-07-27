@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
@@ -21,8 +22,10 @@ import (
 
 type managedPreparationFacts interface {
 	LoadPlan(context.Context, string, string) (cloudapproval.PlanV1, error)
+	LoadApproval(context.Context, string, string) (cloudapproval.ApprovalV1, error)
 	LoadQuote(context.Context, string, string) (cloudquote.QuoteV1, error)
 	ResolveRecipeDraft(context.Context, string, string, string) (planning.RecipeDraft, error)
+	GetByDeployment(context.Context, string) (cloudexecution.Operation, error)
 }
 
 type managedPreparationCurrent interface {
@@ -75,10 +78,21 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 	if !templatesOK {
 		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
 	}
-	planHash, err := plan.Hash()
-	if err != nil {
+	launch, err := builder.facts.GetByDeployment(ctx, deploymentID)
+	if err != nil || launch.State != cloudexecution.StateActive || launch.DeploymentID != deploymentID ||
+		launch.TaskID != deployment.Worker.TaskID || launch.ConnectionID != deployment.ConnectionID ||
+		launch.Launch.OwnerID != ownerID || launch.Launch.PlanID != plan.PlanID ||
+		launch.Launch.ApprovalID == "" || launch.ApprovedPlanHash == "" {
 		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
 	}
+	approval, err := builder.facts.LoadApproval(ctx, ownerID, launch.Launch.ApprovalID)
+	if err != nil || approval.ApprovalID != launch.Launch.ApprovalID ||
+		approval.AgentInstanceID != builder.agentInstanceID || approval.OwnerID != ownerID ||
+		approval.PlanID != plan.PlanID || approval.ConnectionID != plan.ConnectionID ||
+		approval.PlanHash != launch.ApprovedPlanHash || approval.ValidateApprovedPlan(plan) != nil {
+		return serviceoperation.ScopeV1{}, serviceoperation.ErrRevisionConflict
+	}
+	planHash := approval.PlanHash
 	connection, err := builder.current.GetConnection(ctx, ownerID, deployment.ConnectionID)
 	if err != nil || connection.ConnectionID != deployment.ConnectionID || connection.OwnerID != ownerID ||
 		connection.Status != "active" || connection.Revision < 1 || connection.Region != plan.ResourceScope.Region {
@@ -122,7 +136,7 @@ func (builder *managedPreparationScopeBuilder) BuildManagedPreparationScope(ctx 
 		PreparationOperationID: operationID, OwnerID: ownerID, AgentInstanceID: builder.agentInstanceID,
 		DeploymentID: deploymentID, DeploymentRevision: deployment.Worker.Revision,
 		ConnectionID: connection.ConnectionID, ConnectionRevision: connection.Revision,
-		PlanID: plan.PlanID, PlanRevision: int64(plan.Revision), PlanHash: planHash,
+		PlanID: plan.PlanID, PlanRevision: int64(approval.PlanRevision), PlanHash: planHash,
 		RecipeID: draft.RecipeID, RecipeDigest: draft.Digest, RecipeRevision: draft.Revision,
 		EC2: ec2, SourceVolumes: make([]serviceoperation.ResourceFactV1, 0, len(volumes)),
 		Restart: serviceoperation.RestartReferenceV1{

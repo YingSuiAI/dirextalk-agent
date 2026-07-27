@@ -296,6 +296,13 @@ const managedPreparationResourceIntentOriginSQL = `
 	  ON step.operation_id=operation.operation_id
 	JOIN cloud_approval_devices AS device
 	  ON device.key_id=operation.signer_key_id
+	JOIN cloud_launch_operations AS launch
+	  ON launch.deployment_id=operation.deployment_id
+	 AND launch.agent_instance_id=operation.agent_instance_id
+	 AND launch.plan_id=operation.plan_id
+	 AND launch.connection_id=operation.connection_id
+	JOIN cloud_approvals AS approval
+	  ON approval.approval_id=launch.approval_id
 	JOIN cloud_plans AS plan ON plan.plan_id=operation.plan_id
 	JOIN cloud_connections AS connection ON connection.connection_id=operation.connection_id
 	JOIN worker_deployments AS deployment ON deployment.deployment_id=operation.deployment_id
@@ -323,12 +330,18 @@ const managedPreparationResourceIntentOriginSQL = `
 	  AND device.status='active'
 	  AND operation.approved_at>=device.not_before
 	  AND operation.approved_at<device.expires_at
+	  AND launch.owner_id=$2
+	  AND launch.task_id=$3
+	  AND approval.agent_instance_id=$1
+	  AND approval.owner_id=$2
+	  AND approval.plan_id=operation.plan_id
+	  AND approval.plan_revision=operation.plan_revision
+	  AND approval.plan_hash=$6
 	  AND plan.agent_instance_id=$1
 	  AND plan.owner_id=$2
 	  AND plan.plan_id=operation.plan_id
 	  AND plan.connection_id=operation.connection_id::text
-	  AND plan.revision=operation.plan_revision
-	  AND plan.plan_hash=$6
+	  AND plan.revision=approval.plan_revision+1
 	  AND plan.status='approved'
 	  AND connection.agent_instance_id=$1
 	  AND connection.owner_id=$2
@@ -447,7 +460,7 @@ const managedPreparationResourceIntentOriginSQL = `
 	          AND snapshot.depends_on=ARRAY[source.resource_id]::uuid[])
 	      ))
 	  )
-	FOR SHARE OF operation, step, device, plan, connection, deployment, source`
+	FOR SHARE OF operation, step, device, launch, approval, plan, connection, deployment, source`
 
 func (store *ResourceStore) Get(ctx context.Context, resourceID string) (resource.ResourceV1, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(resourceID))

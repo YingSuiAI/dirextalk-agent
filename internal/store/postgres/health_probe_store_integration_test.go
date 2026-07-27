@@ -63,10 +63,10 @@ func TestHealthProbePostgresAtomicEvidenceEventsRestartAndRevisionFence(t *testi
 
 	var planHash, recipeDigest string
 	if err := pool.QueryRow(ctx, `
-		SELECT plan.plan_hash, 'sha256:' || encode(deployment.recipe_bundle_sha256, 'hex')
+		SELECT approval.plan_hash, 'sha256:' || encode(deployment.recipe_bundle_sha256, 'hex')
 		FROM worker_deployments deployment
 		JOIN cloud_launch_operations launch USING (deployment_id)
-		JOIN cloud_plans plan USING (plan_id)
+		JOIN cloud_approvals approval ON approval.approval_id=launch.approval_id
 		WHERE deployment.deployment_id=$1`, deploymentID,
 	).Scan(&planHash, &recipeDigest); err != nil {
 		t.Fatal(err)

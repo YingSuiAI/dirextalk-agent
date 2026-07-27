@@ -107,10 +107,6 @@ func (builder *entrypointScopeBuilder) build(ctx context.Context, ownerID, deplo
 		plan.OwnerID != ownerID || plan.PlanID != deployment.PlanID || plan.ConnectionID != deployment.ConnectionID || plan.ResourceScope.Region == "" {
 		return entrypoint.ScopeV1{}, entrypoint.ErrWorkerNotReady
 	}
-	planHash, err := plan.Hash()
-	if err != nil {
-		return entrypoint.ScopeV1{}, entrypoint.ErrWorkerNotReady
-	}
 	trustedCost, err := builder.readEntryCost(ctx, ownerID, plan, draft, now)
 	if err != nil {
 		return entrypoint.ScopeV1{}, err
@@ -119,15 +115,19 @@ func (builder *entrypointScopeBuilder) build(ctx context.Context, ownerID, deplo
 	if err != nil {
 		return entrypoint.ScopeV1{}, entrypoint.ErrWorkerNotReady
 	}
-	workerResource, groupResource, ok := entryWorkerResources(resources, builder.agentInstanceID, ownerID, deployment, planHash)
+	workerResource, groupResource, ok := entryWorkerResources(resources, builder.agentInstanceID, ownerID, deployment)
 	if !ok {
 		return entrypoint.ScopeV1{}, entrypoint.ErrWorkerNotReady
 	}
 	approval, err := builder.facts.LoadApproval(ctx, ownerID, workerResource.ApprovalID)
-	if err != nil || approval.Validate() != nil || !entryApprovalMatchesPlan(approval, plan, planHash) ||
-		groupResource.ApprovalID != approval.ApprovalID || groupResource.ApprovedPlanHash != planHash {
+	if err != nil || approval.Validate() != nil || approval.AgentInstanceID != plan.AgentInstanceID ||
+		approval.OwnerID != plan.OwnerID || approval.PlanID != plan.PlanID ||
+		approval.ConnectionID != plan.ConnectionID || approval.ValidateApprovedPlan(plan) != nil ||
+		workerResource.ApprovedPlanHash != approval.PlanHash ||
+		groupResource.ApprovalID != approval.ApprovalID || groupResource.ApprovedPlanHash != approval.PlanHash {
 		return entrypoint.ScopeV1{}, entrypoint.ErrWorkerNotReady
 	}
+	planHash := approval.PlanHash
 	connection, err := builder.connections.LoadConnection(ctx, ownerID, deployment.ConnectionID)
 	if err != nil || connection.ConnectionID != deployment.ConnectionID || connection.OwnerID != ownerID || connection.Status != "active" ||
 		connection.Region != plan.ResourceScope.Region || connection.AccountID == "" {
@@ -182,17 +182,17 @@ func (builder *entrypointScopeBuilder) build(ctx context.Context, ownerID, deplo
 	return result, nil
 }
 
-func entryWorkerResources(resources []resource.ResourceV1, agentInstanceID, ownerID string, deployment cloudstatus.Deployment, planHash string) (resource.ResourceV1, resource.ResourceV1, bool) {
+func entryWorkerResources(resources []resource.ResourceV1, agentInstanceID, ownerID string, deployment cloudstatus.Deployment) (resource.ResourceV1, resource.ResourceV1, bool) {
 	var workerResource, groupResource resource.ResourceV1
 	for _, item := range resources {
 		switch {
 		case item.Type == resource.TypeEC2 && item.LogicalName == "exclusive-cloud-worker":
-			if workerResource.ResourceID != "" || !validEntryWorkerResource(item, agentInstanceID, ownerID, deployment, planHash) {
+			if workerResource.ResourceID != "" || !validEntryWorkerResource(item, agentInstanceID, ownerID, deployment) {
 				return resource.ResourceV1{}, resource.ResourceV1{}, false
 			}
 			workerResource = item
 		case item.Type == resource.TypeSG && item.LogicalName == "worker-security-group":
-			if groupResource.ResourceID != "" || !validEntryWorkerResource(item, agentInstanceID, ownerID, deployment, planHash) {
+			if groupResource.ResourceID != "" || !validEntryWorkerResource(item, agentInstanceID, ownerID, deployment) {
 				return resource.ResourceV1{}, resource.ResourceV1{}, false
 			}
 			groupResource = item
@@ -205,17 +205,10 @@ func entryWorkerResources(resources []resource.ResourceV1, agentInstanceID, owne
 	return workerResource, groupResource, true
 }
 
-func validEntryWorkerResource(item resource.ResourceV1, agentInstanceID, ownerID string, deployment cloudstatus.Deployment, planHash string) bool {
+func validEntryWorkerResource(item resource.ResourceV1, agentInstanceID, ownerID string, deployment cloudstatus.Deployment) bool {
 	return item.AgentInstanceID == agentInstanceID && item.OwnerID == ownerID && item.DeploymentID == deployment.Worker.DeploymentID && item.TaskID == deployment.Worker.TaskID &&
-		item.ApprovedPlanHash == planHash && item.ProviderID != "" && (item.State == resource.StateActive || item.State == resource.StateRetainedManaged) &&
+		item.ProviderID != "" && (item.State == resource.StateActive || item.State == resource.StateRetainedManaged) &&
 		!item.ReadBack.ObservedAt.IsZero() && item.ReadBack.ProviderID == item.ProviderID
-}
-
-func entryApprovalMatchesPlan(approval cloudapproval.ApprovalV1, plan cloudapproval.PlanV1, planHash string) bool {
-	return approval.AgentInstanceID == plan.AgentInstanceID && approval.OwnerID == plan.OwnerID && approval.PlanID == plan.PlanID &&
-		approval.PlanRevision == plan.Revision && approval.PlanHash == planHash && approval.ConnectionID == plan.ConnectionID &&
-		approval.RecipeDigest == plan.Recipe.Digest && approval.QuoteID == plan.Quote.QuoteID && approval.QuoteDigest == plan.Quote.Digest &&
-		approval.QuoteScopeDigest == plan.Quote.ScopeDigest && approval.QuoteCandidateID == plan.Quote.CandidateID
 }
 
 func entryRetention(workerResource, groupResource resource.ResourceV1) (entrypoint.RetentionScopeV1, bool) {

@@ -221,6 +221,27 @@ func (store *Store) GetApproval(ctx context.Context, ownerID, approvalID string)
 	return record.Approval, nil
 }
 
+func (store *Store) GetDeploymentApproval(ctx context.Context, ownerID, deploymentID string) (cloudapproval.ApprovalV1, error) {
+	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
+	if err != nil || deployment == uuid.Nil || strings.TrimSpace(ownerID) == "" {
+		return cloudapproval.ApprovalV1{}, ErrCloudFactInvalid
+	}
+	var approvalID uuid.UUID
+	err = store.pool.QueryRow(ctx, `
+		SELECT approval_id
+		FROM cloud_launch_operations
+		WHERE agent_instance_id=$1 AND owner_id=$2 AND deployment_id=$3`,
+		store.instanceID, strings.TrimSpace(ownerID), deployment,
+	).Scan(&approvalID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cloudapproval.ApprovalV1{}, ErrCloudFactNotFound
+	}
+	if err != nil {
+		return cloudapproval.ApprovalV1{}, fmt.Errorf("read deployment approval binding: %w", err)
+	}
+	return store.GetApproval(ctx, ownerID, approvalID.String())
+}
+
 func readCloudApproval(ctx context.Context, query cloudPlanQuerier, approvalID uuid.UUID) (CloudApprovalRecord, error) {
 	var (
 		agentID, planID, quoteID                    uuid.UUID

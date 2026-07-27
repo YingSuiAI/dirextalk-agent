@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"slices"
@@ -63,6 +64,70 @@ func TestLaunchApprovedPlanCreatesOneDurableWorkerAndReplaysTerminalOperation(t 
 	}
 	if fixture.tasks.calls != 1 || fixture.bundles.calls != 1 || fixture.workers.calls != 1 || fixture.bootstraps.calls != 1 || fixture.resources.calls != 1 {
 		t.Fatal("terminal replay repeated a mutating side effect")
+	}
+}
+
+func TestLaunchApprovedPlanStopsAtEverySideEffectBoundaryWhenTaskFinishes(t *testing.T) {
+	testCases := []struct {
+		name               string
+		finishOnGet        int
+		wantBundles        int
+		wantWorkers        int
+		wantBootstraps     int
+		wantResources      int
+		wantCredentialWipe bool
+	}{
+		{name: "after task creation", finishOnGet: 1},
+		{name: "before bundle publication", finishOnGet: 2},
+		{name: "before Worker registration", finishOnGet: 3, wantBundles: 1},
+		{name: "before bootstrap publication", finishOnGet: 4, wantBundles: 1, wantWorkers: 1, wantCredentialWipe: true},
+		{name: "before provider provisioning", finishOnGet: 5, wantBundles: 1, wantWorkers: 1, wantBootstraps: 1, wantCredentialWipe: true},
+		{name: "after first provider resource", finishOnGet: 6, wantBundles: 1, wantWorkers: 1, wantBootstraps: 1, wantResources: 1, wantCredentialWipe: true},
+		{name: "after second provider resource", finishOnGet: 7, wantBundles: 1, wantWorkers: 1, wantBootstraps: 1, wantResources: 2, wantCredentialWipe: true},
+		{name: "after third provider resource", finishOnGet: 8, wantBundles: 1, wantWorkers: 1, wantBootstraps: 1, wantResources: 3, wantCredentialWipe: true},
+		{name: "after fourth provider resource", finishOnGet: 9, wantBundles: 1, wantWorkers: 1, wantBootstraps: 1, wantResources: 4, wantCredentialWipe: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
+			fixture.tasks.finishOnGet = testCase.finishOnGet
+			fixture.service.resourcePlans = fakeResourcePlans{count: 5}
+
+			operation, err := fixture.service.LaunchApprovedPlan(context.Background(), fixture.caller, fixture.request)
+			if !errors.Is(err, ErrTaskTerminal) {
+				t.Fatalf("LaunchApprovedPlan() error = %v, want ErrTaskTerminal", err)
+			}
+			if operation.TaskID == "" || operation.TaskID != fixture.tasks.task.TaskID {
+				t.Fatalf("terminal operation task = %q, want %q", operation.TaskID, fixture.tasks.task.TaskID)
+			}
+			if fixture.bundles.calls != testCase.wantBundles || fixture.workers.calls != testCase.wantWorkers ||
+				fixture.bootstraps.calls != testCase.wantBootstraps || fixture.resources.calls != testCase.wantResources {
+				t.Fatalf("side effects bundles=%d workers=%d bootstraps=%d resources=%d",
+					fixture.bundles.calls, fixture.workers.calls, fixture.bootstraps.calls, fixture.resources.calls)
+			}
+			credentialWiped := fixture.workers.credential != nil && fixture.workers.credential.destroyed
+			if credentialWiped != testCase.wantCredentialWipe {
+				t.Fatalf("credential destroyed = %t, want %t", credentialWiped, testCase.wantCredentialWipe)
+			}
+		})
+	}
+}
+
+func TestDispatcherTreatsTerminalTaskAsSuccessfulCancellation(t *testing.T) {
+	fixture := newLaunchFixture(t, time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC))
+	if _, err := fixture.service.PrepareApprovedPlan(context.Background(), fixture.caller, fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	fixture.tasks.finishOnGet = 1
+	dispatcher, err := NewDispatcher(fixture.service, fixture.service.operations, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatcher.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v, want cancellation to be quiet", err)
+	}
+	if fixture.bundles.calls+fixture.workers.calls+fixture.bootstraps.calls+fixture.resources.calls != 0 {
+		t.Fatal("dispatcher ran an external side effect for a terminal task")
 	}
 }
 
@@ -776,7 +841,10 @@ func newLaunchFixture(t *testing.T, now time.Time) launchFixture {
 	}
 	plan.Status, plan.Revision = cloudapproval.PlanApproved, 2
 
-	tasks := &fakeTasks{task: task.Task{TaskID: uuid.NewString(), OwnerID: ownerID}}
+	tasks := &fakeTasks{task: task.Task{
+		TaskID: uuid.NewString(), OwnerID: ownerID, ExecutionStatus: task.ExecutionQueued,
+		OutcomeStatus: task.OutcomePending, RetentionPolicy: task.RetentionEphemeralAutoDestroy,
+	}}
 	bundles, workers, bootstraps, resources := &fakeBundles{}, &fakeWorkers{}, &fakeBootstraps{}, &fakeResources{}
 	connections := &fakeConnections{value: cloudapp.Connection{ConnectionID: connectionID, OwnerID: ownerID, AccountID: "123456789012", Region: "us-east-1", ControlRoleARN: "arn:aws:iam::123456789012:role/control", FoundationStack: "stack", Status: "active", Revision: 1}}
 	operations := &memoryOperations{}
@@ -913,12 +981,23 @@ func (recipes fakeRecipes) ResolveRecipe(context.Context, string, string, string
 }
 
 type fakeTasks struct {
-	task  task.Task
-	calls int
+	task        task.Task
+	calls       int
+	gets        int
+	finishOnGet int
 }
 
 func (tasks *fakeTasks) Create(context.Context, task.MutationScope, task.CreateCommand) (task.Task, error) {
 	tasks.calls++
+	return tasks.task, nil
+}
+
+func (tasks *fakeTasks) Get(context.Context, string) (task.Task, error) {
+	tasks.gets++
+	if tasks.finishOnGet == tasks.gets {
+		tasks.task.ExecutionStatus = task.ExecutionFinished
+		tasks.task.OutcomeStatus = task.OutcomeCanceled
+	}
 	return tasks.task, nil
 }
 
@@ -1045,14 +1124,16 @@ func (credential *fakeCredential) Destroy() {
 }
 
 type fakeWorkers struct {
-	calls   int
-	request worker.CreateDeploymentRequest
+	calls      int
+	request    worker.CreateDeploymentRequest
+	credential *fakeCredential
 }
 
 func (workers *fakeWorkers) CreateDeployment(_ context.Context, _ WorkerCreateMutation, request worker.CreateDeploymentRequest) (worker.Deployment, SensitiveCredential, error) {
 	workers.calls++
 	workers.request = request
-	return worker.Deployment{DeploymentID: request.DeploymentID, TaskID: request.TaskID, StepID: request.StepID, Revision: 1}, &fakeCredential{value: bytes.Repeat([]byte{0x42}, 48)}, nil
+	workers.credential = &fakeCredential{value: bytes.Repeat([]byte{0x42}, 48)}
+	return worker.Deployment{DeploymentID: request.DeploymentID, TaskID: request.TaskID, StepID: request.StepID, Revision: 1}, workers.credential, nil
 }
 
 type fakeBootstraps struct {
@@ -1068,10 +1149,18 @@ func (publisher *fakeBootstraps) PublishBootstrap(_ context.Context, _ cloudapp.
 	return result, nil
 }
 
-type fakeResourcePlans struct{}
+type fakeResourcePlans struct{ count int }
 
-func (fakeResourcePlans) Build(_ cloudapproval.PlanV1, _ cloudapp.Connection, _ recipe.RecipeV1, operation Operation) ([]resource.ProvisionSpec, error) {
-	return []resource.ProvisionSpec{{ResourceID: deterministicID(operation.DeploymentID, "ec2")}}, nil
+func (plans fakeResourcePlans) Build(_ cloudapproval.PlanV1, _ cloudapp.Connection, _ recipe.RecipeV1, operation Operation) ([]resource.ProvisionSpec, error) {
+	count := plans.count
+	if count == 0 {
+		count = 1
+	}
+	result := make([]resource.ProvisionSpec, 0, count)
+	for index := range count {
+		result = append(result, resource.ProvisionSpec{ResourceID: deterministicID(operation.DeploymentID, fmt.Sprintf("resource-%d", index))})
+	}
+	return result, nil
 }
 
 type fakeResources struct {

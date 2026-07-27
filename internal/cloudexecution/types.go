@@ -27,6 +27,7 @@ var (
 	ErrRevisionConflict  = errors.New("cloud execution revision conflict")
 	ErrUnsupportedRecipe = errors.New("recipe requires an unavailable Worker action")
 	ErrUnavailable       = errors.New("cloud execution dependency unavailable")
+	ErrTaskTerminal      = errors.New("cloud execution task is terminal")
 )
 
 type State string
@@ -203,6 +204,7 @@ type RecipeResolver interface {
 
 type TaskCreator interface {
 	Create(context.Context, task.MutationScope, task.CreateCommand) (task.Task, error)
+	Get(context.Context, string) (task.Task, error)
 }
 
 type BundlePublisher interface {

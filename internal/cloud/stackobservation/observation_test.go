@@ -29,7 +29,7 @@ func TestAssemblerBindsExactStackAndRejectsAttachmentDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	if first.Digest == "" || len(first.Resources) != 4 || len(first.Attachments) != 1 ||
-		first.PlanRevision != request.Plan.Revision || first.HealthRevision != request.Health.Revision {
+		first.PlanRevision != request.Approval.PlanRevision || first.HealthRevision != request.Health.Revision {
 		t.Fatalf("incomplete observation: %#v", first)
 	}
 	second, err := assembler.Observe(context.Background(), request)
@@ -92,7 +92,7 @@ func observationFixture(t *testing.T) Request {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	plan := cloudapproval.PlanV1{
 		SchemaVersion: cloudapproval.PlanSchemaV1, AgentInstanceID: agentID, OwnerID: "owner-a", PlanID: planID,
-		Revision: 3, Status: cloudapproval.PlanApproved, ConnectionID: connectionID,
+		Revision: 2, Status: cloudapproval.PlanReadyForConfirmation, ConnectionID: connectionID,
 		Recipe: cloudapproval.RecipeBindingV1{RecipeID: recipeID, Digest: digest, Maturity: recipe.MaturityManaged},
 		Quote:  cloudapproval.QuoteBindingV1{QuoteID: quoteID, Digest: digest, ScopeDigest: digest, CandidateID: string(cloudquote.CandidateRecommended), ValidUntil: now.Add(time.Hour)},
 		ResourceScope: cloudapproval.ResourceScopeV1{
@@ -118,17 +118,22 @@ func observationFixture(t *testing.T) Request {
 		t.Fatal(err)
 	}
 	plan.Quote.ScopeDigest = scopeDigest
-	planHash, err := plan.Hash()
+	approval, err := cloudapproval.NewApprovalV1(
+		plan, approvalID, strings.Repeat("c", 48), "stack-observation-device", now.Add(5*time.Minute),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	approval := cloudapproval.ApprovalV1{
-		ApprovalID: approvalID, AgentInstanceID: agentID, OwnerID: plan.OwnerID, PlanID: planID, PlanRevision: plan.Revision,
-		PlanHash: planHash, ConnectionID: connectionID, RecipeDigest: digest, QuoteID: quoteID, QuoteDigest: digest,
-		QuoteScopeDigest: scopeDigest, QuoteCandidateID: string(cloudquote.CandidateRecommended),
-		QuoteValidUntil: plan.Quote.ValidUntil, ResourceScope: plan.ResourceScope, NetworkScope: plan.NetworkScope,
-		SecretScope: plan.SecretScope, IntegrationScope: plan.IntegrationScope, RetentionScope: plan.RetentionScope,
+	plan.Status = cloudapproval.PlanApproved
+	plan.Revision++
+	currentPlanHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
 	}
+	if currentPlanHash == approval.PlanHash {
+		t.Fatal("approved fixture must distinguish current Plan hash from signed approval hash")
+	}
+	planHash := approval.PlanHash
 	resourceIDs := []string{uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	providers := []string{"i-0123456789abcdef0", "vol-0123456789abcdef0", "eni-0123456789abcdef0", "snap-0123456789abcdef0"}
 	kinds := []resource.Type{resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeSnapshot}

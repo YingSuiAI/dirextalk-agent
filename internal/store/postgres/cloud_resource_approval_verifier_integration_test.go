@@ -104,6 +104,13 @@ func TestResourceApprovalVerifierAcceptsOnlyApprovedEntrySource(t *testing.T) {
 		ResourceID: entryResourceID, ApprovedPlanHash: approved.Challenge.PlanHash, ApprovalID: approved.Challenge.ApprovalID,
 		Retention: task.RetentionEphemeralAutoDestroy, DestroyDeadline: scope.Retention.DestroyDeadline, AutoDestroy: true, State: "active",
 	}
+	var currentApprovedPlanHash string
+	if err := pool.QueryRow(ctx, `SELECT plan_hash FROM cloud_plans WHERE plan_id=$1`, scope.Worker.OriginalPlanID).Scan(&currentApprovedPlanHash); err != nil {
+		t.Fatal(err)
+	}
+	if currentApprovedPlanHash == proof.OriginalPlanHash {
+		t.Fatal("fixture does not distinguish the current approved Plan hash from the device-signed Plan hash")
+	}
 	if err := store.VerifyResourceApproval(ctx, proof); err != nil {
 		t.Fatalf("valid separate entry approval rejected: %v", err)
 	}

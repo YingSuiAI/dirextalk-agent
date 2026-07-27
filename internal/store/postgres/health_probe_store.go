@@ -414,12 +414,20 @@ func scanHealthMonitor(row healthMonitorRow) (resource.ProbeMonitorRecord, error
 func loadHealthBinding(ctx context.Context, query rowQuerier, instanceID, deploymentID uuid.UUID) (string, string, string, error) {
 	var ownerID, planHash, recipeDigest string
 	err := query.QueryRow(ctx, `
-		SELECT deployment.owner_id, plan.plan_hash, 'sha256:' || encode(deployment.recipe_bundle_sha256, 'hex')
+		SELECT deployment.owner_id, approval.plan_hash, 'sha256:' || encode(deployment.recipe_bundle_sha256, 'hex')
 		FROM worker_deployments deployment
 		JOIN cloud_launch_operations launch ON launch.deployment_id=deployment.deployment_id
 		  AND launch.agent_instance_id=deployment.agent_instance_id
 		JOIN cloud_plans plan ON plan.plan_id=launch.plan_id AND plan.agent_instance_id=deployment.agent_instance_id
-		WHERE deployment.deployment_id=$1 AND deployment.agent_instance_id=$2`, deploymentID, instanceID,
+		JOIN cloud_approvals approval ON approval.approval_id=launch.approval_id
+		  AND approval.agent_instance_id=deployment.agent_instance_id
+		WHERE deployment.deployment_id=$1 AND deployment.agent_instance_id=$2
+		  AND launch.owner_id=deployment.owner_id
+		  AND plan.owner_id=deployment.owner_id
+		  AND plan.status='approved'
+		  AND plan.revision=approval.plan_revision+1
+		  AND approval.owner_id=deployment.owner_id
+		  AND approval.plan_id=plan.plan_id`, deploymentID, instanceID,
 	).Scan(&ownerID, &planHash, &recipeDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", "", resource.ErrNotFound

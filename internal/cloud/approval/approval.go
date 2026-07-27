@@ -333,6 +333,27 @@ func (a ApprovalV1) ValidateAgainstPlan(plan PlanV1, now time.Time) error {
 	return nil
 }
 
+// ValidateApprovedPlan proves that a durable approved Plan is the exact
+// one-step state transition of the revision the device signed. The approved
+// Plan has a different revision and therefore a different current hash; the
+// authorization lineage remains a.PlanHash.
+func (a ApprovalV1) ValidateApprovedPlan(plan PlanV1) error {
+	if plan.Status != PlanApproved || plan.Revision != a.PlanRevision+1 {
+		return fmt.Errorf("approved plan is not the direct successor of the signed revision")
+	}
+	signedPlan := plan
+	signedPlan.Status = PlanReadyForConfirmation
+	signedPlan.Revision = a.PlanRevision
+	validationTime := a.ExpiresAt
+	if a.QuoteValidUntil.Before(validationTime) {
+		validationTime = a.QuoteValidUntil
+	}
+	if validationTime.IsZero() {
+		return fmt.Errorf("approval validity window is missing")
+	}
+	return a.ValidateAgainstPlan(signedPlan, validationTime.Add(-time.Nanosecond))
+}
+
 // VerifyForPlan verifies the cryptographic Plan binding. High-risk callers use
 // Service.Verify plus an atomic persistence transaction so Quote freshness,
 // device registration, and one-time challenge consumption are also enforced.

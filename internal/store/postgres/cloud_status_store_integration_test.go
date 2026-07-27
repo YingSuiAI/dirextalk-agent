@@ -74,9 +74,9 @@ func TestCloudStatusPostgresOwnerIsolationPaginationAndReadBack(t *testing.T) {
 		var approvedPlanHash string
 		var approvalID uuid.UUID
 		if err := pool.QueryRow(ctx, `
-			SELECT plan.plan_hash, launch.approval_id
+			SELECT approval.plan_hash, launch.approval_id
 			FROM cloud_launch_operations AS launch
-			JOIN cloud_plans AS plan ON plan.plan_id=launch.plan_id
+			JOIN cloud_approvals AS approval ON approval.approval_id=launch.approval_id
 			WHERE launch.agent_instance_id=$1 AND launch.owner_id=$2 AND launch.deployment_id=$3 AND launch.task_id=$4`,
 			instanceID, ownerID, deploymentID, taskID,
 		).Scan(&approvedPlanHash, &approvalID); err != nil {

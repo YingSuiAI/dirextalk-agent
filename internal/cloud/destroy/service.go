@@ -19,6 +19,7 @@ import (
 
 type PlanReader interface {
 	LoadPlan(context.Context, string, string) (cloudapproval.PlanV1, error)
+	LoadDeploymentApproval(context.Context, string, string) (cloudapproval.ApprovalV1, error)
 }
 
 type Notifier interface{ NotifyManualDestroy() }
@@ -174,10 +175,18 @@ func (service *Service) snapshot(ctx context.Context, ownerID, deploymentID stri
 	if err != nil {
 		return ScopeV1{}, ErrNotFound
 	}
-	planHash, err := plan.Hash()
-	if err != nil || plan.Status != cloudapproval.PlanApproved || plan.AgentInstanceID != service.agentInstanceID || plan.OwnerID != ownerID || plan.PlanID != deployment.PlanID || plan.ConnectionID != deployment.ConnectionID {
+	approval, err := service.plans.LoadDeploymentApproval(ctx, ownerID, deploymentID)
+	if err != nil {
+		return ScopeV1{}, ErrNotFound
+	}
+	if plan.Status != cloudapproval.PlanApproved || plan.AgentInstanceID != service.agentInstanceID || plan.OwnerID != ownerID ||
+		plan.PlanID != deployment.PlanID || plan.ConnectionID != deployment.ConnectionID ||
+		approval.AgentInstanceID != service.agentInstanceID || approval.OwnerID != ownerID ||
+		approval.PlanID != plan.PlanID || approval.ConnectionID != plan.ConnectionID ||
+		approval.ValidateApprovedPlan(plan) != nil {
 		return ScopeV1{}, ErrInvalid
 	}
+	planHash := approval.PlanHash
 	scope := ScopeV1{SchemaVersion: ScopeSchemaV1, AgentInstanceID: service.agentInstanceID, OwnerID: ownerID,
 		DeploymentID: deploymentID, DeploymentRevision: deploymentRevision(deployment.Worker.Revision, resources), TaskID: deployment.Worker.TaskID,
 		PlanID: deployment.PlanID, PlanHash: planHash, ConnectionID: deployment.ConnectionID, Resources: make([]ResourceScopeV1, 0, len(resources))}

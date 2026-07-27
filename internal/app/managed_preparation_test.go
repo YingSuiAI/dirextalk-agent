@@ -13,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	cloudquote "github.com/YingSuiAI/dirextalk-agent/internal/cloud/quote"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/serviceoperation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudstatus"
 	"github.com/YingSuiAI/dirextalk-agent/internal/healthprobe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
@@ -34,6 +35,8 @@ func TestManagedPreparationScopeBuilderBindsEveryV2SnapshotRetentionTerm(t *test
 		t.Fatal(err)
 	}
 	if scope.SchemaVersion != serviceoperation.ScopeSchemaV2 || len(scope.Volumes) != 1 ||
+		scope.PlanHash != fixture.facts.approval.PlanHash ||
+		scope.PlanRevision != int64(fixture.facts.approval.PlanRevision) ||
 		scope.Volumes[0].SnapshotOperationKey != "managed-snapshot-knowledge" ||
 		scope.Volumes[0].SnapshotSourceVolumeScopeDigest == "" ||
 		scope.Volumes[0].SnapshotMaxRetentionSeconds != 30*24*60*60 {
@@ -65,7 +68,7 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 	quoteID := uuid.NewString()
 	plan := cloudapproval.PlanV1{
 		SchemaVersion: cloudapproval.PlanSchemaV2, AgentInstanceID: agentID, OwnerID: ownerID, PlanID: planID,
-		Revision: 3, Status: cloudapproval.PlanApproved, ConnectionID: connectionID,
+		Revision: 2, Status: cloudapproval.PlanReadyForConfirmation, ConnectionID: connectionID,
 		Recipe: cloudapproval.RecipeBindingV1{RecipeID: currentRecipe.RecipeID, Digest: recipeDigest, Maturity: currentRecipe.Maturity},
 		Quote:  cloudapproval.QuoteBindingV1{QuoteID: quoteID, CandidateID: string(cloudquote.CandidateRecommended), ValidUntil: now.Add(15 * time.Minute)},
 		ResourceScope: cloudapproval.ResourceScopeV1{
@@ -99,7 +102,22 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 	if err != nil || plan.Validate() != nil {
 		t.Fatalf("plan fixture invalid: digest=%v plan=%v", err, plan.Validate())
 	}
-	planHash, _ := plan.Hash()
+	approval, err := cloudapproval.NewApprovalV1(
+		plan, uuid.NewString(), strings.Repeat("f", 48), "managed-preparation-device", now.Add(10*time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status = cloudapproval.PlanApproved
+	plan.Revision++
+	currentPlanHash, err := plan.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentPlanHash == approval.PlanHash {
+		t.Fatal("approved fixture must distinguish current Plan hash from signed approval hash")
+	}
+	planHash := approval.PlanHash
 	volumeSpec := &resource.AWSResourceSpecV1{SchemaVersion: resource.AWSResourceSpecSchemaV1, Volume: &resource.AWSEBSVolumeSpecV1{
 		AvailabilityZone: "us-east-1a", SizeGiB: 80, VolumeType: "gp3", IOPS: 3000, ThroughputMiBPS: 125,
 		KMSKeyID: "alias/dtx-agent-test-foundation", SlotID: "knowledge", DeviceName: "/dev/sdf",
@@ -110,6 +128,7 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 		"exclusive-cloud-worker", "i-0123456789abcdef0", managedPreparationDigest('2'), now)
 	volume := managedPreparationResource(agentID, ownerID, deploymentID, taskID, planHash, resource.TypeEBS,
 		"recipe-volume-knowledge", "vol-0123456789abcdef0", volumeDigest, now)
+	ec2.ApprovalID, volume.ApprovalID = approval.ApprovalID, approval.ApprovalID
 	executionDigest := sha256.Sum256([]byte("execution"))
 	delivery := &installer.DeliveryV1{
 		SignedPlan: installer.SignedInstallerPlanV1{Plan: installer.InstallerPlanV1{
@@ -139,8 +158,20 @@ func newManagedPreparationScopeFixture(t *testing.T) managedPreparationScopeFixt
 	if monitor.Validate() != nil {
 		t.Fatal("monitor fixture invalid")
 	}
+	launch := cloudexecution.Operation{
+		Intent: cloudexecution.Intent{
+			Launch: cloudexecution.LaunchRequest{
+				OwnerID: ownerID, PlanID: planID, ApprovalID: approval.ApprovalID,
+			},
+			ConnectionID: connectionID, ApprovedPlanHash: planHash, DeploymentID: deploymentID,
+		},
+		State: cloudexecution.StateActive, TaskID: taskID,
+	}
 	return managedPreparationScopeFixture{agentID: agentID, ownerID: ownerID, deploymentID: deploymentID,
-		facts:   &managedPreparationFactsFake{plan: plan, quote: quoted, draft: planning.RecipeDraft{RecipeID: currentRecipe.RecipeID, Recipe: currentRecipe, Digest: recipeDigest, Revision: 5}},
+		facts: &managedPreparationFactsFake{
+			plan: plan, approval: approval, launch: launch, quote: quoted,
+			draft: planning.RecipeDraft{RecipeID: currentRecipe.RecipeID, Recipe: currentRecipe, Digest: recipeDigest, Revision: 5},
+		},
 		current: &managedPreparationCurrentFake{deployment: deployment, connection: cloudstatus.Connection{ConnectionID: connectionID, OwnerID: ownerID, Region: "us-east-1", Status: "active", Revision: 2}, resources: []resource.ResourceV1{ec2, volume}},
 		monitor: &managedPreparationMonitorFake{record: monitor}}
 }
@@ -154,10 +185,11 @@ func managedPreparationScopeForDownstreamTest(t *testing.T, fixture managedPrepa
 	if err := plan.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	planHash, err := plan.Hash()
-	if err != nil {
+	approval := fixture.facts.approval
+	if err := approval.ValidateApprovedPlan(plan); err != nil {
 		t.Fatal(err)
 	}
+	planHash := approval.PlanHash
 	deployment := fixture.current.deployment
 	ec2, volumes, ok := exactPreparationResources(fixture.current.resources, fixture.agentID, fixture.ownerID, deployment, plan, planHash)
 	if !ok {
@@ -177,7 +209,7 @@ func managedPreparationScopeForDownstreamTest(t *testing.T, fixture managedPrepa
 		PreparationOperationID: operationID, OwnerID: fixture.ownerID, AgentInstanceID: fixture.agentID,
 		DeploymentID: fixture.deploymentID, DeploymentRevision: deployment.Worker.Revision,
 		ConnectionID: deployment.ConnectionID, ConnectionRevision: fixture.current.connection.Revision,
-		PlanID: plan.PlanID, PlanRevision: int64(plan.Revision), PlanHash: planHash,
+		PlanID: plan.PlanID, PlanRevision: int64(approval.PlanRevision), PlanHash: planHash,
 		RecipeID: fixture.facts.draft.RecipeID, RecipeDigest: fixture.facts.draft.Digest, RecipeRevision: fixture.facts.draft.Revision,
 		EC2: ec2, SourceVolumes: make([]serviceoperation.ResourceFactV1, 0, len(volumes)),
 		Restart: serviceoperation.RestartReferenceV1{
@@ -244,19 +276,27 @@ func managedPreparationResource(agentID, ownerID, deploymentID, taskID, planHash
 }
 
 type managedPreparationFactsFake struct {
-	plan  cloudapproval.PlanV1
-	quote cloudquote.QuoteV1
-	draft planning.RecipeDraft
+	plan     cloudapproval.PlanV1
+	approval cloudapproval.ApprovalV1
+	launch   cloudexecution.Operation
+	quote    cloudquote.QuoteV1
+	draft    planning.RecipeDraft
 }
 
 func (fake *managedPreparationFactsFake) LoadPlan(context.Context, string, string) (cloudapproval.PlanV1, error) {
 	return fake.plan, nil
+}
+func (fake *managedPreparationFactsFake) LoadApproval(context.Context, string, string) (cloudapproval.ApprovalV1, error) {
+	return fake.approval, nil
 }
 func (fake *managedPreparationFactsFake) LoadQuote(context.Context, string, string) (cloudquote.QuoteV1, error) {
 	return fake.quote, nil
 }
 func (fake *managedPreparationFactsFake) ResolveRecipeDraft(context.Context, string, string, string) (planning.RecipeDraft, error) {
 	return fake.draft, nil
+}
+func (fake *managedPreparationFactsFake) GetByDeployment(context.Context, string) (cloudexecution.Operation, error) {
+	return fake.launch, nil
 }
 
 type managedPreparationCurrentFake struct {

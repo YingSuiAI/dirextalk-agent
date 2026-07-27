@@ -72,6 +72,9 @@ func (dispatcher *Dispatcher) RunOnce(ctx context.Context) error {
 	var batchErr error
 	for _, operation := range operations {
 		_, launchErr := dispatcher.service.LaunchApprovedPlan(ctx, operation.Caller, operation.Launch)
+		if errors.Is(launchErr, ErrTaskTerminal) {
+			continue
+		}
 		if launchErr != nil {
 			batchErr = errors.Join(batchErr, launchErr)
 		}

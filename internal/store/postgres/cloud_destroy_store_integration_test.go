@@ -32,9 +32,9 @@ func TestCloudDestroyStorePersistsApprovalAndFencesLifecycle(t *testing.T) {
 
 	var planID, connectionID, planHash, originalApprovalID string
 	if err := pool.QueryRow(ctx, `
-		SELECT launch.plan_id::text, launch.connection_id::text, plan.plan_hash, launch.approval_id::text
+		SELECT launch.plan_id::text, launch.connection_id::text, approval.plan_hash, launch.approval_id::text
 		FROM cloud_launch_operations launch
-		JOIN cloud_plans plan ON plan.plan_id=launch.plan_id
+		JOIN cloud_approvals approval ON approval.approval_id=launch.approval_id
 		WHERE launch.deployment_id=$1`, deploymentID).
 		Scan(&planID, &connectionID, &planHash, &originalApprovalID); err != nil {
 		t.Fatalf("read destroy prerequisite facts failed (%T)", err)
@@ -216,6 +216,12 @@ func exerciseConcurrentDestroyReplay(
 			!bytes.Equal(created[index].SigningCBOR, challenge.SigningCBOR) {
 			t.Fatalf("concurrent exact destroy challenge replay %d changed response: %#v", index, created[index])
 		}
+	}
+	operationCollision := prepare
+	operationCollision.IdempotencyKey = uuid.NewString()
+	operationCollision.RequestHash = sha256.Sum256([]byte("destroy-operation-id-collision"))
+	if _, err := store.CreateDestroyChallenge(ctx, operationCollision, challenge); !errors.Is(err, clouddestroy.ErrIdempotencyConflict) {
+		t.Fatalf("same operation under a different idempotency key error=%v", err)
 	}
 
 	if _, err := pool.Exec(ctx, `

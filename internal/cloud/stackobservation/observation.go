@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -104,10 +103,10 @@ func (assembler *Assembler) Observe(ctx context.Context, request Request) (Obser
 	if err := validateRequest(request, assembler.maxHealthAge); err != nil {
 		return ObservationV1{}, err
 	}
-	planHash, err := request.Plan.Hash()
-	if err != nil || !sameApproval(request.Approval, request.Plan, planHash) {
+	if request.Approval.ValidateApprovedPlan(request.Plan) != nil {
 		return ObservationV1{}, ErrDrift
 	}
+	planHash := request.Approval.PlanHash
 
 	resources, byLogicalName, instance, err := exactResources(request, planHash)
 	if err != nil {
@@ -146,7 +145,7 @@ func (assembler *Assembler) Observe(ctx context.Context, request Request) (Obser
 
 	result := ObservationV1{
 		SchemaVersion: SchemaV1, AgentInstanceID: request.AgentInstanceID, OwnerID: request.OwnerID,
-		DeploymentID: request.DeploymentID, PlanID: request.Plan.PlanID, PlanRevision: request.Plan.Revision,
+		DeploymentID: request.DeploymentID, PlanID: request.Plan.PlanID, PlanRevision: request.Approval.PlanRevision,
 		PlanHash: planHash, ApprovalID: request.Approval.ApprovalID, RecipeID: request.Plan.Recipe.RecipeID,
 		RecipeDigest: request.Plan.Recipe.Digest, HealthRevision: request.Health.Revision,
 		HealthEvidenceDigest: request.Health.EvidenceDigest, HealthObservedAt: request.Health.ObservedAt,
@@ -174,19 +173,6 @@ func validateRequest(request Request, maxHealthAge time.Duration) error {
 		return ErrInvalid
 	}
 	return nil
-}
-
-func sameApproval(approval cloudapproval.ApprovalV1, plan cloudapproval.PlanV1, planHash string) bool {
-	return approval.AgentInstanceID == plan.AgentInstanceID && approval.OwnerID == plan.OwnerID &&
-		approval.PlanID == plan.PlanID && approval.PlanRevision == plan.Revision && approval.PlanHash == planHash &&
-		approval.ConnectionID == plan.ConnectionID && approval.RecipeDigest == plan.Recipe.Digest &&
-		approval.QuoteID == plan.Quote.QuoteID && approval.QuoteDigest == plan.Quote.Digest &&
-		approval.QuoteScopeDigest == plan.Quote.ScopeDigest && approval.QuoteCandidateID == plan.Quote.CandidateID &&
-		reflect.DeepEqual(approval.ResourceScope, plan.ResourceScope) &&
-		reflect.DeepEqual(approval.NetworkScope, plan.NetworkScope) &&
-		reflect.DeepEqual(approval.SecretScope, plan.SecretScope) &&
-		reflect.DeepEqual(approval.IntegrationScope, plan.IntegrationScope) &&
-		reflect.DeepEqual(approval.RetentionScope, plan.RetentionScope)
 }
 
 func exactResources(request Request, planHash string) ([]ResourceFactV1, map[string]resource.ResourceV1, resource.ResourceV1, error) {
