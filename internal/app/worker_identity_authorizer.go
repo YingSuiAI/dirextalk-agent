@@ -117,13 +117,15 @@ func (authorizer *workerIdentityAuthorizer) AuthorizeDeployment(ctx context.Cont
 	}
 
 	expectedTags := map[string]string{
-		resource.TagAgentInstanceID: instance.Tags[resource.TagAgentInstanceID],
-		resource.TagOwnerID:         instance.Tags[resource.TagOwnerID],
-		resource.TagTaskID:          instance.Tags[resource.TagTaskID],
-		resource.TagDeploymentID:    instance.Tags[resource.TagDeploymentID],
-		resource.TagResourceID:      instance.Tags[resource.TagResourceID],
-		resource.TagRetention:       instance.Tags[resource.TagRetention],
-		resource.TagDestroyDeadline: instance.Tags[resource.TagDestroyDeadline],
+		resource.TagAgentInstanceID:  instance.Tags[resource.TagAgentInstanceID],
+		resource.TagOwnerID:          instance.Tags[resource.TagOwnerID],
+		resource.TagTaskID:           instance.Tags[resource.TagTaskID],
+		resource.TagDeploymentID:     instance.Tags[resource.TagDeploymentID],
+		resource.TagResourceID:       instance.Tags[resource.TagResourceID],
+		resource.TagRetention:        instance.Tags[resource.TagRetention],
+		resource.TagDestroyDeadline:  instance.Tags[resource.TagDestroyDeadline],
+		resource.TagApprovedPlanHash: instance.Tags[resource.TagApprovedPlanHash],
+		resource.TagApprovalID:       instance.Tags[resource.TagApprovalID],
 	}
 	for _, value := range expectedTags {
 		if strings.TrimSpace(value) == "" {

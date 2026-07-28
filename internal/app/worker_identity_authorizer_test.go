@@ -69,10 +69,20 @@ func TestWorkerIdentityAuthorizerJoinsDurableFactsBeforeExactEC2ReadBack(t *test
 	if !evidence.Authorized || !evidence.Exists || !evidence.TagsVerified || evidence.InstanceID != fixture.claim.InstanceID || fixture.provider.calls != 1 {
 		t.Fatalf("evidence=%+v calls=%d", evidence, fixture.provider.calls)
 	}
-	if fixture.provider.request.InstanceID != fixture.claim.InstanceID || fixture.provider.request.WorkerProfileName != fixture.claim.WorkerRoleName || len(fixture.provider.request.ExpectedOwnershipTags) != 7 {
+	if fixture.provider.request.InstanceID != fixture.claim.InstanceID || fixture.provider.request.WorkerProfileName != fixture.claim.WorkerRoleName || len(fixture.provider.request.ExpectedOwnershipTags) != 9 {
 		t.Fatalf("typed provider request = %+v", fixture.provider.request)
 	}
-	for _, key := range []string{resource.TagAgentInstanceID, resource.TagOwnerID, resource.TagTaskID, resource.TagDeploymentID, resource.TagResourceID, resource.TagRetention, resource.TagDestroyDeadline} {
+	for _, key := range []string{
+		resource.TagAgentInstanceID,
+		resource.TagOwnerID,
+		resource.TagTaskID,
+		resource.TagDeploymentID,
+		resource.TagResourceID,
+		resource.TagRetention,
+		resource.TagDestroyDeadline,
+		resource.TagApprovedPlanHash,
+		resource.TagApprovalID,
+	} {
 		if fixture.provider.request.ExpectedOwnershipTags[key] == "" {
 			t.Fatalf("ownership tag %s was not independently supplied", key)
 		}
@@ -93,6 +103,9 @@ func TestWorkerIdentityAuthorizerFailsClosedBeforeProviderOnFactMismatch(t *test
 		},
 		"duplicate instance": func(fixture *workerIdentityAuthorizerFixture) {
 			fixture.resources.resources = append(fixture.resources.resources, fixture.resources.resources[0])
+		},
+		"missing approval tag": func(fixture *workerIdentityAuthorizerFixture) {
+			delete(fixture.resources.resources[0].Tags, resource.TagApprovalID)
 		},
 	}
 	for name, mutate := range tests {
@@ -141,6 +154,7 @@ func newWorkerIdentityAuthorizerFixture(t *testing.T) workerIdentityAuthorizerFi
 		resource.TagAgentInstanceID: agentID, resource.TagOwnerID: ownerID, resource.TagTaskID: taskID,
 		resource.TagDeploymentID: deploymentID, resource.TagResourceID: resourceID,
 		resource.TagRetention: string(task.RetentionEphemeralAutoDestroy), resource.TagDestroyDeadline: now.Add(time.Hour).Format(time.RFC3339),
+		resource.TagApprovedPlanHash: operation.ApprovedPlanHash, resource.TagApprovalID: approvalID,
 	}
 	resources := &identityResourceFake{resources: []resource.ResourceV1{{
 		ResourceID: resourceID, AgentInstanceID: agentID, OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
