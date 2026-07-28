@@ -156,6 +156,84 @@ func TestEinoCloudGoalPlanningModelRepairsRejectedCaptureWithinOneDurableRequest
 	}
 }
 
+func TestEinoCloudGoalPlanningModelAcceptsStrictFinalJSONWithoutCaptureToolCall(t *testing.T) {
+	recipeValue := validRecipe()
+	recipeValue.RecipeID = "recipe-model-final-json"
+	store := &cloudGoalModelStoreFake{config: planningModelRuntimeConfig(), completed: make(map[string]runtimeapi.RuntimeResponseSnapshot)}
+	engine := &cloudGoalModelEngineFake{
+		source: recipeValue.Sources[0], planRaw: planningModelRecipeRaw(t, recipeValue),
+		finalJSONOnly: true,
+	}
+	model, err := NewEinoCloudGoalPlanningModel(store, engine, runtimeapi.ModelFactoryFunc(func(context.Context, modelapi.Profile, runtimeapi.SecretResolver) (modelapi.Client, error) {
+		return cloudGoalModelClientFake{}, nil
+	}), runtimeapi.SecretResolver(runtimeapiSecretResolverFake{}), &cloudGoalModelToolsFake{source: recipeValue.Sources[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sources, err := model.ResearchOfficialSources(t.Context(), CloudGoalResearchInput{
+		Request: planningModelStage(cloudskill.StepResearchOfficialSources, recipeValue.RecipeID),
+	})
+	if err != nil || len(sources) != 1 || sources[0].ContentDigest != recipeValue.Sources[0].ContentDigest {
+		t.Fatalf("strict final JSON sources=%#v err=%v", sources, err)
+	}
+	if len(engine.captureResults) != 0 || len(store.completed) != 1 {
+		t.Fatalf("capture tool calls=%d completed=%d", len(engine.captureResults), len(store.completed))
+	}
+}
+
+func TestCloudGoalOfficialFetchFailureIsModelVisibleAndDeSecreted(t *testing.T) {
+	const canary = "provider-secret-should-not-reach-model"
+	call := modelapi.ToolCall{
+		ID: "fetch-failed", Type: "function",
+		Function: modelapi.FunctionCall{Name: publicweb.ToolName, Arguments: `{"url":"https://example.com"}`},
+	}
+	result, err := invokeCloudGoalModelTool(
+		t.Context(),
+		runtimeapi.ToolRequest{RequestID: "request-1", OwnerID: "owner-1", ConversationID: "conversation-1"},
+		call,
+		captureOfficialSourcesTool,
+		&planningCapture{},
+		map[string]runtimeapi.Tool{
+			publicweb.ToolName: {
+				Run: func(context.Context, runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
+					return runtimeapi.ToolResult{Content: canary, IsError: true}, nil
+				},
+			},
+		},
+		map[string]publicweb.Evidence{},
+		func(json.RawMessage, map[string]publicweb.Evidence, bool) error { return nil },
+	)
+	if err != nil || !result.IsError || result.ToolCallID != call.ID || result.Name != publicweb.ToolName {
+		t.Fatalf("recoverable fetch result=%#v err=%v", result, err)
+	}
+	if strings.Contains(result.Content, canary) || !strings.Contains(result.Content, "Choose a different") {
+		t.Fatalf("fetch failure was not de-secreted and actionable: %q", result.Content)
+	}
+}
+
+func TestCloudGoalGenerationFailureReasonIsStableAndRedacted(t *testing.T) {
+	providerErr := &modelapi.ProviderError{StatusCode: 429, Message: "sk-" + strings.Repeat("Z", 40)}
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{err: providerErr, want: "model_provider_http_429"},
+		{err: modelapi.ErrSecretUnavailable, want: "model_secret_unavailable"},
+		{err: modelapi.ErrProviderUnavailable, want: "model_provider_unavailable"},
+		{err: modelapi.ErrResponseTooLarge, want: "model_response_too_large"},
+		{err: runtimeapi.ErrInvalidModelResponse, want: "model_response_invalid"},
+		{err: runtimeapi.ErrInvalidToolCall, want: "model_tool_protocol_invalid"},
+		{err: errors.New("opaque"), want: "model_generation_failed"},
+	}
+	for _, test := range cases {
+		if got := cloudGoalGenerationFailureReason(test.err); got != test.want ||
+			strings.Contains(got, providerErr.Message) {
+			t.Fatalf("failure reason=%q want=%q", got, test.want)
+		}
+	}
+}
+
 func TestPlanningCaptureFailureReasonKeepsOnlyFixedValidationCode(t *testing.T) {
 	capture := &planningCapture{lastRejection: "planning_recipe_invalid"}
 	if got := capture.failureReason("model_step_limit_exceeded"); got != "model_step_limit_exceeded_after_planning_recipe_invalid" {
@@ -485,6 +563,7 @@ type cloudGoalModelEngineFake struct {
 	rejectedPlanRaw json.RawMessage
 	captureResults  []runtimeapi.ToolExecution
 	skipFetch       bool
+	finalJSONOnly   bool
 	calls           int
 	delay           time.Duration
 	canceled        chan struct{}
@@ -517,6 +596,9 @@ func (fake *cloudGoalModelEngineFake) Generate(ctx context.Context, request runt
 		raw = encoded
 	} else if captureName == captureResourceCandidatesTool {
 		raw = fake.candidateRaw
+	}
+	if fake.finalJSONOnly {
+		return runtimeapi.EngineResult{Message: modelapi.Message{Role: modelapi.RoleAssistant, Content: string(raw)}}, nil
 	}
 	if len(fake.rejectedPlanRaw) != 0 && captureName == captureExperimentalRecipeTool {
 		rejected, err := request.InvokeTool(ctx, modelapi.ToolCall{ID: "capture-rejected", Type: "function", Function: modelapi.FunctionCall{

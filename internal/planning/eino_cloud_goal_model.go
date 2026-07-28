@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -594,7 +595,7 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 	case errors.Is(err, runtimeapi.ErrStepLimit):
 		failureReason = "model_step_limit_exceeded"
 	case err != nil:
-		failureReason = "model_generation_failed"
+		failureReason = cloudGoalGenerationFailureReason(err)
 	case result.Message.Role != modelapi.RoleAssistant:
 		failureReason = "model_response_role_invalid"
 	}
@@ -603,6 +604,13 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 		return nil, ErrCloudGoalModelUnavailable
 	}
 	raw, ok := capture.value()
+	if !ok {
+		finalContent := strings.TrimSpace(result.Message.Content)
+		accepted, _, submitErr := capture.submit(finalContent, fetched, validate)
+		if submitErr == nil && accepted {
+			raw, ok = capture.value()
+		}
+	}
 	if !ok {
 		reportCloudGoalModelFailure(request, capture.failureReason("capture_missing"))
 		return nil, ErrCloudGoalModelUnavailable
@@ -631,6 +639,26 @@ func reportCloudGoalModelFailure(request CloudGoalStageRequest, reason string) {
 		"stage", request.Step.Name,
 		"reason", reason,
 	)
+}
+
+func cloudGoalGenerationFailureReason(err error) string {
+	var providerErr *modelapi.ProviderError
+	switch {
+	case errors.As(err, &providerErr):
+		return "model_provider_http_" + strconv.Itoa(providerErr.StatusCode)
+	case errors.Is(err, modelapi.ErrSecretUnavailable):
+		return "model_secret_unavailable"
+	case errors.Is(err, modelapi.ErrProviderUnavailable):
+		return "model_provider_unavailable"
+	case errors.Is(err, modelapi.ErrResponseTooLarge):
+		return "model_response_too_large"
+	case errors.Is(err, runtimeapi.ErrInvalidModelResponse):
+		return "model_response_invalid"
+	case errors.Is(err, runtimeapi.ErrInvalidToolCall):
+		return "model_tool_protocol_invalid"
+	default:
+		return "model_generation_failed"
+	}
 }
 
 type planningCapture struct {
@@ -762,8 +790,16 @@ func invokeCloudGoalModelTool(
 		RequestID: request.RequestID, OwnerID: request.OwnerID, ConversationID: request.ConversationID,
 		ToolCallID: call.ID, Name: name, Arguments: json.RawMessage(call.Function.Arguments),
 	})
-	if err != nil || result.IsError {
+	if err != nil {
 		return runtimeapi.ToolExecution{}, ErrCloudGoalModelUnavailable
+	}
+	if result.IsError {
+		return runtimeapi.ToolExecution{
+			ToolCallID: call.ID,
+			Name:       name,
+			Content:    `{"error":"official_source_fetch_failed","instruction":"Choose a different public official HTTPS URL and retry."}`,
+			IsError:    true,
+		}, nil
 	}
 	evidence, err := publicweb.ParseEvidenceResult(result.Content)
 	if err != nil {

@@ -15,7 +15,7 @@ func TestGenerateRunsToolAndReturnsFinalAssistant(t *testing.T) {
 	t.Parallel()
 
 	client := &scriptedClient{completions: []modelapi.Completion{
-		{Message: modelapi.Message{Role: modelapi.RoleAssistant, ToolCalls: []modelapi.ToolCall{{
+		{Message: modelapi.Message{Role: modelapi.RoleAssistant, ReasoningContent: "verified the source", ToolCalls: []modelapi.ToolCall{{
 			ID: "call-1", Type: "function", Function: modelapi.FunctionCall{Name: "lookup", Arguments: `{"q":"x"}`},
 		}}}},
 		{Message: modelapi.Message{Role: modelapi.RoleAssistant, Content: "finished"}},
@@ -49,7 +49,10 @@ func TestGenerateRunsToolAndReturnsFinalAssistant(t *testing.T) {
 		t.Fatalf("unexpected steps: %#v", result.Steps)
 	}
 	requests := client.recordedRequests()
-	if len(requests) != 2 || len(requests[1].Messages) != 3 || requests[1].Messages[1].ToolCalls[0].ID != "call-1" || requests[1].Messages[2].ToolCallID != "call-1" {
+	if len(requests) != 2 || len(requests[1].Messages) != 3 ||
+		requests[1].Messages[1].ReasoningContent != "verified the source" ||
+		requests[1].Messages[1].ToolCalls[0].ID != "call-1" ||
+		requests[1].Messages[2].ToolCallID != "call-1" {
 		t.Fatalf("tool result was not fed back to the model: %#v", requests)
 	}
 }
