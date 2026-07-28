@@ -48,6 +48,12 @@ func (fake *fakeDynamoDB) Query(_ context.Context, input *dynamodb.QueryInput, _
 }
 
 func (fake *fakeDynamoDB) UpdateItem(_ context.Context, input *dynamodb.UpdateItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	expressions := awsStringValue(input.UpdateExpression) + " " + awsStringValue(input.ConditionExpression)
+	for placeholder := range input.ExpressionAttributeValues {
+		if !strings.Contains(expressions, placeholder) {
+			return nil, errors.New("DynamoDB ValidationException: unused expression attribute value " + placeholder)
+		}
+	}
 	sk, _ := stringAttribute(input.Key["sk"])
 	current := fake.items[sk]
 	newRevision, _ := strconv.ParseInt(input.ExpressionAttributeValues[":revision"].(*dynamodbtypes.AttributeValueMemberN).Value, 10, 64)
@@ -78,6 +84,13 @@ func (fake *fakeDynamoDB) UpdateItem(_ context.Context, input *dynamodb.UpdateIt
 		return nil, errors.New("simulated response loss")
 	}
 	return &dynamodb.UpdateItemOutput{}, nil
+}
+
+func awsStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func TestDynamoManifestStoreReadBackRecoversLostUpdateResponseByExactKey(t *testing.T) {

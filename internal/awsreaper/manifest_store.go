@@ -148,13 +148,14 @@ func (store *DynamoManifestStore) put(ctx context.Context, manifest resource.Man
 		":managed":   &dynamodbtypes.AttributeValueMemberBOOL{Value: manifest.Managed},
 		":approved":  &dynamodbtypes.AttributeValueMemberBOOL{Value: manifest.AutoDestroyApproved},
 		":claimed":   &dynamodbtypes.AttributeValueMemberBOOL{Value: manifestDestroying(manifest)},
-		":false":     &dynamodbtypes.AttributeValueMemberBOOL{Value: false},
 	}
 	condition := "attribute_not_exists(#revision) OR ((attribute_not_exists(#claimed) OR #claimed = :false) AND #revision < :revision) OR (#revision = :revision AND #digest = :digest)"
 	if expectedRevision != nil {
 		values[":expected"] = &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(*expectedRevision, 10)}
 		values[":expected_digest"] = &dynamodbtypes.AttributeValueMemberS{Value: expectedDigest}
 		condition = "(#revision = :expected AND #digest = :expected_digest) OR (#revision = :revision AND #digest = :digest)"
+	} else {
+		values[":false"] = &dynamodbtypes.AttributeValueMemberBOOL{Value: false}
 	}
 	_, err = store.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &store.table,
