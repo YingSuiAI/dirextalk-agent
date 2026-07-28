@@ -357,7 +357,8 @@ func validateScopeResourceGraph(resources []ResourceScopeV1) error {
 
 func supportedResourceType(value resource.Type) bool {
 	switch value {
-	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeSG,
+	case resource.TypeEC2, resource.TypeEBS, resource.TypeENI, resource.TypeEIP,
+		resource.TypeSG, resource.TypeEndpoint, resource.TypeSnapshot,
 		resource.TypeALB, resource.TypeTargetGroup, resource.TypeListener, resource.TypeSecurityGroupRule:
 		return true
 	default:

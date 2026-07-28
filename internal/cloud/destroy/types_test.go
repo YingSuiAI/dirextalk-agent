@@ -52,7 +52,7 @@ func TestSigningPayloadMatchesDartGolden(t *testing.T) {
 	}
 }
 
-func TestManualDestroyScopeAllowsOnlyClosedEntrypointGraph(t *testing.T) {
+func TestManualDestroyScopeAllowsClosedProviderResourceGraph(t *testing.T) {
 	scope := entryDestroyScope()
 	digest, err := ScopeDigest(scope)
 	if err != nil {
@@ -86,13 +86,6 @@ func TestManualDestroyScopeAllowsOnlyClosedEntrypointGraph(t *testing.T) {
 			want: ErrInvalid,
 		},
 		{
-			name: "known but unsupported resource type",
-			mutate: func(value *ScopeV1) {
-				value.Resources[0].Type = resource.TypeEndpoint
-			},
-			want: ErrInvalid,
-		},
-		{
 			name: "managed entry resource",
 			mutate: func(value *ScopeV1) {
 				value.Resources[0].Retention = task.RetentionManaged
@@ -122,6 +115,29 @@ func TestManualDestroyScopeAllowsOnlyClosedEntrypointGraph(t *testing.T) {
 				t.Fatalf("ScopeDigest() error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestManualDestroySupportsEveryTypedResourceLifecycle(t *testing.T) {
+	for _, kind := range []resource.Type{
+		resource.TypeEC2,
+		resource.TypeEBS,
+		resource.TypeENI,
+		resource.TypeEIP,
+		resource.TypeSG,
+		resource.TypeEndpoint,
+		resource.TypeSnapshot,
+		resource.TypeALB,
+		resource.TypeTargetGroup,
+		resource.TypeListener,
+		resource.TypeSecurityGroupRule,
+	} {
+		if !supportedResourceType(kind) {
+			t.Errorf("supportedResourceType(%q) = false", kind)
+		}
+	}
+	if supportedResourceType(resource.Type("unknown")) {
+		t.Fatal("supportedResourceType(unknown) = true")
 	}
 }
 
