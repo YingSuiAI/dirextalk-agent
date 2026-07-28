@@ -172,7 +172,7 @@ func (manager builderManager) readDockerProxy(ctx context.Context, dockerConfigD
 		parsed, err := url.Parse(raw)
 		port, portErr := strconv.Atoi(parsed.Port())
 		if err != nil || portErr != nil || parsed.Scheme != "http" || parsed.User != nil ||
-			parsed.Hostname() != "http.docker.internal" || port < 1 || port > 65535 ||
+			!dockerInternalProxyHost(parsed.Hostname()) || port < 1 || port > 65535 ||
 			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 			net.ParseIP(parsed.Hostname()) != nil {
 			return "", ErrBuilder
@@ -188,6 +188,10 @@ func (manager builderManager) readDockerProxy(ctx context.Context, dockerConfigD
 		return "", ErrBuilder
 	}
 	return httpProxy, nil
+}
+
+func dockerInternalProxyHost(host string) bool {
+	return host == "http.docker.internal" || host == "host.docker.internal"
 }
 
 func (manager builderManager) preflight(ctx context.Context, session SessionV1) error {

@@ -180,6 +180,19 @@ func TestDirectBuilderRejectsForeignOrCredentialedProxyBeforeOwnership(t *testin
 	}
 }
 
+func TestDirectBuilderAcceptsCredentialFreeDockerInternalProxyAliases(t *testing.T) {
+	for _, host := range []string{"http.docker.internal", "host.docker.internal"} {
+		t.Run(host, func(t *testing.T) {
+			value := "http://" + host + ":3128"
+			runner := &fakeBuilderRunner{httpProxy: value, httpsProxy: value}
+			proxy, err := (builderManager{runner: runner}).readDockerProxy(context.Background(), t.TempDir())
+			if err != nil || proxy != value {
+				t.Fatalf("readDockerProxy() = %q, %v", proxy, err)
+			}
+		})
+	}
+}
+
 func directTestSession(t *testing.T) SessionV1 {
 	t.Helper()
 	session, err := newDockerSession()
