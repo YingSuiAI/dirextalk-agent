@@ -568,6 +568,7 @@ func controlArtifactTagPolicyFailsClosed(value any) bool {
 		sameStrings(templateResourceStrings(statement["Resource"]), []string{
 			"${ArtifactBucket.Arn}/deployments/*/bundles/*",
 			"${ArtifactBucket.Arn}/deployments/*/launch/*",
+			"${ArtifactBucket.Arn}/workers/*/bundles/*",
 		}) && statement["Condition"] == nil
 }
 

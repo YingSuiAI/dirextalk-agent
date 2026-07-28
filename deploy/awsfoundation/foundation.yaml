@@ -1057,6 +1057,7 @@ Resources:
             Resource:
               - Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/bundles/*
               - Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/launch/*
+              - Fn::Sub: ${ArtifactBucket.Arn}/workers/*/bundles/*
 
   # Keep public entry-point authority in a separate managed policy. The
   # existing runtime policy is already close to the IAM inline-policy quota;

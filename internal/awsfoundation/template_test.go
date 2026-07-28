@@ -220,6 +220,7 @@ func TestFoundationTemplateControlArtifactTagPolicyIsMinimumScoped(t *testing.T)
 		!sameStrings(templateResourceStrings(statement["Resource"]), []string{
 			"${ArtifactBucket.Arn}/deployments/*/bundles/*",
 			"${ArtifactBucket.Arn}/deployments/*/launch/*",
+			"${ArtifactBucket.Arn}/workers/*/bundles/*",
 		}) || statement["Condition"] != nil {
 		t.Fatalf("control artifact tag policy is not path-scoped: %#v", statement)
 	}
@@ -229,6 +230,7 @@ func TestFoundationTemplateControlArtifactTagPolicyIsMinimumScoped(t *testing.T)
 		"action changes":       {"TagPublishedControlArtifacts", "- s3:PutObjectTagging", "- s3:PutObject"},
 		"bundle path broadens": {"TagPublishedControlArtifacts", "deployments/*/bundles/*", "deployments/*"},
 		"launch path changes":  {"TagPublishedControlArtifacts", "deployments/*/launch/*", "deployments/*/artifacts/*"},
+		"worker path broadens": {"TagPublishedControlArtifacts", "workers/*/bundles/*", "workers/*"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := ValidateTemplate(mutateFoundationStatement(t, template, mutation[0], mutation[1], mutation[2])); err == nil {
