@@ -39,8 +39,10 @@ var (
 const (
 	maxCommandOutput    = 1 << 20
 	maxMetadataBytes    = 1 << 20
-	maxBuildAttempts    = 3
+	maxBuildAttempts    = 6
 	errorDetectorWindow = 128
+	initialRetryDelay   = time.Second
+	maxRetryDelay       = 8 * time.Second
 )
 
 var (
@@ -703,8 +705,33 @@ func (runner execRunner) Run(ctx context.Context, directory, executable string, 
 		if ctx.Err() != nil || !stderr.Transient() {
 			break
 		}
+		if attempt+1 < attempts && !waitForBuildRetry(ctx, buildRetryDelay(attempt)) {
+			break
+		}
 	}
 	return nil, errors.New("command failed")
+}
+
+func buildRetryDelay(retry int) time.Duration {
+	delay := initialRetryDelay
+	for step := 0; step < retry && delay < maxRetryDelay; step++ {
+		delay *= 2
+		if delay > maxRetryDelay {
+			return maxRetryDelay
+		}
+	}
+	return delay
+}
+
+func waitForBuildRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func releaseExecutable(executable string, arguments []string) (string, []string) {

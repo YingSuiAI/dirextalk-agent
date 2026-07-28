@@ -519,6 +519,29 @@ func TestTransientErrorDetectorMatchesAcrossWritesWithoutRetryingPermanentErrors
 	}
 }
 
+func TestBuildRetryDelayIsBoundedAndContextAware(t *testing.T) {
+	want := []time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		8 * time.Second,
+	}
+	if len(want) != maxBuildAttempts-1 {
+		t.Fatalf("retry schedule does not cover all attempts: %d", maxBuildAttempts)
+	}
+	for retry, expected := range want {
+		if got := buildRetryDelay(retry); got != expected {
+			t.Fatalf("retry %d delay = %s, want %s", retry, got, expected)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitForBuildRetry(ctx, initialRetryDelay) {
+		t.Fatal("canceled retry wait reported success")
+	}
+}
+
 func TestPublishRecoversImmutableTagAfterPartialPublish(t *testing.T) {
 	repositoryRoot := t.TempDir()
 	outputRoot := t.TempDir()
