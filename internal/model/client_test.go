@@ -297,6 +297,57 @@ func TestOpenAICompatibleToolCallAndStream(t *testing.T) {
 	}
 }
 
+func TestDeepSeekToolContinuationPreservesReasoningContent(t *testing.T) {
+	t.Parallel()
+
+	request := CompletionRequest{Messages: []Message{
+		{Role: RoleUser, Content: "inspect"},
+		{
+			Role:             RoleAssistant,
+			ReasoningContent: "verified the source",
+			ToolCalls: []ToolCall{{
+				ID: "call-1", Type: "function",
+				Function: FunctionCall{Name: "lookup", Arguments: `{"q":"x"}`},
+			}},
+		},
+		{Role: RoleTool, Name: "lookup", ToolCallID: "call-1", Content: `{"ok":true}`},
+	}}
+	deepSeek := &client{profile: Profile{Provider: ProviderDeepSeek, Model: "deepseek-v4-pro"}}
+	payload, err := deepSeek.openAIRequestPayload(request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, ok := payload["messages"].([]map[string]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("DeepSeek messages=%#v", payload["messages"])
+	}
+	if got, exists := messages[1]["reasoning_content"]; !exists || got != "verified the source" {
+		t.Fatalf("DeepSeek assistant reasoning_content=%#v exists=%v", got, exists)
+	}
+	if _, exists := messages[2]["reasoning_content"]; exists {
+		t.Fatal("tool result unexpectedly received reasoning_content")
+	}
+	request.Messages[1].ReasoningContent = ""
+	payload, err = deepSeek.openAIRequestPayload(request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages = payload["messages"].([]map[string]any)
+	if got, exists := messages[1]["reasoning_content"]; !exists || got != "" {
+		t.Fatalf("DeepSeek empty reasoning_content=%#v exists=%v", got, exists)
+	}
+
+	deepSeek.profile.Provider = ProviderOpenAICompatible
+	payload, err = deepSeek.openAIRequestPayload(request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages = payload["messages"].([]map[string]any)
+	if _, exists := messages[1]["reasoning_content"]; exists {
+		t.Fatal("generic OpenAI-compatible payload received a DeepSeek-only field")
+	}
+}
+
 func TestAnthropicToolCallAndStream(t *testing.T) {
 	t.Parallel()
 

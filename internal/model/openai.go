@@ -24,6 +24,11 @@ func (c *client) openAIRequestPayload(request CompletionRequest, stream bool) (m
 		}
 		if len(message.ToolCalls) > 0 {
 			encoded["tool_calls"] = openAIToolCalls(message.ToolCalls)
+			if c.profile.Provider == ProviderDeepSeek && message.Role == RoleAssistant {
+				// DeepSeek reasoning models require this field, including when
+				// empty, on the assistant tool-call turn sent back after tools.
+				encoded["reasoning_content"] = message.ReasoningContent
+			}
 		}
 		messages = append(messages, encoded)
 	}
