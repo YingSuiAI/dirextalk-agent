@@ -141,6 +141,167 @@ func TestDynamoManifestStoreBlocksManagedOverwriteOfActiveReaperClaim(t *testing
 	}
 }
 
+func TestDynamoManifestStoreSafelyAdvancesAndReleasesInterruptedDestroyClaim(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, err := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := reaperManifest(agentID, now.Add(-time.Minute), false)
+	manifest.Resources[0].Intent = resource.MutationIntent{
+		Operation: resource.MutationCreate, ClientToken: strings.Repeat("a", 64), RecordedAt: now.Add(-time.Hour),
+	}
+	manifest.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists: true, ProviderID: manifest.Resources[0].ProviderID, ObservedAt: now.Add(-30 * time.Minute), TagDigest: digestFixture(),
+	}
+	second := manifest.Resources[0]
+	second.ResourceID = uuid.NewString()
+	second.Type = resource.TypeENI
+	second.LogicalName = "worker-interface"
+	second.ProviderID = "eni-0123456789abcdef0"
+	second.Intent.ClientToken = strings.Repeat("b", 64)
+	second.Tags = cloneStringMap(manifest.Resources[0].Tags)
+	second.Tags[resource.TagResourceID] = second.ResourceID
+	second.ReadBack.ProviderID = second.ProviderID
+	manifest.Resources = append(manifest.Resources, second)
+	if err := store.Put(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.Revision++
+	claimed.UpdatedAt = now
+	claimed.Resources[0].State = resource.StateDestroying
+	claimed.Resources[0].Intent = resource.MutationIntent{
+		Operation: resource.MutationDestroy, ClientToken: strings.Repeat("c", 64), RecordedAt: now,
+	}
+	claimed.Resources[0].Revision++
+	claimed.Resources[0].UpdatedAt = now
+	if err := store.PutIfRevision(context.Background(), claimed, manifest.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	successor, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor.Revision += 4 // PostgreSQL may have advanced through several durable generations.
+	successor.UpdatedAt = now.Add(time.Second)
+	successor.Resources[0].State = resource.StateVerifiedDestroyed
+	successor.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists: false, ProviderID: successor.Resources[0].ProviderID, ObservedAt: now.Add(time.Second), TagDigest: digestFixture(),
+	}
+	successor.Resources[0].Intent.RecordedAt = successor.Resources[0].Intent.RecordedAt.Add(600 * time.Nanosecond)
+	successor.Resources[0].CreatedAt = successor.Resources[0].CreatedAt.Add(600 * time.Nanosecond)
+	successor.Resources[0].Revision++
+	successor.Resources[0].UpdatedAt = now.Add(time.Second)
+	successor.Resources[1].State = resource.StateDestroying
+	successor.Resources[1].Intent = resource.MutationIntent{
+		Operation: resource.MutationDestroy, ClientToken: strings.Repeat("d", 64), RecordedAt: now.Add(time.Second),
+	}
+	successor.Resources[1].Revision++
+	successor.Resources[1].UpdatedAt = now.Add(time.Second)
+	if err := store.Put(context.Background(), successor); err != nil {
+		t.Fatalf("advance interrupted claim to the next resource: %v", err)
+	}
+	advanced, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil || advanced.Revision != successor.Revision ||
+		advanced.Resources[0].State != resource.StateVerifiedDestroyed ||
+		advanced.Resources[1].State != resource.StateDestroying {
+		t.Fatalf("advanced claim=%+v error=%v", advanced, err)
+	}
+
+	finished := advanced
+	finished.Revision += 2
+	finished.UpdatedAt = now.Add(2 * time.Second)
+	finished.Resources[1].State = resource.StateVerifiedDestroyed
+	finished.Resources[1].ReadBack = resource.ReadBackEvidence{
+		Exists: false, ProviderID: finished.Resources[1].ProviderID, ObservedAt: now.Add(2 * time.Second), TagDigest: digestFixture(),
+	}
+	finished.Resources[1].Revision++
+	finished.Resources[1].UpdatedAt = now.Add(2 * time.Second)
+	if err := store.Put(context.Background(), finished); err != nil {
+		t.Fatalf("release completed destroy claim: %v", err)
+	}
+	observed, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil || observed.Revision != finished.Revision ||
+		observed.Resources[0].State != resource.StateVerifiedDestroyed ||
+		observed.Resources[1].State != resource.StateVerifiedDestroyed {
+		t.Fatalf("released claim=%+v error=%v", observed, err)
+	}
+	item := fake.items[manifestSortKey(manifest.DeploymentID)]
+	if claimed, _ := boolAttribute(item["reaper_claimed"]); claimed {
+		t.Fatal("completed destruction remained claimed")
+	}
+}
+
+func TestDynamoManifestStoreRejectsNonMonotonicClaimRecovery(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	manifest := reaperManifest(agentID, now.Add(-time.Minute), false)
+	manifest.Resources[0].Intent = resource.MutationIntent{
+		Operation: resource.MutationCreate, ClientToken: strings.Repeat("a", 64), RecordedAt: now.Add(-time.Hour),
+	}
+	manifest.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists: true, ProviderID: manifest.Resources[0].ProviderID, ObservedAt: now.Add(-30 * time.Minute), TagDigest: digestFixture(),
+	}
+	if err := store.Put(context.Background(), manifest); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed.Revision++
+	claimed.UpdatedAt = now
+	claimed.Resources[0].State = resource.StateDestroying
+	claimed.Resources[0].Intent = resource.MutationIntent{
+		Operation: resource.MutationDestroy, ClientToken: strings.Repeat("b", 64), RecordedAt: now,
+	}
+	claimed.Resources[0].Revision++
+	claimed.Resources[0].UpdatedAt = now
+	if err := store.PutIfRevision(context.Background(), claimed, manifest.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	resurrected, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resurrected.Revision++
+	resurrected.UpdatedAt = now.Add(time.Second)
+	resurrected.Resources[0].State = resource.StateActive
+	resurrected.Resources[0].Revision++
+	resurrected.Resources[0].UpdatedAt = now.Add(time.Second)
+	if err := store.Put(context.Background(), resurrected); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("claim resurrection error=%v, want revision conflict", err)
+	}
+
+	replaced, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced.Revision++
+	replaced.UpdatedAt = now.Add(2 * time.Second)
+	replaced.Resources[0].State = resource.StateVerifiedDestroyed
+	replaced.Resources[0].ProviderID = "i-replaced-provider"
+	replaced.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists: false, ProviderID: replaced.Resources[0].ProviderID, ObservedAt: now.Add(2 * time.Second), TagDigest: digestFixture(),
+	}
+	replaced.Resources[0].Revision++
+	replaced.Resources[0].UpdatedAt = now.Add(2 * time.Second)
+	if err := store.Put(context.Background(), replaced); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("provider identity replacement error=%v, want revision conflict", err)
+	}
+}
+
 func TestDynamoManifestStoreListsOnlyExpiredEphemeralAndFencesRevision(t *testing.T) {
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	agentID := uuid.NewString()
@@ -333,6 +494,14 @@ func reaperManifest(agentID string, deadline time.Time, managed bool) resource.M
 
 func digestFixture() string {
 	return "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	result := make(map[string]string, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
 }
 
 func cloneItem(input map[string]dynamodbtypes.AttributeValue) map[string]dynamodbtypes.AttributeValue {

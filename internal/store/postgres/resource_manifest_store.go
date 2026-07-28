@@ -77,6 +77,11 @@ func (mirror *TrackedResourceManifestMirror) Put(ctx context.Context, manifest r
 		expected = current.Generation
 		candidate := cloneManifest(manifest)
 		candidate.Revision = current.Manifest.Revision
+		// UpdatedAt is a snapshot timestamp, not a graph identity field. A
+		// lifecycle retry rebuilds the same graph with a fresh snapshot time;
+		// normalize it before comparison so the exact failed generation is
+		// replayed instead of creating an unbounded sequence of no-op writes.
+		candidate.UpdatedAt = current.Manifest.UpdatedAt
 		currentJSON, currentErr := encodeResourceManifest(current.Manifest)
 		candidateJSON, candidateErr := encodeResourceManifest(candidate)
 		if currentErr != nil || candidateErr != nil {

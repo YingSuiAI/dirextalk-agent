@@ -15,13 +15,17 @@ import (
 )
 
 type responseLossManifestMirror struct {
-	manifest       resource.Manifest
-	puts           int
-	failAfterWrite bool
+	manifest        resource.Manifest
+	puts            int
+	failBeforeWrite bool
+	failAfterWrite  bool
 }
 
 func (mirror *responseLossManifestMirror) Put(_ context.Context, manifest resource.Manifest) error {
 	mirror.puts++
+	if mirror.failBeforeWrite {
+		return errors.New("simulated DynamoDB write failure")
+	}
 	encoded, _ := json.Marshal(manifest)
 	_ = json.Unmarshal(encoded, &mirror.manifest)
 	if mirror.failAfterWrite {
@@ -106,6 +110,48 @@ func TestTrackedManifestReplayPersistsReadBackAndFencesOldGeneration(t *testing.
 	}
 	if remote.puts != putsBefore {
 		t.Fatal("stale PostgreSQL generation reached the remote mirror")
+	}
+}
+
+func TestTrackedManifestRetryIgnoresSnapshotTimestampDrift(t *testing.T) {
+	_, baseStore, instanceID := newPlanningTestStore(t)
+	ctx := context.Background()
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := recoveryManifestFixture(instanceID)
+	remote := &responseLossManifestMirror{failBeforeWrite: true}
+	tracked, err := postgres.NewTrackedResourceManifestMirror(store, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracked.Put(ctx, manifest); err == nil {
+		t.Fatal("initial remote failure was not returned")
+	}
+	failed, err := store.GetResourceManifestRecord(ctx, manifest.DeploymentID)
+	if err != nil || failed.Status != postgres.ResourceManifestFailedRetriable {
+		t.Fatalf("failed manifest record=%+v err=%v", failed, err)
+	}
+
+	remote.failBeforeWrite = false
+	retry := manifest
+	retry.UpdatedAt = retry.UpdatedAt.Add(30 * time.Second)
+	if err := tracked.Put(ctx, retry); err != nil {
+		t.Fatalf("retry exact graph with timestamp drift: %v", err)
+	}
+	recovered, err := store.GetResourceManifestRecord(ctx, manifest.DeploymentID)
+	if err != nil || recovered.Status != postgres.ResourceManifestMirrored {
+		t.Fatalf("recovered manifest record=%+v err=%v", recovered, err)
+	}
+	if recovered.Generation != failed.Generation || recovered.Manifest.Revision != failed.Manifest.Revision {
+		t.Fatalf(
+			"timestamp-only retry advanced generation/revision: failed=(%d,%d) recovered=(%d,%d)",
+			failed.Generation, failed.Manifest.Revision, recovered.Generation, recovered.Manifest.Revision,
+		)
+	}
+	if !recovered.Manifest.UpdatedAt.Equal(manifest.UpdatedAt) {
+		t.Fatalf("timestamp-only retry replaced the persisted generation: %s", recovered.Manifest.UpdatedAt)
 	}
 }
 

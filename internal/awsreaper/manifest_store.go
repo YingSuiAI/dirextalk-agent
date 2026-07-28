@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,7 +61,28 @@ func NewDynamoManifestStore(client DynamoDBAPI, table, agentInstanceID string) (
 }
 
 func (store *DynamoManifestStore) Put(ctx context.Context, manifest resource.Manifest) error {
-	return store.put(ctx, manifest, nil, "")
+	err := store.put(ctx, manifest, nil, "")
+	if !errors.Is(err, resource.ErrRevisionConflict) {
+		return err
+	}
+
+	// A Reaper or Agent deletion claim deliberately blocks ordinary writes.
+	// Recover only by strongly reading that exact claim, proving the desired
+	// graph is a monotonic destruction successor, and fencing the replacement
+	// with both the observed revision and payload digest. This releases an
+	// interrupted claim without allowing a stale Agent to resurrect or retag
+	// resources owned by an independently running Reaper.
+	observed, readErr := store.Get(ctx, manifest.DeploymentID)
+	if readErr != nil || !safeClaimedManifestSuccessor(observed, manifest) {
+		return resource.ErrRevisionConflict
+	}
+	store.mu.Lock()
+	snapshot, ok := store.observed[manifest.DeploymentID]
+	store.mu.Unlock()
+	if !ok || snapshot.revision != observed.Revision || snapshot.digest == "" {
+		return resource.ErrRevisionConflict
+	}
+	return store.put(ctx, manifest, &snapshot.revision, snapshot.digest)
 }
 
 func (store *DynamoManifestStore) PutIfRevision(ctx context.Context, manifest resource.Manifest, expectedRevision int64) error {
@@ -286,6 +309,181 @@ func manifestDestroying(manifest resource.Manifest) bool {
 		}
 	}
 	return false
+}
+
+func safeClaimedManifestSuccessor(observed, desired resource.Manifest) bool {
+	if !manifestDestroying(observed) || desired.Revision <= observed.Revision ||
+		persistedTimeBefore(desired.UpdatedAt, observed.UpdatedAt) ||
+		observed.ManifestID != desired.ManifestID ||
+		observed.AgentInstanceID != desired.AgentInstanceID ||
+		observed.OwnerID != desired.OwnerID ||
+		observed.TaskID != desired.TaskID ||
+		observed.DeploymentID != desired.DeploymentID ||
+		observed.Retention != desired.Retention ||
+		!observed.DestroyDeadline.Equal(desired.DestroyDeadline) ||
+		observed.AutoDestroyApproved != desired.AutoDestroyApproved ||
+		observed.AutoDestroyApprovalID != desired.AutoDestroyApprovalID ||
+		observed.ApprovedPlanHash != desired.ApprovedPlanHash ||
+		observed.Managed != desired.Managed ||
+		!reflect.DeepEqual(observed.ApprovalBindings, desired.ApprovalBindings) ||
+		len(observed.Resources) != len(desired.Resources) {
+		return false
+	}
+
+	desiredByID := make(map[string]resource.ResourceV1, len(desired.Resources))
+	for _, item := range desired.Resources {
+		if _, duplicate := desiredByID[item.ResourceID]; duplicate {
+			return false
+		}
+		desiredByID[item.ResourceID] = item
+	}
+	for _, current := range observed.Resources {
+		next, ok := desiredByID[current.ResourceID]
+		if !ok || !safeDestroyResourceSuccessor(current, next) {
+			return false
+		}
+		delete(desiredByID, current.ResourceID)
+	}
+	return len(desiredByID) == 0
+}
+
+func safeDestroyResourceSuccessor(current, next resource.ResourceV1) bool {
+	if current.ResourceID != next.ResourceID ||
+		current.AgentInstanceID != next.AgentInstanceID ||
+		current.OwnerID != next.OwnerID ||
+		current.TaskID != next.TaskID ||
+		current.DeploymentID != next.DeploymentID ||
+		current.Type != next.Type ||
+		current.LogicalName != next.LogicalName ||
+		current.Region != next.Region ||
+		current.SpecDigest != next.SpecDigest ||
+		current.ApprovedPlanHash != next.ApprovedPlanHash ||
+		current.ApprovalID != next.ApprovalID ||
+		current.IntentOrigin != next.IntentOrigin ||
+		current.OriginScopeDigest != next.OriginScopeDigest ||
+		current.ProviderID != next.ProviderID ||
+		current.Retention != next.Retention ||
+		!current.DestroyDeadline.Equal(next.DestroyDeadline) ||
+		current.AutoDestroyApproved != next.AutoDestroyApproved ||
+		!slices.Equal(current.DependsOn, next.DependsOn) ||
+		!reflect.DeepEqual(current.Tags, next.Tags) ||
+		!providerCandidatesContain(next.ProviderCandidateIDs, current.ProviderCandidateIDs) ||
+		!safeDestroyStateSuccessor(current.State, next.State) ||
+		!safeDestroyIntentSuccessor(current.Intent, next.Intent) ||
+		!safeReadBackSuccessor(current.ReadBack, next.ReadBack) ||
+		next.Revision < current.Revision ||
+		!samePersistedTime(next.CreatedAt, current.CreatedAt) ||
+		persistedTimeBefore(next.UpdatedAt, current.UpdatedAt) {
+		return false
+	}
+	return true
+}
+
+func providerCandidatesContain(values, required []string) bool {
+	present := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		present[value] = struct{}{}
+	}
+	for _, value := range required {
+		if _, ok := present[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func safeDestroyStateSuccessor(current, next resource.State) bool {
+	switch current {
+	case resource.StateProvisioning:
+		switch next {
+		case resource.StateProvisioning, resource.StateDestroyScheduled, resource.StateDestroying,
+			resource.StateDestroyBlocked, resource.StateVerifiedDestroyed:
+			return true
+		}
+	case resource.StateActive:
+		switch next {
+		case resource.StateActive, resource.StateDestroyScheduled, resource.StateDestroying,
+			resource.StateDestroyBlocked, resource.StateVerifiedDestroyed:
+			return true
+		}
+	case resource.StateDestroyScheduled:
+		switch next {
+		case resource.StateDestroyScheduled, resource.StateDestroying, resource.StateDestroyBlocked, resource.StateVerifiedDestroyed:
+			return true
+		}
+	case resource.StateDestroying:
+		switch next {
+		case resource.StateDestroying, resource.StateDestroyBlocked, resource.StateVerifiedDestroyed:
+			return true
+		}
+	case resource.StateDestroyBlocked:
+		switch next {
+		case resource.StateDestroyScheduled, resource.StateDestroying, resource.StateDestroyBlocked, resource.StateVerifiedDestroyed:
+			return true
+		}
+	case resource.StateVerifiedDestroyed:
+		return next == resource.StateVerifiedDestroyed
+	case resource.StateRetainedManaged, resource.StateOrphaned:
+		return next == current
+	}
+	return false
+}
+
+func safeDestroyIntentSuccessor(current, next resource.MutationIntent) bool {
+	if current.Operation == resource.MutationDestroy {
+		return next.Operation == resource.MutationDestroy &&
+			next.ClientToken == current.ClientToken &&
+			samePersistedTime(next.RecordedAt, current.RecordedAt) &&
+			next.ProviderCreateStartedAt.IsZero()
+	}
+	if current.Operation != resource.MutationCreate {
+		return reflect.DeepEqual(current, next)
+	}
+	if next.Operation == resource.MutationCreate {
+		return next.ClientToken == current.ClientToken &&
+			samePersistedTime(next.RecordedAt, current.RecordedAt) &&
+			samePersistedTime(next.ProviderCreateStartedAt, current.ProviderCreateStartedAt)
+	}
+	return next.Operation == resource.MutationDestroy &&
+		next.ClientToken != "" &&
+		!persistedTimeBefore(next.RecordedAt, current.RecordedAt) &&
+		next.ProviderCreateStartedAt.IsZero()
+}
+
+func safeReadBackSuccessor(current, next resource.ReadBackEvidence) bool {
+	if persistedTimeBefore(next.ObservedAt, current.ObservedAt) {
+		return false
+	}
+	if !current.Exists {
+		return !next.Exists &&
+			next.ProviderID == current.ProviderID &&
+			(current.TagDigest == "" || next.TagDigest == current.TagDigest)
+	}
+	if next.Exists {
+		return next.ProviderID == current.ProviderID && next.TagDigest == current.TagDigest
+	}
+	return !next.ObservedAt.IsZero() && next.ProviderID == current.ProviderID
+}
+
+func samePersistedTime(left, right time.Time) bool {
+	if left.IsZero() || right.IsZero() {
+		return left.IsZero() && right.IsZero()
+	}
+	delta := left.Sub(right)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= time.Microsecond
+}
+
+func persistedTimeBefore(left, right time.Time) bool {
+	if right.IsZero() {
+		return false
+	}
+	if left.IsZero() {
+		return true
+	}
+	return left.Before(right.Add(-time.Microsecond))
 }
 
 type manifestEnvelope struct {
