@@ -21,6 +21,17 @@ type fakeBuilderRunner struct {
 	httpsProxy string
 }
 
+func TestBuilderExecutableDoesNotDependOnUserDockerPluginConfig(t *testing.T) {
+	executable, arguments := builderExecutable([]string{"buildx", "create", "--name", "release-builder"})
+	if executable != "docker-buildx" || !slices.Equal(arguments, []string{"create", "--name", "release-builder"}) {
+		t.Fatalf("buildx command = %q %#v", executable, arguments)
+	}
+	executable, arguments = builderExecutable([]string{"container", "ls"})
+	if executable != "docker" || !slices.Equal(arguments, []string{"container", "ls"}) {
+		t.Fatalf("Docker command = %q %#v", executable, arguments)
+	}
+}
+
 func (runner *fakeBuilderRunner) Run(_ context.Context, config string, stdin []byte, arguments ...string) ([]byte, error) {
 	runner.configs = append(runner.configs, config)
 	runner.commands = append(runner.commands, append([]string(nil), arguments...))

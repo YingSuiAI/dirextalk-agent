@@ -35,7 +35,8 @@ type builderCommandRunner interface {
 type execBuilderRunner struct{}
 
 func (execBuilderRunner) Run(ctx context.Context, dockerConfigDir string, stdin []byte, arguments ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "docker", arguments...)
+	executable, commandArguments := builderExecutable(arguments)
+	command := exec.CommandContext(ctx, executable, commandArguments...)
 	command.Env = safeDockerEnvironment(dockerConfigDir)
 	if len(stdin) != 0 {
 		command.Stdin = bytes.NewReader(stdin)
@@ -47,6 +48,13 @@ func (execBuilderRunner) Run(ctx context.Context, dockerConfigDir string, stdin 
 		return nil, ErrBuilder
 	}
 	return output.Bytes(), nil
+}
+
+func builderExecutable(arguments []string) (string, []string) {
+	if len(arguments) > 0 && arguments[0] == "buildx" {
+		return "docker-buildx", arguments[1:]
+	}
+	return "docker", arguments
 }
 
 type limitedBuilderOutput struct {
