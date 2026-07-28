@@ -693,24 +693,30 @@ func (capture *planningCapture) submit(
 	fetched map[string]publicweb.Evidence,
 	validate captureValidator,
 ) (bool, string, error) {
-	if capture == nil || len(raw) == 0 || len(raw) > cloudGoalModelMaxCapture || !json.Valid([]byte(raw)) || security.ContainsLikelySecret(raw) {
+	if capture == nil || validate == nil {
 		return false, "", ErrCloudGoalModelUnavailable
 	}
-	compact := &bytes.Buffer{}
-	if err := json.Compact(compact, []byte(raw)); err != nil {
-		return false, "", ErrCloudGoalModelUnavailable
+	var canonical json.RawMessage
+	rejection := "capture_contract_invalid"
+	if len(raw) > 0 && len(raw) <= cloudGoalModelMaxCapture &&
+		json.Valid([]byte(raw)) && !security.ContainsLikelySecret(raw) {
+		compact := &bytes.Buffer{}
+		if err := json.Compact(compact, []byte(raw)); err == nil {
+			canonical = append(json.RawMessage(nil), compact.Bytes()...)
+			rejection = captureValidationFailureCode(validate(canonical, fetched, false))
+		}
 	}
-	canonical := append(json.RawMessage(nil), compact.Bytes()...)
-	validationErr := validate(canonical, fetched, false)
-	rejection := captureValidationFailureCode(validationErr)
 
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	if len(capture.raw) != 0 || capture.submissions >= cloudGoalModelMaxSubmissions {
-		return false, "", ErrCloudGoalModelUnavailable
+	if len(capture.raw) != 0 {
+		return true, "", nil
+	}
+	if capture.submissions >= cloudGoalModelMaxSubmissions {
+		return false, "capture_submission_limit_reached", nil
 	}
 	capture.submissions++
-	if validationErr != nil {
+	if rejection != "" {
 		capture.lastRejection = rejection
 		return false, rejection, nil
 	}
@@ -777,7 +783,8 @@ func invokeCloudGoalModelTool(
 	validate captureValidator,
 ) (runtimeapi.ToolExecution, error) {
 	name := strings.TrimSpace(call.Function.Name)
-	if strings.TrimSpace(call.ID) == "" || len(call.ID) > 255 || security.ContainsLikelySecret(call.ID) || name == "" || !json.Valid([]byte(call.Function.Arguments)) {
+	if strings.TrimSpace(call.ID) == "" || len(call.ID) > 255 || security.ContainsLikelySecret(call.ID) ||
+		name == "" || len(name) > 255 || security.ContainsLikelySecret(name) {
 		return runtimeapi.ToolExecution{}, ErrCloudGoalModelUnavailable
 	}
 	if name == captureName {
@@ -805,7 +812,20 @@ func invokeCloudGoalModelTool(
 	}
 	tool, ok := available[name]
 	if !ok || tool.Run == nil {
-		return runtimeapi.ToolExecution{}, ErrCloudGoalModelUnavailable
+		return runtimeapi.ToolExecution{
+			ToolCallID: call.ID,
+			Name:       name,
+			Content:    `{"error":"unsupported_planning_tool","instruction":"Use only the tools provided in the current request."}`,
+			IsError:    true,
+		}, nil
+	}
+	if !json.Valid([]byte(call.Function.Arguments)) {
+		return runtimeapi.ToolExecution{
+			ToolCallID: call.ID,
+			Name:       name,
+			Content:    `{"error":"tool_arguments_invalid","instruction":"Retry this tool with one valid JSON object matching its schema."}`,
+			IsError:    true,
+		}, nil
 	}
 	if name == publicweb.ToolName && !fetchBudget.take() {
 		return runtimeapi.ToolExecution{

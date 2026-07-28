@@ -214,6 +214,70 @@ func TestCloudGoalOfficialFetchFailureIsModelVisibleAndDeSecreted(t *testing.T) 
 	}
 }
 
+func TestCloudGoalMalformedCaptureAndUnknownToolStayBoundedAndModelVisible(t *testing.T) {
+	capture := &planningCapture{}
+	request := runtimeapi.ToolRequest{RequestID: "request-1", OwnerID: "owner-1", ConversationID: "conversation-1"}
+	var last runtimeapi.ToolExecution
+	for index := 0; index < cloudGoalModelMaxSubmissions+1; index++ {
+		result, err := invokeCloudGoalModelTool(
+			t.Context(),
+			request,
+			modelapi.ToolCall{
+				ID: "capture-" + strconv.Itoa(index), Type: "function",
+				Function: modelapi.FunctionCall{Name: captureOfficialSourcesTool, Arguments: "not-json"},
+			},
+			captureOfficialSourcesTool,
+			capture,
+			&planningFetchBudget{remaining: cloudGoalMaxOfficialFetches},
+			map[string]runtimeapi.Tool{},
+			map[string]publicweb.Evidence{},
+			func(json.RawMessage, map[string]publicweb.Evidence, bool) error { return nil },
+		)
+		if err != nil || !result.IsError {
+			t.Fatalf("capture attempt=%d result=%#v err=%v", index, result, err)
+		}
+		last = result
+	}
+	if !strings.Contains(last.Content, "capture_submission_limit_reached") ||
+		capture.submissions != cloudGoalModelMaxSubmissions ||
+		capture.lastRejection != "capture_contract_invalid" {
+		t.Fatalf("last=%#v capture=%#v", last, capture)
+	}
+
+	unknown, err := invokeCloudGoalModelTool(
+		t.Context(),
+		request,
+		modelapi.ToolCall{
+			ID: "unknown-1", Type: "function",
+			Function: modelapi.FunctionCall{Name: "invented_tool", Arguments: `{}`},
+		},
+		captureOfficialSourcesTool,
+		&planningCapture{},
+		&planningFetchBudget{remaining: cloudGoalMaxOfficialFetches},
+		map[string]runtimeapi.Tool{},
+		map[string]publicweb.Evidence{},
+		func(json.RawMessage, map[string]publicweb.Evidence, bool) error { return nil },
+	)
+	if err != nil || !unknown.IsError || !strings.Contains(unknown.Content, "unsupported_planning_tool") {
+		t.Fatalf("unknown result=%#v err=%v", unknown, err)
+	}
+}
+
+func TestPlanningCaptureKeepsFirstAcceptedValueImmutable(t *testing.T) {
+	capture := &planningCapture{}
+	validate := func(json.RawMessage, map[string]publicweb.Evidence, bool) error { return nil }
+	accepted, rejection, err := capture.submit(`{"value":"first"}`, nil, validate)
+	if err != nil || !accepted || rejection != "" {
+		t.Fatalf("first accepted=%v rejection=%q err=%v", accepted, rejection, err)
+	}
+	accepted, rejection, err = capture.submit(`{"value":"different"}`, nil, validate)
+	raw, ok := capture.value()
+	if err != nil || !accepted || rejection != "" || !ok || string(raw) != `{"value":"first"}` ||
+		capture.submissions != 1 {
+		t.Fatalf("duplicate accepted=%v rejection=%q raw=%s submissions=%d err=%v", accepted, rejection, raw, capture.submissions, err)
+	}
+}
+
 func TestCloudGoalOfficialFetchBudgetPreventsUnboundedModelFanout(t *testing.T) {
 	source := validRecipe().Sources[0]
 	encoded, err := json.Marshal(map[string]string{
