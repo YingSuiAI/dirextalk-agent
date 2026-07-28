@@ -61,7 +61,7 @@ func (runner *fakeBuilderRunner) Run(_ context.Context, config string, stdin []b
 			return []byte(directBuilderName(strings.Repeat("a", 32)) + "*\n"), nil
 		}
 		return []byte("default*\n"), nil
-	case len(arguments) == 17 && slices.Equal(arguments[:2], []string{"buildx", "create"}):
+	case len(arguments) == 19 && slices.Equal(arguments[:2], []string{"buildx", "create"}):
 		runner.builder, runner.container, runner.volume = true, true, true
 		return nil, nil
 	case len(arguments) == 3 && slices.Equal(arguments[:2], []string{"buildx", "rm"}):
@@ -115,6 +115,9 @@ func TestDirectBuilderUsesPinnedPrivateSessionAndCleansWithReadBack(t *testing.T
 	}
 	if !commandWithRequiredArguments(runner.commands, wantCreate[:8], "--bootstrap") {
 		t.Fatalf("pinned create command missing: %#v", runner.commands)
+	}
+	if !commandWithRequiredArguments(runner.commands, wantCreate[:8], "env.GODEBUG="+buildKitGODEBUG) {
+		t.Fatalf("portable BuildKit crypto setting missing: %#v", runner.commands)
 	}
 	for _, config := range runner.configs {
 		if config != session.DockerConfigDir {

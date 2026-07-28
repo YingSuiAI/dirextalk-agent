@@ -21,6 +21,8 @@ const (
 	builderNamePrefix     = "dirextalk-release-"
 	builderCleanupTimeout = 2 * time.Minute
 	maxBuilderOutput      = 64 << 10
+	// BuildKit may run under approved amd64 emulation; keep publisher TLS on portable Go AES.
+	buildKitGODEBUG = "cpu.aes=off"
 )
 
 type builderMarker struct {
@@ -129,6 +131,7 @@ func (manager builderManager) activate(ctx context.Context, session SessionV1) e
 		"--driver-opt", "env.HTTPS_PROXY="+proxy,
 		"--driver-opt", "env.http_proxy="+proxy,
 		"--driver-opt", "env.https_proxy="+proxy,
+		"--driver-opt", "env.GODEBUG="+buildKitGODEBUG,
 		"--bootstrap",
 	)
 	if createErr != nil {
