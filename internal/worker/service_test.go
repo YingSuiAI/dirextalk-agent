@@ -234,10 +234,45 @@ func (repository *memoryRepository) CreateIdentityChallengeIdempotent(_ context.
 		if !bytes.Equal(replay.hash[:], intent.RequestHash[:]) {
 			return IdentityChallenge{}, ErrIdempotencyConflict
 		}
-		if replay.challenge.ConsumedAt.IsZero() && !intent.CreatedAt.Before(replay.challenge.ExpiresAt) {
-			return IdentityChallenge{}, ErrIdentityChallengeExpired
+		challenge := replay.challenge
+		if stored, storedExists := repository.identityChallenges[challenge.ChallengeID]; storedExists {
+			challenge = stored
 		}
-		return replay.challenge, nil
+		if !challenge.ConsumedAt.IsZero() || intent.CreatedAt.Before(challenge.ExpiresAt) {
+			return challenge, nil
+		}
+		deployment, deploymentExists := repository.deployments[intent.DeploymentID]
+		if !deploymentExists {
+			return IdentityChallenge{}, ErrNotFound
+		}
+		if deployment.Revision != intent.ExpectedRevision || challenge.ExpectedRevision != intent.ExpectedRevision {
+			return IdentityChallenge{}, ErrRevisionConflict
+		}
+		if deployment.State != StatePendingEnrollment || deployment.WorkerID != "" || !deployment.Enrollment.ConsumedAt.IsZero() {
+			return IdentityChallenge{}, ErrEnrollmentConsumed
+		}
+		if !intent.CreatedAt.Before(deployment.Enrollment.ExpiresAt) {
+			return IdentityChallenge{}, ErrEnrollmentExpired
+		}
+		binding, bindingExists := repository.identityBindings[intent.DeploymentID]
+		if !bindingExists || binding.ownerID != challenge.OwnerID || binding.accountID != challenge.AccountID ||
+			binding.region != challenge.Region || binding.providerInstanceID != challenge.ExpectedProviderInstanceID {
+			return IdentityChallenge{}, ErrIdentityUnavailable
+		}
+		if intent.ChallengeID == challenge.ChallengeID {
+			return IdentityChallenge{}, ErrInvalid
+		}
+		challenge.ExpiresAt = intent.ExpiresAt
+		if deployment.Enrollment.ExpiresAt.Before(challenge.ExpiresAt) {
+			challenge.ExpiresAt = deployment.Enrollment.ExpiresAt
+		}
+		delete(repository.identityChallenges, challenge.ChallengeID)
+		challenge.ChallengeID = intent.ChallengeID
+		challenge.CreatedAt = intent.CreatedAt
+		challenge.Revision++
+		repository.identityChallenges[challenge.ChallengeID] = challenge
+		repository.challengeMutations[key] = memoryChallengeMutation{hash: replay.hash, challenge: challenge}
+		return challenge, nil
 	}
 	deployment, exists := repository.deployments[intent.DeploymentID]
 	if !exists {
@@ -246,8 +281,11 @@ func (repository *memoryRepository) CreateIdentityChallengeIdempotent(_ context.
 	if deployment.Revision != intent.ExpectedRevision {
 		return IdentityChallenge{}, ErrRevisionConflict
 	}
-	if deployment.State != StatePendingEnrollment || deployment.WorkerID != "" {
+	if deployment.State != StatePendingEnrollment || deployment.WorkerID != "" || !deployment.Enrollment.ConsumedAt.IsZero() {
 		return IdentityChallenge{}, ErrEnrollmentConsumed
+	}
+	if !intent.CreatedAt.Before(deployment.Enrollment.ExpiresAt) {
+		return IdentityChallenge{}, ErrEnrollmentExpired
 	}
 	binding, exists := repository.identityBindings[intent.DeploymentID]
 	if !exists || binding.providerInstanceID == "" {
@@ -258,6 +296,9 @@ func (repository *memoryRepository) CreateIdentityChallengeIdempotent(_ context.
 		OwnerID: binding.ownerID, AccountID: binding.accountID, Region: binding.region,
 		ExpectedProviderInstanceID: binding.providerInstanceID, ExpectedRevision: intent.ExpectedRevision,
 		ExpiresAt: intent.ExpiresAt, Revision: 1, CreatedAt: intent.CreatedAt,
+	}
+	if deployment.Enrollment.ExpiresAt.Before(challenge.ExpiresAt) {
+		challenge.ExpiresAt = deployment.Enrollment.ExpiresAt
 	}
 	repository.identityChallenges[challenge.ChallengeID] = challenge
 	repository.challengeMutations[key] = memoryChallengeMutation{hash: intent.RequestHash, challenge: challenge}
@@ -297,6 +338,9 @@ func (repository *memoryRepository) EnrollVerifiedIdentityIdempotent(_ context.C
 	deployment, exists := repository.deployments[record.DeploymentID]
 	if !exists {
 		return Deployment{}, nil, ErrNotFound
+	}
+	if !record.CompletedAt.Before(deployment.Enrollment.ExpiresAt) {
+		return Deployment{}, nil, ErrEnrollmentExpired
 	}
 	if deployment.Revision != record.ExpectedRevision || challenge.ExpectedRevision != record.ExpectedRevision {
 		return Deployment{}, nil, ErrRevisionConflict
@@ -659,6 +703,63 @@ func TestIdentityChallengeExpiryRejectsEnrollment(t *testing.T) {
 	}); !errors.Is(err, ErrIdentityChallengeExpired) {
 		credential.Destroy()
 		t.Fatalf("expired identity challenge error=%v", err)
+	}
+}
+
+func TestIdentityChallengeRenewalStopsAtEnrollmentDeadline(t *testing.T) {
+	repository := newMemoryRepository()
+	service, _ := NewService(repository, []byte("0123456789abcdef0123456789abcdef"))
+	now := time.Date(2026, 7, 16, 11, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	deploymentID := uuid.NewString()
+	created, enrollment, err := service.CreateDeployment(context.Background(), newControlMutation(), CreateDeploymentRequest{
+		DeploymentID: deploymentID, OwnerID: "owner-renewal", TaskID: uuid.NewString(), StepID: uuid.NewString(), EnrollmentTTL: 5 * time.Minute,
+		ControlPlaneEndpoint: "grpcs://agent.internal.example:9443", RecipeBundle: BundleRef{S3Ref: "s3://renewal/d/r", SHA256: [32]byte{1}},
+		ExecutionBundle: BundleRef{S3Ref: "s3://renewal/d/e", SHA256: [32]byte{2}}, ExecutionTimeout: time.Minute,
+		Access: AccessScope{ArtifactPrefix: "s3://renewal/d/a/", CheckpointPrefix: "s3://renewal/d/c/", EvidencePrefix: "s3://renewal/d/v/", LogPrefix: "cloudwatch://renewal/d"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment.Destroy()
+	repository.identityBindings[deploymentID] = memoryIdentityBinding{
+		ownerID: "owner-renewal", accountID: "123456789012", region: "us-east-1", providerInstanceID: "i-0123456789abcdef0",
+	}
+	request := CreateIdentityChallengeRequest{
+		DeploymentID: deploymentID, WorkerID: uuid.NewString(), IdempotencyKey: uuid.NewString(), ExpectedRevision: created.Revision,
+	}
+	challenge, err := service.CreateIdentityChallenge(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now = challenge.ExpiresAt
+	renewed, err := service.CreateIdentityChallenge(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.ChallengeID == challenge.ChallengeID || renewed.Revision != challenge.Revision+1 ||
+		!renewed.CreatedAt.Equal(now) || !renewed.ExpiresAt.Equal(now.Add(identityChallengeTTL)) {
+		t.Fatalf("first renewed challenge=%+v original=%+v", renewed, challenge)
+	}
+	if _, err := service.GetIdentityChallenge(context.Background(), challenge.ChallengeID, deploymentID, request.WorkerID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("retired challenge lookup error=%v", err)
+	}
+
+	now = renewed.ExpiresAt
+	bounded, err := service.CreateIdentityChallenge(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollmentDeadline := created.CreatedAt.Add(5 * time.Minute)
+	if bounded.ChallengeID == renewed.ChallengeID || bounded.Revision != renewed.Revision+1 ||
+		!bounded.ExpiresAt.Equal(enrollmentDeadline) {
+		t.Fatalf("bounded renewed challenge=%+v deadline=%s", bounded, enrollmentDeadline)
+	}
+
+	now = enrollmentDeadline
+	if _, err := service.CreateIdentityChallenge(context.Background(), request); !errors.Is(err, ErrEnrollmentExpired) {
+		t.Fatalf("renewal at enrollment deadline error=%v", err)
 	}
 }
 

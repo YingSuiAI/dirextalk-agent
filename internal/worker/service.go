@@ -85,7 +85,9 @@ type IdentityEnrollmentRecord struct {
 // persist both the new Deployment and its scoped idempotency response.
 // CreateIdempotent and EnrollIdempotent must encrypt replayCredential before
 // persistence and return the original decrypted credential for an exact replay
-// after response loss.
+// after response loss. An expired, unconsumed identity challenge is a renewable
+// lease: the same idempotency key rotates its challenge ID without extending
+// the enclosing deployment enrollment deadline.
 type Repository interface {
 	CreateIdempotent(context.Context, Deployment, ControlMutationRecord, []byte) (Deployment, []byte, error)
 	CreateIdentityChallengeIdempotent(context.Context, IdentityChallengeIntent) (IdentityChallenge, error)

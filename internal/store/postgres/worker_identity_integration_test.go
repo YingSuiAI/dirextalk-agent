@@ -82,6 +82,37 @@ func TestWorkerIdentityPostgresChallengeAtomicEnrollmentAndEncryptedReplay(t *te
 	if err != nil || replayedChallenge.ChallengeID != challenge.ChallengeID {
 		t.Fatalf("challenge replay=%+v err=%v", replayedChallenge, err)
 	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE worker_identity_challenges
+		SET created_at=clock_timestamp()-interval '2 minutes', expires_at=clock_timestamp()-interval '1 minute'
+		WHERE challenge_id=$1`, challenge.ChallengeID); err != nil {
+		t.Fatal(err)
+	}
+	type challengeResult struct {
+		challenge worker.IdentityChallenge
+		err       error
+	}
+	challengeResults := make(chan challengeResult, 2)
+	for range 2 {
+		go func() {
+			value, createErr := service.CreateIdentityChallenge(ctx, challengeRequest)
+			challengeResults <- challengeResult{challenge: value, err: createErr}
+		}()
+	}
+	leftChallenge, rightChallenge := <-challengeResults, <-challengeResults
+	if leftChallenge.err != nil || rightChallenge.err != nil ||
+		leftChallenge.challenge.ChallengeID != rightChallenge.challenge.ChallengeID {
+		t.Fatalf("concurrent challenge renewal left=%+v right=%+v", leftChallenge, rightChallenge)
+	}
+	renewedChallenge := leftChallenge.challenge
+	if renewedChallenge.ChallengeID == challenge.ChallengeID || renewedChallenge.Revision != challenge.Revision+1 ||
+		renewedChallenge.CreatedAt.IsZero() || !renewedChallenge.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("renewed challenge=%+v original=%+v", renewedChallenge, challenge)
+	}
+	if _, err := service.GetIdentityChallenge(ctx, challenge.ChallengeID, deploymentID, workerID); !errors.Is(err, worker.ErrNotFound) {
+		t.Fatalf("retired identity challenge lookup error=%v", err)
+	}
+	challenge = renewedChallenge
 	identity, materialization := testVerifiedWorkerIdentity(challenge, providerInstanceID)
 	wrongIdentity := identity
 	wrongIdentity.InstanceID = "i-0abcdef0123456789"

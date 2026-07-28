@@ -30,11 +30,33 @@ func (store *WorkerStore) CreateIdentityChallengeIdempotent(ctx context.Context,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	challenge, err := scanWorkerIdentityChallenge(tx.QueryRow(ctx, workerIdentityChallengeSelect+`
+		WHERE deployment_id=$1 AND worker_id=$2 AND idempotency_key=$3 AND agent_instance_id=$4`,
+		deploymentID, workerID, key, store.instanceID))
+	if err == nil {
+		if subtle.ConstantTimeCompare(challenge.RequestHash[:], intent.RequestHash[:]) != 1 {
+			return worker.IdentityChallenge{}, worker.ErrIdempotencyConflict
+		}
+		if challenge.ConsumedAt.IsZero() && !intent.CreatedAt.Before(challenge.ExpiresAt) {
+			challenge, err = store.renewIdentityChallenge(ctx, tx, intent, challenge, deploymentID, workerID, key)
+			if err != nil {
+				return worker.IdentityChallenge{}, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return worker.IdentityChallenge{}, fmt.Errorf("commit Worker identity challenge replay: %w", err)
+		}
+		return challenge, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return worker.IdentityChallenge{}, fmt.Errorf("load Worker identity challenge replay: %w", err)
+	}
+
 	current, err := loadWorkerForUpdate(ctx, tx, deploymentID, store.instanceID)
 	if err != nil {
 		return worker.IdentityChallenge{}, err
 	}
-	challenge, err := scanWorkerIdentityChallenge(tx.QueryRow(ctx, workerIdentityChallengeSelect+`
+	challenge, err = scanWorkerIdentityChallenge(tx.QueryRow(ctx, workerIdentityChallengeSelect+`
 		WHERE deployment_id=$1 AND worker_id=$2 AND idempotency_key=$3 AND agent_instance_id=$4`,
 		deploymentID, workerID, key, store.instanceID))
 	if err == nil {
@@ -45,12 +67,12 @@ func (store *WorkerStore) CreateIdentityChallengeIdempotent(ctx context.Context,
 			return worker.IdentityChallenge{}, worker.ErrIdentityChallengeExpired
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return worker.IdentityChallenge{}, fmt.Errorf("commit Worker identity challenge replay: %w", err)
+			return worker.IdentityChallenge{}, fmt.Errorf("commit concurrent Worker identity challenge replay: %w", err)
 		}
 		return challenge, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return worker.IdentityChallenge{}, fmt.Errorf("load Worker identity challenge replay: %w", err)
+		return worker.IdentityChallenge{}, fmt.Errorf("load concurrent Worker identity challenge replay: %w", err)
 	}
 	if current.Revision != intent.ExpectedRevision {
 		return worker.IdentityChallenge{}, worker.ErrRevisionConflict
@@ -62,35 +84,16 @@ func (store *WorkerStore) CreateIdentityChallengeIdempotent(ctx context.Context,
 		return worker.IdentityChallenge{}, worker.ErrEnrollmentExpired
 	}
 
-	var accountID, region, ownerID, providerInstanceID string
-	var matches int
-	err = tx.QueryRow(ctx, `
-		SELECT cc.account_id, cc.region, lo.owner_id, cr.provider_id, count(*) OVER ()
-		FROM cloud_launch_operations lo
-		JOIN cloud_connections cc
-		  ON cc.connection_id=lo.connection_id AND cc.agent_instance_id=lo.agent_instance_id AND cc.owner_id=lo.owner_id
-		JOIN cloud_resources cr
-		  ON cr.agent_instance_id=lo.agent_instance_id AND cr.owner_id=lo.owner_id
-		 AND cr.deployment_id=lo.deployment_id AND cr.task_id=lo.task_id
-		WHERE lo.agent_instance_id=$1 AND lo.deployment_id=$2 AND lo.owner_id=$3 AND lo.task_id=$4
-		  AND cc.status='active' AND cr.resource_type='ec2' AND cr.provider_id <> ''
-		  AND cr.state IN ('provisioning','active')`,
-		store.instanceID, deploymentID, current.OwnerID, current.TaskID,
-	).Scan(&accountID, &region, &ownerID, &providerInstanceID, &matches)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return worker.IdentityChallenge{}, worker.ErrIdentityUnavailable
-	}
+	binding, err := loadWorkerIdentityProviderBinding(ctx, tx, store.instanceID, deploymentID, current)
 	if err != nil {
-		return worker.IdentityChallenge{}, fmt.Errorf("load Worker identity provider binding: %w", err)
+		return worker.IdentityChallenge{}, err
 	}
-	if matches != 1 || !validWorkerProviderInstanceID(providerInstanceID) || ownerID != current.OwnerID {
-		return worker.IdentityChallenge{}, worker.ErrIdentityUnavailable
-	}
+	expiresAt := boundedIdentityChallengeExpiry(intent.ExpiresAt, current.Enrollment.ExpiresAt)
 
 	challenge = worker.IdentityChallenge{
 		ChallengeID: challengeID.String(), DeploymentID: deploymentID.String(), WorkerID: workerID.String(),
-		OwnerID: ownerID, AccountID: accountID, Region: region, ExpectedProviderInstanceID: providerInstanceID,
-		ExpectedRevision: intent.ExpectedRevision, RequestHash: intent.RequestHash, ExpiresAt: intent.ExpiresAt.UTC(), Revision: 1, CreatedAt: intent.CreatedAt.UTC(),
+		OwnerID: binding.ownerID, AccountID: binding.accountID, Region: binding.region, ExpectedProviderInstanceID: binding.providerInstanceID,
+		ExpectedRevision: intent.ExpectedRevision, RequestHash: intent.RequestHash, ExpiresAt: expiresAt, Revision: 1, CreatedAt: intent.CreatedAt.UTC(),
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO worker_identity_challenges (
@@ -98,8 +101,8 @@ func (store *WorkerStore) CreateIdentityChallengeIdempotent(ctx context.Context,
 			owner_id, account_id, region, expected_provider_instance_id, expected_revision,
 			expires_at, revision, created_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-		challengeID, store.instanceID, deploymentID, workerID, key, intent.RequestHash[:], ownerID, accountID, region,
-		providerInstanceID, intent.ExpectedRevision, challenge.ExpiresAt, challenge.Revision, challenge.CreatedAt,
+		challengeID, store.instanceID, deploymentID, workerID, key, intent.RequestHash[:], binding.ownerID, binding.accountID, binding.region,
+		binding.providerInstanceID, intent.ExpectedRevision, challenge.ExpiresAt, challenge.Revision, challenge.CreatedAt,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -111,6 +114,125 @@ func (store *WorkerStore) CreateIdentityChallengeIdempotent(ctx context.Context,
 		return worker.IdentityChallenge{}, fmt.Errorf("commit Worker identity challenge: %w", err)
 	}
 	return challenge, nil
+}
+
+func (store *WorkerStore) renewIdentityChallenge(
+	ctx context.Context,
+	tx pgx.Tx,
+	intent worker.IdentityChallengeIntent,
+	observed worker.IdentityChallenge,
+	deploymentID, workerID, key uuid.UUID,
+) (worker.IdentityChallenge, error) {
+	challenge, err := scanWorkerIdentityChallenge(tx.QueryRow(ctx, workerIdentityChallengeSelect+`
+		WHERE deployment_id=$1 AND worker_id=$2 AND idempotency_key=$3 AND agent_instance_id=$4 FOR UPDATE`,
+		deploymentID, workerID, key, store.instanceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return worker.IdentityChallenge{}, worker.ErrNotFound
+	}
+	if err != nil {
+		return worker.IdentityChallenge{}, fmt.Errorf("lock Worker identity challenge renewal: %w", err)
+	}
+	if subtle.ConstantTimeCompare(challenge.RequestHash[:], intent.RequestHash[:]) != 1 {
+		return worker.IdentityChallenge{}, worker.ErrIdempotencyConflict
+	}
+	if !challenge.ConsumedAt.IsZero() || intent.CreatedAt.Before(challenge.ExpiresAt) {
+		return challenge, nil
+	}
+	if challenge.ChallengeID != observed.ChallengeID {
+		return worker.IdentityChallenge{}, worker.ErrIdempotencyConflict
+	}
+
+	current, err := loadWorkerForUpdate(ctx, tx, deploymentID, store.instanceID)
+	if err != nil {
+		return worker.IdentityChallenge{}, err
+	}
+	if current.Revision != intent.ExpectedRevision || challenge.ExpectedRevision != intent.ExpectedRevision {
+		return worker.IdentityChallenge{}, worker.ErrRevisionConflict
+	}
+	if current.State != worker.StatePendingEnrollment || current.WorkerID != "" || !current.Enrollment.ConsumedAt.IsZero() {
+		return worker.IdentityChallenge{}, worker.ErrEnrollmentConsumed
+	}
+	if !intent.CreatedAt.Before(current.Enrollment.ExpiresAt) {
+		return worker.IdentityChallenge{}, worker.ErrEnrollmentExpired
+	}
+	binding, err := loadWorkerIdentityProviderBinding(ctx, tx, store.instanceID, deploymentID, current)
+	if err != nil {
+		return worker.IdentityChallenge{}, err
+	}
+	if current.OwnerID != challenge.OwnerID || binding.ownerID != challenge.OwnerID || binding.accountID != challenge.AccountID ||
+		binding.region != challenge.Region || binding.providerInstanceID != challenge.ExpectedProviderInstanceID {
+		return worker.IdentityChallenge{}, worker.ErrIdentityUnavailable
+	}
+	if intent.ChallengeID == challenge.ChallengeID {
+		return worker.IdentityChallenge{}, worker.ErrInvalid
+	}
+
+	expiresAt := boundedIdentityChallengeExpiry(intent.ExpiresAt, current.Enrollment.ExpiresAt)
+	result, err := tx.Exec(ctx, `
+		UPDATE worker_identity_challenges
+		SET challenge_id=$3, expires_at=$4, created_at=$5, revision=revision+1
+		WHERE challenge_id=$1 AND revision=$2 AND consumed_at IS NULL AND expires_at <= $5`,
+		challenge.ChallengeID, challenge.Revision, intent.ChallengeID, expiresAt, intent.CreatedAt.UTC(),
+	)
+	if err != nil {
+		return worker.IdentityChallenge{}, fmt.Errorf("renew Worker identity challenge: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return worker.IdentityChallenge{}, worker.ErrRevisionConflict
+	}
+	challenge.ChallengeID = intent.ChallengeID
+	challenge.ExpiresAt = expiresAt
+	challenge.CreatedAt = intent.CreatedAt.UTC()
+	challenge.Revision++
+	return challenge, nil
+}
+
+type workerIdentityProviderBinding struct {
+	ownerID            string
+	accountID          string
+	region             string
+	providerInstanceID string
+}
+
+func loadWorkerIdentityProviderBinding(
+	ctx context.Context,
+	tx pgx.Tx,
+	instanceID, deploymentID uuid.UUID,
+	current worker.Deployment,
+) (workerIdentityProviderBinding, error) {
+	var binding workerIdentityProviderBinding
+	var matches int
+	err := tx.QueryRow(ctx, `
+		SELECT cc.account_id, cc.region, lo.owner_id, cr.provider_id, count(*) OVER ()
+		FROM cloud_launch_operations lo
+		JOIN cloud_connections cc
+		  ON cc.connection_id=lo.connection_id AND cc.agent_instance_id=lo.agent_instance_id AND cc.owner_id=lo.owner_id
+		JOIN cloud_resources cr
+		  ON cr.agent_instance_id=lo.agent_instance_id AND cr.owner_id=lo.owner_id
+		 AND cr.deployment_id=lo.deployment_id AND cr.task_id=lo.task_id
+		WHERE lo.agent_instance_id=$1 AND lo.deployment_id=$2 AND lo.owner_id=$3 AND lo.task_id=$4
+		  AND cc.status='active' AND cr.resource_type='ec2' AND cr.provider_id <> ''
+		  AND cr.state IN ('provisioning','active')`,
+		instanceID, deploymentID, current.OwnerID, current.TaskID,
+	).Scan(&binding.accountID, &binding.region, &binding.ownerID, &binding.providerInstanceID, &matches)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return workerIdentityProviderBinding{}, worker.ErrIdentityUnavailable
+	}
+	if err != nil {
+		return workerIdentityProviderBinding{}, fmt.Errorf("load Worker identity provider binding: %w", err)
+	}
+	if matches != 1 || !validWorkerProviderInstanceID(binding.providerInstanceID) || binding.ownerID != current.OwnerID {
+		return workerIdentityProviderBinding{}, worker.ErrIdentityUnavailable
+	}
+	return binding, nil
+}
+
+func boundedIdentityChallengeExpiry(challengeExpiry, enrollmentExpiry time.Time) time.Time {
+	challengeExpiry, enrollmentExpiry = challengeExpiry.UTC(), enrollmentExpiry.UTC()
+	if enrollmentExpiry.Before(challengeExpiry) {
+		return enrollmentExpiry
+	}
+	return challengeExpiry
 }
 
 func (store *WorkerStore) GetIdentityChallenge(ctx context.Context, challengeID, deploymentID, workerID string) (worker.IdentityChallenge, error) {
@@ -204,6 +326,9 @@ func (store *WorkerStore) EnrollVerifiedIdentityIdempotent(ctx context.Context, 
 	current, err := loadWorkerForUpdate(ctx, tx, deploymentID, store.instanceID)
 	if err != nil {
 		return worker.Deployment{}, nil, err
+	}
+	if !record.CompletedAt.Before(current.Enrollment.ExpiresAt) {
+		return worker.Deployment{}, nil, worker.ErrEnrollmentExpired
 	}
 	if current.Revision != record.ExpectedRevision {
 		return worker.Deployment{}, nil, worker.ErrRevisionConflict
