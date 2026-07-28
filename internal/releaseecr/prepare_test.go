@@ -520,11 +520,13 @@ func TestPrepareRejectsAuthorizationEndpointMismatchAndRedactsErrors(t *testing.
 }
 
 func TestDockerEnvironmentDoesNotForwardAWSCredentialsOrInheritedConfig(t *testing.T) {
+	t.Setenv(releaseDockerHostEnv, "")
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLESECRET")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "provider-secret")
 	t.Setenv("AWS_SESSION_TOKEN", "provider-session")
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "C:/secret/credentials")
 	t.Setenv("DOCKER_CONFIG", "C:/user-home/.docker")
+	t.Setenv("DOCKER_HOST", "tcp://attacker.example:2375")
 	t.Setenv("BUILDX_BUILDER", "foreign-builder")
 	t.Setenv("HTTP_PROXY", "http://foreign-proxy")
 	t.Setenv("HTTPS_PROXY", "http://foreign-proxy")
@@ -540,12 +542,58 @@ func TestDockerEnvironmentDoesNotForwardAWSCredentialsOrInheritedConfig(t *testi
 		if value == "DOCKER_CONFIG=C:/user-home/.docker" {
 			t.Fatalf("inherited Docker config reached login: %#v", environment)
 		}
+		if strings.HasPrefix(value, "DOCKER_HOST=") {
+			t.Fatalf("inherited Docker host reached login: %#v", environment)
+		}
 		if strings.HasPrefix(value, "BUILDX_") || strings.HasPrefix(value, "HTTP_PROXY=") || strings.HasPrefix(value, "HTTPS_PROXY=") {
 			t.Fatalf("inherited builder/proxy configuration reached private session: %q", value)
 		}
 	}
 	if !slices.Contains(environment, "DOCKER_CONFIG=C:/private-release-session") {
 		t.Fatalf("private Docker config missing: %#v", environment)
+	}
+}
+
+func TestDockerEnvironmentAcceptsExplicitLoopbackDockerHost(t *testing.T) {
+	for _, dockerHost := range []string{
+		"tcp://127.0.0.1:2376",
+		"tcp://[::1]:2376",
+	} {
+		t.Run(dockerHost, func(t *testing.T) {
+			t.Setenv(releaseDockerHostEnv, dockerHost)
+			environment := safeDockerEnvironment(t.TempDir())
+			if !slices.Contains(environment, "DOCKER_HOST="+dockerHost) {
+				t.Fatalf("explicit loopback Docker host missing: %#v", environment)
+			}
+			for _, value := range environment {
+				if strings.HasPrefix(value, releaseDockerHostEnv+"=") {
+					t.Fatalf("release-only configuration leaked to Docker: %q", value)
+				}
+			}
+		})
+	}
+}
+
+func TestDockerEnvironmentRejectsUnsafeExplicitDockerHost(t *testing.T) {
+	for _, dockerHost := range []string{
+		"tcp://192.168.1.10:2376",
+		"tcp://localhost:2376",
+		"tcp://user@127.0.0.1:2376",
+		"tcp://127.0.0.1:2376/path",
+		"tcp://127.0.0.1:2376?query=value",
+		"tcp://127.0.0.1:0",
+		"tcp://127.0.0.1:65536",
+		"unix:///var/run/docker.sock",
+	} {
+		t.Run(dockerHost, func(t *testing.T) {
+			t.Setenv(releaseDockerHostEnv, dockerHost)
+			environment := safeDockerEnvironment(t.TempDir())
+			for _, value := range environment {
+				if strings.HasPrefix(value, "DOCKER_HOST=") {
+					t.Fatalf("unsafe Docker host reached release command: %q", value)
+				}
+			}
+		})
 	}
 }
 

@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
+	"strings"
 )
+
+const releaseDockerHostEnv = "DIREXTALK_RELEASE_DOCKER_HOST"
 
 type dockerRunner struct{}
 
@@ -40,6 +46,29 @@ func safeDockerEnvironment(dockerConfigDir string) []string {
 			environment = append(environment, key+"="+value)
 		}
 	}
+	if dockerHost, ok := validatedReleaseDockerHost(os.Getenv(releaseDockerHostEnv)); ok {
+		environment = append(environment, "DOCKER_HOST="+dockerHost)
+	}
 	environment = append(environment, "DOCKER_CONFIG="+dockerConfigDir)
 	return environment
+}
+
+func validatedReleaseDockerHost(value string) (string, bool) {
+	if value == "" || strings.TrimSpace(value) != value {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "tcp" || parsed.User != nil || parsed.Opaque != "" ||
+		parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	host := net.ParseIP(parsed.Hostname())
+	if host == nil || !host.IsLoopback() {
+		return "", false
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return "", false
+	}
+	return value, true
 }
