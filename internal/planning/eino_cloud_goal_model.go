@@ -30,6 +30,7 @@ const (
 	cloudGoalModelMaxSteps        = 24
 	cloudGoalModelMaxCapture      = 256 << 10
 	cloudGoalModelMaxSubmissions  = 3
+	cloudGoalMaxOfficialFetches   = 6
 	captureOfficialSourcesTool    = "capture_official_sources"
 	captureExperimentalRecipeTool = "capture_experimental_recipe"
 	captureResourceCandidatesTool = "capture_resource_candidates"
@@ -565,6 +566,7 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 		definitions = append(definitions, tools[0].Definition)
 	}
 	capture := &planningCapture{}
+	fetchBudget := &planningFetchBudget{remaining: cloudGoalMaxOfficialFetches}
 	definitions = append(definitions, modelapi.Tool{
 		Name: captureName,
 		Description: "Submit the complete planning output after using every required official-source tool. " +
@@ -580,7 +582,7 @@ func (model *EinoCloudGoalPlanningModel) runCapture(
 		},
 		Tools: definitions, MaxSteps: min(config.MaxSteps, cloudGoalModelMaxSteps),
 		InvokeTool: func(runCtx context.Context, call modelapi.ToolCall) (runtimeapi.ToolExecution, error) {
-			return invokeCloudGoalModelTool(runCtx, toolRequest, call, captureName, capture, available, fetched, validate)
+			return invokeCloudGoalModelTool(runCtx, toolRequest, call, captureName, capture, fetchBudget, available, fetched, validate)
 		},
 	})
 	executionErr := executionCtx.Err()
@@ -668,6 +670,24 @@ type planningCapture struct {
 	lastRejection string
 }
 
+type planningFetchBudget struct {
+	mu        sync.Mutex
+	remaining int
+}
+
+func (budget *planningFetchBudget) take() bool {
+	if budget == nil {
+		return false
+	}
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	if budget.remaining <= 0 {
+		return false
+	}
+	budget.remaining--
+	return true
+}
+
 func (capture *planningCapture) submit(
 	raw string,
 	fetched map[string]publicweb.Evidence,
@@ -751,6 +771,7 @@ func invokeCloudGoalModelTool(
 	call modelapi.ToolCall,
 	captureName string,
 	capture *planningCapture,
+	fetchBudget *planningFetchBudget,
 	available map[string]runtimeapi.Tool,
 	fetched map[string]publicweb.Evidence,
 	validate captureValidator,
@@ -785,6 +806,14 @@ func invokeCloudGoalModelTool(
 	tool, ok := available[name]
 	if !ok || tool.Run == nil {
 		return runtimeapi.ToolExecution{}, ErrCloudGoalModelUnavailable
+	}
+	if name == publicweb.ToolName && !fetchBudget.take() {
+		return runtimeapi.ToolExecution{
+			ToolCallID: call.ID,
+			Name:       name,
+			Content:    `{"error":"official_source_fetch_limit_reached","instruction":"Use only the successfully fetched evidence already available and submit the complete result now."}`,
+			IsError:    true,
+		}, nil
 	}
 	result, err := tool.Run(ctx, runtimeapi.ToolInvocation{
 		RequestID: request.RequestID, OwnerID: request.OwnerID, ConversationID: request.ConversationID,

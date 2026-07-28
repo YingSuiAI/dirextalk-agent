@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -194,6 +195,7 @@ func TestCloudGoalOfficialFetchFailureIsModelVisibleAndDeSecreted(t *testing.T) 
 		call,
 		captureOfficialSourcesTool,
 		&planningCapture{},
+		&planningFetchBudget{remaining: cloudGoalMaxOfficialFetches},
 		map[string]runtimeapi.Tool{
 			publicweb.ToolName: {
 				Run: func(context.Context, runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
@@ -209,6 +211,53 @@ func TestCloudGoalOfficialFetchFailureIsModelVisibleAndDeSecreted(t *testing.T) 
 	}
 	if strings.Contains(result.Content, canary) || !strings.Contains(result.Content, "Choose a different") {
 		t.Fatalf("fetch failure was not de-secreted and actionable: %q", result.Content)
+	}
+}
+
+func TestCloudGoalOfficialFetchBudgetPreventsUnboundedModelFanout(t *testing.T) {
+	source := validRecipe().Sources[0]
+	encoded, err := json.Marshal(map[string]string{
+		"url": source.URL, "retrieved_at": source.RetrievedAt.Format(time.RFC3339Nano),
+		"content_digest": source.ContentDigest, "content": "official source content",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	available := map[string]runtimeapi.Tool{
+		publicweb.ToolName: {
+			Run: func(context.Context, runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
+				runs++
+				return runtimeapi.ToolResult{Content: string(encoded)}, nil
+			},
+		},
+	}
+	budget := &planningFetchBudget{remaining: cloudGoalMaxOfficialFetches}
+	fetched := make(map[string]publicweb.Evidence)
+	var last runtimeapi.ToolExecution
+	for index := 0; index < cloudGoalMaxOfficialFetches+3; index++ {
+		last, err = invokeCloudGoalModelTool(
+			t.Context(),
+			runtimeapi.ToolRequest{RequestID: "request-1", OwnerID: "owner-1", ConversationID: "conversation-1"},
+			modelapi.ToolCall{
+				ID: "fetch-" + strconv.Itoa(index), Type: "function",
+				Function: modelapi.FunctionCall{Name: publicweb.ToolName, Arguments: `{"url":"https://example.com"}`},
+			},
+			captureOfficialSourcesTool,
+			&planningCapture{},
+			budget,
+			available,
+			fetched,
+			func(json.RawMessage, map[string]publicweb.Evidence, bool) error { return nil },
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs != cloudGoalMaxOfficialFetches || !last.IsError ||
+		!strings.Contains(last.Content, "official_source_fetch_limit_reached") ||
+		len(fetched) != 1 {
+		t.Fatalf("runs=%d last=%#v fetched=%d", runs, last, len(fetched))
 	}
 }
 
