@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
 
@@ -313,6 +314,13 @@ func (provider *scopedCloudProvider) Tools(ctx context.Context, request runtimea
 			return nil, cloudskill.ErrInvalidCallScope
 		}
 		connectionID = trusted.ConnectionID
+		if workerprofile.MatchesDiagnosticGoal(request.LatestUserMessage) {
+			profileID, ok := workerprofile.RecipeIDForRequest(request.RequestID)
+			if !ok {
+				return nil, cloudskill.ErrInvalidCallScope
+			}
+			recipeID = profileID
+		}
 	}
 	scoped, err := cloudskill.BindCallScope(ctx, cloudskill.CallScope{
 		OwnerID: request.OwnerID, ConnectionID: connectionID, RecipeID: recipeID, Retention: task.RetentionEphemeralAutoDestroy,

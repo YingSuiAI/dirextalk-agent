@@ -314,14 +314,15 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 		recipeIDs = nil
 	}
 	tools, err := loadToolSet(ctx, r.tools, ToolRequest{
-		RequestID:      request.RequestID,
-		OwnerID:        request.OwnerID,
-		ConversationID: request.ConversationID,
-		EnabledNames:   enabledNames,
-		KnowledgeRefs:  knowledgeRefs,
-		MCPServerIDs:   mcpServerIDs,
-		RecipeIDs:      recipeIDs,
-		CloudDialogue:  request.CloudDialogue,
+		RequestID:         request.RequestID,
+		OwnerID:           request.OwnerID,
+		ConversationID:    request.ConversationID,
+		LatestUserMessage: latestUserMessage(requestMessages),
+		EnabledNames:      enabledNames,
+		KnowledgeRefs:     knowledgeRefs,
+		MCPServerIDs:      mcpServerIDs,
+		RecipeIDs:         recipeIDs,
+		CloudDialogue:     request.CloudDialogue,
 	})
 	if err != nil {
 		return runState{}, err
@@ -348,6 +349,15 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 	state.client = client
 	state.tools = tools
 	return state, nil
+}
+
+func latestUserMessage(messages []modelapi.Message) string {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == modelapi.RoleUser {
+			return strings.TrimSpace(messages[index].Content)
+		}
+	}
+	return ""
 }
 
 func (r *Runtime) pendingConversation(state *runState, produced []modelapi.Message) (*Conversation, int64) {

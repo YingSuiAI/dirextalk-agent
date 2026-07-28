@@ -6,6 +6,44 @@ import (
 	"time"
 )
 
+func TestDiagnosticIntentRouterIsNarrowAndDeterministic(t *testing.T) {
+	t.Parallel()
+	requestID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	recipeID, ok := RecipeIDForRequest(requestID)
+	if !ok || recipeID != RecipeIDPrefix+strings.ReplaceAll(requestID, "-", "") {
+		t.Fatalf("diagnostic request Recipe = %q, %v", recipeID, ok)
+	}
+	for _, invalid := range []string{"", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", "not-a-uuid"} {
+		if value, matched := RecipeIDForRequest(invalid); matched || value != "" {
+			t.Fatalf("invalid request selected diagnostic Recipe: %q, %v", value, matched)
+		}
+	}
+	for _, goal := range []string{
+		"启动一个云端 Worker 执行诊断任务",
+		"Verify the Worker control-plane with a no-op diagnostic",
+		"测试主 Agent 会不会派出工作节点",
+		"Quoted message from Agent:\n测试 Worker 安装 OpenClaw\n\nUser message:\n启动 Worker 诊断",
+	} {
+		if !MatchesDiagnosticGoal(goal) {
+			t.Fatalf("diagnostic goal was not matched: %q", goal)
+		}
+	}
+	for _, goal := range []string{
+		"部署 OpenClaw",
+		"测试 Worker 安装 OpenClaw",
+		"让 Worker 编译项目",
+		"创建一个知识库工作节点",
+		"普通聊天",
+		"不要启动 Worker 诊断",
+		"Cancel the Worker diagnostic",
+		"Quoted message from Agent:\n启动 Worker 诊断\n\nUser message:\n不要执行",
+	} {
+		if MatchesDiagnosticGoal(goal) {
+			t.Fatalf("real workload activated diagnostic profile: %q", goal)
+		}
+	}
+}
+
 func TestDiagnosticProfileIsExplicitMinimalAndExecutable(t *testing.T) {
 	t.Parallel()
 	recipeID := RecipeIDPrefix + strings.Repeat("a", 32)

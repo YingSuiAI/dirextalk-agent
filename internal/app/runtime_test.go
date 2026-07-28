@@ -11,6 +11,7 @@ import (
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
 
@@ -73,7 +74,8 @@ func TestScopedCloudProviderDerivesStableServerOwnedRecipeScope(t *testing.T) {
 	connectionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	cloudRequest := runtimeapi.ToolRequest{
 		RequestID: uuid.NewString(), OwnerID: "owner-1", ConversationID: "conversation-2",
-		CloudDialogue: &runtimeapi.CloudDialogueScope{ConnectionID: connectionID},
+		LatestUserMessage: "启动一个云端 Worker 执行诊断任务",
+		CloudDialogue:     &runtimeapi.CloudDialogueScope{ConnectionID: connectionID},
 	}
 	cloudTools, err := provider.Tools(context.Background(), cloudRequest)
 	if err != nil {
@@ -93,8 +95,10 @@ func TestScopedCloudProviderDerivesStableServerOwnedRecipeScope(t *testing.T) {
 		})
 		break
 	}
-	if err != nil || captured.ConnectionID != connectionID || captured.ConversationID != cloudRequest.ConversationID {
-		t.Fatalf("cloud connection was not bound from trusted scope: captured=%#v err=%v", captured, err)
+	wantProfileID, ok := workerprofile.RecipeIDForRequest(cloudRequest.RequestID)
+	if !ok || err != nil || captured.ConnectionID != connectionID || captured.ConversationID != cloudRequest.ConversationID ||
+		captured.RecipeID != wantProfileID {
+		t.Fatalf("cloud diagnostic scope was not server-bound: captured=%#v err=%v", captured, err)
 	}
 }
 

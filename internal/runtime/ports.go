@@ -61,13 +61,14 @@ type ToolResult struct {
 }
 
 type ToolRequest struct {
-	RequestID      string
-	OwnerID        string
-	ConversationID string
-	EnabledNames   []string
-	KnowledgeRefs  []string
-	MCPServerIDs   []string
-	RecipeIDs      []string
+	RequestID         string
+	OwnerID           string
+	ConversationID    string
+	LatestUserMessage string
+	EnabledNames      []string
+	KnowledgeRefs     []string
+	MCPServerIDs      []string
+	RecipeIDs         []string
 	// CloudDialogue is trusted request scope. Providers may use it to bind
 	// application state, but it is never serialized as model tool input.
 	CloudDialogue *CloudDialogueScope

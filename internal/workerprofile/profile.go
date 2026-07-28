@@ -1,14 +1,16 @@
 // Package workerprofile owns the fixed, low-cost Worker control-plane
-// diagnostic Recipe. It is selected only through an explicit server-bound
-// Recipe ID and cannot install software, receive secrets, retain data, or
-// expose a listener.
+// diagnostic Recipe. Trusted code may select it from an explicit profile ID
+// or a narrowly matched user diagnostic intent. It cannot install software,
+// receive secrets, retain data, or expose a listener.
 package workerprofile
 
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/google/uuid"
 )
 
 const (
@@ -58,6 +60,54 @@ func IsDiagnosticRecipeID(value string) bool {
 		}
 	}
 	return true
+}
+
+// RecipeIDForRequest returns a deterministic server-owned diagnostic profile
+// identity. The raw request UUID is already bound into the runtime
+// idempotency digest, so retries select the same immutable Recipe.
+func RecipeIDForRequest(requestID string) (string, bool) {
+	parsed, err := uuid.Parse(requestID)
+	if err != nil || parsed == uuid.Nil || parsed.String() != requestID {
+		return "", false
+	}
+	return RecipeIDPrefix + strings.ReplaceAll(parsed.String(), "-", ""), true
+}
+
+// MatchesDiagnosticGoal deliberately recognizes only the non-installing
+// Worker control-plane acceptance task. Real workloads, even when described
+// as tests, must continue through independent Recipe resolution.
+func MatchesDiagnosticGoal(value string) bool {
+	normalized := strings.ToLower(currentUserIntent(value))
+	if normalized == "" || utf8.RuneCountInString(normalized) > 2048 {
+		return false
+	}
+	if !containsAny(normalized, "worker", "工作节点") ||
+		!containsAny(normalized, "diagnostic", "diagnose", "control-plane", "control plane", "noop", "no-op", "诊断", "验收", "验证", "测试") {
+		return false
+	}
+	return !containsAny(
+		normalized,
+		"openclaw", "hermes", "qdrant", "postgres", "mysql", "redis", "mongodb", "ollama",
+		"安装", "部署软件", "知识库", "数据库", "模型训练", "训练模型", "微调", "编译", "构建",
+		"do not", "don't", "dont", "cancel", "stop", "不要", "别启动", "取消", "停止",
+	)
+}
+
+func currentUserIntent(value string) string {
+	const marker = "\nUser message:\n"
+	if index := strings.LastIndex(value, marker); index >= 0 {
+		value = value[index+len(marker):]
+	}
+	return strings.TrimSpace(value)
+}
+
+func containsAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func ResearchHints() []ResearchHint {

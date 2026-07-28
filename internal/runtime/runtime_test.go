@@ -483,7 +483,9 @@ func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if toolRequest.CloudDialogue == nil || toolRequest.CloudDialogue.ConnectionID != connectionID || len(toolRequest.KnowledgeRefs) != 0 || len(toolRequest.MCPServerIDs) != 0 || len(toolRequest.RecipeIDs) != 0 {
+	if toolRequest.CloudDialogue == nil || toolRequest.CloudDialogue.ConnectionID != connectionID ||
+		toolRequest.LatestUserMessage != "research official documentation" ||
+		len(toolRequest.KnowledgeRefs) != 0 || len(toolRequest.MCPServerIDs) != 0 || len(toolRequest.RecipeIDs) != 0 {
 		t.Fatalf("trusted cloud tool scope drifted: %#v", toolRequest)
 	}
 }
