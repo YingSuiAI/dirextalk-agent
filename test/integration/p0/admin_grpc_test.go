@@ -21,6 +21,50 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+func TestBootstrapCredentialCanOnlyNarrowScopes(t *testing.T) {
+	database := newMigratedDatabase(t)
+	pepper := sha256.Sum256([]byte("dirextalk-agent-p0-bootstrap-scope-pepper"))
+	secret := sha256.Sum256([]byte("dirextalk-agent-p0-bootstrap-scope-secret"))
+	keyID := "p0-bootstrap-scope-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	bootstrap := auth.BootstrapCredential{
+		KeyID: keyID, ClientID: "dirextalk-message-server", Scopes: []string{"admin"},
+		SecretDigest: auth.Digest(pepper[:], secret[:]),
+	}
+	created, err := database.store.EnsureBootstrapCredential(context.Background(), bootstrap)
+	if err != nil || created.Revision != 1 {
+		t.Fatalf("create bootstrap credential failed: revision=%d err=%v", created.Revision, err)
+	}
+
+	bootstrap.Scopes = []string{"runtime.read", "runtime.write", "runtime.chat", "cloud.read"}
+	narrowed, err := database.store.EnsureBootstrapCredential(context.Background(), bootstrap)
+	if err != nil || narrowed.Revision != 2 ||
+		strings.Join(narrowed.Scopes, ",") != "cloud.read,runtime.chat,runtime.read,runtime.write" {
+		t.Fatalf("narrow bootstrap credential failed: credential=%#v err=%v", narrowed, err)
+	}
+	replayed, err := database.store.EnsureBootstrapCredential(context.Background(), bootstrap)
+	if err != nil || replayed.Revision != narrowed.Revision {
+		t.Fatalf("replay narrowed bootstrap credential failed: revision=%d err=%v", replayed.Revision, err)
+	}
+
+	bootstrap.Scopes = append(bootstrap.Scopes, "cloud.plan.write")
+	if _, err := database.store.EnsureBootstrapCredential(context.Background(), bootstrap); err == nil {
+		t.Fatal("bootstrap credential accepted a scope expansion")
+	}
+	stored, err := database.store.CredentialByKeyID(context.Background(), keyID)
+	if err != nil || stored.Revision != narrowed.Revision ||
+		strings.Join(stored.Scopes, ",") != "cloud.read,runtime.chat,runtime.read,runtime.write" {
+		t.Fatalf("rejected expansion changed the credential: credential=%#v err=%v", stored, err)
+	}
+
+	var eventCount int
+	if err := database.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM task_events
+		WHERE aggregate_id=$1 AND event_type='agent.credential.scopes_narrowed'`,
+		narrowed.CredentialID).Scan(&eventCount); err != nil || eventCount != 1 {
+		t.Fatalf("scope narrowing event count = %d, err=%v", eventCount, err)
+	}
+}
+
 func TestAdminCreateServiceKeyEncryptedDeliveryReplayAndScope(t *testing.T) {
 	harness := newAdminBoundaryHarness(t)
 	request := &agentv1.CreateServiceKeyRequest{

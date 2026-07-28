@@ -29,7 +29,7 @@ Observable acceptance: a TLS gRPC caller with a valid scoped Service Key can cre
 - [x] Add repository ownership/security instructions, Go module, Buf configuration, versioned `dirextalk.agent.v1` source, architecture/API documentation, and this tracker.
 - [x] Freeze P0 protobuf messages and generate Go stubs from the repository-owned source.
 - [x] Implement TLS gRPC server configuration with fail-closed production defaults and standard health service.
-- [x] Implement pairwise `DTX-Service-Key <key_id>.<secret>` parsing, peppered digest verification, scopes, expiration, constant-time comparison, revocation, rotation overlap, and metadata/log redaction.
+- [x] Implement pairwise `DTX-Service-Key <key_id>.<secret>` parsing, peppered digest verification, scopes, expiration, constant-time comparison, revocation, rotation overlap, and metadata/log redaction. Reinstall-time bootstrap reconciliation may only narrow an unchanged key/client/digest with a revisioned event; any scope addition/replacement requires explicit key rotation.
 - [x] Implement PostgreSQL-owned migrations for immutable instance metadata, credentials, Task, Step, dependency, attempt/lease, idempotency, Event, and Outbox facts.
 - [x] Implement Task/Step domain validation, UUID idempotency, payload conflict detection, expected-revision fencing, transactionally emitted events, and durable pagination/cursor resume.
 - [x] Implement gRPC Task/Admin services and explicit `UNIMPLEMENTED` capability responses for later Runtime/Cloud/Worker surfaces without claiming unavailable execution.

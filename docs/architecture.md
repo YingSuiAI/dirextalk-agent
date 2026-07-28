@@ -8,7 +8,7 @@ The first release does not integrate Connect or vNext Run. Matrix, ProductCore, 
 
 ## P0 durable boundary
 
-The TLS gRPC interceptor authenticates a pairwise credential and replaces raw authorization metadata with a typed caller principal. Mutation handlers derive their idempotency namespace from that principal; owner IDs remain protocol-neutral project data rather than authentication material.
+The TLS gRPC interceptor authenticates a pairwise credential and replaces raw authorization metadata with a typed caller principal. Mutation handlers derive their idempotency namespace from that principal; owner IDs remain protocol-neutral project data rather than authentication material. Bootstrap reconciliation is idempotent for the same key/client/digest and may atomically narrow that credential's scopes with a revisioned audit event. It cannot add or replace scopes, reactivate a key, change client identity, or change secret material; privilege expansion requires explicit key rotation.
 
 PostgreSQL owns immutable instance metadata, migration checksums, credentials, tasks, steps, dependencies, attempts, leases, idempotency snapshots, events, and Outbox rows. Entity mutation, response snapshot, event, and Outbox payload commit in one transaction. Events are projections of facts, not an in-memory ordering source. Restart recovery reconstructs services from PostgreSQL and resumes from the caller's durable event cursor without repurchasing or duplicating work.
 

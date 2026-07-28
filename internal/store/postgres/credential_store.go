@@ -51,11 +51,30 @@ func (store *Store) EnsureBootstrapCredential(ctx context.Context, bootstrap aut
 	if err != nil {
 		return auth.Credential{}, fmt.Errorf("read bootstrap credential: %w", err)
 	}
-	if result.RowsAffected() == 0 && (credential.ClientID != bootstrap.ClientID || !slices.Equal(credential.Scopes, scopes) || !bytes.Equal(credential.SecretDigest, bootstrap.SecretDigest)) {
-		return auth.Credential{}, errors.New("bootstrap key id is already bound to different credential material")
-	}
 	if !credential.Active {
 		return auth.Credential{}, auth.ErrCredentialInactive
+	}
+	if result.RowsAffected() == 0 {
+		if credential.ClientID != bootstrap.ClientID || !bytes.Equal(credential.SecretDigest, bootstrap.SecretDigest) {
+			return auth.Credential{}, errors.New("bootstrap key id is already bound to different credential material")
+		}
+		if !slices.Equal(credential.Scopes, scopes) {
+			if !canNarrowBootstrapScopes(credential.Scopes, scopes) {
+				return auth.Credential{}, errors.New("bootstrap key id cannot gain or replace scopes")
+			}
+			credential, err = scanCredential(tx.QueryRow(ctx, `
+				UPDATE service_credentials
+				SET scopes=$2, revision=revision+1, updated_at=clock_timestamp()
+				WHERE credential_id=$1 AND revision=$3
+				RETURNING credential_id, key_id, client_id, scopes, secret_digest, active, expires_at, revision`,
+				credential.CredentialID, scopes, credential.Revision))
+			if err != nil {
+				return auth.Credential{}, fmt.Errorf("narrow bootstrap credential scopes: %w", err)
+			}
+			if err := appendCredentialEvent(ctx, tx, credential, "agent.credential.scopes_narrowed", bootstrap.ClientID, credential.CredentialID); err != nil {
+				return auth.Credential{}, err
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return auth.Credential{}, fmt.Errorf("commit bootstrap credential: %w", err)
@@ -238,6 +257,23 @@ func canonicalScopes(scopes []string) []string {
 	result := append([]string(nil), scopes...)
 	slices.Sort(result)
 	return slices.Compact(result)
+}
+
+func canNarrowBootstrapScopes(current, desired []string) bool {
+	current = canonicalScopes(current)
+	desired = canonicalScopes(desired)
+	if slices.Equal(current, desired) {
+		return true
+	}
+	if slices.Contains(current, "admin") && !slices.Contains(desired, "admin") {
+		return true
+	}
+	for _, scope := range desired {
+		if !slices.Contains(current, scope) {
+			return false
+		}
+	}
+	return true
 }
 
 type credentialSnapshot struct {
