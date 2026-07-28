@@ -481,6 +481,44 @@ func TestReleaseExecutableDoesNotDependOnUserDockerPluginConfig(t *testing.T) {
 	}
 }
 
+func TestReleaseBuildCommandIdentifiesOnlyBuildxBuilds(t *testing.T) {
+	for _, test := range []struct {
+		executable string
+		arguments  []string
+		want       bool
+	}{
+		{executable: "docker-buildx", arguments: []string{"build"}, want: true},
+		{executable: "docker-buildx", arguments: []string{"--builder", "release", "build"}, want: true},
+		{executable: "docker-buildx", arguments: []string{"imagetools", "inspect"}},
+		{executable: "docker", arguments: []string{"buildx", "build"}},
+		{executable: "git", arguments: []string{"status"}},
+	} {
+		if got := releaseBuildCommand(test.executable, test.arguments); got != test.want {
+			t.Fatalf("releaseBuildCommand(%q, %#v) = %t, want %t", test.executable, test.arguments, got, test.want)
+		}
+	}
+}
+
+func TestTransientErrorDetectorMatchesAcrossWritesWithoutRetryingPermanentErrors(t *testing.T) {
+	var detector transientErrorDetector
+	for _, content := range []string{"failed to copy: local error: tls: bad ", "record MAC"} {
+		if _, err := detector.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !detector.Transient() {
+		t.Fatal("transient TLS failure was not detected")
+	}
+
+	detector = transientErrorDetector{}
+	if _, err := detector.Write([]byte("authentication required: denied: requested access to the resource is denied")); err != nil {
+		t.Fatal(err)
+	}
+	if detector.Transient() {
+		t.Fatal("permanent authentication error was marked transient")
+	}
+}
+
 func TestPublishRecoversImmutableTagAfterPartialPublish(t *testing.T) {
 	repositoryRoot := t.TempDir()
 	outputRoot := t.TempDir()

@@ -37,8 +37,10 @@ var (
 )
 
 const (
-	maxCommandOutput = 1 << 20
-	maxMetadataBytes = 1 << 20
+	maxCommandOutput    = 1 << 20
+	maxMetadataBytes    = 1 << 20
+	maxBuildAttempts    = 3
+	errorDetectorWindow = 128
 )
 
 var (
@@ -682,17 +684,27 @@ type execRunner struct {
 
 func (runner execRunner) Run(ctx context.Context, directory, executable string, arguments ...string) ([]byte, error) {
 	executable, arguments = releaseExecutable(executable, arguments)
-	command := exec.CommandContext(ctx, executable, arguments...)
-	command.Dir = directory
-	command.Env = safeEnvironment(runner.dockerConfigDir)
-	var stdout limitedBuffer
-	stdout.limit = maxCommandOutput
-	command.Stdout = &stdout
-	command.Stderr = io.Discard
-	if err := command.Run(); err != nil {
-		return nil, errors.New("command failed")
+	attempts := 1
+	if releaseBuildCommand(executable, arguments) {
+		attempts = maxBuildAttempts
 	}
-	return stdout.Bytes(), nil
+	for attempt := 0; attempt < attempts; attempt++ {
+		command := exec.CommandContext(ctx, executable, arguments...)
+		command.Dir = directory
+		command.Env = safeEnvironment(runner.dockerConfigDir)
+		var stdout limitedBuffer
+		stdout.limit = maxCommandOutput
+		var stderr transientErrorDetector
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+		if err := command.Run(); err == nil {
+			return stdout.Bytes(), nil
+		}
+		if ctx.Err() != nil || !stderr.Transient() {
+			break
+		}
+	}
+	return nil, errors.New("command failed")
 }
 
 func releaseExecutable(executable string, arguments []string) (string, []string) {
@@ -700,6 +712,16 @@ func releaseExecutable(executable string, arguments []string) (string, []string)
 		return "docker-buildx", arguments[1:]
 	}
 	return executable, arguments
+}
+
+func releaseBuildCommand(executable string, arguments []string) bool {
+	if executable != "docker-buildx" || len(arguments) == 0 {
+		return false
+	}
+	if arguments[0] == "build" {
+		return true
+	}
+	return len(arguments) >= 3 && arguments[0] == "--builder" && arguments[1] != "" && arguments[2] == "build"
 }
 
 func safeEnvironment(dockerConfigDir string) []string {
@@ -720,6 +742,46 @@ func safeEnvironment(dockerConfigDir string) []string {
 	}
 	environment = append(environment, "DOCKER_CONFIG="+dockerConfigDir)
 	return environment
+}
+
+type transientErrorDetector struct {
+	tail      string
+	transient bool
+}
+
+func (detector *transientErrorDetector) Write(content []byte) (int, error) {
+	if detector.transient {
+		return len(content), nil
+	}
+	lower := strings.ToLower(detector.tail + string(content))
+	for _, marker := range []string{
+		"tls: bad record mac",
+		"tls handshake timeout",
+		"connection reset by peer",
+		"connection timed out",
+		"i/o timeout",
+		"unexpected eof",
+		"temporary failure in name resolution",
+		"received unexpected http status: 500",
+		"received unexpected http status: 502",
+		"received unexpected http status: 503",
+		"received unexpected http status: 504",
+	} {
+		if strings.Contains(lower, marker) {
+			detector.transient = true
+			detector.tail = ""
+			return len(content), nil
+		}
+	}
+	if len(lower) > errorDetectorWindow {
+		lower = lower[len(lower)-errorDetectorWindow:]
+	}
+	detector.tail = lower
+	return len(content), nil
+}
+
+func (detector *transientErrorDetector) Transient() bool {
+	return detector != nil && detector.transient
 }
 
 type limitedBuffer struct {
