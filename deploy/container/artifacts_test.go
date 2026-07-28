@@ -186,6 +186,7 @@ func TestWorkerAMIRootfsRunsSupervisorWithoutPrivilegeOrInboundSocket(t *testing
 		"CapabilityBoundingSet=\n",
 		"ProtectSystem=strict",
 		"SocketBindDeny=any",
+		"StandardError=journal+console",
 	} {
 		if !strings.Contains(service, required) {
 			t.Fatalf("Worker AMI service is missing %q", required)

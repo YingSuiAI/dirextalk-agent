@@ -19,6 +19,7 @@ Environment=DIREXTALK_WORKER_TLS_CA_FILE=/etc/ssl/certs/ca-certificates.crt
 ExecStart=/usr/local/bin/dirextalk-cloud-worker
 Restart=on-failure
 RestartSec=10s
+StandardError=journal+console
 UMask=0077
 
 NoNewPrivileges=yes
