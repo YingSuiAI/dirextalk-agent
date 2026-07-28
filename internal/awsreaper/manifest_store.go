@@ -434,7 +434,7 @@ func safeDestroyIntentSuccessor(current, next resource.MutationIntent) bool {
 	if current.Operation == resource.MutationDestroy {
 		return next.Operation == resource.MutationDestroy &&
 			next.ClientToken == current.ClientToken &&
-			samePersistedTime(next.RecordedAt, current.RecordedAt) &&
+			!persistedTimeBefore(next.RecordedAt, current.RecordedAt) &&
 			next.ProviderCreateStartedAt.IsZero()
 	}
 	if current.Operation != resource.MutationCreate {

@@ -209,7 +209,7 @@ func TestDynamoManifestStoreSafelyAdvancesAndReleasesInterruptedDestroyClaim(t *
 	successor.Resources[0].ReadBack = resource.ReadBackEvidence{
 		Exists: false, ProviderID: successor.Resources[0].ProviderID, ObservedAt: now.Add(time.Second), TagDigest: digestFixture(),
 	}
-	successor.Resources[0].Intent.RecordedAt = successor.Resources[0].Intent.RecordedAt.Add(600 * time.Nanosecond)
+	successor.Resources[0].Intent.RecordedAt = successor.Resources[0].Intent.RecordedAt.Add(time.Hour)
 	successor.Resources[0].CreatedAt = successor.Resources[0].CreatedAt.Add(600 * time.Nanosecond)
 	successor.Resources[0].Revision++
 	successor.Resources[0].UpdatedAt = now.Add(time.Second)
@@ -312,6 +312,24 @@ func TestDynamoManifestStoreRejectsNonMonotonicClaimRecovery(t *testing.T) {
 	replaced.Resources[0].UpdatedAt = now.Add(2 * time.Second)
 	if err := store.Put(context.Background(), replaced); !errors.Is(err, resource.ErrRevisionConflict) {
 		t.Fatalf("provider identity replacement error=%v, want revision conflict", err)
+	}
+
+	retokened, err := store.Get(context.Background(), manifest.DeploymentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retokened.Revision++
+	retokened.UpdatedAt = now.Add(3 * time.Second)
+	retokened.Resources[0].State = resource.StateVerifiedDestroyed
+	retokened.Resources[0].Intent.ClientToken = strings.Repeat("c", 64)
+	retokened.Resources[0].Intent.RecordedAt = now.Add(3 * time.Second)
+	retokened.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists: false, ProviderID: retokened.Resources[0].ProviderID, ObservedAt: now.Add(3 * time.Second), TagDigest: digestFixture(),
+	}
+	retokened.Resources[0].Revision++
+	retokened.Resources[0].UpdatedAt = now.Add(3 * time.Second)
+	if err := store.Put(context.Background(), retokened); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("destroy token replacement error=%v, want revision conflict", err)
 	}
 }
 
