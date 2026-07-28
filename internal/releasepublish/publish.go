@@ -681,6 +681,7 @@ type execRunner struct {
 }
 
 func (runner execRunner) Run(ctx context.Context, directory, executable string, arguments ...string) ([]byte, error) {
+	executable, arguments = releaseExecutable(executable, arguments)
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Dir = directory
 	command.Env = safeEnvironment(runner.dockerConfigDir)
@@ -692,6 +693,13 @@ func (runner execRunner) Run(ctx context.Context, directory, executable string, 
 		return nil, errors.New("command failed")
 	}
 	return stdout.Bytes(), nil
+}
+
+func releaseExecutable(executable string, arguments []string) (string, []string) {
+	if executable == "docker" && len(arguments) > 0 && arguments[0] == "buildx" {
+		return "docker-buildx", arguments[1:]
+	}
+	return executable, arguments
 }
 
 func safeEnvironment(dockerConfigDir string) []string {
@@ -706,6 +714,9 @@ func safeEnvironment(dockerConfigDir string) []string {
 		if value, ok := os.LookupEnv(key); ok {
 			environment = append(environment, key+"="+value)
 		}
+	}
+	if dockerHost, ok := releaseecr.ExplicitDockerHost(); ok {
+		environment = append(environment, "DOCKER_HOST="+dockerHost)
 	}
 	environment = append(environment, "DOCKER_CONFIG="+dockerConfigDir)
 	return environment

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -445,19 +446,38 @@ func TestPublishDockerFailureReturnsFixedErrorAndCleansOutput(t *testing.T) {
 
 func TestPublishEnvironmentUsesOnlyExplicitDockerSession(t *testing.T) {
 	t.Setenv("DOCKER_CONFIG", "C:/user-home/.docker")
+	t.Setenv("DOCKER_HOST", "tcp://attacker.example:2375")
+	t.Setenv("DIREXTALK_RELEASE_DOCKER_HOST", "tcp://127.0.0.1:2376")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "provider-secret")
 	environment := safeEnvironment("C:/private/release-session")
-	wanted := false
+	wantedConfig, wantedHost := false, false
 	for _, value := range environment {
 		if value == "DOCKER_CONFIG=C:/private/release-session" {
-			wanted = true
+			wantedConfig = true
+		}
+		if value == "DOCKER_HOST=tcp://127.0.0.1:2376" {
+			wantedHost = true
 		}
 		if value == "DOCKER_CONFIG=C:/user-home/.docker" || strings.HasPrefix(value, "AWS_") || strings.Contains(value, "provider-secret") {
 			t.Fatalf("unsafe release environment: %#v", environment)
 		}
+		if value == "DOCKER_HOST=tcp://attacker.example:2375" {
+			t.Fatalf("inherited Docker host reached publisher: %#v", environment)
+		}
 	}
-	if !wanted {
-		t.Fatalf("explicit Docker session missing: %#v", environment)
+	if !wantedConfig || !wantedHost {
+		t.Fatalf("explicit Docker session or host missing: %#v", environment)
+	}
+}
+
+func TestReleaseExecutableDoesNotDependOnUserDockerPluginConfig(t *testing.T) {
+	executable, arguments := releaseExecutable("docker", []string{"buildx", "--builder", "release", "build"})
+	if executable != "docker-buildx" || !slices.Equal(arguments, []string{"--builder", "release", "build"}) {
+		t.Fatalf("buildx command = %q %#v", executable, arguments)
+	}
+	executable, arguments = releaseExecutable("git", []string{"status", "--porcelain=v1"})
+	if executable != "git" || !slices.Equal(arguments, []string{"status", "--porcelain=v1"}) {
+		t.Fatalf("git command = %q %#v", executable, arguments)
 	}
 }
 
@@ -573,6 +593,11 @@ func TestPublishRejectsRepositoryChangeBeforeManifest(t *testing.T) {
 
 func assertFixedCommands(t *testing.T, commands []recordedCommand, repositoryRoot string, request Request, temporaryRoot string) {
 	t.Helper()
+	canonicalRepositoryRoot, err := filepath.EvalSymlinks(repositoryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot = canonicalRepositoryRoot
 	if len(commands) != 19 {
 		t.Fatalf("command count = %d: %#v", len(commands), commands)
 	}

@@ -46,11 +46,17 @@ func safeDockerEnvironment(dockerConfigDir string) []string {
 			environment = append(environment, key+"="+value)
 		}
 	}
-	if dockerHost, ok := validatedReleaseDockerHost(os.Getenv(releaseDockerHostEnv)); ok {
+	if dockerHost, ok := ExplicitDockerHost(); ok {
 		environment = append(environment, "DOCKER_HOST="+dockerHost)
 	}
 	environment = append(environment, "DOCKER_CONFIG="+dockerConfigDir)
 	return environment
+}
+
+// ExplicitDockerHost returns the release-only Docker endpoint after proving it
+// is a TCP listener bound to an IP loopback address.
+func ExplicitDockerHost() (string, bool) {
+	return validatedReleaseDockerHost(os.Getenv(releaseDockerHostEnv))
 }
 
 func validatedReleaseDockerHost(value string) (string, bool) {
