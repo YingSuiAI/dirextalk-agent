@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/turncontrol"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
@@ -34,6 +35,7 @@ type RuntimeComposition struct {
 	TeamPlans           *teamplan.CatalogCompiler
 	TeamOrchestrator    *teamorchestration.Service
 	TeamPreparation     *teamorchestration.PreparationService
+	Turns               *turncontrol.Service
 }
 
 type runtimeCompositionOptions struct {
@@ -282,6 +284,10 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}
+	turns, err := turncontrol.NewDefaultService(store)
+	if err != nil {
+		return RuntimeComposition{}, errors.New("Turn Controller is unavailable")
+	}
 	var teamOrchestrator *teamorchestration.Service
 	var teamPreparation *teamorchestration.PreparationService
 	if options.teamPolicies != nil {
@@ -328,6 +334,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,
 		CloudGoalDispatcher: cloudGoalDispatcher, TeamPlans: options.teamPlans,
 		TeamOrchestrator: teamOrchestrator, TeamPreparation: teamPreparation,
+		Turns: turns,
 	}, nil
 }
 

@@ -187,6 +187,21 @@ Turn Controller 必须做到：
   已完成”。
 - App 断线、Agent 重启或模型失败后可从持久状态继续。
 
+首个控制内核已按上述阶段落地，但尚未接管 Chat。它只保存 owner、request、
+conversation、目标摘要、当前阶段、路由、阶段 attempt/deadline、Plan/Task/
+approval 绑定以及产物引用和摘要，不复制会话正文、模型 reasoning、工具参数或
+工具结果正文。模型只能产生 `model_candidate` 产物，状态推进 authority 枚举中
+不存在 model。`await_approval -> execute` 由 PostgreSQL 原子核对当前
+Team Plan、永久设备签名、Task、owner 和 Agent instance；委派任务的
+`synthesize -> finalize` 还要求 Plan 与 Task 均已成功终结并已有验证证据。
+阶段事件不可修改，所有 mutation 使用 caller-scoped 幂等键和 revision fencing；
+丢失响应后的同键重试先返回原快照，不因当前阶段已经前进而误报冲突。
+
+当前这一层是可复用的控制事实内核，不等于自动编排已经打通。下一步仍需由受信
+Turn Driver 把 Runtime 的理解/记忆结果、Team Proposal 捕获、Plan v3、Task
+状态和最终候选回复逐阶段接入；Message Server 和 App 接入前，现有 Chat RPC
+行为保持不变。
+
 ### 5.2 Task Kernel
 
 任务使用持久化 DAG：
@@ -800,6 +815,17 @@ trigger 同时禁止修改或删除上述签名事实。
 跨节点读取通道。创建 challenge、批准和过期命令还必须显式携带 owner，
 owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UUID 操作。
 
+Turn Controller 使用独立 migration 45：
+
+- `agent_turns` 保存当前阶段投影、deadline、attempt、route 和经过验证的
+  Proposal/Plan/approval/Task/result/validation/response 引用；
+- `agent_turn_events` 按 Turn revision 追加 authority、阶段变化和去敏产物
+  摘要，写入后禁止更新或删除；
+- 数据库 trigger 二次限制合法阶段图、路由不可逆、Plan/approval 绑定、Task
+  成功条件和最终完成证据；
+- Turn 不保存聊天正文、模型 reasoning、工具调用参数、工具结果正文或任何
+  Secret。
+
 ## 20. 测试体系
 
 ### 20.1 领域测试
@@ -983,6 +1009,8 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
 - 多 Worker Plan v3 的 Message Server 门面、App 去密 DTO 与整单签名接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及 Cloud Connection 只读报价的真实 AWS 验收。
+- 受信 Turn Driver：把现有 Runtime、Team Plan v3、Task Kernel 和 Response
+  Arbiter 串成真正的自动路由与恢复流程。
 
 尚未实现或尚未验收：
 
@@ -990,7 +1018,8 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
 - 多 Worker Plan v3 的 App 审批与真实 Worker 执行。
 - 通用高工具调用 Worker Runtime Adapter。
 - 多 Worker 真实 AWS 协作和结果整合。
-- Canonical Memory 和完整 Turn Controller。
+- Canonical Memory、Evidence Ledger，以及 Turn Controller 对 Chat/Team/Task
+  的自动驱动和跨任务重规划。
 - 2C2G 24 小时持续压力验收。
 
 因此，当前系统不能声称已经能从 App 自动选择并调度上述多个 Agent。现阶段的
