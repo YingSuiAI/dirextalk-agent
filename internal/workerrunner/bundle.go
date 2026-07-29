@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 )
 
 const (
@@ -43,6 +44,7 @@ type ActionV1 struct {
 	TimeoutSeconds uint32                   `json:"timeout_seconds"`
 	Noop           *NoopInputV1             `json:"noop,omitempty"`
 	Installer      *InstallerExecuteInputV1 `json:"installer,omitempty"`
+	Runtime        *RuntimeExecuteInputV1   `json:"runtime,omitempty"`
 }
 
 type NoopInputV1 struct {
@@ -60,8 +62,13 @@ type InstallerExecuteInputV1 struct {
 	LeaseGrant *installer.SignedLeaseGrantV1 `json:"-"`
 }
 
+type RuntimeExecuteInputV1 struct {
+	Task workerruntime.TaskV1 `json:"task"`
+}
+
 type ActionResult struct {
-	Status string
+	Status  string
+	Runtime *workerruntime.Result
 }
 
 type ActionHandler interface {
@@ -126,7 +133,9 @@ type NoopAction struct{}
 func (NoopAction) Kind() string { return "worker.noop" }
 
 func (NoopAction) Validate(action ActionV1) error {
-	if action.Kind != (NoopAction{}).Kind() || action.Noop == nil || action.Installer != nil || action.Noop.DelayMillis > 10_000 {
+	if action.Kind != (NoopAction{}).Kind() || action.Noop == nil ||
+		action.Installer != nil || action.Runtime != nil ||
+		action.Noop.DelayMillis > 10_000 {
 		return fmt.Errorf("%w: worker.noop input is invalid", ErrInvalidBundle)
 	}
 	return nil
@@ -163,10 +172,17 @@ func parseExecutionBundle(raw, recipeDigest []byte, executionTimeout time.Durati
 		return ExecutionBundleV1{}, ErrInvalidBundle
 	}
 	seen := make(map[string]struct{}, len(bundle.Actions))
+	runtimeActions := 0
 	for _, action := range bundle.Actions {
 		if !actionIDPattern.MatchString(action.ID) || !actionIDPattern.MatchString(action.Kind) || action.TimeoutSeconds == 0 ||
 			time.Duration(action.TimeoutSeconds)*time.Second > executionTimeout {
 			return ExecutionBundleV1{}, ErrInvalidBundle
+		}
+		if action.Runtime != nil {
+			runtimeActions++
+			if runtimeActions > MaxRuntimeResultsPerManifest {
+				return ExecutionBundleV1{}, ErrInvalidBundle
+			}
 		}
 		if _, duplicate := seen[action.ID]; duplicate {
 			return ExecutionBundleV1{}, ErrInvalidBundle

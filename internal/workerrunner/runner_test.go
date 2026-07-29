@@ -197,7 +197,9 @@ func (store *memoryObjects) Get(_ context.Context, reference string) ([]byte, er
 }
 
 func (store *memoryObjects) Put(_ context.Context, reference, contentType string, content []byte) (worker.ObjectClaim, error) {
-	if contentType != "application/json" {
+	switch contentType {
+	case "application/json", "text/plain; charset=utf-8":
+	default:
 		return worker.ObjectClaim{}, errors.New("unexpected content type")
 	}
 	store.mu.Lock()
@@ -424,7 +426,7 @@ func TestRunnerRejectsCheckpointScopeAndFenceMismatches(t *testing.T) {
 			candidate := proto.Clone(assignment).(*agentv1.WorkerAssignment)
 			candidate.CheckpointRef = ref
 			objects.objects[ref] = raw
-			if _, _, resumeErr := runner.resumeCheckpoint(context.Background(), candidate, bundle); resumeErr == nil {
+			if _, _, _, resumeErr := runner.resumeCheckpoint(context.Background(), candidate, bundle); resumeErr == nil {
 				t.Fatal("mismatched checkpoint was accepted")
 			}
 		})

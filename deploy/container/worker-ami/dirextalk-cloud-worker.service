@@ -16,6 +16,7 @@ StateDirectory=dirextalk-worker
 StateDirectoryMode=0700
 Environment=DIREXTALK_WORKER_BINARY_SHA256_FILE=/usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256
 Environment=DIREXTALK_WORKER_TLS_CA_FILE=/etc/ssl/certs/ca-certificates.crt
+EnvironmentFile=-/etc/dirextalk-worker/runtime.env
 ExecStart=/usr/local/bin/dirextalk-cloud-worker
 Restart=on-failure
 RestartSec=10s

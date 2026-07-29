@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -264,10 +265,18 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 	if err != nil {
 		return nil, nil, err
 	}
+	for _, action := range bundle.Actions {
+		if action.Runtime != nil &&
+			action.Runtime.Task.TaskID != assignment.GetTaskId() {
+			return nil, nil, ErrInvalidBundle
+		}
+	}
 	if err := runner.Registry.Validate(bundle); err != nil {
 		return nil, nil, err
 	}
-	completed, startIndex, err := runner.resumeCheckpoint(ctx, assignment, bundle)
+	completed, startIndex, runtimeResults, err := runner.resumeCheckpoint(
+		ctx, assignment, bundle,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -280,20 +289,46 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 			return completed, nil, err
 		}
 		actionContext, cancel := context.WithTimeout(ctx, time.Duration(action.TimeoutSeconds)*time.Second)
-		_, actionErr := runner.Registry.Execute(actionContext, action)
+		actionResult, actionErr := runner.Registry.Execute(actionContext, action)
 		cancel()
 		if actionErr != nil {
+			destroyActionResult(&actionResult)
 			_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
 			return completed, nil, fmt.Errorf("typed action %s failed: %w", action.ID, actionErr)
+		}
+		if !validActionResultStatus(action, actionResult.Status) {
+			destroyActionResult(&actionResult)
+			_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
+			return completed, nil, fmt.Errorf("typed action %s returned an invalid result", action.ID)
+		}
+		if action.Runtime != nil {
+			if actionResult.Runtime == nil {
+				_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
+				return completed, nil, fmt.Errorf("typed action %s returned no runtime result", action.ID)
+			}
+			runtimeResult, runtimeErr := runner.storeRuntimeActionResult(
+				ctx, assignment, action, actionResult.Runtime,
+			)
+			destroyActionResult(&actionResult)
+			if runtimeErr != nil {
+				_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
+				return completed, nil, runtimeErr
+			}
+			runtimeResults = append(runtimeResults, runtimeResult)
+		} else if actionResult.Runtime != nil {
+			destroyActionResult(&actionResult)
+			_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
+			return completed, nil, fmt.Errorf("typed action %s crossed the runtime output boundary", action.ID)
 		}
 		if err := runner.emitLog(ctx, assignment, LogActionSucceeded, action.ID, ""); err != nil {
 			return completed, nil, err
 		}
 		checkpoint := checkpointV1{
-			SchemaVersion: checkpointSchemaV1, DeploymentID: assignment.GetDeploymentId(), WorkerID: assignment.GetWorkerId(),
+			SchemaVersion: checkpointSchemaV2, DeploymentID: assignment.GetDeploymentId(), WorkerID: assignment.GetWorkerId(),
 			Attempt: assignment.GetAttempt(), LeaseEpoch: assignment.GetLeaseEpoch(),
 			RecipeSHA256: hex.EncodeToString(assignment.GetRecipeBundle().GetSha256()), ExecutionSHA256: hex.EncodeToString(assignment.GetExecutionBundle().GetSha256()),
 			ActionIndex: actionIndex, ActionID: action.ID, Status: "succeeded",
+			RuntimeResults: runtimeResults,
 		}
 		checkpointBytes, err := json.Marshal(checkpoint)
 		if err != nil {
@@ -322,13 +357,31 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		}
 		completed = append(completed, action.ID)
 	}
-	resultBody, _ := json.Marshal(struct {
-		SchemaVersion    int      `json:"schema_version"`
-		Attempt          int32    `json:"attempt"`
-		LeaseEpoch       int64    `json:"lease_epoch"`
-		Status           string   `json:"status"`
-		CompletedActions []string `json:"completed_actions"`
-	}{SchemaVersion: 1, Attempt: assignment.GetAttempt(), LeaseEpoch: assignment.GetLeaseEpoch(), Status: "succeeded", CompletedActions: completed})
+	expectation := resultExpectationFromAssignment(assignment)
+	manifest := ResultManifestV2{
+		SchemaVersion: ResultManifestSchemaV2,
+		DeploymentID:  assignment.GetDeploymentId(),
+		WorkerID:      assignment.GetWorkerId(),
+		TaskID:        assignment.GetTaskId(),
+		StepID:        assignment.GetStepId(),
+		Attempt:       assignment.GetAttempt(),
+		LeaseEpoch:    assignment.GetLeaseEpoch(),
+		RecipeSHA256: hex.EncodeToString(
+			assignment.GetRecipeBundle().GetSha256(),
+		),
+		ExecutionSHA256: hex.EncodeToString(
+			assignment.GetExecutionBundle().GetSha256(),
+		),
+		Status: "succeeded", CompletedActions: completed,
+		RuntimeResults: runtimeResults,
+	}
+	if err := manifest.Validate(expectation); err != nil {
+		return completed, nil, err
+	}
+	resultBody, err := json.Marshal(manifest)
+	if err != nil {
+		return completed, nil, ErrInvalidBundle
+	}
 	resultDigest := sha256.Sum256(resultBody)
 	resultRef, err := scopedResultRef(assignment.GetAccess(), assignment.GetAttempt(), assignment.GetLeaseEpoch(), resultDigest)
 	if err != nil {
@@ -345,6 +398,114 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		return completed, nil, errors.New("Worker object store returned a mismatched result claim")
 	}
 	return completed, &resultObject, nil
+}
+
+func validActionResultStatus(action ActionV1, status string) bool {
+	switch {
+	case action.Runtime != nil:
+		return status == "succeeded"
+	case action.Installer != nil:
+		return status == installer.StatusExecuted
+	case action.Noop != nil:
+		return status == "ok"
+	default:
+		return false
+	}
+}
+
+func resultExpectationFromAssignment(
+	assignment *agentv1.WorkerAssignment,
+) ResultExpectationV2 {
+	if assignment == nil {
+		return ResultExpectationV2{}
+	}
+	return ResultExpectationV2{
+		DeploymentID: assignment.GetDeploymentId(),
+		WorkerID:     assignment.GetWorkerId(),
+		TaskID:       assignment.GetTaskId(),
+		StepID:       assignment.GetStepId(),
+		Attempt:      assignment.GetAttempt(),
+		LeaseEpoch:   assignment.GetLeaseEpoch(),
+		RecipeSHA256: hex.EncodeToString(
+			assignment.GetRecipeBundle().GetSha256(),
+		),
+		ExecutionSHA256: hex.EncodeToString(
+			assignment.GetExecutionBundle().GetSha256(),
+		),
+		ArtifactBucket: assignment.GetAccess().GetArtifactBucket(),
+		ArtifactPrefix: assignment.GetAccess().GetArtifactPrefix(),
+	}
+}
+
+func (runner Runner) storeRuntimeActionResult(
+	ctx context.Context,
+	assignment *agentv1.WorkerAssignment,
+	action ActionV1,
+	result *workerruntime.Result,
+) (RuntimeActionResultV1, error) {
+	if assignment == nil || action.Runtime == nil || result == nil ||
+		result.Validate() != nil {
+		return RuntimeActionResultV1{}, ErrInvalidBundle
+	}
+	claims := make([]RuntimeArtifactClaimV1, 0, len(result.Artifacts))
+	for _, artifact := range result.Artifacts {
+		digest := sha256.Sum256(artifact.Content)
+		reference, err := scopedRuntimeArtifactRef(
+			assignment.GetAccess(), assignment.GetAttempt(),
+			assignment.GetLeaseEpoch(), action.ID, artifact.Name,
+			artifact.MediaType, digest,
+		)
+		if err != nil {
+			return RuntimeActionResultV1{}, err
+		}
+		stored, err := runner.Objects.Put(
+			ctx, reference, artifact.MediaType, artifact.Content,
+		)
+		if err != nil {
+			return RuntimeActionResultV1{}, fmt.Errorf(
+				"store Worker runtime artifact: %w", err,
+			)
+		}
+		expected := worker.ObjectClaim{
+			Ref: reference, SHA256: digest,
+			SizeBytes: int64(len(artifact.Content)),
+			MediaType: artifact.MediaType,
+		}
+		if stored != expected {
+			return RuntimeActionResultV1{}, errors.New(
+				"Worker object store returned a mismatched runtime artifact claim",
+			)
+		}
+		manifest, err := runtimeArtifactManifest(
+			assignment.GetAttempt(), assignment.GetLeaseEpoch(),
+			artifact, stored,
+		)
+		if err != nil {
+			return RuntimeActionResultV1{}, err
+		}
+		claims = append(claims, manifest)
+	}
+	value, err := runtimeActionResultFrom(
+		action, assignment.GetAttempt(), assignment.GetLeaseEpoch(),
+		claims, result.Usage,
+	)
+	if err != nil {
+		return RuntimeActionResultV1{}, err
+	}
+	return value, nil
+}
+
+func destroyActionResult(result *ActionResult) {
+	if result == nil {
+		return
+	}
+	if result.Runtime != nil {
+		for index := range result.Runtime.Artifacts {
+			clear(result.Runtime.Artifacts[index].Content)
+		}
+		*result.Runtime = workerruntime.Result{}
+	}
+	*result = ActionResult{}
 }
 
 func (runner Runner) emitLog(ctx context.Context, assignment *agentv1.WorkerAssignment, kind LogKind, actionID string, outcome LogOutcome) error {
@@ -391,65 +552,86 @@ func logOutcome(value agentv1.WorkerOutcome) LogOutcome {
 }
 
 type checkpointV1 struct {
-	SchemaVersion   int    `json:"schema_version"`
-	DeploymentID    string `json:"deployment_id"`
-	WorkerID        string `json:"worker_id"`
-	Attempt         int32  `json:"attempt"`
-	LeaseEpoch      int64  `json:"lease_epoch"`
-	RecipeSHA256    string `json:"recipe_sha256"`
-	ExecutionSHA256 string `json:"execution_sha256"`
-	ActionIndex     int    `json:"action_index"`
-	ActionID        string `json:"action_id"`
-	Status          string `json:"status"`
+	SchemaVersion   int                     `json:"schema_version"`
+	DeploymentID    string                  `json:"deployment_id"`
+	WorkerID        string                  `json:"worker_id"`
+	Attempt         int32                   `json:"attempt"`
+	LeaseEpoch      int64                   `json:"lease_epoch"`
+	RecipeSHA256    string                  `json:"recipe_sha256"`
+	ExecutionSHA256 string                  `json:"execution_sha256"`
+	ActionIndex     int                     `json:"action_index"`
+	ActionID        string                  `json:"action_id"`
+	Status          string                  `json:"status"`
+	RuntimeResults  []RuntimeActionResultV1 `json:"runtime_results,omitempty"`
 }
 
-const checkpointSchemaV1 = 1
+const (
+	checkpointSchemaV1 = 1
+	checkpointSchemaV2 = 2
+)
 
-func (runner Runner) resumeCheckpoint(ctx context.Context, assignment *agentv1.WorkerAssignment, bundle ExecutionBundleV1) ([]string, int, error) {
+func (runner Runner) resumeCheckpoint(
+	ctx context.Context,
+	assignment *agentv1.WorkerAssignment,
+	bundle ExecutionBundleV1,
+) ([]string, int, []RuntimeActionResultV1, error) {
 	checkpointRef := strings.TrimSpace(assignment.GetCheckpointRef())
 	if checkpointRef == "" {
 		if assignment.GetCheckpointAttempt() != 0 || assignment.GetCheckpointLeaseEpoch() != 0 {
-			return nil, 0, errors.New("Worker checkpoint fence exists without a checkpoint reference")
+			return nil, 0, nil, errors.New("Worker checkpoint fence exists without a checkpoint reference")
 		}
-		return make([]string, 0, len(bundle.Actions)), 0, nil
+		return make([]string, 0, len(bundle.Actions)), 0,
+			make([]RuntimeActionResultV1, 0), nil
 	}
 	if assignment.GetCheckpointAttempt() < 1 || assignment.GetCheckpointLeaseEpoch() < 1 ||
 		assignment.GetAttempt() <= assignment.GetCheckpointAttempt() || assignment.GetLeaseEpoch() <= assignment.GetCheckpointLeaseEpoch() ||
 		!checkpointRefWithinScope(assignment.GetAccess(), checkpointRef) {
-		return nil, 0, errors.New("Worker checkpoint fence is invalid")
+		return nil, 0, nil, errors.New("Worker checkpoint fence is invalid")
 	}
 	raw, err := runner.Objects.Get(ctx, checkpointRef)
 	if err != nil {
-		return nil, 0, fmt.Errorf("fetch Worker checkpoint: %w", err)
+		return nil, 0, nil, fmt.Errorf("fetch Worker checkpoint: %w", err)
 	}
 	defer wipe(raw)
 	if len(raw) == 0 || len(raw) > maxBundleBytes {
-		return nil, 0, errors.New("Worker checkpoint is invalid")
+		return nil, 0, nil, errors.New("Worker checkpoint is invalid")
 	}
 	var checkpoint checkpointV1
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&checkpoint); err != nil {
-		return nil, 0, errors.New("Worker checkpoint is invalid")
+		return nil, 0, nil, errors.New("Worker checkpoint is invalid")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, 0, errors.New("Worker checkpoint contains trailing data")
+		return nil, 0, nil, errors.New("Worker checkpoint contains trailing data")
 	}
 	digest := sha256.Sum256(raw)
 	expectedRef, err := scopedCheckpointRef(assignment.GetAccess(), checkpoint, digest)
-	if err != nil || expectedRef != checkpointRef || checkpoint.SchemaVersion != checkpointSchemaV1 || checkpoint.Status != "succeeded" ||
+	if err != nil || expectedRef != checkpointRef ||
+		(checkpoint.SchemaVersion != checkpointSchemaV1 &&
+			checkpoint.SchemaVersion != checkpointSchemaV2) ||
+		(checkpoint.SchemaVersion == checkpointSchemaV1 &&
+			len(checkpoint.RuntimeResults) != 0) ||
+		checkpoint.Status != "succeeded" ||
 		checkpoint.DeploymentID != assignment.GetDeploymentId() || checkpoint.WorkerID != assignment.GetWorkerId() ||
 		checkpoint.Attempt != assignment.GetCheckpointAttempt() || checkpoint.LeaseEpoch != assignment.GetCheckpointLeaseEpoch() ||
 		checkpoint.RecipeSHA256 != hex.EncodeToString(assignment.GetRecipeBundle().GetSha256()) ||
 		checkpoint.ExecutionSHA256 != hex.EncodeToString(assignment.GetExecutionBundle().GetSha256()) ||
 		checkpoint.ActionIndex < 0 || checkpoint.ActionIndex >= len(bundle.Actions) || bundle.Actions[checkpoint.ActionIndex].ID != checkpoint.ActionID {
-		return nil, 0, errors.New("Worker checkpoint does not match the current assignment")
+		return nil, 0, nil, errors.New("Worker checkpoint does not match the current assignment")
+	}
+	if err := validateRuntimeResults(
+		bundle, checkpoint.ActionIndex, checkpoint.RuntimeResults,
+		assignment.GetAccess(), checkpoint.Attempt, checkpoint.LeaseEpoch,
+	); err != nil {
+		return nil, 0, nil, errors.New("Worker checkpoint runtime results are invalid")
 	}
 	completed := make([]string, checkpoint.ActionIndex+1)
 	for index := range completed {
 		completed[index] = bundle.Actions[index].ID
 	}
-	return completed, checkpoint.ActionIndex + 1, nil
+	return completed, checkpoint.ActionIndex + 1,
+		append([]RuntimeActionResultV1(nil), checkpoint.RuntimeResults...), nil
 }
 
 func (runner Runner) verifiedObject(ctx context.Context, reference *agentv1.WorkerBundleReference) ([]byte, error) {

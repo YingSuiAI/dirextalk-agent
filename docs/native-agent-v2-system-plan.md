@@ -310,6 +310,25 @@ Shutdown()
 适配器隐藏各 Agent 的 CLI、HTTP、ACP 或 Gateway 差异。Central Agent 只看
 统一事件，不解析终端颜色文本或自然语言日志。
 
+截至 2026-07-29，统一协议的第一个可运行内核已经落地，但还不是生产目录：
+
+- `worker-runtime-task/v1` 只允许固定 release、镜像、上下文、工作区、模型
+  Profile、凭据槽和目标，不允许任务注入命令、argv、环境变量、路径、端点、
+  AWS 操作或秘密。
+- Worker 内部使用封闭 Adapter Registry；已实现
+  `codex_exec_task_v1`，其他 runtime 名称只是协议保留值，未注册就失败关闭。
+- Codex Adapter 使用固定非交互参数、受限 sandbox、标准输入目标、严格 JSON
+  Schema、独立进程组取消和限定输出；关闭内部多 Agent、插件、应用、Hooks、
+  网页搜索和工具推荐；运行前重新校验安装清单与可执行文件摘要。
+- Worker Runner 负责上传有界制品，并把 deployment、Worker、Task、Step、
+  attempt、lease epoch、Recipe/Execution 摘要和制品声明写入可恢复 checkpoint
+  与最终 manifest。
+- Central Result Collector 只按已持久化的结果对象声明下载、校验并读取每个
+  runtime 的 `final.json`；Worker 输出仍是不可信候选，必须经过 Validator。
+
+当前内核仍缺生产 Codex AMI、任务级模型 Token 签发/撤销、Team Plan 到多个
+Worker Assignment 的受信物化、DAG Dispatcher、Validator 和最终合成接线。
+
 ### 6.3 初始运行时定位
 
 | Runtime | 优先任务 | 可借鉴能力 | 不应默认使用的场景 |
@@ -1040,19 +1059,25 @@ Turn Controller 使用独立 migration 45：
   Arbiter 串成真正的自动路由与恢复流程。
 - Canonical Memory 的 Chat 候选捕捉、检索快照、Knowledge active-revision
   镜像、Message Server 门面和 App 设备签名管理。
+- Team Plan Assignment Materializer：把批准的角色、依赖、Runtime/Model/
+  Compute 选择物化成逐 Worker Recipe、上下文、工作区、凭据槽和执行包。
+- 多 Worker Dispatcher、任务级模型 Token 签发/撤销、结果 Validator 与
+  Response Arbiter 合成接线。
 
 尚未实现或尚未验收：
 
 - Claude Code、Codex、OpenCode、Hermes、OpenClaw 的生产镜像目录。
 - 多 Worker Plan v3 的 App 审批与真实 Worker 执行。
-- 通用高工具调用 Worker Runtime Adapter。
+- 除本地 Codex 固定 Adapter 内核外，其他 Runtime Adapter 和所有生产资格
+  认证；Codex 生产 AMI、任务级凭据隔离和真实模型调用也尚未验收。
 - 多 Worker 真实 AWS 协作和结果整合。
 - Turn Controller 对 Chat/Team/Task 的自动驱动和跨任务重规划。
 - Canonical Memory 的公开撤销签名合同、App 审批/查看/撤销和语义检索。
 - 2C2G 24 小时持续压力验收。
 
-因此，当前系统不能声称已经能从 App 自动选择并调度上述多个 Agent。现阶段的
-真实能力仍是受控诊断 Worker；本规划描述的是正在逐步实现的目标系统。
+因此，当前系统不能声称已经能从 App 自动选择并调度上述多个 Agent。生产云端
+能力仍是受控诊断 Worker；高工具调用 Runtime 已有本地可运行内核和真实 Linux
+全仓验证，但尚未由 Central Agent 自动派工，也未进入 demo2 或生产目录。
 
 ## 23. 建议确认的产品决策
 

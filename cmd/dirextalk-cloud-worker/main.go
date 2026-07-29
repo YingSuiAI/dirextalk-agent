@@ -35,6 +35,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workermaintenance"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
@@ -136,7 +137,20 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	registry, err := workerrunner.NewRegistry(workerrunner.NoopAction{}, installerAction)
+	handlers := []workerrunner.ActionHandler{
+		workerrunner.NoopAction{}, installerAction,
+	}
+	runtimeInstallation := requiredEnvironment(
+		"DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE",
+	)
+	if runtimeInstallation != "" {
+		runtimeAction, err := loadRuntimeExecuteAction(runtimeInstallation)
+		if err != nil {
+			return err
+		}
+		handlers = append(handlers, runtimeAction)
+	}
+	registry, err := workerrunner.NewRegistry(handlers...)
 	if err != nil {
 		return err
 	}
@@ -207,6 +221,62 @@ func run() error {
 		return nil
 	}
 	return errors.Join(results...)
+}
+
+func loadRuntimeExecuteAction(
+	installationPath string,
+) (*workerrunner.RuntimeExecuteAction, error) {
+	raw, err := installer.ReadRootOwnedFile(
+		installationPath,
+		workerruntime.MaxInstallationBytes,
+	)
+	if err != nil {
+		return nil, errors.New("load root-owned Worker runtime installation")
+	}
+	defer clear(raw)
+	installation, err := workerruntime.ParseInstallationJSON(raw)
+	if err != nil {
+		return nil, errors.New("validate Worker runtime installation")
+	}
+	inputs, err := workerruntime.NewFilesystemResolver(
+		installation.ContextRoot,
+		installation.WorkspaceRoot,
+		installation.CredentialRoot,
+	)
+	if err != nil {
+		return nil, errors.New("initialize Worker runtime inputs")
+	}
+	processes := workerruntime.OSProcessRunner{}
+	patches, err := workerruntime.NewGitPatchCollector(
+		installation.GitExecutable,
+		processes,
+	)
+	if err != nil {
+		return nil, errors.New("initialize Worker runtime patch collector")
+	}
+	codex, err := workerruntime.NewCodexExecutor(
+		workerruntime.CodexConfig{
+			Release:    installation.CodexRelease,
+			Models:     installation.Models,
+			Inputs:     inputs,
+			Processes:  processes,
+			Patches:    patches,
+			StateRoot:  installation.StateRoot,
+			SearchPath: installation.SearchPath,
+		},
+	)
+	if err != nil {
+		return nil, errors.New("initialize qualified Codex runtime")
+	}
+	runtimes, err := workerruntime.NewRegistry(codex)
+	if err != nil {
+		return nil, errors.New("initialize Worker runtime registry")
+	}
+	action, err := workerrunner.NewRuntimeExecuteAction(runtimes)
+	if err != nil {
+		return nil, errors.New("initialize Worker runtime action")
+	}
+	return action, nil
 }
 
 func newWorkerMaintenanceService(control workermaintenance.Control, root workermaintenance.RootControl) *workermaintenance.Service {
