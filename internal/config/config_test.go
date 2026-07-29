@@ -141,6 +141,85 @@ func TestLoadServerRequiresRuntimeCatalogAndPublicKeyTogether(t *testing.T) {
 	}
 }
 
+func TestLoadServerKeepsTeamPricingBehindCompleteTrustedAWSConfig(
+	t *testing.T,
+) {
+	t.Run("catalogs must be paired", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		t.Setenv(
+			"AGENT_TEAM_MODEL_OFFER_CATALOG_FILE",
+			"/run/dirextalk/config/team-model-offers.json",
+		)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"AGENT_TEAM_MODEL_OFFER_CATALOG_FILE and AGENT_TEAM_COMPUTE_CATALOG_FILE",
+			) {
+			t.Fatalf("unpaired Team pricing error=%v", err)
+		}
+	})
+
+	t.Run("catalogs require policy", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamPricingCatalogEnvironment(t)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "AGENT_TEAM_POLICY_FILE") {
+			t.Fatalf("missing Team policy error=%v", err)
+		}
+	})
+
+	t.Run("catalogs require AWS control", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		setTeamPricingCatalogEnvironment(t)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"AGENT_ENABLE_AWS_CONTROL=true",
+			) {
+			t.Fatalf("missing AWS control error=%v", err)
+		}
+	})
+
+	t.Run("catalogs reject staged Worker control", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		setTeamPricingCatalogEnvironment(t)
+		setAWSControlEnvironment(t)
+		t.Setenv(
+			"AGENT_WORKER_CONNECTIVITY_MODE",
+			"no_nat_endpoints_v1",
+		)
+		t.Setenv(
+			"AGENT_WORKER_CONTROL_ENDPOINT",
+			"grpcs://worker-control.y1.dirextalk.ai:443",
+		)
+		t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "")
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"complete Worker Control configuration",
+			) {
+			t.Fatalf("staged Worker control error=%v", err)
+		}
+	})
+
+	t.Run("complete configuration", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		setTeamPricingCatalogEnvironment(t)
+		setAWSControlEnvironment(t)
+		server, err := LoadServer()
+		if err != nil ||
+			server.TeamModelOfferCatalogFile == "" ||
+			server.TeamComputeCatalogFile == "" ||
+			!server.EnableAWSControl ||
+			server.StagedWorkerControl {
+			t.Fatalf("Team pricing config=%#v error=%v", server, err)
+		}
+	})
+}
+
 func TestLoadServerRejectsMutableOrReservedReaperImageTags(t *testing.T) {
 	for _, image := range []string{
 		"registry.example/reaper:latest@sha256:" + strings.Repeat("a", 64),
@@ -430,4 +509,51 @@ func setValidServerEnvironment(t *testing.T) {
 	t.Setenv("AGENT_MOUNTED_SECRETS_DIR", t.TempDir())
 	t.Setenv("AGENT_MODEL_PROFILES_FILE", "model-profiles.json")
 	t.Setenv("AGENT_MASTER_KEY_FILE", "master-key")
+}
+
+func setTeamTrustEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv(
+		"AGENT_RUNTIME_CATALOG_FILE",
+		"/run/dirextalk/config/runtime-catalog.json",
+	)
+	t.Setenv(
+		"AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE",
+		"/run/dirextalk/config/runtime-catalog-public-key",
+	)
+	t.Setenv(
+		"AGENT_TEAM_POLICY_FILE",
+		"/run/dirextalk/config/team-policy.json",
+	)
+}
+
+func setTeamPricingCatalogEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv(
+		"AGENT_TEAM_MODEL_OFFER_CATALOG_FILE",
+		"/run/dirextalk/config/team-model-offers.json",
+	)
+	t.Setenv(
+		"AGENT_TEAM_COMPUTE_CATALOG_FILE",
+		"/run/dirextalk/config/team-compute.json",
+	)
+}
+
+func setAWSControlEnvironment(t *testing.T) {
+	t.Helper()
+	t.Setenv("AGENT_ENABLE_AWS_CONTROL", "true")
+	t.Setenv(
+		"AGENT_AWS_REAPER_IMAGE_URI",
+		"registry.example/reaper:v0.1.0-alpha.1@sha256:"+
+			strings.Repeat("d", 64),
+	)
+	t.Setenv(
+		"AGENT_WORKER_CONNECTIVITY_MODE",
+		"direct_public_tls_v1",
+	)
+	t.Setenv(
+		"AGENT_WORKER_CONTROL_ENDPOINT",
+		"grpcs://worker-control.y1.dirextalk.ai:443",
+	)
+	t.Setenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME", "")
 }

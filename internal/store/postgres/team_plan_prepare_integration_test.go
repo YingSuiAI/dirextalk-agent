@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -143,6 +144,13 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 	foreignStore, err := postgres.New(pool, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := foreignStore.LoadConnection(
+		ctx,
+		ownerID,
+		connectionID,
+	); !errors.Is(err, cloudexecution.ErrNotReady) {
+		t.Fatalf("cross-Agent Cloud Connection read error=%v", err)
 	}
 	if _, found, err := foreignStore.FindPreparedTeamPlan(
 		ctx,

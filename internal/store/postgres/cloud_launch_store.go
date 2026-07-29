@@ -189,7 +189,12 @@ func (store *Store) LoadConnection(ctx context.Context, ownerID, connectionID st
 	if parseErr != nil || parsed == uuid.Nil {
 		return cloudappConnection, cloudexecution.ErrInvalid
 	}
-	value, readErr := readCloudConnection(ctx, store.pool, parsed.String())
+	value, readErr := readCloudConnectionForAgent(
+		ctx,
+		store.pool,
+		store.instanceID,
+		parsed.String(),
+	)
 	if readErr != nil {
 		if errors.Is(readErr, cloudapp.ErrNotFound) {
 			return cloudappConnection, cloudexecution.ErrNotReady

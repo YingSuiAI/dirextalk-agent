@@ -223,3 +223,63 @@ func TestWithTeamPolicyResolverRejectsMissingResolver(t *testing.T) {
 		)
 	}
 }
+
+func TestWithTeamOfferBuilderAndLoadedProfilesRejectMissingDependencies(
+	t *testing.T,
+) {
+	t.Parallel()
+	var options runtimeCompositionOptions
+	if err := WithTeamOfferBuilder(nil)(&options); err == nil ||
+		options.teamOffers != nil {
+		t.Fatalf(
+			"WithTeamOfferBuilder(nil) options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+	builder := teamorchestration.TrustedOfferBuilderFunc(
+		func(
+			context.Context,
+			string,
+			string,
+		) (*teamplan.OfferSnapshot, error) {
+			return nil, teamorchestration.ErrInvalid
+		},
+	)
+	if err := WithTeamOfferBuilder(builder)(&options); err != nil ||
+		options.teamOffers == nil {
+		t.Fatalf(
+			"WithTeamOfferBuilder() options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+	if err := WithLoadedModelProfiles(nil)(&options); err == nil ||
+		options.modelProfiles != nil {
+		t.Fatalf(
+			"WithLoadedModelProfiles(nil) options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+	profiles, err := modelapi.NewProfileCatalog([]modelapi.Profile{{
+		ProfileID:       "deepseek-v4",
+		Provider:        modelapi.ProviderDeepSeek,
+		Model:           "deepseekv4-pro",
+		BaseURL:         "https://api.deepseek.example/v1",
+		SecretRef:       "mounted:deepseek-token",
+		ContextWindow:   65_536,
+		MaxOutputTokens: 8_192,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WithLoadedModelProfiles(profiles)(&options); err != nil ||
+		options.modelProfiles != profiles {
+		t.Fatalf(
+			"WithLoadedModelProfiles() options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+}

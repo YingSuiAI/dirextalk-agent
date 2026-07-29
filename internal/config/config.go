@@ -44,6 +44,8 @@ type Server struct {
 	RuntimeCatalogFile               string
 	RuntimeCatalogPublicKeyFile      string
 	TeamPolicyFile                   string
+	TeamModelOfferCatalogFile        string
+	TeamComputeCatalogFile           string
 	EnableAWSControl                 bool
 	EnableManagedPreparationAWS      bool
 	AWSReaperImageURI                string
@@ -93,6 +95,8 @@ func LoadServer() (Server, error) {
 		RuntimeCatalogFile:               strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_FILE")),
 		RuntimeCatalogPublicKeyFile:      strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE")),
 		TeamPolicyFile:                   strings.TrimSpace(os.Getenv("AGENT_TEAM_POLICY_FILE")),
+		TeamModelOfferCatalogFile:        strings.TrimSpace(os.Getenv("AGENT_TEAM_MODEL_OFFER_CATALOG_FILE")),
+		TeamComputeCatalogFile:           strings.TrimSpace(os.Getenv("AGENT_TEAM_COMPUTE_CATALOG_FILE")),
 		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
 		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
 		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
@@ -168,6 +172,14 @@ func LoadServer() (Server, error) {
 	if server.TeamPolicyFile != "" && server.RuntimeCatalogFile == "" {
 		return Server{}, errors.New("AGENT_TEAM_POLICY_FILE requires the signed Runtime Catalog")
 	}
+	if (server.TeamModelOfferCatalogFile == "") !=
+		(server.TeamComputeCatalogFile == "") {
+		return Server{}, errors.New("AGENT_TEAM_MODEL_OFFER_CATALOG_FILE and AGENT_TEAM_COMPUTE_CATALOG_FILE must be configured together")
+	}
+	teamPricingEnabled := server.TeamModelOfferCatalogFile != ""
+	if teamPricingEnabled && server.TeamPolicyFile == "" {
+		return Server{}, errors.New("Team pricing catalogs require AGENT_TEAM_POLICY_FILE")
+	}
 	if server.AWSReaperImageURI != "" {
 		lower := strings.ToLower(server.AWSReaperImageURI)
 		if !immutableOCIImagePattern.MatchString(server.AWSReaperImageURI) || strings.Contains(lower, ":latest@") || strings.Contains(lower, ":v1.0.3@") {
@@ -198,6 +210,11 @@ func LoadServer() (Server, error) {
 		if server.EnableManagedPreparationAWS && server.StagedWorkerControl {
 			return Server{}, errors.New("AGENT_ENABLE_MANAGED_PREPARATION_AWS requires AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")
 		}
+	} else if teamPricingEnabled {
+		return Server{}, errors.New("Team pricing catalogs require AGENT_ENABLE_AWS_CONTROL=true")
+	}
+	if teamPricingEnabled && server.StagedWorkerControl {
+		return Server{}, errors.New("Team pricing catalogs require complete Worker Control configuration")
 	}
 	return server, nil
 }

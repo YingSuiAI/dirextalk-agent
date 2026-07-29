@@ -330,6 +330,14 @@ func (service *Service) verifyCurrentPlan(
 		planFact.Plan.Revision != planRevision {
 		return PlanFact{}, nil, teamplan.Policy{}, ErrFactMismatch
 	}
+	if err := service.repository.VerifyConnectionScope(
+		ctx,
+		ownerID,
+		planFact.Plan.ProviderScope,
+		planFact.Plan.Region,
+	); err != nil {
+		return PlanFact{}, nil, teamplan.Policy{}, err
+	}
 	offerFact, err := service.repository.GetOffer(
 		ctx,
 		ownerID,

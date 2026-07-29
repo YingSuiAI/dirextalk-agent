@@ -83,6 +83,7 @@ type CloudComposition struct {
 	managedPreparationRecovery *managedPreparationRecoveryController
 	agentInstanceID            string
 	cloudGoalStore             *postgres.Store
+	resourceRuntime            *awsResourceRuntimeFactory
 	vault                      *awsfoundation.CredentialVault
 	rootHelperDeriver          *helperkey.DeterministicKeyDeriver
 }
@@ -770,6 +771,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		managedPreparationRecovery: managedPreparationRecovery,
 		agentInstanceID:            agentInstanceID,
 		cloudGoalStore:             store,
+		resourceRuntime:            runtimeFactory,
 		vault:                      vault,
 		rootHelperDeriver:          rootHelperDeriver,
 	}, nil

@@ -36,6 +36,12 @@ func TestModelOfferCatalogResolvesServerOwnedProfiles(t *testing.T) {
 		got.CredentialRef != "secret_ref:model/openai-codex" {
 		t.Fatalf("resolved offer = %#v", got)
 	}
+	if offers[1].sourceCredentialRef != "mounted:openai-codex" {
+		t.Fatalf(
+			"source credential reference = %q",
+			offers[1].sourceCredentialRef,
+		)
+	}
 }
 
 func TestModelOfferCatalogRejectsUntrustedMetadata(t *testing.T) {
@@ -46,6 +52,12 @@ func TestModelOfferCatalogRejectsUntrustedMetadata(t *testing.T) {
 		},
 		"duplicate profile": func(value *ModelOfferCatalogDocument) {
 			value.Offers[1].ProfileID = value.Offers[0].ProfileID
+		},
+		"ambiguous worker credential": func(
+			value *ModelOfferCatalogDocument,
+		) {
+			value.Offers[1].WorkerCredentialRef =
+				value.Offers[0].WorkerCredentialRef
 		},
 		"raw credential": func(value *ModelOfferCatalogDocument) {
 			value.Offers[0].WorkerCredentialRef =

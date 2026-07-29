@@ -55,12 +55,33 @@ func NewTeamComputePricingProvider(
 ) (*TeamComputePricingProvider, error) {
 	if pricing == nil || pricing.factory == nil || pricing.now == nil ||
 		scope.Validate() != nil ||
-		scope.Provider != teamplan.CloudProviderAWS ||
-		strings.TrimSpace(region) != region ||
+		scope.Provider != teamplan.CloudProviderAWS {
+		return nil, ErrInvalidTeamComputePricing
+	}
+	normalizedRegion, normalizedZones, normalizedShapes, err :=
+		normalizeTeamComputeRegion(region, zones, shapes)
+	if err != nil {
+		return nil, err
+	}
+	return &TeamComputePricingProvider{
+		pricing: pricing,
+		scope:   scope,
+		region:  normalizedRegion,
+		zones:   normalizedZones,
+		shapes:  normalizedShapes,
+	}, nil
+}
+
+func normalizeTeamComputeRegion(
+	region string,
+	zones []string,
+	shapes []TeamComputeShape,
+) (string, []string, []TeamComputeShape, error) {
+	if strings.TrimSpace(region) != region ||
 		!sdkRegionPattern.MatchString(region) ||
 		len(zones) == 0 || len(zones) > 16 ||
 		len(shapes) == 0 || len(shapes) > maximumTeamComputeShapes {
-		return nil, ErrInvalidTeamComputePricing
+		return "", nil, nil, ErrInvalidTeamComputePricing
 	}
 	normalizedZones := append([]string(nil), zones...)
 	slices.Sort(normalizedZones)
@@ -70,7 +91,7 @@ func NewTeamComputePricingProvider(
 			len(zone) != len(region)+1 ||
 			!strings.HasPrefix(zone, region) ||
 			(index > 0 && normalizedZones[index-1] == zone) {
-			return nil, ErrInvalidTeamComputePricing
+			return "", nil, nil, ErrInvalidTeamComputePricing
 		}
 	}
 
@@ -82,16 +103,10 @@ func NewTeamComputePricingProvider(
 			shape.DiskGiB < 8 || shape.DiskGiB > 64*1024 ||
 			(index > 0 &&
 				compareTeamComputeShapes(normalizedShapes[index-1], shape) == 0) {
-			return nil, ErrInvalidTeamComputePricing
+			return "", nil, nil, ErrInvalidTeamComputePricing
 		}
 	}
-	return &TeamComputePricingProvider{
-		pricing: pricing,
-		scope:   scope,
-		region:  region,
-		zones:   normalizedZones,
-		shapes:  normalizedShapes,
-	}, nil
+	return region, normalizedZones, normalizedShapes, nil
 }
 
 func (provider *TeamComputePricingProvider) ReadComputeOffers(

@@ -130,6 +130,12 @@ type Repository interface {
 		task.MutationScope,
 		PersistPreparedPlanCommand,
 	) (PreparedPlanFact, error)
+	VerifyConnectionScope(
+		context.Context,
+		string,
+		teamplan.ProviderScope,
+		string,
+	) error
 	GetOffer(context.Context, string, string) (OfferFact, error)
 	GetPlan(context.Context, string, string, uint64) (PlanFact, error)
 	PersistChallenge(

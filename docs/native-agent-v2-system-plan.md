@@ -942,16 +942,21 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
   AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
   Compute Adapter；不同实例类型共享同一 vCPU quota pool。Offer Snapshot、
   Team Plan 和设备签名现已共同绑定云厂商、Cloud Connection ID/revision、
-  AWS 账号和 Region，跨连接或跨账号复用会失败；尚未接入真实 Cloud
-  Connection factory、生产报价目录和长期模型凭据绑定。
+  AWS 账号和 Region，跨连接或跨账号复用会失败。受保护的模型报价和
+  Region/AZ/实例规格目录、逻辑 Worker SecretRef 到本机 mounted SecretRef 的
+  布尔就绪映射，以及 owner-scoped Cloud Connection/AssumeRole 只读报价构建器
+  已接入 Agent 启动组合；不完整目录、策略、AWS 或 Worker Control 配置会使
+  启动失败。形成 challenge、接受批准和执行交接还会重新核对当前 Agent
+  instance、owner、Connection 状态/revision、账号和 Region。尚未配置生产报价
+  目录，也未执行真实 AWS 报价调用。
 
 正在实现：
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- 实现受信构建器的真实 Cloud Connection reader、受保护算力目录和只读 AWS
-  配置工厂，把现有安全入口接入 Agent 启动组合；随后完成整单设备签名的 RPC、
-  Message Server 和 App 接入。
+- 在暴露 RPC 前，为重启后尚未批准的 Plan 增加当前模型报价目录、算力允许
+  目录和凭据就绪 revision 复核；随后完成整单设备签名的 RPC、Message Server
+  和 App 接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
 

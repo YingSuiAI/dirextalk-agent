@@ -163,6 +163,8 @@ func TestAgentComposeKeepsSignedRuntimeCatalogExplicitAndOptional(t *testing.T) 
 		"AGENT_RUNTIME_CATALOG_FILE: ${AGENT_RUNTIME_CATALOG_FILE:-}",
 		"AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE: ${AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE:-}",
 		"AGENT_TEAM_POLICY_FILE: ${AGENT_TEAM_POLICY_FILE:-}",
+		"AGENT_TEAM_MODEL_OFFER_CATALOG_FILE: ${AGENT_TEAM_MODEL_OFFER_CATALOG_FILE:-}",
+		"AGENT_TEAM_COMPUTE_CATALOG_FILE: ${AGENT_TEAM_COMPUTE_CATALOG_FILE:-}",
 	} {
 		if !strings.Contains(compose, required) {
 			t.Fatalf("compose.yaml is missing signed runtime catalog boundary %q", required)

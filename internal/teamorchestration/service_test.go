@@ -240,6 +240,16 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		t.Fatalf("substituted approval verification error=%v", err)
 	}
 	repository.approval = validApproval
+	repository.connectionErr = ErrFactMismatch
+	if _, err := service.VerifyApprovedPlan(
+		context.Background(),
+		request.OwnerID,
+		request.PlanID,
+		1,
+	); !errors.Is(err, ErrFactMismatch) {
+		t.Fatalf("changed Connection verification error=%v", err)
+	}
+	repository.connectionErr = nil
 	verified, err := service.VerifyApprovedPlan(
 		context.Background(),
 		request.OwnerID,
@@ -411,16 +421,36 @@ func (resolver *orchestrationPolicyResolverFixture) ResolveTeamPolicy(
 }
 
 type orchestrationRepositoryFixture struct {
-	offer          OfferFact
-	plan           PlanFact
-	prepareKey     string
-	connectionID   string
-	findCalls      int
-	prepareCalls   int
-	challengeCalls int
-	approvalCalls  int
-	tamperPlan     bool
-	approval       ApprovalFact
+	offer           OfferFact
+	plan            PlanFact
+	prepareKey      string
+	connectionID    string
+	findCalls       int
+	prepareCalls    int
+	challengeCalls  int
+	approvalCalls   int
+	connectionCalls int
+	connectionErr   error
+	tamperPlan      bool
+	approval        ApprovalFact
+}
+
+func (repository *orchestrationRepositoryFixture) VerifyConnectionScope(
+	_ context.Context,
+	ownerID string,
+	scope teamplan.ProviderScope,
+	region string,
+) error {
+	repository.connectionCalls++
+	if repository.connectionErr != nil {
+		return repository.connectionErr
+	}
+	if ownerID != repository.plan.Plan.OwnerID ||
+		scope != repository.plan.Plan.ProviderScope ||
+		region != repository.plan.Plan.Region {
+		return ErrFactMismatch
+	}
+	return nil
 }
 
 func newOrchestrationRepositoryFixture() *orchestrationRepositoryFixture {

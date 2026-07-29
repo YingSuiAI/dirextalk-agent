@@ -247,7 +247,12 @@ func (store *Store) completeFoundationOperation(ctx context.Context, operationID
 		return cloudapp.FoundationOperation{}, cloudapp.ErrUnavailable
 	}
 	if result.RowsAffected() == 0 {
-		existing, loadErr := readCloudConnection(ctx, tx, connection.ConnectionID)
+		existing, loadErr := readCloudConnectionForAgent(
+			ctx,
+			tx,
+			store.instanceID,
+			connection.ConnectionID,
+		)
 		if loadErr != nil || existing != connection {
 			return cloudapp.FoundationOperation{}, cloudapp.ErrRevisionConflict
 		}
@@ -365,12 +370,22 @@ func scanFoundationOperation(row rowScanner) (cloudapp.FoundationOperation, erro
 	return operation, nil
 }
 
-func readCloudConnection(ctx context.Context, query interface {
+func readCloudConnectionForAgent(ctx context.Context, query interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
-}, connectionID string) (cloudapp.Connection, error) {
+}, agentInstanceID uuid.UUID, connectionID string) (cloudapp.Connection, error) {
+	return scanCloudConnection(query.QueryRow(ctx, `
+		SELECT connection_id, owner_id, account_id, region, control_role_arn,
+		       foundation_stack_id, status, revision
+		FROM cloud_connections
+		WHERE agent_instance_id=$1 AND connection_id=$2`,
+		agentInstanceID,
+		connectionID,
+	))
+}
+
+func scanCloudConnection(row pgx.Row) (cloudapp.Connection, error) {
 	var value cloudapp.Connection
-	if err := query.QueryRow(ctx, `SELECT connection_id, owner_id, account_id, region, control_role_arn,
-		foundation_stack_id, status, revision FROM cloud_connections WHERE connection_id=$1`, connectionID).Scan(
+	if err := row.Scan(
 		&value.ConnectionID, &value.OwnerID, &value.AccountID, &value.Region, &value.ControlRoleARN,
 		&value.FoundationStack, &value.Status, &value.Revision); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

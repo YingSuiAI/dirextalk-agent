@@ -223,6 +223,28 @@ func (store *Store) GetTeamOfferSnapshot(
 	return record, nil
 }
 
+func (store *Store) VerifyTeamConnectionScope(
+	ctx context.Context,
+	ownerID string,
+	scope teamplan.ProviderScope,
+	region string,
+) error {
+	if store == nil || store.pool == nil || ctx == nil ||
+		ownerID != strings.TrimSpace(ownerID) || ownerID == "" ||
+		scope.Validate() != nil ||
+		region != strings.TrimSpace(region) || region == "" {
+		return ErrTeamFactInvalid
+	}
+	return verifyTeamConnectionScope(
+		ctx,
+		store.pool,
+		store.instanceID,
+		ownerID,
+		scope,
+		region,
+	)
+}
+
 type teamOfferSnapshotQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }

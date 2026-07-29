@@ -17,17 +17,21 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeworker"
+	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/scheduling"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
 )
@@ -156,6 +160,21 @@ func serve() error {
 	}
 	var teamPlanCompiler *teamplan.CatalogCompiler
 	var teamPolicyResolver *teamorchestration.StaticPolicyResolver
+	modelProfiles, err := modelapi.LoadProfileCatalog(
+		serverConfig.ModelProfilesFile,
+	)
+	if err != nil {
+		return errors.New("could not load model profile catalog")
+	}
+	mountedSecrets, err := secretref.NewMountedResolver(
+		serverConfig.MountedSecretsDir,
+	)
+	if err != nil {
+		return errors.New("could not initialize mounted runtime secrets")
+	}
+	var teamModelOffers *teampricing.ModelOfferCatalog
+	var teamComputeCatalog *awsprovider.TeamComputeCatalog
+	var teamCredentialReadiness *teampricing.CatalogCredentialReadiness
 	if serverConfig.RuntimeCatalogFile != "" {
 		runtimeCatalog, loadErr := teamplan.LoadRuntimeCatalog(
 			serverConfig.RuntimeCatalogFile,
@@ -176,6 +195,29 @@ func serve() error {
 			)
 		if err != nil {
 			return errors.New("could not load protected Team Plan policy")
+		}
+	}
+	if serverConfig.TeamModelOfferCatalogFile != "" {
+		teamModelOffers, err = teampricing.LoadModelOfferCatalog(
+			serverConfig.TeamModelOfferCatalogFile,
+			modelProfiles,
+		)
+		if err != nil {
+			return errors.New("could not load protected Team model offer catalog")
+		}
+		teamComputeCatalog, err = awsprovider.LoadTeamComputeCatalog(
+			serverConfig.TeamComputeCatalogFile,
+		)
+		if err != nil {
+			return errors.New("could not load protected Team compute catalog")
+		}
+		teamCredentialReadiness, err =
+			teampricing.NewCatalogCredentialReadiness(
+				teamModelOffers,
+				mountedSecrets,
+			)
+		if err != nil {
+			return errors.New("could not initialize Team model credential readiness")
 		}
 	}
 	pepper, err := config.ReadKeyMaterial(serverConfig.PepperFile)
@@ -308,8 +350,12 @@ func serve() error {
 			}
 		}
 	}
-	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 4)
-	runtimeOptions = append(runtimeOptions, app.WithLocalRunBudget(runBudget))
+	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 7)
+	runtimeOptions = append(
+		runtimeOptions,
+		app.WithLocalRunBudget(runBudget),
+		app.WithLoadedModelProfiles(modelProfiles),
+	)
 	if teamPlanCompiler != nil {
 		runtimeOptions = append(
 			runtimeOptions,
@@ -324,6 +370,24 @@ func serve() error {
 	}
 	if cloudComposition != nil {
 		runtimeOptions = append(runtimeOptions, app.WithCloudGoalMaterializer(cloudComposition.ProviderPlans))
+	}
+	if teamModelOffers != nil {
+		if cloudComposition == nil {
+			return errors.New("Team pricing requires complete AWS cloud composition")
+		}
+		teamOfferBuilder, builderErr :=
+			cloudComposition.NewTeamOfferBuilder(
+				teamModelOffers,
+				teamCredentialReadiness,
+				teamComputeCatalog,
+			)
+		if builderErr != nil {
+			return errors.New("could not initialize trusted Team offer builder")
+		}
+		runtimeOptions = append(
+			runtimeOptions,
+			app.WithTeamOfferBuilder(teamOfferBuilder),
+		)
 	}
 	runtimeComposition, err := app.NewRuntimeComposition(
 		store, serverConfig.InstanceID, serverConfig.MountedSecretsDir, serverConfig.ModelProfilesFile, serverConfig.MCPServersFile,

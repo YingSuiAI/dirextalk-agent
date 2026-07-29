@@ -6,6 +6,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 )
 
 // TeamOrchestrationRepository is the narrow application adapter. RPC and
@@ -98,6 +99,23 @@ func (repository *TeamOrchestrationRepository) GetOffer(
 		Digest:    record.Digest,
 		CreatedAt: record.CreatedAt,
 	}, nil
+}
+
+func (repository *TeamOrchestrationRepository) VerifyConnectionScope(
+	ctx context.Context,
+	ownerID string,
+	scope teamplan.ProviderScope,
+	region string,
+) error {
+	if repository == nil || repository.store == nil {
+		return teamorchestration.ErrInvalid
+	}
+	return repository.store.VerifyTeamConnectionScope(
+		ctx,
+		ownerID,
+		scope,
+		region,
+	)
 }
 
 func (repository *TeamOrchestrationRepository) GetPlan(

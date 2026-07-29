@@ -68,7 +68,8 @@ type ModelOfferCatalogDocument struct {
 }
 
 type catalogOffer struct {
-	offer teamplan.ModelOffer
+	offer               teamplan.ModelOffer
+	sourceCredentialRef string
 }
 
 // ModelOfferCatalog is immutable after construction.
@@ -139,6 +140,7 @@ func NewModelOfferCatalog(
 
 	usedSources := make(map[string]struct{}, len(sources))
 	seenProfiles := make(map[string]struct{}, len(document.Offers))
+	credentialSources := make(map[string]string, len(document.Offers))
 	offers := make([]catalogOffer, 0, len(document.Offers))
 	for _, entry := range document.Offers {
 		entry.ProfileID = strings.ToLower(strings.TrimSpace(entry.ProfileID))
@@ -159,6 +161,9 @@ func NewModelOfferCatalog(
 		})
 		if err != nil || !compatibleInterface(profile.Provider, entry.Interface) ||
 			profile.ContextWindow < 1024 {
+			return nil, ErrInvalidModelCatalog
+		}
+		if source, exists := credentialSources[entry.WorkerCredentialRef]; exists && source != profile.SecretRef {
 			return nil, ErrInvalidModelCatalog
 		}
 		if entry.Quality != teamplan.QualityEconomy &&
@@ -190,8 +195,12 @@ func NewModelOfferCatalog(
 			}
 		}
 		seenProfiles[entry.ProfileID] = struct{}{}
+		credentialSources[entry.WorkerCredentialRef] = profile.SecretRef
 		usedSources[entry.SourceID] = struct{}{}
-		offers = append(offers, catalogOffer{offer: offer})
+		offers = append(offers, catalogOffer{
+			offer:               offer,
+			sourceCredentialRef: profile.SecretRef,
+		})
 	}
 	if len(usedSources) != len(sources) {
 		return nil, ErrInvalidModelCatalog

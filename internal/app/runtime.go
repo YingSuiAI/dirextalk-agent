@@ -33,6 +33,7 @@ type RuntimeComposition struct {
 	CloudGoalDispatcher *planning.CloudGoalDispatcher
 	TeamPlans           *teamplan.CatalogCompiler
 	TeamOrchestrator    *teamorchestration.Service
+	TeamPreparation     *teamorchestration.PreparationService
 }
 
 type runtimeCompositionOptions struct {
@@ -41,6 +42,8 @@ type runtimeCompositionOptions struct {
 	localRunBudget        *scheduling.RunBudget
 	teamPlans             *teamplan.CatalogCompiler
 	teamPolicies          teamorchestration.PolicyResolver
+	teamOffers            teamorchestration.TrustedOfferBuilder
+	modelProfiles         *modelapi.ProfileCatalog
 }
 
 // WithCloudGoalMaterializer enables the production queued planning path. The
@@ -84,6 +87,35 @@ func WithTeamPolicyResolver(
 			return errors.New("Team Plan policy resolver is unavailable")
 		}
 		options.teamPolicies = resolver
+		return nil
+	}
+}
+
+// WithTeamOfferBuilder enables server-owned Team Plan preparation. The
+// builder accepts only owner plus Cloud Connection identity and derives every
+// provider, pricing, capacity, model, and compute fact internally.
+func WithTeamOfferBuilder(
+	builder teamorchestration.TrustedOfferBuilder,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || builder == nil {
+			return errors.New("trusted Team offer builder is unavailable")
+		}
+		options.teamOffers = builder
+		return nil
+	}
+}
+
+// WithLoadedModelProfiles reuses one already-validated immutable Profile
+// catalog across runtime execution and Team pricing startup.
+func WithLoadedModelProfiles(
+	profiles *modelapi.ProfileCatalog,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || profiles == nil {
+			return errors.New("model profile catalog is unavailable")
+		}
+		options.modelProfiles = profiles
 		return nil
 	}
 }
@@ -135,6 +167,10 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if options.teamPolicies != nil && options.teamPlans == nil {
 		return RuntimeComposition{}, errors.New("Team Plan policy requires a verified runtime catalog")
 	}
+	if options.teamOffers != nil &&
+		(options.teamPolicies == nil || options.teamPlans == nil) {
+		return RuntimeComposition{}, errors.New("Team offer builder requires the verified Team Plan gate")
+	}
 	var runtimeAdmission runtimeapp.Admission
 	var cloudGoalAdmission planning.CloudGoalAdmission
 	if options.localRunBudget != nil {
@@ -147,9 +183,12 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 			return RuntimeComposition{}, errors.New("background Agent run admission is unavailable")
 		}
 	}
-	modelProfiles, err := modelapi.LoadProfileCatalog(modelProfilesFile)
-	if err != nil {
-		return RuntimeComposition{}, errors.New("model profile catalog is unavailable")
+	modelProfiles := options.modelProfiles
+	if modelProfiles == nil {
+		modelProfiles, err = modelapi.LoadProfileCatalog(modelProfilesFile)
+		if err != nil {
+			return RuntimeComposition{}, errors.New("model profile catalog is unavailable")
+		}
 	}
 	secrets, err := secretref.NewMountedResolver(mountedSecretsDir)
 	if err != nil {
@@ -244,6 +283,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}
 	var teamOrchestrator *teamorchestration.Service
+	var teamPreparation *teamorchestration.PreparationService
 	if options.teamPolicies != nil {
 		teamRepository, repositoryErr :=
 			postgres.NewTeamOrchestrationRepository(store)
@@ -259,11 +299,21 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		if repositoryErr != nil {
 			return RuntimeComposition{}, errors.New("Team Plan orchestrator is unavailable")
 		}
+		if options.teamOffers != nil {
+			teamPreparation, repositoryErr =
+				teamorchestration.NewPreparationService(
+					teamOrchestrator,
+					options.teamOffers,
+				)
+			if repositoryErr != nil {
+				return RuntimeComposition{}, errors.New("Team Plan preparation is unavailable")
+			}
+		}
 	}
 	return RuntimeComposition{
 		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,
 		CloudGoalDispatcher: cloudGoalDispatcher, TeamPlans: options.teamPlans,
-		TeamOrchestrator: teamOrchestrator,
+		TeamOrchestrator: teamOrchestrator, TeamPreparation: teamPreparation,
 	}, nil
 }
 
