@@ -930,7 +930,9 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
 - 受保护的静态 Team Policy、Plan 绑定的策略摘要和 Agent 内部
   `teamorchestration` 应用门禁；形成 challenge、接受批准或启动 Worker 前都会
   重新核验当前 Runtime Catalog、Team Policy、报价快照、云身份和永久审批签名。
-  该服务已接入 Agent 启动组合，但尚未暴露 RPC。
+  Plan 准备以稳定请求为幂等依据，在一个 PostgreSQL 事务内原子写入 Offer
+  Snapshot、Plan、事件和回放结果；重试先读回当前 Plan 状态，不重新报价，也
+  不会产生孤立 Snapshot。该服务已接入 Agent 启动组合，但尚未暴露 RPC。
 - 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层。
 - 严格受保护的模型报价目录、凭据布尔就绪端口、报价快照组装服务，以及读取
   AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
@@ -943,9 +945,9 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- Plan v3 准备操作的事务化幂等持久化，以及整单设备签名的 RPC、Message
-  Server 和 App 接入；在 Offer Snapshot 与 Plan 不能原子提交和可靠重放前，
-  不开放公网或产品 RPC。
+- 按 Cloud Connection 构造可信报价服务，把受约束 Team Proposal、报价组装
+  和事务化 Plan 准备收敛为一个内部用例；随后完成整单设备签名的 RPC、
+  Message Server 和 App 接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
 

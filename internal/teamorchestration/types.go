@@ -71,17 +71,32 @@ type ApprovalFact struct {
 	CreatedAt  time.Time
 }
 
-type PersistOfferCommand struct {
-	IdempotencyKey string
-	OwnerID        string
-	Snapshot       *teamplan.OfferSnapshot
+type PreparationIntent struct {
+	OwnerID                  string
+	TaskID                   string
+	PlanID                   string
+	Revision                 uint64
+	ExpectedPreviousRevision uint64
+	GoalDigest               string
+	Proposal                 teamplan.TeamProposal
 }
 
-type PersistPlanCommand struct {
-	IdempotencyKey           string
-	TaskID                   string
-	ExpectedPreviousRevision uint64
-	Plan                     teamplan.Plan
+type PreparedPlanFact struct {
+	Offer    OfferFact
+	Plan     PlanFact
+	Replayed bool
+}
+
+type FindPreparedPlanCommand struct {
+	IdempotencyKey string
+	Intent         PreparationIntent
+}
+
+type PersistPreparedPlanCommand struct {
+	IdempotencyKey string
+	Intent         PreparationIntent
+	Offers         *teamplan.OfferSnapshot
+	Plan           teamplan.Plan
 }
 
 type PersistChallengeCommand struct {
@@ -104,17 +119,17 @@ type PersistApprovalCommand struct {
 }
 
 type Repository interface {
-	PersistOffer(
+	FindPreparedPlan(
 		context.Context,
 		task.MutationScope,
-		PersistOfferCommand,
-	) (OfferFact, error)
+		FindPreparedPlanCommand,
+	) (PreparedPlanFact, bool, error)
+	PersistPreparedPlan(
+		context.Context,
+		task.MutationScope,
+		PersistPreparedPlanCommand,
+	) (PreparedPlanFact, error)
 	GetOffer(context.Context, string, string) (OfferFact, error)
-	PersistPlan(
-		context.Context,
-		task.MutationScope,
-		PersistPlanCommand,
-	) (PlanFact, error)
 	GetPlan(context.Context, string, string, uint64) (PlanFact, error)
 	PersistChallenge(
 		context.Context,

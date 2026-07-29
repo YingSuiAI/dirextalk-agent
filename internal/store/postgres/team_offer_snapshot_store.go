@@ -39,15 +39,6 @@ func (store *Store) CreateTeamOfferSnapshot(
 		return TeamOfferSnapshotRecord{}, err
 	}
 	snapshotID, _ := uuid.Parse(command.Snapshot.SnapshotID())
-	document := command.Snapshot.Document()
-	documentJSON, err := json.Marshal(document)
-	if err != nil {
-		return TeamOfferSnapshotRecord{}, ErrTeamFactInvalid
-	}
-	documentCBOR, err := command.Snapshot.CanonicalCBOR()
-	if err != nil {
-		return TeamOfferSnapshotRecord{}, ErrTeamFactInvalid
-	}
 
 	tx, err := store.pool.BeginTx(
 		ctx,
@@ -85,7 +76,50 @@ func (store *Store) CreateTeamOfferSnapshot(
 		}
 		return record, nil
 	}
+	record, err := store.createTeamOfferSnapshotTx(ctx, tx, command)
+	if err != nil {
+		return TeamOfferSnapshotRecord{}, err
+	}
+	if err := setScopedIdempotencyResponse(
+		ctx,
+		tx,
+		caller,
+		createTeamOfferSnapshotOperation,
+		command.IdempotencyKey,
+		teamOfferSnapshotReplay{
+			SchemaVersion: teamFactSnapshotSchemaV1,
+			Record:        record,
+		},
+	); err != nil {
+		return TeamOfferSnapshotRecord{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TeamOfferSnapshotRecord{}, fmt.Errorf(
+			"commit create Team Offer Snapshot: %w",
+			err,
+		)
+	}
+	return record, nil
+}
 
+func (store *Store) createTeamOfferSnapshotTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	command CreateTeamOfferSnapshotCommand,
+) (TeamOfferSnapshotRecord, error) {
+	if err := command.validate(); err != nil {
+		return TeamOfferSnapshotRecord{}, err
+	}
+	snapshotID, _ := uuid.Parse(command.Snapshot.SnapshotID())
+	document := command.Snapshot.Document()
+	documentJSON, err := json.Marshal(document)
+	if err != nil {
+		return TeamOfferSnapshotRecord{}, ErrTeamFactInvalid
+	}
+	documentCBOR, err := command.Snapshot.CanonicalCBOR()
+	if err != nil {
+		return TeamOfferSnapshotRecord{}, ErrTeamFactInvalid
+	}
 	var databaseNow time.Time
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(
 		&databaseNow,
@@ -157,25 +191,6 @@ func (store *Store) CreateTeamOfferSnapshot(
 		)
 	}
 	record.CreatedAt = record.CreatedAt.UTC()
-	if err := setScopedIdempotencyResponse(
-		ctx,
-		tx,
-		caller,
-		createTeamOfferSnapshotOperation,
-		command.IdempotencyKey,
-		teamOfferSnapshotReplay{
-			SchemaVersion: teamFactSnapshotSchemaV1,
-			Record:        record,
-		},
-	); err != nil {
-		return TeamOfferSnapshotRecord{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return TeamOfferSnapshotRecord{}, fmt.Errorf(
-			"commit create Team Offer Snapshot: %w",
-			err,
-		)
-	}
 	return record, nil
 }
 

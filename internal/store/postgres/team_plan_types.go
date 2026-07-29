@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,6 +84,155 @@ type TeamApprovalRecord struct {
 	Signature  teamapproval.SignatureV1 `json:"signature"`
 	ApprovedAt time.Time                `json:"approved_at"`
 	CreatedAt  time.Time                `json:"created_at"`
+}
+
+type TeamPlanPreparationIntent struct {
+	OwnerID                  string                `json:"owner_id"`
+	TaskID                   string                `json:"task_id,omitempty"`
+	PlanID                   string                `json:"plan_id"`
+	Revision                 uint64                `json:"revision"`
+	ExpectedPreviousRevision uint64                `json:"expected_previous_revision"`
+	GoalDigest               string                `json:"goal_digest"`
+	Proposal                 teamplan.TeamProposal `json:"proposal"`
+}
+
+func (intent TeamPlanPreparationIntent) validate() error {
+	if !validTeamOwnerID(intent.OwnerID) ||
+		!canonicalTeamUUID(intent.PlanID) ||
+		intent.Revision == 0 ||
+		intent.Revision > uint64(math.MaxInt64) ||
+		!teamDigestPattern.MatchString(intent.GoalDigest) ||
+		intent.Proposal.Confidence == 0 ||
+		intent.Proposal.Confidence > 100 ||
+		len(intent.Proposal.Rationale) == 0 ||
+		len(intent.Proposal.Rationale) > 4096 ||
+		len(intent.Proposal.Roles) == 0 ||
+		len(intent.Proposal.Roles) > 8 {
+		return ErrTeamFactInvalid
+	}
+	if intent.Revision == 1 {
+		if intent.ExpectedPreviousRevision != 0 {
+			return ErrTeamFactInvalid
+		}
+	} else if intent.ExpectedPreviousRevision != intent.Revision-1 {
+		return ErrTeamFactInvalid
+	}
+	if intent.TaskID != "" && !canonicalTeamUUID(intent.TaskID) {
+		return ErrTeamFactInvalid
+	}
+	for _, role := range intent.Proposal.Roles {
+		if len(role.RoleID) == 0 || len(role.RoleID) > 64 ||
+			len(role.Title) == 0 || len(role.Title) > 160 ||
+			len(role.Objective) == 0 || len(role.Objective) > 8192 ||
+			len(role.RequiredCapabilities) == 0 ||
+			len(role.RequiredCapabilities) > 24 ||
+			len(role.PreferredFamilies) > 8 ||
+			len(role.DependsOnRoleIDs) > 7 {
+			return ErrTeamFactInvalid
+		}
+	}
+	return nil
+}
+
+func (intent TeamPlanPreparationIntent) digest() ([sha256.Size]byte, error) {
+	if err := intent.validate(); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return teamMutationDigest(intent)
+}
+
+type PreparedTeamPlanRecord struct {
+	Offer    TeamOfferSnapshotRecord `json:"offer"`
+	Plan     TeamPlanRecord          `json:"plan"`
+	Replayed bool                    `json:"replayed"`
+}
+
+type FindPreparedTeamPlanCommand struct {
+	IdempotencyKey string
+	Intent         TeamPlanPreparationIntent
+}
+
+func (command FindPreparedTeamPlanCommand) validate() error {
+	if err := validateTeamMutationKey(command.IdempotencyKey); err != nil {
+		return err
+	}
+	return command.Intent.validate()
+}
+
+type PrepareTeamPlanCommand struct {
+	IdempotencyKey string
+	Intent         TeamPlanPreparationIntent
+	Snapshot       *teamplan.OfferSnapshot
+	Plan           teamplan.Plan
+}
+
+func (command PrepareTeamPlanCommand) validate() error {
+	if err := validateTeamMutationKey(command.IdempotencyKey); err != nil {
+		return err
+	}
+	if err := command.Intent.validate(); err != nil ||
+		command.Snapshot == nil ||
+		command.Plan.Validate() != nil ||
+		command.Plan.OwnerID != command.Intent.OwnerID ||
+		command.Plan.PlanID != command.Intent.PlanID ||
+		command.Plan.Revision != command.Intent.Revision ||
+		command.Plan.GoalDigest != command.Intent.GoalDigest ||
+		command.Plan.PricingSnapshotID != command.Snapshot.SnapshotID() ||
+		command.Plan.PricingSnapshotDigest != command.Snapshot.Digest() ||
+		command.Plan.ProviderScope != command.Snapshot.ProviderScope() ||
+		command.Plan.Region != command.Snapshot.Region() ||
+		command.Plan.ProposalConfidence != command.Intent.Proposal.Confidence ||
+		command.Plan.ProposalRationale != command.Intent.Proposal.Rationale ||
+		!teamPlanMatchesPreparationIntent(command.Plan, command.Intent) {
+		return ErrTeamFactInvalid
+	}
+	return nil
+}
+
+func teamPlanMatchesPreparationIntent(
+	plan teamplan.Plan,
+	intent TeamPlanPreparationIntent,
+) bool {
+	if plan.WorkerCount != uint32(len(intent.Proposal.Roles)) {
+		return false
+	}
+	assignments := make(
+		map[string]teamplan.WorkerAssignment,
+		len(plan.Assignments),
+	)
+	for _, assignment := range plan.Assignments {
+		assignments[assignment.RoleID] = assignment
+	}
+	for _, role := range intent.Proposal.Roles {
+		assignment, exists := assignments[role.RoleID]
+		required := append(
+			[]teamplan.Capability(nil),
+			role.RequiredCapabilities...,
+		)
+		dependencies := append(
+			[]string(nil),
+			role.DependsOnRoleIDs...,
+		)
+		slices.Sort(required)
+		slices.Sort(dependencies)
+		if !exists ||
+			assignment.Title != role.Title ||
+			assignment.Objective != role.Objective ||
+			assignment.WorkClass != role.WorkClass ||
+			!slices.Equal(assignment.RequiredCapabilities, required) ||
+			assignment.Workspace != role.Workspace ||
+			!slices.Equal(assignment.DependsOnRoleIDs, dependencies) ||
+			assignment.Duration != role.Duration ||
+			assignment.Tokens != role.Tokens ||
+			assignment.Resources.VCPU < role.MinimumResources.VCPU ||
+			assignment.Resources.MemoryMiB < role.MinimumResources.MemoryMiB ||
+			assignment.Resources.DiskGiB < role.MinimumResources.DiskGiB ||
+			role.MinimumResources.Arch != "" &&
+				assignment.Resources.Arch != role.MinimumResources.Arch {
+			return false
+		}
+	}
+	return true
 }
 
 type CreateTeamOfferSnapshotCommand struct {

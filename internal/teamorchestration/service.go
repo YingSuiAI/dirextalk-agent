@@ -2,6 +2,7 @@ package teamorchestration
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 
@@ -9,8 +10,6 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 )
-
-const orchestrationIdempotencyDomain = "dirextalk.agent.team-orchestration/v1"
 
 type Service struct {
 	compiler   PlanCompiler
@@ -51,8 +50,29 @@ func (service *Service) PreparePlan(
 	if service == nil ||
 		ctx == nil ||
 		scope.Validate() != nil ||
-		!canonicalUUID(request.IdempotencyKey) ||
-		request.Offers == nil {
+		!canonicalUUID(request.IdempotencyKey) {
+		return PlanFact{}, ErrInvalid
+	}
+	intent := preparationIntent(request)
+	replayed, found, err := service.repository.FindPreparedPlan(
+		ctx,
+		scope,
+		FindPreparedPlanCommand{
+			IdempotencyKey: request.IdempotencyKey,
+			Intent:         intent,
+		},
+	)
+	if err != nil {
+		return PlanFact{}, err
+	}
+	if found {
+		if !replayed.Replayed ||
+			!preparedPlanMatchesIntent(replayed, intent) {
+			return PlanFact{}, ErrFactMismatch
+		}
+		return replayed.Plan, nil
+	}
+	if request.Offers == nil {
 		return PlanFact{}, ErrInvalid
 	}
 	policy, err := service.resolvePolicy(ctx, request.OwnerID)
@@ -84,49 +104,34 @@ func (service *Service) PreparePlan(
 	); err != nil {
 		return PlanFact{}, err
 	}
-	offerFact, err := service.repository.PersistOffer(
+	prepared, err := service.repository.PersistPreparedPlan(
 		ctx,
 		scope,
-		PersistOfferCommand{
-			IdempotencyKey: deriveIdempotencyKey(
-				request.IdempotencyKey,
-				"offer",
-			),
-			OwnerID:  request.OwnerID,
-			Snapshot: request.Offers,
+		PersistPreparedPlanCommand{
+			IdempotencyKey: request.IdempotencyKey,
+			Intent:         intent,
+			Offers:         request.Offers,
+			Plan:           plan,
 		},
 	)
 	if err != nil {
 		return PlanFact{}, err
 	}
-	if !sameOfferFact(offerFact, request.OwnerID, request.Offers) {
+	if !preparedPlanMatchesIntent(prepared, intent) {
 		return PlanFact{}, ErrFactMismatch
 	}
-	planFact, err := service.repository.PersistPlan(
-		ctx,
-		scope,
-		PersistPlanCommand{
-			IdempotencyKey: deriveIdempotencyKey(
-				request.IdempotencyKey,
-				"plan",
-			),
-			TaskID:                   request.TaskID,
-			ExpectedPreviousRevision: request.ExpectedPreviousRevision,
-			Plan:                     plan,
-		},
-	)
-	if err != nil {
-		return PlanFact{}, err
+	if prepared.Replayed {
+		return prepared.Plan, nil
 	}
 	if !samePlanFact(
-		planFact,
+		prepared.Plan,
 		request.TaskID,
 		plan,
 		PlanReadyForConfirmation,
-	) {
+	) || !sameOfferFact(prepared.Offer, request.OwnerID, request.Offers) {
 		return PlanFact{}, ErrFactMismatch
 	}
-	return planFact, nil
+	return prepared.Plan, nil
 }
 
 func (service *Service) CreateChallenge(
@@ -396,20 +401,84 @@ func samePlanFact(
 		fact.Plan.PolicyRevision == plan.PolicyRevision
 }
 
-func deriveIdempotencyKey(root, purpose string) string {
-	parsed, err := uuid.Parse(root)
-	if err != nil || parsed == uuid.Nil {
-		return ""
-	}
-	return uuid.NewSHA1(
-		parsed,
-		[]byte(orchestrationIdempotencyDomain+"\x00"+purpose),
-	).String()
-}
-
 func canonicalUUID(value string) bool {
 	parsed, err := uuid.Parse(value)
 	return err == nil && parsed != uuid.Nil && parsed.String() == value
 }
 
 var _ PlanCompiler = (*teamplan.CatalogCompiler)(nil)
+
+func preparationIntent(request PreparePlanRequest) PreparationIntent {
+	return PreparationIntent{
+		OwnerID:                  request.OwnerID,
+		TaskID:                   request.TaskID,
+		PlanID:                   request.PlanID,
+		Revision:                 request.Revision,
+		ExpectedPreviousRevision: request.ExpectedPreviousRevision,
+		GoalDigest:               request.GoalDigest,
+		Proposal:                 request.Proposal,
+	}
+}
+
+func preparedPlanMatchesIntent(
+	prepared PreparedPlanFact,
+	intent PreparationIntent,
+) bool {
+	plan := prepared.Plan.Plan
+	if !samePlanFact(
+		prepared.Plan,
+		intent.TaskID,
+		plan,
+		prepared.Plan.Status,
+	) ||
+		prepared.Offer.OwnerID != intent.OwnerID ||
+		plan.OwnerID != intent.OwnerID ||
+		plan.PlanID != intent.PlanID ||
+		plan.Revision != intent.Revision ||
+		plan.GoalDigest != intent.GoalDigest ||
+		plan.ProposalConfidence != intent.Proposal.Confidence ||
+		plan.ProposalRationale != intent.Proposal.Rationale ||
+		plan.WorkerCount != uint32(len(intent.Proposal.Roles)) ||
+		plan.PricingSnapshotID != prepared.Offer.Document.SnapshotID ||
+		plan.PricingSnapshotDigest != prepared.Offer.Digest {
+		return false
+	}
+	assignments := make(
+		map[string]teamplan.WorkerAssignment,
+		len(plan.Assignments),
+	)
+	for _, assignment := range plan.Assignments {
+		assignments[assignment.RoleID] = assignment
+	}
+	for _, role := range intent.Proposal.Roles {
+		assignment, exists := assignments[role.RoleID]
+		required := append(
+			[]teamplan.Capability(nil),
+			role.RequiredCapabilities...,
+		)
+		dependencies := append(
+			[]string(nil),
+			role.DependsOnRoleIDs...,
+		)
+		slices.Sort(required)
+		slices.Sort(dependencies)
+		if !exists ||
+			assignment.Title != role.Title ||
+			assignment.Objective != role.Objective ||
+			assignment.WorkClass != role.WorkClass ||
+			!slices.Equal(assignment.RequiredCapabilities, required) ||
+			assignment.Workspace != role.Workspace ||
+			!slices.Equal(assignment.DependsOnRoleIDs, dependencies) ||
+			assignment.Duration != role.Duration ||
+			assignment.Tokens != role.Tokens ||
+			assignment.Resources.VCPU < role.MinimumResources.VCPU ||
+			assignment.Resources.MemoryMiB < role.MinimumResources.MemoryMiB ||
+			assignment.Resources.DiskGiB < role.MinimumResources.DiskGiB ||
+			role.MinimumResources.Arch != "" &&
+				assignment.Resources.Arch != role.MinimumResources.Arch {
+			return false
+		}
+	}
+	_, err := prepared.Offer.Snapshot()
+	return err == nil
+}

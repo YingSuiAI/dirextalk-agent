@@ -63,17 +63,43 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		compiler.compileCalls != 1 ||
 		compiler.verifyCalls != 1 ||
 		resolver.calls != 1 ||
-		repository.offerKey == request.IdempotencyKey ||
-		repository.planKey == request.IdempotencyKey ||
-		repository.offerKey == repository.planKey {
+		repository.findCalls != 1 ||
+		repository.prepareCalls != 1 ||
+		repository.prepareKey != request.IdempotencyKey {
 		t.Fatalf(
-			"prepared=%#v compiler=%d/%d policy=%d keys=%q/%q",
+			"prepared=%#v compiler=%d/%d policy=%d repository=%d/%d key=%q",
 			planFact,
 			compiler.compileCalls,
 			compiler.verifyCalls,
 			resolver.calls,
-			repository.offerKey,
-			repository.planKey,
+			repository.findCalls,
+			repository.prepareCalls,
+			repository.prepareKey,
+		)
+	}
+	replayRequest := request
+	replayRequest.Offers = nil
+	replayedPlan, err := service.PreparePlan(
+		context.Background(),
+		scope,
+		replayRequest,
+	)
+	if err != nil ||
+		replayedPlan.PlanDigest != planFact.PlanDigest ||
+		compiler.compileCalls != 1 ||
+		compiler.verifyCalls != 1 ||
+		resolver.calls != 1 ||
+		repository.findCalls != 2 ||
+		repository.prepareCalls != 1 {
+		t.Fatalf(
+			"replayed=%#v error=%v compiler=%d/%d policy=%d repository=%d/%d",
+			replayedPlan,
+			err,
+			compiler.compileCalls,
+			compiler.verifyCalls,
+			resolver.calls,
+			repository.findCalls,
+			repository.prepareCalls,
 		)
 	}
 	if _, err := service.VerifyApprovedPlan(
@@ -296,8 +322,9 @@ func (resolver *orchestrationPolicyResolverFixture) ResolveTeamPolicy(
 type orchestrationRepositoryFixture struct {
 	offer          OfferFact
 	plan           PlanFact
-	offerKey       string
-	planKey        string
+	prepareKey     string
+	findCalls      int
+	prepareCalls   int
 	challengeCalls int
 	approvalCalls  int
 	tamperPlan     bool
@@ -308,46 +335,48 @@ func newOrchestrationRepositoryFixture() *orchestrationRepositoryFixture {
 	return &orchestrationRepositoryFixture{}
 }
 
-func (repository *orchestrationRepositoryFixture) PersistOffer(
+func (repository *orchestrationRepositoryFixture) FindPreparedPlan(
 	_ context.Context,
 	_ task.MutationScope,
-	command PersistOfferCommand,
-) (OfferFact, error) {
-	repository.offerKey = command.IdempotencyKey
+	command FindPreparedPlanCommand,
+) (PreparedPlanFact, bool, error) {
+	repository.findCalls++
+	if repository.plan.RecordRevision == 0 {
+		return PreparedPlanFact{}, false, nil
+	}
+	if command.IdempotencyKey != repository.prepareKey ||
+		command.Intent.OwnerID != repository.plan.Plan.OwnerID ||
+		command.Intent.PlanID != repository.plan.Plan.PlanID ||
+		command.Intent.Revision != repository.plan.Plan.Revision {
+		return PreparedPlanFact{}, false, ErrFactMismatch
+	}
+	return PreparedPlanFact{
+		Offer:    repository.offer,
+		Plan:     repository.plan,
+		Replayed: true,
+	}, true, nil
+}
+
+func (repository *orchestrationRepositoryFixture) PersistPreparedPlan(
+	_ context.Context,
+	_ task.MutationScope,
+	command PersistPreparedPlanCommand,
+) (PreparedPlanFact, error) {
+	repository.prepareCalls++
+	repository.prepareKey = command.IdempotencyKey
 	repository.offer = OfferFact{
-		OwnerID:  command.OwnerID,
-		Document: command.Snapshot.Document(),
-		Digest:   command.Snapshot.Digest(),
-		CreatedAt: command.Snapshot.
+		OwnerID:  command.Intent.OwnerID,
+		Document: command.Offers.Document(),
+		Digest:   command.Offers.Digest(),
+		CreatedAt: command.Offers.
 			CapturedAt(),
 	}
-	return repository.offer, nil
-}
-
-func (repository *orchestrationRepositoryFixture) GetOffer(
-	_ context.Context,
-	ownerID,
-	snapshotID string,
-) (OfferFact, error) {
-	if repository.offer.OwnerID != ownerID ||
-		repository.offer.Document.SnapshotID != snapshotID {
-		return OfferFact{}, ErrFactMismatch
-	}
-	return repository.offer, nil
-}
-
-func (repository *orchestrationRepositoryFixture) PersistPlan(
-	_ context.Context,
-	_ task.MutationScope,
-	command PersistPlanCommand,
-) (PlanFact, error) {
-	repository.planKey = command.IdempotencyKey
 	digest, err := command.Plan.Digest()
 	if err != nil {
-		return PlanFact{}, err
+		return PreparedPlanFact{}, err
 	}
 	repository.plan = PlanFact{
-		TaskID:         command.TaskID,
+		TaskID:         command.Intent.TaskID,
 		Plan:           command.Plan,
 		PlanDigest:     digest,
 		Status:         PlanReadyForConfirmation,
@@ -363,7 +392,22 @@ func (repository *orchestrationRepositoryFixture) PersistPlan(
 		)
 		result.Plan.Assignments[0].Objective = "substituted objective"
 	}
-	return result, nil
+	return PreparedPlanFact{
+		Offer: repository.offer,
+		Plan:  result,
+	}, nil
+}
+
+func (repository *orchestrationRepositoryFixture) GetOffer(
+	_ context.Context,
+	ownerID,
+	snapshotID string,
+) (OfferFact, error) {
+	if repository.offer.OwnerID != ownerID ||
+		repository.offer.Document.SnapshotID != snapshotID {
+		return OfferFact{}, ErrFactMismatch
+	}
+	return repository.offer, nil
 }
 
 func (repository *orchestrationRepositoryFixture) GetPlan(

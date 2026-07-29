@@ -45,20 +45,7 @@ func (store *Store) CreateTeamPlan(
 		return TeamPlanRecord{}, err
 	}
 	planID, _ := uuid.Parse(command.Plan.PlanID)
-	snapshotID, _ := uuid.Parse(command.Plan.PricingSnapshotID)
 	versionID := teamPlanVersionID(planID, command.Plan.Revision)
-	planDigest, err := command.Plan.Digest()
-	if err != nil {
-		return TeamPlanRecord{}, ErrTeamFactInvalid
-	}
-	planCBOR, err := command.Plan.CanonicalCBOR()
-	if err != nil {
-		return TeamPlanRecord{}, ErrTeamFactInvalid
-	}
-	planJSON, err := json.Marshal(command.Plan)
-	if err != nil {
-		return TeamPlanRecord{}, ErrTeamFactInvalid
-	}
 
 	tx, err := store.pool.BeginTx(
 		ctx,
@@ -92,6 +79,52 @@ func (store *Store) CreateTeamPlan(
 			)
 		}
 		return record, nil
+	}
+	record, err := store.createTeamPlanTx(ctx, tx, caller, command)
+	if err != nil {
+		return TeamPlanRecord{}, err
+	}
+	if err := setScopedIdempotencyResponse(
+		ctx,
+		tx,
+		caller,
+		createTeamPlanOperation,
+		command.IdempotencyKey,
+		teamPlanReplay{
+			SchemaVersion: teamFactSnapshotSchemaV1,
+			Record:        record,
+		},
+	); err != nil {
+		return TeamPlanRecord{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TeamPlanRecord{}, fmt.Errorf("commit create Team Plan: %w", err)
+	}
+	return record, nil
+}
+
+func (store *Store) createTeamPlanTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	caller idempotencyCaller,
+	command CreateTeamPlanCommand,
+) (TeamPlanRecord, error) {
+	if err := command.validate(); err != nil {
+		return TeamPlanRecord{}, err
+	}
+	planID, _ := uuid.Parse(command.Plan.PlanID)
+	snapshotID, _ := uuid.Parse(command.Plan.PricingSnapshotID)
+	planDigest, err := command.Plan.Digest()
+	if err != nil {
+		return TeamPlanRecord{}, ErrTeamFactInvalid
+	}
+	planCBOR, err := command.Plan.CanonicalCBOR()
+	if err != nil {
+		return TeamPlanRecord{}, ErrTeamFactInvalid
+	}
+	planJSON, err := json.Marshal(command.Plan)
+	if err != nil {
+		return TeamPlanRecord{}, ErrTeamFactInvalid
 	}
 	if _, err := tx.Exec(
 		ctx,
@@ -226,8 +259,7 @@ func (store *Store) CreateTeamPlan(
 				return TeamPlanRecord{}, err
 			}
 		case TeamPlanExpired:
-			// An already expired signed revision is immutable and inactive.
-			// The next quote can be inserted without rewriting it.
+			// An expired signed revision remains immutable and inactive.
 		default:
 			return TeamPlanRecord{}, ErrTeamFactRevision
 		}
@@ -282,22 +314,6 @@ func (store *Store) CreateTeamPlan(
 	record.UpdatedAt = record.UpdatedAt.UTC()
 	if err := appendTeamPlanEvent(ctx, tx, caller, record); err != nil {
 		return TeamPlanRecord{}, err
-	}
-	if err := setScopedIdempotencyResponse(
-		ctx,
-		tx,
-		caller,
-		createTeamPlanOperation,
-		command.IdempotencyKey,
-		teamPlanReplay{
-			SchemaVersion: teamFactSnapshotSchemaV1,
-			Record:        record,
-		},
-	); err != nil {
-		return TeamPlanRecord{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return TeamPlanRecord{}, fmt.Errorf("commit create Team Plan: %w", err)
 	}
 	return record, nil
 }

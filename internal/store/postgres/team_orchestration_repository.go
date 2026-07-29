@@ -23,32 +23,57 @@ func NewTeamOrchestrationRepository(
 	return &TeamOrchestrationRepository{store: store}, nil
 }
 
-func (repository *TeamOrchestrationRepository) PersistOffer(
+func (repository *TeamOrchestrationRepository) FindPreparedPlan(
 	ctx context.Context,
 	scope task.MutationScope,
-	command teamorchestration.PersistOfferCommand,
-) (teamorchestration.OfferFact, error) {
+	command teamorchestration.FindPreparedPlanCommand,
+) (teamorchestration.PreparedPlanFact, bool, error) {
 	if repository == nil || repository.store == nil {
-		return teamorchestration.OfferFact{}, teamorchestration.ErrInvalid
+		return teamorchestration.PreparedPlanFact{},
+			false,
+			teamorchestration.ErrInvalid
 	}
-	record, err := repository.store.CreateTeamOfferSnapshot(
+	record, found, err := repository.store.FindPreparedTeamPlan(
 		ctx,
 		scope,
-		CreateTeamOfferSnapshotCommand{
+		FindPreparedTeamPlanCommand{
 			IdempotencyKey: command.IdempotencyKey,
-			OwnerID:        command.OwnerID,
-			Snapshot:       command.Snapshot,
+			Intent:         orchestrationPreparationIntent(command.Intent),
 		},
 	)
 	if err != nil {
-		return teamorchestration.OfferFact{}, err
+		return teamorchestration.PreparedPlanFact{}, false, err
 	}
-	return teamorchestration.OfferFact{
-		OwnerID:   record.OwnerID,
-		Document:  record.Document,
-		Digest:    record.Digest,
-		CreatedAt: record.CreatedAt,
-	}, nil
+	if !found {
+		return teamorchestration.PreparedPlanFact{}, false, nil
+	}
+	prepared, err := orchestrationPreparedPlanFact(record)
+	return prepared, err == nil, err
+}
+
+func (repository *TeamOrchestrationRepository) PersistPreparedPlan(
+	ctx context.Context,
+	scope task.MutationScope,
+	command teamorchestration.PersistPreparedPlanCommand,
+) (teamorchestration.PreparedPlanFact, error) {
+	if repository == nil || repository.store == nil {
+		return teamorchestration.PreparedPlanFact{},
+			teamorchestration.ErrInvalid
+	}
+	record, err := repository.store.PrepareTeamPlan(
+		ctx,
+		scope,
+		PrepareTeamPlanCommand{
+			IdempotencyKey: command.IdempotencyKey,
+			Intent:         orchestrationPreparationIntent(command.Intent),
+			Snapshot:       command.Offers,
+			Plan:           command.Plan,
+		},
+	)
+	if err != nil {
+		return teamorchestration.PreparedPlanFact{}, err
+	}
+	return orchestrationPreparedPlanFact(record)
 }
 
 func (repository *TeamOrchestrationRepository) GetOffer(
@@ -73,30 +98,6 @@ func (repository *TeamOrchestrationRepository) GetOffer(
 		Digest:    record.Digest,
 		CreatedAt: record.CreatedAt,
 	}, nil
-}
-
-func (repository *TeamOrchestrationRepository) PersistPlan(
-	ctx context.Context,
-	scope task.MutationScope,
-	command teamorchestration.PersistPlanCommand,
-) (teamorchestration.PlanFact, error) {
-	if repository == nil || repository.store == nil {
-		return teamorchestration.PlanFact{}, teamorchestration.ErrInvalid
-	}
-	record, err := repository.store.CreateTeamPlan(
-		ctx,
-		scope,
-		CreateTeamPlanCommand{
-			IdempotencyKey:           command.IdempotencyKey,
-			TaskID:                   command.TaskID,
-			ExpectedPreviousRevision: command.ExpectedPreviousRevision,
-			Plan:                     command.Plan,
-		},
-	)
-	if err != nil {
-		return teamorchestration.PlanFact{}, err
-	}
-	return orchestrationPlanFact(record)
 }
 
 func (repository *TeamOrchestrationRepository) GetPlan(
@@ -224,6 +225,39 @@ func orchestrationPlanFact(
 		RecordRevision: record.RecordRevision,
 		CreatedAt:      record.CreatedAt,
 		UpdatedAt:      record.UpdatedAt,
+	}, nil
+}
+
+func orchestrationPreparationIntent(
+	intent teamorchestration.PreparationIntent,
+) TeamPlanPreparationIntent {
+	return TeamPlanPreparationIntent{
+		OwnerID:                  intent.OwnerID,
+		TaskID:                   intent.TaskID,
+		PlanID:                   intent.PlanID,
+		Revision:                 intent.Revision,
+		ExpectedPreviousRevision: intent.ExpectedPreviousRevision,
+		GoalDigest:               intent.GoalDigest,
+		Proposal:                 intent.Proposal,
+	}
+}
+
+func orchestrationPreparedPlanFact(
+	record PreparedTeamPlanRecord,
+) (teamorchestration.PreparedPlanFact, error) {
+	plan, err := orchestrationPlanFact(record.Plan)
+	if err != nil {
+		return teamorchestration.PreparedPlanFact{}, err
+	}
+	return teamorchestration.PreparedPlanFact{
+		Offer: teamorchestration.OfferFact{
+			OwnerID:   record.Offer.OwnerID,
+			Document:  record.Offer.Document,
+			Digest:    record.Offer.Digest,
+			CreatedAt: record.Offer.CreatedAt,
+		},
+		Plan:     plan,
+		Replayed: record.Replayed,
 	}, nil
 }
 
