@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
@@ -29,12 +30,14 @@ type RuntimeComposition struct {
 	Features            rpcapi.RuntimeFeatures
 	CloudGoals          rpcapi.CloudGoalPlanner
 	CloudGoalDispatcher *planning.CloudGoalDispatcher
+	TeamPlans           *teamplan.CatalogCompiler
 }
 
 type runtimeCompositionOptions struct {
 	cloudGoalOutput       planning.CloudGoalOutputAdapter
 	cloudGoalMaterializer planning.ProviderPlanMaterializer
 	localRunBudget        *scheduling.RunBudget
+	teamPlans             *teamplan.CatalogCompiler
 }
 
 // WithCloudGoalMaterializer enables the production queued planning path. The
@@ -52,6 +55,21 @@ func WithCloudGoalMaterializer(materializer planning.ProviderPlanMaterializer) R
 }
 
 type RuntimeCompositionOption func(*runtimeCompositionOptions) error
+
+// WithTeamPlanCompiler installs the compiler that is already bound to a
+// signature-verified runtime catalog. It adds no public RPC by itself.
+func WithTeamPlanCompiler(
+	compiler *teamplan.CatalogCompiler,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || compiler == nil ||
+			compiler.CatalogRevision() == "" {
+			return errors.New("runtime-catalog-bound Team Plan compiler is unavailable")
+		}
+		options.teamPlans = compiler
+		return nil
+	}
+}
 
 // WithLocalRunBudget shares one process-local capacity envelope between
 // interactive runtime calls and background planning. Durable tasks remain
@@ -206,7 +224,8 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}
 	return RuntimeComposition{
-		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter, CloudGoalDispatcher: cloudGoalDispatcher,
+		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,
+		CloudGoalDispatcher: cloudGoalDispatcher, TeamPlans: options.teamPlans,
 	}, nil
 }
 

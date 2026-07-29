@@ -11,6 +11,7 @@ import (
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
@@ -162,5 +163,21 @@ func TestCatalogModelFactoryRejectsTamperedEndpointBeforeSecretOrProviderAccess(
 	}
 	if providerCalls != 0 || secretCalls != 0 {
 		t.Fatalf("tampered profile reached provider=%d secret_resolver=%d", providerCalls, secretCalls)
+	}
+}
+
+func TestWithTeamPlanCompilerRejectsMissingOrUninitializedCompiler(t *testing.T) {
+	t.Parallel()
+	for label, compiler := range map[string]*teamplan.CatalogCompiler{
+		"missing":       nil,
+		"uninitialized": {},
+	} {
+		t.Run(label, func(t *testing.T) {
+			var options runtimeCompositionOptions
+			if err := WithTeamPlanCompiler(compiler)(&options); err == nil ||
+				options.teamPlans != nil {
+				t.Fatalf("WithTeamPlanCompiler(%s) options=%#v error=%v", label, options, err)
+			}
+		})
 	}
 }

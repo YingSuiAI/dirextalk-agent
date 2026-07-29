@@ -157,6 +157,18 @@ func TestAgentComposePinsTwoCoreTwoGiBControlPlaneBudget(t *testing.T) {
 	}
 }
 
+func TestAgentComposeKeepsSignedRuntimeCatalogExplicitAndOptional(t *testing.T) {
+	compose := readArtifact(t, "compose.yaml")
+	for _, required := range []string{
+		"AGENT_RUNTIME_CATALOG_FILE: ${AGENT_RUNTIME_CATALOG_FILE:-}",
+		"AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE: ${AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE:-}",
+	} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("compose.yaml is missing signed runtime catalog boundary %q", required)
+		}
+	}
+}
+
 func TestAllRuntimeArtifactsRequireImmutablePrereleaseMetadata(t *testing.T) {
 	for _, name := range []string{"agent.Containerfile", "worker.Containerfile", "reaper.Containerfile"} {
 		artifact := readArtifact(t, name)

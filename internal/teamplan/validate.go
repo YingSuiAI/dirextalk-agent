@@ -23,6 +23,7 @@ var (
 	ErrNoCompute          = errors.New("no compute offer can satisfy role")
 	ErrBudgetExceeded     = errors.New("team plan exceeds cost policy")
 	ErrArithmeticOverflow = errors.New("team plan estimate overflow")
+	ErrCatalogChanged     = errors.New("team plan runtime catalog changed")
 )
 
 var (

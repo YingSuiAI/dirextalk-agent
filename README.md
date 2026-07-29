@@ -59,6 +59,7 @@ The control process has five commands: `migrate`, `bootstrap-service-key`, `boot
 - `AGENT_MOUNTED_SECRETS_DIR`, whose protected files are addressed only as opaque `mounted:<name>` references.
 - `AGENT_MODEL_PROFILES_FILE`, a strict, secret-free JSON catalog that binds each public `profile_id` to one provider, model, HTTPS endpoint, mounted credential reference, context window, and maximum output-token limit.
 - Optional `AGENT_MCP_SERVERS_FILE`, containing trusted, secret-free HTTPS MCP endpoint metadata and optional mounted secret references.
+- Optional paired `AGENT_RUNTIME_CATALOG_FILE` and `AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE`. When configured, startup requires a protected Ed25519-signed catalog and constructs the Team Plan compiler only from its qualified, digest-pinned releases; either path alone or any invalid signature fails startup.
 - `AGENT_MAX_ACTIVE_LOCAL_RUNS` (defaults to `2`) limits all simultaneous local model-backed runs.
 - `AGENT_MAX_BACKGROUND_LOCAL_RUNS` (defaults to `1`) limits background planning within the shared local total; `0` pauses background model work without losing its durable queue.
 - `AGENT_GO_MEMORY_LIMIT_MIB` (defaults to `768`) sets the Go heap target and never raises a stricter existing runtime limit.

@@ -27,6 +27,16 @@ Server shutdown first reports `NOT_SERVING`, waits for active streams within a b
 
 `RuntimeService` persists project/model configuration per protocol-neutral `owner_id`. Public callers select a server-owned `profile_id`; the strict `AGENT_MODEL_PROFILES_FILE` catalog immutably binds provider, model, HTTPS endpoint, mounted credential reference, context window, and output ceiling. Callers may only apply bounded sampling/output overrides. The same binding is checked again when Chat constructs the provider client, before resolving a mounted secret or issuing network traffic. The mounted resolver accepts `mounted:<name>`, confines resolution to `AGENT_MOUNTED_SECRETS_DIR`, and never places resolved bytes in runtime configuration, prompts, events, or PostgreSQL. Optional `AGENT_MCP_SERVERS_FILE` contains only strict, trusted HTTPS Streamable HTTP MCP endpoint metadata and mounted secret references.
 
+The Native Agent v2 Team Plan path remains internal and adds no public RPC. If
+both runtime-catalog paths are configured, startup reads protected regular
+files, verifies the canonical Ed25519 signature and qualification evidence,
+and constructs one immutable trusted compiler. Its public request type omits
+runtime releases and catalog revision, so those values cannot come from model,
+RPC, or stored request input. A Plan is rejected after the startup catalog
+revision changes or when an assignment no longer matches its exact qualified
+release. Leaving both paths empty preserves the existing single-Worker
+behavior; configuring only one path or an invalid catalog prevents startup.
+
 `Chat` and `StreamChat` run through the same native Eino ReAct engine. Runtime request and tool-call ledgers are caller-scoped and lease-fenced. The coordinator binds the effective memory mode before execution, with disabled persistence remaining sticky after lease recovery; stateless requests never create a conversation row. Every model round is bounded by the catalog profile's context window and preserves the system policy, newest user input, and complete tool-call/result groups. The final conversation update and versioned response snapshot commit atomically, so an exact retry or process restart returns the original response without re-running the model or tools. Structured Task/Plan references survive tool replay and response replay, but streaming exposes them only in the final `Done` after commit. Raw reasoning, tool arguments, and raw tool results are not part of the public stream.
 
 One process-local run budget covers both interactive Eino calls and queued Cloud Goal planning. The 2 vCPU / 2 GiB profile admits two local model-backed runs in total and at most one background run. Completed idempotent response replay bypasses admission because it does not invoke a model. A new interactive request that cannot acquire capacity releases its durable request lease and returns retryable gRPC `RESOURCE_EXHAUSTED`; a background planner that cannot acquire capacity leaves the Step unleased in PostgreSQL for a later poll. The Go heap target and container CPU/memory/PID limits provide a second boundary, but PostgreSQL remains the task truth and no in-memory admission counter is used for recovery or ordering.

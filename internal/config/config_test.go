@@ -82,6 +82,55 @@ func TestLoadServerRequiresMountedAgentMasterKey(t *testing.T) {
 	}
 }
 
+func TestLoadServerRequiresRuntimeCatalogAndPublicKeyTogether(t *testing.T) {
+	tests := map[string]struct {
+		catalog string
+		key     string
+		valid   bool
+	}{
+		"disabled": {},
+		"catalog only": {
+			catalog: "/run/dirextalk/config/runtime-catalog.json",
+		},
+		"key only": {
+			key: "/run/dirextalk/config/runtime-catalog-public-key",
+		},
+		"configured pair": {
+			catalog: "/run/dirextalk/config/runtime-catalog.json",
+			key:     "/run/dirextalk/config/runtime-catalog-public-key",
+			valid:   true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			setValidServerEnvironment(t)
+			t.Setenv("AGENT_RUNTIME_CATALOG_FILE", test.catalog)
+			t.Setenv("AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE", test.key)
+			server, err := LoadServer()
+			if test.catalog == "" && test.key == "" {
+				if err != nil || server.RuntimeCatalogFile != "" ||
+					server.RuntimeCatalogPublicKeyFile != "" {
+					t.Fatalf("disabled runtime catalog = %#v, %v", server, err)
+				}
+				return
+			}
+			if !test.valid {
+				if err == nil || !strings.Contains(
+					err.Error(),
+					"must be configured together",
+				) {
+					t.Fatalf("unpaired runtime catalog error = %v", err)
+				}
+				return
+			}
+			if err != nil || server.RuntimeCatalogFile != test.catalog ||
+				server.RuntimeCatalogPublicKeyFile != test.key {
+				t.Fatalf("runtime catalog config = %#v, %v", server, err)
+			}
+		})
+	}
+}
+
 func TestLoadServerRejectsMutableOrReservedReaperImageTags(t *testing.T) {
 	for _, image := range []string{
 		"registry.example/reaper:latest@sha256:" + strings.Repeat("a", 64),

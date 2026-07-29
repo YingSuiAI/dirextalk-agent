@@ -880,12 +880,16 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
 - Message Server 的 owner-scoped 云任务门面。
 - Flutter 的任务、计划、报价、批准、进度、取消和结果基础面板。
 - 四个仓库均在独立 `codex/native-agent-v2` 分支开发。
+- 受约束的 Team Proposal、确定性 Runtime/Model/Compute 选型、DAG 时长和
+  成本估算领域层。
+- Ed25519 签名 Runtime Catalog、资格证据绑定和目录约束的 Team Plan 编译器；
+  可选配置后由 Agent 启动时严格验证，但尚未配置任何生产 Runtime 记录。
 
 正在实现：
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- Team Plan 的受约束领域模型、选型和估算器。
+- Plan v3 持久化、报价来源和整单设备签名协议。
 
 尚未实现或尚未验收：
 

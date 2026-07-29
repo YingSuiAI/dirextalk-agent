@@ -41,6 +41,8 @@ type Server struct {
 	MountedSecretsDir                string
 	ModelProfilesFile                string
 	MCPServersFile                   string
+	RuntimeCatalogFile               string
+	RuntimeCatalogPublicKeyFile      string
 	EnableAWSControl                 bool
 	EnableManagedPreparationAWS      bool
 	AWSReaperImageURI                string
@@ -87,6 +89,8 @@ func LoadServer() (Server, error) {
 		MountedSecretsDir:                strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
 		ModelProfilesFile:                strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
 		MCPServersFile:                   strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
+		RuntimeCatalogFile:               strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_FILE")),
+		RuntimeCatalogPublicKeyFile:      strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE")),
 		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
 		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
 		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
@@ -154,6 +158,10 @@ func LoadServer() (Server, error) {
 	}
 	if server.MasterKeyFile == "" {
 		return Server{}, errors.New("AGENT_MASTER_KEY_FILE is required")
+	}
+	if (server.RuntimeCatalogFile == "") !=
+		(server.RuntimeCatalogPublicKeyFile == "") {
+		return Server{}, errors.New("AGENT_RUNTIME_CATALOG_FILE and AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE must be configured together")
 	}
 	if server.AWSReaperImageURI != "" {
 		lower := strings.ToLower(server.AWSReaperImageURI)

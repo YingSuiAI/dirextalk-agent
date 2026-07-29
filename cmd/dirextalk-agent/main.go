@@ -26,6 +26,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
 )
@@ -151,6 +152,20 @@ func serve() error {
 	})
 	if err != nil {
 		return errors.New("could not initialize local Agent run budget")
+	}
+	var teamPlanCompiler *teamplan.CatalogCompiler
+	if serverConfig.RuntimeCatalogFile != "" {
+		runtimeCatalog, loadErr := teamplan.LoadRuntimeCatalog(
+			serverConfig.RuntimeCatalogFile,
+			serverConfig.RuntimeCatalogPublicKeyFile,
+		)
+		if loadErr != nil {
+			return errors.New("could not verify configured runtime catalog")
+		}
+		teamPlanCompiler, loadErr = teamplan.NewCatalogCompiler(runtimeCatalog)
+		if loadErr != nil {
+			return errors.New("could not initialize runtime-catalog-bound Team Plan compiler")
+		}
 	}
 	pepper, err := config.ReadKeyMaterial(serverConfig.PepperFile)
 	if err != nil {
@@ -282,8 +297,14 @@ func serve() error {
 			}
 		}
 	}
-	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 2)
+	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 3)
 	runtimeOptions = append(runtimeOptions, app.WithLocalRunBudget(runBudget))
+	if teamPlanCompiler != nil {
+		runtimeOptions = append(
+			runtimeOptions,
+			app.WithTeamPlanCompiler(teamPlanCompiler),
+		)
+	}
 	if cloudComposition != nil {
 		runtimeOptions = append(runtimeOptions, app.WithCloudGoalMaterializer(cloudComposition.ProviderPlans))
 	}
@@ -382,6 +403,7 @@ func serve() error {
 		"max_active_local_runs", serverConfig.MaxActiveLocalRuns,
 		"max_background_local_runs", serverConfig.MaxBackgroundLocalRuns,
 		"go_memory_limit_mib", effectiveMemoryLimit/(1024*1024),
+		"runtime_catalog_revision", runtimeComposition.TeamPlans.CatalogRevision(),
 	)
 	err = grpcServer.Serve(listener)
 	select {
