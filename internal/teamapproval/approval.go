@@ -126,6 +126,25 @@ func NewChallengeV1(
 }
 
 func (challenge ChallengeV1) ValidateAt(now time.Time) error {
+	if err := challenge.Validate(); err != nil {
+		return err
+	}
+	if now.IsZero() {
+		return ErrInvalid
+	}
+	now = now.UTC()
+	if now.Before(challenge.IssuedAt.Add(-30*time.Second)) ||
+		!now.Before(challenge.ExpiresAt) ||
+		!now.Before(challenge.QuoteValidUntil) {
+		return ErrExpired
+	}
+	return nil
+}
+
+// Validate checks the immutable challenge document without applying a
+// current-time expiry decision. Persistence readers use it to verify historic
+// consumed or expired records.
+func (challenge ChallengeV1) Validate() error {
 	if challenge.SchemaVersion != ChallengeSchemaV1 ||
 		challenge.Revision != 1 ||
 		!canonicalUUID(challenge.ApprovalID) ||
@@ -165,15 +184,6 @@ func (challenge ChallengeV1) ValidateAt(now time.Time) error {
 		challenge.ExpiresAt.After(challenge.QuoteValidUntil) ||
 		challenge.ExpiresAt.Sub(challenge.IssuedAt) > ChallengeValidity {
 		return ErrInvalid
-	}
-	if now.IsZero() {
-		return ErrInvalid
-	}
-	now = now.UTC()
-	if now.Before(challenge.IssuedAt.Add(-30*time.Second)) ||
-		!now.Before(challenge.ExpiresAt) ||
-		!now.Before(challenge.QuoteValidUntil) {
-		return ErrExpired
 	}
 	return nil
 }

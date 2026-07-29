@@ -770,6 +770,18 @@ TeamPlanV3
 Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2 保持兼容，
 迁移期间两种计划并存。
 
+数据库不把 `status` 写进签名 Plan。`OfferSnapshot` 和每个 `(plan_id,
+plan_revision)` 的 Plan JSON、CBOR 与摘要写入后不可修改；`ready`、`approved`、
+`expired`、`superseded`、`executing` 和终态由独立 `record_revision` 表达。
+新 revision 只能接续同一 Plan 聚合，未批准上一版会原子变为 `superseded`，
+已过期上一版保持原样；已批准或执行中的版本不能被静默替换。challenge 只能
+原子消费一次，approval 永久保留原始签名、签名 payload 和批准时间。数据库
+trigger 同时禁止修改或删除上述签名事实。
+所有 Snapshot、Plan、challenge 与 approval 查询和行锁都先在 SQL 条件中绑定
+当前 `agent_instance_id`，再校验 owner，避免共享数据库或错误实例配置形成
+跨节点读取通道。创建 challenge、批准和过期命令还必须显式携带 owner，
+owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UUID 操作。
+
 ## 20. 测试体系
 
 ### 20.1 领域测试
@@ -911,7 +923,10 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
 - Ed25519 签名 Runtime Catalog、资格证据绑定和目录约束的 Team Plan 编译器；
   可选配置后由 Agent 启动时严格验证，但尚未配置任何生产 Runtime 记录。
 - Team Plan 的确定性 CBOR 摘要、五分钟设备签名 challenge、报价过期和计划
-  revision 漂移校验；尚未接入数据库、RPC 和 App。
+  revision 漂移校验。
+- migration 44 的不可变 Offer Snapshot、Plan revision、challenge 和 approval
+  PostgreSQL 存储；整单批准只推进外层状态，不改写签名 Plan，并支持到期后
+  新 revision 重报价。尚未接入 RPC、Message Server 和 App。
 - 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层。
 - 严格受保护的模型报价目录、凭据布尔就绪端口、报价快照组装服务，以及读取
   AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
@@ -924,14 +939,14 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- Plan v3 持久化以及整单设备签名的服务端/App 接入。
+- Plan v3 编排服务以及整单设备签名的 RPC、Message Server 和 App 接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
 
 尚未实现或尚未验收：
 
 - Claude Code、Codex、OpenCode、Hermes、OpenClaw 的生产镜像目录。
-- 多 Worker Plan v3 和整单设备签名。
+- 多 Worker Plan v3 的 RPC/App 审批与真实 Worker 执行。
 - 通用高工具调用 Worker Runtime Adapter。
 - 多 Worker 真实 AWS 协作和结果整合。
 - Canonical Memory 和完整 Turn Controller。

@@ -84,6 +84,13 @@ func (snapshot *OfferSnapshot) Digest() string {
 	return snapshot.digest
 }
 
+func (snapshot *OfferSnapshot) CanonicalCBOR() ([]byte, error) {
+	if snapshot == nil || snapshot.digest == "" {
+		return nil, ErrInvalid
+	}
+	return canonical.Marshal(snapshot.document)
+}
+
 func (snapshot *OfferSnapshot) Region() string {
 	if snapshot == nil {
 		return ""
@@ -148,6 +155,135 @@ func (snapshot *OfferSnapshot) ValidateAt(now time.Time) error {
 	if now.Before(snapshot.document.CapturedAt.Add(-30*time.Second)) ||
 		!now.Before(snapshot.document.ValidUntil) {
 		return ErrPricingExpired
+	}
+	return nil
+}
+
+// VerifyPlanPricing proves that a signed Plan still resolves to this exact,
+// unexpired price/capacity snapshot. Runtime-catalog verification remains a
+// separate CatalogCompiler responsibility.
+func (snapshot *OfferSnapshot) VerifyPlanPricing(
+	plan Plan,
+	now time.Time,
+) error {
+	if snapshot == nil {
+		return ErrInvalid
+	}
+	if err := validatePlan(plan); err != nil {
+		return err
+	}
+	if err := snapshot.ValidateAt(now); err != nil {
+		return err
+	}
+	if plan.PricingSnapshotID != snapshot.SnapshotID() ||
+		plan.PricingSnapshotDigest != snapshot.Digest() ||
+		plan.ProviderScope != snapshot.ProviderScope() ||
+		plan.Region != snapshot.Region() ||
+		plan.Cost.Currency != snapshot.Currency() ||
+		!plan.QuotedAt.Equal(snapshot.CapturedAt()) ||
+		!plan.ValidUntil.Equal(snapshot.ValidUntil()) {
+		return ErrPricingChanged
+	}
+	models := make(map[string]ModelOffer, len(snapshot.document.ModelOffers))
+	for _, offer := range snapshot.document.ModelOffers {
+		models[offer.ProfileID] = offer
+	}
+	compute := make(
+		map[string]ComputeOffer,
+		len(snapshot.document.ComputeOffers),
+	)
+	for _, offer := range snapshot.document.ComputeOffers {
+		compute[offer.OfferID] = offer
+	}
+	computeUsage := make(map[string]uint64, len(compute))
+	var fixedOverhead uint64
+	for index, assignment := range plan.Assignments {
+		model, modelExists := models[assignment.ModelProfileID]
+		machine, computeExists := compute[assignment.ComputeOfferID]
+		if !modelExists || !model.Enabled || !model.CredentialReady ||
+			assignment.ModelProvider != model.Provider ||
+			assignment.Model != model.Model ||
+			assignment.ModelInterface != model.Interface ||
+			assignment.ModelCredentialRef != model.CredentialRef ||
+			!computeExists || !machine.Available ||
+			assignment.InstanceType != machine.InstanceType ||
+			assignment.Resources.Arch != machine.Architecture ||
+			assignment.Resources.VCPU != machine.VCPU ||
+			assignment.Resources.MemoryMiB != machine.MemoryMiB ||
+			assignment.Resources.DiskGiB != machine.DiskGiB {
+			return ErrPricingChanged
+		}
+		computeUsage[machine.CapacityPool] += machine.CapacityUnits
+		if computeUsage[machine.CapacityPool] > machine.AvailableUnits {
+			return ErrPricingChanged
+		}
+		calculated, err := estimateRoleCost(
+			assignment,
+			machine.HourlyMicros,
+			model.InputMicrosPerMillion,
+			model.OutputMicrosPerMillion,
+			0,
+		)
+		if err != nil {
+			return err
+		}
+		quoted := plan.Cost.Roles[index]
+		if quoted.ComputeMinimumMicros != calculated.ComputeMinimumMicros ||
+			quoted.ComputeExpectedMicros != calculated.ComputeExpectedMicros ||
+			quoted.ComputeMaximumMicros != calculated.ComputeMaximumMicros ||
+			quoted.ModelMinimumMicros != calculated.ModelMinimumMicros ||
+			quoted.ModelExpectedMicros != calculated.ModelExpectedMicros ||
+			quoted.ModelMaximumMicros != calculated.ModelMaximumMicros ||
+			quoted.TotalMinimumMicros < calculated.TotalMinimumMicros ||
+			quoted.TotalExpectedMicros < calculated.TotalExpectedMicros ||
+			quoted.TotalMaximumMicros < calculated.TotalMaximumMicros {
+			return ErrPricingChanged
+		}
+		minimumOverhead := quoted.TotalMinimumMicros -
+			calculated.TotalMinimumMicros
+		expectedOverhead := quoted.TotalExpectedMicros -
+			calculated.TotalExpectedMicros
+		maximumOverhead := quoted.TotalMaximumMicros -
+			calculated.TotalMaximumMicros
+		if minimumOverhead != expectedOverhead ||
+			expectedOverhead != maximumOverhead ||
+			minimumOverhead > absoluteMaxRateMicros ||
+			index > 0 && minimumOverhead != fixedOverhead {
+			return ErrPricingChanged
+		}
+		fixedOverhead = minimumOverhead
+	}
+	schedule, peak, err := estimateSchedule(
+		plan.Assignments,
+		plan.MaxConcurrentWorkers,
+	)
+	if err != nil {
+		return err
+	}
+	if schedule != plan.Schedule ||
+		peak != plan.MaxConcurrentWorkers ||
+		!slices.Equal(plan.Cost.Assumptions, []string{
+			"on_demand_compute",
+			"remote_model_token_range",
+			"workers_start_when_roles_are_ready",
+		}) ||
+		!slices.Equal(plan.Cost.Exclusions, []string{
+			"excess_network_egress",
+			"third_party_paid_tools",
+			"unapproved_retries",
+		}) {
+		return ErrPricingChanged
+	}
+	maximumHardBudget, err := checkedMul(
+		plan.Cost.MaximumMicros,
+		15_000,
+	)
+	if err != nil {
+		return err
+	}
+	maximumHardBudget = ceilDiv(maximumHardBudget, 10_000)
+	if plan.Cost.HardBudgetMicros > maximumHardBudget {
+		return ErrPricingChanged
 	}
 	return nil
 }

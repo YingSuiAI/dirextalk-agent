@@ -93,17 +93,8 @@ func (compiler *CatalogCompiler) VerifyPlan(
 	if plan.CatalogRevision != compiler.catalog.Revision() {
 		return ErrCatalogChanged
 	}
-	if err := offers.ValidateAt(now); err != nil {
+	if err := offers.VerifyPlanPricing(plan, now); err != nil {
 		return err
-	}
-	if plan.PricingSnapshotID != offers.SnapshotID() ||
-		plan.PricingSnapshotDigest != offers.Digest() ||
-		plan.ProviderScope != offers.ProviderScope() ||
-		plan.Region != offers.Region() ||
-		plan.Cost.Currency != offers.Currency() ||
-		!plan.QuotedAt.Equal(offers.CapturedAt()) ||
-		!plan.ValidUntil.Equal(offers.ValidUntil()) {
-		return ErrPricingChanged
 	}
 	releases := make(map[string]RuntimeRelease)
 	for _, release := range compiler.catalog.QualifiedReleases() {
@@ -128,36 +119,6 @@ func (compiler *CatalogCompiler) VerifyPlan(
 		}
 		if _, suitable := runtimeSuitability(release, assignment.WorkClass); !suitable {
 			return ErrCatalogChanged
-		}
-	}
-	models := make(map[string]ModelOffer)
-	for _, offer := range offers.ModelOffers() {
-		models[offer.ProfileID] = offer
-	}
-	compute := make(map[string]ComputeOffer)
-	for _, offer := range offers.ComputeOffers() {
-		compute[offer.OfferID] = offer
-	}
-	computeUsage := make(map[string]uint64, len(compute))
-	for _, assignment := range plan.Assignments {
-		model, modelExists := models[assignment.ModelProfileID]
-		machine, computeExists := compute[assignment.ComputeOfferID]
-		if !modelExists || !model.Enabled || !model.CredentialReady ||
-			assignment.ModelProvider != model.Provider ||
-			assignment.Model != model.Model ||
-			assignment.ModelInterface != model.Interface ||
-			assignment.ModelCredentialRef != model.CredentialRef ||
-			!computeExists || !machine.Available ||
-			assignment.InstanceType != machine.InstanceType ||
-			assignment.Resources.Arch != machine.Architecture ||
-			assignment.Resources.VCPU != machine.VCPU ||
-			assignment.Resources.MemoryMiB != machine.MemoryMiB ||
-			assignment.Resources.DiskGiB != machine.DiskGiB {
-			return ErrPricingChanged
-		}
-		computeUsage[machine.CapacityPool] += machine.CapacityUnits
-		if computeUsage[machine.CapacityPool] > machine.AvailableUnits {
-			return ErrPricingChanged
 		}
 	}
 	return nil

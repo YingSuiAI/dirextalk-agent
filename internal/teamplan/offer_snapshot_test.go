@@ -24,6 +24,17 @@ func TestOfferSnapshotIsDeterministicAndDetached(t *testing.T) {
 		!reflect.DeepEqual(first.Document(), second.Document()) {
 		t.Fatalf("unordered snapshots differ: %q / %q", first.Digest(), second.Digest())
 	}
+	firstCBOR, err := first.CanonicalCBOR()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCBOR, err := second.CanonicalCBOR()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(firstCBOR, secondCBOR) {
+		t.Fatal("canonical snapshot CBOR differs across input order")
+	}
 	document.ModelOffers[0].Model = "mutated"
 	if reflect.DeepEqual(document, first.Document()) {
 		t.Fatal("Document() exposed mutable snapshot state")
@@ -111,6 +122,71 @@ func TestOfferSnapshotValidityWindow(t *testing.T) {
 		ErrPricingExpired,
 	) {
 		t.Fatalf("ValidateAt(expired) error = %v, want ErrPricingExpired", err)
+	}
+}
+
+func TestOfferSnapshotRecomputesQuotedRatesScheduleAndBudget(t *testing.T) {
+	t.Parallel()
+	request := validCompileRequest()
+	snapshot := validOfferSnapshot(t, request)
+	request.PricingSnapshotDigest = snapshot.Digest()
+	request.ModelOffers = snapshot.ModelOffers()
+	request.ComputeOffers = snapshot.ComputeOffers()
+	plan, err := Compile(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := snapshot.CapturedAt().Add(time.Minute)
+	if err := snapshot.VerifyPlanPricing(plan, now); err != nil {
+		t.Fatalf("VerifyPlanPricing() error = %v", err)
+	}
+	tests := map[string]func(*Plan){
+		"compute rate": func(value *Plan) {
+			value.Cost.Roles[0].ComputeMinimumMicros++
+			value.Cost.Roles[0].TotalMinimumMicros++
+			value.Cost.MinimumMicros++
+		},
+		"schedule": func(value *Plan) {
+			value.Schedule.ExpectedWallTime += time.Second
+		},
+		"hard budget": func(value *Plan) {
+			value.Cost.HardBudgetMicros = value.Cost.MaximumMicros * 2
+		},
+		"assumptions": func(value *Plan) {
+			value.Cost.Assumptions[0] = "model_supplied_price"
+		},
+	}
+	for name, mutate := range tests {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			changed := plan
+			changed.Assignments = append(
+				[]WorkerAssignment(nil),
+				plan.Assignments...,
+			)
+			changed.Cost.Roles = append(
+				[]RoleCostEstimate(nil),
+				plan.Cost.Roles...,
+			)
+			changed.Cost.Assumptions = append(
+				[]string(nil),
+				plan.Cost.Assumptions...,
+			)
+			changed.Cost.Exclusions = append(
+				[]string(nil),
+				plan.Cost.Exclusions...,
+			)
+			mutate(&changed)
+			if err := snapshot.VerifyPlanPricing(
+				changed,
+				now,
+			); !errors.Is(err, ErrPricingChanged) {
+				t.Fatalf(
+					"VerifyPlanPricing() error = %v, want ErrPricingChanged",
+					err,
+				)
+			}
+		})
 	}
 }
 

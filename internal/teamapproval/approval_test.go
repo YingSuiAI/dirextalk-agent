@@ -139,6 +139,9 @@ func TestChallengeUsesShorterQuoteWindowAndExpires(t *testing.T) {
 	if err := challenge.ValidateAt(plan.ValidUntil); !errors.Is(err, ErrExpired) {
 		t.Fatalf("ValidateAt(expiry) error = %v, want ErrExpired", err)
 	}
+	if err := challenge.Validate(); err != nil {
+		t.Fatalf("Validate() rejected structurally valid expired challenge: %v", err)
+	}
 }
 
 func TestChallengeRejectsIssueBeforeQuote(t *testing.T) {
