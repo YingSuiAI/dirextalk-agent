@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/google/uuid"
 )
 
 var (
@@ -54,6 +56,17 @@ type Binding struct {
 	ConnectionID   string
 	RecipeID       string
 	Retention      task.RetentionPolicy
+}
+
+// PlanningConversationID derives the only conversation shape that the durable
+// Cloud Goal dispatcher admits. A runtime chat conversation remains an
+// independent user-facing memory key and must never be persisted here.
+func PlanningConversationID(requestID string) (string, error) {
+	parsed, err := uuid.Parse(requestID)
+	if err != nil || parsed == uuid.Nil || parsed.String() != requestID {
+		return "", ErrInvocationScopeMismatch
+	}
+	return "cloud-goal-" + strings.ReplaceAll(requestID, "-", ""), nil
 }
 
 type ResearchRequest struct {

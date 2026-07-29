@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -11,15 +12,98 @@ import (
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
+	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+func TestCloudDialogueSkillPersistsDispatchablePlanningTask(t *testing.T) {
+	pool, store, instanceID := newPlanningTestStore(t)
+	ctx := context.Background()
+	ownerID := "owner-cloud-dialogue"
+	connectionID := uuid.NewString()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cloud_connections
+		    (connection_id, agent_instance_id, owner_id, account_id, region, control_role_arn,
+		     foundation_stack_id, credential_generation, status, revision)
+		VALUES ($1,$2,$3,'123456789012','ap-northeast-3',
+		        'arn:aws:iam::123456789012:role/dirextalk-control','foundation-cloud-dialogue',1,'active',1)`,
+		connectionID, instanceID, ownerID); err != nil {
+		t.Fatal(err)
+	}
+	planner, err := planning.NewCloudSkillAdapter(store, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, err := cloudskill.New(cloudskill.Dependencies{
+		Research: planner, Status: planner, RecipeDraft: planner, PlanDraft: planner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestID := uuid.NewString()
+	chatConversationID := "agent-chat-" + requestID
+	credentialID := uuid.NewString()
+	callContext := auth.ContextWithPrincipal(ctx, auth.Principal{ClientID: "message-server", CredentialID: credentialID})
+	callContext, err = cloudskill.BindCallScope(callContext, cloudskill.CallScope{
+		OwnerID: ownerID, ConnectionID: connectionID, RecipeID: "dirextalk-worker-diagnostic-v1",
+		Retention: task.RetentionEphemeralAutoDestroy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := skill.Tools(callContext, runtimeapi.ToolRequest{
+		RequestID: requestID, OwnerID: ownerID, ConversationID: chatConversationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var research runtimeapi.Tool
+	for _, candidate := range tools {
+		if candidate.Definition.Name == cloudskill.ToolResearch {
+			research = candidate
+			break
+		}
+	}
+	if research.Run == nil {
+		t.Fatal("cloud research tool is missing")
+	}
+	result, err := research.Run(callContext, runtimeapi.ToolInvocation{
+		RequestID: requestID, OwnerID: ownerID, ConversationID: chatConversationID,
+		ToolCallID: "call-cloud-dialogue", Name: cloudskill.ToolResearch,
+		Arguments: json.RawMessage(`{"goal":"run a bounded Worker diagnostic"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.RelatedTaskIDs) != 1 {
+		t.Fatalf("related task IDs=%v", result.RelatedTaskIDs)
+	}
+	dispatchable, err := store.ListDispatchableCloudGoals(ctx, 10)
+	if err != nil || len(dispatchable) != 1 {
+		t.Fatalf("dispatchable Cloud Dialogue tasks=%d err=%v", len(dispatchable), err)
+	}
+	wantConversationID, err := cloudskill.PlanningConversationID(requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := dispatchable[0]
+	if queued.Task.TaskID != result.RelatedTaskIDs[0] ||
+		queued.Session.Binding.ConversationID != wantConversationID ||
+		queued.Session.Binding.ConversationID == chatConversationID ||
+		queued.Session.Binding.ConnectionID != connectionID ||
+		queued.Caller.ClientID != "message-server" ||
+		queued.Caller.CredentialID != credentialID {
+		t.Fatalf("dispatchable Cloud Dialogue binding=%#v", queued)
+	}
+}
 
 func TestCloudGoalRPCPersistsOnePlanningTaskAndOutboxSequence(t *testing.T) {
 	pool, store, instanceID := newPlanningTestStore(t)

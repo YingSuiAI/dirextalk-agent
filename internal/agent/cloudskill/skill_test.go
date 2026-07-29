@@ -342,6 +342,13 @@ func TestResearchBindsTrustedScopeAndCreatesAtMostOneTask(t *testing.T) {
 	if !reflect.DeepEqual(first.RelatedTaskIDs, []string{"99a88e43-ab03-48cb-a917-334f126a303e"}) || !reflect.DeepEqual(first.RelatedTaskIDs, second.RelatedTaskIDs) {
 		t.Fatalf("research result lost stable Task reference: first=%#v second=%#v", first, second)
 	}
+	var researchResult researchView
+	if err := json.Unmarshal([]byte(first.Content), &researchResult); err != nil {
+		t.Fatal(err)
+	}
+	if researchResult.WorkerStarted || researchResult.PlanReady || !researchResult.ApprovalRequired {
+		t.Fatalf("queued planning result overstated cloud state: %#v", researchResult)
+	}
 	if _, err := research.Run(context.Background(), invocation(ToolResearch, `{"goal":"a different goal"}`)); !errors.Is(err, ErrResearchAlreadyStarted) {
 		t.Fatalf("different-goal error = %v, want ErrResearchAlreadyStarted", err)
 	}
@@ -353,7 +360,9 @@ func TestResearchBindsTrustedScopeAndCreatesAtMostOneTask(t *testing.T) {
 	if got.Create.IdempotencyKey != testRequestID || got.Create.OwnerID != "owner-1" || got.Create.Goal != "research an official knowledge node" {
 		t.Fatalf("trusted task command was not bound correctly: %#v", got.Create)
 	}
-	if got.Create.Retention != task.RetentionEphemeralAutoDestroy || got.ConversationID != "conversation-1" || got.ConnectionID != "connection-1" || got.RecipeID != "recipe-1" {
+	if got.Create.Retention != task.RetentionEphemeralAutoDestroy ||
+		got.ConversationID != "cloud-goal-61bf1ec026054d9aa28c84ec2f86b524" ||
+		got.ConnectionID != "connection-1" || got.RecipeID != "recipe-1" {
 		t.Fatalf("trusted cloud scope was not bound correctly: %#v", got)
 	}
 	if len(got.Create.Steps) != 3 || got.Create.Steps[0].Name != "research_official_sources" || got.Create.Steps[1].DependsOnStepIDs[0] != got.Create.Steps[0].StepID || got.Create.Steps[2].DependsOnStepIDs[0] != got.Create.Steps[1].StepID {
@@ -649,7 +658,7 @@ func expectedBinding() Binding {
 	return Binding{
 		RequestID:      testRequestID,
 		OwnerID:        "owner-1",
-		ConversationID: "conversation-1",
+		ConversationID: "cloud-goal-61bf1ec026054d9aa28c84ec2f86b524",
 		ConnectionID:   "connection-1",
 		RecipeID:       "recipe-1",
 		Retention:      task.RetentionEphemeralAutoDestroy,

@@ -293,11 +293,12 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 	history := make([]modelapi.Message, 0, len(state.conversation.Messages)+len(requestMessages)+1)
 	history = append(history, state.conversation.Messages...)
 	history = append(history, requestMessages...)
+	projectProfile := modelProjectProfile(config.ProjectProfile, request.CloudDialogue != nil)
 	preflightBudget, ok := modelInputByteBudget(config.ModelProfile, nil)
 	if !ok {
 		return runState{}, contextWindowInputError()
 	}
-	if _, ok = modelMessages(config.ProjectProfile, state.conversation.Summary, history, config.ContextMessageLimit, preflightBudget); !ok {
+	if _, ok = modelMessages(projectProfile, state.conversation.Summary, history, config.ContextMessageLimit, preflightBudget); !ok {
 		// Do this before tool discovery: MCP providers may initialize/list tools
 		// over the network, and an intrinsically oversized system/latest-user
 		// input can never become valid after those definitions are loaded.
@@ -331,7 +332,7 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 	if !ok {
 		return runState{}, contextWindowInputError()
 	}
-	state.history, ok = modelMessages(config.ProjectProfile, state.conversation.Summary, history, config.ContextMessageLimit, contextByteBudget)
+	state.history, ok = modelMessages(projectProfile, state.conversation.Summary, history, config.ContextMessageLimit, contextByteBudget)
 	if !ok {
 		return runState{}, contextWindowInputError()
 	}

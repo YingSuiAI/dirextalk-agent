@@ -67,7 +67,9 @@ func TestScopedCloudProviderDerivesStableServerOwnedRecipeScope(t *testing.T) {
 		t.Fatalf("research tool error = %v", err)
 	}
 	wantRecipeID := uuid.NewSHA1(namespace, []byte("owner-1\x00conversation-1")).String()
-	if captured.RecipeID != wantRecipeID || captured.ConnectionID != "" || captured.ConversationID != request.ConversationID {
+	wantPlanningConversation, conversationErr := cloudskill.PlanningConversationID(request.RequestID)
+	if conversationErr != nil || captured.RecipeID != wantRecipeID || captured.ConnectionID != "" ||
+		captured.ConversationID != wantPlanningConversation {
 		t.Fatalf("captured trusted planning scope = %#v", captured)
 	}
 
@@ -96,7 +98,9 @@ func TestScopedCloudProviderDerivesStableServerOwnedRecipeScope(t *testing.T) {
 		break
 	}
 	wantProfileID, ok := workerprofile.RecipeIDForRequest(cloudRequest.RequestID)
-	if !ok || err != nil || captured.ConnectionID != connectionID || captured.ConversationID != cloudRequest.ConversationID ||
+	wantPlanningConversation, conversationErr = cloudskill.PlanningConversationID(cloudRequest.RequestID)
+	if !ok || err != nil || conversationErr != nil || captured.ConnectionID != connectionID ||
+		captured.ConversationID != wantPlanningConversation ||
 		captured.RecipeID != wantProfileID {
 		t.Fatalf("cloud diagnostic scope was not server-bound: captured=%#v err=%v", captured, err)
 	}

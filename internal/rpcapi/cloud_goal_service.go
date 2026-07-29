@@ -46,6 +46,10 @@ func (service *CloudControlService) CreateCloudGoal(ctx context.Context, request
 	if err != nil {
 		return nil, err
 	}
+	conversationID, err := cloudskill.PlanningConversationID(request.GetIdempotencyKey())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "idempotency_key must be a canonical UUID")
+	}
 	command := task.CreateCommand{
 		IdempotencyKey: request.GetIdempotencyKey(), OwnerID: ownerID, Goal: request.GetGoal(), Retention: retention,
 		Steps: cloudskill.PlanningSteps(request.GetIdempotencyKey()),
@@ -62,7 +66,7 @@ func (service *CloudControlService) CreateCloudGoal(ctx context.Context, request
 		return nil, status.Error(codes.Internal, "cloud connection ownership read-back is invalid")
 	}
 	created, err := service.goalPlanner.CreateResearch(ctx, cloudskill.ResearchRequest{
-		Create: command, ConversationID: cloudGoalConversationID(request.GetIdempotencyKey()),
+		Create: command, ConversationID: conversationID,
 		ConnectionID: connectionID, RecipeID: recipeID,
 	})
 	if err != nil {
@@ -98,11 +102,6 @@ func cloudGoalRecipeID(idempotencyKey, requested string) (string, error) {
 		}
 	}
 	return value, nil
-}
-
-func cloudGoalConversationID(idempotencyKey string) string {
-	parsed := uuid.MustParse(idempotencyKey)
-	return "cloud-goal-" + strings.ReplaceAll(parsed.String(), "-", "")
 }
 
 func validCreatedCloudGoalTask(created task.Task, command task.CreateCommand) bool {

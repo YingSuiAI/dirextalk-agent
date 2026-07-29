@@ -55,13 +55,14 @@ func (skill *Skill) Tools(ctx context.Context, request runtimeapi.ToolRequest) (
 	if request.OwnerID != scope.OwnerID || !validOpaqueID(request.ConversationID, 255) {
 		return nil, ErrInvocationScopeMismatch
 	}
-	if _, err := uuid.Parse(request.RequestID); err != nil {
+	planningConversationID, err := PlanningConversationID(request.RequestID)
+	if err != nil {
 		return nil, ErrInvocationScopeMismatch
 	}
 	binding := Binding{
 		RequestID:      request.RequestID,
 		OwnerID:        scope.OwnerID,
-		ConversationID: request.ConversationID,
+		ConversationID: planningConversationID,
 		ConnectionID:   scope.ConnectionID,
 		RecipeID:       scope.RecipeID,
 		Retention:      scope.Retention,
@@ -100,7 +101,7 @@ func (skill *Skill) Tools(ctx context.Context, request runtimeapi.ToolRequest) (
 		{
 			Definition: modelapi.Tool{
 				Name:        ToolResearch,
-				Description: "Create one durable research task for a secret-free cloud service goal. Ownership, connection, recipe and retention are already bound by the caller.",
+				Description: "Queue one durable planning task for a secret-free cloud service goal. This does not start a Worker or any cloud resource. Ownership, connection, recipe and retention are already bound by the caller, and signed user approval remains required after a plan is ready.",
 				InputSchema: researchInputSchema(),
 			},
 			Run: func(runCtx context.Context, invocation runtimeapi.ToolInvocation) (runtimeapi.ToolResult, error) {
@@ -702,14 +703,20 @@ func jsonFieldName(field reflect.StructField) (string, bool) {
 }
 
 type researchView struct {
-	TaskID          string               `json:"task_id"`
-	ExecutionStatus task.ExecutionStatus `json:"execution_status"`
-	OutcomeStatus   task.OutcomeStatus   `json:"outcome_status"`
-	Revision        int64                `json:"revision"`
+	TaskID           string               `json:"task_id"`
+	ExecutionStatus  task.ExecutionStatus `json:"execution_status"`
+	OutcomeStatus    task.OutcomeStatus   `json:"outcome_status"`
+	WorkerStarted    bool                 `json:"worker_started"`
+	PlanReady        bool                 `json:"plan_ready"`
+	ApprovalRequired bool                 `json:"approval_required"`
+	Revision         int64                `json:"revision"`
 }
 
 func researchViewFromTask(value task.Task) researchView {
-	return researchView{TaskID: value.TaskID, ExecutionStatus: value.ExecutionStatus, OutcomeStatus: value.OutcomeStatus, Revision: value.Revision}
+	return researchView{
+		TaskID: value.TaskID, ExecutionStatus: value.ExecutionStatus, OutcomeStatus: value.OutcomeStatus,
+		WorkerStarted: false, PlanReady: false, ApprovalRequired: true, Revision: value.Revision,
+	}
 }
 
 type statusView struct {

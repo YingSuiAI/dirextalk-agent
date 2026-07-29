@@ -450,6 +450,9 @@ func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *te
 	config.RecipeIDs = []string{"caller-recipe"}
 	var toolRequest ToolRequest
 	engine := &scriptedEngine{generate: func(_ context.Context, request EngineRequest) (EngineResult, error) {
+		if len(request.Messages) == 0 || !strings.Contains(request.Messages[0].Content, cloudDialoguePolicy) {
+			t.Fatalf("cloud dialogue policy was not composed: %#v", request.Messages)
+		}
 		got := make(map[string]struct{}, len(request.Tools))
 		for _, tool := range request.Tools {
 			got[tool.Name] = struct{}{}
