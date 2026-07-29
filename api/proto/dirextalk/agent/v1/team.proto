@@ -1,0 +1,359 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum TeamPlanStatusV3 {
+  TEAM_PLAN_STATUS_V3_UNSPECIFIED = 0;
+  TEAM_PLAN_STATUS_V3_READY_FOR_CONFIRMATION = 1;
+  TEAM_PLAN_STATUS_V3_APPROVED = 2;
+  TEAM_PLAN_STATUS_V3_EXPIRED = 3;
+  TEAM_PLAN_STATUS_V3_SUPERSEDED = 4;
+  TEAM_PLAN_STATUS_V3_EXECUTING = 5;
+  TEAM_PLAN_STATUS_V3_COMPLETED = 6;
+  TEAM_PLAN_STATUS_V3_FAILED = 7;
+  TEAM_PLAN_STATUS_V3_CANCELED = 8;
+}
+
+enum TeamCloudProviderV3 {
+  TEAM_CLOUD_PROVIDER_V3_UNSPECIFIED = 0;
+  TEAM_CLOUD_PROVIDER_V3_AWS = 1;
+}
+
+enum TeamRuntimeFamilyV3 {
+  TEAM_RUNTIME_FAMILY_V3_UNSPECIFIED = 0;
+  TEAM_RUNTIME_FAMILY_V3_CLAUDE_CODE = 1;
+  TEAM_RUNTIME_FAMILY_V3_CODEX = 2;
+  TEAM_RUNTIME_FAMILY_V3_OPENCLAW = 3;
+  TEAM_RUNTIME_FAMILY_V3_HERMES = 4;
+  TEAM_RUNTIME_FAMILY_V3_OPENCODE = 5;
+}
+
+enum TeamRuntimeAdapterV3 {
+  TEAM_RUNTIME_ADAPTER_V3_UNSPECIFIED = 0;
+  TEAM_RUNTIME_ADAPTER_V3_CLAUDE_CODE_TASK_V1 = 1;
+  TEAM_RUNTIME_ADAPTER_V3_CODEX_EXEC_TASK_V1 = 2;
+  TEAM_RUNTIME_ADAPTER_V3_OPENCLAW_GATEWAY_TASK_V1 = 3;
+  TEAM_RUNTIME_ADAPTER_V3_HERMES_API_TASK_V1 = 4;
+  TEAM_RUNTIME_ADAPTER_V3_OPENCODE_SERVER_TASK_V1 = 5;
+}
+
+enum TeamWorkClassV3 {
+  TEAM_WORK_CLASS_V3_UNSPECIFIED = 0;
+  TEAM_WORK_CLASS_V3_SOFTWARE_IMPLEMENTATION = 1;
+  TEAM_WORK_CLASS_V3_SOFTWARE_REVIEW = 2;
+  TEAM_WORK_CLASS_V3_SOFTWARE_TEST = 3;
+  TEAM_WORK_CLASS_V3_RESEARCH = 4;
+  TEAM_WORK_CLASS_V3_BROWSER_AUTOMATION = 5;
+  TEAM_WORK_CLASS_V3_COMMUNICATION_AUTOMATION = 6;
+  TEAM_WORK_CLASS_V3_GENERAL_TOOL = 7;
+  TEAM_WORK_CLASS_V3_LONG_RUNNING_OPERATIONS = 8;
+}
+
+enum TeamWorkspaceModeV3 {
+  TEAM_WORKSPACE_MODE_V3_UNSPECIFIED = 0;
+  TEAM_WORKSPACE_MODE_V3_READ_ONLY = 1;
+  TEAM_WORKSPACE_MODE_V3_ISOLATED = 2;
+  TEAM_WORKSPACE_MODE_V3_EXCLUSIVE = 3;
+}
+
+enum TeamCapabilityV3 {
+  TEAM_CAPABILITY_V3_UNSPECIFIED = 0;
+  TEAM_CAPABILITY_V3_REPOSITORY_READ = 1;
+  TEAM_CAPABILITY_V3_REPOSITORY_WRITE = 2;
+  TEAM_CAPABILITY_V3_CODE_REVIEW = 3;
+  TEAM_CAPABILITY_V3_SHELL = 4;
+  TEAM_CAPABILITY_V3_GIT = 5;
+  TEAM_CAPABILITY_V3_TEST = 6;
+  TEAM_CAPABILITY_V3_WEB_RESEARCH = 7;
+  TEAM_CAPABILITY_V3_BROWSER = 8;
+  TEAM_CAPABILITY_V3_MCP_CLIENT = 9;
+  TEAM_CAPABILITY_V3_ACP = 10;
+  TEAM_CAPABILITY_V3_LONG_MEMORY = 11;
+  TEAM_CAPABILITY_V3_SUBAGENTS = 12;
+  TEAM_CAPABILITY_V3_MESSAGING = 13;
+  TEAM_CAPABILITY_V3_DOCUMENT = 14;
+  TEAM_CAPABILITY_V3_DATA_ANALYSIS = 15;
+  TEAM_CAPABILITY_V3_LONG_RUNNING = 16;
+  TEAM_CAPABILITY_V3_STRUCTURED_RESULTS = 17;
+}
+
+enum TeamModelInterfaceV3 {
+  TEAM_MODEL_INTERFACE_V3_UNSPECIFIED = 0;
+  TEAM_MODEL_INTERFACE_V3_ANTHROPIC_API = 1;
+  TEAM_MODEL_INTERFACE_V3_OPENAI_RESPONSES = 2;
+  TEAM_MODEL_INTERFACE_V3_OPENAI_COMPATIBLE = 3;
+}
+
+enum TeamQualityTierV3 {
+  TEAM_QUALITY_TIER_V3_UNSPECIFIED = 0;
+  TEAM_QUALITY_TIER_V3_ECONOMY = 1;
+  TEAM_QUALITY_TIER_V3_BALANCED = 2;
+  TEAM_QUALITY_TIER_V3_PREMIUM = 3;
+}
+
+enum TeamArchitectureV3 {
+  TEAM_ARCHITECTURE_V3_UNSPECIFIED = 0;
+  TEAM_ARCHITECTURE_V3_AMD64 = 1;
+  TEAM_ARCHITECTURE_V3_ARM64 = 2;
+}
+
+message TeamProviderScopeV3 {
+  TeamCloudProviderV3 provider = 1;
+  string cloud_connection_id = 2;
+  int64 cloud_connection_revision = 3;
+  string account_id = 4;
+}
+
+message TeamResourceEnvelopeV3 {
+  uint32 vcpu = 1;
+  uint64 memory_mib = 2;
+  uint64 disk_gib = 3;
+  TeamArchitectureV3 architecture = 4;
+}
+
+message TeamMinimumResourcesV3 {
+  uint32 vcpu = 1;
+  uint64 memory_mib = 2;
+  uint64 disk_gib = 3;
+}
+
+message TeamDurationEstimateV3 {
+  uint64 minimum_seconds = 1;
+  uint64 expected_seconds = 2;
+  uint64 maximum_seconds = 3;
+}
+
+message TeamTokenEstimateV3 {
+  uint64 input_minimum = 1;
+  uint64 input_expected = 2;
+  uint64 input_maximum = 3;
+  uint64 output_minimum = 4;
+  uint64 output_expected = 5;
+  uint64 output_maximum = 6;
+}
+
+message TeamModelNeedV3 {
+  TeamQualityTierV3 minimum_quality = 1;
+  uint64 minimum_context_tokens = 2;
+  bool vision = 3;
+}
+
+// This is the complete caller-controlled planning surface. Runtime releases,
+// model profiles, cloud identity, Region, prices, images, and instance types
+// are selected only from server-owned catalogs after this request is accepted.
+message TeamRoleProposalV3 {
+  string role_id = 1;
+  string title = 2;
+  string objective = 3;
+  TeamWorkClassV3 work_class = 4;
+  repeated TeamCapabilityV3 required_capabilities = 5;
+  repeated TeamRuntimeFamilyV3 preferred_runtime_families = 6;
+  TeamWorkspaceModeV3 workspace_mode = 7;
+  repeated string depends_on_role_ids = 8;
+  TeamDurationEstimateV3 duration = 9;
+  TeamTokenEstimateV3 tokens = 10;
+  TeamModelNeedV3 model_need = 11;
+  TeamMinimumResourcesV3 minimum_resources = 12;
+}
+
+message TeamProposalV3 {
+  repeated TeamRoleProposalV3 roles = 1;
+  uint32 confidence = 2;
+  string rationale = 3;
+}
+
+// This device-visible projection deliberately omits the internal model
+// credential reference and every secret-delivery coordinate.
+message TeamWorkerAssignmentV3 {
+  string role_id = 1;
+  string title = 2;
+  string objective = 3;
+  TeamWorkClassV3 work_class = 4;
+  repeated TeamCapabilityV3 required_capabilities = 5;
+  TeamWorkspaceModeV3 workspace_mode = 6;
+  repeated string depends_on_role_ids = 7;
+  string runtime_release_id = 8;
+  TeamRuntimeFamilyV3 runtime_family = 9;
+  string runtime_version = 10;
+  string runtime_image_digest = 11;
+  TeamRuntimeAdapterV3 runtime_adapter = 12;
+  string model_profile_id = 13;
+  string model_provider = 14;
+  string model = 15;
+  TeamModelInterfaceV3 model_interface = 16;
+  string compute_offer_id = 17;
+  string instance_type = 18;
+  TeamResourceEnvelopeV3 resources = 19;
+  TeamDurationEstimateV3 duration = 20;
+  TeamTokenEstimateV3 tokens = 21;
+  uint64 cold_start_seconds = 22;
+}
+
+message TeamRoleCostEstimateV3 {
+  string role_id = 1;
+  uint64 compute_minimum_micros = 2;
+  uint64 compute_expected_micros = 3;
+  uint64 compute_maximum_micros = 4;
+  uint64 model_minimum_micros = 5;
+  uint64 model_expected_micros = 6;
+  uint64 model_maximum_micros = 7;
+  uint64 total_minimum_micros = 8;
+  uint64 total_expected_micros = 9;
+  uint64 total_maximum_micros = 10;
+}
+
+message TeamCostEstimateV3 {
+  string currency = 1;
+  uint64 minimum_micros = 2;
+  uint64 expected_micros = 3;
+  uint64 maximum_micros = 4;
+  uint64 hard_budget_micros = 5;
+  repeated TeamRoleCostEstimateV3 roles = 6;
+  repeated string assumptions = 7;
+  repeated string exclusions = 8;
+}
+
+message TeamScheduleEstimateV3 {
+  uint64 minimum_wall_seconds = 1;
+  uint64 expected_wall_seconds = 2;
+  uint64 maximum_wall_seconds = 3;
+}
+
+message TeamPlanV3 {
+  string schema_version = 1;
+  string task_id = 2;
+  string plan_id = 3;
+  int64 plan_revision = 4;
+  string owner_id = 5;
+  string goal_digest = 6;
+  TeamProviderScopeV3 provider_scope = 7;
+  string region = 8;
+  string runtime_catalog_revision = 9;
+  string policy_revision = 10;
+  string pricing_snapshot_id = 11;
+  string pricing_snapshot_digest = 12;
+  google.protobuf.Timestamp quoted_at = 13;
+  google.protobuf.Timestamp valid_until = 14;
+  uint32 proposal_confidence = 15;
+  string proposal_rationale = 16;
+  uint32 worker_count = 17;
+  uint32 max_concurrent_workers = 18;
+  repeated TeamWorkerAssignmentV3 assignments = 19;
+  TeamScheduleEstimateV3 schedule = 20;
+  TeamCostEstimateV3 cost = 21;
+  string plan_digest = 22;
+  TeamPlanStatusV3 status = 23;
+  int64 record_revision = 24;
+  google.protobuf.Timestamp created_at = 25;
+  google.protobuf.Timestamp updated_at = 26;
+}
+
+message TeamApprovalChallengeV3 {
+  string schema_version = 1;
+  int64 challenge_revision = 2;
+  string approval_id = 3;
+  string challenge_id = 4;
+  string agent_instance_id = 5;
+  string owner_id = 6;
+  string plan_id = 7;
+  int64 plan_revision = 8;
+  string plan_digest = 9;
+  string goal_digest = 10;
+  TeamProviderScopeV3 provider_scope = 11;
+  string runtime_catalog_revision = 12;
+  string policy_revision = 13;
+  string pricing_snapshot_id = 14;
+  string pricing_snapshot_digest = 15;
+  google.protobuf.Timestamp quoted_at = 16;
+  google.protobuf.Timestamp quote_valid_until = 17;
+  uint32 worker_count = 18;
+  uint32 max_concurrent_workers = 19;
+  string currency = 20;
+  uint64 minimum_cost_micros = 21;
+  uint64 expected_cost_micros = 22;
+  uint64 maximum_cost_micros = 23;
+  uint64 hard_budget_micros = 24;
+  uint64 minimum_wall_seconds = 25;
+  uint64 expected_wall_seconds = 26;
+  uint64 maximum_wall_seconds = 27;
+  string signer_key_id = 28;
+  google.protobuf.Timestamp issued_at = 29;
+  google.protobuf.Timestamp expires_at = 30;
+  bytes signing_payload_cbor = 31;
+  int64 record_revision = 32;
+  google.protobuf.Timestamp consumed_at = 33;
+  google.protobuf.Timestamp created_at = 34;
+  google.protobuf.Timestamp updated_at = 35;
+}
+
+message TeamApprovalSignatureV3 {
+  string approval_id = 1;
+  string challenge_id = 2;
+  string plan_id = 3;
+  int64 plan_revision = 4;
+  string plan_digest = 5;
+  string signer_key_id = 6;
+  bytes signature = 7;
+}
+
+message PrepareTeamPlanV3Request {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string task_id = 3;
+  string cloud_connection_id = 4;
+  string plan_id = 5;
+  int64 plan_revision = 6;
+  int64 expected_previous_plan_revision = 7;
+  string goal_digest = 8;
+  TeamProposalV3 proposal = 9;
+}
+
+message PrepareTeamPlanV3Response {
+  TeamPlanV3 plan = 1;
+}
+
+message GetTeamPlanV3Request {
+  string owner_id = 1;
+  string plan_id = 2;
+  int64 plan_revision = 3;
+}
+
+message GetTeamPlanV3Response {
+  TeamPlanV3 plan = 1;
+}
+
+message CreateTeamApprovalChallengeV3Request {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string plan_id = 3;
+  int64 plan_revision = 4;
+  int64 expected_plan_record_revision = 5;
+  string signer_key_id = 6;
+}
+
+message CreateTeamApprovalChallengeV3Response {
+  TeamApprovalChallengeV3 challenge = 1;
+}
+
+message ApproveTeamPlanV3Request {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  int64 expected_plan_record_revision = 3;
+  int64 expected_challenge_record_revision = 4;
+  TeamApprovalSignatureV3 approval = 5;
+}
+
+message ApproveTeamPlanV3Response {
+  TeamPlanV3 plan = 1;
+}
+
+service TeamPlanService {
+  rpc PrepareTeamPlanV3(PrepareTeamPlanV3Request) returns (PrepareTeamPlanV3Response);
+  rpc GetTeamPlanV3(GetTeamPlanV3Request) returns (GetTeamPlanV3Response);
+  rpc CreateTeamApprovalChallengeV3(CreateTeamApprovalChallengeV3Request) returns (CreateTeamApprovalChallengeV3Response);
+  rpc ApproveTeamPlanV3(ApproveTeamPlanV3Request) returns (ApproveTeamPlanV3Response);
+}

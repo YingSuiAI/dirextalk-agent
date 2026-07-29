@@ -359,7 +359,10 @@ func validatePlan(plan Plan) error {
 		plan.MaxConcurrentWorkers > plan.WorkerCount ||
 		plan.Schedule.MinimumWallTime <= 0 ||
 		plan.Schedule.MinimumWallTime > plan.Schedule.ExpectedWallTime ||
-		plan.Schedule.ExpectedWallTime > plan.Schedule.MaximumWallTime {
+		plan.Schedule.ExpectedWallTime > plan.Schedule.MaximumWallTime ||
+		plan.Schedule.MinimumWallTime%time.Second != 0 ||
+		plan.Schedule.ExpectedWallTime%time.Second != 0 ||
+		plan.Schedule.MaximumWallTime%time.Second != 0 {
 		return ErrInvalid
 	}
 	if !slices.IsSortedFunc(plan.Assignments, func(left, right WorkerAssignment) int {

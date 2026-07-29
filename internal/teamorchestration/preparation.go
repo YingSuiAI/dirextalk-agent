@@ -43,6 +43,14 @@ func (service *PreparationService) PreparePlan(
 	if found {
 		return replayed, nil
 	}
+	policy, err := service.plans.validateFreshProposal(
+		ctx,
+		request.OwnerID,
+		request.Proposal,
+	)
+	if err != nil {
+		return PlanFact{}, err
+	}
 
 	offers, err := service.offers.BuildForConnection(
 		ctx,
@@ -56,5 +64,11 @@ func (service *PreparationService) PreparePlan(
 		offers.ProviderScope().ConnectionID != request.ConnectionID {
 		return PlanFact{}, ErrFactMismatch
 	}
-	return service.plans.prepareFreshPlan(ctx, scope, request, offers)
+	return service.plans.prepareFreshPlan(
+		ctx,
+		scope,
+		request,
+		offers,
+		policy,
+	)
 }

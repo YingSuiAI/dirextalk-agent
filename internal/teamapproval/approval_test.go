@@ -55,6 +55,12 @@ func TestChallengeBindsCompleteTeamPlanAndVerifiesDeviceSignature(t *testing.T) 
 			ed25519.Sign(privateKey, payload),
 		),
 	}
+	if err := ValidateSignerKeyID(signature.SignerKeyID); err != nil {
+		t.Fatalf("ValidateSignerKeyID() error = %v", err)
+	}
+	if err := signature.Validate(); err != nil {
+		t.Fatalf("SignatureV1.Validate() error = %v", err)
+	}
 	if err := Verify(
 		challenge,
 		signature,
@@ -161,6 +167,14 @@ func TestChallengeRejectsIssueBeforeQuote(t *testing.T) {
 	); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("NewChallengeV1() error = %v, want ErrInvalid", err)
 	}
+	challenge, _, _ := signedApprovalFixture(t, plan)
+	challenge.PlanRevision = uint64(1) << 63
+	if err := challenge.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf(
+			"overflowing ChallengeV1.Validate() error = %v, want ErrInvalid",
+			err,
+		)
+	}
 }
 
 func TestVerifyRejectsWrongKeyAndNonCanonicalSignature(t *testing.T) {
@@ -180,6 +194,12 @@ func TestVerifyRejectsWrongKeyAndNonCanonicalSignature(t *testing.T) {
 		t.Fatalf("wrong key Verify() error = %v, want ErrSignatureInvalid", err)
 	}
 	signature.SignatureBase64URL += "="
+	if err := signature.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf(
+			"padded SignatureV1.Validate() error = %v, want ErrInvalid",
+			err,
+		)
+	}
 	if err := Verify(
 		challenge,
 		signature,

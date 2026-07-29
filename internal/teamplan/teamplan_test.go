@@ -226,6 +226,18 @@ func TestCompileRejectsSubMicrosecondQuoteTimestamp(t *testing.T) {
 	}
 }
 
+func TestPlanValidationRejectsSubsecondSchedule(t *testing.T) {
+	t.Parallel()
+	plan, err := Compile(validCompileRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Schedule.ExpectedWallTime += time.Nanosecond
+	if err := plan.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate() error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestPlanValidationRejectsZeroBudgetProjection(t *testing.T) {
 	t.Parallel()
 	plan, err := Compile(validCompileRequest())

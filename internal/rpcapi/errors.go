@@ -17,6 +17,10 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -37,7 +41,10 @@ func publicError(err error) error {
 		errors.Is(err, cloudmanaged.ErrInvalid),
 		errors.Is(err, serviceoperation.ErrInvalid),
 		errors.Is(err, pairing.ErrInvalid),
-		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid):
+		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid),
+		errors.Is(err, teamorchestration.ErrInvalid),
+		errors.Is(err, teamplan.ErrInvalid),
+		errors.Is(err, teamapproval.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, task.ErrNotFound), errors.Is(err, task.ErrStepNotFound), errors.Is(err, task.ErrAttemptNotFound), errors.Is(err, auth.ErrCredentialNotFound),
 		errors.Is(err, secretbootstrap.ErrNotFound), errors.Is(err, cloudapp.ErrNotFound), errors.Is(err, cloudstatus.ErrNotFound),
@@ -48,7 +55,8 @@ func publicError(err error) error {
 		errors.Is(err, cloudmanaged.ErrNotFound),
 		errors.Is(err, serviceoperation.ErrNotFound),
 		errors.Is(err, pairing.ErrNotFound),
-		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound):
+		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound),
+		errors.Is(err, teamorchestration.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
 			return status.Error(codes.NotFound, "requested cloud status entity was not found")
 		}
@@ -71,9 +79,13 @@ func publicError(err error) error {
 	case errors.Is(err, cloudfoundation.ErrIdempotencyConflict):
 		return status.Error(codes.AlreadyExists, "idempotency key conflicts with an earlier Foundation request")
 	case errors.Is(err, task.ErrRevisionConflict), errors.Is(err, task.ErrStaleLease), errors.Is(err, auth.ErrCredentialRevision),
-		errors.Is(err, secretbootstrap.ErrRevisionConflict), errors.Is(err, cloudapp.ErrRevisionConflict):
+		errors.Is(err, secretbootstrap.ErrRevisionConflict), errors.Is(err, cloudapp.ErrRevisionConflict),
+		errors.Is(err, teamorchestration.ErrRevision):
 		if errors.Is(err, cloudapp.ErrRevisionConflict) {
 			return status.Error(codes.Aborted, "cloud entity revision does not match")
+		}
+		if errors.Is(err, teamorchestration.ErrRevision) {
+			return status.Error(codes.Aborted, "Team Plan record revision does not match")
 		}
 		return status.Error(codes.Aborted, "expected revision does not match")
 	case errors.Is(err, clouddestroy.ErrRevisionConflict):
@@ -100,8 +112,28 @@ func publicError(err error) error {
 		return status.Error(codes.PermissionDenied, "valid Managed preparation device approval is required")
 	case errors.Is(err, pairing.ErrApprovalRequired):
 		return status.Error(codes.PermissionDenied, "valid pairing resume device approval is required")
+	case errors.Is(err, teamapproval.ErrSignatureInvalid):
+		return status.Error(codes.PermissionDenied, "Team Plan device approval signature is invalid")
 	case errors.Is(err, entrypoint.ErrApprovalExpired), errors.Is(err, entrypoint.ErrWorkerNotReady), errors.Is(err, entrypoint.ErrReadBackRequired), errors.Is(err, entrypoint.ErrUnsupportedEntry):
 		return status.Error(codes.FailedPrecondition, "cloud entrypoint approval scope is no longer valid")
+	case errors.Is(err, teamplan.ErrCatalogChanged),
+		errors.Is(err, teamplan.ErrPolicyChanged),
+		errors.Is(err, teamplan.ErrPricingExpired),
+		errors.Is(err, teamplan.ErrPricingChanged),
+		errors.Is(err, teamapproval.ErrExpired),
+		errors.Is(err, teamapproval.ErrPlanChanged):
+		return status.Error(codes.FailedPrecondition, "Team Plan must be requoted and approved again")
+	case errors.Is(err, teamplan.ErrNoRuntime),
+		errors.Is(err, teamplan.ErrNoModel),
+		errors.Is(err, teamplan.ErrNoCompute),
+		errors.Is(err, teamplan.ErrBudgetExceeded),
+		errors.Is(err, teamplan.ErrArithmeticOverflow):
+		return status.Error(codes.FailedPrecondition, "trusted Team configuration cannot satisfy the proposed work")
+	case errors.Is(err, teamorchestration.ErrNotReady),
+		errors.Is(err, teamorchestration.ErrChallengeConsumed):
+		return status.Error(codes.FailedPrecondition, "Team Plan is not ready for this operation")
+	case errors.Is(err, teamorchestration.ErrScopeChanged):
+		return status.Error(codes.FailedPrecondition, "Team Plan cloud scope changed")
 	case errors.Is(err, clouddestroy.ErrManaged):
 		return status.Error(codes.FailedPrecondition, "managed resources require a separate destroy contract")
 	case errors.Is(err, clouddestroy.ErrUnavailable):
@@ -123,6 +155,10 @@ func publicError(err error) error {
 		return status.Error(codes.FailedPrecondition, "worker-control PrivateLink capability is not ready")
 	case errors.Is(err, cloudapp.ErrUnavailable):
 		return status.Error(codes.Unavailable, "cloud provider is unavailable")
+	case errors.Is(err, teamorchestration.ErrOfferVerificationUnavailable),
+		errors.Is(err, teampricing.ErrComputeEvidenceUnavailable),
+		errors.Is(err, teampricing.ErrCredentialReadinessUnavailable):
+		return status.Error(codes.Unavailable, "trusted Team pricing is unavailable")
 	default:
 		return status.Error(codes.Internal, "agent persistence operation failed")
 	}

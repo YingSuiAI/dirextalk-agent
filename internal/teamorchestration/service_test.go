@@ -2,6 +2,7 @@ package teamorchestration
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -89,6 +90,17 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 			repository.prepareCalls,
 			repository.prepareKey,
 		)
+	}
+	readPlan, err := service.GetPlan(
+		context.Background(),
+		request.OwnerID,
+		request.PlanID,
+		request.Revision,
+	)
+	if err != nil ||
+		readPlan.PlanDigest != planFact.PlanDigest ||
+		readPlan.RecordRevision != planFact.RecordRevision {
+		t.Fatalf("GetPlan() plan=%#v error=%v", readPlan, err)
 	}
 	replayedPlan, err := preparation.PreparePlan(
 		context.Background(),
@@ -328,6 +340,460 @@ func TestPreparationServiceRejectsOfferForAnotherConnection(t *testing.T) {
 	}
 }
 
+func TestPreparationServiceRejectsInvalidProposalBeforeOfferRead(
+	t *testing.T,
+) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	offers := orchestrationOfferFixture(t, now)
+	repository := newOrchestrationRepositoryFixture()
+	resolver := &orchestrationPolicyResolverFixture{
+		policy: orchestrationPolicyFixture(),
+	}
+	plans, err := NewService(
+		&orchestrationCompilerFixture{
+			revision: "sha256:" + strings.Repeat("c", 64),
+		},
+		resolver,
+		repository,
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := &orchestrationOfferBuilderFixture{offers: offers}
+	preparation, err := NewPreparationService(plans, builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := orchestrationProposalFixture()
+	proposal.Roles[0].Tokens = teamplan.TokenEstimate{}
+	_, err = preparation.PreparePlan(
+		context.Background(),
+		task.MutationScope{
+			ClientID:     "team-orchestration-test",
+			CredentialID: uuid.NewString(),
+		},
+		PreparePlanRequest{
+			IdempotencyKey: uuid.NewString(),
+			OwnerID:        "owner-team",
+			TaskID:         uuid.NewString(),
+			ConnectionID:   offers.ProviderScope().ConnectionID,
+			PlanID:         uuid.NewString(),
+			Revision:       1,
+			GoalDigest:     "sha256:" + strings.Repeat("d", 64),
+			Proposal:       proposal,
+		},
+	)
+	if !errors.Is(err, teamplan.ErrInvalid) ||
+		builder.calls != 0 ||
+		repository.prepareCalls != 0 ||
+		resolver.calls != 1 {
+		t.Fatalf(
+			"invalid proposal error=%v builder=%d prepare=%d policy=%d",
+			err,
+			builder.calls,
+			repository.prepareCalls,
+			resolver.calls,
+		)
+	}
+}
+
+func TestPreparationServiceRejectsInvalidIdentityBeforeRepositoryOrOfferRead(
+	t *testing.T,
+) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	offers := orchestrationOfferFixture(t, now)
+	base := PreparePlanRequest{
+		IdempotencyKey: uuid.NewString(),
+		OwnerID:        "owner-team",
+		TaskID:         uuid.NewString(),
+		ConnectionID:   offers.ProviderScope().ConnectionID,
+		PlanID:         uuid.NewString(),
+		Revision:       1,
+		GoalDigest:     "sha256:" + strings.Repeat("d", 64),
+		Proposal:       orchestrationProposalFixture(),
+	}
+	tests := []struct {
+		name   string
+		mutate func(*PreparePlanRequest)
+	}{
+		{
+			name: "idempotency key",
+			mutate: func(request *PreparePlanRequest) {
+				request.IdempotencyKey = "not-a-uuid"
+			},
+		},
+		{
+			name: "owner",
+			mutate: func(request *PreparePlanRequest) {
+				request.OwnerID = "owner\nteam"
+			},
+		},
+		{
+			name: "task",
+			mutate: func(request *PreparePlanRequest) {
+				request.TaskID = "not-a-uuid"
+			},
+		},
+		{
+			name: "connection",
+			mutate: func(request *PreparePlanRequest) {
+				request.ConnectionID = "not-a-uuid"
+			},
+		},
+		{
+			name: "plan",
+			mutate: func(request *PreparePlanRequest) {
+				request.PlanID = "not-a-uuid"
+			},
+		},
+		{
+			name: "zero revision",
+			mutate: func(request *PreparePlanRequest) {
+				request.Revision = 0
+			},
+		},
+		{
+			name: "revision overflow",
+			mutate: func(request *PreparePlanRequest) {
+				request.Revision = uint64(1) << 63
+			},
+		},
+		{
+			name: "first revision predecessor",
+			mutate: func(request *PreparePlanRequest) {
+				request.ExpectedPreviousRevision = 1
+			},
+		},
+		{
+			name: "later revision predecessor",
+			mutate: func(request *PreparePlanRequest) {
+				request.Revision = 2
+			},
+		},
+		{
+			name: "goal digest",
+			mutate: func(request *PreparePlanRequest) {
+				request.GoalDigest = "sha256:not-a-digest"
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			repository := newOrchestrationRepositoryFixture()
+			resolver := &orchestrationPolicyResolverFixture{
+				policy: orchestrationPolicyFixture(),
+			}
+			compiler := &orchestrationCompilerFixture{
+				revision: "sha256:" + strings.Repeat("c", 64),
+			}
+			plans, err := NewService(
+				compiler,
+				resolver,
+				repository,
+				func() time.Time { return now },
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			builder := &orchestrationOfferBuilderFixture{offers: offers}
+			preparation, err := NewPreparationService(plans, builder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := base
+			test.mutate(&request)
+			_, err = preparation.PreparePlan(
+				context.Background(),
+				task.MutationScope{
+					ClientID:     "team-orchestration-test",
+					CredentialID: uuid.NewString(),
+				},
+				request,
+			)
+			if !errors.Is(err, ErrInvalid) ||
+				repository.findCalls != 0 ||
+				repository.prepareCalls != 0 ||
+				resolver.calls != 0 ||
+				builder.calls != 0 ||
+				compiler.compileCalls != 0 {
+				t.Fatalf(
+					"error=%v repository=%d/%d policy=%d offers=%d compile=%d",
+					err,
+					repository.findCalls,
+					repository.prepareCalls,
+					resolver.calls,
+					builder.calls,
+					compiler.compileCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestServiceGetPlanRejectsInvalidIdentityBeforeRepositoryRead(
+	t *testing.T,
+) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	repository := newOrchestrationRepositoryFixture()
+	service, err := NewService(
+		&orchestrationCompilerFixture{
+			revision: "sha256:" + strings.Repeat("c", 64),
+		},
+		&orchestrationPolicyResolverFixture{
+			policy: orchestrationPolicyFixture(),
+		},
+		repository,
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name         string
+		ownerID      string
+		planID       string
+		planRevision uint64
+	}{
+		{
+			name:         "owner",
+			ownerID:      "owner\nteam",
+			planID:       uuid.NewString(),
+			planRevision: 1,
+		},
+		{
+			name:         "plan",
+			ownerID:      "owner-team",
+			planID:       "not-a-uuid",
+			planRevision: 1,
+		},
+		{
+			name:         "zero revision",
+			ownerID:      "owner-team",
+			planID:       uuid.NewString(),
+			planRevision: 0,
+		},
+		{
+			name:         "revision overflow",
+			ownerID:      "owner-team",
+			planID:       uuid.NewString(),
+			planRevision: uint64(1) << 63,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			_, err := service.GetPlan(
+				context.Background(),
+				test.ownerID,
+				test.planID,
+				test.planRevision,
+			)
+			if !errors.Is(err, ErrInvalid) || repository.getCalls != 0 {
+				t.Fatalf(
+					"GetPlan() error=%v repository calls=%d",
+					err,
+					repository.getCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestServiceRejectsInvalidChallengeBeforeCurrentFactReads(
+	t *testing.T,
+) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	base := ChallengeRequest{
+		IdempotencyKey:             uuid.NewString(),
+		OwnerID:                    "owner-team",
+		PlanID:                     uuid.NewString(),
+		PlanRevision:               1,
+		ExpectedPlanRecordRevision: 1,
+		ApprovalID:                 uuid.NewString(),
+		ChallengeID:                uuid.NewString(),
+		SignerKeyID:                "owner-device-1",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ChallengeRequest)
+	}{
+		{
+			name: "signer",
+			mutate: func(request *ChallengeRequest) {
+				request.SignerKeyID = "not a key"
+			},
+		},
+		{
+			name: "approval",
+			mutate: func(request *ChallengeRequest) {
+				request.ApprovalID = "not-a-uuid"
+			},
+		},
+		{
+			name: "plan revision overflow",
+			mutate: func(request *ChallengeRequest) {
+				request.PlanRevision = uint64(1) << 63
+			},
+		},
+		{
+			name: "record revision overflow",
+			mutate: func(request *ChallengeRequest) {
+				request.ExpectedPlanRecordRevision = uint64(1) << 63
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			repository := newOrchestrationRepositoryFixture()
+			resolver := &orchestrationPolicyResolverFixture{
+				policy: orchestrationPolicyFixture(),
+			}
+			verifier := &orchestrationOfferVerifierFixture{}
+			service, err := NewService(
+				&orchestrationCompilerFixture{
+					revision: "sha256:" + strings.Repeat("c", 64),
+				},
+				resolver,
+				repository,
+				func() time.Time { return now },
+				WithTrustedOfferVerifier(verifier),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := base
+			test.mutate(&request)
+			_, err = service.CreateChallenge(
+				context.Background(),
+				task.MutationScope{
+					ClientID:     "team-orchestration-test",
+					CredentialID: uuid.NewString(),
+				},
+				request,
+			)
+			if !errors.Is(err, ErrInvalid) ||
+				resolver.calls != 0 ||
+				repository.getCalls != 0 ||
+				repository.challengeCalls != 0 ||
+				verifier.calls != 0 {
+				t.Fatalf(
+					"error=%v policy=%d plan=%d challenge=%d offer=%d",
+					err,
+					resolver.calls,
+					repository.getCalls,
+					repository.challengeCalls,
+					verifier.calls,
+				)
+			}
+		})
+	}
+}
+
+func TestServiceRejectsInvalidApprovalBeforeCurrentFactReads(
+	t *testing.T,
+) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	base := ApprovalRequest{
+		IdempotencyKey:                  uuid.NewString(),
+		OwnerID:                         "owner-team",
+		ExpectedPlanRecordRevision:      1,
+		ExpectedChallengeRecordRevision: 1,
+		Signature: teamapproval.SignatureV1{
+			SchemaVersion:      teamapproval.SignatureSchemaV1,
+			ApprovalID:         uuid.NewString(),
+			ChallengeID:        uuid.NewString(),
+			PlanID:             uuid.NewString(),
+			PlanRevision:       1,
+			PlanDigest:         "sha256:" + strings.Repeat("d", 64),
+			SignerKeyID:        "owner-device-1",
+			SignatureBase64URL: base64.RawURLEncoding.EncodeToString(make([]byte, 64)),
+		},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ApprovalRequest)
+	}{
+		{
+			name: "plan digest",
+			mutate: func(request *ApprovalRequest) {
+				request.Signature.PlanDigest = "sha256:not-a-digest"
+			},
+		},
+		{
+			name: "signature encoding",
+			mutate: func(request *ApprovalRequest) {
+				request.Signature.SignatureBase64URL = "not-a-signature"
+			},
+		},
+		{
+			name: "plan revision overflow",
+			mutate: func(request *ApprovalRequest) {
+				request.Signature.PlanRevision = uint64(1) << 63
+			},
+		},
+		{
+			name: "challenge record revision overflow",
+			mutate: func(request *ApprovalRequest) {
+				request.ExpectedChallengeRecordRevision = uint64(1) << 63
+			},
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			repository := newOrchestrationRepositoryFixture()
+			resolver := &orchestrationPolicyResolverFixture{
+				policy: orchestrationPolicyFixture(),
+			}
+			verifier := &orchestrationOfferVerifierFixture{}
+			service, err := NewService(
+				&orchestrationCompilerFixture{
+					revision: "sha256:" + strings.Repeat("c", 64),
+				},
+				resolver,
+				repository,
+				func() time.Time { return now },
+				WithTrustedOfferVerifier(verifier),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := base
+			test.mutate(&request)
+			_, err = service.ApprovePlan(
+				context.Background(),
+				task.MutationScope{
+					ClientID:     "team-orchestration-test",
+					CredentialID: uuid.NewString(),
+				},
+				request,
+			)
+			if !errors.Is(err, ErrInvalid) ||
+				resolver.calls != 0 ||
+				repository.getCalls != 0 ||
+				repository.approvalCalls != 0 ||
+				verifier.calls != 0 {
+				t.Fatalf(
+					"error=%v policy=%d plan=%d approval=%d offer=%d",
+					err,
+					resolver.calls,
+					repository.getCalls,
+					repository.approvalCalls,
+					verifier.calls,
+				)
+			}
+		})
+	}
+}
+
 func TestServiceFailsClosedWithoutCurrentOfferVerifier(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -506,6 +972,7 @@ type orchestrationRepositoryFixture struct {
 	prepareKey      string
 	connectionID    string
 	findCalls       int
+	getCalls        int
 	prepareCalls    int
 	challengeCalls  int
 	approvalCalls   int
@@ -653,6 +1120,7 @@ func (repository *orchestrationRepositoryFixture) GetPlan(
 	planID string,
 	planRevision uint64,
 ) (PlanFact, error) {
+	repository.getCalls++
 	if repository.plan.Plan.OwnerID != ownerID ||
 		repository.plan.Plan.PlanID != planID ||
 		repository.plan.Plan.Revision != planRevision {

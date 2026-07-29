@@ -414,6 +414,16 @@ func serve() error {
 		app.WithSecretBootstrap(secretManager, serverConfig.InstanceID),
 		app.WithWorkerControl(workerService),
 	}
+	if runtimeComposition.TeamPreparation != nil &&
+		runtimeComposition.TeamOrchestrator != nil {
+		serverOptions = append(
+			serverOptions,
+			app.WithTeamPlans(
+				runtimeComposition.TeamPreparation,
+				runtimeComposition.TeamOrchestrator,
+			),
+		)
+	}
 	if cloudCoordinator != nil {
 		serverOptions = append(serverOptions, app.WithCloudControl(cloudCoordinator))
 	}

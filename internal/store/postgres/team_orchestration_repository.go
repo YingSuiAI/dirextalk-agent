@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -43,7 +44,9 @@ func (repository *TeamOrchestrationRepository) FindPreparedPlan(
 		},
 	)
 	if err != nil {
-		return teamorchestration.PreparedPlanFact{}, false, err
+		return teamorchestration.PreparedPlanFact{},
+			false,
+			orchestrationRepositoryError(err)
 	}
 	if !found {
 		return teamorchestration.PreparedPlanFact{}, false, nil
@@ -72,7 +75,8 @@ func (repository *TeamOrchestrationRepository) PersistPreparedPlan(
 		},
 	)
 	if err != nil {
-		return teamorchestration.PreparedPlanFact{}, err
+		return teamorchestration.PreparedPlanFact{},
+			orchestrationRepositoryError(err)
 	}
 	return orchestrationPreparedPlanFact(record)
 }
@@ -91,7 +95,8 @@ func (repository *TeamOrchestrationRepository) GetOffer(
 		snapshotID,
 	)
 	if err != nil {
-		return teamorchestration.OfferFact{}, err
+		return teamorchestration.OfferFact{},
+			orchestrationRepositoryError(err)
 	}
 	return teamorchestration.OfferFact{
 		OwnerID:   record.OwnerID,
@@ -110,11 +115,13 @@ func (repository *TeamOrchestrationRepository) VerifyConnectionScope(
 	if repository == nil || repository.store == nil {
 		return teamorchestration.ErrInvalid
 	}
-	return repository.store.VerifyTeamConnectionScope(
-		ctx,
-		ownerID,
-		scope,
-		region,
+	return orchestrationRepositoryError(
+		repository.store.VerifyTeamConnectionScope(
+			ctx,
+			ownerID,
+			scope,
+			region,
+		),
 	)
 }
 
@@ -134,7 +141,8 @@ func (repository *TeamOrchestrationRepository) GetPlan(
 		planRevision,
 	)
 	if err != nil {
-		return teamorchestration.PlanFact{}, err
+		return teamorchestration.PlanFact{},
+			orchestrationRepositoryError(err)
 	}
 	return orchestrationPlanFact(record)
 }
@@ -162,7 +170,8 @@ func (repository *TeamOrchestrationRepository) PersistChallenge(
 		},
 	)
 	if err != nil {
-		return teamorchestration.ChallengeFact{}, err
+		return teamorchestration.ChallengeFact{},
+			orchestrationRepositoryError(err)
 	}
 	return orchestrationChallengeFact(record), nil
 }
@@ -189,7 +198,8 @@ func (repository *TeamOrchestrationRepository) PersistApproval(
 		},
 	)
 	if err != nil {
-		return teamorchestration.PlanFact{}, err
+		return teamorchestration.PlanFact{},
+			orchestrationRepositoryError(err)
 	}
 	return orchestrationPlanFact(record)
 }
@@ -210,7 +220,8 @@ func (repository *TeamOrchestrationRepository) GetApprovalForPlan(
 		planRevision,
 	)
 	if err != nil {
-		return teamorchestration.ApprovalFact{}, err
+		return teamorchestration.ApprovalFact{},
+			orchestrationRepositoryError(err)
 	}
 	return teamorchestration.ApprovalFact{
 		Signature:  record.Signature,
@@ -233,7 +244,8 @@ func orchestrationPlanFact(
 		teamorchestration.PlanFailed,
 		teamorchestration.PlanCanceled:
 	default:
-		return teamorchestration.PlanFact{}, ErrTeamFactCorrupt
+		return teamorchestration.PlanFact{},
+			teamorchestration.ErrFactMismatch
 	}
 	return teamorchestration.PlanFact{
 		TaskID:         record.TaskID,
@@ -244,6 +256,27 @@ func orchestrationPlanFact(
 		CreatedAt:      record.CreatedAt,
 		UpdatedAt:      record.UpdatedAt,
 	}, nil
+}
+
+func orchestrationRepositoryError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrTeamFactInvalid):
+		return teamorchestration.ErrInvalid
+	case errors.Is(err, ErrTeamFactNotFound):
+		return teamorchestration.ErrNotFound
+	case errors.Is(err, ErrTeamFactRevision):
+		return teamorchestration.ErrRevision
+	case errors.Is(err, ErrTeamFactScope):
+		return teamorchestration.ErrScopeChanged
+	case errors.Is(err, ErrTeamChallengeConsumed):
+		return teamorchestration.ErrChallengeConsumed
+	case errors.Is(err, ErrTeamFactCorrupt):
+		return teamorchestration.ErrFactMismatch
+	default:
+		return err
+	}
 }
 
 func orchestrationPreparationIntent(

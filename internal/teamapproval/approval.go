@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -155,6 +156,7 @@ func (challenge ChallengeV1) Validate() error {
 		!safeOwnerID(challenge.OwnerID) ||
 		!canonicalUUID(challenge.PlanID) ||
 		challenge.PlanRevision == 0 ||
+		challenge.PlanRevision > uint64(math.MaxInt64) ||
 		!digestPattern.MatchString(challenge.PlanDigest) ||
 		!digestPattern.MatchString(challenge.GoalDigest) ||
 		challenge.ProviderScope.Validate() != nil ||
@@ -227,6 +229,38 @@ func (challenge ChallengeV1) SigningPayload() ([]byte, error) {
 	})
 }
 
+// ValidateSignerKeyID applies the same bounded, secret-aware identifier
+// contract used by challenges and signatures.
+func ValidateSignerKeyID(value string) error {
+	if !safeKeyID(value) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// Validate checks only the immutable signature envelope. Verify additionally
+// binds that envelope to one challenge, Plan, public key, and current time.
+func (signature SignatureV1) Validate() error {
+	decoded, err := base64.RawURLEncoding.DecodeString(
+		signature.SignatureBase64URL,
+	)
+	if signature.SchemaVersion != SignatureSchemaV1 ||
+		!canonicalUUID(signature.ApprovalID) ||
+		!canonicalUUID(signature.ChallengeID) ||
+		!canonicalUUID(signature.PlanID) ||
+		signature.PlanRevision == 0 ||
+		signature.PlanRevision > uint64(math.MaxInt64) ||
+		!digestPattern.MatchString(signature.PlanDigest) ||
+		!safeKeyID(signature.SignerKeyID) ||
+		err != nil ||
+		len(decoded) != ed25519.SignatureSize ||
+		base64.RawURLEncoding.EncodeToString(decoded) !=
+			signature.SignatureBase64URL {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func Verify(
 	challenge ChallengeV1,
 	signature SignatureV1,
@@ -238,7 +272,7 @@ func Verify(
 		return err
 	}
 	if len(publicKey) != ed25519.PublicKeySize ||
-		signature.SchemaVersion != SignatureSchemaV1 ||
+		signature.Validate() != nil ||
 		signature.ApprovalID != challenge.ApprovalID ||
 		signature.ChallengeID != challenge.ChallengeID ||
 		signature.PlanID != challenge.PlanID ||

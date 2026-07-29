@@ -32,6 +32,8 @@ type Server struct {
 type serverOptions struct {
 	runtimeCoordinator      rpcapi.RuntimeCoordinator
 	runtimeFeatures         rpcapi.RuntimeFeatures
+	teamPreparation         rpcapi.TeamPlanPreparationCoordinator
+	teamPlans               rpcapi.TeamPlanCoordinator
 	secretBootstrap         rpcapi.SecretBootstrapManager
 	cloudCoordinator        cloudapp.Coordinator
 	cloudDestroy            rpcapi.CloudDestroyCoordinator
@@ -75,6 +77,16 @@ func WithRuntime(coordinator rpcapi.RuntimeCoordinator, features rpcapi.RuntimeF
 	return func(options *serverOptions) {
 		options.runtimeCoordinator = coordinator
 		options.runtimeFeatures = features
+	}
+}
+
+func WithTeamPlans(
+	preparation rpcapi.TeamPlanPreparationCoordinator,
+	plans rpcapi.TeamPlanCoordinator,
+) ServerOption {
+	return func(options *serverOptions) {
+		options.teamPreparation = preparation
+		options.teamPlans = plans
 	}
 }
 
@@ -189,6 +201,9 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	if rootHelperEnabled && options.workerService == nil {
 		return nil, errors.New("root helper control requires Worker session authentication")
 	}
+	if (options.teamPreparation == nil) != (options.teamPlans == nil) {
+		return nil, errors.New("Team Plan v3 requires complete preparation and orchestration composition")
+	}
 	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
@@ -276,6 +291,9 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 	for method, scope := range knowledgeServiceScopes() {
 		scopes[method] = scope
 	}
+	for method, scope := range teamPlanServiceScopes() {
+		scopes[method] = scope
+	}
 	serviceKeyScopes := auth.StaticScopeResolver(scopes)
 	resolver := auth.ScopeResolver(func(fullMethod string) (string, bool) {
 		if isWorkerSelfAuthenticatedMethod(fullMethod) {
@@ -290,6 +308,13 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		grpc.MaxRecvMsgSize(4<<20), grpc.MaxSendMsgSize(4<<20),
 	)
 	agentv1.RegisterTaskServiceServer(grpcServer, rpcapi.NewTaskService(store))
+	agentv1.RegisterTeamPlanServiceServer(
+		grpcServer,
+		rpcapi.NewTeamPlanService(
+			options.teamPreparation,
+			options.teamPlans,
+		),
+	)
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))
 	agentv1.RegisterKnowledgeServiceServer(grpcServer, rpcapi.NewKnowledgeService(options.knowledgeCoordinator))
@@ -335,6 +360,15 @@ func knowledgeServiceScopes() map[string]string {
 		agentv1.KnowledgeService_DeleteKnowledgeSource_FullMethodName:           "knowledge.write",
 		agentv1.KnowledgeService_SearchKnowledge_FullMethodName:                 "knowledge.search",
 		agentv1.KnowledgeService_GetKnowledgeStatus_FullMethodName:              "knowledge.read",
+	}
+}
+
+func teamPlanServiceScopes() map[string]string {
+	return map[string]string{
+		agentv1.TeamPlanService_PrepareTeamPlanV3_FullMethodName:             "team.plan.write",
+		agentv1.TeamPlanService_GetTeamPlanV3_FullMethodName:                 "team.plan.read",
+		agentv1.TeamPlanService_CreateTeamApprovalChallengeV3_FullMethodName: "team.plan.approve",
+		agentv1.TeamPlanService_ApproveTeamPlanV3_FullMethodName:             "team.plan.approve",
 	}
 }
 

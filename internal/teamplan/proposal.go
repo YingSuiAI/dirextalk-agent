@@ -102,6 +102,16 @@ func DecodeProposalJSON(raw []byte, policy Policy) (TeamProposal, error) {
 	return canonicalProposal(proposal), nil
 }
 
+// ValidateProposal applies the same protected Policy boundary used by the
+// model decoder and compiler. Trusted orchestration calls it before any remote
+// pricing read so malformed intent cannot trigger provider I/O.
+func ValidateProposal(proposal TeamProposal, policy Policy) error {
+	if err := validatePolicy(policy); err != nil {
+		return err
+	}
+	return validateTeamProposal(proposal, policy)
+}
+
 // ProposalInputSchema returns the exact closed schema supplied to the capture
 // tool. Limits are derived from the trusted policy, not from model output.
 func ProposalInputSchema(policy Policy) (map[string]any, error) {

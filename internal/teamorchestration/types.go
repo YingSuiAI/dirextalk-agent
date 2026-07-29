@@ -16,6 +16,10 @@ import (
 var (
 	ErrInvalid                      = errors.New("invalid Team orchestration request")
 	ErrFactMismatch                 = errors.New("Team orchestration fact mismatch")
+	ErrNotFound                     = errors.New("Team Plan was not found")
+	ErrRevision                     = errors.New("Team Plan record revision does not match")
+	ErrScopeChanged                 = errors.New("Team Plan cloud scope changed")
+	ErrChallengeConsumed            = errors.New("Team Plan approval challenge was already consumed")
 	ErrNotReady                     = errors.New("Team Plan is not ready for this operation")
 	ErrOfferVerificationUnavailable = errors.New("trusted Team offer verification is unavailable")
 )

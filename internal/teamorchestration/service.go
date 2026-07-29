@@ -2,13 +2,22 @@ package teamorchestration
 
 import (
 	"context"
+	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
+)
+
+var preparationGoalDigestPattern = regexp.MustCompile(
+	`^sha256:[0-9a-f]{64}$`,
 )
 
 type Service struct {
@@ -69,21 +78,18 @@ func (service *Service) prepareFreshPlan(
 	scope task.MutationScope,
 	request PreparePlanRequest,
 	offers *teamplan.OfferSnapshot,
+	policy teamplan.Policy,
 ) (PlanFact, error) {
 	if service == nil ||
 		ctx == nil ||
 		scope.Validate() != nil ||
-		!canonicalUUID(request.IdempotencyKey) ||
-		!canonicalUUID(request.ConnectionID) ||
+		!validPreparationRequest(request) ||
 		offers == nil ||
-		offers.ProviderScope().ConnectionID != request.ConnectionID {
+		offers.ProviderScope().ConnectionID != request.ConnectionID ||
+		policy.Validate() != nil {
 		return PlanFact{}, ErrInvalid
 	}
 	intent := preparationIntent(request)
-	policy, err := service.resolvePolicy(ctx, request.OwnerID)
-	if err != nil {
-		return PlanFact{}, err
-	}
 	now, err := service.currentTime()
 	if err != nil {
 		return PlanFact{}, err
@@ -147,8 +153,7 @@ func (service *Service) findPreparedPlan(
 	if service == nil ||
 		ctx == nil ||
 		scope.Validate() != nil ||
-		!canonicalUUID(request.IdempotencyKey) ||
-		!canonicalUUID(request.ConnectionID) {
+		!validPreparationRequest(request) {
 		return PlanFact{}, false, ErrInvalid
 	}
 	intent := preparationIntent(request)
@@ -173,6 +178,64 @@ func (service *Service) findPreparedPlan(
 	return replayed.Plan, true, nil
 }
 
+// GetPlan returns the immutable Plan plus its outer lifecycle state. It does
+// not require a current quote so clients can explain an expired or superseded
+// Plan; every mutating transition still passes through verifyCurrentPlan.
+func (service *Service) GetPlan(
+	ctx context.Context,
+	ownerID,
+	planID string,
+	planRevision uint64,
+) (PlanFact, error) {
+	if service == nil ||
+		ctx == nil ||
+		!validTeamOwnerID(ownerID) ||
+		!canonicalUUID(planID) ||
+		planRevision == 0 ||
+		planRevision > uint64(math.MaxInt64) {
+		return PlanFact{}, ErrInvalid
+	}
+	planFact, err := service.repository.GetPlan(
+		ctx,
+		ownerID,
+		planID,
+		planRevision,
+	)
+	if err != nil {
+		return PlanFact{}, err
+	}
+	if !samePlanFact(
+		planFact,
+		planFact.TaskID,
+		planFact.Plan,
+		planFact.Status,
+	) ||
+		planFact.Plan.OwnerID != ownerID ||
+		planFact.Plan.PlanID != planID ||
+		planFact.Plan.Revision != planRevision {
+		return PlanFact{}, ErrFactMismatch
+	}
+	return planFact, nil
+}
+
+func (service *Service) validateFreshProposal(
+	ctx context.Context,
+	ownerID string,
+	proposal teamplan.TeamProposal,
+) (teamplan.Policy, error) {
+	if service == nil || ctx == nil {
+		return teamplan.Policy{}, ErrInvalid
+	}
+	policy, err := service.resolvePolicy(ctx, ownerID)
+	if err != nil {
+		return teamplan.Policy{}, err
+	}
+	if err := teamplan.ValidateProposal(proposal, policy); err != nil {
+		return teamplan.Policy{}, err
+	}
+	return policy, nil
+}
+
 func (service *Service) CreateChallenge(
 	ctx context.Context,
 	scope task.MutationScope,
@@ -181,7 +244,7 @@ func (service *Service) CreateChallenge(
 	if service == nil ||
 		ctx == nil ||
 		scope.Validate() != nil ||
-		!canonicalUUID(request.IdempotencyKey) {
+		!validChallengeRequest(request) {
 		return ChallengeFact{}, ErrInvalid
 	}
 	planFact, _, _, err := service.verifyCurrentPlan(
@@ -235,7 +298,7 @@ func (service *Service) ApprovePlan(
 	if service == nil ||
 		ctx == nil ||
 		scope.Validate() != nil ||
-		!canonicalUUID(request.IdempotencyKey) {
+		!validApprovalRequest(request) {
 		return PlanFact{}, ErrInvalid
 	}
 	planFact, _, _, err := service.verifyCurrentPlan(
@@ -462,6 +525,61 @@ func samePlanFact(
 func canonicalUUID(value string) bool {
 	parsed, err := uuid.Parse(value)
 	return err == nil && parsed != uuid.Nil && parsed.String() == value
+}
+
+func validPreparationRequest(request PreparePlanRequest) bool {
+	if !canonicalUUID(request.IdempotencyKey) ||
+		!validTeamOwnerID(request.OwnerID) ||
+		(request.TaskID != "" && !canonicalUUID(request.TaskID)) ||
+		!canonicalUUID(request.ConnectionID) ||
+		!canonicalUUID(request.PlanID) ||
+		request.Revision == 0 ||
+		request.Revision > uint64(math.MaxInt64) ||
+		!preparationGoalDigestPattern.MatchString(request.GoalDigest) {
+		return false
+	}
+	if request.Revision == 1 {
+		return request.ExpectedPreviousRevision == 0
+	}
+	return request.ExpectedPreviousRevision == request.Revision-1
+}
+
+func validTeamOwnerID(value string) bool {
+	if value != strings.TrimSpace(value) ||
+		value == "" ||
+		len(value) > 255 ||
+		!utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func validChallengeRequest(request ChallengeRequest) bool {
+	return canonicalUUID(request.IdempotencyKey) &&
+		validTeamOwnerID(request.OwnerID) &&
+		canonicalUUID(request.PlanID) &&
+		request.PlanRevision > 0 &&
+		request.PlanRevision <= uint64(math.MaxInt64) &&
+		request.ExpectedPlanRecordRevision > 0 &&
+		request.ExpectedPlanRecordRevision <= uint64(math.MaxInt64) &&
+		canonicalUUID(request.ApprovalID) &&
+		canonicalUUID(request.ChallengeID) &&
+		teamapproval.ValidateSignerKeyID(request.SignerKeyID) == nil
+}
+
+func validApprovalRequest(request ApprovalRequest) bool {
+	return canonicalUUID(request.IdempotencyKey) &&
+		validTeamOwnerID(request.OwnerID) &&
+		request.ExpectedPlanRecordRevision > 0 &&
+		request.ExpectedPlanRecordRevision <= uint64(math.MaxInt64) &&
+		request.ExpectedChallengeRecordRevision > 0 &&
+		request.ExpectedChallengeRecordRevision <= uint64(math.MaxInt64) &&
+		request.Signature.Validate() == nil
 }
 
 var _ PlanCompiler = (*teamplan.CatalogCompiler)(nil)

@@ -770,6 +770,24 @@ TeamPlanV3
 Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2 保持兼容，
 迁移期间两种计划并存。
 
+Agent 端当前新增独立 `TeamPlanService`，不改写现有 Cloud Plan API。其第一组
+闭环接口为：
+
+- `PrepareTeamPlanV3`：只接收 owner、Task、Cloud Connection ID、Plan
+  identity、目标摘要和受约束 Team Proposal；
+- `GetTeamPlanV3`：读取不可变 Plan 与独立生命周期状态；
+- `CreateTeamApprovalChallengeV3`：由服务端确定性生成 approval/challenge
+  identity，并返回完整签名事实和确定性 CBOR；
+- `ApproveTeamPlanV3`：接收设备产生的 64 字节 Ed25519 签名并推进外层状态。
+
+准备请求不能指定 AWS 账号、Region、实例、价格、镜像、模型 Profile 或凭据；
+资源架构也由服务端目录决定。返回的 Worker Assignment 包含用户需要审核的
+运行时、模型、实例和成本事实，但不包含内部模型凭据引用或 secret delivery
+坐标。读取、准备和批准分别使用 `team.plan.read`、`team.plan.write` 和
+`team.plan.approve` 权限。Message Server 门面、App DTO/签名交互和上述权限的
+配对 Service Key 轮换仍是独立后续工作，不能把 Agent RPC 已存在等同于 App
+链路已打通。
+
 数据库不把 `status` 写进签名 Plan。`OfferSnapshot` 和每个 `(plan_id,
 plan_revision)` 的 Plan JSON、CBOR 与摘要写入后不可修改；`ready`、`approved`、
 `expired`、`superseded`、`executing` 和终态由独立 `record_revision` 表达。
@@ -936,7 +954,11 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
   幂等键不能换连接。可注入 `OfferSnapshot` 的方法已收回包内，唯一公开准备
   入口只能接收 owner、Task、Cloud Connection ID、Plan identity、目标摘要和
   受约束 Team Proposal；首次请求通过受信构建器取报价，已提交重放不会访问
-  AWS 或凭据源。该服务尚未暴露 RPC。
+  AWS 或凭据源。Agent 端已新增独立、去密的 `TeamPlanService`，提供准备、
+  读取、生成完整签名 challenge 和提交设备签名四个 Plan v3 RPC；准备请求
+  无法注入 Region、实例、价格、镜像、模型 Profile 或凭据，返回值也不暴露
+  内部模型凭据引用。服务端生成 challenge identity，并把读、写、批准拆为
+  三个权限。Message Server 和 App 尚未接入这些 RPC。
 - 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层。
 - 严格受保护的模型报价目录、凭据布尔就绪端口、报价快照组装服务，以及读取
   AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
@@ -958,15 +980,14 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- 多 Worker Plan v3 的去密 DTO、整单设备签名 RPC、Message Server 门面和
-  App 接入。
+- 多 Worker Plan v3 的 Message Server 门面、App 去密 DTO 与整单签名接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及 Cloud Connection 只读报价的真实 AWS 验收。
 
 尚未实现或尚未验收：
 
 - Claude Code、Codex、OpenCode、Hermes、OpenClaw 的生产镜像目录。
-- 多 Worker Plan v3 的 RPC/App 审批与真实 Worker 执行。
+- 多 Worker Plan v3 的 App 审批与真实 Worker 执行。
 - 通用高工具调用 Worker Runtime Adapter。
 - 多 Worker 真实 AWS 协作和结果整合。
 - Canonical Memory 和完整 Turn Controller。
