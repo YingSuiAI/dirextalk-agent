@@ -82,6 +82,95 @@ func (store *Store) EnsureBootstrapCredential(ctx context.Context, bootstrap aut
 	return credential, nil
 }
 
+// RotateBootstrapCredential is the explicit local path for changing pairwise
+// service-key material or adding scopes. The new credential and old-key
+// revocation commit together; an exact replay returns the same final state.
+func (store *Store) RotateBootstrapCredential(
+	ctx context.Context,
+	previousKeyID string,
+	bootstrap auth.BootstrapCredential,
+) (auth.Credential, auth.Credential, error) {
+	if err := bootstrap.Validate(); err != nil {
+		return auth.Credential{}, auth.Credential{}, err
+	}
+	if previousKeyID == "" || previousKeyID == bootstrap.KeyID {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("%w: previous bootstrap key is invalid", auth.ErrInvalidCredentialInput)
+	}
+	scopes := canonicalScopes(bootstrap.Scopes)
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("begin bootstrap credential rotation: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	previous, err := scanCredential(tx.QueryRow(ctx, `
+		SELECT credential_id, key_id, client_id, scopes, secret_digest, active, expires_at, revision
+		FROM service_credentials WHERE key_id=$1 FOR UPDATE`, previousKeyID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return auth.Credential{}, auth.Credential{}, auth.ErrCredentialNotFound
+	}
+	if err != nil {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("read previous bootstrap credential: %w", err)
+	}
+
+	replacement, replacementErr := scanCredential(tx.QueryRow(ctx, `
+		SELECT credential_id, key_id, client_id, scopes, secret_digest, active, expires_at, revision
+		FROM service_credentials WHERE key_id=$1 FOR UPDATE`, bootstrap.KeyID))
+	if replacementErr == nil {
+		if previous.Active || !replacement.Active || previous.ClientID != bootstrap.ClientID ||
+			replacement.ClientID != bootstrap.ClientID || !bytes.Equal(replacement.SecretDigest, bootstrap.SecretDigest) ||
+			!slices.Equal(replacement.Scopes, scopes) {
+			return auth.Credential{}, auth.Credential{}, errors.New("bootstrap credential rotation conflicts with existing state")
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return auth.Credential{}, auth.Credential{}, fmt.Errorf("commit bootstrap credential rotation replay: %w", err)
+		}
+		return replacement, previous, nil
+	}
+	if !errors.Is(replacementErr, pgx.ErrNoRows) {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("read replacement bootstrap credential: %w", replacementErr)
+	}
+	if !previous.Active || previous.ClientID != bootstrap.ClientID {
+		return auth.Credential{}, auth.Credential{}, errors.New("previous bootstrap credential is not an active credential for this client")
+	}
+
+	replacementID, err := uuid.NewV7()
+	if err != nil {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("generate replacement bootstrap credential id: %w", err)
+	}
+	replacement, err = scanCredential(tx.QueryRow(ctx, `
+		INSERT INTO service_credentials (credential_id, key_id, client_id, scopes, secret_digest)
+		VALUES ($1,$2,$3,$4,$5)
+		RETURNING credential_id, key_id, client_id, scopes, secret_digest, active, expires_at, revision`,
+		replacementID, bootstrap.KeyID, bootstrap.ClientID, scopes, bootstrap.SecretDigest,
+	))
+	if err != nil {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("insert replacement bootstrap credential: %w", err)
+	}
+	if err := appendCredentialEvent(ctx, tx, replacement, "agent.credential.created", previous.ClientID, previous.CredentialID); err != nil {
+		return auth.Credential{}, auth.Credential{}, err
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE service_credentials
+		SET active=false, revision=revision+1, updated_at=clock_timestamp()
+		WHERE credential_id=$1 AND revision=$2 AND active=true
+		RETURNING credential_id, key_id, client_id, scopes, secret_digest, active, expires_at, revision`,
+		previous.CredentialID, previous.Revision,
+	).Scan(
+		&previous.CredentialID, &previous.KeyID, &previous.ClientID, &previous.Scopes,
+		&previous.SecretDigest, &previous.Active, &previous.ExpiresAt, &previous.Revision,
+	); err != nil {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("revoke previous bootstrap credential: %w", err)
+	}
+	if err := appendCredentialEvent(ctx, tx, previous, "agent.credential.revoked", replacement.ClientID, replacement.CredentialID); err != nil {
+		return auth.Credential{}, auth.Credential{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return auth.Credential{}, auth.Credential{}, fmt.Errorf("commit bootstrap credential rotation: %w", err)
+	}
+	return replacement, previous, nil
+}
+
 func (store *Store) CreateCredential(ctx context.Context, command auth.CreateCredentialCommand) (auth.CreatedCredential, error) {
 	if err := command.Validate(time.Now().UTC()); err != nil {
 		return auth.CreatedCredential{}, err
