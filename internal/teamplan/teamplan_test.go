@@ -198,6 +198,35 @@ func TestCompileRejectsSecretShapedProposal(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsSubMicrosecondQuoteTimestamp(t *testing.T) {
+	t.Parallel()
+	request := validCompileRequest()
+	request.QuotedAt = request.QuotedAt.Add(time.Nanosecond)
+	if _, err := Compile(request); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Compile() error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestPlanValidationRejectsZeroBudgetProjection(t *testing.T) {
+	t.Parallel()
+	plan, err := Compile(validCompileRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Cost.MinimumMicros = 0
+	plan.Cost.ExpectedMicros = 0
+	plan.Cost.MaximumMicros = 0
+	plan.Cost.HardBudgetMicros = 0
+	for index := range plan.Cost.Roles {
+		plan.Cost.Roles[index] = RoleCostEstimate{
+			RoleID: plan.Cost.Roles[index].RoleID,
+		}
+	}
+	if err := plan.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate() error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestPlanDigestBindsRuntimeImageAndRejectsFloatingVersion(t *testing.T) {
 	t.Parallel()
 	plan, err := Compile(validCompileRequest())

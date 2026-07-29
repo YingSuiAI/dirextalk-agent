@@ -884,12 +884,14 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
   成本估算领域层。
 - Ed25519 签名 Runtime Catalog、资格证据绑定和目录约束的 Team Plan 编译器；
   可选配置后由 Agent 启动时严格验证，但尚未配置任何生产 Runtime 记录。
+- Team Plan 的确定性 CBOR 摘要、五分钟设备签名 challenge、报价过期和计划
+  revision 漂移校验；尚未接入数据库、RPC 和 App。
 
 正在实现：
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- Plan v3 持久化、报价来源和整单设备签名协议。
+- Plan v3 持久化、可信报价来源和整单设备签名的服务端/App 接入。
 
 尚未实现或尚未验收：
 

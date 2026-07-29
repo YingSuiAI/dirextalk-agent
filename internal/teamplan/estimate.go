@@ -1,9 +1,6 @@
 package teamplan
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"math"
 	"slices"
 	"strings"
@@ -340,21 +337,6 @@ func topologicalAssignments(assignments []WorkerAssignment) ([]string, error) {
 	return order, nil
 }
 
-// Digest returns the stable SHA-256 digest that a future Plan v3 approval
-// binds. The production approval encoding remains deterministic CBOR; this
-// domain digest deliberately avoids maps and canonicalizes every set.
-func (plan Plan) Digest() (string, error) {
-	if err := validatePlan(plan); err != nil {
-		return "", err
-	}
-	encoded, err := json.Marshal(plan)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256.Sum256(encoded)
-	return "sha256:" + hex.EncodeToString(digest[:]), nil
-}
-
 func validatePlan(plan Plan) error {
 	if plan.SchemaVersion != SchemaV1 ||
 		!canonicalUUID(plan.PlanID) ||
@@ -460,6 +442,7 @@ func validateCost(cost CostEstimate, assignments []WorkerAssignment) error {
 		len(cost.Roles) != len(assignments) ||
 		cost.MinimumMicros > cost.ExpectedMicros ||
 		cost.ExpectedMicros > cost.MaximumMicros ||
+		cost.HardBudgetMicros == 0 ||
 		cost.HardBudgetMicros < cost.MaximumMicros ||
 		cost.HardBudgetMicros > absoluteMaxPlanMicros ||
 		len(cost.Assumptions) == 0 ||

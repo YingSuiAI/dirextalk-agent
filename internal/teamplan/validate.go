@@ -543,7 +543,8 @@ func canonicalUUID(value string) bool {
 }
 
 func utcTimestamp(value time.Time) bool {
-	return !value.IsZero() && value.Location() == time.UTC
+	return !value.IsZero() && value.Location() == time.UTC &&
+		value.Nanosecond()%1000 == 0
 }
 
 func uniqueValues[T comparable](values []T, valid func(T) bool) bool {
