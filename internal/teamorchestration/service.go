@@ -39,42 +39,25 @@ func NewService(
 	}, nil
 }
 
-// PreparePlan accepts only a bounded model proposal and an internally built,
-// trusted Offer Snapshot. Runtime releases, model profiles, instance types,
-// prices, credentials, and policy are resolved by server-owned dependencies.
-func (service *Service) PreparePlan(
+// prepareFreshPlan is package-private so network transports cannot provide
+// their own Offer Snapshot. The repository still arbitrates a concurrent
+// idempotent winner when the fresh facts are committed.
+func (service *Service) prepareFreshPlan(
 	ctx context.Context,
 	scope task.MutationScope,
 	request PreparePlanRequest,
+	offers *teamplan.OfferSnapshot,
 ) (PlanFact, error) {
 	if service == nil ||
 		ctx == nil ||
 		scope.Validate() != nil ||
-		!canonicalUUID(request.IdempotencyKey) {
+		!canonicalUUID(request.IdempotencyKey) ||
+		!canonicalUUID(request.ConnectionID) ||
+		offers == nil ||
+		offers.ProviderScope().ConnectionID != request.ConnectionID {
 		return PlanFact{}, ErrInvalid
 	}
 	intent := preparationIntent(request)
-	replayed, found, err := service.repository.FindPreparedPlan(
-		ctx,
-		scope,
-		FindPreparedPlanCommand{
-			IdempotencyKey: request.IdempotencyKey,
-			Intent:         intent,
-		},
-	)
-	if err != nil {
-		return PlanFact{}, err
-	}
-	if found {
-		if !replayed.Replayed ||
-			!preparedPlanMatchesIntent(replayed, intent) {
-			return PlanFact{}, ErrFactMismatch
-		}
-		return replayed.Plan, nil
-	}
-	if request.Offers == nil {
-		return PlanFact{}, ErrInvalid
-	}
 	policy, err := service.resolvePolicy(ctx, request.OwnerID)
 	if err != nil {
 		return PlanFact{}, err
@@ -90,7 +73,7 @@ func (service *Service) PreparePlan(
 		GoalDigest:  request.GoalDigest,
 		Proposal:    request.Proposal,
 		Policy:      policy,
-		Offers:      request.Offers,
+		Offers:      offers,
 		CompileTime: now,
 	})
 	if err != nil {
@@ -98,7 +81,7 @@ func (service *Service) PreparePlan(
 	}
 	if err := service.compiler.VerifyPlan(
 		plan,
-		request.Offers,
+		offers,
 		policy,
 		now,
 	); err != nil {
@@ -110,7 +93,7 @@ func (service *Service) PreparePlan(
 		PersistPreparedPlanCommand{
 			IdempotencyKey: request.IdempotencyKey,
 			Intent:         intent,
-			Offers:         request.Offers,
+			Offers:         offers,
 			Plan:           plan,
 		},
 	)
@@ -128,10 +111,44 @@ func (service *Service) PreparePlan(
 		request.TaskID,
 		plan,
 		PlanReadyForConfirmation,
-	) || !sameOfferFact(prepared.Offer, request.OwnerID, request.Offers) {
+	) || !sameOfferFact(prepared.Offer, request.OwnerID, offers) {
 		return PlanFact{}, ErrFactMismatch
 	}
 	return prepared.Plan, nil
+}
+
+func (service *Service) findPreparedPlan(
+	ctx context.Context,
+	scope task.MutationScope,
+	request PreparePlanRequest,
+) (PlanFact, bool, error) {
+	if service == nil ||
+		ctx == nil ||
+		scope.Validate() != nil ||
+		!canonicalUUID(request.IdempotencyKey) ||
+		!canonicalUUID(request.ConnectionID) {
+		return PlanFact{}, false, ErrInvalid
+	}
+	intent := preparationIntent(request)
+	replayed, found, err := service.repository.FindPreparedPlan(
+		ctx,
+		scope,
+		FindPreparedPlanCommand{
+			IdempotencyKey: request.IdempotencyKey,
+			Intent:         intent,
+		},
+	)
+	if err != nil {
+		return PlanFact{}, false, err
+	}
+	if !found {
+		return PlanFact{}, false, nil
+	}
+	if !replayed.Replayed ||
+		!preparedPlanMatchesIntent(replayed, intent) {
+		return PlanFact{}, false, ErrFactMismatch
+	}
+	return replayed.Plan, true, nil
 }
 
 func (service *Service) CreateChallenge(
@@ -412,6 +429,7 @@ func preparationIntent(request PreparePlanRequest) PreparationIntent {
 	return PreparationIntent{
 		OwnerID:                  request.OwnerID,
 		TaskID:                   request.TaskID,
+		ConnectionID:             request.ConnectionID,
 		PlanID:                   request.PlanID,
 		Revision:                 request.Revision,
 		ExpectedPreviousRevision: request.ExpectedPreviousRevision,
@@ -433,6 +451,7 @@ func preparedPlanMatchesIntent(
 	) ||
 		prepared.Offer.OwnerID != intent.OwnerID ||
 		plan.OwnerID != intent.OwnerID ||
+		plan.ProviderScope.ConnectionID != intent.ConnectionID ||
 		plan.PlanID != intent.PlanID ||
 		plan.Revision != intent.Revision ||
 		plan.GoalDigest != intent.GoalDigest ||

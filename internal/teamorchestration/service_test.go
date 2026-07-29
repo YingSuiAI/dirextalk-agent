@@ -33,6 +33,11 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	offerBuilder := &orchestrationOfferBuilderFixture{offers: offers}
+	preparation, err := NewPreparationService(service, offerBuilder)
+	if err != nil {
+		t.Fatal(err)
+	}
 	scope := task.MutationScope{
 		ClientID:     "team-orchestration-test",
 		CredentialID: uuid.NewString(),
@@ -40,13 +45,13 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	request := PreparePlanRequest{
 		IdempotencyKey: uuid.NewString(),
 		OwnerID:        "owner-team",
+		ConnectionID:   offers.ProviderScope().ConnectionID,
 		PlanID:         uuid.NewString(),
 		Revision:       1,
 		GoalDigest:     "sha256:" + strings.Repeat("d", 64),
 		Proposal:       orchestrationProposalFixture(),
-		Offers:         offers,
 	}
-	planFact, err := service.PreparePlan(
+	planFact, err := preparation.PreparePlan(
 		context.Background(),
 		scope,
 		request,
@@ -63,42 +68,66 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		compiler.compileCalls != 1 ||
 		compiler.verifyCalls != 1 ||
 		resolver.calls != 1 ||
+		offerBuilder.calls != 1 ||
+		offerBuilder.ownerID != request.OwnerID ||
+		offerBuilder.connectionID != request.ConnectionID ||
 		repository.findCalls != 1 ||
 		repository.prepareCalls != 1 ||
 		repository.prepareKey != request.IdempotencyKey {
 		t.Fatalf(
-			"prepared=%#v compiler=%d/%d policy=%d repository=%d/%d key=%q",
+			"prepared=%#v compiler=%d/%d policy=%d offers=%d/%q/%q repository=%d/%d key=%q",
 			planFact,
 			compiler.compileCalls,
 			compiler.verifyCalls,
 			resolver.calls,
+			offerBuilder.calls,
+			offerBuilder.ownerID,
+			offerBuilder.connectionID,
 			repository.findCalls,
 			repository.prepareCalls,
 			repository.prepareKey,
 		)
 	}
-	replayRequest := request
-	replayRequest.Offers = nil
-	replayedPlan, err := service.PreparePlan(
+	replayedPlan, err := preparation.PreparePlan(
 		context.Background(),
 		scope,
-		replayRequest,
+		request,
 	)
 	if err != nil ||
 		replayedPlan.PlanDigest != planFact.PlanDigest ||
 		compiler.compileCalls != 1 ||
 		compiler.verifyCalls != 1 ||
 		resolver.calls != 1 ||
+		offerBuilder.calls != 1 ||
 		repository.findCalls != 2 ||
 		repository.prepareCalls != 1 {
 		t.Fatalf(
-			"replayed=%#v error=%v compiler=%d/%d policy=%d repository=%d/%d",
+			"replayed=%#v error=%v compiler=%d/%d policy=%d offers=%d repository=%d/%d",
 			replayedPlan,
 			err,
 			compiler.compileCalls,
 			compiler.verifyCalls,
 			resolver.calls,
+			offerBuilder.calls,
 			repository.findCalls,
+			repository.prepareCalls,
+		)
+	}
+	changedConnection := request
+	changedConnection.ConnectionID = uuid.NewString()
+	if _, err := preparation.PreparePlan(
+		context.Background(),
+		scope,
+		changedConnection,
+	); !errors.Is(err, ErrFactMismatch) ||
+		offerBuilder.calls != 1 ||
+		compiler.compileCalls != 1 ||
+		repository.prepareCalls != 1 {
+		t.Fatalf(
+			"changed Connection error=%v offers=%d compiler=%d prepare=%d",
+			err,
+			offerBuilder.calls,
+			compiler.compileCalls,
 			repository.prepareCalls,
 		)
 	}
@@ -223,6 +252,60 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	}
 }
 
+func TestPreparationServiceRejectsOfferForAnotherConnection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	offers := orchestrationOfferFixture(t, now)
+	compiler := &orchestrationCompilerFixture{
+		revision: "sha256:" + strings.Repeat("c", 64),
+	}
+	repository := newOrchestrationRepositoryFixture()
+	plans, err := NewService(
+		compiler,
+		&orchestrationPolicyResolverFixture{
+			policy: orchestrationPolicyFixture(),
+		},
+		repository,
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := &orchestrationOfferBuilderFixture{offers: offers}
+	service, err := NewPreparationService(plans, builder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.PreparePlan(
+		context.Background(),
+		task.MutationScope{
+			ClientID:     "team-orchestration-test",
+			CredentialID: uuid.NewString(),
+		},
+		PreparePlanRequest{
+			IdempotencyKey: uuid.NewString(),
+			OwnerID:        "owner-team",
+			ConnectionID:   uuid.NewString(),
+			PlanID:         uuid.NewString(),
+			Revision:       1,
+			GoalDigest:     "sha256:" + strings.Repeat("d", 64),
+			Proposal:       orchestrationProposalFixture(),
+		},
+	)
+	if !errors.Is(err, ErrFactMismatch) ||
+		builder.calls != 1 ||
+		compiler.compileCalls != 0 ||
+		repository.prepareCalls != 0 {
+		t.Fatalf(
+			"substituted offer error=%v builder=%d compile=%d prepare=%d",
+			err,
+			builder.calls,
+			compiler.compileCalls,
+			repository.prepareCalls,
+		)
+	}
+}
+
 func TestPreparePlanRejectsRepositoryFactSubstitution(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
@@ -241,7 +324,15 @@ func TestPreparePlanRejectsRepositoryFactSubstitution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.PreparePlan(
+	offers := orchestrationOfferFixture(t, now)
+	preparation, err := NewPreparationService(
+		service,
+		&orchestrationOfferBuilderFixture{offers: offers},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = preparation.PreparePlan(
 		context.Background(),
 		task.MutationScope{
 			ClientID:     "team-orchestration-test",
@@ -250,11 +341,11 @@ func TestPreparePlanRejectsRepositoryFactSubstitution(t *testing.T) {
 		PreparePlanRequest{
 			IdempotencyKey: uuid.NewString(),
 			OwnerID:        "owner-team",
+			ConnectionID:   offers.ProviderScope().ConnectionID,
 			PlanID:         uuid.NewString(),
 			Revision:       1,
 			GoalDigest:     "sha256:" + strings.Repeat("d", 64),
 			Proposal:       orchestrationProposalFixture(),
-			Offers:         orchestrationOfferFixture(t, now),
 		},
 	)
 	if !errors.Is(err, ErrFactMismatch) {
@@ -323,6 +414,7 @@ type orchestrationRepositoryFixture struct {
 	offer          OfferFact
 	plan           PlanFact
 	prepareKey     string
+	connectionID   string
 	findCalls      int
 	prepareCalls   int
 	challengeCalls int
@@ -346,6 +438,7 @@ func (repository *orchestrationRepositoryFixture) FindPreparedPlan(
 	}
 	if command.IdempotencyKey != repository.prepareKey ||
 		command.Intent.OwnerID != repository.plan.Plan.OwnerID ||
+		command.Intent.ConnectionID != repository.connectionID ||
 		command.Intent.PlanID != repository.plan.Plan.PlanID ||
 		command.Intent.Revision != repository.plan.Plan.Revision {
 		return PreparedPlanFact{}, false, ErrFactMismatch
@@ -364,6 +457,7 @@ func (repository *orchestrationRepositoryFixture) PersistPreparedPlan(
 ) (PreparedPlanFact, error) {
 	repository.prepareCalls++
 	repository.prepareKey = command.IdempotencyKey
+	repository.connectionID = command.Intent.ConnectionID
 	repository.offer = OfferFact{
 		OwnerID:  command.Intent.OwnerID,
 		Document: command.Offers.Document(),
@@ -396,6 +490,25 @@ func (repository *orchestrationRepositoryFixture) PersistPreparedPlan(
 		Offer: repository.offer,
 		Plan:  result,
 	}, nil
+}
+
+type orchestrationOfferBuilderFixture struct {
+	offers       *teamplan.OfferSnapshot
+	err          error
+	calls        int
+	ownerID      string
+	connectionID string
+}
+
+func (builder *orchestrationOfferBuilderFixture) BuildForConnection(
+	_ context.Context,
+	ownerID,
+	connectionID string,
+) (*teamplan.OfferSnapshot, error) {
+	builder.calls++
+	builder.ownerID = ownerID
+	builder.connectionID = connectionID
+	return builder.offers, builder.err
 }
 
 func (repository *orchestrationRepositoryFixture) GetOffer(
@@ -719,3 +832,4 @@ func orchestrationPlanFixture(
 var _ PlanCompiler = (*orchestrationCompilerFixture)(nil)
 var _ PolicyResolver = (*orchestrationPolicyResolverFixture)(nil)
 var _ Repository = (*orchestrationRepositoryFixture)(nil)
+var _ TrustedOfferBuilder = (*orchestrationOfferBuilderFixture)(nil)

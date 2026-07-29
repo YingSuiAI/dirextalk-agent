@@ -89,6 +89,7 @@ type TeamApprovalRecord struct {
 type TeamPlanPreparationIntent struct {
 	OwnerID                  string                `json:"owner_id"`
 	TaskID                   string                `json:"task_id,omitempty"`
+	ConnectionID             string                `json:"connection_id"`
 	PlanID                   string                `json:"plan_id"`
 	Revision                 uint64                `json:"revision"`
 	ExpectedPreviousRevision uint64                `json:"expected_previous_revision"`
@@ -98,6 +99,7 @@ type TeamPlanPreparationIntent struct {
 
 func (intent TeamPlanPreparationIntent) validate() error {
 	if !validTeamOwnerID(intent.OwnerID) ||
+		!canonicalTeamUUID(intent.ConnectionID) ||
 		!canonicalTeamUUID(intent.PlanID) ||
 		intent.Revision == 0 ||
 		intent.Revision > uint64(math.MaxInt64) ||
@@ -177,6 +179,7 @@ func (command PrepareTeamPlanCommand) validate() error {
 		command.Plan.PlanID != command.Intent.PlanID ||
 		command.Plan.Revision != command.Intent.Revision ||
 		command.Plan.GoalDigest != command.Intent.GoalDigest ||
+		command.Plan.ProviderScope.ConnectionID != command.Intent.ConnectionID ||
 		command.Plan.PricingSnapshotID != command.Snapshot.SnapshotID() ||
 		command.Plan.PricingSnapshotDigest != command.Snapshot.Digest() ||
 		command.Plan.ProviderScope != command.Snapshot.ProviderScope() ||

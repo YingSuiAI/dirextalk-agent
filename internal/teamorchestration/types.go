@@ -74,6 +74,7 @@ type ApprovalFact struct {
 type PreparationIntent struct {
 	OwnerID                  string
 	TaskID                   string
+	ConnectionID             string
 	PlanID                   string
 	Revision                 uint64
 	ExpectedPreviousRevision uint64
@@ -180,12 +181,38 @@ type PreparePlanRequest struct {
 	IdempotencyKey           string
 	OwnerID                  string
 	TaskID                   string
+	ConnectionID             string
 	PlanID                   string
 	Revision                 uint64
 	ExpectedPreviousRevision uint64
 	GoalDigest               string
 	Proposal                 teamplan.TeamProposal
-	Offers                   *teamplan.OfferSnapshot
+}
+
+// TrustedOfferBuilder resolves one owner-scoped Cloud Connection and builds
+// fresh pricing/capacity evidence through server-owned dependencies. It must
+// never accept provider identity, Region, instance type, price, or credential
+// data from a network request.
+type TrustedOfferBuilder interface {
+	BuildForConnection(
+		context.Context,
+		string,
+		string,
+	) (*teamplan.OfferSnapshot, error)
+}
+
+type TrustedOfferBuilderFunc func(
+	context.Context,
+	string,
+	string,
+) (*teamplan.OfferSnapshot, error)
+
+func (function TrustedOfferBuilderFunc) BuildForConnection(
+	ctx context.Context,
+	ownerID,
+	connectionID string,
+) (*teamplan.OfferSnapshot, error) {
+	return function(ctx, ownerID, connectionID)
 }
 
 type ChallengeRequest struct {

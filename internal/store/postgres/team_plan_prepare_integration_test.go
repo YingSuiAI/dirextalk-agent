@@ -116,6 +116,18 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 	); !errors.Is(err, idempotency.ErrConflict) {
 		t.Fatalf("changed stable intent replay error=%v", err)
 	}
+	changedConnection := intent
+	changedConnection.ConnectionID = uuid.NewString()
+	if _, _, err := store.FindPreparedTeamPlan(
+		ctx,
+		scope,
+		postgres.FindPreparedTeamPlanCommand{
+			IdempotencyKey: key,
+			Intent:         changedConnection,
+		},
+	); !errors.Is(err, idempotency.ErrConflict) {
+		t.Fatalf("changed Cloud Connection replay error=%v", err)
+	}
 	otherScope := scope
 	otherScope.CredentialID = uuid.NewString()
 	if _, found, err := store.FindPreparedTeamPlan(
@@ -287,11 +299,12 @@ func teamPlanPreparationIntentFixture(
 ) postgres.TeamPlanPreparationIntent {
 	assignment := plan.Assignments[0]
 	return postgres.TeamPlanPreparationIntent{
-		OwnerID:    plan.OwnerID,
-		TaskID:     taskID,
-		PlanID:     plan.PlanID,
-		Revision:   plan.Revision,
-		GoalDigest: plan.GoalDigest,
+		OwnerID:      plan.OwnerID,
+		TaskID:       taskID,
+		ConnectionID: plan.ProviderScope.ConnectionID,
+		PlanID:       plan.PlanID,
+		Revision:     plan.Revision,
+		GoalDigest:   plan.GoalDigest,
 		Proposal: teamplan.TeamProposal{
 			Confidence: plan.ProposalConfidence,
 			Rationale:  plan.ProposalRationale,

@@ -234,6 +234,7 @@ func orchestrationPreparationIntent(
 	return TeamPlanPreparationIntent{
 		OwnerID:                  intent.OwnerID,
 		TaskID:                   intent.TaskID,
+		ConnectionID:             intent.ConnectionID,
 		PlanID:                   intent.PlanID,
 		Revision:                 intent.Revision,
 		ExpectedPreviousRevision: intent.ExpectedPreviousRevision,
