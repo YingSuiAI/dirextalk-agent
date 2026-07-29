@@ -40,6 +40,7 @@ type TeamComputeShape struct {
 // contains no RunInstances, Create*, Delete*, Stop*, or Terminate* operation.
 type TeamComputePricingProvider struct {
 	pricing *PricingProvider
+	scope   teamplan.ProviderScope
 	region  string
 	zones   []string
 	shapes  []TeamComputeShape
@@ -47,11 +48,14 @@ type TeamComputePricingProvider struct {
 
 func NewTeamComputePricingProvider(
 	pricing *PricingProvider,
+	scope teamplan.ProviderScope,
 	region string,
 	zones []string,
 	shapes []TeamComputeShape,
 ) (*TeamComputePricingProvider, error) {
 	if pricing == nil || pricing.factory == nil || pricing.now == nil ||
+		scope.Validate() != nil ||
+		scope.Provider != teamplan.CloudProviderAWS ||
 		strings.TrimSpace(region) != region ||
 		!sdkRegionPattern.MatchString(region) ||
 		len(zones) == 0 || len(zones) > 16 ||
@@ -83,6 +87,7 @@ func NewTeamComputePricingProvider(
 	}
 	return &TeamComputePricingProvider{
 		pricing: pricing,
+		scope:   scope,
 		region:  region,
 		zones:   normalizedZones,
 		shapes:  normalizedShapes,
@@ -91,9 +96,11 @@ func NewTeamComputePricingProvider(
 
 func (provider *TeamComputePricingProvider) ReadComputeOffers(
 	ctx context.Context,
+	scope teamplan.ProviderScope,
 	region string,
 ) (teampricing.ComputeEvidence, error) {
 	if provider == nil || provider.pricing == nil || ctx == nil ||
+		scope != provider.scope ||
 		region != provider.region {
 		return teampricing.ComputeEvidence{}, ErrInvalidTeamComputePricing
 	}
@@ -251,6 +258,7 @@ func (provider *TeamComputePricingProvider) ReadComputeOffers(
 
 	priceDigest, err := canonical.Digest(teamComputePriceEvidence{
 		SchemaVersion: teamComputeEvidenceSchemaV1,
+		ProviderScope: scope,
 		Region:        region,
 		Currency:      "USD",
 		CapturedAt:    capturedAt,
@@ -261,6 +269,7 @@ func (provider *TeamComputePricingProvider) ReadComputeOffers(
 	}
 	capacityDigest, err := canonical.Digest(teamComputeCapacityEvidence{
 		SchemaVersion: teamComputeEvidenceSchemaV1,
+		ProviderScope: scope,
 		Region:        region,
 		CapturedAt:    capturedAt,
 		Offers:        capacity,
@@ -269,7 +278,9 @@ func (provider *TeamComputePricingProvider) ReadComputeOffers(
 		return teampricing.ComputeEvidence{}, err
 	}
 	return teampricing.ComputeEvidence{
-		Currency: "USD",
+		ProviderScope: scope,
+		Region:        region,
+		Currency:      "USD",
 		Sources: []teamplan.OfferSourceReceipt{
 			{
 				Kind:       teamplan.OfferSourceComputePricing,
@@ -290,6 +301,7 @@ func (provider *TeamComputePricingProvider) ReadComputeOffers(
 
 type teamComputePriceEvidence struct {
 	SchemaVersion string                        `json:"schema_version"`
+	ProviderScope teamplan.ProviderScope        `json:"provider_scope"`
 	Region        string                        `json:"region"`
 	Currency      string                        `json:"currency"`
 	CapturedAt    time.Time                     `json:"captured_at"`
@@ -306,6 +318,7 @@ type teamComputePriceObservation struct {
 
 type teamComputeCapacityEvidence struct {
 	SchemaVersion string                           `json:"schema_version"`
+	ProviderScope teamplan.ProviderScope           `json:"provider_scope"`
 	Region        string                           `json:"region"`
 	CapturedAt    time.Time                        `json:"captured_at"`
 	Offers        []teamComputeCapacityObservation `json:"offers"`

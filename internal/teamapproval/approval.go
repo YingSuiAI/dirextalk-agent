@@ -35,36 +35,37 @@ const (
 )
 
 type signingDocumentV1 struct {
-	PayloadSchema         string    `json:"payload_schema"`
-	HashAlgorithm         string    `json:"hash_algorithm"`
-	ChallengeSchema       string    `json:"challenge_schema"`
-	Revision              uint64    `json:"revision"`
-	ApprovalID            string    `json:"approval_id"`
-	ChallengeID           string    `json:"challenge_id"`
-	AgentInstanceID       string    `json:"agent_instance_id"`
-	OwnerID               string    `json:"owner_id"`
-	PlanID                string    `json:"plan_id"`
-	PlanRevision          uint64    `json:"plan_revision"`
-	PlanDigest            string    `json:"plan_digest"`
-	GoalDigest            string    `json:"goal_digest"`
-	CatalogRevision       string    `json:"catalog_revision"`
-	PricingSnapshotID     string    `json:"pricing_snapshot_id"`
-	PricingSnapshotDigest string    `json:"pricing_snapshot_digest"`
-	QuotedAt              time.Time `json:"quoted_at"`
-	QuoteValidUntil       time.Time `json:"quote_valid_until"`
-	WorkerCount           uint32    `json:"worker_count"`
-	MaxConcurrentWorkers  uint32    `json:"max_concurrent_workers"`
-	Currency              string    `json:"currency"`
-	MinimumCostMicros     uint64    `json:"minimum_cost_micros"`
-	ExpectedCostMicros    uint64    `json:"expected_cost_micros"`
-	MaximumCostMicros     uint64    `json:"maximum_cost_micros"`
-	HardBudgetMicros      uint64    `json:"hard_budget_micros"`
-	MinimumWallSeconds    uint64    `json:"minimum_wall_seconds"`
-	ExpectedWallSeconds   uint64    `json:"expected_wall_seconds"`
-	MaximumWallSeconds    uint64    `json:"maximum_wall_seconds"`
-	SignerKeyID           string    `json:"signer_key_id"`
-	IssuedAt              time.Time `json:"issued_at"`
-	ExpiresAt             time.Time `json:"expires_at"`
+	PayloadSchema         string                 `json:"payload_schema"`
+	HashAlgorithm         string                 `json:"hash_algorithm"`
+	ChallengeSchema       string                 `json:"challenge_schema"`
+	Revision              uint64                 `json:"revision"`
+	ApprovalID            string                 `json:"approval_id"`
+	ChallengeID           string                 `json:"challenge_id"`
+	AgentInstanceID       string                 `json:"agent_instance_id"`
+	OwnerID               string                 `json:"owner_id"`
+	PlanID                string                 `json:"plan_id"`
+	PlanRevision          uint64                 `json:"plan_revision"`
+	PlanDigest            string                 `json:"plan_digest"`
+	GoalDigest            string                 `json:"goal_digest"`
+	ProviderScope         teamplan.ProviderScope `json:"provider_scope"`
+	CatalogRevision       string                 `json:"catalog_revision"`
+	PricingSnapshotID     string                 `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest string                 `json:"pricing_snapshot_digest"`
+	QuotedAt              time.Time              `json:"quoted_at"`
+	QuoteValidUntil       time.Time              `json:"quote_valid_until"`
+	WorkerCount           uint32                 `json:"worker_count"`
+	MaxConcurrentWorkers  uint32                 `json:"max_concurrent_workers"`
+	Currency              string                 `json:"currency"`
+	MinimumCostMicros     uint64                 `json:"minimum_cost_micros"`
+	ExpectedCostMicros    uint64                 `json:"expected_cost_micros"`
+	MaximumCostMicros     uint64                 `json:"maximum_cost_micros"`
+	HardBudgetMicros      uint64                 `json:"hard_budget_micros"`
+	MinimumWallSeconds    uint64                 `json:"minimum_wall_seconds"`
+	ExpectedWallSeconds   uint64                 `json:"expected_wall_seconds"`
+	MaximumWallSeconds    uint64                 `json:"maximum_wall_seconds"`
+	SignerKeyID           string                 `json:"signer_key_id"`
+	IssuedAt              time.Time              `json:"issued_at"`
+	ExpiresAt             time.Time              `json:"expires_at"`
 }
 
 func NewChallengeV1(
@@ -101,6 +102,7 @@ func NewChallengeV1(
 		AgentInstanceID: agentInstanceID, OwnerID: plan.OwnerID,
 		PlanID: plan.PlanID, PlanRevision: plan.Revision,
 		PlanDigest: planDigest, GoalDigest: plan.GoalDigest,
+		ProviderScope:         plan.ProviderScope,
 		CatalogRevision:       plan.CatalogRevision,
 		PricingSnapshotID:     plan.PricingSnapshotID,
 		PricingSnapshotDigest: plan.PricingSnapshotDigest,
@@ -134,6 +136,7 @@ func (challenge ChallengeV1) ValidateAt(now time.Time) error {
 		challenge.PlanRevision == 0 ||
 		!digestPattern.MatchString(challenge.PlanDigest) ||
 		!digestPattern.MatchString(challenge.GoalDigest) ||
+		challenge.ProviderScope.Validate() != nil ||
 		!digestPattern.MatchString(challenge.CatalogRevision) ||
 		!canonicalUUID(challenge.PricingSnapshotID) ||
 		!digestPattern.MatchString(challenge.PricingSnapshotDigest) ||
@@ -190,6 +193,7 @@ func (challenge ChallengeV1) SigningPayload() ([]byte, error) {
 		OwnerID:         challenge.OwnerID,
 		PlanID:          challenge.PlanID, PlanRevision: challenge.PlanRevision,
 		PlanDigest: challenge.PlanDigest, GoalDigest: challenge.GoalDigest,
+		ProviderScope:         challenge.ProviderScope,
 		CatalogRevision:       challenge.CatalogRevision,
 		PricingSnapshotID:     challenge.PricingSnapshotID,
 		PricingSnapshotDigest: challenge.PricingSnapshotDigest,
@@ -261,6 +265,7 @@ func (challenge ChallengeV1) matchesPlan(plan teamplan.Plan) error {
 		plan.OwnerID != challenge.OwnerID ||
 		digest != challenge.PlanDigest ||
 		plan.GoalDigest != challenge.GoalDigest ||
+		plan.ProviderScope != challenge.ProviderScope ||
 		plan.CatalogRevision != challenge.CatalogRevision ||
 		plan.PricingSnapshotID != challenge.PricingSnapshotID ||
 		plan.PricingSnapshotDigest != challenge.PricingSnapshotDigest ||

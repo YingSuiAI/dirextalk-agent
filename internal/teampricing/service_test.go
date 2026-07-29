@@ -32,12 +32,14 @@ func TestSnapshotServiceFreezesTrustedEvidenceAndReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	scope := validPricingProviderScope()
 
-	snapshot, err := service.Build(context.Background(), "us-east-1")
+	snapshot, err := service.Build(context.Background(), scope, "us-east-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if snapshot.SnapshotID() != "10000000-0000-4000-8000-000000000099" ||
+		snapshot.ProviderScope() != scope ||
 		snapshot.Currency() != "USD" ||
 		!snapshot.ValidUntil().Equal(now.Add(10*time.Minute)) {
 		t.Fatalf("snapshot header = %#v", snapshot.Document())
@@ -46,7 +48,9 @@ func TestSnapshotServiceFreezesTrustedEvidenceAndReadiness(t *testing.T) {
 		credentials.calls[0] != "secret_ref:model/openai-codex" {
 		t.Fatalf("credential readiness calls = %v", credentials.calls)
 	}
-	if len(compute.calls) != 1 || compute.calls[0] != "us-east-1" {
+	if len(compute.calls) != 1 ||
+		compute.calls[0].scope != scope ||
+		compute.calls[0].region != "us-east-1" {
 		t.Fatalf("compute calls = %v", compute.calls)
 	}
 	offers := snapshot.ModelOffers()
@@ -97,6 +101,15 @@ func TestSnapshotServiceFailsClosedOnEvidenceAndCredentialErrors(t *testing.T) {
 			}(),
 			want: ErrInvalidSnapshotRequest,
 		},
+		"provider scope drift": {
+			credentials: &fakeCredentialReadiness{},
+			compute: func() ComputeEvidence {
+				value := validComputeEvidence(now)
+				value.ProviderScope.ConnectionRevision++
+				return value
+			}(),
+			want: ErrInvalidSnapshotRequest,
+		},
 		"expired compute evidence": {
 			credentials: &fakeCredentialReadiness{},
 			compute: func() ComputeEvidence {
@@ -126,7 +139,11 @@ func TestSnapshotServiceFailsClosedOnEvidenceAndCredentialErrors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, got := service.Build(context.Background(), "us-east-1")
+			_, got := service.Build(
+				context.Background(),
+				validPricingProviderScope(),
+				"us-east-1",
+			)
 			if !errors.Is(got, test.want) {
 				t.Fatalf("Build() error = %v, want %v", got, test.want)
 			}
@@ -155,6 +172,7 @@ func TestSnapshotServiceRejectsInvalidRegionBeforeProviderCall(t *testing.T) {
 	}
 	if _, err := service.Build(
 		context.Background(),
+		validPricingProviderScope(),
 		" us-east-1",
 	); !errors.Is(err, ErrInvalidSnapshotRequest) {
 		t.Fatalf("Build() error = %v", err)
@@ -187,6 +205,7 @@ func TestSnapshotServiceRedactsComputeFailureAndPreservesCancellation(t *testing
 	}
 	if _, err := service.Build(
 		context.Background(),
+		validPricingProviderScope(),
 		"us-east-1",
 	); !errors.Is(err, ErrComputeEvidenceUnavailable) {
 		t.Fatalf("Build() error = %v", err)
@@ -195,6 +214,7 @@ func TestSnapshotServiceRedactsComputeFailureAndPreservesCancellation(t *testing
 	cancel()
 	if _, err := service.Build(
 		ctx,
+		validPricingProviderScope(),
 		"us-east-1",
 	); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled Build() error = %v", err)

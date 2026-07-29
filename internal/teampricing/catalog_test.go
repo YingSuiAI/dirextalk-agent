@@ -226,20 +226,37 @@ func (fake *fakeCredentialReadiness) Ready(
 type fakeComputePort struct {
 	evidence ComputeEvidence
 	err      error
-	calls    []string
+	calls    []computeCall
+}
+
+type computeCall struct {
+	scope  teamplan.ProviderScope
+	region string
 }
 
 func (fake *fakeComputePort) ReadComputeOffers(
 	_ context.Context,
+	scope teamplan.ProviderScope,
 	region string,
 ) (ComputeEvidence, error) {
-	fake.calls = append(fake.calls, region)
+	fake.calls = append(fake.calls, computeCall{scope: scope, region: region})
 	return fake.evidence, fake.err
+}
+
+func validPricingProviderScope() teamplan.ProviderScope {
+	return teamplan.ProviderScope{
+		Provider:           teamplan.CloudProviderAWS,
+		ConnectionID:       "20000000-0000-4000-8000-000000000001",
+		ConnectionRevision: 3,
+		AccountID:          "123456789012",
+	}
 }
 
 func validComputeEvidence(now time.Time) ComputeEvidence {
 	return ComputeEvidence{
-		Currency: "USD",
+		ProviderScope: validPricingProviderScope(),
+		Region:        "us-east-1",
+		Currency:      "USD",
 		Sources: []teamplan.OfferSourceReceipt{
 			{
 				Kind:       teamplan.OfferSourceComputePricing,

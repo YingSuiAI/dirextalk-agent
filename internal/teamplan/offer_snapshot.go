@@ -39,6 +39,7 @@ type OfferSourceReceipt struct {
 type OfferSnapshotDocument struct {
 	SchemaVersion string               `json:"schema_version"`
 	SnapshotID    string               `json:"snapshot_id"`
+	ProviderScope ProviderScope        `json:"provider_scope"`
 	Region        string               `json:"region"`
 	Currency      string               `json:"currency"`
 	CapturedAt    time.Time            `json:"captured_at"`
@@ -88,6 +89,13 @@ func (snapshot *OfferSnapshot) Region() string {
 		return ""
 	}
 	return snapshot.document.Region
+}
+
+func (snapshot *OfferSnapshot) ProviderScope() ProviderScope {
+	if snapshot == nil {
+		return ProviderScope{}
+	}
+	return snapshot.document.ProviderScope
 }
 
 func (snapshot *OfferSnapshot) Currency() string {
@@ -150,6 +158,7 @@ func normalizeOfferSnapshot(
 	document = cloneOfferSnapshotDocument(document)
 	if document.SchemaVersion != OfferSnapshotSchemaV1 ||
 		!canonicalUUID(document.SnapshotID) ||
+		validateProviderScope(document.ProviderScope) != nil ||
 		!regionPattern.MatchString(document.Region) ||
 		!currencyPattern.MatchString(document.Currency) ||
 		!utcTimestamp(document.CapturedAt) ||

@@ -246,7 +246,9 @@ func TestPlanValidationRejectsZeroBudgetProjection(t *testing.T) {
 	}
 }
 
-func TestPlanDigestBindsRuntimeImageAndRejectsFloatingVersion(t *testing.T) {
+func TestPlanDigestBindsRuntimeImageProviderScopeAndRejectsFloatingVersion(
+	t *testing.T,
+) {
 	t.Parallel()
 	plan, err := Compile(validCompileRequest())
 	if err != nil {
@@ -266,6 +268,17 @@ func TestPlanDigestBindsRuntimeImageAndRejectsFloatingVersion(t *testing.T) {
 	if changedDigest == original {
 		t.Fatal("runtime image change did not change Plan digest")
 	}
+	changed = plan
+	changed.ProviderScope.ConnectionRevision++
+	changedDigest, err = changed.Digest()
+	if err != nil {
+		t.Fatalf("provider scope mutation Digest() error = %v", err)
+	}
+	if changedDigest == original {
+		t.Fatal("Provider scope mutation did not change Plan digest")
+	}
+	changed = plan
+	changed.Assignments = append([]WorkerAssignment(nil), plan.Assignments...)
 	changed.Assignments[0].RuntimeVersion = "latest"
 	if _, err := changed.Digest(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("floating version Digest() error = %v, want ErrInvalid", err)
@@ -307,10 +320,16 @@ func assertRuntime(t *testing.T, plan Plan, roleID string, want RuntimeFamily) {
 func validCompileRequest() CompileRequest {
 	now := time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC)
 	return CompileRequest{
-		PlanID:                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-		Revision:              1,
-		OwnerID:               "owner-test",
-		GoalDigest:            "sha256:" + strings.Repeat("1", 64),
+		PlanID:     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Revision:   1,
+		OwnerID:    "owner-test",
+		GoalDigest: "sha256:" + strings.Repeat("1", 64),
+		ProviderScope: ProviderScope{
+			Provider:           CloudProviderAWS,
+			ConnectionID:       "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			ConnectionRevision: 7,
+			AccountID:          "123456789012",
+		},
 		Region:                "ap-southeast-3",
 		CatalogRevision:       "sha256:" + strings.Repeat("2", 64),
 		PricingSnapshotID:     "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",

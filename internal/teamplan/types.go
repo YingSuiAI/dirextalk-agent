@@ -102,6 +102,19 @@ const (
 	QualityPremium  QualityTier = "premium"
 )
 
+type CloudProvider string
+
+const CloudProviderAWS CloudProvider = "aws"
+
+// ProviderScope binds a quote and Plan to one exact, revision-fenced cloud
+// identity. Region remains separate because it also scopes every ComputeOffer.
+type ProviderScope struct {
+	Provider           CloudProvider `json:"provider"`
+	ConnectionID       string        `json:"connection_id"`
+	ConnectionRevision uint64        `json:"connection_revision"`
+	AccountID          string        `json:"account_id"`
+}
+
 type Suitability struct {
 	WorkClass WorkClass `json:"work_class"`
 	Score     uint32    `json:"score"`
@@ -232,6 +245,7 @@ type CompileRequest struct {
 	Revision              uint64           `json:"revision"`
 	OwnerID               string           `json:"owner_id"`
 	GoalDigest            string           `json:"goal_digest"`
+	ProviderScope         ProviderScope    `json:"provider_scope"`
 	Region                string           `json:"region"`
 	CatalogRevision       string           `json:"catalog_revision"`
 	PricingSnapshotID     string           `json:"pricing_snapshot_id"`
@@ -311,6 +325,7 @@ type Plan struct {
 	Revision              uint64             `json:"revision"`
 	OwnerID               string             `json:"owner_id"`
 	GoalDigest            string             `json:"goal_digest"`
+	ProviderScope         ProviderScope      `json:"provider_scope"`
 	Region                string             `json:"region"`
 	CatalogRevision       string             `json:"catalog_revision"`
 	PricingSnapshotID     string             `json:"pricing_snapshot_id"`

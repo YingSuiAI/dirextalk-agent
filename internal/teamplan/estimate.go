@@ -343,6 +343,7 @@ func validatePlan(plan Plan) error {
 		plan.Revision == 0 ||
 		!validText(plan.OwnerID, 255) ||
 		!sha256Pattern.MatchString(plan.GoalDigest) ||
+		validateProviderScope(plan.ProviderScope) != nil ||
 		!regionPattern.MatchString(plan.Region) ||
 		!sha256Pattern.MatchString(plan.CatalogRevision) ||
 		!canonicalUUID(plan.PricingSnapshotID) ||

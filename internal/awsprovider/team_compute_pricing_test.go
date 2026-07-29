@@ -35,8 +35,10 @@ func TestTeamComputePricingProviderBuildsReadOnlyEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	scope := validTeamComputeProviderScope()
 	provider, err := NewTeamComputePricingProvider(
 		pricing,
+		scope,
 		"us-east-1",
 		[]string{"us-east-1b", "us-east-1a"},
 		[]TeamComputeShape{
@@ -58,12 +60,15 @@ func TestTeamComputePricingProviderBuildsReadOnlyEvidence(t *testing.T) {
 
 	evidence, err := provider.ReadComputeOffers(
 		context.Background(),
+		scope,
 		"us-east-1",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if evidence.Currency != "USD" ||
+	if evidence.ProviderScope != scope ||
+		evidence.Region != "us-east-1" ||
+		evidence.Currency != "USD" ||
 		len(evidence.Sources) != 2 ||
 		len(evidence.Offers) != 2 {
 		t.Fatalf("evidence = %#v", evidence)
@@ -132,8 +137,10 @@ func TestTeamComputePricingProviderNormalizesTrustedInput(t *testing.T) {
 		}
 		return value
 	}
+	scope := validTeamComputeProviderScope()
 	left, err := NewTeamComputePricingProvider(
 		newPricing(),
+		scope,
 		"us-east-1",
 		[]string{"us-east-1a", "us-east-1b"},
 		[]TeamComputeShape{
@@ -154,6 +161,7 @@ func TestTeamComputePricingProviderNormalizesTrustedInput(t *testing.T) {
 	}
 	right, err := NewTeamComputePricingProvider(
 		newPricing(),
+		scope,
 		"us-east-1",
 		[]string{"us-east-1b", "us-east-1a"},
 		[]TeamComputeShape{
@@ -174,6 +182,7 @@ func TestTeamComputePricingProviderNormalizesTrustedInput(t *testing.T) {
 	}
 	leftEvidence, err := left.ReadComputeOffers(
 		context.Background(),
+		scope,
 		"us-east-1",
 	)
 	if err != nil {
@@ -181,6 +190,7 @@ func TestTeamComputePricingProviderNormalizesTrustedInput(t *testing.T) {
 	}
 	rightEvidence, err := right.ReadComputeOffers(
 		context.Background(),
+		scope,
 		"us-east-1",
 	)
 	if err != nil {
@@ -215,8 +225,19 @@ func TestTeamComputePricingProviderRejectsUntrustedScope(t *testing.T) {
 		Architecture: recipe.ArchitectureAMD64,
 		DiskGiB:      20,
 	}
+	scope := validTeamComputeProviderScope()
 	if _, err := NewTeamComputePricingProvider(
 		pricing,
+		teamplan.ProviderScope{},
+		"us-east-1",
+		[]string{"us-east-1a"},
+		[]TeamComputeShape{shape},
+	); !errors.Is(err, ErrInvalidTeamComputePricing) {
+		t.Fatalf("invalid Provider scope error = %v", err)
+	}
+	if _, err := NewTeamComputePricingProvider(
+		pricing,
+		scope,
 		"us-east-1",
 		[]string{"us-east-1a"},
 		[]TeamComputeShape{shape, shape},
@@ -225,6 +246,7 @@ func TestTeamComputePricingProviderRejectsUntrustedScope(t *testing.T) {
 	}
 	provider, err := NewTeamComputePricingProvider(
 		pricing,
+		scope,
 		"us-east-1",
 		[]string{"us-east-1a"},
 		[]TeamComputeShape{shape},
@@ -234,8 +256,27 @@ func TestTeamComputePricingProviderRejectsUntrustedScope(t *testing.T) {
 	}
 	if _, err := provider.ReadComputeOffers(
 		context.Background(),
+		scope,
 		"us-west-2",
 	); !errors.Is(err, ErrInvalidTeamComputePricing) {
 		t.Fatalf("Region drift error = %v", err)
+	}
+	changedScope := scope
+	changedScope.ConnectionRevision++
+	if _, err := provider.ReadComputeOffers(
+		context.Background(),
+		changedScope,
+		"us-east-1",
+	); !errors.Is(err, ErrInvalidTeamComputePricing) {
+		t.Fatalf("Provider scope drift error = %v", err)
+	}
+}
+
+func validTeamComputeProviderScope() teamplan.ProviderScope {
+	return teamplan.ProviderScope{
+		Provider:           teamplan.CloudProviderAWS,
+		ConnectionID:       "30000000-0000-4000-8000-000000000001",
+		ConnectionRevision: 9,
+		AccountID:          "123456789012",
 	}
 }

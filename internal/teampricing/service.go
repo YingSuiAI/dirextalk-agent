@@ -31,13 +31,19 @@ type CredentialReadinessPort interface {
 // ComputeEvidence contains only read-only public AWS price, instance-shape,
 // quota, and availability evidence.
 type ComputeEvidence struct {
-	Currency string
-	Sources  []teamplan.OfferSourceReceipt
-	Offers   []teamplan.ComputeOffer
+	ProviderScope teamplan.ProviderScope
+	Region        string
+	Currency      string
+	Sources       []teamplan.OfferSourceReceipt
+	Offers        []teamplan.ComputeOffer
 }
 
 type ComputeOfferPort interface {
-	ReadComputeOffers(context.Context, string) (ComputeEvidence, error)
+	ReadComputeOffers(
+		context.Context,
+		teamplan.ProviderScope,
+		string,
+	) (ComputeEvidence, error)
 }
 
 type SnapshotService struct {
@@ -89,9 +95,11 @@ func newSnapshotService(
 // them with model pricing into one content-addressed Offer Snapshot.
 func (service *SnapshotService) Build(
 	ctx context.Context,
+	scope teamplan.ProviderScope,
 	region string,
 ) (*teamplan.OfferSnapshot, error) {
 	if service == nil || ctx == nil ||
+		scope.Validate() != nil ||
 		strings.TrimSpace(region) != region ||
 		!regionPattern.MatchString(region) {
 		return nil, ErrInvalidSnapshotRequest
@@ -104,7 +112,7 @@ func (service *SnapshotService) Build(
 		return nil, ErrInvalidSnapshotRequest
 	}
 
-	compute, err := service.compute.ReadComputeOffers(ctx, region)
+	compute, err := service.compute.ReadComputeOffers(ctx, scope, region)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -114,7 +122,7 @@ func (service *SnapshotService) Build(
 	if compute.Currency != service.models.Currency() {
 		return nil, ErrInvalidSnapshotRequest
 	}
-	if err := validateComputeEvidence(compute, region); err != nil {
+	if err := validateComputeEvidence(compute, scope, region); err != nil {
 		return nil, err
 	}
 
@@ -159,6 +167,7 @@ func (service *SnapshotService) Build(
 	return teamplan.NewOfferSnapshot(teamplan.OfferSnapshotDocument{
 		SchemaVersion: teamplan.OfferSnapshotSchemaV1,
 		SnapshotID:    snapshotID,
+		ProviderScope: scope,
 		Region:        region,
 		Currency:      compute.Currency,
 		CapturedAt:    capturedAt,
@@ -169,8 +178,14 @@ func (service *SnapshotService) Build(
 	})
 }
 
-func validateComputeEvidence(evidence ComputeEvidence, region string) error {
+func validateComputeEvidence(
+	evidence ComputeEvidence,
+	scope teamplan.ProviderScope,
+	region string,
+) error {
 	if !currencyPattern.MatchString(evidence.Currency) ||
+		evidence.ProviderScope != scope ||
+		evidence.Region != region ||
 		len(evidence.Sources) < 2 ||
 		len(evidence.Sources) > 2 ||
 		len(evidence.Offers) == 0 ||

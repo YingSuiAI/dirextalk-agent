@@ -181,6 +181,15 @@ func TestCatalogCompilerRejectsPricingMutationAndExpiry(t *testing.T) {
 	); !errors.Is(err, ErrPricingChanged) {
 		t.Fatalf("changed pricing VerifyPlan() error = %v, want ErrPricingChanged", err)
 	}
+	changedPlan := plan
+	changedPlan.ProviderScope.ConnectionRevision++
+	if err := compiler.VerifyPlan(
+		changedPlan,
+		request.Offers,
+		request.CompileTime,
+	); !errors.Is(err, ErrPricingChanged) {
+		t.Fatalf("scope drift VerifyPlan() error = %v, want ErrPricingChanged", err)
+	}
 	request.CompileTime = request.Offers.ValidUntil()
 	if _, err := compiler.Compile(request); !errors.Is(err, ErrPricingExpired) {
 		t.Fatalf("expired Compile() error = %v, want ErrPricingExpired", err)
@@ -209,6 +218,7 @@ func validOfferSnapshot(
 	snapshot, err := NewOfferSnapshot(OfferSnapshotDocument{
 		SchemaVersion: OfferSnapshotSchemaV1,
 		SnapshotID:    request.PricingSnapshotID,
+		ProviderScope: request.ProviderScope,
 		Region:        request.Region, Currency: request.Currency,
 		CapturedAt: request.QuotedAt, ValidUntil: request.ValidUntil,
 		Sources: []OfferSourceReceipt{

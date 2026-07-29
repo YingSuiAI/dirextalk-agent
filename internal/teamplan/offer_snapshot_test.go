@@ -35,6 +35,9 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 	request := validCompileRequest()
 	base := validOfferSnapshot(t, request).Document()
 	tests := map[string]func(*OfferSnapshotDocument){
+		"invalid provider scope": func(document *OfferSnapshotDocument) {
+			document.ProviderScope.ConnectionRevision = 0
+		},
 		"missing capacity evidence": func(document *OfferSnapshotDocument) {
 			for index, source := range document.Sources {
 				if source.Kind == OfferSourceComputeCapacity {

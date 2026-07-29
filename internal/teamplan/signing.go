@@ -55,6 +55,7 @@ type planDigestDocumentV1 struct {
 	Revision              uint64               `json:"revision"`
 	OwnerID               string               `json:"owner_id"`
 	GoalDigest            string               `json:"goal_digest"`
+	ProviderScope         ProviderScope        `json:"provider_scope"`
 	Region                string               `json:"region"`
 	CatalogRevision       string               `json:"catalog_revision"`
 	PricingSnapshotID     string               `json:"pricing_snapshot_id"`
@@ -140,7 +141,9 @@ func (plan Plan) digestDocument() (planDigestDocumentV1, error) {
 		HashAlgorithm: canonical.Algorithm,
 		SchemaVersion: plan.SchemaVersion,
 		PlanID:        plan.PlanID, Revision: plan.Revision, OwnerID: plan.OwnerID,
-		GoalDigest: plan.GoalDigest, Region: plan.Region,
+		GoalDigest:            plan.GoalDigest,
+		ProviderScope:         plan.ProviderScope,
+		Region:                plan.Region,
 		CatalogRevision:       plan.CatalogRevision,
 		PricingSnapshotID:     plan.PricingSnapshotID,
 		PricingSnapshotDigest: plan.PricingSnapshotDigest,

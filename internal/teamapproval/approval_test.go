@@ -30,6 +30,7 @@ func TestChallengeBindsCompleteTeamPlanAndVerifiesDeviceSignature(t *testing.T) 
 		t.Fatalf("NewChallengeV1() error = %v", err)
 	}
 	if challenge.WorkerCount != plan.WorkerCount ||
+		challenge.ProviderScope != plan.ProviderScope ||
 		challenge.ExpectedCostMicros != plan.Cost.ExpectedMicros ||
 		challenge.HardBudgetMicros != plan.Cost.HardBudgetMicros ||
 		challenge.ExpectedWallSeconds !=
@@ -79,6 +80,9 @@ func TestVerifyRejectsPlanRevisionRuntimeBudgetAndSignatureDrift(t *testing.T) {
 		},
 		"hard budget": func(plan *teamplan.Plan, _ *SignatureV1) {
 			plan.Cost.HardBudgetMicros++
+		},
+		"provider scope": func(plan *teamplan.Plan, _ *SignatureV1) {
+			plan.ProviderScope.ConnectionRevision++
 		},
 		"signature plan": func(_ *teamplan.Plan, signature *SignatureV1) {
 			signature.PlanDigest = "sha256:" + strings.Repeat("f", 64)
@@ -193,8 +197,8 @@ func TestApprovalV1GoldenDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	payloadDigest := sha256.Sum256(payload)
-	const wantPlanDigest = "sha256:079c342e10e6d1c9500d35d125d934d37649a20064b72a8c8b2745fe4c14adfa"
-	const wantPayloadDigest = "sha256:baeb3398062d96cb07e1319c628bffbe88a8513538840a613276f5524ce29c9b"
+	const wantPlanDigest = "sha256:651bf9f785b56a442e6e8cf45310b59931329f90a36ee6349bdbe93312837563"
+	const wantPayloadDigest = "sha256:38c4da43f30a39708c4e92289c1589c473c418fd0c3a253a15f422fceafba1ff"
 	if planDigest != wantPlanDigest {
 		t.Errorf("Plan.Digest() = %q, want %q", planDigest, wantPlanDigest)
 	}
@@ -291,7 +295,13 @@ func approvalTestPlan() teamplan.Plan {
 		SchemaVersion: teamplan.SchemaV1,
 		PlanID:        "33333333-3333-4333-8333-333333333333",
 		Revision:      1, OwnerID: "owner-a",
-		GoalDigest:            "sha256:" + strings.Repeat("2", 64),
+		GoalDigest: "sha256:" + strings.Repeat("2", 64),
+		ProviderScope: teamplan.ProviderScope{
+			Provider:           teamplan.CloudProviderAWS,
+			ConnectionID:       "55555555-5555-4555-8555-555555555555",
+			ConnectionRevision: 11,
+			AccountID:          "123456789012",
+		},
 		Region:                "ap-northeast-3",
 		CatalogRevision:       "sha256:" + strings.Repeat("3", 64),
 		PricingSnapshotID:     "44444444-4444-4444-8444-444444444444",

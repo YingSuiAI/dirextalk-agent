@@ -60,6 +60,7 @@ func (compiler *CatalogCompiler) Compile(
 		Revision:              request.Revision,
 		OwnerID:               request.OwnerID,
 		GoalDigest:            request.GoalDigest,
+		ProviderScope:         request.Offers.ProviderScope(),
 		Region:                request.Offers.Region(),
 		CatalogRevision:       compiler.catalog.Revision(),
 		PricingSnapshotID:     request.Offers.SnapshotID(),
@@ -97,6 +98,7 @@ func (compiler *CatalogCompiler) VerifyPlan(
 	}
 	if plan.PricingSnapshotID != offers.SnapshotID() ||
 		plan.PricingSnapshotDigest != offers.Digest() ||
+		plan.ProviderScope != offers.ProviderScope() ||
 		plan.Region != offers.Region() ||
 		plan.Cost.Currency != offers.Currency() ||
 		!plan.QuotedAt.Equal(offers.CapturedAt()) ||

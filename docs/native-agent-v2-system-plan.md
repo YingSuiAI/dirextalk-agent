@@ -404,6 +404,12 @@ Central Agent 可以产生：
 单价、Region、实例可用性或模型凭据就绪状态变化都必须生成新 snapshot 和新
 Plan revision。
 
+每份 snapshot 还必须绑定完整 `ProviderScope`：云厂商、Cloud Connection ID、
+连接 revision 和 AWS 12 位账号 ID。报价适配器只能为构造时绑定的同一 scope
+读取证据；连接轮换、跨账号或跨连接复用即使 Region 相同也必须失败并重新报价。
+账号 ID 只是身份边界，不是访问凭据，不能替代对当前连接和 STS 身份的执行前
+复核。
+
 同一 AWS Service Quota 可能同时约束多个实例类型，因此容量不能只写成单个
 实例的 `available=true`。Compute Offer 必须绑定容量池、每实例消耗单位和池内
 剩余单位；编队器对同池所有角色统一扣减，容量不足时在展示给用户批准前失败，
@@ -439,7 +445,8 @@ Plan revision。
 - 每个角色及依赖；
 - runtime release、版本和镜像摘要；
 - 模型 Profile 和 SecretRef；
-- Region、实例类型、数量和磁盘；
+- 云厂商、Cloud Connection ID/revision、AWS 账号、Region、实例类型、数量和
+  磁盘；
 - 网络、数据和工具权限；
 - 预计时长和 token 区间；
 - 报价快照、有效期和硬预算；
@@ -455,6 +462,7 @@ Plan revision。
 - 提高预算；
 - 开放公网；
 - 增加 Secret、工具或数据范围；
+- 更换云账号、Cloud Connection 或其 revision；
 - 延长资源寿命；
 - 从临时资源变为 Managed。
 
@@ -734,6 +742,12 @@ planned
 TeamPlanV3
   PlanBinding
   GoalBinding
+  CloudProviderBinding
+    Provider
+    ConnectionID
+    ConnectionRevision
+    AccountID
+    Region
   RuntimeCatalogBinding
   PricingSnapshotBinding
   WorkerAssignments[]
@@ -765,6 +779,7 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
 - 确定性 runtime 选型和稳定 tie-break。
 - 时长 DAG 调度。
 - token/计算成本区间和溢出边界。
+- 云账号、Cloud Connection revision 和 Region 漂移。
 - Plan 摘要跨进程确定一致。
 
 ### 20.2 合同测试
@@ -900,14 +915,16 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
 - 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层。
 - 严格受保护的模型报价目录、凭据布尔就绪端口、报价快照组装服务，以及读取
   AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
-  Compute Adapter；不同实例类型共享同一 vCPU quota pool，尚未接入真实
-  Cloud Connection、生产报价目录和长期模型凭据绑定。
+  Compute Adapter；不同实例类型共享同一 vCPU quota pool。Offer Snapshot、
+  Team Plan 和设备签名现已共同绑定云厂商、Cloud Connection ID/revision、
+  AWS 账号和 Region，跨连接或跨账号复用会失败；尚未接入真实 Cloud
+  Connection factory、生产报价目录和长期模型凭据绑定。
 
 正在实现：
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- Plan v3 持久化、可信报价来源和整单设备签名的服务端/App 接入。
+- Plan v3 持久化以及整单设备签名的服务端/App 接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
 

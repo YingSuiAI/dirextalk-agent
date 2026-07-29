@@ -3,6 +3,7 @@ package teamplan
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -41,6 +42,7 @@ var (
 	capacityPoolPattern = regexp.MustCompile(
 		`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`,
 	)
+	awsAccountIDPattern = regexp.MustCompile(`^[0-9]{12}$`)
 )
 
 const (
@@ -57,6 +59,7 @@ const (
 func validateCompileRequest(request CompileRequest) error {
 	if !canonicalUUID(request.PlanID) || request.Revision == 0 ||
 		!validText(request.OwnerID, 255) || !sha256Pattern.MatchString(request.GoalDigest) ||
+		validateProviderScope(request.ProviderScope) != nil ||
 		!regionPattern.MatchString(request.Region) ||
 		!sha256Pattern.MatchString(request.CatalogRevision) ||
 		!canonicalUUID(request.PricingSnapshotID) ||
@@ -142,6 +145,21 @@ func validatePolicy(policy Policy) error {
 		return ErrInvalid
 	}
 	if !uniqueValues(policy.AllowedRuntimeFamilies, validRuntimeFamily) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func (scope ProviderScope) Validate() error {
+	return validateProviderScope(scope)
+}
+
+func validateProviderScope(scope ProviderScope) error {
+	if scope.Provider != CloudProviderAWS ||
+		!canonicalUUID(scope.ConnectionID) ||
+		scope.ConnectionRevision == 0 ||
+		scope.ConnectionRevision > uint64(math.MaxInt64) ||
+		!awsAccountIDPattern.MatchString(scope.AccountID) {
 		return ErrInvalid
 	}
 	return nil

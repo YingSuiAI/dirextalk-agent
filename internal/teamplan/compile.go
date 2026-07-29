@@ -71,6 +71,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		Revision:              request.Revision,
 		OwnerID:               request.OwnerID,
 		GoalDigest:            request.GoalDigest,
+		ProviderScope:         request.ProviderScope,
 		Region:                request.Region,
 		CatalogRevision:       request.CatalogRevision,
 		PricingSnapshotID:     request.PricingSnapshotID,
