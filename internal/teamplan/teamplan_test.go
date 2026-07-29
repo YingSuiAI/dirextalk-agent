@@ -288,16 +288,17 @@ func assertRuntime(t *testing.T, plan Plan, roleID string, want RuntimeFamily) {
 func validCompileRequest() CompileRequest {
 	now := time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC)
 	return CompileRequest{
-		PlanID:            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-		Revision:          1,
-		OwnerID:           "owner-test",
-		GoalDigest:        "sha256:" + strings.Repeat("1", 64),
-		Region:            "ap-southeast-3",
-		CatalogRevision:   "sha256:" + strings.Repeat("2", 64),
-		PricingSnapshotID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-		Currency:          "USD",
-		QuotedAt:          now,
-		ValidUntil:        now.Add(15 * time.Minute),
+		PlanID:                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		Revision:              1,
+		OwnerID:               "owner-test",
+		GoalDigest:            "sha256:" + strings.Repeat("1", 64),
+		Region:                "ap-southeast-3",
+		CatalogRevision:       "sha256:" + strings.Repeat("2", 64),
+		PricingSnapshotID:     "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		PricingSnapshotDigest: "sha256:" + strings.Repeat("3", 64),
+		Currency:              "USD",
+		QuotedAt:              now,
+		ValidUntil:            now.Add(15 * time.Minute),
 		Proposal: TeamProposal{
 			Confidence: 84,
 			Rationale:  "Use independent implementation, research, and review roles.",

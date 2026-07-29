@@ -48,6 +48,17 @@ drift. The challenge is currently a domain contract only: PostgreSQL storage,
 device-registry coordination, protobuf, Message Server, and Flutter signing
 remain closed until their separate implementation and golden-vector checks.
 
+Team Plan compilation no longer accepts loose model and compute offer slices at
+its catalog-bound application seam. One immutable Offer Snapshot combines
+server-owned model-pricing metadata with read-only compute pricing and capacity
+receipts, normalizes every offer, computes a deterministic content digest, and
+expires after at most 15 minutes. The Plan and device challenge bind both
+snapshot ID and digest. Pre-approval verification resolves every selected
+model and machine back to that exact snapshot; changed price, capacity,
+credential readiness, source evidence, Region, or validity requires a new
+snapshot and Plan revision. Provider adapters and durable snapshot persistence
+remain pending, so this is not yet a live AWS or model-price quote path.
+
 `Chat` and `StreamChat` run through the same native Eino ReAct engine. Runtime request and tool-call ledgers are caller-scoped and lease-fenced. The coordinator binds the effective memory mode before execution, with disabled persistence remaining sticky after lease recovery; stateless requests never create a conversation row. Every model round is bounded by the catalog profile's context window and preserves the system policy, newest user input, and complete tool-call/result groups. The final conversation update and versioned response snapshot commit atomically, so an exact retry or process restart returns the original response without re-running the model or tools. Structured Task/Plan references survive tool replay and response replay, but streaming exposes them only in the final `Done` after commit. Raw reasoning, tool arguments, and raw tool results are not part of the public stream.
 
 One process-local run budget covers both interactive Eino calls and queued Cloud Goal planning. The 2 vCPU / 2 GiB profile admits two local model-backed runs in total and at most one background run. Completed idempotent response replay bypasses admission because it does not invoke a model. A new interactive request that cannot acquire capacity releases its durable request lease and returns retryable gRPC `RESOURCE_EXHAUSTED`; a background planner that cannot acquire capacity leaves the Step unleased in PostgreSQL for a later poll. The Go heap target and container CPU/memory/PID limits provide a second boundary, but PostgreSQL remains the task truth and no in-memory admission counter is used for recovery or ordering.

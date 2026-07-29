@@ -193,8 +193,8 @@ func TestApprovalV1GoldenDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	payloadDigest := sha256.Sum256(payload)
-	const wantPlanDigest = "sha256:4617c0b10e42af84220bb2ab349aff439b2638b72a5f64ec0015a024895433de"
-	const wantPayloadDigest = "sha256:8678a9337cf455663aa5a244854fce5228f7b326129894f1cebe4c905a8ce6d4"
+	const wantPlanDigest = "sha256:079c342e10e6d1c9500d35d125d934d37649a20064b72a8c8b2745fe4c14adfa"
+	const wantPayloadDigest = "sha256:baeb3398062d96cb07e1319c628bffbe88a8513538840a613276f5524ce29c9b"
 	if planDigest != wantPlanDigest {
 		t.Errorf("Plan.Digest() = %q, want %q", planDigest, wantPlanDigest)
 	}
@@ -291,11 +291,12 @@ func approvalTestPlan() teamplan.Plan {
 		SchemaVersion: teamplan.SchemaV1,
 		PlanID:        "33333333-3333-4333-8333-333333333333",
 		Revision:      1, OwnerID: "owner-a",
-		GoalDigest:        "sha256:" + strings.Repeat("2", 64),
-		Region:            "ap-northeast-3",
-		CatalogRevision:   "sha256:" + strings.Repeat("3", 64),
-		PricingSnapshotID: "44444444-4444-4444-8444-444444444444",
-		QuotedAt:          quotedAt, ValidUntil: quotedAt.Add(15 * time.Minute),
+		GoalDigest:            "sha256:" + strings.Repeat("2", 64),
+		Region:                "ap-northeast-3",
+		CatalogRevision:       "sha256:" + strings.Repeat("3", 64),
+		PricingSnapshotID:     "44444444-4444-4444-8444-444444444444",
+		PricingSnapshotDigest: "sha256:" + strings.Repeat("4", 64),
+		QuotedAt:              quotedAt, ValidUntil: quotedAt.Add(15 * time.Minute),
 		ProposalConfidence: 85,
 		ProposalRationale:  "One isolated implementation Worker is sufficient.",
 		WorkerCount:        1, MaxConcurrentWorkers: 1,

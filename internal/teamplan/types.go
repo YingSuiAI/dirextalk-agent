@@ -225,21 +225,22 @@ type Policy struct {
 }
 
 type CompileRequest struct {
-	PlanID            string           `json:"plan_id"`
-	Revision          uint64           `json:"revision"`
-	OwnerID           string           `json:"owner_id"`
-	GoalDigest        string           `json:"goal_digest"`
-	Region            string           `json:"region"`
-	CatalogRevision   string           `json:"catalog_revision"`
-	PricingSnapshotID string           `json:"pricing_snapshot_id"`
-	Currency          string           `json:"currency"`
-	QuotedAt          time.Time        `json:"quoted_at"`
-	ValidUntil        time.Time        `json:"valid_until"`
-	Proposal          TeamProposal     `json:"proposal"`
-	RuntimeReleases   []RuntimeRelease `json:"runtime_releases"`
-	ModelOffers       []ModelOffer     `json:"model_offers"`
-	ComputeOffers     []ComputeOffer   `json:"compute_offers"`
-	Policy            Policy           `json:"policy"`
+	PlanID                string           `json:"plan_id"`
+	Revision              uint64           `json:"revision"`
+	OwnerID               string           `json:"owner_id"`
+	GoalDigest            string           `json:"goal_digest"`
+	Region                string           `json:"region"`
+	CatalogRevision       string           `json:"catalog_revision"`
+	PricingSnapshotID     string           `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest string           `json:"pricing_snapshot_digest"`
+	Currency              string           `json:"currency"`
+	QuotedAt              time.Time        `json:"quoted_at"`
+	ValidUntil            time.Time        `json:"valid_until"`
+	Proposal              TeamProposal     `json:"proposal"`
+	RuntimeReleases       []RuntimeRelease `json:"runtime_releases"`
+	ModelOffers           []ModelOffer     `json:"model_offers"`
+	ComputeOffers         []ComputeOffer   `json:"compute_offers"`
+	Policy                Policy           `json:"policy"`
 }
 
 type WorkerAssignment struct {
@@ -302,21 +303,22 @@ type ScheduleEstimate struct {
 // estimate, dependency, or budget change produces a different digest and must
 // create a newer revision for user approval.
 type Plan struct {
-	SchemaVersion        string             `json:"schema_version"`
-	PlanID               string             `json:"plan_id"`
-	Revision             uint64             `json:"revision"`
-	OwnerID              string             `json:"owner_id"`
-	GoalDigest           string             `json:"goal_digest"`
-	Region               string             `json:"region"`
-	CatalogRevision      string             `json:"catalog_revision"`
-	PricingSnapshotID    string             `json:"pricing_snapshot_id"`
-	QuotedAt             time.Time          `json:"quoted_at"`
-	ValidUntil           time.Time          `json:"valid_until"`
-	ProposalConfidence   uint32             `json:"proposal_confidence"`
-	ProposalRationale    string             `json:"proposal_rationale"`
-	WorkerCount          uint32             `json:"worker_count"`
-	MaxConcurrentWorkers uint32             `json:"max_concurrent_workers"`
-	Assignments          []WorkerAssignment `json:"assignments"`
-	Schedule             ScheduleEstimate   `json:"schedule"`
-	Cost                 CostEstimate       `json:"cost"`
+	SchemaVersion         string             `json:"schema_version"`
+	PlanID                string             `json:"plan_id"`
+	Revision              uint64             `json:"revision"`
+	OwnerID               string             `json:"owner_id"`
+	GoalDigest            string             `json:"goal_digest"`
+	Region                string             `json:"region"`
+	CatalogRevision       string             `json:"catalog_revision"`
+	PricingSnapshotID     string             `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest string             `json:"pricing_snapshot_digest"`
+	QuotedAt              time.Time          `json:"quoted_at"`
+	ValidUntil            time.Time          `json:"valid_until"`
+	ProposalConfidence    uint32             `json:"proposal_confidence"`
+	ProposalRationale     string             `json:"proposal_rationale"`
+	WorkerCount           uint32             `json:"worker_count"`
+	MaxConcurrentWorkers  uint32             `json:"max_concurrent_workers"`
+	Assignments           []WorkerAssignment `json:"assignments"`
+	Schedule              ScheduleEstimate   `json:"schedule"`
+	Cost                  CostEstimate       `json:"cost"`
 }

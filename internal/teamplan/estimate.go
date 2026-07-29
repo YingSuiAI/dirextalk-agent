@@ -346,6 +346,7 @@ func validatePlan(plan Plan) error {
 		!regionPattern.MatchString(plan.Region) ||
 		!sha256Pattern.MatchString(plan.CatalogRevision) ||
 		!canonicalUUID(plan.PricingSnapshotID) ||
+		!sha256Pattern.MatchString(plan.PricingSnapshotDigest) ||
 		!validQuoteWindow(plan.QuotedAt, plan.ValidUntil) ||
 		plan.ProposalConfidence == 0 || plan.ProposalConfidence > 100 ||
 		!validSafeText(plan.ProposalRationale, 4096) ||

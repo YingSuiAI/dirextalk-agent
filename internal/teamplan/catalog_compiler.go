@@ -7,24 +7,15 @@ import (
 
 // CatalogCompileRequest deliberately omits runtime releases and catalog
 // revision. Those values come only from the verified startup catalog.
-//
-// Model and compute offers are validated here but are not authenticated by the
-// runtime catalog. The application must source them from its server-owned
-// pricing and capacity adapters rather than model or RPC input.
 type CatalogCompileRequest struct {
-	PlanID            string
-	Revision          uint64
-	OwnerID           string
-	GoalDigest        string
-	Region            string
-	PricingSnapshotID string
-	Currency          string
-	QuotedAt          time.Time
-	ValidUntil        time.Time
-	Proposal          TeamProposal
-	ModelOffers       []ModelOffer
-	ComputeOffers     []ComputeOffer
-	Policy            Policy
+	PlanID      string
+	Revision    uint64
+	OwnerID     string
+	GoalDigest  string
+	Proposal    TeamProposal
+	Policy      Policy
+	Offers      *OfferSnapshot
+	CompileTime time.Time
 }
 
 // CatalogCompiler binds every compiled Team Plan to one verified runtime
@@ -54,34 +45,45 @@ func (compiler *CatalogCompiler) Compile(
 	if compiler == nil || compiler.catalog == nil {
 		return Plan{}, ErrInvalid
 	}
+	if request.Offers == nil {
+		return Plan{}, ErrInvalid
+	}
+	if err := request.Offers.ValidateAt(request.CompileTime); err != nil {
+		return Plan{}, err
+	}
 	releases := compiler.catalog.QualifiedReleases()
 	if len(releases) == 0 {
 		return Plan{}, ErrNoRuntime
 	}
 	return Compile(CompileRequest{
-		PlanID:            request.PlanID,
-		Revision:          request.Revision,
-		OwnerID:           request.OwnerID,
-		GoalDigest:        request.GoalDigest,
-		Region:            request.Region,
-		CatalogRevision:   compiler.catalog.Revision(),
-		PricingSnapshotID: request.PricingSnapshotID,
-		Currency:          request.Currency,
-		QuotedAt:          request.QuotedAt,
-		ValidUntil:        request.ValidUntil,
-		Proposal:          request.Proposal,
-		RuntimeReleases:   releases,
-		ModelOffers:       append([]ModelOffer(nil), request.ModelOffers...),
-		ComputeOffers:     append([]ComputeOffer(nil), request.ComputeOffers...),
-		Policy:            request.Policy,
+		PlanID:                request.PlanID,
+		Revision:              request.Revision,
+		OwnerID:               request.OwnerID,
+		GoalDigest:            request.GoalDigest,
+		Region:                request.Offers.Region(),
+		CatalogRevision:       compiler.catalog.Revision(),
+		PricingSnapshotID:     request.Offers.SnapshotID(),
+		PricingSnapshotDigest: request.Offers.Digest(),
+		Currency:              request.Offers.Currency(),
+		QuotedAt:              request.Offers.CapturedAt(),
+		ValidUntil:            request.Offers.ValidUntil(),
+		Proposal:              request.Proposal,
+		RuntimeReleases:       releases,
+		ModelOffers:           request.Offers.ModelOffers(),
+		ComputeOffers:         request.Offers.ComputeOffers(),
+		Policy:                request.Policy,
 	})
 }
 
-// VerifyPlan rejects an old Plan after the startup catalog changes and checks
-// that every assignment still describes the exact qualified release selected
-// by the compiler.
-func (compiler *CatalogCompiler) VerifyPlan(plan Plan) error {
-	if compiler == nil || compiler.catalog == nil {
+// VerifyPlan rejects an old Plan after either startup catalog or Offer
+// Snapshot changes. It rechecks every selected runtime, model and machine
+// against those immutable inputs before approval or execution.
+func (compiler *CatalogCompiler) VerifyPlan(
+	plan Plan,
+	offers *OfferSnapshot,
+	now time.Time,
+) error {
+	if compiler == nil || compiler.catalog == nil || offers == nil {
 		return ErrInvalid
 	}
 	if err := validatePlan(plan); err != nil {
@@ -89,6 +91,17 @@ func (compiler *CatalogCompiler) VerifyPlan(plan Plan) error {
 	}
 	if plan.CatalogRevision != compiler.catalog.Revision() {
 		return ErrCatalogChanged
+	}
+	if err := offers.ValidateAt(now); err != nil {
+		return err
+	}
+	if plan.PricingSnapshotID != offers.SnapshotID() ||
+		plan.PricingSnapshotDigest != offers.Digest() ||
+		plan.Region != offers.Region() ||
+		plan.Cost.Currency != offers.Currency() ||
+		!plan.QuotedAt.Equal(offers.CapturedAt()) ||
+		!plan.ValidUntil.Equal(offers.ValidUntil()) {
+		return ErrPricingChanged
 	}
 	releases := make(map[string]RuntimeRelease)
 	for _, release := range compiler.catalog.QualifiedReleases() {
@@ -113,6 +126,31 @@ func (compiler *CatalogCompiler) VerifyPlan(plan Plan) error {
 		}
 		if _, suitable := runtimeSuitability(release, assignment.WorkClass); !suitable {
 			return ErrCatalogChanged
+		}
+	}
+	models := make(map[string]ModelOffer)
+	for _, offer := range offers.ModelOffers() {
+		models[offer.ProfileID] = offer
+	}
+	compute := make(map[string]ComputeOffer)
+	for _, offer := range offers.ComputeOffers() {
+		compute[offer.OfferID] = offer
+	}
+	for _, assignment := range plan.Assignments {
+		model, modelExists := models[assignment.ModelProfileID]
+		machine, computeExists := compute[assignment.ComputeOfferID]
+		if !modelExists || !model.Enabled || !model.CredentialReady ||
+			assignment.ModelProvider != model.Provider ||
+			assignment.Model != model.Model ||
+			assignment.ModelInterface != model.Interface ||
+			assignment.ModelCredentialRef != model.CredentialRef ||
+			!computeExists || !machine.Available ||
+			assignment.InstanceType != machine.InstanceType ||
+			assignment.Resources.Arch != machine.Architecture ||
+			assignment.Resources.VCPU != machine.VCPU ||
+			assignment.Resources.MemoryMiB != machine.MemoryMiB ||
+			assignment.Resources.DiskGiB != machine.DiskGiB {
+			return ErrPricingChanged
 		}
 	}
 	return nil

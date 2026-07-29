@@ -48,25 +48,26 @@ type scheduleDigestV1 struct {
 }
 
 type planDigestDocumentV1 struct {
-	PayloadSchema        string               `json:"payload_schema"`
-	HashAlgorithm        string               `json:"hash_algorithm"`
-	SchemaVersion        string               `json:"schema_version"`
-	PlanID               string               `json:"plan_id"`
-	Revision             uint64               `json:"revision"`
-	OwnerID              string               `json:"owner_id"`
-	GoalDigest           string               `json:"goal_digest"`
-	Region               string               `json:"region"`
-	CatalogRevision      string               `json:"catalog_revision"`
-	PricingSnapshotID    string               `json:"pricing_snapshot_id"`
-	QuotedAt             time.Time            `json:"quoted_at"`
-	ValidUntil           time.Time            `json:"valid_until"`
-	ProposalConfidence   uint32               `json:"proposal_confidence"`
-	ProposalRationale    string               `json:"proposal_rationale"`
-	WorkerCount          uint32               `json:"worker_count"`
-	MaxConcurrentWorkers uint32               `json:"max_concurrent_workers"`
-	Assignments          []assignmentDigestV1 `json:"assignments"`
-	Schedule             scheduleDigestV1     `json:"schedule"`
-	Cost                 CostEstimate         `json:"cost"`
+	PayloadSchema         string               `json:"payload_schema"`
+	HashAlgorithm         string               `json:"hash_algorithm"`
+	SchemaVersion         string               `json:"schema_version"`
+	PlanID                string               `json:"plan_id"`
+	Revision              uint64               `json:"revision"`
+	OwnerID               string               `json:"owner_id"`
+	GoalDigest            string               `json:"goal_digest"`
+	Region                string               `json:"region"`
+	CatalogRevision       string               `json:"catalog_revision"`
+	PricingSnapshotID     string               `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest string               `json:"pricing_snapshot_digest"`
+	QuotedAt              time.Time            `json:"quoted_at"`
+	ValidUntil            time.Time            `json:"valid_until"`
+	ProposalConfidence    uint32               `json:"proposal_confidence"`
+	ProposalRationale     string               `json:"proposal_rationale"`
+	WorkerCount           uint32               `json:"worker_count"`
+	MaxConcurrentWorkers  uint32               `json:"max_concurrent_workers"`
+	Assignments           []assignmentDigestV1 `json:"assignments"`
+	Schedule              scheduleDigestV1     `json:"schedule"`
+	Cost                  CostEstimate         `json:"cost"`
 }
 
 // Validate exposes the same closed validation used by compilation and signing.
@@ -140,9 +141,10 @@ func (plan Plan) digestDocument() (planDigestDocumentV1, error) {
 		SchemaVersion: plan.SchemaVersion,
 		PlanID:        plan.PlanID, Revision: plan.Revision, OwnerID: plan.OwnerID,
 		GoalDigest: plan.GoalDigest, Region: plan.Region,
-		CatalogRevision:   plan.CatalogRevision,
-		PricingSnapshotID: plan.PricingSnapshotID,
-		QuotedAt:          plan.QuotedAt.UTC(), ValidUntil: plan.ValidUntil.UTC(),
+		CatalogRevision:       plan.CatalogRevision,
+		PricingSnapshotID:     plan.PricingSnapshotID,
+		PricingSnapshotDigest: plan.PricingSnapshotDigest,
+		QuotedAt:              plan.QuotedAt.UTC(), ValidUntil: plan.ValidUntil.UTC(),
 		ProposalConfidence:   plan.ProposalConfidence,
 		ProposalRationale:    plan.ProposalRationale,
 		WorkerCount:          plan.WorkerCount,

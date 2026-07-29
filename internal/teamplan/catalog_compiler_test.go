@@ -21,7 +21,7 @@ func TestCatalogCompilerInjectsVerifiedCatalogAndRechecksPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := trustedCompileRequestFrom(validCompileRequest())
+	request := trustedCompileRequestFrom(t, validCompileRequest())
 	plan, err := compiler.Compile(request)
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
@@ -35,7 +35,11 @@ func TestCatalogCompilerInjectsVerifiedCatalogAndRechecksPlan(t *testing.T) {
 			catalog.Revision(),
 		)
 	}
-	if err := compiler.VerifyPlan(plan); err != nil {
+	if err := compiler.VerifyPlan(
+		plan,
+		request.Offers,
+		request.CompileTime,
+	); err != nil {
 		t.Fatalf("VerifyPlan() error = %v", err)
 	}
 
@@ -46,7 +50,11 @@ func TestCatalogCompilerInjectsVerifiedCatalogAndRechecksPlan(t *testing.T) {
 	)
 	tampered.Assignments[0].RuntimeImageDigest =
 		"sha256:" + strings.Repeat("f", 64)
-	if err := compiler.VerifyPlan(tampered); !errors.Is(err, ErrCatalogChanged) {
+	if err := compiler.VerifyPlan(
+		tampered,
+		request.Offers,
+		request.CompileTime,
+	); !errors.Is(err, ErrCatalogChanged) {
 		t.Fatalf("tampered VerifyPlan() error = %v, want ErrCatalogChanged", err)
 	}
 }
@@ -66,9 +74,8 @@ func TestCatalogCompilerRejectsPlanFromSupersededCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := firstCompiler.Compile(
-		trustedCompileRequestFrom(validCompileRequest()),
-	)
+	request := trustedCompileRequestFrom(t, validCompileRequest())
+	plan, err := firstCompiler.Compile(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +98,11 @@ func TestCatalogCompilerRejectsPlanFromSupersededCatalog(t *testing.T) {
 	if secondCompiler.CatalogRevision() == firstCompiler.CatalogRevision() {
 		t.Fatal("catalog mutation did not change revision")
 	}
-	if err := secondCompiler.VerifyPlan(plan); !errors.Is(
+	if err := secondCompiler.VerifyPlan(
+		plan,
+		request.Offers,
+		request.CompileTime,
+	); !errors.Is(
 		err,
 		ErrCatalogChanged,
 	) {
@@ -132,29 +143,99 @@ func TestCatalogCompilerReportsCatalogWithoutQualifiedRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiler.Compile(
-		trustedCompileRequestFrom(validCompileRequest()),
-	); !errors.Is(err, ErrNoRuntime) {
+	request := trustedCompileRequestFrom(t, validCompileRequest())
+	if _, err := compiler.Compile(request); !errors.Is(err, ErrNoRuntime) {
 		t.Fatalf("Compile() error = %v, want ErrNoRuntime", err)
 	}
 }
 
+func TestCatalogCompilerRejectsPricingMutationAndExpiry(t *testing.T) {
+	t.Parallel()
+	publicKey, privateKey := runtimeCatalogTestKey()
+	catalog, err := ParseRuntimeCatalogJSON(
+		signRuntimeCatalog(t, validRuntimeCatalogPayload(publicKey), privateKey),
+		publicKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler, err := NewCatalogCompiler(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := trustedCompileRequestFrom(t, validCompileRequest())
+	plan, err := compiler.Compile(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedDocument := request.Offers.Document()
+	changedDocument.ModelOffers[0].InputMicrosPerMillion++
+	changedOffers, err := NewOfferSnapshot(changedDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiler.VerifyPlan(
+		plan,
+		changedOffers,
+		request.CompileTime,
+	); !errors.Is(err, ErrPricingChanged) {
+		t.Fatalf("changed pricing VerifyPlan() error = %v, want ErrPricingChanged", err)
+	}
+	request.CompileTime = request.Offers.ValidUntil()
+	if _, err := compiler.Compile(request); !errors.Is(err, ErrPricingExpired) {
+		t.Fatalf("expired Compile() error = %v, want ErrPricingExpired", err)
+	}
+}
+
 func trustedCompileRequestFrom(
+	t *testing.T,
 	request CompileRequest,
 ) CatalogCompileRequest {
+	t.Helper()
 	return CatalogCompileRequest{
-		PlanID:            request.PlanID,
-		Revision:          request.Revision,
-		OwnerID:           request.OwnerID,
-		GoalDigest:        request.GoalDigest,
-		Region:            request.Region,
-		PricingSnapshotID: request.PricingSnapshotID,
-		Currency:          request.Currency,
-		QuotedAt:          request.QuotedAt,
-		ValidUntil:        request.ValidUntil,
-		Proposal:          request.Proposal,
-		ModelOffers:       request.ModelOffers,
-		ComputeOffers:     request.ComputeOffers,
-		Policy:            request.Policy,
+		PlanID: request.PlanID, Revision: request.Revision,
+		OwnerID: request.OwnerID, GoalDigest: request.GoalDigest,
+		Proposal: request.Proposal, Policy: request.Policy,
+		Offers:      validOfferSnapshot(t, request),
+		CompileTime: request.QuotedAt.Add(time.Minute),
 	}
+}
+
+func validOfferSnapshot(
+	t *testing.T,
+	request CompileRequest,
+) *OfferSnapshot {
+	t.Helper()
+	snapshot, err := NewOfferSnapshot(OfferSnapshotDocument{
+		SchemaVersion: OfferSnapshotSchemaV1,
+		SnapshotID:    request.PricingSnapshotID,
+		Region:        request.Region, Currency: request.Currency,
+		CapturedAt: request.QuotedAt, ValidUntil: request.ValidUntil,
+		Sources: []OfferSourceReceipt{
+			{
+				Kind:       OfferSourceModelPricing,
+				SourceID:   "model-catalog-v1",
+				Digest:     "sha256:" + strings.Repeat("4", 64),
+				CapturedAt: request.QuotedAt.Add(-time.Hour),
+			},
+			{
+				Kind:       OfferSourceComputePricing,
+				SourceID:   "aws-price-list-ap-southeast-3",
+				Digest:     "sha256:" + strings.Repeat("5", 64),
+				CapturedAt: request.QuotedAt,
+			},
+			{
+				Kind:       OfferSourceComputeCapacity,
+				SourceID:   "aws-ec2-offerings-ap-southeast-3",
+				Digest:     "sha256:" + strings.Repeat("6", 64),
+				CapturedAt: request.QuotedAt,
+			},
+		},
+		ModelOffers:   request.ModelOffers,
+		ComputeOffers: request.ComputeOffers,
+	})
+	if err != nil {
+		t.Fatalf("NewOfferSnapshot() error = %v", err)
+	}
+	return snapshot
 }

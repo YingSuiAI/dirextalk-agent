@@ -24,6 +24,8 @@ var (
 	ErrBudgetExceeded     = errors.New("team plan exceeds cost policy")
 	ErrArithmeticOverflow = errors.New("team plan estimate overflow")
 	ErrCatalogChanged     = errors.New("team plan runtime catalog changed")
+	ErrPricingExpired     = errors.New("team plan pricing snapshot expired")
+	ErrPricingChanged     = errors.New("team plan pricing snapshot changed")
 )
 
 var (
@@ -55,6 +57,7 @@ func validateCompileRequest(request CompileRequest) error {
 		!regionPattern.MatchString(request.Region) ||
 		!sha256Pattern.MatchString(request.CatalogRevision) ||
 		!canonicalUUID(request.PricingSnapshotID) ||
+		!sha256Pattern.MatchString(request.PricingSnapshotDigest) ||
 		!currencyPattern.MatchString(request.Currency) ||
 		!validQuoteWindow(request.QuotedAt, request.ValidUntil) {
 		return ErrInvalid
