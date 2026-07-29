@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
 	"github.com/google/uuid"
@@ -33,6 +34,121 @@ type approveTeamPlanReplay struct {
 	Plan          TeamPlanRecord              `json:"plan"`
 	Challenge     TeamApprovalChallengeRecord `json:"challenge"`
 	Approval      TeamApprovalRecord          `json:"approval"`
+}
+
+func (store *Store) FindApprovedTeamPlan(
+	ctx context.Context,
+	scope task.MutationScope,
+	command ApproveTeamPlanCommand,
+) (TeamPlanRecord, bool, error) {
+	if store == nil || store.pool == nil || ctx == nil {
+		return TeamPlanRecord{}, false, ErrTeamFactInvalid
+	}
+	caller, err := parseIdempotencyCaller(scope)
+	if err != nil {
+		return TeamPlanRecord{}, false, err
+	}
+	if err := command.validate(); err != nil {
+		return TeamPlanRecord{}, false, err
+	}
+	requestDigest, err := command.digest()
+	if err != nil {
+		return TeamPlanRecord{}, false, err
+	}
+	approvalID := uuid.MustParse(command.Signature.ApprovalID)
+	tx, err := store.pool.BeginTx(
+		ctx,
+		pgx.TxOptions{
+			IsoLevel:   pgx.RepeatableRead,
+			AccessMode: pgx.ReadOnly,
+		},
+	)
+	if err != nil {
+		return TeamPlanRecord{}, false,
+			fmt.Errorf("begin Team approval replay read: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var storedDigest, response []byte
+	var aggregateID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT request_hash, aggregate_id, response_json
+		FROM idempotency_records
+		WHERE operation=$1
+		  AND caller_client_id=$2
+		  AND caller_credential_id=$3
+		  AND idempotency_key=$4`,
+		approveTeamPlanOperation,
+		caller.ClientID,
+		caller.CredentialID,
+		command.IdempotencyKey,
+	).Scan(&storedDigest, &aggregateID, &response)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TeamPlanRecord{}, false, nil
+	}
+	if err != nil {
+		return TeamPlanRecord{}, false,
+			fmt.Errorf("find Team approval replay: %w", err)
+	}
+	if !bytes.Equal(storedDigest, requestDigest[:]) {
+		return TeamPlanRecord{}, false, idempotency.ErrConflict
+	}
+	replay, err := decodeApproveTeamPlanReplay(response)
+	if err != nil ||
+		aggregateID != approvalID ||
+		replay.Approval.Signature != command.Signature ||
+		replay.Plan.Plan.OwnerID != command.OwnerID ||
+		replay.Plan.RecordRevision !=
+			command.ExpectedPlanRecordRevision+1 ||
+		replay.Challenge.RecordRevision !=
+			command.ExpectedChallengeRecordRevision+1 {
+		return TeamPlanRecord{}, false, ErrTeamFactCorrupt
+	}
+	current, err := readTeamPlan(
+		ctx,
+		tx,
+		store.instanceID,
+		uuid.MustParse(command.Signature.PlanID),
+		command.Signature.PlanRevision,
+		false,
+	)
+	if err != nil ||
+		current.TaskID != replay.Plan.TaskID ||
+		current.PlanDigest != replay.Plan.PlanDigest ||
+		current.RecordRevision < replay.Plan.RecordRevision ||
+		!replayableApprovedTeamPlanStatus(current.Status) {
+		return TeamPlanRecord{}, false, ErrTeamFactCorrupt
+	}
+	approval, err := getVerifiedTeamApproval(
+		ctx,
+		tx,
+		store.instanceID,
+		command.OwnerID,
+		approvalID,
+	)
+	if err != nil ||
+		approval.Signature != replay.Approval.Signature ||
+		!approval.ApprovedAt.Equal(replay.Approval.ApprovedAt) {
+		return TeamPlanRecord{}, false, ErrTeamFactCorrupt
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TeamPlanRecord{}, false,
+			fmt.Errorf("commit Team approval replay read: %w", err)
+	}
+	return replay.Plan, true, nil
+}
+
+func replayableApprovedTeamPlanStatus(status TeamPlanStatus) bool {
+	switch status {
+	case TeamPlanApproved,
+		TeamPlanExecuting,
+		TeamPlanCompleted,
+		TeamPlanFailed,
+		TeamPlanCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (store *Store) CreateTeamApprovalChallenge(
@@ -510,7 +626,7 @@ func (store *Store) ApproveTeamPlan(
 		UPDATE team_plans
 		SET status='approved',
 		    record_revision=record_revision+1,
-		    updated_at=clock_timestamp()
+		    updated_at=GREATEST(updated_at, clock_timestamp())
 		WHERE plan_id=$1
 		  AND plan_revision=$2
 		  AND record_revision=$3
@@ -662,10 +778,26 @@ func (store *Store) getTeamApproval(
 	ownerID string,
 	approvalID uuid.UUID,
 ) (TeamApprovalRecord, error) {
-	record, binding, err := readTeamApproval(
+	return getVerifiedTeamApproval(
 		ctx,
 		store.pool,
 		store.instanceID,
+		ownerID,
+		approvalID,
+	)
+}
+
+func getVerifiedTeamApproval(
+	ctx context.Context,
+	query teamApprovalQuerier,
+	instanceID uuid.UUID,
+	ownerID string,
+	approvalID uuid.UUID,
+) (TeamApprovalRecord, error) {
+	record, binding, err := readTeamApproval(
+		ctx,
+		query,
+		instanceID,
 		approvalID,
 	)
 	if err != nil {
@@ -673,8 +805,8 @@ func (store *Store) getTeamApproval(
 	}
 	challenge, err := readTeamApprovalChallenge(
 		ctx,
-		store.pool,
-		store.instanceID,
+		query,
+		instanceID,
 		binding.challengeID,
 		false,
 	)
@@ -683,8 +815,8 @@ func (store *Store) getTeamApproval(
 	}
 	plan, err := readTeamPlan(
 		ctx,
-		store.pool,
-		store.instanceID,
+		query,
+		instanceID,
 		binding.planID,
 		binding.planRevision,
 		false,
@@ -694,8 +826,8 @@ func (store *Store) getTeamApproval(
 	}
 	snapshotRecord, err := readTeamOfferSnapshot(
 		ctx,
-		store.pool,
-		store.instanceID,
+		query,
+		instanceID,
 		binding.snapshotID,
 		false,
 	)
@@ -708,14 +840,14 @@ func (store *Store) getTeamApproval(
 	}
 	device, err := readApprovalDevice(
 		ctx,
-		store.pool,
+		query,
 		record.Signature.SignerKeyID,
 		false,
 	)
 	if err != nil ||
 		challenge.ConsumedAt == nil ||
 		!challenge.ConsumedAt.Equal(record.ApprovedAt) ||
-		binding.agentID != store.instanceID ||
+		binding.agentID != instanceID ||
 		binding.ownerID != ownerID ||
 		binding.planDigest != plan.PlanDigest ||
 		binding.snapshotID.String() != plan.Plan.PricingSnapshotID ||
@@ -729,7 +861,7 @@ func (store *Store) getTeamApproval(
 		challenge.Challenge.PlanDigest != binding.planDigest ||
 		challenge.Challenge.PricingSnapshotID != binding.snapshotID.String() ||
 		challenge.Challenge.PricingSnapshotDigest != binding.snapshotDigest ||
-		device.Device.AgentInstanceID != store.instanceID.String() ||
+		device.Device.AgentInstanceID != instanceID.String() ||
 		device.Device.OwnerID != ownerID ||
 		device.Device.KeyID != record.Signature.SignerKeyID ||
 		plan.Plan.OwnerID != ownerID ||

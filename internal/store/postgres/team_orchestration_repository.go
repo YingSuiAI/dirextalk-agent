@@ -204,6 +204,41 @@ func (repository *TeamOrchestrationRepository) PersistApproval(
 	return orchestrationPlanFact(record)
 }
 
+func (repository *TeamOrchestrationRepository) FindApproval(
+	ctx context.Context,
+	scope task.MutationScope,
+	command teamorchestration.PersistApprovalCommand,
+) (teamorchestration.PlanFact, bool, error) {
+	if repository == nil || repository.store == nil {
+		return teamorchestration.PlanFact{},
+			false,
+			teamorchestration.ErrInvalid
+	}
+	record, found, err := repository.store.FindApprovedTeamPlan(
+		ctx,
+		scope,
+		ApproveTeamPlanCommand{
+			IdempotencyKey: command.IdempotencyKey,
+			OwnerID:        command.OwnerID,
+			ExpectedPlanRecordRevision: command.
+				ExpectedPlanRecordRevision,
+			ExpectedChallengeRecordRevision: command.
+				ExpectedChallengeRecordRevision,
+			Signature: command.Signature,
+		},
+	)
+	if err != nil {
+		return teamorchestration.PlanFact{},
+			false,
+			orchestrationRepositoryError(err)
+	}
+	if !found {
+		return teamorchestration.PlanFact{}, false, nil
+	}
+	fact, err := orchestrationPlanFact(record)
+	return fact, err == nil, err
+}
+
 func (repository *TeamOrchestrationRepository) GetApprovalForPlan(
 	ctx context.Context,
 	ownerID,

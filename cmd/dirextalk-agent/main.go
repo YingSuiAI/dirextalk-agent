@@ -29,11 +29,14 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
+	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -423,6 +426,14 @@ func serve() error {
 				runtimeComposition.TeamOrchestrator,
 			),
 		)
+		if runtimeComposition.TeamExecutions != nil {
+			serverOptions = append(
+				serverOptions,
+				app.WithTeamExecutions(
+					runtimeComposition.TeamExecutions,
+				),
+			)
+		}
 	}
 	if cloudCoordinator != nil {
 		serverOptions = append(serverOptions, app.WithCloudControl(cloudCoordinator))
@@ -462,6 +473,20 @@ func serve() error {
 	bootstrapContext, stopBootstrap := context.WithCancel(context.Background())
 	defer stopBootstrap()
 	go expireBootstrapSessions(bootstrapContext, secretManager)
+	if runtimeComposition.TeamExecutions != nil {
+		instanceID := uuid.MustParse(serverConfig.InstanceID)
+		go recoverApprovedTeamExecutions(
+			bootstrapContext,
+			runtimeComposition.TeamExecutions,
+			task.MutationScope{
+				ClientID: "dirextalk-agent-team-execution-recovery",
+				CredentialID: uuid.NewSHA1(
+					instanceID,
+					[]byte("team-execution-recovery/v1"),
+				).String(),
+			},
+		)
+	}
 	go func() {
 		if dispatchErr := runtimeComposition.RunCloudGoals(bootstrapContext); dispatchErr != nil && !errors.Is(dispatchErr, context.Canceled) {
 			slog.Warn("cloud Goal dispatcher stopped", "error", safeError(dispatchErr))
@@ -523,6 +548,47 @@ func expireBootstrapSessions(ctx context.Context, manager *secretbootstrap.Manag
 			if _, err := manager.Expire(ctx); err != nil && ctx.Err() == nil {
 				slog.Warn("secret bootstrap expiry sweep failed", "error", safeError(err))
 			}
+		}
+	}
+}
+
+func recoverApprovedTeamExecutions(
+	ctx context.Context,
+	executions *teamexecution.Service,
+	scope task.MutationScope,
+) {
+	run := func() {
+		recoveryContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		recovered, err := executions.RecoverPendingMaterializations(
+			recoveryContext,
+			scope,
+			64,
+		)
+		if recovered > 0 {
+			slog.Info(
+				"approved Team executions materialized",
+				"count",
+				recovered,
+			)
+		}
+		if err != nil && ctx.Err() == nil {
+			slog.Warn(
+				"approved Team execution recovery deferred",
+				"error",
+				safeError(err),
+			)
+		}
+	}
+	run()
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
 		}
 	}
 }

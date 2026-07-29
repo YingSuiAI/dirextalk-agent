@@ -55,7 +55,8 @@ func (coordinator *WorkerTaskCoordinator) Claim(ctx context.Context, event worke
 		return err
 	}
 	command := task.AcquireReadyStepCommand{
-		IdempotencyKey: event.IdempotencyKey, TaskID: event.TaskID, StepID: event.StepID, WorkerID: event.WorkerID,
+		IdempotencyKey: event.IdempotencyKey, DeploymentID: event.DeploymentID,
+		TaskID: event.TaskID, StepID: event.StepID, WorkerID: event.WorkerID,
 		ExecutorKind: task.ExecutorCloudWorker, LeaseDuration: event.LeaseDuration,
 	}
 	attempt, found, err := coordinator.store.AcquireReadyStep(ctx, coordinator.scope, command)

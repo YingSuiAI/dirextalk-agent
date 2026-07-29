@@ -13,6 +13,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
@@ -153,8 +154,10 @@ func TestTeamPlanServiceMapsRawDeviceSignatureAndReadsApprovedPlan(
 	t.Parallel()
 	fact := rpcTeamPlanFact(t, teamorchestration.PlanReadyForConfirmation)
 	stub := &teamPlanRPCStub{plan: fact}
-	service := NewTeamPlanService(stub, stub)
+	executions := &teamExecutionRPCStub{}
+	service := NewTeamPlanService(stub, stub, executions)
 	signature := bytes.Repeat([]byte{0x5a}, 64)
+	approvalID := uuid.NewString()
 	response, err := service.ApproveTeamPlanV3(
 		rpcTeamPrincipalContext(),
 		&agentv1.ApproveTeamPlanV3Request{
@@ -163,7 +166,7 @@ func TestTeamPlanServiceMapsRawDeviceSignatureAndReadsApprovedPlan(
 			ExpectedPlanRecordRevision:      int64(fact.RecordRevision),
 			ExpectedChallengeRecordRevision: 1,
 			Approval: &agentv1.TeamApprovalSignatureV3{
-				ApprovalId:  uuid.NewString(),
+				ApprovalId:  approvalID,
 				ChallengeId: uuid.NewString(),
 				PlanId:      fact.Plan.PlanID,
 				PlanRevision: int64(
@@ -184,12 +187,19 @@ func TestTeamPlanServiceMapsRawDeviceSignatureAndReadsApprovedPlan(
 		stub.approval.Signature.SignatureBase64URL !=
 			base64.RawURLEncoding.EncodeToString(signature) ||
 		response.GetPlan().GetStatus() !=
-			agentv1.TeamPlanStatusV3_TEAM_PLAN_STATUS_V3_APPROVED {
+			agentv1.TeamPlanStatusV3_TEAM_PLAN_STATUS_V3_APPROVED ||
+		executions.calls != 1 ||
+		executions.request.OwnerID != fact.Plan.OwnerID ||
+		executions.request.PlanID != fact.Plan.PlanID ||
+		executions.request.PlanRevision != fact.Plan.Revision ||
+		executions.request.IdempotencyKey == "" ||
+		executions.scope != stub.scope {
 		t.Fatalf(
-			"approval=%#v response=%#v calls=%d",
+			"approval=%#v response=%#v calls=%d materialization=%#v",
 			stub.approval,
 			response,
 			stub.approveCalls,
+			executions,
 		)
 	}
 	read, err := service.GetTeamPlanV3(
@@ -204,6 +214,47 @@ func TestTeamPlanServiceMapsRawDeviceSignatureAndReadsApprovedPlan(
 		read.GetPlan().GetStatus() !=
 			agentv1.TeamPlanStatusV3_TEAM_PLAN_STATUS_V3_APPROVED {
 		t.Fatalf("GetTeamPlanV3() response=%#v error=%v", read, err)
+	}
+}
+
+func TestTeamPlanServiceReturnsDurableApprovalWhenMaterializationIsPending(
+	t *testing.T,
+) {
+	t.Parallel()
+	fact := rpcTeamPlanFact(t, teamorchestration.PlanReadyForConfirmation)
+	stub := &teamPlanRPCStub{plan: fact}
+	executions := &teamExecutionRPCStub{err: teamexecution.ErrNotReady}
+	service := NewTeamPlanService(stub, stub, executions)
+	response, err := service.ApproveTeamPlanV3(
+		rpcTeamPrincipalContext(),
+		&agentv1.ApproveTeamPlanV3Request{
+			IdempotencyKey:                  uuid.NewString(),
+			OwnerId:                         fact.Plan.OwnerID,
+			ExpectedPlanRecordRevision:      int64(fact.RecordRevision),
+			ExpectedChallengeRecordRevision: 1,
+			Approval: &agentv1.TeamApprovalSignatureV3{
+				ApprovalId:  uuid.NewString(),
+				ChallengeId: uuid.NewString(),
+				PlanId:      fact.Plan.PlanID,
+				PlanRevision: int64(
+					fact.Plan.Revision,
+				),
+				PlanDigest:  fact.PlanDigest,
+				SignerKeyId: "owner-device-1",
+				Signature:   bytes.Repeat([]byte{0x5a}, 64),
+			},
+		},
+	)
+	if err != nil ||
+		response.GetPlan().GetStatus() !=
+			agentv1.TeamPlanStatusV3_TEAM_PLAN_STATUS_V3_APPROVED ||
+		executions.calls != 1 {
+		t.Fatalf(
+			"approval response=%#v error=%v materialization_calls=%d",
+			response,
+			err,
+			executions.calls,
+		)
 	}
 }
 
@@ -348,6 +399,24 @@ type teamPlanRPCStub struct {
 	prepareCalls   int
 	challengeCalls int
 	approveCalls   int
+}
+
+type teamExecutionRPCStub struct {
+	scope   task.MutationScope
+	request teamexecution.MaterializeRequest
+	calls   int
+	err     error
+}
+
+func (stub *teamExecutionRPCStub) Materialize(
+	_ context.Context,
+	scope task.MutationScope,
+	request teamexecution.MaterializeRequest,
+) (teamexecution.Fact, error) {
+	stub.scope = scope
+	stub.request = request
+	stub.calls++
+	return teamexecution.Fact{}, stub.err
 }
 
 func (stub *teamPlanRPCStub) PreparePlan(

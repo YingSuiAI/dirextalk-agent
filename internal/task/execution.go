@@ -99,6 +99,7 @@ type Attempt struct {
 
 type AcquireReadyStepCommand struct {
 	IdempotencyKey string
+	DeploymentID   string
 	TaskID         string
 	StepID         string
 	WorkerID       string
@@ -110,6 +111,15 @@ func (command AcquireReadyStepCommand) Validate() error {
 	if err := validateMutationIDs(command.IdempotencyKey, command.TaskID, command.StepID, command.WorkerID); err != nil {
 		return err
 	}
+	if command.DeploymentID != "" {
+		deploymentID, err := uuid.Parse(command.DeploymentID)
+		if err != nil || deploymentID == uuid.Nil {
+			return fmt.Errorf(
+				"%w: deployment_id must be a non-zero UUID",
+				ErrInvalid,
+			)
+		}
+	}
 	if command.ExecutorKind != ExecutorControlPlane && command.ExecutorKind != ExecutorCloudWorker {
 		return fmt.Errorf("%w: executor kind is invalid", ErrInvalid)
 	}
@@ -118,13 +128,28 @@ func (command AcquireReadyStepCommand) Validate() error {
 
 func (command AcquireReadyStepCommand) Digest() [sha256.Size]byte {
 	encoded, _ := json.Marshal(struct {
+		DeploymentID  string       `json:"deployment_id,omitempty"`
 		TaskID        string       `json:"task_id"`
 		StepID        string       `json:"step_id"`
 		WorkerID      string       `json:"worker_id"`
 		ExecutorKind  ExecutorKind `json:"executor_kind"`
 		LeaseDuration int64        `json:"lease_duration_ns"`
-	}{normalizedUUID(command.TaskID), normalizedUUID(command.StepID), normalizedUUID(command.WorkerID), command.ExecutorKind, int64(command.LeaseDuration)})
+	}{
+		normalizedOptionalUUID(command.DeploymentID),
+		normalizedUUID(command.TaskID),
+		normalizedUUID(command.StepID),
+		normalizedUUID(command.WorkerID),
+		command.ExecutorKind,
+		int64(command.LeaseDuration),
+	})
 	return sha256.Sum256(encoded)
+}
+
+func normalizedOptionalUUID(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return normalizedUUID(value)
 }
 
 type RenewStepLeaseCommand struct {

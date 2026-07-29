@@ -76,6 +76,14 @@ type ApprovalFact struct {
 	CreatedAt  time.Time
 }
 
+// ApprovedPlanFact is the complete execution authorization. Callers must bind
+// both the immutable Plan and the exact device approval when materializing
+// Worker assignments.
+type ApprovedPlanFact struct {
+	Plan     PlanFact
+	Approval ApprovalFact
+}
+
 type PreparationIntent struct {
 	OwnerID                  string
 	TaskID                   string
@@ -153,6 +161,11 @@ type Repository interface {
 		task.MutationScope,
 		PersistApprovalCommand,
 	) (PlanFact, error)
+	FindApproval(
+		context.Context,
+		task.MutationScope,
+		PersistApprovalCommand,
+	) (PlanFact, bool, error)
 	GetApprovalForPlan(
 		context.Context,
 		string,

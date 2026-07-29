@@ -27,15 +27,17 @@ Server shutdown first reports `NOT_SERVING`, waits for active streams within a b
 
 `RuntimeService` persists project/model configuration per protocol-neutral `owner_id`. Public callers select a server-owned `profile_id`; the strict `AGENT_MODEL_PROFILES_FILE` catalog immutably binds provider, model, HTTPS endpoint, mounted credential reference, context window, and output ceiling. Callers may only apply bounded sampling/output overrides. The same binding is checked again when Chat constructs the provider client, before resolving a mounted secret or issuing network traffic. The mounted resolver accepts `mounted:<name>`, confines resolution to `AGENT_MOUNTED_SECRETS_DIR`, and never places resolved bytes in runtime configuration, prompts, events, or PostgreSQL. Optional `AGENT_MCP_SERVERS_FILE` contains only strict, trusted HTTPS Streamable HTTP MCP endpoint metadata and mounted secret references.
 
-The Native Agent v2 Team Plan path remains internal and adds no public RPC. If
-both runtime-catalog paths are configured, startup reads protected regular
-files, verifies the canonical Ed25519 signature and qualification evidence,
-and constructs one immutable trusted compiler. Its public request type omits
-runtime releases and catalog revision, so those values cannot come from model,
-RPC, or stored request input. A Plan is rejected after the startup catalog
-revision changes or when an assignment no longer matches its exact qualified
-release. Leaving both paths empty preserves the existing single-Worker
-behavior; configuring only one path or an invalid catalog prevents startup.
+The Native Agent v2 Team Plan path has an Agent-side v3 RPC for preparation,
+read, challenge, and approval, but remains unavailable through Message Server
+and Flutter. If both runtime-catalog paths are configured, startup reads
+protected regular files, verifies the canonical Ed25519 signature and
+qualification evidence, and constructs one immutable trusted compiler. Its
+public request type omits runtime releases and catalog revision, so those
+values cannot come from model, RPC, or stored request input. A Plan is rejected
+after the startup catalog revision changes or when an assignment no longer
+matches its exact qualified release. Leaving both paths empty preserves the
+existing single-Worker behavior; configuring only one path or an invalid
+catalog prevents startup.
 
 The Team Plan approval domain is separate from the frozen single-Worker Cloud
 Plan v1/v2 vectors. A Team Plan uses an explicit deterministic-CBOR projection
@@ -44,9 +46,56 @@ Ed25519 challenge copies the plan/owner/catalog/pricing revisions, quote
 window, Worker count and peak concurrency, wall-time range, cost range, and
 hard budget. Verification recomputes the complete Plan digest and rejects any
 revision, runtime image, model, resource, estimate, dependency, or budget
-drift. The challenge is currently a domain contract only: PostgreSQL storage,
-device-registry coordination, protobuf, Message Server, and Flutter signing
-remain closed until their separate implementation and golden-vector checks.
+drift. PostgreSQL storage, device-registry verification, and Agent protobuf
+exist; Message Server and Flutter signing remain closed until their separate
+implementation and golden-vector checks.
+
+After approval, the internal Team Execution materializer accepts no role or
+infrastructure overrides. It deterministically projects the approved Plan into
+immutable role identities and a Cloud Worker Task DAG, replacing every
+server-side model credential reference with a logical per-role slot. One
+PostgreSQL transaction stores the execution JSON/CBOR/digest, role and
+dependency records, appends all Task Steps, and structurally queues the
+existing Task. The database rejects unknown Execution or Role fields and
+compares every authorization-sensitive Role field with the signed Plan
+assignment. Deployment and expected Worker identities use the same shared
+derivation contract as the Worker control plane.
+
+Approval resolves an exact committed same-key replay before consulting current
+catalog, policy, price, credential-readiness, or connection facts. A newly
+committed approval invokes materialization with a deterministic internal key,
+but approval remains successful if the process exits or synchronous
+materialization fails after that commit. The durable relation "approved Plan
+without Execution" is explicit recovery intent. A background controller scans
+it with keyset pagination on startup and periodically thereafter, isolates a
+bad record from later records, and converges separate or concurrent
+idempotency keys on one Execution. Materialization itself performs no provider
+mutation, needs no currently active quote or connection, and resolves no
+secret.
+
+The queued Team Steps are not claimable yet. Immediately before the first paid
+provider mutation, the internal `BeginDispatch` gate re-verifies current
+catalog, model readiness, compute configuration, price window, Cloud
+Connection identity, and the permanent device approval. Its PostgreSQL
+transaction advances Plan `approved -> executing`, Execution `materialized ->
+dispatching`, and the Task dispatch revision together. A Team Step claim then
+locks the Execution, requires its exact approved Deployment and expected
+Worker identities, checks dependency completion and the approved maximum
+concurrency, and advances the first lease to `running`. Successful completion
+of the full DAG reaches `verifying`; a failed Step atomically fails the Plan
+and Execution. Historical idempotency responses remain replayable after those
+states advance or the quote expires.
+
+Task cancellation atomically fences the Task and any active Team Plan and
+Execution, including the approved-without-Execution recovery state. This
+prevents a canceled Plan from being materialized or dispatched later, but it
+does not yet constitute provider teardown.
+
+These boundaries create no AWS resource and resolve no secret. There is still
+no production caller that takes a dispatching Execution through provider
+mutation. The role input materializer, short-lived credential/token issuer,
+provider-backed launch/observe/terminate controller, Validator, synthesis, and
+verified teardown orchestration remain pending.
 
 Team Plan compilation no longer accepts loose model and compute offer slices at
 its catalog-bound application seam. One immutable Offer Snapshot combines

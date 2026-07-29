@@ -301,6 +301,35 @@ func (service *Service) ApprovePlan(
 		!validApprovalRequest(request) {
 		return PlanFact{}, ErrInvalid
 	}
+	command := PersistApprovalCommand{
+		IdempotencyKey: request.IdempotencyKey,
+		OwnerID:        request.OwnerID,
+		ExpectedPlanRecordRevision: request.
+			ExpectedPlanRecordRevision,
+		ExpectedChallengeRecordRevision: request.
+			ExpectedChallengeRecordRevision,
+		Signature: request.Signature,
+	}
+	replayed, found, err := service.repository.FindApproval(
+		ctx,
+		scope,
+		command,
+	)
+	if err != nil {
+		return PlanFact{}, err
+	}
+	if found {
+		if replayed.Status != PlanApproved ||
+			replayed.RecordRevision !=
+				request.ExpectedPlanRecordRevision+1 ||
+			replayed.Plan.OwnerID != request.OwnerID ||
+			replayed.Plan.PlanID != request.Signature.PlanID ||
+			replayed.Plan.Revision != request.Signature.PlanRevision ||
+			replayed.PlanDigest != request.Signature.PlanDigest {
+			return PlanFact{}, ErrFactMismatch
+		}
+		return replayed, nil
+	}
 	planFact, _, _, err := service.verifyCurrentPlan(
 		ctx,
 		request.OwnerID,
@@ -318,15 +347,7 @@ func (service *Service) ApprovePlan(
 	approved, err := service.repository.PersistApproval(
 		ctx,
 		scope,
-		PersistApprovalCommand{
-			IdempotencyKey: request.IdempotencyKey,
-			OwnerID:        request.OwnerID,
-			ExpectedPlanRecordRevision: request.
-				ExpectedPlanRecordRevision,
-			ExpectedChallengeRecordRevision: request.
-				ExpectedChallengeRecordRevision,
-			Signature: request.Signature,
-		},
+		command,
 	)
 	if err != nil {
 		return PlanFact{}, err
@@ -351,10 +372,7 @@ func (service *Service) VerifyApprovedPlan(
 	planID string,
 	planRevision uint64,
 ) (PlanFact, error) {
-	if service == nil || ctx == nil {
-		return PlanFact{}, ErrInvalid
-	}
-	planFact, _, _, err := service.verifyCurrentPlan(
+	approved, err := service.VerifyApprovedPlanForExecution(
 		ctx,
 		ownerID,
 		planID,
@@ -363,8 +381,30 @@ func (service *Service) VerifyApprovedPlan(
 	if err != nil {
 		return PlanFact{}, err
 	}
+	return approved.Plan, nil
+}
+
+// GetApprovedPlanForMaterialization verifies the permanent signed approval
+// chain without requiring the original quote to remain current. Materializing
+// an immutable DAG does not spend money; BeginDispatch performs the fresh
+// offer and cloud-scope verification immediately before provider mutation.
+func (service *Service) GetApprovedPlanForMaterialization(
+	ctx context.Context,
+	ownerID,
+	planID string,
+	planRevision uint64,
+) (ApprovedPlanFact, error) {
+	planFact, err := service.GetPlan(
+		ctx,
+		ownerID,
+		planID,
+		planRevision,
+	)
+	if err != nil {
+		return ApprovedPlanFact{}, err
+	}
 	if planFact.Status != PlanApproved {
-		return PlanFact{}, ErrNotReady
+		return ApprovedPlanFact{}, ErrNotReady
 	}
 	approval, err := service.repository.GetApprovalForPlan(
 		ctx,
@@ -373,16 +413,59 @@ func (service *Service) VerifyApprovedPlan(
 		planRevision,
 	)
 	if err != nil {
-		return PlanFact{}, err
+		return ApprovedPlanFact{}, err
 	}
 	if approval.Signature.PlanID != planID ||
 		approval.Signature.PlanRevision != planRevision ||
 		approval.Signature.PlanDigest != planFact.PlanDigest ||
 		approval.Signature.ApprovalID == "" ||
 		approval.ApprovedAt.IsZero() {
-		return PlanFact{}, ErrFactMismatch
+		return ApprovedPlanFact{}, ErrFactMismatch
 	}
-	return planFact, nil
+	return ApprovedPlanFact{Plan: planFact, Approval: approval}, nil
+}
+
+// VerifyApprovedPlanForExecution returns the exact approval together with the
+// current Plan. The spend gate uses this method so provider dispatch cannot be
+// rebound to another approval after current-fact verification succeeds.
+func (service *Service) VerifyApprovedPlanForExecution(
+	ctx context.Context,
+	ownerID,
+	planID string,
+	planRevision uint64,
+) (ApprovedPlanFact, error) {
+	if service == nil || ctx == nil {
+		return ApprovedPlanFact{}, ErrInvalid
+	}
+	planFact, _, _, err := service.verifyCurrentPlan(
+		ctx,
+		ownerID,
+		planID,
+		planRevision,
+	)
+	if err != nil {
+		return ApprovedPlanFact{}, err
+	}
+	if planFact.Status != PlanApproved {
+		return ApprovedPlanFact{}, ErrNotReady
+	}
+	approval, err := service.repository.GetApprovalForPlan(
+		ctx,
+		ownerID,
+		planID,
+		planRevision,
+	)
+	if err != nil {
+		return ApprovedPlanFact{}, err
+	}
+	if approval.Signature.PlanID != planID ||
+		approval.Signature.PlanRevision != planRevision ||
+		approval.Signature.PlanDigest != planFact.PlanDigest ||
+		approval.Signature.ApprovalID == "" ||
+		approval.ApprovedAt.IsZero() {
+		return ApprovedPlanFact{}, ErrFactMismatch
+	}
+	return ApprovedPlanFact{Plan: planFact, Approval: approval}, nil
 }
 
 func (service *Service) verifyCurrentPlan(

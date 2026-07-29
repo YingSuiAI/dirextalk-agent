@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -58,6 +60,15 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 	}
 	if currentTask.ExecutionStatus == task.ExecutionFinished || currentTask.OutcomeStatus != task.OutcomePending {
 		return task.Attempt{}, false, task.ErrTerminal
+	}
+	teamClaim, err := store.lockTeamStepClaim(
+		ctx,
+		tx,
+		currentTask,
+		command,
+	)
+	if err != nil {
+		return task.Attempt{}, false, err
 	}
 
 	var step task.Step
@@ -150,6 +161,25 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 	if err != nil {
 		return task.Attempt{}, false, err
 	}
+	if teamClaim != nil &&
+		teamClaim.execution.Status == teamexecution.StatusDispatching {
+		teamClaim.execution, err = markTeamExecutionRunning(
+			ctx,
+			tx,
+			teamClaim.execution,
+		)
+		if err != nil {
+			return task.Attempt{}, false, err
+		}
+		if err := appendTeamExecutionEvent(
+			ctx,
+			tx,
+			caller,
+			teamClaim.execution,
+		); err != nil {
+			return task.Attempt{}, false, err
+		}
+	}
 	if err := tx.QueryRow(ctx, `
 		UPDATE tasks
 		SET execution_status=$2, outcome_status=$3, current_step_id=$4,
@@ -182,6 +212,171 @@ func (store *Store) AcquireReadyStep(ctx context.Context, scope task.MutationSco
 		return task.Attempt{}, false, fmt.Errorf("commit acquire ready step: %w", err)
 	}
 	return leased, true, nil
+}
+
+type teamStepClaim struct {
+	execution teamexecution.Fact
+}
+
+func (store *Store) lockTeamStepClaim(
+	ctx context.Context,
+	tx pgx.Tx,
+	currentTask task.Task,
+	command task.AcquireReadyStepCommand,
+) (*teamStepClaim, error) {
+	var executionID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT execution_id
+		FROM team_execution_roles
+		WHERE task_id=$1
+		  AND task_step_id=$2`,
+		command.TaskID,
+		command.StepID,
+	).Scan(&executionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve Team execution Step: %w", err)
+	}
+	execution, err := readTeamExecution(
+		ctx,
+		tx,
+		store.instanceID,
+		currentTask.OwnerID,
+		executionID,
+		true,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var role *teamexecution.RoleV1
+	for index := range execution.Execution.Roles {
+		candidate := &execution.Execution.Roles[index]
+		if candidate.TaskStepID == command.StepID {
+			role = candidate
+			break
+		}
+	}
+	deploymentID, deploymentErr := uuid.Parse(command.DeploymentID)
+	if role == nil ||
+		deploymentErr != nil ||
+		deploymentID == uuid.Nil ||
+		deploymentID.String() != role.DeploymentID ||
+		command.WorkerID != role.ExpectedWorkerID ||
+		command.ExecutorKind != task.ExecutorCloudWorker ||
+		currentTask.ApprovedPlanID != execution.Execution.PlanID ||
+		currentTask.OutcomeStatus != task.OutcomePending ||
+		currentTask.ExecutionStatus != task.ExecutionQueued &&
+			currentTask.ExecutionStatus != task.ExecutionRunning ||
+		execution.Status != teamexecution.StatusDispatching &&
+			execution.Status != teamexecution.StatusRunning {
+		return nil, teamexecution.ErrNotReady
+	}
+	plan, err := readTeamPlan(
+		ctx,
+		tx,
+		store.instanceID,
+		uuid.MustParse(execution.Execution.PlanID),
+		execution.Execution.PlanRevision,
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Status != TeamPlanExecuting ||
+		plan.PlanDigest != execution.Execution.PlanDigest ||
+		plan.Plan.Cost.HardBudgetMicros !=
+			execution.Execution.HardBudgetMicros {
+		return nil, teamexecution.ErrNotReady
+	}
+	var activeWorkers int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*)
+		FROM team_execution_roles role
+		JOIN task_steps step
+		  ON step.task_id=role.task_id
+		 AND step.step_id=role.task_step_id
+		JOIN task_attempts attempt
+		  ON attempt.task_id=step.task_id
+		 AND attempt.step_id=step.step_id
+		 AND attempt.attempt=step.attempt
+		WHERE role.execution_id=$1
+		  AND step.execution_status='running'
+		  AND step.outcome_status='pending'
+		  AND attempt.execution_status='running'
+		  AND attempt.outcome_status='pending'
+		  AND attempt.lease_expires_at>clock_timestamp()`,
+		executionID,
+	).Scan(&activeWorkers); err != nil {
+		return nil, fmt.Errorf(
+			"count active Team Workers: %w",
+			err,
+		)
+	}
+	if activeWorkers >= int(execution.Execution.MaxConcurrentWorkers) {
+		return nil, teamexecution.ErrConcurrencyLimit
+	}
+	var dependenciesReady bool
+	if err := tx.QueryRow(ctx, `
+		SELECT NOT EXISTS (
+		    SELECT 1
+		    FROM task_step_dependencies dependency
+		    JOIN task_steps required
+		      ON required.task_id=dependency.task_id
+		     AND required.step_id=dependency.depends_on_step_id
+		    WHERE dependency.task_id=$1
+		      AND dependency.step_id=$2
+		      AND NOT (
+		          required.execution_status='finished'
+		          AND required.outcome_status='succeeded'
+		      )
+		)`,
+		command.TaskID,
+		command.StepID,
+	).Scan(&dependenciesReady); err != nil {
+		return nil, fmt.Errorf(
+			"verify Team execution Step dependencies: %w",
+			err,
+		)
+	}
+	if !dependenciesReady {
+		return nil, teamexecution.ErrNotReady
+	}
+	return &teamStepClaim{execution: execution}, nil
+}
+
+func markTeamExecutionRunning(
+	ctx context.Context,
+	tx pgx.Tx,
+	fact teamexecution.Fact,
+) (teamexecution.Fact, error) {
+	if fact.Status != teamexecution.StatusDispatching ||
+		fact.RecordRevision == 0 ||
+		fact.RecordRevision >= uint64(math.MaxInt64) {
+		return teamexecution.Fact{}, teamexecution.ErrNotReady
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE team_executions
+		SET status='running',
+		    record_revision=record_revision+1,
+		    updated_at=GREATEST(updated_at, clock_timestamp())
+		WHERE execution_id=$1
+		  AND status='dispatching'
+		  AND record_revision=$2
+		RETURNING record_revision, updated_at`,
+		fact.Execution.ExecutionID,
+		int64(fact.RecordRevision),
+	).Scan(&fact.RecordRevision, &fact.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return teamexecution.Fact{}, teamexecution.ErrNotReady
+		}
+		return teamexecution.Fact{},
+			fmt.Errorf("mark Team execution running: %w", err)
+	}
+	fact.Status = teamexecution.StatusRunning
+	fact.UpdatedAt = fact.UpdatedAt.UTC()
+	return fact, nil
 }
 
 func (store *Store) RenewStepLease(ctx context.Context, scope task.MutationScope, command task.RenewStepLeaseCommand) (task.Attempt, error) {
@@ -287,6 +482,16 @@ func (store *Store) CompleteStep(ctx context.Context, scope task.MutationScope, 
 		if err != nil {
 			return task.Attempt{}, err
 		}
+		if err := advanceTeamExecutionAfterStep(
+			ctx,
+			tx,
+			store.instanceID,
+			caller,
+			currentTask,
+			step,
+		); err != nil {
+			return task.Attempt{}, err
+		}
 		if _, err := appendStepEvent(ctx, tx, step, caller, "agent.step.completed"); err != nil {
 			return task.Attempt{}, err
 		}
@@ -295,6 +500,184 @@ func (store *Store) CompleteStep(ctx context.Context, scope task.MutationScope, 
 		}
 		return attempt, nil
 	})
+}
+
+func advanceTeamExecutionAfterStep(
+	ctx context.Context,
+	tx pgx.Tx,
+	instanceID uuid.UUID,
+	caller idempotencyCaller,
+	currentTask task.Task,
+	step task.Step,
+) error {
+	var executionID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT execution_id
+		FROM team_execution_roles
+		WHERE task_id=$1
+		  AND task_step_id=$2`,
+		step.TaskID,
+		step.StepID,
+	).Scan(&executionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf(
+			"resolve completed Team execution Step: %w",
+			err,
+		)
+	}
+	execution, err := readTeamExecution(
+		ctx,
+		tx,
+		instanceID,
+		currentTask.OwnerID,
+		executionID,
+		true,
+	)
+	if err != nil {
+		return err
+	}
+	switch {
+	case step.OutcomeStatus == task.OutcomeSucceeded &&
+		currentTask.ExecutionStatus == task.ExecutionFinished &&
+		currentTask.OutcomeStatus == task.OutcomeSucceeded:
+		execution, err = transitionTeamExecution(
+			ctx,
+			tx,
+			execution,
+			teamexecution.StatusRunning,
+			teamexecution.StatusVerifying,
+		)
+		if err != nil {
+			return err
+		}
+	case step.OutcomeStatus != task.OutcomeSucceeded:
+		plan, planErr := readTeamPlan(
+			ctx,
+			tx,
+			instanceID,
+			uuid.MustParse(execution.Execution.PlanID),
+			execution.Execution.PlanRevision,
+			true,
+		)
+		if planErr != nil {
+			return planErr
+		}
+		plan, planErr = transitionExecutingTeamPlan(
+			ctx,
+			tx,
+			instanceID,
+			plan,
+			TeamPlanFailed,
+		)
+		if planErr != nil {
+			return planErr
+		}
+		execution, err = transitionTeamExecution(
+			ctx,
+			tx,
+			execution,
+			teamexecution.StatusRunning,
+			teamexecution.StatusFailed,
+		)
+		if err != nil {
+			return err
+		}
+		if err := appendTeamPlanEvent(
+			ctx,
+			tx,
+			caller,
+			plan,
+		); err != nil {
+			return err
+		}
+	default:
+		return nil
+	}
+	return appendTeamExecutionEvent(ctx, tx, caller, execution)
+}
+
+func transitionTeamExecution(
+	ctx context.Context,
+	tx pgx.Tx,
+	fact teamexecution.Fact,
+	from,
+	to teamexecution.Status,
+) (teamexecution.Fact, error) {
+	if fact.Status != from ||
+		fact.RecordRevision == 0 ||
+		fact.RecordRevision >= uint64(math.MaxInt64) {
+		return teamexecution.Fact{}, teamexecution.ErrNotReady
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE team_executions
+		SET status=$3,
+		    record_revision=record_revision+1,
+		    updated_at=GREATEST(updated_at, clock_timestamp())
+		WHERE execution_id=$1
+		  AND status=$2
+		  AND record_revision=$4
+		RETURNING record_revision, updated_at`,
+		fact.Execution.ExecutionID,
+		from,
+		to,
+		int64(fact.RecordRevision),
+	).Scan(&fact.RecordRevision, &fact.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return teamexecution.Fact{}, teamexecution.ErrNotReady
+		}
+		return teamexecution.Fact{},
+			fmt.Errorf("transition Team execution: %w", err)
+	}
+	fact.Status = to
+	fact.UpdatedAt = fact.UpdatedAt.UTC()
+	return fact, nil
+}
+
+func transitionExecutingTeamPlan(
+	ctx context.Context,
+	tx pgx.Tx,
+	instanceID uuid.UUID,
+	record TeamPlanRecord,
+	to TeamPlanStatus,
+) (TeamPlanRecord, error) {
+	if record.Status != TeamPlanExecuting ||
+		to != TeamPlanFailed && to != TeamPlanCanceled &&
+			to != TeamPlanCompleted ||
+		record.RecordRevision == 0 ||
+		record.RecordRevision >= uint64(math.MaxInt64) {
+		return TeamPlanRecord{}, teamexecution.ErrNotReady
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE team_plans
+		SET status=$6,
+		    record_revision=record_revision+1,
+		    updated_at=GREATEST(updated_at, clock_timestamp())
+		WHERE plan_id=$1
+		  AND plan_revision=$2
+		  AND agent_instance_id=$3
+		  AND owner_id=$4
+		  AND status='executing'
+		  AND record_revision=$5
+		RETURNING record_revision, updated_at`,
+		record.Plan.PlanID,
+		int64(record.Plan.Revision),
+		instanceID,
+		record.Plan.OwnerID,
+		int64(record.RecordRevision),
+		to,
+	).Scan(&record.RecordRevision, &record.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return TeamPlanRecord{}, teamexecution.ErrNotReady
+		}
+		return TeamPlanRecord{},
+			fmt.Errorf("transition executing Team Plan: %w", err)
+	}
+	record.Status = to
+	record.UpdatedAt = record.UpdatedAt.UTC()
+	return record, nil
 }
 
 func (store *Store) mutateAttempt(

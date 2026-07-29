@@ -192,14 +192,25 @@ Implemented locally:
 - Runtime Worker action, checkpointed artifact claims, and result manifest.
 - Root-owned optional runtime installation loading.
 - Central transport-integrity Result Collector.
+- Approved Team Execution materializer with deterministic role, Task Step,
+  Deployment, expected Worker, credential-slot, and dependency identities.
+- Atomic PostgreSQL append of the immutable role graph to the approved Task.
+- Strict database binding of Role authorization fields to signed Plan
+  assignments, with unknown JSON keys rejected.
+- Same-key approval replay before fresh-fact checks, plus durable periodic,
+  keyset-paginated recovery for an approved Plan that has no Execution.
+- Fresh pre-spend dispatch gate plus exact Deployment/Worker claim, dependency,
+  and maximum-concurrency enforcement through the `verifying` boundary.
+- Atomic Task/Plan/Execution cancellation fencing before provider dispatch.
 
 Not implemented or not accepted:
 
 - Production Codex AMI and signed qualified catalog record.
 - Task-scoped model-token issuer and revocation service.
-- Team Plan assignment-to-Recipe/context/workspace/secret materializer.
-- Multi-Worker DAG dispatcher and Team Plan lifecycle transitions.
-- Central Validator and synthesis wiring.
+- Role-to-Recipe/context/workspace/ephemeral-secret/input-bundle materializer.
+- Typed AWS multi-Worker launch/observe/terminate controller.
+- Central Validator-driven `verifying -> completed` transition and synthesis.
+- Provider-backed Team dispatch caller and cancellation-to-teardown wiring.
 - Central Agent-driven runtime execution and demo2 end-to-end acceptance.
 
 ## 10. Development Validation Record

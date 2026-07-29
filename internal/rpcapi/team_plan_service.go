@@ -7,6 +7,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -40,20 +41,34 @@ type TeamPlanCoordinator interface {
 	) (teamorchestration.PlanFact, error)
 }
 
+type TeamExecutionCoordinator interface {
+	Materialize(
+		context.Context,
+		task.MutationScope,
+		teamexecution.MaterializeRequest,
+	) (teamexecution.Fact, error)
+}
+
 type TeamPlanService struct {
 	agentv1.UnimplementedTeamPlanServiceServer
 	preparation TeamPlanPreparationCoordinator
 	plans       TeamPlanCoordinator
+	executions  TeamExecutionCoordinator
 }
 
 func NewTeamPlanService(
 	preparation TeamPlanPreparationCoordinator,
 	plans TeamPlanCoordinator,
+	executions ...TeamExecutionCoordinator,
 ) *TeamPlanService {
-	return &TeamPlanService{
+	service := &TeamPlanService{
 		preparation: preparation,
 		plans:       plans,
 	}
+	if len(executions) == 1 {
+		service.executions = executions[0]
+	}
+	return service
 }
 
 func (service *TeamPlanService) PrepareTeamPlanV3(
@@ -206,6 +221,32 @@ func (service *TeamPlanService) ApproveTeamPlanV3(
 	if err != nil {
 		return nil, publicError(err)
 	}
+	if service.executions != nil {
+		planID, parseErr := uuid.Parse(approved.Plan.PlanID)
+		if parseErr != nil || planID == uuid.Nil {
+			return nil, invalidTeamProjection()
+		}
+		materializationKey := uuid.NewSHA1(
+			planID,
+			[]byte(
+				"team-execution-materialize/v1\x00"+
+					signature.ApprovalID,
+			),
+		).String()
+		// Approval is already durable. A transient materialization failure
+		// leaves the Plan truthfully approved and is recovered from the
+		// durable approved-without-Execution relation.
+		_, _ = service.executions.Materialize(
+			ctx,
+			scope,
+			teamexecution.MaterializeRequest{
+				IdempotencyKey: materializationKey,
+				OwnerID:        approved.Plan.OwnerID,
+				PlanID:         approved.Plan.PlanID,
+				PlanRevision:   approved.Plan.Revision,
+			},
+		)
+	}
 	projected, err := teamPlanToProto(approved)
 	if err != nil {
 		return nil, invalidTeamProjection()
@@ -301,3 +342,4 @@ func invalidTeamProjection() error {
 
 var _ TeamPlanPreparationCoordinator = (*teamorchestration.PreparationService)(nil)
 var _ TeamPlanCoordinator = (*teamorchestration.Service)(nil)
+var _ TeamExecutionCoordinator = (*teamexecution.Service)(nil)

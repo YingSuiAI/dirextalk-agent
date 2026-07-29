@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/google/uuid"
 )
@@ -240,7 +241,10 @@ func (service *Service) LaunchApprovedPlan(ctx context.Context, caller cloudapp.
 		}
 	}
 
-	workerID := deterministicID(intent.DeploymentID, "worker")
+	workerID, err := workeridentity.DeriveWorkerID(intent.DeploymentID)
+	if err != nil {
+		return service.fail(ctx, operation, ErrInvalid)
+	}
 	if err := service.requireOpenTask(ctx, operation); err != nil {
 		return operation, err
 	}

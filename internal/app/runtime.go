@@ -21,6 +21,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/turncontrol"
@@ -36,6 +37,7 @@ type RuntimeComposition struct {
 	TeamPlans           *teamplan.CatalogCompiler
 	TeamOrchestrator    *teamorchestration.Service
 	TeamPreparation     *teamorchestration.PreparationService
+	TeamExecutions      *teamexecution.Service
 	Turns               *turncontrol.Service
 	CanonicalMemory     *canonicalmemory.Service
 }
@@ -298,6 +300,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	}
 	var teamOrchestrator *teamorchestration.Service
 	var teamPreparation *teamorchestration.PreparationService
+	var teamExecutions *teamexecution.Service
 	if options.teamPolicies != nil {
 		teamRepository, repositoryErr :=
 			postgres.NewTeamOrchestrationRepository(store)
@@ -337,12 +340,23 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 				return RuntimeComposition{}, errors.New("Team Plan preparation is unavailable")
 			}
 		}
+		if options.teamOffers != nil {
+			teamExecutions, repositoryErr = teamexecution.NewService(
+				teamOrchestrator,
+				store,
+			)
+			if repositoryErr != nil {
+				return RuntimeComposition{},
+					errors.New("Team execution materializer is unavailable")
+			}
+		}
 	}
 	return RuntimeComposition{
 		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,
 		CloudGoalDispatcher: cloudGoalDispatcher, TeamPlans: options.teamPlans,
 		TeamOrchestrator: teamOrchestrator, TeamPreparation: teamPreparation,
-		Turns: turns, CanonicalMemory: canonicalMemory,
+		TeamExecutions: teamExecutions, Turns: turns,
+		CanonicalMemory: canonicalMemory,
 	}, nil
 }
 

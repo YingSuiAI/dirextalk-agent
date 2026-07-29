@@ -12,6 +12,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -137,6 +138,14 @@ func (store *Store) Cancel(ctx context.Context, scope task.MutationScope, comman
 	if current.ExecutionStatus == task.ExecutionFinished {
 		return task.Task{}, task.ErrTerminal
 	}
+	if err := store.cancelActiveTeamExecution(
+		ctx,
+		tx,
+		current,
+		caller,
+	); err != nil {
+		return task.Task{}, err
+	}
 	if err := cancelOutstandingSteps(ctx, tx, parsedTaskID, caller); err != nil {
 		return task.Task{}, err
 	}
@@ -164,6 +173,184 @@ func (store *Store) Cancel(ctx context.Context, scope task.MutationScope, comman
 		return task.Task{}, fmt.Errorf("commit cancel task: %w", err)
 	}
 	return current, nil
+}
+
+func (store *Store) cancelActiveTeamExecution(
+	ctx context.Context,
+	tx pgx.Tx,
+	current task.Task,
+	caller idempotencyCaller,
+) error {
+	taskID := uuid.MustParse(current.TaskID)
+	var executionID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT execution_id
+		FROM team_executions
+		WHERE agent_instance_id=$1
+		  AND task_id=$2
+		  AND status IN ('materialized','dispatching','running','verifying')`,
+		store.instanceID,
+		taskID,
+	).Scan(&executionID)
+	hasExecution := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("resolve active Team execution for cancellation: %w", err)
+	}
+
+	var (
+		execution teamexecution.Fact
+		planID    uuid.UUID
+		revision  uint64
+	)
+	if hasExecution {
+		execution, err = readTeamExecution(
+			ctx,
+			tx,
+			store.instanceID,
+			current.OwnerID,
+			executionID,
+			true,
+		)
+		if err != nil {
+			return err
+		}
+		planID = uuid.MustParse(execution.Execution.PlanID)
+		revision = execution.Execution.PlanRevision
+	} else {
+		var planRevision int64
+		err = tx.QueryRow(ctx, `
+			SELECT plan_id, plan_revision
+			FROM team_plans
+			WHERE agent_instance_id=$1
+			  AND owner_id=$2
+			  AND task_id=$3
+			  AND status IN (
+			      'ready_for_confirmation',
+			      'approved',
+			      'executing'
+			  )`,
+			store.instanceID,
+			current.OwnerID,
+			taskID,
+		).Scan(&planID, &planRevision)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("resolve active Team Plan for cancellation: %w", err)
+		}
+		if planRevision <= 0 {
+			return ErrTeamFactCorrupt
+		}
+		revision = uint64(planRevision)
+	}
+	plan, err := readTeamPlan(
+		ctx,
+		tx,
+		store.instanceID,
+		planID,
+		revision,
+		true,
+	)
+	if err != nil {
+		return err
+	}
+	if plan.TaskID != current.TaskID ||
+		plan.Plan.OwnerID != current.OwnerID ||
+		current.ApprovedPlanID != "" &&
+			current.ApprovedPlanID != plan.Plan.PlanID {
+		return ErrTeamFactCorrupt
+	}
+	if hasExecution {
+		switch execution.Status {
+		case teamexecution.StatusMaterialized:
+			if plan.Status != TeamPlanApproved {
+				return ErrTeamFactCorrupt
+			}
+		case teamexecution.StatusDispatching,
+			teamexecution.StatusRunning,
+			teamexecution.StatusVerifying:
+			if plan.Status != TeamPlanExecuting {
+				return ErrTeamFactCorrupt
+			}
+		default:
+			return ErrTeamFactCorrupt
+		}
+	}
+	plan, err = transitionTeamPlanCanceled(
+		ctx,
+		tx,
+		store.instanceID,
+		plan,
+	)
+	if err != nil {
+		return err
+	}
+	if hasExecution {
+		execution, err = transitionTeamExecution(
+			ctx,
+			tx,
+			execution,
+			execution.Status,
+			teamexecution.StatusCanceled,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	if err := appendTeamPlanEvent(ctx, tx, caller, plan); err != nil {
+		return err
+	}
+	if hasExecution {
+		return appendTeamExecutionEvent(ctx, tx, caller, execution)
+	}
+	return nil
+}
+
+func transitionTeamPlanCanceled(
+	ctx context.Context,
+	tx pgx.Tx,
+	instanceID uuid.UUID,
+	record TeamPlanRecord,
+) (TeamPlanRecord, error) {
+	switch record.Status {
+	case TeamPlanReadyForConfirmation,
+		TeamPlanApproved,
+		TeamPlanExecuting:
+	default:
+		return TeamPlanRecord{}, ErrTeamFactRevision
+	}
+	if record.RecordRevision == 0 {
+		return TeamPlanRecord{}, ErrTeamFactRevision
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE team_plans
+		SET status='canceled',
+		    record_revision=record_revision+1,
+		    updated_at=GREATEST(updated_at, clock_timestamp())
+		WHERE plan_id=$1
+		  AND plan_revision=$2
+		  AND agent_instance_id=$3
+		  AND owner_id=$4
+		  AND status=$5
+		  AND record_revision=$6
+		RETURNING record_revision, updated_at`,
+		record.Plan.PlanID,
+		int64(record.Plan.Revision),
+		instanceID,
+		record.Plan.OwnerID,
+		record.Status,
+		int64(record.RecordRevision),
+	).Scan(&record.RecordRevision, &record.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return TeamPlanRecord{}, ErrTeamFactRevision
+		}
+		return TeamPlanRecord{},
+			fmt.Errorf("cancel active Team Plan: %w", err)
+	}
+	record.Status = TeamPlanCanceled
+	record.UpdatedAt = record.UpdatedAt.UTC()
+	return record, nil
 }
 
 func (store *Store) List(ctx context.Context, query task.ListQuery) (task.ListResult, error) {

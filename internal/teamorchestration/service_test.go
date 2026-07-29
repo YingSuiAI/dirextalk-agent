@@ -223,16 +223,17 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		)
 	}
 	resolver.policy = policy
+	approvalRequest := ApprovalRequest{
+		IdempotencyKey:                  uuid.NewString(),
+		OwnerID:                         request.OwnerID,
+		ExpectedPlanRecordRevision:      1,
+		ExpectedChallengeRecordRevision: 1,
+		Signature:                       signature,
+	}
 	approved, err := service.ApprovePlan(
 		context.Background(),
 		scope,
-		ApprovalRequest{
-			IdempotencyKey:                  uuid.NewString(),
-			OwnerID:                         request.OwnerID,
-			ExpectedPlanRecordRevision:      1,
-			ExpectedChallengeRecordRevision: 1,
-			Signature:                       signature,
-		},
+		approvalRequest,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -242,6 +243,26 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		repository.approvalCalls != 1 {
 		t.Fatalf("approved=%#v calls=%d", approved, repository.approvalCalls)
 	}
+	resolver.policy.FixedWorkerOverheadMicros++
+	offerVerifier.err = teamplan.ErrPricingChanged
+	replayedApproval, err := service.ApprovePlan(
+		context.Background(),
+		scope,
+		approvalRequest,
+	)
+	if err != nil ||
+		replayedApproval.Status != PlanApproved ||
+		replayedApproval.RecordRevision != approved.RecordRevision ||
+		repository.approvalCalls != 1 {
+		t.Fatalf(
+			"approval replay=%#v error=%v calls=%d",
+			replayedApproval,
+			err,
+			repository.approvalCalls,
+		)
+	}
+	resolver.policy = policy
+	offerVerifier.err = nil
 	validApproval := repository.approval
 	repository.approval.Signature.PlanDigest = "sha256:" +
 		strings.Repeat("f", 64)
@@ -273,6 +294,24 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	); !errors.Is(err, teamplan.ErrPricingChanged) {
 		t.Fatalf("changed offer configuration error=%v", err)
 	}
+	materializationAuthorization, err :=
+		service.GetApprovedPlanForMaterialization(
+			context.Background(),
+			request.OwnerID,
+			request.PlanID,
+			1,
+		)
+	if err != nil ||
+		materializationAuthorization.Plan.PlanDigest !=
+			approved.PlanDigest ||
+		materializationAuthorization.Approval.Signature.ApprovalID !=
+			challengeFact.Challenge.ApprovalID {
+		t.Fatalf(
+			"historical materialization authorization=%#v error=%v",
+			materializationAuthorization,
+			err,
+		)
+	}
 	offerVerifier.err = nil
 	verified, err := service.VerifyApprovedPlan(
 		context.Background(),
@@ -283,6 +322,22 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	if err != nil ||
 		verified.PlanDigest != approved.PlanDigest {
 		t.Fatalf("execution verification=%#v error=%v", verified, err)
+	}
+	authorization, err := service.VerifyApprovedPlanForExecution(
+		context.Background(),
+		request.OwnerID,
+		request.PlanID,
+		1,
+	)
+	if err != nil ||
+		authorization.Plan.PlanDigest != approved.PlanDigest ||
+		authorization.Approval.Signature.ApprovalID !=
+			challengeFact.Challenge.ApprovalID {
+		t.Fatalf(
+			"execution authorization=%#v error=%v",
+			authorization,
+			err,
+		)
 	}
 }
 
@@ -976,10 +1031,13 @@ type orchestrationRepositoryFixture struct {
 	prepareCalls    int
 	challengeCalls  int
 	approvalCalls   int
+	approvalFinds   int
 	connectionCalls int
 	connectionErr   error
 	tamperPlan      bool
 	approval        ApprovalFact
+	approvalKey     string
+	approvedPlan    PlanFact
 }
 
 func (repository *orchestrationRepositoryFixture) VerifyConnectionScope(
@@ -1160,6 +1218,7 @@ func (repository *orchestrationRepositoryFixture) PersistApproval(
 	command PersistApprovalCommand,
 ) (PlanFact, error) {
 	repository.approvalCalls++
+	repository.approvalKey = command.IdempotencyKey
 	repository.approval = ApprovalFact{
 		Signature:  command.Signature,
 		ApprovedAt: repository.plan.Plan.QuotedAt.Add(2 * time.Minute),
@@ -1168,7 +1227,25 @@ func (repository *orchestrationRepositoryFixture) PersistApproval(
 	repository.plan.Status = PlanApproved
 	repository.plan.RecordRevision++
 	repository.plan.UpdatedAt = repository.plan.UpdatedAt.Add(time.Second)
+	repository.approvedPlan = repository.plan
 	return repository.plan, nil
+}
+
+func (repository *orchestrationRepositoryFixture) FindApproval(
+	_ context.Context,
+	_ task.MutationScope,
+	command PersistApprovalCommand,
+) (PlanFact, bool, error) {
+	repository.approvalFinds++
+	if repository.approvalKey == "" ||
+		command.IdempotencyKey != repository.approvalKey {
+		return PlanFact{}, false, nil
+	}
+	if command.Signature != repository.approval.Signature ||
+		command.OwnerID != repository.approvedPlan.Plan.OwnerID {
+		return PlanFact{}, false, ErrFactMismatch
+	}
+	return repository.approvedPlan, true, nil
 }
 
 func (repository *orchestrationRepositoryFixture) GetApprovalForPlan(

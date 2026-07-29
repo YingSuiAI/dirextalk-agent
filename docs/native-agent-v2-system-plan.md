@@ -326,8 +326,44 @@ Shutdown()
 - Central Result Collector 只按已持久化的结果对象声明下载、校验并读取每个
   runtime 的 `final.json`；Worker 输出仍是不可信候选，必须经过 Validator。
 
-当前内核仍缺生产 Codex AMI、任务级模型 Token 签发/撤销、Team Plan 到多个
-Worker Assignment 的受信物化、DAG Dispatcher、Validator 和最终合成接线。
+截至 2026-07-30，批准后的第一层受信物化也已落地。`teamexecution`
+只接受 Plan 标识和调用者幂等键，重新取得已批准 Plan 与永久设备审批后，生成
+确定性的 Execution、Step declaration、Task Step、Deployment 和预期 Worker
+身份。角色的依赖、Runtime release/image/adapter、Model Profile/interface、
+Compute Offer/实例/资源、时长、Token 上限、并发和硬预算都必须与 Plan 摘要
+完全一致；内部模型凭据引用不会进入执行清单，只生成逐角色逻辑凭据槽。
+PostgreSQL 在一个事务中写入不可变 Execution/Role/Dependency、追加原 Task
+的 Cloud Worker DAG 并推进到 `queued`，并发或重启重放不会重复追加步骤。
+数据库会拒绝 Execution/Role JSON 的未知字段，并把每个会影响授权的角色字段
+与签名 Plan assignment 逐项核对；Deployment 到预期 Worker 的身份推导也与
+现有 Worker Control 共用同一合同。
+
+审批命令会先查找同一幂等键的已提交结果，再读取当前目录、策略、报价、凭据和
+连接，因此事实漂移不会破坏已经成功的历史重放。审批 RPC 使用确定性内部键
+自动触发物化；若审批已提交而同步物化失败或进程退出，仍返回持久的批准事实，
+并把“已批准但无 Execution”保留为明确的恢复意图。后台恢复控制器在启动后
+立即运行并周期执行，使用 `(updated_at, plan_id, plan_revision)` 键集分页，
+单条坏记录不会阻塞后续 Plan。物化不调用云厂商、不要求报价或连接当前仍有效，
+也不读取任何秘密。
+
+`queued` 在这里表示结构已就绪，不代表 Worker 可直接领取。首次付费调度前，
+`BeginDispatch` 会重新验证当前报价、目录、模型凭据可用性、计算配置和
+Cloud Connection，再在一个事务里推进 Plan `approved -> executing`、
+Execution `materialized -> dispatching` 以及 Task 调度修订。Team Worker
+领取时必须匹配批准图中的 Deployment/预期 Worker，满足依赖，并在 Execution
+行锁下统计有效租约，不能超过 `max_concurrent_workers`。第一份租约将
+Execution 推进为 `running`；完整 DAG 成功后进入 `verifying`，任一 Step
+失败会原子地把 Plan 和 Execution 置为 `failed`。历史幂等响应不依赖报价仍
+有效，因此状态推进或报价过期后仍能安全重放。
+
+Task 取消会在同一 PostgreSQL 事务里同时封锁尚未完成的 Plan、Execution、
+Step 和 Attempt；其中包括“已批准但尚未物化”的恢复状态。它能阻止后续物化
+或派发，但当前还没有把该状态变化接成 AWS 资源销毁指令。
+
+这只是调度前的可信执行图，不等于 Worker 已启动。当前仍缺生产 Codex AMI、
+角色到 Recipe/上下文/工作区/临时模型凭据和执行包的输入物化、任务级模型
+Token 签发/撤销、真正调用 typed AWS provider 启动实例的 Dispatcher、
+Validator、最终合成和执行后资源销毁接线。
 
 ### 6.3 初始运行时定位
 
@@ -1059,10 +1095,12 @@ Turn Controller 使用独立 migration 45：
   Arbiter 串成真正的自动路由与恢复流程。
 - Canonical Memory 的 Chat 候选捕捉、检索快照、Knowledge active-revision
   镜像、Message Server 门面和 App 设备签名管理。
-- Team Plan Assignment Materializer：把批准的角色、依赖、Runtime/Model/
-  Compute 选择物化成逐 Worker Recipe、上下文、工作区、凭据槽和执行包。
+- Worker Input Materializer：在已落地的批准角色/DAG 身份物化之后，继续把
+  每个角色物化成摘要绑定的 Recipe、上下文、隔离工作区、临时凭据和执行包。
 - 多 Worker Dispatcher、任务级模型 Token 签发/撤销、结果 Validator 与
   Response Arbiter 合成接线。
+- 把当前内部 `BeginDispatch` 花费门禁接到生产 provider controller；目前
+  没有生产调用者会根据 Team Execution 自动创建 AWS 资源。
 
 尚未实现或尚未验收：
 
@@ -1075,7 +1113,9 @@ Turn Controller 使用独立 migration 45：
 - Canonical Memory 的公开撤销签名合同、App 审批/查看/撤销和语义检索。
 - 2C2G 24 小时持续压力验收。
 
-因此，当前系统不能声称已经能从 App 自动选择并调度上述多个 Agent。生产云端
+因此，当前系统不能声称已经能从 App 自动选择并调度上述多个 Agent。Central
+Agent 已能把一份有效设备审批确定性地转换为不可变多 Worker Task DAG，但还
+不能从该 DAG 自动签发临时模型凭据、启动 AWS 实例或收敛整队结果。生产云端
 能力仍是受控诊断 Worker；高工具调用 Runtime 已有本地可运行内核和真实 Linux
 全仓验证，但尚未由 Central Agent 自动派工，也未进入 demo2 或生产目录。
 

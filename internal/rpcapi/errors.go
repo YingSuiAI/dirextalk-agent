@@ -18,6 +18,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
@@ -43,6 +44,7 @@ func publicError(err error) error {
 		errors.Is(err, pairing.ErrInvalid),
 		errors.Is(err, resource.ErrInvalid), errors.Is(err, worker.ErrInvalid),
 		errors.Is(err, teamorchestration.ErrInvalid),
+		errors.Is(err, teamexecution.ErrInvalid),
 		errors.Is(err, teamplan.ErrInvalid),
 		errors.Is(err, teamapproval.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -56,7 +58,8 @@ func publicError(err error) error {
 		errors.Is(err, serviceoperation.ErrNotFound),
 		errors.Is(err, pairing.ErrNotFound),
 		errors.Is(err, resource.ErrNotFound), errors.Is(err, worker.ErrNotFound),
-		errors.Is(err, teamorchestration.ErrNotFound):
+		errors.Is(err, teamorchestration.ErrNotFound),
+		errors.Is(err, teamexecution.ErrNotFound):
 		if errors.Is(err, cloudstatus.ErrNotFound) || errors.Is(err, resource.ErrNotFound) || errors.Is(err, worker.ErrNotFound) {
 			return status.Error(codes.NotFound, "requested cloud status entity was not found")
 		}
@@ -130,7 +133,9 @@ func publicError(err error) error {
 		errors.Is(err, teamplan.ErrArithmeticOverflow):
 		return status.Error(codes.FailedPrecondition, "trusted Team configuration cannot satisfy the proposed work")
 	case errors.Is(err, teamorchestration.ErrNotReady),
-		errors.Is(err, teamorchestration.ErrChallengeConsumed):
+		errors.Is(err, teamorchestration.ErrChallengeConsumed),
+		errors.Is(err, teamexecution.ErrNotReady),
+		errors.Is(err, teamexecution.ErrConcurrencyLimit):
 		return status.Error(codes.FailedPrecondition, "Team Plan is not ready for this operation")
 	case errors.Is(err, teamorchestration.ErrScopeChanged):
 		return status.Error(codes.FailedPrecondition, "Team Plan cloud scope changed")

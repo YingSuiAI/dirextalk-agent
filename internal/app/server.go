@@ -34,6 +34,7 @@ type serverOptions struct {
 	runtimeFeatures         rpcapi.RuntimeFeatures
 	teamPreparation         rpcapi.TeamPlanPreparationCoordinator
 	teamPlans               rpcapi.TeamPlanCoordinator
+	teamExecutions          rpcapi.TeamExecutionCoordinator
 	secretBootstrap         rpcapi.SecretBootstrapManager
 	cloudCoordinator        cloudapp.Coordinator
 	cloudDestroy            rpcapi.CloudDestroyCoordinator
@@ -87,6 +88,14 @@ func WithTeamPlans(
 	return func(options *serverOptions) {
 		options.teamPreparation = preparation
 		options.teamPlans = plans
+	}
+}
+
+func WithTeamExecutions(
+	executions rpcapi.TeamExecutionCoordinator,
+) ServerOption {
+	return func(options *serverOptions) {
+		options.teamExecutions = executions
 	}
 }
 
@@ -313,6 +322,7 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		rpcapi.NewTeamPlanService(
 			options.teamPreparation,
 			options.teamPlans,
+			options.teamExecutions,
 		),
 	)
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))

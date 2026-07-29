@@ -231,7 +231,7 @@ func (store *Store) createTeamPlanTx(
 				UPDATE team_plans
 				SET status='superseded',
 				    record_revision=record_revision+1,
-				    updated_at=clock_timestamp()
+				    updated_at=GREATEST(updated_at, clock_timestamp())
 				WHERE plan_id=$1
 				  AND plan_revision=$2
 				  AND record_revision=$3
@@ -406,7 +406,7 @@ func (store *Store) ExpireTeamPlan(
 		UPDATE team_plans
 		SET status='expired',
 		    record_revision=record_revision+1,
-		    updated_at=clock_timestamp()
+		    updated_at=GREATEST(updated_at, clock_timestamp())
 		WHERE plan_id=$1
 		  AND plan_revision=$2
 		  AND record_revision=$3
