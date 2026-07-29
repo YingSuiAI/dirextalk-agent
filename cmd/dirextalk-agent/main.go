@@ -26,6 +26,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
@@ -154,6 +155,7 @@ func serve() error {
 		return errors.New("could not initialize local Agent run budget")
 	}
 	var teamPlanCompiler *teamplan.CatalogCompiler
+	var teamPolicyResolver *teamorchestration.StaticPolicyResolver
 	if serverConfig.RuntimeCatalogFile != "" {
 		runtimeCatalog, loadErr := teamplan.LoadRuntimeCatalog(
 			serverConfig.RuntimeCatalogFile,
@@ -165,6 +167,15 @@ func serve() error {
 		teamPlanCompiler, loadErr = teamplan.NewCatalogCompiler(runtimeCatalog)
 		if loadErr != nil {
 			return errors.New("could not initialize runtime-catalog-bound Team Plan compiler")
+		}
+	}
+	if serverConfig.TeamPolicyFile != "" {
+		teamPolicyResolver, err =
+			teamorchestration.LoadStaticPolicyResolver(
+				serverConfig.TeamPolicyFile,
+			)
+		if err != nil {
+			return errors.New("could not load protected Team Plan policy")
 		}
 	}
 	pepper, err := config.ReadKeyMaterial(serverConfig.PepperFile)
@@ -297,12 +308,18 @@ func serve() error {
 			}
 		}
 	}
-	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 3)
+	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 4)
 	runtimeOptions = append(runtimeOptions, app.WithLocalRunBudget(runBudget))
 	if teamPlanCompiler != nil {
 		runtimeOptions = append(
 			runtimeOptions,
 			app.WithTeamPlanCompiler(teamPlanCompiler),
+		)
+	}
+	if teamPolicyResolver != nil {
+		runtimeOptions = append(
+			runtimeOptions,
+			app.WithTeamPolicyResolver(teamPolicyResolver),
 		)
 	}
 	if cloudComposition != nil {
@@ -404,6 +421,7 @@ func serve() error {
 		"max_background_local_runs", serverConfig.MaxBackgroundLocalRuns,
 		"go_memory_limit_mib", effectiveMemoryLimit/(1024*1024),
 		"runtime_catalog_revision", runtimeComposition.TeamPlans.CatalogRevision(),
+		"team_policy_revision", teamPolicyResolver.Revision(),
 	)
 	err = grpcServer.Serve(listener)
 	select {

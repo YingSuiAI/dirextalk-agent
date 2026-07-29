@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
@@ -179,5 +181,45 @@ func TestWithTeamPlanCompilerRejectsMissingOrUninitializedCompiler(t *testing.T)
 				t.Fatalf("WithTeamPlanCompiler(%s) options=%#v error=%v", label, options, err)
 			}
 		})
+	}
+}
+
+func TestWithTeamPolicyResolverRejectsMissingResolver(t *testing.T) {
+	t.Parallel()
+	var options runtimeCompositionOptions
+	if err := WithTeamPolicyResolver(nil)(&options); err == nil ||
+		options.teamPolicies != nil {
+		t.Fatalf(
+			"WithTeamPolicyResolver(nil) options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+	resolver, err := teamorchestration.NewStaticPolicyResolver(
+		teamplan.Policy{
+			MaxWorkers:                1,
+			MaxConcurrentWorkers:      1,
+			MaxRoleDuration:           time.Minute,
+			MaxVCPUPerWorker:          2,
+			MaxMemoryMiBPerWorker:     2048,
+			MaxDiskGiBPerWorker:       20,
+			MaxPlanCostMicros:         1_000_000,
+			SafetyMarginBasisPoints:   2000,
+			FixedWorkerOverheadMicros: 10_000,
+			AllowedRuntimeFamilies: []teamplan.RuntimeFamily{
+				teamplan.RuntimeCodex,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WithTeamPolicyResolver(resolver)(&options); err != nil ||
+		options.teamPolicies != resolver {
+		t.Fatalf(
+			"WithTeamPolicyResolver() options=%#v error=%v",
+			options,
+			err,
+		)
 	}
 }

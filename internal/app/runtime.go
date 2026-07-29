@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
@@ -31,6 +32,7 @@ type RuntimeComposition struct {
 	CloudGoals          rpcapi.CloudGoalPlanner
 	CloudGoalDispatcher *planning.CloudGoalDispatcher
 	TeamPlans           *teamplan.CatalogCompiler
+	TeamOrchestrator    *teamorchestration.Service
 }
 
 type runtimeCompositionOptions struct {
@@ -38,6 +40,7 @@ type runtimeCompositionOptions struct {
 	cloudGoalMaterializer planning.ProviderPlanMaterializer
 	localRunBudget        *scheduling.RunBudget
 	teamPlans             *teamplan.CatalogCompiler
+	teamPolicies          teamorchestration.PolicyResolver
 }
 
 // WithCloudGoalMaterializer enables the production queued planning path. The
@@ -67,6 +70,20 @@ func WithTeamPlanCompiler(
 			return errors.New("runtime-catalog-bound Team Plan compiler is unavailable")
 		}
 		options.teamPlans = compiler
+		return nil
+	}
+}
+
+// WithTeamPolicyResolver enables the application-layer Team Plan gate. The
+// resolver is server-owned; callers cannot submit policy in an RPC request.
+func WithTeamPolicyResolver(
+	resolver teamorchestration.PolicyResolver,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || resolver == nil {
+			return errors.New("Team Plan policy resolver is unavailable")
+		}
+		options.teamPolicies = resolver
 		return nil
 	}
 }
@@ -114,6 +131,9 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	}
 	if options.cloudGoalOutput != nil && options.cloudGoalMaterializer != nil {
 		return RuntimeComposition{}, errors.New("cloud Goal output composition is ambiguous")
+	}
+	if options.teamPolicies != nil && options.teamPlans == nil {
+		return RuntimeComposition{}, errors.New("Team Plan policy requires a verified runtime catalog")
 	}
 	var runtimeAdmission runtimeapp.Admission
 	var cloudGoalAdmission planning.CloudGoalAdmission
@@ -223,9 +243,27 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime coordinator is unavailable")
 	}
+	var teamOrchestrator *teamorchestration.Service
+	if options.teamPolicies != nil {
+		teamRepository, repositoryErr :=
+			postgres.NewTeamOrchestrationRepository(store)
+		if repositoryErr != nil {
+			return RuntimeComposition{}, errors.New("Team Plan repository is unavailable")
+		}
+		teamOrchestrator, repositoryErr = teamorchestration.NewService(
+			options.teamPlans,
+			options.teamPolicies,
+			teamRepository,
+			time.Now,
+		)
+		if repositoryErr != nil {
+			return RuntimeComposition{}, errors.New("Team Plan orchestrator is unavailable")
+		}
+	}
 	return RuntimeComposition{
 		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,
 		CloudGoalDispatcher: cloudGoalDispatcher, TeamPlans: options.teamPlans,
+		TeamOrchestrator: teamOrchestrator,
 	}, nil
 }
 

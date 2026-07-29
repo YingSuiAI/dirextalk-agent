@@ -49,6 +49,7 @@ type signingDocumentV1 struct {
 	GoalDigest            string                 `json:"goal_digest"`
 	ProviderScope         teamplan.ProviderScope `json:"provider_scope"`
 	CatalogRevision       string                 `json:"catalog_revision"`
+	PolicyRevision        string                 `json:"policy_revision"`
 	PricingSnapshotID     string                 `json:"pricing_snapshot_id"`
 	PricingSnapshotDigest string                 `json:"pricing_snapshot_digest"`
 	QuotedAt              time.Time              `json:"quoted_at"`
@@ -104,6 +105,7 @@ func NewChallengeV1(
 		PlanDigest: planDigest, GoalDigest: plan.GoalDigest,
 		ProviderScope:         plan.ProviderScope,
 		CatalogRevision:       plan.CatalogRevision,
+		PolicyRevision:        plan.PolicyRevision,
 		PricingSnapshotID:     plan.PricingSnapshotID,
 		PricingSnapshotDigest: plan.PricingSnapshotDigest,
 		QuotedAt:              plan.QuotedAt.UTC(), QuoteValidUntil: plan.ValidUntil.UTC(),
@@ -157,6 +159,7 @@ func (challenge ChallengeV1) Validate() error {
 		!digestPattern.MatchString(challenge.GoalDigest) ||
 		challenge.ProviderScope.Validate() != nil ||
 		!digestPattern.MatchString(challenge.CatalogRevision) ||
+		!digestPattern.MatchString(challenge.PolicyRevision) ||
 		!canonicalUUID(challenge.PricingSnapshotID) ||
 		!digestPattern.MatchString(challenge.PricingSnapshotDigest) ||
 		!utcMicrosecond(challenge.QuotedAt) ||
@@ -205,6 +208,7 @@ func (challenge ChallengeV1) SigningPayload() ([]byte, error) {
 		PlanDigest: challenge.PlanDigest, GoalDigest: challenge.GoalDigest,
 		ProviderScope:         challenge.ProviderScope,
 		CatalogRevision:       challenge.CatalogRevision,
+		PolicyRevision:        challenge.PolicyRevision,
 		PricingSnapshotID:     challenge.PricingSnapshotID,
 		PricingSnapshotDigest: challenge.PricingSnapshotDigest,
 		QuotedAt:              challenge.QuotedAt, QuoteValidUntil: challenge.QuoteValidUntil,
@@ -277,6 +281,7 @@ func (challenge ChallengeV1) matchesPlan(plan teamplan.Plan) error {
 		plan.GoalDigest != challenge.GoalDigest ||
 		plan.ProviderScope != challenge.ProviderScope ||
 		plan.CatalogRevision != challenge.CatalogRevision ||
+		plan.PolicyRevision != challenge.PolicyRevision ||
 		plan.PricingSnapshotID != challenge.PricingSnapshotID ||
 		plan.PricingSnapshotDigest != challenge.PricingSnapshotDigest ||
 		!plan.QuotedAt.Equal(challenge.QuotedAt) ||

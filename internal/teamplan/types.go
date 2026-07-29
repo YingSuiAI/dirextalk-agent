@@ -328,6 +328,7 @@ type Plan struct {
 	ProviderScope         ProviderScope      `json:"provider_scope"`
 	Region                string             `json:"region"`
 	CatalogRevision       string             `json:"catalog_revision"`
+	PolicyRevision        string             `json:"policy_revision"`
 	PricingSnapshotID     string             `json:"pricing_snapshot_id"`
 	PricingSnapshotDigest string             `json:"pricing_snapshot_digest"`
 	QuotedAt              time.Time          `json:"quoted_at"`

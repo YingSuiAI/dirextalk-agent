@@ -346,6 +346,7 @@ func validatePlan(plan Plan) error {
 		validateProviderScope(plan.ProviderScope) != nil ||
 		!regionPattern.MatchString(plan.Region) ||
 		!sha256Pattern.MatchString(plan.CatalogRevision) ||
+		!sha256Pattern.MatchString(plan.PolicyRevision) ||
 		!canonicalUUID(plan.PricingSnapshotID) ||
 		!sha256Pattern.MatchString(plan.PricingSnapshotDigest) ||
 		!validQuoteWindow(plan.QuotedAt, plan.ValidUntil) ||

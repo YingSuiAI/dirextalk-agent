@@ -606,11 +606,67 @@ func (store *Store) GetTeamApproval(
 		ownerID == "" {
 		return TeamApprovalRecord{}, ErrTeamFactInvalid
 	}
+	return store.getTeamApproval(ctx, ownerID, parsed)
+}
+
+func (store *Store) GetTeamApprovalForPlan(
+	ctx context.Context,
+	ownerID,
+	planID string,
+	planRevision uint64,
+) (TeamApprovalRecord, error) {
+	parsedPlanID, err := uuid.Parse(planID)
+	if err != nil ||
+		parsedPlanID == uuid.Nil ||
+		parsedPlanID.String() != planID ||
+		ownerID != strings.TrimSpace(ownerID) ||
+		ownerID == "" ||
+		planRevision == 0 ||
+		planRevision > uint64(math.MaxInt64) {
+		return TeamApprovalRecord{}, ErrTeamFactInvalid
+	}
+	var approvalID uuid.UUID
+	if err := store.pool.QueryRow(ctx, `
+		SELECT approval_id
+		FROM team_plan_approvals
+		WHERE agent_instance_id=$1
+		  AND owner_id=$2
+		  AND plan_id=$3
+		  AND plan_revision=$4`,
+		store.instanceID,
+		ownerID,
+		parsedPlanID,
+		int64(planRevision),
+	).Scan(&approvalID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return TeamApprovalRecord{}, ErrTeamFactNotFound
+		}
+		return TeamApprovalRecord{}, fmt.Errorf(
+			"read Team Plan approval binding: %w",
+			err,
+		)
+	}
+	record, err := store.getTeamApproval(ctx, ownerID, approvalID)
+	if err != nil {
+		return TeamApprovalRecord{}, err
+	}
+	if record.Signature.PlanID != planID ||
+		record.Signature.PlanRevision != planRevision {
+		return TeamApprovalRecord{}, ErrTeamFactCorrupt
+	}
+	return record, nil
+}
+
+func (store *Store) getTeamApproval(
+	ctx context.Context,
+	ownerID string,
+	approvalID uuid.UUID,
+) (TeamApprovalRecord, error) {
 	record, binding, err := readTeamApproval(
 		ctx,
 		store.pool,
 		store.instanceID,
-		parsed,
+		approvalID,
 	)
 	if err != nil {
 		return TeamApprovalRecord{}, err

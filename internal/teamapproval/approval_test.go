@@ -31,6 +31,7 @@ func TestChallengeBindsCompleteTeamPlanAndVerifiesDeviceSignature(t *testing.T) 
 	}
 	if challenge.WorkerCount != plan.WorkerCount ||
 		challenge.ProviderScope != plan.ProviderScope ||
+		challenge.PolicyRevision != plan.PolicyRevision ||
 		challenge.ExpectedCostMicros != plan.Cost.ExpectedMicros ||
 		challenge.HardBudgetMicros != plan.Cost.HardBudgetMicros ||
 		challenge.ExpectedWallSeconds !=
@@ -83,6 +84,9 @@ func TestVerifyRejectsPlanRevisionRuntimeBudgetAndSignatureDrift(t *testing.T) {
 		},
 		"provider scope": func(plan *teamplan.Plan, _ *SignatureV1) {
 			plan.ProviderScope.ConnectionRevision++
+		},
+		"policy": func(plan *teamplan.Plan, _ *SignatureV1) {
+			plan.PolicyRevision = "sha256:" + strings.Repeat("e", 64)
 		},
 		"signature plan": func(_ *teamplan.Plan, signature *SignatureV1) {
 			signature.PlanDigest = "sha256:" + strings.Repeat("f", 64)
@@ -200,8 +204,8 @@ func TestApprovalV1GoldenDigests(t *testing.T) {
 		t.Fatal(err)
 	}
 	payloadDigest := sha256.Sum256(payload)
-	const wantPlanDigest = "sha256:651bf9f785b56a442e6e8cf45310b59931329f90a36ee6349bdbe93312837563"
-	const wantPayloadDigest = "sha256:38c4da43f30a39708c4e92289c1589c473c418fd0c3a253a15f422fceafba1ff"
+	const wantPlanDigest = "sha256:cf53a97334b334aca5c62d499c11b6ec1d2777117d805e1c671024c20438df73"
+	const wantPayloadDigest = "sha256:ab1cf96614d4d6ebb8e2683312b1cc711c463798a23453ce72a24a489bd2ffbd"
 	if planDigest != wantPlanDigest {
 		t.Errorf("Plan.Digest() = %q, want %q", planDigest, wantPlanDigest)
 	}
@@ -307,6 +311,7 @@ func approvalTestPlan() teamplan.Plan {
 		},
 		Region:                "ap-northeast-3",
 		CatalogRevision:       "sha256:" + strings.Repeat("3", 64),
+		PolicyRevision:        "sha256:" + strings.Repeat("5", 64),
 		PricingSnapshotID:     "44444444-4444-4444-8444-444444444444",
 		PricingSnapshotDigest: "sha256:" + strings.Repeat("4", 64),
 		QuotedAt:              quotedAt, ValidUntil: quotedAt.Add(15 * time.Minute),

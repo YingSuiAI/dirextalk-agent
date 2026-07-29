@@ -245,13 +245,14 @@ func (store *Store) CreateTeamPlan(
 		INSERT INTO team_plans
 		    (plan_id, plan_revision, agent_instance_id, owner_id, task_id,
 		     provider, connection_id, connection_revision, account_id, region,
-		     catalog_revision, goal_digest, snapshot_id, snapshot_digest,
+		     catalog_revision, policy_revision, goal_digest,
+		     snapshot_id, snapshot_digest,
 		     plan_digest, plan_json, plan_cbor, status, record_revision,
 		     quoted_at, valid_until)
 		VALUES (
 		    $1,$2,$3,$4,NULLIF($5::text,'')::uuid,
-		    $6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-		    'ready_for_confirmation',1,$18,$19
+		    $6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+		    'ready_for_confirmation',1,$19,$20
 		)
 		RETURNING created_at, updated_at`,
 		planID,
@@ -265,6 +266,7 @@ func (store *Store) CreateTeamPlan(
 		providerScope.AccountID,
 		command.Plan.Region,
 		command.Plan.CatalogRevision,
+		command.Plan.PolicyRevision,
 		command.Plan.GoalDigest,
 		snapshotID,
 		command.Plan.PricingSnapshotDigest,
@@ -492,7 +494,8 @@ func readTeamPlan(
 	statement := `
 		SELECT agent_instance_id, owner_id, COALESCE(task_id::text,''),
 		       provider, connection_id, connection_revision, account_id, region,
-		       catalog_revision, goal_digest, snapshot_id, snapshot_digest,
+		       catalog_revision, policy_revision, goal_digest,
+		       snapshot_id, snapshot_digest,
 		       plan_digest, plan_json, plan_cbor, status, record_revision,
 		       quoted_at, valid_until, created_at, updated_at
 		FROM team_plans
@@ -503,13 +506,14 @@ func readTeamPlan(
 		statement += " FOR UPDATE"
 	}
 	var (
-		agentID, connectionID, snapshotID           uuid.UUID
-		ownerID, provider, accountID, region        string
-		catalogRevision, goalDigest, snapshotDigest string
-		status                                      string
-		connectionRevision, recordRevision          int64
-		planJSON, planCBOR                          []byte
-		record                                      TeamPlanRecord
+		agentID, connectionID, snapshotID    uuid.UUID
+		ownerID, provider, accountID, region string
+		catalogRevision, policyRevision      string
+		goalDigest, snapshotDigest           string
+		status                               string
+		connectionRevision, recordRevision   int64
+		planJSON, planCBOR                   []byte
+		record                               TeamPlanRecord
 	)
 	quotedAt := new(time.Time)
 	validUntil := new(time.Time)
@@ -529,6 +533,7 @@ func readTeamPlan(
 		&accountID,
 		&region,
 		&catalogRevision,
+		&policyRevision,
 		&goalDigest,
 		&snapshotID,
 		&snapshotDigest,
@@ -569,6 +574,7 @@ func readTeamPlan(
 		record.Plan.ProviderScope.AccountID != accountID ||
 		record.Plan.Region != region ||
 		record.Plan.CatalogRevision != catalogRevision ||
+		record.Plan.PolicyRevision != policyRevision ||
 		record.Plan.GoalDigest != goalDigest ||
 		record.Plan.PricingSnapshotID != snapshotID.String() ||
 		record.Plan.PricingSnapshotDigest != snapshotDigest ||

@@ -44,6 +44,7 @@ CREATE TABLE team_plans (
     account_id text NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
     region text NOT NULL CHECK (region ~ '^[a-z]{2}(-[a-z0-9]+)+-[0-9]+$'),
     catalog_revision text NOT NULL CHECK (catalog_revision ~ '^sha256:[a-f0-9]{64}$'),
+    policy_revision text NOT NULL CHECK (policy_revision ~ '^sha256:[a-f0-9]{64}$'),
     goal_digest text NOT NULL CHECK (goal_digest ~ '^sha256:[a-f0-9]{64}$'),
     snapshot_id uuid NOT NULL,
     snapshot_digest text NOT NULL CHECK (snapshot_digest ~ '^sha256:[a-f0-9]{64}$'),
@@ -151,7 +152,8 @@ CREATE TABLE team_plan_approvals (
         REFERENCES team_plans(plan_id, plan_revision) ON DELETE RESTRICT,
     FOREIGN KEY (snapshot_id, snapshot_digest)
         REFERENCES team_offer_snapshots(snapshot_id, snapshot_digest)
-        ON DELETE RESTRICT
+        ON DELETE RESTRICT,
+    UNIQUE (plan_id, plan_revision)
 );
 
 CREATE INDEX team_plan_approvals_owner_cursor_idx
@@ -205,6 +207,7 @@ BEGIN
         OLD.account_id,
         OLD.region,
         OLD.catalog_revision,
+        OLD.policy_revision,
         OLD.goal_digest,
         OLD.snapshot_id,
         OLD.snapshot_digest,
@@ -226,6 +229,7 @@ BEGIN
         NEW.account_id,
         NEW.region,
         NEW.catalog_revision,
+        NEW.policy_revision,
         NEW.goal_digest,
         NEW.snapshot_id,
         NEW.snapshot_digest,

@@ -58,6 +58,7 @@ type planDigestDocumentV1 struct {
 	ProviderScope         ProviderScope        `json:"provider_scope"`
 	Region                string               `json:"region"`
 	CatalogRevision       string               `json:"catalog_revision"`
+	PolicyRevision        string               `json:"policy_revision"`
 	PricingSnapshotID     string               `json:"pricing_snapshot_id"`
 	PricingSnapshotDigest string               `json:"pricing_snapshot_digest"`
 	QuotedAt              time.Time            `json:"quoted_at"`
@@ -145,6 +146,7 @@ func (plan Plan) digestDocument() (planDigestDocumentV1, error) {
 		ProviderScope:         plan.ProviderScope,
 		Region:                plan.Region,
 		CatalogRevision:       plan.CatalogRevision,
+		PolicyRevision:        plan.PolicyRevision,
 		PricingSnapshotID:     plan.PricingSnapshotID,
 		PricingSnapshotDigest: plan.PricingSnapshotDigest,
 		QuotedAt:              plan.QuotedAt.UTC(), ValidUntil: plan.ValidUntil.UTC(),

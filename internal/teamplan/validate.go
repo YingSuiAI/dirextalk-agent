@@ -25,6 +25,7 @@ var (
 	ErrBudgetExceeded     = errors.New("team plan exceeds cost policy")
 	ErrArithmeticOverflow = errors.New("team plan estimate overflow")
 	ErrCatalogChanged     = errors.New("team plan runtime catalog changed")
+	ErrPolicyChanged      = errors.New("team plan policy changed")
 	ErrPricingExpired     = errors.New("team plan pricing snapshot expired")
 	ErrPricingChanged     = errors.New("team plan pricing snapshot changed")
 )
@@ -132,6 +133,7 @@ func validatePolicy(policy Policy) error {
 		policy.MaxConcurrentWorkers > policy.MaxWorkers ||
 		policy.MaxRoleDuration < time.Minute ||
 		policy.MaxRoleDuration > absoluteMaxRoleDuration ||
+		policy.MaxRoleDuration%time.Second != 0 ||
 		policy.MaxVCPUPerWorker == 0 || policy.MaxVCPUPerWorker > 1024 ||
 		policy.MaxMemoryMiBPerWorker == 0 ||
 		policy.MaxMemoryMiBPerWorker > 64*1024*1024 ||

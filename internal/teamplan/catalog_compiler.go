@@ -82,6 +82,7 @@ func (compiler *CatalogCompiler) Compile(
 func (compiler *CatalogCompiler) VerifyPlan(
 	plan Plan,
 	offers *OfferSnapshot,
+	policy Policy,
 	now time.Time,
 ) error {
 	if compiler == nil || compiler.catalog == nil || offers == nil {
@@ -92,6 +93,9 @@ func (compiler *CatalogCompiler) VerifyPlan(
 	}
 	if plan.CatalogRevision != compiler.catalog.Revision() {
 		return ErrCatalogChanged
+	}
+	if err := verifyPlanPolicy(plan, policy); err != nil {
+		return err
 	}
 	if err := offers.VerifyPlanPricing(plan, now); err != nil {
 		return err

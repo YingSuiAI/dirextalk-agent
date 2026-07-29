@@ -96,6 +96,7 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 		t.Fatalf("snapshot replay=%#v err=%v", replayedSnapshot, err)
 	}
 	plan := teamPlanFixture(
+		t,
 		snapshot,
 		ownerID,
 		goal,
@@ -268,6 +269,27 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 			signature.SignatureBase64URL {
 		t.Fatalf("stored approval=%#v err=%v", storedApproval, err)
 	}
+	boundApproval, err := store.GetTeamApprovalForPlan(
+		ctx,
+		ownerID,
+		plan.PlanID,
+		plan.Revision,
+	)
+	if err != nil ||
+		boundApproval.Signature.ApprovalID != signature.ApprovalID ||
+		boundApproval.Signature.PlanDigest != beforeDigest ||
+		boundApproval.Signature.SignatureBase64URL !=
+			signature.SignatureBase64URL {
+		t.Fatalf("Plan-bound approval=%#v err=%v", boundApproval, err)
+	}
+	if _, err := store.GetTeamApprovalForPlan(
+		ctx,
+		"other-owner",
+		plan.PlanID,
+		plan.Revision,
+	); !errors.Is(err, postgres.ErrTeamFactNotFound) {
+		t.Fatalf("cross-owner Plan-bound approval read error=%v", err)
+	}
 	if _, err := store.GetTeamPlan(
 		ctx,
 		"other-owner",
@@ -309,6 +331,14 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	); !errors.Is(err, postgres.ErrTeamFactNotFound) {
 		t.Fatalf("cross-Agent approval read error=%v", err)
 	}
+	if _, err := foreignStore.GetTeamApprovalForPlan(
+		ctx,
+		ownerID,
+		plan.PlanID,
+		plan.Revision,
+	); !errors.Is(err, postgres.ErrTeamFactNotFound) {
+		t.Fatalf("cross-Agent Plan-bound approval read error=%v", err)
+	}
 	var (
 		afterDigest string
 		afterJSON   string
@@ -337,6 +367,7 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	)
 
 	replanV1 := teamPlanFixture(
+		t,
 		snapshot,
 		ownerID,
 		goal,
@@ -421,6 +452,7 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	}
 
 	racePlan := teamPlanFixture(
+		t,
 		snapshot,
 		ownerID,
 		goal,
@@ -520,6 +552,7 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 		t.Fatal(err)
 	}
 	expiringPlan := teamPlanFixture(
+		t,
 		expiringSnapshot,
 		ownerID,
 		goal,
@@ -568,6 +601,7 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 		t.Fatalf("expired Team Plan=%#v err=%v", expiredPlan, err)
 	}
 	requotePlan := teamPlanFixture(
+		t,
 		snapshot,
 		ownerID,
 		goal,
@@ -704,16 +738,22 @@ func teamOfferSnapshotFixture(
 }
 
 func teamPlanFixture(
+	t *testing.T,
 	snapshot *teamplan.OfferSnapshot,
 	ownerID,
 	goal,
 	planID string,
 	revision uint64,
 ) teamplan.Plan {
+	t.Helper()
 	goalHash := sha256.Sum256([]byte(strings.TrimSpace(goal)))
 	document := snapshot.Document()
 	compute := document.ComputeOffers[0]
 	model := document.ModelOffers[0]
+	policyRevision, err := teamPlanPolicyFixture().Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	assignment := teamplan.WorkerAssignment{
 		RoleID:    "implementation",
 		Title:     "Implementation",
@@ -764,6 +804,7 @@ func teamPlanFixture(
 		ProviderScope:         document.ProviderScope,
 		Region:                document.Region,
 		CatalogRevision:       "sha256:" + strings.Repeat("b", 64),
+		PolicyRevision:        policyRevision,
 		PricingSnapshotID:     snapshot.SnapshotID(),
 		PricingSnapshotDigest: snapshot.Digest(),
 		QuotedAt:              snapshot.CapturedAt(),
@@ -806,6 +847,23 @@ func teamPlanFixture(
 				"third_party_paid_tools",
 				"unapproved_retries",
 			},
+		},
+	}
+}
+
+func teamPlanPolicyFixture() teamplan.Policy {
+	return teamplan.Policy{
+		MaxWorkers:                1,
+		MaxConcurrentWorkers:      1,
+		MaxRoleDuration:           3 * time.Minute,
+		MaxVCPUPerWorker:          2,
+		MaxMemoryMiBPerWorker:     8192,
+		MaxDiskGiBPerWorker:       40,
+		MaxPlanCostMicros:         1_000_000,
+		SafetyMarginBasisPoints:   2000,
+		FixedWorkerOverheadMicros: 10_000,
+		AllowedRuntimeFamilies: []teamplan.RuntimeFamily{
+			teamplan.RuntimeCodex,
 		},
 	}
 }

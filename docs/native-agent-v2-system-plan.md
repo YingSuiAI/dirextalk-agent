@@ -1,6 +1,6 @@
 # Native Agent v2 系统规划
 
-版本：0.1
+版本：0.2
 
 日期：2026-07-29
 
@@ -926,7 +926,11 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
   revision 漂移校验。
 - migration 44 的不可变 Offer Snapshot、Plan revision、challenge 和 approval
   PostgreSQL 存储；整单批准只推进外层状态，不改写签名 Plan，并支持到期后
-  新 revision 重报价。尚未接入 RPC、Message Server 和 App。
+  新 revision 重报价。
+- 受保护的静态 Team Policy、Plan 绑定的策略摘要和 Agent 内部
+  `teamorchestration` 应用门禁；形成 challenge、接受批准或启动 Worker 前都会
+  重新核验当前 Runtime Catalog、Team Policy、报价快照、云身份和永久审批签名。
+  该服务已接入 Agent 启动组合，但尚未暴露 RPC。
 - 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层。
 - 严格受保护的模型报价目录、凭据布尔就绪端口、报价快照组装服务，以及读取
   AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
@@ -939,7 +943,9 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- Plan v3 编排服务以及整单设备签名的 RPC、Message Server 和 App 接入。
+- Plan v3 准备操作的事务化幂等持久化，以及整单设备签名的 RPC、Message
+  Server 和 App 接入；在 Offer Snapshot 与 Plan 不能原子提交和可靠重放前，
+  不开放公网或产品 RPC。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
   物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
 

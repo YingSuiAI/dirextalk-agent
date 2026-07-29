@@ -86,6 +86,7 @@ func TestLoadServerRequiresRuntimeCatalogAndPublicKeyTogether(t *testing.T) {
 	tests := map[string]struct {
 		catalog string
 		key     string
+		policy  string
 		valid   bool
 	}{
 		"disabled": {},
@@ -95,9 +96,18 @@ func TestLoadServerRequiresRuntimeCatalogAndPublicKeyTogether(t *testing.T) {
 		"key only": {
 			key: "/run/dirextalk/config/runtime-catalog-public-key",
 		},
+		"policy only": {
+			policy: "/run/dirextalk/config/team-policy.json",
+		},
 		"configured pair": {
 			catalog: "/run/dirextalk/config/runtime-catalog.json",
 			key:     "/run/dirextalk/config/runtime-catalog-public-key",
+			valid:   true,
+		},
+		"configured policy": {
+			catalog: "/run/dirextalk/config/runtime-catalog.json",
+			key:     "/run/dirextalk/config/runtime-catalog-public-key",
+			policy:  "/run/dirextalk/config/team-policy.json",
 			valid:   true,
 		},
 	}
@@ -106,25 +116,25 @@ func TestLoadServerRequiresRuntimeCatalogAndPublicKeyTogether(t *testing.T) {
 			setValidServerEnvironment(t)
 			t.Setenv("AGENT_RUNTIME_CATALOG_FILE", test.catalog)
 			t.Setenv("AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE", test.key)
+			t.Setenv("AGENT_TEAM_POLICY_FILE", test.policy)
 			server, err := LoadServer()
-			if test.catalog == "" && test.key == "" {
+			if test.catalog == "" && test.key == "" && test.policy == "" {
 				if err != nil || server.RuntimeCatalogFile != "" ||
-					server.RuntimeCatalogPublicKeyFile != "" {
+					server.RuntimeCatalogPublicKeyFile != "" ||
+					server.TeamPolicyFile != "" {
 					t.Fatalf("disabled runtime catalog = %#v, %v", server, err)
 				}
 				return
 			}
 			if !test.valid {
-				if err == nil || !strings.Contains(
-					err.Error(),
-					"must be configured together",
-				) {
+				if err == nil {
 					t.Fatalf("unpaired runtime catalog error = %v", err)
 				}
 				return
 			}
 			if err != nil || server.RuntimeCatalogFile != test.catalog ||
-				server.RuntimeCatalogPublicKeyFile != test.key {
+				server.RuntimeCatalogPublicKeyFile != test.key ||
+				server.TeamPolicyFile != test.policy {
 				t.Fatalf("runtime catalog config = %#v, %v", server, err)
 			}
 		})

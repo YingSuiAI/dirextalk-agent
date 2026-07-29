@@ -43,6 +43,7 @@ type Server struct {
 	MCPServersFile                   string
 	RuntimeCatalogFile               string
 	RuntimeCatalogPublicKeyFile      string
+	TeamPolicyFile                   string
 	EnableAWSControl                 bool
 	EnableManagedPreparationAWS      bool
 	AWSReaperImageURI                string
@@ -91,6 +92,7 @@ func LoadServer() (Server, error) {
 		MCPServersFile:                   strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
 		RuntimeCatalogFile:               strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_FILE")),
 		RuntimeCatalogPublicKeyFile:      strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE")),
+		TeamPolicyFile:                   strings.TrimSpace(os.Getenv("AGENT_TEAM_POLICY_FILE")),
 		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
 		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
 		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
@@ -162,6 +164,9 @@ func LoadServer() (Server, error) {
 	if (server.RuntimeCatalogFile == "") !=
 		(server.RuntimeCatalogPublicKeyFile == "") {
 		return Server{}, errors.New("AGENT_RUNTIME_CATALOG_FILE and AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE must be configured together")
+	}
+	if server.TeamPolicyFile != "" && server.RuntimeCatalogFile == "" {
+		return Server{}, errors.New("AGENT_TEAM_POLICY_FILE requires the signed Runtime Catalog")
 	}
 	if server.AWSReaperImageURI != "" {
 		lower := strings.ToLower(server.AWSReaperImageURI)

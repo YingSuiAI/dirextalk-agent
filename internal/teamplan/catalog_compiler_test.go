@@ -38,6 +38,7 @@ func TestCatalogCompilerInjectsVerifiedCatalogAndRechecksPlan(t *testing.T) {
 	if err := compiler.VerifyPlan(
 		plan,
 		request.Offers,
+		request.Policy,
 		request.CompileTime,
 	); err != nil {
 		t.Fatalf("VerifyPlan() error = %v", err)
@@ -53,6 +54,7 @@ func TestCatalogCompilerInjectsVerifiedCatalogAndRechecksPlan(t *testing.T) {
 	if err := compiler.VerifyPlan(
 		tampered,
 		request.Offers,
+		request.Policy,
 		request.CompileTime,
 	); !errors.Is(err, ErrCatalogChanged) {
 		t.Fatalf("tampered VerifyPlan() error = %v, want ErrCatalogChanged", err)
@@ -101,6 +103,7 @@ func TestCatalogCompilerRejectsPlanFromSupersededCatalog(t *testing.T) {
 	if err := secondCompiler.VerifyPlan(
 		plan,
 		request.Offers,
+		request.Policy,
 		request.CompileTime,
 	); !errors.Is(
 		err,
@@ -177,6 +180,7 @@ func TestCatalogCompilerRejectsPricingMutationAndExpiry(t *testing.T) {
 	if err := compiler.VerifyPlan(
 		plan,
 		changedOffers,
+		request.Policy,
 		request.CompileTime,
 	); !errors.Is(err, ErrPricingChanged) {
 		t.Fatalf("changed pricing VerifyPlan() error = %v, want ErrPricingChanged", err)
@@ -186,6 +190,7 @@ func TestCatalogCompilerRejectsPricingMutationAndExpiry(t *testing.T) {
 	if err := compiler.VerifyPlan(
 		changedPlan,
 		request.Offers,
+		request.Policy,
 		request.CompileTime,
 	); !errors.Is(err, ErrPricingChanged) {
 		t.Fatalf("scope drift VerifyPlan() error = %v, want ErrPricingChanged", err)

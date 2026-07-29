@@ -1,0 +1,193 @@
+// Package teamorchestration is the only application-layer gate for compiling,
+// approving, and authorizing multi-Worker Team Plans. Network transports must
+// not call the underlying persistence methods directly.
+package teamorchestration
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+)
+
+var (
+	ErrInvalid      = errors.New("invalid Team orchestration request")
+	ErrFactMismatch = errors.New("Team orchestration fact mismatch")
+	ErrNotReady     = errors.New("Team Plan is not ready for this operation")
+)
+
+type PlanStatus string
+
+const (
+	PlanReadyForConfirmation PlanStatus = "ready_for_confirmation"
+	PlanApproved             PlanStatus = "approved"
+	PlanExpired              PlanStatus = "expired"
+	PlanSuperseded           PlanStatus = "superseded"
+	PlanExecuting            PlanStatus = "executing"
+	PlanCompleted            PlanStatus = "completed"
+	PlanFailed               PlanStatus = "failed"
+	PlanCanceled             PlanStatus = "canceled"
+)
+
+type OfferFact struct {
+	OwnerID   string
+	Document  teamplan.OfferSnapshotDocument
+	Digest    string
+	CreatedAt time.Time
+}
+
+func (fact OfferFact) Snapshot() (*teamplan.OfferSnapshot, error) {
+	snapshot, err := teamplan.NewOfferSnapshot(fact.Document)
+	if err != nil || snapshot.Digest() != fact.Digest {
+		return nil, ErrFactMismatch
+	}
+	return snapshot, nil
+}
+
+type PlanFact struct {
+	TaskID         string
+	Plan           teamplan.Plan
+	PlanDigest     string
+	Status         PlanStatus
+	RecordRevision uint64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type ChallengeFact struct {
+	Challenge      teamapproval.ChallengeV1
+	ConsumedAt     *time.Time
+	RecordRevision uint64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type ApprovalFact struct {
+	Signature  teamapproval.SignatureV1
+	ApprovedAt time.Time
+	CreatedAt  time.Time
+}
+
+type PersistOfferCommand struct {
+	IdempotencyKey string
+	OwnerID        string
+	Snapshot       *teamplan.OfferSnapshot
+}
+
+type PersistPlanCommand struct {
+	IdempotencyKey           string
+	TaskID                   string
+	ExpectedPreviousRevision uint64
+	Plan                     teamplan.Plan
+}
+
+type PersistChallengeCommand struct {
+	IdempotencyKey             string
+	OwnerID                    string
+	PlanID                     string
+	PlanRevision               uint64
+	ExpectedPlanRecordRevision uint64
+	ApprovalID                 string
+	ChallengeID                string
+	SignerKeyID                string
+}
+
+type PersistApprovalCommand struct {
+	IdempotencyKey                  string
+	OwnerID                         string
+	ExpectedPlanRecordRevision      uint64
+	ExpectedChallengeRecordRevision uint64
+	Signature                       teamapproval.SignatureV1
+}
+
+type Repository interface {
+	PersistOffer(
+		context.Context,
+		task.MutationScope,
+		PersistOfferCommand,
+	) (OfferFact, error)
+	GetOffer(context.Context, string, string) (OfferFact, error)
+	PersistPlan(
+		context.Context,
+		task.MutationScope,
+		PersistPlanCommand,
+	) (PlanFact, error)
+	GetPlan(context.Context, string, string, uint64) (PlanFact, error)
+	PersistChallenge(
+		context.Context,
+		task.MutationScope,
+		PersistChallengeCommand,
+	) (ChallengeFact, error)
+	PersistApproval(
+		context.Context,
+		task.MutationScope,
+		PersistApprovalCommand,
+	) (PlanFact, error)
+	GetApprovalForPlan(
+		context.Context,
+		string,
+		string,
+		uint64,
+	) (ApprovalFact, error)
+}
+
+type PolicyResolver interface {
+	ResolveTeamPolicy(context.Context, string) (teamplan.Policy, error)
+}
+
+type PolicyResolverFunc func(
+	context.Context,
+	string,
+) (teamplan.Policy, error)
+
+func (function PolicyResolverFunc) ResolveTeamPolicy(
+	ctx context.Context,
+	ownerID string,
+) (teamplan.Policy, error) {
+	return function(ctx, ownerID)
+}
+
+type PlanCompiler interface {
+	CatalogRevision() string
+	Compile(teamplan.CatalogCompileRequest) (teamplan.Plan, error)
+	VerifyPlan(
+		teamplan.Plan,
+		*teamplan.OfferSnapshot,
+		teamplan.Policy,
+		time.Time,
+	) error
+}
+
+type PreparePlanRequest struct {
+	IdempotencyKey           string
+	OwnerID                  string
+	TaskID                   string
+	PlanID                   string
+	Revision                 uint64
+	ExpectedPreviousRevision uint64
+	GoalDigest               string
+	Proposal                 teamplan.TeamProposal
+	Offers                   *teamplan.OfferSnapshot
+}
+
+type ChallengeRequest struct {
+	IdempotencyKey             string
+	OwnerID                    string
+	PlanID                     string
+	PlanRevision               uint64
+	ExpectedPlanRecordRevision uint64
+	ApprovalID                 string
+	ChallengeID                string
+	SignerKeyID                string
+}
+
+type ApprovalRequest struct {
+	IdempotencyKey                  string
+	OwnerID                         string
+	ExpectedPlanRecordRevision      uint64
+	ExpectedChallengeRecordRevision uint64
+	Signature                       teamapproval.SignatureV1
+}

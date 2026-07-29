@@ -65,6 +65,10 @@ func Compile(request CompileRequest) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	policyRevision, err := request.Policy.Digest()
+	if err != nil {
+		return Plan{}, err
+	}
 	plan := Plan{
 		SchemaVersion:         SchemaV1,
 		PlanID:                request.PlanID,
@@ -74,6 +78,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		ProviderScope:         request.ProviderScope,
 		Region:                request.Region,
 		CatalogRevision:       request.CatalogRevision,
+		PolicyRevision:        policyRevision,
 		PricingSnapshotID:     request.PricingSnapshotID,
 		PricingSnapshotDigest: request.PricingSnapshotDigest,
 		QuotedAt:              request.QuotedAt,
