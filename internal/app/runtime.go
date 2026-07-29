@@ -42,7 +42,7 @@ type runtimeCompositionOptions struct {
 	localRunBudget        *scheduling.RunBudget
 	teamPlans             *teamplan.CatalogCompiler
 	teamPolicies          teamorchestration.PolicyResolver
-	teamOffers            teamorchestration.TrustedOfferBuilder
+	teamOffers            teamorchestration.TrustedOfferSource
 	modelProfiles         *modelapi.ProfileCatalog
 }
 
@@ -95,7 +95,7 @@ func WithTeamPolicyResolver(
 // builder accepts only owner plus Cloud Connection identity and derives every
 // provider, pricing, capacity, model, and compute fact internally.
 func WithTeamOfferBuilder(
-	builder teamorchestration.TrustedOfferBuilder,
+	builder teamorchestration.TrustedOfferSource,
 ) RuntimeCompositionOption {
 	return func(options *runtimeCompositionOptions) error {
 		if options == nil || builder == nil {
@@ -290,11 +290,25 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		if repositoryErr != nil {
 			return RuntimeComposition{}, errors.New("Team Plan repository is unavailable")
 		}
+		orchestrationOptions := make(
+			[]teamorchestration.ServiceOption,
+			0,
+			1,
+		)
+		if options.teamOffers != nil {
+			orchestrationOptions = append(
+				orchestrationOptions,
+				teamorchestration.WithTrustedOfferVerifier(
+					options.teamOffers,
+				),
+			)
+		}
 		teamOrchestrator, repositoryErr = teamorchestration.NewService(
 			options.teamPlans,
 			options.teamPolicies,
 			teamRepository,
 			time.Now,
+			orchestrationOptions...,
 		)
 		if repositoryErr != nil {
 			return RuntimeComposition{}, errors.New("Team Plan orchestrator is unavailable")

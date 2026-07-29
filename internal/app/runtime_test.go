@@ -237,15 +237,7 @@ func TestWithTeamOfferBuilderAndLoadedProfilesRejectMissingDependencies(
 			err,
 		)
 	}
-	builder := teamorchestration.TrustedOfferBuilderFunc(
-		func(
-			context.Context,
-			string,
-			string,
-		) (*teamplan.OfferSnapshot, error) {
-			return nil, teamorchestration.ErrInvalid
-		},
-	)
+	builder := runtimeTeamOfferSourceFixture{}
 	if err := WithTeamOfferBuilder(builder)(&options); err != nil ||
 		options.teamOffers == nil {
 		t.Fatalf(
@@ -283,3 +275,23 @@ func TestWithTeamOfferBuilderAndLoadedProfilesRejectMissingDependencies(
 		)
 	}
 }
+
+type runtimeTeamOfferSourceFixture struct{}
+
+func (runtimeTeamOfferSourceFixture) BuildForConnection(
+	context.Context,
+	string,
+	string,
+) (*teamplan.OfferSnapshot, error) {
+	return nil, teamorchestration.ErrInvalid
+}
+
+func (runtimeTeamOfferSourceFixture) VerifyCurrentOffer(
+	context.Context,
+	string,
+	*teamplan.OfferSnapshot,
+) error {
+	return nil
+}
+
+var _ teamorchestration.TrustedOfferSource = runtimeTeamOfferSourceFixture{}

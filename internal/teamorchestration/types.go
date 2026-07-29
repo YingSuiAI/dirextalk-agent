@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	ErrInvalid      = errors.New("invalid Team orchestration request")
-	ErrFactMismatch = errors.New("Team orchestration fact mismatch")
-	ErrNotReady     = errors.New("Team Plan is not ready for this operation")
+	ErrInvalid                      = errors.New("invalid Team orchestration request")
+	ErrFactMismatch                 = errors.New("Team orchestration fact mismatch")
+	ErrNotReady                     = errors.New("Team Plan is not ready for this operation")
+	ErrOfferVerificationUnavailable = errors.New("trusted Team offer verification is unavailable")
 )
 
 type PlanStatus string
@@ -205,6 +206,19 @@ type TrustedOfferBuilder interface {
 		string,
 		string,
 	) (*teamplan.OfferSnapshot, error)
+}
+
+type TrustedOfferVerifier interface {
+	VerifyCurrentOffer(
+		context.Context,
+		string,
+		*teamplan.OfferSnapshot,
+	) error
+}
+
+type TrustedOfferSource interface {
+	TrustedOfferBuilder
+	TrustedOfferVerifier
 }
 
 type TrustedOfferBuilderFunc func(

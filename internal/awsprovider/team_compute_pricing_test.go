@@ -69,7 +69,7 @@ func TestTeamComputePricingProviderBuildsReadOnlyEvidence(t *testing.T) {
 	if evidence.ProviderScope != scope ||
 		evidence.Region != "us-east-1" ||
 		evidence.Currency != "USD" ||
-		len(evidence.Sources) != 2 ||
+		len(evidence.Sources) != 3 ||
 		len(evidence.Offers) != 2 {
 		t.Fatalf("evidence = %#v", evidence)
 	}
@@ -99,8 +99,9 @@ func TestTeamComputePricingProviderBuildsReadOnlyEvidence(t *testing.T) {
 			t.Fatalf("source receipt = %#v", source)
 		}
 	}
-	if evidence.Sources[0].Kind != teamplan.OfferSourceComputePricing ||
-		evidence.Sources[1].Kind != teamplan.OfferSourceComputeCapacity {
+	if evidence.Sources[0].Kind != teamplan.OfferSourceComputeConfig ||
+		evidence.Sources[1].Kind != teamplan.OfferSourceComputePricing ||
+		evidence.Sources[2].Kind != teamplan.OfferSourceComputeCapacity {
 		t.Fatalf("source kinds = %#v", evidence.Sources)
 	}
 	if ec2Client.offeringCalls != 2 ||

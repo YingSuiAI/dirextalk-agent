@@ -62,6 +62,78 @@ func TestTeamComputeCatalogNormalizesAndCopiesConfiguration(t *testing.T) {
 	}
 }
 
+func TestTeamComputeCatalogConfigurationBindingTracksMeaningfulDrift(
+	t *testing.T,
+) {
+	t.Parallel()
+	leftDocument := validTeamComputeCatalogDocument()
+	leftDocument.Regions[0].AvailabilityZones = []string{
+		"us-east-1b",
+		"us-east-1a",
+	}
+	leftDocument.Regions[0].Shapes = append(
+		leftDocument.Regions[0].Shapes,
+		TeamComputeShape{
+			InstanceType: "c7g.large",
+			Architecture: recipe.ArchitectureARM64,
+			DiskGiB:      32,
+		},
+	)
+	rightDocument := validTeamComputeCatalogDocument()
+	rightDocument.Regions[0].Shapes = []TeamComputeShape{
+		leftDocument.Regions[0].Shapes[1],
+		leftDocument.Regions[0].Shapes[0],
+	}
+	left, err := NewTeamComputeCatalog(leftDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := NewTeamComputeCatalog(rightDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftSourceID, leftDigest, err := left.ConfigurationBinding("us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightSourceID, rightDigest, err := right.ConfigurationBinding("us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leftSourceID != rightSourceID || leftDigest != rightDigest {
+		t.Fatalf(
+			"equivalent configuration binding differs: %q/%q %q/%q",
+			leftSourceID,
+			leftDigest,
+			rightSourceID,
+			rightDigest,
+		)
+	}
+
+	changedDocument := rightDocument
+	changedDocument.Regions[0].AvailabilityZones = append(
+		changedDocument.Regions[0].AvailabilityZones,
+		"us-east-1c",
+	)
+	changed, err := NewTeamComputeCatalog(changedDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedSourceID, changedDigest, err :=
+		changed.ConfigurationBinding("us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedSourceID != leftSourceID || changedDigest == leftDigest {
+		t.Fatalf(
+			"meaningful drift binding = %q/%q, want source %q and new digest",
+			changedSourceID,
+			changedDigest,
+			leftSourceID,
+		)
+	}
+}
+
 func TestTeamComputeCatalogRejectsUntrustedConfiguration(t *testing.T) {
 	t.Parallel()
 	tests := map[string]func(*TeamComputeCatalogDocument){

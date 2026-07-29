@@ -60,6 +60,17 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 				}
 			}
 		},
+		"missing compute configuration": func(document *OfferSnapshotDocument) {
+			for index, source := range document.Sources {
+				if source.Kind == OfferSourceComputeConfig {
+					document.Sources = append(
+						document.Sources[:index],
+						document.Sources[index+1:]...,
+					)
+					break
+				}
+			}
+		},
 		"compute region drift": func(document *OfferSnapshotDocument) {
 			document.ComputeOffers[0].Region = "us-east-1"
 		},

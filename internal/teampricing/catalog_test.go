@@ -282,6 +282,12 @@ func validComputeEvidence(now time.Time) ComputeEvidence {
 				Digest:     "sha256:" + strings.Repeat("4", 64),
 				CapturedAt: now.Add(-2 * time.Minute),
 			},
+			{
+				Kind:       teamplan.OfferSourceComputeConfig,
+				SourceID:   "agent-team-compute-catalog:us-east-1:v1",
+				Digest:     "sha256:" + strings.Repeat("5", 64),
+				CapturedAt: now,
+			},
 		},
 		Offers: []teamplan.ComputeOffer{
 			{

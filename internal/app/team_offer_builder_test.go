@@ -9,6 +9,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
+	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
@@ -31,12 +32,14 @@ func TestAWSTeamOfferBuilderDerivesCloudIdentityFromConnection(t *testing.T) {
 		port: teamComputeOfferPortFixture{},
 	}
 	snapshots := &teamSnapshotAssemblerFixture{}
+	policy := &teamOfferPolicyFixture{}
 	builder, err := newAWSTeamOfferBuilder(
 		connections,
 		configs,
 		catalog,
 		ports,
 		snapshots,
+		policy,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +73,7 @@ func TestAWSTeamOfferBuilderDerivesCloudIdentityFromConnection(t *testing.T) {
 		snapshots.calls != 1 ||
 		snapshots.scope != wantScope ||
 		snapshots.region != connection.Region ||
+		policy.calls != 1 ||
 		snapshot.ProviderScope() != wantScope {
 		t.Fatalf(
 			"connection=%#v config=%#v ports=%#v snapshots=%#v snapshot=%#v",
@@ -78,6 +82,18 @@ func TestAWSTeamOfferBuilderDerivesCloudIdentityFromConnection(t *testing.T) {
 			ports,
 			snapshots,
 			snapshot.Document(),
+		)
+	}
+	if err := builder.VerifyCurrentOffer(
+		context.Background(),
+		connection.OwnerID,
+		snapshot,
+	); err != nil || policy.calls != 2 || connections.calls != 2 {
+		t.Fatalf(
+			"VerifyCurrentOffer() policy=%d connections=%d error=%v",
+			policy.calls,
+			connections.calls,
+			err,
 		)
 	}
 }
@@ -118,6 +134,7 @@ func TestAWSTeamOfferBuilderRejectsConnectionFactSubstitution(t *testing.T) {
 				teamOfferComputeCatalogFixture(t),
 				&teamComputePortFactoryFixture{},
 				&teamSnapshotAssemblerFixture{},
+				&teamOfferPolicyFixture{},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -156,6 +173,7 @@ func TestAWSTeamOfferBuilderRejectsSnapshotScopeSubstitution(t *testing.T) {
 			port: teamComputeOfferPortFixture{},
 		},
 		assembler,
+		&teamOfferPolicyFixture{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +184,102 @@ func TestAWSTeamOfferBuilderRejectsSnapshotScopeSubstitution(t *testing.T) {
 		connection.ConnectionID,
 	); !errors.Is(err, teamorchestration.ErrFactMismatch) {
 		t.Fatalf("substituted Snapshot error=%v", err)
+	}
+}
+
+func TestTrustedTeamOfferPolicyRejectsCatalogAndCredentialDrift(
+	t *testing.T,
+) {
+	t.Parallel()
+	profiles, err := modelapi.NewProfileCatalog([]modelapi.Profile{{
+		ProfileID:       "model-balanced",
+		Provider:        modelapi.ProviderOpenAICompatible,
+		Model:           "code-model",
+		BaseURL:         "https://api.openai.example/v1",
+		SecretRef:       "mounted:model-balanced",
+		ContextWindow:   128_000,
+		MaxOutputTokens: 32_000,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	models, err := teampricing.NewModelOfferCatalog(
+		teampricing.ModelOfferCatalogDocument{
+			SchemaVersion: teampricing.ModelOfferCatalogSchemaV1,
+			Currency:      "USD",
+			Sources: []teampricing.ModelPriceSource{{
+				SourceID:   "model-pricing-test",
+				Digest:     "sha256:" + strings.Repeat("1", 64),
+				CapturedAt: now.Add(-time.Hour),
+			}},
+			Offers: []teampricing.ModelOfferEntry{{
+				ProfileID:              "model-balanced",
+				Interface:              teamplan.ModelOpenAIResponses,
+				Quality:                teamplan.QualityBalanced,
+				InputMicrosPerMillion:  1_000_000,
+				OutputMicrosPerMillion: 2_000_000,
+				WorkerCredentialRef:    "secret_ref:model/test",
+				Enabled:                true,
+				SourceID:               "model-pricing-test",
+			}},
+		},
+		profiles,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compute := teamOfferComputeCatalogFixture(t)
+	credentials := &teamCredentialReadinessFixture{ready: true}
+	policy := trustedTeamOfferPolicy{
+		models:      models,
+		credentials: credentials,
+		compute:     compute,
+	}
+	connection := teamOfferConnectionFixture()
+	scope := teamplan.ProviderScope{
+		Provider:           teamplan.CloudProviderAWS,
+		ConnectionID:       connection.ConnectionID,
+		ConnectionRevision: uint64(connection.Revision),
+		AccountID:          connection.AccountID,
+	}
+	snapshot, err := teamOfferSnapshotFixture(scope, connection.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.VerifyCurrent(
+		context.Background(),
+		snapshot,
+	); err != nil {
+		t.Fatalf("VerifyCurrent() error=%v", err)
+	}
+
+	credentials.ready = false
+	if err := policy.VerifyCurrent(
+		context.Background(),
+		snapshot,
+	); !errors.Is(err, teamplan.ErrPricingChanged) {
+		t.Fatalf("credential drift error=%v", err)
+	}
+	credentials.ready = true
+
+	changedDocument := teamOfferComputeCatalogDocument()
+	changedDocument.Regions[0].AvailabilityZones = append(
+		changedDocument.Regions[0].AvailabilityZones,
+		"us-east-1c",
+	)
+	changedCompute, err := awsprovider.NewTeamComputeCatalog(
+		changedDocument,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.compute = changedCompute
+	if err := policy.VerifyCurrent(
+		context.Background(),
+		snapshot,
+	); !errors.Is(err, teamplan.ErrPricingChanged) {
+		t.Fatalf("compute catalog drift error=%v", err)
 	}
 }
 
@@ -240,6 +354,21 @@ type teamSnapshotAssemblerFixture struct {
 	compute     teampricing.ComputeOfferPort
 }
 
+type teamOfferPolicyFixture struct {
+	err      error
+	calls    int
+	snapshot *teamplan.OfferSnapshot
+}
+
+func (fixture *teamOfferPolicyFixture) VerifyCurrent(
+	_ context.Context,
+	snapshot *teamplan.OfferSnapshot,
+) error {
+	fixture.calls++
+	fixture.snapshot = snapshot
+	return fixture.err
+}
+
 func (fixture *teamSnapshotAssemblerFixture) Build(
 	_ context.Context,
 	scope teamplan.ProviderScope,
@@ -266,6 +395,18 @@ func (teamComputeOfferPortFixture) ReadComputeOffers(
 	return teampricing.ComputeEvidence{}, nil
 }
 
+type teamCredentialReadinessFixture struct {
+	ready bool
+	err   error
+}
+
+func (fixture *teamCredentialReadinessFixture) Ready(
+	context.Context,
+	string,
+) (bool, error) {
+	return fixture.ready, fixture.err
+}
+
 func teamOfferConnectionFixture() cloudapp.Connection {
 	return cloudapp.Connection{
 		ConnectionID:    uuid.NewString(),
@@ -284,21 +425,7 @@ func teamOfferComputeCatalogFixture(
 ) *awsprovider.TeamComputeCatalog {
 	t.Helper()
 	catalog, err := awsprovider.NewTeamComputeCatalog(
-		awsprovider.TeamComputeCatalogDocument{
-			SchemaVersion: awsprovider.TeamComputeCatalogSchemaV1,
-			Regions: []awsprovider.TeamComputeRegion{{
-				Region: "us-east-1",
-				AvailabilityZones: []string{
-					"us-east-1a",
-					"us-east-1b",
-				},
-				Shapes: []awsprovider.TeamComputeShape{{
-					InstanceType: "m7i.large",
-					Architecture: recipe.ArchitectureAMD64,
-					DiskGiB:      40,
-				}},
-			}},
-		},
+		teamOfferComputeCatalogDocument(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -311,6 +438,17 @@ func teamOfferSnapshotFixture(
 	region string,
 ) (*teamplan.OfferSnapshot, error) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	computeCatalog, err := awsprovider.NewTeamComputeCatalog(
+		teamOfferComputeCatalogDocument(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	computeSourceID, computeDigest, err :=
+		computeCatalog.ConfigurationBinding(region)
+	if err != nil {
+		return nil, err
+	}
 	return teamplan.NewOfferSnapshot(teamplan.OfferSnapshotDocument{
 		SchemaVersion: teamplan.OfferSnapshotSchemaV1,
 		SnapshotID:    uuid.NewString(),
@@ -338,10 +476,16 @@ func teamOfferSnapshotFixture(
 				Digest:     "sha256:" + strings.Repeat("3", 64),
 				CapturedAt: now,
 			},
+			{
+				Kind:       teamplan.OfferSourceComputeConfig,
+				SourceID:   computeSourceID,
+				Digest:     computeDigest,
+				CapturedAt: now,
+			},
 		},
 		ModelOffers: []teamplan.ModelOffer{{
 			ProfileID:              "model-balanced",
-			Provider:               "openai",
+			Provider:               string(modelapi.ProviderOpenAICompatible),
 			Model:                  "code-model",
 			Interface:              teamplan.ModelOpenAIResponses,
 			Quality:                teamplan.QualityBalanced,
@@ -370,8 +514,28 @@ func teamOfferSnapshotFixture(
 	})
 }
 
+func teamOfferComputeCatalogDocument() awsprovider.TeamComputeCatalogDocument {
+	return awsprovider.TeamComputeCatalogDocument{
+		SchemaVersion: awsprovider.TeamComputeCatalogSchemaV1,
+		Regions: []awsprovider.TeamComputeRegion{{
+			Region: "us-east-1",
+			AvailabilityZones: []string{
+				"us-east-1a",
+				"us-east-1b",
+			},
+			Shapes: []awsprovider.TeamComputeShape{{
+				InstanceType: "m7i.large",
+				Architecture: recipe.ArchitectureAMD64,
+				DiskGiB:      40,
+			}},
+		}},
+	}
+}
+
 var _ teamOfferConnectionReader = (*teamOfferConnectionReaderFixture)(nil)
 var _ teamPricingConfigProvider = (*teamPricingConfigFixture)(nil)
 var _ teamComputePortFactory = (*teamComputePortFactoryFixture)(nil)
 var _ teamSnapshotAssembler = (*teamSnapshotAssemblerFixture)(nil)
+var _ teamOfferConfigurationVerifier = (*teamOfferPolicyFixture)(nil)
 var _ teampricing.ComputeOfferPort = teamComputeOfferPortFixture{}
+var _ teampricing.CredentialReadinessPort = (*teamCredentialReadinessFixture)(nil)

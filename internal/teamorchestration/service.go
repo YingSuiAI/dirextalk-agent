@@ -15,7 +15,22 @@ type Service struct {
 	compiler   PlanCompiler
 	policies   PolicyResolver
 	repository Repository
+	offers     TrustedOfferVerifier
 	now        func() time.Time
+}
+
+type ServiceOption func(*Service) error
+
+func WithTrustedOfferVerifier(
+	verifier TrustedOfferVerifier,
+) ServiceOption {
+	return func(service *Service) error {
+		if service == nil || verifier == nil {
+			return ErrInvalid
+		}
+		service.offers = verifier
+		return nil
+	}
 }
 
 func NewService(
@@ -23,6 +38,7 @@ func NewService(
 	policies PolicyResolver,
 	repository Repository,
 	now func() time.Time,
+	optionSet ...ServiceOption,
 ) (*Service, error) {
 	if compiler == nil ||
 		strings.TrimSpace(compiler.CatalogRevision()) == "" ||
@@ -31,12 +47,18 @@ func NewService(
 		now == nil {
 		return nil, ErrInvalid
 	}
-	return &Service{
+	service := &Service{
 		compiler:   compiler,
 		policies:   policies,
 		repository: repository,
 		now:        now,
-	}, nil
+	}
+	for _, option := range optionSet {
+		if option == nil || option(service) != nil {
+			return nil, ErrInvalid
+		}
+	}
+	return service, nil
 }
 
 // prepareFreshPlan is package-private so network transports cannot provide
@@ -348,6 +370,17 @@ func (service *Service) verifyCurrentPlan(
 	}
 	offers, err := offerFact.Snapshot()
 	if err != nil {
+		return PlanFact{}, nil, teamplan.Policy{}, err
+	}
+	if service.offers == nil {
+		return PlanFact{}, nil, teamplan.Policy{},
+			ErrOfferVerificationUnavailable
+	}
+	if err := service.offers.VerifyCurrentOffer(
+		ctx,
+		ownerID,
+		offers,
+	); err != nil {
 		return PlanFact{}, nil, teamplan.Policy{}, err
 	}
 	now, err := service.currentTime()

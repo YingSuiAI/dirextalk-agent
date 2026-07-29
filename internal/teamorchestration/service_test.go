@@ -24,11 +24,13 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		revision: "sha256:" + strings.Repeat("c", 64),
 	}
 	resolver := &orchestrationPolicyResolverFixture{policy: policy}
+	offerVerifier := &orchestrationOfferVerifierFixture{}
 	service, err := NewService(
 		compiler,
 		resolver,
 		repository,
 		func() time.Time { return now },
+		WithTrustedOfferVerifier(offerVerifier),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -250,6 +252,16 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		t.Fatalf("changed Connection verification error=%v", err)
 	}
 	repository.connectionErr = nil
+	offerVerifier.err = teamplan.ErrPricingChanged
+	if _, err := service.VerifyApprovedPlan(
+		context.Background(),
+		request.OwnerID,
+		request.PlanID,
+		1,
+	); !errors.Is(err, teamplan.ErrPricingChanged) {
+		t.Fatalf("changed offer configuration error=%v", err)
+	}
+	offerVerifier.err = nil
 	verified, err := service.VerifyApprovedPlan(
 		context.Background(),
 		request.OwnerID,
@@ -312,6 +324,74 @@ func TestPreparationServiceRejectsOfferForAnotherConnection(t *testing.T) {
 			builder.calls,
 			compiler.compileCalls,
 			repository.prepareCalls,
+		)
+	}
+}
+
+func TestServiceFailsClosedWithoutCurrentOfferVerifier(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	offers := orchestrationOfferFixture(t, now)
+	repository := newOrchestrationRepositoryFixture()
+	service, err := NewService(
+		&orchestrationCompilerFixture{
+			revision: "sha256:" + strings.Repeat("c", 64),
+		},
+		&orchestrationPolicyResolverFixture{
+			policy: orchestrationPolicyFixture(),
+		},
+		repository,
+		func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := NewPreparationService(
+		service,
+		&orchestrationOfferBuilderFixture{offers: offers},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := task.MutationScope{
+		ClientID:     "team-orchestration-test",
+		CredentialID: uuid.NewString(),
+	}
+	request := PreparePlanRequest{
+		IdempotencyKey: uuid.NewString(),
+		OwnerID:        "owner-team",
+		ConnectionID:   offers.ProviderScope().ConnectionID,
+		PlanID:         uuid.NewString(),
+		Revision:       1,
+		GoalDigest:     "sha256:" + strings.Repeat("d", 64),
+		Proposal:       orchestrationProposalFixture(),
+	}
+	if _, err := preparation.PreparePlan(
+		context.Background(),
+		scope,
+		request,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateChallenge(
+		context.Background(),
+		scope,
+		ChallengeRequest{
+			IdempotencyKey:             uuid.NewString(),
+			OwnerID:                    request.OwnerID,
+			PlanID:                     request.PlanID,
+			PlanRevision:               request.Revision,
+			ExpectedPlanRecordRevision: 1,
+			ApprovalID:                 uuid.NewString(),
+			ChallengeID:                uuid.NewString(),
+			SignerKeyID:                "team-device-1",
+		},
+	); !errors.Is(err, ErrOfferVerificationUnavailable) ||
+		repository.challengeCalls != 0 {
+		t.Fatalf(
+			"CreateChallenge() error=%v calls=%d",
+			err,
+			repository.challengeCalls,
 		)
 	}
 }
@@ -530,6 +610,20 @@ type orchestrationOfferBuilderFixture struct {
 	connectionID string
 }
 
+type orchestrationOfferVerifierFixture struct {
+	err   error
+	calls int
+}
+
+func (verifier *orchestrationOfferVerifierFixture) VerifyCurrentOffer(
+	_ context.Context,
+	_ string,
+	_ *teamplan.OfferSnapshot,
+) error {
+	verifier.calls++
+	return verifier.err
+}
+
 func (builder *orchestrationOfferBuilderFixture) BuildForConnection(
 	_ context.Context,
 	ownerID,
@@ -718,6 +812,12 @@ func orchestrationOfferFixture(
 					Digest:     "sha256:" + strings.Repeat("3", 64),
 					CapturedAt: now,
 				},
+				{
+					Kind:       teamplan.OfferSourceComputeConfig,
+					SourceID:   "agent-team-compute-catalog:us-east-1:v1",
+					Digest:     "sha256:" + strings.Repeat("4", 64),
+					CapturedAt: now,
+				},
 			},
 			ModelOffers: []teamplan.ModelOffer{{
 				ProfileID:              "model-balanced",
@@ -863,3 +963,4 @@ var _ PlanCompiler = (*orchestrationCompilerFixture)(nil)
 var _ PolicyResolver = (*orchestrationPolicyResolverFixture)(nil)
 var _ Repository = (*orchestrationRepositoryFixture)(nil)
 var _ TrustedOfferBuilder = (*orchestrationOfferBuilderFixture)(nil)
+var _ TrustedOfferVerifier = (*orchestrationOfferVerifierFixture)(nil)

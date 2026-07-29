@@ -947,18 +947,21 @@ owner 会进入幂等请求摘要并与锁定事实匹配，不能仅凭 Plan UU
   布尔就绪映射，以及 owner-scoped Cloud Connection/AssumeRole 只读报价构建器
   已接入 Agent 启动组合；不完整目录、策略、AWS 或 Worker Control 配置会使
   启动失败。形成 challenge、接受批准和执行交接还会重新核对当前 Agent
-  instance、owner、Connection 状态/revision、账号和 Region。尚未配置生产报价
-  目录，也未执行真实 AWS 报价调用。
+  instance、owner、Connection 状态/revision、账号和 Region。每份 Snapshot
+  还冻结当前模型价格源、模型目录、逻辑凭据就绪状态以及 Region 对应的
+  AZ/实例规格/磁盘白名单摘要；challenge、批准和执行交接前会重新读取当前
+  目录与凭据状态并逐项比对。任何实质漂移返回重新报价，配置顺序变化不会
+  误判；缺少当前报价验证器时批准链路失败关闭。尚未配置生产报价目录，也未
+  执行真实 AWS 报价调用。
 
 正在实现：
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
-- 在暴露 RPC 前，为重启后尚未批准的 Plan 增加当前模型报价目录、算力允许
-  目录和凭据就绪 revision 复核；随后完成整单设备签名的 RPC、Message Server
-  和 App 接入。
+- 多 Worker Plan v3 的去密 DTO、整单设备签名 RPC、Message Server 门面和
+  App 接入。
 - 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
-  物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
+  物化，以及 Cloud Connection 只读报价的真实 AWS 验收。
 
 尚未实现或尚未验收：
 

@@ -61,7 +61,7 @@ func TestSnapshotServiceFreezesTrustedEvidenceAndReadiness(t *testing.T) {
 		!offers[1].CredentialReady {
 		t.Fatalf("model offers = %#v", offers)
 	}
-	if len(snapshot.Document().Sources) != 4 {
+	if len(snapshot.Document().Sources) != 5 {
 		t.Fatalf("source receipts = %#v", snapshot.Document().Sources)
 	}
 }

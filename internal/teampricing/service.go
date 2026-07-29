@@ -186,8 +186,7 @@ func validateComputeEvidence(
 	if !currencyPattern.MatchString(evidence.Currency) ||
 		evidence.ProviderScope != scope ||
 		evidence.Region != region ||
-		len(evidence.Sources) < 2 ||
-		len(evidence.Sources) > 2 ||
+		len(evidence.Sources) != 3 ||
 		len(evidence.Offers) == 0 ||
 		len(evidence.Offers) > 128 {
 		return ErrInvalidSnapshotRequest
@@ -195,8 +194,11 @@ func validateComputeEvidence(
 	sources := append([]teamplan.OfferSourceReceipt(nil), evidence.Sources...)
 	slices.SortFunc(sources, compareSources)
 	if sources[0].Kind != teamplan.OfferSourceComputeCapacity ||
-		sources[1].Kind != teamplan.OfferSourceComputePricing ||
-		sources[0].SourceID == sources[1].SourceID {
+		sources[1].Kind != teamplan.OfferSourceComputeConfig ||
+		sources[2].Kind != teamplan.OfferSourceComputePricing ||
+		sources[0].SourceID == sources[1].SourceID ||
+		sources[0].SourceID == sources[2].SourceID ||
+		sources[1].SourceID == sources[2].SourceID {
 		return ErrInvalidSnapshotRequest
 	}
 	for _, offer := range evidence.Offers {

@@ -23,6 +23,7 @@ const (
 	OfferSourceModelPricing    OfferSourceKind = "model_pricing"
 	OfferSourceComputePricing  OfferSourceKind = "compute_pricing"
 	OfferSourceComputeCapacity OfferSourceKind = "compute_capacity"
+	OfferSourceComputeConfig   OfferSourceKind = "compute_configuration"
 )
 
 var offerSourceIDPattern = regexp.MustCompile(
@@ -313,6 +314,7 @@ func normalizeOfferSnapshot(
 		OfferSourceModelPricing:    false,
 		OfferSourceComputePricing:  false,
 		OfferSourceComputeCapacity: false,
+		OfferSourceComputeConfig:   false,
 	}
 	sourceKeys := make(map[string]struct{}, len(document.Sources))
 	for _, source := range document.Sources {

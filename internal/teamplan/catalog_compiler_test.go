@@ -245,6 +245,12 @@ func validOfferSnapshot(
 				Digest:     "sha256:" + strings.Repeat("6", 64),
 				CapturedAt: request.QuotedAt,
 			},
+			{
+				Kind:       OfferSourceComputeConfig,
+				SourceID:   "agent-team-compute-catalog:ap-southeast-3:v1",
+				Digest:     "sha256:" + strings.Repeat("7", 64),
+				CapturedAt: request.QuotedAt,
+			},
 		},
 		ModelOffers:   request.ModelOffers,
 		ComputeOffers: request.ComputeOffers,

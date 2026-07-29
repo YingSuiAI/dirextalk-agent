@@ -19,6 +19,7 @@ import (
 
 const (
 	teamComputeEvidenceSchemaV1 = "dirextalk.agent.aws-team-compute-evidence/v1"
+	teamComputeConfigSchemaV1   = "dirextalk.agent.aws-team-compute-configuration/v1"
 	maximumTeamComputeShapes    = 32
 )
 
@@ -31,9 +32,9 @@ var (
 // TeamComputeShape is an operator-owned allowlist item. The Agent model cannot
 // provide an instance type, Region, zone, disk size, or purchase option.
 type TeamComputeShape struct {
-	InstanceType string
-	Architecture recipe.Architecture
-	DiskGiB      uint64
+	InstanceType string              `json:"instance_type"`
+	Architecture recipe.Architecture `json:"architecture"`
+	DiskGiB      uint64              `json:"disk_gib"`
 }
 
 // TeamComputePricingProvider combines only AWS read APIs. Its client surface
@@ -44,6 +45,7 @@ type TeamComputePricingProvider struct {
 	region  string
 	zones   []string
 	shapes  []TeamComputeShape
+	config  teamComputeConfigurationBinding
 }
 
 func NewTeamComputePricingProvider(
@@ -63,12 +65,21 @@ func NewTeamComputePricingProvider(
 	if err != nil {
 		return nil, err
 	}
+	binding, err := newTeamComputeConfigurationBinding(
+		normalizedRegion,
+		normalizedZones,
+		normalizedShapes,
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &TeamComputePricingProvider{
 		pricing: pricing,
 		scope:   scope,
 		region:  normalizedRegion,
 		zones:   normalizedZones,
 		shapes:  normalizedShapes,
+		config:  binding,
 	}, nil
 }
 
@@ -298,6 +309,12 @@ func (provider *TeamComputePricingProvider) ReadComputeOffers(
 		Currency:      "USD",
 		Sources: []teamplan.OfferSourceReceipt{
 			{
+				Kind:       teamplan.OfferSourceComputeConfig,
+				SourceID:   provider.config.SourceID,
+				Digest:     provider.config.Digest,
+				CapturedAt: capturedAt,
+			},
+			{
 				Kind:       teamplan.OfferSourceComputePricing,
 				SourceID:   "aws-price-list:" + region + ":team-compute/v1",
 				Digest:     priceDigest,
@@ -311,6 +328,43 @@ func (provider *TeamComputePricingProvider) ReadComputeOffers(
 			},
 		},
 		Offers: offers,
+	}, nil
+}
+
+type teamComputeConfigurationBinding struct {
+	SourceID string
+	Digest   string
+}
+
+type teamComputeConfigurationDocument struct {
+	SchemaVersion     string             `json:"schema_version"`
+	Region            string             `json:"region"`
+	AvailabilityZones []string           `json:"availability_zones"`
+	Shapes            []TeamComputeShape `json:"shapes"`
+}
+
+func newTeamComputeConfigurationBinding(
+	region string,
+	zones []string,
+	shapes []TeamComputeShape,
+) (teamComputeConfigurationBinding, error) {
+	normalizedRegion, normalizedZones, normalizedShapes, err :=
+		normalizeTeamComputeRegion(region, zones, shapes)
+	if err != nil {
+		return teamComputeConfigurationBinding{}, err
+	}
+	digest, err := canonical.Digest(teamComputeConfigurationDocument{
+		SchemaVersion:     teamComputeConfigSchemaV1,
+		Region:            normalizedRegion,
+		AvailabilityZones: normalizedZones,
+		Shapes:            normalizedShapes,
+	})
+	if err != nil {
+		return teamComputeConfigurationBinding{}, err
+	}
+	return teamComputeConfigurationBinding{
+		SourceID: "agent-team-compute-catalog:" + normalizedRegion + ":v1",
+		Digest:   digest,
 	}, nil
 }
 

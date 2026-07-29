@@ -121,6 +121,24 @@ func (catalog *TeamComputeCatalog) Regions() []string {
 	return result
 }
 
+func (catalog *TeamComputeCatalog) ConfigurationBinding(
+	region string,
+) (string, string, error) {
+	zones, shapes, err := catalog.Resolve(region)
+	if err != nil {
+		return "", "", err
+	}
+	binding, err := newTeamComputeConfigurationBinding(
+		region,
+		zones,
+		shapes,
+	)
+	if err != nil {
+		return "", "", err
+	}
+	return binding.SourceID, binding.Digest, nil
+}
+
 func teamComputeShapeStrings(shapes []TeamComputeShape) []string {
 	result := make([]string, 0, len(shapes)*2)
 	for _, shape := range shapes {

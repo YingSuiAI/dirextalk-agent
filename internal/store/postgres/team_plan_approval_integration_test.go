@@ -700,6 +700,12 @@ func teamOfferSnapshotFixture(
 				Digest:     "sha256:" + strings.Repeat("3", 64),
 				CapturedAt: capturedAt,
 			},
+			{
+				Kind:       teamplan.OfferSourceComputeConfig,
+				SourceID:   "agent-team-compute-catalog:us-east-1:v1",
+				Digest:     "sha256:" + strings.Repeat("4", 64),
+				CapturedAt: capturedAt,
+			},
 		},
 		ModelOffers: []teamplan.ModelOffer{{
 			ProfileID:              "model-balanced",
