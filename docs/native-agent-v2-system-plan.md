@@ -404,6 +404,11 @@ Central Agent 可以产生：
 单价、Region、实例可用性或模型凭据就绪状态变化都必须生成新 snapshot 和新
 Plan revision。
 
+同一 AWS Service Quota 可能同时约束多个实例类型，因此容量不能只写成单个
+实例的 `available=true`。Compute Offer 必须绑定容量池、每实例消耗单位和池内
+剩余单位；编队器对同池所有角色统一扣减，容量不足时在展示给用户批准前失败，
+而不是等到 `RunInstances` 才发现超配。
+
 ### 8.2 时长估算
 
 模型提出每个角色的最低、期望和最长执行时间。确定性调度器再加入：
@@ -892,14 +897,19 @@ Plan v3 仍使用确定性 CBOR 和 Ed25519。现有诊断 Worker 的 Plan v1/v2
   可选配置后由 Agent 启动时严格验证，但尚未配置任何生产 Runtime 记录。
 - Team Plan 的确定性 CBOR 摘要、五分钟设备签名 challenge、报价过期和计划
   revision 漂移校验；尚未接入数据库、RPC 和 App。
-- 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层；
-  尚未接入真实模型价格目录和 AWS 只读适配器。
+- 模型定价、算力价格和容量来源回执组成的不可变 Offer Snapshot 领域层。
+- 严格受保护的模型报价目录、凭据布尔就绪端口、报价快照组装服务，以及读取
+  AWS Price List、EC2 规格/可用区、Service Quotas 和 gp3 根卷价格的只读
+  Compute Adapter；不同实例类型共享同一 vCPU quota pool，尚未接入真实
+  Cloud Connection、生产报价目录和长期模型凭据绑定。
 
 正在实现：
 
 - App 审批设备与 Agent 现有信任根的安全交接。
 - demo2 新版 Agent、Message Server 和 App E2E。
 - Plan v3 持久化、可信报价来源和整单设备签名的服务端/App 接入。
+- 生产模型报价文件、逻辑模型凭据到逐 Worker Secrets Manager 版本的安全
+  物化，以及按 Cloud Connection 构造 AWS 只读报价适配器。
 
 尚未实现或尚未验收：
 

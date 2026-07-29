@@ -49,6 +49,12 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 		"compute region drift": func(document *OfferSnapshotDocument) {
 			document.ComputeOffers[0].Region = "us-east-1"
 		},
+		"shared capacity pool drift": func(document *OfferSnapshotDocument) {
+			document.ComputeOffers[1].CapacityPool =
+				document.ComputeOffers[0].CapacityPool
+			document.ComputeOffers[1].AvailableUnits =
+				document.ComputeOffers[0].AvailableUnits + 1
+		},
 		"credential in source": func(document *OfferSnapshotDocument) {
 			document.Sources[0].SourceID =
 				"sk-abcdefghijklmnopqrstuvwxyz"
@@ -66,8 +72,16 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 				if document.Sources[index].Kind == OfferSourceModelPricing {
 					document.Sources[index].CapturedAt =
 						document.CapturedAt.Add(
-							-maximumModelPricingAge - time.Microsecond,
+							-ModelPricingEvidenceValidity - time.Microsecond,
 						)
+				}
+			}
+		},
+		"validity outlives compute evidence": func(document *OfferSnapshotDocument) {
+			for index := range document.Sources {
+				if document.Sources[index].Kind == OfferSourceComputeCapacity {
+					document.Sources[index].CapturedAt =
+						document.CapturedAt.Add(-time.Minute)
 				}
 			}
 		},

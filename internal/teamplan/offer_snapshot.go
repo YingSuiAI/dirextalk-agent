@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	OfferSnapshotSchemaV1  = "dirextalk.agent.team-offer-snapshot/v1"
-	OfferSnapshotValidity  = 15 * time.Minute
-	maximumModelPricingAge = 7 * 24 * time.Hour
-	maximumOfferSources    = 8
+	OfferSnapshotSchemaV1        = "dirextalk.agent.team-offer-snapshot/v1"
+	OfferSnapshotValidity        = 15 * time.Minute
+	ModelPricingEvidenceValidity = 7 * 24 * time.Hour
+	maximumOfferSources          = 8
 )
 
 type OfferSourceKind string
@@ -181,9 +181,10 @@ func normalizeOfferSnapshot(
 		}
 		maximumAge := OfferSnapshotValidity
 		if source.Kind == OfferSourceModelPricing {
-			maximumAge = maximumModelPricingAge
+			maximumAge = ModelPricingEvidenceValidity
 		}
-		if document.CapturedAt.Sub(source.CapturedAt) > maximumAge {
+		if document.CapturedAt.Sub(source.CapturedAt) > maximumAge ||
+			document.ValidUntil.After(source.CapturedAt.Add(maximumAge)) {
 			return OfferSnapshotDocument{}, ErrInvalid
 		}
 		key := string(source.Kind) + "\x00" + source.SourceID
@@ -209,6 +210,7 @@ func normalizeOfferSnapshot(
 		modelIDs[offer.ProfileID] = struct{}{}
 	}
 	computeIDs := make(map[string]struct{}, len(document.ComputeOffers))
+	capacityPools := make(map[string]uint64, len(document.ComputeOffers))
 	for _, offer := range document.ComputeOffers {
 		if validateComputeOffer(offer) != nil ||
 			offer.Region != document.Region {
@@ -218,6 +220,11 @@ func normalizeOfferSnapshot(
 			return OfferSnapshotDocument{}, ErrInvalid
 		}
 		computeIDs[offer.OfferID] = struct{}{}
+		if available, exists := capacityPools[offer.CapacityPool]; exists &&
+			available != offer.AvailableUnits {
+			return OfferSnapshotDocument{}, ErrInvalid
+		}
+		capacityPools[offer.CapacityPool] = offer.AvailableUnits
 	}
 	slices.SortFunc(document.Sources, func(left, right OfferSourceReceipt) int {
 		if left.Kind != right.Kind {

@@ -164,6 +164,9 @@ type ComputeOffer struct {
 	DiskGiB        uint64              `json:"disk_gib"`
 	HourlyMicros   uint64              `json:"hourly_micros"`
 	PurchaseOption string              `json:"purchase_option"`
+	CapacityPool   string              `json:"capacity_pool"`
+	CapacityUnits  uint64              `json:"capacity_units"`
+	AvailableUnits uint64              `json:"available_units"`
 	Available      bool                `json:"available"`
 }
 

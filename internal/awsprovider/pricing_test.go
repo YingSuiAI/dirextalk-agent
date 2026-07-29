@@ -328,6 +328,7 @@ func (f fakePricingFactory) ClientsForRegion(string) PricingReadClients { return
 type fakePricingEC2 struct {
 	now                                         time.Time
 	vcpus                                       map[string]int32
+	memoryMiB                                   map[string]int64
 	offeringCalls, spotCalls, instanceTypeCalls int
 }
 
@@ -358,8 +359,13 @@ func (f *fakePricingEC2) DescribeInstanceTypes(_ context.Context, input *ec2.Des
 	}
 	instance := string(input.InstanceTypes[0])
 	vcpus := f.vcpus[instance]
+	memoryMiB := f.memoryMiB[instance]
+	if memoryMiB == 0 {
+		memoryMiB = int64(vcpus) * 2048
+	}
 	return &ec2.DescribeInstanceTypesOutput{InstanceTypes: []ec2types.InstanceTypeInfo{{
 		InstanceType: input.InstanceTypes[0], VCpuInfo: &ec2types.VCpuInfo{DefaultVCpus: aws.Int32(vcpus)},
+		MemoryInfo:    &ec2types.MemoryInfo{SizeInMiB: aws.Int64(memoryMiB)},
 		ProcessorInfo: &ec2types.ProcessorInfo{SupportedArchitectures: []ec2types.ArchitectureType{ec2types.ArchitectureTypeX8664}},
 	}}}, nil
 }

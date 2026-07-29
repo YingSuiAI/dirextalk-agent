@@ -136,6 +136,7 @@ func (compiler *CatalogCompiler) VerifyPlan(
 	for _, offer := range offers.ComputeOffers() {
 		compute[offer.OfferID] = offer
 	}
+	computeUsage := make(map[string]uint64, len(compute))
 	for _, assignment := range plan.Assignments {
 		model, modelExists := models[assignment.ModelProfileID]
 		machine, computeExists := compute[assignment.ComputeOfferID]
@@ -150,6 +151,10 @@ func (compiler *CatalogCompiler) VerifyPlan(
 			assignment.Resources.VCPU != machine.VCPU ||
 			assignment.Resources.MemoryMiB != machine.MemoryMiB ||
 			assignment.Resources.DiskGiB != machine.DiskGiB {
+			return ErrPricingChanged
+		}
+		computeUsage[machine.CapacityPool] += machine.CapacityUnits
+		if computeUsage[machine.CapacityPool] > machine.AvailableUnits {
 			return ErrPricingChanged
 		}
 	}

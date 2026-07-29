@@ -38,6 +38,9 @@ var (
 	credentialRefPattern = regexp.MustCompile(
 		`^secret_ref:[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`,
 	)
+	capacityPoolPattern = regexp.MustCompile(
+		`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`,
+	)
 )
 
 const (
@@ -102,6 +105,7 @@ func validateCompileRequest(request CompileRequest) error {
 		models[offer.ProfileID] = struct{}{}
 	}
 	compute := make(map[string]struct{}, len(request.ComputeOffers))
+	capacityPools := make(map[string]uint64, len(request.ComputeOffers))
 	for _, offer := range request.ComputeOffers {
 		if err := validateComputeOffer(offer); err != nil {
 			return err
@@ -110,6 +114,11 @@ func validateCompileRequest(request CompileRequest) error {
 			return ErrInvalid
 		}
 		compute[offer.OfferID] = struct{}{}
+		if available, exists := capacityPools[offer.CapacityPool]; exists &&
+			available != offer.AvailableUnits {
+			return ErrInvalid
+		}
+		capacityPools[offer.CapacityPool] = offer.AvailableUnits
 	}
 	return nil
 }
@@ -314,7 +323,12 @@ func validateComputeOffer(value ComputeOffer) error {
 		value.VCPU == 0 || value.MemoryMiB == 0 || value.DiskGiB == 0 ||
 		value.HourlyMicros == 0 ||
 		value.HourlyMicros > absoluteMaxHourlyMicros ||
-		value.PurchaseOption != "on_demand" {
+		value.PurchaseOption != "on_demand" ||
+		!capacityPoolPattern.MatchString(value.CapacityPool) ||
+		security.ContainsLikelySecret(value.CapacityPool) ||
+		value.CapacityUnits == 0 ||
+		value.AvailableUnits < value.CapacityUnits ||
+		value.AvailableUnits > 1_000_000_000 {
 		return ErrInvalid
 	}
 	return nil

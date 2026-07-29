@@ -56,8 +56,17 @@ expires after at most 15 minutes. The Plan and device challenge bind both
 snapshot ID and digest. Pre-approval verification resolves every selected
 model and machine back to that exact snapshot; changed price, capacity,
 credential readiness, source evidence, Region, or validity requires a new
-snapshot and Plan revision. Provider adapters and durable snapshot persistence
-remain pending, so this is not yet a live AWS or model-price quote path.
+snapshot and Plan revision. A strict protected model-offer catalog now resolves
+only immutable server-owned model Profiles and keeps the reusable logical
+Worker credential reference separate from the Central Agent's mounted model
+secret. An injected readiness port can report only a boolean. The read-only AWS
+adapter observes Price List, instance specifications, Availability Zone
+offerings, CloudWatch-backed Service Quotas, and root gp3 pricing; it emits
+content-digested price/capacity receipts and one shared quota pool so different
+instance types cannot double-spend the same account vCPU allowance. These
+adapters are local application components only. No durable snapshot,
+Cloud-Connection factory, reusable model-credential vault binding, RPC, App
+surface, real AWS quote, or production model-price file is wired yet.
 
 `Chat` and `StreamChat` run through the same native Eino ReAct engine. Runtime request and tool-call ledgers are caller-scoped and lease-fenced. The coordinator binds the effective memory mode before execution, with disabled persistence remaining sticky after lease recovery; stateless requests never create a conversation row. Every model round is bounded by the catalog profile's context window and preserves the system policy, newest user input, and complete tool-call/result groups. The final conversation update and versioned response snapshot commit atomically, so an exact retry or process restart returns the original response without re-running the model or tools. Structured Task/Plan references survive tool replay and response replay, but streaming exposes them only in the final `Done` after commit. Raw reasoning, tool arguments, and raw tool results are not part of the public stream.
 

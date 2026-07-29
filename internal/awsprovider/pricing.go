@@ -245,11 +245,27 @@ func readOffering(ctx context.Context, client PricingEC2ReadAPI, query cloudquot
 }
 
 func readInstanceVCPU(ctx context.Context, client PricingEC2ReadAPI, instanceType string, architecture recipe.Architecture) (uint64, error) {
+	spec, err := readInstanceSpec(ctx, client, instanceType, architecture)
+	if err != nil {
+		return 0, err
+	}
+	return spec.vcpu, nil
+}
+
+type pricingInstanceSpec struct {
+	vcpu      uint64
+	memoryMiB uint64
+}
+
+func readInstanceSpec(ctx context.Context, client PricingEC2ReadAPI, instanceType string, architecture recipe.Architecture) (pricingInstanceSpec, error) {
 	output, err := client.DescribeInstanceTypes(ctx, &ec2.DescribeInstanceTypesInput{
 		InstanceTypes: []ec2types.InstanceType{ec2types.InstanceType(instanceType)},
 	})
 	if err != nil {
-		return 0, fmt.Errorf("DescribeInstanceTypes: %w", err)
+		return pricingInstanceSpec{}, fmt.Errorf("DescribeInstanceTypes: %w", err)
+	}
+	if output == nil {
+		return pricingInstanceSpec{}, errors.New("DescribeInstanceTypes returned an empty response")
 	}
 	for _, item := range output.InstanceTypes {
 		if string(item.InstanceType) != instanceType || item.VCpuInfo == nil || aws.ToInt32(item.VCpuInfo.DefaultVCpus) <= 0 || item.ProcessorInfo == nil {
@@ -261,12 +277,22 @@ func readInstanceVCPU(ctx context.Context, client PricingEC2ReadAPI, instanceTyp
 		}
 		for _, supported := range item.ProcessorInfo.SupportedArchitectures {
 			if supported == wanted {
-				return uint64(aws.ToInt32(item.VCpuInfo.DefaultVCpus)), nil
+				memoryMiB := int64(0)
+				if item.MemoryInfo != nil {
+					memoryMiB = aws.ToInt64(item.MemoryInfo.SizeInMiB)
+				}
+				if memoryMiB < 0 {
+					return pricingInstanceSpec{}, errors.New("instance type memory is invalid")
+				}
+				return pricingInstanceSpec{
+					vcpu:      uint64(aws.ToInt32(item.VCpuInfo.DefaultVCpus)),
+					memoryMiB: uint64(memoryMiB),
+				}, nil
 			}
 		}
-		return 0, errors.New("instance type does not support the requested architecture")
+		return pricingInstanceSpec{}, errors.New("instance type does not support the requested architecture")
 	}
-	return 0, errors.New("instance type vCPU count is unavailable")
+	return pricingInstanceSpec{}, errors.New("instance type vCPU count is unavailable")
 }
 
 type quotaSnapshot struct {

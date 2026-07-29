@@ -181,6 +181,25 @@ func TestCompileRejectsBudgetOverrunBeforeApproval(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsAggregateComputeCapacityOverrun(t *testing.T) {
+	t.Parallel()
+	request := validCompileRequest()
+	for index := range request.ComputeOffers {
+		request.ComputeOffers[index].Available = false
+		request.ComputeOffers[index].AvailableUnits = 16
+	}
+	request.ComputeOffers[0].Available = true
+	request.ComputeOffers[0].VCPU = 8
+	request.ComputeOffers[0].MemoryMiB = 16 * 1024
+	request.ComputeOffers[0].DiskGiB = 200
+	request.ComputeOffers[0].CapacityUnits = 8
+	request.ComputeOffers[0].AvailableUnits = 16
+
+	if _, err := Compile(request); !errors.Is(err, ErrNoCompute) {
+		t.Fatalf("Compile() error = %v, want ErrNoCompute", err)
+	}
+}
+
 func TestCompileRejectsSecretShapedProposal(t *testing.T) {
 	t.Parallel()
 	request := validCompileRequest()
@@ -453,6 +472,8 @@ func validCompileRequest() CompileRequest {
 				Architecture: recipe.ArchitectureAMD64,
 				VCPU:         2, MemoryMiB: 4096, DiskGiB: 40,
 				HourlyMicros: 100_000, PurchaseOption: "on_demand", Available: true,
+				CapacityPool:  "aws:ec2:standard",
+				CapacityUnits: 2, AvailableUnits: 64,
 			},
 			{
 				OfferID: "10000000-0000-4000-8000-000000000002",
@@ -460,6 +481,8 @@ func validCompileRequest() CompileRequest {
 				Architecture: recipe.ArchitectureAMD64,
 				VCPU:         4, MemoryMiB: 8192, DiskGiB: 80,
 				HourlyMicros: 200_000, PurchaseOption: "on_demand", Available: true,
+				CapacityPool:  "aws:ec2:standard",
+				CapacityUnits: 4, AvailableUnits: 64,
 			},
 			{
 				OfferID: "10000000-0000-4000-8000-000000000003",
@@ -467,6 +490,8 @@ func validCompileRequest() CompileRequest {
 				Architecture: recipe.ArchitectureARM64,
 				VCPU:         2, MemoryMiB: 4096, DiskGiB: 40,
 				HourlyMicros: 80_000, PurchaseOption: "on_demand", Available: true,
+				CapacityPool:  "aws:ec2:standard",
+				CapacityUnits: 2, AvailableUnits: 64,
 			},
 		},
 		Policy: Policy{

@@ -24,11 +24,30 @@ func Compile(request CompileRequest) (Plan, error) {
 	proposal := canonicalProposal(request.Proposal)
 	assignments := make([]WorkerAssignment, 0, len(proposal.Roles))
 	roleCosts := make([]RoleCostEstimate, 0, len(proposal.Roles))
+	remainingCompute := make(map[string]uint64, len(request.ComputeOffers))
+	for _, offer := range request.ComputeOffers {
+		remainingCompute[offer.CapacityPool] = offer.AvailableUnits
+	}
 	for _, role := range proposal.Roles {
-		selected, err := selectAssignment(request, role)
+		selected, err := selectAssignment(request, role, remainingCompute)
 		if err != nil {
 			return Plan{}, fmt.Errorf("%w: role %s", err, role.RoleID)
 		}
+		selectedOffer, exists := computeOfferByID(
+			request.ComputeOffers,
+			selected.assignment.ComputeOfferID,
+		)
+		if !exists ||
+			remainingCompute[selectedOffer.CapacityPool] <
+				selectedOffer.CapacityUnits {
+			return Plan{}, fmt.Errorf(
+				"%w: role %s",
+				ErrNoCompute,
+				role.RoleID,
+			)
+		}
+		remainingCompute[selectedOffer.CapacityPool] -=
+			selectedOffer.CapacityUnits
 		assignments = append(assignments, selected.assignment)
 		roleCosts = append(roleCosts, selected.cost)
 	}
@@ -72,7 +91,11 @@ func Compile(request CompileRequest) (Plan, error) {
 	return plan, nil
 }
 
-func selectAssignment(request CompileRequest, role RoleProposal) (assignmentCandidate, error) {
+func selectAssignment(
+	request CompileRequest,
+	role RoleProposal,
+	remainingCompute map[string]uint64,
+) (assignmentCandidate, error) {
 	allowed := make(map[RuntimeFamily]struct{}, len(request.Policy.AllowedRuntimeFamilies))
 	for _, family := range request.Policy.AllowedRuntimeFamilies {
 		allowed[family] = struct{}{}
@@ -109,6 +132,7 @@ func selectAssignment(request CompileRequest, role RoleProposal) (assignmentCand
 			request.Region,
 			request.ComputeOffers,
 			request.Policy,
+			remainingCompute,
 		)
 		if !computeFound {
 			continue
@@ -223,6 +247,7 @@ func selectCompute(
 	region string,
 	offers []ComputeOffer,
 	policy Policy,
+	remaining map[string]uint64,
 ) (ComputeOffer, bool) {
 	requiredVCPU := max(release.Recommended.VCPU, role.MinimumResources.VCPU)
 	requiredMemory := max(release.Recommended.MemoryMiB, role.MinimumResources.MemoryMiB)
@@ -235,7 +260,9 @@ func selectCompute(
 	var best ComputeOffer
 	found := false
 	for _, offer := range offers {
-		if !offer.Available || offer.Region != region ||
+		if !offer.Available ||
+			remaining[offer.CapacityPool] < offer.CapacityUnits ||
+			offer.Region != region ||
 			offer.Architecture != release.Recommended.Arch ||
 			offer.PurchaseOption != "on_demand" ||
 			offer.VCPU < requiredVCPU ||
@@ -256,6 +283,18 @@ func selectCompute(
 		}
 	}
 	return best, found
+}
+
+func computeOfferByID(
+	offers []ComputeOffer,
+	offerID string,
+) (ComputeOffer, bool) {
+	for _, offer := range offers {
+		if offer.OfferID == offerID {
+			return offer, true
+		}
+	}
+	return ComputeOffer{}, false
 }
 
 func runtimeCoversRole(release RuntimeRelease, role RoleProposal) bool {
