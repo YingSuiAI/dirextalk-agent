@@ -590,7 +590,34 @@ Worker 产出的补丁不能自动推送主分支。Git push、PR、部署和生
 - 只有稳定、可追溯、用户允许保留的信息进入长期记忆。
 - 记忆条目带来源、有效期、可见范围、版本和撤销状态。
 
-### 13.3 Worker 上下文包
+### 13.3 Canonical Memory 可信控制合同
+
+本地 `codex/native-agent-v2` 分支已经完成第一版内核：
+
+- migration 46 分开保存不可变 Evidence Ledger、候选事实、一次性设备签名
+  challenge、永久 approval、Canonical Memory 身份、不可变 revision 和事件历史；
+- Worker 对象摘要固定标记为 `untrusted`，不能单独满足任何事实提升条件；
+- Task Result 只作为 `corroborating` 证据，Turn Validator 的通过结果才是
+  `verified` 证据；
+- 所有事实提升都需要现有 owner approval device 对领域隔离的确定性 CBOR
+  payload 签名，签名绑定候选、证据集、目标 Memory、当前 revision 和有效期；
+- 用户偏好和决策可由用户签名直接确认；项目事实必须有验证证据，操作流程必须
+  同时有同一 Task/Turn 的结果与验证，外部事实最长有效 30 天；
+- PostgreSQL trigger 独立读回 Worker/Turn 原始记录，拒绝伪造证据、重复批准、
+  越级 revision、事实改写和历史删除；
+- Canonical statement 限制为 4 KiB，并在进入数据库前拒绝疑似密钥。
+
+当前边界必须保持清楚：
+
+- 服务已进入 Agent runtime composition，但尚未接入 Chat Turn Driver；
+- 尚无 Message Server RPC、Flutter 候选审批/记忆管理界面或设备签名撤销合同；
+- 当前撤销入口仅供 Agent 内部控制层使用，不能直接开放给远端调用方；
+- 现阶段按 owner/namespace 分页读取有效事实，尚未把 active revision 镜像到
+  Knowledge 向量索引，也没有语义检索；
+- Conversation Memory 和 Knowledge `memory` source 仍保持原语义，不能被当成
+  Canonical Memory。
+
+### 13.4 Worker 上下文包
 
 Worker 只拿到最小必要内容：
 
@@ -1011,6 +1038,8 @@ Turn Controller 使用独立 migration 45：
   物化，以及 Cloud Connection 只读报价的真实 AWS 验收。
 - 受信 Turn Driver：把现有 Runtime、Team Plan v3、Task Kernel 和 Response
   Arbiter 串成真正的自动路由与恢复流程。
+- Canonical Memory 的 Chat 候选捕捉、检索快照、Knowledge active-revision
+  镜像、Message Server 门面和 App 设备签名管理。
 
 尚未实现或尚未验收：
 
@@ -1018,8 +1047,8 @@ Turn Controller 使用独立 migration 45：
 - 多 Worker Plan v3 的 App 审批与真实 Worker 执行。
 - 通用高工具调用 Worker Runtime Adapter。
 - 多 Worker 真实 AWS 协作和结果整合。
-- Canonical Memory、Evidence Ledger，以及 Turn Controller 对 Chat/Team/Task
-  的自动驱动和跨任务重规划。
+- Turn Controller 对 Chat/Team/Task 的自动驱动和跨任务重规划。
+- Canonical Memory 的公开撤销签名合同、App 审批/查看/撤销和语义检索。
 - 2C2G 24 小时持续压力验收。
 
 因此，当前系统不能声称已经能从 App 自动选择并调度上述多个 Agent。现阶段的

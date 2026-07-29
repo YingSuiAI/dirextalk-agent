@@ -9,6 +9,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/einoengine"
+	"github.com/YingSuiAI/dirextalk-agent/internal/canonicalmemory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/planning"
@@ -36,6 +37,7 @@ type RuntimeComposition struct {
 	TeamOrchestrator    *teamorchestration.Service
 	TeamPreparation     *teamorchestration.PreparationService
 	Turns               *turncontrol.Service
+	CanonicalMemory     *canonicalmemory.Service
 }
 
 type runtimeCompositionOptions struct {
@@ -288,6 +290,12 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{}, errors.New("Turn Controller is unavailable")
 	}
+	canonicalMemory, err := canonicalmemory.NewDefaultService(
+		namespace.String(), store)
+	if err != nil {
+		return RuntimeComposition{},
+			errors.New("Canonical Memory is unavailable")
+	}
 	var teamOrchestrator *teamorchestration.Service
 	var teamPreparation *teamorchestration.PreparationService
 	if options.teamPolicies != nil {
@@ -334,7 +342,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,
 		CloudGoalDispatcher: cloudGoalDispatcher, TeamPlans: options.teamPlans,
 		TeamOrchestrator: teamOrchestrator, TeamPreparation: teamPreparation,
-		Turns: turns,
+		Turns: turns, CanonicalMemory: canonicalMemory,
 	}, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/canonicalmemory"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -447,6 +448,57 @@ func TestTurnControllerPersistsApprovalAndCompletionGates(t *testing.T) {
 		events[len(events)-1].Authority != turncontrol.AuthorityArbiter ||
 		events[len(events)-1].Artifact.Kind != turncontrol.ArtifactResponse {
 		t.Fatalf("persisted Turn events=%#v", events)
+	}
+	memoryService, err := canonicalmemory.NewDefaultService(
+		instanceID, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resultEvidence, validationEvidence canonicalmemory.Evidence
+	for _, event := range events {
+		var evidenceKind canonicalmemory.EvidenceKind
+		switch event.Artifact.Kind {
+		case turncontrol.ArtifactResult:
+			evidenceKind = canonicalmemory.EvidenceTaskResult
+		case turncontrol.ArtifactValidation:
+			if event.ValidationOutcome != turncontrol.ValidationPassed {
+				continue
+			}
+			evidenceKind = canonicalmemory.EvidenceTurnValidation
+		default:
+			continue
+		}
+		recorded, err := memoryService.RecordTurnEvidence(
+			ctx, scope, canonicalmemory.RecordTurnEvidenceRequest{
+				IdempotencyKey: uuid.NewString(),
+				OwnerID:        ownerID,
+				Namespace:      "project:dirextalk",
+				Kind:           evidenceKind,
+				TurnID:         completed.TurnID,
+				TurnRevision:   event.Revision,
+				Artifact: canonicalmemory.Artifact{
+					Ref:    event.Artifact.Ref,
+					Digest: event.Artifact.Digest,
+				},
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if evidenceKind == canonicalmemory.EvidenceTaskResult {
+			resultEvidence = recorded
+		} else {
+			validationEvidence = recorded
+		}
+	}
+	if resultEvidence.Trust != canonicalmemory.TrustCorroborating ||
+		validationEvidence.Trust != canonicalmemory.TrustVerified ||
+		resultEvidence.TaskID != planRecord.TaskID ||
+		validationEvidence.TaskID != planRecord.TaskID {
+		t.Fatalf(
+			"Turn evidence trust result=%+v validation=%+v",
+			resultEvidence,
+			validationEvidence,
+		)
 	}
 	auditTurn, err := controller.Begin(ctx, scope, turncontrol.BeginRequest{
 		IdempotencyKey: uuid.NewString(),
