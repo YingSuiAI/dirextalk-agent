@@ -6,6 +6,13 @@ The implemented control process contains the Eino runtime, durable Task/Step ker
 
 The first release does not integrate Connect or vNext Run. Matrix, ProductCore, Flutter navigation, and Dirextalk-specific user identity remain integration concerns outside this repository.
 
+The reviewed target for evolving the current exclusive diagnostic Worker into
+a bounded multi-runtime Worker team is documented in
+[`native-agent-v2-system-plan.md`](native-agent-v2-system-plan.md). That
+document defines the target architecture and acceptance boundaries; this file
+and `delivery-tracker.md` continue to describe implemented facts and delivery
+state.
+
 ## P0 durable boundary
 
 The TLS gRPC interceptor authenticates a pairwise credential and replaces raw authorization metadata with a typed caller principal. Mutation handlers derive their idempotency namespace from that principal; owner IDs remain protocol-neutral project data rather than authentication material. Bootstrap reconciliation is idempotent for the same key/client/digest and may atomically narrow that credential's scopes with a revisioned audit event. It cannot add or replace scopes, reactivate a key, change client identity, or change secret material; privilege expansion requires explicit key rotation.
