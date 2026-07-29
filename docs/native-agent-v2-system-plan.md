@@ -274,6 +274,11 @@ Policy Compiler 是确定性代码，不是 LLM。它负责：
 只有 `qualified` 能进入选型。禁止 `latest`、浮动 tag、运行时自更新和任务中
 动态安装未知插件。
 
+整份目录由独立的 Ed25519 发布密钥签名。每条 `qualified` 记录必须绑定 SBOM、
+构建 provenance、漏洞扫描、Runtime Adapter 合同测试和许可证决策的 SHA-256
+摘要。Agent 启动时从受保护的只读挂载读取目录和公钥，验证签名后计算目录
+revision；目录、公钥、资格证据或镜像摘要发生变化时，旧计划不能静默复用。
+
 ### 6.2 统一 Worker Runtime Adapter
 
 每个外部 Agent 都包装成统一协议：
