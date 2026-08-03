@@ -86,7 +86,7 @@ systemctl enable dirextalk-worker-installer-bootstrap.service
 systemctl enable dirextalk-cloud-worker.service
 
 build_step='filesystem_tools'
-for required_filesystem_tool in /usr/bin/lsblk /usr/sbin/blkid /usr/bin/findmnt /usr/sbin/mkfs.ext4 /usr/bin/mount; do
+for required_filesystem_tool in /usr/bin/dd /usr/bin/findmnt /usr/bin/head /usr/bin/lsblk /usr/bin/mount /usr/bin/readlink /usr/sbin/blkid /usr/sbin/mkfs.ext4; do
   test -x "${required_filesystem_tool}" || exit 76
 done
 
@@ -126,6 +126,17 @@ done
 for forbidden_socket in /var/run/docker.sock /run/docker.sock /run/containerd/containerd.sock /run/podman/podman.sock; do
   test ! -e "${forbidden_socket}" || exit 75
 done
+
+# Base AMIs are restored lazily from EBS snapshots. Read every root-device
+# block before shutdown so CreateImage and later builder deletion do not depend
+# on background snapshot initialization making progress after the instance is
+# gone.
+build_step='volume_initialization'
+readonly root_source="$(readlink -f "$(findmnt -n -o SOURCE /)")"
+readonly root_parent="$(lsblk -n -o PKNAME "${root_source}" | head -n 1)"
+test -n "${root_parent}" || exit 78
+test -b "/dev/${root_parent}" || exit 78
+dd if="/dev/${root_parent}" of=/dev/null bs=16M iflag=direct status=none
 
 build_step='cloud_init_cleanup'
 cloud-init clean --logs --machine-id --seed || true

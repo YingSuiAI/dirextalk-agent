@@ -128,6 +128,16 @@ same publication. `verify` repeats the AWS read-back and attestation, while
 `destroy` requires an explicit account/image-digest confirmation and reports
 success only after the AMI and snapshot are absent.
 
+Temporary Builder volume and network-interface absence is confirmed for up to
+30 minutes after termination. This accommodates observed EBS deletion lag
+while still withholding the publication and preserving the exact recovery
+intent if AWS has not yet proved cleanup.
+
+The Builder also reads every block of its snapshot-backed root device before
+shutdown. This completes lazy EBS initialization while the private Builder is
+still alive, so image creation and temporary-volume deletion are not left
+waiting on background initialization after termination.
+
 The resulting publication can be mounted as
 `AGENT_WORKER_AMI_PUBLICATION_FILE`. Agent startup strictly validates it and
 imports it into a durable active-release catalog keyed by Agent instance, AWS

@@ -757,6 +757,7 @@ func assertSafeLaunch(t *testing.T, provider *fakeProvider, request BuildRequest
 		"build_step='filesystem_tools'",
 		"build_step='package_cleanup'",
 		"build_step='forbidden_runtime'",
+		"build_step='volume_initialization'",
 		"build_step='cloud_init_cleanup'",
 		"build_step='complete'",
 		"test \"$(cat \"${worker_digest_file}\")\" = \"${expected_worker_sha256}\"",
@@ -767,10 +768,13 @@ func assertSafeLaunch(t *testing.T, provider *fakeProvider, request BuildRequest
 		"/opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts",
 		"test \"$(\"${pi_binary}\" --version)\" = \"0.83.0\" || exit 77",
 		"systemctl disable dirextalk-worker-installer.socket", "systemctl enable dirextalk-worker-installer-bootstrap.service", "systemctl enable dirextalk-cloud-worker.service",
-		"for required_filesystem_tool in /usr/bin/lsblk /usr/sbin/blkid /usr/bin/findmnt /usr/sbin/mkfs.ext4 /usr/bin/mount",
+		"for required_filesystem_tool in /usr/bin/dd /usr/bin/findmnt /usr/bin/head /usr/bin/lsblk /usr/bin/mount /usr/bin/readlink /usr/sbin/blkid /usr/sbin/mkfs.ext4",
 		"systemd-sysusers", "systemd-tmpfiles", "apt-get purge -y curl",
 		"dnf remove -y curl curl-minimal", "forbidden_runtime in aws node npm docker dockerd containerd",
 		"forbidden_unit in docker.service docker.socket containerd.service", "forbidden_socket in /var/run/docker.sock",
+		"readonly root_source=\"$(readlink -f \"$(findmnt -n -o SOURCE /)\")\"",
+		"readonly root_parent=\"$(lsblk -n -o PKNAME \"${root_source}\" | head -n 1)\"",
+		"dd if=\"/dev/${root_parent}\" of=/dev/null bs=16M iflag=direct status=none",
 		"cloud-init clean", "systemctl poweroff",
 	} {
 		if !strings.Contains(launch.UserData, required) {
@@ -851,6 +855,23 @@ func newTestService(t *testing.T, provider Provider) *Service {
 		t.Fatal(err)
 	}
 	return service
+}
+
+func TestCleanupTimeoutDefaultsAndValidation(t *testing.T) {
+	provider := newFakeProvider(validBuildRequest(t))
+	service, err := New(provider)
+	if err != nil || service.cleanupTimeout != 30*time.Minute {
+		t.Fatalf("default cleanup timeout = %v, %v", service.cleanupTimeout, err)
+	}
+	service, err = New(provider, WithCleanupTimeout(45*time.Minute))
+	if err != nil || service.cleanupTimeout != 45*time.Minute {
+		t.Fatalf("configured cleanup timeout = %v, %v", service.cleanupTimeout, err)
+	}
+	for _, invalid := range []time.Duration{0, time.Minute - time.Nanosecond, 2*time.Hour + time.Nanosecond} {
+		if _, err := New(provider, WithCleanupTimeout(invalid)); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("WithCleanupTimeout(%v) error = %v", invalid, err)
+		}
+	}
 }
 
 func digestOf(value string) string { return digestOfBytes([]byte(value)) }

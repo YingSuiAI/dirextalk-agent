@@ -9,7 +9,7 @@ import (
 
 const (
 	defaultPollInterval    = 10 * time.Second
-	defaultCleanupTimeout  = 10 * time.Minute
+	defaultCleanupTimeout  = 30 * time.Minute
 	defaultDestroyTimeout  = 30 * time.Minute
 	imageReconcileAttempts = 12
 )
@@ -52,6 +52,16 @@ func WithDestroyTimeout(timeout time.Duration) Option {
 			return ErrInvalidInput
 		}
 		service.destroyTimeout = timeout
+		return nil
+	}
+}
+
+func WithCleanupTimeout(timeout time.Duration) Option {
+	return func(service *Service) error {
+		if timeout < time.Minute || timeout > 2*time.Hour {
+			return ErrInvalidInput
+		}
+		service.cleanupTimeout = timeout
 		return nil
 	}
 }

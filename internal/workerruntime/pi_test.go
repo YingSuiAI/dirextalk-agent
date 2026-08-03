@@ -143,6 +143,37 @@ func TestPiExecutorUsesDeepSeekCredentialChannel(t *testing.T) {
 	}
 }
 
+func TestPiExecutorAcceptsDeploymentScopedCredentialSlot(t *testing.T) {
+	t.Parallel()
+	task := validPiTask()
+	task.CredentialSlot = "model-c9bba9b368d4b0dd"
+	task.IncludePatch = false
+	process := &piFakeProcess{events: validPiEventStream()}
+	executor := newTestPiExecutor(
+		t,
+		task,
+		"",
+		[]byte("scoped-test-credential-1234567890"),
+		process,
+		nil,
+	)
+
+	if err := executor.ValidateTask(task); err != nil {
+		t.Fatalf("deployment-scoped credential slot rejected: %v", err)
+	}
+	unqualified := task
+	unqualified.Model = "unqualified-model"
+	if !errors.Is(executor.ValidateTask(unqualified), ErrUnsupported) {
+		t.Fatal("unqualified model was accepted")
+	}
+	if _, err := executor.Execute(t.Context(), task); err != nil {
+		t.Fatalf("execute deployment-scoped credential slot: %v", err)
+	}
+	if process.calls != 1 {
+		t.Fatalf("Pi process calls = %d", process.calls)
+	}
+}
+
 func TestPiExecutorReverifiesReleaseAndExtensionBeforeEveryTask(
 	t *testing.T,
 ) {
@@ -302,7 +333,7 @@ func newTestPiExecutor(
 			Provider:       task.ModelProvider,
 			Model:          task.Model,
 			Interface:      task.ModelInterface,
-			CredentialSlot: task.CredentialSlot,
+			CredentialSlot: "model-token",
 		}},
 		Inputs:     resolver,
 		Processes:  process,

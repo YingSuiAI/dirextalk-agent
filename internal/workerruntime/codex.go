@@ -41,19 +41,21 @@ var codexOutputSchema = []byte(`{
 }`)
 
 type QualifiedModel struct {
-	ProfileID      string         `json:"profile_id"`
-	Provider       string         `json:"provider"`
-	Model          string         `json:"model"`
-	Interface      ModelInterface `json:"interface"`
-	CredentialSlot string         `json:"credential_slot"`
+	ProfileID string         `json:"profile_id"`
+	Provider  string         `json:"provider"`
+	Model     string         `json:"model"`
+	Interface ModelInterface `json:"interface"`
+	// CredentialSlot is the image's canonical slot label. A signed task may
+	// bind the same qualified model to a deployment-scoped slot; that slot is
+	// authorized separately by the immutable task and credential grant.
+	CredentialSlot string `json:"credential_slot"`
 }
 
 func (model QualifiedModel) matches(task TaskV1) bool {
 	return task.ModelProfileID == model.ProfileID &&
 		task.ModelProvider == model.Provider &&
 		task.Model == model.Model &&
-		task.ModelInterface == model.Interface &&
-		task.CredentialSlot == model.CredentialSlot
+		task.ModelInterface == model.Interface
 }
 
 func (model QualifiedModel) validate() error {
