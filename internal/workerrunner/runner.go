@@ -265,6 +265,10 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 	if err != nil {
 		return nil, nil, err
 	}
+	bundle, err = bindInputAssignment(bundle, assignment)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, action := range bundle.Actions {
 		if action.Runtime != nil &&
 			action.Runtime.Task.TaskID != assignment.GetTaskId() {
@@ -404,6 +408,8 @@ func validActionResultStatus(action ActionV1, status string) bool {
 	switch {
 	case action.Runtime != nil:
 		return status == "succeeded"
+	case action.Input != nil:
+		return status == "materialized"
 	case action.Installer != nil:
 		return status == installer.StatusExecuted
 	case action.Noop != nil:
@@ -411,6 +417,115 @@ func validActionResultStatus(action ActionV1, status string) bool {
 	default:
 		return false
 	}
+}
+
+func bindInputAssignment(
+	bundle ExecutionBundleV1,
+	assignment *agentv1.WorkerAssignment,
+) (ExecutionBundleV1, error) {
+	if assignment == nil || assignment.GetAccess() == nil {
+		return ExecutionBundleV1{}, ErrInvalidBundle
+	}
+	bound := bundle
+	bound.Actions = append([]ActionV1(nil), bundle.Actions...)
+	var input *InputMaterializeInputV1
+	inputIndex := -1
+	runtimeIndexes := make([]int, 0, len(bundle.Actions))
+	for index := range bound.Actions {
+		action := bound.Actions[index]
+		if action.Input != nil {
+			if input != nil {
+				return ExecutionBundleV1{}, ErrInvalidBundle
+			}
+			inputCopy := *action.Input
+			workspaceCopy := inputCopy.Workspace
+			if workspaceCopy != nil {
+				cloned := *workspaceCopy
+				inputCopy.Workspace = &cloned
+			}
+			bound.Actions[index].Input = &inputCopy
+			input = &inputCopy
+			inputIndex = index
+			if validateMaterializeDeclaration(
+				input.Context,
+				"application/json",
+				workerruntime.MaxContextBytes,
+			) != nil {
+				return ExecutionBundleV1{}, ErrInvalidBundle
+			}
+			contextRef, objectErr := scopedInputObjectRef(
+				assignment.GetAccess(),
+				input.Context.ObjectName,
+			)
+			if objectErr != nil {
+				return ExecutionBundleV1{}, ErrInvalidBundle
+			}
+			input.Context.S3Ref = contextRef
+			if input.Workspace != nil {
+				if validateMaterializeDeclaration(
+					*input.Workspace,
+					"application/x-tar",
+					MaxWorkspaceArchiveBytes,
+				) != nil {
+					return ExecutionBundleV1{}, ErrInvalidBundle
+				}
+				workspaceRef, objectErr := scopedInputObjectRef(
+					assignment.GetAccess(),
+					input.Workspace.ObjectName,
+				)
+				if objectErr != nil ||
+					input.Workspace.ObjectName ==
+						input.Context.ObjectName {
+					return ExecutionBundleV1{}, ErrInvalidBundle
+				}
+				input.Workspace.S3Ref = workspaceRef
+			}
+		}
+		if action.Runtime != nil {
+			runtimeIndexes = append(runtimeIndexes, index)
+		}
+	}
+	if input == nil {
+		return bound, nil
+	}
+	if len(runtimeIndexes) == 0 {
+		return ExecutionBundleV1{}, ErrInvalidBundle
+	}
+	for _, index := range runtimeIndexes {
+		task := bundle.Actions[index].Runtime.Task
+		if inputIndex >= index ||
+			input.Context.SHA256 != task.ContextDigest {
+			return ExecutionBundleV1{}, ErrInvalidBundle
+		}
+		if task.WorkspaceMode == workerruntime.WorkspaceNone {
+			if input.Workspace != nil {
+				return ExecutionBundleV1{}, ErrInvalidBundle
+			}
+		} else if input.Workspace == nil ||
+			input.Workspace.SHA256 != task.WorkspaceDigest {
+			return ExecutionBundleV1{}, ErrInvalidBundle
+		}
+	}
+	return bound, nil
+}
+
+func scopedInputObjectRef(
+	access *agentv1.WorkerAccessScope,
+	name string,
+) (string, error) {
+	if access == nil || access.GetArtifactBucket() == "" ||
+		!workerObjectNamePattern.MatchString(name) ||
+		strings.Contains(name, "..") {
+		return "", ErrInvalidBundle
+	}
+	prefix := access.GetArtifactPrefix()
+	if prefix == "" || strings.HasPrefix(prefix, "/") ||
+		!strings.HasSuffix(prefix, "/") ||
+		strings.Contains(prefix, "..") {
+		return "", ErrInvalidBundle
+	}
+	return "s3://" + access.GetArtifactBucket() + "/" +
+		prefix + name, nil
 }
 
 func resultExpectationFromAssignment(

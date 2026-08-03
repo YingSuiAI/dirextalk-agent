@@ -41,7 +41,7 @@ func TestSnapshotServiceFreezesTrustedEvidenceAndReadiness(t *testing.T) {
 	if snapshot.SnapshotID() != "10000000-0000-4000-8000-000000000099" ||
 		snapshot.ProviderScope() != scope ||
 		snapshot.Currency() != "USD" ||
-		!snapshot.ValidUntil().Equal(now.Add(10*time.Minute)) {
+		!snapshot.ValidUntil().Equal(now.Add(24*time.Hour)) {
 		t.Fatalf("snapshot header = %#v", snapshot.Document())
 	}
 	if len(credentials.calls) != 1 ||
@@ -63,6 +63,53 @@ func TestSnapshotServiceFreezesTrustedEvidenceAndReadiness(t *testing.T) {
 	}
 	if len(snapshot.Document().Sources) != 5 {
 		t.Fatalf("source receipts = %#v", snapshot.Document().Sources)
+	}
+}
+
+func TestSnapshotServiceCapturesSnapshotAfterProviderEvidence(t *testing.T) {
+	t.Parallel()
+	startedAt := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	evidenceAt := startedAt.Add(2 * time.Second)
+	completedAt := evidenceAt.Add(time.Second)
+	models, err := NewModelOfferCatalog(validCatalogDocument(), profileCatalog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRead := false
+	compute := &fakeComputePort{
+		evidence: validComputeEvidence(evidenceAt),
+		onRead: func() {
+			providerRead = true
+		},
+	}
+	service, err := newSnapshotService(
+		models,
+		&fakeCredentialReadiness{},
+		compute,
+		func() time.Time {
+			if providerRead {
+				return completedAt
+			}
+			return startedAt
+		},
+		func() (string, error) {
+			return "10000000-0000-4000-8000-000000000099", nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := service.Build(
+		context.Background(),
+		validPricingProviderScope(),
+		"us-east-1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.CapturedAt().Equal(completedAt) {
+		t.Fatalf("CapturedAt = %v, want %v", snapshot.CapturedAt(), completedAt)
 	}
 }
 

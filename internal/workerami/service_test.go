@@ -165,6 +165,72 @@ func TestBuildV2PersistsReachabilityBeforeLaunchAndCleansItAfterBuilder(t *testi
 	}
 }
 
+func TestBuildPersistsCleanupEvidenceBeforeExternalBuilderTermination(t *testing.T) {
+	request := validBuildRequest(t)
+	request.NetworkMode = NetworkModeS3GatewayV2
+	request.FoundationStackName = "dtx-agent-abc-foundation"
+	request.FoundationStackID = "arn:aws:cloudformation:us-west-2:123456789012:stack/dtx-agent-abc-foundation/11111111-2222-4333-8444-555555555555"
+	request.FoundationVPCID = "vpc-0123456789abcdef0"
+	request.FoundationRouteTableID = "rtb-0123456789abcdef0"
+	request.S3PrefixListID = "pl-0123456789abcdef0"
+	request.RecordBuilderReachabilityEvidence = func(BuilderReachabilityEvidenceV2) error { return nil }
+	var recorded BuilderCleanupEvidenceV1
+	var provider *fakeProvider
+	request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
+		recorded = evidence
+		if provider != nil {
+			provider.calls = append(provider.calls, "record-builder-cleanup")
+		}
+		return nil
+	}
+	provider = newFakeProvider(request)
+	provider.supportReachability = true
+	provider.terminateBuilderOnFirstObserve = true
+
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if !errors.Is(err, ErrBuildFailed) || errors.Is(err, ErrCleanupFailed) || manifest != (ImageManifestV1{}) {
+		t.Fatalf("Build(external termination) = %#v, %v", manifest, err)
+	}
+	if recorded.Validate() != nil || provider.terminateCalls != 0 {
+		t.Fatalf("cleanup evidence was not durable before termination: evidence=%#v calls=%#v", recorded, provider.calls)
+	}
+	recordIndex := callIndex(provider.calls, "record-builder-cleanup")
+	observeIndex := callIndex(provider.calls, "observe-builder")
+	if recordIndex < 0 || observeIndex <= recordIndex {
+		t.Fatalf("builder topology was not recorded before polling: %#v", provider.calls)
+	}
+	if provider.reachabilityPresent || provider.artifactFound || provider.builderVolumeFound || provider.builderNetworkFound {
+		t.Fatalf("external termination left temporary resources: %#v calls=%#v", provider, provider.calls)
+	}
+}
+
+func TestBuildWaitsForCompleteProviderTopologyBeforePersistingCleanupEvidence(t *testing.T) {
+	request := validBuildRequest(t)
+	var recorded BuilderCleanupEvidenceV1
+	var provider *fakeProvider
+	request.RecordBuilderCleanupEvidence = func(evidence BuilderCleanupEvidenceV1) error {
+		recorded = evidence
+		if provider != nil {
+			provider.calls = append(provider.calls, "record-builder-cleanup")
+		}
+		return nil
+	}
+	provider = newFakeProvider(request)
+	provider.omitRootVolumeFromLaunchResponse = true
+
+	manifest, err := newTestService(t, provider).Build(context.Background(), request)
+	if err != nil || manifest.ImageID == "" || recorded.Validate() != nil {
+		t.Fatalf("Build(delayed topology) = %#v, %v evidence=%#v", manifest, err, recorded)
+	}
+	launchIndex := callIndex(provider.calls, "launch-builder")
+	observeIndex := callIndex(provider.calls, "observe-builder")
+	recordIndex := callIndex(provider.calls, "record-builder-cleanup")
+	terminateIndex := callIndex(provider.calls, "terminate-builder")
+	if launchIndex < 0 || observeIndex <= launchIndex || recordIndex <= observeIndex || terminateIndex <= recordIndex {
+		t.Fatalf("provider topology was not reconciled before cleanup: %#v", provider.calls)
+	}
+}
+
 func TestVerifyBuilderReachabilityAttemptCleanupAcceptsTokenOnlyEvidence(t *testing.T) {
 	request := validBuildRequest(t)
 	request.NetworkMode = NetworkModeS3GatewayV2
@@ -681,7 +747,25 @@ func assertSafeLaunch(t *testing.T, provider *fakeProvider, request BuildRequest
 	for _, required := range []string{
 		"sha256sum --check --strict", "--numeric-owner --same-owner --same-permissions",
 		"readonly expected_worker_sha256='" + strings.TrimPrefix(request.RootFS.Manifest.BinaryDigest, "sha256:") + "'",
+		"trap report_builder_failure EXIT",
+		"dirextalk_worker_ami_builder_step=%s status=%s",
+		"build_step='archive_integrity'",
+		"build_step='runtime_executables'",
+		"build_step='runtime_assets'",
+		"build_step='runtime_version'",
+		"build_step='systemd_install'",
+		"build_step='filesystem_tools'",
+		"build_step='package_cleanup'",
+		"build_step='forbidden_runtime'",
+		"build_step='cloud_init_cleanup'",
+		"build_step='complete'",
 		"test \"$(cat \"${worker_digest_file}\")\" = \"${expected_worker_sha256}\"",
+		"for required_runtime_executable in /lib64/ld-linux-x86-64.so.2 /bin/bash /usr/bin/git \"${pi_binary}\"",
+		"/opt/dirextalk-worker/runtimes/pi/bin/package.json",
+		"/opt/dirextalk-worker/runtimes/pi/bin/photon_rs_bg.wasm",
+		"/opt/dirextalk-worker/runtimes/pi/bin/theme/dark.json",
+		"/opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts",
+		"test \"$(\"${pi_binary}\" --version)\" = \"0.83.0\" || exit 77",
 		"systemctl disable dirextalk-worker-installer.socket", "systemctl enable dirextalk-worker-installer-bootstrap.service", "systemctl enable dirextalk-cloud-worker.service",
 		"for required_filesystem_tool in /usr/bin/lsblk /usr/sbin/blkid /usr/bin/findmnt /usr/sbin/mkfs.ext4 /usr/bin/mount",
 		"systemd-sysusers", "systemd-tmpfiles", "apt-get purge -y curl",
@@ -704,6 +788,9 @@ func assertSafeLaunch(t *testing.T, provider *fakeProvider, request BuildRequest
 	}
 	if !strings.Contains(launch.UserData, "X-Amz-Signature=") {
 		t.Fatal("fake presigned URL was not handed to the closed builder boundary")
+	}
+	if count := strings.Count(launch.UserData, "systemctl poweroff"); count != 1 {
+		t.Fatalf("only a successful builder may power off, count = %d", count)
 	}
 	manifestText := strings.Join([]string{provider.image.Name, provider.image.ImageID, provider.snapshot.SnapshotID}, "\n")
 	if strings.Contains(manifestText, "X-Amz-") {
@@ -835,6 +922,8 @@ type fakeProvider struct {
 	reachabilityRecorded                  bool
 	returnTerminatedTombstone             bool
 	returnStoppingTombstoneAfterTerminate bool
+	terminateBuilderOnFirstObserve        bool
+	omitRootVolumeFromLaunchResponse      bool
 }
 
 func newFakeProvider(request BuildRequestV1) *fakeProvider {
@@ -972,6 +1061,11 @@ func (provider *fakeProvider) LaunchBuilder(_ context.Context, launch LaunchBuil
 	if provider.loseLaunchResponse {
 		return BuilderObservationV1{}, errors.New("lost launch response")
 	}
+	if provider.omitRootVolumeFromLaunchResponse {
+		observation := provider.builder
+		observation.RootVolumeID = ""
+		return observation, nil
+	}
 	return provider.builder, nil
 }
 
@@ -982,6 +1076,12 @@ func (provider *fakeProvider) ObserveBuilder(_ context.Context, instanceID strin
 	}
 	if !provider.builderFound || instanceID != provider.builder.InstanceID {
 		return BuilderObservationV1{}, false, nil
+	}
+	if provider.terminateBuilderOnFirstObserve && provider.builder.State == BuilderRunning {
+		provider.builder.State = BuilderTerminated
+		provider.builderVolumeFound = false
+		provider.builderNetworkFound = false
+		return terminatedBuilderTombstone(provider.builder), true, nil
 	}
 	if provider.builder.State == BuilderRunning {
 		provider.builder.State = BuilderStopped

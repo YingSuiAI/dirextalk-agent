@@ -6,6 +6,7 @@ package runtimeapp
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -46,6 +47,10 @@ type Store interface {
 type Executor interface {
 	Chat(context.Context, runtimeapi.ChatRequest) (runtimeapi.ChatResult, error)
 	Stream(context.Context, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) (runtimeapi.ChatResult, error)
+}
+
+type modelDiscoverer interface {
+	ListModels(context.Context, runtimeapi.ModelListRequest) ([]modelapi.Descriptor, error)
 }
 
 type Admission interface {
@@ -111,6 +116,32 @@ func (service *Service) SaveRuntimeConfig(ctx context.Context, scope runtimeapi.
 		return runtimeapi.RuntimeConfig{}, stableDurabilityError(err)
 	}
 	return config, nil
+}
+
+// ListModels is intentionally non-durable: it validates the authenticated
+// mutation scope, consumes one admission slot, and delegates one provider
+// metadata request without creating a runtime request or conversation record.
+func (service *Service) ListModels(ctx context.Context, scope runtimeapi.MutationScope, request runtimeapi.ModelListRequest) ([]modelapi.Descriptor, error) {
+	if service == nil || service.executor == nil {
+		return nil, ErrInvalidDependencies
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, stableDurabilityError(err)
+	}
+	discoverer, ok := service.executor.(modelDiscoverer)
+	if !ok {
+		return nil, ErrInvalidDependencies
+	}
+	releaseCapacity, err := service.acquireCapacity()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseCapacity()
+	models, err := discoverer.ListModels(withMutationScope(ctx, scope), request)
+	if err != nil {
+		return nil, stableExecutionError(err)
+	}
+	return models, nil
 }
 
 func (service *Service) Chat(ctx context.Context, scope runtimeapi.MutationScope, request runtimeapi.ChatRequest) (runtimeapi.ChatResult, error) {
@@ -445,6 +476,17 @@ func stableDurabilityError(err error) error {
 }
 
 func stableExecutionError(err error) error {
+	var providerErr *modelapi.ProviderError
+	if errors.As(err, &providerErr) {
+		slog.Warn(
+			"model provider request failed",
+			"provider", providerErr.Provider,
+			"status_code", providerErr.StatusCode,
+			"provider_code", providerErr.Code,
+			"request_id", providerErr.RequestID,
+			"detail", providerErr.Message,
+		)
+	}
 	return stableKnownError(err, ErrExecutionFailed)
 }
 
@@ -486,8 +528,18 @@ func stableKnownError(err, fallback error) error {
 		return runtimeapi.ErrToolExecutionNotFound
 	case errors.Is(err, modelapi.ErrProviderUnavailable):
 		return modelapi.ErrProviderUnavailable
+	case errors.Is(err, modelapi.ErrProviderCredential):
+		return modelapi.ErrProviderCredential
+	case errors.Is(err, modelapi.ErrProviderRequest):
+		return modelapi.ErrProviderRequest
+	case errors.Is(err, modelapi.ErrProviderRateLimited):
+		return modelapi.ErrProviderRateLimited
 	case errors.Is(err, modelapi.ErrSecretUnavailable):
 		return modelapi.ErrSecretUnavailable
+	case errors.Is(err, modelapi.ErrModelListRejected):
+		return modelapi.ErrModelListRejected
+	case errors.Is(err, modelapi.ErrModelListUnsupported):
+		return modelapi.ErrModelListUnsupported
 	default:
 		return fallback
 	}

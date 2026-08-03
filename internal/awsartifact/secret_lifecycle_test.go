@@ -16,7 +16,14 @@ import (
 func TestDeploymentSecretDestroyRequiresResourceNotFoundReadBack(t *testing.T) {
 	agentID, operation, connection := secretDestroyFixture()
 	client := &destroySecretsFake{describeErr: &smithy.GenericAPIError{Code: "ResourceNotFoundException", Message: "missing"}}
-	if err := destroyDeploymentSecrets(context.Background(), client, agentID, connection, operation); err != nil {
+	if err := destroyDeploymentSecrets(
+		context.Background(),
+		client,
+		agentID,
+		connection,
+		operation.DeploymentID,
+		operation.InstallerSecrets,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if client.deletedARN != operation.InstallerSecrets[0].SecretARN || !client.forceDelete {
@@ -24,7 +31,14 @@ func TestDeploymentSecretDestroyRequiresResourceNotFoundReadBack(t *testing.T) {
 	}
 
 	client = &destroySecretsFake{description: &secretsmanager.DescribeSecretOutput{ARN: aws.String(operation.InstallerSecrets[0].SecretARN)}}
-	if err := destroyDeploymentSecrets(context.Background(), client, agentID, connection, operation); !errors.Is(err, cloudexecution.ErrUnavailable) {
+	if err := destroyDeploymentSecrets(
+		context.Background(),
+		client,
+		agentID,
+		connection,
+		operation.DeploymentID,
+		operation.InstallerSecrets,
+	); !errors.Is(err, cloudexecution.ErrUnavailable) {
 		t.Fatalf("still-existing secret read-back = %v", err)
 	}
 }

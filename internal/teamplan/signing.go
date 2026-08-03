@@ -5,9 +5,14 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 )
 
-const PlanDigestPayloadV1 = "dirextalk.agent.team-plan-digest-payload/v1"
+const (
+	PlanDigestPayloadV1 = "dirextalk.agent.team-plan-digest-payload/v1"
+	PlanDigestPayloadV2 = "dirextalk.agent.team-plan-digest-payload/v2"
+	PlanDigestPayloadV3 = "dirextalk.agent.team-plan-digest-payload/v3"
+)
 
 type durationDigestV1 struct {
 	MinimumSeconds  uint64 `json:"minimum_seconds"`
@@ -16,29 +21,30 @@ type durationDigestV1 struct {
 }
 
 type assignmentDigestV1 struct {
-	RoleID               string           `json:"role_id"`
-	Title                string           `json:"title"`
-	Objective            string           `json:"objective"`
-	WorkClass            WorkClass        `json:"work_class"`
-	RequiredCapabilities []Capability     `json:"required_capabilities"`
-	Workspace            WorkspaceMode    `json:"workspace"`
-	DependsOnRoleIDs     []string         `json:"depends_on_role_ids,omitempty"`
-	RuntimeReleaseID     string           `json:"runtime_release_id"`
-	RuntimeFamily        RuntimeFamily    `json:"runtime_family"`
-	RuntimeVersion       string           `json:"runtime_version"`
-	RuntimeImageDigest   string           `json:"runtime_image_digest"`
-	RuntimeAdapter       RuntimeAdapter   `json:"runtime_adapter"`
-	ModelProfileID       string           `json:"model_profile_id"`
-	ModelProvider        string           `json:"model_provider"`
-	Model                string           `json:"model"`
-	ModelInterface       ModelInterface   `json:"model_interface"`
-	ModelCredentialRef   string           `json:"model_credential_ref"`
-	ComputeOfferID       string           `json:"compute_offer_id"`
-	InstanceType         string           `json:"instance_type"`
-	Resources            ResourceEnvelope `json:"resources"`
-	Duration             durationDigestV1 `json:"duration"`
-	Tokens               TokenEstimate    `json:"tokens"`
-	ColdStartSeconds     uint64           `json:"cold_start_seconds"`
+	RoleID               string                      `json:"role_id"`
+	Title                string                      `json:"title"`
+	Objective            string                      `json:"objective"`
+	WorkClass            WorkClass                   `json:"work_class"`
+	RequiredCapabilities []Capability                `json:"required_capabilities"`
+	Workspace            WorkspaceMode               `json:"workspace"`
+	DependsOnRoleIDs     []string                    `json:"depends_on_role_ids,omitempty"`
+	RuntimeReleaseID     string                      `json:"runtime_release_id"`
+	RuntimeFamily        RuntimeFamily               `json:"runtime_family"`
+	RuntimeVersion       string                      `json:"runtime_version"`
+	RuntimeImageDigest   string                      `json:"runtime_image_digest"`
+	RuntimeAdapter       RuntimeAdapter              `json:"runtime_adapter"`
+	ModelProfileID       string                      `json:"model_profile_id"`
+	ModelProvider        string                      `json:"model_provider"`
+	Model                string                      `json:"model"`
+	ModelInterface       ModelInterface              `json:"model_interface"`
+	ModelCredentialRef   string                      `json:"model_credential_ref"`
+	ComputeOfferID       string                      `json:"compute_offer_id"`
+	InstanceType         string                      `json:"instance_type"`
+	Resources            ResourceEnvelope            `json:"resources"`
+	Duration             durationDigestV1            `json:"duration"`
+	Tokens               TokenEstimate               `json:"tokens"`
+	ColdStartSeconds     uint64                      `json:"cold_start_seconds"`
+	Marketplace          *WorkerMarketplaceBindingV1 `json:"marketplace,omitempty"`
 }
 
 type scheduleDigestV1 struct {
@@ -55,6 +61,8 @@ type planDigestDocumentV1 struct {
 	Revision              uint64               `json:"revision"`
 	OwnerID               string               `json:"owner_id"`
 	GoalDigest            string               `json:"goal_digest"`
+	InputSnapshot         *taskinput.BindingV1 `json:"input_snapshot,omitempty"`
+	TaskInput             *taskinput.BindingV2 `json:"task_input,omitempty"`
 	ProviderScope         ProviderScope        `json:"provider_scope"`
 	Region                string               `json:"region"`
 	CatalogRevision       string               `json:"catalog_revision"`
@@ -104,6 +112,11 @@ func (plan Plan) digestDocument() (planDigestDocumentV1, error) {
 	}
 	assignments := make([]assignmentDigestV1, 0, len(plan.Assignments))
 	for _, assignment := range plan.Assignments {
+		var marketplace *WorkerMarketplaceBindingV1
+		if assignment.Marketplace != nil {
+			value := assignment.Marketplace.Clone()
+			marketplace = &value
+		}
 		assignments = append(assignments, assignmentDigestV1{
 			RoleID: assignment.RoleID, Title: assignment.Title,
 			Objective: assignment.Objective, WorkClass: assignment.WorkClass,
@@ -129,6 +142,7 @@ func (plan Plan) digestDocument() (planDigestDocumentV1, error) {
 			Duration:           durationDigest(assignment.Duration),
 			Tokens:             assignment.Tokens,
 			ColdStartSeconds:   seconds(assignment.ColdStart),
+			Marketplace:        marketplace,
 		})
 	}
 	cost := plan.Cost
@@ -137,12 +151,27 @@ func (plan Plan) digestDocument() (planDigestDocumentV1, error) {
 	cost.Exclusions = append([]string(nil), cost.Exclusions...)
 	slices.Sort(cost.Assumptions)
 	slices.Sort(cost.Exclusions)
+	payloadSchema := PlanDigestPayloadV1
+	var inputSnapshot *taskinput.BindingV1
+	var taskInput *taskinput.BindingV2
+	switch plan.SchemaVersion {
+	case SchemaV2:
+		payloadSchema = PlanDigestPayloadV2
+		value := plan.InputSnapshot
+		inputSnapshot = &value
+	case SchemaV3:
+		payloadSchema = PlanDigestPayloadV3
+		value := plan.TaskInput
+		taskInput = &value
+	}
 	return planDigestDocumentV1{
-		PayloadSchema: PlanDigestPayloadV1,
+		PayloadSchema: payloadSchema,
 		HashAlgorithm: canonical.Algorithm,
 		SchemaVersion: plan.SchemaVersion,
 		PlanID:        plan.PlanID, Revision: plan.Revision, OwnerID: plan.OwnerID,
 		GoalDigest:            plan.GoalDigest,
+		InputSnapshot:         inputSnapshot,
+		TaskInput:             taskInput,
 		ProviderScope:         plan.ProviderScope,
 		Region:                plan.Region,
 		CatalogRevision:       plan.CatalogRevision,

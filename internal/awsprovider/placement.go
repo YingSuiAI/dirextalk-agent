@@ -22,6 +22,7 @@ const placementPageLimit = 100
 var (
 	ErrPlacementNetworkUnavailable  = errors.New("no eligible AWS placement network is available")
 	ErrPlacementCapacityUnavailable = errors.New("fewer than three eligible AWS instance candidates are available")
+	ErrExactPlacementUnavailable    = errors.New("approved AWS instance placement is unavailable")
 	placementRegionPattern          = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
 )
 
@@ -53,6 +54,68 @@ type PlacementRequestV1 struct {
 
 func (request PlacementRequestV1) Validate() error {
 	return validatePlacementRequest(request)
+}
+
+type ExactPlacementShapeV1 struct {
+	InstanceType string
+	Architecture recipe.Architecture
+	VCPU         uint32
+	MemoryMiB    uint64
+	DiskGiB      uint64
+}
+
+// ExactPlacementRequestV1 checks the immutable instance choices already
+// present in a signed Team Plan. It can discover network and availability
+// facts, but it cannot substitute a different instance type.
+type ExactPlacementRequestV1 struct {
+	Shapes                 []ExactPlacementShapeV1
+	PublicIPv4             bool
+	RuntimeHoursPerMonth   uint32
+	PrivateConnectivity    cloudquote.PrivateConnectivityMode
+	ControlPlaneEndpoint   string
+	PrivateEndpointDataMiB uint64
+}
+
+func (request ExactPlacementRequestV1) Validate() error {
+	if len(request.Shapes) == 0 || len(request.Shapes) > 8 ||
+		!slices.IsSortedFunc(request.Shapes, compareExactPlacementShapes) {
+		return ErrInvalidRequest
+	}
+	for index, shape := range request.Shapes {
+		if !instanceTypePattern.MatchString(shape.InstanceType) ||
+			!recipe.ValidArchitecture(shape.Architecture) ||
+			shape.VCPU == 0 || shape.VCPU > 1024 ||
+			shape.MemoryMiB == 0 ||
+			shape.MemoryMiB > 64*1024*1024 ||
+			shape.DiskGiB < 8 || shape.DiskGiB > 64*1024 ||
+			index > 0 &&
+				compareExactPlacementShapes(
+					request.Shapes[index-1],
+					shape,
+				) == 0 {
+			return ErrInvalidRequest
+		}
+	}
+	first := request.Shapes[0]
+	return validatePlacementRequest(PlacementRequestV1{
+		Requirements: recipe.ResourceRequirementsV1{
+			MinVCPU:      first.VCPU,
+			MinMemoryMiB: first.MemoryMiB,
+			MinDiskGiB:   first.DiskGiB,
+			Architecture: first.Architecture,
+		},
+		PublicIPv4:             request.PublicIPv4,
+		RuntimeHoursPerMonth:   request.RuntimeHoursPerMonth,
+		PrivateConnectivity:    request.PrivateConnectivity,
+		ControlPlaneEndpoint:   request.ControlPlaneEndpoint,
+		PrivateEndpointDataMiB: request.PrivateEndpointDataMiB,
+	})
+}
+
+type ExactPlacementV1 struct {
+	Region           string
+	AvailabilityZone string
+	Network          cloudquote.NetworkScopeV1
 }
 
 type PlacementCandidateV1 struct {
@@ -143,6 +206,108 @@ func (resolver *PlacementResolver) Resolve(ctx context.Context, request Placemen
 		}, nil
 	}
 	return PlacementV1{}, ErrPlacementCapacityUnavailable
+}
+
+func (resolver *PlacementResolver) ResolveExact(
+	ctx context.Context,
+	request ExactPlacementRequestV1,
+) (ExactPlacementV1, error) {
+	if resolver == nil || resolver.client == nil || ctx == nil ||
+		request.Validate() != nil {
+		return ExactPlacementV1{}, ErrInvalidRequest
+	}
+	first := request.Shapes[0]
+	networkRequest := PlacementRequestV1{
+		Requirements: recipe.ResourceRequirementsV1{
+			MinVCPU:      first.VCPU,
+			MinMemoryMiB: first.MemoryMiB,
+			MinDiskGiB:   first.DiskGiB,
+			Architecture: first.Architecture,
+		},
+		PublicIPv4:             request.PublicIPv4,
+		RuntimeHoursPerMonth:   request.RuntimeHoursPerMonth,
+		PrivateConnectivity:    request.PrivateConnectivity,
+		ControlPlaneEndpoint:   request.ControlPlaneEndpoint,
+		PrivateEndpointDataMiB: request.PrivateEndpointDataMiB,
+	}
+	networks, err := resolver.readNetworks(ctx, networkRequest)
+	if err != nil {
+		return ExactPlacementV1{}, err
+	}
+	if len(networks) == 0 {
+		return ExactPlacementV1{}, ErrPlacementNetworkUnavailable
+	}
+	observed := make(map[string]placementInstance, len(request.Shapes))
+	architectures := make(map[recipe.Architecture]struct{})
+	for _, shape := range request.Shapes {
+		architectures[shape.Architecture] = struct{}{}
+	}
+	for architecture := range architectures {
+		instances, readErr := resolver.readInstanceTypes(
+			ctx,
+			recipe.ResourceRequirementsV1{
+				MinVCPU:      1,
+				MinMemoryMiB: 1,
+				MinDiskGiB:   8,
+				Architecture: architecture,
+			},
+		)
+		if readErr != nil {
+			return ExactPlacementV1{}, readErr
+		}
+		for _, shape := range request.Shapes {
+			if shape.Architecture != architecture {
+				continue
+			}
+			instance, found := instances[shape.InstanceType]
+			if !found ||
+				instance.architecture != shape.Architecture ||
+				instance.vcpu != shape.VCPU ||
+				instance.memoryMiB != shape.MemoryMiB {
+				return ExactPlacementV1{},
+					ErrExactPlacementUnavailable
+			}
+			observed[shape.InstanceType] = instance
+		}
+	}
+	if len(observed) != len(request.Shapes) {
+		return ExactPlacementV1{}, ErrExactPlacementUnavailable
+	}
+	offerings, err := resolver.readOfferings(
+		ctx,
+		networkZones(networks),
+	)
+	if err != nil {
+		return ExactPlacementV1{}, err
+	}
+	for _, network := range networks {
+		allAvailable := true
+		for _, shape := range request.Shapes {
+			if _, available := offerings[network.zone][shape.InstanceType]; !available {
+				allAvailable = false
+				break
+			}
+		}
+		if !allAvailable {
+			continue
+		}
+		return ExactPlacementV1{
+			Region:           resolver.region,
+			AvailabilityZone: network.zone,
+			Network: cloudquote.NetworkScopeV1{
+				VPCID:             network.vpcID,
+				SubnetID:          network.subnetID,
+				SecurityGroupMode: cloudquote.SecurityGroupCreateDedicated,
+				PublicIPv4:        request.PublicIPv4,
+				EntryPoint:        cloudquote.EntryPointNone,
+				RouteTableID:      network.routeTableID,
+				ControlPlaneEndpoint: request.
+					ControlPlaneEndpoint,
+				PrivateConnectivity: request.PrivateConnectivity,
+			},
+		}, nil
+	}
+	return ExactPlacementV1{}, ErrExactPlacementUnavailable
 }
 
 type placementNetwork struct {
@@ -672,6 +837,13 @@ func networkZones(networks []placementNetwork) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func compareExactPlacementShapes(
+	left,
+	right ExactPlacementShapeV1,
+) int {
+	return strings.Compare(left.InstanceType, right.InstanceType)
 }
 
 func validatePlacementRequest(request PlacementRequestV1) error {

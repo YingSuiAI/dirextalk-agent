@@ -50,6 +50,7 @@ type ModelPriceSource struct {
 // capability, pricing, and a deployment-scoped credential reference.
 type ModelOfferEntry struct {
 	ProfileID              string                  `json:"profile_id"`
+	WorkerProvider         string                  `json:"worker_provider"`
 	Interface              teamplan.ModelInterface `json:"interface"`
 	Quality                teamplan.QualityTier    `json:"quality"`
 	Vision                 bool                    `json:"vision"`
@@ -144,9 +145,18 @@ func NewModelOfferCatalog(
 	offers := make([]catalogOffer, 0, len(document.Offers))
 	for _, entry := range document.Offers {
 		entry.ProfileID = strings.ToLower(strings.TrimSpace(entry.ProfileID))
+		entry.WorkerProvider = strings.ToLower(
+			strings.TrimSpace(entry.WorkerProvider),
+		)
 		entry.WorkerCredentialRef = strings.TrimSpace(entry.WorkerCredentialRef)
 		entry.SourceID = strings.TrimSpace(entry.SourceID)
 		if _, exists := seenProfiles[entry.ProfileID]; exists ||
+			!validWorkerProvider(
+				entry.WorkerProvider,
+				entry.Interface,
+				profiles,
+				entry.ProfileID,
+			) ||
 			!credentialRefPattern.MatchString(entry.WorkerCredentialRef) ||
 			security.ContainsLikelySecret(entry.WorkerCredentialRef) ||
 			entry.InputMicrosPerMillion > 10_000_000_000 ||
@@ -173,7 +183,7 @@ func NewModelOfferCatalog(
 		}
 		offer := teamplan.ModelOffer{
 			ProfileID:              profile.ProfileID,
-			Provider:               string(profile.Provider),
+			Provider:               entry.WorkerProvider,
 			Model:                  profile.Model,
 			Interface:              entry.Interface,
 			Quality:                entry.Quality,
@@ -228,6 +238,19 @@ func (catalog *ModelOfferCatalog) Currency() string {
 	return catalog.currency
 }
 
+// Offers returns de-secreted Worker-facing model metadata for release-bundle
+// verification. The mounted source credential reference remains private.
+func (catalog *ModelOfferCatalog) Offers() []teamplan.ModelOffer {
+	if catalog == nil {
+		return nil
+	}
+	result := make([]teamplan.ModelOffer, 0, len(catalog.offers))
+	for _, configured := range catalog.offers {
+		result = append(result, configured.offer)
+	}
+	return result
+}
+
 func (catalog *ModelOfferCatalog) sourceReceipts() []teamplan.OfferSourceReceipt {
 	if catalog == nil {
 		return nil
@@ -254,6 +277,39 @@ func compatibleInterface(
 	case modelapi.ProviderOpenAICompatible:
 		return modelInterface == teamplan.ModelOpenAICompatible ||
 			modelInterface == teamplan.ModelOpenAIResponses
+	default:
+		return false
+	}
+}
+
+func validWorkerProvider(
+	workerProvider string,
+	modelInterface teamplan.ModelInterface,
+	profiles *modelapi.ProfileCatalog,
+	profileID string,
+) bool {
+	if !sourceIDPattern.MatchString(workerProvider) ||
+		strings.ContainsAny(workerProvider, "/:") ||
+		security.ContainsLikelySecret(workerProvider) {
+		return false
+	}
+	profile, err := profiles.ResolveSelection(modelapi.Profile{
+		ProfileID: profileID,
+	})
+	if err != nil {
+		return false
+	}
+	switch profile.Provider {
+	case modelapi.ProviderOpenAICompatible:
+		return workerProvider == "openai" &&
+			(modelInterface == teamplan.ModelOpenAIResponses ||
+				modelInterface == teamplan.ModelOpenAICompatible)
+	case modelapi.ProviderDeepSeek:
+		return workerProvider == "deepseek" &&
+			modelInterface == teamplan.ModelOpenAICompatible
+	case modelapi.ProviderAnthropic:
+		return workerProvider == "anthropic" &&
+			modelInterface == teamplan.ModelAnthropicAPI
 	default:
 		return false
 	}

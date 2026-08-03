@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 )
 
 func TestPackIsDeterministicAndCanonical(t *testing.T) {
@@ -115,6 +118,57 @@ func TestPackRejectsTamperingAndInvalidFilesystemEntries(t *testing.T) {
 			name: "malformed sidecar",
 			edit: func(t *testing.T, root string) {
 				writeFile(t, root, workerSidecarPath, []byte(strings.Repeat("0", 64)))
+			},
+		},
+		{
+			name: "Pi binary changed without installation update",
+			edit: func(t *testing.T, root string) {
+				writeFile(t, root, piBinaryPath, []byte("tampered Pi"))
+			},
+		},
+		{
+			name: "Pi result extension changed without installation update",
+			edit: func(t *testing.T, root string) {
+				writeFile(
+					t,
+					root,
+					piExtensionPath,
+					[]byte("tampered extension"),
+				)
+			},
+		},
+		{
+			name: "Pi runtime environment changed",
+			edit: func(t *testing.T, root string) {
+				writeFile(
+					t,
+					root,
+					runtimeEnvironment,
+					[]byte("DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE=/tmp/runtime.json\n"),
+				)
+			},
+		},
+		{
+			name: "Pi theme is malformed",
+			edit: func(t *testing.T, root string) {
+				writeFile(t, root, piDarkThemePath, []byte("{"))
+			},
+		},
+		{
+			name: "Pi photon runtime is malformed",
+			edit: func(t *testing.T, root string) {
+				writeFile(t, root, piPhotonWASMPath, []byte("not wasm"))
+			},
+		},
+		{
+			name: "Pi package metadata has a different version",
+			edit: func(t *testing.T, root string) {
+				writeFile(
+					t,
+					root,
+					piPackageJSONPath,
+					[]byte(`{"name":"@earendil-works/pi-coding-agent","version":"0.82.0","piConfig":{"configDir":".pi"}}`),
+				)
 			},
 		},
 		{
@@ -251,13 +305,64 @@ func populateRootfs(t *testing.T, root string) {
 	t.Helper()
 	worker := []byte("deterministic-cloud-worker-binary")
 	installer := []byte("deterministic-installer-binary")
+	pi := []byte("deterministic-pi-binary")
+	extension := []byte("export default function register() {}\n")
 	workerSum := sha256.Sum256(worker)
 	installerSum := sha256.Sum256(installer)
+	piSum := sha256.Sum256(pi)
+	extensionSum := sha256.Sum256(extension)
+	installation, err := json.Marshal(workerruntime.InstallationV2{
+		SchemaVersion:          workerruntime.InstallationSchemaV2,
+		CredentialPolicy:       workerruntime.CredentialPolicyV1,
+		ContextRoot:            workerruntime.DefaultContextRoot,
+		WorkspaceRoot:          workerruntime.DefaultWorkspaceRoot,
+		CredentialRoot:         workerruntime.DefaultCredentialRoot,
+		StateRoot:              workerruntime.DefaultStateRoot,
+		GitExecutable:          workerruntime.DefaultGitExecutable,
+		SearchPath:             workerruntime.DefaultRuntimeSearchPath,
+		PatchCollectionEnabled: true,
+		RuntimeRelease: workerruntime.InstalledRelease{
+			ReleaseID:      "511acecc-3e4e-4bc5-890e-89638945c72c",
+			Version:        "0.83.0",
+			ImageDigest:    "sha256:" + strings.Repeat("a", 64),
+			Adapter:        workerruntime.AdapterPiV1,
+			ExecutablePath: workerruntime.DefaultPiExecutable,
+			ExecutableSHA256: "sha256:" +
+				hex.EncodeToString(piSum[:]),
+		},
+		Extensions: []workerruntime.InstalledExtension{{
+			Name:   workerruntime.PiResultExtensionName,
+			Path:   workerruntime.DefaultPiResultExtension,
+			SHA256: "sha256:" + hex.EncodeToString(extensionSum[:]),
+		}},
+		Models: []workerruntime.QualifiedModel{{
+			ProfileID:      "deepseek-v4-pro",
+			Provider:       "deepseek",
+			Model:          "deepseek-v4-pro",
+			Interface:      workerruntime.ModelOpenAICompatible,
+			CredentialSlot: "model-token",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	content := map[string][]byte{
 		workerBinaryPath:     worker,
 		workerSidecarPath:    []byte(hex.EncodeToString(workerSum[:]) + "\n"),
 		installerBinaryPath:  installer,
 		installerSidecarPath: []byte(hex.EncodeToString(installerSum[:]) + "\n"),
+		runtimeInstallPath:   installation,
+		runtimeEnvironment: []byte(
+			"DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE=" +
+				"/etc/dirextalk-worker/runtime-installation.json\n",
+		),
+		piBinaryPath:      pi,
+		piPackageJSONPath: []byte(`{"name":"@earendil-works/pi-coding-agent","version":"0.83.0","piConfig":{"configDir":".pi"}}`),
+		piPhotonWASMPath:  {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00},
+		piExtensionPath:   extension,
+		piDarkThemePath:   []byte(`{"name":"dark"}`),
+		piLightThemePath:  []byte(`{"name":"light"}`),
+		piThemeSchemaPath: []byte(`{"type":"object"}`),
 	}
 	for _, spec := range rootfsEntries {
 		name := filepath.Join(root, filepath.FromSlash(spec.path))

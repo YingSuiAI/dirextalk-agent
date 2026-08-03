@@ -215,6 +215,7 @@ func TestTrustedTeamOfferPolicyRejectsCatalogAndCredentialDrift(
 			}},
 			Offers: []teampricing.ModelOfferEntry{{
 				ProfileID:              "model-balanced",
+				WorkerProvider:         "openai",
 				Interface:              teamplan.ModelOpenAIResponses,
 				Quality:                teamplan.QualityBalanced,
 				InputMicrosPerMillion:  1_000_000,
@@ -485,7 +486,7 @@ func teamOfferSnapshotFixture(
 		},
 		ModelOffers: []teamplan.ModelOffer{{
 			ProfileID:              "model-balanced",
-			Provider:               string(modelapi.ProviderOpenAICompatible),
+			Provider:               "openai",
 			Model:                  "code-model",
 			Interface:              teamplan.ModelOpenAIResponses,
 			Quality:                teamplan.QualityBalanced,

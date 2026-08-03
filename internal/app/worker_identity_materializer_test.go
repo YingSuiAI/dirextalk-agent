@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsartifact"
@@ -89,7 +90,13 @@ func newWorkerIdentityMaterializerFixture(t *testing.T) workerIdentityMaterializ
 	}
 	operation := cloudexecution.Operation{
 		Intent: cloudexecution.Intent{
-			Launch: cloudexecution.LaunchRequest{OwnerID: deployment.OwnerID}, ConnectionID: connectionID, DeploymentID: deploymentID,
+			Launch: cloudexecution.LaunchRequest{
+				OwnerID:    deployment.OwnerID,
+				ApprovalID: uuid.NewString(),
+			},
+			ConnectionID:     connectionID,
+			DeploymentID:     deploymentID,
+			ApprovedPlanHash: "sha256:" + strings.Repeat("1", 64),
 		},
 		State: cloudexecution.StateProvisioning, TaskID: taskID, RecipeBundle: deployment.RecipeBundle, ExecutionBundle: deployment.ExecutionBundle,
 	}

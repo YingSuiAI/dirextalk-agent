@@ -4,8 +4,10 @@ package workerrootfs
 
 import (
 	"archive/tar"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 )
 
 const (
@@ -23,6 +27,15 @@ const (
 	workerSidecarPath    = "usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256"
 	installerBinaryPath  = "usr/local/bin/dirextalk-worker-installer"
 	installerSidecarPath = "usr/local/share/dirextalk-worker/dirextalk-worker-installer.sha256"
+	runtimeInstallPath   = "etc/dirextalk-worker/runtime-installation.json"
+	runtimeEnvironment   = "etc/dirextalk-worker/runtime.env"
+	piBinaryPath         = "opt/dirextalk-worker/runtimes/pi/bin/pi"
+	piPackageJSONPath    = "opt/dirextalk-worker/runtimes/pi/bin/package.json"
+	piPhotonWASMPath     = "opt/dirextalk-worker/runtimes/pi/bin/photon_rs_bg.wasm"
+	piExtensionPath      = "opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts"
+	piDarkThemePath      = "opt/dirextalk-worker/runtimes/pi/bin/theme/dark.json"
+	piLightThemePath     = "opt/dirextalk-worker/runtimes/pi/bin/theme/light.json"
+	piThemeSchemaPath    = "opt/dirextalk-worker/runtimes/pi/bin/theme/theme-schema.json"
 )
 
 // ManifestV1 is safe to print: it contains only content digests and size, never
@@ -57,6 +70,24 @@ var rootfsEntries = []entrySpec{
 	{path: "etc/ssl", kind: directoryEntry, mode: 0o755},
 	{path: "etc/ssl/certs", kind: directoryEntry, mode: 0o755},
 	{path: "etc/ssl/certs/ca-certificates.crt", kind: regularEntry, mode: 0o444, maxBytes: 16 << 20},
+	{path: "etc/dirextalk-worker", kind: directoryEntry, mode: 0o755},
+	{path: runtimeInstallPath, kind: regularEntry, mode: 0o444, maxBytes: workerruntime.MaxInstallationBytes},
+	{path: runtimeEnvironment, kind: regularEntry, mode: 0o444, maxBytes: 4 << 10},
+	{path: "opt", kind: directoryEntry, mode: 0o755},
+	{path: "opt/dirextalk-worker", kind: directoryEntry, mode: 0o755},
+	{path: "opt/dirextalk-worker/runtime-contexts", kind: directoryEntry, mode: 0o755},
+	{path: "opt/dirextalk-worker/runtimes", kind: directoryEntry, mode: 0o755},
+	{path: "opt/dirextalk-worker/runtimes/pi", kind: directoryEntry, mode: 0o755},
+	{path: "opt/dirextalk-worker/runtimes/pi/bin", kind: directoryEntry, mode: 0o755},
+	{path: piBinaryPath, kind: regularEntry, mode: 0o555, maxBytes: 192 << 20},
+	{path: piPackageJSONPath, kind: regularEntry, mode: 0o444, maxBytes: 64 << 10},
+	{path: piPhotonWASMPath, kind: regularEntry, mode: 0o444, maxBytes: 8 << 20},
+	{path: "opt/dirextalk-worker/runtimes/pi/bin/theme", kind: directoryEntry, mode: 0o755},
+	{path: piDarkThemePath, kind: regularEntry, mode: 0o444, maxBytes: 256 << 10},
+	{path: piLightThemePath, kind: regularEntry, mode: 0o444, maxBytes: 256 << 10},
+	{path: piThemeSchemaPath, kind: regularEntry, mode: 0o444, maxBytes: 256 << 10},
+	{path: "opt/dirextalk-worker/runtimes/pi/extensions", kind: directoryEntry, mode: 0o755},
+	{path: piExtensionPath, kind: regularEntry, mode: 0o444, maxBytes: 256 << 10},
 	{path: "usr", kind: directoryEntry, mode: 0o755},
 	{path: "usr/local", kind: directoryEntry, mode: 0o755},
 	{path: "usr/local/bin", kind: directoryEntry, mode: 0o755},
@@ -110,8 +141,9 @@ func VerifyArchive(reader io.Reader, expectedWorkerDigest string) error {
 	expected := append([]entrySpec(nil), rootfsEntries...)
 	sort.Slice(expected, func(i, j int) bool { return expected[i].path < expected[j].path })
 	archive := tar.NewReader(reader)
-	digests := make(map[string]string, 2)
+	digests := make(map[string]string, 3)
 	sidecars := make(map[string]string, 2)
+	runtimeFiles := make(map[string][]byte, 6)
 	epoch := time.Unix(0, 0).UTC()
 	for _, spec := range expected {
 		header, err := archive.Next()
@@ -142,9 +174,18 @@ func VerifyArchive(reader io.Reader, expectedWorkerDigest string) error {
 		var buffer strings.Builder
 		hasher := sha256.New()
 		switch spec.path {
-		case workerBinaryPath, installerBinaryPath:
+		case workerBinaryPath, installerBinaryPath, piBinaryPath:
 			destination = hasher
-		case workerSidecarPath, installerSidecarPath:
+		case workerSidecarPath,
+			installerSidecarPath,
+			runtimeInstallPath,
+			runtimeEnvironment,
+			piPackageJSONPath,
+			piPhotonWASMPath,
+			piExtensionPath,
+			piDarkThemePath,
+			piLightThemePath,
+			piThemeSchemaPath:
 			buffer.Grow(int(header.Size))
 			destination = &buffer
 		}
@@ -153,10 +194,19 @@ func VerifyArchive(reader io.Reader, expectedWorkerDigest string) error {
 			return errors.New("read rootfs archive entry")
 		}
 		switch spec.path {
-		case workerBinaryPath, installerBinaryPath:
+		case workerBinaryPath, installerBinaryPath, piBinaryPath:
 			digests[spec.path] = hex.EncodeToString(hasher.Sum(nil))
 		case workerSidecarPath, installerSidecarPath:
 			sidecars[spec.path] = buffer.String()
+		case runtimeInstallPath,
+			runtimeEnvironment,
+			piPackageJSONPath,
+			piPhotonWASMPath,
+			piExtensionPath,
+			piDarkThemePath,
+			piLightThemePath,
+			piThemeSchemaPath:
+			runtimeFiles[spec.path] = []byte(buffer.String())
 		}
 	}
 	if _, err := archive.Next(); err != io.EOF {
@@ -167,6 +217,12 @@ func VerifyArchive(reader io.Reader, expectedWorkerDigest string) error {
 	if workerHex == "" || installerHex == "" || sidecars[workerSidecarPath] != workerHex+"\n" ||
 		sidecars[installerSidecarPath] != installerHex+"\n" || expectedWorkerDigest != "sha256:"+workerHex {
 		return errors.New("rootfs executable digest binding does not match")
+	}
+	if verifyPiRuntimeBindings(
+		runtimeFiles,
+		digests[piBinaryPath],
+	) != nil {
+		return errors.New("rootfs Pi runtime binding does not match")
 	}
 	return nil
 }
@@ -301,11 +357,93 @@ func snapshotRoot(root string) ([]packedEntry, string, error) {
 	if string(content[installerSidecarPath]) != hex.EncodeToString(installerSum[:])+"\n" {
 		return nil, "", errors.New("installer binary digest sidecar does not match")
 	}
+	piSum := sha256.Sum256(content[piBinaryPath])
+	if verifyPiRuntimeBindings(
+		content,
+		hex.EncodeToString(piSum[:]),
+	) != nil {
+		return nil, "", errors.New("Pi runtime installation does not match")
+	}
 
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].spec.path < entries[j].spec.path
 	})
 	return entries, "sha256:" + workerHex, nil
+}
+
+func verifyPiRuntimeBindings(
+	content map[string][]byte,
+	piExecutableHex string,
+) error {
+	if len(piExecutableHex) != sha256.Size*2 ||
+		string(content[runtimeEnvironment]) !=
+			"DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE="+
+				"/etc/dirextalk-worker/runtime-installation.json\n" {
+		return errors.New("invalid Pi runtime environment")
+	}
+	installation, err := workerruntime.ParseInstallationJSON(
+		content[runtimeInstallPath],
+	)
+	if err != nil ||
+		installation.SchemaVersion != workerruntime.InstallationSchemaV2 ||
+		installation.RuntimeRelease.Adapter != workerruntime.AdapterPiV1 ||
+		installation.RuntimeRelease.ExecutablePath !=
+			workerruntime.DefaultPiExecutable ||
+		installation.RuntimeRelease.ExecutableSHA256 !=
+			"sha256:"+piExecutableHex ||
+		len(installation.Models) != 1 ||
+		installation.Models[0].ProfileID != "deepseek-v4-pro" ||
+		installation.Models[0].Provider != "deepseek" ||
+		installation.Models[0].Model != "deepseek-v4-pro" ||
+		installation.Models[0].Interface !=
+			workerruntime.ModelOpenAICompatible ||
+		installation.Models[0].CredentialSlot != "model-token" {
+		return errors.New("invalid Pi runtime installation")
+	}
+	extension, found := installation.Extension(
+		workerruntime.PiResultExtensionName,
+	)
+	extensionSum := sha256.Sum256(content[piExtensionPath])
+	if !found ||
+		extension.Path != workerruntime.DefaultPiResultExtension ||
+		extension.SHA256 !=
+			"sha256:"+hex.EncodeToString(extensionSum[:]) {
+		return errors.New("invalid Pi runtime extension")
+	}
+	for _, path := range []string{
+		piDarkThemePath,
+		piLightThemePath,
+		piThemeSchemaPath,
+	} {
+		if len(content[path]) == 0 ||
+			!json.Valid(content[path]) ||
+			bytes.Contains(content[path], []byte{0}) {
+			return errors.New("invalid Pi runtime theme")
+		}
+	}
+	photon := content[piPhotonWASMPath]
+	if len(photon) < 8 ||
+		!bytes.Equal(photon[:4], []byte{0x00, 0x61, 0x73, 0x6d}) {
+		return errors.New("invalid Pi photon runtime")
+	}
+	var packageMetadata struct {
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		PIConfig struct {
+			ConfigDirectory string `json:"configDir"`
+		} `json:"piConfig"`
+	}
+	if json.Unmarshal(
+		content[piPackageJSONPath],
+		&packageMetadata,
+	) != nil ||
+		packageMetadata.Name !=
+			"@earendil-works/pi-coding-agent" ||
+		packageMetadata.Version != "0.83.0" ||
+		packageMetadata.PIConfig.ConfigDirectory != ".pi" {
+		return errors.New("invalid Pi package metadata")
+	}
+	return nil
 }
 
 func readRegularFile(name string, initial os.FileInfo, maxBytes int64) ([]byte, error) {

@@ -489,20 +489,28 @@ func ValidateInstallerCapability(deploymentID, taskID string, recipeBundle Bundl
 		}
 		return nil
 	}
-	if len(commandIDs) == 0 || len(commandIDs) > 128 {
-		return fmt.Errorf("%w: installer delivery requires command selectors", ErrInvalid)
+	if len(commandIDs) > 128 {
+		return fmt.Errorf("%w: too many installer command selectors", ErrInvalid)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, delivery.SignedPlan.Plan.ExpiresAt)
 	if err != nil || installer.ValidateDeliveryAt(*delivery, expiresAt.Add(-time.Nanosecond)) != nil {
 		return fmt.Errorf("%w: installer delivery is invalid", ErrInvalid)
+	}
+	plan := delivery.SignedPlan.Plan
+	if len(commandIDs) == 0 &&
+		(len(plan.Commands) != 0 || len(plan.Secrets) == 0) {
+		return fmt.Errorf(
+			"%w: command-free installer delivery must contain only secrets",
+			ErrInvalid,
+		)
 	}
 	binding := delivery.Config.Binding
 	if binding.DeploymentID != strings.TrimSpace(deploymentID) || binding.TaskID != strings.TrimSpace(taskID) ||
 		binding.RecipeDigest != "sha256:"+hex.EncodeToString(recipeBundle.SHA256[:]) {
 		return fmt.Errorf("%w: installer delivery binding does not match deployment", ErrInvalid)
 	}
-	declared := make(map[string]struct{}, len(delivery.SignedPlan.Plan.Commands))
-	for _, command := range delivery.SignedPlan.Plan.Commands {
+	declared := make(map[string]struct{}, len(plan.Commands))
+	for _, command := range plan.Commands {
 		declared[command.CommandID] = struct{}{}
 	}
 	seen := make(map[string]struct{}, len(commandIDs))

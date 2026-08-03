@@ -144,11 +144,14 @@ func run() error {
 		"DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE",
 	)
 	if runtimeInstallation != "" {
-		runtimeAction, err := loadRuntimeExecuteAction(runtimeInstallation)
+		runtimeActions, err := loadRuntimeActions(
+			runtimeInstallation,
+			objects,
+		)
 		if err != nil {
 			return err
 		}
-		handlers = append(handlers, runtimeAction)
+		handlers = append(handlers, runtimeActions...)
 	}
 	registry, err := workerrunner.NewRegistry(handlers...)
 	if err != nil {
@@ -223,20 +226,30 @@ func run() error {
 	return errors.Join(results...)
 }
 
-func loadRuntimeExecuteAction(
+func loadRuntimeActions(
 	installationPath string,
-) (*workerrunner.RuntimeExecuteAction, error) {
+	objects workerrunner.InputObjectStore,
+) ([]workerrunner.ActionHandler, error) {
 	raw, err := installer.ReadRootOwnedFile(
 		installationPath,
 		workerruntime.MaxInstallationBytes,
 	)
 	if err != nil {
-		return nil, errors.New("load root-owned Worker runtime installation")
+		return nil,
+			errors.New("load root-owned Worker runtime installation")
 	}
 	defer clear(raw)
 	installation, err := workerruntime.ParseInstallationJSON(raw)
 	if err != nil {
 		return nil, errors.New("validate Worker runtime installation")
+	}
+	inputAction, err := workerrunner.NewInputMaterializeAction(
+		objects,
+		installation.ContextRoot,
+		installation.WorkspaceRoot,
+	)
+	if err != nil {
+		return nil, errors.New("initialize Worker input materializer")
 	}
 	inputs, err := workerruntime.NewFilesystemResolver(
 		installation.ContextRoot,
@@ -254,21 +267,48 @@ func loadRuntimeExecuteAction(
 	if err != nil {
 		return nil, errors.New("initialize Worker runtime patch collector")
 	}
-	codex, err := workerruntime.NewCodexExecutor(
-		workerruntime.CodexConfig{
-			Release:    installation.CodexRelease,
-			Models:     installation.Models,
-			Inputs:     inputs,
-			Processes:  processes,
-			Patches:    patches,
-			StateRoot:  installation.StateRoot,
-			SearchPath: installation.SearchPath,
-		},
-	)
-	if err != nil {
-		return nil, errors.New("initialize qualified Codex runtime")
+	var runtimeExecutor workerruntime.Executor
+	switch installation.RuntimeRelease.Adapter {
+	case workerruntime.AdapterCodexV1:
+		runtimeExecutor, err = workerruntime.NewCodexExecutor(
+			workerruntime.CodexConfig{
+				Release:    installation.RuntimeRelease,
+				Models:     installation.Models,
+				Inputs:     inputs,
+				Processes:  processes,
+				Patches:    patches,
+				StateRoot:  installation.StateRoot,
+				SearchPath: installation.SearchPath,
+			},
+		)
+	case workerruntime.AdapterPiV1:
+		resultExtension, found := installation.Extension(
+			workerruntime.PiResultExtensionName,
+		)
+		if !found {
+			return nil, errors.New(
+				"qualified Pi result extension is unavailable",
+			)
+		}
+		runtimeExecutor, err = workerruntime.NewPiExecutor(
+			workerruntime.PiConfig{
+				Release:         installation.RuntimeRelease,
+				ResultExtension: resultExtension,
+				Models:          installation.Models,
+				Inputs:          inputs,
+				Processes:       processes,
+				Patches:         patches,
+				StateRoot:       installation.StateRoot,
+				SearchPath:      installation.SearchPath,
+			},
+		)
+	default:
+		return nil, errors.New("qualified Worker runtime is unsupported")
 	}
-	runtimes, err := workerruntime.NewRegistry(codex)
+	if err != nil {
+		return nil, errors.New("initialize qualified Worker runtime")
+	}
+	runtimes, err := workerruntime.NewRegistry(runtimeExecutor)
 	if err != nil {
 		return nil, errors.New("initialize Worker runtime registry")
 	}
@@ -276,7 +316,7 @@ func loadRuntimeExecuteAction(
 	if err != nil {
 		return nil, errors.New("initialize Worker runtime action")
 	}
-	return action, nil
+	return []workerrunner.ActionHandler{inputAction, action}, nil
 }
 
 func newWorkerMaintenanceService(control workermaintenance.Control, root workermaintenance.RootControl) *workermaintenance.Service {

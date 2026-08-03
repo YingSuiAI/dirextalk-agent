@@ -62,6 +62,30 @@ func (service *TaskService) ListTasks(ctx context.Context, request *agentv1.List
 	return response, nil
 }
 
+func (service *TaskService) GetTaskOverview(ctx context.Context, request *agentv1.GetTaskOverviewRequest) (*agentv1.GetTaskOverviewResponse, error) {
+	overview, err := service.store.GetOverview(ctx, request.GetOwnerId(), int(request.GetRecentLimit()))
+	if err != nil {
+		return nil, publicError(err)
+	}
+	response := &agentv1.GetTaskOverviewResponse{
+		TotalCount:   overview.TotalCount,
+		StatusCounts: make([]*agentv1.TaskStatusCount, 0, len(overview.StatusCounts)),
+		RecentTasks:  make([]*agentv1.Task, 0, len(overview.RecentTasks)),
+		AsOf:         timestamppb.New(overview.AsOf),
+	}
+	for _, count := range overview.StatusCounts {
+		response.StatusCounts = append(response.StatusCounts, &agentv1.TaskStatusCount{
+			ExecutionStatus: executionToProto(count.ExecutionStatus),
+			OutcomeStatus:   outcomeToProto(count.OutcomeStatus),
+			Count:           count.Count,
+		})
+	}
+	for _, item := range overview.RecentTasks {
+		response.RecentTasks = append(response.RecentTasks, taskToProto(item))
+	}
+	return response, nil
+}
+
 func (service *TaskService) CancelTask(ctx context.Context, request *agentv1.CancelTaskRequest) (*agentv1.CancelTaskResponse, error) {
 	scope, err := mutationScope(ctx)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamdispatch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
@@ -41,7 +42,7 @@ type workerIdentityProviderFactory interface {
 // accepted as an ownership fact by itself.
 type workerIdentityAuthorizer struct {
 	agentInstanceID string
-	launches        workerIdentityLaunchReader
+	launches        *workerIdentityLaunchResolver
 	connections     workerIdentityConnectionReader
 	resources       workerIdentityResourceReader
 	deployments     workerIdentityDeploymentReader
@@ -55,14 +56,23 @@ func newWorkerIdentityAuthorizer(
 	resources workerIdentityResourceReader,
 	deployments workerIdentityDeploymentReader,
 	providers workerIdentityProviderFactory,
+	teamLaunches ...teamdispatch.WorkerLaunchReader,
 ) (*workerIdentityAuthorizer, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
 	if err != nil || parsed == uuid.Nil || launches == nil || connections == nil || resources == nil || deployments == nil || providers == nil {
 		return nil, cloudapp.ErrInvalid
 	}
+	resolver, err := newWorkerIdentityLaunchResolver(
+		launches,
+		teamLaunches,
+	)
+	if err != nil {
+		return nil, cloudapp.ErrInvalid
+	}
 	return &workerIdentityAuthorizer{
-		agentInstanceID: parsed.String(), launches: launches, connections: connections,
+		agentInstanceID: parsed.String(), connections: connections,
 		resources: resources, deployments: deployments, providers: providers,
+		launches: resolver,
 	}, nil
 }
 
@@ -70,17 +80,16 @@ func (authorizer *workerIdentityAuthorizer) AuthorizeDeployment(ctx context.Cont
 	if authorizer == nil || ctx == nil || claim.AgentInstanceID != authorizer.agentInstanceID || claim.OwnerID == "" || claim.DeploymentID == "" || claim.InstanceID == "" {
 		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
 	}
-	operation, err := authorizer.launches.GetByDeployment(ctx, claim.DeploymentID)
-	if err != nil || operation.DeploymentID != claim.DeploymentID || operation.Launch.OwnerID != claim.OwnerID || operation.ConnectionID == "" || operation.ApprovedPlanHash == "" ||
-		(operation.State != cloudexecution.StateProvisioning && operation.State != cloudexecution.StateActive) {
-		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
-	}
 	deployment, err := authorizer.deployments.Get(ctx, claim.DeploymentID)
-	if err != nil || deployment.DeploymentID != claim.DeploymentID || deployment.OwnerID != claim.OwnerID || deployment.TaskID != operation.TaskID ||
+	if err != nil || deployment.DeploymentID != claim.DeploymentID || deployment.OwnerID != claim.OwnerID ||
 		deployment.State != worker.StatePendingEnrollment || deployment.ProviderInstanceID != "" {
 		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
 	}
-	connection, err := authorizer.connections.LoadConnection(ctx, claim.OwnerID, operation.ConnectionID)
+	launch, err := authorizer.launches.Resolve(ctx, claim.OwnerID, deployment)
+	if err != nil {
+		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
+	}
+	connection, err := authorizer.connections.LoadConnection(ctx, claim.OwnerID, launch.ConnectionID)
 	if err != nil || connection.Status != "active" || connection.OwnerID != claim.OwnerID || connection.AccountID != claim.AccountID || connection.Region != claim.Region {
 		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
 	}
@@ -111,8 +120,8 @@ func (authorizer *workerIdentityAuthorizer) AuthorizeDeployment(ctx context.Cont
 		instance = candidate
 	}
 	if instance == nil || instance.State != resource.StateActive || !instance.ReadBack.Exists || instance.ProviderID != claim.InstanceID || instance.ReadBack.ProviderID != claim.InstanceID ||
-		instance.AgentInstanceID != authorizer.agentInstanceID || instance.OwnerID != claim.OwnerID || instance.DeploymentID != claim.DeploymentID || instance.TaskID != operation.TaskID ||
-		instance.Region != claim.Region || instance.ApprovedPlanHash != operation.ApprovedPlanHash || instance.ApprovalID != operation.Launch.ApprovalID {
+		instance.AgentInstanceID != authorizer.agentInstanceID || instance.OwnerID != claim.OwnerID || instance.DeploymentID != claim.DeploymentID || instance.TaskID != launch.TaskID ||
+		instance.Region != claim.Region || instance.ApprovedPlanHash != launch.ApprovedPlanHash || instance.ApprovalID != launch.ApprovalID {
 		return workeridentity.DeploymentEvidence{}, workeridentity.ErrIdentityRejected
 	}
 

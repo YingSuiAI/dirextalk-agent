@@ -1,5 +1,7 @@
 d /run/dirextalk-installer 0710 root dirextalk-worker -
 d /etc/dirextalk-installer 0700 root root -
-d /etc/dirextalk-service-secrets 0700 root root -
+# Secret names stay unlistable, while the fixed Worker UID can traverse to
+# its approval-bound 0400 credential file.
+d /etc/dirextalk-service-secrets 0711 root root -
 d /usr/local/share/dirextalk-worker/artifacts 0755 root root -
 d /opt/dirextalk/deployments 0755 root root -

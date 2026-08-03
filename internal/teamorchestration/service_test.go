@@ -8,12 +8,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 )
+
+const orchestrationTaskID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 
 func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	t.Parallel()
@@ -26,12 +31,16 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	}
 	resolver := &orchestrationPolicyResolverFixture{policy: policy}
 	offerVerifier := &orchestrationOfferVerifierFixture{}
+	launchBuilder := &orchestrationLaunchAuthorizationBuilderFixture{
+		agentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	}
 	service, err := NewService(
 		compiler,
 		resolver,
 		repository,
 		func() time.Time { return now },
 		WithTrustedOfferVerifier(offerVerifier),
+		WithTrustedLaunchAuthorizationBuilder(launchBuilder),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -48,11 +57,17 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 	request := PreparePlanRequest{
 		IdempotencyKey: uuid.NewString(),
 		OwnerID:        "owner-team",
+		TaskID:         orchestrationTaskID,
 		ConnectionID:   offers.ProviderScope().ConnectionID,
 		PlanID:         uuid.NewString(),
 		Revision:       1,
 		GoalDigest:     "sha256:" + strings.Repeat("d", 64),
-		Proposal:       orchestrationProposalFixture(),
+		TaskInput: orchestrationInputBinding(
+			"owner-team",
+			orchestrationTaskID,
+			"sha256:"+strings.Repeat("d", 64),
+		),
+		Proposal: orchestrationProposalFixture(),
 	}
 	planFact, err := preparation.PreparePlan(
 		context.Background(),
@@ -187,17 +202,51 @@ func TestServiceGatesPlanChallengeApprovalAndExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	if challengeFact.Challenge.PolicyRevision != policyDigest ||
+		challengeFact.Authorization == nil ||
+		launchBuilder.calls != 1 ||
+		launchBuilder.approvalID != challengeRequest.ApprovalID ||
+		repository.challengeFinds != 1 ||
 		repository.challengeCalls != 1 {
-		t.Fatalf("challenge=%#v calls=%d", challengeFact, repository.challengeCalls)
+		t.Fatalf(
+			"challenge=%#v launch=%d/%q finds/calls=%d/%d",
+			challengeFact,
+			launchBuilder.calls,
+			launchBuilder.approvalID,
+			repository.challengeFinds,
+			repository.challengeCalls,
+		)
+	}
+	now = now.Add(30 * time.Second)
+	replayedChallenge, err := service.CreateChallenge(
+		context.Background(),
+		scope,
+		challengeRequest,
+	)
+	if err != nil ||
+		replayedChallenge.Challenge != challengeFact.Challenge ||
+		replayedChallenge.Authorization == nil ||
+		launchBuilder.calls != 1 ||
+		repository.challengeFinds != 2 ||
+		repository.challengeCalls != 1 {
+		t.Fatalf(
+			"replayed challenge=%#v error=%v launch=%d finds/calls=%d/%d",
+			replayedChallenge,
+			err,
+			launchBuilder.calls,
+			repository.challengeFinds,
+			repository.challengeCalls,
+		)
 	}
 	signature := teamapproval.SignatureV1{
-		SchemaVersion: teamapproval.SignatureSchemaV1,
-		ApprovalID:    challengeFact.Challenge.ApprovalID,
-		ChallengeID:   challengeFact.Challenge.ChallengeID,
-		PlanID:        challengeFact.Challenge.PlanID,
-		PlanRevision:  challengeFact.Challenge.PlanRevision,
-		PlanDigest:    challengeFact.Challenge.PlanDigest,
-		SignerKeyID:   challengeFact.Challenge.SignerKeyID,
+		SchemaVersion:             teamapproval.SignatureSchemaV2,
+		ApprovalID:                challengeFact.Challenge.ApprovalID,
+		ChallengeID:               challengeFact.Challenge.ChallengeID,
+		PlanID:                    challengeFact.Challenge.PlanID,
+		PlanRevision:              challengeFact.Challenge.PlanRevision,
+		PlanDigest:                challengeFact.Challenge.PlanDigest,
+		LaunchAuthorizationID:     challengeFact.Challenge.LaunchAuthorizationID,
+		LaunchAuthorizationDigest: challengeFact.Challenge.LaunchAuthorizationDigest,
+		SignerKeyID:               challengeFact.Challenge.SignerKeyID,
 		SignatureBase64URL: strings.Repeat(
 			"A",
 			86,
@@ -374,11 +423,17 @@ func TestPreparationServiceRejectsOfferForAnotherConnection(t *testing.T) {
 		PreparePlanRequest{
 			IdempotencyKey: uuid.NewString(),
 			OwnerID:        "owner-team",
+			TaskID:         orchestrationTaskID,
 			ConnectionID:   uuid.NewString(),
 			PlanID:         uuid.NewString(),
 			Revision:       1,
 			GoalDigest:     "sha256:" + strings.Repeat("d", 64),
-			Proposal:       orchestrationProposalFixture(),
+			TaskInput: orchestrationInputBinding(
+				"owner-team",
+				orchestrationTaskID,
+				"sha256:"+strings.Repeat("d", 64),
+			),
+			Proposal: orchestrationProposalFixture(),
 		},
 	)
 	if !errors.Is(err, ErrFactMismatch) ||
@@ -432,12 +487,17 @@ func TestPreparationServiceRejectsInvalidProposalBeforeOfferRead(
 		PreparePlanRequest{
 			IdempotencyKey: uuid.NewString(),
 			OwnerID:        "owner-team",
-			TaskID:         uuid.NewString(),
+			TaskID:         orchestrationTaskID,
 			ConnectionID:   offers.ProviderScope().ConnectionID,
 			PlanID:         uuid.NewString(),
 			Revision:       1,
 			GoalDigest:     "sha256:" + strings.Repeat("d", 64),
-			Proposal:       proposal,
+			TaskInput: orchestrationInputBinding(
+				"owner-team",
+				orchestrationTaskID,
+				"sha256:"+strings.Repeat("d", 64),
+			),
+			Proposal: proposal,
 		},
 	)
 	if !errors.Is(err, teamplan.ErrInvalid) ||
@@ -463,12 +523,17 @@ func TestPreparationServiceRejectsInvalidIdentityBeforeRepositoryOrOfferRead(
 	base := PreparePlanRequest{
 		IdempotencyKey: uuid.NewString(),
 		OwnerID:        "owner-team",
-		TaskID:         uuid.NewString(),
+		TaskID:         orchestrationTaskID,
 		ConnectionID:   offers.ProviderScope().ConnectionID,
 		PlanID:         uuid.NewString(),
 		Revision:       1,
 		GoalDigest:     "sha256:" + strings.Repeat("d", 64),
-		Proposal:       orchestrationProposalFixture(),
+		TaskInput: orchestrationInputBinding(
+			"owner-team",
+			orchestrationTaskID,
+			"sha256:"+strings.Repeat("d", 64),
+		),
+		Proposal: orchestrationProposalFixture(),
 	}
 	tests := []struct {
 		name   string
@@ -881,11 +946,17 @@ func TestServiceFailsClosedWithoutCurrentOfferVerifier(t *testing.T) {
 	request := PreparePlanRequest{
 		IdempotencyKey: uuid.NewString(),
 		OwnerID:        "owner-team",
+		TaskID:         orchestrationTaskID,
 		ConnectionID:   offers.ProviderScope().ConnectionID,
 		PlanID:         uuid.NewString(),
 		Revision:       1,
 		GoalDigest:     "sha256:" + strings.Repeat("d", 64),
-		Proposal:       orchestrationProposalFixture(),
+		TaskInput: orchestrationInputBinding(
+			"owner-team",
+			orchestrationTaskID,
+			"sha256:"+strings.Repeat("d", 64),
+		),
+		Proposal: orchestrationProposalFixture(),
 	}
 	if _, err := preparation.PreparePlan(
 		context.Background(),
@@ -952,11 +1023,17 @@ func TestPreparePlanRejectsRepositoryFactSubstitution(t *testing.T) {
 		PreparePlanRequest{
 			IdempotencyKey: uuid.NewString(),
 			OwnerID:        "owner-team",
+			TaskID:         orchestrationTaskID,
 			ConnectionID:   offers.ProviderScope().ConnectionID,
 			PlanID:         uuid.NewString(),
 			Revision:       1,
 			GoalDigest:     "sha256:" + strings.Repeat("d", 64),
-			Proposal:       orchestrationProposalFixture(),
+			TaskInput: orchestrationInputBinding(
+				"owner-team",
+				orchestrationTaskID,
+				"sha256:"+strings.Repeat("d", 64),
+			),
+			Proposal: orchestrationProposalFixture(),
 		},
 	)
 	if !errors.Is(err, ErrFactMismatch) {
@@ -1029,6 +1106,7 @@ type orchestrationRepositoryFixture struct {
 	findCalls       int
 	getCalls        int
 	prepareCalls    int
+	challengeFinds  int
 	challengeCalls  int
 	approvalCalls   int
 	approvalFinds   int
@@ -1036,6 +1114,9 @@ type orchestrationRepositoryFixture struct {
 	connectionErr   error
 	tamperPlan      bool
 	approval        ApprovalFact
+	authorization   *teamlaunch.AuthorizationV1
+	challengeKey    string
+	challengeFact   ChallengeFact
 	approvalKey     string
 	approvedPlan    PlanFact
 }
@@ -1135,6 +1216,13 @@ type orchestrationOfferBuilderFixture struct {
 	connectionID string
 }
 
+type orchestrationLaunchAuthorizationBuilderFixture struct {
+	agentInstanceID string
+	err             error
+	calls           int
+	approvalID      string
+}
+
 type orchestrationOfferVerifierFixture struct {
 	err   error
 	calls int
@@ -1158,6 +1246,25 @@ func (builder *orchestrationOfferBuilderFixture) BuildForConnection(
 	builder.ownerID = ownerID
 	builder.connectionID = connectionID
 	return builder.offers, builder.err
+}
+
+func (builder *orchestrationLaunchAuthorizationBuilderFixture) BuildForPlan(
+	_ context.Context,
+	plan teamplan.Plan,
+	approvalID string,
+	issuedAt time.Time,
+) (teamlaunch.AuthorizationV1, error) {
+	builder.calls++
+	builder.approvalID = approvalID
+	if builder.err != nil {
+		return teamlaunch.AuthorizationV1{}, builder.err
+	}
+	return orchestrationLaunchAuthorizationFixture(
+		plan,
+		builder.agentInstanceID,
+		approvalID,
+		issuedAt,
+	)
 }
 
 func (repository *orchestrationRepositoryFixture) GetOffer(
@@ -1187,29 +1294,64 @@ func (repository *orchestrationRepositoryFixture) GetPlan(
 	return repository.plan, nil
 }
 
+func (repository *orchestrationRepositoryFixture) FindChallenge(
+	_ context.Context,
+	_ task.MutationScope,
+	command FindChallengeCommand,
+) (ChallengeFact, bool, error) {
+	repository.challengeFinds++
+	if repository.challengeKey == "" {
+		return ChallengeFact{}, false, nil
+	}
+	challenge := repository.challengeFact.Challenge
+	if command.IdempotencyKey != repository.challengeKey ||
+		command.OwnerID != challenge.OwnerID ||
+		command.PlanID != challenge.PlanID ||
+		command.PlanRevision != challenge.PlanRevision ||
+		command.ExpectedPlanRecordRevision !=
+			repository.plan.RecordRevision ||
+		command.ApprovalID != challenge.ApprovalID ||
+		command.ChallengeID != challenge.ChallengeID ||
+		command.SignerKeyID != challenge.SignerKeyID {
+		return ChallengeFact{}, false, ErrFactMismatch
+	}
+	fact := repository.challengeFact
+	if fact.Authorization != nil {
+		authorization := *fact.Authorization
+		fact.Authorization = &authorization
+	}
+	return fact, true, nil
+}
+
 func (repository *orchestrationRepositoryFixture) PersistChallenge(
 	_ context.Context,
 	_ task.MutationScope,
 	command PersistChallengeCommand,
 ) (ChallengeFact, error) {
 	repository.challengeCalls++
-	challenge, err := teamapproval.NewChallengeV1(
+	authorization := command.Authorization
+	challenge, err := teamapproval.NewChallengeV2(
 		repository.plan.Plan,
-		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		authorization,
+		authorization.AgentInstanceID,
 		command.ApprovalID,
 		command.ChallengeID,
 		command.SignerKeyID,
-		repository.plan.Plan.QuotedAt.Add(time.Minute),
+		authorization.LaunchNotBefore,
 	)
 	if err != nil {
 		return ChallengeFact{}, err
 	}
-	return ChallengeFact{
+	repository.authorization = &authorization
+	repository.challengeKey = command.IdempotencyKey
+	repository.challengeFact = ChallengeFact{
 		Challenge:      challenge,
+		Authorization:  &authorization,
 		RecordRevision: 1,
 		CreatedAt:      challenge.IssuedAt,
 		UpdatedAt:      challenge.IssuedAt,
-	}, nil
+	}
+	return repository.challengeFact, nil
 }
 
 func (repository *orchestrationRepositoryFixture) PersistApproval(
@@ -1219,10 +1361,16 @@ func (repository *orchestrationRepositoryFixture) PersistApproval(
 ) (PlanFact, error) {
 	repository.approvalCalls++
 	repository.approvalKey = command.IdempotencyKey
+	var authorization *teamlaunch.AuthorizationV1
+	if repository.authorization != nil {
+		value := *repository.authorization
+		authorization = &value
+	}
 	repository.approval = ApprovalFact{
-		Signature:  command.Signature,
-		ApprovedAt: repository.plan.Plan.QuotedAt.Add(2 * time.Minute),
-		CreatedAt:  repository.plan.Plan.QuotedAt.Add(2 * time.Minute),
+		Signature:     command.Signature,
+		Authorization: authorization,
+		ApprovedAt:    repository.plan.Plan.QuotedAt.Add(2 * time.Minute),
+		CreatedAt:     repository.plan.Plan.QuotedAt.Add(2 * time.Minute),
 	}
 	repository.plan.Status = PlanApproved
 	repository.plan.RecordRevision++
@@ -1260,6 +1408,179 @@ func (repository *orchestrationRepositoryFixture) GetApprovalForPlan(
 		return ApprovalFact{}, ErrFactMismatch
 	}
 	return repository.approval, nil
+}
+
+func orchestrationLaunchAuthorizationFixture(
+	plan teamplan.Plan,
+	agentInstanceID,
+	approvalID string,
+	issuedAt time.Time,
+) (teamlaunch.AuthorizationV1, error) {
+	planDigest, err := plan.Digest()
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	authorizationID, err := teamlaunch.AuthorizationID(
+		plan.PlanID,
+		plan.Revision,
+		approvalID,
+	)
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	foundation, err := awsfoundation.BuildSpec(awsfoundation.SpecInput{
+		AgentInstanceID: agentInstanceID,
+		Partition:       "aws",
+		AccountID:       plan.ProviderScope.AccountID,
+		Region:          plan.Region,
+	})
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	kmsAlias, err := awsfoundation.KMSAliasForAgent(agentInstanceID)
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	maximumCosts := make(
+		map[string]uint64,
+		len(plan.Cost.Roles),
+	)
+	for _, cost := range plan.Cost.Roles {
+		maximumCosts[cost.RoleID] = cost.TotalMaximumMicros
+	}
+	roles := make(
+		[]teamlaunch.RoleLaunchV1,
+		0,
+		len(plan.Assignments),
+	)
+	for _, assignment := range plan.Assignments {
+		maximumCost, found := maximumCosts[assignment.RoleID]
+		if !found {
+			return teamlaunch.AuthorizationV1{}, teamlaunch.ErrInvalid
+		}
+		roles = append(roles, teamlaunch.RoleLaunchV1{
+			RoleID:                    assignment.RoleID,
+			RuntimeReleaseID:          assignment.RuntimeReleaseID,
+			RuntimeImageDigest:        assignment.RuntimeImageDigest,
+			RuntimeInstallationDigest: "sha256:" + strings.Repeat("6", 64),
+			RuntimeExecutableDigest:   "sha256:" + strings.Repeat("7", 64),
+			ComputeOfferID:            assignment.ComputeOfferID,
+			InstanceType:              assignment.InstanceType,
+			Architecture:              assignment.Resources.Arch,
+			VCPU:                      assignment.Resources.VCPU,
+			MemoryMiB:                 assignment.Resources.MemoryMiB,
+			PurchaseOption:            teamlaunch.PurchaseOnDemand,
+			InstanceProfileName:       foundation.WorkerProfileName,
+			EBSOptimized:              true,
+			RequireIMDSv2:             true,
+			MetadataResponseHopLimit:  1,
+			ShutdownBehavior:          teamlaunch.ShutdownTerminate,
+			RootStorage: teamlaunch.RootStorageV1{
+				DeviceName:          "/dev/sda1",
+				SizeGiB:             assignment.Resources.DiskGiB,
+				VolumeType:          "gp3",
+				IOPS:                3000,
+				ThroughputMiBPS:     125,
+				KMSKeyID:            kmsAlias,
+				Encrypted:           true,
+				DeleteOnTermination: true,
+			},
+			WorkerImage: teamlaunch.WorkerImageV1{
+				PublicationDigest:     "sha256:" + strings.Repeat("8", 64),
+				AgentInstanceID:       agentInstanceID,
+				AccountID:             plan.ProviderScope.AccountID,
+				Region:                plan.Region,
+				Architecture:          assignment.Resources.Arch,
+				ImageID:               "ami-0123456789abcdef0",
+				ImageDigest:           "sha256:" + strings.Repeat("9", 64),
+				RootSnapshotID:        "snap-0123456789abcdef0",
+				ReleaseManifestDigest: "sha256:" + strings.Repeat("a", 64),
+				WorkerRootFSDigest:    "sha256:" + strings.Repeat("b", 64),
+				WorkerBinaryDigest:    "sha256:" + strings.Repeat("c", 64),
+				ObservedAt: issuedAt.
+					Add(-time.Hour).
+					UTC().
+					Truncate(time.Microsecond),
+			},
+			MaximumApprovedCostMicros: maximumCost,
+		})
+	}
+	authorization := teamlaunch.AuthorizationV1{
+		SchemaVersion:   teamlaunch.SchemaV1,
+		AuthorizationID: authorizationID,
+		AgentInstanceID: agentInstanceID,
+		OwnerID:         plan.OwnerID,
+		PlanID:          plan.PlanID,
+		PlanRevision:    plan.Revision,
+		PlanDigest:      planDigest,
+		ApprovalID:      approvalID,
+		ProviderScope:   plan.ProviderScope,
+		Region:          plan.Region,
+		Network: teamlaunch.NetworkV1{
+			ConnectivityMode:     teamlaunch.ConnectivityDirectPublicTLSV1,
+			VPCID:                "vpc-0123456789abcdef0",
+			SubnetID:             "subnet-0123456789abcdef0",
+			AvailabilityZone:     plan.Region + "a",
+			SecurityGroupMode:    teamlaunch.SecurityGroupDedicatedNoIngress,
+			PublicIPv4:           true,
+			ControlPlaneEndpoint: "grpcs://worker-control.demo2.dirextalk.ai:7443",
+			Egress: []teamlaunch.EgressRuleV1{
+				{
+					Protocol: "tcp",
+					FromPort: 443,
+					ToPort:   443,
+					CIDRv4:   "0.0.0.0/0",
+				},
+				{
+					Protocol: "tcp",
+					FromPort: 7443,
+					ToPort:   7443,
+					CIDRv4:   "0.0.0.0/0",
+				},
+				{
+					Protocol: "udp",
+					FromPort: 53,
+					ToPort:   53,
+					CIDRv4:   "169.254.169.253/32",
+				},
+			},
+		},
+		Retention: teamlaunch.RetentionV1{
+			Class:                  teamlaunch.RetentionEphemeralAutoDestroy,
+			AutoDestroy:            true,
+			MaximumLifetimeSeconds: 2 * 60 * 60,
+			DestroyGraceSeconds:    5 * 60,
+		},
+		WorkerCount:                  plan.WorkerCount,
+		MaxConcurrentBillableWorkers: plan.MaxConcurrentWorkers,
+		Currency:                     plan.Cost.Currency,
+		HardBudgetMicros:             plan.Cost.HardBudgetMicros,
+		RequiresFreshQuote:           true,
+		MaximumQuoteAgeSeconds:       15 * 60,
+		LaunchNotBefore:              issuedAt.UTC().Truncate(time.Microsecond),
+		LaunchNotAfter:               plan.ValidUntil,
+		Roles:                        roles,
+	}
+	if err := authorization.ValidateAgainst(plan); err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	return authorization, nil
+}
+
+func orchestrationInputBinding(
+	ownerID,
+	taskID,
+	goalDigest string,
+) taskinput.BindingV2 {
+	input, err := taskinput.NewEmptyInput(ownerID, taskID, goalDigest)
+	if err != nil {
+		panic(err)
+	}
+	binding, err := input.Binding()
+	if err != nil {
+		panic(err)
+	}
+	return binding
 }
 
 func orchestrationPolicyFixture() teamplan.Policy {
@@ -1453,11 +1774,12 @@ func orchestrationPlanFixture(
 		},
 	}
 	plan := teamplan.Plan{
-		SchemaVersion:         teamplan.SchemaV1,
+		SchemaVersion:         teamplan.SchemaV3,
 		PlanID:                request.PlanID,
 		Revision:              request.Revision,
 		OwnerID:               request.OwnerID,
 		GoalDigest:            request.GoalDigest,
+		TaskInput:             request.TaskInput,
 		ProviderScope:         document.ProviderScope,
 		Region:                document.Region,
 		CatalogRevision:       catalogRevision,

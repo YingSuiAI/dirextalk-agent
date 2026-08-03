@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -40,12 +41,18 @@ type Server struct {
 	MasterKeyFile                    string
 	MountedSecretsDir                string
 	ModelProfilesFile                string
+	SearchProfilesFile               string
 	MCPServersFile                   string
 	RuntimeCatalogFile               string
 	RuntimeCatalogPublicKeyFile      string
+	WorkerMarketRegistryFile         string
+	WorkerMarketPublicKeyFile        string
+	WorkerMarketOrganizationID       string
 	TeamPolicyFile                   string
 	TeamModelOfferCatalogFile        string
 	TeamComputeCatalogFile           string
+	TeamBundleDir                    string
+	GitHubAppConnectionsFile         string
 	EnableAWSControl                 bool
 	EnableManagedPreparationAWS      bool
 	AWSReaperImageURI                string
@@ -91,12 +98,18 @@ func LoadServer() (Server, error) {
 		MasterKeyFile:                    strings.TrimSpace(os.Getenv("AGENT_MASTER_KEY_FILE")),
 		MountedSecretsDir:                strings.TrimSpace(os.Getenv("AGENT_MOUNTED_SECRETS_DIR")),
 		ModelProfilesFile:                strings.TrimSpace(os.Getenv("AGENT_MODEL_PROFILES_FILE")),
+		SearchProfilesFile:               strings.TrimSpace(os.Getenv("AGENT_SEARCH_PROFILES_FILE")),
 		MCPServersFile:                   strings.TrimSpace(os.Getenv("AGENT_MCP_SERVERS_FILE")),
 		RuntimeCatalogFile:               strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_FILE")),
 		RuntimeCatalogPublicKeyFile:      strings.TrimSpace(os.Getenv("AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE")),
+		WorkerMarketRegistryFile:         strings.TrimSpace(os.Getenv("AGENT_WORKER_MARKET_REGISTRY_FILE")),
+		WorkerMarketPublicKeyFile:        strings.TrimSpace(os.Getenv("AGENT_WORKER_MARKET_PUBLIC_KEY_FILE")),
+		WorkerMarketOrganizationID:       strings.TrimSpace(os.Getenv("AGENT_WORKER_MARKET_ORGANIZATION_ID")),
 		TeamPolicyFile:                   strings.TrimSpace(os.Getenv("AGENT_TEAM_POLICY_FILE")),
 		TeamModelOfferCatalogFile:        strings.TrimSpace(os.Getenv("AGENT_TEAM_MODEL_OFFER_CATALOG_FILE")),
 		TeamComputeCatalogFile:           strings.TrimSpace(os.Getenv("AGENT_TEAM_COMPUTE_CATALOG_FILE")),
+		TeamBundleDir:                    strings.TrimSpace(os.Getenv("AGENT_TEAM_BUNDLE_DIR")),
+		GitHubAppConnectionsFile:         strings.TrimSpace(os.Getenv("AGENT_GITHUB_APP_CONNECTIONS_FILE")),
 		AWSReaperImageURI:                strings.TrimSpace(os.Getenv("AGENT_AWS_REAPER_IMAGE_URI")),
 		WorkerControlEndpoint:            strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT")),
 		WorkerControlEndpointServiceName: strings.TrimSpace(os.Getenv("AGENT_WORKER_CONTROL_ENDPOINT_SERVICE_NAME")),
@@ -169,6 +182,38 @@ func LoadServer() (Server, error) {
 		(server.RuntimeCatalogPublicKeyFile == "") {
 		return Server{}, errors.New("AGENT_RUNTIME_CATALOG_FILE and AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE must be configured together")
 	}
+	if (server.WorkerMarketRegistryFile == "") !=
+		(server.WorkerMarketPublicKeyFile == "") {
+		return Server{}, errors.New("AGENT_WORKER_MARKET_REGISTRY_FILE and AGENT_WORKER_MARKET_PUBLIC_KEY_FILE must be configured together")
+	}
+	if server.WorkerMarketRegistryFile != "" &&
+		server.RuntimeCatalogFile == "" &&
+		server.TeamBundleDir == "" {
+		return Server{}, errors.New(
+			"Worker Marketplace Registry requires the signed Runtime Catalog",
+		)
+	}
+	if server.WorkerMarketRegistryFile != "" &&
+		server.TeamPolicyFile == "" &&
+		server.TeamBundleDir == "" {
+		return Server{}, errors.New(
+			"Worker Marketplace Registry requires AGENT_TEAM_POLICY_FILE",
+		)
+	}
+	if server.WorkerMarketOrganizationID != "" {
+		organizationID, parseErr := uuid.Parse(
+			server.WorkerMarketOrganizationID,
+		)
+		if server.WorkerMarketRegistryFile == "" ||
+			parseErr != nil ||
+			organizationID == uuid.Nil ||
+			organizationID.String() !=
+				server.WorkerMarketOrganizationID {
+			return Server{}, errors.New(
+				"AGENT_WORKER_MARKET_ORGANIZATION_ID requires a canonical UUID and the Worker Marketplace Registry",
+			)
+		}
+	}
 	if server.TeamPolicyFile != "" && server.RuntimeCatalogFile == "" {
 		return Server{}, errors.New("AGENT_TEAM_POLICY_FILE requires the signed Runtime Catalog")
 	}
@@ -176,9 +221,55 @@ func LoadServer() (Server, error) {
 		(server.TeamComputeCatalogFile == "") {
 		return Server{}, errors.New("AGENT_TEAM_MODEL_OFFER_CATALOG_FILE and AGENT_TEAM_COMPUTE_CATALOG_FILE must be configured together")
 	}
-	teamPricingEnabled := server.TeamModelOfferCatalogFile != ""
-	if teamPricingEnabled && server.TeamPolicyFile == "" {
+	if server.TeamBundleDir != "" {
+		if !filepath.IsAbs(server.TeamBundleDir) ||
+			filepath.Clean(server.TeamBundleDir) !=
+				server.TeamBundleDir ||
+			strings.Contains(server.TeamBundleDir, "\x00") ||
+			server.TeamBundleDir == "/" {
+			return Server{}, errors.New(
+				"AGENT_TEAM_BUNDLE_DIR must be an absolute protected bundle directory",
+			)
+		}
+		if server.ModelProfilesFile !=
+			filepath.Join(
+				server.TeamBundleDir,
+				"model-profiles.json",
+			) {
+			return Server{}, errors.New(
+				"AGENT_MODEL_PROFILES_FILE must select the Team bundle model catalog",
+			)
+		}
+		if server.RuntimeCatalogFile != "" ||
+			server.RuntimeCatalogPublicKeyFile != "" ||
+			server.TeamPolicyFile != "" ||
+			server.TeamModelOfferCatalogFile != "" ||
+			server.TeamComputeCatalogFile != "" ||
+			server.WorkerAMIPublicationFile != "" {
+			return Server{}, errors.New(
+				"AGENT_TEAM_BUNDLE_DIR cannot be combined with loose Team release files",
+			)
+		}
+	}
+	teamPricingEnabled := server.TeamModelOfferCatalogFile != "" ||
+		server.TeamBundleDir != ""
+	if teamPricingEnabled &&
+		server.TeamPolicyFile == "" &&
+		server.TeamBundleDir == "" {
 		return Server{}, errors.New("Team pricing catalogs require AGENT_TEAM_POLICY_FILE")
+	}
+	if server.GitHubAppConnectionsFile != "" &&
+		server.TeamPolicyFile == "" &&
+		server.TeamBundleDir == "" {
+		return Server{}, errors.New(
+			"AGENT_GITHUB_APP_CONNECTIONS_FILE requires AGENT_TEAM_POLICY_FILE",
+		)
+	}
+	if server.TeamBundleDir != "" &&
+		server.GitHubAppConnectionsFile != "" {
+		return Server{}, errors.New(
+			"Pi Team bundle does not accept GitHub App connections",
+		)
 	}
 	if server.AWSReaperImageURI != "" {
 		lower := strings.ToLower(server.AWSReaperImageURI)
@@ -212,9 +303,20 @@ func LoadServer() (Server, error) {
 		}
 	} else if teamPricingEnabled {
 		return Server{}, errors.New("Team pricing catalogs require AGENT_ENABLE_AWS_CONTROL=true")
+	} else if server.GitHubAppConnectionsFile != "" {
+		return Server{}, errors.New(
+			"AGENT_GITHUB_APP_CONNECTIONS_FILE requires AGENT_ENABLE_AWS_CONTROL=true",
+		)
 	}
 	if teamPricingEnabled && server.StagedWorkerControl {
 		return Server{}, errors.New("Team pricing catalogs require complete Worker Control configuration")
+	}
+	if teamPricingEnabled &&
+		server.WorkerConnectivityMode !=
+			cloudquote.PrivateConnectivityDirectPublicTLSV1 {
+		return Server{}, errors.New(
+			"Team execution currently requires direct public TLS Worker control",
+		)
 	}
 	return server, nil
 }

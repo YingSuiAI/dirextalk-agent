@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TaskService_CreateTask_FullMethodName  = "/dirextalk.agent.v1.TaskService/CreateTask"
-	TaskService_GetTask_FullMethodName     = "/dirextalk.agent.v1.TaskService/GetTask"
-	TaskService_ListTasks_FullMethodName   = "/dirextalk.agent.v1.TaskService/ListTasks"
-	TaskService_CancelTask_FullMethodName  = "/dirextalk.agent.v1.TaskService/CancelTask"
-	TaskService_ListSteps_FullMethodName   = "/dirextalk.agent.v1.TaskService/ListSteps"
-	TaskService_WatchEvents_FullMethodName = "/dirextalk.agent.v1.TaskService/WatchEvents"
+	TaskService_CreateTask_FullMethodName      = "/dirextalk.agent.v1.TaskService/CreateTask"
+	TaskService_GetTask_FullMethodName         = "/dirextalk.agent.v1.TaskService/GetTask"
+	TaskService_ListTasks_FullMethodName       = "/dirextalk.agent.v1.TaskService/ListTasks"
+	TaskService_GetTaskOverview_FullMethodName = "/dirextalk.agent.v1.TaskService/GetTaskOverview"
+	TaskService_CancelTask_FullMethodName      = "/dirextalk.agent.v1.TaskService/CancelTask"
+	TaskService_ListSteps_FullMethodName       = "/dirextalk.agent.v1.TaskService/ListSteps"
+	TaskService_WatchEvents_FullMethodName     = "/dirextalk.agent.v1.TaskService/WatchEvents"
 )
 
 // TaskServiceClient is the client API for TaskService service.
@@ -34,6 +35,7 @@ type TaskServiceClient interface {
 	CreateTask(ctx context.Context, in *CreateTaskRequest, opts ...grpc.CallOption) (*CreateTaskResponse, error)
 	GetTask(ctx context.Context, in *GetTaskRequest, opts ...grpc.CallOption) (*GetTaskResponse, error)
 	ListTasks(ctx context.Context, in *ListTasksRequest, opts ...grpc.CallOption) (*ListTasksResponse, error)
+	GetTaskOverview(ctx context.Context, in *GetTaskOverviewRequest, opts ...grpc.CallOption) (*GetTaskOverviewResponse, error)
 	CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error)
 	ListSteps(ctx context.Context, in *ListStepsRequest, opts ...grpc.CallOption) (*ListStepsResponse, error)
 	WatchEvents(ctx context.Context, in *WatchEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchEventsResponse], error)
@@ -71,6 +73,16 @@ func (c *taskServiceClient) ListTasks(ctx context.Context, in *ListTasksRequest,
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListTasksResponse)
 	err := c.cc.Invoke(ctx, TaskService_ListTasks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *taskServiceClient) GetTaskOverview(ctx context.Context, in *GetTaskOverviewRequest, opts ...grpc.CallOption) (*GetTaskOverviewResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTaskOverviewResponse)
+	err := c.cc.Invoke(ctx, TaskService_GetTaskOverview_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +135,7 @@ type TaskServiceServer interface {
 	CreateTask(context.Context, *CreateTaskRequest) (*CreateTaskResponse, error)
 	GetTask(context.Context, *GetTaskRequest) (*GetTaskResponse, error)
 	ListTasks(context.Context, *ListTasksRequest) (*ListTasksResponse, error)
+	GetTaskOverview(context.Context, *GetTaskOverviewRequest) (*GetTaskOverviewResponse, error)
 	CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error)
 	ListSteps(context.Context, *ListStepsRequest) (*ListStepsResponse, error)
 	WatchEvents(*WatchEventsRequest, grpc.ServerStreamingServer[WatchEventsResponse]) error
@@ -144,6 +157,9 @@ func (UnimplementedTaskServiceServer) GetTask(context.Context, *GetTaskRequest) 
 }
 func (UnimplementedTaskServiceServer) ListTasks(context.Context, *ListTasksRequest) (*ListTasksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListTasks not implemented")
+}
+func (UnimplementedTaskServiceServer) GetTaskOverview(context.Context, *GetTaskOverviewRequest) (*GetTaskOverviewResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTaskOverview not implemented")
 }
 func (UnimplementedTaskServiceServer) CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelTask not implemented")
@@ -229,6 +245,24 @@ func _TaskService_ListTasks_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TaskService_GetTaskOverview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTaskOverviewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TaskServiceServer).GetTaskOverview(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TaskService_GetTaskOverview_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TaskServiceServer).GetTaskOverview(ctx, req.(*GetTaskOverviewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TaskService_CancelTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CancelTaskRequest)
 	if err := dec(in); err != nil {
@@ -296,6 +330,10 @@ var TaskService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _TaskService_ListTasks_Handler,
 		},
 		{
+			MethodName: "GetTaskOverview",
+			Handler:    _TaskService_GetTaskOverview_Handler,
+		},
+		{
 			MethodName: "CancelTask",
 			Handler:    _TaskService_CancelTask_Handler,
 		},
@@ -318,6 +356,7 @@ const (
 	RuntimeService_GetCapabilities_FullMethodName  = "/dirextalk.agent.v1.RuntimeService/GetCapabilities"
 	RuntimeService_GetRuntimeConfig_FullMethodName = "/dirextalk.agent.v1.RuntimeService/GetRuntimeConfig"
 	RuntimeService_PutRuntimeConfig_FullMethodName = "/dirextalk.agent.v1.RuntimeService/PutRuntimeConfig"
+	RuntimeService_ListModels_FullMethodName       = "/dirextalk.agent.v1.RuntimeService/ListModels"
 	RuntimeService_Chat_FullMethodName             = "/dirextalk.agent.v1.RuntimeService/Chat"
 	RuntimeService_StreamChat_FullMethodName       = "/dirextalk.agent.v1.RuntimeService/StreamChat"
 )
@@ -329,6 +368,7 @@ type RuntimeServiceClient interface {
 	GetCapabilities(ctx context.Context, in *RuntimeServiceGetCapabilitiesRequest, opts ...grpc.CallOption) (*RuntimeServiceGetCapabilitiesResponse, error)
 	GetRuntimeConfig(ctx context.Context, in *GetRuntimeConfigRequest, opts ...grpc.CallOption) (*GetRuntimeConfigResponse, error)
 	PutRuntimeConfig(ctx context.Context, in *PutRuntimeConfigRequest, opts ...grpc.CallOption) (*PutRuntimeConfigResponse, error)
+	ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error)
 	Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error)
 	StreamChat(ctx context.Context, in *StreamChatRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamChatResponse], error)
 }
@@ -371,6 +411,16 @@ func (c *runtimeServiceClient) PutRuntimeConfig(ctx context.Context, in *PutRunt
 	return out, nil
 }
 
+func (c *runtimeServiceClient) ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListModelsResponse)
+	err := c.cc.Invoke(ctx, RuntimeService_ListModels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *runtimeServiceClient) Chat(ctx context.Context, in *ChatRequest, opts ...grpc.CallOption) (*ChatResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChatResponse)
@@ -407,6 +457,7 @@ type RuntimeServiceServer interface {
 	GetCapabilities(context.Context, *RuntimeServiceGetCapabilitiesRequest) (*RuntimeServiceGetCapabilitiesResponse, error)
 	GetRuntimeConfig(context.Context, *GetRuntimeConfigRequest) (*GetRuntimeConfigResponse, error)
 	PutRuntimeConfig(context.Context, *PutRuntimeConfigRequest) (*PutRuntimeConfigResponse, error)
+	ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error)
 	Chat(context.Context, *ChatRequest) (*ChatResponse, error)
 	StreamChat(*StreamChatRequest, grpc.ServerStreamingServer[StreamChatResponse]) error
 	mustEmbedUnimplementedRuntimeServiceServer()
@@ -427,6 +478,9 @@ func (UnimplementedRuntimeServiceServer) GetRuntimeConfig(context.Context, *GetR
 }
 func (UnimplementedRuntimeServiceServer) PutRuntimeConfig(context.Context, *PutRuntimeConfigRequest) (*PutRuntimeConfigResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PutRuntimeConfig not implemented")
+}
+func (UnimplementedRuntimeServiceServer) ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListModels not implemented")
 }
 func (UnimplementedRuntimeServiceServer) Chat(context.Context, *ChatRequest) (*ChatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Chat not implemented")
@@ -509,6 +563,24 @@ func _RuntimeService_PutRuntimeConfig_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RuntimeService_ListModels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListModelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeServiceServer).ListModels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeService_ListModels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeServiceServer).ListModels(ctx, req.(*ListModelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RuntimeService_Chat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ChatRequest)
 	if err := dec(in); err != nil {
@@ -556,6 +628,10 @@ var RuntimeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PutRuntimeConfig",
 			Handler:    _RuntimeService_PutRuntimeConfig_Handler,
+		},
+		{
+			MethodName: "ListModels",
+			Handler:    _RuntimeService_ListModels_Handler,
 		},
 		{
 			MethodName: "Chat",

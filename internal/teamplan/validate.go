@@ -18,7 +18,10 @@ import (
 )
 
 var (
-	ErrInvalid            = errors.New("invalid team plan input")
+	ErrInvalid                    = errors.New("invalid team plan input")
+	ErrRuntimeRegistryUnavailable = errors.New(
+		"worker marketplace registry is unavailable",
+	)
 	ErrNoRuntime          = errors.New("no qualified runtime can satisfy role")
 	ErrNoModel            = errors.New("no configured model can satisfy role")
 	ErrNoCompute          = errors.New("no compute offer can satisfy role")
@@ -60,6 +63,7 @@ const (
 func validateCompileRequest(request CompileRequest) error {
 	if !canonicalUUID(request.PlanID) || request.Revision == 0 ||
 		!validText(request.OwnerID, 255) || !sha256Pattern.MatchString(request.GoalDigest) ||
+		request.TaskInput.Validate() != nil ||
 		validateProviderScope(request.ProviderScope) != nil ||
 		!regionPattern.MatchString(request.Region) ||
 		!sha256Pattern.MatchString(request.CatalogRevision) ||
@@ -170,7 +174,7 @@ func validateProviderScope(scope ProviderScope) error {
 func validateTeamProposal(proposal TeamProposal, policy Policy) error {
 	if len(proposal.Roles) == 0 || len(proposal.Roles) > int(policy.MaxWorkers) ||
 		proposal.Confidence == 0 || proposal.Confidence > 100 ||
-		!validSafeText(proposal.Rationale, 4096) {
+		!validMultilineSafeText(proposal.Rationale, 4096) {
 		return ErrInvalid
 	}
 	roles := make(map[string]RoleProposal, len(proposal.Roles))
@@ -202,7 +206,7 @@ func validateTeamProposal(proposal TeamProposal, policy Policy) error {
 func validateRoleProposal(role RoleProposal, policy Policy) error {
 	if !roleIDPattern.MatchString(role.RoleID) ||
 		!validSafeText(role.Title, 160) ||
-		!validSafeText(role.Objective, 8192) ||
+		!validMultilineSafeText(role.Objective, 8192) ||
 		!validWorkClass(role.WorkClass) ||
 		!validWorkspaceMode(role.Workspace) ||
 		len(role.RequiredCapabilities) == 0 ||
@@ -219,6 +223,11 @@ func validateRoleProposal(role RoleProposal, policy Policy) error {
 		validateModelNeed(role.ModelNeed) != nil ||
 		validateRoleResources(role.MinimumResources, policy) != nil {
 		return ErrInvalid
+	}
+	for _, family := range role.PreferredFamilies {
+		if !slices.Contains(policy.AllowedRuntimeFamilies, family) {
+			return ErrInvalid
+		}
 	}
 	if slices.Contains(role.RequiredCapabilities, CapabilityRepositoryWrite) &&
 		role.Workspace == WorkspaceReadOnly {
@@ -357,7 +366,7 @@ func validateComputeOffer(value ComputeOffer) error {
 func validQuoteWindow(quotedAt, validUntil time.Time) bool {
 	return utcTimestamp(quotedAt) && utcTimestamp(validUntil) &&
 		validUntil.After(quotedAt) &&
-		validUntil.Sub(quotedAt) <= time.Hour
+		validUntil.Sub(quotedAt) <= OfferSnapshotValidity
 }
 
 func hasRoleCycle(roles map[string]RoleProposal) bool {
@@ -443,6 +452,8 @@ func runtimeAdapterFor(family RuntimeFamily) RuntimeAdapter {
 		return AdapterHermesV1
 	case RuntimeOpenCode:
 		return AdapterOpenCodeV1
+	case RuntimePi:
+		return AdapterPiV1
 	default:
 		return ""
 	}
@@ -455,6 +466,7 @@ func validRuntimeFamilies() []RuntimeFamily {
 		RuntimeOpenClaw,
 		RuntimeHermes,
 		RuntimeOpenCode,
+		RuntimePi,
 	}
 }
 
@@ -572,6 +584,20 @@ func validText(value string, maximum int) bool {
 
 func validSafeText(value string, maximum int) bool {
 	return validText(value, maximum) && !security.ContainsLikelySecret(value)
+}
+
+func validMultilineSafeText(value string, maximum int) bool {
+	if value != strings.TrimSpace(value) || value == "" || len(value) > maximum ||
+		!utf8.ValidString(value) || security.ContainsLikelySecret(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) &&
+			character != '\n' && character != '\r' && character != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalUUID(value string) bool {

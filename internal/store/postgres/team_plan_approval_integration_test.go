@@ -13,11 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,6 +106,7 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 		uuid.NewString(),
 		1,
 	)
+	plan = bindTeamPlanGitHubInput(t, plan, createdTask.TaskID)
 	planKey := uuid.NewString()
 	planRecord, err := store.CreateTeamPlan(
 		ctx,
@@ -120,6 +124,34 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 		planRecord.RecordRevision != 1 ||
 		planRecord.Plan.Revision != 1 {
 		t.Fatalf("created Team Plan = %#v", planRecord)
+	}
+	var sourceKind, repositoryID, baseCommitSHA, sourceDigest string
+	if err := pool.QueryRow(ctx, `
+		SELECT source_kind, repository_id, repository_base_commit_sha,
+		       source_digest
+		FROM team_task_inputs
+		WHERE input_id=$1 AND input_digest=$2`,
+		plan.TaskInput.InputID,
+		plan.TaskInput.InputDigest,
+	).Scan(
+		&sourceKind,
+		&repositoryID,
+		&baseCommitSHA,
+		&sourceDigest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if sourceKind != string(taskinput.SourceGitHubRepository) ||
+		repositoryID != plan.TaskInput.Repository.RepositoryID ||
+		baseCommitSHA != plan.TaskInput.Repository.BaseCommitSHA ||
+		sourceDigest != plan.TaskInput.SourceDigest {
+		t.Fatalf(
+			"stored GitHub TaskInput drifted: %s %s %s %s",
+			sourceKind,
+			repositoryID,
+			baseCommitSHA,
+			sourceDigest,
+		)
 	}
 	var (
 		beforeDigest string
@@ -158,6 +190,9 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	); err != nil {
 		t.Fatal(err)
 	}
+	crossApprovalID, crossAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, plan, instanceID)
+	crossAuthorization.OwnerID = "other-owner"
 	if _, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		mutationScope,
@@ -167,13 +202,16 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 			PlanID:                     plan.PlanID,
 			PlanRevision:               plan.Revision,
 			ExpectedPlanRecordRevision: planRecord.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 crossApprovalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              crossAuthorization,
 		},
 	); !errors.Is(err, postgres.ErrTeamFactScope) {
 		t.Fatalf("cross-owner approval challenge error=%v", err)
 	}
+	approvalID, authorization :=
+		newTeamLaunchAuthorizationFixture(t, plan, instanceID)
 	challengeRecord, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		mutationScope,
@@ -183,9 +221,10 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 			PlanID:                     plan.PlanID,
 			PlanRevision:               plan.Revision,
 			ExpectedPlanRecordRevision: planRecord.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 approvalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              authorization,
 		},
 	)
 	if err != nil {
@@ -385,6 +424,8 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	if err != nil {
 		t.Fatal(err)
 	}
+	staleApprovalID, staleAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, replanV1, instanceID)
 	staleChallenge, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		mutationScope,
@@ -394,9 +435,10 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 			PlanID:                     replanV1.PlanID,
 			PlanRevision:               1,
 			ExpectedPlanRecordRevision: firstReplan.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 staleApprovalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              staleAuthorization,
 		},
 	)
 	if err != nil {
@@ -470,6 +512,8 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	if err != nil {
 		t.Fatal(err)
 	}
+	raceApprovalID, raceAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, racePlan, instanceID)
 	raceChallenge, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		mutationScope,
@@ -479,9 +523,10 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 			PlanID:                     racePlan.PlanID,
 			PlanRevision:               racePlan.Revision,
 			ExpectedPlanRecordRevision: racePlanRecord.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 raceApprovalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              raceAuthorization,
 		},
 	)
 	if err != nil {
@@ -628,6 +673,8 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 	); err != nil {
 		t.Fatal(err)
 	}
+	driftApprovalID, driftAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, replanV2, instanceID)
 	if _, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		mutationScope,
@@ -637,9 +684,10 @@ func TestTeamPlanFactsAreImmutableScopedAndAtomicallyApproved(
 			PlanID:                     replanV2.PlanID,
 			PlanRevision:               replanV2.Revision,
 			ExpectedPlanRecordRevision: secondReplan.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 driftApprovalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              driftAuthorization,
 		},
 	); !errors.Is(err, postgres.ErrTeamFactScope) {
 		t.Fatalf("connection revision drift challenge error=%v", err)
@@ -857,6 +905,73 @@ func teamPlanFixture(
 	}
 }
 
+func bindTeamPlanTaskInput(
+	t *testing.T,
+	plan teamplan.Plan,
+	taskID string,
+) teamplan.Plan {
+	t.Helper()
+	input, err := taskinput.NewEmptyInput(
+		plan.OwnerID,
+		taskID,
+		plan.GoalDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := input.Binding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.SchemaVersion = teamplan.SchemaV3
+	plan.InputSnapshot = taskinput.BindingV1{}
+	plan.TaskInput = binding
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("TaskInput-bound Team Plan fixture is invalid: %v", err)
+	}
+	return plan
+}
+
+func bindTeamPlanGitHubInput(
+	t *testing.T,
+	plan teamplan.Plan,
+	taskID string,
+) teamplan.Plan {
+	t.Helper()
+	input, err := taskinput.NewGitHubInput(
+		plan.OwnerID,
+		taskID,
+		plan.GoalDigest,
+		taskinput.GitRepositoryV1{
+			Provider: taskinput.GitProviderGitHub,
+			Host:     taskinput.GitHubHost,
+			ConnectionID: uuid.NewSHA1(
+				uuid.MustParse(taskID),
+				[]byte("github-app-connection"),
+			).String(),
+			RepositoryID:  "123456789",
+			Owner:         "YingSuiAI",
+			Name:          "dirextalk-agent",
+			BaseCommitSHA: strings.Repeat("c", 40),
+			BaseRef:       "refs/heads/codex/native-agent-v2",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := input.Binding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.SchemaVersion = teamplan.SchemaV3
+	plan.InputSnapshot = taskinput.BindingV1{}
+	plan.TaskInput = binding
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("GitHub TaskInput-bound Team Plan fixture is invalid: %v", err)
+	}
+	return plan
+}
+
 func teamPlanPolicyFixture() teamplan.Policy {
 	return teamplan.Policy{
 		MaxWorkers:                1,
@@ -874,6 +989,182 @@ func teamPlanPolicyFixture() teamplan.Policy {
 	}
 }
 
+func newTeamLaunchAuthorizationFixture(
+	t *testing.T,
+	plan teamplan.Plan,
+	instanceID string,
+) (string, teamlaunch.AuthorizationV1) {
+	t.Helper()
+	approvalID := uuid.NewString()
+	return approvalID, teamLaunchAuthorizationFixture(
+		t,
+		plan,
+		instanceID,
+		approvalID,
+	)
+}
+
+func teamLaunchAuthorizationFixture(
+	t *testing.T,
+	plan teamplan.Plan,
+	instanceID,
+	approvalID string,
+) teamlaunch.AuthorizationV1 {
+	t.Helper()
+	planDigest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizationID, err := teamlaunch.AuthorizationID(
+		plan.PlanID,
+		plan.Revision,
+		approvalID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundation, err := awsfoundation.BuildSpec(awsfoundation.SpecInput{
+		AgentInstanceID: instanceID,
+		Partition:       "aws",
+		AccountID:       plan.ProviderScope.AccountID,
+		Region:          plan.Region,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kmsAlias, err := awsfoundation.KMSAliasForAgent(instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maximumCosts := make(
+		map[string]uint64,
+		len(plan.Cost.Roles),
+	)
+	for _, cost := range plan.Cost.Roles {
+		maximumCosts[cost.RoleID] = cost.TotalMaximumMicros
+	}
+	roles := make(
+		[]teamlaunch.RoleLaunchV1,
+		0,
+		len(plan.Assignments),
+	)
+	for _, assignment := range plan.Assignments {
+		maximumCost, found := maximumCosts[assignment.RoleID]
+		if !found {
+			t.Fatalf(
+				"missing maximum cost for role %q",
+				assignment.RoleID,
+			)
+		}
+		roles = append(roles, teamlaunch.RoleLaunchV1{
+			RoleID:                    assignment.RoleID,
+			RuntimeReleaseID:          assignment.RuntimeReleaseID,
+			RuntimeImageDigest:        assignment.RuntimeImageDigest,
+			RuntimeInstallationDigest: "sha256:" + strings.Repeat("6", 64),
+			RuntimeExecutableDigest:   "sha256:" + strings.Repeat("7", 64),
+			ComputeOfferID:            assignment.ComputeOfferID,
+			InstanceType:              assignment.InstanceType,
+			Architecture:              assignment.Resources.Arch,
+			VCPU:                      assignment.Resources.VCPU,
+			MemoryMiB:                 assignment.Resources.MemoryMiB,
+			PurchaseOption:            teamlaunch.PurchaseOnDemand,
+			InstanceProfileName:       foundation.WorkerProfileName,
+			EBSOptimized:              true,
+			RequireIMDSv2:             true,
+			MetadataResponseHopLimit:  1,
+			ShutdownBehavior:          teamlaunch.ShutdownTerminate,
+			RootStorage: teamlaunch.RootStorageV1{
+				DeviceName:          "/dev/sda1",
+				SizeGiB:             assignment.Resources.DiskGiB,
+				VolumeType:          "gp3",
+				IOPS:                3000,
+				ThroughputMiBPS:     125,
+				KMSKeyID:            kmsAlias,
+				Encrypted:           true,
+				DeleteOnTermination: true,
+			},
+			WorkerImage: teamlaunch.WorkerImageV1{
+				PublicationDigest:     "sha256:" + strings.Repeat("8", 64),
+				AgentInstanceID:       instanceID,
+				AccountID:             plan.ProviderScope.AccountID,
+				Region:                plan.Region,
+				Architecture:          assignment.Resources.Arch,
+				ImageID:               "ami-0123456789abcdef0",
+				ImageDigest:           "sha256:" + strings.Repeat("9", 64),
+				RootSnapshotID:        "snap-0123456789abcdef0",
+				ReleaseManifestDigest: "sha256:" + strings.Repeat("a", 64),
+				WorkerRootFSDigest:    "sha256:" + strings.Repeat("b", 64),
+				WorkerBinaryDigest:    "sha256:" + strings.Repeat("c", 64),
+				ObservedAt: plan.QuotedAt.
+					Add(-time.Hour).
+					UTC().
+					Truncate(time.Microsecond),
+			},
+			MaximumApprovedCostMicros: maximumCost,
+		})
+	}
+	authorization := teamlaunch.AuthorizationV1{
+		SchemaVersion:   teamlaunch.SchemaV1,
+		AuthorizationID: authorizationID,
+		AgentInstanceID: instanceID,
+		OwnerID:         plan.OwnerID,
+		PlanID:          plan.PlanID,
+		PlanRevision:    plan.Revision,
+		PlanDigest:      planDigest,
+		ApprovalID:      approvalID,
+		ProviderScope:   plan.ProviderScope,
+		Region:          plan.Region,
+		Network: teamlaunch.NetworkV1{
+			ConnectivityMode:     teamlaunch.ConnectivityDirectPublicTLSV1,
+			VPCID:                "vpc-0123456789abcdef0",
+			SubnetID:             "subnet-0123456789abcdef0",
+			AvailabilityZone:     plan.Region + "a",
+			SecurityGroupMode:    teamlaunch.SecurityGroupDedicatedNoIngress,
+			PublicIPv4:           true,
+			ControlPlaneEndpoint: "grpcs://worker-control.test.dirextalk.ai:7443",
+			Egress: []teamlaunch.EgressRuleV1{
+				{
+					Protocol: "tcp",
+					FromPort: 443,
+					ToPort:   443,
+					CIDRv4:   "0.0.0.0/0",
+				},
+				{
+					Protocol: "tcp",
+					FromPort: 7443,
+					ToPort:   7443,
+					CIDRv4:   "0.0.0.0/0",
+				},
+				{
+					Protocol: "udp",
+					FromPort: 53,
+					ToPort:   53,
+					CIDRv4:   "169.254.169.253/32",
+				},
+			},
+		},
+		Retention: teamlaunch.RetentionV1{
+			Class:                  teamlaunch.RetentionEphemeralAutoDestroy,
+			AutoDestroy:            true,
+			MaximumLifetimeSeconds: 2 * 60 * 60,
+			DestroyGraceSeconds:    5 * 60,
+		},
+		WorkerCount:                  plan.WorkerCount,
+		MaxConcurrentBillableWorkers: plan.MaxConcurrentWorkers,
+		Currency:                     plan.Cost.Currency,
+		HardBudgetMicros:             plan.Cost.HardBudgetMicros,
+		RequiresFreshQuote:           true,
+		MaximumQuoteAgeSeconds:       15 * 60,
+		LaunchNotBefore:              plan.QuotedAt,
+		LaunchNotAfter:               plan.ValidUntil,
+		Roles:                        roles,
+	}
+	if err := authorization.ValidateAgainst(plan); err != nil {
+		t.Fatalf("launch authorization fixture is invalid: %v", err)
+	}
+	return authorization
+}
+
 func signTeamApproval(
 	t *testing.T,
 	challenge teamapproval.ChallengeV1,
@@ -884,14 +1175,20 @@ func signTeamApproval(
 	if err != nil {
 		t.Fatal(err)
 	}
+	schemaVersion := teamapproval.SignatureSchemaV1
+	if challenge.SchemaVersion == teamapproval.ChallengeSchemaV2 {
+		schemaVersion = teamapproval.SignatureSchemaV2
+	}
 	return teamapproval.SignatureV1{
-		SchemaVersion: teamapproval.SignatureSchemaV1,
-		ApprovalID:    challenge.ApprovalID,
-		ChallengeID:   challenge.ChallengeID,
-		PlanID:        challenge.PlanID,
-		PlanRevision:  challenge.PlanRevision,
-		PlanDigest:    challenge.PlanDigest,
-		SignerKeyID:   challenge.SignerKeyID,
+		SchemaVersion:             schemaVersion,
+		ApprovalID:                challenge.ApprovalID,
+		ChallengeID:               challenge.ChallengeID,
+		PlanID:                    challenge.PlanID,
+		PlanRevision:              challenge.PlanRevision,
+		PlanDigest:                challenge.PlanDigest,
+		LaunchAuthorizationID:     challenge.LaunchAuthorizationID,
+		LaunchAuthorizationDigest: challenge.LaunchAuthorizationDigest,
+		SignerKeyID:               challenge.SignerKeyID,
 		SignatureBase64URL: base64.RawURLEncoding.EncodeToString(
 			ed25519.Sign(privateKey, payload),
 		),
@@ -926,6 +1223,33 @@ func assertTeamPlanDatabaseImmutability(
 				    updated_at=clock_timestamp()
 				WHERE plan_id=$1 AND plan_revision=$2`,
 			arguments: []any{plan.PlanID, int64(plan.Revision)},
+		},
+		{
+			name: "TaskInput source",
+			statement: `
+				UPDATE team_task_inputs
+				SET repository_base_commit_sha=$3
+				WHERE input_id=$1 AND input_digest=$2`,
+			arguments: []any{
+				plan.TaskInput.InputID,
+				plan.TaskInput.InputDigest,
+				strings.Repeat("d", 40),
+			},
+		},
+		{
+			name: "Plan TaskInput reference",
+			statement: `
+				UPDATE team_plans
+				SET task_input_source_digest=$3,
+				    status='failed',
+				    record_revision=record_revision+1,
+				    updated_at=clock_timestamp()
+				WHERE plan_id=$1 AND plan_revision=$2`,
+			arguments: []any{
+				plan.PlanID,
+				int64(plan.Revision),
+				"sha256:" + strings.Repeat("d", 64),
+			},
 		},
 		{
 			name: "Offer Snapshot",

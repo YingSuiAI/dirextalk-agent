@@ -16,6 +16,10 @@ import (
 // coordinator. It cannot price, approve, or mutate resources.
 type PlacementPort interface {
 	Resolve(context.Context, awsprovider.PlacementRequestV1) (awsprovider.PlacementV1, error)
+	ResolveExact(
+		context.Context,
+		awsprovider.ExactPlacementRequestV1,
+	) (awsprovider.ExactPlacementV1, error)
 }
 
 type ActivePlacementFactory interface {
@@ -32,6 +36,12 @@ type ActivePlacementRequestV1 struct {
 	OwnerID      string
 	ConnectionID string
 	Placement    awsprovider.PlacementRequestV1
+}
+
+type ActiveExactPlacementRequestV1 struct {
+	OwnerID      string
+	ConnectionID string
+	Placement    awsprovider.ExactPlacementRequestV1
 }
 
 // AWSActivePlacementResolver permits discovery only after an owner-bound
@@ -73,6 +83,51 @@ func (resolver *AWSActivePlacementResolver) Resolve(ctx context.Context, connect
 	}
 	if placement.Region != connection.Region {
 		return awsprovider.PlacementV1{}, ErrUnavailable
+	}
+	return placement, nil
+}
+
+func (resolver *AWSActivePlacementResolver) ResolveExact(
+	ctx context.Context,
+	connection Connection,
+	request ActiveExactPlacementRequestV1,
+) (awsprovider.ExactPlacementV1, error) {
+	if resolver == nil || ctx == nil ||
+		resolver.ValidateConnection(
+			connection,
+			request.OwnerID,
+			request.ConnectionID,
+		) != nil ||
+		request.Placement.Validate() != nil {
+		return awsprovider.ExactPlacementV1{}, ErrInvalid
+	}
+	credentials, err := resolver.credentials.Open(
+		ctx,
+		awsfoundation.SourceCredentialBinding{
+			AgentInstanceID: resolver.agentInstanceID,
+			AccountID:       connection.AccountID,
+			Region:          connection.Region,
+		},
+	)
+	if err != nil {
+		return awsprovider.ExactPlacementV1{}, ErrUnavailable
+	}
+	defer credentials.Wipe()
+	port, err := resolver.factory.NewPlacementPort(
+		connection.Region,
+		&credentials,
+		connection.ControlRoleARN,
+		activePlacementRoleSession(connection.ConnectionID),
+	)
+	if err != nil {
+		return awsprovider.ExactPlacementV1{}, ErrUnavailable
+	}
+	placement, err := port.ResolveExact(ctx, request.Placement)
+	if err != nil {
+		return awsprovider.ExactPlacementV1{}, ErrUnavailable
+	}
+	if placement.Region != connection.Region {
+		return awsprovider.ExactPlacementV1{}, ErrUnavailable
 	}
 	return placement, nil
 }

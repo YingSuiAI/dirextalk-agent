@@ -7,6 +7,7 @@ import (
 	"time"
 
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 )
 
 const (
@@ -15,25 +16,29 @@ const (
 )
 
 type Runtime struct {
-	engine        Engine
-	models        ModelFactory
-	tools         ToolProvider
-	configs       RuntimeConfigRepository
-	conversations ConversationRepository
-	secrets       SecretResolver
-	now           Clock
+	engine               Engine
+	models               ModelFactory
+	transientModels      ModelFactory
+	modelDiscovery       ModelDiscovery
+	tools                ToolProvider
+	configs              RuntimeConfigRepository
+	conversations        ConversationRepository
+	secrets              SecretResolver
+	transientCredentials TransientCredentialConsumer
+	now                  Clock
 }
 
 type runState struct {
-	config            RuntimeConfig
-	client            modelapi.Client
-	tools             toolSet
-	conversation      Conversation
-	expectedRevision  int64
-	memoryDisabled    bool
-	requestMessages   []modelapi.Message
-	history           []modelapi.Message
-	contextByteBudget int64
+	config              RuntimeConfig
+	client              modelapi.Client
+	tools               toolSet
+	conversation        Conversation
+	expectedRevision    int64
+	memoryDisabled      bool
+	requestMessages     []modelapi.Message
+	history             []modelapi.Message
+	contextByteBudget   int64
+	transientCredential []byte
 }
 
 // contextBoundModelClient is the final outbound guard. The engine's message
@@ -86,15 +91,56 @@ func New(dependencies Dependencies) (*Runtime, error) {
 	if dependencies.Clock == nil {
 		dependencies.Clock = time.Now
 	}
+	if dependencies.ModelDiscovery == nil {
+		dependencies.ModelDiscovery = ModelDiscoveryFunc(func(ctx context.Context, profile modelapi.Profile, secrets SecretResolver) ([]modelapi.Descriptor, error) {
+			return modelapi.ListModels(ctx, profile, secrets)
+		})
+	}
 	return &Runtime{
-		engine:        dependencies.Engine,
-		models:        dependencies.Models,
-		tools:         dependencies.Tools,
-		configs:       dependencies.Configs,
-		conversations: dependencies.Conversations,
-		secrets:       dependencies.Secrets,
-		now:           dependencies.Clock,
+		engine:               dependencies.Engine,
+		models:               dependencies.Models,
+		transientModels:      dependencies.TransientModels,
+		modelDiscovery:       dependencies.ModelDiscovery,
+		tools:                dependencies.Tools,
+		configs:              dependencies.Configs,
+		conversations:        dependencies.Conversations,
+		secrets:              dependencies.Secrets,
+		transientCredentials: dependencies.TransientCredentials,
+		now:                  dependencies.Clock,
 	}, nil
+}
+
+// ListModels consumes the same one-time SecretBootstrap envelope as chat but
+// never loads or mutates runtime configuration, conversation state, or the
+// durable request ledger.
+func (r *Runtime) ListModels(ctx context.Context, request ModelListRequest) ([]modelapi.Descriptor, error) {
+	if r == nil || r.modelDiscovery == nil {
+		return nil, ErrInvalidDependencies
+	}
+	transientRequest := ChatRequest{
+		RequestID: request.RequestID, OwnerID: request.OwnerID,
+		BootstrapClientID: request.BootstrapClientID, TransientModel: request.TransientModel,
+	}
+	prepared, err := prepareTransientModelMetadata(transientRequest)
+	if err != nil || prepared == nil {
+		return nil, ErrTransientModel
+	}
+	credential, err := r.consumeTransientCredential(ctx, transientRequest, *prepared)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(credential)
+	resolver := &transientSecretResolver{ref: prepared.profile.SecretRef, credential: credential}
+	models, err := r.modelDiscovery.ListModels(ctx, prepared.profile, resolver)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]modelapi.Descriptor, len(models))
+	for index := range models {
+		result[index] = models[index]
+		result[index].ReasoningModes = append([]string(nil), models[index].ReasoningModes...)
+	}
+	return result, nil
 }
 
 func (r *Runtime) Chat(ctx context.Context, request ChatRequest) (ChatResult, error) {
@@ -102,6 +148,7 @@ func (r *Runtime) Chat(ctx context.Context, request ChatRequest) (ChatResult, er
 	if err != nil {
 		return ChatResult{}, err
 	}
+	defer clear(state.transientCredential)
 	engineResult, err := r.engine.Generate(ctx, runtimeEngineRequest(state))
 	if err != nil {
 		return ChatResult{}, err
@@ -126,6 +173,7 @@ func (r *Runtime) Stream(ctx context.Context, request ChatRequest, emit StreamEm
 	if err != nil {
 		return ChatResult{}, err
 	}
+	defer clear(state.transientCredential)
 	engineResult, err := r.engine.Stream(ctx, runtimeEngineRequest(state), publicStreamEmitter(emit))
 	if err != nil {
 		return ChatResult{}, err
@@ -235,7 +283,13 @@ func publicStreamEmitter(emit StreamEmitter) StreamEmitter {
 	}
 }
 
-func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, error) {
+func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (state runState, err error) {
+	var requestCredential []byte
+	defer func() {
+		if err != nil {
+			clear(requestCredential)
+		}
+	}()
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.OwnerID = strings.TrimSpace(request.OwnerID)
 	request.ConversationID = strings.TrimSpace(request.ConversationID)
@@ -256,7 +310,19 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 		return runState{}, err
 	}
 	config = normalizedRuntimeConfig(config)
-	state := runState{
+	transient, err := prepareTransientModelMetadata(request)
+	if err != nil {
+		return runState{}, err
+	}
+	if transient != nil {
+		config.ModelProfile = transient.profile
+		if transient.searchProfile != nil {
+			config.SearchProfile = transient.searchProfile
+		} else if config.SearchProfile != nil && config.SearchProfile.Provider == searchprofile.ProviderDeepSeekNative {
+			config.SearchProfile = nil
+		}
+	}
+	state = runState{
 		config:          config,
 		requestMessages: requestMessages,
 	}
@@ -304,15 +370,41 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 		// input can never become valid after those definitions are loaded.
 		return runState{}, contextWindowInputError()
 	}
+	modelResolver := r.secrets
+	modelFactory := r.models
+	var transientSearchResolver SecretResolver
+	if transient != nil {
+		var consumeErr error
+		requestCredential, consumeErr = r.consumeTransientCredential(ctx, request, *transient)
+		if consumeErr != nil {
+			return runState{}, consumeErr
+		}
+		state.transientCredential = requestCredential
+		resolver := &transientSecretResolver{ref: transient.profile.SecretRef, credential: requestCredential}
+		modelResolver = resolver
+		modelFactory = r.transientModels
+		if transient.searchProfile != nil {
+			transientSearchResolver = resolver
+		}
+	}
 	enabledNames := append([]string(nil), config.EnabledTools...)
 	knowledgeRefs := append([]string(nil), config.KnowledgeRefs...)
 	mcpServerIDs := append([]string(nil), config.MCPServerIDs...)
 	recipeIDs := append([]string(nil), config.RecipeIDs...)
+	var searchProfile *searchprofile.Profile
+	if config.SearchProfile != nil {
+		profile := *config.SearchProfile
+		searchProfile = &profile
+		enabledNames = append(enabledNames, SearchToolName)
+	}
 	if request.CloudDialogue != nil {
 		enabledNames = CloudDialogueToolNames()
 		knowledgeRefs = nil
 		mcpServerIDs = nil
 		recipeIDs = nil
+		if searchProfile != nil {
+			enabledNames = append(enabledNames, SearchToolName)
+		}
 	}
 	tools, err := loadToolSet(ctx, r.tools, ToolRequest{
 		RequestID:         request.RequestID,
@@ -323,10 +415,28 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 		KnowledgeRefs:     knowledgeRefs,
 		MCPServerIDs:      mcpServerIDs,
 		RecipeIDs:         recipeIDs,
+		SearchProfile:     searchProfile,
+		TransientSecrets:  transientSearchResolver,
 		CloudDialogue:     request.CloudDialogue,
 	})
 	if err != nil {
 		return runState{}, err
+	}
+	if searchProfile != nil {
+		if _, available := tools.byName[SearchToolName]; !available {
+			return runState{}, ErrSearchUnavailable
+		}
+	}
+	if request.CloudDialogue != nil {
+		preflight := trustedTaskStatusPreflight(
+			ctx,
+			tools,
+			history,
+		)
+		if preflight.ProjectProfile != "" {
+			projectProfile += "\n\n" + preflight.ProjectProfile
+			history = append(history, preflight.Messages...)
+		}
 	}
 	contextByteBudget, ok := modelInputByteBudget(config.ModelProfile, tools.definitions)
 	if !ok {
@@ -337,7 +447,10 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (runState, e
 		return runState{}, contextWindowInputError()
 	}
 	state.contextByteBudget = contextByteBudget
-	client, err := r.models.CreateModel(ctx, config.ModelProfile, r.secrets)
+	if modelFactory == nil || modelResolver == nil {
+		return runState{}, ErrInvalidDependencies
+	}
+	client, err := modelFactory.CreateModel(ctx, config.ModelProfile, modelResolver)
 	if err != nil {
 		return runState{}, err
 	}

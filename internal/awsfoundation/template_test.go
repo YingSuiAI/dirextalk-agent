@@ -16,7 +16,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		t.Fatalf("validate template: %v", err)
 	}
 	for _, forbidden := range [][]byte{
-		[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"), []byte("RunTaggedNetworkInterface"),
+		[]byte("AWS::ApiGateway"), []byte("BrokerLambda"), []byte("AWS::IAM::User"), []byte("nodejs"), []byte("latest"),
 		[]byte("AWS::Route53"), []byte("route53:"), []byte("acm:RequestCertificate"), []byte("acm:DeleteCertificate"), []byte("acm:ImportCertificate"),
 		[]byte("WorkerTypedMilestoneLogs"), []byte("${WorkerLogGroup.Arn}:log-stream:*"),
 	} {
@@ -32,7 +32,7 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("cloudwatch:GetMetricStatistics"), []byte("pricing:GetProducts"), []byte("servicequotas:GetServiceQuota"),
 		[]byte("RunTaggedInstanceVolume"),
 		[]byte("UseOwnedNetworkInterface"), []byte("UsePublicBuilderBaseImage"), []byte("UseOwnedWorkerImage"), []byte("UseLaunchNetworkInputs"),
-		[]byte("CreateImageFromOwnedBuilder"), []byte("CreateImageOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
+		[]byte("CreateImageFromOwnedBuilder"), []byte("CreateImageOutput"), []byte("CreateImageSnapshotOutput"), []byte("TagWorkerImageOutputs"), []byte("DestroyOwnedWorkerImage"),
 		[]byte("ec2:CreateImage"), []byte("ec2:DeregisterImage"), []byte("s3:GetBucketVersioning"), []byte("s3:GetEncryptionConfiguration"),
 		[]byte("s3:ListBucketVersions"), []byte("s3:GetObjectVersion"), []byte("s3:DeleteObjectVersion"),
 		[]byte("WorkerInstallerArtifacts"), []byte("${ArtifactBucket.Arn}/deployments/*/artifacts/*"), []byte("s3:ExistingObjectTag/dirextalk:worker_principal"),
@@ -41,13 +41,66 @@ func TestFoundationTemplateContainsScopedFoundationWithoutBroker(t *testing.T) {
 		[]byte("WorkerMilestoneRelayLogs"), []byte("logs:PutLogEvents"),
 		[]byte("kms:EnableKeyRotation"), []byte("kms:ScheduleKeyDeletion"), []byte("kms:EncryptionContext:aws:s3:arn"), []byte("kms:ViaService"),
 		[]byte("AWS::IAM::ManagedPolicy"), []byte("ControlEntrypointPolicy"), []byte("acm:DescribeCertificate"), []byte("secretsmanager:DeleteResourcePolicy"),
+		[]byte("DestroyDeploymentSecretsByNamespace"),
 		[]byte("elasticloadbalancing:CreateLoadBalancer"), []byte("elasticloadbalancing:CreateTargetGroup"), []byte("elasticloadbalancing:CreateListener"),
 		[]byte("elasticloadbalancing:DescribeTargetHealth"), []byte("elasticloadbalancing:AddTags"), []byte("elasticloadbalancing:DeleteLoadBalancer"),
-		[]byte("ec2:DescribeSecurityGroupRules"), []byte("AuthorizeTaggedIngressOnOwnedSecurityGroup"), []byte("TagIngressRuleOnCreate"),
+		[]byte("ec2:DescribeSecurityGroupRules"), []byte("AuthorizeTaggedWorkerAMIEgressRule"), []byte("RunTaggedNetworkInterface"), []byte("AuthorizeTaggedIngressOnOwnedSecurityGroup"), []byte("TagIngressRuleOnCreate"),
 	} {
 		if !bytes.Contains(template, required) {
 			t.Fatalf("template is missing %q", required)
 		}
+	}
+}
+
+func TestFoundationTemplateSecretDestroyRemainsNamespaceScopedWithoutResourceTags(t *testing.T) {
+	template := testFoundationTemplate(t)
+	statements := controlManagedPolicyStatements(t, "ControlArtifactTagPolicy")
+	destroy, ok := statements["DestroyDeploymentSecretsByNamespace"]
+	if !ok {
+		t.Fatal("control supplemental policy is missing namespace-scoped secret destruction")
+	}
+	if !sameStrings(stringValues(destroy["Action"]), []string{
+		"secretsmanager:DeleteSecret", "secretsmanager:DescribeSecret",
+	}) || !sameStrings(templateResourceStrings(destroy["Resource"]), []string{
+		"arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*",
+	}) || destroy["Condition"] != nil {
+		t.Fatalf("namespace-scoped secret destruction = %#v", destroy)
+	}
+
+	for _, mutation := range []struct{ old, replacement string }{
+		{"secret:${SecretNamespace}*", "secret:*"},
+		{"- secretsmanager:DescribeSecret", "- secretsmanager:ListSecrets"},
+		{"            Resource:", "            Condition:\n              StringEquals:\n                aws:ResourceTag/dirextalk:agent_instance_id:\n                  Ref: AgentInstanceId\n            Resource:"},
+	} {
+		mutated := mutateFoundationStatement(t, template, "DestroyDeploymentSecretsByNamespace", mutation.old, mutation.replacement)
+		if err := ValidateTemplate(mutated); err == nil {
+			t.Fatalf("unsafe namespace secret destruction mutation %q was accepted", mutation.replacement)
+		}
+	}
+}
+
+func TestCanonicalTemplateBodyFitsInlineCloudFormationAndIsDeterministic(t *testing.T) {
+	source := testFoundationTemplate(t)
+	canonical, err := CanonicalTemplateBody(source)
+	if err != nil {
+		t.Fatalf("CanonicalTemplateBody() error = %v", err)
+	}
+	if len(canonical) > cloudFormationTemplateBodyMaxBytes {
+		t.Fatalf("canonical template is %d bytes; CloudFormation accepts at most %d", len(canonical), cloudFormationTemplateBodyMaxBytes)
+	}
+	if !json.Valid(canonical) || bytes.Contains(canonical, []byte{'\n'}) {
+		t.Fatal("canonical template is not compact JSON")
+	}
+	if err := ValidateTemplate(canonical); err != nil {
+		t.Fatalf("canonical template no longer satisfies the source policy: %v", err)
+	}
+	withSourceOnlyChanges := append(append([]byte(nil), source...), []byte("\n# source-only release note\n")...)
+	second, err := CanonicalTemplateBody(withSourceOnlyChanges)
+	if err != nil {
+		t.Fatalf("CanonicalTemplateBody(commented) error = %v", err)
+	}
+	if !bytes.Equal(canonical, second) {
+		t.Fatal("source-only YAML comments changed the provider template body")
 	}
 }
 
@@ -214,23 +267,65 @@ func TestFoundationTemplateControlEBSKMSPermissionsAreScoped(t *testing.T) {
 
 func TestFoundationTemplateControlArtifactTagPolicyIsMinimumScoped(t *testing.T) {
 	statements := controlManagedPolicyStatements(t, "ControlArtifactTagPolicy")
-	statement, ok := statements["TagPublishedControlArtifacts"]
-	if !ok || len(statements) != 1 ||
-		!sameStrings(stringValues(statement["Action"]), []string{"s3:PutObjectTagging"}) ||
-		!sameStrings(templateResourceStrings(statement["Resource"]), []string{
+	artifacts, artifactsOK := statements["TagPublishedControlArtifacts"]
+	workerAMIEgress, egressOK := statements["AuthorizeTaggedWorkerAMIEgressRule"]
+	taggedNetworkInterface, networkInterfaceOK := statements["RunTaggedNetworkInterface"]
+	imageSnapshot, imageSnapshotOK := statements["CreateImageSnapshotOutput"]
+	secretCreate, secretCreateOK := statements["CreateTaggedDeploymentSecrets"]
+	secretMutate, secretMutateOK := statements["MutateOnlyOwnedDeploymentSecrets"]
+	secretDestroy, secretDestroyOK := statements["DestroyDeploymentSecretsByNamespace"]
+	secretResource := []string{"arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*"}
+	if !artifactsOK || !egressOK || !networkInterfaceOK || !imageSnapshotOK ||
+		!secretCreateOK || !secretMutateOK || !secretDestroyOK || len(statements) != 7 ||
+		!sameStrings(stringValues(artifacts["Action"]), []string{"s3:PutObjectTagging"}) ||
+		!sameStrings(templateResourceStrings(artifacts["Resource"]), []string{
 			"${ArtifactBucket.Arn}/deployments/*/bundles/*",
 			"${ArtifactBucket.Arn}/deployments/*/launch/*",
 			"${ArtifactBucket.Arn}/workers/*/bundles/*",
-		}) || statement["Condition"] != nil {
-		t.Fatalf("control artifact tag policy is not path-scoped: %#v", statement)
+		}) || artifacts["Condition"] != nil ||
+		!sameStrings(stringValues(workerAMIEgress["Action"]), []string{"ec2:AuthorizeSecurityGroupEgress"}) ||
+		!sameStrings(templateResourceStrings(workerAMIEgress["Resource"]), []string{
+			"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*",
+		}) || !workerAMIEgressRuleCondition(workerAMIEgress) ||
+		!sameStrings(stringValues(taggedNetworkInterface["Action"]), []string{"ec2:RunInstances"}) ||
+		!sameStrings(templateResourceStrings(taggedNetworkInterface["Resource"]), []string{
+			"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
+		}) || !singleRefCondition(taggedNetworkInterface, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		!sameStrings(stringValues(imageSnapshot["Action"]), []string{"ec2:CreateImage"}) ||
+		!sameStrings(templateResourceStrings(imageSnapshot["Resource"]), []string{
+			"arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*",
+		}) || !workerAMISnapshotOutputCondition(imageSnapshot) ||
+		!sameStrings(stringValues(secretCreate["Action"]), []string{"secretsmanager:CreateSecret"}) ||
+		!sameStrings(templateResourceStrings(secretCreate["Resource"]), secretResource) ||
+		!singleRefCondition(secretCreate, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		!sameStrings(stringValues(secretMutate["Action"]), []string{
+			"secretsmanager:DeleteResourcePolicy", "secretsmanager:GetSecretValue", "secretsmanager:GetResourcePolicy",
+			"secretsmanager:PutSecretValue", "secretsmanager:PutResourcePolicy", "secretsmanager:TagResource", "secretsmanager:UntagResource",
+		}) || !sameStrings(templateResourceStrings(secretMutate["Resource"]), secretResource) ||
+		!singleRefCondition(secretMutate, "StringEquals", "aws:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		!sameStrings(stringValues(secretDestroy["Action"]), []string{"secretsmanager:DeleteSecret", "secretsmanager:DescribeSecret"}) ||
+		!sameStrings(templateResourceStrings(secretDestroy["Resource"]), secretResource) || secretDestroy["Condition"] != nil {
+		t.Fatalf("control auxiliary policy is not exactly scoped: %#v", statements)
 	}
 
 	template := testFoundationTemplate(t)
 	for name, mutation := range map[string][3]string{
-		"action changes":       {"TagPublishedControlArtifacts", "- s3:PutObjectTagging", "- s3:PutObject"},
-		"bundle path broadens": {"TagPublishedControlArtifacts", "deployments/*/bundles/*", "deployments/*"},
-		"launch path changes":  {"TagPublishedControlArtifacts", "deployments/*/launch/*", "deployments/*/artifacts/*"},
-		"worker path broadens": {"TagPublishedControlArtifacts", "workers/*/bundles/*", "workers/*"},
+		"artifact action changes":                 {"TagPublishedControlArtifacts", "- s3:PutObjectTagging", "- s3:PutObject"},
+		"bundle path broadens":                    {"TagPublishedControlArtifacts", "deployments/*/bundles/*", "deployments/*"},
+		"launch path changes":                     {"TagPublishedControlArtifacts", "deployments/*/launch/*", "deployments/*/artifacts/*"},
+		"worker path broadens":                    {"TagPublishedControlArtifacts", "workers/*/bundles/*", "workers/*"},
+		"Worker AMI egress loses ownership":       {"AuthorizeTaggedWorkerAMIEgressRule", "aws:RequestTag/dirextalk:agent_instance_id", "aws:RequestTag/unrelated"},
+		"Worker AMI egress loses ephemeral scope": {"AuthorizeTaggedWorkerAMIEgressRule", "aws:RequestTag/dirextalk:retention: ephemeral", "aws:RequestTag/dirextalk:retention: managed"},
+		"Worker AMI egress resource broadens":     {"AuthorizeTaggedWorkerAMIEgressRule", "security-group-rule/*", "security-group/*"},
+		"Worker AMI egress tag keys broaden":      {"AuthorizeTaggedWorkerAMIEgressRule", "                  - dirextalk:retention", "                  - unrestricted_tag_key"},
+		"new interface loses request ownership":   {"RunTaggedNetworkInterface", "aws:RequestTag/dirextalk:agent_instance_id", "ec2:ResourceTag/dirextalk:agent_instance_id"},
+		"new interface resource broadens":         {"RunTaggedNetworkInterface", ":network-interface/*", ":*"},
+		"AMI snapshot loses request ownership":    {"CreateImageSnapshotOutput", "aws:RequestTag/dirextalk:agent_instance_id", "ec2:ResourceTag/dirextalk:agent_instance_id"},
+		"AMI snapshot resource broadens":          {"CreateImageSnapshotOutput", ":snapshot/*", ":*"},
+		"AMI snapshot tag allowlist broadens":     {"CreateImageSnapshotOutput", "                  - dirextalk:worker_binary_digest", "                  - unrestricted_tag_key"},
+		"AMI snapshot release tag may be absent":  {"CreateImageSnapshotOutput", "aws:RequestTag/dirextalk:release_manifest_digest: 'false'", "aws:RequestTag/dirextalk:release_manifest_digest: 'true'"},
+		"secret creation loses request ownership": {"CreateTaggedDeploymentSecrets", "aws:RequestTag/dirextalk:agent_instance_id", "aws:RequestTag/unrelated"},
+		"secret mutation loses ownership":         {"MutateOnlyOwnedDeploymentSecrets", "aws:ResourceTag/dirextalk:agent_instance_id", "aws:ResourceTag/unrelated"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := ValidateTemplate(mutateFoundationStatement(t, template, mutation[0], mutation[1], mutation[2])); err == nil {
@@ -313,7 +408,7 @@ func TestFoundationTemplateWorkerAMIPermissionsFailClosed(t *testing.T) {
 		{name: "source action is granted on the wrong resource", sid: "CreateImageFromOwnedBuilder", old: ":instance/*", new: ":image/*"},
 		{name: "new image loses request ownership", sid: "CreateImageOutput", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
 		{name: "CreateImage is combined with its dependent tag action", sid: "CreateImageOutput", old: "- ec2:CreateImage", new: "- ec2:CreateImage\n              - ec2:CreateTags"},
-		{name: "new image action is granted on a snapshot", sid: "CreateImageOutput", old: "::image/*", new: ":${AWS::AccountId}:snapshot/*"},
+		{name: "new image action is granted on a snapshot", sid: "CreateImageOutput", old: "::image/*", new: "::snapshot/*"},
 		{name: "new image tags lose request ownership", sid: "TagWorkerImageOutputs", old: "aws:RequestTag/dirextalk:agent_instance_id", new: "ec2:ResourceTag/dirextalk:agent_instance_id"},
 		{name: "new image snapshot tag scope is broadened", sid: "TagWorkerImageOutputs", old: ":snapshot/*", new: ":volume/*"},
 		{name: "image tagging is detached from CreateImage", sid: "TagWorkerImageOutputs", old: "ec2:CreateAction: CreateImage", new: "ec2:CreateAction: RunInstances"},
@@ -360,7 +455,7 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*",
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
-		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*",
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*",
 	})
 	if !conditionRefEquals(created, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
@@ -407,7 +502,6 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 	if !singleRefCondition(volume, "StringEquals", "ec2:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
 		t.Fatal("snapshot creation is not bound to an owned source volume")
 	}
-
 	tagging := assertStatement("TagComputeOnCreate", []string{"ec2:CreateTags"}, []string{
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*",
 	})
@@ -422,11 +516,37 @@ func TestFoundationTemplateControlRuntimeCreatePermissionsMatchEC2ResourceModel(
 	if !computeTagCondition(tagging, true) {
 		t.Fatal("tag-on-create permission does not restrict ownership, tag keys, and create actions")
 	}
+	tagCondition, _ := stringMap(tagging["Condition"])
+	tagKeyCondition, _ := stringMap(tagCondition["ForAllValues:StringEquals"])
+	for _, required := range []string{
+		"dirextalk:component",
+		"dirextalk:worker_ami_build_digest",
+		"dirextalk:release_manifest_digest",
+		"dirextalk:worker_rootfs_digest",
+		"dirextalk:worker_binary_digest",
+	} {
+		if !stringSliceContains(stringValues(tagKeyCondition["aws:TagKeys"]), required) {
+			t.Fatalf("tag-on-create permission is missing Worker AMI identity key %q", required)
+		}
+	}
 	ownedTagging := assertStatement("TagOnlyOwnedCompute", []string{"ec2:CreateTags"}, []string{
 		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*",
 	})
 	if !computeTagCondition(ownedTagging, false) {
 		t.Fatal("direct CreateTags is not restricted to an already-owned resource and the runtime tag allowlist")
+	}
+	ownedCondition, _ := stringMap(ownedTagging["Condition"])
+	ownedTagKeyCondition, _ := stringMap(ownedCondition["ForAllValues:StringEquals"])
+	for _, immutable := range []string{
+		"dirextalk:component",
+		"dirextalk:worker_ami_build_digest",
+		"dirextalk:release_manifest_digest",
+		"dirextalk:worker_rootfs_digest",
+		"dirextalk:worker_binary_digest",
+	} {
+		if stringSliceContains(stringValues(ownedTagKeyCondition["aws:TagKeys"]), immutable) {
+			t.Fatalf("direct CreateTags can rewrite Worker AMI identity key %q", immutable)
+		}
 	}
 }
 
@@ -446,6 +566,7 @@ func TestFoundationTemplateEC2CreationPermissionsFailClosed(t *testing.T) {
 		{name: "snapshot accepts an unowned source volume", sid: "UseOwnedVolumeForSnapshot", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:RequestTag/dirextalk:agent_instance_id"},
 		{name: "elastic ip tagging is omitted", sid: "TagComputeOnCreate", old: "                  - AllocateAddress\n", replacement: ""},
 		{name: "transient S3 egress rule tagging is omitted", sid: "TagComputeOnCreate", old: "                  - AuthorizeSecurityGroupEgress\n", replacement: ""},
+		{name: "Worker AMI build digest tagging is omitted", sid: "TagComputeOnCreate", old: "                  - dirextalk:worker_ami_build_digest\n", replacement: ""},
 		{name: "unlisted create action may tag", sid: "TagComputeOnCreate", old: "                  - AllocateAddress", replacement: "                  - ModifyVolume"},
 		{name: "tag key allowlist is broadened", sid: "TagComputeOnCreate", old: "                  - dirextalk_client_token", replacement: "                  - unrestricted_tag_key"},
 		{name: "direct tagging loses existing ownership", sid: "TagOnlyOwnedCompute", old: "ec2:ResourceTag/dirextalk:agent_instance_id", replacement: "aws:ResourceTag/unrelated"},

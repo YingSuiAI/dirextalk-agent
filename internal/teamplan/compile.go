@@ -70,11 +70,12 @@ func Compile(request CompileRequest) (Plan, error) {
 		return Plan{}, err
 	}
 	plan := Plan{
-		SchemaVersion:         SchemaV1,
+		SchemaVersion:         SchemaV3,
 		PlanID:                request.PlanID,
 		Revision:              request.Revision,
 		OwnerID:               request.OwnerID,
 		GoalDigest:            request.GoalDigest,
+		TaskInput:             request.TaskInput,
 		ProviderScope:         request.ProviderScope,
 		Region:                request.Region,
 		CatalogRevision:       request.CatalogRevision,

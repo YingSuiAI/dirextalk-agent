@@ -105,6 +105,24 @@ message ListTasksResponse {
   string next_page_token = 2;
 }
 
+message TaskStatusCount {
+  ExecutionStatus execution_status = 1;
+  OutcomeStatus outcome_status = 2;
+  int64 count = 3;
+}
+
+message GetTaskOverviewRequest {
+  string owner_id = 1;
+  int32 recent_limit = 2;
+}
+
+message GetTaskOverviewResponse {
+  int64 total_count = 1;
+  repeated TaskStatusCount status_counts = 2;
+  repeated Task recent_tasks = 3;
+  google.protobuf.Timestamp as_of = 4;
+}
+
 message CancelTaskRequest {
   string idempotency_key = 1;
   string task_id = 2;
@@ -122,6 +140,7 @@ service TaskService {
   rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
   rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc GetTaskOverview(GetTaskOverviewRequest) returns (GetTaskOverviewResponse);
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
   rpc ListSteps(ListStepsRequest) returns (ListStepsResponse);
   rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse);
@@ -137,6 +156,7 @@ message RuntimeCapabilities {
   bool knowledge = 7;
   bool mcp_http = 8;
   repeated string model_profile_ids = 9;
+  repeated string search_profile_ids = 10;
 }
 
 message RuntimeServiceGetCapabilitiesRequest {}
@@ -165,6 +185,34 @@ message ModelProfile {
   string profile_id = 10;
 }
 
+// TransientModelInvocation carries caller-selected, non-secret model metadata
+// plus a one-time SecretBootstrap reference. API-key bytes are never part of
+// RuntimeService Chat/StreamChat protobuf messages.
+message TransientModelInvocation {
+  ModelProfile profile = 1;
+  string credential_session_id = 2;
+  int64 credential_session_revision = 3;
+  bytes credential_sha256 = 4;
+}
+
+enum SearchProvider {
+  SEARCH_PROVIDER_UNSPECIFIED = 0;
+  SEARCH_PROVIDER_TAVILY = 1;
+  SEARCH_PROVIDER_BRAVE = 2;
+  SEARCH_PROVIDER_EXA = 3;
+  SEARCH_PROVIDER_SERPER = 4;
+  SEARCH_PROVIDER_DEEPSEEK_NATIVE = 5;
+}
+
+message SearchProfile {
+  string profile_id = 1;
+  SearchProvider provider = 2;
+  string base_url = 3;
+  string secret_ref = 4;
+  int32 max_results = 5;
+  int32 timeout_seconds = 6;
+}
+
 message RuntimeConfigSpec {
   ModelProfile model_profile = 1;
 
@@ -179,6 +227,7 @@ message RuntimeConfigSpec {
   repeated string knowledge_refs = 8;
   repeated string mcp_server_ids = 9;
   repeated string recipe_ids = 10;
+  SearchProfile search_profile = 11;
 }
 
 message RuntimeConfig {
@@ -207,6 +256,7 @@ message ChatRequest {
   bool memory_disabled = 5;
   int64 expected_conversation_revision = 6;
   CloudDialogueScopeV1 cloud_dialogue_scope = 7;
+  TransientModelInvocation transient_model = 8;
 }
 
 enum RuntimeStepKind {
@@ -237,6 +287,26 @@ message ChatResponse {
   repeated string related_plan_ids = 6;
 }
 
+// ListModels performs a credential-scoped provider discovery request without
+// persisting either the request or the one-time credential. Only sanitized
+// provider model metadata is returned to the caller.
+message ListModelsRequest {
+  string request_id = 1;
+  string owner_id = 2;
+  TransientModelInvocation transient_model = 3;
+}
+
+message ModelDescriptor {
+  string id = 1;
+  string name = 2;
+  string provider = 3;
+  int64 context_window = 4;
+  int64 max_output_tokens = 5;
+  repeated string reasoning_modes = 6;
+}
+
+message ListModelsResponse { repeated ModelDescriptor models = 1; }
+
 message StreamChatRequest {
   string idempotency_key = 1;
   string owner_id = 2;
@@ -245,6 +315,7 @@ message StreamChatRequest {
   bool memory_disabled = 5;
   int64 expected_conversation_revision = 6;
   CloudDialogueScopeV1 cloud_dialogue_scope = 7;
+  TransientModelInvocation transient_model = 8;
 }
 
 message ChatDelta {
@@ -273,6 +344,7 @@ service RuntimeService {
   rpc GetCapabilities(RuntimeServiceGetCapabilitiesRequest) returns (RuntimeServiceGetCapabilitiesResponse);
   rpc GetRuntimeConfig(GetRuntimeConfigRequest) returns (GetRuntimeConfigResponse);
   rpc PutRuntimeConfig(PutRuntimeConfigRequest) returns (PutRuntimeConfigResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
   rpc Chat(ChatRequest) returns (ChatResponse);
   rpc StreamChat(StreamChatRequest) returns (stream StreamChatResponse);
 }

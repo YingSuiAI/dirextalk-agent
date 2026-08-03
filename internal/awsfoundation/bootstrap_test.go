@@ -63,6 +63,13 @@ func TestBootstrapEstablishesFoundationWithoutPersistingAdminCredential(t *testi
 	if provider.ensureCalls != 1 || provider.stackCalls != 1 || provider.stackRequest.FoundationRoleARN == "" || provider.stackRequest.TemplateSHA256 == "" {
 		t.Fatalf("provider calls = ensure %d stack %d request %#v", provider.ensureCalls, provider.stackCalls, provider.stackRequest)
 	}
+	canonical, err := CanonicalTemplateBody(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.stackRequest.TemplateBody != string(canonical) || len(provider.stackRequest.TemplateBody) > cloudFormationTemplateBodyMaxBytes {
+		t.Fatalf("provider did not receive the bounded canonical template body: %d bytes", len(provider.stackRequest.TemplateBody))
+	}
 }
 
 func TestBootstrapFailsClosedBeforeMutationOnIdentityMismatch(t *testing.T) {

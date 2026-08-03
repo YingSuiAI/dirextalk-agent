@@ -11,10 +11,14 @@ import (
 )
 
 const (
-	OfferSnapshotSchemaV1        = "dirextalk.agent.team-offer-snapshot/v1"
-	OfferSnapshotValidity        = 15 * time.Minute
-	ModelPricingEvidenceValidity = 7 * 24 * time.Hour
-	maximumOfferSources          = 8
+	OfferSnapshotSchemaV1 = "dirextalk.agent.team-offer-snapshot/v1"
+	// Plans remain approvable for one day. Provider creation still requires
+	// a fresh quote no older than teamlaunch.maximumQuoteAgeSeconds and may
+	// never exceed the approved role or Team hard-budget boundaries.
+	OfferSnapshotValidity          = 24 * time.Hour
+	ComputePricingEvidenceValidity = 15 * time.Minute
+	ModelPricingEvidenceValidity   = 7 * 24 * time.Hour
+	maximumOfferSources            = 8
 )
 
 type OfferSourceKind string
@@ -326,12 +330,11 @@ func normalizeOfferSnapshot(
 			source.CapturedAt.After(document.CapturedAt) {
 			return OfferSnapshotDocument{}, ErrInvalid
 		}
-		maximumAge := OfferSnapshotValidity
+		maximumAge := ComputePricingEvidenceValidity
 		if source.Kind == OfferSourceModelPricing {
 			maximumAge = ModelPricingEvidenceValidity
 		}
-		if document.CapturedAt.Sub(source.CapturedAt) > maximumAge ||
-			document.ValidUntil.After(source.CapturedAt.Add(maximumAge)) {
+		if document.CapturedAt.Sub(source.CapturedAt) > maximumAge {
 			return OfferSnapshotDocument{}, ErrInvalid
 		}
 		key := string(source.Kind) + "\x00" + source.SourceID

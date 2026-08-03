@@ -159,6 +159,32 @@ func TestProviderErrorIsStructuredBoundedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestProviderErrorExposesOnlyStableFailureClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		statusCode int
+		want       error
+	}{
+		{name: "credential", statusCode: http.StatusUnauthorized, want: ErrProviderCredential},
+		{name: "request", statusCode: http.StatusBadRequest, want: ErrProviderRequest},
+		{name: "rate limited", statusCode: http.StatusTooManyRequests, want: ErrProviderRateLimited},
+		{name: "provider unavailable", statusCode: http.StatusBadGateway, want: ErrProviderUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := &ProviderError{
+				Provider: ProviderDeepSeek, StatusCode: test.statusCode,
+				Code: "provider_owned_code", Message: "bounded provider detail",
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("errors.Is(%v) = false, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestSecretResolverFailureDoesNotPropagateSensitiveCause(t *testing.T) {
 	t.Parallel()
 

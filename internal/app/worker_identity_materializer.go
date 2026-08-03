@@ -6,8 +6,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
-	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
-	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamdispatch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 )
@@ -17,7 +16,7 @@ type workerPrincipalBinder interface {
 }
 
 type workerIdentityMaterializer struct {
-	launches    workerIdentityLaunchReader
+	launches    *workerIdentityLaunchResolver
 	connections workerIdentityConnectionReader
 	deployments workerIdentityDeploymentReader
 	binder      workerPrincipalBinder
@@ -28,11 +27,22 @@ func newWorkerIdentityMaterializer(
 	connections workerIdentityConnectionReader,
 	deployments workerIdentityDeploymentReader,
 	binder workerPrincipalBinder,
+	teamLaunches ...teamdispatch.WorkerLaunchReader,
 ) (*workerIdentityMaterializer, error) {
 	if launches == nil || connections == nil || deployments == nil || binder == nil {
 		return nil, cloudapp.ErrInvalid
 	}
-	return &workerIdentityMaterializer{launches: launches, connections: connections, deployments: deployments, binder: binder}, nil
+	resolver, err := newWorkerIdentityLaunchResolver(
+		launches,
+		teamLaunches,
+	)
+	if err != nil {
+		return nil, cloudapp.ErrInvalid
+	}
+	return &workerIdentityMaterializer{
+		launches: resolver, connections: connections,
+		deployments: deployments, binder: binder,
+	}, nil
 }
 
 func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
@@ -46,31 +56,28 @@ func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
 		identity.InstanceID != challenge.ExpectedProviderInstanceID || identity.PrincipalID == "" {
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
-	operation, err := materializer.launches.GetByDeployment(ctx, challenge.DeploymentID)
-	if err != nil || operation.DeploymentID != challenge.DeploymentID || operation.Launch.OwnerID != challenge.OwnerID || operation.ConnectionID == "" ||
-		(operation.State != cloudexecution.StateProvisioning && operation.State != cloudexecution.StateActive) {
-		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
-	}
 	deployment, err := materializer.deployments.Get(ctx, challenge.DeploymentID)
-	if err != nil || deployment.DeploymentID != challenge.DeploymentID || deployment.OwnerID != challenge.OwnerID || deployment.TaskID != operation.TaskID ||
+	if err != nil || deployment.DeploymentID != challenge.DeploymentID || deployment.OwnerID != challenge.OwnerID ||
 		deployment.State != worker.StatePendingEnrollment || deployment.ProviderInstanceID != "" ||
-		(deployment.WorkerID != "" && deployment.WorkerID != challenge.WorkerID) ||
-		operation.RecipeBundle != deployment.RecipeBundle || operation.ExecutionBundle != deployment.ExecutionBundle {
+		(deployment.WorkerID != "" && deployment.WorkerID != challenge.WorkerID) {
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
-	connection, err := materializer.connections.LoadConnection(ctx, challenge.OwnerID, operation.ConnectionID)
+	launch, err := materializer.launches.Resolve(
+		ctx,
+		challenge.OwnerID,
+		deployment,
+	)
+	if err != nil {
+		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
+	}
+	connection, err := materializer.connections.LoadConnection(ctx, challenge.OwnerID, launch.ConnectionID)
 	if err != nil || connection.Status != "active" || connection.OwnerID != challenge.OwnerID || connection.AccountID != challenge.AccountID || connection.Region != challenge.Region ||
 		strings.TrimSpace(connection.FoundationStack) == "" {
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
-	published := cloudexecution.PublishedBundles{
-		Recipe: operation.RecipeBundle, Execution: operation.ExecutionBundle, Access: deployment.Access,
-		SecretBindings: installerSecretBindings(operation), InstallerRootTrust: operation.InstallerRootTrust,
-		InstallerSecrets: append([]installerbootstrap.SecretSourceV1(nil), operation.InstallerSecrets...),
-	}
 	bound, err := materializer.binder.Bind(ctx, awsartifact.PrincipalBindRequest{
 		Connection: connection, DeploymentID: challenge.DeploymentID, InstanceID: identity.InstanceID,
-		STSUserID: identity.PrincipalID, Published: published,
+		STSUserID: identity.PrincipalID, Published: launch.Published,
 	})
 	if err != nil {
 		return worker.IdentityMaterialization{}, worker.ErrIdentityUnavailable
@@ -87,12 +94,4 @@ func (materializer *workerIdentityMaterializer) MaterializeWorkerIdentity(
 		return worker.IdentityMaterialization{}, worker.ErrIdentityRejected
 	}
 	return result, nil
-}
-
-func installerSecretBindings(operation cloudexecution.Operation) map[string]string {
-	result := make(map[string]string, len(operation.InstallerSecrets))
-	for _, source := range operation.InstallerSecrets {
-		result[source.SecretRef] = "secret://aws/deployments/" + operation.DeploymentID + "/" + source.SlotID + "/" + source.VersionID
-	}
-	return result
 }

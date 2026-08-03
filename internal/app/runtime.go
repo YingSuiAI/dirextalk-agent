@@ -9,6 +9,8 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/cloudskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agent/einoengine"
+	"github.com/YingSuiAI/dirextalk-agent/internal/agent/teamskill"
+	"github.com/YingSuiAI/dirextalk-agent/internal/agent/teamtaskskill"
 	"github.com/YingSuiAI/dirextalk-agent/internal/canonicalmemory"
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
@@ -18,6 +20,7 @@ import (
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/scheduling"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
@@ -25,6 +28,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/turncontrol"
+	"github.com/YingSuiAI/dirextalk-agent/internal/websearch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
 	"github.com/google/uuid"
 )
@@ -49,7 +53,10 @@ type runtimeCompositionOptions struct {
 	teamPlans             *teamplan.CatalogCompiler
 	teamPolicies          teamorchestration.PolicyResolver
 	teamOffers            teamorchestration.TrustedOfferSource
+	teamLaunches          teamorchestration.TrustedLaunchAuthorizationBuilder
 	modelProfiles         *modelapi.ProfileCatalog
+	searchProfiles        *searchprofile.Catalog
+	transientCredentials  runtimeapi.TransientCredentialConsumer
 }
 
 // WithCloudGoalMaterializer enables the production queued planning path. The
@@ -112,6 +119,23 @@ func WithTeamOfferBuilder(
 	}
 }
 
+// WithTeamLaunchAuthorizationBuilder installs the server-owned projection
+// from an immutable Team Plan to exact, provider-launchable facts. Clients can
+// approve its digest but cannot supply or replace any of those facts.
+func WithTeamLaunchAuthorizationBuilder(
+	builder teamorchestration.TrustedLaunchAuthorizationBuilder,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || builder == nil {
+			return errors.New(
+				"trusted Team launch authorization builder is unavailable",
+			)
+		}
+		options.teamLaunches = builder
+		return nil
+	}
+}
+
 // WithLoadedModelProfiles reuses one already-validated immutable Profile
 // catalog across runtime execution and Team pricing startup.
 func WithLoadedModelProfiles(
@@ -122,6 +146,34 @@ func WithLoadedModelProfiles(
 			return errors.New("model profile catalog is unavailable")
 		}
 		options.modelProfiles = profiles
+		return nil
+	}
+}
+
+// WithLoadedSearchProfiles adds the optional immutable Search Profile catalog
+// to the public runtime configuration surface. It does not expose credential
+// references or provider bytes to callers.
+func WithLoadedSearchProfiles(
+	profiles *searchprofile.Catalog,
+) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || profiles == nil {
+			return errors.New("search profile catalog is unavailable")
+		}
+		options.searchProfiles = profiles
+		return nil
+	}
+}
+
+// WithTransientModelCredentials enables request-scoped client model profiles.
+// The supplied consumer releases only SecretBootstrap plaintext for the exact
+// authenticated runtime request and never persists it in runtime config.
+func WithTransientModelCredentials(consumer runtimeapi.TransientCredentialConsumer) RuntimeCompositionOption {
+	return func(options *runtimeCompositionOptions) error {
+		if options == nil || consumer == nil {
+			return errors.New("transient model credential consumer is unavailable")
+		}
+		options.transientCredentials = consumer
 		return nil
 	}
 }
@@ -177,6 +229,19 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		(options.teamPolicies == nil || options.teamPlans == nil) {
 		return RuntimeComposition{}, errors.New("Team offer builder requires the verified Team Plan gate")
 	}
+	if options.teamOffers != nil && options.teamLaunches == nil {
+		return RuntimeComposition{}, errors.New(
+			"Team offer builder requires trusted launch authorization",
+		)
+	}
+	if options.teamLaunches != nil &&
+		(options.teamOffers == nil ||
+			options.teamPolicies == nil ||
+			options.teamPlans == nil) {
+		return RuntimeComposition{}, errors.New(
+			"Team launch authorization requires complete Team planning",
+		)
+	}
 	var runtimeAdmission runtimeapp.Admission
 	var cloudGoalAdmission planning.CloudGoalAdmission
 	if options.localRunBudget != nil {
@@ -201,6 +266,67 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		return RuntimeComposition{}, errors.New("mounted runtime secret directory is unavailable")
 	}
 
+	var teamOrchestrator *teamorchestration.Service
+	var teamPreparation *teamorchestration.PreparationService
+	var teamExecutions *teamexecution.Service
+	if options.teamPolicies != nil {
+		teamRepository, repositoryErr :=
+			postgres.NewTeamOrchestrationRepository(store)
+		if repositoryErr != nil {
+			return RuntimeComposition{}, errors.New("Team Plan repository is unavailable")
+		}
+		orchestrationOptions := make(
+			[]teamorchestration.ServiceOption,
+			0,
+			2,
+		)
+		if options.teamOffers != nil {
+			orchestrationOptions = append(
+				orchestrationOptions,
+				teamorchestration.WithTrustedOfferVerifier(
+					options.teamOffers,
+				),
+			)
+		}
+		if options.teamLaunches != nil {
+			orchestrationOptions = append(
+				orchestrationOptions,
+				teamorchestration.
+					WithTrustedLaunchAuthorizationBuilder(
+						options.teamLaunches,
+					),
+			)
+		}
+		teamOrchestrator, repositoryErr = teamorchestration.NewService(
+			options.teamPlans,
+			options.teamPolicies,
+			teamRepository,
+			time.Now,
+			orchestrationOptions...,
+		)
+		if repositoryErr != nil {
+			return RuntimeComposition{}, errors.New("Team Plan orchestrator is unavailable")
+		}
+		if options.teamOffers != nil {
+			teamPreparation, repositoryErr =
+				teamorchestration.NewPreparationService(
+					teamOrchestrator,
+					options.teamOffers,
+				)
+			if repositoryErr != nil {
+				return RuntimeComposition{}, errors.New("Team Plan preparation is unavailable")
+			}
+			teamExecutions, repositoryErr = teamexecution.NewService(
+				teamOrchestrator,
+				store,
+			)
+			if repositoryErr != nil {
+				return RuntimeComposition{},
+					errors.New("Team execution materializer is unavailable")
+			}
+		}
+	}
+
 	planningAdapter, err := planning.NewCloudSkillAdapter(store, store)
 	if err != nil {
 		return RuntimeComposition{}, errors.New("planning adapter is unavailable")
@@ -215,7 +341,59 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		&scopedCloudProvider{namespace: namespace, provider: cloudProvider},
 		publicweb.New(),
 	}
-	features := rpcapi.RuntimeFeatures{Skills: []string{"cloud-dispatcher"}, ModelProfiles: modelProfiles}
+	features := rpcapi.RuntimeFeatures{
+		Skills: []string{"cloud-dispatcher"}, ModelProfiles: modelProfiles,
+		SearchProfiles: options.searchProfiles,
+	}
+	searchProvider, providerErr := websearch.New(options.searchProfiles, secrets)
+	if providerErr != nil {
+		return RuntimeComposition{}, errors.New("web search provider is unavailable")
+	}
+	providers = append(providers, searchProvider)
+	if options.searchProfiles != nil || options.transientCredentials != nil {
+		features.Skills = append(features.Skills, "web-search")
+	}
+	teamTaskDialogue, taskDialogueErr := newTeamTaskDialogueAdapter(store)
+	if taskDialogueErr != nil {
+		return RuntimeComposition{},
+			errors.New("Team Task dialogue adapter is unavailable")
+	}
+	teamTaskSkill, taskSkillErr := teamtaskskill.New(
+		teamtaskskill.Dependencies{Lifecycle: teamTaskDialogue},
+	)
+	if taskSkillErr != nil {
+		return RuntimeComposition{},
+			errors.New("Team Task control skill is unavailable")
+	}
+	providers = append(
+		providers,
+		&scopedTeamTaskProvider{provider: teamTaskSkill},
+	)
+	features.Skills = append(features.Skills, "team-task-control")
+	if teamPreparation != nil {
+		teamDialogue, dialogueErr := newTeamDialogueAdapter(
+			store,
+			teamPreparation,
+		)
+		if dialogueErr != nil {
+			return RuntimeComposition{},
+				errors.New("Team dialogue adapter is unavailable")
+		}
+		teamSkill, skillErr := teamskill.New(teamskill.Dependencies{
+			Policies:      options.teamPolicies,
+			Preparation:   teamDialogue,
+			TaskLifecycle: teamDialogue,
+		})
+		if skillErr != nil {
+			return RuntimeComposition{},
+				errors.New("Team planner skill is unavailable")
+		}
+		providers = append(
+			providers,
+			&scopedTeamProvider{provider: teamSkill},
+		)
+		features.Skills = append(features.Skills, "team-planner")
+	}
 
 	if strings.TrimSpace(mcpServersFile) != "" {
 		configs, loadErr := mcphttp.LoadServerConfigs(mcpServersFile)
@@ -273,9 +451,11 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		return RuntimeComposition{}, errors.New("cloud Goal dispatcher is unavailable")
 	}
 	executor, err := runtimeapi.New(runtimeapi.Dependencies{
-		Engine: engine,
-		Models: modelFactory,
-		Tools:  durableTools, Configs: store, Conversations: store, Secrets: secrets,
+		Engine:          engine,
+		Models:          modelFactory,
+		TransientModels: delegateFactory,
+		Tools:           durableTools, Configs: store, Conversations: store, Secrets: secrets,
+		TransientCredentials: options.transientCredentials,
 	})
 	if err != nil {
 		return RuntimeComposition{}, errors.New("runtime executor is unavailable")
@@ -297,59 +477,6 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 	if err != nil {
 		return RuntimeComposition{},
 			errors.New("Canonical Memory is unavailable")
-	}
-	var teamOrchestrator *teamorchestration.Service
-	var teamPreparation *teamorchestration.PreparationService
-	var teamExecutions *teamexecution.Service
-	if options.teamPolicies != nil {
-		teamRepository, repositoryErr :=
-			postgres.NewTeamOrchestrationRepository(store)
-		if repositoryErr != nil {
-			return RuntimeComposition{}, errors.New("Team Plan repository is unavailable")
-		}
-		orchestrationOptions := make(
-			[]teamorchestration.ServiceOption,
-			0,
-			1,
-		)
-		if options.teamOffers != nil {
-			orchestrationOptions = append(
-				orchestrationOptions,
-				teamorchestration.WithTrustedOfferVerifier(
-					options.teamOffers,
-				),
-			)
-		}
-		teamOrchestrator, repositoryErr = teamorchestration.NewService(
-			options.teamPlans,
-			options.teamPolicies,
-			teamRepository,
-			time.Now,
-			orchestrationOptions...,
-		)
-		if repositoryErr != nil {
-			return RuntimeComposition{}, errors.New("Team Plan orchestrator is unavailable")
-		}
-		if options.teamOffers != nil {
-			teamPreparation, repositoryErr =
-				teamorchestration.NewPreparationService(
-					teamOrchestrator,
-					options.teamOffers,
-				)
-			if repositoryErr != nil {
-				return RuntimeComposition{}, errors.New("Team Plan preparation is unavailable")
-			}
-		}
-		if options.teamOffers != nil {
-			teamExecutions, repositoryErr = teamexecution.NewService(
-				teamOrchestrator,
-				store,
-			)
-			if repositoryErr != nil {
-				return RuntimeComposition{},
-					errors.New("Team execution materializer is unavailable")
-			}
-		}
 	}
 	return RuntimeComposition{
 		Coordinator: coordinator, Features: features, CloudGoals: planningAdapter,

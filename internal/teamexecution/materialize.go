@@ -16,6 +16,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
@@ -38,15 +40,26 @@ func Materialize(
 	if err := validateAuthorization(authorization, true); err != nil {
 		return ExecutionV1{}, err
 	}
-	planID, _ := uuid.Parse(plan.PlanID)
-	executionID := uuid.NewSHA1(
-		planID,
-		[]byte(fmt.Sprintf(
-			"team-execution:%d:%s",
-			plan.Revision,
-			approval.Signature.ApprovalID,
-		)),
+	executionSchema := SchemaV1
+	inputSnapshot := taskinput.BindingV1{}
+	taskInput := taskinput.BindingV2{}
+	switch plan.SchemaVersion {
+	case teamplan.SchemaV2:
+		executionSchema = SchemaV2
+		inputSnapshot = plan.InputSnapshot
+	case teamplan.SchemaV3:
+		executionSchema = SchemaV3
+		taskInput = plan.TaskInput
+	}
+	executionIDText, err := DeriveExecutionID(
+		plan.PlanID,
+		plan.Revision,
+		approval.Signature.ApprovalID,
 	)
+	if err != nil {
+		return ExecutionV1{}, err
+	}
+	executionID := uuid.MustParse(executionIDText)
 	roles := make([]RoleV1, 0, len(plan.Assignments))
 	for _, assignment := range plan.Assignments {
 		declarationID := uuid.NewSHA1(
@@ -64,6 +77,11 @@ func Materialize(
 			deterministicWorkerIdentity(executionID, assignment.RoleID)
 		if err != nil {
 			return ExecutionV1{}, ErrInvalid
+		}
+		var marketplace *teamplan.WorkerMarketplaceBindingV1
+		if assignment.Marketplace != nil {
+			value := assignment.Marketplace.Clone()
+			marketplace = &value
 		}
 		roles = append(roles, RoleV1{
 			RoleID: assignment.RoleID, Title: assignment.Title,
@@ -83,6 +101,7 @@ func Materialize(
 			RuntimeVersion:     assignment.RuntimeVersion,
 			RuntimeImageDigest: assignment.RuntimeImageDigest,
 			RuntimeAdapter:     assignment.RuntimeAdapter,
+			Marketplace:        marketplace,
 			ModelProfileID:     assignment.ModelProfileID,
 			ModelProvider:      assignment.ModelProvider,
 			Model:              assignment.Model,
@@ -102,7 +121,7 @@ func Materialize(
 		})
 	}
 	execution := ExecutionV1{
-		SchemaVersion:         SchemaV1,
+		SchemaVersion:         executionSchema,
 		ExecutionID:           executionID.String(),
 		OwnerID:               plan.OwnerID,
 		TaskID:                planFact.TaskID,
@@ -112,6 +131,8 @@ func Materialize(
 		ApprovalID:            approval.Signature.ApprovalID,
 		ApprovalSignerKeyID:   approval.Signature.SignerKeyID,
 		GoalDigest:            plan.GoalDigest,
+		InputSnapshot:         inputSnapshot,
+		TaskInput:             taskInput,
 		ProviderScope:         plan.ProviderScope,
 		Region:                plan.Region,
 		CatalogRevision:       plan.CatalogRevision,
@@ -145,6 +166,35 @@ func Materialize(
 	return execution, nil
 }
 
+// DeriveExecutionID lets an approval response expose the stable execution
+// identity before asynchronous materialization has necessarily committed.
+func DeriveExecutionID(
+	planID string,
+	planRevision uint64,
+	approvalID string,
+) (string, error) {
+	parsedPlanID, planErr := uuid.Parse(planID)
+	parsedApprovalID, approvalErr := uuid.Parse(approvalID)
+	if planErr != nil ||
+		parsedPlanID == uuid.Nil ||
+		parsedPlanID.String() != planID ||
+		approvalErr != nil ||
+		parsedApprovalID == uuid.Nil ||
+		parsedApprovalID.String() != approvalID ||
+		planRevision == 0 ||
+		planRevision > uint64(math.MaxInt64) {
+		return "", ErrInvalid
+	}
+	return uuid.NewSHA1(
+		parsedPlanID,
+		[]byte(fmt.Sprintf(
+			"team-execution:%d:%s",
+			planRevision,
+			parsedApprovalID.String(),
+		)),
+	).String(), nil
+}
+
 func (execution ExecutionV1) CanonicalCBOR() ([]byte, error) {
 	if err := execution.Validate(); err != nil {
 		return nil, err
@@ -174,7 +224,9 @@ func (role RoleV1) Digest() (string, error) {
 }
 
 func (execution ExecutionV1) Validate() error {
-	if execution.SchemaVersion != SchemaV1 ||
+	if (execution.SchemaVersion != SchemaV1 &&
+		execution.SchemaVersion != SchemaV2 &&
+		execution.SchemaVersion != SchemaV3) ||
 		!canonicalUUID(execution.ExecutionID) ||
 		!validText(execution.OwnerID, 255) ||
 		!canonicalUUID(execution.TaskID) ||
@@ -214,6 +266,25 @@ func (execution ExecutionV1) Validate() error {
 			},
 		) {
 		return ErrInvalid
+	}
+	switch execution.SchemaVersion {
+	case SchemaV1:
+		if execution.InputSnapshot != (taskinput.BindingV1{}) {
+			return ErrInvalid
+		}
+		if execution.TaskInput != (taskinput.BindingV2{}) {
+			return ErrInvalid
+		}
+	case SchemaV2:
+		if execution.InputSnapshot.Validate() != nil ||
+			execution.TaskInput != (taskinput.BindingV2{}) {
+			return ErrInvalid
+		}
+	case SchemaV3:
+		if execution.InputSnapshot != (taskinput.BindingV1{}) ||
+			execution.TaskInput.Validate() != nil {
+			return ErrInvalid
+		}
 	}
 	roleIDs := make(map[string]struct{}, len(execution.Roles))
 	declarationIDs := make(map[string]struct{}, len(execution.Roles))
@@ -271,6 +342,8 @@ func (execution ExecutionV1) ValidateAgainst(
 		execution.ApprovalID != approval.Signature.ApprovalID ||
 		execution.ApprovalSignerKeyID != approval.Signature.SignerKeyID ||
 		execution.GoalDigest != plan.GoalDigest ||
+		execution.InputSnapshot != plan.InputSnapshot ||
+		execution.TaskInput != plan.TaskInput ||
 		execution.ProviderScope != plan.ProviderScope ||
 		execution.Region != plan.Region ||
 		execution.CatalogRevision != plan.CatalogRevision ||
@@ -334,6 +407,11 @@ func validateAuthorization(
 	planFact := authorization.Plan
 	approval := authorization.Approval
 	plan := planFact.Plan
+	launch := approval.Authorization
+	launchDigest := ""
+	if launch != nil {
+		launchDigest, _ = launch.Digest()
+	}
 	digest, err := plan.Digest()
 	if err != nil ||
 		!validAuthorizedPlanStatus(planFact.Status, requireApproved) ||
@@ -344,6 +422,17 @@ func validateAuthorization(
 		approval.Signature.PlanID != plan.PlanID ||
 		approval.Signature.PlanRevision != plan.Revision ||
 		approval.Signature.PlanDigest != digest ||
+		approval.Signature.SchemaVersion !=
+			teamapproval.SignatureSchemaV2 ||
+		launch == nil ||
+		launch.ValidateAgainst(plan) != nil ||
+		launch.ValidateAt(approval.ApprovedAt) != nil ||
+		launch.AuthorizationID !=
+			approval.Signature.LaunchAuthorizationID ||
+		launchDigest == "" ||
+		launchDigest !=
+			approval.Signature.LaunchAuthorizationDigest ||
+		launch.ApprovalID != approval.Signature.ApprovalID ||
 		approval.ApprovedAt.IsZero() {
 		return ErrInvalid
 	}
@@ -437,6 +526,10 @@ func roleMatchesAssignment(
 		role.RuntimeVersion == assignment.RuntimeVersion &&
 		role.RuntimeImageDigest == assignment.RuntimeImageDigest &&
 		role.RuntimeAdapter == assignment.RuntimeAdapter &&
+		marketplaceBindingsMatch(
+			role.Marketplace,
+			assignment.Marketplace,
+		) &&
 		role.ModelProfileID == assignment.ModelProfileID &&
 		role.ModelProvider == assignment.ModelProvider &&
 		role.Model == assignment.Model &&
@@ -453,7 +546,7 @@ func roleMatchesAssignment(
 func validateRole(role RoleV1) error {
 	if !roleIDPattern.MatchString(role.RoleID) ||
 		!validSafeText(role.Title, 160) ||
-		!validSafeText(role.Objective, 8192) ||
+		!validMultilineSafeText(role.Objective, 8192) ||
 		!validWorkClass(role.WorkClass) ||
 		len(role.RequiredCapabilities) == 0 ||
 		!uniqueCapabilities(role.RequiredCapabilities) ||
@@ -468,6 +561,11 @@ func validateRole(role RoleV1) error {
 		!canonicalUUID(role.RuntimeReleaseID) ||
 		!validRuntime(role.RuntimeFamily, role.RuntimeAdapter) ||
 		!executionDigestPattern.MatchString(role.RuntimeImageDigest) ||
+		(role.Marketplace != nil &&
+			role.Marketplace.Validate(
+				role.RuntimeReleaseID,
+				role.RuntimeImageDigest,
+			) != nil) ||
 		!validText(role.RuntimeVersion, 128) ||
 		!validText(role.ModelProfileID, 160) ||
 		!validText(role.ModelProvider, 128) ||
@@ -501,6 +599,16 @@ func validateRole(role RoleV1) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func marketplaceBindingsMatch(
+	left,
+	right *teamplan.WorkerMarketplaceBindingV1,
+) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }
 
 func validWorkClass(value teamplan.WorkClass) bool {
@@ -593,6 +701,8 @@ func validRuntime(
 		return adapter == teamplan.AdapterHermesV1
 	case teamplan.RuntimeOpenCode:
 		return adapter == teamplan.AdapterOpenCodeV1
+	case teamplan.RuntimePi:
+		return adapter == teamplan.AdapterPiV1
 	default:
 		return false
 	}
@@ -679,6 +789,25 @@ func validText(value string, maximum int) bool {
 func validSafeText(value string, maximum int) bool {
 	return validText(value, maximum) &&
 		!security.ContainsLikelySecret(value)
+}
+
+func validMultilineSafeText(value string, maximum int) bool {
+	if value != strings.TrimSpace(value) ||
+		value == "" ||
+		len(value) > maximum ||
+		!utf8.ValidString(value) ||
+		security.ContainsLikelySecret(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) &&
+			character != '\n' &&
+			character != '\r' &&
+			character != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func utcTimestamp(value time.Time) bool {

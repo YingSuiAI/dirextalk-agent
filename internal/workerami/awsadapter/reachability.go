@@ -100,6 +100,27 @@ func (adapter *Adapter) PrepareBuilderReachability(ctx context.Context, request 
 			if err != nil {
 				return workerami.BuilderReachabilityEvidenceV2{}, err
 			}
+			if !found && isAuthorizationDenied(authorizeErr) {
+				// Foundations created before tagged security-group-rule
+				// authorization was added still enforce ownership on the
+				// parent security group. Use an exact, independently read-back
+				// rule until the Foundation can be upgraded.
+				output, authorizeErr = adapter.ec2.AuthorizeSecurityGroupEgress(ctx, &ec2.AuthorizeSecurityGroupEgressInput{
+					GroupId:       aws.String(request.SecurityGroupID),
+					IpPermissions: []ec2types.IpPermission{{IpProtocol: aws.String("tcp"), FromPort: aws.Int32(443), ToPort: aws.Int32(443), PrefixListIds: []ec2types.PrefixListId{{PrefixListId: aws.String(request.S3PrefixListID), Description: aws.String("Dirextalk transient Worker AMI S3")}}}},
+				})
+				if authorizeErr == nil && output != nil && len(output.SecurityGroupRules) == 1 {
+					rule = output.SecurityGroupRules[0]
+				}
+				if authorizeErr != nil || !validS3EgressRule(rule, request) {
+					rule, found, err = adapter.findS3EgressRule(ctx, request, "")
+					if err != nil {
+						return workerami.BuilderReachabilityEvidenceV2{}, err
+					}
+				} else {
+					found = true
+				}
+			}
 			if !found || !validS3EgressRule(rule, request) {
 				if authorizeErr != nil {
 					return workerami.BuilderReachabilityEvidenceV2{}, providerError(ctx, authorizeErr)
@@ -338,7 +359,45 @@ func (adapter *Adapter) findS3EgressRule(ctx context.Context, request workerami.
 		return ec2types.SecurityGroupRule{}, false, workerami.ErrReadBackMismatch
 	}
 	if len(output.SecurityGroupRules) == 0 {
-		return ec2types.SecurityGroupRule{}, false, nil
+		if ruleID != "" {
+			return ec2types.SecurityGroupRule{}, false, nil
+		}
+		// A legacy Foundation may create the exact transient rule without
+		// tags because EC2 otherwise requires a security-group-rule resource
+		// permission that the old Control Role does not have. The parent
+		// security group remains ownership-gated.
+		output, err = adapter.ec2.DescribeSecurityGroupRules(ctx, &ec2.DescribeSecurityGroupRulesInput{
+			Filters: []ec2types.Filter{{Name: aws.String("group-id"), Values: []string{request.SecurityGroupID}}},
+		})
+		if err != nil {
+			if isNotFound(err) {
+				return ec2types.SecurityGroupRule{}, false, nil
+			}
+			return ec2types.SecurityGroupRule{}, false, providerError(ctx, err)
+		}
+		if output == nil {
+			return ec2types.SecurityGroupRule{}, false, workerami.ErrReadBackMismatch
+		}
+		var candidate ec2types.SecurityGroupRule
+		matches := 0
+		for _, current := range output.SecurityGroupRules {
+			if !validS3EgressRuleShape(current, request) {
+				continue
+			}
+			tags := tagsToMap(current.Tags)
+			if len(tags) != 0 && !equalTags(tags, request.Tags) {
+				return ec2types.SecurityGroupRule{}, false, workerami.ErrOwnershipMismatch
+			}
+			candidate = current
+			matches++
+		}
+		if matches > 1 {
+			return ec2types.SecurityGroupRule{}, false, workerami.ErrReadBackMismatch
+		}
+		if matches == 0 {
+			return ec2types.SecurityGroupRule{}, false, nil
+		}
+		return candidate, true, nil
 	}
 	if !validS3EgressRule(output.SecurityGroupRules[0], request) {
 		return ec2types.SecurityGroupRule{}, false, workerami.ErrOwnershipMismatch
@@ -347,9 +406,17 @@ func (adapter *Adapter) findS3EgressRule(ctx context.Context, request workerami.
 }
 
 func validS3EgressRule(rule ec2types.SecurityGroupRule, request workerami.BuilderReachabilityV2) bool {
+	if !validS3EgressRuleShape(rule, request) {
+		return false
+	}
+	tags := tagsToMap(rule.Tags)
+	return len(tags) == 0 || equalTags(tags, request.Tags)
+}
+
+func validS3EgressRuleShape(rule ec2types.SecurityGroupRule, request workerami.BuilderReachabilityV2) bool {
 	return securityRulePattern.MatchString(stringValue(rule.SecurityGroupRuleId)) && stringValue(rule.GroupId) == request.SecurityGroupID && aws.ToBool(rule.IsEgress) &&
 		stringValue(rule.IpProtocol) == "tcp" && aws.ToInt32(rule.FromPort) == 443 && aws.ToInt32(rule.ToPort) == 443 && stringValue(rule.PrefixListId) == request.S3PrefixListID &&
-		stringValue(rule.CidrIpv4) == "" && stringValue(rule.CidrIpv6) == "" && rule.ReferencedGroupInfo == nil && equalTags(tagsToMap(rule.Tags), request.Tags)
+		stringValue(rule.CidrIpv4) == "" && stringValue(rule.CidrIpv6) == "" && rule.ReferencedGroupInfo == nil
 }
 
 func (adapter *Adapter) verifyS3Route(ctx context.Context, evidence workerami.BuilderReachabilityEvidenceV2, requirePresent bool) error {

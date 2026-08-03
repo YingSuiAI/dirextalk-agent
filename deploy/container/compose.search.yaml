@@ -1,0 +1,9 @@
+services:
+  agent:
+    environment:
+      AGENT_SEARCH_PROFILES_FILE: /run/dirextalk/config/search-profiles.json
+    volumes:
+      - type: bind
+        source: ${AGENT_SEARCH_PROFILES_PATH:?set the protected host search profile catalog path}
+        target: /run/dirextalk/config/search-profiles.json
+        read_only: true

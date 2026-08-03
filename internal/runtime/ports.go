@@ -6,6 +6,8 @@ import (
 	"time"
 
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 )
 
 // ModelFactory binds a non-secret profile to the runtime's opaque secret
@@ -21,10 +23,31 @@ func (f ModelFactoryFunc) CreateModel(ctx context.Context, profile modelapi.Prof
 	return f(ctx, profile, secrets)
 }
 
+// ModelDiscovery performs one provider metadata request with a request-local
+// secret resolver. It is separate from ModelFactory so discovery cannot enter
+// the inference or conversation persistence paths.
+type ModelDiscovery interface {
+	ListModels(context.Context, modelapi.Profile, SecretResolver) ([]modelapi.Descriptor, error)
+}
+
+type ModelDiscoveryFunc func(context.Context, modelapi.Profile, SecretResolver) ([]modelapi.Descriptor, error)
+
+func (f ModelDiscoveryFunc) ListModels(ctx context.Context, profile modelapi.Profile, secrets SecretResolver) ([]modelapi.Descriptor, error) {
+	return f(ctx, profile, secrets)
+}
+
 // SecretResolver is deliberately identical to the model package boundary but
 // remains a runtime port so the service composition root owns secret access.
 type SecretResolver interface {
 	ResolveSecret(context.Context, string) ([]byte, error)
+}
+
+// TransientCredentialConsumer owns the one-time transition from encrypted
+// bootstrap storage into request-local memory. Get is required so immutable
+// binding fields are checked before the session is consumed.
+type TransientCredentialConsumer interface {
+	Get(context.Context, string, string) (secretbootstrap.SessionV1, error)
+	Consume(context.Context, string, string, uint64, secretbootstrap.SecretConsumer) (secretbootstrap.SessionV1, error)
 }
 
 type RuntimeConfigRepository interface {
@@ -69,6 +92,12 @@ type ToolRequest struct {
 	KnowledgeRefs     []string
 	MCPServerIDs      []string
 	RecipeIDs         []string
+	// SearchProfile is trusted, catalog-resolved runtime configuration. It is
+	// never serialized as model input; a search tool accepts only the query.
+	SearchProfile *searchprofile.Profile
+	// TransientSecrets is request-local and is used only when SearchProfile was
+	// derived from the same transient model credential. It is never persisted.
+	TransientSecrets SecretResolver
 	// CloudDialogue is trusted request scope. Providers may use it to bind
 	// application state, but it is never serialized as model tool input.
 	CloudDialogue *CloudDialogueScope
@@ -118,11 +147,14 @@ type EngineResult struct {
 type Clock func() time.Time
 
 type Dependencies struct {
-	Engine        Engine
-	Models        ModelFactory
-	Tools         ToolProvider
-	Configs       RuntimeConfigRepository
-	Conversations ConversationRepository
-	Secrets       SecretResolver
-	Clock         Clock
+	Engine               Engine
+	Models               ModelFactory
+	TransientModels      ModelFactory
+	ModelDiscovery       ModelDiscovery
+	Tools                ToolProvider
+	Configs              RuntimeConfigRepository
+	Conversations        ConversationRepository
+	Secrets              SecretResolver
+	TransientCredentials TransientCredentialConsumer
+	Clock                Clock
 }

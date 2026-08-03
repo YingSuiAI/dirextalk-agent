@@ -126,6 +126,8 @@ func publicError(err error) error {
 		errors.Is(err, teamapproval.ErrExpired),
 		errors.Is(err, teamapproval.ErrPlanChanged):
 		return status.Error(codes.FailedPrecondition, "Team Plan must be requoted and approved again")
+	case errors.Is(err, teamplan.ErrRuntimeRegistryUnavailable):
+		return status.Error(codes.Unavailable, "trusted Worker Marketplace registry is unavailable")
 	case errors.Is(err, teamplan.ErrNoRuntime),
 		errors.Is(err, teamplan.ErrNoModel),
 		errors.Is(err, teamplan.ErrNoCompute),
@@ -139,6 +141,11 @@ func publicError(err error) error {
 		return status.Error(codes.FailedPrecondition, "Team Plan is not ready for this operation")
 	case errors.Is(err, teamorchestration.ErrScopeChanged):
 		return status.Error(codes.FailedPrecondition, "Team Plan cloud scope changed")
+	case errors.Is(err, ErrTeamApprovalDeviceAlreadyBootstrapped):
+		return status.Error(
+			codes.FailedPrecondition,
+			"another approval device is already linked",
+		)
 	case errors.Is(err, clouddestroy.ErrManaged):
 		return status.Error(codes.FailedPrecondition, "managed resources require a separate destroy contract")
 	case errors.Is(err, clouddestroy.ErrUnavailable):
@@ -161,9 +168,25 @@ func publicError(err error) error {
 	case errors.Is(err, cloudapp.ErrUnavailable):
 		return status.Error(codes.Unavailable, "cloud provider is unavailable")
 	case errors.Is(err, teamorchestration.ErrOfferVerificationUnavailable),
+		errors.Is(
+			err,
+			teamorchestration.ErrLaunchAuthorizationUnavailable,
+		),
 		errors.Is(err, teampricing.ErrComputeEvidenceUnavailable),
 		errors.Is(err, teampricing.ErrCredentialReadinessUnavailable):
-		return status.Error(codes.Unavailable, "trusted Team pricing is unavailable")
+		if errors.Is(
+			err,
+			teamorchestration.ErrLaunchAuthorizationUnavailable,
+		) {
+			return status.Error(
+				codes.Unavailable,
+				"trusted Team launch authorization is unavailable",
+			)
+		}
+		return status.Error(
+			codes.Unavailable,
+			"trusted Team pricing is unavailable",
+		)
 	default:
 		return status.Error(codes.Internal, "agent persistence operation failed")
 	}

@@ -144,9 +144,11 @@ func ProposalInputSchema(policy Policy) (map[string]any, error) {
 	proposalSchemaItems(capabilities)["enum"] = stringValues(validCapabilities())
 
 	families := proposalProperty(role, "preferred_families")
-	families["maxItems"] = len(validRuntimeFamilies())
+	families["maxItems"] = len(policy.AllowedRuntimeFamilies)
 	families["uniqueItems"] = true
-	proposalSchemaItems(families)["enum"] = stringValues(validRuntimeFamilies())
+	proposalSchemaItems(families)["enum"] = stringValues(
+		policy.AllowedRuntimeFamilies,
+	)
 
 	dependencies := proposalProperty(role, "depends_on_role_ids")
 	dependencies["maxItems"] = policy.MaxWorkers - 1

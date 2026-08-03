@@ -42,6 +42,7 @@ func TestMutationRequestsExposeIdempotencyAndRevisionFences(t *testing.T) {
 		{message: &agentv1.CreateCloudDeploymentEntryChallengeRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.ApproveCloudDeploymentEntryRequest{}, revisionField: "expected_revision"},
 		{message: &agentv1.PrepareTeamPlanV3Request{}, revisionField: "expected_previous_plan_revision"},
+		{message: &agentv1.BootstrapFirstTeamApprovalDeviceV3Request{}},
 		{message: &agentv1.CreateTeamApprovalChallengeV3Request{}, revisionField: "expected_plan_record_revision"},
 		{message: &agentv1.ApproveTeamPlanV3Request{}, revisionField: "expected_plan_record_revision"},
 	}
@@ -103,6 +104,85 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 			)
 		}
 	}
+	inputSnapshot := (&agentv1.TeamInputSnapshotBindingV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, required := range []protoreflect.Name{
+		"snapshot_id",
+		"snapshot_digest",
+		"workspace_digest",
+		"workspace_size_bytes",
+		"workspace_media_type",
+	} {
+		if inputSnapshot.Fields().ByName(required) == nil {
+			t.Fatalf(
+				"TeamInputSnapshotBindingV3 is missing %s",
+				required,
+			)
+		}
+	}
+	for _, forbidden := range []protoreflect.Name{
+		"bucket",
+		"object_key",
+		"storage_url",
+		"url",
+		"path",
+		"credential_ref",
+		"token",
+	} {
+		if inputSnapshot.Fields().ByName(forbidden) != nil {
+			t.Fatalf(
+				"TeamInputSnapshotBindingV3 exposes forbidden field %s",
+				forbidden,
+			)
+		}
+	}
+	taskInput := (&agentv1.TeamTaskInputBindingV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, required := range []protoreflect.Name{
+		"schema_version",
+		"input_id",
+		"input_digest",
+		"source_digest",
+		"source_kind",
+		"repository",
+		"workspace",
+	} {
+		if taskInput.Fields().ByName(required) == nil {
+			t.Fatalf(
+				"TeamTaskInputBindingV3 is missing %s",
+				required,
+			)
+		}
+	}
+	repository := (&agentv1.TeamGitRepositorySourceV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, forbidden := range []protoreflect.Name{
+		"token",
+		"credential",
+		"clone_url",
+		"private_key",
+		"installation_token",
+	} {
+		if repository.Fields().ByName(forbidden) != nil {
+			t.Fatalf(
+				"TeamGitRepositorySourceV3 exposes forbidden field %s",
+				forbidden,
+			)
+		}
+	}
+	plan := (&agentv1.TeamPlanV3{}).ProtoReflect().Descriptor()
+	execution := (&agentv1.TeamExecutionV3{}).
+		ProtoReflect().
+		Descriptor()
+	if plan.Fields().ByName("input_snapshot") == nil ||
+		execution.Fields().ByName("input_snapshot") == nil ||
+		plan.Fields().ByName("task_input") == nil ||
+		execution.Fields().ByName("task_input") == nil {
+		t.Fatal("Team Plan or execution omits immutable task input")
+	}
 	role := (&agentv1.TeamRoleProposalV3{}).ProtoReflect().Descriptor()
 	for _, forbidden := range []protoreflect.Name{
 		"provider",
@@ -123,6 +203,60 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 			)
 		}
 	}
+	assignment := (&agentv1.TeamWorkerAssignmentV3{}).
+		ProtoReflect().
+		Descriptor()
+	if assignment.Fields().ByName("marketplace") == nil {
+		t.Fatal(
+			"TeamWorkerAssignmentV3 omits reviewed Marketplace binding",
+		)
+	}
+	marketplace := (&agentv1.TeamWorkerMarketplaceBindingV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, required := range []protoreflect.Name{
+		"registry_id",
+		"registry_revision",
+		"release_id",
+		"worker_type_id",
+		"publisher_id",
+		"publisher_display_name",
+		"publisher_tier",
+		"manifest_digest",
+		"image_repository",
+		"image_digest",
+		"image_signature_digest",
+		"sbom_digest",
+		"provenance_envelope_digest",
+		"review_id",
+		"review_policy_revision",
+		"review_risk_class",
+		"review_valid_until",
+		"granted_permissions",
+	} {
+		if marketplace.Fields().ByName(required) == nil {
+			t.Fatalf(
+				"TeamWorkerMarketplaceBindingV3 is missing %s",
+				required,
+			)
+		}
+	}
+	permissions := (&agentv1.TeamWorkerPermissionSetV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, required := range []protoreflect.Name{
+		"workspace",
+		"network_services",
+		"tool_scopes",
+		"max_temp_disk_mib",
+	} {
+		if permissions.Fields().ByName(required) == nil {
+			t.Fatalf(
+				"TeamWorkerPermissionSetV3 is missing %s",
+				required,
+			)
+		}
+	}
 	minimumResources := (&agentv1.TeamMinimumResourcesV3{}).
 		ProtoReflect().
 		Descriptor()
@@ -136,12 +270,21 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 
 	for _, message := range []proto.Message{
 		&agentv1.TeamProviderScopeV3{},
+		&agentv1.TeamWorkerPermissionSetV3{},
+		&agentv1.TeamWorkerMarketplaceBindingV3{},
 		&agentv1.TeamWorkerAssignmentV3{},
 		&agentv1.TeamRoleCostEstimateV3{},
 		&agentv1.TeamCostEstimateV3{},
 		&agentv1.TeamScheduleEstimateV3{},
 		&agentv1.TeamPlanV3{},
 		&agentv1.TeamApprovalChallengeV3{},
+		&agentv1.TeamLaunchEgressRuleV3{},
+		&agentv1.TeamLaunchNetworkV3{},
+		&agentv1.TeamLaunchRetentionV3{},
+		&agentv1.TeamLaunchWorkerImageV3{},
+		&agentv1.TeamLaunchRootStorageV3{},
+		&agentv1.TeamRoleLaunchAuthorizationV3{},
+		&agentv1.TeamLaunchAuthorizationV3{},
 	} {
 		descriptor := message.ProtoReflect().Descriptor()
 		for index := 0; index < descriptor.Fields().Len(); index++ {
@@ -162,13 +305,21 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 			}
 		}
 	}
-	assignment := (&agentv1.TeamWorkerAssignmentV3{}).
+	assignmentSelection := (&agentv1.TeamWorkerAssignmentV3{}).
 		ProtoReflect().
 		Descriptor()
-	if assignment.Fields().ByName("runtime_image_digest") == nil ||
-		assignment.Fields().ByName("model_profile_id") == nil ||
-		assignment.Fields().ByName("instance_type") == nil {
+	if assignmentSelection.Fields().ByName("runtime_image_digest") == nil ||
+		assignmentSelection.Fields().ByName("model_profile_id") == nil ||
+		assignmentSelection.Fields().ByName("instance_type") == nil {
 		t.Fatal("TeamWorkerAssignmentV3 omits device-visible selection facts")
+	}
+	roleLaunch := (&agentv1.TeamRoleLaunchAuthorizationV3{}).
+		ProtoReflect().
+		Descriptor()
+	if roleLaunch.Fields().ByName("marketplace") == nil {
+		t.Fatal(
+			"TeamRoleLaunchAuthorizationV3 omits Marketplace binding",
+		)
 	}
 
 	challenge := (&agentv1.TeamApprovalChallengeV3{}).
@@ -194,6 +345,8 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 		"signer_key_id",
 		"expires_at",
 		"signing_payload_cbor",
+		"launch_authorization_id",
+		"launch_authorization_digest",
 	} {
 		if challenge.Fields().ByName(required) == nil {
 			t.Fatalf("TeamApprovalChallengeV3 is missing %s", required)
@@ -206,11 +359,112 @@ func TestTeamPlanV3ContractKeepsSelectionServerOwnedAndOutputDesecreted(
 		field.Kind() != protoreflect.BytesKind {
 		t.Fatalf("TeamApprovalSignatureV3.signature = %v, want bytes", field)
 	}
+	for _, required := range []protoreflect.Name{
+		"schema_version",
+		"launch_authorization_id",
+		"launch_authorization_digest",
+	} {
+		if signature.Fields().ByName(required) == nil {
+			t.Fatalf("TeamApprovalSignatureV3 is missing %s", required)
+		}
+	}
+	authorization := (&agentv1.TeamLaunchAuthorizationV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, required := range []protoreflect.Name{
+		"authorization_id",
+		"agent_instance_id",
+		"plan_digest",
+		"approval_id",
+		"provider_scope",
+		"network",
+		"retention",
+		"hard_budget_micros",
+		"launch_not_before",
+		"launch_not_after",
+		"roles",
+	} {
+		if authorization.Fields().ByName(required) == nil {
+			t.Fatalf("TeamLaunchAuthorizationV3 is missing %s", required)
+		}
+	}
+	challengeResponse := (&agentv1.CreateTeamApprovalChallengeV3Response{}).
+		ProtoReflect().
+		Descriptor()
+	if challengeResponse.Fields().ByName("authorization") == nil {
+		t.Fatal("challenge response omits exact launch authorization")
+	}
 	service := agentv1.File_dirextalk_agent_v1_team_proto.
 		Services().
 		ByName("TeamPlanService")
-	if service == nil || service.Methods().Len() != 4 {
+	if service == nil || service.Methods().Len() != 6 ||
+		service.Methods().
+			ByName("BootstrapFirstTeamApprovalDeviceV3") == nil ||
+		service.Methods().ByName("GetTeamExecutionV3") == nil {
 		t.Fatalf("TeamPlanService methods=%v", service)
+	}
+	deviceBootstrap := (&agentv1.BootstrapFirstTeamApprovalDeviceV3Request{}).
+		ProtoReflect().
+		Descriptor()
+	for _, required := range []protoreflect.Name{
+		"idempotency_key",
+		"owner_id",
+		"key_id",
+		"public_key",
+	} {
+		if deviceBootstrap.Fields().ByName(required) == nil {
+			t.Fatalf(
+				"BootstrapFirstTeamApprovalDeviceV3Request is missing %s",
+				required,
+			)
+		}
+	}
+	deviceBootstrapResponse :=
+		(&agentv1.BootstrapFirstTeamApprovalDeviceV3Response{}).
+			ProtoReflect().
+			Descriptor()
+	for _, forbidden := range []protoreflect.Name{
+		"public_key",
+		"private_key",
+		"credential",
+		"secret",
+	} {
+		if deviceBootstrapResponse.Fields().ByName(forbidden) != nil {
+			t.Fatalf(
+				"approval-device bootstrap response exposes %s",
+				forbidden,
+			)
+		}
+	}
+	reportFinal := (&agentv1.TeamExecutionFinalV3{}).
+		ProtoReflect().
+		Descriptor()
+	for _, forbidden := range []protoreflect.Name{
+		"artifact_ref",
+		"artifact_size_bytes",
+		"credential_ref",
+		"raw_output",
+	} {
+		if reportFinal.Fields().ByName(forbidden) != nil {
+			t.Fatalf(
+				"TeamExecutionFinalV3 exposes forbidden field %s",
+				forbidden,
+			)
+		}
+	}
+	for _, required := range []protoreflect.Name{
+		"summary",
+		"deliverables",
+		"tests",
+		"risks",
+		"artifact_sha256",
+	} {
+		if reportFinal.Fields().ByName(required) == nil {
+			t.Fatalf(
+				"TeamExecutionFinalV3 is missing %s",
+				required,
+			)
+		}
 	}
 }
 

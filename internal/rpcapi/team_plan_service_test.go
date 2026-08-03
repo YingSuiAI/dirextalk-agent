@@ -3,19 +3,30 @@ package rpcapi
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
+	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamartifact"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamreport"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -47,6 +58,7 @@ func TestTeamPlanServiceMapsTrustedPreparationAndRedactsCredentialReference(
 			CredentialID: principal.CredentialID,
 		}) ||
 		stub.prepare.ConnectionID != request.GetCloudConnectionId() ||
+		!taskinput.IsEmptyInput(stub.prepare.TaskInput) ||
 		stub.prepare.Proposal.Roles[0].PreferredFamilies[0] !=
 			teamplan.RuntimeCodex {
 		t.Fatalf(
@@ -58,6 +70,10 @@ func TestTeamPlanServiceMapsTrustedPreparationAndRedactsCredentialReference(
 	}
 	projected := response.GetPlan()
 	if projected.GetPlanDigest() != fact.PlanDigest ||
+		projected.GetTaskInput().GetInputDigest() !=
+			fact.Plan.TaskInput.InputDigest ||
+		projected.GetTaskInput().GetWorkspace().GetWorkspaceDigest() !=
+			fact.Plan.TaskInput.Workspace.WorkspaceDigest ||
 		projected.GetProviderScope().GetAccountId() !=
 			fact.Plan.ProviderScope.AccountID ||
 		projected.GetAssignments()[0].GetRuntimeFamily() !=
@@ -94,6 +110,123 @@ func TestTeamPlanProjectionAllowsZeroColdStart(t *testing.T) {
 			"cold_start_seconds=%d, want 0",
 			projected.GetAssignments()[0].GetColdStartSeconds(),
 		)
+	}
+}
+
+func TestTeamRuntimeCodecSupportsPi(t *testing.T) {
+	t.Parallel()
+	family, err := teamRuntimeFamilyFromProto(
+		agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_PI,
+	)
+	if err != nil || family != teamplan.RuntimePi {
+		t.Fatalf("Pi family decode = %q, %v", family, err)
+	}
+	projectedFamily, err := teamRuntimeFamilyToProto(
+		teamplan.RuntimePi,
+	)
+	if err != nil ||
+		projectedFamily !=
+			agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_PI {
+		t.Fatalf(
+			"Pi family projection = %s, %v",
+			projectedFamily,
+			err,
+		)
+	}
+	projectedAdapter, err := teamRuntimeAdapterToProto(
+		teamplan.AdapterPiV1,
+	)
+	if err != nil ||
+		projectedAdapter !=
+			agentv1.TeamRuntimeAdapterV3_TEAM_RUNTIME_ADAPTER_V3_PI_JSON_TASK_V1 {
+		t.Fatalf(
+			"Pi adapter projection = %s, %v",
+			projectedAdapter,
+			err,
+		)
+	}
+}
+
+func TestTeamPlanServiceBootstrapsCanonicalFirstApprovalDevice(
+	t *testing.T,
+) {
+	t.Parallel()
+	publicKey := bytes.Repeat([]byte{0x37}, ed25519.PublicKeySize)
+	digest := sha256.Sum256(publicKey)
+	keyID := "cloud-device-" +
+		hex.EncodeToString(digest[:])[:24]
+	now := time.Now().UTC()
+	bootstrapper := &teamApprovalDeviceBootstrapRPCStub{
+		device: cloudapproval.DeviceKeyV1{
+			KeyID:           keyID,
+			AgentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			OwnerID:         "owner-team-bootstrap",
+			Revision:        1,
+			Status:          cloudapproval.DeviceKeyActive,
+			PublicKey: append(
+				ed25519.PublicKey(nil),
+				publicKey...,
+			),
+			NotBefore: now.Add(-time.Minute),
+			ExpiresAt: now.Add(24 * time.Hour),
+		},
+	}
+	service := NewTeamPlanService(nil, nil).
+		WithApprovalDeviceBootstrap(bootstrapper)
+	request := &agentv1.BootstrapFirstTeamApprovalDeviceV3Request{
+		IdempotencyKey: uuid.NewString(),
+		OwnerId:        bootstrapper.device.OwnerID,
+		KeyId:          keyID,
+		PublicKey:      publicKey,
+	}
+	response, err := service.BootstrapFirstTeamApprovalDeviceV3(
+		rpcTeamPrincipalContext(),
+		request,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bootstrapper.calls != 1 ||
+		bootstrapper.command.IdempotencyKey != request.GetIdempotencyKey() ||
+		bootstrapper.command.OwnerID != request.GetOwnerId() ||
+		bootstrapper.command.KeyID != keyID ||
+		!bytes.Equal(bootstrapper.command.PublicKey, publicKey) ||
+		response.GetKeyId() != keyID ||
+		response.GetRevision() != 1 ||
+		!response.GetExpiresAt().AsTime().Equal(
+			bootstrapper.device.ExpiresAt,
+		) {
+		t.Fatalf(
+			"command=%#v response=%#v calls=%d",
+			bootstrapper.command,
+			response,
+			bootstrapper.calls,
+		)
+	}
+}
+
+func TestTeamPlanServiceRejectsMismatchedApprovalDeviceIdentity(
+	t *testing.T,
+) {
+	t.Parallel()
+	bootstrapper := &teamApprovalDeviceBootstrapRPCStub{}
+	service := NewTeamPlanService(nil, nil).
+		WithApprovalDeviceBootstrap(bootstrapper)
+	_, err := service.BootstrapFirstTeamApprovalDeviceV3(
+		rpcTeamPrincipalContext(),
+		&agentv1.BootstrapFirstTeamApprovalDeviceV3Request{
+			IdempotencyKey: uuid.NewString(),
+			OwnerId:        "owner-team-bootstrap",
+			KeyId:          "cloud-device-mismatched",
+			PublicKey: bytes.Repeat(
+				[]byte{0x48},
+				ed25519.PublicKeySize,
+			),
+		},
+	)
+	if status.Code(err) != codes.InvalidArgument ||
+		bootstrapper.calls != 0 {
+		t.Fatalf("error=%v calls=%d", err, bootstrapper.calls)
 	}
 }
 
@@ -143,8 +276,23 @@ func TestTeamPlanServiceChallengeIDsAreStableAndPayloadIsComplete(
 		projected.GetProviderScope().GetCloudConnectionId() !=
 			fact.Plan.ProviderScope.ConnectionID ||
 		projected.GetHardBudgetMicros() !=
-			fact.Plan.Cost.HardBudgetMicros {
+			fact.Plan.Cost.HardBudgetMicros ||
+		first.GetAuthorization().GetAuthorizationId() !=
+			projected.GetLaunchAuthorizationId() ||
+		first.GetAuthorization().GetPlanDigest() != fact.PlanDigest ||
+		first.GetAuthorization().GetNetwork().GetPublicInbound() ||
+		!first.GetAuthorization().GetRetention().GetAutoDestroy() ||
+		first.GetAuthorization().GetRoles()[0].
+			GetWorkerImage().GetImageId() == "" {
 		t.Fatalf("challenge projection lost signed facts: %#v", projected)
+	}
+	encoded, err := protojson.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte("secret_ref:")) ||
+		bytes.Contains(bytes.ToLower(encoded), []byte("credential")) {
+		t.Fatalf("launch authorization leaked secret material: %s", encoded)
 	}
 }
 
@@ -172,9 +320,12 @@ func TestTeamPlanServiceMapsRawDeviceSignatureAndReadsApprovedPlan(
 				PlanRevision: int64(
 					fact.Plan.Revision,
 				),
-				PlanDigest:  fact.PlanDigest,
-				SignerKeyId: "owner-device-1",
-				Signature:   signature,
+				PlanDigest:                fact.PlanDigest,
+				SignerKeyId:               "owner-device-1",
+				Signature:                 signature,
+				SchemaVersion:             teamapproval.SignatureSchemaV2,
+				LaunchAuthorizationId:     uuid.NewString(),
+				LaunchAuthorizationDigest: "sha256:" + strings.Repeat("f", 64),
 			},
 		},
 	)
@@ -183,11 +334,17 @@ func TestTeamPlanServiceMapsRawDeviceSignatureAndReadsApprovedPlan(
 	}
 	if stub.approveCalls != 1 ||
 		stub.approval.Signature.SchemaVersion !=
-			teamapproval.SignatureSchemaV1 ||
+			teamapproval.SignatureSchemaV2 ||
 		stub.approval.Signature.SignatureBase64URL !=
 			base64.RawURLEncoding.EncodeToString(signature) ||
 		response.GetPlan().GetStatus() !=
 			agentv1.TeamPlanStatusV3_TEAM_PLAN_STATUS_V3_APPROVED ||
+		response.GetExecutionId() != mustTeamExecutionID(
+			t,
+			fact.Plan.PlanID,
+			fact.Plan.Revision,
+			approvalID,
+		) ||
 		executions.calls != 1 ||
 		executions.request.OwnerID != fact.Plan.OwnerID ||
 		executions.request.PlanID != fact.Plan.PlanID ||
@@ -239,15 +396,19 @@ func TestTeamPlanServiceReturnsDurableApprovalWhenMaterializationIsPending(
 				PlanRevision: int64(
 					fact.Plan.Revision,
 				),
-				PlanDigest:  fact.PlanDigest,
-				SignerKeyId: "owner-device-1",
-				Signature:   bytes.Repeat([]byte{0x5a}, 64),
+				PlanDigest:                fact.PlanDigest,
+				SignerKeyId:               "owner-device-1",
+				Signature:                 bytes.Repeat([]byte{0x5a}, 64),
+				SchemaVersion:             teamapproval.SignatureSchemaV2,
+				LaunchAuthorizationId:     uuid.NewString(),
+				LaunchAuthorizationDigest: "sha256:" + strings.Repeat("f", 64),
 			},
 		},
 	)
 	if err != nil ||
 		response.GetPlan().GetStatus() !=
 			agentv1.TeamPlanStatusV3_TEAM_PLAN_STATUS_V3_APPROVED ||
+		response.GetExecutionId() == "" ||
 		executions.calls != 1 {
 		t.Fatalf(
 			"approval response=%#v error=%v materialization_calls=%d",
@@ -255,6 +416,153 @@ func TestTeamPlanServiceReturnsDurableApprovalWhenMaterializationIsPending(
 			err,
 			executions.calls,
 		)
+	}
+}
+
+func TestTeamPlanServiceRecoversExecutionIDFromApprovedPlan(
+	t *testing.T,
+) {
+	t.Parallel()
+	fact := rpcTeamPlanFact(t, teamorchestration.PlanApproved)
+	executionID := uuid.NewString()
+	reader := &teamExecutionReadRPCStub{
+		execution: teamexecution.Fact{
+			Execution: teamexecution.ExecutionV1{
+				ExecutionID:  executionID,
+				OwnerID:      fact.Plan.OwnerID,
+				PlanID:       fact.Plan.PlanID,
+				PlanRevision: fact.Plan.Revision,
+				PlanDigest:   fact.PlanDigest,
+			},
+		},
+		findFound: true,
+	}
+	service := NewTeamPlanService(
+		&teamPlanRPCStub{plan: fact},
+		&teamPlanRPCStub{plan: fact},
+	).WithExecutionReads(reader, reader)
+
+	response, err := service.GetTeamPlanV3(
+		context.Background(),
+		&agentv1.GetTeamPlanV3Request{
+			OwnerId:      fact.Plan.OwnerID,
+			PlanId:       fact.Plan.PlanID,
+			PlanRevision: int64(fact.Plan.Revision),
+		},
+	)
+	if err != nil ||
+		response.GetExecutionId() != executionID ||
+		reader.findCalls != 1 {
+		t.Fatalf(
+			"GetTeamPlanV3() response=%#v reads=%d error=%v",
+			response,
+			reader.findCalls,
+			err,
+		)
+	}
+
+	reader.findFound = false
+	response, err = service.GetTeamPlanV3(
+		context.Background(),
+		&agentv1.GetTeamPlanV3Request{
+			OwnerId:      fact.Plan.OwnerID,
+			PlanId:       fact.Plan.PlanID,
+			PlanRevision: int64(fact.Plan.Revision),
+		},
+	)
+	if err != nil || response.GetExecutionId() != "" {
+		t.Fatalf(
+			"pending materialization response=%#v error=%v",
+			response,
+			err,
+		)
+	}
+}
+
+func mustTeamExecutionID(
+	t *testing.T,
+	planID string,
+	planRevision uint64,
+	approvalID string,
+) string {
+	t.Helper()
+	value, err := teamexecution.DeriveExecutionID(
+		planID,
+		planRevision,
+		approvalID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func TestTeamPlanServiceReturnsCompletedExecutionReportWithoutObjectRefs(
+	t *testing.T,
+) {
+	t.Parallel()
+	execution, report, artifacts := rpcCompletedTeamExecution(t)
+	reader := &teamExecutionReadRPCStub{
+		execution: execution,
+		report:    report,
+		artifacts: artifacts,
+	}
+	service := NewTeamPlanService(
+		&teamPlanRPCStub{},
+		&teamPlanRPCStub{},
+		&teamExecutionRPCStub{},
+	).WithExecutionReads(reader, reader).WithArtifactReads(reader)
+	response, err := service.GetTeamExecutionV3(
+		context.Background(),
+		&agentv1.GetTeamExecutionV3Request{
+			OwnerId:     execution.Execution.OwnerID,
+			ExecutionId: execution.Execution.ExecutionID,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := response.GetExecution()
+	if projected.GetStatus() !=
+		agentv1.TeamExecutionStatusV3_TEAM_EXECUTION_STATUS_V3_COMPLETED ||
+		projected.GetTaskInput().GetInputDigest() !=
+			execution.Execution.TaskInput.InputDigest ||
+		projected.GetReport().GetReportDigest() !=
+			report.ReportDigest ||
+		projected.GetReport().GetRoles()[0].
+			GetFinals()[0].GetSummary() !=
+			"Implementation completed and verified." ||
+		projected.GetReport().GetTotalUsage().GetInputTokens() != 100 ||
+		len(projected.GetArtifacts()) != 1 ||
+		projected.GetArtifacts()[0].GetName() != "final.json" ||
+		projected.GetArtifacts()[0].GetSha256() !=
+			artifacts[0].SHA256 ||
+		reader.executionCalls != 1 ||
+		reader.reportCalls != 1 ||
+		reader.artifactCalls != 1 {
+		t.Fatalf(
+			"execution response=%#v reads=%#v",
+			projected,
+			reader,
+		)
+	}
+	encoded, err := protojson.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range [][]byte{
+		[]byte("s3://"),
+		[]byte("secret_ref:"),
+		[]byte("credential"),
+		[]byte("artifactRef"),
+	} {
+		if bytes.Contains(bytes.ToLower(encoded), bytes.ToLower(forbidden)) {
+			t.Fatalf(
+				"Team execution report leaked %q: %s",
+				forbidden,
+				encoded,
+			)
+		}
 	}
 }
 
@@ -357,6 +665,14 @@ func TestTeamPlanPublicErrorsHaveStableRecoverySemantics(t *testing.T) {
 			message: "trusted Team pricing is unavailable",
 		},
 		{
+			name: "launch authorization unavailable",
+			err: teamorchestration.
+				ErrLaunchAuthorizationUnavailable,
+			code: codes.Unavailable,
+			message: "trusted Team launch authorization " +
+				"is unavailable",
+		},
+		{
 			name:    "scope changed",
 			err:     teamorchestration.ErrScopeChanged,
 			code:    codes.FailedPrecondition,
@@ -367,6 +683,15 @@ func TestTeamPlanPublicErrorsHaveStableRecoverySemantics(t *testing.T) {
 			err:     teamorchestration.ErrChallengeConsumed,
 			code:    codes.FailedPrecondition,
 			message: "Team Plan is not ready for this operation",
+		},
+		{
+			name: "approval device already bootstrapped",
+			err: errors.Join(
+				errors.New("bootstrap failed"),
+				ErrTeamApprovalDeviceAlreadyBootstrapped,
+			),
+			code:    codes.FailedPrecondition,
+			message: "another approval device is already linked",
 		},
 	}
 	for _, test := range tests {
@@ -408,6 +733,80 @@ type teamExecutionRPCStub struct {
 	err     error
 }
 
+type teamExecutionReadRPCStub struct {
+	execution      teamexecution.Fact
+	report         teamreport.Fact
+	artifacts      []teamartifact.ArtifactV1
+	findFound      bool
+	findCalls      int
+	executionCalls int
+	reportCalls    int
+	artifactCalls  int
+}
+
+type teamApprovalDeviceBootstrapRPCStub struct {
+	device  cloudapproval.DeviceKeyV1
+	command TeamApprovalDeviceBootstrapCommand
+	calls   int
+	err     error
+}
+
+func (stub *teamApprovalDeviceBootstrapRPCStub) RegisterTeamApprovalSigner(
+	_ context.Context,
+	_ task.MutationScope,
+	command TeamApprovalDeviceBootstrapCommand,
+) (cloudapproval.DeviceKeyV1, error) {
+	stub.calls++
+	stub.command = command
+	stub.command.PublicKey = append(
+		ed25519.PublicKey(nil),
+		command.PublicKey...,
+	)
+	device := stub.device
+	device.PublicKey = append(
+		ed25519.PublicKey(nil),
+		device.PublicKey...,
+	)
+	return device, stub.err
+}
+
+func (stub *teamExecutionReadRPCStub) FindTeamExecutionByPlan(
+	context.Context,
+	string,
+	string,
+	uint64,
+) (teamexecution.Fact, bool, error) {
+	stub.findCalls++
+	return stub.execution, stub.findFound, nil
+}
+
+func (stub *teamExecutionReadRPCStub) GetTeamExecution(
+	context.Context,
+	string,
+	string,
+) (teamexecution.Fact, error) {
+	stub.executionCalls++
+	return stub.execution, nil
+}
+
+func (stub *teamExecutionReadRPCStub) GetTeamExecutionReport(
+	context.Context,
+	string,
+	string,
+) (teamreport.Fact, error) {
+	stub.reportCalls++
+	return stub.report, nil
+}
+
+func (stub *teamExecutionReadRPCStub) ListTeamArtifacts(
+	context.Context,
+	string,
+	string,
+) ([]teamartifact.ArtifactV1, error) {
+	stub.artifactCalls++
+	return append([]teamartifact.ArtifactV1(nil), stub.artifacts...), nil
+}
+
 func (stub *teamExecutionRPCStub) Materialize(
 	_ context.Context,
 	scope task.MutationScope,
@@ -447,9 +846,17 @@ func (stub *teamPlanRPCStub) CreateChallenge(
 	stub.scope = scope
 	stub.challenge = request
 	stub.challengeCalls++
-	challenge, err := teamapproval.NewChallengeV1(
+	authorization, err := rpcTeamLaunchAuthorization(
 		stub.plan.Plan,
-		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		request.ApprovalID,
+	)
+	if err != nil {
+		return teamorchestration.ChallengeFact{}, err
+	}
+	challenge, err := teamapproval.NewChallengeV2(
+		stub.plan.Plan,
+		authorization,
+		authorization.AgentInstanceID,
 		request.ApprovalID,
 		request.ChallengeID,
 		request.SignerKeyID,
@@ -460,6 +867,7 @@ func (stub *teamPlanRPCStub) CreateChallenge(
 	}
 	stub.challengeFact = teamorchestration.ChallengeFact{
 		Challenge:      challenge,
+		Authorization:  &authorization,
 		RecordRevision: 1,
 		CreatedAt:      challenge.IssuedAt,
 		UpdatedAt:      challenge.IssuedAt,
@@ -489,6 +897,140 @@ func rpcTeamPrincipalContext() context.Context {
 			CredentialID: uuid.NewString(),
 		},
 	)
+}
+
+func rpcCompletedTeamExecution(
+	t *testing.T,
+) (teamexecution.Fact, teamreport.Fact, []teamartifact.ArtifactV1) {
+	t.Helper()
+	planFact := rpcTeamPlanFact(
+		t,
+		teamorchestration.PlanApproved,
+	)
+	approvalID := uuid.NewString()
+	authorization, err := rpcTeamLaunchAuthorization(
+		planFact.Plan,
+		approvalID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizationDigest, err := authorization.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedAt := planFact.Plan.QuotedAt.
+		Add(2 * time.Minute).
+		UTC().
+		Truncate(time.Microsecond)
+	approved := teamorchestration.ApprovedPlanFact{
+		Plan: planFact,
+		Approval: teamorchestration.ApprovalFact{
+			Signature: teamapproval.SignatureV1{
+				SchemaVersion:             teamapproval.SignatureSchemaV2,
+				ApprovalID:                approvalID,
+				ChallengeID:               uuid.NewString(),
+				PlanID:                    planFact.Plan.PlanID,
+				PlanRevision:              planFact.Plan.Revision,
+				PlanDigest:                planFact.PlanDigest,
+				LaunchAuthorizationID:     authorization.AuthorizationID,
+				LaunchAuthorizationDigest: authorizationDigest,
+				SignerKeyID:               "owner-device-report",
+				SignatureBase64URL: base64.RawURLEncoding.EncodeToString(
+					bytes.Repeat([]byte{0x5a}, 64),
+				),
+			},
+			Authorization: &authorization,
+			ApprovedAt:    approvedAt,
+			CreatedAt:     approvedAt,
+		},
+	}
+	execution, err := teamexecution.Materialize(approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionDigest, err := execution.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executionFact := teamexecution.Fact{
+		Execution:       execution,
+		ExecutionDigest: executionDigest,
+		Status:          teamexecution.StatusCompleted,
+		RecordRevision:  5,
+		CreatedAt:       approvedAt,
+		UpdatedAt:       approvedAt.Add(time.Minute),
+	}
+	role := execution.Roles[0]
+	reportValue := teamreport.ReportV1{
+		SchemaVersion: teamreport.SchemaV1,
+		ExecutionID:   execution.ExecutionID,
+		OwnerID:       execution.OwnerID,
+		TaskID:        execution.TaskID,
+		PlanID:        execution.PlanID,
+		PlanRevision:  execution.PlanRevision,
+		PlanDigest:    execution.PlanDigest,
+		Roles: []teamreport.RoleV1{{
+			RoleID:               role.RoleID,
+			Title:                role.Title,
+			RuntimeFamily:        role.RuntimeFamily,
+			RuntimeAdapter:       workerruntime.Adapter(role.RuntimeAdapter),
+			Outcome:              task.OutcomeSucceeded,
+			ResultEvidenceDigest: "sha256:" + strings.Repeat("8", 64),
+			Finals: []teamreport.FinalV1{{
+				ActionID: "execute",
+				Adapter:  workerruntime.AdapterCodexV1,
+				Usage: workerruntime.Usage{
+					InputTokens: 100, OutputTokens: 20,
+				},
+				Status:         "completed",
+				Summary:        "Implementation completed and verified.",
+				Deliverables:   []string{"Implementation"},
+				Tests:          []string{"Focused tests passed."},
+				Risks:          []string{},
+				ArtifactSHA256: "sha256:" + strings.Repeat("9", 64),
+			}},
+		}},
+		TotalUsage: workerruntime.Usage{
+			InputTokens: 100, OutputTokens: 20,
+		},
+	}
+	reportDigest, err := reportValue.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportFact := teamreport.Fact{
+		Report:       reportValue,
+		ReportDigest: reportDigest,
+		GeneratedAt:  executionFact.UpdatedAt,
+	}
+	if reportFact.Validate() != nil {
+		t.Fatal("invalid Team report RPC fixture")
+	}
+	artifact, err := teamartifact.NewVerified(teamartifact.BuildRequest{
+		AgentInstanceID:  uuid.NewString(),
+		OwnerID:          execution.OwnerID,
+		ExecutionID:      execution.ExecutionID,
+		OperationID:      uuid.NewString(),
+		TaskID:           execution.TaskID,
+		PlanID:           execution.PlanID,
+		PlanRevision:     execution.PlanRevision,
+		ConnectionID:     execution.ProviderScope.ConnectionID,
+		RoleID:           role.RoleID,
+		ActionID:         "execute",
+		DeploymentID:     uuid.NewString(),
+		Name:             "final.json",
+		MediaType:        "application/json",
+		SizeBytes:        128,
+		SHA256:           "sha256:" + strings.Repeat("9", 64),
+		ObjectRef:        "s3://artifact-test/executions/" + execution.ExecutionID + "/final.json",
+		CreatedAt:        executionFact.UpdatedAt,
+		RetentionExpires: executionFact.UpdatedAt.Add(90 * 24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return executionFact, reportFact, []teamartifact.ArtifactV1{artifact}
 }
 
 func rpcPrepareTeamPlanRequest(
@@ -545,6 +1087,148 @@ func rpcPrepareTeamPlanRequest(
 	}
 }
 
+func rpcTeamLaunchAuthorization(
+	plan teamplan.Plan,
+	approvalID string,
+) (teamlaunch.AuthorizationV1, error) {
+	const agentInstanceID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	if len(plan.Assignments) != 1 || len(plan.Cost.Roles) != 1 {
+		return teamlaunch.AuthorizationV1{}, teamlaunch.ErrInvalid
+	}
+	planDigest, err := plan.Digest()
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	authorizationID, err := teamlaunch.AuthorizationID(
+		plan.PlanID,
+		plan.Revision,
+		approvalID,
+	)
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	foundation, err := awsfoundation.BuildSpec(awsfoundation.SpecInput{
+		AgentInstanceID: agentInstanceID,
+		Partition:       "aws",
+		AccountID:       plan.ProviderScope.AccountID,
+		Region:          plan.Region,
+	})
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	kmsAlias, err := awsfoundation.KMSAliasForAgent(agentInstanceID)
+	if err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	assignment := plan.Assignments[0]
+	cost := plan.Cost.Roles[0]
+	authorization := teamlaunch.AuthorizationV1{
+		SchemaVersion:   teamlaunch.SchemaV1,
+		AuthorizationID: authorizationID,
+		AgentInstanceID: agentInstanceID,
+		OwnerID:         plan.OwnerID,
+		PlanID:          plan.PlanID,
+		PlanRevision:    plan.Revision,
+		PlanDigest:      planDigest,
+		ApprovalID:      approvalID,
+		ProviderScope:   plan.ProviderScope,
+		Region:          plan.Region,
+		Network: teamlaunch.NetworkV1{
+			ConnectivityMode:     teamlaunch.ConnectivityDirectPublicTLSV1,
+			VPCID:                "vpc-0123456789abcdef0",
+			SubnetID:             "subnet-0123456789abcdef0",
+			AvailabilityZone:     plan.Region + "a",
+			SecurityGroupMode:    teamlaunch.SecurityGroupDedicatedNoIngress,
+			PublicIPv4:           true,
+			ControlPlaneEndpoint: "grpcs://worker-control.demo2.dirextalk.ai:7443",
+			Egress: []teamlaunch.EgressRuleV1{
+				{
+					Protocol: "tcp",
+					FromPort: 443,
+					ToPort:   443,
+					CIDRv4:   "0.0.0.0/0",
+				},
+				{
+					Protocol: "tcp",
+					FromPort: 7443,
+					ToPort:   7443,
+					CIDRv4:   "0.0.0.0/0",
+				},
+				{
+					Protocol: "udp",
+					FromPort: 53,
+					ToPort:   53,
+					CIDRv4:   "169.254.169.253/32",
+				},
+			},
+		},
+		Retention: teamlaunch.RetentionV1{
+			Class:                  teamlaunch.RetentionEphemeralAutoDestroy,
+			AutoDestroy:            true,
+			MaximumLifetimeSeconds: 2 * 60 * 60,
+			DestroyGraceSeconds:    5 * 60,
+		},
+		WorkerCount:                  plan.WorkerCount,
+		MaxConcurrentBillableWorkers: plan.MaxConcurrentWorkers,
+		Currency:                     plan.Cost.Currency,
+		HardBudgetMicros:             plan.Cost.HardBudgetMicros,
+		RequiresFreshQuote:           true,
+		MaximumQuoteAgeSeconds:       15 * 60,
+		LaunchNotBefore:              plan.QuotedAt,
+		LaunchNotAfter:               plan.ValidUntil,
+		Roles: []teamlaunch.RoleLaunchV1{{
+			RoleID:                    assignment.RoleID,
+			RuntimeReleaseID:          assignment.RuntimeReleaseID,
+			RuntimeImageDigest:        assignment.RuntimeImageDigest,
+			RuntimeInstallationDigest: "sha256:" + strings.Repeat("6", 64),
+			RuntimeExecutableDigest:   "sha256:" + strings.Repeat("7", 64),
+			ComputeOfferID:            assignment.ComputeOfferID,
+			InstanceType:              assignment.InstanceType,
+			Architecture:              assignment.Resources.Arch,
+			VCPU:                      assignment.Resources.VCPU,
+			MemoryMiB:                 assignment.Resources.MemoryMiB,
+			PurchaseOption:            teamlaunch.PurchaseOnDemand,
+			InstanceProfileName:       foundation.WorkerProfileName,
+			EBSOptimized:              true,
+			RequireIMDSv2:             true,
+			MetadataResponseHopLimit:  1,
+			ShutdownBehavior:          teamlaunch.ShutdownTerminate,
+			RootStorage: teamlaunch.RootStorageV1{
+				DeviceName:          "/dev/sda1",
+				SizeGiB:             assignment.Resources.DiskGiB,
+				VolumeType:          "gp3",
+				IOPS:                3000,
+				ThroughputMiBPS:     125,
+				KMSKeyID:            kmsAlias,
+				Encrypted:           true,
+				DeleteOnTermination: true,
+			},
+			WorkerImage: teamlaunch.WorkerImageV1{
+				PublicationDigest:     "sha256:" + strings.Repeat("8", 64),
+				AgentInstanceID:       agentInstanceID,
+				AccountID:             plan.ProviderScope.AccountID,
+				Region:                plan.Region,
+				Architecture:          assignment.Resources.Arch,
+				ImageID:               "ami-0123456789abcdef0",
+				ImageDigest:           "sha256:" + strings.Repeat("9", 64),
+				RootSnapshotID:        "snap-0123456789abcdef0",
+				ReleaseManifestDigest: "sha256:" + strings.Repeat("a", 64),
+				WorkerRootFSDigest:    "sha256:" + strings.Repeat("b", 64),
+				WorkerBinaryDigest:    "sha256:" + strings.Repeat("c", 64),
+				ObservedAt: plan.QuotedAt.
+					Add(-time.Hour).
+					UTC().
+					Truncate(time.Microsecond),
+			},
+			MaximumApprovedCostMicros: cost.TotalMaximumMicros,
+		}},
+	}
+	if err := authorization.ValidateAgainst(plan); err != nil {
+		return teamlaunch.AuthorizationV1{}, err
+	}
+	return authorization, nil
+}
+
 func rpcTeamPlanFact(
 	t *testing.T,
 	statusValue teamorchestration.PlanStatus,
@@ -552,6 +1236,21 @@ func rpcTeamPlanFact(
 	t.Helper()
 	quotedAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	planID := uuid.NewString()
+	taskID := uuid.NewString()
+	ownerID := "owner-team-rpc"
+	goalDigest := "sha256:" + strings.Repeat("d", 64)
+	taskInput, err := taskinput.NewEmptyInput(
+		ownerID,
+		taskID,
+		goalDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputBinding, err := taskInput.Binding()
+	if err != nil {
+		t.Fatal(err)
+	}
 	assignment := teamplan.WorkerAssignment{
 		RoleID:    "implementation",
 		Title:     "Implementation",
@@ -567,7 +1266,7 @@ func rpcTeamPlanFact(
 		RuntimeImageDigest: "sha256:" + strings.Repeat("a", 64),
 		RuntimeAdapter:     teamplan.AdapterCodexV1,
 		ModelProfileID:     "model-balanced",
-		ModelProvider:      "openai_compatible",
+		ModelProvider:      "openai",
 		Model:              "code-model",
 		ModelInterface:     teamplan.ModelOpenAIResponses,
 		ModelCredentialRef: "secret_ref:model/worker-balanced",
@@ -595,11 +1294,12 @@ func rpcTeamPlanFact(
 		ColdStart: 30 * time.Second,
 	}
 	plan := teamplan.Plan{
-		SchemaVersion: teamplan.SchemaV1,
+		SchemaVersion: teamplan.SchemaV3,
 		PlanID:        planID,
 		Revision:      1,
-		OwnerID:       "owner-team-rpc",
-		GoalDigest:    "sha256:" + strings.Repeat("d", 64),
+		OwnerID:       ownerID,
+		GoalDigest:    goalDigest,
+		TaskInput:     inputBinding,
 		ProviderScope: teamplan.ProviderScope{
 			Provider:           teamplan.CloudProviderAWS,
 			ConnectionID:       uuid.NewString(),
@@ -653,7 +1353,7 @@ func rpcTeamPlanFact(
 		t.Fatal(err)
 	}
 	return teamorchestration.PlanFact{
-		TaskID:         uuid.NewString(),
+		TaskID:         taskID,
 		Plan:           plan,
 		PlanDigest:     digest,
 		Status:         statusValue,

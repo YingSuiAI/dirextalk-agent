@@ -135,10 +135,10 @@ func (state *builderCleanupState) capture(observation BuilderObservationV1, vali
 	if state.evidence.SchemaVersion != "" && !equalBuilderCleanupEvidence(state.evidence, evidence) {
 		return ErrOwnershipMismatch
 	}
-	state.evidence = evidence
 	if state.recorder != nil && state.recorder(evidence) != nil {
 		return ErrCleanupFailed
 	}
+	state.evidence = evidence
 	return nil
 }
 
@@ -274,6 +274,12 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 			return ImageManifestV1{}, validationErr
 		}
 		builderID = builderObservation.InstanceID
+		if builderObservation.State != BuilderTerminated && cleanupState.evidence.SchemaVersion == "" {
+			builderObservation, err = service.waitBuilderCleanupEvidence(buildCtx, validated, cleanupState, builderObservation)
+			if err != nil {
+				return ImageManifestV1{}, err
+			}
+		}
 	}
 
 	artifactObservation, artifactFound, providerErr := service.provider.FindArtifact(buildCtx, validated.object)
@@ -351,13 +357,17 @@ func (service *Service) Build(ctx context.Context, request BuildRequestV1) (mani
 			builderObservation = recovered
 		}
 		builderID = builderObservation.InstanceID
+		builderObservation, err = service.waitBuilderCleanupEvidence(buildCtx, validated, cleanupState, builderObservation)
+		if err != nil {
+			return ImageManifestV1{}, err
+		}
 	} else if builderObservation.State != BuilderStopped && !artifactFound {
 		// A running builder whose exact versioned input disappeared cannot be
 		// repaired by uploading a different version behind its existing URL.
 		return ImageManifestV1{}, ErrBuildFailed
 	}
 
-	builderObservation, err = service.waitBuilderStopped(buildCtx, validated, builderObservation)
+	builderObservation, err = service.waitBuilderStopped(buildCtx, validated, cleanupState, builderObservation)
 	if err != nil {
 		return ImageManifestV1{}, err
 	}
@@ -441,8 +451,63 @@ func (service *Service) waitSnapshotCompleted(ctx context.Context, manifest Imag
 	}
 }
 
-func (service *Service) waitBuilderStopped(ctx context.Context, validated validatedBuild, observation BuilderObservationV1) (BuilderObservationV1, error) {
+// waitBuilderCleanupEvidence closes the short EC2 window where RunInstances
+// has returned the instance and ENI but DescribeInstances has not yet exposed
+// the root EBS volume. Destructive cleanup cannot start until all provider IDs
+// are durably recorded.
+func (service *Service) waitBuilderCleanupEvidence(
+	ctx context.Context,
+	validated validatedBuild,
+	cleanupState *builderCleanupState,
+	observation BuilderObservationV1,
+) (BuilderObservationV1, error) {
+	if cleanupState == nil {
+		return BuilderObservationV1{}, ErrCleanupFailed
+	}
 	for {
+		if err := validateBuilderObservation(observation, validated); err != nil {
+			return BuilderObservationV1{}, err
+		}
+		if volumeIDPattern.MatchString(observation.RootVolumeID) &&
+			len(observation.NetworkInterfaceIDs) == 1 &&
+			networkIDPattern.MatchString(observation.NetworkInterfaceIDs[0]) {
+			if err := cleanupState.capture(observation, validated); err != nil {
+				return BuilderObservationV1{}, err
+			}
+			return observation, nil
+		}
+		switch observation.State {
+		case BuilderTerminated, BuilderFailed:
+			return BuilderObservationV1{}, ErrBuildFailed
+		}
+		if err := service.pause(ctx); err != nil {
+			return BuilderObservationV1{}, err
+		}
+		var found bool
+		var providerErr error
+		observation, found, providerErr = service.provider.ObserveBuilder(ctx, observation.InstanceID)
+		if providerErr != nil {
+			return BuilderObservationV1{}, operationError(ctx)
+		}
+		if !found {
+			return BuilderObservationV1{}, ErrReadBackMismatch
+		}
+	}
+}
+
+func (service *Service) waitBuilderStopped(
+	ctx context.Context,
+	validated validatedBuild,
+	cleanupState *builderCleanupState,
+	observation BuilderObservationV1,
+) (BuilderObservationV1, error) {
+	for {
+		if observation.State == BuilderTerminated && cleanupState != nil && cleanupState.evidence.SchemaVersion != "" {
+			if err := validateTerminatedBuilderForCleanup(observation, cleanupState.evidence); err != nil {
+				return BuilderObservationV1{}, err
+			}
+			return BuilderObservationV1{}, ErrBuildFailed
+		}
 		if err := validateBuilderObservation(observation, validated); err != nil {
 			return BuilderObservationV1{}, err
 		}
@@ -738,7 +803,8 @@ func (service *Service) ensureBuilderTerminated(ctx context.Context, validated v
 	}
 	if observation.State == BuilderTerminated {
 		if cleanupState.evidence.SchemaVersion == "" {
-			if validateBuilderObservation(observation, validated) != nil || cleanupState.capture(observation, validated) != nil {
+			if validateBuilderObservation(observation, validated) != nil ||
+				cleanupState.capture(observation, validated) != nil {
 				return ErrCleanupFailed
 			}
 		} else if validateTerminatedBuilderForCleanup(observation, cleanupState.evidence) != nil {
@@ -746,7 +812,13 @@ func (service *Service) ensureBuilderTerminated(ctx context.Context, validated v
 		}
 		return nil
 	}
-	if observation.State == BuilderStopping && cleanupState.evidence.SchemaVersion != "" {
+	if cleanupState.evidence.SchemaVersion == "" {
+		observation, providerErr = service.waitBuilderCleanupEvidence(ctx, validated, cleanupState, observation)
+		if providerErr != nil {
+			return ErrCleanupFailed
+		}
+	}
+	if observation.State == BuilderStopping {
 		if validateStoppingBuilderForCleanup(observation, cleanupState.evidence) != nil {
 			return ErrCleanupFailed
 		}

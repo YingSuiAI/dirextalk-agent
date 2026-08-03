@@ -8,12 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerami"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
+	workerprotocol "github.com/YingSuiAI/dirextalk-agent/sdk/workerprotocol/v1"
 	"github.com/google/uuid"
 )
 
@@ -37,6 +43,8 @@ func TestMaterializeBuildsDeterministicSecretFreeWorkerDAG(t *testing.T) {
 		t.Fatalf("execution digest drifted: %q != %q error=%v", secondDigest, firstDigest, err)
 	}
 	if first.ExecutionID != second.ExecutionID ||
+		first.SchemaVersion != SchemaV3 ||
+		first.TaskInput != authorization.Plan.Plan.TaskInput ||
 		len(first.Roles) != 2 ||
 		first.Roles[0].RoleID != "implement" ||
 		first.Roles[1].RoleID != "review" ||
@@ -44,7 +52,11 @@ func TestMaterializeBuildsDeterministicSecretFreeWorkerDAG(t *testing.T) {
 		first.Roles[1].DependsOnRoleIDs[0] != "implement" ||
 		first.Roles[0].TaskStepID == first.Roles[1].TaskStepID ||
 		first.Roles[0].DeploymentID == first.Roles[1].DeploymentID ||
-		first.Roles[0].ExpectedWorkerID == first.Roles[1].ExpectedWorkerID {
+		first.Roles[0].ExpectedWorkerID == first.Roles[1].ExpectedWorkerID ||
+		first.Roles[0].Marketplace == nil ||
+		!first.Roles[0].Marketplace.Equal(
+			*authorization.Plan.Plan.Assignments[0].Marketplace,
+		) {
 		t.Fatalf("materialized Worker DAG = %#v", first)
 	}
 	expectedWorkerID, err := workeridentity.DeriveWorkerID(
@@ -74,6 +86,34 @@ func TestMaterializeBuildsDeterministicSecretFreeWorkerDAG(t *testing.T) {
 	}
 }
 
+func TestDeriveExecutionIDIsStableAndApprovalBound(t *testing.T) {
+	t.Parallel()
+	planID := uuid.NewString()
+	approvalID := uuid.NewString()
+	first, err := DeriveExecutionID(planID, 1, approvalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := DeriveExecutionID(planID, 1, approvalID)
+	if err != nil || second != first {
+		t.Fatalf("stable execution ID = %q, %v", second, err)
+	}
+	changed, err := DeriveExecutionID(
+		planID,
+		1,
+		uuid.NewString(),
+	)
+	if err != nil || changed == first {
+		t.Fatalf("approval-bound execution ID = %q, %v", changed, err)
+	}
+	if _, err := DeriveExecutionID(planID, 0, approvalID); !errors.Is(
+		err,
+		ErrInvalid,
+	) {
+		t.Fatalf("zero revision error = %v", err)
+	}
+}
+
 func TestExecutionRejectsPlanAndIdentitySubstitution(t *testing.T) {
 	t.Parallel()
 	authorization := executionAuthorizationFixture(t)
@@ -92,10 +132,26 @@ func TestExecutionRejectsPlanAndIdentitySubstitution(t *testing.T) {
 			},
 		},
 		{
+			name: "input snapshot",
+			mutate: func(value *ExecutionV1) {
+				value.TaskInput.Workspace.WorkspaceDigest = "sha256:" +
+					strings.Repeat("9", 64)
+			},
+		},
+		{
 			name: "runtime image",
 			mutate: func(value *ExecutionV1) {
 				value.Roles[0].RuntimeImageDigest = "sha256:" +
 					strings.Repeat("9", 64)
+			},
+		},
+		{
+			name: "Marketplace manifest",
+			mutate: func(value *ExecutionV1) {
+				binding := value.Roles[0].Marketplace.Clone()
+				binding.ManifestDigest = "sha256:" +
+					strings.Repeat("9", 64)
+				value.Roles[0].Marketplace = &binding
 			},
 		},
 		{
@@ -633,6 +689,20 @@ func executionAuthorizationFixture(
 	planID := uuid.NewString()
 	taskID := uuid.NewString()
 	approvalID := uuid.NewString()
+	ownerID := "owner-team-execution"
+	goalDigest := "sha256:" + strings.Repeat("1", 64)
+	taskInput, err := taskinput.NewEmptyInput(
+		ownerID,
+		taskID,
+		goalDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputBinding, err := taskInput.Binding()
+	if err != nil {
+		t.Fatal(err)
+	}
 	assignments := []teamplan.WorkerAssignment{
 		executionAssignmentFixture(planID, "implement", nil),
 		executionAssignmentFixture(
@@ -640,6 +710,14 @@ func executionAuthorizationFixture(
 			"review",
 			[]string{"implement"},
 		),
+	}
+	for index := range assignments {
+		binding := executionMarketplaceBinding(
+			planID,
+			assignments[index],
+			now.Add(24*time.Hour),
+		)
+		assignments[index].Marketplace = &binding
 	}
 	assignments[1].Title = "Review"
 	assignments[1].Objective = "Independently review and test the implementation."
@@ -652,11 +730,12 @@ func executionAuthorizationFixture(
 		executionRoleCost("review"),
 	}
 	plan := teamplan.Plan{
-		SchemaVersion: teamplan.SchemaV1,
+		SchemaVersion: teamplan.SchemaV3,
 		PlanID:        planID,
 		Revision:      1,
-		OwnerID:       "owner-team-execution",
-		GoalDigest:    "sha256:" + strings.Repeat("1", 64),
+		OwnerID:       ownerID,
+		GoalDigest:    goalDigest,
+		TaskInput:     inputBinding,
 		ProviderScope: teamplan.ProviderScope{
 			Provider:           teamplan.CloudProviderAWS,
 			ConnectionID:       uuid.NewString(),
@@ -699,6 +778,83 @@ func executionAuthorizationFixture(
 		t.Fatal(err)
 	}
 	approvedAt := now.Add(time.Minute)
+	launchAuthorization, err := teamlaunch.NewAuthorizationV1(
+		teamlaunch.BuildRequest{
+			Plan:            plan,
+			AgentInstanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			ApprovalID:      approvalID,
+			Network: teamlaunch.NetworkV1{
+				ConnectivityMode: teamlaunch.
+					ConnectivityDirectPublicTLSV1,
+				VPCID:            "vpc-0123456789abcdef0",
+				SubnetID:         "subnet-0123456789abcdef0",
+				AvailabilityZone: "us-east-1a",
+				SecurityGroupMode: teamlaunch.
+					SecurityGroupDedicatedNoIngress,
+				PublicIPv4:    true,
+				PublicInbound: false,
+				ControlPlaneEndpoint: "grpcs://" +
+					"worker-control.demo2.dirextalk.ai:443",
+				Egress: []teamlaunch.EgressRuleV1{
+					{
+						Protocol: "tcp",
+						FromPort: 443,
+						ToPort:   443,
+						CIDRv4:   "0.0.0.0/0",
+					},
+					{
+						Protocol: "udp",
+						FromPort: 53,
+						ToPort:   53,
+						CIDRv4:   "169.254.169.253/32",
+					},
+				},
+			},
+			Retention: teamlaunch.RetentionV1{
+				Class:       teamlaunch.RetentionEphemeralAutoDestroy,
+				AutoDestroy: true,
+				MaximumLifetimeSeconds: uint64(
+					(time.Hour) / time.Second,
+				),
+				DestroyGraceSeconds: uint64(
+					(5 * time.Minute) / time.Second,
+				),
+			},
+			LaunchNotBefore: now.Add(30 * time.Second),
+			LaunchNotAfter:  now.Add(9 * time.Minute),
+			RoleSelections: []teamlaunch.RoleSelection{
+				{
+					RoleID: "implement",
+					RuntimeInstallationDigest: "sha256:" +
+						strings.Repeat("b", 64),
+					RuntimeExecutableDigest: "sha256:" +
+						strings.Repeat("c", 64),
+					WorkerRelease: executionWorkerReleaseFixture(
+						t,
+						now,
+					),
+				},
+				{
+					RoleID: "review",
+					RuntimeInstallationDigest: "sha256:" +
+						strings.Repeat("b", 64),
+					RuntimeExecutableDigest: "sha256:" +
+						strings.Repeat("c", 64),
+					WorkerRelease: executionWorkerReleaseFixture(
+						t,
+						now,
+					),
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("build launch authorization: %v", err)
+	}
+	launchDigest, err := launchAuthorization.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return teamorchestration.ApprovedPlanFact{
 		Plan: teamorchestration.PlanFact{
 			TaskID:         taskID,
@@ -711,19 +867,80 @@ func executionAuthorizationFixture(
 		},
 		Approval: teamorchestration.ApprovalFact{
 			Signature: teamapproval.SignatureV1{
-				SchemaVersion:      teamapproval.SignatureSchemaV1,
-				ApprovalID:         approvalID,
-				ChallengeID:        uuid.NewString(),
-				PlanID:             planID,
-				PlanRevision:       1,
-				PlanDigest:         digest,
-				SignerKeyID:        "team-device-1",
-				SignatureBase64URL: strings.Repeat("A", 86),
+				SchemaVersion: teamapproval.SignatureSchemaV2,
+				ApprovalID:    approvalID,
+				ChallengeID:   uuid.NewString(),
+				PlanID:        planID,
+				PlanRevision:  1,
+				PlanDigest:    digest,
+				LaunchAuthorizationID: launchAuthorization.
+					AuthorizationID,
+				LaunchAuthorizationDigest: launchDigest,
+				SignerKeyID:               "team-device-1",
+				SignatureBase64URL:        strings.Repeat("A", 86),
 			},
-			ApprovedAt: approvedAt,
-			CreatedAt:  approvedAt,
+			Authorization: &launchAuthorization,
+			ApprovedAt:    approvedAt,
+			CreatedAt:     approvedAt,
 		},
 	}
+}
+
+func executionWorkerReleaseFixture(
+	t *testing.T,
+	now time.Time,
+) workerrelease.ReleaseV1 {
+	t.Helper()
+	image := workerami.ImageManifestV1{
+		SchemaVersion:         workerami.ImageManifestSchemaV1,
+		AgentInstanceID:       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		ImageID:               "ami-0123456789abcdef0",
+		ImageName:             "dtx-worker-ami-0123456789abcdef0123",
+		RootSnapshotID:        "snap-0123456789abcdef0",
+		AccountID:             "123456789012",
+		Region:                "us-east-1",
+		Architecture:          "amd64",
+		BaseAMIID:             "ami-0abcdef0123456789",
+		BaseAMIOwnerID:        "099720109477",
+		RootDeviceName:        "/dev/sda1",
+		ReleaseManifestDigest: "sha256:" + strings.Repeat("d", 64),
+		WorkerRootFSDigest:    "sha256:" + strings.Repeat("e", 64),
+		WorkerBinaryDigest:    "sha256:" + strings.Repeat("f", 64),
+		CreatedAt: now.Add(-time.Hour).UTC().
+			Truncate(time.Second).Format(time.RFC3339),
+	}
+	attestation := awsprovider.WorkerAMIAttestationV1{
+		SchemaVersion:         awsprovider.WorkerAMIAttestationSchemaV1,
+		AgentInstanceID:       image.AgentInstanceID,
+		AMIID:                 image.ImageID,
+		RootSnapshotID:        image.RootSnapshotID,
+		AccountID:             image.AccountID,
+		Region:                image.Region,
+		Architecture:          recipe.ArchitectureAMD64,
+		ReleaseManifestDigest: image.ReleaseManifestDigest,
+		WorkerRootFSDigest:    image.WorkerRootFSDigest,
+		WorkerBinaryDigest:    image.WorkerBinaryDigest,
+		ObservedAt: now.Add(-59 * time.Minute).UTC().
+			Truncate(time.Second),
+	}
+	imageDigest, err := attestation.ImageDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(workerrelease.PublicationV1{
+		SchemaVersion: workerrelease.PublicationSchemaV1,
+		ImageManifest: image,
+		ImageDigest:   imageDigest,
+		Attestation:   attestation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := workerrelease.ParsePublicationJSON(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return release
 }
 
 func executionAssignmentFixture(
@@ -732,9 +949,10 @@ func executionAssignmentFixture(
 	dependencies []string,
 ) teamplan.WorkerAssignment {
 	return teamplan.WorkerAssignment{
-		RoleID:    roleID,
-		Title:     "Implementation",
-		Objective: "Implement the approved change in an isolated workspace.",
+		RoleID: roleID,
+		Title:  "Implementation",
+		Objective: "1. Implement the approved change.\n" +
+			"2. Test it in an isolated workspace.",
 		WorkClass: teamplan.WorkSoftwareImplementation,
 		RequiredCapabilities: []teamplan.Capability{
 			teamplan.CapabilityGit,
@@ -771,6 +989,58 @@ func executionAssignmentFixture(
 			OutputMinimum:  100,
 			OutputExpected: 200,
 			OutputMaximum:  300,
+		},
+	}
+}
+
+func executionMarketplaceBinding(
+	planID string,
+	assignment teamplan.WorkerAssignment,
+	reviewValidUntil time.Time,
+) teamplan.WorkerMarketplaceBindingV1 {
+	planUUID := uuid.MustParse(planID)
+	return teamplan.WorkerMarketplaceBindingV1{
+		SchemaVersion: teamplan.WorkerMarketplaceBindingSchemaV1,
+		RegistryID: uuid.NewSHA1(
+			planUUID,
+			[]byte("market-registry"),
+		).String(),
+		RegistryRevision: "sha256:" + strings.Repeat("5", 64),
+		ReleaseID:        assignment.RuntimeReleaseID,
+		WorkerTypeID: uuid.NewSHA1(
+			planUUID,
+			[]byte("worker-type:"+assignment.RoleID),
+		).String(),
+		PublisherID: uuid.NewSHA1(
+			planUUID,
+			[]byte("publisher"),
+		).String(),
+		PublisherDisplayName:     "Dirextalk Official",
+		PublisherTier:            "dirextalk_official",
+		ManifestDigest:           "sha256:" + strings.Repeat("6", 64),
+		ImageRepository:          "public.ecr.aws/dirextalk/workers/code",
+		ImageDigest:              assignment.RuntimeImageDigest,
+		ImageSignatureDigest:     "sha256:" + strings.Repeat("7", 64),
+		SBOMDigest:               "sha256:" + strings.Repeat("8", 64),
+		ProvenanceEnvelopeDigest: "sha256:" + strings.Repeat("9", 64),
+		ReviewID: uuid.NewSHA1(
+			planUUID,
+			[]byte("review:"+assignment.RoleID),
+		).String(),
+		ReviewPolicyRevision: "sha256:" + strings.Repeat("b", 64),
+		ReviewRiskClass:      "moderate",
+		ReviewValidUntil: reviewValidUntil.
+			UTC().
+			Truncate(time.Second),
+		GrantedPermissions: workerprotocol.PermissionSetV1{
+			Workspace: workerprotocol.WorkspaceIsolated,
+			NetworkServices: []workerprotocol.NetworkService{
+				workerprotocol.NetworkArtifactStore,
+				workerprotocol.NetworkControlPlane,
+				workerprotocol.NetworkModelGateway,
+			},
+			ToolScopes:     []string{"git.read"},
+			MaxTempDiskMiB: 4096,
 		},
 	}
 }

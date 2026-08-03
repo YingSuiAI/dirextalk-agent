@@ -144,9 +144,10 @@ go run ./cmd/dirextalk-ecrctl cleanup --session $Session
 builder from the verified private BuildKit child digest; it neither imports
 the operator's normal Docker
 configuration nor forwards inherited proxy, AWS, or `BUILDX_*` environment
-variables. It accepts only the current credential-free Docker-internal proxy
-discovered through Docker read-back and binds that value only to the
-task-owned builder. The publisher selects it explicitly, and cleanup must
+variables. Docker read-back must report either no daemon proxy (direct egress,
+as used by Colima) or the same credential-free Docker-internal HTTP proxy for
+both HTTP and HTTPS. Only a validated internal proxy is bound to the task-owned
+builder. The publisher selects it explicitly, and cleanup must
 complete external container/volume read-back before the single-use ECR session
 can be removed.
 A failed source verification or activation preflight is a release blocker, not
@@ -274,6 +275,23 @@ docker compose `
 The model-profile file and runtime-secret directory must be readable by UID
 `65532` and remain read-only. No host Docker socket should be mounted into the
 Agent or Worker.
+
+To enable reviewed web search, place the strict, secret-free Search Profile
+catalog in a protected host file, place each referenced credential in the
+already mounted runtime-secret directory, set `AGENT_SEARCH_PROFILES_PATH`,
+and add the optional overlay:
+
+```powershell
+docker compose `
+  -f deploy/container/compose.yaml `
+  -f deploy/container/compose.search.yaml `
+  config --quiet
+```
+
+The overlay mounts only catalog metadata. Credential bytes remain separate
+mode-`0400` files addressed by `mounted:<name>` and never enter Compose,
+images, RuntimeService responses, or Flutter. A catalog entry is accepted only
+for the exact reviewed official endpoint of its declared provider.
 
 ## Fixed Worker AMI bootstrap assets
 

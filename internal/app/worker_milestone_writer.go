@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamdispatch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -42,12 +43,13 @@ type workerMilestoneSinkFactory interface {
 }
 
 type workerMilestoneWriter struct {
-	launches    workerMilestoneLaunchReader
-	connections workerMilestoneConnectionReader
-	validator   workerMilestoneConnectionValidator
-	configs     workerMilestoneControlConfig
-	sinks       workerMilestoneSinkFactory
-	now         func() time.Time
+	launches     workerMilestoneLaunchReader
+	teamLaunches teamdispatch.WorkerLaunchReader
+	connections  workerMilestoneConnectionReader
+	validator    workerMilestoneConnectionValidator
+	configs      workerMilestoneControlConfig
+	sinks        workerMilestoneSinkFactory
+	now          func() time.Time
 }
 
 func newWorkerMilestoneWriter(
@@ -57,11 +59,26 @@ func newWorkerMilestoneWriter(
 	configs workerMilestoneControlConfig,
 	sinks workerMilestoneSinkFactory,
 	now func() time.Time,
+	teamLaunches ...teamdispatch.WorkerLaunchReader,
 ) (*workerMilestoneWriter, error) {
-	if launches == nil || connections == nil || validator == nil || configs == nil || sinks == nil || now == nil {
+	if launches == nil ||
+		connections == nil ||
+		validator == nil ||
+		configs == nil ||
+		sinks == nil ||
+		now == nil ||
+		len(teamLaunches) > 1 ||
+		(len(teamLaunches) == 1 && teamLaunches[0] == nil) {
 		return nil, errors.New("Worker milestone relay is unavailable")
 	}
-	return &workerMilestoneWriter{launches: launches, connections: connections, validator: validator, configs: configs, sinks: sinks, now: now}, nil
+	writer := &workerMilestoneWriter{
+		launches: launches, connections: connections,
+		validator: validator, configs: configs, sinks: sinks, now: now,
+	}
+	if len(teamLaunches) == 1 {
+		writer.teamLaunches = teamLaunches[0]
+	}
+	return writer, nil
 }
 
 // EmitMilestone writes a closed telemetry event with the Control Role. The
@@ -85,16 +102,19 @@ func (writer *workerMilestoneWriter) EmitMilestone(ctx context.Context, target w
 	if err != nil {
 		return err
 	}
-	operation, err := writer.launches.GetByDeployment(ctx, target.DeploymentID)
-	if err != nil || operation.DeploymentID != target.DeploymentID || operation.Launch.OwnerID != target.OwnerID || operation.ConnectionID == "" ||
-		(operation.State != cloudexecution.StateProvisioning && operation.State != cloudexecution.StateActive) {
+	connectionID, err := writer.resolveConnectionID(
+		ctx,
+		target.OwnerID,
+		target.DeploymentID,
+	)
+	if err != nil {
 		return errors.New("Worker milestone deployment is unavailable")
 	}
-	connection, err := writer.connections.LoadConnection(ctx, target.OwnerID, operation.ConnectionID)
-	if err != nil || connection.ConnectionID != operation.ConnectionID || connection.OwnerID != target.OwnerID || connection.Status != "active" {
+	connection, err := writer.connections.LoadConnection(ctx, target.OwnerID, connectionID)
+	if err != nil || connection.ConnectionID != connectionID || connection.OwnerID != target.OwnerID || connection.Status != "active" {
 		return errors.New("Worker milestone connection is unavailable")
 	}
-	if err := writer.validator.ValidateConnection(connection, target.OwnerID, operation.ConnectionID); err != nil {
+	if err := writer.validator.ValidateConnection(connection, target.OwnerID, connectionID); err != nil {
 		return errors.New("Worker milestone connection is unavailable")
 	}
 	configuration, foundation, err := writer.configs.controlConfig(ctx, connection)
@@ -109,6 +129,36 @@ func (writer *workerMilestoneWriter) EmitMilestone(ctx context.Context, target w
 		return errors.New("Worker milestone delivery failed")
 	}
 	return nil
+}
+
+func (writer *workerMilestoneWriter) resolveConnectionID(
+	ctx context.Context,
+	ownerID,
+	deploymentID string,
+) (string, error) {
+	operation, err := writer.launches.GetByDeployment(ctx, deploymentID)
+	if err == nil &&
+		operation.DeploymentID == deploymentID &&
+		operation.Launch.OwnerID == ownerID &&
+		operation.ConnectionID != "" &&
+		(operation.State == cloudexecution.StateProvisioning ||
+			operation.State == cloudexecution.StateActive) {
+		return operation.ConnectionID, nil
+	}
+	if writer.teamLaunches == nil {
+		return "", errors.New("Worker milestone launch is unavailable")
+	}
+	launch, err := writer.teamLaunches.LoadWorkerLaunchByDeployment(
+		ctx,
+		ownerID,
+		deploymentID,
+	)
+	if err != nil ||
+		launch.ValidateForIdentity() != nil ||
+		launch.Dispatch.PublishedEvidence == nil {
+		return "", errors.New("Worker milestone launch is unavailable")
+	}
+	return launch.Dispatch.PublishedEvidence.ConnectionID, nil
 }
 
 func workerMilestoneLogScope(raw string) (string, string, error) {

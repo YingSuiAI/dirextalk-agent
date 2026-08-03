@@ -141,6 +141,117 @@ func TestLoadServerRequiresRuntimeCatalogAndPublicKeyTogether(t *testing.T) {
 	}
 }
 
+func TestLoadServerKeepsWorkerMarketplaceBehindCompleteTrustConfig(
+	t *testing.T,
+) {
+	registryPath :=
+		"/run/dirextalk/config/worker-market-registry.json"
+	keyPath :=
+		"/run/dirextalk/config/worker-market-public-key"
+
+	t.Run("registry and key must be paired", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		t.Setenv("AGENT_WORKER_MARKET_REGISTRY_FILE", registryPath)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"AGENT_WORKER_MARKET_REGISTRY_FILE and AGENT_WORKER_MARKET_PUBLIC_KEY_FILE",
+			) {
+			t.Fatalf("unpaired Worker Marketplace error=%v", err)
+		}
+	})
+
+	t.Run("registry requires runtime catalog", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		t.Setenv("AGENT_WORKER_MARKET_REGISTRY_FILE", registryPath)
+		t.Setenv("AGENT_WORKER_MARKET_PUBLIC_KEY_FILE", keyPath)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "signed Runtime Catalog") {
+			t.Fatalf("missing Runtime Catalog error=%v", err)
+		}
+	})
+
+	t.Run("registry requires Team policy", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		t.Setenv(
+			"AGENT_RUNTIME_CATALOG_FILE",
+			"/run/dirextalk/config/runtime-catalog.json",
+		)
+		t.Setenv(
+			"AGENT_RUNTIME_CATALOG_PUBLIC_KEY_FILE",
+			"/run/dirextalk/config/runtime-catalog-public-key",
+		)
+		t.Setenv("AGENT_WORKER_MARKET_REGISTRY_FILE", registryPath)
+		t.Setenv("AGENT_WORKER_MARKET_PUBLIC_KEY_FILE", keyPath)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "AGENT_TEAM_POLICY_FILE") {
+			t.Fatalf("missing Team policy error=%v", err)
+		}
+	})
+
+	t.Run("organization scope must be canonical", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		t.Setenv("AGENT_WORKER_MARKET_REGISTRY_FILE", registryPath)
+		t.Setenv("AGENT_WORKER_MARKET_PUBLIC_KEY_FILE", keyPath)
+		t.Setenv("AGENT_WORKER_MARKET_ORGANIZATION_ID", "tenant-a")
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "canonical UUID") {
+			t.Fatalf("invalid organization scope error=%v", err)
+		}
+	})
+
+	t.Run("complete configuration", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		organizationID := uuid.NewString()
+		t.Setenv("AGENT_WORKER_MARKET_REGISTRY_FILE", registryPath)
+		t.Setenv("AGENT_WORKER_MARKET_PUBLIC_KEY_FILE", keyPath)
+		t.Setenv(
+			"AGENT_WORKER_MARKET_ORGANIZATION_ID",
+			organizationID,
+		)
+		server, err := LoadServer()
+		if err != nil ||
+			server.WorkerMarketRegistryFile != registryPath ||
+			server.WorkerMarketPublicKeyFile != keyPath ||
+			server.WorkerMarketOrganizationID != organizationID {
+			t.Fatalf(
+				"Worker Marketplace config=%#v error=%v",
+				server,
+				err,
+			)
+		}
+	})
+
+	t.Run("signed Team bundle supplies catalog and policy", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setAWSControlEnvironment(t)
+		const bundleDirectory = "/run/dirextalk/pi-team-bundle"
+		t.Setenv("AGENT_TEAM_BUNDLE_DIR", bundleDirectory)
+		t.Setenv(
+			"AGENT_MODEL_PROFILES_FILE",
+			bundleDirectory+"/model-profiles.json",
+		)
+		t.Setenv("AGENT_WORKER_MARKET_REGISTRY_FILE", registryPath)
+		t.Setenv("AGENT_WORKER_MARKET_PUBLIC_KEY_FILE", keyPath)
+		organizationID := uuid.NewString()
+		t.Setenv("AGENT_WORKER_MARKET_ORGANIZATION_ID", organizationID)
+		server, err := LoadServer()
+		if err != nil || server.TeamBundleDir != bundleDirectory ||
+			server.WorkerMarketRegistryFile != registryPath ||
+			server.WorkerMarketPublicKeyFile != keyPath ||
+			server.WorkerMarketOrganizationID != organizationID {
+			t.Fatalf(
+				"bundled Worker Marketplace config=%#v error=%v",
+				server,
+				err,
+			)
+		}
+	})
+}
+
 func TestLoadServerKeepsTeamPricingBehindCompleteTrustedAWSConfig(
 	t *testing.T,
 ) {
@@ -216,6 +327,135 @@ func TestLoadServerKeepsTeamPricingBehindCompleteTrustedAWSConfig(
 			!server.EnableAWSControl ||
 			server.StagedWorkerControl {
 			t.Fatalf("Team pricing config=%#v error=%v", server, err)
+		}
+	})
+}
+
+func TestLoadServerEnablesOnlyCompletePiTeamBundle(t *testing.T) {
+	const bundleDirectory = "/run/dirextalk/pi-team-bundle"
+	setBundle := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("AGENT_TEAM_BUNDLE_DIR", bundleDirectory)
+		t.Setenv(
+			"AGENT_MODEL_PROFILES_FILE",
+			bundleDirectory+"/model-profiles.json",
+		)
+	}
+
+	t.Run("complete configuration", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setAWSControlEnvironment(t)
+		setBundle(t)
+		server, err := LoadServer()
+		if err != nil ||
+			server.TeamBundleDir != bundleDirectory ||
+			server.ModelProfilesFile !=
+				bundleDirectory+"/model-profiles.json" ||
+			!server.EnableAWSControl ||
+			server.StagedWorkerControl {
+			t.Fatalf("Team bundle config=%#v error=%v", server, err)
+		}
+	})
+
+	t.Run("requires AWS control", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setBundle(t)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"AGENT_ENABLE_AWS_CONTROL=true",
+			) {
+			t.Fatalf("missing AWS control error=%v", err)
+		}
+	})
+
+	t.Run("requires bundled model catalog", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setAWSControlEnvironment(t)
+		t.Setenv("AGENT_TEAM_BUNDLE_DIR", bundleDirectory)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"must select the Team bundle model catalog",
+			) {
+			t.Fatalf("external model catalog error=%v", err)
+		}
+	})
+
+	t.Run("rejects loose release files", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setAWSControlEnvironment(t)
+		setBundle(t)
+		t.Setenv(
+			"AGENT_WORKER_AMI_PUBLICATION_FILE",
+			"/run/dirextalk/config/publication.json",
+		)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "loose Team release files") {
+			t.Fatalf("loose release file error=%v", err)
+		}
+	})
+
+	t.Run("rejects noncanonical directory", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setAWSControlEnvironment(t)
+		t.Setenv(
+			"AGENT_TEAM_BUNDLE_DIR",
+			"/run/dirextalk/../dirextalk/pi-team-bundle",
+		)
+		t.Setenv(
+			"AGENT_MODEL_PROFILES_FILE",
+			"/run/dirextalk/pi-team-bundle/model-profiles.json",
+		)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "absolute protected") {
+			t.Fatalf("noncanonical bundle directory error=%v", err)
+		}
+	})
+}
+
+func TestLoadServerKeepsGitHubAppConnectionsBehindTeamAWSBoundary(
+	t *testing.T,
+) {
+	t.Run("connections require Team policy", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		t.Setenv(
+			"AGENT_GITHUB_APP_CONNECTIONS_FILE",
+			"/run/dirextalk/config/github-app-connections.json",
+		)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(err.Error(), "AGENT_TEAM_POLICY_FILE") {
+			t.Fatalf("missing Team policy error=%v", err)
+		}
+	})
+
+	t.Run("connections require AWS control", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		t.Setenv(
+			"AGENT_GITHUB_APP_CONNECTIONS_FILE",
+			"/run/dirextalk/config/github-app-connections.json",
+		)
+		if _, err := LoadServer(); err == nil ||
+			!strings.Contains(
+				err.Error(),
+				"AGENT_ENABLE_AWS_CONTROL=true",
+			) {
+			t.Fatalf("missing AWS control error=%v", err)
+		}
+	})
+
+	t.Run("complete configuration", func(t *testing.T) {
+		setValidServerEnvironment(t)
+		setTeamTrustEnvironment(t)
+		setAWSControlEnvironment(t)
+		path :=
+			"/run/dirextalk/config/github-app-connections.json"
+		t.Setenv("AGENT_GITHUB_APP_CONNECTIONS_FILE", path)
+		server, err := LoadServer()
+		if err != nil ||
+			server.GitHubAppConnectionsFile != path {
+			t.Fatalf("GitHub App config=%#v error=%v", server, err)
 		}
 	})
 }

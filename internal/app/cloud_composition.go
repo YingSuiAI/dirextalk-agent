@@ -82,10 +82,19 @@ type CloudComposition struct {
 	managedAcceptanceExecutor  *cloudmanaged.Executor
 	managedPreparationRecovery *managedPreparationRecoveryController
 	agentInstanceID            string
+	workerControlTarget        string
+	workerConnectivityMode     cloudquote.PrivateConnectivityMode
 	cloudGoalStore             *postgres.Store
 	resourceRuntime            *awsResourceRuntimeFactory
 	vault                      *awsfoundation.CredentialVault
 	rootHelperDeriver          *helperkey.DeterministicKeyDeriver
+	teamArtifactPublisher      *awsartifact.BundlePublisher
+	teamResourceProvisioner    *cloudexecution.DynamicResourceProvisioner
+	teamWorkerControl          *cloudexecution.WorkerServiceAdapter
+	teamBootstrapPublisher     *cloudexecution.IdentityBootstrapPublisher
+	teamResultCollector        *awsTeamResultCollector
+	teamRoleCleanup            *awsTeamRoleCleanup
+	teamInstallerIssuer        *installer.TrustIssuer
 }
 
 type CloudCompositionOption func(*cloudCompositionOptions)
@@ -386,7 +395,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	identityAuthorizer, err := newWorkerIdentityAuthorizer(agentInstanceID, store, store, resourceStore, workerStore, runtimeFactory)
+	identityAuthorizer, err := newWorkerIdentityAuthorizer(agentInstanceID, store, store, resourceStore, workerStore, runtimeFactory, store)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -396,12 +405,12 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	identityMaterializer, err := newWorkerIdentityMaterializer(store, store, workerStore, principalBinder)
+	identityMaterializer, err := newWorkerIdentityMaterializer(store, store, workerStore, principalBinder, store)
 	if err != nil {
 		vault.Close()
 		return nil, err
 	}
-	milestoneWriter, err := newWorkerMilestoneWriter(store, store, activePlacements, runtimeFactory, sdkWorkerMilestoneSinkFactory{}, time.Now)
+	milestoneWriter, err := newWorkerMilestoneWriter(store, store, activePlacements, runtimeFactory, sdkWorkerMilestoneSinkFactory{}, time.Now, store)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -411,6 +420,27 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
+	lifecycleFactory := awsLifecycleFactory{
+		repository: resourceStore,
+		runtimes:   runtimeFactory,
+	}
+	teamResultCollector, err := newAWSTeamResultCollector(
+		agentInstanceID,
+		runtimeFactory,
+	)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	teamRoleCleanup, err := newAWSTeamRoleCleanup(
+		lifecycleFactory,
+		deploymentSecrets,
+	)
+	if err != nil {
+		vault.Close()
+		return nil, err
+	}
+	bootstrapPublisher := cloudexecution.NewIdentityBootstrapPublisher()
 	resourcePlans, err := cloudexecution.NewAWSResourcePlanBuilder(agentInstanceID, workerControlTarget, workerControlServiceName, workerConnectivityMode)
 	if err != nil {
 		vault.Close()
@@ -428,7 +458,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	}
 	execution, err := cloudexecution.NewService(
 		agentInstanceID, facts, store, store, store, artifactPublisher, workerAdapter,
-		cloudexecution.NewIdentityBootstrapPublisher(), resourcePlans, resourceProvisioner, store, time.Now,
+		bootstrapPublisher, resourcePlans, resourceProvisioner, store, time.Now,
 		cloudexecution.WithInstallerTrustIssuer(installerIssuer),
 		cloudexecution.WithInstallerArtifactResolver(installerArtifacts),
 		cloudexecution.WithInstallerSecretResolver(installerSecrets),
@@ -445,7 +475,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 	lifecycle, err := cloudexecution.NewEphemeralDestroyController(cloudexecution.EphemeralDestroyConfig{
 		AgentInstanceID: agentInstanceID, PollInterval: 30 * time.Second,
 		Resources: resourceStore, Launches: store, Facts: facts, Connections: store, Tasks: store,
-		Lifecycles: awsLifecycleFactory{repository: resourceStore, runtimes: runtimeFactory}, Secrets: deploymentSecrets,
+		Lifecycles: lifecycleFactory, Secrets: deploymentSecrets,
 		Approvals: resourceApprovals, Now: time.Now,
 	})
 	if err != nil {
@@ -647,7 +677,7 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		vault.Close()
 		return nil, err
 	}
-	foundationSnapshots, err := cloudapp.NewFoundationSnapshotReader(agentInstanceID, awsfoundationassets.Template(), reaperImageURI, manager, store, cloudStatuses, foundationRepository, time.Now)
+	foundationSnapshots, err := cloudapp.NewFoundationSnapshotReader(agentInstanceID, foundation, reaperImageURI, manager, store, cloudStatuses, foundationRepository, time.Now)
 	if err != nil {
 		vault.Close()
 		return nil, err
@@ -770,10 +800,19 @@ func NewCloudComposition(store *postgres.Store, manager *secretbootstrap.Manager
 		managedAcceptanceExecutor:  managedExecutor,
 		managedPreparationRecovery: managedPreparationRecovery,
 		agentInstanceID:            agentInstanceID,
+		workerControlTarget:        workerControlTarget,
+		workerConnectivityMode:     workerConnectivityMode,
 		cloudGoalStore:             store,
 		resourceRuntime:            runtimeFactory,
 		vault:                      vault,
 		rootHelperDeriver:          rootHelperDeriver,
+		teamArtifactPublisher:      artifactPublisher,
+		teamResourceProvisioner:    resourceProvisioner,
+		teamWorkerControl:          workerAdapter,
+		teamBootstrapPublisher:     bootstrapPublisher,
+		teamResultCollector:        teamResultCollector,
+		teamRoleCleanup:            teamRoleCleanup,
+		teamInstallerIssuer:        installerIssuer,
 	}, nil
 }
 

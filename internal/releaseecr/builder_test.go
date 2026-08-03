@@ -11,14 +11,15 @@ import (
 )
 
 type fakeBuilderRunner struct {
-	commands   [][]string
-	configs    []string
-	builder    bool
-	container  bool
-	volume     bool
-	failRemove bool
-	httpProxy  string
-	httpsProxy string
+	commands     [][]string
+	configs      []string
+	builder      bool
+	container    bool
+	volume       bool
+	failRemove   bool
+	httpProxy    string
+	httpsProxy   string
+	directEgress bool
 }
 
 func TestBuilderExecutableDoesNotDependOnUserDockerPluginConfig(t *testing.T) {
@@ -45,12 +46,18 @@ func (runner *fakeBuilderRunner) Run(_ context.Context, config string, stdin []b
 		}
 		return nil, nil
 	case slices.Equal(arguments, []string{"info", "--format", "{{json .HTTPProxy}}"}):
+		if runner.directEgress {
+			return []byte(`""`), nil
+		}
 		value := runner.httpProxy
 		if value == "" {
 			value = "http.docker.internal:3128"
 		}
 		return []byte(`"` + value + `"`), nil
 	case slices.Equal(arguments, []string{"info", "--format", "{{json .HTTPSProxy}}"}):
+		if runner.directEgress {
+			return []byte(`""`), nil
+		}
 		value := runner.httpsProxy
 		if value == "" {
 			value = "http.docker.internal:3128"
@@ -61,7 +68,7 @@ func (runner *fakeBuilderRunner) Run(_ context.Context, config string, stdin []b
 			return []byte(directBuilderName(strings.Repeat("a", 32)) + "*\n"), nil
 		}
 		return []byte("default*\n"), nil
-	case len(arguments) == 19 && slices.Equal(arguments[:2], []string{"buildx", "create"}):
+	case len(arguments) >= 11 && slices.Equal(arguments[:2], []string{"buildx", "create"}):
 		runner.builder, runner.container, runner.volume = true, true, true
 		return nil, nil
 	case len(arguments) == 3 && slices.Equal(arguments[:2], []string{"buildx", "rm"}):
@@ -204,6 +211,43 @@ func TestDirectBuilderAcceptsCredentialFreeDockerInternalProxyAliases(t *testing
 				t.Fatalf("readDockerProxy() = %q, %v", proxy, err)
 			}
 		})
+	}
+}
+
+func TestDirectBuilderAcceptsDaemonReportedDirectEgress(t *testing.T) {
+	session := directTestSession(t)
+	runner := &fakeBuilderRunner{directEgress: true}
+	manager := builderManager{runner: runner}
+
+	if err := manager.activate(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range runner.commands {
+		if !commandWithPrefix([][]string{command}, "buildx", "create") {
+			continue
+		}
+		joined := strings.Join(command, "\n")
+		if strings.Contains(joined, "HTTP_PROXY") ||
+			strings.Contains(joined, "HTTPS_PROXY") ||
+			strings.Contains(joined, "http_proxy") ||
+			strings.Contains(joined, "https_proxy") {
+			t.Fatalf("empty daemon proxy reached builder options: %#v", command)
+		}
+	}
+	if err := manager.cleanup(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDirectBuilderRejectsPartialDaemonProxy(t *testing.T) {
+	runner := &fakeBuilderRunner{
+		httpProxy:  "http://http.docker.internal:3128",
+		httpsProxy: " ",
+	}
+	if _, err := (builderManager{runner: runner}).readDockerProxy(
+		context.Background(), t.TempDir(),
+	); !errors.Is(err, ErrBuilder) {
+		t.Fatalf("partial proxy error = %v", err)
 	}
 }
 

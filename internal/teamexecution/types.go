@@ -10,11 +10,16 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 )
 
-const SchemaV1 = "dirextalk.agent.team-execution/v1"
+const (
+	SchemaV1 = "dirextalk.agent.team-execution/v1"
+	SchemaV2 = "dirextalk.agent.team-execution/v2"
+	SchemaV3 = "dirextalk.agent.team-execution/v3"
+)
 
 var (
 	ErrInvalid          = errors.New("invalid Team execution request")
@@ -52,33 +57,34 @@ type ScheduleEstimateV1 struct {
 // deployment-scoped file slot; it is deliberately not the server-side
 // credential reference and never contains secret material.
 type RoleV1 struct {
-	RoleID               string                    `json:"role_id"`
-	Title                string                    `json:"title"`
-	Objective            string                    `json:"objective"`
-	WorkClass            teamplan.WorkClass        `json:"work_class"`
-	RequiredCapabilities []teamplan.Capability     `json:"required_capabilities"`
-	Workspace            teamplan.WorkspaceMode    `json:"workspace"`
-	DependsOnRoleIDs     []string                  `json:"depends_on_role_ids,omitempty"`
-	StepDeclarationID    string                    `json:"step_declaration_id"`
-	TaskStepID           string                    `json:"task_step_id"`
-	DeploymentID         string                    `json:"deployment_id"`
-	ExpectedWorkerID     string                    `json:"expected_worker_id"`
-	RuntimeReleaseID     string                    `json:"runtime_release_id"`
-	RuntimeFamily        teamplan.RuntimeFamily    `json:"runtime_family"`
-	RuntimeVersion       string                    `json:"runtime_version"`
-	RuntimeImageDigest   string                    `json:"runtime_image_digest"`
-	RuntimeAdapter       teamplan.RuntimeAdapter   `json:"runtime_adapter"`
-	ModelProfileID       string                    `json:"model_profile_id"`
-	ModelProvider        string                    `json:"model_provider"`
-	Model                string                    `json:"model"`
-	ModelInterface       teamplan.ModelInterface   `json:"model_interface"`
-	ModelCredentialSlot  string                    `json:"model_credential_slot"`
-	ComputeOfferID       string                    `json:"compute_offer_id"`
-	InstanceType         string                    `json:"instance_type"`
-	Resources            teamplan.ResourceEnvelope `json:"resources"`
-	Duration             DurationEstimateV1        `json:"duration"`
-	Tokens               teamplan.TokenEstimate    `json:"tokens"`
-	ColdStartSeconds     uint64                    `json:"cold_start_seconds"`
+	RoleID               string                               `json:"role_id"`
+	Title                string                               `json:"title"`
+	Objective            string                               `json:"objective"`
+	WorkClass            teamplan.WorkClass                   `json:"work_class"`
+	RequiredCapabilities []teamplan.Capability                `json:"required_capabilities"`
+	Workspace            teamplan.WorkspaceMode               `json:"workspace"`
+	DependsOnRoleIDs     []string                             `json:"depends_on_role_ids,omitempty"`
+	StepDeclarationID    string                               `json:"step_declaration_id"`
+	TaskStepID           string                               `json:"task_step_id"`
+	DeploymentID         string                               `json:"deployment_id"`
+	ExpectedWorkerID     string                               `json:"expected_worker_id"`
+	RuntimeReleaseID     string                               `json:"runtime_release_id"`
+	RuntimeFamily        teamplan.RuntimeFamily               `json:"runtime_family"`
+	RuntimeVersion       string                               `json:"runtime_version"`
+	RuntimeImageDigest   string                               `json:"runtime_image_digest"`
+	RuntimeAdapter       teamplan.RuntimeAdapter              `json:"runtime_adapter"`
+	Marketplace          *teamplan.WorkerMarketplaceBindingV1 `json:"marketplace,omitempty"`
+	ModelProfileID       string                               `json:"model_profile_id"`
+	ModelProvider        string                               `json:"model_provider"`
+	Model                string                               `json:"model"`
+	ModelInterface       teamplan.ModelInterface              `json:"model_interface"`
+	ModelCredentialSlot  string                               `json:"model_credential_slot"`
+	ComputeOfferID       string                               `json:"compute_offer_id"`
+	InstanceType         string                               `json:"instance_type"`
+	Resources            teamplan.ResourceEnvelope            `json:"resources"`
+	Duration             DurationEstimateV1                   `json:"duration"`
+	Tokens               teamplan.TokenEstimate               `json:"tokens"`
+	ColdStartSeconds     uint64                               `json:"cold_start_seconds"`
 }
 
 // ExecutionV1 is the deterministic projection authorized by one device-signed
@@ -95,6 +101,8 @@ type ExecutionV1 struct {
 	ApprovalID            string                 `json:"approval_id"`
 	ApprovalSignerKeyID   string                 `json:"approval_signer_key_id"`
 	GoalDigest            string                 `json:"goal_digest"`
+	InputSnapshot         taskinput.BindingV1    `json:"input_snapshot,omitempty"`
+	TaskInput             taskinput.BindingV2    `json:"task_input,omitempty"`
 	ProviderScope         teamplan.ProviderScope `json:"provider_scope"`
 	Region                string                 `json:"region"`
 	CatalogRevision       string                 `json:"catalog_revision"`

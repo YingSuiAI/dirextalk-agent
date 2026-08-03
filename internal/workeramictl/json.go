@@ -282,7 +282,13 @@ func parseBuildRequest(path string, allowLegacyV1 bool) (preparedBuild, error) {
 		ReleaseManifestDigest: releaseDigest, WorkerRootFSDigest: rootFSManifest.RootFSDigest,
 		WorkerBinaryDigest: rootFSManifest.BinaryDigest, WorkerRootFSSize: rootFSManifest.Size,
 	}
-	return preparedBuild{request: build, adapterConfig: adapterConfig, intent: intent}, nil
+	return preparedBuild{
+		request:             build,
+		adapterConfig:       adapterConfig,
+		intent:              intent,
+		releaseManifestPath: requestFile.ReleaseManifestPath,
+		rootFSArchivePath:   requestFile.RootFSArchivePath,
+	}, nil
 }
 
 func parseBuildRequestV2(input []byte, requestContentDigest string) (preparedBuild, error) {
@@ -330,7 +336,13 @@ func parseBuildRequestV2(input []byte, requestContentDigest string) (preparedBui
 	intent := BuildIntentV1{SchemaVersion: BuildIntentSchemaV2, RequestContentDigest: requestContentDigest, PreparedRequestDigest: preparedDigest,
 		AccountID: requestFile.AccountID, Region: requestFile.Region, AgentInstanceID: requestFile.AgentInstanceID, ReleaseManifestDigest: releaseDigest,
 		WorkerRootFSDigest: rootFSManifest.RootFSDigest, WorkerBinaryDigest: rootFSManifest.BinaryDigest, WorkerRootFSSize: rootFSManifest.Size}
-	return preparedBuild{request: build, adapterConfig: awsadapter.Config{Region: requestFile.Region, AccountID: requestFile.AccountID}, intent: intent}, nil
+	return preparedBuild{
+		request:             build,
+		adapterConfig:       awsadapter.Config{Region: requestFile.Region, AccountID: requestFile.AccountID},
+		intent:              intent,
+		releaseManifestPath: requestFile.ReleaseManifestPath,
+		rootFSArchivePath:   requestFile.RootFSArchivePath,
+	}, nil
 }
 
 func buildRequestFromV2(request BuildRequestFileV2, release releaseartifact.ReleaseManifestV1, rootFS workerrootfs.ManifestV1) workerami.BuildRequestV1 {

@@ -407,6 +407,123 @@ func (store *Store) List(ctx context.Context, query task.ListQuery) (task.ListRe
 	return result, nil
 }
 
+func (store *Store) GetOverview(
+	ctx context.Context,
+	ownerID string,
+	recentLimit int,
+) (task.Overview, error) {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" || len(ownerID) > 255 {
+		return task.Overview{}, fmt.Errorf("%w: owner_id length must be 1..255", task.ErrInvalid)
+	}
+	if recentLimit <= 0 {
+		recentLimit = 5
+	}
+	if recentLimit > 20 {
+		recentLimit = 20
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return task.Overview{}, fmt.Errorf("begin task overview: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	result := task.Overview{StatusCounts: []task.StatusCount{}, RecentTasks: []task.Task{}}
+	rows, err := tx.Query(ctx, `
+		SELECT execution_status, outcome_status, COUNT(*)
+		FROM tasks
+		WHERE owner_id=$1
+		GROUP BY execution_status, outcome_status
+		ORDER BY execution_status, outcome_status`, ownerID)
+	if err != nil {
+		return task.Overview{}, fmt.Errorf("count task overview statuses: %w", err)
+	}
+	for rows.Next() {
+		var count task.StatusCount
+		if err := rows.Scan(&count.ExecutionStatus, &count.OutcomeStatus, &count.Count); err != nil {
+			rows.Close()
+			return task.Overview{}, fmt.Errorf("scan task overview status: %w", err)
+		}
+		if !validTaskStatusCount(count) {
+			rows.Close()
+			return task.Overview{}, errors.New("stored task overview status is invalid")
+		}
+		result.TotalCount += count.Count
+		result.StatusCounts = append(result.StatusCounts, count)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return task.Overview{}, fmt.Errorf("iterate task overview statuses: %w", err)
+	}
+	rows.Close()
+
+	recentRows, err := tx.Query(ctx, `
+		SELECT task_id, owner_id, goal, execution_status, outcome_status, retention_policy,
+		       COALESCE(current_step_id::text,''), COALESCE(approved_plan_id::text,''),
+		       revision, created_at, updated_at
+		FROM tasks
+		WHERE owner_id=$1
+		ORDER BY updated_at DESC, task_id DESC
+		LIMIT $2`, ownerID, recentLimit)
+	if err != nil {
+		return task.Overview{}, fmt.Errorf("list task overview recents: %w", err)
+	}
+	for recentRows.Next() {
+		item, scanErr := scanTask(recentRows)
+		if scanErr != nil {
+			recentRows.Close()
+			return task.Overview{}, scanErr
+		}
+		result.RecentTasks = append(result.RecentTasks, item)
+	}
+	if err := recentRows.Err(); err != nil {
+		recentRows.Close()
+		return task.Overview{}, fmt.Errorf("iterate task overview recents: %w", err)
+	}
+	recentRows.Close()
+
+	if err := tx.QueryRow(ctx, `SELECT transaction_timestamp()`).Scan(&result.AsOf); err != nil {
+		return task.Overview{}, fmt.Errorf("read task overview timestamp: %w", err)
+	}
+	result.AsOf = result.AsOf.UTC()
+	if err := tx.Commit(ctx); err != nil {
+		return task.Overview{}, fmt.Errorf("commit task overview: %w", err)
+	}
+	return result, nil
+}
+
+func validTaskStatusCount(count task.StatusCount) bool {
+	if count.Count <= 0 {
+		return false
+	}
+	switch count.ExecutionStatus {
+	case task.ExecutionDraft,
+		task.ExecutionPlanning,
+		task.ExecutionAwaitingApproval,
+		task.ExecutionQueued,
+		task.ExecutionRunning,
+		task.ExecutionWaitingUser,
+		task.ExecutionVerifying,
+		task.ExecutionFinished:
+	default:
+		return false
+	}
+	switch count.OutcomeStatus {
+	case task.OutcomePending,
+		task.OutcomeSucceeded,
+		task.OutcomeFailed,
+		task.OutcomeCanceled,
+		task.OutcomeTimedOut,
+		task.OutcomeInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 func (store *Store) ListSteps(ctx context.Context, taskID string) ([]task.Step, error) {
 	parsed, err := uuid.Parse(taskID)
 	if err != nil {

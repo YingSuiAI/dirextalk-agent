@@ -110,7 +110,7 @@ func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.Reso
 	if err := store.validateResourceIntentOrigin(ctx, tx, item); err != nil {
 		return resource.ResourceV1{}, err
 	}
-	inserted, err := store.insertResource(ctx, tx, item)
+	_, err = store.insertResource(ctx, tx, item)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return resource.ResourceV1{}, resource.ErrAlreadyExists
@@ -120,10 +120,10 @@ func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.Reso
 	if err := tx.Commit(ctx); err != nil {
 		return resource.ResourceV1{}, fmt.Errorf("commit resource intent: %w", err)
 	}
-	if !inserted {
-		return store.Get(ctx, item.ResourceID)
-	}
-	return cloneResource(item), nil
+	// PostgreSQL timestamps have microsecond precision. Always return the
+	// persisted representation so an immediate Save cannot reject the same
+	// resource because its in-memory CreatedAt still contains nanoseconds.
+	return store.Get(ctx, item.ResourceID)
 }
 
 // rejectCreateDuringDestroy is intentionally in the same transaction as the
@@ -202,6 +202,14 @@ func (store *ResourceStore) validateResourceIntentOrigin(ctx context.Context, tx
 		return fmt.Errorf("verify Worker resource intent origin: %w", err)
 	}
 
+	if err := tx.QueryRow(ctx, teamWorkerResourceIntentOriginSQL,
+		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash, item.Region,
+	).Scan(new(uuid.UUID)); err == nil {
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("verify Team Worker resource intent origin: %w", err)
+	}
+
 	if err := tx.QueryRow(ctx, entryResourceIntentOriginSQL,
 		store.instanceID, item.OwnerID, taskID, deploymentID, approvalID, item.ApprovedPlanHash, item.Region,
 	).Scan(new(uuid.UUID)); err == nil {
@@ -237,6 +245,76 @@ const workerResourceIntentOriginSQL = `
 	  AND connection.region=$7
 	  AND connection.status='active'
 	FOR SHARE OF launch, approval, plan, connection`
+
+const teamWorkerResourceIntentOriginSQL = `
+	SELECT dispatch.operation_id
+	FROM team_role_dispatches AS dispatch
+	JOIN team_executions AS execution
+	  ON execution.execution_id=dispatch.execution_id
+	 AND execution.execution_digest=dispatch.execution_digest
+	JOIN team_plans AS plan
+	  ON plan.plan_id=dispatch.plan_id
+	 AND plan.plan_revision=dispatch.plan_revision
+	 AND plan.plan_digest=dispatch.plan_digest
+	JOIN team_plan_approvals AS approval
+	  ON approval.approval_id=dispatch.approval_id
+	 AND approval.plan_id=dispatch.plan_id
+	 AND approval.plan_revision=dispatch.plan_revision
+	 AND approval.plan_digest=dispatch.plan_digest
+	JOIN team_launch_authorizations AS launch
+	  ON launch.authorization_id=dispatch.launch_authorization_id
+	 AND launch.authorization_digest=dispatch.launch_authorization_digest
+	 AND launch.approval_id=dispatch.approval_id
+	JOIN cloud_connections AS connection
+	  ON connection.connection_id=launch.connection_id
+	WHERE dispatch.agent_instance_id=$1
+	  AND dispatch.owner_id=$2
+	  AND dispatch.task_id=$3
+	  AND dispatch.deployment_id=$4
+	  AND dispatch.approval_id=$5
+	  AND dispatch.plan_digest=$6
+	  AND dispatch.phase='provisioning'
+	  AND dispatch.outcome_status='pending'
+	  AND dispatch.provisioning_quote_digest IS NOT NULL
+	  AND dispatch.provisioning_quote_valid_until IS NOT NULL
+	  AND dispatch.provisioning_started_at IS NOT NULL
+	  AND execution.agent_instance_id=$1
+	  AND execution.owner_id=$2
+	  AND execution.task_id=$3
+	  AND execution.plan_id=dispatch.plan_id
+	  AND execution.plan_revision=dispatch.plan_revision
+	  AND execution.plan_digest=$6
+	  AND execution.approval_id=$5
+	  AND execution.status IN ('dispatching','running')
+	  AND plan.agent_instance_id=$1
+	  AND plan.owner_id=$2
+	  AND plan.task_id=$3
+	  AND plan.region=$7
+	  AND plan.status='executing'
+	  AND approval.agent_instance_id=$1
+	  AND approval.owner_id=$2
+	  AND approval.signature_json IS NOT NULL
+	  AND approval.signing_payload IS NOT NULL
+	  AND approval.signature IS NOT NULL
+	  AND approval.approved_at IS NOT NULL
+	  AND approval.launch_authorization_id=dispatch.launch_authorization_id
+	  AND approval.launch_authorization_digest=dispatch.launch_authorization_digest
+	  AND launch.agent_instance_id=$1
+	  AND launch.owner_id=$2
+	  AND launch.plan_id=dispatch.plan_id
+	  AND launch.plan_revision=dispatch.plan_revision
+	  AND launch.plan_digest=$6
+	  AND launch.region=$7
+	  AND launch.launch_not_before <= dispatch.provisioning_started_at
+	  AND launch.launch_not_after=dispatch.launch_not_after
+	  AND dispatch.provisioning_started_at < launch.launch_not_after
+	  AND connection.agent_instance_id=$1
+	  AND connection.owner_id=$2
+	  AND connection.account_id=launch.account_id
+	  AND connection.region=$7
+	  AND connection.revision=launch.connection_revision
+	  AND connection.status='active'
+	FOR SHARE OF dispatch, execution, plan, approval, launch, connection`
 
 const entryResourceIntentOriginSQL = `
 	SELECT operation.operation_id
@@ -521,12 +599,7 @@ func (store *ResourceStore) Save(ctx context.Context, item resource.ResourceV1, 
 		return resource.ResourceV1{}, resource.ErrRevisionConflict
 	}
 	if current.Intent.ProviderCreateStartedAt.IsZero() && !item.Intent.ProviderCreateStartedAt.IsZero() {
-		var active bool
-		if err := tx.QueryRow(ctx, `SELECT connection.status='active'
-		 FROM cloud_launch_operations launch
-		 JOIN cloud_connections connection ON connection.agent_instance_id=launch.agent_instance_id AND connection.connection_id=launch.connection_id
-		 WHERE launch.agent_instance_id=$1 AND launch.owner_id=$2 AND launch.deployment_id=$3
-		 FOR UPDATE OF connection`, store.instanceID, item.OwnerID, item.DeploymentID).Scan(&active); err != nil || !active {
+		if err := store.validateProviderCreateStart(ctx, tx, item); err != nil {
 			return resource.ResourceV1{}, resource.ErrRevisionConflict
 		}
 	}
@@ -537,6 +610,55 @@ func (store *ResourceStore) Save(ctx context.Context, item resource.ResourceV1, 
 		return resource.ResourceV1{}, fmt.Errorf("commit resource save: %w", err)
 	}
 	return cloneResource(item), nil
+}
+
+// validateProviderCreateStart rechecks the durable approval origin immediately
+// before the lifecycle service crosses the irreversible provider boundary. The
+// legacy Worker/entry paths are rooted in cloud_launch_operations; Team roles
+// instead carry their signed launch chain in team_role_dispatches.
+func (store *ResourceStore) validateProviderCreateStart(
+	ctx context.Context,
+	tx pgx.Tx,
+	item resource.ResourceV1,
+) error {
+	var active bool
+	err := tx.QueryRow(ctx, `SELECT connection.status='active'
+		 FROM cloud_launch_operations launch
+		 JOIN cloud_connections connection ON connection.agent_instance_id=launch.agent_instance_id AND connection.connection_id=launch.connection_id
+		 WHERE launch.agent_instance_id=$1 AND launch.owner_id=$2 AND launch.deployment_id=$3
+		 FOR UPDATE OF connection`, store.instanceID, item.OwnerID, item.DeploymentID).Scan(&active)
+	if err == nil && active {
+		return nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
+	taskID, taskErr := uuid.Parse(item.TaskID)
+	deploymentID, deploymentErr := uuid.Parse(item.DeploymentID)
+	approvalID, approvalErr := uuid.Parse(item.ApprovalID)
+	if taskErr != nil || deploymentErr != nil || approvalErr != nil ||
+		taskID == uuid.Nil || deploymentID == uuid.Nil || approvalID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	var operationID uuid.UUID
+	if err := tx.QueryRow(
+		ctx,
+		teamWorkerResourceIntentOriginSQL,
+		store.instanceID,
+		item.OwnerID,
+		taskID,
+		deploymentID,
+		approvalID,
+		item.ApprovedPlanHash,
+		item.Region,
+	).Scan(&operationID); err != nil {
+		return err
+	}
+	if operationID == uuid.Nil {
+		return resource.ErrInvalid
+	}
+	return nil
 }
 
 func (store *ResourceStore) AcceptManaged(

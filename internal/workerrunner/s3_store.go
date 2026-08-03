@@ -41,25 +41,54 @@ func NewS3ObjectStore(client S3API) (*S3ObjectStore, error) {
 }
 
 func (store *S3ObjectStore) Get(ctx context.Context, reference string) ([]byte, error) {
-	bucket, key, err := splitS3Object(reference)
+	body, size, err := store.OpenInput(ctx, reference, maxBundleBytes)
 	if err != nil {
 		return nil, err
 	}
-	output, err := store.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
-	if err != nil {
-		return nil, ErrWorkerObjectUnavailable
-	}
-	defer output.Body.Close()
-	content, err := io.ReadAll(io.LimitReader(output.Body, maxBundleBytes+1))
+	defer body.Close()
+	content, err := io.ReadAll(io.LimitReader(body, maxBundleBytes+1))
 	if err != nil {
 		wipe(content)
 		return nil, ErrWorkerObjectUnavailable
 	}
-	if len(content) > maxBundleBytes {
+	if len(content) > maxBundleBytes || int64(len(content)) != size {
 		wipe(content)
 		return nil, ErrInvalidBundle
 	}
 	return content, nil
+}
+
+// OpenInput exposes a bounded streaming read for digest-bound Worker inputs.
+// Callers still verify the exact byte count and SHA-256 before materializing.
+func (store *S3ObjectStore) OpenInput(
+	ctx context.Context,
+	reference string,
+	maximum int64,
+) (io.ReadCloser, int64, error) {
+	if store == nil || store.client == nil || ctx == nil ||
+		maximum < 1 {
+		return nil, 0, ErrWorkerObjectInvalid
+	}
+	bucket, key, err := splitS3Object(reference)
+	if err != nil {
+		return nil, 0, err
+	}
+	output, err := store.client.GetObject(
+		ctx,
+		&s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		},
+	)
+	if err != nil || output == nil || output.Body == nil {
+		return nil, 0, ErrWorkerObjectUnavailable
+	}
+	size := aws.ToInt64(output.ContentLength)
+	if size < 1 || size > maximum {
+		_ = output.Body.Close()
+		return nil, 0, ErrWorkerObjectInvalid
+	}
+	return output.Body, size, nil
 }
 
 func (store *S3ObjectStore) Put(ctx context.Context, reference, contentType string, content []byte) (worker.ObjectClaim, error) {

@@ -11,6 +11,7 @@ import (
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -111,6 +112,131 @@ func TestPutRuntimeConfigRejectsProfileTamperingBeforeCoordinator(t *testing.T) 
 	}
 	if coordinator.saveCalls != 0 {
 		t.Fatalf("coordinator was called %d times before profile validation", coordinator.saveCalls)
+	}
+}
+
+func TestRuntimeServiceSearchProfileIsCatalogBoundAndSecretFree(t *testing.T) {
+	coordinator := &runtimeCoordinatorStub{}
+	searchProfiles := runtimeServiceTestSearchProfiles(t)
+	service := NewRuntimeService(coordinator, RuntimeFeatures{
+		ModelProfiles:  runtimeServiceTestProfiles(t),
+		SearchProfiles: searchProfiles,
+	})
+	capabilities, err := service.GetCapabilities(context.Background(), nil)
+	if err != nil || strings.Join(capabilities.GetCapabilities().GetSearchProfileIds(), ",") != "brave-default" {
+		t.Fatalf("GetCapabilities() = %#v, %v", capabilities, err)
+	}
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: uuid.NewString()})
+	request := &agentv1.PutRuntimeConfigRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: "project-owner",
+		Spec: &agentv1.RuntimeConfigSpec{
+			ModelProfile:        &agentv1.ModelProfile{ProfileId: "deepseek-v4"},
+			ContextMessageLimit: 64, MemoryMessageLimit: 32, MaxSteps: 12,
+			SearchProfile: &agentv1.SearchProfile{
+				ProfileId: "brave-default", MaxResults: 6, TimeoutSeconds: 10,
+			},
+		},
+	}
+	response, err := service.PutRuntimeConfig(ctx, request)
+	if err != nil {
+		t.Fatalf("PutRuntimeConfig() error = %v", err)
+	}
+	saved := coordinator.savedCommand.Config.SearchProfile
+	returned := response.GetConfig().GetSpec().GetSearchProfile()
+	if saved == nil || saved.SecretRef != "mounted:brave-search-token" || saved.MaxResults != 6 || saved.TimeoutSeconds != 10 {
+		t.Fatalf("saved search profile = %#v", saved)
+	}
+	if !containsString(coordinator.savedCommand.Config.EnabledTools, runtimeapi.SearchToolName) ||
+		!containsString(response.GetConfig().GetSpec().GetEnabledTools(), runtimeapi.SearchToolName) {
+		t.Fatalf("search tool was not persisted with the selected profile: %#v", coordinator.savedCommand.Config.EnabledTools)
+	}
+	if returned == nil || returned.GetProfileId() != "brave-default" || returned.GetProvider() != agentv1.SearchProvider_SEARCH_PROVIDER_BRAVE || returned.GetSecretRef() != "" {
+		t.Fatalf("public search profile = %#v", returned)
+	}
+
+	request.IdempotencyKey = uuid.NewString()
+	request.Spec.SearchProfile.BaseUrl = "https://attacker.invalid/search"
+	if _, err := service.PutRuntimeConfig(ctx, request); status.Code(err) != codes.InvalidArgument || coordinator.saveCalls != 1 {
+		t.Fatalf("tampered search profile crossed coordinator: calls=%d err=%v", coordinator.saveCalls, err)
+	}
+}
+
+func TestDeepSeekNativeSearchProviderProtoMappingIsStable(t *testing.T) {
+	t.Parallel()
+	provider, ok := searchProviderFromProto(agentv1.SearchProvider_SEARCH_PROVIDER_DEEPSEEK_NATIVE)
+	if !ok || provider != searchprofile.ProviderDeepSeekNative ||
+		searchProviderToProto(provider) != agentv1.SearchProvider_SEARCH_PROVIDER_DEEPSEEK_NATIVE {
+		t.Fatalf("DeepSeek native provider mapping = %q, %v", provider, ok)
+	}
+}
+
+func TestRuntimeServiceAutomaticallyAttachesCatalogBoundNativeSearch(t *testing.T) {
+	t.Parallel()
+	coordinator := &runtimeCoordinatorStub{}
+	searchProfiles, err := searchprofile.NewCatalogWithAutoBindings([]searchprofile.Profile{{
+		ProfileID: "deepseek-native-default", Provider: searchprofile.ProviderDeepSeekNative,
+		BaseURL:   "https://api.deepseek.com/anthropic/v1/messages",
+		SecretRef: "mounted:deepseek-token", MaxResults: 8, TimeoutSeconds: 45,
+	}}, map[string][]string{
+		"deepseek-native-default": {"deepseek-v4"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewRuntimeService(coordinator, RuntimeFeatures{
+		ModelProfiles: runtimeServiceTestProfiles(t), SearchProfiles: searchProfiles,
+	})
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{
+		ClientID: "message-server", CredentialID: uuid.NewString(),
+	})
+	response, err := service.PutRuntimeConfig(ctx, &agentv1.PutRuntimeConfigRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: "project-owner",
+		Spec: &agentv1.RuntimeConfigSpec{
+			ModelProfile:        &agentv1.ModelProfile{ProfileId: "deepseek-v4"},
+			ContextMessageLimit: 64, MemoryMessageLimit: 32, MaxSteps: 12,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := coordinator.savedCommand.Config.SearchProfile
+	public := response.GetConfig().GetSpec().GetSearchProfile()
+	if saved == nil || saved.ProfileID != "deepseek-native-default" ||
+		saved.SecretRef != "mounted:deepseek-token" ||
+		public == nil || public.GetProfileId() != saved.ProfileID || public.GetSecretRef() != "" ||
+		!containsString(response.GetConfig().GetSpec().GetEnabledTools(), runtimeapi.SearchToolName) {
+		t.Fatalf("automatic native search = saved=%#v public=%#v", saved, public)
+	}
+}
+
+func TestRuntimeServiceRejectsNativeSearchCredentialAudienceMismatch(t *testing.T) {
+	t.Parallel()
+	coordinator := &runtimeCoordinatorStub{}
+	searchProfiles, err := searchprofile.NewCatalogWithAutoBindings([]searchprofile.Profile{{
+		ProfileID: "deepseek-native-default", Provider: searchprofile.ProviderDeepSeekNative,
+		BaseURL:   "https://api.deepseek.com/anthropic/v1/messages",
+		SecretRef: "mounted:other-token", MaxResults: 8, TimeoutSeconds: 45,
+	}}, map[string][]string{
+		"deepseek-native-default": {"deepseek-v4"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewRuntimeService(coordinator, RuntimeFeatures{
+		ModelProfiles: runtimeServiceTestProfiles(t), SearchProfiles: searchProfiles,
+	})
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{
+		ClientID: "message-server", CredentialID: uuid.NewString(),
+	})
+	_, err = service.PutRuntimeConfig(ctx, &agentv1.PutRuntimeConfigRequest{
+		IdempotencyKey: uuid.NewString(), OwnerId: "project-owner",
+		Spec: &agentv1.RuntimeConfigSpec{
+			ModelProfile:        &agentv1.ModelProfile{ProfileId: "deepseek-v4"},
+			ContextMessageLimit: 64, MemoryMessageLimit: 32, MaxSteps: 12,
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition || coordinator.saveCalls != 0 {
+		t.Fatalf("credential audience mismatch calls=%d error=%v", coordinator.saveCalls, err)
 	}
 }
 
@@ -245,12 +371,73 @@ func TestRuntimeCapacityExhaustionIsRetryableAndRedacted(t *testing.T) {
 	}
 }
 
+func TestRuntimeProviderFailuresUseStablePublicCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{name: "credential", err: modelapi.ErrProviderCredential, code: codes.PermissionDenied},
+		{name: "request", err: modelapi.ErrProviderRequest, code: codes.FailedPrecondition},
+		{name: "rate limited", err: modelapi.ErrProviderRateLimited, code: codes.ResourceExhausted},
+		{name: "unavailable", err: modelapi.ErrProviderUnavailable, code: codes.Unavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := publicRuntimeError(test.err)
+			if status.Code(got) != test.code {
+				t.Fatalf("publicRuntimeError(%v) code = %s, want %s", test.err, status.Code(got), test.code)
+			}
+		})
+	}
+}
+
+func TestRuntimeServiceListModelsMapsTransientBindingAndSanitizedResponse(t *testing.T) {
+	credentialID := uuid.NewString()
+	coordinator := &runtimeCoordinatorStub{listedModels: []modelapi.Descriptor{{
+		ID: "gpt-test", Name: "GPT Test", Provider: "openai_compatible",
+		ContextWindow: 128000, MaxOutputTokens: 8192, ReasoningModes: []string{"low", "high"},
+	}}}
+	service := NewRuntimeService(coordinator)
+	ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{ClientID: "message-server", CredentialID: credentialID})
+	requestID := uuid.NewString()
+	response, err := service.ListModels(ctx, &agentv1.ListModelsRequest{
+		RequestId: requestID, OwnerId: "owner-1",
+		TransientModel: &agentv1.TransientModelInvocation{
+			Profile: &agentv1.ModelProfile{
+				ProfileId: "model-discovery", Provider: agentv1.ModelProvider_MODEL_PROVIDER_OPENAI_COMPATIBLE,
+				Model: "model-discovery", BaseUrl: "https://api.openai.com/v1",
+				ContextWindow: 65536, MaxOutputTokens: 4096,
+			},
+			CredentialSessionId: uuid.NewString(), CredentialSessionRevision: 2,
+			CredentialSha256: make([]byte, 32),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.listRequest.RequestID != requestID || coordinator.listRequest.OwnerID != "owner-1" ||
+		coordinator.listRequest.BootstrapClientID != "message-server" || coordinator.listScope.CredentialID != credentialID {
+		t.Fatalf("list request=%#v scope=%#v", coordinator.listRequest, coordinator.listScope)
+	}
+	models := response.GetModels()
+	if len(models) != 1 || models[0].GetId() != "gpt-test" || models[0].GetContextWindow() != 128000 ||
+		strings.Join(models[0].GetReasoningModes(), ",") != "low,high" {
+		t.Fatalf("models = %#v", models)
+	}
+}
+
 type runtimeCoordinatorStub struct {
 	savedScope   runtimeapi.MutationScope
 	savedCommand runtimeapi.SaveRuntimeConfigCommand
 	saveCalls    int
 	chatRequest  runtimeapi.ChatRequest
 	chatCalls    int
+	listRequest  runtimeapi.ModelListRequest
+	listScope    runtimeapi.MutationScope
+	listedModels []modelapi.Descriptor
 }
 
 func (*runtimeCoordinatorStub) LoadRuntimeConfig(context.Context, string) (runtimeapi.RuntimeConfig, error) {
@@ -278,10 +465,29 @@ func runtimeServiceTestProfiles(t *testing.T) *modelapi.ProfileCatalog {
 	return catalog
 }
 
+func runtimeServiceTestSearchProfiles(t *testing.T) *searchprofile.Catalog {
+	t.Helper()
+	catalog, err := searchprofile.NewCatalog([]searchprofile.Profile{{
+		ProfileID: "brave-default", Provider: searchprofile.ProviderBrave,
+		BaseURL:   "https://api.search.brave.com/res/v1/web/search",
+		SecretRef: "mounted:brave-search-token", MaxResults: 10, TimeoutSeconds: 20,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
 func (stub *runtimeCoordinatorStub) Chat(_ context.Context, _ runtimeapi.MutationScope, request runtimeapi.ChatRequest) (runtimeapi.ChatResult, error) {
 	stub.chatCalls++
 	stub.chatRequest = request
 	return runtimeapi.ChatResult{}, nil
+}
+
+func (stub *runtimeCoordinatorStub) ListModels(_ context.Context, scope runtimeapi.MutationScope, request runtimeapi.ModelListRequest) ([]modelapi.Descriptor, error) {
+	stub.listScope = scope
+	stub.listRequest = request
+	return append([]modelapi.Descriptor(nil), stub.listedModels...), nil
 }
 
 func (*runtimeCoordinatorStub) Stream(context.Context, runtimeapi.MutationScope, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) error {

@@ -30,6 +30,7 @@ enum TeamRuntimeFamilyV3 {
   TEAM_RUNTIME_FAMILY_V3_OPENCLAW = 3;
   TEAM_RUNTIME_FAMILY_V3_HERMES = 4;
   TEAM_RUNTIME_FAMILY_V3_OPENCODE = 5;
+  TEAM_RUNTIME_FAMILY_V3_PI = 6;
 }
 
 enum TeamRuntimeAdapterV3 {
@@ -39,6 +40,7 @@ enum TeamRuntimeAdapterV3 {
   TEAM_RUNTIME_ADAPTER_V3_OPENCLAW_GATEWAY_TASK_V1 = 3;
   TEAM_RUNTIME_ADAPTER_V3_HERMES_API_TASK_V1 = 4;
   TEAM_RUNTIME_ADAPTER_V3_OPENCODE_SERVER_TASK_V1 = 5;
+  TEAM_RUNTIME_ADAPTER_V3_PI_JSON_TASK_V1 = 6;
 }
 
 enum TeamWorkClassV3 {
@@ -99,6 +101,24 @@ enum TeamArchitectureV3 {
   TEAM_ARCHITECTURE_V3_UNSPECIFIED = 0;
   TEAM_ARCHITECTURE_V3_AMD64 = 1;
   TEAM_ARCHITECTURE_V3_ARM64 = 2;
+}
+
+enum TeamExecutionStatusV3 {
+  TEAM_EXECUTION_STATUS_V3_UNSPECIFIED = 0;
+  TEAM_EXECUTION_STATUS_V3_MATERIALIZED = 1;
+  TEAM_EXECUTION_STATUS_V3_DISPATCHING = 2;
+  TEAM_EXECUTION_STATUS_V3_RUNNING = 3;
+  TEAM_EXECUTION_STATUS_V3_VERIFYING = 4;
+  TEAM_EXECUTION_STATUS_V3_COMPLETED = 5;
+  TEAM_EXECUTION_STATUS_V3_FAILED = 6;
+  TEAM_EXECUTION_STATUS_V3_CANCELED = 7;
+}
+
+enum TeamInputSourceKindV3 {
+  TEAM_INPUT_SOURCE_KIND_V3_UNSPECIFIED = 0;
+  TEAM_INPUT_SOURCE_KIND_V3_EMPTY = 1;
+  TEAM_INPUT_SOURCE_KIND_V3_GITHUB_REPOSITORY = 2;
+  TEAM_INPUT_SOURCE_KIND_V3_WORKSPACE_ARCHIVE = 3;
 }
 
 message TeamProviderScopeV3 {
@@ -166,6 +186,39 @@ message TeamProposalV3 {
   string rationale = 3;
 }
 
+message TeamWorkerPermissionSetV3 {
+  string workspace = 1;
+  repeated string network_services = 2;
+  repeated string tool_scopes = 3;
+  uint64 max_temp_disk_mib = 4;
+}
+
+// This is the exact reviewed Marketplace release and least-privilege grant
+// covered by device approval. It contains no registry credential, image pull
+// credential, model key, Matrix token, or provider control coordinate.
+message TeamWorkerMarketplaceBindingV3 {
+  string schema_version = 1;
+  string registry_id = 2;
+  string registry_revision = 3;
+  string release_id = 4;
+  string worker_type_id = 5;
+  string publisher_id = 6;
+  string publisher_display_name = 7;
+  string publisher_tier = 8;
+  string organization_id = 9;
+  string manifest_digest = 10;
+  string image_repository = 11;
+  string image_digest = 12;
+  string image_signature_digest = 13;
+  string sbom_digest = 14;
+  string provenance_envelope_digest = 15;
+  string review_id = 16;
+  string review_policy_revision = 17;
+  string review_risk_class = 18;
+  google.protobuf.Timestamp review_valid_until = 19;
+  TeamWorkerPermissionSetV3 granted_permissions = 20;
+}
+
 // This device-visible projection deliberately omits the internal model
 // credential reference and every secret-delivery coordinate.
 message TeamWorkerAssignmentV3 {
@@ -191,6 +244,7 @@ message TeamWorkerAssignmentV3 {
   TeamDurationEstimateV3 duration = 20;
   TeamTokenEstimateV3 tokens = 21;
   uint64 cold_start_seconds = 22;
+  TeamWorkerMarketplaceBindingV3 marketplace = 23;
 }
 
 message TeamRoleCostEstimateV3 {
@@ -223,6 +277,39 @@ message TeamScheduleEstimateV3 {
   uint64 maximum_wall_seconds = 3;
 }
 
+// This is the immutable, de-secreted task input authorized by the Team Plan.
+// It deliberately contains no object-storage coordinate, URL, or local path.
+message TeamInputSnapshotBindingV3 {
+  string snapshot_id = 1;
+  string snapshot_digest = 2;
+  string workspace_digest = 3;
+  int64 workspace_size_bytes = 4;
+  string workspace_media_type = 5;
+}
+
+message TeamGitRepositorySourceV3 {
+  string provider = 1;
+  string host = 2;
+  string connection_id = 3;
+  string repository_id = 4;
+  string owner = 5;
+  string name = 6;
+  string base_commit_sha = 7;
+  string base_ref = 8;
+}
+
+// This is the complete source binding approved for one Team execution. It
+// contains repository identity or an archive digest, never a Git credential.
+message TeamTaskInputBindingV3 {
+  string schema_version = 1;
+  string input_id = 2;
+  string input_digest = 3;
+  TeamInputSourceKindV3 source_kind = 4;
+  TeamGitRepositorySourceV3 repository = 5;
+  TeamInputSnapshotBindingV3 workspace = 6;
+  string source_digest = 7;
+}
+
 message TeamPlanV3 {
   string schema_version = 1;
   string task_id = 2;
@@ -250,6 +337,8 @@ message TeamPlanV3 {
   int64 record_revision = 24;
   google.protobuf.Timestamp created_at = 25;
   google.protobuf.Timestamp updated_at = 26;
+  TeamInputSnapshotBindingV3 input_snapshot = 27;
+  TeamTaskInputBindingV3 task_input = 28;
 }
 
 message TeamApprovalChallengeV3 {
@@ -288,6 +377,8 @@ message TeamApprovalChallengeV3 {
   google.protobuf.Timestamp consumed_at = 33;
   google.protobuf.Timestamp created_at = 34;
   google.protobuf.Timestamp updated_at = 35;
+  string launch_authorization_id = 36;
+  string launch_authorization_digest = 37;
 }
 
 message TeamApprovalSignatureV3 {
@@ -298,6 +389,110 @@ message TeamApprovalSignatureV3 {
   string plan_digest = 5;
   string signer_key_id = 6;
   bytes signature = 7;
+  string schema_version = 8;
+  string launch_authorization_id = 9;
+  string launch_authorization_digest = 10;
+}
+
+message TeamLaunchEgressRuleV3 {
+  string protocol = 1;
+  uint32 from_port = 2;
+  uint32 to_port = 3;
+  string cidr_v4 = 4;
+}
+
+message TeamLaunchNetworkV3 {
+  string connectivity_mode = 1;
+  string vpc_id = 2;
+  string subnet_id = 3;
+  string availability_zone = 4;
+  string security_group_mode = 5;
+  bool public_ipv4 = 6;
+  bool public_inbound = 7;
+  string control_plane_endpoint = 8;
+  repeated TeamLaunchEgressRuleV3 egress = 9;
+}
+
+message TeamLaunchRetentionV3 {
+  string retention_class = 1;
+  bool auto_destroy = 2;
+  uint64 maximum_lifetime_seconds = 3;
+  uint64 destroy_grace_seconds = 4;
+}
+
+message TeamLaunchWorkerImageV3 {
+  string publication_digest = 1;
+  string agent_instance_id = 2;
+  string account_id = 3;
+  string region = 4;
+  TeamArchitectureV3 architecture = 5;
+  string image_id = 6;
+  string image_digest = 7;
+  string root_snapshot_id = 8;
+  string release_manifest_digest = 9;
+  string worker_rootfs_digest = 10;
+  string worker_binary_digest = 11;
+  google.protobuf.Timestamp observed_at = 12;
+}
+
+message TeamLaunchRootStorageV3 {
+  string device_name = 1;
+  uint64 size_gib = 2;
+  string volume_type = 3;
+  uint32 iops = 4;
+  uint32 throughput_mibps = 5;
+  string kms_key_id = 6;
+  bool encrypted = 7;
+  bool delete_on_termination = 8;
+}
+
+message TeamRoleLaunchAuthorizationV3 {
+  string role_id = 1;
+  string runtime_release_id = 2;
+  string runtime_image_digest = 3;
+  string runtime_installation_digest = 4;
+  string runtime_executable_digest = 5;
+  string compute_offer_id = 6;
+  string instance_type = 7;
+  TeamArchitectureV3 architecture = 8;
+  uint32 vcpu = 9;
+  uint64 memory_mib = 10;
+  string purchase_option = 11;
+  string instance_profile_name = 12;
+  bool ebs_optimized = 13;
+  bool require_imdsv2 = 14;
+  uint32 metadata_response_hop_limit = 15;
+  string shutdown_behavior = 16;
+  TeamLaunchRootStorageV3 root_storage = 17;
+  TeamLaunchWorkerImageV3 worker_image = 18;
+  uint64 maximum_approved_cost_micros = 19;
+  TeamWorkerMarketplaceBindingV3 marketplace = 20;
+}
+
+// This is the complete device-visible provider authorization. It contains no
+// AWS credentials, model API keys, secret references, or bootstrap tokens.
+message TeamLaunchAuthorizationV3 {
+  string schema_version = 1;
+  string authorization_id = 2;
+  string agent_instance_id = 3;
+  string owner_id = 4;
+  string plan_id = 5;
+  int64 plan_revision = 6;
+  string plan_digest = 7;
+  string approval_id = 8;
+  TeamProviderScopeV3 provider_scope = 9;
+  string region = 10;
+  TeamLaunchNetworkV3 network = 11;
+  TeamLaunchRetentionV3 retention = 12;
+  uint32 worker_count = 13;
+  uint32 max_concurrent_billable_workers = 14;
+  string currency = 15;
+  uint64 hard_budget_micros = 16;
+  bool requires_fresh_quote = 17;
+  uint64 maximum_quote_age_seconds = 18;
+  google.protobuf.Timestamp launch_not_before = 19;
+  google.protobuf.Timestamp launch_not_after = 20;
+  repeated TeamRoleLaunchAuthorizationV3 roles = 21;
 }
 
 message PrepareTeamPlanV3Request {
@@ -324,6 +519,21 @@ message GetTeamPlanV3Request {
 
 message GetTeamPlanV3Response {
   TeamPlanV3 plan = 1;
+  // Empty until the approved Plan has a durable Team execution.
+  string execution_id = 2;
+}
+
+message BootstrapFirstTeamApprovalDeviceV3Request {
+  string idempotency_key = 1;
+  string owner_id = 2;
+  string key_id = 3;
+  bytes public_key = 4;
+}
+
+message BootstrapFirstTeamApprovalDeviceV3Response {
+  string key_id = 1;
+  int64 revision = 2;
+  google.protobuf.Timestamp expires_at = 3;
 }
 
 message CreateTeamApprovalChallengeV3Request {
@@ -337,6 +547,7 @@ message CreateTeamApprovalChallengeV3Request {
 
 message CreateTeamApprovalChallengeV3Response {
   TeamApprovalChallengeV3 challenge = 1;
+  TeamLaunchAuthorizationV3 authorization = 2;
 }
 
 message ApproveTeamPlanV3Request {
@@ -349,11 +560,109 @@ message ApproveTeamPlanV3Request {
 
 message ApproveTeamPlanV3Response {
   TeamPlanV3 plan = 1;
+  string execution_id = 2;
+}
+
+message TeamRuntimeUsageV3 {
+  int64 input_tokens = 1;
+  int64 cached_input_tokens = 2;
+  int64 output_tokens = 3;
+  int64 reasoning_output_tokens = 4;
+}
+
+// This projection deliberately omits the cloud object reference. The digest
+// lets a later authorized artifact download be checked against frozen output.
+message TeamExecutionFinalV3 {
+  string action_id = 1;
+  TeamRuntimeAdapterV3 runtime_adapter = 2;
+  TeamRuntimeUsageV3 usage = 3;
+  string status = 4;
+  string summary = 5;
+  repeated string deliverables = 6;
+  repeated string tests = 7;
+  repeated string risks = 8;
+  string artifact_sha256 = 9;
+}
+
+message TeamExecutionRoleReportV3 {
+  string role_id = 1;
+  string title = 2;
+  TeamRuntimeFamilyV3 runtime_family = 3;
+  TeamRuntimeAdapterV3 runtime_adapter = 4;
+  string outcome = 5;
+  string result_evidence_digest = 6;
+  repeated TeamExecutionFinalV3 finals = 7;
+}
+
+message TeamExecutionReportV3 {
+  string schema_version = 1;
+  string execution_id = 2;
+  string owner_id = 3;
+  string task_id = 4;
+  string plan_id = 5;
+  int64 plan_revision = 6;
+  string plan_digest = 7;
+  repeated TeamExecutionRoleReportV3 roles = 8;
+  TeamRuntimeUsageV3 total_usage = 9;
+  string report_digest = 10;
+  google.protobuf.Timestamp generated_at = 11;
+}
+
+// TeamExecutionArtifactV3 is the device-safe projection of one immutable
+// Worker deliverable. Storage coordinates and cloud credentials are never
+// exposed through this message.
+message TeamExecutionArtifactV3 {
+  string schema_version = 1;
+  string artifact_id = 2;
+  string role_id = 3;
+  string action_id = 4;
+  string name = 5;
+  string kind = 6;
+  string media_type = 7;
+  int64 size_bytes = 8;
+  string sha256 = 9;
+  string verification = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp retention_expires_at = 12;
+}
+
+message TeamExecutionV3 {
+  string schema_version = 1;
+  string execution_id = 2;
+  string owner_id = 3;
+  string task_id = 4;
+  string plan_id = 5;
+  int64 plan_revision = 6;
+  string plan_digest = 7;
+  TeamExecutionStatusV3 status = 8;
+  uint32 worker_count = 9;
+  uint32 max_concurrent_workers = 10;
+  int64 record_revision = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  TeamExecutionReportV3 report = 14;
+  TeamInputSnapshotBindingV3 input_snapshot = 15;
+  TeamTaskInputBindingV3 task_input = 16;
+  repeated TeamExecutionArtifactV3 artifacts = 17;
+}
+
+message GetTeamExecutionV3Request {
+  string owner_id = 1;
+  string execution_id = 2;
+}
+
+message GetTeamExecutionV3Response {
+  TeamExecutionV3 execution = 1;
 }
 
 service TeamPlanService {
   rpc PrepareTeamPlanV3(PrepareTeamPlanV3Request) returns (PrepareTeamPlanV3Response);
   rpc GetTeamPlanV3(GetTeamPlanV3Request) returns (GetTeamPlanV3Response);
+  // Compatibility enrollment surface for an authenticated owner's approval
+  // signer. It registers the exact key idempotently and never replaces,
+  // rotates, or revokes another signer.
+  rpc BootstrapFirstTeamApprovalDeviceV3(BootstrapFirstTeamApprovalDeviceV3Request) returns (BootstrapFirstTeamApprovalDeviceV3Response);
   rpc CreateTeamApprovalChallengeV3(CreateTeamApprovalChallengeV3Request) returns (CreateTeamApprovalChallengeV3Response);
   rpc ApproveTeamPlanV3(ApproveTeamPlanV3Request) returns (ApproveTeamPlanV3Response);
+  rpc GetTeamExecutionV3(GetTeamExecutionV3Request) returns (GetTeamExecutionV3Response);
 }

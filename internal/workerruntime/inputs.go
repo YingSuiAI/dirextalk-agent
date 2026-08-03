@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,9 +17,15 @@ import (
 )
 
 const (
-	MaxContextBytes    = 512 << 10
-	MaxCredentialBytes = 16 << 10
-	workspaceMarker    = ".dirextalk-workspace-digest"
+	MaxContextBytes       = 512 << 10
+	MaxCredentialBytes    = 16 << 10
+	WorkspaceDigestMarker = ".dirextalk-workspace-digest"
+)
+
+var (
+	ErrContextInput    = errors.New("Worker context input unavailable")
+	ErrWorkspaceInput  = errors.New("Worker workspace input unavailable")
+	ErrCredentialInput = errors.New("Worker credential input unavailable")
 )
 
 type ResolvedInputs struct {
@@ -88,7 +95,7 @@ func (resolver *FilesystemResolver) Resolve(
 		security.ContainsLikelySecret(string(contextJSON)) ||
 		!matchesDigest(contextJSON, task.ContextDigest) {
 		clear(contextJSON)
-		return ResolvedInputs{}, ErrInvalid
+		return ResolvedInputs{}, errors.Join(ErrInvalid, ErrContextInput)
 	}
 
 	workspaceDir := ""
@@ -101,7 +108,7 @@ func (resolver *FilesystemResolver) Resolve(
 			ctx, workspaceDir, task.WorkspaceDigest,
 		); err != nil {
 			clear(contextJSON)
-			return ResolvedInputs{}, err
+			return ResolvedInputs{}, errors.Join(ErrInvalid, ErrWorkspaceInput)
 		}
 	}
 
@@ -109,7 +116,7 @@ func (resolver *FilesystemResolver) Resolve(
 	credential, err := readCredential(ctx, credentialPath)
 	if err != nil {
 		clear(contextJSON)
-		return ResolvedInputs{}, err
+		return ResolvedInputs{}, errors.Join(ErrInvalid, ErrCredentialInput)
 	}
 	return ResolvedInputs{
 		ContextJSON: contextJSON, WorkspaceDir: workspaceDir,
@@ -129,7 +136,7 @@ func validateWorkspace(
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return ErrInvalid
 	}
-	markerPath := filepath.Join(name, workspaceMarker)
+	markerPath := filepath.Join(name, WorkspaceDigestMarker)
 	marker, err := readStableFile(ctx, markerPath, 128)
 	if err != nil {
 		return ErrInvalid

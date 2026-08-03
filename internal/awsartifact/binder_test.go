@@ -1,6 +1,7 @@
 package awsartifact
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -147,5 +148,109 @@ func TestPrincipalBinderVerifiesPublishedSourceDigestBeforeWriting(t *testing.T)
 	})
 	if !errors.Is(err, ErrSourceIntegrity) || factory.client.putCalls != puts {
 		t.Fatalf("tampered source error=%v puts=%d want=%d", err, factory.client.putCalls, puts)
+	}
+}
+
+func TestPrincipalBinderCopiesTeamInputsToExactWorkerPrincipal(t *testing.T) {
+	publisher, factory, connection, deploymentID := publisherFixture(t)
+	compiled, workspaceBytes := teamArtifactFixture(t, deploymentID)
+	defer compiled.Destroy()
+	published, err := publisher.PublishBundles(
+		context.Background(),
+		connection,
+		deploymentID,
+		cloudexecution.CompiledBundles{
+			RecipeBytes:    compiled.ManifestBytes,
+			ExecutionBytes: compiled.ExecutionBytes,
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishTeamInputs(
+		context.Background(),
+		connection,
+		deploymentID,
+		compiled,
+		&memoryTeamWorkspace{content: workspaceBytes},
+	); err != nil {
+		t.Fatal(err)
+	}
+	binder, err := NewPrincipalBinder(
+		publisher.agentInstanceID,
+		publisher.vault,
+		factory,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principalID := testWorkerRoleID + ":" + testWorkerInstanceID
+	bound, err := binder.Bind(
+		context.Background(),
+		PrincipalBindRequest{
+			Connection:   connection,
+			DeploymentID: deploymentID,
+			InstanceID:   testWorkerInstanceID,
+			STSUserID:    principalID,
+			Published:    published,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := publisher.foundationSpec(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := spec.ArtifactBucketName + "/workers/" + principalID +
+		"/" + deploymentID + "/artifacts/"
+	for _, expected := range []struct {
+		name    string
+		content []byte
+	}{
+		{compiled.ContextObject.ObjectName, compiled.ContextBytes},
+		{compiled.WorkspaceObject.ObjectName, workspaceBytes},
+	} {
+		object, ok := factory.client.objects[prefix+expected.name]
+		if !ok ||
+			!bytes.Equal(object.payload, expected.content) ||
+			object.metadata["principal-id"] != principalID ||
+			object.metadata["deployment-id"] != deploymentID {
+			t.Fatalf(
+				"unbound Worker input %q: %#v",
+				expected.name,
+				object,
+			)
+		}
+	}
+	if factory.client.copyCalls != 2 ||
+		!strings.HasSuffix(bound.ArtifactPrefix, "/artifacts/") {
+		t.Fatalf(
+			"copy calls=%d binding=%+v",
+			factory.client.copyCalls,
+			bound,
+		)
+	}
+	copies := factory.client.copyCalls
+	replayed, err := binder.Bind(
+		context.Background(),
+		PrincipalBindRequest{
+			Connection:   connection,
+			DeploymentID: deploymentID,
+			InstanceID:   testWorkerInstanceID,
+			STSUserID:    principalID,
+			Published:    published,
+		},
+	)
+	if err != nil || replayed != bound ||
+		factory.client.copyCalls != copies {
+		t.Fatalf(
+			"idempotent bind=%+v copies=%d want=%d error=%v",
+			replayed,
+			factory.client.copyCalls,
+			copies,
+			err,
+		)
 	}
 }

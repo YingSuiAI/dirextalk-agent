@@ -122,17 +122,26 @@ func (manager builderManager) activate(ctx context.Context, session SessionV1) e
 	if err := writeBuilderMarker(session); err != nil {
 		return ErrBuilder
 	}
-	_, createErr := manager.runner.Run(ctx, session.DockerConfigDir, nil,
+	createArguments := []string{
 		"buildx", "create",
 		"--name", session.BuilderName,
 		"--driver", "docker-container",
-		"--driver-opt", "image="+sources.BuildKit,
-		"--driver-opt", "env.HTTP_PROXY="+proxy,
-		"--driver-opt", "env.HTTPS_PROXY="+proxy,
-		"--driver-opt", "env.http_proxy="+proxy,
-		"--driver-opt", "env.https_proxy="+proxy,
+		"--driver-opt", "image=" + sources.BuildKit,
+	}
+	if proxy != "" {
+		createArguments = append(createArguments,
+			"--driver-opt", "env.HTTP_PROXY="+proxy,
+			"--driver-opt", "env.HTTPS_PROXY="+proxy,
+			"--driver-opt", "env.http_proxy="+proxy,
+			"--driver-opt", "env.https_proxy="+proxy,
+		)
+	}
+	createArguments = append(createArguments,
 		"--driver-opt", "env.GODEBUG="+buildKitGODEBUG,
 		"--bootstrap",
+	)
+	_, createErr := manager.runner.Run(
+		ctx, session.DockerConfigDir, nil, createArguments...,
 	)
 	if createErr != nil {
 		if cleanupErr := manager.rollback(session); cleanupErr != nil {
@@ -176,13 +185,25 @@ func (manager builderManager) readDockerProxy(ctx context.Context, dockerConfigD
 		json.Unmarshal(bytes.TrimSpace(httpsOutput), &httpsProxy) != nil {
 		return "", ErrBuilder
 	}
+	// Engines such as Colima report no daemon proxy because their BuildKit
+	// containers have direct egress. This is distinct from accepting an
+	// inherited or caller-supplied proxy: both daemon fields must be empty.
+	if httpProxy == "" && httpsProxy == "" {
+		return "", nil
+	}
+	if httpProxy == "" || httpsProxy == "" {
+		return "", ErrBuilder
+	}
 	normalize := func(raw string) (string, error) {
 		if !strings.Contains(raw, "://") {
 			raw = "http://" + raw
 		}
 		parsed, err := url.Parse(raw)
+		if err != nil || parsed == nil {
+			return "", ErrBuilder
+		}
 		port, portErr := strconv.Atoi(parsed.Port())
-		if err != nil || portErr != nil || parsed.Scheme != "http" || parsed.User != nil ||
+		if portErr != nil || parsed.Scheme != "http" || parsed.User != nil ||
 			!dockerInternalProxyHost(parsed.Hostname()) || port < 1 || port > 65535 ||
 			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
 			net.ParseIP(parsed.Hostname()) != nil {

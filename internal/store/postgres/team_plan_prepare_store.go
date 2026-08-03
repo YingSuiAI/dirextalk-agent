@@ -139,6 +139,26 @@ func (store *Store) PrepareTeamPlan(
 		if err != nil {
 			return PreparedTeamPlanRecord{}, err
 		}
+		if record.Plan.Status == TeamPlanReadyForConfirmation {
+			boundTask, err := lockTeamPlanTaskForPreparation(
+				ctx,
+				tx,
+				record.Plan.TaskID,
+				record.Plan.Plan,
+			)
+			if err != nil {
+				return PreparedTeamPlanRecord{}, err
+			}
+			if err := transitionTeamPlanTaskAwaitingApproval(
+				ctx,
+				tx,
+				caller,
+				boundTask,
+				false,
+			); err != nil {
+				return PreparedTeamPlanRecord{}, err
+			}
+		}
 		record.Replayed = true
 		if err := tx.Commit(ctx); err != nil {
 			return PreparedTeamPlanRecord{}, fmt.Errorf(
@@ -277,6 +297,7 @@ func (store *Store) readPreparedTeamPlan(
 		plan.Plan.PlanID != intent.PlanID ||
 		plan.Plan.Revision != intent.Revision ||
 		plan.Plan.GoalDigest != intent.GoalDigest ||
+		plan.Plan.TaskInput != intent.TaskInput ||
 		plan.Plan.PricingSnapshotID != offer.Document.SnapshotID ||
 		plan.Plan.PricingSnapshotDigest != offer.Digest ||
 		plan.Plan.ProposalConfidence != intent.Proposal.Confidence ||

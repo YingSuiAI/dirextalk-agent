@@ -40,7 +40,7 @@ func (mutator *AWSFoundationLifecycleMutator) MutateFoundation(ctx context.Conte
 		if errors.Is(err, awsfoundation.ErrFoundationDestroyBlocked) {
 			return cloudfoundation.ExecutionResult{}, fmt.Errorf("%w: %v", cloudfoundation.ErrProviderDestroyBlocked, err)
 		}
-		if errors.Is(err, awsfoundation.ErrAdminAuthorizationRequired) || errors.Is(err, awsfoundation.ErrIdentityConfirmationMismatch) ||
+		if errors.Is(err, awsfoundation.ErrFoundationTemplateChanged) || errors.Is(err, awsfoundation.ErrAdminAuthorizationRequired) || errors.Is(err, awsfoundation.ErrIdentityConfirmationMismatch) ||
 			errors.Is(err, awsfoundation.ErrCredentialRevisionConflict) || errors.Is(err, awsfoundation.ErrCredentialEnvelope) {
 			if scope.Action == cloudfoundation.ActionTeardown || scope.Action == cloudfoundation.ActionRemediate {
 				return cloudfoundation.ExecutionResult{}, cloudfoundation.ErrProviderDestroyBlocked

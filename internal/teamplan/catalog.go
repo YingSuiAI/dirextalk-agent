@@ -22,6 +22,7 @@ import (
 
 const (
 	RuntimeCatalogSchemaV1 = "dirextalk.agent.runtime-catalog/v1"
+	RuntimeCatalogSchemaV2 = "dirextalk.agent.runtime-catalog/v2"
 	maximumCatalogBytes    = 2 << 20
 	maximumPublicKeyBytes  = 256
 )
@@ -35,6 +36,14 @@ type QualificationEvidence struct {
 	VulnerabilityScanDigest string `json:"vulnerability_scan_digest"`
 	ContractTestDigest      string `json:"contract_test_digest"`
 	LicenseDecisionDigest   string `json:"license_decision_digest"`
+}
+
+// RuntimeLaunchEvidence is the signed expected state after the Worker
+// installer materializes one runtime. V2 catalogs bind both the complete
+// root-owned installation manifest and the executable bytes.
+type RuntimeLaunchEvidence struct {
+	InstallationManifestDigest string `json:"installation_manifest_digest"`
+	ExecutableDigest           string `json:"executable_digest"`
 }
 
 type runtimeCatalogReleaseDocument struct {
@@ -55,6 +64,7 @@ type runtimeCatalogReleaseDocument struct {
 	Trust            RuntimeTrust           `json:"trust"`
 	QualifiedAt      time.Time              `json:"qualified_at"`
 	Qualification    *QualificationEvidence `json:"qualification,omitempty"`
+	Launch           *RuntimeLaunchEvidence `json:"launch,omitempty"`
 }
 
 type runtimeCatalogPayload struct {
@@ -72,15 +82,25 @@ type signedRuntimeCatalogDocument struct {
 type CatalogRelease struct {
 	Runtime       RuntimeRelease
 	Qualification *QualificationEvidence
+	Launch        *RuntimeLaunchEvidence
+}
+
+// RuntimeCatalogReleaseSpec is the operator-side input for one signed catalog
+// record. Runtime startup never accepts this unsigned shape.
+type RuntimeCatalogReleaseSpec struct {
+	Runtime       RuntimeRelease
+	Qualification *QualificationEvidence
+	Launch        *RuntimeLaunchEvidence
 }
 
 // RuntimeCatalog is immutable trusted configuration. The catalog revision is
 // the digest of the canonical signed payload and is bound into every Team Plan.
 type RuntimeCatalog struct {
-	revision    string
-	signerKeyID string
-	generatedAt time.Time
-	releases    []CatalogRelease
+	schemaVersion string
+	revision      string
+	signerKeyID   string
+	generatedAt   time.Time
+	releases      []CatalogRelease
 }
 
 // LoadRuntimeCatalog reads a protected signed catalog and its raw-base64url
@@ -145,11 +165,19 @@ func ParseRuntimeCatalogJSON(
 	}
 	digest := sha256.Sum256(canonical)
 	return &RuntimeCatalog{
-		revision:    "sha256:" + hex.EncodeToString(digest[:]),
-		signerKeyID: payload.SignerKeyID,
-		generatedAt: payload.GeneratedAt,
-		releases:    releases,
+		schemaVersion: payload.SchemaVersion,
+		revision:      "sha256:" + hex.EncodeToString(digest[:]),
+		signerKeyID:   payload.SignerKeyID,
+		generatedAt:   payload.GeneratedAt,
+		releases:      releases,
 	}, nil
+}
+
+func (catalog *RuntimeCatalog) SchemaVersion() string {
+	if catalog == nil {
+		return ""
+	}
+	return catalog.schemaVersion
 }
 
 func RuntimeCatalogSignerKeyID(publicKey ed25519.PublicKey) string {
@@ -158,6 +186,102 @@ func RuntimeCatalogSignerKeyID(publicKey ed25519.PublicKey) string {
 	}
 	digest := sha256.Sum256(publicKey)
 	return "runtime-catalog-key-" + hex.EncodeToString(digest[:])[:24]
+}
+
+// SignRuntimeCatalogV2 creates one canonical, Ed25519-signed runtime catalog.
+// The private key remains caller-owned and is never returned or serialized.
+func SignRuntimeCatalogV2(
+	generatedAt time.Time,
+	releases []RuntimeCatalogReleaseSpec,
+	privateKey ed25519.PrivateKey,
+) ([]byte, []byte, error) {
+	if len(privateKey) != ed25519.PrivateKeySize ||
+		!utcTimestamp(generatedAt) ||
+		len(releases) == 0 ||
+		len(releases) > 64 {
+		return nil, nil, ErrInvalid
+	}
+	derivedPrivateKey := ed25519.NewKeyFromSeed(
+		privateKey[:ed25519.SeedSize],
+	)
+	defer clear(derivedPrivateKey)
+	if !bytes.Equal(derivedPrivateKey, privateKey) {
+		return nil, nil, ErrInvalid
+	}
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok || len(publicKey) != ed25519.PublicKeySize {
+		return nil, nil, ErrInvalid
+	}
+	payload := runtimeCatalogPayload{
+		SchemaVersion: RuntimeCatalogSchemaV2,
+		SignerKeyID:   RuntimeCatalogSignerKeyID(publicKey),
+		GeneratedAt:   generatedAt,
+		Releases: make(
+			[]runtimeCatalogReleaseDocument,
+			0,
+			len(releases),
+		),
+	}
+	for _, specified := range releases {
+		runtimeRelease := cloneRuntimeRelease(specified.Runtime)
+		var qualification *QualificationEvidence
+		if specified.Qualification != nil {
+			value := *specified.Qualification
+			qualification = &value
+		}
+		var launch *RuntimeLaunchEvidence
+		if specified.Launch != nil {
+			value := *specified.Launch
+			launch = &value
+		}
+		payload.Releases = append(
+			payload.Releases,
+			runtimeCatalogReleaseDocument{
+				ReleaseID:        runtimeRelease.ReleaseID,
+				Family:           runtimeRelease.Family,
+				Version:          runtimeRelease.Version,
+				SourceURL:        runtimeRelease.SourceURL,
+				SourceCommit:     runtimeRelease.SourceCommit,
+				License:          runtimeRelease.License,
+				ImageDigest:      runtimeRelease.ImageDigest,
+				Adapter:          runtimeRelease.Adapter,
+				Capabilities:     runtimeRelease.Capabilities,
+				ModelInterfaces:  runtimeRelease.ModelInterfaces,
+				Suitability:      runtimeRelease.Suitability,
+				Minimum:          runtimeRelease.Minimum,
+				Recommended:      runtimeRelease.Recommended,
+				ColdStartSeconds: uint64(runtimeRelease.ColdStart / time.Second),
+				Trust:            runtimeRelease.Trust,
+				QualifiedAt:      runtimeRelease.QualifiedAt,
+				Qualification:    qualification,
+				Launch:           launch,
+			},
+		)
+	}
+	normalizedPayload, _, err := normalizeRuntimeCatalogPayload(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	canonical, err := json.Marshal(normalizedPayload)
+	if err != nil {
+		return nil, nil, ErrInvalid
+	}
+	document := signedRuntimeCatalogDocument{
+		Payload: normalizedPayload,
+		SignatureBase64URL: base64.RawURLEncoding.EncodeToString(
+			ed25519.Sign(privateKey, canonical),
+		),
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, nil, ErrInvalid
+	}
+	if _, err := ParseRuntimeCatalogJSON(encoded, publicKey); err != nil {
+		return nil, nil, ErrInvalid
+	}
+	return encoded,
+		[]byte(base64.RawURLEncoding.EncodeToString(publicKey)),
+		nil
 }
 
 func (catalog *RuntimeCatalog) Revision() string {
@@ -217,10 +341,28 @@ func (catalog *RuntimeCatalog) Evidence(releaseID string) (QualificationEvidence
 	return QualificationEvidence{}, false
 }
 
+func (catalog *RuntimeCatalog) LaunchEvidence(
+	releaseID string,
+) (RuntimeLaunchEvidence, bool) {
+	if catalog == nil ||
+		catalog.schemaVersion != RuntimeCatalogSchemaV2 {
+		return RuntimeLaunchEvidence{}, false
+	}
+	for _, release := range catalog.releases {
+		if release.Runtime.ReleaseID == releaseID &&
+			release.Runtime.Trust == RuntimeTrustQualified &&
+			release.Launch != nil {
+			return *release.Launch, true
+		}
+	}
+	return RuntimeLaunchEvidence{}, false
+}
+
 func normalizeRuntimeCatalogPayload(
 	payload runtimeCatalogPayload,
 ) (runtimeCatalogPayload, []CatalogRelease, error) {
-	if payload.SchemaVersion != RuntimeCatalogSchemaV1 ||
+	if (payload.SchemaVersion != RuntimeCatalogSchemaV1 &&
+		payload.SchemaVersion != RuntimeCatalogSchemaV2) ||
 		!catalogSignerKeyPattern.MatchString(payload.SignerKeyID) ||
 		!utcTimestamp(payload.GeneratedAt) ||
 		len(payload.Releases) == 0 ||
@@ -284,6 +426,14 @@ func normalizeRuntimeCatalogPayload(
 		if err != nil {
 			return runtimeCatalogPayload{}, nil, err
 		}
+		launch, err := validateRuntimeLaunchEvidence(
+			document.Launch,
+			payload.SchemaVersion,
+			release.Trust,
+		)
+		if err != nil {
+			return runtimeCatalogPayload{}, nil, err
+		}
 		if release.Trust == RuntimeTrustQualified {
 			key := string(release.Family) + "\x00" + string(release.Minimum.Arch)
 			if _, exists := activeKeys[key]; exists {
@@ -292,10 +442,41 @@ func normalizeRuntimeCatalogPayload(
 			activeKeys[key] = struct{}{}
 		}
 		releases = append(releases, CatalogRelease{
-			Runtime: release, Qualification: qualification,
+			Runtime:       release,
+			Qualification: qualification,
+			Launch:        launch,
 		})
 	}
 	return payload, releases, nil
+}
+
+func validateRuntimeLaunchEvidence(
+	value *RuntimeLaunchEvidence,
+	schemaVersion string,
+	trust RuntimeTrust,
+) (*RuntimeLaunchEvidence, error) {
+	if schemaVersion == RuntimeCatalogSchemaV1 {
+		if value != nil {
+			return nil, ErrInvalid
+		}
+		return nil, nil
+	}
+	if schemaVersion != RuntimeCatalogSchemaV2 {
+		return nil, ErrInvalid
+	}
+	if value == nil {
+		if trust == RuntimeTrustQualified {
+			return nil, ErrInvalid
+		}
+		return nil, nil
+	}
+	if !sha256Pattern.MatchString(
+		value.InstallationManifestDigest,
+	) || !sha256Pattern.MatchString(value.ExecutableDigest) {
+		return nil, ErrInvalid
+	}
+	copy := *value
+	return &copy, nil
 }
 
 func validateQualification(

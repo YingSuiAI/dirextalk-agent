@@ -9,19 +9,22 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 )
 
 var (
-	ErrInvalid                      = errors.New("invalid Team orchestration request")
-	ErrFactMismatch                 = errors.New("Team orchestration fact mismatch")
-	ErrNotFound                     = errors.New("Team Plan was not found")
-	ErrRevision                     = errors.New("Team Plan record revision does not match")
-	ErrScopeChanged                 = errors.New("Team Plan cloud scope changed")
-	ErrChallengeConsumed            = errors.New("Team Plan approval challenge was already consumed")
-	ErrNotReady                     = errors.New("Team Plan is not ready for this operation")
-	ErrOfferVerificationUnavailable = errors.New("trusted Team offer verification is unavailable")
+	ErrInvalid                        = errors.New("invalid Team orchestration request")
+	ErrFactMismatch                   = errors.New("Team orchestration fact mismatch")
+	ErrNotFound                       = errors.New("Team Plan was not found")
+	ErrRevision                       = errors.New("Team Plan record revision does not match")
+	ErrScopeChanged                   = errors.New("Team Plan cloud scope changed")
+	ErrChallengeConsumed              = errors.New("Team Plan approval challenge was already consumed")
+	ErrNotReady                       = errors.New("Team Plan is not ready for this operation")
+	ErrOfferVerificationUnavailable   = errors.New("trusted Team offer verification is unavailable")
+	ErrLaunchAuthorizationUnavailable = errors.New("trusted Team launch authorization is unavailable")
 )
 
 type PlanStatus string
@@ -64,6 +67,7 @@ type PlanFact struct {
 
 type ChallengeFact struct {
 	Challenge      teamapproval.ChallengeV1
+	Authorization  *teamlaunch.AuthorizationV1
 	ConsumedAt     *time.Time
 	RecordRevision uint64
 	CreatedAt      time.Time
@@ -71,9 +75,10 @@ type ChallengeFact struct {
 }
 
 type ApprovalFact struct {
-	Signature  teamapproval.SignatureV1
-	ApprovedAt time.Time
-	CreatedAt  time.Time
+	Signature     teamapproval.SignatureV1
+	Authorization *teamlaunch.AuthorizationV1
+	ApprovedAt    time.Time
+	CreatedAt     time.Time
 }
 
 // ApprovedPlanFact is the complete execution authorization. Callers must bind
@@ -92,6 +97,7 @@ type PreparationIntent struct {
 	Revision                 uint64
 	ExpectedPreviousRevision uint64
 	GoalDigest               string
+	TaskInput                taskinput.BindingV2
 	Proposal                 teamplan.TeamProposal
 }
 
@@ -114,6 +120,20 @@ type PersistPreparedPlanCommand struct {
 }
 
 type PersistChallengeCommand struct {
+	IdempotencyKey             string
+	OwnerID                    string
+	PlanID                     string
+	PlanRevision               uint64
+	ExpectedPlanRecordRevision uint64
+	ApprovalID                 string
+	ChallengeID                string
+	SignerKeyID                string
+	Authorization              teamlaunch.AuthorizationV1
+}
+
+// FindChallengeCommand contains only caller-controlled challenge intent.
+// Server-generated launch times must not participate in replay identity.
+type FindChallengeCommand struct {
 	IdempotencyKey             string
 	OwnerID                    string
 	PlanID                     string
@@ -151,6 +171,11 @@ type Repository interface {
 	) error
 	GetOffer(context.Context, string, string) (OfferFact, error)
 	GetPlan(context.Context, string, string, uint64) (PlanFact, error)
+	FindChallenge(
+		context.Context,
+		task.MutationScope,
+		FindChallengeCommand,
+	) (ChallengeFact, bool, error)
 	PersistChallenge(
 		context.Context,
 		task.MutationScope,
@@ -210,6 +235,7 @@ type PreparePlanRequest struct {
 	Revision                 uint64
 	ExpectedPreviousRevision uint64
 	GoalDigest               string
+	TaskInput                taskinput.BindingV2
 	Proposal                 teamplan.TeamProposal
 }
 
@@ -236,6 +262,19 @@ type TrustedOfferVerifier interface {
 type TrustedOfferSource interface {
 	TrustedOfferBuilder
 	TrustedOfferVerifier
+}
+
+// TrustedLaunchAuthorizationBuilder resolves network placement, immutable
+// Worker publications, runtime installation evidence, Foundation identities,
+// retention, and the bounded launch window from server-owned sources. Network
+// callers cannot supply any of those provider facts.
+type TrustedLaunchAuthorizationBuilder interface {
+	BuildForPlan(
+		context.Context,
+		teamplan.Plan,
+		string,
+		time.Time,
+	) (teamlaunch.AuthorizationV1, error)
 }
 
 type TrustedOfferBuilderFunc func(

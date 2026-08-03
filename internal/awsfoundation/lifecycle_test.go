@@ -33,7 +33,7 @@ func TestLifecycleUpgradeAndFullTeardownRequireFreshAdminAndExactTemplate(t *tes
 	}
 	request := LifecycleRequest{Action: LifecycleUpgrade, OperationID: "upgrade-operation", AgentInstanceID: binding.AgentInstanceID, Region: binding.Region,
 		ConfirmedAccountID: binding.AccountID, ExpectedCredentialGeneration: 1, AdminAuthorization: AdminAuthorization{SessionID: "upgrade-operation", AccountID: binding.AccountID,
-			Region: binding.Region, VerifiedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute)}, TemplateDigest: bootstrapper.templateHash,
+			Region: binding.Region, VerifiedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute)}, TemplateDigest: bootstrapper.TemplateDigest(),
 		ReaperImageURI: "registry.example/reaper:v2.0.0-rc.1@sha256:" + strings.Repeat("a", 64)}
 	result, err := bootstrapper.Mutate(context.Background(), bootstrapPayload(), request)
 	if err != nil {
@@ -45,8 +45,12 @@ func TestLifecycleUpgradeAndFullTeardownRequireFreshAdminAndExactTemplate(t *tes
 
 	tampered := request
 	tampered.TemplateDigest = "sha256:" + strings.Repeat("f", 64)
-	if _, err := bootstrapper.Mutate(context.Background(), bootstrapPayload(), tampered); !errors.Is(err, ErrFoundationBootstrap) {
+	tamperedPayload := bootstrapPayload()
+	if _, err := bootstrapper.Mutate(context.Background(), tamperedPayload, tampered); !errors.Is(err, ErrFoundationTemplateChanged) {
 		t.Fatalf("tampered template error=%v", err)
+	}
+	if !allZeroBytes(tamperedPayload) {
+		t.Fatal("template-mismatched bootstrap payload remained live")
 	}
 	expired := request
 	expired.OperationID = "teardown-operation"

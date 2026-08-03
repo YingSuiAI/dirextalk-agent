@@ -1,10 +1,14 @@
 package container_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 )
 
 func TestAllContainerBasesRequireClosedPrivateBuildArguments(t *testing.T) {
@@ -72,6 +76,11 @@ func TestWorkerArtifactPreservesExclusiveVMRuntimeBoundary(t *testing.T) {
 		"dirextalk-worker-installer-bootstrap.service /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer-bootstrap.service",
 		"dirextalk-worker-installer.socket /usr/local/share/dirextalk-worker/ami/dirextalk-worker-installer.socket",
 		"dirextalk-installer.tmpfiles /usr/local/share/dirextalk-worker/ami/dirextalk-installer.tmpfiles",
+		"https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-linux-x64.tar.gz",
+		"b0625eb623197b0afe20c870d21ef2f34481f1504e5777df3f698a66c7636f5f",
+		"c25c16162b62eda32deb0d544bcae5e5d6c6148958e17130e6aed2d115104f1a",
+		"/opt/dirextalk-worker/runtimes/pi/bin/pi",
+		"/etc/dirextalk-worker/runtime-installation.json",
 		"ENTRYPOINT [\"/usr/local/bin/dirextalk-cloud-worker\"]",
 		"grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+-(alpha|beta|rc)",
 	} {
@@ -90,6 +99,9 @@ func TestWorkerArtifactBootstrapsTraversableRootfsDirectories(t *testing.T) {
 	containerfile := readArtifact(t, "worker.Containerfile")
 	for _, required := range []string{
 		"mkdir -p /out/worker-rootfs-dirs/etc/ssl/certs",
+		"/out/worker-rootfs-dirs/etc/dirextalk-worker",
+		"/out/worker-rootfs-dirs/opt/dirextalk-worker/runtime-contexts",
+		"/out/worker-rootfs-dirs/opt/dirextalk-worker/runtimes/pi/bin",
 		"/out/worker-rootfs-dirs/usr/local/share/dirextalk-worker/ami",
 		"/out/worker-rootfs-dirs/var/lib/dirextalk-worker",
 		"COPY --from=build --chmod=0755 /out/worker-rootfs-dirs/ /",
@@ -172,6 +184,89 @@ func TestAgentComposeKeepsSignedRuntimeCatalogExplicitAndOptional(t *testing.T) 
 	}
 }
 
+func TestSearchComposeOverlayMountsOnlySecretFreeCatalogMetadata(t *testing.T) {
+	overlay := readArtifact(t, "compose.search.yaml")
+	for _, required := range []string{
+		"AGENT_SEARCH_PROFILES_FILE: /run/dirextalk/config/search-profiles.json",
+		"${AGENT_SEARCH_PROFILES_PATH:?set the protected host search profile catalog path}",
+		"target: /run/dirextalk/config/search-profiles.json",
+		"read_only: true",
+	} {
+		if !strings.Contains(overlay, required) {
+			t.Fatalf("compose.search.yaml is missing search catalog boundary %q", required)
+		}
+	}
+	for _, forbidden := range []string{"api_key", "secret_ref", "tavily-token", "brave-token", "exa-token", "serper-token"} {
+		if strings.Contains(strings.ToLower(overlay), strings.ToLower(forbidden)) {
+			t.Fatalf("compose.search.yaml contains credential material %q", forbidden)
+		}
+	}
+}
+
+func TestPiWorkerArtifactBindsInstallationAndResultExtension(t *testing.T) {
+	containerfile := readArtifact(t, "worker.Containerfile")
+	for _, required := range []string{
+		"d3e86b44313cc77abb26b3245857290bdec12a2d1f91ec4b8a30ca1d90aea328",
+		"97321584a745e75113f08dd1b751bc2a70da28f132b242f1ae5c23816c5e10bc",
+		"51839872e9cca2ed8804a040b6222a10d0fd5bf6f241b5a4b2824fbb98f3abd1",
+		"e02deae1cec07035807436c1864c88342e2f7d49050d03b858a3719f0c7aedbf",
+		"10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c",
+		"/out/pi-runtime/package.json /opt/dirextalk-worker/runtimes/pi/bin/package.json",
+		"/out/pi-runtime/photon_rs_bg.wasm /opt/dirextalk-worker/runtimes/pi/bin/photon_rs_bg.wasm",
+		"pi-worker/dirextalk-result.ts /opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts",
+		"pi-worker/runtime.env /etc/dirextalk-worker/runtime.env",
+	} {
+		if !strings.Contains(containerfile, required) {
+			t.Fatalf("Pi Worker image is missing immutable asset %q", required)
+		}
+	}
+	raw, err := os.ReadFile("pi-worker/runtime-installation.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation, err := workerruntime.ParseInstallationJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extension, found := installation.Extension(
+		workerruntime.PiResultExtensionName,
+	)
+	extensionRaw, err := os.ReadFile("pi-worker/dirextalk-result.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extensionSum := sha256.Sum256(extensionRaw)
+	if installation.SchemaVersion !=
+		workerruntime.InstallationSchemaV2 ||
+		installation.RuntimeRelease.Adapter !=
+			workerruntime.AdapterPiV1 ||
+		installation.RuntimeRelease.Version != "0.83.0" ||
+		installation.RuntimeRelease.ExecutableSHA256 !=
+			"sha256:c25c16162b62eda32deb0d544bcae5e5d6c6148958e17130e6aed2d115104f1a" ||
+		len(installation.Models) != 1 ||
+		installation.Models[0].ProfileID != "deepseek-v4-pro" ||
+		installation.Models[0].Provider != "deepseek" ||
+		installation.Models[0].Model != "deepseek-v4-pro" ||
+		installation.Models[0].Interface !=
+			workerruntime.ModelOpenAICompatible ||
+		!found ||
+		extension.SHA256 !=
+			"sha256:"+hex.EncodeToString(extensionSum[:]) {
+		t.Fatalf(
+			"Pi installation and extension are not bound: %#v",
+			installation,
+		)
+	}
+	if runtimeEnvironment := readArtifact(
+		t,
+		"pi-worker/runtime.env",
+	); runtimeEnvironment !=
+		"DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE="+
+			"/etc/dirextalk-worker/runtime-installation.json\n" {
+		t.Fatalf("Pi runtime environment = %q", runtimeEnvironment)
+	}
+}
+
 func TestAllRuntimeArtifactsRequireImmutablePrereleaseMetadata(t *testing.T) {
 	for _, name := range []string{"agent.Containerfile", "worker.Containerfile", "reaper.Containerfile"} {
 		artifact := readArtifact(t, name)
@@ -197,6 +292,7 @@ func TestWorkerAMIRootfsRunsSupervisorWithoutPrivilegeOrInboundSocket(t *testing
 		"User=dirextalk-worker",
 		"Group=dirextalk-worker",
 		"ExecStart=/usr/local/bin/dirextalk-cloud-worker",
+		"ConditionFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker",
 		"NoNewPrivileges=yes",
 		"CapabilityBoundingSet=\n",
 		"ProtectSystem=strict",
@@ -240,15 +336,22 @@ func TestWorkerAMIInstallerUsesOnlyApprovalBoundUnixSocket(t *testing.T) {
 	bootstrap := readArtifact(t, "worker-ami/dirextalk-worker-installer-bootstrap.service")
 	for _, required := range []string{
 		"Type=oneshot", "User=root", "ExecStart=/usr/local/bin/dirextalk-worker-installer bootstrap",
-		"Before=dirextalk-cloud-worker.service dirextalk-worker-installer.socket",
-		"CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE", "AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE",
-		"Restart=on-failure", "RestartSec=5s",
+		"Before=dirextalk-cloud-worker.service",
+		"ConditionFileIsExecutable=/usr/local/bin/dirextalk-worker-installer",
+		"CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER",
+		"AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER",
+		"Restart=on-failure", "RestartSec=5s", "TimeoutStartSec=3min",
+		"StandardError=journal+console",
 	} {
 		if !strings.Contains(bootstrap, required) {
 			t.Fatalf("Worker installer bootstrap service is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"PrivateDevices=yes", "PrivateTmp=yes", "ProtectSystem=", "ReadWritePaths="} {
+	for _, forbidden := range []string{
+		"Before=dirextalk-cloud-worker.service dirextalk-worker-installer.socket",
+		"ConditionPathIsExecutable=", "PrivateDevices=yes", "PrivateTmp=yes",
+		"ProtectSystem=", "ReadWritePaths=",
+	} {
 		if strings.Contains(bootstrap, forbidden) {
 			t.Fatalf("Worker installer bootstrap would hide host EBS mounts through %q", forbidden)
 		}
@@ -259,6 +362,8 @@ func TestWorkerAMIInstallerUsesOnlyApprovalBoundUnixSocket(t *testing.T) {
 		}
 	}
 	if tmpfiles := readArtifact(t, "worker-ami/dirextalk-installer.tmpfiles"); !strings.Contains(tmpfiles, "d /etc/dirextalk-installer 0700 root root -") ||
+		!strings.Contains(tmpfiles, "d /etc/dirextalk-service-secrets 0711 root root -") ||
+		strings.Contains(tmpfiles, "d /etc/dirextalk-service-secrets 0700 root root -") ||
 		!strings.Contains(tmpfiles, "d /usr/local/share/dirextalk-worker/artifacts 0755 root root -") {
 		t.Fatal("installer trust/artifact directories are not root-owned")
 	}

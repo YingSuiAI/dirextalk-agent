@@ -7,7 +7,9 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"google.golang.org/grpc/codes"
@@ -217,6 +219,16 @@ func teamPlanToProto(
 	if err != nil {
 		return nil, err
 	}
+	inputSnapshot, err := teamInputSnapshotToProto(
+		fact.Plan.InputSnapshot,
+	)
+	if err != nil {
+		return nil, err
+	}
+	taskInput, err := teamTaskInputToProto(fact.Plan.TaskInput)
+	if err != nil {
+		return nil, err
+	}
 	assignments := make(
 		[]*agentv1.TeamWorkerAssignmentV3,
 		0,
@@ -252,6 +264,8 @@ func teamPlanToProto(
 		PlanRevision:           int64(fact.Plan.Revision),
 		OwnerId:                fact.Plan.OwnerID,
 		GoalDigest:             fact.Plan.GoalDigest,
+		InputSnapshot:          inputSnapshot,
+		TaskInput:              taskInput,
 		ProviderScope:          provider,
 		Region:                 fact.Plan.Region,
 		RuntimeCatalogRevision: fact.Plan.CatalogRevision,
@@ -275,10 +289,91 @@ func teamPlanToProto(
 	}, nil
 }
 
+func teamTaskInputToProto(
+	value taskinput.BindingV2,
+) (*agentv1.TeamTaskInputBindingV3, error) {
+	if value == (taskinput.BindingV2{}) {
+		return nil, nil
+	}
+	if value.Validate() != nil {
+		return nil, teamorchestration.ErrFactMismatch
+	}
+	sourceKind, err := teamInputSourceKindToProto(value.SourceKind)
+	if err != nil {
+		return nil, err
+	}
+	var repository *agentv1.TeamGitRepositorySourceV3
+	if value.SourceKind == taskinput.SourceGitHubRepository {
+		repository = &agentv1.TeamGitRepositorySourceV3{
+			Provider:      value.Repository.Provider,
+			Host:          value.Repository.Host,
+			ConnectionId:  value.Repository.ConnectionID,
+			RepositoryId:  value.Repository.RepositoryID,
+			Owner:         value.Repository.Owner,
+			Name:          value.Repository.Name,
+			BaseCommitSha: value.Repository.BaseCommitSHA,
+			BaseRef:       value.Repository.BaseRef,
+		}
+	}
+	workspace, err := teamInputSnapshotToProto(value.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	return &agentv1.TeamTaskInputBindingV3{
+		SchemaVersion: value.SchemaVersion,
+		InputId:       value.InputID,
+		InputDigest:   value.InputDigest,
+		SourceDigest:  value.SourceDigest,
+		SourceKind:    sourceKind,
+		Repository:    repository,
+		Workspace:     workspace,
+	}, nil
+}
+
+func teamInputSourceKindToProto(
+	value taskinput.SourceKind,
+) (agentv1.TeamInputSourceKindV3, error) {
+	switch value {
+	case taskinput.SourceEmpty:
+		return agentv1.TeamInputSourceKindV3_TEAM_INPUT_SOURCE_KIND_V3_EMPTY, nil
+	case taskinput.SourceGitHubRepository:
+		return agentv1.TeamInputSourceKindV3_TEAM_INPUT_SOURCE_KIND_V3_GITHUB_REPOSITORY, nil
+	case taskinput.SourceWorkspaceArchive:
+		return agentv1.TeamInputSourceKindV3_TEAM_INPUT_SOURCE_KIND_V3_WORKSPACE_ARCHIVE, nil
+	default:
+		return agentv1.TeamInputSourceKindV3_TEAM_INPUT_SOURCE_KIND_V3_UNSPECIFIED,
+			teamorchestration.ErrFactMismatch
+	}
+}
+
+func teamInputSnapshotToProto(
+	value taskinput.BindingV1,
+) (*agentv1.TeamInputSnapshotBindingV3, error) {
+	if value == (taskinput.BindingV1{}) {
+		return nil, nil
+	}
+	if value.Validate() != nil {
+		return nil, teamorchestration.ErrFactMismatch
+	}
+	return &agentv1.TeamInputSnapshotBindingV3{
+		SnapshotId:         value.SnapshotID,
+		SnapshotDigest:     value.SnapshotDigest,
+		WorkspaceDigest:    value.WorkspaceDigest,
+		WorkspaceSizeBytes: value.WorkspaceSizeBytes,
+		WorkspaceMediaType: value.WorkspaceMediaType,
+	}, nil
+}
+
 func teamAssignmentToProto(
 	value teamplan.WorkerAssignment,
 ) (*agentv1.TeamWorkerAssignmentV3, error) {
 	workClass, err := teamWorkClassToProto(value.WorkClass)
+	if err != nil {
+		return nil, err
+	}
+	marketplace, err := teamMarketplaceBindingToProto(
+		value.Marketplace,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -348,6 +443,59 @@ func teamAssignmentToProto(
 		Duration:           duration,
 		Tokens:             teamTokensToProto(value.Tokens),
 		ColdStartSeconds:   coldStart,
+		Marketplace:        marketplace,
+	}, nil
+}
+
+func teamMarketplaceBindingToProto(
+	value *teamplan.WorkerMarketplaceBindingV1,
+) (*agentv1.TeamWorkerMarketplaceBindingV3, error) {
+	if value == nil {
+		return nil, nil
+	}
+	reviewValidUntil, err := checkedTeamTimestamp(
+		value.ReviewValidUntil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	networkServices := make(
+		[]string,
+		0,
+		len(value.GrantedPermissions.NetworkServices),
+	)
+	for _, service := range value.GrantedPermissions.NetworkServices {
+		networkServices = append(networkServices, string(service))
+	}
+	return &agentv1.TeamWorkerMarketplaceBindingV3{
+		SchemaVersion:            value.SchemaVersion,
+		RegistryId:               value.RegistryID,
+		RegistryRevision:         value.RegistryRevision,
+		ReleaseId:                value.ReleaseID,
+		WorkerTypeId:             value.WorkerTypeID,
+		PublisherId:              value.PublisherID,
+		PublisherDisplayName:     value.PublisherDisplayName,
+		PublisherTier:            value.PublisherTier,
+		OrganizationId:           value.OrganizationID,
+		ManifestDigest:           value.ManifestDigest,
+		ImageRepository:          value.ImageRepository,
+		ImageDigest:              value.ImageDigest,
+		ImageSignatureDigest:     value.ImageSignatureDigest,
+		SbomDigest:               value.SBOMDigest,
+		ProvenanceEnvelopeDigest: value.ProvenanceEnvelopeDigest,
+		ReviewId:                 value.ReviewID,
+		ReviewPolicyRevision:     value.ReviewPolicyRevision,
+		ReviewRiskClass:          value.ReviewRiskClass,
+		ReviewValidUntil:         reviewValidUntil,
+		GrantedPermissions: &agentv1.TeamWorkerPermissionSetV3{
+			Workspace:       string(value.GrantedPermissions.Workspace),
+			NetworkServices: networkServices,
+			ToolScopes: append(
+				[]string(nil),
+				value.GrantedPermissions.ToolScopes...,
+			),
+			MaxTempDiskMib: value.GrantedPermissions.MaxTempDiskMiB,
+		},
 	}, nil
 }
 
@@ -462,7 +610,38 @@ func teamCostToProto(
 func teamChallengeToProto(
 	fact teamorchestration.ChallengeFact,
 ) (*agentv1.TeamApprovalChallengeV3, error) {
+	if fact.Authorization == nil {
+		return nil, teamorchestration.ErrFactMismatch
+	}
+	authorizationDigest, authorizationDigestErr :=
+		fact.Authorization.Digest()
 	if err := fact.Challenge.Validate(); err != nil ||
+		fact.Challenge.SchemaVersion !=
+			teamapproval.ChallengeSchemaV2 ||
+		fact.Authorization.Validate() != nil ||
+		authorizationDigestErr != nil ||
+		fact.Authorization.AuthorizationID !=
+			fact.Challenge.LaunchAuthorizationID ||
+		authorizationDigest !=
+			fact.Challenge.LaunchAuthorizationDigest ||
+		fact.Authorization.AgentInstanceID !=
+			fact.Challenge.AgentInstanceID ||
+		fact.Authorization.OwnerID != fact.Challenge.OwnerID ||
+		fact.Authorization.PlanID != fact.Challenge.PlanID ||
+		fact.Authorization.PlanRevision !=
+			fact.Challenge.PlanRevision ||
+		fact.Authorization.PlanDigest != fact.Challenge.PlanDigest ||
+		fact.Authorization.ApprovalID !=
+			fact.Challenge.ApprovalID ||
+		fact.Authorization.ProviderScope !=
+			fact.Challenge.ProviderScope ||
+		fact.Authorization.WorkerCount !=
+			fact.Challenge.WorkerCount ||
+		fact.Authorization.MaxConcurrentBillableWorkers !=
+			fact.Challenge.MaxConcurrentWorkers ||
+		fact.Authorization.Currency != fact.Challenge.Currency ||
+		fact.Authorization.HardBudgetMicros !=
+			fact.Challenge.HardBudgetMicros ||
 		fact.Challenge.PlanRevision > math.MaxInt64 ||
 		fact.RecordRevision == 0 ||
 		fact.RecordRevision > math.MaxInt64 {
@@ -547,6 +726,162 @@ func teamChallengeToProto(
 		ConsumedAt:             consumedAt,
 		CreatedAt:              createdAt,
 		UpdatedAt:              updatedAt,
+		LaunchAuthorizationId: fact.Challenge.
+			LaunchAuthorizationID,
+		LaunchAuthorizationDigest: fact.Challenge.
+			LaunchAuthorizationDigest,
+	}, nil
+}
+
+func teamLaunchAuthorizationToProto(
+	value *teamlaunch.AuthorizationV1,
+) (*agentv1.TeamLaunchAuthorizationV3, error) {
+	if value == nil ||
+		value.Validate() != nil ||
+		value.PlanRevision > math.MaxInt64 {
+		return nil, teamorchestration.ErrFactMismatch
+	}
+	provider, err := teamProviderScopeToProto(value.ProviderScope)
+	if err != nil {
+		return nil, err
+	}
+	notBefore, err := checkedTeamTimestamp(value.LaunchNotBefore)
+	if err != nil {
+		return nil, err
+	}
+	notAfter, err := checkedTeamTimestamp(value.LaunchNotAfter)
+	if err != nil {
+		return nil, err
+	}
+	egress := make(
+		[]*agentv1.TeamLaunchEgressRuleV3,
+		0,
+		len(value.Network.Egress),
+	)
+	for _, rule := range value.Network.Egress {
+		egress = append(egress, &agentv1.TeamLaunchEgressRuleV3{
+			Protocol: rule.Protocol,
+			FromPort: uint32(rule.FromPort),
+			ToPort:   uint32(rule.ToPort),
+			CidrV4:   rule.CIDRv4,
+		})
+	}
+	roles := make(
+		[]*agentv1.TeamRoleLaunchAuthorizationV3,
+		0,
+		len(value.Roles),
+	)
+	for _, role := range value.Roles {
+		architecture, err := teamArchitectureToProto(
+			role.Architecture,
+		)
+		if err != nil {
+			return nil, err
+		}
+		imageArchitecture, err := teamArchitectureToProto(
+			role.WorkerImage.Architecture,
+		)
+		if err != nil {
+			return nil, err
+		}
+		observedAt, err := checkedTeamTimestamp(
+			role.WorkerImage.ObservedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		marketplace, err := teamMarketplaceBindingToProto(
+			role.Marketplace,
+		)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(
+			roles,
+			&agentv1.TeamRoleLaunchAuthorizationV3{
+				RoleId:                    role.RoleID,
+				RuntimeReleaseId:          role.RuntimeReleaseID,
+				RuntimeImageDigest:        role.RuntimeImageDigest,
+				RuntimeInstallationDigest: role.RuntimeInstallationDigest,
+				RuntimeExecutableDigest:   role.RuntimeExecutableDigest,
+				ComputeOfferId:            role.ComputeOfferID,
+				InstanceType:              role.InstanceType,
+				Architecture:              architecture,
+				Vcpu:                      role.VCPU,
+				MemoryMib:                 role.MemoryMiB,
+				PurchaseOption:            string(role.PurchaseOption),
+				InstanceProfileName:       role.InstanceProfileName,
+				EbsOptimized:              role.EBSOptimized,
+				RequireImdsv2:             role.RequireIMDSv2,
+				MetadataResponseHopLimit:  role.MetadataResponseHopLimit,
+				ShutdownBehavior:          string(role.ShutdownBehavior),
+				RootStorage: &agentv1.TeamLaunchRootStorageV3{
+					DeviceName:          role.RootStorage.DeviceName,
+					SizeGib:             role.RootStorage.SizeGiB,
+					VolumeType:          role.RootStorage.VolumeType,
+					Iops:                role.RootStorage.IOPS,
+					ThroughputMibps:     role.RootStorage.ThroughputMiBPS,
+					KmsKeyId:            role.RootStorage.KMSKeyID,
+					Encrypted:           role.RootStorage.Encrypted,
+					DeleteOnTermination: role.RootStorage.DeleteOnTermination,
+				},
+				WorkerImage: &agentv1.TeamLaunchWorkerImageV3{
+					PublicationDigest:     role.WorkerImage.PublicationDigest,
+					AgentInstanceId:       role.WorkerImage.AgentInstanceID,
+					AccountId:             role.WorkerImage.AccountID,
+					Region:                role.WorkerImage.Region,
+					Architecture:          imageArchitecture,
+					ImageId:               role.WorkerImage.ImageID,
+					ImageDigest:           role.WorkerImage.ImageDigest,
+					RootSnapshotId:        role.WorkerImage.RootSnapshotID,
+					ReleaseManifestDigest: role.WorkerImage.ReleaseManifestDigest,
+					WorkerRootfsDigest:    role.WorkerImage.WorkerRootFSDigest,
+					WorkerBinaryDigest:    role.WorkerImage.WorkerBinaryDigest,
+					ObservedAt:            observedAt,
+				},
+				MaximumApprovedCostMicros: role.MaximumApprovedCostMicros,
+				Marketplace:               marketplace,
+			},
+		)
+	}
+	return &agentv1.TeamLaunchAuthorizationV3{
+		SchemaVersion:   value.SchemaVersion,
+		AuthorizationId: value.AuthorizationID,
+		AgentInstanceId: value.AgentInstanceID,
+		OwnerId:         value.OwnerID,
+		PlanId:          value.PlanID,
+		PlanRevision:    int64(value.PlanRevision),
+		PlanDigest:      value.PlanDigest,
+		ApprovalId:      value.ApprovalID,
+		ProviderScope:   provider,
+		Region:          value.Region,
+		Network: &agentv1.TeamLaunchNetworkV3{
+			ConnectivityMode:     string(value.Network.ConnectivityMode),
+			VpcId:                value.Network.VPCID,
+			SubnetId:             value.Network.SubnetID,
+			AvailabilityZone:     value.Network.AvailabilityZone,
+			SecurityGroupMode:    string(value.Network.SecurityGroupMode),
+			PublicIpv4:           value.Network.PublicIPv4,
+			PublicInbound:        value.Network.PublicInbound,
+			ControlPlaneEndpoint: value.Network.ControlPlaneEndpoint,
+			Egress:               egress,
+		},
+		Retention: &agentv1.TeamLaunchRetentionV3{
+			RetentionClass: string(value.Retention.Class),
+			AutoDestroy:    value.Retention.AutoDestroy,
+			MaximumLifetimeSeconds: value.Retention.
+				MaximumLifetimeSeconds,
+			DestroyGraceSeconds: value.Retention.DestroyGraceSeconds,
+		},
+		WorkerCount:                  value.WorkerCount,
+		MaxConcurrentBillableWorkers: value.MaxConcurrentBillableWorkers,
+		Currency:                     value.Currency,
+		HardBudgetMicros:             value.HardBudgetMicros,
+		RequiresFreshQuote:           value.RequiresFreshQuote,
+		MaximumQuoteAgeSeconds:       value.MaximumQuoteAgeSeconds,
+		LaunchNotBefore:              notBefore,
+		LaunchNotAfter:               notAfter,
+		Roles:                        roles,
 	}, nil
 }
 
@@ -554,24 +889,34 @@ func teamApprovalFromProto(
 	value *agentv1.TeamApprovalSignatureV3,
 ) (teamapproval.SignatureV1, error) {
 	if value == nil ||
+		value.GetSchemaVersion() !=
+			teamapproval.SignatureSchemaV2 ||
 		value.GetPlanRevision() < 1 ||
 		len(value.GetSignature()) != 64 {
 		return teamapproval.SignatureV1{}, invalidTeamRequest(
 			"valid Team Plan device approval is required",
 		)
 	}
-	return teamapproval.SignatureV1{
-		SchemaVersion: teamapproval.SignatureSchemaV1,
-		ApprovalID:    value.GetApprovalId(),
-		ChallengeID:   value.GetChallengeId(),
-		PlanID:        value.GetPlanId(),
-		PlanRevision:  uint64(value.GetPlanRevision()),
-		PlanDigest:    value.GetPlanDigest(),
-		SignerKeyID:   value.GetSignerKeyId(),
+	signature := teamapproval.SignatureV1{
+		SchemaVersion:             value.GetSchemaVersion(),
+		ApprovalID:                value.GetApprovalId(),
+		ChallengeID:               value.GetChallengeId(),
+		PlanID:                    value.GetPlanId(),
+		PlanRevision:              uint64(value.GetPlanRevision()),
+		PlanDigest:                value.GetPlanDigest(),
+		LaunchAuthorizationID:     value.GetLaunchAuthorizationId(),
+		LaunchAuthorizationDigest: value.GetLaunchAuthorizationDigest(),
+		SignerKeyID:               value.GetSignerKeyId(),
 		SignatureBase64URL: base64.RawURLEncoding.EncodeToString(
 			append([]byte(nil), value.GetSignature()...),
 		),
-	}, nil
+	}
+	if signature.Validate() != nil {
+		return teamapproval.SignatureV1{}, invalidTeamRequest(
+			"valid Team Plan device approval is required",
+		)
+	}
+	return signature, nil
 }
 
 func teamProviderScopeToProto(
@@ -654,6 +999,8 @@ func teamRuntimeFamilyFromProto(
 		return teamplan.RuntimeHermes, nil
 	case agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_OPENCODE:
 		return teamplan.RuntimeOpenCode, nil
+	case agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_PI:
+		return teamplan.RuntimePi, nil
 	default:
 		return "", invalidTeamRequest("unknown preferred runtime family")
 	}
@@ -673,6 +1020,8 @@ func teamRuntimeFamilyToProto(
 		return agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_HERMES, nil
 	case teamplan.RuntimeOpenCode:
 		return agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_OPENCODE, nil
+	case teamplan.RuntimePi:
+		return agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_PI, nil
 	default:
 		return agentv1.TeamRuntimeFamilyV3_TEAM_RUNTIME_FAMILY_V3_UNSPECIFIED,
 			teamorchestration.ErrFactMismatch
@@ -693,6 +1042,8 @@ func teamRuntimeAdapterToProto(
 		return agentv1.TeamRuntimeAdapterV3_TEAM_RUNTIME_ADAPTER_V3_HERMES_API_TASK_V1, nil
 	case teamplan.AdapterOpenCodeV1:
 		return agentv1.TeamRuntimeAdapterV3_TEAM_RUNTIME_ADAPTER_V3_OPENCODE_SERVER_TASK_V1, nil
+	case teamplan.AdapterPiV1:
+		return agentv1.TeamRuntimeAdapterV3_TEAM_RUNTIME_ADAPTER_V3_PI_JSON_TASK_V1, nil
 	default:
 		return agentv1.TeamRuntimeAdapterV3_TEAM_RUNTIME_ADAPTER_V3_UNSPECIFIED,
 			teamorchestration.ErrFactMismatch

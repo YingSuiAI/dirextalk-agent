@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -34,6 +36,126 @@ type approveTeamPlanReplay struct {
 	Plan          TeamPlanRecord              `json:"plan"`
 	Challenge     TeamApprovalChallengeRecord `json:"challenge"`
 	Approval      TeamApprovalRecord          `json:"approval"`
+}
+
+func (store *Store) FindTeamApprovalChallenge(
+	ctx context.Context,
+	scope task.MutationScope,
+	command FindTeamApprovalChallengeCommand,
+) (TeamApprovalChallengeRecord, bool, error) {
+	if store == nil || store.pool == nil || ctx == nil {
+		return TeamApprovalChallengeRecord{}, false, ErrTeamFactInvalid
+	}
+	caller, err := parseIdempotencyCaller(scope)
+	if err != nil {
+		return TeamApprovalChallengeRecord{}, false, err
+	}
+	if err := command.validate(); err != nil {
+		return TeamApprovalChallengeRecord{}, false, err
+	}
+	challengeID := uuid.MustParse(command.ChallengeID)
+	planID := uuid.MustParse(command.PlanID)
+	tx, err := store.pool.BeginTx(
+		ctx,
+		pgx.TxOptions{
+			IsoLevel:   pgx.RepeatableRead,
+			AccessMode: pgx.ReadOnly,
+		},
+	)
+	if err != nil {
+		return TeamApprovalChallengeRecord{}, false,
+			fmt.Errorf("begin Team challenge replay read: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var response []byte
+	var aggregateID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT aggregate_id, response_json
+		FROM idempotency_records
+		WHERE operation=$1
+		  AND caller_client_id=$2
+		  AND caller_credential_id=$3
+		  AND idempotency_key=$4`,
+		createTeamApprovalChallengeOperation,
+		caller.ClientID,
+		caller.CredentialID,
+		command.IdempotencyKey,
+	).Scan(&aggregateID, &response)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TeamApprovalChallengeRecord{}, false, nil
+	}
+	if err != nil {
+		return TeamApprovalChallengeRecord{}, false,
+			fmt.Errorf("find Team challenge replay: %w", err)
+	}
+	replay, err := decodeTeamApprovalChallengeReplay(response)
+	if err != nil ||
+		aggregateID != challengeID ||
+		replay.Challenge.OwnerID != command.OwnerID ||
+		replay.Challenge.PlanID != command.PlanID ||
+		replay.Challenge.PlanRevision != command.PlanRevision ||
+		replay.Challenge.ApprovalID != command.ApprovalID ||
+		replay.Challenge.ChallengeID != command.ChallengeID ||
+		replay.Challenge.SignerKeyID != command.SignerKeyID ||
+		replay.RecordRevision != 1 ||
+		replay.ConsumedAt != nil {
+		return TeamApprovalChallengeRecord{}, false,
+			idempotency.ErrConflict
+	}
+	plan, err := readTeamPlan(
+		ctx,
+		tx,
+		store.instanceID,
+		planID,
+		command.PlanRevision,
+		false,
+	)
+	if err != nil ||
+		plan.Plan.OwnerID != command.OwnerID ||
+		plan.RecordRevision != command.ExpectedPlanRecordRevision ||
+		plan.Status != TeamPlanReadyForConfirmation ||
+		plan.PlanDigest != replay.Challenge.PlanDigest {
+		return TeamApprovalChallengeRecord{}, false, ErrTeamFactCorrupt
+	}
+	stored, err := readTeamApprovalChallenge(
+		ctx,
+		tx,
+		store.instanceID,
+		challengeID,
+		false,
+	)
+	if err != nil || !sameTeamApprovalChallengeRecord(stored, replay) {
+		return TeamApprovalChallengeRecord{}, false, ErrTeamFactCorrupt
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TeamApprovalChallengeRecord{}, false,
+			fmt.Errorf("commit Team challenge replay read: %w", err)
+	}
+	return replay, true, nil
+}
+
+func sameTeamApprovalChallengeRecord(
+	left,
+	right TeamApprovalChallengeRecord,
+) bool {
+	if left.Challenge != right.Challenge ||
+		(left.ConsumedAt == nil) != (right.ConsumedAt == nil) ||
+		left.RecordRevision != right.RecordRevision ||
+		!left.CreatedAt.Equal(right.CreatedAt) ||
+		!left.UpdatedAt.Equal(right.UpdatedAt) ||
+		(left.Authorization == nil) != (right.Authorization == nil) {
+		return false
+	}
+	if left.ConsumedAt != nil && !left.ConsumedAt.Equal(*right.ConsumedAt) {
+		return false
+	}
+	if left.Authorization == nil {
+		return true
+	}
+	leftDigest, leftErr := left.Authorization.Digest()
+	rightDigest, rightErr := right.Authorization.Digest()
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
 func (store *Store) FindApprovedTeamPlan(
@@ -287,8 +409,29 @@ func (store *Store) CreateTeamApprovalChallenge(
 	); err != nil {
 		return TeamApprovalChallengeRecord{}, err
 	}
-	challenge, err := teamapproval.NewChallengeV1(
+	authorization := command.Authorization
+	if authorization.ValidateAt(databaseNow) != nil ||
+		authorization.ValidateAgainst(planRecord.Plan) != nil ||
+		authorization.AgentInstanceID != store.instanceID.String() ||
+		authorization.OwnerID != planRecord.Plan.OwnerID ||
+		authorization.PlanDigest != planRecord.PlanDigest ||
+		authorization.ApprovalID != command.ApprovalID {
+		return TeamApprovalChallengeRecord{}, ErrTeamFactInvalid
+	}
+	authorizationDigest, err := persistTeamLaunchAuthorization(
+		ctx,
+		tx,
+		store.instanceID,
+		planRecord,
+		authorization,
+		databaseNow,
+	)
+	if err != nil {
+		return TeamApprovalChallengeRecord{}, err
+	}
+	challenge, err := teamapproval.NewChallengeV2(
 		planRecord.Plan,
+		authorization,
 		store.instanceID.String(),
 		command.ApprovalID,
 		command.ChallengeID,
@@ -308,15 +451,20 @@ func (store *Store) CreateTeamApprovalChallenge(
 	}
 	record := TeamApprovalChallengeRecord{
 		Challenge:      challenge,
+		Authorization:  &authorization,
 		RecordRevision: 1,
 	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO team_plan_approval_challenges
 		    (challenge_id, approval_id, agent_instance_id, owner_id,
 		     plan_id, plan_revision, plan_digest, snapshot_id, snapshot_digest,
+		     launch_authorization_id, launch_authorization_digest,
 		     signer_key_id, challenge_json, signing_payload,
 		     issued_at, expires_at, record_revision)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1)
+		VALUES (
+		    $1,$2,$3,$4,$5,$6,$7,$8,$9,
+		    $10,$11,$12,$13,$14,$15,$16,1
+		)
 		RETURNING created_at, updated_at`,
 		challengeID,
 		command.ApprovalID,
@@ -327,6 +475,8 @@ func (store *Store) CreateTeamApprovalChallenge(
 		planRecord.PlanDigest,
 		snapshotID,
 		planRecord.Plan.PricingSnapshotDigest,
+		authorization.AuthorizationID,
+		authorizationDigest,
 		command.SignerKeyID,
 		challengeJSON,
 		signingPayload,
@@ -447,7 +597,11 @@ func (store *Store) ApproveTeamPlan(
 	}
 	if challengeRecord.Challenge.ApprovalID != signature.ApprovalID ||
 		challengeRecord.Challenge.PlanID != signature.PlanID ||
-		challengeRecord.Challenge.PlanRevision != signature.PlanRevision {
+		challengeRecord.Challenge.PlanRevision != signature.PlanRevision ||
+		challengeRecord.Challenge.LaunchAuthorizationID !=
+			signature.LaunchAuthorizationID ||
+		challengeRecord.Challenge.LaunchAuthorizationDigest !=
+			signature.LaunchAuthorizationDigest {
 		return TeamPlanRecord{}, ErrTeamFactScope
 	}
 	planRecord, err := readTeamPlan(
@@ -530,8 +684,8 @@ func (store *Store) ApproveTeamPlan(
 		challengeRecord.Challenge.PlanDigest != planRecord.PlanDigest {
 		return TeamPlanRecord{}, ErrTeamFactScope
 	}
-	if err := teamapproval.Verify(
-		challengeRecord.Challenge,
+	if err := verifyStoredTeamApproval(
+		challengeRecord,
 		signature,
 		planRecord.Plan,
 		deviceRecord.Device.PublicKey,
@@ -551,15 +705,27 @@ func (store *Store) ApproveTeamPlan(
 		return TeamPlanRecord{}, ErrTeamFactInvalid
 	}
 	approvalRecord := TeamApprovalRecord{
-		Signature:  signature,
-		ApprovedAt: approvedAt,
+		Signature:     signature,
+		Authorization: challengeRecord.Authorization,
+		ApprovedAt:    approvedAt,
+	}
+	var launchAuthorizationID, launchAuthorizationDigest any
+	if challengeRecord.Challenge.LaunchAuthorizationID != "" {
+		launchAuthorizationID =
+			challengeRecord.Challenge.LaunchAuthorizationID
+		launchAuthorizationDigest =
+			challengeRecord.Challenge.LaunchAuthorizationDigest
 	}
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO team_plan_approvals
 		    (approval_id, challenge_id, agent_instance_id, owner_id,
 		     plan_id, plan_revision, plan_digest, snapshot_id, snapshot_digest,
+		     launch_authorization_id, launch_authorization_digest,
 		     signer_key_id, signature_json, signing_payload, signature, approved_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		VALUES (
+		    $1,$2,$3,$4,$5,$6,$7,$8,$9,
+		    $10,$11,$12,$13,$14,$15,$16
+		)
 		RETURNING created_at`,
 		approvalID,
 		challengeID,
@@ -570,6 +736,8 @@ func (store *Store) ApproveTeamPlan(
 		planRecord.PlanDigest,
 		snapshotID,
 		planRecord.Plan.PricingSnapshotDigest,
+		launchAuthorizationID,
+		launchAuthorizationDigest,
 		signature.SignerKeyID,
 		signatureJSON,
 		signingPayload,
@@ -844,6 +1012,11 @@ func getVerifiedTeamApproval(
 		record.Signature.SignerKeyID,
 		false,
 	)
+	bindingLaunchAuthorizationID := ""
+	if binding.launchAuthorizationID != uuid.Nil {
+		bindingLaunchAuthorizationID =
+			binding.launchAuthorizationID.String()
+	}
 	if err != nil ||
 		challenge.ConsumedAt == nil ||
 		!challenge.ConsumedAt.Equal(record.ApprovedAt) ||
@@ -861,6 +1034,16 @@ func getVerifiedTeamApproval(
 		challenge.Challenge.PlanDigest != binding.planDigest ||
 		challenge.Challenge.PricingSnapshotID != binding.snapshotID.String() ||
 		challenge.Challenge.PricingSnapshotDigest != binding.snapshotDigest ||
+		challenge.Challenge.LaunchAuthorizationID !=
+			bindingLaunchAuthorizationID ||
+		challenge.Challenge.LaunchAuthorizationDigest !=
+			binding.launchAuthorizationDigest ||
+		record.Signature.LaunchAuthorizationID !=
+			bindingLaunchAuthorizationID ||
+		record.Signature.LaunchAuthorizationDigest !=
+			binding.launchAuthorizationDigest ||
+		(record.Authorization == nil) !=
+			(challenge.Authorization == nil) ||
 		device.Device.AgentInstanceID != instanceID.String() ||
 		device.Device.OwnerID != ownerID ||
 		device.Device.KeyID != record.Signature.SignerKeyID ||
@@ -870,8 +1053,8 @@ func getVerifiedTeamApproval(
 			binding.signingPayload,
 			teamChallengePayload(challenge.Challenge),
 		) ||
-		teamapproval.Verify(
-			challenge.Challenge,
+		verifyStoredTeamApproval(
+			challenge,
 			record.Signature,
 			plan.Plan,
 			device.Device.PublicKey,
@@ -882,20 +1065,58 @@ func getVerifiedTeamApproval(
 	return record, nil
 }
 
+func verifyStoredTeamApproval(
+	challenge TeamApprovalChallengeRecord,
+	signature teamapproval.SignatureV1,
+	plan teamplan.Plan,
+	publicKey ed25519.PublicKey,
+	now time.Time,
+) error {
+	switch challenge.Challenge.SchemaVersion {
+	case teamapproval.ChallengeSchemaV1:
+		if challenge.Authorization != nil {
+			return teamapproval.ErrSignatureInvalid
+		}
+		return teamapproval.Verify(
+			challenge.Challenge,
+			signature,
+			plan,
+			publicKey,
+			now,
+		)
+	case teamapproval.ChallengeSchemaV2:
+		if challenge.Authorization == nil {
+			return teamapproval.ErrSignatureInvalid
+		}
+		return teamapproval.VerifyWithLaunch(
+			challenge.Challenge,
+			signature,
+			plan,
+			*challenge.Authorization,
+			publicKey,
+			now,
+		)
+	default:
+		return teamapproval.ErrSignatureInvalid
+	}
+}
+
 type teamApprovalQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 type teamApprovalBinding struct {
-	challengeID    uuid.UUID
-	agentID        uuid.UUID
-	ownerID        string
-	planID         uuid.UUID
-	planRevision   uint64
-	planDigest     string
-	snapshotID     uuid.UUID
-	snapshotDigest string
-	signingPayload []byte
+	challengeID               uuid.UUID
+	agentID                   uuid.UUID
+	ownerID                   string
+	planID                    uuid.UUID
+	planRevision              uint64
+	planDigest                string
+	snapshotID                uuid.UUID
+	snapshotDigest            string
+	launchAuthorizationID     uuid.UUID
+	launchAuthorizationDigest string
+	signingPayload            []byte
 }
 
 func readTeamApprovalChallenge(
@@ -909,6 +1130,8 @@ func readTeamApprovalChallenge(
 		SELECT approval_id, agent_instance_id, owner_id,
 		       plan_id, plan_revision, plan_digest,
 		       snapshot_id, snapshot_digest, signer_key_id,
+		       launch_authorization_id::text,
+		       launch_authorization_digest,
 		       challenge_json, signing_payload,
 		       issued_at, expires_at, consumed_at, record_revision,
 		       created_at, updated_at
@@ -921,6 +1144,8 @@ func readTeamApprovalChallenge(
 		approvalID, agentID, planID, snapshotID uuid.UUID
 		ownerID, planDigest, snapshotDigest     string
 		signerKeyID                             string
+		launchAuthorizationID                   sql.NullString
+		launchAuthorizationDigest               sql.NullString
 		challengeJSON, signingPayload           []byte
 		issuedAt, expiresAt                     time.Time
 		consumedAt                              *time.Time
@@ -942,6 +1167,8 @@ func readTeamApprovalChallenge(
 		&snapshotID,
 		&snapshotDigest,
 		&signerKeyID,
+		&launchAuthorizationID,
+		&launchAuthorizationDigest,
 		&challengeJSON,
 		&signingPayload,
 		&issuedAt,
@@ -972,6 +1199,40 @@ func readTeamApprovalChallenge(
 		value := consumedAt.UTC()
 		record.ConsumedAt = &value
 	}
+	switch record.Challenge.SchemaVersion {
+	case teamapproval.ChallengeSchemaV1:
+		if launchAuthorizationID.Valid ||
+			launchAuthorizationDigest.Valid ||
+			record.Challenge.LaunchAuthorizationID != "" ||
+			record.Challenge.LaunchAuthorizationDigest != "" {
+			return TeamApprovalChallengeRecord{}, ErrTeamFactCorrupt
+		}
+	case teamapproval.ChallengeSchemaV2:
+		parsedAuthorizationID, parseErr := uuid.Parse(
+			launchAuthorizationID.String,
+		)
+		if !launchAuthorizationID.Valid ||
+			!launchAuthorizationDigest.Valid ||
+			parseErr != nil ||
+			parsedAuthorizationID == uuid.Nil ||
+			parsedAuthorizationID.String() !=
+				launchAuthorizationID.String {
+			return TeamApprovalChallengeRecord{}, ErrTeamFactCorrupt
+		}
+		authorization, readErr := readTeamLaunchAuthorization(
+			ctx,
+			query,
+			instanceID,
+			parsedAuthorizationID,
+			launchAuthorizationDigest.String,
+		)
+		if readErr != nil {
+			return TeamApprovalChallengeRecord{}, readErr
+		}
+		record.Authorization = &authorization
+	default:
+		return TeamApprovalChallengeRecord{}, ErrTeamFactCorrupt
+	}
 	actualPayload, err := record.Challenge.SigningPayload()
 	if err != nil ||
 		!bytes.Equal(actualPayload, signingPayload) ||
@@ -985,6 +1246,10 @@ func readTeamApprovalChallenge(
 		record.Challenge.PlanDigest != planDigest ||
 		record.Challenge.PricingSnapshotID != snapshotID.String() ||
 		record.Challenge.PricingSnapshotDigest != snapshotDigest ||
+		record.Challenge.LaunchAuthorizationID !=
+			launchAuthorizationID.String ||
+		record.Challenge.LaunchAuthorizationDigest !=
+			launchAuthorizationDigest.String ||
 		record.Challenge.SignerKeyID != signerKeyID ||
 		!record.Challenge.IssuedAt.Equal(issuedAt.UTC()) ||
 		!record.Challenge.ExpiresAt.Equal(expiresAt.UTC()) ||
@@ -1010,6 +1275,8 @@ func readTeamApproval(
 		challengeID, agentID, planID, snapshotID    uuid.UUID
 		ownerID, planDigest, snapshotDigest         string
 		signerKeyID                                 string
+		launchAuthorizationID                       sql.NullString
+		launchAuthorizationDigest                   sql.NullString
 		signatureJSON, signingPayload, rawSignature []byte
 		planRevision                                int64
 		record                                      TeamApprovalRecord
@@ -1019,6 +1286,8 @@ func readTeamApproval(
 		SELECT challenge_id, agent_instance_id, owner_id,
 		       plan_id, plan_revision, plan_digest,
 		       snapshot_id, snapshot_digest, signer_key_id,
+		       launch_authorization_id::text,
+		       launch_authorization_digest,
 		       signature_json, signing_payload, signature,
 		       approved_at, created_at
 		FROM team_plan_approvals
@@ -1035,6 +1304,8 @@ func readTeamApproval(
 		&snapshotID,
 		&snapshotDigest,
 		&signerKeyID,
+		&launchAuthorizationID,
+		&launchAuthorizationDigest,
 		&signatureJSON,
 		&signingPayload,
 		&rawSignature,
@@ -1051,7 +1322,8 @@ func readTeamApproval(
 		)
 	}
 	if planRevision <= 0 ||
-		json.Unmarshal(signatureJSON, &record.Signature) != nil {
+		json.Unmarshal(signatureJSON, &record.Signature) != nil ||
+		record.Signature.Validate() != nil {
 		return TeamApprovalRecord{}, teamApprovalBinding{},
 			ErrTeamFactCorrupt
 	}
@@ -1066,6 +1338,10 @@ func readTeamApproval(
 		record.Signature.PlanID != planID.String() ||
 		record.Signature.PlanRevision != uint64(planRevision) ||
 		record.Signature.PlanDigest != planDigest ||
+		record.Signature.LaunchAuthorizationID !=
+			launchAuthorizationID.String ||
+		record.Signature.LaunchAuthorizationDigest !=
+			launchAuthorizationDigest.String ||
 		record.Signature.SignerKeyID != signerKeyID ||
 		agentID != instanceID ||
 		ownerID == "" ||
@@ -1075,18 +1351,57 @@ func readTeamApproval(
 		return TeamApprovalRecord{}, teamApprovalBinding{},
 			ErrTeamFactCorrupt
 	}
+	var parsedLaunchAuthorizationID uuid.UUID
+	switch record.Signature.SchemaVersion {
+	case teamapproval.SignatureSchemaV1:
+		if launchAuthorizationID.Valid ||
+			launchAuthorizationDigest.Valid {
+			return TeamApprovalRecord{}, teamApprovalBinding{},
+				ErrTeamFactCorrupt
+		}
+	case teamapproval.SignatureSchemaV2:
+		var parseErr error
+		parsedLaunchAuthorizationID, parseErr = uuid.Parse(
+			launchAuthorizationID.String,
+		)
+		if !launchAuthorizationID.Valid ||
+			!launchAuthorizationDigest.Valid ||
+			parseErr != nil ||
+			parsedLaunchAuthorizationID == uuid.Nil ||
+			parsedLaunchAuthorizationID.String() !=
+				launchAuthorizationID.String {
+			return TeamApprovalRecord{}, teamApprovalBinding{},
+				ErrTeamFactCorrupt
+		}
+		authorization, readErr := readTeamLaunchAuthorization(
+			ctx,
+			query,
+			instanceID,
+			parsedLaunchAuthorizationID,
+			launchAuthorizationDigest.String,
+		)
+		if readErr != nil {
+			return TeamApprovalRecord{}, teamApprovalBinding{}, readErr
+		}
+		record.Authorization = &authorization
+	default:
+		return TeamApprovalRecord{}, teamApprovalBinding{},
+			ErrTeamFactCorrupt
+	}
 	record.ApprovedAt = record.ApprovedAt.UTC()
 	record.CreatedAt = record.CreatedAt.UTC()
 	binding = teamApprovalBinding{
-		challengeID:    challengeID,
-		agentID:        agentID,
-		ownerID:        ownerID,
-		planID:         planID,
-		planRevision:   uint64(planRevision),
-		planDigest:     planDigest,
-		snapshotID:     snapshotID,
-		snapshotDigest: snapshotDigest,
-		signingPayload: append([]byte(nil), signingPayload...),
+		challengeID:               challengeID,
+		agentID:                   agentID,
+		ownerID:                   ownerID,
+		planID:                    planID,
+		planRevision:              uint64(planRevision),
+		planDigest:                planDigest,
+		snapshotID:                snapshotID,
+		snapshotDigest:            snapshotDigest,
+		launchAuthorizationID:     parsedLaunchAuthorizationID,
+		launchAuthorizationDigest: launchAuthorizationDigest.String,
+		signingPayload:            append([]byte(nil), signingPayload...),
 	}
 	return record, binding, nil
 }
@@ -1106,7 +1421,8 @@ func decodeTeamApprovalChallengeReplay(
 	if json.Unmarshal(encoded, &replay) != nil ||
 		replay.SchemaVersion != teamFactSnapshotSchemaV1 ||
 		replay.Record.RecordRevision == 0 ||
-		replay.Record.Challenge.Validate() != nil {
+		replay.Record.Challenge.Validate() != nil ||
+		!teamChallengeAuthorizationMatches(replay.Record) {
 		return TeamApprovalChallengeRecord{}, ErrTeamFactCorrupt
 	}
 	replay.Record.CreatedAt = replay.Record.CreatedAt.UTC()
@@ -1126,8 +1442,15 @@ func decodeApproveTeamPlanReplay(
 		replay.SchemaVersion != teamFactSnapshotSchemaV1 ||
 		replay.Plan.Status != TeamPlanApproved ||
 		replay.Challenge.ConsumedAt == nil ||
+		!teamChallengeAuthorizationMatches(replay.Challenge) ||
 		replay.Approval.Signature.ApprovalID !=
-			replay.Challenge.Challenge.ApprovalID {
+			replay.Challenge.Challenge.ApprovalID ||
+		replay.Approval.Signature.LaunchAuthorizationID !=
+			replay.Challenge.Challenge.LaunchAuthorizationID ||
+		replay.Approval.Signature.LaunchAuthorizationDigest !=
+			replay.Challenge.Challenge.LaunchAuthorizationDigest ||
+		(replay.Approval.Authorization == nil) !=
+			(replay.Challenge.Authorization == nil) {
 		return approveTeamPlanReplay{}, ErrTeamFactCorrupt
 	}
 	planDigest, err := replay.Plan.Plan.Digest()
@@ -1145,6 +1468,41 @@ func decodeApproveTeamPlanReplay(
 	return replay, nil
 }
 
+func teamChallengeAuthorizationMatches(
+	record TeamApprovalChallengeRecord,
+) bool {
+	switch record.Challenge.SchemaVersion {
+	case teamapproval.ChallengeSchemaV1:
+		return record.Authorization == nil &&
+			record.Challenge.LaunchAuthorizationID == "" &&
+			record.Challenge.LaunchAuthorizationDigest == ""
+	case teamapproval.ChallengeSchemaV2:
+		if record.Authorization == nil ||
+			record.Authorization.Validate() != nil {
+			return false
+		}
+		digest, err := record.Authorization.Digest()
+		return err == nil &&
+			record.Authorization.AuthorizationID ==
+				record.Challenge.LaunchAuthorizationID &&
+			digest == record.Challenge.LaunchAuthorizationDigest &&
+			record.Authorization.ApprovalID ==
+				record.Challenge.ApprovalID &&
+			record.Authorization.AgentInstanceID ==
+				record.Challenge.AgentInstanceID &&
+			record.Authorization.OwnerID == record.Challenge.OwnerID &&
+			record.Authorization.PlanID == record.Challenge.PlanID &&
+			record.Authorization.PlanRevision ==
+				record.Challenge.PlanRevision &&
+			record.Authorization.PlanDigest ==
+				record.Challenge.PlanDigest &&
+			record.Authorization.ProviderScope ==
+				record.Challenge.ProviderScope
+	default:
+		return false
+	}
+}
+
 func appendTeamApprovalChallengeEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1156,29 +1514,33 @@ func appendTeamApprovalChallengeEvent(
 		return ErrTeamFactInvalid
 	}
 	summary := struct {
-		SchemaVersion  int             `json:"schema_version"`
-		ChallengeID    string          `json:"challenge_id"`
-		ApprovalID     string          `json:"approval_id"`
-		OwnerID        string          `json:"owner_id"`
-		PlanID         string          `json:"plan_id"`
-		PlanRevision   uint64          `json:"plan_revision"`
-		SignerKeyID    string          `json:"signer_key_id"`
-		ExpiresAt      time.Time       `json:"expires_at"`
-		Consumed       bool            `json:"consumed"`
-		RecordRevision uint64          `json:"record_revision"`
-		Actor          cloudEventActor `json:"actor"`
+		SchemaVersion             int             `json:"schema_version"`
+		ChallengeID               string          `json:"challenge_id"`
+		ApprovalID                string          `json:"approval_id"`
+		OwnerID                   string          `json:"owner_id"`
+		PlanID                    string          `json:"plan_id"`
+		PlanRevision              uint64          `json:"plan_revision"`
+		LaunchAuthorizationID     string          `json:"launch_authorization_id,omitempty"`
+		LaunchAuthorizationDigest string          `json:"launch_authorization_digest,omitempty"`
+		SignerKeyID               string          `json:"signer_key_id"`
+		ExpiresAt                 time.Time       `json:"expires_at"`
+		Consumed                  bool            `json:"consumed"`
+		RecordRevision            uint64          `json:"record_revision"`
+		Actor                     cloudEventActor `json:"actor"`
 	}{
-		SchemaVersion:  teamFactSnapshotSchemaV1,
-		ChallengeID:    record.Challenge.ChallengeID,
-		ApprovalID:     record.Challenge.ApprovalID,
-		OwnerID:        record.Challenge.OwnerID,
-		PlanID:         record.Challenge.PlanID,
-		PlanRevision:   record.Challenge.PlanRevision,
-		SignerKeyID:    record.Challenge.SignerKeyID,
-		ExpiresAt:      record.Challenge.ExpiresAt.UTC(),
-		Consumed:       record.ConsumedAt != nil,
-		RecordRevision: record.RecordRevision,
-		Actor:          newCloudEventActor(caller),
+		SchemaVersion:             teamFactSnapshotSchemaV1,
+		ChallengeID:               record.Challenge.ChallengeID,
+		ApprovalID:                record.Challenge.ApprovalID,
+		OwnerID:                   record.Challenge.OwnerID,
+		PlanID:                    record.Challenge.PlanID,
+		PlanRevision:              record.Challenge.PlanRevision,
+		LaunchAuthorizationID:     record.Challenge.LaunchAuthorizationID,
+		LaunchAuthorizationDigest: record.Challenge.LaunchAuthorizationDigest,
+		SignerKeyID:               record.Challenge.SignerKeyID,
+		ExpiresAt:                 record.Challenge.ExpiresAt.UTC(),
+		Consumed:                  record.ConsumedAt != nil,
+		RecordRevision:            record.RecordRevision,
+		Actor:                     newCloudEventActor(caller),
 	}
 	return appendCloudFactEvent(
 		ctx,
@@ -1203,27 +1565,31 @@ func appendTeamApprovalEvent(
 		return ErrTeamFactInvalid
 	}
 	summary := struct {
-		SchemaVersion int             `json:"schema_version"`
-		ApprovalID    string          `json:"approval_id"`
-		ChallengeID   string          `json:"challenge_id"`
-		OwnerID       string          `json:"owner_id"`
-		PlanID        string          `json:"plan_id"`
-		PlanRevision  uint64          `json:"plan_revision"`
-		PlanDigest    string          `json:"plan_digest"`
-		SignerKeyID   string          `json:"signer_key_id"`
-		ApprovedAt    time.Time       `json:"approved_at"`
-		Actor         cloudEventActor `json:"actor"`
+		SchemaVersion             int             `json:"schema_version"`
+		ApprovalID                string          `json:"approval_id"`
+		ChallengeID               string          `json:"challenge_id"`
+		OwnerID                   string          `json:"owner_id"`
+		PlanID                    string          `json:"plan_id"`
+		PlanRevision              uint64          `json:"plan_revision"`
+		PlanDigest                string          `json:"plan_digest"`
+		LaunchAuthorizationID     string          `json:"launch_authorization_id,omitempty"`
+		LaunchAuthorizationDigest string          `json:"launch_authorization_digest,omitempty"`
+		SignerKeyID               string          `json:"signer_key_id"`
+		ApprovedAt                time.Time       `json:"approved_at"`
+		Actor                     cloudEventActor `json:"actor"`
 	}{
-		SchemaVersion: teamFactSnapshotSchemaV1,
-		ApprovalID:    approval.Signature.ApprovalID,
-		ChallengeID:   approval.Signature.ChallengeID,
-		OwnerID:       plan.Plan.OwnerID,
-		PlanID:        plan.Plan.PlanID,
-		PlanRevision:  plan.Plan.Revision,
-		PlanDigest:    plan.PlanDigest,
-		SignerKeyID:   approval.Signature.SignerKeyID,
-		ApprovedAt:    approval.ApprovedAt.UTC(),
-		Actor:         newCloudEventActor(caller),
+		SchemaVersion:             teamFactSnapshotSchemaV1,
+		ApprovalID:                approval.Signature.ApprovalID,
+		ChallengeID:               approval.Signature.ChallengeID,
+		OwnerID:                   plan.Plan.OwnerID,
+		PlanID:                    plan.Plan.PlanID,
+		PlanRevision:              plan.Plan.Revision,
+		PlanDigest:                plan.PlanDigest,
+		LaunchAuthorizationID:     approval.Signature.LaunchAuthorizationID,
+		LaunchAuthorizationDigest: approval.Signature.LaunchAuthorizationDigest,
+		SignerKeyID:               approval.Signature.SignerKeyID,
+		ApprovedAt:                approval.ApprovedAt.UTC(),
+		Actor:                     newCloudEventActor(caller),
 	}
 	return appendCloudFactEvent(
 		ctx,

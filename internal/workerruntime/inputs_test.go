@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,7 +42,7 @@ func TestFilesystemResolverUsesOnlyFixedDigestAndSlotPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(workspacePath, workspaceMarker),
+		filepath.Join(workspacePath, WorkspaceDigestMarker),
 		[]byte(task.WorkspaceDigest+"\n"),
 		0o600,
 	); err != nil {
@@ -101,6 +102,8 @@ func TestFilesystemResolverRejectsDigestMismatchAndCredentialSymlink(
 	}
 	if _, err := resolver.Resolve(context.Background(), task); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("digest mismatch error = %v", err)
+	} else if !errors.Is(err, ErrContextInput) {
+		t.Fatalf("digest mismatch category = %v", err)
 	}
 
 	target := filepath.Join(root, "real-credential")
@@ -120,12 +123,71 @@ func TestFilesystemResolverRejectsDigestMismatchAndCredentialSymlink(
 	}
 }
 
+func TestFilesystemResolverClassifiesCredentialFailureWithoutPathOrValue(
+	t *testing.T,
+) {
+	t.Parallel()
+	root := t.TempDir()
+	contextRoot := filepath.Join(root, "contexts")
+	workspaceRoot := filepath.Join(root, "workspaces")
+	credentialRoot := filepath.Join(root, "credentials")
+	for _, directory := range []string{
+		contextRoot, workspaceRoot, credentialRoot,
+	} {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := validTask()
+	contextJSON := []byte(`{"goal":"implement approved change"}`)
+	task.ContextDigest = testDigest(contextJSON)
+	if err := os.WriteFile(
+		filepath.Join(
+			contextRoot,
+			task.ContextDigest[len("sha256:"):]+".json",
+		),
+		contextJSON,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	workspacePath := filepath.Join(
+		workspaceRoot,
+		task.WorkspaceDigest[len("sha256:"):],
+	)
+	if err := os.Mkdir(workspacePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workspacePath, WorkspaceDigestMarker),
+		[]byte(task.WorkspaceDigest+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := NewFilesystemResolver(
+		contextRoot, workspaceRoot, credentialRoot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolver.Resolve(context.Background(), task)
+	if !errors.Is(err, ErrInvalid) ||
+		!errors.Is(err, ErrCredentialInput) {
+		t.Fatalf("credential failure category = %v", err)
+	}
+	if strings.Contains(err.Error(), task.CredentialSlot) ||
+		strings.Contains(err.Error(), credentialRoot) {
+		t.Fatalf("credential failure exposed protected coordinates: %v", err)
+	}
+}
+
 func TestValidateWorkspaceHonorsCancellation(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
 	digest := "sha256:" + string(make([]byte, 64))
 	if err := os.WriteFile(
-		filepath.Join(workspace, workspaceMarker),
+		filepath.Join(workspace, WorkspaceDigestMarker),
 		[]byte(digest),
 		0o600,
 	); err != nil {

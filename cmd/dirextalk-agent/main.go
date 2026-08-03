@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,21 +21,27 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/githubapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/githubsource"
 	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/knowledgeworker"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/scheduling"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretref"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teambundle"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamcontroller"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workermarket"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrelease"
 	"github.com/google/uuid"
 )
@@ -47,24 +54,44 @@ func main() {
 }
 
 func run(arguments []string) error {
-	if len(arguments) != 1 {
-		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|rotate-bootstrap-service-key|bootstrap-approval-device|healthcheck|serve>")
+	if len(arguments) == 0 {
+		return errors.New("usage: dirextalk-agent <migrate|bootstrap-service-key|rotate-bootstrap-service-key|bootstrap-approval-device|publish-worker-ami|healthcheck|serve>")
 	}
 	switch arguments[0] {
 	case "migrate":
+		if len(arguments) != 1 {
+			return errors.New("migrate does not accept arguments")
+		}
 		return migrate()
 	case "bootstrap-service-key":
+		if len(arguments) != 1 {
+			return errors.New("bootstrap-service-key does not accept arguments")
+		}
 		return bootstrapServiceKey()
 	case "rotate-bootstrap-service-key":
+		if len(arguments) != 1 {
+			return errors.New("rotate-bootstrap-service-key does not accept arguments")
+		}
 		return rotateBootstrapServiceKey()
 	case "bootstrap-approval-device":
+		if len(arguments) != 1 {
+			return errors.New("bootstrap-approval-device does not accept arguments")
+		}
 		return bootstrapApprovalDevice()
+	case "publish-worker-ami":
+		return publishWorkerAMI(arguments[1:])
 	case "healthcheck":
+		if len(arguments) != 1 {
+			return errors.New("healthcheck does not accept arguments")
+		}
 		return runHealthcheck()
 	case "serve":
+		if len(arguments) != 1 {
+			return errors.New("serve does not accept arguments")
+		}
 		return serve()
 	default:
-		return errors.New("unknown command; expected migrate, bootstrap-service-key, rotate-bootstrap-service-key, bootstrap-approval-device, healthcheck, or serve")
+		return errors.New("unknown command; expected migrate, bootstrap-service-key, rotate-bootstrap-service-key, bootstrap-approval-device, publish-worker-ami, healthcheck, or serve")
 	}
 }
 
@@ -163,11 +190,36 @@ func serve() error {
 	}
 	var teamPlanCompiler *teamplan.CatalogCompiler
 	var teamPolicyResolver *teamorchestration.StaticPolicyResolver
-	modelProfiles, err := modelapi.LoadProfileCatalog(
-		serverConfig.ModelProfilesFile,
-	)
-	if err != nil {
-		return errors.New("could not load model profile catalog")
+	var loadedTeamBundle *teambundle.Bundle
+	var modelProfiles *modelapi.ProfileCatalog
+	var searchProfiles *searchprofile.Catalog
+	if serverConfig.TeamBundleDir != "" {
+		loadedTeamBundle, err = teambundle.Load(
+			serverConfig.TeamBundleDir,
+		)
+		if err != nil ||
+			loadedTeamBundle.Manifest.AgentInstanceID !=
+				serverConfig.InstanceID {
+			return errors.New(
+				"could not verify configured Pi Team bundle",
+			)
+		}
+		modelProfiles = loadedTeamBundle.ModelProfiles
+	} else {
+		modelProfiles, err = modelapi.LoadProfileCatalog(
+			serverConfig.ModelProfilesFile,
+		)
+		if err != nil {
+			return errors.New("could not load model profile catalog")
+		}
+	}
+	if serverConfig.SearchProfilesFile != "" {
+		searchProfiles, err = searchprofile.LoadCatalog(
+			serverConfig.SearchProfilesFile,
+		)
+		if err != nil {
+			return errors.New("could not load search profile catalog")
+		}
 	}
 	mountedSecrets, err := secretref.NewMountedResolver(
 		serverConfig.MountedSecretsDir,
@@ -175,23 +227,133 @@ func serve() error {
 	if err != nil {
 		return errors.New("could not initialize mounted runtime secrets")
 	}
+	var githubSourceSnapshotter *githubsource.Snapshotter
+	if serverConfig.GitHubAppConnectionsFile != "" {
+		githubConnections, loadErr :=
+			githubapp.LoadConnectionCatalog(
+				serverConfig.GitHubAppConnectionsFile,
+			)
+		if loadErr != nil {
+			return errors.New(
+				"could not load protected GitHub App connections",
+			)
+		}
+		githubPrivateKeys, loadErr :=
+			githubapp.NewResolverPrivateKeySource(mountedSecrets)
+		if loadErr != nil {
+			return errors.New(
+				"could not initialize GitHub App private keys",
+			)
+		}
+		githubHTTPClient := &http.Client{
+			Transport: http.DefaultTransport,
+			Timeout:   30 * time.Second,
+			CheckRedirect: func(
+				*http.Request,
+				[]*http.Request,
+			) error {
+				return http.ErrUseLastResponse
+			},
+		}
+		githubBroker, loadErr := githubapp.NewBroker(
+			githubConnections,
+			githubPrivateKeys,
+			githubHTTPClient,
+			time.Now,
+		)
+		if loadErr != nil {
+			return errors.New(
+				"could not initialize GitHub App credential broker",
+			)
+		}
+		githubSourceRoot, loadErr := os.MkdirTemp(
+			"",
+			"dirextalk-github-source-",
+		)
+		if loadErr != nil {
+			return errors.New(
+				"could not initialize protected GitHub source storage",
+			)
+		}
+		defer os.RemoveAll(githubSourceRoot)
+		githubSourceSnapshotter, loadErr =
+			githubsource.NewSnapshotter(
+				githubBroker,
+				http.DefaultTransport,
+				githubSourceRoot,
+			)
+		if loadErr != nil {
+			return errors.New(
+				"could not initialize GitHub source snapshotter",
+			)
+		}
+	}
 	var teamModelOffers *teampricing.ModelOfferCatalog
 	var teamComputeCatalog *awsprovider.TeamComputeCatalog
 	var teamCredentialReadiness *teampricing.CatalogCredentialReadiness
-	if serverConfig.RuntimeCatalogFile != "" {
-		runtimeCatalog, loadErr := teamplan.LoadRuntimeCatalog(
+	var workerMarketGate *workermarket.TeamPlanGate
+	var runtimeCatalog *teamplan.RuntimeCatalog
+	if loadedTeamBundle != nil {
+		runtimeCatalog = loadedTeamBundle.RuntimeCatalog
+		teamPolicyResolver = loadedTeamBundle.Policy
+		teamModelOffers = loadedTeamBundle.ModelOffers
+		teamComputeCatalog = loadedTeamBundle.ComputeCatalog
+	}
+	if serverConfig.WorkerMarketRegistryFile != "" {
+		workerRegistry, loadErr := workermarket.LoadRegistry(
+			serverConfig.WorkerMarketRegistryFile,
+			serverConfig.WorkerMarketPublicKeyFile,
+		)
+		if loadErr != nil {
+			return errors.New(
+				"could not verify configured Worker Marketplace registry",
+			)
+		}
+		workerMarketGate, loadErr = workermarket.NewTeamPlanGate(
+			workerRegistry,
+			serverConfig.WorkerMarketOrganizationID,
+		)
+		if loadErr != nil {
+			return errors.New(
+				"could not initialize Worker Marketplace approval gate",
+			)
+		}
+	}
+	if runtimeCatalog == nil && serverConfig.RuntimeCatalogFile != "" {
+		runtimeCatalog, err = teamplan.LoadRuntimeCatalog(
 			serverConfig.RuntimeCatalogFile,
 			serverConfig.RuntimeCatalogPublicKeyFile,
 		)
-		if loadErr != nil {
+		if err != nil {
 			return errors.New("could not verify configured runtime catalog")
 		}
-		teamPlanCompiler, loadErr = teamplan.NewCatalogCompiler(runtimeCatalog)
+	}
+	if runtimeCatalog != nil {
+		var loadErr error
+		if workerMarketGate != nil {
+			teamPlanCompiler, loadErr =
+				teamplan.NewCatalogCompilerForMarketplace(
+					runtimeCatalog,
+					[]teamplan.RuntimeAdapter{
+						teamplan.AdapterPiV1,
+					},
+					workerMarketGate,
+					time.Now,
+				)
+		} else {
+			teamPlanCompiler, loadErr =
+				teamplan.NewCatalogCompilerForAdapters(
+					runtimeCatalog,
+					[]teamplan.RuntimeAdapter{
+						teamplan.AdapterPiV1,
+					},
+				)
+		}
 		if loadErr != nil {
 			return errors.New("could not initialize runtime-catalog-bound Team Plan compiler")
 		}
 	}
-	if serverConfig.TeamPolicyFile != "" {
+	if teamPolicyResolver == nil && serverConfig.TeamPolicyFile != "" {
 		teamPolicyResolver, err =
 			teamorchestration.LoadStaticPolicyResolver(
 				serverConfig.TeamPolicyFile,
@@ -200,7 +362,8 @@ func serve() error {
 			return errors.New("could not load protected Team Plan policy")
 		}
 	}
-	if serverConfig.TeamModelOfferCatalogFile != "" {
+	if teamModelOffers == nil &&
+		serverConfig.TeamModelOfferCatalogFile != "" {
 		teamModelOffers, err = teampricing.LoadModelOfferCatalog(
 			serverConfig.TeamModelOfferCatalogFile,
 			modelProfiles,
@@ -214,6 +377,8 @@ func serve() error {
 		if err != nil {
 			return errors.New("could not load protected Team compute catalog")
 		}
+	}
+	if teamModelOffers != nil {
 		teamCredentialReadiness, err =
 			teampricing.NewCatalogCredentialReadiness(
 				teamModelOffers,
@@ -251,6 +416,21 @@ func serve() error {
 	store, err := postgres.New(pool, serverConfig.InstanceID)
 	if err != nil {
 		return err
+	}
+	reconcileCtx, reconcileCancel := context.WithTimeout(
+		context.Background(),
+		30*time.Second,
+	)
+	repairedTasks, err := store.ReconcileTeamPlanTaskApprovalStates(reconcileCtx)
+	reconcileCancel()
+	if err != nil {
+		return errors.New("could not reconcile Team Plan Task approval states")
+	}
+	if repairedTasks > 0 {
+		slog.Info(
+			"reconciled Team Plan Task approval states",
+			"tasks", repairedTasks,
+		)
 	}
 	knowledgeCatalog := knowledge.DefaultCatalog()
 	knowledgeRepository, err := knowledge.NewPostgresRepository(pool, serverConfig.InstanceID, knowledgeCatalog)
@@ -305,13 +485,31 @@ func serve() error {
 	var cloudComposition *app.CloudComposition
 	var cloudCoordinator cloudapp.Coordinator
 	if serverConfig.EnableAWSControl {
-		if serverConfig.WorkerAMIPublicationFile != "" {
-			release, releaseErr := workerrelease.LoadPublicationFile(serverConfig.WorkerAMIPublicationFile)
+		var configuredWorkerRelease *workerrelease.ReleaseV1
+		if loadedTeamBundle != nil {
+			release := loadedTeamBundle.WorkerRelease
+			configuredWorkerRelease = &release
+		} else if serverConfig.WorkerAMIPublicationFile != "" {
+			release, releaseErr := workerrelease.LoadPublicationFile(
+				serverConfig.WorkerAMIPublicationFile,
+			)
 			if releaseErr != nil || release.AgentInstanceID != serverConfig.InstanceID {
 				return errors.New("could not validate configured Worker AMI publication")
 			}
+			configuredWorkerRelease = &release
+		}
+		if configuredWorkerRelease != nil {
+			if configuredWorkerRelease.AgentInstanceID !=
+				serverConfig.InstanceID {
+				return errors.New(
+					"could not validate configured Worker AMI publication",
+				)
+			}
 			importContext, stopImport := context.WithTimeout(context.Background(), 30*time.Second)
-			_, releaseErr = store.ImportWorkerRelease(importContext, release)
+			_, releaseErr := store.ImportWorkerRelease(
+				importContext,
+				*configuredWorkerRelease,
+			)
 			stopImport()
 			if releaseErr != nil {
 				return errors.New("could not persist configured Worker AMI publication")
@@ -354,11 +552,19 @@ func serve() error {
 		}
 	}
 	runtimeOptions := make([]app.RuntimeCompositionOption, 0, 7)
+	var teamOfferBuilder teamorchestration.TrustedOfferSource
 	runtimeOptions = append(
 		runtimeOptions,
 		app.WithLocalRunBudget(runBudget),
 		app.WithLoadedModelProfiles(modelProfiles),
+		app.WithTransientModelCredentials(secretManager),
 	)
+	if searchProfiles != nil {
+		runtimeOptions = append(
+			runtimeOptions,
+			app.WithLoadedSearchProfiles(searchProfiles),
+		)
+	}
 	if teamPlanCompiler != nil {
 		runtimeOptions = append(
 			runtimeOptions,
@@ -378,7 +584,8 @@ func serve() error {
 		if cloudComposition == nil {
 			return errors.New("Team pricing requires complete AWS cloud composition")
 		}
-		teamOfferBuilder, builderErr :=
+		var builderErr error
+		teamOfferBuilder, builderErr =
 			cloudComposition.NewTeamOfferBuilder(
 				teamModelOffers,
 				teamCredentialReadiness,
@@ -387,9 +594,21 @@ func serve() error {
 		if builderErr != nil {
 			return errors.New("could not initialize trusted Team offer builder")
 		}
+		teamLaunchBuilder, builderErr :=
+			cloudComposition.NewTeamLaunchAuthorizationBuilder(
+				teamPlanCompiler,
+			)
+		if builderErr != nil {
+			return errors.New(
+				"could not initialize trusted Team launch authorization",
+			)
+		}
 		runtimeOptions = append(
 			runtimeOptions,
 			app.WithTeamOfferBuilder(teamOfferBuilder),
+			app.WithTeamLaunchAuthorizationBuilder(
+				teamLaunchBuilder,
+			),
 		)
 	}
 	runtimeComposition, err := app.NewRuntimeComposition(
@@ -398,6 +617,45 @@ func serve() error {
 	)
 	if err != nil {
 		return errors.New("could not initialize Agent runtime")
+	}
+	var centralTeamController *teamcontroller.Controller
+	if runtimeComposition.TeamExecutions != nil {
+		if cloudComposition == nil ||
+			teamOfferBuilder == nil ||
+			teamCredentialReadiness == nil {
+			return errors.New(
+				"Team execution requires complete cloud controller dependencies",
+			)
+		}
+		centralTeamController, err =
+			cloudComposition.NewTeamController(
+				runtimeComposition,
+				teamOfferBuilder,
+				teamCredentialReadiness,
+				githubSourceSnapshotter,
+			)
+		if err != nil {
+			return fmt.Errorf(
+				"could not initialize Team execution controller: %w",
+				err,
+			)
+		}
+		teamRecoveryContext, stopTeamRecovery :=
+			context.WithTimeout(
+				context.Background(),
+				2*time.Minute,
+			)
+		teamRecoveryErr := centralTeamController.RunOnce(
+			teamRecoveryContext,
+		)
+		stopTeamRecovery()
+		if teamRecoveryErr != nil {
+			slog.Warn(
+				"Team execution recovery deferred",
+				"error",
+				safeError(teamRecoveryErr),
+			)
+		}
 	}
 	cloudGoalRecoveryContext, stopCloudGoalRecovery := context.WithTimeout(context.Background(), 30*time.Second)
 	cloudGoalRecoveryErr := runtimeComposition.RecoverCloudGoals(cloudGoalRecoveryContext)
@@ -496,6 +754,20 @@ func serve() error {
 		go func() {
 			if dispatchErr := cloudComposition.Run(bootstrapContext); dispatchErr != nil && !errors.Is(dispatchErr, context.Canceled) {
 				slog.Warn("cloud dispatcher stopped", "error", safeError(dispatchErr))
+			}
+		}()
+	}
+	if centralTeamController != nil {
+		go func() {
+			if controllerErr := centralTeamController.Run(
+				bootstrapContext,
+			); controllerErr != nil &&
+				!errors.Is(controllerErr, context.Canceled) {
+				slog.Warn(
+					"Team execution controller stopped",
+					"error",
+					safeError(controllerErr),
+				)
 			}
 		}()
 	}

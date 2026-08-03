@@ -11,6 +11,32 @@ import (
 	"github.com/google/uuid"
 )
 
+type InstalledExtension struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+func (extension InstalledExtension) Validate() error {
+	if !validCatalogName(extension.Name) ||
+		!cleanAbsolute(extension.Path) ||
+		!validDigest(extension.SHA256) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func (extension InstalledExtension) Verify() error {
+	if extension.Validate() != nil {
+		return ErrInvalid
+	}
+	return verifyInstalledFile(
+		extension.Path,
+		extension.SHA256,
+		false,
+	)
+}
+
 type InstalledRelease struct {
 	ReleaseID        string  `json:"release_id"`
 	Version          string  `json:"version"`
@@ -40,13 +66,31 @@ func (release InstalledRelease) VerifyExecutable() error {
 	if release.Validate() != nil {
 		return ErrInvalid
 	}
-	before, err := os.Lstat(release.ExecutablePath)
+	return verifyInstalledFile(
+		release.ExecutablePath,
+		release.ExecutableSHA256,
+		true,
+	)
+}
+
+func verifyInstalledFile(
+	filePath,
+	expectedDigest string,
+	requireExecutable bool,
+) error {
+	before, err := os.Lstat(filePath)
 	if err != nil || before.Mode()&os.ModeSymlink != 0 ||
-		!before.Mode().IsRegular() || before.Mode().Perm()&0o111 == 0 ||
+		!before.Mode().IsRegular() ||
 		before.Mode().Perm()&0o022 != 0 {
 		return ErrInvalid
 	}
-	file, err := os.Open(filepath.Clean(release.ExecutablePath))
+	if requireExecutable && before.Mode().Perm()&0o111 == 0 {
+		return ErrInvalid
+	}
+	if !requireExecutable && before.Mode().Perm()&0o111 != 0 {
+		return ErrInvalid
+	}
+	file, err := os.Open(filepath.Clean(filePath))
 	if err != nil {
 		return ErrInvalid
 	}
@@ -59,13 +103,13 @@ func (release InstalledRelease) VerifyExecutable() error {
 	if _, err := io.Copy(hasher, file); err != nil {
 		return ErrInvalid
 	}
-	after, err := os.Lstat(release.ExecutablePath)
+	after, err := os.Lstat(filePath)
 	if err != nil || after.Mode()&os.ModeSymlink != 0 ||
 		!os.SameFile(before, after) || after.Size() != before.Size() {
 		return ErrInvalid
 	}
 	expected, err := hex.DecodeString(
-		release.ExecutableSHA256[len("sha256:"):],
+		expectedDigest[len("sha256:"):],
 	)
 	if err != nil || len(expected) != sha256.Size {
 		clear(expected)

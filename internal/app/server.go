@@ -234,12 +234,14 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 		agentv1.TaskService_CreateTask_FullMethodName:                                    "task.write",
 		agentv1.TaskService_GetTask_FullMethodName:                                       "task.read",
 		agentv1.TaskService_ListTasks_FullMethodName:                                     "task.read",
+		agentv1.TaskService_GetTaskOverview_FullMethodName:                               "task.read",
 		agentv1.TaskService_CancelTask_FullMethodName:                                    "task.write",
 		agentv1.TaskService_ListSteps_FullMethodName:                                     "task.read",
 		agentv1.TaskService_WatchEvents_FullMethodName:                                   "event.read",
 		agentv1.RuntimeService_GetCapabilities_FullMethodName:                            "runtime.read",
 		agentv1.RuntimeService_GetRuntimeConfig_FullMethodName:                           "runtime.read",
 		agentv1.RuntimeService_PutRuntimeConfig_FullMethodName:                           "runtime.write",
+		agentv1.RuntimeService_ListModels_FullMethodName:                                 "runtime.chat",
 		agentv1.RuntimeService_Chat_FullMethodName:                                       "runtime.chat",
 		agentv1.RuntimeService_StreamChat_FullMethodName:                                 "runtime.chat",
 		agentv1.CloudControlService_GetCapabilities_FullMethodName:                       "cloud.read",
@@ -323,7 +325,15 @@ func NewServer(store *postgres.Store, pepper []byte, certFile, keyFile string, o
 			options.teamPreparation,
 			options.teamPlans,
 			options.teamExecutions,
-		),
+		).
+			WithExecutionReads(store, store).
+			WithArtifactReads(store).
+			WithApprovalDeviceBootstrap(
+				newTeamApprovalSignerRegistrar(
+					store,
+					options.agentInstanceID,
+				),
+			),
 	)
 	agentv1.RegisterAdminServiceServer(grpcServer, rpcapi.NewAdminService(store, pepper))
 	agentv1.RegisterRuntimeServiceServer(grpcServer, rpcapi.NewRuntimeServiceWithCloudDialogue(options.runtimeCoordinator, options.runtimeFeatures, cloudStatuses))
@@ -375,10 +385,12 @@ func knowledgeServiceScopes() map[string]string {
 
 func teamPlanServiceScopes() map[string]string {
 	return map[string]string{
-		agentv1.TeamPlanService_PrepareTeamPlanV3_FullMethodName:             "team.plan.write",
-		agentv1.TeamPlanService_GetTeamPlanV3_FullMethodName:                 "team.plan.read",
-		agentv1.TeamPlanService_CreateTeamApprovalChallengeV3_FullMethodName: "team.plan.approve",
-		agentv1.TeamPlanService_ApproveTeamPlanV3_FullMethodName:             "team.plan.approve",
+		agentv1.TeamPlanService_PrepareTeamPlanV3_FullMethodName:                  "team.plan.write",
+		agentv1.TeamPlanService_GetTeamPlanV3_FullMethodName:                      "team.plan.read",
+		agentv1.TeamPlanService_GetTeamExecutionV3_FullMethodName:                 "team.plan.read",
+		agentv1.TeamPlanService_BootstrapFirstTeamApprovalDeviceV3_FullMethodName: "team.approval_device.bootstrap",
+		agentv1.TeamPlanService_CreateTeamApprovalChallengeV3_FullMethodName:      "team.plan.approve",
+		agentv1.TeamPlanService_ApproveTeamPlanV3_FullMethodName:                  "team.plan.approve",
 	}
 }
 

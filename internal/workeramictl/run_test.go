@@ -20,6 +20,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerami"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerami/awsadapter"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrootfs"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
@@ -654,10 +655,61 @@ func populateBuildRootFS(t *testing.T, root string) {
 	t.Helper()
 	worker := []byte("deterministic-cloud-worker-binary")
 	installer := []byte("deterministic-worker-installer-binary")
+	pi := []byte("deterministic-pi-binary")
+	extension := []byte("export default function register() {}\n")
 	workerSum := sha256.Sum256(worker)
 	installerSum := sha256.Sum256(installer)
+	piSum := sha256.Sum256(pi)
+	extensionSum := sha256.Sum256(extension)
+	installation, err := json.Marshal(workerruntime.InstallationV2{
+		SchemaVersion:          workerruntime.InstallationSchemaV2,
+		CredentialPolicy:       workerruntime.CredentialPolicyV1,
+		ContextRoot:            workerruntime.DefaultContextRoot,
+		WorkspaceRoot:          workerruntime.DefaultWorkspaceRoot,
+		CredentialRoot:         workerruntime.DefaultCredentialRoot,
+		StateRoot:              workerruntime.DefaultStateRoot,
+		GitExecutable:          workerruntime.DefaultGitExecutable,
+		SearchPath:             workerruntime.DefaultRuntimeSearchPath,
+		PatchCollectionEnabled: true,
+		RuntimeRelease: workerruntime.InstalledRelease{
+			ReleaseID:      "511acecc-3e4e-4bc5-890e-89638945c72c",
+			Version:        "0.83.0",
+			ImageDigest:    "sha256:" + strings.Repeat("a", 64),
+			Adapter:        workerruntime.AdapterPiV1,
+			ExecutablePath: workerruntime.DefaultPiExecutable,
+			ExecutableSHA256: "sha256:" +
+				hex.EncodeToString(piSum[:]),
+		},
+		Extensions: []workerruntime.InstalledExtension{{
+			Name:   workerruntime.PiResultExtensionName,
+			Path:   workerruntime.DefaultPiResultExtension,
+			SHA256: "sha256:" + hex.EncodeToString(extensionSum[:]),
+		}},
+		Models: []workerruntime.QualifiedModel{{
+			ProfileID:      "deepseek-v4-pro",
+			Provider:       "deepseek",
+			Model:          "deepseek-v4-pro",
+			Interface:      workerruntime.ModelOpenAICompatible,
+			CredentialSlot: "model-token",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	files := map[string][]byte{
-		"etc/ssl/certs/ca-certificates.crt":                                                 worker,
+		"etc/ssl/certs/ca-certificates.crt":              worker,
+		"etc/dirextalk-worker/runtime-installation.json": installation,
+		"etc/dirextalk-worker/runtime.env": []byte(
+			"DIREXTALK_WORKER_RUNTIME_INSTALLATION_FILE=" +
+				"/etc/dirextalk-worker/runtime-installation.json\n",
+		),
+		"opt/dirextalk-worker/runtimes/pi/bin/pi":                                           pi,
+		"opt/dirextalk-worker/runtimes/pi/bin/package.json":                                 []byte(`{"name":"@earendil-works/pi-coding-agent","version":"0.83.0","piConfig":{"configDir":".pi"}}`),
+		"opt/dirextalk-worker/runtimes/pi/bin/photon_rs_bg.wasm":                            {0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00},
+		"opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts":                   extension,
+		"opt/dirextalk-worker/runtimes/pi/bin/theme/dark.json":                              []byte(`{"name":"dark"}`),
+		"opt/dirextalk-worker/runtimes/pi/bin/theme/light.json":                             []byte(`{"name":"light"}`),
+		"opt/dirextalk-worker/runtimes/pi/bin/theme/theme-schema.json":                      []byte(`{"type":"object"}`),
 		"usr/local/bin/dirextalk-cloud-worker":                                              worker,
 		"usr/local/bin/dirextalk-worker-installer":                                          installer,
 		"usr/local/share/dirextalk-worker/ami/dirextalk-cloud-worker.service":               []byte("fixed cloud Worker service\n"),
@@ -679,8 +731,13 @@ func populateBuildRootFS(t *testing.T, root string) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(root, "var", "lib", "dirextalk-worker"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, directory := range []string{
+		filepath.Join(root, "var", "lib", "dirextalk-worker"),
+		filepath.Join(root, "opt", "dirextalk-worker", "runtime-contexts"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

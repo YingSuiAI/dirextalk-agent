@@ -1,10 +1,13 @@
 package resource
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/installer"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
@@ -315,5 +318,85 @@ func workerInstanceSpec() *AWSResourceSpecV1 {
 			RootKMSKeyID: "alias/dtx-agent-worker", DataDeviceName: "/dev/sdf",
 			Market: AWSMarketOnDemand, EBSOptimized: true,
 		},
+	}
+}
+
+func TestWorkerBootstrapAcceptsSignedSecretOnlyRootCapability(t *testing.T) {
+	now := time.Date(2026, 7, 30, 9, 0, 0, 0, time.UTC)
+	deploymentID := "11111111-1111-4111-8111-111111111111"
+	binding := installer.BindingV1{
+		AgentInstanceID: "33333333-3333-4333-8333-333333333333",
+		DeploymentID:    deploymentID,
+		TaskID:          "44444444-4444-4444-8444-444444444444",
+		PlanHash:        "sha256:" + strings.Repeat("a", 64),
+		ApprovalID:      "55555555-5555-4555-8555-555555555555",
+		RecipeDigest:    "sha256:" + strings.Repeat("b", 64),
+	}
+	secret := installer.SecretV1{
+		SlotID:    "model-token",
+		SecretRef: "secret_ref:model/openai",
+		SecretName: "dtx/" + binding.AgentInstanceID +
+			"/deployments/" + deploymentID + "/model-token",
+		VersionID:  "66666666-6666-4666-8666-666666666666",
+		TargetPath: installer.PreinstalledSecretRoot + "/model-token",
+		FileMode:   0o400,
+		OwnerUID:   65532,
+		OwnerGID:   65532,
+	}
+	issuer, err := installer.NewTrustIssuer(
+		bytes.Repeat([]byte{0x63}, 32),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	delivery, err := issuer.Issue(
+		installer.InstallerPlanV1{
+			SchemaVersion: installer.PlanSchemaV1,
+			Binding:       binding,
+			SecretRefs:    []string{secret.SecretRef},
+			Secrets:       []installer.SecretV1{secret},
+			ExpiresAt:     now.Add(time.Hour).Format(time.RFC3339Nano),
+		},
+		installer.DaemonConfigV1{
+			SchemaVersion: installer.DaemonConfigSchema,
+			Binding:       binding,
+			TargetRoot:    installer.PreinstalledArtifactRoot,
+		},
+		now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := delivery.RootTrustMaterial(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := installerbootstrap.NewRootTrustMaterial(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workerInstanceSpec()
+	spec.Instance.DataDeviceName = ""
+	spec.Instance.Bootstrap.InstallerTrust = &trust
+	spec.Instance.Bootstrap.InstallerSecrets =
+		[]installerbootstrap.SecretSourceV1{{
+			SchemaVersion: installerbootstrap.SecretSourceSchemaV1,
+			SlotID:        secret.SlotID,
+			SecretRef:     secret.SecretRef,
+			SecretARN: "arn:aws:secretsmanager:us-east-1:" +
+				"123456789012:secret:" + secret.SecretName + "-Ab12Cd",
+			SecretName: secret.SecretName,
+			VersionID:  secret.VersionID,
+			KMSKeyARN: "arn:aws:kms:us-east-1:123456789012:key/" +
+				"77777777-7777-4777-8777-777777777777",
+			TargetPath:   secret.TargetPath,
+			FileMode:     secret.FileMode,
+			OwnerUID:     secret.OwnerUID,
+			OwnerGID:     secret.OwnerGID,
+			RecipeDigest: binding.RecipeDigest,
+		}}
+	if err := spec.Validate(TypeEC2); err != nil {
+		t.Fatalf("secret-only Worker bootstrap rejected: %v", err)
 	}
 }

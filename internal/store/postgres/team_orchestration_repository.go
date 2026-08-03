@@ -147,6 +147,41 @@ func (repository *TeamOrchestrationRepository) GetPlan(
 	return orchestrationPlanFact(record)
 }
 
+func (repository *TeamOrchestrationRepository) FindChallenge(
+	ctx context.Context,
+	scope task.MutationScope,
+	command teamorchestration.FindChallengeCommand,
+) (teamorchestration.ChallengeFact, bool, error) {
+	if repository == nil || repository.store == nil {
+		return teamorchestration.ChallengeFact{},
+			false,
+			teamorchestration.ErrInvalid
+	}
+	record, found, err := repository.store.FindTeamApprovalChallenge(
+		ctx,
+		scope,
+		FindTeamApprovalChallengeCommand{
+			IdempotencyKey:             command.IdempotencyKey,
+			OwnerID:                    command.OwnerID,
+			PlanID:                     command.PlanID,
+			PlanRevision:               command.PlanRevision,
+			ExpectedPlanRecordRevision: command.ExpectedPlanRecordRevision,
+			ApprovalID:                 command.ApprovalID,
+			ChallengeID:                command.ChallengeID,
+			SignerKeyID:                command.SignerKeyID,
+		},
+	)
+	if err != nil {
+		return teamorchestration.ChallengeFact{},
+			false,
+			orchestrationRepositoryError(err)
+	}
+	if !found {
+		return teamorchestration.ChallengeFact{}, false, nil
+	}
+	return orchestrationChallengeFact(record), true, nil
+}
+
 func (repository *TeamOrchestrationRepository) PersistChallenge(
 	ctx context.Context,
 	scope task.MutationScope,
@@ -167,6 +202,7 @@ func (repository *TeamOrchestrationRepository) PersistChallenge(
 			ApprovalID:                 command.ApprovalID,
 			ChallengeID:                command.ChallengeID,
 			SignerKeyID:                command.SignerKeyID,
+			Authorization:              command.Authorization,
 		},
 	)
 	if err != nil {
@@ -259,9 +295,10 @@ func (repository *TeamOrchestrationRepository) GetApprovalForPlan(
 			orchestrationRepositoryError(err)
 	}
 	return teamorchestration.ApprovalFact{
-		Signature:  record.Signature,
-		ApprovedAt: record.ApprovedAt,
-		CreatedAt:  record.CreatedAt,
+		Signature:     record.Signature,
+		Authorization: record.Authorization,
+		ApprovedAt:    record.ApprovedAt,
+		CreatedAt:     record.CreatedAt,
 	}, nil
 }
 
@@ -325,6 +362,7 @@ func orchestrationPreparationIntent(
 		Revision:                 intent.Revision,
 		ExpectedPreviousRevision: intent.ExpectedPreviousRevision,
 		GoalDigest:               intent.GoalDigest,
+		TaskInput:                intent.TaskInput,
 		Proposal:                 intent.Proposal,
 	}
 }
@@ -358,6 +396,7 @@ func orchestrationChallengeFact(
 	}
 	return teamorchestration.ChallengeFact{
 		Challenge:      record.Challenge,
+		Authorization:  record.Authorization,
 		ConsumedAt:     consumedAt,
 		RecordRevision: record.RecordRevision,
 		CreatedAt:      record.CreatedAt,

@@ -29,6 +29,25 @@ type ProviderError struct {
 	RequestID  string
 }
 
+// Unwrap exposes only a stable failure class. Provider-owned messages remain
+// bounded and redacted on ProviderError and are never used for authorization
+// or retry decisions.
+func (e *ProviderError) Unwrap() error {
+	if e == nil {
+		return ErrProviderUnavailable
+	}
+	switch e.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ErrProviderCredential
+	case http.StatusTooManyRequests:
+		return ErrProviderRateLimited
+	}
+	if e.StatusCode >= http.StatusBadRequest && e.StatusCode < http.StatusInternalServerError {
+		return ErrProviderRequest
+	}
+	return ErrProviderUnavailable
+}
+
 func (e *ProviderError) Error() string {
 	if e == nil {
 		return "model provider request failed"

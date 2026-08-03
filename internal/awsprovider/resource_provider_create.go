@@ -553,6 +553,7 @@ func (provider *EC2ResourceProvider) createInstance(ctx context.Context, request
 		BlockDeviceMappings: []ec2types.BlockDeviceMapping{{DeviceName: aws.String(spec.RootDeviceName), Ebs: &ec2types.EbsBlockDevice{
 			DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true), KmsKeyId: aws.String(spec.RootKMSKeyID),
 			VolumeSize: aws.Int32(int32(spec.RootVolumeGiB)), VolumeType: ec2types.VolumeTypeGp3,
+			Iops: aws.Int32(3000), Throughput: aws.Int32(125),
 		}}},
 		TagSpecifications: []ec2types.TagSpecification{
 			{ResourceType: ec2types.ResourceTypeInstance, Tags: ec2Tags(provider.creationTags(request))},
@@ -703,7 +704,11 @@ func (provider *EC2ResourceProvider) verifyLaunchedInstance(ctx context.Context,
 	if err != nil {
 		return "", err
 	}
-	if !aws.ToBool(root.Encrypted) || aws.ToInt32(root.Size) != int32(spec.RootVolumeGiB) || root.VolumeType != ec2types.VolumeTypeGp3 || !kmsReadBackMatches(spec.RootKMSKeyID, aws.ToString(root.KmsKeyId)) {
+	if !aws.ToBool(root.Encrypted) || aws.ToInt32(root.Size) != int32(spec.RootVolumeGiB) ||
+		root.VolumeType != ec2types.VolumeTypeGp3 ||
+		aws.ToInt32(root.Iops) != 3000 ||
+		aws.ToInt32(root.Throughput) != 125 ||
+		!kmsReadBackMatches(spec.RootKMSKeyID, aws.ToString(root.KmsKeyId)) {
 		return "", resource.ErrReadBack
 	}
 	return rootVolumeID, nil

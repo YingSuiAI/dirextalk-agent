@@ -185,9 +185,11 @@ func (dependencies Dependencies) valid() bool {
 }
 
 type preparedBuild struct {
-	request       workerami.BuildRequestV1
-	adapterConfig awsadapter.Config
-	intent        BuildIntentV1
+	request             workerami.BuildRequestV1
+	adapterConfig       awsadapter.Config
+	intent              BuildIntentV1
+	releaseManifestPath string
+	rootFSArchivePath   string
 }
 
 func (input BuildRequestFileV1) timeout() time.Duration {

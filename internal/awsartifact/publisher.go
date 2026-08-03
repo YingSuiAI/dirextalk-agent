@@ -218,8 +218,11 @@ func validateInstallerStaging(compiled cloudexecution.CompiledBundles) error {
 		return nil
 	}
 	manifest := compiled.InstallerRootTrust.ArtifactManifest.Manifest
-	if len(compiled.InstallerArtifacts) != len(manifest.Artifacts) || len(manifest.Artifacts) == 0 {
+	if len(compiled.InstallerArtifacts) != len(manifest.Artifacts) {
 		return ErrInstallerArtifactUnresolved
+	}
+	if len(manifest.Artifacts) == 0 {
+		return nil
 	}
 	expected := make(map[string]struct {
 		digest string

@@ -27,11 +27,12 @@ func TestParseRuntimeCatalogJSONVerifiesSignedQualificationEvidence(t *testing.T
 	if catalog.SignerKeyID() != RuntimeCatalogSignerKeyID(publicKey) ||
 		!strings.HasPrefix(catalog.Revision(), "sha256:") ||
 		catalog.GeneratedAt() != payload.GeneratedAt ||
-		len(catalog.QualifiedReleases()) != 5 {
+		len(catalog.QualifiedReleases()) != len(payload.Releases) {
 		t.Fatalf("catalog metadata = %#v", catalog)
 	}
 	releases := catalog.Releases()
-	if len(releases) != 5 || !slicesAreSortedReleases(releases) {
+	if len(releases) != len(payload.Releases) ||
+		!slicesAreSortedReleases(releases) {
 		t.Fatalf("catalog releases = %+v", releases)
 	}
 	evidence, found := catalog.Evidence(releases[0].ReleaseID)
@@ -49,6 +50,119 @@ func TestParseRuntimeCatalogJSONVerifiesSignedQualificationEvidence(t *testing.T
 	if _, err := Compile(request); err != nil {
 		t.Fatalf("Compile(signed catalog) error = %v", err)
 	}
+	if _, found := catalog.LaunchEvidence(releases[0].ReleaseID); found {
+		t.Fatal("V1 catalog exposed unsigned runtime launch evidence")
+	}
+}
+
+func TestRuntimeCatalogV2BindsWorkerInstallationAndExecutable(t *testing.T) {
+	t.Parallel()
+	publicKey, privateKey := runtimeCatalogTestKey()
+	payload := validRuntimeCatalogV2Payload(publicKey)
+	catalog, err := ParseRuntimeCatalogJSON(
+		signRuntimeCatalog(t, payload, privateKey),
+		publicKey,
+	)
+	if err != nil {
+		t.Fatalf("ParseRuntimeCatalogJSON(V2) error = %v", err)
+	}
+	release := catalog.QualifiedReleases()[0]
+	evidence, found := catalog.LaunchEvidence(release.ReleaseID)
+	if !found ||
+		evidence.InstallationManifestDigest !=
+			payload.Releases[0].Launch.InstallationManifestDigest ||
+		evidence.ExecutableDigest !=
+			payload.Releases[0].Launch.ExecutableDigest ||
+		catalog.SchemaVersion() != RuntimeCatalogSchemaV2 {
+		t.Fatalf("V2 launch evidence = %+v, %v", evidence, found)
+	}
+	compiler, err := NewCatalogCompiler(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := compiler.ResolveRuntimeLaunchEvidence(
+		release.ReleaseID,
+	)
+	if err != nil || resolved != evidence {
+		t.Fatalf("compiler launch evidence = %+v, %v", resolved, err)
+	}
+
+	missing := validRuntimeCatalogV2Payload(publicKey)
+	missing.Releases[0].Launch = nil
+	if _, err := ParseRuntimeCatalogJSON(
+		marshalRuntimeCatalogWithDummySignature(t, missing),
+		publicKey,
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing V2 launch evidence error = %v", err)
+	}
+
+	legacy := validRuntimeCatalogPayload(publicKey)
+	legacy.Releases[0].Launch = payload.Releases[0].Launch
+	if _, err := ParseRuntimeCatalogJSON(
+		marshalRuntimeCatalogWithDummySignature(t, legacy),
+		publicKey,
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("V1 launch extension error = %v", err)
+	}
+}
+
+func TestSignRuntimeCatalogV2ProducesSelfVerifyingCanonicalDocument(
+	t *testing.T,
+) {
+	t.Parallel()
+	publicKey, privateKey := runtimeCatalogTestKey()
+	payload := validRuntimeCatalogV2Payload(publicKey)
+	_, releases, err := normalizeRuntimeCatalogPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specifications := make(
+		[]RuntimeCatalogReleaseSpec,
+		0,
+		len(releases),
+	)
+	for _, release := range releases {
+		specifications = append(
+			specifications,
+			RuntimeCatalogReleaseSpec{
+				Runtime:       release.Runtime,
+				Qualification: release.Qualification,
+				Launch:        release.Launch,
+			},
+		)
+	}
+	raw, encodedPublicKey, err := SignRuntimeCatalogV2(
+		payload.GeneratedAt,
+		specifications,
+		privateKey,
+	)
+	if err != nil {
+		t.Fatalf("SignRuntimeCatalogV2() error = %v", err)
+	}
+	if string(encodedPublicKey) !=
+		base64.RawURLEncoding.EncodeToString(publicKey) {
+		t.Fatal("SignRuntimeCatalogV2() returned a different public key")
+	}
+	catalog, err := ParseRuntimeCatalogJSON(raw, publicKey)
+	if err != nil {
+		t.Fatalf("signed catalog parse error = %v", err)
+	}
+	if catalog.SchemaVersion() != RuntimeCatalogSchemaV2 ||
+		catalog.SignerKeyID() != RuntimeCatalogSignerKeyID(publicKey) ||
+		len(catalog.QualifiedReleases()) != len(specifications) {
+		t.Fatalf("signed catalog = %#v", catalog)
+	}
+
+	malformed := append(ed25519.PrivateKey(nil), privateKey...)
+	malformed[len(malformed)-1] ^= 0xff
+	if _, _, err := SignRuntimeCatalogV2(
+		payload.GeneratedAt,
+		specifications,
+		malformed,
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("malformed private key error = %v", err)
+	}
+	clear(malformed)
 }
 
 func TestParseRuntimeCatalogJSONRejectsTamperUnknownFieldsAndWrongKey(t *testing.T) {
@@ -128,11 +242,14 @@ func TestRuntimeCatalogQualificationAndActiveReleaseRules(t *testing.T) {
 		if err != nil {
 			t.Fatalf("candidate catalog error = %v", err)
 		}
-		if len(catalog.Releases()) != 5 || len(catalog.QualifiedReleases()) != 4 {
+		if len(catalog.Releases()) != len(payload.Releases) ||
+			len(catalog.QualifiedReleases()) != len(payload.Releases)-1 {
 			t.Fatalf(
-				"catalog release counts = %d/%d, want 5/4",
+				"catalog release counts = %d/%d, want %d/%d",
 				len(catalog.Releases()),
 				len(catalog.QualifiedReleases()),
+				len(payload.Releases),
+				len(payload.Releases)-1,
 			)
 		}
 	})
@@ -217,6 +334,28 @@ func validRuntimeCatalogPayload(publicKey ed25519.PublicKey) runtimeCatalogPaylo
 		GeneratedAt:   qualifiedAt.Add(time.Minute),
 		Releases:      documents,
 	}
+}
+
+func validRuntimeCatalogV2Payload(
+	publicKey ed25519.PublicKey,
+) runtimeCatalogPayload {
+	payload := validRuntimeCatalogPayload(publicKey)
+	payload.SchemaVersion = RuntimeCatalogSchemaV2
+	for index := range payload.Releases {
+		installationFill := "8"
+		executableFill := "9"
+		if index%2 == 1 {
+			installationFill = "a"
+			executableFill = "b"
+		}
+		payload.Releases[index].Launch = &RuntimeLaunchEvidence{
+			InstallationManifestDigest: "sha256:" +
+				strings.Repeat(installationFill, 64),
+			ExecutableDigest: "sha256:" +
+				strings.Repeat(executableFill, 64),
+		}
+	}
+	return payload
 }
 
 func validQualification(id string) *QualificationEvidence {

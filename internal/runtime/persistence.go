@@ -14,6 +14,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/google/uuid"
 )
@@ -108,6 +109,14 @@ func normalizePersistedRuntimeConfig(config RuntimeConfig) RuntimeConfig {
 	config.ModelProfile.BaseURL = strings.TrimSpace(config.ModelProfile.BaseURL)
 	config.ModelProfile.SecretRef = strings.TrimSpace(config.ModelProfile.SecretRef)
 	config.ModelProfile.ReasoningEffort = strings.TrimSpace(config.ModelProfile.ReasoningEffort)
+	if config.SearchProfile != nil {
+		profile := *config.SearchProfile
+		profile.ProfileID = strings.ToLower(strings.TrimSpace(profile.ProfileID))
+		profile.Provider = searchprofile.Provider(strings.ToLower(strings.TrimSpace(string(profile.Provider))))
+		profile.BaseURL = strings.TrimRight(strings.TrimSpace(profile.BaseURL), "/")
+		profile.SecretRef = strings.TrimSpace(profile.SecretRef)
+		config.SearchProfile = &profile
+	}
 	config.ProjectProfile = strings.TrimSpace(config.ProjectProfile)
 	config.EnabledTools = normalizeRuntimeIdentifiers(config.EnabledTools)
 	config.KnowledgeRefs = normalizeRuntimeIdentifiers(config.KnowledgeRefs)
@@ -167,7 +176,35 @@ func ValidateRuntimeConfig(config RuntimeConfig) error {
 			return fmt.Errorf("%w: invalid model base_url", ErrRuntimePersistence)
 		}
 	}
+	if search := config.SearchProfile; search != nil {
+		if search.ProfileID == "" || len(search.ProfileID) > 128 ||
+			search.SecretRef == "" || len(search.SecretRef) > 512 ||
+			len(search.BaseURL) > 2048 || search.MaxResults < 1 ||
+			search.MaxResults > 50 || search.TimeoutSeconds < 1 ||
+			search.TimeoutSeconds > 60 ||
+			strings.ContainsAny(search.SecretRef, "\r\n\t ") {
+			return fmt.Errorf("%w: invalid search profile", ErrRuntimePersistence)
+		}
+		switch search.Provider {
+		case searchprofile.ProviderTavily,
+			searchprofile.ProviderBrave,
+			searchprofile.ProviderExa,
+			searchprofile.ProviderSerper,
+			searchprofile.ProviderDeepSeekNative:
+		default:
+			return fmt.Errorf("%w: unsupported search provider", ErrRuntimePersistence)
+		}
+		parsed, err := url.Parse(search.BaseURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" ||
+			parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" ||
+			parsed.Fragment != "" {
+			return fmt.Errorf("%w: invalid search base_url", ErrRuntimePersistence)
+		}
+	}
 	values := []string{profile.ProfileID, string(profile.Provider), profile.Model, profile.BaseURL, profile.SecretRef, profile.ReasoningEffort, config.ProjectProfile}
+	if search := config.SearchProfile; search != nil {
+		values = append(values, search.ProfileID, string(search.Provider), search.BaseURL, search.SecretRef)
+	}
 	values = append(values, config.EnabledTools...)
 	values = append(values, config.KnowledgeRefs...)
 	values = append(values, config.MCPServerIDs...)
@@ -310,6 +347,10 @@ func (command RuntimeRequestCommand) Validated() (RuntimeRequestCommand, error) 
 		return RuntimeRequestCommand{}, fmt.Errorf("%w: invalid cloud dialogue scope", ErrRuntimePersistence)
 	}
 	command.Request.CloudDialogue = cloudDialogue
+	if _, err := prepareTransientModelMetadata(command.Request); err != nil {
+		return RuntimeRequestCommand{}, fmt.Errorf("%w: invalid transient model invocation", ErrRuntimePersistence)
+	}
+	command.Request.TransientModel = cloneTransientModelInvocation(command.Request.TransientModel)
 	if err := validatePersistedMessages(command.Request.Messages); err != nil || !hasUserMessage(command.Request.Messages) {
 		if err != nil {
 			return RuntimeRequestCommand{}, err
@@ -317,6 +358,16 @@ func (command RuntimeRequestCommand) Validated() (RuntimeRequestCommand, error) 
 		return RuntimeRequestCommand{}, ErrInvalidRequest
 	}
 	return command, nil
+}
+
+func cloneTransientModelInvocation(value *TransientModelInvocation) *TransientModelInvocation {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.Profile.Temperature = cloneTransientFloat(value.Profile.Temperature)
+	cloned.Profile.TopP = cloneTransientFloat(value.Profile.TopP)
+	return &cloned
 }
 
 func (command RuntimeRequestCommand) Digest() ([sha256.Size]byte, error) {

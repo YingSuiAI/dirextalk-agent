@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 )
 
 const (
+	SearchToolName     = "web_search"
 	toolArgumentsLimit = 64 << 10
 	toolResultLimit    = 64 << 10
 )
@@ -19,6 +21,12 @@ type toolSet struct {
 	definitions []modelapi.Tool
 	byName      map[string]Tool
 	request     ToolRequest
+	cloudState  *cloudToolExecutionState
+}
+
+type cloudToolExecutionState struct {
+	mu                sync.Mutex
+	teamPlanAttempted bool
 }
 
 func loadToolSet(ctx context.Context, provider ToolProvider, request ToolRequest) (toolSet, error) {
@@ -35,7 +43,14 @@ func loadToolSet(ctx context.Context, provider ToolProvider, request ToolRequest
 	if err != nil {
 		return toolSet{}, err
 	}
-	result := toolSet{definitions: make([]modelapi.Tool, 0, len(tools)), byName: make(map[string]Tool, len(tools)), request: request}
+	result := toolSet{
+		definitions: make([]modelapi.Tool, 0, len(tools)),
+		byName:      make(map[string]Tool, len(tools)),
+		request:     request,
+	}
+	if request.CloudDialogue != nil {
+		result.cloudState = &cloudToolExecutionState{}
+	}
 	for _, tool := range tools {
 		name := strings.TrimSpace(tool.Definition.Name)
 		if name == "" || tool.Run == nil {
@@ -75,6 +90,12 @@ func runTool(ctx context.Context, call modelapi.ToolCall, tools toolSet) ToolExe
 	tool, ok := tools.byName[execution.Name]
 	if !ok {
 		execution.Content = `{"error":"tool is unavailable"}`
+		execution.IsError = true
+		return execution
+	}
+	if tools.cloudState != nil &&
+		!tools.cloudState.allow(execution.Name) {
+		execution.Content = `{"error":"cloud research fallback is unavailable after Team planning","reason_code":"team_plan_fallback_forbidden"}`
 		execution.IsError = true
 		return execution
 	}
@@ -122,6 +143,18 @@ func runTool(ctx context.Context, call modelapi.ToolCall, tools toolSet) ToolExe
 		execution.RelatedPlanIDs = planIDs
 	}
 	return execution
+}
+
+func (state *cloudToolExecutionState) allow(name string) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	switch name {
+	case CloudDialogueToolTeamPlanPrepare:
+		state.teamPlanAttempted = true
+	case CloudDialogueToolResearch:
+		return !state.teamPlanAttempted
+	}
+	return true
 }
 
 func boundedToolResult(content string) string {

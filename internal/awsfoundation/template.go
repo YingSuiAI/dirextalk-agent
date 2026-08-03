@@ -2,6 +2,7 @@ package awsfoundation
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,10 @@ import (
 
 var ErrInvalidTemplate = errors.New("invalid AWS foundation template")
 
-const reaperDigestOnlyAllowedPattern = `^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$`
+const (
+	reaperDigestOnlyAllowedPattern     = `^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$`
+	cloudFormationTemplateBodyMaxBytes = 51_200
+)
 
 var requiredTemplateResources = map[string]string{
 	"ReleaseVPC":                          "AWS::EC2::VPC",
@@ -171,6 +175,23 @@ func ValidateTemplate(raw []byte) error {
 	return nil
 }
 
+// CanonicalTemplateBody preserves the validated CloudFormation document while
+// removing source-only YAML comments and whitespace before an inline API call.
+func CanonicalTemplateBody(raw []byte) ([]byte, error) {
+	if err := ValidateTemplate(raw); err != nil {
+		return nil, err
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(raw, &root); err != nil {
+		return nil, fmt.Errorf("%w: YAML decode: %v", ErrInvalidTemplate, err)
+	}
+	encoded, err := json.Marshal(root)
+	if err != nil || len(encoded) == 0 || len(encoded) > cloudFormationTemplateBodyMaxBytes {
+		return nil, ErrInvalidTemplate
+	}
+	return encoded, nil
+}
+
 func validReleaseEnvironment(resources map[string]any) bool {
 	vpc, vpcOK := stringMap(resources["ReleaseVPC"])
 	vpcProperties, vpcPropertiesOK := stringMap(vpc["Properties"])
@@ -236,7 +257,7 @@ func controlPolicyFailsClosed(value any) bool {
 		useNetworkCreationInputs, useVPCForNetworkCreation               bool
 		useRouteTableInputs                                              bool
 		ownedSnapshotVolume, tagComputeOnCreate, tagOnlyOwnedCompute     bool
-		deleteSecretPolicy, milestoneRelayLogs                           bool
+		milestoneRelayLogs                                               bool
 	}
 	seen := make(map[string]struct{}, len(statements))
 	for _, item := range statements {
@@ -270,7 +291,7 @@ func controlPolicyFailsClosed(value any) bool {
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*",
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
-				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*",
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*",
 			}) || !singleRefCondition(statement, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
 				return false
@@ -454,20 +475,11 @@ func controlPolicyFailsClosed(value any) bool {
 				if action == "ec2:TerminateInstances" {
 					workerAMI.terminate = true
 				}
-				if action == "ec2:DeleteSnapshot" && stringSliceContains(resources, "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*") {
+				if action == "ec2:DeleteSnapshot" && stringSliceContains(resources, "arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*") {
 					workerAMI.deleteSnapshot = true
 				}
-			case action == "secretsmanager:CreateSecret":
-				if !strings.Contains(condition, "aws:RequestTag/dirextalk:agent_instance_id") {
-					return false
-				}
 			case strings.HasPrefix(action, "secretsmanager:"):
-				if !strings.Contains(condition, "aws:ResourceTag/dirextalk:agent_instance_id") {
-					return false
-				}
-				if action == "secretsmanager:DeleteResourcePolicy" {
-					workerAMI.deleteSecretPolicy = true
-				}
+				return false
 			}
 		}
 	}
@@ -475,7 +487,7 @@ func controlPolicyFailsClosed(value any) bool {
 		workerAMI.deregister && workerAMI.deleteSnapshot && workerAMI.artifactAccess && workerAMI.launchInstanceVolume && workerAMI.ownedNetworkInput && workerAMI.publicBaseImage &&
 		workerAMI.ownedWorkerImage && workerAMI.launchNetworkInputs && workerAMI.createTaggedCompute && workerAMI.useNetworkCreationInputs &&
 		workerAMI.useVPCForNetworkCreation && workerAMI.useRouteTableInputs && workerAMI.ownedSnapshotVolume && workerAMI.tagComputeOnCreate && workerAMI.tagOnlyOwnedCompute &&
-		workerAMI.deleteSecretPolicy && workerAMI.milestoneRelayLogs
+		workerAMI.milestoneRelayLogs
 }
 
 var controlRuntimeStatementSIDs = map[string]struct{}{
@@ -483,7 +495,7 @@ var controlRuntimeStatementSIDs = map[string]struct{}{
 	"RunTaggedInstanceVolume": {}, "UseOwnedNetworkInterface": {}, "UsePublicBuilderBaseImage": {}, "UseOwnedWorkerImage": {}, "UseLaunchNetworkInputs": {},
 	"TagComputeOnCreate": {}, "CreateImageFromOwnedBuilder": {}, "CreateImageOutput": {}, "TagWorkerImageOutputs": {}, "MutateOnlyOwnedCompute": {},
 	"DestroyOwnedWorkerImage": {}, "TagOnlyOwnedCompute": {}, "PassOnlyWorkerRole": {}, "ReadExactWorkerRoleIdentity": {}, "FoundationArtifacts": {},
-	"BindExactInstallerArtifactVersions": {}, "CreateTaggedDeploymentSecrets": {}, "MutateOnlyOwnedDeploymentSecrets": {}, "ResourceManifest": {},
+	"BindExactInstallerArtifactVersions": {}, "ResourceManifest": {},
 	"WorkerMilestoneRelayLogs": {},
 }
 
@@ -558,18 +570,87 @@ func controlArtifactTagPolicyFailsClosed(value any) bool {
 	properties, _ := stringMap(resource["Properties"])
 	document, _ := stringMap(properties["PolicyDocument"])
 	statements, ok := anySlice(document["Statement"])
-	if !ok || len(statements) != 1 {
+	if !ok || len(statements) != 7 {
 		return false
 	}
-	statement, ok := stringMap(statements[0])
-	return ok && scalarString(statement["Sid"]) == "TagPublishedControlArtifacts" &&
-		scalarString(statement["Effect"]) == "Allow" &&
-		sameStrings(stringValues(statement["Action"]), []string{"s3:PutObjectTagging"}) &&
-		sameStrings(templateResourceStrings(statement["Resource"]), []string{
-			"${ArtifactBucket.Arn}/deployments/*/bundles/*",
-			"${ArtifactBucket.Arn}/deployments/*/launch/*",
-			"${ArtifactBucket.Arn}/workers/*/bundles/*",
-		}) && statement["Condition"] == nil
+	seenArtifacts, seenWorkerAMIEgress, seenTaggedNetworkInterface, seenImageSnapshot := false, false, false, false
+	seenSecretCreate, seenSecretMutate, seenSecretDestroy := false, false, false
+	secretResource := []string{"arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*"}
+	for _, raw := range statements {
+		statement, statementOK := stringMap(raw)
+		if !statementOK || scalarString(statement["Effect"]) != "Allow" {
+			return false
+		}
+		switch scalarString(statement["Sid"]) {
+		case "TagPublishedControlArtifacts":
+			if seenArtifacts ||
+				!sameStrings(stringValues(statement["Action"]), []string{"s3:PutObjectTagging"}) ||
+				!sameStrings(templateResourceStrings(statement["Resource"]), []string{
+					"${ArtifactBucket.Arn}/deployments/*/bundles/*",
+					"${ArtifactBucket.Arn}/deployments/*/launch/*",
+					"${ArtifactBucket.Arn}/workers/*/bundles/*",
+				}) || statement["Condition"] != nil {
+				return false
+			}
+			seenArtifacts = true
+		case "AuthorizeTaggedWorkerAMIEgressRule":
+			if seenWorkerAMIEgress ||
+				!sameStrings(stringValues(statement["Action"]), []string{"ec2:AuthorizeSecurityGroupEgress"}) ||
+				!sameStrings(templateResourceStrings(statement["Resource"]), []string{
+					"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*",
+				}) || !workerAMIEgressRuleCondition(statement) {
+				return false
+			}
+			seenWorkerAMIEgress = true
+		case "RunTaggedNetworkInterface":
+			if seenTaggedNetworkInterface ||
+				!sameStrings(stringValues(statement["Action"]), []string{"ec2:RunInstances"}) ||
+				!sameStrings(templateResourceStrings(statement["Resource"]), []string{
+					"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
+				}) || !singleRefCondition(statement, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+			seenTaggedNetworkInterface = true
+		case "CreateImageSnapshotOutput":
+			if seenImageSnapshot ||
+				!sameStrings(stringValues(statement["Action"]), []string{"ec2:CreateImage"}) ||
+				!sameStrings(templateResourceStrings(statement["Resource"]), []string{
+					"arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*",
+				}) || !workerAMISnapshotOutputCondition(statement) {
+				return false
+			}
+			seenImageSnapshot = true
+		case "CreateTaggedDeploymentSecrets":
+			if seenSecretCreate ||
+				!sameStrings(stringValues(statement["Action"]), []string{"secretsmanager:CreateSecret"}) ||
+				!sameStrings(templateResourceStrings(statement["Resource"]), secretResource) ||
+				!singleRefCondition(statement, "StringEquals", "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+			seenSecretCreate = true
+		case "MutateOnlyOwnedDeploymentSecrets":
+			if seenSecretMutate ||
+				!sameStrings(stringValues(statement["Action"]), []string{
+					"secretsmanager:DeleteResourcePolicy", "secretsmanager:GetSecretValue", "secretsmanager:GetResourcePolicy",
+					"secretsmanager:PutSecretValue", "secretsmanager:PutResourcePolicy", "secretsmanager:TagResource", "secretsmanager:UntagResource",
+				}) || !sameStrings(templateResourceStrings(statement["Resource"]), secretResource) ||
+				!singleRefCondition(statement, "StringEquals", "aws:ResourceTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+				return false
+			}
+			seenSecretMutate = true
+		case "DestroyDeploymentSecretsByNamespace":
+			if seenSecretDestroy ||
+				!sameStrings(stringValues(statement["Action"]), []string{"secretsmanager:DeleteSecret", "secretsmanager:DescribeSecret"}) ||
+				!sameStrings(templateResourceStrings(statement["Resource"]), secretResource) || statement["Condition"] != nil {
+				return false
+			}
+			seenSecretDestroy = true
+		default:
+			return false
+		}
+	}
+	return seenArtifacts && seenWorkerAMIEgress && seenTaggedNetworkInterface && seenImageSnapshot &&
+		seenSecretCreate && seenSecretMutate && seenSecretDestroy
 }
 
 func inlinePolicyAttachesOnlyControlRole(resource map[string]any) bool {
@@ -688,6 +769,55 @@ func controlEntrypointPolicyFailsClosed(value any) bool {
 		}
 	}
 	return len(seen) == 11
+}
+
+func workerAMIEgressRuleCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 2 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	if !ok || len(equals) != 2 ||
+		!conditionReferenceEquals(equals, "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") ||
+		scalarString(equals["aws:RequestTag/dirextalk:retention"]) != "ephemeral" {
+		return false
+	}
+	tagCondition, ok := stringMap(condition["ForAllValues:StringEquals"])
+	return ok && len(tagCondition) == 1 && sameStrings(stringValues(tagCondition["aws:TagKeys"]), []string{
+		"Name", "dirextalk:agent_instance_id", "dirextalk:resource_id", "dirextalk:retention",
+	})
+}
+
+func workerAMISnapshotOutputCondition(statement map[string]any) bool {
+	condition, ok := stringMap(statement["Condition"])
+	if !ok || len(condition) != 3 {
+		return false
+	}
+	equals, ok := stringMap(condition["StringEquals"])
+	if !ok || len(equals) != 1 ||
+		!conditionReferenceEquals(equals, "aws:RequestTag/dirextalk:agent_instance_id", "AgentInstanceId") {
+		return false
+	}
+	nulls, ok := stringMap(condition["Null"])
+	if !ok || len(nulls) != 3 {
+		return false
+	}
+	for _, key := range []string{
+		"aws:RequestTag/dirextalk:release_manifest_digest",
+		"aws:RequestTag/dirextalk:worker_rootfs_digest",
+		"aws:RequestTag/dirextalk:worker_binary_digest",
+	} {
+		if scalarString(nulls[key]) != "false" {
+			return false
+		}
+	}
+	tagCondition, ok := stringMap(condition["ForAllValues:StringEquals"])
+	return ok && len(tagCondition) == 1 && sameStrings(stringValues(tagCondition["aws:TagKeys"]), []string{
+		"dirextalk:agent_instance_id",
+		"dirextalk:release_manifest_digest",
+		"dirextalk:worker_rootfs_digest",
+		"dirextalk:worker_binary_digest",
+	})
 }
 
 func entrypointLoadBalancerCreateCondition(statement map[string]any) bool {
@@ -865,17 +995,27 @@ func computeTagCondition(statement map[string]any, onCreate bool) bool {
 		return false
 	}
 	tagKeys, ok := stringMap(condition["ForAllValues:StringEquals"])
-	return ok && len(tagKeys) == 1 && sameStrings(stringValues(tagKeys["aws:TagKeys"]), []string{
+	expectedTagKeys := []string{
 		"Name", "dirextalk:agent_instance_id", "dirextalk:owner_id", "dirextalk:task_id", "dirextalk:deployment_id",
 		"dirextalk:resource_id", "dirextalk:retention", "dirextalk:destroy_deadline", "dtx:p", "dtx:a", "dirextalk_embedded_parent",
 		"dtx:s", "dirextalk_client_token",
-	})
+	}
+	if onCreate {
+		expectedTagKeys = append(expectedTagKeys,
+			"dirextalk:component",
+			"dirextalk:worker_ami_build_digest",
+			"dirextalk:release_manifest_digest",
+			"dirextalk:worker_rootfs_digest",
+			"dirextalk:worker_binary_digest",
+		)
+	}
+	return ok && len(tagKeys) == 1 && sameStrings(stringValues(tagKeys["aws:TagKeys"]), expectedTagKeys)
 }
 
 func workerAMIOutputResources(resources []string) bool {
 	return sameStrings(resources, []string{
 		"arn:${AWS::Partition}:ec2:${AWS::Region}::image/*",
-		"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+		"arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*",
 	})
 }
 
@@ -1193,7 +1333,7 @@ func reaperFailsClosed(value any) bool {
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*",
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*",
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*",
-				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*",
+				"arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*",
 				"arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*",
 			}) || !reaperEphemeralCondition(statement, "ec2:ResourceTag/") {
 				return false

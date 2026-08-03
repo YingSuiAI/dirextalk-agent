@@ -116,6 +116,66 @@ func TestTrustIssuerProducesDeterministicLeaseScopedDelivery(t *testing.T) {
 	}
 }
 
+func TestTrustIssuerAcceptsSecretOnlyPlanWithoutRootCommandSurface(
+	t *testing.T,
+) {
+	t.Parallel()
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	fixture, config := deliveryFixture(t, now)
+	plan := fixture.plan
+	plan.Artifacts = nil
+	plan.Commands = nil
+	plan.Volumes = nil
+	plan.Ports = nil
+	plan.Network = NetworkV1{
+		OutboundHTTPSHosts: []string{"api.openai.com"},
+	}
+	issuer, err := NewTrustIssuer(bytes.Repeat([]byte{0x73}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	delivery, err := issuer.Issue(plan, config, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	material, err := delivery.RootTrustMaterial(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRootTrustMaterial(material); err != nil {
+		t.Fatal(err)
+	}
+	if len(material.ArtifactManifest.Manifest.Artifacts) != 0 ||
+		len(material.ArtifactManifest.Manifest.Secrets) != 1 ||
+		len(delivery.SignedPlan.Plan.Commands) != 0 {
+		t.Fatalf("secret-only delivery = %#v", delivery)
+	}
+	if _, err := issuer.IssueLeaseGrant(
+		delivery,
+		"undeclared-command",
+		1,
+		now.Add(time.Minute),
+		now,
+	); !errors.Is(err, Error(CodeCommandNotAllowed)) {
+		t.Fatalf("secret-only command grant error=%v", err)
+	}
+
+	unsafe := plan
+	unsafe.Commands = []CommandV1{{
+		CommandID: "run", Argv: []string{"/usr/bin/true"},
+		WorkingDirectory: "/", TimeoutSeconds: 1,
+		SecretRefs: append([]string(nil), plan.SecretRefs...),
+	}}
+	if _, err := issuer.Issue(
+		unsafe,
+		config,
+		now,
+	); !errors.Is(err, Error(CodeInvalidRequest)) {
+		t.Fatalf("secret-only plan exposed a command: %v", err)
+	}
+}
+
 func TestSocketClientExecutesSignedCommandOnceAcrossReplay(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	fixture, config := deliveryFixture(t, now)

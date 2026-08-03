@@ -9,6 +9,7 @@ import (
 
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -64,12 +65,16 @@ func (store *Store) SaveRuntimeConfig(ctx context.Context, scope runtimeapi.Muta
 			INSERT INTO runtime_configs (
 			    owner_id, profile_id, model_provider, model_name, base_url, secret_ref, temperature, top_p,
 			    max_output_tokens, context_window, reasoning_effort, allow_insecure_http,
+			    search_profile_id, search_provider, search_base_url, search_secret_ref,
+			    search_max_results, search_timeout_seconds,
 			    project_profile, context_message_limit, memory_message_limit, max_steps,
 			    memory_disabled, enabled_tools, knowledge_refs, mcp_server_ids, recipe_ids)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
 			ON CONFLICT (owner_id) DO NOTHING
 			RETURNING profile_id, model_provider, model_name, base_url, secret_ref, temperature, top_p,
 			          max_output_tokens, context_window, reasoning_effort, allow_insecure_http,
+			          search_profile_id, search_provider, search_base_url, search_secret_ref,
+			          search_max_results, search_timeout_seconds,
 			          project_profile, context_message_limit, memory_message_limit, max_steps,
 			          memory_disabled, enabled_tools, knowledge_refs, mcp_server_ids, recipe_ids, revision`, runtimeConfigArguments(validated.OwnerID, config)...), &config)
 	} else {
@@ -79,12 +84,16 @@ func (store *Store) SaveRuntimeConfig(ctx context.Context, scope runtimeapi.Muta
 			UPDATE runtime_configs SET
 			    profile_id=$2, model_provider=$3, model_name=$4, base_url=$5, secret_ref=$6, temperature=$7, top_p=$8,
 			    max_output_tokens=$9, context_window=$10, reasoning_effort=$11, allow_insecure_http=$12,
-			    project_profile=$13, context_message_limit=$14, memory_message_limit=$15, max_steps=$16,
-			    memory_disabled=$17, enabled_tools=$18, knowledge_refs=$19, mcp_server_ids=$20,
-			    recipe_ids=$21, revision=revision+1, updated_at=clock_timestamp()
-			WHERE owner_id=$1 AND revision=$22
+			    search_profile_id=$13, search_provider=$14, search_base_url=$15, search_secret_ref=$16,
+			    search_max_results=$17, search_timeout_seconds=$18,
+			    project_profile=$19, context_message_limit=$20, memory_message_limit=$21, max_steps=$22,
+			    memory_disabled=$23, enabled_tools=$24, knowledge_refs=$25, mcp_server_ids=$26,
+			    recipe_ids=$27, revision=revision+1, updated_at=clock_timestamp()
+			WHERE owner_id=$1 AND revision=$28
 			RETURNING profile_id, model_provider, model_name, base_url, secret_ref, temperature, top_p,
 			          max_output_tokens, context_window, reasoning_effort, allow_insecure_http,
+			          search_profile_id, search_provider, search_base_url, search_secret_ref,
+			          search_max_results, search_timeout_seconds,
 			          project_profile, context_message_limit, memory_message_limit, max_steps,
 			          memory_disabled, enabled_tools, knowledge_refs, mcp_server_ids, recipe_ids, revision`, arguments...), &config)
 	}
@@ -112,6 +121,8 @@ func (store *Store) LoadRuntimeConfig(ctx context.Context, ownerID string) (runt
 	err := scanRuntimeConfig(store.pool.QueryRow(ctx, `
 		SELECT profile_id, model_provider, model_name, base_url, secret_ref, temperature, top_p,
 		       max_output_tokens, context_window, reasoning_effort, allow_insecure_http,
+		       search_profile_id, search_provider, search_base_url, search_secret_ref,
+		       search_max_results, search_timeout_seconds,
 		       project_profile, context_message_limit, memory_message_limit, max_steps,
 		       memory_disabled, enabled_tools, knowledge_refs, mcp_server_ids, recipe_ids, revision
 		FROM runtime_configs WHERE owner_id=$1`, ownerID), &config)
@@ -129,9 +140,20 @@ func (store *Store) LoadRuntimeConfig(ctx context.Context, ownerID string) (runt
 
 func runtimeConfigArguments(ownerID string, config runtimeapi.RuntimeConfig) []any {
 	profile := config.ModelProfile
+	var searchProfileID, searchProvider, searchBaseURL, searchSecretRef any
+	var searchMaxResults, searchTimeoutSeconds any
+	if search := config.SearchProfile; search != nil {
+		searchProfileID = search.ProfileID
+		searchProvider = search.Provider
+		searchBaseURL = search.BaseURL
+		searchSecretRef = search.SecretRef
+		searchMaxResults = search.MaxResults
+		searchTimeoutSeconds = search.TimeoutSeconds
+	}
 	return []any{
 		ownerID, profile.ProfileID, profile.Provider, profile.Model, profile.BaseURL, profile.SecretRef, profile.Temperature, profile.TopP,
 		profile.MaxOutputTokens, profile.ContextWindow, profile.ReasoningEffort, profile.AllowInsecureHTTP,
+		searchProfileID, searchProvider, searchBaseURL, searchSecretRef, searchMaxResults, searchTimeoutSeconds,
 		config.ProjectProfile, config.ContextMessageLimit, config.MemoryMessageLimit, config.MaxSteps,
 		config.MemoryDisabled, config.EnabledTools, config.KnowledgeRefs, config.MCPServerIDs, config.RecipeIDs,
 	}
@@ -140,14 +162,38 @@ func runtimeConfigArguments(ownerID string, config runtimeapi.RuntimeConfig) []a
 type runtimeConfigScanner interface{ Scan(...any) error }
 
 func scanRuntimeConfig(scanner runtimeConfigScanner, config *runtimeapi.RuntimeConfig) error {
-	return scanner.Scan(
+	var searchProfileID, searchProvider, searchBaseURL, searchSecretRef *string
+	var searchMaxResults, searchTimeoutSeconds *int
+	if err := scanner.Scan(
 		&config.ModelProfile.ProfileID, &config.ModelProfile.Provider, &config.ModelProfile.Model, &config.ModelProfile.BaseURL,
 		&config.ModelProfile.SecretRef, &config.ModelProfile.Temperature, &config.ModelProfile.TopP,
 		&config.ModelProfile.MaxOutputTokens, &config.ModelProfile.ContextWindow,
 		&config.ModelProfile.ReasoningEffort, &config.ModelProfile.AllowInsecureHTTP,
+		&searchProfileID, &searchProvider, &searchBaseURL, &searchSecretRef,
+		&searchMaxResults, &searchTimeoutSeconds,
 		&config.ProjectProfile, &config.ContextMessageLimit, &config.MemoryMessageLimit, &config.MaxSteps,
 		&config.MemoryDisabled, &config.EnabledTools, &config.KnowledgeRefs, &config.MCPServerIDs, &config.RecipeIDs, &config.Revision,
-	)
+	); err != nil {
+		return err
+	}
+	if searchProfileID == nil && searchProvider == nil && searchBaseURL == nil &&
+		searchSecretRef == nil && searchMaxResults == nil && searchTimeoutSeconds == nil {
+		config.SearchProfile = nil
+		return nil
+	}
+	if searchProfileID == nil || searchProvider == nil || searchBaseURL == nil ||
+		searchSecretRef == nil || searchMaxResults == nil || searchTimeoutSeconds == nil {
+		return errors.New("stored runtime search profile is incomplete")
+	}
+	config.SearchProfile = &searchprofile.Profile{
+		ProfileID:      *searchProfileID,
+		Provider:       searchprofile.Provider(*searchProvider),
+		BaseURL:        *searchBaseURL,
+		SecretRef:      *searchSecretRef,
+		MaxResults:     *searchMaxResults,
+		TimeoutSeconds: *searchTimeoutSeconds,
+	}
+	return nil
 }
 
 func decodeRuntimeConfigSnapshot(encoded []byte) (runtimeapi.RuntimeConfig, error) {

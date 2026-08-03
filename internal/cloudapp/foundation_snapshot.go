@@ -2,9 +2,8 @@ package cloudapp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +14,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/google/uuid"
 )
+
+var foundationTemplateDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+type FoundationTemplateDigestSource interface {
+	TemplateDigest() string
+}
 
 // FoundationSnapshotReader builds the server-authoritative scope signed for
 // an independent Foundation lifecycle operation. Worker Plans, quotes, and
@@ -38,13 +43,16 @@ type FoundationTeardownGuard interface {
 	CheckFoundationTeardown(context.Context, string, string, string, string) error
 }
 
-func NewFoundationSnapshotReader(agentInstanceID string, template []byte, reaperImageURI string, secrets SecretBootstrapLifecycle, identities AWSIdentityRepository, connections cloudstatus.Reader, teardownGuard FoundationTeardownGuard, now func() time.Time) (*FoundationSnapshotReader, error) {
+func NewFoundationSnapshotReader(agentInstanceID string, template FoundationTemplateDigestSource, reaperImageURI string, secrets SecretBootstrapLifecycle, identities AWSIdentityRepository, connections cloudstatus.Reader, teardownGuard FoundationTeardownGuard, now func() time.Time) (*FoundationSnapshotReader, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(agentInstanceID))
-	if err != nil || parsed == uuid.Nil || awsfoundation.ValidateTemplate(template) != nil || strings.TrimSpace(reaperImageURI) == "" || secrets == nil || identities == nil || connections == nil || teardownGuard == nil || now == nil {
+	if err != nil || parsed == uuid.Nil || template == nil || strings.TrimSpace(reaperImageURI) == "" || secrets == nil || identities == nil || connections == nil || teardownGuard == nil || now == nil {
 		return nil, cloudfoundation.ErrInvalid
 	}
-	digest := sha256.Sum256(template)
-	return &FoundationSnapshotReader{agentInstanceID: parsed.String(), templateDigest: "sha256:" + hex.EncodeToString(digest[:]), reaperImageURI: reaperImageURI,
+	templateDigest := strings.TrimSpace(template.TemplateDigest())
+	if !foundationTemplateDigestPattern.MatchString(templateDigest) {
+		return nil, cloudfoundation.ErrInvalid
+	}
+	return &FoundationSnapshotReader{agentInstanceID: parsed.String(), templateDigest: templateDigest, reaperImageURI: reaperImageURI,
 		secrets: secrets, identities: identities, connections: connections, teardownGuard: teardownGuard, now: now}, nil
 }
 

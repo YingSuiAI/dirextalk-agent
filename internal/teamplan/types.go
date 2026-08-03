@@ -7,9 +7,17 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
+	workerprotocol "github.com/YingSuiAI/dirextalk-agent/sdk/workerprotocol/v1"
 )
 
-const SchemaV1 = "dirextalk.agent.team-plan/v1"
+const (
+	SchemaV1 = "dirextalk.agent.team-plan/v1"
+	SchemaV2 = "dirextalk.agent.team-plan/v2"
+	SchemaV3 = "dirextalk.agent.team-plan/v3"
+
+	WorkerMarketplaceBindingSchemaV1 = "dirextalk.agent.worker-marketplace-binding/v1"
+)
 
 type RuntimeFamily string
 
@@ -19,6 +27,7 @@ const (
 	RuntimeOpenClaw   RuntimeFamily = "openclaw"
 	RuntimeHermes     RuntimeFamily = "hermes"
 	RuntimeOpenCode   RuntimeFamily = "opencode"
+	RuntimePi         RuntimeFamily = "pi"
 )
 
 type RuntimeAdapter string
@@ -29,6 +38,7 @@ const (
 	AdapterOpenClawV1   RuntimeAdapter = "openclaw_gateway_task_v1"
 	AdapterHermesV1     RuntimeAdapter = "hermes_api_task_v1"
 	AdapterOpenCodeV1   RuntimeAdapter = "opencode_server_task_v1"
+	AdapterPiV1         RuntimeAdapter = "pi_json_task_v1"
 )
 
 type RuntimeTrust string
@@ -241,49 +251,77 @@ type Policy struct {
 }
 
 type CompileRequest struct {
-	PlanID                string           `json:"plan_id"`
-	Revision              uint64           `json:"revision"`
-	OwnerID               string           `json:"owner_id"`
-	GoalDigest            string           `json:"goal_digest"`
-	ProviderScope         ProviderScope    `json:"provider_scope"`
-	Region                string           `json:"region"`
-	CatalogRevision       string           `json:"catalog_revision"`
-	PricingSnapshotID     string           `json:"pricing_snapshot_id"`
-	PricingSnapshotDigest string           `json:"pricing_snapshot_digest"`
-	Currency              string           `json:"currency"`
-	QuotedAt              time.Time        `json:"quoted_at"`
-	ValidUntil            time.Time        `json:"valid_until"`
-	Proposal              TeamProposal     `json:"proposal"`
-	RuntimeReleases       []RuntimeRelease `json:"runtime_releases"`
-	ModelOffers           []ModelOffer     `json:"model_offers"`
-	ComputeOffers         []ComputeOffer   `json:"compute_offers"`
-	Policy                Policy           `json:"policy"`
+	PlanID                string              `json:"plan_id"`
+	Revision              uint64              `json:"revision"`
+	OwnerID               string              `json:"owner_id"`
+	GoalDigest            string              `json:"goal_digest"`
+	TaskInput             taskinput.BindingV2 `json:"task_input"`
+	ProviderScope         ProviderScope       `json:"provider_scope"`
+	Region                string              `json:"region"`
+	CatalogRevision       string              `json:"catalog_revision"`
+	PricingSnapshotID     string              `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest string              `json:"pricing_snapshot_digest"`
+	Currency              string              `json:"currency"`
+	QuotedAt              time.Time           `json:"quoted_at"`
+	ValidUntil            time.Time           `json:"valid_until"`
+	Proposal              TeamProposal        `json:"proposal"`
+	RuntimeReleases       []RuntimeRelease    `json:"runtime_releases"`
+	ModelOffers           []ModelOffer        `json:"model_offers"`
+	ComputeOffers         []ComputeOffer      `json:"compute_offers"`
+	Policy                Policy              `json:"policy"`
 }
 
 type WorkerAssignment struct {
-	RoleID               string           `json:"role_id"`
-	Title                string           `json:"title"`
-	Objective            string           `json:"objective"`
-	WorkClass            WorkClass        `json:"work_class"`
-	RequiredCapabilities []Capability     `json:"required_capabilities"`
-	Workspace            WorkspaceMode    `json:"workspace"`
-	DependsOnRoleIDs     []string         `json:"depends_on_role_ids,omitempty"`
-	RuntimeReleaseID     string           `json:"runtime_release_id"`
-	RuntimeFamily        RuntimeFamily    `json:"runtime_family"`
-	RuntimeVersion       string           `json:"runtime_version"`
-	RuntimeImageDigest   string           `json:"runtime_image_digest"`
-	RuntimeAdapter       RuntimeAdapter   `json:"runtime_adapter"`
-	ModelProfileID       string           `json:"model_profile_id"`
-	ModelProvider        string           `json:"model_provider"`
-	Model                string           `json:"model"`
-	ModelInterface       ModelInterface   `json:"model_interface"`
-	ModelCredentialRef   string           `json:"model_credential_ref"`
-	ComputeOfferID       string           `json:"compute_offer_id"`
-	InstanceType         string           `json:"instance_type"`
-	Resources            ResourceEnvelope `json:"resources"`
-	Duration             DurationEstimate `json:"duration"`
-	Tokens               TokenEstimate    `json:"tokens"`
-	ColdStart            time.Duration    `json:"cold_start"`
+	RoleID               string                      `json:"role_id"`
+	Title                string                      `json:"title"`
+	Objective            string                      `json:"objective"`
+	WorkClass            WorkClass                   `json:"work_class"`
+	RequiredCapabilities []Capability                `json:"required_capabilities"`
+	Workspace            WorkspaceMode               `json:"workspace"`
+	DependsOnRoleIDs     []string                    `json:"depends_on_role_ids,omitempty"`
+	RuntimeReleaseID     string                      `json:"runtime_release_id"`
+	RuntimeFamily        RuntimeFamily               `json:"runtime_family"`
+	RuntimeVersion       string                      `json:"runtime_version"`
+	RuntimeImageDigest   string                      `json:"runtime_image_digest"`
+	RuntimeAdapter       RuntimeAdapter              `json:"runtime_adapter"`
+	ModelProfileID       string                      `json:"model_profile_id"`
+	ModelProvider        string                      `json:"model_provider"`
+	Model                string                      `json:"model"`
+	ModelInterface       ModelInterface              `json:"model_interface"`
+	ModelCredentialRef   string                      `json:"model_credential_ref"`
+	ComputeOfferID       string                      `json:"compute_offer_id"`
+	InstanceType         string                      `json:"instance_type"`
+	Resources            ResourceEnvelope            `json:"resources"`
+	Duration             DurationEstimate            `json:"duration"`
+	Tokens               TokenEstimate               `json:"tokens"`
+	ColdStart            time.Duration               `json:"cold_start"`
+	Marketplace          *WorkerMarketplaceBindingV1 `json:"marketplace,omitempty"`
+}
+
+// WorkerMarketplaceBindingV1 is the complete reviewed release and permission
+// fact shown to the user and covered by the Team Plan signature. The model
+// cannot supply it; only a verified Worker Marketplace gate can materialize it.
+type WorkerMarketplaceBindingV1 struct {
+	SchemaVersion            string                         `json:"schema_version"`
+	RegistryID               string                         `json:"registry_id"`
+	RegistryRevision         string                         `json:"registry_revision"`
+	ReleaseID                string                         `json:"release_id"`
+	WorkerTypeID             string                         `json:"worker_type_id"`
+	PublisherID              string                         `json:"publisher_id"`
+	PublisherDisplayName     string                         `json:"publisher_display_name"`
+	PublisherTier            string                         `json:"publisher_tier"`
+	OrganizationID           string                         `json:"organization_id,omitempty"`
+	ManifestDigest           string                         `json:"manifest_digest"`
+	ImageRepository          string                         `json:"image_repository"`
+	ImageDigest              string                         `json:"image_digest"`
+	ImageSignatureDigest     string                         `json:"image_signature_digest"`
+	SBOMDigest               string                         `json:"sbom_digest"`
+	ProvenanceEnvelopeDigest string                         `json:"provenance_envelope_digest"`
+	ReviewID                 string                         `json:"review_id"`
+	ReviewPolicyRevision     string                         `json:"review_policy_revision"`
+	ReviewRiskClass          string                         `json:"review_risk_class"`
+	ReviewValidUntil         time.Time                      `json:"review_valid_until"`
+	GrantedPermissions       workerprotocol.PermissionSetV1 `json:"granted_permissions"`
 }
 
 type RoleCostEstimate struct {
@@ -320,24 +358,26 @@ type ScheduleEstimate struct {
 // estimate, dependency, or budget change produces a different digest and must
 // create a newer revision for user approval.
 type Plan struct {
-	SchemaVersion         string             `json:"schema_version"`
-	PlanID                string             `json:"plan_id"`
-	Revision              uint64             `json:"revision"`
-	OwnerID               string             `json:"owner_id"`
-	GoalDigest            string             `json:"goal_digest"`
-	ProviderScope         ProviderScope      `json:"provider_scope"`
-	Region                string             `json:"region"`
-	CatalogRevision       string             `json:"catalog_revision"`
-	PolicyRevision        string             `json:"policy_revision"`
-	PricingSnapshotID     string             `json:"pricing_snapshot_id"`
-	PricingSnapshotDigest string             `json:"pricing_snapshot_digest"`
-	QuotedAt              time.Time          `json:"quoted_at"`
-	ValidUntil            time.Time          `json:"valid_until"`
-	ProposalConfidence    uint32             `json:"proposal_confidence"`
-	ProposalRationale     string             `json:"proposal_rationale"`
-	WorkerCount           uint32             `json:"worker_count"`
-	MaxConcurrentWorkers  uint32             `json:"max_concurrent_workers"`
-	Assignments           []WorkerAssignment `json:"assignments"`
-	Schedule              ScheduleEstimate   `json:"schedule"`
-	Cost                  CostEstimate       `json:"cost"`
+	SchemaVersion         string              `json:"schema_version"`
+	PlanID                string              `json:"plan_id"`
+	Revision              uint64              `json:"revision"`
+	OwnerID               string              `json:"owner_id"`
+	GoalDigest            string              `json:"goal_digest"`
+	InputSnapshot         taskinput.BindingV1 `json:"input_snapshot,omitempty"`
+	TaskInput             taskinput.BindingV2 `json:"task_input,omitempty"`
+	ProviderScope         ProviderScope       `json:"provider_scope"`
+	Region                string              `json:"region"`
+	CatalogRevision       string              `json:"catalog_revision"`
+	PolicyRevision        string              `json:"policy_revision"`
+	PricingSnapshotID     string              `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest string              `json:"pricing_snapshot_digest"`
+	QuotedAt              time.Time           `json:"quoted_at"`
+	ValidUntil            time.Time           `json:"valid_until"`
+	ProposalConfidence    uint32              `json:"proposal_confidence"`
+	ProposalRationale     string              `json:"proposal_rationale"`
+	WorkerCount           uint32              `json:"worker_count"`
+	MaxConcurrentWorkers  uint32              `json:"max_concurrent_workers"`
+	Assignments           []WorkerAssignment  `json:"assignments"`
+	Schedule              ScheduleEstimate    `json:"schedule"`
+	Cost                  CostEstimate        `json:"cost"`
 }

@@ -11,7 +11,9 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerprofile"
@@ -274,6 +276,55 @@ func TestWithTeamOfferBuilderAndLoadedProfilesRejectMissingDependencies(
 			err,
 		)
 	}
+	if err := WithLoadedSearchProfiles(nil)(&options); err == nil ||
+		options.searchProfiles != nil {
+		t.Fatalf(
+			"WithLoadedSearchProfiles(nil) options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+	searchProfiles, err := searchprofile.NewCatalog([]searchprofile.Profile{{
+		ProfileID: "tavily-default", Provider: searchprofile.ProviderTavily,
+		BaseURL:   "https://api.tavily.com/search",
+		SecretRef: "mounted:tavily-token", MaxResults: 10,
+		TimeoutSeconds: 15,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WithLoadedSearchProfiles(searchProfiles)(&options); err != nil ||
+		options.searchProfiles != searchProfiles {
+		t.Fatalf(
+			"WithLoadedSearchProfiles() options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+}
+
+func TestWithTeamLaunchAuthorizationBuilderRejectsMissingDependency(
+	t *testing.T,
+) {
+	t.Parallel()
+	var options runtimeCompositionOptions
+	if err := WithTeamLaunchAuthorizationBuilder(nil)(&options); err == nil ||
+		options.teamLaunches != nil {
+		t.Fatalf(
+			"WithTeamLaunchAuthorizationBuilder(nil) options=%#v error=%v",
+			options,
+			err,
+		)
+	}
+	builder := runtimeTeamLaunchBuilderFixture{}
+	if err := WithTeamLaunchAuthorizationBuilder(builder)(&options); err != nil ||
+		options.teamLaunches == nil {
+		t.Fatalf(
+			"WithTeamLaunchAuthorizationBuilder() options=%#v error=%v",
+			options,
+			err,
+		)
+	}
 }
 
 type runtimeTeamOfferSourceFixture struct{}
@@ -295,3 +346,16 @@ func (runtimeTeamOfferSourceFixture) VerifyCurrentOffer(
 }
 
 var _ teamorchestration.TrustedOfferSource = runtimeTeamOfferSourceFixture{}
+
+type runtimeTeamLaunchBuilderFixture struct{}
+
+func (runtimeTeamLaunchBuilderFixture) BuildForPlan(
+	context.Context,
+	teamplan.Plan,
+	string,
+	time.Time,
+) (teamlaunch.AuthorizationV1, error) {
+	return teamlaunch.AuthorizationV1{}, teamorchestration.ErrInvalid
+}
+
+var _ teamorchestration.TrustedLaunchAuthorizationBuilder = runtimeTeamLaunchBuilderFixture{}

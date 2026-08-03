@@ -555,6 +555,75 @@ func (store *Store) GetTeamExecution(
 	return fact, nil
 }
 
+func (store *Store) FindTeamExecutionByPlan(
+	ctx context.Context,
+	ownerID,
+	planID string,
+	planRevision uint64,
+) (teamexecution.Fact, bool, error) {
+	parsedPlanID, err := uuid.Parse(planID)
+	if store == nil ||
+		store.pool == nil ||
+		ctx == nil ||
+		!validTeamOwnerID(ownerID) ||
+		err != nil ||
+		parsedPlanID == uuid.Nil ||
+		parsedPlanID.String() != planID ||
+		planRevision == 0 ||
+		planRevision > uint64(math.MaxInt64) {
+		return teamexecution.Fact{}, false, teamexecution.ErrInvalid
+	}
+	tx, err := store.pool.BeginTx(
+		ctx,
+		pgx.TxOptions{
+			IsoLevel:   pgx.RepeatableRead,
+			AccessMode: pgx.ReadOnly,
+		},
+	)
+	if err != nil {
+		return teamexecution.Fact{}, false,
+			fmt.Errorf("begin Team execution Plan lookup: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	executionID, found, err := findTeamExecutionForPlan(
+		ctx,
+		tx,
+		store.instanceID,
+		parsedPlanID,
+		planRevision,
+	)
+	if err != nil {
+		return teamexecution.Fact{}, false, err
+	}
+	if !found {
+		if err := tx.Commit(ctx); err != nil {
+			return teamexecution.Fact{}, false,
+				fmt.Errorf("commit empty Team execution Plan lookup: %w", err)
+		}
+		return teamexecution.Fact{}, false, nil
+	}
+	fact, err := readTeamExecution(
+		ctx,
+		tx,
+		store.instanceID,
+		ownerID,
+		executionID,
+		false,
+	)
+	if err != nil {
+		return teamexecution.Fact{}, false, err
+	}
+	if fact.Execution.PlanID != planID ||
+		fact.Execution.PlanRevision != planRevision {
+		return teamexecution.Fact{}, false, teamexecution.ErrFactMismatch
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return teamexecution.Fact{}, false,
+			fmt.Errorf("commit Team execution Plan lookup: %w", err)
+	}
+	return fact, true, nil
+}
+
 func (store *Store) FindDispatch(
 	ctx context.Context,
 	scope task.MutationScope,
@@ -1031,14 +1100,17 @@ func insertTeamExecution(
 		    plan_id, plan_revision, plan_digest, approval_id,
 		    provider, connection_id, connection_revision, account_id, region,
 		    catalog_revision, policy_revision,
+		    task_input_id, task_input_digest, task_input_source_digest,
 		    pricing_snapshot_id, pricing_snapshot_digest,
 		    worker_count, max_concurrent_workers, currency,
 		    hard_budget_micros, execution_digest, execution_json,
 		    execution_cbor, status, record_revision, authorized_at
 		)
 		VALUES (
-		    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-		    $18,$19,$20,$21,$22,$23,$24,$25,$26,$27
+		    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+		    NULLIF($16::text,'')::uuid,
+		    NULLIF($17::text,''),NULLIF($18::text,''),
+		    $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
 		)
 		RETURNING created_at, updated_at`,
 		execution.ExecutionID,
@@ -1056,6 +1128,9 @@ func insertTeamExecution(
 		execution.Region,
 		execution.CatalogRevision,
 		execution.PolicyRevision,
+		execution.TaskInput.InputID,
+		execution.TaskInput.InputDigest,
+		execution.TaskInput.SourceDigest,
 		execution.PricingSnapshotID,
 		execution.PricingSnapshotDigest,
 		int32(execution.WorkerCount),
@@ -1459,6 +1534,9 @@ func readTeamExecution(
 		SELECT owner_id, task_id, plan_id, plan_revision, plan_digest,
 		       approval_id, provider, connection_id, connection_revision,
 		       account_id, region, catalog_revision, policy_revision,
+		       COALESCE(task_input_id::text,''),
+		       COALESCE(task_input_digest,''),
+		       COALESCE(task_input_source_digest,''),
 		       pricing_snapshot_id, pricing_snapshot_digest,
 		       worker_count, max_concurrent_workers, currency,
 		       hard_budget_micros, execution_digest, execution_json,
@@ -1475,6 +1553,7 @@ func readTeamExecution(
 		taskID, planID, approvalID, connectionID, snapshotID uuid.UUID
 		storedOwner, planDigest, provider, accountID         string
 		region, catalogRevision, policyRevision              string
+		taskInputID, taskInputDigest, taskInputSourceDigest  string
 		snapshotDigest, executionDigest, currency, status    string
 		connectionRevision, planRevision, hardBudget         int64
 		workerCount, maxConcurrent, recordRevision           int64
@@ -1502,6 +1581,9 @@ func readTeamExecution(
 		&region,
 		&catalogRevision,
 		&policyRevision,
+		&taskInputID,
+		&taskInputDigest,
+		&taskInputSourceDigest,
 		&snapshotID,
 		&snapshotDigest,
 		&workerCount,
@@ -1557,6 +1639,12 @@ func readTeamExecution(
 		fact.Execution.Region != region ||
 		fact.Execution.CatalogRevision != catalogRevision ||
 		fact.Execution.PolicyRevision != policyRevision ||
+		!storedTeamExecutionTaskInputReferenceMatches(
+			fact.Execution,
+			taskInputID,
+			taskInputDigest,
+			taskInputSourceDigest,
+		) ||
 		fact.Execution.PricingSnapshotID != snapshotID.String() ||
 		fact.Execution.PricingSnapshotDigest != snapshotDigest ||
 		fact.Execution.WorkerCount != uint32(workerCount) ||
@@ -1597,6 +1685,20 @@ func readTeamExecution(
 		return teamexecution.Fact{}, teamexecution.ErrFactMismatch
 	}
 	return fact, nil
+}
+
+func storedTeamExecutionTaskInputReferenceMatches(
+	execution teamexecution.ExecutionV1,
+	inputID,
+	inputDigest,
+	sourceDigest string,
+) bool {
+	if execution.SchemaVersion == teamexecution.SchemaV3 {
+		return execution.TaskInput.InputID == inputID &&
+			execution.TaskInput.InputDigest == inputDigest &&
+			execution.TaskInput.SourceDigest == sourceDigest
+	}
+	return inputID == "" && inputDigest == "" && sourceDigest == ""
 }
 
 func teamExecutionPlanStatusMatches(
@@ -1655,9 +1757,10 @@ func readStoredTeamExecutionAuthorization(
 	return teamorchestration.ApprovedPlanFact{
 		Plan: planFact,
 		Approval: teamorchestration.ApprovalFact{
-			Signature:  approval.Signature,
-			ApprovedAt: approval.ApprovedAt,
-			CreatedAt:  approval.CreatedAt,
+			Signature:     approval.Signature,
+			Authorization: approval.Authorization,
+			ApprovedAt:    approval.ApprovedAt,
+			CreatedAt:     approval.CreatedAt,
 		},
 	}, nil
 }

@@ -87,6 +87,7 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 		goal,
 		uuid.NewString(),
 	)
+	plan = bindTeamPlanGitHubInput(t, plan, createdTask.TaskID)
 	planRecord, err := store.CreateTeamPlan(
 		ctx,
 		scope,
@@ -122,6 +123,8 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 	); err != nil {
 		t.Fatal(err)
 	}
+	approvalID, launchAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, plan, instanceID)
 	challenge, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		scope,
@@ -131,9 +134,10 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 			PlanID:                     plan.PlanID,
 			PlanRevision:               plan.Revision,
 			ExpectedPlanRecordRevision: planRecord.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 approvalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              launchAuthorization,
 		},
 	)
 	if err != nil {
@@ -179,9 +183,10 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 			UpdatedAt:      approvedPlan.UpdatedAt,
 		},
 		Approval: teamorchestration.ApprovalFact{
-			Signature:  approval.Signature,
-			ApprovedAt: approval.ApprovedAt,
-			CreatedAt:  approval.CreatedAt,
+			Signature:     approval.Signature,
+			Authorization: approval.Authorization,
+			ApprovedAt:    approval.ApprovedAt,
+			CreatedAt:     approval.CreatedAt,
 		},
 	}
 	execution, err := teamexecution.Materialize(authorization)
@@ -344,6 +349,23 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 	pending, err = store.ListPendingMaterializations(ctx, nil, 16)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("materialized Plan remained pending=%#v error=%v", pending, err)
+	}
+	byPlan, found, err := store.FindTeamExecutionByPlan(
+		ctx,
+		ownerID,
+		plan.PlanID,
+		plan.Revision,
+	)
+	if err != nil ||
+		!found ||
+		byPlan.Execution.ExecutionID != first.Execution.ExecutionID ||
+		byPlan.ExecutionDigest != first.ExecutionDigest {
+		t.Fatalf(
+			"Team execution Plan lookup=%#v found=%v error=%v",
+			byPlan,
+			found,
+			err,
+		)
 	}
 
 	replayKey := uuid.NewString()
@@ -799,6 +821,18 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 	); err == nil {
 		t.Fatal("immutable Team execution mutation succeeded")
 	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE team_executions
+		SET task_input_source_digest=$2,
+		    status='failed',
+		    record_revision=record_revision+1,
+		    updated_at=clock_timestamp()
+		WHERE execution_id=$1`,
+		execution.ExecutionID,
+		"sha256:"+strings.Repeat("d", 64),
+	); err == nil {
+		t.Fatal("immutable Team execution TaskInput reference mutation succeeded")
+	}
 
 	blockedTask, err := store.Create(
 		ctx,
@@ -808,11 +842,6 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 			OwnerID:        ownerID,
 			Goal:           "Do not append Workers while this step is queued.",
 			Retention:      task.RetentionEphemeralAutoDestroy,
-			Steps: []task.StepDefinition{{
-				StepID:       uuid.NewString(),
-				Name:         "unfinished_control_step",
-				ExecutorKind: task.ExecutorControlPlane,
-			}},
 		},
 	)
 	if err != nil {
@@ -838,6 +867,8 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 	if err != nil {
 		t.Fatal(err)
 	}
+	blockedApprovalID, blockedLaunchAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, blockedPlan, instanceID)
 	blockedChallenge, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		scope,
@@ -848,9 +879,10 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 			PlanRevision:   blockedPlan.Revision,
 			ExpectedPlanRecordRevision: blockedPlanRecord.
 				RecordRevision,
-			ApprovalID:  uuid.NewString(),
-			ChallengeID: uuid.NewString(),
-			SignerKeyID: signerKeyID,
+			ApprovalID:    blockedApprovalID,
+			ChallengeID:   uuid.NewString(),
+			SignerKeyID:   signerKeyID,
+			Authorization: blockedLaunchAuthorization,
 		},
 	)
 	if err != nil {
@@ -896,10 +928,24 @@ func TestTeamExecutionMaterializationIsAtomicConcurrentAndRestartable(
 			UpdatedAt:      blockedApproved.UpdatedAt,
 		},
 		Approval: teamorchestration.ApprovalFact{
-			Signature:  blockedApproval.Signature,
-			ApprovedAt: blockedApproval.ApprovedAt,
-			CreatedAt:  blockedApproval.CreatedAt,
+			Signature:     blockedApproval.Signature,
+			Authorization: blockedApproval.Authorization,
+			ApprovedAt:    blockedApproval.ApprovedAt,
+			CreatedAt:     blockedApproval.CreatedAt,
 		},
+	}
+	blockedStepID := uuid.NewString()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO task_steps (
+		    step_id, task_id, name, executor_kind,
+		    execution_status, outcome_status
+		)
+		VALUES ($1,$2,'unfinished_control_step','control_plane',
+		        'queued','pending')`,
+		blockedStepID,
+		blockedTask.TaskID,
+	); err != nil {
+		t.Fatal(err)
 	}
 	blockedExecution, err := teamexecution.Materialize(
 		blockedAuthorization,

@@ -374,6 +374,79 @@ func TestPlacementResolverDeterministicallyResolvesThreeCandidatesAcrossUnordere
 	}
 }
 
+func TestPlacementResolverBindsExactApprovedTeamShapes(t *testing.T) {
+	fake := placementFixture()
+	resolver, err := newPlacementResolver(fake, testPlacementRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ExactPlacementRequestV1{
+		Shapes: []ExactPlacementShapeV1{
+			{
+				InstanceType: "m7i.xlarge",
+				Architecture: recipe.ArchitectureAMD64,
+				VCPU:         4,
+				MemoryMiB:    16384,
+				DiskGiB:      40,
+			},
+			{
+				InstanceType: "t3.small",
+				Architecture: recipe.ArchitectureAMD64,
+				VCPU:         2,
+				MemoryMiB:    4096,
+				DiskGiB:      40,
+			},
+		},
+		PublicIPv4:           true,
+		RuntimeHoursPerMonth: 1,
+		PrivateConnectivity: cloudquote.
+			PrivateConnectivityDirectPublicTLSV1,
+		ControlPlaneEndpoint: "grpcs://worker-control.example.com:443",
+	}
+	got, err := resolver.ResolveExact(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Region != testPlacementRegion ||
+		got.AvailabilityZone != testPlacementZone ||
+		got.Network.VPCID != testPlacementVPC ||
+		got.Network.SubnetID != testPlacementSubnet ||
+		!got.Network.PublicIPv4 ||
+		got.Network.ControlPlaneEndpoint != request.ControlPlaneEndpoint {
+		t.Fatalf("exact placement = %#v", got)
+	}
+
+	drifted := request
+	drifted.Shapes = append(
+		[]ExactPlacementShapeV1(nil),
+		request.Shapes...,
+	)
+	drifted.Shapes[0].MemoryMiB++
+	if _, err := resolver.ResolveExact(
+		context.Background(),
+		drifted,
+	); !errors.Is(err, ErrExactPlacementUnavailable) {
+		t.Fatalf("shape drift error = %v", err)
+	}
+
+	missing := placementFixture()
+	missing.offeringPages[""].InstanceTypeOfferings =
+		missing.offeringPages[""].InstanceTypeOfferings[1:]
+	missingResolver, err := newPlacementResolver(
+		missing,
+		testPlacementRegion,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := missingResolver.ResolveExact(
+		context.Background(),
+		request,
+	); !errors.Is(err, ErrExactPlacementUnavailable) {
+		t.Fatalf("missing exact offering error = %v", err)
+	}
+}
+
 const (
 	testPlacementRegion     = "us-east-1"
 	testPlacementZone       = "us-east-1b"

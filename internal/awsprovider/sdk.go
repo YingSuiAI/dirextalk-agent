@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -37,7 +38,10 @@ var (
 	digestPattern     = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
-const awsPropagationRetryAttempts = 7
+const (
+	awsPropagationRetryAttempts       = 7
+	cloudFormationTemplateBodyMaxSize = 51_200
+)
 
 type STSAPI interface {
 	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
@@ -437,11 +441,15 @@ func (provider *SDKProvider) UpdateFoundationStack(ctx context.Context, request 
 		return FoundationStackReceipt{}, ErrReadBackMismatch
 	}
 	for {
-		receipt, readErr := provider.recoverFoundationStack(ctx, request)
+		receipt, readErr := provider.recoverFoundationStackOwnership(ctx, request)
 		if readErr == nil {
 			switch cloudformationtypes.StackStatus(receipt.Status) {
 			case cloudformationtypes.StackStatusUpdateComplete, cloudformationtypes.StackStatusCreateComplete:
-				return receipt, nil
+				verified, verifyErr := provider.recoverFoundationStack(ctx, request)
+				if verifyErr != nil {
+					return FoundationStackReceipt{}, verifyErr
+				}
+				return verified, nil
 			case cloudformationtypes.StackStatusUpdateInProgress, cloudformationtypes.StackStatusUpdateCompleteCleanupInProgress: // poll
 			default:
 				return FoundationStackReceipt{}, ErrFoundationStackFailed
@@ -695,11 +703,30 @@ func (provider *SDKProvider) recoverFoundationStackChecked(ctx context.Context, 
 	if err != nil || template == nil || template.TemplateBody == nil {
 		return FoundationStackReceipt{}, ErrProviderUnavailable
 	}
-	sum := sha256.Sum256([]byte(aws.ToString(template.TemplateBody)))
-	if "sha256:"+hex.EncodeToString(sum[:]) != request.TemplateSHA256 {
+	templateDigest, err := canonicalCloudFormationTemplateDigest(aws.ToString(template.TemplateBody))
+	if err != nil || templateDigest != request.TemplateSHA256 {
 		return FoundationStackReceipt{}, ErrReadBackMismatch
 	}
 	return FoundationStackReceipt{StackID: stackID, Status: string(stack.StackStatus), ObservedAt: provider.now().UTC()}, nil
+}
+
+func canonicalCloudFormationTemplateDigest(body string) (string, error) {
+	decoder := json.NewDecoder(strings.NewReader(body))
+	decoder.UseNumber()
+	var root map[string]any
+	if err := decoder.Decode(&root); err != nil || len(root) == 0 {
+		return "", ErrReadBackMismatch
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", ErrReadBackMismatch
+	}
+	canonical, err := json.Marshal(root)
+	if err != nil || len(canonical) == 0 || len(canonical) > cloudFormationTemplateBodyMaxSize {
+		return "", ErrReadBackMismatch
+	}
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func validateBootstrapSpec(spec BootstrapIdentitySpec, region string) error {
@@ -718,7 +745,7 @@ func validateBootstrapSpec(spec BootstrapIdentitySpec, region string) error {
 }
 
 func validateStackRequest(request FoundationStackRequest, region string) error {
-	if request.Region != region || !sdkRegionPattern.MatchString(request.Region) || !sdkAccountPattern.MatchString(request.AccountID) || !sdkNamePattern.MatchString(request.StackName) || !strings.HasPrefix(request.ClientToken, "dtx-") || len(request.ClientToken) > 128 || !digestPattern.MatchString(request.TemplateSHA256) || request.TemplateBody == "" || len(request.TemplateBody) > 512*1024 || !request.TerminationProtect {
+	if request.Region != region || !sdkRegionPattern.MatchString(request.Region) || !sdkAccountPattern.MatchString(request.AccountID) || !sdkNamePattern.MatchString(request.StackName) || !strings.HasPrefix(request.ClientToken, "dtx-") || len(request.ClientToken) > 128 || !digestPattern.MatchString(request.TemplateSHA256) || request.TemplateBody == "" || len(request.TemplateBody) > cloudFormationTemplateBodyMaxSize || !request.TerminationProtect {
 		return ErrInvalidRequest
 	}
 	sum := sha256.Sum256([]byte(request.TemplateBody))

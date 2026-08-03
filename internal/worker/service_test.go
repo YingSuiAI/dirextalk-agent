@@ -152,6 +152,69 @@ func TestClaimAndRecoveryIssueFreshLeaseBoundInstallerGrant(t *testing.T) {
 	}
 }
 
+func TestSecretOnlyInstallerCapabilityNeedsNoCommandSelector(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	issuer, err := installer.NewTrustIssuer(bytes.Repeat([]byte{0x75}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer issuer.Close()
+	deploymentID := uuid.NewString()
+	taskID := uuid.NewString()
+	agentInstanceID := uuid.NewString()
+	recipeDigest := [sha256.Size]byte{7}
+	binding := installer.BindingV1{
+		AgentInstanceID: agentInstanceID,
+		DeploymentID:    deploymentID,
+		TaskID:          taskID,
+		PlanHash: "sha256:" +
+			hex.EncodeToString(bytes.Repeat([]byte{8}, sha256.Size)),
+		ApprovalID:   uuid.NewString(),
+		RecipeDigest: "sha256:" + hex.EncodeToString(recipeDigest[:]),
+	}
+	delivery, err := issuer.Issue(
+		installer.InstallerPlanV1{
+			SchemaVersion: installer.PlanSchemaV1,
+			Binding:       binding,
+			SecretRefs:    []string{"secret_ref:models/openai"},
+			Secrets: []installer.SecretV1{{
+				SlotID:    "model-api",
+				SecretRef: "secret_ref:models/openai",
+				SecretName: "dtx/" + agentInstanceID +
+					"/deployments/" + deploymentID + "/model-api",
+				VersionID:  uuid.NewString(),
+				TargetPath: "/etc/dirextalk-service-secrets/model-api",
+				FileMode:   0o400,
+				OwnerUID:   65532,
+				OwnerGID:   65532,
+			}},
+			ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339Nano),
+		},
+		installer.DaemonConfigV1{
+			SchemaVersion: installer.DaemonConfigSchema,
+			Binding:       binding,
+			TargetRoot:    installer.PreinstalledArtifactRoot,
+		},
+		now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateInstallerCapability(
+		deploymentID,
+		taskID,
+		BundleRef{
+			S3Ref:  "s3://worker/deployments/" + deploymentID + "/recipe.cbor",
+			SHA256: recipeDigest,
+		},
+		&delivery,
+		nil,
+	); err != nil {
+		t.Fatalf("ValidateInstallerCapability() error = %v", err)
+	}
+}
+
 type memoryRepository struct {
 	mu                  sync.Mutex
 	deployments         map[string]Deployment

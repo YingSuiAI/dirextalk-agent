@@ -122,6 +122,19 @@ func TestCancelTeamExecutionUpdatesTaskPlanAndExecutionAtomically(
 						err,
 					)
 				}
+				authorized, err := fixture.store.LoadAuthorizedExecution(
+					fixture.ctx,
+					fixture.ownerID,
+					fixture.execution.ExecutionID,
+				)
+				if err != nil || authorized.ValidateForCleanup() != nil ||
+					authorized.Execution.Status != teamexecution.StatusCanceled {
+					t.Fatalf(
+						"canceled cleanup authorization=%#v error=%v",
+						authorized,
+						err,
+					)
+				}
 			}
 			var activePlans, activeExecutions int
 			if err := fixture.pool.QueryRow(fixture.ctx, `
@@ -266,6 +279,8 @@ func newTeamCancellationFixture(
 	); err != nil {
 		t.Fatal(err)
 	}
+	approvalID, launchAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, plan, instanceID)
 	challenge, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		scope,
@@ -275,9 +290,10 @@ func newTeamCancellationFixture(
 			PlanID:                     plan.PlanID,
 			PlanRevision:               plan.Revision,
 			ExpectedPlanRecordRevision: planRecord.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 approvalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              launchAuthorization,
 		},
 	)
 	if err != nil {
@@ -321,9 +337,10 @@ func newTeamCancellationFixture(
 			UpdatedAt:      approvedPlan.UpdatedAt,
 		},
 		Approval: teamorchestration.ApprovalFact{
-			Signature:  approval.Signature,
-			ApprovedAt: approval.ApprovedAt,
-			CreatedAt:  approval.CreatedAt,
+			Signature:     approval.Signature,
+			Authorization: approval.Authorization,
+			ApprovedAt:    approval.ApprovedAt,
+			CreatedAt:     approval.CreatedAt,
 		},
 	}
 	execution, err := teamexecution.Materialize(authorization)

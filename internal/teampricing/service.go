@@ -107,11 +107,6 @@ func (service *SnapshotService) Build(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	capturedAt := service.now().UTC().Truncate(time.Microsecond)
-	if capturedAt.IsZero() {
-		return nil, ErrInvalidSnapshotRequest
-	}
-
 	compute, err := service.compute.ReadComputeOffers(ctx, scope, region)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -144,21 +139,28 @@ func (service *SnapshotService) Build(
 		modelOffers = append(modelOffers, offer)
 	}
 
+	// The snapshot represents the completed evidence read. Capturing this time
+	// before the provider call can make fresh provider receipts appear to come
+	// from the future and fail the immutable snapshot validation below.
+	capturedAt := service.now().UTC().Truncate(time.Microsecond)
+	if capturedAt.IsZero() {
+		return nil, ErrInvalidSnapshotRequest
+	}
+
 	sources := append(service.models.sourceReceipts(), compute.Sources...)
-	validUntil := capturedAt.Add(teamplan.OfferSnapshotValidity)
 	for _, source := range sources {
-		validity := teamplan.OfferSnapshotValidity
+		maximumAge := teamplan.ComputePricingEvidenceValidity
 		if source.Kind == teamplan.OfferSourceModelPricing {
-			validity = teamplan.ModelPricingEvidenceValidity
+			maximumAge = teamplan.ModelPricingEvidenceValidity
 		}
-		sourceExpiry := source.CapturedAt.Add(validity)
-		if sourceExpiry.Before(validUntil) {
-			validUntil = sourceExpiry
+		if source.CapturedAt.After(capturedAt) {
+			return nil, ErrInvalidSnapshotRequest
+		}
+		if capturedAt.Sub(source.CapturedAt) > maximumAge {
+			return nil, ErrPricingEvidenceExpired
 		}
 	}
-	if !capturedAt.Before(validUntil) {
-		return nil, ErrPricingEvidenceExpired
-	}
+	validUntil := capturedAt.Add(teamplan.OfferSnapshotValidity)
 
 	snapshotID, err := service.newID()
 	if err != nil {

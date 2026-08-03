@@ -2,11 +2,13 @@ package teamplan
 
 import (
 	"math"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 )
 
 func estimateRoleCost(
@@ -338,7 +340,9 @@ func topologicalAssignments(assignments []WorkerAssignment) ([]string, error) {
 }
 
 func validatePlan(plan Plan) error {
-	if plan.SchemaVersion != SchemaV1 ||
+	if (plan.SchemaVersion != SchemaV1 &&
+		plan.SchemaVersion != SchemaV2 &&
+		plan.SchemaVersion != SchemaV3) ||
 		!canonicalUUID(plan.PlanID) ||
 		plan.Revision == 0 ||
 		!validText(plan.OwnerID, 255) ||
@@ -351,7 +355,7 @@ func validatePlan(plan Plan) error {
 		!sha256Pattern.MatchString(plan.PricingSnapshotDigest) ||
 		!validQuoteWindow(plan.QuotedAt, plan.ValidUntil) ||
 		plan.ProposalConfidence == 0 || plan.ProposalConfidence > 100 ||
-		!validSafeText(plan.ProposalRationale, 4096) ||
+		!validMultilineSafeText(plan.ProposalRationale, 4096) ||
 		plan.WorkerCount == 0 ||
 		plan.WorkerCount != uint32(len(plan.Assignments)) ||
 		plan.WorkerCount > absoluteMaxWorkers ||
@@ -364,6 +368,25 @@ func validatePlan(plan Plan) error {
 		plan.Schedule.ExpectedWallTime%time.Second != 0 ||
 		plan.Schedule.MaximumWallTime%time.Second != 0 {
 		return ErrInvalid
+	}
+	switch plan.SchemaVersion {
+	case SchemaV1:
+		if plan.InputSnapshot != (taskinput.BindingV1{}) {
+			return ErrInvalid
+		}
+		if plan.TaskInput != (taskinput.BindingV2{}) {
+			return ErrInvalid
+		}
+	case SchemaV2:
+		if plan.InputSnapshot.Validate() != nil ||
+			plan.TaskInput != (taskinput.BindingV2{}) {
+			return ErrInvalid
+		}
+	case SchemaV3:
+		if plan.InputSnapshot != (taskinput.BindingV1{}) ||
+			plan.TaskInput.Validate() != nil {
+			return ErrInvalid
+		}
 	}
 	if !slices.IsSortedFunc(plan.Assignments, func(left, right WorkerAssignment) int {
 		return strings.Compare(left.RoleID, right.RoleID)
@@ -403,7 +426,7 @@ func validatePlan(plan Plan) error {
 func validateAssignment(value WorkerAssignment) error {
 	if !roleIDPattern.MatchString(value.RoleID) ||
 		!validSafeText(value.Title, 160) ||
-		!validSafeText(value.Objective, 8192) ||
+		!validMultilineSafeText(value.Objective, 8192) ||
 		!validWorkClass(value.WorkClass) ||
 		len(value.RequiredCapabilities) == 0 ||
 		!uniqueValues(value.RequiredCapabilities, validCapability) ||
@@ -436,11 +459,77 @@ func validateAssignment(value WorkerAssignment) error {
 		value.ColdStart%time.Second != 0 {
 		return ErrInvalid
 	}
+	if value.Marketplace != nil &&
+		validateMarketplaceBinding(
+			*value.Marketplace,
+			value.RuntimeReleaseID,
+			value.RuntimeImageDigest,
+		) != nil {
+		return ErrInvalid
+	}
 	if slices.Contains(value.RequiredCapabilities, CapabilityRepositoryWrite) &&
 		value.Workspace == WorkspaceReadOnly {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func validateMarketplaceBinding(
+	value WorkerMarketplaceBindingV1,
+	runtimeReleaseID,
+	runtimeImageDigest string,
+) error {
+	if value.SchemaVersion != WorkerMarketplaceBindingSchemaV1 ||
+		!canonicalUUID(value.RegistryID) ||
+		!sha256Pattern.MatchString(value.RegistryRevision) ||
+		!canonicalUUID(value.ReleaseID) ||
+		value.ReleaseID != runtimeReleaseID ||
+		!canonicalUUID(value.WorkerTypeID) ||
+		!canonicalUUID(value.PublisherID) ||
+		!validSafeText(value.PublisherDisplayName, 128) ||
+		(value.PublisherTier != "dirextalk_official" &&
+			value.PublisherTier != "verified_partner" &&
+			value.PublisherTier != "organization_private") ||
+		(value.OrganizationID != "" &&
+			!canonicalUUID(value.OrganizationID)) ||
+		!sha256Pattern.MatchString(value.ManifestDigest) ||
+		!validMarketplaceRepository(value.ImageRepository) ||
+		!sha256Pattern.MatchString(value.ImageDigest) ||
+		value.ImageDigest != runtimeImageDigest ||
+		!sha256Pattern.MatchString(value.ImageSignatureDigest) ||
+		!sha256Pattern.MatchString(value.SBOMDigest) ||
+		!sha256Pattern.MatchString(value.ProvenanceEnvelopeDigest) ||
+		!canonicalUUID(value.ReviewID) ||
+		!sha256Pattern.MatchString(value.ReviewPolicyRevision) ||
+		(value.ReviewRiskClass != "low" &&
+			value.ReviewRiskClass != "moderate" &&
+			value.ReviewRiskClass != "high") ||
+		!utcTimestamp(value.ReviewValidUntil) ||
+		value.GrantedPermissions.Validate() != nil {
+		return ErrInvalid
+	}
+	if (value.PublisherTier == "organization_private") !=
+		(value.OrganizationID != "") {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validMarketplaceRepository(value string) bool {
+	if value == "" ||
+		value != strings.ToLower(value) ||
+		strings.Contains(value, "..") ||
+		strings.ContainsAny(value, "@?#") {
+		return false
+	}
+	parsed, err := url.Parse("oci://" + value)
+	return err == nil &&
+		parsed.User == nil &&
+		parsed.Host != "" &&
+		parsed.Path != "" &&
+		parsed.Path != "/" &&
+		!strings.Contains(parsed.Path, ":") &&
+		!strings.HasSuffix(parsed.Path, "/")
 }
 
 func validateCost(cost CostEstimate, assignments []WorkerAssignment) error {

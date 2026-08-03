@@ -19,6 +19,7 @@ var (
 	ErrFoundationPermissionDenied   = errors.New("AWS foundation bootstrap permission denied")
 	ErrIdentityConfirmationMismatch = errors.New("AWS account or Region did not match confirmation")
 	ErrFoundationDestroyBlocked     = errors.New("AWS Foundation teardown is incomplete")
+	ErrFoundationTemplateChanged    = errors.New("AWS Foundation template changed after approval")
 	immutableImagePattern           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]*:[vV]?[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta|rc)(?:[.-][A-Za-z0-9][A-Za-z0-9.-]*)?@sha256:[a-f0-9]{64}$`)
 )
 
@@ -48,12 +49,25 @@ type Bootstrapper struct {
 	mu           sync.Mutex
 }
 
+// TemplateDigest is the immutable identity of the exact canonical template
+// body accepted by Mutate and sent to CloudFormation.
+func (bootstrapper *Bootstrapper) TemplateDigest() string {
+	if bootstrapper == nil {
+		return ""
+	}
+	return bootstrapper.templateHash
+}
+
 func NewBootstrapper(factory awsprovider.BootstrapProviderFactory, vault *CredentialVault, template []byte, now func() time.Time) (*Bootstrapper, error) {
-	if factory == nil || vault == nil || now == nil || ValidateTemplate(template) != nil {
+	if factory == nil || vault == nil || now == nil {
 		return nil, ErrFoundationBootstrap
 	}
-	hash := sha256.Sum256(template)
-	return &Bootstrapper{factory: factory, vault: vault, templateBody: string(template), templateHash: "sha256:" + hex.EncodeToString(hash[:]), now: now}, nil
+	templateBody, err := CanonicalTemplateBody(template)
+	if err != nil {
+		return nil, ErrFoundationBootstrap
+	}
+	hash := sha256.Sum256(templateBody)
+	return &Bootstrapper{factory: factory, vault: vault, templateBody: string(templateBody), templateHash: "sha256:" + hex.EncodeToString(hash[:]), now: now}, nil
 }
 
 func (bootstrapper *Bootstrapper) Establish(ctx context.Context, payload []byte, request EstablishRequest) (EstablishResult, error) {

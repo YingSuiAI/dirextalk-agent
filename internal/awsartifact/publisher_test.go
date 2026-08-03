@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -45,12 +46,14 @@ type storedObject struct {
 	bucketKey   bool
 	metadata    map[string]string
 	tagging     string
+	versionID   string
 }
 
 type fakeS3 struct {
 	objects         map[string]storedObject
 	getCalls        int
 	putCalls        int
+	copyCalls       int
 	lostResponse    map[string]bool
 	corruptReadback bool
 }
@@ -78,6 +81,10 @@ func (fake *fakeS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ .
 	if !ok {
 		return nil, fakeAPIError{code: "NotFound"}
 	}
+	if requested := aws.ToString(input.VersionId); requested != "" &&
+		requested != object.versionID {
+		return nil, fakeAPIError{code: "NoSuchVersion"}
+	}
 	kmsKey := object.kmsKey
 	if fake.corruptReadback {
 		kmsKey = ""
@@ -86,6 +93,7 @@ func (fake *fakeS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ .
 		ContentLength: aws.Int64(int64(len(object.payload))), ContentType: &object.contentType,
 		ChecksumSHA256: &object.checksum, ServerSideEncryption: s3types.ServerSideEncryptionAwsKms,
 		SSEKMSKeyId: &kmsKey, BucketKeyEnabled: aws.Bool(object.bucketKey), Metadata: cloneMetadata(object.metadata),
+		VersionId: &object.versionID,
 	}, nil
 }
 
@@ -109,11 +117,57 @@ func (fake *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...
 		payload: append([]byte(nil), payload...), contentType: aws.ToString(input.ContentType),
 		checksum: aws.ToString(input.ChecksumSHA256), kmsKey: aws.ToString(input.SSEKMSKeyId),
 		bucketKey: aws.ToBool(input.BucketKeyEnabled), metadata: cloneMetadata(input.Metadata), tagging: aws.ToString(input.Tagging),
+		versionID: "version-1",
 	}
 	if fake.lostResponse[key] {
 		return nil, errors.New("response lost after durable write")
 	}
 	return &s3.PutObjectOutput{}, nil
+}
+
+func (fake *fakeS3) CopyObject(_ context.Context, input *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	fake.copyCalls++
+	rawSource := aws.ToString(input.CopySource)
+	parts := strings.SplitN(rawSource, "?versionId=", 2)
+	if len(parts) != 2 {
+		return nil, errors.New("copy source is not version bound")
+	}
+	sourceName, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	versionID, err := url.QueryUnescape(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	source, ok := fake.objects[sourceName]
+	if !ok || source.versionID != versionID {
+		return nil, fakeAPIError{code: "NoSuchVersion"}
+	}
+	targetName := aws.ToString(input.Bucket) + "/" + aws.ToString(input.Key)
+	if _, exists := fake.objects[targetName]; exists {
+		return nil, errors.New("unsafe CopyObject overwrite")
+	}
+	if input.MetadataDirective != s3types.MetadataDirectiveReplace ||
+		(aws.ToString(input.Tagging) != "" &&
+			input.TaggingDirective != s3types.TaggingDirectiveReplace) ||
+		input.ChecksumAlgorithm != s3types.ChecksumAlgorithmSha256 ||
+		input.ServerSideEncryption != s3types.ServerSideEncryptionAwsKms ||
+		aws.ToString(input.SSEKMSKeyId) == "" ||
+		!aws.ToBool(input.BucketKeyEnabled) {
+		return nil, errors.New("unsafe CopyObject request")
+	}
+	fake.objects[targetName] = storedObject{
+		payload:     append([]byte(nil), source.payload...),
+		contentType: aws.ToString(input.ContentType),
+		checksum:    source.checksum,
+		kmsKey:      aws.ToString(input.SSEKMSKeyId),
+		bucketKey:   aws.ToBool(input.BucketKeyEnabled),
+		metadata:    cloneMetadata(input.Metadata),
+		tagging:     aws.ToString(input.Tagging),
+		versionID:   "version-1",
+	}
+	return &s3.CopyObjectOutput{}, nil
 }
 
 func TestBundlePublisherUploadsEncryptedImmutableDeploymentArtifactsIdempotently(t *testing.T) {

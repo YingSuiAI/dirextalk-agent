@@ -200,10 +200,24 @@ type ListResult struct {
 	NextCursor string
 }
 
+type StatusCount struct {
+	ExecutionStatus ExecutionStatus
+	OutcomeStatus   OutcomeStatus
+	Count           int64
+}
+
+type Overview struct {
+	TotalCount   int64
+	StatusCounts []StatusCount
+	RecentTasks  []Task
+	AsOf         time.Time
+}
+
 type Store interface {
 	Create(context.Context, MutationScope, CreateCommand) (Task, error)
 	Get(context.Context, string) (Task, error)
 	List(context.Context, ListQuery) (ListResult, error)
+	GetOverview(context.Context, string, int) (Overview, error)
 	Cancel(context.Context, MutationScope, CancelCommand) (Task, error)
 	ListSteps(context.Context, string) ([]Step, error)
 	EventsAfter(context.Context, int64, int) ([]Event, error)

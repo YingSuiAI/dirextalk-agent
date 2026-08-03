@@ -114,6 +114,74 @@ func TestCatalogCredentialReadinessPropagatesCancellation(t *testing.T) {
 	}
 }
 
+func TestCatalogCredentialMaterializationRequiresExactApprovedSelection(
+	t *testing.T,
+) {
+	t.Parallel()
+	catalog, err := NewModelOfferCatalog(
+		validCatalogDocument(),
+		profileCatalog(t),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := &credentialReadinessResolver{
+		secret: []byte("synthetic-provider-token"),
+	}
+	readiness, err := NewCatalogCredentialReadiness(catalog, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CredentialMaterializationRequest{
+		ProfileID:           "openai-codex",
+		Provider:            "openai",
+		Model:               "gpt-codex",
+		ModelInterface:      "openai_responses",
+		WorkerCredentialRef: "secret_ref:model/openai-codex",
+	}
+	var observed []byte
+	if err := readiness.Materialize(
+		context.Background(),
+		request,
+		func(secret []byte) error {
+			observed = append([]byte(nil), secret...)
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if string(observed) != "synthetic-provider-token" ||
+		resolver.reference != "mounted:openai-codex" {
+		t.Fatalf(
+			"materialized=%q source=%q",
+			observed,
+			resolver.reference,
+		)
+	}
+	for index, value := range resolver.secret {
+		if value != 0 {
+			t.Fatalf("secret byte %d was not cleared", index)
+		}
+	}
+
+	resolver.calls = 0
+	resolver.secret = []byte("must-not-be-read")
+	request.Model = "substituted-model"
+	if err := readiness.Materialize(
+		context.Background(),
+		request,
+		func([]byte) error {
+			t.Fatal("mismatched selection reached secret callback")
+			return nil
+		},
+	); !errors.Is(err, ErrCredentialReadinessUnavailable) {
+		t.Fatalf("mismatched selection error=%v", err)
+	}
+	if resolver.calls != 0 {
+		t.Fatalf("mismatched selection resolved %d secrets", resolver.calls)
+	}
+}
+
 type credentialReadinessResolver struct {
 	secret    []byte
 	err       error

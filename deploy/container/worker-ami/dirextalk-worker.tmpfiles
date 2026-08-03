@@ -1,1 +1,4 @@
 d /var/lib/dirextalk-worker 0700 dirextalk-worker dirextalk-worker -
+d /var/lib/dirextalk-worker/workspaces 0700 dirextalk-worker dirextalk-worker -
+d /var/lib/dirextalk-worker/runtime-state 0700 dirextalk-worker dirextalk-worker -
+d /opt/dirextalk-worker/runtime-contexts 0700 dirextalk-worker dirextalk-worker -

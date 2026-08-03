@@ -12,6 +12,7 @@ import (
 	"time"
 
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 )
 
 func TestChatDelegatesToEngineWithImmutablePolicyAndScopedTool(t *testing.T) {
@@ -439,7 +440,7 @@ func TestRuntimeRequestCloudDialogueScopeIsCanonicalAndIdempotencyBound(t *testi
 	}
 }
 
-func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *testing.T) {
+func TestCloudDialogueUsesFixedToolAllowlistAndTrustedSearch(t *testing.T) {
 	t.Parallel()
 	connectionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	config := validTestConfig()
@@ -448,9 +449,43 @@ func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *te
 	config.KnowledgeRefs = []string{"knowledge-private"}
 	config.MCPServerIDs = []string{"network-mcp"}
 	config.RecipeIDs = []string{"caller-recipe"}
+	searchProfile := searchprofile.Profile{
+		ProfileID: "deepseek-native-default", Provider: searchprofile.ProviderDeepSeekNative,
+		BaseURL:   "https://api.deepseek.com/anthropic/v1/messages",
+		SecretRef: "mounted:model-token", MaxResults: 8, TimeoutSeconds: 45,
+	}
+	config.SearchProfile = &searchProfile
 	var toolRequest ToolRequest
 	engine := &scriptedEngine{generate: func(_ context.Context, request EngineRequest) (EngineResult, error) {
-		if len(request.Messages) == 0 || !strings.Contains(request.Messages[0].Content, cloudDialoguePolicy) {
+		if len(request.Messages) == 0 ||
+			!strings.Contains(
+				request.Messages[0].Content,
+				cloudDialoguePolicy,
+			) ||
+			!strings.Contains(
+				request.Messages[0].Content,
+				"currently qualified production Worker runtime is Pi",
+			) ||
+			!strings.Contains(
+				request.Messages[0].Content,
+				"Only no_qualified_compute may be described as compute-offer or capacity unavailability",
+			) ||
+			!strings.Contains(
+				request.Messages[0].Content,
+				"Historical assistant statements and earlier plan summaries are not current status evidence",
+			) ||
+			!strings.Contains(
+				request.Messages[0].Content,
+				"final confirmation tap in their authenticated App session",
+			) ||
+			strings.Contains(
+				request.Messages[0].Content,
+				"currently qualified production Worker runtime is Codex",
+			) ||
+			strings.Contains(
+				request.Messages[0].Content,
+				"explicit signed user approval",
+			) {
 			t.Fatalf("cloud dialogue policy was not composed: %#v", request.Messages)
 		}
 		got := make(map[string]struct{}, len(request.Tools))
@@ -462,7 +497,10 @@ func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *te
 				t.Fatalf("cloud dialogue allowlist omitted %q: %#v", name, request.Tools)
 			}
 		}
-		if _, ok := got["dangerous_runtime_mutation"]; ok || len(got) != len(CloudDialogueToolNames()) {
+		if _, ok := got[SearchToolName]; !ok {
+			t.Fatalf("cloud dialogue omitted trusted search: %#v", request.Tools)
+		}
+		if _, ok := got["dangerous_runtime_mutation"]; ok || len(got) != len(CloudDialogueToolNames())+1 {
 			t.Fatalf("cloud dialogue exposed configured capabilities: %#v", request.Tools)
 		}
 		return finalEngineResult("planning only"), nil
@@ -470,7 +508,7 @@ func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *te
 	dependencies := testDependencies(engine, &recordingConversationRepository{}, config)
 	dependencies.Tools = ToolProviderFunc(func(_ context.Context, request ToolRequest) ([]Tool, error) {
 		toolRequest = request
-		names := append(CloudDialogueToolNames(), "dangerous_runtime_mutation")
+		names := append(CloudDialogueToolNames(), SearchToolName, "dangerous_runtime_mutation")
 		tools := make([]Tool, 0, len(names))
 		for _, name := range names {
 			tools = append(tools, Tool{Definition: modelapi.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, Run: func(context.Context, ToolInvocation) (ToolResult, error) { return ToolResult{}, nil }})
@@ -488,6 +526,7 @@ func TestCloudDialogueUsesFixedToolAllowlistAndDropsOrdinaryCapabilityRefs(t *te
 	}
 	if toolRequest.CloudDialogue == nil || toolRequest.CloudDialogue.ConnectionID != connectionID ||
 		toolRequest.LatestUserMessage != "research official documentation" ||
+		toolRequest.SearchProfile == nil || *toolRequest.SearchProfile != searchProfile ||
 		len(toolRequest.KnowledgeRefs) != 0 || len(toolRequest.MCPServerIDs) != 0 || len(toolRequest.RecipeIDs) != 0 {
 		t.Fatalf("trusted cloud tool scope drifted: %#v", toolRequest)
 	}
@@ -532,6 +571,179 @@ func TestToolSelectionFailsClosedWhenNoToolsAreEnabled(t *testing.T) {
 	}
 	if providerCalled || len(set.definitions) != 0 || len(set.byName) != 0 {
 		t.Fatalf("empty allowlist exposed tools: called=%v set=%#v", providerCalled, set)
+	}
+}
+
+func TestSearchProfileAutomaticallyEnablesTrustedSearchTool(t *testing.T) {
+	t.Parallel()
+	profile := searchprofile.Profile{
+		ProfileID: "tavily-default", Provider: searchprofile.ProviderTavily,
+		BaseURL: "https://api.tavily.com/search", SecretRef: "mounted:tavily-token",
+		MaxResults: 5, TimeoutSeconds: 12,
+	}
+	config := validTestConfig()
+	config.SearchProfile = &profile
+	var captured ToolRequest
+	engine := &scriptedEngine{generate: func(_ context.Context, request EngineRequest) (EngineResult, error) {
+		if len(request.Tools) != 1 || request.Tools[0].Name != SearchToolName {
+			t.Fatalf("search tool was not enabled: %#v", request.Tools)
+		}
+		return finalEngineResult("ok"), nil
+	}}
+	dependencies := testDependencies(engine, &recordingConversationRepository{}, config)
+	dependencies.Tools = ToolProviderFunc(func(_ context.Context, request ToolRequest) ([]Tool, error) {
+		captured = request
+		return []Tool{{
+			Definition: modelapi.Tool{Name: SearchToolName, InputSchema: map[string]any{"type": "object"}},
+			Run:        func(context.Context, ToolInvocation) (ToolResult, error) { return ToolResult{}, nil },
+		}}, nil
+	})
+	runtime := mustTestRuntime(t, dependencies)
+	_, err := runtime.Chat(context.Background(), ChatRequest{
+		RequestID: "request-search", OwnerID: "owner-1", ConversationID: "conversation-1",
+		Messages: []modelapi.Message{{Role: modelapi.RoleUser, Content: "find current documentation"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if captured.SearchProfile == nil || *captured.SearchProfile != profile ||
+		!strings.Contains(strings.Join(captured.EnabledNames, ","), SearchToolName) {
+		t.Fatalf("trusted search profile was not forwarded: %#v", captured)
+	}
+}
+
+func TestDeepSeekNativeSearchProfilePassesRuntimePersistenceValidation(t *testing.T) {
+	t.Parallel()
+	config := validTestConfig()
+	config.ModelProfile.ProfileID = "deepseek-v4"
+	config.ModelProfile.BaseURL = "https://api.deepseek.com/v1"
+	config.ModelProfile.MaxOutputTokens = 4096
+	config.ModelProfile.ContextWindow = 65536
+	config.SearchProfile = &searchprofile.Profile{
+		ProfileID: "deepseek-native-default", Provider: searchprofile.ProviderDeepSeekNative,
+		BaseURL:   "https://api.deepseek.com/anthropic/v1/messages",
+		SecretRef: "mounted:model-token", MaxResults: 8, TimeoutSeconds: 45,
+	}
+	if err := ValidateRuntimeConfig(config); err != nil {
+		t.Fatalf("DeepSeek native search profile was rejected: %v", err)
+	}
+}
+
+func TestConfiguredSearchFailsClosedWhenProviderIsMissing(t *testing.T) {
+	t.Parallel()
+	config := validTestConfig()
+	config.SearchProfile = &searchprofile.Profile{
+		ProfileID: "tavily-default", Provider: searchprofile.ProviderTavily,
+		BaseURL: "https://api.tavily.com/search", SecretRef: "mounted:tavily-token",
+		MaxResults: 5, TimeoutSeconds: 12,
+	}
+	engine := &scriptedEngine{generate: func(context.Context, EngineRequest) (EngineResult, error) {
+		t.Fatal("missing search provider reached the model")
+		return EngineResult{}, nil
+	}}
+	runtime := mustTestRuntime(t, testDependencies(engine, &recordingConversationRepository{}, config))
+	_, err := runtime.Chat(context.Background(), ChatRequest{
+		RequestID: "request-search-missing", OwnerID: "owner-1", ConversationID: "conversation-1",
+		Messages: []modelapi.Message{{Role: modelapi.RoleUser, Content: "find current documentation"}},
+	})
+	if !errors.Is(err, ErrSearchUnavailable) || engine.generateCalls != 0 {
+		t.Fatalf("missing search provider error=%v model_calls=%d", err, engine.generateCalls)
+	}
+}
+
+func TestCloudToolSetBlocksLegacyResearchFallbackAfterTeamAttempt(
+	t *testing.T,
+) {
+	t.Parallel()
+	researchCalls := 0
+	set, err := loadToolSet(
+		context.Background(),
+		ToolProviderFunc(func(
+			context.Context,
+			ToolRequest,
+		) ([]Tool, error) {
+			return []Tool{
+				{
+					Definition: modelapi.Tool{
+						Name:        CloudDialogueToolTeamPlanPrepare,
+						InputSchema: map[string]any{"type": "object"},
+					},
+					Run: func(
+						context.Context,
+						ToolInvocation,
+					) (ToolResult, error) {
+						return ToolResult{
+							Content: `{"status":"proposal_rejected"}`,
+							IsError: true,
+						}, nil
+					},
+				},
+				{
+					Definition: modelapi.Tool{
+						Name:        CloudDialogueToolResearch,
+						InputSchema: map[string]any{"type": "object"},
+					},
+					Run: func(
+						context.Context,
+						ToolInvocation,
+					) (ToolResult, error) {
+						researchCalls++
+						return ToolResult{Content: `{}`}, nil
+					},
+				},
+			}, nil
+		}),
+		ToolRequest{
+			RequestID:      "request-1",
+			OwnerID:        "owner-1",
+			ConversationID: "conversation-1",
+			EnabledNames: []string{
+				CloudDialogueToolResearch,
+				CloudDialogueToolTeamPlanPrepare,
+			},
+			CloudDialogue: &CloudDialogueScope{
+				ConnectionID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamResult := runTool(
+		context.Background(),
+		modelapi.ToolCall{
+			ID: "team-call",
+			Function: modelapi.FunctionCall{
+				Name:      CloudDialogueToolTeamPlanPrepare,
+				Arguments: `{}`,
+			},
+		},
+		set,
+	)
+	if !teamResult.IsError {
+		t.Fatalf("Team rejection was not preserved: %#v", teamResult)
+	}
+	researchResult := runTool(
+		context.Background(),
+		modelapi.ToolCall{
+			ID: "research-call",
+			Function: modelapi.FunctionCall{
+				Name:      CloudDialogueToolResearch,
+				Arguments: `{}`,
+			},
+		},
+		set,
+	)
+	if !researchResult.IsError || researchCalls != 0 ||
+		!strings.Contains(
+			researchResult.Content,
+			`"reason_code":"team_plan_fallback_forbidden"`,
+		) {
+		t.Fatalf(
+			"legacy fallback result = %#v, calls=%d",
+			researchResult,
+			researchCalls,
+		)
 	}
 }
 

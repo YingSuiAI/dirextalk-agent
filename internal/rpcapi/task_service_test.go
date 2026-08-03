@@ -19,6 +19,7 @@ import (
 type taskStoreStub struct {
 	create      func(context.Context, task.MutationScope, task.CreateCommand) (task.Task, error)
 	eventsAfter func(context.Context, int64, int) ([]task.Event, error)
+	overview    func(context.Context, string, int) (task.Overview, error)
 }
 
 func (store taskStoreStub) Create(ctx context.Context, scope task.MutationScope, command task.CreateCommand) (task.Task, error) {
@@ -29,6 +30,12 @@ func (taskStoreStub) Get(context.Context, string) (task.Task, error) {
 }
 func (taskStoreStub) List(context.Context, task.ListQuery) (task.ListResult, error) {
 	return task.ListResult{}, nil
+}
+func (store taskStoreStub) GetOverview(ctx context.Context, ownerID string, recentLimit int) (task.Overview, error) {
+	if store.overview == nil {
+		return task.Overview{}, nil
+	}
+	return store.overview(ctx, ownerID, recentLimit)
 }
 func (taskStoreStub) Cancel(context.Context, task.MutationScope, task.CancelCommand) (task.Task, error) {
 	return task.Task{}, task.ErrNotFound
@@ -74,6 +81,40 @@ func TestCreateTaskRequiresRetentionAndMapsSafeErrors(t *testing.T) {
 	})
 	if status.Code(err) != codes.InvalidArgument || !called {
 		t.Fatalf("raw secret = (%v, called=%v), want InvalidArgument", err, called)
+	}
+}
+
+func TestGetTaskOverviewMapsExactCountsAndRecentTasks(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, time.August, 2, 5, 6, 7, 0, time.UTC)
+	recent := task.Task{
+		TaskID: uuid.NewString(), OwnerID: "owner", Goal: "Build release",
+		ExecutionStatus: task.ExecutionRunning, OutcomeStatus: task.OutcomePending,
+		RetentionPolicy: task.RetentionEphemeralAutoDestroy, Revision: 4,
+		CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+	}
+	service := NewTaskService(taskStoreStub{
+		overview: func(_ context.Context, ownerID string, recentLimit int) (task.Overview, error) {
+			if ownerID != "owner" || recentLimit != 3 {
+				t.Fatalf("overview request = %q, %d", ownerID, recentLimit)
+			}
+			return task.Overview{
+				TotalCount: 7,
+				StatusCounts: []task.StatusCount{
+					{ExecutionStatus: task.ExecutionRunning, OutcomeStatus: task.OutcomePending, Count: 2},
+					{ExecutionStatus: task.ExecutionFinished, OutcomeStatus: task.OutcomeSucceeded, Count: 5},
+				},
+				RecentTasks: []task.Task{recent}, AsOf: now,
+			}, nil
+		},
+	})
+	response, err := service.GetTaskOverview(context.Background(), &agentv1.GetTaskOverviewRequest{
+		OwnerId: "owner", RecentLimit: 3,
+	})
+	if err != nil || response.GetTotalCount() != 7 || len(response.GetStatusCounts()) != 2 ||
+		len(response.GetRecentTasks()) != 1 || response.GetRecentTasks()[0].GetTaskId() != recent.TaskID ||
+		!response.GetAsOf().AsTime().Equal(now) {
+		t.Fatalf("GetTaskOverview() = %#v, %v", response, err)
 	}
 }
 

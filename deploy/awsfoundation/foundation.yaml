@@ -503,7 +503,7 @@ Resources:
                   - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
                   - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
                   - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
-                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+                  - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*
                   - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
                 Condition:
                   StringEquals:
@@ -690,7 +690,7 @@ Resources:
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/*
             Condition:
               StringEquals:
@@ -814,6 +814,11 @@ Resources:
                   - dirextalk_embedded_parent
                   - dtx:s
                   - dirextalk_client_token
+                  - dirextalk:component
+                  - dirextalk:worker_ami_build_digest
+                  - dirextalk:release_manifest_digest
+                  - dirextalk:worker_rootfs_digest
+                  - dirextalk:worker_binary_digest
           - Sid: CreateImageFromOwnedBuilder
             Effect: Allow
             Action:
@@ -841,7 +846,7 @@ Resources:
               - ec2:CreateTags
             Resource:
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*
             Condition:
               StringEquals:
                 aws:RequestTag/dirextalk:agent_instance_id:
@@ -870,7 +875,7 @@ Resources:
               # types. The resource-type wildcard avoids the fixed IAM inline
               # policy quota while the ownership tag remains mandatory.
               - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*
-              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:snapshot/*
+              - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*
             Condition:
               StringEquals:
                 ec2:ResourceTag/dirextalk:agent_instance_id:
@@ -954,34 +959,6 @@ Resources:
               - s3:PutObjectVersionTagging
             Resource:
               Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/artifacts/*
-          - Sid: CreateTaggedDeploymentSecrets
-            Effect: Allow
-            Action:
-              - secretsmanager:CreateSecret
-            Resource:
-              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
-            Condition:
-              StringEquals:
-                aws:RequestTag/dirextalk:agent_instance_id:
-                  Ref: AgentInstanceId
-          - Sid: MutateOnlyOwnedDeploymentSecrets
-            Effect: Allow
-            Action:
-              - secretsmanager:DeleteSecret
-              - secretsmanager:DeleteResourcePolicy
-              - secretsmanager:DescribeSecret
-              - secretsmanager:GetSecretValue
-              - secretsmanager:GetResourcePolicy
-              - secretsmanager:PutSecretValue
-              - secretsmanager:PutResourcePolicy
-              - secretsmanager:TagResource
-              - secretsmanager:UntagResource
-            Resource:
-              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
-            Condition:
-              StringEquals:
-                aws:ResourceTag/dirextalk:agent_instance_id:
-                  Ref: AgentInstanceId
           - Sid: ResourceManifest
             Effect: Allow
             Action:
@@ -1036,9 +1013,9 @@ Resources:
               Bool:
                 kms:GrantIsForAWSResource: 'true'
 
-  # S3 authorizes x-amz-tagging on PutObject separately. Keep that permission
-  # out of the quota-bound runtime policy and restrict it to the two immutable
-  # control-artifact paths whose initial uploads always carry ownership tags.
+  # Keep small, independently bounded Control permissions out of the
+  # quota-bound runtime policy. The physical policy name is retained for
+  # compatibility with existing Foundation stacks.
   ControlArtifactTagPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -1058,6 +1035,100 @@ Resources:
               - Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/bundles/*
               - Fn::Sub: ${ArtifactBucket.Arn}/deployments/*/launch/*
               - Fn::Sub: ${ArtifactBucket.Arn}/workers/*/bundles/*
+          # A tagged security-group rule is a separate IAM resource when the
+          # AuthorizeSecurityGroupEgress request includes TagSpecifications.
+          # The runtime policy separately requires the parent security group
+          # to carry this Agent instance's ownership tag.
+          - Sid: AuthorizeTaggedWorkerAMIEgressRule
+            Effect: Allow
+            Action:
+              - ec2:AuthorizeSecurityGroupEgress
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group-rule/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+                aws:RequestTag/dirextalk:retention: ephemeral
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - Name
+                  - dirextalk:agent_instance_id
+                  - dirextalk:resource_id
+                  - dirextalk:retention
+          # RunInstances treats a network interface created atomically with
+          # the instance as a new resource. Existing interfaces remain gated
+          # by UseOwnedNetworkInterface in the runtime policy.
+          - Sid: RunTaggedNetworkInterface
+            Effect: Allow
+            Action:
+              - ec2:RunInstances
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          # CreateImage authorizes its implicit root snapshot separately from
+          # the source instance and image. EC2 snapshot ARNs omit the account
+          # segment, so keep the resource region-scoped and require the complete
+          # immutable attestation tag set emitted by the Worker AMI adapter.
+          - Sid: CreateImageSnapshotOutput
+            Effect: Allow
+            Action:
+              - ec2:CreateImage
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+              'Null':
+                aws:RequestTag/dirextalk:release_manifest_digest: 'false'
+                aws:RequestTag/dirextalk:worker_rootfs_digest: 'false'
+                aws:RequestTag/dirextalk:worker_binary_digest: 'false'
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - dirextalk:agent_instance_id
+                  - dirextalk:release_manifest_digest
+                  - dirextalk:worker_rootfs_digest
+                  - dirextalk:worker_binary_digest
+          - Sid: CreateTaggedDeploymentSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:CreateSecret
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
+            Condition:
+              StringEquals:
+                aws:RequestTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          - Sid: MutateOnlyOwnedDeploymentSecrets
+            Effect: Allow
+            Action:
+              - secretsmanager:DeleteResourcePolicy
+              - secretsmanager:GetSecretValue
+              - secretsmanager:GetResourcePolicy
+              - secretsmanager:PutSecretValue
+              - secretsmanager:PutResourcePolicy
+              - secretsmanager:TagResource
+              - secretsmanager:UntagResource
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/dirextalk:agent_instance_id:
+                  Ref: AgentInstanceId
+          # After force deletion, Secrets Manager can no longer evaluate a
+          # resource-tag condition. Keep idempotent deletion and read-back
+          # bounded by this Agent's immutable deployment namespace instead.
+          - Sid: DestroyDeploymentSecretsByNamespace
+            Effect: Allow
+            Action:
+              - secretsmanager:DeleteSecret
+              - secretsmanager:DescribeSecret
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretNamespace}*
 
   # Keep public entry-point authority in a separate managed policy. The
   # existing runtime policy is already close to the IAM inline-policy quota;

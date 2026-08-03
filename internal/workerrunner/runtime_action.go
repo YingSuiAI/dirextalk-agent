@@ -28,7 +28,7 @@ func (handler *RuntimeExecuteAction) Validate(action ActionV1) error {
 	if handler == nil || handler.runtimes == nil ||
 		action.Kind != RuntimeExecuteActionKind ||
 		action.Runtime == nil || action.Noop != nil ||
-		action.Installer != nil {
+		action.Installer != nil || action.Input != nil {
 		return ErrInvalidBundle
 	}
 	if err := handler.runtimes.ValidateTask(action.Runtime.Task); err != nil {

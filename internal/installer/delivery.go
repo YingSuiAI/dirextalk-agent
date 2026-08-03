@@ -300,7 +300,10 @@ func ValidateRootTrustMaterial(material RootTrustMaterialV1) error {
 		return errorf(CodeInvalidSignature, "installer root trust identity is invalid")
 	}
 	signed := material.ArtifactManifest
-	if signed.Manifest.SchemaVersion != ArtifactManifestSchemaV1 || len(signed.Manifest.Artifacts) == 0 || len(signed.Manifest.Artifacts) > 128 ||
+	if signed.Manifest.SchemaVersion != ArtifactManifestSchemaV1 ||
+		(len(signed.Manifest.Artifacts) == 0 &&
+			len(signed.Manifest.Secrets) == 0) ||
+		len(signed.Manifest.Artifacts) > 128 ||
 		signed.SignerKeyID != SignerKeyID(ed25519.PublicKey(material.PublicKey)) || len(signed.Signature) != ed25519.SignatureSize ||
 		validateBinding(signed.Manifest.Binding) != nil {
 		return errorf(CodeInvalidSignature, "installer artifact manifest is invalid")

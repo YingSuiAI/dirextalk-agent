@@ -25,15 +25,27 @@ func (opener *activePlacementOpener) Open(_ context.Context, binding awsfoundati
 }
 
 type activePlacementPort struct {
-	result  awsprovider.PlacementV1
-	request awsprovider.PlacementRequestV1
-	calls   int
+	result       awsprovider.PlacementV1
+	request      awsprovider.PlacementRequestV1
+	exactResult  awsprovider.ExactPlacementV1
+	exactRequest awsprovider.ExactPlacementRequestV1
+	calls        int
+	exactCalls   int
 }
 
 func (port *activePlacementPort) Resolve(_ context.Context, request awsprovider.PlacementRequestV1) (awsprovider.PlacementV1, error) {
 	port.calls++
 	port.request = request
 	return port.result, nil
+}
+
+func (port *activePlacementPort) ResolveExact(
+	_ context.Context,
+	request awsprovider.ExactPlacementRequestV1,
+) (awsprovider.ExactPlacementV1, error) {
+	port.exactCalls++
+	port.exactRequest = request
+	return port.exactResult, nil
 }
 
 type activePlacementFactory struct {
@@ -87,6 +99,70 @@ func TestActivePlacementUsesOnlyBoundControlRoleAndWipesSourceCredential(t *test
 	}
 	if opener.binding.AgentInstanceID != testAgentID || opener.binding.AccountID != connection.AccountID || opener.binding.Region != connection.Region {
 		t.Fatalf("credential binding=%#v", opener.binding)
+	}
+}
+
+func TestActiveExactPlacementKeepsApprovedShapesAndWipesCredential(
+	t *testing.T,
+) {
+	connection := activePlacementConnection(t)
+	request := ActiveExactPlacementRequestV1{
+		OwnerID:      connection.OwnerID,
+		ConnectionID: connection.ConnectionID,
+		Placement: awsprovider.ExactPlacementRequestV1{
+			Shapes: []awsprovider.ExactPlacementShapeV1{{
+				InstanceType: "m7i.large",
+				Architecture: recipe.ArchitectureAMD64,
+				VCPU:         2,
+				MemoryMiB:    8192,
+				DiskGiB:      40,
+			}},
+			PublicIPv4:           true,
+			RuntimeHoursPerMonth: 1,
+		},
+	}
+	opener := &activePlacementOpener{
+		credentials: awsprovider.SourceCredentials{
+			AccessKeyID: []byte("AKIAABCDEFGHIJKLMNOP"),
+			SecretAccessKey: []byte(
+				"synthetic-source-secret-material-000000",
+			),
+		},
+	}
+	port := &activePlacementPort{
+		exactResult: awsprovider.ExactPlacementV1{
+			Region: connection.Region,
+		},
+	}
+	factory := &activePlacementFactory{port: port}
+	resolver, err := NewAWSActivePlacementResolver(
+		testAgentID,
+		opener,
+		factory,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolver.ResolveExact(
+		context.Background(),
+		connection,
+		request,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Region != connection.Region ||
+		port.exactCalls != 1 ||
+		port.exactRequest.Shapes[0].InstanceType != "m7i.large" ||
+		factory.source == nil ||
+		len(factory.source.AccessKeyID) != 0 ||
+		len(factory.source.SecretAccessKey) != 0 {
+		t.Fatalf(
+			"result=%#v exact_calls=%d request=%#v",
+			got,
+			port.exactCalls,
+			port.exactRequest,
+		)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/idempotency"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamcontroller"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 )
@@ -66,6 +68,7 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 		uuid.NewString(),
 		1,
 	)
+	plan = bindTeamPlanTaskInput(t, plan, createdTask.TaskID)
 	intent := teamPlanPreparationIntentFixture(plan, createdTask.TaskID)
 	key := uuid.NewString()
 	prepared, err := store.PrepareTeamPlan(
@@ -87,6 +90,34 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 		prepared.Plan.Status != postgres.TeamPlanReadyForConfirmation {
 		t.Fatalf("prepared Team Plan = %#v", prepared)
 	}
+	resolvedPlan, found, err := store.FindTeamPlanByTask(
+		ctx,
+		ownerID,
+		createdTask.TaskID,
+	)
+	if err != nil || !found ||
+		resolvedPlan.TaskID != createdTask.TaskID ||
+		resolvedPlan.Plan.PlanID != plan.PlanID ||
+		resolvedPlan.Plan.Revision != plan.Revision ||
+		resolvedPlan.Status != teamorchestration.PlanReadyForConfirmation {
+		t.Fatalf(
+			"Task Plan lookup=%#v found=%v error=%v",
+			resolvedPlan,
+			found,
+			err,
+		)
+	}
+	awaitingApprovalTask, err := store.Get(ctx, createdTask.TaskID)
+	if err != nil ||
+		awaitingApprovalTask.ExecutionStatus != task.ExecutionAwaitingApproval ||
+		awaitingApprovalTask.OutcomeStatus != task.OutcomePending ||
+		awaitingApprovalTask.Revision != createdTask.Revision+1 {
+		t.Fatalf(
+			"awaiting approval Task=%#v error=%v",
+			awaitingApprovalTask,
+			err,
+		)
+	}
 	replayed, found, err := store.FindPreparedTeamPlan(
 		ctx,
 		scope,
@@ -104,6 +135,11 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 			found,
 			err,
 		)
+	}
+	replayedTask, err := store.Get(ctx, createdTask.TaskID)
+	if err != nil || replayedTask.Revision != awaitingApprovalTask.Revision ||
+		replayedTask.ExecutionStatus != task.ExecutionAwaitingApproval {
+		t.Fatalf("replayed preparation Task=%#v error=%v", replayedTask, err)
 	}
 	changedIntent := intent
 	changedIntent.Proposal.Rationale += " changed"
@@ -193,21 +229,61 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 	}
 
 	time.Sleep(time.Until(snapshot.ValidUntil()) + 50*time.Millisecond)
-	expired, err := store.ExpireTeamPlan(
+	expiryWork, err := store.ListPlanExpiryWork(ctx, 10)
+	if err != nil || len(expiryWork) != 1 ||
+		expiryWork[0].OwnerID != ownerID ||
+		expiryWork[0].TaskID != createdTask.TaskID ||
+		expiryWork[0].PlanID != plan.PlanID ||
+		expiryWork[0].PlanRevision != plan.Revision ||
+		expiryWork[0].RecordRevision != prepared.Plan.RecordRevision ||
+		expiryWork[0].Status != teamcontroller.PlanExpiryReadyForConfirmation {
+		t.Fatalf("ready Team Plan expiry work=%#v error=%v", expiryWork, err)
+	}
+	if err := store.ExpireReadyPlan(
 		ctx,
 		scope,
-		postgres.ExpireTeamPlanCommand{
+		teamcontroller.ExpireReadyPlanRequest{
 			IdempotencyKey:         uuid.NewString(),
 			OwnerID:                ownerID,
 			PlanID:                 plan.PlanID,
 			PlanRevision:           plan.Revision,
 			ExpectedRecordRevision: prepared.Plan.RecordRevision,
 		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.GetTeamPlan(
+		ctx,
+		ownerID,
+		plan.PlanID,
+		plan.Revision,
 	)
 	if err != nil ||
 		expired.Status != postgres.TeamPlanExpired ||
 		expired.RecordRevision != 2 {
 		t.Fatalf("expired Team Plan=%#v error=%v", expired, err)
+	}
+	expiryWork, err = store.ListPlanExpiryWork(ctx, 10)
+	if err != nil || len(expiryWork) != 1 ||
+		expiryWork[0].Status != teamcontroller.PlanExpiryExpired ||
+		expiryWork[0].RecordRevision != expired.RecordRevision {
+		t.Fatalf("expired Team Plan recovery work=%#v error=%v", expiryWork, err)
+	}
+	currentTask, err := store.Get(ctx, createdTask.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Cancel(ctx, scope, task.CancelCommand{
+		IdempotencyKey:   uuid.NewString(),
+		TaskID:           createdTask.TaskID,
+		ExpectedRevision: currentTask.Revision,
+		Reason:           "expire Team Plan integration test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expiryWork, err = store.ListPlanExpiryWork(ctx, 10)
+	if err != nil || len(expiryWork) != 0 {
+		t.Fatalf("terminal Task expiry work=%#v error=%v", expiryWork, err)
 	}
 	expiredReplay, found, err := store.FindPreparedTeamPlan(
 		ctx,
@@ -278,6 +354,123 @@ func TestPrepareTeamPlanIsAtomicAndReplaysStableIntent(t *testing.T) {
 	}
 }
 
+func TestTeamPlanTaskReconcilerRepairsExistingPlanningTask(
+	t *testing.T,
+) {
+	pool, store, instanceID := newPlanningTestStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	scope := task.MutationScope{
+		ClientID:     "team-plan-task-state-migration",
+		CredentialID: uuid.NewString(),
+	}
+	ownerID := "owner-team-plan-task-state-migration"
+	connectionID := uuid.NewString()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO cloud_connections
+		    (connection_id, agent_instance_id, owner_id, account_id, region,
+		     control_role_arn, foundation_stack_id, credential_generation,
+		     status, revision)
+		VALUES ($1,$2,$3,'123456789012','us-east-1',
+		        'arn:aws:iam::123456789012:role/test-control',
+		        'test-foundation-stack',1,'active',1)`,
+		connectionID,
+		instanceID,
+		ownerID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	goal := "Repair a legacy Team Task approval projection."
+	createdTask, err := store.Create(
+		ctx,
+		scope,
+		task.CreateCommand{
+			IdempotencyKey: uuid.NewString(),
+			OwnerID:        ownerID,
+			Goal:           goal,
+			Retention:      task.RetentionEphemeralAutoDestroy,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snapshot := teamOfferSnapshotFixture(t, connectionID, now)
+	plan := teamPlanFixture(
+		t,
+		snapshot,
+		ownerID,
+		goal,
+		uuid.NewString(),
+		1,
+	)
+	plan = bindTeamPlanTaskInput(t, plan, createdTask.TaskID)
+	if _, err := store.PrepareTeamPlan(
+		ctx,
+		scope,
+		postgres.PrepareTeamPlanCommand{
+			IdempotencyKey: uuid.NewString(),
+			Intent:         teamPlanPreparationIntentFixture(plan, createdTask.TaskID),
+			Snapshot:       snapshot,
+			Plan:           plan,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var legacyRevision int64
+	if err := pool.QueryRow(ctx, `
+		UPDATE tasks
+		SET execution_status='planning'
+		WHERE task_id=$1
+		RETURNING revision`,
+		createdTask.TaskID,
+	).Scan(&legacyRevision); err != nil {
+		t.Fatal(err)
+	}
+	repairedCount, err := store.ReconcileTeamPlanTaskApprovalStates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repairedCount != 1 {
+		t.Fatalf("repaired Task count=%d", repairedCount)
+	}
+	repaired, err := store.Get(ctx, createdTask.TaskID)
+	if err != nil ||
+		repaired.ExecutionStatus != task.ExecutionAwaitingApproval ||
+		repaired.OutcomeStatus != task.OutcomePending ||
+		repaired.Revision != legacyRevision+1 {
+		t.Fatalf("repaired Task=%#v error=%v", repaired, err)
+	}
+	var eventCount, outboxCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+		    (SELECT count(*)
+		     FROM task_events
+		     WHERE aggregate_id=$1
+		       AND event_type='agent.task.awaiting_approval'
+		       AND summary_json->>'actor_client_id'=
+		           'system:team-plan-task-reconciler'),
+		    (SELECT count(*)
+		     FROM outbox_events AS outbox
+		     JOIN task_events AS event ON event.seq=outbox.event_seq
+		     WHERE event.aggregate_id=$1
+		       AND event.event_type='agent.task.awaiting_approval'
+		       AND event.summary_json->>'actor_client_id'=
+		           'system:team-plan-task-reconciler')`,
+		createdTask.TaskID,
+	).Scan(&eventCount, &outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 1 || outboxCount != 1 {
+		t.Fatalf("reconciliation events=%d outbox=%d", eventCount, outboxCount)
+	}
+	replayedCount, err := store.ReconcileTeamPlanTaskApprovalStates(ctx)
+	if err != nil || replayedCount != 0 {
+		t.Fatalf("replayed reconciliation count=%d error=%v", replayedCount, err)
+	}
+}
+
 func shortLivedTeamOfferSnapshotFixture(
 	t *testing.T,
 	connectionID string,
@@ -313,6 +506,7 @@ func teamPlanPreparationIntentFixture(
 		PlanID:       plan.PlanID,
 		Revision:     plan.Revision,
 		GoalDigest:   plan.GoalDigest,
+		TaskInput:    plan.TaskInput,
 		Proposal: teamplan.TeamProposal{
 			Confidence: plan.ProposalConfidence,
 			Rationale:  plan.ProposalRationale,

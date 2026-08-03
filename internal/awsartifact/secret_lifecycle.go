@@ -9,6 +9,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsprovider"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudapp"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
+	installerbootstrap "github.com/YingSuiAI/dirextalk-agent/internal/installer/bootstrap"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -37,6 +38,49 @@ func (lifecycle *DeploymentSecretLifecycle) Destroy(ctx context.Context, connect
 	if lifecycle == nil || ctx == nil || operation.DeploymentID == "" || operation.Launch.OwnerID != connection.OwnerID || operation.ConnectionID != connection.ConnectionID {
 		return cloudexecution.ErrUnavailable
 	}
+	return lifecycle.destroyExact(
+		ctx,
+		connection,
+		operation.DeploymentID,
+		operation.InstallerSecrets,
+	)
+}
+
+// DestroyPublished deletes only the exact deployment-scoped secrets frozen in
+// immutable Team publication evidence.
+func (lifecycle *DeploymentSecretLifecycle) DestroyPublished(
+	ctx context.Context,
+	connection cloudapp.Connection,
+	ownerID,
+	deploymentID string,
+	secrets []installerbootstrap.SecretSourceV1,
+) error {
+	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
+	if len(secrets) == 0 {
+		return nil
+	}
+	if lifecycle == nil ||
+		ctx == nil ||
+		connection.OwnerID != ownerID ||
+		err != nil ||
+		deployment == uuid.Nil ||
+		deployment.String() != deploymentID {
+		return cloudexecution.ErrUnavailable
+	}
+	return lifecycle.destroyExact(
+		ctx,
+		connection,
+		deploymentID,
+		secrets,
+	)
+}
+
+func (lifecycle *DeploymentSecretLifecycle) destroyExact(
+	ctx context.Context,
+	connection cloudapp.Connection,
+	deploymentID string,
+	secrets []installerbootstrap.SecretSourceV1,
+) error {
 	role, err := arn.Parse(connection.ControlRoleARN)
 	if err != nil || role.AccountID != connection.AccountID || role.Region != "" {
 		return cloudexecution.ErrUnavailable
@@ -47,7 +91,7 @@ func (lifecycle *DeploymentSecretLifecycle) Destroy(ctx context.Context, connect
 	if err != nil {
 		return cloudexecution.ErrUnavailable
 	}
-	config, configErr := awsprovider.AssumedControlAWSConfig(connection.Region, &source, connection.ControlRoleARN, artifactRoleSession(operation.DeploymentID))
+	config, configErr := awsprovider.AssumedControlAWSConfig(connection.Region, &source, connection.ControlRoleARN, artifactRoleSession(deploymentID))
 	source.Wipe()
 	if configErr != nil {
 		return cloudexecution.ErrUnavailable
@@ -56,17 +100,32 @@ func (lifecycle *DeploymentSecretLifecycle) Destroy(ctx context.Context, connect
 	if client == nil {
 		return cloudexecution.ErrUnavailable
 	}
-	return destroyDeploymentSecrets(ctx, client, lifecycle.agentInstanceID, connection, operation)
+	return destroyDeploymentSecrets(
+		ctx,
+		client,
+		lifecycle.agentInstanceID,
+		connection,
+		deploymentID,
+		secrets,
+	)
 }
 
-func destroyDeploymentSecrets(ctx context.Context, client SecretsAPI, agentInstanceID string, connection cloudapp.Connection, operation cloudexecution.Operation) error {
+func destroyDeploymentSecrets(
+	ctx context.Context,
+	client SecretsAPI,
+	agentInstanceID string,
+	connection cloudapp.Connection,
+	deploymentID string,
+	secrets []installerbootstrap.SecretSourceV1,
+) error {
 	if ctx == nil || client == nil {
 		return cloudexecution.ErrUnavailable
 	}
-	for _, secret := range operation.InstallerSecrets {
+	for _, secret := range secrets {
 		secretARN, parseErr := arn.Parse(secret.SecretARN)
 		if parseErr != nil || secretARN.AccountID != connection.AccountID || secretARN.Region != connection.Region || secretARN.Service != "secretsmanager" ||
-			secret.SecretName != "dtx/"+agentInstanceID+"/deployments/"+operation.DeploymentID+"/"+secret.SlotID {
+			secret.SchemaVersion != installerbootstrap.SecretSourceSchemaV1 ||
+			secret.SecretName != "dtx/"+agentInstanceID+"/deployments/"+deploymentID+"/"+secret.SlotID {
 			return cloudexecution.ErrUnavailable
 		}
 		_, deleteErr := client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{

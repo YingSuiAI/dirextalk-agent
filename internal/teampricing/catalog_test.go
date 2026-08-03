@@ -30,7 +30,7 @@ func TestModelOfferCatalogResolvesServerOwnedProfiles(t *testing.T) {
 	}
 	got := offers[1].offer
 	if got.ProfileID != "openai-codex" ||
-		got.Provider != string(modelapi.ProviderOpenAICompatible) ||
+		got.Provider != "openai" ||
 		got.Model != "gpt-codex" ||
 		got.ContextTokens != 256_000 ||
 		got.CredentialRef != "secret_ref:model/openai-codex" {
@@ -65,6 +65,9 @@ func TestModelOfferCatalogRejectsUntrustedMetadata(t *testing.T) {
 		},
 		"provider interface mismatch": func(value *ModelOfferCatalogDocument) {
 			value.Offers[0].Interface = teamplan.ModelOpenAIResponses
+		},
+		"worker provider mismatch": func(value *ModelOfferCatalogDocument) {
+			value.Offers[1].WorkerProvider = "openai_compatible"
 		},
 		"unknown pricing source": func(value *ModelOfferCatalogDocument) {
 			value.Offers[0].SourceID = "missing-source"
@@ -171,6 +174,7 @@ func validCatalogDocument() ModelOfferCatalogDocument {
 		Offers: []ModelOfferEntry{
 			{
 				ProfileID:              "anthropic-review",
+				WorkerProvider:         "anthropic",
 				Interface:              teamplan.ModelAnthropicAPI,
 				Quality:                teamplan.QualityPremium,
 				InputMicrosPerMillion:  5_000_000,
@@ -181,6 +185,7 @@ func validCatalogDocument() ModelOfferCatalogDocument {
 			},
 			{
 				ProfileID:              "openai-codex",
+				WorkerProvider:         "openai",
 				Interface:              teamplan.ModelOpenAIResponses,
 				Quality:                teamplan.QualityBalanced,
 				InputMicrosPerMillion:  2_000_000,
@@ -239,6 +244,7 @@ type fakeComputePort struct {
 	evidence ComputeEvidence
 	err      error
 	calls    []computeCall
+	onRead   func()
 }
 
 type computeCall struct {
@@ -252,6 +258,9 @@ func (fake *fakeComputePort) ReadComputeOffers(
 	region string,
 ) (ComputeEvidence, error) {
 	fake.calls = append(fake.calls, computeCall{scope: scope, region: region})
+	if fake.onRead != nil {
+		fake.onRead()
+	}
 	return fake.evidence, fake.err
 }
 

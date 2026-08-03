@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 )
 
 func TestCompileSelectsQualifiedTeamAndEstimatesParallelSchedule(t *testing.T) {
@@ -297,6 +298,81 @@ func TestPlanDigestBindsRuntimeImageProviderScopeAndRejectsFloatingVersion(
 	}
 }
 
+func TestPlanDigestBindsGitHubRepositoryAndCommit(t *testing.T) {
+	t.Parallel()
+	leftRequest := validCompileRequest()
+	rightRequest := validCompileRequest()
+	leftInput, err := taskinput.NewGitHubInput(
+		leftRequest.OwnerID,
+		"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		leftRequest.GoalDigest,
+		taskinput.GitRepositoryV1{
+			Provider:      taskinput.GitProviderGitHub,
+			Host:          taskinput.GitHubHost,
+			ConnectionID:  "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			RepositoryID:  "123456789",
+			Owner:         "YingSuiAI",
+			Name:          "dirextalk-agent",
+			BaseCommitSHA: strings.Repeat("a", 40),
+			BaseRef:       "refs/heads/codex/native-agent-v2",
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewGitHubInput(left) error = %v", err)
+	}
+	rightInput, err := taskinput.NewGitHubInput(
+		rightRequest.OwnerID,
+		"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		rightRequest.GoalDigest,
+		taskinput.GitRepositoryV1{
+			Provider:      taskinput.GitProviderGitHub,
+			Host:          taskinput.GitHubHost,
+			ConnectionID:  "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			RepositoryID:  "123456789",
+			Owner:         "YingSuiAI",
+			Name:          "dirextalk-agent",
+			BaseCommitSHA: strings.Repeat("b", 40),
+			BaseRef:       "refs/heads/codex/native-agent-v2",
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewGitHubInput(right) error = %v", err)
+	}
+	leftRequest.TaskInput, err = leftInput.Binding()
+	if err != nil {
+		t.Fatalf("Binding(left) error = %v", err)
+	}
+	rightRequest.TaskInput, err = rightInput.Binding()
+	if err != nil {
+		t.Fatalf("Binding(right) error = %v", err)
+	}
+	leftPlan, err := Compile(leftRequest)
+	if err != nil {
+		t.Fatalf("Compile(left) error = %v", err)
+	}
+	rightPlan, err := Compile(rightRequest)
+	if err != nil {
+		t.Fatalf("Compile(right) error = %v", err)
+	}
+	leftDigest, err := leftPlan.Digest()
+	if err != nil {
+		t.Fatalf("Digest(left) error = %v", err)
+	}
+	rightDigest, err := rightPlan.Digest()
+	if err != nil {
+		t.Fatalf("Digest(right) error = %v", err)
+	}
+	if leftPlan.TaskInput.SourceDigest == rightPlan.TaskInput.SourceDigest {
+		t.Fatal("commit change did not change TaskInput source digest")
+	}
+	if leftPlan.TaskInput.InputDigest == rightPlan.TaskInput.InputDigest {
+		t.Fatal("commit change did not change TaskInput digest")
+	}
+	if leftDigest == rightDigest {
+		t.Fatal("commit change did not change Plan digest")
+	}
+}
+
 func TestRuntimeCatalogRejectsTwoQualifiedReleasesForSameFamilyAndArchitecture(t *testing.T) {
 	t.Parallel()
 	request := validCompileRequest()
@@ -331,11 +407,25 @@ func assertRuntime(t *testing.T, plan Plan, roleID string, want RuntimeFamily) {
 
 func validCompileRequest() CompileRequest {
 	now := time.Date(2026, 7, 29, 8, 0, 0, 0, time.UTC)
+	goalDigest := "sha256:" + strings.Repeat("1", 64)
+	input, err := taskinput.NewEmptyInput(
+		"owner-test",
+		"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		goalDigest,
+	)
+	if err != nil {
+		panic(err)
+	}
+	inputBinding, err := input.Binding()
+	if err != nil {
+		panic(err)
+	}
 	return CompileRequest{
 		PlanID:     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		Revision:   1,
 		OwnerID:    "owner-test",
-		GoalDigest: "sha256:" + strings.Repeat("1", 64),
+		GoalDigest: goalDigest,
+		TaskInput:  inputBinding,
 		ProviderScope: ProviderScope{
 			Provider:           CloudProviderAWS,
 			ConnectionID:       "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
@@ -702,6 +792,35 @@ func validRuntimeReleases(now time.Time) []RuntimeRelease {
 				Arch: recipe.ArchitectureAMD64,
 			},
 			ColdStart: 90 * time.Second, Trust: RuntimeTrustQualified, QualifiedAt: now,
+		},
+		{
+			ReleaseID: "20000000-0000-4000-8000-000000000006",
+			Family:    RuntimePi, Version: "0.83.0", Adapter: AdapterPiV1,
+			SourceURL:    "https://github.com/earendil-works/pi",
+			SourceCommit: strings.Repeat("f", 40), License: "MIT",
+			ImageDigest: "sha256:" + strings.Repeat("f", 64),
+			Capabilities: append(append([]Capability(nil), baseCapabilities...),
+				CapabilityRepositoryWrite,
+				CapabilityCodeReview,
+				CapabilityGit,
+				CapabilityTest,
+			),
+			ModelInterfaces: []ModelInterface{ModelOpenAIResponses},
+			Suitability: []Suitability{
+				{WorkClass: WorkSoftwareImplementation, Score: 95},
+				{WorkClass: WorkSoftwareReview, Score: 90},
+				{WorkClass: WorkSoftwareTest, Score: 94},
+				{WorkClass: WorkGeneralTool, Score: 88},
+			},
+			Minimum: ResourceEnvelope{
+				VCPU: 1, MemoryMiB: 1024, DiskGiB: 10,
+				Arch: recipe.ArchitectureAMD64,
+			},
+			Recommended: ResourceEnvelope{
+				VCPU: 2, MemoryMiB: 2048, DiskGiB: 20,
+				Arch: recipe.ArchitectureAMD64,
+			},
+			ColdStart: 30 * time.Second, Trust: RuntimeTrustQualified, QualifiedAt: now,
 		},
 	}
 }

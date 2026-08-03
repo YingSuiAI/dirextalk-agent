@@ -126,6 +126,15 @@ func (store *Store) createTeamPlanTx(
 	if err != nil {
 		return TeamPlanRecord{}, ErrTeamFactInvalid
 	}
+	boundTask, err := lockTeamPlanTaskForPreparation(
+		ctx,
+		tx,
+		command.TaskID,
+		command.Plan,
+	)
+	if err != nil {
+		return TeamPlanRecord{}, err
+	}
 	if _, err := tx.Exec(
 		ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
@@ -174,10 +183,11 @@ func (store *Store) createTeamPlanTx(
 	); err != nil {
 		return TeamPlanRecord{}, err
 	}
-	if command.TaskID != "" {
-		if err := verifyTeamPlanTaskBinding(
+	if command.Plan.SchemaVersion == teamplan.SchemaV3 {
+		if err := persistTeamTaskInput(
 			ctx,
 			tx,
+			store.instanceID,
 			command.TaskID,
 			command.Plan,
 		); err != nil {
@@ -278,13 +288,17 @@ func (store *Store) createTeamPlanTx(
 		    (plan_id, plan_revision, agent_instance_id, owner_id, task_id,
 		     provider, connection_id, connection_revision, account_id, region,
 		     catalog_revision, policy_revision, goal_digest,
+		     task_input_id, task_input_digest, task_input_source_digest,
 		     snapshot_id, snapshot_digest,
 		     plan_digest, plan_json, plan_cbor, status, record_revision,
 		     quoted_at, valid_until)
 		VALUES (
 		    $1,$2,$3,$4,NULLIF($5::text,'')::uuid,
-		    $6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-		    'ready_for_confirmation',1,$19,$20
+		    $6,$7,$8,$9,$10,$11,$12,$13,
+		    NULLIF($14::text,'')::uuid,
+		    NULLIF($15::text,''),NULLIF($16::text,''),
+		    $17,$18,$19,$20,$21,
+		    'ready_for_confirmation',1,$22,$23
 		)
 		RETURNING created_at, updated_at`,
 		planID,
@@ -300,6 +314,9 @@ func (store *Store) createTeamPlanTx(
 		command.Plan.CatalogRevision,
 		command.Plan.PolicyRevision,
 		command.Plan.GoalDigest,
+		command.Plan.TaskInput.InputID,
+		command.Plan.TaskInput.InputDigest,
+		command.Plan.TaskInput.SourceDigest,
 		snapshotID,
 		command.Plan.PricingSnapshotDigest,
 		planDigest,
@@ -313,6 +330,15 @@ func (store *Store) createTeamPlanTx(
 	record.CreatedAt = record.CreatedAt.UTC()
 	record.UpdatedAt = record.UpdatedAt.UTC()
 	if err := appendTeamPlanEvent(ctx, tx, caller, record); err != nil {
+		return TeamPlanRecord{}, err
+	}
+	if err := transitionTeamPlanTaskAwaitingApproval(
+		ctx,
+		tx,
+		caller,
+		boundTask,
+		true,
+	); err != nil {
 		return TeamPlanRecord{}, err
 	}
 	return record, nil
@@ -511,6 +537,9 @@ func readTeamPlan(
 		SELECT agent_instance_id, owner_id, COALESCE(task_id::text,''),
 		       provider, connection_id, connection_revision, account_id, region,
 		       catalog_revision, policy_revision, goal_digest,
+		       COALESCE(task_input_id::text,''),
+		       COALESCE(task_input_digest,''),
+		       COALESCE(task_input_source_digest,''),
 		       snapshot_id, snapshot_digest,
 		       plan_digest, plan_json, plan_cbor, status, record_revision,
 		       quoted_at, valid_until, created_at, updated_at
@@ -526,6 +555,8 @@ func readTeamPlan(
 		ownerID, provider, accountID, region string
 		catalogRevision, policyRevision      string
 		goalDigest, snapshotDigest           string
+		taskInputID, taskInputDigest         string
+		taskInputSourceDigest                string
 		status                               string
 		connectionRevision, recordRevision   int64
 		planJSON, planCBOR                   []byte
@@ -551,6 +582,9 @@ func readTeamPlan(
 		&catalogRevision,
 		&policyRevision,
 		&goalDigest,
+		&taskInputID,
+		&taskInputDigest,
+		&taskInputSourceDigest,
 		&snapshotID,
 		&snapshotDigest,
 		&record.PlanDigest,
@@ -592,6 +626,12 @@ func readTeamPlan(
 		record.Plan.CatalogRevision != catalogRevision ||
 		record.Plan.PolicyRevision != policyRevision ||
 		record.Plan.GoalDigest != goalDigest ||
+		!storedTeamTaskInputReferenceMatches(
+			record.Plan,
+			taskInputID,
+			taskInputDigest,
+			taskInputSourceDigest,
+		) ||
 		record.Plan.PricingSnapshotID != snapshotID.String() ||
 		record.Plan.PricingSnapshotDigest != snapshotDigest ||
 		!record.Plan.QuotedAt.Equal(quotedAt.UTC()) ||
@@ -606,7 +646,30 @@ func readTeamPlan(
 	if err != nil || !bytes.Equal(actualCBOR, planCBOR) {
 		return TeamPlanRecord{}, ErrTeamFactCorrupt
 	}
+	if err := verifyStoredTeamTaskInput(
+		ctx,
+		query,
+		instanceID,
+		record.TaskID,
+		record.Plan,
+	); err != nil {
+		return TeamPlanRecord{}, err
+	}
 	return record, nil
+}
+
+func storedTeamTaskInputReferenceMatches(
+	plan teamplan.Plan,
+	inputID,
+	inputDigest,
+	sourceDigest string,
+) bool {
+	if plan.SchemaVersion == teamplan.SchemaV3 {
+		return plan.TaskInput.InputID == inputID &&
+			plan.TaskInput.InputDigest == inputDigest &&
+			plan.TaskInput.SourceDigest == sourceDigest
+	}
+	return inputID == "" && inputDigest == "" && sourceDigest == ""
 }
 
 func decodeTeamPlanReplay(encoded []byte) (TeamPlanRecord, error) {
@@ -626,31 +689,101 @@ func decodeTeamPlanReplay(encoded []byte) (TeamPlanRecord, error) {
 	return replay.Record, nil
 }
 
-func verifyTeamPlanTaskBinding(
+func lockTeamPlanTaskForPreparation(
 	ctx context.Context,
-	query teamPlanQuerier,
+	tx pgx.Tx,
 	taskID string,
 	plan teamplan.Plan,
-) error {
-	var ownerID, goal string
-	if err := query.QueryRow(ctx, `
-		SELECT owner_id, goal
-		FROM tasks
-		WHERE task_id=$1
-		FOR SHARE`,
-		taskID,
-	).Scan(&ownerID, &goal); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrTeamFactScope
+) (task.Task, error) {
+	if taskID == "" {
+		return task.Task{}, nil
+	}
+	parsedTaskID, err := uuid.Parse(taskID)
+	if err != nil || parsedTaskID == uuid.Nil || parsedTaskID.String() != taskID {
+		return task.Task{}, ErrTeamFactScope
+	}
+	current, err := loadTask(ctx, tx, parsedTaskID, true)
+	if err != nil {
+		if errors.Is(err, task.ErrNotFound) {
+			return task.Task{}, ErrTeamFactScope
 		}
-		return fmt.Errorf("read Team Plan Task binding: %w", err)
+		return task.Task{}, fmt.Errorf("lock Team Plan Task binding: %w", err)
 	}
-	digest := sha256.Sum256([]byte(strings.TrimSpace(goal)))
-	if ownerID != plan.OwnerID ||
+	digest := sha256.Sum256([]byte(strings.TrimSpace(current.Goal)))
+	if current.OwnerID != plan.OwnerID ||
 		"sha256:"+hex.EncodeToString(digest[:]) != plan.GoalDigest {
-		return ErrTeamFactScope
+		return task.Task{}, ErrTeamFactScope
 	}
-	return nil
+	if current.OutcomeStatus != task.OutcomePending ||
+		current.CurrentStepID != "" ||
+		current.ApprovedPlanID != "" {
+		return task.Task{}, ErrTeamFactInvalid
+	}
+	switch current.ExecutionStatus {
+	case task.ExecutionPlanning, task.ExecutionAwaitingApproval:
+		return current, nil
+	default:
+		return task.Task{}, ErrTeamFactInvalid
+	}
+}
+
+func transitionTeamPlanTaskAwaitingApproval(
+	ctx context.Context,
+	tx pgx.Tx,
+	caller idempotencyCaller,
+	current task.Task,
+	recordUnchangedStatus bool,
+) error {
+	if current.TaskID == "" {
+		return nil
+	}
+	if current.ExecutionStatus == task.ExecutionAwaitingApproval &&
+		!recordUnchangedStatus {
+		return nil
+	}
+	if current.ExecutionStatus != task.ExecutionPlanning &&
+		current.ExecutionStatus != task.ExecutionAwaitingApproval ||
+		current.OutcomeStatus != task.OutcomePending ||
+		current.CurrentStepID != "" ||
+		current.ApprovedPlanID != "" ||
+		current.Revision < 1 {
+		return ErrTeamFactInvalid
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE tasks
+		SET execution_status='awaiting_approval',
+		    revision=revision+1,
+		    updated_at=clock_timestamp()
+		WHERE task_id=$1
+		  AND revision=$2
+		  AND execution_status=$3
+		  AND outcome_status='pending'
+		  AND current_step_id IS NULL
+		  AND approved_plan_id IS NULL
+		RETURNING execution_status, revision, updated_at`,
+		current.TaskID,
+		current.Revision,
+		current.ExecutionStatus,
+	).Scan(
+		&current.ExecutionStatus,
+		&current.Revision,
+		&current.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrTeamFactRevision
+		}
+		return fmt.Errorf("mark Team Plan Task awaiting approval: %w", err)
+	}
+	current.UpdatedAt = current.UpdatedAt.UTC()
+	_, err := appendTaskEvent(
+		ctx,
+		tx,
+		current,
+		caller,
+		"agent.task.awaiting_approval",
+		"",
+	)
+	return err
 }
 
 func appendTeamPlanEvent(

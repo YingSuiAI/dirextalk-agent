@@ -190,4 +190,17 @@ func isNotFound(err error) bool {
 	}
 }
 
+func isAuthorizationDenied(err error) bool {
+	var apiError smithy.APIError
+	if !errors.As(err, &apiError) {
+		return false
+	}
+	switch apiError.ErrorCode() {
+	case "AccessDenied", "AccessDeniedException", "UnauthorizedOperation":
+		return true
+	default:
+		return false
+	}
+}
+
 func stringValue(value *string) string { return awsv2.ToString(value) }

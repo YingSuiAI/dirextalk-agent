@@ -108,7 +108,8 @@ func NewCodexExecutor(config CodexConfig) (*CodexExecutor, error) {
 	models := make([]QualifiedModel, len(config.Models))
 	seenProfiles := make(map[string]struct{}, len(config.Models))
 	for index, model := range config.Models {
-		if model.validate() != nil {
+		if model.validate() != nil ||
+			!supportedCodexModel(model) {
 			return nil, ErrInvalid
 		}
 		if _, duplicate := seenProfiles[model.ProfileID]; duplicate {
@@ -150,8 +151,14 @@ func (executor *CodexExecutor) ValidateTask(task TaskV1) error {
 			break
 		}
 	}
-	if !qualified || task.ModelProvider != "openai" ||
-		task.ModelInterface != ModelOpenAIResponses ||
+	if !qualified ||
+		!supportedCodexModel(QualifiedModel{
+			ProfileID:      task.ModelProfileID,
+			Provider:       task.ModelProvider,
+			Model:          task.Model,
+			Interface:      task.ModelInterface,
+			CredentialSlot: task.CredentialSlot,
+		}) ||
 		(task.IncludePatch && (task.WorkspaceMode == WorkspaceNone ||
 			task.WorkspaceMode == WorkspaceReadOnly ||
 			executor.patches == nil)) {
@@ -175,7 +182,10 @@ func (executor *CodexExecutor) Execute(
 	}
 	inputs, err := executor.inputs.Resolve(ctx, task)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: resolve Codex inputs", ErrExecution)
+		return Result{}, fmt.Errorf(
+			"%w: resolve Codex inputs: %v",
+			ErrExecution, err,
+		)
 	}
 	defer inputs.Destroy()
 
@@ -392,7 +402,7 @@ func parseCodexEvents(stream []byte) (Usage, error) {
 	return usage, nil
 }
 
-type codexFinal struct {
+type CodexFinalV1 struct {
 	SchemaVersion string   `json:"schema_version"`
 	Status        string   `json:"status"`
 	Summary       string   `json:"summary"`
@@ -401,16 +411,18 @@ type codexFinal struct {
 	Risks         []string `json:"risks"`
 }
 
-func validateCodexFinal(input []byte) ([]byte, error) {
+// ParseCodexFinalV1 applies the same strict, secret-rejecting contract used on
+// the Worker before the Central Agent accepts a downloaded final artifact.
+func ParseCodexFinalV1(input []byte) (CodexFinalV1, []byte, error) {
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.DisallowUnknownFields()
-	var final codexFinal
+	var final CodexFinalV1
 	if decoder.Decode(&final) != nil {
-		return nil, ErrExecution
+		return CodexFinalV1{}, nil, ErrExecution
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, ErrExecution
+		return CodexFinalV1{}, nil, ErrExecution
 	}
 	if final.SchemaVersion != CodexFinalSchemaV1 ||
 		(final.Status != "completed" && final.Status != "partial" &&
@@ -419,13 +431,18 @@ func validateCodexFinal(input []byte) ([]byte, error) {
 		!validFinalList(final.Deliverables) ||
 		!validFinalList(final.Tests) ||
 		!validFinalList(final.Risks) {
-		return nil, ErrExecution
+		return CodexFinalV1{}, nil, ErrExecution
 	}
 	encoded, err := json.Marshal(final)
 	if err != nil {
-		return nil, ErrExecution
+		return CodexFinalV1{}, nil, ErrExecution
 	}
-	return encoded, nil
+	return final, encoded, nil
+}
+
+func validateCodexFinal(input []byte) ([]byte, error) {
+	_, encoded, err := ParseCodexFinalV1(input)
+	return encoded, err
 }
 
 func validFinalList(values []string) bool {

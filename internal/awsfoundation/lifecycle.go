@@ -39,9 +39,13 @@ type LifecycleResult struct {
 }
 
 func (bootstrapper *Bootstrapper) Mutate(ctx context.Context, payload []byte, request LifecycleRequest) (LifecycleResult, error) {
-	if bootstrapper == nil || request.TemplateDigest != bootstrapper.templateHash {
+	if bootstrapper == nil {
 		zeroBytes(payload)
 		return LifecycleResult{}, ErrFoundationBootstrap
+	}
+	if request.TemplateDigest != bootstrapper.templateHash {
+		zeroBytes(payload)
+		return LifecycleResult{}, ErrFoundationTemplateChanged
 	}
 	if request.Action == LifecycleEstablish {
 		result, err := bootstrapper.Establish(ctx, payload, EstablishRequest{AgentInstanceID: request.AgentInstanceID, Region: request.Region,

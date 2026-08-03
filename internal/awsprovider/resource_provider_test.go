@@ -92,7 +92,9 @@ func TestEC2ResourceProviderLaunchesHardenedWorkerFromImmutableArtifactReference
 	if input.MetadataOptions == nil || input.MetadataOptions.HttpTokens != ec2types.HttpTokensStateRequired || aws.ToInt32(input.MetadataOptions.HttpPutResponseHopLimit) != 1 || input.MetadataOptions.InstanceMetadataTags != ec2types.InstanceMetadataTagsStateEnabled {
 		t.Fatalf("IMDSv2 hardening is missing: %#v", input.MetadataOptions)
 	}
-	if len(input.BlockDeviceMappings) != 1 || input.BlockDeviceMappings[0].Ebs == nil || !aws.ToBool(input.BlockDeviceMappings[0].Ebs.Encrypted) || !aws.ToBool(input.BlockDeviceMappings[0].Ebs.DeleteOnTermination) || aws.ToString(input.BlockDeviceMappings[0].Ebs.KmsKeyId) != "alias/dtx-worker" {
+	if len(input.BlockDeviceMappings) != 1 || input.BlockDeviceMappings[0].Ebs == nil || !aws.ToBool(input.BlockDeviceMappings[0].Ebs.Encrypted) || !aws.ToBool(input.BlockDeviceMappings[0].Ebs.DeleteOnTermination) || aws.ToString(input.BlockDeviceMappings[0].Ebs.KmsKeyId) != "alias/dtx-worker" ||
+		aws.ToInt32(input.BlockDeviceMappings[0].Ebs.Iops) != 3000 ||
+		aws.ToInt32(input.BlockDeviceMappings[0].Ebs.Throughput) != 125 {
 		t.Fatalf("encrypted root volume is missing: %#v", input.BlockDeviceMappings)
 	}
 	rawTags, rawRootTags := map[string]string{}, map[string]string{}
@@ -362,8 +364,9 @@ func (fake *workerEC2Fake) DescribeVolumes(_ context.Context, input *ec2.Describ
 	ebs := fake.runInput.BlockDeviceMappings[0].Ebs
 	return &ec2.DescribeVolumesOutput{Volumes: []ec2types.Volume{{
 		VolumeId: aws.String("vol-0123456789abcdef0"), Encrypted: aws.Bool(true), Size: ebs.VolumeSize,
-		VolumeType: ec2types.VolumeTypeGp3, KmsKeyId: aws.String("arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"),
-		Tags: append([]ec2types.Tag(nil), fake.volumeTags...),
+		VolumeType: ec2types.VolumeTypeGp3, Iops: ebs.Iops, Throughput: ebs.Throughput,
+		KmsKeyId: aws.String("arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000"),
+		Tags:     append([]ec2types.Tag(nil), fake.volumeTags...),
 	}}}, nil
 }
 

@@ -27,11 +27,28 @@ const (
 )
 
 var (
-	ErrInvalidProfile      = errors.New("invalid model profile")
-	ErrSecretUnavailable   = errors.New("model credential is unavailable")
-	ErrProviderUnavailable = errors.New("model provider is unavailable")
-	ErrResponseTooLarge    = errors.New("model provider response exceeds the allowed size")
+	ErrInvalidProfile       = errors.New("invalid model profile")
+	ErrSecretUnavailable    = errors.New("model credential is unavailable")
+	ErrProviderUnavailable  = errors.New("model provider is unavailable")
+	ErrProviderCredential   = errors.New("model provider rejected the credential")
+	ErrProviderRequest      = errors.New("model provider rejected the request")
+	ErrProviderRateLimited  = errors.New("model provider rate limit is exhausted")
+	ErrModelListRejected    = errors.New("model provider rejected model discovery")
+	ErrModelListUnsupported = errors.New("model provider does not expose a compatible model list")
+	ErrResponseTooLarge     = errors.New("model provider response exceeds the allowed size")
 )
+
+// Descriptor is the strict public subset accepted from a provider's model
+// discovery response. Provider-owned arbitrary metadata never crosses the
+// Agent boundary.
+type Descriptor struct {
+	ID              string
+	Name            string
+	Provider        string
+	ContextWindow   int64
+	MaxOutputTokens int64
+	ReasoningModes  []string
+}
 
 // Profile contains only non-secret model configuration. SecretRef is an
 // opaque reference resolved immediately before an outbound provider request.

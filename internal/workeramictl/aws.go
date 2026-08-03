@@ -159,6 +159,28 @@ func DefaultDependencies() Dependencies {
 	}
 }
 
+// DependenciesForConfig binds the closed AMI command to one pre-authorized
+// AWS configuration. It is used by the Agent's operator-only publisher after
+// the encrypted source credential has been exchanged for a Control Role
+// session in memory.
+func DependenciesForConfig(configuration aws.Config) (Dependencies, error) {
+	if !regionPattern.MatchString(configuration.Region) ||
+		configuration.Credentials == nil {
+		return Dependencies{}, errIdentityMismatch
+	}
+	dependencies := DefaultDependencies()
+	dependencies.LoadConfig = func(
+		_ context.Context,
+		region string,
+	) (aws.Config, error) {
+		if region != configuration.Region {
+			return aws.Config{}, errIdentityMismatch
+		}
+		return configuration, nil
+	}
+	return dependencies, nil
+}
+
 func loadAndConfirmIdentity(ctx context.Context, dependencies Dependencies, accountID, region string) (aws.Config, error) {
 	if ctx == nil || !dependencies.valid() || !accountPattern.MatchString(accountID) || !regionPattern.MatchString(region) {
 		return aws.Config{}, errInvalidInput

@@ -1,12 +1,14 @@
 package awsartifact
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloudexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -57,6 +60,19 @@ type PrincipalBinding struct {
 
 type PrincipalBinder struct {
 	publisher *BundlePublisher
+}
+
+type s3CopyAPI interface {
+	CopyObject(
+		context.Context,
+		*s3.CopyObjectInput,
+		...func(*s3.Options),
+	) (*s3.CopyObjectOutput, error)
+}
+
+type s3CopyClient interface {
+	S3API
+	s3CopyAPI
 }
 
 func NewPrincipalBinder(agentInstanceID string, vault *awsfoundation.CredentialVault, factory S3Factory) (*PrincipalBinder, error) {
@@ -124,6 +140,23 @@ func (binder *PrincipalBinder) Bind(ctx context.Context, request PrincipalBindRe
 		return PrincipalBinding{}, err
 	}
 	defer clear(executionBytes)
+	inputObjects, err := workerrunner.PublishedInputObjects(
+		executionBytes,
+		request.Published.Recipe.SHA256[:],
+	)
+	if err != nil {
+		if bytes.Contains(
+			executionBytes,
+			[]byte(workerrunner.InputMaterializeActionKind),
+		) {
+			return PrincipalBinding{}, ErrSourceIntegrity
+		}
+		inputObjects = []workerrunner.MaterializeObjectV1{}
+	}
+	copyClient, canCopy := client.(s3CopyClient)
+	if len(inputObjects) != 0 && !canCopy {
+		return PrincipalBinding{}, ErrArtifactUnavailable
+	}
 
 	principalID := roleID + ":" + instanceID
 	targetPrefix := "workers/" + principalID + "/" + deploymentID + "/"
@@ -137,6 +170,37 @@ func (binder *PrincipalBinder) Bind(ctx context.Context, request PrincipalBindRe
 		targets[index].agentInstanceID = binder.publisher.agentInstanceID
 		targets[index].principalID = principalID
 		if err := putImmutable(ctx, client, targets[index]); err != nil {
+			return PrincipalBinding{}, err
+		}
+	}
+	for _, input := range inputObjects {
+		if err := copyWorkerInput(
+			ctx,
+			copyClient,
+			streamedImmutableObject{
+				bucket:          spec.ArtifactBucketName,
+				key:             sourcePrefix + "artifacts/" + input.ObjectName,
+				kind:            "worker-input",
+				contentType:     input.ContentType,
+				sizeBytes:       input.SizeBytes,
+				digest:          input.SHA256,
+				kmsAlias:        kmsAlias,
+				deploymentID:    deploymentID,
+				agentInstanceID: binder.publisher.agentInstanceID,
+			},
+			streamedImmutableObject{
+				bucket:          spec.ArtifactBucketName,
+				key:             targetPrefix + "artifacts/" + input.ObjectName,
+				kind:            "worker-input",
+				contentType:     input.ContentType,
+				sizeBytes:       input.SizeBytes,
+				digest:          input.SHA256,
+				kmsAlias:        kmsAlias,
+				deploymentID:    deploymentID,
+				agentInstanceID: binder.publisher.agentInstanceID,
+				principalID:     principalID,
+			},
+		); err != nil {
 			return PrincipalBinding{}, err
 		}
 	}
@@ -156,6 +220,117 @@ func (binder *PrincipalBinder) Bind(ctx context.Context, request PrincipalBindRe
 		return PrincipalBinding{}, ErrInvalidRequest
 	}
 	return result, nil
+}
+
+func copyWorkerInput(
+	ctx context.Context,
+	client s3CopyClient,
+	source streamedImmutableObject,
+	target streamedImmutableObject,
+) error {
+	if ctx == nil || client == nil ||
+		source.bucket != target.bucket ||
+		source.deploymentID != target.deploymentID ||
+		source.kind != "worker-input" ||
+		target.kind != source.kind ||
+		source.contentType != target.contentType ||
+		source.sizeBytes != target.sizeBytes ||
+		source.digest != target.digest ||
+		target.principalID == "" {
+		return ErrInvalidRequest
+	}
+	rawDigest, err := hex.DecodeString(
+		strings.TrimPrefix(source.digest, "sha256:"),
+	)
+	if err != nil || len(rawDigest) != sha256.Size {
+		clear(rawDigest)
+		return ErrInvalidRequest
+	}
+	hexDigest := hex.EncodeToString(rawDigest)
+	base64Digest := base64.StdEncoding.EncodeToString(rawDigest)
+	clear(rawDigest)
+	sourceHead, err := headObject(
+		ctx,
+		client,
+		source.bucket,
+		source.key,
+	)
+	if err != nil ||
+		!exactStreamedHead(
+			sourceHead,
+			source,
+			hexDigest,
+			base64Digest,
+		) {
+		return ErrSourceIntegrity
+	}
+	versionID := aws.ToString(sourceHead.VersionId)
+	if versionID == "" || versionID == "null" {
+		return ErrSourceIntegrity
+	}
+	targetHead, targetErr := headObject(
+		ctx,
+		client,
+		target.bucket,
+		target.key,
+	)
+	if targetErr == nil {
+		if exactStreamedHead(
+			targetHead,
+			target,
+			hexDigest,
+			base64Digest,
+		) {
+			return nil
+		}
+		return ErrImmutableConflict
+	}
+	if !errors.Is(targetErr, errObjectNotFound) {
+		return ErrArtifactUnavailable
+	}
+	copySource := url.PathEscape(
+		source.bucket+"/"+source.key,
+	) + "?versionId=" + url.QueryEscape(versionID)
+	metadata := map[string]string{
+		"schema":        artifactSchemaV1,
+		"sha256":        hexDigest,
+		"kind":          target.kind,
+		"deployment-id": target.deploymentID,
+		"principal-id":  target.principalID,
+	}
+	_, copyErr := client.CopyObject(
+		ctx,
+		&s3.CopyObjectInput{
+			Bucket:               &target.bucket,
+			Key:                  &target.key,
+			CopySource:           &copySource,
+			ContentType:          &target.contentType,
+			Metadata:             metadata,
+			MetadataDirective:    s3types.MetadataDirectiveReplace,
+			ChecksumAlgorithm:    s3types.ChecksumAlgorithmSha256,
+			ServerSideEncryption: s3types.ServerSideEncryptionAwsKms,
+			SSEKMSKeyId:          &target.kmsAlias,
+			BucketKeyEnabled:     aws.Bool(true),
+		},
+	)
+	readBack, readErr := headObject(
+		ctx,
+		client,
+		target.bucket,
+		target.key,
+	)
+	if readErr == nil && exactStreamedHead(
+		readBack,
+		target,
+		hexDigest,
+		base64Digest,
+	) {
+		return nil
+	}
+	if copyErr != nil {
+		return ErrArtifactUnavailable
+	}
+	return ErrSourceIntegrity
 }
 
 func parseWorkerPrincipal(rawUserID, rawInstanceID string) (string, string, error) {

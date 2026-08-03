@@ -300,9 +300,18 @@ func validateRequestEnvelope(request RequestV1) error {
 }
 
 func validatePlan(plan InstallerPlanV1, targetRoot string) error {
-	if plan.SchemaVersion != PlanSchemaV1 || len(plan.Artifacts) == 0 || len(plan.Artifacts) > 128 ||
+	if plan.SchemaVersion != PlanSchemaV1 ||
+		(len(plan.Artifacts) == 0 && len(plan.Secrets) == 0) ||
+		len(plan.Artifacts) > 128 ||
 		len(plan.SecretRefs) > 128 || len(plan.Secrets) > 32 || len(plan.Ports) > 128 || len(plan.Volumes) > 128 || len(plan.Commands) > 128 {
 		return errorf(CodeInvalidRequest, "invalid installer plan schema or declaration count")
+	}
+	if len(plan.Artifacts) == 0 &&
+		(len(plan.Commands) != 0 || len(plan.Volumes) != 0) {
+		return errorf(
+			CodeInvalidRequest,
+			"secret-only installer plans cannot declare commands or volumes",
+		)
 	}
 	if err := validateBinding(plan.Binding); err != nil {
 		return err

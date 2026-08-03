@@ -203,16 +203,62 @@ func loadWorkerIdentityProviderBinding(
 	var binding workerIdentityProviderBinding
 	var matches int
 	err := tx.QueryRow(ctx, `
-		SELECT cc.account_id, cc.region, lo.owner_id, cr.provider_id, count(*) OVER ()
-		FROM cloud_launch_operations lo
-		JOIN cloud_connections cc
-		  ON cc.connection_id=lo.connection_id AND cc.agent_instance_id=lo.agent_instance_id AND cc.owner_id=lo.owner_id
-		JOIN cloud_resources cr
-		  ON cr.agent_instance_id=lo.agent_instance_id AND cr.owner_id=lo.owner_id
-		 AND cr.deployment_id=lo.deployment_id AND cr.task_id=lo.task_id
-		WHERE lo.agent_instance_id=$1 AND lo.deployment_id=$2 AND lo.owner_id=$3 AND lo.task_id=$4
-		  AND cc.status='active' AND cr.resource_type='ec2' AND cr.provider_id <> ''
-		  AND cr.state IN ('provisioning','active')`,
+		WITH provider_bindings AS (
+		    SELECT cc.account_id, cc.region, launch.owner_id,
+		           resource.provider_id
+		    FROM cloud_launch_operations launch
+		    JOIN cloud_connections cc
+		      ON cc.connection_id=launch.connection_id
+		     AND cc.agent_instance_id=launch.agent_instance_id
+		     AND cc.owner_id=launch.owner_id
+		    JOIN cloud_resources resource
+		      ON resource.agent_instance_id=launch.agent_instance_id
+		     AND resource.owner_id=launch.owner_id
+		     AND resource.deployment_id=launch.deployment_id
+		     AND resource.task_id=launch.task_id
+		    WHERE launch.agent_instance_id=$1
+		      AND launch.deployment_id=$2
+		      AND launch.owner_id=$3
+		      AND launch.task_id=$4
+		      AND cc.status='active'
+		      AND resource.resource_type='ec2'
+		      AND resource.provider_id <> ''
+		      AND resource.state IN ('provisioning','active')
+		    UNION ALL
+		    SELECT cc.account_id, cc.region, dispatch.owner_id,
+		           resource.provider_id
+		    FROM team_role_dispatches dispatch
+		    JOIN team_executions execution
+		      ON execution.execution_id=dispatch.execution_id
+		     AND execution.agent_instance_id=dispatch.agent_instance_id
+		     AND execution.owner_id=dispatch.owner_id
+		     AND execution.task_id=dispatch.task_id
+		    JOIN cloud_connections cc
+		      ON cc.connection_id=execution.connection_id
+		     AND cc.agent_instance_id=execution.agent_instance_id
+		     AND cc.owner_id=execution.owner_id
+		     AND cc.account_id=execution.account_id
+		     AND cc.region=execution.region
+		    JOIN cloud_resources resource
+		      ON resource.agent_instance_id=dispatch.agent_instance_id
+		     AND resource.owner_id=dispatch.owner_id
+		     AND resource.deployment_id=dispatch.deployment_id
+		     AND resource.task_id=dispatch.task_id
+		    WHERE dispatch.agent_instance_id=$1
+		      AND dispatch.deployment_id=$2
+		      AND dispatch.owner_id=$3
+		      AND dispatch.task_id=$4
+		      AND dispatch.phase IN ('provisioning','active')
+		      AND dispatch.published_evidence_json->>'connection_id'=
+		          execution.connection_id::text
+		      AND cc.status='active'
+		      AND resource.resource_type='ec2'
+		      AND resource.provider_id <> ''
+		      AND resource.state IN ('provisioning','active')
+		)
+		SELECT account_id, region, owner_id, provider_id,
+		       count(*) OVER ()
+		FROM provider_bindings`,
 		instanceID, deploymentID, current.OwnerID, current.TaskID,
 	).Scan(&binding.accountID, &binding.region, &binding.ownerID, &binding.providerInstanceID, &matches)
 	if errors.Is(err, pgx.ErrNoRows) {

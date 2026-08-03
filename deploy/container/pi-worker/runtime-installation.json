@@ -1,0 +1,35 @@
+{
+  "schema_version": "dirextalk.agent.worker-runtime-installation/v2",
+  "credential_policy": "ephemeral-task-token/v1",
+  "context_root": "/opt/dirextalk-worker/runtime-contexts",
+  "workspace_root": "/var/lib/dirextalk-worker/workspaces",
+  "credential_root": "/etc/dirextalk-service-secrets",
+  "state_root": "/var/lib/dirextalk-worker/runtime-state",
+  "git_executable": "/usr/bin/git",
+  "search_path": "/usr/local/bin:/usr/bin:/bin",
+  "patch_collection_enabled": true,
+  "runtime_release": {
+    "release_id": "511acecc-3e4e-4bc5-890e-89638945c72c",
+    "version": "0.83.0",
+    "image_digest": "sha256:b0625eb623197b0afe20c870d21ef2f34481f1504e5777df3f698a66c7636f5f",
+    "adapter": "pi_json_task_v1",
+    "executable_path": "/opt/dirextalk-worker/runtimes/pi/bin/pi",
+    "executable_sha256": "sha256:c25c16162b62eda32deb0d544bcae5e5d6c6148958e17130e6aed2d115104f1a"
+  },
+  "extensions": [
+    {
+      "name": "dirextalk_result_v1",
+      "path": "/opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts",
+      "sha256": "sha256:39e98a6a8339a48c0b1609ff7aed3c7af0807ee9e2cb4a975b64e46a2e5f94d9"
+    }
+  ],
+  "models": [
+    {
+      "profile_id": "deepseek-v4-pro",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "interface": "openai_compatible",
+      "credential_slot": "model-token"
+    }
+  ]
+}

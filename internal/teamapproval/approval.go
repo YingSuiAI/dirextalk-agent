@@ -13,6 +13,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 )
@@ -68,6 +69,43 @@ type signingDocumentV1 struct {
 	SignerKeyID           string                 `json:"signer_key_id"`
 	IssuedAt              time.Time              `json:"issued_at"`
 	ExpiresAt             time.Time              `json:"expires_at"`
+}
+
+type signingDocumentV2 struct {
+	PayloadSchema             string                 `json:"payload_schema"`
+	HashAlgorithm             string                 `json:"hash_algorithm"`
+	ChallengeSchema           string                 `json:"challenge_schema"`
+	Revision                  uint64                 `json:"revision"`
+	ApprovalID                string                 `json:"approval_id"`
+	ChallengeID               string                 `json:"challenge_id"`
+	AgentInstanceID           string                 `json:"agent_instance_id"`
+	OwnerID                   string                 `json:"owner_id"`
+	PlanID                    string                 `json:"plan_id"`
+	PlanRevision              uint64                 `json:"plan_revision"`
+	PlanDigest                string                 `json:"plan_digest"`
+	GoalDigest                string                 `json:"goal_digest"`
+	ProviderScope             teamplan.ProviderScope `json:"provider_scope"`
+	CatalogRevision           string                 `json:"catalog_revision"`
+	PolicyRevision            string                 `json:"policy_revision"`
+	PricingSnapshotID         string                 `json:"pricing_snapshot_id"`
+	PricingSnapshotDigest     string                 `json:"pricing_snapshot_digest"`
+	QuotedAt                  time.Time              `json:"quoted_at"`
+	QuoteValidUntil           time.Time              `json:"quote_valid_until"`
+	WorkerCount               uint32                 `json:"worker_count"`
+	MaxConcurrentWorkers      uint32                 `json:"max_concurrent_workers"`
+	Currency                  string                 `json:"currency"`
+	MinimumCostMicros         uint64                 `json:"minimum_cost_micros"`
+	ExpectedCostMicros        uint64                 `json:"expected_cost_micros"`
+	MaximumCostMicros         uint64                 `json:"maximum_cost_micros"`
+	HardBudgetMicros          uint64                 `json:"hard_budget_micros"`
+	MinimumWallSeconds        uint64                 `json:"minimum_wall_seconds"`
+	ExpectedWallSeconds       uint64                 `json:"expected_wall_seconds"`
+	MaximumWallSeconds        uint64                 `json:"maximum_wall_seconds"`
+	LaunchAuthorizationID     string                 `json:"launch_authorization_id"`
+	LaunchAuthorizationDigest string                 `json:"launch_authorization_digest"`
+	SignerKeyID               string                 `json:"signer_key_id"`
+	IssuedAt                  time.Time              `json:"issued_at"`
+	ExpiresAt                 time.Time              `json:"expires_at"`
 }
 
 func NewChallengeV1(
@@ -128,6 +166,53 @@ func NewChallengeV1(
 	return challenge, nil
 }
 
+// NewChallengeV2 binds the exact AWS launch authorization into the same device
+// signature as the Team Plan. It intentionally does not bind an Execution
+// digest because Execution is derived only after this approval exists.
+func NewChallengeV2(
+	plan teamplan.Plan,
+	authorization teamlaunch.AuthorizationV1,
+	agentInstanceID,
+	approvalID,
+	challengeID,
+	signerKeyID string,
+	issuedAt time.Time,
+) (ChallengeV1, error) {
+	challenge, err := NewChallengeV1(
+		plan,
+		agentInstanceID,
+		approvalID,
+		challengeID,
+		signerKeyID,
+		issuedAt,
+	)
+	if err != nil {
+		return ChallengeV1{}, err
+	}
+	issuedAt = issuedAt.UTC().Truncate(time.Microsecond)
+	if authorization.ValidateAt(issuedAt) != nil ||
+		authorization.ValidateAgainst(plan) != nil ||
+		authorization.AgentInstanceID != agentInstanceID ||
+		authorization.OwnerID != plan.OwnerID ||
+		authorization.ApprovalID != approvalID {
+		return ChallengeV1{}, ErrInvalid
+	}
+	authorizationDigest, err := authorization.Digest()
+	if err != nil {
+		return ChallengeV1{}, ErrInvalid
+	}
+	challenge.SchemaVersion = ChallengeSchemaV2
+	challenge.LaunchAuthorizationID = authorization.AuthorizationID
+	challenge.LaunchAuthorizationDigest = authorizationDigest
+	if authorization.LaunchNotAfter.Before(challenge.ExpiresAt) {
+		challenge.ExpiresAt = authorization.LaunchNotAfter
+	}
+	if err := challenge.ValidateAt(issuedAt); err != nil {
+		return ChallengeV1{}, err
+	}
+	return challenge, nil
+}
+
 func (challenge ChallengeV1) ValidateAt(now time.Time) error {
 	if err := challenge.Validate(); err != nil {
 		return err
@@ -148,7 +233,8 @@ func (challenge ChallengeV1) ValidateAt(now time.Time) error {
 // current-time expiry decision. Persistence readers use it to verify historic
 // consumed or expired records.
 func (challenge ChallengeV1) Validate() error {
-	if challenge.SchemaVersion != ChallengeSchemaV1 ||
+	if (challenge.SchemaVersion != ChallengeSchemaV1 &&
+		challenge.SchemaVersion != ChallengeSchemaV2) ||
 		challenge.Revision != 1 ||
 		!canonicalUUID(challenge.ApprovalID) ||
 		!canonicalUUID(challenge.ChallengeID) ||
@@ -190,6 +276,20 @@ func (challenge ChallengeV1) Validate() error {
 		challenge.ExpiresAt.Sub(challenge.IssuedAt) > ChallengeValidity {
 		return ErrInvalid
 	}
+	switch challenge.SchemaVersion {
+	case ChallengeSchemaV1:
+		if challenge.LaunchAuthorizationID != "" ||
+			challenge.LaunchAuthorizationDigest != "" {
+			return ErrInvalid
+		}
+	case ChallengeSchemaV2:
+		if !canonicalUUID(challenge.LaunchAuthorizationID) ||
+			!digestPattern.MatchString(
+				challenge.LaunchAuthorizationDigest,
+			) {
+			return ErrInvalid
+		}
+	}
 	return nil
 }
 
@@ -197,36 +297,78 @@ func (challenge ChallengeV1) SigningPayload() ([]byte, error) {
 	if err := challenge.ValidateAt(challenge.IssuedAt); err != nil {
 		return nil, err
 	}
-	return canonical.Marshal(signingDocumentV1{
-		PayloadSchema:   SigningPayloadSchemaV1,
-		HashAlgorithm:   canonical.Algorithm,
-		ChallengeSchema: challenge.SchemaVersion,
-		Revision:        challenge.Revision,
-		ApprovalID:      challenge.ApprovalID,
-		ChallengeID:     challenge.ChallengeID,
-		AgentInstanceID: challenge.AgentInstanceID,
-		OwnerID:         challenge.OwnerID,
-		PlanID:          challenge.PlanID, PlanRevision: challenge.PlanRevision,
-		PlanDigest: challenge.PlanDigest, GoalDigest: challenge.GoalDigest,
-		ProviderScope:         challenge.ProviderScope,
-		CatalogRevision:       challenge.CatalogRevision,
-		PolicyRevision:        challenge.PolicyRevision,
-		PricingSnapshotID:     challenge.PricingSnapshotID,
-		PricingSnapshotDigest: challenge.PricingSnapshotDigest,
-		QuotedAt:              challenge.QuotedAt, QuoteValidUntil: challenge.QuoteValidUntil,
-		WorkerCount:          challenge.WorkerCount,
-		MaxConcurrentWorkers: challenge.MaxConcurrentWorkers,
-		Currency:             challenge.Currency,
-		MinimumCostMicros:    challenge.MinimumCostMicros,
-		ExpectedCostMicros:   challenge.ExpectedCostMicros,
-		MaximumCostMicros:    challenge.MaximumCostMicros,
-		HardBudgetMicros:     challenge.HardBudgetMicros,
-		MinimumWallSeconds:   challenge.MinimumWallSeconds,
-		ExpectedWallSeconds:  challenge.ExpectedWallSeconds,
-		MaximumWallSeconds:   challenge.MaximumWallSeconds,
-		SignerKeyID:          challenge.SignerKeyID,
-		IssuedAt:             challenge.IssuedAt, ExpiresAt: challenge.ExpiresAt,
-	})
+	switch challenge.SchemaVersion {
+	case ChallengeSchemaV1:
+		return canonical.Marshal(signingDocumentV1{
+			PayloadSchema:   SigningPayloadSchemaV1,
+			HashAlgorithm:   canonical.Algorithm,
+			ChallengeSchema: challenge.SchemaVersion,
+			Revision:        challenge.Revision,
+			ApprovalID:      challenge.ApprovalID,
+			ChallengeID:     challenge.ChallengeID,
+			AgentInstanceID: challenge.AgentInstanceID,
+			OwnerID:         challenge.OwnerID,
+			PlanID:          challenge.PlanID, PlanRevision: challenge.PlanRevision,
+			PlanDigest: challenge.PlanDigest, GoalDigest: challenge.GoalDigest,
+			ProviderScope:         challenge.ProviderScope,
+			CatalogRevision:       challenge.CatalogRevision,
+			PolicyRevision:        challenge.PolicyRevision,
+			PricingSnapshotID:     challenge.PricingSnapshotID,
+			PricingSnapshotDigest: challenge.PricingSnapshotDigest,
+			QuotedAt:              challenge.QuotedAt, QuoteValidUntil: challenge.QuoteValidUntil,
+			WorkerCount:          challenge.WorkerCount,
+			MaxConcurrentWorkers: challenge.MaxConcurrentWorkers,
+			Currency:             challenge.Currency,
+			MinimumCostMicros:    challenge.MinimumCostMicros,
+			ExpectedCostMicros:   challenge.ExpectedCostMicros,
+			MaximumCostMicros:    challenge.MaximumCostMicros,
+			HardBudgetMicros:     challenge.HardBudgetMicros,
+			MinimumWallSeconds:   challenge.MinimumWallSeconds,
+			ExpectedWallSeconds:  challenge.ExpectedWallSeconds,
+			MaximumWallSeconds:   challenge.MaximumWallSeconds,
+			SignerKeyID:          challenge.SignerKeyID,
+			IssuedAt:             challenge.IssuedAt, ExpiresAt: challenge.ExpiresAt,
+		})
+	case ChallengeSchemaV2:
+		return canonical.Marshal(signingDocumentV2{
+			PayloadSchema:             SigningPayloadSchemaV2,
+			HashAlgorithm:             canonical.Algorithm,
+			ChallengeSchema:           challenge.SchemaVersion,
+			Revision:                  challenge.Revision,
+			ApprovalID:                challenge.ApprovalID,
+			ChallengeID:               challenge.ChallengeID,
+			AgentInstanceID:           challenge.AgentInstanceID,
+			OwnerID:                   challenge.OwnerID,
+			PlanID:                    challenge.PlanID,
+			PlanRevision:              challenge.PlanRevision,
+			PlanDigest:                challenge.PlanDigest,
+			GoalDigest:                challenge.GoalDigest,
+			ProviderScope:             challenge.ProviderScope,
+			CatalogRevision:           challenge.CatalogRevision,
+			PolicyRevision:            challenge.PolicyRevision,
+			PricingSnapshotID:         challenge.PricingSnapshotID,
+			PricingSnapshotDigest:     challenge.PricingSnapshotDigest,
+			QuotedAt:                  challenge.QuotedAt,
+			QuoteValidUntil:           challenge.QuoteValidUntil,
+			WorkerCount:               challenge.WorkerCount,
+			MaxConcurrentWorkers:      challenge.MaxConcurrentWorkers,
+			Currency:                  challenge.Currency,
+			MinimumCostMicros:         challenge.MinimumCostMicros,
+			ExpectedCostMicros:        challenge.ExpectedCostMicros,
+			MaximumCostMicros:         challenge.MaximumCostMicros,
+			HardBudgetMicros:          challenge.HardBudgetMicros,
+			MinimumWallSeconds:        challenge.MinimumWallSeconds,
+			ExpectedWallSeconds:       challenge.ExpectedWallSeconds,
+			MaximumWallSeconds:        challenge.MaximumWallSeconds,
+			LaunchAuthorizationID:     challenge.LaunchAuthorizationID,
+			LaunchAuthorizationDigest: challenge.LaunchAuthorizationDigest,
+			SignerKeyID:               challenge.SignerKeyID,
+			IssuedAt:                  challenge.IssuedAt,
+			ExpiresAt:                 challenge.ExpiresAt,
+		})
+	default:
+		return nil, ErrInvalid
+	}
 }
 
 // ValidateSignerKeyID applies the same bounded, secret-aware identifier
@@ -244,7 +386,8 @@ func (signature SignatureV1) Validate() error {
 	decoded, err := base64.RawURLEncoding.DecodeString(
 		signature.SignatureBase64URL,
 	)
-	if signature.SchemaVersion != SignatureSchemaV1 ||
+	if (signature.SchemaVersion != SignatureSchemaV1 &&
+		signature.SchemaVersion != SignatureSchemaV2) ||
 		!canonicalUUID(signature.ApprovalID) ||
 		!canonicalUUID(signature.ChallengeID) ||
 		!canonicalUUID(signature.PlanID) ||
@@ -258,6 +401,20 @@ func (signature SignatureV1) Validate() error {
 			signature.SignatureBase64URL {
 		return ErrInvalid
 	}
+	switch signature.SchemaVersion {
+	case SignatureSchemaV1:
+		if signature.LaunchAuthorizationID != "" ||
+			signature.LaunchAuthorizationDigest != "" {
+			return ErrInvalid
+		}
+	case SignatureSchemaV2:
+		if !canonicalUUID(signature.LaunchAuthorizationID) ||
+			!digestPattern.MatchString(
+				signature.LaunchAuthorizationDigest,
+			) {
+			return ErrInvalid
+		}
+	}
 	return nil
 }
 
@@ -265,6 +422,52 @@ func Verify(
 	challenge ChallengeV1,
 	signature SignatureV1,
 	plan teamplan.Plan,
+	publicKey ed25519.PublicKey,
+	now time.Time,
+) error {
+	if challenge.SchemaVersion != ChallengeSchemaV1 ||
+		signature.SchemaVersion != SignatureSchemaV1 {
+		return ErrSignatureInvalid
+	}
+	return verify(
+		challenge,
+		signature,
+		plan,
+		nil,
+		publicKey,
+		now,
+	)
+}
+
+// VerifyWithLaunch verifies a v2 signature against both immutable documents.
+// A caller cannot fall back to Verify and thereby omit provider-launch facts.
+func VerifyWithLaunch(
+	challenge ChallengeV1,
+	signature SignatureV1,
+	plan teamplan.Plan,
+	authorization teamlaunch.AuthorizationV1,
+	publicKey ed25519.PublicKey,
+	now time.Time,
+) error {
+	if challenge.SchemaVersion != ChallengeSchemaV2 ||
+		signature.SchemaVersion != SignatureSchemaV2 {
+		return ErrSignatureInvalid
+	}
+	return verify(
+		challenge,
+		signature,
+		plan,
+		&authorization,
+		publicKey,
+		now,
+	)
+}
+
+func verify(
+	challenge ChallengeV1,
+	signature SignatureV1,
+	plan teamplan.Plan,
+	authorization *teamlaunch.AuthorizationV1,
 	publicKey ed25519.PublicKey,
 	now time.Time,
 ) error {
@@ -278,11 +481,24 @@ func Verify(
 		signature.PlanID != challenge.PlanID ||
 		signature.PlanRevision != challenge.PlanRevision ||
 		signature.PlanDigest != challenge.PlanDigest ||
+		signature.LaunchAuthorizationID !=
+			challenge.LaunchAuthorizationID ||
+		signature.LaunchAuthorizationDigest !=
+			challenge.LaunchAuthorizationDigest ||
 		signature.SignerKeyID != challenge.SignerKeyID {
 		return ErrSignatureInvalid
 	}
 	if err := challenge.matchesPlan(plan); err != nil {
 		return err
+	}
+	if authorization != nil {
+		if err := challenge.matchesLaunch(
+			plan,
+			*authorization,
+			now,
+		); err != nil {
+			return err
+		}
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(
 		signature.SignatureBase64URL,
@@ -298,6 +514,30 @@ func Verify(
 	}
 	if !ed25519.Verify(publicKey, payload, decoded) {
 		return ErrSignatureInvalid
+	}
+	return nil
+}
+
+func (challenge ChallengeV1) matchesLaunch(
+	plan teamplan.Plan,
+	authorization teamlaunch.AuthorizationV1,
+	now time.Time,
+) error {
+	digest, err := authorization.Digest()
+	if err != nil ||
+		authorization.ValidateAt(now) != nil ||
+		authorization.ValidateAgainst(plan) != nil ||
+		authorization.AuthorizationID !=
+			challenge.LaunchAuthorizationID ||
+		digest != challenge.LaunchAuthorizationDigest ||
+		authorization.AgentInstanceID != challenge.AgentInstanceID ||
+		authorization.OwnerID != challenge.OwnerID ||
+		authorization.PlanID != challenge.PlanID ||
+		authorization.PlanRevision != challenge.PlanRevision ||
+		authorization.PlanDigest != challenge.PlanDigest ||
+		authorization.ApprovalID != challenge.ApprovalID ||
+		authorization.ProviderScope != challenge.ProviderScope {
+		return ErrPlanChanged
 	}
 	return nil
 }

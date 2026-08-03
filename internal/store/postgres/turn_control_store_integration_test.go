@@ -250,6 +250,8 @@ func TestTurnControllerPersistsApprovalAndCompletionGates(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	approvalID, launchAuthorization :=
+		newTeamLaunchAuthorizationFixture(t, plan, instanceID)
 	challenge, err := store.CreateTeamApprovalChallenge(
 		ctx,
 		scope,
@@ -259,9 +261,10 @@ func TestTurnControllerPersistsApprovalAndCompletionGates(t *testing.T) {
 			PlanID:                     plan.PlanID,
 			PlanRevision:               plan.Revision,
 			ExpectedPlanRecordRevision: planRecord.RecordRevision,
-			ApprovalID:                 uuid.NewString(),
+			ApprovalID:                 approvalID,
 			ChallengeID:                uuid.NewString(),
 			SignerKeyID:                signerKeyID,
+			Authorization:              launchAuthorization,
 		},
 	)
 	if err != nil {

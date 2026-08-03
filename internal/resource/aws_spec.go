@@ -789,14 +789,16 @@ func (spec AWSWorkerBootstrapSpecV1) validate() error {
 		if _, err := installerbootstrap.ValidateTrustMaterial(*spec.InstallerTrust, spec.DeploymentID); err != nil {
 			return fmt.Errorf("%w: Worker installer trust scope is invalid", ErrInvalid)
 		}
-		if len(spec.InstallerArtifacts) == 0 {
+		manifest := spec.InstallerTrust.ArtifactManifest.Manifest
+		if len(spec.InstallerArtifacts) != 0 {
+			key, err := arn.Parse(spec.InstallerArtifacts[0].KMSKeyARN)
+			if err != nil || installerbootstrap.ValidateArtifactSources(*spec.InstallerTrust, spec.InstallerArtifacts, spec.DeploymentID, installerbootstrap.InstanceIdentityV1{
+				AccountID: key.AccountID, Region: key.Region, InstanceID: "i-00000000",
+			}) != nil {
+				return fmt.Errorf("%w: Worker installer artifact scope is invalid", ErrInvalid)
+			}
+		} else if len(manifest.Artifacts) != 0 {
 			return fmt.Errorf("%w: Worker installer artifact sources are required", ErrInvalid)
-		}
-		key, err := arn.Parse(spec.InstallerArtifacts[0].KMSKeyARN)
-		if err != nil || installerbootstrap.ValidateArtifactSources(*spec.InstallerTrust, spec.InstallerArtifacts, spec.DeploymentID, installerbootstrap.InstanceIdentityV1{
-			AccountID: key.AccountID, Region: key.Region, InstanceID: "i-00000000",
-		}) != nil {
-			return fmt.Errorf("%w: Worker installer artifact scope is invalid", ErrInvalid)
 		}
 		if len(spec.InstallerSecrets) != 0 {
 			secretKey, keyErr := arn.Parse(spec.InstallerSecrets[0].KMSKeyARN)
@@ -805,7 +807,7 @@ func (spec AWSWorkerBootstrapSpecV1) validate() error {
 			}) != nil {
 				return fmt.Errorf("%w: Worker installer secret scope is invalid", ErrInvalid)
 			}
-		} else if len(spec.InstallerTrust.ArtifactManifest.Manifest.Secrets) != 0 {
+		} else if len(manifest.Secrets) != 0 {
 			return fmt.Errorf("%w: Worker installer secret sources are required", ErrInvalid)
 		}
 	} else if len(spec.InstallerArtifacts) != 0 || len(spec.InstallerSecrets) != 0 {

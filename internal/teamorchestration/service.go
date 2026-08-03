@@ -25,6 +25,7 @@ type Service struct {
 	policies   PolicyResolver
 	repository Repository
 	offers     TrustedOfferVerifier
+	launches   TrustedLaunchAuthorizationBuilder
 	now        func() time.Time
 }
 
@@ -38,6 +39,18 @@ func WithTrustedOfferVerifier(
 			return ErrInvalid
 		}
 		service.offers = verifier
+		return nil
+	}
+}
+
+func WithTrustedLaunchAuthorizationBuilder(
+	builder TrustedLaunchAuthorizationBuilder,
+) ServiceOption {
+	return func(service *Service) error {
+		if service == nil || builder == nil {
+			return ErrInvalid
+		}
+		service.launches = builder
 		return nil
 	}
 }
@@ -99,6 +112,7 @@ func (service *Service) prepareFreshPlan(
 		Revision:    request.Revision,
 		OwnerID:     request.OwnerID,
 		GoalDigest:  request.GoalDigest,
+		TaskInput:   request.TaskInput,
 		Proposal:    request.Proposal,
 		Policy:      policy,
 		Offers:      offers,
@@ -260,6 +274,58 @@ func (service *Service) CreateChallenge(
 		planFact.RecordRevision != request.ExpectedPlanRecordRevision {
 		return ChallengeFact{}, ErrNotReady
 	}
+	findCommand := FindChallengeCommand{
+		IdempotencyKey:             request.IdempotencyKey,
+		OwnerID:                    request.OwnerID,
+		PlanID:                     request.PlanID,
+		PlanRevision:               request.PlanRevision,
+		ExpectedPlanRecordRevision: request.ExpectedPlanRecordRevision,
+		ApprovalID:                 request.ApprovalID,
+		ChallengeID:                request.ChallengeID,
+		SignerKeyID:                request.SignerKeyID,
+	}
+	replayed, found, err := service.repository.FindChallenge(
+		ctx,
+		scope,
+		findCommand,
+	)
+	if err != nil {
+		return ChallengeFact{}, err
+	}
+	if found {
+		if !challengeFactMatchesRequest(replayed, planFact, request) {
+			return ChallengeFact{}, ErrFactMismatch
+		}
+		return replayed, nil
+	}
+	if service.launches == nil {
+		return ChallengeFact{}, ErrLaunchAuthorizationUnavailable
+	}
+	now, err := service.currentTime()
+	if err != nil {
+		return ChallengeFact{}, err
+	}
+	authorization, err := service.launches.BuildForPlan(
+		ctx,
+		planFact.Plan,
+		request.ApprovalID,
+		now,
+	)
+	if err != nil {
+		return ChallengeFact{}, err
+	}
+	authorizationDigest, err := authorization.Digest()
+	if err != nil ||
+		authorization.ValidateAt(now) != nil ||
+		authorization.ValidateAgainst(planFact.Plan) != nil ||
+		authorization.AgentInstanceID == "" ||
+		authorization.OwnerID != request.OwnerID ||
+		authorization.PlanID != request.PlanID ||
+		authorization.PlanRevision != request.PlanRevision ||
+		authorization.PlanDigest != planFact.PlanDigest ||
+		authorization.ApprovalID != request.ApprovalID {
+		return ChallengeFact{}, ErrFactMismatch
+	}
 	challengeFact, err := service.repository.PersistChallenge(
 		ctx,
 		scope,
@@ -272,22 +338,57 @@ func (service *Service) CreateChallenge(
 			ApprovalID:                 request.ApprovalID,
 			ChallengeID:                request.ChallengeID,
 			SignerKeyID:                request.SignerKeyID,
+			Authorization:              authorization,
 		},
 	)
 	if err != nil {
 		return ChallengeFact{}, err
 	}
-	if challengeFact.RecordRevision != 1 ||
-		challengeFact.ConsumedAt != nil ||
-		challengeFact.Challenge.OwnerID != request.OwnerID ||
-		challengeFact.Challenge.PlanID != request.PlanID ||
-		challengeFact.Challenge.PlanRevision != request.PlanRevision ||
-		challengeFact.Challenge.PlanDigest != planFact.PlanDigest ||
-		challengeFact.Challenge.PolicyRevision !=
-			planFact.Plan.PolicyRevision {
+	if !challengeFactMatchesRequest(challengeFact, planFact, request) ||
+		challengeFact.Authorization.AuthorizationID !=
+			authorization.AuthorizationID ||
+		challengeFact.Challenge.LaunchAuthorizationDigest !=
+			authorizationDigest {
 		return ChallengeFact{}, ErrFactMismatch
 	}
 	return challengeFact, nil
+}
+
+func challengeFactMatchesRequest(
+	fact ChallengeFact,
+	plan PlanFact,
+	request ChallengeRequest,
+) bool {
+	if fact.RecordRevision != 1 ||
+		fact.ConsumedAt != nil ||
+		fact.Challenge.Validate() != nil ||
+		fact.Authorization == nil ||
+		fact.Authorization.Validate() != nil ||
+		fact.Authorization.ValidateAgainst(plan.Plan) != nil {
+		return false
+	}
+	authorizationDigest, err := fact.Authorization.Digest()
+	return err == nil &&
+		fact.Challenge.OwnerID == request.OwnerID &&
+		fact.Challenge.PlanID == request.PlanID &&
+		fact.Challenge.PlanRevision == request.PlanRevision &&
+		fact.Challenge.PlanDigest == plan.PlanDigest &&
+		fact.Challenge.ApprovalID == request.ApprovalID &&
+		fact.Challenge.ChallengeID == request.ChallengeID &&
+		fact.Challenge.SignerKeyID == request.SignerKeyID &&
+		fact.Challenge.PolicyRevision == plan.Plan.PolicyRevision &&
+		fact.Challenge.ProviderScope == plan.Plan.ProviderScope &&
+		fact.Challenge.AgentInstanceID ==
+			fact.Authorization.AgentInstanceID &&
+		fact.Challenge.LaunchAuthorizationID ==
+			fact.Authorization.AuthorizationID &&
+		fact.Challenge.LaunchAuthorizationDigest ==
+			authorizationDigest &&
+		fact.Authorization.OwnerID == request.OwnerID &&
+		fact.Authorization.PlanID == request.PlanID &&
+		fact.Authorization.PlanRevision == request.PlanRevision &&
+		fact.Authorization.PlanDigest == plan.PlanDigest &&
+		fact.Authorization.ApprovalID == request.ApprovalID
 }
 
 func (service *Service) ApprovePlan(
@@ -418,6 +519,14 @@ func (service *Service) GetApprovedPlanForMaterialization(
 	if approval.Signature.PlanID != planID ||
 		approval.Signature.PlanRevision != planRevision ||
 		approval.Signature.PlanDigest != planFact.PlanDigest ||
+		approval.Signature.SchemaVersion !=
+			teamapproval.SignatureSchemaV2 ||
+		approval.Authorization == nil ||
+		approval.Authorization.ValidateAgainst(planFact.Plan) != nil ||
+		approval.Authorization.AuthorizationID !=
+			approval.Signature.LaunchAuthorizationID ||
+		mustLaunchAuthorizationDigest(approval.Authorization) !=
+			approval.Signature.LaunchAuthorizationDigest ||
 		approval.Signature.ApprovalID == "" ||
 		approval.ApprovedAt.IsZero() {
 		return ApprovedPlanFact{}, ErrFactMismatch
@@ -461,9 +570,24 @@ func (service *Service) VerifyApprovedPlanForExecution(
 	if approval.Signature.PlanID != planID ||
 		approval.Signature.PlanRevision != planRevision ||
 		approval.Signature.PlanDigest != planFact.PlanDigest ||
+		approval.Signature.SchemaVersion !=
+			teamapproval.SignatureSchemaV2 ||
+		approval.Authorization == nil ||
+		approval.Authorization.ValidateAgainst(planFact.Plan) != nil ||
+		approval.Authorization.AuthorizationID !=
+			approval.Signature.LaunchAuthorizationID ||
+		mustLaunchAuthorizationDigest(approval.Authorization) !=
+			approval.Signature.LaunchAuthorizationDigest ||
 		approval.Signature.ApprovalID == "" ||
 		approval.ApprovedAt.IsZero() {
 		return ApprovedPlanFact{}, ErrFactMismatch
+	}
+	now, err := service.currentTime()
+	if err != nil {
+		return ApprovedPlanFact{}, err
+	}
+	if approval.Authorization.ValidateAt(now) != nil {
+		return ApprovedPlanFact{}, ErrNotReady
 	}
 	return ApprovedPlanFact{Plan: planFact, Approval: approval}, nil
 }
@@ -605,6 +729,19 @@ func samePlanFact(
 		fact.Plan.PolicyRevision == plan.PolicyRevision
 }
 
+func mustLaunchAuthorizationDigest(
+	authorization interface{ Digest() (string, error) },
+) string {
+	if authorization == nil {
+		return ""
+	}
+	digest, err := authorization.Digest()
+	if err != nil {
+		return ""
+	}
+	return digest
+}
+
 func canonicalUUID(value string) bool {
 	parsed, err := uuid.Parse(value)
 	return err == nil && parsed != uuid.Nil && parsed.String() == value
@@ -618,7 +755,8 @@ func validPreparationRequest(request PreparePlanRequest) bool {
 		!canonicalUUID(request.PlanID) ||
 		request.Revision == 0 ||
 		request.Revision > uint64(math.MaxInt64) ||
-		!preparationGoalDigestPattern.MatchString(request.GoalDigest) {
+		!preparationGoalDigestPattern.MatchString(request.GoalDigest) ||
+		request.TaskInput.Validate() != nil {
 		return false
 	}
 	if request.Revision == 1 {
@@ -676,6 +814,7 @@ func preparationIntent(request PreparePlanRequest) PreparationIntent {
 		Revision:                 request.Revision,
 		ExpectedPreviousRevision: request.ExpectedPreviousRevision,
 		GoalDigest:               request.GoalDigest,
+		TaskInput:                request.TaskInput,
 		Proposal:                 request.Proposal,
 	}
 }
@@ -697,6 +836,7 @@ func preparedPlanMatchesIntent(
 		plan.PlanID != intent.PlanID ||
 		plan.Revision != intent.Revision ||
 		plan.GoalDigest != intent.GoalDigest ||
+		plan.TaskInput != intent.TaskInput ||
 		plan.ProposalConfidence != intent.Proposal.Confidence ||
 		plan.ProposalRationale != intent.Proposal.Rationale ||
 		plan.WorkerCount != uint32(len(intent.Proposal.Roles)) ||

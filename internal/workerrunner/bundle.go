@@ -44,6 +44,7 @@ type ActionV1 struct {
 	TimeoutSeconds uint32                   `json:"timeout_seconds"`
 	Noop           *NoopInputV1             `json:"noop,omitempty"`
 	Installer      *InstallerExecuteInputV1 `json:"installer,omitempty"`
+	Input          *InputMaterializeInputV1 `json:"input,omitempty"`
 	Runtime        *RuntimeExecuteInputV1   `json:"runtime,omitempty"`
 }
 
@@ -134,7 +135,8 @@ func (NoopAction) Kind() string { return "worker.noop" }
 
 func (NoopAction) Validate(action ActionV1) error {
 	if action.Kind != (NoopAction{}).Kind() || action.Noop == nil ||
-		action.Installer != nil || action.Runtime != nil ||
+		action.Installer != nil || action.Input != nil ||
+		action.Runtime != nil ||
 		action.Noop.DelayMillis > 10_000 {
 		return fmt.Errorf("%w: worker.noop input is invalid", ErrInvalidBundle)
 	}
@@ -190,6 +192,83 @@ func parseExecutionBundle(raw, recipeDigest []byte, executionTimeout time.Durati
 		seen[action.ID] = struct{}{}
 	}
 	return bundle, nil
+}
+
+// PublishedInputObjects returns only immutable object declarations from a
+// digest-verified execution bundle. Provider code uses it to copy those
+// objects into one verified EC2 principal prefix without parsing model input.
+func PublishedInputObjects(
+	raw []byte,
+	recipeDigest []byte,
+) ([]MaterializeObjectV1, error) {
+	bundle, err := parseExecutionBundle(
+		raw,
+		recipeDigest,
+		7*24*time.Hour,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var input *InputMaterializeInputV1
+	inputIndex := -1
+	runtimeIndexes := make([]int, 0, len(bundle.Actions))
+	for index := range bundle.Actions {
+		action := bundle.Actions[index]
+		if action.Input != nil {
+			if input != nil ||
+				action.Kind != InputMaterializeActionKind ||
+				action.Noop != nil || action.Installer != nil ||
+				action.Runtime != nil {
+				return nil, ErrInvalidBundle
+			}
+			input = action.Input
+			inputIndex = index
+		}
+		if action.Runtime != nil {
+			runtimeIndexes = append(runtimeIndexes, index)
+		}
+	}
+	if input == nil {
+		return []MaterializeObjectV1{}, nil
+	}
+	if len(runtimeIndexes) == 0 ||
+		validateMaterializeDeclaration(
+			input.Context,
+			"application/json",
+			workerruntime.MaxContextBytes,
+		) != nil ||
+		input.Context.S3Ref != "" {
+		return nil, ErrInvalidBundle
+	}
+	objects := []MaterializeObjectV1{input.Context}
+	if input.Workspace != nil {
+		if validateMaterializeDeclaration(
+			*input.Workspace,
+			"application/x-tar",
+			MaxWorkspaceArchiveBytes,
+		) != nil ||
+			input.Workspace.S3Ref != "" ||
+			input.Workspace.ObjectName == input.Context.ObjectName {
+			return nil, ErrInvalidBundle
+		}
+		objects = append(objects, *input.Workspace)
+	}
+	for _, index := range runtimeIndexes {
+		task := bundle.Actions[index].Runtime.Task
+		if inputIndex >= index ||
+			input.Context.SHA256 != task.ContextDigest {
+			return nil, ErrInvalidBundle
+		}
+		if task.WorkspaceMode == workerruntime.WorkspaceNone {
+			if input.Workspace != nil {
+				return nil, ErrInvalidBundle
+			}
+		} else if input.Workspace == nil ||
+			input.Workspace.SHA256 != task.WorkspaceDigest {
+			return nil, ErrInvalidBundle
+		}
+	}
+	return objects, nil
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {

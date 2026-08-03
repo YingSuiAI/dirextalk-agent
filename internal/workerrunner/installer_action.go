@@ -28,7 +28,8 @@ func (*InstallerExecuteAction) Kind() string { return installer.ActionExecute }
 func (handler *InstallerExecuteAction) Validate(action ActionV1) error {
 	if handler == nil || handler.client == nil || handler.now == nil ||
 		action.Kind != installer.ActionExecute || action.Noop != nil ||
-		action.Runtime != nil || action.Installer == nil ||
+		action.Input != nil || action.Runtime != nil ||
+		action.Installer == nil ||
 		action.Installer.LeaseGrant == nil {
 		return ErrInvalidBundle
 	}

@@ -232,6 +232,10 @@ func TestActionResultStatusIsBoundToActionKind(t *testing.T) {
 			status: "succeeded", valid: true,
 		},
 		{
+			action: ActionV1{Input: &InputMaterializeInputV1{}},
+			status: "materialized", valid: true,
+		},
+		{
 			action: ActionV1{Installer: &InstallerExecuteInputV1{}},
 			status: installer.StatusExecuted, valid: true,
 		},

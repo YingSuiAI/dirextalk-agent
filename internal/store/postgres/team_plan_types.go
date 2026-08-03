@@ -13,7 +13,9 @@ import (
 
 	cloudapproval "github.com/YingSuiAI/dirextalk-agent/internal/cloud/approval"
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/canonical"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teamlaunch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/google/uuid"
 )
@@ -73,17 +75,19 @@ type TeamPlanRecord struct {
 }
 
 type TeamApprovalChallengeRecord struct {
-	Challenge      teamapproval.ChallengeV1 `json:"challenge"`
-	ConsumedAt     *time.Time               `json:"consumed_at,omitempty"`
-	RecordRevision uint64                   `json:"record_revision"`
-	CreatedAt      time.Time                `json:"created_at"`
-	UpdatedAt      time.Time                `json:"updated_at"`
+	Challenge      teamapproval.ChallengeV1    `json:"challenge"`
+	Authorization  *teamlaunch.AuthorizationV1 `json:"authorization,omitempty"`
+	ConsumedAt     *time.Time                  `json:"consumed_at,omitempty"`
+	RecordRevision uint64                      `json:"record_revision"`
+	CreatedAt      time.Time                   `json:"created_at"`
+	UpdatedAt      time.Time                   `json:"updated_at"`
 }
 
 type TeamApprovalRecord struct {
-	Signature  teamapproval.SignatureV1 `json:"signature"`
-	ApprovedAt time.Time                `json:"approved_at"`
-	CreatedAt  time.Time                `json:"created_at"`
+	Signature     teamapproval.SignatureV1    `json:"signature"`
+	Authorization *teamlaunch.AuthorizationV1 `json:"authorization,omitempty"`
+	ApprovedAt    time.Time                   `json:"approved_at"`
+	CreatedAt     time.Time                   `json:"created_at"`
 }
 
 type TeamPlanPreparationIntent struct {
@@ -94,6 +98,7 @@ type TeamPlanPreparationIntent struct {
 	Revision                 uint64                `json:"revision"`
 	ExpectedPreviousRevision uint64                `json:"expected_previous_revision"`
 	GoalDigest               string                `json:"goal_digest"`
+	TaskInput                taskinput.BindingV2   `json:"task_input"`
 	Proposal                 teamplan.TeamProposal `json:"proposal"`
 }
 
@@ -112,14 +117,23 @@ func (intent TeamPlanPreparationIntent) validate() error {
 		len(intent.Proposal.Roles) > 8 {
 		return ErrTeamFactInvalid
 	}
+	if intent.TaskInput == (taskinput.BindingV2{}) {
+		if intent.TaskID != "" && !canonicalTeamUUID(intent.TaskID) {
+			return ErrTeamFactInvalid
+		}
+	} else if !canonicalTeamUUID(intent.TaskID) ||
+		intent.TaskInput.ValidateFor(
+			intent.OwnerID,
+			intent.TaskID,
+			intent.GoalDigest,
+		) != nil {
+		return ErrTeamFactInvalid
+	}
 	if intent.Revision == 1 {
 		if intent.ExpectedPreviousRevision != 0 {
 			return ErrTeamFactInvalid
 		}
 	} else if intent.ExpectedPreviousRevision != intent.Revision-1 {
-		return ErrTeamFactInvalid
-	}
-	if intent.TaskID != "" && !canonicalTeamUUID(intent.TaskID) {
 		return ErrTeamFactInvalid
 	}
 	for _, role := range intent.Proposal.Roles {
@@ -179,6 +193,7 @@ func (command PrepareTeamPlanCommand) validate() error {
 		command.Plan.PlanID != command.Intent.PlanID ||
 		command.Plan.Revision != command.Intent.Revision ||
 		command.Plan.GoalDigest != command.Intent.GoalDigest ||
+		command.Plan.TaskInput != command.Intent.TaskInput ||
 		command.Plan.ProviderScope.ConnectionID != command.Intent.ConnectionID ||
 		command.Plan.PricingSnapshotID != command.Snapshot.SnapshotID() ||
 		command.Plan.PricingSnapshotDigest != command.Snapshot.Digest() ||
@@ -285,14 +300,23 @@ func (command CreateTeamPlanCommand) validate() error {
 		command.Plan.Revision > uint64(math.MaxInt64) {
 		return ErrTeamFactInvalid
 	}
+	if command.Plan.SchemaVersion == teamplan.SchemaV3 {
+		if !canonicalTeamUUID(command.TaskID) ||
+			command.Plan.TaskInput.ValidateFor(
+				command.Plan.OwnerID,
+				command.TaskID,
+				command.Plan.GoalDigest,
+			) != nil {
+			return ErrTeamFactInvalid
+		}
+	} else if command.TaskID != "" && !canonicalTeamUUID(command.TaskID) {
+		return ErrTeamFactInvalid
+	}
 	if command.Plan.Revision == 1 {
 		if command.ExpectedPreviousRevision != 0 {
 			return ErrTeamFactInvalid
 		}
 	} else if command.ExpectedPreviousRevision != command.Plan.Revision-1 {
-		return ErrTeamFactInvalid
-	}
-	if command.TaskID != "" && !canonicalTeamUUID(command.TaskID) {
 		return ErrTeamFactInvalid
 	}
 	return nil
@@ -319,6 +343,36 @@ type CreateTeamApprovalChallengeCommand struct {
 	ApprovalID                 string
 	ChallengeID                string
 	SignerKeyID                string
+	Authorization              teamlaunch.AuthorizationV1
+}
+
+type FindTeamApprovalChallengeCommand struct {
+	IdempotencyKey             string
+	OwnerID                    string
+	PlanID                     string
+	PlanRevision               uint64
+	ExpectedPlanRecordRevision uint64
+	ApprovalID                 string
+	ChallengeID                string
+	SignerKeyID                string
+}
+
+func (command FindTeamApprovalChallengeCommand) validate() error {
+	if err := validateTeamMutationKey(command.IdempotencyKey); err != nil {
+		return err
+	}
+	if !validTeamOwnerID(command.OwnerID) ||
+		!canonicalTeamUUID(command.PlanID) ||
+		command.PlanRevision == 0 ||
+		command.PlanRevision > uint64(math.MaxInt64) ||
+		command.ExpectedPlanRecordRevision == 0 ||
+		command.ExpectedPlanRecordRevision > uint64(math.MaxInt64) ||
+		!canonicalTeamUUID(command.ApprovalID) ||
+		!canonicalTeamUUID(command.ChallengeID) ||
+		!teamSignerKeyPattern.MatchString(command.SignerKeyID) {
+		return ErrTeamFactInvalid
+	}
+	return nil
 }
 
 func (command CreateTeamApprovalChallengeCommand) validate() error {
@@ -330,15 +384,53 @@ func (command CreateTeamApprovalChallengeCommand) validate() error {
 		command.PlanRevision == 0 ||
 		command.PlanRevision > uint64(math.MaxInt64) ||
 		command.ExpectedPlanRecordRevision == 0 ||
+		command.ExpectedPlanRecordRevision > uint64(math.MaxInt64) ||
 		!canonicalTeamUUID(command.ApprovalID) ||
 		!canonicalTeamUUID(command.ChallengeID) ||
-		!teamSignerKeyPattern.MatchString(command.SignerKeyID) {
+		!teamSignerKeyPattern.MatchString(command.SignerKeyID) ||
+		command.Authorization.Validate() != nil ||
+		command.Authorization.OwnerID != command.OwnerID ||
+		command.Authorization.PlanID != command.PlanID ||
+		command.Authorization.PlanRevision != command.PlanRevision ||
+		command.Authorization.ApprovalID != command.ApprovalID {
 		return ErrTeamFactInvalid
 	}
 	return nil
 }
 
 func (command CreateTeamApprovalChallengeCommand) digest() ([sha256.Size]byte, error) {
+	return teamApprovalChallengeIntentDigest(
+		command.OwnerID,
+		command.PlanID,
+		command.PlanRevision,
+		command.ExpectedPlanRecordRevision,
+		command.ApprovalID,
+		command.ChallengeID,
+		command.SignerKeyID,
+	)
+}
+
+func (command FindTeamApprovalChallengeCommand) digest() ([sha256.Size]byte, error) {
+	return teamApprovalChallengeIntentDigest(
+		command.OwnerID,
+		command.PlanID,
+		command.PlanRevision,
+		command.ExpectedPlanRecordRevision,
+		command.ApprovalID,
+		command.ChallengeID,
+		command.SignerKeyID,
+	)
+}
+
+func teamApprovalChallengeIntentDigest(
+	ownerID,
+	planID string,
+	planRevision,
+	expectedPlanRecordRevision uint64,
+	approvalID,
+	challengeID,
+	signerKeyID string,
+) ([sha256.Size]byte, error) {
 	return teamMutationDigest(struct {
 		OwnerID                    string `json:"owner_id"`
 		PlanID                     string `json:"plan_id"`
@@ -348,13 +440,13 @@ func (command CreateTeamApprovalChallengeCommand) digest() ([sha256.Size]byte, e
 		ChallengeID                string `json:"challenge_id"`
 		SignerKeyID                string `json:"signer_key_id"`
 	}{
-		OwnerID:                    command.OwnerID,
-		PlanID:                     command.PlanID,
-		PlanRevision:               command.PlanRevision,
-		ExpectedPlanRecordRevision: command.ExpectedPlanRecordRevision,
-		ApprovalID:                 command.ApprovalID,
-		ChallengeID:                command.ChallengeID,
-		SignerKeyID:                command.SignerKeyID,
+		OwnerID:                    ownerID,
+		PlanID:                     planID,
+		PlanRevision:               planRevision,
+		ExpectedPlanRecordRevision: expectedPlanRecordRevision,
+		ApprovalID:                 approvalID,
+		ChallengeID:                challengeID,
+		SignerKeyID:                signerKeyID,
 	})
 }
 
@@ -414,7 +506,7 @@ func (command ApproveTeamPlanCommand) validate() error {
 	if !validTeamOwnerID(command.OwnerID) ||
 		command.ExpectedPlanRecordRevision == 0 ||
 		command.ExpectedChallengeRecordRevision == 0 ||
-		signature.SchemaVersion != teamapproval.SignatureSchemaV1 ||
+		signature.Validate() != nil ||
 		!canonicalTeamUUID(signature.ApprovalID) ||
 		!canonicalTeamUUID(signature.ChallengeID) ||
 		!canonicalTeamUUID(signature.PlanID) ||

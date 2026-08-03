@@ -29,6 +29,19 @@ import (
 	"github.com/aws/smithy-go"
 )
 
+func providerFoundationTemplate(t *testing.T) []byte {
+	t.Helper()
+	source, err := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := awsfoundation.CanonicalTemplateBody(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return template
+}
+
 func TestStaticAWSConfigUsesOnlyUploadedCredentials(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAENVIRONMENTKEY00")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "environment-secret-that-must-not-be-used")
@@ -179,6 +192,34 @@ func TestSDKProviderLostCreateResponseDoesNotDeleteKeyOrRepeatCreate(t *testing.
 	}
 }
 
+func TestSDKProviderRejectsOversizedInlineTemplateBeforeAWS(t *testing.T) {
+	clients, _, formation := completeFakeClients()
+	provider, err := awsprovider.NewSDKProvider(clients, "us-east-1", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := strings.Repeat("x", 51_201)
+	sum := sha256.Sum256([]byte(template))
+	request := awsprovider.FoundationStackRequest{
+		StackName:          "dtx-agent-0123456789ab-foundation",
+		Region:             "us-east-1",
+		AccountID:          "123456789012",
+		FoundationRoleARN:  "arn:aws:iam::123456789012:role/dtx-agent-0123456789ab-foundation",
+		ClientToken:        "dtx-0123456789abcdef",
+		TemplateBody:       template,
+		TemplateSHA256:     "sha256:" + hex.EncodeToString(sum[:]),
+		Parameters:         map[string]string{"AgentInstanceId": "agent-01"},
+		Tags:               []awsprovider.Tag{{Key: awsprovider.TagAgentInstanceID, Value: "agent-01"}},
+		TerminationProtect: true,
+	}
+	if _, err := provider.CreateFoundationStack(context.Background(), request); !errors.Is(err, awsprovider.ErrInvalidRequest) {
+		t.Fatalf("oversized template error = %v", err)
+	}
+	if formation.createInput != nil {
+		t.Fatal("oversized inline template reached CloudFormation")
+	}
+}
+
 func TestSDKProviderRecoversLostCreateStackResponseByExactReadBack(t *testing.T) {
 	clients, _, fakeCFN := completeFakeClients()
 	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
@@ -186,10 +227,7 @@ func TestSDKProviderRecoversLostCreateStackResponseByExactReadBack(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+	template := providerFoundationTemplate(t)
 	sum := sha256.Sum256(template)
 	request := awsprovider.FoundationStackRequest{
 		StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
@@ -209,7 +247,9 @@ func TestSDKProviderRecoversLostCreateStackResponseByExactReadBack(t *testing.T)
 	complete.Stacks = append([]cloudformationtypes.Stack(nil), inProgress.Stacks...)
 	complete.Stacks[0].StackStatus = cloudformationtypes.StackStatusCreateComplete
 	fakeCFN.describeOutputs = []*cloudformation.DescribeStacksOutput{inProgress, &complete}
-	fakeCFN.templateOutput = &cloudformation.GetTemplateOutput{TemplateBody: aws.String(string(template))}
+	// CloudFormation may append transport whitespace to the original JSON body.
+	// Stable-state read-back must compare the canonical document, not raw bytes.
+	fakeCFN.templateOutput = &cloudformation.GetTemplateOutput{TemplateBody: aws.String(string(template) + "\n")}
 	receipt, err := provider.CreateFoundationStack(context.Background(), request)
 	if err != nil {
 		t.Fatalf("recover stack: %v", err)
@@ -236,10 +276,7 @@ func TestSDKProviderRetriesCloudFormationRolePropagationWithSameToken(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+	template := providerFoundationTemplate(t)
 	sum := sha256.Sum256(template)
 	request := awsprovider.FoundationStackRequest{
 		StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
@@ -274,10 +311,7 @@ func TestSDKProviderRetriesUpdateAfterCompleteRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
+	template := providerFoundationTemplate(t)
 	sum := sha256.Sum256(template)
 	request := awsprovider.FoundationStackRequest{
 		StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
@@ -291,7 +325,7 @@ func TestSDKProviderRetriesUpdateAfterCompleteRollback(t *testing.T) {
 		stackReadBack(request, cloudformationtypes.StackStatusUpdateInProgress),
 		stackReadBack(request, cloudformationtypes.StackStatusUpdateComplete),
 	}
-	fakeCFN.templateOutput = &cloudformation.GetTemplateOutput{TemplateBody: aws.String(string(template))}
+	fakeCFN.templateOutput = &cloudformation.GetTemplateOutput{TemplateBody: aws.String(string(template) + "\n")}
 
 	receipt, err := provider.UpdateFoundationStack(context.Background(), request)
 	if err != nil {
@@ -309,7 +343,7 @@ func TestSDKProviderRejectsFoundationFailureAndReturnsContextTimeoutForRetry(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, _ := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
+	template := providerFoundationTemplate(t)
 	sum := sha256.Sum256(template)
 	request := awsprovider.FoundationStackRequest{
 		StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
@@ -341,7 +375,7 @@ func TestSDKProviderDeleteFoundationRecoversLostResponseAndInProgressRetry(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, _ := os.ReadFile("../../deploy/awsfoundation/foundation.yaml")
+	template := providerFoundationTemplate(t)
 	sum := sha256.Sum256(template)
 	request := awsprovider.FoundationStackRequest{StackName: "dtx-agent-0123456789ab-foundation", Region: "us-east-1", AccountID: "123456789012",
 		FoundationRoleARN: "arn:aws:iam::123456789012:role/dtx-agent-0123456789ab-foundation", ClientToken: "dtx-delete-operation",

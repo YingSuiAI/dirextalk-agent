@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+func TestOfferSnapshotApprovalWindowIsOneDay(t *testing.T) {
+	t.Parallel()
+	if OfferSnapshotValidity != 24*time.Hour {
+		t.Fatalf("OfferSnapshotValidity = %s", OfferSnapshotValidity)
+	}
+}
+
 func TestOfferSnapshotIsDeterministicAndDetached(t *testing.T) {
 	t.Parallel()
 	request := validCompileRequest()
@@ -99,14 +106,6 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 						document.CapturedAt.Add(
 							-ModelPricingEvidenceValidity - time.Microsecond,
 						)
-				}
-			}
-		},
-		"validity outlives compute evidence": func(document *OfferSnapshotDocument) {
-			for index := range document.Sources {
-				if document.Sources[index].Kind == OfferSourceComputeCapacity {
-					document.Sources[index].CapturedAt =
-						document.CapturedAt.Add(-time.Minute)
 				}
 			}
 		},

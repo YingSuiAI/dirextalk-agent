@@ -34,6 +34,12 @@ does not use AWS CLI or stored credentials: it reads the strict manifest from
 IMDSv2, obtains the instance role through IMDSv2, and fetches only the exact
 versioned S3 objects declared by that manifest with the embedded Go SDK.
 
+`/etc/dirextalk-service-secrets` is root-owned mode `0711`: the Worker cannot
+list credential slots, but it can traverse to the one digest-bound slot named
+by its approved runtime task. Each materialized credential remains mode `0400`
+and owned by the fixed Worker UID/GID. Mode `0700` is invalid because it makes
+the correctly owned credential unreadable to the unprivileged runtime.
+
 The instance security group has no inbound rule. The control-plane connection
 is credential-free outbound `grpcs://` with TLS 1.3. The Worker also requires
 link-local IMDSv2 and scoped outbound HTTPS to AWS STS and S3; therefore “only

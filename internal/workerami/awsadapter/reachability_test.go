@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 func TestReachabilityRecoversLostResponsesPersistsIDsAndCleansInOrder(t *testing.T) {
@@ -157,6 +158,110 @@ func TestReachabilityResumesPersistedAttemptTokenAndRecoversLostCreateResponse(t
 	})
 	if err != nil || evidence.Validate() != nil || persisted != evidence || evidence.VPCEndpointClientToken != tokenOnly.VPCEndpointClientToken {
 		t.Fatalf("resumed evidence = %#v persisted=%#v err=%v", evidence, persisted, err)
+	}
+}
+
+func TestReachabilityUsesExactUntaggedRuleWithLegacyFoundationPolicy(t *testing.T) {
+	request := validReachabilityRequest()
+	endpoint := validEndpoint(request)
+	rule := validRule(request)
+	rule.Tags = nil
+	rulePresent := false
+	authorizeCalls := 0
+	client := &fakeEC2{}
+	client.describeVpcEndpointsFn = func(*ec2.DescribeVpcEndpointsInput) (*ec2.DescribeVpcEndpointsOutput, error) {
+		return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []ec2types.VpcEndpoint{endpoint}}, nil
+	}
+	client.describeSecurityGroupRulesFn = func(input *ec2.DescribeSecurityGroupRulesInput) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+		if !rulePresent {
+			return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+		}
+		if len(input.SecurityGroupRuleIds) == 1 {
+			return &ec2.DescribeSecurityGroupRulesOutput{SecurityGroupRules: []ec2types.SecurityGroupRule{rule}}, nil
+		}
+		for _, filter := range input.Filters {
+			if aws.ToString(filter.Name) == "tag:"+workerami.TagAgentInstanceID {
+				return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+			}
+		}
+		return &ec2.DescribeSecurityGroupRulesOutput{SecurityGroupRules: []ec2types.SecurityGroupRule{rule}}, nil
+	}
+	client.authorizeSecurityGroupEgressFn = func(input *ec2.AuthorizeSecurityGroupEgressInput) (*ec2.AuthorizeSecurityGroupEgressOutput, error) {
+		authorizeCalls++
+		if authorizeCalls == 1 {
+			if len(input.TagSpecifications) != 1 {
+				t.Fatalf("tagged authorization input = %#v", input)
+			}
+			return nil, &smithy.GenericAPIError{Code: "UnauthorizedOperation", Message: "redacted"}
+		}
+		if len(input.TagSpecifications) != 0 || len(input.IpPermissions) != 1 ||
+			aws.ToString(input.IpPermissions[0].IpProtocol) != "tcp" ||
+			aws.ToInt32(input.IpPermissions[0].FromPort) != 443 ||
+			aws.ToInt32(input.IpPermissions[0].ToPort) != 443 ||
+			len(input.IpPermissions[0].PrefixListIds) != 1 ||
+			aws.ToString(input.IpPermissions[0].PrefixListIds[0].PrefixListId) != request.S3PrefixListID {
+			t.Fatalf("legacy authorization input = %#v", input)
+		}
+		rulePresent = true
+		return &ec2.AuthorizeSecurityGroupEgressOutput{SecurityGroupRules: []ec2types.SecurityGroupRule{rule}}, nil
+	}
+	client.describeRouteTablesFn = func(*ec2.DescribeRouteTablesInput) (*ec2.DescribeRouteTablesOutput, error) {
+		return &ec2.DescribeRouteTablesOutput{RouteTables: []ec2types.RouteTable{{
+			RouteTableId: aws.String(request.RouteTableID), VpcId: aws.String(request.VPCID),
+			Routes: []ec2types.Route{
+				{DestinationCidrBlock: aws.String("10.255.0.0/24"), GatewayId: aws.String("local"), State: ec2types.RouteStateActive},
+				{DestinationPrefixListId: aws.String(request.S3PrefixListID), GatewayId: endpoint.VpcEndpointId, State: ec2types.RouteStateActive},
+			},
+		}}}, nil
+	}
+	adapter := newTestAdapter(t, client, &fakeS3{}, nil)
+	evidence, err := adapter.PrepareBuilderReachability(context.Background(), request, nil, func(workerami.BuilderReachabilityEvidenceV2) error { return nil })
+	if err != nil || evidence.SecurityGroupRuleID != aws.ToString(rule.SecurityGroupRuleId) || authorizeCalls != 2 {
+		t.Fatalf("legacy reachability = %#v calls=%d err=%v", evidence, authorizeCalls, err)
+	}
+}
+
+func TestReachabilityRejectsLegacyRuleWithForeignTags(t *testing.T) {
+	request := validReachabilityRequest()
+	endpoint := validEndpoint(request)
+	rule := validRule(request)
+	rule.Tags = []ec2types.Tag{{Key: aws.String(workerami.TagAgentInstanceID), Value: aws.String("22222222-2222-4222-8222-222222222222")}}
+	client := &fakeEC2{}
+	client.describeVpcEndpointsFn = func(*ec2.DescribeVpcEndpointsInput) (*ec2.DescribeVpcEndpointsOutput, error) {
+		return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []ec2types.VpcEndpoint{endpoint}}, nil
+	}
+	client.describeSecurityGroupRulesFn = func(input *ec2.DescribeSecurityGroupRulesInput) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+		for _, filter := range input.Filters {
+			if aws.ToString(filter.Name) == "tag:"+workerami.TagAgentInstanceID {
+				return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+			}
+		}
+		return &ec2.DescribeSecurityGroupRulesOutput{SecurityGroupRules: []ec2types.SecurityGroupRule{rule}}, nil
+	}
+	adapter := newTestAdapter(t, client, &fakeS3{}, nil)
+	if _, err := adapter.PrepareBuilderReachability(context.Background(), request, nil, func(workerami.BuilderReachabilityEvidenceV2) error { return nil }); !errors.Is(err, workerami.ErrOwnershipMismatch) {
+		t.Fatalf("foreign legacy rule error = %v", err)
+	}
+}
+
+func TestReachabilityDoesNotUseLegacyRuleForNonAuthorizationFailure(t *testing.T) {
+	request := validReachabilityRequest()
+	endpoint := validEndpoint(request)
+	client := &fakeEC2{}
+	client.describeVpcEndpointsFn = func(*ec2.DescribeVpcEndpointsInput) (*ec2.DescribeVpcEndpointsOutput, error) {
+		return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []ec2types.VpcEndpoint{endpoint}}, nil
+	}
+	client.describeSecurityGroupRulesFn = func(*ec2.DescribeSecurityGroupRulesInput) (*ec2.DescribeSecurityGroupRulesOutput, error) {
+		return &ec2.DescribeSecurityGroupRulesOutput{}, nil
+	}
+	authorizeCalls := 0
+	client.authorizeSecurityGroupEgressFn = func(*ec2.AuthorizeSecurityGroupEgressInput) (*ec2.AuthorizeSecurityGroupEgressOutput, error) {
+		authorizeCalls++
+		return nil, &smithy.GenericAPIError{Code: "RequestLimitExceeded", Message: "redacted"}
+	}
+	adapter := newTestAdapter(t, client, &fakeS3{}, nil)
+	if _, err := adapter.PrepareBuilderReachability(context.Background(), request, nil, func(workerami.BuilderReachabilityEvidenceV2) error { return nil }); !errors.Is(err, workerami.ErrProviderOperation) || authorizeCalls != 1 {
+		t.Fatalf("non-authorization fallback calls=%d err=%v", authorizeCalls, err)
 	}
 }
 

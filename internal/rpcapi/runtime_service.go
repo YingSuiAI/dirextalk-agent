@@ -13,6 +13,7 @@ import (
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/runtimeapp"
+	"github.com/YingSuiAI/dirextalk-agent/internal/searchprofile"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,6 +27,9 @@ type RuntimeFeatures struct {
 	// ModelProfiles is trusted server configuration, not a caller capability.
 	// A runtime without it fails closed for config mutation and chat.
 	ModelProfiles *modelapi.ProfileCatalog
+	// SearchProfiles is optional trusted configuration. An absent catalog keeps
+	// search configuration unavailable without disabling the core runtime.
+	SearchProfiles *searchprofile.Catalog
 }
 
 type RuntimeCoordinator interface {
@@ -33,6 +37,10 @@ type RuntimeCoordinator interface {
 	SaveRuntimeConfig(context.Context, runtimeapi.MutationScope, runtimeapi.SaveRuntimeConfigCommand) (runtimeapi.RuntimeConfig, error)
 	Chat(context.Context, runtimeapi.MutationScope, runtimeapi.ChatRequest) (runtimeapi.ChatResult, error)
 	Stream(context.Context, runtimeapi.MutationScope, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) error
+}
+
+type runtimeModelDiscoverer interface {
+	ListModels(context.Context, runtimeapi.MutationScope, runtimeapi.ModelListRequest) ([]modelapi.Descriptor, error)
 }
 
 type RuntimeService struct {
@@ -74,6 +82,9 @@ func (service *RuntimeService) GetCapabilities(context.Context, *agentv1.Runtime
 	if available {
 		capabilities.Skills = append([]string(nil), service.features.Skills...)
 		capabilities.ModelProfileIds = service.features.ModelProfiles.IDs()
+		if service.features.SearchProfiles != nil {
+			capabilities.SearchProfileIds = service.features.SearchProfiles.IDs()
+		}
 	}
 	return &agentv1.RuntimeServiceGetCapabilitiesResponse{Capabilities: capabilities}, nil
 }
@@ -91,6 +102,20 @@ func (service *RuntimeService) GetRuntimeConfig(ctx context.Context, request *ag
 		return nil, status.Error(codes.FailedPrecondition, "stored model profile is not available")
 	}
 	config.ModelProfile = canonical
+	if config.SearchProfile != nil {
+		if service.features.SearchProfiles == nil {
+			return nil, status.Error(codes.FailedPrecondition, "stored search profile is not available")
+		}
+		search, resolveErr := service.features.SearchProfiles.ResolvePersisted(*config.SearchProfile)
+		if resolveErr != nil {
+			return nil, status.Error(codes.FailedPrecondition, "stored search profile is not available")
+		}
+		if !service.features.SearchProfiles.AllowsModelProfile(search.ProfileID, canonical.ProfileID) ||
+			!searchProfileMatchesModel(search, canonical) {
+			return nil, status.Error(codes.FailedPrecondition, "stored search profile is not compatible with model profile")
+		}
+		config.SearchProfile = &search
+	}
 	return &agentv1.GetRuntimeConfigResponse{Config: runtimeConfigToProto(request.GetOwnerId(), config)}, nil
 }
 
@@ -102,7 +127,10 @@ func (service *RuntimeService) PutRuntimeConfig(ctx context.Context, request *ag
 	if err != nil {
 		return nil, err
 	}
-	config, err := runtimeConfigFromProto(request.GetSpec(), request.GetExpectedRevision(), service.features.ModelProfiles)
+	config, err := runtimeConfigFromProto(
+		request.GetSpec(), request.GetExpectedRevision(),
+		service.features.ModelProfiles, service.features.SearchProfiles,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +142,40 @@ func (service *RuntimeService) PutRuntimeConfig(ctx context.Context, request *ag
 		return nil, publicRuntimeError(err)
 	}
 	return &agentv1.PutRuntimeConfigResponse{Config: runtimeConfigToProto(request.GetOwnerId(), saved)}, nil
+}
+
+func (service *RuntimeService) ListModels(ctx context.Context, request *agentv1.ListModelsRequest) (*agentv1.ListModelsResponse, error) {
+	if service == nil || service.coordinator == nil {
+		return nil, status.Error(codes.Unimplemented, "model discovery is unavailable")
+	}
+	discoverer, ok := service.coordinator.(runtimeModelDiscoverer)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "model discovery is unavailable")
+	}
+	scope, err := runtimeMutationScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	transient, err := transientModelFromProto(request.GetTransientModel())
+	if err != nil || transient == nil {
+		return nil, status.Error(codes.InvalidArgument, "transient model invocation is required")
+	}
+	models, err := discoverer.ListModels(ctx, scope, runtimeapi.ModelListRequest{
+		RequestID: request.GetRequestId(), OwnerID: request.GetOwnerId(),
+		BootstrapClientID: scope.ClientID, TransientModel: transient,
+	})
+	if err != nil {
+		return nil, publicRuntimeError(err)
+	}
+	response := &agentv1.ListModelsResponse{Models: make([]*agentv1.ModelDescriptor, 0, len(models))}
+	for _, model := range models {
+		response.Models = append(response.Models, &agentv1.ModelDescriptor{
+			Id: model.ID, Name: model.Name, Provider: model.Provider,
+			ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens,
+			ReasoningModes: append([]string(nil), model.ReasoningModes...),
+		})
+	}
+	return response, nil
 }
 
 func (service *RuntimeService) Chat(ctx context.Context, request *agentv1.ChatRequest) (*agentv1.ChatResponse, error) {
@@ -129,6 +191,13 @@ func (service *RuntimeService) Chat(ctx context.Context, request *agentv1.ChatRe
 		return nil, err
 	}
 	command := chatCommand(request.GetIdempotencyKey(), request.GetOwnerId(), request.GetConversationId(), request.GetMessage(), request.GetMemoryDisabled(), request.GetExpectedConversationRevision(), cloudDialogue)
+	command.TransientModel, err = transientModelFromProto(request.GetTransientModel())
+	if err != nil {
+		return nil, err
+	}
+	if command.TransientModel != nil {
+		command.BootstrapClientID = scope.ClientID
+	}
 	result, err := service.coordinator.Chat(ctx, scope, command)
 	if err != nil {
 		return nil, publicRuntimeError(err)
@@ -149,6 +218,13 @@ func (service *RuntimeService) StreamChat(request *agentv1.StreamChatRequest, st
 		return err
 	}
 	command := chatCommand(request.GetIdempotencyKey(), request.GetOwnerId(), request.GetConversationId(), request.GetMessage(), request.GetMemoryDisabled(), request.GetExpectedConversationRevision(), cloudDialogue)
+	command.TransientModel, err = transientModelFromProto(request.GetTransientModel())
+	if err != nil {
+		return err
+	}
+	if command.TransientModel != nil {
+		command.BootstrapClientID = scope.ClientID
+	}
 	err = service.coordinator.Stream(stream.Context(), scope, command, func(event runtimeapi.StreamEvent) error {
 		response := runtimeStreamResponse(request.GetIdempotencyKey(), request.GetConversationId(), event)
 		if response == nil {
@@ -160,6 +236,37 @@ func (service *RuntimeService) StreamChat(request *agentv1.StreamChatRequest, st
 		return publicRuntimeError(err)
 	}
 	return nil
+}
+
+func transientModelFromProto(invocation *agentv1.TransientModelInvocation) (*runtimeapi.TransientModelInvocation, error) {
+	if invocation == nil {
+		return nil, nil
+	}
+	profile := invocation.GetProfile()
+	provider, ok := modelProviderFromProto(profile.GetProvider())
+	if profile == nil || !ok || strings.TrimSpace(profile.GetSecretRef()) != "" ||
+		len(invocation.GetCredentialSha256()) != 32 || invocation.GetCredentialSessionRevision() != 2 {
+		return nil, status.Error(codes.InvalidArgument, "transient model invocation is invalid")
+	}
+	result := &runtimeapi.TransientModelInvocation{
+		Profile: modelapi.Profile{
+			ProfileID: profile.GetProfileId(), Provider: provider, Model: profile.GetModel(),
+			BaseURL: profile.GetBaseUrl(), MaxOutputTokens: int(profile.GetMaxOutputTokens()),
+			ContextWindow: int(profile.GetContextWindow()), ReasoningEffort: profile.GetReasoningEffort(),
+		},
+		CredentialSessionID:       invocation.GetCredentialSessionId(),
+		CredentialSessionRevision: uint64(invocation.GetCredentialSessionRevision()),
+	}
+	copy(result.CredentialSHA256[:], invocation.GetCredentialSha256())
+	if profile.Temperature != nil {
+		value := profile.GetTemperature()
+		result.Profile.Temperature = &value
+	}
+	if profile.TopP != nil {
+		value := profile.GetTopP()
+		result.Profile.TopP = &value
+	}
+	return result, nil
 }
 
 func runtimeMutationScope(ctx context.Context) (runtimeapi.MutationScope, error) {
@@ -208,7 +315,12 @@ func (service *RuntimeService) resolveCloudDialogueScope(ctx context.Context, ow
 	return trusted, nil
 }
 
-func runtimeConfigFromProto(spec *agentv1.RuntimeConfigSpec, revision int64, profiles *modelapi.ProfileCatalog) (runtimeapi.RuntimeConfig, error) {
+func runtimeConfigFromProto(
+	spec *agentv1.RuntimeConfigSpec,
+	revision int64,
+	profiles *modelapi.ProfileCatalog,
+	searchProfiles *searchprofile.Catalog,
+) (runtimeapi.RuntimeConfig, error) {
 	if spec == nil || spec.GetModelProfile() == nil {
 		return runtimeapi.RuntimeConfig{}, status.Error(codes.InvalidArgument, "model_profile is required")
 	}
@@ -248,10 +360,75 @@ func runtimeConfigFromProto(spec *agentv1.RuntimeConfigSpec, revision int64, pro
 		EnabledTools: append([]string(nil), spec.GetEnabledTools()...), KnowledgeRefs: append([]string(nil), spec.GetKnowledgeRefs()...),
 		MCPServerIDs: append([]string(nil), spec.GetMcpServerIds()...), RecipeIDs: append([]string(nil), spec.GetRecipeIds()...),
 	}
+	if requested := spec.GetSearchProfile(); requested != nil {
+		if searchProfiles == nil {
+			return runtimeapi.RuntimeConfig{}, status.Error(codes.FailedPrecondition, "search profile catalog is unavailable")
+		}
+		provider, ok := searchProviderFromProto(requested.GetProvider())
+		if requested.GetProvider() != agentv1.SearchProvider_SEARCH_PROVIDER_UNSPECIFIED && !ok {
+			return runtimeapi.RuntimeConfig{}, status.Error(codes.InvalidArgument, "search provider is invalid")
+		}
+		selected, resolveErr := searchProfiles.ResolveSelection(searchprofile.Profile{
+			ProfileID: requested.GetProfileId(), Provider: provider,
+			BaseURL: requested.GetBaseUrl(), SecretRef: requested.GetSecretRef(),
+			MaxResults:     int(requested.GetMaxResults()),
+			TimeoutSeconds: int(requested.GetTimeoutSeconds()),
+		})
+		if resolveErr != nil {
+			return runtimeapi.RuntimeConfig{}, status.Error(codes.InvalidArgument, "search profile selection is invalid")
+		}
+		if !searchProfiles.AllowsModelProfile(selected.ProfileID, canonical.ProfileID) ||
+			!searchProfileMatchesModel(selected, canonical) {
+			return runtimeapi.RuntimeConfig{}, status.Error(codes.InvalidArgument, "search profile is not compatible with model profile")
+		}
+		result.SearchProfile = &selected
+	} else if searchProfiles != nil {
+		if automatic, ok := searchProfiles.DefaultForModelProfile(canonical.ProfileID); ok {
+			if !searchProfileMatchesModel(automatic, canonical) {
+				return runtimeapi.RuntimeConfig{}, status.Error(codes.FailedPrecondition, "automatic search profile binding is invalid")
+			}
+			result.SearchProfile = &automatic
+		}
+	}
+	if result.SearchProfile != nil {
+		if !containsString(result.EnabledTools, runtimeapi.SearchToolName) {
+			result.EnabledTools = append(result.EnabledTools, runtimeapi.SearchToolName)
+		}
+	} else {
+		result.EnabledTools = withoutString(result.EnabledTools, runtimeapi.SearchToolName)
+	}
 	if err := runtimeapi.ValidateRuntimeConfig(result); err != nil {
 		return runtimeapi.RuntimeConfig{}, publicRuntimeError(err)
 	}
 	return result, nil
+}
+
+func searchProfileMatchesModel(search searchprofile.Profile, model modelapi.Profile) bool {
+	if search.Provider != searchprofile.ProviderDeepSeekNative {
+		return true
+	}
+	return model.Provider == modelapi.ProviderDeepSeek &&
+		strings.TrimSpace(search.SecretRef) != "" &&
+		strings.TrimSpace(search.SecretRef) == strings.TrimSpace(model.SecretRef)
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutString(values []string, target string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != target {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func runtimeConfigToProto(ownerID string, config runtimeapi.RuntimeConfig) *agentv1.RuntimeConfig {
@@ -270,6 +447,16 @@ func runtimeConfigToProto(ownerID string, config runtimeapi.RuntimeConfig) *agen
 		value := *config.ModelProfile.TopP
 		profile.TopP = &value
 	}
+	var searchProfile *agentv1.SearchProfile
+	if search := config.SearchProfile; search != nil {
+		searchProfile = &agentv1.SearchProfile{
+			ProfileId:      search.ProfileID,
+			Provider:       searchProviderToProto(search.Provider),
+			BaseUrl:        search.BaseURL,
+			MaxResults:     int32(search.MaxResults),
+			TimeoutSeconds: int32(search.TimeoutSeconds),
+		}
+	}
 	return &agentv1.RuntimeConfig{
 		OwnerId: strings.TrimSpace(ownerID), Revision: config.Revision,
 		Spec: &agentv1.RuntimeConfigSpec{
@@ -277,6 +464,7 @@ func runtimeConfigToProto(ownerID string, config runtimeapi.RuntimeConfig) *agen
 			ContextMessageLimit: int32(config.ContextMessageLimit), MemoryMessageLimit: int32(config.MemoryMessageLimit), MaxSteps: int32(config.MaxSteps),
 			MemoryDisabled: config.MemoryDisabled, EnabledTools: append([]string(nil), config.EnabledTools...),
 			KnowledgeRefs: append([]string(nil), config.KnowledgeRefs...), McpServerIds: append([]string(nil), config.MCPServerIDs...), RecipeIds: append([]string(nil), config.RecipeIDs...),
+			SearchProfile: searchProfile,
 		},
 	}
 }
@@ -304,6 +492,40 @@ func modelProviderToProto(provider modelapi.Provider) agentv1.ModelProvider {
 		return agentv1.ModelProvider_MODEL_PROVIDER_ANTHROPIC
 	default:
 		return agentv1.ModelProvider_MODEL_PROVIDER_UNSPECIFIED
+	}
+}
+
+func searchProviderFromProto(provider agentv1.SearchProvider) (searchprofile.Provider, bool) {
+	switch provider {
+	case agentv1.SearchProvider_SEARCH_PROVIDER_TAVILY:
+		return searchprofile.ProviderTavily, true
+	case agentv1.SearchProvider_SEARCH_PROVIDER_BRAVE:
+		return searchprofile.ProviderBrave, true
+	case agentv1.SearchProvider_SEARCH_PROVIDER_EXA:
+		return searchprofile.ProviderExa, true
+	case agentv1.SearchProvider_SEARCH_PROVIDER_SERPER:
+		return searchprofile.ProviderSerper, true
+	case agentv1.SearchProvider_SEARCH_PROVIDER_DEEPSEEK_NATIVE:
+		return searchprofile.ProviderDeepSeekNative, true
+	default:
+		return "", false
+	}
+}
+
+func searchProviderToProto(provider searchprofile.Provider) agentv1.SearchProvider {
+	switch provider {
+	case searchprofile.ProviderTavily:
+		return agentv1.SearchProvider_SEARCH_PROVIDER_TAVILY
+	case searchprofile.ProviderBrave:
+		return agentv1.SearchProvider_SEARCH_PROVIDER_BRAVE
+	case searchprofile.ProviderExa:
+		return agentv1.SearchProvider_SEARCH_PROVIDER_EXA
+	case searchprofile.ProviderSerper:
+		return agentv1.SearchProvider_SEARCH_PROVIDER_SERPER
+	case searchprofile.ProviderDeepSeekNative:
+		return agentv1.SearchProvider_SEARCH_PROVIDER_DEEPSEEK_NATIVE
+	default:
+		return agentv1.SearchProvider_SEARCH_PROVIDER_UNSPECIFIED
 	}
 }
 
@@ -410,6 +632,16 @@ func publicRuntimeError(err error) error {
 		return status.Error(codes.FailedPrecondition, "runtime request cannot continue in its current state")
 	case errors.Is(err, modelapi.ErrProviderUnavailable), errors.Is(err, modelapi.ErrSecretUnavailable):
 		return status.Error(codes.Unavailable, "model provider is unavailable")
+	case errors.Is(err, modelapi.ErrProviderCredential):
+		return status.Error(codes.PermissionDenied, "model provider rejected the supplied credential")
+	case errors.Is(err, modelapi.ErrProviderRequest):
+		return status.Error(codes.FailedPrecondition, "model provider rejected the selected model or request")
+	case errors.Is(err, modelapi.ErrProviderRateLimited):
+		return status.Error(codes.ResourceExhausted, "model provider rate limit is temporarily exhausted")
+	case errors.Is(err, modelapi.ErrModelListRejected):
+		return status.Error(codes.PermissionDenied, "model provider rejected the supplied credential")
+	case errors.Is(err, modelapi.ErrModelListUnsupported):
+		return status.Error(codes.FailedPrecondition, "model provider does not expose a compatible model list")
 	case errors.Is(err, runtimeapp.ErrCapacityExhausted):
 		return status.Error(codes.ResourceExhausted, "local Agent capacity is temporarily exhausted")
 	default:

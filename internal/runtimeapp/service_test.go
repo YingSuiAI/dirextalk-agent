@@ -447,6 +447,29 @@ type executorFake struct {
 	stream      func(context.Context, runtimeapi.ChatRequest, runtimeapi.StreamEmitter) (runtimeapi.ChatResult, error)
 }
 
+func TestStableExecutionErrorPreservesProviderFailureClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		statusCode int
+		want       error
+	}{
+		{statusCode: 401, want: modelapi.ErrProviderCredential},
+		{statusCode: 400, want: modelapi.ErrProviderRequest},
+		{statusCode: 429, want: modelapi.ErrProviderRateLimited},
+		{statusCode: 503, want: modelapi.ErrProviderUnavailable},
+	}
+	for _, test := range tests {
+		err := stableExecutionError(&modelapi.ProviderError{
+			Provider: modelapi.ProviderDeepSeek, StatusCode: test.statusCode,
+			Code: "provider_code", Message: "bounded provider detail",
+		})
+		if !errors.Is(err, test.want) {
+			t.Fatalf("status %d mapped to %v, want %v", test.statusCode, err, test.want)
+		}
+	}
+}
+
 type admissionFake struct {
 	allowed  atomic.Bool
 	acquired atomic.Int32

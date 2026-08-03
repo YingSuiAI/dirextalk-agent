@@ -47,6 +47,7 @@ const (
 	AdapterOpenClawV1   Adapter = "openclaw_gateway_task_v1"
 	AdapterHermesV1     Adapter = "hermes_api_task_v1"
 	AdapterOpenCodeV1   Adapter = "opencode_server_task_v1"
+	AdapterPiV1         Adapter = "pi_json_task_v1"
 )
 
 func (adapter Adapter) IsSupported() bool {
@@ -250,7 +251,7 @@ func (artifact Artifact) Digest() (string, error) {
 func validAdapter(value Adapter) bool {
 	switch value {
 	case AdapterClaudeCodeV1, AdapterCodexV1, AdapterOpenClawV1,
-		AdapterHermesV1, AdapterOpenCodeV1:
+		AdapterHermesV1, AdapterOpenCodeV1, AdapterPiV1:
 		return true
 	default:
 		return false

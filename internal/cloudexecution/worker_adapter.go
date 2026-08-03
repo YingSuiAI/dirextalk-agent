@@ -27,3 +27,24 @@ func (adapter *WorkerServiceAdapter) CreateDeployment(ctx context.Context, mutat
 	}
 	return created, &credential, nil
 }
+
+func (adapter *WorkerServiceAdapter) GetDeployment(
+	ctx context.Context,
+	deploymentID string,
+) (worker.Deployment, error) {
+	if adapter == nil || adapter.service == nil || ctx == nil {
+		return worker.Deployment{}, ErrInvalid
+	}
+	return adapter.service.Get(ctx, deploymentID)
+}
+
+func (adapter *WorkerServiceAdapter) RequestCancel(
+	ctx context.Context,
+	deploymentID,
+	reason string,
+) (worker.Deployment, error) {
+	if adapter == nil || adapter.service == nil || ctx == nil {
+		return worker.Deployment{}, ErrInvalid
+	}
+	return adapter.service.RequestCancel(ctx, deploymentID, reason)
+}

@@ -329,8 +329,11 @@ func ValidateTrustMaterial(material RootTrustMaterialV1, deploymentID string) (T
 func ValidateArtifactSources(material RootTrustMaterialV1, sources []ArtifactSourceV1, deploymentID string, identity InstanceIdentityV1) error {
 	manifest := material.ArtifactManifest.Manifest
 	if !validIdentity(identity) || manifest.Binding.DeploymentID != deploymentID || manifest.Binding.RecipeDigest == "" ||
-		len(sources) != len(manifest.Artifacts) || len(sources) == 0 {
+		len(sources) != len(manifest.Artifacts) {
 		return ErrTrustMismatch
+	}
+	if len(manifest.Artifacts) == 0 {
+		return nil
 	}
 	expected := make(map[string]installer.ArtifactV1, len(manifest.Artifacts))
 	for _, artifact := range manifest.Artifacts {
