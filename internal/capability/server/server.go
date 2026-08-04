@@ -81,8 +81,11 @@ func New(config *Config) (*Server, error) {
 	s := &Server{
 		config:   config,
 		token:    token,
+		registry: registry,
+		opMgr:    opMgr,
 		querySem: make(chan struct{}, config.MaxConcurrentQuery),
 		watchSem: make(chan struct{}, config.MaxConcurrentWatch),
+		ready:    true,
 	}
 
 	// 加载 TLS 配置

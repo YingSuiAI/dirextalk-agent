@@ -4,11 +4,11 @@ import (
 	"context"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/chat"
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/echo"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/knowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/models"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/skills"
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/tasks"
-	"github.com/YingSuiAI/dirextalk-agent/internal/capability/server"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -30,6 +30,7 @@ func NewRegistry() *Registry {
 	}
 
 	// Register all capabilities
+	r.Register(echo.NewCapability())
 	r.Register(chat.NewCapability())
 	r.Register(models.NewCapability())
 	r.Register(tasks.NewCapability())
@@ -60,7 +61,7 @@ func (r *Registry) List() []*capv1.CapabilityDescriptor {
 	return descriptors
 }
 
-// IntegrateWithServer integrates the registry with the capability server
-func (r *Registry) IntegrateWithServer(s *server.Server) {
-	// TODO: Connect registry to server handlers
+// IntegrateWithServer is deprecated - registry is now passed to server.New()
+func (r *Registry) IntegrateWithServer(s interface{}) {
+	// No-op: registry integration now happens via constructor
 }

@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"sort"
 
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
@@ -14,12 +16,35 @@ func (s *Server) DescribeCapabilities(
 	ctx context.Context,
 	req *capv1.DescribeCapabilitiesRequest,
 ) (*capv1.DescribeCapabilitiesResponse, error) {
-	// TODO: 从 registry 获取 capabilities
+	if s.registry == nil {
+		return nil, status.Error(codes.Unavailable, "registry not initialized")
+	}
+
+	descriptors := s.registry.List()
+	digest := computeCatalogDigest(descriptors)
+
 	return &capv1.DescribeCapabilitiesResponse{
-		Capabilities:   []*capv1.CapabilityDescriptor{},
+		Capabilities:   descriptors,
 		CatalogVersion: 1,
-		CatalogDigest:  []byte("TODO"),
+		CatalogDigest:  digest,
 	}, nil
+}
+
+// computeCatalogDigest 计算 capability 目录的摘要
+func computeCatalogDigest(descriptors []*capv1.CapabilityDescriptor) []byte {
+	// 排序以确保一致性
+	sorted := make([]*capv1.CapabilityDescriptor, len(descriptors))
+	copy(sorted, descriptors)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].CapabilityId < sorted[j].CapabilityId
+	})
+
+	h := sha256.New()
+	for _, desc := range sorted {
+		h.Write([]byte(desc.CapabilityId))
+		h.Write([]byte(desc.SemanticVersion))
+	}
+	return h.Sum(nil)
 }
 
 // Query 执行无副作用查询
