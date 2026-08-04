@@ -154,6 +154,19 @@ func (s *Service) ReleaseReservation(ctx context.Context, command ReleaseReserva
 	return s.repository.ReleaseReservation(ctx, command)
 }
 
+// AcknowledgeExtensionExecutionUncertain is an explicit reconciliation
+// acknowledgement. It never retries or dispatches the uncertain operation.
+func (s *Service) AcknowledgeExtensionExecutionUncertain(ctx context.Context, command AcknowledgeExtensionExecutionUncertainCommand) (AcknowledgeExtensionExecutionUncertainResult, error) {
+	if s == nil || !validateUUID(command.IdempotencyKey) || !validateUUID(command.ConfirmationID) || !validateUUID(command.TaskID) || !validateUUID(command.InstallationID) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != ExtensionUncertainAcknowledgedUnknownNoRetry {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrInvalid
+	}
+	ack, ok := s.repository.(ExtensionUncertainAcknowledger)
+	if !ok {
+		return AcknowledgeExtensionExecutionUncertainResult{}, ErrBindingUnavailable
+	}
+	return ack.AcknowledgeExtensionExecutionUncertain(ctx, command)
+}
+
 // TerminalizeTask is a preparation seam for the generic task terminal writer.
 // Wiring belongs to the ledger owner: this service deliberately does not race
 // it by writing task rows itself.

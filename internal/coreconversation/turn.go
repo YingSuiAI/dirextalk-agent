@@ -170,6 +170,13 @@ type TurnRequestLookup interface {
 	GetTurnByRequestID(context.Context, string) (Turn, error)
 }
 
+// TurnLister is the fresh Agent-owned history contract used by capability
+// clients. It is optional on TurnStore to avoid making recovery-only stores
+// implement a public listing surface.
+type TurnLister interface {
+	ListTurns(context.Context, string, string, int) ([]Turn, string, error)
+}
+
 type TurnDispatchStore interface {
 	PrepareTurnModel(context.Context, TurnLease) (Turn, error)
 	LoadTurnModelResult(context.Context, string) (ModelRunResult, bool, error)

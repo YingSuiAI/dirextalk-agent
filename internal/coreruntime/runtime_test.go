@@ -94,11 +94,32 @@ func TestModelRunnerToolDoneAndStreamError(t *testing.T) {
 	if err != nil || res.Done {
 		t.Fatalf("run done=%v err=%v", res.Done, err)
 	}
+	if !coretask.ValidUUID(res.Message.ID) {
+		t.Fatalf("run message id = %q, want canonical UUID", res.Message.ID)
+	}
 	fc2 := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{ToolCalls: []coremodel.ToolCall{{Index: 0, ID: "c", Function: coremodel.FunctionCall{Name: "f", Arguments: "{"}}}}}, err: errors.New("boom")}}
 	r2, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return fc2, nil })
 	res, err = r2.Stream(context.Background(), coreconversation.ModelRunRequest{Snapshot: snapshot}, nil)
 	if err == nil || res.Done {
 		t.Fatalf("stream err=%v done=%v", err, res.Done)
+	}
+	fc3 := &streamClient{stream: &fakeStream{deltas: []coremodel.Delta{{Content: "ok"}}}}
+	r3, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return fc3, nil })
+	res, err = r3.Stream(context.Background(), coreconversation.ModelRunRequest{Snapshot: snapshot}, nil)
+	if err != nil || !res.Done || res.Message.Content != "ok" || !coretask.ValidUUID(res.Message.ID) {
+		t.Fatalf("successful stream result=%+v err=%v", res, err)
+	}
+}
+
+func TestModelRunnerFailsClosedForUnresolvedExtensionSnapshot(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return &captureClient{}, nil })
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{
+		Snapshot:           coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}),
+		ExtensionSnapshots: []coreconversation.ExtensionExecutionSnapshot{{Selection: coreconversation.ExtensionSelection{Kind: coreconversation.ExtensionMCP, ID: id, Version: "1", Digest: strings.Repeat("a", 64)}, InstallationID: id, VersionID: "1", Source: "product-capability", ContentDigest: strings.Repeat("a", 64), ArtifactDigest: strings.Repeat("b", 64)}},
+	})
+	if !errors.Is(err, ErrExtensionSnapshotRequiresResolver) {
+		t.Fatalf("err=%v, want fail-closed snapshot error", err)
 	}
 }
 
@@ -173,6 +194,20 @@ func TestRoleToolMapsCallNameAcrossMessages(t *testing.T) {
 	got := client.req
 	if err != nil || len(got.Messages) != 2 || got.Messages[1].ToolCallID != "call-1" || got.Messages[1].Name != "lookup" {
 		t.Fatalf("request=%+v err=%v", got, err)
+	}
+}
+
+func TestModelRunnerForwardsResolvedExtensionToolsToProvider(t *testing.T) {
+	id := "00000000-0000-4000-8000-000000000001"
+	client := &captureClient{}
+	r, _ := NewModelRunner(func(coremodel.Profile) (coremodel.Client, error) { return client, nil })
+	ext := coreconversation.ResolvedExtension{Tools: []coremodel.Tool{{Name: "product_contacts_list", Description: "list contacts", InputSchema: map[string]any{"type": "object"}}}}
+	_, err := r.Run(context.Background(), coreconversation.ModelRunRequest{Snapshot: coremodel.SnapshotFromProfile(coremodel.Profile{ID: id, DisplayName: "p", Model: "m", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", APIKey: "k", Revision: 1}), Extensions: []coreconversation.ResolvedExtension{ext}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.req.Tools) != 1 || client.req.Tools[0].Name != "product_contacts_list" {
+		t.Fatalf("provider tool catalog=%+v", client.req.Tools)
 	}
 }
 

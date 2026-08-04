@@ -19,6 +19,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
@@ -36,6 +37,81 @@ func TestComposeCoreKnowledgeDisabledDoesNotCreateProductionFallback(t *testing.
 	}
 	if composition != nil {
 		t.Fatal("disabled Knowledge unexpectedly created a composition")
+	}
+}
+
+type reconcileKnowledgeOpener struct{}
+
+func (reconcileKnowledgeOpener) OpenManaged(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+type reconcileKnowledgeFence struct{}
+
+func (reconcileKnowledgeFence) AcquireDeleteFence(context.Context, string) (coreknowledge.DeleteFenceToken, error) {
+	return coreknowledge.DeleteFenceToken{Token: "reconcile"}, nil
+}
+func (reconcileKnowledgeFence) ReleaseDeleteFence(context.Context, coreknowledge.DeleteFenceToken) error {
+	return nil
+}
+func (reconcileKnowledgeFence) ConsumeDelete(_ context.Context, _ coreknowledge.DeleteFenceToken, _ string, _ int64, transition func() error) error {
+	return transition()
+}
+
+func TestKnowledgeEmbeddingReconcileFailsClosedWithoutBlockingInitialModelSetup(t *testing.T) {
+	repo, err := coreknowledge.NewMemoryRepository(time.Now, reconcileKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), reconcileKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("a", 64), Revision: 1}
+	if _, err := repo.EnsureEmbeddingConfig(context.Background(), initial); err != nil {
+		t.Fatal(err)
+	}
+	domain, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composition := &coreKnowledgeComposition{domain: domain, profiles: profiles}
+	if err := composition.reconcileEmbeddingBinding(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := domain.GetEmbeddingConfig(context.Background())
+	if err != nil || current.EmbeddingProfileID != initial.EmbeddingProfileID {
+		t.Fatalf("invalid provisioned binding was unexpectedly changed: %+v err=%v", current, err)
+	}
+}
+
+func TestKnowledgeEmbeddingReconcileBindsValidatedEmbeddingDefault(t *testing.T) {
+	repo, err := coreknowledge.NewMemoryRepository(time.Now, reconcileKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), reconcileKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnsureEmbeddingConfig(context.Background(), coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("b", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "embedding-secret"
+	if _, err := profiles.Sync(context.Background(), coremodel.SyncProfileCommand{IdempotencyKey: "22222222-2222-4222-8222-222222222222", DefaultEmbeddingProfileID: "embed", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "embed", DisplayName: "Embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: "embed", APIKey: &key}}}); err != nil {
+		t.Fatal(err)
+	}
+	domain, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composition := &coreKnowledgeComposition{domain: domain, profiles: profiles}
+	if err := composition.reconcileEmbeddingBinding(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, err := domain.GetEmbeddingConfig(context.Background())
+	if err != nil || current.EmbeddingProfileID != coremodel.SyncProfileID("embed") || current.Revision != 2 {
+		t.Fatalf("embedding default was not bound: %+v err=%v", current, err)
 	}
 }
 

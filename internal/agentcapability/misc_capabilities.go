@@ -1,0 +1,1128 @@
+package agentcapability
+
+// This file owns the small Native Agent surfaces which do not belong to the
+// model, conversation, task, Knowledge, extension, confirmation, or AWS
+// domains.  They are intentionally ports: the capability boundary validates
+// the public input and identity context, while the composition root supplies
+// the Agent-owned implementation.  No message-server state, shell, or
+// caller-supplied owner identity is accepted here.
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"regexp"
+	"sort"
+	"strings"
+	"unicode"
+
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfig"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"github.com/google/uuid"
+)
+
+const (
+	infoCapabilityID    = "agent.info.v1"
+	runtimeCapabilityID = "agent.runtime.v1"
+	configCapabilityID  = "agent.config.v1"
+
+	maxRuntimeNameBytes    = 128
+	maxRuntimeArgs         = 64
+	maxRuntimeArgBytes     = 4096
+	maxRuntimeOutputBytes  = 64 << 10
+	maxRuntimeInstallItems = 8
+)
+
+// BackendInfo is deliberately a closed, non-secret projection.  Providers
+// must not put credentials, endpoints containing credentials, or filesystem
+// secrets in this value.  The capability copies and normalizes slices before
+// returning them to make the catalog and response deterministic.
+type BackendInfo struct {
+	Available               bool     `json:"available"`
+	Configured              bool     `json:"configured"`
+	Status                  string   `json:"status"`
+	InstanceID              string   `json:"instance_id,omitempty"`
+	APIVersion              string   `json:"api_version,omitempty"`
+	Capabilities            []string `json:"capabilities"`
+	SupportedModelProviders []string `json:"supported_model_providers"`
+}
+
+type BackendsSnapshot struct {
+	Embedded BackendInfo `json:"embedded"`
+	Core     BackendInfo `json:"core"`
+}
+
+// InfoProvider is the composition hook for the Agent's readiness and backend
+// discovery implementation.  It receives the authenticated capability
+// context and therefore cannot be keyed by an owner value supplied in JSON.
+type InfoProvider interface {
+	Backends(context.Context) (BackendsSnapshot, error)
+	Status(context.Context) (BackendInfo, error)
+}
+
+// ModelCatalogProvider owns the provider/runtime model catalog behind the
+// legacy agent.models.list action.  It is deliberately separate from the
+// Core model-profile store: profile CRUD returns encrypted profile metadata,
+// whereas this operation discovers provider models for a requested kind.
+type ModelCatalogProvider interface {
+	ListModels(context.Context, ModelCatalogRequest) (ModelCatalogResult, error)
+}
+
+type ModelCatalogRequest struct {
+	ModelProfileID       string `json:"model_profile_id,omitempty"`
+	ClientModelProfileID string `json:"client_model_profile_id,omitempty"`
+	Provider             string `json:"provider,omitempty"`
+	BaseURL              string `json:"base_url,omitempty"`
+	APIKey               string `json:"api_key,omitempty"`
+	ModelKind            string `json:"model_kind"`
+}
+
+type ModelCatalogProviderInfo struct {
+	Provider       string `json:"provider"`
+	DefaultBaseURL string `json:"default_base_url,omitempty"`
+	RequiresAPIKey bool   `json:"requires_api_key"`
+	DynamicModels  bool   `json:"dynamic_models"`
+}
+
+type ModelCatalogResult struct {
+	Models    []map[string]any           `json:"models"`
+	Providers []ModelCatalogProviderInfo `json:"providers"`
+}
+
+// InfoProviderFunc is useful for the process composition root and deterministic
+// tests without creating a second persistence implementation.
+type InfoProviderFunc struct {
+	BackendsFunc func(context.Context) (BackendsSnapshot, error)
+	StatusFunc   func(context.Context) (BackendInfo, error)
+	ModelsFunc   func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error)
+}
+
+func (f InfoProviderFunc) Backends(ctx context.Context) (BackendsSnapshot, error) {
+	if f.BackendsFunc == nil {
+		return BackendsSnapshot{}, errors.New("agent backend provider is unavailable")
+	}
+	return f.BackendsFunc(ctx)
+}
+
+func (f InfoProviderFunc) Status(ctx context.Context) (BackendInfo, error) {
+	if f.StatusFunc == nil {
+		return BackendInfo{}, errors.New("agent status provider is unavailable")
+	}
+	return f.StatusFunc(ctx)
+}
+
+func (f InfoProviderFunc) ListModels(ctx context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
+	if f.ModelsFunc == nil {
+		return ModelCatalogResult{}, errors.New("agent model catalog provider is unavailable")
+	}
+	return f.ModelsFunc(ctx, request)
+}
+
+type infoCapability struct{ provider InfoProvider }
+
+// NewInfoCapability creates the agent.info.v1 capability.  A nil provider is
+// rejected by the registration helper rather than publishing a fake ready
+// capability.
+func NewInfoCapability(provider InfoProvider) Capability {
+	return &infoCapability{provider: provider}
+}
+
+func (c *infoCapability) Descriptor() *capv1.CapabilityDescriptor {
+	return capabilityDescriptor(infoCapabilityID, "Agent Info", "Agent backend readiness and safe instance status", []capabilityOperation{
+		{
+			ID:           "get_backends",
+			DisplayName:  "Get backends",
+			Description:  "Return ready Agent backends and non-secret capability names.",
+			Type:         capv1.OperationType_OPERATION_TYPE_READ,
+			Scope:        "agent:info:read",
+			InputSchema:  `{"additionalProperties":false,"properties":{},"type":"object"}`,
+			ResultSchema: `{"additionalProperties":false,"properties":{"core":{"$ref":"#/$defs/backend"},"embedded":{"$ref":"#/$defs/backend"}},"required":["core","embedded"],"$defs":{"backend":{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}},"type":"object"}`,
+		},
+		{
+			ID:           "get_status",
+			DisplayName:  "Get status",
+			Description:  "Return the authenticated Agent's non-secret readiness status.",
+			Type:         capv1.OperationType_OPERATION_TYPE_READ,
+			Scope:        "agent:info:read",
+			InputSchema:  `{"additionalProperties":false,"properties":{},"type":"object"}`,
+			ResultSchema: `{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}`,
+		},
+		{
+			ID:           "list_models",
+			DisplayName:  "List provider models",
+			Description:  "Discover provider/runtime models for a requested model kind; credentials are write-only and never returned.",
+			Type:         capv1.OperationType_OPERATION_TYPE_READ,
+			Scope:        "agent:models:read",
+			InputSchema:  modelCatalogSchema,
+			ResultSchema: modelCatalogResultSchema,
+		},
+	})
+}
+
+func (c *infoCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
+	if err := requireCapabilityIdentity(ctx); err != nil {
+		return nil, err
+	}
+	if c == nil || c.provider == nil {
+		return nil, errors.New("agent info provider is unavailable")
+	}
+	switch operationID {
+	case "get_backends":
+		if err := requireEmptyObject(raw); err != nil {
+			return nil, err
+		}
+		value, err := c.provider.Backends(ctx)
+		if err != nil {
+			return nil, err
+		}
+		value.Embedded = normalizeBackendInfo(value.Embedded)
+		value.Core = normalizeBackendInfo(value.Core)
+		return json.Marshal(value)
+	case "get_status":
+		if err := requireEmptyObject(raw); err != nil {
+			return nil, err
+		}
+		value, err := c.provider.Status(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(normalizeBackendInfo(value))
+	case "list_models":
+		provider, ok := c.provider.(ModelCatalogProvider)
+		if !ok || provider == nil {
+			return nil, errors.New("agent model catalog provider is unavailable")
+		}
+		var request ModelCatalogRequest
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, err
+		}
+		if err := validateModelCatalogRequest(request); err != nil {
+			return nil, err
+		}
+		value, err := provider.ListModels(ctx, request)
+		if err != nil {
+			return nil, redactSecretError(err, request.APIKey)
+		}
+		return json.Marshal(sanitizeModelCatalogResult(value))
+	default:
+		return nil, fmt.Errorf("unknown agent info operation %q", operationID)
+	}
+}
+
+func normalizeBackendInfo(value BackendInfo) BackendInfo {
+	value.Status = normalizeStatus(value.Status)
+	value.InstanceID = safeString(value.InstanceID, maxRuntimeNameBytes)
+	value.APIVersion = safeString(value.APIVersion, maxRuntimeNameBytes)
+	value.Capabilities = normalizeStrings(value.Capabilities, maxRuntimeNameBytes)
+	value.SupportedModelProviders = normalizeStrings(value.SupportedModelProviders, maxRuntimeNameBytes)
+	return value
+}
+
+func normalizeStatus(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "ready", "configured", "degraded", "unavailable", "disabled", "not_configured", "unknown":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeStrings(values []string, maxBytes int) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = safeString(value, maxBytes)
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RuntimePort is the only execution seam exposed by agent.runtime.v1.  A
+// production implementation must run through the Agent-owned isolated
+// extension/workload runner.  The capability never accepts a shell string,
+// environment map, working-directory override, or arbitrary URL.
+type RuntimePort interface {
+	Inspect(context.Context) (RuntimeInspection, error)
+	Install(context.Context, RuntimeInstallRequest) (RuntimeInstallResult, error)
+	Which(context.Context, string) (RuntimeWhichResult, error)
+	Run(context.Context, RuntimeRunRequest) (RuntimeRunResult, error)
+	WebSearchTest(context.Context, WebSearchTestRequest) (WebSearchTestResult, error)
+}
+
+type RuntimeInspection struct {
+	Ready        bool     `json:"ready"`
+	Configured   bool     `json:"configured"`
+	Capabilities []string `json:"capabilities"`
+	Tools        []string `json:"tools"`
+	UpdatedAt    string   `json:"updated_at,omitempty"`
+}
+
+type RuntimeInstallRequest struct {
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	Target         string   `json:"target"`
+	Package        string   `json:"package,omitempty"`
+	Channels       []string `json:"channels,omitempty"`
+}
+
+type RuntimeInstallResult struct {
+	Installed bool   `json:"installed"`
+	Target    string `json:"target"`
+	Revision  string `json:"revision,omitempty"`
+	Status    string `json:"status"`
+}
+
+type RuntimeWhichResult struct {
+	Found   bool   `json:"found"`
+	Name    string `json:"name"`
+	Path    string `json:"path,omitempty"`
+	Version string `json:"version,omitempty"`
+}
+
+type RuntimeRunRequest struct {
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	Tool           string   `json:"tool"`
+	Argv           []string `json:"argv,omitempty"`
+	Stdin          string   `json:"stdin,omitempty"`
+	TimeoutMS      int      `json:"timeout_ms,omitempty"`
+}
+
+type RuntimeRunResult struct {
+	Tool       string `json:"tool"`
+	ExitCode   int    `json:"exit_code"`
+	Stdout     string `json:"stdout,omitempty"`
+	Stderr     string `json:"stderr,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+}
+
+type WebSearchTestRequest struct {
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider,omitempty"`
+	APIKey   string `json:"api_key"`
+}
+
+type WebSearchTestResult struct {
+	OK          bool   `json:"ok"`
+	Provider    string `json:"provider"`
+	ResultCount int    `json:"result_count"`
+}
+
+type runtimeCapability struct{ port RuntimePort }
+
+func NewRuntimeCapability(port RuntimePort) Capability {
+	return &runtimeCapability{port: port}
+}
+
+func (c *runtimeCapability) Descriptor() *capv1.CapabilityDescriptor {
+	return capabilityDescriptor(runtimeCapabilityID, "Agent Runtime", "Agent-owned isolated runtime and request-scoped web search", []capabilityOperation{
+		{ID: "inspect", DisplayName: "Inspect runtime", Description: "Inspect non-secret runtime readiness.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:runtime:read", InputSchema: emptyObjectSchema, ResultSchema: runtimeInspectResultSchema},
+		{ID: "install", DisplayName: "Install runtime", Description: "Install an exact Agent-owned runtime target through the isolated runner.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:runtime:write", Risk: capv1.RiskLevel_RISK_LEVEL_HIGH, InputSchema: runtimeInstallSchema, ResultSchema: runtimeInstallResultSchema},
+		{ID: "which", DisplayName: "Find runtime tool", Description: "Resolve an installed Agent-owned tool by exact name.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:runtime:read", InputSchema: runtimeWhichSchema, ResultSchema: runtimeWhichResultSchema},
+		{ID: "run", DisplayName: "Run runtime tool", Description: "Run an installed Agent-owned tool with an argv vector; shell execution is not supported.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:runtime:write", Risk: capv1.RiskLevel_RISK_LEVEL_HIGH, InputSchema: runtimeRunSchema, ResultSchema: runtimeRunResultSchema},
+		{ID: "web_search_test", DisplayName: "Test web search", Description: "Test a request-scoped web-search credential without persisting it.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:runtime:web_search", InputSchema: webSearchTestSchema, ResultSchema: webSearchTestResultSchema},
+	})
+}
+
+func (c *runtimeCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
+	if err := requireCapabilityIdentity(ctx); err != nil {
+		return nil, err
+	}
+	if c == nil || c.port == nil {
+		return nil, errors.New("agent runtime provider is unavailable")
+	}
+	switch operationID {
+	case "inspect":
+		if err := requireEmptyObject(raw); err != nil {
+			return nil, err
+		}
+		result, err := c.port.Inspect(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result.Capabilities = normalizeStrings(result.Capabilities, maxRuntimeNameBytes)
+		result.Tools = normalizeStrings(result.Tools, maxRuntimeNameBytes)
+		result.UpdatedAt = safeString(result.UpdatedAt, maxRuntimeNameBytes)
+		return json.Marshal(result)
+	case "install":
+		var request RuntimeInstallRequest
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, err
+		}
+		if err := validateRuntimeInstall(request); err != nil {
+			return nil, err
+		}
+		result, err := c.port.Install(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		result.Target = safeString(result.Target, maxRuntimeNameBytes)
+		result.Revision = safeString(result.Revision, maxRuntimeNameBytes)
+		result.Status = normalizeStatus(result.Status)
+		return json.Marshal(result)
+	case "which":
+		var request struct {
+			Name string `json:"name"`
+		}
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, err
+		}
+		if err := validateRuntimeName(request.Name); err != nil {
+			return nil, err
+		}
+		result, err := c.port.Which(ctx, request.Name)
+		if err != nil {
+			return nil, err
+		}
+		result.Name = safeString(result.Name, maxRuntimeNameBytes)
+		result.Path = safeString(result.Path, maxRuntimeNameBytes)
+		result.Version = safeString(result.Version, maxRuntimeNameBytes)
+		return json.Marshal(result)
+	case "run":
+		var request RuntimeRunRequest
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, err
+		}
+		if err := validateRuntimeRun(request); err != nil {
+			return nil, err
+		}
+		result, err := c.port.Run(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		result.Tool = safeString(result.Tool, maxRuntimeNameBytes)
+		result.Stdout = redactRuntimeText(result.Stdout)
+		result.Stderr = redactRuntimeText(result.Stderr)
+		return json.Marshal(result)
+	case "web_search_test":
+		var request struct {
+			ToolCredentials struct {
+				WebSearch WebSearchTestRequest `json:"web_search"`
+			} `json:"tool_credentials"`
+		}
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, err
+		}
+		if err := validateWebSearchTest(request.ToolCredentials.WebSearch); err != nil {
+			return nil, err
+		}
+		result, err := c.port.WebSearchTest(ctx, request.ToolCredentials.WebSearch)
+		if err != nil {
+			return nil, redactSecretError(err, request.ToolCredentials.WebSearch.APIKey)
+		}
+		result.Provider = safeString(result.Provider, maxRuntimeNameBytes)
+		if result.ResultCount < 0 {
+			result.ResultCount = 0
+		}
+		return json.Marshal(result)
+	default:
+		return nil, fmt.Errorf("unknown agent runtime operation %q", operationID)
+	}
+}
+
+// ConfigProposalPort is optional.  If it is nil the capability still
+// produces a validated proposal; applying it remains a separate, confirmed
+// Core extension/configuration operation.  This prevents a Native Agent from
+// rewriting process configuration as a side effect of a proposal request.
+type ConfigProposalPort interface {
+	ProposeConfigPatch(context.Context, ConfigPatchRequest) (ConfigPatchResult, error)
+}
+
+type ConfigPatchRequest struct {
+	Kind      string         `json:"kind"`
+	Skill     map[string]any `json:"skill,omitempty"`
+	MCPServer map[string]any `json:"mcp_server,omitempty"`
+}
+
+type ConfigPatchResult struct {
+	RequiresConfirmation bool           `json:"requires_confirmation"`
+	ConfigPatch          map[string]any `json:"config_patch"`
+}
+
+type configCapability struct {
+	port  ConfigProposalPort
+	store coreconfig.Store
+}
+
+// NewConfigCapability keeps the original one-argument construction form for
+// standalone proposal tests while allowing production composition to provide
+// the durable owner-scoped config store.
+func NewConfigCapability(port ConfigProposalPort, stores ...coreconfig.Store) Capability {
+	var store coreconfig.Store
+	if len(stores) > 0 {
+		store = stores[0]
+	}
+	return &configCapability{port: port, store: store}
+}
+
+func (c *configCapability) Descriptor() *capv1.CapabilityDescriptor {
+	operations := []capabilityOperation{
+		{ID: "propose_patch", DisplayName: "Propose config patch", Description: "Create a confirmation-bound config proposal; never apply it.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:config:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: configProposalSchema, ResultSchema: configProposalResultSchema},
+	}
+	if c != nil && c.store != nil {
+		operations = append(operations,
+			capabilityOperation{ID: "get", DisplayName: "Get Native Agent config", Description: "Read owner-scoped Native Agent configuration without Online Matrix identity.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:config:read", InputSchema: nativeConfigGetSchema, ResultSchema: nativeConfigResultSchema},
+			capabilityOperation{ID: "update", DisplayName: "Update Native Agent config", Description: "Update owner-scoped Native Agent configuration with an idempotency key.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:config:write", Risk: capv1.RiskLevel_RISK_LEVEL_MEDIUM, InputSchema: nativeConfigUpdateSchema, ResultSchema: nativeConfigResultSchema},
+		)
+	}
+	return capabilityDescriptor(configCapabilityID, "Agent Config", "Owner-scoped Native Agent configuration and confirmation-bound proposals", operations)
+}
+
+func (c *configCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
+	if err := requireCapabilityIdentity(ctx); err != nil {
+		return nil, err
+	}
+	if operationID == "get" {
+		if c == nil || c.store == nil || requireEmptyObject(raw) != nil {
+			return nil, coreconfig.ErrInvalid
+		}
+		permission, ok := capabilityclient.PermissionFromContext(ctx)
+		if !ok || permission == nil {
+			return nil, coreconfig.ErrInvalid
+		}
+		value, err := c.store.Get(ctx, strings.TrimSpace(permission.GetAuthenticatedOwnerId()))
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(value.Normalize())
+	}
+	if operationID == "update" {
+		if c == nil || c.store == nil {
+			return nil, coreconfig.ErrInvalid
+		}
+		var input map[string]json.RawMessage
+		if err := decodeStrictObject(raw, &input); err != nil {
+			return nil, coreconfig.ErrInvalid
+		}
+		update, err := decodeNativeConfigUpdate(input)
+		if err != nil {
+			return nil, err
+		}
+		permission, ok := capabilityclient.PermissionFromContext(ctx)
+		if !ok || permission == nil {
+			return nil, coreconfig.ErrInvalid
+		}
+		value, err := c.store.Update(ctx, strings.TrimSpace(permission.GetAuthenticatedOwnerId()), update)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(value.Normalize())
+	}
+	if operationID != "propose_patch" {
+		return nil, fmt.Errorf("unknown agent config operation %q", operationID)
+	}
+	var request ConfigPatchRequest
+	if err := decodeStrictObject(raw, &request); err != nil {
+		return nil, err
+	}
+	sanitized, err := sanitizeConfigProposal(request)
+	if err != nil {
+		return nil, err
+	}
+	if c != nil && c.port != nil {
+		result, err := c.port.ProposeConfigPatch(ctx, sanitized)
+		if err != nil {
+			return nil, err
+		}
+		result.ConfigPatch = redactConfigMap(result.ConfigPatch)
+		result.RequiresConfirmation = true
+		return json.Marshal(result)
+	}
+	patch := map[string]any{}
+	switch sanitized.Kind {
+	case "skill":
+		patch["skills_add"] = []any{sanitized.Skill}
+	case "mcp_server":
+		patch["mcp_servers_add"] = []any{sanitized.MCPServer}
+	}
+	return json.Marshal(ConfigPatchResult{RequiresConfirmation: true, ConfigPatch: patch})
+}
+
+func decodeNativeConfigUpdate(input map[string]json.RawMessage) (coreconfig.Update, error) {
+	var update coreconfig.Update
+	allowed := map[string]struct{}{
+		"idempotency_key": {}, "expected_revision": {}, "display_name": {}, "avatar_url": {},
+		"native_agent_identity": {}, "context_window": {}, "enabled": {}, "model": {},
+		"system_prompt": {}, "mcp_blocked_room_ids": {},
+	}
+	for key := range input {
+		if _, ok := allowed[key]; !ok {
+			return update, fmt.Errorf("%w: field %q is not allowed", coreconfig.ErrInvalid, key)
+		}
+	}
+	if err := json.Unmarshal(inputRaw(input, "idempotency_key"), &update.IdempotencyKey); err != nil {
+		return update, coreconfig.ErrInvalid
+	}
+	if raw := input["expected_revision"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &update.ExpectedRevision); err != nil {
+			return update, coreconfig.ErrInvalid
+		}
+	}
+	if raw := input["display_name"]; len(raw) > 0 {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.DisplayName = &value
+	}
+	if raw := input["avatar_url"]; len(raw) > 0 {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.AvatarURL = &value
+	}
+	if raw := input["native_agent_identity"]; len(raw) > 0 {
+		var value coreconfig.Identity
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.NativeIdentity = &value
+	}
+	if raw := input["context_window"]; len(raw) > 0 {
+		var value int64
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.ContextWindow = &value
+	}
+	if raw := input["enabled"]; len(raw) > 0 {
+		var value bool
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.Enabled = &value
+	}
+	if raw := input["model"]; len(raw) > 0 {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.Model = &value
+	}
+	if raw := input["system_prompt"]; len(raw) > 0 {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.SystemPrompt = &value
+	}
+	if raw := input["mcp_blocked_room_ids"]; len(raw) > 0 {
+		var value []string
+		if json.Unmarshal(raw, &value) != nil {
+			return update, coreconfig.ErrInvalid
+		}
+		update.MCPBlockedRoomIDs = &value
+	}
+	if err := coreconfig.ValidateUpdate(update); err != nil {
+		return update, err
+	}
+	return update, nil
+}
+
+func inputRaw(input map[string]json.RawMessage, key string) []byte {
+	if value := input[key]; len(value) > 0 {
+		return value
+	}
+	return []byte(`""`)
+}
+
+// RegisterMiscCapabilities composes the independent surfaces without forcing
+// the Core server to know their concrete implementations.  nil dependencies
+// are not registered, so DescribeCapabilities never advertises a fake-ready
+// runtime/info/config capability.
+func RegisterMiscCapabilities(r *Registry, bindings MiscBindings) error {
+	if r == nil {
+		return errors.New("agent capability registry is required")
+	}
+	if bindings.Info != nil {
+		registerUnique(r, NewInfoCapability(bindings.Info))
+	}
+	if bindings.Runtime != nil {
+		registerUnique(r, NewRuntimeCapability(bindings.Runtime))
+	}
+	// Config proposals have a safe local implementation even without a
+	// persistence port, so always publish the capability for a configured Core.
+	registerUnique(r, NewConfigCapability(bindings.Config, bindings.ConfigStore))
+	return nil
+}
+
+type MiscBindings struct {
+	Info        InfoProvider
+	Runtime     RuntimePort
+	Config      ConfigProposalPort
+	ConfigStore coreconfig.Store
+}
+
+func registerUnique(r *Registry, capability Capability) {
+	if capability == nil {
+		return
+	}
+	if _, exists := r.Get(capability.Descriptor().GetCapabilityId()); exists {
+		return
+	}
+	r.Register(capability)
+}
+
+func requireCapabilityIdentity(ctx context.Context) error {
+	permission, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" {
+		return errors.New("authenticated owner context is required")
+	}
+	if permission.GetAccountGeneration() <= 0 {
+		return errors.New("account generation is required")
+	}
+	return nil
+}
+
+func requireEmptyObject(raw []byte) error {
+	var value map[string]json.RawMessage
+	if err := decodeStrictObject(raw, &value); err != nil {
+		return err
+	}
+	if len(value) != 0 {
+		return errors.New("request must not contain fields")
+	}
+	return nil
+}
+
+func decodeStrictObject(raw []byte, dst any) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return errors.New("request_json is required")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return fmt.Errorf("decode request: %w", err)
+	}
+	if err := ensureObject(raw); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request must contain one JSON value")
+		}
+		return fmt.Errorf("decode request tail: %w", err)
+	}
+	return nil
+}
+
+func ensureObject(raw []byte) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return fmt.Errorf("request must be a JSON object: %w", err)
+	}
+	if object == nil {
+		return errors.New("request must be a JSON object")
+	}
+	return nil
+}
+
+var safeRuntimeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$`)
+
+func validateRuntimeName(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxRuntimeNameBytes || strings.Contains(value, "..") || !safeRuntimeName.MatchString(value) {
+		return errors.New("runtime name is invalid")
+	}
+	return nil
+}
+
+func validateIdempotency(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, err := uuid.Parse(strings.TrimSpace(value)); err != nil {
+		return errors.New("idempotency_key must be a UUID")
+	}
+	return nil
+}
+
+func validateRuntimeInstall(request RuntimeInstallRequest) error {
+	if err := validateRuntimeName(request.Target); err != nil {
+		return err
+	}
+	if err := validateIdempotency(request.IdempotencyKey); err != nil {
+		return err
+	}
+	if request.Package != "" {
+		if err := validateRuntimeName(request.Package); err != nil {
+			return fmt.Errorf("package: %w", err)
+		}
+	}
+	if len(request.Channels) > maxRuntimeInstallItems {
+		return errors.New("channels exceed the maximum")
+	}
+	for _, channel := range request.Channels {
+		if err := validateRuntimeName(channel); err != nil {
+			return fmt.Errorf("channel: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateRuntimeRun(request RuntimeRunRequest) error {
+	if err := validateRuntimeName(request.Tool); err != nil {
+		return err
+	}
+	if err := validateIdempotency(request.IdempotencyKey); err != nil {
+		return err
+	}
+	if len(request.Argv) > maxRuntimeArgs {
+		return errors.New("argv exceeds the maximum")
+	}
+	for _, arg := range request.Argv {
+		if len(arg) > maxRuntimeArgBytes || strings.IndexByte(arg, 0) >= 0 {
+			return errors.New("argv contains an invalid argument")
+		}
+	}
+	if len(request.Stdin) > maxRuntimeOutputBytes {
+		return errors.New("stdin exceeds the maximum")
+	}
+	if request.TimeoutMS < 0 || request.TimeoutMS > 10*60*1000 {
+		return errors.New("timeout_ms is outside the allowed range")
+	}
+	return nil
+}
+
+func validateWebSearchTest(request WebSearchTestRequest) error {
+	if !request.Enabled {
+		return errors.New("web search must be enabled")
+	}
+	if strings.TrimSpace(request.APIKey) == "" || len(request.APIKey) > 4096 {
+		return errors.New("web search api_key is required")
+	}
+	provider := strings.ToLower(strings.TrimSpace(request.Provider))
+	if provider == "" {
+		provider = "tavily"
+	}
+	if provider != "tavily" {
+		return errors.New("unsupported web search provider")
+	}
+	return nil
+}
+
+func validateModelCatalogRequest(request ModelCatalogRequest) error {
+	request.ModelKind = strings.ToLower(strings.TrimSpace(request.ModelKind))
+	if request.ModelKind != "conversation" && request.ModelKind != "embedding" && request.ModelKind != "speech" {
+		return errors.New("model_kind must be conversation, embedding, or speech")
+	}
+	for label, value := range map[string]string{"provider": request.Provider, "model_profile_id": request.ModelProfileID, "client_model_profile_id": request.ClientModelProfileID} {
+		if value != "" && (len(value) > maxRuntimeNameBytes || strings.ContainsAny(value, "\r\n\x00")) {
+			return fmt.Errorf("%s is invalid", label)
+		}
+	}
+	if request.Provider != "" && !safeRuntimeName.MatchString(request.Provider) {
+		return errors.New("provider is invalid")
+	}
+	if request.BaseURL != "" {
+		if len(request.BaseURL) > 2048 || strings.ContainsAny(request.BaseURL, "\r\n\x00") {
+			return errors.New("base_url is invalid")
+		}
+		lower := strings.ToLower(request.BaseURL)
+		if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "http://") {
+			return errors.New("base_url must use http or https")
+		}
+		if strings.Contains(request.BaseURL, "@") || strings.Contains(request.BaseURL, "?") || strings.Contains(request.BaseURL, "#") {
+			return errors.New("base_url must not contain userinfo, query, or fragment")
+		}
+	}
+	if request.Provider != "" && request.ModelProfileID == "" && request.ClientModelProfileID == "" && request.APIKey == "" {
+		return errors.New("api_key is required when provider is supplied without a model profile")
+	}
+	if (request.ModelProfileID != "" || request.ClientModelProfileID != "") && request.APIKey != "" {
+		return errors.New("api_key must not be provided with a model profile")
+	}
+	if len(request.APIKey) > 4096 || strings.ContainsAny(request.APIKey, "\r\n\x00") {
+		return errors.New("api_key is invalid")
+	}
+	return nil
+}
+
+func sanitizeModelCatalogResult(value ModelCatalogResult) ModelCatalogResult {
+	providers := append([]ModelCatalogProviderInfo(nil), value.Providers...)
+	for i := range providers {
+		providers[i].Provider = safeString(providers[i].Provider, maxRuntimeNameBytes)
+		providers[i].DefaultBaseURL = safeString(providers[i].DefaultBaseURL, 2048)
+	}
+	sort.Slice(providers, func(i, j int) bool { return providers[i].Provider < providers[j].Provider })
+	models := make([]map[string]any, 0, len(value.Models))
+	for _, model := range value.Models {
+		models = append(models, sanitizeModelMap(model))
+	}
+	return ModelCatalogResult{Models: models, Providers: providers}
+}
+
+func sanitizeModelMap(input map[string]any) map[string]any {
+	if input == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if strings.Contains(lower, "api_key") || strings.Contains(lower, "authorization") || strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
+			continue
+		}
+		clean, keep := sanitizeModelValue(lower, value)
+		if keep {
+			out[key] = clean
+		}
+	}
+	return out
+}
+
+func sanitizeModelValue(key string, value any) (any, bool) {
+	switch typed := value.(type) {
+	case string:
+		if strings.ContainsAny(typed, "\r\n\x00") {
+			return nil, false
+		}
+		if key == "base_url" || key == "url" {
+			if strings.Contains(typed, "@") || strings.Contains(typed, "?") || strings.Contains(typed, "#") {
+				return nil, false
+			}
+		}
+		return safeString(typed, 4096), true
+	case map[string]any:
+		return sanitizeModelMap(typed), true
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			clean, keep := sanitizeModelValue("", item)
+			if keep {
+				out = append(out, clean)
+			}
+		}
+		return out, true
+	default:
+		return value, true
+	}
+}
+
+func redactRuntimeText(value string) string {
+	if len(value) > maxRuntimeOutputBytes {
+		value = value[:maxRuntimeOutputBytes]
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	for _, r := range value {
+		if r == '\n' || r == '\r' || r == '\t' || !unicode.IsControl(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func redactSecretError(err error, secret string) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ReplaceAll(err.Error(), secret, "[redacted]")
+	if strings.TrimSpace(message) == "" {
+		message = "runtime provider failed"
+	}
+	return errors.New(message)
+}
+
+func sanitizeConfigProposal(request ConfigPatchRequest) (ConfigPatchRequest, error) {
+	request.Kind = strings.ToLower(strings.TrimSpace(request.Kind))
+	if request.Kind != "skill" && request.Kind != "mcp_server" {
+		return ConfigPatchRequest{}, errors.New("kind must be skill or mcp_server")
+	}
+	if request.Kind == "skill" {
+		value, err := sanitizeConfigMap(request.Skill, allowedSkillConfigKeys)
+		if err != nil {
+			return ConfigPatchRequest{}, fmt.Errorf("skill: %w", err)
+		}
+		if len(value) == 0 {
+			return ConfigPatchRequest{}, errors.New("skill proposal is empty")
+		}
+		request.Skill = value
+		request.MCPServer = nil
+		return request, nil
+	}
+	value, err := sanitizeConfigMap(request.MCPServer, allowedMCPConfigKeys)
+	if err != nil {
+		return ConfigPatchRequest{}, fmt.Errorf("mcp_server: %w", err)
+	}
+	if len(value) == 0 {
+		return ConfigPatchRequest{}, errors.New("mcp_server proposal is empty")
+	}
+	request.MCPServer = value
+	request.Skill = nil
+	return request, nil
+}
+
+var allowedSkillConfigKeys = map[string]bool{"name": true, "version": true, "source": true, "description": true, "entrypoint": true, "args": true, "permissions": true}
+var allowedMCPConfigKeys = map[string]bool{"name": true, "version": true, "source": true, "description": true, "transport": true, "url": true, "command": true, "args": true, "timeout_ms": true, "tool_allowlist": true}
+
+func sanitizeConfigMap(input map[string]any, allowed map[string]bool) (map[string]any, error) {
+	if input == nil {
+		return nil, errors.New("object is required")
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		key = strings.TrimSpace(key)
+		if !allowed[key] {
+			return nil, fmt.Errorf("field %q is not allowed", key)
+		}
+		if strings.Contains(strings.ToLower(key), "secret") || strings.Contains(strings.ToLower(key), "token") || strings.Contains(strings.ToLower(key), "password") || strings.Contains(strings.ToLower(key), "api_key") || strings.Contains(strings.ToLower(key), "env") || strings.Contains(strings.ToLower(key), "shell") || strings.Contains(strings.ToLower(key), "cwd") {
+			return nil, fmt.Errorf("field %q is not allowed", key)
+		}
+		if key == "command" {
+			argv, ok := value.([]any)
+			if !ok || len(argv) == 0 || len(argv) > maxRuntimeArgs {
+				return nil, errors.New("command must be an argv array")
+			}
+			if err := validateNonShellArgv(argv); err != nil {
+				return nil, err
+			}
+		}
+		if err := rejectNestedSecretKeys(value); err != nil {
+			return nil, err
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+func validateNonShellArgv(argv []any) error {
+	for index, item := range argv {
+		value, ok := item.(string)
+		if !ok || len(value) == 0 || len(value) > maxRuntimeArgBytes || strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("command argument %d is invalid", index)
+		}
+		if index == 0 {
+			base := strings.ToLower(strings.TrimSpace(value))
+			if base == "sh" || base == "bash" || base == "zsh" || base == "fish" || base == "cmd" || base == "cmd.exe" || base == "powershell" || base == "pwsh" {
+				return errors.New("shell interpreters are not allowed")
+			}
+		}
+		if index > 0 && (value == "-c" || value == "-Command" || value == "/c" || value == "/C") {
+			return errors.New("shell evaluation arguments are not allowed")
+		}
+	}
+	return nil
+}
+
+func rejectNestedSecretKeys(value any) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			lower := strings.ToLower(strings.TrimSpace(key))
+			if strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "password") || strings.Contains(lower, "api_key") || strings.Contains(lower, "authorization") || strings.Contains(lower, "env") || strings.Contains(lower, "shell") || strings.Contains(lower, "cwd") {
+				return fmt.Errorf("field %q is not allowed", key)
+			}
+			if err := rejectNestedSecretKeys(item); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if err := rejectNestedSecretKeys(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func redactConfigMap(input map[string]any) map[string]any {
+	if input == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "password") || strings.Contains(lower, "api_key") {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+type capabilityOperation struct {
+	ID           string
+	DisplayName  string
+	Description  string
+	Type         capv1.OperationType
+	Scope        string
+	Risk         capv1.RiskLevel
+	InputSchema  string
+	ResultSchema string
+}
+
+func capabilityDescriptor(id, name, description string, operations []capabilityOperation) *capv1.CapabilityDescriptor {
+	descriptor := &capv1.CapabilityDescriptor{CapabilityId: id, SemanticVersion: "1.0.0", ProtocolVersion: 1, DisplayName: name, Description: description, Readiness: true}
+	for _, operation := range operations {
+		input := operation.InputSchema
+		if input == "" {
+			input = emptyObjectSchema
+		}
+		result := operation.ResultSchema
+		if result == "" {
+			result = genericObjectSchema
+		}
+		risk := operation.Risk
+		if risk == capv1.RiskLevel_RISK_LEVEL_UNSPECIFIED {
+			risk = capv1.RiskLevel_RISK_LEVEL_SAFE
+		}
+		d := &capv1.OperationDescriptor{
+			OperationId: operation.ID, DisplayName: operation.DisplayName, Description: operation.Description, OperationType: operation.Type,
+			Audience: []capv1.Audience{capv1.Audience_AUDIENCE_OWNER_CLIENT, capv1.Audience_AUDIENCE_NATIVE_AGENT}, RiskLevel: risk,
+			RequiredScopes: []string{operation.Scope}, InputSchemaJson: input, ResultSchemaJson: result, MaxRequestSizeBytes: 1 << 20, TimeoutClass: "medium",
+		}
+		inputDigest := sha256.Sum256([]byte(input))
+		resultDigest := sha256.Sum256([]byte(result))
+		d.InputSchemaDigest = inputDigest[:]
+		d.ResultSchemaDigest = resultDigest[:]
+		descriptor.Operations = append(descriptor.Operations, d)
+	}
+	return descriptor
+}
+
+func safeString(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > maxBytes {
+		value = value[:maxBytes]
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return ""
+		}
+	}
+	return value
+}
+
+const (
+	emptyObjectSchema          = `{"additionalProperties":false,"properties":{},"type":"object"}`
+	genericObjectSchema        = `{"additionalProperties":true,"type":"object"}`
+	runtimeInspectResultSchema = `{"additionalProperties":false,"properties":{"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"ready":{"type":"boolean"},"tools":{"items":{"type":"string"},"type":"array"},"updated_at":{"type":"string"}},"required":["ready","configured","capabilities","tools"],"type":"object"}`
+	runtimeInstallSchema       = `{"additionalProperties":false,"properties":{"channels":{"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$"},"maxItems":8,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"package":{"type":"string"},"target":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["target"],"type":"object"}`
+	runtimeInstallResultSchema = `{"additionalProperties":false,"properties":{"installed":{"type":"boolean"},"revision":{"type":"string"},"status":{"type":"string"},"target":{"type":"string"}},"required":["installed","status","target"],"type":"object"}`
+	runtimeWhichSchema         = `{"additionalProperties":false,"properties":{"name":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["name"],"type":"object"}`
+	runtimeWhichResultSchema   = `{"additionalProperties":false,"properties":{"found":{"type":"boolean"},"name":{"type":"string"},"path":{"type":"string"},"version":{"type":"string"}},"required":["found","name"],"type":"object"}`
+	runtimeRunSchema           = `{"additionalProperties":false,"properties":{"argv":{"items":{"type":"string","maxLength":4096},"maxItems":64,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"stdin":{"maxLength":65536,"type":"string"},"timeout_ms":{"maximum":600000,"minimum":0,"type":"integer"},"tool":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["tool"],"type":"object"}`
+	runtimeRunResultSchema     = `{"additionalProperties":false,"properties":{"duration_ms":{"type":"integer"},"exit_code":{"type":"integer"},"stderr":{"type":"string"},"stdout":{"type":"string"},"tool":{"type":"string"}},"required":["exit_code","tool"],"type":"object"}`
+	webSearchTestSchema        = `{"additionalProperties":false,"properties":{"tool_credentials":{"additionalProperties":false,"properties":{"web_search":{"additionalProperties":false,"properties":{"api_key":{"type":"string","write_only":true},"enabled":{"type":"boolean"},"provider":{"default":"tavily","enum":["tavily"],"type":"string"}},"required":["api_key","enabled"],"type":"object"}},"required":["web_search"],"type":"object"}},"required":["tool_credentials"],"type":"object"}`
+	webSearchTestResultSchema  = `{"additionalProperties":false,"properties":{"ok":{"type":"boolean"},"provider":{"type":"string"},"result_count":{"minimum":0,"type":"integer"}},"required":["ok","provider","result_count"],"type":"object"}`
+	modelCatalogSchema         = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","write_only":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"required":["model_kind"],"type":"object"}`
+	modelCatalogResultSchema   = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":true,"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
+	configProposalSchema       = `{"additionalProperties":false,"properties":{"kind":{"enum":["mcp_server","skill"],"type":"string"},"mcp_server":{"additionalProperties":true,"type":"object"},"skill":{"additionalProperties":true,"type":"object"}},"required":["kind"],"type":"object"}`
+	configProposalResultSchema = `{"additionalProperties":false,"properties":{"config_patch":{"additionalProperties":true,"type":"object"},"requires_confirmation":{"const":true,"type":"boolean"}},"required":["requires_confirmation","config_patch"],"type":"object"}`
+	nativeConfigGetSchema      = `{"additionalProperties":false,"properties":{},"type":"object"}`
+	nativeConfigUpdateSchema   = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"maximum":4194304,"minimum":1,"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"},"system_prompt":{"type":"string"}},"required":["idempotency_key"],"type":"object"}`
+	nativeConfigResultSchema   = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"},"system_prompt":{"type":"string"}},"required":["revision","display_name","avatar_url","native_agent_identity","context_window","enabled","model","system_prompt","mcp_blocked_room_ids"],"type":"object"}`
+)

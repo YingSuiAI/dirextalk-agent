@@ -3,12 +3,6 @@ package agentcapability
 import (
 	"context"
 
-	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/chat"
-	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/echo"
-	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/knowledge"
-	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/models"
-	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/skills"
-	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/tasks"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -23,25 +17,23 @@ type Capability interface {
 	HandleOperation(ctx context.Context, operationID string, inputJSON []byte) ([]byte, error)
 }
 
-// NewRegistry creates and registers all agent capabilities
+// NewRegistry creates an empty registry for explicit composition.
+//
+// Production must use NewCoreRegistry, which only advertises capabilities
+// whose Core service has been wired and passed its readiness gate.  Keeping
+// this constructor empty prevents stale in-memory/test capabilities from
+// being exposed accidentally by a caller that has not composed Core.
 func NewRegistry() *Registry {
-	r := &Registry{
+	return &Registry{
 		capabilities: make(map[string]Capability),
 	}
-
-	// Register all capabilities
-	r.Register(echo.NewCapability())
-	r.Register(chat.NewCapability())
-	r.Register(models.NewCapability())
-	r.Register(tasks.NewCapability())
-	r.Register(skills.NewCapability())
-	r.Register(knowledge.NewCapability())
-
-	return r
 }
 
 // Register adds a capability to the registry
 func (r *Registry) Register(cap Capability) {
+	if r == nil || cap == nil || cap.Descriptor() == nil {
+		return
+	}
 	desc := cap.Descriptor()
 	r.capabilities[desc.CapabilityId] = cap
 }

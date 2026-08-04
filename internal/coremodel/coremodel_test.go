@@ -32,6 +32,38 @@ func TestNormalizeBaseURLDefaultsAndStrictHTTPS(t *testing.T) {
 	}
 }
 
+func TestOpenRouterProviderAliasNormalizesToOpenAICompatible(t *testing.T) {
+	got, err := NormalizeBaseURL(ModelProvider("openrouter"), "")
+	if err != nil || got != "https://openrouter.ai/api/v1" {
+		t.Fatalf("OpenRouter default: %q %v", got, err)
+	}
+	p, err := ValidateProfile(Profile{ID: "11111111-1111-4111-8111-111111111111", DisplayName: "OpenRouter", Provider: ModelProvider("openrouter"), Model: "openai/gpt-4o-mini", APIKey: "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Provider != ProviderOpenAICompatible || p.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("normalized profile=%+v", p)
+	}
+	custom, err := ValidateProfile(Profile{ID: "22222222-2222-4222-8222-222222222222", DisplayName: "DeepSeek", Provider: ModelProvider("deepseek"), BaseURL: "https://gateway.example/v1/", Model: "deepseek-chat", APIKey: "k"})
+	if err != nil || custom.Provider != ProviderOpenAICompatible || custom.BaseURL != "https://gateway.example/v1" {
+		t.Fatalf("custom alias profile=%+v err=%v", custom, err)
+	}
+}
+
+func TestSpeechProfileAcceptsMetadataWithoutGenericAPIKey(t *testing.T) {
+	p, err := ValidateProfile(Profile{ID: "33333333-3333-4333-8333-333333333333", DisplayName: "Volc Speech", Provider: ProviderVolcVoice, ModelKind: ModelKindSpeech, ProviderConfig: map[string]any{"app_id": "app"}})
+	if err != nil {
+		t.Fatalf("speech profile: %v", err)
+	}
+	if p.ModelKind != ModelKindSpeech || p.Model != "volc_voice" || p.BaseURL != "" {
+		t.Fatalf("speech normalization = %#v", p)
+	}
+	public := p.Public()
+	if public.APIKeyConfigured || public.ProviderSecretStatus != nil {
+		t.Fatalf("speech public projection leaked credential state: %#v", public)
+	}
+}
+
 func TestValidateProfileRejectsNilUUID(t *testing.T) {
 	if _, err := ValidateProfile(Profile{ID: "00000000-0000-0000-0000-000000000000", DisplayName: "x", Provider: ProviderGemini, Model: "gemini-test", APIKey: "k"}); err == nil {
 		t.Fatal("accepted nil UUID")

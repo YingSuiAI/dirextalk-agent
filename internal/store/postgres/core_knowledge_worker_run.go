@@ -347,8 +347,20 @@ func (w *knowledgeTaskWorker) fail(ctx context.Context, task coretask.Task, code
 	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_index_jobs SET status='failed',error_code=$2,error_summary=$3,updated_at=$4 WHERE task_id=$1 AND status IN ('queued','running')`, task.ID, code, summary, now); err != nil {
 		return coreruntime.ManagedOutcome{Err: err}
 	}
-	_, _ = tx.Exec(ctx, `INSERT INTO core_knowledge_generation_cleanup(source_id,generation,cleanup_kind,revision) SELECT x::uuid,j.generation,'staging',0 FROM core_knowledge_index_jobs j, jsonb_array_elements_text(j.source_ids) x WHERE j.task_id=$1`, task.ID)
-	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',error_code=$2,updated_at=$3 WHERE source_id IN (SELECT jsonb_array_elements_text(source_ids)::uuid FROM core_knowledge_index_jobs WHERE task_id=$1) AND status='indexing'`, task.ID, code, now); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_knowledge_generation_cleanup(source_id,generation,cleanup_kind,revision)
+		SELECT x::uuid,j.generation,'staging',0 FROM core_knowledge_index_jobs j, jsonb_array_elements_text(j.source_ids) x
+		WHERE j.task_id=$1 ON CONFLICT DO NOTHING`, task.ID); err != nil {
+		return coreruntime.ManagedOutcome{Err: err}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_sources AS source
+		SET status='ready',error_code=$2,updated_at=$3
+		FROM (
+			SELECT item.value::uuid AS source_id,(job.expected_revisions ->> ((item.ordinality - 1)::int))::bigint AS expected_revision
+			FROM core_knowledge_index_jobs AS job
+			CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) WITH ORDINALITY AS item(value,ordinality)
+			WHERE job.task_id=$1
+		) AS expected
+		WHERE source.source_id=expected.source_id AND source.revision=expected.expected_revision AND source.status='indexing'`, task.ID, code, now); err != nil {
 		return coreruntime.ManagedOutcome{Err: err}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status='failed',failure_code=$2,failure_summary=$3,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$4 WHERE task_id=$1 AND status='running' AND revision=$5 AND lease_epoch=$6 AND lease_holder=$7 AND lease_expires_at>$4`, task.ID, code, summary, now, task.Revision, task.LeaseEpoch, task.Lease.Holder)

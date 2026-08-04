@@ -26,6 +26,10 @@ type Schedule struct {
 	CreatedAt        time.Time    `json:"created_at"`
 	UpdatedAt        time.Time    `json:"updated_at"`
 	Deleted          bool         `json:"deleted,omitempty"`
+	// Replayed is an in-memory mutation receipt marker. It is omitted from the
+	// durable schedule snapshot and public schedule DTO, then surfaced by the
+	// capability adapter as an additive receipt field.
+	Replayed bool `json:"-"`
 }
 
 var cronToken = regexp.MustCompile(`^[0-9*/\-,]+$`)

@@ -109,12 +109,12 @@ mkdir -p "$out_parent"
 out_parent=$(cd "$out_parent" && pwd -P)
 out=$out_parent/$out_base
 
-required_files="postgres-password database-url service-token instance-id tls-key tls-cert tls-ca config.yaml .env"
+required_files="postgres-password database-url service-token core-secret-master-key instance-id tls-key tls-cert tls-ca config.yaml .env"
 lock=$out.lock
 
 is_expected_name() {
   case "$1" in
-    postgres-password|database-url|service-token|instance-id|tls-key|tls-cert|tls-ca|config.yaml|.env|.manifest) return 0 ;;
+    postgres-password|database-url|service-token|core-secret-master-key|instance-id|tls-key|tls-cert|tls-ca|config.yaml|.env|.manifest) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -126,7 +126,7 @@ is_regular_protected_file() {
 
 is_migration_artifact_name() {
   case "$1" in
-    .cgroup-parent-migration|.cgroup-parent-migration.tmp|.env.migrate-backup|.env.migrate.tmp|.manifest.migrate-backup|.manifest.migrate.tmp) return 0 ;;
+    .cgroup-parent-migration|.cgroup-parent-migration.tmp|.env.migrate-backup|.env.migrate.tmp|.manifest.migrate-backup|.manifest.migrate.tmp|.core-secret-master-key.migrate.tmp|config.yaml.migrate.tmp) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -185,6 +185,7 @@ validate_complete() {
   password=$(sed -n '1{/^$/d;p;}' "$dir/postgres-password")
   [ "$(printf '%s\n' "$password" | wc -l)" -eq 1 ] || return 1
   printf '%s' "$password" | grep -Eq '^[0-9a-f]{48}$' || return 1
+  [ "$(wc -c < "$dir/core-secret-master-key")" -eq 32 ] || return 1
   expected_url="postgresql://dirextalk_agent:${password}@postgres:5432/dirextalk_agent?sslmode=disable"
   printf '%s\n' "$expected_url" | cmp -s - "$dir/database-url" || return 1
 
@@ -201,6 +202,8 @@ validate_complete() {
   grep -Fqx "tls_cert_file: /run/secrets/tls_cert" "$dir/config.yaml" || return 1
   grep -Fqx "tls_key_file: /run/secrets/tls_key" "$dir/config.yaml" || return 1
   grep -Fqx "service_token_file: /run/secrets/service_token" "$dir/config.yaml" || return 1
+  grep -Fqx "core_secret_master_key_file: /run/secrets/core_secret_master_key" "$dir/config.yaml" || return 1
+  grep -Fqx "core_secret_master_key_version: 1" "$dir/config.yaml" || return 1
   grep -Fqx "DIREXTALK_AGENT_CONFIG_FILE=$expected_root/config.yaml" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_POSTGRES_PASSWORD_FILE=$expected_root/postgres-password" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_DATABASE_URL_FILE=$expected_root/database-url" "$dir/.env" || return 1
@@ -208,6 +211,7 @@ validate_complete() {
   grep -Fqx "DIREXTALK_TLS_KEY_FILE=$expected_root/tls-key" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_TLS_CA_FILE=$expected_root/tls-ca" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_SERVICE_TOKEN_FILE=$expected_root/service-token" "$dir/.env" || return 1
+  grep -Fqx "DIREXTALK_CORE_SECRET_MASTER_KEY_FILE=$expected_root/core-secret-master-key" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_AGENT_INSTANCE_ID_FILE=$expected_root/instance-id" "$dir/.env" || return 1
   grep -Eq '^DIREXTALK_AGENT_EXPECTED_INSTANCE_ID=[0-9a-f-]+$' "$dir/.env" || return 1
   grep -Eq '^DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=.+$' "$dir/.env" || return 1
@@ -278,24 +282,74 @@ copy_protected_atomic() {
 write_manifest_atomic() {
   dir=$1
   manifest_tmp=$dir/.manifest.migrate.tmp
-  migration_failpoint before-manifest-mktemp
+  if [ "${2:-failpoint}" = failpoint ]; then
+    migration_failpoint before-manifest-mktemp
+  fi
   rm -f "$manifest_tmp"
   (
     cd "$dir" || exit 1
     { printf '%s\n' '# dirextalk-bootstrap-manifest-v1'; sha256sum $required_files; } > "$manifest_tmp"
   ) || { rm -f "$manifest_tmp"; return 1; }
-  migration_failpoint after-manifest-hash
+  if [ "${2:-failpoint}" = failpoint ]; then
+    migration_failpoint after-manifest-hash
+  fi
   chmod 0400 "$manifest_tmp" || { rm -f "$manifest_tmp"; return 1; }
   sync_path "$manifest_tmp"
   mv -f "$manifest_tmp" "$dir/.manifest" || { rm -f "$manifest_tmp"; return 1; }
   sync_directory "$dir"
 }
 
+# Older protected bundles predate the encrypted Core AWS credential boundary.
+# Preserve their identity/volumes while adding one fresh, strict master-key
+# artifact and its non-secret path references. This is an additive bootstrap
+# migration; an existing malformed key is never replaced automatically.
+migrate_legacy_master_key() {
+  dir=$1
+  key=$dir/core-secret-master-key
+  legacy_files="postgres-password database-url service-token instance-id tls-key tls-cert tls-ca config.yaml .env"
+  [ -f "$dir/.manifest" ] && [ "$(stat -c '%a' "$dir/.manifest" 2>/dev/null || echo 0)" = 400 ] || return 0
+  [ "$(sed -n '1p' "$dir/.manifest")" = "# dirextalk-bootstrap-manifest-v1" ] || return 0
+  [ "$(tail -n +2 "$dir/.manifest" | wc -l)" -eq 9 ] || return 0
+  for name in $legacy_files; do
+    is_regular_protected_file "$dir/$name" || return 0
+    tail -n +2 "$dir/.manifest" | grep -Eq "^[0-9a-f]{64}  ${name}$" || return 0
+  done
+  (cd "$dir" && tail -n +2 .manifest | sha256sum -c --status -) || return 0
+  if [ -e "$key" ] || [ -L "$key" ]; then
+    is_regular_protected_file "$key" || return 1
+    [ "$(wc -c < "$key")" -eq 32 ] || return 1
+  else
+    key_tmp=$dir/.core-secret-master-key.migrate.tmp
+    openssl rand 32 > "$key_tmp" || { rm -f "$key_tmp"; return 1; }
+    chmod 0400 "$key_tmp" || { rm -f "$key_tmp"; return 1; }
+    sync_path "$key_tmp"
+    mv -f "$key_tmp" "$key" || { rm -f "$key_tmp"; return 1; }
+    sync_directory "$dir"
+  fi
+  for target in "$dir/config.yaml" "$dir/.env"; do
+      target_tmp=$target.migrate.tmp
+      cp "$target" "$target_tmp" || { rm -f "$target_tmp"; return 1; }
+      if [ "$target" = "$dir/config.yaml" ]; then
+        grep -Fqx "core_secret_master_key_file: /run/secrets/core_secret_master_key" "$target" || printf '%s\n' 'core_secret_master_key_file: /run/secrets/core_secret_master_key' >> "$target_tmp"
+        grep -Fqx "core_secret_master_key_version: 1" "$target" || printf '%s\n' 'core_secret_master_key_version: 1' >> "$target_tmp"
+      else
+        grep -Fqx "DIREXTALK_CORE_SECRET_MASTER_KEY_FILE=$dir/core-secret-master-key" "$target" || printf '%s\n' "DIREXTALK_CORE_SECRET_MASTER_KEY_FILE=$dir/core-secret-master-key" >> "$target_tmp"
+      fi
+      chmod 0400 "$target_tmp" || { rm -f "$target_tmp"; return 1; }
+      sync_path "$target_tmp"
+      mv -f "$target_tmp" "$target"
+      sync_directory "$dir"
+  done
+  write_manifest_atomic "$dir" nofail || return 1
+  return 0
+}
+
 clear_migration_artifacts() {
   dir=$1
   rm -f "$dir/.cgroup-parent-migration" "$dir/.cgroup-parent-migration.tmp" \
     "$dir/.env.migrate-backup" "$dir/.env.migrate.tmp" \
-    "$dir/.manifest.migrate-backup" "$dir/.manifest.migrate.tmp"
+    "$dir/.manifest.migrate-backup" "$dir/.manifest.migrate.tmp" \
+    "$dir/.core-secret-master-key.migrate.tmp" "$dir/config.yaml.migrate.tmp"
   sync_directory "$dir"
 }
 
@@ -422,6 +476,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 if [ -e "$out" ] || [ -L "$out" ]; then
+  migrate_legacy_master_key "$out" || die "legacy Core AWS master-key migration failed; refusing in-place regeneration: $out"
   recover_cgroup_parent_migration "$out" || die "protected Compose migration recovery failed; refusing in-place regeneration: $out"
   if ! validate_complete "$out"; then
     migrate_cgroup_parents "$out" || die "output target exists but is incomplete or inconsistent; refusing in-place regeneration: $out"
@@ -460,6 +515,7 @@ done
 printf '%s\n' "$password" > "$stage/postgres-password"
 printf 'postgresql://dirextalk_agent:%s@postgres:5432/dirextalk_agent?sslmode=disable\n' "$password" > "$stage/database-url"
 printf '%s' "$token" > "$stage/service-token"
+openssl rand 32 > "$stage/core-secret-master-key"
 printf '%s\n' "$instance_id" > "$stage/instance-id"
 
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
@@ -476,6 +532,9 @@ grpc_listen: ":9443"
 tls_cert_file: /run/secrets/tls_cert
 tls_key_file: /run/secrets/tls_key
 service_token_file: /run/secrets/service_token
+core_aws_enabled: false
+core_secret_master_key_file: /run/secrets/core_secret_master_key
+core_secret_master_key_version: 1
 enable_health_service: true
 enable_reflection: false
 core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
@@ -500,6 +559,7 @@ DIREXTALK_TLS_CERT_FILE=$out/tls-cert
 DIREXTALK_TLS_KEY_FILE=$out/tls-key
 DIREXTALK_TLS_CA_FILE=$out/tls-ca
 DIREXTALK_SERVICE_TOKEN_FILE=$out/service-token
+DIREXTALK_CORE_SECRET_MASTER_KEY_FILE=$out/core-secret-master-key
 DIREXTALK_HEALTHCHECK_SERVER_NAME=$tls_server_name
 DIREXTALK_AGENT_INSTANCE_ID_FILE=$out/instance-id
 DIREXTALK_AGENT_EXPECTED_INSTANCE_ID=$instance_id

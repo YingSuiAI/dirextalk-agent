@@ -113,6 +113,12 @@ func TestMemoryRepositoryUploadChecksumAndIdempotency(t *testing.T) {
 	if u1.ID != u2.ID {
 		t.Fatal("idempotent replay changed upload")
 	}
+	if u1.Replayed {
+		t.Fatal("first upload.start response was marked replayed")
+	}
+	if !u2.Replayed {
+		t.Fatal("exact upload.start replay did not carry a receipt marker")
+	}
 	chunkKey := "22222222-2222-4222-8222-222222222222"
 	if _, err := r.AppendUploadChunk(context.Background(), UploadChunk{IdempotencyKey: chunkKey, UploadID: u1.ID, Ordinal: 0, Data: []byte("hello"), ChunkSHA256: digestBytes([]byte("hello"))}); err != nil {
 		t.Fatal(err)
@@ -243,6 +249,39 @@ func TestMemoryRepositoryDeleteFenceAndCleanupRetry(t *testing.T) {
 	}
 }
 
+func TestMemoryRepositoryListMemoriesHidesDeletedContent(t *testing.T) {
+	r := newTestRepository()
+	memory, err := r.CreateMemory(context.Background(), MemoryCommand{
+		IdempotencyKey: "abababab-abab-4bab-8bab-abababababab",
+		Title:          "delete me",
+		Content:        "plaintext must not be listed after delete",
+		MediaType:      "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.Delete(context.Background(), DeleteCommand{
+		IdempotencyKey:   "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+		SourceID:         memory.ID,
+		ExpectedRevision: memory.Revision,
+		Kind:             SourceKindMemory,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := r.ListMemories(context.Background(), ListQuery{PageSize: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		if item.ID == memory.ID {
+			t.Fatalf("deleted memory was listed: %#v", item)
+		}
+	}
+	if _, err = r.GetMemory(context.Background(), memory.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted memory get error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestMemoryRepositoryRejectsSelectedIneligibleSource(t *testing.T) {
 	r := newTestRepository()
 	meta := UploadMetadata{IdempotencyKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", MediaType: "text/plain", DeclaredSize: 1, ContentSHA256: digestBytes([]byte("x"))}
@@ -253,6 +292,59 @@ func TestMemoryRepositoryRejectsSelectedIneligibleSource(t *testing.T) {
 	_, err = r.Search(context.Background(), SearchQuery{Query: "x", SourceIDs: []string{u.SourceID}})
 	if !errors.Is(err, ErrIneligible) {
 		t.Fatalf("eligibility: %v", err)
+	}
+}
+
+func TestMemoryRepositoryKindSafeDeleteAndSearch(t *testing.T) {
+	r := newTestRepository()
+	mount, err := r.CreateMount(context.Background(), MountCommand{IdempotencyKey: "11111111-1111-4111-8111-111111111111", SourceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", RelativePath: "docs/a.txt", SizeBytes: 1, MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := r.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: "22222222-2222-4222-8222-222222222222", SourceID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Content: "long term memory", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Delete(context.Background(), DeleteCommand{IdempotencyKey: "33333333-3333-4333-8333-333333333333", SourceID: mount.ID, ExpectedRevision: mount.Revision, Kind: SourceKindMemory}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("memory delete removed a mount: %v", err)
+	}
+	if got, err := r.Get(context.Background(), mount.ID); err != nil || got.Status != SourceStatusReady {
+		t.Fatalf("mount changed after kind mismatch: %#v %v", got, err)
+	}
+	page, err := r.Search(context.Background(), SearchQuery{Query: "memory", Kind: SourceKindMemory})
+	if err != nil || len(page.Matches) != 1 || page.Matches[0].SourceID != memory.ID {
+		t.Fatalf("memory kind filter: %#v %v", page, err)
+	}
+	if _, err := r.Search(context.Background(), SearchQuery{Query: "memory", Kind: SourceKindMemory, SourceIDs: []string{mount.ID}}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("search accepted a mount under memory kind: %v", err)
+	}
+}
+
+func TestMemoryRepositoryUpdateMemoryRevisionAndReplay(t *testing.T) {
+	r := newTestRepository()
+	created, err := r.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: "44444444-4444-4444-8444-444444444444", SourceID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Title: "old", Content: "before", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := UpdateMemoryCommand{IdempotencyKey: "55555555-5555-4555-8555-555555555555", SourceID: created.ID, ExpectedRevision: created.Revision, Title: "new", Content: "after", ContentSHA256: digestBytes([]byte("after")), MediaType: "text/plain"}
+	updated, err := r.UpdateMemory(context.Background(), cmd)
+	if err != nil || updated.Revision != created.Revision+1 || updated.Title != "new" || updated.Digest != digestBytes([]byte("after")) {
+		t.Fatalf("update failed: %#v %v", updated, err)
+	}
+	replay, err := r.UpdateMemory(context.Background(), cmd)
+	if err != nil || replay.Revision != updated.Revision || replay.Digest != updated.Digest {
+		t.Fatalf("update replay changed receipt: %#v %v", replay, err)
+	}
+	conflict := cmd
+	conflict.Content = "different"
+	if _, err := r.UpdateMemory(context.Background(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("changed update replay was accepted: %v", err)
+	}
+	stale := cmd
+	stale.IdempotencyKey = "66666666-6666-4666-8666-666666666666"
+	stale.ExpectedRevision = created.Revision
+	if _, err := r.UpdateMemory(context.Background(), stale); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("stale update was accepted: %v", err)
 	}
 }
 

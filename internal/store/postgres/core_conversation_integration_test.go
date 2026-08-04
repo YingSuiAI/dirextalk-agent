@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -78,7 +80,11 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e = ApplyMigrations(ctx, pool, sid); e != nil {
 		t.Fatal(e)
 	}
-	s, e := New(pool, sid)
+	keyring, e := secretbox.New(secretbox.KeyVersionMin, bytes.Repeat([]byte{0x5a}, secretbox.MasterKeySize))
+	if e != nil {
+		t.Fatal(e)
+	}
+	s, e := New(pool, sid, keyring)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -115,7 +121,9 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 		t.Fatal(e)
 	}
 	profileID := lease.ProfileID
-	if _, e = pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,system_prompt,api_key,api_key_configured,temperature,top_p,max_output_tokens,context_window,reasoning_effort) VALUES($1,'snapshot','openai_compatible','https://example.invalid/v1','original-model','original prompt','original-secret',true,0.25,0.75,321,8192,'high')`, profileID); e != nil {
+	nowProfile := time.Now().UTC().Truncate(time.Microsecond)
+	temperatureProfile, topPProfile := 0.25, 0.75
+	if _, e = s.CreateProfile(ctx, coremodel.Profile{ID: profileID, DisplayName: "snapshot", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid/v1", Model: "original-model", SystemPrompt: "original prompt", APIKey: "original-secret", Temperature: &temperatureProfile, TopP: &topPProfile, MaxOutputTokens: 321, ContextWindow: 8192, ReasoningEffort: "high", Revision: 1, CreatedAt: nowProfile, UpdatedAt: nowProfile}, uuid.NewString(), sha256hexPG([]byte("profile-create"))); e != nil {
 		t.Fatal(e)
 	}
 	temperature, topP := 0.25, 0.75
@@ -127,7 +135,7 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if strings.Contains(bound.String(), snapshot.APIKey) || strings.Contains(bound.GoString(), snapshot.APIKey) {
 		t.Fatal("snapshot secret leaked from lease string")
 	}
-	if _, e = pool.Exec(ctx, `UPDATE core_model_profiles SET model_name='mutated-model',api_key='mutated-secret',system_prompt='mutated prompt',temperature=1.5,top_p=0.1 WHERE profile_id=$1`, profileID); e != nil {
+	if _, e = pool.Exec(ctx, `UPDATE core_model_profiles SET model_name='mutated-model',system_prompt='mutated prompt',temperature=1.5,top_p=0.1 WHERE profile_id=$1`, profileID); e != nil {
 		t.Fatal(e)
 	}
 	// Delete through the profile repository so immutable secret-revision
@@ -194,7 +202,7 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	commitReq := uuid.NewString()
 	commitConv := core.Conversation{ID: uuid.NewString(), Revision: 1, CreatedAt: now, UpdatedAt: now}
 	commitProfile := uuid.NewString()
-	if _, e = pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name) VALUES($1,'integration','openai_compatible','https://example.invalid','test-model')`, commitProfile); e != nil {
+	if _, e = s.CreateProfile(ctx, coremodel.Profile{ID: commitProfile, DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test-model", APIKey: "commit-secret", Revision: 1, CreatedAt: nowProfile, UpdatedAt: nowProfile}, uuid.NewString(), sha256hexPG([]byte("commit-profile-create"))); e != nil {
 		t.Fatal(e)
 	}
 	commitLease, e := cs.ClaimChat(ctx, commitReq, commitConv.ID, sha256hexPG([]byte("commit")), commitProfile, nil, now, time.Minute)
@@ -285,7 +293,7 @@ func TestCoreConversationModelStepReplayAfterReclaim(t *testing.T) {
 	if err := ApplyMigrations(ctx, pool, instanceID); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(pool, instanceID)
+	store, err := New(pool, instanceID, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,6 +27,8 @@ message CoreAWSCredential {
   int64 revision = 9;
   google.protobuf.Timestamp created_at = 10;
   google.protobuf.Timestamp updated_at = 11;
+  int64 verified_revision = 12;
+  google.protobuf.Timestamp tested_at = 13;
 }
 
 message CoreCloudControlServiceCreateCredentialRequest {

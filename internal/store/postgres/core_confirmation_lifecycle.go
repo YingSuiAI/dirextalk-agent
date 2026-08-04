@@ -222,7 +222,7 @@ func (s *CoreConfirmationStore) Confirm(ctx context.Context, c coreconfirmation.
 	if ts != "waiting_user" {
 		return cur, coreconfirmation.ErrConflict
 	}
-	matches, bindingErr := confirmationBindingMatchesTx(ctx, tx, cur, c.ResolveBinding, c.At)
+	matches, bindingErr := confirmationBindingMatchesTx(ctx, tx, s.store, cur, c.ResolveBinding, c.At)
 	if bindingErr != nil {
 		return cur, bindingErr
 	}
@@ -412,7 +412,7 @@ func (s *CoreConfirmationStore) Consume(ctx context.Context, c coreconfirmation.
 	if status != "running" || attempt != int(c.Attempt) || epoch != int64(c.LeaseEpoch) || rev != c.ExpectedTaskRevision || leaseExp == nil || !leaseExp.After(c.At.UTC()) {
 		return cur, coreconfirmation.ErrTaskFenceConflict
 	}
-	matches, bindingErr := confirmationBindingMatchesTx(ctx, tx, cur, c.ResolveBinding, c.At)
+	matches, bindingErr := confirmationBindingMatchesTx(ctx, tx, s.store, cur, c.ResolveBinding, c.At)
 	if bindingErr != nil {
 		return cur, bindingErr
 	}

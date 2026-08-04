@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,21 @@ func TestLoadRejectsUnknownYAMLFields(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsExplicitVoiceCallbackRelayTokenField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	contents := "core_voice_callback_relay_token_file: /run/secrets/voice_relay_token\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreVoiceCallbackRelayTokenFile != "/run/secrets/voice_relay_token" {
+		t.Fatalf("voice callback relay token field = %q", cfg.CoreVoiceCallbackRelayTokenFile)
+	}
+}
+
 func TestLoadAWSReadinessUsesExplicitSnakeCaseTargetSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	contents := `core_aws_ssm_readiness:
@@ -70,6 +86,21 @@ func TestLoadAWSReadinessUsesExplicitSnakeCaseTargetSchema(t *testing.T) {
 	}
 }
 
+func TestLoadCloudFormationRoleARNFromExplicitEnvironmentFallback(t *testing.T) {
+	t.Setenv("DIREXTALK_CORE_AWS_CLOUDFORMATION_SERVICE_ROLE_ARN", "arn:aws:iam::123456789012:role/dirextalk-cfn-execution")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("core_execution_v2_enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreAWSCloudFormationServiceRoleARN == "" {
+		t.Fatal("explicit role ARN environment fallback was not loaded")
+	}
+}
+
 func TestValidateCoreRequiresTokenAndBounds(t *testing.T) {
 	cfg := validCoreConfig(t)
 	if err := ValidateCore(&cfg); err != nil {
@@ -86,6 +117,74 @@ func TestValidateCoreRequiresTokenAndBounds(t *testing.T) {
 	cfg.ServiceTokenFile = ""
 	if err := ValidateCore(&cfg); err == nil || !strings.Contains(err.Error(), "service_token_file") {
 		t.Fatalf("missing token error = %v", err)
+	}
+}
+
+func TestValidateCoreAWSRequiresStrictMountedMasterKey(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreAWSEnabled = true
+	keyPath := filepath.Join(filepath.Dir(cfg.DatabaseURLFile), "core-secret-master-key")
+	cfg.CoreSecretMasterKeyFile = keyPath
+	if err := ValidateCore(&cfg); err != nil {
+		t.Fatalf("strict AWS key config rejected: %v", err)
+	}
+	if cfg.CoreSecretMasterKeyVersion != 1 || !filepath.IsAbs(cfg.CoreSecretMasterKeyFile) {
+		t.Fatalf("AWS key config normalization = %#v", cfg)
+	}
+	if err := os.Chmod(keyPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateCoreAWS(&cfg); err == nil || !strings.Contains(err.Error(), "core_secret_master_key_file") {
+		t.Fatalf("insecure AWS key mode accepted: %v", err)
+	}
+}
+
+func TestValidateCoreAWSDisabledDoesNotReadKeyFile(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreSecretMasterKeyFile = filepath.Join(t.TempDir(), "missing")
+	if err := ValidateCoreAWS(&cfg); err != nil {
+		t.Fatalf("disabled AWS unexpectedly required key: %v", err)
+	}
+}
+
+func TestValidateCoreExecutionV2RequiresDedicatedCloudFormationRole(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreExecutionV2Enabled = true
+	cfg.CoreAWSEnabled = true
+	cfg.CoreExecutionV2ProbeTimeout = time.Second
+	cfg.CoreExecutionV2BindingOperations = []string{"target.observe"}
+	cfg.CoreAWSSSMReadiness = &AWSWorkloadReadiness{}
+	if err := ValidateCoreExecutionV2(&cfg); err == nil || !strings.Contains(err.Error(), "cloudformation_service_role_arn") {
+		t.Fatalf("missing service role accepted: %v", err)
+	}
+	cfg.CoreAWSCloudFormationServiceRoleARN = "arn:aws:iam::123456789012:role/dirextalk-cfn-execution"
+	if err := ValidateCoreExecutionV2(&cfg); err != nil {
+		t.Fatalf("valid service role rejected: %v", err)
+	}
+	cfg.CoreAWSCloudFormationServiceRoleARN = "arn:aws:iam::123456789012:role/*"
+	if err := ValidateCoreExecutionV2(&cfg); err == nil {
+		t.Fatal("wildcard service role accepted")
+	}
+}
+
+func TestValidateCoreAWSRejectsSymlinkedMasterKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions differ on Windows")
+	}
+	cfg := validCoreConfig(t)
+	cfg.CoreAWSEnabled = true
+	root := filepath.Dir(cfg.DatabaseURLFile)
+	target := filepath.Join(root, "core-secret-master-key-target")
+	link := filepath.Join(root, "core-secret-master-key-link")
+	if err := os.WriteFile(target, []byte(strings.Repeat("K", 32)), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CoreSecretMasterKeyFile = link
+	if err := ValidateCoreAWS(&cfg); err == nil {
+		t.Fatal("symlinked AWS master key accepted")
 	}
 }
 
@@ -125,6 +224,87 @@ func TestValidateCoreKnowledgeEnabledRequiresProductionComposition(t *testing.T)
 	}
 }
 
+func TestValidateCoreVoiceDisabledDoesNotRequireProviderSecrets(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreVoiceEnabled = false
+	cfg.CoreVoiceAppID = ""
+	if err := ValidateCore(&cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateCoreVoiceRequiresProtectedFreshOnlyBinding(t *testing.T) {
+	cfg := validCoreConfig(t)
+	root := filepath.Dir(cfg.DatabaseURLFile)
+	write := func(name, value string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cfg.CoreVoiceEnabled = true
+	cfg.CapabilityAccountGeneration = 1
+	cfg.CoreVoiceAppID = "123456789012345678901234"
+	cfg.CoreVoiceCallbackEnabled = true
+	cfg.CoreVoiceCallbackListenAddress = ":0"
+	cfg.CoreVoiceWebhookURL = "https://message.example.test/_p2p/agent/voice/webhook"
+	cfg.CoreVoiceCustomLLMURL = "https://message.example.test/_p2p/agent/voice/volc/custom-llm"
+	cfg.CoreVoiceConversationProfileID = "11111111-1111-4111-8111-111111111111"
+	cfg.CoreVoiceSpeechProfileID = "22222222-2222-4222-8222-222222222222"
+	cfg.CoreVoiceAccessKeyIDFile = write("voice-access", "access")
+	cfg.CoreVoiceSecretAccessKeyFile = write("voice-secret", "secret")
+	cfg.CoreVoiceRTCAppKeyFile = write("voice-rtc", "rtc")
+	cfg.CoreVoiceWebhookSecretFile = write("voice-webhook", "callback-secret")
+	cfg.CoreVoiceRelayTokenFile = write("voice-relay", "relay-secret")
+	if err := ValidateCore(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreVoiceProvider != "volc_voice" || cfg.CoreVoiceHost != "https://rtc.volcengineapi.com" {
+		t.Fatalf("voice defaults not applied: %#v", cfg)
+	}
+
+	if err := ValidateCore(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoreVoiceCallbackTLSCertFile != cfg.TLSCertFile || cfg.CoreVoiceCallbackTLSKeyFile != cfg.TLSKeyFile {
+		t.Fatalf("callback TLS fallback not applied: %#v", cfg)
+	}
+}
+
+func TestValidateCoreVoiceRejectsInsecureCallbackURL(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreVoiceEnabled = true
+	cfg.CapabilityAccountGeneration = 1
+	cfg.CoreVoiceAppID = "123456789012345678901234"
+	cfg.CoreVoiceWebhookURL = "http://message.example.test/voice"
+	cfg.CoreVoiceCustomLLMURL = "https://message.example.test/voice"
+	cfg.CoreVoiceConversationProfileID = "11111111-1111-4111-8111-111111111111"
+	cfg.CoreVoiceSpeechProfileID = "22222222-2222-4222-8222-222222222222"
+	root := filepath.Dir(cfg.DatabaseURLFile)
+	for _, name := range []string{"access", "secret", "rtc", "webhook", "relay"} {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		switch name {
+		case "access":
+			cfg.CoreVoiceAccessKeyIDFile = path
+		case "secret":
+			cfg.CoreVoiceSecretAccessKeyFile = path
+		case "rtc":
+			cfg.CoreVoiceRTCAppKeyFile = path
+		case "webhook":
+			cfg.CoreVoiceWebhookSecretFile = path
+		case "relay":
+			cfg.CoreVoiceRelayTokenFile = path
+		}
+	}
+	if err := ValidateCore(&cfg); err == nil || !strings.Contains(err.Error(), "core_voice_webhook_url") {
+		t.Fatalf("insecure callback URL error = %v", err)
+	}
+}
+
 func validCoreConfig(t *testing.T) Config {
 	t.Helper()
 	root := t.TempDir()
@@ -135,5 +315,9 @@ func validCoreConfig(t *testing.T) Config {
 		}
 		return path
 	}
-	return Config{InstanceID: "00000000-0000-4000-8000-000000000000", DatabaseURLFile: write("db", "postgres://core"), TLSCertFile: write("tls.crt", "cert"), TLSKeyFile: write("tls.key", "key"), ServiceTokenFile: write("token", strings.Repeat("A", 43)), CoreTaskMaxConcurrency: 4, CoreTaskLeaseTTL: 30 * time.Second, CoreScheduleSweepInterval: time.Second, CoreShutdownGrace: 30 * time.Second}
+	keyPath := write("core-secret-master-key", strings.Repeat("K", 32))
+	if err := os.Chmod(keyPath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	return Config{InstanceID: "00000000-0000-4000-8000-000000000000", DatabaseURLFile: write("db", "postgres://core"), TLSCertFile: write("tls.crt", "cert"), TLSKeyFile: write("tls.key", "key"), ServiceTokenFile: write("token", strings.Repeat("A", 43)), CoreSecretMasterKeyFile: keyPath, CoreTaskMaxConcurrency: 4, CoreTaskLeaseTTL: 30 * time.Second, CoreScheduleSweepInterval: time.Second, CoreShutdownGrace: 30 * time.Second}
 }

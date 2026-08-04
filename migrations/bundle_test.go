@@ -7,7 +7,7 @@ import (
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 4 || entries[0] != "000001_core_v1_baseline.up.sql" || entries[1] != "000002_model_profile_sync.up.sql" || entries[2] != "000003_core_conversation_turns.up.sql" || entries[3] != "000004_core_workloads.up.sql" {
+	if len(entries) != 1 || entries[0] != "000001_core_v1_fresh.up.sql" {
 		t.Fatalf("entries=%v, want baseline plus model sync and turns migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -26,19 +26,17 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		"CREATE TABLE core_extension_installations",
 		"CREATE TABLE core_aws_credentials",
 		"CREATE TABLE core_task_execution_snapshots",
+		"CREATE TABLE core_conversation_turns",
+		"CREATE TABLE core_workload_plans",
+		"CREATE TABLE agent_capability_operations",
+		"CREATE TABLE core_voice_sessions",
+		"CREATE TABLE core_execution_v2_secrets",
+		"CREATE TABLE agent_account_deprovisions",
+		"CREATE TABLE agent_native_configs",
 	} {
 		if !bytes.Contains(migration.Script, []byte(needle)) {
 			t.Fatalf("baseline missing %q", needle)
 		}
-	}
-	if !bytes.Contains(Ordered()[1].Script, []byte("client_profile_id")) || !bytes.Contains(Ordered()[1].Script, []byte("core_model_profile_defaults")) {
-		t.Fatal("model profile sync migration missing client/default state")
-	}
-	if !bytes.Contains(Ordered()[2].Script, []byte("core_conversation_turns")) || !bytes.Contains(Ordered()[2].Script, []byte("core_conversation_turn_events")) {
-		t.Fatal("conversation turn migration missing durable turn/event state")
-	}
-	if !bytes.Contains(Ordered()[3].Script, []byte("core_workload_plans")) || !bytes.Contains(Ordered()[3].Script, []byte("core_workloads")) || !bytes.Contains(Ordered()[3].Script, []byte("core_workload_operations")) || !bytes.Contains(Ordered()[3].Script, []byte("AWS_EC2_SSM")) {
-		t.Fatal("workload migration missing durable plan/operation state")
 	}
 }
 
@@ -47,7 +45,7 @@ func TestParseBundleRejectsMalformedMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := []byte(beginMarker + "000001_core_v1_baseline.up.sql\n")
+	first := []byte(beginMarker + "000001_core_v1_fresh.up.sql\n")
 	cases := []struct {
 		name   string
 		mutate func([]byte) []byte
@@ -55,7 +53,7 @@ func TestParseBundleRejectsMalformedMarkers(t *testing.T) {
 		{
 			name: "duplicate",
 			mutate: func(input []byte) []byte {
-				end := []byte(endMarker + "000001_core_v1_baseline.up.sql\n")
+				end := []byte(endMarker + "000001_core_v1_fresh.up.sql\n")
 				return bytes.Replace(input, end, append(first, end...), 1)
 			},
 		},
@@ -68,14 +66,14 @@ func TestParseBundleRejectsMalformedMarkers(t *testing.T) {
 		{
 			name: "missing-end",
 			mutate: func(input []byte) []byte {
-				marker := []byte(endMarker + "000001_core_v1_baseline.up.sql\n")
+				marker := []byte(endMarker + "000001_core_v1_fresh.up.sql\n")
 				return bytes.Replace(input, marker, nil, 1)
 			},
 		},
 		{
 			name: "mismatched-end",
 			mutate: func(input []byte) []byte {
-				marker := []byte(endMarker + "000001_core_v1_baseline.up.sql\n")
+				marker := []byte(endMarker + "000001_core_v1_fresh.up.sql\n")
 				return bytes.Replace(input, marker, []byte(endMarker+"000002_future.up.sql\n"), 1)
 			},
 		},

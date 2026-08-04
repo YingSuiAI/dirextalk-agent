@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -154,7 +155,7 @@ func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, fun
 		cancel()
 		t.Fatal(err)
 	}
-	store, err := New(pool, instance)
+	store, err := New(pool, instance, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,6 +291,299 @@ func TestCoreKnowledgePostgresPersistenceAndCursor(t *testing.T) {
 	}
 	if retried, err := fresh.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: uuid.NewString(), SourceID: mem.ID, ExpectedRevision: failed.Revision}); err != nil || retried.Status != coreknowledge.SourceStatusDeleted {
 		t.Fatalf("cleanup retry=%+v err=%v", retried, err)
+	}
+}
+
+func TestCoreKnowledgePostgresMemoryReplacementCleanupRecoversAfterDeleteFailure(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	content := repo.content.(*pgKnowledgeContent)
+	memory, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{
+		IdempotencyKey: uuid.NewString(), Title: "replace me", Content: "old memory", MediaType: "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldRef string
+	if err := repo.store.pool.QueryRow(ctx, `SELECT content_ref FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&oldRef); err != nil {
+		t.Fatal(err)
+	}
+	content.mu.Lock()
+	content.failDelete = true
+	content.mu.Unlock()
+	updated, err := repo.UpdateMemory(ctx, coreknowledge.UpdateMemoryCommand{
+		IdempotencyKey: uuid.NewString(), SourceID: memory.ID, ExpectedRevision: memory.Revision,
+		Title: "replaced", Content: "new memory", MediaType: "text/plain",
+	})
+	if err != nil || updated.Revision != memory.Revision+1 {
+		t.Fatalf("metadata replacement failed after old delete outage: updated=%+v err=%v", updated, err)
+	}
+	var operation, pendingRef string
+	var attempts int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT operation,content_ref,attempts FROM core_knowledge_cleanup WHERE source_id=$1`, memory.ID).Scan(&operation, &pendingRef, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if operation != knowledgeMemoryReplaceCleanup || pendingRef != oldRef || attempts < 1 {
+		t.Fatalf("replacement cleanup intent=%q ref=%q attempts=%d", operation, pendingRef, attempts)
+	}
+	content.mu.Lock()
+	_, oldStillPresent := content.objects[oldRef]
+	content.mu.Unlock()
+	if !oldStillPresent {
+		t.Fatal("injected delete failure unexpectedly removed old content")
+	}
+	if _, err := repo.UpdateMemory(ctx, coreknowledge.UpdateMemoryCommand{
+		IdempotencyKey: uuid.NewString(), SourceID: memory.ID, ExpectedRevision: updated.Revision,
+		Title: "blocked while cleanup pending", Content: "must wait", MediaType: "text/plain",
+	}); err != coreknowledge.ErrCleanupPending {
+		t.Fatalf("replacement update crossed pending cleanup boundary: %v", err)
+	}
+	fresh, err := NewCoreKnowledgeStore(repo.store, CoreKnowledgeStoreConfig{Content: content, ManagedFiles: pgKnowledgeOpener{}, Search: pgKnowledgeSearch{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.RecoverPendingCleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_cleanup WHERE source_id=$1 AND operation=$2`, memory.ID, knowledgeMemoryReplaceCleanup).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("replacement cleanup intent remained after recovery: %d", remaining)
+	}
+	content.mu.Lock()
+	_, oldStillPresent = content.objects[oldRef]
+	content.mu.Unlock()
+	if oldStillPresent {
+		t.Fatal("recovery did not remove old content")
+	}
+	var currentRef string
+	if err := repo.store.pool.QueryRow(ctx, `SELECT content_ref FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&currentRef); err != nil {
+		t.Fatal(err)
+	}
+	if currentRef == oldRef || currentRef == "" {
+		t.Fatalf("current content ref=%q after replacement", currentRef)
+	}
+}
+
+func TestCoreKnowledgePostgresDeleteResolvesPendingMemoryReplacement(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	content := repo.content.(*pgKnowledgeContent)
+	memory, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "before delete", Content: "before delete", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content.mu.Lock()
+	content.failDelete = true
+	content.mu.Unlock()
+	updated, err := repo.UpdateMemory(ctx, coreknowledge.UpdateMemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: memory.ID, ExpectedRevision: memory.Revision, Title: "replacement", Content: "replacement", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := repo.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: uuid.NewString(), SourceID: memory.ID, ExpectedRevision: updated.Revision, Kind: coreknowledge.SourceKindMemory})
+	if err != nil || deleted.Status != coreknowledge.SourceStatusDeleted {
+		t.Fatalf("delete did not resolve replacement cleanup: deleted=%+v err=%v", deleted, err)
+	}
+	var pending int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_cleanup WHERE source_id=$1`, memory.ID).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("cleanup ledger remained after source delete: %d", pending)
+	}
+	content.mu.Lock()
+	remaining := len(content.objects)
+	content.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("content objects remained after replacement/delete convergence: %d", remaining)
+	}
+}
+
+func TestCoreKnowledgePostgresListMemoriesHidesDeletedContent(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	memory, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{
+		IdempotencyKey: uuid.NewString(),
+		Title:          "delete me",
+		Content:        "plaintext must not be reopened after delete",
+		MediaType:      "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.Delete(ctx, coreknowledge.DeleteCommand{
+		IdempotencyKey:   uuid.NewString(),
+		SourceID:         memory.ID,
+		ExpectedRevision: memory.Revision,
+		Kind:             coreknowledge.SourceKindMemory,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := repo.ListMemories(ctx, coreknowledge.ListQuery{PageSize: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range page.Items {
+		if item.ID == memory.ID {
+			t.Fatalf("deleted memory was listed: %#v", item)
+		}
+	}
+	if _, err = repo.GetMemory(ctx, memory.ID); !errors.Is(err, coreknowledge.ErrNotFound) {
+		t.Fatalf("deleted memory get error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCoreKnowledgePostgresAutoIndexCandidateAndPromotionProjection(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	profileID := uuid.NewString()
+	collectionDigest := strings.Repeat("a", 64)
+	createTestProfile(ctx, t, repo.store, profileID, "auto-index-embed", "auto-index-secret")
+	config, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: collectionDigest, Revision: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Title: "auto-index", Content: "restart safe semantic memory", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := repo.ListAutoIndexCandidates(ctx, config.EmbeddingProfileID, config.CollectionConfigDigest, 8)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != source.ID {
+		t.Fatalf("unpromoted candidates = %+v err=%v", candidates, err)
+	}
+	state, err := repo.GetEmbeddingSourceStatus(ctx, source.ID, config)
+	if err != nil || state.Indexed || state.Status != coreknowledge.SourceStatusReady || !state.Stale {
+		t.Fatalf("unpromoted state = %+v err=%v", state, err)
+	}
+	generation := "auto-generation-" + uuid.NewString()
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, generation, profileID, collectionDigest); err != nil {
+		t.Fatal(err)
+	}
+	state, err = repo.GetEmbeddingSourceStatus(ctx, source.ID, config)
+	if err != nil || !state.Indexed || state.Stale || state.PromotedRevision != source.Revision {
+		t.Fatalf("promoted state = %+v err=%v", state, err)
+	}
+	candidates, err = repo.ListAutoIndexCandidates(ctx, config.EmbeddingProfileID, config.CollectionConfigDigest, 8)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("promoted candidates = %+v err=%v", candidates, err)
+	}
+}
+
+func TestCoreKnowledgeIndexerAutoExplicitAndConcurrentReplay(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	profileID := uuid.NewString()
+	createTestProfile(ctx, t, repo.store, profileID, "auto-index-embed", "auto-index-secret")
+	collectionDigest := strings.Repeat("d", 64)
+	config, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: collectionDigest, Revision: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, collectionDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	service, err := coreknowledge.NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "automatic task", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoKey := uuid.NewString()
+	auto, err := indexer.RequestIndex(ctx, coreknowledge.IndexRequest{IdempotencyKey: autoKey, SourceIDs: []string{source.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := service.Index(ctx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{source.ID}})
+	if err != nil || explicit.TaskID != auto.TaskID {
+		t.Fatalf("explicit request did not converge on automatic task: explicit=%+v auto=%+v err=%v", explicit, auto, err)
+	}
+	restarted, err := NewKnowledgeIndexer(repo.store, config.EmbeddingProfileID, config.CollectionConfigDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.SetEmbeddingConfigReader(repo)
+	replayed, err := restarted.RequestIndex(ctx, coreknowledge.IndexRequest{IdempotencyKey: autoKey, SourceIDs: []string{source.ID}})
+	if err != nil || replayed.TaskID != auto.TaskID {
+		t.Fatalf("restart replay changed automatic task: replay=%+v auto=%+v err=%v", replayed, auto, err)
+	}
+	concurrentSource, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "concurrent task", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := []string{uuid.NewString(), uuid.NewString()}
+	refs := make([]coreknowledge.TaskReference, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for n := range keys {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			refs[index], errs[index] = indexer.RequestIndex(ctx, coreknowledge.IndexRequest{IdempotencyKey: keys[index], SourceIDs: []string{concurrentSource.ID}})
+		}(n)
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil || refs[0].TaskID == "" || refs[0].TaskID != refs[1].TaskID {
+		t.Fatalf("concurrent requests diverged: refs=%+v errs=%v", refs, errs)
+	}
+	if _, err := service.Index(ctx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{source.ID, concurrentSource.ID}}); err != coreknowledge.ErrIneligible {
+		t.Fatalf("different source set unexpectedly converged: %v", err)
+	}
+}
+
+func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	oldProfile, newProfile := uuid.NewString(), uuid.NewString()
+	createTestProfile(ctx, t, repo.store, oldProfile, "old-embed", "old-secret")
+	createTestProfile(ctx, t, repo.store, newProfile, "new-embed", "new-secret")
+	digest := strings.Repeat("f", 64)
+	config, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: oldProfile, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "already promoted", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, "generation-old", oldProfile, digest); err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, oldProfile, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	service, err := coreknowledge.NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BindEmbeddingProfile(ctx, newProfile); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := repo.GetEmbeddingConfig(ctx)
+	if err != nil || bound.EmbeddingProfileID != newProfile || bound.Revision != config.Revision+1 {
+		t.Fatalf("bound config=%+v err=%v", bound, err)
+	}
+	state, err := repo.GetEmbeddingSourceStatus(ctx, source.ID, bound)
+	if err != nil || !state.Stale || state.Indexed {
+		t.Fatalf("ready source did not become stale after binding: %+v err=%v", state, err)
+	}
+	if err := service.ReconcileAutoIndex(ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	state, err = repo.GetEmbeddingSourceStatus(ctx, source.ID, bound)
+	if err != nil || state.Status != coreknowledge.SourceStatusIndexing {
+		t.Fatalf("stale source was not requeued: %+v err=%v", state, err)
+	}
+	var jobs int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_index_jobs WHERE source_ids @> jsonb_build_array($1::text) AND profile_id=$2::uuid AND status='queued'`, source.ID, newProfile).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("new binding index job count=%d err=%v", jobs, err)
 	}
 }
 

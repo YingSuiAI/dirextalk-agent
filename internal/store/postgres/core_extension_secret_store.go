@@ -84,12 +84,22 @@ func (s *CoreExtensionSecretStore) resolveExactBound(ctx context.Context, instal
 	if purpose == "" {
 		return "", coreextension.ErrConflict
 	}
-	var value []byte
-	if e := s.store.pool.QueryRow(ctx, `SELECT secret_value FROM core_extension_secret_revisions WHERE installation_id=$1 AND version_id=$2 AND reference_id=$3 AND purpose=$4 AND fingerprint=$5 AND state='promoted'`, installationID, versionID, ref, purpose, bindingDigest).Scan(&value); e != nil {
+	var bindingRevision int64
+	var keyVersion uint32
+	var nonce, ciphertext []byte
+	if e := s.store.pool.QueryRow(ctx, `SELECT binding_revision,secret_key_version,secret_value_nonce,secret_value_ciphertext FROM core_extension_secret_revisions WHERE installation_id=$1 AND version_id=$2 AND reference_id=$3 AND purpose=$4 AND fingerprint=$5 AND state='promoted'`, installationID, versionID, ref, purpose, bindingDigest).Scan(&bindingRevision, &keyVersion, &nonce, &ciphertext); e != nil {
 		if errors.Is(e, pgx.ErrNoRows) {
 			return "", coreextension.ErrConflict
 		}
 		return "", e
 	}
-	return string(append([]byte(nil), value...)), nil
+	plaintext, e := s.store.openDurableSecret("core_extension_secret_revisions", installationID+"/"+versionID+"/"+ref+"/"+purpose, bindingRevision, "secret_value", keyVersion, nonce, ciphertext)
+	if e != nil {
+		return "", coreextension.ErrConflict
+	}
+	value := string(plaintext)
+	for index := range plaintext {
+		plaintext[index] = 0
+	}
+	return value, nil
 }

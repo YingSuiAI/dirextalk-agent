@@ -112,6 +112,21 @@ func TestComposeCoreWorkloadAWSRoutesRequireExplicitReadiness(t *testing.T) {
 	}
 }
 
+func TestComposeCoreWorkloadWithConfiguredTargetDoesNotProbeAWSAtStartup(t *testing.T) {
+	deps, ssmFactory, ecsFactory, probes := composeDeps(t, nil)
+	readiness := &config.AWSWorkloadReadiness{CredentialReference: "11111111-1111-4111-8111-111111111111", Target: coreworkload.TargetSettings{Region: "us-east-1", AccountID: "123456789012", InstanceID: "i-0123456789abcdef0", Identity: coreworkload.TargetIdentity{Kind: coreworkload.TargetAWSEC2SSM, Region: "us-east-1", AccountID: "123456789012", InstanceID: "i-0123456789abcdef0"}, EC2DocumentVersion: "1", EC2SystemdService: "dirextalk-agent.service", RequiredInstanceTags: map[string]string{"dirextalk-managed": "execution-v2"}}}
+	comp, err := composeCoreWorkloadWithDeps(config.Config{CoreAWSEnabled: true, CoreAWSSSMReadiness: readiness, CoreAWSCloudFormationServiceRoleARN: "arn:aws:iam::123456789012:role/dirextalk-cfn-execution"}, nil, []*coreworkload.Service{composeDomain(t)}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comp == nil || !comp.awsSSMReady || comp.executionProbe == nil {
+		t.Fatalf("configured lazy route missing: %#v", comp)
+	}
+	if *probes != 0 || ssmFactory.calls != 0 || ecsFactory.calls != 0 {
+		t.Fatalf("startup contacted AWS/provider factory: runner=%d ssm=%d ecs=%d", *probes, ssmFactory.calls, ecsFactory.calls)
+	}
+}
+
 func TestComposeCoreWorkloadRunnerProbeDoesNotEnableUnconfiguredAWSRoutes(t *testing.T) {
 	deps, _, _, probes := composeDeps(t, errors.New("runner unavailable"))
 	comp, err := composeCoreWorkloadWithDeps(config.Config{CoreWorkloadEnabled: true, CoreAWSEnabled: true, CoreWorkloadRunnerSocket: "/tmp/runner.sock", CoreWorkloadRunnerUID: 65530, InstanceID: "agent-instance"}, nil, []*coreworkload.Service{composeDomain(t)}, deps)

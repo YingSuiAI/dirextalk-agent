@@ -8,12 +8,15 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 )
 
 type CoreServerConfig struct {
@@ -38,6 +41,7 @@ type CoreServerConfig struct {
 	CoreRunnerReady                       bool
 	AWSWorkloadSSMReady                   bool
 	AWSWorkloadECSReady                   bool
+	MutationGuard                         coreruntime.MutationGuard
 }
 
 type CoreServer struct {
@@ -102,6 +106,10 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 		return nil, err
 	}
 	unary, stream := authenticator.Interceptors()
+	if config.MutationGuard != nil {
+		unary = chainMutationUnary(config.MutationGuard, unary)
+		stream = chainMutationStream(config.MutationGuard, stream)
+	}
 	grpcServer := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS13})),
 		grpc.ChainUnaryInterceptor(unary),
@@ -151,6 +159,61 @@ func NewCoreServer(config CoreServerConfig) (*CoreServer, error) {
 		reflection.Register(grpcServer)
 	}
 	return &CoreServer{grpc: grpcServer, health: healthServer}, nil
+}
+
+func chainMutationUnary(guard coreruntime.MutationGuard, auth grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if auth != nil {
+			return auth(ctx, req, info, func(authCtx context.Context, authReq any) (any, error) {
+				return guardedUnary(guard, authCtx, authReq, info, handler)
+			})
+		}
+		return guardedUnary(guard, ctx, req, info, handler)
+	}
+}
+
+func guardedUnary(guard coreruntime.MutationGuard, ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	// Liveness and immutable instance metadata remain available after account
+	// sealing so deployment health checks do not turn a successful purge into a
+	// restart loop. Business RPCs still fail closed through the shared fence.
+	if lifecycleExempt(info.FullMethod) {
+		return handler(ctx, req)
+	}
+	release, err := guard.Enter(ctx)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, "Agent account is deprovisioning")
+	}
+	defer release()
+	return handler(ctx, req)
+}
+
+func chainMutationStream(guard coreruntime.MutationGuard, auth grpc.StreamServerInterceptor) grpc.StreamServerInterceptor {
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		wrapped := func(authSrv any, authStream grpc.ServerStream) error {
+			if lifecycleExempt(info.FullMethod) {
+				return handler(authSrv, authStream)
+			}
+			release, err := guard.Enter(authStream.Context())
+			if err != nil {
+				return status.Error(codes.FailedPrecondition, "Agent account is deprovisioning")
+			}
+			defer release()
+			return handler(authSrv, authStream)
+		}
+		if auth != nil {
+			return auth(srv, stream, info, wrapped)
+		}
+		return wrapped(srv, stream)
+	}
+}
+
+func lifecycleExempt(fullMethod string) bool {
+	switch fullMethod {
+	case "/dirextalk.agent.v1.AgentService/GetInstanceInfo", "/dirextalk.agent.v1.AgentService/GetCapabilities", "/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo":
+		return true
+	default:
+		return false
+	}
 }
 
 func (server *CoreServer) Serve(listener net.Listener) error {

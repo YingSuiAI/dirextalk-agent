@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
@@ -18,9 +20,10 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 		return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
 	}
 	digest := knowledgeDigest(struct {
-		Query     string   `json:"query"`
-		SourceIDs []string `json:"source_ids"`
-	}{strings.ToLower(strings.TrimSpace(q.Query)), q.SourceIDs})
+		Query     string                   `json:"query"`
+		SourceIDs []string                 `json:"source_ids"`
+		Kind      coreknowledge.SourceKind `json:"kind"`
+	}{strings.ToLower(strings.TrimSpace(q.Query)), q.SourceIDs, q.Kind})
 	c, err := decodeKnowledgeCursor(q.PageToken)
 	if err != nil {
 		return coreknowledge.SearchPage{}, err
@@ -48,12 +51,38 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 			if s.Status != coreknowledge.SourceStatusReady {
 				return coreknowledge.SearchPage{}, coreknowledge.ErrIneligible
 			}
+			if q.Kind != "" && s.Kind != q.Kind {
+				return coreknowledge.SearchPage{}, coreknowledge.ErrNotFound
+			}
 		}
-		resolved, err := r.search.Search(ctx, coreknowledge.SearchQuery{Query: q.Query, SourceIDs: q.SourceIDs, Limit: coreknowledge.MaxSearchResults})
+		searchIDs := append([]string(nil), q.SourceIDs...)
+		if q.Kind != "" && len(searchIDs) == 0 {
+			rows, queryErr := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind=$1 AND status='ready' ORDER BY source_id`, q.Kind)
+			if queryErr != nil {
+				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+			}
+			for rows.Next() {
+				var id string
+				if scanErr := rows.Scan(&id); scanErr != nil {
+					rows.Close()
+					return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+				}
+				searchIDs = append(searchIDs, id)
+			}
+			if rowsErr := rows.Err(); rowsErr != nil {
+				rows.Close()
+				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+			}
+			rows.Close()
+			if len(searchIDs) == 0 {
+				return coreknowledge.SearchPage{}, nil
+			}
+		}
+		resolved, err := r.search.Search(ctx, coreknowledge.SearchQuery{Query: q.Query, SourceIDs: searchIDs, Limit: coreknowledge.MaxSearchResults, Kind: q.Kind})
 		if err != nil {
 			return coreknowledge.SearchPage{}, err
 		}
-		matches = append([]coreknowledge.SearchMatch(nil), resolved.Matches...)
+		matches = append(make([]coreknowledge.SearchMatch, 0, len(resolved.Matches)), resolved.Matches...)
 		if len(matches) > coreknowledge.MaxSearchResults {
 			matches = matches[:coreknowledge.MaxSearchResults]
 		}
@@ -114,6 +143,51 @@ func (r *CoreKnowledgeStore) ResolveSources(ctx context.Context, ids []string) e
 		}
 	}
 	return nil
+}
+
+func (r *CoreKnowledgeStore) ListAutoIndexCandidates(ctx context.Context, profileID, collectionDigest string, limit int) ([]coreknowledge.Source, error) {
+	if r == nil || r.store == nil || !validKnowledgeUUID(profileID) || len(collectionDigest) != 64 || limit <= 0 || limit > 256 {
+		return nil, coreknowledge.ErrInvalid
+	}
+	rows, err := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE status='ready' AND (promoted_revision < revision OR promoted_profile_id IS DISTINCT FROM $1::uuid OR promoted_collection_config_digest IS DISTINCT FROM $2) ORDER BY updated_at,source_id LIMIT $3`, profileID, strings.ToLower(collectionDigest), limit)
+	if err != nil {
+		return nil, coreknowledge.ErrConflict
+	}
+	defer rows.Close()
+	result := make([]coreknowledge.Source, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, coreknowledge.ErrConflict
+		}
+		source, err := r.Get(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, coreknowledge.ErrConflict
+	}
+	return result, nil
+}
+
+func (r *CoreKnowledgeStore) GetEmbeddingSourceStatus(ctx context.Context, sourceID string, config coreknowledge.EmbeddingConfig) (coreknowledge.EmbeddingSourceStatus, error) {
+	if r == nil || r.store == nil || !validKnowledgeUUID(sourceID) || !validKnowledgeUUID(config.EmbeddingProfileID) || len(config.CollectionConfigDigest) != 64 {
+		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrInvalid
+	}
+	var status string
+	var revision, promotedRevision int64
+	var promotedProfile, promotedDigest string
+	err := r.store.pool.QueryRow(ctx, `SELECT status,revision,promoted_revision,COALESCE(promoted_profile_id::text,''),COALESCE(promoted_collection_config_digest,'') FROM core_knowledge_sources WHERE source_id=$1`, sourceID).Scan(&status, &revision, &promotedRevision, &promotedProfile, &promotedDigest)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrNotFound
+	}
+	if err != nil {
+		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrConflict
+	}
+	indexed := status == string(coreknowledge.SourceStatusReady) && promotedRevision == revision && promotedProfile == config.EmbeddingProfileID && strings.EqualFold(promotedDigest, config.CollectionConfigDigest)
+	return coreknowledge.EmbeddingSourceStatus{Status: coreknowledge.SourceStatus(status), Indexed: indexed, Stale: !indexed && status != string(coreknowledge.SourceStatusUploading), Revision: revision, PromotedRevision: promotedRevision}, nil
 }
 
 func validKnowledgeUUID(v string) bool { _, e := uuid.Parse(v); return e == nil }

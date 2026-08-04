@@ -173,7 +173,7 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	ngRaw, _ := json.Marshal(i.NetworkGrants)
 	sgRaw, _ := json.Marshal(i.SecretGrants)
 	var inserted bool
-	if tag, ee := tx.Exec(ctx, `INSERT INTO core_extension_installations(installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,active_version_id,proposed_version_id,network_grants_json,secret_grants_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,'')::uuid,NULLIF($12,'')::uuid,$13,$14,$15,$15) ON CONFLICT (installation_id) DO NOTHING`, i.ID, candRaw, string(i.Kind), string(i.Source), i.CandidateID, i.Name, i.Description, string(i.Transport), i.Revision, string(i.State), i.ActiveVersionID, i.ProposedVersionID, ngRaw, sgRaw, i.CreatedAt); ee != nil {
+	if tag, ee := tx.Exec(ctx, `INSERT INTO core_extension_installations(installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,active_version_id,proposed_version_id,network_grants_json,secret_grants_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,'')::uuid,NULLIF($13,'')::uuid,$14,$15,$16,$16) ON CONFLICT (installation_id) DO NOTHING`, i.ID, candRaw, string(i.Kind), string(i.Source), i.CandidateID, i.Name, i.Description, string(i.Transport), i.Revision, string(i.State), i.Enabled, i.ActiveVersionID, i.ProposedVersionID, ngRaw, sgRaw, i.CreatedAt); ee != nil {
 		e = ee
 	} else {
 		inserted = tag.RowsAffected() == 1
@@ -205,7 +205,15 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 		if _, e = tx.Exec(ctx, `INSERT INTO core_extension_secret_receipts(reference_id,purpose,fingerprint) VALUES($1,$2,$3) ON CONFLICT(reference_id,purpose) DO UPDATE SET fingerprint=EXCLUDED.fingerprint,updated_at=clock_timestamp()`, secret.ReferenceID, string(secret.Purpose), secret.Fingerprint()); e != nil {
 			return coreextension.MutationResult{}, fmt.Errorf("stage extension secret receipt: %w", e)
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO core_extension_secret_revisions(revision_id,installation_id,version_id,reference_id,purpose,secret_value,fingerprint,state) VALUES($1,$2,$3,$4,$5,$6,$7,'staged')`, uuid.New(), i.ID, i.ProposedVersionID, secret.ReferenceID, string(secret.Purpose), []byte(secret.Value), secret.Fingerprint()); e != nil {
+		plaintext := []byte(secret.Value)
+		envelope, sealErr := s.store.sealDurableSecret("core_extension_secret_revisions", i.ID+"/"+i.ProposedVersionID+"/"+secret.ReferenceID+"/"+string(secret.Purpose), int64(i.Revision), "secret_value", plaintext)
+		for index := range plaintext {
+			plaintext[index] = 0
+		}
+		if sealErr != nil {
+			return coreextension.MutationResult{}, sealErr
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO core_extension_secret_revisions(revision_id,installation_id,version_id,reference_id,purpose,binding_revision,secret_key_version,secret_value_nonce,secret_value_ciphertext,fingerprint,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staged')`, uuid.New(), i.ID, i.ProposedVersionID, secret.ReferenceID, string(secret.Purpose), i.Revision, envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, secret.Fingerprint()); e != nil {
 			return coreextension.MutationResult{}, fmt.Errorf("stage extension secret: %w", e)
 		}
 	}

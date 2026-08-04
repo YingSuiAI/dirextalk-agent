@@ -187,18 +187,30 @@ func validateRawRequestBudget(p Profile, r CompletionRequest) error {
 }
 
 func NormalizeBaseURL(provider ModelProvider, raw string) (string, error) {
-	provider = ModelProvider(strings.ToLower(strings.TrimSpace(string(provider))))
+	rawProvider := strings.ToLower(strings.TrimSpace(string(provider)))
+	provider = normalizeProviderName(provider)
 	base := strings.TrimSpace(raw)
 	if base == "" {
-		switch provider {
-		case ProviderOpenAICompatible:
+		switch rawProvider {
+		case "openrouter":
+			base = "https://openrouter.ai/api/v1"
+		case "deepseek":
+			base = "https://api.deepseek.com"
+		case "xai":
+			base = "https://api.x.ai/v1"
+		case "openai":
 			base = "https://api.openai.com/v1"
-		case ProviderAnthropic:
-			base = "https://api.anthropic.com"
-		case ProviderGemini:
-			base = "https://generativelanguage.googleapis.com"
 		default:
-			return "", ErrUnsupportedProvider
+			switch provider {
+			case ProviderOpenAICompatible:
+				base = "https://api.openai.com/v1"
+			case ProviderAnthropic:
+				base = "https://api.anthropic.com"
+			case ProviderGemini:
+				base = "https://generativelanguage.googleapis.com"
+			default:
+				return "", ErrUnsupportedProvider
+			}
 		}
 	}
 	u, err := url.Parse(base)
@@ -218,27 +230,59 @@ func ValidateProfile(p Profile) (Profile, error) { return validateProfile(p, tru
 func validateStoredProfile(p Profile) (Profile, error) { return validateProfile(p, false) }
 
 func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
-	p.Provider = ModelProvider(strings.ToLower(strings.TrimSpace(string(p.Provider))))
+	rawProvider := p.Provider
+	p.Provider = normalizeProviderName(p.Provider)
+	p.ModelKind = strings.ToLower(strings.TrimSpace(p.ModelKind))
+	if p.ModelKind == "" {
+		p.ModelKind = ModelKindConversation
+	}
+	if p.Provider == ProviderVolcVoice {
+		p.ModelKind = ModelKindSpeech
+	}
+	switch p.ModelKind {
+	case ModelKindConversation, ModelKindEmbedding, ModelKindSpeech:
+	default:
+		return Profile{}, fmt.Errorf("%w: unsupported model kind", ErrInvalidProfile)
+	}
+	if len(p.InputModalities) > 16 {
+		return Profile{}, fmt.Errorf("%w: too many input modalities", ErrInvalidProfile)
+	}
+	for _, modality := range p.InputModalities {
+		if !validText(strings.TrimSpace(modality), 64, true, false) {
+			return Profile{}, fmt.Errorf("%w: invalid input modality", ErrInvalidProfile)
+		}
+	}
 	p.ID = strings.ToLower(strings.TrimSpace(p.ID))
 	p.DisplayName = strings.TrimSpace(p.DisplayName)
 	p.Model = strings.TrimSpace(p.Model)
 	if !uuidPattern.MatchString(p.ID) || strings.Trim(p.ID, "0-") == "" {
 		return Profile{}, fmt.Errorf("%w: profile id must be canonical UUID", ErrInvalidProfile)
 	}
-	if requireAPIKey && p.APIKey == "" {
+	isSpeech := p.Provider == ProviderVolcVoice || p.ModelKind == ModelKindSpeech
+	if requireAPIKey && p.APIKey == "" && !isSpeech {
 		return Profile{}, ErrAPIKeyUnavailable
 	}
-	if !validText(p.DisplayName, 128, true, false) || !validText(p.Model, 256, true, false) || !validText(p.APIKey, 4096, requireAPIKey, false) || !validText(p.SystemPrompt, 128<<10, false, true) {
+	if isSpeech && p.Provider != ProviderVolcVoice {
+		return Profile{}, fmt.Errorf("%w: speech profiles must use volc_voice", ErrInvalidProfile)
+	}
+	if isSpeech && p.Model == "" {
+		p.Model = "volc_voice"
+	}
+	if !validText(p.DisplayName, 128, true, false) || (!isSpeech && !validText(p.Model, 256, true, false)) || !validText(p.APIKey, 4096, requireAPIKey && !isSpeech, false) || !validText(p.SystemPrompt, 128<<10, false, true) {
 		return Profile{}, fmt.Errorf("%w: invalid text field", ErrInvalidProfile)
 	}
 	if p.Provider == ProviderGemini && !geminiModelPattern.MatchString(p.Model) {
 		return Profile{}, fmt.Errorf("%w: unsafe Gemini model name", ErrInvalidProfile)
 	}
-	base, err := NormalizeBaseURL(p.Provider, p.BaseURL)
-	if err != nil {
-		return Profile{}, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+	if isSpeech {
+		p.BaseURL = ""
+	} else {
+		base, err := NormalizeBaseURL(rawProvider, p.BaseURL)
+		if err != nil {
+			return Profile{}, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+		}
+		p.BaseURL = base
 	}
-	p.BaseURL = base
 	if p.Temperature != nil && (math.IsNaN(*p.Temperature) || math.IsInf(*p.Temperature, 0) || *p.Temperature < 0 || *p.Temperature > 2) {
 		return Profile{}, fmt.Errorf("%w: temperature out of range", ErrInvalidProfile)
 	}
@@ -260,23 +304,41 @@ func validateProfile(p Profile, requireAPIKey bool) (Profile, error) {
 	return p, nil
 }
 
+// normalizeProviderName keeps the persisted provider vocabulary deliberately
+// small while accepting the provider names commonly used by OpenRouter and
+// other OpenAI-compatible gateways at the API boundary.  A caller-supplied
+// BaseURL remains authoritative; only an omitted URL receives the alias's
+// safe default endpoint.
+func normalizeProviderName(provider ModelProvider) ModelProvider {
+	raw := strings.ToLower(strings.TrimSpace(string(provider)))
+	switch raw {
+	case "openrouter", "openai", "deepseek", "xai":
+		return ProviderOpenAICompatible
+	default:
+		return ModelProvider(raw)
+	}
+}
+
 func isUTC(t time.Time) bool { return t.Location() == time.UTC }
 
 func NewProfile(spec ProfileSpec) (Profile, error) {
-	if spec.APIKey == nil || *spec.APIKey == "" {
+	if (spec.APIKey == nil || *spec.APIKey == "") && spec.Provider != ProviderVolcVoice && spec.ModelKind != ModelKindSpeech {
 		return Profile{}, ErrAPIKeyUnavailable
 	}
 	p := Profile{ID: spec.ID, DisplayName: spec.DisplayName, Provider: spec.Provider,
-		BaseURL: spec.BaseURL, Model: spec.Model, APIKey: *spec.APIKey,
+		ModelKind: spec.ModelKind, InputModalities: append([]string(nil), spec.InputModalities...), ProviderConfig: cloneMap(spec.ProviderConfig), ProviderSecrets: cloneStringMap(spec.ProviderSecrets), BaseURL: spec.BaseURL, Model: spec.Model,
 		SystemPrompt: spec.SystemPrompt, Temperature: spec.Temperature, TopP: spec.TopP,
 		MaxOutputTokens: spec.MaxOutputTokens, ContextWindow: spec.ContextWindow,
 		ReasoningEffort: spec.ReasoningEffort}
+	if spec.APIKey != nil {
+		p.APIKey = *spec.APIKey
+	}
 	return ValidateProfile(p)
 }
 
 func UpdateProfile(existing Profile, spec ProfileSpec) (Profile, error) {
 	p := existing
-	patchMode := spec.Patch || spec.DisplayNameSet || spec.ProviderSet || spec.BaseURLSet || spec.ModelSet || spec.SystemPromptSet || spec.MaxOutputTokensSet || spec.ContextWindowSet || spec.ReasoningEffortSet
+	patchMode := spec.Patch || spec.DisplayNameSet || spec.ProviderSet || spec.BaseURLSet || spec.ModelSet || spec.SystemPromptSet || spec.MaxOutputTokensSet || spec.ContextWindowSet || spec.ReasoningEffortSet || spec.ModelKind != "" || spec.InputModalities != nil || spec.ProviderConfig != nil || spec.ProviderSecrets != nil
 	if spec.ID == "" || strings.TrimSpace(spec.ID) != existing.ID {
 		return Profile{}, fmt.Errorf("%w: profile id is immutable", ErrInvalidProfile)
 	}
@@ -289,6 +351,18 @@ func UpdateProfile(existing Profile, spec ProfileSpec) (Profile, error) {
 	}
 	if !patchMode || spec.ProviderSet {
 		p.Provider = spec.Provider
+	}
+	if spec.ModelKind != "" {
+		p.ModelKind = spec.ModelKind
+	}
+	if spec.InputModalities != nil {
+		p.InputModalities = append([]string(nil), spec.InputModalities...)
+	}
+	if spec.ProviderConfig != nil {
+		p.ProviderConfig = cloneMap(spec.ProviderConfig)
+	}
+	if spec.ProviderSecrets != nil {
+		p.ProviderSecrets = cloneStringMap(spec.ProviderSecrets)
 	}
 	// Non-secret fields are replacement values. An empty BaseURL intentionally
 	// selects the provider default; empty prompt and nil sampling values clear.

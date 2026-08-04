@@ -98,10 +98,13 @@ and index bindings before search results are added to the model input.
 ### AWS
 
 Core AWS uses typed SDK clients and PostgreSQL-backed credentials, plans,
-quotes, and change coordination. Operations that can create, update, expose,
-spend, or destroy resources require a durable user confirmation before the
-provider call. Provider errors and uncertain outcomes remain fenced and
-reconcilable.
+quotes, and change coordination. Credential secret fields are AES-256-GCM
+sealed before persistence with a mode-0400, raw 32-byte master key from
+`core_secret_master_key_file`; key version, nonce, ciphertext, and field-bound AAD
+are the only durable secret representation. Operations that can create, update,
+expose, spend, or destroy resources require a durable user confirmation before
+the provider call. Provider errors and uncertain outcomes remain fenced and
+reconcilable. SDK credential material exists only for the request-local call.
 
 ## Explicit non-goals
 

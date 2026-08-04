@@ -40,6 +40,7 @@ func (s *CoreConversationStore) CreateConversationMutation(ctx context.Context, 
 		}
 		var r core.ConversationMutationResponse
 		e = json.Unmarshal(raw, &r)
+		r.Replayed = e == nil
 		if e == nil {
 			e = tx.Commit(ctx)
 		}
@@ -82,6 +83,7 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 		}
 		var r core.ConversationMutationResponse
 		e = json.Unmarshal(raw, &r)
+		r.Replayed = e == nil
 		if e == nil {
 			e = tx.Commit(ctx)
 		}
@@ -118,6 +120,70 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 		return core.ConversationMutationResponse{}, e
 	}
 	return r, nil
+}
+
+func (s *CoreConversationStore) RenameConversationMutation(ctx context.Context, id, title string, expected uint64, requestID string) (core.ConversationMutationResponse, error) {
+	_, parseErr := uuid.Parse(id)
+	_, requestErr := uuid.Parse(requestID)
+	if parseErr != nil || requestErr != nil || expected == 0 || len(title) > 512 {
+		return core.ConversationMutationResponse{}, core.ErrInvalid
+	}
+	digest := digestRenamePG(id, title, expected)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.ConversationMutationResponse{}, err
+	}
+	defer tx.Rollback(ctx)
+	var stored string
+	var replay []byte
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='conversation.rename' AND idempotency_key=$1`, requestID).Scan(&stored, &replay)
+	if err == nil {
+		if stored != digest {
+			return core.ConversationMutationResponse{}, core.ErrConflict
+		}
+		var out core.ConversationMutationResponse
+		if json.Unmarshal(replay, &out) != nil {
+			return core.ConversationMutationResponse{}, core.ErrConflict
+		}
+		out.Replayed = true
+		if err = tx.Commit(ctx); err != nil {
+			return core.ConversationMutationResponse{}, err
+		}
+		return out, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return core.ConversationMutationResponse{}, err
+	}
+	var conversation core.Conversation
+	var deleted *time.Time
+	if err = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1 FOR UPDATE`, id).Scan(&conversation.ID, &conversation.Title, &conversation.Revision, &conversation.CreatedAt, &conversation.UpdatedAt, &deleted); err != nil {
+		return core.ConversationMutationResponse{}, core.ErrConflict
+	}
+	conversation.DeletedAt = deleted
+	if deleted != nil || conversation.Revision != expected {
+		return core.ConversationMutationResponse{}, core.ErrConflict
+	}
+	now := time.Now().UTC()
+	if tag, updateErr := tx.Exec(ctx, `UPDATE core_conversations SET title=$2,revision=revision+1,updated_at=$3 WHERE conversation_id=$1 AND revision=$4 AND deleted_at IS NULL`, id, title, now, expected); updateErr != nil || tag.RowsAffected() != 1 {
+		if updateErr != nil {
+			return core.ConversationMutationResponse{}, updateErr
+		}
+		return core.ConversationMutationResponse{}, core.ErrConflict
+	}
+	conversation.Title, conversation.Revision, conversation.UpdatedAt = title, expected+1, now
+	out := core.ConversationMutationResponse{Conversation: conversation, RequestID: requestID}
+	replay, _ = json.Marshal(out)
+	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES('conversation.rename',$1,$2,$3)`, requestID, digest, replay); err != nil {
+		return core.ConversationMutationResponse{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.ConversationMutationResponse{}, err
+	}
+	return out, nil
+}
+
+func digestRenamePG(id, title string, revision uint64) string {
+	return sha256hexPG([]byte(fmt.Sprintf("%s:%d:%s", id, revision, title)))
 }
 
 func (s *CoreConversationStore) CreateConversation(ctx context.Context, c core.Conversation, key string) error {
@@ -167,10 +233,16 @@ func stringArrayJSONPG(values []string) ([]byte, error) {
 func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string) (core.Conversation, error) {
 	var c core.Conversation
 	var del *time.Time
-	if e := s.pool.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del); e != nil {
+	var summary string
+	var offset int64
+	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset); e != nil {
 		return c, core.ErrConflict
 	}
 	c.DeletedAt = del
+	if offset < 0 {
+		return c, core.ErrConflict
+	}
+	c.Summary, c.ContextMessageOffset = summary, uint64(offset)
 	rows, e := s.pool.Query(ctx, `SELECT message_id,role,content,model_profile_id,created_at,payload_json,related_task_ids,tool_summaries FROM core_messages WHERE conversation_id=$1 ORDER BY sequence`, id)
 	if e != nil {
 		return c, e
@@ -243,7 +315,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 	var rows pgx.Rows
 	var e error
 	if strings.TrimSpace(token) == "" {
-		rows, e = s.pool.Query(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE deleted_at IS NULL ORDER BY updated_at DESC,conversation_id LIMIT $1`, limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
 	} else {
 		parts := strings.SplitN(token, "|", 2)
 		if len(parts) != 2 {
@@ -253,7 +325,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		if pe != nil || !coreUUID(parts[1]) {
 			return nil, "", core.ErrInvalid
 		}
-		rows, e = s.pool.Query(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE deleted_at IS NULL AND (updated_at < $1 OR (updated_at = $1 AND conversation_id > $2)) ORDER BY updated_at DESC,conversation_id ASC LIMIT $3`, ct, parts[1], limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
 	}
 	if e != nil {
 		return nil, "", e
@@ -263,9 +335,15 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 	for rows.Next() {
 		var c core.Conversation
 		var d *time.Time
-		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d); e != nil {
+		var summary string
+		var offset int64
+		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d, &summary, &offset); e != nil {
 			return nil, "", e
 		}
+		if offset < 0 {
+			return nil, "", core.ErrConflict
+		}
+		c.Summary, c.ContextMessageOffset = summary, uint64(offset)
 		out = append(out, c)
 	}
 	next := ""

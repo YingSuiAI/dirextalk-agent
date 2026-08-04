@@ -325,7 +325,7 @@ func (r *MemoryRepository) DeleteCredential(_ context.Context, id string, expect
 	return nil
 }
 
-func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string, expected int64, identity Identity) (Credentials, error) {
+func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string, expected int64, identity Identity, testedAt time.Time) (Credentials, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c, ok := r.credentials[id]
@@ -335,7 +335,10 @@ func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string
 	if c.Revision != expected {
 		return Credentials{}, ErrRevisionConflict
 	}
-	c.AccountID, c.UserARN, c.VerifiedRevision, c.UpdatedAt = identity.AccountID, identity.UserARN, c.Revision, time.Now().UTC()
+	if testedAt.IsZero() {
+		return Credentials{}, ErrInvalid
+	}
+	c.AccountID, c.UserARN, c.VerifiedRevision, c.TestedAt, c.UpdatedAt = identity.AccountID, identity.UserARN, c.Revision, testedAt.UTC(), testedAt.UTC()
 	r.credentials[id] = cloneCredential(c)
 	return cloneCredential(c), nil
 }

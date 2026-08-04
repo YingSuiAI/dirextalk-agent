@@ -224,7 +224,11 @@ func (s *CoreCloudControlService) GetChangeStatus(ctx context.Context, r *agentv
 }
 
 func credentialProto(v coreaws.CredentialView) *agentv1.CoreAWSCredential {
-	return &agentv1.CoreAWSCredential{CredentialId: v.ID, Name: v.Name, Region: v.Region, AccountId: v.AccountID, UserArn: v.UserARN, AccessKeyConfigured: v.HasAccessKey, SecretAccessKeyConfigured: v.HasSecretKey, SessionTokenConfigured: v.HasSessionToken, Revision: v.Revision, CreatedAt: timestamppb.New(v.CreatedAt.UTC()), UpdatedAt: timestamppb.New(v.UpdatedAt.UTC())}
+	var testedAt *timestamppb.Timestamp
+	if !v.TestedAt.IsZero() {
+		testedAt = timestamppb.New(v.TestedAt.UTC())
+	}
+	return &agentv1.CoreAWSCredential{CredentialId: v.ID, Name: v.Name, Region: v.Region, AccountId: v.AccountID, UserArn: v.UserARN, AccessKeyConfigured: v.HasAccessKey, SecretAccessKeyConfigured: v.HasSecretKey, SessionTokenConfigured: v.HasSessionToken, Revision: v.Revision, CreatedAt: timestamppb.New(v.CreatedAt.UTC()), UpdatedAt: timestamppb.New(v.UpdatedAt.UTC()), VerifiedRevision: v.VerifiedRevision, TestedAt: testedAt}
 }
 func operationFromProto(v agentv1.CoreAWSOperation) (coreaws.Operation, bool) {
 	switch v {

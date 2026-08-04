@@ -58,6 +58,9 @@ func NewClient(profile Profile, options ...ClientOption) (Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.Provider == ProviderVolcVoice {
+		return nil, ErrInvalidProfile
+	}
 	opts := httpOptions{timeout: 90 * time.Second}
 	for _, o := range options {
 		if o != nil {

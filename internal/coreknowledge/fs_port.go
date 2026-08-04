@@ -37,6 +37,17 @@ func (o *RootManagedFileOpener) Close() error {
 	return err
 }
 
+// Purge removes every entry below the already-opened trusted mount root
+// without following a pathname replacement or symlink. It is reserved for
+// explicit account deprovisioning; ordinary mount deletion uses source-level
+// cleanup instead.
+func (o *RootManagedFileOpener) Purge(ctx context.Context) error {
+	if o == nil || o.root == nil || ctx == nil || ctx.Err() != nil {
+		return ErrInvalid
+	}
+	return purgeTrustedRoot(ctx, o.root)
+}
+
 func (o *RootManagedFileOpener) OpenManaged(ctx context.Context, relative string) (io.ReadCloser, error) {
 	if o == nil || o.root == nil || ctx == nil || ctx.Err() != nil || validateRelativePath(relative) != nil {
 		return nil, ErrPathTraversal
@@ -166,6 +177,59 @@ func (p *RootContentPort) Close() error {
 	err := p.root.Close()
 	p.root = nil
 	return err
+}
+
+// Purge removes all finalized/staging content below the trusted content root
+// and resets quota accounting. The root descriptor remains open so a caller
+// may finish a deprovision response before shutting the Agent down.
+func (p *RootContentPort) Purge(ctx context.Context) error {
+	if p == nil || p.root == nil || ctx == nil || ctx.Err() != nil {
+		return ErrInvalid
+	}
+	if err := purgeTrustedRoot(ctx, p.root); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.used, p.reserved = 0, 0
+	p.mu.Unlock()
+	return nil
+}
+
+func purgeTrustedRoot(ctx context.Context, root *os.File) error {
+	if root == nil {
+		return ErrFilesystemUnavailable
+	}
+	dup, err := unix.Dup(int(root.Fd()))
+	if err != nil {
+		return ErrFilesystemUnavailable
+	}
+	dir := os.NewFile(uintptr(dup), root.Name())
+	if dir == nil {
+		_ = unix.Close(dup)
+		return ErrFilesystemUnavailable
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
+		return ErrFilesystemUnavailable
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		name := entry.Name()
+		if validateRelativePath(name) != nil {
+			return ErrPathTraversal
+		}
+		flags := 0
+		if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+			flags = unix.AT_REMOVEDIR
+		}
+		if err := unix.Unlinkat(int(root.Fd()), name, flags); err != nil && !errors.Is(err, unix.ENOENT) {
+			return ErrCleanupPending
+		}
+	}
+	return nil
 }
 
 func (p *RootContentPort) Begin(ctx context.Context, m UploadMetadata) (ContentSink, error) {

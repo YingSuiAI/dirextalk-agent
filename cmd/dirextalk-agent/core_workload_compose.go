@@ -8,6 +8,7 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2/production"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws/ecs"
@@ -24,6 +25,19 @@ type coreWorkloadComposition struct {
 	coreRunnerReady bool
 	awsSSMReady     bool
 	awsECSReady     bool
+
+	// These typed seams are consumed only by the opt-in execution.v2
+	// composition.  Keeping them on the already-probed workload graph avoids
+	// a second credential or provider construction path in core_serve.
+	executionCredentialResolver  workaws.CredentialResolver
+	executionCredentialRevision  production.CredentialRevision
+	executionInspector           production.Inspector
+	executionReservations        production.ReservationCatalog
+	executionWorkload            coreworkload.Provider
+	executionProvisioner         production.ComputeProvisioner
+	executionImportTarget        coreworkload.TargetSettings
+	executionCredentialReference string
+	executionProbe               func(context.Context) error
 }
 
 type coreWorkloadComposeDeps struct {
@@ -53,8 +67,8 @@ func applyCoreWorkloadReadiness(server *app.CoreServerConfig, composition *coreW
 
 // composeCoreWorkload keeps planning available independently of execution
 // routes. Local runner readiness is proven synchronously. AWS routes are
-// advertised only after an explicit configured target passes typed identity
-// and prerequisite readbacks.
+// configured only from one explicit target; their typed identity/readiness
+// probe is deferred to the first explicit provider action.
 func composeCoreWorkload(cfg config.Config, store *postgres.Store, domains ...*coreworkload.Service) (*coreWorkloadComposition, error) {
 	deps := coreWorkloadComposeDeps{
 		runnerTransport: func(c config.Config) (runner.Transport, error) {
@@ -119,30 +133,37 @@ func composeCoreWorkloadWithDeps(cfg config.Config, store *postgres.Store, domai
 			return nil, err
 		}
 		if readinessAWSConfigured(cfg.CoreAWSSSMReadiness, coreworkload.TargetAWSEC2SSM) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if h, resolveErr := deps.credentialResolver.ResolveCredential(ctx, cfg.CoreAWSSSMReadiness.CredentialReference); resolveErr == nil && h.ReferenceID == cfg.CoreAWSSSMReadiness.CredentialReference {
-				probeErr := ssmProvider.Probe(ctx, cfg.CoreAWSSSMReadiness.Target, h)
-				if probeErr == nil {
-					routes[coreworkload.TargetAWSEC2SSM] = ssmProvider
-					comp.awsSSMReady = true
-				}
+			routes[coreworkload.TargetAWSEC2SSM] = ssmProvider
+			comp.awsSSMReady = true
+			comp.executionCredentialResolver = deps.credentialResolver
+			if revisionResolver, ok := deps.credentialResolver.(workaws.CredentialRevisionResolver); ok {
+				comp.executionCredentialRevision = revisionResolver.CredentialRevision
 			}
-			cancel()
+			comp.executionInspector = production.InspectorFunc(func(inspectCtx context.Context, target coreworkload.TargetSettings, credential workaws.CredentialHandle) (production.Inspection, error) {
+				inspection, inspectErr := ssmProvider.Inspect(inspectCtx, target, credential)
+				return production.Inspection{State: inspection.State, AccountID: inspection.AccountID, Region: inspection.Region, InstanceID: inspection.InstanceID, Facts: inspection.Facts}, inspectErr
+			})
+			comp.executionReservations = production.NewAWSReservationCatalog(production.SDKReservationFactory{}, time.Now)
+			comp.executionWorkload = ssmProvider
+			comp.executionProvisioner = production.NewAWSCloudFormationProvisioner(production.SDKCloudFormationFactory{}, time.Now, cfg.CoreAWSCloudFormationServiceRoleARN)
+			readiness := *cfg.CoreAWSSSMReadiness
+			comp.executionImportTarget = readiness.Target
+			comp.executionCredentialReference = readiness.CredentialReference
+			comp.executionProbe = func(probeCtx context.Context) error {
+				probeCredential, resolveErr := deps.credentialResolver.ResolveCredential(probeCtx, readiness.CredentialReference)
+				if resolveErr != nil || probeCredential.ReferenceID != readiness.CredentialReference {
+					return workaws.ErrPrecondition
+				}
+				return ssmProvider.Probe(probeCtx, readiness.Target, probeCredential)
+			}
 		}
 		if deps.ecsFactory != nil && readinessAWSConfigured(cfg.CoreAWSECSReadiness, coreworkload.TargetAWSECS) {
 			ecsProvider, ecsErr := ecs.NewProvider(deps.ecsFactory, deps.credentialResolver, deps.secretResolver, ecs.WithAgentInstanceID(cfg.InstanceID))
 			if ecsErr != nil {
 				return nil, ecsErr
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if h, resolveErr := deps.credentialResolver.ResolveCredential(ctx, cfg.CoreAWSECSReadiness.CredentialReference); resolveErr == nil && h.ReferenceID == cfg.CoreAWSECSReadiness.CredentialReference {
-				probeErr := ecsProvider.Probe(ctx, cfg.CoreAWSECSReadiness.Target, h)
-				if probeErr == nil {
-					routes[coreworkload.TargetAWSECS] = ecsProvider
-					comp.awsECSReady = true
-				}
-			}
-			cancel()
+			routes[coreworkload.TargetAWSECS] = ecsProvider
+			comp.awsECSReady = true
 		}
 	}
 	if len(routes) == 0 {

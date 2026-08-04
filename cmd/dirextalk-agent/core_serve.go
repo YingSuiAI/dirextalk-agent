@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime"
 	"net"
+	"net/http"
 	"os/signal"
 	"strings"
 	"sync"
@@ -18,19 +19,30 @@ import (
 	"unicode/utf8"
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
 	"github.com/YingSuiAI/dirextalk-agent/internal/app"
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	capabilityserver "github.com/YingSuiAI/dirextalk-agent/internal/capability/server"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
 func serveCore(cfg config.Config) error {
@@ -43,6 +55,16 @@ func serveCore(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	var secretMasterKey *secretbox.Keyring
+	secretMasterKey, err = secretbox.LoadMountedFile(cfg.CoreSecretMasterKeyFile, cfg.CoreSecretMasterKeyVersion)
+	if err != nil {
+		return fmt.Errorf("load Core secret master key: %w", err)
+	}
+	externalPurge, err := composeCoreExternalPurge(cfg)
+	if err != nil {
+		return err
+	}
+	defer externalPurge.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	pool, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -60,9 +82,26 @@ func serveCore(cfg config.Config) error {
 		return err
 	}
 	cancel()
-	store, err := postgres.New(pool, cfg.InstanceID)
+	store, err := postgres.New(pool, cfg.InstanceID, secretMasterKey)
 	if err != nil {
 		return fmt.Errorf("initialize postgres store: %w", err)
+	}
+	// Restore the durable account lifecycle fence before composing any service
+	// that may recover rows, create roots, or ensure an external collection.
+	// A restart after deprovision must remain sealed and must not recreate the
+	// purged Knowledge collection.
+	lifecycleFence := coredeprovision.NewLifecycleFence()
+	deprovisionService, err := coredeprovision.NewService(postgres.NewCoreDeprovisionStore(store.Pool()), lifecycleFence)
+	if err != nil {
+		return fmt.Errorf("initialize account deprovision service: %w", err)
+	}
+	if err := deprovisionService.RestoreFence(processCtx); err != nil {
+		return fmt.Errorf("restore account deprovision fence: %w", err)
+	}
+	configStore := postgres.NewCoreAgentConfigStore(store)
+	executionStore, err := coreexecutionv2.NewPostgresStore(store.Pool(), secretMasterKey)
+	if err != nil {
+		return fmt.Errorf("initialize execution v2 store: %w", err)
 	}
 	profiles, err := coremodel.NewService(store, coremodel.NewConnectionTester())
 	if err != nil {
@@ -91,8 +130,33 @@ func serveCore(cfg config.Config) error {
 	// Reclaim accepted/running durable turns after the process has rebuilt its
 	// service graph. Recovery is best-effort only for an empty legacy schema;
 	// a configured Core schema must surface storage errors during startup.
-	if err := conversation.RecoverTurns(processCtx); err != nil && !errors.Is(err, coreconversation.ErrInvalid) {
-		return fmt.Errorf("recover conversation turns: %w", err)
+	if !lifecycleFence.IsSealed() {
+		if err := conversation.RecoverTurns(processCtx); err != nil && !errors.Is(err, coreconversation.ErrInvalid) {
+			return fmt.Errorf("recover conversation turns: %w", err)
+		}
+	}
+	var voiceService *corevoice.Service
+	var voiceRelayToken string
+	if cfg.CoreVoiceEnabled {
+		voiceRelayToken, err = config.ReadMountedSecretText(cfg.CoreVoiceCallbackRelayTokenFile)
+		if err != nil {
+			return fmt.Errorf("read Core Voice relay token: %w", err)
+		}
+		voiceStore := postgres.NewCoreVoiceStore(store)
+		voiceResolver := coreVoiceProfileResolver{profiles: profiles, config: cfg}
+		voiceProvider := corevoice.NewVolcProvider()
+		voiceProvider.Host, voiceProvider.Region = cfg.CoreVoiceHost, cfg.CoreVoiceRegion
+		voiceService, err = corevoice.NewService(voiceStore, voiceResolver, voiceProvider, coreConversationVoiceRunner{conversation: conversation})
+		if err != nil {
+			return fmt.Errorf("initialize Core Voice service: %w", err)
+		}
+		if !lifecycleFence.IsSealed() {
+			if err := voiceService.Recover(processCtx); err != nil {
+				_ = voiceService.Close()
+				return fmt.Errorf("recover Core Voice sessions: %w", err)
+			}
+		}
+		slog.Info("dirextalk-agent Core Voice service ready", "provider", cfg.CoreVoiceProvider, "callback_relay", !cfg.CoreVoiceCallbackEnabled)
 	}
 	taskStore := postgres.NewCoreTaskStore(store)
 	taskService := rpcapi.NewCoreTaskService(taskStore)
@@ -117,7 +181,10 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize task executor: %w", err)
 	}
 	taskExecutor.SetAgentLedger(taskStore)
-	knowledgeComposition, err := composeCoreKnowledge(cfg, store, profiles)
+	var knowledgeComposition *coreKnowledgeComposition
+	if !lifecycleFence.IsSealed() {
+		knowledgeComposition, err = composeCoreKnowledge(cfg, store, profiles, lifecycleFence)
+	}
 	if err != nil {
 		return fmt.Errorf("initialize Knowledge composition: %w", err)
 	}
@@ -155,6 +222,25 @@ func serveCore(cfg config.Config) error {
 	if workloadComposition != nil {
 		workloadService = workloadComposition.service
 		taskExecutor.SetWorkloadHandler(workloadComposition.taskHandler)
+	}
+	executionComposition, err := composeCoreExecutionV2(cfg, executionStore, func() coreExecutionV2ComposeDeps {
+		if workloadComposition == nil {
+			return coreExecutionV2ComposeDeps{}
+		}
+		return coreExecutionV2ComposeDeps{
+			credentialResolver:  workloadComposition.executionCredentialResolver,
+			credentialRevision:  workloadComposition.executionCredentialRevision,
+			inspector:           workloadComposition.executionInspector,
+			reservations:        workloadComposition.executionReservations,
+			workload:            workloadComposition.executionWorkload,
+			provisioner:         workloadComposition.executionProvisioner,
+			importTarget:        workloadComposition.executionImportTarget,
+			credentialReference: workloadComposition.executionCredentialReference,
+			probe:               workloadComposition.executionProbe,
+		}
+	}())
+	if err != nil {
+		return fmt.Errorf("initialize execution v2 composition: %w", err)
 	}
 	if knowledgeComposition != nil {
 		taskExecutor.SetPinnedContextResolvers(knowledgeComposition.pinned, knowledgeComposition.attachments)
@@ -205,6 +291,7 @@ func serveCore(cfg config.Config) error {
 		}
 		return fmt.Errorf("initialize task worker pool: %w", err)
 	}
+	workerPool.SetMutationGuard(deprovisionService)
 	scheduleLoop, err := coreruntime.NewScheduleLoop(scheduleStore, coreruntime.NewCronCalculator(), cfg.CoreScheduleSweepInterval)
 	if err != nil {
 		if knowledgeComposition != nil {
@@ -212,10 +299,16 @@ func serveCore(cfg config.Config) error {
 		}
 		return fmt.Errorf("initialize schedule loop: %w", err)
 	}
+	scheduleLoop.SetMutationGuard(deprovisionService)
+	confirmationExpiry.SetMutationGuard(deprovisionService)
+	if extensionComposition != nil && extensionComposition.artifactCleaner != nil {
+		extensionComposition.artifactCleaner.SetMutationGuard(deprovisionService)
+	}
 	serverConfig := app.CoreServerConfig{
 		InstanceID: cfg.InstanceID, ServiceToken: token, TLSCertFile: cfg.TLSCertFile,
 		TLSKeyFile: cfg.TLSKeyFile, EnableHealth: cfg.EnableHealthService,
 		EnableReflection: cfg.EnableReflection, ModelProfileService: modelService,
+		MutationGuard:       deprovisionService,
 		ConversationService: conversationService, ConversationExtensionsReady: extensionComposition != nil, TaskService: taskService, ScheduleService: scheduleService, ConfirmationService: confirmationService, ExtensionExecutionReconciliationReady: extensionComposition != nil,
 		KnowledgeService: func() agentv1.CoreKnowledgeServiceServer {
 			if knowledgeComposition == nil {
@@ -251,10 +344,176 @@ func serveCore(cfg config.Config) error {
 		}
 		return fmt.Errorf("initialize Core TLS gRPC server: %w", err)
 	}
+	// Product callbacks and the inbound Agent capability boundary share one
+	// process-local fence.  This rejects same-chain synchronous re-entry while
+	// preserving independent chains and does not replace signed call-context
+	// verification at either gRPC boundary.
+	chainFence := capabilityclient.NewChainFence()
+	var capabilityServer *capabilityserver.Server
+	var productCapabilityClient *capabilityclient.Client
+	var voiceCallbackServer *http.Server
+	if cfg.CoreVoiceEnabled && cfg.CoreVoiceCallbackEnabled {
+		callbackHandler, callbackErr := corevoice.NewCallbackHandler(corevoice.CallbackHandlerConfig{
+			Service: voiceService, AccountGeneration: cfg.CapabilityAccountGeneration, ReadTimeout: cfg.CoreVoiceCallbackReadTimeout,
+			WriteTimeout: cfg.CoreVoiceCallbackWriteTimeout, RelayToken: voiceRelayToken,
+		})
+		if callbackErr != nil {
+			return fmt.Errorf("initialize Core Voice callback handler: %w", callbackErr)
+		}
+		callbackListener, listenErr := net.Listen("tcp", cfg.CoreVoiceCallbackListenAddress)
+		if listenErr != nil {
+			return fmt.Errorf("listen for Core Voice callback: %w", listenErr)
+		}
+		voiceCallbackServer = &http.Server{Handler: callbackHandler, ReadHeaderTimeout: cfg.CoreVoiceCallbackReadTimeout, WriteTimeout: cfg.CoreVoiceCallbackWriteTimeout, MaxHeaderBytes: 16 << 10}
+		go func() {
+			if serveErr := voiceCallbackServer.ServeTLS(callbackListener, cfg.CoreVoiceCallbackTLSCertFile, cfg.CoreVoiceCallbackTLSKeyFile); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				slog.Error("Core Voice callback server stopped", "error", serveErr)
+			}
+		}()
+		slog.Info("dirextalk-agent Core Voice callback server ready", "listen", cfg.CoreVoiceCallbackListenAddress)
+	}
+	defer func() {
+		if voiceCallbackServer != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+			_ = voiceCallbackServer.Shutdown(closeCtx)
+			closeCancel()
+		}
+	}()
+	if cfg.ProductCapabilityEnabled {
+		productCapabilityClient, err = capabilityclient.New(&capabilityclient.Config{
+			ServerAddr: cfg.ProductCapabilityAddress, CACertFile: cfg.ProductCapabilityCACertFile,
+			ClientCertFile: cfg.ProductCapabilityTLSCertFile, ClientKeyFile: cfg.ProductCapabilityTLSKeyFile,
+			TokenFile: cfg.ProductCapabilityTokenFile, InstanceID: cfg.ProductCapabilityInstanceID,
+			ServerName: cfg.ProductCapabilityServerName, AccountGeneration: cfg.ProductCapabilityAccountGeneration,
+			ChainFence: chainFence,
+		})
+		if err != nil {
+			if knowledgeComposition != nil {
+				knowledgeComposition.Close()
+			}
+			return fmt.Errorf("initialize Product Capability client: %w", err)
+		}
+		slog.Info("dirextalk-agent Product Capability client ready", "server", cfg.ProductCapabilityAddress)
+		// The callback client is also the source for model-facing Product tools.
+		// Install this resolver only after the client has passed TLS/credential
+		// validation so ordinary Core callers remain extension-free.
+		var baseResolver coreconversation.ExtensionResolver
+		if extensionComposition != nil {
+			baseResolver = extensionComposition.conversationResolver
+		}
+		conversation.SetExtensionResolver(&productConversationResolver{base: baseResolver, product: productCapabilityClient})
+	}
+	if cfg.CapabilityEnabled {
+		capabilityOpManager := operation.NewManager(store.Pool())
+		// Purge closes ordinary capability watchers as soon as the account is
+		// sealed. The deprovision watcher is tagged and retained so its handler
+		// can publish the terminal result after external cleanup completes.
+		lifecycleFence.OnSealed(capabilityOpManager.CloseOrdinaryWatchers)
+		capabilityOpManager.SetAdmissionGuard(func(ctx context.Context, op *operation.Operation) error {
+			if op != nil && op.CapabilityID == "agent.account.v1" && op.OperationName == "deprovision_account" {
+				return nil
+			}
+			if op == nil {
+				return coredeprovision.ErrInvalid
+			}
+			return deprovisionService.CheckAdmission(ctx, op.OwnerID, op.AccountGeneration)
+		})
+		capabilityOpManager.SetExecutionGuard(func(ctx context.Context, op *operation.Operation) (func(), error) {
+			if op != nil && op.CapabilityID == "agent.account.v1" && op.OperationName == "deprovision_account" {
+				return func() {}, nil
+			}
+			if op == nil {
+				return nil, coredeprovision.ErrInvalid
+			}
+			return deprovisionService.EnterMutation(ctx)
+		})
+		recoverCtx, recoverCancel := context.WithTimeout(processCtx, 10*time.Second)
+		recoverErr := capabilityOpManager.Recover(recoverCtx)
+		recoverCancel()
+		if recoverErr != nil {
+			if knowledgeComposition != nil {
+				knowledgeComposition.Close()
+			}
+			return fmt.Errorf("recover capability operations before publication: %w", recoverErr)
+		}
+		registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{
+			Conversation:  conversation,
+			Confirmations: confirmationDomain,
+			Models:        profiles,
+			Tasks:         taskStore,
+			Schedules:     scheduleStore,
+			Knowledge: func() *coreknowledge.Service {
+				if knowledgeComposition == nil {
+					return nil
+				}
+				return knowledgeComposition.domain
+			}(),
+			Extensions: func() coreextension.Service {
+				if extensionComposition == nil {
+					return nil
+				}
+				return extensionComposition.domain
+			}(),
+			Product:            productCapabilityClient,
+			CapabilityProgress: capabilityOpManager.Progress,
+			ExecutionV2: func() *coreexecutionv2.Service {
+				if executionComposition == nil {
+					return nil
+				}
+				return executionComposition.domain
+			}(),
+			AWS: func() *coreaws.Service {
+				if awsComposition == nil {
+					return nil
+				}
+				return awsComposition.domain
+			}(),
+			Voice:       voiceService,
+			Deprovision: deprovisionService,
+			DeprovisionPurge: func(ctx context.Context) error {
+				return externalPurge.Purge(ctx)
+			},
+			Misc: agentcapability.MiscBindings{
+				Info:        newCoreInfoProvider(cfg.InstanceID),
+				ConfigStore: configStore,
+			},
+		})
+		capabilityServer, err = capabilityserver.New(&capabilityserver.Config{
+			ListenAddr: cfg.CapabilityListenAddress, CACertFile: cfg.CapabilityCACertFile,
+			ServerCertFile: cfg.CapabilityTLSCertFile, ServerKeyFile: cfg.CapabilityTLSKeyFile,
+			TokenFile: cfg.CapabilityTokenFile, InstanceID: cfg.InstanceID,
+			GrantPublicKeyFile: cfg.CapabilityGrantPublicKeyFile,
+			PeerInstanceID:     cfg.CapabilityPeerInstanceID,
+			AccountGeneration:  cfg.CapabilityAccountGeneration, PeerCommonName: cfg.CapabilityPeerCommonName,
+			MaxConcurrentQuery: cfg.CapabilityMaxConcurrentQuery, MaxConcurrentWatch: cfg.CapabilityMaxConcurrentWatch,
+			ChainFence: chainFence, MutationGuard: deprovisionService,
+		}, capabilityRegistryAdapter{registry: registry}, capabilityOpManager)
+		if err != nil {
+			if knowledgeComposition != nil {
+				knowledgeComposition.Close()
+			}
+			return fmt.Errorf("initialize Agent Capability server: %w", err)
+		}
+		if err := capabilityServer.Start(); err != nil {
+			if knowledgeComposition != nil {
+				knowledgeComposition.Close()
+			}
+			return fmt.Errorf("start Agent Capability server: %w", err)
+		}
+		slog.Info("dirextalk-agent Capability gRPC server ready", "listen", cfg.CapabilityListenAddress, "instance_id", cfg.InstanceID)
+	}
 	listener, err := net.Listen("tcp", cfg.ListenAddress)
 	if err != nil {
 		if knowledgeComposition != nil {
 			knowledgeComposition.Close()
+		}
+		if capabilityServer != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+			_ = capabilityServer.Stop(closeCtx)
+			closeCancel()
+		}
+		if productCapabilityClient != nil {
+			_ = productCapabilityClient.Close()
 		}
 		return fmt.Errorf("listen for gRPC: %w", err)
 	}
@@ -270,6 +529,15 @@ func serveCore(cfg config.Config) error {
 	}
 	return runCoreLifecycle(processCtx, listener, coreServer, scheduleLoop, workerPool, cfg.CoreShutdownGrace, func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+		if capabilityServer != nil {
+			_ = capabilityServer.Stop(closeCtx)
+		}
+		if productCapabilityClient != nil {
+			_ = productCapabilityClient.Close()
+		}
+		if voiceService != nil {
+			_ = voiceService.Close()
+		}
 		_ = conversation.CloseContext(closeCtx)
 		closeCancel()
 		if knowledgeComposition != nil {
@@ -280,6 +548,29 @@ func serveCore(cfg config.Config) error {
 			poolClosed = true
 		}
 	}, cleanup, extensionCleanup, confirmationExpiry)
+}
+
+// capabilityRegistryAdapter keeps the domain registry independent from the
+// transport package while satisfying the server's narrow registry contract.
+// The two capability interfaces intentionally have the same methods, but Go
+// does not allow covariant return types on interface methods.
+type capabilityRegistryAdapter struct {
+	registry *agentcapability.Registry
+}
+
+func (a capabilityRegistryAdapter) Get(id string) (capabilityserver.Capability, bool) {
+	if a.registry == nil {
+		return nil, false
+	}
+	value, ok := a.registry.Get(id)
+	return value, ok
+}
+
+func (a capabilityRegistryAdapter) List() []*capv1.CapabilityDescriptor {
+	if a.registry == nil {
+		return nil
+	}
+	return a.registry.List()
 }
 
 type knowledgeSearchSlot struct {
@@ -307,17 +598,20 @@ func (s *knowledgeSearchSlot) set(resolver coreknowledge.SearchResolver) {
 }
 
 type coreKnowledgeComposition struct {
-	service     agentv1.CoreKnowledgeServiceServer
-	taskHandler coreruntime.TaskHandler
-	store       *postgres.Store
-	repository  *postgres.CoreKnowledgeStore
-	backend     semantic.StagedVectorStore
-	pinned      coreruntime.PinnedKnowledgeResolver
-	attachments coreruntime.PinnedAttachmentResolver
-	interval    time.Duration
-	closers     []io.Closer
-	closeOnce   sync.Once
-	done        chan struct{}
+	service       agentv1.CoreKnowledgeServiceServer
+	domain        *coreknowledge.Service
+	profiles      *coremodel.Service
+	taskHandler   coreruntime.TaskHandler
+	store         *postgres.Store
+	repository    *postgres.CoreKnowledgeStore
+	backend       semantic.StagedVectorStore
+	pinned        coreruntime.PinnedKnowledgeResolver
+	attachments   coreruntime.PinnedAttachmentResolver
+	interval      time.Duration
+	closers       []io.Closer
+	closeOnce     sync.Once
+	done          chan struct{}
+	mutationGuard coreruntime.MutationGuard
 }
 
 type pinnedKnowledgeResolver struct {
@@ -421,7 +715,7 @@ func (r *pinnedAttachmentResolver) ResolvePinnedAttachment(ctx context.Context, 
 	return string(b), nil
 }
 
-func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *coremodel.Service) (*coreKnowledgeComposition, error) {
+func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *coremodel.Service, guards ...coreruntime.MutationGuard) (*coreKnowledgeComposition, error) {
 	if !cfg.CoreKnowledgeEnabled {
 		return nil, nil
 	}
@@ -452,6 +746,11 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		_ = content.Close()
 		return nil, fmt.Errorf("Qdrant store: %w", err)
 	}
+	if err := waitForQdrantCollection(context.Background(), backend, 60*time.Second, time.Second); err != nil {
+		_ = opener.Close()
+		_ = content.Close()
+		return nil, fmt.Errorf("Qdrant readiness: %w", err)
+	}
 	slot := &knowledgeSearchSlot{}
 	repository, err := postgres.NewCoreKnowledgeStore(store, postgres.CoreKnowledgeStoreConfig{
 		Content: content, ManagedFiles: opener, Search: slot,
@@ -461,13 +760,20 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		_ = content.Close()
 		return nil, fmt.Errorf("Knowledge store: %w", err)
 	}
-	configDigest := knowledgeCollectionDigest(cfg)
-	indexer, err := postgres.NewKnowledgeIndexer(store, cfg.CoreKnowledgeEmbeddingProfileID, configDigest)
+	embeddingConfig, err := repository.EnsureEmbeddingConfig(context.Background(), coreknowledge.EmbeddingConfig{EmbeddingProfileID: cfg.CoreKnowledgeEmbeddingProfileID, Dimension: cfg.CoreKnowledgeQdrantDimension, Collection: cfg.CoreKnowledgeQdrantCollection, CollectionConfigDigest: knowledgeCollectionDigest(cfg), Revision: 1})
+	if err != nil {
+		_ = opener.Close()
+		_ = content.Close()
+		return nil, fmt.Errorf("Knowledge embedding config: %w", err)
+	}
+	configDigest := embeddingConfig.CollectionConfigDigest
+	indexer, err := postgres.NewKnowledgeIndexer(store, embeddingConfig.EmbeddingProfileID, configDigest)
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
 		return nil, fmt.Errorf("Knowledge indexer: %w", err)
 	}
+	indexer.SetEmbeddingConfigReader(repository)
 	service, err := coreknowledge.NewService(repository, indexer)
 	if err != nil {
 		_ = opener.Close()
@@ -480,13 +786,13 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		_ = content.Close()
 		return nil, fmt.Errorf("Knowledge RPC: %w", err)
 	}
-	search, err := semantic.NewSearchResolver(semantic.SearchConfig{Embedder: embedder, VectorStore: backend, BindingResolver: repository, ProfileResolver: profiles, EmbeddingProfileID: cfg.CoreKnowledgeEmbeddingProfileID, CollectionConfigDigest: configDigest, Dimension: cfg.CoreKnowledgeQdrantDimension})
+	search, err := semantic.NewSearchResolver(semantic.SearchConfig{Embedder: embedder, VectorStore: backend, BindingResolver: repository, ProfileResolver: profiles, EmbeddingProfileID: embeddingConfig.EmbeddingProfileID, CollectionConfigDigest: configDigest, Dimension: embeddingConfig.Dimension, ConfigReader: repository})
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
 		return nil, fmt.Errorf("Knowledge search resolver: %w", err)
 	}
-	engine, err := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: embedder, VectorStore: backend, ProfileResolver: profiles, EmbeddingProfileID: cfg.CoreKnowledgeEmbeddingProfileID, Dimension: cfg.CoreKnowledgeQdrantDimension})
+	engine, err := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: embedder, VectorStore: backend, ProfileResolver: profiles, EmbeddingProfileID: embeddingConfig.EmbeddingProfileID, Dimension: embeddingConfig.Dimension, ConfigReader: repository})
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
@@ -499,22 +805,96 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		_ = content.Close()
 		return nil, fmt.Errorf("Knowledge task handler: %w", err)
 	}
-	return &coreKnowledgeComposition{service: rpcService, taskHandler: handler, store: store, repository: repository, backend: backend, pinned: &pinnedKnowledgeResolver{repository: repository, search: search}, attachments: &pinnedAttachmentResolver{content: content}, interval: cfg.CoreKnowledgeSweepInterval, closers: []io.Closer{opener, content}, done: make(chan struct{})}, nil
+	var mutationGuard coreruntime.MutationGuard
+	if len(guards) > 0 {
+		mutationGuard = guards[0]
+	}
+	return &coreKnowledgeComposition{service: rpcService, domain: service, profiles: profiles, taskHandler: handler, store: store, repository: repository, backend: backend, pinned: &pinnedKnowledgeResolver{repository: repository, search: search}, attachments: &pinnedAttachmentResolver{content: content}, interval: cfg.CoreKnowledgeSweepInterval, closers: []io.Closer{opener, content}, done: make(chan struct{}), mutationGuard: mutationGuard}, nil
 }
 
 func knowledgeCollectionDigest(cfg config.Config) string {
-	sum := sha256.Sum256([]byte(cfg.CoreKnowledgeQdrantEndpoint + "\x00" + cfg.CoreKnowledgeQdrantCollection + "\x00" + fmt.Sprint(cfg.CoreKnowledgeQdrantDimension)))
-	return hex.EncodeToString(sum[:])
+	return postgres.KnowledgeCollectionDigest(cfg.CoreKnowledgeQdrantCollection, cfg.CoreKnowledgeQdrantDimension)
 }
 
 func (c *coreKnowledgeComposition) Sweep(ctx context.Context) error {
+	if c != nil && c.mutationGuard != nil {
+		release, err := c.mutationGuard.Enter(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	return c.sweep(ctx)
+}
+
+func (c *coreKnowledgeComposition) sweep(ctx context.Context) error {
 	if c == nil || c.store == nil || c.repository == nil || c.backend == nil {
 		return errors.New("Knowledge cleanup is not initialized")
 	}
 	if err := c.repository.RecoverPendingCleanup(ctx); err != nil {
 		return err
 	}
-	return postgres.SweepStaleKnowledgeStagesWithBackend(ctx, c.store, c.backend)
+	if err := postgres.SweepStaleKnowledgeStagesWithBackend(ctx, c.store, c.backend); err != nil {
+		return err
+	}
+	if err := c.reconcileEmbeddingBinding(ctx); err != nil {
+		return err
+	}
+	// Metadata commits and task creation intentionally live in separate
+	// transactions. Reconcile the durable ready/unpromoted projection at
+	// startup and on every sweep so a crash between those transactions cannot
+	// leave a memory/upload permanently invisible to semantic search.
+	if c.domain != nil {
+		return c.domain.ReconcileAutoIndex(ctx, 64)
+	}
+	return nil
+}
+
+func (c *coreKnowledgeComposition) reconcileEmbeddingBinding(ctx context.Context) error {
+	if c == nil || c.domain == nil || c.profiles == nil {
+		return nil
+	}
+	desired, err := c.profiles.ResolveDefaultProfileID(ctx, coremodel.ModelKindEmbedding)
+	if err == nil {
+		profile, profileErr := c.profiles.ResolveProfile(ctx, desired)
+		if profileErr != nil {
+			// An embedding profile is normally installed after first boot through
+			// the authenticated profile API. This expected empty-state is checked
+			// every sweep and must not create a warning/log-cost storm.
+			slog.Debug("Knowledge embedding binding is waiting for the default embedding profile credentials", "error", profileErr)
+			return nil
+		}
+		if strings.ToLower(strings.TrimSpace(profile.ModelKind)) != coremodel.ModelKindEmbedding {
+			slog.Warn("Knowledge embedding binding is unavailable because the default profile is not an embedding profile", "model_kind", profile.ModelKind)
+			return nil
+		}
+		if _, bindErr := c.domain.BindEmbeddingProfile(ctx, desired); bindErr != nil {
+			return fmt.Errorf("bind Knowledge embedding profile: %w", bindErr)
+		}
+		return nil
+	}
+	if !errors.Is(err, coremodel.ErrProfileNotFound) {
+		return fmt.Errorf("resolve default embedding profile: %w", err)
+	}
+	// A missing client default is allowed when the provisioned Knowledge
+	// profile is itself a valid embedding profile. This keeps deployments with
+	// a server-owned embedding profile usable while still failing closed when
+	// no usable profile exists at all.
+	current, configErr := c.domain.GetEmbeddingConfig(ctx)
+	if configErr != nil {
+		slog.Debug("Knowledge embedding binding is waiting for configuration", "error", configErr)
+		return nil
+	}
+	profile, profileErr := c.profiles.ResolveProfile(ctx, current.EmbeddingProfileID)
+	if profileErr != nil {
+		slog.Debug("Knowledge embedding binding is waiting for the provisioned profile", "error", profileErr)
+		return nil
+	}
+	if strings.ToLower(strings.TrimSpace(profile.ModelKind)) != coremodel.ModelKindEmbedding {
+		slog.Warn("Knowledge embedding binding is unavailable because the provisioned profile is not an embedding profile", "model_kind", profile.ModelKind)
+		return nil
+	}
+	return nil
 }
 
 func (c *coreKnowledgeComposition) Run(ctx context.Context) error {
@@ -525,6 +905,10 @@ func (c *coreKnowledgeComposition) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	defer close(c.done)
 	if err := c.Sweep(ctx); err != nil {
+		if errors.Is(err, coredeprovision.ErrClosed) {
+			<-ctx.Done()
+			return ctx.Err()
+		}
 		return err
 	}
 	for {
@@ -533,6 +917,10 @@ func (c *coreKnowledgeComposition) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := c.Sweep(ctx); err != nil {
+				if errors.Is(err, coredeprovision.ErrClosed) {
+					<-ctx.Done()
+					return ctx.Err()
+				}
 				return err
 			}
 		}

@@ -17,6 +17,7 @@ type Repository interface {
 	CreateMutation(context.Context, Mutation) (MutationResult, error)
 	UpdateMutation(context.Context, Mutation, State) (MutationResult, error)
 	RemoveMutation(context.Context, Mutation) (MutationResult, error)
+	SetEnabled(context.Context, ToggleCommand) (Installation, error)
 	RequestLifecycle(context.Context, LifecycleRequest) (MutationResult, error)
 	ConfirmLifecycle(context.Context, coreconfirmation.ConfirmCommand) (coreconfirmation.Confirmation, error)
 	ConsumeLifecycle(context.Context, coreconfirmation.ConsumeCommand) (coreconfirmation.Confirmation, error)
@@ -30,8 +31,8 @@ type ListQuery struct {
 	PageToken string
 }
 type InstallationPage struct {
-	Installations []Installation
-	NextPageToken string
+	Installations []Installation `json:"installations"`
+	NextPageToken string         `json:"next_page_token"`
 }
 
 type replayMutation struct {
@@ -47,6 +48,7 @@ type MemoryRepository struct {
 	replay           map[string]replayMutation
 	lifecycleReplay  map[string]lifecycleReplay
 	completionReplay map[string]completionReplay
+	toggleReplay     map[string]toggleReplay
 	lifecycles       map[string]LifecycleRecord
 	tasks            map[string]Task
 	confirmations    map[string]coreconfirmation.Confirmation
@@ -57,7 +59,18 @@ type MemoryRepository struct {
 	secretStore      SecretStore
 }
 
+func (r *MemoryRepository) nowUTC() time.Time {
+	if r == nil || r.now == nil {
+		return time.Now().UTC()
+	}
+	return r.now().UTC()
+}
+
 type completionReplay struct {
+	digest string
+	result Installation
+}
+type toggleReplay struct {
 	digest string
 	result Installation
 }
@@ -80,7 +93,7 @@ func NewMemoryRepository(now ...func() time.Time) *MemoryRepository {
 	if len(now) > 0 && now[0] != nil {
 		clock = now[0]
 	}
-	return &MemoryRepository{now: clock, items: map[string]Installation{}, replay: map[string]replayMutation{}, lifecycleReplay: map[string]lifecycleReplay{}, completionReplay: map[string]completionReplay{}, lifecycles: map[string]LifecycleRecord{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]coreconfirmation.Reservation{}}
+	return &MemoryRepository{now: clock, items: map[string]Installation{}, replay: map[string]replayMutation{}, lifecycleReplay: map[string]lifecycleReplay{}, completionReplay: map[string]completionReplay{}, toggleReplay: map[string]toggleReplay{}, lifecycles: map[string]LifecycleRecord{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]coreconfirmation.Reservation{}}
 }
 func (r *MemoryRepository) SetRequestFailpoint(f func() error) {
 	r.mu.Lock()

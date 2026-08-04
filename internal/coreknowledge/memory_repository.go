@@ -1,11 +1,13 @@
 package coreknowledge
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"hash"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -44,20 +46,81 @@ const (
 // streamed directly to the configured ContentSink; only bounded metadata and
 // immutable content references are retained here.
 type MemoryRepository struct {
-	mu            sync.Mutex
-	now           func() time.Time
-	opener        ManagedFileOpener
-	contentPort   StreamingContentPort
-	deleter       FileDeleter
-	fence         SourceReferenceFence
-	reservedBytes int64
-	activeUploads int
-	sources       map[string]Source
-	contents      map[string]string // bounded memory-source text only
-	contentRefs   map[string]ContentReference
-	uploads       map[string]uploadRecord
-	replay        map[string]mutationReplay
-	snapshots     map[string]repositorySnapshot
+	mu              sync.Mutex
+	now             func() time.Time
+	opener          ManagedFileOpener
+	contentPort     StreamingContentPort
+	deleter         FileDeleter
+	fence           SourceReferenceFence
+	reservedBytes   int64
+	activeUploads   int
+	sources         map[string]Source
+	contents        map[string]string // bounded memory-source text only
+	contentRefs     map[string]ContentReference
+	tags            map[string][]string
+	uploads         map[string]uploadRecord
+	replay          map[string]mutationReplay
+	snapshots       map[string]repositorySnapshot
+	embeddingConfig *EmbeddingConfig
+}
+
+func (r *MemoryRepository) GetEmbeddingConfig(_ context.Context) (EmbeddingConfig, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.embeddingConfig == nil {
+		return EmbeddingConfig{}, ErrNotFound
+	}
+	return *r.embeddingConfig, nil
+}
+
+func (r *MemoryRepository) EnsureEmbeddingConfig(_ context.Context, config EmbeddingConfig) (EmbeddingConfig, error) {
+	if !validUUID(config.EmbeddingProfileID) || config.Dimension <= 0 || config.Dimension > 16384 || strings.TrimSpace(config.Collection) == "" || len(config.Collection) > 255 || config.Revision < 1 {
+		return EmbeddingConfig{}, ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.embeddingConfig == nil {
+		config.UpdatedAt = r.nowUTC()
+		r.embeddingConfig = &config
+	}
+	return *r.embeddingConfig, nil
+}
+
+func (r *MemoryRepository) UpdateEmbeddingConfig(_ context.Context, command EmbeddingConfigCommand) (EmbeddingConfig, error) {
+	if !validUUID(command.IdempotencyKey) || command.ExpectedRevision < 1 || !validUUID(command.EmbeddingProfileID) || command.Dimension <= 0 || command.Dimension > 16384 || strings.TrimSpace(command.Collection) == "" || len(command.Collection) > 255 {
+		return EmbeddingConfig{}, ErrInvalid
+	}
+	digest := replayDigest(command)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if prior, err, ok := r.replayLocked("config:"+command.IdempotencyKey, digest); ok {
+		if err != nil {
+			return EmbeddingConfig{}, err
+		}
+		value, ok := prior.(EmbeddingConfig)
+		if !ok {
+			return EmbeddingConfig{}, ErrConflict
+		}
+		return value, nil
+	}
+	if r.embeddingConfig == nil {
+		return EmbeddingConfig{}, ErrNotFound
+	}
+	current := *r.embeddingConfig
+	if current.Revision != command.ExpectedRevision {
+		r.rememberLocked("config:"+command.IdempotencyKey, digest, EmbeddingConfig{}, ErrRevisionConflict)
+		return EmbeddingConfig{}, ErrRevisionConflict
+	}
+	if command.Dimension != current.Dimension || command.Collection != current.Collection || (command.CollectionConfigDigest != "" && command.CollectionConfigDigest != current.CollectionConfigDigest) {
+		r.rememberLocked("config:"+command.IdempotencyKey, digest, EmbeddingConfig{}, ErrInvalid)
+		return EmbeddingConfig{}, ErrInvalid
+	}
+	current.EmbeddingProfileID = command.EmbeddingProfileID
+	current.Revision++
+	current.UpdatedAt = r.nowUTC()
+	r.embeddingConfig = &current
+	r.rememberLocked("config:"+command.IdempotencyKey, digest, current, nil)
+	return current, nil
 }
 
 func NewMemoryRepository(now func() time.Time, opener ManagedFileOpener, contentPort StreamingContentPort, fence SourceReferenceFence) (*MemoryRepository, error) {
@@ -66,7 +129,7 @@ func NewMemoryRepository(now func() time.Time, opener ManagedFileOpener, content
 	}
 	return &MemoryRepository{
 		now: now, opener: opener, contentPort: contentPort, fence: fence,
-		sources: map[string]Source{}, contents: map[string]string{}, contentRefs: map[string]ContentReference{},
+		sources: map[string]Source{}, contents: map[string]string{}, contentRefs: map[string]ContentReference{}, tags: map[string][]string{},
 		uploads: map[string]uploadRecord{}, replay: map[string]mutationReplay{}, snapshots: map[string]repositorySnapshot{},
 	}, nil
 }
@@ -87,7 +150,10 @@ func (r *MemoryRepository) SetReferenceFence(fence SourceReferenceFence) {
 	}
 }
 
-func cloneSource(s Source) Source { return s }
+func cloneSource(s Source) Source {
+	s.Tags = append([]string(nil), s.Tags...)
+	return s
+}
 func cloneUpload(u Upload) Upload { return u }
 func replayDigest(v any) string   { b, _ := json.Marshal(v); return digestBytes(b) }
 func (r *MemoryRepository) replayLocked(key, digest string) (any, error, bool) {
@@ -104,6 +170,16 @@ func (r *MemoryRepository) rememberLocked(key, digest string, value any, err err
 	r.replay[key] = mutationReplay{digest: digest, value: value, err: err}
 }
 func (r *MemoryRepository) nowUTC() time.Time { return r.now().UTC() }
+
+func (r *MemoryRepository) GetUpload(_ context.Context, id string) (Upload, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.uploads[id]
+	if !ok {
+		return Upload{}, ErrNotFound
+	}
+	return cloneUpload(rec.u), nil
+}
 
 func (r *MemoryRepository) CreateMount(ctx context.Context, command MountCommand) (Source, error) {
 	if err := command.validate(); err != nil {
@@ -159,7 +235,9 @@ func (r *MemoryRepository) StartUpload(ctx context.Context, metadata UploadMetad
 		if v == nil {
 			return Upload{}, err
 		}
-		return cloneUpload(v.(Upload)), err
+		u := cloneUpload(v.(Upload))
+		u.Replayed = true
+		return u, err
 	}
 	r.mu.Unlock()
 	sink, err := r.contentPort.Begin(ctx, metadata)
@@ -180,7 +258,9 @@ func (r *MemoryRepository) StartUpload(ctx context.Context, metadata UploadMetad
 		if v == nil {
 			return Upload{}, err
 		}
-		return cloneUpload(v.(Upload)), err
+		u := cloneUpload(v.(Upload))
+		u.Replayed = true
+		return u, err
 	}
 	uploadID := metadata.UploadID
 	if uploadID == "" {
@@ -396,10 +476,44 @@ func (r *MemoryRepository) CreateMemory(_ context.Context, command MemoryCommand
 		return Source{}, ErrConflict
 	}
 	now := r.nowUTC()
-	s := Source{ID: id, Kind: SourceKindMemory, Status: SourceStatusReady, Title: command.Title, Digest: digest, SizeBytes: int64(len(command.Content)), MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	s := Source{ID: id, Kind: SourceKindMemory, Status: SourceStatusReady, Title: command.Title, Digest: digest, SizeBytes: int64(len(command.Content)), MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now, Tags: append([]string(nil), command.Tags...)}
 	r.sources[id], r.contents[id] = s, command.Content
+	r.tags[id] = append([]string(nil), command.Tags...)
 	r.contentRefs[id] = ContentReference{Ref: id, Digest: digest, SizeBytes: int64(len(command.Content))}
 	r.rememberLocked(command.IdempotencyKey, d, s, nil)
+	return cloneSource(s), nil
+}
+
+func (r *MemoryRepository) UpdateMemory(_ context.Context, command UpdateMemoryCommand) (Source, error) {
+	if err := command.validate(); err != nil {
+		return Source{}, err
+	}
+	d := replayDigest(command)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if v, err, ok := r.replayLocked("memory.update:"+command.IdempotencyKey, d); ok {
+		if v == nil {
+			return Source{}, err
+		}
+		return cloneSource(v.(Source)), err
+	}
+	s, ok := r.sources[command.SourceID]
+	if !ok || s.Status == SourceStatusDeleted || s.Kind != SourceKindMemory {
+		return Source{}, ErrNotFound
+	}
+	if s.Revision != command.ExpectedRevision {
+		return Source{}, ErrRevisionConflict
+	}
+	digest := digestBytes([]byte(command.Content))
+	if command.ContentSHA256 != "" && !strings.EqualFold(command.ContentSHA256, digest) {
+		return Source{}, ErrChecksumMismatch
+	}
+	now := r.nowUTC()
+	s.Title, s.Digest, s.SizeBytes, s.MediaType, s.Revision, s.UpdatedAt, s.Tags = command.Title, digest, int64(len([]byte(command.Content))), command.MediaType, s.Revision+1, now, append([]string(nil), command.Tags...)
+	r.sources[s.ID], r.contents[s.ID] = s, command.Content
+	r.tags[s.ID] = append([]string(nil), command.Tags...)
+	r.contentRefs[s.ID] = ContentReference{Ref: s.ID, Digest: digest, SizeBytes: s.SizeBytes}
+	r.rememberLocked("memory.update:"+command.IdempotencyKey, d, s, nil)
 	return cloneSource(s), nil
 }
 
@@ -414,6 +528,41 @@ func (r *MemoryRepository) Get(_ context.Context, id string) (Source, error) {
 		return Source{}, ErrNotFound
 	}
 	return cloneSource(s), nil
+}
+
+func (r *MemoryRepository) GetMemory(_ context.Context, id string) (Memory, error) {
+	if !validUUID(id) {
+		return Memory{}, ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sources[id]
+	if !ok || s.Status == SourceStatusDeleted || s.Kind != SourceKindMemory {
+		return Memory{}, ErrNotFound
+	}
+	return memoryFromSource(s, r.contents[id], r.tags[id]), nil
+}
+
+func (r *MemoryRepository) ListMemories(ctx context.Context, q ListQuery) (MemoryPage, error) {
+	q.Kind = SourceKindMemory
+	page, err := r.List(ctx, q)
+	if err != nil {
+		return MemoryPage{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items := make([]Memory, 0, len(page.Sources))
+	for _, source := range page.Sources {
+		if source.Status == SourceStatusDeleted {
+			continue
+		}
+		items = append(items, memoryFromSource(source, r.contents[source.ID], r.tags[source.ID]))
+	}
+	return MemoryPage{Items: items, NextPageToken: page.NextPageToken}, nil
+}
+
+func memoryFromSource(source Source, content string, tags []string) Memory {
+	return Memory{ID: source.ID, Title: source.Title, Content: content, Tags: append([]string(nil), tags...), Revision: source.Revision, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}
 }
 
 func (r *MemoryRepository) cleanupSnapshotsLocked(now time.Time) {
@@ -512,6 +661,10 @@ func (r *MemoryRepository) Delete(ctx context.Context, command DeleteCommand) (S
 	}
 	s, ok := r.sources[command.SourceID]
 	if !ok {
+		r.mu.Unlock()
+		return Source{}, ErrNotFound
+	}
+	if command.Kind != "" && s.Kind != command.Kind {
 		r.mu.Unlock()
 		return Source{}, ErrNotFound
 	}
@@ -632,7 +785,8 @@ func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage,
 	digest := replayDigest(struct {
 		Query     string
 		SourceIDs []string
-	}{strings.ToLower(strings.TrimSpace(q.Query)), q.SourceIDs})
+		Kind      SourceKind
+	}{strings.ToLower(strings.TrimSpace(q.Query)), q.SourceIDs, q.Kind})
 	c, err := decodePageCursor(q.PageToken)
 	if err != nil {
 		return SearchPage{}, err
@@ -664,10 +818,13 @@ func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage,
 			if source.Status != SourceStatusReady {
 				return SearchPage{}, ErrIneligible
 			}
+			if q.Kind != "" && source.Kind != q.Kind {
+				return SearchPage{}, ErrNotFound
+			}
 		}
 		needle := strings.ToLower(strings.TrimSpace(q.Query))
 		for id, s := range r.sources {
-			if s.Status != SourceStatusReady || s.CreatedAt.After(now) || (len(selected) > 0 && !selected[id]) {
+			if s.Status != SourceStatusReady || s.CreatedAt.After(now) || (q.Kind != "" && s.Kind != q.Kind) || (len(selected) > 0 && !selected[id]) {
 				continue
 			}
 			text := r.contents[id]
@@ -760,6 +917,22 @@ func (p *MemoryContentPort) Delete(_ context.Context, ref ContentReference) erro
 		p.used = 0
 	}
 	return nil
+}
+
+func (p *MemoryContentPort) OpenContent(_ context.Context, ref ContentReference) (io.ReadCloser, error) {
+	if p == nil || ref.Ref == "" {
+		return nil, ErrInvalid
+	}
+	p.mu.Lock()
+	data, ok := p.objects[ref.Ref]
+	p.mu.Unlock()
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if int64(len(data)) != ref.SizeBytes || digestBytes(data) != strings.ToLower(ref.Digest) {
+		return nil, ErrChecksumMismatch
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 type memoryContentSink struct {

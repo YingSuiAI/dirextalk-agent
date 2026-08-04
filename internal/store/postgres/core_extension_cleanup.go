@@ -3,21 +3,31 @@ package postgres
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/google/uuid"
 )
 
 // CoreExtensionArtifactCleaner converges digest-addressed Agent staging after
 // lifecycle rejection/failure or successful runner publication.
 type CoreExtensionArtifactCleaner struct {
-	Store    *Store
-	Root     string
-	Interval time.Duration
-	done     chan struct{}
+	Store         *Store
+	Root          string
+	Interval      time.Duration
+	done          chan struct{}
+	mutationGuard coreruntime.MutationGuard
+}
+
+func (c *CoreExtensionArtifactCleaner) SetMutationGuard(guard coreruntime.MutationGuard) {
+	if c != nil {
+		c.mutationGuard = guard
+	}
 }
 
 func NewCoreExtensionArtifactCleaner(store *Store, root string, interval time.Duration) (*CoreExtensionArtifactCleaner, error) {
@@ -33,6 +43,10 @@ func (c *CoreExtensionArtifactCleaner) Run(ctx context.Context) error {
 	}
 	defer close(c.done)
 	if _, err := c.Sweep(ctx, 128); err != nil {
+		if errors.Is(err, coredeprovision.ErrClosed) {
+			<-ctx.Done()
+			return ctx.Err()
+		}
 		return err
 	}
 	t := time.NewTicker(c.Interval)
@@ -43,6 +57,10 @@ func (c *CoreExtensionArtifactCleaner) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-t.C:
 			if _, err := c.Sweep(ctx, 128); err != nil {
+				if errors.Is(err, coredeprovision.ErrClosed) {
+					<-ctx.Done()
+					return ctx.Err()
+				}
 				return err
 			}
 		}
@@ -75,6 +93,17 @@ func (c *CoreExtensionArtifactCleaner) Sweep(ctx context.Context, limit int) (in
 	if c == nil || c.Store == nil || !filepath.IsAbs(c.Root) || filepath.Clean(c.Root) != c.Root || limit <= 0 || limit > 128 {
 		return 0, coreextension.ErrInvalid
 	}
+	if c.mutationGuard != nil {
+		release, err := c.mutationGuard.Enter(ctx)
+		if err != nil {
+			return 0, err
+		}
+		defer release()
+	}
+	return c.sweep(ctx, limit)
+}
+
+func (c *CoreExtensionArtifactCleaner) sweep(ctx context.Context, limit int) (int, error) {
 	rows, err := c.Store.pool.Query(ctx, `SELECT cleanup_id,artifact_digest FROM core_extension_artifact_cleanup WHERE ((state IN ('pending','failed') AND next_attempt_at<=clock_timestamp()) OR (state='running' AND updated_at<clock_timestamp()-interval '5 minutes')) ORDER BY next_attempt_at,cleanup_id LIMIT $1`, limit)
 	if err != nil {
 		return 0, err

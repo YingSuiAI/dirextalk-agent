@@ -26,6 +26,7 @@ import (
 )
 
 type coreExtensionComposition struct {
+	domain                  coreextension.Service
 	mcpService              agentv1.MCPServiceServer
 	skillService            agentv1.SkillServiceServer
 	taskHandler             coreruntime.TaskHandler
@@ -398,5 +399,5 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 			return coreruntime.ManagedOutcome{Err: coreextension.ErrInvalid, TerminalOwned: true}
 		}
 	}
-	return &coreExtensionComposition{mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
 }

@@ -67,6 +67,20 @@ func TestSearchRejectsCrossSourceVectorResponse(t *testing.T) {
 	}
 }
 
+func TestSearchAcceptsMultilineKnowledgeSnippet(t *testing.T) {
+	e := &bridgeEmbedder{vectors: [][]float32{{1, 0}}}
+	binding := Binding{SourceID: "source", Revision: 1}
+	s := &bridgeVectorStore{matches: []Match{{SourceID: binding.SourceID, Revision: binding.Revision, ChunkRef: "chunk-000000", Digest: strings.Repeat("a", 64), Snippet: "line one\nline two", Score: .5, PointID: PointID(binding.SourceID, binding.Revision, "chunk-000000")}}}
+	r, err := NewSearchResolver(SearchConfig{Embedder: e, VectorStore: s, BindingResolver: bridgeBindingResolver{bindings: []Binding{binding}}, ProfileResolver: bridgeProfileResolver{profile: coremodel.Profile{Provider: coremodel.ProviderOpenAICompatible, Model: "m", APIKey: "k"}}, EmbeddingProfileID: "p", Dimension: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := r.Search(context.Background(), coreknowledge.SearchQuery{Query: "q"})
+	if err != nil || len(page.Matches) != 1 || page.Matches[0].Snippet != "line one\nline two" {
+		t.Fatalf("page=%#v err=%v", page, err)
+	}
+}
+
 func TestSearchRejectsAnthropicAndProviderErrors(t *testing.T) {
 	e := &bridgeEmbedder{vectors: [][]float32{{1, 0}}, err: ErrProvider}
 	r, err := NewSearchResolver(SearchConfig{Embedder: e, VectorStore: &bridgeVectorStore{}, BindingResolver: bridgeBindingResolver{bindings: []Binding{{SourceID: "source", Revision: 1}}}, ProfileResolver: bridgeProfileResolver{profile: coremodel.Profile{Provider: coremodel.ProviderAnthropic, Model: "m", APIKey: "k"}}, EmbeddingProfileID: "p", Dimension: 2})

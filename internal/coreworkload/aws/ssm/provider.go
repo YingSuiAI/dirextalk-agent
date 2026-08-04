@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -54,6 +55,22 @@ type Provider struct {
 	secrets       workaws.SecretResolver
 	timeout, poll time.Duration
 }
+
+// Inspection is a redacted, typed SSM readback used by Agent-owned
+// execution.v2 composition. It contains no credential material or arbitrary
+// provider response body.
+type Inspection struct {
+	State      string
+	AccountID  string
+	Region     string
+	InstanceID string
+	Facts      map[string]string
+}
+
+// Ready reports whether the provider has enough typed dependencies to be
+// probed. It does not claim that the configured AWS target is reachable.
+func (p *Provider) Ready() bool { return p != nil && p.factory != nil && p.creds != nil }
+
 type Option func(*Provider) error
 
 func WithTimeout(v time.Duration) Option {
@@ -101,6 +118,47 @@ func (p *Provider) Probe(ctx context.Context, target coreworkload.TargetSettings
 	}
 	plan := coreworkload.Plan{TargetKind: coreworkload.TargetAWSEC2SSM, Target: target}
 	return p.verify(ctx, h, clients, plan)
+}
+
+// Inspect performs the same identity/instance/SSM readback fencing as Probe
+// and returns only stable facts. It never sends an SSM command.
+func (p *Provider) Inspect(ctx context.Context, target coreworkload.TargetSettings, h workaws.CredentialHandle) (Inspection, error) {
+	if p == nil || p.factory == nil || h.Validate() != nil || target.ValidateProviderTarget(coreworkload.TargetAWSEC2SSM) != nil || h.Region != target.Region || h.AccountID != target.AccountID {
+		return Inspection{}, workaws.ErrPrecondition
+	}
+	clients, err := p.factory.New(h)
+	if err != nil || clients.STS == nil || clients.EC2 == nil || clients.SSM == nil {
+		return Inspection{}, workaws.ErrProvider
+	}
+	plan := coreworkload.Plan{TargetKind: coreworkload.TargetAWSEC2SSM, Target: target}
+	if err := p.verify(ctx, h, clients, plan); err != nil {
+		return Inspection{}, err
+	}
+	tags := make([]string, 0, len(target.RequiredInstanceTags))
+	for key, value := range target.RequiredInstanceTags {
+		tags = append(tags, key+"="+value)
+	}
+	sort.Strings(tags)
+	return Inspection{State: "ready", AccountID: h.AccountID, Region: h.Region, InstanceID: target.InstanceID, Facts: map[string]string{
+		"instance_id": target.InstanceID, "account_id": h.AccountID, "region": h.Region,
+		"operating_system": "linux", "ssm_status": "Online", "required_tags_digest": deterministicTagsDigest(tags),
+	}}, nil
+}
+
+func deterministicTagsDigest(tags []string) string {
+	value := sha256.Sum256([]byte(stringsJoin(tags, "\x00")))
+	return hex.EncodeToString(value[:])
+}
+
+func stringsJoin(values []string, sep string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	out := values[0]
+	for _, value := range values[1:] {
+		out += sep + value
+	}
+	return out
 }
 
 func (p *Provider) Apply(ctx context.Context, plan coreworkload.Plan, op coreworkload.Operation) (coreworkload.Readback, error) {

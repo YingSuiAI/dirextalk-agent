@@ -73,7 +73,7 @@ func (r *MemoryRepository) CreateMutation(ctx context.Context, m Mutation) (Muta
 	id := uuid.New().String()
 	v := versionFromInspection(m.Inspection, now)
 	v.ArtifactPath, v.ArtifactDigest = m.ArtifactPath, m.ArtifactDigest
-	i := Installation{ID: id, Kind: m.Candidate.Kind, Source: m.Candidate.Source, CandidateID: m.Candidate.ID, Name: m.Candidate.Name, Description: m.Candidate.Description, Transport: m.Candidate.Transport, Revision: 1, State: StateInstalling, ProposedVersionID: v.VersionID, Versions: []VersionRecord{v}, CreatedAt: now, UpdatedAt: now}
+	i := Installation{ID: id, Kind: m.Candidate.Kind, Source: m.Candidate.Source, CandidateID: m.Candidate.ID, Name: m.Candidate.Name, Description: m.Candidate.Description, Transport: m.Candidate.Transport, Revision: 1, State: StateInstalling, Enabled: false, ProposedVersionID: v.VersionID, Versions: []VersionRecord{v}, CreatedAt: now, UpdatedAt: now}
 	i.Candidate = m.Candidate
 	req := lifecycleFor(m, i, OperationInstall)
 	res, e := r.requestLifecycleLocked(context.Background(), req)
@@ -332,6 +332,7 @@ func (r *MemoryRepository) CompleteLifecycle(_ context.Context, c Completion) (I
 			i.NetworkGrants = nil
 			i.SecretGrants = nil
 			i.State = StateRemoved
+			i.Enabled = false
 		} else if i.ProposedVersionID != "" {
 			i.ActiveVersionID = i.ProposedVersionID
 			i.ProposedVersionID = ""
@@ -343,6 +344,9 @@ func (r *MemoryRepository) CompleteLifecycle(_ context.Context, c Completion) (I
 				}
 			}
 			i.State = StateInstalled
+			if c.Operation == OperationInstall {
+				i.Enabled = true
+			}
 		}
 	} else {
 		if r.artifactStore != nil && i.ProposedVersionID != "" {

@@ -83,6 +83,7 @@ services:
         install -m 0400 /run/secrets/tls_cert /out/tls_cert;
         install -m 0400 /run/secrets/tls_key /out/tls_key;
         install -m 0400 /run/secrets/service_token /out/service_token;
+        install -m 0400 /run/secrets/core_secret_master_key /out/core_secret_master_key;
         install -m 0444 /bootstrap/config.yaml /out-config/config.yaml;
         install -m 0440 /run/secrets/postgres_password /out-postgres/postgres_password;
         chown 65532:65532 /out /out/*;
@@ -98,6 +99,8 @@ services:
         target: tls_key
       - source: service_token
         target: service_token
+      - source: core_secret_master_key
+        target: core_secret_master_key
       - source: postgres_password
         target: postgres_password
     volumes:
@@ -303,3 +306,5 @@ secrets:
     file: ${DIREXTALK_TLS_KEY_FILE:?set the TLS private-key file}
   service_token:
     file: ${DIREXTALK_SERVICE_TOKEN_FILE:?set the Agent service token file}
+  core_secret_master_key:
+    file: ${DIREXTALK_CORE_SECRET_MASTER_KEY_FILE:?set the 32-byte Agent secret master key file}

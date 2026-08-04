@@ -71,12 +71,12 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 	if err := ApplyMigrations(ctx, pool, instanceID); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(pool, instanceID)
+	store, err := New(pool, instanceID, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := "integration-secret"
-	profile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com", Model: "test", APIKey: key, ContextWindow: 32768, ReasoningEffort: "medium", Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
+	profile := coremodel.Profile{ID: uuid.NewString(), DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.com", Model: "test", APIKey: key, ContextWindow: 32768, ReasoningEffort: "medium", Revision: 1, CreatedAt: nowUTC(), UpdatedAt: nowUTC()}
 	createKey := uuid.NewString()
 	createDigest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	snap, err := store.CreateProfile(ctx, profile, createKey, createDigest)
@@ -299,7 +299,7 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 	if err := ApplyMigrations(ctx, pool, instanceID); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(pool, instanceID)
+	store, err := New(pool, instanceID, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 )
@@ -78,6 +79,13 @@ type VectorStore interface {
 	Search(context.Context, []float32, []Binding, int) ([]Match, error)
 }
 
+// CollectionDeleter is an optional destructive lifecycle extension used only
+// by the explicit account-deprovision flow. Ordinary Knowledge mutations may
+// delete individual source points but never delete the configured collection.
+type CollectionDeleter interface {
+	DeleteCollection(context.Context) error
+}
+
 // StagedVectorStore is an optional extension used by the Knowledge worker.
 // Writes are isolated under an opaque generation and become searchable only
 // after PromoteGeneration atomically switches the exact source/revision
@@ -95,6 +103,17 @@ type StagedVectorStore interface {
 func validateText(v string, max int, required bool) error {
 	v = strings.TrimSpace(v)
 	if required && v == "" || len(v) > max || strings.ContainsAny(v, "\x00\r\n") {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// validateContentText is for natural-language input and snippets. Unlike
+// identifiers, document text may contain line breaks and tabs; NUL and invalid
+// UTF-8 remain forbidden so provider and vector-store payloads stay bounded
+// and deterministic.
+func validateContentText(v string, max int, required bool) error {
+	if required && strings.TrimSpace(v) == "" || len(v) > max || strings.ContainsRune(v, '\x00') || !utf8.ValidString(v) {
 		return ErrInvalid
 	}
 	return nil
@@ -124,7 +143,7 @@ func validateUpsert(sourceID string, revision int64, chunks []Chunk, dimension i
 		if err := validateText(chunk.Digest, 128, true); err != nil {
 			return ErrInvalid
 		}
-		if err := validateText(chunk.Snippet, 1<<20, false); err != nil {
+		if err := validateContentText(chunk.Snippet, 1<<20, false); err != nil {
 			return ErrInvalid
 		}
 		if _, ok := seen[chunk.Ref]; ok {

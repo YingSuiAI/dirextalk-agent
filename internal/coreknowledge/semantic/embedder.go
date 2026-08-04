@@ -90,7 +90,7 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, profile coremodel.Profile, inp
 		return nil, ErrInvalid
 	}
 	for _, input := range inputs {
-		if err := validateText(input, 1<<20, false); err != nil {
+		if err := validateContentText(input, 1<<20, true); err != nil {
 			return nil, ErrInvalid
 		}
 	}

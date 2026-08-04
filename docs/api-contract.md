@@ -20,6 +20,9 @@ The Core server may register these services, subject to configuration gates:
 - `CoreKnowledgeService`;
 - `CoreCloudControlService`.
 - `WorkloadService` for durable workload planning and operations.
+- `CoreExecutionV2Service` is the typed Agent-owned composition seam for the
+  frozen `agent.execution.v2.*` action family. The public proxy uses the
+  neutral Capability API and the exact operation IDs from `docs/execution-v2.md`.
 
 Health and reflection are optional server features. No REST API, admin UI, or
 multi-user authorization surface is part of Core v1.
@@ -49,6 +52,19 @@ role, device, or multi-tenant model.
 - Stored credentials and other secret values are write-only from ordinary
   read/list RPCs. Responses expose configuration status or fingerprints, not
   secret bytes.
+- Durable Core secret fields are encrypted at rest with
+  AES-256-GCM using the raw 32-byte mode-0400 mounted
+  `core_secret_master_key_file`. The database stores only key version, nonce, and
+  ciphertext; a wrong/missing key or revision/field AAD mismatch is a hard
+  failure. Provider calls receive request-local material only.
+- Account deprovision binds configured Agent-owned roots at startup and purges
+  extension staging/workspaces plus Knowledge content recursively through
+  trusted descriptors. The read-only `core_knowledge_mount_root` is an
+  external source tree and is deliberately never unlinked. Symlinks and
+  pathname replacements fail closed; the configured Qdrant base collection
+  and exact `<collection>__stage_<generation>` children are deleted in the
+  same external phase. Any partial filesystem/vector failure leaves
+  `external_purged` false.
 - Unknown enum values, malformed UUIDs, invalid digests, and unsupported
   combinations fail closed as `INVALID_ARGUMENT` or `FAILED_PRECONDITION`.
 
@@ -127,11 +143,12 @@ operation.
 Typed SSM/ECS registry execution is wired behind `core_aws_enabled`. A
 capability is advertised only when its optional `core_aws_ssm_readiness` or
 `core_aws_ecs_readiness` block names one exact durable credential reference and
-target and the typed provider proves STS/account binding plus the configured
-resource prerequisites at startup. Missing, partial, stale, or failed proof
-keeps that capability disabled; there is no default target or account-wide
-scan. Per-operation credential, ARN target binding, identity, and read-back
-checks remain a second fence.
+target and the typed provider graph is complete. Process startup performs no
+AWS API calls. The first explicit provider action performs the exact
+STS/account/resource readiness probe; a failed probe is returned as a
+per-operation precondition and is retried on a later explicit action. There is
+no default target or account-wide scan. Per-operation credential, ARN target
+binding, identity, and read-back checks remain a second fence.
 
 The SSM proof requires the exact running Linux instance, its online managed
 SSM record, and configured tags. The ECS proof requires the exact ACTIVE

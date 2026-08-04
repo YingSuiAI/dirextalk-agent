@@ -52,13 +52,14 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 	for _, selected := range spec.Extensions {
 		var revision int64
 		var kind, state, activeVersion string
-		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR SHARE`, selected.ID).Scan(&revision, &kind, &state, &activeVersion); err != nil {
+		var enabled bool
+		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR SHARE`, selected.ID).Scan(&revision, &kind, &state, &enabled, &activeVersion); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
 			}
 			return coretask.ExecutionSnapshot{}, err
 		}
-		if state != "installed" || revision <= 0 || activeVersion == "" {
+		if state != "installed" || !enabled || revision <= 0 || activeVersion == "" {
 			return coretask.ExecutionSnapshot{}, coretask.ErrConflict
 		}
 		var raw []byte
@@ -107,13 +108,14 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 		p := spec.Payload.Extension
 		var revision int64
 		var kind, state, activeVersion string
-		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR SHARE`, p.InstallationID).Scan(&revision, &kind, &state, &activeVersion); err != nil {
+		var enabled bool
+		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR SHARE`, p.InstallationID).Scan(&revision, &kind, &state, &enabled, &activeVersion); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
 			}
 			return coretask.ExecutionSnapshot{}, err
 		}
-		if state != "installed" || revision != int64(p.ExpectedRevision) || activeVersion == "" {
+		if state != "installed" || !enabled || revision != int64(p.ExpectedRevision) || activeVersion == "" {
 			return coretask.ExecutionSnapshot{}, coretask.ErrRevisionConflict
 		}
 		var raw []byte

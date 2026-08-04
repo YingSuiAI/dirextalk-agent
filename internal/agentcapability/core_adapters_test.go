@@ -1,0 +1,518 @@
+package agentcapability
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+	"time"
+
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"github.com/google/uuid"
+)
+
+func TestEmitCapabilityProgressFailsClosedWhenLedgerRejectsEvent(t *testing.T) {
+	want := errors.New("ledger unavailable")
+	err := emitCapabilityProgress(context.Background(), "operation-1", coreconversation.StreamEvent{Kind: coreconversation.EventDelta, Text: "partial"}, func(context.Context, string, []byte) error {
+		return want
+	})
+	if err == nil || !errors.Is(err, want) {
+		t.Fatalf("progress failure was swallowed: %v", err)
+	}
+	if err := emitCapabilityProgress(context.Background(), "operation-1", coreconversation.StreamEvent{Kind: coreconversation.EventDone}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestModelSyncMapsSnakeCaseRolesAndSpeechMetadata(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	service, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: service}
+	result, err := capability.HandleOperation(context.Background(), "sync_models", []byte(`{"idempotency_key":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","default_conversation_client_profile_id":"chat","default_embedding_client_profile_id":"embed","default_speech_client_profile_id":"speech","entries":[{"client_profile_id":"chat","display_name":"Chat","provider":"openrouter","model":"openai/gpt-4o-mini","api_key":"sentinel","model_kind":"conversation","provider_config":{"app_id":"safe"}},{"client_profile_id":"embed","display_name":"Embed","provider":"openrouter","model":"text-embedding-3-small","api_key":"sentinel","model_kind":"embedding"},{"client_profile_id":"speech","display_name":"Speech","provider":"volc_voice","model_kind":"speech","provider_config":{"app_id":"voice"},"provider_secrets":{"rtc_app_key":"provider-secret-sentinel"}}]}`))
+	if err != nil {
+		t.Fatalf("sync models: %v", err)
+	}
+	if string(result) == "" || string(result) == "null" {
+		t.Fatalf("empty sync result")
+	}
+	var decoded struct {
+		Profiles     []coremodel.PublicProfile `json:"profiles"`
+		Conversation string                    `json:"default_conversation_client_profile_id"`
+		Embedding    string                    `json:"default_embedding_client_profile_id"`
+		Speech       string                    `json:"default_speech_client_profile_id"`
+	}
+	if err := json.Unmarshal(result, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Conversation != "chat" || decoded.Embedding != "embed" || decoded.Speech != "speech" || len(decoded.Profiles) != 3 {
+		t.Fatalf("unexpected sync projection: %s", result)
+	}
+	defaultID, err := service.ResolveDefaultProfileID(context.Background(), coremodel.ModelKindConversation)
+	if err != nil {
+		t.Fatalf("resolve default conversation profile: %v", err)
+	}
+	if defaultID != coremodel.SyncProfileID("chat") {
+		t.Fatalf("default conversation profile id = %q, want %q", defaultID, coremodel.SyncProfileID("chat"))
+	}
+	for _, profile := range decoded.Profiles {
+		if profile.ClientProfileID == "speech" && (profile.ModelKind != coremodel.ModelKindSpeech || !profile.ProviderSecretStatus["rtc_app_key"]) {
+			t.Fatalf("speech metadata was not projected: %#v", profile)
+		}
+	}
+	if strings.Contains(string(result), "sentinel") || strings.Contains(string(result), "provider-secret-sentinel") {
+		t.Fatalf("model secret leaked: %s", result)
+	}
+}
+
+type capabilityIndexRecorder struct {
+	requests []coreknowledge.IndexRequest
+}
+
+func (i *capabilityIndexRecorder) RequestIndex(_ context.Context, request coreknowledge.IndexRequest) (coreknowledge.TaskReference, error) {
+	i.requests = append(i.requests, request)
+	return coreknowledge.TaskReference{TaskID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, nil
+}
+
+type flakyEmbeddingConfigRepository struct {
+	*coreknowledge.MemoryRepository
+	failures int
+}
+
+func (r *flakyEmbeddingConfigRepository) UpdateEmbeddingConfig(ctx context.Context, command coreknowledge.EmbeddingConfigCommand) (coreknowledge.EmbeddingConfig, error) {
+	if r.failures > 0 {
+		r.failures--
+		return coreknowledge.EmbeddingConfig{}, coreknowledge.ErrConflict
+	}
+	return r.MemoryRepository.UpdateEmbeddingConfig(ctx, command)
+}
+
+func TestModelSyncBindsKnowledgeEmbeddingAndAutoIndexesCapabilityMutations(t *testing.T) {
+	ctx := context.Background()
+	modelsRepo := coremodel.NewMemoryProfileRepository()
+	models, err := coremodel.NewService(modelsRepo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledgeRepo, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := knowledgeRepo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("c", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	indexer := &capabilityIndexRecorder{}
+	knowledge, err := coreknowledge.NewService(knowledgeRepo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelCapability := &coreModelCapability{service: models, knowledge: knowledge}
+	syncRaw := []byte(`{"idempotency_key":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","default_embedding_client_profile_id":"embed","entries":[{"client_profile_id":"embed","display_name":"Embedding","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"text-embedding-test","model_kind":"embedding","api_key":"embedding-secret"}]}`)
+	if _, err := modelCapability.HandleOperation(ctx, "sync_models", syncRaw); err != nil {
+		t.Fatal(err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID != coremodel.SyncProfileID("embed") || config.Revision != 2 {
+		t.Fatalf("embedding binding = %+v err=%v", config, err)
+	}
+	knowledgeCapability := &coreKnowledgeCapability{service: knowledge, models: models}
+	memoryRaw, err := knowledgeCapability.HandleOperation(ctx, "create_memory", []byte(`{"title":"fact","content":"semantic memory","idempotency_key":"cccccccc-cccc-4ccc-8ccc-cccccccccccc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var memory map[string]any
+	if err := json.Unmarshal(memoryRaw, &memory); err != nil {
+		t.Fatal(err)
+	}
+	if memory["embedding_profile_id"] != coremodel.SyncProfileID("embed") || len(indexer.requests) != 1 {
+		t.Fatalf("memory binding/indexing = %s requests=%#v", memoryRaw, indexer.requests)
+	}
+	content := []byte("abc")
+	digest := sha256.Sum256(content)
+	start := []byte(`{"declared_size":3,"content_sha256":"` + hex.EncodeToString(digest[:]) + `","media_type":"text/plain","idempotency_key":"dddddddd-dddd-4ddd-8ddd-dddddddddddd"}`)
+	uploadRaw, err := knowledgeCapability.HandleOperation(ctx, "start_upload", start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upload map[string]any
+	if err := json.Unmarshal(uploadRaw, &upload); err != nil {
+		t.Fatal(err)
+	}
+	uploadID, _ := upload["upload_id"].(string)
+	chunkDigest := sha256.Sum256(content)
+	if _, err := knowledgeCapability.HandleOperation(ctx, "append_upload_chunk", []byte(`{"upload_id":"`+uploadID+`","ordinal":0,"offset_bytes":0,"data":"YWJj","chunk_sha256":"`+hex.EncodeToString(chunkDigest[:])+`","idempotency_key":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := knowledgeCapability.HandleOperation(ctx, "commit_upload", []byte(`{"upload_id":"`+uploadID+`","content_sha256":"`+hex.EncodeToString(digest[:])+`","idempotency_key":"ffffffff-ffff-4fff-8fff-ffffffffffff"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(indexer.requests) != 2 {
+		t.Fatalf("committed upload did not auto-index: %#v", indexer.requests)
+	}
+	searchRaw, err := knowledgeCapability.HandleOperation(ctx, "search_memory", []byte(`{"query":"semantic","limit":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var search map[string]any
+	if err := json.Unmarshal(searchRaw, &search); err != nil {
+		t.Fatal(err)
+	}
+	if search["search_mode"] != "semantic" {
+		t.Fatalf("search mode = %v", search["search_mode"])
+	}
+}
+
+func TestModelSyncRejectsEmbeddingDefaultWithoutEmbeddingProfile(t *testing.T) {
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: models}
+	_, err = capability.HandleOperation(context.Background(), "sync_models", []byte(`{"idempotency_key":"12121212-1212-4121-8121-121212121212","default_embedding_client_profile_id":"chat","entries":[{"client_profile_id":"chat","display_name":"Chat","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"chat","api_key":"secret"}]}`))
+	if !errors.Is(err, coremodel.ErrInvalidProfile) {
+		t.Fatalf("wrong embedding kind err=%v", err)
+	}
+}
+
+func TestModelSyncBindingFailureIsRetriedByTheSameIdempotencyKey(t *testing.T) {
+	ctx := context.Background()
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("f", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	flaky := &flakyEmbeddingConfigRepository{MemoryRepository: base, failures: 1}
+	knowledge, err := coreknowledge.NewService(flaky, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: models, knowledge: knowledge}
+	request := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-abababababab","default_embedding_client_profile_id":"embed","entries":[{"client_profile_id":"embed","display_name":"Embedding","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"embed","model_kind":"embedding","api_key":"secret"}]}`)
+	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != coreknowledge.ErrConflict {
+		t.Fatalf("first sync binding error=%v", err)
+	}
+	if _, err := capability.HandleOperation(ctx, "sync_models", request); err != nil {
+		t.Fatal(err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID != coremodel.SyncProfileID("embed") {
+		t.Fatalf("retry did not converge embedding binding: %+v err=%v", config, err)
+	}
+}
+
+func TestConcurrentModelSyncEmbeddingDefaultsConvergeToDurableDefault(t *testing.T) {
+	ctx := context.Background()
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := base.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: "11111111-1111-4111-8111-111111111111", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("a", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := coreknowledge.NewService(base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: models, knowledge: knowledge}
+	left := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-abababababac","default_embedding_client_profile_id":"left","entries":[{"client_profile_id":"left","display_name":"Left","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"left","model_kind":"embedding","api_key":"secret-left"}]}`)
+	right := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-ababababad","default_embedding_client_profile_id":"right","entries":[{"client_profile_id":"right","display_name":"Right","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"right","model_kind":"embedding","api_key":"secret-right"}]}`)
+	results := make(chan error, 2)
+	go func() { _, err := capability.HandleOperation(ctx, "sync_models", left); results <- err }()
+	go func() { _, err := capability.HandleOperation(ctx, "sync_models", right); results <- err }()
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := models.ResolveDefaultProfileID(ctx, coremodel.ModelKindEmbedding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := knowledge.GetEmbeddingConfig(ctx)
+	if err != nil || config.EmbeddingProfileID != want {
+		t.Fatalf("concurrent embedding binding diverged: config=%+v want=%q err=%v", config, want, err)
+	}
+}
+
+func TestModelCapabilityUpdateHonorsExplicitClearsAndZeroValues(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	service, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	temperature := 0.7
+	key := "initial-api-key"
+	profileID := "11111111-1111-4111-8111-111111111111"
+	if _, err := service.Create(context.Background(), coremodel.CreateProfileCommand{IdempotencyKey: "11111111-1111-4111-8111-111111111112", Spec: coremodel.ProfileSpec{ID: profileID, DisplayName: "Profile", Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.com/v1", Model: "model", APIKey: &key, SystemPrompt: "prompt", Temperature: &temperature, MaxOutputTokens: 128, ContextWindow: 4096, ReasoningEffort: "high"}}); err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: service}
+	payload := []byte(`{"profile_id":"11111111-1111-4111-8111-111111111111","expected_revision":1,"idempotency_key":"11111111-1111-4111-8111-111111111113","api_key_clear":true,"base_url":"","system_prompt":"","temperature":null,"max_output_tokens":0,"context_window":0,"reasoning_effort":""}`)
+	if _, err := capability.HandleOperation(context.Background(), "update_model", payload); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := service.Get(context.Background(), profileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.APIKeyConfigured || profile.SystemPrompt != "" || profile.Temperature != nil || profile.MaxOutputTokens != 0 || profile.ContextWindow != 0 || profile.ReasoningEffort != "" {
+		t.Fatalf("explicit clears were not applied: %#v", profile)
+	}
+	if profile.BaseURL == "https://example.com/v1" {
+		t.Fatalf("explicit empty base_url was treated as preserve: %#v", profile)
+	}
+
+	invalid := []byte(`{"profile_id":"11111111-1111-4111-8111-111111111111","expected_revision":2,"idempotency_key":"11111111-1111-4111-8111-111111111114","model":""}`)
+	if _, err := capability.HandleOperation(context.Background(), "update_model", invalid); !errors.Is(err, coremodel.ErrInvalidProfile) {
+		t.Fatalf("explicit empty required model was silently preserved: %v", err)
+	}
+}
+
+func TestChatCapabilityUsesDefaultConversationProfileWhenOmitted(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	models, err := coremodel.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	if _, err := models.Sync(context.Background(), coremodel.SyncProfileCommand{
+		IdempotencyKey:               key,
+		DefaultConversationProfileID: "chat",
+		Entries: []coremodel.SyncProfileEntry{{
+			ClientProfileID: "chat", DisplayName: "Chat", Provider: coremodel.ProviderOpenAICompatible,
+			BaseURL: "https://example.com/v1", Model: "test-model", APIKey: stringPtrForAdapterTest("secret"),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreChatCapability{models: models}
+	profileID, err := capability.resolveProfileID(context.Background(), map[string]json.RawMessage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profileID != coremodel.SyncProfileID("chat") {
+		t.Fatalf("resolved profile id = %q, want %q", profileID, coremodel.SyncProfileID("chat"))
+	}
+}
+
+func stringPtrForAdapterTest(value string) *string { return &value }
+
+type adapterKnowledgeOpener struct{}
+
+func (adapterKnowledgeOpener) OpenManaged(context.Context, string) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+
+type adapterKnowledgeFence struct{}
+
+func (adapterKnowledgeFence) AcquireDeleteFence(context.Context, string) (coreknowledge.DeleteFenceToken, error) {
+	return coreknowledge.DeleteFenceToken{Token: "adapter-test"}, nil
+}
+func (adapterKnowledgeFence) ReleaseDeleteFence(context.Context, coreknowledge.DeleteFenceToken) error {
+	return nil
+}
+func (adapterKnowledgeFence) ConsumeDelete(_ context.Context, _ coreknowledge.DeleteFenceToken, _ string, _ int64, transition func() error) error {
+	return transition()
+}
+
+func TestKnowledgeCapabilityProjectsHonestSemanticStatusAndMemoryMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelsRepo := coremodel.NewMemoryProfileRepository()
+	models, err := coremodel.NewService(modelsRepo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := "55555555-5555-4555-8555-555555555555"
+	apiKey := "embedding-secret"
+	profile, err := models.Create(ctx, coremodel.CreateProfileCommand{IdempotencyKey: "66666666-6666-4666-8666-666666666666", Spec: coremodel.ProfileSpec{ID: profileID, DisplayName: "Embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://api.openai.com/v1", Model: "text-embedding-test", APIKey: &apiKey}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profile.ID, Dimension: 2, Collection: "knowledge", Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreKnowledgeCapability{service: knowledge, models: models}
+	statusRaw, err := capability.HandleOperation(ctx, "status", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(statusRaw, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status["supported"] != true || status["embedding_indexed"] != float64(0) || status["embedding_profile_id"] != profileID || status["embedding_model"] != "text-embedding-test" {
+		t.Fatalf("unexpected semantic status: %s", statusRaw)
+	}
+	if _, ok := status["embedding_stale"]; !ok {
+		t.Fatalf("semantic status omitted stale count: %s", statusRaw)
+	}
+	memoryRaw, err := capability.HandleOperation(ctx, "create_memory", []byte(`{"title":"fact","content":"long-term fact","tags":["profile"],"idempotency_key":"77777777-7777-4777-8777-777777777777"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var memory map[string]any
+	if err := json.Unmarshal(memoryRaw, &memory); err != nil {
+		t.Fatal(err)
+	}
+	if memory["embedding_indexed"] != false || memory["embedding_status"] != "unknown" || memory["embedding_profile_id"] != profileID || memory["embedding_model"] != "text-embedding-test" {
+		t.Fatalf("unexpected memory semantic projection: %s", memoryRaw)
+	}
+	if strings.Contains(string(memoryRaw), apiKey) {
+		t.Fatalf("embedding secret leaked: %s", memoryRaw)
+	}
+	contentDigest := sha256.Sum256([]byte("abc"))
+	startRequest := []byte(`{"declared_size":3,"content_sha256":"` + hex.EncodeToString(contentDigest[:]) + `","media_type":"text/plain","idempotency_key":"88888888-8888-4888-8888-888888888888"}`)
+	firstUpload, err := capability.HandleOperation(ctx, "start_upload", startRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondUpload, err := capability.HandleOperation(ctx, "start_upload", startRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstUploadValue, secondUploadValue map[string]any
+	if err := json.Unmarshal(firstUpload, &firstUploadValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(secondUpload, &secondUploadValue); err != nil {
+		t.Fatal(err)
+	}
+	if firstUploadValue["replayed"] != false || secondUploadValue["replayed"] != true {
+		t.Fatalf("upload replay receipt mismatch: first=%s second=%s", firstUpload, secondUpload)
+	}
+}
+
+func TestCapabilityProgressUsesDurableOperationContext(t *testing.T) {
+	ctx := capabilityoperation.WithOperationID(context.Background(), "durable-operation-id")
+	var got string
+	err := emitCapabilityProgress(ctx, "stream_chat", coreconversation.StreamEvent{Kind: coreconversation.EventDelta, Text: "partial"}, func(_ context.Context, operationID string, _ []byte) error {
+		got = operationID
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "durable-operation-id" {
+		t.Fatalf("progress ledger id = %q", got)
+	}
+}
+
+func TestCoreDescriptorsBindInputSchemaDigests(t *testing.T) {
+	for _, descriptor := range []*capv1.CapabilityDescriptor{
+		descriptorForTest("agent.chat.v1"),
+		descriptorForTest("agent.models.v1"),
+		descriptorForTest("agent.knowledge.v1"),
+		descriptorForTest("agent.account.v1"),
+		descriptorForTest("agent.skills.v1"),
+	} {
+		for _, operation := range descriptor.GetOperations() {
+			if operation.GetInputSchemaJson() == "" || !json.Valid([]byte(operation.GetInputSchemaJson())) || len(operation.GetInputSchemaDigest()) != sha256.Size {
+				t.Fatalf("%s/%s missing input schema binding", descriptor.GetCapabilityId(), operation.GetOperationId())
+			}
+			digest := sha256.Sum256([]byte(operation.GetInputSchemaJson()))
+			if string(digest[:]) != string(operation.GetInputSchemaDigest()) {
+				t.Fatalf("%s/%s input schema digest mismatch", descriptor.GetCapabilityId(), operation.GetOperationId())
+			}
+		}
+	}
+}
+
+func descriptorForTest(id string) *capv1.CapabilityDescriptor {
+	switch id {
+	case "agent.chat.v1":
+		return (&coreChatCapability{}).Descriptor()
+	case "agent.models.v1":
+		return (&coreModelCapability{}).Descriptor()
+	case "agent.knowledge.v1":
+		return (&coreKnowledgeCapability{}).Descriptor()
+	case "agent.account.v1":
+		return (&coreAccountCapability{}).Descriptor()
+	default:
+		return (&coreExtensionCapability{}).Descriptor()
+	}
+}
+
+type fakeDeprovisionStore struct {
+	command coredeprovision.Command
+}
+
+func (s *fakeDeprovisionStore) Deprovision(_ context.Context, command coredeprovision.Command, external func(context.Context) error) (coredeprovision.Result, error) {
+	s.command = command
+	if err := external(context.Background()); err != nil {
+		return coredeprovision.Result{}, err
+	}
+	return coredeprovision.Result{Status: "deprovisioned", DatabasePurged: true, ExternalPurged: true}, nil
+}
+
+func TestAccountDeprovisionCapabilityUsesAuthenticatedOwnerAndRejectsBodyIdentity(t *testing.T) {
+	store := &fakeDeprovisionStore{}
+	service, err := coredeprovision.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreAccountCapability{service: service, purge: func(context.Context) error { return nil }}
+	key := uuid.NewString()
+	permission := &capv1.PermissionContext{AuthenticatedOwnerId: "owner-from-grant", AccountGeneration: 9}
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, permission)
+	result, err := capability.HandleOperation(ctx, "deprovision_account", []byte(`{"idempotency_key":"`+key+`","confirmation":"deprovision_account"}`))
+	if err != nil {
+		t.Fatalf("deprovision failed: %v", err)
+	}
+	var decoded coredeprovision.Result
+	if err := json.Unmarshal(result, &decoded); err != nil || decoded.Status != "deprovisioned" {
+		t.Fatalf("unexpected deprovision result: %s err=%v", result, err)
+	}
+	if store.command.OwnerID != "owner-from-grant" || store.command.AccountGeneration != 9 {
+		t.Fatalf("identity was not taken from permission context: %+v", store.command)
+	}
+	if _, err := capability.HandleOperation(ctx, "deprovision_account", []byte(`{"owner_id":"attacker","idempotency_key":"`+uuid.NewString()+`","confirmation":"deprovision_account"}`)); !errors.Is(err, coredeprovision.ErrInvalid) {
+		t.Fatalf("caller-supplied owner was accepted: %v", err)
+	}
+}
+
+func TestAccountDeprovisionDescriptorIsNeutralAndExplicit(t *testing.T) {
+	d := (&coreAccountCapability{}).Descriptor()
+	if d.GetCapabilityId() != "agent.account.v1" || len(d.GetOperations()) != 1 || d.GetOperations()[0].GetOperationId() != "deprovision_account" {
+		t.Fatalf("unexpected account descriptor: %+v", d)
+	}
+	if d.GetOperations()[0].GetRequiredScopes()[0] != "agent:account:deprovision" {
+		t.Fatalf("unexpected deprovision scope: %v", d.GetOperations()[0].GetRequiredScopes())
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(d.GetOperations()[0].GetInputSchemaJson()), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("deprovision schema permits arbitrary identity fields: %s", d.GetOperations()[0].GetInputSchemaJson())
+	}
+}

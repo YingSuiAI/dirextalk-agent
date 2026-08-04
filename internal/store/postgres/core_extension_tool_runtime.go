@@ -32,7 +32,7 @@ func (r *PostgresExtensionToolRuntime) ListTools(ctx context.Context, i coreexte
 	if r == nil || uuid.Validate(i.ID) != nil || uuid.Validate(v.VersionID) != nil {
 		return nil, coreextension.ErrInvalid
 	}
-	if i.State != coreextension.StateInstalled || i.ActiveVersionID != v.VersionID || len(v.ContentDigest) != 64 {
+	if i.State != coreextension.StateInstalled || !i.Enabled || i.ActiveVersionID != v.VersionID || len(v.ContentDigest) != 64 {
 		return nil, coreextension.ErrConflict
 	}
 	if len(v.Tools) == 0 {

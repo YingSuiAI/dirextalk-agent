@@ -35,6 +35,7 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 	var replay knowledgeReplay
 	if ok, replayErr := replayKnowledge(ctx, tx, "upload.start", metadata.IdempotencyKey, digest, &replay); ok {
 		if replayErr == nil {
+			replay.Upload.Replayed = true
 			_ = tx.Commit(ctx)
 			return replay.Upload, nil
 		}
@@ -91,6 +92,7 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 		if readErr := r.store.pool.QueryRow(ctx, `SELECT response_json FROM core_knowledge_mutation_replays WHERE operation='upload.start' AND idempotency_key=$1`, uuid.MustParse(metadata.IdempotencyKey)).Scan(&raw); readErr == nil {
 			var canonical knowledgeReplay
 			if json.Unmarshal(raw, &canonical) == nil && canonical.Upload.ID != "" {
+				canonical.Upload.Replayed = true
 				r.mu.Lock()
 				r.sinks[canonical.Upload.ID] = sink
 				r.mu.Unlock()
@@ -102,6 +104,33 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 	r.mu.Lock()
 	r.sinks[uploadID] = sink
 	r.mu.Unlock()
+	return u, nil
+}
+
+// GetUpload reads the durable cursor without claiming or mutating the upload.
+// It is used by capability adapters when a public request omits the internal
+// revision/ordinal fields; append/commit still re-check them transactionally.
+func (r *CoreKnowledgeStore) GetUpload(ctx context.Context, id string) (coreknowledge.Upload, error) {
+	return r.loadUpload(ctx, id)
+}
+
+func (r *CoreKnowledgeStore) loadUpload(ctx context.Context, id string) (coreknowledge.Upload, error) {
+	query := `SELECT upload_id,source_id,metadata_json,status,received_size,next_ordinal,revision,created_at,updated_at FROM core_knowledge_uploads WHERE upload_id=$1`
+	var u coreknowledge.Upload
+	var raw []byte
+	var status string
+	if err := r.store.pool.QueryRow(ctx, query, id).Scan(&u.ID, &u.SourceID, &raw, &status, &u.ReceivedSize, &u.NextChunk, &u.Revision, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return u, coreknowledge.ErrNotFound
+		}
+		return u, coreknowledge.ErrConflict
+	}
+	if json.Unmarshal(raw, &u.Metadata) != nil {
+		return u, coreknowledge.ErrConflict
+	}
+	u.Status = coreknowledge.SourceStatus(status)
+	u.CreatedAt, u.UpdatedAt = u.CreatedAt.UTC(), u.UpdatedAt.UTC()
+	u.Session = coreknowledge.UploadSession{UploadID: u.ID, SourceID: u.SourceID, ReceivedSize: u.ReceivedSize, NextOrdinal: u.NextChunk, Revision: u.Revision}
 	return u, nil
 }
 
@@ -419,8 +448,12 @@ func (r *CoreKnowledgeStore) CreateMemory(ctx context.Context, command coreknowl
 		return coreknowledge.Source{}, coreknowledge.ErrChecksumMismatch
 	}
 	now := r.nowUTC()
-	s := coreknowledge.Source{ID: sourceID, Kind: coreknowledge.SourceKindMemory, Status: coreknowledge.SourceStatusReady, Title: command.Title, Digest: contentDigest, SizeBytes: metadata.DeclaredSize, MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now}
-	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,content_ref,created_at,updated_at) VALUES($1,'memory','ready',$2,$3,$4,$5,1,$6,$7,$7)`, s.ID, s.Title, s.Digest, s.SizeBytes, s.MediaType, ref.Ref, now)
+	tagsJSON := []byte("[]")
+	if command.Tags != nil {
+		tagsJSON, _ = json.Marshal(command.Tags)
+	}
+	s := coreknowledge.Source{ID: sourceID, Kind: coreknowledge.SourceKindMemory, Status: coreknowledge.SourceStatusReady, Title: command.Title, Digest: contentDigest, SizeBytes: metadata.DeclaredSize, MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now, Tags: append([]string(nil), command.Tags...)}
+	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,content_ref,tags_json,created_at,updated_at) VALUES($1,'memory','ready',$2,$3,$4,$5,1,$6,$7,$8,$8)`, s.ID, s.Title, s.Digest, s.SizeBytes, s.MediaType, ref.Ref, tagsJSON, now)
 	if err == nil {
 		err = putKnowledgeReplay(ctx, tx, "memory", command.IdempotencyKey, digest, knowledgeReplay{Source: s}, nil)
 	}
@@ -431,6 +464,117 @@ func (r *CoreKnowledgeStore) CreateMemory(ctx context.Context, command coreknowl
 	if err = tx.Commit(ctx); err != nil {
 		_ = r.content.Delete(ctx, ref)
 		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	return s, nil
+}
+
+func (r *CoreKnowledgeStore) UpdateMemory(ctx context.Context, command coreknowledge.UpdateMemoryCommand) (coreknowledge.Source, error) {
+	if err := command.ValidateForRepository(); err != nil {
+		return coreknowledge.Source{}, err
+	}
+	digest := knowledgeDigest(command)
+	tx, err := r.store.pool.Begin(ctx)
+	if err != nil {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	defer tx.Rollback(ctx)
+	if err = lockKnowledgeKey(ctx, tx, "memory.update", command.IdempotencyKey); err != nil {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	var replay knowledgeReplay
+	if ok, replayErr := replayKnowledge(ctx, tx, "memory.update", command.IdempotencyKey, digest, &replay); ok {
+		if replayErr == nil {
+			_ = tx.Commit(ctx)
+			return replay.Source, nil
+		}
+		return coreknowledge.Source{}, replayErr
+	}
+	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 FOR UPDATE`, command.SourceID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coreknowledge.Source{}, coreknowledge.ErrNotFound
+	}
+	if err != nil {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	if s.Kind != coreknowledge.SourceKindMemory || s.Status == coreknowledge.SourceStatusDeleted {
+		return coreknowledge.Source{}, coreknowledge.ErrNotFound
+	}
+	if s.Revision != command.ExpectedRevision {
+		return coreknowledge.Source{}, coreknowledge.ErrRevisionConflict
+	}
+	oldDigest, oldSize := s.Digest, s.SizeBytes
+	contentDigest := digestBytesKnowledge([]byte(command.Content))
+	if command.ContentSHA256 != "" && !strings.EqualFold(command.ContentSHA256, contentDigest) {
+		return coreknowledge.Source{}, coreknowledge.ErrChecksumMismatch
+	}
+	var oldRef string
+	if err := tx.QueryRow(ctx, `SELECT content_ref FROM core_knowledge_sources WHERE source_id=$1`, s.ID).Scan(&oldRef); err != nil {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	var pendingOperation string
+	if err := tx.QueryRow(ctx, `SELECT operation FROM core_knowledge_cleanup WHERE source_id=$1`, s.ID).Scan(&pendingOperation); err == nil {
+		return coreknowledge.Source{}, coreknowledge.ErrCleanupPending
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	metadata := coreknowledge.UploadMetadata{IdempotencyKey: command.IdempotencyKey, UploadID: uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/memory/update/"+command.IdempotencyKey)).String(), SourceID: s.ID, Title: command.Title, MediaType: command.MediaType, DeclaredSize: int64(len([]byte(command.Content))), ContentSHA256: contentDigest}
+	sink, err := r.content.Begin(ctx, metadata)
+	if err != nil || sink == nil {
+		if resumable, ok := r.content.(resumableContentPort); ok {
+			sink, err = resumable.Resume(ctx, metadata, 0, 0)
+		}
+	}
+	if err != nil || sink == nil {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	if sink.Size() != metadata.DeclaredSize {
+		if n, writeErr := io.WriteString(sink, command.Content); writeErr != nil || n != len([]byte(command.Content)) {
+			_ = sink.Abort(ctx)
+			return coreknowledge.Source{}, coreknowledge.ErrConflict
+		}
+	}
+	ref, err := sink.Finalize(ctx, contentDigest, metadata.DeclaredSize)
+	if err != nil {
+		_ = sink.Abort(ctx)
+		return coreknowledge.Source{}, coreknowledge.ErrChecksumMismatch
+	}
+	now := r.nowUTC()
+	s.Tags = append([]string(nil), command.Tags...)
+	s.Title, s.Digest, s.SizeBytes, s.MediaType, s.Revision, s.UpdatedAt = command.Title, contentDigest, metadata.DeclaredSize, command.MediaType, s.Revision+1, now
+	s.Status = coreknowledge.SourceStatusReady
+	tagsJSON := []byte("[]")
+	if command.Tags != nil {
+		tagsJSON, _ = json.Marshal(command.Tags)
+	}
+	tag, updateErr := tx.Exec(ctx, `UPDATE core_knowledge_sources SET title=$2,digest=$3,size_bytes=$4,media_type=$5,revision=$6,content_ref=$7,tags_json=$8,status='ready',updated_at=$9,error_code='' WHERE source_id=$1 AND kind='memory' AND status IN ('ready','indexing') AND revision=$10`, s.ID, s.Title, s.Digest, s.SizeBytes, s.MediaType, s.Revision, ref.Ref, tagsJSON, now, command.ExpectedRevision)
+	if updateErr != nil {
+		err = updateErr
+	} else if tag.RowsAffected() != 1 {
+		_ = r.content.Delete(ctx, ref)
+		return coreknowledge.Source{}, coreknowledge.ErrRevisionConflict
+	}
+	if err == nil {
+		if oldRef != "" && oldRef != ref.Ref {
+			_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_cleanup(source_id,operation,idempotency_key,request_hash,content_ref,content_digest,content_size_bytes,relative_path,attempts,last_error,next_attempt_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'',0,'',$8,$8)`, s.ID, knowledgeMemoryReplaceCleanup, uuid.MustParse(command.IdempotencyKey), digest, oldRef, oldDigest, oldSize, now)
+		}
+	}
+	if err == nil {
+		err = putKnowledgeReplay(ctx, tx, "memory.update", command.IdempotencyKey, digest, knowledgeReplay{Source: s}, nil)
+	}
+	if err != nil {
+		_ = r.content.Delete(ctx, ref)
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	if err = tx.Commit(ctx); err != nil {
+		_ = r.content.Delete(ctx, ref)
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	// Old content is immutable and no longer referenced. Cleanup is deliberately
+	// best effort after the durable replacement; the durable replacement intent
+	// is retried by RecoverPendingCleanup if an object-store delete is
+	// temporarily unavailable.
+	if oldRef != "" && oldRef != ref.Ref {
+		_ = r.resumeMemoryReplacementCleanup(ctx, s.ID)
 	}
 	return s, nil
 }

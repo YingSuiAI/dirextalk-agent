@@ -66,7 +66,7 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 		admin.Close()
 		t.Fatal(err)
 	}
-	base, err := New(pool, instance)
+	base, err := New(pool, instance, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,11 +238,8 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	createTestProfile(context.Background(), t, h.store.Store, turn.ProfileID, "test", "integration-secret")
 	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = h.pool.Exec(context.Background(), `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured) VALUES($1,'test','openai_compatible','https://example.invalid','test','secret',true)`, turn.ProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}

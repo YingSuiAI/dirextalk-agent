@@ -84,7 +84,10 @@ PostgreSQL is not shared with a business service, and no data directory or
 Docker socket is mounted.
 
 All secret values are files mounted read-only at runtime. The YAML contains only
-the instance ID, feature gates, and file paths. `migrate` completes before
+the instance ID, feature gates, and file paths. `core_secret_master_key_file`
+points to a strict mode-0400 raw 32-byte key for every durable Core secret
+envelope; PostgreSQL receives only encrypted credential and snapshot fields.
+`migrate` completes before
 `core` starts and reads the same database URL file and image revision as Core.
 
 The readiness probe is authenticated and checks `AgentService` instance ID,
@@ -101,6 +104,13 @@ The production Compose file puts external PostgreSQL on the separately
 managed `agent_database` network, joined only by Core and `migrate`.
 
 ## Extension runner seam
+
+The `agent_runner_workspaces` volume belongs to the isolated extension runner,
+not to the Agent purge registry. It must be treated as ephemeral execution
+scratch only; durable account data must stay under the Agent-mounted
+`agent_extension_workspaces`/staging roots. Keep the extensions profile
+disabled unless the deployment also provisions an equivalent runner-volume
+cleanup sidecar and verifies it during account deprovision.
 
 Keep `core_extension_enabled: false` until a Linux host delegates a private
 cgroup-v2 subtree to UID `65531` and the socket/install/workspace volume

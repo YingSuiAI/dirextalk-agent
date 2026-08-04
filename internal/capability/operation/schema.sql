@@ -4,7 +4,10 @@ CREATE TABLE IF NOT EXISTS operations (
     capability_id TEXT NOT NULL,
     operation_name TEXT NOT NULL,
     state TEXT NOT NULL,
-    request_json BLOB NOT NULL,
+    -- Kept only as a fixed-shape compatibility receipt. Business request
+    -- JSON (which may contain credentials) is never persisted.
+    request_json BLOB NOT NULL DEFAULT X'7B7D' CHECK (request_json = X'7B7D'),
+    root_request_digest BLOB NOT NULL,
     request_digest BLOB NOT NULL,
     result_json BLOB,
     error_code TEXT,

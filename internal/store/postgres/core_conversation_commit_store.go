@@ -32,6 +32,12 @@ func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core
 	if convResult.RowsAffected() != 1 {
 		return core.ChatResponse{}, core.ErrConflict
 	}
+	if a.Conversation.ContextMessageOffset > uint64(^uint64(0)>>1) || len(a.Conversation.Summary) > core.MaxSummaryBytes {
+		return core.ChatResponse{}, core.ErrInvalid
+	}
+	if _, e = tx.Exec(ctx, `INSERT INTO core_conversation_contexts(conversation_id,summary,message_offset,updated_at) VALUES($1,$2,$3,$4) ON CONFLICT(conversation_id) DO UPDATE SET summary=$2,message_offset=$3,updated_at=$4`, a.Conversation.ID, a.Conversation.Summary, int64(a.Conversation.ContextMessageOffset), a.Conversation.UpdatedAt); e != nil {
+		return core.ChatResponse{}, e
+	}
 	for i, m := range a.Conversation.Messages {
 		payload, _ := json.Marshal(m)
 		tasks, _ := stringArrayJSONPG(m.RelatedTaskIDs)

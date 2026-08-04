@@ -24,6 +24,10 @@ activation and live verification remain separate release gates.
 - The Agent runs outside the business server and owns conversations, Tasks,
   events, schedules, model profiles, prompts, extension installations,
   Knowledge metadata, and typed AWS configuration.
+- The Agent also owns the current `agent.execution.v2.*` analysis, target,
+  plan, deployment, run, confirmation, artifact, service-binding, and secret
+  records. Message Server remains a public action facade only; execution.v2
+  data and idempotency/event history are stored in the Agent database.
 - A future business-server proxy calls the Agent over TLS gRPC with one
   deployment-generated service token. The token is a protected file, not a
   database value; rotation is atomic replacement plus restart.
@@ -48,10 +52,11 @@ Its `WORKLOAD` Task handler is registered when at least one exact target route
 is available. `workload.core_runner` requires the local authenticated readiness
 proof; `workload.aws_ssm` and `workload.aws_ecs` are advertised independently
 only after an explicit readiness target is configured and the typed provider
-proves its STS/account binding plus exact target prerequisites. Missing or
-stale readiness configuration keeps the capability disabled; there is no
-implicit default target or broad scan. Per-operation credential, ARN, and
-target checks remain a second fence.
+graph is complete. Startup performs no AWS API calls; the first explicit
+provider action proves STS/account binding plus exact target prerequisites.
+Missing or stale readiness configuration keeps the capability disabled; there
+is no implicit default target or broad scan. Per-operation credential, ARN,
+and target checks remain a second fence.
 
 ## Acceptance scenarios
 
@@ -166,6 +171,14 @@ Typed AWS credentials, `TestCredentialIdentity` identity checks, plans, quotes,
 and change requests are exposed through `CoreCloudControlService`. Provider calls use typed SDK clients
 and durable fencing. Confirmation is mandatory for mutating or spend/exposure
 operations; model and extension tools cannot bypass it.
+
+AWS credential access still requires `core_aws_enabled`; all durable Core secret
+envelopes require a raw 32-byte `core_secret_master_key_file` mounted with mode
+`0400`. PostgreSQL
+stores only the key version, nonce, and AES-256-GCM ciphertext; field AAD binds
+the credential ID, revision, and secret field. Missing keys, wrong keys, and
+version mismatches fail closed. Provider code materializes credentials only
+for the request-local SDK call and never logs them.
 
 Fake-provider lifecycle tests and source-level typed-provider checks cover
 confirmation, read-back, and cleanup. No live AWS workload lifecycle is claimed

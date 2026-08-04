@@ -33,6 +33,7 @@ type SearchConfig struct {
 	EmbeddingProfileID     string
 	CollectionConfigDigest string
 	Dimension              int
+	ConfigReader           coreknowledge.EmbeddingConfigReader
 }
 
 // SearchResolver is the semantic implementation of coreknowledge.SearchResolver.
@@ -44,6 +45,7 @@ type SearchResolver struct {
 	profile                string
 	collectionConfigDigest string
 	dim                    int
+	configReader           coreknowledge.EmbeddingConfigReader
 }
 
 func NewSearchResolver(cfg SearchConfig) (*SearchResolver, error) {
@@ -52,7 +54,18 @@ func NewSearchResolver(cfg SearchConfig) (*SearchResolver, error) {
 		return nil, ErrInvalid
 	}
 	return &SearchResolver{embedder: cfg.Embedder, store: cfg.VectorStore, bindings: cfg.BindingResolver,
-		profiles: cfg.ProfileResolver, profile: strings.TrimSpace(cfg.EmbeddingProfileID), collectionConfigDigest: strings.ToLower(strings.TrimSpace(cfg.CollectionConfigDigest)), dim: cfg.Dimension}, nil
+		profiles: cfg.ProfileResolver, profile: strings.TrimSpace(cfg.EmbeddingProfileID), collectionConfigDigest: strings.ToLower(strings.TrimSpace(cfg.CollectionConfigDigest)), dim: cfg.Dimension, configReader: cfg.ConfigReader}, nil
+}
+
+func (r *SearchResolver) currentConfig(ctx context.Context) (string, string, int, error) {
+	if r.configReader == nil {
+		return r.profile, r.collectionConfigDigest, r.dim, nil
+	}
+	cfg, err := r.configReader.GetEmbeddingConfig(ctx)
+	if err != nil || strings.TrimSpace(cfg.EmbeddingProfileID) == "" || cfg.Dimension <= 0 || strings.TrimSpace(cfg.CollectionConfigDigest) == "" {
+		return "", "", 0, ErrResponse
+	}
+	return strings.TrimSpace(cfg.EmbeddingProfileID), strings.ToLower(strings.TrimSpace(cfg.CollectionConfigDigest)), cfg.Dimension, nil
 }
 
 var _ coreknowledge.SearchResolver = (*SearchResolver)(nil)
@@ -72,6 +85,10 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 	if limit > MaxSearchLimit {
 		return coreknowledge.SearchPage{}, ErrInvalid
 	}
+	profileID, configDigest, dimension, err := r.currentConfig(ctx)
+	if err != nil {
+		return coreknowledge.SearchPage{}, err
+	}
 	bindings, err := r.bindings.ResolveBindings(ctx, append([]string(nil), query.SourceIDs...))
 	if err != nil {
 		return coreknowledge.SearchPage{}, err
@@ -82,7 +99,7 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 	if err := validateRequestedBindings(query.SourceIDs, bindings); err != nil {
 		return coreknowledge.SearchPage{}, err
 	}
-	profile, err := r.profiles.ResolveProfile(ctx, r.profile)
+	profile, err := r.profiles.ResolveProfile(ctx, profileID)
 	if err != nil {
 		return coreknowledge.SearchPage{}, err
 	}
@@ -90,7 +107,7 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 		return coreknowledge.SearchPage{}, ErrProvider
 	}
 	for _, binding := range bindings {
-		if binding.EmbeddingProfileID != "" && (binding.EmbeddingProfileID != r.profile || binding.EmbeddingProfileRevision != profile.Revision || (r.collectionConfigDigest != "" && binding.CollectionConfigDigest != r.collectionConfigDigest)) {
+		if binding.EmbeddingProfileID != "" && (binding.EmbeddingProfileID != profileID || binding.EmbeddingProfileRevision != profile.Revision || (configDigest != "" && binding.CollectionConfigDigest != configDigest)) {
 			return coreknowledge.SearchPage{}, ErrResponse
 		}
 	}
@@ -98,7 +115,7 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 	if err != nil {
 		return coreknowledge.SearchPage{}, err
 	}
-	if len(vectors) != 1 || validateVector(vectors[0], r.dim) != nil {
+	if len(vectors) != 1 || validateVector(vectors[0], dimension) != nil {
 		return coreknowledge.SearchPage{}, ErrDimension
 	}
 	matches, err := r.store.Search(ctx, vectors[0], bindings, limit)
@@ -159,7 +176,7 @@ func verifyMatches(matches []Match, bindings []Binding) error {
 		}
 		if !okBinding ||
 			validateText(match.ChunkRef, 512, true) != nil || !isDigest(match.Digest) ||
-			validateText(match.Snippet, 1<<20, false) != nil || math.IsNaN(float64(match.Score)) || math.IsInf(float64(match.Score), 0) ||
+			validateContentText(match.Snippet, 1<<20, false) != nil || math.IsNaN(float64(match.Score)) || math.IsInf(float64(match.Score), 0) ||
 			match.Score < -1 || match.Score > 1 || (match.PointID != PointID(match.SourceID, match.Revision, match.ChunkRef) && match.PointID != GenerationPointID(match.Generation, match.SourceID, match.Revision, match.ChunkRef)) {
 			return ErrResponse
 		}
@@ -196,15 +213,17 @@ type IndexConfig struct {
 	EmbeddingProfileID string
 	Dimension          int
 	BatchSize          int
+	ConfigReader       coreknowledge.EmbeddingConfigReader
 }
 
 type IndexEngine struct {
-	embedder Embedder
-	store    VectorStore
-	profiles ProfileResolver
-	profile  string
-	dim      int
-	batch    int
+	embedder     Embedder
+	store        VectorStore
+	profiles     ProfileResolver
+	profile      string
+	dim          int
+	batch        int
+	configReader coreknowledge.EmbeddingConfigReader
 }
 
 // Store exposes the configured vector boundary to orchestration code that
@@ -230,7 +249,7 @@ func NewIndexEngine(cfg IndexConfig) (*IndexEngine, error) {
 	if cfg.BatchSize < 1 || cfg.BatchSize > MaxInputs {
 		return nil, ErrInvalid
 	}
-	return &IndexEngine{embedder: cfg.Embedder, store: cfg.VectorStore, profiles: cfg.ProfileResolver, profile: strings.TrimSpace(cfg.EmbeddingProfileID), dim: cfg.Dimension, batch: cfg.BatchSize}, nil
+	return &IndexEngine{embedder: cfg.Embedder, store: cfg.VectorStore, profiles: cfg.ProfileResolver, profile: strings.TrimSpace(cfg.EmbeddingProfileID), dim: cfg.Dimension, batch: cfg.BatchSize, configReader: cfg.ConfigReader}, nil
 }
 
 func (e *IndexEngine) Index(ctx context.Context, document SourceDocument) error {
@@ -273,7 +292,15 @@ func (e *IndexEngine) index(ctx context.Context, document SourceDocument, genera
 	if len(chunks) == 0 || len(chunks) > MaxChunksPerUpsert {
 		return ErrInvalid
 	}
-	profile, err := e.profiles.ResolveProfile(ctx, e.profile)
+	profileID, dimension := e.profile, e.dim
+	if e.configReader != nil {
+		cfg, err := e.configReader.GetEmbeddingConfig(ctx)
+		if err != nil || strings.TrimSpace(cfg.EmbeddingProfileID) == "" || cfg.Dimension <= 0 {
+			return ErrResponse
+		}
+		profileID, dimension = strings.TrimSpace(cfg.EmbeddingProfileID), cfg.Dimension
+	}
+	profile, err := e.profiles.ResolveProfile(ctx, profileID)
 	if err != nil {
 		return err
 	}
@@ -311,7 +338,7 @@ func (e *IndexEngine) index(ctx context.Context, document SourceDocument, genera
 		}
 		indexed := make([]Chunk, end-start)
 		for i := start; i < end; i++ {
-			if validateVector(vectors[i-start], e.dim) != nil {
+			if validateVector(vectors[i-start], dimension) != nil {
 				return ErrDimension
 			}
 			digest := sha256.Sum256([]byte(chunks[i].Text))

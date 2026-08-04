@@ -23,9 +23,10 @@ func (s *CoreConversationStore) ClaimChat(ctx context.Context, id, conv, fp, pro
 	var lease *uuid.UUID
 	var exp *time.Time
 	var storedConv, storedProfile *uuid.UUID
-	var storedExt, responseRaw, snapshotRaw []byte
+	var storedExt, responseRaw, snapshotRaw, snapshotNonce, snapshotCiphertext []byte
+	var snapshotKeyVersion *int32
 	var snapshotDigest *string
-	e = tx.QueryRow(ctx, `SELECT state,request_fingerprint,conversation_id,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,lease_epoch,lease_id,lease_expires_at,response_json,error_code,error_summary FROM core_chat_request_leases WHERE request_id=$1`, id).Scan(&state, &storedFP, &storedConv, &storedProfile, &storedExt, &snapshotRaw, &snapshotDigest, &epoch, &lease, &exp, &responseRaw, &failureCode, &failureSummary)
+	e = tx.QueryRow(ctx, `SELECT state,request_fingerprint,conversation_id,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch,lease_id,lease_expires_at,response_json,error_code,error_summary FROM core_chat_request_leases WHERE request_id=$1`, id).Scan(&state, &storedFP, &storedConv, &storedProfile, &storedExt, &snapshotRaw, &snapshotDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &epoch, &lease, &exp, &responseRaw, &failureCode, &failureSummary)
 	if errors.Is(e, pgx.ErrNoRows) {
 		leaseID := uuid.New()
 		lease = &leaseID
@@ -53,7 +54,7 @@ func (s *CoreConversationStore) ClaimChat(ctx context.Context, id, conv, fp, pro
 	_ = json.Unmarshal(storedExt, &storedExts)
 	base := core.ChatLease{RequestID: id, ConversationID: conv, Fingerprint: fp, ProfileID: profile, Extensions: storedExts, Epoch: epoch}
 	if snapshotDigest != nil {
-		if len(snapshotRaw) == 0 || json.Unmarshal(snapshotRaw, &base.ProfileSnapshot) != nil || base.ProfileSnapshot.Validate() != nil || base.ProfileSnapshot.Digest() != *snapshotDigest {
+		if snapshotKeyVersion == nil || len(snapshotRaw) == 0 || s.decodeChatSnapshot(ctx, id, snapshotRaw, *snapshotDigest, uint32(*snapshotKeyVersion), snapshotNonce, snapshotCiphertext, &base.ProfileSnapshot) != nil {
 			return core.ChatLease{}, core.ErrConflict
 		}
 		base.ProfileSnapshotDigest = *snapshotDigest
@@ -99,18 +100,27 @@ func (s *CoreConversationStore) BindChatProfileSnapshot(ctx context.Context, id,
 	if err := snapshot.Validate(); err != nil {
 		return core.ChatLease{}, core.ErrInvalid
 	}
-	raw, err := json.Marshal(snapshot)
+	metadataSnapshot := snapshot
+	metadataSnapshot.APIKey = ""
+	raw, err := json.Marshal(metadataSnapshot)
 	if err != nil {
 		return core.ChatLease{}, err
 	}
 	digest := snapshot.Digest()
+	plaintext := []byte(snapshot.APIKey)
+	envelope, err := s.sealDurableSecret("core_chat_request_leases", id, snapshot.Revision, "profile_snapshot_api_key", plaintext)
+	clearBytes(plaintext)
+	if err != nil {
+		return core.ChatLease{}, err
+	}
 	var out core.ChatLease
 	var conv, profile *uuid.UUID
 	var leaseUUID *uuid.UUID
 	var expires *time.Time
-	var exts, snapshotRaw []byte
+	var exts, snapshotRaw, snapshotNonce, snapshotCiphertext []byte
+	var snapshotKeyVersion int32
 	var storedDigest *string
-	err = s.pool.QueryRow(ctx, `UPDATE core_chat_request_leases SET profile_snapshot_json=$5,profile_snapshot_digest=$6,updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND request_fingerprint=$4 AND profile_id=$7 AND state='in_flight' AND profile_snapshot_json IS NULL AND profile_snapshot_digest IS NULL RETURNING conversation_id,request_fingerprint,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,lease_epoch,lease_id,lease_expires_at`, id, lease, epoch, fp, raw, digest, snapshot.ProfileID).Scan(&conv, &out.Fingerprint, &profile, &exts, &snapshotRaw, &storedDigest, &out.Epoch, &leaseUUID, &expires)
+	err = s.pool.QueryRow(ctx, `UPDATE core_chat_request_leases SET profile_snapshot_json=$5,profile_snapshot_digest=$6,profile_snapshot_key_version=$8,profile_snapshot_api_key_nonce=$9,profile_snapshot_api_key_ciphertext=$10,updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND request_fingerprint=$4 AND profile_id=$7 AND state='in_flight' AND profile_snapshot_json IS NULL AND profile_snapshot_digest IS NULL RETURNING conversation_id,request_fingerprint,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch,lease_id,lease_expires_at`, id, lease, epoch, fp, raw, digest, snapshot.ProfileID, envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext).Scan(&conv, &out.Fingerprint, &profile, &exts, &snapshotRaw, &storedDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &out.Epoch, &leaseUUID, &expires)
 	if err != nil {
 		return core.ChatLease{}, core.ErrConflict
 	}
@@ -128,7 +138,7 @@ func (s *CoreConversationStore) BindChatProfileSnapshot(ctx context.Context, id,
 		out.ProfileID = profile.String()
 	}
 	_ = json.Unmarshal(exts, &out.Extensions)
-	if storedDigest == nil || *storedDigest != digest || json.Unmarshal(snapshotRaw, &out.ProfileSnapshot) != nil {
+	if storedDigest == nil || *storedDigest != digest || s.decodeChatSnapshot(ctx, id, snapshotRaw, *storedDigest, uint32(snapshotKeyVersion), snapshotNonce, snapshotCiphertext, &out.ProfileSnapshot) != nil {
 		return core.ChatLease{}, core.ErrConflict
 	}
 	out.ProfileSnapshotDigest = *storedDigest
@@ -142,9 +152,10 @@ func (s *CoreConversationStore) RenewChat(ctx context.Context, id, lease string,
 	var ep uint64
 	var conv, profile *uuid.UUID
 	var fp string
-	var exts, snapshotRaw []byte
+	var exts, snapshotRaw, snapshotNonce, snapshotCiphertext []byte
+	var snapshotKeyVersion *int32
 	var snapshotDigest *string
-	e = s.pool.QueryRow(ctx, `UPDATE core_chat_request_leases SET lease_epoch=lease_epoch+1,lease_expires_at=$4,updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight' RETURNING conversation_id,request_fingerprint,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,lease_epoch`, id, lease, epoch, x).Scan(&conv, &fp, &profile, &exts, &snapshotRaw, &snapshotDigest, &ep)
+	e = s.pool.QueryRow(ctx, `UPDATE core_chat_request_leases SET lease_epoch=lease_epoch+1,lease_expires_at=$4,updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight' RETURNING conversation_id,request_fingerprint,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch`, id, lease, epoch, x).Scan(&conv, &fp, &profile, &exts, &snapshotRaw, &snapshotDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &ep)
 	if e != nil {
 		return out, core.ErrConflict
 	}
@@ -157,7 +168,7 @@ func (s *CoreConversationStore) RenewChat(ctx context.Context, id, lease string,
 	}
 	_ = json.Unmarshal(exts, &out.Extensions)
 	if snapshotDigest != nil {
-		if json.Unmarshal(snapshotRaw, &out.ProfileSnapshot) != nil || out.ProfileSnapshot.Validate() != nil || out.ProfileSnapshot.Digest() != *snapshotDigest {
+		if snapshotKeyVersion == nil || s.decodeChatSnapshot(ctx, id, snapshotRaw, *snapshotDigest, uint32(*snapshotKeyVersion), snapshotNonce, snapshotCiphertext, &out.ProfileSnapshot) != nil {
 			return core.ChatLease{}, core.ErrConflict
 		}
 		out.ProfileSnapshotDigest = *snapshotDigest
@@ -166,6 +177,23 @@ func (s *CoreConversationStore) RenewChat(ctx context.Context, id, lease string,
 	out.ExpiresAt = x
 	out.Status = core.ClaimInFlight
 	return out, nil
+}
+
+func (s *CoreConversationStore) decodeChatSnapshot(ctx context.Context, requestID string, raw []byte, digest string, version uint32, nonce, ciphertext []byte, out *coremodel.ExecutionSnapshot) error {
+	if out == nil || json.Unmarshal(raw, out) != nil || out.APIKey != "" {
+		return core.ErrConflict
+	}
+	plaintext, err := s.openDurableSecret("core_chat_request_leases", requestID, out.Revision, "profile_snapshot_api_key", version, nonce, ciphertext)
+	if err != nil {
+		return core.ErrConflict
+	}
+	out.APIKey = string(plaintext)
+	clearBytes(plaintext)
+	if err := out.Validate(); err != nil || out.Digest() != digest {
+		return core.ErrConflict
+	}
+	_ = ctx
+	return nil
 }
 func (s *CoreConversationStore) ReleaseChat(ctx context.Context, id, lease string, epoch uint64) error {
 	res, e := s.pool.Exec(ctx, `UPDATE core_chat_request_leases SET lease_id=NULL,lease_expires_at=NULL WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight'`, id, lease, epoch)

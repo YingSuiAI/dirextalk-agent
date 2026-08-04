@@ -52,6 +52,13 @@ func (h CredentialHandle) MarshalJSON() ([]byte, error) {
 type CredentialResolver interface {
 	ResolveCredential(context.Context, string) (CredentialHandle, error)
 }
+
+// CredentialRevisionResolver is an optional exact-version read seam used by
+// execution.v2. It returns only the durable revision number; secret bytes
+// remain inside ResolveCredential's trusted provider boundary.
+type CredentialRevisionResolver interface {
+	CredentialRevision(context.Context, string) (uint64, error)
+}
 type SecretResolver interface {
 	ResolveSecretReference(context.Context, string) (string, error)
 }
@@ -94,6 +101,17 @@ func (r *DurableCredentialResolver) ResolveCredential(ctx context.Context, ref s
 		return CredentialHandle{}, ErrPrecondition
 	}
 	return h, nil
+}
+
+func (r *DurableCredentialResolver) CredentialRevision(ctx context.Context, ref string) (uint64, error) {
+	if r == nil || r.store == nil || !canonicalUUID(ref) {
+		return 0, ErrPrecondition
+	}
+	c, err := r.store.GetCredential(ctx, ref)
+	if err != nil || c.ID != ref || c.Revision <= 0 || c.VerifiedRevision != c.Revision {
+		return 0, ErrPrecondition
+	}
+	return uint64(c.Revision), nil
 }
 
 func canonicalUUID(v string) bool {

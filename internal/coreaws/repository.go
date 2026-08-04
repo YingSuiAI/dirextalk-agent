@@ -1,6 +1,9 @@
 package coreaws
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository is the persistence boundary for AWS profiles, immutable plans
 // and change records. Implementations must serialize mutations and replay
@@ -11,7 +14,7 @@ type Repository interface {
 	ListCredentials(context.Context, int, string) (CredentialPage, error)
 	UpdateCredential(context.Context, Credentials, int64) (Credentials, error)
 	DeleteCredential(context.Context, string, int64) error
-	RecordCredentialIdentity(context.Context, string, int64, Identity) (Credentials, error)
+	RecordCredentialIdentity(context.Context, string, int64, Identity, time.Time) (Credentials, error)
 	CreatePlan(context.Context, Plan) (Plan, error)
 	GetPlan(context.Context, string) (Plan, error)
 	ListPlans(context.Context, int, string) (PlanPage, error)

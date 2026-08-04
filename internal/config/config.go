@@ -9,12 +9,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -23,39 +26,102 @@ import (
 // Config is the complete non-secret Agent process configuration. Secret
 // material is represented only by mounted-file paths.
 type Config struct {
-	InstanceID                      string                `yaml:"instance_id" mapstructure:"instance_id"`
-	DatabaseURL                     string                `yaml:"-" mapstructure:"-"`
-	DatabaseURLFile                 string                `yaml:"database_url_file" mapstructure:"database_url_file"`
-	ListenAddress                   string                `yaml:"grpc_listen" mapstructure:"grpc_listen"`
-	TLSCertFile                     string                `yaml:"tls_cert_file" mapstructure:"tls_cert_file"`
-	TLSKeyFile                      string                `yaml:"tls_key_file" mapstructure:"tls_key_file"`
-	ServiceTokenFile                string                `yaml:"service_token_file" mapstructure:"service_token_file"`
-	EnableHealthService             bool                  `yaml:"enable_health_service" mapstructure:"enable_health_service"`
-	EnableReflection                bool                  `yaml:"enable_reflection" mapstructure:"enable_reflection"`
-	CoreTaskMaxConcurrency          int                   `yaml:"core_task_max_concurrency" mapstructure:"core_task_max_concurrency"`
-	CoreTaskLeaseTTL                time.Duration         `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
-	CoreScheduleSweepInterval       time.Duration         `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
-	CoreShutdownGrace               time.Duration         `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
-	CoreAWSEnabled                  bool                  `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
-	CoreAWSSSMReadiness             *AWSWorkloadReadiness `yaml:"core_aws_ssm_readiness" mapstructure:"core_aws_ssm_readiness"`
-	CoreAWSECSReadiness             *AWSWorkloadReadiness `yaml:"core_aws_ecs_readiness" mapstructure:"core_aws_ecs_readiness"`
-	CoreExtensionEnabled            bool                  `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
-	CoreExtensionStagingRoot        string                `yaml:"core_extension_staging_root" mapstructure:"core_extension_staging_root"`
-	CoreExtensionWorkspaceRoot      string                `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
-	CoreExtensionRunnerSocket       string                `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
-	CoreExtensionRunnerUID          uint32                `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
-	CoreWorkloadEnabled             bool                  `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
-	CoreWorkloadRunnerSocket        string                `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
-	CoreWorkloadRunnerUID           uint32                `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
-	CoreKnowledgeEnabled            bool                  `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
-	CoreKnowledgeContentRoot        string                `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
-	CoreKnowledgeMountRoot          string                `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
-	CoreKnowledgeContentQuotaBytes  int64                 `yaml:"core_knowledge_content_quota_bytes" mapstructure:"core_knowledge_content_quota_bytes"`
-	CoreKnowledgeEmbeddingProfileID string                `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
-	CoreKnowledgeQdrantEndpoint     string                `yaml:"core_knowledge_qdrant_endpoint" mapstructure:"core_knowledge_qdrant_endpoint"`
-	CoreKnowledgeQdrantCollection   string                `yaml:"core_knowledge_qdrant_collection" mapstructure:"core_knowledge_qdrant_collection"`
-	CoreKnowledgeQdrantDimension    int                   `yaml:"core_knowledge_qdrant_dimension" mapstructure:"core_knowledge_qdrant_dimension"`
-	CoreKnowledgeSweepInterval      time.Duration         `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
+	InstanceID       string `yaml:"instance_id" mapstructure:"instance_id"`
+	DatabaseURL      string `yaml:"-" mapstructure:"-"`
+	DatabaseURLFile  string `yaml:"database_url_file" mapstructure:"database_url_file"`
+	ListenAddress    string `yaml:"grpc_listen" mapstructure:"grpc_listen"`
+	TLSCertFile      string `yaml:"tls_cert_file" mapstructure:"tls_cert_file"`
+	TLSKeyFile       string `yaml:"tls_key_file" mapstructure:"tls_key_file"`
+	ServiceTokenFile string `yaml:"service_token_file" mapstructure:"service_token_file"`
+	// Capability API is a separate mTLS listener used by message-server.  It
+	// may reuse the Core certificate/token when no separate material is
+	// mounted, but production deployments should provide an independent
+	// directional token file.
+	CapabilityEnabled                   bool                  `yaml:"capability_enabled" mapstructure:"capability_enabled"`
+	CapabilityListenAddress             string                `yaml:"capability_grpc_listen" mapstructure:"capability_grpc_listen"`
+	CapabilityCACertFile                string                `yaml:"capability_ca_cert_file" mapstructure:"capability_ca_cert_file"`
+	CapabilityTLSCertFile               string                `yaml:"capability_tls_cert_file" mapstructure:"capability_tls_cert_file"`
+	CapabilityTLSKeyFile                string                `yaml:"capability_tls_key_file" mapstructure:"capability_tls_key_file"`
+	CapabilityTokenFile                 string                `yaml:"capability_token_file" mapstructure:"capability_token_file"`
+	CapabilityGrantPublicKeyFile        string                `yaml:"capability_grant_public_key_file" mapstructure:"capability_grant_public_key_file"`
+	CapabilityPeerCommonName            string                `yaml:"capability_peer_common_name" mapstructure:"capability_peer_common_name"`
+	CapabilityPeerInstanceID            string                `yaml:"capability_peer_instance_id" mapstructure:"capability_peer_instance_id"`
+	CapabilityAccountGeneration         int64                 `yaml:"capability_account_generation" mapstructure:"capability_account_generation"`
+	CapabilityMaxConcurrentQuery        int                   `yaml:"capability_max_concurrent_query" mapstructure:"capability_max_concurrent_query"`
+	CapabilityMaxConcurrentWatch        int                   `yaml:"capability_max_concurrent_watch" mapstructure:"capability_max_concurrent_watch"`
+	ProductCapabilityEnabled            bool                  `yaml:"product_capability_enabled" mapstructure:"product_capability_enabled"`
+	ProductCapabilityAddress            string                `yaml:"product_capability_address" mapstructure:"product_capability_address"`
+	ProductCapabilityCACertFile         string                `yaml:"product_capability_ca_cert_file" mapstructure:"product_capability_ca_cert_file"`
+	ProductCapabilityTLSCertFile        string                `yaml:"product_capability_tls_cert_file" mapstructure:"product_capability_tls_cert_file"`
+	ProductCapabilityTLSKeyFile         string                `yaml:"product_capability_tls_key_file" mapstructure:"product_capability_tls_key_file"`
+	ProductCapabilityTokenFile          string                `yaml:"product_capability_token_file" mapstructure:"product_capability_token_file"`
+	ProductCapabilityServerName         string                `yaml:"product_capability_server_name" mapstructure:"product_capability_server_name"`
+	ProductCapabilityInstanceID         string                `yaml:"product_capability_instance_id" mapstructure:"product_capability_instance_id"`
+	ProductCapabilityAccountGeneration  int64                 `yaml:"product_capability_account_generation" mapstructure:"product_capability_account_generation"`
+	EnableHealthService                 bool                  `yaml:"enable_health_service" mapstructure:"enable_health_service"`
+	EnableReflection                    bool                  `yaml:"enable_reflection" mapstructure:"enable_reflection"`
+	CoreTaskMaxConcurrency              int                   `yaml:"core_task_max_concurrency" mapstructure:"core_task_max_concurrency"`
+	CoreTaskLeaseTTL                    time.Duration         `yaml:"core_task_lease_ttl" mapstructure:"core_task_lease_ttl"`
+	CoreScheduleSweepInterval           time.Duration         `yaml:"core_schedule_sweep_interval" mapstructure:"core_schedule_sweep_interval"`
+	CoreShutdownGrace                   time.Duration         `yaml:"core_shutdown_grace" mapstructure:"core_shutdown_grace"`
+	CoreAWSEnabled                      bool                  `yaml:"core_aws_enabled" mapstructure:"core_aws_enabled"`
+	CoreSecretMasterKeyFile             string                `yaml:"core_secret_master_key_file" mapstructure:"core_secret_master_key_file"`
+	CoreSecretMasterKeyVersion          uint32                `yaml:"core_secret_master_key_version" mapstructure:"core_secret_master_key_version"`
+	CoreAWSSSMReadiness                 *AWSWorkloadReadiness `yaml:"core_aws_ssm_readiness" mapstructure:"core_aws_ssm_readiness"`
+	CoreAWSECSReadiness                 *AWSWorkloadReadiness `yaml:"core_aws_ecs_readiness" mapstructure:"core_aws_ecs_readiness"`
+	CoreAWSCloudFormationServiceRoleARN string                `yaml:"core_aws_cloudformation_service_role_arn" mapstructure:"core_aws_cloudformation_service_role_arn"`
+	CoreExtensionEnabled                bool                  `yaml:"core_extension_enabled" mapstructure:"core_extension_enabled"`
+	CoreExtensionStagingRoot            string                `yaml:"core_extension_staging_root" mapstructure:"core_extension_staging_root"`
+	CoreExtensionWorkspaceRoot          string                `yaml:"core_extension_workspace_root" mapstructure:"core_extension_workspace_root"`
+	CoreExtensionRunnerSocket           string                `yaml:"core_extension_runner_socket" mapstructure:"core_extension_runner_socket"`
+	CoreExtensionRunnerUID              uint32                `yaml:"core_extension_runner_uid" mapstructure:"core_extension_runner_uid"`
+	CoreWorkloadEnabled                 bool                  `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
+	CoreWorkloadRunnerSocket            string                `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
+	CoreWorkloadRunnerUID               uint32                `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
+	// execution.v2 is Agent-owned and remains disabled unless an explicit
+	// SSM target/readiness proof and all typed provider routes are composed.
+	CoreExecutionV2Enabled           bool          `yaml:"core_execution_v2_enabled" mapstructure:"core_execution_v2_enabled"`
+	CoreExecutionV2ProbeTimeout      time.Duration `yaml:"core_execution_v2_probe_timeout" mapstructure:"core_execution_v2_probe_timeout"`
+	CoreExecutionV2BindingOperations []string      `yaml:"core_execution_v2_binding_operations" mapstructure:"core_execution_v2_binding_operations"`
+	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
+	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
+	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
+	CoreKnowledgeContentQuotaBytes   int64         `yaml:"core_knowledge_content_quota_bytes" mapstructure:"core_knowledge_content_quota_bytes"`
+	CoreKnowledgeEmbeddingProfileID  string        `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
+	CoreKnowledgeQdrantEndpoint      string        `yaml:"core_knowledge_qdrant_endpoint" mapstructure:"core_knowledge_qdrant_endpoint"`
+	CoreKnowledgeQdrantCollection    string        `yaml:"core_knowledge_qdrant_collection" mapstructure:"core_knowledge_qdrant_collection"`
+	CoreKnowledgeQdrantDimension     int           `yaml:"core_knowledge_qdrant_dimension" mapstructure:"core_knowledge_qdrant_dimension"`
+	CoreKnowledgeSweepInterval       time.Duration `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
+	// Native Voice is an optional Agent-owned capability.  Credentials are
+	// mounted-file references only; the values are read request-locally and
+	// never written to the Agent database or returned by the capability API.
+	CoreVoiceEnabled                bool   `yaml:"core_voice_enabled" mapstructure:"core_voice_enabled"`
+	CoreVoiceProvider               string `yaml:"core_voice_provider" mapstructure:"core_voice_provider"`
+	CoreVoiceHost                   string `yaml:"core_voice_host" mapstructure:"core_voice_host"`
+	CoreVoiceRegion                 string `yaml:"core_voice_region" mapstructure:"core_voice_region"`
+	CoreVoiceAppID                  string `yaml:"core_voice_app_id" mapstructure:"core_voice_app_id"`
+	CoreVoiceChatAppID              string `yaml:"core_voice_chat_app_id" mapstructure:"core_voice_chat_app_id"`
+	CoreVoiceAIUserID               string `yaml:"core_voice_ai_user_id" mapstructure:"core_voice_ai_user_id"`
+	CoreVoiceAccessKeyIDFile        string `yaml:"core_voice_access_key_id_file" mapstructure:"core_voice_access_key_id_file"`
+	CoreVoiceSecretAccessKeyFile    string `yaml:"core_voice_secret_access_key_file" mapstructure:"core_voice_secret_access_key_file"`
+	CoreVoiceRTCAppKeyFile          string `yaml:"core_voice_rtc_app_key_file" mapstructure:"core_voice_rtc_app_key_file"`
+	CoreVoiceWebhookURL             string `yaml:"core_voice_webhook_url" mapstructure:"core_voice_webhook_url"`
+	CoreVoiceWebhookSecretFile      string `yaml:"core_voice_webhook_secret_file" mapstructure:"core_voice_webhook_secret_file"`
+	CoreVoiceCallbackRelayTokenFile string `yaml:"core_voice_callback_relay_token_file" mapstructure:"core_voice_callback_relay_token_file"`
+	// CoreVoiceRelayTokenFile is retained as an in-process alias for callers
+	// constructing Config values directly. YAML deployments should use the
+	// explicit callback name above so it matches the split compose contract.
+	CoreVoiceRelayTokenFile          string        `yaml:"core_voice_relay_token_file" mapstructure:"core_voice_relay_token_file"`
+	CoreVoiceCustomLLMURL            string        `yaml:"core_voice_custom_llm_url" mapstructure:"core_voice_custom_llm_url"`
+	CoreVoiceConversationProfileID   string        `yaml:"core_voice_conversation_profile_id" mapstructure:"core_voice_conversation_profile_id"`
+	CoreVoiceSpeechProfileID         string        `yaml:"core_voice_speech_profile_id" mapstructure:"core_voice_speech_profile_id"`
+	CoreVoiceClientTranscriptEnabled bool          `yaml:"core_voice_client_transcript_enabled" mapstructure:"core_voice_client_transcript_enabled"`
+	CoreVoiceCallbackEnabled         bool          `yaml:"core_voice_callback_enabled" mapstructure:"core_voice_callback_enabled"`
+	CoreVoiceCallbackListenAddress   string        `yaml:"core_voice_callback_listen" mapstructure:"core_voice_callback_listen"`
+	CoreVoiceCallbackTLSCertFile     string        `yaml:"core_voice_callback_tls_cert_file" mapstructure:"core_voice_callback_tls_cert_file"`
+	CoreVoiceCallbackTLSKeyFile      string        `yaml:"core_voice_callback_tls_key_file" mapstructure:"core_voice_callback_tls_key_file"`
+	CoreVoiceCallbackReadTimeout     time.Duration `yaml:"core_voice_callback_read_timeout" mapstructure:"core_voice_callback_read_timeout"`
+	CoreVoiceCallbackWriteTimeout    time.Duration `yaml:"core_voice_callback_write_timeout" mapstructure:"core_voice_callback_write_timeout"`
 }
 
 // AWSWorkloadReadiness is non-secret, explicit startup proof configuration.
@@ -92,12 +158,19 @@ func Load(path string) (Config, error) {
 	v.SetDefault("core_schedule_sweep_interval", defaultCoreScheduleSweepInterval)
 	v.SetDefault("core_shutdown_grace", defaultCoreShutdownGrace)
 	v.SetDefault("core_knowledge_sweep_interval", defaultKnowledgeSweepInterval)
+	v.SetDefault("core_execution_v2_probe_timeout", 10*time.Second)
+	v.SetDefault("core_secret_master_key_version", uint32(1))
+	v.SetDefault("core_voice_callback_read_timeout", 5*time.Second)
+	v.SetDefault("core_voice_callback_write_timeout", 15*time.Second)
 	if err := v.ReadConfig(bytes.NewReader(contents)); err != nil {
 		return Config{}, fmt.Errorf("read config through viper: %w", err)
 	}
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return Config{}, fmt.Errorf("viper config decode: %w", err)
+	}
+	if strings.TrimSpace(cfg.CoreAWSCloudFormationServiceRoleARN) == "" {
+		cfg.CoreAWSCloudFormationServiceRoleARN = strings.TrimSpace(os.Getenv("DIREXTALK_CORE_AWS_CLOUDFORMATION_SERVICE_ROLE_ARN"))
 	}
 	var strictCfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(contents))
@@ -120,6 +193,12 @@ func ValidateCore(cfg *Config) error {
 	if err := ValidateCommon(cfg); err != nil {
 		return err
 	}
+	if err := ValidateCoreSecretMasterKey(cfg); err != nil {
+		return err
+	}
+	if err := ValidateCoreAWS(cfg); err != nil {
+		return err
+	}
 	if err := validateCoreRuntime(cfg); err != nil {
 		return err
 	}
@@ -130,6 +209,12 @@ func ValidateCore(cfg *Config) error {
 		return err
 	}
 	if err := ValidateCoreWorkload(cfg); err != nil {
+		return err
+	}
+	if err := ValidateCoreExecutionV2(cfg); err != nil {
+		return err
+	}
+	if err := ValidateCoreVoice(cfg); err != nil {
 		return err
 	}
 	if strings.TrimSpace(cfg.ListenAddress) == "" {
@@ -171,6 +256,367 @@ func ValidateCore(cfg *Config) error {
 			cfg.TLSKeyFile = resolved
 		}
 	}
+	if err := ValidateCapability(cfg); err != nil {
+		return err
+	}
+	if err := ValidateProductCapability(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateCoreSecretMasterKey validates the mounted Agent secret key used by
+// every durable secret envelope (model/provider, conversation snapshots,
+// extension, execution.v2, and AWS). It checks only path ownership/mode and
+// never loads key bytes into configuration.
+func ValidateCoreSecretMasterKey(cfg *Config) error {
+	if cfg == nil {
+		return errors.New("core secret master key config is required")
+	}
+	if cfg.CoreSecretMasterKeyVersion == 0 {
+		cfg.CoreSecretMasterKeyVersion = secretbox.KeyVersionMin
+	}
+	if strings.TrimSpace(cfg.CoreSecretMasterKeyFile) == "" {
+		return errors.New("core_secret_master_key_file is required")
+	}
+	resolved, err := filepath.Abs(strings.TrimSpace(cfg.CoreSecretMasterKeyFile))
+	if err != nil {
+		return fmt.Errorf("resolve core_secret_master_key_file: %w", err)
+	}
+	if err := secretbox.ValidateMountedFile(resolved); err != nil {
+		return fmt.Errorf("core_secret_master_key_file: %w", err)
+	}
+	cfg.CoreSecretMasterKeyFile = resolved
+	return nil
+}
+
+// ValidateCoreAWS retains the AWS-specific validation entry point while the
+// mounted master key is now required for every Core durable-secret surface.
+func ValidateCoreAWS(cfg *Config) error {
+	if cfg == nil || !cfg.CoreAWSEnabled {
+		return nil
+	}
+	return ValidateCoreSecretMasterKey(cfg)
+}
+
+// ValidateCoreExecutionV2 keeps the production execution capability opt-in.
+// The composition root performs the stronger dependency/readiness checks;
+// this function only validates process-level values that can be checked
+// without opening a database or contacting AWS.
+func ValidateCoreExecutionV2(cfg *Config) error {
+	if cfg == nil || !cfg.CoreExecutionV2Enabled {
+		return nil
+	}
+	if cfg.CoreExecutionV2ProbeTimeout <= 0 || cfg.CoreExecutionV2ProbeTimeout > 2*time.Minute {
+		return errors.New("core_execution_v2_probe_timeout must be between 1ns and 2m")
+	}
+	if len(cfg.CoreExecutionV2BindingOperations) == 0 {
+		return errors.New("core_execution_v2_binding_operations must explicitly allow at least one operation")
+	}
+	seen := map[string]struct{}{}
+	for _, operation := range cfg.CoreExecutionV2BindingOperations {
+		operation = strings.TrimSpace(operation)
+		if operation == "" || len(operation) > 64 || strings.ContainsAny(operation, "\r\n\x00 ") {
+			return errors.New("core_execution_v2_binding_operations contains an invalid operation")
+		}
+		if _, ok := seen[operation]; ok {
+			return errors.New("core_execution_v2_binding_operations contains a duplicate operation")
+		}
+		seen[operation] = struct{}{}
+	}
+	if cfg.CoreAWSEnabled == false || cfg.CoreAWSSSMReadiness == nil {
+		return errors.New("core_execution_v2_enabled requires core_aws_enabled and core_aws_ssm_readiness")
+	}
+	if !awsServiceRoleARNRE.MatchString(strings.TrimSpace(cfg.CoreAWSCloudFormationServiceRoleARN)) {
+		return errors.New("core_aws_cloudformation_service_role_arn must be an explicit IAM role ARN")
+	}
+	return nil
+}
+
+var awsServiceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,512}$`)
+
+// ValidateCoreVoice validates the optional Agent-owned Native Voice graph.
+// Disabled mode deliberately leaves all voice fields untouched so an Agent
+// can run without Volc credentials or a callback listener.  A deployment that
+// enables Voice must provide explicit provider/profile references and
+// protected mounted files; the runtime never persists their contents.
+func ValidateCoreVoice(cfg *Config) error {
+	if cfg == nil || !cfg.CoreVoiceEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.CoreVoiceProvider) == "" {
+		cfg.CoreVoiceProvider = "volc_voice"
+	}
+	if cfg.CoreVoiceProvider != "volc_voice" {
+		return errors.New("core_voice_provider must be volc_voice")
+	}
+	if cfg.CapabilityAccountGeneration <= 0 {
+		return errors.New("core_voice requires a positive capability_account_generation")
+	}
+	if strings.TrimSpace(cfg.CoreVoiceHost) == "" {
+		cfg.CoreVoiceHost = "https://rtc.volcengineapi.com"
+	}
+	if strings.TrimSpace(cfg.CoreVoiceRegion) == "" {
+		cfg.CoreVoiceRegion = "cn-north-1"
+	}
+	if strings.TrimSpace(cfg.CoreVoiceAppID) == "" {
+		return errors.New("core_voice_app_id is required")
+	}
+	if strings.TrimSpace(cfg.CoreVoiceAccessKeyIDFile) == "" || strings.TrimSpace(cfg.CoreVoiceSecretAccessKeyFile) == "" || strings.TrimSpace(cfg.CoreVoiceRTCAppKeyFile) == "" || strings.TrimSpace(cfg.CoreVoiceWebhookSecretFile) == "" {
+		return errors.New("core_voice credential files are required")
+	}
+	if strings.TrimSpace(cfg.CoreVoiceCallbackRelayTokenFile) == "" {
+		cfg.CoreVoiceCallbackRelayTokenFile = cfg.CoreVoiceRelayTokenFile
+	}
+	if strings.TrimSpace(cfg.CoreVoiceCallbackRelayTokenFile) == "" {
+		return errors.New("core_voice_callback_relay_token_file is required")
+	}
+	for name, value := range map[string]string{
+		"core_voice_access_key_id_file":        cfg.CoreVoiceAccessKeyIDFile,
+		"core_voice_secret_access_key_file":    cfg.CoreVoiceSecretAccessKeyFile,
+		"core_voice_rtc_app_key_file":          cfg.CoreVoiceRTCAppKeyFile,
+		"core_voice_webhook_secret_file":       cfg.CoreVoiceWebhookSecretFile,
+		"core_voice_callback_relay_token_file": cfg.CoreVoiceCallbackRelayTokenFile,
+	} {
+		resolved, err := canonicalPath(value)
+		if err != nil {
+			return fmt.Errorf("canonicalize %s: %w", name, err)
+		}
+		if err := ValidateMountedSecretFile(resolved); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		switch name {
+		case "core_voice_access_key_id_file":
+			cfg.CoreVoiceAccessKeyIDFile = resolved
+		case "core_voice_secret_access_key_file":
+			cfg.CoreVoiceSecretAccessKeyFile = resolved
+		case "core_voice_rtc_app_key_file":
+			cfg.CoreVoiceRTCAppKeyFile = resolved
+		case "core_voice_webhook_secret_file":
+			cfg.CoreVoiceWebhookSecretFile = resolved
+		case "core_voice_callback_relay_token_file":
+			cfg.CoreVoiceCallbackRelayTokenFile = resolved
+		}
+	}
+	cfg.CoreVoiceRelayTokenFile = cfg.CoreVoiceCallbackRelayTokenFile
+	for name, raw := range map[string]string{
+		"core_voice_host":           cfg.CoreVoiceHost,
+		"core_voice_webhook_url":    cfg.CoreVoiceWebhookURL,
+		"core_voice_custom_llm_url": cfg.CoreVoiceCustomLLMURL,
+	} {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(raw, "\x00\r\n") {
+			return fmt.Errorf("%s must be an absolute HTTPS URL", name)
+		}
+	}
+	if strings.TrimSpace(cfg.CoreVoiceConversationProfileID) == "" || strings.TrimSpace(cfg.CoreVoiceSpeechProfileID) == "" {
+		return errors.New("core_voice conversation and speech profile references are required")
+	}
+	conversationProfile, err := uuid.Parse(strings.TrimSpace(cfg.CoreVoiceConversationProfileID))
+	if err != nil || conversationProfile == uuid.Nil || conversationProfile.String() != strings.TrimSpace(cfg.CoreVoiceConversationProfileID) {
+		return errors.New("core_voice_conversation_profile_id must be a UUID")
+	}
+	speechProfile, err := uuid.Parse(strings.TrimSpace(cfg.CoreVoiceSpeechProfileID))
+	if err != nil || speechProfile == uuid.Nil || speechProfile.String() != strings.TrimSpace(cfg.CoreVoiceSpeechProfileID) {
+		return errors.New("core_voice_speech_profile_id must be a UUID")
+	}
+	if cfg.CoreVoiceCallbackEnabled {
+		if strings.TrimSpace(cfg.CoreVoiceCallbackListenAddress) == "" {
+			cfg.CoreVoiceCallbackListenAddress = ":8444"
+		}
+		if strings.TrimSpace(cfg.ListenAddress) != "" && cfg.CoreVoiceCallbackListenAddress == cfg.ListenAddress {
+			return errors.New("core_voice_callback_listen must not reuse the Core gRPC listen address")
+		}
+		if cfg.CoreVoiceCallbackReadTimeout == 0 {
+			cfg.CoreVoiceCallbackReadTimeout = 5 * time.Second
+		}
+		if cfg.CoreVoiceCallbackWriteTimeout == 0 {
+			cfg.CoreVoiceCallbackWriteTimeout = 15 * time.Second
+		}
+		if strings.TrimSpace(cfg.CoreVoiceCallbackTLSCertFile) == "" {
+			cfg.CoreVoiceCallbackTLSCertFile = cfg.TLSCertFile
+		}
+		if strings.TrimSpace(cfg.CoreVoiceCallbackTLSKeyFile) == "" {
+			cfg.CoreVoiceCallbackTLSKeyFile = cfg.TLSKeyFile
+		}
+		for name, path := range map[string]string{
+			"core_voice_callback_tls_cert_file": cfg.CoreVoiceCallbackTLSCertFile,
+			"core_voice_callback_tls_key_file":  cfg.CoreVoiceCallbackTLSKeyFile,
+		} {
+			resolved, err := canonicalPath(path)
+			if err != nil {
+				return fmt.Errorf("canonicalize %s: %w", name, err)
+			}
+			info, statErr := os.Stat(resolved)
+			if statErr != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("%s must resolve to a regular file", name)
+			}
+			if name == "core_voice_callback_tls_cert_file" {
+				cfg.CoreVoiceCallbackTLSCertFile = resolved
+			} else {
+				cfg.CoreVoiceCallbackTLSKeyFile = resolved
+			}
+		}
+		if cfg.CoreVoiceCallbackReadTimeout < time.Second || cfg.CoreVoiceCallbackReadTimeout > time.Minute {
+			return errors.New("core_voice_callback_read_timeout must be between 1s and 1m")
+		}
+		if cfg.CoreVoiceCallbackWriteTimeout < time.Second || cfg.CoreVoiceCallbackWriteTimeout > 2*time.Minute {
+			return errors.New("core_voice_callback_write_timeout must be between 1s and 2m")
+		}
+	}
+	if !cfg.CoreVoiceCallbackEnabled {
+		return errors.New("core_voice_callback_enabled must be true when voice relay URLs are configured")
+	}
+	cfg.CoreVoiceProvider = strings.TrimSpace(cfg.CoreVoiceProvider)
+	cfg.CoreVoiceHost = strings.TrimRight(strings.TrimSpace(cfg.CoreVoiceHost), "/")
+	cfg.CoreVoiceRegion = strings.TrimSpace(cfg.CoreVoiceRegion)
+	cfg.CoreVoiceConversationProfileID = strings.TrimSpace(cfg.CoreVoiceConversationProfileID)
+	cfg.CoreVoiceSpeechProfileID = strings.TrimSpace(cfg.CoreVoiceSpeechProfileID)
+	return nil
+}
+
+// ValidateCapability validates the message-server → Agent neutral capability
+// listener.  Existing Core-only configurations remain valid when the listener
+// is disabled; production config enables it explicitly.
+func ValidateCapability(cfg *Config) error {
+	if cfg == nil || !cfg.CapabilityEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.CapabilityListenAddress) == "" {
+		cfg.CapabilityListenAddress = ":50052"
+	}
+	if strings.TrimSpace(cfg.CapabilityPeerCommonName) == "" {
+		cfg.CapabilityPeerCommonName = "message-server-client"
+	}
+	if strings.TrimSpace(cfg.CapabilityPeerInstanceID) == "" {
+		// A single deployment commonly uses one instance identity on both
+		// sides. Multi-instance deployments must set the explicit peer value.
+		cfg.CapabilityPeerInstanceID = cfg.InstanceID
+	}
+	if strings.TrimSpace(cfg.CapabilityPeerInstanceID) == "" {
+		return errors.New("capability_peer_instance_id is required")
+	}
+	if cfg.CapabilityMaxConcurrentQuery <= 0 {
+		cfg.CapabilityMaxConcurrentQuery = 32
+	}
+	if cfg.CapabilityMaxConcurrentWatch <= 0 {
+		cfg.CapabilityMaxConcurrentWatch = 64
+	}
+	if cfg.CapabilityAccountGeneration <= 0 {
+		return errors.New("capability_account_generation must be positive")
+	}
+	if strings.TrimSpace(cfg.CapabilityTLSCertFile) == "" {
+		cfg.CapabilityTLSCertFile = cfg.TLSCertFile
+	}
+	if strings.TrimSpace(cfg.CapabilityTLSKeyFile) == "" {
+		cfg.CapabilityTLSKeyFile = cfg.TLSKeyFile
+	}
+	if strings.TrimSpace(cfg.CapabilityTokenFile) == "" {
+		cfg.CapabilityTokenFile = cfg.ServiceTokenFile
+	}
+	if strings.TrimSpace(cfg.CapabilityGrantPublicKeyFile) == "" {
+		return errors.New("capability_grant_public_key_file is required")
+	}
+	for name, path := range map[string]string{
+		"capability_ca_cert_file":  cfg.CapabilityCACertFile,
+		"capability_tls_cert_file": cfg.CapabilityTLSCertFile,
+		"capability_tls_key_file":  cfg.CapabilityTLSKeyFile,
+	} {
+		resolved, err := canonicalPath(path)
+		if err != nil {
+			return fmt.Errorf("canonicalize %s: %w", name, err)
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must resolve to a regular file", name)
+		}
+		switch name {
+		case "capability_ca_cert_file":
+			cfg.CapabilityCACertFile = resolved
+		case "capability_tls_cert_file":
+			cfg.CapabilityTLSCertFile = resolved
+		case "capability_tls_key_file":
+			cfg.CapabilityTLSKeyFile = resolved
+		}
+	}
+	token, err := canonicalPath(cfg.CapabilityTokenFile)
+	if err != nil {
+		return fmt.Errorf("canonicalize capability_token_file: %w", err)
+	}
+	if err := auth.ValidateServiceTokenFile(token); err != nil {
+		return fmt.Errorf("capability token: %w", err)
+	}
+	cfg.CapabilityTokenFile = token
+	grantKey, err := canonicalPath(cfg.CapabilityGrantPublicKeyFile)
+	if err != nil {
+		return fmt.Errorf("canonicalize capability_grant_public_key_file: %w", err)
+	}
+	if info, err := os.Stat(grantKey); err != nil || !info.Mode().IsRegular() {
+		return errors.New("capability_grant_public_key_file must resolve to a regular file")
+	}
+	key, err := os.ReadFile(grantKey)
+	if err != nil {
+		return fmt.Errorf("capability_grant_public_key_file cannot be read: %w", err)
+	}
+	if _, err := capv1.ParseGrantPublicKey(key); err != nil {
+		return fmt.Errorf("capability_grant_public_key_file is invalid: %w", err)
+	}
+	cfg.CapabilityGrantPublicKeyFile = grantKey
+	return nil
+}
+
+// ValidateProductCapability validates the optional Agent→message-server
+// callback client. It is disabled by default so Core-only deployments do not
+// need mounted callback credentials.
+func ValidateProductCapability(cfg *Config) error {
+	if cfg == nil || !cfg.ProductCapabilityEnabled {
+		return nil
+	}
+	for name, value := range map[string]string{
+		"product_capability_address":       cfg.ProductCapabilityAddress,
+		"product_capability_ca_cert_file":  cfg.ProductCapabilityCACertFile,
+		"product_capability_tls_cert_file": cfg.ProductCapabilityTLSCertFile,
+		"product_capability_tls_key_file":  cfg.ProductCapabilityTLSKeyFile,
+		"product_capability_token_file":    cfg.ProductCapabilityTokenFile,
+		"product_capability_instance_id":   cfg.ProductCapabilityInstanceID,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+	if cfg.ProductCapabilityAccountGeneration <= 0 {
+		return errors.New("product_capability_account_generation must be positive")
+	}
+	for name, path := range map[string]string{
+		"product_capability_ca_cert_file":  cfg.ProductCapabilityCACertFile,
+		"product_capability_tls_cert_file": cfg.ProductCapabilityTLSCertFile,
+		"product_capability_tls_key_file":  cfg.ProductCapabilityTLSKeyFile,
+	} {
+		resolved, err := canonicalPath(path)
+		if err != nil {
+			return fmt.Errorf("canonicalize %s: %w", name, err)
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("%s must resolve to a regular file", name)
+		}
+		switch name {
+		case "product_capability_ca_cert_file":
+			cfg.ProductCapabilityCACertFile = resolved
+		case "product_capability_tls_cert_file":
+			cfg.ProductCapabilityTLSCertFile = resolved
+		case "product_capability_tls_key_file":
+			cfg.ProductCapabilityTLSKeyFile = resolved
+		}
+	}
+	token, err := canonicalPath(cfg.ProductCapabilityTokenFile)
+	if err != nil {
+		return fmt.Errorf("canonicalize product_capability_token_file: %w", err)
+	}
+	if info, statErr := os.Stat(token); statErr != nil || !info.Mode().IsRegular() {
+		return errors.New("product_capability_token_file must resolve to a regular file")
+	}
+	cfg.ProductCapabilityTokenFile = token
 	return nil
 }
 

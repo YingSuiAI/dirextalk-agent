@@ -22,6 +22,7 @@ func profile(provider coremodel.ModelProvider, base, key string) coremodel.Profi
 
 func TestOpenAIEmbedderPayloadHeadersAndOrdering(t *testing.T) {
 	var gotHeader string
+	var gotInputs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/embeddings" || r.Method != http.MethodPost {
 			t.Errorf("request = %s %s", r.Method, r.URL.Path)
@@ -37,6 +38,9 @@ func TestOpenAIEmbedderPayloadHeadersAndOrdering(t *testing.T) {
 		if payload["model"] != "text-embedding-test" {
 			t.Fatalf("payload model = %#v", payload["model"])
 		}
+		for _, input := range payload["input"].([]any) {
+			gotInputs = append(gotInputs, input.(string))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"data":[{"index":1,"embedding":[0,1]},{"index":0,"embedding":[1,0]}]}`)
 	}))
@@ -45,12 +49,25 @@ func TestOpenAIEmbedderPayloadHeadersAndOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := e.Embed(context.Background(), profile(coremodel.ProviderOpenAICompatible, server.URL+"/v1", "secret-key"), []string{"a", "b"})
+	got, err := e.Embed(context.Background(), profile(coremodel.ProviderOpenAICompatible, server.URL+"/v1", "secret-key"), []string{"line one\nline two", "a\tb"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotHeader != "Bearer secret-key" || len(got) != 2 || got[0][0] != 1 || got[1][1] != 1 {
-		t.Fatalf("header/vectors = %q %#v", gotHeader, got)
+	if gotHeader != "Bearer secret-key" || len(got) != 2 || got[0][0] != 1 || got[1][1] != 1 || !strings.Contains(gotInputs[0], "\n") || !strings.Contains(gotInputs[1], "\t") {
+		t.Fatalf("header/inputs/vectors = %q %#v %#v", gotHeader, gotInputs, got)
+	}
+}
+
+func TestOpenAIEmbedderRejectsEmptyAndNULContent(t *testing.T) {
+	e, err := NewHTTPEmbedder(HTTPEmbedderConfig{Dimension: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := profile(coremodel.ProviderOpenAICompatible, "https://example.invalid/v1", "secret-key")
+	for _, input := range []string{" \r\n\t", "contains\x00nul"} {
+		if _, err := e.Embed(context.Background(), p, []string{input}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("input %q error = %v", input, err)
+		}
 	}
 }
 
@@ -171,8 +188,32 @@ func TestQdrantEnsureUpsertDeleteSearchAndExactBindings(t *testing.T) {
 			io.WriteString(w, `{"result":{"status":"completed"}}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/points/delete"):
 			io.WriteString(w, `{"result":{"status":"completed"}}`)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/points/search"):
-			io.WriteString(w, `{"result":[{"id":"`+PointID("s", 1, "0")+`","score":0.9,"payload":{"source_id":"s","revision":1,"chunk_ref":"0","digest":"`+strings.Repeat("c", 64)+`","snippet":"ok"}}]}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/points/query"):
+			var request map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("query body: %v", err)
+			}
+			if _, ok := request["query"]; !ok {
+				t.Error("latest qdrant query endpoint requires query vector")
+			}
+			if _, ok := request["vector"]; ok {
+				t.Error("deprecated qdrant search vector field used")
+			}
+			filter, filterOK := request["filter"].(map[string]any)
+			should, shouldOK := filter["should"].([]any)
+			if !filterOK || !shouldOK || len(should) != 1 {
+				t.Errorf("query filter = %#v", request["filter"])
+			} else if group, ok := should[0].(map[string]any); !ok {
+				t.Errorf("query should group = %#v", should[0])
+			} else {
+				if _, wrapped := group["filter"]; wrapped {
+					t.Errorf("query should group has unsupported filter wrapper: %#v", group)
+				}
+				if must, ok := group["must"].([]any); !ok || len(must) != 2 {
+					t.Errorf("query must group = %#v", group["must"])
+				}
+			}
+			io.WriteString(w, `{"result":{"points":[{"id":"`+PointID("s", 1, "0")+`","score":0.9,"payload":{"source_id":"s","revision":1,"chunk_ref":"0","digest":"`+strings.Repeat("c", 64)+`","snippet":"ok"}}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -205,8 +246,8 @@ func TestQdrantEnsureUpsertDeleteSearchAndExactBindings(t *testing.T) {
 
 func TestQdrantRejectsMalformedPayloadAndDimension(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/points/search") {
-			io.WriteString(w, `{"result":[{"id":"not-a-uuid","score":1,"payload":{}}]}`)
+		if strings.HasSuffix(r.URL.Path, "/points/query") {
+			io.WriteString(w, `{"result":{"points":[{"id":"not-a-uuid","score":1,"payload":{}}]}}`)
 			return
 		}
 		io.WriteString(w, `{"result":{"config":{"params":{"vectors":{"size":3}}}}}`)
@@ -295,6 +336,33 @@ func TestQdrantDeletePromotedGenerationUsesMainFilter(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(got), "generation") || !strings.Contains(fmt.Sprint(got), "src") {
 		t.Fatalf("filter=%v", got)
+	}
+}
+
+func TestQdrantDeleteCollectionPurgesOnlyBaseAndStagingCollections(t *testing.T) {
+	var deleted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/collections" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"collections": []map[string]string{{"name": "main"}, {"name": "main__stage_a"}, {"name": "main__stage_b"}, {"name": "mainland"}, {"name": "unrelated__stage_x"}}}})
+			return
+		}
+		if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/collections/") {
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/collections/"))
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	q, err := NewQdrantStore(QdrantConfig{Endpoint: server.URL, Collection: "main", Dimension: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.DeleteCollection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(deleted, ","), "main,main__stage_a,main__stage_b"; got != want {
+		t.Fatalf("deleted collections=%q, want %q", got, want)
 	}
 }
 

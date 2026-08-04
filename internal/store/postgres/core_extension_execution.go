@@ -69,7 +69,7 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 	if err != nil {
 		return coreextension.ExecuteResult{}, err
 	}
-	if installation.State != coreextension.StateInstalled || installation.Revision != in.ExpectedRevision || installation.ActiveVersionID == "" {
+	if installation.State != coreextension.StateInstalled || !installation.Enabled || installation.Revision != in.ExpectedRevision || installation.ActiveVersionID == "" {
 		return coreextension.ExecuteResult{}, coreextension.ErrRevisionConflict
 	}
 	var version coreextension.VersionRecord

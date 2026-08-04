@@ -1,6 +1,6 @@
 # Reproducible Core image. Keep the build input digest-pinned and pass VERSION
 # VERSION/REVISION from the release job; no source or dependency is fetched at runtime.
-FROM --platform=linux/amd64 docker.io/library/golang:1.26.0-alpine@sha256:7c6a62c80c3f15fb49aae282d7a296149889ebe39b2318f3a299f2759c1ce135 AS build
+FROM --platform=linux/amd64 docker.io/library/golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 WORKDIR /src
 RUN apk add --no-cache ca-certificates
 COPY go.mod go.sum ./

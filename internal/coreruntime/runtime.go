@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -28,6 +29,13 @@ type ScheduleMaterializer interface {
 	// drain every schedule that was due at that tick without guessing from
 	// errors or issuing an unbounded query.
 	MaterializeNextDue(context.Context, time.Time, coretask.CronCalculator) (bool, error)
+}
+
+// MutationGuard is shared by all process-local background writers. A reader
+// lease spans task claim, handler side effects, and the terminal task write so
+// account purge cannot cross an admitted worker.
+type MutationGuard interface {
+	Enter(context.Context) (func(), error)
 }
 
 // ErrorDisposition controls whether a runtime dependency error may be retried.
@@ -83,6 +91,7 @@ type WorkerPool struct {
 	wg            sync.WaitGroup
 	classify      ErrorClassifier
 	backoff       BackoffFunc
+	mutationGuard MutationGuard
 }
 
 func NewWorkerPool(store TaskStore, executor *TaskExecutor, maxConcurrent int, leaseTTL time.Duration, classifiers ...ErrorClassifier) (*WorkerPool, error) {
@@ -100,6 +109,12 @@ func (p *WorkerPool) Active() int    { return int(p.active.Load()) }
 func (p *WorkerPool) SetBackoff(backoff BackoffFunc) {
 	if backoff != nil {
 		p.backoff = backoff
+	}
+}
+
+func (p *WorkerPool) SetMutationGuard(guard MutationGuard) {
+	if p != nil {
+		p.mutationGuard = guard
 	}
 }
 
@@ -127,8 +142,19 @@ func (p *WorkerPool) Run(ctx context.Context) error {
 			}
 			continue
 		}
+		release, guardErr := p.enterMutation(runCtx)
+		if guardErr != nil {
+			if errors.Is(guardErr, coredeprovision.ErrClosed) {
+				if !p.backoff(runCtx, 20*time.Millisecond) {
+					return runCtx.Err()
+				}
+				continue
+			}
+			return guardErr
+		}
 		task, lease, err := p.store.ClaimNextDue(runCtx, p.holder, time.Now().UTC(), p.leaseTTL, p.maxConcurrent)
 		if err != nil {
+			release()
 			if errors.Is(err, coretask.ErrNotFound) {
 				transientFailures = 0
 				backoff = 25 * time.Millisecond
@@ -160,8 +186,20 @@ func (p *WorkerPool) Run(ctx context.Context) error {
 		backoff = 25 * time.Millisecond
 		p.active.Add(1)
 		p.wg.Add(1)
-		go func() { defer p.active.Add(-1); defer p.wg.Done(); p.execute(runCtx, task, lease) }()
+		go func() {
+			defer release()
+			defer p.active.Add(-1)
+			defer p.wg.Done()
+			p.execute(runCtx, task, lease)
+		}()
 	}
+}
+
+func (p *WorkerPool) enterMutation(ctx context.Context) (func(), error) {
+	if p == nil || p.mutationGuard == nil {
+		return func() {}, nil
+	}
+	return p.mutationGuard.Enter(ctx)
 }
 
 func waitBackoff(ctx context.Context, delay time.Duration) bool {
@@ -344,15 +382,16 @@ func boundedSummary(s string) string {
 }
 
 type ScheduleLoop struct {
-	store      ScheduleMaterializer
-	calculator coretask.CronCalculator
-	interval   time.Duration
-	classify   ErrorClassifier
-	started    chan struct{}
-	done       chan struct{}
-	startOnce  sync.Once
-	doneOnce   sync.Once
-	backoff    BackoffFunc
+	store         ScheduleMaterializer
+	calculator    coretask.CronCalculator
+	interval      time.Duration
+	classify      ErrorClassifier
+	started       chan struct{}
+	done          chan struct{}
+	startOnce     sync.Once
+	doneOnce      sync.Once
+	backoff       BackoffFunc
+	mutationGuard MutationGuard
 }
 
 func NewScheduleLoop(store ScheduleMaterializer, calculator coretask.CronCalculator, interval time.Duration, classifiers ...ErrorClassifier) (*ScheduleLoop, error) {
@@ -368,6 +407,12 @@ func NewScheduleLoop(store ScheduleMaterializer, calculator coretask.CronCalcula
 func (l *ScheduleLoop) SetBackoff(backoff BackoffFunc) {
 	if backoff != nil {
 		l.backoff = backoff
+	}
+}
+
+func (l *ScheduleLoop) SetMutationGuard(guard MutationGuard) {
+	if l != nil {
+		l.mutationGuard = guard
 	}
 }
 func (l *ScheduleLoop) Run(ctx context.Context) error {
@@ -416,7 +461,18 @@ func (l *ScheduleLoop) materializeRetry(ctx context.Context, now time.Time) erro
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		release, guardErr := l.enterMutation(ctx)
+		if guardErr != nil {
+			if errors.Is(guardErr, coredeprovision.ErrClosed) {
+				if !l.backoff(ctx, l.interval) {
+					return ctx.Err()
+				}
+				continue
+			}
+			return guardErr
+		}
 		materialized, err := l.store.MaterializeNextDue(ctx, now, l.calculator)
+		release()
 		if err == nil {
 			if !materialized {
 				return nil
@@ -447,4 +503,11 @@ func (l *ScheduleLoop) materializeRetry(ctx context.Context, now time.Time) erro
 			}
 		}
 	}
+}
+
+func (l *ScheduleLoop) enterMutation(ctx context.Context) (func(), error) {
+	if l == nil || l.mutationGuard == nil {
+		return func() {}, nil
+	}
+	return l.mutationGuard.Enter(ctx)
 }

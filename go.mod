@@ -2,15 +2,15 @@ module github.com/YingSuiAI/dirextalk-agent
 
 go 1.26.0
 
-replace github.com/YingSuiAI/dirextalk-capability-api => /home/adam/dirextalk/dirextalk-capability-api
+replace github.com/YingSuiAI/dirextalk-capability-api => ../dirextalk-capability-api
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.43.0
+	github.com/aws/aws-sdk-go-v2 v1.43.2
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.29
 	github.com/aws/aws-sdk-go-v2/service/cloudformation v1.74.1
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.46.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.44.1
-	github.com/aws/smithy-go v1.27.3
+	github.com/aws/smithy-go v1.27.5
 	github.com/cloudwego/eino v0.9.12
 	github.com/eino-contrib/jsonschema v1.0.3
 	github.com/google/uuid v1.6.0
@@ -22,10 +22,12 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+require github.com/aws/aws-sdk-go-v2/service/pricing v1.44.2 // indirect
+
 require (
-	github.com/YingSuiAI/dirextalk-capability-api v0.0.0-00010101000000-000000000000
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.31 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.31 // indirect
+	github.com/YingSuiAI/dirextalk-capability-api v1.0.1
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.33 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.33 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.31 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.317.0
 	github.com/aws/aws-sdk-go-v2/service/ecs v1.89.0

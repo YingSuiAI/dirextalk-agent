@@ -114,6 +114,7 @@ func (f *fakeStore) CreateConversationMutation(ctx context.Context, c CreateConv
 		if old.digest != c.Fingerprint {
 			return ConversationMutationResponse{}, ErrConflict
 		}
+		old.response.Replayed = true
 		return old.response, nil
 	}
 	if err := c.Validate(); err != nil {
@@ -141,6 +142,7 @@ func (f *fakeStore) DeleteConversationMutation(ctx context.Context, c DeleteConv
 		if old.digest != c.Fingerprint {
 			return ConversationMutationResponse{}, ErrConflict
 		}
+		old.response.Replayed = true
 		return old.response, nil
 	}
 	if err := c.Validate(); err != nil {

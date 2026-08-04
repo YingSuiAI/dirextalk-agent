@@ -5,6 +5,7 @@
 .idea
 .vscode
 .run
+start-agent.sh
 
 **/*_test.go
 **/*.log
@@ -21,6 +22,19 @@ rootkey.csv
 **/*.key
 **/*.p12
 **/*.pfx
+**/*.token
+**/*.secret
+**/*-token
+**/*-secret
+**/database-url
+**/database_url
+**/database-url.txt
+**/database_url.txt
+**/postgres-password
+**/postgres_password
+**/service-token
+**/service_token
+**/agent.pid
 **/*.db
 **/*.sqlite
 **/*.sqlite3

@@ -3,6 +3,9 @@ package operation
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +17,10 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
+	// An in-memory SQLite database is scoped to a single connection. Keep the
+	// test pool on one connection so concurrent manager calls exercise the same
+	// schema (and the replay CAS) rather than opening an empty database.
+	db.SetMaxOpenConns(1)
 
 	// 创建表结构
 	schema := `
@@ -22,7 +29,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 			capability_id TEXT NOT NULL,
 			operation_name TEXT NOT NULL,
 			state TEXT NOT NULL,
-			request_json BLOB NOT NULL,
+			request_json BLOB NOT NULL DEFAULT X'7B7D' CHECK (request_json = X'7B7D'),
+			root_request_digest BLOB NOT NULL,
 			request_digest BLOB NOT NULL,
 			result_json BLOB,
 			error_code TEXT,
@@ -51,6 +59,16 @@ func setupTestDB(t *testing.T) *sql.DB {
 	}
 
 	return db
+}
+
+func TestManager_PostgresTableNamesMatchFreshSchema(t *testing.T) {
+	manager := &Manager{postgres: true}
+	if got, want := manager.table("operations"), "agent_capability_operations"; got != want {
+		t.Fatalf("operations table = %q, want %q", got, want)
+	}
+	if got, want := manager.table("events"), "agent_capability_operation_events"; got != want {
+		t.Fatalf("events table = %q, want %q", got, want)
+	}
 }
 
 func TestManager_StartAndGet(t *testing.T) {
@@ -91,6 +109,183 @@ func TestManager_StartAndGet(t *testing.T) {
 	}
 }
 
+func TestManager_ModelSyncSecretsNeverReachLedgerAcrossRestart(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	secret := "openrouter-sentinel-api-key"
+	op := &Operation{
+		ID:                "op-model-sync-secret",
+		CapabilityID:      "agent.models.v1",
+		OperationName:     "sync_models",
+		RequestJSON:       []byte(`{"entries":[{"client_profile_id":"default","provider":"openai_compatible","api_key":"openrouter-sentinel-api-key"}]}`),
+		RequestDigest:     []byte("grant-digest"),
+		OwnerID:           "owner",
+		AccountGeneration: 1,
+	}
+	if _, created, err := manager.StartOrGet(context.Background(), op); err != nil || !created {
+		t.Fatalf("model sync admission failed: created=%v err=%v", created, err)
+	}
+	var requestJSON []byte
+	if err := db.QueryRow(`SELECT request_json FROM operations WHERE id=?`, op.ID).Scan(&requestJSON); err != nil {
+		t.Fatal(err)
+	}
+	if string(requestJSON) != "{}" {
+		t.Fatalf("business request was persisted: %q", requestJSON)
+	}
+	if err := manager.Progress(context.Background(), op.ID, []byte(`{"message":"openrouter-sentinel-api-key"}`)); err != nil {
+		t.Fatalf("secret-bearing progress failed: %v", err)
+	}
+	if err := manager.Complete(context.Background(), op.ID, []byte(`{"message":"openrouter-sentinel-api-key","api_key":"openrouter-sentinel-api-key"}`)); err != nil {
+		t.Fatalf("model sync completion failed: %v", err)
+	}
+
+	// A fresh manager models an Agent restart. The only durable source is the
+	// database; no raw request or event/result payload may contain the key.
+	restarted := NewManager(db)
+	if _, err := restarted.Get(context.Background(), op.ID); err != nil {
+		t.Fatalf("restart lookup failed: %v", err)
+	}
+	for _, table := range []string{"operations", "operation_events"} {
+		rows, err := db.Query(`SELECT CAST(request_json AS TEXT) FROM operations WHERE ?='operations' UNION ALL SELECT CAST(event_json AS TEXT) FROM operation_events WHERE ?='operation_events'`, table, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var payload string
+			if err := rows.Scan(&payload); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			if strings.Contains(payload, secret) {
+				rows.Close()
+				t.Fatalf("secret persisted in %s: %s", table, payload)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		rows.Close()
+	}
+	var result, progress string
+	if err := db.QueryRow(`SELECT CAST(result_json AS TEXT) FROM operations WHERE id=?`, op.ID).Scan(&result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, secret) {
+		t.Fatalf("secret persisted in result_json: %s", result)
+	}
+	if err := db.QueryRow(`SELECT CAST(event_json AS TEXT) FROM operation_events WHERE operation_id=? AND event_type='progress'`, op.ID).Scan(&progress); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(progress, secret) {
+		t.Fatalf("secret persisted in progress event: %s", progress)
+	}
+}
+
+func TestManager_StartAdmissionRollsBackWhenAcceptedEventFails(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{
+		ID:                "op-atomic",
+		CapabilityID:      "test.cap.v1",
+		OperationName:     "test_operation",
+		RequestJSON:       []byte(`{"test":"data"}`),
+		RequestDigest:     []byte("digest123"),
+		OwnerID:           "user-456",
+		AccountGeneration: 1,
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_accepted_event BEFORE INSERT ON operation_events
+		WHEN NEW.event_type = 'accepted' BEGIN SELECT RAISE(ABORT, 'accepted event unavailable'); END`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+	if _, _, err := manager.StartOrGet(context.Background(), op); err == nil {
+		t.Fatal("admission succeeded despite accepted event failure")
+	}
+	var operations, events int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM operations`).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM operation_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 0 || events != 0 {
+		t.Fatalf("admission was partially committed: operations=%d events=%d", operations, events)
+	}
+	if _, err := db.Exec(`DROP TRIGGER reject_accepted_event`); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := manager.StartOrGet(context.Background(), op); err != nil || !created {
+		t.Fatalf("admission did not recover after event store became available: created=%v err=%v", created, err)
+	}
+}
+
+func TestManager_StartReplayAfterManagerRestartReusesDurableAdmission(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	op := &Operation{
+		ID:                "op-restart",
+		CapabilityID:      "test.cap.v1",
+		OperationName:     "test_operation",
+		RequestJSON:       []byte(`{"test":"data"}`),
+		RequestDigest:     []byte("digest123"),
+		OwnerID:           "user-456",
+		AccountGeneration: 1,
+	}
+	if _, created, err := NewManager(db).StartOrGet(context.Background(), op); err != nil || !created {
+		t.Fatalf("first admission failed: created=%v err=%v", created, err)
+	}
+	replay, created, err := NewManager(db).StartOrGet(context.Background(), op)
+	if err != nil || created {
+		t.Fatalf("restart replay was not idempotent: created=%v err=%v", created, err)
+	}
+	if replay == nil || replay.State != StatePending || replay.Sequence == 0 {
+		t.Fatalf("restart replay lost durable accepted event: %#v", replay)
+	}
+}
+
+func TestManager_ConcurrentAdmissionCreatesOneOperationAndAcceptedEvent(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	op := &Operation{ID: "op-concurrent", CapabilityID: "test.cap.v1", OperationName: "test_operation", RequestJSON: []byte(`{"test":"data"}`), RequestDigest: []byte("digest123"), OwnerID: "user-456", AccountGeneration: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	manager := NewManager(db)
+	created := make(chan bool, 2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, isCreated, err := manager.StartOrGet(ctx, op)
+			created <- isCreated
+			errs <- err
+		}()
+	}
+	createdCount := 0
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent admission failed: %v", err)
+		}
+		if <-created {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("concurrent admissions created %d operations", createdCount)
+	}
+	var operations, events int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM operations WHERE id='op-concurrent'`).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM operation_events WHERE operation_id='op-concurrent' AND event_type='accepted'`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 1 || events != 1 {
+		t.Fatalf("durable admission mismatch: operations=%d accepted_events=%d", operations, events)
+	}
+}
+
 func TestManager_Idempotency(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -123,9 +318,71 @@ func TestManager_Idempotency(t *testing.T) {
 	// 不同 digest 的启动应该失败
 	op2 := *op
 	op2.RequestDigest = []byte("different-digest")
+	op2.RootRequestDigest = []byte("different-root-digest")
 	err = manager.Start(ctx, &op2)
 	if err == nil {
 		t.Error("Start with different digest should fail")
+	}
+}
+
+func TestManager_ReplayWithRefreshedGrantKeepsBusinessReceipt(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	root := []byte("root-business-digest")
+	first := &Operation{ID: "op-grant-refresh", CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{"value":"same"}`), RootRequestDigest: root, RequestDigest: []byte("grant-v1"), OwnerID: "owner", AccountGeneration: 7}
+	accepted, created, err := manager.StartOrGet(context.Background(), first)
+	if err != nil || !created {
+		t.Fatalf("initial admission failed: created=%v err=%v", created, err)
+	}
+	replay := *first
+	replay.RequestDigest = []byte("grant-v2")
+	replayed, created, err := manager.StartOrGet(context.Background(), &replay)
+	if err != nil || created {
+		t.Fatalf("grant refresh was not a replay: created=%v err=%v", created, err)
+	}
+	if replayed.ID != accepted.ID || string(replayed.RootRequestDigest) != string(root) || string(replayed.RequestDigest) != "grant-v1" || replayed.State != StatePending {
+		t.Fatalf("replay changed durable business receipt: first=%+v replay=%+v", accepted, replayed)
+	}
+}
+
+func TestManager_RecoverFencesPendingAndRunningAndReconcileDoesNotRetry(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	for _, state := range []State{StatePending, StateRunning} {
+		op := &Operation{ID: "op-recover-" + string(state), CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{"value":"same"}`), RootRequestDigest: []byte("root-" + string(state)), RequestDigest: []byte("grant"), OwnerID: "owner", AccountGeneration: 7}
+		if _, created, err := manager.StartOrGet(context.Background(), op); err != nil || !created {
+			t.Fatalf("admission %s failed: created=%v err=%v", state, created, err)
+		}
+		if state == StateRunning {
+			if err := manager.UpdateState(context.Background(), op.ID, StateRunning); err != nil {
+				t.Fatalf("mark running: %v", err)
+			}
+		}
+	}
+	if err := manager.Recover(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	for _, state := range []State{StatePending, StateRunning} {
+		op, err := manager.Get(context.Background(), "op-recover-"+string(state))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if op.State != StateUncertain || op.ErrorCode != "UNCERTAIN" {
+			t.Fatalf("%s was not fenced: %+v", state, op)
+		}
+		reconciled, err := manager.Reconcile(context.Background(), op.ID)
+		if err != nil {
+			t.Fatalf("reconcile %s: %v", state, err)
+		}
+		if reconciled.State != StateFailed || reconciled.ErrorCode != "UNCERTAIN" {
+			t.Fatalf("uncertain reconciliation was not terminal failure: %+v", reconciled)
+		}
+		manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+			t.Fatal("uncertain operation was retried")
+			return nil, nil
+		})
 	}
 }
 
@@ -217,6 +474,172 @@ func TestManager_Fail(t *testing.T) {
 	}
 	if retrieved.ErrorMessage != "Test error" {
 		t.Errorf("ErrorMessage mismatch")
+	}
+}
+
+func TestManager_ReopenForReplayOnlyResetsFailedOrUncertain(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-replay", CapabilityID: "agent.account.v1", OperationName: "deprovision_account", RequestJSON: []byte(`{"confirmation":"deprovision_account"}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Fail(context.Background(), op.ID, "EXTERNAL_PURGE_FAILED", "retry"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, didReopen, err := manager.ReopenForReplay(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !didReopen {
+		t.Fatal("first replay did not win CAS")
+	}
+	if reopened.State != StatePending || reopened.ErrorCode != "" || reopened.ResultJSON != nil {
+		t.Fatalf("reopened operation=%+v", reopened)
+	}
+	if err := manager.Complete(context.Background(), op.ID, []byte(`{"ok":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, didReopen, err := manager.ReopenForReplay(context.Background(), op.ID); !errors.Is(err, ErrTerminal) || didReopen {
+		t.Fatalf("completed replay err=%v, want ErrTerminal", err)
+	}
+}
+
+func TestManager_ReopenForReplayRollsBackWhenEventInsertFails(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-replay-event-failure", CapabilityID: "agent.account.v1", OperationName: "deprovision_account", RequestJSON: []byte(`{}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Fail(context.Background(), op.ID, "EXTERNAL_PURGE_FAILED", "retry"); err != nil {
+		t.Fatal(err)
+	}
+	// Fail only the replay accepted event. The CAS and event insert must share
+	// one transaction, so this trigger must leave the durable row in failed
+	// state rather than marooning it at pending.
+	if _, err := db.Exec(`CREATE TRIGGER fail_replay_event BEFORE INSERT ON operation_events
+		WHEN NEW.event_type='accepted' AND CAST(NEW.event_json AS TEXT) LIKE '%replay%'
+		BEGIN SELECT RAISE(ABORT, 'injected replay event failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, won, err := manager.ReopenForReplay(context.Background(), op.ID); err == nil || won {
+		t.Fatalf("injected replay event failure: won=%v err=%v", won, err)
+	}
+	failed, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != StateFailed {
+		t.Fatalf("replay CAS was not rolled back, state=%s", failed.State)
+	}
+	if _, err := db.Exec(`DROP TRIGGER fail_replay_event`); err != nil {
+		t.Fatal(err)
+	}
+	if _, won, err := manager.ReopenForReplay(context.Background(), op.ID); err != nil || !won {
+		t.Fatalf("safe replay retry failed: won=%v err=%v", won, err)
+	}
+	reopened, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.State != StatePending {
+		t.Fatalf("safe replay retry state=%s, want pending", reopened.State)
+	}
+	var replayEvents int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM operation_events WHERE operation_id=? AND event_type='accepted' AND CAST(event_json AS TEXT) LIKE '%replay%'`, op.ID).Scan(&replayEvents); err != nil {
+		t.Fatal(err)
+	}
+	if replayEvents != 1 {
+		t.Fatalf("replay accepted events=%d, want exactly one", replayEvents)
+	}
+}
+
+func TestManager_ReopenForReplaySingleCASWinner(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-replay-race", CapabilityID: "agent.account.v1", OperationName: "deprovision_account", RequestJSON: []byte(`{}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Fail(context.Background(), op.ID, "EXTERNAL_PURGE_FAILED", "retry"); err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		won bool
+		err error
+	}
+	results := make(chan outcome, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, won, err := manager.ReopenForReplay(context.Background(), op.ID)
+			results <- outcome{won: won, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	wins := 0
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.won {
+			wins++
+		}
+	}
+	if wins != 1 {
+		t.Fatalf("replay CAS winners=%d, want exactly 1", wins)
+	}
+}
+
+func TestManager_CloseOrdinaryWatchersPreservesDeprovisionWatcher(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	normal := &Operation{ID: "op-watch-normal", CapabilityID: "test.cap.v1", OperationName: "mutate", RequestJSON: []byte(`{}`), RequestDigest: []byte("normal"), OwnerID: "owner", AccountGeneration: 1}
+	deprov := &Operation{ID: "op-watch-deprovision", CapabilityID: "agent.account.v1", OperationName: "deprovision_account", RequestJSON: []byte(`{}`), RequestDigest: []byte("deprov"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(ctx, normal); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(ctx, deprov); err != nil {
+		t.Fatal(err)
+	}
+	normalEvents, err := manager.Watch(ctx, normal.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deprovEvents, err := manager.Watch(ctx, deprov.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.CloseOrdinaryWatchers()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case _, ok := <-normalEvents:
+			if !ok {
+				goto normalClosed
+			}
+		case <-deadline.C:
+			t.Fatal("ordinary watcher was not closed after purge")
+		}
+	}
+normalClosed:
+	select {
+	case _, ok := <-deprovEvents:
+		if !ok {
+			t.Fatal("deprovision watcher closed before terminal result")
+		}
+	default:
 	}
 }
 
@@ -314,5 +737,65 @@ func TestManager_Watch(t *testing.T) {
 	// 验证至少收到了 accepted 事件
 	if len(eventTypes) == 0 {
 		t.Error("Should have received at least one event")
+	}
+}
+
+func TestManager_ProgressIsDurableAndRejectsTerminalOperation(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-progress", CapabilityID: "test.cap.v1", OperationName: "stream", RequestJSON: []byte(`{"message":"hi"}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	accepted, _, err := manager.StartOrGet(context.Background(), op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Progress(context.Background(), op.ID, []byte(`{"event":"delta","text":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+	events, err := manager.getEvents(context.Background(), op.ID, accepted.Sequence)
+	if err != nil || len(events) != 1 || events[0].EventType != "progress" {
+		t.Fatalf("progress events=%+v err=%v", events, err)
+	}
+	if err := manager.Complete(context.Background(), op.ID, []byte(`{"done":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Progress(context.Background(), op.ID, []byte(`{"event":"late"}`)); err != ErrTerminal {
+		t.Fatalf("late progress err=%v, want ErrTerminal", err)
+	}
+}
+
+func TestManager_StreamHandlerFailsWhenProgressPersistenceFails(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-progress-failure", CapabilityID: "test.cap.v1", OperationName: "stream", RequestJSON: []byte(`{"message":"hi"}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if _, _, err := manager.StartOrGet(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_progress BEFORE INSERT ON operation_events WHEN NEW.event_type = 'progress' BEGIN SELECT RAISE(ABORT, 'progress unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		manager.Execute(context.Background(), op.ID, func(ctx context.Context, _ *Operation) ([]byte, error) {
+			if err := manager.Progress(ctx, op.ID, []byte(`{"event":"delta"}`)); err == nil {
+				return nil, errors.New("progress unexpectedly succeeded")
+			} else {
+				return nil, err
+			}
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream handler did not terminate after progress failure")
+	}
+	state, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.State != StateFailed || state.ErrorCode == "" {
+		t.Fatalf("progress failure did not terminalize operation: %+v", state)
 	}
 }

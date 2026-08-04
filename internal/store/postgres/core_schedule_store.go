@@ -41,6 +41,114 @@ func (s *CoreScheduleStore) LookupScheduleMutation(ctx context.Context, operatio
 
 func NewCoreScheduleStore(s *Store) *CoreScheduleStore { return &CoreScheduleStore{store: s} }
 
+func (s *CoreScheduleStore) FindOccurrence(ctx context.Context, scheduleID, triggerKey string) (coretask.Occurrence, error) {
+	if !coretask.ValidUUID(scheduleID) || !coretask.ValidUUID(triggerKey) {
+		return coretask.Occurrence{}, coretask.ErrInvalid
+	}
+	var out coretask.Occurrence
+	err := s.store.pool.QueryRow(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND trigger_key=$2`, scheduleID, triggerKey).Scan(&out.ID, &out.ScheduleID, &out.ScheduledFor, &out.TriggerKey, &out.TaskID, &out.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coretask.Occurrence{}, coretask.ErrNotFound
+	}
+	if err != nil {
+		return coretask.Occurrence{}, err
+	}
+	return out, nil
+}
+
+func (s *CoreScheduleStore) CreateOccurrence(ctx context.Context, schedule coretask.Schedule, command coretask.TriggerNowCommand, occurrence coretask.Occurrence) (coretask.Occurrence, error) {
+	if schedule.Validate() != nil || !coretask.ValidUUID(command.ScheduleID) || !coretask.ValidUUID(command.IdempotencyKey) || occurrence.Validate() != nil || occurrence.ScheduleID != schedule.ID {
+		return coretask.Occurrence{}, coretask.ErrInvalid
+	}
+	template, _ := json.Marshal(schedule.Spec)
+	_, err := s.store.pool.Exec(ctx, `INSERT INTO core_schedule_occurrences(occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,spec_snapshot_json,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (occurrence_id) DO NOTHING`, occurrence.ID, occurrence.ScheduleID, occurrence.ScheduledFor.UTC(), occurrence.TriggerKey, occurrence.TaskID, template, occurrence.CreatedAt.UTC())
+	if err != nil {
+		return coretask.Occurrence{}, coretask.ErrConflict
+	}
+	return occurrence, nil
+}
+
+func (s *CoreScheduleStore) GetOccurrence(ctx context.Context, id string) (coretask.Occurrence, error) {
+	if !coretask.ValidUUID(id) {
+		return coretask.Occurrence{}, coretask.ErrInvalid
+	}
+	var out coretask.Occurrence
+	err := s.store.pool.QueryRow(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE occurrence_id=$1`, id).Scan(&out.ID, &out.ScheduleID, &out.ScheduledFor, &out.TriggerKey, &out.TaskID, &out.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coretask.Occurrence{}, coretask.ErrNotFound
+	}
+	if err != nil {
+		return coretask.Occurrence{}, err
+	}
+	return out, nil
+}
+
+type occurrenceReader interface {
+	ListOccurrences(context.Context, string, string, int) ([]coretask.Occurrence, string, error)
+	GetOccurrence(context.Context, string) (coretask.Occurrence, error)
+}
+
+func (s *CoreScheduleStore) ListOccurrences(ctx context.Context, scheduleID, token string, limit int) ([]coretask.Occurrence, string, error) {
+	if !coretask.ValidUUID(scheduleID) || limit <= 0 || limit > 200 {
+		return nil, "", coretask.ErrInvalid
+	}
+	var after time.Time
+	var afterID string
+	if token != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(token)
+		if err != nil {
+			return nil, "", coretask.ErrInvalid
+		}
+		var cursor struct{ Time, ID string }
+		if json.Unmarshal(raw, &cursor) != nil || cursor.Time == "" || !coretask.ValidUUID(cursor.ID) {
+			return nil, "", coretask.ErrInvalid
+		}
+		after, err = time.Parse(time.RFC3339Nano, cursor.Time)
+		if err != nil {
+			return nil, "", coretask.ErrInvalid
+		}
+		afterID = cursor.ID
+	}
+	rows, err := s.store.pool.Query(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND ($2::timestamptz IS NULL OR (scheduled_for,occurrence_id)>($2,$3::uuid)) ORDER BY scheduled_for,occurrence_id LIMIT $4`, scheduleID, nullableScheduleTime(after), nullableScheduleUUID(afterID), limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	out := make([]coretask.Occurrence, 0, limit+1)
+	for rows.Next() {
+		var value coretask.Occurrence
+		if err := rows.Scan(&value.ID, &value.ScheduleID, &value.ScheduledFor, &value.TriggerKey, &value.TaskID, &value.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		out = append(out, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > limit {
+		last := out[limit-1]
+		out = out[:limit]
+		raw, _ := json.Marshal(struct{ Time, ID string }{last.ScheduledFor.UTC().Format(time.RFC3339Nano), last.ID})
+		next = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	return out, next, nil
+}
+
+func nullableScheduleTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
+}
+
+func nullableScheduleUUID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return uuid.MustParse(value)
+}
+
 // MaterializeNextDue locks exactly one due schedule. The occurrence and its
 // task are committed with the cursor so crash recovery can safely retry. The
 // returned boolean is false when no schedule was due; callers can use it to
@@ -330,6 +438,7 @@ func (s *CoreScheduleStore) TriggerNow(ctx context.Context, c coretask.TriggerSc
 		if json.Unmarshal(replay, &value) != nil {
 			return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, coretask.ErrInvalid
 		}
+		value.Schedule.Replayed = true
 		if err = tx.Commit(ctx); err != nil {
 			return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 		}
@@ -420,6 +529,7 @@ func (s *CoreScheduleStore) coreScheduleMutate(ctx context.Context, op string, m
 		if json.Unmarshal(raw, &v) != nil {
 			return v, e
 		}
+		v.Replayed = true
 		if e = tx.Commit(ctx); e != nil {
 			return v, e
 		}

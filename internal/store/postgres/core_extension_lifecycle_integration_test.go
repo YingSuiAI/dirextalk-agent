@@ -52,7 +52,7 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	if e = ApplyMigrations(ctx, pool, instance); e != nil {
 		t.Fatal(e)
 	}
-	store, e := New(pool, instance)
+	store, e := New(pool, instance, testSecretKeyring(t))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -201,7 +201,7 @@ func TestCoreExtensionPostgresSecretPromotionAndExpiryRollback(t *testing.T) {
 	if e = ApplyMigrations(ctx, pool, uuid.NewString()); e != nil {
 		t.Fatal(e)
 	}
-	store, e := New(pool, uuid.NewString())
+	store, e := New(pool, uuid.NewString(), testSecretKeyring(t))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -326,7 +326,7 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	if e = ApplyMigrations(ctx, pool, uuid.NewString()); e != nil {
 		t.Fatal(e)
 	}
-	store, e := New(pool, uuid.NewString())
+	store, e := New(pool, uuid.NewString(), testSecretKeyring(t))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -520,7 +520,7 @@ func TestCoreExtensionPostgresUncertainAckRacesLifecycleMutations(t *testing.T) 
 	if err = ApplyMigrations(ctx, pool, instance); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(pool, instance)
+	store, err := New(pool, instance, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}

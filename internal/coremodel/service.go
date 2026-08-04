@@ -47,8 +47,24 @@ type ListProfileCommand struct {
 }
 
 type ProfilePage struct {
-	Profiles   []PublicProfile
-	NextCursor string
+	Profiles   []PublicProfile `json:"profiles"`
+	NextCursor string          `json:"next_page_token"`
+	Defaults   ProfileDefaults `json:"-"`
+}
+
+// ProfileDefaults are stable role bindings used by conversation, embedding,
+// and speech runtimes. The legacy default_client_profile_id is an alias for
+// the conversation role at the capability boundary.
+type ProfileDefaults struct {
+	ConversationClientProfileID string `json:"default_conversation_client_profile_id"`
+	EmbeddingClientProfileID    string `json:"default_embedding_client_profile_id"`
+	SpeechClientProfileID       string `json:"default_speech_client_profile_id"`
+}
+
+// ProfileDefaultsReader is optional so existing test repositories remain
+// source-compatible while durable stores can expose role bindings on lists.
+type ProfileDefaultsReader interface {
+	GetProfileDefaults(context.Context) (ProfileDefaults, error)
 }
 type MutationSnapshot struct {
 	Profile PublicProfile
@@ -98,10 +114,13 @@ func (s *Service) Create(ctx context.Context, cmd CreateProfileCommand) (PublicP
 	if cmd.Spec.APIKeyClear {
 		return PublicProfile{}, ErrInvalidProfile
 	}
-	if cmd.Spec.APIKey == nil || *cmd.Spec.APIKey == "" {
+	if (cmd.Spec.APIKey == nil || *cmd.Spec.APIKey == "") && cmd.Spec.Provider != ProviderVolcVoice && cmd.Spec.ModelKind != ModelKindSpeech {
 		return PublicProfile{}, ErrAPIKeyUnavailable
 	}
-	p := Profile{ID: cmd.Spec.ID, DisplayName: cmd.Spec.DisplayName, Provider: cmd.Spec.Provider, BaseURL: cmd.Spec.BaseURL, Model: cmd.Spec.Model, APIKey: *cmd.Spec.APIKey, SystemPrompt: cmd.Spec.SystemPrompt, Temperature: cmd.Spec.Temperature, TopP: cmd.Spec.TopP, MaxOutputTokens: cmd.Spec.MaxOutputTokens, ContextWindow: cmd.Spec.ContextWindow, ReasoningEffort: cmd.Spec.ReasoningEffort}
+	p := Profile{ID: cmd.Spec.ID, DisplayName: cmd.Spec.DisplayName, Provider: cmd.Spec.Provider, ModelKind: cmd.Spec.ModelKind, InputModalities: append([]string(nil), cmd.Spec.InputModalities...), ProviderConfig: cloneMap(cmd.Spec.ProviderConfig), ProviderSecrets: cloneStringMap(cmd.Spec.ProviderSecrets), BaseURL: cmd.Spec.BaseURL, Model: cmd.Spec.Model, SystemPrompt: cmd.Spec.SystemPrompt, Temperature: cmd.Spec.Temperature, TopP: cmd.Spec.TopP, MaxOutputTokens: cmd.Spec.MaxOutputTokens, ContextWindow: cmd.Spec.ContextWindow, ReasoningEffort: cmd.Spec.ReasoningEffort}
+	if cmd.Spec.APIKey != nil {
+		p.APIKey = *cmd.Spec.APIKey
+	}
 	if p.ID == "" {
 		p.ID = deterministicProfileID(cmd.IdempotencyKey, digest)
 	}
@@ -157,6 +176,13 @@ func (s *Service) List(ctx context.Context, cmd ListProfileCommand) (ProfilePage
 	for _, p := range profiles {
 		page.Profiles = append(page.Profiles, p.Public())
 	}
+	if reader, ok := s.repo.(ProfileDefaultsReader); ok {
+		defaults, err := reader.GetProfileDefaults(ctx)
+		if err != nil {
+			return ProfilePage{}, safeServiceError(err)
+		}
+		page.Defaults = defaults
+	}
 	return page, nil
 }
 func (s *Service) ListProfiles(ctx context.Context, cmd ListProfileCommand) (ProfilePage, error) {
@@ -183,7 +209,10 @@ func (s *Service) Update(ctx context.Context, cmd UpdateProfileCommand) (PublicP
 		}
 		return snap.Profile, nil
 	}
-	current, err := s.repo.GetProfile(ctx, cmd.ID)
+	// Updates may omit write-only credentials. Resolve the durable profile so
+	// the repository can preserve its encrypted provider/API secret material
+	// without ever serializing a redacted status placeholder.
+	current, err := s.repo.ResolveProfile(ctx, cmd.ID)
 	if err != nil {
 		return PublicProfile{}, safeServiceError(err)
 	}
@@ -273,21 +302,45 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 			return SyncProfileResult{}, ErrAPIKeyUnavailable
 		}
 		candidate := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID,
-			DisplayName: e.DisplayName, Provider: e.Provider, BaseURL: e.BaseURL, Model: e.Model,
+			DisplayName: e.DisplayName, Provider: e.Provider, ModelKind: e.ModelKind, InputModalities: e.InputModalities, ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model,
 			APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature,
 			TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort}
-		if _, err := validateStoredProfile(candidate); err != nil && e.APIKey != nil {
+		if _, err := validateStoredProfile(candidate); err != nil && (e.APIKey != nil || e.Provider != ProviderVolcVoice) {
 			return SyncProfileResult{}, err
 		}
 	}
-	if cmd.DefaultClientProfileID != "" {
-		cmd.DefaultClientProfileID = strings.TrimSpace(cmd.DefaultClientProfileID)
-		if _, ok := seen[cmd.DefaultClientProfileID]; !ok {
+	cmd.DefaultClientProfileID = strings.TrimSpace(cmd.DefaultClientProfileID)
+	cmd.DefaultConversationProfileID = strings.TrimSpace(cmd.DefaultConversationProfileID)
+	cmd.DefaultEmbeddingProfileID = strings.TrimSpace(cmd.DefaultEmbeddingProfileID)
+	cmd.DefaultSpeechProfileID = strings.TrimSpace(cmd.DefaultSpeechProfileID)
+	if cmd.DefaultConversationProfileID == "" {
+		cmd.DefaultConversationProfileID = cmd.DefaultClientProfileID
+	}
+	if cmd.DefaultClientProfileID == "" {
+		cmd.DefaultClientProfileID = cmd.DefaultConversationProfileID
+	}
+	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
+		if defaultID == "" {
+			continue
+		}
+		if _, ok := seen[defaultID]; !ok {
 			// The repository also accepts an already persisted profile as the default.
-			if err := ValidateClientProfileID(cmd.DefaultClientProfileID); err != nil {
+			if err := ValidateClientProfileID(defaultID); err != nil {
 				return SyncProfileResult{}, err
 			}
 		}
+	}
+	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultClientProfileID, ModelKindConversation, cmd.Entries); err != nil {
+		return SyncProfileResult{}, err
+	}
+	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultConversationProfileID, ModelKindConversation, cmd.Entries); err != nil {
+		return SyncProfileResult{}, err
+	}
+	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultEmbeddingProfileID, ModelKindEmbedding, cmd.Entries); err != nil {
+		return SyncProfileResult{}, err
+	}
+	if err := s.validateSyncDefaultKind(ctx, cmd.DefaultSpeechProfileID, ModelKindSpeech, cmd.Entries); err != nil {
+		return SyncProfileResult{}, err
 	}
 	digest, err := syncProfileDigest(cmd)
 	if err != nil {
@@ -298,6 +351,59 @@ func (s *Service) Sync(ctx context.Context, cmd SyncProfileCommand) (SyncProfile
 		return SyncProfileResult{}, safeServiceError(err)
 	}
 	return result, nil
+}
+
+func (s *Service) validateSyncDefaultKind(ctx context.Context, clientOrProfileID, expectedKind string, entries []SyncProfileEntry) error {
+	clientOrProfileID = strings.TrimSpace(clientOrProfileID)
+	if clientOrProfileID == "" {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.ClientProfileID != clientOrProfileID {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(entry.ModelKind))
+		if kind == "" {
+			kind = ModelKindConversation
+		}
+		if entry.Provider == ProviderVolcVoice {
+			kind = ModelKindSpeech
+		}
+		if kind != expectedKind {
+			return ErrInvalidProfile
+		}
+		return nil
+	}
+	for cursor := ""; ; {
+		profiles, next, err := s.repo.ListProfiles(ctx, cursor, 100)
+		if err != nil {
+			return safeServiceError(err)
+		}
+		for _, profile := range profiles {
+			if profile.ClientProfileID != clientOrProfileID && profile.ID != clientOrProfileID {
+				continue
+			}
+			kind := strings.ToLower(strings.TrimSpace(profile.ModelKind))
+			if kind == "" {
+				kind = ModelKindConversation
+			}
+			if profile.Provider == ProviderVolcVoice {
+				kind = ModelKindSpeech
+			}
+			if kind != expectedKind {
+				return ErrInvalidProfile
+			}
+			if expectedKind == ModelKindEmbedding && !profile.APIKeyConfigured && strings.TrimSpace(profile.APIKey) == "" {
+				return ErrAPIKeyUnavailable
+			}
+			return nil
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return ErrProfileNotFound
 }
 
 func valueOrEmpty(v *string) string {
@@ -320,10 +426,72 @@ func (s *Service) ResolveProfile(ctx context.Context, id string) (Profile, error
 	if err != nil {
 		return Profile{}, safeServiceError(err)
 	}
-	if p.APIKey == "" {
+	if p.APIKey == "" && p.Provider != ProviderVolcVoice {
 		return Profile{}, ErrAPIKeyUnavailable
 	}
 	return p, nil
+}
+
+// ResolveDefaultProfileID resolves the durable role binding to the Core UUID
+// used by conversation/model runners.  Defaults are stored by the stable
+// client_profile_id so that a client can replace its model configuration
+// without knowing server-generated UUIDs.  The profile list is paged rather
+// than assuming the first page contains the selected profile.
+func (s *Service) ResolveDefaultProfileID(ctx context.Context, modelKind string) (string, error) {
+	if s == nil || s.repo == nil {
+		return "", ErrProfileRepository
+	}
+	switch modelKind {
+	case "", ModelKindConversation, ModelKindEmbedding, ModelKindSpeech:
+	default:
+		return "", ErrInvalidProfile
+	}
+	reader, ok := s.repo.(ProfileDefaultsReader)
+	if !ok {
+		return "", ErrProfileNotFound
+	}
+	defaults, err := reader.GetProfileDefaults(ctx)
+	if err != nil {
+		return "", safeServiceError(err)
+	}
+	clientID := defaults.ConversationClientProfileID
+	switch modelKind {
+	case ModelKindEmbedding:
+		clientID = defaults.EmbeddingClientProfileID
+	case ModelKindSpeech:
+		clientID = defaults.SpeechClientProfileID
+	}
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		return "", ErrProfileNotFound
+	}
+
+	for cursor := ""; ; {
+		profiles, next, listErr := s.repo.ListProfiles(ctx, cursor, 100)
+		if listErr != nil {
+			return "", safeServiceError(listErr)
+		}
+		for _, profile := range profiles {
+			kind := strings.TrimSpace(profile.ModelKind)
+			if kind == "" {
+				kind = ModelKindConversation
+			}
+			if kind != modelKind && !(modelKind == "" && kind == ModelKindConversation) {
+				continue
+			}
+			// Defaults normally contain the stable client ID. Accepting the
+			// persisted Core UUID as well keeps the resolver tolerant of a
+			// freshly provisioned database whose seed used server IDs.
+			if profile.ClientProfileID == clientID || profile.ID == clientID {
+				return profile.ID, nil
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return "", ErrProfileNotFound
 }
 
 type ConnectionTestResult struct {
@@ -428,37 +596,41 @@ func profileSpecDigest(op, id string, revision int64, spec ProfileSpec) (string,
 		keyHash = hex.EncodeToString(sum[:])
 	}
 	canonical := struct {
-		Op                 string        `json:"op"`
-		ID                 string        `json:"id"`
-		Revision           int64         `json:"revision"`
-		DisplayName        string        `json:"display_name"`
-		Provider           ModelProvider `json:"provider"`
-		BaseURL            string        `json:"base_url"`
-		Model              string        `json:"model"`
-		SystemPrompt       string        `json:"system_prompt"`
-		APIKeyOp           string        `json:"api_key_op"`
-		APIKeyClear        bool          `json:"api_key_clear"`
-		APIKeyPresent      bool          `json:"api_key_present"`
-		APIKeySHA256       string        `json:"api_key_sha256,omitempty"`
-		Temperature        *float64      `json:"temperature,omitempty"`
-		TemperatureSet     bool          `json:"temperature_set"`
-		TemperatureClear   bool          `json:"temperature_clear"`
-		TopP               *float64      `json:"top_p,omitempty"`
-		TopPSet            bool          `json:"top_p_set"`
-		TopPClear          bool          `json:"top_p_clear"`
-		MaxOutputTokens    int           `json:"max_output_tokens"`
-		ContextWindow      int           `json:"context_window"`
-		ContextWindowSet   bool          `json:"context_window_set"`
-		ReasoningEffort    string        `json:"reasoning_effort"`
-		ReasoningEffortSet bool          `json:"reasoning_effort_set"`
-		Patch              bool          `json:"patch"`
-		DisplayNameSet     bool          `json:"display_name_set"`
-		ProviderSet        bool          `json:"provider_set"`
-		BaseURLSet         bool          `json:"base_url_set"`
-		ModelSet           bool          `json:"model_set"`
-		SystemPromptSet    bool          `json:"system_prompt_set"`
-		MaxOutputTokensSet bool          `json:"max_output_tokens_set"`
-	}{op, id, revision, spec.DisplayName, spec.Provider, spec.BaseURL, spec.Model, spec.SystemPrompt, keyOp, spec.APIKeyClear, spec.APIKey != nil, keyHash, spec.Temperature, spec.TemperatureSet, spec.TemperatureClear, spec.TopP, spec.TopPSet, spec.TopPClear, spec.MaxOutputTokens, spec.ContextWindow, spec.ContextWindowSet, spec.ReasoningEffort, spec.ReasoningEffortSet, spec.Patch, spec.DisplayNameSet, spec.ProviderSet, spec.BaseURLSet, spec.ModelSet, spec.SystemPromptSet, spec.MaxOutputTokensSet}
+		Op                 string         `json:"op"`
+		ID                 string         `json:"id"`
+		Revision           int64          `json:"revision"`
+		DisplayName        string         `json:"display_name"`
+		Provider           ModelProvider  `json:"provider"`
+		ModelKind          string         `json:"model_kind,omitempty"`
+		InputModalities    []string       `json:"input_modalities,omitempty"`
+		ProviderConfig     map[string]any `json:"provider_config,omitempty"`
+		ProviderSecrets    []secretDigest `json:"provider_secrets,omitempty"`
+		BaseURL            string         `json:"base_url"`
+		Model              string         `json:"model"`
+		SystemPrompt       string         `json:"system_prompt"`
+		APIKeyOp           string         `json:"api_key_op"`
+		APIKeyClear        bool           `json:"api_key_clear"`
+		APIKeyPresent      bool           `json:"api_key_present"`
+		APIKeySHA256       string         `json:"api_key_sha256,omitempty"`
+		Temperature        *float64       `json:"temperature,omitempty"`
+		TemperatureSet     bool           `json:"temperature_set"`
+		TemperatureClear   bool           `json:"temperature_clear"`
+		TopP               *float64       `json:"top_p,omitempty"`
+		TopPSet            bool           `json:"top_p_set"`
+		TopPClear          bool           `json:"top_p_clear"`
+		MaxOutputTokens    int            `json:"max_output_tokens"`
+		ContextWindow      int            `json:"context_window"`
+		ContextWindowSet   bool           `json:"context_window_set"`
+		ReasoningEffort    string         `json:"reasoning_effort"`
+		ReasoningEffortSet bool           `json:"reasoning_effort_set"`
+		Patch              bool           `json:"patch"`
+		DisplayNameSet     bool           `json:"display_name_set"`
+		ProviderSet        bool           `json:"provider_set"`
+		BaseURLSet         bool           `json:"base_url_set"`
+		ModelSet           bool           `json:"model_set"`
+		SystemPromptSet    bool           `json:"system_prompt_set"`
+		MaxOutputTokensSet bool           `json:"max_output_tokens_set"`
+	}{op, id, revision, spec.DisplayName, spec.Provider, spec.ModelKind, append([]string(nil), spec.InputModalities...), redactProviderConfig(spec.ProviderConfig), providerSecretDigests(spec.ProviderSecrets), spec.BaseURL, spec.Model, spec.SystemPrompt, keyOp, spec.APIKeyClear, spec.APIKey != nil, keyHash, spec.Temperature, spec.TemperatureSet, spec.TemperatureClear, spec.TopP, spec.TopPSet, spec.TopPClear, spec.MaxOutputTokens, spec.ContextWindow, spec.ContextWindowSet, spec.ReasoningEffort, spec.ReasoningEffortSet, spec.Patch, spec.DisplayNameSet, spec.ProviderSet, spec.BaseURLSet, spec.ModelSet, spec.SystemPromptSet, spec.MaxOutputTokensSet}
 	b, err := json.Marshal(canonical)
 	if err != nil {
 		return "", ErrInvalidProfile
@@ -469,9 +641,12 @@ func profileSpecDigest(op, id string, revision int64, spec ProfileSpec) (string,
 
 func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
 	canonical := struct {
-		Default string `json:"default_client_profile_id"`
-		Entries []any  `json:"entries"`
-	}{Default: cmd.DefaultClientProfileID}
+		Default             string `json:"default_client_profile_id"`
+		ConversationDefault string `json:"default_conversation_client_profile_id"`
+		EmbeddingDefault    string `json:"default_embedding_client_profile_id"`
+		SpeechDefault       string `json:"default_speech_client_profile_id"`
+		Entries             []any  `json:"entries"`
+	}{Default: cmd.DefaultClientProfileID, ConversationDefault: cmd.DefaultConversationProfileID, EmbeddingDefault: cmd.DefaultEmbeddingProfileID, SpeechDefault: cmd.DefaultSpeechProfileID}
 	for _, e := range cmd.Entries {
 		keyHash := ""
 		if e.APIKey != nil {
@@ -479,22 +654,53 @@ func syncProfileDigest(cmd SyncProfileCommand) (string, error) {
 			keyHash = hex.EncodeToString(sum[:])
 		}
 		canonical.Entries = append(canonical.Entries, struct {
-			ClientID     string        `json:"client_profile_id"`
-			Expected     *int64        `json:"expected_revision,omitempty"`
-			DisplayName  string        `json:"display_name"`
-			Provider     ModelProvider `json:"provider"`
-			BaseURL      string        `json:"base_url"`
-			Model        string        `json:"model"`
-			SystemPrompt string        `json:"system_prompt"`
-			APIKeySHA256 string        `json:"api_key_sha256,omitempty"`
-			Temperature  *float64      `json:"temperature,omitempty"`
-			TopP         *float64      `json:"top_p,omitempty"`
-			Max          int           `json:"max_output_tokens"`
-			Context      int           `json:"context_window"`
-			Reasoning    string        `json:"reasoning_effort"`
-		}{e.ClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.BaseURL, e.Model, e.SystemPrompt, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
+			ClientID     string         `json:"client_profile_id"`
+			Expected     *int64         `json:"expected_revision,omitempty"`
+			DisplayName  string         `json:"display_name"`
+			Provider     ModelProvider  `json:"provider"`
+			ModelKind    string         `json:"model_kind,omitempty"`
+			Modalities   []string       `json:"input_modalities,omitempty"`
+			Config       map[string]any `json:"provider_config,omitempty"`
+			Secrets      []secretDigest `json:"provider_secrets,omitempty"`
+			BaseURL      string         `json:"base_url"`
+			Model        string         `json:"model"`
+			SystemPrompt string         `json:"system_prompt"`
+			APIKeySHA256 string         `json:"api_key_sha256,omitempty"`
+			Temperature  *float64       `json:"temperature,omitempty"`
+			TopP         *float64       `json:"top_p,omitempty"`
+			Max          int            `json:"max_output_tokens"`
+			Context      int            `json:"context_window"`
+			Reasoning    string         `json:"reasoning_effort"`
+		}{e.ClientProfileID, e.ExpectedRevision, e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), redactProviderConfig(e.ProviderConfig), providerSecretDigests(e.ProviderSecrets), e.BaseURL, e.Model, e.SystemPrompt, keyHash, e.Temperature, e.TopP, e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort})
 	}
 	return profileDigest("sync", canonical)
+}
+
+func providerSecretKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+type secretDigest struct {
+	Key    string `json:"key"`
+	SHA256 string `json:"sha256"`
+}
+
+// providerSecretDigests keeps secret bytes out of idempotency records while
+// still making a credential rotation part of the canonical request identity.
+// Sorting by key makes the digest stable across map iteration order.
+func providerSecretDigests(values map[string]string) []secretDigest {
+	keys := providerSecretKeys(values)
+	result := make([]secretDigest, 0, len(keys))
+	for _, key := range keys {
+		sum := sha256.Sum256([]byte(values[key]))
+		result = append(result, secretDigest{Key: key, SHA256: hex.EncodeToString(sum[:])})
+	}
+	return result
 }
 func redactDigestValue(value any) any {
 	b, _ := json.Marshal(value)
@@ -557,7 +763,8 @@ type MemoryProfileRepository struct {
 		Digest string
 		Result ConnectionTestResult
 	}
-	refs map[string]int
+	refs     map[string]int
+	defaults ProfileDefaults
 }
 
 func NewMemoryProfileRepository() *MemoryProfileRepository {
@@ -619,6 +826,11 @@ func (r *MemoryProfileRepository) GetProfile(_ context.Context, id string) (Prof
 }
 func (r *MemoryProfileRepository) ResolveProfile(ctx context.Context, id string) (Profile, error) {
 	return r.GetProfile(ctx, id)
+}
+func (r *MemoryProfileRepository) GetProfileDefaults(_ context.Context) (ProfileDefaults, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.defaults, nil
 }
 func (r *MemoryProfileRepository) RunConnectionTest(_ context.Context, key, digest, id string, test func(Profile) ConnectionTestResult) (ConnectionTestResult, bool, error) {
 	r.mu.Lock()
@@ -712,6 +924,10 @@ func cloneProfile(p Profile) Profile {
 		v := *p.TopP
 		p.TopP = &v
 	}
+	p.InputModalities = append([]string(nil), p.InputModalities...)
+	p.ProviderConfig = cloneMap(p.ProviderConfig)
+	p.ProviderSecrets = cloneStringMap(p.ProviderSecrets)
+	p.ProviderSecretStatus = cloneBoolMap(p.ProviderSecretStatus)
 	return p
 }
 func clonePublicProfile(p PublicProfile) PublicProfile {
@@ -723,7 +939,47 @@ func clonePublicProfile(p PublicProfile) PublicProfile {
 		v := *p.TopP
 		p.TopP = &v
 	}
+	p.InputModalities = append([]string(nil), p.InputModalities...)
+	p.ProviderConfig = cloneMap(p.ProviderConfig)
+	p.ProviderSecretStatus = cloneBoolMap(p.ProviderSecretStatus)
 	return p
+}
+
+func cloneMap(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if json.Unmarshal(encoded, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+func cloneStringMap(value map[string]string) map[string]string {
+	if len(value) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
+}
+
+func cloneBoolMap(value map[string]bool) map[string]bool {
+	if len(value) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }
 func (r *MemoryProfileRepository) DeleteProfile(_ context.Context, id, key, digest string, expected int64) (MutationSnapshot, error) {
 	r.mu.Lock()
@@ -791,7 +1047,7 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
-			p.DisplayName, p.Provider, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.BaseURL, e.Model, e.SystemPrompt
+			p.DisplayName, p.Provider, p.ModelKind, p.InputModalities, p.ProviderConfig, p.ProviderSecrets, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.ProviderSecrets, e.BaseURL, e.Model, e.SystemPrompt
 			p.Temperature, p.TopP = cloneFloat(e.Temperature), cloneFloat(e.TopP)
 			p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort = e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort
 			if e.APIKey != nil {
@@ -803,18 +1059,18 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			if e.ExpectedRevision != nil {
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
-			p := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: cloneFloat(e.Temperature), TopP: cloneFloat(e.TopP), MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			p := Profile{ID: SyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: cloneFloat(e.Temperature), TopP: cloneFloat(e.TopP), MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 			id = p.ID
 			byClient[e.ClientProfileID] = id
 			work[id] = p
 			exists = true
 		}
 		p := work[id]
-		if e.APIKey == nil && p.APIKey == "" {
+		if e.APIKey == nil && p.APIKey == "" && p.Provider != ProviderVolcVoice {
 			return SyncProfileResult{}, ErrAPIKeyUnavailable
 		}
 		p, err := validateStoredProfile(p)
-		if err != nil || p.APIKey == "" {
+		if err != nil || (p.APIKey == "" && p.Provider != ProviderVolcVoice) {
 			if err != nil {
 				return SyncProfileResult{}, err
 			}
@@ -824,14 +1080,28 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 		work[id] = p
 		out.Profiles = append(out.Profiles, p.Public())
 	}
-	if out.DefaultClientProfileID != "" {
-		if _, ok := byClient[out.DefaultClientProfileID]; !ok {
+	if cmd.DefaultConversationProfileID == "" {
+		cmd.DefaultConversationProfileID = cmd.DefaultClientProfileID
+	}
+	if cmd.DefaultClientProfileID == "" {
+		cmd.DefaultClientProfileID = cmd.DefaultConversationProfileID
+	}
+	for _, defaultID := range []string{cmd.DefaultConversationProfileID, cmd.DefaultEmbeddingProfileID, cmd.DefaultSpeechProfileID} {
+		if defaultID == "" {
+			continue
+		}
+		if _, ok := byClient[defaultID]; !ok {
 			return SyncProfileResult{}, ErrProfileNotFound
 		}
 	}
+	out.DefaultClientProfileID = cmd.DefaultClientProfileID
+	out.DefaultConversationProfileID = cmd.DefaultConversationProfileID
+	out.DefaultEmbeddingProfileID = cmd.DefaultEmbeddingProfileID
+	out.DefaultSpeechProfileID = cmd.DefaultSpeechProfileID
 	for id, p := range work {
 		r.profiles[id] = p
 	}
+	r.defaults = ProfileDefaults{ConversationClientProfileID: out.DefaultConversationProfileID, EmbeddingClientProfileID: out.DefaultEmbeddingProfileID, SpeechClientProfileID: out.DefaultSpeechProfileID}
 	r.syncIdempotency[key] = struct {
 		Digest string
 		Result SyncProfileResult

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -708,8 +709,15 @@ func safeStreamError(requestID, code string) StreamEvent {
 }
 
 func (s *Service) DeleteConversation(ctx context.Context, id string, expected uint64, callerKey ...string) error {
+	_, err := s.DeleteConversationReceipt(ctx, id, expected, callerKey...)
+	return err
+}
+
+// DeleteConversationReceipt returns the durable mutation snapshot together
+// with its exact replay marker for capability adapters.
+func (s *Service) DeleteConversationReceipt(ctx context.Context, id string, expected uint64, callerKey ...string) (ConversationMutationResponse, error) {
 	if !validUUID(id) {
-		return ErrInvalid
+		return ConversationMutationResponse{}, ErrInvalid
 	}
 	rid := ""
 	if len(callerKey) > 0 {
@@ -719,27 +727,37 @@ func (s *Service) DeleteConversation(ctx context.Context, id string, expected ui
 	}
 	cmd := DeleteConversationCommand{RequestID: rid, ConversationID: id, ExpectedRevision: expected, Fingerprint: digest(fmt.Sprintf("%s:%d", id, expected))}
 	if err := cmd.Validate(); err != nil {
-		return err
+		return ConversationMutationResponse{}, err
 	}
-	_, err := s.store.DeleteConversationMutation(ctx, cmd)
-	return err
+	store, ok := s.store.(ConversationMutationStore)
+	if !ok {
+		return ConversationMutationResponse{}, ErrConflict
+	}
+	return store.DeleteConversationMutation(ctx, cmd)
 }
 
 func (s *Service) CreateConversation(ctx context.Context, conversation Conversation, idempotencyKey string) (Conversation, error) {
+	receipt, err := s.CreateConversationReceipt(ctx, conversation, idempotencyKey)
+	return receipt.Conversation, err
+}
+
+// CreateConversationReceipt returns the durable mutation snapshot together
+// with its exact replay marker for capability adapters.
+func (s *Service) CreateConversationReceipt(ctx context.Context, conversation Conversation, idempotencyKey string) (ConversationMutationResponse, error) {
 	if !validUUID(conversation.ID) || conversation.Revision == 0 {
-		return Conversation{}, ErrInvalid
+		return ConversationMutationResponse{}, ErrInvalid
 	}
 	conversation.CreatedAt = time.Time{}
 	conversation.UpdatedAt = time.Time{}
 	cmd := CreateConversationCommand{RequestID: idempotencyKey, Conversation: conversation, Fingerprint: digestConversation(conversation)}
 	if err := cmd.Validate(); err != nil {
-		return Conversation{}, err
+		return ConversationMutationResponse{}, err
 	}
-	r, err := s.store.CreateConversationMutation(ctx, cmd)
-	if err != nil {
-		return Conversation{}, err
+	store, ok := s.store.(ConversationMutationStore)
+	if !ok {
+		return ConversationMutationResponse{}, ErrConflict
 	}
-	return r.Conversation, nil
+	return store.CreateConversationMutation(ctx, cmd)
 }
 func digestConversation(c Conversation) string {
 	canonical := struct {
@@ -761,6 +779,63 @@ func (s *Service) ListConversations(ctx context.Context, cursor string, limit in
 		return nil, "", ErrInvalid
 	}
 	return s.store.ListConversations(ctx, cursor, limit)
+}
+
+// RenameConversation applies a revision-bound, idempotent title mutation. A
+// production store should implement ConversationRenameStore so the replay
+// record and row update share one transaction.
+func (s *Service) RenameConversation(ctx context.Context, id, title string, expected uint64, callerKey ...string) (Conversation, error) {
+	receipt, err := s.RenameConversationReceipt(ctx, id, title, expected, callerKey...)
+	return receipt.Conversation, err
+}
+
+// RenameConversationReceipt returns the durable mutation snapshot together
+// with its exact replay marker for capability adapters.
+func (s *Service) RenameConversationReceipt(ctx context.Context, id, title string, expected uint64, callerKey ...string) (ConversationMutationResponse, error) {
+	if !validUUID(id) || expected == 0 || len(title) > 512 || !utf8.ValidString(title) {
+		return ConversationMutationResponse{}, ErrInvalid
+	}
+	key := ""
+	if len(callerKey) > 0 {
+		key = callerKey[0]
+	}
+	if key == "" {
+		key = uuid.NewSHA1(uuid.NameSpaceOID, []byte("rename:"+id+fmt.Sprint(expected)+":"+title)).String()
+	}
+	if !validUUID(key) {
+		return ConversationMutationResponse{}, ErrInvalid
+	}
+	if renamer, ok := s.store.(ConversationRenameStore); ok {
+		result, err := renamer.RenameConversationMutation(ctx, id, title, expected, key)
+		return result, err
+	}
+	conversation, err := s.store.LoadConversation(ctx, id)
+	if err != nil {
+		return ConversationMutationResponse{}, err
+	}
+	if conversation.DeletedAt != nil || conversation.Revision != expected {
+		return ConversationMutationResponse{}, ErrConflict
+	}
+	conversation.Title = title
+	conversation.Revision++
+	conversation.UpdatedAt = s.clock()
+	if err := s.store.SaveConversation(ctx, conversation, expected); err != nil {
+		return ConversationMutationResponse{}, err
+	}
+	return ConversationMutationResponse{Conversation: conversation}, nil
+}
+
+// ListTurns lists durable turn metadata for one conversation. Message bodies
+// and event history remain separate Watch/Get concerns.
+func (s *Service) ListTurns(ctx context.Context, conversationID, cursor string, limit int) ([]Turn, string, error) {
+	if s == nil || s.turns == nil || !validUUID(conversationID) || limit <= 0 || limit > 1000 {
+		return nil, "", ErrInvalid
+	}
+	lister, ok := s.turns.(TurnLister)
+	if !ok {
+		return nil, "", ErrInvalid
+	}
+	return lister.ListTurns(ctx, conversationID, cursor, limit)
 }
 
 // StartTurn durably accepts a prompt before starting any model work. The
@@ -856,6 +931,20 @@ func (s *Service) GetTurn(ctx context.Context, id string) (Turn, error) {
 		return Turn{}, ErrInvalid
 	}
 	return s.turns.GetTurn(ctx, id)
+}
+
+// GetTurnByRequestID resolves the durable turn identity used by an external
+// adapter (for example the Native Voice runner).  Request ids are not turn
+// ids, so adapters must not guess or hash the storage primary key.
+func (s *Service) GetTurnByRequestID(ctx context.Context, requestID string) (Turn, error) {
+	if s.turns == nil || !validUUID(requestID) {
+		return Turn{}, ErrInvalid
+	}
+	lookup, ok := s.turns.(TurnRequestLookup)
+	if !ok {
+		return Turn{}, ErrInvalid
+	}
+	return lookup.GetTurnByRequestID(ctx, requestID)
 }
 
 // RecoverTurns is called after process startup. It only resumes accepted or

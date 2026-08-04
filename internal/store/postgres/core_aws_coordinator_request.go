@@ -166,9 +166,13 @@ func (c *CoreAWSChangeCoordinator) ConsumeChange(ctx context.Context, cmd coreaw
 	}
 	var planID, credentialID, region, stack, account, user, templateSHA, operation string
 	now := c.now().UTC()
-	var template, parametersRaw, tagsRaw, capabilitiesRaw, accessKey, secretKey, sessionToken []byte
+	var template, parametersRaw, tagsRaw, capabilitiesRaw []byte
 	var planRev, verified, credRevision int64
-	if e = tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.access_key_id,c.secret_access_key,c.session_token,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.change_id=$1 FOR UPDATE`, cmd.ChangeID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &parametersRaw, &tagsRaw, &capabilitiesRaw, &planRev, &account, &user, &accessKey, &secretKey, &sessionToken, &credRevision, &verified); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.change_id=$1 FOR UPDATE`, cmd.ChangeID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &parametersRaw, &tagsRaw, &capabilitiesRaw, &planRev, &account, &user, &credRevision, &verified); e != nil {
+		return coreaws.Reservation{}, e
+	}
+	cred, e := NewCoreAWSStore(c.store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, credentialID))
+	if e != nil {
 		return coreaws.Reservation{}, e
 	}
 	var parameters, tags map[string]string
@@ -177,7 +181,6 @@ func (c *CoreAWSChangeCoordinator) ConsumeChange(ctx context.Context, cmd coreaw
 	_ = json.Unmarshal(tagsRaw, &tags)
 	_ = json.Unmarshal(capabilitiesRaw, &capabilities)
 	plan := coreaws.Plan{ID: planID, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: parameters, Tags: tags, Capabilities: capabilities, Revision: planRev}
-	cred := coreaws.RehydrateCredentials(credentialID, "", region, account, user, accessKey, secretKey, sessionToken, verified, credRevision, now, now)
 	wantBinding, _ := coreaws.BindingForPlan(plan, cred).Normalize()
 	storedBinding, _ := cmd.Binding.Normalize()
 	if verified != credRevision || account == "" || user == "" || !storedBinding.Equal(wantBinding) {

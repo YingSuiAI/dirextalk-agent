@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,7 +28,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	defer tx.Rollback(ctx)
 	fp := c.Fingerprint()
 	var existing core.Turn
-	if err = scanTurn(ctx, tx, c.RequestID, &existing); err == nil {
+	if err = s.scanTurn(ctx, tx, c.RequestID, &existing); err == nil {
 		if existing.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() || existing.RequestFingerprint != fp {
 			return core.Turn{}, core.ErrConflict
 		}
@@ -57,13 +58,21 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 		}
 	}
 	turnID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+c.RequestID)).String()
-	raw, _ := json.Marshal(c.ProfileSnapshot)
+	metadataSnapshot := c.ProfileSnapshot
+	metadataSnapshot.APIKey = ""
+	raw, _ := json.Marshal(metadataSnapshot)
+	plaintext := []byte(c.ProfileSnapshot.APIKey)
+	envelope, err := s.sealDurableSecret("core_conversation_turns", turnID, c.ProfileSnapshot.Revision, "profile_snapshot_api_key", plaintext)
+	clearBytes(plaintext)
+	if err != nil {
+		return core.Turn{}, err
+	}
 	textSnapshots := c.ExtensionSnapshots
 	if textSnapshots == nil {
 		textSnapshots = []core.ExtensionExecutionSnapshot{}
 	}
 	extRaw, _ := json.Marshal(textSnapshots)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,extension_snapshot_json,extension_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'accepted',1,1,1,$12,$12)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), extRaw, c.ExtensionSnapshotDigest(), now); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',1,1,1,$15,$15)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), now); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			_ = tx.Rollback(ctx)
@@ -105,7 +114,7 @@ type turnRow interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func scanTurn(ctx context.Context, q turnRow, key string, out *core.Turn) error {
+func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key string, out *core.Turn) error {
 	var conv, profile *uuid.UUID
 	var expected *int64
 	var snapshot []byte
@@ -119,7 +128,9 @@ func scanTurn(ctx context.Context, q turnRow, key string, out *core.Turn) error 
 	var dispatchEpoch uint64
 	var last int64
 	var extensionRaw []byte
-	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,extension_snapshot_json,extension_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &extensionRaw, &extensionDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
+	var snapshotKeyVersion uint32
+	var snapshotNonce, snapshotCiphertext []byte
+	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -134,7 +145,18 @@ func scanTurn(ctx context.Context, q turnRow, key string, out *core.Turn) error 
 		out.ExpectedRevision = &x
 	}
 	if len(snapshot) > 0 {
-		_ = json.Unmarshal(snapshot, &out.ProfileSnapshot)
+		if json.Unmarshal(snapshot, &out.ProfileSnapshot) != nil {
+			return core.ErrConflict
+		}
+		plaintext, openErr := s.openDurableSecret("core_conversation_turns", out.ID, out.ProfileSnapshot.Revision, "profile_snapshot_api_key", snapshotKeyVersion, snapshotNonce, snapshotCiphertext)
+		if openErr != nil {
+			return core.ErrConflict
+		}
+		out.ProfileSnapshot.APIKey = string(plaintext)
+		clearBytes(plaintext)
+		if out.ProfileSnapshot.Validate() != nil || out.ProfileSnapshot.Digest() != digest {
+			return core.ErrConflict
+		}
 	}
 	out.ProfileSnapshotDigest, out.State, out.CancelRequested, out.LastSequence = digest, core.TurnState(state), cancel, last
 	out.ExtensionSnapshotDigest = extensionDigest
@@ -166,7 +188,7 @@ func scanTurn(ctx context.Context, q turnRow, key string, out *core.Turn) error 
 
 func (s *CoreConversationStore) GetTurn(ctx context.Context, id string) (core.Turn, error) {
 	var out core.Turn
-	err := scanTurn(ctx, s.pool, id, &out)
+	err := s.scanTurn(ctx, s.pool, id, &out)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, core.ErrConflict
 	}
@@ -175,7 +197,7 @@ func (s *CoreConversationStore) GetTurn(ctx context.Context, id string) (core.Tu
 
 func (s *CoreConversationStore) GetTurnByRequestID(ctx context.Context, id string) (core.Turn, error) {
 	var out core.Turn
-	err := scanTurn(ctx, s.pool, id, &out)
+	err := s.scanTurn(ctx, s.pool, id, &out)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, core.ErrConflict
 	}
@@ -203,6 +225,70 @@ func (s *CoreConversationStore) ListRecoverableTurns(ctx context.Context) ([]cor
 	return out, rows.Err()
 }
 
+func (s *CoreConversationStore) ListTurns(ctx context.Context, conversationID, token string, limit int) ([]core.Turn, string, error) {
+	if _, err := uuid.Parse(conversationID); err != nil || limit <= 0 || limit > 1000 {
+		return nil, "", core.ErrInvalid
+	}
+	type cursor struct {
+		CreatedAt time.Time `json:"created_at"`
+		TurnID    string    `json:"turn_id"`
+	}
+	var after cursor
+	if token != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(token)
+		if err != nil || json.Unmarshal(raw, &after) != nil || after.CreatedAt.IsZero() || uuid.Validate(after.TurnID) != nil {
+			return nil, "", core.ErrInvalid
+		}
+	}
+	rows, err := s.pool.Query(ctx, `SELECT turn_id,created_at FROM core_conversation_turns WHERE conversation_id=$1 AND ($2::timestamptz IS NULL OR (created_at,turn_id)>($2,$3::uuid)) ORDER BY created_at,turn_id LIMIT $4`, conversationID, nullableTime(after.CreatedAt), nullableUUID(after.TurnID), limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	ids := make([]cursor, 0, limit+1)
+	for rows.Next() {
+		var item cursor
+		if err := rows.Scan(&item.TurnID, &item.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		item.CreatedAt = item.CreatedAt.UTC()
+		ids = append(ids, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(ids) > limit {
+		last := ids[limit-1]
+		ids = ids[:limit]
+		raw, _ := json.Marshal(last)
+		next = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	out := make([]core.Turn, 0, len(ids))
+	for _, item := range ids {
+		turn, err := s.GetTurn(ctx, item.TurnID)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, turn)
+	}
+	return out, next, nil
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
+func nullableUUID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return uuid.MustParse(value)
+}
+
 func (s *CoreConversationStore) ClaimTurn(ctx context.Context, id string, now time.Time, ttl time.Duration) (core.TurnLease, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -210,7 +296,7 @@ func (s *CoreConversationStore) ClaimTurn(ctx context.Context, id string, now ti
 	}
 	defer tx.Rollback(ctx)
 	var turn core.Turn
-	if err = scanTurn(ctx, tx, id, &turn); err != nil {
+	if err = s.scanTurn(ctx, tx, id, &turn); err != nil {
 		return core.TurnLease{}, core.ErrConflict
 	}
 	if turn.State == core.TurnCompleted || turn.State == core.TurnCanceled || turn.State == core.TurnFailed || turn.State == core.TurnWaitingConfirmation {
@@ -398,7 +484,7 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 	}
 	defer tx.Rollback(ctx)
 	var turn core.Turn
-	if err = scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
+	if err = s.scanTurn(ctx, tx, lease.Turn.ID, &turn); err != nil {
 		return core.Turn{}, core.ErrConflict
 	}
 	if turn.State != core.TurnRunning || turn.RequestID != lease.Turn.RequestID {
@@ -472,7 +558,7 @@ func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.Tu
 	}
 	defer tx.Rollback(ctx)
 	var turn core.Turn
-	if err = scanTurn(ctx, tx, c.TurnID, &turn); err != nil {
+	if err = s.scanTurn(ctx, tx, c.TurnID, &turn); err != nil {
 		return core.Turn{}, core.ErrConflict
 	}
 	cancelFingerprint := sha256hexPG([]byte(fmt.Sprintf("%s:%d", c.TurnID, c.ExpectedRevision)))
@@ -578,7 +664,7 @@ func (s *CoreConversationStore) MarkTurnCanceledRequested(ctx context.Context, i
 		return core.Turn{}, core.ErrConflict
 	}
 	var turn core.Turn
-	if err = scanTurn(ctx, tx, id, &turn); err != nil {
+	if err = s.scanTurn(ctx, tx, id, &turn); err != nil {
 		return core.Turn{}, err
 	}
 	if err = insertTurnEventTx(ctx, tx, id, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventCanceled}, now); err != nil {
@@ -605,7 +691,7 @@ func (s *CoreConversationStore) FailTurnUncertain(ctx context.Context, id, code,
 		return core.Turn{}, core.ErrConflict
 	}
 	var turn core.Turn
-	if err = scanTurn(ctx, tx, id, &turn); err != nil {
+	if err = s.scanTurn(ctx, tx, id, &turn); err != nil {
 		return core.Turn{}, err
 	}
 	if err = insertTurnEventTx(ctx, tx, id, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventError, ErrorCode: code, ErrorSummary: summary}, now); err != nil {

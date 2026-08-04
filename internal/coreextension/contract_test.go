@@ -192,8 +192,30 @@ func TestLifecycleInstallSuccessActivatesProposal(t *testing.T) {
 	r := NewMemoryRepository()
 	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
 	out := completeInstall(t, r, res, true)
-	if out.State != StateInstalled || out.ActiveVersionID == "" || out.ProposedVersionID != "" {
+	if out.State != StateInstalled || !out.Enabled || out.ActiveVersionID == "" || out.ProposedVersionID != "" {
 		t.Fatalf("outcome: %#v", out)
+	}
+}
+
+func TestEnableDisableRevisionAndReplay(t *testing.T) {
+	r := NewMemoryRepository()
+	res, _ := installForLifecycle(t, r, KindMCP, SourceOfficialRegistry)
+	installed := completeInstall(t, r, res, true)
+	disableKey := uuid.NewString()
+	disabled, err := r.SetEnabled(context.Background(), ToggleCommand{IdempotencyKey: disableKey, InstallationID: installed.ID, ExpectedRevision: installed.Revision, Enabled: false})
+	if err != nil || disabled.Enabled || disabled.Revision != installed.Revision+1 {
+		t.Fatalf("disable: %#v %v", disabled, err)
+	}
+	replay, err := r.SetEnabled(context.Background(), ToggleCommand{IdempotencyKey: disableKey, InstallationID: installed.ID, ExpectedRevision: installed.Revision, Enabled: false})
+	if err != nil || replay.Revision != disabled.Revision || replay.Enabled {
+		t.Fatalf("disable replay: %#v %v", replay, err)
+	}
+	if _, err = r.SetEnabled(context.Background(), ToggleCommand{IdempotencyKey: uuid.NewString(), InstallationID: installed.ID, ExpectedRevision: installed.Revision, Enabled: true}); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("expected stale revision, got %v", err)
+	}
+	enable, err := r.SetEnabled(context.Background(), ToggleCommand{IdempotencyKey: uuid.NewString(), InstallationID: installed.ID, ExpectedRevision: disabled.Revision, Enabled: true})
+	if err != nil || !enable.Enabled || enable.Revision != disabled.Revision+1 {
+		t.Fatalf("enable: %#v %v", enable, err)
 	}
 }
 func TestLifecycleInstallFailureClearsProposal(t *testing.T) {

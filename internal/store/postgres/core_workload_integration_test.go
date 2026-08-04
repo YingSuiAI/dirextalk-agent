@@ -509,7 +509,7 @@ func TestCoreWorkloadPostgresCancelLedgerAndPostClaimFence(t *testing.T) {
 func TestCoreWorkloadPostgresOwnerIsolationAndIdempotency(t *testing.T) {
 	ctx, storeA, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
-	storeB, err := New(storeA.pool, uuid.NewString())
+	storeB, err := New(storeA.pool, uuid.NewString(), testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}

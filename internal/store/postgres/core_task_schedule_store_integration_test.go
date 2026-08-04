@@ -253,14 +253,12 @@ func coreTaskScheduleFixture(t *testing.T) (context.Context, *Store, string, fun
 	if err = ApplyMigrations(ctx, pool, instance); err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(pool, instance)
+	store, err := New(pool, instance, testSecretKeyring(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile := uuid.NewString()
-	if _, err = pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured) VALUES($1,'test','openai_compatible','https://example.invalid','test','test',true)`, profile); err != nil {
-		t.Fatal(err)
-	}
+	createTestProfile(ctx, t, store, profile, "test", "test")
 	return ctx, store, profile, func() {
 		pool.Close()
 		cancel()

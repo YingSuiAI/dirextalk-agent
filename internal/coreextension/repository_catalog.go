@@ -64,6 +64,52 @@ func (r *MemoryRepository) Get(_ context.Context, id string) (Installation, erro
 	return cloneInstallation(v), nil
 }
 
+// SetEnabled is a small transactional projection mutation in the in-memory
+// repository used by contract tests. Production uses the PostgreSQL
+// implementation with the same revision/idempotency semantics.
+func (r *MemoryRepository) SetEnabled(_ context.Context, command ToggleCommand) (Installation, error) {
+	if !validUUID(command.IdempotencyKey) || !validUUID(command.InstallationID) || command.ExpectedRevision < 1 {
+		return Installation{}, ErrInvalid
+	}
+	digest := digestBytes(mustJSON(struct {
+		ID      string
+		Rev     int64
+		Enabled bool
+	}{command.InstallationID, command.ExpectedRevision, command.Enabled}))
+	replayKey := map[bool]string{true: "enable:", false: "disable:"}[command.Enabled] + command.IdempotencyKey
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if prior, ok := r.toggleReplay[replayKey]; ok {
+		if prior.digest != digest {
+			return Installation{}, ErrIdempotencyConflict
+		}
+		return cloneInstallation(prior.result), nil
+	}
+	i, ok := r.items[command.InstallationID]
+	if !ok {
+		return Installation{}, ErrNotFound
+	}
+	if i.Revision != command.ExpectedRevision {
+		return Installation{}, ErrRevisionConflict
+	}
+	if i.State != StateInstalled || i.ActiveVersionID == "" {
+		return Installation{}, ErrConflict
+	}
+	if i.Enabled != command.Enabled {
+		i.Enabled = command.Enabled
+		i.Revision++
+		i.UpdatedAt = r.nowUTC()
+		r.items[i.ID] = i
+	}
+	r.toggleReplay[replayKey] = toggleReplay{digest: digest, result: cloneInstallation(i)}
+	return cloneInstallation(i), nil
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
+
 // GetLifecycleRecord exposes the immutable proposal fence for recovery and
 // inspection tests without exposing mutable repository state.
 func (r *MemoryRepository) GetLifecycleRecord(_ context.Context, id string) (LifecycleRecord, error) {

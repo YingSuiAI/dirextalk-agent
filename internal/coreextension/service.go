@@ -12,6 +12,8 @@ type Service interface {
 	RequestInstall(context.Context, Mutation) (MutationResult, error)
 	RequestUpdate(context.Context, Mutation) (MutationResult, error)
 	RequestUninstall(context.Context, Mutation) (MutationResult, error)
+	Enable(context.Context, ToggleCommand) (Installation, error)
+	Disable(context.Context, ToggleCommand) (Installation, error)
 	Get(context.Context, string) (Installation, error)
 	List(context.Context, ListQuery) (InstallationPage, error)
 	ListTools(context.Context, string, int64) ([]Tool, error)
@@ -249,6 +251,21 @@ func bindSecretGrants(grants []SecretGrantDescriptor, inputs []SecretInput) ([]S
 func (s *service) RequestUninstall(ctx context.Context, m Mutation) (MutationResult, error) {
 	return s.repo.RemoveMutation(ctx, m)
 }
+func (s *service) Enable(ctx context.Context, command ToggleCommand) (Installation, error) {
+	command.Enabled = true
+	return s.toggle(ctx, command)
+}
+func (s *service) Disable(ctx context.Context, command ToggleCommand) (Installation, error) {
+	command.Enabled = false
+	return s.toggle(ctx, command)
+}
+func (s *service) toggle(ctx context.Context, command ToggleCommand) (Installation, error) {
+	if s == nil || s.repo == nil || !validUUID(command.IdempotencyKey) || !validUUID(command.InstallationID) || command.ExpectedRevision < 1 {
+		return Installation{}, ErrInvalid
+	}
+	value, err := s.repo.SetEnabled(ctx, command)
+	return value, err
+}
 func (s *service) Get(ctx context.Context, id string) (Installation, error) {
 	return s.repo.Get(ctx, id)
 }
@@ -263,7 +280,7 @@ func (s *service) ListTools(ctx context.Context, id string, rev int64) ([]Tool, 
 	if rev > 0 && i.Revision != rev {
 		return nil, ErrRevisionConflict
 	}
-	if i.ActiveVersionID == "" {
+	if i.State != StateInstalled || !i.Enabled || i.ActiveVersionID == "" {
 		return nil, ErrConflict
 	}
 	if s.runtime != nil {

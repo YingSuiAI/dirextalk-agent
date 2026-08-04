@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -15,40 +17,163 @@ import (
 type CoreAWSStore struct{ store *Store }
 
 func NewCoreAWSStore(s *Store) *CoreAWSStore { return &CoreAWSStore{store: s} }
-func secretCredential(c coreaws.Credentials, a, s, t []byte) coreaws.Credentials { // restore private bytes for provider use; never serialized/logged
-	return coreaws.RehydrateCredentials(c.ID, c.Name, c.Region, c.AccountID, c.UserARN, a, s, t, c.VerifiedRevision, c.Revision, c.CreatedAt, c.UpdatedAt)
+
+const awsCredentialDomain = "core_aws_credentials"
+
+func (s *CoreAWSStore) keyring() (*secretbox.Keyring, error) {
+	if s == nil || s.store == nil {
+		return nil, errSecretKeyUnavailable
+	}
+	return s.store.secretKeyring()
+}
+
+func secretCredential(c coreaws.Credentials, a, se, t []byte) coreaws.Credentials { // restore private bytes for provider use; never serialized/logged
+	defer clearBytes(a)
+	defer clearBytes(se)
+	defer clearBytes(t)
+	return coreaws.RehydrateCredentialsWithTestedAt(c.ID, c.Name, c.Region, c.AccountID, c.UserARN, a, se, t, c.VerifiedRevision, c.Revision, c.TestedAt, c.CreatedAt, c.UpdatedAt)
 }
 func credArgs(c coreaws.Credentials) ([]byte, []byte, []byte) {
 	return c.StoredSecretBytes()
 }
-func (s *CoreAWSStore) CreateCredential(ctx context.Context, c coreaws.Credentials) (coreaws.Credentials, error) {
-	if c.Validate() != nil {
-		return coreaws.Credentials{}, coreaws.ErrInvalid
+
+func credentialSessionConfigured(c coreaws.Credentials) bool {
+	a, se, t := credArgs(c)
+	configured := len(t) > 0
+	clearBytes(a)
+	clearBytes(se)
+	clearBytes(t)
+	return configured
+}
+
+type encryptedCredential struct {
+	keyVersion                      uint32
+	accessNonce, accessCiphertext   []byte
+	secretNonce, secretCiphertext   []byte
+	sessionNonce, sessionCiphertext []byte
+}
+
+func (s *CoreAWSStore) sealCredential(c coreaws.Credentials) (encryptedCredential, error) {
+	key, err := s.keyring()
+	if err != nil {
+		return encryptedCredential{}, err
 	}
 	a, se, t := credArgs(c)
-	_, e := s.store.pool.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,access_key_id,secret_access_key,session_token,account_id,user_arn,verified_revision,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, c.ID, c.Name, c.Region, a, se, t, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, c.CreatedAt, c.UpdatedAt)
+	defer clearBytes(a)
+	defer clearBytes(se)
+	defer clearBytes(t)
+	seal := func(field string, plaintext []byte) (secretbox.Envelope, error) {
+		aad, err := secretbox.BindAAD(awsCredentialDomain, c.ID, c.Revision, field)
+		if err != nil {
+			return secretbox.Envelope{}, err
+		}
+		return key.Seal(plaintext, aad)
+	}
+	access, err := seal("access_key_id", a)
+	if err != nil {
+		return encryptedCredential{}, err
+	}
+	secret, err := seal("secret_access_key", se)
+	if err != nil {
+		return encryptedCredential{}, err
+	}
+	session, err := seal("session_token", t)
+	if err != nil {
+		return encryptedCredential{}, err
+	}
+	return encryptedCredential{keyVersion: key.Version(), accessNonce: access.Nonce, accessCiphertext: access.Ciphertext, secretNonce: secret.Nonce, secretCiphertext: secret.Ciphertext, sessionNonce: session.Nonce, sessionCiphertext: session.Ciphertext}, nil
+}
+
+func (s *CoreAWSStore) openCredential(c coreaws.Credentials, encrypted encryptedCredential) (coreaws.Credentials, error) {
+	key, err := s.keyring()
+	if err != nil {
+		return coreaws.Credentials{}, err
+	}
+	if encrypted.keyVersion != key.Version() {
+		return coreaws.Credentials{}, secretbox.ErrKeyVersionMismatch
+	}
+	open := func(field string, nonce, ciphertext []byte) ([]byte, error) {
+		aad, err := secretbox.BindAAD(awsCredentialDomain, c.ID, c.Revision, field)
+		if err != nil {
+			return nil, err
+		}
+		return key.Open(secretbox.Envelope{KeyVersion: encrypted.keyVersion, Nonce: nonce, Ciphertext: ciphertext}, aad)
+	}
+	a, err := open("access_key_id", encrypted.accessNonce, encrypted.accessCiphertext)
+	if err != nil {
+		return coreaws.Credentials{}, err
+	}
+	se, err := open("secret_access_key", encrypted.secretNonce, encrypted.secretCiphertext)
+	if err != nil {
+		clearBytes(a)
+		return coreaws.Credentials{}, err
+	}
+	t, err := open("session_token", encrypted.sessionNonce, encrypted.sessionCiphertext)
+	if err != nil {
+		clearBytes(a)
+		clearBytes(se)
+		return coreaws.Credentials{}, err
+	}
+	return secretCredential(c, a, se, t), nil
+}
+
+type credentialRow interface{ Scan(...any) error }
+
+func (s *CoreAWSStore) scanCredentialRow(row credentialRow) (coreaws.Credentials, error) {
+	var c coreaws.Credentials
+	var encrypted encryptedCredential
+	var testedAt *time.Time
+	if err := row.Scan(&c.ID, &c.Name, &c.Region, &encrypted.keyVersion, &encrypted.accessNonce, &encrypted.accessCiphertext, &encrypted.secretNonce, &encrypted.secretCiphertext, &encrypted.sessionNonce, &encrypted.sessionCiphertext, &c.AccountID, &c.UserARN, &c.VerifiedRevision, &c.Revision, &testedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c, coreaws.ErrNotFound
+		}
+		return c, err
+	}
+	if testedAt != nil {
+		c.TestedAt = testedAt.UTC()
+	}
+	return s.openCredential(c, encrypted)
+}
+
+func clearBytes(value []byte) {
+	for i := range value {
+		value[i] = 0
+	}
+}
+
+func nullableCredentialTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
+}
+
+func (s *CoreAWSStore) CreateCredential(ctx context.Context, c coreaws.Credentials) (coreaws.Credentials, error) {
+	if c.Validate() != nil || s == nil || s.store == nil {
+		return coreaws.Credentials{}, coreaws.ErrInvalid
+	}
+	encrypted, err := s.sealCredential(c)
+	if err != nil {
+		return coreaws.Credentials{}, err
+	}
+	configured := credentialSessionConfigured(c)
+	_, e := s.store.pool.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.CreatedAt, c.UpdatedAt)
 	if e != nil {
 		return coreaws.Credentials{}, e
 	}
 	return c, nil
 }
 func (s *CoreAWSStore) GetCredential(ctx context.Context, id string) (coreaws.Credentials, error) {
-	var c coreaws.Credentials
-	var a, se, t []byte
-	e := s.store.pool.QueryRow(ctx, `SELECT credential_id::text,name,region,access_key_id,secret_access_key,session_token,account_id,user_arn,verified_revision,revision,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1`, id).Scan(&c.ID, &c.Name, &c.Region, &a, &se, &t, &c.AccountID, &c.UserARN, &c.VerifiedRevision, &c.Revision, &c.CreatedAt, &c.UpdatedAt)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return c, coreaws.ErrNotFound
+	if s == nil || s.store == nil {
+		return coreaws.Credentials{}, coreaws.ErrInvalid
 	}
-	if e != nil {
-		return c, e
-	}
-	return secretCredential(c, a, se, t), nil
+	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1`, id))
 }
 func (s *CoreAWSStore) ListCredentials(ctx context.Context, size int, token string) (coreaws.CredentialPage, error) {
 	if size < 0 || size > 100 {
 		return coreaws.CredentialPage{}, coreaws.ErrInvalid
 	}
-	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,revision,created_at,updated_at,(length(access_key_id)>0),(length(secret_access_key)>0),(length(session_token)>0) FROM core_aws_credentials WHERE credential_id::text>$1 ORDER BY credential_id LIMIT $2`, token, size+1)
+	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE credential_id::text>$1 ORDER BY credential_id LIMIT $2`, token, size+1)
 	if e != nil {
 		return coreaws.CredentialPage{}, e
 	}
@@ -56,8 +181,12 @@ func (s *CoreAWSStore) ListCredentials(ctx context.Context, size int, token stri
 	var out []coreaws.CredentialView
 	for rows.Next() {
 		var v coreaws.CredentialView
-		if e = rows.Scan(&v.ID, &v.Name, &v.Region, &v.AccountID, &v.UserARN, &v.Revision, &v.CreatedAt, &v.UpdatedAt, &v.HasAccessKey, &v.HasSecretKey, &v.HasSessionToken); e != nil {
+		var testedAt *time.Time
+		if e = rows.Scan(&v.ID, &v.Name, &v.Region, &v.AccountID, &v.UserARN, &v.VerifiedRevision, &v.Revision, &testedAt, &v.CreatedAt, &v.UpdatedAt, &v.HasAccessKey, &v.HasSecretKey, &v.HasSessionToken); e != nil {
 			return coreaws.CredentialPage{}, e
+		}
+		if testedAt != nil {
+			v.TestedAt = testedAt.UTC()
 		}
 		out = append(out, v)
 	}
@@ -74,8 +203,12 @@ func (s *CoreAWSStore) UpdateCredential(ctx context.Context, c coreaws.Credentia
 	if c.Validate() != nil || c.Revision != expected+1 {
 		return coreaws.Credentials{}, coreaws.ErrInvalid
 	}
-	a, se, t := credArgs(c)
-	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET name=$2,region=$3,access_key_id=$4,secret_access_key=$5,session_token=$6,account_id=$7,user_arn=$8,verified_revision=$9,revision=$10,updated_at=$11 WHERE credential_id=$1 AND revision=$12`, c.ID, c.Name, c.Region, a, se, t, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, c.UpdatedAt, expected)
+	encrypted, err := s.sealCredential(c)
+	if err != nil {
+		return coreaws.Credentials{}, err
+	}
+	configured := credentialSessionConfigured(c)
+	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET name=$2,region=$3,secret_key_version=$4,access_key_id_nonce=$5,access_key_id_ciphertext=$6,secret_access_key_nonce=$7,secret_access_key_ciphertext=$8,session_token_nonce=$9,session_token_ciphertext=$10,session_token_configured=$11,account_id=$12,user_arn=$13,verified_revision=$14,revision=$15,tested_at=$16,updated_at=$17 WHERE credential_id=$1 AND revision=$18`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.UpdatedAt, expected)
 	if e != nil {
 		return coreaws.Credentials{}, e
 	}
@@ -91,10 +224,17 @@ func (s *CoreAWSStore) DeleteCredential(ctx context.Context, id string, expected
 	}
 	return e
 }
-func (s *CoreAWSStore) RecordCredentialIdentity(ctx context.Context, id string, rev int64, i coreaws.Identity) (coreaws.Credentials, error) {
-	_, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET account_id=$2,user_arn=$3,verified_revision=$4,updated_at=clock_timestamp() WHERE credential_id=$1 AND revision=$4`, id, i.AccountID, i.UserARN, rev)
+func (s *CoreAWSStore) RecordCredentialIdentity(ctx context.Context, id string, rev int64, i coreaws.Identity, testedAt time.Time) (coreaws.Credentials, error) {
+	if testedAt.IsZero() {
+		return coreaws.Credentials{}, coreaws.ErrInvalid
+	}
+	testedAt = testedAt.UTC()
+	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET account_id=$2,user_arn=$3,verified_revision=$4,tested_at=$5,updated_at=$5 WHERE credential_id=$1 AND revision=$4`, id, i.AccountID, i.UserARN, rev, testedAt)
 	if e != nil {
 		return coreaws.Credentials{}, e
+	}
+	if tag.RowsAffected() != 1 {
+		return coreaws.Credentials{}, coreaws.ErrRevisionConflict
 	}
 	return s.GetCredential(ctx, id)
 }

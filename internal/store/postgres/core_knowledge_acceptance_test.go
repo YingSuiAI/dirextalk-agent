@@ -71,9 +71,7 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	profileID := uuid.NewString()
-	if _, err := baseRepo.store.pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured,revision,created_at,updated_at) VALUES($1,'acceptance embedding','openai_compatible','http://placeholder','acceptance-embed','acceptance-secret',true,1,clock_timestamp(),clock_timestamp())`, profileID); err != nil {
-		t.Fatal(err)
-	}
+	createTestProfile(ctx, t, baseRepo.store, profileID, "acceptance-embed", "acceptance-secret")
 
 	var embeddingCalls int
 	embedding := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +300,7 @@ func (q *acceptanceQdrant) handle(w http.ResponseWriter, r *http.Request) {
 		collection = parts[1]
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if strings.HasSuffix(r.URL.Path, "/points/search") {
+	if strings.HasSuffix(r.URL.Path, "/points/query") || strings.HasSuffix(r.URL.Path, "/points/search") {
 		var request struct {
 			Filter struct {
 				Should []struct {
@@ -341,7 +339,7 @@ func (q *acceptanceQdrant) handle(w http.ResponseWriter, r *http.Request) {
 		if request.Limit > 0 && len(result) > request.Limit {
 			result = result[:request.Limit]
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": result})
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points": result}})
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, "/points/scroll") {

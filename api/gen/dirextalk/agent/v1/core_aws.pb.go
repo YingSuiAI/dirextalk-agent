@@ -88,6 +88,8 @@ type CoreAWSCredential struct {
 	Revision                  int64                  `protobuf:"varint,9,opt,name=revision,proto3" json:"revision,omitempty"`
 	CreatedAt                 *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt                 *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	VerifiedRevision          int64                  `protobuf:"varint,12,opt,name=verified_revision,json=verifiedRevision,proto3" json:"verified_revision,omitempty"`
+	TestedAt                  *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=tested_at,json=testedAt,proto3" json:"tested_at,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
@@ -195,6 +197,20 @@ func (x *CoreAWSCredential) GetCreatedAt() *timestamppb.Timestamp {
 func (x *CoreAWSCredential) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *CoreAWSCredential) GetVerifiedRevision() int64 {
+	if x != nil {
+		return x.VerifiedRevision
+	}
+	return 0
+}
+
+func (x *CoreAWSCredential) GetTestedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.TestedAt
 	}
 	return nil
 }
@@ -2135,7 +2151,7 @@ var File_dirextalk_agent_v1_core_aws_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_aws_proto_rawDesc = "" +
 	"\n" +
-	"!dirextalk/agent/v1/core_aws.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a*dirextalk/agent/v1/core_confirmation.proto\"\xdf\x03\n" +
+	"!dirextalk/agent/v1/core_aws.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a*dirextalk/agent/v1/core_confirmation.proto\"\xc5\x04\n" +
 	"\x11CoreAWSCredential\x12#\n" +
 	"\rcredential_id\x18\x01 \x01(\tR\fcredentialId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
@@ -2151,7 +2167,9 @@ const file_dirextalk_agent_v1_core_aws_proto_rawDesc = "" +
 	"created_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"\xfa\x01\n" +
+	"updated_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12+\n" +
+	"\x11verified_revision\x18\f \x01(\x03R\x10verifiedRevision\x127\n" +
+	"\ttested_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\btestedAt\"\xfa\x01\n" +
 	".CoreCloudControlServiceCreateCredentialRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
@@ -2402,64 +2420,65 @@ var file_dirextalk_agent_v1_core_aws_proto_goTypes = []any{
 var file_dirextalk_agent_v1_core_aws_proto_depIdxs = []int32{
 	37, // 0: dirextalk.agent.v1.CoreAWSCredential.created_at:type_name -> google.protobuf.Timestamp
 	37, // 1: dirextalk.agent.v1.CoreAWSCredential.updated_at:type_name -> google.protobuf.Timestamp
-	1,  // 2: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
-	1,  // 3: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
-	1,  // 4: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse.credentials:type_name -> dirextalk.agent.v1.CoreAWSCredential
-	1,  // 5: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
-	37, // 6: dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse.tested_at:type_name -> google.protobuf.Timestamp
-	0,  // 7: dirextalk.agent.v1.CoreAWSPlan.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	33, // 8: dirextalk.agent.v1.CoreAWSPlan.parameters:type_name -> dirextalk.agent.v1.CoreAWSPlan.ParametersEntry
-	34, // 9: dirextalk.agent.v1.CoreAWSPlan.tags:type_name -> dirextalk.agent.v1.CoreAWSPlan.TagsEntry
-	37, // 10: dirextalk.agent.v1.CoreAWSPlan.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 11: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	35, // 12: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.parameters:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.ParametersEntry
-	36, // 13: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.tags:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.TagsEntry
-	14, // 14: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
-	14, // 15: dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
-	14, // 16: dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse.plans:type_name -> dirextalk.agent.v1.CoreAWSPlan
-	0,  // 17: dirextalk.agent.v1.CoreAWSQuote.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	21, // 18: dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse.quote:type_name -> dirextalk.agent.v1.CoreAWSQuote
-	0,  // 19: dirextalk.agent.v1.CoreAWSChange.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
-	37, // 20: dirextalk.agent.v1.CoreAWSChange.created_at:type_name -> google.protobuf.Timestamp
-	37, // 21: dirextalk.agent.v1.CoreAWSChange.updated_at:type_name -> google.protobuf.Timestamp
-	24, // 22: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
-	38, // 23: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
-	24, // 24: dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
-	24, // 25: dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse.changes:type_name -> dirextalk.agent.v1.CoreAWSChange
-	24, // 26: dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
-	2,  // 27: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest
-	4,  // 28: dirextalk.agent.v1.CoreCloudControlService.GetCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest
-	6,  // 29: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest
-	8,  // 30: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest
-	10, // 31: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest
-	12, // 32: dirextalk.agent.v1.CoreCloudControlService.TestCredentialIdentity:input_type -> dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityRequest
-	15, // 33: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest
-	17, // 34: dirextalk.agent.v1.CoreCloudControlService.GetPlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest
-	19, // 35: dirextalk.agent.v1.CoreCloudControlService.ListPlans:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansRequest
-	22, // 36: dirextalk.agent.v1.CoreCloudControlService.Quote:input_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest
-	25, // 37: dirextalk.agent.v1.CoreCloudControlService.RequestChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest
-	27, // 38: dirextalk.agent.v1.CoreCloudControlService.GetChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest
-	29, // 39: dirextalk.agent.v1.CoreCloudControlService.ListChanges:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest
-	31, // 40: dirextalk.agent.v1.CoreCloudControlService.GetChangeStatus:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusRequest
-	3,  // 41: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse
-	5,  // 42: dirextalk.agent.v1.CoreCloudControlService.GetCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse
-	7,  // 43: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse
-	9,  // 44: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse
-	11, // 45: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse
-	13, // 46: dirextalk.agent.v1.CoreCloudControlService.TestCredentialIdentity:output_type -> dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse
-	16, // 47: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse
-	18, // 48: dirextalk.agent.v1.CoreCloudControlService.GetPlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse
-	20, // 49: dirextalk.agent.v1.CoreCloudControlService.ListPlans:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse
-	23, // 50: dirextalk.agent.v1.CoreCloudControlService.Quote:output_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse
-	26, // 51: dirextalk.agent.v1.CoreCloudControlService.RequestChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse
-	28, // 52: dirextalk.agent.v1.CoreCloudControlService.GetChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse
-	30, // 53: dirextalk.agent.v1.CoreCloudControlService.ListChanges:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse
-	32, // 54: dirextalk.agent.v1.CoreCloudControlService.GetChangeStatus:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse
-	41, // [41:55] is the sub-list for method output_type
-	27, // [27:41] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	37, // 2: dirextalk.agent.v1.CoreAWSCredential.tested_at:type_name -> google.protobuf.Timestamp
+	1,  // 3: dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
+	1,  // 4: dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
+	1,  // 5: dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse.credentials:type_name -> dirextalk.agent.v1.CoreAWSCredential
+	1,  // 6: dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse.credential:type_name -> dirextalk.agent.v1.CoreAWSCredential
+	37, // 7: dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse.tested_at:type_name -> google.protobuf.Timestamp
+	0,  // 8: dirextalk.agent.v1.CoreAWSPlan.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	33, // 9: dirextalk.agent.v1.CoreAWSPlan.parameters:type_name -> dirextalk.agent.v1.CoreAWSPlan.ParametersEntry
+	34, // 10: dirextalk.agent.v1.CoreAWSPlan.tags:type_name -> dirextalk.agent.v1.CoreAWSPlan.TagsEntry
+	37, // 11: dirextalk.agent.v1.CoreAWSPlan.created_at:type_name -> google.protobuf.Timestamp
+	0,  // 12: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	35, // 13: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.parameters:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.ParametersEntry
+	36, // 14: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.tags:type_name -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest.TagsEntry
+	14, // 15: dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
+	14, // 16: dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse.plan:type_name -> dirextalk.agent.v1.CoreAWSPlan
+	14, // 17: dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse.plans:type_name -> dirextalk.agent.v1.CoreAWSPlan
+	0,  // 18: dirextalk.agent.v1.CoreAWSQuote.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	21, // 19: dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse.quote:type_name -> dirextalk.agent.v1.CoreAWSQuote
+	0,  // 20: dirextalk.agent.v1.CoreAWSChange.operation:type_name -> dirextalk.agent.v1.CoreAWSOperation
+	37, // 21: dirextalk.agent.v1.CoreAWSChange.created_at:type_name -> google.protobuf.Timestamp
+	37, // 22: dirextalk.agent.v1.CoreAWSChange.updated_at:type_name -> google.protobuf.Timestamp
+	24, // 23: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
+	38, // 24: dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse.confirmation:type_name -> dirextalk.agent.v1.CoreConfirmation
+	24, // 25: dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
+	24, // 26: dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse.changes:type_name -> dirextalk.agent.v1.CoreAWSChange
+	24, // 27: dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse.change:type_name -> dirextalk.agent.v1.CoreAWSChange
+	2,  // 28: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialRequest
+	4,  // 29: dirextalk.agent.v1.CoreCloudControlService.GetCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialRequest
+	6,  // 30: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsRequest
+	8,  // 31: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialRequest
+	10, // 32: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:input_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialRequest
+	12, // 33: dirextalk.agent.v1.CoreCloudControlService.TestCredentialIdentity:input_type -> dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityRequest
+	15, // 34: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanRequest
+	17, // 35: dirextalk.agent.v1.CoreCloudControlService.GetPlan:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanRequest
+	19, // 36: dirextalk.agent.v1.CoreCloudControlService.ListPlans:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansRequest
+	22, // 37: dirextalk.agent.v1.CoreCloudControlService.Quote:input_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteRequest
+	25, // 38: dirextalk.agent.v1.CoreCloudControlService.RequestChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeRequest
+	27, // 39: dirextalk.agent.v1.CoreCloudControlService.GetChange:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeRequest
+	29, // 40: dirextalk.agent.v1.CoreCloudControlService.ListChanges:input_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesRequest
+	31, // 41: dirextalk.agent.v1.CoreCloudControlService.GetChangeStatus:input_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusRequest
+	3,  // 42: dirextalk.agent.v1.CoreCloudControlService.CreateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreateCredentialResponse
+	5,  // 43: dirextalk.agent.v1.CoreCloudControlService.GetCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetCredentialResponse
+	7,  // 44: dirextalk.agent.v1.CoreCloudControlService.ListCredentials:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListCredentialsResponse
+	9,  // 45: dirextalk.agent.v1.CoreCloudControlService.UpdateCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceUpdateCredentialResponse
+	11, // 46: dirextalk.agent.v1.CoreCloudControlService.DeleteCredential:output_type -> dirextalk.agent.v1.CoreCloudControlServiceDeleteCredentialResponse
+	13, // 47: dirextalk.agent.v1.CoreCloudControlService.TestCredentialIdentity:output_type -> dirextalk.agent.v1.CoreCloudControlServiceTestCredentialIdentityResponse
+	16, // 48: dirextalk.agent.v1.CoreCloudControlService.CreatePlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceCreatePlanResponse
+	18, // 49: dirextalk.agent.v1.CoreCloudControlService.GetPlan:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetPlanResponse
+	20, // 50: dirextalk.agent.v1.CoreCloudControlService.ListPlans:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListPlansResponse
+	23, // 51: dirextalk.agent.v1.CoreCloudControlService.Quote:output_type -> dirextalk.agent.v1.CoreCloudControlServiceQuoteResponse
+	26, // 52: dirextalk.agent.v1.CoreCloudControlService.RequestChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceRequestChangeResponse
+	28, // 53: dirextalk.agent.v1.CoreCloudControlService.GetChange:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeResponse
+	30, // 54: dirextalk.agent.v1.CoreCloudControlService.ListChanges:output_type -> dirextalk.agent.v1.CoreCloudControlServiceListChangesResponse
+	32, // 55: dirextalk.agent.v1.CoreCloudControlService.GetChangeStatus:output_type -> dirextalk.agent.v1.CoreCloudControlServiceGetChangeStatusResponse
+	42, // [42:56] is the sub-list for method output_type
+	28, // [28:42] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_dirextalk_agent_v1_core_aws_proto_init() }

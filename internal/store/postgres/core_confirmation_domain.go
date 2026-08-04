@@ -120,12 +120,19 @@ func (s *CoreConfirmationStore) UpsertCurrentTargetBinding(ctx context.Context, 
 }
 func bindingJSON(b coreconfirmation.Binding) ([]byte, error) { return json.Marshal(b) }
 
-func awsBindingTx(ctx context.Context, tx pgx.Tx, confirmationID string, at time.Time) (coreconfirmation.Binding, error) {
+func awsBindingTx(ctx context.Context, tx pgx.Tx, store *Store, confirmationID string, at time.Time) (coreconfirmation.Binding, error) {
+	if store == nil {
+		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
+	}
 	var planID, credentialID, region, stack, operation, account, user string
-	var template, paramsRaw, tagsRaw, capsRaw, access, secret, session []byte
+	var template, paramsRaw, tagsRaw, capsRaw []byte
 	var templateSHA string
 	var planRevision, credentialRevision, verifiedRevision int64
-	err := tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.access_key_id,c.secret_access_key,c.session_token,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &paramsRaw, &tagsRaw, &capsRaw, &planRevision, &account, &user, &access, &secret, &session, &credentialRevision, &verifiedRevision)
+	err := tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &paramsRaw, &tagsRaw, &capsRaw, &planRevision, &account, &user, &credentialRevision, &verifiedRevision)
+	if err != nil {
+		return coreconfirmation.Binding{}, err
+	}
+	credential, err := NewCoreAWSStore(store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, credentialID))
 	if err != nil {
 		return coreconfirmation.Binding{}, err
 	}
@@ -138,7 +145,6 @@ func awsBindingTx(ctx context.Context, tx pgx.Tx, confirmationID string, at time
 		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
 	}
 	plan := coreaws.Plan{ID: planID, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: params, Tags: tags, Capabilities: caps, Revision: planRevision}
-	credential := coreaws.RehydrateCredentials(credentialID, "", region, account, user, access, secret, session, verifiedRevision, credentialRevision, at, at)
 	return coreaws.BindingForPlan(plan, credential).Normalize()
 }
 func scanConfirmation(row interface{ Scan(...any) error }) (coreconfirmation.Confirmation, error) {
@@ -295,6 +301,7 @@ func (s *CoreConfirmationStore) staleAndReplay(ctx context.Context, tx pgx.Tx, c
 func confirmationBindingMatchesTx(
 	ctx context.Context,
 	tx pgx.Tx,
+	store *Store,
 	cur coreconfirmation.Confirmation,
 	resolve func(context.Context) (coreconfirmation.Binding, error),
 	at time.Time,
@@ -317,7 +324,7 @@ func confirmationBindingMatchesTx(
 		}
 	}
 	if cur.Binding.OperationDomain == "aws" {
-		current, err := awsBindingTx(ctx, tx, cur.ConfirmationID, at.UTC())
+		current, err := awsBindingTx(ctx, tx, store, cur.ConfirmationID, at.UTC())
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return false, coreconfirmation.ErrBindingUnavailable
 		}
@@ -369,11 +376,12 @@ func extensionExecutionBindingTx(ctx context.Context, tx pgx.Tx, cur coreconfirm
 		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
 	}
 	var kind, transport, state, activeID string
+	var enabled bool
 	var revision int64
-	if err := tx.QueryRow(ctx, `SELECT kind,transport,state,revision,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, payload.Extension.InstallationID).Scan(&kind, &transport, &state, &revision, &activeID); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT kind,transport,state,revision,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, payload.Extension.InstallationID).Scan(&kind, &transport, &state, &revision, &enabled, &activeID); err != nil {
 		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
 	}
-	if state != string(coreextension.StateInstalled) || revision != int64(payload.Extension.ExpectedRevision) || activeID == "" {
+	if state != string(coreextension.StateInstalled) || !enabled || revision != int64(payload.Extension.ExpectedRevision) || activeID == "" {
 		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
 	}
 	var versionRaw []byte

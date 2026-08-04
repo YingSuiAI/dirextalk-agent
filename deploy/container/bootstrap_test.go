@@ -258,7 +258,7 @@ func TestBootstrapLocalReusesCompleteSetFromAnotherWorkingDirectory(t *testing.T
 	if output, err := runBootstrap(t, script, out, t.TempDir(), nil, "core:first", "runner:first", "postgres:first", "first.example"); err != nil {
 		t.Fatalf("initial bootstrap: %v (%s)", err, output)
 	}
-	files := []string{"postgres-password", "database-url", "service-token", "instance-id", "tls-key", "tls-cert", "tls-ca", "config.yaml", ".env", ".manifest"}
+	files := []string{"postgres-password", "database-url", "service-token", "core-secret-master-key", "instance-id", "tls-key", "tls-cert", "tls-ca", "config.yaml", ".env", ".manifest"}
 	before := make(map[string][]byte, len(files))
 	for _, name := range files {
 		before[name], err = os.ReadFile(filepath.Join(out, name))
@@ -656,7 +656,7 @@ func TestBootstrapLocalConcurrentGenerationHasOneCanonicalPromotion(t *testing.T
 	}
 	files := map[string]bool{
 		".env": true, ".manifest": true, "config.yaml": true, "database-url": true,
-		"instance-id": true, "postgres-password": true, "service-token": true,
+		"instance-id": true, "postgres-password": true, "service-token": true, "core-secret-master-key": true,
 		"tls-ca": true, "tls-cert": true, "tls-key": true,
 	}
 	entries, err := os.ReadDir(out)

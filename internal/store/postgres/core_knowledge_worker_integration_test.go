@@ -21,6 +21,12 @@ func (workerEmbedding) Embed(context.Context, coremodel.Profile, []string) ([][]
 	return [][]float32{{1, 0}}, nil
 }
 
+type failingWorkerEmbedding struct{}
+
+func (failingWorkerEmbedding) Embed(context.Context, coremodel.Profile, []string) ([][]float32, error) {
+	return nil, context.DeadlineExceeded
+}
+
 type workerProfiles struct{ id string }
 
 func (p workerProfiles) ResolveProfile(context.Context, string) (coremodel.Profile, error) {
@@ -70,10 +76,7 @@ func TestCoreKnowledgeWorkerPostgresRequestClaimPromoteAndSearchBinding(t *testi
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
 	profileID := uuid.NewString()
-	_, err := repo.store.pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured,revision,created_at,updated_at) VALUES($1,'embed','openai_compatible','http://embed','embed','test',true,1,clock_timestamp(),clock_timestamp())`, profileID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "w", Content: "worker content", MediaType: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +116,7 @@ func TestCoreKnowledgeWorkerPostgresTamperAndStageSweep(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
 	profileID := uuid.NewString()
-	_, _ = repo.store.pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured,revision,created_at,updated_at) VALUES($1,'embed','openai_compatible','http://embed','embed','test',true,1,clock_timestamp(),clock_timestamp())`, profileID)
+	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, _ := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "w", Content: "worker content", MediaType: "text/plain"})
 	cfg := strings.Repeat("b", 64)
 	idx, _ := NewKnowledgeIndexer(repo.store, profileID, cfg)
@@ -146,11 +149,131 @@ func TestCoreKnowledgeWorkerPostgresTamperAndStageSweep(t *testing.T) {
 	_ = SweepStaleKnowledgeStages(ctx, repo.store)
 }
 
+func TestCoreKnowledgeWorkerPostgresEmbeddingFailureCommitsTerminalState(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	profileID := uuid.NewString()
+	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
+	mem, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "failure", Content: "embedding failure", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := NewKnowledgeIndexer(repo.store, profileID, strings.Repeat("1", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := idx.RequestIndex(ctx, coreknowledge.IndexRequest{SourceIDs: []string{mem.ID}, IdempotencyKey: uuid.NewString()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(repo.store)
+	task, _, err := tasks.ClaimNextDue(ctx, "knowledge-failure", time.Now().UTC(), time.Minute, 1)
+	if err != nil || task.ID != ref.TaskID {
+		t.Fatalf("claim=%v %#v", err, task)
+	}
+	store, _ := semantic.NewMemoryStore(2)
+	engine, _ := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: failingWorkerEmbedding{}, VectorStore: store, ProfileResolver: workerProfiles{id: profileID}, EmbeddingProfileID: profileID, Dimension: 2})
+	handler, _ := NewKnowledgeTaskHandler(repo.store, nil, repo.content.(*pgKnowledgeContent), engine)
+	out := handler(ctx, task)
+	if out.Err == nil || !out.TerminalOwned {
+		t.Fatalf("outcome=%#v", out)
+	}
+	got, err := tasks.GetTask(ctx, task.ID)
+	if err != nil || got.Status != coretask.StatusFailed || got.FailureCode != "knowledge_index_failed" {
+		t.Fatalf("task=%#v err=%v", got, err)
+	}
+	var jobStatus, jobCode, sourceStatus, sourceCode string
+	if err := repo.store.pool.QueryRow(ctx, `SELECT status,error_code FROM core_knowledge_index_jobs WHERE task_id=$1`, task.ID).Scan(&jobStatus, &jobCode); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.store.pool.QueryRow(ctx, `SELECT status,error_code FROM core_knowledge_sources WHERE source_id=$1`, mem.ID).Scan(&sourceStatus, &sourceCode); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "failed" || jobCode != "knowledge_index_failed" || sourceStatus != string(coreknowledge.SourceStatusReady) || sourceCode != "knowledge_index_failed" {
+		t.Fatalf("job=%s/%s source=%s/%s", jobStatus, jobCode, sourceStatus, sourceCode)
+	}
+	var cleanupCount int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_generation_cleanup WHERE source_id=$1`, mem.ID).Scan(&cleanupCount); err != nil || cleanupCount != 1 {
+		t.Fatalf("cleanup count=%d err=%v", cleanupCount, err)
+	}
+}
+
+func TestCoreKnowledgeWorkerPostgresMemoryUpdateSupersedesInFlightIndex(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	profileID := uuid.NewString()
+	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
+	configDigest := strings.Repeat("2", 64)
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: configDigest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, configDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	service, err := coreknowledge.NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "initial", Content: "initial memory", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := service.UpdateMemory(ctx, coreknowledge.UpdateMemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: memory.ID, ExpectedRevision: memory.Revision, Title: "updated", Content: "updated memory", MediaType: "text/plain"})
+	if err != nil || updated.Revision != memory.Revision+1 {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	current, err := service.GetMemory(ctx, memory.ID)
+	if err != nil || current.Content != "updated memory" || current.Revision != updated.Revision {
+		t.Fatalf("current=%+v err=%v", current, err)
+	}
+
+	tasks := NewCoreTaskStore(repo.store)
+	backend, _ := semantic.NewMemoryStore(2)
+	engine, _ := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: workerEmbedding{}, VectorStore: backend, ProfileResolver: workerProfiles{id: profileID}, EmbeddingProfileID: profileID, Dimension: 2, ConfigReader: repo})
+	handler, _ := NewKnowledgeTaskHandler(repo.store, nil, repo.content.(*pgKnowledgeContent), engine)
+	oldTask, _, err := tasks.ClaimNextDue(ctx, "knowledge-old", time.Now().UTC(), time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOutcome := handler(ctx, oldTask)
+	if oldOutcome.Err == nil || !oldOutcome.TerminalOwned {
+		t.Fatalf("old outcome=%#v", oldOutcome)
+	}
+	var sourceStatus, sourceError string
+	var sourceRevision int64
+	if err := repo.store.pool.QueryRow(ctx, `SELECT status,error_code,revision FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&sourceStatus, &sourceError, &sourceRevision); err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus != string(coreknowledge.SourceStatusIndexing) || sourceError != "" || sourceRevision != updated.Revision {
+		t.Fatalf("source after superseded failure=%s/%s revision=%d", sourceStatus, sourceError, sourceRevision)
+	}
+	newTask, _, err := tasks.ClaimNextDue(ctx, "knowledge-new", time.Now().UTC(), time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newOutcome := handler(ctx, newTask)
+	if newOutcome.Err != nil {
+		t.Fatalf("new outcome=%#v", newOutcome)
+	}
+	current, err = service.GetMemory(ctx, memory.ID)
+	if err != nil || current.Content != "updated memory" || current.Revision != updated.Revision {
+		t.Fatalf("promoted current=%+v err=%v", current, err)
+	}
+	if err := repo.store.pool.QueryRow(ctx, `SELECT status,error_code,revision FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&sourceStatus, &sourceError, &sourceRevision); err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus != string(coreknowledge.SourceStatusReady) || sourceError != "" || sourceRevision != updated.Revision {
+		t.Fatalf("promoted source=%s/%s revision=%d", sourceStatus, sourceError, sourceRevision)
+	}
+}
+
 func TestCoreKnowledgeWorkerPostgresCancellationRestoresSource(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
 	profileID := uuid.NewString()
-	_, _ = repo.store.pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured,revision,created_at,updated_at) VALUES($1,'embed','openai_compatible','http://embed','embed','test',true,1,clock_timestamp(),clock_timestamp())`, profileID)
+	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, _ := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "cancel", Content: "cancel me", MediaType: "text/plain"})
 	idx, _ := NewKnowledgeIndexer(repo.store, profileID, strings.Repeat("c", 64))
 	ref, err := idx.RequestIndex(ctx, coreknowledge.IndexRequest{SourceIDs: []string{mem.ID}, IdempotencyKey: uuid.NewString()})
@@ -181,9 +304,7 @@ func TestCoreKnowledgeWorkerPostgresCancelLateUpsertRetainsTombstoneAndRecleans(
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
 	profileID := uuid.NewString()
-	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured,revision,created_at,updated_at) VALUES($1,'embed','openai_compatible','http://embed','embed','test',true,1,clock_timestamp(),clock_timestamp())`, profileID); err != nil {
-		t.Fatal(err)
-	}
+	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "race", Content: "late upsert", MediaType: "text/plain"})
 	if err != nil {
 		t.Fatal(err)

@@ -27,7 +27,7 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 		if hash != cd {
 			return coreextension.Installation{}, coreextension.ErrConflict
 		}
-		return s.getTx(ctx, tx.QueryRow(ctx, `SELECT installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,''),network_grants_json,secret_grants_json,created_at,updated_at FROM core_extension_installations WHERE installation_id=$1`, c.InstallationID))
+		return s.getTx(ctx, tx.QueryRow(ctx, `SELECT installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,''),network_grants_json,secret_grants_json,created_at,updated_at FROM core_extension_installations WHERE installation_id=$1`, c.InstallationID))
 	}
 	var op, confirm, task, state string
 	var expected int64
@@ -89,10 +89,10 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 			if _, e = tx.Exec(ctx, `UPDATE core_extension_secret_revisions r SET state='rolled_back',updated_at=clock_timestamp() WHERE r.installation_id=$1 AND r.version_id<>$2 AND r.state='staged'`, c.InstallationID, proposed); e != nil {
 				return coreextension.Installation{}, e
 			}
-			if _, e = tx.Exec(ctx, `UPDATE core_extension_secrets s SET secret_value=r.secret_value,fingerprint=r.fingerprint,revision=s.revision+1,updated_at=clock_timestamp() FROM core_extension_secret_revisions r WHERE r.installation_id=$1 AND r.version_id=$2 AND r.state='staged' AND s.reference_id=r.reference_id AND s.purpose=r.purpose`, c.InstallationID, proposed); e != nil {
+			if _, e = tx.Exec(ctx, `UPDATE core_extension_secrets s SET binding_revision=r.binding_revision,secret_key_version=r.secret_key_version,secret_value_nonce=r.secret_value_nonce,secret_value_ciphertext=r.secret_value_ciphertext,fingerprint=r.fingerprint,revision=s.revision+1,updated_at=clock_timestamp() FROM core_extension_secret_revisions r WHERE r.installation_id=$1 AND r.version_id=$2 AND r.state='staged' AND s.reference_id=r.reference_id AND s.purpose=r.purpose`, c.InstallationID, proposed); e != nil {
 				return coreextension.Installation{}, e
 			}
-			if _, e = tx.Exec(ctx, `INSERT INTO core_extension_secrets(reference_id,purpose,secret_value,fingerprint) SELECT reference_id,purpose,secret_value,fingerprint FROM core_extension_secret_revisions WHERE installation_id=$1 AND version_id=$2 AND state='staged' ON CONFLICT(reference_id,purpose) DO UPDATE SET secret_value=EXCLUDED.secret_value,fingerprint=EXCLUDED.fingerprint,revision=core_extension_secrets.revision+1,updated_at=clock_timestamp()`, c.InstallationID, proposed); e != nil {
+			if _, e = tx.Exec(ctx, `INSERT INTO core_extension_secrets(reference_id,purpose,binding_revision,secret_key_version,secret_value_nonce,secret_value_ciphertext,fingerprint) SELECT reference_id,purpose,binding_revision,secret_key_version,secret_value_nonce,secret_value_ciphertext,fingerprint FROM core_extension_secret_revisions WHERE installation_id=$1 AND version_id=$2 AND state='staged' ON CONFLICT(reference_id,purpose) DO UPDATE SET binding_revision=EXCLUDED.binding_revision,secret_key_version=EXCLUDED.secret_key_version,secret_value_nonce=EXCLUDED.secret_value_nonce,secret_value_ciphertext=EXCLUDED.secret_value_ciphertext,fingerprint=EXCLUDED.fingerprint,revision=core_extension_secrets.revision+1,updated_at=clock_timestamp()`, c.InstallationID, proposed); e != nil {
 				return coreextension.Installation{}, e
 			}
 			if _, e = tx.Exec(ctx, `UPDATE core_extension_secret_revisions SET state='promoted',updated_at=clock_timestamp() WHERE installation_id=$1 AND version_id=$2 AND state='staged'`, c.InstallationID, proposed); e != nil {
@@ -137,7 +137,7 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 			}
 		}
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_extension_installations SET state=$2,active_version_id=NULLIF($3,'')::uuid,proposed_version_id=NULLIF($4,'')::uuid,revision=revision+1,updated_at=clock_timestamp() WHERE installation_id=$1`, c.InstallationID, string(newState), newActive, newProposed); e != nil {
+	if _, e = tx.Exec(ctx, `UPDATE core_extension_installations SET state=$2,enabled=CASE WHEN $5='install' THEN true WHEN $5='uninstall' THEN false ELSE enabled END,active_version_id=NULLIF($3,'')::uuid,proposed_version_id=NULLIF($4,'')::uuid,revision=revision+1,updated_at=clock_timestamp() WHERE installation_id=$1`, c.InstallationID, string(newState), newActive, newProposed, op); e != nil {
 		return coreextension.Installation{}, e
 	}
 	statusTask := "failed"

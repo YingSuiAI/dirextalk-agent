@@ -67,13 +67,28 @@ type Message struct {
 }
 
 type Conversation struct {
-	ID        string     `json:"id"`
-	Title     string     `json:"title,omitempty"`
-	Revision  uint64     `json:"revision"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	Messages  []Message  `json:"messages"`
+	ID                   string     `json:"id"`
+	Title                string     `json:"title,omitempty"`
+	Revision             uint64     `json:"revision"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	DeletedAt            *time.Time `json:"deleted_at,omitempty"`
+	Summary              string     `json:"summary,omitempty"`
+	ContextMessageOffset uint64     `json:"context_message_offset,omitempty"`
+	Messages             []Message  `json:"messages"`
+}
+
+// ContextCompressionResult is the Agent-owned result of a context compaction
+// mutation.  The full transcript remains durable; Messages is the bounded
+// model context window selected by the operation.
+type ContextCompressionResult struct {
+	ConversationID string       `json:"conversation_id"`
+	Summary        string       `json:"summary"`
+	Messages       []Message    `json:"messages"`
+	Revision       uint64       `json:"revision"`
+	UpdatedAt      time.Time    `json:"updated_at"`
+	Compression    string       `json:"compression"`
+	Conversation   Conversation `json:"conversation"`
 }
 
 type ExtensionSelection struct {
@@ -240,6 +255,10 @@ type ResolvedExtension struct {
 	Selection ExtensionSelection
 	Execute   func(context.Context, ToolExecutionRequest) (ToolResult, error)
 	Snapshot  ExtensionExecutionSnapshot
+	// Tools is the immutable model-facing tool catalog for this resolved
+	// extension.  Legacy MCP/Skill resolvers may leave it empty; the runtime
+	// then falls back to the pinned snapshot names with an object schema.
+	Tools []coremodel.Tool
 }
 
 // ExtensionSnapshotResolver may resolve an already-pinned snapshot to an
@@ -279,10 +298,28 @@ type ConversationMutationResponse struct {
 	Conversation Conversation
 	RequestID    string
 	Deleted      bool
+	// Replayed is set only when the durable mutation response came from the
+	// idempotency replay record. It is intentionally not persisted inside the
+	// response JSON so a fresh execution never inherits a stale replay marker.
+	Replayed bool `json:"-"`
 }
 type ConversationMutationStore interface {
 	CreateConversationMutation(context.Context, CreateConversationCommand) (ConversationMutationResponse, error)
 	DeleteConversationMutation(context.Context, DeleteConversationCommand) (ConversationMutationResponse, error)
+}
+
+// ConversationRenameStore is optional so legacy in-memory stores can keep the
+// smaller conversation contract. Production PostgreSQL implements the
+// idempotent revision-bound mutation.
+type ConversationRenameStore interface {
+	RenameConversationMutation(context.Context, string, string, uint64, string) (ConversationMutationResponse, error)
+}
+
+// ConversationContextStore is the production CAS/replay boundary for context
+// compaction.  It updates only Agent-owned conversation state; transcript rows
+// are intentionally retained for authoritative history and auditability.
+type ConversationContextStore interface {
+	CompressConversationContext(context.Context, string, string, uint64, uint64, string) (Conversation, error)
 }
 
 func (c CreateConversationCommand) Validate() error {
@@ -529,7 +566,7 @@ func (m Message) Validate() error {
 }
 
 func (c Conversation) ValidateForPersistence() error {
-	if !validUUID(c.ID) || len(c.Title) > 512 || !utf8.ValidString(c.Title) || c.Revision == 0 || len(c.Messages) > MaxMessages || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() || c.CreatedAt.Location() != time.UTC || c.UpdatedAt.Location() != time.UTC || c.UpdatedAt.Before(c.CreatedAt) {
+	if !validUUID(c.ID) || len(c.Title) > 512 || !utf8.ValidString(c.Title) || len(c.Summary) > MaxSummaryBytes || !utf8.ValidString(c.Summary) || c.Revision == 0 || len(c.Messages) > MaxMessages || c.ContextMessageOffset > uint64(len(c.Messages)) || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() || c.CreatedAt.Location() != time.UTC || c.UpdatedAt.Location() != time.UTC || c.UpdatedAt.Before(c.CreatedAt) {
 		return ErrInvalid
 	}
 	if c.DeletedAt != nil && (c.DeletedAt.IsZero() || c.DeletedAt.Location() != time.UTC || c.DeletedAt.Before(c.UpdatedAt)) {

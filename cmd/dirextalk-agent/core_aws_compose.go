@@ -15,6 +15,7 @@ import (
 
 type coreAWSComposition struct {
 	service     agentv1.CoreCloudControlServiceServer
+	domain      *coreaws.Service
 	taskHandler coreruntime.TaskHandler
 }
 
@@ -54,5 +55,5 @@ func composeCoreAWSGraph(cfg config.Config, repository coreaws.Repository, coord
 	if err != nil {
 		return nil, err
 	}
-	return &coreAWSComposition{service: rpcService, taskHandler: handler}, nil
+	return &coreAWSComposition{service: rpcService, domain: service, taskHandler: handler}, nil
 }

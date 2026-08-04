@@ -97,9 +97,9 @@ func (r *CoreKnowledgeStore) ResolveBindings(ctx context.Context, sourceIDs []st
 	var rows pgx.Rows
 	var err error
 	if len(sourceIDs) == 0 {
-		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE status='ready' AND promoted_revision > 0 ORDER BY source_id`)
+		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE status='ready' AND promoted_revision=revision AND promoted_revision > 0 ORDER BY source_id`)
 	} else {
-		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE source_id = ANY($1::uuid[]) AND status='ready' AND promoted_revision > 0 ORDER BY source_id`, sourceIDs)
+		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE source_id = ANY($1::uuid[]) AND status='ready' AND promoted_revision=revision AND promoted_revision > 0 ORDER BY source_id`, sourceIDs)
 	}
 	if err != nil {
 		return nil, coreknowledge.ErrConflict
@@ -270,14 +270,19 @@ func scanKnowledgeSource(row knowledgeSourceScanner) (coreknowledge.Source, erro
 	var s coreknowledge.Source
 	var kind, status string
 	var contentRef string
-	if err := row.Scan(&s.ID, &kind, &status, &s.Title, &s.RelativePath, &s.Digest, &s.SizeBytes, &s.MediaType, &s.Revision, &contentRef, &s.ErrorCode, &s.CreatedAt, &s.UpdatedAt); err != nil {
+	var tagsRaw []byte
+	if err := row.Scan(&s.ID, &kind, &status, &s.Title, &s.RelativePath, &s.Digest, &s.SizeBytes, &s.MediaType, &s.Revision, &contentRef, &s.ErrorCode, &tagsRaw, &s.CreatedAt, &s.UpdatedAt); err != nil {
 		return s, err
 	}
 	s.Kind, s.Status = coreknowledge.SourceKind(kind), coreknowledge.SourceStatus(status)
+	s.ContentRef = contentRef
+	if len(tagsRaw) > 0 && json.Unmarshal(tagsRaw, &s.Tags) != nil {
+		return s, coreknowledge.ErrConflict
+	}
 	s.CreatedAt, s.UpdatedAt = s.CreatedAt.UTC(), s.UpdatedAt.UTC()
 	return s, nil
 }
 
-const knowledgeSourceSelect = `SELECT source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,content_ref,error_code,created_at,updated_at FROM core_knowledge_sources`
+const knowledgeSourceSelect = `SELECT source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,content_ref,error_code,tags_json,created_at,updated_at FROM core_knowledge_sources`
 
 var _ coreknowledge.Repository = (*CoreKnowledgeStore)(nil)

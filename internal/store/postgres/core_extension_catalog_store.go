@@ -15,7 +15,7 @@ func (s *CoreExtensionStore) Get(ctx context.Context, id string) (coreextension.
 	if uuid.Validate(id) != nil {
 		return coreextension.Installation{}, coreextension.ErrInvalid
 	}
-	return s.getTx(ctx, s.store.pool.QueryRow(ctx, `SELECT installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,''),network_grants_json,secret_grants_json,created_at,updated_at FROM core_extension_installations WHERE installation_id=$1`, id))
+	return s.getTx(ctx, s.store.pool.QueryRow(ctx, `SELECT installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,''),network_grants_json,secret_grants_json,created_at,updated_at FROM core_extension_installations WHERE installation_id=$1`, id))
 }
 
 type extScanner interface{ Scan(...any) error }
@@ -24,7 +24,7 @@ func (s *CoreExtensionStore) getTx(ctx context.Context, row extScanner) (coreext
 	var i coreextension.Installation
 	var cand, ng, sg []byte
 	var id, kind, source, transport, state, active, proposed string
-	if err := row.Scan(&id, &cand, &kind, &source, &i.CandidateID, &i.Name, &i.Description, &transport, &i.Revision, &state, &active, &proposed, &ng, &sg, &i.CreatedAt, &i.UpdatedAt); err != nil {
+	if err := row.Scan(&id, &cand, &kind, &source, &i.CandidateID, &i.Name, &i.Description, &transport, &i.Revision, &state, &i.Enabled, &active, &proposed, &ng, &sg, &i.CreatedAt, &i.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return i, coreextension.ErrNotFound
 		}

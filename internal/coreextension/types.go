@@ -427,16 +427,20 @@ type VersionRecord struct {
 	CreatedAt           time.Time               `json:"created_at"`
 }
 type Installation struct {
-	ID                string                  `json:"id"`
-	Candidate         Candidate               `json:"candidate"`
-	Kind              Kind                    `json:"kind"`
-	Source            Source                  `json:"source"`
-	CandidateID       string                  `json:"candidate_id"`
-	Name              string                  `json:"name"`
-	Description       string                  `json:"description,omitempty"`
-	Transport         Transport               `json:"transport"`
-	Revision          int64                   `json:"revision"`
-	State             State                   `json:"state"`
+	ID          string    `json:"id"`
+	Candidate   Candidate `json:"candidate"`
+	Kind        Kind      `json:"kind"`
+	Source      Source    `json:"source"`
+	CandidateID string    `json:"candidate_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Transport   Transport `json:"transport"`
+	Revision    int64     `json:"revision"`
+	State       State     `json:"state"`
+	// Enabled is the durable execution gate for an installed extension. A
+	// successful first install enables the extension by default; disabling is
+	// a revision-bound mutation and never removes the immutable version.
+	Enabled           bool                    `json:"enabled"`
 	ActiveVersionID   string                  `json:"active_version_id,omitempty"`
 	ProposedVersionID string                  `json:"proposed_version_id,omitempty"`
 	Versions          []VersionRecord         `json:"versions,omitempty"`
@@ -565,9 +569,19 @@ type Mutation struct {
 	ArtifactDigest   string
 }
 type MutationResult struct {
-	Installation   Installation
-	ConfirmationID string
-	TaskID         string
+	Installation   Installation `json:"installation"`
+	ConfirmationID string       `json:"confirmation_id,omitempty"`
+	TaskID         string       `json:"task_id,omitempty"`
+}
+
+// ToggleCommand changes only the execution gate of an installed extension.
+// It intentionally does not reuse Mutation: no source inspection, artifact,
+// or secret material is involved in enable/disable.
+type ToggleCommand struct {
+	IdempotencyKey   string
+	InstallationID   string
+	ExpectedRevision int64
+	Enabled          bool
 }
 type ExecuteRequest struct {
 	InstallationID   string

@@ -45,12 +45,12 @@ else
 fi
 trap cleanup EXIT HUP INT TERM
 
-all_files="postgres-password database-url service-token instance-id tls-key tls-cert tls-ca config.yaml .env"
-immutable_files="postgres-password database-url instance-id config.yaml .env"
+all_files="postgres-password database-url service-token core-secret-master-key instance-id tls-key tls-cert tls-ca config.yaml .env"
+immutable_files="postgres-password database-url core-secret-master-key instance-id config.yaml .env"
 
 is_expected_name() {
   case "$1" in
-    postgres-password|database-url|service-token|instance-id|tls-key|tls-cert|tls-ca|config.yaml|.env|.manifest) return 0 ;;
+    postgres-password|database-url|service-token|core-secret-master-key|instance-id|tls-key|tls-cert|tls-ca|config.yaml|.env|.manifest) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -64,7 +64,7 @@ validate_manifest_shape() {
   manifest=$1
   protected_file "$manifest" || return 1
   [ "$(sed -n '1p' "$manifest")" = "# dirextalk-bootstrap-manifest-v1" ] || return 1
-  [ "$(tail -n +2 "$manifest" | wc -l)" -eq 9 ] || return 1
+  [ "$(tail -n +2 "$manifest" | wc -l)" -eq 10 ] || return 1
   for name in $all_files; do
     tail -n +2 "$manifest" | grep -Eq "^[0-9a-f]{64}  ${name}$" || return 1
   done
@@ -93,6 +93,7 @@ validate_artifacts() {
   printf '%s\n' "$instance_id" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$' || return 1
   password=$(sed -n '1{/^$/d;p;}' "$dir/postgres-password")
   printf '%s' "$password" | grep -Eq '^[0-9a-f]{48}$' || return 1
+  [ "$(wc -c < "$dir/core-secret-master-key")" -eq 32 ] || return 1
   expected_url="postgresql://dirextalk_agent:${password}@postgres:5432/dirextalk_agent?sslmode=disable"
   printf '%s\n' "$expected_url" | cmp -s - "$dir/database-url" || return 1
 
@@ -114,6 +115,9 @@ validate_artifacts() {
   grep -Fqx "DIREXTALK_TLS_KEY_FILE=$dir/tls-key" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_TLS_CA_FILE=$dir/tls-ca" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_SERVICE_TOKEN_FILE=$dir/service-token" "$dir/.env" || return 1
+  grep -Fqx "DIREXTALK_CORE_SECRET_MASTER_KEY_FILE=$dir/core-secret-master-key" "$dir/.env" || return 1
+  grep -Fqx "core_secret_master_key_file: /run/secrets/core_secret_master_key" "$dir/config.yaml" || return 1
+  grep -Fqx "core_secret_master_key_version: 1" "$dir/config.yaml" || return 1
   grep -Fqx "DIREXTALK_AGENT_INSTANCE_ID_FILE=$dir/instance-id" "$dir/.env" || return 1
 }
 

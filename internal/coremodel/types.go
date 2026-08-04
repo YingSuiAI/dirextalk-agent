@@ -16,6 +16,13 @@ const (
 	ProviderOpenAICompatible ModelProvider = "openai_compatible"
 	ProviderAnthropic        ModelProvider = "anthropic"
 	ProviderGemini           ModelProvider = "gemini"
+	ProviderVolcVoice        ModelProvider = "volc_voice"
+)
+
+const (
+	ModelKindConversation = "conversation"
+	ModelKindEmbedding    = "embedding"
+	ModelKindSpeech       = "speech"
 )
 
 type Profile struct {
@@ -23,18 +30,28 @@ type Profile struct {
 	ClientProfileID string
 	DisplayName     string
 	Provider        ModelProvider
-	BaseURL         string
-	Model           string
-	APIKey          string `json:"-"`
-	SystemPrompt    string
-	Temperature     *float64
-	TopP            *float64
-	MaxOutputTokens int
-	ContextWindow   int
-	ReasoningEffort string
-	Revision        int64
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ModelKind       string
+	InputModalities []string
+	ProviderConfig  map[string]any
+	ProviderSecrets map[string]string
+	// ProviderSecretStatus is a redacted status projection populated by
+	// durable stores when provider secret material is intentionally withheld.
+	// It is never serialized as secret-bearing profile state.
+	ProviderSecretStatus map[string]bool `json:"-"`
+	BaseURL              string
+	Model                string
+	APIKey               string `json:"-"`
+	APIKeyConfigured     bool   `json:"-"`
+	SystemPrompt         string
+	Temperature          *float64
+	TopP                 *float64
+	MaxOutputTokens      int
+	ContextWindow        int
+	ReasoningEffort      string
+	Revision             int64
+	CredentialVersion    int64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // ExecutionSnapshot is the immutable, secret-bearing profile material bound
@@ -44,6 +61,7 @@ type ExecutionSnapshot struct {
 	ProfileID       string        `json:"profile_id"`
 	Revision        int64         `json:"revision"`
 	Provider        ModelProvider `json:"provider"`
+	ModelKind       string        `json:"model_kind,omitempty"`
 	BaseURL         string        `json:"base_url"`
 	Model           string        `json:"model"`
 	APIKey          string        `json:"api_key"`
@@ -56,13 +74,13 @@ type ExecutionSnapshot struct {
 }
 
 func SnapshotFromProfile(p Profile) ExecutionSnapshot {
-	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, Provider: p.Provider, BaseURL: p.BaseURL,
+	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, Provider: p.Provider, ModelKind: p.ModelKind, BaseURL: p.BaseURL,
 		Model: p.Model, APIKey: p.APIKey, SystemPrompt: p.SystemPrompt, Temperature: cloneFloat(p.Temperature),
 		TopP: cloneFloat(p.TopP), MaxOutputTokens: p.MaxOutputTokens, ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort}
 }
 
 func (s ExecutionSnapshot) Profile() Profile {
-	return Profile{ID: s.ProfileID, DisplayName: "snapshot", Provider: s.Provider, BaseURL: s.BaseURL, Model: s.Model, APIKey: s.APIKey,
+	return Profile{ID: s.ProfileID, DisplayName: "snapshot", Provider: s.Provider, ModelKind: s.ModelKind, BaseURL: s.BaseURL, Model: s.Model, APIKey: s.APIKey,
 		SystemPrompt: s.SystemPrompt, Temperature: cloneFloat(s.Temperature), TopP: cloneFloat(s.TopP),
 		MaxOutputTokens: s.MaxOutputTokens, ContextWindow: s.ContextWindow, ReasoningEffort: s.ReasoningEffort, Revision: s.Revision}
 }
@@ -100,6 +118,10 @@ type ProfileSpec struct {
 	ID                 string
 	DisplayName        string
 	Provider           ModelProvider
+	ModelKind          string
+	InputModalities    []string
+	ProviderConfig     map[string]any
+	ProviderSecrets    map[string]string
 	BaseURL            string
 	Model              string
 	APIKey             *string
@@ -128,50 +150,65 @@ type ProfileSpec struct {
 // SyncProfileEntry is a complete client-owned profile projection. A nil APIKey
 // preserves an existing configured key; a non-nil key is write-only rotation.
 type SyncProfileEntry struct {
-	ClientProfileID  string
-	ExpectedRevision *int64
-	DisplayName      string
-	Provider         ModelProvider
-	BaseURL          string
-	Model            string
-	SystemPrompt     string
-	APIKey           *string
-	Temperature      *float64
-	TopP             *float64
-	MaxOutputTokens  int
-	ContextWindow    int
-	ReasoningEffort  string
+	ClientProfileID  string            `json:"client_profile_id"`
+	ExpectedRevision *int64            `json:"expected_revision,omitempty"`
+	DisplayName      string            `json:"display_name"`
+	Provider         ModelProvider     `json:"provider"`
+	ModelKind        string            `json:"model_kind,omitempty"`
+	InputModalities  []string          `json:"input_modalities,omitempty"`
+	ProviderConfig   map[string]any    `json:"provider_config,omitempty"`
+	ProviderSecrets  map[string]string `json:"provider_secrets,omitempty"`
+	BaseURL          string            `json:"base_url"`
+	Model            string            `json:"model"`
+	SystemPrompt     string            `json:"system_prompt"`
+	APIKey           *string           `json:"api_key,omitempty"`
+	Temperature      *float64          `json:"temperature,omitempty"`
+	TopP             *float64          `json:"top_p,omitempty"`
+	MaxOutputTokens  int               `json:"max_output_tokens"`
+	ContextWindow    int               `json:"context_window"`
+	ReasoningEffort  string            `json:"reasoning_effort"`
 }
 
 type SyncProfileCommand struct {
-	IdempotencyKey         string
-	DefaultClientProfileID string
-	Entries                []SyncProfileEntry
+	IdempotencyKey               string
+	DefaultClientProfileID       string
+	DefaultConversationProfileID string
+	DefaultEmbeddingProfileID    string
+	DefaultSpeechProfileID       string
+	Entries                      []SyncProfileEntry
 }
 
 type SyncProfileResult struct {
-	Profiles               []PublicProfile `json:"profiles"`
-	DefaultClientProfileID string          `json:"default_client_profile_id"`
-	Replay                 bool            `json:"-"`
+	Profiles                     []PublicProfile `json:"profiles"`
+	DefaultClientProfileID       string          `json:"default_client_profile_id"`
+	DefaultConversationProfileID string          `json:"default_conversation_client_profile_id"`
+	DefaultEmbeddingProfileID    string          `json:"default_embedding_client_profile_id"`
+	DefaultSpeechProfileID       string          `json:"default_speech_client_profile_id"`
+	Replay                       bool            `json:"-"`
 }
 
 type PublicProfile struct {
-	ID               string        `json:"id"`
-	ClientProfileID  string        `json:"client_profile_id,omitempty"`
-	DisplayName      string        `json:"display_name"`
-	Provider         ModelProvider `json:"provider"`
-	BaseURL          string        `json:"base_url"`
-	Model            string        `json:"model"`
-	SystemPrompt     string        `json:"system_prompt,omitempty"`
-	Temperature      *float64      `json:"temperature,omitempty"`
-	TopP             *float64      `json:"top_p,omitempty"`
-	MaxOutputTokens  int           `json:"max_output_tokens,omitempty"`
-	ContextWindow    int           `json:"context_window,omitempty"`
-	ReasoningEffort  string        `json:"reasoning_effort,omitempty"`
-	APIKeyConfigured bool          `json:"api_key_configured"`
-	Revision         int64         `json:"revision"`
-	CreatedAt        time.Time     `json:"created_at"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	ID                   string          `json:"id"`
+	ClientProfileID      string          `json:"client_profile_id,omitempty"`
+	DisplayName          string          `json:"display_name"`
+	Provider             ModelProvider   `json:"provider"`
+	ModelKind            string          `json:"model_kind"`
+	InputModalities      []string        `json:"input_modalities,omitempty"`
+	ProviderConfig       map[string]any  `json:"provider_config,omitempty"`
+	ProviderSecretStatus map[string]bool `json:"provider_secret_status,omitempty"`
+	BaseURL              string          `json:"base_url"`
+	Model                string          `json:"model"`
+	SystemPrompt         string          `json:"system_prompt,omitempty"`
+	Temperature          *float64        `json:"temperature,omitempty"`
+	TopP                 *float64        `json:"top_p,omitempty"`
+	MaxOutputTokens      int             `json:"max_output_tokens,omitempty"`
+	ContextWindow        int             `json:"context_window,omitempty"`
+	ReasoningEffort      string          `json:"reasoning_effort,omitempty"`
+	APIKeyConfigured     bool            `json:"api_key_configured"`
+	Revision             int64           `json:"revision"`
+	CredentialVersion    int64           `json:"credential_version"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
 func (p Profile) Public() PublicProfile {
@@ -184,11 +221,83 @@ func (p Profile) Public() PublicProfile {
 		value := *p.TopP
 		topP = &value
 	}
-	return PublicProfile{ID: p.ID, ClientProfileID: p.ClientProfileID, DisplayName: p.DisplayName, Provider: p.Provider,
+	modelKind := strings.TrimSpace(p.ModelKind)
+	if modelKind == "" {
+		modelKind = ModelKindConversation
+	}
+	secretStatus := providerSecretStatus(p.ProviderSecrets)
+	if len(secretStatus) == 0 && len(p.ProviderSecretStatus) > 0 {
+		secretStatus = cloneBoolMap(p.ProviderSecretStatus)
+	}
+	return PublicProfile{ID: p.ID, ClientProfileID: p.ClientProfileID, DisplayName: p.DisplayName, Provider: p.Provider, ModelKind: modelKind,
+		InputModalities: append([]string(nil), p.InputModalities...), ProviderConfig: redactProviderConfig(p.ProviderConfig), ProviderSecretStatus: secretStatus,
 		BaseURL: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt,
 		Temperature: temperature, TopP: topP, MaxOutputTokens: p.MaxOutputTokens,
 		ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort,
-		APIKeyConfigured: p.APIKey != "", Revision: p.Revision, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
+		APIKeyConfigured: p.APIKeyConfigured || p.APIKey != "", Revision: p.Revision, CredentialVersion: credentialVersion(p), CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
+}
+
+func credentialVersion(p Profile) int64 {
+	if p.CredentialVersion > 0 {
+		return p.CredentialVersion
+	}
+	if p.Revision > 0 {
+		return p.Revision
+	}
+	return 1
+}
+
+func providerSecretStatus(values map[string]string) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(values)+1)
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			out[key] = strings.TrimSpace(value) != ""
+		}
+	}
+	return out
+}
+
+func redactProviderConfig(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out any
+	if json.Unmarshal(encoded, &out) != nil {
+		return nil
+	}
+	redactProviderConfigValue(out)
+	result, ok := out.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return result
+}
+
+func redactProviderConfigValue(value any) {
+	switch current := value.(type) {
+	case map[string]any:
+		for key, child := range current {
+			lower := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
+			switch lower {
+			case "apikey", "secret", "secretkey", "secretaccesskey", "accesstoken", "refreshtoken", "password", "credential", "credentials", "clientsecret", "webhooksecret":
+				delete(current, key)
+			default:
+				redactProviderConfigValue(child)
+			}
+		}
+	case []any:
+		for _, child := range current {
+			redactProviderConfigValue(child)
+		}
+	}
 }
 
 func (p Profile) Redacted() PublicProfile { return p.Public() }

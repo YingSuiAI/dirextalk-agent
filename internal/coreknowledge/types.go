@@ -38,6 +38,8 @@ const (
 	MaxUploadBytes      int64 = 64 << 20
 	MaxUploadChunkBytes int   = 1 << 20
 	MaxMemoryBytes      int   = 1 << 20
+	MaxMemoryTags       int   = 16
+	MaxMemoryTagBytes   int   = 64
 	MaxSnippetBytes     int   = 4096
 	MaxSearchResults    int   = 100
 )
@@ -75,6 +77,27 @@ type Source struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	ErrorCode    string
+	ContentRef   string
+	// Tags are meaningful only for memory sources. Source listings use
+	// explicit adapter DTOs and never include content bytes.
+	Tags []string
+}
+
+// Memory is the public long-term-memory projection. Content is deliberately
+// available only from memory get/list operations, never generic source lists.
+type Memory struct {
+	ID        string    `json:"memory_id"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	Tags      []string  `json:"tags"`
+	Revision  int64     `json:"revision"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type MemoryPage struct {
+	Items         []Memory `json:"items"`
+	NextPageToken string   `json:"next_page_token"`
 }
 
 // ContentReference identifies immutable bytes finalized by the content port.
@@ -109,6 +132,7 @@ type DeleteCommand struct {
 	IdempotencyKey   string
 	SourceID         string
 	ExpectedRevision int64
+	Kind             SourceKind
 }
 
 type MountCommand struct {
@@ -129,6 +153,21 @@ type MemoryCommand struct {
 	Content        string
 	ContentSHA256  string
 	MediaType      string
+	Tags           []string
+}
+
+// UpdateMemoryCommand replaces one memory's immutable content and metadata.
+// Revision and idempotency are checked in the same repository transaction so
+// a stale client cannot overwrite a newer memory revision.
+type UpdateMemoryCommand struct {
+	IdempotencyKey   string
+	SourceID         string
+	ExpectedRevision int64
+	Title            string
+	Content          string
+	ContentSHA256    string
+	MediaType        string
+	Tags             []string
 }
 
 type UploadMetadata struct {
@@ -162,6 +201,11 @@ type Upload struct {
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	Session      UploadSession
+	// Replayed is an in-process receipt marker for the upload.start mutation.
+	// It is deliberately excluded from persistence/public DTOs; the capability
+	// adapter exposes it only on the start response so a restarted caller can
+	// distinguish an exact idempotent readback from a newly-created session.
+	Replayed bool `json:"-"`
 }
 
 type CommitUploadCommand struct {
@@ -182,18 +226,20 @@ type SearchQuery struct {
 	SourceIDs []string
 	Limit     int
 	PageToken string
+	Kind      SourceKind
 }
 
 type SearchMatch struct {
-	SourceID string
-	ChunkRef string
-	Snippet  string
-	Score    float64
+	SourceID string  `json:"source_id"`
+	ChunkRef string  `json:"chunk_ref"`
+	Snippet  string  `json:"snippet"`
+	Score    float64 `json:"score"`
 }
 
 type SearchPage struct {
-	Matches       []SearchMatch
-	NextPageToken string
+	Matches       []SearchMatch `json:"items"`
+	NextPageToken string        `json:"next_cursor"`
+	SearchMode    string        `json:"search_mode,omitempty"`
 }
 
 // SearchResolver is the semantic search boundary. A durable repository may
@@ -204,12 +250,64 @@ type SearchResolver interface {
 }
 
 type Status struct {
-	ReadyCount          int
-	UploadingCount      int
-	IndexingCount       int
-	FailedCount         int
-	CleanupPendingCount int
-	CheckedAt           time.Time
+	ReadyCount          int       `json:"ready_count"`
+	UploadingCount      int       `json:"uploading_count"`
+	IndexingCount       int       `json:"indexing_count"`
+	FailedCount         int       `json:"failed_count"`
+	CleanupPendingCount int       `json:"cleanup_pending_count"`
+	CheckedAt           time.Time `json:"checked_at"`
+}
+
+// EmbeddingConfig is the owner-scoped semantic binding used by new index and
+// search requests. Deployment-owned endpoint/content roots are deliberately
+// absent; only the embedding profile may be changed at runtime in v1. The
+// dimension and collection are returned for observability and are immutable
+// deployment invariants.
+type EmbeddingConfig struct {
+	EmbeddingProfileID     string    `json:"embedding_profile_id"`
+	Dimension              int       `json:"dimension"`
+	Collection             string    `json:"collection"`
+	CollectionConfigDigest string    `json:"collection_config_digest"`
+	Revision               int64     `json:"revision"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+type EmbeddingConfigCommand struct {
+	IdempotencyKey         string
+	ExpectedRevision       int64
+	EmbeddingProfileID     string
+	Dimension              int
+	Collection             string
+	CollectionConfigDigest string
+}
+
+type EmbeddingSourceStatus struct {
+	Status           SourceStatus `json:"status"`
+	Indexed          bool         `json:"embedding_indexed"`
+	Stale            bool         `json:"embedding_stale"`
+	Revision         int64        `json:"revision"`
+	PromotedRevision int64        `json:"promoted_revision"`
+}
+
+// EmbeddingConfigReader is intentionally a narrow optional repository port so
+// semantic index/search paths can resolve the current owner config for every
+// request without coupling to PostgreSQL.
+type EmbeddingConfigReader interface {
+	GetEmbeddingConfig(context.Context) (EmbeddingConfig, error)
+}
+
+type EmbeddingConfigStore interface {
+	EmbeddingConfigReader
+	EnsureEmbeddingConfig(context.Context, EmbeddingConfig) (EmbeddingConfig, error)
+	UpdateEmbeddingConfig(context.Context, EmbeddingConfigCommand) (EmbeddingConfig, error)
+}
+
+// EmbeddingStatusReader is an optional persistence projection for promoted
+// vector generations. A repository that cannot prove promotion should omit
+// this port; callers then remain conservative and report zero indexed vectors
+// rather than inferring them from source readiness.
+type EmbeddingStatusReader interface {
+	EmbeddingStatus(context.Context) (indexed, stale int, err error)
 }
 
 // TaskReference is intentionally generic: the task service owns task shape and
@@ -258,6 +356,13 @@ type ContentSink interface {
 type StreamingContentPort interface {
 	Begin(context.Context, UploadMetadata) (ContentSink, error)
 	Delete(context.Context, ContentReference) error
+}
+
+// ContentReader is optional on content ports that can safely reopen a
+// finalized immutable object. Public memory get/list projections require it;
+// ordinary source metadata operations do not read content bytes.
+type ContentReader interface {
+	OpenContent(context.Context, ContentReference) (io.ReadCloser, error)
 }
 
 type FileDeleter interface {
@@ -345,7 +450,7 @@ func (m MountCommand) validate() error {
 	return nil
 }
 func (m MemoryCommand) validate() error {
-	if !validUUID(m.IdempotencyKey) || (m.SourceID != "" && !validUUID(m.SourceID)) || strings.TrimSpace(m.Content) == "" || m.MediaType == "" {
+	if !validUUID(m.IdempotencyKey) || (m.SourceID != "" && !validUUID(m.SourceID)) || strings.TrimSpace(m.Content) == "" || m.MediaType == "" || !validMemoryTags(m.Tags) {
 		return ErrInvalid
 	}
 	if len([]byte(m.Content)) > MaxMemoryBytes {
@@ -355,6 +460,36 @@ func (m MemoryCommand) validate() error {
 		return ErrInvalid
 	}
 	return nil
+}
+func (m UpdateMemoryCommand) validate() error {
+	if !validUUID(m.IdempotencyKey) || !validUUID(m.SourceID) || m.ExpectedRevision < 1 || strings.TrimSpace(m.Content) == "" || m.MediaType == "" || !validMemoryTags(m.Tags) {
+		return ErrInvalid
+	}
+	if len([]byte(m.Content)) > MaxMemoryBytes {
+		return ErrLimitExceeded
+	}
+	if m.ContentSHA256 != "" && !validDigest(m.ContentSHA256) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validMemoryTags(tags []string) bool {
+	if len(tags) > MaxMemoryTags {
+		return false
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, raw := range tags {
+		tag := strings.TrimSpace(raw)
+		if tag == "" || len([]byte(tag)) > MaxMemoryTagBytes || strings.ContainsAny(tag, "\x00\r\n") {
+			return false
+		}
+		if _, ok := seen[tag]; ok {
+			return false
+		}
+		seen[tag] = struct{}{}
+	}
+	return true
 }
 func (m UploadMetadata) validate() error {
 	if !validUUID(m.IdempotencyKey) || (m.UploadID != "" && !validUUID(m.UploadID)) || (m.SourceID != "" && !validUUID(m.SourceID)) || m.DeclaredSize <= 0 || m.DeclaredSize > MaxUploadBytes || m.MediaType == "" || !validDigest(m.ContentSHA256) {
@@ -374,7 +509,7 @@ func (c UploadChunk) validate() error {
 	return nil
 }
 func (c DeleteCommand) validate() error {
-	if !validUUID(c.IdempotencyKey) || !validUUID(c.SourceID) || c.ExpectedRevision < 1 {
+	if !validUUID(c.IdempotencyKey) || !validUUID(c.SourceID) || c.ExpectedRevision < 1 || c.Kind != "" && c.Kind != SourceKindMount && c.Kind != SourceKindUpload && c.Kind != SourceKindMemory {
 		return ErrInvalid
 	}
 	return nil
@@ -399,7 +534,7 @@ func (q ListQuery) validate() error {
 	return err
 }
 func (q SearchQuery) validate() error {
-	if strings.TrimSpace(q.Query) == "" || q.Limit < 0 || q.Limit > MaxSearchResults {
+	if strings.TrimSpace(q.Query) == "" || q.Limit < 0 || q.Limit > MaxSearchResults || q.Kind != "" && q.Kind != SourceKindMount && q.Kind != SourceKindUpload && q.Kind != SourceKindMemory {
 		return ErrInvalid
 	}
 	if _, err := decodePageCursor(q.PageToken); err != nil {
@@ -428,6 +563,7 @@ func (m UploadMetadata) ValidateForRepository() error      { return m.validate()
 func (c UploadChunk) ValidateForRepository() error         { return c.validate() }
 func (c CommitUploadCommand) ValidateForRepository() error { return c.validate() }
 func (c DeleteCommand) ValidateForRepository() error       { return c.validate() }
+func (m UpdateMemoryCommand) ValidateForRepository() error { return m.validate() }
 func (q ListQuery) ValidateForRepository() error           { return q.validate() }
 func (q SearchQuery) ValidateForRepository() error         { return q.validate() }
 

@@ -12,6 +12,11 @@ core_task_max_concurrency: 4
 core_task_lease_ttl: 30s
 core_schedule_sweep_interval: 1s
 core_shutdown_grace: 30s
+# Core AWS is opt-in. When enabled, this path must resolve to a raw 32-byte
+# mode-0400 mounted key file; the key value never belongs in YAML or PostgreSQL.
+core_aws_enabled: false
+core_secret_master_key_file: /run/secrets/core_secret_master_key
+core_secret_master_key_version: 1
 core_extension_enabled: false
 core_extension_staging_root: /var/lib/dirextalk-agent/extension-staging
 core_extension_workspace_root: /var/lib/dirextalk-agent/extension-workspaces
@@ -23,6 +28,15 @@ core_extension_runner_uid: 65531
 core_workload_enabled: false
 core_workload_runner_socket: /run/dirextalk-core-runner/runner.sock
 core_workload_runner_uid: 65530
+# Agent-owned execution.v2 stays disabled unless the exact SSM readiness target,
+# live AWS catalog, and all typed provider routes are composed at startup.
+# core_execution_v2_enabled: false
+# core_execution_v2_probe_timeout: 10s
+# core_execution_v2_binding_operations: [target.observe]
+# Dedicated CloudFormation service role assumed by AWS for the fixed
+# execution.v2 VPC/EC2 template. Wildcards and caller-credential fallback are
+# rejected when execution.v2 is enabled. The role ARN is non-secret.
+# core_aws_cloudformation_service_role_arn: arn:aws:iam::000000000000:role/dirextalk-execution-v2-cfn
 # AWS workload capability remains disabled unless each block names one exact,
 # durable credential reference and target. Startup proves STS/account plus the
 # configured instance/cluster prerequisites; no account-wide target scan is
@@ -62,3 +76,29 @@ core_workload_runner_uid: 65530
 #     ecs_security_group_ids: [sg-0123456789abcdef0]
 #     ecs_desired_count: 1
 core_knowledge_enabled: false
+# Native Voice remains disabled unless the neutral Capability listener is
+# enabled with the same positive account generation. URLs may point to the
+# message-server's existing public relay; mounted files must be mode 0600.
+core_voice_enabled: false
+# capability_enabled: true
+# capability_account_generation: 1
+# core_voice_provider: volc_voice
+# core_voice_host: https://rtc.volcengineapi.com
+# core_voice_region: cn-north-1
+# core_voice_app_id: "<24-char-volc-app-id>"
+# core_voice_conversation_profile_id: 00000000-0000-4000-8000-000000000001
+# core_voice_speech_profile_id: 00000000-0000-4000-8000-000000000002
+# core_voice_access_key_id_file: /run/secrets/voice_access_key_id
+# core_voice_secret_access_key_file: /run/secrets/voice_secret_access_key
+# core_voice_rtc_app_key_file: /run/secrets/voice_rtc_app_key
+# core_voice_webhook_secret_file: /run/secrets/voice_webhook_secret
+# core_voice_callback_relay_token_file: /run/secrets/voice_relay_token
+# core_voice_webhook_url: https://message.example.com/_p2p/agent/voice/webhook
+# core_voice_custom_llm_url: https://message.example.com/_p2p/agent/voice/volc/custom-llm
+# core_voice_client_transcript_enabled: false
+# Optional Agent-private callback listener. Keep this on a separate port;
+# it must never reuse grpc_listen.
+# core_voice_callback_enabled: true
+# core_voice_callback_listen: ":8444"
+# core_voice_callback_tls_cert_file: /run/secrets/tls_cert
+# core_voice_callback_tls_key_file: /run/secrets/tls_key

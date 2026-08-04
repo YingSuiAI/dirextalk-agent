@@ -310,6 +310,61 @@ func (q *QdrantStore) DeleteSource(ctx context.Context, sourceID string, revisio
 	return nil
 }
 
+// DeleteCollection is idempotent and intentionally absent from the normal
+// Knowledge service. It is called only after an authenticated explicit
+// account-deprovision confirmation has transactionally purged Agent rows.
+func (q *QdrantStore) DeleteCollection(ctx context.Context) error {
+	if q == nil || q.collection == "" {
+		return ErrInvalid
+	}
+	// Staged generations use a separate collection named
+	// <base>__stage_<generation>. Enumerate first and delete only that exact
+	// prefix; unrelated collections in the same Qdrant instance are never
+	// touched. A retry after a partial delete is safe because DELETE is
+	// idempotent for both the base and stage collections.
+	data, status, err := q.request(ctx, http.MethodGet, q.endpoint+"/collections", nil)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		zeroBytes(data)
+		return fmt.Errorf("qdrant collection listing returned status %d", status)
+	}
+	var listing struct {
+		Result struct {
+			Collections []struct {
+				Name string `json:"name"`
+			} `json:"collections"`
+		} `json:"result"`
+	}
+	if err := decodeBounded(data, &listing); err != nil {
+		zeroBytes(data)
+		return ErrResponse
+	}
+	zeroBytes(data)
+	names := []string{q.collection}
+	prefix := q.collection + "__stage_"
+	for _, item := range listing.Result.Collections {
+		name := strings.TrimSpace(item.Name)
+		if strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
+			if validateText(name, 256, true) != nil {
+				return ErrResponse
+			}
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		_, status, err := q.request(ctx, http.MethodDelete, q.endpoint+"/collections/"+url.PathEscape(name), nil)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK && status != http.StatusNotFound {
+			return fmt.Errorf("qdrant collection delete returned status %d", status)
+		}
+	}
+	return nil
+}
+
 func (q *QdrantStore) Search(ctx context.Context, query []float32, bindings []Binding, limit int) ([]Match, error) {
 	if err := validateVector(query, q.dimension); err != nil {
 		return nil, err
@@ -320,25 +375,25 @@ func (q *QdrantStore) Search(ctx context.Context, query []float32, bindings []Bi
 	if limit <= 0 || limit > MaxSearchLimit {
 		return nil, ErrInvalid
 	}
-	should := make([]qdrantNestedCondition, 0, len(bindings))
+	should := make([]qdrantFilter, 0, len(bindings))
 	for _, binding := range bindings {
 		must := []qdrantCondition{{Key: "source_id", Match: qdrantMatch{Value: binding.SourceID}}, {Key: "revision", Match: qdrantMatch{Value: binding.Revision}}}
 		if binding.Generation != "" {
 			must = append(must, qdrantCondition{Key: "generation", Match: qdrantMatch{Value: binding.Generation}})
 		}
-		should = append(should, qdrantNestedCondition{Filter: &qdrantFilter{Must: must}})
+		should = append(should, qdrantFilter{Must: must})
 	}
 	body, err := json.Marshal(struct {
-		Vector  []float32    `json:"vector"`
+		Query   []float32    `json:"query"`
 		Filter  qdrantFilter `json:"filter"`
 		Limit   int          `json:"limit"`
 		Payload bool         `json:"with_payload"`
-	}{Vector: query, Filter: qdrantFilter{Should: should}, Limit: limit, Payload: true})
+	}{Query: query, Filter: qdrantFilter{Should: should}, Limit: limit, Payload: true})
 	if err != nil {
 		return nil, ErrInvalid
 	}
 	defer zeroBytes(body)
-	data, status, err := q.request(ctx, http.MethodPost, q.collectionPath("/points/search"), body)
+	data, status, err := q.request(ctx, http.MethodPost, q.collectionPath("/points/query"), body)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +402,9 @@ func (q *QdrantStore) Search(ctx context.Context, query []float32, bindings []Bi
 		return nil, fmt.Errorf("qdrant search returned status %d", status)
 	}
 	var response struct {
-		Result []qdrantSearchResult `json:"result"`
+		Result struct {
+			Points []qdrantSearchResult `json:"points"`
+		} `json:"result"`
 	}
 	if err := decodeBounded(data, &response); err != nil {
 		return nil, ErrResponse
@@ -356,8 +413,8 @@ func (q *QdrantStore) Search(ctx context.Context, query []float32, bindings []Bi
 	for _, binding := range bindings {
 		allowed[binding] = struct{}{}
 	}
-	matches := make([]Match, 0, len(response.Result))
-	for _, item := range response.Result {
+	matches := make([]Match, 0, len(response.Result.Points))
+	for _, item := range response.Result.Points {
 		if item.ID == "" || !isUUID(item.ID) || item.Payload.SourceID == "" || item.Payload.Revision <= 0 || item.Payload.ChunkRef == "" || item.Payload.Digest == "" {
 			return nil, ErrResponse
 		}
@@ -398,12 +455,9 @@ type qdrantCondition struct {
 	Key   string      `json:"key"`
 	Match qdrantMatch `json:"match"`
 }
-type qdrantNestedCondition struct {
-	Filter *qdrantFilter `json:"filter,omitempty"`
-}
 type qdrantFilter struct {
-	Must   []qdrantCondition       `json:"must,omitempty"`
-	Should []qdrantNestedCondition `json:"should,omitempty"`
+	Must   []qdrantCondition `json:"must,omitempty"`
+	Should []qdrantFilter    `json:"should,omitempty"`
 }
 type qdrantSearchResult struct {
 	ID      string        `json:"id"`

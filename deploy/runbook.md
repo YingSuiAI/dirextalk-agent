@@ -3,7 +3,8 @@
 ## Provision
 
 Create one protected directory per Agent instance and generate a database URL,
-PostgreSQL password, TLS certificate/key, and 32-byte service token with
+PostgreSQL password, TLS certificate/key, 32-byte service token, and raw
+32-byte Core secret master key with
 `deploy/container/scripts/bootstrap-local.sh` from the Agent project directory.
 The script writes absolute paths and an exact 43-byte canonical token with no
 trailing newline. Keep the directory outside the
@@ -14,6 +15,14 @@ Use a unique PostgreSQL database, role, named data volume, and instance ID for
 each Core. Do not attach the project to another service's database or data
 volume. Keep the private Compose network internal and do not publish Core gRPC
 to the host.
+
+The generated `core-secret-master-key` is mounted as
+`/run/secrets/core_secret_master_key` and referenced only by
+`core_secret_master_key_file`. Keep it mode `0400`; Core reads it for durable
+secret envelopes (AWS credentials, model/provider credentials, chat/turn
+snapshots, extensions, and execution.v2). Rotating the key without a compatible re-encryption
+operation intentionally fails closed rather than attempting to read old rows
+with an unknown key.
 
 ## Start and upgrade
 

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/YingSuiAI/dirextalk-agent/migrations"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,17 +21,42 @@ const currentSchemaVersion int64 = migrations.CurrentVersion
 type Store struct {
 	pool       *pgxpool.Pool
 	instanceID uuid.UUID
+	// secretKey is injected only by Core composition when encrypted secret
+	// operations are enabled. A nil key deliberately fails those operations
+	// closed while leaving non-secret stores usable for migration/tests.
+	secretKey *secretbox.Keyring
 }
 
-func New(pool *pgxpool.Pool, instanceID string) (*Store, error) {
+// Pool exposes the already configured Agent-owned pool to infrastructure
+// components that need to participate in the same PostgreSQL transaction
+// boundary (for example the capability operation ledger).  Callers must not
+// close the returned pool; Store owns its lifecycle.
+func (s *Store) Pool() *pgxpool.Pool {
+	if s == nil {
+		return nil
+	}
+	return s.pool
+}
+
+func New(pool *pgxpool.Pool, instanceID string, secretKeys ...*secretbox.Keyring) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("postgres pool is required")
+	}
+	if len(secretKeys) > 1 {
+		return nil, errors.New("postgres store accepts at most one secret key")
 	}
 	parsed, err := uuid.Parse(instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("parse agent instance id: %w", err)
 	}
-	return &Store{pool: pool, instanceID: parsed}, nil
+	return &Store{pool: pool, instanceID: parsed, secretKey: firstKey(secretKeys)}, nil
+}
+
+func firstKey(keys []*secretbox.Keyring) *secretbox.Keyring {
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys[0]
 }
 
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {

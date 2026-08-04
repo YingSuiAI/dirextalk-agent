@@ -3,6 +3,7 @@ package coreaws
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (CredentialView, error) {
@@ -102,7 +103,7 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 		c.private.sessionToken = in.SessionToken
 	}
 	c.Revision = expected + 1
-	c.AccountID, c.UserARN, c.VerifiedRevision = "", "", 0
+	c.AccountID, c.UserARN, c.VerifiedRevision, c.TestedAt = "", "", 0, time.Time{}
 	c.UpdatedAt = s.now().UTC()
 	if err := c.Validate(); err != nil {
 		return CredentialView{}, err
@@ -150,12 +151,13 @@ func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest
 	if e != nil {
 		return CredentialTest{}, ErrProvider
 	}
-	updated, ue := s.repo.RecordCredentialIdentity(ctx, id, c.Revision, identity)
+	testedAt := s.now().UTC()
+	updated, ue := s.repo.RecordCredentialIdentity(ctx, id, c.Revision, identity, testedAt)
 	if ue != nil {
 		return CredentialTest{}, ue
 	}
 	c = updated
-	return CredentialTest{CredentialID: id, Identity: identity, CredentialRevision: c.Revision, TestedAt: s.now().UTC()}, nil
+	return CredentialTest{CredentialID: id, Identity: identity, CredentialRevision: c.Revision, TestedAt: testedAt}, nil
 }
 
 func (s *Service) CreatePlan(ctx context.Context, in PlanInput) (PlanView, error) {

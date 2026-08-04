@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// CoreExecutionV2Service is the typed Agent-owned seam for the frozen
+// agent.execution.v2 ProductCore actions. Business servers use the neutral
+// Capability API for the public proxy; this service is also useful for Core
+// composition and focused deployment probes.
+message CoreExecutionV2Record {
+  string owner_id = 1;
+  string kind = 2;
+  string id = 3;
+  uint64 revision = 4;
+  string status = 5;
+  string digest = 6;
+  bytes payload_json = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message CoreExecutionV2ExecuteRequest {
+  string action = 1;
+  bytes request_json = 2;
+}
+message CoreExecutionV2ExecuteResponse { bytes result_json = 1; }
+
+message CoreExecutionV2GetRequest {
+  string kind = 1;
+  string id = 2;
+  uint64 revision = 3;
+}
+message CoreExecutionV2GetResponse { CoreExecutionV2Record record = 1; }
+
+message CoreExecutionV2ListEventsRequest {
+  string kind = 1;
+  string id = 2;
+  uint64 after_sequence = 3;
+  int32 limit = 4;
+}
+message CoreExecutionV2Event {
+  string owner_id = 1;
+  string kind = 2;
+  string resource_id = 3;
+  uint64 sequence = 4;
+  string event_id = 5;
+  string type = 6;
+  bytes payload_json = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+message CoreExecutionV2ListEventsResponse {
+  repeated CoreExecutionV2Event events = 1;
+  uint64 next_sequence = 2;
+}
+
+service CoreExecutionV2Service {
+  rpc Execute(CoreExecutionV2ExecuteRequest) returns (CoreExecutionV2ExecuteResponse);
+  rpc Get(CoreExecutionV2GetRequest) returns (CoreExecutionV2GetResponse);
+  rpc ListEvents(CoreExecutionV2ListEventsRequest) returns (CoreExecutionV2ListEventsResponse);
+}

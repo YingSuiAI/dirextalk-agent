@@ -1,4 +1,4 @@
--- dirextalk-agent migration begin 000001_core_v1_baseline.up.sql
+-- dirextalk-agent migration begin 000001_core_v1_fresh.up.sql
 -- Core v1 schema baseline for the single-user Agent service.
 CREATE TABLE agent_instance_metadata (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
@@ -24,12 +24,14 @@ FOR EACH ROW EXECUTE FUNCTION reject_agent_instance_mutation();
 CREATE TABLE core_model_profiles (
     profile_id uuid PRIMARY KEY,
     display_name text NOT NULL CHECK (length(display_name) BETWEEN 1 AND 255),
-    provider text NOT NULL CHECK (provider IN ('openai_compatible','anthropic','gemini')),
+    provider text NOT NULL CHECK (provider IN ('openai_compatible','anthropic','gemini','volc_voice')),
     base_url text NOT NULL CHECK (length(base_url) BETWEEN 1 AND 2048),
     model_name text NOT NULL CHECK (length(model_name) BETWEEN 1 AND 255),
     system_prompt text NOT NULL DEFAULT '',
-    api_key text CHECK (api_key IS NULL OR length(api_key) <= 65536),
     api_key_configured boolean NOT NULL DEFAULT false,
+    api_key_key_version integer NOT NULL DEFAULT 1 CHECK (api_key_key_version > 0),
+    api_key_nonce bytea,
+    api_key_ciphertext bytea,
     temperature double precision CHECK (temperature IS NULL OR temperature BETWEEN 0 AND 2),
     top_p double precision CHECK (top_p IS NULL OR top_p BETWEEN 0 AND 1),
     max_output_tokens integer NOT NULL DEFAULT 0 CHECK (max_output_tokens >= 0),
@@ -39,7 +41,9 @@ CREATE TABLE core_model_profiles (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     deleted_at timestamptz,
-    CHECK (api_key_configured = (api_key IS NOT NULL AND length(api_key) > 0))
+    CHECK (api_key_configured = (api_key_ciphertext IS NOT NULL AND octet_length(api_key_ciphertext) >= 16)),
+    CHECK ((api_key_nonce IS NULL) = (api_key_ciphertext IS NULL)),
+    CHECK (api_key_nonce IS NULL OR octet_length(api_key_nonce) = 12)
 );
 
 CREATE INDEX core_model_profiles_list_idx
@@ -69,6 +73,16 @@ CREATE TABLE core_conversations (
 CREATE INDEX core_conversations_list_idx
     ON core_conversations (updated_at DESC, conversation_id)
     WHERE deleted_at IS NULL;
+
+-- Agent-owned context compaction state.  Transcript messages remain durable;
+-- the offset selects the bounded model-facing window and the summary carries
+-- facts from older messages.
+CREATE TABLE core_conversation_contexts (
+    conversation_id uuid PRIMARY KEY REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    summary text NOT NULL DEFAULT '' CHECK (length(summary) <= 4096),
+    message_offset bigint NOT NULL DEFAULT 0 CHECK (message_offset >= 0),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
 
 CREATE TABLE core_messages (
     message_id uuid PRIMARY KEY,
@@ -115,6 +129,9 @@ CREATE TABLE core_chat_request_leases (
     profile_id uuid NOT NULL,
     profile_snapshot_json jsonb,
     profile_snapshot_digest text,
+    profile_snapshot_key_version integer,
+    profile_snapshot_api_key_nonce bytea,
+    profile_snapshot_api_key_ciphertext bytea,
     extensions_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(extensions_json) = 'array' AND pg_column_size(extensions_json) <= 1048576),
     state text NOT NULL CHECK (state IN ('in_flight','completed','failed')),
     lease_id uuid,
@@ -138,6 +155,9 @@ CREATE TABLE core_chat_request_leases (
     ,CHECK (profile_snapshot_json IS NULL OR (jsonb_typeof(profile_snapshot_json) = 'object' AND pg_column_size(profile_snapshot_json) <= 1048576))
     ,CHECK (profile_snapshot_digest IS NULL OR profile_snapshot_digest ~ '^[a-f0-9]{64}$')
     ,CHECK (state <> 'completed' OR profile_snapshot_json IS NOT NULL)
+    ,CHECK ((profile_snapshot_api_key_nonce IS NULL) = (profile_snapshot_api_key_ciphertext IS NULL))
+    ,CHECK (profile_snapshot_api_key_nonce IS NULL OR octet_length(profile_snapshot_api_key_nonce) = 12)
+    ,CHECK (profile_snapshot_api_key_ciphertext IS NULL OR octet_length(profile_snapshot_api_key_ciphertext) >= 16)
 );
 
 CREATE INDEX core_chat_request_leases_active_idx ON core_chat_request_leases (lease_expires_at, request_id) WHERE state = 'in_flight';
@@ -409,6 +429,7 @@ CREATE TABLE core_knowledge_sources (
     digest text NOT NULL CHECK (digest = '' OR digest ~ '^[a-f0-9]{64}$'),
     size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
     media_type text NOT NULL CHECK (length(media_type) BETWEEN 1 AND 255),
+    tags_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(tags_json) = 'array' AND jsonb_array_length(tags_json) <= 16 AND pg_column_size(tags_json) <= 16384),
     revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
     content_ref text NOT NULL DEFAULT '' CHECK (length(content_ref) <= 4096),
     error_code text NOT NULL DEFAULT '' CHECK (length(error_code) <= 128),
@@ -463,6 +484,19 @@ CREATE TABLE core_knowledge_mutation_replays (
     PRIMARY KEY(operation, idempotency_key)
 );
 
+-- Owner-scoped semantic configuration. Deployment-owned endpoint and content
+-- roots remain process configuration; only the embedding profile can change
+-- through the Agent capability surface in v1.
+CREATE TABLE core_knowledge_embedding_config (
+    singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+    embedding_profile_id uuid NOT NULL,
+    dimension integer NOT NULL CHECK (dimension > 0 AND dimension <= 16384),
+    collection text NOT NULL CHECK (length(collection) BETWEEN 1 AND 255),
+    collection_config_digest text NOT NULL CHECK (collection_config_digest ~ '^[a-f0-9]{64}$'),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    updated_at timestamptz NOT NULL
+);
+
 CREATE TABLE core_knowledge_cleanup (
     source_id uuid PRIMARY KEY REFERENCES core_knowledge_sources(source_id) ON DELETE RESTRICT,
     content_ref text NOT NULL DEFAULT '' CHECK (length(content_ref) <= 4096),
@@ -493,6 +527,7 @@ CREATE TABLE core_extension_installations (
  transport text NOT NULL,
  revision bigint NOT NULL DEFAULT 1 CHECK (revision>0),
  state text NOT NULL,
+ enabled boolean NOT NULL DEFAULT true,
  active_version_id uuid,
  proposed_version_id uuid,
  network_grants_json jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -547,9 +582,17 @@ CREATE TABLE core_extension_secret_receipts (
 );
 CREATE TABLE core_aws_credentials (
  credential_id uuid PRIMARY KEY,
- name text NOT NULL, region text NOT NULL, access_key_id bytea NOT NULL, secret_access_key bytea NOT NULL, session_token bytea NOT NULL DEFAULT ''::bytea,
+ name text NOT NULL, region text NOT NULL,
+ secret_key_version integer NOT NULL DEFAULT 1 CHECK (secret_key_version > 0),
+ access_key_id_nonce bytea NOT NULL CHECK (octet_length(access_key_id_nonce) = 12),
+ access_key_id_ciphertext bytea NOT NULL CHECK (octet_length(access_key_id_ciphertext) >= 16),
+ secret_access_key_nonce bytea NOT NULL CHECK (octet_length(secret_access_key_nonce) = 12),
+ secret_access_key_ciphertext bytea NOT NULL CHECK (octet_length(secret_access_key_ciphertext) >= 16),
+ session_token_nonce bytea NOT NULL CHECK (octet_length(session_token_nonce) = 12),
+ session_token_ciphertext bytea NOT NULL CHECK (octet_length(session_token_ciphertext) >= 16),
+ session_token_configured boolean NOT NULL DEFAULT false,
  account_id text NOT NULL DEFAULT '', user_arn text NOT NULL DEFAULT '', verified_revision bigint NOT NULL DEFAULT 0, revision bigint NOT NULL DEFAULT 1,
- created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+ tested_at timestamptz, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
 );
 CREATE TABLE core_aws_plans (
  plan_id uuid PRIMARY KEY, credential_id uuid NOT NULL REFERENCES core_aws_credentials(credential_id) ON DELETE RESTRICT, region text NOT NULL, stack_name text NOT NULL,
@@ -581,7 +624,11 @@ ALTER TABLE core_knowledge_cleanup
     ADD COLUMN idempotency_key uuid,
     ADD COLUMN request_hash text NOT NULL DEFAULT '';
 ALTER TABLE core_knowledge_cleanup
-    ADD CONSTRAINT core_knowledge_cleanup_operation_chk CHECK (operation IN ('delete','upload_abort','upload_commit'));
+    ADD COLUMN content_digest text NOT NULL DEFAULT '',
+    ADD COLUMN content_size_bytes bigint NOT NULL DEFAULT 0,
+    ADD CONSTRAINT core_knowledge_cleanup_operation_chk CHECK (operation IN ('delete','upload_abort','upload_commit','memory_replace')),
+    ADD CONSTRAINT core_knowledge_cleanup_content_digest_chk CHECK (content_digest = '' OR content_digest ~ '^[a-f0-9]{64}$'),
+    ADD CONSTRAINT core_knowledge_cleanup_content_size_chk CHECK (content_size_bytes >= 0);
 CREATE INDEX core_knowledge_cleanup_due_idx ON core_knowledge_cleanup(next_attempt_at,source_id);
 ALTER TABLE core_knowledge_cleanup
     ADD CONSTRAINT core_knowledge_cleanup_request_hash_chk CHECK (request_hash = '' OR request_hash ~ '^[a-f0-9]{64}$');
@@ -635,7 +682,10 @@ CREATE TABLE core_knowledge_index_stages (
 CREATE TABLE core_extension_secrets (
  reference_id uuid NOT NULL,
  purpose text NOT NULL,
- secret_value bytea NOT NULL,
+ binding_revision bigint NOT NULL CHECK (binding_revision > 0),
+ secret_key_version integer NOT NULL CHECK (secret_key_version > 0),
+ secret_value_nonce bytea NOT NULL CHECK (octet_length(secret_value_nonce) = 12),
+ secret_value_ciphertext bytea NOT NULL CHECK (octet_length(secret_value_ciphertext) >= 16),
  fingerprint text NOT NULL CHECK (fingerprint ~ '^[a-f0-9]{64}$'),
  revision bigint NOT NULL DEFAULT 1 CHECK (revision>0),
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -648,7 +698,10 @@ CREATE TABLE core_extension_secret_revisions (
  version_id uuid NOT NULL REFERENCES core_extension_versions(version_id) ON DELETE RESTRICT,
  reference_id uuid NOT NULL,
  purpose text NOT NULL,
- secret_value bytea NOT NULL,
+ binding_revision bigint NOT NULL CHECK (binding_revision > 0),
+ secret_key_version integer NOT NULL CHECK (secret_key_version > 0),
+ secret_value_nonce bytea NOT NULL CHECK (octet_length(secret_value_nonce) = 12),
+ secret_value_ciphertext bytea NOT NULL CHECK (octet_length(secret_value_ciphertext) >= 16),
  fingerprint text NOT NULL CHECK (fingerprint ~ '^[a-f0-9]{64}$'),
  state text NOT NULL CHECK (state IN ('staged','promoted','rolled_back')),
  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
@@ -741,26 +794,12 @@ CREATE INDEX core_model_profile_active_refs_knowledge_generation_idx
 CREATE TABLE core_model_profile_secret_revisions (
     profile_id uuid NOT NULL REFERENCES core_model_profiles(profile_id) ON DELETE RESTRICT,
     revision bigint NOT NULL CHECK (revision > 0),
-    api_key text NOT NULL CHECK (length(api_key) > 0 AND length(api_key) <= 65536),
+    secret_key_version integer NOT NULL CHECK (secret_key_version > 0),
+    api_key_nonce bytea NOT NULL CHECK (octet_length(api_key_nonce) = 12),
+    api_key_ciphertext bytea NOT NULL CHECK (octet_length(api_key_ciphertext) >= 16),
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (profile_id, revision)
 );
-INSERT INTO core_model_profile_secret_revisions(profile_id,revision,api_key)
-SELECT profile_id,revision,api_key FROM core_model_profiles
-WHERE api_key IS NOT NULL AND length(api_key) > 0;
-CREATE OR REPLACE FUNCTION core_capture_model_profile_secret_revision()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.api_key IS NOT NULL AND length(NEW.api_key) > 0 THEN
-    INSERT INTO core_model_profile_secret_revisions(profile_id,revision,api_key)
-    VALUES (NEW.profile_id,NEW.revision,NEW.api_key)
-    ON CONFLICT (profile_id,revision) DO NOTHING;
-  END IF;
-  RETURN NEW;
-END $$;
-CREATE TRIGGER core_model_profile_secret_revision_capture
-AFTER INSERT OR UPDATE OF api_key,revision ON core_model_profiles
-FOR EACH ROW EXECUTE FUNCTION core_capture_model_profile_secret_revision();
 ALTER TABLE core_knowledge_sources
     ADD COLUMN promoted_profile_id uuid REFERENCES core_model_profiles(profile_id) ON DELETE RESTRICT,
     ADD COLUMN promoted_profile_revision bigint NOT NULL DEFAULT 0 CHECK (promoted_profile_revision >= 0),
@@ -812,10 +851,22 @@ CREATE TABLE core_extension_artifact_cleanup (
 );
 CREATE UNIQUE INDEX core_extension_artifact_cleanup_live_idx ON core_extension_artifact_cleanup(installation_id,version_id,artifact_digest) WHERE state IN ('pending','running','failed');
 CREATE INDEX core_extension_artifact_cleanup_due_idx ON core_extension_artifact_cleanup(state,next_attempt_at,cleanup_id);
--- dirextalk-agent migration end 000001_core_v1_baseline.up.sql
--- dirextalk-agent migration begin 000002_model_profile_sync.up.sql
 ALTER TABLE core_model_profiles
     ADD COLUMN client_profile_id text;
+
+ALTER TABLE core_model_profiles
+    ADD COLUMN model_kind text NOT NULL DEFAULT 'conversation'
+        CHECK (model_kind IN ('conversation','embedding','speech')),
+    ADD COLUMN input_modalities jsonb NOT NULL DEFAULT '[]'::jsonb
+        CHECK (jsonb_typeof(input_modalities) = 'array' AND pg_column_size(input_modalities) <= 65536),
+    ADD COLUMN provider_config jsonb NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(provider_config) = 'object' AND pg_column_size(provider_config) <= 262144),
+    ADD COLUMN provider_secret_status jsonb NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(provider_secret_status) = 'object' AND pg_column_size(provider_secret_status) <= 65536),
+    ADD COLUMN provider_secrets_key_version integer NOT NULL DEFAULT 1 CHECK (provider_secrets_key_version > 0),
+    ADD COLUMN provider_secrets_nonce bytea,
+    ADD COLUMN provider_secrets_ciphertext bytea,
+    ADD CONSTRAINT core_model_profiles_provider_secret_envelope_chk CHECK ((provider_secrets_nonce IS NULL) = (provider_secrets_ciphertext IS NULL) AND (provider_secrets_nonce IS NULL OR octet_length(provider_secrets_nonce) = 12) AND (provider_secrets_ciphertext IS NULL OR octet_length(provider_secrets_ciphertext) >= 16));
 
 ALTER TABLE core_model_profiles
     ADD CONSTRAINT core_model_profiles_client_profile_id_len
@@ -827,10 +878,11 @@ ALTER TABLE core_model_profiles
 CREATE TABLE core_model_profile_defaults (
     singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
     default_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
+    default_conversation_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
+    default_embedding_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
+    default_speech_client_profile_id text REFERENCES core_model_profiles(client_profile_id),
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
--- dirextalk-agent migration end 000002_model_profile_sync.up.sql
--- dirextalk-agent migration begin 000003_core_conversation_turns.up.sql
 -- Durable ordinary model turns. The request binding and profile snapshot are
 -- committed before the accepted event is visible to callers.
 -- Compatibility marker: state IN ('accepted','running','completed','canceled','failed')
@@ -844,6 +896,9 @@ CREATE TABLE core_conversation_turns (
     expected_revision bigint CHECK (expected_revision IS NULL OR expected_revision > 0),
     profile_snapshot_json jsonb NOT NULL CHECK (jsonb_typeof(profile_snapshot_json) = 'object' AND pg_column_size(profile_snapshot_json) <= 1048576),
     profile_snapshot_digest text NOT NULL CHECK (profile_snapshot_digest ~ '^[a-f0-9]{64}$'),
+    profile_snapshot_key_version integer NOT NULL CHECK (profile_snapshot_key_version > 0),
+    profile_snapshot_api_key_nonce bytea NOT NULL CHECK (octet_length(profile_snapshot_api_key_nonce) = 12),
+    profile_snapshot_api_key_ciphertext bytea NOT NULL CHECK (octet_length(profile_snapshot_api_key_ciphertext) >= 16),
     extension_snapshot_json jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(extension_snapshot_json) = 'array' AND pg_column_size(extension_snapshot_json) <= 1048576),
     extension_snapshot_digest text NOT NULL DEFAULT '' CHECK ((jsonb_array_length(extension_snapshot_json) = 0 AND extension_snapshot_digest = '') OR (jsonb_array_length(extension_snapshot_json) > 0 AND extension_snapshot_digest ~ '^[a-f0-9]{64}$')),
     state text NOT NULL CHECK (state IN ('accepted','running','waiting_confirmation','completed','canceled','failed')),
@@ -927,8 +982,6 @@ CREATE TABLE core_conversation_tool_attempts (
     UNIQUE (turn_id, round, call_id),
     CHECK ((state IN ('completed','denied','canceled')) = (result_json IS NOT NULL))
 );
--- dirextalk-agent migration end 000003_core_conversation_turns.up.sql
--- dirextalk-agent migration begin 000004_core_workloads.up.sql
 ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_task_kind_chk;
 ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool'));
 
@@ -1017,4 +1070,214 @@ CREATE TABLE core_workload_idempotency (
     PRIMARY KEY(owner_id,operation,idempotency_key)
 );
 CREATE INDEX core_workload_idempotency_plan_idx ON core_workload_idempotency(owner_id,plan_id);
--- dirextalk-agent migration end 000004_core_workloads.up.sql
+-- Durable neutral Capability API admission, idempotency and event journal.
+-- Business state remains in the Core v1 tables; these rows only fence the
+-- cross-service operation envelope.
+CREATE TABLE agent_capability_operations (
+    operation_id text PRIMARY KEY,
+    capability_id text NOT NULL CHECK (length(capability_id) BETWEEN 1 AND 256),
+    operation_name text NOT NULL CHECK (length(operation_name) BETWEEN 1 AND 256),
+    state text NOT NULL CHECK (state IN ('pending','running','completed','failed','cancelled','uncertain')),
+    -- Keep the column for the neutral ledger wire shape, but persist only a
+    -- fixed empty object. Capability business requests may contain write-only
+    -- provider credentials and are intentionally never durable.
+    request_json bytea NOT NULL DEFAULT decode('7b7d','hex') CHECK (request_json = decode('7b7d','hex')),
+    root_request_digest bytea NOT NULL CHECK (octet_length(root_request_digest) = 32),
+    request_digest bytea NOT NULL CHECK (octet_length(request_digest) = 32),
+    result_json bytea CHECK (result_json IS NULL OR octet_length(result_json) <= 1048576),
+    error_code text NOT NULL DEFAULT '' CHECK (length(error_code) <= 128),
+    error_message text NOT NULL DEFAULT '' CHECK (length(error_message) <= 4096),
+    expected_revision bigint NOT NULL DEFAULT 0 CHECK (expected_revision >= 0),
+    actual_revision bigint NOT NULL DEFAULT 0 CHECK (actual_revision >= 0),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256),
+    account_generation bigint NOT NULL DEFAULT 0 CHECK (account_generation >= 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    CHECK ((state = 'completed') = (result_json IS NOT NULL)),
+    CHECK (state <> 'completed' OR (error_code = '' AND error_message = '')),
+    CHECK (state <> 'failed' OR length(error_code) > 0),
+    CHECK (state <> 'uncertain' OR length(error_code) > 0)
+);
+CREATE INDEX agent_capability_operations_owner_idx ON agent_capability_operations(owner_id, updated_at DESC);
+CREATE INDEX agent_capability_operations_state_idx ON agent_capability_operations(state, updated_at ASC);
+CREATE TABLE agent_capability_operation_events (
+    id bigserial PRIMARY KEY,
+    operation_id text NOT NULL REFERENCES agent_capability_operations(operation_id) ON DELETE RESTRICT,
+    event_type text NOT NULL CHECK (event_type IN ('accepted','running','state_changed','progress','result','error','cancelled')),
+    event_json bytea NOT NULL CHECK (octet_length(event_json) <= 1048576),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX agent_capability_operation_events_cursor_idx ON agent_capability_operation_events(operation_id, id);
+-- Agent-owned Native voice sessions, transcript turns, and bounded stream
+-- events. Rows are fenced by owner and account generation; ended sessions are
+-- retained as tombstones until their expiry so retries cannot resurrect them.
+CREATE TABLE core_voice_sessions (
+    session_id text PRIMARY KEY CHECK (length(session_id) BETWEEN 1 AND 256),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    conversation_id text NOT NULL CHECK (length(conversation_id) BETWEEN 1 AND 256),
+    conversation_profile_id text NOT NULL CHECK (length(conversation_profile_id) BETWEEN 1 AND 256),
+    speech_profile_id text NOT NULL CHECK (length(speech_profile_id) BETWEEN 1 AND 256),
+    app_id text NOT NULL DEFAULT '',
+    voice_chat_app_id text NOT NULL DEFAULT '',
+    ai_user_id text NOT NULL DEFAULT '',
+    room_id text NOT NULL DEFAULT '',
+    user_id text NOT NULL DEFAULT '',
+    provider_handle text NOT NULL DEFAULT '' CHECK (length(provider_handle) <= 4096),
+    provider_task_id text NOT NULL DEFAULT '' CHECK (length(provider_task_id) <= 256),
+    provider_intent text NOT NULL DEFAULT '' CHECK (provider_intent IN ('','create','start','interrupt','end')),
+    provider_uncertain boolean NOT NULL DEFAULT false,
+    provider_last_error text NOT NULL DEFAULT '' CHECK (length(provider_last_error) <= 4096),
+    expires_at timestamptz NOT NULL,
+    state text NOT NULL CHECK (state IN ('created','started','stopping','ended')),
+    started_at timestamptz,
+    ended_at timestamptz,
+    tombstone_expires_at timestamptz,
+    active_turn_id text NOT NULL DEFAULT '',
+    turn_sequence bigint NOT NULL DEFAULT 0 CHECK (turn_sequence >= 0),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    provider_stopped boolean NOT NULL DEFAULT false,
+    provider_stop_pending boolean NOT NULL DEFAULT false,
+    client_transcript_enabled boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK ((state='ended') = (ended_at IS NOT NULL)),
+    CHECK ((state='ended') = (tombstone_expires_at IS NOT NULL))
+);
+CREATE INDEX core_voice_sessions_owner_idx ON core_voice_sessions(owner_id,account_generation,updated_at DESC);
+CREATE INDEX core_voice_sessions_expiry_idx ON core_voice_sessions(state,expires_at);
+CREATE TABLE core_voice_turns (
+    turn_id text PRIMARY KEY CHECK (length(turn_id) BETWEEN 1 AND 512),
+    session_id text NOT NULL REFERENCES core_voice_sessions(session_id) ON DELETE RESTRICT,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    transcript text NOT NULL CHECK (length(transcript) BETWEEN 1 AND 1048576),
+    answer text NOT NULL DEFAULT '' CHECK (length(answer) <= 1048576),
+    state text NOT NULL CHECK (state IN ('pending','running','completed','interrupted','failed','uncertain')),
+    error_code text NOT NULL DEFAULT '' CHECK (length(error_code) <= 128),
+    error_message text NOT NULL DEFAULT '' CHECK (length(error_message) <= 4096),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX core_voice_turns_session_idx ON core_voice_turns(session_id,created_at,turn_id);
+CREATE TABLE core_voice_events (
+    sequence bigserial PRIMARY KEY,
+    session_id text NOT NULL REFERENCES core_voice_sessions(session_id) ON DELETE RESTRICT,
+    event text NOT NULL CHECK (length(event) BETWEEN 1 AND 128),
+    event_json jsonb NOT NULL CHECK (pg_column_size(event_json) <= 1048576),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX core_voice_events_session_idx ON core_voice_events(session_id,sequence);
+CREATE TABLE core_voice_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    operation text NOT NULL CHECK (length(operation) BETWEEN 1 AND 128),
+    idempotency_key text NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 512),
+    request_hash text NOT NULL CHECK (length(request_hash)=64),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json)='object' AND pg_column_size(response_json) <= 1048576),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(owner_id,account_generation,operation,idempotency_key)
+);
+-- Agent-owned execution-plan/v2 baseline. This is a fresh schema slice; it
+-- deliberately does not reference Message Server tables or migration IDs.
+CREATE TABLE core_execution_v2_records (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    resource_type text NOT NULL CHECK (resource_type IN ('analysis','target','plan','deployment','run','stage','confirmation','artifact','binding','dispatch_intent')),
+    resource_id uuid NOT NULL,
+    revision bigint NOT NULL CHECK (revision > 0),
+    status text NOT NULL CHECK (length(status) BETWEEN 1 AND 64),
+    digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 4194304),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, resource_type, resource_id)
+);
+CREATE INDEX core_execution_v2_records_list_idx ON core_execution_v2_records (owner_id, resource_type, created_at, resource_id);
+
+CREATE TABLE core_execution_v2_revisions (
+    owner_id text NOT NULL,
+    resource_type text NOT NULL,
+    resource_id uuid NOT NULL,
+    revision bigint NOT NULL CHECK (revision > 0),
+    status text NOT NULL,
+    digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 4194304),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, resource_type, resource_id, revision),
+    FOREIGN KEY (owner_id, resource_type, resource_id) REFERENCES core_execution_v2_records(owner_id, resource_type, resource_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE core_execution_v2_replays (
+    owner_id text NOT NULL,
+    action text NOT NULL,
+    idempotency_key uuid NOT NULL,
+    request_digest bytea NOT NULL CHECK (octet_length(request_digest) = 32),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 4194304),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, action, idempotency_key)
+);
+
+CREATE TABLE core_execution_v2_events (
+    owner_id text NOT NULL,
+    resource_type text NOT NULL,
+    resource_id uuid NOT NULL,
+    sequence bigint NOT NULL CHECK (sequence > 0),
+    event_id uuid NOT NULL UNIQUE,
+    event_type text NOT NULL CHECK (length(event_type) BETWEEN 1 AND 128),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 1048576),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, resource_type, resource_id, sequence),
+    FOREIGN KEY (owner_id, resource_type, resource_id) REFERENCES core_execution_v2_records(owner_id, resource_type, resource_id) ON DELETE RESTRICT
+);
+CREATE INDEX core_execution_v2_events_watch_idx ON core_execution_v2_events(owner_id, resource_type, resource_id, sequence);
+
+CREATE TABLE core_execution_v2_secrets (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    secret_ref uuid NOT NULL,
+    revision bigint NOT NULL CHECK (revision > 0),
+    provider text NOT NULL CHECK (length(provider) BETWEEN 1 AND 64),
+    purpose text NOT NULL CHECK (purpose = 'ai_provider_api_key'),
+    secret_key_version integer NOT NULL CHECK (secret_key_version > 0),
+    secret_value_nonce bytea NOT NULL CHECK (octet_length(secret_value_nonce) = 12),
+    secret_value_ciphertext bytea NOT NULL CHECK (octet_length(secret_value_ciphertext) >= 16),
+    binding_digest text NOT NULL CHECK (binding_digest ~ '^[0-9a-f]{64}$'),
+    status text NOT NULL CHECK (status IN ('active','revoked')),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, secret_ref)
+);
+CREATE INDEX core_execution_v2_secrets_list_idx ON core_execution_v2_secrets(owner_id, secret_ref);
+-- Durable account deletion fence. This row is intentionally retained while
+-- all other Agent-owned rows are purged so retries after restart are safe.
+CREATE TABLE agent_account_deprovisions (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    idempotency_key uuid NOT NULL,
+    request_digest bytea NOT NULL CHECK (octet_length(request_digest) = 32),
+    state text NOT NULL CHECK (state IN ('running','database_purged','completed','failed')),
+    error_code text NOT NULL DEFAULT '' CHECK (length(error_code) <= 128),
+    error_message text NOT NULL DEFAULT '' CHECK (length(error_message) <= 4096),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    PRIMARY KEY (owner_id, account_generation, idempotency_key),
+    CHECK (state <> 'completed' OR completed_at IS NOT NULL)
+);
+CREATE INDEX agent_account_deprovisions_state_idx ON agent_account_deprovisions(state, updated_at);
+-- Owner-scoped Native Agent configuration. Online Matrix identity remains in
+-- message-server; this table contains only the Native runtime projection and
+-- its idempotent update receipt.
+CREATE TABLE agent_native_configs (
+    owner_id text PRIMARY KEY CHECK (length(owner_id) BETWEEN 1 AND 512),
+    config_json jsonb NOT NULL CHECK (jsonb_typeof(config_json) = 'object' AND pg_column_size(config_json) <= 1048576),
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    last_idempotency_key uuid,
+    last_request_digest bytea CHECK (last_request_digest IS NULL OR octet_length(last_request_digest) = 32),
+    last_response_json jsonb CHECK (last_response_json IS NULL OR jsonb_typeof(last_response_json) = 'object'),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX agent_native_configs_updated_idx ON agent_native_configs (updated_at, owner_id);
+-- dirextalk-agent migration end 000001_core_v1_fresh.up.sql

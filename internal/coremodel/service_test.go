@@ -132,6 +132,29 @@ func TestClearReplayDoesNotAliasClearAndSet(t *testing.T) {
 	}
 }
 
+func TestProviderSecretRotationChangesCreateAndUpdateDigest(t *testing.T) {
+	repo := NewMemoryProfileRepository()
+	svc, _ := NewService(repo, nil)
+	create := CreateProfileCommand{IdempotencyKey: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Spec: serviceSpec(serviceProfileID, "Primary", strPtr(serviceKey1))}
+	create.Spec.ProviderSecrets = map[string]string{"credential": "first-value"}
+	if _, err := svc.Create(context.Background(), create); err != nil {
+		t.Fatal(err)
+	}
+	create.Spec.ProviderSecrets["credential"] = "rotated-value"
+	if _, err := svc.Create(context.Background(), create); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("provider secret rotation aliased create replay: %v", err)
+	}
+
+	update := UpdateProfileCommand{ID: serviceProfileID, IdempotencyKey: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", ExpectedRevision: 1, Spec: ProfileSpec{ID: serviceProfileID, Patch: true, ProviderSecrets: map[string]string{"credential": "second-value"}}}
+	if _, err := svc.Update(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	update.Spec.ProviderSecrets["credential"] = "another-value"
+	if _, err := svc.Update(context.Background(), update); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("provider secret rotation aliased update replay: %v", err)
+	}
+}
+
 func TestSamplingPatchOperationsStrict(t *testing.T) {
 	key := "k"
 	base := validProfile(ProviderOpenAICompatible, "https://example.com", key)

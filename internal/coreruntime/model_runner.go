@@ -9,9 +9,13 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/google/uuid"
 )
 
-var ErrUnsupportedTaskInput = errors.New("unsupported task input in Core v1")
+var (
+	ErrUnsupportedTaskInput              = errors.New("unsupported task input in Core v1")
+	ErrExtensionSnapshotRequiresResolver = errors.New("extension execution snapshots require a live resolver")
+)
 
 type ProfileResolver interface {
 	ResolveProfile(context.Context, string) (coremodel.Profile, error)
@@ -27,6 +31,14 @@ func NewModelRunner(factory ClientFactory) (*ModelRunner, error) {
 }
 
 func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRunRequest) (coremodel.Profile, coremodel.Client, coremodel.CompletionRequest, error) {
+	// Durable turn recovery persists only redacted extension snapshots.  A
+	// snapshot is not executable code and must never be reconstructed as a
+	// permissive object-schema tool.  The live resolver must supply the
+	// executable extension on a fresh request; recovery therefore fails closed
+	// until that binding is available.
+	if len(req.ExtensionSnapshots) > 0 && len(req.Extensions) == 0 {
+		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, ErrExtensionSnapshotRequiresResolver
+	}
 	var p coremodel.Profile
 	snapshot := req.Snapshot
 	if snapshot.ProfileID == "" {
@@ -44,9 +56,16 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	if err != nil {
 		return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, err
 	}
-	messages := make([]coremodel.Message, 0, len(req.Conversation.Messages)+1)
+	start := int(req.Conversation.ContextMessageOffset)
+	if start < 0 || start > len(req.Conversation.Messages) {
+		start = 0
+	}
+	messages := make([]coremodel.Message, 0, len(req.Conversation.Messages)-start+2)
+	if summary := strings.TrimSpace(req.Conversation.Summary); summary != "" {
+		messages = append(messages, coremodel.Message{Role: coremodel.RoleSystem, Content: "Conversation context summary:\n" + summary})
+	}
 	callNames := map[string]string{}
-	for _, m := range req.Conversation.Messages {
+	for _, m := range req.Conversation.Messages[start:] {
 		pm := coremodel.Message{Role: coremodel.Role(m.Role), Content: m.Content}
 		for _, tc := range m.ToolCalls {
 			pm.ToolCalls = append(pm.ToolCalls, coremodel.ToolCall{ID: tc.ID, Type: "function", Function: coremodel.FunctionCall{Name: tc.Name, Arguments: tc.Arguments}})
@@ -59,7 +78,37 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 			messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, Content: tr.Content, ToolCallID: tr.CallID, Name: callNames[tr.CallID]})
 		}
 	}
-	return p, client, coremodel.CompletionRequest{Messages: messages}, nil
+	tools := make([]coremodel.Tool, 0)
+	seenTools := make(map[string]struct{})
+	for _, ext := range req.Extensions {
+		for _, tool := range ext.Tools {
+			if strings.TrimSpace(tool.Name) == "" {
+				continue
+			}
+			if _, exists := seenTools[tool.Name]; exists {
+				continue
+			}
+			seenTools[tool.Name] = struct{}{}
+			if tool.InputSchema == nil {
+				tool.InputSchema = map[string]any{"type": "object"}
+			}
+			tools = append(tools, tool)
+		}
+		if len(ext.Tools) == 0 {
+			for _, name := range ext.Snapshot.ToolNames {
+				name = strings.TrimSpace(name)
+				if name == "" {
+					continue
+				}
+				if _, exists := seenTools[name]; exists {
+					continue
+				}
+				seenTools[name] = struct{}{}
+				tools = append(tools, coremodel.Tool{Name: name, Description: "extension tool", InputSchema: map[string]any{"type": "object"}})
+			}
+		}
+	}
+	return p, client, coremodel.CompletionRequest{Messages: messages, Tools: tools}, nil
 }
 
 func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequest) (coreconversation.ModelRunResult, error) {
@@ -71,7 +120,7 @@ func (r *ModelRunner) Run(ctx context.Context, req coreconversation.ModelRunRequ
 	if err != nil {
 		return coreconversation.ModelRunResult{}, err
 	}
-	msg := coreconversation.Message{Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ModelProfileID: p.ID}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.Role(comp.Message.Role), Content: comp.Message.Content, ModelProfileID: p.ID}
 	for _, tc := range comp.Message.ToolCalls {
 		msg.ToolCalls = append(msg.ToolCalls, coreconversation.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
 	}
@@ -134,7 +183,7 @@ func (r *ModelRunner) Stream(ctx context.Context, req coreconversation.ModelRunR
 	for _, i := range indices {
 		calls = append(calls, callsByIndex[i])
 	}
-	msg := coreconversation.Message{Role: coreconversation.RoleAssistant, Content: content.String(), ToolCalls: calls, ModelProfileID: p.ID}
+	msg := coreconversation.Message{ID: uuid.NewString(), Role: coreconversation.RoleAssistant, Content: content.String(), ToolCalls: calls, ModelProfileID: p.ID}
 	return coreconversation.ModelRunResult{Message: msg, ToolCalls: calls, Done: len(calls) == 0}, nil
 }
 

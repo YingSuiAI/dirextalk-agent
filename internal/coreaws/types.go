@@ -81,6 +81,7 @@ type Credentials struct {
 	UserARN          string
 	VerifiedRevision int64
 	Revision         int64
+	TestedAt         time.Time
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -88,7 +89,11 @@ type Credentials struct {
 // RehydrateCredentials reconstructs durable credentials inside the trusted
 // Agent boundary. Secret bytes must never be returned from ordinary APIs.
 func RehydrateCredentials(id, name, region, accountID, userARN string, accessKeyID, secretAccessKey, sessionToken []byte, verifiedRevision, revision int64, createdAt, updatedAt time.Time) Credentials {
-	return Credentials{ID: id, Name: name, Region: region, AccountID: accountID, UserARN: userARN, VerifiedRevision: verifiedRevision, Revision: revision, CreatedAt: createdAt, UpdatedAt: updatedAt, private: &credentialPayload{string(accessKeyID), string(secretAccessKey), string(sessionToken)}}
+	return RehydrateCredentialsWithTestedAt(id, name, region, accountID, userARN, accessKeyID, secretAccessKey, sessionToken, verifiedRevision, revision, time.Time{}, createdAt, updatedAt)
+}
+
+func RehydrateCredentialsWithTestedAt(id, name, region, accountID, userARN string, accessKeyID, secretAccessKey, sessionToken []byte, verifiedRevision, revision int64, testedAt, createdAt, updatedAt time.Time) Credentials {
+	return Credentials{ID: id, Name: name, Region: region, AccountID: accountID, UserARN: userARN, VerifiedRevision: verifiedRevision, Revision: revision, TestedAt: testedAt, CreatedAt: createdAt, UpdatedAt: updatedAt, private: &credentialPayload{string(accessKeyID), string(secretAccessKey), string(sessionToken)}}
 }
 
 type credentialPayload struct{ accessKeyID, secretAccessKey, sessionToken string }
@@ -120,11 +125,12 @@ type CredentialView struct {
 	ID, Name, Region, AccountID, UserARN        string
 	HasAccessKey, HasSecretKey, HasSessionToken bool
 	Revision                                    int64
-	CreatedAt, UpdatedAt                        time.Time
+	VerifiedRevision                            int64
+	TestedAt, CreatedAt, UpdatedAt              time.Time
 }
 
 func (c Credentials) View() CredentialView {
-	return CredentialView{ID: c.ID, Name: c.Name, Region: c.Region, AccountID: c.AccountID, UserARN: c.UserARN, HasAccessKey: c.private != nil && c.private.accessKeyID != "", HasSecretKey: c.private != nil && c.private.secretAccessKey != "", HasSessionToken: c.private != nil && c.private.sessionToken != "", Revision: c.Revision, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
+	return CredentialView{ID: c.ID, Name: c.Name, Region: c.Region, AccountID: c.AccountID, UserARN: c.UserARN, HasAccessKey: c.private != nil && c.private.accessKeyID != "", HasSecretKey: c.private != nil && c.private.secretAccessKey != "", HasSessionToken: c.private != nil && c.private.sessionToken != "", Revision: c.Revision, VerifiedRevision: c.VerifiedRevision, TestedAt: c.TestedAt, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt}
 }
 
 // StoredSecretBytes is restricted to persistence adapters inside Agent.

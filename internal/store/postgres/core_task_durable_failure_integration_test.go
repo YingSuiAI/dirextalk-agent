@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -93,14 +95,16 @@ func corePGFixture(t *testing.T, dsn string) (context.Context, *Store, string, f
 		cancel()
 		t.Fatal(err)
 	}
-	store, err := New(pool, instance)
+	keyring, err := secretbox.New(secretbox.KeyVersionMin, bytes.Repeat([]byte{0x5a}, secretbox.MasterKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := New(pool, instance, keyring)
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile := uuid.NewString()
-	if _, err = pool.Exec(ctx, `INSERT INTO core_model_profiles(profile_id,display_name,provider,base_url,model_name,api_key,api_key_configured) VALUES($1,'test','openai_compatible','https://example.invalid','test','test',true)`, profile); err != nil {
-		t.Fatal(err)
-	}
+	createTestProfile(ctx, t, store, profile, "test", "test")
 	return ctx, store, profile, func() {
 		pool.Close()
 		cancel()
@@ -108,6 +112,23 @@ func corePGFixture(t *testing.T, dsn string) (context.Context, *Store, string, f
 		defer done()
 		_, _ = admin.Exec(cleanup, "DROP SCHEMA "+quoted+" CASCADE")
 		admin.Close()
+	}
+}
+
+func testSecretKeyring(t *testing.T) *secretbox.Keyring {
+	t.Helper()
+	keyring, err := secretbox.New(secretbox.KeyVersionMin, bytes.Repeat([]byte{0x5a}, secretbox.MasterKeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keyring
+}
+
+func createTestProfile(ctx context.Context, t *testing.T, store *Store, id, model, apiKey string) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := store.CreateProfile(ctx, coremodel.Profile{ID: id, DisplayName: "test", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: model, APIKey: apiKey, ContextWindow: 32768, Revision: 1, CreatedAt: now, UpdatedAt: now}, uuid.NewString(), strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
 	}
 }
 

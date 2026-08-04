@@ -127,6 +127,25 @@ func TestSyncProfilesDigestConflictAndOverlappingRevisionFence(t *testing.T) {
 	_ = created
 }
 
+func TestSyncProviderSecretRotationChangesDigest(t *testing.T) {
+	svc := newSyncTestService(t)
+	request := SyncProfileCommand{
+		IdempotencyKey:         "a0000000-0000-4000-8000-000000000040",
+		DefaultSpeechProfileID: "speech",
+		Entries: []SyncProfileEntry{{
+			ClientProfileID: "speech", DisplayName: "Speech", Provider: ProviderVolcVoice,
+			ModelKind: ModelKindSpeech, ProviderSecrets: map[string]string{"rtc_app_key": "first-value"},
+		}},
+	}
+	if _, err := svc.Sync(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.Entries[0].ProviderSecrets["rtc_app_key"] = "rotated-value"
+	if _, err := svc.Sync(context.Background(), request); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("provider secret rotation aliased sync replay: %v", err)
+	}
+}
+
 func newSyncTestService(t *testing.T) *Service {
 	t.Helper()
 	svc, err := NewService(NewMemoryProfileRepository(), nil)

@@ -2,19 +2,27 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
-	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
@@ -32,8 +40,20 @@ type Config struct {
 	// TokenFile 是 MS→Agent 方向的 token 文件路径
 	TokenFile string
 
+	// GrantPublicKeyFile is the Ed25519 public verification key for MS-issued
+	// capability grants. Agent never receives the signing private key.
+	GrantPublicKeyFile string
+
 	// InstanceID 是 Agent 实例 ID
 	InstanceID string
+
+	// PeerCommonName binds the mTLS client identity to the message-server
+	// deployment.  Empty uses the production default.
+	PeerCommonName string
+
+	// PeerInstanceID binds metadata to the exact message-server instance. It
+	// must be configured in production; InstanceID remains Agent's identity.
+	PeerInstanceID string
 
 	// AccountGeneration 是账号生成标识
 	AccountGeneration int64
@@ -41,6 +61,16 @@ type Config struct {
 	// 连接池配置
 	MaxConcurrentQuery int // 默认 32
 	MaxConcurrentWatch int // 默认 64
+
+	// ChainFence is shared with the Agent→Product client. While a Product
+	// callback is outstanding, inbound Agent requests carrying the same chain
+	// are rejected before dispatch so a synchronous re-entry cannot deadlock.
+	ChainFence *capabilityclient.ChainFence
+	// MutationGuard fences Query/Cancel/Reconcile adapters that can reach
+	// durable operation state outside the asynchronous handler path.
+	MutationGuard interface {
+		Enter(context.Context) (func(), error)
+	}
 }
 
 // Server 实现 AgentCapabilityService
@@ -51,16 +81,21 @@ type Server struct {
 	grpcServer   *grpc.Server
 	listener     net.Listener
 	expectedPeer string // 期望的 peer instance ID（从 token 推导）
-	token        []byte // 方向 token
+	token        []byte // exact base64url direction token
+	grantKey     []byte // Ed25519 public verification key, never logged/returned
 
 	// 并发控制
 	querySem chan struct{}
 	watchSem chan struct{}
 
-	mu       sync.RWMutex
-	ready    bool
-	registry CapabilityRegistry
-	opMgr    *operation.Manager
+	mu            sync.RWMutex
+	ready         bool
+	registry      CapabilityRegistry
+	opMgr         *operation.Manager
+	chainFence    *capabilityclient.ChainFence
+	mutationGuard interface {
+		Enter(context.Context) (func(), error)
+	}
 }
 
 // CapabilityRegistry 定义 capability 注册表接口
@@ -77,6 +112,27 @@ type Capability interface {
 
 // New 创建新的 AgentCapabilityService 服务器
 func New(config *Config, registry CapabilityRegistry, opMgr *operation.Manager) (*Server, error) {
+	if config == nil {
+		return nil, fmt.Errorf("capability server config is required")
+	}
+	if registry == nil || opMgr == nil {
+		return nil, fmt.Errorf("capability registry and operation manager are required")
+	}
+	if strings.TrimSpace(config.ListenAddr) == "" {
+		return nil, fmt.Errorf("capability listen address is required")
+	}
+	if strings.TrimSpace(config.PeerCommonName) == "" {
+		config.PeerCommonName = "message-server-client"
+	}
+	if strings.TrimSpace(config.PeerInstanceID) == "" {
+		return nil, fmt.Errorf("capability peer instance id is required")
+	}
+	if config.AccountGeneration <= 0 {
+		return nil, fmt.Errorf("capability account generation must be positive")
+	}
+	if strings.TrimSpace(config.GrantPublicKeyFile) == "" {
+		return nil, fmt.Errorf("capability grant public key file is required")
+	}
 	if config.MaxConcurrentQuery <= 0 {
 		config.MaxConcurrentQuery = 32
 	}
@@ -84,20 +140,34 @@ func New(config *Config, registry CapabilityRegistry, opMgr *operation.Manager) 
 		config.MaxConcurrentWatch = 64
 	}
 
-	// 读取方向 token
+	// 读取方向 token.  Keep the same strict 32-byte base64url contract as the
+	// Core gRPC boundary and reject newline/padding/trailing material.
 	token, err := os.ReadFile(config.TokenFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read token file: %w", err)
 	}
+	value := string(token)
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != value {
+		return nil, fmt.Errorf("invalid capability direction token")
+	}
+	grantKeyMaterial, err := os.ReadFile(config.GrantPublicKeyFile)
+	grantKey, parseKeyErr := capv1.ParseGrantPublicKey(grantKeyMaterial)
+	if err != nil || parseKeyErr != nil {
+		return nil, fmt.Errorf("invalid capability grant public key")
+	}
 
 	s := &Server{
-		config:   config,
-		token:    token,
-		registry: registry,
-		opMgr:    opMgr,
-		querySem: make(chan struct{}, config.MaxConcurrentQuery),
-		watchSem: make(chan struct{}, config.MaxConcurrentWatch),
-		ready:    true,
+		config:        config,
+		token:         []byte(value),
+		grantKey:      append([]byte(nil), grantKey...),
+		registry:      registry,
+		opMgr:         opMgr,
+		chainFence:    config.ChainFence,
+		mutationGuard: config.MutationGuard,
+		querySem:      make(chan struct{}, config.MaxConcurrentQuery),
+		watchSem:      make(chan struct{}, config.MaxConcurrentWatch),
+		ready:         true,
 	}
 
 	// 加载 TLS 配置
@@ -171,23 +241,30 @@ func (s *Server) Start() error {
 
 // Stop 停止服务器
 func (s *Server) Stop(ctx context.Context) error {
-	if s.grpcServer != nil {
-		// Graceful stop with timeout
-		stopped := make(chan struct{})
-		go func() {
-			s.grpcServer.GracefulStop()
-			close(stopped)
-		}()
-
-		select {
-		case <-stopped:
-			return nil
-		case <-ctx.Done():
-			s.grpcServer.Stop()
-			return ctx.Err()
+	if s == nil || s.grpcServer == nil {
+		return nil
+	}
+	closeListener := func() {
+		if s.listener != nil {
+			_ = s.listener.Close()
 		}
 	}
-	return nil
+	// Graceful stop with timeout
+	stopped := make(chan struct{})
+	go func() {
+		s.grpcServer.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		closeListener()
+		return nil
+	case <-ctx.Done():
+		s.grpcServer.Stop()
+		closeListener()
+		return ctx.Err()
+	}
 }
 
 // SetReady 设置 readiness 状态
@@ -269,14 +346,31 @@ func (s *Server) authenticate(ctx context.Context) error {
 		return status.Error(codes.Unauthenticated, "no verified chains")
 	}
 
-	// 验证客户端证书 CN（应该是 "message-server-client"）
+	if len(tlsInfo.State.PeerCertificates) == 0 {
+		return status.Error(codes.Unauthenticated, "client certificate is required")
+	}
 	cert := tlsInfo.State.PeerCertificates[0]
-	if cert.Subject.CommonName != "message-server-client" {
+	if cert.Subject.CommonName != s.config.PeerCommonName {
 		return status.Errorf(codes.Unauthenticated, "invalid client CN: %s", cert.Subject.CommonName)
 	}
-
-	// TODO: 验证方向 token（从 metadata 中获取）
-	// TODO: 验证 instance ID 和 generation
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "capability direction token is required")
+	}
+	normalized, err := capv1.ParseCapabilityMetadata(map[string][]string(md))
+	if err != nil {
+		return status.Errorf(codes.Unauthenticated, "invalid capability metadata: %v", err)
+	}
+	candidate := []byte(normalized.Token)
+	if len(candidate) != len(s.token) || subtle.ConstantTimeCompare(candidate, s.token) != 1 {
+		return status.Error(codes.Unauthenticated, "invalid capability direction token")
+	}
+	if normalized.InstanceID != s.config.PeerInstanceID {
+		return status.Error(codes.Unauthenticated, "invalid capability peer instance")
+	}
+	if s.config.AccountGeneration <= 0 || normalized.AccountGeneration != s.config.AccountGeneration {
+		return status.Error(codes.Unauthenticated, "invalid capability account generation")
+	}
 
 	return nil
 }
@@ -295,12 +389,21 @@ func (s *Server) validateCallContext(req interface{}) error {
 				return status.Errorf(codes.InvalidArgument, "invalid call_context: %v", err)
 			}
 
-			// 验证调用路径
-			if err := capv1.ValidateCallPath(ctx, "agent"); err != nil {
-				if err.Error() == "cycle detected" {
+			// Agent is a receiver boundary.  The trusted sender appends `ms`
+			// before dialing; Agent validates that peer route and advances it to
+			// `ms→agent` before a handler can run.  A second validation pass (the
+			// handler's requireCallContext) accepts only that already-advanced
+			// route and verifies its sender prefix.
+			advanced, err := validateOrAdvanceAgentCallContext(ctx)
+			if err != nil {
+				if errors.Is(err, capv1.ErrCycleDetected) {
 					return status.Error(codes.FailedPrecondition, "CYCLE_DETECTED")
 				}
 				return status.Errorf(codes.InvalidArgument, "invalid call path: %v", err)
+			}
+			setRequestCallContext(req, advanced)
+			if s.chainFence != nil && s.chainFence.Active(ctx.GetChainId()) {
+				return status.Error(codes.FailedPrecondition, "CYCLE_DETECTED")
 			}
 
 			// 检查 deadline
@@ -313,6 +416,209 @@ func (s *Server) validateCallContext(req interface{}) error {
 	}
 
 	return nil
+}
+
+func validateOrAdvanceAgentCallContext(ctx *capv1.CallContext) (*capv1.CallContext, error) {
+	if ctx == nil {
+		return nil, errors.New("call_context is required")
+	}
+	parts := strings.Split(ctx.GetRoute(), capv1.RouteSeparator)
+	if ctx.GetRoute() == "" {
+		return nil, fmt.Errorf("%w: peer-bound call_context route is required", capv1.ErrInvalidCallPath)
+	}
+	if parts[len(parts)-1] == capv1.NodeAgent {
+		// The interceptor may run before the handler's explicit validation.  A
+		// route that is already advanced must have a valid Agent sender prefix.
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("%w: agent route has no message-server sender", capv1.ErrInvalidCallPath)
+		}
+		prefix := &capv1.CallContext{ChainId: ctx.GetChainId(), RootOperationId: ctx.GetRootOperationId(), ParentCallId: ctx.GetParentCallId(), DeadlineUnixMs: ctx.GetDeadlineUnixMs()}
+		prefix.Route = strings.Join(parts[:len(parts)-1], capv1.RouteSeparator)
+		prefix.Hop = int32(len(parts) - 1)
+		if err := capv1.ValidateAgentCallPath(prefix); err != nil {
+			return nil, err
+		}
+		return ctx, nil
+	}
+	if err := capv1.ValidateAgentCallPath(ctx); err != nil {
+		return nil, err
+	}
+	advanced, err := capv1.ValidateAndAdvanceAgentCallContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return advanced, nil
+}
+
+// setRequestCallContext is intentionally a small type switch over the public
+// capability requests.  It avoids reflection and keeps the generated API as
+// the source of truth while preserving the advanced route for downstream
+// Product Capability calls.
+func setRequestCallContext(req interface{}, advanced *capv1.CallContext) {
+	if advanced == nil {
+		return
+	}
+	switch value := req.(type) {
+	case *capv1.QueryRequest:
+		value.CallContext = advanced
+	case *capv1.StartOperationRequest:
+		value.CallContext = advanced
+	case *capv1.GetOperationRequest:
+		value.CallContext = advanced
+	case *capv1.WatchOperationRequest:
+		value.CallContext = advanced
+	case *capv1.CancelOperationRequest:
+		value.CallContext = advanced
+	case *capv1.ReconcileOperationRequest:
+		value.CallContext = advanced
+	}
+}
+
+func (s *Server) requireCallContext(req interface{}) error {
+	type hasCallContext interface{ GetCallContext() *capv1.CallContext }
+	r, ok := req.(hasCallContext)
+	if !ok || r.GetCallContext() == nil {
+		return status.Error(codes.InvalidArgument, "call_context is required")
+	}
+	return s.validateCallContext(req)
+}
+
+func (s *Server) validatePermission(callCtx *capv1.CallContext, permission *capv1.PermissionContext, descriptor *capv1.CapabilityDescriptor, operation string, requestDigest []byte) error {
+	return s.validatePermissionWithRoot(callCtx, permission, descriptor, operation, requestDigest, true)
+}
+
+func (s *Server) validatePermissionWithRoot(callCtx *capv1.CallContext, permission *capv1.PermissionContext, descriptor *capv1.CapabilityDescriptor, operation string, requestDigest []byte, query bool) error {
+	if permission == nil || strings.TrimSpace(permission.AuthenticatedOwnerId) == "" {
+		return status.Error(codes.PermissionDenied, "permission context is required")
+	}
+	if s.config.AccountGeneration > 0 && permission.AccountGeneration != s.config.AccountGeneration {
+		return status.Error(codes.PermissionDenied, "account generation is stale")
+	}
+	// The grant is opaque and signed by message-server.  The Agent does not
+	// mint or accept a caller-supplied owner-only context without that grant.
+	if len(permission.CapabilityGrant) == 0 {
+		return status.Error(codes.PermissionDenied, "capability grant is required")
+	}
+	var required []string
+	for _, d := range descriptor.GetOperations() {
+		if d.GetOperationId() == operation {
+			required = d.GetRequiredScopes()
+			break
+		}
+	}
+	have := make(map[string]struct{}, len(permission.GetGrantedScopes()))
+	for _, scope := range permission.GetGrantedScopes() {
+		have[scope] = struct{}{}
+	}
+	for _, scope := range required {
+		if _, ok := have[scope]; !ok {
+			return status.Errorf(codes.PermissionDenied, "missing capability scope %q", scope)
+		}
+	}
+	verifyErr := s.verifyAgentGrant(callCtx, permission, descriptor, operation, requestDigest, query)
+	if verifyErr != nil {
+		return status.Errorf(codes.PermissionDenied, "invalid capability grant: %v", verifyErr)
+	}
+	return nil
+}
+
+func (s *Server) verifyAgentGrant(callCtx *capv1.CallContext, permission *capv1.PermissionContext, descriptor *capv1.CapabilityDescriptor, operation string, requestDigest []byte, query bool) error {
+	if s == nil || len(s.grantKey) != capv1.MinGrantKeySize || callCtx == nil || permission == nil || descriptor == nil || len(requestDigest) != sha256.Size {
+		return capv1.ErrInvalidGrant
+	}
+	if permission.GetAccountGeneration() <= 0 {
+		return capv1.ErrGrantBinding
+	}
+	var operationDescriptor *capv1.OperationDescriptor
+	var required []string
+	for _, item := range descriptor.GetOperations() {
+		if item.GetOperationId() == operation {
+			operationDescriptor = item
+			required = item.GetRequiredScopes()
+			break
+		}
+	}
+	if operationDescriptor == nil {
+		return capv1.ErrGrantBinding
+	}
+	catalogDigest := computeCatalogDigest(s.registry.List())
+	schemaDigest := sha256.Sum256([]byte(operationDescriptor.GetInputSchemaJson()))
+	required = append([]string(nil), required...)
+	sort.Strings(required)
+	// Agent is the root capability receiver. Bind every authenticated grant
+	// claim, including catalog/schema/target operation and the grant-independent
+	// root request digest. Query has no wire digest field, so this recomputation
+	// is its replay fence; StartOperation additionally compares its final digest
+	// before reaching this verifier.
+	binding := &capv1.AgentGrantBinding{
+		CallContext: callCtx, RootOperationID: callCtx.GetRootOperationId(), OwnerID: permission.GetAuthenticatedOwnerId(), AccountGeneration: permission.GetAccountGeneration(),
+		RootCapabilityID: descriptor.GetCapabilityId(), RootOperation: operation, RootRequestDigest: requestDigest,
+		CatalogDigest: catalogDigest, SchemaDigest: schemaDigest[:], RequiredScopes: required,
+	}
+	var claims capv1.GrantClaims
+	var verifyErr error
+	if query {
+		claims, verifyErr = capv1.VerifyAgentQueryGrant(permission.GetCapabilityGrant(), s.grantKey, time.Now(), *binding)
+	} else {
+		claims, verifyErr = capv1.VerifyAgentRootBinding(permission.GetCapabilityGrant(), s.grantKey, time.Now(), *binding)
+	}
+	if verifyErr != nil {
+		return verifyErr
+	}
+	if callCtx.GetHop() > claims.MaxHop || int32(len(callCtx.GetRoute())) > claims.MaxRouteLength {
+		return capv1.ErrGrantBinding
+	}
+	for _, scope := range required {
+		if !containsScope(claims.Scopes, scope) {
+			return capv1.ErrGrantBinding
+		}
+	}
+	if !sameScopes(claims.Scopes, permission.GetGrantedScopes()) {
+		return capv1.ErrGrantBinding
+	}
+	return nil
+}
+
+func containsScope(scopes []string, wanted string) bool {
+	for _, scope := range scopes {
+		if scope == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func sameScopes(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, value := range a {
+		seen[value] = struct{}{}
+	}
+	for _, value := range b {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) operationDescriptor(capabilityID, operation string) (*capv1.CapabilityDescriptor, *capv1.OperationDescriptor, error) {
+	if s.registry == nil {
+		return nil, nil, status.Error(codes.Unavailable, "capability registry is not ready")
+	}
+	capability, ok := s.registry.Get(capabilityID)
+	if !ok {
+		return nil, nil, status.Error(codes.NotFound, "capability not found")
+	}
+	desc := capability.Descriptor()
+	for _, op := range desc.GetOperations() {
+		if op.GetOperationId() == operation {
+			return desc, op, nil
+		}
+	}
+	return desc, nil, status.Error(codes.NotFound, "capability operation not found")
 }
 
 // acquireQuerySem 获取 query semaphore
