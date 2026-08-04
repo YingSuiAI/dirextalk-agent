@@ -5,6 +5,85 @@ Agent RPC, Eino tool, Skill surface, arbitrary EC2 client, or credential
 transport. Run it only from the committed release checkout and an authorized
 operator context using the standard AWS SDK credential chain.
 
+## Pi real-task recovery gate
+
+The deployed v72 Agent and its Pi Worker AMI completed bootstrap, enrollment,
+claim, heartbeat, input materialization, checkpointing, terminal completion,
+and verified AWS cleanup for Task
+`019fcbce-4100-7be6-a97d-0895d9cd6552`. The `execute-role` action failed after
+Pi had run for about 67 seconds. The published evidence contains only
+`action_failed` and `outcome=failed`; it does not contain the failure class.
+
+The first irreversible loss occurs in `internal/workerruntime`: Pi exits zero
+for provider and agent errors and reports them in its JSON event stream, while
+the adapter currently collapses every `stopReason=error`, malformed event
+sequence, and missing final tool result into `ErrExecution`. Process stderr and
+exit details are also destroyed before a safe classification is retained.
+Therefore the existing evidence cannot prove that the AMI package, credential,
+provider call, Pi event contract, or required final tool call caused this
+specific failure.
+
+No Central OS feature work, demo2 replacement, Worker AMI publication, active
+Release switch, or paid retry may proceed through this recovery gate. The
+deployed source baseline is immutable commit
+`ec95c313d31639aa97d9c70a0e0501295167ae7b`; recovery work uses a separate
+branch and preserves the current AMI as the rollback Release.
+
+### Chosen recovery design
+
+Blindly rebuilding the AMI is rejected because the image already booted and
+ran Pi. Adding free-form stderr or provider messages to logs is also rejected
+because those values can contain credentials, request content, or upstream
+implementation details. Recovery instead has three bounded layers:
+
+1. Run the digest-verified Pi `0.83.0` executable and the exact Dirextalk result
+   extension against a local OpenAI-compatible fake provider. This release
+   qualification must exercise the real CLI arguments and parse the real JSON
+   event stream. It performs no model call and incurs no provider cost.
+2. Preserve only a closed failure class and stage before raw process or Pi
+   diagnostics are erased. Initial classes distinguish process start, timeout,
+   output limit, non-zero exit, provider authentication, provider quota/rate
+   limit, provider request/server/network failure, invalid Pi event stream,
+   aborted execution, and missing structured final result. Raw stderr,
+   `errorMessage`, response bodies, prompts, paths, and credentials remain
+   forbidden from durable evidence and ordinary logs.
+3. Use the classified result to fix the actual runtime boundary. A packaging
+   change is permitted only if the real-binary qualification proves a packaged
+   asset defect. A prompt, extension, or adapter change is permitted only when
+   its failing test reproduces that exact class. One change is tested at a time.
+
+The first compatibility release may expose the closed class in the Worker's
+serial log while keeping the deployed completion RPC unchanged. Extending the
+Agent protocol, PostgreSQL projection, or App failure UI is a separate change
+after the Worker succeeds; it must not be bundled into the root-cause fix.
+
+### Recovery implementation and acceptance
+
+Implementation follows this order:
+
+1. Add failing tests for real Pi provider-error events, missing final result,
+   non-zero exit, timeout, and output overflow. Confirm every test fails for
+   the intended missing classification.
+2. Add the minimum typed error contract in `internal/workerruntime` and retain
+   no raw diagnostic text after classification.
+3. Add an opt-in real-binary qualification test. It requires an explicit Pi
+   executable and result-extension path, verifies their digests before use,
+   serves a loopback fake provider, and validates one complete structured
+   result through `parsePiEvents`.
+4. Run focused normal and race tests, all Worker packages, `go vet`, Worker
+   command builds, repository secret scans, and `git diff --check`.
+5. Only after those checks pass, prepare a new immutable Worker rootfs and AMI
+   candidate. Preparation is read-only; any AWS build or model request requires
+   a fresh explicit authorization.
+6. Keep the current Release active. A separately approved one-Worker task may
+   select the candidate once. Promotion requires a verified structured result,
+   App correlation, terminal cleanup, and independent zero-resource read-back.
+
+The recovery is not complete when tests merely pass with a fake process or
+handwritten event fixture. It is complete only after the exact Pi release runs
+the loopback qualification and one authorized real task reaches the full
+success-and-cleanup boundary.
+
 ## Prepare a build-request v2
 
 Preparation is read-only. It confirms the exact STS account and Region,
