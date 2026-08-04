@@ -32,6 +32,12 @@ func TestTaskV1WorkspacePolicyIsClosed(t *testing.T) {
 		edit func(*TaskV1)
 	}{
 		{
+			name: "output token limit overflow",
+			edit: func(task *TaskV1) {
+				task.MaxOutputTokens = MaxTaskOutputTokens + 1
+			},
+		},
+		{
 			name: "read only patch",
 			edit: func(task *TaskV1) {
 				task.WorkspaceMode = WorkspaceReadOnly
@@ -127,6 +133,7 @@ func validTask() TaskV1 {
 		ModelProvider:      "openai",
 		Model:              "gpt-5.3-codex",
 		ModelInterface:     ModelOpenAIResponses,
+		MaxOutputTokens:    8192,
 		CredentialSlot:     "model-token",
 		IncludePatch:       true,
 	}

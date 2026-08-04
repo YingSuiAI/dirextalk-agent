@@ -104,6 +104,7 @@ func TestPiExecutorUsesDeepSeekCredentialChannel(t *testing.T) {
 	task.ModelProvider = "deepseek"
 	task.Model = "deepseek-v4-pro"
 	task.ModelInterface = ModelOpenAICompatible
+	task.MaxOutputTokens = 128
 	task.IncludePatch = false
 	credential := []byte("scoped-deepseek-credential-1234567890")
 	process := &piFakeProcess{events: validPiEventStream()}
@@ -141,6 +142,64 @@ func TestPiExecutorUsesDeepSeekCredentialChannel(t *testing.T) {
 	}
 	if _, present := process.spec.SecretEnvironment["OPENAI_API_KEY"]; present {
 		t.Fatal("DeepSeek credential was also exposed as OPENAI_API_KEY")
+	}
+	var models struct {
+		Providers map[string]struct {
+			ModelOverrides map[string]struct {
+				MaxTokens uint64 `json:"maxTokens"`
+				Compat    struct {
+					MaxTokensField string `json:"maxTokensField"`
+				} `json:"compat"`
+			} `json:"modelOverrides"`
+		} `json:"providers"`
+	}
+	if json.Unmarshal(process.modelsConfig, &models) != nil {
+		t.Fatalf("Pi models config = %q", process.modelsConfig)
+	}
+	override := models.Providers["deepseek"].ModelOverrides[task.Model]
+	if override.MaxTokens != task.MaxOutputTokens ||
+		override.Compat.MaxTokensField != "max_tokens" {
+		t.Fatalf("DeepSeek model override = %+v", override)
+	}
+}
+
+func TestPiExecutorBoundsLegacyTaskOutput(t *testing.T) {
+	t.Parallel()
+	task := validPiTask()
+	task.MaxOutputTokens = 0
+	task.IncludePatch = false
+	process := &piFakeProcess{events: validPiEventStream()}
+	executor := newTestPiExecutor(
+		t,
+		task,
+		"",
+		[]byte("scoped-test-credential-1234567890"),
+		process,
+		nil,
+	)
+
+	result, err := executor.Execute(t.Context(), task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, artifact := range result.Artifacts {
+			clear(artifact.Content)
+		}
+	}()
+	var models struct {
+		Providers map[string]struct {
+			ModelOverrides map[string]struct {
+				MaxTokens uint64 `json:"maxTokens"`
+			} `json:"modelOverrides"`
+		} `json:"providers"`
+	}
+	if json.Unmarshal(process.modelsConfig, &models) != nil {
+		t.Fatalf("Pi models config = %q", process.modelsConfig)
+	}
+	override := models.Providers[task.ModelProvider].ModelOverrides[task.Model]
+	if override.MaxTokens != defaultPiOutputTokens {
+		t.Fatalf("legacy Pi max tokens = %d", override.MaxTokens)
 	}
 }
 
@@ -499,10 +558,11 @@ func piTerminalFailureStream(stopReason, errorMessage string) []byte {
 }
 
 type piFakeProcess struct {
-	events []byte
-	err    error
-	calls  int
-	spec   ProcessSpec
+	events       []byte
+	err          error
+	calls        int
+	spec         ProcessSpec
+	modelsConfig []byte
 }
 
 func (process *piFakeProcess) Run(
@@ -511,6 +571,10 @@ func (process *piFakeProcess) Run(
 ) (ProcessOutput, error) {
 	process.calls++
 	process.spec = cloneProcessSpec(spec)
+	configRoot := spec.Environment["PI_CODING_AGENT_DIR"]
+	process.modelsConfig, _ = os.ReadFile(
+		filepath.Join(configRoot, "models.json"),
+	)
 	if process.err != nil {
 		return ProcessOutput{}, process.err
 	}

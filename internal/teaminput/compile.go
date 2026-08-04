@@ -107,6 +107,7 @@ func Compile(request CompileRequest) (CompiledInput, error) {
 		ModelProvider:      role.ModelProvider,
 		Model:              role.Model,
 		ModelInterface:     modelInterface,
+		MaxOutputTokens:    role.Tokens.OutputMaximum,
 		CredentialSlot:     role.ModelCredentialSlot,
 		IncludePatch:       includePatch,
 	}

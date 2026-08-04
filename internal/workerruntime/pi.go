@@ -20,6 +20,7 @@ const (
 	PiResultExtensionName = "dirextalk_result_v1"
 	piResultToolName      = "dirextalk_submit_result"
 	maxPiEventLineBytes   = 2 << 20
+	defaultPiOutputTokens = 8192
 )
 
 const piSystemPrompt = `Execute one approved Dirextalk Worker role.
@@ -167,6 +168,9 @@ func (executor *PiExecutor) Execute(
 	if err := os.Mkdir(configRoot, 0o700); err != nil {
 		return Result{}, ErrExecution
 	}
+	if writePiModelsConfig(configRoot, task) != nil {
+		return Result{}, ErrExecution
+	}
 	workspace := inputs.WorkspaceDir
 	if workspace == "" {
 		workspace = filepath.Join(jobRoot, "workspace")
@@ -248,6 +252,41 @@ func (executor *PiExecutor) Execute(
 		)
 	}
 	return result, nil
+}
+
+func writePiModelsConfig(configRoot string, task TaskV1) error {
+	maxTokens := task.MaxOutputTokens
+	if maxTokens == 0 {
+		maxTokens = defaultPiOutputTokens
+	}
+	override := map[string]any{"maxTokens": maxTokens}
+	if task.ModelProvider == "deepseek" {
+		override["compat"] = map[string]any{
+			"maxTokensField": "max_tokens",
+		}
+	}
+	config := map[string]any{
+		"providers": map[string]any{
+			task.ModelProvider: map[string]any{
+				"modelOverrides": map[string]any{
+					task.Model: override,
+				},
+			},
+		},
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return ErrExecution
+	}
+	defer clear(encoded)
+	if err := os.WriteFile(
+		filepath.Join(configRoot, "models.json"),
+		encoded,
+		0o600,
+	); err != nil {
+		return ErrExecution
+	}
+	return nil
 }
 
 func piSecretEnvironment(

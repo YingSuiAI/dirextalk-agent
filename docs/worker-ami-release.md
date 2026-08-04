@@ -14,20 +14,52 @@ and verified AWS cleanup for Task
 Pi had run for about 67 seconds. The published evidence contains only
 `action_failed` and `outcome=failed`; it does not contain the failure class.
 
-The first irreversible loss occurs in `internal/workerruntime`: Pi exits zero
+The first irreversible loss in the deployed runtime occurs in
+`internal/workerruntime`: Pi exits zero
 for provider and agent errors and reports them in its JSON event stream, while
-the adapter currently collapses every `stopReason=error`, malformed event
+the deployed adapter collapses every `stopReason=error`, malformed event
 sequence, and missing final tool result into `ErrExecution`. Process stderr and
 exit details are also destroyed before a safe classification is retained.
 Therefore the existing evidence cannot prove that the AMI package, credential,
 provider call, Pi event contract, or required final tool call caused this
 specific failure.
 
-No Central OS feature work, demo2 replacement, Worker AMI publication, active
-Release switch, or paid retry may proceed through this recovery gate. The
-deployed source baseline is immutable commit
+The deployed source baseline remains immutable commit
 `ec95c313d31639aa97d9c70a0e0501295167ae7b`; recovery work uses a separate
 branch and preserves the current AMI as the rollback Release.
+
+On 2026-08-04, a single controlled provider qualification ran directly on
+demo2 without EC2 or service mutation. It verified the official Pi `0.83.0`
+Linux x64 archive and executable plus the exact result extension by SHA-256,
+loaded the existing root-protected DeepSeek token, and selected
+`deepseek-v4-pro` with a configured `maxTokens` of 128. Pi exited zero after
+one provider turn, emitted no provider error, invoked
+`dirextalk_submit_result` exactly once, and terminated the tool successfully
+with status `completed`. Usage was 530 input tokens, 315 output tokens including
+114 reasoning tokens, with zero cache tokens and Pi-recorded cost USD
+0.0005046. All temporary files were independently confirmed absent afterward.
+The structured summary was valid but did not exactly equal the smoke prompt's
+requested sentence; exact wording is not part of the production result schema.
+
+The 315-token output also exposed a separate budget-enforcement defect. Pi's
+model list displayed the configured 128-token maximum, but a post-run loopback
+inspection proved Pi's built-in DeepSeek profile emitted
+`max_completion_tokens`, which this DeepSeek compatibility path did not enforce.
+The deployed Worker additionally created an empty Pi config directory, so its
+signed Team `output_maximum` never reached the model request at all. The
+candidate now carries that signed maximum in the immutable runtime task and
+writes a per-task `0600` `models.json`; DeepSeek explicitly selects
+`maxTokensField=max_tokens`. Legacy tasks without the new optional field are
+bounded to 8192 tokens. A digest-verified real Pi `0.83.0` loopback asserts the
+actual outbound `max_tokens=128` field before accepting the tool result.
+
+This evidence proves the released Linux Pi executable, demo2 credential,
+DeepSeek model path, extension loading, tool declaration, tool execution, and
+structured-result contract can work together. It does not recover the first
+Worker's erased failure or prove the EC2 Worker environment and complete
+App-to-Worker-to-App path. Central OS feature work and active Release promotion
+remain frozen until one candidate Worker with closed failure classification
+passes the correlated success, cleanup, and independent zero-resource gate.
 
 ### Chosen recovery design
 
@@ -73,10 +105,10 @@ Implementation follows this order:
 4. Run focused normal and race tests, all Worker packages, `go vet`, Worker
    command builds, repository secret scans, and `git diff --check`.
 5. Only after those checks pass, prepare a new immutable Worker rootfs and AMI
-   candidate. Preparation is read-only; any AWS build or model request requires
-   a fresh explicit authorization.
-6. Keep the current Release active. A separately approved one-Worker task may
-   select the candidate once. Promotion requires a verified structured result,
+   candidate. The 2026-08-04 direct provider qualification satisfies the
+   model-path prerequisite but does not authorize an active Release switch.
+6. Keep the current Release active. One bounded Worker task may select the
+   candidate once. Promotion requires a verified structured result,
    App correlation, terminal cleanup, and independent zero-resource read-back.
 
 The recovery is not complete when tests merely pass with a fake process or
@@ -86,13 +118,19 @@ success-and-cleanup boundary.
 
 ### Test-driven implementation checklist
 
-The recovery change set is intentionally limited to these files:
+The recovery change set remains within the Worker runtime and immutable input
+compiler:
 
 - `internal/workerruntime/failure.go` owns the closed failure code and stage;
+- `internal/workerruntime/types.go` carries the optional signed output bound
+  while retaining a bounded compatibility path for old tasks;
 - `internal/workerruntime/process.go` classifies process boundary failures;
-- `internal/workerruntime/pi.go` classifies Pi JSON terminal failures;
+- `internal/workerruntime/pi.go` classifies Pi JSON terminal failures and writes
+  the task-local provider/model override;
+- `internal/teaminput/compile.go` copies the approved role output maximum into
+  the immutable runtime task;
 - `internal/workerruntime/process_test.go` and `pi_test.go` prove each class
-  before implementation;
+  plus exact DeepSeek and legacy output bounds;
 - `internal/workerruntime/pi_binary_integration_test.go` runs an explicitly
   supplied, digest-verified Pi binary against a loopback provider;
 - `cmd/dirextalk-cloud-worker/main.go` emits only failure code and stage in the
@@ -116,8 +154,8 @@ The red/green sequence is:
    `go test -race ./internal/workerruntime`.
 4. Add the opt-in real-binary loopback test and run it with the exact local Pi
    `0.83.0` asset and expected SHA-256. The fake provider must receive the
-   expected model and result-tool declaration, then return one tool call that
-   produces a valid `dirextalk.agent.pi-final/v1` artifact.
+   expected model, exact `max_tokens=128`, and result-tool declaration, then return
+   one tool call that produces a valid `dirextalk.agent.pi-final/v1` artifact.
 5. Add the closed serial-log projection and its negative secret/raw-text test.
    Run `go test ./cmd/dirextalk-cloud-worker` before changing the command and
    again after the minimal implementation.

@@ -49,6 +49,7 @@ func TestCompileBuildsDeterministicSecretFreeRuntimeInput(t *testing.T) {
 		first.RuntimeTask.WorkspaceMode != workerruntime.WorkspaceReadOnly ||
 		first.RuntimeTask.IncludePatch ||
 		first.RuntimeTask.ContextDigest != first.Manifest.ContextDigest ||
+		first.RuntimeTask.MaxOutputTokens != role.Tokens.OutputMaximum ||
 		first.CredentialGrant.CredentialSlot != role.ModelCredentialSlot ||
 		first.CredentialGrant.MaximumInputTokens !=
 			role.Tokens.InputMaximum ||

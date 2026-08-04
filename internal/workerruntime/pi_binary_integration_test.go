@@ -58,7 +58,17 @@ func TestPi083RealBinaryLoopbackQualification(t *testing.T) {
 		}
 	}
 	models := map[string]any{"providers": map[string]any{
-		"deepseek": map[string]any{"baseUrl": provider.URL + "/v1"},
+		"deepseek": map[string]any{
+			"baseUrl": provider.URL + "/v1",
+			"modelOverrides": map[string]any{
+				"deepseek-v4-pro": map[string]any{
+					"maxTokens": 128,
+					"compat": map[string]any{
+						"maxTokensField": "max_tokens",
+					},
+				},
+			},
+		},
 	}}
 	modelsJSON, err := json.Marshal(models)
 	if err != nil {
@@ -73,6 +83,7 @@ func TestPi083RealBinaryLoopbackQualification(t *testing.T) {
 	task.ModelProvider = "deepseek"
 	task.Model = "deepseek-v4-pro"
 	task.ModelInterface = ModelOpenAICompatible
+	task.MaxOutputTokens = 128
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binaryPath, piArguments(task, extensionPath)...)
@@ -148,8 +159,9 @@ func newPiLoopbackProvider(t *testing.T) *piLoopbackProvider {
 		}
 		defer clear(body)
 		var payload struct {
-			Model string `json:"model"`
-			Tools []struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+			Tools     []struct {
 				Function struct {
 					Name string `json:"name"`
 				} `json:"function"`
@@ -157,8 +169,14 @@ func newPiLoopbackProvider(t *testing.T) *piLoopbackProvider {
 		}
 		if json.Unmarshal(body, &payload) != nil ||
 			payload.Model != "deepseek-v4-pro" ||
+			payload.MaxTokens != 128 ||
 			!containsPiResultTool(payload.Tools) {
-			t.Errorf("unexpected Pi provider payload model=%q tools=%d", payload.Model, len(payload.Tools))
+			t.Errorf(
+				"unexpected Pi provider payload model=%q max_tokens=%d tools=%d",
+				payload.Model,
+				payload.MaxTokens,
+				len(payload.Tools),
+			)
 			http.Error(writer, "invalid payload", http.StatusBadRequest)
 			return
 		}

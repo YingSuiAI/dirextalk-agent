@@ -24,6 +24,7 @@ const (
 	MaxFinalArtifactBytes = 512 << 10
 	MaxArtifactsPerResult = 4
 	MaxResultBytes        = 8 << 20
+	MaxTaskOutputTokens   = 100_000_000
 )
 
 var (
@@ -91,6 +92,7 @@ type TaskV1 struct {
 	ModelProvider      string         `json:"model_provider"`
 	Model              string         `json:"model"`
 	ModelInterface     ModelInterface `json:"model_interface"`
+	MaxOutputTokens    uint64         `json:"max_output_tokens,omitempty"`
 	CredentialSlot     string         `json:"credential_slot"`
 	IncludePatch       bool           `json:"include_patch"`
 }
@@ -110,6 +112,7 @@ func (task TaskV1) Validate() error {
 		!validCatalogName(task.ModelProvider) ||
 		!validCatalogName(task.Model) ||
 		!validModelInterface(task.ModelInterface) ||
+		task.MaxOutputTokens > MaxTaskOutputTokens ||
 		!credentialSlot.MatchString(task.CredentialSlot) ||
 		security.ContainsLikelySecret(task.CredentialSlot) {
 		return ErrInvalid
