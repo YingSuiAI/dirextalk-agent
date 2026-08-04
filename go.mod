@@ -2,6 +2,8 @@ module github.com/YingSuiAI/dirextalk-agent
 
 go 1.26.0
 
+replace github.com/YingSuiAI/dirextalk-capability-api => /home/adam/dirextalk/dirextalk-capability-api
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.29
@@ -21,15 +23,16 @@ require (
 )
 
 require (
+	github.com/YingSuiAI/dirextalk-capability-api v0.0.0-00010101000000-000000000000
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.31 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.31 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.31 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.317.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ecs v1.89.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.58.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.317.0
+	github.com/aws/aws-sdk-go-v2/service/ecs v1.89.0
+	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.58.1
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.31 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.73.0
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
