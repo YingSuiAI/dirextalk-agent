@@ -201,7 +201,7 @@ func (p *ModelProvider) CallOpenAI(ctx context.Context, profile *ModelProfile, m
 	}
 
 	return &schema.Message{
-		Role:    schema.RoleAssistant,
+		Role:    "assistant",
 		Content: result.Choices[0].Message.Content,
 	}, nil
 }

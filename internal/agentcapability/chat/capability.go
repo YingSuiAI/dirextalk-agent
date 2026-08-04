@@ -36,7 +36,7 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				DisplayName:   "Create Conversation",
 				Description:   "Create a new conversation",
 				OperationType: capv1.OperationType_OPERATION_TYPE_MUTATION,
-				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
+				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
 				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes: []string{"agent:chat:write"},
 				InputSchemaJson: `{
@@ -52,8 +52,8 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				DisplayName:   "Send Message",
 				Description:   "Send a message and get streaming response",
 				OperationType: capv1.OperationType_OPERATION_TYPE_MUTATION,
-				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
-				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_ELEVATED,
+				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
+				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes: []string{"agent:chat:write"},
 				InputSchemaJson: `{
 					"type": "object",
@@ -70,7 +70,7 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				DisplayName:   "List Conversations",
 				Description:   "List all conversations",
 				OperationType: capv1.OperationType_OPERATION_TYPE_READ,
-				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
+				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
 				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes: []string{"agent:chat:read"},
 				InputSchemaJson: `{
