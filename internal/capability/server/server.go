@@ -59,12 +59,24 @@ type Server struct {
 
 	mu       sync.RWMutex
 	ready    bool
-	registry interface{}       // TODO: 实际的 registry 接口
-	opMgr    *operation.Manager // Operation manager
+	registry CapabilityRegistry
+	opMgr    *operation.Manager
+}
+
+// CapabilityRegistry 定义 capability 注册表接口
+type CapabilityRegistry interface {
+	Get(capabilityID string) (Capability, bool)
+	List() []*capv1.CapabilityDescriptor
+}
+
+// Capability 定义单个 capability 接口
+type Capability interface {
+	Descriptor() *capv1.CapabilityDescriptor
+	HandleOperation(ctx context.Context, operationID string, inputJSON []byte) ([]byte, error)
 }
 
 // New 创建新的 AgentCapabilityService 服务器
-func New(config *Config) (*Server, error) {
+func New(config *Config, registry CapabilityRegistry, opMgr *operation.Manager) (*Server, error) {
 	if config.MaxConcurrentQuery <= 0 {
 		config.MaxConcurrentQuery = 32
 	}
