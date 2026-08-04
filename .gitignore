@@ -24,3 +24,21 @@ coverage/
 .tmp/
 secrets/
 state/
+
+# Deployment artifacts
+*.pid
+database_url.txt
+dirextalk-agent-local
+agent.log
+config.yaml
+
+# Test scripts
+*_test.sh
+TEST_*.sh
+
+# Documentation temporary files
+*_STATUS.md
+*_COMPLETE.md
+*_SUCCESS.md
+ALTERNATIVE_*.md
+WORK_SUMMARY.md
