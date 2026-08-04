@@ -468,6 +468,20 @@ func TestProposalFailureFeedbackSeparatesMarketplaceAndCapacity(
 			safe,
 		)
 	}
+	reason, guidance, retryable, safe = proposalFailureFeedback(
+		teamplan.ErrRuntimeBudget,
+	)
+	if !safe || !retryable || reason != "runtime_output_budget_too_small" ||
+		!strings.Contains(guidance, "512") ||
+		!strings.Contains(guidance, "output_maximum") {
+		t.Fatalf(
+			"runtime budget feedback reason=%q guidance=%q retryable=%t safe=%t",
+			reason,
+			guidance,
+			retryable,
+			safe,
+		)
+	}
 }
 
 func TestSkillRejectsUntrustedScopeAndMismatchedGoal(t *testing.T) {

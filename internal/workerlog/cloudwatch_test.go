@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
@@ -39,6 +40,38 @@ func TestCloudWatchSinkCreatesExactStreamAndWritesTypedMilestone(t *testing.T) {
 	}
 	if !strings.Contains(client.message, `"kind":"action_succeeded"`) || !strings.Contains(client.message, `"occurred_at":"2026-07-17T04:00:00Z"`) {
 		t.Fatalf("unexpected event payload: %s", client.message)
+	}
+}
+
+func TestCloudWatchSinkWritesOnlyClosedRuntimeFailure(t *testing.T) {
+	client := &logsFake{}
+	sink, err := NewCloudWatchSink(
+		client,
+		"dtx-agent-a-foundation",
+		"AROAABCDEFGHIJKLMNOP/i-0123456789abcdef0",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := EventV1{
+		EventID: uuid.NewString(), DeploymentID: uuid.NewString(),
+		WorkerID: uuid.NewString(), Attempt: 1, LeaseEpoch: 1,
+		Kind: KindActionFailed, ActionID: "execute-role", Outcome: OutcomeFailed,
+		FailureStage: workerruntime.FailureStagePi,
+		FailureCode:  workerruntime.FailureCodePiFinalMissing,
+		OccurredAt:   time.Now().UTC(),
+	}
+	if err := sink.Emit(t.Context(), event); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(client.message, `"failure_stage":"pi"`) ||
+		!strings.Contains(client.message, `"failure_code":"pi_final_missing"`) {
+		t.Fatalf("closed runtime failure missing from event: %s", client.message)
+	}
+	event.Kind = KindActionSucceeded
+	event.Outcome = ""
+	if err := sink.Emit(t.Context(), event); err == nil {
+		t.Fatal("runtime failure fields were accepted on a successful action")
 	}
 }
 

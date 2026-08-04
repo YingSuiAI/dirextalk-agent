@@ -61,6 +61,9 @@ func (failure Failure) valid() bool {
 	return false
 }
 
+// Valid reports whether the stage and code form one closed runtime failure.
+func (failure Failure) Valid() bool { return failure.valid() }
+
 type failureError struct{ failure Failure }
 
 func (err *failureError) Error() string {

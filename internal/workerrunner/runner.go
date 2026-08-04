@@ -297,7 +297,12 @@ func (runner Runner) execute(ctx context.Context, assignment *agentv1.WorkerAssi
 		cancel()
 		if actionErr != nil {
 			destroyActionResult(&actionResult)
-			_ = runner.emitLog(context.WithoutCancel(ctx), assignment, LogActionFailed, action.ID, LogOutcomeFailed)
+			_ = runner.emitActionFailureLog(
+				context.WithoutCancel(ctx),
+				assignment,
+				action.ID,
+				actionErr,
+			)
 			return completed, nil, fmt.Errorf("typed action %s failed: %w", action.ID, actionErr)
 		}
 		if !validActionResultStatus(action, actionResult.Status) {
@@ -624,6 +629,41 @@ func destroyActionResult(result *ActionResult) {
 }
 
 func (runner Runner) emitLog(ctx context.Context, assignment *agentv1.WorkerAssignment, kind LogKind, actionID string, outcome LogOutcome) error {
+	return runner.emitLogWithFailure(
+		ctx,
+		assignment,
+		kind,
+		actionID,
+		outcome,
+		workerruntime.Failure{},
+	)
+}
+
+func (runner Runner) emitActionFailureLog(
+	ctx context.Context,
+	assignment *agentv1.WorkerAssignment,
+	actionID string,
+	actionErr error,
+) error {
+	failure, _ := workerruntime.FailureOf(actionErr)
+	return runner.emitLogWithFailure(
+		ctx,
+		assignment,
+		LogActionFailed,
+		actionID,
+		LogOutcomeFailed,
+		failure,
+	)
+}
+
+func (runner Runner) emitLogWithFailure(
+	ctx context.Context,
+	assignment *agentv1.WorkerAssignment,
+	kind LogKind,
+	actionID string,
+	outcome LogOutcome,
+	failure workerruntime.Failure,
+) error {
 	if runner.Logs == nil {
 		return nil
 	}
@@ -640,6 +680,8 @@ func (runner Runner) emitLog(ctx context.Context, assignment *agentv1.WorkerAssi
 		Kind:          kind,
 		ActionID:      actionID,
 		Outcome:       outcome,
+		FailureStage:  failure.Stage,
+		FailureCode:   failure.Code,
 		OccurredAt:    time.Now().UTC(),
 	}
 	_, err := retryCall(ctx, runner.retryDelay(), func() (struct{}, error) {

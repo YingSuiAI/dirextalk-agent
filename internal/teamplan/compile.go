@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 )
 
 type assignmentCandidate struct {
@@ -109,6 +111,7 @@ func selectAssignment(
 	}
 	hadRuntime := false
 	hadModel := false
+	hadRuntimeBudget := false
 	var best assignmentCandidate
 	found := false
 	for _, release := range request.RuntimeReleases {
@@ -125,14 +128,19 @@ func selectAssignment(
 			continue
 		}
 		hadRuntime = true
-		model, modelFound, err := selectModel(release, role, request.ModelOffers)
+		model, modelFound, modelBeforeBudget, err := selectModel(
+			release,
+			role,
+			request.ModelOffers,
+		)
 		if err != nil {
 			return assignmentCandidate{}, err
 		}
+		hadModel = hadModel || modelBeforeBudget
 		if !modelFound {
 			continue
 		}
-		hadModel = true
+		hadRuntimeBudget = true
 		compute, computeFound := selectCompute(
 			release,
 			role,
@@ -205,6 +213,8 @@ func selectAssignment(
 		return assignmentCandidate{}, ErrNoRuntime
 	case !hadModel:
 		return assignmentCandidate{}, ErrNoModel
+	case !hadRuntimeBudget:
+		return assignmentCandidate{}, ErrRuntimeBudget
 	default:
 		return assignmentCandidate{}, ErrNoCompute
 	}
@@ -214,16 +224,23 @@ func selectModel(
 	release RuntimeRelease,
 	role RoleProposal,
 	offers []ModelOffer,
-) (ModelOffer, bool, error) {
+) (ModelOffer, bool, bool, error) {
 	var best ModelOffer
 	var bestExpected uint64
 	found := false
+	qualifiedBeforeBudget := false
 	for _, offer := range offers {
 		if !offer.Enabled || !offer.CredentialReady ||
 			qualityRank(offer.Quality) < qualityRank(role.ModelNeed.MinimumQuality) ||
 			offer.ContextTokens < role.ModelNeed.MinimumContextTokens ||
 			(role.ModelNeed.Vision && !offer.Vision) ||
 			!slices.Contains(release.ModelInterfaces, offer.Interface) {
+			continue
+		}
+		qualifiedBeforeBudget = true
+		if release.Adapter == AdapterPiV1 &&
+			strings.EqualFold(offer.Provider, "deepseek") &&
+			role.Tokens.OutputMaximum < runtimebounds.PiDeepSeekMinimumOutputTokens {
 			continue
 		}
 		expected, err := estimateModelCost(
@@ -233,7 +250,7 @@ func selectModel(
 			offer.OutputMicrosPerMillion,
 		)
 		if err != nil {
-			return ModelOffer{}, false, err
+			return ModelOffer{}, false, qualifiedBeforeBudget, err
 		}
 		if !found || expected < bestExpected ||
 			(expected == bestExpected &&
@@ -245,7 +262,7 @@ func selectModel(
 			found = true
 		}
 	}
-	return best, found, nil
+	return best, found, qualifiedBeforeBudget, nil
 }
 
 func selectCompute(

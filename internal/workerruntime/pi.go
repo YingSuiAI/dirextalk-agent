@@ -212,7 +212,7 @@ func (executor *PiExecutor) Execute(
 		},
 	)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: run Pi", ErrExecution)
+		return Result{}, fmt.Errorf("run Pi: %w", err)
 	}
 	defer clear(processOutput.Stdout)
 	usage, finalJSON, err := parsePiEvents(processOutput.Stdout)

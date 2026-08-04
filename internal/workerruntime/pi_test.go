@@ -97,6 +97,31 @@ func TestPiExecutorUsesQualifiedReleaseAndStructuredResult(t *testing.T) {
 	}
 }
 
+func TestPiExecutorPreservesClosedProcessFailure(t *testing.T) {
+	t.Parallel()
+	task := validPiTask()
+	task.IncludePatch = false
+	processFailure := newFailure(
+		FailureStageProcess,
+		FailureCodeProcessExitNonZero,
+	)
+	executor := newTestPiExecutor(
+		t,
+		task,
+		"",
+		[]byte("scoped-test-credential-1234567890"),
+		&piFakeProcess{err: processFailure},
+		nil,
+	)
+
+	_, err := executor.Execute(t.Context(), task)
+	failure, ok := FailureOf(err)
+	if !ok || failure.Stage != FailureStageProcess ||
+		failure.Code != FailureCodeProcessExitNonZero {
+		t.Fatalf("Pi process failure = (%+v, %t), error=%v", failure, ok, err)
+	}
+}
+
 func TestPiExecutorUsesDeepSeekCredentialChannel(t *testing.T) {
 	t.Parallel()
 	task := validPiTask()
@@ -104,7 +129,7 @@ func TestPiExecutorUsesDeepSeekCredentialChannel(t *testing.T) {
 	task.ModelProvider = "deepseek"
 	task.Model = "deepseek-v4-pro"
 	task.ModelInterface = ModelOpenAICompatible
-	task.MaxOutputTokens = 128
+	task.MaxOutputTokens = 512
 	task.IncludePatch = false
 	credential := []byte("scoped-deepseek-credential-1234567890")
 	process := &piFakeProcess{events: validPiEventStream()}

@@ -62,7 +62,7 @@ func TestPi083RealBinaryLoopbackQualification(t *testing.T) {
 			"baseUrl": provider.URL + "/v1",
 			"modelOverrides": map[string]any{
 				"deepseek-v4-pro": map[string]any{
-					"maxTokens": 128,
+					"maxTokens": 512,
 					"compat": map[string]any{
 						"maxTokensField": "max_tokens",
 					},
@@ -83,7 +83,7 @@ func TestPi083RealBinaryLoopbackQualification(t *testing.T) {
 	task.ModelProvider = "deepseek"
 	task.Model = "deepseek-v4-pro"
 	task.ModelInterface = ModelOpenAICompatible
-	task.MaxOutputTokens = 128
+	task.MaxOutputTokens = 512
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binaryPath, piArguments(task, extensionPath)...)

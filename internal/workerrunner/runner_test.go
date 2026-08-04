@@ -14,6 +14,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -297,6 +298,70 @@ func TestRunnerRelaysTypedMilestonesThroughWorkerSession(t *testing.T) {
 	if control.milestones[1].GetActionId() != "smoke" || control.milestones[2].GetActionId() != "smoke" ||
 		control.milestones[3].GetOutcome() != agentv1.WorkerOutcome_WORKER_OUTCOME_SUCCEEDED {
 		t.Fatalf("milestone action/outcome binding = %#v", control.milestones)
+	}
+}
+
+func TestGRPCMilestoneSinkRelaysClosedRuntimeFailure(t *testing.T) {
+	_, _, control, _ := runnerFixture(t, validNoopBundle(t, 0))
+	sink, err := NewGRPCMilestoneSink(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.BindSession([]byte("dtxw-session.0123456789abcdef0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	assignment := control.assignment
+	err = sink.Emit(t.Context(), LogEventV1{
+		SchemaVersion: WorkerLogSchemaV1, EventID: uuid.NewString(),
+		DeploymentID: assignment.GetDeploymentId(), WorkerID: assignment.GetWorkerId(),
+		Attempt: 1, LeaseEpoch: 9, Kind: LogActionFailed,
+		ActionID: "execute-role", Outcome: LogOutcomeFailed,
+		FailureStage: workerruntime.FailureStagePi,
+		FailureCode:  workerruntime.FailureCodePiFinalMissing,
+		OccurredAt:   time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	if len(control.milestones) != 1 ||
+		control.milestones[0].GetFailureStage() != agentv1.WorkerRuntimeFailureStage_WORKER_RUNTIME_FAILURE_STAGE_PI ||
+		control.milestones[0].GetFailureCode() != agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PI_FINAL_MISSING {
+		t.Fatalf("runtime failure milestone = %#v", control.milestones)
+	}
+}
+
+func TestRunnerRelaysClassifiedRuntimeActionFailure(t *testing.T) {
+	_, processErr := (workerruntime.OSProcessRunner{}).Run(
+		t.Context(),
+		workerruntime.ProcessSpec{
+			Executable: "/bin/sh", Arguments: []string{"-c", "exit 7"},
+			Directory: t.TempDir(), Environment: map[string]string{"PATH": "/usr/bin:/bin"},
+			MaxStdoutBytes: 1024, MaxStderrBytes: 1024,
+		},
+	)
+	if processErr == nil {
+		t.Fatal("process failure fixture unexpectedly succeeded")
+	}
+	sink := &logSinkFake{}
+	runner := Runner{Logs: sink, RetryDelay: time.Millisecond}
+	assignment := &agentv1.WorkerAssignment{
+		DeploymentId: uuid.NewString(), WorkerId: uuid.NewString(),
+		Attempt: 1, LeaseEpoch: 1,
+	}
+	if err := runner.emitActionFailureLog(
+		t.Context(),
+		assignment,
+		"execute-role",
+		processErr,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.events) != 1 ||
+		sink.events[0].FailureStage != workerruntime.FailureStageProcess ||
+		sink.events[0].FailureCode != workerruntime.FailureCodeProcessExitNonZero {
+		t.Fatalf("classified action failure = %#v", sink.events)
 	}
 }
 

@@ -2401,6 +2401,30 @@ enum WorkerMilestoneKind {
   WORKER_MILESTONE_KIND_EXECUTION_FINISHED = 5;
 }
 
+enum WorkerRuntimeFailureStage {
+  WORKER_RUNTIME_FAILURE_STAGE_UNSPECIFIED = 0;
+  WORKER_RUNTIME_FAILURE_STAGE_PROCESS = 1;
+  WORKER_RUNTIME_FAILURE_STAGE_PI = 2;
+}
+
+enum WorkerRuntimeFailureCode {
+  WORKER_RUNTIME_FAILURE_CODE_UNSPECIFIED = 0;
+  WORKER_RUNTIME_FAILURE_CODE_PROCESS_START = 1;
+  WORKER_RUNTIME_FAILURE_CODE_PROCESS_TIMEOUT = 2;
+  WORKER_RUNTIME_FAILURE_CODE_PROCESS_OUTPUT_LIMIT = 3;
+  WORKER_RUNTIME_FAILURE_CODE_PROCESS_EXIT_NONZERO = 4;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_AUTHENTICATION = 5;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_QUOTA = 6;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_RATE_LIMIT = 7;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_REQUEST = 8;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_SERVER = 9;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_NETWORK = 10;
+  WORKER_RUNTIME_FAILURE_CODE_PROVIDER_UNKNOWN = 11;
+  WORKER_RUNTIME_FAILURE_CODE_PI_ABORTED = 12;
+  WORKER_RUNTIME_FAILURE_CODE_PI_EVENT_INVALID = 13;
+  WORKER_RUNTIME_FAILURE_CODE_PI_FINAL_MISSING = 14;
+}
+
 // EmitMilestone is at-least-once untrusted telemetry. event_id stays stable
 // across a Worker retry, so duplicate CloudWatch entries are identifiable;
 // no deployment state is advanced by this call.
@@ -2412,6 +2436,8 @@ message WorkerControlServiceEmitMilestoneRequest {
   WorkerMilestoneKind kind = 5;
   string action_id = 6;
   WorkerOutcome outcome = 7;
+  WorkerRuntimeFailureStage failure_stage = 8;
+  WorkerRuntimeFailureCode failure_code = 9;
 }
 message WorkerControlServiceEmitMilestoneResponse {}
 

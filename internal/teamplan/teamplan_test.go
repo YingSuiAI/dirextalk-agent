@@ -102,6 +102,39 @@ func TestCompileRejectsConcurrentExclusiveWriters(t *testing.T) {
 	}
 }
 
+func TestCompileRequiresQualifiedPiDeepSeekOutputBudget(t *testing.T) {
+	t.Parallel()
+	request := validCompileRequest()
+	request.Proposal.Roles = []RoleProposal{request.Proposal.Roles[0]}
+	request.Proposal.Roles[0].PreferredFamilies = []RuntimeFamily{RuntimePi}
+	request.Proposal.Roles[0].Tokens = TokenEstimate{
+		InputMinimum: 100, InputExpected: 200, InputMaximum: 400,
+		OutputMinimum: 128, OutputExpected: 256, OutputMaximum: 511,
+	}
+	request.Policy.AllowedRuntimeFamilies = []RuntimeFamily{RuntimePi}
+	for index := range request.RuntimeReleases {
+		if request.RuntimeReleases[index].Adapter == AdapterPiV1 {
+			request.RuntimeReleases[index].ModelInterfaces = []ModelInterface{ModelOpenAICompatible}
+		}
+	}
+	request.ModelOffers = []ModelOffer{{
+		ProfileID: "deepseek-v4-pro", Provider: "deepseek", Model: "deepseek-v4-pro",
+		Interface: ModelOpenAICompatible, Quality: QualityBalanced,
+		ContextTokens: 128_000, InputMicrosPerMillion: 280_000,
+		OutputMicrosPerMillion: 420_000,
+		CredentialRef:          "secret_ref:model-deepseek-v4-pro",
+		Enabled:                true, CredentialReady: true,
+	}}
+
+	if _, err := Compile(request); !errors.Is(err, ErrRuntimeBudget) {
+		t.Fatalf("Compile() error = %v, want ErrRuntimeBudget", err)
+	}
+	request.Proposal.Roles[0].Tokens.OutputMaximum = 512
+	if _, err := Compile(request); err != nil {
+		t.Fatalf("Compile() rejected qualified Pi+DeepSeek output budget: %v", err)
+	}
+}
+
 func TestCompileAllowsExplicitlySerializedExclusiveWriters(t *testing.T) {
 	t.Parallel()
 	request := validCompileRequest()

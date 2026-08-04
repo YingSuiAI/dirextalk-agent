@@ -3,6 +3,8 @@ package workerrunner
 import (
 	"context"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 )
 
 const WorkerLogSchemaV1 = "dirextalk.agent.worker-log-event/v1"
@@ -30,16 +32,18 @@ const (
 // LogEventV1 deliberately contains only control-plane identifiers and fixed
 // enums. It has no free-form message, command, path, URL, output, or error.
 type LogEventV1 struct {
-	SchemaVersion string     `json:"schema_version"`
-	EventID       string     `json:"event_id"`
-	DeploymentID  string     `json:"deployment_id"`
-	WorkerID      string     `json:"worker_id"`
-	Attempt       int32      `json:"attempt"`
-	LeaseEpoch    int64      `json:"lease_epoch"`
-	Kind          LogKind    `json:"kind"`
-	ActionID      string     `json:"action_id,omitempty"`
-	Outcome       LogOutcome `json:"outcome,omitempty"`
-	OccurredAt    time.Time  `json:"occurred_at"`
+	SchemaVersion string                     `json:"schema_version"`
+	EventID       string                     `json:"event_id"`
+	DeploymentID  string                     `json:"deployment_id"`
+	WorkerID      string                     `json:"worker_id"`
+	Attempt       int32                      `json:"attempt"`
+	LeaseEpoch    int64                      `json:"lease_epoch"`
+	Kind          LogKind                    `json:"kind"`
+	ActionID      string                     `json:"action_id,omitempty"`
+	Outcome       LogOutcome                 `json:"outcome,omitempty"`
+	FailureStage  workerruntime.FailureStage `json:"failure_stage,omitempty"`
+	FailureCode   workerruntime.FailureCode  `json:"failure_code,omitempty"`
+	OccurredAt    time.Time                  `json:"occurred_at"`
 }
 
 type LogSink interface {

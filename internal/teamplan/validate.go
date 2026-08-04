@@ -24,6 +24,7 @@ var (
 	)
 	ErrNoRuntime          = errors.New("no qualified runtime can satisfy role")
 	ErrNoModel            = errors.New("no configured model can satisfy role")
+	ErrRuntimeBudget      = errors.New("runtime output budget is below the qualified minimum")
 	ErrNoCompute          = errors.New("no compute offer can satisfy role")
 	ErrBudgetExceeded     = errors.New("team plan exceeds cost policy")
 	ErrArithmeticOverflow = errors.New("team plan estimate overflow")

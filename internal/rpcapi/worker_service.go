@@ -17,6 +17,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -558,12 +559,52 @@ func workerMilestoneEventFromProto(request *agentv1.WorkerControlServiceEmitMile
 	if !ok {
 		return workerlog.EventV1{}, errors.New("invalid Worker milestone outcome")
 	}
+	failure, ok := workerRuntimeFailureFromProto(
+		request.GetFailureStage(),
+		request.GetFailureCode(),
+	)
+	if !ok {
+		return workerlog.EventV1{}, errors.New("invalid Worker runtime failure")
+	}
 	return workerlog.ValidateEvent(workerlog.EventV1{
 		SchemaVersion: workerlog.SchemaV1, EventID: request.GetEventId(),
 		DeploymentID: target.DeploymentID, WorkerID: target.WorkerID,
 		Attempt: target.Attempt, LeaseEpoch: target.LeaseEpoch,
-		Kind: kind, ActionID: request.GetActionId(), Outcome: outcome, OccurredAt: occurredAt.UTC(),
+		Kind: kind, ActionID: request.GetActionId(), Outcome: outcome,
+		FailureStage: failure.Stage, FailureCode: failure.Code, OccurredAt: occurredAt.UTC(),
 	})
+}
+
+func workerRuntimeFailureFromProto(
+	stage agentv1.WorkerRuntimeFailureStage,
+	code agentv1.WorkerRuntimeFailureCode,
+) (workerruntime.Failure, bool) {
+	if stage == agentv1.WorkerRuntimeFailureStage_WORKER_RUNTIME_FAILURE_STAGE_UNSPECIFIED &&
+		code == agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_UNSPECIFIED {
+		return workerruntime.Failure{}, true
+	}
+	stages := map[agentv1.WorkerRuntimeFailureStage]workerruntime.FailureStage{
+		agentv1.WorkerRuntimeFailureStage_WORKER_RUNTIME_FAILURE_STAGE_PROCESS: workerruntime.FailureStageProcess,
+		agentv1.WorkerRuntimeFailureStage_WORKER_RUNTIME_FAILURE_STAGE_PI:      workerruntime.FailureStagePi,
+	}
+	codes := map[agentv1.WorkerRuntimeFailureCode]workerruntime.FailureCode{
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROCESS_START:           workerruntime.FailureCodeProcessStart,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROCESS_TIMEOUT:         workerruntime.FailureCodeProcessTimeout,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROCESS_OUTPUT_LIMIT:    workerruntime.FailureCodeProcessOutputLimit,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROCESS_EXIT_NONZERO:    workerruntime.FailureCodeProcessExitNonZero,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_AUTHENTICATION: workerruntime.FailureCodeProviderAuthentication,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_QUOTA:          workerruntime.FailureCodeProviderQuota,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_RATE_LIMIT:     workerruntime.FailureCodeProviderRateLimit,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_REQUEST:        workerruntime.FailureCodeProviderRequest,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_SERVER:         workerruntime.FailureCodeProviderServer,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_NETWORK:        workerruntime.FailureCodeProviderNetwork,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PROVIDER_UNKNOWN:        workerruntime.FailureCodeProviderUnknown,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PI_ABORTED:              workerruntime.FailureCodePiAborted,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PI_EVENT_INVALID:        workerruntime.FailureCodePiEventInvalid,
+		agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PI_FINAL_MISSING:        workerruntime.FailureCodePiFinalMissing,
+	}
+	failure := workerruntime.Failure{Stage: stages[stage], Code: codes[code]}
+	return failure, failure.Valid()
 }
 
 func workerMilestoneKindFromProto(value agentv1.WorkerMilestoneKind) (workerlog.Kind, bool) {

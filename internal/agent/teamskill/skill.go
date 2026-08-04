@@ -322,6 +322,8 @@ func proposalFailureFeedback(err error) (string, string, bool, bool) {
 		return "no_qualified_runtime", "No currently approved runtime matches the indispensable capabilities. This is a runtime eligibility mismatch, not compute capacity. Remove optional capabilities once without changing the user goal.", true, true
 	case errors.Is(err, teamplan.ErrNoModel):
 		return "no_qualified_model", "Reduce optional model quality or context requirements without changing the user goal.", true, true
+	case errors.Is(err, teamplan.ErrRuntimeBudget):
+		return "runtime_output_budget_too_small", "Pi with DeepSeek requires output_maximum of at least 512 tokens. Raise output_maximum while preserving minimum <= expected <= maximum and the user goal.", true, true
 	case errors.Is(err, teamplan.ErrNoCompute):
 		return "no_qualified_compute", "No trusted compute offer matches the requested shape. Reduce optional compute requirements within the trusted limits without changing the user goal.", true, true
 	case errors.Is(err, teamplan.ErrBudgetExceeded):

@@ -74,6 +74,31 @@ func TestTaskV1WorkspacePolicyIsClosed(t *testing.T) {
 	}
 }
 
+func TestTaskV1RequiresQualifiedPiDeepSeekOutputBudget(t *testing.T) {
+	t.Parallel()
+	task := validTask()
+	task.Adapter = AdapterPiV1
+	task.RuntimeVersion = "0.83.0"
+	task.ModelProfileID = "deepseek-v4-pro"
+	task.ModelProvider = "deepseek"
+	task.Model = "deepseek-v4-pro"
+	task.ModelInterface = ModelOpenAICompatible
+	task.IncludePatch = false
+
+	task.MaxOutputTokens = 511
+	if !errors.Is(task.Validate(), ErrInvalid) {
+		t.Fatal("Pi+DeepSeek task below the qualified output budget was accepted")
+	}
+	task.MaxOutputTokens = 512
+	if err := task.Validate(); err != nil {
+		t.Fatalf("Pi+DeepSeek task at the qualified output budget was rejected: %v", err)
+	}
+	task.MaxOutputTokens = 0
+	if err := task.Validate(); err != nil {
+		t.Fatalf("legacy Pi+DeepSeek task without an explicit budget was rejected: %v", err)
+	}
+}
+
 func TestResultRejectsSecretsDuplicatesAndOversize(t *testing.T) {
 	t.Parallel()
 	valid := Result{

@@ -481,14 +481,16 @@ func TestWorkerMilestoneRelayContractIsClosedAndAtLeastOnce(t *testing.T) {
 		"kind":          {5, protoreflect.EnumKind},
 		"action_id":     {6, protoreflect.StringKind},
 		"outcome":       {7, protoreflect.EnumKind},
+		"failure_stage": {8, protoreflect.EnumKind},
+		"failure_code":  {9, protoreflect.EnumKind},
 	} {
 		field := descriptor.Fields().ByName(name)
 		if field == nil || field.Number() != number.number || field.Kind() != number.kind {
 			t.Fatalf("Worker milestone field %s = %v, want number=%d kind=%s", name, field, number.number, number.kind)
 		}
 	}
-	if descriptor.Fields().Len() != 7 {
-		t.Fatalf("Worker milestone relay accepts %d fields, want only 7 closed fields", descriptor.Fields().Len())
+	if descriptor.Fields().Len() != 9 {
+		t.Fatalf("Worker milestone relay accepts %d fields, want only 9 closed fields", descriptor.Fields().Len())
 	}
 	if outcome := descriptor.Fields().ByName("outcome"); outcome == nil || outcome.Enum().Name() != "WorkerOutcome" {
 		t.Fatalf("Worker milestone outcome must reuse the canonical WorkerOutcome enum: %v", outcome)

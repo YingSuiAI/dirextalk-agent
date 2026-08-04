@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerlog"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -231,7 +232,9 @@ func TestWorkerControlRelaysOnlyAuthorizedTypedMilestones(t *testing.T) {
 	request := &agentv1.WorkerControlServiceEmitMilestoneRequest{
 		DeploymentId: deploymentID, WorkerId: workerID, LeaseEpoch: 9, EventId: uuid.NewString(),
 		Kind: agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_ACTION_FAILED, ActionId: "install.openclaw",
-		Outcome: agentv1.WorkerOutcome_WORKER_OUTCOME_FAILED,
+		Outcome:      agentv1.WorkerOutcome_WORKER_OUTCOME_FAILED,
+		FailureStage: agentv1.WorkerRuntimeFailureStage_WORKER_RUNTIME_FAILURE_STAGE_PI,
+		FailureCode:  agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_PI_FINAL_MISSING,
 	}
 	if _, err := service.EmitMilestone(workerAuthorizationContext("DTX-Worker-Session "+sessionToken), request); err != nil {
 		t.Fatal(err)
@@ -241,6 +244,10 @@ func TestWorkerControlRelaysOnlyAuthorizedTypedMilestones(t *testing.T) {
 		writer.event.LeaseEpoch != target.LeaseEpoch || writer.event.Kind != workerlog.KindActionFailed || writer.event.ActionID != "install.openclaw" ||
 		writer.event.Outcome != workerlog.OutcomeFailed || writer.event.OccurredAt.IsZero() {
 		t.Fatalf("milestone relay = target=%+v event=%+v", writer.target, writer.event)
+	}
+	if writer.event.FailureStage != workerruntime.FailureStagePi ||
+		writer.event.FailureCode != workerruntime.FailureCodePiFinalMissing {
+		t.Fatalf("runtime failure relay = %+v", writer.event)
 	}
 
 	request.Kind = agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_UNSPECIFIED
@@ -252,6 +259,8 @@ func TestWorkerControlRelaysOnlyAuthorizedTypedMilestones(t *testing.T) {
 	}
 	request.Kind = agentv1.WorkerMilestoneKind_WORKER_MILESTONE_KIND_EXECUTION_STARTED
 	request.ActionId, request.Outcome = "", agentv1.WorkerOutcome_WORKER_OUTCOME_UNSPECIFIED
+	request.FailureStage = agentv1.WorkerRuntimeFailureStage_WORKER_RUNTIME_FAILURE_STAGE_UNSPECIFIED
+	request.FailureCode = agentv1.WorkerRuntimeFailureCode_WORKER_RUNTIME_FAILURE_CODE_UNSPECIFIED
 	if _, err := service.EmitMilestone(workerAuthorizationContext("DTX-Worker-Session "+sessionToken), request); status.Code(err) != codes.Aborted || writer.calls != 1 {
 		t.Fatalf("stale milestone = (%s, writer calls %d), want (Aborted, 1): %v", status.Code(err), writer.calls, err)
 	}

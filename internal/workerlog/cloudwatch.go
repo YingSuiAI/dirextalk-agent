@@ -14,6 +14,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	cloudwatchtypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 	"github.com/aws/smithy-go"
@@ -158,19 +159,20 @@ func normalizeEvent(event EventV1) (EventV1, error) {
 	}
 	switch event.Kind {
 	case KindExecutionStarted:
-		if event.ActionID != "" || event.Outcome != "" {
+		if event.ActionID != "" || event.Outcome != "" || hasRuntimeFailure(event) {
 			return EventV1{}, errors.New("invalid execution-started log event")
 		}
 	case KindActionStarted, KindActionSucceeded:
-		if !actionIDPattern.MatchString(event.ActionID) || event.Outcome != "" {
+		if !actionIDPattern.MatchString(event.ActionID) || event.Outcome != "" || hasRuntimeFailure(event) {
 			return EventV1{}, errors.New("invalid action log event")
 		}
 	case KindActionFailed:
-		if !actionIDPattern.MatchString(event.ActionID) || event.Outcome != OutcomeFailed {
+		if !actionIDPattern.MatchString(event.ActionID) || event.Outcome != OutcomeFailed ||
+			(hasRuntimeFailure(event) && !runtimeFailure(event).Valid()) {
 			return EventV1{}, errors.New("invalid failed-action log event")
 		}
 	case KindExecutionFinished:
-		if event.ActionID != "" || !validOutcome(event.Outcome) {
+		if event.ActionID != "" || !validOutcome(event.Outcome) || hasRuntimeFailure(event) {
 			return EventV1{}, errors.New("invalid execution-finished log event")
 		}
 	default:
@@ -178,6 +180,14 @@ func normalizeEvent(event EventV1) (EventV1, error) {
 	}
 	event.OccurredAt = event.OccurredAt.UTC()
 	return event, nil
+}
+
+func hasRuntimeFailure(event EventV1) bool {
+	return event.FailureStage != "" || event.FailureCode != ""
+}
+
+func runtimeFailure(event EventV1) workerruntime.Failure {
+	return workerruntime.Failure{Stage: event.FailureStage, Code: event.FailureCode}
 }
 
 func validUUID(value string) bool {
