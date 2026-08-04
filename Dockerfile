@@ -6,7 +6,7 @@ WORKDIR /build
 # Install build dependencies
 RUN apk add --no-cache git make gcc musl-dev
 
-# Copy all source including capability-api (for local replace)
+# Copy application source after dependency resolution.
 COPY . .
 
 # Build the binary
