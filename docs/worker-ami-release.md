@@ -84,6 +84,58 @@ handwritten event fixture. It is complete only after the exact Pi release runs
 the loopback qualification and one authorized real task reaches the full
 success-and-cleanup boundary.
 
+### Test-driven implementation checklist
+
+The recovery change set is intentionally limited to these files:
+
+- `internal/workerruntime/failure.go` owns the closed failure code and stage;
+- `internal/workerruntime/process.go` classifies process boundary failures;
+- `internal/workerruntime/pi.go` classifies Pi JSON terminal failures;
+- `internal/workerruntime/process_test.go` and `pi_test.go` prove each class
+  before implementation;
+- `internal/workerruntime/pi_binary_integration_test.go` runs an explicitly
+  supplied, digest-verified Pi binary against a loopback provider;
+- `cmd/dirextalk-cloud-worker/main.go` emits only failure code and stage in the
+  final serial-console record; and
+- `cmd/dirextalk-cloud-worker/main_test.go` proves raw upstream text and
+  credential-shaped values cannot enter that record.
+
+The red/green sequence is:
+
+1. Add assertions for `process_start`, `process_timeout`,
+   `process_output_limit`, and `process_exit_nonzero`; run
+   `go test ./internal/workerruntime -run TestOSProcessRunner` and observe the
+   new assertions fail because no code is available.
+2. Add assertions for `provider_authentication`, `provider_quota`,
+   `provider_rate_limit`, `provider_request`, `provider_server`,
+   `provider_network`, `pi_aborted`, `pi_event_invalid`, and
+   `pi_final_missing`; run `go test ./internal/workerruntime -run TestParsePi`
+   and observe the missing classifications.
+3. Implement only enough typed failure behavior to make those focused tests
+   pass, then rerun `go test ./internal/workerruntime` and
+   `go test -race ./internal/workerruntime`.
+4. Add the opt-in real-binary loopback test and run it with the exact local Pi
+   `0.83.0` asset and expected SHA-256. The fake provider must receive the
+   expected model and result-tool declaration, then return one tool call that
+   produces a valid `dirextalk.agent.pi-final/v1` artifact.
+5. Add the closed serial-log projection and its negative secret/raw-text test.
+   Run `go test ./cmd/dirextalk-cloud-worker` before changing the command and
+   again after the minimal implementation.
+6. Run the complete no-cloud gate:
+
+   ```text
+   go test ./internal/workerruntime ./internal/workerrunner ./internal/workerlog
+   go test -race ./internal/workerruntime ./internal/workerrunner
+   go test ./cmd/dirextalk-cloud-worker ./cmd/dirextalk-worker-rootfs
+   go vet ./internal/workerruntime ./internal/workerrunner ./cmd/dirextalk-cloud-worker
+   go build ./cmd/dirextalk-cloud-worker ./cmd/dirextalk-worker-rootfs
+   git diff --check
+   ```
+
+Any failure outside this list stops the change and is reported separately. The
+implementation must not change the active Release, AMI catalog, AWS account,
+demo2 container, completion RPC, database schema, or client behavior.
+
 ## Prepare a build-request v2
 
 Preparation is read-only. It confirms the exact STS account and Region,
