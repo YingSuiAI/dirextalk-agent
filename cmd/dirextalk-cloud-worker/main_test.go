@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,12 +18,37 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workermaintenance"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerruntime"
 	"github.com/google/uuid"
 )
 
 type staticUserData []byte
 
 func (source staticUserData) Read(context.Context) ([]byte, error) { return bytes.Clone(source), nil }
+
+func TestSafeWorkerErrorProjectsOnlyClosedRuntimeFailure(t *testing.T) {
+	_, runtimeErr := (workerruntime.OSProcessRunner{}).Run(
+		context.Background(),
+		workerruntime.ProcessSpec{
+			Executable: "/missing/dirextalk-worker-binary",
+			Arguments:  []string{"--version"},
+			Directory:  filepath.Clean(t.TempDir()),
+			Environment: map[string]string{
+				"PATH": "/usr/bin:/bin",
+			},
+			MaxStdoutBytes: 64,
+			MaxStderrBytes: 64,
+		},
+	)
+	wrapped := fmt.Errorf("sensitive-upstream-canary: %w", runtimeErr)
+	message := safeWorkerError(wrapped)
+	if message != "worker_runtime_failure:process/process_start" {
+		t.Fatalf("safe Worker error = %q", message)
+	}
+	if strings.Contains(message, "sensitive-upstream-canary") {
+		t.Fatalf("raw upstream error escaped: %q", message)
+	}
+}
 
 func TestLoadLaunchUsesStrictSecretFreeIMDSContract(t *testing.T) {
 	t.Setenv("DIREXTALK_WORKER_LOCAL_TEST_MODE", "")

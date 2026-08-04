@@ -721,6 +721,10 @@ func safeWorkerError(err error) string {
 	if err == nil {
 		return ""
 	}
+	if failure, ok := workerruntime.FailureOf(err); ok {
+		return "worker_runtime_failure:" + string(failure.Stage) + "/" +
+			string(failure.Code)
+	}
 	message := security.RedactText(err.Error())
 	if len(message) > 512 {
 		message = message[:512]
