@@ -84,8 +84,3 @@ func (c *Capability) getModel(ctx context.Context, inputJSON []byte) ([]byte, er
 func (c *Capability) updateModelConfig(ctx context.Context, inputJSON []byte) ([]byte, error) {
 	return nil, nil
 }
-
-func (c *Capability) updateModelConfig(ctx context.Context, inputJSON []byte) ([]byte, error) {
-	// TODO: Implement
-	return nil, nil
-}

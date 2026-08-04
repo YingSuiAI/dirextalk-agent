@@ -10,15 +10,11 @@ import (
 )
 
 // Capability implements the agent.chat.v1 capability
-type Capability struct {
-	runtime *Runtime
-}
+type Capability struct{}
 
 // NewCapability creates a new chat capability
 func NewCapability() *Capability {
-	return &Capability{
-		runtime: NewRuntime(),
-	}
+	return &Capability{}
 }
 
 // Descriptor returns the capability descriptor
@@ -86,20 +82,35 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 }
 
 // HandleOperation handles an operation request
-func (c *Capability) HandleOperation(ctx context.Context, req *OperationRequest) (*OperationResponse, error) {
-	switch req.OperationID {
+func (c *Capability) HandleOperation(ctx context.Context, operationID string, inputJSON []byte) ([]byte, error) {
+	switch operationID {
 	case "create_conversation":
-		return c.createConversation(ctx, req)
+		var input struct {
+			Title          string `json:"title"`
+			InitialMessage string `json:"initial_message"`
+		}
+		if err := json.Unmarshal(inputJSON, &input); err != nil {
+			return nil, err
+		}
+		result, _ := json.Marshal(map[string]interface{}{
+			"conversation_id": fmt.Sprintf("conv_%d", time.Now().Unix()),
+			"title":           input.Title,
+			"created_at":      time.Now(),
+		})
+		return result, nil
 	case "send_message":
-		return c.sendMessage(ctx, req)
+		return nil, fmt.Errorf("not implemented")
 	case "list_conversations":
-		return c.listConversations(ctx, req)
+		result, _ := json.Marshal(map[string]interface{}{
+			"conversations": []interface{}{},
+		})
+		return result, nil
 	case "get_conversation":
-		return c.getConversation(ctx, req)
+		return nil, fmt.Errorf("not implemented")
 	case "delete_conversation":
-		return c.deleteConversation(ctx, req)
+		return nil, fmt.Errorf("not implemented")
 	case "rename_conversation":
-		return c.renameConversation(ctx, req)
+		return nil, fmt.Errorf("not implemented")
 	default:
 		return nil, ErrOperationNotFound
 	}
