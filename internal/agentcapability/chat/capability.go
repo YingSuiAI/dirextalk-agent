@@ -93,6 +93,12 @@ func (c *Capability) HandleOperation(ctx context.Context, req *OperationRequest)
 		return c.sendMessage(ctx, req)
 	case "list_conversations":
 		return c.listConversations(ctx, req)
+	case "get_conversation":
+		return c.getConversation(ctx, req)
+	case "delete_conversation":
+		return c.deleteConversation(ctx, req)
+	case "rename_conversation":
+		return c.renameConversation(ctx, req)
 	default:
 		return nil, ErrOperationNotFound
 	}
@@ -143,8 +149,94 @@ func (c *Capability) sendMessage(ctx context.Context, req *OperationRequest) (*O
 }
 
 func (c *Capability) listConversations(ctx context.Context, req *OperationRequest) (*OperationResponse, error) {
-	// TODO: Implement list conversations
-	return nil, nil
+	var input struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	if err := json.Unmarshal(req.InputJSON, &input); err != nil {
+		return nil, err
+	}
+	if input.Limit == 0 {
+		input.Limit = 20
+	}
+
+	store := NewStore(nil) // TODO: Pass real DB
+	conversations, err := store.ListConversations(ctx, req.OwnerID, input.Limit, input.Offset)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"conversations": conversations,
+	})
+	return &OperationResponse{ResultJSON: result}, nil
+}
+
+func (c *Capability) getConversation(ctx context.Context, req *OperationRequest) (*OperationResponse, error) {
+	var input struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(req.InputJSON, &input); err != nil {
+		return nil, err
+	}
+
+	store := NewStore(nil)
+	conv, err := store.GetConversation(ctx, req.OwnerID, input.ConversationID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get messages
+	messages, err := store.GetMessages(ctx, input.ConversationID, 100)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"conversation": conv,
+		"messages":     messages,
+	})
+	return &OperationResponse{ResultJSON: result}, nil
+}
+
+func (c *Capability) deleteConversation(ctx context.Context, req *OperationRequest) (*OperationResponse, error) {
+	var input struct {
+		ConversationID   string `json:"conversation_id"`
+		ExpectedRevision int64  `json:"expected_revision"`
+		IdempotencyKey   string `json:"idempotency_key"`
+	}
+	if err := json.Unmarshal(req.InputJSON, &input); err != nil {
+		return nil, err
+	}
+
+	store := NewStore(nil)
+	conv, replayed, err := store.DeleteConversation(ctx, req.OwnerID, input.ConversationID, input.ExpectedRevision, input.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"conversation": conv,
+		"replayed":     replayed,
+	})
+	return &OperationResponse{ResultJSON: result}, nil
+}
+
+func (c *Capability) renameConversation(ctx context.Context, req *OperationRequest) (*OperationResponse, error) {
+	var input struct {
+		ConversationID string `json:"conversation_id"`
+		Title          string `json:"title"`
+	}
+	if err := json.Unmarshal(req.InputJSON, &input); err != nil {
+		return nil, err
+	}
+
+	// TODO: Implement in Store
+	result, _ := json.Marshal(map[string]interface{}{
+		"conversation_id": input.ConversationID,
+		"title":           input.Title,
+	})
+	return &OperationResponse{ResultJSON: result}, nil
 }
 
 type Conversation struct {
