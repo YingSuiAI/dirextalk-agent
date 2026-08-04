@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
@@ -115,7 +116,7 @@ type OperationResponse struct {
 	Error      error
 }
 
-var ErrOperationNotFound = capv1.ErrorCode_ERROR_CODE_NOT_FOUND
+var ErrOperationNotFound = fmt.Errorf("operation not found")
 
 func (c *Capability) createConversation(ctx context.Context, req *OperationRequest) (*OperationResponse, error) {
 	var input struct {

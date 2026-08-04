@@ -124,13 +124,17 @@ func (r *Runtime) ExecuteAgentTurn(
 	return result.Content, toolCalls, nil
 }
 
+// ModelProfile represents a model configuration
 type ModelProfile struct {
 	Provider    string
 	Model       string
 	Temperature float64
 	MaxTokens   int
+	APIKey      string
+	BaseURL     string
 }
 
+// SessionState represents conversation session state
 type SessionState struct {
 	ConversationID string
 	TurnCount      int

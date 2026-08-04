@@ -49,7 +49,7 @@ func (p *ModelProvider) CallAnthropic(ctx context.Context, profile *ModelProfile
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", profile.Config["api_key"].(string))
+	req.Header.Set("x-api-key", profile.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := p.httpClient.Do(req)
@@ -113,7 +113,7 @@ func (p *ModelProvider) StreamAnthropic(ctx context.Context, profile *ModelProfi
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", profile.Config["api_key"].(string))
+	req.Header.Set("x-api-key", profile.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := p.httpClient.Do(req)
@@ -175,7 +175,7 @@ func (p *ModelProvider) CallOpenAI(ctx context.Context, profile *ModelProfile, m
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+profile.Config["api_key"].(string))
+	req.Header.Set("Authorization", "Bearer "+profile.APIKey)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -201,15 +201,14 @@ func (p *ModelProvider) CallOpenAI(ctx context.Context, profile *ModelProfile, m
 	}
 
 	return &schema.Message{
-		Role:    result.Choices[0].Message.Role,
+		Role:    schema.RoleAssistant,
 		Content: result.Choices[0].Message.Content,
 	}, nil
 }
 
 // CallGemini implements Google Gemini API
 func (p *ModelProvider) CallGemini(ctx context.Context, profile *ModelProfile, messages []*schema.Message) (*schema.Message, error) {
-	apiKey := profile.Config["api_key"].(string)
-	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", profile.Model, apiKey)
+	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", profile.Model, profile.APIKey)
 
 	// Convert to Gemini format
 	contents := make([]map[string]interface{}, 0, len(messages))
