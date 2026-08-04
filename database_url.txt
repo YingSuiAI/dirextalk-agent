@@ -1,0 +1,1 @@
+postgres://dirextalk:dirextalk_pass@localhost:15433/dirextalk?sslmode=disable

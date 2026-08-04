@@ -1,0 +1,12 @@
+instance_id: "d1bafe15-194e-4acd-9a4b-4a2fecb622b9"
+database_url_file: "/home/adam/dirextalk/dirextalk-agent/database_url.txt"
+grpc_listen: ":50051"
+tls_cert_file: "/home/adam/dirextalk/certs/agent.crt"
+tls_key_file: "/home/adam/dirextalk/certs/agent.key"
+service_token_file: "/home/adam/dirextalk/tokens/ms-to-agent.token"
+enable_health_service: true
+enable_reflection: true
+core_knowledge_enabled: false
+core_workload_enabled: false
+core_extension_enabled: false
+core_aws_enabled: false

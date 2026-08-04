@@ -4,21 +4,18 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /build
 
 # Install build dependencies
-RUN apk add --no-cache git make gcc musl-dev sqlite-dev
+RUN apk add --no-cache git make gcc musl-dev
 
-# Copy all source first (needed for local replace directives)
+# Copy all source including capability-api (for local replace)
 COPY . .
 
-# Download dependencies
-RUN go mod download
-
 # Build the binary
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o dirextalk-agent ./cmd/dirextalk-agent
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o dirextalk-agent ./cmd/dirextalk-agent
 
 # Final stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates tzdata sqlite-libs
+RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
