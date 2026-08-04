@@ -29,7 +29,7 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				DisplayName:   "List Models",
 				Description:   "List available model profiles",
 				OperationType: capv1.OperationType_OPERATION_TYPE_READ,
-				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
+				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
 				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes: []string{"agent:models:read"},
 			},
@@ -38,7 +38,7 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				DisplayName:   "Get Model",
 				Description:   "Get a specific model profile",
 				OperationType: capv1.OperationType_OPERATION_TYPE_READ,
-				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
+				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
 				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes: []string{"agent:models:read"},
 			},
@@ -65,8 +65,15 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, in
 	case "update_model_config":
 		return c.updateModelConfig(ctx, inputJSON)
 	default:
-		return nil, capv1.ErrorCode_ERROR_CODE_NOT_FOUND
+		return nil, fmt.Errorf("operation not found")
 	}
+}
+
+func (c *Capability) listModels(ctx context.Context) ([]byte, error) {
+	// TODO: Implement model listing
+	return json.Marshal(map[string]interface{}{
+		"models": []interface{}{},
+	})
 }
 
 func (c *Capability) listModels(ctx context.Context) ([]byte, error) {
