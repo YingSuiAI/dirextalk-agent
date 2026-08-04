@@ -79,6 +79,9 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		_, _ = io.WriteString(stderr, "worker-ami: builder reachability evidence conflicts with existing state\n")
 		return 1
 	}
+	var verifiedCleanupEvidence workerami.BuilderCleanupEvidenceV1
+	var verifiedReachabilityEvidence workerami.BuilderReachabilityEvidenceV2
+	var canRestoreCleanupEvidence, canRestoreReachabilityEvidence bool
 	config, err := loadAndConfirmIdentity(ctx, dependencies, prepared.request.AccountID, prepared.request.Region)
 	if err != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: AWS identity confirmation failed\n")
@@ -104,6 +107,8 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 		}
 		if builderAbsent && reachabilityAbsent {
 			if hasReachabilityEvidence {
+				verifiedReachabilityEvidence = reachabilityEvidence
+				canRestoreReachabilityEvidence = true
 				if removeBuilderReachabilityEvidence(builderReachabilityEvidencePath(*outputPath), reachabilityEvidence) != nil {
 					_, _ = io.WriteString(stderr, "worker-ami: stale builder reachability evidence cleanup failed\n")
 					return 1
@@ -113,6 +118,8 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 				hasReachabilityEvidence = false
 			}
 			if hasCleanupEvidence {
+				verifiedCleanupEvidence = cleanupEvidence
+				canRestoreCleanupEvidence = true
 				if removeBuilderCleanupEvidence(builderCleanupEvidencePath(*outputPath), cleanupEvidence) != nil {
 					_, _ = io.WriteString(stderr, "worker-ami: stale builder cleanup evidence removal failed\n")
 					return 1
@@ -149,6 +156,22 @@ func runBuild(ctx context.Context, args []string, stderr io.Writer, dependencies
 	if err != nil {
 		_, _ = io.WriteString(stderr, "worker-ami: Worker AMI build failed\n")
 		return 1
+	}
+	// Build may reuse an already available image without launching a new
+	// builder. Restore the freshly verified absence evidence in that path.
+	if canRestoreCleanupEvidence {
+		exists, existsErr := regularFileExists(builderCleanupEvidencePath(*outputPath))
+		if existsErr != nil || (!exists && ensureBuilderCleanupEvidence(builderCleanupEvidencePath(*outputPath), verifiedCleanupEvidence) != nil) {
+			_, _ = io.WriteString(stderr, "worker-ami: builder cleanup evidence restoration failed\n")
+			return 1
+		}
+	}
+	if canRestoreReachabilityEvidence {
+		exists, existsErr := regularFileExists(builderReachabilityEvidencePath(*outputPath))
+		if existsErr != nil || (!exists && persistBuilderReachabilityEvidence(builderReachabilityEvidencePath(*outputPath), verifiedReachabilityEvidence) != nil) {
+			_, _ = io.WriteString(stderr, "worker-ami: builder reachability evidence restoration failed\n")
+			return 1
+		}
 	}
 	cleanupEvidence, err = readBuilderCleanupEvidence(builderCleanupEvidencePath(*outputPath))
 	if err != nil || !builderCleanupEvidenceMatchesPrepared(cleanupEvidence, prepared) || service.VerifyBuilderCleanup(ctx, cleanupEvidence) != nil {

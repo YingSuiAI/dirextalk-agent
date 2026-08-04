@@ -245,6 +245,52 @@ func TestRunBuildRotatesCompletedBuilderEvidenceBeforeNewV2Attempt(t *testing.T)
 	}
 }
 
+func TestRunBuildRestoresVerifiedEvidenceWhenExistingV2ImageNeedsNoBuilder(t *testing.T) {
+	fixture := newBuildFixture(t)
+	requestPath := writeV2BuildRequestForFixture(t, fixture)
+	prepared, err := parseBuildRequest(requestPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "publication.json")
+	if err := ensureBuildIntent(output, prepared.intent); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := builderCleanupEvidenceForRequest(t, prepared.request)
+	if err := ensureBuilderCleanupEvidence(builderCleanupEvidencePath(output), cleanup); err != nil {
+		t.Fatal(err)
+	}
+	buildDigest, err := workerami.BuildDigest(prepared.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reachability := workerami.BuilderReachabilityEvidenceV2{
+		SchemaVersion: workerami.BuilderReachabilitySchemaV2, AgentInstanceID: prepared.request.AgentInstanceID,
+		AccountID: prepared.request.AccountID, Region: prepared.request.Region, BuildDigest: buildDigest,
+		VPCID: prepared.request.FoundationVPCID, RouteTableID: prepared.request.FoundationRouteTableID,
+		SecurityGroupID: prepared.request.ZeroIngressSGID, S3PrefixListID: prepared.request.S3PrefixListID,
+		ArtifactBucket: prepared.request.ArtifactBucket, ArtifactKey: prepared.request.ArtifactKey,
+		VPCEndpointClientToken: "dtx-worker-ami-s3-11111111-2222-4333-8444-555555555555",
+		VPCEndpointID:          "vpce-aaaaaaaaaaaaaaaaa", SecurityGroupRuleID: "sgr-aaaaaaaaaaaaaaaaa",
+	}
+	if err := persistBuilderReachabilityEvidence(builderReachabilityEvidencePath(output), reachability); err != nil {
+		t.Fatal(err)
+	}
+
+	cloud := newFakeCloud(fixture.image, fixture.evidence)
+	cloud.reuseExistingImage = true
+	var stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"build", "--request", requestPath, "--output", output}, ioDiscardBuffer{}, &stderr, cloud.dependencies()); code != 0 {
+		t.Fatalf("Run(build existing image recovery) = %d, stderr=%q", code, stderr.String())
+	}
+	if current, readErr := readBuilderCleanupEvidence(builderCleanupEvidencePath(output)); readErr != nil || !equalBuilderCleanupEvidence(current, cleanup) {
+		t.Fatalf("verified cleanup evidence was not restored: %#v, %v", current, readErr)
+	}
+	if current, readErr := readBuilderReachabilityEvidence(builderReachabilityEvidencePath(output)); readErr != nil || current != reachability {
+		t.Fatalf("verified reachability evidence was not restored: %#v, %v", current, readErr)
+	}
+}
+
 func TestRunBuildRejectsUnverifiedV2BuilderWithoutAttemptEvidence(t *testing.T) {
 	fixture := newBuildFixture(t)
 	requestPath := writeV2BuildRequestForFixture(t, fixture)
@@ -839,6 +885,7 @@ type fakeCloud struct {
 	prepareEnvironment             PrepareEnvironmentV2
 	prepareErr                     error
 	prepareCalls                   int
+	reuseExistingImage             bool
 }
 
 func newFakeCloud(image workerami.ImageManifestV1, evidence awsprovider.WorkerAMIAttestationV1) *fakeCloud {
@@ -877,15 +924,17 @@ func (service fakeAMIService) Build(_ context.Context, request workerami.BuildRe
 	if err != nil {
 		return workerami.ImageManifestV1{}, err
 	}
-	if request.ExistingBuilderCleanupEvidence != nil {
-		service.cloud.existingCleanupInputs++
-		evidence = *request.ExistingBuilderCleanupEvidence
+	if !service.cloud.reuseExistingImage {
+		if request.ExistingBuilderCleanupEvidence != nil {
+			service.cloud.existingCleanupInputs++
+			evidence = *request.ExistingBuilderCleanupEvidence
+		}
+		if request.RecordBuilderCleanupEvidence == nil || request.RecordBuilderCleanupEvidence(evidence) != nil {
+			return workerami.ImageManifestV1{}, errors.New("cleanup evidence not persisted")
+		}
+		service.cloud.cleanupEvidence = evidence
 	}
-	if request.RecordBuilderCleanupEvidence == nil || request.RecordBuilderCleanupEvidence(evidence) != nil {
-		return workerami.ImageManifestV1{}, errors.New("cleanup evidence not persisted")
-	}
-	service.cloud.cleanupEvidence = evidence
-	if request.NetworkMode == workerami.NetworkModeS3GatewayV2 {
+	if request.NetworkMode == workerami.NetworkModeS3GatewayV2 && !service.cloud.reuseExistingImage {
 		buildDigest, digestErr := workerami.BuildDigest(request)
 		if digestErr != nil {
 			return workerami.ImageManifestV1{}, digestErr
