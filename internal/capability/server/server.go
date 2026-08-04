@@ -11,6 +11,7 @@ import (
 	"time"
 
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -58,7 +59,8 @@ type Server struct {
 
 	mu       sync.RWMutex
 	ready    bool
-	registry interface{} // TODO: 实际的 registry 接口
+	registry interface{}       // TODO: 实际的 registry 接口
+	opMgr    *operation.Manager // Operation manager
 }
 
 // New 创建新的 AgentCapabilityService 服务器
