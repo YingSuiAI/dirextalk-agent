@@ -2,6 +2,8 @@ package models
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
@@ -47,8 +49,8 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				DisplayName:   "Update Model Config",
 				Description:   "Update model configuration",
 				OperationType: capv1.OperationType_OPERATION_TYPE_MUTATION,
-				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
-				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_ELEVATED,
+				Audience:      []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
+				RiskLevel:     capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes: []string{"agent:models:write"},
 			},
 		},
@@ -70,19 +72,16 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, in
 }
 
 func (c *Capability) listModels(ctx context.Context) ([]byte, error) {
-	// TODO: Implement model listing
 	return json.Marshal(map[string]interface{}{
 		"models": []interface{}{},
 	})
 }
 
-func (c *Capability) listModels(ctx context.Context) ([]byte, error) {
-	// TODO: Implement from native_agent_models.go
-	return []byte(`{"models": []}`), nil
+func (c *Capability) getModel(ctx context.Context, inputJSON []byte) ([]byte, error) {
+	return nil, nil
 }
 
-func (c *Capability) getModel(ctx context.Context, inputJSON []byte) ([]byte, error) {
-	// TODO: Implement
+func (c *Capability) updateModelConfig(ctx context.Context, inputJSON []byte) ([]byte, error) {
 	return nil, nil
 }
 

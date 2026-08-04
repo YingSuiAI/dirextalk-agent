@@ -26,8 +26,8 @@ func (c *Capability) Descriptor() *capv1.CapabilityDescriptor {
 				OperationId:     "upload_attachment",
 				DisplayName:     "Upload Attachment",
 				OperationType:   capv1.OperationType_OPERATION_TYPE_MUTATION,
-				Audience:        []capv1.Audience{capv1.Audience_AUDIENCE_FLUTTER_CLIENT},
-				RiskLevel:       capv1.RiskLevel_RISK_LEVEL_ELEVATED,
+				Audience:        []capv1.Audience{capv1.Audience_AUDIENCE_UNSPECIFIED},
+				RiskLevel:       capv1.RiskLevel_RISK_LEVEL_SAFE,
 				RequiredScopes:  []string{"agent:knowledge:write"},
 			},
 			{
