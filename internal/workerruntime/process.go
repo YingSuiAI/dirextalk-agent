@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -68,9 +67,9 @@ func (OSProcessRunner) Run(
 	clear(stderr.buffer)
 	if stdout.exceeded || stderr.exceeded {
 		clear(stdout.buffer)
-		return ProcessOutput{}, fmt.Errorf(
-			"%w: process output exceeded its bound",
-			ErrExecution,
+		return ProcessOutput{}, newFailure(
+			FailureStageProcess,
+			FailureCodeProcessOutputLimit,
 		)
 	}
 	if err != nil {
@@ -78,10 +77,28 @@ func (OSProcessRunner) Run(
 		if !errors.As(err, &exitError) ||
 			!allowedExitCode(exitError.ExitCode(), spec.AllowedExitCodes) {
 			clear(stdout.buffer)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return ProcessOutput{}, errors.Join(
+					ctx.Err(),
+					newFailure(
+						FailureStageProcess,
+						FailureCodeProcessTimeout,
+					),
+				)
+			}
 			if ctx.Err() != nil {
 				return ProcessOutput{}, ctx.Err()
 			}
-			return ProcessOutput{}, ErrExecution
+			if errors.As(err, &exitError) {
+				return ProcessOutput{}, newFailure(
+					FailureStageProcess,
+					FailureCodeProcessExitNonZero,
+				)
+			}
+			return ProcessOutput{}, newFailure(
+				FailureStageProcess,
+				FailureCodeProcessStart,
+			)
 		}
 	}
 	result := bytes.Clone(stdout.buffer)

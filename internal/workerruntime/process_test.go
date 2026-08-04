@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,4 +74,93 @@ func TestOSProcessRunnerCancelsProcessGroup(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cancellation error = %v", err)
 	}
+}
+
+func TestOSProcessRunnerClassifiesClosedFailures(t *testing.T) {
+	t.Parallel()
+	directory := filepath.Clean(t.TempDir())
+	tests := []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+		spec ProcessSpec
+		code FailureCode
+	}{
+		{
+			name: "process start",
+			ctx:  backgroundContext,
+			spec: validProcessSpec(directory, "/missing/dirextalk-worker-binary"),
+			code: FailureCodeProcessStart,
+		},
+		{
+			name: "timeout",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 25*time.Millisecond)
+			},
+			spec: processShellSpec(directory, "sleep 5"),
+			code: FailureCodeProcessTimeout,
+		},
+		{
+			name: "stdout limit",
+			ctx:  backgroundContext,
+			spec: processShellSpec(directory, "printf 'output-overflow'"),
+			code: FailureCodeProcessOutputLimit,
+		},
+		{
+			name: "stderr limit",
+			ctx:  backgroundContext,
+			spec: processShellSpec(directory, "printf 'stderr-overflow' >&2"),
+			code: FailureCodeProcessOutputLimit,
+		},
+		{
+			name: "non-zero exit",
+			ctx:  backgroundContext,
+			spec: processExitSpec(
+				directory,
+				"printf 'sensitive-process-canary' >&2; exit 17",
+			),
+			code: FailureCodeProcessExitNonZero,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := test.ctx()
+			defer cancel()
+			_, err := (OSProcessRunner{}).Run(ctx, test.spec)
+			requireFailure(t, err, test.code, FailureStageProcess)
+			if strings.Contains(err.Error(), "sensitive-process-canary") {
+				t.Fatalf("raw process diagnostic escaped: %v", err)
+			}
+		})
+	}
+}
+
+func backgroundContext() (context.Context, context.CancelFunc) {
+	return context.Background(), func() {}
+}
+
+func validProcessSpec(directory, executable string) ProcessSpec {
+	return ProcessSpec{
+		Executable: executable,
+		Arguments:  []string{"--version"},
+		Directory:  directory,
+		Environment: map[string]string{
+			"PATH": "/usr/bin:/bin",
+		},
+		MaxStdoutBytes: 8,
+		MaxStderrBytes: 8,
+	}
+}
+
+func processShellSpec(directory, script string) ProcessSpec {
+	spec := validProcessSpec(directory, "/bin/sh")
+	spec.Arguments = []string{"-c", script}
+	return spec
+}
+
+func processExitSpec(directory, script string) ProcessSpec {
+	spec := processShellSpec(directory, script)
+	spec.MaxStderrBytes = 64
+	return spec
 }

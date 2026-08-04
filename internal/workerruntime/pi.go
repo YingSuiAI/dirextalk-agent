@@ -356,9 +356,10 @@ type piEvent struct {
 }
 
 type piMessage struct {
-	Role       string  `json:"role"`
-	Usage      piUsage `json:"usage"`
-	StopReason string  `json:"stopReason"`
+	Role         string  `json:"role"`
+	Usage        piUsage `json:"usage"`
+	StopReason   string  `json:"stopReason"`
+	ErrorMessage string  `json:"errorMessage"`
 }
 
 type piUsage struct {
@@ -385,7 +386,10 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 	if len(stream) == 0 ||
 		len(stream) > MaxProcessOutputBytes ||
 		!utf8.Valid(stream) {
-		return Usage{}, nil, ErrExecution
+		return Usage{}, nil, newFailure(
+			FailureStagePi,
+			FailureCodePiEventInvalid,
+		)
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(stream))
 	scanner.Buffer(make([]byte, 64<<10), maxPiEventLineBytes)
@@ -403,13 +407,13 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 		}
 		if agentSettled {
 			clear(finalJSON)
-			return Usage{}, nil, ErrExecution
+			return Usage{}, nil, piEventInvalid()
 		}
 		var event piEvent
 		if json.Unmarshal(line, &event) != nil ||
 			!validPiEventType(event.Type) {
 			clear(finalJSON)
-			return Usage{}, nil, ErrExecution
+			return Usage{}, nil, piEventInvalid()
 		}
 		switch event.Type {
 		case "session":
@@ -417,49 +421,60 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 				agentStarted ||
 				event.Version != 3 {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			sessionSeen = true
 		case "agent_start":
 			if !sessionSeen || agentStarted || agentEnded {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			agentStarted = true
 		case "message_end":
 			if !agentStarted || agentEnded {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			var message piMessage
 			if json.Unmarshal(event.Message, &message) != nil {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			if message.Role == "assistant" {
-				if message.StopReason == "error" ||
-					message.StopReason == "aborted" ||
-					addPiUsage(&usage, message.Usage) != nil {
+				if message.StopReason == "error" {
 					clear(finalJSON)
-					return Usage{}, nil, ErrExecution
+					return Usage{}, nil, classifyPiProviderFailure(
+						message.ErrorMessage,
+					)
+				}
+				if message.StopReason == "aborted" {
+					clear(finalJSON)
+					return Usage{}, nil, newFailure(
+						FailureStagePi,
+						FailureCodePiAborted,
+					)
+				}
+				if addPiUsage(&usage, message.Usage) != nil {
+					clear(finalJSON)
+					return Usage{}, nil, piEventInvalid()
 				}
 			}
 		case "tool_execution_end":
 			if !agentStarted || agentEnded {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			if event.ToolName != piResultToolName {
 				continue
 			}
 			if finalSeen || event.IsError {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			var result piToolResult
 			if json.Unmarshal(event.Result, &result) != nil ||
 				!result.Terminate {
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			canonical, err := canonicalPiFinal(result.Details)
 			if err != nil {
@@ -472,13 +487,13 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 				agentEnded ||
 				event.WillRetry {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			agentEnded = true
 		case "agent_settled":
 			if !agentEnded || agentSettled {
 				clear(finalJSON)
-				return Usage{}, nil, ErrExecution
+				return Usage{}, nil, piEventInvalid()
 			}
 			agentSettled = true
 		}
@@ -488,12 +503,60 @@ func parsePiEvents(stream []byte) (Usage, []byte, error) {
 		!agentStarted ||
 		!agentEnded ||
 		!agentSettled ||
-		!finalSeen ||
 		usage.Validate() != nil {
 		clear(finalJSON)
-		return Usage{}, nil, ErrExecution
+		return Usage{}, nil, piEventInvalid()
+	}
+	if !finalSeen {
+		clear(finalJSON)
+		return Usage{}, nil, newFailure(
+			FailureStagePi,
+			FailureCodePiFinalMissing,
+		)
 	}
 	return usage, finalJSON, nil
+}
+
+func piEventInvalid() error {
+	return newFailure(FailureStagePi, FailureCodePiEventInvalid)
+}
+
+func classifyPiProviderFailure(message string) error {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	code := FailureCodeProviderUnknown
+	switch {
+	case strings.HasPrefix(normalized, "401"),
+		strings.Contains(normalized, "authentication"),
+		strings.Contains(normalized, "unauthorized"),
+		strings.Contains(normalized, "invalid api key"):
+		code = FailureCodeProviderAuthentication
+	case strings.HasPrefix(normalized, "402"),
+		strings.Contains(normalized, "insufficient_balance"),
+		strings.Contains(normalized, "quota"),
+		strings.Contains(normalized, "billing"):
+		code = FailureCodeProviderQuota
+	case strings.HasPrefix(normalized, "429"),
+		strings.Contains(normalized, "rate_limit"):
+		code = FailureCodeProviderRateLimit
+	case strings.HasPrefix(normalized, "400"),
+		strings.HasPrefix(normalized, "404"),
+		strings.HasPrefix(normalized, "422"),
+		strings.Contains(normalized, "invalid_request"):
+		code = FailureCodeProviderRequest
+	case strings.HasPrefix(normalized, "500"),
+		strings.HasPrefix(normalized, "502"),
+		strings.HasPrefix(normalized, "503"),
+		strings.HasPrefix(normalized, "504"),
+		strings.Contains(normalized, "server_error"),
+		strings.Contains(normalized, "service unavailable"):
+		code = FailureCodeProviderServer
+	case strings.Contains(normalized, "fetch failed"),
+		strings.Contains(normalized, "connection"),
+		strings.Contains(normalized, "network"),
+		strings.Contains(normalized, "timed out"):
+		code = FailureCodeProviderNetwork
+	}
+	return newFailure(FailureStagePi, code)
 }
 
 func validPiEventType(value string) bool {

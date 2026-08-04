@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -259,6 +260,96 @@ func TestParsePiEventsRequiresSettledSingleFinalResult(t *testing.T) {
 	}
 }
 
+func TestParsePiEventsClassifiesClosedTerminalFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		stream       []byte
+		code         FailureCode
+		forbiddenRaw string
+	}{
+		{
+			name: "provider authentication",
+			stream: piTerminalFailureStream(
+				"error",
+				`401: {"type":"authentication_error","message":"sk-sensitive-provider-canary"}`,
+			),
+			code:         FailureCodeProviderAuthentication,
+			forbiddenRaw: "sensitive-provider-canary",
+		},
+		{
+			name: "provider quota",
+			stream: piTerminalFailureStream(
+				"error",
+				`402: {"type":"insufficient_balance","message":"quota exhausted"}`,
+			),
+			code: FailureCodeProviderQuota,
+		},
+		{
+			name: "provider rate limit",
+			stream: piTerminalFailureStream(
+				"error",
+				`429: {"type":"rate_limit_error"}`,
+			),
+			code: FailureCodeProviderRateLimit,
+		},
+		{
+			name: "provider request",
+			stream: piTerminalFailureStream(
+				"error",
+				`400: {"type":"invalid_request_error"}`,
+			),
+			code: FailureCodeProviderRequest,
+		},
+		{
+			name: "provider server",
+			stream: piTerminalFailureStream(
+				"error",
+				`503: {"type":"server_error"}`,
+			),
+			code: FailureCodeProviderServer,
+		},
+		{
+			name: "provider network",
+			stream: piTerminalFailureStream(
+				"error",
+				"fetch failed: connection reset by peer",
+			),
+			code: FailureCodeProviderNetwork,
+		},
+		{
+			name:   "Pi aborted",
+			stream: piTerminalFailureStream("aborted", ""),
+			code:   FailureCodePiAborted,
+		},
+		{
+			name:   "invalid event",
+			stream: []byte("not-json\n"),
+			code:   FailureCodePiEventInvalid,
+		},
+		{
+			name:   "missing final result",
+			stream: piTerminalFailureStream("stop", ""),
+			code:   FailureCodePiFinalMissing,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			usage, final, err := parsePiEvents(test.stream)
+			clear(final)
+			if usage != (Usage{}) {
+				t.Fatalf("failed usage = %+v", usage)
+			}
+			requireFailure(t, err, test.code, FailureStagePi)
+			if test.forbiddenRaw != "" && strings.Contains(err.Error(), test.forbiddenRaw) {
+				t.Fatalf("raw Pi diagnostic escaped: %v", err)
+			}
+		})
+	}
+}
+
 func TestParsePiFinalRejectsUnknownFieldsAndSecrets(t *testing.T) {
 	t.Parallel()
 	for _, value := range [][]byte{
@@ -379,6 +470,29 @@ func validPiEventStream() []byte {
 			`{"type":"tool_execution_start","toolCallId":"call-1","toolName":"dirextalk_submit_result","args":{}}` + "\n" +
 			`{"type":"tool_execution_end","toolCallId":"call-1","toolName":"dirextalk_submit_result","result":{"content":[{"type":"text","text":"Final result submitted."}],"details":{"status":"completed","summary":"Implemented the approved change.","deliverables":["Updated the API implementation."],"tests":["Focused tests passed."],"risks":[]},"terminate":true},"isError":false}` + "\n" +
 			`{"type":"turn_end","message":{"role":"assistant"},"toolResults":[]}` + "\n" +
+			`{"type":"agent_end","messages":[],"willRetry":false}` + "\n" +
+			`{"type":"agent_settled"}` + "\n",
+	)
+}
+
+func piTerminalFailureStream(stopReason, errorMessage string) []byte {
+	message := map[string]any{
+		"role":       "assistant",
+		"stopReason": stopReason,
+		"usage": map[string]int64{
+			"input": 0, "output": 0, "cacheRead": 0, "reasoning": 0,
+		},
+	}
+	if errorMessage != "" {
+		message["errorMessage"] = errorMessage
+	}
+	messageJSON, _ := json.Marshal(message)
+	return []byte(
+		`{"type":"session","version":3,"id":"session-1"}` + "\n" +
+			`{"type":"agent_start"}` + "\n" +
+			`{"type":"turn_start"}` + "\n" +
+			`{"type":"message_end","message":` + string(messageJSON) + `}` + "\n" +
+			`{"type":"turn_end","message":` + string(messageJSON) + `,"toolResults":[]}` + "\n" +
 			`{"type":"agent_end","messages":[],"willRetry":false}` + "\n" +
 			`{"type":"agent_settled"}` + "\n",
 	)
