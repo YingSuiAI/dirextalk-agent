@@ -30,7 +30,7 @@ verification. External product work is not included.
   surface is removed, and execution uses the descriptor-only Linux boundary.
 - Core Knowledge uploads, mounts, memory, indexing/search composition.
 - Typed Core AWS credentials, plans, and confirmation-bound change composition.
-- Versioned Core Protobufs and Core-focused contract tests.
+- Versioned, Buf-lint-clean Core Protobufs and Core-focused contract tests.
 - `WorkloadService` planning/confirmation and a fenced `WORKLOAD` Task path.
 - Optional Core Runner protocol: nonce/full readiness, descriptor-only sealed
   result export, exact tmpfs writable quota, zero persistent raw output, and

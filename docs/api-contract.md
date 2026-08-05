@@ -23,6 +23,8 @@ The Core server may register these services, subject to configuration gates:
 - `CoreExecutionV2Service` is the typed Agent-owned composition seam for the
   frozen `agent.execution.v2.*` action family. The public proxy uses the
   neutral Capability API and the exact operation IDs from `docs/execution-v2.md`.
+  Its request and response messages use the Buf-standard
+  `CoreExecutionV2Service<Method>{Request,Response}` names.
 
 Health and reflection are optional server features. No REST API, admin UI, or
 multi-user authorization surface is part of Core v1.

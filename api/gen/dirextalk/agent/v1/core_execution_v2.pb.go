@@ -134,7 +134,7 @@ func (x *CoreExecutionV2Record) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-type CoreExecutionV2ExecuteRequest struct {
+type CoreExecutionV2ServiceExecuteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Action        string                 `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`
 	RequestJson   []byte                 `protobuf:"bytes,2,opt,name=request_json,json=requestJson,proto3" json:"request_json,omitempty"`
@@ -142,20 +142,20 @@ type CoreExecutionV2ExecuteRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CoreExecutionV2ExecuteRequest) Reset() {
-	*x = CoreExecutionV2ExecuteRequest{}
+func (x *CoreExecutionV2ServiceExecuteRequest) Reset() {
+	*x = CoreExecutionV2ServiceExecuteRequest{}
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CoreExecutionV2ExecuteRequest) String() string {
+func (x *CoreExecutionV2ServiceExecuteRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CoreExecutionV2ExecuteRequest) ProtoMessage() {}
+func (*CoreExecutionV2ServiceExecuteRequest) ProtoMessage() {}
 
-func (x *CoreExecutionV2ExecuteRequest) ProtoReflect() protoreflect.Message {
+func (x *CoreExecutionV2ServiceExecuteRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -167,46 +167,46 @@ func (x *CoreExecutionV2ExecuteRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CoreExecutionV2ExecuteRequest.ProtoReflect.Descriptor instead.
-func (*CoreExecutionV2ExecuteRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CoreExecutionV2ServiceExecuteRequest.ProtoReflect.Descriptor instead.
+func (*CoreExecutionV2ServiceExecuteRequest) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *CoreExecutionV2ExecuteRequest) GetAction() string {
+func (x *CoreExecutionV2ServiceExecuteRequest) GetAction() string {
 	if x != nil {
 		return x.Action
 	}
 	return ""
 }
 
-func (x *CoreExecutionV2ExecuteRequest) GetRequestJson() []byte {
+func (x *CoreExecutionV2ServiceExecuteRequest) GetRequestJson() []byte {
 	if x != nil {
 		return x.RequestJson
 	}
 	return nil
 }
 
-type CoreExecutionV2ExecuteResponse struct {
+type CoreExecutionV2ServiceExecuteResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ResultJson    []byte                 `protobuf:"bytes,1,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CoreExecutionV2ExecuteResponse) Reset() {
-	*x = CoreExecutionV2ExecuteResponse{}
+func (x *CoreExecutionV2ServiceExecuteResponse) Reset() {
+	*x = CoreExecutionV2ServiceExecuteResponse{}
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CoreExecutionV2ExecuteResponse) String() string {
+func (x *CoreExecutionV2ServiceExecuteResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CoreExecutionV2ExecuteResponse) ProtoMessage() {}
+func (*CoreExecutionV2ServiceExecuteResponse) ProtoMessage() {}
 
-func (x *CoreExecutionV2ExecuteResponse) ProtoReflect() protoreflect.Message {
+func (x *CoreExecutionV2ServiceExecuteResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -218,19 +218,19 @@ func (x *CoreExecutionV2ExecuteResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CoreExecutionV2ExecuteResponse.ProtoReflect.Descriptor instead.
-func (*CoreExecutionV2ExecuteResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CoreExecutionV2ServiceExecuteResponse.ProtoReflect.Descriptor instead.
+func (*CoreExecutionV2ServiceExecuteResponse) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *CoreExecutionV2ExecuteResponse) GetResultJson() []byte {
+func (x *CoreExecutionV2ServiceExecuteResponse) GetResultJson() []byte {
 	if x != nil {
 		return x.ResultJson
 	}
 	return nil
 }
 
-type CoreExecutionV2GetRequest struct {
+type CoreExecutionV2ServiceGetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
@@ -239,20 +239,20 @@ type CoreExecutionV2GetRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CoreExecutionV2GetRequest) Reset() {
-	*x = CoreExecutionV2GetRequest{}
+func (x *CoreExecutionV2ServiceGetRequest) Reset() {
+	*x = CoreExecutionV2ServiceGetRequest{}
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CoreExecutionV2GetRequest) String() string {
+func (x *CoreExecutionV2ServiceGetRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CoreExecutionV2GetRequest) ProtoMessage() {}
+func (*CoreExecutionV2ServiceGetRequest) ProtoMessage() {}
 
-func (x *CoreExecutionV2GetRequest) ProtoReflect() protoreflect.Message {
+func (x *CoreExecutionV2ServiceGetRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -264,53 +264,53 @@ func (x *CoreExecutionV2GetRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CoreExecutionV2GetRequest.ProtoReflect.Descriptor instead.
-func (*CoreExecutionV2GetRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CoreExecutionV2ServiceGetRequest.ProtoReflect.Descriptor instead.
+func (*CoreExecutionV2ServiceGetRequest) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *CoreExecutionV2GetRequest) GetKind() string {
+func (x *CoreExecutionV2ServiceGetRequest) GetKind() string {
 	if x != nil {
 		return x.Kind
 	}
 	return ""
 }
 
-func (x *CoreExecutionV2GetRequest) GetId() string {
+func (x *CoreExecutionV2ServiceGetRequest) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *CoreExecutionV2GetRequest) GetRevision() uint64 {
+func (x *CoreExecutionV2ServiceGetRequest) GetRevision() uint64 {
 	if x != nil {
 		return x.Revision
 	}
 	return 0
 }
 
-type CoreExecutionV2GetResponse struct {
+type CoreExecutionV2ServiceGetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Record        *CoreExecutionV2Record `protobuf:"bytes,1,opt,name=record,proto3" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CoreExecutionV2GetResponse) Reset() {
-	*x = CoreExecutionV2GetResponse{}
+func (x *CoreExecutionV2ServiceGetResponse) Reset() {
+	*x = CoreExecutionV2ServiceGetResponse{}
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CoreExecutionV2GetResponse) String() string {
+func (x *CoreExecutionV2ServiceGetResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CoreExecutionV2GetResponse) ProtoMessage() {}
+func (*CoreExecutionV2ServiceGetResponse) ProtoMessage() {}
 
-func (x *CoreExecutionV2GetResponse) ProtoReflect() protoreflect.Message {
+func (x *CoreExecutionV2ServiceGetResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -322,19 +322,19 @@ func (x *CoreExecutionV2GetResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CoreExecutionV2GetResponse.ProtoReflect.Descriptor instead.
-func (*CoreExecutionV2GetResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CoreExecutionV2ServiceGetResponse.ProtoReflect.Descriptor instead.
+func (*CoreExecutionV2ServiceGetResponse) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *CoreExecutionV2GetResponse) GetRecord() *CoreExecutionV2Record {
+func (x *CoreExecutionV2ServiceGetResponse) GetRecord() *CoreExecutionV2Record {
 	if x != nil {
 		return x.Record
 	}
 	return nil
 }
 
-type CoreExecutionV2ListEventsRequest struct {
+type CoreExecutionV2ServiceListEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
 	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
@@ -344,20 +344,20 @@ type CoreExecutionV2ListEventsRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CoreExecutionV2ListEventsRequest) Reset() {
-	*x = CoreExecutionV2ListEventsRequest{}
+func (x *CoreExecutionV2ServiceListEventsRequest) Reset() {
+	*x = CoreExecutionV2ServiceListEventsRequest{}
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CoreExecutionV2ListEventsRequest) String() string {
+func (x *CoreExecutionV2ServiceListEventsRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CoreExecutionV2ListEventsRequest) ProtoMessage() {}
+func (*CoreExecutionV2ServiceListEventsRequest) ProtoMessage() {}
 
-func (x *CoreExecutionV2ListEventsRequest) ProtoReflect() protoreflect.Message {
+func (x *CoreExecutionV2ServiceListEventsRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -369,33 +369,33 @@ func (x *CoreExecutionV2ListEventsRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CoreExecutionV2ListEventsRequest.ProtoReflect.Descriptor instead.
-func (*CoreExecutionV2ListEventsRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CoreExecutionV2ServiceListEventsRequest.ProtoReflect.Descriptor instead.
+func (*CoreExecutionV2ServiceListEventsRequest) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *CoreExecutionV2ListEventsRequest) GetKind() string {
+func (x *CoreExecutionV2ServiceListEventsRequest) GetKind() string {
 	if x != nil {
 		return x.Kind
 	}
 	return ""
 }
 
-func (x *CoreExecutionV2ListEventsRequest) GetId() string {
+func (x *CoreExecutionV2ServiceListEventsRequest) GetId() string {
 	if x != nil {
 		return x.Id
 	}
 	return ""
 }
 
-func (x *CoreExecutionV2ListEventsRequest) GetAfterSequence() uint64 {
+func (x *CoreExecutionV2ServiceListEventsRequest) GetAfterSequence() uint64 {
 	if x != nil {
 		return x.AfterSequence
 	}
 	return 0
 }
 
-func (x *CoreExecutionV2ListEventsRequest) GetLimit() int32 {
+func (x *CoreExecutionV2ServiceListEventsRequest) GetLimit() int32 {
 	if x != nil {
 		return x.Limit
 	}
@@ -502,7 +502,7 @@ func (x *CoreExecutionV2Event) GetCreatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-type CoreExecutionV2ListEventsResponse struct {
+type CoreExecutionV2ServiceListEventsResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Events        []*CoreExecutionV2Event `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
 	NextSequence  uint64                  `protobuf:"varint,2,opt,name=next_sequence,json=nextSequence,proto3" json:"next_sequence,omitempty"`
@@ -510,20 +510,20 @@ type CoreExecutionV2ListEventsResponse struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CoreExecutionV2ListEventsResponse) Reset() {
-	*x = CoreExecutionV2ListEventsResponse{}
+func (x *CoreExecutionV2ServiceListEventsResponse) Reset() {
+	*x = CoreExecutionV2ServiceListEventsResponse{}
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CoreExecutionV2ListEventsResponse) String() string {
+func (x *CoreExecutionV2ServiceListEventsResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CoreExecutionV2ListEventsResponse) ProtoMessage() {}
+func (*CoreExecutionV2ServiceListEventsResponse) ProtoMessage() {}
 
-func (x *CoreExecutionV2ListEventsResponse) ProtoReflect() protoreflect.Message {
+func (x *CoreExecutionV2ServiceListEventsResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -535,19 +535,19 @@ func (x *CoreExecutionV2ListEventsResponse) ProtoReflect() protoreflect.Message 
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CoreExecutionV2ListEventsResponse.ProtoReflect.Descriptor instead.
-func (*CoreExecutionV2ListEventsResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CoreExecutionV2ServiceListEventsResponse.ProtoReflect.Descriptor instead.
+func (*CoreExecutionV2ServiceListEventsResponse) Descriptor() ([]byte, []int) {
 	return file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *CoreExecutionV2ListEventsResponse) GetEvents() []*CoreExecutionV2Event {
+func (x *CoreExecutionV2ServiceListEventsResponse) GetEvents() []*CoreExecutionV2Event {
 	if x != nil {
 		return x.Events
 	}
 	return nil
 }
 
-func (x *CoreExecutionV2ListEventsResponse) GetNextSequence() uint64 {
+func (x *CoreExecutionV2ServiceListEventsResponse) GetNextSequence() uint64 {
 	if x != nil {
 		return x.NextSequence
 	}
@@ -570,20 +570,20 @@ const file_dirextalk_agent_v1_core_execution_v2_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"Z\n" +
-	"\x1dCoreExecutionV2ExecuteRequest\x12\x16\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"a\n" +
+	"$CoreExecutionV2ServiceExecuteRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12!\n" +
-	"\frequest_json\x18\x02 \x01(\fR\vrequestJson\"A\n" +
-	"\x1eCoreExecutionV2ExecuteResponse\x12\x1f\n" +
+	"\frequest_json\x18\x02 \x01(\fR\vrequestJson\"H\n" +
+	"%CoreExecutionV2ServiceExecuteResponse\x12\x1f\n" +
 	"\vresult_json\x18\x01 \x01(\fR\n" +
-	"resultJson\"[\n" +
-	"\x19CoreExecutionV2GetRequest\x12\x12\n" +
+	"resultJson\"b\n" +
+	" CoreExecutionV2ServiceGetRequest\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1a\n" +
-	"\brevision\x18\x03 \x01(\x04R\brevision\"_\n" +
-	"\x1aCoreExecutionV2GetResponse\x12A\n" +
-	"\x06record\x18\x01 \x01(\v2).dirextalk.agent.v1.CoreExecutionV2RecordR\x06record\"\x83\x01\n" +
-	" CoreExecutionV2ListEventsRequest\x12\x12\n" +
+	"\brevision\x18\x03 \x01(\x04R\brevision\"f\n" +
+	"!CoreExecutionV2ServiceGetResponse\x12A\n" +
+	"\x06record\x18\x01 \x01(\v2).dirextalk.agent.v1.CoreExecutionV2RecordR\x06record\"\x8a\x01\n" +
+	"'CoreExecutionV2ServiceListEventsRequest\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12%\n" +
 	"\x0eafter_sequence\x18\x03 \x01(\x04R\rafterSequence\x12\x14\n" +
@@ -598,15 +598,15 @@ const file_dirextalk_agent_v1_core_execution_v2_proto_rawDesc = "" +
 	"\x04type\x18\x06 \x01(\tR\x04type\x12!\n" +
 	"\fpayload_json\x18\a \x01(\fR\vpayloadJson\x129\n" +
 	"\n" +
-	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x8a\x01\n" +
-	"!CoreExecutionV2ListEventsResponse\x12@\n" +
+	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x91\x01\n" +
+	"(CoreExecutionV2ServiceListEventsResponse\x12@\n" +
 	"\x06events\x18\x01 \x03(\v2(.dirextalk.agent.v1.CoreExecutionV2EventR\x06events\x12#\n" +
-	"\rnext_sequence\x18\x02 \x01(\x04R\fnextSequence2\xeb\x02\n" +
-	"\x16CoreExecutionV2Service\x12p\n" +
-	"\aExecute\x121.dirextalk.agent.v1.CoreExecutionV2ExecuteRequest\x1a2.dirextalk.agent.v1.CoreExecutionV2ExecuteResponse\x12d\n" +
-	"\x03Get\x12-.dirextalk.agent.v1.CoreExecutionV2GetRequest\x1a..dirextalk.agent.v1.CoreExecutionV2GetResponse\x12y\n" +
+	"\rnext_sequence\x18\x02 \x01(\x04R\fnextSequence2\x96\x03\n" +
+	"\x16CoreExecutionV2Service\x12~\n" +
+	"\aExecute\x128.dirextalk.agent.v1.CoreExecutionV2ServiceExecuteRequest\x1a9.dirextalk.agent.v1.CoreExecutionV2ServiceExecuteResponse\x12r\n" +
+	"\x03Get\x124.dirextalk.agent.v1.CoreExecutionV2ServiceGetRequest\x1a5.dirextalk.agent.v1.CoreExecutionV2ServiceGetResponse\x12\x87\x01\n" +
 	"\n" +
-	"ListEvents\x124.dirextalk.agent.v1.CoreExecutionV2ListEventsRequest\x1a5.dirextalk.agent.v1.CoreExecutionV2ListEventsResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
+	"ListEvents\x12;.dirextalk.agent.v1.CoreExecutionV2ServiceListEventsRequest\x1a<.dirextalk.agent.v1.CoreExecutionV2ServiceListEventsResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_dirextalk_agent_v1_core_execution_v2_proto_rawDescOnce sync.Once
@@ -622,28 +622,28 @@ func file_dirextalk_agent_v1_core_execution_v2_proto_rawDescGZIP() []byte {
 
 var file_dirextalk_agent_v1_core_execution_v2_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_dirextalk_agent_v1_core_execution_v2_proto_goTypes = []any{
-	(*CoreExecutionV2Record)(nil),             // 0: dirextalk.agent.v1.CoreExecutionV2Record
-	(*CoreExecutionV2ExecuteRequest)(nil),     // 1: dirextalk.agent.v1.CoreExecutionV2ExecuteRequest
-	(*CoreExecutionV2ExecuteResponse)(nil),    // 2: dirextalk.agent.v1.CoreExecutionV2ExecuteResponse
-	(*CoreExecutionV2GetRequest)(nil),         // 3: dirextalk.agent.v1.CoreExecutionV2GetRequest
-	(*CoreExecutionV2GetResponse)(nil),        // 4: dirextalk.agent.v1.CoreExecutionV2GetResponse
-	(*CoreExecutionV2ListEventsRequest)(nil),  // 5: dirextalk.agent.v1.CoreExecutionV2ListEventsRequest
-	(*CoreExecutionV2Event)(nil),              // 6: dirextalk.agent.v1.CoreExecutionV2Event
-	(*CoreExecutionV2ListEventsResponse)(nil), // 7: dirextalk.agent.v1.CoreExecutionV2ListEventsResponse
-	(*timestamppb.Timestamp)(nil),             // 8: google.protobuf.Timestamp
+	(*CoreExecutionV2Record)(nil),                    // 0: dirextalk.agent.v1.CoreExecutionV2Record
+	(*CoreExecutionV2ServiceExecuteRequest)(nil),     // 1: dirextalk.agent.v1.CoreExecutionV2ServiceExecuteRequest
+	(*CoreExecutionV2ServiceExecuteResponse)(nil),    // 2: dirextalk.agent.v1.CoreExecutionV2ServiceExecuteResponse
+	(*CoreExecutionV2ServiceGetRequest)(nil),         // 3: dirextalk.agent.v1.CoreExecutionV2ServiceGetRequest
+	(*CoreExecutionV2ServiceGetResponse)(nil),        // 4: dirextalk.agent.v1.CoreExecutionV2ServiceGetResponse
+	(*CoreExecutionV2ServiceListEventsRequest)(nil),  // 5: dirextalk.agent.v1.CoreExecutionV2ServiceListEventsRequest
+	(*CoreExecutionV2Event)(nil),                     // 6: dirextalk.agent.v1.CoreExecutionV2Event
+	(*CoreExecutionV2ServiceListEventsResponse)(nil), // 7: dirextalk.agent.v1.CoreExecutionV2ServiceListEventsResponse
+	(*timestamppb.Timestamp)(nil),                    // 8: google.protobuf.Timestamp
 }
 var file_dirextalk_agent_v1_core_execution_v2_proto_depIdxs = []int32{
 	8, // 0: dirextalk.agent.v1.CoreExecutionV2Record.created_at:type_name -> google.protobuf.Timestamp
 	8, // 1: dirextalk.agent.v1.CoreExecutionV2Record.updated_at:type_name -> google.protobuf.Timestamp
-	0, // 2: dirextalk.agent.v1.CoreExecutionV2GetResponse.record:type_name -> dirextalk.agent.v1.CoreExecutionV2Record
+	0, // 2: dirextalk.agent.v1.CoreExecutionV2ServiceGetResponse.record:type_name -> dirextalk.agent.v1.CoreExecutionV2Record
 	8, // 3: dirextalk.agent.v1.CoreExecutionV2Event.created_at:type_name -> google.protobuf.Timestamp
-	6, // 4: dirextalk.agent.v1.CoreExecutionV2ListEventsResponse.events:type_name -> dirextalk.agent.v1.CoreExecutionV2Event
-	1, // 5: dirextalk.agent.v1.CoreExecutionV2Service.Execute:input_type -> dirextalk.agent.v1.CoreExecutionV2ExecuteRequest
-	3, // 6: dirextalk.agent.v1.CoreExecutionV2Service.Get:input_type -> dirextalk.agent.v1.CoreExecutionV2GetRequest
-	5, // 7: dirextalk.agent.v1.CoreExecutionV2Service.ListEvents:input_type -> dirextalk.agent.v1.CoreExecutionV2ListEventsRequest
-	2, // 8: dirextalk.agent.v1.CoreExecutionV2Service.Execute:output_type -> dirextalk.agent.v1.CoreExecutionV2ExecuteResponse
-	4, // 9: dirextalk.agent.v1.CoreExecutionV2Service.Get:output_type -> dirextalk.agent.v1.CoreExecutionV2GetResponse
-	7, // 10: dirextalk.agent.v1.CoreExecutionV2Service.ListEvents:output_type -> dirextalk.agent.v1.CoreExecutionV2ListEventsResponse
+	6, // 4: dirextalk.agent.v1.CoreExecutionV2ServiceListEventsResponse.events:type_name -> dirextalk.agent.v1.CoreExecutionV2Event
+	1, // 5: dirextalk.agent.v1.CoreExecutionV2Service.Execute:input_type -> dirextalk.agent.v1.CoreExecutionV2ServiceExecuteRequest
+	3, // 6: dirextalk.agent.v1.CoreExecutionV2Service.Get:input_type -> dirextalk.agent.v1.CoreExecutionV2ServiceGetRequest
+	5, // 7: dirextalk.agent.v1.CoreExecutionV2Service.ListEvents:input_type -> dirextalk.agent.v1.CoreExecutionV2ServiceListEventsRequest
+	2, // 8: dirextalk.agent.v1.CoreExecutionV2Service.Execute:output_type -> dirextalk.agent.v1.CoreExecutionV2ServiceExecuteResponse
+	4, // 9: dirextalk.agent.v1.CoreExecutionV2Service.Get:output_type -> dirextalk.agent.v1.CoreExecutionV2ServiceGetResponse
+	7, // 10: dirextalk.agent.v1.CoreExecutionV2Service.ListEvents:output_type -> dirextalk.agent.v1.CoreExecutionV2ServiceListEventsResponse
 	8, // [8:11] is the sub-list for method output_type
 	5, // [5:8] is the sub-list for method input_type
 	5, // [5:5] is the sub-list for extension type_name

@@ -28,9 +28,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type CoreExecutionV2ServiceClient interface {
-	Execute(ctx context.Context, in *CoreExecutionV2ExecuteRequest, opts ...grpc.CallOption) (*CoreExecutionV2ExecuteResponse, error)
-	Get(ctx context.Context, in *CoreExecutionV2GetRequest, opts ...grpc.CallOption) (*CoreExecutionV2GetResponse, error)
-	ListEvents(ctx context.Context, in *CoreExecutionV2ListEventsRequest, opts ...grpc.CallOption) (*CoreExecutionV2ListEventsResponse, error)
+	Execute(ctx context.Context, in *CoreExecutionV2ServiceExecuteRequest, opts ...grpc.CallOption) (*CoreExecutionV2ServiceExecuteResponse, error)
+	Get(ctx context.Context, in *CoreExecutionV2ServiceGetRequest, opts ...grpc.CallOption) (*CoreExecutionV2ServiceGetResponse, error)
+	ListEvents(ctx context.Context, in *CoreExecutionV2ServiceListEventsRequest, opts ...grpc.CallOption) (*CoreExecutionV2ServiceListEventsResponse, error)
 }
 
 type coreExecutionV2ServiceClient struct {
@@ -41,9 +41,9 @@ func NewCoreExecutionV2ServiceClient(cc grpc.ClientConnInterface) CoreExecutionV
 	return &coreExecutionV2ServiceClient{cc}
 }
 
-func (c *coreExecutionV2ServiceClient) Execute(ctx context.Context, in *CoreExecutionV2ExecuteRequest, opts ...grpc.CallOption) (*CoreExecutionV2ExecuteResponse, error) {
+func (c *coreExecutionV2ServiceClient) Execute(ctx context.Context, in *CoreExecutionV2ServiceExecuteRequest, opts ...grpc.CallOption) (*CoreExecutionV2ServiceExecuteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreExecutionV2ExecuteResponse)
+	out := new(CoreExecutionV2ServiceExecuteResponse)
 	err := c.cc.Invoke(ctx, CoreExecutionV2Service_Execute_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -51,9 +51,9 @@ func (c *coreExecutionV2ServiceClient) Execute(ctx context.Context, in *CoreExec
 	return out, nil
 }
 
-func (c *coreExecutionV2ServiceClient) Get(ctx context.Context, in *CoreExecutionV2GetRequest, opts ...grpc.CallOption) (*CoreExecutionV2GetResponse, error) {
+func (c *coreExecutionV2ServiceClient) Get(ctx context.Context, in *CoreExecutionV2ServiceGetRequest, opts ...grpc.CallOption) (*CoreExecutionV2ServiceGetResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreExecutionV2GetResponse)
+	out := new(CoreExecutionV2ServiceGetResponse)
 	err := c.cc.Invoke(ctx, CoreExecutionV2Service_Get_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -61,9 +61,9 @@ func (c *coreExecutionV2ServiceClient) Get(ctx context.Context, in *CoreExecutio
 	return out, nil
 }
 
-func (c *coreExecutionV2ServiceClient) ListEvents(ctx context.Context, in *CoreExecutionV2ListEventsRequest, opts ...grpc.CallOption) (*CoreExecutionV2ListEventsResponse, error) {
+func (c *coreExecutionV2ServiceClient) ListEvents(ctx context.Context, in *CoreExecutionV2ServiceListEventsRequest, opts ...grpc.CallOption) (*CoreExecutionV2ServiceListEventsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CoreExecutionV2ListEventsResponse)
+	out := new(CoreExecutionV2ServiceListEventsResponse)
 	err := c.cc.Invoke(ctx, CoreExecutionV2Service_ListEvents_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -75,9 +75,9 @@ func (c *coreExecutionV2ServiceClient) ListEvents(ctx context.Context, in *CoreE
 // All implementations must embed UnimplementedCoreExecutionV2ServiceServer
 // for forward compatibility.
 type CoreExecutionV2ServiceServer interface {
-	Execute(context.Context, *CoreExecutionV2ExecuteRequest) (*CoreExecutionV2ExecuteResponse, error)
-	Get(context.Context, *CoreExecutionV2GetRequest) (*CoreExecutionV2GetResponse, error)
-	ListEvents(context.Context, *CoreExecutionV2ListEventsRequest) (*CoreExecutionV2ListEventsResponse, error)
+	Execute(context.Context, *CoreExecutionV2ServiceExecuteRequest) (*CoreExecutionV2ServiceExecuteResponse, error)
+	Get(context.Context, *CoreExecutionV2ServiceGetRequest) (*CoreExecutionV2ServiceGetResponse, error)
+	ListEvents(context.Context, *CoreExecutionV2ServiceListEventsRequest) (*CoreExecutionV2ServiceListEventsResponse, error)
 	mustEmbedUnimplementedCoreExecutionV2ServiceServer()
 }
 
@@ -88,13 +88,13 @@ type CoreExecutionV2ServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedCoreExecutionV2ServiceServer struct{}
 
-func (UnimplementedCoreExecutionV2ServiceServer) Execute(context.Context, *CoreExecutionV2ExecuteRequest) (*CoreExecutionV2ExecuteResponse, error) {
+func (UnimplementedCoreExecutionV2ServiceServer) Execute(context.Context, *CoreExecutionV2ServiceExecuteRequest) (*CoreExecutionV2ServiceExecuteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Execute not implemented")
 }
-func (UnimplementedCoreExecutionV2ServiceServer) Get(context.Context, *CoreExecutionV2GetRequest) (*CoreExecutionV2GetResponse, error) {
+func (UnimplementedCoreExecutionV2ServiceServer) Get(context.Context, *CoreExecutionV2ServiceGetRequest) (*CoreExecutionV2ServiceGetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Get not implemented")
 }
-func (UnimplementedCoreExecutionV2ServiceServer) ListEvents(context.Context, *CoreExecutionV2ListEventsRequest) (*CoreExecutionV2ListEventsResponse, error) {
+func (UnimplementedCoreExecutionV2ServiceServer) ListEvents(context.Context, *CoreExecutionV2ServiceListEventsRequest) (*CoreExecutionV2ServiceListEventsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListEvents not implemented")
 }
 func (UnimplementedCoreExecutionV2ServiceServer) mustEmbedUnimplementedCoreExecutionV2ServiceServer() {
@@ -120,7 +120,7 @@ func RegisterCoreExecutionV2ServiceServer(s grpc.ServiceRegistrar, srv CoreExecu
 }
 
 func _CoreExecutionV2Service_Execute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreExecutionV2ExecuteRequest)
+	in := new(CoreExecutionV2ServiceExecuteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -132,13 +132,13 @@ func _CoreExecutionV2Service_Execute_Handler(srv interface{}, ctx context.Contex
 		FullMethod: CoreExecutionV2Service_Execute_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreExecutionV2ServiceServer).Execute(ctx, req.(*CoreExecutionV2ExecuteRequest))
+		return srv.(CoreExecutionV2ServiceServer).Execute(ctx, req.(*CoreExecutionV2ServiceExecuteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _CoreExecutionV2Service_Get_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreExecutionV2GetRequest)
+	in := new(CoreExecutionV2ServiceGetRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -150,13 +150,13 @@ func _CoreExecutionV2Service_Get_Handler(srv interface{}, ctx context.Context, d
 		FullMethod: CoreExecutionV2Service_Get_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreExecutionV2ServiceServer).Get(ctx, req.(*CoreExecutionV2GetRequest))
+		return srv.(CoreExecutionV2ServiceServer).Get(ctx, req.(*CoreExecutionV2ServiceGetRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
 func _CoreExecutionV2Service_ListEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CoreExecutionV2ListEventsRequest)
+	in := new(CoreExecutionV2ServiceListEventsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func _CoreExecutionV2Service_ListEvents_Handler(srv interface{}, ctx context.Con
 		FullMethod: CoreExecutionV2Service_ListEvents_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(CoreExecutionV2ServiceServer).ListEvents(ctx, req.(*CoreExecutionV2ListEventsRequest))
+		return srv.(CoreExecutionV2ServiceServer).ListEvents(ctx, req.(*CoreExecutionV2ServiceListEventsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }

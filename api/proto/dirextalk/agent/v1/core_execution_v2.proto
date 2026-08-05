@@ -22,20 +22,20 @@ message CoreExecutionV2Record {
   google.protobuf.Timestamp updated_at = 9;
 }
 
-message CoreExecutionV2ExecuteRequest {
+message CoreExecutionV2ServiceExecuteRequest {
   string action = 1;
   bytes request_json = 2;
 }
-message CoreExecutionV2ExecuteResponse { bytes result_json = 1; }
+message CoreExecutionV2ServiceExecuteResponse { bytes result_json = 1; }
 
-message CoreExecutionV2GetRequest {
+message CoreExecutionV2ServiceGetRequest {
   string kind = 1;
   string id = 2;
   uint64 revision = 3;
 }
-message CoreExecutionV2GetResponse { CoreExecutionV2Record record = 1; }
+message CoreExecutionV2ServiceGetResponse { CoreExecutionV2Record record = 1; }
 
-message CoreExecutionV2ListEventsRequest {
+message CoreExecutionV2ServiceListEventsRequest {
   string kind = 1;
   string id = 2;
   uint64 after_sequence = 3;
@@ -51,13 +51,13 @@ message CoreExecutionV2Event {
   bytes payload_json = 7;
   google.protobuf.Timestamp created_at = 8;
 }
-message CoreExecutionV2ListEventsResponse {
+message CoreExecutionV2ServiceListEventsResponse {
   repeated CoreExecutionV2Event events = 1;
   uint64 next_sequence = 2;
 }
 
 service CoreExecutionV2Service {
-  rpc Execute(CoreExecutionV2ExecuteRequest) returns (CoreExecutionV2ExecuteResponse);
-  rpc Get(CoreExecutionV2GetRequest) returns (CoreExecutionV2GetResponse);
-  rpc ListEvents(CoreExecutionV2ListEventsRequest) returns (CoreExecutionV2ListEventsResponse);
+  rpc Execute(CoreExecutionV2ServiceExecuteRequest) returns (CoreExecutionV2ServiceExecuteResponse);
+  rpc Get(CoreExecutionV2ServiceGetRequest) returns (CoreExecutionV2ServiceGetResponse);
+  rpc ListEvents(CoreExecutionV2ServiceListEventsRequest) returns (CoreExecutionV2ServiceListEventsResponse);
 }

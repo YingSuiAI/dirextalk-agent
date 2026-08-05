@@ -41,7 +41,7 @@ func (s *CoreExecutionV2Service) owner(ctx context.Context) (string, error) {
 	return owner, nil
 }
 
-func (s *CoreExecutionV2Service) Execute(ctx context.Context, req *agentv1.CoreExecutionV2ExecuteRequest) (*agentv1.CoreExecutionV2ExecuteResponse, error) {
+func (s *CoreExecutionV2Service) Execute(ctx context.Context, req *agentv1.CoreExecutionV2ServiceExecuteRequest) (*agentv1.CoreExecutionV2ServiceExecuteResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetAction()) == "" || len(req.GetRequestJson()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "action and request_json are required")
 	}
@@ -61,10 +61,10 @@ func (s *CoreExecutionV2Service) Execute(ctx context.Context, req *agentv1.CoreE
 	if err != nil {
 		return nil, status.Error(codes.Internal, "encode execution result")
 	}
-	return &agentv1.CoreExecutionV2ExecuteResponse{ResultJson: raw}, nil
+	return &agentv1.CoreExecutionV2ServiceExecuteResponse{ResultJson: raw}, nil
 }
 
-func (s *CoreExecutionV2Service) Get(ctx context.Context, req *agentv1.CoreExecutionV2GetRequest) (*agentv1.CoreExecutionV2GetResponse, error) {
+func (s *CoreExecutionV2Service) Get(ctx context.Context, req *agentv1.CoreExecutionV2ServiceGetRequest) (*agentv1.CoreExecutionV2ServiceGetResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetKind()) == "" || strings.TrimSpace(req.GetId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "kind and id are required")
 	}
@@ -77,10 +77,10 @@ func (s *CoreExecutionV2Service) Get(ctx context.Context, req *agentv1.CoreExecu
 		return nil, mapExecutionError(err)
 	}
 	raw, _ := json.Marshal(record.Payload)
-	return &agentv1.CoreExecutionV2GetResponse{Record: &agentv1.CoreExecutionV2Record{OwnerId: record.OwnerID, Kind: record.Kind, Id: record.ID, Revision: record.Revision, Status: record.Status, Digest: record.Digest, PayloadJson: raw, CreatedAt: timestamppb.New(record.CreatedAt), UpdatedAt: timestamppb.New(record.UpdatedAt)}}, nil
+	return &agentv1.CoreExecutionV2ServiceGetResponse{Record: &agentv1.CoreExecutionV2Record{OwnerId: record.OwnerID, Kind: record.Kind, Id: record.ID, Revision: record.Revision, Status: record.Status, Digest: record.Digest, PayloadJson: raw, CreatedAt: timestamppb.New(record.CreatedAt), UpdatedAt: timestamppb.New(record.UpdatedAt)}}, nil
 }
 
-func (s *CoreExecutionV2Service) ListEvents(ctx context.Context, req *agentv1.CoreExecutionV2ListEventsRequest) (*agentv1.CoreExecutionV2ListEventsResponse, error) {
+func (s *CoreExecutionV2Service) ListEvents(ctx context.Context, req *agentv1.CoreExecutionV2ServiceListEventsRequest) (*agentv1.CoreExecutionV2ServiceListEventsResponse, error) {
 	if req == nil || strings.TrimSpace(req.GetKind()) == "" || strings.TrimSpace(req.GetId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "kind and id are required")
 	}
@@ -96,7 +96,7 @@ func (s *CoreExecutionV2Service) ListEvents(ctx context.Context, req *agentv1.Co
 	if err != nil {
 		return nil, mapExecutionError(err)
 	}
-	response := &agentv1.CoreExecutionV2ListEventsResponse{NextSequence: next}
+	response := &agentv1.CoreExecutionV2ServiceListEventsResponse{NextSequence: next}
 	for _, event := range events {
 		raw, _ := json.Marshal(event.Payload)
 		response.Events = append(response.Events, &agentv1.CoreExecutionV2Event{OwnerId: event.OwnerID, Kind: event.Kind, ResourceId: event.ResourceID, Sequence: event.Sequence, EventId: event.EventID, Type: event.Type, PayloadJson: raw, CreatedAt: timestamppb.New(event.CreatedAt)})
