@@ -436,7 +436,14 @@ func serveCore(cfg config.Config) error {
 			}
 			return fmt.Errorf("recover capability operations before publication: %w", recoverErr)
 		}
-		registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{
+		var registry *agentcapability.Registry
+		infoProvider := newCoreInfoProvider(cfg.InstanceID, func() []*capv1.CapabilityDescriptor {
+			if registry == nil {
+				return nil
+			}
+			return registry.List()
+		})
+		registry = agentcapability.NewCoreRegistry(agentcapability.CoreBindings{
 			Conversation:  conversation,
 			Confirmations: confirmationDomain,
 			Models:        profiles,
@@ -474,7 +481,7 @@ func serveCore(cfg config.Config) error {
 				return externalPurge.Purge(ctx)
 			},
 			Misc: agentcapability.MiscBindings{
-				Info:        newCoreInfoProvider(cfg.InstanceID),
+				Info:        infoProvider,
 				ConfigStore: configStore,
 			},
 		})

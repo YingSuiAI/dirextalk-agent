@@ -268,14 +268,14 @@ operation.
 
 ## Service composition and capabilities
 
-`AgentService.GetCapabilities` advertises a capability only when its production
-composition is usable. At minimum:
+`AgentService.GetCapabilities` and the neutral Capability API advertise a
+capability only when its production composition is usable. At minimum:
 
 - `agent.info`, `model.profile`, and `conversation` are the minimum basic-chat
   set;
 - `conversation.extensions` only when chat extension resolution and Runner
   dispatch are wired;
-- `task`, `schedule`, `confirmation`, `mcp`, `skill`, `knowledge`, and
+- `task`, `schedule`, `confirmation`, `mcp`, `skills.server`, `knowledge`, and
   `aws.control` retain their exact current meanings;
 - `workload.core_runner` only when the workload Runner is ready;
 - `workload.aws_ssm` only when the AWS provider supports the required calls;
@@ -287,6 +287,36 @@ explicit readiness block naming one exact durable credential reference and
 target, plus typed-provider proof of STS/account binding and target
 prerequisites. Without that configured live target and proof, the capability
 remains disabled; there is no default target or broad account scan.
+
+### Native Agent client projection
+
+The `agent.info.v1` `get_backends` response projects the readiness-passed
+descriptors from the same `NewCoreRegistry` used by the Capability server. The
+Core list is a sorted, de-duplicated set of stable client tokens; descriptor
+IDs are not exposed as feature claims and unknown IDs are ignored.
+
+| Core descriptor | Client tokens |
+| --- | --- |
+| `agent.info.v1` | `agent.info` |
+| `agent.config.v1` | `config` |
+| `agent.chat.v1` | `conversation` |
+| `agent.models.v1` | `model.profile`, `model_profiles.server`, `model_roles.server` |
+| `agent.knowledge.v1` | `knowledge`, `memory.server` |
+| `agent.schedules.v1` | `schedule`, `schedules.server` |
+| `agent.tasks.v1` | `task` |
+| `agent.confirmations.v1` | `confirmation` |
+| `agent.skills.v1` | `mcp` only when `list_mcp` is present; `skills.server` when a Skill operation is present |
+| `agent.aws.v1` | `aws.control` |
+| `agent.voice.v1` | `voice.server` |
+| `agent.execution.v2` | `execution.v2` plus only the sub-tokens backed by advertised operation IDs |
+
+`agent.skills.v1` with only `invoke_product` is a Product bridge and publishes
+neither `mcp` nor `skills.server`. Execution V2 maps its operation groups to
+`execution.v2.plan`, `.observe`, `.provision`, `.run`, `.bindings`, `.secrets`,
+and `execution.v2.transport.aws_ssm`; `service_bindings.invoke` additionally
+publishes `execution.v2.transport.http_api`. These tokens are never added from
+configuration or action-name guesses when the corresponding descriptor or
+operation is absent.
 
 ## Deployment assets
 
