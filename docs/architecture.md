@@ -68,3 +68,10 @@ see the [Message Server integration contract](message-server-integration-develop
 
 Core v1 does not add REST, an admin UI, multi-user RBAC, Agent clusters/pools,
 task priority, graph authoring, or deployment automation.
+
+## Proposed evolution
+
+The proposed Central OS Team execution extension is specified in the
+[Agent Core v1 + Central OS Pi Worker migration design](central-os-pi-worker-migration-design.md).
+That document is a proposed migration boundary, not a claim that `agent.team.v1`
+or AWS Pi Worker execution is present in the current Core v1 baseline.
