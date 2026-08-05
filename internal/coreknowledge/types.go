@@ -236,10 +236,25 @@ type SearchMatch struct {
 	Score    float64 `json:"score"`
 }
 
+// SearchPage carries the immutable embedding binding used to produce the
+// page.  The binding is deliberately projected once at page level rather
+// than repeated on every match.  Repositories that support opaque cursors
+// must persist these values with the cursor snapshot and replay them on every
+// subsequent page; callers must never resolve the current default profile
+// while resuming a cursor.
+type SearchProvenance struct {
+	EmbeddingProfileID       string `json:"embedding_profile_id,omitempty"`
+	EmbeddingProfileRevision int64  `json:"embedding_profile_revision,omitempty"`
+	EmbeddingModel           string `json:"embedding_model,omitempty"`
+	EmbeddingGeneration      string `json:"embedding_generation,omitempty"`
+	CollectionConfigDigest   string `json:"collection_config_digest,omitempty"`
+}
+
 type SearchPage struct {
 	Matches       []SearchMatch `json:"items"`
 	NextPageToken string        `json:"next_cursor"`
 	SearchMode    string        `json:"search_mode,omitempty"`
+	SearchProvenance
 }
 
 // SearchResolver is the semantic search boundary. A durable repository may
@@ -264,12 +279,19 @@ type Status struct {
 // dimension and collection are returned for observability and are immutable
 // deployment invariants.
 type EmbeddingConfig struct {
-	EmbeddingProfileID     string    `json:"embedding_profile_id"`
-	Dimension              int       `json:"dimension"`
-	Collection             string    `json:"collection"`
-	CollectionConfigDigest string    `json:"collection_config_digest"`
-	Revision               int64     `json:"revision"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	EmbeddingProfileID string `json:"embedding_profile_id"`
+	// The following fields are optional repository-local provenance hints. The
+	// PostgreSQL semantic resolver obtains them from the model-profile
+	// authority at search time; the in-memory repository accepts them so its
+	// cursor snapshots can exercise the same immutable page contract.
+	EmbeddingProfileRevision int64     `json:"embedding_profile_revision,omitempty"`
+	EmbeddingModel           string    `json:"embedding_model,omitempty"`
+	EmbeddingGeneration      string    `json:"embedding_generation,omitempty"`
+	Dimension                int       `json:"dimension"`
+	Collection               string    `json:"collection"`
+	CollectionConfigDigest   string    `json:"collection_config_digest"`
+	Revision                 int64     `json:"revision"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 type EmbeddingConfigCommand struct {

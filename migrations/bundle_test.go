@@ -7,8 +7,8 @@ import (
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 1 || entries[0] != "000001_core_v1_fresh.up.sql" {
-		t.Fatalf("entries=%v, want baseline plus model sync and turns migrations", entries)
+	if len(entries) != 2 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" {
+		t.Fatalf("entries=%v, want the immutable baseline plus provenance migration", entries)
 	}
 	migration := Ordered()[0]
 	if migration.Version != 1 {
@@ -16,6 +16,13 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	}
 	if len(migration.Script) == 0 || migration.Script[len(migration.Script)-1] != '\n' {
 		t.Fatal("baseline script lost its source newline")
+	}
+	provenance := Ordered()[1]
+	if provenance.Version != 2 || len(provenance.Script) == 0 || provenance.Script[len(provenance.Script)-1] != '\n' {
+		t.Fatal("provenance migration lost its source newline")
+	}
+	if !bytes.Contains(provenance.Script, []byte("embedding_profile_revision")) {
+		t.Fatal("provenance migration missing profile revision")
 	}
 	for _, needle := range []string{
 		"CREATE TABLE agent_instance_metadata",

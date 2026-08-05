@@ -28,11 +28,12 @@ type uploadRecord struct {
 }
 
 type repositorySnapshot struct {
-	created time.Time
-	expires time.Time
-	digest  string
-	sources []Source
-	matches []SearchMatch
+	created    time.Time
+	expires    time.Time
+	digest     string
+	sources    []Source
+	matches    []SearchMatch
+	provenance SearchProvenance
 }
 
 const (
@@ -74,7 +75,7 @@ func (r *MemoryRepository) GetEmbeddingConfig(_ context.Context) (EmbeddingConfi
 }
 
 func (r *MemoryRepository) EnsureEmbeddingConfig(_ context.Context, config EmbeddingConfig) (EmbeddingConfig, error) {
-	if !validUUID(config.EmbeddingProfileID) || config.Dimension <= 0 || config.Dimension > 16384 || strings.TrimSpace(config.Collection) == "" || len(config.Collection) > 255 || config.Revision < 1 {
+	if !validUUID(config.EmbeddingProfileID) || config.EmbeddingProfileRevision < 0 || len(config.EmbeddingModel) > 255 || len(config.EmbeddingGeneration) > 256 || config.Dimension <= 0 || config.Dimension > 16384 || strings.TrimSpace(config.Collection) == "" || len(config.Collection) > 255 || config.Revision < 1 {
 		return EmbeddingConfig{}, ErrInvalid
 	}
 	r.mu.Lock()
@@ -116,6 +117,12 @@ func (r *MemoryRepository) UpdateEmbeddingConfig(_ context.Context, command Embe
 		return EmbeddingConfig{}, ErrInvalid
 	}
 	current.EmbeddingProfileID = command.EmbeddingProfileID
+	// The command only binds a profile identity. Any optional in-memory model
+	// hints from the previous profile must be cleared rather than reused for a
+	// different binding.
+	current.EmbeddingProfileRevision = 0
+	current.EmbeddingModel = ""
+	current.EmbeddingGeneration = ""
 	current.Revision++
 	current.UpdatedAt = r.nowUTC()
 	r.embeddingConfig = &current
@@ -792,6 +799,7 @@ func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage,
 		return SearchPage{}, err
 	}
 	var matches []SearchMatch
+	var provenance SearchProvenance
 	if q.PageToken != "" {
 		if c.Digest != digest {
 			return SearchPage{}, ErrCursorConflict
@@ -801,6 +809,7 @@ func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage,
 			return SearchPage{}, ErrCursorConflict
 		}
 		matches = append([]SearchMatch(nil), snap.matches...)
+		provenance = snap.provenance
 	} else {
 		for _, id := range q.SourceIDs {
 			source, ok := r.sources[id]
@@ -842,6 +851,23 @@ func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage,
 			return matches[i].SourceID < matches[j].SourceID
 		})
 	}
+	if q.PageToken == "" && r.embeddingConfig != nil {
+		// The in-memory repository has no model-profile resolver.  Its durable
+		// config revision is the strongest available binding, and the same
+		// value is frozen in the snapshot so a later profile rebind cannot
+		// relabel an already-issued cursor.
+		profileRevision := r.embeddingConfig.EmbeddingProfileRevision
+		if profileRevision <= 0 {
+			profileRevision = r.embeddingConfig.Revision
+		}
+		provenance = SearchProvenance{
+			EmbeddingProfileID:       r.embeddingConfig.EmbeddingProfileID,
+			EmbeddingProfileRevision: profileRevision,
+			EmbeddingModel:           r.embeddingConfig.EmbeddingModel,
+			EmbeddingGeneration:      r.embeddingConfig.EmbeddingGeneration,
+			CollectionConfigDigest:   r.embeddingConfig.CollectionConfigDigest,
+		}
+	}
 	start := 0
 	for start < len(matches) && matches[start].SourceID <= c.LastID {
 		start++
@@ -850,12 +876,12 @@ func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage,
 	if end > len(matches) {
 		end = len(matches)
 	}
-	out := SearchPage{Matches: append([]SearchMatch(nil), matches[start:end]...)}
+	out := SearchPage{Matches: append([]SearchMatch(nil), matches[start:end]...), SearchProvenance: provenance}
 	if end < len(matches) {
 		snapshotID := c.SnapshotID
 		if snapshotID == "" {
 			snapshotID = uuid.NewString()
-			r.snapshots[snapshotID] = repositorySnapshot{created: now, expires: now.Add(snapshotTTL), digest: digest, matches: append([]SearchMatch(nil), matches...)}
+			r.snapshots[snapshotID] = repositorySnapshot{created: now, expires: now.Add(snapshotTTL), digest: digest, matches: append([]SearchMatch(nil), matches...), provenance: provenance}
 			r.cleanupSnapshotsLocked(now)
 		}
 		out.NextPageToken = encodePageCursor(cursor{LastID: matches[end-1].SourceID, Snapshot: now, SnapshotID: snapshotID, Digest: digest})

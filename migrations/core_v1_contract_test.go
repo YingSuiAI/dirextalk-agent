@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 1 {
-		t.Fatalf("CurrentVersion = %d, want 1", CurrentVersion)
+	if CurrentVersion != 2 {
+		t.Fatalf("CurrentVersion = %d, want 2", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 1 || entries[0] != "000001_core_v1_fresh.up.sql" {
+	if len(entries) != 2 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -56,6 +56,15 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	} {
 		if !strings.Contains(string(script), needle) {
 			t.Errorf("Core v1 baseline missing %q", needle)
+		}
+	}
+	provenance, err := Files.ReadFile(entries[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"embedding_profile_id", "embedding_profile_revision", "embedding_model", "embedding_generation", "embedding_collection_config_digest"} {
+		if !strings.Contains(string(provenance), needle) {
+			t.Errorf("provenance migration missing %q", needle)
 		}
 	}
 	for _, forbidden := range []string{

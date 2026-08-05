@@ -550,6 +550,12 @@ func (c *coreKnowledgeCapability) embeddingProjection(ctx context.Context) map[s
 	if err != nil || strings.TrimSpace(config.EmbeddingProfileID) == "" || config.Revision < 1 {
 		return value
 	}
+	if c.models == nil {
+		// The model-profile authority is required to prove the profile
+		// revision/model projection. Returning only the config binding would
+		// make a safe read appear complete while omitting its provenance.
+		return value
+	}
 	value["supported"] = true
 	value["embedding_profile_id"] = config.EmbeddingProfileID
 	profileRevision := config.Revision
@@ -600,6 +606,29 @@ func mergeKnowledgeProjection(value map[string]any, projection map[string]any) m
 	return value
 }
 
+func mergeSearchProvenance(value map[string]any, page coreknowledge.SearchPage) map[string]any {
+	if value == nil {
+		return value
+	}
+	provenance := page.SearchProvenance
+	if strings.TrimSpace(provenance.EmbeddingProfileID) != "" {
+		value["embedding_profile_id"] = provenance.EmbeddingProfileID
+	}
+	if provenance.EmbeddingProfileRevision > 0 {
+		value["embedding_profile_revision"] = provenance.EmbeddingProfileRevision
+	}
+	if strings.TrimSpace(provenance.EmbeddingModel) != "" {
+		value["embedding_model"] = provenance.EmbeddingModel
+	}
+	if strings.TrimSpace(provenance.EmbeddingGeneration) != "" {
+		value["embedding_generation"] = provenance.EmbeddingGeneration
+	}
+	if strings.TrimSpace(provenance.CollectionConfigDigest) != "" {
+		value["collection_config_digest"] = provenance.CollectionConfigDigest
+	}
+	return value
+}
+
 func (c *coreKnowledgeCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.knowledge.v1", "Knowledge and Memory", "Core Knowledge, embeddings and long-term memory", []opSpec{
 		{"get_config", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"update_config", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"create_memory", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"list_sources", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"get_source", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"delete_source", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"start_upload", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"append_upload_chunk", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"commit_upload", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"list_memories", capv1.OperationType_OPERATION_TYPE_READ, "agent:memory:read"}, {"get_memory", capv1.OperationType_OPERATION_TYPE_READ, "agent:memory:read"}, {"update_memory", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:memory:write"}, {"delete_memory", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:memory:write"}, {"search_knowledge", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"}, {"search_memory", capv1.OperationType_OPERATION_TYPE_READ, "agent:memory:read"}, {"index_sources", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:knowledge:write"}, {"status", capv1.OperationType_OPERATION_TYPE_READ, "agent:knowledge:read"},
@@ -614,7 +643,22 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 	switch operationID {
 	case "get_config":
 		value, err := c.service.GetEmbeddingConfig(ctx)
-		return marshalResult(value, err)
+		if err != nil {
+			return nil, err
+		}
+		projection := map[string]any{
+			"embedding_profile_id":     value.EmbeddingProfileID,
+			"dimension":                value.Dimension,
+			"collection":               value.Collection,
+			"collection_config_digest": value.CollectionConfigDigest,
+			"revision":                 value.Revision,
+			"updated_at":               value.UpdatedAt,
+		}
+		currentProjection := c.embeddingProjection(ctx)
+		if currentProjection["supported"] != true || currentProjection["embedding_profile_revision"] == nil || currentProjection["embedding_model"] == nil {
+			return nil, coreknowledge.ErrConflict
+		}
+		return marshalResult(mergeKnowledgeProjection(projection, currentProjection), nil)
 	case "update_config":
 		current, err := c.service.GetEmbeddingConfig(ctx)
 		if err != nil {
@@ -632,8 +676,30 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		if collection == "" {
 			collection = current.Collection
 		}
+		if c.models == nil {
+			return nil, coreknowledge.ErrConflict
+		}
+		profile, profileErr := c.models.Get(ctx, profileID)
+		if profileErr != nil || strings.ToLower(strings.TrimSpace(profile.ModelKind)) != coremodel.ModelKindEmbedding || !profile.APIKeyConfigured {
+			return nil, coreknowledge.ErrConflict
+		}
 		value, err := c.service.UpdateEmbeddingConfig(ctx, coreknowledge.EmbeddingConfigCommand{IdempotencyKey: key, ExpectedRevision: int64Value(in, "expected_revision"), EmbeddingProfileID: profileID, Dimension: dimension, Collection: collection, CollectionConfigDigest: stringValue(in, "collection_config_digest")})
-		return marshalResult(value, err)
+		if err != nil {
+			return nil, err
+		}
+		projection := map[string]any{
+			"embedding_profile_id":     value.EmbeddingProfileID,
+			"dimension":                value.Dimension,
+			"collection":               value.Collection,
+			"collection_config_digest": value.CollectionConfigDigest,
+			"revision":                 value.Revision,
+			"updated_at":               value.UpdatedAt,
+		}
+		currentProjection := c.embeddingProjection(ctx)
+		if currentProjection["supported"] != true || currentProjection["embedding_profile_revision"] == nil || currentProjection["embedding_model"] == nil {
+			return nil, coreknowledge.ErrConflict
+		}
+		return marshalResult(mergeKnowledgeProjection(projection, currentProjection), nil)
 	case "create_memory":
 		content := stringValue(in, "content")
 		mediaType := stringValue(in, "media_type")
@@ -794,7 +860,13 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 			return nil, err
 		}
 		result := map[string]any{"items": p.Matches, "next_cursor": p.NextPageToken, "search_mode": p.SearchMode}
-		return marshalResult(mergeKnowledgeProjection(result, c.embeddingProjection(ctx)), nil)
+		if stringValue(in, "page_token") == "" {
+			// The first page is allowed to use the current projection only when
+			// the resolver did not return one. Once a cursor exists, provenance
+			// must come exclusively from its immutable snapshot.
+			result = mergeKnowledgeProjection(result, c.embeddingProjection(ctx))
+		}
+		return marshalResult(mergeSearchProvenance(result, p), nil)
 	case "index_sources":
 		ref, err := c.service.Index(ctx, coreknowledge.IndexRequest{SourceIDs: stringSlice(in, "source_ids"), IdempotencyKey: key})
 		return marshalResult(ref, err)
@@ -1156,7 +1228,7 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 	for _, s := range specs {
 		inputSchema := operationInputSchema(id, s.id)
 		inputDigest := sha256.Sum256([]byte(inputSchema))
-		resultSchema := `{"type":"object"}`
+		resultSchema := operationResultSchema(id, s.id)
 		resultDigest := sha256.Sum256([]byte(resultSchema))
 		op := &capv1.OperationDescriptor{OperationId: s.id, DisplayName: s.id, OperationType: s.typ, Audience: []capv1.Audience{capv1.Audience_AUDIENCE_OWNER_CLIENT, capv1.Audience_AUDIENCE_NATIVE_AGENT}, RiskLevel: capv1.RiskLevel_RISK_LEVEL_SAFE, RequiredScopes: []string{s.scope}, InputSchemaJson: inputSchema, InputSchemaDigest: inputDigest[:], ResultSchemaJson: resultSchema, ResultSchemaDigest: resultDigest[:], MaxRequestSizeBytes: 1 << 20, TimeoutClass: "medium"}
 		if s.typ == capv1.OperationType_OPERATION_TYPE_DURABLE_STREAM {
@@ -1168,6 +1240,17 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 		d.Operations = append(d.Operations, op)
 	}
 	return d
+}
+
+func operationResultSchema(capabilityID, operation string) string {
+	switch capabilityID + ":" + operation {
+	case "agent.knowledge.v1:get_config", "agent.knowledge.v1:update_config":
+		return `{"type":"object","properties":{"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"},"revision":{"type":"integer"},"updated_at":{"type":"string"}},"required":["embedding_profile_id","embedding_profile_revision","embedding_model","collection_config_digest","revision"]}`
+	case "agent.knowledge.v1:search_knowledge", "agent.knowledge.v1:search_memory":
+		return `{"type":"object","properties":{"items":{"type":"array"},"next_cursor":{"type":"string"},"search_mode":{"type":"string"},"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"embedding_generation":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["items","next_cursor","search_mode"]}`
+	default:
+		return `{"type":"object"}`
+	}
 }
 
 func operationInputSchema(capabilityID, operation string) string {

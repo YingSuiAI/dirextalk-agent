@@ -30,13 +30,14 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 	}
 	now := r.nowUTC()
 	var matches []coreknowledge.SearchMatch
+	var provenance coreknowledge.SearchProvenance
 	var raw []byte
 	var exp time.Time
 	if q.PageToken != "" {
 		if c.Digest != digest {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrCursorConflict
 		}
-		if err = r.store.pool.QueryRow(ctx, `SELECT search_matches,expires_at FROM core_knowledge_list_snapshots WHERE snapshot_id=$1 AND query_digest=$2`, c.SnapshotID, digest).Scan(&raw, &exp); err != nil || !now.Before(exp) {
+		if err = r.store.pool.QueryRow(ctx, `SELECT search_matches,expires_at,COALESCE(embedding_profile_id::text,''),COALESCE(embedding_profile_revision,0),embedding_model,embedding_generation,embedding_collection_config_digest FROM core_knowledge_list_snapshots WHERE snapshot_id=$1 AND query_digest=$2`, c.SnapshotID, digest).Scan(&raw, &exp, &provenance.EmbeddingProfileID, &provenance.EmbeddingProfileRevision, &provenance.EmbeddingModel, &provenance.EmbeddingGeneration, &provenance.CollectionConfigDigest); err != nil || !now.Before(exp) {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrCursorConflict
 		}
 		if json.Unmarshal(raw, &matches) != nil {
@@ -86,9 +87,10 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 		if len(matches) > coreknowledge.MaxSearchResults {
 			matches = matches[:coreknowledge.MaxSearchResults]
 		}
+		provenance = resolved.SearchProvenance
 		snap := uuid.New()
 		enc, _ := json.Marshal(matches)
-		if _, err = r.store.pool.Exec(ctx, `INSERT INTO core_knowledge_list_snapshots(snapshot_id,query_digest,snapshot_at,expires_at,source_ids,search_matches) VALUES($1,$2,$3,$4,'[]'::jsonb,$5)`, snap, digest, now, now.Add(knowledgeSnapshotTTL), enc); err != nil {
+		if _, err = r.store.pool.Exec(ctx, `INSERT INTO core_knowledge_list_snapshots(snapshot_id,query_digest,snapshot_at,expires_at,source_ids,search_matches,embedding_profile_id,embedding_profile_revision,embedding_model,embedding_generation,embedding_collection_config_digest) VALUES($1,$2,$3,$4,'[]'::jsonb,$5,NULLIF($6,'')::uuid,NULLIF($7,0),$8,$9,$10)`, snap, digest, now, now.Add(knowledgeSnapshotTTL), enc, provenance.EmbeddingProfileID, provenance.EmbeddingProfileRevision, provenance.EmbeddingModel, provenance.EmbeddingGeneration, provenance.CollectionConfigDigest); err != nil {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
 		}
 		c = knowledgeCursor{SnapshotID: snap.String(), Snapshot: now, Digest: digest}
@@ -106,7 +108,7 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 	if n == 0 {
 		n = 20
 	}
-	out := coreknowledge.SearchPage{}
+	out := coreknowledge.SearchPage{SearchProvenance: provenance}
 	if n > len(matches) {
 		n = len(matches)
 	}

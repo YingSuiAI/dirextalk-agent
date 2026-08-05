@@ -28,7 +28,9 @@ verification. External product work is not included.
   UID/network/mount/cgroup-isolated services.
 - Current-only extension execution: the obsolete in-process/legacy sandbox
   surface is removed, and execution uses the descriptor-only Linux boundary.
-- Core Knowledge uploads, mounts, memory, indexing/search composition.
+- Core Knowledge uploads, mounts, memory, indexing/search composition, with
+  secret-free model/profile provenance pinned to each semantic-search cursor
+  snapshot and replayed unchanged across pagination.
 - Typed Core AWS credentials, plans, and confirmation-bound change composition.
 - Versioned, Buf-lint-clean Core Protobufs and Core-focused contract tests.
 - `WorkloadService` planning/confirmation and a fenced `WORKLOAD` Task path.

@@ -123,7 +123,14 @@ different digest is an idempotency conflict.
 
 `CoreKnowledgeService` owns mounts, uploads, memory sources, status, indexing,
 and search for this Agent instance. Search and Task context are bound to exact
-source revisions and index bindings.
+source revisions and index bindings. A semantic search page exposes one
+secret-free top-level embedding provenance projection (`embedding_profile_id`,
+`embedding_profile_revision`, `embedding_model`, plus available generation and
+collection digest). The opaque cursor snapshot persists that projection, so
+pagination never relabels old matches from the current default profile. The
+Knowledge capability's `get_config` and `update_config` responses merge the
+same authoritative profile projection and never return API-key/provider
+secret values.
 
 `CoreCloudControlService` exposes typed AWS credentials, `TestCredentialIdentity`
 identity checks, plans, quotes, and confirmed changes. It does not expose arbitrary AWS SDK calls or

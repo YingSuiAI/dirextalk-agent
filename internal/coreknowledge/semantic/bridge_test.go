@@ -81,6 +81,23 @@ func TestSearchAcceptsMultilineKnowledgeSnippet(t *testing.T) {
 	}
 }
 
+func TestSearchReturnsPinnedEmbeddingProvenance(t *testing.T) {
+	e := &bridgeEmbedder{vectors: [][]float32{{1, 0}}}
+	binding := Binding{SourceID: "source", Revision: 1, Generation: "generation-1", EmbeddingProfileID: "profile", EmbeddingProfileRevision: 4, CollectionConfigDigest: strings.Repeat("a", 64)}
+	s := &bridgeVectorStore{matches: []Match{{SourceID: binding.SourceID, Revision: binding.Revision, Generation: binding.Generation, ChunkRef: "chunk-000000", Digest: strings.Repeat("a", 64), Snippet: "x", Score: .5, PointID: GenerationPointID(binding.Generation, binding.SourceID, binding.Revision, "chunk-000000")}}}
+	r, err := NewSearchResolver(SearchConfig{Embedder: e, VectorStore: s, BindingResolver: bridgeBindingResolver{bindings: []Binding{binding}}, ProfileResolver: bridgeProfileResolver{profile: coremodel.Profile{Revision: 4, Provider: coremodel.ProviderOpenAICompatible, Model: "embedding-model", APIKey: "k"}}, EmbeddingProfileID: binding.EmbeddingProfileID, CollectionConfigDigest: binding.CollectionConfigDigest, Dimension: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := r.Search(context.Background(), coreknowledge.SearchQuery{Query: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.EmbeddingProfileID != binding.EmbeddingProfileID || page.EmbeddingProfileRevision != 4 || page.EmbeddingModel != "embedding-model" || page.EmbeddingGeneration != binding.Generation || page.CollectionConfigDigest != binding.CollectionConfigDigest {
+		t.Fatalf("provenance=%+v", page.SearchProvenance)
+	}
+}
+
 func TestSearchRejectsAnthropicAndProviderErrors(t *testing.T) {
 	e := &bridgeEmbedder{vectors: [][]float32{{1, 0}}, err: ErrProvider}
 	r, err := NewSearchResolver(SearchConfig{Embedder: e, VectorStore: &bridgeVectorStore{}, BindingResolver: bridgeBindingResolver{bindings: []Binding{{SourceID: "source", Revision: 1}}}, ProfileResolver: bridgeProfileResolver{profile: coremodel.Profile{Provider: coremodel.ProviderAnthropic, Model: "m", APIKey: "k"}}, EmbeddingProfileID: "p", Dimension: 2})

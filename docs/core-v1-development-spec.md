@@ -216,7 +216,14 @@ secrets. No in-process or unconfirmed fallback is allowed.
 Knowledge supports Agent-owned mounts, bounded uploads, memory, source status,
 indexing, and semantic search. Content is opened through root-bound ports.
 Task snapshots pin source revision, content digest, and index binding; search
-must reject drift before context reaches the model.
+must reject drift before context reaches the model. A vector-search cursor
+snapshot also pins the secret-free embedding provenance at page level:
+`embedding_profile_id`, the model-profile `embedding_profile_revision`,
+`embedding_model`, and any available `embedding_generation` and
+`collection_config_digest`. Every page resumed from that cursor replays the
+same provenance even if the current default embedding profile is rebound.
+`agent.knowledge.v1` `get_config` and `update_config` return the same current
+projection, without API keys or provider secret material.
 
 ### AWS
 

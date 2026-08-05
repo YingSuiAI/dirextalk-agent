@@ -1318,3 +1318,19 @@ CREATE TABLE core_web_search_replays (
     PRIMARY KEY (owner_id, account_generation, idempotency_key)
 );
 -- dirextalk-agent migration end 000001_core_v1_fresh.up.sql
+-- dirextalk-agent migration begin 000002_knowledge_search_provenance.up.sql
+-- Search cursor snapshots retain the exact semantic binding that produced
+-- their matches. The binding is nullable for non-semantic/list snapshots;
+-- populated rows must carry a complete secret-free profile projection.
+ALTER TABLE core_knowledge_list_snapshots
+    ADD COLUMN embedding_profile_id uuid,
+    ADD COLUMN embedding_profile_revision bigint,
+    ADD COLUMN embedding_model text NOT NULL DEFAULT '',
+    ADD COLUMN embedding_generation text NOT NULL DEFAULT '',
+    ADD COLUMN embedding_collection_config_digest text NOT NULL DEFAULT '',
+    ADD CONSTRAINT core_knowledge_snapshot_embedding_provenance_chk CHECK (
+        (embedding_profile_id IS NULL AND embedding_profile_revision IS NULL AND embedding_model = '' AND embedding_generation = '' AND embedding_collection_config_digest = '') OR
+        (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND embedding_generation = '' AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$')) OR
+        (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND length(embedding_generation) BETWEEN 1 AND 256 AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$'))
+    );
+-- dirextalk-agent migration end 000002_knowledge_search_provenance.up.sql

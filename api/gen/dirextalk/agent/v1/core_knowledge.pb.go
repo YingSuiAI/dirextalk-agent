@@ -1872,8 +1872,15 @@ type CoreKnowledgeServiceSearchResponse struct {
 	state         protoimpl.MessageState      `protogen:"open.v1"`
 	Matches       []*CoreKnowledgeSearchMatch `protobuf:"bytes,1,rep,name=matches,proto3" json:"matches,omitempty"`
 	NextPageToken string                      `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Secret-free provenance for the exact embedding binding used to produce
+	// this page. Cursor pagination replays the same values from its snapshot.
+	EmbeddingProfileId       string `protobuf:"bytes,3,opt,name=embedding_profile_id,json=embeddingProfileId,proto3" json:"embedding_profile_id,omitempty"`
+	EmbeddingProfileRevision int64  `protobuf:"varint,4,opt,name=embedding_profile_revision,json=embeddingProfileRevision,proto3" json:"embedding_profile_revision,omitempty"`
+	EmbeddingModel           string `protobuf:"bytes,5,opt,name=embedding_model,json=embeddingModel,proto3" json:"embedding_model,omitempty"`
+	EmbeddingGeneration      string `protobuf:"bytes,6,opt,name=embedding_generation,json=embeddingGeneration,proto3" json:"embedding_generation,omitempty"`
+	CollectionConfigDigest   string `protobuf:"bytes,7,opt,name=collection_config_digest,json=collectionConfigDigest,proto3" json:"collection_config_digest,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *CoreKnowledgeServiceSearchResponse) Reset() {
@@ -1916,6 +1923,41 @@ func (x *CoreKnowledgeServiceSearchResponse) GetMatches() []*CoreKnowledgeSearch
 func (x *CoreKnowledgeServiceSearchResponse) GetNextPageToken() string {
 	if x != nil {
 		return x.NextPageToken
+	}
+	return ""
+}
+
+func (x *CoreKnowledgeServiceSearchResponse) GetEmbeddingProfileId() string {
+	if x != nil {
+		return x.EmbeddingProfileId
+	}
+	return ""
+}
+
+func (x *CoreKnowledgeServiceSearchResponse) GetEmbeddingProfileRevision() int64 {
+	if x != nil {
+		return x.EmbeddingProfileRevision
+	}
+	return 0
+}
+
+func (x *CoreKnowledgeServiceSearchResponse) GetEmbeddingModel() string {
+	if x != nil {
+		return x.EmbeddingModel
+	}
+	return ""
+}
+
+func (x *CoreKnowledgeServiceSearchResponse) GetEmbeddingGeneration() string {
+	if x != nil {
+		return x.EmbeddingGeneration
+	}
+	return ""
+}
+
+func (x *CoreKnowledgeServiceSearchResponse) GetCollectionConfigDigest() string {
+	if x != nil {
+		return x.CollectionConfigDigest
 	}
 	return ""
 }
@@ -2061,10 +2103,15 @@ const file_dirextalk_agent_v1_core_knowledge_proto_rawDesc = "" +
 	"\tsource_id\x18\x01 \x01(\tR\bsourceId\x12\x1b\n" +
 	"\tchunk_ref\x18\x02 \x01(\tR\bchunkRef\x12\x18\n" +
 	"\asnippet\x18\x03 \x01(\tR\asnippet\x12\x14\n" +
-	"\x05score\x18\x04 \x01(\x01R\x05score\"\x94\x01\n" +
+	"\x05score\x18\x04 \x01(\x01R\x05score\"\x9a\x03\n" +
 	"\"CoreKnowledgeServiceSearchResponse\x12F\n" +
 	"\amatches\x18\x01 \x03(\v2,.dirextalk.agent.v1.CoreKnowledgeSearchMatchR\amatches\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\xb9\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x120\n" +
+	"\x14embedding_profile_id\x18\x03 \x01(\tR\x12embeddingProfileId\x12<\n" +
+	"\x1aembedding_profile_revision\x18\x04 \x01(\x03R\x18embeddingProfileRevision\x12'\n" +
+	"\x0fembedding_model\x18\x05 \x01(\tR\x0eembeddingModel\x121\n" +
+	"\x14embedding_generation\x18\x06 \x01(\tR\x13embeddingGeneration\x128\n" +
+	"\x18collection_config_digest\x18\a \x01(\tR\x16collectionConfigDigest*\xb9\x01\n" +
 	"\x17CoreKnowledgeSourceKind\x12*\n" +
 	"&CORE_KNOWLEDGE_SOURCE_KIND_UNSPECIFIED\x10\x00\x12$\n" +
 	" CORE_KNOWLEDGE_SOURCE_KIND_MOUNT\x10\x01\x12%\n" +

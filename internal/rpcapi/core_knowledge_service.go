@@ -229,7 +229,15 @@ func (s *CoreKnowledgeService) Search(ctx context.Context, r *agentv1.CoreKnowle
 	if err != nil {
 		return nil, coreKnowledgeRPCError(err)
 	}
-	out := &agentv1.CoreKnowledgeServiceSearchResponse{NextPageToken: v.NextPageToken, Matches: make([]*agentv1.CoreKnowledgeSearchMatch, 0, len(v.Matches))}
+	out := &agentv1.CoreKnowledgeServiceSearchResponse{
+		NextPageToken:            v.NextPageToken,
+		EmbeddingProfileId:       v.EmbeddingProfileID,
+		EmbeddingProfileRevision: v.EmbeddingProfileRevision,
+		EmbeddingModel:           v.EmbeddingModel,
+		EmbeddingGeneration:      v.EmbeddingGeneration,
+		CollectionConfigDigest:   v.CollectionConfigDigest,
+		Matches:                  make([]*agentv1.CoreKnowledgeSearchMatch, 0, len(v.Matches)),
+	}
 	for _, m := range v.Matches {
 		out.Matches = append(out.Matches, &agentv1.CoreKnowledgeSearchMatch{SourceId: m.SourceID, ChunkRef: m.ChunkRef, Snippet: m.Snippet, Score: m.Score})
 	}

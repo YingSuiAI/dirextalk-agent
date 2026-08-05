@@ -15,7 +15,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-type knowledgeRPCRepo struct{ upload coreknowledge.Upload }
+type knowledgeRPCRepo struct {
+	upload     coreknowledge.Upload
+	searchPage coreknowledge.SearchPage
+}
 
 func (r *knowledgeRPCRepo) CreateMount(context.Context, coreknowledge.MountCommand) (coreknowledge.Source, error) {
 	return coreknowledge.Source{}, nil
@@ -62,7 +65,7 @@ func (r *knowledgeRPCRepo) Status(context.Context) (coreknowledge.Status, error)
 	return coreknowledge.Status{}, nil
 }
 func (r *knowledgeRPCRepo) Search(context.Context, coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
-	return coreknowledge.SearchPage{}, nil
+	return r.searchPage, nil
 }
 func (r *knowledgeRPCRepo) ResolveSources(context.Context, []string) error { return nil }
 func (r *knowledgeRPCRepo) ContentPort() coreknowledge.StreamingContentPort {
@@ -139,6 +142,35 @@ func TestCoreKnowledgeErrorMappingDoesNotExposeDetails(t *testing.T) {
 	err := coreKnowledgeRPCError(coreknowledge.ErrConflict)
 	if status.Code(err) != codes.Unavailable || status.Convert(err).Message() != "knowledge persistence is unavailable" {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestCoreKnowledgeSearchProjectsPageProvenance(t *testing.T) {
+	repo := &knowledgeRPCRepo{searchPage: coreknowledge.SearchPage{
+		Matches:       []coreknowledge.SearchMatch{{SourceID: "source", ChunkRef: "chunk:0", Snippet: "result", Score: .9}},
+		NextPageToken: "cursor",
+		SearchProvenance: coreknowledge.SearchProvenance{
+			EmbeddingProfileID:       "11111111-1111-4111-8111-111111111111",
+			EmbeddingProfileRevision: 3,
+			EmbeddingModel:           "embedding-model",
+			EmbeddingGeneration:      "generation",
+			CollectionConfigDigest:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}}
+	service, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewCoreKnowledgeService(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := svc.Search(context.Background(), &agentv1.CoreKnowledgeServiceSearchRequest{Query: "result", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetEmbeddingProfileId() != repo.searchPage.EmbeddingProfileID || response.GetEmbeddingProfileRevision() != 3 || response.GetEmbeddingModel() != "embedding-model" || response.GetEmbeddingGeneration() != "generation" || response.GetCollectionConfigDigest() != repo.searchPage.CollectionConfigDigest {
+		t.Fatalf("search provenance=%+v", response)
 	}
 }
 

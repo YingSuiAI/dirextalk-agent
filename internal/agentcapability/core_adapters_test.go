@@ -401,6 +401,60 @@ func TestKnowledgeCapabilityProjectsHonestSemanticStatusAndMemoryMetadata(t *tes
 	}
 }
 
+func TestKnowledgeConfigProjectionUsesPublicEmbeddingProfileMetadata(t *testing.T) {
+	ctx := context.Background()
+	repo, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := coremodel.NewService(coremodel.NewMemoryProfileRepository(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := "12121212-1212-4121-8121-121212121212"
+	secret := "config-projection-secret"
+	profile, err := models.Create(ctx, coremodel.CreateProfileCommand{IdempotencyKey: "13131313-1313-4131-8131-131313131313", Spec: coremodel.ProfileSpec{ID: profileID, DisplayName: "Embedding", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindEmbedding, BaseURL: "https://example.invalid/v1", Model: "embedding-model-v1", APIKey: &secret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profile.ID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: strings.Repeat("a", 64), Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreKnowledgeCapability{service: knowledge, models: models}
+	getRaw, err := capability.HandleOperation(ctx, "get_config", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(getRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["embedding_profile_id"] != profileID || got["embedding_profile_revision"] != float64(profile.Revision) || got["embedding_model"] != profile.Model {
+		t.Fatalf("config projection=%s", getRaw)
+	}
+	if strings.Contains(string(getRaw), secret) || got["api_key"] != nil {
+		t.Fatalf("config projection leaked secret=%s", getRaw)
+	}
+	updateRaw, err := capability.HandleOperation(ctx, "update_config", []byte(`{"idempotency_key":"14141414-1414-4141-8141-141414141414","expected_revision":1,"embedding_profile_id":"`+profileID+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = map[string]any{}
+	if err := json.Unmarshal(updateRaw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["embedding_profile_id"] != profileID || got["embedding_profile_revision"] != float64(profile.Revision) || got["embedding_model"] != profile.Model || got["revision"] != float64(2) {
+		t.Fatalf("updated config projection=%s", updateRaw)
+	}
+	if strings.Contains(string(updateRaw), secret) || got["api_key"] != nil {
+		t.Fatalf("updated config projection leaked secret=%s", updateRaw)
+	}
+}
+
 func TestCapabilityProgressUsesDurableOperationContext(t *testing.T) {
 	ctx := capabilityoperation.WithOperationID(context.Background(), "durable-operation-id")
 	var got string

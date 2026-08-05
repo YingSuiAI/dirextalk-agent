@@ -109,6 +109,30 @@ func (pgKnowledgeSearch) Search(_ context.Context, q coreknowledge.SearchQuery) 
 	}}, nil
 }
 
+type pgKnowledgeProvenanceSearch struct {
+	profileID string
+	digest    string
+}
+
+func (s pgKnowledgeProvenanceSearch) Search(_ context.Context, q coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
+	if len(q.SourceIDs) == 0 {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+	}
+	return coreknowledge.SearchPage{
+		Matches: []coreknowledge.SearchMatch{
+			{SourceID: q.SourceIDs[0], ChunkRef: "chunk:0", Snippet: "pinned result 0", Score: .9},
+			{SourceID: q.SourceIDs[0], ChunkRef: "chunk:1", Snippet: "pinned result 1", Score: .8},
+		},
+		SearchProvenance: coreknowledge.SearchProvenance{
+			EmbeddingProfileID:       s.profileID,
+			EmbeddingProfileRevision: 7,
+			EmbeddingModel:           "embedding-model-v1",
+			EmbeddingGeneration:      "generation-v1",
+			CollectionConfigDigest:   s.digest,
+		},
+	}, nil
+}
+
 func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, func()) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("DIREXTALK_TEST_DATABASE_URL"))
@@ -292,6 +316,58 @@ func TestCoreKnowledgePostgresPersistenceAndCursor(t *testing.T) {
 	if retried, err := fresh.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: uuid.NewString(), SourceID: mem.ID, ExpectedRevision: failed.Revision}); err != nil || retried.Status != coreknowledge.SourceStatusDeleted {
 		t.Fatalf("cleanup retry=%+v err=%v", retried, err)
 	}
+}
+
+func TestCoreKnowledgePostgresSearchCursorPinsProvenanceAcrossRebind(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	oldProfile, newProfile := uuid.NewString(), uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: oldProfile, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	searchRepo, err := NewCoreKnowledgeStore(repo.store, CoreKnowledgeStoreConfig{Content: repo.content, ManagedFiles: pgKnowledgeOpener{}, Search: pgKnowledgeProvenanceSearch{profileID: oldProfile, digest: digest}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := searchRepo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "pinned semantic result", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := searchRepo.Search(ctx, coreknowledge.SearchQuery{Query: "semantic", SourceIDs: []string{source.ID}, Limit: 1})
+	if err != nil || len(first.Matches) != 1 || first.NextPageToken == "" {
+		t.Fatalf("first search=%+v err=%v", first, err)
+	}
+	if first.EmbeddingProfileID != oldProfile || first.EmbeddingProfileRevision != 7 || first.EmbeddingModel != "embedding-model-v1" || first.EmbeddingGeneration != "generation-v1" || first.CollectionConfigDigest != digest {
+		t.Fatalf("first provenance=%+v", first.SearchProvenance)
+	}
+	if _, err := searchRepo.UpdateEmbeddingConfig(ctx, coreknowledge.EmbeddingConfigCommand{IdempotencyKey: uuid.NewString(), ExpectedRevision: 1, EmbeddingProfileID: newProfile, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := searchRepo.Search(ctx, coreknowledge.SearchQuery{Query: "semantic", SourceIDs: []string{source.ID}, Limit: 1, PageToken: first.NextPageToken})
+	if err != nil || len(second.Matches) != 1 || second.Matches[0].ChunkRef != "chunk:1" {
+		t.Fatalf("second search=%+v err=%v", second, err)
+	}
+	if second.EmbeddingProfileID != oldProfile || second.EmbeddingProfileRevision != 7 || second.EmbeddingModel != "embedding-model-v1" || second.EmbeddingGeneration != "generation-v1" || second.CollectionConfigDigest != digest {
+		t.Fatalf("rebound cursor relabeled provenance=%+v", second.SearchProvenance)
+	}
+	var snapshotProfile, snapshotModel, snapshotGeneration, snapshotDigest string
+	var snapshotRevision int64
+	if err := searchRepo.store.pool.QueryRow(ctx, `SELECT embedding_profile_id::text,embedding_profile_revision,embedding_model,embedding_generation,embedding_collection_config_digest FROM core_knowledge_list_snapshots WHERE snapshot_id=$1`, decodeSnapshotIDForTest(t, first.NextPageToken)).Scan(&snapshotProfile, &snapshotRevision, &snapshotModel, &snapshotGeneration, &snapshotDigest); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotProfile != oldProfile || snapshotRevision != 7 || snapshotModel != "embedding-model-v1" || snapshotGeneration != "generation-v1" || snapshotDigest != digest {
+		t.Fatalf("snapshot provenance=%q/%d/%q/%q/%q", snapshotProfile, snapshotRevision, snapshotModel, snapshotGeneration, snapshotDigest)
+	}
+}
+
+func decodeSnapshotIDForTest(t *testing.T, token string) string {
+	t.Helper()
+	c, err := decodeKnowledgeCursor(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.SnapshotID
 }
 
 func TestCoreKnowledgePostgresMemoryReplacementCleanupRecoversAfterDeleteFailure(t *testing.T) {

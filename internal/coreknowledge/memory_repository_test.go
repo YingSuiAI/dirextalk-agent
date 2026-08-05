@@ -545,6 +545,40 @@ func TestMemoryRepositorySearchSnapshotSurvivesSelectedSourceDelete(t *testing.T
 	}
 }
 
+func TestMemoryRepositorySearchCursorPinsEmbeddingProvenanceAcrossRebind(t *testing.T) {
+	ctx := context.Background()
+	r := newTestRepository()
+	oldProfile := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	newProfile := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	oldDigest := strings.Repeat("a", 64)
+	if _, err := r.EnsureEmbeddingConfig(ctx, EmbeddingConfig{EmbeddingProfileID: oldProfile, EmbeddingProfileRevision: 7, EmbeddingModel: "embedding-model-v1", EmbeddingGeneration: "generation-v1", Dimension: 2, Collection: "knowledge", CollectionConfigDigest: oldDigest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"cccccccc-cccc-4ccc-8ccc-cccccccccccc", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"}
+	for i, id := range ids {
+		if _, err := r.CreateMemory(ctx, MemoryCommand{IdempotencyKey: fmt.Sprintf("%08d-4444-4444-8444-444444444444", i+1), SourceID: id, Content: "vector provenance", MediaType: "text/plain"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := r.Search(ctx, SearchQuery{Query: "provenance", Limit: 1})
+	if err != nil || len(first.Matches) != 1 || first.NextPageToken == "" {
+		t.Fatalf("first page=%+v err=%v", first, err)
+	}
+	if first.EmbeddingProfileID != oldProfile || first.EmbeddingProfileRevision != 7 || first.EmbeddingModel != "embedding-model-v1" || first.EmbeddingGeneration != "generation-v1" || first.CollectionConfigDigest != oldDigest {
+		t.Fatalf("first provenance=%+v", first.SearchProvenance)
+	}
+	if _, err := r.UpdateEmbeddingConfig(ctx, EmbeddingConfigCommand{IdempotencyKey: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", ExpectedRevision: 1, EmbeddingProfileID: newProfile, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: oldDigest}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.Search(ctx, SearchQuery{Query: "provenance", Limit: 1, PageToken: first.NextPageToken})
+	if err != nil || len(second.Matches) != 1 {
+		t.Fatalf("second page=%+v err=%v", second, err)
+	}
+	if second.EmbeddingProfileID != oldProfile || second.EmbeddingProfileRevision != 7 || second.EmbeddingModel != "embedding-model-v1" || second.EmbeddingGeneration != "generation-v1" || second.CollectionConfigDigest != oldDigest {
+		t.Fatalf("rebound cursor relabeled provenance=%+v", second.SearchProvenance)
+	}
+}
+
 func TestMemoryRepositoryMemoryDeleteClearsPlaintextAfterCleanup(t *testing.T) {
 	port := &failingContentDeletePort{MemoryContentPort: NewMemoryContentPort(1024)}
 	r, err := NewMemoryRepository(time.Now, testOpener{}, port, referenceFence{})

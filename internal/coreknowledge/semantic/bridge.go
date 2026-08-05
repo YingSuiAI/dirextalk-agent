@@ -130,7 +130,62 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 		page.Matches = append(page.Matches, coreknowledge.SearchMatch{SourceID: match.SourceID, ChunkRef: match.ChunkRef,
 			Snippet: match.Snippet, Score: float64(match.Score)})
 	}
+	// A page-level binding is emitted only when the model resolver supplied the
+	// complete non-secret identity required by the cursor contract. Test
+	// doubles and metadata-only resolvers may omit it; those callers receive no
+	// unverifiable provenance rather than a partially populated pin.
+	if profile.Revision > 0 && strings.TrimSpace(profile.Model) != "" {
+		if configDigest == "" {
+			configDigest = commonCollectionDigest(bindings)
+		}
+		page.SearchProvenance = coreknowledge.SearchProvenance{
+			EmbeddingProfileID:       profileID,
+			EmbeddingProfileRevision: profile.Revision,
+			EmbeddingModel:           profile.Model,
+			EmbeddingGeneration:      commonGeneration(bindings),
+			CollectionConfigDigest:   configDigest,
+		}
+	}
 	return page, nil
+}
+
+// commonGeneration returns a generation only when every selected binding is
+// backed by the same generation. A page-level provenance value must never
+// claim one generation for matches that were authorized from multiple
+// generations; an empty value is the honest projection for that case.
+func commonGeneration(bindings []Binding) string {
+	var generation string
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.Generation) == "" {
+			return ""
+		}
+		if generation == "" {
+			generation = binding.Generation
+			continue
+		}
+		if generation != binding.Generation {
+			return ""
+		}
+	}
+	return generation
+}
+
+func commonCollectionDigest(bindings []Binding) string {
+	var digest string
+	for _, binding := range bindings {
+		value := strings.TrimSpace(binding.CollectionConfigDigest)
+		if value == "" {
+			return ""
+		}
+		if digest == "" {
+			digest = value
+			continue
+		}
+		if !strings.EqualFold(digest, value) {
+			return ""
+		}
+	}
+	return digest
 }
 
 func validateRequestedBindings(sourceIDs []string, bindings []Binding) error {

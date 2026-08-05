@@ -167,6 +167,13 @@ message CoreKnowledgeSearchMatch {
 message CoreKnowledgeServiceSearchResponse {
   repeated CoreKnowledgeSearchMatch matches = 1;
   string next_page_token = 2;
+  // Secret-free provenance for the exact embedding binding used to produce
+  // this page. Cursor pagination replays the same values from its snapshot.
+  string embedding_profile_id = 3;
+  int64 embedding_profile_revision = 4;
+  string embedding_model = 5;
+  string embedding_generation = 6;
+  string collection_config_digest = 7;
 }
 
 service CoreKnowledgeService {
