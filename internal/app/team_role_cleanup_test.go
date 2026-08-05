@@ -131,6 +131,32 @@ func TestTeamRoleCleanupDoesNotHideOtherScheduleFailures(
 	}
 }
 
+func TestTeamRoleCleanupDoesNotHideRevisionConflictWithoutTerminalEvidence(
+	t *testing.T,
+) {
+	t.Parallel()
+	dispatch := teamDestroyingDispatch(t)
+	lifecycle := &teamResourceLifecycleStub{
+		scheduleErr: resource.ErrRevisionConflict,
+		destroyErr:  resource.ErrNotFound,
+	}
+	cleanup, err := newAWSTeamRoleCleanup(
+		teamLifecycleFactoryStub{lifecycle: lifecycle},
+		&awsartifact.DeploymentSecretLifecycle{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroyed, err := cleanup.DestroyRole(
+		context.Background(),
+		cloudapp.Connection{OwnerID: dispatch.Intent.OwnerID},
+		dispatch,
+	)
+	if destroyed || !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("destroyed=%v error=%v, want revision conflict", destroyed, err)
+	}
+}
+
 func teamDestroyingDispatch(t *testing.T) teamdispatch.Fact {
 	t.Helper()
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)

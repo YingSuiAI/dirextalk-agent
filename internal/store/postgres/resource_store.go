@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -613,14 +614,17 @@ func (store *ResourceStore) Save(ctx context.Context, item resource.ResourceV1, 
 	return cloneResource(item), nil
 }
 
-// AdoptVerifiedDestroyed advances the local ledger to an exact, higher
-// DynamoDB successor written by the independently fenced AWS Reaper. Only a
-// complete verified-destroyed graph can cross this recovery boundary.
+// AdoptVerifiedDestroyed reconciles the local ledger with a complete
+// verified-destroyed graph written by the independently fenced AWS Reaper.
+// Manifest revision ordering is authoritative only for a successfully
+// mirrored local generation; failed local generations may legitimately be
+// numerically ahead of the durable DynamoDB branch.
 func (store *ResourceStore) AdoptVerifiedDestroyed(
 	ctx context.Context,
 	manifest resource.Manifest,
 ) ([]resource.ResourceV1, error) {
-	if store.validateManifest(manifest) != nil {
+	if resource.NormalizeLegacyApprovalBindings(&manifest) != nil ||
+		store.validateManifest(manifest) != nil {
 		return nil, resource.ErrInvalid
 	}
 	for _, item := range manifest.Resources {
@@ -629,6 +633,7 @@ func (store *ResourceStore) AdoptVerifiedDestroyed(
 			item.ReadBack.ProviderID == "" ||
 			item.ReadBack.ProviderID != item.ProviderID ||
 			item.ReadBack.ObservedAt.IsZero() ||
+			!resourceSHA256Pattern.MatchString(item.ReadBack.TagDigest) ||
 			item.Intent.Operation != resource.MutationDestroy ||
 			item.Intent.ClientToken == "" ||
 			item.Intent.RecordedAt.IsZero() {
@@ -638,6 +643,10 @@ func (store *ResourceStore) AdoptVerifiedDestroyed(
 	deploymentID, err := uuid.Parse(manifest.DeploymentID)
 	if err != nil || deploymentID == uuid.Nil {
 		return nil, resource.ErrInvalid
+	}
+	encoded, err := encodeResourceManifest(manifest)
+	if err != nil {
+		return nil, err
 	}
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -664,19 +673,28 @@ func (store *ResourceStore) AdoptVerifiedDestroyed(
 	if err != nil {
 		return nil, err
 	}
-	if len(current) != len(manifest.Resources) ||
+	if len(current) != len(manifest.Resources) {
+		return nil, fmt.Errorf("%w: verified Reaper resource count mismatch", resource.ErrRevisionConflict)
+	}
+	currentCanonical, err := encodeResourceManifest(currentRecord.Manifest)
+	if err != nil {
+		return nil, err
+	}
+	remoteMatchesCurrent := bytes.Equal(currentCanonical, encoded)
+	if currentRecord.Status == ResourceManifestMirrored &&
+		!remoteMatchesCurrent &&
 		manifest.Revision <= currentRecord.Manifest.Revision {
-		return nil, resource.ErrRevisionConflict
+		return nil, fmt.Errorf("%w: verified Reaper manifest is not the durable successor", resource.ErrRevisionConflict)
 	}
 	byID := make(map[string]resource.ResourceV1, len(current))
 	for _, item := range current {
 		byID[item.ResourceID] = item
 	}
+	seen := make(map[string]struct{}, len(manifest.Resources))
 	for _, observed := range manifest.Resources {
 		stored, found := byID[observed.ResourceID]
-		if !found ||
-			observed.Revision <= stored.Revision ||
-			observed.UpdatedAt.Before(stored.UpdatedAt) ||
+		_, duplicate := seen[observed.ResourceID]
+		if duplicate || !found ||
 			!sameResourceIdentity(stored, observed) ||
 			stored.ProviderID != observed.ProviderID ||
 			!slices.Equal(stored.ProviderCandidateIDs, observed.ProviderCandidateIDs) ||
@@ -684,23 +702,33 @@ func (store *ResourceStore) AdoptVerifiedDestroyed(
 			!stored.DestroyDeadline.Equal(observed.DestroyDeadline) ||
 			stored.AutoDestroyApproved != observed.AutoDestroyApproved ||
 			!maps.Equal(stored.Tags, observed.Tags) {
-			return nil, resource.ErrRevisionConflict
+			return nil, fmt.Errorf("%w: verified Reaper resource identity mismatch", resource.ErrRevisionConflict)
+		}
+		seen[observed.ResourceID] = struct{}{}
+		if verifiedDestroyedResource(stored) {
+			continue
+		}
+		adopted := cloneResource(observed)
+		adopted.Revision = stored.Revision + 1
+		if adopted.UpdatedAt.Before(stored.UpdatedAt) {
+			adopted.UpdatedAt = stored.UpdatedAt
+		}
+		if store.validateResource(adopted) != nil {
+			return nil, fmt.Errorf("%w: reconciled Reaper resource is invalid", resource.ErrRevisionConflict)
 		}
 		if err := saveResourceTx(
 			ctx,
 			tx,
 			store.instanceID,
 			stored.Revision,
-			observed,
+			adopted,
 		); err != nil {
 			return nil, err
 		}
+		byID[observed.ResourceID] = adopted
 	}
-	encoded, err := encodeResourceManifest(manifest)
-	if err != nil {
-		return nil, err
-	}
-	result, err := tx.Exec(ctx, `
+	if !remoteMatchesCurrent || currentRecord.Status != ResourceManifestMirrored {
+		result, err := tx.Exec(ctx, `
 		UPDATE resource_manifest_mirror
 		SET owner_id=$3, task_id=$4, manifest_revision=$5,
 		    manifest_json=$6, mirror_generation=mirror_generation+1,
@@ -708,29 +736,45 @@ func (store *ResourceStore) AdoptVerifiedDestroyed(
 		    updated_at=clock_timestamp()
 		WHERE deployment_id=$1 AND agent_instance_id=$2
 		  AND mirror_generation=$8`,
-		deploymentID,
-		store.instanceID,
-		manifest.OwnerID,
-		manifest.TaskID,
-		manifest.Revision,
-		encoded,
-		ResourceManifestMirrored,
-		currentRecord.Generation,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("adopt verified Reaper manifest: %w", err)
-	}
-	if result.RowsAffected() != 1 {
-		return nil, resource.ErrRevisionConflict
+			deploymentID,
+			store.instanceID,
+			manifest.OwnerID,
+			manifest.TaskID,
+			manifest.Revision,
+			encoded,
+			ResourceManifestMirrored,
+			currentRecord.Generation,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("adopt verified Reaper manifest: %w", err)
+		}
+		if result.RowsAffected() != 1 {
+			return nil, resource.ErrRevisionConflict
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit verified Reaper adoption: %w", err)
 	}
-	items := cloneResources(manifest.Resources)
+	items := make([]resource.ResourceV1, 0, len(byID))
+	for _, item := range byID {
+		items = append(items, cloneResource(item))
+	}
 	sort.Slice(items, func(left, right int) bool {
 		return items[left].ResourceID < items[right].ResourceID
 	})
 	return items, nil
+}
+
+func verifiedDestroyedResource(item resource.ResourceV1) bool {
+	return item.State == resource.StateVerifiedDestroyed &&
+		!item.ReadBack.Exists &&
+		item.ReadBack.ProviderID != "" &&
+		item.ReadBack.ProviderID == item.ProviderID &&
+		!item.ReadBack.ObservedAt.IsZero() &&
+		resourceSHA256Pattern.MatchString(item.ReadBack.TagDigest) &&
+		item.Intent.Operation == resource.MutationDestroy &&
+		item.Intent.ClientToken != "" &&
+		!item.Intent.RecordedAt.IsZero()
 }
 
 // validateProviderCreateStart rechecks the durable approval origin immediately

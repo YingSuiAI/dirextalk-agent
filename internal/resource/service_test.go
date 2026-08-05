@@ -30,8 +30,18 @@ func (repository *fakeResourceRepository) AdoptVerifiedDestroyed(
 	defer repository.mu.Unlock()
 	repository.adoptCalls++
 	for _, item := range manifest.Resources {
-		if _, found := repository.resources[item.ResourceID]; !found {
+		stored, found := repository.resources[item.ResourceID]
+		if !found {
 			return nil, ErrRevisionConflict
+		}
+		if stored.State == StateVerifiedDestroyed &&
+			!stored.ReadBack.Exists &&
+			stored.ReadBack.ProviderID == stored.ProviderID {
+			continue
+		}
+		item.Revision = stored.Revision + 1
+		if item.UpdatedAt.Before(stored.UpdatedAt) {
+			item.UpdatedAt = stored.UpdatedAt
 		}
 		repository.resources[item.ResourceID] = item.clone()
 	}
@@ -1496,11 +1506,8 @@ func TestDestroyAdoptsExactVerifiedReaperSuccessor(t *testing.T) {
 		"resource tag": func(value *Manifest) {
 			value.Resources[0].Tags[TagOwnerID] = "other-owner"
 		},
-		"stale revision": func(value *Manifest) {
-			value.Resources[0].Revision = local.Revision
-		},
-		"non-successor manifest revision": func(value *Manifest) {
-			value.Revision = local.Revision
+		"dependency": func(value *Manifest) {
+			value.Resources[0].DependsOn = []string{uuid.NewString()}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1515,6 +1522,10 @@ func TestDestroyAdoptsExactVerifiedReaperSuccessor(t *testing.T) {
 			}
 		})
 	}
+	remote.Revision = 1
+	remote.Resources[0].Revision = 1
+	remote.Resources[0].UpdatedAt = local.UpdatedAt
+	fixture.mirror.manifests[fixture.deploymentID] = remote
 
 	result, err := fixture.service.Destroy(
 		context.Background(),
@@ -1536,6 +1547,62 @@ func TestDestroyAdoptsExactVerifiedReaperSuccessor(t *testing.T) {
 			"Central repeated Reaper deletion: %v",
 			fixture.provider.deleteOrder,
 		)
+	}
+	replayed, err := fixture.service.Destroy(context.Background(), request)
+	if err != nil || replayed.Blocked || len(replayed.Resources) != 1 ||
+		replayed.Resources[0].State != StateVerifiedDestroyed ||
+		fixture.repository.adoptCalls != 2 ||
+		len(fixture.provider.deleteOrder) != 1 {
+		t.Fatalf(
+			"replayed adoption=%+v calls=%d deletes=%v error=%v",
+			replayed,
+			fixture.repository.adoptCalls,
+			fixture.provider.deleteOrder,
+			err,
+		)
+	}
+}
+
+func TestVerifiedReaperReconciliationRejectsDuplicateResourceIDs(t *testing.T) {
+	fixture := newResourceFixture(t)
+	created, err := fixture.service.Provision(
+		context.Background(),
+		fixture.spec(TypeEC2, "ephemeral-worker"),
+		fixture.createAuthorization(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper, err := NewReaper(fixture.provider, fixture.mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper.now = func() time.Time { return fixture.now.Add(time.Hour) }
+	if _, err := reaper.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	local, err := fixture.repository.Get(context.Background(), created.ResourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := local.clone()
+	second.ResourceID = uuid.NewString()
+	second.LogicalName = "second-resource"
+	second.ProviderID = "i-second"
+	second.ReadBack.ProviderID = second.ProviderID
+	second.Tags[TagResourceID] = second.ResourceID
+	remote := fixture.mirror.manifests[fixture.deploymentID]
+	remote.Resources = append(remote.Resources, remote.Resources[0].clone())
+	if exactVerifiedDestroySuccessor(
+		[]ResourceV1{local, second},
+		remote,
+		DestroyRequest{
+			DeploymentID: fixture.deploymentID,
+			OwnerID:      fixture.ownerID,
+			ApprovalID:   fixture.approvalID,
+		},
+	) {
+		t.Fatal("duplicate remote resource ID was accepted")
 	}
 }
 

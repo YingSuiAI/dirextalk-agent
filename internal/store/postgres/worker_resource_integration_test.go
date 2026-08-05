@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -572,6 +573,40 @@ func TestResourcePostgresAdoptsVerifiedReaperSuccessorAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	secondID := uuid.NewString()
+	second := item
+	second.ResourceID = secondID
+	second.Type = resource.TypeSG
+	second.LogicalName = "reaper-security-group"
+	second.ProviderID = ""
+	second.State = resource.StateProvisioning
+	second.Intent = resource.MutationIntent{
+		Operation:   resource.MutationCreate,
+		ClientToken: strings.Repeat("f", 64),
+		RecordedAt:  now,
+	}
+	second.ReadBack = resource.ReadBackEvidence{}
+	second.Revision = 1
+	second.UpdatedAt = now
+	second.Tags = maps.Clone(item.Tags)
+	second.Tags[resource.TagResourceID] = secondID
+	second, err = store.CreateIntent(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.ProviderID = "sg-reaper-fixture"
+	second.State = resource.StateActive
+	second.ReadBack = resource.ReadBackEvidence{
+		Exists: true, ProviderID: second.ProviderID,
+		ObservedAt: now.Add(time.Second),
+		TagDigest:  "sha256:" + strings.Repeat("b", 64),
+	}
+	second.Revision = 2
+	second.UpdatedAt = now.Add(time.Second)
+	second, err = store.Save(ctx, second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifest := resource.Manifest{
 		ManifestID: deploymentID, AgentInstanceID: instanceID,
 		OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
@@ -583,7 +618,7 @@ func TestResourcePostgresAdoptsVerifiedReaperSuccessorAtomically(t *testing.T) {
 			ApprovedPlanHash: approvedPlanHash,
 			ApprovalID:       approvalID.String(),
 		}},
-		Resources: []resource.ResourceV1{item},
+		Resources: []resource.ResourceV1{item, second},
 		Revision:  2, UpdatedAt: now.Add(time.Second),
 	}
 	record, err := store.PutResourceManifestPending(ctx, manifest, 0)
@@ -600,19 +635,21 @@ func TestResourcePostgresAdoptsVerifiedReaperSuccessorAtomically(t *testing.T) {
 
 	successor := manifest
 	successor.Resources = slices.Clone(manifest.Resources)
-	successor.Resources[0].State = resource.StateVerifiedDestroyed
-	successor.Resources[0].Intent = resource.MutationIntent{
-		Operation:   resource.MutationDestroy,
-		ClientToken: strings.Repeat("d", 64),
-		RecordedAt:  now.Add(2 * time.Second),
+	for index := range successor.Resources {
+		successor.Resources[index].State = resource.StateVerifiedDestroyed
+		successor.Resources[index].Intent = resource.MutationIntent{
+			Operation:   resource.MutationDestroy,
+			ClientToken: strings.Repeat("d", 63) + string(rune('0'+index)),
+			RecordedAt:  now.Add(2 * time.Second),
+		}
+		successor.Resources[index].ReadBack = resource.ReadBackEvidence{
+			Exists: false, ProviderID: successor.Resources[index].ProviderID,
+			ObservedAt: now.Add(3 * time.Second),
+			TagDigest:  "sha256:" + strings.Repeat("e", 64),
+		}
+		successor.Resources[index].Revision = 1
+		successor.Resources[index].UpdatedAt = now
 	}
-	successor.Resources[0].ReadBack = resource.ReadBackEvidence{
-		Exists: false, ProviderID: item.ProviderID,
-		ObservedAt: now.Add(3 * time.Second),
-		TagDigest:  "sha256:" + strings.Repeat("e", 64),
-	}
-	successor.Resources[0].Revision = 4
-	successor.Resources[0].UpdatedAt = now.Add(2 * time.Second)
 	successor.Revision = 8
 	successor.UpdatedAt = now.Add(2 * time.Second)
 	nonSuccessor := successor
@@ -623,10 +660,21 @@ func TestResourcePostgresAdoptsVerifiedReaperSuccessorAtomically(t *testing.T) {
 	); !errors.Is(err, resource.ErrRevisionConflict) {
 		t.Fatalf("non-successor Reaper manifest error=%v", err)
 	}
+	duplicate := successor
+	duplicate.Resources = []resource.ResourceV1{
+		successor.Resources[0],
+		successor.Resources[0],
+	}
+	if _, err := store.AdoptVerifiedDestroyed(
+		ctx,
+		duplicate,
+	); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("duplicate Reaper resource error=%v", err)
+	}
 	tampered := successor
 	tampered.Resources = slices.Clone(successor.Resources)
-	tampered.Resources[0].ProviderID = "i-substituted"
-	tampered.Resources[0].ReadBack.ProviderID = "i-substituted"
+	tampered.Resources[1].ProviderID = "sg-substituted"
+	tampered.Resources[1].ReadBack.ProviderID = "sg-substituted"
 	if _, err := store.AdoptVerifiedDestroyed(
 		ctx,
 		tampered,
@@ -638,25 +686,85 @@ func TestResourcePostgresAdoptsVerifiedReaperSuccessorAtomically(t *testing.T) {
 		unchanged.Revision != item.Revision {
 		t.Fatalf("tampered adoption changed local resource=%+v error=%v", unchanged, err)
 	}
+	unchangedSecond, err := store.Get(ctx, secondID)
+	if err != nil || unchangedSecond.State != resource.StateActive ||
+		unchangedSecond.Revision != second.Revision {
+		t.Fatalf("tampered adoption changed second resource=%+v error=%v", unchangedSecond, err)
+	}
 
 	adopted, err := store.AdoptVerifiedDestroyed(ctx, successor)
-	if err != nil || len(adopted) != 1 ||
-		adopted[0].State != resource.StateVerifiedDestroyed ||
-		adopted[0].Revision != 4 || adopted[0].ReadBack.Exists {
+	if err != nil || len(adopted) != 2 {
 		t.Fatalf("adopted=%+v error=%v", adopted, err)
 	}
-	stored, err := store.Get(ctx, resourceID)
-	if err != nil || stored.State != resource.StateVerifiedDestroyed ||
-		stored.Revision != 4 || stored.ReadBack.Exists {
-		t.Fatalf("stored=%+v error=%v", stored, err)
+	for _, resourceID := range []string{resourceID, secondID} {
+		stored, getErr := store.Get(ctx, resourceID)
+		if getErr != nil || stored.State != resource.StateVerifiedDestroyed ||
+			stored.Revision != 3 || stored.ReadBack.Exists {
+			t.Fatalf("stored=%+v error=%v", stored, getErr)
+		}
 	}
 	mirrored, err := store.GetResourceManifestRecord(ctx, deploymentID)
 	if err != nil || mirrored.Status != postgres.ResourceManifestMirrored ||
 		mirrored.Generation != record.Generation+1 ||
 		mirrored.Manifest.Revision != successor.Revision ||
+		len(mirrored.Manifest.Resources) != 2 ||
 		mirrored.Manifest.Resources[0].State != resource.StateVerifiedDestroyed {
 		t.Fatalf("mirrored=%+v error=%v", mirrored, err)
 	}
+	mirroredJSON, _ := json.Marshal(mirrored.Manifest)
+	successorJSON, _ := json.Marshal(successor)
+	if !bytes.Equal(mirroredJSON, successorJSON) {
+		t.Fatalf("mirrored manifest differs from successor\nmirrored=%s\nsuccessor=%s", mirroredJSON, successorJSON)
+	}
+	replayed, err := store.AdoptVerifiedDestroyed(ctx, successor)
+	if err != nil || len(replayed) != 2 {
+		t.Fatalf("replayed=%+v error=%v", replayed, err)
+	}
+	replayedRecord, err := store.GetResourceManifestRecord(ctx, deploymentID)
+	if err != nil || replayedRecord.Generation != mirrored.Generation {
+		t.Fatalf("replayed manifest=%+v error=%v", replayedRecord, err)
+	}
+
+	failedLocal := successor
+	failedLocal.Resources = cloneResourceSlice(adopted)
+	failedLocal.Revision = 20
+	failedLocal.UpdatedAt = now.Add(4 * time.Second)
+	failedRecord, err := store.PutResourceManifestPending(
+		ctx,
+		failedLocal,
+		mirrored.Generation,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedRecord, err = store.MarkResourceManifestFailed(
+		ctx,
+		deploymentID,
+		failedRecord.Generation,
+		errors.New("simulated lost mirror response"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AdoptVerifiedDestroyed(ctx, successor); err != nil {
+		t.Fatalf("lower durable Reaper branch was not reconciled: %v", err)
+	}
+	reconciled, err := store.GetResourceManifestRecord(ctx, deploymentID)
+	if err != nil || reconciled.Status != postgres.ResourceManifestMirrored ||
+		reconciled.Manifest.Revision != successor.Revision ||
+		reconciled.Generation != failedRecord.Generation+1 {
+		t.Fatalf("reconciled manifest=%+v error=%v", reconciled, err)
+	}
+}
+
+func cloneResourceSlice(items []resource.ResourceV1) []resource.ResourceV1 {
+	cloned := slices.Clone(items)
+	for index := range cloned {
+		cloned[index].ProviderCandidateIDs = slices.Clone(cloned[index].ProviderCandidateIDs)
+		cloned[index].DependsOn = slices.Clone(cloned[index].DependsOn)
+		cloned[index].Tags = maps.Clone(cloned[index].Tags)
+	}
+	return cloned
 }
 
 func TestResourcePostgresPersistsProviderlessDestroyFences(t *testing.T) {

@@ -719,25 +719,49 @@ func (service *Service) adoptVerifiedReaperSuccessor(
 	if err != nil {
 		return nil, false, err
 	}
-	if !exactAdoptedResources(adopted, remote.Resources) {
+	if !exactAdoptedResources(adopted, local, remote.Resources) {
 		return nil, false, ErrRevisionConflict
 	}
 	return cloneResources(adopted), true, nil
 }
 
-func exactAdoptedResources(adopted, expected []ResourceV1) bool {
-	if len(adopted) != len(expected) {
+func exactAdoptedResources(adopted, local, remote []ResourceV1) bool {
+	if len(adopted) != len(local) || len(adopted) != len(remote) {
 		return false
 	}
-	byID := make(map[string]ResourceV1, len(expected))
-	for _, item := range expected {
-		byID[item.ResourceID] = item
+	localByID := make(map[string]ResourceV1, len(local))
+	remoteByID := make(map[string]ResourceV1, len(remote))
+	for _, item := range local {
+		localByID[item.ResourceID] = item
 	}
-	for _, item := range adopted {
-		expectedItem, found := byID[item.ResourceID]
-		if !found || !reflect.DeepEqual(item, expectedItem) {
+	for _, item := range remote {
+		if _, duplicate := remoteByID[item.ResourceID]; duplicate {
 			return false
 		}
+		remoteByID[item.ResourceID] = item
+	}
+	seen := make(map[string]struct{}, len(adopted))
+	for _, item := range adopted {
+		stored, localFound := localByID[item.ResourceID]
+		observed, remoteFound := remoteByID[item.ResourceID]
+		_, duplicate := seen[item.ResourceID]
+		if duplicate || !localFound || !remoteFound ||
+			!exactDestroyReconciliationIdentity(stored, item) ||
+			!exactDestroyReconciliationIdentity(observed, item) ||
+			item.State != StateVerifiedDestroyed ||
+			item.ReadBack.Exists ||
+			item.ReadBack.ProviderID == "" ||
+			item.ReadBack.ProviderID != item.ProviderID ||
+			item.ReadBack.ObservedAt.IsZero() ||
+			!sha256Pattern.MatchString(item.ReadBack.TagDigest) ||
+			item.Intent.Operation != MutationDestroy ||
+			item.Intent.ClientToken == "" ||
+			item.Intent.RecordedAt.IsZero() ||
+			item.Revision < stored.Revision ||
+			item.UpdatedAt.Before(stored.UpdatedAt) {
+			return false
+		}
+		seen[item.ResourceID] = struct{}{}
 	}
 	return true
 }
@@ -757,7 +781,7 @@ func exactVerifiedDestroySuccessor(
 		return false
 	}
 	localManifest, err := manifestFrom(local, false, remote.UpdatedAt)
-	if err != nil || remote.Revision <= localManifest.Revision {
+	if err != nil {
 		return false
 	}
 	remoteScope := remote.clone()
@@ -773,9 +797,11 @@ func exactVerifiedDestroySuccessor(
 	for _, item := range local {
 		current[item.ResourceID] = item
 	}
+	seen := make(map[string]struct{}, len(remote.Resources))
 	for _, observed := range remote.Resources {
 		stored, found := current[observed.ResourceID]
-		if !found ||
+		_, duplicate := seen[observed.ResourceID]
+		if duplicate || !found ||
 			observed.State != StateVerifiedDestroyed ||
 			observed.ReadBack.Exists ||
 			observed.ReadBack.ProviderID == "" ||
@@ -785,22 +811,25 @@ func exactVerifiedDestroySuccessor(
 			observed.Intent.Operation != MutationDestroy ||
 			observed.Intent.ClientToken == "" ||
 			observed.Intent.RecordedAt.IsZero() ||
-			observed.Revision <= stored.Revision ||
-			observed.UpdatedAt.Before(stored.UpdatedAt) {
+			observed.Revision < 1 ||
+			observed.UpdatedAt.IsZero() ||
+			!exactDestroyReconciliationIdentity(stored, observed) {
 			return false
 		}
-		expected := stored.clone()
-		expected.State = observed.State
-		expected.Intent = observed.Intent
-		expected.ReadBack = observed.ReadBack
-		expected.BlockedReason = observed.BlockedReason
-		expected.Revision = observed.Revision
-		expected.UpdatedAt = observed.UpdatedAt
-		if !reflect.DeepEqual(expected, observed) {
-			return false
-		}
+		seen[observed.ResourceID] = struct{}{}
 	}
 	return true
+}
+
+func exactDestroyReconciliationIdentity(left, right ResourceV1) bool {
+	expected := left.clone()
+	expected.State = right.State
+	expected.Intent = right.Intent
+	expected.ReadBack = right.ReadBack
+	expected.BlockedReason = right.BlockedReason
+	expected.Revision = right.Revision
+	expected.UpdatedAt = right.UpdatedAt
+	return reflect.DeepEqual(expected, right)
 }
 
 func providerlessCreateNeedsDestroyReconciliation(item ResourceV1) bool {

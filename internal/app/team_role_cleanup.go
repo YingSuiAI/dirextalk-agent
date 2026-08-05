@@ -56,7 +56,8 @@ func (cleanup *awsTeamRoleCleanup) DestroyRole(
 		dispatch.Intent.DeploymentID,
 		dispatch.Intent.OwnerID,
 	)
-	if errors.Is(scheduleErr, resource.ErrNotFound) {
+	scheduleNotFound := errors.Is(scheduleErr, resource.ErrNotFound)
+	if scheduleNotFound {
 		scheduleErr = nil
 	}
 	if scheduleErr != nil {
@@ -73,7 +74,8 @@ func (cleanup *awsTeamRoleCleanup) DestroyRole(
 			ApprovalID:   dispatch.Intent.ApprovalID,
 		},
 	)
-	if errors.Is(destroyErr, resource.ErrNotFound) {
+	destroyNotFound := errors.Is(destroyErr, resource.ErrNotFound)
+	if destroyNotFound {
 		destroyErr = nil
 	}
 	if destroyErr != nil {
@@ -98,7 +100,7 @@ func (cleanup *awsTeamRoleCleanup) DestroyRole(
 			)
 		}
 	}
-	resourcesVerified := destroyErr == nil && !result.Blocked
+	resourcesVerified := destroyErr == nil && !result.Blocked && len(result.Resources) > 0
 	for _, item := range result.Resources {
 		if item.DeploymentID != dispatch.Intent.DeploymentID ||
 			item.OwnerID != dispatch.Intent.OwnerID ||
@@ -117,6 +119,9 @@ func (cleanup *awsTeamRoleCleanup) DestroyRole(
 	joined := errors.Join(scheduleErr, destroyErr, secretErr)
 	if joined != nil {
 		return false, joined
+	}
+	if scheduleNotFound && destroyNotFound && len(result.Resources) == 0 && !result.Blocked {
+		return true, nil
 	}
 	if !resourcesVerified {
 		return false, resource.ErrDestroyBlocked
