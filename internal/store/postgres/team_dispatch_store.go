@@ -493,7 +493,10 @@ func (store *Store) PublishRoleArtifacts(
 			}
 			return current, nil
 		}
-		return teamdispatch.Fact{}, teamdispatch.ErrFactMismatch
+		return teamdispatch.Fact{}, fmt.Errorf(
+			"stored Team result differs: %w",
+			teamdispatch.ErrFactMismatch,
+		)
 	}
 	if current.RecordRevision != command.ExpectedRevision ||
 		current.Phase != teamdispatch.PhaseInputReady ||
@@ -688,8 +691,10 @@ func (store *Store) RecordRoleResult(
 			deployment,
 			command.Evidence,
 		) {
-		return teamdispatch.Fact{},
-			teamdispatch.ErrFactMismatch
+		return teamdispatch.Fact{}, fmt.Errorf(
+			"Worker result evidence differs: %w",
+			teamdispatch.ErrFactMismatch,
+		)
 	}
 	var databaseNow time.Time
 	if err := tx.QueryRow(
@@ -742,7 +747,10 @@ func (store *Store) RecordRoleResult(
 		current.Intent,
 		command.Artifacts,
 	); err != nil {
-		return teamdispatch.Fact{}, err
+		return teamdispatch.Fact{}, fmt.Errorf(
+			"freeze Team result artifacts: %w",
+			err,
+		)
 	}
 	evidence := command.Evidence
 	verifiedAt := databaseNow
@@ -755,8 +763,10 @@ func (store *Store) RecordRoleResult(
 	current.FailureCode = ""
 	current.UpdatedAt = current.UpdatedAt.UTC()
 	if current.Validate() != nil {
-		return teamdispatch.Fact{},
-			teamdispatch.ErrFactMismatch
+		return teamdispatch.Fact{}, fmt.Errorf(
+			"validate frozen Team result: %w",
+			teamdispatch.ErrFactMismatch,
+		)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return teamdispatch.Fact{},

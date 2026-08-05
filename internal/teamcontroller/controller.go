@@ -636,10 +636,13 @@ func (controller *Controller) collectRoleResult(
 		dispatch.Intent.DeploymentID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("load Worker result deployment: %w", err)
 	}
 	if !roleDeploymentMatches(dispatch.Intent, deployment) {
-		return ErrFactMismatch
+		return fmt.Errorf(
+			"match Worker result deployment: %w",
+			ErrFactMismatch,
+		)
 	}
 	if deployment.State == worker.StatePendingEnrollment {
 		if dispatch.ProvisioningEnrollmentExpires == nil {
@@ -691,7 +694,7 @@ func (controller *Controller) collectRoleResult(
 		if err == nil {
 			err = ErrFactMismatch
 		}
-		return err
+		return fmt.Errorf("load Worker result authorization: %w", err)
 	}
 	connection, err := controller.loadConnection(
 		ctx,
@@ -699,7 +702,7 @@ func (controller *Controller) collectRoleResult(
 		*authorized.Approval.Approval.Authorization,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("load Worker result connection: %w", err)
 	}
 	collected, err := controller.results.Collect(
 		ctx,
@@ -707,7 +710,7 @@ func (controller *Controller) collectRoleResult(
 		deployment,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("collect Worker result artifacts: %w", err)
 	}
 	defer collected.Destroy()
 	evidence, err := workerresult.ValidateTeamRole(
@@ -716,7 +719,7 @@ func (controller *Controller) collectRoleResult(
 		collected,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("validate Worker role result: %w", err)
 	}
 	artifacts, err := workerresult.VerifiedTeamArtifacts(
 		dispatch.Intent,
@@ -728,7 +731,7 @@ func (controller *Controller) collectRoleResult(
 		controller.config.ArtifactRetention,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("bind verified Worker artifacts: %w", err)
 	}
 	_, err = controller.dispatches.RecordRoleResult(
 		ctx,
@@ -740,7 +743,10 @@ func (controller *Controller) collectRoleResult(
 			Artifacts:        artifacts,
 		},
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("freeze verified Worker result: %w", err)
+	}
+	return nil
 }
 
 func (controller *Controller) materializeInput(
