@@ -169,7 +169,7 @@ func newPiLoopbackProvider(t *testing.T) *piLoopbackProvider {
 		}
 		if json.Unmarshal(body, &payload) != nil ||
 			payload.Model != "deepseek-v4-pro" ||
-			payload.MaxTokens != 128 ||
+			payload.MaxTokens != 512 ||
 			!containsPiResultTool(payload.Tools) {
 			t.Errorf(
 				"unexpected Pi provider payload model=%q max_tokens=%d tools=%d",

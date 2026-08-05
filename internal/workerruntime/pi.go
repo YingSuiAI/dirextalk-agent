@@ -402,10 +402,11 @@ type piMessage struct {
 }
 
 type piUsage struct {
-	Input     int64 `json:"input"`
-	Output    int64 `json:"output"`
-	CacheRead int64 `json:"cacheRead"`
-	Reasoning int64 `json:"reasoning"`
+	Input      int64 `json:"input"`
+	Output     int64 `json:"output"`
+	CacheRead  int64 `json:"cacheRead"`
+	CacheWrite int64 `json:"cacheWrite"`
+	Reasoning  int64 `json:"reasoning"`
 }
 
 type piToolResult struct {
@@ -604,6 +605,9 @@ func validPiEventType(value string) bool {
 		"agent_start",
 		"agent_end",
 		"agent_settled",
+		"entry_appended",
+		"session_info_changed",
+		"thinking_level_changed",
 		"turn_start",
 		"turn_end",
 		"message_start",
@@ -632,16 +636,21 @@ func addPiUsage(total *Usage, value piUsage) error {
 		value.Input < 0 ||
 		value.Output < 0 ||
 		value.CacheRead < 0 ||
+		value.CacheWrite < 0 ||
 		value.Reasoning < 0 ||
-		value.CacheRead > value.Input ||
-		total.InputTokens > math.MaxInt64-value.Input ||
+		value.CacheRead > math.MaxInt64-value.Input ||
+		value.CacheWrite > math.MaxInt64-value.Input-value.CacheRead {
+		return ErrExecution
+	}
+	normalizedInput := value.Input + value.CacheRead + value.CacheWrite
+	if total.InputTokens > math.MaxInt64-normalizedInput ||
 		total.OutputTokens > math.MaxInt64-value.Output ||
 		total.CachedInputTokens > math.MaxInt64-value.CacheRead ||
 		total.ReasoningOutputTokens >
 			math.MaxInt64-value.Reasoning {
 		return ErrExecution
 	}
-	total.InputTokens += value.Input
+	total.InputTokens += normalizedInput
 	total.OutputTokens += value.Output
 	total.CachedInputTokens += value.CacheRead
 	total.ReasoningOutputTokens += value.Reasoning

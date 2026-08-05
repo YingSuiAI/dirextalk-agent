@@ -39,7 +39,7 @@ func TestPiExecutorUsesQualifiedReleaseAndStructuredResult(t *testing.T) {
 			clear(artifact.Content)
 		}
 	}()
-	if result.Usage.InputTokens != 120 ||
+	if result.Usage.InputTokens != 140 ||
 		result.Usage.CachedInputTokens != 20 ||
 		result.Usage.OutputTokens != 24 ||
 		result.Usage.ReasoningOutputTokens != 6 ||
@@ -341,6 +341,49 @@ func TestParsePiEventsRequiresSettledSingleFinalResult(t *testing.T) {
 				stream,
 			)
 		}
+	}
+}
+
+func TestParsePiEventsAcceptsIndependentCachedInputUsage(t *testing.T) {
+	t.Parallel()
+	stream := bytes.Replace(
+		validPiEventStream(),
+		[]byte(`"input":120,"output":24,"cacheRead":20`),
+		[]byte(`"input":10,"output":24,"cacheRead":120,"cacheWrite":7`),
+		1,
+	)
+
+	usage, final, err := parsePiEvents(stream)
+	defer clear(final)
+	if err != nil {
+		t.Fatalf("parse cached Pi usage: %v", err)
+	}
+	if usage.InputTokens != 137 || usage.CachedInputTokens != 120 {
+		t.Fatalf("cached Pi usage = %+v", usage)
+	}
+}
+
+func TestParsePiEventsAcceptsPinnedSessionMetadataEvents(t *testing.T) {
+	t.Parallel()
+	stream := bytes.Replace(
+		validPiEventStream(),
+		[]byte(`{"type":"agent_start"}`+"\n"),
+		[]byte(
+			`{"type":"thinking_level_changed","level":"medium"}`+"\n"+
+				`{"type":"session_info_changed","name":"probe"}`+"\n"+
+				`{"type":"entry_appended","entry":{"type":"custom","id":"entry-1"}}`+"\n"+
+				`{"type":"agent_start"}`+"\n",
+		),
+		1,
+	)
+
+	usage, final, err := parsePiEvents(stream)
+	defer clear(final)
+	if err != nil {
+		t.Fatalf("parse pinned Pi session events: %v", err)
+	}
+	if usage.Validate() != nil || len(final) == 0 {
+		t.Fatalf("pinned Pi session events lost result: usage=%+v", usage)
 	}
 }
 
