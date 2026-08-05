@@ -279,7 +279,7 @@ func (s TaskSpec) Normalize() (TaskSpec, error) {
 	if (s.Kind == TaskKindAgent || s.Kind == TaskKindKnowledgeIndex) && !ValidUUID(s.ModelProfileID) {
 		return TaskSpec{}, ErrInvalid
 	}
-	if s.Kind != TaskKindAgent && s.Kind != TaskKindKnowledgeIndex && s.ModelProfileID != "" && !ValidUUID(s.ModelProfileID) {
+	if s.Kind != TaskKindAgent && s.Kind != TaskKindKnowledgeIndex && s.ModelProfileID != "" {
 		return TaskSpec{}, ErrInvalid
 	}
 	if s.Kind != TaskKindAgent && (s.ConversationID != "" || len(s.AttachmentRefs) != 0 || len(s.Extensions) != 0 || len(s.KnowledgeRefs) != 0) {

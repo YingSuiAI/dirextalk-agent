@@ -141,6 +141,39 @@ func TestTeamExecutionTaskTemplateIsFenced(t *testing.T) {
 	}
 }
 
+func TestNonModelTaskKindsRejectModelProfileID(t *testing.T) {
+	validSpec := func(kind TaskKind) TaskSpec {
+		spec := TaskSpec{Kind: kind, Goal: "bounded task", IdempotencyKey: testID}
+		switch kind {
+		case TaskKindExtension:
+			spec.Payload.Extension = &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, InstallationID: testID2, ExpectedRevision: 1, Version: "1.0.0", Digest: strings.Repeat("a", 64), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"value":1}`)}
+		case TaskKindAWSChange:
+			spec.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID2}
+		case TaskKindWorkload:
+			spec.Payload.Workload = &WorkloadTaskPayload{WorkloadID: testID2, PlanID: testID2, OperationID: testID2, PlanRevision: 1, PlanDigest: strings.Repeat("a", 64), TargetKind: "CORE_RUNNER", ConfirmationID: testID2}
+		case TaskKindConversationTool:
+			spec.Payload.ConversationTool = &ConversationToolTaskPayload{TurnID: testID2, AttemptID: testID2, Round: 1, CallID: testID2, ExtensionSnapshotDigest: strings.Repeat("a", 64), InstallationID: testID2, VersionID: testID2, InstallationRevision: 1, ToolName: "echo", ToolSchemaDigest: strings.Repeat("b", 64), ArgumentsDigest: strings.Repeat("c", 64)}
+		case TaskKindTeamExecution:
+			p := validTeamExecutionTaskPayload()
+			spec.Payload.TeamExecution = &p
+		}
+		return spec
+	}
+
+	for _, kind := range []TaskKind{TaskKindExtension, TaskKindAWSChange, TaskKindWorkload, TaskKindConversationTool, TaskKindTeamExecution} {
+		t.Run(string(kind), func(t *testing.T) {
+			if _, err := validSpec(kind).Normalize(); err != nil {
+				t.Fatalf("valid baseline Normalize() error = %v", err)
+			}
+			withModelProfile := validSpec(kind)
+			withModelProfile.ModelProfileID = testID2
+			if _, err := withModelProfile.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Normalize() with model profile error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
 var testID = "00000000-0000-4000-8000-000000000001"
 var testID2 = "00000000-0000-4000-8000-000000000002"
 
