@@ -21,6 +21,26 @@ claim a managed deployment.
 - Use a protected local path for the one-time ECR Docker session descriptor.
   It is not a host-runtime credential and must be consumed or cleaned.
 
+## Release selection gate
+
+Classify the committed diff before starting a release. The selected path is a
+release invariant, not an operator preference:
+
+| Changed surface | Required release path | Must not run |
+| --- | --- | --- |
+| Central Agent command, controller, API, or Agent container only | `dirextalk-agent-imagectl` | Worker/Reaper/rootfs publication and Worker AMI build |
+| Worker harness, Worker runtime, Pi package/assets, result extension, Worker rootfs, or Reaper | complete release bundle plus the applicable Worker AMI flow | Agent-only acceptance as proof of the Worker change |
+| Documentation or tests with no shipped binary/input change | no image release | any paid or mutable release flow |
+
+Use `git diff --name-only <deployed-revision>...HEAD` and the container build
+inputs to make this decision. If a file is shared by Agent and Worker build
+graphs, treat the release as Worker-impacting until the build graph proves
+otherwise. Record the chosen path and exact revision before mutation.
+
+An Agent-only release must normally complete without creating EC2, EBS, AMI,
+snapshot, Worker rootfs, or Worker image resources. An AMI snapshot wait during
+an Agent-only change means the wrong release path was selected.
+
 ## Closed flow
 
 ```text
@@ -69,6 +89,42 @@ changing Git checkout, a tag not bound to the current revision, an existing
 tag with a different digest, credential-shaped coordinates, and any attempt to
 override the fixed Agent repository. Publication is `linux/amd64` only and
 injects the verified private frontend and Go-base references on every build.
+
+## Repeatable operator checks and resume
+
+Before `prepare`, verify the exact checkout and builder rather than discovering
+missing prerequisites during publication:
+
+- clean detached or release checkout at the recorded revision;
+- restrictive `umask` (`0077` for protected receipts), sufficient disk, and a
+  working Docker daemon with Buildx;
+- the repository-required Go toolchain and native compiler/build packages;
+- live STS account/Region identity and read-back of the fixed ECR repositories;
+  and
+- a new protected stage directory that does not reuse an old session file.
+
+Pass `--region <recorded-region>` to every AWS CLI preflight and read-back.
+Do not rely on `AWS_REGION`: AWS CLI v1 can continue using its configured
+default Region. Before treating `Invalid*NotFound` as absence, read back the
+caller's account plus a Region-bound fact such as the VPC, Availability Zone,
+or repository URI and prove it belongs to the recorded Region.
+
+Keep the safe preparation and publication receipts in that stage directory.
+Resume from the first missing read-back fact:
+
+1. If no preparation receipt and live session exist, run `prepare` again.
+2. If preparation exists but no publication receipt exists, verify the session
+   is still live and run `publish`; otherwise clean it and prepare a new one.
+3. If the immutable tag already resolves to the receipt digest in ECR, do not
+   rebuild or repush it. Continue with deployment verification.
+4. Deploy only the exact `tag@sha256:digest`, verify the running container's
+   image, revision label, and health, then log the host out of ECR and read back
+   an empty Docker authorization set.
+
+Never restart from a complete release bundle or AMI merely because deployment
+or result verification failed after an Agent-only image was published. Diagnose
+the failed lifecycle stage and publish only the component whose build inputs
+changed.
 
 If publication does not consume the session, clean it explicitly:
 

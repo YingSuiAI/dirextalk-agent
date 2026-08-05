@@ -174,6 +174,46 @@ Any failure outside this list stops the change and is reported separately. The
 implementation must not change the active Release, AMI catalog, AWS account,
 demo2 container, completion RPC, database schema, or client behavior.
 
+## Full-release preflight and resume boundary
+
+Enter this path only when the classified diff changes a Worker/Reaper binary,
+Worker rootfs, Pi installation/assets, result extension, or AMI construction.
+Central-only controller or API changes use the Agent-only flow in
+`docs/agent-image-release.md` and must not pay the AMI wait.
+
+Before publishing a bundle or launching a builder, verify and record:
+
+- a clean committed source revision with restrictive receipt-directory
+  permissions and a known `umask`;
+- builder disk, Docker/Buildx, Go, `gcc`/native build packages, AWS identity,
+  Region, and immutable ECR repository policy;
+- the complete Pi installation tree required by the executable, including
+  runtime assets such as themes, rather than qualifying a copied binary alone;
+- archive hygiene produced with macOS copy-file metadata disabled, with every
+  `._*`/AppleDouble member rejected before upload; and
+- exact archive ownership, mode, path, digest, and the runtime qualification
+  result from the same rootfs bytes that will enter the AMI.
+
+Every AWS CLI command must carry the recorded `--region` explicitly. Do not
+use `AWS_REGION` as the only Region selector because AWS CLI v1 may continue
+using its configured default. Confirm the account, VPC, subnet Availability
+Zone, AMI Region, and ECR URI before interpreting any `Invalid*NotFound`
+response or creating replacement infrastructure.
+
+Treat release publication, AMI creation, snapshot availability, AMI
+verification, and Release promotion as separate durable stages. Each stage
+must write a protected receipt before moving forward. Resume from the first
+stage whose AWS/ECR read-back is absent or inconsistent; never rebuild earlier
+artifacts that still match their immutable digests.
+
+AMI creation and encrypted snapshot finalization are asynchronous AWS
+operations and can take several minutes. Poll the recorded AMI/snapshot IDs
+with bounded backoff while preserving the builder cleanup facts. A long
+snapshot wait is not evidence that compilation or upload should be restarted.
+After success or failure, run the scoped destroy/read-back path and prove the
+temporary builder, root EBS volume, ENI, endpoint/rule, credentials, and local
+session artifacts are absent.
+
 ## Prepare a build-request v2
 
 Preparation is read-only. It confirms the exact STS account and Region,
