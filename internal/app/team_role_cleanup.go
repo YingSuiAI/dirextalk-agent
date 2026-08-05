@@ -98,20 +98,28 @@ func (cleanup *awsTeamRoleCleanup) DestroyRole(
 			)
 		}
 	}
-	joined := errors.Join(scheduleErr, destroyErr, secretErr)
-	if joined != nil {
-		return false, joined
-	}
-	if result.Blocked {
-		return false, resource.ErrDestroyBlocked
-	}
+	resourcesVerified := destroyErr == nil && !result.Blocked
 	for _, item := range result.Resources {
 		if item.DeploymentID != dispatch.Intent.DeploymentID ||
 			item.OwnerID != dispatch.Intent.OwnerID ||
 			item.ApprovalID != dispatch.Intent.ApprovalID ||
 			item.State != resource.StateVerifiedDestroyed {
-			return false, resource.ErrDestroyBlocked
+			resourcesVerified = false
+			break
 		}
+	}
+	if resourcesVerified && errors.Is(scheduleErr, resource.ErrRevisionConflict) {
+		// A concurrent Reaper may advance the manifest between scheduling and
+		// destruction. Its exact verified terminal result supersedes that stale
+		// scheduling write, but no other scheduling error is safe to ignore.
+		scheduleErr = nil
+	}
+	joined := errors.Join(scheduleErr, destroyErr, secretErr)
+	if joined != nil {
+		return false, joined
+	}
+	if !resourcesVerified {
+		return false, resource.ErrDestroyBlocked
 	}
 	return true, nil
 }

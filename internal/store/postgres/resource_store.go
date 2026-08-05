@@ -8,6 +8,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -610,6 +611,126 @@ func (store *ResourceStore) Save(ctx context.Context, item resource.ResourceV1, 
 		return resource.ResourceV1{}, fmt.Errorf("commit resource save: %w", err)
 	}
 	return cloneResource(item), nil
+}
+
+// AdoptVerifiedDestroyed advances the local ledger to an exact, higher
+// DynamoDB successor written by the independently fenced AWS Reaper. Only a
+// complete verified-destroyed graph can cross this recovery boundary.
+func (store *ResourceStore) AdoptVerifiedDestroyed(
+	ctx context.Context,
+	manifest resource.Manifest,
+) ([]resource.ResourceV1, error) {
+	if store.validateManifest(manifest) != nil {
+		return nil, resource.ErrInvalid
+	}
+	for _, item := range manifest.Resources {
+		if item.State != resource.StateVerifiedDestroyed ||
+			item.ReadBack.Exists ||
+			item.ReadBack.ProviderID == "" ||
+			item.ReadBack.ProviderID != item.ProviderID ||
+			item.ReadBack.ObservedAt.IsZero() ||
+			item.Intent.Operation != resource.MutationDestroy ||
+			item.Intent.ClientToken == "" ||
+			item.Intent.RecordedAt.IsZero() {
+			return nil, resource.ErrRevisionConflict
+		}
+	}
+	deploymentID, err := uuid.Parse(manifest.DeploymentID)
+	if err != nil || deploymentID == uuid.Nil {
+		return nil, resource.ErrInvalid
+	}
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin verified Reaper adoption: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	currentRecord, _, err := loadManifestRecordForUpdate(
+		ctx,
+		tx,
+		deploymentID,
+		store.instanceID,
+	)
+	if err != nil {
+		return nil, mapManifestLoadError(err)
+	}
+	current, err := listResourcesTx(
+		ctx,
+		tx,
+		deploymentID,
+		store.instanceID,
+		true,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(current) != len(manifest.Resources) ||
+		manifest.Revision <= currentRecord.Manifest.Revision {
+		return nil, resource.ErrRevisionConflict
+	}
+	byID := make(map[string]resource.ResourceV1, len(current))
+	for _, item := range current {
+		byID[item.ResourceID] = item
+	}
+	for _, observed := range manifest.Resources {
+		stored, found := byID[observed.ResourceID]
+		if !found ||
+			observed.Revision <= stored.Revision ||
+			observed.UpdatedAt.Before(stored.UpdatedAt) ||
+			!sameResourceIdentity(stored, observed) ||
+			stored.ProviderID != observed.ProviderID ||
+			!slices.Equal(stored.ProviderCandidateIDs, observed.ProviderCandidateIDs) ||
+			stored.Retention != observed.Retention ||
+			!stored.DestroyDeadline.Equal(observed.DestroyDeadline) ||
+			stored.AutoDestroyApproved != observed.AutoDestroyApproved ||
+			!maps.Equal(stored.Tags, observed.Tags) {
+			return nil, resource.ErrRevisionConflict
+		}
+		if err := saveResourceTx(
+			ctx,
+			tx,
+			store.instanceID,
+			stored.Revision,
+			observed,
+		); err != nil {
+			return nil, err
+		}
+	}
+	encoded, err := encodeResourceManifest(manifest)
+	if err != nil {
+		return nil, err
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE resource_manifest_mirror
+		SET owner_id=$3, task_id=$4, manifest_revision=$5,
+		    manifest_json=$6, mirror_generation=mirror_generation+1,
+		    mirror_status=$7, last_error='', mirrored_at=clock_timestamp(),
+		    updated_at=clock_timestamp()
+		WHERE deployment_id=$1 AND agent_instance_id=$2
+		  AND mirror_generation=$8`,
+		deploymentID,
+		store.instanceID,
+		manifest.OwnerID,
+		manifest.TaskID,
+		manifest.Revision,
+		encoded,
+		ResourceManifestMirrored,
+		currentRecord.Generation,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("adopt verified Reaper manifest: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return nil, resource.ErrRevisionConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit verified Reaper adoption: %w", err)
+	}
+	items := cloneResources(manifest.Resources)
+	sort.Slice(items, func(left, right int) bool {
+		return items[left].ResourceID < items[right].ResourceID
+	})
+	return items, nil
 }
 
 // validateProviderCreateStart rechecks the durable approval origin immediately

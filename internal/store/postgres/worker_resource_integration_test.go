@@ -486,6 +486,179 @@ func TestResourcePostgresCASManagedAndManifestRecovery(t *testing.T) {
 	}
 }
 
+func TestResourcePostgresAdoptsVerifiedReaperSuccessorAtomically(t *testing.T) {
+	pool, baseStore, instanceID := newPlanningTestStore(t)
+	ctx := context.Background()
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	taskID, _ := createWorkerTask(t, baseStore)
+	deploymentID := uuid.NewString()
+	ownerID := "owner-reaper-adoption"
+	seedWorkerIdentityBinding(
+		t,
+		pool,
+		instanceID,
+		ownerID,
+		taskID,
+		deploymentID,
+		"i-0123456789abcdef0",
+		"123456789012",
+	)
+	var approvalID uuid.UUID
+	var approvedPlanHash string
+	if err := pool.QueryRow(ctx, `
+		SELECT launch.approval_id, approval.plan_hash
+		FROM cloud_launch_operations AS launch
+		JOIN cloud_approvals AS approval
+		  ON approval.approval_id=launch.approval_id
+		WHERE launch.deployment_id=$1`, deploymentID).Scan(
+		&approvalID,
+		&approvedPlanHash,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(
+		ctx,
+		`DELETE FROM cloud_resources WHERE deployment_id=$1`,
+		deploymentID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	deadline := now.Add(30 * time.Minute).Truncate(time.Second)
+	resourceID := uuid.NewString()
+	item := resource.ResourceV1{
+		ResourceID: resourceID, AgentInstanceID: instanceID,
+		OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
+		Type: resource.TypeEC2, LogicalName: "reaper-worker",
+		Region: "us-west-2", SpecDigest: "sha256:" + strings.Repeat("a", 64),
+		ApprovedPlanHash: approvedPlanHash, ApprovalID: approvalID.String(),
+		Retention:       task.RetentionEphemeralAutoDestroy,
+		DestroyDeadline: deadline, AutoDestroyApproved: true,
+		Tags: map[string]string{
+			resource.TagAgentInstanceID:  instanceID,
+			resource.TagOwnerID:          ownerID,
+			resource.TagTaskID:           taskID,
+			resource.TagDeploymentID:     deploymentID,
+			resource.TagResourceID:       resourceID,
+			resource.TagRetention:        string(task.RetentionEphemeralAutoDestroy),
+			resource.TagDestroyDeadline:  deadline.Format(time.RFC3339),
+			resource.TagApprovedPlanHash: approvedPlanHash,
+			resource.TagApprovalID:       approvalID.String(),
+		},
+		State: resource.StateProvisioning,
+		Intent: resource.MutationIntent{
+			Operation:   resource.MutationCreate,
+			ClientToken: strings.Repeat("c", 64), RecordedAt: now,
+		},
+		Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	item, err = store.CreateIntent(ctx, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.ProviderID = "i-reaper-fixture"
+	item.State = resource.StateActive
+	item.ReadBack = resource.ReadBackEvidence{
+		Exists: true, ProviderID: item.ProviderID,
+		ObservedAt: now.Add(time.Second),
+		TagDigest:  "sha256:" + strings.Repeat("b", 64),
+	}
+	item.Revision = 2
+	item.UpdatedAt = now.Add(time.Second)
+	item, err = store.Save(ctx, item, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := resource.Manifest{
+		ManifestID: deploymentID, AgentInstanceID: instanceID,
+		OwnerID: ownerID, TaskID: taskID, DeploymentID: deploymentID,
+		Retention:       task.RetentionEphemeralAutoDestroy,
+		DestroyDeadline: deadline, AutoDestroyApproved: true,
+		AutoDestroyApprovalID: approvalID.String(),
+		ApprovedPlanHash:      approvedPlanHash,
+		ApprovalBindings: []resource.ApprovalBinding{{
+			ApprovedPlanHash: approvedPlanHash,
+			ApprovalID:       approvalID.String(),
+		}},
+		Resources: []resource.ResourceV1{item},
+		Revision:  2, UpdatedAt: now.Add(time.Second),
+	}
+	record, err := store.PutResourceManifestPending(ctx, manifest, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkResourceManifestMirrored(
+		ctx,
+		deploymentID,
+		record.Generation,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	successor := manifest
+	successor.Resources = slices.Clone(manifest.Resources)
+	successor.Resources[0].State = resource.StateVerifiedDestroyed
+	successor.Resources[0].Intent = resource.MutationIntent{
+		Operation:   resource.MutationDestroy,
+		ClientToken: strings.Repeat("d", 64),
+		RecordedAt:  now.Add(2 * time.Second),
+	}
+	successor.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists: false, ProviderID: item.ProviderID,
+		ObservedAt: now.Add(3 * time.Second),
+		TagDigest:  "sha256:" + strings.Repeat("e", 64),
+	}
+	successor.Resources[0].Revision = 4
+	successor.Resources[0].UpdatedAt = now.Add(2 * time.Second)
+	successor.Revision = 8
+	successor.UpdatedAt = now.Add(2 * time.Second)
+	nonSuccessor := successor
+	nonSuccessor.Revision = manifest.Revision
+	if _, err := store.AdoptVerifiedDestroyed(
+		ctx,
+		nonSuccessor,
+	); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("non-successor Reaper manifest error=%v", err)
+	}
+	tampered := successor
+	tampered.Resources = slices.Clone(successor.Resources)
+	tampered.Resources[0].ProviderID = "i-substituted"
+	tampered.Resources[0].ReadBack.ProviderID = "i-substituted"
+	if _, err := store.AdoptVerifiedDestroyed(
+		ctx,
+		tampered,
+	); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("tampered Reaper successor error=%v", err)
+	}
+	unchanged, err := store.Get(ctx, resourceID)
+	if err != nil || unchanged.State != resource.StateActive ||
+		unchanged.Revision != item.Revision {
+		t.Fatalf("tampered adoption changed local resource=%+v error=%v", unchanged, err)
+	}
+
+	adopted, err := store.AdoptVerifiedDestroyed(ctx, successor)
+	if err != nil || len(adopted) != 1 ||
+		adopted[0].State != resource.StateVerifiedDestroyed ||
+		adopted[0].Revision != 4 || adopted[0].ReadBack.Exists {
+		t.Fatalf("adopted=%+v error=%v", adopted, err)
+	}
+	stored, err := store.Get(ctx, resourceID)
+	if err != nil || stored.State != resource.StateVerifiedDestroyed ||
+		stored.Revision != 4 || stored.ReadBack.Exists {
+		t.Fatalf("stored=%+v error=%v", stored, err)
+	}
+	mirrored, err := store.GetResourceManifestRecord(ctx, deploymentID)
+	if err != nil || mirrored.Status != postgres.ResourceManifestMirrored ||
+		mirrored.Generation != record.Generation+1 ||
+		mirrored.Manifest.Revision != successor.Revision ||
+		mirrored.Manifest.Resources[0].State != resource.StateVerifiedDestroyed {
+		t.Fatalf("mirrored=%+v error=%v", mirrored, err)
+	}
+}
+
 func TestResourcePostgresPersistsProviderlessDestroyFences(t *testing.T) {
 	pool, baseStore, instanceID := newPlanningTestStore(t)
 	ctx := context.Background()

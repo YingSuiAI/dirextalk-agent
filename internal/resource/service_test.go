@@ -16,9 +16,28 @@ import (
 )
 
 type fakeResourceRepository struct {
-	mu        sync.Mutex
-	resources map[string]ResourceV1
-	managed   map[string]ManagedServiceV1
+	mu         sync.Mutex
+	resources  map[string]ResourceV1
+	managed    map[string]ManagedServiceV1
+	adoptCalls int
+}
+
+func (repository *fakeResourceRepository) AdoptVerifiedDestroyed(
+	_ context.Context,
+	manifest Manifest,
+) ([]ResourceV1, error) {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	repository.adoptCalls++
+	for _, item := range manifest.Resources {
+		if _, found := repository.resources[item.ResourceID]; !found {
+			return nil, ErrRevisionConflict
+		}
+		repository.resources[item.ResourceID] = item.clone()
+	}
+	return repository.list(func(item ResourceV1) bool {
+		return item.DeploymentID == manifest.DeploymentID
+	}), nil
 }
 
 func newFakeResourceRepository() *fakeResourceRepository {
@@ -1431,6 +1450,92 @@ func TestAgentLossReaperDeletesOnlyApprovedExpiredEphemeral(t *testing.T) {
 	}
 	if report.SkippedNotApproved != 1 || !fixture.provider.resources["unapproved-provider"].Exists {
 		t.Fatalf("unapproved manifest was reaped: %+v", report)
+	}
+}
+
+func TestDestroyAdoptsExactVerifiedReaperSuccessor(t *testing.T) {
+	fixture := newResourceFixture(t)
+	created, err := fixture.service.Provision(
+		context.Background(),
+		fixture.spec(TypeEC2, "ephemeral-worker"),
+		fixture.createAuthorization(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reaper, err := NewReaper(fixture.provider, fixture.mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaper.now = func() time.Time { return fixture.now.Add(time.Hour) }
+	if _, err := reaper.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.provider.deleteOrder) != 1 {
+		t.Fatalf("Reaper delete order = %v", fixture.provider.deleteOrder)
+	}
+	local, err := fixture.repository.Get(context.Background(), created.ResourceID)
+	if err != nil || local.State != StateActive {
+		t.Fatalf("local resource = %+v, error=%v", local, err)
+	}
+	remote := fixture.mirror.manifests[fixture.deploymentID]
+	request := DestroyRequest{
+		DeploymentID: fixture.deploymentID,
+		OwnerID:      fixture.ownerID,
+		ApprovalID:   fixture.approvalID,
+	}
+	for name, mutate := range map[string]func(*Manifest){
+		"owner": func(value *Manifest) { value.OwnerID = "other-owner" },
+		"provider": func(value *Manifest) {
+			value.Resources[0].ProviderID = "i-substituted"
+		},
+		"readback exists": func(value *Manifest) {
+			value.Resources[0].ReadBack.Exists = true
+		},
+		"resource tag": func(value *Manifest) {
+			value.Resources[0].Tags[TagOwnerID] = "other-owner"
+		},
+		"stale revision": func(value *Manifest) {
+			value.Resources[0].Revision = local.Revision
+		},
+		"non-successor manifest revision": func(value *Manifest) {
+			value.Revision = local.Revision
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tampered := remote.clone()
+			mutate(&tampered)
+			if exactVerifiedDestroySuccessor(
+				[]ResourceV1{local},
+				tampered,
+				request,
+			) {
+				t.Fatal("tampered Reaper successor was accepted")
+			}
+		})
+	}
+
+	result, err := fixture.service.Destroy(
+		context.Background(),
+		request,
+	)
+	if err != nil || result.Blocked ||
+		len(result.Resources) != 1 ||
+		result.Resources[0].State != StateVerifiedDestroyed ||
+		fixture.repository.adoptCalls != 1 {
+		t.Fatalf(
+			"adopt result=%+v calls=%d error=%v",
+			result,
+			fixture.repository.adoptCalls,
+			err,
+		)
+	}
+	if len(fixture.provider.deleteOrder) != 1 {
+		t.Fatalf(
+			"Central repeated Reaper deletion: %v",
+			fixture.provider.deleteOrder,
+		)
 	}
 }
 

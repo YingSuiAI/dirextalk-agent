@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,55 @@ func TestTeamRoleCleanupAllowsCancellationBeforeResourcesExist(
 	)
 	if err != nil || !destroyed {
 		t.Fatalf("destroyed=%v error=%v", destroyed, err)
+	}
+}
+
+func TestTeamRoleCleanupAcceptsVerifiedDestroyAfterScheduleRace(
+	t *testing.T,
+) {
+	t.Parallel()
+	dispatch := teamDestroyingDispatch(t)
+	lifecycle := &teamResourceLifecycleStub{
+		scheduleErr: resource.ErrRevisionConflict,
+	}
+	cleanup, err := newAWSTeamRoleCleanup(
+		teamLifecycleFactoryStub{lifecycle: lifecycle},
+		&awsartifact.DeploymentSecretLifecycle{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroyed, err := cleanup.DestroyRole(
+		context.Background(),
+		cloudapp.Connection{OwnerID: dispatch.Intent.OwnerID},
+		dispatch,
+	)
+	if err != nil || !destroyed {
+		t.Fatalf("destroyed=%v error=%v", destroyed, err)
+	}
+}
+
+func TestTeamRoleCleanupDoesNotHideOtherScheduleFailures(
+	t *testing.T,
+) {
+	t.Parallel()
+	dispatch := teamDestroyingDispatch(t)
+	wantErr := errors.New("schedule unavailable")
+	lifecycle := &teamResourceLifecycleStub{scheduleErr: wantErr}
+	cleanup, err := newAWSTeamRoleCleanup(
+		teamLifecycleFactoryStub{lifecycle: lifecycle},
+		&awsartifact.DeploymentSecretLifecycle{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destroyed, err := cleanup.DestroyRole(
+		context.Background(),
+		cloudapp.Connection{OwnerID: dispatch.Intent.OwnerID},
+		dispatch,
+	)
+	if destroyed || !errors.Is(err, wantErr) {
+		t.Fatalf("destroyed=%v error=%v, want schedule failure", destroyed, err)
 	}
 }
 

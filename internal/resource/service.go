@@ -33,6 +33,10 @@ type managedReplayRepository interface {
 	GetManaged(context.Context, string) (ManagedServiceV1, []ResourceV1, error)
 }
 
+type verifiedDestroyAdopter interface {
+	AdoptVerifiedDestroyed(context.Context, Manifest) ([]ResourceV1, error)
+}
+
 const providerCreateVisibilityWindow = 10 * time.Minute
 
 // FindExactManagedReplay performs a read-only recovery check for the crash
@@ -577,6 +581,15 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 			return DestroyResult{}, ErrManaged
 		}
 	}
+	if adopted, ok, err := service.adoptVerifiedReaperSuccessor(
+		ctx,
+		request,
+		resources,
+	); err != nil {
+		return DestroyResult{}, err
+	} else if ok {
+		return DestroyResult{Resources: adopted}, nil
+	}
 	ordered, err := reverseDependencyOrder(resources)
 	if err != nil {
 		return DestroyResult{}, err
@@ -673,6 +686,121 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 		return DestroyResult{}, err
 	}
 	return DestroyResult{Resources: cloneResources(final), Blocked: blocked}, nil
+}
+
+func (service *Service) adoptVerifiedReaperSuccessor(
+	ctx context.Context,
+	request DestroyRequest,
+	local []ResourceV1,
+) ([]ResourceV1, bool, error) {
+	reader, readable := service.mirror.(ManifestReadBack)
+	adopter, adoptable := service.repository.(verifiedDestroyAdopter)
+	if !readable || !adoptable {
+		return nil, false, nil
+	}
+	remote, err := reader.Get(ctx, request.DeploymentID)
+	if err != nil {
+		return nil, false, nil
+	}
+	terminal := true
+	for _, item := range remote.Resources {
+		if item.State != StateVerifiedDestroyed {
+			terminal = false
+			break
+		}
+	}
+	if !terminal {
+		return nil, false, nil
+	}
+	if !exactVerifiedDestroySuccessor(local, remote, request) {
+		return nil, false, ErrRevisionConflict
+	}
+	adopted, err := adopter.AdoptVerifiedDestroyed(ctx, remote)
+	if err != nil {
+		return nil, false, err
+	}
+	if !exactAdoptedResources(adopted, remote.Resources) {
+		return nil, false, ErrRevisionConflict
+	}
+	return cloneResources(adopted), true, nil
+}
+
+func exactAdoptedResources(adopted, expected []ResourceV1) bool {
+	if len(adopted) != len(expected) {
+		return false
+	}
+	byID := make(map[string]ResourceV1, len(expected))
+	for _, item := range expected {
+		byID[item.ResourceID] = item
+	}
+	for _, item := range adopted {
+		expectedItem, found := byID[item.ResourceID]
+		if !found || !reflect.DeepEqual(item, expectedItem) {
+			return false
+		}
+	}
+	return true
+}
+
+func exactVerifiedDestroySuccessor(
+	local []ResourceV1,
+	remote Manifest,
+	request DestroyRequest,
+) bool {
+	if len(local) == 0 || len(remote.Resources) != len(local) ||
+		remote.DeploymentID != request.DeploymentID ||
+		remote.OwnerID != request.OwnerID ||
+		remote.Managed ||
+		remote.Retention != task.RetentionEphemeralAutoDestroy ||
+		NormalizeLegacyApprovalBindings(&remote) != nil ||
+		remote.ValidateResourceApprovalScope() != nil {
+		return false
+	}
+	localManifest, err := manifestFrom(local, false, remote.UpdatedAt)
+	if err != nil || remote.Revision <= localManifest.Revision {
+		return false
+	}
+	remoteScope := remote.clone()
+	localScope := localManifest.clone()
+	remoteScope.Resources = nil
+	localScope.Resources = nil
+	localScope.Revision = remoteScope.Revision
+	localScope.UpdatedAt = remoteScope.UpdatedAt
+	if !reflect.DeepEqual(localScope, remoteScope) {
+		return false
+	}
+	current := make(map[string]ResourceV1, len(local))
+	for _, item := range local {
+		current[item.ResourceID] = item
+	}
+	for _, observed := range remote.Resources {
+		stored, found := current[observed.ResourceID]
+		if !found ||
+			observed.State != StateVerifiedDestroyed ||
+			observed.ReadBack.Exists ||
+			observed.ReadBack.ProviderID == "" ||
+			observed.ReadBack.ProviderID != observed.ProviderID ||
+			observed.ReadBack.ObservedAt.IsZero() ||
+			!sha256Pattern.MatchString(observed.ReadBack.TagDigest) ||
+			observed.Intent.Operation != MutationDestroy ||
+			observed.Intent.ClientToken == "" ||
+			observed.Intent.RecordedAt.IsZero() ||
+			observed.Revision <= stored.Revision ||
+			observed.UpdatedAt.Before(stored.UpdatedAt) {
+			return false
+		}
+		expected := stored.clone()
+		expected.State = observed.State
+		expected.Intent = observed.Intent
+		expected.ReadBack = observed.ReadBack
+		expected.BlockedReason = observed.BlockedReason
+		expected.Revision = observed.Revision
+		expected.UpdatedAt = observed.UpdatedAt
+		if !reflect.DeepEqual(expected, observed) {
+			return false
+		}
+	}
+	return true
 }
 
 func providerlessCreateNeedsDestroyReconciliation(item ResourceV1) bool {
