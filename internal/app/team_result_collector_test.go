@@ -3,9 +3,11 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"io"
 	"testing"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/worker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerresult"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -21,8 +23,8 @@ func TestTeamResultObjectReaderRestrictsExactDeploymentPrefix(
 	reader := &teamResultObjectReader{
 		client: client,
 		bucket: "agent-artifacts",
-		prefix: "deployments/11111111-1111-4111-8111-111111111111/" +
-			"artifacts/",
+		prefix: "workers/AROAABCDEFGHIJKLMNOP:i-0123456789abcdef0/" +
+			"11111111-1111-4111-8111-111111111111/artifacts/",
 	}
 	reference := "s3://agent-artifacts/" +
 		reader.prefix + "result.json"
@@ -45,7 +47,8 @@ func TestTeamResultObjectReaderRestrictsExactDeploymentPrefix(
 	}
 	for _, invalid := range []string{
 		"s3://other-bucket/" + reader.prefix + "result.json",
-		"s3://agent-artifacts/deployments/other/artifacts/result.json",
+		"s3://agent-artifacts/workers/AROAABCDEFGHIJKLMNOP:" +
+			"i-0123456789abcdef0/other/artifacts/result.json",
 		"s3://agent-artifacts/" + reader.prefix + "nested/result.json",
 	} {
 		if _, err := reader.Get(
@@ -63,14 +66,32 @@ func TestTeamResultPrefixRequiresCanonicalDeploymentPath(
 ) {
 	t.Parallel()
 	deploymentID := "11111111-1111-4111-8111-111111111111"
+	principalID := "AROAABCDEFGHIJKLMNOP:i-0123456789abcdef0"
+	base := "s3://agent-artifacts/workers/" + principalID + "/" +
+		deploymentID + "/"
+	digest := [sha256.Size]byte{1}
+	deployment := worker.Deployment{
+		DeploymentID: deploymentID,
+		RecipeBundle: worker.BundleRef{
+			S3Ref: base + "bundles/recipe.cbor", SHA256: digest,
+		},
+		ExecutionBundle: worker.BundleRef{
+			S3Ref: base + "bundles/execution.json", SHA256: digest,
+		},
+		Access: worker.AccessScope{
+			ArtifactPrefix:   base + "artifacts/",
+			CheckpointPrefix: base + "checkpoints/",
+			EvidencePrefix:   base + "evidence/",
+			LogPrefix:        "cloudwatch://agent-workers/role/instance",
+		},
+	}
 	bucket, prefix, err := teamResultPrefix(
-		"s3://agent-artifacts/deployments/"+
-			deploymentID+"/artifacts/",
-		deploymentID,
+		deployment,
 	)
 	if err != nil ||
 		bucket != "agent-artifacts" ||
-		prefix != "deployments/"+deploymentID+"/artifacts/" {
+		prefix != "workers/"+principalID+"/"+
+			deploymentID+"/artifacts/" {
 		t.Fatalf(
 			"Team result prefix bucket=%q prefix=%q error=%v",
 			bucket,
@@ -78,10 +99,9 @@ func TestTeamResultPrefixRequiresCanonicalDeploymentPath(
 			err,
 		)
 	}
-	if _, _, err := teamResultPrefix(
-		"s3://agent-artifacts/deployments/other/artifacts/",
-		deploymentID,
-	); err != workerresult.ErrInvalid {
+	deployment.Access.ArtifactPrefix = "s3://agent-artifacts/workers/" +
+		principalID + "/22222222-2222-4222-8222-222222222222/artifacts/"
+	if _, _, err := teamResultPrefix(deployment); err != workerresult.ErrInvalid {
 		t.Fatalf("mismatched deployment prefix error=%v", err)
 	}
 }

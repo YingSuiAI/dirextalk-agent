@@ -58,10 +58,7 @@ func (collector *awsTeamResultCollector) Collect(
 	if err != nil {
 		return workerresult.Collected{}, err
 	}
-	bucket, prefix, err := teamResultPrefix(
-		deployment.Access.ArtifactPrefix,
-		deployment.DeploymentID,
-	)
+	bucket, prefix, err := teamResultPrefix(deployment)
 	if err != nil || bucket != foundation.ArtifactBucketName {
 		return workerresult.Collected{}, workerresult.ErrInvalid
 	}
@@ -132,20 +129,39 @@ func (reader *teamResultObjectReader) Get(
 }
 
 func teamResultPrefix(
-	reference string,
-	deploymentID string,
+	deployment worker.Deployment,
 ) (string, string, error) {
+	reference := deployment.Access.ArtifactPrefix
 	parsed, err := url.Parse(strings.TrimSpace(reference))
-	expected := "deployments/" + deploymentID + "/artifacts/"
-	if err != nil ||
-		parsed.Scheme != "s3" ||
-		parsed.Host == "" ||
-		strings.TrimPrefix(parsed.Path, "/") != expected ||
-		parsed.User != nil ||
-		parsed.RawQuery != "" ||
-		parsed.Fragment != "" {
+	if err != nil || parsed == nil {
 		return "", "", workerresult.ErrInvalid
 	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if parsed.Scheme != "s3" ||
+		parsed.Host == "" ||
+		parsed.User != nil ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" ||
+		!strings.HasSuffix(parsed.Path, "/") ||
+		len(segments) != 4 ||
+		segments[0] != "workers" ||
+		segments[1] == "" ||
+		segments[2] != deployment.DeploymentID ||
+		segments[3] != "artifacts" {
+		return "", "", workerresult.ErrInvalid
+	}
+	materialization := worker.IdentityMaterialization{
+		RecipeBundle:    deployment.RecipeBundle,
+		ExecutionBundle: deployment.ExecutionBundle,
+		Access:          deployment.Access,
+	}
+	if materialization.Validate(
+		segments[1],
+		deployment.DeploymentID,
+	) != nil {
+		return "", "", workerresult.ErrInvalid
+	}
+	expected := strings.Join(segments, "/") + "/"
 	return parsed.Host, expected, nil
 }
 
