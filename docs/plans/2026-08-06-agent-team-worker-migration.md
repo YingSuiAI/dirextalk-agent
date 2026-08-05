@@ -30,7 +30,7 @@
 - Modify: `migrations/agent_migrations.sql`
 - Modify: `migrations/core_v1_contract_test.go`
 
-- [ ] **Step 1: Write failing Task union and schema tests**
+- [x] **Step 1: Write failing Task union and schema tests**
 
 Add a test that accepts exactly this payload and rejects missing IDs, non-canonical digests, a fourth payload branch, or a model/conversation field outside the payload:
 
@@ -53,13 +53,13 @@ func TestTeamExecutionTaskPayloadIsClosed(t *testing.T) {
 
 Require the migration constraint to contain `team_execution` and the proto enum to contain `CORE_TASK_KIND_TEAM_EXECUTION`.
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 Run: `GOWORK=off go test ./internal/coretask ./migrations -run 'Test.*TeamExecution' -count=1`
 
 Expected: FAIL because the kind, payload, enum, and migration constraint do not exist.
 
-- [ ] **Step 3: Implement the closed union**
+- [x] **Step 3: Implement the closed union**
 
 Add these exact contracts and extend `normalizePayload` so exactly one payload branch is present:
 
@@ -85,13 +85,13 @@ type TaskPayload struct {
 
 Update the SQL check to admit `team_execution` without weakening any existing model-profile or payload constraints, then regenerate proto output with `buf generate`.
 
-- [ ] **Step 4: Run focused and contract tests**
+- [x] **Step 4: Run focused and contract tests**
 
 Run: `GOWORK=off go test ./internal/coretask ./migrations ./internal/rpcapi -run 'Test.*(TeamExecution|TaskKind|Proto)' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/coretask api/proto/dirextalk/agent/v1/core_task.proto api/gen/dirextalk/agent/v1 migrations
@@ -107,14 +107,15 @@ git commit -m "feat: add Core Team execution task kind"
 - Create: `internal/coreteam/compiler_test.go`
 - Create: `internal/coreteam/repository.go`
 
-- [ ] **Step 1: Write failing closed-domain tests**
+- [x] **Step 1: Write failing closed-domain tests**
 
 Cover one to three roles, acyclic dependencies, unique role IDs, Pi-only runtime, `t3.small`, `ap-northeast-3`, positive credential revision, output budget, quote expiry, and stable digest. Require a fourth role, unknown runtime, cycle, expired quote, free-form AWS request, or credential bytes to fail.
 
 ```go
 func TestCompilerProducesBoundedPiPlan(t *testing.T) {
 	plan, err := NewCompiler(fakeCatalog(), fakeQuote()).Compile(context.Background(), CompileCommand{
-		OwnerID: ownerID, Goal: "research and verify", ConversationID: conversationID,
+		OwnerID: ownerID, AccountGeneration: accountGeneration,
+		Goal: "research and verify", ConversationID: conversationID,
 		CredentialID: credentialID, CredentialRevision: 3,
 		Roles: []RoleProposal{{RoleID: "research", Goal: "research"}, {RoleID: "review", Goal: "review", DependsOn: []string{"research"}}},
 	})
@@ -122,13 +123,13 @@ func TestCompilerProducesBoundedPiPlan(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run: `GOWORK=off go test ./internal/coreteam -run 'TestCompiler|Test.*Valid' -count=1`
 
 Expected: FAIL because `internal/coreteam` does not exist.
 
-- [ ] **Step 3: Implement the domain**
+- [x] **Step 3: Implement the domain**
 
 Define these closed types and ports:
 
@@ -140,20 +141,20 @@ type ExecutionStatus string
 const (ExecutionQueued ExecutionStatus = "queued"; ExecutionRunning ExecutionStatus = "running"; ExecutionCleaningUp ExecutionStatus = "cleaning_up"; ExecutionCompleted ExecutionStatus = "completed"; ExecutionFailed ExecutionStatus = "failed"; ExecutionCanceled ExecutionStatus = "canceled"; ExecutionTimedOut ExecutionStatus = "timed_out")
 type RuntimeBinding struct { RuntimeID, Adapter, ImageDigest, AMIID string; OutputTokens uint32 }
 type QuoteBinding struct { Region, AvailabilityZone, InstanceType, Currency, Amount, HardBudget string; ExpiresAt time.Time }
-type Role struct { RoleID, Goal string; DependsOn []string }
-type Plan struct { PlanID, OwnerID, TaskID, ConversationID, CredentialID, ConfirmationID string; Revision, CredentialRevision uint64; Goal, Digest string; Runtime RuntimeBinding; Quote QuoteBinding; Roles []Role; Status PlanStatus }
+type Role struct { RoleID, Goal string; DependsOn []string; Capabilities []Capability }
+type Plan struct { PlanID, OwnerID, TaskID, ConversationID, CredentialID, ConfirmationID string; AccountGeneration int64; Revision, CredentialRevision uint64; Goal, Digest string; Runtime RuntimeBinding; Quote QuoteBinding; Roles []Role; Status PlanStatus }
 type Compiler struct { catalog RuntimeCatalog; quotes QuoteProvider; now func() time.Time }
 ```
 
 Canonical JSON must sort roles and dependencies and hash only immutable fields. No AWS SDK type, command string, URL, secret, or provider error may enter a Plan.
 
-- [ ] **Step 4: Run normal and race tests**
+- [x] **Step 4: Run normal and race tests**
 
 Run: `GOWORK=off go test ./internal/coreteam -count=1 && GOWORK=off go test -race ./internal/coreteam -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/coreteam
@@ -188,19 +189,19 @@ Expected: FAIL because schema and store methods are absent.
 
 - [ ] **Step 3: Add the durable schema and store**
 
-Add closed tables named `core_team_plans`, `core_team_roles`, `core_team_executions`, `core_team_role_runs`, and `core_team_replays`. Every row includes `owner_id`; Plan and role definitions are immutable; execution mutations use expected revision. `core_team_plans.task_id` references `core_tasks(task_id)` and `confirmation_id` references `core_confirmations(confirmation_id)`.
+Add closed tables named `core_team_plans`, `core_team_roles`, `core_team_executions`, `core_team_role_runs`, and `core_team_replays`. Every row includes `owner_id` and `account_generation`; Plan and role definitions are immutable; execution mutations use expected revision. `core_team_plans.task_id` references `core_tasks(task_id)` and `confirmation_id` references `core_confirmations(confirmation_id)`.
 
 Expose this repository contract:
 
 ```go
 type Repository interface {
 	CreatePlan(context.Context, CreatePlanCommand) (PlanRecord, bool, error)
-	GetPlan(context.Context, string, string) (PlanRecord, error)
+	GetPlan(context.Context, Scope, string) (PlanRecord, error)
 	CreateExecution(context.Context, CreateExecutionCommand) (Execution, bool, error)
-	GetExecution(context.Context, string, string) (Execution, error)
+	GetExecution(context.Context, Scope, string) (Execution, error)
 	ListExecutions(context.Context, ListQuery) (Page, error)
-	CompareAndSwapExecution(context.Context, Execution, uint64) (Execution, error)
-	ListRunnableRoles(context.Context, string, string, uint32) ([]RoleRun, error)
+	CompareAndSwapExecution(context.Context, Scope, Execution, uint64) (Execution, error)
+	ListRunnableRoles(context.Context, Scope, string, uint32) ([]RoleRun, error)
 }
 ```
 
@@ -240,7 +241,7 @@ Expected: FAIL because resolver and guard are absent.
 - [ ] **Step 3: Implement the exact Core boundary**
 
 ```go
-type ActiveExecutionGuard interface { RequireNoActiveTeamExecution(context.Context, string) error }
+type ActiveExecutionGuard interface { RequireNoActiveTeamExecution(context.Context, coreteam.Scope) error }
 const ErrorCodeTeamExecutionActive = "team_execution_active"
 
 func ConfirmationBinding(plan Plan) (coreconfirmation.Binding, error) {

@@ -150,7 +150,7 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 
 - AWS key 由 App 通过 Message Server 的 write-only action 写入 Agent Core；Message Server 和 Flutter 不长期保存明文。
 - Agent Core 使用现有 `core_aws_credentials` 加密存储和 credential revision，不建立 Team 私有凭证表。
-- 创建、替换或删除 AWS key 前，Agent 必须在同一事务内确认该 owner 没有非终态 Team Execution。
+- 创建、替换或删除 AWS key 前，Agent 必须在同一事务内确认该 `owner_id + account_generation` 没有非终态 Team Execution。
 - 存在运行中任务时返回固定错误 `team_execution_active`，Flutter 提供“查看任务”和“终止任务”入口；不得边运行边换 key。
 - Worker 永远不接收用户 AWS key，也不能获得创建或销毁云资源的权限。
 
