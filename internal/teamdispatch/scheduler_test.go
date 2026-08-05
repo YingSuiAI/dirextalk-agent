@@ -133,19 +133,34 @@ func TestResultCollectionAuthorizationAcceptsVerifyingOnlyBeforeTerminal(t *test
 	if err := intent.ValidateAgainstForResultCollection(authorized); err != nil {
 		t.Fatalf("result collection rejected bound intent: %v", err)
 	}
-
-	authorized.Execution.Status = teamexecution.StatusCompleted
+	tampered := intent
+	tampered.DeploymentID = uuid.NewString()
 	if !errors.Is(
-		authorized.ValidateForResultCollection(),
-		ErrNotReady,
-	) {
-		t.Fatal("result collection accepted terminal execution")
-	}
-	if !errors.Is(
-		intent.ValidateAgainstForResultCollection(authorized),
+		tampered.ValidateAgainstForResultCollection(authorized),
 		ErrFactMismatch,
 	) {
-		t.Fatal("result collection accepted terminal intent binding")
+		t.Fatal("result collection accepted substituted deployment")
+	}
+
+	for _, status := range []teamexecution.Status{
+		teamexecution.StatusMaterialized,
+		teamexecution.StatusCompleted,
+		teamexecution.StatusFailed,
+		teamexecution.StatusCanceled,
+	} {
+		authorized.Execution.Status = status
+		if !errors.Is(
+			authorized.ValidateForResultCollection(),
+			ErrNotReady,
+		) {
+			t.Fatalf("result collection accepted execution status %s", status)
+		}
+		if !errors.Is(
+			intent.ValidateAgainstForResultCollection(authorized),
+			ErrFactMismatch,
+		) {
+			t.Fatalf("result collection accepted intent in status %s", status)
+		}
 	}
 }
 
