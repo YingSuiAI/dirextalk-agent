@@ -19,6 +19,7 @@ type fakeDynamoDB struct {
 	items                map[string]map[string]dynamodbtypes.AttributeValue
 	failUpdateAfterWrite bool
 	lastGet              *dynamodb.GetItemInput
+	beforeUpdate         func()
 }
 
 func newFakeDynamoDB() *fakeDynamoDB {
@@ -55,6 +56,11 @@ func (fake *fakeDynamoDB) UpdateItem(_ context.Context, input *dynamodb.UpdateIt
 		}
 	}
 	sk, _ := stringAttribute(input.Key["sk"])
+	if fake.beforeUpdate != nil {
+		beforeUpdate := fake.beforeUpdate
+		fake.beforeUpdate = nil
+		beforeUpdate()
+	}
 	current := fake.items[sk]
 	newRevision, _ := strconv.ParseInt(input.ExpressionAttributeValues[":revision"].(*dynamodbtypes.AttributeValueMemberN).Value, 10, 64)
 	newDigest, _ := stringAttribute(input.ExpressionAttributeValues[":digest"])
@@ -331,6 +337,208 @@ func TestDynamoManifestStoreRejectsNonMonotonicClaimRecovery(t *testing.T) {
 	if err := store.Put(context.Background(), retokened); !errors.Is(err, resource.ErrRevisionConflict) {
 		t.Fatalf("destroy token replacement error=%v, want revision conflict", err)
 	}
+}
+
+func TestDynamoManifestStoreRejectsHigherRevisionReplayAfterVerifiedDestruction(t *testing.T) {
+	now := time.Date(2026, 8, 5, 7, 0, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	active := reaperManifest(agentID, now.Add(-time.Minute), false)
+	if err := store.Put(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	terminal := verifiedDestroyedManifest(active, now)
+	if err := store.PutIfRevision(context.Background(), terminal, active.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := active
+	stale.Revision = terminal.Revision + 20
+	stale.UpdatedAt = now.Add(time.Minute)
+	stale.Resources[0].Revision = terminal.Resources[0].Revision + 20
+	stale.Resources[0].UpdatedAt = stale.UpdatedAt
+	if err := store.Put(context.Background(), stale); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("terminal replay error=%v, want revision conflict", err)
+	}
+	observed, err := store.Get(context.Background(), active.DeploymentID)
+	if err != nil || observed.Resources[0].State != resource.StateVerifiedDestroyed {
+		t.Fatalf("terminal manifest was replaced: observed=%+v error=%v", observed, err)
+	}
+}
+
+func TestDynamoManifestStoreRejectsDifferentVerifiedDestroyedSuccessor(t *testing.T) {
+	now := time.Date(2026, 8, 5, 7, 15, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	active := reaperManifest(agentID, now.Add(-time.Minute), false)
+	if err := store.Put(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	terminal := verifiedDestroyedManifest(active, now)
+	if err := store.PutIfRevision(context.Background(), terminal, active.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	rewritten := terminal
+	rewritten.Resources = append([]resource.ResourceV1(nil), terminal.Resources...)
+	rewritten.Revision++
+	rewritten.UpdatedAt = now.Add(time.Minute)
+	rewritten.Resources[0].Intent.ClientToken = strings.Repeat("e", 64)
+	rewritten.Resources[0].Intent.RecordedAt = rewritten.UpdatedAt
+	rewritten.Resources[0].ReadBack.ObservedAt = rewritten.UpdatedAt
+	rewritten.Resources[0].Revision++
+	rewritten.Resources[0].UpdatedAt = rewritten.UpdatedAt
+	if err := store.Put(context.Background(), rewritten); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("terminal rewrite error=%v, want revision conflict", err)
+	}
+	observed, err := store.Get(context.Background(), active.DeploymentID)
+	if err != nil || observed.Revision != terminal.Revision ||
+		observed.Resources[0].Intent.ClientToken != terminal.Resources[0].Intent.ClientToken {
+		t.Fatalf("terminal manifest was rewritten: observed=%+v error=%v", observed, err)
+	}
+}
+
+func TestDynamoManifestStoreConditionalWriteRejectsVerifiedDestroyedSuccessor(t *testing.T) {
+	now := time.Date(2026, 8, 5, 7, 20, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	active := reaperManifest(agentID, now.Add(-time.Minute), false)
+	if err := store.Put(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	terminal := verifiedDestroyedManifest(active, now)
+	if err := store.PutIfRevision(context.Background(), terminal, active.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	rewritten := terminal
+	rewritten.Resources = append([]resource.ResourceV1(nil), terminal.Resources...)
+	rewritten.Revision++
+	rewritten.UpdatedAt = now.Add(time.Minute)
+	rewritten.Resources[0].Revision++
+	rewritten.Resources[0].UpdatedAt = rewritten.UpdatedAt
+	if err := store.PutIfRevision(context.Background(), rewritten, terminal.Revision); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("conditional terminal rewrite error=%v, want revision conflict", err)
+	}
+}
+
+func TestDynamoManifestStoreConditionalWriteRecoversExactLostResponse(t *testing.T) {
+	now := time.Date(2026, 8, 5, 7, 22, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	active := reaperManifest(agentID, now.Add(-time.Minute), false)
+	if err := store.Put(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	claimed := active
+	claimed.Resources = append([]resource.ResourceV1(nil), active.Resources...)
+	claimed.Revision++
+	claimed.UpdatedAt = now
+	claimed.Resources[0].State = resource.StateDestroying
+	claimed.Resources[0].Intent = resource.MutationIntent{
+		Operation:   resource.MutationDestroy,
+		ClientToken: strings.Repeat("d", 64),
+		RecordedAt:  now,
+	}
+	claimed.Resources[0].Revision++
+	claimed.Resources[0].UpdatedAt = now
+
+	fake.failUpdateAfterWrite = true
+	if err := store.PutIfRevision(context.Background(), claimed, active.Revision); !errors.Is(err, ErrManifestStore) {
+		t.Fatalf("lost conditional response error=%v, want manifest store error", err)
+	}
+	if err := store.PutIfRevision(context.Background(), claimed, active.Revision); err != nil {
+		t.Fatalf("exact conditional replay error=%v", err)
+	}
+}
+
+func TestDynamoManifestStoreDoesNotListVerifiedDestroyedManifest(t *testing.T) {
+	now := time.Date(2026, 8, 5, 7, 25, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	active := reaperManifest(agentID, now.Add(-time.Minute), false)
+	if err := store.Put(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	terminal := verifiedDestroyedManifest(active, now)
+	if err := store.PutIfRevision(context.Background(), terminal, active.Revision); err != nil {
+		t.Fatal(err)
+	}
+
+	manifests, err := store.ListExpired(context.Background(), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifests) != 0 {
+		t.Fatalf("verified destroyed manifests=%+v, want none", manifests)
+	}
+}
+
+func TestDynamoManifestStoreCASRejectsReaperCompletionAfterAgentRead(t *testing.T) {
+	now := time.Date(2026, 8, 5, 7, 30, 0, 0, time.UTC)
+	agentID := uuid.NewString()
+	fake := newFakeDynamoDB()
+	store, _ := NewDynamoManifestStore(fake, "dtx-agent-resources", agentID)
+	active := reaperManifest(agentID, now.Add(-time.Minute), false)
+	if err := store.Put(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	activeItem := cloneItem(fake.items[manifestSortKey(active.DeploymentID)])
+	terminal := verifiedDestroyedManifest(active, now)
+	if err := store.PutIfRevision(context.Background(), terminal, active.Revision); err != nil {
+		t.Fatal(err)
+	}
+	terminalItem := cloneItem(fake.items[manifestSortKey(active.DeploymentID)])
+	fake.items[manifestSortKey(active.DeploymentID)] = activeItem
+
+	stale := active
+	stale.Revision = terminal.Revision + 20
+	stale.UpdatedAt = now.Add(time.Minute)
+	stale.Resources[0].Revision = terminal.Resources[0].Revision + 20
+	stale.Resources[0].UpdatedAt = stale.UpdatedAt
+	fake.beforeUpdate = func() {
+		fake.items[manifestSortKey(active.DeploymentID)] = cloneItem(terminalItem)
+	}
+	if err := store.Put(context.Background(), stale); !errors.Is(err, resource.ErrRevisionConflict) {
+		t.Fatalf("racing terminal replay error=%v, want revision conflict", err)
+	}
+	observed, err := store.Get(context.Background(), active.DeploymentID)
+	if err != nil || observed.Resources[0].State != resource.StateVerifiedDestroyed {
+		t.Fatalf("racing terminal manifest was replaced: observed=%+v error=%v", observed, err)
+	}
+}
+
+func verifiedDestroyedManifest(active resource.Manifest, now time.Time) resource.Manifest {
+	terminal := active
+	terminal.Resources = append([]resource.ResourceV1(nil), active.Resources...)
+	terminal.Resources[0].Tags = cloneStringMap(active.Resources[0].Tags)
+	terminal.Resources[0].DependsOn = append([]string(nil), active.Resources[0].DependsOn...)
+	terminal.Resources[0].ProviderCandidateIDs = append(
+		[]string(nil),
+		active.Resources[0].ProviderCandidateIDs...,
+	)
+	terminal.Revision++
+	terminal.UpdatedAt = now
+	terminal.Resources[0].State = resource.StateVerifiedDestroyed
+	terminal.Resources[0].Intent = resource.MutationIntent{
+		Operation:   resource.MutationDestroy,
+		ClientToken: strings.Repeat("f", 64),
+		RecordedAt:  now,
+	}
+	terminal.Resources[0].ReadBack = resource.ReadBackEvidence{
+		Exists:     false,
+		ProviderID: terminal.Resources[0].ProviderID,
+		ObservedAt: now,
+		TagDigest:  digestFixture(),
+	}
+	terminal.Resources[0].Revision++
+	terminal.Resources[0].UpdatedAt = now
+	return terminal
 }
 
 func TestDynamoManifestStoreListsOnlyExpiredEphemeralAndFencesRevision(t *testing.T) {

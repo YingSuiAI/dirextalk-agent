@@ -61,25 +61,32 @@ func NewDynamoManifestStore(client DynamoDBAPI, table, agentInstanceID string) (
 }
 
 func (store *DynamoManifestStore) Put(ctx context.Context, manifest resource.Manifest) error {
-	err := store.put(ctx, manifest, nil, "")
-	if !errors.Is(err, resource.ErrRevisionConflict) {
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
 		return err
 	}
-
-	// A Reaper or Agent deletion claim deliberately blocks ordinary writes.
-	// Recover only by strongly reading that exact claim, proving the desired
-	// graph is a monotonic destruction successor, and fencing the replacement
-	// with both the observed revision and payload digest. This releases an
-	// interrupted claim without allowing a stale Agent to resurrect or retag
-	// resources owned by an independently running Reaper.
-	observed, readErr := store.Get(ctx, manifest.DeploymentID)
-	if readErr != nil || !safeClaimedManifestSuccessor(observed, manifest) {
-		return resource.ErrRevisionConflict
+	_, desiredDigest, _, err := store.encode(manifest)
+	if err != nil {
+		return err
+	}
+	observed, found, err := store.read(ctx, manifest.DeploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return store.put(ctx, manifest, nil, "")
 	}
 	store.mu.Lock()
 	snapshot, ok := store.observed[manifest.DeploymentID]
 	store.mu.Unlock()
 	if !ok || snapshot.revision != observed.Revision || snapshot.digest == "" {
+		return resource.ErrRevisionConflict
+	}
+	if manifest.Revision == observed.Revision && desiredDigest == snapshot.digest {
+		return nil
+	}
+	if manifestVerifiedDestroyed(observed) ||
+		manifest.Revision <= observed.Revision ||
+		(manifestDestroying(observed) && !safeClaimedManifestSuccessor(observed, manifest)) {
 		return resource.ErrRevisionConflict
 	}
 	return store.put(ctx, manifest, &snapshot.revision, snapshot.digest)
@@ -89,19 +96,50 @@ func (store *DynamoManifestStore) PutIfRevision(ctx context.Context, manifest re
 	if expectedRevision < 1 || manifest.Revision != expectedRevision+1 {
 		return resource.ErrRevisionConflict
 	}
+	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
+		return err
+	}
+	_, desiredDigest, _, err := store.encode(manifest)
+	if err != nil {
+		return err
+	}
+	observedManifest, found, err := store.read(ctx, manifest.DeploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return resource.ErrRevisionConflict
+	}
 	store.mu.Lock()
 	observed, ok := store.observed[manifest.DeploymentID]
 	store.mu.Unlock()
-	if !ok || observed.revision != expectedRevision {
+	if !ok || observed.digest == "" || observed.revision != observedManifest.Revision {
+		return resource.ErrRevisionConflict
+	}
+	if manifest.Revision == observedManifest.Revision && desiredDigest == observed.digest {
+		return nil
+	}
+	if observedManifest.Revision != expectedRevision || manifestVerifiedDestroyed(observedManifest) {
 		return resource.ErrRevisionConflict
 	}
 	return store.put(ctx, manifest, &expectedRevision, observed.digest)
 }
 
 func (store *DynamoManifestStore) Get(ctx context.Context, deploymentID string) (resource.Manifest, error) {
+	manifest, found, err := store.read(ctx, deploymentID)
+	if err != nil {
+		return resource.Manifest{}, err
+	}
+	if !found {
+		return resource.Manifest{}, ErrManifestStore
+	}
+	return manifest, nil
+}
+
+func (store *DynamoManifestStore) read(ctx context.Context, deploymentID string) (resource.Manifest, bool, error) {
 	parsed, err := uuid.Parse(strings.TrimSpace(deploymentID))
 	if err != nil || parsed == uuid.Nil || parsed.String() != deploymentID {
-		return resource.Manifest{}, resource.ErrInvalid
+		return resource.Manifest{}, false, resource.ErrInvalid
 	}
 	output, err := store.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: &store.table,
@@ -111,22 +149,25 @@ func (store *DynamoManifestStore) Get(ctx context.Context, deploymentID string) 
 		},
 		ConsistentRead: awsBool(true),
 	})
-	if err != nil || output == nil || len(output.Item) == 0 {
-		return resource.Manifest{}, ErrManifestStore
+	if err != nil || output == nil {
+		return resource.Manifest{}, false, ErrManifestStore
+	}
+	if len(output.Item) == 0 {
+		return resource.Manifest{}, false, nil
 	}
 	manifest, err := store.decode(output.Item)
 	if err != nil || manifest.DeploymentID != deploymentID {
-		return resource.Manifest{}, ErrManifestStore
+		return resource.Manifest{}, false, ErrManifestStore
 	}
 	_, digest, _, err := store.encode(manifest)
 	if err != nil {
-		return resource.Manifest{}, err
+		return resource.Manifest{}, false, err
 	}
 	store.remember(manifest.DeploymentID, manifest.Revision, digest)
 	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
-		return resource.Manifest{}, ErrManifestStore
+		return resource.Manifest{}, false, ErrManifestStore
 	}
-	return manifest, nil
+	return manifest, true, nil
 }
 
 func (store *DynamoManifestStore) put(ctx context.Context, manifest resource.Manifest, expectedRevision *int64, expectedDigest string) error {
@@ -149,13 +190,11 @@ func (store *DynamoManifestStore) put(ctx context.Context, manifest resource.Man
 		":approved":  &dynamodbtypes.AttributeValueMemberBOOL{Value: manifest.AutoDestroyApproved},
 		":claimed":   &dynamodbtypes.AttributeValueMemberBOOL{Value: manifestDestroying(manifest)},
 	}
-	condition := "attribute_not_exists(#revision) OR ((attribute_not_exists(#claimed) OR #claimed = :false) AND #revision < :revision) OR (#revision = :revision AND #digest = :digest)"
+	condition := "attribute_not_exists(#revision) OR (#revision = :revision AND #digest = :digest)"
 	if expectedRevision != nil {
 		values[":expected"] = &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(*expectedRevision, 10)}
 		values[":expected_digest"] = &dynamodbtypes.AttributeValueMemberS{Value: expectedDigest}
 		condition = "(#revision = :expected AND #digest = :expected_digest) OR (#revision = :revision AND #digest = :digest)"
-	} else {
-		values[":false"] = &dynamodbtypes.AttributeValueMemberBOOL{Value: false}
 	}
 	_, err = store.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &store.table,
@@ -208,6 +247,9 @@ func (store *DynamoManifestStore) ListExpired(ctx context.Context, before time.T
 			manifest, err := store.decode(item)
 			if err != nil {
 				return nil, err
+			}
+			if manifestVerifiedDestroyed(manifest) {
+				continue
 			}
 			if (manifest.Retention == task.RetentionEphemeralAutoDestroy && !manifest.DestroyDeadline.After(before.UTC())) ||
 				resource.HasExpiredManagedPreparationSnapshot(manifest, before) {
@@ -310,6 +352,18 @@ func manifestDestroying(manifest resource.Manifest) bool {
 		}
 	}
 	return false
+}
+
+func manifestVerifiedDestroyed(manifest resource.Manifest) bool {
+	if len(manifest.Resources) == 0 {
+		return false
+	}
+	for _, item := range manifest.Resources {
+		if item.State != resource.StateVerifiedDestroyed {
+			return false
+		}
+	}
+	return true
 }
 
 func safeClaimedManifestSuccessor(observed, desired resource.Manifest) bool {

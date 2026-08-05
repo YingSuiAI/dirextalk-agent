@@ -43,7 +43,10 @@ func (store *Store) NewResourceStore() (*ResourceStore, error) {
 	if store == nil || store.pool == nil {
 		return nil, resource.ErrInvalid
 	}
-	return &ResourceStore{pool: store.pool, instanceID: store.instanceID}, nil
+	return &ResourceStore{
+		pool:       store.pool,
+		instanceID: store.instanceID,
+	}, nil
 }
 
 // WithDeploymentFence serializes an externally coordinated create/destroy
@@ -68,37 +71,22 @@ func (store *ResourceStore) WithDeploymentFence(ctx context.Context, deploymentI
 		return fn(ctx)
 	}
 
-	connection, err := store.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire deployment fence connection: %w", err)
+	if store.pool.Config().MaxConns < 2 {
+		return fmt.Errorf("%w: deployment fence requires at least two database connections", resource.ErrInvalid)
 	}
 	lockKey := "dirextalk-agent:resource-deployment-fence:" + store.instanceID.String() + ":" + deployment.String()
-	if _, err := connection.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 0))`, lockKey); err != nil {
-		connection.Release()
-		return fmt.Errorf("acquire deployment fence: %w", err)
+	connection, err := store.acquireDeploymentFence(ctx, lockKey)
+	if err != nil {
+		return err
 	}
 	defer func() {
-		cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		var unlocked bool
-		unlockErr := connection.QueryRow(cleanupContext, `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, lockKey).Scan(&unlocked)
-		if unlockErr == nil && unlocked {
+		unlockErr := releaseAdvisoryLock(connection, lockKey)
+		if unlockErr == nil {
 			connection.Release()
 			return
 		}
-
-		// pgxpool would otherwise make this session available for reuse while it
-		// may still own a session advisory lock. Hijack removes it from the pool;
-		// closing the physical connection makes PostgreSQL release every lock.
-		physical := connection.Hijack()
-		_ = physical.Close(cleanupContext)
 		if result == nil {
-			if unlockErr != nil {
-				result = fmt.Errorf("release deployment fence: %w", unlockErr)
-			} else {
-				result = fmt.Errorf("release deployment fence: advisory lock was not held")
-			}
+			result = fmt.Errorf("release deployment fence: %w", unlockErr)
 		}
 	}()
 
@@ -107,6 +95,117 @@ func (store *ResourceStore) WithDeploymentFence(ctx context.Context, deploymentI
 		deploymentID: deployment,
 	})
 	return fn(fenced)
+}
+
+func (store *ResourceStore) acquireDeploymentFence(ctx context.Context, lockKey string) (*pgxpool.Conn, error) {
+	admissionKey := "dirextalk-agent:resource-deployment-fence-admission:" + store.instanceID.String()
+	for {
+		connection, err := store.pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("acquire deployment fence connection: %w", err)
+		}
+		var admitted bool
+		err = connection.QueryRow(
+			ctx,
+			`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`,
+			admissionKey,
+		).Scan(&admitted)
+		if err != nil {
+			discardPoolConnection(connection)
+			return nil, fmt.Errorf("acquire deployment fence admission: %w", err)
+		}
+		if !admitted {
+			connection.Release()
+			if err := waitForDeploymentFenceRetry(ctx); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// For the same Agent instance, the admission lock serializes this check
+		// across Store instances and processes. The acquiring connection itself
+		// is included in the count; refusing the last slot guarantees callbacks
+		// can still run Store work.
+		if store.pool.Stat().AcquiredConns() >= store.pool.Config().MaxConns {
+			if err := releaseAdvisoryLock(connection, admissionKey); err != nil {
+				return nil, fmt.Errorf("release deployment fence admission: %w", err)
+			}
+			connection.Release()
+			if err := waitForDeploymentFenceRetry(ctx); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		var acquired bool
+		lockErr := connection.QueryRow(
+			ctx,
+			`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`,
+			lockKey,
+		).Scan(&acquired)
+		admissionErr := releaseAdvisoryLock(connection, admissionKey)
+		if lockErr != nil {
+			if admissionErr == nil {
+				discardPoolConnection(connection)
+			}
+			return nil, errors.Join(fmt.Errorf("acquire deployment fence: %w", lockErr), admissionErr)
+		}
+		if admissionErr != nil {
+			return nil, fmt.Errorf("release deployment fence admission: %w", admissionErr)
+		}
+		if acquired {
+			return connection, nil
+		}
+		connection.Release()
+		if err := waitForDeploymentFenceRetry(ctx); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func releaseAdvisoryLock(connection *pgxpool.Conn, lockKey string) error {
+	cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var unlocked bool
+	err := connection.QueryRow(
+		cleanupContext,
+		`SELECT pg_advisory_unlock(hashtextextended($1, 0))`,
+		lockKey,
+	).Scan(&unlocked)
+	if err == nil && unlocked {
+		return nil
+	}
+
+	// A lock-bearing session must never return to the pool after an ambiguous
+	// unlock. Closing the hijacked physical connection releases every lock.
+	physical := connection.Hijack()
+	closeContext, stopClose := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopClose()
+	_ = physical.Close(closeContext)
+	if err != nil {
+		return err
+	}
+	return errors.New("advisory lock was not held")
+}
+
+func discardPoolConnection(connection *pgxpool.Conn) {
+	cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	physical := connection.Hijack()
+	_ = physical.Close(cleanupContext)
+}
+
+func waitForDeploymentFenceRetry(ctx context.Context) error {
+	timer := time.NewTimer(25 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.ResourceV1) (resource.ResourceV1, error) {

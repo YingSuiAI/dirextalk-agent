@@ -9,6 +9,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/cloud/entrypoint"
 	"github.com/YingSuiAI/dirextalk-agent/internal/resource"
+	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -175,6 +176,262 @@ func TestResourceStoreWithDeploymentFenceSerializesCallbacksAndReleases(t *testi
 		return nil
 	}); err != nil || !runAfterError {
 		t.Fatalf("deployment fence was not released after callback error: ran=%v err=%v", runAfterError, err)
+	}
+}
+
+func TestResourceStoreDeploymentFenceWaitersDoNotStarveBusinessPool(t *testing.T) {
+	pool, _, instanceID := newPlanningTestStore(t)
+	config := pool.Config()
+	config.MaxConns = 2
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	limitedPool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer limitedPool.Close()
+	baseStore, err := postgres.New(limitedPool, instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploymentID := uuid.NewString()
+	holderEntered := make(chan struct{})
+	runProbe := make(chan struct{})
+	releaseHolder := make(chan struct{})
+	probeResult := make(chan error, 1)
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- store.WithDeploymentFence(ctx, deploymentID, func(runCtx context.Context) error {
+			close(holderEntered)
+			<-runProbe
+			var one int
+			err := limitedPool.QueryRow(runCtx, `SELECT 1`).Scan(&one)
+			probeResult <- err
+			<-releaseHolder
+			if err != nil {
+				return err
+			}
+			if one != 1 {
+				return errors.New("business pool probe returned the wrong value")
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-holderEntered:
+	case <-ctx.Done():
+		t.Fatalf("deployment fence holder did not enter: %v", ctx.Err())
+	}
+
+	const waiterCount = 8
+	waiterDone := make(chan error, waiterCount)
+	for index := 0; index < waiterCount; index++ {
+		go func() {
+			waiterDone <- store.WithDeploymentFence(ctx, deploymentID, func(context.Context) error { return nil })
+		}()
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(runProbe)
+	starved := false
+	select {
+	case err := <-probeResult:
+		if err != nil {
+			close(releaseHolder)
+			t.Fatalf("business pool probe failed: %v", err)
+		}
+	case <-time.After(750 * time.Millisecond):
+		starved = true
+		cancel()
+	}
+	close(releaseHolder)
+	if err := <-holderDone; err != nil && !starved {
+		t.Fatalf("deployment fence holder failed: %v", err)
+	}
+	for index := 0; index < waiterCount; index++ {
+		<-waiterDone
+	}
+	if starved {
+		t.Fatal("advisory-lock waiters exhausted the business connection pool")
+	}
+}
+
+func TestResourceStoreDistinctDeploymentFencesRetainBusinessConnection(t *testing.T) {
+	pool, _, instanceID := newPlanningTestStore(t)
+	config := pool.Config()
+	config.MaxConns = 2
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	limitedPool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer limitedPool.Close()
+	baseStore, err := postgres.New(limitedPool, instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstEntered := make(chan struct{})
+	runProbe := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	probeResult := make(chan error, 1)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.WithDeploymentFence(ctx, uuid.NewString(), func(runCtx context.Context) error {
+			close(firstEntered)
+			<-runProbe
+			var one int
+			err := limitedPool.QueryRow(runCtx, `SELECT 1`).Scan(&one)
+			probeResult <- err
+			<-releaseFirst
+			if err != nil {
+				return err
+			}
+			if one != 1 {
+				return errors.New("business pool probe returned the wrong value")
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-firstEntered:
+	case <-ctx.Done():
+		t.Fatalf("first deployment fence did not enter: %v", ctx.Err())
+	}
+
+	secondEntered := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- store.WithDeploymentFence(ctx, uuid.NewString(), func(context.Context) error {
+			close(secondEntered)
+			<-releaseSecond
+			return nil
+		})
+	}()
+	time.Sleep(200 * time.Millisecond)
+	close(runProbe)
+	select {
+	case err := <-probeResult:
+		if err != nil {
+			close(releaseFirst)
+			t.Fatalf("business pool probe failed: %v", err)
+		}
+	case <-time.After(750 * time.Millisecond):
+		cancel()
+		close(releaseFirst)
+		close(releaseSecond)
+		t.Fatal("distinct deployment fences exhausted the business connection pool")
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first deployment fence failed: %v", err)
+	}
+	select {
+	case <-secondEntered:
+	case <-ctx.Done():
+		t.Fatalf("second deployment fence did not enter after capacity released: %v", ctx.Err())
+	}
+	close(releaseSecond)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second deployment fence failed: %v", err)
+	}
+}
+
+func TestResourceStoreSharedPoolStoresRetainBusinessConnection(t *testing.T) {
+	pool, _, instanceID := newPlanningTestStore(t)
+	config := pool.Config()
+	config.MaxConns = 2
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	limitedPool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer limitedPool.Close()
+	firstBase, err := postgres.New(limitedPool, instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBase, err := postgres.New(limitedPool, uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstStore, err := firstBase.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStore, err := secondBase.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstEntered := make(chan struct{})
+	runProbe := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	probeResult := make(chan error, 1)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- firstStore.WithDeploymentFence(ctx, uuid.NewString(), func(runCtx context.Context) error {
+			close(firstEntered)
+			<-runProbe
+			var one int
+			err := limitedPool.QueryRow(runCtx, `SELECT 1`).Scan(&one)
+			probeResult <- err
+			<-releaseFirst
+			if err != nil {
+				return err
+			}
+			if one != 1 {
+				return errors.New("business pool probe returned the wrong value")
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-firstEntered:
+	case <-ctx.Done():
+		t.Fatalf("first Store deployment fence did not enter: %v", ctx.Err())
+	}
+
+	releaseSecond := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- secondStore.WithDeploymentFence(ctx, uuid.NewString(), func(context.Context) error {
+			<-releaseSecond
+			return nil
+		})
+	}()
+	time.Sleep(200 * time.Millisecond)
+	close(runProbe)
+	select {
+	case err := <-probeResult:
+		if err != nil {
+			close(releaseFirst)
+			close(releaseSecond)
+			t.Fatalf("shared-pool business probe failed: %v", err)
+		}
+	case <-time.After(750 * time.Millisecond):
+		cancel()
+		close(releaseFirst)
+		close(releaseSecond)
+		t.Fatal("separate Stores exhausted their shared business connection pool")
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Store deployment fence failed: %v", err)
+	}
+	close(releaseSecond)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Store deployment fence failed: %v", err)
 	}
 }
 
