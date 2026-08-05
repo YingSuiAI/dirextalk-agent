@@ -4,6 +4,7 @@
 # Compose still supplies their UID, network, mount, and cgroup boundaries.
 FROM --platform=linux/amd64 docker.io/library/golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 WORKDIR /src
+ARG GOPROXY=https://proxy.golang.org,direct
 RUN apk add --no-cache busybox-static ca-certificates
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
