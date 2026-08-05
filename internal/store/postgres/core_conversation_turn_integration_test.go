@@ -84,8 +84,8 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 }
 
 func turnCommand() core.TurnStartCommand {
-	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
-	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ProfileSnapshot: s}
+	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
+	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
 }
 
 func TestCoreConversationTurnConcurrentStartIdempotencyPostgres(t *testing.T) {

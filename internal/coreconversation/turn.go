@@ -91,14 +91,16 @@ type TurnEvent struct {
 }
 
 type TurnStartCommand struct {
-	RequestID          string
-	ConversationID     string
-	Prompt             string
-	ProfileID          string
-	ExpectedRevision   *uint64
-	ProfileSnapshot    coremodel.ExecutionSnapshot
-	Extensions         []ExtensionSelection
-	ExtensionSnapshots []ExtensionExecutionSnapshot
+	RequestID                 string
+	ConversationID            string
+	Prompt                    string
+	ProfileID                 string
+	ExpectedProfileRevision   int64
+	ExpectedCredentialVersion int64
+	ExpectedRevision          *uint64
+	ProfileSnapshot           coremodel.ExecutionSnapshot
+	Extensions                []ExtensionSelection
+	ExtensionSnapshots        []ExtensionExecutionSnapshot
 }
 
 type TurnCancelCommand struct {
@@ -193,7 +195,7 @@ type TurnUncertainStore interface {
 }
 
 func (c TurnStartCommand) Validate() error {
-	if !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) {
+	if !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {
 		return ErrInvalid
 	}
 	if err := validateText(c.Prompt, MaxContentBytes); err != nil {
@@ -205,7 +207,7 @@ func (c TurnStartCommand) Validate() error {
 	if err := c.ProfileSnapshot.Validate(); err != nil {
 		return ErrInvalid
 	}
-	if c.ProfileSnapshot.ProfileID != c.ProfileID {
+	if c.ProfileSnapshot.ProfileID != c.ProfileID || c.ProfileSnapshot.Revision != c.ExpectedProfileRevision || c.ProfileSnapshot.CredentialVersion != c.ExpectedCredentialVersion {
 		return ErrConflict
 	}
 	for _, selection := range c.Extensions {
@@ -245,7 +247,7 @@ func (s ExtensionExecutionSnapshot) Validate() error {
 }
 
 func (c TurnStartCommand) Fingerprint() string {
-	return digest(turnStructDigest(c.RequestID, c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedRevision, c.ProfileSnapshot.Digest(), c.ExtensionSnapshotDigest()))
+	return digest(turnStructDigest(c.RequestID, c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, c.ExpectedRevision, c.ProfileSnapshot.Digest(), c.ExtensionSnapshotDigest()))
 }
 
 func (c TurnStartCommand) ExtensionSnapshotDigest() string {

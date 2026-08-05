@@ -58,23 +58,24 @@ type Profile struct {
 // to a durable Core conversation request. It is internal state only; callers
 // must use Redacted/ String when presenting it.
 type ExecutionSnapshot struct {
-	ProfileID       string        `json:"profile_id"`
-	Revision        int64         `json:"revision"`
-	Provider        ModelProvider `json:"provider"`
-	ModelKind       string        `json:"model_kind,omitempty"`
-	BaseURL         string        `json:"base_url"`
-	Model           string        `json:"model"`
-	APIKey          string        `json:"api_key"`
-	SystemPrompt    string        `json:"system_prompt"`
-	Temperature     *float64      `json:"temperature,omitempty"`
-	TopP            *float64      `json:"top_p,omitempty"`
-	MaxOutputTokens int           `json:"max_output_tokens"`
-	ContextWindow   int           `json:"context_window"`
-	ReasoningEffort string        `json:"reasoning_effort"`
+	ProfileID         string        `json:"profile_id"`
+	Revision          int64         `json:"revision"`
+	CredentialVersion int64         `json:"credential_version"`
+	Provider          ModelProvider `json:"provider"`
+	ModelKind         string        `json:"model_kind,omitempty"`
+	BaseURL           string        `json:"base_url"`
+	Model             string        `json:"model"`
+	APIKey            string        `json:"api_key"`
+	SystemPrompt      string        `json:"system_prompt"`
+	Temperature       *float64      `json:"temperature,omitempty"`
+	TopP              *float64      `json:"top_p,omitempty"`
+	MaxOutputTokens   int           `json:"max_output_tokens"`
+	ContextWindow     int           `json:"context_window"`
+	ReasoningEffort   string        `json:"reasoning_effort"`
 }
 
 func SnapshotFromProfile(p Profile) ExecutionSnapshot {
-	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, Provider: p.Provider, ModelKind: p.ModelKind, BaseURL: p.BaseURL,
+	return ExecutionSnapshot{ProfileID: p.ID, Revision: p.Revision, CredentialVersion: credentialVersion(p), Provider: p.Provider, ModelKind: p.ModelKind, BaseURL: p.BaseURL,
 		Model: p.Model, APIKey: p.APIKey, SystemPrompt: p.SystemPrompt, Temperature: cloneFloat(p.Temperature),
 		TopP: cloneFloat(p.TopP), MaxOutputTokens: p.MaxOutputTokens, ContextWindow: p.ContextWindow, ReasoningEffort: p.ReasoningEffort}
 }
@@ -82,11 +83,11 @@ func SnapshotFromProfile(p Profile) ExecutionSnapshot {
 func (s ExecutionSnapshot) Profile() Profile {
 	return Profile{ID: s.ProfileID, DisplayName: "snapshot", Provider: s.Provider, ModelKind: s.ModelKind, BaseURL: s.BaseURL, Model: s.Model, APIKey: s.APIKey,
 		SystemPrompt: s.SystemPrompt, Temperature: cloneFloat(s.Temperature), TopP: cloneFloat(s.TopP),
-		MaxOutputTokens: s.MaxOutputTokens, ContextWindow: s.ContextWindow, ReasoningEffort: s.ReasoningEffort, Revision: s.Revision}
+		MaxOutputTokens: s.MaxOutputTokens, ContextWindow: s.ContextWindow, ReasoningEffort: s.ReasoningEffort, Revision: s.Revision, CredentialVersion: s.CredentialVersion}
 }
 
 func (s ExecutionSnapshot) Validate() error {
-	if strings.TrimSpace(s.ProfileID) == "" || s.Revision <= 0 || strings.TrimSpace(s.APIKey) == "" {
+	if strings.TrimSpace(s.ProfileID) == "" || s.Revision <= 0 || s.CredentialVersion <= 0 || strings.TrimSpace(s.APIKey) == "" {
 		return fmt.Errorf("invalid execution snapshot")
 	}
 	p := s.Profile()
@@ -103,7 +104,7 @@ func (s ExecutionSnapshot) Digest() string {
 }
 
 func (s ExecutionSnapshot) Redacted() map[string]any {
-	return map[string]any{"profile_id": s.ProfileID, "revision": s.Revision, "provider": s.Provider,
+	return map[string]any{"profile_id": s.ProfileID, "revision": s.Revision, "credential_version": s.CredentialVersion, "provider": s.Provider,
 		"base_url": s.BaseURL, "model": s.Model, "system_prompt": s.SystemPrompt, "temperature": s.Temperature,
 		"top_p": s.TopP, "max_output_tokens": s.MaxOutputTokens, "context_window": s.ContextWindow,
 		"reasoning_effort": s.ReasoningEffort, "api_key_configured": s.APIKey != ""}

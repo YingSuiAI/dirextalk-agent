@@ -39,12 +39,12 @@ func TestChatAndStreamPersistProfilesAndReplayAcrossServiceRecreation(t *testing
 	}
 	profileA := "11111111-1111-4111-8111-111111111111"
 	profileB := "22222222-2222-4222-8222-222222222222"
-	first := ChatCommand{RequestID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Prompt: "first", ProfileID: profileA}
+	first := ChatCommand{RequestID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Prompt: "first", ProfileID: profileA, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1}
 	respA, err := svc.Chat(context.Background(), first)
 	if err != nil || respA.Message.Content != profileA {
 		t.Fatalf("chat A=%+v err=%v", respA, err)
 	}
-	second := ChatCommand{RequestID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", ConversationID: respA.ConversationID, Prompt: "second", ProfileID: profileB}
+	second := ChatCommand{RequestID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", ConversationID: respA.ConversationID, Prompt: "second", ProfileID: profileB, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1}
 	respB, err := svc.Chat(context.Background(), second)
 	if err != nil || respB.Message.Content != profileB {
 		t.Fatalf("chat B=%+v err=%v", respB, err)
@@ -54,7 +54,7 @@ func TestChatAndStreamPersistProfilesAndReplayAcrossServiceRecreation(t *testing
 		t.Fatalf("conversation=%+v err=%v", conv, err)
 	}
 
-	streamCmd := ChatCommand{RequestID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", ConversationID: respA.ConversationID, Prompt: "stream", ProfileID: profileA}
+	streamCmd := ChatCommand{RequestID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", ConversationID: respA.ConversationID, Prompt: "stream", ProfileID: profileA, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1}
 	stream, err := svc.StreamChat(context.Background(), streamCmd)
 	if err != nil {
 		t.Fatal(err)

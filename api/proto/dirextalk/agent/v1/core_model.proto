@@ -39,6 +39,7 @@ message CoreModelProfile {
   google.protobuf.Timestamp created_at = 14;
   google.protobuf.Timestamp updated_at = 15;
   string client_profile_id = 16;
+  int64 credential_version = 17;
 }
 
 message CoreModelProfileSyncEntry {

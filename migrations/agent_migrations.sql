@@ -29,6 +29,7 @@ CREATE TABLE core_model_profiles (
     model_name text NOT NULL CHECK (length(model_name) BETWEEN 1 AND 255),
     system_prompt text NOT NULL DEFAULT '',
     api_key_configured boolean NOT NULL DEFAULT false,
+    credential_version bigint NOT NULL DEFAULT 1 CHECK (credential_version > 0),
     api_key_key_version integer NOT NULL DEFAULT 1 CHECK (api_key_key_version > 0),
     api_key_nonce bytea,
     api_key_ciphertext bytea,

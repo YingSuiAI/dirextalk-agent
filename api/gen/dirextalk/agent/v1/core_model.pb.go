@@ -174,25 +174,26 @@ func (*CoreSamplingUpdate_Set) isCoreSamplingUpdate_Value() {}
 func (*CoreSamplingUpdate_Clear) isCoreSamplingUpdate_Value() {}
 
 type CoreModelProfile struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	ProfileId        string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
-	DisplayName      string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	Provider         CoreModelProvider      `protobuf:"varint,3,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
-	BaseUrl          string                 `protobuf:"bytes,4,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
-	Model            string                 `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
-	SystemPrompt     string                 `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
-	ApiKeyConfigured bool                   `protobuf:"varint,7,opt,name=api_key_configured,json=apiKeyConfigured,proto3" json:"api_key_configured,omitempty"`
-	Temperature      *float64               `protobuf:"fixed64,8,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
-	TopP             *float64               `protobuf:"fixed64,9,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
-	MaxOutputTokens  int32                  `protobuf:"varint,10,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
-	ContextWindow    int32                  `protobuf:"varint,11,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
-	ReasoningEffort  string                 `protobuf:"bytes,12,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
-	Revision         int64                  `protobuf:"varint,13,opt,name=revision,proto3" json:"revision,omitempty"`
-	CreatedAt        *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt        *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	ClientProfileId  string                 `protobuf:"bytes,16,opt,name=client_profile_id,json=clientProfileId,proto3" json:"client_profile_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ProfileId         string                 `protobuf:"bytes,1,opt,name=profile_id,json=profileId,proto3" json:"profile_id,omitempty"`
+	DisplayName       string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	Provider          CoreModelProvider      `protobuf:"varint,3,opt,name=provider,proto3,enum=dirextalk.agent.v1.CoreModelProvider" json:"provider,omitempty"`
+	BaseUrl           string                 `protobuf:"bytes,4,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	Model             string                 `protobuf:"bytes,5,opt,name=model,proto3" json:"model,omitempty"`
+	SystemPrompt      string                 `protobuf:"bytes,6,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`
+	ApiKeyConfigured  bool                   `protobuf:"varint,7,opt,name=api_key_configured,json=apiKeyConfigured,proto3" json:"api_key_configured,omitempty"`
+	Temperature       *float64               `protobuf:"fixed64,8,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
+	TopP              *float64               `protobuf:"fixed64,9,opt,name=top_p,json=topP,proto3,oneof" json:"top_p,omitempty"`
+	MaxOutputTokens   int32                  `protobuf:"varint,10,opt,name=max_output_tokens,json=maxOutputTokens,proto3" json:"max_output_tokens,omitempty"`
+	ContextWindow     int32                  `protobuf:"varint,11,opt,name=context_window,json=contextWindow,proto3" json:"context_window,omitempty"`
+	ReasoningEffort   string                 `protobuf:"bytes,12,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
+	Revision          int64                  `protobuf:"varint,13,opt,name=revision,proto3" json:"revision,omitempty"`
+	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	ClientProfileId   string                 `protobuf:"bytes,16,opt,name=client_profile_id,json=clientProfileId,proto3" json:"client_profile_id,omitempty"`
+	CredentialVersion int64                  `protobuf:"varint,17,opt,name=credential_version,json=credentialVersion,proto3" json:"credential_version,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CoreModelProfile) Reset() {
@@ -335,6 +336,13 @@ func (x *CoreModelProfile) GetClientProfileId() string {
 		return x.ClientProfileId
 	}
 	return ""
+}
+
+func (x *CoreModelProfile) GetCredentialVersion() int64 {
+	if x != nil {
+		return x.CredentialVersion
+	}
+	return 0
 }
 
 type CoreModelProfileSyncEntry struct {
@@ -1398,7 +1406,7 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"\bpreserve\x18\x01 \x01(\v2\x16.google.protobuf.EmptyH\x00R\bpreserve\x12\x12\n" +
 	"\x03set\x18\x02 \x01(\x01H\x00R\x03set\x12\x16\n" +
 	"\x05clear\x18\x03 \x01(\bH\x00R\x05clearB\a\n" +
-	"\x05value\"\xb2\x05\n" +
+	"\x05value\"\xe1\x05\n" +
 	"\x10CoreModelProfile\x12\x1d\n" +
 	"\n" +
 	"profile_id\x18\x01 \x01(\tR\tprofileId\x12!\n" +
@@ -1419,7 +1427,8 @@ const file_dirextalk_agent_v1_core_model_proto_rawDesc = "" +
 	"created_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12*\n" +
-	"\x11client_profile_id\x18\x10 \x01(\tR\x0fclientProfileIdB\x0e\n" +
+	"\x11client_profile_id\x18\x10 \x01(\tR\x0fclientProfileId\x12-\n" +
+	"\x12credential_version\x18\x11 \x01(\x03R\x11credentialVersionB\x0e\n" +
 	"\f_temperatureB\b\n" +
 	"\x06_top_p\"\xce\x04\n" +
 	"\x19CoreModelProfileSyncEntry\x12*\n" +

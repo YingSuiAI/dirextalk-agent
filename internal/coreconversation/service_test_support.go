@@ -428,13 +428,13 @@ func (m *fakeModel) Stream(ctx context.Context, r ModelRunRequest, emit func(Mod
 type fakeProfile struct{}
 
 func (fakeProfile) ResolveProfileSnapshot(_ context.Context, id string) (coremodel.ExecutionSnapshot, error) {
-	return coremodel.ExecutionSnapshot{ProfileID: id, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, Model: "test", APIKey: "test-key"}, nil
+	return coremodel.ExecutionSnapshot{ProfileID: id, Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, Model: "test", APIKey: "test-key"}, nil
 }
 
 type trackingProfile struct{}
 
 func (trackingProfile) ResolveProfileSnapshot(_ context.Context, id string) (coremodel.ExecutionSnapshot, error) {
-	return coremodel.ExecutionSnapshot{ProfileID: id, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, Model: "test", APIKey: "test-key"}, nil
+	return coremodel.ExecutionSnapshot{ProfileID: id, Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, Model: "test", APIKey: "test-key"}, nil
 }
 
 type trackingModel struct {
@@ -477,5 +477,5 @@ func (fakeExt) ResolveExtensions(context.Context, []ExtensionSelection) ([]Resol
 }
 
 func command() ChatCommand {
-	return ChatCommand{RequestID: uuid.NewString(), Prompt: "hello", ProfileID: uuid.NewString()}
+	return ChatCommand{RequestID: uuid.NewString(), Prompt: "hello", ProfileID: uuid.NewString(), ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1}
 }

@@ -118,6 +118,19 @@ and streaming chat. Provider-neutral model calls pass through Eino's
 so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running.
 
+Every Chat, StreamChat, and StartTurn request carries the exact model-profile
+pin triple: `model_profile_id`, `model_profile_revision`, and
+`credential_version`. All three values must be positive and match the resolved
+profile exactly; there is no default-profile or partial-pin fallback. The
+profile revision advances for any profile update, while the credential version
+advances when API-key or provider-secret material is rotated or cleared. The
+resolved snapshot, request fingerprint, durable turn, and replay receipt retain
+the same pins without storing them as secret material. A stale pin fails before
+provider work, while an idempotent replay returns the already-bound durable
+snapshot even if the current profile has since rotated. Model-profile and
+durable-turn responses project the profile revision and credential version so
+the caller can pin its next request.
+
 `agent.info.v1/list_models` is the provider catalog, separate from persisted
 profile listing. It resolves either a write-only request credential or an
 Agent-owned profile ID, performs a bounded provider request, and returns only

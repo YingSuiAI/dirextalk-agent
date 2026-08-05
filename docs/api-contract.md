@@ -51,6 +51,12 @@ role, device, or multi-tenant model.
   writes fail without changing state.
 - Durable Task events and results are fenced by Task revision, attempt, and
   lease epoch. `WatchEvents` resumes strictly after its supplied sequence.
+- Conversation Chat, StreamChat, and StartTurn requests require an exact
+  positive `model_profile_id`/`model_profile_revision`/`credential_version`
+  triple. The Agent rejects partial or stale pins before provider work and
+  never falls back to a default profile. Durable replays retain the original
+  snapshot and pins; profile and durable-turn responses expose the revision and
+  credential version.
 - Stored credentials and other secret values are write-only from ordinary
   read/list RPCs. Responses expose configuration status or fingerprints, not
   secret bytes.
@@ -79,9 +85,11 @@ one independent Task per one-time or Cron occurrence; it is not a graph or
 priority scheduler.
 
 `ConversationService` provides durable `Chat` and streaming `StreamChat` over
-server-owned model profiles. Model calls, extension calls, Knowledge context,
-and attachment reads use the Task execution snapshot when background work is
-required.
+server-owned model profiles. Each request pins the exact profile revision and
+credential version in addition to the profile ID. Model calls, extension calls,
+Knowledge context, and attachment reads use the Task execution snapshot when
+background work is required. `StartTurn` applies the same pin fence before it
+accepts durable work.
 
 `ConfirmationService` is the common explicit-confirmation boundary. MCP/Skill
 installation, upgrade, removal, and execution, plus AWS operations that create,

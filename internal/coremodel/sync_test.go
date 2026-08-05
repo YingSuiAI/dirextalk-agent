@@ -50,12 +50,44 @@ func TestSyncProfilesPreservesMissingProfilesAndRotatesWriteOnlyKey(t *testing.T
 	}
 	rotated := mustSync(t, svc, "a0000000-0000-4000-8000-000000000012", "secondary", SyncProfileEntry{ClientProfileID: "secondary", ExpectedRevision: int64Ptr(2), DisplayName: "Secondary v3", Provider: ProviderOpenAICompatible, Model: "model", APIKey: stringPtr("rotated")})
 	resolved, err := svc.ResolveProfile(context.Background(), rotated.Profiles[0].ID)
-	if err != nil || resolved.APIKey != "rotated" || resolved.Revision != 3 {
+	if err != nil || resolved.APIKey != "rotated" || resolved.Revision != 3 || resolved.CredentialVersion != 2 {
 		t.Fatalf("rotated profile=%+v err=%v", resolved, err)
 	}
 	page, err := svc.List(context.Background(), ListProfileCommand{Limit: 10})
 	if err != nil || len(page.Profiles) != 2 {
 		t.Fatalf("missing profile was deleted: page=%+v err=%v", page, err)
+	}
+}
+
+func TestSyncProfilesPreservesAndReplacesProviderSecrets(t *testing.T) {
+	svc := newSyncTestService(t)
+	first := mustSync(t, svc, "a0000000-0000-4000-8000-000000000050", "primary", SyncProfileEntry{
+		ClientProfileID: "primary", DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "model", APIKey: stringPtr("api-key"), ProviderSecrets: map[string]string{"rtc_app_key": "first"},
+	})
+	if first.Profiles[0].CredentialVersion != 1 {
+		t.Fatalf("initial credential version=%d, want 1", first.Profiles[0].CredentialVersion)
+	}
+	profileID := first.Profiles[0].ID
+	preserved := mustSync(t, svc, "a0000000-0000-4000-8000-000000000051", "primary", SyncProfileEntry{
+		ClientProfileID: "primary", ExpectedRevision: int64Ptr(1), DisplayName: "Primary preserved", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil, ProviderSecrets: nil,
+	})
+	resolved, err := svc.ResolveProfile(context.Background(), profileID)
+	if err != nil || resolved.ProviderSecrets["rtc_app_key"] != "first" || preserved.Profiles[0].CredentialVersion != 1 {
+		t.Fatalf("nil provider secrets did not preserve material: profile=%+v result=%+v err=%v", resolved, preserved, err)
+	}
+	replaced := mustSync(t, svc, "a0000000-0000-4000-8000-000000000052", "primary", SyncProfileEntry{
+		ClientProfileID: "primary", ExpectedRevision: int64Ptr(2), DisplayName: "Primary replaced", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil, ProviderSecrets: map[string]string{"rtc_app_key": "second"},
+	})
+	resolved, err = svc.ResolveProfile(context.Background(), profileID)
+	if err != nil || resolved.ProviderSecrets["rtc_app_key"] != "second" || replaced.Profiles[0].CredentialVersion != 2 {
+		t.Fatalf("provider secret replacement did not rotate: profile=%+v result=%+v err=%v", resolved, replaced, err)
+	}
+	cleared := mustSync(t, svc, "a0000000-0000-4000-8000-000000000053", "primary", SyncProfileEntry{
+		ClientProfileID: "primary", ExpectedRevision: int64Ptr(3), DisplayName: "Primary cleared", Provider: ProviderOpenAICompatible, Model: "model", APIKey: nil, ProviderSecrets: map[string]string{},
+	})
+	resolved, err = svc.ResolveProfile(context.Background(), profileID)
+	if err != nil || len(resolved.ProviderSecrets) != 0 || cleared.Profiles[0].CredentialVersion != 3 {
+		t.Fatalf("explicit provider secret clear did not rotate: profile=%+v result=%+v err=%v", resolved, cleared, err)
 	}
 }
 

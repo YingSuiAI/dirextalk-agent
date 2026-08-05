@@ -44,6 +44,16 @@ The implemented path:
 7. fail closed on drift, unavailable Runner composition, or missing grants; and
 8. preserve idempotency for unary and streaming retries.
 
+Chat and StreamChat are profile-pinned operations. The caller must provide a
+canonical UUID `model_profile_id` plus positive `model_profile_revision` and
+`credential_version`; the Agent resolves that profile and rejects any missing,
+partial, stale, or mismatched triple before model execution. Agent capability
+schemas require all three fields and do not select a default profile. A
+credential rotation or clear increments `credential_version`; an idempotent
+replay continues to use the durable snapshot captured by the original request
+and does not resolve mutable current credentials. StartTurn applies the same
+pin fence and returns the pins on its durable turn projection.
+
 Knowledge references may be enabled only after the same snapshot/drift
 invariants are implemented for conversation Chat. They must not remain
 advertised while production RPCs reject them without an explicit disabled
@@ -94,6 +104,8 @@ Sync behavior:
 - an omitted API key preserves the configured key;
 - a non-empty API key rotates it without returning it;
 - reads return only `api_key_configured` and safe metadata;
+- every public profile projection includes its positive `credential_version`;
+- API-key/provider-secret rotation or clear increments `credential_version`;
 - duplicate client references fail closed; and
 - explicit delete remains separate from automatic synchronization.
 

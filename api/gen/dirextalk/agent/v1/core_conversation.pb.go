@@ -632,16 +632,18 @@ func (*ConversationServiceDeleteResponse) Descriptor() ([]byte, []int) {
 }
 
 type ConversationServiceChatRequest struct {
-	state            protoimpl.MessageState    `protogen:"open.v1"`
-	IdempotencyKey   string                    `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	ConversationId   string                    `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Message          string                    `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	ModelProfileId   string                    `protobuf:"bytes,4,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
-	Extensions       []*CoreExtensionSelection `protobuf:"bytes,5,rep,name=extensions,proto3" json:"extensions,omitempty"`
-	KnowledgeRefs    []string                  `protobuf:"bytes,6,rep,name=knowledge_refs,json=knowledgeRefs,proto3" json:"knowledge_refs,omitempty"`
-	ExpectedRevision *int64                    `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                protoimpl.MessageState    `protogen:"open.v1"`
+	IdempotencyKey       string                    `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ConversationId       string                    `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message              string                    `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	ModelProfileId       string                    `protobuf:"bytes,4,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
+	Extensions           []*CoreExtensionSelection `protobuf:"bytes,5,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	KnowledgeRefs        []string                  `protobuf:"bytes,6,rep,name=knowledge_refs,json=knowledgeRefs,proto3" json:"knowledge_refs,omitempty"`
+	ExpectedRevision     *int64                    `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
+	ModelProfileRevision *int64                    `protobuf:"varint,8,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
+	CredentialVersion    *int64                    `protobuf:"varint,9,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ConversationServiceChatRequest) Reset() {
@@ -723,6 +725,20 @@ func (x *ConversationServiceChatRequest) GetExpectedRevision() int64 {
 	return 0
 }
 
+func (x *ConversationServiceChatRequest) GetModelProfileRevision() int64 {
+	if x != nil && x.ModelProfileRevision != nil {
+		return *x.ModelProfileRevision
+	}
+	return 0
+}
+
+func (x *ConversationServiceChatRequest) GetCredentialVersion() int64 {
+	if x != nil && x.CredentialVersion != nil {
+		return *x.CredentialVersion
+	}
+	return 0
+}
+
 type ConversationServiceChatResponse struct {
 	state          protoimpl.MessageState   `protogen:"open.v1"`
 	Conversation   *CoreConversation        `protobuf:"bytes,1,opt,name=conversation,proto3" json:"conversation,omitempty"`
@@ -784,16 +800,18 @@ func (x *ConversationServiceChatResponse) GetRelatedTaskIds() []string {
 }
 
 type ConversationServiceStreamChatRequest struct {
-	state            protoimpl.MessageState    `protogen:"open.v1"`
-	IdempotencyKey   string                    `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	ConversationId   string                    `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Message          string                    `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	ModelProfileId   string                    `protobuf:"bytes,4,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
-	Extensions       []*CoreExtensionSelection `protobuf:"bytes,5,rep,name=extensions,proto3" json:"extensions,omitempty"`
-	KnowledgeRefs    []string                  `protobuf:"bytes,6,rep,name=knowledge_refs,json=knowledgeRefs,proto3" json:"knowledge_refs,omitempty"`
-	ExpectedRevision *int64                    `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                protoimpl.MessageState    `protogen:"open.v1"`
+	IdempotencyKey       string                    `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ConversationId       string                    `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message              string                    `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	ModelProfileId       string                    `protobuf:"bytes,4,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
+	Extensions           []*CoreExtensionSelection `protobuf:"bytes,5,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	KnowledgeRefs        []string                  `protobuf:"bytes,6,rep,name=knowledge_refs,json=knowledgeRefs,proto3" json:"knowledge_refs,omitempty"`
+	ExpectedRevision     *int64                    `protobuf:"varint,7,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
+	ModelProfileRevision *int64                    `protobuf:"varint,8,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
+	CredentialVersion    *int64                    `protobuf:"varint,9,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ConversationServiceStreamChatRequest) Reset() {
@@ -871,6 +889,20 @@ func (x *ConversationServiceStreamChatRequest) GetKnowledgeRefs() []string {
 func (x *ConversationServiceStreamChatRequest) GetExpectedRevision() int64 {
 	if x != nil && x.ExpectedRevision != nil {
 		return *x.ExpectedRevision
+	}
+	return 0
+}
+
+func (x *ConversationServiceStreamChatRequest) GetModelProfileRevision() int64 {
+	if x != nil && x.ModelProfileRevision != nil {
+		return *x.ModelProfileRevision
+	}
+	return 0
+}
+
+func (x *ConversationServiceStreamChatRequest) GetCredentialVersion() int64 {
+	if x != nil && x.CredentialVersion != nil {
+		return *x.CredentialVersion
 	}
 	return 0
 }
@@ -1216,23 +1248,25 @@ func (*ConversationServiceStreamChatResponse_Done) isConversationServiceStreamCh
 // A durable model turn is accepted before execution starts.  Events are
 // append-only and are resumed using their sequence number.
 type CoreConversationTurn struct {
-	state            protoimpl.MessageState   `protogen:"open.v1"`
-	TurnId           string                   `protobuf:"bytes,1,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	RequestId        string                   `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	ConversationId   string                   `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Message          string                   `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	ModelProfileId   string                   `protobuf:"bytes,5,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
-	ExpectedRevision int64                    `protobuf:"varint,6,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
-	Revision         int64                    `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
-	State            string                   `protobuf:"bytes,8,opt,name=state,proto3" json:"state,omitempty"`
-	TerminalCode     string                   `protobuf:"bytes,9,opt,name=terminal_code,json=terminalCode,proto3" json:"terminal_code,omitempty"`
-	TerminalSummary  string                   `protobuf:"bytes,10,opt,name=terminal_summary,json=terminalSummary,proto3" json:"terminal_summary,omitempty"`
-	LastSequence     int64                    `protobuf:"varint,11,opt,name=last_sequence,json=lastSequence,proto3" json:"last_sequence,omitempty"`
-	CreatedAt        *timestamppb.Timestamp   `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt        *timestamppb.Timestamp   `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	Result           *CoreConversationMessage `protobuf:"bytes,14,opt,name=result,proto3" json:"result,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                protoimpl.MessageState   `protogen:"open.v1"`
+	TurnId               string                   `protobuf:"bytes,1,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	RequestId            string                   `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ConversationId       string                   `protobuf:"bytes,3,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message              string                   `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	ModelProfileId       string                   `protobuf:"bytes,5,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
+	ExpectedRevision     int64                    `protobuf:"varint,6,opt,name=expected_revision,json=expectedRevision,proto3" json:"expected_revision,omitempty"`
+	Revision             int64                    `protobuf:"varint,7,opt,name=revision,proto3" json:"revision,omitempty"`
+	State                string                   `protobuf:"bytes,8,opt,name=state,proto3" json:"state,omitempty"`
+	TerminalCode         string                   `protobuf:"bytes,9,opt,name=terminal_code,json=terminalCode,proto3" json:"terminal_code,omitempty"`
+	TerminalSummary      string                   `protobuf:"bytes,10,opt,name=terminal_summary,json=terminalSummary,proto3" json:"terminal_summary,omitempty"`
+	LastSequence         int64                    `protobuf:"varint,11,opt,name=last_sequence,json=lastSequence,proto3" json:"last_sequence,omitempty"`
+	CreatedAt            *timestamppb.Timestamp   `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt            *timestamppb.Timestamp   `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Result               *CoreConversationMessage `protobuf:"bytes,14,opt,name=result,proto3" json:"result,omitempty"`
+	ModelProfileRevision *int64                   `protobuf:"varint,15,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
+	CredentialVersion    *int64                   `protobuf:"varint,16,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CoreConversationTurn) Reset() {
@@ -1363,16 +1397,32 @@ func (x *CoreConversationTurn) GetResult() *CoreConversationMessage {
 	return nil
 }
 
+func (x *CoreConversationTurn) GetModelProfileRevision() int64 {
+	if x != nil && x.ModelProfileRevision != nil {
+		return *x.ModelProfileRevision
+	}
+	return 0
+}
+
+func (x *CoreConversationTurn) GetCredentialVersion() int64 {
+	if x != nil && x.CredentialVersion != nil {
+		return *x.CredentialVersion
+	}
+	return 0
+}
+
 type ConversationServiceStartTurnRequest struct {
-	state            protoimpl.MessageState    `protogen:"open.v1"`
-	IdempotencyKey   string                    `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
-	ConversationId   string                    `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	Message          string                    `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	ModelProfileId   string                    `protobuf:"bytes,4,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
-	ExpectedRevision *int64                    `protobuf:"varint,5,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
-	Extensions       []*CoreExtensionSelection `protobuf:"bytes,6,rep,name=extensions,proto3" json:"extensions,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                protoimpl.MessageState    `protogen:"open.v1"`
+	IdempotencyKey       string                    `protobuf:"bytes,1,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	ConversationId       string                    `protobuf:"bytes,2,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	Message              string                    `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	ModelProfileId       string                    `protobuf:"bytes,4,opt,name=model_profile_id,json=modelProfileId,proto3" json:"model_profile_id,omitempty"`
+	ExpectedRevision     *int64                    `protobuf:"varint,5,opt,name=expected_revision,json=expectedRevision,proto3,oneof" json:"expected_revision,omitempty"`
+	Extensions           []*CoreExtensionSelection `protobuf:"bytes,6,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	ModelProfileRevision *int64                    `protobuf:"varint,7,opt,name=model_profile_revision,json=modelProfileRevision,proto3,oneof" json:"model_profile_revision,omitempty"`
+	CredentialVersion    *int64                    `protobuf:"varint,8,opt,name=credential_version,json=credentialVersion,proto3,oneof" json:"credential_version,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ConversationServiceStartTurnRequest) Reset() {
@@ -1445,6 +1495,20 @@ func (x *ConversationServiceStartTurnRequest) GetExtensions() []*CoreExtensionSe
 		return x.Extensions
 	}
 	return nil
+}
+
+func (x *ConversationServiceStartTurnRequest) GetModelProfileRevision() int64 {
+	if x != nil && x.ModelProfileRevision != nil {
+		return *x.ModelProfileRevision
+	}
+	return 0
+}
+
+func (x *ConversationServiceStartTurnRequest) GetCredentialVersion() int64 {
+	if x != nil && x.CredentialVersion != nil {
+		return *x.CredentialVersion
+	}
+	return 0
 }
 
 type ConversationServiceStartTurnResponse struct {
@@ -2003,7 +2067,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12+\n" +
 	"\x11expected_revision\x18\x03 \x01(\x03R\x10expectedRevision\"#\n" +
-	"!ConversationServiceDeleteResponse\"\xf1\x02\n" +
+	"!ConversationServiceDeleteResponse\"\x92\x04\n" +
 	"\x1eConversationServiceChatRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
@@ -2013,12 +2077,16 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"extensions\x18\x05 \x03(\v2*.dirextalk.agent.v1.CoreExtensionSelectionR\n" +
 	"extensions\x12%\n" +
 	"\x0eknowledge_refs\x18\x06 \x03(\tR\rknowledgeRefs\x120\n" +
-	"\x11expected_revision\x18\a \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01B\x14\n" +
-	"\x12_expected_revision\"\xdc\x01\n" +
+	"\x11expected_revision\x18\a \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x129\n" +
+	"\x16model_profile_revision\x18\b \x01(\x03H\x01R\x14modelProfileRevision\x88\x01\x01\x122\n" +
+	"\x12credential_version\x18\t \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01B\x14\n" +
+	"\x12_expected_revisionB\x19\n" +
+	"\x17_model_profile_revisionB\x15\n" +
+	"\x13_credential_version\"\xdc\x01\n" +
 	"\x1fConversationServiceChatResponse\x12H\n" +
 	"\fconversation\x18\x01 \x01(\v2$.dirextalk.agent.v1.CoreConversationR\fconversation\x12E\n" +
 	"\amessage\x18\x02 \x01(\v2+.dirextalk.agent.v1.CoreConversationMessageR\amessage\x12(\n" +
-	"\x10related_task_ids\x18\x03 \x03(\tR\x0erelatedTaskIds\"\xf7\x02\n" +
+	"\x10related_task_ids\x18\x03 \x03(\tR\x0erelatedTaskIds\"\x98\x04\n" +
 	"$ConversationServiceStreamChatRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
@@ -2028,8 +2096,12 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"extensions\x18\x05 \x03(\v2*.dirextalk.agent.v1.CoreExtensionSelectionR\n" +
 	"extensions\x12%\n" +
 	"\x0eknowledge_refs\x18\x06 \x03(\tR\rknowledgeRefs\x120\n" +
-	"\x11expected_revision\x18\a \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01B\x14\n" +
-	"\x12_expected_revision\")\n" +
+	"\x11expected_revision\x18\a \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x129\n" +
+	"\x16model_profile_revision\x18\b \x01(\x03H\x01R\x14modelProfileRevision\x88\x01\x01\x122\n" +
+	"\x12credential_version\x18\t \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01B\x14\n" +
+	"\x12_expected_revisionB\x19\n" +
+	"\x17_model_profile_revisionB\x15\n" +
+	"\x13_credential_version\")\n" +
 	"\x13CoreStreamChatDelta\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\"\x99\x01\n" +
 	"\x1aCoreStreamChatToolProgress\x12\x12\n" +
@@ -2050,7 +2122,7 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x05delta\x18\x01 \x01(\v2'.dirextalk.agent.v1.CoreStreamChatDeltaH\x00R\x05delta\x12D\n" +
 	"\x04tool\x18\x02 \x01(\v2..dirextalk.agent.v1.CoreStreamChatToolProgressH\x00R\x04tool\x12<\n" +
 	"\x04done\x18\x03 \x01(\v2&.dirextalk.agent.v1.CoreStreamChatDoneH\x00R\x04doneB\a\n" +
-	"\x05event\"\xca\x04\n" +
+	"\x05event\"\xeb\x05\n" +
 	"\x14CoreConversationTurn\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\tR\x06turnId\x12\x1d\n" +
 	"\n" +
@@ -2069,7 +2141,11 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12C\n" +
-	"\x06result\x18\x0e \x01(\v2+.dirextalk.agent.v1.CoreConversationMessageR\x06result\"\xcf\x02\n" +
+	"\x06result\x18\x0e \x01(\v2+.dirextalk.agent.v1.CoreConversationMessageR\x06result\x129\n" +
+	"\x16model_profile_revision\x18\x0f \x01(\x03H\x00R\x14modelProfileRevision\x88\x01\x01\x122\n" +
+	"\x12credential_version\x18\x10 \x01(\x03H\x01R\x11credentialVersion\x88\x01\x01B\x19\n" +
+	"\x17_model_profile_revisionB\x15\n" +
+	"\x13_credential_version\"\xf0\x03\n" +
 	"#ConversationServiceStartTurnRequest\x12'\n" +
 	"\x0fidempotency_key\x18\x01 \x01(\tR\x0eidempotencyKey\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12\x18\n" +
@@ -2078,8 +2154,12 @@ const file_dirextalk_agent_v1_core_conversation_proto_rawDesc = "" +
 	"\x11expected_revision\x18\x05 \x01(\x03H\x00R\x10expectedRevision\x88\x01\x01\x12J\n" +
 	"\n" +
 	"extensions\x18\x06 \x03(\v2*.dirextalk.agent.v1.CoreExtensionSelectionR\n" +
-	"extensionsB\x14\n" +
-	"\x12_expected_revision\"d\n" +
+	"extensions\x129\n" +
+	"\x16model_profile_revision\x18\a \x01(\x03H\x01R\x14modelProfileRevision\x88\x01\x01\x122\n" +
+	"\x12credential_version\x18\b \x01(\x03H\x02R\x11credentialVersion\x88\x01\x01B\x14\n" +
+	"\x12_expected_revisionB\x19\n" +
+	"\x17_model_profile_revisionB\x15\n" +
+	"\x13_credential_version\"d\n" +
 	"$ConversationServiceStartTurnResponse\x12<\n" +
 	"\x04turn\x18\x01 \x01(\v2(.dirextalk.agent.v1.CoreConversationTurnR\x04turn\"<\n" +
 	"!ConversationServiceGetTurnRequest\x12\x17\n" +
@@ -2250,6 +2330,7 @@ func file_dirextalk_agent_v1_core_conversation_proto_init() {
 		(*ConversationServiceStreamChatResponse_Tool)(nil),
 		(*ConversationServiceStreamChatResponse_Done)(nil),
 	}
+	file_dirextalk_agent_v1_core_conversation_proto_msgTypes[18].OneofWrappers = []any{}
 	file_dirextalk_agent_v1_core_conversation_proto_msgTypes[19].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -70,7 +70,7 @@ func TestCoreSecretSentinelAcrossAgentTables(t *testing.T) {
 	if _, err := conversationStore.BindChatProfileSnapshot(ctx, requestID, lease.LeaseID, lease.Epoch, fingerprint, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "sentinel", ProfileID: profileID, ProfileSnapshot: snapshot}
+	turnCommand := core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "sentinel", ProfileID: profileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
 	if _, err := conversationStore.StartTurn(ctx, turnCommand); err != nil {
 		t.Fatal(err)
 	}

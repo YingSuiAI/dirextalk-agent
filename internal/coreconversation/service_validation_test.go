@@ -42,7 +42,7 @@ func TestDigestIncludesAllowedTools(t *testing.T) {
 }
 func TestFingerprintNormalizedAndSecretFree(t *testing.T) {
 	id := uuid.NewString()
-	a := ChatCommand{RequestID: uuid.NewString(), Prompt: " x ", ProfileID: id, Extensions: []ExtensionSelection{{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: "sha256:a", AllowedTools: []string{"b", "a"}}}}
+	a := ChatCommand{RequestID: uuid.NewString(), Prompt: " x ", ProfileID: id, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1, Extensions: []ExtensionSelection{{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: "sha256:a", AllowedTools: []string{"b", "a"}}}}
 	b := a
 	b.Prompt = " x "
 	b.Extensions[0].AllowedTools = []string{"a", "b"}
@@ -50,6 +50,16 @@ func TestFingerprintNormalizedAndSecretFree(t *testing.T) {
 	y, _ := b.Fingerprint()
 	if x != y {
 		t.Fatal("normalization mismatch")
+	}
+	revisionChanged := a
+	revisionChanged.ExpectedProfileRevision++
+	if changed, _ := revisionChanged.Fingerprint(); changed == x {
+		t.Fatal("profile revision pin omitted from fingerprint")
+	}
+	credentialChanged := a
+	credentialChanged.ExpectedCredentialVersion++
+	if changed, _ := credentialChanged.Fingerprint(); changed == x {
+		t.Fatal("credential version pin omitted from fingerprint")
 	}
 	raw := string(mustJSON(Conversation{ID: id, Revision: 1, Messages: []Message{{ID: uuid.NewString(), Role: RoleUser, Content: "secret_ref"}}}))
 	if strings.Contains(raw, "api_key") || strings.Contains(raw, "secret_ref_id") {

@@ -235,6 +235,9 @@ func (s *Service) bindProfileSnapshot(ctx context.Context, cmd ChatCommand, leas
 		if err := lease.ProfileSnapshot.Validate(); err != nil || lease.ProfileSnapshot.Digest() != lease.ProfileSnapshotDigest {
 			return ErrConflict
 		}
+		if err := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
+			return err
+		}
 		return nil
 	}
 	binder, ok := s.store.(ChatProfileSnapshotBinder)
@@ -249,6 +252,9 @@ func (s *Service) bindProfileSnapshot(ctx context.Context, cmd ChatCommand, leas
 		return err
 	}
 	if err := snap.Validate(); err != nil {
+		return err
+	}
+	if err := validateProfilePins(snap, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
 		return err
 	}
 	bound, err := binder.BindChatProfileSnapshot(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, lease.Fingerprint, snap)
@@ -329,6 +335,11 @@ func (s *Service) Chat(ctx context.Context, cmd ChatCommand) (ChatResponse, erro
 	if len(lease.Extensions) > 0 && digestSelections(lease.Extensions) != digestSelections(cmd.NormalizedExtensions()) {
 		return ChatResponse{}, ErrConflict
 	}
+	if lease.ProfileSnapshotDigest != "" {
+		if err := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
+			return ChatResponse{}, err
+		}
+	}
 	if lease.Status == ClaimCompleted && lease.Response != nil {
 		return *lease.Response, nil
 	}
@@ -381,6 +392,9 @@ func (s *Service) loadOrCreate(ctx context.Context, cmd ChatCommand, lease ChatL
 }
 
 func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, lease *ChatLease, emit func(StreamEvent)) (ChatResponse, error) {
+	if err := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
+		return ChatResponse{}, err
+	}
 	if emit != nil {
 		emit(StreamEvent{Kind: EventStarted, RequestID: cmd.RequestID, ConversationID: conv.ID})
 	}
@@ -657,6 +671,12 @@ func (s *Service) StreamChat(ctx context.Context, cmd ChatCommand) (<-chan Strea
 			send(safeStreamError(cmd.RequestID, "conflict"))
 			return
 		}
+		if lease.ProfileSnapshotDigest != "" {
+			if pinErr := validateProfilePins(lease.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); pinErr != nil {
+				send(safeStreamError(cmd.RequestID, "conflict"))
+				return
+			}
+		}
 		if lease.Status == ClaimCompleted && lease.Response != nil {
 			r := *lease.Response
 			send(StreamEvent{Kind: EventDone, RequestID: r.RequestID, ConversationID: r.ConversationID, Response: &r})
@@ -846,7 +866,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if s.turns == nil {
 		return Turn{}, ErrInvalid
 	}
-	if !validUUID(cmd.RequestID) || !validUUID(cmd.ProfileID) || (cmd.ConversationID != "" && !validUUID(cmd.ConversationID)) {
+	if !validUUID(cmd.RequestID) || !validUUID(cmd.ProfileID) || (cmd.ConversationID != "" && !validUUID(cmd.ConversationID)) || cmd.ExpectedProfileRevision <= 0 || cmd.ExpectedCredentialVersion <= 0 {
 		return Turn{}, ErrInvalid
 	}
 	if err := validateText(cmd.Prompt, MaxContentBytes); err != nil {
@@ -890,6 +910,9 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 			return Turn{}, err
 		}
 		cmd.ProfileSnapshot = snapshot
+	}
+	if err := validateProfilePins(cmd.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
+		return Turn{}, err
 	}
 	if len(cmd.Extensions) > 0 && len(cmd.ExtensionSnapshots) == 0 {
 		if s.extensions == nil {

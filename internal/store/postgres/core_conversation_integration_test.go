@@ -127,7 +127,7 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 		t.Fatal(e)
 	}
 	temperature, topP := 0.25, 0.75
-	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid/v1", Model: "original-model", APIKey: "original-secret", SystemPrompt: "original prompt", Temperature: &temperature, TopP: &topP, MaxOutputTokens: 321, ContextWindow: 8192, ReasoningEffort: "high"}
+	snapshot := coremodel.ExecutionSnapshot{ProfileID: profileID, Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid/v1", Model: "original-model", APIKey: "original-secret", SystemPrompt: "original prompt", Temperature: &temperature, TopP: &topP, MaxOutputTokens: 321, ContextWindow: 8192, ReasoningEffort: "high"}
 	bound, e := cs.BindChatProfileSnapshot(ctx, rid, lease.LeaseID, lease.Epoch, sha256hexPG([]byte("chat")), snapshot)
 	if e != nil || bound.ProfileSnapshotDigest != snapshot.Digest() {
 		t.Fatalf("bind snapshot=%+v err=%v", bound, e)
@@ -226,7 +226,7 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	commitSnapshot := coremodel.ExecutionSnapshot{ProfileID: commitProfile, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test-model", APIKey: "commit-secret"}
+	commitSnapshot := coremodel.ExecutionSnapshot{ProfileID: commitProfile, Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test-model", APIKey: "commit-secret"}
 	commitLease, e = cs.BindChatProfileSnapshot(ctx, commitReq, commitLease.LeaseID, commitLease.Epoch, sha256hexPG([]byte("commit")), commitSnapshot)
 	if e != nil {
 		t.Fatal(e)

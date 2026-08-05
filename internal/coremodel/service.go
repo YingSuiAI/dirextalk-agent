@@ -53,16 +53,16 @@ type ProfilePage struct {
 }
 
 // ProfileDefaults are stable role bindings used by conversation, embedding,
-// and speech runtimes. The legacy default_client_profile_id is an alias for
-// the conversation role at the capability boundary.
+// and speech runtimes. The default_client_profile_id field aliases the
+// conversation role at the capability boundary.
 type ProfileDefaults struct {
 	ConversationClientProfileID string `json:"default_conversation_client_profile_id"`
 	EmbeddingClientProfileID    string `json:"default_embedding_client_profile_id"`
 	SpeechClientProfileID       string `json:"default_speech_client_profile_id"`
 }
 
-// ProfileDefaultsReader is optional so existing test repositories remain
-// source-compatible while durable stores can expose role bindings on lists.
+// ProfileDefaultsReader is optional so repositories can expose role bindings
+// on profile-list responses when that boundary is available.
 type ProfileDefaultsReader interface {
 	GetProfileDefaults(context.Context) (ProfileDefaults, error)
 }
@@ -130,6 +130,7 @@ func (s *Service) Create(ctx context.Context, cmd CreateProfileCommand) (PublicP
 	}
 	now := s.now().UTC()
 	p.Revision = 1
+	p.CredentialVersion = 1
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	snapshot, err := s.repo.CreateProfile(ctx, p, cmd.IdempotencyKey, digest)
@@ -225,6 +226,13 @@ func (s *Service) Update(ctx context.Context, cmd UpdateProfileCommand) (PublicP
 	}
 	updated.ID = cmd.ID
 	updated.Revision = current.Revision + 1
+	updated.CredentialVersion = current.CredentialVersion
+	if updated.CredentialVersion <= 0 {
+		updated.CredentialVersion = 1
+	}
+	if credentialMaterialChanged(current, updated) {
+		updated.CredentialVersion++
+	}
 	updated.UpdatedAt = s.now().UTC()
 	updated.CreatedAt = current.CreatedAt
 	if updated.CreatedAt.IsZero() {
@@ -411,6 +419,22 @@ func valueOrEmpty(v *string) string {
 		return ""
 	}
 	return *v
+}
+
+func credentialMaterialChanged(before, after Profile) bool {
+	return before.APIKey != after.APIKey || !equalStringMap(before.ProviderSecrets, after.ProviderSecrets)
+}
+
+func equalStringMap(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // SyncProfileID returns the stable Core UUID assigned to a new client profile.
@@ -1062,11 +1086,22 @@ func (r *MemoryProfileRepository) SyncProfiles(_ context.Context, key, digest st
 			if e.ExpectedRevision == nil || p.Revision != *e.ExpectedRevision {
 				return SyncProfileResult{}, ErrRevisionConflict
 			}
-			p.DisplayName, p.Provider, p.ModelKind, p.InputModalities, p.ProviderConfig, p.ProviderSecrets, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.ProviderSecrets, e.BaseURL, e.Model, e.SystemPrompt
+			previousAPIKey := p.APIKey
+			previousProviderSecrets := cloneStringMap(p.ProviderSecrets)
+			p.DisplayName, p.Provider, p.ModelKind, p.InputModalities, p.ProviderConfig, p.BaseURL, p.Model, p.SystemPrompt = e.DisplayName, e.Provider, e.ModelKind, append([]string(nil), e.InputModalities...), e.ProviderConfig, e.BaseURL, e.Model, e.SystemPrompt
+			if e.ProviderSecrets != nil {
+				p.ProviderSecrets = cloneStringMap(e.ProviderSecrets)
+			}
 			p.Temperature, p.TopP = cloneFloat(e.Temperature), cloneFloat(e.TopP)
 			p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort = e.MaxOutputTokens, e.ContextWindow, e.ReasoningEffort
 			if e.APIKey != nil {
 				p.APIKey = *e.APIKey
+			}
+			if p.CredentialVersion <= 0 {
+				p.CredentialVersion = 1
+			}
+			if previousAPIKey != p.APIKey || !equalStringMap(previousProviderSecrets, p.ProviderSecrets) {
+				p.CredentialVersion++
 			}
 			p.Revision++
 			work[id] = p

@@ -56,6 +56,14 @@ func mapErr(err error) error {
 
 func turnProto(t coreconversation.Turn) *agentv1.CoreConversationTurn {
 	out := &agentv1.CoreConversationTurn{TurnId: t.ID, RequestId: t.RequestID, ConversationId: t.ConversationID, Message: t.Prompt, ModelProfileId: t.ProfileID, Revision: int64(t.Revision), State: string(t.State), TerminalCode: t.TerminalCode, TerminalSummary: t.TerminalSummary, LastSequence: t.LastSequence, CreatedAt: timestamppb.New(t.CreatedAt), UpdatedAt: timestamppb.New(t.UpdatedAt)}
+	if t.ProfileSnapshot.Revision > 0 {
+		revision := t.ProfileSnapshot.Revision
+		out.ModelProfileRevision = &revision
+	}
+	if t.ProfileSnapshot.CredentialVersion > 0 {
+		credentialVersion := t.ProfileSnapshot.CredentialVersion
+		out.CredentialVersion = &credentialVersion
+	}
 	if t.ExpectedRevision != nil {
 		out.ExpectedRevision = int64(*t.ExpectedRevision)
 	}
@@ -196,7 +204,7 @@ func (s *CoreConversationService) Chat(ctx context.Context, r *agentv1.Conversat
 	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
 		return nil, e
 	}
-	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), Extensions: extensionCommands(r.GetExtensions())}
+	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions())}
 	if r.ExpectedRevision != nil {
 		x := uint64(r.GetExpectedRevision())
 		cmd.ExpectedRevision = &x
@@ -211,7 +219,7 @@ func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStrea
 	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
 		return e
 	}
-	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), Extensions: extensionCommands(r.GetExtensions())}
+	cmd := coreconversation.ChatCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions())}
 	if r.ExpectedRevision != nil {
 		x := uint64(r.GetExpectedRevision())
 		cmd.ExpectedRevision = &x
@@ -269,7 +277,7 @@ func mapStreamError(code string) error {
 }
 
 func (s *CoreConversationService) StartTurn(ctx context.Context, r *agentv1.ConversationServiceStartTurnRequest) (*agentv1.ConversationServiceStartTurnResponse, error) {
-	cmd := coreconversation.TurnStartCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), Extensions: extensionCommands(r.GetExtensions())}
+	cmd := coreconversation.TurnStartCommand{RequestID: r.GetIdempotencyKey(), ConversationID: r.GetConversationId(), Prompt: r.GetMessage(), ProfileID: r.GetModelProfileId(), ExpectedProfileRevision: r.GetModelProfileRevision(), ExpectedCredentialVersion: r.GetCredentialVersion(), Extensions: extensionCommands(r.GetExtensions())}
 	if r.ExpectedRevision != nil {
 		x := uint64(r.GetExpectedRevision())
 		cmd.ExpectedRevision = &x

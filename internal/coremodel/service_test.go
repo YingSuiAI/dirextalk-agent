@@ -31,6 +31,9 @@ func TestServiceCRUDReplayRevisionAndSecretBoundary(t *testing.T) {
 	if !pub.APIKeyConfigured || strings.Contains(mustJSON(pub), serviceKey1) {
 		t.Fatalf("secret leaked: %#v", pub)
 	}
+	if pub.CredentialVersion != 1 {
+		t.Fatalf("initial credential version=%d, want 1", pub.CredentialVersion)
+	}
 	if strings.Contains(mustJSON(Profile{APIKey: serviceKey1}), serviceKey1) {
 		t.Fatal("Profile JSON leaked API key")
 	}
@@ -54,11 +57,55 @@ func TestServiceCRUDReplayRevisionAndSecretBoundary(t *testing.T) {
 	if updated.APIKeyConfigured || updated.Revision != 2 {
 		t.Fatalf("clear patch failed: %#v", updated)
 	}
+	if updated.CredentialVersion != 2 {
+		t.Fatalf("credential clear did not rotate version: %#v", updated)
+	}
 	if _, err := svc.Update(context.Background(), UpdateProfileCommand{ID: serviceProfileID, IdempotencyKey: "44444444-4444-4444-8444-444444444444", ExpectedRevision: 1, Spec: serviceSpec(serviceProfileID, "Stale", nil)}); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("stale revision err=%v", err)
 	}
 	if _, err := svc.ResolveProfile(context.Background(), serviceProfileID); !errors.Is(err, ErrAPIKeyUnavailable) {
 		t.Fatalf("cleared key resolve err=%v", err)
+	}
+}
+
+func TestCredentialVersionRotatesOnAPIKeyReplacementAndClear(t *testing.T) {
+	repo := NewMemoryProfileRepository()
+	svc, err := NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Create(context.Background(), CreateProfileCommand{
+		IdempotencyKey: "12121212-1212-4121-8121-121212121212",
+		Spec:           serviceSpec(serviceProfileID, "Primary", strPtr("old-key")),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := svc.Update(context.Background(), UpdateProfileCommand{
+		ID:               serviceProfileID,
+		IdempotencyKey:   "13131313-1313-4131-8131-131313131313",
+		ExpectedRevision: 1,
+		Spec:             ProfileSpec{ID: serviceProfileID, Patch: true, DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "test-model", APIKey: strPtr("new-key")},
+	})
+	if err != nil || replacement.Revision != 2 || replacement.CredentialVersion != 2 {
+		t.Fatalf("replacement=%#v err=%v", replacement, err)
+	}
+	preserved, err := svc.Update(context.Background(), UpdateProfileCommand{
+		ID:               serviceProfileID,
+		IdempotencyKey:   "14141414-1414-4141-8141-141414141414",
+		ExpectedRevision: 2,
+		Spec:             ProfileSpec{ID: serviceProfileID, Patch: true, DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "test-model"},
+	})
+	if err != nil || preserved.CredentialVersion != 2 {
+		t.Fatalf("preserve update changed credential version: %#v err=%v", preserved, err)
+	}
+	cleared, err := svc.Update(context.Background(), UpdateProfileCommand{
+		ID:               serviceProfileID,
+		IdempotencyKey:   "15151515-1515-4151-8151-151515151515",
+		ExpectedRevision: 3,
+		Spec:             ProfileSpec{ID: serviceProfileID, Patch: true, DisplayName: "Primary", Provider: ProviderOpenAICompatible, Model: "test-model", APIKeyClear: true},
+	})
+	if err != nil || cleared.Revision != 4 || cleared.CredentialVersion != 3 || cleared.APIKeyConfigured {
+		t.Fatalf("clear=%#v err=%v", cleared, err)
 	}
 }
 

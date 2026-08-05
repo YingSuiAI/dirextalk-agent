@@ -167,14 +167,14 @@ func (c *coreChatCapability) Descriptor() *capv1.CapabilityDescriptor {
 	})
 }
 
-func (c *coreChatCapability) resolveProfileID(ctx context.Context, in map[string]json.RawMessage) (string, error) {
-	if profileID := stringValue(in, "model_profile_id"); profileID != "" {
-		return profileID, nil
+func (c *coreChatCapability) resolveProfilePins(in map[string]json.RawMessage) (string, int64, int64, error) {
+	profileID := stringValue(in, "model_profile_id")
+	profileRevision := int64Value(in, "model_profile_revision")
+	credentialVersion := int64Value(in, "credential_version")
+	if !coretask.ValidUUID(profileID) || profileRevision <= 0 || credentialVersion <= 0 {
+		return "", 0, 0, coreconversation.ErrInvalid
 	}
-	if c == nil || c.models == nil {
-		return "", coreconversation.ErrInvalid
-	}
-	return c.models.ResolveDefaultProfileID(ctx, coremodel.ModelKindConversation)
+	return profileID, profileRevision, credentialVersion, nil
 }
 
 func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -219,19 +219,19 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 	case "summarize":
 		return marshalResult(c.service.Summarize(ctx, stringValue(in, "text")), nil)
 	case "chat":
-		profileID, err := c.resolveProfileID(ctx, in)
+		profileID, profileRevision, credentialVersion, err := c.resolveProfilePins(in)
 		if err != nil {
 			return nil, err
 		}
-		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID}
+		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion}
 		value, err := c.service.Chat(ctx, cmd)
 		return marshalResult(value, err)
 	case "stream_chat":
-		profileID, err := c.resolveProfileID(ctx, in)
+		profileID, profileRevision, credentialVersion, err := c.resolveProfilePins(in)
 		if err != nil {
 			return nil, err
 		}
-		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID}
+		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion}
 		events, err := c.service.StreamChat(ctx, cmd)
 		if err != nil {
 			return nil, err
@@ -1189,6 +1189,8 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"expected_revision":{"type":"integer"},"memory_window":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:summarize":
 		return `{"type":"object","properties":{"text":{"type":"string"},"room_id":{"type":"string"}}}`
+	case "agent.chat.v1:chat", "agent.chat.v1:stream_chat":
+		return `{"type":"object","properties":{"idempotency_key":{"type":"string"},"conversation_id":{"type":"string"},"message":{"type":"string"},"model_profile_id":{"type":"string"},"model_profile_revision":{"type":"integer"},"credential_version":{"type":"integer"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.knowledge.v1:list_sources":

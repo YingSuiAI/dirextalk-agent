@@ -151,7 +151,7 @@ func serveCore(cfg config.Config) error {
 		voiceResolver := coreVoiceProfileResolver{profiles: profiles, config: cfg}
 		voiceProvider := corevoice.NewVolcProvider()
 		voiceProvider.Host, voiceProvider.Region = cfg.CoreVoiceHost, cfg.CoreVoiceRegion
-		voiceService, err = corevoice.NewService(voiceStore, voiceResolver, voiceProvider, coreConversationVoiceRunner{conversation: conversation})
+		voiceService, err = corevoice.NewService(voiceStore, voiceResolver, voiceProvider, coreConversationVoiceRunner{conversation: conversation, profiles: profiles})
 		if err != nil {
 			return fmt.Errorf("initialize Core Voice service: %w", err)
 		}

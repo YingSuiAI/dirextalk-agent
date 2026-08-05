@@ -129,13 +129,15 @@ const (
 )
 
 type ChatCommand struct {
-	RequestID        string               `json:"request_id"`
-	ConversationID   string               `json:"conversation_id,omitempty"`
-	Prompt           string               `json:"prompt"`
-	ProfileID        string               `json:"profile_id"`
-	Extensions       []ExtensionSelection `json:"extensions,omitempty"`
-	ExpectedRevision *uint64              `json:"expected_revision,omitempty"`
-	LeaseTTL         time.Duration        `json:"-"`
+	RequestID                 string               `json:"request_id"`
+	ConversationID            string               `json:"conversation_id,omitempty"`
+	Prompt                    string               `json:"prompt"`
+	ProfileID                 string               `json:"profile_id"`
+	ExpectedProfileRevision   int64                `json:"expected_profile_revision"`
+	ExpectedCredentialVersion int64                `json:"expected_credential_version"`
+	Extensions                []ExtensionSelection `json:"extensions,omitempty"`
+	ExpectedRevision          *uint64              `json:"expected_revision,omitempty"`
+	LeaseTTL                  time.Duration        `json:"-"`
 }
 
 type ChatResponse struct {
@@ -627,7 +629,7 @@ func (s ExtensionSelection) Validate() error {
 	return nil
 }
 func (c ChatCommand) Validate() error {
-	if !validUUID(c.RequestID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || !validUUID(c.ProfileID) {
+	if !validUUID(c.RequestID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || !validUUID(c.ProfileID) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {
 		return ErrInvalid
 	}
 	if err := validateText(c.Prompt, MaxContentBytes); err != nil {
@@ -647,6 +649,8 @@ func (c ChatCommand) Fingerprint() (string, error) {
 	}
 	type normalized struct {
 		ConversationID, Prompt, ProfileID string
+		ExpectedProfileRevision           int64
+		ExpectedCredentialVersion         int64
 		Extensions                        []ExtensionSelection
 		ExpectedRevision                  *uint64
 	}
@@ -670,7 +674,7 @@ func (c ChatCommand) Fingerprint() (string, error) {
 			uniq = append(uniq, e)
 		}
 	}
-	n := normalized{c.ConversationID, c.Prompt, c.ProfileID, uniq, c.ExpectedRevision}
+	n := normalized{c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, uniq, c.ExpectedRevision}
 	b, err := json.Marshal(n)
 	if err != nil {
 		return "", err
@@ -701,6 +705,13 @@ func (c ChatCommand) NormalizedExtensions() []ExtensionSelection {
 		}
 	}
 	return uniq
+}
+
+func validateProfilePins(snapshot coremodel.ExecutionSnapshot, profileID string, revision, credentialVersion int64) error {
+	if revision <= 0 || credentialVersion <= 0 || snapshot.ProfileID != profileID || snapshot.Revision != revision || snapshot.CredentialVersion != credentialVersion {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (c Conversation) Snapshot() Conversation {

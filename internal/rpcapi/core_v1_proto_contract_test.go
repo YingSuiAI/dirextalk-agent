@@ -10,7 +10,7 @@ import (
 func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	want := map[string][]string{
 		"ModelProfileService": {"Create", "Get", "List", "Update", "Delete", "TestConnection", "Sync"},
-		"ConversationService": {"Create", "Get", "List", "Delete", "Chat", "StreamChat"},
+		"ConversationService": {"Create", "Get", "List", "Delete", "Chat", "StreamChat", "StartTurn", "GetTurn", "WatchTurnEvents", "CancelTurn"},
 		"TaskService":         {"CreateTask", "GetTask", "ListTasks", "CancelTask", "RetryTask", "DeleteTask", "WatchTaskEvents"},
 		"ScheduleService":     {"Create", "Get", "List", "Update", "Pause", "Resume", "TriggerNow", "Delete"},
 		"WorkloadService":     {"Plan", "Get", "List", "Quote", "RequestApply", "RequestDestroy"},
@@ -40,6 +40,9 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	if profile.Fields().ByName("client_profile_id") == nil {
 		t.Fatal("profile client_profile_id missing")
 	}
+	if f := profile.Fields().ByName("credential_version"); f == nil || f.Kind() != protoreflect.Int64Kind {
+		t.Fatal("profile credential_version missing or wrong type")
+	}
 	syncEntry := (&agentv1.CoreModelProfileSyncEntry{}).ProtoReflect().Descriptor()
 	if f := syncEntry.Fields().ByName("api_key"); f == nil || !f.HasOptionalKeyword() {
 		t.Fatal("sync api_key must be optional/write-only")
@@ -51,9 +54,25 @@ func TestCoreV1ServiceDescriptorsAndPrivacy(t *testing.T) {
 	if trigger.Fields().ByName("expected_revision") != nil {
 		t.Fatal("TriggerNow has revision fence")
 	}
-	chat := (&agentv1.ConversationServiceChatRequest{}).ProtoReflect().Descriptor()
-	if f := chat.Fields().ByName("expected_revision"); f == nil || !f.HasOptionalKeyword() {
-		t.Fatal("chat expected_revision must be optional")
+	for _, req := range []protoreflect.MessageDescriptor{
+		(&agentv1.ConversationServiceChatRequest{}).ProtoReflect().Descriptor(),
+		(&agentv1.ConversationServiceStreamChatRequest{}).ProtoReflect().Descriptor(),
+		(&agentv1.ConversationServiceStartTurnRequest{}).ProtoReflect().Descriptor(),
+	} {
+		if f := req.Fields().ByName("expected_revision"); f != nil && !f.HasOptionalKeyword() {
+			t.Fatalf("%s expected_revision must be optional when present", req.Name())
+		}
+		for _, name := range []protoreflect.Name{"model_profile_revision", "credential_version"} {
+			if f := req.Fields().ByName(name); f == nil || !f.HasOptionalKeyword() || f.Kind() != protoreflect.Int64Kind {
+				t.Fatalf("%s %s must be optional int64", req.Name(), name)
+			}
+		}
+	}
+	turn := (&agentv1.CoreConversationTurn{}).ProtoReflect().Descriptor()
+	for _, name := range []protoreflect.Name{"model_profile_revision", "credential_version"} {
+		if f := turn.Fields().ByName(name); f == nil || !f.HasOptionalKeyword() || f.Kind() != protoreflect.Int64Kind {
+			t.Fatalf("turn %s must be optional int64", name)
+		}
 	}
 	update := (&agentv1.ModelProfileServiceUpdateRequest{}).ProtoReflect().Descriptor()
 	if update.Oneofs().ByName("api_key_update") == nil {

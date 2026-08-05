@@ -238,7 +238,7 @@ func fromProtoProvider(v agentv1.CoreModelProvider) (coremodel.ModelProvider, er
 	}
 }
 func publicProfileProto(p coremodel.PublicProfile) *agentv1.CoreModelProfile {
-	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision}
+	out := &agentv1.CoreModelProfile{ProfileId: p.ID, ClientProfileId: p.ClientProfileID, DisplayName: p.DisplayName, Provider: toProtoProvider(p.Provider), BaseUrl: p.BaseURL, Model: p.Model, SystemPrompt: p.SystemPrompt, ApiKeyConfigured: p.APIKeyConfigured, MaxOutputTokens: int32(p.MaxOutputTokens), ContextWindow: int32(p.ContextWindow), ReasoningEffort: p.ReasoningEffort, Revision: p.Revision, CredentialVersion: p.CredentialVersion}
 	if p.Temperature != nil {
 		v := *p.Temperature
 		out.Temperature = &v

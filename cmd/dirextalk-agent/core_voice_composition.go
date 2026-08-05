@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -100,7 +101,15 @@ func resolveVoiceModelProfile(ctx context.Context, profiles *coremodel.Service, 
 // from the voice turn gives provider retries the same conversation turn
 // identity while allowing product room ids that are not UUIDs.
 type coreConversationVoiceRunner struct {
-	conversation *coreconversation.Service
+	conversation coreConversationTurnService
+	profiles     *coremodel.Service
+}
+
+type coreConversationTurnService interface {
+	GetTurnByRequestID(context.Context, string) (coreconversation.Turn, error)
+	StartTurn(context.Context, coreconversation.TurnStartCommand) (coreconversation.Turn, error)
+	WatchTurnEvents(context.Context, string, int64, int) (<-chan coreconversation.TurnEvent, error)
+	CancelTurn(context.Context, coreconversation.TurnCancelCommand) (coreconversation.Turn, error)
 }
 
 func (r coreConversationVoiceRunner) Run(ctx context.Context, _ string, session corevoice.Session, turn corevoice.Turn, emit func(corevoice.StreamEvent) error) error {
@@ -109,12 +118,31 @@ func (r coreConversationVoiceRunner) Run(ctx context.Context, _ string, session 
 	}
 	requestID := voiceUUID("voice-request:" + turn.ID)
 	conversationID := voiceUUID("voice-conversation:" + session.ConversationID)
-	profileID := voiceUUID(session.ConversationProfileID)
-	accepted, err := r.conversation.StartTurn(ctx, coreconversation.TurnStartCommand{RequestID: requestID, ConversationID: conversationID, Prompt: turn.Transcript, ProfileID: profileID})
+	if existing, lookupErr := r.conversation.GetTurnByRequestID(ctx, requestID); lookupErr == nil {
+		if existing.ID == "" || existing.RequestID != requestID || existing.ConversationID != conversationID || existing.Prompt != turn.Transcript {
+			return corevoice.ErrConflict
+		}
+		return r.watchTurn(ctx, existing.ID, emit)
+	} else if !errors.Is(lookupErr, coreconversation.ErrConflict) {
+		return lookupErr
+	}
+	if r.profiles == nil {
+		return corevoice.ErrUnavailable
+	}
+	profile, err := r.profiles.ResolveProfile(ctx, session.ConversationProfileID)
+	if err != nil {
+		return fmt.Errorf("resolve voice conversation profile: %w", err)
+	}
+	snapshot := coremodel.SnapshotFromProfile(profile)
+	accepted, err := r.conversation.StartTurn(ctx, coreconversation.TurnStartCommand{RequestID: requestID, ConversationID: conversationID, Prompt: turn.Transcript, ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot})
 	if err != nil {
 		return err
 	}
-	events, err := r.conversation.WatchTurnEvents(ctx, accepted.ID, 0, 256)
+	return r.watchTurn(ctx, accepted.ID, emit)
+}
+
+func (r coreConversationVoiceRunner) watchTurn(ctx context.Context, turnID string, emit func(corevoice.StreamEvent) error) error {
+	events, err := r.conversation.WatchTurnEvents(ctx, turnID, 0, 256)
 	if err != nil {
 		return err
 	}

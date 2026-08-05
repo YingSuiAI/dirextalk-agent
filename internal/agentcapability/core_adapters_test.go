@@ -290,30 +290,19 @@ func TestModelCapabilityUpdateHonorsExplicitClearsAndZeroValues(t *testing.T) {
 	}
 }
 
-func TestChatCapabilityUsesDefaultConversationProfileWhenOmitted(t *testing.T) {
-	repo := coremodel.NewMemoryProfileRepository()
-	models, err := coremodel.NewService(repo, nil)
-	if err != nil {
-		t.Fatal(err)
+func TestChatCapabilityRequiresExplicitProfilePins(t *testing.T) {
+	capability := &coreChatCapability{}
+	if _, _, _, err := capability.resolveProfilePins(map[string]json.RawMessage{}); !errors.Is(err, coreconversation.ErrInvalid) {
+		t.Fatalf("missing profile pins err=%v", err)
 	}
-	key := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	if _, err := models.Sync(context.Background(), coremodel.SyncProfileCommand{
-		IdempotencyKey:               key,
-		DefaultConversationProfileID: "chat",
-		Entries: []coremodel.SyncProfileEntry{{
-			ClientProfileID: "chat", DisplayName: "Chat", Provider: coremodel.ProviderOpenAICompatible,
-			BaseURL: "https://example.com/v1", Model: "test-model", APIKey: stringPtrForAdapterTest("secret"),
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	capability := &coreChatCapability{models: models}
-	profileID, err := capability.resolveProfileID(context.Background(), map[string]json.RawMessage{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profileID != coremodel.SyncProfileID("chat") {
-		t.Fatalf("resolved profile id = %q, want %q", profileID, coremodel.SyncProfileID("chat"))
+	profileID := "11111111-1111-4111-8111-111111111111"
+	gotID, gotRevision, gotCredential, err := capability.resolveProfilePins(map[string]json.RawMessage{
+		"model_profile_id":       json.RawMessage(`"` + profileID + `"`),
+		"model_profile_revision": json.RawMessage(`2`),
+		"credential_version":     json.RawMessage(`3`),
+	})
+	if err != nil || gotID != profileID || gotRevision != 2 || gotCredential != 3 {
+		t.Fatalf("pins=%q/%d/%d err=%v", gotID, gotRevision, gotCredential, err)
 	}
 }
 
@@ -445,6 +434,45 @@ func TestCoreDescriptorsBindInputSchemaDigests(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestChatCapabilitySchemaRequiresProfilePins(t *testing.T) {
+	descriptor := (&coreChatCapability{}).Descriptor()
+	for _, operationID := range []string{"chat", "stream_chat"} {
+		var operation *capv1.OperationDescriptor
+		for _, candidate := range descriptor.GetOperations() {
+			if candidate.GetOperationId() == operationID {
+				operation = candidate
+				break
+			}
+		}
+		if operation == nil {
+			t.Fatalf("missing chat operation %q", operationID)
+		}
+		var schema struct {
+			Required []string `json:"required"`
+		}
+		if err := json.Unmarshal([]byte(operation.GetInputSchemaJson()), &schema); err != nil {
+			t.Fatalf("%s schema: %v", operationID, err)
+		}
+		for _, required := range []string{"idempotency_key", "message", "model_profile_id", "model_profile_revision", "credential_version"} {
+			if !containsString(schema.Required, required) {
+				t.Fatalf("%s schema does not require %q: %s", operationID, required, operation.GetInputSchemaJson())
+			}
+		}
+		if strings.Contains(operation.GetInputSchemaJson(), "default_profile") {
+			t.Fatalf("%s schema exposes a default profile fallback", operationID)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func descriptorForTest(id string) *capv1.CapabilityDescriptor {

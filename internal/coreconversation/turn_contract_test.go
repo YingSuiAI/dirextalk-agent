@@ -230,13 +230,13 @@ func (s *replayTurnStore) FailTurn(context.Context, TurnLease, string, string) (
 }
 
 func testTurnSnapshot() coremodel.ExecutionSnapshot {
-	return coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "bound-secret"}
+	return coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "bound-secret"}
 }
 
 func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 	snapshot := testTurnSnapshot()
 	revision := uint64(1)
-	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedRevision: &revision, ProfileSnapshot: snapshot}
+	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ExpectedRevision: &revision, ProfileSnapshot: snapshot}
 	if err := cmd.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 
 func TestStartTurnReplayDoesNotResolveRotatedProfile(t *testing.T) {
 	snapshot := testTurnSnapshot()
-	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot}
+	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
 	if err := cmd.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestStartTurnReplayDoesNotResolveRotatedProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.StartTurn(context.Background(), TurnStartCommand{RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID}); err != nil {
+	if _, err = service.StartTurn(context.Background(), TurnStartCommand{RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ExpectedProfileRevision: cmd.ExpectedProfileRevision, ExpectedCredentialVersion: cmd.ExpectedCredentialVersion}); err != nil {
 		t.Fatal(err)
 	}
 	if resolved != 0 {
@@ -384,7 +384,7 @@ func TestPublicStartAndCancelWaitForNonCooperativeRunner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot}
+	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
 	turn, err := service.StartTurn(context.Background(), cmd)
 	if err != nil {
 		t.Fatal(err)

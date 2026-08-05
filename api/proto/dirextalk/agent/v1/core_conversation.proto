@@ -59,6 +59,8 @@ message ConversationServiceChatRequest {
   repeated CoreExtensionSelection extensions = 5;
   repeated string knowledge_refs = 6;
   optional int64 expected_revision = 7;
+  optional int64 model_profile_revision = 8;
+  optional int64 credential_version = 9;
 }
 message ConversationServiceChatResponse {
   CoreConversation conversation = 1;
@@ -74,6 +76,8 @@ message ConversationServiceStreamChatRequest {
   repeated CoreExtensionSelection extensions = 5;
   repeated string knowledge_refs = 6;
   optional int64 expected_revision = 7;
+  optional int64 model_profile_revision = 8;
+  optional int64 credential_version = 9;
 }
 message CoreStreamChatDelta { string text = 1; }
 message CoreStreamChatToolProgress {
@@ -118,6 +122,8 @@ message CoreConversationTurn {
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
   CoreConversationMessage result = 14;
+  optional int64 model_profile_revision = 15;
+  optional int64 credential_version = 16;
 }
 message ConversationServiceStartTurnRequest {
   string idempotency_key = 1;
@@ -126,6 +132,8 @@ message ConversationServiceStartTurnRequest {
   string model_profile_id = 4;
   optional int64 expected_revision = 5;
   repeated CoreExtensionSelection extensions = 6;
+  optional int64 model_profile_revision = 7;
+  optional int64 credential_version = 8;
 }
 message ConversationServiceStartTurnResponse { CoreConversationTurn turn = 1; }
 message ConversationServiceGetTurnRequest { string turn_id = 1; }
