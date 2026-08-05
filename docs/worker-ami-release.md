@@ -56,10 +56,34 @@ actual outbound `max_tokens=128` field before accepting the tool result.
 This evidence proves the released Linux Pi executable, demo2 credential,
 DeepSeek model path, extension loading, tool declaration, tool execution, and
 structured-result contract can work together. It does not recover the first
-Worker's erased failure or prove the EC2 Worker environment and complete
-App-to-Worker-to-App path. Central OS feature work and active Release promotion
-remain frozen until one candidate Worker with closed failure classification
-passes the correlated success, cleanup, and independent zero-resource gate.
+Worker's erased failure, so that historical failure remains unknown rather
+than being retrospectively reclassified. The candidate's EC2 and complete
+App-to-Worker-to-App acceptance were subsequently closed by the 2026-08-05
+run recorded below.
+
+### Recovery gate closeout
+
+On 2026-08-05, App-originated Task
+`019fd102-aee9-76e7-882e-9e4ac356d6f0` used Plan
+`5f733ab7-faf5-58cb-a751-4ff0ac707408`, Execution
+`3020fb7f-8a01-553e-9c42-738f8b64e342`, and one official Pi Worker from AMI
+`ami-023e6b2d57694b86d`. The Worker enrolled, materialized input, ran the
+approved role on its first attempt, uploaded a structured result, and reached
+terminal success. Central validated artifact SHA-256
+`bdf5bfcb60c7a5627c3a4f75fee6be26f2a387d3a154efea3c2e5f73188cadc6`
+and froze Team Report digest
+`sha256:369774cd87709048cac370cab96851161a82b500ee2c30395bbe0dafcccb4e7a`.
+The App received the uniquely correlated completion only after Central had
+verified cleanup.
+
+Central's durable ledger records one EC2 instance, root EBS volume, ENI, EIP,
+and security group, all `verified_destroyed` with negative provider read-back.
+An independent AWS API query repeated on 2026-08-05 returned zero resources in
+all five task-tagged scopes. The official AMI remains `available`; its root
+snapshot `snap-0ae9af10d9f1a406e` remains `completed` and encrypted. This
+closes the Worker recovery and Release-promotion gate. Later Agent-only result
+projection fixes must use `docs/agent-image-release.md` and must not rebuild
+this proven Worker AMI.
 
 ### Chosen recovery design
 
