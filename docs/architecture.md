@@ -1,114 +1,70 @@
 # Core v1 architecture
 
-Dirextalk Agent is a private process for one user and one Dirextalk deployment.
-The composition root is `cmd/dirextalk-agent`; the extension runner is a
-separate command and process boundary. The service owns Agent data and does
-not share a business-server database or execution history.
+Dirextalk Agent is a private process for one user and one Dirextalk
+deployment. It is the Agent-owned runtime outside Message Server. Message
+Server is the owner-authenticated proxy for Flutter; Online Agent's Matrix
+room is a separate transport from Native Agent Core.
 
-## Runtime shape
+## Runtime topology
 
 ```text
-TLS gRPC client
+Flutter (owner access_token)
       |
       v
-CoreServer (token interceptor, optional health/reflection)
-      |
-      +-- Model profiles / conversations
-      +-- Tasks / schedules / confirmations
-      +-- MCP / Skills lifecycle and execution
-      +-- Knowledge sources and indexing
-      +-- Typed AWS control
-      |
+Message Server ProductCore + Native Agent stream facade
+      |  authenticated Capability boundary
       v
-PostgreSQL  <---- durable state, snapshots, leases, events, digests
+CoreServer (TLS token interceptor, optional health/reflection)
       |
-      +-- Core worker pool and scheduler
+      +-- model profiles / conversations / Tasks / schedules
+      +-- confirmations / MCP / Skills / Knowledge / typed AWS
+      +-- worker pool and scheduler
+      +-- PostgreSQL for durable state, snapshots, leases, events, digests
       +-- Qdrant through the Knowledge semantic ports
       +-- extension-runner through an authenticated Unix socket
+      +-- Core Runner through a separate authenticated Unix socket
 ```
 
-`serveCore` constructs the graph before starting workers. Disabled optional
-domains are absent from the gRPC server and their Task kinds fail closed when
-selected. There is one durable Task/event path for background model,
-extension, Knowledge, and AWS work.
+`serveCore` composes enabled domains before starting workers. Optional domains
+are absent from the public registry until their composition and readiness
+checks pass. Background model, extension, Knowledge, and AWS work use the same
+durable Task/event path; the Agent never creates a parallel execution history.
 
-## Boundaries
+## Ownership
 
-### Authentication
+- Agent owns its PostgreSQL database, files, credentials, model/conversation
+  state, Tasks, confirmations, Knowledge, Web Search, AWS, Execution V2, and
+  runner processes.
+- Message Server owns owner authentication, ProductCore action envelopes,
+  Native Agent stream frames, and Product Capability callbacks. It does not
+  share the Agent database or execution history.
+- Flutter owns the user experience and local projection only. It calls Message
+  Server, not the Agent listener. Online Agent history and status remain in the
+  real Matrix `agent_room_id` transport.
 
-TLS 1.3 protects the gRPC listener. `service_token_file` is the only caller
-credential. The token is loaded from a protected file, compared in constant
-time, and never persisted in PostgreSQL. Rotation is file replacement plus
-restart; there is no remote credential manager.
+## Data and security boundaries
 
-### Persistence
+PostgreSQL is the schema authority for durable Agent state; configured Agent
+roots hold large files and artifacts, with relative paths and digests persisted
+in the database. Mutable credentials are Agent-owned, protected at rest, and
+write-only from ordinary reads. Detailed profile, Knowledge, Web Search, and
+Execution V2 invariants are defined in the [API contract](api-contract.md),
+[Core v1 specification](core-v1-development-spec.md), and
+[Execution V2 contract](execution-v2.md).
 
-`migrations` is the schema authority. PostgreSQL stores durable domain facts,
-immutable execution snapshots, revisions, leases, confirmation bindings,
-artifact/content digests, and relative managed-file paths. Secret values are
-not returned by ordinary reads. Large files and installed artifacts remain in
-configured Agent-owned roots.
+The gRPC listener uses TLS 1.3 and one protected deployment token. The token is
+compared in constant time, never persisted, and rotated by atomic file
+replacement followed by restart. There is no remote token-management API,
+multi-tenant authorization, or caller-scope model.
 
-### Task execution
+MCP and Skill execution uses a separate isolated extension runner. Core Runner
+work uses a separate descriptor-only boundary. Neither runner receives the
+Agent database connection or raw Agent credentials, and unavailable isolation
+fails closed rather than falling back in-process. Container, socket, mount,
+network, identity, and cgroup separation is part of the deployment contract;
+see the [Message Server integration contract](message-server-integration-development-contract.md).
 
-The worker claims a Task with `(task_id, attempt, lease_epoch, revision)` and
-commits progress/results through fenced transitions. Recovery resumes durable
-state rather than creating a parallel history. Schedules create independent
-Tasks and provide no priority, graph, or pool semantics.
+## Non-goals
 
-Model execution resolves the exact profile revision and protected secret
-revision recorded in the Task snapshot. MCP, Skill, Knowledge, attachment,
-and AWS work is dispatched through the same Task boundary.
-
-Conversation and Agent Task model calls use an Eino `ToolCallingChatModel`
-adapter for provider-neutral messages, tool schemas, unary calls, and streams.
-The durable Task ledger stays outside that adapter and fences every model/tool
-round, so Eino does not hide dispatch, replay, cancellation, or uncertain
-outcomes inside an in-memory graph.
-
-### MCP and Skills
-
-Installation and lifecycle operations are confirmation-bound to immutable source
-pins, version/content/artifact digests, schemas, network grants, and secret
-bindings. Local stdio and Skill code run only in the separate
-`cmd/dirextalk-extension-runner` process under its deployment-owned UID. The
-Agent connects through a credential-checked Unix `SOCK_SEQPACKET` socket and
-passes only sealed or root-bound descriptors. Each run creates user, PID, IPC,
-network, mount, and filesystem isolation; executes inside a detached tmpfs root
-with a read-only install, no-exec task workspace, empty environment, and only
-the explicitly granted secret files; then drops capabilities and installs a
-seccomp filter before `exec`.
-
-A delegated cgroup-v2 subtree enforces memory, zero swap, process, and CPU
-limits for the complete process tree. Cancellation uses `cgroup.kill`, waits
-for `populated 0`, and requires successful cgroup removal before reporting
-cleanup complete. A pidfd is retained only as a fallback when the group kill
-write itself fails. Cleanup uncertainty is a terminal cleanup failure, not a
-successful cancellation. If any isolation primitive is unavailable, execution
-is unavailable and is never moved into the Agent process. Remote MCP uses only
-the exact confirmed HTTPS endpoint and purpose-bound credential binding.
-
-### Knowledge
-
-Knowledge content is behind root-bound content/file ports. PostgreSQL owns
-source metadata, upload state, revisions, and index bindings; Qdrant is reached
-through the semantic vector port. Task context validates exact source content
-and index bindings before search results are added to the model input.
-
-### AWS
-
-Core AWS uses typed SDK clients and PostgreSQL-backed credentials, plans,
-quotes, and change coordination. Credential secret fields are AES-256-GCM
-sealed before persistence with a mode-0400, raw 32-byte master key from
-`core_secret_master_key_file`; key version, nonce, ciphertext, and field-bound AAD
-are the only durable secret representation. Operations that can create, update,
-expose, spend, or destroy resources require a durable user confirmation before
-the provider call. Provider errors and uncertain outcomes remain fenced and
-reconcilable. SDK credential material exists only for the request-local call.
-
-## Explicit non-goals
-
-Core v1 does not implement product adapters, REST, an admin UI, multi-user
-RBAC, Agent clusters/pools, task priority, graph authoring, or deployment
-automation. Those concerns belong outside this service or to a separately
-approved contract.
+Core v1 does not add REST, an admin UI, multi-user RBAC, Agent clusters/pools,
+task priority, graph authoring, or deployment automation.

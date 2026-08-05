@@ -1,10 +1,11 @@
 # Dirextalk Agent Core v1 development specification
 
-> Source behavior for the Message Server adapter, typed workload providers, and
-> isolated Compose assets is implemented at the companion integration revisions
-> recorded below. Production activation and live verification remain separate
-> release gates; capability advertisement stays disabled until its exact
-> readiness proof is present.
+> This document freezes the Agent-owned product and implementation boundary at
+> HEAD. Message Server owns the public action/stream proxy and Product
+> Capability callback; Flutter uses that proxy and never connects to Agent Core
+> directly. Production activation and live verification remain separate gates;
+> capability advertisement stays disabled until its exact readiness proof is
+> present.
 
 This document is the current product and implementation boundary for the
 independent Agent service. The versioned Protobuf in
@@ -12,8 +13,10 @@ independent Agent service. The versioned Protobuf in
 contract. A public or schema change updates this document and its contract tests
 together.
 
-Source behavior follows the `Agent Core v1 source contract`; production
-activation and live verification remain separate release gates.
+The companion Message Server integration contract is
+[`docs/message-server-integration-development-contract.md`](message-server-integration-development-contract.md).
+The current implementation and tests in this repository override historical
+planning notes; no compatibility path or fixture fallback is part of Core v1.
 
 ## Product boundary
 
@@ -29,24 +32,33 @@ activation and live verification remain separate release gates.
   plan, deployment, run, confirmation, artifact, service-binding, and secret
   records. Message Server remains a public action facade only; execution.v2
   data and idempotency/event history are stored in the Agent database.
-- A future business-server proxy calls the Agent over TLS gRPC with one
-  deployment-generated service token. The token is a protected file, not a
-  database value; rotation is atomic replacement plus restart.
-- Core v1 changes this repository only. Product adapters, a standalone admin
-  UI, and deployment automation are outside this specification.
+- Message Server calls Agent Core over TLS gRPC/Capability mTLS with
+  deployment-generated protected credentials and account-generation fences. The
+  Agent-to-Message-Server Product Capability callback is a separate direction;
+  neither side shares the other's database or execution history.
+- Flutter receives only Message Server's owner-authenticated ProductCore
+  actions and Native Agent stream frames. Online Agent remains the real private
+  Matrix `agent_room_id` conversation and does not share Native Agent history,
+  model state, or online-state inference.
+- Agent product/runtime code, Protobuf, migrations, and its deployment image
+  are owned here. Product adapters, the public action envelope, and Flutter UI
+  remain in their companion repositories; this document does not duplicate
+  those APIs.
 
 ## Public capabilities
 
-The Core server registers `AgentService`, `ModelProfileService`,
-`ConversationService`, `TaskService`, `ScheduleService`,
-`ConfirmationService`, `MCPService`, `SkillService`, `CoreKnowledgeService`,
-and the optionally enabled `CoreCloudControlService`. Health and reflection
-are optional server features.
+The Core server composes and registers the services listed in the [API
+contract](api-contract.md). Registration and capability publication are
+separate: a stable planning or introspection RPC such as `WorkloadService` may
+be registered before an optional provider is ready. Health and reflection are
+optional server features.
 
 All mutation RPCs follow the Protobuf's UUID idempotency and expected-revision
 rules. Ordinary reads never return stored secret values. Task events and
 results are durable, redacted, resumable, and fenced by lease epoch and
-revision.
+revision. Optional client capabilities remain absent from the neutral
+Capability registry until their production composition and readiness checks
+pass; callers must not infer readiness from gRPC registration alone.
 
 The neutral Capability API additionally publishes `agent.web_search.v1` only
 when the Agent-owned encrypted repository and Tavily client are composed. Its
@@ -69,16 +81,10 @@ the bounded provider request; deprovision takes the exclusive form, so cleanup
 cannot be followed by a configuration/replay resurrection or an outbound call
 that won the race.
 
-`WorkloadService` remains available for durable planning and confirmation.
-Its `WORKLOAD` Task handler is registered when at least one exact target route
-is available. `workload.core_runner` requires the local authenticated readiness
-proof; `workload.aws_ssm` and `workload.aws_ecs` are advertised independently
-only after an explicit readiness target is configured and the typed provider
-graph is complete. Startup performs no AWS API calls; the first explicit
-provider action proves STS/account binding plus exact target prerequisites.
-Missing or stale readiness configuration keeps the capability disabled; there
-is no implicit default target or broad scan. Per-operation credential, ARN,
-and target checks remain a second fence.
+`WorkloadService` uses the distinct `WORKLOAD` Task kind and the readiness
+semantics defined in the [API contract](api-contract.md). Missing or stale
+target proof keeps a capability disabled; there is no implicit default target
+or broad scan.
 
 ## Acceptance scenarios
 
@@ -86,8 +92,8 @@ The Core v1 acceptance set covers these ten observable scenarios:
 
 1. TLS gRPC authenticates with the protected token file; atomic token
    replacement takes effect after restart.
-2. Model profiles and model execution cover the OpenAI-compatible, Anthropic,
-   and Gemini providers.
+2. Model profiles and model execution cover OpenAI-compatible providers
+   (including OpenRouter, DeepSeek, and xAI), Anthropic, and Gemini.
 3. Unary and streaming chat are durable and idempotent across retries and
    service recreation.
 4. Immediate, one-time, and Cron schedules create FIFO Tasks and recover due
@@ -101,9 +107,9 @@ The Core v1 acceptance set covers these ten observable scenarios:
    process tree and delegated cgroup are gone before the task is cleaned.
 8. Knowledge covers Agent-owned mounts, bounded uploads, memory, indexing,
    and semantic search with revision and digest checks.
-9. AWS fake-provider flows cover confirmation, durable recovery, and confirmed
-   destroy operations; authorized real-provider lifecycle evidence is recorded
-   in the AWS section below.
+9. Core CloudControl fake-provider flows cover confirmation, durable recovery,
+   and confirmed destroy operations; provider acceptance evidence is recorded
+   in the [delivery tracker](delivery-tracker.md).
 10. Storage remains Agent-owned and tests prove operation without a business
     server repository or shared product database.
 
@@ -153,11 +159,12 @@ encrypted repository.
 
 Tasks support immediate and scheduled execution, cancellation, retry as a new
 idempotent Task, deletion, durable progress, and event replay. The supported
-Task kinds are Agent, Extension, Knowledge indexing, and AWS change. A Task is
-claimed with an attempt, lease epoch, and expected revision; only the fenced
-owner may checkpoint or terminalize it. Schedules create independent Tasks
-for one-time or Cron occurrences. Core v1 has no priority, DAG/graph, task
-dependency authoring, or cluster/pool scheduler.
+Task kinds are Agent, Extension, Conversation Tool, Knowledge indexing,
+`AWS_CHANGE`, and `WORKLOAD`. A Task is claimed with an attempt, lease epoch,
+and expected revision; only the fenced owner may checkpoint or terminalize it.
+Schedules create independent Tasks for one-time or Cron occurrences. Core v1
+has no priority, DAG/graph, task dependency authoring, or cluster/pool
+scheduler.
 
 Eino adapts each model round, while the Agent-owned Task ledger remains the
 durable orchestrator for model dispatch, tool calls, retries, recovery, and
@@ -170,11 +177,11 @@ never receives Agent credentials, raw secrets, or a database connection.
 
 ### Core Runner
 
-The optional local Core Runner runs as a distinct non-root UID (`65530` in the
-Compose example; Agent UID `65532`). It uses a protected Unix packet socket,
-exact peer credentials, and a v1 cryptographic nonce probe. Readiness includes
-static-root validation plus a bounded real user-namespace/tmpfs/seccomp/cgroup
-result-manager exercise; the capability remains absent when that proof fails.
+Core Runner is a separate optional process reached through a protected Unix
+packet socket with exact peer credentials and a v1 cryptographic nonce probe.
+Readiness includes static-root validation plus a bounded real
+user-namespace/tmpfs/seccomp/cgroup result-manager exercise; the
+`workload.core_runner` capability remains absent when that proof fails.
 
 Install commands export only a sealed descriptor result. Persistent services
 receive zero raw host output and their sole writable area is the exact bounded
@@ -215,9 +222,15 @@ secrets. No in-process or unconfirmed fallback is allowed.
 
 Knowledge supports Agent-owned mounts, bounded uploads, memory, source status,
 indexing, and semantic search. Content is opened through root-bound ports.
-Task snapshots pin source revision, content digest, and index binding; search
-must reject drift before context reaches the model. A vector-search cursor
-snapshot also pins the secret-free embedding provenance at page level:
+Uploads declare one whole-content SHA-256 and size, validate each chunk's
+SHA-256 and contiguous offset/ordinal, and become `ready` only after commit
+rechecks the expected revision, full digest, size, and finalized content. Source
+status is explicit (`uploading`, `ready`, `indexing`, `failed`, `deleting`,
+`cleanup_pending`, or `deleted`) and is observable through status/list/get
+projections. Task snapshots pin source revision, content digest, and index
+binding; search must reject drift before context reaches the model. A
+vector-search cursor snapshot also pins the secret-free embedding provenance at
+page level:
 `embedding_profile_id`, the model-profile `embedding_profile_revision`,
 `embedding_model`, and any available `embedding_generation` and
 `collection_config_digest`. Every page resumed from that cursor replays the
@@ -228,9 +241,11 @@ projection, without API keys or provider secret material.
 ### AWS
 
 Typed AWS credentials, `TestCredentialIdentity` identity checks, plans, quotes,
-and change requests are exposed through `CoreCloudControlService`. Provider calls use typed SDK clients
-and durable fencing. Confirmation is mandatory for mutating or spend/exposure
-operations; model and extension tools cannot bypass it.
+and CloudFormation change requests are exposed through
+`CoreCloudControlService`. Provider calls use typed SDK clients and durable
+fencing. Confirmation is mandatory for mutating or spend/exposure operations;
+model and extension tools cannot bypass it. Provider evidence is tracked in the
+[delivery tracker](delivery-tracker.md).
 
 AWS credential access still requires `core_aws_enabled`; all durable Core secret
 envelopes require a raw 32-byte `core_secret_master_key_file` mounted with mode
@@ -241,9 +256,11 @@ version mismatches fail closed. Provider code materializes credentials only
 for the request-local SDK call and never logs them.
 
 Fake-provider lifecycle tests and source-level typed-provider checks cover
-confirmation, read-back, and cleanup. No live AWS workload lifecycle is claimed
-by this document; a real run requires an explicitly configured target, owner
-confirmation, independent read-back, and a zero-residue audit.
+confirmation, read-back, and cleanup. Typed workload routes require their own
+exact readiness blocks and lazy target probes; `agent.execution.v2` additionally
+requires its complete typed provider graph and dedicated CloudFormation service
+role. The [API contract](api-contract.md) defines publication gates; evidence
+and remaining verification are recorded in the [delivery tracker](delivery-tracker.md).
 
 ## Security and data rules
 
@@ -263,11 +280,4 @@ confirmation, independent read-back, and a zero-residue audit.
 
 No REST public API, multi-user RBAC, Agent clusters or pools, task priority,
 graph authoring, product adapters, or standalone admin UI is specified.
-No behavior is promised beyond the current Protobuf, Core composition, and
-focused tests.
-
-Two isolated Compose projects, real DeepSeek conversation, extension
-installation/execution, and live AWS workload acceptance are release evidence
-gates rather than fabricated production-readiness claims. Until those gates are
-completed against the configured targets, Core Runner and AWS capabilities stay
-disabled by readiness policy.
+Status and release evidence are maintained in the [delivery tracker](delivery-tracker.md).

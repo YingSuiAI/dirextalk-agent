@@ -1,373 +1,63 @@
-# Message Server and workload integration contract
+# Message Server and Agent integration contract
 
-Status: source implementation recorded; production activation and live
-verification remain gated
-Approved: 2026-07-25  
-Implemented source behavior follows the `Agent Core v1 source contract`.
+This document freezes the cross-repository boundary for the independent Agent
+service. Agent-owned API and domain invariants remain in the [API
+contract](api-contract.md), [Core v1 specification](core-v1-development-spec.md),
+and [Execution V2 contract](execution-v2.md). Implementation status and live
+verification belong only in the [delivery tracker](delivery-tracker.md).
 
-The cross-repository product contract is owned by the Message Server document
-`docs/agent-core-integration-development-contract.md` in the companion
-repository. This document freezes the Agent-owned portion.
+## Proxy boundary
 
-## Scope
+Message Server is the current owner-authenticated proxy between Flutter and
+Agent Core. Flutter sends owner access-token requests to Message Server;
+Message Server maps ProductCore action envelopes and Native Agent stream frames
+to the Agent's authenticated Capability/gRPC boundary. Flutter never connects
+to the Agent listener, receives the Agent service token, or sends Agent-owned
+provider credentials and durable histories directly.
 
-Agent Core remains a one-deployment, one-owner private service reached only by
-Message Server over TLS gRPC. This integration adds:
+The Agent owns the independent runtime, database, files, secrets, model and
+conversation state, Tasks, Knowledge, Web Search, AWS, Execution V2, and
+runner processes. Message Server owns owner authentication, ProductCore action
+names, Native Agent WebSocket frames, Product Capability callbacks, and Matrix
+product data. The two services keep separate databases, credentials, and
+execution histories.
 
-- production Chat/StreamChat support for selected MCP and Skills;
-- model-profile synchronization using a stable client profile reference;
-- arbitrary, owner-confirmed Core-host workload installation;
-- arbitrary CloudFormation, EC2+SSM, and ECS deployment workflows;
-- container/release assets for an Agent-owned Compose project; and
-- contract and end-to-end tests used by the Message Server adapter.
+Online Agent is the real private Matrix `agent_room_id` conversation. It is a
+separate transport from Native Agent Core and does not share its history,
+model state, or online-state inference.
 
-Flutter, ProductCore JSON DTOs, Matrix rooms, and the embedded Eino runtime are
-not owned here.
+## Capability directions
 
-## Conversation and extension correctness
-
-The source composition now accepts exact installed MCP/Skill selections and
-resolves them through the Core-owned extension boundary. Production capability
-advertisement remains readiness-gated until the configured Core/Runner path is
-live-verified.
-
-The implemented path:
-
-1. accept exact installed MCP/Skill selections;
-2. resolve installation, pinned version, content/artifact digest, allowed tool
-   names, network grants, and secret bindings before model execution;
-3. seal the resolved selection into the chat claim/snapshot;
-4. provide MCP tool schemas to the model and Skill instructions as bounded,
-   untrusted instructions;
-5. execute tool calls through the existing isolated Runner/dispatcher;
-6. persist tool summaries and related Task IDs in the durable conversation;
-7. fail closed on drift, unavailable Runner composition, or missing grants; and
-8. preserve idempotency for unary and streaming retries.
-
-Chat and StreamChat are profile-pinned operations. The caller must provide a
-canonical UUID `model_profile_id` plus positive `model_profile_revision` and
-`credential_version`; the Agent resolves that profile and rejects any missing,
-partial, stale, or mismatched triple before model execution. Agent capability
-schemas require all three fields and do not select a default profile. A
-credential rotation or clear increments `credential_version`; an idempotent
-replay continues to use the durable snapshot captured by the original request
-and does not resolve mutable current credentials. StartTurn applies the same
-pin fence and returns the pins on its durable turn projection.
-
-Knowledge references may be enabled only after the same snapshot/drift
-invariants are implemented for conversation Chat. They must not remain
-advertised while production RPCs reject them without an explicit disabled
+The Message Server-to-Agent direction uses the authenticated TLS gRPC/
+Capability boundary and deployment-generated protected credentials. Optional
+Agent descriptors are published only after their complete composition and
+readiness proof pass; a schema or proxy registration alone is not a live
 capability.
 
-Required production-composition tests cover unary and streaming chat with:
+The Agent-to-Message-Server direction is the separate Product Capability
+callback over its authenticated mTLS channel. Callbacks do not become a second
+Agent database or execution ledger, and neither direction accepts raw Agent
+secrets from Flutter.
 
-- one pinned MCP tool;
-- one pinned Skill;
-- combined selection;
-- retry with the same idempotency key;
-- changed digest/revision rejection;
-- Runner unavailable/cancelled;
-- secret/network grant mismatch; and
-- process/service recreation.
+## Deployment boundary
 
-The Message Server integration does not use the current request-context-owned
-`StreamChat` as its durable transport. `ConversationService` adds:
+The split deployment builds one immutable image from
+`deploy/container/agent.Containerfile`. It contains `dirextalk-agent`,
+`dirextalk-extension-runner`, and `dirextalk-core-runner`; Compose runs that
+image as three isolated services with distinct UIDs (Core `65532`, extension
+runner `65531`, Core Runner `65530`), sockets, mounts, networks, and delegated
+cgroup-v2 roots.
 
-- `StartTurn`
-- `GetTurn`
-- `WatchTurnEvents`
-- `CancelTurn`
+Starting a runner service does not publish its workload capability. Core and
+Message Server require the corresponding nonce/full runner proof and exact
+target readiness before exposing a route. No Message Server database/data
+volume or Docker socket is mounted into the Agent project.
 
-`StartTurn` durably binds the caller UUID/idempotency key, request digest,
-conversation and expected revision, model-profile snapshot, prompt, and
-extension/Knowledge selections before returning. A lease-driven executor owns
-the turn independently of the initiating gRPC context. Turn events and terminal
-results are durable and sequence-numbered.
+## Change rule
 
-`WatchTurnEvents` resumes strictly after `after_sequence` and reports replay
-bounds on a gap. `CancelTurn` is idempotent and revision-aware. A previously
-committed terminal result wins a cancellation race; otherwise cancelled is
-terminal only after the active lease and all delegated execution are fenced and
-cleaned. Restart recovery resumes or reconciles accepted turns without creating
-a new request ID or resubmitting an already claimed prompt.
-
-## Model profile synchronization
-
-Core model profiles add an optional, unique `client_profile_id` scoped to the
-Agent instance. It is a stable non-secret reference from the owner client's
-single model configuration page.
-
-Sync behavior:
-
-- create is idempotent by `client_profile_id` and request UUID;
-- update requires the current Core revision;
-- an omitted API key preserves the configured key;
-- a non-empty API key rotates it without returning it;
-- reads return only `api_key_configured` and safe metadata;
-- every public profile projection includes its positive `credential_version`;
-- API-key/provider-secret rotation or clear increments `credential_version`;
-- duplicate client references fail closed; and
-- explicit delete remains separate from automatic synchronization.
-
-`ModelProfileService.Sync` is an atomic batch RPC. The request carries a batch
-idempotency UUID, `default_client_profile_id`, and entries containing a stable
-`client_profile_id`, optional expected Core revision, full public settings, and
-an optional write-only API key. Missing profiles are preserved.
-
-The store validates and applies profile changes plus default selection in one
-transaction. One invalid/stale entry changes nothing. A same-key/same-digest
-replay returns the original sanitized result; the same key with different
-content conflicts. The default reference must resolve to a profile in the
-resulting state.
-
-The supported providers remain OpenAI-compatible, Anthropic, and Gemini with
-owner-provided credentials.
-
-## Confirmation boundary
-
-MCP/Skill lifecycle, arbitrary commands, local workload exposure, CloudFormation
-changes, EC2 SSM commands, ECS deployments, and destruction use
-`ConfirmationService`.
-
-Ordinary owner data mutations—conversation records/chat, atomic model sync,
-task cancel/retry, and AWS credential record CRUD—use authentication,
-idempotency and revisions but do not consume `ConfirmationService`.
-
-Confirming installation of an exact MCP/Skill version makes it discoverable and
-selectable; it does not authorize later side effects. Only code-shipped,
-contract-tested read-only tools may execute without a per-call confirmation.
-Every third-party, unknown/unclassified, secret-using, network-changing, or
-side-effecting tool call requires a new durable confirmation binding its exact
-tool/version/digest, argument summary, target revision, and grants.
-
-The originating durable turn records `confirmation_required` before execution,
-pauses without releasing its request identity, and resumes the same tool step
-only after confirmation consumption. Rejection/expiry produces a durable tool
-denial; it cannot silently choose another tool/backend or execute first.
-
-A confirmation binds:
-
-- operation and target kind/ID/revision;
-- normalized plan and content digest;
-- source/artifact/image digest;
-- exact command steps or CloudFormation template/parameters;
-- AWS credential reference, account, region, and target;
-- network exposure;
-- secret references and purposes;
-- quote/impact summary; and
-- expiry.
-
-Confirming does not execute inline. It consumes the confirmation into a durable
-Task. Rejection/expiry is terminal. A changed plan requires a new confirmation.
-Unknown execution outcomes are fenced and reported as uncertain, never blindly
-replayed. If a worker is reclaimed after confirmation consumption without an
-exact idempotent side-effect receipt, Core records the sanitized
-`extension_execution_uncertain` marker, keeps the consumed reservation and
-installation fence active, and blocks retry or a new proposal. The owner-only
-`AcknowledgeExtensionExecutionUncertain` action accepts only the exact
-confirmation/task/installation/revision fences plus
-`acknowledged_unknown_no_retry`; it records reconciliation, releases the
-reservation, and leaves the Task failed. It never retries or silently reports
-success.
-
-## Workload API
-
-Add a versioned `WorkloadService` to the Core v1 Protobuf with:
-
-- `Plan`
-- `Get`
-- `List`
-- `Quote`
-- `RequestApply`
-- `RequestDestroy`
-
-The canonical workload targets are:
-
-- `CORE_RUNNER`
-- `AWS_EC2_SSM`
-- `AWS_ECS`
-
-A plan contains an immutable revision and digest, owner-visible summary,
-artifact/source description, command steps or image digest, target settings,
-network and secret grants, resource limits, and expiry. Apply/destroy return
-the created confirmation and durable Task identity.
-
-There is no interactive terminal RPC. The model may help construct a plan, but
-model/tool output cannot confirm or bypass it. Terminal read-back is provided by
-the owner-only read actions `agent.core.workloads.operations.get`,
-`agent.core.workloads.operations.events` (exact `{events}` envelope), and
-`agent.core.workloads.actual.get`; these are read-only and a missing actual is
-never destroy success.
-
-Workloads use a distinct `WORKLOAD` Task kind and payload; they do not overload
-the current CloudFormation-only `AWS_CHANGE` kind. The payload pins workload,
-plan and operation IDs, plan revision/digest, target kind, confirmation ID, and
-the execution snapshot. Task validation and the database task-kind constraint
-add this branch explicitly.
-
-`RequestApply`/`RequestDestroy` atomically create the requested workload
-operation, a waiting Task, and a pending Confirmation, following the existing
-AWS coordinator pattern. `ConfirmationService.Confirm` only changes approval
-state; it does not enqueue or execute inline. A fenced Workload Task handler
-consumes the exact confirmed operation, dispatches the target provider, records
-events/read-back, and owns the single terminal transition.
-
-### Core Runner target
-
-Arbitrary installation commands execute only through a separate Runner
-identity. They never execute in the Core API/migration process.
-
-The implemented Core Runner path enforces:
-
-- a separate non-root UID and non-privileged process/container boundary;
-- detached root, isolated namespaces, seccomp, and a task cgroup-v2;
-- a task/workload-owned filesystem root and read-only fixed inputs;
-- an empty base environment plus explicit variables and secret grants;
-- deny-by-default egress with exact confirmed host grants;
-- no privileged mode, added capabilities, devices, Docker socket, or host
-  mounts;
-- CPU, memory, process, disk, time, and output quotas;
-- bounded stdout/stderr capture with redaction;
-- descendant cancellation with cgroup `populated 0` and removal proof;
-- restart-time workload supervisor reconciliation; and
-- a durable workload record for long-running services.
-
-Services must be started by an explicit workload supervisor/runtime contract;
-they cannot survive accidentally as orphan children.
-
-### AWS EC2 SSM target
-
-Core uses typed AWS SDK clients to:
-
-1. plan/provision or select an EC2 instance;
-2. verify account, region, instance identity, tags, and SSM readiness;
-3. submit the exact confirmed command document/parameters;
-4. poll command invocation to a durable terminal state;
-5. independently read back the service/resource state; and
-6. destroy only through a new confirmation.
-
-The product does not open or manage SSH. Commands may install arbitrary
-services because the owner explicitly approved their exact digest.
-
-### AWS ECS target
-
-Core can deploy an arbitrary OCI workload. Confirmation pins:
-
-- registry and image digest;
-- cluster/service/task definition revisions;
-- CPU/memory/count;
-- ports, load balancer and public/private exposure;
-- secret references;
-- account/region/tags; and
-- create/update/destroy impact.
-
-Tags identify the owning Agent instance and workload. Core independently reads
-back the running task definition and service state after a mutation.
-
-### Existing CloudFormation
-
-The current typed CloudFormation credential/plan/quote/change contract remains
-supported. Workload plans may compose it but do not replace its confirmation,
-fencing, or read-back guarantees. Arbitrary SDK and shell arguments may not
-bypass a confirmed CloudFormation/SSM/ECS plan.
-
-## Scheduling
-
-Scheduled deployment work may create or refresh a plan and pending
-confirmation. It must not consume a confirmation or mutate/spend automatically.
-The owner manually confirms every apply, update, command, exposure, and destroy
-operation.
-
-## Service composition and capabilities
-
-`AgentService.GetCapabilities` and the neutral Capability API advertise a
-capability only when its production composition is usable. At minimum:
-
-- `agent.info`, `model.profile`, and `conversation` are the minimum basic-chat
-  set;
-- `conversation.extensions` only when chat extension resolution and Runner
-  dispatch are wired;
-- `task`, `schedule`, `confirmation`, `mcp`, `skills.server`, `knowledge`, and
-  `aws.control` retain their exact current meanings;
-- `workload.core_runner` only when the workload Runner is ready;
-- `workload.aws_ssm` only when the AWS provider supports the required calls;
-- `workload.aws_ecs` only when the AWS provider supports the required calls.
-
-Registration alone is not readiness. Configuration-disabled or partially wired
-services report disabled. AWS SSM/ECS capabilities additionally require an
-explicit readiness block naming one exact durable credential reference and
-target, plus typed-provider proof of STS/account binding and target
-prerequisites. Without that configured live target and proof, the capability
-remains disabled; there is no default target or broad account scan.
-
-### Native Agent client projection
-
-The `agent.info.v1` `get_backends` response projects the readiness-passed
-descriptors from the same `NewCoreRegistry` used by the Capability server. The
-Core list is a sorted, de-duplicated set of stable client tokens; descriptor
-IDs are not exposed as feature claims and unknown IDs are ignored.
-
-| Core descriptor | Client tokens |
-| --- | --- |
-| `agent.info.v1` | `agent.info` |
-| `agent.config.v1` | `config` |
-| `agent.chat.v1` | `conversation` |
-| `agent.models.v1` | `model.profile`, `model_profiles.server`, `model_roles.server` |
-| `agent.knowledge.v1` | `knowledge`, `memory.server` |
-| `agent.schedules.v1` | `schedule`, `schedules.server` |
-| `agent.tasks.v1` | `task` |
-| `agent.confirmations.v1` | `confirmation` |
-| `agent.skills.v1` | `mcp` only when `list_mcp` is present; `skills.server` when a Skill operation is present |
-| `agent.aws.v1` | `aws.control` |
-| `agent.voice.v1` | `voice.server` |
-| `agent.web_search.v1` | `web_search.server` |
-| `agent.execution.v2` | `execution.v2` plus only the sub-tokens backed by advertised operation IDs |
-
-`agent.skills.v1` with only `invoke_product` is a Product bridge and publishes
-neither `mcp` nor `skills.server`. Execution V2 maps its operation groups to
-`execution.v2.plan`, `.observe`, `.provision`, `.run`, `.bindings`, `.secrets`,
-and `execution.v2.transport.aws_ssm`; `service_bindings.invoke` additionally
-publishes `execution.v2.transport.http_api`. These tokens are never added from
-configuration or action-name guesses when the corresponding descriptor or
-operation is absent.
-
-## Deployment assets
-
-The repository adds:
-
-- a reproducible Agent runtime image containing Core and both isolated runner
-  binaries;
-- a migration image/command using the same immutable revision;
-- separate Core, extension-runner, and Core Runner services using that image;
-- an Agent-owned Compose project with its own PostgreSQL and volumes;
-- health/readiness checks;
-- protected-file examples for database URL, TLS key/cert, service token, model
-  and AWS secrets; and
-- a runbook for token/certificate rotation, migration, backup, upgrade and
-  rollback.
-
-Agent gRPC is exposed only on the shared private integration network in the
-local two-project test. No Message Server database/data volume or Docker socket
-is mounted.
-
-## Acceptance
-
-Focused checks must prove:
-
-- protobuf generation and breaking checks;
-- all existing Core tests;
-- real Chat/StreamChat model exchange through the production composition;
-- MCP and Skill installation, confirmation, invocation and cleanup;
-- Core Runner arbitrary install success/failure/cancel;
-- fake AWS CloudFormation, SSM and ECS create/read-back/destroy;
-- crash/restart recovery and idempotency;
-- secret and error redaction;
-- unified Agent image/migration builds plus smoke checks for all three service
-  entrypoints; and
-- authenticated TLS operation from the separate Message Server project.
-
-Real provider acceptance is performed only with explicit account, region,
-budget and owner confirmations. Evidence records immutable revisions and
-proves cleanup independently. Two isolated Compose projects and real DeepSeek,
-extension, and workload runs are release evidence, not a claim that production
-readiness or live AWS acceptance has already completed.
+Changes to ProductCore action envelopes, Native Agent stream frames, Matrix
+rooms, or Message Server Capability callbacks are owned by the companion
+repository and must preserve this boundary. Changes to Agent Protobuf,
+migrations, or Agent-owned runtime behavior update this repository's owning
+contract and focused tests together. The service is fresh-state; do not add
+legacy compatibility shims, fixture fallbacks, or parallel public contracts.

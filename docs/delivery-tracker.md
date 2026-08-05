@@ -1,47 +1,30 @@
 # Core v1 delivery tracker
 
-This tracker describes the current independent Agent contract and its
-verification. External product work is not included.
+This is the single detailed record of Agent implementation status, verification
+evidence, and remaining release gates. Contract details live in the
+[architecture](architecture.md), [API contract](api-contract.md), [Core v1
+specification](core-v1-development-spec.md), [Message Server integration
+contract](message-server-integration-development-contract.md), and
+[Execution V2 contract](execution-v2.md).
 
-## Implemented Core v1
+## Implemented at HEAD
 
 - Core-only `dirextalk-agent` entrypoint with `migrate` and `serve`.
-- TLS 1.3 gRPC server with protected `DTX-Agent-Token` authentication,
-  optional health/reflection, and capability/instance discovery.
-- PostgreSQL-backed model profiles, conversations, Tasks, events, schedules,
-  confirmation records, and fenced recovery paths.
-- Provider-backed model catalog discovery with bounded OpenRouter conversation
-  and embedding endpoints, profile-owned credential resolution, and secret-free
-  result normalization.
-- Owner- and account-generation-scoped `agent.web_search.v1` configuration with
-  encrypted Tavily keys whose AAD and replay fencing include the positive
-  generation, revision/idempotency fencing, safe connectivity tests, and chat
-  resolver injection that revalidates revision and credential version before
-  every provider dispatch (including rotation, clear, disable, and deprovision
-  races). Update and dispatch share the global deprovision admission lock, with
-  dispatch holding it through the bounded provider request.
-- Eino-adapted model calls inside the durable conversation and Task execution
-  paths, without moving Task recovery or tool ledgers into an opaque graph.
-- Core MCP/Skill lifecycle RPCs and isolated extension-runner composition.
-- The unified Agent runtime image contains the Core, extension-runner, and Core
-  Runner binaries; local Compose keeps all three processes in separate
-  UID/network/mount/cgroup-isolated services.
-- Current-only extension execution: the obsolete in-process/legacy sandbox
-  surface is removed, and execution uses the descriptor-only Linux boundary.
-- Core Knowledge uploads, mounts, memory, indexing/search composition, with
-  secret-free model/profile provenance pinned to each semantic-search cursor
-  snapshot and replayed unchanged across pagination.
-- Typed Core AWS credentials, plans, and confirmation-bound change composition.
-- Versioned, Buf-lint-clean Core Protobufs and Core-focused contract tests.
-- `WorkloadService` planning/confirmation and a fenced `WORKLOAD` Task path.
-- Optional Core Runner protocol: nonce/full readiness, descriptor-only sealed
-  result export, exact tmpfs writable quota, zero persistent raw output, and
-  restart `cleanup_required` reconciliation.
+- TLS 1.3 gRPC authentication, health/reflection, capability discovery, and
+  PostgreSQL-backed profiles, conversations, Tasks, events, schedules,
+  confirmations, and fenced recovery.
+- Provider-backed model catalog and durable Eino conversation/Task execution.
+- Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
+- MCP/Skill lifecycle with isolated extension-runner execution.
+- Knowledge mounts, uploads, memory, indexing, and semantic-search composition.
+- Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
+  and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
+- Unified Agent image and split Compose services for Core, extension runner,
+  and Core Runner; the latter has nonce/full readiness and descriptor-only
+  sealed-result boundaries.
+- Versioned, Buf-lint-clean Protobufs and focused Core contract tests.
 
-## Verification status
-
-The Core acceptance suite covers the ten scenarios listed in the [Core v1
-specification](core-v1-development-spec.md). Local verification uses:
+## Verification commands
 
 ```text
 go test ./...
@@ -51,51 +34,36 @@ buf lint
 git diff --check
 ```
 
-Set `AGENT_TEST_POSTGRES_DSN` for opt-in PostgreSQL integration tests; Knowledge
-integration also accepts `DIREXTALK_TEST_DATABASE_URL`.
+Opt-in PostgreSQL integration tests use `AGENT_TEST_POSTGRES_DSN`; Knowledge
+integration also accepts `DIREXTALK_TEST_DATABASE_URL`. The opt-in Linux
+isolation lane requires a delegated cgroup-v2 subtree and user/mount namespace
+support.
 
-The opt-in Linux isolation acceptance passed both in a privileged cgroup-v2
-test environment and in a non-root delegated systemd user scope. It verifies
-the detached root, hidden host/config paths, denied network, exact secret
-exposure, descendant creation, cancellation through `cgroup.kill`, the
-`populated 0` read-back, workspace cleanup, and zero process/cgroup residue.
+## Verified evidence
 
-The final local acceptance run completed 435 tests across 24 packages in both
-normal and race modes. Vet, both command builds, Buf lint, deterministic
-Protobuf generation, formatting, module tidiness, and diff checks also passed.
+- Linux isolation verification passed in privileged cgroup-v2 and non-root
+  delegated systemd scopes, covering detached roots, hidden host/config paths,
+  denied network, explicit secret exposure, descendant cancellation,
+  `cgroup.kill`, `populated 0`, workspace cleanup, and zero residue.
+- Runner-focused tests, focused command/config/app tests, command builds, and
+  the non-root delegated isolation test passed without provider credentials.
+- On **2026-07-25**, the explicitly authorized real AWS lane used the typed
+  `CoreCloudControlService` in `us-east-1` to create and read back one tagged
+  idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent
+  deletion verification and a post-run prefix audit found zero active stacks or
+  queues. This evidence covers Core CloudControl only.
 
-On 2026-07-25, an explicitly authorized real AWS Core lifecycle ran in
-`us-east-1` through the production typed provider and Agent confirmation/durable
-Task path. It created exactly one CloudFormation stack containing one tagged
-idle SQS queue; independent stack, resource, and tag read-back succeeded. The
-stack was deleted through Agent confirmation/Task, deletion was independently
-verified, and a post-run prefix audit found zero active stacks or queues. This
-delivery evidence is separate from the Agent runtime boundary.
+## Remaining release gates
 
-## Maintenance policy
+- Two isolated Compose-project E2E verification is not recorded here.
+- Live `workload.aws_ssm` and `workload.aws_ecs` acceptance is not recorded;
+  their exact target/readiness probes remain per-operation gates.
+- Live `workload.core_runner` workload execution is not recorded.
+- `agent.execution.v2` source composition and focused provider/fence tests are
+  present, but publication still requires `core_execution_v2_enabled`, every
+  typed route, the exact target proof, and the configured CloudFormation service
+  role; live AWS provision/read-back acceptance is not recorded.
 
-Runner-focused verification passed without credentials: `go test -race
-./internal/coreworkload/runner ./internal/extensionrunner`, focused Core Runner
-and Agent command/config/app tests, `go build ./cmd/...`, `git diff --check`,
-and `TestLinuxIsolationIntegrationOptIn` in a transient non-root delegated
-systemd user scope. This is extension-isolation lane evidence only.
-
-Production SSM/ECS registry wiring is implemented with independent
-`workload.aws_ssm`/`workload.aws_ecs` capabilities, durable verified-credential
-and strict reference-only ARN adapters, and exact target multiplexer routing.
-Startup performs no AWS calls; the first explicit provider action performs the
-configured exact-target probe and reports failures as per-operation
-preconditions. Two-Compose E2E, live AWS workload acceptance, and real Core
-Runner workload acceptance remain pending. Runtime probe failure continues to
-leave `workload.core_runner` disabled while planning RPCs remain available.
-
-## Product boundary
-
-Product adapters, REST, admin UI, multi-user/RBAC, clusters, pools,
-graph/DAG authoring, task priority, and deployment automation are not part of
-the Agent runtime. The real-account AWS lifecycle above is delivery validation,
-separate from these runtime and product boundaries.
-
-See [the Core v1 specification](core-v1-development-spec.md),
-[architecture](architecture.md), and [API contract](api-contract.md) for the
-stable boundaries.
+These gates are evidence requirements, not fallback behavior: a missing proof
+keeps the corresponding capability unpublished while planning and unrelated
+ready capabilities remain available.
