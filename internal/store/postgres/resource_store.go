@@ -29,6 +29,13 @@ type ResourceStore struct {
 	instanceID uuid.UUID
 }
 
+type deploymentFenceContextKey struct{}
+
+type deploymentFenceScope struct {
+	instanceID   uuid.UUID
+	deploymentID uuid.UUID
+}
+
 var _ resource.Repository = (*ResourceStore)(nil)
 var _ resource.DeploymentFencer = (*ResourceStore)(nil)
 
@@ -55,6 +62,10 @@ func (store *ResourceStore) WithDeploymentFence(ctx context.Context, deploymentI
 	deployment, err := uuid.Parse(strings.TrimSpace(deploymentID))
 	if err != nil || deployment == uuid.Nil {
 		return resource.ErrInvalid
+	}
+	if held, ok := ctx.Value(deploymentFenceContextKey{}).(deploymentFenceScope); ok &&
+		held.instanceID == store.instanceID && held.deploymentID == deployment {
+		return fn(ctx)
 	}
 
 	connection, err := store.pool.Acquire(ctx)
@@ -91,7 +102,11 @@ func (store *ResourceStore) WithDeploymentFence(ctx context.Context, deploymentI
 		}
 	}()
 
-	return fn(ctx)
+	fenced := context.WithValue(ctx, deploymentFenceContextKey{}, deploymentFenceScope{
+		instanceID:   store.instanceID,
+		deploymentID: deployment,
+	})
+	return fn(fenced)
 }
 
 func (store *ResourceStore) CreateIntent(ctx context.Context, item resource.ResourceV1) (resource.ResourceV1, error) {
@@ -620,6 +635,19 @@ func (store *ResourceStore) Save(ctx context.Context, item resource.ResourceV1, 
 // mirrored local generation; failed local generations may legitimately be
 // numerically ahead of the durable DynamoDB branch.
 func (store *ResourceStore) AdoptVerifiedDestroyed(
+	ctx context.Context,
+	manifest resource.Manifest,
+) ([]resource.ResourceV1, error) {
+	var adopted []resource.ResourceV1
+	err := store.WithDeploymentFence(ctx, manifest.DeploymentID, func(fenced context.Context) error {
+		var adoptErr error
+		adopted, adoptErr = store.adoptVerifiedDestroyed(fenced, manifest)
+		return adoptErr
+	})
+	return adopted, err
+}
+
+func (store *ResourceStore) adoptVerifiedDestroyed(
 	ctx context.Context,
 	manifest resource.Manifest,
 ) ([]resource.ResourceV1, error) {

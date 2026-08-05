@@ -81,6 +81,20 @@ type fenceAwareProvider struct {
 	beforeReadBack func() error
 }
 
+type fenceAwareMirror struct {
+	*fakeMirror
+	beforeGet func() error
+}
+
+func (mirror *fenceAwareMirror) Get(ctx context.Context, deploymentID string) (Manifest, error) {
+	if mirror.beforeGet != nil {
+		if err := mirror.beforeGet(); err != nil {
+			return Manifest{}, err
+		}
+	}
+	return mirror.fakeMirror.Get(ctx, deploymentID)
+}
+
 func (provider *fenceAwareProvider) Create(ctx context.Context, request ProviderCreateRequest) (ProviderObservation, error) {
 	if provider.beforeCreate != nil {
 		if err := provider.beforeCreate(); err != nil {
@@ -208,6 +222,50 @@ func TestDeploymentFenceSerializesProvisionAndScheduleDestroy(t *testing.T) {
 	if entered := fixture.fencer.enteredDeployments(); len(entered) != 2 || entered[0] != spec.DeploymentID || entered[1] != spec.DeploymentID {
 		t.Fatalf("unexpected deployment fence sequence: %v", entered)
 	}
+}
+
+func TestDeploymentFenceCoversDestroySuccessorReadAndProviderCleanup(t *testing.T) {
+	fixture := newFencedResourceFixture(t)
+	mirror := &fenceAwareMirror{fakeMirror: fixture.mirror}
+	mirror.beforeGet = func() error {
+		if !fixture.fencer.isHeld(fixture.deploymentID) {
+			return errors.New("remote successor read ran outside deployment fence")
+		}
+		return nil
+	}
+	fixture.provider.beforeReadBack = func() error {
+		if !fixture.fencer.isHeld(fixture.deploymentID) {
+			return errors.New("destroy read-back ran outside deployment fence")
+		}
+		return nil
+	}
+	service, err := NewService(fixture.fencer, fixture.provider, mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = fixture.service.now
+	fixture.service = service
+	created, err := fixture.service.Provision(
+		context.Background(),
+		fixture.spec(TypeEBS, "destroy-fenced-volume"),
+		fixture.createAuthorization(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireFenceRequest(t, fixture.fencer, fixture.deploymentID)
+
+	result, err := fixture.service.Destroy(context.Background(), DestroyRequest{
+		DeploymentID: fixture.deploymentID,
+		OwnerID:      fixture.ownerID,
+		ApprovalID:   uuid.NewString(),
+	})
+	if err != nil || result.Blocked || len(result.Resources) != 1 ||
+		result.Resources[0].ResourceID != created.ResourceID ||
+		result.Resources[0].State != StateVerifiedDestroyed {
+		t.Fatalf("Destroy() result=%+v error=%v", result, err)
+	}
+	requireFenceRequest(t, fixture.fencer, fixture.deploymentID)
 }
 
 func TestScheduleDestroyFencesProvisioningIntentAndPreventsReactivation(t *testing.T) {

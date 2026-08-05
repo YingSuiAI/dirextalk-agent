@@ -572,6 +572,16 @@ func (service *Service) Destroy(ctx context.Context, request DestroyRequest) (De
 	if err := validateDestroy(request); err != nil {
 		return DestroyResult{}, err
 	}
+	var result DestroyResult
+	err := service.withDeploymentFence(ctx, request.DeploymentID, func(fenced context.Context) error {
+		var destroyErr error
+		result, destroyErr = service.destroy(fenced, request)
+		return destroyErr
+	})
+	return result, err
+}
+
+func (service *Service) destroy(ctx context.Context, request DestroyRequest) (DestroyResult, error) {
 	resources, err := service.repository.ListDeployment(ctx, request.DeploymentID)
 	if err != nil {
 		return DestroyResult{}, err

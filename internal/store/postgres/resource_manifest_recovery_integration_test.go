@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,35 @@ type responseLossManifestMirror struct {
 	puts            int
 	failBeforeWrite bool
 	failAfterWrite  bool
+}
+
+type blockingManifestMirror struct {
+	mu       sync.Mutex
+	manifest resource.Manifest
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func (mirror *blockingManifestMirror) Put(_ context.Context, manifest resource.Manifest) error {
+	close(mirror.entered)
+	<-mirror.release
+	encoded, _ := json.Marshal(manifest)
+	mirror.mu.Lock()
+	defer mirror.mu.Unlock()
+	return json.Unmarshal(encoded, &mirror.manifest)
+}
+
+func (mirror *blockingManifestMirror) Get(_ context.Context, deploymentID string) (resource.Manifest, error) {
+	mirror.mu.Lock()
+	defer mirror.mu.Unlock()
+	if mirror.manifest.DeploymentID != deploymentID {
+		return resource.Manifest{}, resource.ErrNotFound
+	}
+	return mirror.manifest, nil
+}
+
+func (*blockingManifestMirror) ListExpired(context.Context, time.Time) ([]resource.Manifest, error) {
+	return nil, nil
 }
 
 func (mirror *responseLossManifestMirror) Put(_ context.Context, manifest resource.Manifest) error {
@@ -110,6 +140,71 @@ func TestTrackedManifestReplayPersistsReadBackAndFencesOldGeneration(t *testing.
 	}
 	if remote.puts != putsBefore {
 		t.Fatal("stale PostgreSQL generation reached the remote mirror")
+	}
+}
+
+func TestTrackedManifestReplayHoldsDeploymentFenceAcrossRemoteWrite(t *testing.T) {
+	_, baseStore, instanceID := newPlanningTestStore(t)
+	ctx := context.Background()
+	store, err := baseStore.NewResourceStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := recoveryManifestFixture(instanceID)
+	record, err := store.PutResourceManifestPending(ctx, manifest, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &blockingManifestMirror{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	tracked, err := postgres.NewTrackedResourceManifestMirror(store, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayDone := make(chan error, 1)
+	go func() { replayDone <- tracked.Replay(ctx, record) }()
+	select {
+	case <-remote.entered:
+	case <-time.After(time.Second):
+		t.Fatal("remote manifest write did not begin")
+	}
+
+	fenceEntered := make(chan struct{})
+	fenceDone := make(chan error, 1)
+	fenceRequested := make(chan struct{})
+	go func() {
+		close(fenceRequested)
+		fenceDone <- store.WithDeploymentFence(ctx, manifest.DeploymentID, func(context.Context) error {
+			close(fenceEntered)
+			return nil
+		})
+	}()
+	<-fenceRequested
+	select {
+	case <-fenceEntered:
+		t.Fatal("deployment fence entered while remote replay was still in flight")
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(remote.release)
+	if err := <-replayDone; err != nil {
+		t.Fatalf("Replay() error=%v", err)
+	}
+	select {
+	case <-fenceEntered:
+	case <-time.After(time.Second):
+		t.Fatal("deployment fence did not enter after replay completed")
+	}
+	if err := <-fenceDone; err != nil {
+		t.Fatalf("WithDeploymentFence() error=%v", err)
+	}
+	nestedContext, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := store.WithDeploymentFence(nestedContext, manifest.DeploymentID, func(fenced context.Context) error {
+		return tracked.Replay(fenced, record)
+	}); err != nil {
+		t.Fatalf("nested tracked replay deadlocked or failed: %v", err)
 	}
 }
 

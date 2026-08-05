@@ -69,6 +69,15 @@ func (mirror *TrackedResourceManifestMirror) Get(ctx context.Context, deployment
 }
 
 func (mirror *TrackedResourceManifestMirror) Put(ctx context.Context, manifest resource.Manifest) error {
+	if mirror == nil || mirror.store == nil {
+		return resource.ErrInvalid
+	}
+	return mirror.store.WithDeploymentFence(ctx, manifest.DeploymentID, func(fenced context.Context) error {
+		return mirror.put(fenced, manifest)
+	})
+}
+
+func (mirror *TrackedResourceManifestMirror) put(ctx context.Context, manifest resource.Manifest) error {
 	if err := resource.NormalizeLegacyApprovalBindings(&manifest); err != nil {
 		return resource.ErrInvalid
 	}
@@ -111,6 +120,15 @@ func (mirror *TrackedResourceManifestMirror) Put(ctx context.Context, manifest r
 // before any remote call so a stale scanner result cannot overwrite or mark a
 // newer PostgreSQL generation.
 func (mirror *TrackedResourceManifestMirror) Replay(ctx context.Context, record ResourceManifestRecord) error {
+	if mirror == nil || mirror.store == nil {
+		return resource.ErrInvalid
+	}
+	return mirror.store.WithDeploymentFence(ctx, record.Manifest.DeploymentID, func(fenced context.Context) error {
+		return mirror.replay(fenced, record)
+	})
+}
+
+func (mirror *TrackedResourceManifestMirror) replay(ctx context.Context, record ResourceManifestRecord) error {
 	current, err := mirror.store.GetResourceManifestRecord(ctx, record.Manifest.DeploymentID)
 	if err != nil {
 		return err
