@@ -531,6 +531,23 @@ Shutdown()
 适配器隐藏各 Agent 的 CLI、HTTP、ACP 或 Gateway 差异。Central Agent 只看
 统一事件，不解析终端颜色文本或自然语言日志。
 
+#### 6.3.1 Worker 运行监控与用户可见性
+
+Worker 按 Central Agent 的子 Agent 运行实例处理。会话只承载目标、批准、必须由
+用户处理的问题和最终结果，不逐条显示 Worker 启动、心跳、工具或运行进度。用户从
+Agent 详情入口进入独立的“运行与任务”页面，按需查看当前和历史执行；Central 则在
+App 未打开时仍持续监控。
+
+Central PostgreSQL 是进度真相源。Worker 只通过现有封闭 milestone vocabulary
+上报，Central 重新校验会话、租约和所有权后持久化收件事实，并结合角色调度、心跳、
+结果验证和资源账本投影 `queued`、`preparing`、`starting_worker`、
+`preparing_input`、`running`、`validating_result`、`cleaning_up` 和终态。
+CloudWatch 仅保留异步审计副本，不能作为 App 查询源，也不能因日志故障阻塞任务。
+
+公共投影不包含模型原始思考、工具参数/结果、终端输出、供应商错误原文、Worker/
+Deployment ID、AWS 资源 ID、对象/日志坐标或秘密。详细三仓合同、持久化和验收门槛见
+`docs/native-agent-v2-worker-progress-design.md`。
+
 截至 2026-07-29，统一协议的第一个可运行内核已经落地，但还不是生产目录：
 
 - `worker-runtime-task/v1` 只允许固定 release、镜像、上下文、工作区、模型
