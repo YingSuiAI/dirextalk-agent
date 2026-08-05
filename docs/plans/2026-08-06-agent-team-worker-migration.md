@@ -170,7 +170,7 @@ git commit -m "feat: define bounded Pi Team plans"
 - Create: `internal/store/postgres/core_team_store_integration_test.go`
 - Modify: `internal/store/postgres/store.go`
 
-- [ ] **Step 1: Write failing PostgreSQL integration tests**
+- [x] **Step 1: Write failing PostgreSQL integration tests**
 
 Require atomic creation of Core Task + Plan + roles + execution + replay, exact replay preservation, conflicting replay rejection, owner/account isolation, restart recovery, immutable Plan rows, monotonic execution revision, and no secret-shaped columns.
 
@@ -181,13 +181,13 @@ same, replayed, err := store.CreateTeamPlan(ctx, command, now.Add(time.Minute))
 if err != nil || !replayed || same.Plan.Digest != created.Plan.Digest || !same.CreatedAt.Equal(created.CreatedAt) { t.Fatalf("same=%#v replayed=%v err=%v", same, replayed, err) }
 ```
 
-- [ ] **Step 2: Verify failure against disposable PostgreSQL 18**
+- [x] **Step 2: Verify failure against disposable PostgreSQL 18**
 
 Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test ./internal/store/postgres -run 'TestCoreTeamStore' -count=1`
 
 Expected: FAIL because schema and store methods are absent.
 
-- [ ] **Step 3: Add the durable schema and store**
+- [x] **Step 3: Add the durable schema and store**
 
 Add closed tables named `core_team_plans`, `core_team_roles`, `core_team_executions`, `core_team_role_runs`, and `core_team_replays`. Every row includes `owner_id` and `account_generation`; Plan and role definitions are immutable; execution mutations use expected revision. `core_team_plans.task_id` references `core_tasks(task_id)` and `confirmation_id` references `core_confirmations(confirmation_id)`.
 
@@ -205,13 +205,24 @@ type Repository interface {
 }
 ```
 
-- [ ] **Step 4: Run migration, restart, concurrency, and race tests**
+`CreatePlanCommand` carries the owner/account-generation scope, immutable Plan,
+initial execution ID, exact Core Confirmation binding, idempotency key, request
+digest, and creation time. `CreateExecutionCommand` carries the same scope and
+binding around a complete retry Execution. The first Plan, Core Task, Core
+Confirmation, execution, role runs, and replay record commit atomically.
+
+- [x] **Step 4: Run migration, restart, concurrency, and race tests**
 
 Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test ./migrations ./internal/store/postgres -run 'Test(CoreTeam|CoreV1Contract)' -count=1 && AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/store/postgres -run 'TestCoreTeamStore' -count=1`
 
 Expected: PASS with one Plan/execution under concurrent duplicate creation.
 
-- [ ] **Step 5: Commit**
+The target branch has unrelated Darwin-only build-tag defects outside Team, so
+the PostgreSQL 18 integration binary and race suite were executed in Linux
+containers. All ten Team store integration cases, the focused race suite, and
+`go vet` passed.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add migrations internal/store/postgres internal/coreteam/repository.go
