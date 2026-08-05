@@ -318,13 +318,18 @@ func (s *CoreConversationStore) TerminalizeToolUncertain(ctx context.Context, re
 }
 func (s *CoreConversationStore) RenewToolExecution(ctx context.Context, req, call, lease string, epoch uint64, now time.Time, ttl time.Duration) (core.ToolLease, error) {
 	x := now.Add(ttl)
+	var state string
 	var ep uint64
 	var eid uuid.UUID
-	e := s.pool.QueryRow(ctx, `UPDATE core_tool_executions SET lease_epoch=lease_epoch+1,epoch=epoch+1,lease_expires_at=$5 WHERE request_id=$1 AND tool_call_id=$2 AND lease_id=$3 AND epoch=$4 AND state IN ('claimed','dispatched') RETURNING lease_epoch,execution_id`, req, call, lease, epoch, x).Scan(&ep, &eid)
+	e := s.pool.QueryRow(ctx, `UPDATE core_tool_executions SET lease_epoch=lease_epoch+1,epoch=epoch+1,lease_expires_at=$5,updated_at=clock_timestamp() WHERE request_id=$1 AND tool_call_id=$2 AND lease_id=$3 AND epoch=$4 AND state IN ('claimed','dispatched') RETURNING lease_epoch,execution_id,state`, req, call, lease, epoch, x).Scan(&ep, &eid, &state)
 	if e != nil {
 		return core.ToolLease{}, core.ErrConflict
 	}
-	return core.ToolLease{RequestID: req, ToolCallID: call, LeaseID: lease, Epoch: ep, ExecutionID: eid.String(), ExpiresAt: x, Status: core.ToolClaimInFlight}, nil
+	status := core.ToolClaimNew
+	if state == "dispatched" {
+		status = core.ToolClaimDispatched
+	}
+	return core.ToolLease{RequestID: req, ToolCallID: call, LeaseID: lease, Epoch: ep, ExecutionID: eid.String(), ExpiresAt: x, Status: status}, nil
 }
 func (s *CoreConversationStore) ReleaseToolExecution(ctx context.Context, req, call, lease string, epoch uint64) error {
 	_, e := s.pool.Exec(ctx, `DELETE FROM core_tool_executions WHERE request_id=$1 AND tool_call_id=$2 AND lease_id=$3 AND epoch=$4 AND state='claimed'`, req, call, lease, epoch)

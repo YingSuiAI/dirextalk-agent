@@ -23,7 +23,8 @@ activation and live verification remain separate release gates.
   deployment-side caller consumes one Agent instance.
 - The Agent runs outside the business server and owns conversations, Tasks,
   events, schedules, model profiles, prompts, extension installations,
-  Knowledge metadata, and typed AWS configuration.
+  Knowledge metadata, typed AWS configuration, and encrypted Web Search
+  configuration.
 - The Agent also owns the current `agent.execution.v2.*` analysis, target,
   plan, deployment, run, confirmation, artifact, service-binding, and secret
   records. Message Server remains a public action facade only; execution.v2
@@ -46,6 +47,27 @@ All mutation RPCs follow the Protobuf's UUID idempotency and expected-revision
 rules. Ordinary reads never return stored secret values. Task events and
 results are durable, redacted, resumable, and fenced by lease epoch and
 revision.
+
+The neutral Capability API additionally publishes `agent.web_search.v1` only
+when the Agent-owned encrypted repository and Tavily client are composed. Its
+`get_config`, `update_config`, and `test` operations derive owner identity from
+the authenticated permission context. API keys are accepted only by
+`update_config`, never returned, and are not part of chat requests or durable
+operation payloads. The client readiness projection is `web_search.server`.
+The Web Search envelope reuses `core_secret_master_key_file`; its AAD binds
+the Agent instance, authenticated owner, positive account generation, provider,
+credential version, and field name. Config and replay rows are keyed by owner
+and account generation, so a recreated account cannot read, decrypt, or replay
+an earlier generation. Config revision advances independently so metadata-only
+updates do not invalidate the existing ciphertext. The current provider set is exactly
+`tavily`; adding another provider requires a typed schema, validator, adapter,
+and encrypted field rather than an arbitrary key/value secret API.
+Web Search mutations and provider dispatches take the shared account-
+deprovision admission lock before their identity lock and recheck the durable
+fence in the same transaction. Dispatch holds that shared guard only through
+the bounded provider request; deprovision takes the exclusive form, so cleanup
+cannot be followed by a configuration/replay resurrection or an outbound call
+that won the race.
 
 `WorkloadService` remains available for durable planning and confirmation.
 Its `WORKLOAD` Task handler is registered when at least one exact target route
@@ -95,6 +117,24 @@ and streaming chat. Provider-neutral model calls pass through Eino's
 `ToolCallingChatModel` boundary. Background work uses a Task execution snapshot
 so profile, extension, Knowledge, attachment, and secret bindings cannot drift
 while a request is running.
+
+`agent.info.v1/list_models` is the provider catalog, separate from persisted
+profile listing. It resolves either a write-only request credential or an
+Agent-owned profile ID, performs a bounded provider request, and returns only
+normalized non-secret model metadata. OpenRouter conversation discovery uses
+the text-output filter; embedding discovery uses its dedicated embeddings
+catalog endpoint.
+
+When Web Search is enabled and configured, the conversation resolver adds one
+compiled `web_search` tool. The resolver decrypts the credential only to prove
+readiness; its stable selection and snapshot contain provider, config revision,
+credential version, account identity, and non-secret schema/content digests,
+never the key. Immediately before provider dispatch, the tool revalidates the
+authenticated owner and generation, reloads the current encrypted config, and
+requires exact revision and credential-version matches. Rotation, clear,
+disable, generation change, or deprovision therefore fails closed before any
+Tavily request. A service restart rebuilds the executable closure from the
+encrypted repository.
 
 ### Tasks and schedules
 

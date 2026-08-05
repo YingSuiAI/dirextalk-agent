@@ -1280,4 +1280,40 @@ CREATE TABLE agent_native_configs (
     updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX agent_native_configs_updated_idx ON agent_native_configs (updated_at, owner_id);
+-- Owner- and account-generation-scoped Web Search configuration. API keys are
+-- write-only encrypted envelopes whose AAD binds both identity components;
+-- credential_version is independent from the public config revision so
+-- metadata-only updates keep the existing envelope decryptable.
+CREATE TABLE core_web_search_configs (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    enabled boolean NOT NULL DEFAULT false,
+    provider text NOT NULL CHECK (provider IN ('tavily')),
+    api_key_configured boolean NOT NULL DEFAULT false,
+    credential_version bigint NOT NULL DEFAULT 0 CHECK (credential_version >= 0),
+    api_key_key_version integer NOT NULL DEFAULT 1 CHECK (api_key_key_version > 0),
+    api_key_nonce bytea,
+    api_key_ciphertext bytea,
+    revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0),
+    tested_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CHECK (api_key_configured = (api_key_ciphertext IS NOT NULL AND octet_length(api_key_ciphertext) >= 16)),
+    CHECK ((api_key_nonce IS NULL) = (api_key_ciphertext IS NULL)),
+    CHECK (api_key_nonce IS NULL OR octet_length(api_key_nonce) = 12),
+    CHECK (NOT api_key_configured OR credential_version > 0),
+    CHECK (NOT enabled OR api_key_configured),
+    PRIMARY KEY (owner_id, account_generation)
+);
+CREATE INDEX core_web_search_configs_updated_idx ON core_web_search_configs(owner_id, account_generation, updated_at);
+
+CREATE TABLE core_web_search_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    idempotency_key uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id, account_generation, idempotency_key)
+);
 -- dirextalk-agent migration end 000001_core_v1_fresh.up.sql

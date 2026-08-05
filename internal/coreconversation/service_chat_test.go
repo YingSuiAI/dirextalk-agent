@@ -187,6 +187,84 @@ func TestAtomicCompletionAndToolExchange(t *testing.T) {
 	}
 }
 
+func TestToolDispatchStateIsSynchronizedBeforeCompletion(t *testing.T) {
+	base := newFakeStore()
+	st := &staleToolRenewStatusStore{fakeStore: base}
+	m := &fakeModel{tool: true}
+	svc, err := NewService(st, m, fakeExt{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Chat(context.Background(), command()); err != nil {
+		t.Fatalf("tool exchange err=%v", err)
+	}
+	if len(base.results) != 1 {
+		t.Fatalf("tool results=%d", len(base.results))
+	}
+}
+
+func TestLongToolExecutionRenewsDispatchedLease(t *testing.T) {
+	base := newFakeStore()
+	st := &heartbeatToolRenewStore{fakeStore: base, heartbeat: make(chan struct{}, 1)}
+	svc, err := NewService(st, &fakeModel{tool: true}, heartbeatExtension{heartbeat: st.heartbeat}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := command()
+	cmd.LeaseTTL = 30 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err = svc.Chat(ctx, cmd); err != nil {
+		t.Fatalf("long tool exchange err=%v", err)
+	}
+	if len(base.results) != 1 {
+		t.Fatalf("tool results=%d", len(base.results))
+	}
+}
+
+type heartbeatToolRenewStore struct {
+	*fakeStore
+	heartbeat chan struct{}
+}
+
+func (s *heartbeatToolRenewStore) RenewToolExecution(ctx context.Context, req, call, lease string, epoch uint64, now time.Time, ttl time.Duration) (ToolLease, error) {
+	out, err := s.fakeStore.RenewToolExecution(ctx, req, call, lease, epoch, now, ttl)
+	if err == nil && out.Status == ToolClaimDispatched {
+		select {
+		case s.heartbeat <- struct{}{}:
+		default:
+		}
+	}
+	return out, err
+}
+
+type heartbeatExtension struct {
+	heartbeat <-chan struct{}
+}
+
+func (e heartbeatExtension) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+	return []ResolvedExtension{{Selection: ExtensionSelection{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: "sha256:x", AllowedTools: []string{"echo"}}, Execute: func(ctx context.Context, _ ToolExecutionRequest) (ToolResult, error) {
+		select {
+		case <-e.heartbeat:
+			return ToolResult{CallID: "call-1", Content: "heartbeat"}, nil
+		case <-ctx.Done():
+			return ToolResult{}, ctx.Err()
+		}
+	}}}, nil
+}
+
+type staleToolRenewStatusStore struct {
+	*fakeStore
+}
+
+func (s *staleToolRenewStatusStore) RenewToolExecution(ctx context.Context, req, call, lease string, epoch uint64, now time.Time, ttl time.Duration) (ToolLease, error) {
+	out, err := s.fakeStore.RenewToolExecution(ctx, req, call, lease, epoch, now, ttl)
+	if err == nil {
+		out.Status = ToolClaimInFlight
+	}
+	return out, err
+}
+
 func TestCompletedModelStepReplaysWhenCompletionCommitFails(t *testing.T) {
 	base := newFakeStore()
 	store := &failCompletionStore{fakeStore: base, failCommit: true}

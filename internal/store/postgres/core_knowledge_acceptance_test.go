@@ -304,12 +304,10 @@ func (q *acceptanceQdrant) handle(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Filter struct {
 				Should []struct {
-					Filter struct {
-						Must []struct {
-							Key   string
-							Match struct{ Value any }
-						}
-					} `json:"filter"`
+					Must []struct {
+						Key   string
+						Match struct{ Value any }
+					} `json:"must"`
 				} `json:"should"`
 			} `json:"filter"`
 			Limit int `json:"limit"`
@@ -317,7 +315,7 @@ func (q *acceptanceQdrant) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&request)
 		allowed := map[string]bool{}
 		for _, branch := range request.Filter.Should {
-			for _, condition := range branch.Filter.Must {
+			for _, condition := range branch.Must {
 				if condition.Key == "source_id" {
 					if source, ok := condition.Match.Value.(string); ok {
 						allowed[source] = true

@@ -33,6 +33,8 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 		"CREATE TABLE core_execution_v2_secrets",
 		"CREATE TABLE agent_account_deprovisions",
 		"CREATE TABLE agent_native_configs",
+		"CREATE TABLE core_web_search_configs",
+		"CREATE TABLE core_web_search_replays",
 	} {
 		if !bytes.Contains(migration.Script, []byte(needle)) {
 			t.Fatalf("baseline missing %q", needle)

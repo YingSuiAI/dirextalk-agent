@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -18,7 +19,7 @@ var coreSupportedModelProviders = []string{
 // work is served by this Agent Core process. The descriptor source is delayed
 // until request time because NewCoreRegistry is composed immediately after
 // this provider and becomes the readiness authority for the projection.
-func newCoreInfoProvider(instanceID string, descriptorSource func() []*capv1.CapabilityDescriptor) agentcapability.InfoProvider {
+func newCoreInfoProvider(instanceID string, descriptorSource func() []*capv1.CapabilityDescriptor, profiles *coremodel.Service) agentcapability.InfoProvider {
 	instanceID = strings.TrimSpace(instanceID)
 	embedded := agentcapability.BackendInfo{
 		Available:               false,
@@ -37,15 +38,7 @@ func newCoreInfoProvider(instanceID string, descriptorSource func() []*capv1.Cap
 		StatusFunc: func(context.Context) (agentcapability.BackendInfo, error) {
 			return coreBackendInfo(instanceID, descriptorSource), nil
 		},
-		ModelsFunc: func(context.Context, agentcapability.ModelCatalogRequest) (agentcapability.ModelCatalogResult, error) {
-			providers := make([]agentcapability.ModelCatalogProviderInfo, 0, len(coreSupportedModelProviders))
-			for _, provider := range coreSupportedModelProviders {
-				providers = append(providers, agentcapability.ModelCatalogProviderInfo{
-					Provider: provider, RequiresAPIKey: true, DynamicModels: true,
-				})
-			}
-			return agentcapability.ModelCatalogResult{Models: []map[string]any{}, Providers: providers}, nil
-		},
+		ModelsFunc: newCoreModelCatalog(profiles).ListModels,
 	}
 }
 
@@ -116,6 +109,8 @@ func coreDescriptorTokens(descriptor *capv1.CapabilityDescriptor) []string {
 		return []string{"aws.control"}
 	case "agent.voice.v1":
 		return []string{"voice.server"}
+	case "agent.web_search.v1":
+		return []string{"web_search.server"}
 	case "agent.execution.v2":
 		return coreExecutionTokens(descriptor)
 	default:

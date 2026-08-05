@@ -5,8 +5,6 @@
 .idea
 .vscode
 .run
-start-agent.sh
-
 **/*_test.go
 **/*.log
 **/*.out

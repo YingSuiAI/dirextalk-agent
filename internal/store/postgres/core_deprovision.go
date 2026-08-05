@@ -50,11 +50,12 @@ func (s *CoreDeprovisionStore) HasDeprovisionFence(ctx context.Context) (bool, e
 }
 
 const (
-	deprovisionTable = "agent_account_deprovisions"
-	stateRunning     = "running"
-	stateDBPurged    = "database_purged"
-	stateCompleted   = "completed"
-	stateFailed      = "failed"
+	deprovisionTable            = "agent_account_deprovisions"
+	deprovisionAdvisoryLockName = "dirextalk:agent-account-deprovision"
+	stateRunning                = "running"
+	stateDBPurged               = "database_purged"
+	stateCompleted              = "completed"
+	stateFailed                 = "failed"
 )
 
 func (s *CoreDeprovisionStore) Deprovision(ctx context.Context, command coredeprovision.Command, externalPurge func(context.Context) error) (coredeprovision.Result, error) {
@@ -74,7 +75,7 @@ func (s *CoreDeprovisionStore) Deprovision(ctx context.Context, command coredepr
 		return coredeprovision.Result{}, fmt.Errorf("begin account deprovision: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('dirextalk:agent-account-deprovision',0))`); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, deprovisionAdvisoryLockName); err != nil {
 		return coredeprovision.Result{}, fmt.Errorf("lock account deprovision fence: %w", err)
 	}
 	var state string

@@ -187,6 +187,23 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e = cs.MarkToolDispatched(ctx, rid, toolCallID, tool.LeaseID, tool.Epoch); e != nil {
 		t.Fatal(e)
 	}
+	heartbeatCallID := "tool-heartbeat"
+	heartbeatArgs := sha256hexPG([]byte(`{"heartbeat":true}`))
+	heartbeatExt := sha256hexPG([]byte("ext"))
+	heartbeatTool, e := cs.ClaimToolExecution(ctx, rid, heartbeatCallID, heartbeatArgs, heartbeatExt, now, time.Minute)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = cs.MarkToolDispatched(ctx, rid, heartbeatCallID, heartbeatTool.LeaseID, heartbeatTool.Epoch); e != nil {
+		t.Fatal(e)
+	}
+	renewedTool, e := cs.RenewToolExecution(ctx, rid, heartbeatCallID, heartbeatTool.LeaseID, heartbeatTool.Epoch, now.Add(45*time.Second), time.Minute)
+	if e != nil || renewedTool.Status != core.ToolClaimDispatched {
+		t.Fatalf("renewed dispatched tool=%+v err=%v", renewedTool, e)
+	}
+	if _, e = cs.CompleteToolExecution(ctx, core.ToolCompletion{RequestID: rid, ToolCallID: heartbeatCallID, LeaseID: renewedTool.LeaseID, Epoch: renewedTool.Epoch, ArgsDigest: heartbeatArgs, ExtensionDigest: heartbeatExt, Result: core.ToolResult{CallID: heartbeatCallID, Content: "heartbeat complete"}}); e != nil {
+		t.Fatalf("complete renewed dispatched tool=%v", e)
+	}
 	expiredDispatched, e := cs.ClaimToolExecution(ctx, rid, toolCallID, sha256hexPG([]byte(`{"a":1}`)), sha256hexPG([]byte("ext")), now.Add(2*time.Minute), time.Minute)
 	if e != nil || expiredDispatched.Status != core.ToolClaimDispatched {
 		t.Fatalf("expired dispatched claim=%+v err=%v", expiredDispatched, e)

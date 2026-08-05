@@ -22,12 +22,22 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 		},
 		StatusFunc: func(context.Context) (BackendInfo, error) { return BackendInfo{Status: "ready"}, nil },
 		ModelsFunc: func(_ context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
-			if request.APIKey != "secret-key" || request.ModelKind != "conversation" {
+			if request.ModelKind != "conversation" || (request.Provider != "" && request.APIKey != "secret-key") {
 				t.Fatalf("catalog request = %#v", request)
 			}
 			return ModelCatalogResult{Models: []map[string]any{{"id": "gpt", "provider": "openrouter", "api_key": "secret-key", "base_url": "https://openrouter.ai/api/v1"}}, Providers: []ModelCatalogProviderInfo{{Provider: "openrouter", RequiresAPIKey: true}}}, nil
 		},
 	})
+	var catalogSchema string
+	for _, operation := range capability.Descriptor().GetOperations() {
+		if operation.GetOperationId() == "list_models" {
+			catalogSchema = operation.GetInputSchemaJson()
+			break
+		}
+	}
+	if !strings.Contains(catalogSchema, `"writeOnly":true`) || strings.Contains(catalogSchema, `"write_only"`) {
+		t.Fatalf("model catalog API key schema is not standard writeOnly: %s", catalogSchema)
+	}
 	result, err := capability.HandleOperation(capabilityTestContext(), "get_backends", []byte(`{}`))
 	if err != nil {
 		t.Fatalf("get_backends: %v", err)
@@ -55,12 +65,41 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 	if strings.Contains(string(models), "secret-key") || !strings.Contains(string(models), "openrouter") {
 		t.Fatalf("catalog leaked credential or omitted provider: %s", models)
 	}
+	if _, err := capability.HandleOperation(capabilityTestContext(), "list_models", []byte(`{}`)); err != nil {
+		t.Fatalf("default conversation model catalog: %v", err)
+	}
+}
+
+func TestInfoCapabilityKeepsProfileAndEmptyAPIKeyErrorsIntact(t *testing.T) {
+	providerError := errors.New("provider profile lookup failed")
+	capability := NewInfoCapability(InfoProviderFunc{
+		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
+		StatusFunc:   func(context.Context) (BackendInfo, error) { return BackendInfo{}, nil },
+		ModelsFunc: func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error) {
+			return ModelCatalogResult{}, providerError
+		},
+	})
+	for _, input := range []string{
+		`{"model_profile_id":"profile-without-request-key"}`,
+		`{}`,
+	} {
+		_, err := capability.HandleOperation(capabilityTestContext(), "list_models", []byte(input))
+		if err == nil || err.Error() != providerError.Error() {
+			t.Fatalf("catalog input %s error=%v, want unchanged provider error", input, err)
+		}
+	}
+}
+
+func TestRedactSecretErrorDoesNotReplaceEmptySecret(t *testing.T) {
+	err := errors.New("provider request failed")
+	if got := redactSecretError(err, ""); got == nil || got.Error() != err.Error() {
+		t.Fatalf("empty-secret error = %v, want original message", got)
+	}
 }
 
 type runtimePortFake struct {
 	install RuntimeInstallRequest
 	run     RuntimeRunRequest
-	search  WebSearchTestRequest
 }
 
 func (p *runtimePortFake) Inspect(context.Context) (RuntimeInspection, error) {
@@ -77,12 +116,7 @@ func (p *runtimePortFake) Run(_ context.Context, request RuntimeRunRequest) (Run
 	p.run = request
 	return RuntimeRunResult{Tool: request.Tool, ExitCode: 0, Stdout: "ok\x00\n", Stderr: ""}, nil
 }
-func (p *runtimePortFake) WebSearchTest(_ context.Context, request WebSearchTestRequest) (WebSearchTestResult, error) {
-	p.search = request
-	return WebSearchTestResult{OK: true, Provider: "tavily", ResultCount: 1}, nil
-}
-
-func TestRuntimeCapabilityRejectsShellAndRedactsSearchCredential(t *testing.T) {
+func TestRuntimeCapabilityRejectsShell(t *testing.T) {
 	port := &runtimePortFake{}
 	capability := NewRuntimeCapability(port)
 	if _, err := capability.HandleOperation(capabilityTestContext(), "install", []byte(`{"target":"echo","command":"echo pwned"}`)); err == nil {
@@ -97,43 +131,6 @@ func TestRuntimeCapabilityRejectsShellAndRedactsSearchCredential(t *testing.T) {
 	if string(port.run.Argv[0]) != "ok" {
 		t.Fatalf("argv was not forwarded: %#v", port.run)
 	}
-	result, err := capability.HandleOperation(capabilityTestContext(), "web_search_test", []byte(`{"tool_credentials":{"web_search":{"enabled":true,"provider":"tavily","api_key":"secret-key"}}}`))
-	if err != nil {
-		t.Fatalf("web search test: %v", err)
-	}
-	if strings.Contains(string(result), "secret-key") || port.search.APIKey != "secret-key" {
-		t.Fatalf("credential leaked or not forwarded: result=%s request=%#v", result, port.search)
-	}
-	if _, err := capability.HandleOperation(capabilityTestContext(), "web_search_test", []byte(`{"tool_credentials":{"web_search":{"enabled":false,"api_key":"key"}}}`)); err == nil {
-		t.Fatal("disabled web search was accepted")
-	}
-}
-
-func TestRuntimeCapabilityRedactsProviderError(t *testing.T) {
-	port := &runtimeErrorPort{err: errors.New("provider failed with secret-key")}
-	capability := NewRuntimeCapability(port)
-	_, err := capability.HandleOperation(capabilityTestContext(), "web_search_test", []byte(`{"tool_credentials":{"web_search":{"enabled":true,"api_key":"secret-key"}}}`))
-	if err == nil || strings.Contains(err.Error(), "secret-key") || !strings.Contains(err.Error(), "[redacted]") {
-		t.Fatalf("search error redaction = %v", err)
-	}
-}
-
-type runtimeErrorPort struct{ err error }
-
-func (*runtimeErrorPort) Inspect(context.Context) (RuntimeInspection, error) {
-	return RuntimeInspection{}, nil
-}
-func (*runtimeErrorPort) Install(context.Context, RuntimeInstallRequest) (RuntimeInstallResult, error) {
-	return RuntimeInstallResult{}, nil
-}
-func (*runtimeErrorPort) Which(context.Context, string) (RuntimeWhichResult, error) {
-	return RuntimeWhichResult{}, nil
-}
-func (*runtimeErrorPort) Run(context.Context, RuntimeRunRequest) (RuntimeRunResult, error) {
-	return RuntimeRunResult{}, nil
-}
-func (p *runtimeErrorPort) WebSearchTest(context.Context, WebSearchTestRequest) (WebSearchTestResult, error) {
-	return WebSearchTestResult{}, p.err
 }
 
 func TestConfigProposalIsConfirmationBoundAndDoesNotApply(t *testing.T) {

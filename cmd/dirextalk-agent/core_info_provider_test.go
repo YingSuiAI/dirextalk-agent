@@ -12,7 +12,7 @@ import (
 func TestCoreInfoProviderReportsExternalCoreOnly(t *testing.T) {
 	provider := newCoreInfoProvider("11111111-1111-4111-8111-111111111111", func() []*capv1.CapabilityDescriptor {
 		return []*capv1.CapabilityDescriptor{coreInfoDescriptor("agent.info.v1", true)}
-	})
+	}, nil)
 	backends, err := provider.Backends(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +43,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 			"service_bindings_invoke", "targets_import", "targets_reserve", "targets_observe",
 			"plans_list", "runs_list", "secrets_list"),
 		coreInfoDescriptor("agent.voice.v1", true),
+		coreInfoDescriptor("agent.web_search.v1", true, "get_config", "update_config", "test"),
 		coreInfoDescriptor("agent.confirmations.v1", true),
 		coreInfoDescriptor("agent.skills.v1", true, "invoke_product", "list_mcp", "discover_skill"),
 		coreInfoDescriptor("agent.aws.v1", true),
@@ -57,7 +58,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 	provider := newCoreInfoProvider("instance", func() []*capv1.CapabilityDescriptor {
 		// Registry.List has map iteration order; the projection must not inherit it.
 		return descriptors
-	})
+	}, nil)
 	backends, err := provider.Backends(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +89,7 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		"skills.server",
 		"task",
 		"voice.server",
+		"web_search.server",
 	}
 	if !reflect.DeepEqual(backends.Core.Capabilities, want) {
 		t.Fatalf("Core capabilities = %#v, want %#v", backends.Core.Capabilities, want)
@@ -107,7 +109,7 @@ func TestCoreInfoProviderDoesNotInferSkillsOrExecutionTokens(t *testing.T) {
 			coreInfoDescriptor("agent.skills.v1", true, "invoke_product"),
 			coreInfoDescriptor("agent.execution.v2", true, "service_bindings_invoke"),
 		}
-	})
+	}, nil)
 	backends, err := provider.Backends(context.Background())
 	if err != nil {
 		t.Fatal(err)

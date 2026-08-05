@@ -10,6 +10,16 @@ verification. External product work is not included.
   optional health/reflection, and capability/instance discovery.
 - PostgreSQL-backed model profiles, conversations, Tasks, events, schedules,
   confirmation records, and fenced recovery paths.
+- Provider-backed model catalog discovery with bounded OpenRouter conversation
+  and embedding endpoints, profile-owned credential resolution, and secret-free
+  result normalization.
+- Owner- and account-generation-scoped `agent.web_search.v1` configuration with
+  encrypted Tavily keys whose AAD and replay fencing include the positive
+  generation, revision/idempotency fencing, safe connectivity tests, and chat
+  resolver injection that revalidates revision and credential version before
+  every provider dispatch (including rotation, clear, disable, and deprovision
+  races). Update and dispatch share the global deprovision admission lock, with
+  dispatch holding it through the bounded provider request.
 - Eino-adapted model calls inside the durable conversation and Task execution
   paths, without moving Task recovery or tool ledgers into an opaque graph.
 - Core MCP/Skill lifecycle RPCs and isolated extension-runner composition.

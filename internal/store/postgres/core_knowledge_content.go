@@ -15,6 +15,12 @@ import (
 )
 
 func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowledge.UploadMetadata) (coreknowledge.Upload, error) {
+	// The capability contract permits an omitted title, while PostgreSQL keeps
+	// source labels non-empty. Canonicalize the optional field before hashing so
+	// retries with the same request converge on the same durable replay.
+	if strings.TrimSpace(metadata.Title) == "" {
+		metadata.Title = "upload"
+	}
 	if err := metadata.ValidateForRepository(); err != nil {
 		return coreknowledge.Upload{}, err
 	}
@@ -405,6 +411,12 @@ func (r *CoreKnowledgeStore) cleanupAbortedUpload(ctx context.Context, u corekno
 }
 
 func (r *CoreKnowledgeStore) CreateMemory(ctx context.Context, command coreknowledge.MemoryCommand) (coreknowledge.Source, error) {
+	// Memory titles are optional at the domain/capability boundary, but the
+	// PostgreSQL source projection requires a non-empty label. Normalize before
+	// computing the replay digest so an omitted title remains idempotent.
+	if strings.TrimSpace(command.Title) == "" {
+		command.Title = "memory"
+	}
 	if err := command.ValidateForRepository(); err != nil {
 		return coreknowledge.Source{}, err
 	}

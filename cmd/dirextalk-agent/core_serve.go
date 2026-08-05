@@ -38,6 +38,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
@@ -99,6 +100,10 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("restore account deprovision fence: %w", err)
 	}
 	configStore := postgres.NewCoreAgentConfigStore(store)
+	webSearchService, err := corewebsearch.NewService(postgres.NewCoreWebSearchStore(store), corewebsearch.NewTavilyClient())
+	if err != nil {
+		return fmt.Errorf("initialize Web Search service: %w", err)
+	}
 	executionStore, err := coreexecutionv2.NewPostgresStore(store.Pool(), secretMasterKey)
 	if err != nil {
 		return fmt.Errorf("initialize execution v2 store: %w", err)
@@ -201,9 +206,6 @@ func serveCore(cfg config.Config) error {
 			knowledgeComposition.Close()
 		}
 		return fmt.Errorf("initialize Core Extension composition: %w", err)
-	}
-	if extensionComposition != nil {
-		conversation.SetExtensionResolver(extensionComposition.conversationResolver)
 	}
 	workloadStore := postgres.NewCoreWorkloadStore(store)
 	workloadDomain, err := coreworkload.NewService(workloadStore, time.Now)
@@ -394,15 +396,18 @@ func serveCore(cfg config.Config) error {
 			return fmt.Errorf("initialize Product Capability client: %w", err)
 		}
 		slog.Info("dirextalk-agent Product Capability client ready", "server", cfg.ProductCapabilityAddress)
-		// The callback client is also the source for model-facing Product tools.
-		// Install this resolver only after the client has passed TLS/credential
-		// validation so ordinary Core callers remain extension-free.
-		var baseResolver coreconversation.ExtensionResolver
-		if extensionComposition != nil {
-			baseResolver = extensionComposition.conversationResolver
-		}
-		conversation.SetExtensionResolver(&productConversationResolver{base: baseResolver, product: productCapabilityClient})
 	}
+	// Compose model-facing tools in one resolver chain. Web Search remains
+	// available without Product Capability, but both inject tools only for an
+	// authenticated Capability call.
+	var conversationResolver coreconversation.ExtensionResolver
+	if extensionComposition != nil {
+		conversationResolver = extensionComposition.conversationResolver
+	}
+	if productCapabilityClient != nil {
+		conversationResolver = &productConversationResolver{base: conversationResolver, product: productCapabilityClient}
+	}
+	conversation.SetExtensionResolver(&webSearchConversationResolver{base: conversationResolver, service: webSearchService})
 	if cfg.CapabilityEnabled {
 		capabilityOpManager := operation.NewManager(store.Pool())
 		// Purge closes ordinary capability watchers as soon as the account is
@@ -442,7 +447,7 @@ func serveCore(cfg config.Config) error {
 				return nil
 			}
 			return registry.List()
-		})
+		}, profiles)
 		registry = agentcapability.NewCoreRegistry(agentcapability.CoreBindings{
 			Conversation:  conversation,
 			Confirmations: confirmationDomain,
@@ -475,6 +480,7 @@ func serveCore(cfg config.Config) error {
 				}
 				return awsComposition.domain
 			}(),
+			WebSearch:   webSearchService,
 			Voice:       voiceService,
 			Deprovision: deprovisionService,
 			DeprovisionPurge: func(ctx context.Context) error {

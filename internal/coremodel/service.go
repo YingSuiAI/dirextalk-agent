@@ -418,6 +418,21 @@ func SyncProfileID(clientProfileID string) string {
 	return deterministicProfileID("sync:"+clientProfileID, "")
 }
 
+// ResolveClientProfile resolves the durable profile selected by the public
+// client_profile_id. SyncProfileID is the only server-owned mapping from that
+// write-facing identifier to a Core profile UUID, so the lookup still flows
+// through ResolveProfile and its secret-bearing repository boundary.
+func (s *Service) ResolveClientProfile(ctx context.Context, clientProfileID string) (Profile, error) {
+	if s == nil || s.repo == nil {
+		return Profile{}, ErrProfileRepository
+	}
+	clientProfileID = strings.TrimSpace(clientProfileID)
+	if err := ValidateClientProfileID(clientProfileID); err != nil {
+		return Profile{}, err
+	}
+	return s.ResolveProfile(ctx, SyncProfileID(clientProfileID))
+}
+
 func (s *Service) ResolveProfile(ctx context.Context, id string) (Profile, error) {
 	if err := validateUUID(id); err != nil {
 		return Profile{}, err

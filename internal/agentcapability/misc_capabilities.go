@@ -201,6 +201,9 @@ func (c *infoCapability) HandleOperation(ctx context.Context, operationID string
 		if err := decodeStrictObject(raw, &request); err != nil {
 			return nil, err
 		}
+		if strings.TrimSpace(request.ModelKind) == "" {
+			request.ModelKind = "conversation"
+		}
 		if err := validateModelCatalogRequest(request); err != nil {
 			return nil, err
 		}
@@ -258,7 +261,6 @@ type RuntimePort interface {
 	Install(context.Context, RuntimeInstallRequest) (RuntimeInstallResult, error)
 	Which(context.Context, string) (RuntimeWhichResult, error)
 	Run(context.Context, RuntimeRunRequest) (RuntimeRunResult, error)
-	WebSearchTest(context.Context, WebSearchTestRequest) (WebSearchTestResult, error)
 }
 
 type RuntimeInspection struct {
@@ -306,18 +308,6 @@ type RuntimeRunResult struct {
 	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
-type WebSearchTestRequest struct {
-	Enabled  bool   `json:"enabled"`
-	Provider string `json:"provider,omitempty"`
-	APIKey   string `json:"api_key"`
-}
-
-type WebSearchTestResult struct {
-	OK          bool   `json:"ok"`
-	Provider    string `json:"provider"`
-	ResultCount int    `json:"result_count"`
-}
-
 type runtimeCapability struct{ port RuntimePort }
 
 func NewRuntimeCapability(port RuntimePort) Capability {
@@ -325,12 +315,11 @@ func NewRuntimeCapability(port RuntimePort) Capability {
 }
 
 func (c *runtimeCapability) Descriptor() *capv1.CapabilityDescriptor {
-	return capabilityDescriptor(runtimeCapabilityID, "Agent Runtime", "Agent-owned isolated runtime and request-scoped web search", []capabilityOperation{
+	return capabilityDescriptor(runtimeCapabilityID, "Agent Runtime", "Agent-owned isolated runtime", []capabilityOperation{
 		{ID: "inspect", DisplayName: "Inspect runtime", Description: "Inspect non-secret runtime readiness.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:runtime:read", InputSchema: emptyObjectSchema, ResultSchema: runtimeInspectResultSchema},
 		{ID: "install", DisplayName: "Install runtime", Description: "Install an exact Agent-owned runtime target through the isolated runner.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:runtime:write", Risk: capv1.RiskLevel_RISK_LEVEL_HIGH, InputSchema: runtimeInstallSchema, ResultSchema: runtimeInstallResultSchema},
 		{ID: "which", DisplayName: "Find runtime tool", Description: "Resolve an installed Agent-owned tool by exact name.", Type: capv1.OperationType_OPERATION_TYPE_READ, Scope: "agent:runtime:read", InputSchema: runtimeWhichSchema, ResultSchema: runtimeWhichResultSchema},
 		{ID: "run", DisplayName: "Run runtime tool", Description: "Run an installed Agent-owned tool with an argv vector; shell execution is not supported.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:runtime:write", Risk: capv1.RiskLevel_RISK_LEVEL_HIGH, InputSchema: runtimeRunSchema, ResultSchema: runtimeRunResultSchema},
-		{ID: "web_search_test", DisplayName: "Test web search", Description: "Test a request-scoped web-search credential without persisting it.", Type: capv1.OperationType_OPERATION_TYPE_MUTATION, Scope: "agent:runtime:web_search", InputSchema: webSearchTestSchema, ResultSchema: webSearchTestResultSchema},
 	})
 }
 
@@ -403,27 +392,6 @@ func (c *runtimeCapability) HandleOperation(ctx context.Context, operationID str
 		result.Tool = safeString(result.Tool, maxRuntimeNameBytes)
 		result.Stdout = redactRuntimeText(result.Stdout)
 		result.Stderr = redactRuntimeText(result.Stderr)
-		return json.Marshal(result)
-	case "web_search_test":
-		var request struct {
-			ToolCredentials struct {
-				WebSearch WebSearchTestRequest `json:"web_search"`
-			} `json:"tool_credentials"`
-		}
-		if err := decodeStrictObject(raw, &request); err != nil {
-			return nil, err
-		}
-		if err := validateWebSearchTest(request.ToolCredentials.WebSearch); err != nil {
-			return nil, err
-		}
-		result, err := c.port.WebSearchTest(ctx, request.ToolCredentials.WebSearch)
-		if err != nil {
-			return nil, redactSecretError(err, request.ToolCredentials.WebSearch.APIKey)
-		}
-		result.Provider = safeString(result.Provider, maxRuntimeNameBytes)
-		if result.ResultCount < 0 {
-			result.ResultCount = 0
-		}
 		return json.Marshal(result)
 	default:
 		return nil, fmt.Errorf("unknown agent runtime operation %q", operationID)
@@ -796,23 +764,6 @@ func validateRuntimeRun(request RuntimeRunRequest) error {
 	return nil
 }
 
-func validateWebSearchTest(request WebSearchTestRequest) error {
-	if !request.Enabled {
-		return errors.New("web search must be enabled")
-	}
-	if strings.TrimSpace(request.APIKey) == "" || len(request.APIKey) > 4096 {
-		return errors.New("web search api_key is required")
-	}
-	provider := strings.ToLower(strings.TrimSpace(request.Provider))
-	if provider == "" {
-		provider = "tavily"
-	}
-	if provider != "tavily" {
-		return errors.New("unsupported web search provider")
-	}
-	return nil
-}
-
 func validateModelCatalogRequest(request ModelCatalogRequest) error {
 	request.ModelKind = strings.ToLower(strings.TrimSpace(request.ModelKind))
 	if request.ModelKind != "conversation" && request.ModelKind != "embedding" && request.ModelKind != "speech" {
@@ -928,7 +879,10 @@ func redactSecretError(err error, secret string) error {
 	if err == nil {
 		return nil
 	}
-	message := strings.ReplaceAll(err.Error(), secret, "[redacted]")
+	message := err.Error()
+	if secret != "" {
+		message = strings.ReplaceAll(message, secret, "[redacted]")
+	}
 	if strings.TrimSpace(message) == "" {
 		message = "runtime provider failed"
 	}
@@ -1116,9 +1070,7 @@ const (
 	runtimeWhichResultSchema   = `{"additionalProperties":false,"properties":{"found":{"type":"boolean"},"name":{"type":"string"},"path":{"type":"string"},"version":{"type":"string"}},"required":["found","name"],"type":"object"}`
 	runtimeRunSchema           = `{"additionalProperties":false,"properties":{"argv":{"items":{"type":"string","maxLength":4096},"maxItems":64,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"stdin":{"maxLength":65536,"type":"string"},"timeout_ms":{"maximum":600000,"minimum":0,"type":"integer"},"tool":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["tool"],"type":"object"}`
 	runtimeRunResultSchema     = `{"additionalProperties":false,"properties":{"duration_ms":{"type":"integer"},"exit_code":{"type":"integer"},"stderr":{"type":"string"},"stdout":{"type":"string"},"tool":{"type":"string"}},"required":["exit_code","tool"],"type":"object"}`
-	webSearchTestSchema        = `{"additionalProperties":false,"properties":{"tool_credentials":{"additionalProperties":false,"properties":{"web_search":{"additionalProperties":false,"properties":{"api_key":{"type":"string","write_only":true},"enabled":{"type":"boolean"},"provider":{"default":"tavily","enum":["tavily"],"type":"string"}},"required":["api_key","enabled"],"type":"object"}},"required":["web_search"],"type":"object"}},"required":["tool_credentials"],"type":"object"}`
-	webSearchTestResultSchema  = `{"additionalProperties":false,"properties":{"ok":{"type":"boolean"},"provider":{"type":"string"},"result_count":{"minimum":0,"type":"integer"}},"required":["ok","provider","result_count"],"type":"object"}`
-	modelCatalogSchema         = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","write_only":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"required":["model_kind"],"type":"object"}`
+	modelCatalogSchema         = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","writeOnly":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"default":"conversation","enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"type":"object"}`
 	modelCatalogResultSchema   = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":true,"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
 	configProposalSchema       = `{"additionalProperties":false,"properties":{"kind":{"enum":["mcp_server","skill"],"type":"string"},"mcp_server":{"additionalProperties":true,"type":"object"},"skill":{"additionalProperties":true,"type":"object"}},"required":["kind"],"type":"object"}`
 	configProposalResultSchema = `{"additionalProperties":false,"properties":{"config_patch":{"additionalProperties":true,"type":"object"},"requires_confirmation":{"const":true,"type":"boolean"}},"required":["requires_confirmation","config_patch"],"type":"object"}`

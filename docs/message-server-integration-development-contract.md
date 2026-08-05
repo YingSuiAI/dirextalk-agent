@@ -308,6 +308,7 @@ IDs are not exposed as feature claims and unknown IDs are ignored.
 | `agent.skills.v1` | `mcp` only when `list_mcp` is present; `skills.server` when a Skill operation is present |
 | `agent.aws.v1` | `aws.control` |
 | `agent.voice.v1` | `voice.server` |
+| `agent.web_search.v1` | `web_search.server` |
 | `agent.execution.v2` | `execution.v2` plus only the sub-tokens backed by advertised operation IDs |
 
 `agent.skills.v1` with only `invoke_product` is a Product bridge and publishes

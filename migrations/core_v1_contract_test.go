@@ -47,6 +47,12 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 		"secret_value_ciphertext",
 		"CREATE TABLE agent_account_deprovisions",
 		"CREATE TABLE agent_native_configs",
+		"CREATE TABLE core_web_search_configs",
+		"CREATE TABLE core_web_search_replays",
+		"account_generation bigint NOT NULL CHECK (account_generation > 0)",
+		"PRIMARY KEY (owner_id, account_generation)",
+		"PRIMARY KEY (owner_id, account_generation, idempotency_key)",
+		"credential_version",
 	} {
 		if !strings.Contains(string(script), needle) {
 			t.Errorf("Core v1 baseline missing %q", needle)

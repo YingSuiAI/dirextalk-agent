@@ -564,6 +564,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 					if err := s.store.MarkToolDispatched(ctx, cmd.RequestID, call.ID, tlease.LeaseID, tlease.Epoch); err != nil {
 						return ChatResponse{}, err
 					}
+					tlease.Status = ToolClaimDispatched
 					dispatched = true
 					rq := ToolExecutionRequest{RequestID: cmd.RequestID, ToolCallID: call.ID, ExecutionID: call.ExecutionID, ArgsDigest: argsDigest, ExtensionDigest: extDigest, Call: call}
 					tr, err = s.executeToolHeartbeat(ctx, rq, &tlease, lease, cmd, candidates[0].Execute)

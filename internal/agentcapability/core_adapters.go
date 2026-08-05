@@ -27,6 +27,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
@@ -46,6 +47,7 @@ type CoreBindings struct {
 	CapabilityProgress func(context.Context, string, []byte) error
 	ExecutionV2        *coreexecutionv2.Service
 	AWS                *coreaws.Service
+	WebSearch          *corewebsearch.Service
 	// Voice and Misc are optional composition ports.  The Core registry owns
 	// their publication so standalone capability tests and the production
 	// composition share the same catalog path.
@@ -67,6 +69,9 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.AWS != nil {
 		r.Register(NewCoreAWSCapability(bindings.AWS))
+	}
+	if bindings.WebSearch != nil {
+		r.Register(NewCoreWebSearchCapability(bindings.WebSearch))
 	}
 	if bindings.Voice != nil {
 		r.Register(NewCoreVoiceCapability(bindings.Voice, bindings.CapabilityProgress))
@@ -681,7 +686,14 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		if declared == 0 {
 			declared = int64Value(in, "size")
 		}
-		meta := coreknowledge.UploadMetadata{IdempotencyKey: key, UploadID: stringValue(in, "upload_id"), SourceID: stringValue(in, "source_id"), Title: stringValue(in, "title"), RelativePath: stringValue(in, "relative_path"), MediaType: stringValue(in, "media_type")}
+		title := stringValue(in, "title")
+		// Upload titles are optional at the capability boundary. PostgreSQL
+		// stores a non-empty source label, so use a stable generic label when
+		// the caller does not provide one.
+		if strings.TrimSpace(title) == "" {
+			title = "upload"
+		}
+		meta := coreknowledge.UploadMetadata{IdempotencyKey: key, UploadID: stringValue(in, "upload_id"), SourceID: stringValue(in, "source_id"), Title: title, RelativePath: stringValue(in, "relative_path"), MediaType: stringValue(in, "media_type")}
 		if meta.MediaType == "" {
 			meta.MediaType = stringValue(in, "mime_type")
 		}

@@ -3,11 +3,14 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
 )
@@ -96,6 +99,26 @@ func TestCoreAWSPostgresSecretEnvelopeAndDeprovision(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].VerifiedRevision != 1 || !page.Items[0].TestedAt.Equal(testedAt) {
 		t.Fatal("credential list omitted durable verification metadata")
 	}
+	webSearchStore := NewCoreWebSearchStore(store)
+	webSearchProvider := corewebsearch.ProviderTavily
+	webSearchEnabled := false
+	if _, err := webSearchStore.Update(ctx, corewebsearch.Mutation{
+		OwnerID: "db-secret-sentinel", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("a", 64),
+		ExpectedRevision: 0, Enabled: &webSearchEnabled, Provider: &webSearchProvider,
+		APIKey: stringPtrWebSearch("DB-WEB-SEARCH-CANARY"), Now: now,
+	}); err != nil {
+		t.Fatalf("create Web Search deprovision sentinel: %v", err)
+	}
+	var webSearchConfigs, webSearchReplays int
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM core_web_search_configs`).Scan(&webSearchConfigs); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM core_web_search_replays`).Scan(&webSearchReplays); err != nil {
+		t.Fatal(err)
+	}
+	if webSearchConfigs == 0 || webSearchReplays == 0 {
+		t.Fatalf("Web Search deprovision sentinels were not persisted configs=%d replays=%d", webSearchConfigs, webSearchReplays)
+	}
 
 	deprovision, err := coredeprovision.NewService(NewCoreDeprovisionStore(store.Pool()))
 	if err != nil {
@@ -114,6 +137,18 @@ func TestCoreAWSPostgresSecretEnvelopeAndDeprovision(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatal("deprovision left encrypted AWS credentials behind")
+	}
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM core_web_search_configs`).Scan(&webSearchConfigs); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM core_web_search_replays`).Scan(&webSearchReplays); err != nil {
+		t.Fatal(err)
+	}
+	if webSearchConfigs != 0 || webSearchReplays != 0 {
+		t.Fatalf("deprovision left Web Search rows configs=%d replays=%d", webSearchConfigs, webSearchReplays)
+	}
+	if _, err := webSearchStore.Resolve(ctx, "db-secret-sentinel", 1); !errors.Is(err, corewebsearch.ErrNotConfigured) {
+		t.Fatalf("deprovision fence allowed stale Web Search resolve: %v", err)
 	}
 }
 
