@@ -9,6 +9,19 @@ import (
 	modelapi "github.com/YingSuiAI/dirextalk-agent/internal/model"
 )
 
+func TestCloudDialoguePolicyKeepsWorkerRisksOutOfUserSummary(t *testing.T) {
+	t.Parallel()
+	if strings.Contains(
+		cloudDialoguePolicy,
+		"including concrete deliverables, tests, risks",
+	) || !strings.Contains(
+		cloudDialoguePolicy,
+		"Worker-authored risks are not authoritative public facts",
+	) {
+		t.Fatalf("cloud dialogue policy exposes Worker risk claims")
+	}
+}
+
 func TestChatTrimsOversizedHistoryToProfileContextBudget(t *testing.T) {
 	t.Parallel()
 

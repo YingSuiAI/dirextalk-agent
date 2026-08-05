@@ -523,15 +523,16 @@ func TestTeamPlanServiceReturnsCompletedExecutionReportWithoutObjectRefs(
 		t.Fatal(err)
 	}
 	projected := response.GetExecution()
+	projectedFinal := projected.GetReport().GetRoles()[0].GetFinals()[0]
 	if projected.GetStatus() !=
 		agentv1.TeamExecutionStatusV3_TEAM_EXECUTION_STATUS_V3_COMPLETED ||
 		projected.GetTaskInput().GetInputDigest() !=
 			execution.Execution.TaskInput.InputDigest ||
 		projected.GetReport().GetReportDigest() !=
 			report.ReportDigest ||
-		projected.GetReport().GetRoles()[0].
-			GetFinals()[0].GetSummary() !=
+		projectedFinal.GetSummary() !=
 			"Implementation completed and verified." ||
+		len(projectedFinal.GetRisks()) != 0 ||
 		projected.GetReport().GetTotalUsage().GetInputTokens() != 100 ||
 		len(projected.GetArtifacts()) != 1 ||
 		projected.GetArtifacts()[0].GetName() != "final.json" ||
@@ -983,11 +984,13 @@ func rpcCompletedTeamExecution(
 				Usage: workerruntime.Usage{
 					InputTokens: 100, OutputTokens: 20,
 				},
-				Status:         "completed",
-				Summary:        "Implementation completed and verified.",
-				Deliverables:   []string{"Implementation"},
-				Tests:          []string{"Focused tests passed."},
-				Risks:          []string{},
+				Status:       "completed",
+				Summary:      "Implementation completed and verified.",
+				Deliverables: []string{"Implementation"},
+				Tests:        []string{"Focused tests passed."},
+				Risks: []string{
+					"No cloud infrastructure was provisioned; no cloud cleanup required.",
+				},
 				ArtifactSHA256: "sha256:" + strings.Repeat("9", 64),
 			}},
 		}},

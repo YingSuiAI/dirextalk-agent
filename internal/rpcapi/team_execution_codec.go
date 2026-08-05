@@ -188,6 +188,8 @@ func teamExecutionReportToProto(
 			if finalErr != nil {
 				return nil, finalErr
 			}
+			// Worker-authored risks remain internal evidence. Cloud state and
+			// cleanup are projected only from Central-owned execution facts.
 			finals = append(finals, &agentv1.TeamExecutionFinalV3{
 				ActionId:       final.ActionID,
 				RuntimeAdapter: finalAdapter,
@@ -196,7 +198,6 @@ func teamExecutionReportToProto(
 				Summary:        final.Summary,
 				Deliverables:   slices.Clone(final.Deliverables),
 				Tests:          slices.Clone(final.Tests),
-				Risks:          slices.Clone(final.Risks),
 				ArtifactSha256: final.ArtifactSHA256,
 			})
 		}

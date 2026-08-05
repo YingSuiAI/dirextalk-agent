@@ -432,11 +432,12 @@ func compactCompletionReport(
 				final.Deliverables,
 			)
 			tests, testsTruncated := compactList(final.Tests)
-			risks, risksTruncated := compactList(final.Risks)
 			projected.ContentWasTruncated =
 				projected.ContentWasTruncated ||
 					summaryTruncated || deliverablesTruncated ||
-					testsTruncated || risksTruncated
+					testsTruncated
+			// Worker risks remain internal evidence. Cloud state and cleanup
+			// come only from the trusted lifecycle fields above.
 			projected.Finals = append(
 				projected.Finals,
 				completionFinalView{
@@ -445,7 +446,7 @@ func compactCompletionReport(
 					Summary:        summary,
 					Deliverables:   deliverables,
 					Tests:          tests,
-					Risks:          risks,
+					Risks:          []string{},
 					Usage:          final.Usage,
 					ArtifactSHA256: final.ArtifactSHA256,
 				},

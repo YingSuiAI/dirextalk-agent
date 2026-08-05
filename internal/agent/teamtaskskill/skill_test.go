@@ -92,14 +92,16 @@ func TestSkillReturnsVerifiedCompactCompletionReport(t *testing.T) {
 			Outcome:              task.OutcomeSucceeded,
 			ResultEvidenceDigest: evidenceDigest,
 			Finals: []teamreport.FinalV1{{
-				ActionID:       "implementation",
-				Adapter:        workerruntime.AdapterPiV1,
-				Usage:          workerruntime.Usage{InputTokens: 120, OutputTokens: 40},
-				Status:         "completed",
-				Summary:        "Implemented the CLI and verified the executable.",
-				Deliverables:   []string{"source archive", "linux binary"},
-				Tests:          []string{"go test ./... passed"},
-				Risks:          []string{"No Windows build was requested"},
+				ActionID:     "implementation",
+				Adapter:      workerruntime.AdapterPiV1,
+				Usage:        workerruntime.Usage{InputTokens: 120, OutputTokens: 40},
+				Status:       "completed",
+				Summary:      "Implemented the CLI and verified the executable.",
+				Deliverables: []string{"source archive", "linux binary"},
+				Tests:        []string{"go test ./... passed"},
+				Risks: []string{
+					"No cloud infrastructure was provisioned; no cloud cleanup required.",
+				},
 				ArtifactSHA256: artifactDigest,
 			}},
 		}},
@@ -181,6 +183,7 @@ func TestSkillReturnsVerifiedCompactCompletionReport(t *testing.T) {
 					Summary      string   `json:"summary"`
 					Deliverables []string `json:"deliverables"`
 					Tests        []string `json:"tests"`
+					Risks        []string `json:"risks"`
 				} `json:"finals"`
 			} `json:"roles"`
 		} `json:"completion_report"`
@@ -197,6 +200,11 @@ func TestSkillReturnsVerifiedCompactCompletionReport(t *testing.T) {
 			"Implemented the CLI and verified the executable." ||
 		len(view.CompletionReport.Roles[0].Finals[0].Deliverables) != 2 ||
 		len(view.CompletionReport.Roles[0].Finals[0].Tests) != 1 ||
+		len(view.CompletionReport.Roles[0].Finals[0].Risks) != 0 ||
+		strings.Contains(
+			strings.ToLower(result.Content),
+			"no cloud infrastructure",
+		) ||
 		stub.reportRequest != (StatusRequest{
 			OwnerID: "owner-1",
 			TaskID:  teamTaskTestTaskID,

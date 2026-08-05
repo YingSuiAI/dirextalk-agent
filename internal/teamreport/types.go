@@ -1,6 +1,8 @@
-// Package teamreport builds the durable, device-safe projection of one
-// completed Team execution. It contains no cloud object coordinates, raw
-// Worker output, model credentials, or provider credentials.
+// Package teamreport builds the durable, bounded projection of one completed
+// Team execution. Worker-authored narrative remains candidate evidence; public
+// transports must apply their authority boundary before showing it to users.
+// The report contains no cloud object coordinates, raw Worker output, model
+// credentials, or provider credentials.
 package teamreport
 
 import (
