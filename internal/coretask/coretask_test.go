@@ -141,12 +141,18 @@ func TestTeamExecutionTaskTemplateIsFenced(t *testing.T) {
 	}
 }
 
-func TestNonModelTaskKindsRejectModelProfileID(t *testing.T) {
+func TestTaskKindsEnforceModelProfilePolicy(t *testing.T) {
 	validSpec := func(kind TaskKind) TaskSpec {
 		spec := TaskSpec{Kind: kind, Goal: "bounded task", IdempotencyKey: testID}
 		switch kind {
+		case TaskKindAgent:
+			spec = baseSpec()
+			spec.Kind = TaskKindAgent
 		case TaskKindExtension:
 			spec.Payload.Extension = &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, InstallationID: testID2, ExpectedRevision: 1, Version: "1.0.0", Digest: strings.Repeat("a", 64), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"value":1}`)}
+		case TaskKindKnowledgeIndex:
+			spec.ModelProfileID = testID2
+			spec.Payload.KnowledgeIndex = &KnowledgeIndexTaskPayload{SourceIDs: []string{"source-1"}, ExpectedSourceRevision: []uint64{1}, CollectionConfigDigest: strings.Repeat("a", 64)}
 		case TaskKindAWSChange:
 			spec.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID2}
 		case TaskKindWorkload:
@@ -160,10 +166,30 @@ func TestNonModelTaskKindsRejectModelProfileID(t *testing.T) {
 		return spec
 	}
 
-	for _, kind := range []TaskKind{TaskKindExtension, TaskKindAWSChange, TaskKindWorkload, TaskKindConversationTool, TaskKindTeamExecution} {
-		t.Run(string(kind), func(t *testing.T) {
+	for _, kind := range []TaskKind{TaskKindAgent, TaskKindKnowledgeIndex} {
+		t.Run(string(kind)+" requires model profile", func(t *testing.T) {
 			if _, err := validSpec(kind).Normalize(); err != nil {
-				t.Fatalf("valid baseline Normalize() error = %v", err)
+				t.Fatalf("Normalize() with valid model profile error = %v", err)
+			}
+
+			withoutModelProfile := validSpec(kind)
+			withoutModelProfile.ModelProfileID = ""
+			if _, err := withoutModelProfile.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Normalize() without model profile error = %v, want ErrInvalid", err)
+			}
+
+			withInvalidModelProfile := validSpec(kind)
+			withInvalidModelProfile.ModelProfileID = "not-a-uuid"
+			if _, err := withInvalidModelProfile.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Normalize() with invalid model profile error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+
+	for _, kind := range []TaskKind{TaskKindExtension, TaskKindAWSChange, TaskKindWorkload, TaskKindConversationTool, TaskKindTeamExecution} {
+		t.Run(string(kind)+" forbids model profile", func(t *testing.T) {
+			if _, err := validSpec(kind).Normalize(); err != nil {
+				t.Fatalf("Normalize() without model profile error = %v", err)
 			}
 			withModelProfile := validSpec(kind)
 			withModelProfile.ModelProfileID = testID2

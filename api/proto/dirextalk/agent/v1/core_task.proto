@@ -61,17 +61,6 @@ message CoreConversationToolTaskPayload {
   string confirmation_id = 12;
   string safe_summary = 13;
 }
-message CoreTeamExecutionTaskPayload {
-  string plan_id = 1;
-  uint64 plan_revision = 2;
-  string plan_digest = 3;
-  string execution_id = 4;
-  string confirmation_id = 5;
-  string conversation_id = 6;
-  string credential_id = 7;
-  uint64 credential_revision = 8;
-}
-
 message CoreTaskTemplate {
   string goal = 1;
   string conversation_id = 2;
@@ -170,6 +159,17 @@ message TaskServiceWatchTaskEventsRequest {
   int64 after_sequence = 2;
 }
 message TaskServiceWatchTaskEventsResponse { CoreTaskEvent event = 1; }
+
+message CoreTeamExecutionTaskPayload {
+  string plan_id = 1;
+  uint64 plan_revision = 2;
+  string plan_digest = 3;
+  string execution_id = 4;
+  string confirmation_id = 5;
+  string conversation_id = 6;
+  string credential_id = 7;
+  uint64 credential_revision = 8;
+}
 
 service TaskService {
   rpc CreateTask(TaskServiceCreateTaskRequest) returns (TaskServiceCreateTaskResponse);

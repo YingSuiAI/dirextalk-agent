@@ -464,106 +464,6 @@ func (x *CoreConversationToolTaskPayload) GetSafeSummary() string {
 	return ""
 }
 
-type CoreTeamExecutionTaskPayload struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	PlanId             string                 `protobuf:"bytes,1,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
-	PlanRevision       uint64                 `protobuf:"varint,2,opt,name=plan_revision,json=planRevision,proto3" json:"plan_revision,omitempty"`
-	PlanDigest         string                 `protobuf:"bytes,3,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
-	ExecutionId        string                 `protobuf:"bytes,4,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
-	ConfirmationId     string                 `protobuf:"bytes,5,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
-	ConversationId     string                 `protobuf:"bytes,6,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
-	CredentialId       string                 `protobuf:"bytes,7,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
-	CredentialRevision uint64                 `protobuf:"varint,8,opt,name=credential_revision,json=credentialRevision,proto3" json:"credential_revision,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *CoreTeamExecutionTaskPayload) Reset() {
-	*x = CoreTeamExecutionTaskPayload{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CoreTeamExecutionTaskPayload) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CoreTeamExecutionTaskPayload) ProtoMessage() {}
-
-func (x *CoreTeamExecutionTaskPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CoreTeamExecutionTaskPayload.ProtoReflect.Descriptor instead.
-func (*CoreTeamExecutionTaskPayload) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetPlanId() string {
-	if x != nil {
-		return x.PlanId
-	}
-	return ""
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetPlanRevision() uint64 {
-	if x != nil {
-		return x.PlanRevision
-	}
-	return 0
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetPlanDigest() string {
-	if x != nil {
-		return x.PlanDigest
-	}
-	return ""
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetExecutionId() string {
-	if x != nil {
-		return x.ExecutionId
-	}
-	return ""
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetConfirmationId() string {
-	if x != nil {
-		return x.ConfirmationId
-	}
-	return ""
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetConversationId() string {
-	if x != nil {
-		return x.ConversationId
-	}
-	return ""
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetCredentialId() string {
-	if x != nil {
-		return x.CredentialId
-	}
-	return ""
-}
-
-func (x *CoreTeamExecutionTaskPayload) GetCredentialRevision() uint64 {
-	if x != nil {
-		return x.CredentialRevision
-	}
-	return 0
-}
-
 type CoreTaskTemplate struct {
 	state          protoimpl.MessageState    `protogen:"open.v1"`
 	Goal           string                    `protobuf:"bytes,1,opt,name=goal,proto3" json:"goal,omitempty"`
@@ -580,7 +480,7 @@ type CoreTaskTemplate struct {
 
 func (x *CoreTaskTemplate) Reset() {
 	*x = CoreTaskTemplate{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[4]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -592,7 +492,7 @@ func (x *CoreTaskTemplate) String() string {
 func (*CoreTaskTemplate) ProtoMessage() {}
 
 func (x *CoreTaskTemplate) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[4]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -605,7 +505,7 @@ func (x *CoreTaskTemplate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreTaskTemplate.ProtoReflect.Descriptor instead.
 func (*CoreTaskTemplate) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{4}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CoreTaskTemplate) GetGoal() string {
@@ -695,7 +595,7 @@ type CoreTask struct {
 
 func (x *CoreTask) Reset() {
 	*x = CoreTask{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[5]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -707,7 +607,7 @@ func (x *CoreTask) String() string {
 func (*CoreTask) ProtoMessage() {}
 
 func (x *CoreTask) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[5]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -720,7 +620,7 @@ func (x *CoreTask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreTask.ProtoReflect.Descriptor instead.
 func (*CoreTask) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{5}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CoreTask) GetTaskId() string {
@@ -900,7 +800,7 @@ type TaskServiceCreateTaskRequest struct {
 
 func (x *TaskServiceCreateTaskRequest) Reset() {
 	*x = TaskServiceCreateTaskRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[6]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -912,7 +812,7 @@ func (x *TaskServiceCreateTaskRequest) String() string {
 func (*TaskServiceCreateTaskRequest) ProtoMessage() {}
 
 func (x *TaskServiceCreateTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[6]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -925,7 +825,7 @@ func (x *TaskServiceCreateTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceCreateTaskRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceCreateTaskRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{6}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *TaskServiceCreateTaskRequest) GetIdempotencyKey() string {
@@ -993,7 +893,7 @@ type TaskServiceCreateTaskResponse struct {
 
 func (x *TaskServiceCreateTaskResponse) Reset() {
 	*x = TaskServiceCreateTaskResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[7]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1005,7 +905,7 @@ func (x *TaskServiceCreateTaskResponse) String() string {
 func (*TaskServiceCreateTaskResponse) ProtoMessage() {}
 
 func (x *TaskServiceCreateTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[7]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1018,7 +918,7 @@ func (x *TaskServiceCreateTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceCreateTaskResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceCreateTaskResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{7}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TaskServiceCreateTaskResponse) GetTask() *CoreTask {
@@ -1037,7 +937,7 @@ type TaskServiceGetTaskRequest struct {
 
 func (x *TaskServiceGetTaskRequest) Reset() {
 	*x = TaskServiceGetTaskRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[8]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1049,7 +949,7 @@ func (x *TaskServiceGetTaskRequest) String() string {
 func (*TaskServiceGetTaskRequest) ProtoMessage() {}
 
 func (x *TaskServiceGetTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[8]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1062,7 +962,7 @@ func (x *TaskServiceGetTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceGetTaskRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceGetTaskRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{8}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TaskServiceGetTaskRequest) GetTaskId() string {
@@ -1081,7 +981,7 @@ type TaskServiceGetTaskResponse struct {
 
 func (x *TaskServiceGetTaskResponse) Reset() {
 	*x = TaskServiceGetTaskResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[9]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1093,7 +993,7 @@ func (x *TaskServiceGetTaskResponse) String() string {
 func (*TaskServiceGetTaskResponse) ProtoMessage() {}
 
 func (x *TaskServiceGetTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[9]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1106,7 +1006,7 @@ func (x *TaskServiceGetTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceGetTaskResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceGetTaskResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{9}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *TaskServiceGetTaskResponse) GetTask() *CoreTask {
@@ -1127,7 +1027,7 @@ type TaskServiceListTasksRequest struct {
 
 func (x *TaskServiceListTasksRequest) Reset() {
 	*x = TaskServiceListTasksRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[10]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1139,7 +1039,7 @@ func (x *TaskServiceListTasksRequest) String() string {
 func (*TaskServiceListTasksRequest) ProtoMessage() {}
 
 func (x *TaskServiceListTasksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[10]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1152,7 +1052,7 @@ func (x *TaskServiceListTasksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceListTasksRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceListTasksRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{10}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TaskServiceListTasksRequest) GetPageSize() int32 {
@@ -1186,7 +1086,7 @@ type TaskServiceListTasksResponse struct {
 
 func (x *TaskServiceListTasksResponse) Reset() {
 	*x = TaskServiceListTasksResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[11]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1198,7 +1098,7 @@ func (x *TaskServiceListTasksResponse) String() string {
 func (*TaskServiceListTasksResponse) ProtoMessage() {}
 
 func (x *TaskServiceListTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[11]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1211,7 +1111,7 @@ func (x *TaskServiceListTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceListTasksResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceListTasksResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{11}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *TaskServiceListTasksResponse) GetTasks() []*CoreTask {
@@ -1240,7 +1140,7 @@ type TaskServiceCancelTaskRequest struct {
 
 func (x *TaskServiceCancelTaskRequest) Reset() {
 	*x = TaskServiceCancelTaskRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[12]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1252,7 +1152,7 @@ func (x *TaskServiceCancelTaskRequest) String() string {
 func (*TaskServiceCancelTaskRequest) ProtoMessage() {}
 
 func (x *TaskServiceCancelTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[12]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1265,7 +1165,7 @@ func (x *TaskServiceCancelTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceCancelTaskRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceCancelTaskRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{12}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TaskServiceCancelTaskRequest) GetIdempotencyKey() string {
@@ -1305,7 +1205,7 @@ type TaskServiceCancelTaskResponse struct {
 
 func (x *TaskServiceCancelTaskResponse) Reset() {
 	*x = TaskServiceCancelTaskResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[13]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1317,7 +1217,7 @@ func (x *TaskServiceCancelTaskResponse) String() string {
 func (*TaskServiceCancelTaskResponse) ProtoMessage() {}
 
 func (x *TaskServiceCancelTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[13]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1330,7 +1230,7 @@ func (x *TaskServiceCancelTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceCancelTaskResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceCancelTaskResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{13}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *TaskServiceCancelTaskResponse) GetTask() *CoreTask {
@@ -1351,7 +1251,7 @@ type TaskServiceRetryTaskRequest struct {
 
 func (x *TaskServiceRetryTaskRequest) Reset() {
 	*x = TaskServiceRetryTaskRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1363,7 +1263,7 @@ func (x *TaskServiceRetryTaskRequest) String() string {
 func (*TaskServiceRetryTaskRequest) ProtoMessage() {}
 
 func (x *TaskServiceRetryTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[14]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1376,7 +1276,7 @@ func (x *TaskServiceRetryTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceRetryTaskRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceRetryTaskRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{14}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *TaskServiceRetryTaskRequest) GetIdempotencyKey() string {
@@ -1409,7 +1309,7 @@ type TaskServiceRetryTaskResponse struct {
 
 func (x *TaskServiceRetryTaskResponse) Reset() {
 	*x = TaskServiceRetryTaskResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1421,7 +1321,7 @@ func (x *TaskServiceRetryTaskResponse) String() string {
 func (*TaskServiceRetryTaskResponse) ProtoMessage() {}
 
 func (x *TaskServiceRetryTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[15]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1434,7 +1334,7 @@ func (x *TaskServiceRetryTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceRetryTaskResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceRetryTaskResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{15}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TaskServiceRetryTaskResponse) GetTask() *CoreTask {
@@ -1455,7 +1355,7 @@ type TaskServiceDeleteTaskRequest struct {
 
 func (x *TaskServiceDeleteTaskRequest) Reset() {
 	*x = TaskServiceDeleteTaskRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1467,7 +1367,7 @@ func (x *TaskServiceDeleteTaskRequest) String() string {
 func (*TaskServiceDeleteTaskRequest) ProtoMessage() {}
 
 func (x *TaskServiceDeleteTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[16]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1480,7 +1380,7 @@ func (x *TaskServiceDeleteTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceDeleteTaskRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceDeleteTaskRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{16}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *TaskServiceDeleteTaskRequest) GetIdempotencyKey() string {
@@ -1512,7 +1412,7 @@ type TaskServiceDeleteTaskResponse struct {
 
 func (x *TaskServiceDeleteTaskResponse) Reset() {
 	*x = TaskServiceDeleteTaskResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1524,7 +1424,7 @@ func (x *TaskServiceDeleteTaskResponse) String() string {
 func (*TaskServiceDeleteTaskResponse) ProtoMessage() {}
 
 func (x *TaskServiceDeleteTaskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[17]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1537,7 +1437,7 @@ func (x *TaskServiceDeleteTaskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskServiceDeleteTaskResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceDeleteTaskResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{17}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{16}
 }
 
 type CoreTaskEvent struct {
@@ -1560,7 +1460,7 @@ type CoreTaskEvent struct {
 
 func (x *CoreTaskEvent) Reset() {
 	*x = CoreTaskEvent{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1572,7 +1472,7 @@ func (x *CoreTaskEvent) String() string {
 func (*CoreTaskEvent) ProtoMessage() {}
 
 func (x *CoreTaskEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[18]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1585,7 +1485,7 @@ func (x *CoreTaskEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoreTaskEvent.ProtoReflect.Descriptor instead.
 func (*CoreTaskEvent) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{18}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CoreTaskEvent) GetTaskId() string {
@@ -1682,7 +1582,7 @@ type TaskServiceWatchTaskEventsRequest struct {
 
 func (x *TaskServiceWatchTaskEventsRequest) Reset() {
 	*x = TaskServiceWatchTaskEventsRequest{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1694,7 +1594,7 @@ func (x *TaskServiceWatchTaskEventsRequest) String() string {
 func (*TaskServiceWatchTaskEventsRequest) ProtoMessage() {}
 
 func (x *TaskServiceWatchTaskEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[19]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1707,7 +1607,7 @@ func (x *TaskServiceWatchTaskEventsRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use TaskServiceWatchTaskEventsRequest.ProtoReflect.Descriptor instead.
 func (*TaskServiceWatchTaskEventsRequest) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{19}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TaskServiceWatchTaskEventsRequest) GetTaskId() string {
@@ -1733,7 +1633,7 @@ type TaskServiceWatchTaskEventsResponse struct {
 
 func (x *TaskServiceWatchTaskEventsResponse) Reset() {
 	*x = TaskServiceWatchTaskEventsResponse{}
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1745,7 +1645,7 @@ func (x *TaskServiceWatchTaskEventsResponse) String() string {
 func (*TaskServiceWatchTaskEventsResponse) ProtoMessage() {}
 
 func (x *TaskServiceWatchTaskEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[20]
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1758,7 +1658,7 @@ func (x *TaskServiceWatchTaskEventsResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use TaskServiceWatchTaskEventsResponse.ProtoReflect.Descriptor instead.
 func (*TaskServiceWatchTaskEventsResponse) Descriptor() ([]byte, []int) {
-	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{20}
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TaskServiceWatchTaskEventsResponse) GetEvent() *CoreTaskEvent {
@@ -1766,6 +1666,106 @@ func (x *TaskServiceWatchTaskEventsResponse) GetEvent() *CoreTaskEvent {
 		return x.Event
 	}
 	return nil
+}
+
+type CoreTeamExecutionTaskPayload struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	PlanId             string                 `protobuf:"bytes,1,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	PlanRevision       uint64                 `protobuf:"varint,2,opt,name=plan_revision,json=planRevision,proto3" json:"plan_revision,omitempty"`
+	PlanDigest         string                 `protobuf:"bytes,3,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
+	ExecutionId        string                 `protobuf:"bytes,4,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	ConfirmationId     string                 `protobuf:"bytes,5,opt,name=confirmation_id,json=confirmationId,proto3" json:"confirmation_id,omitempty"`
+	ConversationId     string                 `protobuf:"bytes,6,opt,name=conversation_id,json=conversationId,proto3" json:"conversation_id,omitempty"`
+	CredentialId       string                 `protobuf:"bytes,7,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
+	CredentialRevision uint64                 `protobuf:"varint,8,opt,name=credential_revision,json=credentialRevision,proto3" json:"credential_revision,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *CoreTeamExecutionTaskPayload) Reset() {
+	*x = CoreTeamExecutionTaskPayload{}
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CoreTeamExecutionTaskPayload) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CoreTeamExecutionTaskPayload) ProtoMessage() {}
+
+func (x *CoreTeamExecutionTaskPayload) ProtoReflect() protoreflect.Message {
+	mi := &file_dirextalk_agent_v1_core_task_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CoreTeamExecutionTaskPayload.ProtoReflect.Descriptor instead.
+func (*CoreTeamExecutionTaskPayload) Descriptor() ([]byte, []int) {
+	return file_dirextalk_agent_v1_core_task_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetPlanRevision() uint64 {
+	if x != nil {
+		return x.PlanRevision
+	}
+	return 0
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetPlanDigest() string {
+	if x != nil {
+		return x.PlanDigest
+	}
+	return ""
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetConfirmationId() string {
+	if x != nil {
+		return x.ConfirmationId
+	}
+	return ""
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetConversationId() string {
+	if x != nil {
+		return x.ConversationId
+	}
+	return ""
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetCredentialId() string {
+	if x != nil {
+		return x.CredentialId
+	}
+	return ""
+}
+
+func (x *CoreTeamExecutionTaskPayload) GetCredentialRevision() uint64 {
+	if x != nil {
+		return x.CredentialRevision
+	}
+	return 0
 }
 
 var File_dirextalk_agent_v1_core_task_proto protoreflect.FileDescriptor
@@ -1807,17 +1807,7 @@ const file_dirextalk_agent_v1_core_task_proto_rawDesc = "" +
 	" \x01(\tR\x10toolSchemaDigest\x12)\n" +
 	"\x10arguments_digest\x18\v \x01(\tR\x0fargumentsDigest\x12'\n" +
 	"\x0fconfirmation_id\x18\f \x01(\tR\x0econfirmationId\x12!\n" +
-	"\fsafe_summary\x18\r \x01(\tR\vsafeSummary\"\xc8\x02\n" +
-	"\x1cCoreTeamExecutionTaskPayload\x12\x17\n" +
-	"\aplan_id\x18\x01 \x01(\tR\x06planId\x12#\n" +
-	"\rplan_revision\x18\x02 \x01(\x04R\fplanRevision\x12\x1f\n" +
-	"\vplan_digest\x18\x03 \x01(\tR\n" +
-	"planDigest\x12!\n" +
-	"\fexecution_id\x18\x04 \x01(\tR\vexecutionId\x12'\n" +
-	"\x0fconfirmation_id\x18\x05 \x01(\tR\x0econfirmationId\x12'\n" +
-	"\x0fconversation_id\x18\x06 \x01(\tR\x0econversationId\x12#\n" +
-	"\rcredential_id\x18\a \x01(\tR\fcredentialId\x12/\n" +
-	"\x13credential_revision\x18\b \x01(\x04R\x12credentialRevision\"\x87\x03\n" +
+	"\fsafe_summary\x18\r \x01(\tR\vsafeSummary\"\x87\x03\n" +
 	"\x10CoreTaskTemplate\x12\x12\n" +
 	"\x04goal\x18\x01 \x01(\tR\x04goal\x12'\n" +
 	"\x0fconversation_id\x18\x02 \x01(\tR\x0econversationId\x12(\n" +
@@ -1925,7 +1915,17 @@ const file_dirextalk_agent_v1_core_task_proto_rawDesc = "" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12%\n" +
 	"\x0eafter_sequence\x18\x02 \x01(\x03R\rafterSequence\"]\n" +
 	"\"TaskServiceWatchTaskEventsResponse\x127\n" +
-	"\x05event\x18\x01 \x01(\v2!.dirextalk.agent.v1.CoreTaskEventR\x05event*\xec\x01\n" +
+	"\x05event\x18\x01 \x01(\v2!.dirextalk.agent.v1.CoreTaskEventR\x05event\"\xc8\x02\n" +
+	"\x1cCoreTeamExecutionTaskPayload\x12\x17\n" +
+	"\aplan_id\x18\x01 \x01(\tR\x06planId\x12#\n" +
+	"\rplan_revision\x18\x02 \x01(\x04R\fplanRevision\x12\x1f\n" +
+	"\vplan_digest\x18\x03 \x01(\tR\n" +
+	"planDigest\x12!\n" +
+	"\fexecution_id\x18\x04 \x01(\tR\vexecutionId\x12'\n" +
+	"\x0fconfirmation_id\x18\x05 \x01(\tR\x0econfirmationId\x12'\n" +
+	"\x0fconversation_id\x18\x06 \x01(\tR\x0econversationId\x12#\n" +
+	"\rcredential_id\x18\a \x01(\tR\fcredentialId\x12/\n" +
+	"\x13credential_revision\x18\b \x01(\x04R\x12credentialRevision*\xec\x01\n" +
 	"\x0eCoreTaskStatus\x12 \n" +
 	"\x1cCORE_TASK_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17CORE_TASK_STATUS_QUEUED\x10\x01\x12\x1c\n" +
@@ -1975,24 +1975,24 @@ var file_dirextalk_agent_v1_core_task_proto_goTypes = []any{
 	(*CoreExtensionSelection)(nil),             // 2: dirextalk.agent.v1.CoreExtensionSelection
 	(*CoreWorkloadTaskPayload)(nil),            // 3: dirextalk.agent.v1.CoreWorkloadTaskPayload
 	(*CoreConversationToolTaskPayload)(nil),    // 4: dirextalk.agent.v1.CoreConversationToolTaskPayload
-	(*CoreTeamExecutionTaskPayload)(nil),       // 5: dirextalk.agent.v1.CoreTeamExecutionTaskPayload
-	(*CoreTaskTemplate)(nil),                   // 6: dirextalk.agent.v1.CoreTaskTemplate
-	(*CoreTask)(nil),                           // 7: dirextalk.agent.v1.CoreTask
-	(*TaskServiceCreateTaskRequest)(nil),       // 8: dirextalk.agent.v1.TaskServiceCreateTaskRequest
-	(*TaskServiceCreateTaskResponse)(nil),      // 9: dirextalk.agent.v1.TaskServiceCreateTaskResponse
-	(*TaskServiceGetTaskRequest)(nil),          // 10: dirextalk.agent.v1.TaskServiceGetTaskRequest
-	(*TaskServiceGetTaskResponse)(nil),         // 11: dirextalk.agent.v1.TaskServiceGetTaskResponse
-	(*TaskServiceListTasksRequest)(nil),        // 12: dirextalk.agent.v1.TaskServiceListTasksRequest
-	(*TaskServiceListTasksResponse)(nil),       // 13: dirextalk.agent.v1.TaskServiceListTasksResponse
-	(*TaskServiceCancelTaskRequest)(nil),       // 14: dirextalk.agent.v1.TaskServiceCancelTaskRequest
-	(*TaskServiceCancelTaskResponse)(nil),      // 15: dirextalk.agent.v1.TaskServiceCancelTaskResponse
-	(*TaskServiceRetryTaskRequest)(nil),        // 16: dirextalk.agent.v1.TaskServiceRetryTaskRequest
-	(*TaskServiceRetryTaskResponse)(nil),       // 17: dirextalk.agent.v1.TaskServiceRetryTaskResponse
-	(*TaskServiceDeleteTaskRequest)(nil),       // 18: dirextalk.agent.v1.TaskServiceDeleteTaskRequest
-	(*TaskServiceDeleteTaskResponse)(nil),      // 19: dirextalk.agent.v1.TaskServiceDeleteTaskResponse
-	(*CoreTaskEvent)(nil),                      // 20: dirextalk.agent.v1.CoreTaskEvent
-	(*TaskServiceWatchTaskEventsRequest)(nil),  // 21: dirextalk.agent.v1.TaskServiceWatchTaskEventsRequest
-	(*TaskServiceWatchTaskEventsResponse)(nil), // 22: dirextalk.agent.v1.TaskServiceWatchTaskEventsResponse
+	(*CoreTaskTemplate)(nil),                   // 5: dirextalk.agent.v1.CoreTaskTemplate
+	(*CoreTask)(nil),                           // 6: dirextalk.agent.v1.CoreTask
+	(*TaskServiceCreateTaskRequest)(nil),       // 7: dirextalk.agent.v1.TaskServiceCreateTaskRequest
+	(*TaskServiceCreateTaskResponse)(nil),      // 8: dirextalk.agent.v1.TaskServiceCreateTaskResponse
+	(*TaskServiceGetTaskRequest)(nil),          // 9: dirextalk.agent.v1.TaskServiceGetTaskRequest
+	(*TaskServiceGetTaskResponse)(nil),         // 10: dirextalk.agent.v1.TaskServiceGetTaskResponse
+	(*TaskServiceListTasksRequest)(nil),        // 11: dirextalk.agent.v1.TaskServiceListTasksRequest
+	(*TaskServiceListTasksResponse)(nil),       // 12: dirextalk.agent.v1.TaskServiceListTasksResponse
+	(*TaskServiceCancelTaskRequest)(nil),       // 13: dirextalk.agent.v1.TaskServiceCancelTaskRequest
+	(*TaskServiceCancelTaskResponse)(nil),      // 14: dirextalk.agent.v1.TaskServiceCancelTaskResponse
+	(*TaskServiceRetryTaskRequest)(nil),        // 15: dirextalk.agent.v1.TaskServiceRetryTaskRequest
+	(*TaskServiceRetryTaskResponse)(nil),       // 16: dirextalk.agent.v1.TaskServiceRetryTaskResponse
+	(*TaskServiceDeleteTaskRequest)(nil),       // 17: dirextalk.agent.v1.TaskServiceDeleteTaskRequest
+	(*TaskServiceDeleteTaskResponse)(nil),      // 18: dirextalk.agent.v1.TaskServiceDeleteTaskResponse
+	(*CoreTaskEvent)(nil),                      // 19: dirextalk.agent.v1.CoreTaskEvent
+	(*TaskServiceWatchTaskEventsRequest)(nil),  // 20: dirextalk.agent.v1.TaskServiceWatchTaskEventsRequest
+	(*TaskServiceWatchTaskEventsResponse)(nil), // 21: dirextalk.agent.v1.TaskServiceWatchTaskEventsResponse
+	(*CoreTeamExecutionTaskPayload)(nil),       // 22: dirextalk.agent.v1.CoreTeamExecutionTaskPayload
 	(*structpb.Struct)(nil),                    // 23: google.protobuf.Struct
 	(*timestamppb.Timestamp)(nil),              // 24: google.protobuf.Timestamp
 }
@@ -2009,32 +2009,32 @@ var file_dirextalk_agent_v1_core_task_proto_depIdxs = []int32{
 	1,  // 9: dirextalk.agent.v1.CoreTask.kind:type_name -> dirextalk.agent.v1.CoreTaskKind
 	3,  // 10: dirextalk.agent.v1.CoreTask.workload:type_name -> dirextalk.agent.v1.CoreWorkloadTaskPayload
 	4,  // 11: dirextalk.agent.v1.CoreTask.conversation_tool:type_name -> dirextalk.agent.v1.CoreConversationToolTaskPayload
-	5,  // 12: dirextalk.agent.v1.CoreTask.team_execution:type_name -> dirextalk.agent.v1.CoreTeamExecutionTaskPayload
+	22, // 12: dirextalk.agent.v1.CoreTask.team_execution:type_name -> dirextalk.agent.v1.CoreTeamExecutionTaskPayload
 	2,  // 13: dirextalk.agent.v1.TaskServiceCreateTaskRequest.extensions:type_name -> dirextalk.agent.v1.CoreExtensionSelection
-	7,  // 14: dirextalk.agent.v1.TaskServiceCreateTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
-	7,  // 15: dirextalk.agent.v1.TaskServiceGetTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
+	6,  // 14: dirextalk.agent.v1.TaskServiceCreateTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
+	6,  // 15: dirextalk.agent.v1.TaskServiceGetTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
 	0,  // 16: dirextalk.agent.v1.TaskServiceListTasksRequest.status:type_name -> dirextalk.agent.v1.CoreTaskStatus
-	7,  // 17: dirextalk.agent.v1.TaskServiceListTasksResponse.tasks:type_name -> dirextalk.agent.v1.CoreTask
-	7,  // 18: dirextalk.agent.v1.TaskServiceCancelTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
-	7,  // 19: dirextalk.agent.v1.TaskServiceRetryTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
+	6,  // 17: dirextalk.agent.v1.TaskServiceListTasksResponse.tasks:type_name -> dirextalk.agent.v1.CoreTask
+	6,  // 18: dirextalk.agent.v1.TaskServiceCancelTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
+	6,  // 19: dirextalk.agent.v1.TaskServiceRetryTaskResponse.task:type_name -> dirextalk.agent.v1.CoreTask
 	0,  // 20: dirextalk.agent.v1.CoreTaskEvent.status:type_name -> dirextalk.agent.v1.CoreTaskStatus
 	23, // 21: dirextalk.agent.v1.CoreTaskEvent.result:type_name -> google.protobuf.Struct
 	24, // 22: dirextalk.agent.v1.CoreTaskEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	20, // 23: dirextalk.agent.v1.TaskServiceWatchTaskEventsResponse.event:type_name -> dirextalk.agent.v1.CoreTaskEvent
-	8,  // 24: dirextalk.agent.v1.TaskService.CreateTask:input_type -> dirextalk.agent.v1.TaskServiceCreateTaskRequest
-	10, // 25: dirextalk.agent.v1.TaskService.GetTask:input_type -> dirextalk.agent.v1.TaskServiceGetTaskRequest
-	12, // 26: dirextalk.agent.v1.TaskService.ListTasks:input_type -> dirextalk.agent.v1.TaskServiceListTasksRequest
-	14, // 27: dirextalk.agent.v1.TaskService.CancelTask:input_type -> dirextalk.agent.v1.TaskServiceCancelTaskRequest
-	16, // 28: dirextalk.agent.v1.TaskService.RetryTask:input_type -> dirextalk.agent.v1.TaskServiceRetryTaskRequest
-	18, // 29: dirextalk.agent.v1.TaskService.DeleteTask:input_type -> dirextalk.agent.v1.TaskServiceDeleteTaskRequest
-	21, // 30: dirextalk.agent.v1.TaskService.WatchTaskEvents:input_type -> dirextalk.agent.v1.TaskServiceWatchTaskEventsRequest
-	9,  // 31: dirextalk.agent.v1.TaskService.CreateTask:output_type -> dirextalk.agent.v1.TaskServiceCreateTaskResponse
-	11, // 32: dirextalk.agent.v1.TaskService.GetTask:output_type -> dirextalk.agent.v1.TaskServiceGetTaskResponse
-	13, // 33: dirextalk.agent.v1.TaskService.ListTasks:output_type -> dirextalk.agent.v1.TaskServiceListTasksResponse
-	15, // 34: dirextalk.agent.v1.TaskService.CancelTask:output_type -> dirextalk.agent.v1.TaskServiceCancelTaskResponse
-	17, // 35: dirextalk.agent.v1.TaskService.RetryTask:output_type -> dirextalk.agent.v1.TaskServiceRetryTaskResponse
-	19, // 36: dirextalk.agent.v1.TaskService.DeleteTask:output_type -> dirextalk.agent.v1.TaskServiceDeleteTaskResponse
-	22, // 37: dirextalk.agent.v1.TaskService.WatchTaskEvents:output_type -> dirextalk.agent.v1.TaskServiceWatchTaskEventsResponse
+	19, // 23: dirextalk.agent.v1.TaskServiceWatchTaskEventsResponse.event:type_name -> dirextalk.agent.v1.CoreTaskEvent
+	7,  // 24: dirextalk.agent.v1.TaskService.CreateTask:input_type -> dirextalk.agent.v1.TaskServiceCreateTaskRequest
+	9,  // 25: dirextalk.agent.v1.TaskService.GetTask:input_type -> dirextalk.agent.v1.TaskServiceGetTaskRequest
+	11, // 26: dirextalk.agent.v1.TaskService.ListTasks:input_type -> dirextalk.agent.v1.TaskServiceListTasksRequest
+	13, // 27: dirextalk.agent.v1.TaskService.CancelTask:input_type -> dirextalk.agent.v1.TaskServiceCancelTaskRequest
+	15, // 28: dirextalk.agent.v1.TaskService.RetryTask:input_type -> dirextalk.agent.v1.TaskServiceRetryTaskRequest
+	17, // 29: dirextalk.agent.v1.TaskService.DeleteTask:input_type -> dirextalk.agent.v1.TaskServiceDeleteTaskRequest
+	20, // 30: dirextalk.agent.v1.TaskService.WatchTaskEvents:input_type -> dirextalk.agent.v1.TaskServiceWatchTaskEventsRequest
+	8,  // 31: dirextalk.agent.v1.TaskService.CreateTask:output_type -> dirextalk.agent.v1.TaskServiceCreateTaskResponse
+	10, // 32: dirextalk.agent.v1.TaskService.GetTask:output_type -> dirextalk.agent.v1.TaskServiceGetTaskResponse
+	12, // 33: dirextalk.agent.v1.TaskService.ListTasks:output_type -> dirextalk.agent.v1.TaskServiceListTasksResponse
+	14, // 34: dirextalk.agent.v1.TaskService.CancelTask:output_type -> dirextalk.agent.v1.TaskServiceCancelTaskResponse
+	16, // 35: dirextalk.agent.v1.TaskService.RetryTask:output_type -> dirextalk.agent.v1.TaskServiceRetryTaskResponse
+	18, // 36: dirextalk.agent.v1.TaskService.DeleteTask:output_type -> dirextalk.agent.v1.TaskServiceDeleteTaskResponse
+	21, // 37: dirextalk.agent.v1.TaskService.WatchTaskEvents:output_type -> dirextalk.agent.v1.TaskServiceWatchTaskEventsResponse
 	31, // [31:38] is the sub-list for method output_type
 	24, // [24:31] is the sub-list for method input_type
 	24, // [24:24] is the sub-list for extension type_name
@@ -2047,7 +2047,7 @@ func file_dirextalk_agent_v1_core_task_proto_init() {
 	if File_dirextalk_agent_v1_core_task_proto != nil {
 		return
 	}
-	file_dirextalk_agent_v1_core_task_proto_msgTypes[18].OneofWrappers = []any{}
+	file_dirextalk_agent_v1_core_task_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
