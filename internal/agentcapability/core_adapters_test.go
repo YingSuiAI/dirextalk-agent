@@ -520,6 +520,92 @@ func TestChatCapabilitySchemaRequiresProfilePins(t *testing.T) {
 	}
 }
 
+func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
+	createdAt := time.Date(2026, 8, 6, 1, 2, 3, 0, time.UTC)
+	metadata := publicTurnMetadataList([]coreconversation.Turn{{
+		ID:                      "11111111-1111-4111-8111-111111111111",
+		RequestID:               "request-must-not-cross",
+		RequestFingerprint:      "fingerprint-must-not-cross",
+		ConversationID:          "22222222-2222-4222-8222-222222222222",
+		Prompt:                  "prompt-must-not-cross",
+		ProfileID:               "profile-must-not-cross",
+		Revision:                3,
+		State:                   coreconversation.TurnCompleted,
+		TerminalCode:            "",
+		TerminalSummary:         "",
+		LastSequence:            7,
+		CreatedAt:               createdAt,
+		UpdatedAt:               createdAt.Add(time.Second),
+		ProfileSnapshotDigest:   "snapshot-must-not-cross",
+		ExtensionSnapshotDigest: "extensions-must-not-cross",
+	}})
+	raw, err := json.Marshal(map[string]any{"turns": metadata, "next_page_token": "next"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	turns := envelope["turns"].([]any)
+	turn := turns[0].(map[string]any)
+	if len(turn) != 9 || turn["turn_id"] == nil || turn["conversation_id"] == nil || turn["state"] != "completed" {
+		t.Fatalf("canonical turn metadata = %#v", turn)
+	}
+	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "request_id", "prompt", "profile_id", "ProfileSnapshot"} {
+		if _, leaked := turn[forbidden]; leaked {
+			t.Fatalf("private turn field %q leaked: %#v", forbidden, turn)
+		}
+	}
+
+	descriptor := (&coreChatCapability{}).Descriptor()
+	for _, operation := range descriptor.GetOperations() {
+		if operation.GetOperationId() != "list_turns" {
+			continue
+		}
+		if strings.Contains(operation.GetResultSchemaJson(), "prompt") ||
+			strings.Contains(operation.GetResultSchemaJson(), "profile") ||
+			!strings.Contains(operation.GetResultSchemaJson(), `"additionalProperties":false`) {
+			t.Fatalf("unsafe list_turns result schema: %s", operation.GetResultSchemaJson())
+		}
+		var input map[string]any
+		if err := json.Unmarshal([]byte(operation.GetInputSchemaJson()), &input); err != nil {
+			t.Fatal(err)
+		}
+		if input["additionalProperties"] != false {
+			t.Fatalf("list_turns input is not closed: %s", operation.GetInputSchemaJson())
+		}
+		return
+	}
+	t.Fatal("list_turns descriptor is missing")
+}
+
+func TestListTurnsCapabilityRejectsUnknownAliasesAndMalformedFields(t *testing.T) {
+	conversationID := "22222222-2222-4222-8222-222222222222"
+	if err := validateListTurnsCapabilityInput(map[string]json.RawMessage{
+		"conversation_id": json.RawMessage(`"` + conversationID + `"`),
+		"page_token":      json.RawMessage(`""`),
+		"limit":           json.RawMessage(`20`),
+	}); err != nil {
+		t.Fatalf("canonical input rejected: %v", err)
+	}
+	for _, raw := range []string{
+		`{"conversation_id":"` + conversationID + `","next_cursor":"legacy"}`,
+		`{"conversation_id":"conversation-1"}`,
+		`{"conversation_id":"00000000-0000-0000-0000-000000000000"}`,
+		`{"conversation_id":"` + conversationID + `","limit":1.5}`,
+		`{"conversation_id":"` + conversationID + `","limit":1001}`,
+	} {
+		var input map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &input); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateListTurnsCapabilityInput(input); !errors.Is(err, coreconversation.ErrInvalid) {
+			t.Fatalf("input %s error=%v, want ErrInvalid", raw, err)
+		}
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

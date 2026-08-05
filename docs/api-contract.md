@@ -55,6 +55,13 @@ multi-tenant model.
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
+- Capability `agent.chat.v1/list_turns` accepts only a canonical conversation
+  UUID, an optional opaque page token of at most 4,096 bytes, and an optional
+  limit from 1 through 1,000. Its closed result projects exactly `turn_id`,
+  `conversation_id`, `state`, `revision`, `last_sequence`, `terminal_code`,
+  `terminal_summary`, `created_at`, and `updated_at`; prompts, request identity,
+  model/profile data, credentials, and execution snapshots never cross the
+  Capability boundary.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.

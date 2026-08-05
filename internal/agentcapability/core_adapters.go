@@ -152,6 +152,39 @@ type coreChatCapability struct {
 	progress func(context.Context, string, []byte) error
 }
 
+// publicTurnMetadata is the only list_turns projection allowed to cross the
+// Capability boundary. In particular, prompt, request identity, model/profile
+// data, and decrypted execution snapshots remain Agent-private.
+type publicTurnMetadata struct {
+	TurnID          string                     `json:"turn_id"`
+	ConversationID  string                     `json:"conversation_id"`
+	State           coreconversation.TurnState `json:"state"`
+	Revision        uint64                     `json:"revision"`
+	LastSequence    int64                      `json:"last_sequence"`
+	TerminalCode    string                     `json:"terminal_code"`
+	TerminalSummary string                     `json:"terminal_summary"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	UpdatedAt       time.Time                  `json:"updated_at"`
+}
+
+func publicTurnMetadataList(values []coreconversation.Turn) []publicTurnMetadata {
+	result := make([]publicTurnMetadata, 0, len(values))
+	for _, value := range values {
+		result = append(result, publicTurnMetadata{
+			TurnID:          value.ID,
+			ConversationID:  value.ConversationID,
+			State:           value.State,
+			Revision:        value.Revision,
+			LastSequence:    value.LastSequence,
+			TerminalCode:    value.TerminalCode,
+			TerminalSummary: value.TerminalSummary,
+			CreatedAt:       value.CreatedAt,
+			UpdatedAt:       value.UpdatedAt,
+		})
+	}
+	return result
+}
+
 func (c *coreChatCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.chat.v1", "Chat", "Core conversation operations", []opSpec{
 		{"create_conversation", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
@@ -211,8 +244,11 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		receipt, err := c.service.DeleteConversationReceipt(ctx, stringValue(in, "conversation_id"), uintValue(in, "expected_revision"), key)
 		return marshalResult(map[string]any{"conversation": receipt.Conversation, "replayed": receipt.Replayed}, err)
 	case "list_turns":
+		if err := validateListTurnsCapabilityInput(in); err != nil {
+			return nil, err
+		}
 		values, next, err := c.service.ListTurns(ctx, stringValue(in, "conversation_id"), stringValue(in, "page_token"), intValue(in, "limit", 50))
-		return marshalResult(map[string]any{"turns": values, "next_page_token": next}, err)
+		return marshalResult(map[string]any{"turns": publicTurnMetadataList(values), "next_page_token": next}, err)
 	case "compress_context":
 		value, err := c.service.CompressContext(ctx, stringValue(in, "conversation_id"), uintValue(in, "expected_revision"), intValue(in, "memory_window", coreconversation.DefaultContextMemoryWindow), key)
 		return marshalResult(value, err)
@@ -264,6 +300,40 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 	default:
 		return nil, fmt.Errorf("unknown chat operation %q", operationID)
 	}
+}
+
+func validateListTurnsCapabilityInput(in map[string]json.RawMessage) error {
+	allowed := map[string]struct{}{
+		"conversation_id": {},
+		"page_token":      {},
+		"limit":           {},
+	}
+	for key := range in {
+		if _, ok := allowed[key]; !ok {
+			return coreconversation.ErrInvalid
+		}
+	}
+	var conversationID string
+	if raw, ok := in["conversation_id"]; !ok || json.Unmarshal(raw, &conversationID) != nil {
+		return coreconversation.ErrInvalid
+	}
+	parsed, err := uuid.Parse(conversationID)
+	if err != nil || parsed == uuid.Nil || parsed.String() != conversationID {
+		return coreconversation.ErrInvalid
+	}
+	if raw, ok := in["page_token"]; ok {
+		var pageToken string
+		if json.Unmarshal(raw, &pageToken) != nil || len(pageToken) > 4096 {
+			return coreconversation.ErrInvalid
+		}
+	}
+	if raw, ok := in["limit"]; ok {
+		var limit int
+		if json.Unmarshal(raw, &limit) != nil || limit <= 0 || limit > 1000 {
+			return coreconversation.ErrInvalid
+		}
+	}
+	return nil
 }
 
 func emitCapabilityProgress(ctx context.Context, operationID string, event coreconversation.StreamEvent, progress func(context.Context, string, []byte) error) error {
@@ -1248,6 +1318,8 @@ func operationResultSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"},"revision":{"type":"integer"},"updated_at":{"type":"string"}},"required":["embedding_profile_id","embedding_profile_revision","embedding_model","collection_config_digest","revision"]}`
 	case "agent.knowledge.v1:search_knowledge", "agent.knowledge.v1:search_memory":
 		return `{"type":"object","properties":{"items":{"type":"array"},"next_cursor":{"type":"string"},"search_mode":{"type":"string"},"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"embedding_generation":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["items","next_cursor","search_mode"]}`
+	case "agent.chat.v1:list_turns":
+		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"},"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
 	default:
 		return `{"type":"object"}`
 	}
@@ -1267,7 +1339,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.chat.v1:delete_conversation":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:list_turns":
-		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"page_token":{"type":"string"},"limit":{"type":"integer"}},"required":["conversation_id"]}`
+		return `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"limit":{"maximum":1000,"minimum":1,"type":"integer"},"page_token":{"maxLength":4096,"type":"string"}},"required":["conversation_id"],"type":"object"}`
 	case "agent.chat.v1:compress_context":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"expected_revision":{"type":"integer"},"memory_window":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:summarize":
