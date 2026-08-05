@@ -1,6 +1,6 @@
 # Agent Core v1 + Central OS Pi Worker 三仓统一迁移设计
 
-状态：待用户书面审阅
+状态：已由用户确认，进入三仓实施规划
 
 日期：2026-08-06
 
@@ -130,9 +130,11 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 2. Worker 输出只提供候选结论、交付物和测试结果；云资源是否已清理只能由 Central 的 AWS 读回事实决定。
 3. 控制器销毁全部临时资源，并逐项读回 EC2、EBS、ENI、EIP 和 SG 状态。
 4. 只有结果已验证且资源账本全部 `verified_destroyed`，Execution 才能进入 `completed`。
-5. Agent 在一个本地事务边界内冻结 Team Report、向原 Agent-owned conversation 追加 Central 最终消息并写入 `team_completion_outbox`。异步通知只携带 event/conversation/execution/report 绑定和安全摘要。
+5. Agent 在一个本地事务边界内冻结 Team Report、向原 Agent-owned conversation 追加 Central 最终消息并写入 `team_completion_outbox`。异步通知只携带 `event_id`、`execution_id`、`task_id`、`conversation_id`、终态、`result_message_id` 和完成时间。
 6. Message Server 幂等接收封闭通知并推送 realtime invalidation；Flutter 回读 Agent-owned conversation 和 Execution 详情，显示最终摘要和产物入口。Message Server 可以保存 event ID 去重收据，但不能保存 Team 执行历史。
 7. 失败、取消或超时同样必须进入清理流程；清理不确定时保持 `attention_required`，不能伪装成完成。
+
+异步完成发生时，原聊天 RPC 和短期用户 delegation 已经结束，因此完成通知不能重放或延长原用户 grant。通知固定走现有 Agent→Message Server Product Capability mTLS 连接上的专用 service-notification 分支：Message Server 从部署配置派生 owner 和 account generation，并同时校验 mTLS 客户端证书、方向 token、Agent instance ID、generation、固定 `product.agent_team.v1/completion_record`、规范请求 digest 和永久 operation ID 去重。该分支不能调用其他 Product operation，也不能携带用户可选 owner、scope 或业务 action；除此之外的 Product Capability 调用仍必须完整使用现有用户 delegation/grant。
 
 ## 5. 关键约束
 
@@ -271,6 +273,8 @@ Central 内部模型工具固定为：
 
 - `team_plan_prepare`：只提交受限 Team Proposal，不能审批、启动资源或接触凭证。
 - `team_task_status`：只读取 Central 去敏投影和最终报告，不读取 Worker 原始输出。
+
+这两个工具作为 `coreconversation.ExtensionResolver` 链上的服务端内置工具注入，只在当前 owner/account generation、Team capability readiness 和 runtime catalog 均通过时对模型可见。它们不是可安装 MCP，不允许被同名 Skill/MCP 覆盖，也不把 AWS 凭证、报价原文、Worker 结果或内部执行坐标写入模型上下文。
 
 ## 11. 错误和恢复
 
