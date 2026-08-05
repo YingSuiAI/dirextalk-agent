@@ -118,6 +118,22 @@ func (value IntentV1) ValidateAgainstForCleanup(
 	return nil
 }
 
+func (value IntentV1) ValidateAgainstForResultCollection(
+	authorized AuthorizedExecution,
+) error {
+	if authorized.ValidateForResultCollection() != nil {
+		return ErrFactMismatch
+	}
+	expected, err := materializeIntentFacts(
+		authorized,
+		value.RoleID,
+	)
+	if err != nil || !reflect.DeepEqual(value, expected) {
+		return ErrFactMismatch
+	}
+	return nil
+}
+
 func ClaimIdempotencyKey(intent IntentV1) (string, error) {
 	if intent.Validate() != nil {
 		return "", ErrInvalid

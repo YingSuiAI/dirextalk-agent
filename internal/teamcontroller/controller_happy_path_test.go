@@ -124,6 +124,43 @@ func TestProcessRoleCompletesApprovedWorkerLifecycle(t *testing.T) {
 	}
 }
 
+func TestProcessRoleCollectsResultWhileExecutionIsVerifying(t *testing.T) {
+	t.Parallel()
+	fixture := newControllerHappyPathFixture(t)
+	ctx := context.Background()
+
+	for range 6 {
+		if err := fixture.controller.ProcessRole(
+			ctx,
+			fixture.intent.OwnerID,
+			fixture.intent.OperationID,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fixture.repository.current.Phase != teamdispatch.PhaseActive {
+		t.Fatalf("phase = %s, want active", fixture.repository.current.Phase)
+	}
+	fixture.workers.finishSucceeded(t, fixture.objects)
+	reader := fixture.controller.authorizations.(happyPathAuthorizationReader)
+	reader.authorized.Execution.Status = teamexecution.StatusVerifying
+	fixture.controller.authorizations = reader
+
+	if err := fixture.controller.ProcessRole(
+		ctx,
+		fixture.intent.OwnerID,
+		fixture.intent.OperationID,
+	); err != nil {
+		t.Fatalf("collect verifying result: %v", err)
+	}
+	if fixture.repository.current.Phase != teamdispatch.PhaseResultReady {
+		t.Fatalf(
+			"phase = %s, want result_ready",
+			fixture.repository.current.Phase,
+		)
+	}
+}
+
 type controllerHappyPathFixture struct {
 	controller   *Controller
 	intent       teamdispatch.IntentV1

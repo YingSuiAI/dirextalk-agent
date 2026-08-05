@@ -688,7 +688,7 @@ func (controller *Controller) collectRoleResult(
 			teamdispatch.PhaseDestroying,
 		)
 	}
-	authorized, err := controller.loadAuthorization(ctx, dispatch)
+	authorized, err := controller.loadResultAuthorization(ctx, dispatch)
 	if err != nil ||
 		authorized.Approval.Approval.Authorization == nil {
 		if err == nil {
@@ -1312,6 +1312,25 @@ func (controller *Controller) loadAuthorization(
 	}
 	if authorized.Validate() != nil ||
 		dispatch.Intent.ValidateAgainst(authorized) != nil {
+		return teamdispatch.AuthorizedExecution{}, ErrFactMismatch
+	}
+	return authorized, nil
+}
+
+func (controller *Controller) loadResultAuthorization(
+	ctx context.Context,
+	dispatch teamdispatch.Fact,
+) (teamdispatch.AuthorizedExecution, error) {
+	authorized, err := controller.authorizations.LoadAuthorizedExecution(
+		ctx,
+		dispatch.Intent.OwnerID,
+		dispatch.Intent.ExecutionID,
+	)
+	if err != nil {
+		return teamdispatch.AuthorizedExecution{}, err
+	}
+	if authorized.ValidateForResultCollection() != nil ||
+		dispatch.Intent.ValidateAgainstForResultCollection(authorized) != nil {
 		return teamdispatch.AuthorizedExecution{}, ErrFactMismatch
 	}
 	return authorized, nil

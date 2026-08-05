@@ -112,6 +112,43 @@ func TestIntentBindsExactSignedFactsAndLaunchWindow(t *testing.T) {
 	}
 }
 
+func TestResultCollectionAuthorizationAcceptsVerifyingOnlyBeforeTerminal(t *testing.T) {
+	authorized, now := dispatchFixture(t)
+	intent, err := NewIntent(
+		authorized,
+		"implement",
+		now.Add(2*time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	authorized.Execution.Status = teamexecution.StatusVerifying
+	if !errors.Is(authorized.Validate(), ErrNotReady) {
+		t.Fatal("ordinary authorization accepted verifying execution")
+	}
+	if err := authorized.ValidateForResultCollection(); err != nil {
+		t.Fatalf("result collection rejected verifying execution: %v", err)
+	}
+	if err := intent.ValidateAgainstForResultCollection(authorized); err != nil {
+		t.Fatalf("result collection rejected bound intent: %v", err)
+	}
+
+	authorized.Execution.Status = teamexecution.StatusCompleted
+	if !errors.Is(
+		authorized.ValidateForResultCollection(),
+		ErrNotReady,
+	) {
+		t.Fatal("result collection accepted terminal execution")
+	}
+	if !errors.Is(
+		intent.ValidateAgainstForResultCollection(authorized),
+		ErrFactMismatch,
+	) {
+		t.Fatal("result collection accepted terminal intent binding")
+	}
+}
+
 func TestServiceSchedulesConvergentlyAndReleasesDependency(t *testing.T) {
 	authorized, now := dispatchFixture(t)
 	progress := &dispatchProgressReader{items: dispatchProgress(false)}

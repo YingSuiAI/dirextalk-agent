@@ -90,6 +90,20 @@ func (value AuthorizedExecution) ValidateForCleanup() error {
 	}
 }
 
+func (value AuthorizedExecution) ValidateForResultCollection() error {
+	if value.validateFacts() != nil {
+		return ErrFactMismatch
+	}
+	switch value.Execution.Status {
+	case teamexecution.StatusDispatching,
+		teamexecution.StatusRunning,
+		teamexecution.StatusVerifying:
+		return nil
+	default:
+		return ErrNotReady
+	}
+}
+
 func (value AuthorizedExecution) validateFacts() error {
 	if value.Execution.Execution.ValidateAgainst(value.Approval) != nil ||
 		value.Execution.ExecutionDigest == "" ||
