@@ -2,7 +2,7 @@
 set -eu
 
 usage() {
-  echo "usage: $0 OUTPUT_DIR [CORE_IMAGE] [RUNNER_IMAGE] [POSTGRES_IMAGE] [TLS_SERVER_NAME]" >&2
+  echo "usage: $0 OUTPUT_DIR [AGENT_IMAGE] [POSTGRES_IMAGE] [TLS_SERVER_NAME]" >&2
   exit 2
 }
 
@@ -13,13 +13,14 @@ die() {
 
 out_input=${1:-}
 [ -n "$out_input" ] || usage
-core_image=${2:-dirextalk-agent-core:local}
-runner_image=${3:-dirextalk-extension-runner:local}
-postgres_image=${4:-docker.io/library/postgres:18@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a}
-core_runner_image=${DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE:-dirextalk-core-runner:local}
-tls_server_name=${5:-localhost}
+agent_image=${2:-dirextalk-agent:local}
+postgres_image=${3:-docker.io/library/postgres:18@sha256:3a82e1f56c8f0f5616a11103ac3d47e632c3938698946a7ad26da0df1334744a}
+tls_server_name=${4:-localhost}
 case "$tls_server_name" in
-  *[!A-Za-z0-9.-]*|""|.*|*-|.*-*) echo "invalid TLS server name" >&2; exit 2 ;;
+  ""|*[!A-Za-z0-9.-]*) echo "invalid TLS server name" >&2; exit 2 ;;
+esac
+case "$tls_server_name" in
+  .*|*-) echo "invalid TLS server name" >&2; exit 2 ;;
 esac
 
 parse_bool() {
@@ -38,7 +39,10 @@ validate_uid() {
     ''|*[!0-9]*) die "${name} must be a positive decimal UID" ;;
     0*) die "${name} must be a positive decimal UID" ;;
   esac
-  [ "$value" != "65532" ] || die "${name} must differ from the Agent UID 65532"
+  case "$name:$value" in
+    DIREXTALK_CORE_EXTENSION_RUNNER_UID:65531|DIREXTALK_CORE_WORKLOAD_RUNNER_UID:65530) ;;
+    *) die "${name} must match the unified Agent image UID contract" ;;
+  esac
 }
 
 validate_socket() {
@@ -155,6 +159,7 @@ validate_manifest() {
   manifest=$dir/.manifest
   is_regular_protected_file "$manifest" || return 1
   [ "$(sed -n '1p' "$manifest")" = "# dirextalk-bootstrap-manifest-v1" ] || return 1
+  # shellcheck disable=SC2086
   expected_count=$(printf '%s\n' $required_files | wc -l)
   actual_count=$(tail -n +2 "$manifest" | wc -l)
   [ "$actual_count" -eq "$expected_count" ] || return 1
@@ -214,7 +219,7 @@ validate_complete() {
   grep -Fqx "DIREXTALK_CORE_SECRET_MASTER_KEY_FILE=$expected_root/core-secret-master-key" "$dir/.env" || return 1
   grep -Fqx "DIREXTALK_AGENT_INSTANCE_ID_FILE=$expected_root/instance-id" "$dir/.env" || return 1
   grep -Eq '^DIREXTALK_AGENT_EXPECTED_INSTANCE_ID=[0-9a-f-]+$' "$dir/.env" || return 1
-  grep -Eq '^DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=.+$' "$dir/.env" || return 1
+  grep -Eq '^DIREXTALK_AGENT_IMAGE_IMMUTABLE=.+$' "$dir/.env" || return 1
   stack_name=$(sed -n 's/^DIREXTALK_AGENT_STACK_NAME=//p' "$dir/.env" | tail -n 1)
   validate_stack_name DIREXTALK_AGENT_STACK_NAME "$stack_name" >/dev/null 2>&1 || return 1
   for name in \
@@ -235,10 +240,12 @@ validate_complete() {
     value=$(sed -n "s/^${name}=//p" "$dir/.env" | tail -n 1)
     [ -z "$value" ] || validate_cgroup_parent "$name" "$value" >/dev/null 2>&1 || return 1
   done
+  grep -Fqx 'DIREXTALK_CORE_EXTENSION_RUNNER_UID=65531' "$dir/.env" || return 1
+  grep -Fqx 'DIREXTALK_CORE_WORKLOAD_RUNNER_UID=65530' "$dir/.env" || return 1
   grep -Eq '^core_extension_enabled: (true|false)$' "$dir/config.yaml" || return 1
   grep -Eq '^core_workload_enabled: (true|false)$' "$dir/config.yaml" || return 1
-  grep -Eq '^core_extension_runner_uid: [1-9][0-9]*$' "$dir/config.yaml" || return 1
-  grep -Eq '^core_workload_runner_uid: [1-9][0-9]*$' "$dir/config.yaml" || return 1
+  grep -Fqx 'core_extension_runner_uid: 65531' "$dir/config.yaml" || return 1
+  grep -Fqx 'core_workload_runner_uid: 65530' "$dir/config.yaml" || return 1
 }
 
 write_migration_marker() {
@@ -288,6 +295,7 @@ write_manifest_atomic() {
   rm -f "$manifest_tmp"
   (
     cd "$dir" || exit 1
+    # shellcheck disable=SC2086
     { printf '%s\n' '# dirextalk-bootstrap-manifest-v1'; sha256sum $required_files; } > "$manifest_tmp"
   ) || { rm -f "$manifest_tmp"; return 1; }
   if [ "${2:-failpoint}" = failpoint ]; then
@@ -548,9 +556,7 @@ core_workload_runner_uid: $workload_runner_uid
 EOF
 
 cat > "$stage/.env" <<EOF
-DIREXTALK_AGENT_IMAGE_IMMUTABLE=$core_image
-DIREXTALK_EXTENSION_RUNNER_IMAGE_IMMUTABLE=$runner_image
-DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=$core_runner_image
+DIREXTALK_AGENT_IMAGE_IMMUTABLE=$agent_image
 DIREXTALK_POSTGRES_IMAGE_IMMUTABLE=$postgres_image
 DIREXTALK_AGENT_CONFIG_FILE=$out/config.yaml
 DIREXTALK_POSTGRES_PASSWORD_FILE=$out/postgres-password
@@ -602,6 +608,7 @@ done
   cd "$stage"
   {
     printf '%s\n' '# dirextalk-bootstrap-manifest-v1'
+    # shellcheck disable=SC2086
     sha256sum $required_files
   } > .manifest
 )

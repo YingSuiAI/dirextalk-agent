@@ -1,19 +1,21 @@
-# Dirextalk Agent Core containers
+# Dirextalk Agent containers
 
 These assets deploy one independent Core instance with its own private
-PostgreSQL database and named volumes. The Core image and migration command use
-the same immutable image reference. The extension runner is a separate image,
-UID, socket, install root, workspace root, and delegated cgroup subtree.
+PostgreSQL database and named volumes. The unified Agent runtime image contains
+the `dirextalk-agent`, `dirextalk-extension-runner`, and
+`dirextalk-core-runner` executables plus the verified static shell used by Core
+Runner. The three runtime services select the same immutable image reference
+while retaining separate UID, socket, install root, workspace root, network,
+and delegated cgroup boundaries.
 
 ## Build
 
-Build both binaries from the same source revision. The Dockerfiles use a
-digest-pinned Go toolchain and produce `scratch` images with no shell, package
-manager, runtime downloads, or host socket:
+Build the unified runtime image from one source revision. The Containerfile
+uses a digest-pinned Go toolchain and produces a `scratch` image with no
+package manager, runtime downloads, or host socket:
 
 ```text
-docker build -f deploy/container/agent.Containerfile -t "$CORE_IMAGE" .
-docker build -f deploy/container/extension-runner.Containerfile -t "$RUNNER_IMAGE" .
+docker build -f deploy/container/agent.Containerfile -t "$AGENT_IMAGE" .
 ```
 
 The release pipeline should replace local tags with immutable registry
@@ -26,11 +28,19 @@ directory is ignored by Git):
 
 ```text
 cd /path/to/dirextalk-agent
-deploy/container/scripts/bootstrap-local.sh "$PWD/.run.local" dirextalk-agent-core:local dirextalk-extension-runner:local
+deploy/container/scripts/bootstrap-local.sh "$PWD/.run.local" dirextalk-agent:local
+deploy/container/scripts/preflight-local.sh "$PWD/deploy/container/compose.local.yaml" "$PWD/.run.local/.env"
 docker compose --env-file "$PWD/.run.local/.env" -f "$PWD/deploy/container/compose.local.yaml" config --quiet
 docker compose --env-file "$PWD/.run.local/.env" -f "$PWD/deploy/container/compose.local.yaml" up -d
 deploy/container/scripts/readiness.sh "$PWD/deploy/container/compose.local.yaml" core "$PWD/.run.local/.env"
 ```
+
+The bootstrap arguments are `OUTPUT_DIR [AGENT_IMAGE] [POSTGRES_IMAGE]
+[TLS_SERVER_NAME]`; the default Agent image is `dirextalk-agent:local`. The
+generated `DIREXTALK_AGENT_IMAGE_IMMUTABLE` value is the only Agent image
+reference. The local Compose file starts `core`, `extension-runner`, and
+`core-runner` as three separate containers by default and overrides each
+runner's entrypoint to its explicit binary in that same image.
 
 The bootstrap output and every path written to `.env` are absolute, so the
 Compose command may subsequently be run from another directory.
@@ -38,36 +48,39 @@ Compose command may subsequently be run from another directory.
 Each bootstrap creates a unique stack namespace (`DIREXTALK_AGENT_STACK_NAME`,
 default `dirextalk-agent-<instance-id-prefix>`) and derives every local network,
 named volume, and delegated cgroup root from it. Compose requires those names
-from the generated `.env`; do not reuse an `.env` between stacks. The generated
-Core Runner image variable is `DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE` (default
-`dirextalk-core-runner:local`).
+from the generated `.env`; do not reuse an `.env` between stacks.
 
 Runner containers also receive per-stack systemd cgroup parents through
 `DIREXTALK_EXTENSION_CGROUP_PARENT` and `DIREXTALK_CORE_RUNNER_CGROUP_PARENT`.
 Bootstrap derives safe `<stack>-extension.slice` and
 `<stack>-core-runner.slice` defaults; explicit values must be single-line
 `[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?\.slice` names. Native Linux E2E hosts should use the systemd
-cgroup driver with those delegated slices. The default profile-disabled stack
-still renders safely without starting either runner.
+cgroup driver with those delegated slices. The default stack renders all three
+runtime containers with their isolated entrypoints. Both runner cgroup binds
+set `create_host_path: false`: Compose refuses to start if the host paths are
+missing or are ordinary directories, and each runner readiness probe still
+requires a real delegated cgroup-v2 subtree. WSL Docker cgroupfs environments
+without delegated subtrees are therefore rejected; provision the roots on a
+native systemd+cgroup-v2 host before running `up`.
 If an existing protected environment predates these parent variables, bootstrap
 replays the migration with a protected journal and backups; interrupted runs
 complete or restore the environment before normal validation and reuse.
 
 The optional isolated surfaces are strict, immutable bootstrap controls:
 `DIREXTALK_CORE_EXTENSION_ENABLED` and `DIREXTALK_CORE_WORKLOAD_ENABLED` accept
-only `true` or `false` and default to `false`; runner UIDs default to `65531`
-and `65530`; runner sockets default to
+only `true` or `false` and default to `false`; the unified image fixes runner
+UIDs at `65531` and `65530` (overrides are rejected); runner sockets default to
 `/run/dirextalk-agent/extension-runner.sock` and
 `/run/dirextalk-core-runner/runner.sock`. Invalid values are rejected before
 any output directory is created. The selected values are written to both the
 non-secret Core YAML and the hashed `.manifest` artifact. Enabling a surface
-does not implicitly select a Compose profile: start `extensions` and
-`core-runner` explicitly after provisioning their delegated cgroup roots. Each
-runner has a scratch-image healthcheck: Core Runner uses its nonce-backed UDS
+does not change the container topology: both runners start with Core after
+their socket and delegated cgroup roots are provisioned. Each runner has a
+scratch-image healthcheck: Core Runner uses its nonce-backed UDS
 readiness probe; the extension runner uses its nonce-bound UDS readiness
 protocol plus ownership checks. Wait for both runner healthchecks before
-starting or recreating Core when the corresponding profile
-is enabled; the default profile-disabled stack remains unaffected.
+starting or recreating Core when the corresponding runner readiness checks
+pass.
 
 Bootstrap also writes `instance-id` as a protected, newline-terminated
 artifact and exposes its absolute path as `DIREXTALK_AGENT_INSTANCE_ID_FILE`.
@@ -93,39 +106,40 @@ envelope; PostgreSQL receives only encrypted credential and snapshot fields.
 The readiness probe is authenticated and checks `AgentService` instance ID,
 API version, and the `agent.info`, `model.profile`, and `conversation`
 capabilities. The standard gRPC health service, when enabled, is not used as a
-readiness claim. `TLS_SERVER_NAME` (the fifth bootstrap argument, default
+readiness claim. `TLS_SERVER_NAME` (the fourth bootstrap argument, default
 `localhost`) is placed in the certificate SAN and in the Core readiness SNI.
 For a two-project deployment, the Message Server caller must join the
 `DIREXTALK_AGENT_CALLER_NETWORK_NAME` network and use exactly the same
 `P2P_AGENT_CORE_SERVER_NAME`, CA certificate (`tls-cert`), and service token
 file (`service-token`) as Core; it addresses `core:9443` on that network.
 
-The production Compose file puts external PostgreSQL on the separately
-managed `agent_database` network, joined only by Core and `migrate`.
+The standalone production Compose file intentionally remains Core-only for
+external PostgreSQL. The complete three-container deployment topology is
+owned by the Message Server split-agent Compose deployment.
 
 ## Extension runner seam
 
 The `agent_runner_workspaces` volume belongs to the isolated extension runner,
 not to the Agent purge registry. It must be treated as ephemeral execution
 scratch only; durable account data must stay under the Agent-mounted
-`agent_extension_workspaces`/staging roots. Keep the extensions profile
-disabled unless the deployment also provisions an equivalent runner-volume
-cleanup sidecar and verifies it during account deprovision.
+`agent_extension_workspaces`/staging roots. Keep extension execution disabled
+until the deployment also provisions an equivalent runner-volume cleanup
+sidecar and verifies it during account deprovision.
 
 Keep `core_extension_enabled: false` until a Linux host delegates a private
 cgroup-v2 subtree to UID `65531` and the socket/install/workspace volume
-ownership has been provisioned for UIDs `65531` and `65532`. The runner image
-is included in the baseline so this seam is explicit; enabling it remains a
-separate workload-runner integration acceptance. The runner never receives a
-host socket or Core database volume. With the `extensions` profile,
-`extension-socket-init` repairs socket ownership before the Runner starts.
+ownership has been provisioned for UIDs `65531` and `65532`. The runner binary
+is included in the unified Agent image; its isolation seam remains explicit.
+The runner never receives a
+host socket or Core database volume. The `extension-socket-init` service repairs
+socket ownership before the Runner starts.
 
 ## Core Runner seam
 
 `core_workload_enabled` stays `false` by default. Enabling it requires the
-`core-runner` Compose profile, immutable Core Runner image, private socket
-volume, and a cgroup-v2 subtree delegated to runner UID `65530`; Core runs as
-UID `65532` and must use the matching socket and `core_workload_runner_uid`.
+Core Runner service, the same immutable Agent image, private socket volume,
+and a cgroup-v2 subtree delegated to runner UID `65530`; Core runs as UID
+`65532` and must use the matching socket and `core_workload_runner_uid`.
 The runner has no network, database, Docker socket, Agent secrets, or host
 mounts beyond that delegated cgroup subtree.
 

@@ -24,7 +24,7 @@ func runBootstrap(t *testing.T, script, output, cwd string, env []string, args .
 func TestBootstrapLocalWritesCanonicalTokenAndAbsoluteEnvironment(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "protected")
 	script := filepath.Join("scripts", "bootstrap-local.sh")
-	cmd := exec.Command(script, out, "core:test", "runner:test", "postgres:test", "core.example.test")
+	cmd := exec.Command(script, out, "agent:test", "postgres:test", "core.example.test")
 	cmd.Env = append(os.Environ(), "PATH=/usr/bin:/bin")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bootstrap: %v (%s)", err, output)
@@ -40,8 +40,15 @@ func TestBootstrapLocalWritesCanonicalTokenAndAbsoluteEnvironment(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(env), "DIREXTALK_AGENT_CONFIG_FILE="+out+"/config.yaml\n") || !strings.Contains(string(env), "DIREXTALK_AGENT_CALLER_NETWORK_NAME=") {
+	if !strings.Contains(string(env), "DIREXTALK_AGENT_CONFIG_FILE="+out+"/config.yaml\n") || !strings.Contains(string(env), "DIREXTALK_AGENT_CALLER_NETWORK_NAME=") || !strings.Contains(string(env), "DIREXTALK_AGENT_IMAGE_IMMUTABLE=agent:test\n") {
 		t.Fatalf("bootstrap environment is not absolute/caller-boundary aware: %s", env)
+	}
+	for _, line := range strings.Split(string(env), "\n") {
+		if strings.HasPrefix(line, "DIREXTALK_") && strings.Contains(line, "IMAGE_IMMUTABLE=") &&
+			!strings.HasPrefix(line, "DIREXTALK_AGENT_IMAGE_IMMUTABLE=") &&
+			!strings.HasPrefix(line, "DIREXTALK_POSTGRES_IMAGE_IMMUTABLE=") {
+			t.Fatalf("bootstrap emitted an unexpected image variable: %s", line)
+		}
 	}
 	instanceID, err := os.ReadFile(filepath.Join(out, "instance-id"))
 	if err != nil {
@@ -77,7 +84,9 @@ func TestBootstrapLocalRejectsInvalidIsolationControls(t *testing.T) {
 		{"DIREXTALK_CORE_EXTENSION_ENABLED", "yes"},
 		{"DIREXTALK_CORE_WORKLOAD_ENABLED", "1"},
 		{"DIREXTALK_CORE_EXTENSION_RUNNER_UID", "0"},
+		{"DIREXTALK_CORE_EXTENSION_RUNNER_UID", "65530"},
 		{"DIREXTALK_CORE_WORKLOAD_RUNNER_UID", "65532"},
+		{"DIREXTALK_CORE_WORKLOAD_RUNNER_UID", "65531"},
 		{"DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET", "relative.sock"},
 		{"DIREXTALK_EXTENSION_CGROUP_PARENT", "../bad.slice"},
 		{"DIREXTALK_CORE_RUNNER_CGROUP_PARENT", ".slice"},
@@ -106,18 +115,27 @@ func TestBootstrapLocalRejectsInvalidIsolationControls(t *testing.T) {
 type composeIsolationConfig struct {
 	Name     string `yaml:"name"`
 	Services map[string]struct {
+		Image        string   `yaml:"image"`
+		Entrypoint   []string `yaml:"entrypoint"`
+		User         string   `yaml:"user"`
 		Profiles     []string `yaml:"profiles"`
 		NetworkMode  string   `yaml:"network_mode"`
 		CgroupParent string   `yaml:"cgroup_parent"`
 		Ports        []any    `yaml:"ports"`
 		Command      []string `yaml:"command"`
-		Healthcheck  struct {
+		DependsOn    map[string]struct {
+			Condition string `yaml:"condition"`
+		} `yaml:"depends_on"`
+		Healthcheck struct {
 			Test []string `yaml:"test"`
 		} `yaml:"healthcheck"`
 		Volumes []struct {
 			Type   string `yaml:"type"`
 			Source string `yaml:"source"`
 			Target string `yaml:"target"`
+			Bind   struct {
+				CreateHostPath bool `yaml:"create_host_path"`
+			} `yaml:"bind"`
 		} `yaml:"volumes"`
 	} `yaml:"services"`
 	Networks map[string]struct {
@@ -135,7 +153,7 @@ func renderLocalCompose(t *testing.T, out string) composeIsolationConfig {
 		t.Skip("docker is required for Compose isolation verification")
 	}
 	compose := "compose.local.yaml"
-	cmd := exec.Command(docker, "compose", "--env-file", filepath.Join(out, ".env"), "-f", compose, "--profile", "extensions", "--profile", "core-runner", "config")
+	cmd := exec.Command(docker, "compose", "--env-file", filepath.Join(out, ".env"), "-f", compose, "config")
 	cmd.Dir = "."
 	output, err := cmd.Output()
 	if err != nil {
@@ -161,11 +179,11 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 		outputs[i] = out
 		env := append(os.Environ(),
 			"DIREXTALK_AGENT_STACK_NAME="+stack,
-			"DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE=core-runner:test",
+			"DIREXTALK_AGENT_IMAGE_IMMUTABLE=agent:test",
 			"DIREXTALK_EXTENSION_CGROUP_ROOT="+filepath.Join(root, stack, "extension-cgroup"),
 			"DIREXTALK_CORE_RUNNER_CGROUP_ROOT="+filepath.Join(root, stack, "core-runner-cgroup"),
 		)
-		cmd := exec.Command(script, out)
+		cmd := exec.Command(script, out, "agent:test")
 		cmd.Env = env
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("bootstrap %s: %v (%s)", stack, err, output)
@@ -182,6 +200,26 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 		if len(config.Services["postgres"].Ports) != 0 || len(config.Services["core"].Ports) != 0 {
 			t.Fatalf("stack %d unexpectedly publishes a host port", i)
 		}
+		for _, service := range []string{"core", "extension-runner", "core-runner"} {
+			if config.Services[service].Image != "agent:test" {
+				t.Fatalf("stack %d %s does not use the unified Agent image: %q", i, service, config.Services[service].Image)
+			}
+		}
+		if got := config.Services["extension-runner"].Entrypoint; len(got) != 1 || got[0] != "/usr/local/bin/dirextalk-extension-runner" {
+			t.Fatalf("stack %d extension runner entrypoint is not explicit: %v", i, got)
+		}
+		if got := config.Services["core-runner"].Entrypoint; len(got) != 1 || got[0] != "/usr/local/bin/dirextalk-core-runner" {
+			t.Fatalf("stack %d Core Runner entrypoint is not explicit: %v", i, got)
+		}
+		if config.Services["core"].User != "65532:65532" || config.Services["extension-runner"].User != "65531:65531" || config.Services["core-runner"].User != "65530:65530" {
+			t.Fatalf("stack %d runtime UID isolation is not explicit: core=%q extension=%q workload=%q", i, config.Services["core"].User, config.Services["extension-runner"].User, config.Services["core-runner"].User)
+		}
+		for _, runner := range []string{"extension-runner", "core-runner"} {
+			dependency, ok := config.Services["core"].DependsOn[runner]
+			if !ok || dependency.Condition != "service_healthy" {
+				t.Fatalf("stack %d core must wait for healthy %s: %+v", i, runner, config.Services["core"].DependsOn)
+			}
+		}
 		if config.Services["extension-runner"].NetworkMode != "none" || config.Services["core-runner"].NetworkMode != "none" {
 			t.Fatalf("stack %d runner network isolation is not explicit", i)
 		}
@@ -197,11 +235,8 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 				t.Fatalf("stack %d %s does not preserve setgid/sticky socket mode: %q", i, service, command)
 			}
 		}
-		if len(config.Services["extension-runner"].Profiles) != 1 || config.Services["extension-runner"].Profiles[0] != "extensions" {
-			t.Fatalf("stack %d extension profile is not explicit", i)
-		}
-		if len(config.Services["core-runner"].Profiles) != 1 || config.Services["core-runner"].Profiles[0] != "core-runner" {
-			t.Fatalf("stack %d Core Runner profile is not explicit", i)
+		if len(config.Services["extension-runner"].Profiles) != 0 || len(config.Services["core-runner"].Profiles) != 0 {
+			t.Fatalf("stack %d runner services must start by default", i)
 		}
 	}
 	if configs[0].Name == "" || configs[0].Name == configs[1].Name {
@@ -226,6 +261,18 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 		first, second := configs[0].Services[service], configs[1].Services[service]
 		if len(first.Volumes) == 0 || len(second.Volumes) == 0 {
 			t.Fatalf("%s has no socket volume", service)
+		}
+		seenCgroupBind := false
+		for _, volume := range first.Volumes {
+			if volume.Target == "/cgroup" && volume.Type == "bind" {
+				seenCgroupBind = true
+				if volume.Bind.CreateHostPath {
+					t.Fatalf("%s cgroup bind must not auto-create an ordinary host directory", service)
+				}
+			}
+		}
+		if !seenCgroupBind {
+			t.Fatalf("%s cgroup bind is missing", service)
 		}
 	}
 	if configs[0].Volumes["agent_extension_socket"].Name == configs[1].Volumes["agent_extension_socket"].Name ||
@@ -255,7 +302,7 @@ func TestBootstrapLocalReusesCompleteSetFromAnotherWorkingDirectory(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if output, err := runBootstrap(t, script, out, t.TempDir(), nil, "core:first", "runner:first", "postgres:first", "first.example"); err != nil {
+	if output, err := runBootstrap(t, script, out, t.TempDir(), nil, "agent:first", "postgres:first", "first.example"); err != nil {
 		t.Fatalf("initial bootstrap: %v (%s)", err, output)
 	}
 	files := []string{"postgres-password", "database-url", "service-token", "core-secret-master-key", "instance-id", "tls-key", "tls-cert", "tls-ca", "config.yaml", ".env", ".manifest"}
@@ -266,7 +313,7 @@ func TestBootstrapLocalReusesCompleteSetFromAnotherWorkingDirectory(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	if output, err := runBootstrap(t, script, out, t.TempDir(), nil, "core:changed", "runner:changed", "postgres:changed", "changed.example"); err != nil {
+	if output, err := runBootstrap(t, script, out, t.TempDir(), nil, "agent:changed", "postgres:changed", "changed.example"); err != nil {
 		t.Fatalf("reuse bootstrap: %v (%s)", err, output)
 	}
 	for _, name := range files {
@@ -618,7 +665,7 @@ func TestBootstrapLocalConcurrentGenerationHasOneCanonicalPromotion(t *testing.T
 	}
 	pathEnv := bin + string(os.PathListSeparator) + os.Getenv("PATH")
 	start := func() (*exec.Cmd, *bytes.Buffer) {
-		cmd := exec.Command(script, out, "core:test", "runner:test", "postgres:test", "localhost")
+		cmd := exec.Command(script, out, "agent:test", "postgres:test", "localhost")
 		cmd.Dir = t.TempDir()
 		var output bytes.Buffer
 		cmd.Stdout = &output

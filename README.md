@@ -43,7 +43,7 @@ integration tests.
 ```text
 go test ./...
 go vet ./...
-go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner
+go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner ./cmd/dirextalk-core-runner
 buf lint
 ```
 

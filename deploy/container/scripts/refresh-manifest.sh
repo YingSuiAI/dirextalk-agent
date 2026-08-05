@@ -133,6 +133,7 @@ tmp_manifest=$(mktemp "$dir/.manifest.tmp.XXXXXX")
   cd "$dir"
   {
     printf '%s\n' '# dirextalk-bootstrap-manifest-v1'
+    # shellcheck disable=SC2086
     sha256sum $all_files
   } > "$tmp_manifest"
 )

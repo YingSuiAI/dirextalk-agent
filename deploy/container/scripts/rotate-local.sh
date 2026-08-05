@@ -6,6 +6,9 @@ env_file=${2:?usage: rotate-local.sh COMPOSE_FILE ENV_FILE [SERVICE]}
 service=${3:-core}
 case "$compose_file" in /*) ;; *) compose_file="$(pwd -P)/$compose_file" ;; esac
 case "$env_file" in /*) ;; *) env_file="$(pwd -P)/$env_file" ;; esac
+case "$(basename "$compose_file")" in
+  compose.local.yaml) "$(dirname "$0")/preflight-local.sh" "$compose_file" "$env_file" ;;
+esac
 
 env_value() {
   key=$1

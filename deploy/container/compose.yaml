@@ -49,7 +49,7 @@ services:
     restart: "no"
 
   migrate:
-    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *core-hardening
     command: ["migrate"]
     restart: "no"
@@ -62,7 +62,7 @@ services:
         condition: service_completed_successfully
 
   core:
-    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *core-hardening
     command: ["serve"]
     environment:

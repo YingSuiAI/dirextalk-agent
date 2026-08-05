@@ -53,7 +53,7 @@ services:
       start_period: 10s
 
   migrate:
-    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *core-hardening
     command: ["migrate"]
     restart: "no"
@@ -115,9 +115,9 @@ services:
     restart: "no"
 
   extension-runner:
-    image: ${DIREXTALK_EXTENSION_RUNNER_IMAGE_IMMUTABLE:?set the immutable extension runner image reference}
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *runner-hardening
-    profiles: ["extensions"]
+    entrypoint: ["/usr/local/bin/dirextalk-extension-runner"]
     cgroup_parent: ${DIREXTALK_EXTENSION_CGROUP_PARENT:-${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}-extension.slice}
     group_add: ["65532"]
     command:
@@ -144,6 +144,8 @@ services:
       - type: bind
         source: ${DIREXTALK_EXTENSION_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for the runner}
         target: /cgroup
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "/usr/local/bin/dirextalk-extension-runner", "probe", "--socket", "${DIREXTALK_CORE_EXTENSION_RUNNER_SOCKET:?set the extension runner socket path}", "--runner-uid", "${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}"]
       interval: 5s
@@ -164,7 +166,6 @@ services:
     # the socket listener rejects a writable directory without setgid+sticky.
     cap_add: ["CHOWN", "FOWNER", "FSETID"]
     security_opt: ["no-new-privileges:true"]
-    profiles: ["extensions"]
     command:
       - -ec
       - >-
@@ -176,12 +177,12 @@ services:
     network_mode: "none"
     restart: "no"
 
-  # Profile-gated isolated workload provider. No database, secrets, host
+  # Isolated workload provider. No database, secrets, host
   # filesystem, Docker socket, or network reaches the runner.
   core-runner:
-    image: ${DIREXTALK_CORE_RUNNER_IMAGE_IMMUTABLE:?set the immutable Core Runner image reference}
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *core-runner-hardening
-    profiles: ["core-runner"]
+    entrypoint: ["/usr/local/bin/dirextalk-core-runner"]
     cgroup_parent: ${DIREXTALK_CORE_RUNNER_CGROUP_PARENT:-${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}-core-runner.slice}
     group_add: ["65532"]
     command: ["serve", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/cgroup", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
@@ -195,6 +196,8 @@ services:
       - type: bind
         source: ${DIREXTALK_CORE_RUNNER_CGROUP_ROOT:?set a delegated cgroup-v2 subtree for Core Runner}
         target: /cgroup
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD", "/usr/local/bin/dirextalk-core-runner", "probe", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}"]
       interval: 5s
@@ -215,14 +218,13 @@ services:
     # the socket listener rejects a writable directory without setgid+sticky.
     cap_add: ["CHOWN", "FOWNER", "FSETID"]
     security_opt: ["no-new-privileges:true"]
-    profiles: ["core-runner"]
     command: ["-ec", "install -d -m 3770 /socket; chown ${DIREXTALK_CORE_WORKLOAD_RUNNER_UID:?set the Core Runner UID}:65532 /socket; chmod 3770 /socket"]
     volumes: ["core_runner_socket:/socket"]
     network_mode: "none"
     restart: "no"
 
   core:
-    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Core image reference}
+    image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *core-hardening
     command: ["serve"]
     environment:
@@ -252,6 +254,10 @@ services:
         condition: service_completed_successfully
       secret-init:
         condition: service_completed_successfully
+      extension-runner:
+        condition: service_healthy
+      core-runner:
+        condition: service_healthy
 
 networks:
   agent_private:

@@ -26,10 +26,16 @@ with an unknown key.
 
 ## Start and upgrade
 
-Pin both Core and extension-runner images to the exact source revision and
-registry digest. Run `docker compose ... config --quiet`, then start the local
-stack. `migrate` must finish successfully before `core` is started. An upgrade
-uses the new Core image for both migration and serving; do not mix revisions.
+Pin the unified Agent runtime image to the exact source revision and registry
+digest. Run `docker compose ... config --quiet`, then start the local stack.
+Before `config` or `up`, run
+`deploy/container/scripts/preflight-local.sh /absolute/path/deploy/container/compose.local.yaml /absolute/path/.run.local/.env`;
+it verifies the Docker systemd cgroup driver and both delegated cgroup-v2
+roots without creating host paths.
+`migrate` must finish successfully before `core` is started; the default local
+Compose topology also starts the isolated extension and Core Runner services
+from that same image. An upgrade uses the new Agent image for migration,
+serving, and both runners; do not mix revisions.
 
 After start, run `deploy/container/scripts/readiness.sh /absolute/path/deploy/container/compose.local.yaml core /absolute/path/.run.local/.env` from any directory. A successful result proves TLS,
 service-token authentication, instance identity, API version, and minimum Core
@@ -62,7 +68,7 @@ docker compose --env-file /absolute/path/.env -f /absolute/path/deploy/container
 ```
 
 The second command is refused by Compose unless `migrate` completed
-successfully with the same immutable Core image revision.
+successfully with the same immutable Agent runtime image revision.
 
 ## Rotation
 
@@ -91,8 +97,12 @@ review.
 
 ## Runner integration
 
-The extension runner requires a distinct UID, an authenticated Unix
-`SOCK_SEQPACKET` socket, private install/workspace/state roots, and a delegated
-cgroup-v2 subtree. Keep the runner disabled until those host prerequisites and
-the cancellation/cleanup acceptance lane are complete. No fallback execution
-inside Core is permitted.
+The extension and Core Runner services use fixed UIDs `65531` and `65530`,
+authenticated Unix `SOCK_SEQPACKET` sockets, private install/workspace/state roots, and delegated
+cgroup-v2 subtrees. Provision both delegated roots before starting the default
+local Compose stack; its bind mounts refuse to auto-create ordinary directories
+and each runner readiness probe fails closed on a non-cgroup filesystem. WSL
+Docker cgroupfs hosts without delegated subtrees are unsupported; use a native
+systemd+cgroup-v2 host. Feature flags remain disabled until the corresponding
+isolation and cancellation/cleanup acceptance lanes are complete. No fallback
+execution inside Core is permitted.

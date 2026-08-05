@@ -23,6 +23,9 @@ verification. External product work is not included.
 - Eino-adapted model calls inside the durable conversation and Task execution
   paths, without moving Task recovery or tool ledgers into an opaque graph.
 - Core MCP/Skill lifecycle RPCs and isolated extension-runner composition.
+- The unified Agent runtime image contains the Core, extension-runner, and Core
+  Runner binaries; local Compose keeps all three processes in separate
+  UID/network/mount/cgroup-isolated services.
 - Current-only extension execution: the obsolete in-process/legacy sandbox
   surface is removed, and execution uses the descriptor-only Linux boundary.
 - Core Knowledge uploads, mounts, memory, indexing/search composition.
@@ -41,7 +44,7 @@ specification](core-v1-development-spec.md). Local verification uses:
 ```text
 go test ./...
 go vet ./...
-go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner
+go build ./cmd/dirextalk-agent ./cmd/dirextalk-extension-runner ./cmd/dirextalk-core-runner
 buf lint
 git diff --check
 ```

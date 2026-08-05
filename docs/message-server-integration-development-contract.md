@@ -323,9 +323,10 @@ operation is absent.
 
 The repository adds:
 
-- a reproducible Agent Core image;
+- a reproducible Agent runtime image containing Core and both isolated runner
+  binaries;
 - a migration image/command using the same immutable revision;
-- a separate Runner image;
+- separate Core, extension-runner, and Core Runner services using that image;
 - an Agent-owned Compose project with its own PostgreSQL and volumes;
 - health/readiness checks;
 - protected-file examples for database URL, TLS key/cert, service token, model
@@ -349,7 +350,8 @@ Focused checks must prove:
 - fake AWS CloudFormation, SSM and ECS create/read-back/destroy;
 - crash/restart recovery and idempotency;
 - secret and error redaction;
-- Agent image/migration/Runner image builds; and
+- unified Agent image/migration builds plus smoke checks for all three service
+  entrypoints; and
 - authenticated TLS operation from the separate Message Server project.
 
 Real provider acceptance is performed only with explicit account, region,
