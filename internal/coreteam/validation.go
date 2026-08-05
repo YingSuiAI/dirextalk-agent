@@ -18,6 +18,9 @@ import (
 
 var (
 	ErrInvalid             = errors.New("invalid team plan")
+	ErrNotFound            = errors.New("team record not found")
+	ErrConflict            = errors.New("team record conflict")
+	ErrRevisionConflict    = errors.New("team revision conflict")
 	ErrRuntimeUnavailable  = errors.New("team runtime unavailable")
 	ErrQuoteUnavailable    = errors.New("team quote unavailable")
 	ErrIdentityUnavailable = errors.New("team identity unavailable")
@@ -60,6 +63,7 @@ func (p Plan) ValidateAt(now time.Time) error {
 func (p Plan) Validate() error {
 	if !validUUID(p.PlanID) || !validUUID(p.TaskID) || !validUUID(p.ConversationID) ||
 		!validUUID(p.CredentialID) || !validUUID(p.ConfirmationID) ||
+		!uniqueStrings(p.PlanID, p.TaskID, p.ConversationID, p.CredentialID, p.ConfirmationID) ||
 		!validOwner(p.OwnerID) || p.AccountGeneration <= 0 || p.Revision == 0 ||
 		p.CredentialRevision == 0 || !validBoundedText(p.Goal, MaxGoalBytes) ||
 		!validPlanStatus(p.Status) || validateRuntime(p.Runtime, p.Runtime.RuntimeID) != nil ||
@@ -278,4 +282,15 @@ func validBoundedText(value string, maxBytes int) bool {
 
 func validPlanStatus(status PlanStatus) bool {
 	return status == PlanWaitingUser || status == PlanApproved || status == PlanExpired
+}
+
+func uniqueStrings(values ...string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
 }

@@ -111,3 +111,47 @@ func TestTeamExecutionTaskKindSchemaContractIsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreTeamDurableSchemaContractIsClosed(t *testing.T) {
+	script, err := Files.ReadFile("000001_core_v1_fresh.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(script)
+	for _, needle := range []string{
+		"CREATE TABLE core_team_plans",
+		"CREATE TABLE core_team_roles",
+		"CREATE TABLE core_team_executions",
+		"CREATE TABLE core_team_role_runs",
+		"CREATE TABLE core_team_replays",
+		"CREATE FUNCTION core_team_reject_plan_definition_mutation",
+		"CREATE TRIGGER core_team_plans_immutable_definition",
+		"CREATE TRIGGER core_team_roles_immutable",
+		"FOREIGN KEY (owner_id,account_generation,plan_id)",
+		"PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)",
+		"CHECK (amount::numeric >= 0 AND hard_budget::numeric > 0 AND amount::numeric <= hard_budget::numeric)",
+	} {
+		if !strings.Contains(contents, needle) {
+			t.Errorf("Core Team schema missing %q", needle)
+		}
+	}
+	for _, table := range []string{"core_team_plans", "core_team_roles", "core_team_executions", "core_team_role_runs", "core_team_replays"} {
+		start := strings.Index(contents, "CREATE TABLE "+table)
+		if start < 0 {
+			continue
+		}
+		end := strings.Index(contents[start:], ");")
+		if end < 0 {
+			t.Fatalf("unterminated table %s", table)
+		}
+		definition := contents[start : start+end]
+		if !strings.Contains(definition, "owner_id text NOT NULL") || !strings.Contains(definition, "account_generation bigint NOT NULL CHECK (account_generation > 0)") {
+			t.Errorf("%s missing owner/account-generation scope", table)
+		}
+		for _, forbidden := range []string{"access_key", "secret_key", "session_token", "credential_value", "provider_error"} {
+			if strings.Contains(definition, forbidden) {
+				t.Errorf("%s contains secret-shaped column %q", table, forbidden)
+			}
+		}
+	}
+}

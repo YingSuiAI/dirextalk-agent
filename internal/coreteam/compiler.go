@@ -88,7 +88,7 @@ func (c *Compiler) Compile(ctx context.Context, command CompileCommand) (Plan, e
 		return Plan{}, err
 	}
 	ids := make([]string, 3)
-	seenIDs := make(map[string]struct{}, len(ids))
+	seenIDs := map[string]struct{}{command.ConversationID: {}, command.CredentialID: {}}
 	for i := range ids {
 		ids[i], err = c.newID()
 		if err != nil || !validUUID(ids[i]) {

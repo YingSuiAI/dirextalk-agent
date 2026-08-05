@@ -276,6 +276,24 @@ func TestCompilerRejectsInvalidOrRepeatedServerIDsWithoutLeakingGeneratorErrors(
 	}
 }
 
+func TestCompilerRejectsServerIDsThatCollideWithReferencedIdentities(t *testing.T) {
+	ids := []string{testConversation, testTaskID, testConfirmation}
+	next := 0
+	compiler := NewCompiler(
+		fakeRuntimeCatalog{binding: validRuntime()},
+		fakeQuoteProvider{quote: validQuote()},
+		WithClock(func() time.Time { return testNow }),
+		WithIDGenerator(func() (string, error) {
+			value := ids[next]
+			next++
+			return value, nil
+		}),
+	)
+	if _, err := compiler.Compile(context.Background(), validCommand()); !errors.Is(err, ErrIdentityUnavailable) {
+		t.Fatalf("colliding identity err=%v", err)
+	}
+}
+
 func TestCompilerDoesNotPublishAPlanCanceledDuringIDGeneration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ids := []string{testPlanID, testTaskID, testConfirmation}
@@ -385,6 +403,7 @@ func TestPlanValidationRejectsMutationAndNonCanonicalCollections(t *testing.T) {
 		"noncanonical role order": func(v *Plan) { v.Roles[0], v.Roles[1] = v.Roles[1], v.Roles[0] },
 		"bad status":              func(v *Plan) { v.Status = "draft" },
 		"bad plan id":             func(v *Plan) { v.PlanID = "plan" },
+		"colliding identities":    func(v *Plan) { v.PlanID = v.CredentialID },
 		"bad generation":          func(v *Plan) { v.AccountGeneration = 0 },
 	}
 	for name, mutate := range cases {

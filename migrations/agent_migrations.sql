@@ -1318,6 +1318,158 @@ CREATE TABLE core_web_search_replays (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (owner_id, account_generation, idempotency_key)
 );
+
+-- Central Agent Team Plans bind one immutable official Pi role graph to an
+-- owner account generation. Generic Core Tasks remain owner-neutral; every
+-- Team read and mutation is fenced here by both owner identity components.
+CREATE TABLE core_team_plans (
+    plan_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    task_id uuid NOT NULL UNIQUE REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    conversation_id uuid NOT NULL,
+    credential_id uuid NOT NULL,
+    confirmation_id uuid NOT NULL UNIQUE REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
+    revision bigint NOT NULL CHECK (revision > 0),
+    credential_revision bigint NOT NULL CHECK (credential_revision > 0),
+    goal text NOT NULL CHECK (length(goal) BETWEEN 1 AND 65536),
+    digest text NOT NULL CHECK (digest ~ '^[a-f0-9]{64}$'),
+    runtime_id text NOT NULL CHECK (runtime_id = 'official-pi-0.83.0'),
+    runtime_adapter text NOT NULL CHECK (runtime_adapter = 'pi-v1'),
+    image_digest text NOT NULL CHECK (image_digest ~ '^sha256:[a-f0-9]{64}$'),
+    ami_id text NOT NULL CHECK (ami_id ~ '^ami-([a-f0-9]{8}|[a-f0-9]{17})$'),
+    output_tokens bigint NOT NULL CHECK (output_tokens BETWEEN 1 AND 131072),
+    region text NOT NULL CHECK (region = 'ap-northeast-3'),
+    availability_zone text NOT NULL CHECK (availability_zone ~ '^ap-northeast-3[a-z]$'),
+    instance_type text NOT NULL CHECK (instance_type = 't3.small'),
+    currency text NOT NULL CHECK (currency = 'USD'),
+    amount text NOT NULL CHECK (amount ~ '^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$'),
+    hard_budget text NOT NULL CHECK (hard_budget ~ '^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$'),
+    quote_expires_at timestamptz NOT NULL,
+    status text NOT NULL CHECK (status IN ('waiting_user','approved','expired')),
+    plan_json jsonb NOT NULL CHECK (jsonb_typeof(plan_json) = 'object' AND pg_column_size(plan_json) <= 1048576 AND plan_json->>'status' = status),
+    created_at timestamptz NOT NULL,
+    CHECK (amount::numeric >= 0 AND hard_budget::numeric > 0 AND amount::numeric <= hard_budget::numeric),
+    UNIQUE (owner_id,account_generation,plan_id)
+);
+CREATE INDEX core_team_plans_owner_created_idx ON core_team_plans(owner_id,account_generation,created_at DESC,plan_id);
+
+CREATE TABLE core_team_roles (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    plan_id uuid NOT NULL,
+    role_id text NOT NULL CHECK (role_id ~ '^[a-z][a-z0-9-]{0,62}$'),
+    ordinal integer NOT NULL CHECK (ordinal BETWEEN 0 AND 2),
+    goal text NOT NULL CHECK (length(goal) BETWEEN 1 AND 16384),
+    depends_on jsonb NOT NULL CHECK (jsonb_typeof(depends_on) = 'array' AND pg_column_size(depends_on) <= 4096),
+    capabilities jsonb NOT NULL CHECK (jsonb_typeof(capabilities) = 'array' AND pg_column_size(capabilities) <= 4096),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id,account_generation,plan_id,role_id),
+    UNIQUE (owner_id,account_generation,plan_id,ordinal),
+    FOREIGN KEY (owner_id,account_generation,plan_id) REFERENCES core_team_plans(owner_id,account_generation,plan_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE core_team_executions (
+    execution_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    plan_id uuid NOT NULL,
+    task_id uuid NOT NULL UNIQUE REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    confirmation_id uuid NOT NULL UNIQUE REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
+    status text NOT NULL CHECK (status IN ('queued','running','cleaning_up','completed','failed','canceled','timed_out')),
+    revision bigint NOT NULL CHECK (revision > 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE (owner_id,account_generation,execution_id),
+    FOREIGN KEY (owner_id,account_generation,plan_id) REFERENCES core_team_plans(owner_id,account_generation,plan_id) ON DELETE RESTRICT
+);
+CREATE INDEX core_team_executions_owner_updated_idx ON core_team_executions(owner_id,account_generation,updated_at DESC,execution_id);
+CREATE INDEX core_team_executions_active_idx ON core_team_executions(owner_id,account_generation,status) WHERE status IN ('queued','running','cleaning_up');
+
+CREATE TABLE core_team_role_runs (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    execution_id uuid NOT NULL,
+    plan_id uuid NOT NULL,
+    role_id text NOT NULL,
+    status text NOT NULL CHECK (status IN ('queued','running','cleaning_up','completed','failed','canceled','timed_out')),
+    revision bigint NOT NULL CHECK (revision > 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id,account_generation,execution_id,role_id),
+    FOREIGN KEY (owner_id,account_generation,execution_id) REFERENCES core_team_executions(owner_id,account_generation,execution_id) ON DELETE RESTRICT,
+    FOREIGN KEY (owner_id,account_generation,plan_id,role_id) REFERENCES core_team_roles(owner_id,account_generation,plan_id,role_id) ON DELETE RESTRICT
+);
+CREATE INDEX core_team_role_runs_runnable_idx ON core_team_role_runs(owner_id,account_generation,execution_id,status,role_id);
+
+CREATE TABLE core_team_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    operation text NOT NULL CHECK (operation IN ('create_plan','create_execution')),
+    idempotency_key uuid NOT NULL,
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    plan_id uuid,
+    execution_id uuid,
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 1048576),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)
+);
+
+CREATE FUNCTION core_team_reject_plan_definition_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'core Team Plan definitions are immutable' USING ERRCODE = '55000';
+    END IF;
+    IF NEW.plan_id IS DISTINCT FROM OLD.plan_id
+       OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.account_generation IS DISTINCT FROM OLD.account_generation
+       OR NEW.task_id IS DISTINCT FROM OLD.task_id
+       OR NEW.conversation_id IS DISTINCT FROM OLD.conversation_id
+       OR NEW.credential_id IS DISTINCT FROM OLD.credential_id
+       OR NEW.confirmation_id IS DISTINCT FROM OLD.confirmation_id
+       OR NEW.revision IS DISTINCT FROM OLD.revision
+       OR NEW.credential_revision IS DISTINCT FROM OLD.credential_revision
+       OR NEW.goal IS DISTINCT FROM OLD.goal
+       OR NEW.digest IS DISTINCT FROM OLD.digest
+       OR NEW.runtime_id IS DISTINCT FROM OLD.runtime_id
+       OR NEW.runtime_adapter IS DISTINCT FROM OLD.runtime_adapter
+       OR NEW.image_digest IS DISTINCT FROM OLD.image_digest
+       OR NEW.ami_id IS DISTINCT FROM OLD.ami_id
+       OR NEW.output_tokens IS DISTINCT FROM OLD.output_tokens
+       OR NEW.region IS DISTINCT FROM OLD.region
+       OR NEW.availability_zone IS DISTINCT FROM OLD.availability_zone
+       OR NEW.instance_type IS DISTINCT FROM OLD.instance_type
+       OR NEW.currency IS DISTINCT FROM OLD.currency
+       OR NEW.amount IS DISTINCT FROM OLD.amount
+       OR NEW.hard_budget IS DISTINCT FROM OLD.hard_budget
+       OR NEW.quote_expires_at IS DISTINCT FROM OLD.quote_expires_at
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at
+       OR (NEW.plan_json - 'status') IS DISTINCT FROM (OLD.plan_json - 'status')
+       OR NEW.plan_json->>'status' IS DISTINCT FROM NEW.status
+       OR NOT (NEW.status = OLD.status OR (OLD.status = 'waiting_user' AND NEW.status IN ('approved','expired'))) THEN
+        RAISE EXCEPTION 'core Team Plan definitions are immutable' USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_team_plans_immutable_definition
+BEFORE UPDATE OR DELETE ON core_team_plans
+FOR EACH ROW EXECUTE FUNCTION core_team_reject_plan_definition_mutation();
+
+CREATE FUNCTION core_team_reject_role_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION 'core Team roles are immutable' USING ERRCODE = '55000';
+END;
+$$;
+CREATE TRIGGER core_team_roles_immutable
+BEFORE UPDATE OR DELETE ON core_team_roles
+FOR EACH ROW EXECUTE FUNCTION core_team_reject_role_mutation();
 -- dirextalk-agent migration end 000001_core_v1_fresh.up.sql
 -- dirextalk-agent migration begin 000002_knowledge_search_provenance.up.sql
 -- Search cursor snapshots retain the exact semantic binding that produced
