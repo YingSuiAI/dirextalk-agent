@@ -77,7 +77,8 @@ func (c *Compiler) Compile(ctx context.Context, command CompileCommand) (Plan, e
 	quote, err := c.quotes.Quote(ctx, QuoteRequest{
 		RuntimeID: runtimeID, Region: OsakaRegion, InstanceType: MVPInstanceType, RoleCount: uint32(len(command.Roles)),
 	})
-	if err != nil || validateQuote(quote) != nil || !quote.ExpiresAt.After(c.now().UTC()) {
+	quoteCheckAt := c.now().UTC()
+	if err != nil || validateQuote(quote) != nil || quoteCheckAt.IsZero() || !quote.ExpiresAt.After(quoteCheckAt) {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return Plan{}, contextErr
 		}
@@ -98,6 +99,13 @@ func (c *Compiler) Compile(ctx context.Context, command CompileCommand) (Plan, e
 		}
 		seenIDs[ids[i]] = struct{}{}
 	}
+	if err := ctx.Err(); err != nil {
+		return Plan{}, err
+	}
+	finalCheckAt := c.now().UTC()
+	if finalCheckAt.IsZero() {
+		return Plan{}, ErrInvalid
+	}
 	roles := make([]Role, len(command.Roles))
 	for i, proposal := range command.Roles {
 		roles[i] = Role{
@@ -114,7 +122,13 @@ func (c *Compiler) Compile(ctx context.Context, command CompileCommand) (Plan, e
 		Roles: canonicalRoles(roles), Status: PlanWaitingUser,
 	}
 	plan.Digest, err = plan.SemanticDigest()
-	if err != nil || plan.Validate() != nil {
+	if err != nil {
+		return Plan{}, ErrInvalid
+	}
+	if err = plan.ValidateAt(finalCheckAt); err != nil {
+		if errors.Is(err, ErrQuoteUnavailable) {
+			return Plan{}, ErrQuoteUnavailable
+		}
 		return Plan{}, ErrInvalid
 	}
 	return plan, nil

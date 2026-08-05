@@ -152,6 +152,7 @@ func TestCompilerRejectsInvalidCommands(t *testing.T) {
 	tests := map[string]func(*CompileCommand){
 		"owner blank":              func(c *CompileCommand) { c.OwnerID = " " },
 		"owner too long":           func(c *CompileCommand) { c.OwnerID = strings.Repeat("a", MaxOwnerIDBytes+1) },
+		"owner control character":  func(c *CompileCommand) { c.OwnerID = "@agent\nteam:example.test" },
 		"generation absent":        func(c *CompileCommand) { c.AccountGeneration = 0 },
 		"conversation not UUID":    func(c *CompileCommand) { c.ConversationID = "conversation" },
 		"credential not UUID":      func(c *CompileCommand) { c.CredentialID = "credential" },
@@ -196,6 +197,7 @@ func TestCompilerRejectsInvalidRuntimeAndQuoteBindings(t *testing.T) {
 		"wrong adapter":     func(v *RuntimeBinding) { v.Adapter = "shell" },
 		"mutable image":     func(v *RuntimeBinding) { v.ImageDigest = "latest" },
 		"invalid AMI":       func(v *RuntimeBinding) { v.AMIID = "ami-latest" },
+		"noncanonical AMI":  func(v *RuntimeBinding) { v.AMIID = "ami-012345678" },
 		"zero token budget": func(v *RuntimeBinding) { v.OutputTokens = 0 },
 		"huge token budget": func(v *RuntimeBinding) { v.OutputTokens = MaxOutputTokens + 1 },
 	}
@@ -274,6 +276,28 @@ func TestCompilerRejectsInvalidOrRepeatedServerIDsWithoutLeakingGeneratorErrors(
 	}
 }
 
+func TestCompilerDoesNotPublishAPlanCanceledDuringIDGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ids := []string{testPlanID, testTaskID, testConfirmation}
+	next := 0
+	compiler := NewCompiler(
+		fakeRuntimeCatalog{binding: validRuntime()},
+		fakeQuoteProvider{quote: validQuote()},
+		WithClock(func() time.Time { return testNow }),
+		WithIDGenerator(func() (string, error) {
+			id := ids[next]
+			next++
+			if next == len(ids) {
+				cancel()
+			}
+			return id, nil
+		}),
+	)
+	if _, err := compiler.Compile(ctx, validCommand()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestCompilerUsesTheOfficialRuntimeWhenTheRequestOmitsOne(t *testing.T) {
 	command := validCommand()
 	command.RuntimeID = ""
@@ -283,6 +307,32 @@ func TestCompilerUsesTheOfficialRuntimeWhenTheRequestOmitsOne(t *testing.T) {
 	).Compile(context.Background(), command)
 	if err != nil || plan.Runtime.RuntimeID != OfficialRuntimeID {
 		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+}
+
+func TestCompilerRechecksQuoteFreshnessAfterExternalWork(t *testing.T) {
+	current := testNow
+	ids := []string{testPlanID, testTaskID, testConfirmation}
+	idNext := 0
+	compiler := NewCompiler(
+		fakeRuntimeCatalog{binding: validRuntime()},
+		fakeQuoteProvider{quote: validQuote()},
+		WithClock(func() time.Time { return current }),
+		WithIDGenerator(func() (string, error) {
+			if idNext >= len(ids) {
+				return "", errors.New("too many IDs requested")
+			}
+			value := ids[idNext]
+			idNext++
+			if idNext == len(ids) {
+				current = testNow.Add(16 * time.Minute)
+			}
+			return value, nil
+		}),
+	)
+	_, err := compiler.Compile(context.Background(), validCommand())
+	if !errors.Is(err, ErrQuoteUnavailable) {
+		t.Fatalf("expired quote published: %v", err)
 	}
 }
 
@@ -345,6 +395,42 @@ func TestPlanValidationRejectsMutationAndNonCanonicalCollections(t *testing.T) {
 				t.Fatalf("candidate unexpectedly valid: %#v", candidate)
 			}
 		})
+	}
+}
+
+func TestPlanSeparatesStructuralValidityFromQuoteFreshness(t *testing.T) {
+	plan, err := testCompiler(fakeRuntimeCatalog{binding: validRuntime()}, fakeQuoteProvider{quote: validQuote()}).Compile(context.Background(), validCommand())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.ValidateAt(testNow); err != nil {
+		t.Fatalf("fresh plan rejected: %v", err)
+	}
+	if err := plan.ValidateAt(plan.Quote.ExpiresAt); !errors.Is(err, ErrQuoteUnavailable) {
+		t.Fatalf("expired quote accepted: %v", err)
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("historical structural record became corrupt: %v", err)
+	}
+}
+
+func TestScopeValidationBindsOwnerAndAccountGeneration(t *testing.T) {
+	if err := (Scope{OwnerID: testOwnerID, AccountGeneration: 7}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []Scope{
+		{},
+		{OwnerID: " "},
+		{OwnerID: "@agent\x00team:example.test", AccountGeneration: 1},
+		{OwnerID: "@agent\rteam:example.test", AccountGeneration: 1},
+		{OwnerID: "@agent\tteam:example.test", AccountGeneration: 1},
+		{OwnerID: strings.Repeat("x", MaxOwnerIDBytes+1), AccountGeneration: 1},
+		{OwnerID: testOwnerID, AccountGeneration: 0},
+		{OwnerID: testOwnerID, AccountGeneration: -1},
+	} {
+		if !errors.Is(scope.Validate(), ErrInvalid) {
+			t.Fatalf("scope unexpectedly valid: %#v", scope)
+		}
 	}
 }
 

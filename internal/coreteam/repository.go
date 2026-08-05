@@ -10,6 +10,13 @@ type Scope struct {
 	AccountGeneration int64
 }
 
+func (s Scope) Validate() error {
+	if !validOwner(s.OwnerID) || s.AccountGeneration <= 0 {
+		return ErrInvalid
+	}
+	return nil
+}
+
 type PlanRecord struct {
 	Plan      Plan
 	CreatedAt time.Time

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -22,7 +24,7 @@ var (
 
 	roleIDPattern      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	imageDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
-	amiIDPattern       = regexp.MustCompile(`^ami-[a-f0-9]{8,17}$`)
+	amiIDPattern       = regexp.MustCompile(`^ami-(?:[a-f0-9]{8}|[a-f0-9]{17})$`)
 	zonePattern        = regexp.MustCompile(`^ap-northeast-3[a-z]$`)
 	decimalPattern     = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`)
 )
@@ -41,6 +43,19 @@ var validCapabilities = map[Capability]struct{}{
 }
 
 func (p Plan) Valid() bool { return p.Validate() == nil }
+
+// ValidateAt combines durable structural validation with the time-sensitive
+// quote fence used before approval or launch. Validate intentionally remains
+// time-independent so an expired historical Plan is not treated as corrupt.
+func (p Plan) ValidateAt(now time.Time) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	if now.IsZero() || !p.Quote.ExpiresAt.After(now.UTC()) {
+		return ErrQuoteUnavailable
+	}
+	return nil
+}
 
 func (p Plan) Validate() error {
 	if !validUUID(p.PlanID) || !validUUID(p.TaskID) || !validUUID(p.ConversationID) ||
@@ -253,7 +268,8 @@ func validUUID(value string) bool {
 }
 
 func validOwner(value string) bool {
-	return value == strings.TrimSpace(value) && validBoundedText(value, MaxOwnerIDBytes)
+	return value == strings.TrimSpace(value) && validBoundedText(value, MaxOwnerIDBytes) &&
+		strings.IndexFunc(value, unicode.IsControl) == -1
 }
 
 func validBoundedText(value string, maxBytes int) bool {
