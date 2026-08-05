@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workerrunner"
@@ -67,6 +68,11 @@ func Compile(request CompileRequest) (CompiledInput, error) {
 	contextDigest := digestBytes(contextBytes)
 
 	workspaceMode, includePatch, err := runtimeWorkspace(role.Workspace)
+	if err == nil &&
+		execution.SchemaVersion == teamexecution.SchemaV3 &&
+		taskinput.IsEmptyInput(execution.TaskInput) {
+		includePatch = false
+	}
 	expectedWorkspaceID, workspaceIDErr := WorkspaceSnapshotID(
 		execution.ExecutionID,
 		role.RoleID,

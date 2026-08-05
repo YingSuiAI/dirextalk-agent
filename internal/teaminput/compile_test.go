@@ -10,6 +10,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
+	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
 	"github.com/YingSuiAI/dirextalk-agent/internal/workeridentity"
@@ -135,6 +136,55 @@ func TestCompileCarriesQualifiedPiAdapterIntoRuntimeTask(t *testing.T) {
 		compiled.RuntimeTask.RuntimeVersion != "0.83.0" ||
 		compiled.RuntimeTask.RuntimeReleaseID != role.RuntimeReleaseID {
 		t.Fatalf("Pi runtime task = %#v", compiled.RuntimeTask)
+	}
+}
+
+func TestCompileDoesNotRequestPatchForEmptyIsolatedWorkspace(t *testing.T) {
+	t.Parallel()
+	execution, _ := teamInputExecutionFixture(t)
+	input, err := taskinput.NewEmptyInput(
+		execution.OwnerID,
+		execution.TaskID,
+		execution.GoalDigest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := input.Binding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution.SchemaVersion = teamexecution.SchemaV3
+	execution.TaskInput = binding
+	executionDigest, err := execution.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := teamInputCompileRequest(execution, executionDigest)
+	role := execution.Roles[0]
+	request.RoleID = role.RoleID
+	request.Context.SnapshotID = mustContextSnapshotID(
+		execution.ExecutionID,
+		role.RoleID,
+	)
+	request.Context.Dependencies = nil
+	request.Context.Artifacts = nil
+	request.Workspace.SnapshotID = mustWorkspaceSnapshotID(
+		execution.ExecutionID,
+		role.RoleID,
+	)
+	request.Workspace.Digest = binding.Workspace.WorkspaceDigest
+	request.Workspace.SizeBytes = binding.Workspace.WorkspaceSizeBytes
+
+	compiled, err := Compile(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compiled.Destroy()
+	if compiled.RuntimeTask.WorkspaceMode !=
+		workerruntime.WorkspaceIsolated ||
+		compiled.RuntimeTask.IncludePatch {
+		t.Fatalf("empty isolated runtime task = %#v", compiled.RuntimeTask)
 	}
 }
 
