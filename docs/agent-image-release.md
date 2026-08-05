@@ -98,6 +98,10 @@ missing prerequisites during publication:
 - clean detached or release checkout at the recorded revision;
 - restrictive `umask` (`0077` for protected receipts), sufficient disk, and a
   working Docker daemon with Buildx;
+- a Buildx release that supports `docker-buildx ls --format '{{.Name}}'`;
+  run that exact feature check before `prepare`. Buildx `0.12.1` fails this
+  boundary with `unknown flag: --format`; the 2026-08-05 Agent release used the
+  checksum-verified official `v0.34.1` Linux amd64 binary;
 - the repository-required Go toolchain and native compiler/build packages;
 - live STS account/Region identity and read-back of the fixed ECR repositories;
   and
