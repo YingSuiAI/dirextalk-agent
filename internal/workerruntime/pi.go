@@ -387,12 +387,12 @@ func piPrompt(task TaskV1, contextJSON []byte) ([]byte, error) {
 
 type piEvent struct {
 	Type      string          `json:"type"`
-	Version   int             `json:"version"`
-	Message   json.RawMessage `json:"message"`
-	ToolName  string          `json:"toolName"`
-	Result    json.RawMessage `json:"result"`
-	IsError   bool            `json:"isError"`
-	WillRetry bool            `json:"willRetry"`
+	Version   int             `json:"version,omitempty"`
+	Message   json.RawMessage `json:"message,omitempty"`
+	ToolName  string          `json:"toolName,omitempty"`
+	Result    json.RawMessage `json:"result,omitempty"`
+	IsError   bool            `json:"isError,omitempty"`
+	WillRetry bool            `json:"willRetry,omitempty"`
 }
 
 type piMessage struct {

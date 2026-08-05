@@ -61,15 +61,25 @@ func (OSProcessRunner) Run(
 	if err := validateProcessSpec(spec); err != nil {
 		return ProcessOutput{}, err
 	}
-	command := exec.CommandContext(ctx, spec.Executable, spec.Arguments...)
+	processCtx, cancelProcess := context.WithCancel(ctx)
+	defer cancelProcess()
+	command := exec.CommandContext(
+		processCtx,
+		spec.Executable,
+		spec.Arguments...,
+	)
 	command.Dir = spec.Directory
 	command.Stdin = bytes.NewReader(spec.Stdin)
 	command.Env = buildProcessEnvironment(spec)
 	stdout := newProcessOutputBuffer(
 		spec.StdoutPolicy,
 		spec.MaxStdoutBytes,
+		cancelProcess,
 	)
-	stderr := &boundedBuffer{maximum: spec.MaxStderrBytes}
+	stderr := &boundedBuffer{
+		maximum:    spec.MaxStderrBytes,
+		onExceeded: cancelProcess,
+	}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessCancellation(command)
@@ -213,9 +223,10 @@ func cleanAbsolute(value string) bool {
 }
 
 type boundedBuffer struct {
-	maximum  int
-	buffer   []byte
-	exceeded bool
+	maximum    int
+	buffer     []byte
+	exceeded   bool
+	onExceeded func()
 }
 
 type processOutputBuffer interface {
@@ -229,13 +240,21 @@ type processOutputBuffer interface {
 func newProcessOutputBuffer(
 	policy ProcessStdoutPolicy,
 	maximum int,
+	onExceeded func(),
 ) processOutputBuffer {
 	if policy == ProcessStdoutPiEventsV1 {
 		return &piProcessOutputBuffer{
-			retained: boundedBuffer{maximum: maximum},
+			retained: boundedBuffer{
+				maximum:    maximum,
+				onExceeded: onExceeded,
+			},
+			onExceeded: onExceeded,
 		}
 	}
-	return &boundedBuffer{maximum: maximum}
+	return &boundedBuffer{
+		maximum:    maximum,
+		onExceeded: onExceeded,
+	}
 }
 
 func (buffer *boundedBuffer) Write(input []byte) (int, error) {
@@ -244,16 +263,26 @@ func (buffer *boundedBuffer) Write(input []byte) (int, error) {
 	}
 	remaining := buffer.maximum - len(buffer.buffer)
 	if remaining <= 0 {
-		buffer.exceeded = true
+		buffer.markExceeded()
 		return len(input), nil
 	}
 	if len(input) > remaining {
 		buffer.buffer = append(buffer.buffer, input[:remaining]...)
-		buffer.exceeded = true
+		buffer.markExceeded()
 		return len(input), nil
 	}
 	buffer.buffer = append(buffer.buffer, input...)
 	return len(input), nil
+}
+
+func (buffer *boundedBuffer) markExceeded() {
+	if buffer.exceeded {
+		return
+	}
+	buffer.exceeded = true
+	if buffer.onExceeded != nil {
+		buffer.onExceeded()
+	}
 }
 
 func (*boundedBuffer) finalize() {}

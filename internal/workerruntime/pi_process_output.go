@@ -3,16 +3,15 @@ package workerruntime
 import (
 	"bytes"
 	"encoding/json"
+	"unicode/utf8"
 )
 
-const maxProcessObservedPiBytes = 64 << 20
-
 type piProcessOutputBuffer struct {
-	retained boundedBuffer
-	pending  []byte
-	observed int
-	exceeded bool
-	settled  bool
+	retained   boundedBuffer
+	pending    []byte
+	exceeded   bool
+	settled    bool
+	onExceeded func()
 }
 
 func (buffer *piProcessOutputBuffer) Write(input []byte) (int, error) {
@@ -20,12 +19,6 @@ func (buffer *piProcessOutputBuffer) Write(input []byte) (int, error) {
 	if buffer.exceeded {
 		return written, nil
 	}
-	if len(input) > maxProcessObservedPiBytes-buffer.observed {
-		buffer.exceeded = true
-		buffer.destroyPending()
-		return written, nil
-	}
-	buffer.observed += len(input)
 	for len(input) > 0 {
 		newline := bytes.IndexByte(input, '\n')
 		if newline < 0 {
@@ -43,12 +36,22 @@ func (buffer *piProcessOutputBuffer) Write(input []byte) (int, error) {
 }
 
 func (buffer *piProcessOutputBuffer) appendPending(input []byte) {
-	if len(input) > maxPiEventLineBytes-len(buffer.pending) {
-		buffer.exceeded = true
+	if len(input) >= maxPiEventLineBytes-len(buffer.pending) {
+		buffer.markExceeded()
 		buffer.destroyPending()
 		return
 	}
 	buffer.pending = append(buffer.pending, input...)
+}
+
+func (buffer *piProcessOutputBuffer) markExceeded() {
+	if buffer.exceeded {
+		return
+	}
+	buffer.exceeded = true
+	if buffer.onExceeded != nil {
+		buffer.onExceeded()
+	}
 }
 
 func (buffer *piProcessOutputBuffer) flushLine() {
@@ -56,10 +59,12 @@ func (buffer *piProcessOutputBuffer) flushLine() {
 		return
 	}
 	line := bytes.TrimSpace(buffer.pending)
-	if len(line) != 0 && buffer.retainEvent(line) {
-		_, _ = buffer.retained.Write(line)
+	retained, keep := buffer.retainedEvent(line)
+	if keep {
+		_, _ = buffer.retained.Write(retained)
 		_, _ = buffer.retained.Write([]byte{'\n'})
 	}
+	clear(retained)
 	buffer.destroyPending()
 }
 
@@ -87,28 +92,63 @@ func (buffer *piProcessOutputBuffer) destroyPending() {
 	buffer.pending = nil
 }
 
-func (buffer *piProcessOutputBuffer) retainEvent(line []byte) bool {
+func (buffer *piProcessOutputBuffer) retainedEvent(
+	line []byte,
+) ([]byte, bool) {
+	if len(line) == 0 {
+		return nil, false
+	}
 	if buffer.settled {
-		return true
+		return bytes.Clone(line), true
 	}
-	var event struct {
-		Type string `json:"type"`
-	}
-	if json.Unmarshal(line, &event) != nil ||
+	var event piEvent
+	if !utf8.Valid(line) ||
+		json.Unmarshal(line, &event) != nil ||
 		!validPiEventType(event.Type) {
-		return true
+		return bytes.Clone(line), true
 	}
+	defer clear(event.Message)
+	defer clear(event.Result)
+	var retained piEvent
 	switch event.Type {
-	case "session",
-		"agent_start",
-		"message_end",
-		"tool_execution_end",
-		"agent_end":
-		return true
+	case "session":
+		retained = piEvent{Type: event.Type, Version: event.Version}
+	case "agent_start":
+		retained = piEvent{Type: event.Type}
+	case "message_end":
+		var message piMessage
+		if json.Unmarshal(event.Message, &message) != nil {
+			return bytes.Clone(line), true
+		}
+		messageJSON, err := json.Marshal(message)
+		if err != nil {
+			return bytes.Clone(line), true
+		}
+		defer clear(messageJSON)
+		retained = piEvent{Type: event.Type, Message: messageJSON}
+	case "tool_execution_end":
+		retained = piEvent{
+			Type:     event.Type,
+			ToolName: event.ToolName,
+		}
+		if event.ToolName == piResultToolName {
+			retained.Result = event.Result
+			retained.IsError = event.IsError
+		}
+	case "agent_end":
+		retained = piEvent{
+			Type:      event.Type,
+			WillRetry: event.WillRetry,
+		}
 	case "agent_settled":
 		buffer.settled = true
-		return true
+		retained = piEvent{Type: event.Type}
 	default:
-		return false
+		return nil, false
 	}
+	canonical, err := json.Marshal(retained)
+	if err != nil {
+		return bytes.Clone(line), true
+	}
+	return canonical, true
 }

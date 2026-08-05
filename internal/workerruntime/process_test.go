@@ -161,6 +161,119 @@ func TestOSProcessRunnerPiPolicyPreservesEventsAfterSettlement(t *testing.T) {
 	requireFailure(t, err, FailureCodePiEventInvalid, FailureStagePi)
 }
 
+func TestOSProcessRunnerPiPolicyPreservesMalformedKnownEvents(t *testing.T) {
+	t.Parallel()
+
+	invalidUTF8 := append(
+		[]byte(`{"type":"message_update","message":{"content":"`),
+		0xff,
+	)
+	invalidUTF8 = append(invalidUTF8, []byte(`"}}`)...)
+	for name, malformed := range map[string][]byte{
+		"wrong field type": []byte(`{"type":"message_update","version":"bad"}`),
+		"invalid UTF-8":    invalidUTF8,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stream := bytes.Replace(
+				validPiEventStream(),
+				[]byte(`{"type":"agent_start"}`+"\n"),
+				append(
+					append([]byte(`{"type":"agent_start"}`+"\n"), malformed...),
+					'\n',
+				),
+				1,
+			)
+			output, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
+				Executable:     "/bin/cat",
+				Arguments:      []string{"-"},
+				Directory:      filepath.Clean(t.TempDir()),
+				Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+				Stdin:          stream,
+				StdoutPolicy:   ProcessStdoutPiEventsV1,
+				MaxStdoutBytes: 2048,
+				MaxStderrBytes: 64,
+			})
+			if err != nil {
+				t.Fatalf("capture malformed Pi event: %v", err)
+			}
+			defer clear(output.Stdout)
+			usage, final, err := parsePiEvents(output.Stdout)
+			clear(final)
+			if usage != (Usage{}) {
+				t.Fatalf("malformed Pi stream usage = %+v", usage)
+			}
+			requireFailure(t, err, FailureCodePiEventInvalid, FailureStagePi)
+		})
+	}
+}
+
+func TestOSProcessRunnerCancelsImmediatelyWhenOutputExceedsLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := (OSProcessRunner{}).Run(ctx, ProcessSpec{
+		Executable: "/bin/sh",
+		Arguments: []string{
+			"-c",
+			"printf 'output-overflow'; while :; do :; done",
+		},
+		Directory:      filepath.Clean(t.TempDir()),
+		Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+		MaxStdoutBytes: 4,
+		MaxStderrBytes: 64,
+	})
+	requireFailure(t, err, FailureCodeProcessOutputLimit, FailureStageProcess)
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("output-limited process canceled after %s", elapsed)
+	}
+}
+
+func TestOSProcessRunnerPiPolicyRetainsOnlyCanonicalAuditFields(t *testing.T) {
+	t.Parallel()
+
+	const discardedMarker = "discarded-transient-payload-canary"
+	stream := bytes.Replace(
+		validPiEventStream(),
+		[]byte(`{"type":"agent_start"}`+"\n"),
+		[]byte(
+			`{"type":"agent_start"}`+"\n"+
+				`{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"`+discardedMarker+`"}]}}`+"\n"+
+				`{"type":"tool_execution_end","toolCallId":"call-bash","toolName":"bash","result":{"content":[{"type":"text","text":"`+discardedMarker+`"}]},"isError":false}`+"\n",
+		),
+		1,
+	)
+	stream = bytes.Replace(
+		stream,
+		[]byte(`{"type":"agent_end","messages":[],"willRetry":false}`),
+		[]byte(`{"type":"agent_end","messages":[{"role":"assistant","content":"`+discardedMarker+`"}],"willRetry":false}`),
+		1,
+	)
+	output, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
+		Executable:     "/bin/cat",
+		Arguments:      []string{"-"},
+		Directory:      filepath.Clean(t.TempDir()),
+		Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+		Stdin:          stream,
+		StdoutPolicy:   ProcessStdoutPiEventsV1,
+		MaxStdoutBytes: 2048,
+		MaxStderrBytes: 64,
+	})
+	if err != nil {
+		t.Fatalf("capture canonical Pi audit events: %v", err)
+	}
+	defer clear(output.Stdout)
+	if bytes.Contains(output.Stdout, []byte(discardedMarker)) {
+		t.Fatalf("transient Pi payload retained: %s", output.Stdout)
+	}
+	usage, final, err := parsePiEvents(output.Stdout)
+	defer clear(final)
+	if err != nil || usage.Validate() != nil || len(final) == 0 {
+		t.Fatalf("parse canonical Pi audit events: usage=%+v final=%d err=%v", usage, len(final), err)
+	}
+}
+
 func TestOSProcessRunnerRejectsNilContext(t *testing.T) {
 	t.Parallel()
 	if _, err := (OSProcessRunner{}).Run(
