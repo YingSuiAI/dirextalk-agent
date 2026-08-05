@@ -193,6 +193,27 @@ func TestProgressProtoPreservesEventIDResultAndZeroTimestamp(t *testing.T) {
 	}
 }
 
+func TestCoreTaskProtoProjectsTeamExecutionPayload(t *testing.T) {
+	p := &coretask.TeamExecutionTaskPayload{
+		PlanID:             "11111111-1111-4111-8111-111111111111",
+		PlanRevision:       1,
+		PlanDigest:         strings.Repeat("a", 64),
+		ExecutionID:        "22222222-2222-4222-8222-222222222222",
+		ConfirmationID:     "33333333-3333-4333-8333-333333333333",
+		ConversationID:     "44444444-4444-4444-8444-444444444444",
+		CredentialID:       "55555555-5555-4555-8555-555555555555",
+		CredentialRevision: 2,
+	}
+	got := coreTaskProto(coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindTeamExecution, Payload: coretask.TaskPayload{TeamExecution: p}}})
+	if got.GetKind() != agentv1.CoreTaskKind_CORE_TASK_KIND_TEAM_EXECUTION {
+		t.Fatalf("kind = %v, want CORE_TASK_KIND_TEAM_EXECUTION", got.GetKind())
+	}
+	projected := got.GetTeamExecution()
+	if projected == nil || projected.GetPlanId() != p.PlanID || projected.GetPlanRevision() != p.PlanRevision || projected.GetPlanDigest() != p.PlanDigest || projected.GetExecutionId() != p.ExecutionID || projected.GetConfirmationId() != p.ConfirmationID || projected.GetConversationId() != p.ConversationID || projected.GetCredentialId() != p.CredentialID || projected.GetCredentialRevision() != p.CredentialRevision {
+		t.Fatalf("team execution projection = %#v", projected)
+	}
+}
+
 func TestScheduleCursorValidationIsInvalidArgument(t *testing.T) {
 	fake := &coreScheduleStoreFake{}
 	_, err := NewCoreScheduleService(fake).List(context.Background(), &agentv1.ScheduleServiceListRequest{PageToken: "not-base64"})

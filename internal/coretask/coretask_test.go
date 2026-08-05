@@ -47,6 +47,100 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 	}
 }
 
+func validTeamExecutionTaskPayload() TeamExecutionTaskPayload {
+	return TeamExecutionTaskPayload{
+		PlanID:             "11111111-1111-4111-8111-111111111111",
+		PlanRevision:       1,
+		PlanDigest:         strings.Repeat("a", 64),
+		ExecutionID:        "22222222-2222-4222-8222-222222222222",
+		ConfirmationID:     "33333333-3333-4333-8333-333333333333",
+		ConversationID:     "44444444-4444-4444-8444-444444444444",
+		CredentialID:       "55555555-5555-4555-8555-555555555555",
+		CredentialRevision: 2,
+	}
+}
+
+func TestTeamExecutionTaskPayloadIsClosed(t *testing.T) {
+	p := TeamExecutionTaskPayload{
+		PlanID:             "11111111-1111-4111-8111-111111111111",
+		PlanRevision:       1,
+		PlanDigest:         strings.Repeat("a", 64),
+		ExecutionID:        "22222222-2222-4222-8222-222222222222",
+		ConfirmationID:     "33333333-3333-4333-8333-333333333333",
+		ConversationID:     "44444444-4444-4444-8444-444444444444",
+		CredentialID:       "55555555-5555-4555-8555-555555555555",
+		CredentialRevision: 2,
+	}
+	spec := TaskSpec{Kind: TaskKindTeamExecution, Payload: TaskPayload{TeamExecution: &p}, Goal: "bounded team task", IdempotencyKey: "66666666-6666-4666-8666-666666666666"}
+	if _, err := spec.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTeamExecutionTaskPayloadRejectsOpenBindings(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*TeamExecutionTaskPayload)
+	}{
+		{name: "missing plan ID", mutate: func(p *TeamExecutionTaskPayload) { p.PlanID = "" }},
+		{name: "invalid plan ID", mutate: func(p *TeamExecutionTaskPayload) { p.PlanID = "not-a-uuid" }},
+		{name: "missing execution ID", mutate: func(p *TeamExecutionTaskPayload) { p.ExecutionID = "" }},
+		{name: "invalid execution ID", mutate: func(p *TeamExecutionTaskPayload) { p.ExecutionID = "not-a-uuid" }},
+		{name: "missing confirmation ID", mutate: func(p *TeamExecutionTaskPayload) { p.ConfirmationID = "" }},
+		{name: "invalid confirmation ID", mutate: func(p *TeamExecutionTaskPayload) { p.ConfirmationID = "not-a-uuid" }},
+		{name: "missing conversation ID", mutate: func(p *TeamExecutionTaskPayload) { p.ConversationID = "" }},
+		{name: "invalid conversation ID", mutate: func(p *TeamExecutionTaskPayload) { p.ConversationID = "not-a-uuid" }},
+		{name: "missing credential ID", mutate: func(p *TeamExecutionTaskPayload) { p.CredentialID = "" }},
+		{name: "invalid credential ID", mutate: func(p *TeamExecutionTaskPayload) { p.CredentialID = "not-a-uuid" }},
+		{name: "zero plan revision", mutate: func(p *TeamExecutionTaskPayload) { p.PlanRevision = 0 }},
+		{name: "zero credential revision", mutate: func(p *TeamExecutionTaskPayload) { p.CredentialRevision = 0 }},
+		{name: "uppercase plan digest", mutate: func(p *TeamExecutionTaskPayload) { p.PlanDigest = strings.Repeat("A", 64) }},
+		{name: "short plan digest", mutate: func(p *TeamExecutionTaskPayload) { p.PlanDigest = strings.Repeat("a", 63) }},
+		{name: "non-hex plan digest", mutate: func(p *TeamExecutionTaskPayload) { p.PlanDigest = strings.Repeat("a", 63) + "g" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := validTeamExecutionTaskPayload()
+			tc.mutate(&p)
+			spec := TaskSpec{Kind: TaskKindTeamExecution, Payload: TaskPayload{TeamExecution: &p}, Goal: "bounded team task", IdempotencyKey: "66666666-6666-4666-8666-666666666666"}
+			if _, err := spec.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Normalize() error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*TaskSpec)
+	}{
+		{name: "missing payload", mutate: func(s *TaskSpec) { s.Payload = TaskPayload{} }},
+		{name: "mismatched payload", mutate: func(s *TaskSpec) { s.Payload = TaskPayload{AWSChange: &AWSChangeTaskPayload{ChangeID: testID}} }},
+		{name: "mismatched kind", mutate: func(s *TaskSpec) { s.Kind = TaskKindWorkload }},
+		{name: "multiple payloads", mutate: func(s *TaskSpec) { s.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID} }},
+		{name: "top-level model profile", mutate: func(s *TaskSpec) { s.ModelProfileID = testID }},
+		{name: "top-level conversation", mutate: func(s *TaskSpec) { s.ConversationID = testID }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := validTeamExecutionTaskPayload()
+			spec := TaskSpec{Kind: TaskKindTeamExecution, Payload: TaskPayload{TeamExecution: &p}, Goal: "bounded team task", IdempotencyKey: "66666666-6666-4666-8666-666666666666"}
+			tc.mutate(&spec)
+			if _, err := spec.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Normalize() error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
+func TestTeamExecutionTaskTemplateIsFenced(t *testing.T) {
+	p := validTeamExecutionTaskPayload()
+	template := TaskTemplate{Kind: TaskKindTeamExecution, Payload: TaskPayload{TeamExecution: &p}, Goal: "bounded team task"}
+	if _, err := template.Normalize(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Normalize() error = %v, want ErrInvalid", err)
+	}
+	if err := template.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate() error = %v, want ErrInvalid", err)
+	}
+}
+
 var testID = "00000000-0000-4000-8000-000000000001"
 var testID2 = "00000000-0000-4000-8000-000000000002"
 

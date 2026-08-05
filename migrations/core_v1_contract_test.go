@@ -94,3 +94,20 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestTeamExecutionTaskKindSchemaContractIsClosed(t *testing.T) {
+	script, err := Files.ReadFile("000001_core_v1_fresh.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(script)
+	for _, exact := range []string{
+		"ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool','team_execution'));",
+		"ADD CONSTRAINT core_tasks_model_profile_kind_chk CHECK ((task_kind IN ('agent','knowledge_index')) = (model_profile_id IS NOT NULL));",
+		"ADD CONSTRAINT core_tasks_team_execution_binding_chk CHECK (task_kind <> 'team_execution' OR (model_profile_id IS NULL AND conversation_id IS NULL));",
+	} {
+		if !strings.Contains(contents, exact) {
+			t.Errorf("Core v1 baseline missing exact Team execution contract %q", exact)
+		}
+	}
+}

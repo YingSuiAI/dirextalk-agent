@@ -984,7 +984,8 @@ CREATE TABLE core_conversation_tool_attempts (
     CHECK ((state IN ('completed','denied','canceled')) = (result_json IS NOT NULL))
 );
 ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_task_kind_chk;
-ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool'));
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool','team_execution'));
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_team_execution_binding_chk CHECK (task_kind <> 'team_execution' OR (model_profile_id IS NULL AND conversation_id IS NULL));
 
 CREATE TABLE core_workload_plans (
     plan_id uuid PRIMARY KEY,

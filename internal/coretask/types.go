@@ -39,6 +39,19 @@ const (
 	TaskKindConversationTool TaskKind = "conversation_tool"
 )
 
+const TaskKindTeamExecution TaskKind = "team_execution"
+
+type TeamExecutionTaskPayload struct {
+	PlanID             string `json:"plan_id"`
+	PlanRevision       uint64 `json:"plan_revision"`
+	PlanDigest         string `json:"plan_digest"`
+	ExecutionID        string `json:"execution_id"`
+	ConfirmationID     string `json:"confirmation_id"`
+	ConversationID     string `json:"conversation_id"`
+	CredentialID       string `json:"credential_id"`
+	CredentialRevision uint64 `json:"credential_revision"`
+}
+
 // WorkloadTaskPayload is the immutable execution fence for a workload
 // operation.  It deliberately contains identifiers and digests only; provider
 // credentials and secret values remain behind their typed provider boundary.
@@ -116,6 +129,7 @@ type TaskPayload struct {
 	KnowledgeIndex   *KnowledgeIndexTaskPayload   `json:"knowledge_index,omitempty"`
 	AWSChange        *AWSChangeTaskPayload        `json:"aws_change,omitempty"`
 	Workload         *WorkloadTaskPayload         `json:"workload,omitempty"`
+	TeamExecution    *TeamExecutionTaskPayload    `json:"team_execution,omitempty"`
 }
 
 var (
@@ -227,6 +241,9 @@ type TaskTemplate struct {
 }
 
 func (t TaskTemplate) Normalize() (TaskTemplate, error) {
+	if t.Kind == TaskKindTeamExecution {
+		return TaskTemplate{}, ErrInvalid
+	}
 	s, err := (TaskSpec{Kind: t.Kind, Payload: t.Payload, Goal: t.Goal, ConversationID: t.ConversationID, AttachmentRefs: t.AttachmentRefs, ModelProfileID: t.ModelProfileID, Extensions: t.Extensions, KnowledgeRefs: t.KnowledgeRefs, TimeoutSeconds: t.TimeoutSeconds, IdempotencyKey: "00000000-0000-4000-8000-000000000001"}).Normalize()
 	if err != nil {
 		return TaskTemplate{}, err
@@ -305,6 +322,9 @@ func normalizePayload(s *TaskSpec) error {
 		count++
 	}
 	if s.Payload.ConversationTool != nil {
+		count++
+	}
+	if s.Payload.TeamExecution != nil {
 		count++
 	}
 	switch s.Kind {
@@ -402,6 +422,20 @@ func normalizePayload(s *TaskSpec) error {
 			}
 			p.ExecutionSnapshot, _ = json.Marshal(v)
 		}
+	case TaskKindTeamExecution:
+		if count != 1 || s.Payload.TeamExecution == nil || s.ModelProfileID != "" || s.ConversationID != "" {
+			return ErrInvalid
+		}
+		p := s.Payload.TeamExecution
+		if !ValidUUID(p.PlanID) || p.PlanRevision == 0 || !ValidDigest(p.PlanDigest) || !ValidUUID(p.ExecutionID) || !ValidUUID(p.ConfirmationID) || !ValidUUID(p.ConversationID) || !ValidUUID(p.CredentialID) || p.CredentialRevision == 0 {
+			return ErrInvalid
+		}
+		p.PlanID = strings.TrimSpace(p.PlanID)
+		p.PlanDigest = strings.TrimSpace(p.PlanDigest)
+		p.ExecutionID = strings.TrimSpace(p.ExecutionID)
+		p.ConfirmationID = strings.TrimSpace(p.ConfirmationID)
+		p.ConversationID = strings.TrimSpace(p.ConversationID)
+		p.CredentialID = strings.TrimSpace(p.CredentialID)
 	default:
 		return ErrInvalid
 	}

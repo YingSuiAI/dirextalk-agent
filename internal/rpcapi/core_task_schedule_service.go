@@ -312,7 +312,11 @@ func coreTaskProto(t coretask.Task) *agentv1.CoreTask {
 	if p := t.Spec.Payload.Workload; p != nil {
 		workload = &agentv1.CoreWorkloadTaskPayload{WorkloadId: p.WorkloadID, PlanId: p.PlanID, OperationId: p.OperationID, PlanRevision: int64(p.PlanRevision), PlanDigest: p.PlanDigest, TargetKind: p.TargetKind, ConfirmationId: p.ConfirmationID, ExecutionSnapshot: rawJSONStruct(p.ExecutionSnapshot)}
 	}
-	return &agentv1.CoreTask{TaskId: t.ID, Goal: t.Spec.Goal, ConversationId: t.Spec.ConversationID, ModelProfileId: t.Spec.ModelProfileID, AttachmentRefs: t.Spec.AttachmentRefs, Extensions: extensionsProto(t.Spec.Extensions), KnowledgeRefs: t.Spec.KnowledgeRefs, TimeoutSeconds: t.Spec.TimeoutSeconds, Status: statusProto(t.Status), Attempt: t.Attempt, LeaseEpoch: t.LeaseEpoch, AvailableAt: timestampOrNil(t.AvailableAt), RetryOfTaskId: t.RetryOfTaskID, Result: resultStruct(t.Result), FailureCode: t.FailureCode, FailureSummary: t.FailureSummary, Revision: int64(t.Revision), CreatedAt: timestampOrNil(t.CreatedAt), UpdatedAt: timestampOrNil(t.UpdatedAt), Kind: taskKindProto(t.Spec.Kind), Workload: workload}
+	var teamExecution *agentv1.CoreTeamExecutionTaskPayload
+	if p := t.Spec.Payload.TeamExecution; p != nil {
+		teamExecution = &agentv1.CoreTeamExecutionTaskPayload{PlanId: p.PlanID, PlanRevision: p.PlanRevision, PlanDigest: p.PlanDigest, ExecutionId: p.ExecutionID, ConfirmationId: p.ConfirmationID, ConversationId: p.ConversationID, CredentialId: p.CredentialID, CredentialRevision: p.CredentialRevision}
+	}
+	return &agentv1.CoreTask{TaskId: t.ID, Goal: t.Spec.Goal, ConversationId: t.Spec.ConversationID, ModelProfileId: t.Spec.ModelProfileID, AttachmentRefs: t.Spec.AttachmentRefs, Extensions: extensionsProto(t.Spec.Extensions), KnowledgeRefs: t.Spec.KnowledgeRefs, TimeoutSeconds: t.Spec.TimeoutSeconds, Status: statusProto(t.Status), Attempt: t.Attempt, LeaseEpoch: t.LeaseEpoch, AvailableAt: timestampOrNil(t.AvailableAt), RetryOfTaskId: t.RetryOfTaskID, Result: resultStruct(t.Result), FailureCode: t.FailureCode, FailureSummary: t.FailureSummary, Revision: int64(t.Revision), CreatedAt: timestampOrNil(t.CreatedAt), UpdatedAt: timestampOrNil(t.UpdatedAt), Kind: taskKindProto(t.Spec.Kind), Workload: workload, TeamExecution: teamExecution}
 }
 func taskKindProto(k coretask.TaskKind) agentv1.CoreTaskKind {
 	switch k {
@@ -324,6 +328,8 @@ func taskKindProto(k coretask.TaskKind) agentv1.CoreTaskKind {
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_AWS_CHANGE
 	case coretask.TaskKindWorkload:
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_WORKLOAD
+	case coretask.TaskKindTeamExecution:
+		return agentv1.CoreTaskKind_CORE_TASK_KIND_TEAM_EXECUTION
 	case coretask.TaskKindAgent, "":
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_AGENT
 	default:
