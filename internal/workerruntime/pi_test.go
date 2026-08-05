@@ -60,7 +60,8 @@ func TestPiExecutorUsesQualifiedReleaseAndStructuredResult(t *testing.T) {
 	}
 	if process.calls != 1 ||
 		process.spec.Executable != executor.release.ExecutablePath ||
-		process.spec.Directory != workspace {
+		process.spec.Directory != workspace ||
+		process.spec.StdoutPolicy != ProcessStdoutPiEventsV1 {
 		t.Fatalf("process spec = %+v", process.spec)
 	}
 	arguments := strings.Join(process.spec.Arguments, "\n")

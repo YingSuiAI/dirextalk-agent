@@ -207,6 +207,7 @@ func (executor *PiExecutor) Execute(
 				inputs.Credential,
 			),
 			Stdin:          prompt,
+			StdoutPolicy:   ProcessStdoutPiEventsV1,
 			MaxStdoutBytes: MaxProcessOutputBytes,
 			MaxStderrBytes: MaxFinalResponseBytes,
 		},

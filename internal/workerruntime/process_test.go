@@ -1,6 +1,7 @@
 package workerruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"path/filepath"
@@ -46,6 +47,118 @@ func TestOSProcessRunnerUsesClosedEnvironmentAndBoundedOutput(t *testing.T) {
 	if !errors.Is(err, ErrExecution) {
 		t.Fatalf("output-bound error = %v", err)
 	}
+}
+
+func TestOSProcessRunnerBoundsRetainedPiEventsInsteadOfTransientStream(t *testing.T) {
+	t.Parallel()
+
+	transient := bytes.Repeat(
+		[]byte(`{"type":"message_update","message":{"role":"assistant","content":[{"type":"thinking","thinking":"accumulated-stream-content"}]}}`+"\n"),
+		64,
+	)
+	stream := bytes.Replace(
+		validPiEventStream(),
+		[]byte(`{"type":"agent_start"}`+"\n"),
+		append(
+			[]byte(`{"type":"agent_start"}`+"\n"),
+			transient...,
+		),
+		1,
+	)
+	const retainedLimit = 1024
+	if len(stream) <= retainedLimit {
+		t.Fatalf("Pi stream fixture = %d bytes", len(stream))
+	}
+
+	output, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
+		Executable:     "/bin/cat",
+		Arguments:      []string{"-"},
+		Directory:      filepath.Clean(t.TempDir()),
+		Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+		Stdin:          stream,
+		StdoutPolicy:   ProcessStdoutPiEventsV1,
+		MaxStdoutBytes: retainedLimit,
+		MaxStderrBytes: 64,
+	})
+	if err != nil {
+		t.Fatalf("filter transient Pi stream: %v", err)
+	}
+	defer clear(output.Stdout)
+	if len(output.Stdout) >= retainedLimit ||
+		bytes.Contains(output.Stdout, []byte(`"type":"message_update"`)) {
+		t.Fatalf("retained Pi output = %d bytes", len(output.Stdout))
+	}
+	usage, final, err := parsePiEvents(output.Stdout)
+	defer clear(final)
+	if err != nil || usage.Validate() != nil || len(final) == 0 {
+		t.Fatalf("parse retained Pi events: usage=%+v final=%d err=%v", usage, len(final), err)
+	}
+}
+
+func TestOSProcessRunnerPiPolicyPreservesUnknownEventsForClosedParsing(t *testing.T) {
+	t.Parallel()
+
+	stream := bytes.Replace(
+		validPiEventStream(),
+		[]byte(`{"type":"agent_start"}`+"\n"),
+		[]byte(
+			`{"type":"agent_start"}`+"\n"+
+				`{"type":"future_pi_event","payload":"must-not-be-hidden"}`+"\n",
+		),
+		1,
+	)
+	output, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
+		Executable:     "/bin/cat",
+		Arguments:      []string{"-"},
+		Directory:      filepath.Clean(t.TempDir()),
+		Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+		Stdin:          stream,
+		StdoutPolicy:   ProcessStdoutPiEventsV1,
+		MaxStdoutBytes: 2048,
+		MaxStderrBytes: 64,
+	})
+	if err != nil {
+		t.Fatalf("capture Pi stream with unknown event: %v", err)
+	}
+	defer clear(output.Stdout)
+	if !bytes.Contains(output.Stdout, []byte(`"type":"future_pi_event"`)) {
+		t.Fatal("unknown Pi event was silently discarded")
+	}
+	usage, final, err := parsePiEvents(output.Stdout)
+	clear(final)
+	if usage != (Usage{}) {
+		t.Fatalf("invalid Pi stream usage = %+v", usage)
+	}
+	requireFailure(t, err, FailureCodePiEventInvalid, FailureStagePi)
+}
+
+func TestOSProcessRunnerPiPolicyPreservesEventsAfterSettlement(t *testing.T) {
+	t.Parallel()
+
+	stream := append(
+		bytes.Clone(validPiEventStream()),
+		[]byte(`{"type":"message_update","message":{"role":"assistant"}}`+"\n")...,
+	)
+	output, err := (OSProcessRunner{}).Run(t.Context(), ProcessSpec{
+		Executable:     "/bin/cat",
+		Arguments:      []string{"-"},
+		Directory:      filepath.Clean(t.TempDir()),
+		Environment:    map[string]string{"PATH": "/usr/bin:/bin"},
+		Stdin:          stream,
+		StdoutPolicy:   ProcessStdoutPiEventsV1,
+		MaxStdoutBytes: 2048,
+		MaxStderrBytes: 64,
+	})
+	if err != nil {
+		t.Fatalf("capture Pi post-settlement event: %v", err)
+	}
+	defer clear(output.Stdout)
+	usage, final, err := parsePiEvents(output.Stdout)
+	clear(final)
+	if usage != (Usage{}) {
+		t.Fatalf("post-settlement Pi stream usage = %+v", usage)
+	}
+	requireFailure(t, err, FailureCodePiEventInvalid, FailureStagePi)
 }
 
 func TestOSProcessRunnerRejectsNilContext(t *testing.T) {

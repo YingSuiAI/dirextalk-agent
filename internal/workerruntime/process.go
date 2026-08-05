@@ -29,9 +29,17 @@ type ProcessSpec struct {
 	SecretEnvironment map[string][]byte
 	Stdin             []byte
 	AllowedExitCodes  []int
+	StdoutPolicy      ProcessStdoutPolicy
 	MaxStdoutBytes    int
 	MaxStderrBytes    int
 }
+
+type ProcessStdoutPolicy string
+
+const (
+	ProcessStdoutRaw        ProcessStdoutPolicy = ""
+	ProcessStdoutPiEventsV1 ProcessStdoutPolicy = "pi_events_v1"
+)
 
 type ProcessOutput struct {
 	Stdout []byte
@@ -57,16 +65,20 @@ func (OSProcessRunner) Run(
 	command.Dir = spec.Directory
 	command.Stdin = bytes.NewReader(spec.Stdin)
 	command.Env = buildProcessEnvironment(spec)
-	stdout := &boundedBuffer{maximum: spec.MaxStdoutBytes}
+	stdout := newProcessOutputBuffer(
+		spec.StdoutPolicy,
+		spec.MaxStdoutBytes,
+	)
 	stderr := &boundedBuffer{maximum: spec.MaxStderrBytes}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	configureProcessCancellation(command)
 	err := command.Run()
+	stdout.finalize()
 	clear(command.Env)
 	clear(stderr.buffer)
-	if stdout.exceeded || stderr.exceeded {
-		clear(stdout.buffer)
+	if stdout.exceededLimit() || stderr.exceeded {
+		stdout.destroy()
 		return ProcessOutput{}, newFailure(
 			FailureStageProcess,
 			FailureCodeProcessOutputLimit,
@@ -76,7 +88,7 @@ func (OSProcessRunner) Run(
 		var exitError *exec.ExitError
 		if !errors.As(err, &exitError) ||
 			!allowedExitCode(exitError.ExitCode(), spec.AllowedExitCodes) {
-			clear(stdout.buffer)
+			stdout.destroy()
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				return ProcessOutput{}, errors.Join(
 					ctx.Err(),
@@ -101,8 +113,8 @@ func (OSProcessRunner) Run(
 			)
 		}
 	}
-	result := bytes.Clone(stdout.buffer)
-	clear(stdout.buffer)
+	result := stdout.clone()
+	stdout.destroy()
 	return ProcessOutput{Stdout: result}, nil
 }
 
@@ -112,6 +124,7 @@ func validateProcessSpec(spec ProcessSpec) error {
 		spec.MaxStderrBytes < 1 ||
 		spec.MaxStderrBytes > MaxProcessOutputBytes ||
 		len(spec.Stdin) > MaxProcessOutputBytes ||
+		!validProcessStdoutPolicy(spec.StdoutPolicy) ||
 		!cleanAbsolute(spec.Executable) ||
 		!cleanAbsolute(spec.Directory) ||
 		len(spec.Arguments) == 0 ||
@@ -153,6 +166,11 @@ func validateProcessSpec(spec ProcessSpec) error {
 		}
 	}
 	return nil
+}
+
+func validProcessStdoutPolicy(policy ProcessStdoutPolicy) bool {
+	return policy == ProcessStdoutRaw ||
+		policy == ProcessStdoutPiEventsV1
 }
 
 func buildProcessEnvironment(spec ProcessSpec) []string {
@@ -200,6 +218,26 @@ type boundedBuffer struct {
 	exceeded bool
 }
 
+type processOutputBuffer interface {
+	Write([]byte) (int, error)
+	finalize()
+	exceededLimit() bool
+	clone() []byte
+	destroy()
+}
+
+func newProcessOutputBuffer(
+	policy ProcessStdoutPolicy,
+	maximum int,
+) processOutputBuffer {
+	if policy == ProcessStdoutPiEventsV1 {
+		return &piProcessOutputBuffer{
+			retained: boundedBuffer{maximum: maximum},
+		}
+	}
+	return &boundedBuffer{maximum: maximum}
+}
+
 func (buffer *boundedBuffer) Write(input []byte) (int, error) {
 	if buffer.exceeded {
 		return len(input), nil
@@ -216,6 +254,21 @@ func (buffer *boundedBuffer) Write(input []byte) (int, error) {
 	}
 	buffer.buffer = append(buffer.buffer, input...)
 	return len(input), nil
+}
+
+func (*boundedBuffer) finalize() {}
+
+func (buffer *boundedBuffer) exceededLimit() bool {
+	return buffer.exceeded
+}
+
+func (buffer *boundedBuffer) clone() []byte {
+	return bytes.Clone(buffer.buffer)
+}
+
+func (buffer *boundedBuffer) destroy() {
+	clear(buffer.buffer)
+	buffer.buffer = nil
 }
 
 func processWaitDelay() time.Duration { return 2 * time.Second }
