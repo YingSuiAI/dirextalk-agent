@@ -15,6 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -211,7 +214,7 @@ func (c *infoCapability) HandleOperation(ctx context.Context, operationID string
 		if err != nil {
 			return nil, redactSecretError(err, request.APIKey)
 		}
-		return json.Marshal(sanitizeModelCatalogResult(value))
+		return json.Marshal(sanitizeModelCatalogResult(value, request.APIKey))
 	default:
 		return nil, fmt.Errorf("unknown agent info operation %q", operationID)
 	}
@@ -801,16 +804,33 @@ func validateModelCatalogRequest(request ModelCatalogRequest) error {
 	return nil
 }
 
-func sanitizeModelCatalogResult(value ModelCatalogResult) ModelCatalogResult {
-	providers := append([]ModelCatalogProviderInfo(nil), value.Providers...)
-	for i := range providers {
-		providers[i].Provider = safeString(providers[i].Provider, maxRuntimeNameBytes)
-		providers[i].DefaultBaseURL = safeString(providers[i].DefaultBaseURL, 2048)
+func sanitizeModelCatalogResult(value ModelCatalogResult, requestAPIKey string) ModelCatalogResult {
+	providers := make([]ModelCatalogProviderInfo, 0, len(value.Providers))
+	for _, provider := range value.Providers {
+		if modelCatalogValueContainsSecret(provider.Provider, requestAPIKey) || modelCatalogValueContainsSecret(provider.DefaultBaseURL, requestAPIKey) {
+			continue
+		}
+		provider.Provider = safeString(strings.ToLower(strings.TrimSpace(provider.Provider)), maxRuntimeNameBytes)
+		provider.DefaultBaseURL = safeString(provider.DefaultBaseURL, 2048)
+		if provider.Provider == "" {
+			continue
+		}
+		providers = append(providers, provider)
 	}
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Provider < providers[j].Provider })
 	models := make([]map[string]any, 0, len(value.Models))
 	for _, model := range value.Models {
-		models = append(models, sanitizeModelMap(model))
+		if modelCatalogValueContainsSecret(model, requestAPIKey) {
+			continue
+		}
+		clean := sanitizeModelMap(model)
+		if _, ok := clean["id"].(string); !ok || clean["id"] == "" {
+			continue
+		}
+		if _, ok := clean["provider"].(string); !ok || clean["provider"] == "" {
+			continue
+		}
+		models = append(models, clean)
 	}
 	return ModelCatalogResult{Models: models, Providers: providers}
 }
@@ -822,42 +842,225 @@ func sanitizeModelMap(input map[string]any) map[string]any {
 	out := make(map[string]any, len(input))
 	for key, value := range input {
 		lower := strings.ToLower(strings.TrimSpace(key))
-		if strings.Contains(lower, "api_key") || strings.Contains(lower, "authorization") || strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
+		if !isClosedModelField(lower) {
 			continue
 		}
 		clean, keep := sanitizeModelValue(lower, value)
 		if keep {
-			out[key] = clean
+			out[lower] = clean
 		}
 	}
 	return out
 }
 
+func isClosedModelField(key string) bool {
+	switch key {
+	case "context_length", "context_window", "created", "created_at", "id", "input_modalities", "input_token_limit", "max_input_tokens", "max_output_tokens", "max_tokens", "name", "object", "output_modalities", "output_token_limit", "owned_by", "provider", "type":
+		return true
+	default:
+		return false
+	}
+}
+
+func isClosedModelNumericField(key string) bool {
+	switch key {
+	case "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
+		return true
+	default:
+		return false
+	}
+}
+
 func sanitizeModelValue(key string, value any) (any, bool) {
-	switch typed := value.(type) {
-	case string:
-		if strings.ContainsAny(typed, "\r\n\x00") {
+	switch key {
+	case "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
+		return sanitizeModelIntegerValue(value)
+	case "created":
+		return sanitizeModelNumberValue(value)
+	case "input_modalities":
+		return sanitizeModelStringList(value, false)
+	case "output_modalities":
+		return sanitizeModelStringList(value, true)
+	case "id", "name", "object", "created_at", "owned_by", "provider", "type":
+		text, ok := value.(string)
+		if !ok || strings.ContainsAny(text, "\r\n\x00") || strings.TrimSpace(text) == "" {
 			return nil, false
 		}
-		if key == "base_url" || key == "url" {
-			if strings.Contains(typed, "@") || strings.Contains(typed, "?") || strings.Contains(typed, "#") {
-				return nil, false
-			}
+		text = safeString(text, 4096)
+		if text == "" {
+			return nil, false
 		}
-		return safeString(typed, 4096), true
-	case map[string]any:
-		return sanitizeModelMap(typed), true
-	case []any:
-		out := make([]any, 0, len(typed))
-		for _, item := range typed {
-			clean, keep := sanitizeModelValue("", item)
-			if keep {
-				out = append(out, clean)
-			}
-		}
-		return out, true
+		return text, true
 	default:
-		return value, true
+		return nil, false
+	}
+}
+
+func sanitizeModelStringList(value any, output bool) (any, bool) {
+	var values []any
+	switch typed := value.(type) {
+	case []any:
+		values = typed
+	case []string:
+		values = make([]any, len(typed))
+		for i := range typed {
+			values[i] = typed[i]
+		}
+	default:
+		return nil, false
+	}
+	clean := make([]string, 0, len(values))
+	for _, item := range values {
+		text, ok := item.(string)
+		if !ok || strings.ContainsAny(text, "\r\n\x00") || strings.TrimSpace(text) == "" {
+			return nil, false
+		}
+		clean = append(clean, strings.ToLower(strings.TrimSpace(text)))
+	}
+	if output {
+		clean = CanonicalModelCatalogOutputModalities(clean)
+	}
+	return clean, true
+}
+
+func sanitizeModelNumberValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return typed, true
+	case float32:
+		number := float64(typed)
+		if math.IsNaN(number) || math.IsInf(number, 0) {
+			return nil, false
+		}
+		return typed, true
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return nil, false
+		}
+		return typed, true
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+			return nil, false
+		}
+		return number, true
+	default:
+		return nil, false
+	}
+}
+
+func sanitizeModelIntegerValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int8:
+		return int64(typed), true
+	case int16:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint:
+		if uint64(typed) > uint64(^uint64(0)>>1) {
+			return nil, false
+		}
+		return int64(typed), true
+	case uint8:
+		return int64(typed), true
+	case uint16:
+		return int64(typed), true
+	case uint32:
+		return int64(typed), true
+	case uint64:
+		if typed > uint64(^uint64(0)>>1) {
+			return nil, false
+		}
+		return int64(typed), true
+	case float32:
+		return sanitizeModelIntegerFloat(float64(typed))
+	case float64:
+		return sanitizeModelIntegerFloat(typed)
+	case json.Number:
+		return sanitizeModelIntegerNumber(typed)
+	default:
+		return nil, false
+	}
+}
+
+func sanitizeModelIntegerFloat(value float64) (any, bool) {
+	const minInteger = -float64(uint64(1) << 63)
+	const maxIntegerExclusive = float64(uint64(1) << 63)
+	if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value || value < minInteger || value >= maxIntegerExclusive {
+		return nil, false
+	}
+	return int64(value), true
+}
+
+func sanitizeModelIntegerNumber(value json.Number) (any, bool) {
+	rational, ok := new(big.Rat).SetString(value.String())
+	if !ok || !rational.IsInt() {
+		return nil, false
+	}
+	minimum := new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 63))
+	maximum := new(big.Int).Lsh(big.NewInt(1), 63)
+	numerator := rational.Num()
+	if numerator.Cmp(minimum) < 0 || numerator.Cmp(maximum) >= 0 {
+		return nil, false
+	}
+	return numerator.Int64(), true
+}
+
+func modelCatalogValueContainsSecret(value any, secret string) bool {
+	if secret == "" || value == nil {
+		return false
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.Contains(typed, secret)
+	case []byte:
+		return strings.Contains(string(typed), secret)
+	case []string:
+		for _, item := range typed {
+			if strings.Contains(item, secret) {
+				return true
+			}
+		}
+		return false
+	case []any:
+		for _, item := range typed {
+			if modelCatalogValueContainsSecret(item, secret) {
+				return true
+			}
+		}
+		return false
+	case map[string]any:
+		for key, item := range typed {
+			if strings.Contains(key, secret) || modelCatalogValueContainsSecret(item, secret) {
+				return true
+			}
+		}
+		return false
+	default:
+		reflected := reflect.ValueOf(value)
+		switch reflected.Kind() {
+		case reflect.Map:
+			if reflected.Type().Key().Kind() == reflect.String {
+				iter := reflected.MapRange()
+				for iter.Next() {
+					if strings.Contains(iter.Key().String(), secret) || modelCatalogValueContainsSecret(iter.Value().Interface(), secret) {
+						return true
+					}
+				}
+			}
+		case reflect.Slice, reflect.Array:
+			for index := 0; index < reflected.Len(); index++ {
+				if modelCatalogValueContainsSecret(reflected.Index(index).Interface(), secret) {
+					return true
+				}
+			}
+		}
+		return false
 	}
 }
 
@@ -1061,20 +1264,22 @@ func safeString(value string, maxBytes int) string {
 }
 
 const (
-	emptyObjectSchema          = `{"additionalProperties":false,"properties":{},"type":"object"}`
-	genericObjectSchema        = `{"additionalProperties":true,"type":"object"}`
-	runtimeInspectResultSchema = `{"additionalProperties":false,"properties":{"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"ready":{"type":"boolean"},"tools":{"items":{"type":"string"},"type":"array"},"updated_at":{"type":"string"}},"required":["ready","configured","capabilities","tools"],"type":"object"}`
-	runtimeInstallSchema       = `{"additionalProperties":false,"properties":{"channels":{"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$"},"maxItems":8,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"package":{"type":"string"},"target":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["target"],"type":"object"}`
-	runtimeInstallResultSchema = `{"additionalProperties":false,"properties":{"installed":{"type":"boolean"},"revision":{"type":"string"},"status":{"type":"string"},"target":{"type":"string"}},"required":["installed","status","target"],"type":"object"}`
-	runtimeWhichSchema         = `{"additionalProperties":false,"properties":{"name":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["name"],"type":"object"}`
-	runtimeWhichResultSchema   = `{"additionalProperties":false,"properties":{"found":{"type":"boolean"},"name":{"type":"string"},"path":{"type":"string"},"version":{"type":"string"}},"required":["found","name"],"type":"object"}`
-	runtimeRunSchema           = `{"additionalProperties":false,"properties":{"argv":{"items":{"type":"string","maxLength":4096},"maxItems":64,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"stdin":{"maxLength":65536,"type":"string"},"timeout_ms":{"maximum":600000,"minimum":0,"type":"integer"},"tool":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["tool"],"type":"object"}`
-	runtimeRunResultSchema     = `{"additionalProperties":false,"properties":{"duration_ms":{"type":"integer"},"exit_code":{"type":"integer"},"stderr":{"type":"string"},"stdout":{"type":"string"},"tool":{"type":"string"}},"required":["exit_code","tool"],"type":"object"}`
-	modelCatalogSchema         = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","writeOnly":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"default":"conversation","enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"type":"object"}`
-	modelCatalogResultSchema   = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":true,"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
-	configProposalSchema       = `{"additionalProperties":false,"properties":{"kind":{"enum":["mcp_server","skill"],"type":"string"},"mcp_server":{"additionalProperties":true,"type":"object"},"skill":{"additionalProperties":true,"type":"object"}},"required":["kind"],"type":"object"}`
-	configProposalResultSchema = `{"additionalProperties":false,"properties":{"config_patch":{"additionalProperties":true,"type":"object"},"requires_confirmation":{"const":true,"type":"boolean"}},"required":["requires_confirmation","config_patch"],"type":"object"}`
-	nativeConfigGetSchema      = `{"additionalProperties":false,"properties":{},"type":"object"}`
-	nativeConfigUpdateSchema   = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"maximum":4194304,"minimum":1,"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"},"system_prompt":{"type":"string"}},"required":["idempotency_key"],"type":"object"}`
-	nativeConfigResultSchema   = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"},"system_prompt":{"type":"string"}},"required":["revision","display_name","avatar_url","native_agent_identity","context_window","enabled","model","system_prompt","mcp_blocked_room_ids"],"type":"object"}`
+	emptyObjectSchema                = `{"additionalProperties":false,"properties":{},"type":"object"}`
+	genericObjectSchema              = `{"additionalProperties":true,"type":"object"}`
+	runtimeInspectResultSchema       = `{"additionalProperties":false,"properties":{"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"ready":{"type":"boolean"},"tools":{"items":{"type":"string"},"type":"array"},"updated_at":{"type":"string"}},"required":["ready","configured","capabilities","tools"],"type":"object"}`
+	runtimeInstallSchema             = `{"additionalProperties":false,"properties":{"channels":{"items":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$"},"maxItems":8,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"package":{"type":"string"},"target":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["target"],"type":"object"}`
+	runtimeInstallResultSchema       = `{"additionalProperties":false,"properties":{"installed":{"type":"boolean"},"revision":{"type":"string"},"status":{"type":"string"},"target":{"type":"string"}},"required":["installed","status","target"],"type":"object"}`
+	runtimeWhichSchema               = `{"additionalProperties":false,"properties":{"name":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["name"],"type":"object"}`
+	runtimeWhichResultSchema         = `{"additionalProperties":false,"properties":{"found":{"type":"boolean"},"name":{"type":"string"},"path":{"type":"string"},"version":{"type":"string"}},"required":["found","name"],"type":"object"}`
+	runtimeRunSchema                 = `{"additionalProperties":false,"properties":{"argv":{"items":{"type":"string","maxLength":4096},"maxItems":64,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"stdin":{"maxLength":65536,"type":"string"},"timeout_ms":{"maximum":600000,"minimum":0,"type":"integer"},"tool":{"pattern":"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,127}$","type":"string"}},"required":["tool"],"type":"object"}`
+	runtimeRunResultSchema           = `{"additionalProperties":false,"properties":{"duration_ms":{"type":"integer"},"exit_code":{"type":"integer"},"stderr":{"type":"string"},"stdout":{"type":"string"},"tool":{"type":"string"}},"required":["exit_code","tool"],"type":"object"}`
+	modelCatalogSchema               = `{"additionalProperties":false,"properties":{"api_key":{"type":"string","writeOnly":true},"base_url":{"type":"string"},"client_model_profile_id":{"type":"string"},"model_kind":{"default":"conversation","enum":["conversation","embedding","speech"],"type":"string"},"model_profile_id":{"type":"string"},"provider":{"type":"string"}},"type":"object"}`
+	modelCatalogResultSchemaTemplate = `{"additionalProperties":false,"properties":{"models":{"items":{"additionalProperties":false,"properties":{"context_length":{"type":"integer"},"context_window":{"type":"integer"},"created":{"type":"number"},"created_at":{"type":"string"},"id":{"type":"string"},"input_modalities":{"items":{"type":"string"},"type":"array"},"input_token_limit":{"type":"integer"},"max_input_tokens":{"type":"integer"},"max_output_tokens":{"type":"integer"},"max_tokens":{"type":"integer"},"name":{"type":"string"},"object":{"type":"string"},"output_modalities":{"items":{"enum":__OUTPUT_MODALITIES_ENUM__,"type":"string"},"type":"array"},"output_token_limit":{"type":"integer"},"owned_by":{"type":"string"},"provider":{"type":"string"},"type":{"type":"string"}},"required":["id","provider"],"type":"object"},"type":"array"},"providers":{"items":{"additionalProperties":false,"properties":{"default_base_url":{"type":"string"},"dynamic_models":{"type":"boolean"},"provider":{"type":"string"},"requires_api_key":{"type":"boolean"}},"required":["provider","requires_api_key","dynamic_models"],"type":"object"},"type":"array"}},"required":["models","providers"],"type":"object"}`
+	configProposalSchema             = `{"additionalProperties":false,"properties":{"kind":{"enum":["mcp_server","skill"],"type":"string"},"mcp_server":{"additionalProperties":true,"type":"object"},"skill":{"additionalProperties":true,"type":"object"}},"required":["kind"],"type":"object"}`
+	configProposalResultSchema       = `{"additionalProperties":false,"properties":{"config_patch":{"additionalProperties":true,"type":"object"},"requires_confirmation":{"const":true,"type":"boolean"}},"required":["requires_confirmation","config_patch"],"type":"object"}`
+	nativeConfigGetSchema            = `{"additionalProperties":false,"properties":{},"type":"object"}`
+	nativeConfigUpdateSchema         = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"maximum":4194304,"minimum":1,"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"expected_revision":{"minimum":0,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"mcp_blocked_room_ids":{"items":{"type":"string"},"maxItems":512,"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"type":"object"},"system_prompt":{"type":"string"}},"required":["idempotency_key"],"type":"object"}`
+	nativeConfigResultSchema         = `{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"context_window":{"type":"integer"},"display_name":{"type":"string"},"enabled":{"type":"boolean"},"mcp_blocked_room_ids":{"items":{"type":"string"},"type":"array"},"model":{"type":"string"},"native_agent_identity":{"additionalProperties":false,"properties":{"avatar_url":{"type":"string"},"display_name":{"type":"string"}},"required":["display_name","avatar_url"],"type":"object"},"revision":{"type":"integer"},"system_prompt":{"type":"string"}},"required":["revision","display_name","avatar_url","native_agent_identity","context_window","enabled","model","system_prompt","mcp_blocked_room_ids"],"type":"object"}`
 )
+
+var modelCatalogResultSchema = strings.ReplaceAll(modelCatalogResultSchemaTemplate, "__OUTPUT_MODALITIES_ENUM__", ModelCatalogOutputModalitiesJSON)

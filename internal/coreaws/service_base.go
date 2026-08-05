@@ -124,20 +124,21 @@ func operationKey(changeID, token, kind string, _ uint32, _ uint64) string {
 }
 
 type Service struct {
-	repo          Repository
-	confirmations ConfirmationPort
-	tasks         TaskPort
-	sts           STSProvider
-	provider      CloudProvider
-	coordinator   ChangeCoordinator
-	now           func() time.Time
+	repo                          Repository
+	confirmations                 ConfirmationPort
+	tasks                         TaskPort
+	sts                           STSProvider
+	provider                      CloudProvider
+	coordinator                   ChangeCoordinator
+	now                           func() time.Time
+	credentialTestFinalizeTimeout time.Duration
 }
 
 func NewService(repo Repository, confirmations ConfirmationPort, tasks TaskPort, sts STSProvider, provider CloudProvider, now func() time.Time) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	s := &Service{repo: repo, confirmations: confirmations, tasks: tasks, sts: sts, provider: provider, now: now}
+	s := &Service{repo: repo, confirmations: confirmations, tasks: tasks, sts: sts, provider: provider, now: now, credentialTestFinalizeTimeout: credentialTestFinalizeTimeout}
 	if mr, ok := repo.(*MemoryRepository); ok {
 		s.coordinator = NewMemoryChangeCoordinator(mr, confirmations, tasks, now)
 	}

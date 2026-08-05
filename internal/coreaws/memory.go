@@ -40,6 +40,7 @@ type MemoryRepository struct {
 	reservations  map[string]Reservation
 	events        []ChangeEvent
 	replays       map[string]memoryReplay
+	testClaims    map[string]memoryCredentialTestClaim
 }
 
 type ChangeEvent struct {
@@ -56,11 +57,26 @@ type memoryReplay struct {
 	credential *CredentialView
 	plan       *PlanView
 	change     *ChangeRequestResult
+	test       *CredentialTest
 	deleted    bool
 }
 
+type memoryCredentialTestClaim struct {
+	claim  CredentialTestClaim
+	digest string
+	state  string
+	test   *CredentialTest
+}
+
+const (
+	memoryCredentialTestInProgress = "in_progress"
+	memoryCredentialTestUncertain  = "uncertain"
+	memoryCredentialTestFailed     = "failed"
+	memoryCredentialTestCompleted  = "completed"
+)
+
 func NewMemoryRepository() *MemoryRepository {
-	return &MemoryRepository{credentials: map[string]Credentials{}, plans: map[string]Plan{}, changes: map[string]Change{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]Reservation{}, replays: map[string]memoryReplay{}}
+	return &MemoryRepository{credentials: map[string]Credentials{}, plans: map[string]Plan{}, changes: map[string]Change{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]Reservation{}, replays: map[string]memoryReplay{}, testClaims: map[string]memoryCredentialTestClaim{}}
 }
 
 func replayKey(op, key string) string { return op + ":" + key }
@@ -215,6 +231,11 @@ func (r *MemoryRepository) deleteCredentialIdempotent(_ context.Context, id stri
 		return ErrRevisionConflict
 	}
 	delete(r.credentials, id)
+	for claimKey, claim := range r.testClaims {
+		if claim.claim.CredentialID == id {
+			delete(r.testClaims, claimKey)
+		}
+	}
 	v := old.View()
 	r.replays[replayKey("credential-delete", key)] = memoryReplay{digest: digest, deleted: true, credential: &v}
 	return nil
@@ -322,6 +343,11 @@ func (r *MemoryRepository) DeleteCredential(_ context.Context, id string, expect
 		return ErrRevisionConflict
 	}
 	delete(r.credentials, id)
+	for claimKey, claim := range r.testClaims {
+		if claim.claim.CredentialID == id {
+			delete(r.testClaims, claimKey)
+		}
+	}
 	return nil
 }
 
@@ -341,6 +367,159 @@ func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string
 	c.AccountID, c.UserARN, c.VerifiedRevision, c.TestedAt, c.UpdatedAt = identity.AccountID, identity.UserARN, c.Revision, testedAt.UTC(), testedAt.UTC()
 	r.credentials[id] = cloneCredential(c)
 	return cloneCredential(c), nil
+}
+
+// BeginCredentialTest persists the provider-call claim without invoking the
+// provider while the repository mutex is held. Existing in-progress claims
+// are reported to bounded same-key waiters; uncertain claims fail closed so a
+// retry can never issue a second provider request after an ambiguous crash.
+func (r *MemoryRepository) BeginCredentialTest(_ context.Context, id string, expected int64, key string, leaseTimes ...time.Time) (CredentialTestClaim, *CredentialTest, error) {
+	if r == nil || !validUUID(id) || !validUUID(key) || expected < 1 {
+		return CredentialTestClaim{}, nil, ErrInvalid
+	}
+	leaseExpiresAt, completionGraceUntil, err := CredentialTestLeaseTimes(time.Now(), leaseTimes...)
+	if err != nil {
+		return CredentialTestClaim{}, nil, err
+	}
+	digest := CredentialTestBindingDigest(id, expected)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.testClaims == nil {
+		r.testClaims = make(map[string]memoryCredentialTestClaim)
+	}
+	if existing, ok := r.testClaims[key]; ok {
+		if existing.digest != digest {
+			return CredentialTestClaim{}, nil, ErrIdempotencyConflict
+		}
+		switch existing.state {
+		case memoryCredentialTestCompleted:
+			if existing.test == nil {
+				return CredentialTestClaim{}, nil, ErrConflict
+			}
+			replay := *existing.test
+			return CredentialTestClaim{}, &replay, nil
+		case memoryCredentialTestInProgress, memoryCredentialTestUncertain:
+			if existing.state == memoryCredentialTestInProgress {
+				return CredentialTestClaim{}, nil, &CredentialTestInProgressError{LeaseExpiresAt: existing.claim.LeaseExpiresAt, CompletionGraceUntil: existing.claim.CompletionGraceUntil}
+			}
+			return CredentialTestClaim{}, nil, ErrResponseUncertain
+		case memoryCredentialTestFailed:
+			return CredentialTestClaim{}, nil, ErrProvider
+		default:
+			return CredentialTestClaim{}, nil, ErrConflict
+		}
+	}
+	credential, ok := r.credentials[id]
+	if !ok {
+		return CredentialTestClaim{}, nil, ErrNotFound
+	}
+	if credential.Revision != expected {
+		return CredentialTestClaim{}, nil, ErrRevisionConflict
+	}
+	claim := CredentialTestClaim{ClaimID: newUUID(), IdempotencyKey: key, CredentialID: id, ExpectedRevision: expected, LeaseExpiresAt: leaseExpiresAt, CompletionGraceUntil: completionGraceUntil, Credential: cloneCredential(credential)}
+	r.testClaims[key] = memoryCredentialTestClaim{claim: claim, digest: digest, state: memoryCredentialTestInProgress}
+	return claim, nil, nil
+}
+
+func (r *MemoryRepository) CompleteCredentialTest(_ context.Context, claim CredentialTestClaim, identity Identity, testedAt time.Time) (CredentialTest, error) {
+	if r == nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 || testedAt.IsZero() {
+		return CredentialTest{}, ErrInvalid
+	}
+	digest := CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.testClaims[claim.IdempotencyKey]
+	if !ok || existing.digest != digest || existing.claim.ClaimID != claim.ClaimID {
+		return CredentialTest{}, ErrResponseUncertain
+	}
+	if existing.state == memoryCredentialTestCompleted {
+		if existing.test == nil {
+			return CredentialTest{}, ErrConflict
+		}
+		return *existing.test, nil
+	}
+	if existing.state != memoryCredentialTestInProgress {
+		return CredentialTest{}, ErrResponseUncertain
+	}
+	credential, ok := r.credentials[claim.CredentialID]
+	if !ok {
+		return CredentialTest{}, ErrNotFound
+	}
+	if credential.Revision != claim.ExpectedRevision {
+		return CredentialTest{}, ErrRevisionConflict
+	}
+	testedAt = testedAt.UTC()
+	persistedTestedAt := laterTime(credential.TestedAt, testedAt)
+	persistedUpdatedAt := laterTime(credential.UpdatedAt, testedAt)
+	if !credential.TestedAt.After(testedAt) {
+		credential.AccountID, credential.UserARN = identity.AccountID, identity.UserARN
+	}
+	credential.VerifiedRevision = credential.Revision
+	credential.TestedAt, credential.UpdatedAt = persistedTestedAt, persistedUpdatedAt
+	r.credentials[claim.CredentialID] = cloneCredential(credential)
+	persistedIdentity := identity
+	if credential.TestedAt.After(testedAt) {
+		persistedIdentity.AccountID, persistedIdentity.UserARN = credential.AccountID, credential.UserARN
+	}
+	test := CredentialTest{CredentialID: claim.CredentialID, Identity: persistedIdentity, CredentialRevision: credential.Revision, TestedAt: persistedTestedAt}
+	existing.state, existing.test = memoryCredentialTestCompleted, &test
+	r.testClaims[claim.IdempotencyKey] = existing
+	if r.replays == nil {
+		r.replays = make(map[string]memoryReplay)
+	}
+	r.replays[replayKey("test_credential", claim.IdempotencyKey)] = memoryReplay{digest: digest, test: &test}
+	return test, nil
+}
+
+func laterTime(current, candidate time.Time) time.Time {
+	if current.After(candidate) {
+		return current
+	}
+	return candidate
+}
+
+func (r *MemoryRepository) MarkCredentialTestUncertain(_ context.Context, claim CredentialTestClaim) error {
+	if r == nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 {
+		return ErrInvalid
+	}
+	digest := CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.testClaims[claim.IdempotencyKey]
+	if !ok || existing.digest != digest || existing.claim.ClaimID != claim.ClaimID {
+		return ErrResponseUncertain
+	}
+	if existing.state == memoryCredentialTestCompleted || existing.state == memoryCredentialTestUncertain {
+		return nil
+	}
+	if existing.state != memoryCredentialTestInProgress {
+		return ErrResponseUncertain
+	}
+	existing.state = memoryCredentialTestUncertain
+	r.testClaims[claim.IdempotencyKey] = existing
+	return nil
+}
+
+func (r *MemoryRepository) MarkCredentialTestFailed(_ context.Context, claim CredentialTestClaim) error {
+	if r == nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 {
+		return ErrInvalid
+	}
+	digest := CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	existing, ok := r.testClaims[claim.IdempotencyKey]
+	if !ok || existing.digest != digest || existing.claim.ClaimID != claim.ClaimID {
+		return ErrResponseUncertain
+	}
+	if existing.state == memoryCredentialTestCompleted || existing.state == memoryCredentialTestUncertain || existing.state == memoryCredentialTestFailed {
+		return nil
+	}
+	if existing.state != memoryCredentialTestInProgress {
+		return ErrResponseUncertain
+	}
+	existing.state = memoryCredentialTestFailed
+	r.testClaims[claim.IdempotencyKey] = existing
+	return nil
 }
 func (r *MemoryRepository) CreatePlan(_ context.Context, p Plan) (Plan, error) {
 	if p.Validate() != nil {

@@ -1,6 +1,7 @@
 package agentcapability
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -84,6 +85,83 @@ type capabilityIndexRecorder struct {
 func (i *capabilityIndexRecorder) RequestIndex(_ context.Context, request coreknowledge.IndexRequest) (coreknowledge.TaskReference, error) {
 	i.requests = append(i.requests, request)
 	return coreknowledge.TaskReference{TaskID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, nil
+}
+
+func TestKnowledgeCapabilityRequiresExplicitUUIDIdempotencyKeys(t *testing.T) {
+	repo, err := coreknowledge.NewMemoryRepository(time.Now, adapterKnowledgeOpener{}, coreknowledge.NewMemoryContentPort(1<<20), adapterKnowledgeFence{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer := &capabilityIndexRecorder{}
+	service, err := coreknowledge.NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreKnowledgeCapability{service: service}
+	for _, raw := range [][]byte{
+		[]byte(`{"title":"fact","content":"missing key"}`),
+		[]byte(`{"title":"fact","content":"invalid key","idempotency_key":"not-a-uuid"}`),
+	} {
+		if _, err := capability.HandleOperation(context.Background(), "create_memory", raw); !errors.Is(err, coreknowledge.ErrInvalid) {
+			t.Fatalf("create_memory request=%s err=%v", raw, err)
+		}
+	}
+	valid := []byte(`{"content":"explicit key","idempotency_key":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}`)
+	first, err := capability.HandleOperation(context.Background(), "create_memory", valid)
+	if err != nil {
+		t.Fatalf("create_memory with UUID key: %v", err)
+	}
+	second, err := capability.HandleOperation(context.Background(), "create_memory", valid)
+	if err != nil || !bytes.Equal(first, second) {
+		t.Fatalf("create_memory replay=%s/%s err=%v", first, second, err)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(first, &created); err != nil {
+		t.Fatal(err)
+	}
+	sourceID, _ := created["memory_id"].(string)
+	for _, raw := range [][]byte{
+		[]byte(`{"source_ids":["` + sourceID + `"]}`),
+		[]byte(`{"source_ids":["` + sourceID + `"],"idempotency_key":"not-a-uuid"}`),
+	} {
+		if _, err := capability.HandleOperation(context.Background(), "index_sources", raw); !errors.Is(err, coreknowledge.ErrInvalid) {
+			t.Fatalf("index_sources request=%s err=%v", raw, err)
+		}
+	}
+	indexRaw := []byte(`{"source_ids":["` + sourceID + `"],"idempotency_key":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}`)
+	if _, err := capability.HandleOperation(context.Background(), "index_sources", indexRaw); err != nil {
+		t.Fatalf("index_sources with UUID key: %v", err)
+	}
+	var indexSchema struct {
+		Required []string `json:"required"`
+	}
+	var indexSchemaText string
+	for _, operation := range capability.Descriptor().GetOperations() {
+		if operation.GetOperationId() == "index_sources" {
+			indexSchemaText = operation.GetInputSchemaJson()
+			if err := json.Unmarshal([]byte(indexSchemaText), &indexSchema); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if !containsString(indexSchema.Required, "idempotency_key") {
+		t.Fatalf("index_sources schema does not require idempotency_key: %s", indexSchemaText)
+	}
+	var createMemorySchema struct {
+		Required []string `json:"required"`
+	}
+	for _, operation := range capability.Descriptor().GetOperations() {
+		if operation.GetOperationId() == "create_memory" {
+			if err := json.Unmarshal([]byte(operation.GetInputSchemaJson()), &createMemorySchema); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if containsString(createMemorySchema.Required, "title") || !containsString(createMemorySchema.Required, "content") || !containsString(createMemorySchema.Required, "idempotency_key") {
+		t.Fatalf("create_memory schema required fields = %#v", createMemorySchema.Required)
+	}
 }
 
 type flakyEmbeddingConfigRepository struct {

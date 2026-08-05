@@ -238,6 +238,224 @@ func (s *CoreAWSStore) RecordCredentialIdentity(ctx context.Context, id string, 
 	}
 	return s.GetCredential(ctx, id)
 }
+
+// BeginCredentialTest commits a durable claim before any provider call.  The
+// transaction and advisory lock are intentionally short: they serialize only
+// claim creation/replay inspection, never the potentially 30-second STS
+// request. Active in-progress claims are reported to bounded same-key waiters;
+// uncertain claims are fail-closed on retry.
+func (s *CoreAWSStore) BeginCredentialTest(ctx context.Context, id string, expected int64, key string, leaseTimes ...time.Time) (coreaws.CredentialTestClaim, *coreaws.CredentialTest, error) {
+	if s == nil || s.store == nil || s.store.pool == nil || uuid.Validate(id) != nil || uuid.Validate(key) != nil || expected < 1 {
+		return coreaws.CredentialTestClaim{}, nil, coreaws.ErrInvalid
+	}
+	leaseExpiresAt, completionGraceUntil, err := coreaws.CredentialTestLeaseTimes(time.Now(), leaseTimes...)
+	if err != nil {
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_aws:test_credential:"+key); err != nil {
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	digest := coreaws.CredentialTestBindingDigest(id, expected)
+	var storedHash, state, claimID, storedCredentialID string
+	var storedExpected int64
+	var replayRaw []byte
+	var storedLeaseExpiresAt, storedCompletionGraceUntil time.Time
+	claimErr := tx.QueryRow(ctx, `SELECT request_hash,state,claim_id::text,credential_id::text,expected_revision,lease_expires_at,completion_grace_until,response_json FROM core_aws_credential_test_claims WHERE idempotency_key=$1`, key).Scan(&storedHash, &state, &claimID, &storedCredentialID, &storedExpected, &storedLeaseExpiresAt, &storedCompletionGraceUntil, &replayRaw)
+	if claimErr == nil {
+		if storedHash != digest || storedCredentialID != id || storedExpected != expected {
+			return coreaws.CredentialTestClaim{}, nil, coreaws.ErrIdempotencyConflict
+		}
+		switch state {
+		case "in_progress":
+			return coreaws.CredentialTestClaim{}, nil, &coreaws.CredentialTestInProgressError{LeaseExpiresAt: storedLeaseExpiresAt.UTC(), CompletionGraceUntil: storedCompletionGraceUntil.UTC()}
+		case "uncertain":
+			return coreaws.CredentialTestClaim{}, nil, coreaws.ErrResponseUncertain
+		case "failed":
+			return coreaws.CredentialTestClaim{}, nil, coreaws.ErrProvider
+		case "completed":
+			var replay coreaws.CredentialTest
+			if len(replayRaw) == 0 || json.Unmarshal(replayRaw, &replay) != nil || replay.CredentialID != id || replay.CredentialRevision != expected || replay.TestedAt.IsZero() {
+				return coreaws.CredentialTestClaim{}, nil, coreaws.ErrConflict
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return coreaws.CredentialTestClaim{}, nil, err
+			}
+			return coreaws.CredentialTestClaim{}, &replay, nil
+		default:
+			return coreaws.CredentialTestClaim{}, nil, coreaws.ErrConflict
+		}
+	}
+	if !errors.Is(claimErr, pgx.ErrNoRows) {
+		return coreaws.CredentialTestClaim{}, nil, claimErr
+	}
+	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1`, id))
+	if err != nil {
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	if credential.Revision != expected {
+		return coreaws.CredentialTestClaim{}, nil, coreaws.ErrRevisionConflict
+	}
+	claimID = uuid.NewString()
+	if _, err = tx.Exec(ctx, `INSERT INTO core_aws_credential_test_claims(idempotency_key,claim_id,credential_id,expected_revision,request_hash,state,lease_expires_at,completion_grace_until) VALUES($1,$2,$3,$4,$5,'in_progress',$6,$7)`, key, claimID, id, expected, digest, leaseExpiresAt, completionGraceUntil); err != nil {
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	return coreaws.CredentialTestClaim{ClaimID: claimID, IdempotencyKey: key, CredentialID: id, ExpectedRevision: expected, LeaseExpiresAt: leaseExpiresAt, CompletionGraceUntil: completionGraceUntil, Credential: credential}, nil, nil
+}
+
+// CompleteCredentialTest commits the provider identity and replay receipt in
+// one short transaction after the provider call has returned.  It never
+// invokes provider code and therefore cannot hold database locks across STS.
+func (s *CoreAWSStore) CompleteCredentialTest(ctx context.Context, claim coreaws.CredentialTestClaim, identity coreaws.Identity, testedAt time.Time) (coreaws.CredentialTest, error) {
+	if s == nil || s.store == nil || s.store.pool == nil || uuid.Validate(claim.ClaimID) != nil || uuid.Validate(claim.IdempotencyKey) != nil || uuid.Validate(claim.CredentialID) != nil || claim.ExpectedRevision < 1 || testedAt.IsZero() {
+		return coreaws.CredentialTest{}, coreaws.ErrInvalid
+	}
+	testedAt = testedAt.UTC().Truncate(time.Microsecond)
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_aws:test_credential:"+claim.IdempotencyKey); err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	digest := coreaws.CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
+	var storedHash, state, storedClaimID, storedCredentialID string
+	var storedExpected int64
+	var replayRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT request_hash,state,claim_id::text,credential_id::text,expected_revision,response_json FROM core_aws_credential_test_claims WHERE idempotency_key=$1 FOR UPDATE`, claim.IdempotencyKey).Scan(&storedHash, &state, &storedClaimID, &storedCredentialID, &storedExpected, &replayRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return coreaws.CredentialTest{}, coreaws.ErrResponseUncertain
+		}
+		return coreaws.CredentialTest{}, err
+	}
+	if storedHash != digest || storedClaimID != claim.ClaimID || storedCredentialID != claim.CredentialID || storedExpected != claim.ExpectedRevision {
+		return coreaws.CredentialTest{}, coreaws.ErrIdempotencyConflict
+	}
+	if state == "completed" {
+		var replay coreaws.CredentialTest
+		if len(replayRaw) == 0 || json.Unmarshal(replayRaw, &replay) != nil {
+			return coreaws.CredentialTest{}, coreaws.ErrConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return coreaws.CredentialTest{}, err
+		}
+		return replay, nil
+	}
+	if state != "in_progress" {
+		return coreaws.CredentialTest{}, coreaws.ErrResponseUncertain
+	}
+	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, claim.CredentialID))
+	if err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	if credential.Revision != claim.ExpectedRevision {
+		return coreaws.CredentialTest{}, coreaws.ErrRevisionConflict
+	}
+	var persistedAccountID, persistedUserARN string
+	var persistedTestedAt, persistedUpdatedAt time.Time
+	if err := tx.QueryRow(ctx, `UPDATE core_aws_credentials SET account_id=CASE WHEN tested_at IS NULL OR tested_at <= $5 THEN $2 ELSE account_id END,user_arn=CASE WHEN tested_at IS NULL OR tested_at <= $5 THEN $3 ELSE user_arn END,verified_revision=$4,tested_at=GREATEST(COALESCE(tested_at,'epoch'::timestamptz),$5),updated_at=GREATEST(updated_at,$5) WHERE credential_id=$1 AND revision=$4 RETURNING account_id,user_arn,tested_at,updated_at`, claim.CredentialID, identity.AccountID, identity.UserARN, claim.ExpectedRevision, testedAt).Scan(&persistedAccountID, &persistedUserARN, &persistedTestedAt, &persistedUpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return coreaws.CredentialTest{}, coreaws.ErrRevisionConflict
+		}
+		return coreaws.CredentialTest{}, err
+	}
+	_ = persistedUpdatedAt
+	identity.AccountID, identity.UserARN = persistedAccountID, persistedUserARN
+	test := coreaws.CredentialTest{CredentialID: claim.CredentialID, Identity: identity, CredentialRevision: claim.ExpectedRevision, TestedAt: persistedTestedAt.UTC()}
+	encoded, err := json.Marshal(test)
+	if err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	claimUpdate, err := tx.Exec(ctx, `UPDATE core_aws_credential_test_claims SET state='completed',response_json=$2,completed_at=$3,updated_at=$3 WHERE idempotency_key=$1 AND state='in_progress'`, claim.IdempotencyKey, encoded, testedAt)
+	if err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	if claimUpdate.RowsAffected() != 1 {
+		return coreaws.CredentialTest{}, coreaws.ErrResponseUncertain
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	return test, nil
+}
+
+// MarkCredentialTestUncertain fences a claim after a provider error or a
+// failed completion.  It is intentionally terminal: a retry must not guess
+// whether the provider request reached AWS.
+func (s *CoreAWSStore) MarkCredentialTestUncertain(ctx context.Context, claim coreaws.CredentialTestClaim) error {
+	if s == nil || s.store == nil || s.store.pool == nil || uuid.Validate(claim.ClaimID) != nil || uuid.Validate(claim.IdempotencyKey) != nil || uuid.Validate(claim.CredentialID) != nil || claim.ExpectedRevision < 1 {
+		return coreaws.ErrInvalid
+	}
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_aws:test_credential:"+claim.IdempotencyKey); err != nil {
+		return err
+	}
+	digest := coreaws.CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
+	tag, err := tx.Exec(ctx, `UPDATE core_aws_credential_test_claims SET state='uncertain',error_code='UNCERTAIN',error_message='provider outcome requires reconciliation',updated_at=clock_timestamp() WHERE idempotency_key=$1 AND claim_id=$2 AND credential_id=$3 AND expected_revision=$4 AND request_hash=$5 AND state='in_progress'`, claim.IdempotencyKey, claim.ClaimID, claim.CredentialID, claim.ExpectedRevision, digest)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM core_aws_credential_test_claims WHERE idempotency_key=$1 AND claim_id=$2`, claim.IdempotencyKey, claim.ClaimID).Scan(&state); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return coreaws.ErrResponseUncertain
+			}
+			return err
+		}
+		if state != "completed" && state != "uncertain" {
+			return coreaws.ErrResponseUncertain
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *CoreAWSStore) MarkCredentialTestFailed(ctx context.Context, claim coreaws.CredentialTestClaim) error {
+	if s == nil || s.store == nil || s.store.pool == nil || uuid.Validate(claim.ClaimID) != nil || uuid.Validate(claim.IdempotencyKey) != nil || uuid.Validate(claim.CredentialID) != nil || claim.ExpectedRevision < 1 {
+		return coreaws.ErrInvalid
+	}
+	tx, err := s.store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_aws:test_credential:"+claim.IdempotencyKey); err != nil {
+		return err
+	}
+	digest := coreaws.CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
+	tag, err := tx.Exec(ctx, `UPDATE core_aws_credential_test_claims SET state='failed',error_code='PROVIDER_FAILED',error_message='provider credential test failed',updated_at=clock_timestamp() WHERE idempotency_key=$1 AND claim_id=$2 AND credential_id=$3 AND expected_revision=$4 AND request_hash=$5 AND state='in_progress'`, claim.IdempotencyKey, claim.ClaimID, claim.CredentialID, claim.ExpectedRevision, digest)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM core_aws_credential_test_claims WHERE idempotency_key=$1 AND claim_id=$2`, claim.IdempotencyKey, claim.ClaimID).Scan(&state); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return coreaws.ErrResponseUncertain
+			}
+			return err
+		}
+		if state != "failed" {
+			if state == "completed" {
+				return tx.Commit(ctx)
+			}
+			return coreaws.ErrResponseUncertain
+		}
+	}
+	return tx.Commit(ctx)
+}
 func (s *CoreAWSStore) CreatePlan(ctx context.Context, p coreaws.Plan) (coreaws.Plan, error) {
 	if p.Validate() != nil {
 		return p, coreaws.ErrInvalid

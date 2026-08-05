@@ -65,6 +65,19 @@ multi-tenant model.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.
+- Every `agent.knowledge.v1` mutation, including `index_sources`, requires an
+  explicit canonical UUID `idempotency_key`; missing or malformed keys are
+  rejected, while read operations do not require one. Neutral
+  `agent.aws.v1/test_credential` binds `credential_id`, `expected_revision`,
+  and its UUID key to a durable, secret-free replay. The provider call runs
+  outside database transactions and row locks. A same-key retry observing an
+  active claim polls until its persisted 30-second lease plus short completion
+  grace, then replays the completed result or deterministic provider-failure
+  receipt; an abandoned or completion-uncertain claim becomes fail-closed and
+  is never taken over for a second STS request. Credential verification
+  timestamps and replay receipts are monotonic when different keys complete
+  out of order. The legacy gRPC `TestCredentialIdentity` method remains the
+  separate non-keyed seam.
 - Knowledge upload fields include declared size and whole-content SHA-256;
   chunks carry contiguous ordinal/offset and per-chunk digests. Commit rejects
   revision, size, or digest drift. Search cursors retain the secret-free

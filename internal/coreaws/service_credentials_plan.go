@@ -2,8 +2,14 @@ package coreaws
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
+)
+
+const (
+	credentialTestPollInterval    = 20 * time.Millisecond
+	credentialTestFinalizeTimeout = 5 * time.Second
 )
 
 func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (CredentialView, error) {
@@ -158,6 +164,136 @@ func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest
 	}
 	c = updated
 	return CredentialTest{CredentialID: id, Identity: identity, CredentialRevision: c.Revision, TestedAt: testedAt}, nil
+}
+
+// TestCredentialIdempotent is the neutral Capability-only credential test.
+// Unlike the legacy gRPC TestCredential method, it requires an explicit UUID
+// key and expected revision.  The repository first commits a durable claim,
+// then this service performs the provider call with no database transaction,
+// row lock, or process-global mutex held.  A crash or failed completion leaves
+// the claim in an uncertain state and future retries fail closed rather than
+// issuing a second provider request.
+func (s *Service) TestCredentialIdempotent(ctx context.Context, id string, expectedRevision int64, idempotencyKey string) (CredentialTest, error) {
+	if s == nil || s.repo == nil || !validUUID(id) || !validUUID(idempotencyKey) || expectedRevision < 1 {
+		return CredentialTest{}, ErrInvalid
+	}
+	if s.sts == nil {
+		return CredentialTest{}, ErrProvider
+	}
+	repository, ok := s.repo.(CredentialIdentityIdempotencyRepository)
+	if !ok {
+		return CredentialTest{}, ErrConflict
+	}
+	leaseStart := s.now().UTC()
+	leaseExpiresAt, completionGraceUntil, err := CredentialTestLeaseTimes(leaseStart)
+	if err != nil {
+		return CredentialTest{}, err
+	}
+	for {
+		claim, replay, err := repository.BeginCredentialTest(ctx, id, expectedRevision, idempotencyKey, leaseExpiresAt, completionGraceUntil)
+		if err == nil {
+			if replay != nil {
+				return *replay, nil
+			}
+			return s.runCredentialTestProvider(ctx, repository, claim)
+		}
+		if !errors.Is(err, ErrCredentialTestInProgress) {
+			return CredentialTest{}, err
+		}
+		deadline := completionGraceUntil
+		var inProgress *CredentialTestInProgressError
+		if errors.As(err, &inProgress) {
+			if !inProgress.CompletionGraceUntil.IsZero() {
+				deadline = inProgress.CompletionGraceUntil.UTC()
+			} else if !inProgress.LeaseExpiresAt.IsZero() {
+				deadline = inProgress.LeaseExpiresAt.UTC()
+			}
+		}
+		now := s.now().UTC()
+		if !deadline.IsZero() && !now.Before(deadline) {
+			return CredentialTest{}, ErrResponseUncertain
+		}
+		pollDuration := credentialTestPollInterval
+		if !deadline.IsZero() {
+			remaining := deadline.Sub(now)
+			if remaining <= 0 {
+				return CredentialTest{}, ErrResponseUncertain
+			}
+			if remaining < pollDuration {
+				pollDuration = remaining
+			}
+		}
+		timer := time.NewTimer(pollDuration)
+		select {
+		case <-ctx.Done():
+			stopCredentialReplayTimer(timer)
+			return CredentialTest{}, ErrResponseUncertain
+		case <-timer.C:
+		}
+	}
+}
+
+func stopCredentialReplayTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func (s *Service) runCredentialTestProvider(ctx context.Context, repository CredentialIdentityIdempotencyRepository, claim CredentialTestClaim) (CredentialTest, error) {
+	identity, providerErr := s.sts.GetCallerIdentity(ctx, claim.Credential.handle())
+	if providerErr != nil {
+		if ctx.Err() != nil {
+			if markErr := s.finalizeCredentialTest(func(finalizeCtx context.Context) error {
+				return repository.MarkCredentialTestUncertain(finalizeCtx, claim)
+			}); markErr != nil {
+				return CredentialTest{}, ErrResponseUncertain
+			}
+			return CredentialTest{}, ErrResponseUncertain
+		}
+		if markErr := s.finalizeCredentialTest(func(finalizeCtx context.Context) error {
+			return repository.MarkCredentialTestFailed(finalizeCtx, claim)
+		}); markErr != nil {
+			return CredentialTest{}, ErrResponseUncertain
+		}
+		return CredentialTest{}, ErrProvider
+	}
+	testedAt := s.now().UTC()
+	if testedAt.IsZero() {
+		if markErr := s.finalizeCredentialTest(func(finalizeCtx context.Context) error {
+			return repository.MarkCredentialTestUncertain(finalizeCtx, claim)
+		}); markErr != nil {
+			return CredentialTest{}, ErrResponseUncertain
+		}
+		return CredentialTest{}, ErrInvalid
+	}
+	var test CredentialTest
+	completeErr := s.finalizeCredentialTest(func(finalizeCtx context.Context) error {
+		var err error
+		test, err = repository.CompleteCredentialTest(finalizeCtx, claim, identity, testedAt)
+		return err
+	})
+	if completeErr != nil {
+		// The provider has already run.  Do not let a transaction/connection
+		// failure turn into a retryable second provider call.
+		_ = s.finalizeCredentialTest(func(finalizeCtx context.Context) error {
+			return repository.MarkCredentialTestUncertain(finalizeCtx, claim)
+		})
+		return CredentialTest{}, ErrResponseUncertain
+	}
+	return test, nil
+}
+
+func (s *Service) finalizeCredentialTest(fn func(context.Context) error) error {
+	timeout := credentialTestFinalizeTimeout
+	if s != nil && s.credentialTestFinalizeTimeout > 0 {
+		timeout = s.credentialTestFinalizeTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return fn(ctx)
 }
 
 func (s *Service) CreatePlan(ctx context.Context, in PlanInput) (PlanView, error) {

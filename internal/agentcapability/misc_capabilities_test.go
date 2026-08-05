@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 			if request.ModelKind != "conversation" || (request.Provider != "" && request.APIKey != "secret-key") {
 				t.Fatalf("catalog request = %#v", request)
 			}
-			return ModelCatalogResult{Models: []map[string]any{{"id": "gpt", "provider": "openrouter", "api_key": "secret-key", "base_url": "https://openrouter.ai/api/v1"}}, Providers: []ModelCatalogProviderInfo{{Provider: "openrouter", RequiresAPIKey: true}}}, nil
+			return ModelCatalogResult{Models: []map[string]any{{"id": "gpt", "provider": "openrouter", "api_key": "upstream-key", "base_url": "https://openrouter.ai/api/v1"}}, Providers: []ModelCatalogProviderInfo{{Provider: "openrouter", RequiresAPIKey: true}}}, nil
 		},
 	})
 	var catalogSchema string
@@ -62,11 +63,250 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 	if err != nil {
 		t.Fatalf("list_models: %v", err)
 	}
-	if strings.Contains(string(models), "secret-key") || !strings.Contains(string(models), "openrouter") {
+	if strings.Contains(string(models), "secret-key") || strings.Contains(string(models), "upstream-key") || !strings.Contains(string(models), "openrouter") {
 		t.Fatalf("catalog leaked credential or omitted provider: %s", models)
 	}
 	if _, err := capability.HandleOperation(capabilityTestContext(), "list_models", []byte(`{}`)); err != nil {
 		t.Fatalf("default conversation model catalog: %v", err)
+	}
+}
+
+func TestInfoCapabilitySanitizesClosedCatalogConsumerProjection(t *testing.T) {
+	const requestAPIKey = "request-key"
+	var gotRequest ModelCatalogRequest
+	capability := NewInfoCapability(InfoProviderFunc{
+		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
+		StatusFunc:   func(context.Context) (BackendInfo, error) { return BackendInfo{}, nil },
+		ModelsFunc: func(_ context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
+			gotRequest = request
+			return ModelCatalogResult{
+				Models: []map[string]any{
+					{
+						"ID":                 "valid-model",
+						"PROVIDER":           "OpenRouter",
+						"NAME":               "Valid model",
+						"OBJECT":             "model",
+						"CREATED":            float64(1700000000),
+						"CREATED_AT":         "2023-11-14T22:13:20Z",
+						"OWNED_BY":           "provider",
+						"TYPE":               "chat",
+						"INPUT_MODALITIES":   []any{"TEXT", "image"},
+						"OUTPUT_MODALITIES":  []any{"TEXT", "image", "audio"},
+						"MAX_INPUT_TOKENS":   float64(4096),
+						"MAX_OUTPUT_TOKENS":  float64(8192),
+						"MAX_TOKENS":         float64(16384),
+						"INPUT_TOKEN_LIMIT":  float64(32768),
+						"OUTPUT_TOKEN_LIMIT": float64(65536),
+						"metadata":           map[string]any{"safe": "drop"},
+						"access_token":       "drop",
+					},
+					{
+						"id":                 "malformed-model",
+						"provider":           "openrouter",
+						"name":               42,
+						"input_modalities":   []any{"text", 1},
+						"output_modalities":  []any{"text", ""},
+						"max_input_tokens":   1.5,
+						"max_output_tokens":  json.Number("9223372036854775808"),
+						"max_tokens":         json.Number("8192.0"),
+						"input_token_limit":  json.Number("32768"),
+						"output_token_limit": json.Number("65536"),
+					},
+					{"id": requestAPIKey + "/model", "provider": "openrouter"},
+					{"id": "secret-in-name", "name": "Bearer " + requestAPIKey, "provider": "openrouter"},
+					{"id": "secret-in-provider", "provider": "provider/" + requestAPIKey},
+					{"id": "secret-in-nested", "provider": "openrouter", "metadata": map[string]any{"harmless": requestAPIKey}},
+				},
+				Providers: []ModelCatalogProviderInfo{
+					{Provider: "OPENROUTER", DefaultBaseURL: "https://openrouter.ai/api/v1", RequiresAPIKey: true, DynamicModels: true},
+					{Provider: "DEEPSEEK", DefaultBaseURL: "https://api.deepseek.com/v1", RequiresAPIKey: true, DynamicModels: true},
+					{Provider: requestAPIKey, DefaultBaseURL: "https://invalid.example", RequiresAPIKey: true, DynamicModels: true},
+				},
+			}, nil
+		},
+	})
+
+	result, err := capability.HandleOperation(capabilityTestContext(), "list_models", []byte(`{"model_kind":"conversation","api_key":"request-key"}`))
+	if err != nil {
+		t.Fatalf("list_models: %v", err)
+	}
+	if gotRequest.APIKey != requestAPIKey || gotRequest.ModelKind != "conversation" {
+		t.Fatalf("provider received request = %#v, want API key and kind", gotRequest)
+	}
+
+	var payload struct {
+		Models    []map[string]any `json:"models"`
+		Providers []map[string]any `json:"providers"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("decode list_models result: %v", err)
+	}
+	if len(payload.Models) != 2 {
+		t.Fatalf("models = %#v, want only valid and malformed entries", payload.Models)
+	}
+	if len(payload.Providers) != 2 {
+		t.Fatalf("providers = %#v, want credential-bearing provider omitted", payload.Providers)
+	}
+
+	wantModelKeys := map[string]struct{}{
+		"id": {}, "provider": {}, "name": {}, "object": {}, "created": {}, "created_at": {}, "owned_by": {}, "type": {},
+		"input_modalities": {}, "output_modalities": {}, "max_input_tokens": {}, "max_output_tokens": {}, "max_tokens": {},
+		"input_token_limit": {}, "output_token_limit": {},
+	}
+	valid := payload.Models[0]
+	if valid["id"] != "valid-model" {
+		t.Fatalf("valid model = %#v", valid)
+	}
+	for key := range valid {
+		if _, ok := wantModelKeys[key]; !ok {
+			t.Fatalf("unknown/non-canonical model key %q survived: %#v", key, valid)
+		}
+		if key != strings.ToLower(key) {
+			t.Fatalf("model key %q was not canonical lowercase", key)
+		}
+	}
+	for key, want := range map[string]float64{
+		"max_input_tokens":   4096,
+		"max_output_tokens":  8192,
+		"max_tokens":         16384,
+		"input_token_limit":  32768,
+		"output_token_limit": 65536,
+	} {
+		if got, ok := valid[key].(float64); !ok || got != want {
+			t.Fatalf("valid numeric field %q = %#v, want %v", key, valid[key], want)
+		}
+	}
+	if got, want := valid["input_modalities"], []any{"text", "image"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("input modalities = %#v, want %#v", got, want)
+	}
+	if got, want := valid["output_modalities"], []any{"audio", "image", "text"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("output modalities = %#v, want %#v", got, want)
+	}
+	for _, key := range []string{"metadata", "access_token"} {
+		if _, ok := valid[key]; ok {
+			t.Fatalf("unknown field %q survived: %#v", key, valid)
+		}
+	}
+
+	malformed := payload.Models[1]
+	for _, key := range []string{"name", "input_modalities", "output_modalities", "max_input_tokens", "max_output_tokens"} {
+		if _, ok := malformed[key]; ok {
+			t.Fatalf("malformed field %q survived: %#v", key, malformed)
+		}
+	}
+	for key, want := range map[string]float64{"max_tokens": 8192, "input_token_limit": 32768, "output_token_limit": 65536} {
+		if got, ok := malformed[key].(float64); !ok || got != want {
+			t.Fatalf("valid malformed-model numeric field %q = %#v, want %v", key, malformed[key], want)
+		}
+	}
+
+	wantProviderKeys := map[string]struct{}{"provider": {}, "default_base_url": {}, "requires_api_key": {}, "dynamic_models": {}}
+	for _, provider := range payload.Providers {
+		if provider["provider"] == requestAPIKey {
+			t.Fatalf("credential-bearing provider survived: %#v", provider)
+		}
+		for key := range provider {
+			if _, ok := wantProviderKeys[key]; !ok {
+				t.Fatalf("unknown provider key %q survived: %#v", key, provider)
+			}
+		}
+	}
+	if strings.Contains(string(result), requestAPIKey) {
+		t.Fatalf("request API key leaked in consumer result: %s", result)
+	}
+}
+
+func TestInfoCapabilityRetainsClosedModelNumericTokenFields(t *testing.T) {
+	capability := NewInfoCapability(InfoProviderFunc{
+		BackendsFunc: func(context.Context) (BackendsSnapshot, error) { return BackendsSnapshot{}, nil },
+		StatusFunc:   func(context.Context) (BackendInfo, error) { return BackendInfo{}, nil },
+		ModelsFunc: func(context.Context, ModelCatalogRequest) (ModelCatalogResult, error) {
+			return ModelCatalogResult{Models: []map[string]any{{
+				"id":                 "typed-model",
+				"provider":           "openrouter",
+				"max_input_tokens":   int64(4096),
+				"max_output_tokens":  int64(8192),
+				"max_tokens":         int64(16384),
+				"input_token_limit":  int64(32768),
+				"output_token_limit": int64(65536),
+				"access_token":       "must-drop",
+				"token":              "must-drop",
+			}}}, nil
+		},
+	})
+	result, err := capability.HandleOperation(capabilityTestContext(), "list_models", []byte(`{"model_kind":"conversation"}`))
+	if err != nil {
+		t.Fatalf("list_models: %v", err)
+	}
+	var payload struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("models = %#v", payload.Models)
+	}
+	model := payload.Models[0]
+	for field, want := range map[string]float64{
+		"max_input_tokens":   4096,
+		"max_output_tokens":  8192,
+		"max_tokens":         16384,
+		"input_token_limit":  32768,
+		"output_token_limit": 65536,
+	} {
+		if got, ok := model[field].(float64); !ok || got != want {
+			t.Fatalf("numeric field %q = %#v, want %v", field, model[field], want)
+		}
+	}
+	for _, field := range []string{"access_token", "token"} {
+		if _, ok := model[field]; ok {
+			t.Fatalf("secret token field %q survived sanitizer: %#v", field, model)
+		}
+	}
+}
+
+func TestModelCatalogResultSchemaClosesModelProjection(t *testing.T) {
+	capability := NewInfoCapability(InfoProviderFunc{})
+	var schemaJSON string
+	for _, operation := range capability.Descriptor().GetOperations() {
+		if operation.GetOperationId() == "list_models" {
+			schemaJSON = operation.GetResultSchemaJson()
+			break
+		}
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema["properties"].(map[string]any)
+	models := properties["models"].(map[string]any)
+	model := models["items"].(map[string]any)
+	if model["additionalProperties"] != false {
+		t.Fatalf("model schema is not closed: %s", schemaJSON)
+	}
+	modelProperties := model["properties"].(map[string]any)
+	outputModalities, ok := modelProperties["output_modalities"].(map[string]any)
+	if !ok || outputModalities["type"] != "array" {
+		t.Fatalf("output_modalities missing from model schema: %s", schemaJSON)
+	}
+	items := outputModalities["items"].(map[string]any)
+	var wantEnum []any
+	if err := json.Unmarshal([]byte(ModelCatalogOutputModalitiesJSON), &wantEnum); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items["enum"], wantEnum) {
+		t.Fatalf("output modality enum=%#v, want %#v", items["enum"], wantEnum)
+	}
+	for _, secretField := range []string{"api_key", "authorization", "password", "secret", "token"} {
+		if _, exists := modelProperties[secretField]; exists {
+			t.Fatalf("secret field %q appeared in model schema: %s", secretField, schemaJSON)
+		}
+	}
+	for _, required := range model["required"].([]any) {
+		if required == "output_modalities" {
+			t.Fatal("output_modalities must remain optional")
+		}
 	}
 }
 

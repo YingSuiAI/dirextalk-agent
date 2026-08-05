@@ -66,7 +66,7 @@ func awsResultSchema(operation string) string {
 	case "delete_credential":
 		return `{"additionalProperties":false,"properties":{"credential_id":{"format":"uuid","type":"string"},"deleted":{"type":"boolean"}},"type":"object"}`
 	case "test_credential":
-		return `{"additionalProperties":false,"properties":{"account_id":{"type":"string"},"credential_id":{"format":"uuid","type":"string"},"credential_revision":{"minimum":1,"type":"integer"},"principal_id":{"type":"string"},"tested_at":{"format":"date-time","type":"string"},"user_arn":{"type":"string"}},"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"account_id":{"type":"string"},"credential_id":{"format":"uuid","type":"string"},"credential_revision":{"minimum":1,"type":"integer"},"principal_id":{"type":"string"},"tested_at":{"format":"date-time","type":"string"},"user_arn":{"type":"string"}},"required":["credential_id","credential_revision","account_id","user_arn","principal_id","tested_at"],"type":"object"}`
 	default:
 		return `{"type":"object"}`
 	}
@@ -167,20 +167,15 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		if err != nil {
 			return nil, err
 		}
-		if _, err := requiredAWSUUID(in, "idempotency_key"); err != nil {
+		key, err := requiredAWSUUID(in, "idempotency_key")
+		if err != nil {
 			return nil, err
 		}
-		if int64Value(in, "expected_revision") < 1 {
+		expected := int64Value(in, "expected_revision")
+		if expected < 1 {
 			return nil, coreaws.ErrInvalid
 		}
-		current, err := c.service.GetCredential(ctx, id)
-		if err != nil || current.Revision != int64Value(in, "expected_revision") {
-			if err != nil {
-				return nil, err
-			}
-			return nil, coreaws.ErrRevisionConflict
-		}
-		test, err := c.service.TestCredential(ctx, id)
+		test, err := c.service.TestCredentialIdempotent(ctx, id, expected, key)
 		return marshalResult(awsCredentialTest(test), err)
 	case "create_plan":
 		key, err := requiredAWSUUID(in, "idempotency_key")

@@ -140,6 +140,29 @@ func TestMemoryRepositoryUploadChecksumAndIdempotency(t *testing.T) {
 	}
 }
 
+func TestCreateMemoryDefaultsTitleBeforeReplayDigest(t *testing.T) {
+	r := newTestRepository()
+	service, err := NewService(r, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "99999999-9999-4999-8999-999999999999"
+	first, err := service.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: key, Content: "default title", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Title != "memory" {
+		t.Fatalf("default memory title=%q, want memory", first.Title)
+	}
+	replay, err := service.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: key, Title: "memory", Content: "default title", MediaType: "text/plain"})
+	if err != nil || replay.ID != first.ID || replay.Title != first.Title {
+		t.Fatalf("normalized replay=%+v first=%+v err=%v", replay, first, err)
+	}
+	if _, err := service.CreateMemory(context.Background(), MemoryCommand{IdempotencyKey: key, Title: "different", Content: "default title", MediaType: "text/plain"}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("changed title replay error=%v, want idempotency conflict", err)
+	}
+}
+
 func TestMemoryRepositoryPathBoundaryAndCleanupPending(t *testing.T) {
 	r := newTestRepository()
 	r.SetFileDeleter(failingDeleter{})

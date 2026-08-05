@@ -156,6 +156,16 @@ type MemoryCommand struct {
 	Tags           []string
 }
 
+// NormalizeMemoryCommand applies the domain default before validation and
+// replay digest computation.  Service and repository entry points both call
+// it so omitted titles have identical Memory/PostgreSQL semantics.
+func NormalizeMemoryCommand(command MemoryCommand) MemoryCommand {
+	if strings.TrimSpace(command.Title) == "" {
+		command.Title = "memory"
+	}
+	return command
+}
+
 // UpdateMemoryCommand replaces one memory's immutable content and metadata.
 // Revision and idempotency are checked in the same repository transaction so
 // a stale client cannot overwrite a newer memory revision.

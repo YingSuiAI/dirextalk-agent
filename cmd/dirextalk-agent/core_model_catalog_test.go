@@ -39,7 +39,7 @@ func TestCoreModelCatalogOpenRouterConversationUsesTextFilterAndSafeNormalizatio
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotQuery, gotAuth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"openai/gpt-4o","name":"GPT-4o","architecture":{"output_modalities":["text"],"input_modalities":[" TEXT ","image","IMAGE","audio"]},"context_length":128000,"api_key":"upstream-key","authorization":"Bearer upstream-key","metadata":{"api_key":"nested-key"}},{"id":"prefix/request-key","name":"must-drop-id"},{"id":"must-drop-name","displayName":"alias/request-key","owned_by":"owner/request-key"},{"id":"openai/text-embedding-3-small","architecture":{"output_modalities":["embedding"]}},{"id":"openai/gpt-image-1","architecture":{"output_modalities":["image"]}},{"id":"openai/gpt-4o","name":"duplicate"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"openai/gpt-4o","name":"GPT-4o","architecture":{"output_modalities":[" TEXT ","text"," IMAGE ","text"],"input_modalities":[" TEXT ","image","IMAGE","audio"]},"context_length":128000,"api_key":"upstream-key","authorization":"Bearer upstream-key","metadata":{"api_key":"nested-key"}},{"id":"prefix/request-key","name":"must-drop-id"},{"id":"must-drop-name","displayName":"alias/request-key","owned_by":"owner/request-key"},{"id":"openai/text-embedding-3-small","architecture":{"output_modalities":["embedding"]}},{"id":"openai/gpt-image-1","architecture":{"output_modalities":["image"]}},{"id":"openai/gpt-4o","name":"duplicate"}]}`))
 	}))
 	defer server.Close()
 
@@ -58,12 +58,166 @@ func TestCoreModelCatalogOpenRouterConversationUsesTextFilterAndSafeNormalizatio
 	if got, want := result.Models[0]["input_modalities"], []string{"text", "image"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("input modalities = %#v, want %#v", got, want)
 	}
+	if got, want := result.Models[0]["output_modalities"], []string{"image", "text"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("output modalities = %#v, want %#v", got, want)
+	}
 	encoded, _ := json.Marshal(result)
 	for _, secret := range []string{"request-key", "upstream-key", "nested-key"} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("catalog response leaked %q: %s", secret, encoded)
 		}
 	}
+}
+
+func TestCoreModelCatalogMalformedScalarTypesMatchClosedDescriptor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"typed-model","object":123,"created":"1700000000","created_at":1700000000,"owned_by":true,"type":[],"context_length":"128000","context_window":64000.5,"max_input_tokens":4096.0,"max_output_tokens":"8192","max_tokens":8192,"input_token_limit":null,"output_token_limit":"16384","output_modalities":["text"],"input_modalities":["text"]}]}`))
+	}))
+	defer server.Close()
+
+	result, err := newCoreModelCatalog(nil).ListModels(context.Background(), agentcapability.ModelCatalogRequest{
+		Provider: "openrouter", BaseURL: server.URL + "/v1", APIKey: "request-key", ModelKind: coremodel.ModelKindConversation,
+	})
+	if err != nil {
+		t.Fatalf("malformed scalar catalog: %v", err)
+	}
+	if len(result.Models) != 1 {
+		t.Fatalf("malformed scalar models = %#v", result.Models)
+	}
+	model := result.Models[0]
+	for _, field := range []string{"object", "created", "created_at", "owned_by", "type", "context_length", "context_window", "max_output_tokens", "input_token_limit", "output_token_limit"} {
+		if _, ok := model[field]; ok {
+			t.Fatalf("mismatched scalar field %q was projected: %#v", field, model[field])
+		}
+	}
+	if _, ok := model["max_input_tokens"].(int64); !ok {
+		t.Fatalf("valid integer scalar was not normalized to int64: %#v", model["max_input_tokens"])
+	}
+	if _, ok := model["max_tokens"].(int64); !ok {
+		t.Fatalf("valid integer scalar was not normalized to int64: %#v", model["max_tokens"])
+	}
+
+	var schemaJSON string
+	for _, operation := range agentcapability.NewInfoCapability(agentcapability.InfoProviderFunc{}).Descriptor().GetOperations() {
+		if operation.GetOperationId() == "list_models" {
+			schemaJSON = operation.GetResultSchemaJson()
+			break
+		}
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		t.Fatal(err)
+	}
+	modelSchema := schema["properties"].(map[string]any)["models"].(map[string]any)["items"].(map[string]any)
+	properties := modelSchema["properties"].(map[string]any)
+	for field, value := range model {
+		property, ok := properties[field].(map[string]any)
+		if !ok {
+			t.Fatalf("projected field %q is outside descriptor schema: %#v", field, model)
+		}
+		typeName, _ := property["type"].(string)
+		switch typeName {
+		case "string":
+			if _, ok := value.(string); !ok {
+				t.Fatalf("field %q value=%T violates string schema", field, value)
+			}
+		case "integer":
+			kind := reflect.ValueOf(value).Kind()
+			if kind < reflect.Int || kind > reflect.Uint64 {
+				t.Fatalf("field %q value=%T violates integer schema", field, value)
+			}
+		case "number":
+			kind := reflect.ValueOf(value).Kind()
+			if kind != reflect.Float32 && kind != reflect.Float64 && (kind < reflect.Int || kind > reflect.Uint64) {
+				t.Fatalf("field %q value=%T violates number schema", field, value)
+			}
+		case "array":
+			if reflect.ValueOf(value).Kind() != reflect.Slice {
+				t.Fatalf("field %q value=%T violates array schema", field, value)
+			}
+		default:
+			t.Fatalf("descriptor field %q has unsupported test type %q", field, typeName)
+		}
+	}
+}
+
+func TestCatalogIntegerValueKeepsExactIntegerBounds(t *testing.T) {
+	maxInt64 := int64(^uint64(0) >> 1)
+	minFloat := -float64(uint64(1) << 63)
+	maxFloat := float64(uint64(1) << 63)
+	for _, testCase := range []struct {
+		name  string
+		value any
+		want  any
+		ok    bool
+	}{
+		{name: "signed concrete", value: int64(-7), want: int64(-7), ok: true},
+		{name: "unsigned concrete", value: uint64(maxInt64), want: maxInt64, ok: true},
+		{name: "unsigned overflow", value: uint64(maxInt64) + 1, ok: false},
+		{name: "minimum float", value: minFloat, want: int64(-1 << 63), ok: true},
+		{name: "exclusive maximum float", value: maxFloat, ok: false},
+		{name: "number maximum", value: json.Number("9223372036854775807"), want: maxInt64, ok: true},
+		{name: "number maximum decimal", value: json.Number("9223372036854775807.0"), want: maxInt64, ok: true},
+		{name: "number exclusive maximum", value: json.Number("9223372036854775808"), ok: false},
+		{name: "number fraction", value: json.Number("7.5"), ok: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, ok := catalogIntegerValue(testCase.value)
+			if ok != testCase.ok || (ok && got != testCase.want) {
+				t.Fatalf("catalogIntegerValue(%v) = (%v, %v), want (%v, %v)", testCase.value, got, ok, testCase.want, testCase.ok)
+			}
+		})
+	}
+}
+
+func TestCatalogInputModalitiesRejectsMalformedListAsWholeField(t *testing.T) {
+	if modalities, present := catalogInputModalities(map[string]any{"input_modalities": []any{"text", 1}}); present || modalities != nil {
+		t.Fatalf("malformed direct input modalities = %#v, present=%v", modalities, present)
+	}
+	if modalities, present := catalogInputModalities(map[string]any{"architecture": map[string]any{"input_modalities": []any{"image", ""}}}); present || modalities != nil {
+		t.Fatalf("malformed architecture input modalities = %#v, present=%v", modalities, present)
+	}
+}
+
+func TestNormalizeCatalogModelsKeepsOnlyCanonicalOutputModalities(t *testing.T) {
+	const secret = "CanaryKey-42"
+	models := normalizeCatalogModelsWithSecret("openrouter", []map[string]any{
+		{"id": "direct", "output_modalities": []any{" TEXT ", "text", " IMAGE ", "text"}},
+		{"id": "architecture", "architecture": map[string]any{"output_modalities": []any{" Embedding ", "embedding"}}},
+		{"id": "unknown-mixed", "output_modalities": []any{"text", secret, "audio"}},
+		{"id": "empty", "output_modalities": []any{}},
+		{"id": "invalid", "output_modalities": "text"},
+	}, "")
+	if len(models) != 5 {
+		t.Fatalf("normalized models = %#v", models)
+	}
+	if got, want := models[0]["output_modalities"], []string{"image", "text"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("direct output modalities = %#v, want %#v", got, want)
+	}
+	if got, want := models[1]["output_modalities"], []string{"embedding"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("architecture output modalities = %#v, want %#v", got, want)
+	}
+	if got, want := models[2]["output_modalities"], []string{"audio", "text"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unknown output modalities were not filtered: %#v, want %#v", got, want)
+	}
+	if strings.Contains(string(mustJSON(models[2])), secret) {
+		t.Fatalf("secret-like output modality leaked: %#v", models[2])
+	}
+	if _, ok := models[3]["output_modalities"]; ok {
+		t.Fatalf("empty output modalities should be omitted: %#v", models[3])
+	}
+	if _, ok := models[4]["output_modalities"]; ok {
+		t.Fatalf("invalid output modalities should be omitted: %#v", models[4])
+	}
+}
+
+func mustJSON(value any) []byte {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func TestNormalizeCatalogModelsDropsSecretBearingEntriesAndKeepsNormalEntries(t *testing.T) {

@@ -459,6 +459,7 @@ func (r *MemoryRepository) AbortUpload(ctx context.Context, command AbortUploadC
 }
 
 func (r *MemoryRepository) CreateMemory(_ context.Context, command MemoryCommand) (Source, error) {
+	command = NormalizeMemoryCommand(command)
 	if err := command.validate(); err != nil {
 		return Source{}, err
 	}

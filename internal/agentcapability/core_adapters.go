@@ -709,7 +709,14 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
 	}
-	key := valueOrUUID(in, "idempotency_key")
+	key := stringValue(in, "idempotency_key")
+	if knowledgeMutationOperation(operationID) {
+		var err error
+		key, err = requiredKnowledgeUUID(in, "idempotency_key")
+		if err != nil {
+			return nil, err
+		}
+	}
 	switch operationID {
 	case "get_config":
 		value, err := c.service.GetEmbeddingConfig(ctx)
@@ -1352,28 +1359,32 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"page_token":{"type":"string"},"page_size":{"type":"integer"},"limit":{"type":"integer"},"kind":{"type":"string"},"status":{"type":"string"}}}`
 	case "agent.knowledge.v1:get_config":
 		return `{"type":"object","additionalProperties":false}`
+	case "agent.knowledge.v1:delete_source":
+		return `{"type":"object","properties":{"source_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["source_id","expected_revision","idempotency_key"]}`
 	case "agent.knowledge.v1:update_config":
-		return `{"type":"object","properties":{"idempotency_key":{"type":"string"},"expected_revision":{"type":"integer"},"embedding_profile_id":{"type":"string"},"profile_id":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["idempotency_key","expected_revision"]}`
+		return `{"type":"object","properties":{"idempotency_key":{"format":"uuid","type":"string"},"expected_revision":{"type":"integer"},"embedding_profile_id":{"type":"string"},"profile_id":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["idempotency_key","expected_revision"]}`
 	case "agent.knowledge.v1:start_upload":
-		return `{"type":"object","properties":{"upload_id":{"type":"string"},"source_id":{"type":"string"},"title":{"type":"string"},"relative_path":{"type":"string"},"media_type":{"type":"string"},"declared_size":{"type":"integer"},"content_sha256":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["declared_size","content_sha256","idempotency_key"]}`
+		return `{"type":"object","properties":{"upload_id":{"type":"string"},"source_id":{"type":"string"},"title":{"type":"string"},"relative_path":{"type":"string"},"media_type":{"type":"string"},"declared_size":{"type":"integer"},"content_sha256":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["declared_size","content_sha256","idempotency_key"]}`
 	case "agent.knowledge.v1:append_upload_chunk":
-		return `{"type":"object","properties":{"upload_id":{"type":"string"},"ordinal":{"type":"integer"},"offset_bytes":{"type":"integer"},"data":{"type":"string"},"chunk_sha256":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["upload_id","data","chunk_sha256","idempotency_key"]}`
+		return `{"type":"object","properties":{"upload_id":{"type":"string"},"ordinal":{"type":"integer"},"offset_bytes":{"type":"integer"},"data":{"type":"string"},"chunk_sha256":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["upload_id","data","chunk_sha256","idempotency_key"]}`
 	case "agent.knowledge.v1:commit_upload":
-		return `{"type":"object","properties":{"upload_id":{"type":"string"},"expected_revision":{"type":"integer"},"content_sha256":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["upload_id","content_sha256","idempotency_key"]}`
+		return `{"type":"object","properties":{"upload_id":{"type":"string"},"expected_revision":{"type":"integer"},"content_sha256":{"type":"string"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["upload_id","content_sha256","idempotency_key"]}`
 	case "agent.knowledge.v1:list_memories":
 		return `{"type":"object","properties":{"page_token":{"type":"string"},"page_size":{"type":"integer"},"limit":{"type":"integer"},"status":{"type":"string"}}}`
 	case "agent.knowledge.v1:create_memory":
-		return `{"type":"object","properties":{"source_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"content_sha256":{"type":"string"},"media_type":{"type":"string"},"tags":{"type":"array"},"idempotency_key":{"type":"string"}},"required":["title","content","idempotency_key"]}`
+		return `{"type":"object","properties":{"source_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"content_sha256":{"type":"string"},"media_type":{"type":"string"},"tags":{"type":"array"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["content","idempotency_key"]}`
 	case "agent.knowledge.v1:update_memory":
-		return `{"type":"object","properties":{"memory_id":{"type":"string"},"source_id":{"type":"string"},"expected_revision":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"},"content_sha256":{"type":"string"},"media_type":{"type":"string"},"tags":{"type":"array"},"idempotency_key":{"type":"string"}},"required":["memory_id","expected_revision","content","idempotency_key"]}`
+		return `{"type":"object","properties":{"memory_id":{"type":"string"},"source_id":{"type":"string"},"expected_revision":{"type":"integer"},"title":{"type":"string"},"content":{"type":"string"},"content_sha256":{"type":"string"},"media_type":{"type":"string"},"tags":{"type":"array"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["memory_id","expected_revision","content","idempotency_key"]}`
 	case "agent.knowledge.v1:get_memory":
 		return `{"type":"object","properties":{"memory_id":{"type":"string"}},"required":["memory_id"]}`
 	case "agent.knowledge.v1:delete_memory":
-		return `{"type":"object","properties":{"memory_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["memory_id","expected_revision","idempotency_key"]}`
+		return `{"type":"object","properties":{"memory_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["memory_id","expected_revision","idempotency_key"]}`
 	case "agent.knowledge.v1:search_memory":
 		return `{"type":"object","properties":{"query":{"type":"string"},"source_ids":{"type":"array"},"limit":{"type":"integer"},"page_token":{"type":"string"}},"required":["query"]}`
 	case "agent.knowledge.v1:search_knowledge":
 		return `{"type":"object","properties":{"query":{"type":"string"},"source_ids":{"type":"array"},"kind":{"type":"string"},"limit":{"type":"integer"},"page_token":{"type":"string"}},"required":["query"]}`
+	case "agent.knowledge.v1:index_sources":
+		return `{"type":"object","properties":{"source_ids":{"items":{"format":"uuid","type":"string"},"type":"array"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["source_ids","idempotency_key"]}`
 	case "agent.tasks.v1:list_task_events":
 		return `{"type":"object","properties":{"task_id":{"type":"string"},"after_sequence":{"type":"integer"},"limit":{"type":"integer"}},"required":["task_id"]}`
 	case "agent.confirmations.v1:list":
@@ -1391,7 +1402,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	case "agent.aws.v1:delete_credential":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"credential_id":{"type":"string"},"expected_revision":{"type":"integer"}},"required":["idempotency_key","credential_id","expected_revision"]}`
 	case "agent.aws.v1:test_credential":
-		return `{"type":"object","additionalProperties":false,"properties":{"credential_id":{"type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["credential_id","expected_revision","idempotency_key"]}`
+		return `{"type":"object","additionalProperties":false,"properties":{"credential_id":{"format":"uuid","type":"string"},"expected_revision":{"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"}},"required":["credential_id","expected_revision","idempotency_key"]}`
 	case "agent.aws.v1:create_plan":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"credential_id":{"type":"string"},"region":{"type":"string"},"stack_name":{"type":"string"},"operation":{"type":"string"},"template":{"type":"string"},"parameters":{"type":"object"},"tags":{"type":"object"},"capabilities":{"type":"array"}},"required":["idempotency_key","credential_id","operation","template"]}`
 	case "agent.aws.v1:get_plan":
@@ -1522,6 +1533,24 @@ func valueOrUUID(m map[string]json.RawMessage, key string) string {
 	}
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key+":"+string(m[key]))).String()
 }
+
+func knowledgeMutationOperation(operation string) bool {
+	switch operation {
+	case "update_config", "create_memory", "delete_source", "start_upload", "append_upload_chunk", "commit_upload", "update_memory", "delete_memory", "index_sources":
+		return true
+	default:
+		return false
+	}
+}
+
+func requiredKnowledgeUUID(in map[string]json.RawMessage, key string) (string, error) {
+	value := stringValue(in, key)
+	if !coretask.ValidUUID(value) {
+		return "", coreknowledge.ErrInvalid
+	}
+	return value, nil
+}
+
 func profileSpec(in map[string]json.RawMessage, patch bool) (coremodel.ProfileSpec, error) {
 	p := coremodel.ProfileSpec{ID: stringValue(in, "profile_id"), Patch: patch, DisplayName: stringValue(in, "display_name"), ModelKind: stringValue(in, "model_kind"), BaseURL: stringValue(in, "base_url"), Model: stringValue(in, "model"), SystemPrompt: stringValue(in, "system_prompt"), MaxOutputTokens: intValue(in, "max_output_tokens", 0), ContextWindow: intValue(in, "context_window", 0), ReasoningEffort: stringValue(in, "reasoning_effort"), InputModalities: stringSlice(in, "input_modalities")}
 	provider := stringValue(in, "provider")

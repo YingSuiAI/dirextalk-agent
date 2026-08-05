@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -498,13 +500,16 @@ func normalizeCatalogModelsWithSecret(provider string, rawModels []map[string]an
 		}
 		name := firstCatalogString(raw["display_name"], raw["displayName"], raw["name"], id)
 		model := map[string]any{"id": id, "name": name, "provider": provider}
-		for _, key := range []string{"object", "created", "created_at", "owned_by", "type", "context_length", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit"} {
-			if value, ok := safeCatalogValue(raw[key]); ok {
+		for _, key := range []string{"object", "created", "created_at", "owned_by", "type", "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit"} {
+			if value, ok := safeCatalogValue(key, raw[key]); ok {
 				model[key] = value
 			}
 		}
 		if modalities, present := catalogInputModalities(raw); present && len(modalities) > 0 {
 			model["input_modalities"] = modalities
+		}
+		if modalities, present := catalogOutputModalities(raw); present && len(modalities) > 0 {
+			model["output_modalities"] = modalities
 		}
 		if catalogValueContainsSecret(model, apiKey) {
 			continue
@@ -578,26 +583,73 @@ func catalogValueContainsSecret(value any, secret string) bool {
 }
 
 func catalogOutputModalities(raw map[string]any) ([]string, bool) {
-	if modalities, present := catalogStringList(raw["output_modalities"]); present {
-		return modalities, true
-	}
-	architecture, ok := raw["architecture"].(map[string]any)
-	if !ok {
-		return nil, false
-	}
-	return catalogStringList(architecture["output_modalities"])
-}
-
-func catalogInputModalities(raw map[string]any) ([]string, bool) {
-	modalities, present := catalogStringList(raw["input_modalities"])
+	value, present := raw["output_modalities"]
 	if !present {
 		architecture, ok := raw["architecture"].(map[string]any)
 		if !ok {
 			return nil, false
 		}
-		modalities, present = catalogStringList(architecture["input_modalities"])
+		value, present = architecture["output_modalities"]
 	}
 	if !present {
+		return nil, false
+	}
+	modalities, valid := catalogOutputModalityList(value)
+	if !valid {
+		// Keep malformed output metadata present-but-empty so the existing
+		// conversation/embedding filters reject that catalog item rather than
+		// silently falling back to a guessed modality.
+		return nil, true
+	}
+	return normalizeCatalogOutputModalities(modalities), true
+}
+
+func catalogOutputModalityList(value any) ([]string, bool) {
+	var values []any
+	switch typed := value.(type) {
+	case []any:
+		values = typed
+	case []string:
+		values = make([]any, len(typed))
+		for i := range typed {
+			values[i] = typed[i]
+		}
+	default:
+		return nil, false
+	}
+	result := make([]string, 0, len(values))
+	for _, item := range values {
+		typed, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		value := strings.TrimSpace(catalogStringValue(typed))
+		if value == "" {
+			return nil, false
+		}
+		result = append(result, value)
+	}
+	return result, true
+}
+
+func normalizeCatalogOutputModalities(values []string) []string {
+	return agentcapability.CanonicalModelCatalogOutputModalities(values)
+}
+
+func catalogInputModalities(raw map[string]any) ([]string, bool) {
+	value, present := raw["input_modalities"]
+	if !present {
+		architecture, ok := raw["architecture"].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		value, present = architecture["input_modalities"]
+	}
+	if !present {
+		return nil, false
+	}
+	modalities, valid := catalogInputModalityList(value)
+	if !valid {
 		return nil, false
 	}
 	known := map[string]struct{}{"text": {}, "image": {}}
@@ -612,6 +664,34 @@ func catalogInputModalities(raw map[string]any) ([]string, bool) {
 		}
 		seen[modality] = struct{}{}
 		result = append(result, modality)
+	}
+	return result, true
+}
+
+func catalogInputModalityList(value any) ([]string, bool) {
+	var values []any
+	switch typed := value.(type) {
+	case []any:
+		values = typed
+	case []string:
+		values = make([]any, len(typed))
+		for i := range typed {
+			values[i] = typed[i]
+		}
+	default:
+		return nil, false
+	}
+	result := make([]string, 0, len(values))
+	for _, item := range values {
+		typed, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		value := strings.ToLower(strings.TrimSpace(catalogStringValue(typed)))
+		if value == "" {
+			return nil, false
+		}
+		result = append(result, value)
 	}
 	return result, true
 }
@@ -668,14 +748,122 @@ func catalogStringValue(value any) string {
 	return typed
 }
 
-func safeCatalogValue(value any) (any, bool) {
-	switch typed := value.(type) {
-	case string:
-		value := catalogStringValue(typed)
+func safeCatalogValue(field string, value any) (any, bool) {
+	switch field {
+	case "object", "created_at", "owned_by", "type":
+		value, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		value = catalogStringValue(value)
 		return value, value != ""
-	case bool, float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
-		return typed, true
+	case "created":
+		return catalogNumberValue(value)
+	case "context_length", "context_window", "max_input_tokens", "max_output_tokens", "max_tokens", "input_token_limit", "output_token_limit":
+		return catalogIntegerValue(value)
 	default:
 		return nil, false
 	}
+}
+
+func catalogNumberValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return nil, false
+		}
+		return typed, true
+	case float32:
+		return catalogNumberValue(float64(typed))
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+			return nil, false
+		}
+		return number, true
+	case int:
+		return float64(typed), true
+	case int8:
+		return float64(typed), true
+	case int16:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case uint:
+		return float64(typed), true
+	case uint8:
+		return float64(typed), true
+	case uint16:
+		return float64(typed), true
+	case uint32:
+		return float64(typed), true
+	case uint64:
+		return float64(typed), true
+	default:
+		return nil, false
+	}
+}
+
+func catalogIntegerValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int8:
+		return int64(typed), true
+	case int16:
+		return int64(typed), true
+	case int32:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint:
+		if uint64(typed) > uint64(^uint64(0)>>1) {
+			return nil, false
+		}
+		return int64(typed), true
+	case uint8:
+		return int64(typed), true
+	case uint16:
+		return int64(typed), true
+	case uint32:
+		return int64(typed), true
+	case uint64:
+		if typed > uint64(^uint64(0)>>1) {
+			return nil, false
+		}
+		return int64(typed), true
+	case float32:
+		return catalogIntegerFloat(float64(typed))
+	case float64:
+		return catalogIntegerFloat(typed)
+	case json.Number:
+		return catalogIntegerNumber(typed)
+	default:
+		return nil, false
+	}
+}
+
+func catalogIntegerFloat(value float64) (any, bool) {
+	const minInteger = -float64(uint64(1) << 63)
+	const maxIntegerExclusive = float64(uint64(1) << 63)
+	if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value || value < minInteger || value >= maxIntegerExclusive {
+		return nil, false
+	}
+	return int64(value), true
+}
+
+func catalogIntegerNumber(value json.Number) (any, bool) {
+	rational, ok := new(big.Rat).SetString(value.String())
+	if !ok || !rational.IsInt() {
+		return nil, false
+	}
+	minimum := new(big.Int).Neg(new(big.Int).Lsh(big.NewInt(1), 63))
+	maximum := new(big.Int).Lsh(big.NewInt(1), 63)
+	numerator := rational.Num()
+	if numerator.Cmp(minimum) < 0 || numerator.Cmp(maximum) >= 0 {
+		return nil, false
+	}
+	return numerator.Int64(), true
 }

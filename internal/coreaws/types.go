@@ -19,15 +19,37 @@ import (
 )
 
 var (
-	ErrInvalid             = errors.New("coreaws: invalid")
-	ErrNotFound            = errors.New("coreaws: not found")
-	ErrConflict            = errors.New("coreaws: conflict")
-	ErrRevisionConflict    = errors.New("coreaws: revision conflict")
-	ErrIdempotencyConflict = errors.New("coreaws: idempotency conflict")
-	ErrProvider            = errors.New("coreaws: provider operation failed")
-	ErrUnconfirmed         = errors.New("coreaws: change is not confirmed")
-	ErrResponseUncertain   = errors.New("coreaws: provider response uncertain")
+	ErrInvalid                        = errors.New("coreaws: invalid")
+	ErrNotFound                       = errors.New("coreaws: not found")
+	ErrConflict                       = errors.New("coreaws: conflict")
+	ErrRevisionConflict               = errors.New("coreaws: revision conflict")
+	ErrIdempotencyConflict            = errors.New("coreaws: idempotency conflict")
+	ErrProvider                       = errors.New("coreaws: provider operation failed")
+	ErrUnconfirmed                    = errors.New("coreaws: change is not confirmed")
+	ErrResponseUncertain        error = responseUncertainError{}
+	ErrCredentialTestInProgress       = errors.New("coreaws: credential test in progress")
 )
+
+type responseUncertainError struct{}
+
+func (responseUncertainError) Error() string   { return "coreaws: provider response uncertain" }
+func (responseUncertainError) Uncertain() bool { return true }
+
+// CredentialTestInProgressError carries the durable wait boundary for a
+// same-key request that observes another worker's provider claim. It still
+// matches ErrCredentialTestInProgress for callers that only need the class.
+type CredentialTestInProgressError struct {
+	LeaseExpiresAt       time.Time
+	CompletionGraceUntil time.Time
+}
+
+func (e *CredentialTestInProgressError) Error() string {
+	return ErrCredentialTestInProgress.Error()
+}
+
+func (e *CredentialTestInProgressError) Is(target error) bool {
+	return target == ErrCredentialTestInProgress
+}
 
 type Operation string
 
@@ -157,6 +179,16 @@ type CredentialTest struct {
 	Identity           Identity
 	CredentialRevision int64
 	TestedAt           time.Time
+}
+
+// CredentialTestBindingDigest identifies the non-secret binding protected by
+// the neutral idempotent credential-test receipt. The idempotency key itself
+// is the replay-record key and is intentionally not duplicated in the digest.
+func CredentialTestBindingDigest(credentialID string, expectedRevision int64) string {
+	return canonicalDigest(struct {
+		CredentialID     string
+		ExpectedRevision int64
+	}{credentialID, expectedRevision})
 }
 
 type Plan struct {

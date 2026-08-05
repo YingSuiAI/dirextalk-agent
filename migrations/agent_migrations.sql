@@ -1334,3 +1334,33 @@ ALTER TABLE core_knowledge_list_snapshots
         (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND length(embedding_generation) BETWEEN 1 AND 256 AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$'))
     );
 -- dirextalk-agent migration end 000002_knowledge_search_provenance.up.sql
+-- dirextalk-agent migration begin 000003_aws_credential_test_claims.up.sql
+-- Provider calls run outside database transactions. A durable claim fences
+-- retries across process crashes: active in_progress claims are observed by
+-- bounded same-key waiters, failed/uncertain claims are terminal, and
+-- completed claims carry the secret-free typed response.
+CREATE TABLE core_aws_credential_test_claims (
+    idempotency_key uuid PRIMARY KEY,
+    claim_id uuid NOT NULL UNIQUE,
+    credential_id uuid NOT NULL REFERENCES core_aws_credentials(credential_id) ON DELETE CASCADE,
+    expected_revision bigint NOT NULL CHECK (expected_revision > 0),
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    state text NOT NULL CHECK (state IN ('in_progress','failed','uncertain','completed')),
+    lease_expires_at timestamptz NOT NULL,
+    completion_grace_until timestamptz NOT NULL,
+    response_json jsonb,
+    error_code text NOT NULL DEFAULT '',
+    error_message text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    CHECK ((state = 'completed') = (response_json IS NOT NULL AND completed_at IS NOT NULL)),
+    CHECK ((state <> 'completed') = (response_json IS NULL AND completed_at IS NULL)),
+    CHECK ((state = 'failed') = (error_code = 'PROVIDER_FAILED' AND error_message <> '')),
+    CHECK ((state = 'uncertain') = (error_code = 'UNCERTAIN' AND error_message <> '')),
+    CHECK ((state IN ('in_progress','completed')) = (error_code = '' AND error_message = '')),
+    CHECK (completion_grace_until >= lease_expires_at),
+    CHECK (response_json IS NULL OR (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536))
+);
+CREATE INDEX core_aws_credential_test_claims_credential_idx ON core_aws_credential_test_claims(credential_id, expected_revision);
+-- dirextalk-agent migration end 000003_aws_credential_test_claims.up.sql

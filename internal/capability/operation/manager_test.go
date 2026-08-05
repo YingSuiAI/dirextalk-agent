@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -383,6 +384,26 @@ func TestManager_RecoverFencesPendingAndRunningAndReconcileDoesNotRetry(t *testi
 			t.Fatal("uncertain operation was retried")
 			return nil, nil
 		})
+	}
+}
+
+func TestManager_ExecuteMapsTypedUncertainToUncertainState(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-typed-uncertain", CapabilityID: "agent.aws.v1", OperationName: "test_credential", RequestJSON: []byte(`{"credential_id":"id"}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+		return nil, coreaws.ErrResponseUncertain
+	})
+	got, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateUncertain || got.ErrorCode != "UNCERTAIN" {
+		t.Fatalf("typed uncertain result=%+v", got)
 	}
 }
 

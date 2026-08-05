@@ -15,7 +15,7 @@ const (
 	beginMarker = "-- dirextalk-agent migration begin "
 	endMarker   = "-- dirextalk-agent migration end "
 	// CurrentVersion is the latest Core v1 schema migration version.
-	CurrentVersion = int64(2)
+	CurrentVersion = int64(3)
 )
 
 // Migration is one virtual migration extracted from the embedded bundle.

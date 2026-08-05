@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 2 {
-		t.Fatalf("CurrentVersion = %d, want 2", CurrentVersion)
+	if CurrentVersion != 3 {
+		t.Fatalf("CurrentVersion = %d, want 3", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 2 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" {
+	if len(entries) != 3 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -65,6 +65,15 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{"embedding_profile_id", "embedding_profile_revision", "embedding_model", "embedding_generation", "embedding_collection_config_digest"} {
 		if !strings.Contains(string(provenance), needle) {
 			t.Errorf("provenance migration missing %q", needle)
+		}
+	}
+	claims, err := Files.ReadFile(entries[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"CREATE TABLE core_aws_credential_test_claims", "state IN ('in_progress','failed','uncertain','completed')", "error_code", "request_hash", "lease_expires_at", "completion_grace_until"} {
+		if !strings.Contains(string(claims), needle) {
+			t.Errorf("AWS credential test claim migration missing %q", needle)
 		}
 	}
 	for _, forbidden := range []string{

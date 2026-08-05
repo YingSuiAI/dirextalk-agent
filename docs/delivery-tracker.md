@@ -19,6 +19,13 @@ contract](message-server-integration-development-contract.md), and
 - Knowledge mounts, uploads, memory, indexing, and semantic-search composition.
 - Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
   and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
+- Neutral Capability Knowledge mutations now require explicit UUID idempotency
+  keys, and AWS credential tests have durable, secret-free replay receipts.
+  Provider tests use a persisted claim outside database locks; same-key active
+  retries poll through the persisted 30-second lease plus completion grace and
+  replay completed or deterministic failed receipts, while crash or completion
+  uncertainty fails closed without lease takeover. Different-key completions
+  preserve monotonic credential verification timestamps.
 - Unified Agent image and split Compose services for Core, extension runner,
   and Core Runner; the latter has nonce/full readiness and descriptor-only
   sealed-result boundaries.
@@ -47,6 +54,11 @@ support.
   `cgroup.kill`, `populated 0`, workspace cleanup, and zero residue.
 - Runner-focused tests, focused command/config/app tests, command builds, and
   the non-root delegated isolation test passed without provider credentials.
+- On **2026-08-06**, focused Capability/Core AWS tests covered missing and
+  malformed Knowledge keys, exact replay, changed-binding conflicts, bounded
+  same-key retries, failed receipts, cancellation fencing, and out-of-order
+  monotonic completion. The PostgreSQL restart/replay test is opt-in through
+  `AGENT_TEST_POSTGRES_DSN` and skips when PG18 is unavailable.
 - On **2026-07-25**, the explicitly authorized real AWS lane used the typed
   `CoreCloudControlService` in `us-east-1` to create and read back one tagged
   idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent

@@ -64,6 +64,7 @@ func (s *Service) AbortUpload(ctx context.Context, command AbortUploadCommand) e
 	return s.repository.AbortUpload(ctx, command)
 }
 func (s *Service) CreateMemory(ctx context.Context, command MemoryCommand) (Source, error) {
+	command = NormalizeMemoryCommand(command)
 	if err := command.validate(); err != nil {
 		return Source{}, err
 	}

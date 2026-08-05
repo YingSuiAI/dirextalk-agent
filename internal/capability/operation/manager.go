@@ -41,6 +41,21 @@ var (
 	ErrInvalid             = errors.New("invalid capability operation")
 )
 
+// uncertainError is the small cross-domain marker used by handlers whose
+// provider outcome cannot safely be retried.  The operation manager must not
+// import every domain package just to classify this terminal condition.
+type uncertainError interface{ Uncertain() bool }
+
+// IsUncertain reports whether err carries the typed uncertain marker through
+// any wrapping layer.
+func IsUncertain(err error) bool {
+	if err == nil {
+		return false
+	}
+	var marker uncertainError
+	return errors.As(err, &marker) && marker.Uncertain()
+}
+
 type Operation struct {
 	ID            string
 	CapabilityID  string
@@ -998,6 +1013,10 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 		_ = m.markUncertain(context.Background(), operationID, err.Error())
+		return
+	}
+	if IsUncertain(err) {
+		_ = m.markUncertain(context.Background(), operationID, "operation outcome requires external reconciliation; side effect was not retried")
 		return
 	}
 	_ = m.Fail(context.Background(), operationID, "UPSTREAM_FAILED", safeMessage(err))

@@ -318,6 +318,26 @@ func TestCoreKnowledgePostgresPersistenceAndCursor(t *testing.T) {
 	}
 }
 
+func TestCoreKnowledgePostgresCreateMemoryDefaultsTitleBeforeReplayDigest(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	key := uuid.NewString()
+	first, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: key, Content: "default title", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Title != "memory" {
+		t.Fatalf("default memory title=%q, want memory", first.Title)
+	}
+	replay, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: key, Title: "memory", Content: "default title", MediaType: "text/plain"})
+	if err != nil || replay.ID != first.ID || replay.Title != first.Title {
+		t.Fatalf("normalized replay=%+v first=%+v err=%v", replay, first, err)
+	}
+	if _, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: key, Title: "different", Content: "default title", MediaType: "text/plain"}); !errors.Is(err, coreknowledge.ErrIdempotencyConflict) {
+		t.Fatalf("changed title replay error=%v, want idempotency conflict", err)
+	}
+}
+
 func TestCoreKnowledgePostgresSearchCursorPinsProvenanceAcrossRebind(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
