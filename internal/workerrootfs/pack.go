@@ -21,22 +21,75 @@ import (
 )
 
 type packedEntry struct {
-	spec entrySpec
-	data []byte
+	spec  entrySpec
+	data  []byte
+	info  os.FileInfo
+	links uint64
 }
 
 // Pack snapshots an exact rootfs-export directory and atomically publishes a
 // deterministic USTAR archive. An existing output is never replaced.
 func Pack(root, output string) (ManifestV1, error) {
-	rootPath, outputPath, err := validateArguments(root, output)
+	publication, err := PreparePublication(root, output)
 	if err != nil {
 		return ManifestV1{}, err
+	}
+	manifest := publication.Manifest()
+	publication.Commit()
+	return manifest, nil
+}
+
+// PreparePublication publishes an official rootfs and returns a token that may
+// only commit or roll back that exact output identity.
+func PreparePublication(root, output string) (*Publication, error) {
+	return prepareWithExpectedPiIdentity(root, output, officialPiIdentity())
+}
+
+func packWithExpectedPiIdentity(root, output string, expectedPi releaseartifact.PiRuntimeIdentityV1) (ManifestV1, error) {
+	publication, err := prepareWithExpectedPiIdentity(root, output, expectedPi)
+	if err != nil {
+		return ManifestV1{}, err
+	}
+	manifest := publication.Manifest()
+	publication.Commit()
+	return manifest, nil
+}
+
+func prepareWithExpectedPiIdentity(root, output string, expectedPi releaseartifact.PiRuntimeIdentityV1) (*Publication, error) {
+	expectedPi, err := normalizePiIdentityForPackage(expectedPi)
+	if err != nil {
+		return nil, errors.New("invalid expected rootfs Pi identity")
+	}
+	rootPath, outputPath, err := validateArguments(root, output)
+	if err != nil {
+		return nil, err
 	}
 	entries, identity, err := snapshotRoot(rootPath)
 	if err != nil {
-		return ManifestV1{}, err
+		return nil, err
 	}
-	return writeArchive(outputPath, entries, identity)
+	if identity.PiRuntime != expectedPi {
+		return nil, errors.New("rootfs Pi identity does not match expected release")
+	}
+	published, err := writeArchive(outputPath, entries, identity)
+	if err != nil {
+		return nil, err
+	}
+	return newPublication(outputPath, published.manifest, published.info), nil
+}
+
+func officialPiIdentity() releaseartifact.PiRuntimeIdentityV1 {
+	return releaseartifact.PiRuntimeIdentityV1{
+		Version:               releaseartifact.OfficialPiVersion,
+		ArchiveDigest:         releaseartifact.OfficialPiArchiveDigest,
+		ExecutableDigest:      releaseartifact.OfficialPiExecutableDigest,
+		PackageJSONDigest:     releaseartifact.OfficialPiPackageJSONDigest,
+		PhotonWASMDigest:      releaseartifact.OfficialPiPhotonWASMDigest,
+		DarkThemeDigest:       releaseartifact.OfficialPiDarkThemeDigest,
+		LightThemeDigest:      releaseartifact.OfficialPiLightThemeDigest,
+		ThemeSchemaDigest:     releaseartifact.OfficialPiThemeSchemaDigest,
+		ResultExtensionDigest: releaseartifact.OfficialPiResultExtensionDigest,
+	}
 }
 
 // VerifyArchive applies the complete public release boundary before parsing
@@ -83,6 +136,7 @@ func verifyArchive(reader io.Reader, expected ManifestV1) error {
 	specs := archiveEntrySpecs()
 	archive := tar.NewReader(bytes.NewReader(content))
 	files := make(map[string][]byte, len(specs))
+	decoded := make([]packedEntry, 0, len(specs))
 	for _, spec := range specs {
 		header, err := archive.Next()
 		if err != nil {
@@ -92,6 +146,7 @@ func verifyArchive(reader io.Reader, expected ManifestV1) error {
 			return err
 		}
 		if spec.kind == directoryEntry {
+			decoded = append(decoded, packedEntry{spec: spec})
 			continue
 		}
 		entry, err := io.ReadAll(io.LimitReader(archive, spec.maxBytes+1))
@@ -99,9 +154,14 @@ func verifyArchive(reader io.Reader, expected ManifestV1) error {
 			return errors.New("read rootfs archive entry")
 		}
 		files[spec.path] = entry
+		decoded = append(decoded, packedEntry{spec: spec, data: entry})
 	}
 	if _, err := archive.Next(); err != io.EOF {
 		return errors.New("rootfs archive contains an unexpected entry")
+	}
+	var canonical bytes.Buffer
+	if err := writeCanonicalArchive(&canonical, decoded); err != nil || !bytes.Equal(canonical.Bytes(), content) {
+		return errors.New("rootfs archive bytes are not canonical USTAR")
 	}
 
 	workerDigest, sandboxDigest, archivedPi, err := validateAssets(files)
@@ -206,15 +266,23 @@ func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
 			if !info.IsDir() {
 				return errors.New("rootfs directory has an invalid type")
 			}
+			captured, links, err := captureDirectory(path, info)
+			if err != nil {
+				return err
+			}
+			packed.info = captured
+			packed.links = links
 		case regularEntry:
 			if !info.Mode().IsRegular() {
 				return errors.New("rootfs file has an invalid type")
 			}
-			content, err := readRegularFile(path, info, spec.maxBytes)
+			content, captured, links, err := readRegularFile(path, info, spec.maxBytes)
 			if err != nil {
 				return err
 			}
 			packed.data = content
+			packed.info = captured
+			packed.links = links
 		default:
 			return errors.New("rootfs allowlist has an invalid kind")
 		}
@@ -226,6 +294,9 @@ func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
 	}
 	if len(seen) != len(rootfsEntries) {
 		return nil, ManifestV1{}, errors.New("rootfs is missing a required path")
+	}
+	if err := reviewRootSnapshot(root, seen); err != nil {
+		return nil, ManifestV1{}, err
 	}
 	entries := make([]packedEntry, 0, len(rootfsEntries)+1)
 	files := make(map[string][]byte, len(rootfsEntries)+1)
@@ -437,39 +508,159 @@ func validateHeader(header *tar.Header, spec entrySpec) error {
 	return nil
 }
 
-func readRegularFile(path string, initial os.FileInfo, maxBytes int64) ([]byte, error) {
+func readRegularFile(path string, initial os.FileInfo, maxBytes int64) ([]byte, os.FileInfo, uint64, error) {
 	if initial.Size() <= 0 || initial.Size() > maxBytes {
-		return nil, errors.New("rootfs file exceeds its fixed size limit")
+		return nil, nil, 0, errors.New("rootfs file exceeds its fixed size limit")
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, errors.New("open rootfs file")
+		return nil, nil, 0, errors.New("open rootfs file")
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(initial, opened) {
-		return nil, errors.New("rootfs file changed during validation")
+	if err != nil || !opened.Mode().IsRegular() || !sameFileState(initial, opened) {
+		return nil, nil, 0, errors.New("rootfs file changed during validation")
 	}
 	links, err := regularFileLinkCount(file, opened)
 	if err != nil || links != 1 {
-		return nil, errors.New("rootfs contains a hard link")
+		return nil, nil, 0, errors.New("rootfs contains a hard link")
+	}
+	first, err := readOpenFile(file, opened.Size(), maxBytes)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	middle, err := file.Stat()
+	if err != nil {
+		return nil, nil, 0, errors.New("rootfs file changed during validation")
+	}
+	middleLinks, linkErr := regularFileLinkCount(file, middle)
+	if linkErr != nil || middleLinks != links || !sameFileState(opened, middle) {
+		return nil, nil, 0, errors.New("rootfs file changed during validation")
+	}
+	second, err := readOpenFile(file, opened.Size(), maxBytes)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	final, err := file.Stat()
+	if err != nil {
+		return nil, nil, 0, errors.New("rootfs file changed during validation")
+	}
+	finalLinks, linkErr := regularFileLinkCount(file, final)
+	pathFinal, pathErr := os.Lstat(path)
+	if linkErr != nil || pathErr != nil || finalLinks != links || !bytes.Equal(first, second) ||
+		!final.Mode().IsRegular() || !pathFinal.Mode().IsRegular() || !sameFileState(opened, final) || !sameFileState(final, pathFinal) {
+		return nil, nil, 0, errors.New("rootfs file changed during validation")
+	}
+	return first, final, finalLinks, nil
+}
+
+func readOpenFile(file *os.File, size, maxBytes int64) ([]byte, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, errors.New("seek rootfs file")
 	}
 	content, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
-	if err != nil || int64(len(content)) != opened.Size() || int64(len(content)) > maxBytes {
+	if err != nil || int64(len(content)) != size || int64(len(content)) > maxBytes {
 		return nil, errors.New("read rootfs file")
-	}
-	after, err := os.Lstat(path)
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(opened, after) || after.Size() != int64(len(content)) {
-		return nil, errors.New("rootfs file changed during validation")
 	}
 	return content, nil
 }
 
-func writeArchive(output string, entries []packedEntry, identity ManifestV1) (manifest ManifestV1, err error) {
+func captureDirectory(path string, initial os.FileInfo) (os.FileInfo, uint64, error) {
+	directory, err := os.Open(path)
+	if err != nil {
+		return nil, 0, errors.New("open rootfs directory")
+	}
+	defer directory.Close()
+	opened, err := directory.Stat()
+	if err != nil || !opened.IsDir() || !sameFileState(initial, opened) {
+		return nil, 0, errors.New("rootfs directory changed during validation")
+	}
+	links, err := regularFileLinkCount(directory, opened)
+	if err != nil {
+		return nil, 0, errors.New("inspect rootfs directory links")
+	}
+	pathFinal, err := os.Lstat(path)
+	if err != nil || !pathFinal.IsDir() || !sameFileState(opened, pathFinal) {
+		return nil, 0, errors.New("rootfs directory changed during validation")
+	}
+	return pathFinal, links, nil
+}
+
+func reviewRootSnapshot(root string, snapshot map[string]packedEntry) error {
+	seen := make(map[string]struct{}, len(snapshot))
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return errors.New("review rootfs snapshot")
+		}
+		if path == root {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return errors.New("rootfs review path escapes root")
+		}
+		archivePath := filepath.ToSlash(relative)
+		captured, exists := snapshot[archivePath]
+		if !exists {
+			return errors.New("rootfs changed after snapshot")
+		}
+		if _, duplicate := seen[archivePath]; duplicate {
+			return errors.New("rootfs changed after snapshot")
+		}
+		seen[archivePath] = struct{}{}
+		info, err := entry.Info()
+		if err != nil {
+			return errors.New("review rootfs entry")
+		}
+		var reviewed os.FileInfo
+		var links uint64
+		switch captured.spec.kind {
+		case directoryEntry:
+			if !info.IsDir() {
+				return errors.New("rootfs changed after snapshot")
+			}
+			reviewed, links, err = captureDirectory(path, info)
+		case regularEntry:
+			if !info.Mode().IsRegular() {
+				return errors.New("rootfs changed after snapshot")
+			}
+			var content []byte
+			content, reviewed, links, err = readRegularFile(path, info, captured.spec.maxBytes)
+			if err == nil && !bytes.Equal(content, captured.data) {
+				return errors.New("rootfs file content changed after snapshot")
+			}
+		default:
+			return errors.New("rootfs snapshot has an invalid kind")
+		}
+		if err != nil || links != captured.links || !sameFileState(captured.info, reviewed) {
+			return errors.New("rootfs changed after snapshot")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(seen) != len(snapshot) {
+		return errors.New("rootfs changed after snapshot")
+	}
+	return nil
+}
+
+func sameFileState(left, right os.FileInfo) bool {
+	return left != nil && right != nil && os.SameFile(left, right) && left.Size() == right.Size() &&
+		left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
+}
+
+type publishedArchive struct {
+	manifest ManifestV1
+	info     os.FileInfo
+}
+
+func writeArchive(output string, entries []packedEntry, identity ManifestV1) (publishedArchive, error) {
 	parent := filepath.Dir(output)
 	temporary, file, err := createTemporary(parent)
 	if err != nil {
-		return ManifestV1{}, err
+		return publishedArchive{}, err
 	}
 	defer func() {
 		if file != nil {
@@ -480,7 +671,39 @@ func writeArchive(output string, entries []packedEntry, identity ManifestV1) (ma
 		}
 	}()
 	hasher := sha256.New()
-	archive := tar.NewWriter(io.MultiWriter(file, hasher))
+	if err := writeCanonicalArchive(io.MultiWriter(file, hasher), entries); err != nil {
+		return publishedArchive{}, err
+	}
+	if err := file.Sync(); err != nil {
+		return publishedArchive{}, errors.New("sync rootfs archive")
+	}
+	info, err := file.Stat()
+	if err != nil || info.Size() <= 0 || info.Size() > MaxArchiveBytes {
+		return publishedArchive{}, errors.New("inspect rootfs archive")
+	}
+	if err := file.Close(); err != nil {
+		return publishedArchive{}, errors.New("close rootfs artifact")
+	}
+	file = nil
+	if err := os.Link(temporary, output); err != nil {
+		return publishedArchive{}, errors.New("publish rootfs archive without replacement")
+	}
+	if err := os.Remove(temporary); err != nil {
+		_ = os.Remove(output)
+		return publishedArchive{}, errors.New("finalize rootfs archive")
+	}
+	temporary = ""
+	if err := syncDirectory(parent); err != nil {
+		_ = os.Remove(output)
+		return publishedArchive{}, errors.New("sync rootfs output directory")
+	}
+	identity.RootFSDigest = "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	identity.Size = info.Size()
+	return publishedArchive{manifest: identity, info: info}, nil
+}
+
+func writeCanonicalArchive(output io.Writer, entries []packedEntry) error {
+	archive := tar.NewWriter(output)
 	for _, entry := range entries {
 		header := &tar.Header{
 			Name:       entry.spec.path,
@@ -500,43 +723,18 @@ func writeArchive(output string, entries []packedEntry, identity ManifestV1) (ma
 			header.Size = int64(len(entry.data))
 		}
 		if err := archive.WriteHeader(header); err != nil {
-			return ManifestV1{}, errors.New("write rootfs archive header")
+			return errors.New("write rootfs archive header")
 		}
 		if entry.spec.kind == regularEntry {
 			if _, err := archive.Write(entry.data); err != nil {
-				return ManifestV1{}, errors.New("write rootfs archive content")
+				return errors.New("write rootfs archive content")
 			}
 		}
 	}
 	if err := archive.Close(); err != nil {
-		return ManifestV1{}, errors.New("close rootfs archive")
+		return errors.New("close rootfs archive")
 	}
-	if err := file.Sync(); err != nil {
-		return ManifestV1{}, errors.New("sync rootfs archive")
-	}
-	info, err := file.Stat()
-	if err != nil || info.Size() <= 0 || info.Size() > MaxArchiveBytes {
-		return ManifestV1{}, errors.New("inspect rootfs archive")
-	}
-	if err := file.Close(); err != nil {
-		return ManifestV1{}, errors.New("close rootfs artifact")
-	}
-	file = nil
-	if err := os.Link(temporary, output); err != nil {
-		return ManifestV1{}, errors.New("publish rootfs archive without replacement")
-	}
-	if err := os.Remove(temporary); err != nil {
-		_ = os.Remove(output)
-		return ManifestV1{}, errors.New("finalize rootfs archive")
-	}
-	temporary = ""
-	if err := syncDirectory(parent); err != nil {
-		_ = os.Remove(output)
-		return ManifestV1{}, errors.New("sync rootfs output directory")
-	}
-	identity.RootFSDigest = "sha256:" + hex.EncodeToString(hasher.Sum(nil))
-	identity.Size = info.Size()
-	return identity, nil
+	return nil
 }
 
 func createTemporary(parent string) (string, *os.File, error) {

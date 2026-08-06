@@ -793,6 +793,39 @@ build. Both packs produced
 the qualification image was
 `sha256:63a8b21a7fab7e0aba9cf85abf04d9615a6ce1a794ba3c200a5793986ee6cd77`.
 
+Specification-review fixes on 2026-08-07 used four behavioral RED tests:
+
+```bash
+GOWORK=off go test ./internal/workerrootfs -run '^TestPackPublicBoundaryRejectsSubstitutedPiAssetWithMatchingIdentity$' -count=1
+GOWORK=off go test ./internal/workerrootfs -run '^TestPackRejectsSameInodeSameSizeRewriteDuringSnapshot$' -count=1
+GOWORK=off go test ./internal/workerrootfs -run '^TestVerifyArchiveRejectsIgnoredNonCanonicalUSTARTrailingBytes$' -count=1
+GOWORK=off go test ./cmd/dirextalk-worker-rootfs -run '^TestRunRollsBackPublishedOutputWhenManifestWriteFails$' -count=1
+```
+
+They respectively failed because public `Pack` accepted a substituted Pi
+asset with a matching well-formed identity, snapshotting accepted a concurrent
+same-inode/same-size rewrite, `tar.Reader` ignored non-canonical trailing
+blocks and bytes, and a manifest writer failure left the published output in
+place. The fix makes public pack and verify boundaries require every exact
+`OfficialPi*` value and rehash every Pi file; reads every source file twice and
+then performs a second exact full-tree review; re-encodes parsed entries with
+the same canonical USTAR encoder and requires byte equality; and binds CLI
+rollback to a one-output publication token that rechecks inode, size, digest,
+and content before deletion and syncs the parent directory. Package-private
+fixture seams do not weaken either public boundary.
+
+Final fix qualification:
+
+```bash
+GOWORK=off go test -race ./internal/cloud/canonical ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs -count=1
+GOWORK=off go vet ./internal/cloud/canonical ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs
+GOWORK=off GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/dirextalk-worker-rootfs-task9a-spec-fix ./cmd/dirextalk-worker-rootfs
+git diff --check
+```
+
+The retained AWS qualification above remains the release-asset evidence; the
+review fix did not rerun the expensive Docker build.
+
 Task 9A only packages the drop-ins and unit; it neither creates host accounts
 and state directories nor enables or starts the Worker. Task 9B must run
 `systemd-sysusers`, `systemd-tmpfiles`, and `getent` during AMI construction

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -123,11 +124,11 @@ func TestPackIsDeterministicCanonicalAndVerifiable(t *testing.T) {
 
 	firstOutput := filepath.Join(t.TempDir(), "first.tar")
 	secondOutput := filepath.Join(t.TempDir(), "second.tar")
-	first, err := Pack(firstRoot, firstOutput)
+	first, err := packFixture(t, firstRoot, firstOutput)
 	if err != nil {
 		t.Fatalf("Pack(first) error = %v", err)
 	}
-	second, err := Pack(secondRoot, secondOutput)
+	second, err := packFixture(t, secondRoot, secondOutput)
 	if err != nil {
 		t.Fatalf("Pack(second) error = %v", err)
 	}
@@ -147,6 +148,100 @@ func TestPackIsDeterministicCanonicalAndVerifiable(t *testing.T) {
 		t.Fatalf("verifyArchive() error = %v", err)
 	}
 	assertInstallationManifest(t, firstBytes, first.InstallationManifestDigest)
+}
+
+func TestPackPublicBoundaryRejectsSubstitutedPiAssetWithMatchingIdentity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	populateCurrentRootfs(t, root)
+	replacement := []byte("substituted-pi-0.83.0-linux-x64")
+	writeFile(t, root, piBinaryPath, replacement)
+
+	var identity releaseartifact.PiRuntimeIdentityV1
+	if err := json.Unmarshal(readFile(t, rooted(root, piIdentityPath)), &identity); err != nil {
+		t.Fatal(err)
+	}
+	identity.ExecutableDigest = digest(replacement)
+	identityJSON, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, piIdentityPath, append(identityJSON, '\n'))
+
+	output := filepath.Join(t.TempDir(), "rootfs.tar")
+	if _, err := Pack(root, output); err == nil {
+		t.Fatal("Pack() accepted a substituted Pi asset with a matching well-formed identity")
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("failed public pack exposed output: %v", err)
+	}
+}
+
+func TestPackRejectsSameInodeSameSizeRewriteDuringSnapshot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	populateCurrentRootfs(t, root)
+	path := rooted(root, caBundlePath)
+	first := bytes.Repeat([]byte{'A'}, 8<<20)
+	second := bytes.Repeat([]byte{'B'}, len(first))
+	if err := os.WriteFile(path, first, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	writerDone := make(chan error, 1)
+	var writes atomic.Uint64
+	go func() {
+		defer file.Close()
+		value := second
+		for {
+			if _, err := file.WriteAt(value, 0); err != nil {
+				writerDone <- err
+				return
+			}
+			writes.Add(1)
+			select {
+			case <-stop:
+				writerDone <- nil
+				return
+			default:
+			}
+			if value[0] == 'A' {
+				value = second
+			} else {
+				value = first
+			}
+		}
+	}()
+	for writes.Load() == 0 {
+		runtime.Gosched()
+	}
+	startedAt := writes.Load()
+	output := filepath.Join(t.TempDir(), "rootfs.tar")
+	_, packErr := packFixture(t, root, output)
+	close(stop)
+	if err := <-writerDone; err != nil {
+		t.Fatal(err)
+	}
+	if writes.Load() <= startedAt {
+		t.Fatal("test did not rewrite the source while Pack was running")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() {
+		t.Fatal("test replaced the inode or changed the source size")
+	}
+	if packErr == nil {
+		t.Fatal("Pack() accepted a same-inode same-size source rewrite")
+	}
 }
 
 func TestPackRejectsUnexpectedUnsafeOrUnboundRootfs(t *testing.T) {
@@ -230,7 +325,7 @@ func TestPackRejectsUnexpectedUnsafeOrUnboundRootfs(t *testing.T) {
 			populateCurrentRootfs(t, root)
 			test.edit(t, root)
 			output := filepath.Join(t.TempDir(), "rootfs.tar")
-			if _, err := Pack(root, output); err == nil {
+			if _, err := packFixture(t, root, output); err == nil {
 				t.Fatal("Pack() accepted unsafe or unbound input")
 			}
 			if _, err := os.Stat(output); !os.IsNotExist(err) {
@@ -248,7 +343,7 @@ func TestPackPublishesAtomicallyWithoutReplacingExistingOutput(t *testing.T) {
 	if err := os.WriteFile(output, want, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Pack(root, output); err == nil {
+	if _, err := packFixture(t, root, output); err == nil {
 		t.Fatal("Pack() replaced an existing output")
 	}
 	if got := readFile(t, output); !bytes.Equal(got, want) {
@@ -260,10 +355,106 @@ func TestPackPublishesAtomicallyWithoutReplacingExistingOutput(t *testing.T) {
 	}
 }
 
+func TestPreparedPublicationRollbackRemovesMatchingArtifactAndSyncsDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	populateCurrentRootfs(t, root)
+	output := filepath.Join(t.TempDir(), "rootfs.tar")
+	publication, err := prepareWithExpectedPiIdentity(root, output, fixtureExpectedPi(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var synced string
+	err = publication.rollbackWithSync(func(path string) error {
+		synced = path
+		return syncDirectory(path)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("rollback left published output: %v", err)
+	}
+	wantSynced, err := filepath.EvalSymlinks(filepath.Dir(output))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if synced != wantSynced {
+		t.Fatalf("rollback synced %q, want %q", synced, wantSynced)
+	}
+}
+
+func TestPreparedPublicationRollbackPreservesChangedOutput(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*testing.T, string, []byte)
+	}{
+		{name: "replacement inode with matching bytes", change: func(t *testing.T, output string, content []byte) {
+			before, err := os.Stat(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(output); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(output, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if os.SameFile(before, after) {
+				t.Fatal("test did not replace the output inode")
+			}
+		}},
+		{name: "same inode and size with changed bytes", change: func(t *testing.T, output string, content []byte) {
+			file, err := os.OpenFile(output, os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacement := append([]byte(nil), content...)
+			replacement[0] ^= 0xff
+			if _, err := file.WriteAt(replacement, 0); err != nil {
+				file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "root")
+			populateCurrentRootfs(t, root)
+			output := filepath.Join(t.TempDir(), "rootfs.tar")
+			publication, err := prepareWithExpectedPiIdentity(root, output, fixtureExpectedPi(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := readFile(t, output)
+			test.change(t, output, original)
+			current := readFile(t, output)
+			synced := false
+			if err := publication.rollbackWithSync(func(string) error {
+				synced = true
+				return nil
+			}); err == nil {
+				t.Fatal("rollback accepted an output that no longer matched its publication token")
+			}
+			if synced {
+				t.Fatal("rollback synced the directory after refusing cleanup")
+			}
+			if got := readFile(t, output); !bytes.Equal(got, current) {
+				t.Fatal("rollback deleted or changed a replacement output")
+			}
+		})
+	}
+}
+
 func TestPackRejectsOutputInsideRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	populateCurrentRootfs(t, root)
-	if _, err := Pack(root, filepath.Join(root, "rootfs.tar")); err == nil {
+	if _, err := packFixture(t, root, filepath.Join(root, "rootfs.tar")); err == nil {
 		t.Fatal("Pack() accepted output inside root")
 	}
 }
@@ -308,7 +499,7 @@ func TestVerifyArchiveChecksEveryInstallationDigestSizeAndMode(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	populateCurrentRootfs(t, root)
 	output := filepath.Join(t.TempDir(), "rootfs.tar")
-	packed, err := Pack(root, output)
+	packed, err := packFixture(t, root, output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,16 +515,71 @@ func TestVerifyArchiveChecksEveryInstallationDigestSizeAndMode(t *testing.T) {
 	}
 }
 
+func TestVerifyArchiveRejectsIgnoredNonCanonicalUSTARTrailingBytes(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	populateCurrentRootfs(t, root)
+	output := filepath.Join(t.TempDir(), "rootfs.tar")
+	packed, err := packFixture(t, root, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical := readFile(t, output)
+	tests := []struct {
+		name   string
+		suffix []byte
+	}{
+		{name: "extra end blocks", suffix: make([]byte, 2*512)},
+		{name: "ignored non-zero block", suffix: bytes.Repeat([]byte{0x7f}, 512)},
+		{name: "non-aligned tail", suffix: []byte("ignored-tail")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			mutated := append(append([]byte(nil), canonical...), test.suffix...)
+			expected := packed
+			expected.RootFSDigest = digest(mutated)
+			expected.Size = int64(len(mutated))
+			if err := verifyArchive(bytes.NewReader(mutated), expected); err == nil {
+				t.Fatal("verifyArchive() accepted non-canonical bytes ignored by tar.Reader")
+			}
+		})
+	}
+}
+
 func TestVerifyArchivePublicBoundaryRejectsSmallSubstitutedPiFixture(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	populateCurrentRootfs(t, root)
 	output := filepath.Join(t.TempDir(), "rootfs.tar")
-	packed, err := Pack(root, output)
+	packed, err := packFixture(t, root, output)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := VerifyArchive(bytes.NewReader(readFile(t, output)), releaseForPack(packed)); err == nil {
 		t.Fatal("VerifyArchive() accepted package-local Pi fixture at the public official-release boundary")
+	}
+}
+
+func TestVerifyArchivePublicBoundaryRehashesOfficialPiAssets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	populateCurrentRootfs(t, root)
+	output := filepath.Join(t.TempDir(), "rootfs.tar")
+	packed, err := packFixture(t, root, output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	official := officialPiIdentity()
+	identityJSON, err := json.Marshal(official)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityJSON = append(identityJSON, '\n')
+	tampered := rewriteArchiveEntry(t, readFile(t, output), piIdentityPath, func([]byte) []byte {
+		return identityJSON
+	})
+	packed.RootFSDigest = digest(tampered)
+	packed.Size = int64(len(tampered))
+	packed.PiRuntime = official
+	if err := VerifyArchive(bytes.NewReader(tampered), releaseForPack(packed)); err == nil {
+		t.Fatal("VerifyArchive() trusted official identity text without rehashing actual Pi files")
 	}
 }
 
@@ -466,6 +712,24 @@ func fixturePiIdentity(pi, packageJSON, photon, dark, light, schema, extension [
 		ThemeSchemaDigest:     digest(schema),
 		ResultExtensionDigest: digest(extension),
 	}
+}
+
+func packFixture(t *testing.T, root, output string) (ManifestV1, error) {
+	t.Helper()
+	return packWithExpectedPiIdentity(root, output, fixtureExpectedPi(t))
+}
+
+func fixtureExpectedPi(t *testing.T) releaseartifact.PiRuntimeIdentityV1 {
+	t.Helper()
+	return fixturePiIdentity(
+		[]byte("fixture-pi-0.83.0-linux-x64"),
+		[]byte(`{"name":"@earendil-works/pi-coding-agent","version":"0.83.0","piConfig":{"configDir":".pi"}}`),
+		[]byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00},
+		[]byte(`{"name":"dark"}`),
+		[]byte(`{"name":"light"}`),
+		[]byte(`{"type":"object"}`),
+		readRepositoryAsset(t, "deploy/container/pi-worker/dirextalk-result.ts"),
+	)
 }
 
 func releaseForPack(packed ManifestV1) releaseartifact.ReleaseManifestV1 {

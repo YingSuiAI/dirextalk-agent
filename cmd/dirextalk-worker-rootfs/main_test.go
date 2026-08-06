@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,16 +13,34 @@ import (
 	"testing"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/releaseartifact"
+	"github.com/YingSuiAI/dirextalk-agent/internal/workerrootfs"
 )
 
 func TestRunPackPrintsOnlyClosedArtifactIdentity(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sensitive-local-root-name")
-	makeCLIRootfs(t, root)
 	output := filepath.Join(t.TempDir(), "worker-rootfs.tar")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run([]string{"pack", "--root", root, "--output", output}, &stdout, &stderr); code != 0 {
+	committed := false
+	prepare := func(gotRoot, gotOutput string) (rootfsPublication, error) {
+		if gotRoot != root || gotOutput != output {
+			t.Fatalf("pack paths = %q, %q", gotRoot, gotOutput)
+		}
+		if err := os.WriteFile(output, []byte("fixture archive"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return &testPublication{manifest: workerrootfs.ManifestV1{
+			Schema: "dirextalk.agent.team-worker-rootfs/v1", OS: "linux", Architecture: "amd64",
+			RootFSDigest: "sha256:" + strings.Repeat("1", 64), WorkerBinaryDigest: "sha256:" + strings.Repeat("2", 64),
+			SandboxBinaryDigest: "sha256:" + strings.Repeat("3", 64), InstallationManifestDigest: "sha256:" + strings.Repeat("4", 64),
+			PiRuntime: releaseartifact.PiRuntimeIdentityV1{Version: releaseartifact.OfficialPiVersion}, Size: 15,
+		}, commit: func() { committed = true }}, nil
+	}
+	if code := runWithPrepare([]string{"pack", "--root", root, "--output", output}, &stdout, &stderr, prepare); code != 0 {
 		t.Fatalf("run code = %d, stderr = %q", code, stderr.String())
+	}
+	if !committed {
+		t.Fatal("successful manifest delivery did not commit the publication")
 	}
 	var manifest map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &manifest); err != nil {
@@ -58,6 +77,50 @@ func TestRunRejectsOpenEndedCloudAndExecutionParameters(t *testing.T) {
 				t.Fatalf("unexpected output: stdout=%q stderr=%q", stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestRunRollsBackPublishedOutputWhenManifestWriteFails(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	output := filepath.Join(t.TempDir(), "worker-rootfs.tar")
+	artifact := []byte("published rootfs")
+	directorySynced := false
+	prepare := func(_, gotOutput string) (rootfsPublication, error) {
+		if err := os.WriteFile(gotOutput, artifact, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return &testPublication{manifest: workerrootfs.ManifestV1{
+			Schema: "dirextalk.agent.team-worker-rootfs/v1", OS: "linux", Architecture: "amd64",
+			RootFSDigest: digest(artifact), Size: int64(len(artifact)),
+		}, rollback: func() error {
+			if err := os.Remove(gotOutput); err != nil {
+				return err
+			}
+			directory, err := os.Open(filepath.Dir(gotOutput))
+			if err != nil {
+				return err
+			}
+			defer directory.Close()
+			if err := directory.Sync(); err != nil {
+				return err
+			}
+			directorySynced = true
+			return nil
+		}}, nil
+	}
+	var stderr bytes.Buffer
+	code := runWithPrepare(
+		[]string{"pack", "--root", root, "--output", output},
+		failingWriter{}, &stderr, prepare,
+	)
+	if code != 1 || stderr.String() != outputMessage {
+		t.Fatalf("run code = %d, stderr = %q", code, stderr.String())
+	}
+	if _, err := os.Stat(output); !os.IsNotExist(err) {
+		t.Fatalf("manifest write failure left published output: %v", err)
+	}
+	if !directorySynced {
+		t.Fatal("manifest write rollback did not sync the output directory")
 	}
 }
 
@@ -171,4 +234,33 @@ func digest(content []byte) string {
 func hexDigest(content []byte) string {
 	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("injected writer failure")
+}
+
+type testPublication struct {
+	manifest workerrootfs.ManifestV1
+	commit   func()
+	rollback func() error
+}
+
+func (publication *testPublication) Manifest() workerrootfs.ManifestV1 {
+	return publication.manifest
+}
+
+func (publication *testPublication) Commit() {
+	if publication.commit != nil {
+		publication.commit()
+	}
+}
+
+func (publication *testPublication) Rollback() error {
+	if publication.rollback == nil {
+		return nil
+	}
+	return publication.rollback()
 }
