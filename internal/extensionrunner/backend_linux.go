@@ -125,10 +125,10 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 	if err != nil {
 		return unavailableAt("sandbox_root")
 	}
-	defer os.RemoveAll(root)
+	defer removePublishedTree(root)
 	installRoot := filepath.Join(root, "installs")
 	workspaceRoot := filepath.Join(root, "workspace")
-	if err := os.MkdirAll(filepath.Join(installRoot, "probe"), 0o700); err != nil {
+	if err := os.Mkdir(installRoot, 0o700); err != nil {
 		return unavailableAt("sandbox_install_root")
 	}
 	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
@@ -141,20 +141,9 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 			return unavailableAt("sandbox_executable")
 		}
 	}
-	entry := filepath.Join(installRoot, "probe", "entry")
-	source, err := os.ReadFile(self)
-	if err != nil || os.WriteFile(entry, source, 0o500) != nil {
-		return unavailableAt("sandbox_entry")
-	}
-	digest := DigestBytes(source)
-	manifest := []ManifestEntry{{Path: "entry", SHA256: digest, Size: int64(len(source))}}
-	manifestDigest := ManifestDigest(manifest)
-	if err := os.Rename(filepath.Join(installRoot, "probe"), filepath.Join(installRoot, manifestDigest)); err != nil {
-		return unavailableAt("sandbox_publish")
-	}
-	install, err := OpenAdmittedInstall(filepath.Join(installRoot), manifestDigest, manifest)
+	install, manifestDigest, err := materializeProbeInstall(installRoot, self)
 	if err != nil {
-		return unavailableAt("sandbox_admit")
+		return err
 	}
 	defer install.Close()
 	workspace, err := unix.Open(workspaceRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
@@ -178,6 +167,67 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 		return unavailableAt("sandbox_wait")
 	}
 	return nil
+}
+
+func materializeProbeInstall(installRoot, self string) (*AdmittedInstall, string, error) {
+	probe := filepath.Join(installRoot, "probe")
+	if err := os.Mkdir(probe, 0o700); err != nil {
+		return nil, "", unavailableAt("sandbox_install_root")
+	}
+	entry := filepath.Join(probe, "entry")
+	source, err := os.ReadFile(self)
+	if err != nil || writeFileSync(entry, source, 0o500) != nil {
+		return nil, "", unavailableAt("sandbox_entry")
+	}
+	manifest := []ManifestEntry{{Path: "entry", SHA256: DigestBytes(source), Size: int64(len(source))}}
+	manifestDigest := ManifestDigest(manifest)
+	manifestBody, err := json.Marshal(DiskInstallManifestV1{SchemaVersion: installManifestSchemaV1, Entries: manifest})
+	if err != nil || writeFileSync(filepath.Join(probe, installManifestName), append(manifestBody, '\n'), 0o400) != nil {
+		return nil, "", unavailableAt("sandbox_entry")
+	}
+	if err := makePublishedTreeImmutable(probe); err != nil {
+		return nil, "", unavailableAt("sandbox_publish")
+	}
+	target := filepath.Join(installRoot, manifestDigest)
+	if err := unix.Renameat2(unix.AT_FDCWD, probe, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE); err != nil {
+		return nil, "", unavailableAt("sandbox_publish")
+	}
+	if err := syncDirectory(installRoot); err != nil {
+		return nil, "", unavailableAt("sandbox_publish")
+	}
+	install, err := OpenAdmittedInstall(target, manifestDigest, manifest)
+	if err != nil {
+		return nil, "", unavailableAt("sandbox_admit")
+	}
+	return install, manifestDigest, nil
+}
+
+func writeFileSync(path string, body []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(body); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 func probeIDs() (string, string, string, error) {

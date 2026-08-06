@@ -508,6 +508,9 @@ func makePublishedTreeImmutable(root string) error {
 		return err
 	}
 	for i := len(directories) - 1; i >= 0; i-- {
+		if err = os.Chmod(directories[i], 0500); err != nil {
+			return err
+		}
 		dir, err := os.Open(directories[i])
 		if err != nil {
 			return err
@@ -517,9 +520,6 @@ func makePublishedTreeImmutable(root string) error {
 			return err
 		}
 		if err = dir.Close(); err != nil {
-			return err
-		}
-		if err = os.Chmod(directories[i], 0500); err != nil {
 			return err
 		}
 	}

@@ -395,34 +395,117 @@ func (e LinuxExecutor) publishService(service []byte) (string, *extensionrunner.
 		return "", nil, nil, ErrDenied
 	}
 	d := extensionrunner.ManifestDigest(entries)
-	target := filepath.Join(e.InstallRoot, d)
-	if err := os.Mkdir(target, 0700); err != nil && !os.IsExist(err) {
-		return "", nil, nil, err
-	}
-	for n, b := range files {
-		if err := writeSync(filepath.Join(target, n), b, 0500); err != nil {
-			return "", nil, nil, err
-		}
-	}
-	manifest, err := json.Marshal(extensionrunner.DiskInstallManifestV1{SchemaVersion: "dirextalk.extension.install-manifest/v1", Entries: entries})
-	if err != nil {
-		return "", nil, nil, err
-	}
-	if err = writeSync(filepath.Join(target, ".dirextalk-install-v1.json"), append(manifest, '\n'), 0400); err != nil {
-		return "", nil, nil, err
-	}
-	if dfd, e := os.Open(target); e == nil {
-		e = dfd.Sync()
-		_ = dfd.Close()
-		if e != nil {
-			return "", nil, nil, e
-		}
-	}
-	install, err := (extensionrunner.DiskInstallResolver{Root: e.InstallRoot}).ResolveInstall(d)
+	install, err := e.publishImmutableInstall(d, entries, files)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	return d, install, argv, nil
+}
+
+func (e LinuxExecutor) publishImmutableInstall(digest string, entries []extensionrunner.ManifestEntry, files map[string][]byte) (*extensionrunner.AdmittedInstall, error) {
+	resolver := extensionrunner.DiskInstallResolver{Root: e.InstallRoot}
+	target := filepath.Join(e.InstallRoot, digest)
+	if _, err := os.Lstat(target); err == nil {
+		// A digest path is immutable once visible. Reuse it only after the full
+		// descriptor-backed admission proof; never repair or overwrite a
+		// partial or unknown tree in place.
+		return resolver.ResolveInstall(digest)
+	} else if !os.IsNotExist(err) {
+		return nil, ErrDenied
+	}
+	tmp, err := os.MkdirTemp(e.InstallRoot, ".publish-")
+	if err != nil {
+		return nil, err
+	}
+	var tmpStat unix.Stat_t
+	if err = unix.Lstat(tmp, &tmpStat); err != nil || tmpStat.Mode&unix.S_IFMT != unix.S_IFDIR || tmpStat.Uid != uint32(os.Geteuid()) {
+		return nil, ErrDenied
+	}
+	published := false
+	publishedNames := []string{".dirextalk-install-v1.json"}
+	for name := range files {
+		publishedNames = append(publishedNames, name)
+	}
+	defer func() {
+		if !published {
+			removePublishTemp(tmp, uint64(tmpStat.Dev), tmpStat.Ino, tmpStat.Uid, publishedNames)
+		}
+	}()
+	for name, body := range files {
+		if filepath.Base(name) != name || name == "." || name == "" {
+			return nil, ErrDenied
+		}
+		if err := writeSync(filepath.Join(tmp, name), body, 0o500); err != nil {
+			return nil, err
+		}
+	}
+	manifest, err := json.Marshal(extensionrunner.DiskInstallManifestV1{SchemaVersion: "dirextalk.extension.install-manifest/v1", Entries: entries})
+	if err != nil {
+		return nil, err
+	}
+	if err = writeSync(filepath.Join(tmp, ".dirextalk-install-v1.json"), append(manifest, '\n'), 0o400); err != nil {
+		return nil, err
+	}
+	if err = os.Chmod(tmp, 0o500); err != nil {
+		return nil, err
+	}
+	if err = syncDir(tmp); err != nil {
+		return nil, err
+	}
+	if err = unix.Renameat2(unix.AT_FDCWD, tmp, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return resolver.ResolveInstall(digest)
+		}
+		return nil, err
+	}
+	published = true
+	if err = syncDir(e.InstallRoot); err != nil {
+		return nil, err
+	}
+	return resolver.ResolveInstall(digest)
+}
+
+func removePublishTemp(path string, dev, ino uint64, uid uint32, names []string) {
+	dirFD, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	defer unix.Close(dirFD)
+	var st unix.Stat_t
+	if unix.Fstat(dirFD, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(st.Dev) != dev || st.Ino != ino || st.Uid != uid {
+		return
+	}
+	if unix.Fchmod(dirFD, 0o700) != nil {
+		return
+	}
+	for _, name := range names {
+		if filepath.Base(name) == name && name != "." && name != "" {
+			_ = unix.Unlinkat(dirFD, name, 0)
+		}
+	}
+	parentFD, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	defer unix.Close(parentFD)
+	var current unix.Stat_t
+	if unix.Fstatat(parentFD, filepath.Base(path), &current, unix.AT_SYMLINK_NOFOLLOW) != nil || uint64(current.Dev) != dev || current.Ino != ino || current.Uid != uid || current.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return
+	}
+	_ = unix.Unlinkat(parentFD, filepath.Base(path), unix.AT_REMOVEDIR)
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
 }
 func writeSync(path string, b []byte, mode os.FileMode) error {
 	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
@@ -511,21 +594,11 @@ func (e LinuxExecutor) publishShell() error {
 	}
 	m := []extensionrunner.ManifestEntry{{Path: "entry", SHA256: extensionrunner.DigestBytes(b), Size: int64(len(b))}}
 	d := extensionrunner.ManifestDigest(m)
-	target := filepath.Join(e.InstallRoot, d)
-	if _, err = os.Stat(target); err == nil {
-		return nil
-	}
-	if err = os.Mkdir(target, 0700); err != nil {
-		return err
-	}
-	if err = writeSync(filepath.Join(target, "entry"), b, 0500); err != nil {
-		return err
-	}
-	manifest, err := json.Marshal(extensionrunner.DiskInstallManifestV1{SchemaVersion: "dirextalk.extension.install-manifest/v1", Entries: m})
+	install, err := e.publishImmutableInstall(d, m, map[string][]byte{"entry": b})
 	if err != nil {
 		return err
 	}
-	return writeSync(filepath.Join(target, ".dirextalk-install-v1.json"), append(manifest, '\n'), 0400)
+	return install.Close()
 }
 
 var _ = sha256.Size
