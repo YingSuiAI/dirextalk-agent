@@ -195,9 +195,14 @@ func stableStrings(in []string) []string {
 }
 func (s *Service) clock() time.Time { return s.now().UTC() }
 func nextMessageTime(c Conversation, t time.Time) time.Time {
-	t = t.UTC()
-	if len(c.Messages) > 0 && !t.After(c.Messages[len(c.Messages)-1].CreatedAt) {
-		return c.Messages[len(c.Messages)-1].CreatedAt.Add(time.Nanosecond)
+	// PostgreSQL timestamptz persists microseconds. Normalize before comparing
+	// so strict ordering cannot collapse to equal timestamps after a DB round trip.
+	t = t.UTC().Truncate(time.Microsecond)
+	if len(c.Messages) > 0 {
+		previous := c.Messages[len(c.Messages)-1].CreatedAt.UTC().Truncate(time.Microsecond)
+		if !t.After(previous) {
+			return previous.Add(time.Microsecond)
+		}
 	}
 	return t
 }
@@ -1496,7 +1501,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			}
 			m := out.result.Message
 			userTime := nextMessageTime(conv, s.clock())
-			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Nanosecond)
+			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
 			if m.ID == "" {
 				m.ID = uuid.NewString()
 			}

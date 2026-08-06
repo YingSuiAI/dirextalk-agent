@@ -35,6 +35,76 @@ func TestEmitCapabilityProgressFailsClosedWhenLedgerRejectsEvent(t *testing.T) {
 	}
 }
 
+func TestConsumeChatStreamFailsClosedOnErrorOrMissingDone(t *testing.T) {
+	response := &coreconversation.ChatResponse{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Done: true}
+	tests := []struct {
+		name    string
+		events  []coreconversation.StreamEvent
+		wantOK  bool
+		wantErr error
+	}{
+		{name: "error", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventStarted}, {Kind: coreconversation.EventError, ErrCode: "execution_failed"}}, wantErr: coreconversation.ErrChatFailed},
+		{name: "conflict", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventError, ErrCode: "conflict"}}, wantErr: coreconversation.ErrConflict},
+		{name: "in flight", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventError, ErrCode: "in_flight"}}, wantErr: coreconversation.ErrInFlight},
+		{name: "canceled", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventError, ErrCode: "canceled"}}, wantErr: coreconversation.ErrCanceled},
+		{name: "eof without done", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventStarted}, {Kind: coreconversation.EventDelta, Text: "partial"}}, wantErr: coreconversation.ErrChatFailed},
+		{name: "done without response", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventDone}}, wantErr: coreconversation.ErrChatFailed},
+		{name: "commit backed done", events: []coreconversation.StreamEvent{{Kind: coreconversation.EventStarted}, {Kind: coreconversation.EventDone, Response: response}}, wantOK: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := make(chan coreconversation.StreamEvent, len(tt.events))
+			for _, event := range tt.events {
+				stream <- event
+			}
+			close(stream)
+			raw, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
+			if tt.wantOK {
+				if err != nil || len(raw) == 0 {
+					t.Fatalf("successful stream raw=%s err=%v", raw, err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) || raw != nil {
+				t.Fatalf("stream did not fail closed: raw=%s err=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestConsumeChatStreamErrorsRemainClassifiable(t *testing.T) {
+	tests := []struct {
+		name     string
+		event    coreconversation.StreamEvent
+		wantCode string
+	}{
+		{name: "conflict", event: coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "conflict"}, wantCode: "CONFLICT"},
+		{name: "in flight", event: coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "in_flight"}, wantCode: "CONFLICT"},
+		{name: "execution failed", event: coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "execution_failed"}, wantCode: "PRECONDITION_FAILED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := make(chan coreconversation.StreamEvent, 1)
+			stream <- tt.event
+			close(stream)
+			_, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
+			code, _, ok := capabilityoperation.FailureDetails(classifyCapabilityError(err))
+			if !ok || code != tt.wantCode {
+				t.Fatalf("classified code=%q ok=%v err=%v", code, ok, err)
+			}
+		})
+	}
+
+	stream := make(chan coreconversation.StreamEvent, 1)
+	stream <- coreconversation.StreamEvent{Kind: coreconversation.EventError, ErrCode: "canceled"}
+	close(stream)
+	_, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
+	classified := classifyCapabilityError(err)
+	if !errors.Is(classified, context.Canceled) || !errors.Is(classified, coreconversation.ErrCanceled) {
+		t.Fatalf("cancellation classification=%v", classified)
+	}
+}
+
 func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrder(t *testing.T) {
 	conversationID := uuid.NewString()
 	profileID := uuid.NewString()

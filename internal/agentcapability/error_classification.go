@@ -29,6 +29,12 @@ func classifyCapabilityError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, coreconversation.ErrCanceled) {
+		return errors.Join(context.Canceled, err)
+	}
 	if _, _, classified := capabilityoperation.FailureDetails(err); classified {
 		return err
 	}
@@ -68,10 +74,10 @@ func classifyCapabilityError(err error) error {
 	case errors.Is(err, coremodel.ErrAPIKeyUnavailable),
 		errors.Is(err, coreknowledge.ErrIneligible),
 		errors.Is(err, coreknowledge.ErrCleanupPending),
-		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable),
-		errors.Is(err, coreconversation.ErrChatFailed),
-		errors.Is(err, coreconversation.ErrCanceled):
+		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
+	case errors.Is(err, coreconversation.ErrChatFailed):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent chat failed", err)
 	case errors.Is(err, coremodel.ErrProfileRepository),
 		errors.Is(err, coremodel.ErrConnectionTestFailed),
 		errors.Is(err, coremodel.ErrProviderUnavailable),

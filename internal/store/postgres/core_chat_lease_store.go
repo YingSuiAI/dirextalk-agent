@@ -13,6 +13,7 @@ import (
 )
 
 func (s *CoreConversationStore) ClaimChat(ctx context.Context, id, conv, fp, profile string, exts []core.ExtensionSelection, now time.Time, ttl time.Duration) (core.ChatLease, error) {
+	_ = now // PostgreSQL is the lease clock authority for persisted chat claims.
 	tx, e := s.pool.Begin(ctx)
 	if e != nil {
 		return core.ChatLease{}, e
@@ -20,24 +21,26 @@ func (s *CoreConversationStore) ClaimChat(ctx context.Context, id, conv, fp, pro
 	defer tx.Rollback(ctx)
 	var state, storedFP, failureCode, failureSummary string
 	var epoch uint64
+	var leaseActive bool
 	var lease *uuid.UUID
 	var exp *time.Time
 	var storedConv, storedProfile *uuid.UUID
 	var storedExt, responseRaw, snapshotRaw, snapshotNonce, snapshotCiphertext []byte
 	var snapshotKeyVersion *int32
 	var snapshotDigest *string
-	e = tx.QueryRow(ctx, `SELECT state,request_fingerprint,conversation_id,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch,lease_id,lease_expires_at,response_json,error_code,error_summary FROM core_chat_request_leases WHERE request_id=$1`, id).Scan(&state, &storedFP, &storedConv, &storedProfile, &storedExt, &snapshotRaw, &snapshotDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &epoch, &lease, &exp, &responseRaw, &failureCode, &failureSummary)
+	e = tx.QueryRow(ctx, `SELECT state,request_fingerprint,conversation_id,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch,lease_id,lease_expires_at,COALESCE(lease_expires_at > clock_timestamp(),false),response_json,error_code,error_summary FROM core_chat_request_leases WHERE request_id=$1`, id).Scan(&state, &storedFP, &storedConv, &storedProfile, &storedExt, &snapshotRaw, &snapshotDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &epoch, &lease, &exp, &leaseActive, &responseRaw, &failureCode, &failureSummary)
 	if errors.Is(e, pgx.ErrNoRows) {
 		leaseID := uuid.New()
 		lease = &leaseID
 		epoch = 1
-		expTime := now.Add(ttl)
-		exp = &expTime
 		raw, _ := extensionJSONPG(exts)
-		_, e = tx.Exec(ctx, `INSERT INTO core_chat_request_leases(request_id,conversation_id,idempotency_key,request_fingerprint,profile_id,extensions_json,state,lease_id,lease_epoch,lease_expires_at) VALUES($1,$2,$1,$3,$4,$5,'in_flight',$6,$7,$8)`, id, nullableUUIDPG(conv), fp, profile, raw, lease, epoch, exp)
+		var expTime time.Time
+		e = tx.QueryRow(ctx, `INSERT INTO core_chat_request_leases(request_id,conversation_id,idempotency_key,request_fingerprint,profile_id,extensions_json,state,lease_id,lease_epoch,lease_expires_at) VALUES($1,$2,$1,$3,$4,$5,'in_flight',$6,$7,clock_timestamp()+$8::bigint*interval '1 microsecond') RETURNING lease_expires_at`, id, nullableUUIDPG(conv), fp, profile, raw, lease, epoch, ttl.Microseconds()).Scan(&expTime)
 		if e != nil {
 			return core.ChatLease{}, e
 		}
+		expTime = expTime.UTC()
+		exp = &expTime
 		if e = tx.Commit(ctx); e != nil {
 			return core.ChatLease{}, e
 		}
@@ -68,19 +71,20 @@ func (s *CoreConversationStore) ClaimChat(ctx context.Context, id, conv, fp, pro
 		base.Status, base.FailureCode, base.FailureSummary = core.ClaimFailed, failureCode, failureSummary
 		return base, tx.Commit(ctx)
 	}
-	if exp != nil && exp.After(now) && lease != nil {
+	if leaseActive && exp != nil && lease != nil {
 		base.Status, base.LeaseID, base.ExpiresAt = core.ClaimInFlight, lease.String(), *exp
 		return base, tx.Commit(ctx)
 	}
 	leaseID := uuid.New()
 	lease = &leaseID
 	epoch++
-	expTime := now.Add(ttl)
-	exp = &expTime
-	_, e = tx.Exec(ctx, `UPDATE core_chat_request_leases SET lease_id=$2,lease_epoch=$3,lease_expires_at=$4 WHERE request_id=$1`, id, lease, epoch, exp)
+	var expTime time.Time
+	e = tx.QueryRow(ctx, `UPDATE core_chat_request_leases SET lease_id=$2,lease_epoch=$3,lease_expires_at=clock_timestamp()+$4::bigint*interval '1 microsecond',updated_at=clock_timestamp() WHERE request_id=$1 RETURNING lease_expires_at`, id, lease, epoch, ttl.Microseconds()).Scan(&expTime)
 	if e != nil {
 		return core.ChatLease{}, e
 	}
+	expTime = expTime.UTC()
+	exp = &expTime
 	// Model-step rows are durable provider results for this idempotency
 	// request.  Rebind them to the newly claimed epoch while holding the same
 	// transaction so a retry can replay a completed provider call after a
@@ -146,7 +150,7 @@ func (s *CoreConversationStore) BindChatProfileSnapshot(ctx context.Context, id,
 }
 
 func (s *CoreConversationStore) RenewChat(ctx context.Context, id, lease string, epoch uint64, now time.Time, ttl time.Duration) (core.ChatLease, error) {
-	x := now.Add(ttl)
+	_ = now // PostgreSQL is the lease clock authority for persisted chat claims.
 	var e error
 	var out core.ChatLease
 	var ep uint64
@@ -155,7 +159,7 @@ func (s *CoreConversationStore) RenewChat(ctx context.Context, id, lease string,
 	var exts, snapshotRaw, snapshotNonce, snapshotCiphertext []byte
 	var snapshotKeyVersion *int32
 	var snapshotDigest *string
-	e = s.pool.QueryRow(ctx, `UPDATE core_chat_request_leases SET lease_epoch=lease_epoch+1,lease_expires_at=$4,updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight' RETURNING conversation_id,request_fingerprint,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch`, id, lease, epoch, x).Scan(&conv, &fp, &profile, &exts, &snapshotRaw, &snapshotDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &ep)
+	e = s.pool.QueryRow(ctx, `UPDATE core_chat_request_leases SET lease_epoch=lease_epoch+1,lease_expires_at=clock_timestamp()+$4::bigint*interval '1 microsecond',updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight' RETURNING conversation_id,request_fingerprint,profile_id,extensions_json,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,lease_epoch,lease_expires_at`, id, lease, epoch, ttl.Microseconds()).Scan(&conv, &fp, &profile, &exts, &snapshotRaw, &snapshotDigest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &ep, &out.ExpiresAt)
 	if e != nil {
 		return out, core.ErrConflict
 	}
@@ -174,7 +178,7 @@ func (s *CoreConversationStore) RenewChat(ctx context.Context, id, lease string,
 		out.ProfileSnapshotDigest = *snapshotDigest
 	}
 	out.Epoch = ep
-	out.ExpiresAt = x
+	out.ExpiresAt = out.ExpiresAt.UTC()
 	out.Status = core.ClaimInFlight
 	return out, nil
 }
@@ -196,7 +200,11 @@ func (s *CoreConversationStore) decodeChatSnapshot(ctx context.Context, requestI
 	return nil
 }
 func (s *CoreConversationStore) ReleaseChat(ctx context.Context, id, lease string, epoch uint64) error {
-	res, e := s.pool.Exec(ctx, `UPDATE core_chat_request_leases SET lease_id=NULL,lease_expires_at=NULL WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight'`, id, lease, epoch)
+	// A released request remains reclaimable so a completed model step can be
+	// replayed after a failure between provider completion and conversation
+	// commit. Keep the lease identity required by the in_flight row constraint,
+	// but expire it immediately so the next ClaimChat advances the epoch.
+	res, e := s.pool.Exec(ctx, `UPDATE core_chat_request_leases SET lease_expires_at=clock_timestamp(),updated_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND state='in_flight'`, id, lease, epoch)
 	if e != nil {
 		return e
 	}
