@@ -17,6 +17,7 @@ import (
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
@@ -24,7 +25,28 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 )
+
+func TestTeamConversationResolverIsTheFinalModelToolFence(t *testing.T) {
+	base := fixedConversationResolver{resolved: []coreconversation.ResolvedExtension{{
+		Selection: coreconversation.ExtensionSelection{AllowedTools: []string{"echo"}},
+		Tools:     []coremodel.Tool{{Name: "echo"}},
+	}}}
+	service := &resolverTeamService{ready: true, prepareResult: coreteam.PlanProjection{
+		TaskID: "11111111-1111-4111-8111-111111111111", PlanID: "22222222-2222-4222-8222-222222222222",
+		ConfirmationID: "33333333-3333-4333-8333-333333333333", Revision: 1, Status: coreteam.PlanWaitingUser, Summary: "safe",
+	}}
+	resolver := composeModelToolResolver(base, nil, nil, service)
+	resolved, err := resolver.ResolveExtensions(teamResolverContext("@owner:example.test", 7), nil)
+	if err != nil || len(resolved) != 2 || resolved[len(resolved)-1].Tools[0].Name != "team_plan_prepare" {
+		t.Fatalf("resolved=%#v err=%v", resolved, err)
+	}
+	conflict := fixedConversationResolver{resolved: []coreconversation.ResolvedExtension{{Tools: []coremodel.Tool{{Name: "team_plan_prepare"}}}}}
+	if _, err := composeModelToolResolver(conflict, nil, nil, nil).ResolveExtensions(context.Background(), nil); !errors.Is(err, coreconversation.ErrConflict) {
+		t.Fatalf("final reserved-name fence err=%v", err)
+	}
+}
 
 type testKnowledgeSearchResolver struct{}
 

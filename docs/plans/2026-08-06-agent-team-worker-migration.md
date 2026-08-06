@@ -442,7 +442,7 @@ git commit -m "feat: publish Team execution capability"
 - Modify: `cmd/dirextalk-agent/core_serve.go`
 - Modify: `cmd/dirextalk-agent/core_serve_test.go`
 
-- [ ] **Step 1: Write failing resolver and tool contract tests**
+- [x] **Step 1: Write failing resolver and tool contract tests**
 
 Require exactly `team_plan_prepare` and `team_task_status` in the model-facing catalog when Team readiness, owner permission, account generation, signed Pi runtime catalog, and typed provider readiness all pass. Require both tools to disappear on any fence failure, and reject a Skill/MCP that tries to publish either reserved name.
 
@@ -458,13 +458,13 @@ if len(want) != 0 { t.Fatalf("missing Team tools: %v", want) }
 
 Test canonical arguments, unknown fields, one-to-three roles, dependency cycles, owner/account replacement between resolve and invoke, duplicate model calls, safe summaries, related Core Task IDs, and secret canaries in arguments/service errors.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `GOWORK=off go test ./cmd/dirextalk-agent -run 'TestTeamConversationResolver' -count=1`
 
 Expected: FAIL because the resolver is absent.
 
-- [ ] **Step 3: Implement the built-in resolver**
+- [x] **Step 3: Implement the built-in resolver**
 
 Follow the existing `webSearchConversationResolver` composition pattern, but use a reserved deterministic selection ID/source and a closed Team service port:
 
@@ -485,7 +485,7 @@ type teamConversationService interface {
 
 `team_task_status` accepts one canonical `task_id` or `execution_id` and returns the same sanitized projection used by `agent.team.v1`. It never returns Worker output, raw milestones, cloud coordinates, tool traffic, or audit log references.
 
-- [ ] **Step 4: Compose and verify model-context privacy**
+- [x] **Step 4: Compose and verify model-context privacy**
 
 Chain the resolver after existing extension, Product, and Web Search resolvers with deterministic reserved-name conflict detection. Assert durable conversation snapshots contain only schema/content digests and safe tool summaries, while canonical Team Proposal arguments remain Agent-owned and never appear in public turn events.
 
@@ -493,7 +493,7 @@ Run: `GOWORK=off go test -race ./cmd/dirextalk-agent ./internal/coreconversation
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/dirextalk-agent/team_conversation_resolver.go cmd/dirextalk-agent/team_conversation_resolver_test.go cmd/dirextalk-agent/core_serve.go cmd/dirextalk-agent/core_serve_test.go

@@ -122,6 +122,7 @@ type ExtensionExecutionSnapshot struct {
 	SkillInstructions    string             `json:"skill_instructions,omitempty"`
 	RequiresConfirmation bool               `json:"requires_confirmation"`
 	ReadOnly             bool               `json:"read_only"`
+	PrivateArguments     bool               `json:"private_arguments,omitempty"`
 }
 
 type ExtensionKind string
@@ -275,6 +276,7 @@ type ExtensionSnapshotResolver interface {
 }
 type ToolExecutionRequest struct {
 	RequestID       string
+	ConversationID  string
 	ToolCallID      string
 	ExecutionID     string
 	ArgsDigest      string

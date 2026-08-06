@@ -190,6 +190,73 @@ func TestMultiToolResultsRetainToolNames(t *testing.T) {
 	}
 }
 
+type conversationIDCaptureExtension struct{ conversationID string }
+
+func (e *conversationIDCaptureExtension) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+	return []ResolvedExtension{{
+		Selection: ExtensionSelection{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"echo"}},
+		Execute: func(_ context.Context, request ToolExecutionRequest) (ToolResult, error) {
+			e.conversationID = request.ConversationID
+			return ToolResult{CallID: request.Call.ID, Content: "captured"}, nil
+		},
+	}}, nil
+}
+
+type privateArgumentExtension struct{}
+
+func (privateArgumentExtension) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {
+	selection := ExtensionSelection{ID: uuid.NewString(), Kind: ExtensionMCP, Version: "1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"echo"}}
+	return []ResolvedExtension{{
+		Selection: selection,
+		Snapshot: ExtensionExecutionSnapshot{
+			Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:test",
+			ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolNames: []string{"echo"}, PrivateArguments: true,
+		},
+		Execute: func(_ context.Context, request ToolExecutionRequest) (ToolResult, error) {
+			return ToolResult{CallID: request.Call.ID, Content: "private"}, nil
+		},
+	}}, nil
+}
+
+func TestTeamToolPrivacyHidesPrivateArgumentsFromPublicStreamEvents(t *testing.T) {
+	service, err := NewService(newFakeStore(), &fakeModel{tool: true}, privateArgumentExtension{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := service.StreamChat(context.Background(), command())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for event := range stream {
+		if event.Kind != EventToolCall {
+			continue
+		}
+		seen = true
+		if event.ToolCall == nil || event.ToolCall.Name != "echo" || event.ToolCall.Arguments != "{}" || event.ToolCall.ExecutionID != "" {
+			t.Fatalf("private public tool event=%#v", event.ToolCall)
+		}
+	}
+	if !seen {
+		t.Fatal("private tool call event was not emitted")
+	}
+}
+
+func TestToolExecutionRequestCarriesTheAcceptedConversationID(t *testing.T) {
+	extension := &conversationIDCaptureExtension{}
+	service, err := NewService(newFakeStore(), &fakeModel{tool: true}, extension, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.Chat(context.Background(), command())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extension.conversationID == "" || extension.conversationID != response.ConversationID {
+		t.Fatalf("tool conversation_id=%q response=%q", extension.conversationID, response.ConversationID)
+	}
+}
+
 type fakeExtAllTools struct{}
 
 func (fakeExtAllTools) ResolveExtensions(context.Context, []ExtensionSelection) ([]ResolvedExtension, error) {

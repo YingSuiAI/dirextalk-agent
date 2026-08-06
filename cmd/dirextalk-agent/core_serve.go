@@ -46,6 +46,15 @@ import (
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
+func composeModelToolResolver(base coreconversation.ExtensionResolver, product *capabilityclient.Client, webSearch *corewebsearch.Service, team teamConversationService) coreconversation.ExtensionResolver {
+	resolver := base
+	if product != nil {
+		resolver = &productConversationResolver{base: resolver, product: product}
+	}
+	resolver = &webSearchConversationResolver{base: resolver, service: webSearch}
+	return &teamConversationResolver{base: resolver, team: team}
+}
+
 func serveCore(cfg config.Config) error {
 	if err := config.ValidateCore(&cfg); err != nil {
 		return err
@@ -396,10 +405,7 @@ func serveCore(cfg config.Config) error {
 	if extensionComposition != nil {
 		conversationResolver = extensionComposition.conversationResolver
 	}
-	if productCapabilityClient != nil {
-		conversationResolver = &productConversationResolver{base: conversationResolver, product: productCapabilityClient}
-	}
-	conversation.SetExtensionResolver(&webSearchConversationResolver{base: conversationResolver, service: webSearchService})
+	conversation.SetExtensionResolver(composeModelToolResolver(conversationResolver, productCapabilityClient, webSearchService, nil))
 	if knowledgeComposition != nil {
 		conversation.SetMemoryRecallResolver(coreMemoryRecallResolver{service: knowledgeComposition.repository})
 	}

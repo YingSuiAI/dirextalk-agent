@@ -619,7 +619,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 					}
 					tlease.Status = ToolClaimDispatched
 					dispatched = true
-					rq := ToolExecutionRequest{RequestID: cmd.RequestID, ToolCallID: call.ID, ExecutionID: call.ExecutionID, ArgsDigest: argsDigest, ExtensionDigest: extDigest, Call: call}
+					rq := ToolExecutionRequest{RequestID: cmd.RequestID, ConversationID: conv.ID, ToolCallID: call.ID, ExecutionID: call.ExecutionID, ArgsDigest: argsDigest, ExtensionDigest: extDigest, Call: call}
 					tr, err = s.executeToolHeartbeat(ctx, rq, &tlease, lease, cmd, candidates[0].Execute)
 					found = true
 				}
@@ -656,6 +656,10 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			}
 			if emit != nil {
 				cc := call
+				if privateToolArguments(exts, call.Name) {
+					cc.Arguments = "{}"
+					cc.ExecutionID = ""
+				}
 				emit(StreamEvent{Kind: EventToolCall, RequestID: cmd.RequestID, ConversationID: conv.ID, ToolCall: &cc})
 			}
 			tm := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{tr}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
@@ -675,6 +679,25 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		}
 	}
 	return ChatResponse{}, errors.New("tool exchange exceeded limit")
+}
+
+func privateToolArguments(extensions []ResolvedExtension, toolName string) bool {
+	for _, extension := range extensions {
+		if !extension.Snapshot.PrivateArguments {
+			continue
+		}
+		for _, name := range extension.Snapshot.ToolNames {
+			if name == toolName {
+				return true
+			}
+		}
+		for _, name := range extension.Selection.AllowedTools {
+			if name == toolName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Service) StreamChat(ctx context.Context, cmd ChatCommand) (<-chan StreamEvent, error) {
