@@ -192,12 +192,54 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 | K-08 | Flutter | Agent Core discovery、聊天、模型、知识、Web Search 和账号隔离 | 保持目标分支实现，不回迁旧层 |
 | K-09 | 已验收闭环 | Team Proposal 编译、角色依赖、最多 3 Worker、价格/预算和不可变 Plan | 行为测试先行后移植到新 `coreteam` 域 |
 | K-10 | 已验收闭环 | Worker 身份挑战、一次性 enrollment、claim、heartbeat、lease fence | 协议语义与安全边界保留，重新接入 Core 服务 |
-| K-11 | 已验收闭环 | 零入站 Worker、官方 Pi 0.83.0、AMI/ECR/rootfs/release digest | 保留发布制品契约，重新生成目标基线镜像 |
+| K-11 | 已验收闭环 | 零入站 Worker、官方 Pi 0.83.0、AMI/ECR/rootfs/release digest | 以 `codex/pi-worker-real-task-fix` 的 `workerrootfs + workerami` 发布链和已验收大阪 x86 AMI `ami-023e6b2d57694b86d` 为行为基线；复用构建、校验、恢复和销毁机制，替换旧 Harness/协议后重新生成 Agent Core v1 镜像 |
 | K-12 | 已验收闭环 | 输入 materialization、输出预算、Pi closed failure code、结果扩展 | 保留封闭 schema 和真实二进制资格测试 |
 | K-13 | 已验收闭环 | 结果/产物 digest 校验、不可变 Team Report、Central-owned cloud facts | 迁入新结果域，禁止 Worker 声称云清理 |
 | K-14 | 已验收闭环 | EC2/EBS/ENI/EIP/SG 账本、销毁重试、Reaper 和独立读回 | 用目标 typed AWS 端口重新接线，行为不降级 |
 | K-15 | 已验收闭环 | 原会话唯一关联完成事件和 App 自动显示 | 改用目标 Capability/Event 边界实现相同行为 |
 | K-16 | 已确认设计 | Central 持久化 milestone、异步 CloudWatch Outbox、独立 Runs 页面 | 纳入最终迁移验收，不携带暂停草稿代码 |
+
+### 6.1 旧闭环全链路复用矩阵
+
+旧闭环的 Agent 源基线固定为本地分支
+`codex/pi-worker-real-task-fix`、检查点
+`51bc9ae1d9c367ca58ea2cc35fbd090eb5b7a484`；Message Server 源基线为
+`codex/native-agent-v2` 的
+`7f3aa36d03190ee81ebb61381036123bf6c757a9`；Flutter 源基线为
+`codex/native-agent-v2` 的
+`e2de88151f2edb863e8ca9137ab0664fae68fb8a`。这些分支中的未提交
+Worker progress 草稿不属于复用来源。
+
+“复用”默认包含先移植已有边界测试和真实验收向量，再决定是否移植实现；
+不得在没有写明冲突原因时从零重写。
+
+| 环节 | 旧闭环来源 | 当前落点 | 复用方式 |
+| --- | --- | --- | --- |
+| 对话意图与计划工具 | Agent `turncontrol`、`teamorchestration`、`teamplan` | `coreruntime/coreconversation`、`coreteam`、`team_plan_prepare` | Agent Core 已替代运行框架；移植最多 3 角色、DAG、幂等和模型不可越权等行为测试 |
+| Runtime catalog、Offer、价格与预算 | Agent `teamplan/catalog*`、`offer_snapshot*`、`teampricing`、`workerrelease` | `coreteam` compiler、Core AWS readiness、Team release catalog | 移植规范化、签名、报价新鲜度、AMI/runtime/model/budget 绑定测试；复用独立 release catalog 实现 |
+| Task、Plan、Execution 与重放 | Agent `task`、`teamexecution`、Team PostgreSQL stores | `coretask`、`coreteam` 和 `core_team_*` 表 | Agent Core 已替代通用 Task；移植 revision、attempt、lease、取消、重启和幂等测试 |
+| 用户确认 | Agent `teamapproval`、Team approval device/store | `coreconfirmation` Team binding | 旧密钥/设备代码废弃；移植 Plan drift、预算、runtime、AMI、credential revision 和一次消费测试 |
+| 输入、工作区与依赖结果 | Agent `taskinput`、`teaminput`、`teambundle` | 新 `coreteaminput` 与 Agent Core Worker assignment | 能力级移植 canonical context、workspace snapshot、dependency result、input manifest 和 digest 绑定实现及测试 |
+| 模型凭证授予与物化 | Agent `teamcredential`、`secretbootstrap`、`workerrunner/input_action` | Core model credential revision + 一次性 Worker secret materialization | 移植最小授权、0600 文件、摘要校验和 secret canary；旧实现读取后未删除，安全 open/unlink/fsync 与 Pi 隔离必须新增测试和实现，不迁旧凭证库 |
+| Pi runtime | Agent `workerruntime/pi*`、`process*`、`failure*` | `coreteamruntime` | 直接移植已验证解析、真实 Pi 0.83.0 loopback、输出预算、进程隔离和封闭失败分类，再适配新结果 DTO |
+| Worker 本地执行恢复 | Agent `workerrunner` checkpoint 与 `workeroperation` root-helper receipt/journal | Agent Core v1 Worker 的 `launch_committed/completion_pending/completion_acked` receipt | 旧 receipt 不保护 Pi，不能当成已验收模型恢复；只复用原子 journal/CAS 实现模式，新增长期 receipt、Pi 启动前 fsync、精确 Complete 重放和崩溃不重复调用模型测试 |
+| Worker rootfs 与发行制品 | Agent `workerruntime/installation`、`workerrootfs`、`releaseartifact`、`releaseecr`、`releasepublish` | Agent Core v1 Pi rootfs/release manifest | 直接移植闭合 allow-list、完整 Pi 资产、canonical tar、AppleDouble 拒绝、摘要 sidecar、ECR immutable digest 回读和可恢复发布；删除旧 installer/runtime |
+| AMI 构建、验证与恢复 | Agent `workerami`、`workeramictl`、`cmd/dirextalk-worker-ami` | Agent Core v1 x86_64 Worker AMI 发布 | 直接移植私有 builder、意图/恢复 sidecar、AMI/snapshot attestation、轮询、verify/destroy 和负向读回；装入新 Harness |
+| Release 选择 | Agent `workerrelease` 及 PostgreSQL release store | Team release catalog/store | 直接移植 account/Region/x86_64/Agent instance 选择、精确重导入、supersede 和无匹配即 unavailable |
+| AWS Foundation、计划与临时资源 | Agent `awsfoundation`、`teamlaunch`、`teamprovision`、`awsprovider`、`cloudexecution` | `coreteamfoundation`、`coreteamaws` + `coreworkload/aws.CredentialResolver` | 复用 KMS/S3/DynamoDB/Reaper Lambda 固定 Foundation、EC2/EBS/ENI/EIP/SG 类型化实现与响应丢失恢复；重接 Core 凭证和 confirmation，不复制旧 Cloud Connection |
+| Worker 身份、领取与租约 | Agent `workeridentity`、`worker`、`teamdispatch` | `coreteamworker` 7-RPC 私有协议 | 移植身份绑定、一次 enrollment、claim/heartbeat/fence/late-result 测试；旧 RPC、service token 和 DTO 废弃 |
+| 控制器与并发 | Agent `teamcontroller`、`teamdispatch`、`app/team_*coordinator` | `coreteam.Controller` | 移植 0->1->0、依赖顺序、最多 3 active、重启恢复、取消竞态、结果后清理测试；重接 Core stores |
+| 结果、产物与报告 | Agent `workerresult`、`teamresult`、`teamartifact`、`teamreport` | `coreteam` result/artifact/report + stores | 能力级移植 digest/size/media type 校验、canonical final、汇总 usage、不可变报告和 secret/raw-output 拒绝 |
+| 进度与 CloudWatch | Agent `workerlog`；三仓已审阅 progress 设计 | `coreteam` milestone DB + audit Outbox | 复用 CloudWatch 写入适配器和封闭日志测试；progress 未提交草稿不移植，按当前 schema 重新 TDD |
+| 主清理与失联兜底 | Agent `resource`、`awsreaper`、`cmd/dirextalk-aws-reaper` | Team resource ledger + Agent controller + AWS Reaper | 直接移植 expiry manifest、CAS/fence、逐资源负向读回和重复销毁测试；重接 Core owner/task tags |
+| Agent 最终消息与完成 Outbox | Agent Team finalizer/report store/completion event | Core conversation transaction + Team completion Outbox | 移植唯一关联、原子提交、重复投递和重启测试；最终文字由 Central 写入，不复用旧 App 本地拼接 |
+| Message Server façade | Message Server `agentgrpc/team_actions*`、`agentcompletion/relay*` | `agentgateway`、`productcapability`、最小 completion receipt | 移植严格 DTO 映射、secret 拒绝、事件关联、cursor/replay 测试；重接 Capability，废弃直连 Team RPC 和轮询 relay |
+| Flutter Team 体验 | Flutter `native_agent_team.dart`、Team plan card、completion/event tests | `agent_core_team.dart`、Runs list/detail、Core confirmation、cache invalidation | 移植严格 parser、fixtures、计划/结果组件和事件去重；废弃 Team 专用审批 key/action 与本地生成最终聊天消息 |
+| 真实发布与验收 | 三仓旧闭环记录，Pi AMI `ami-023e6b2d57694b86d` | 新三仓 release gate | 旧证据只作回归向量；必须用新 x86_64 AMI 重跑 App->Central->Worker->Central->App、重启恢复和资源归零 |
+
+开始每个实施 Task 前，必须先从本表对应来源列出实际移植的测试和实现文件。
+若决定不复用某个已验收实现，需在该 Task 文档中记录具体架构冲突和替代验证，
+不能以“新代码更简单”为理由跳过。
 
 ## 7. 重写清单
 
@@ -210,7 +252,7 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 | R-05 | AWS Worker provider | 旧 provider 直接依赖旧 cloud composition | 通过目标 `coreaws/coreexecutionv2/coreworkload` typed ports 适配 |
 | R-06 | Agent composition | 旧 `cloud_composition.go` 不存在于新 Core | 在 `serveCore` 中显式组合 Team，readiness 完整才发布 |
 | R-07 | Worker RPC 边界 | 旧 `WorkerControlService` 使用旧 service token 和存储 | 独立 Worker listener/认证子服务，绑定 Agent instance、Task、role、attempt、lease |
-| R-08 | Worker release | 旧 Agent 镜像和 Worker 镜像构建路径与统一 Core 镜像不同 | 重新生成 Core 基线下的 control image 和 Pi Worker release manifest |
+| R-08 | Worker release | 旧 Agent 镜像和 Worker 镜像构建路径与统一 Core 镜像不同 | 不从零重写 AMI 生产线；按能力级移植旧 `cmd/dirextalk-worker-rootfs`、`internal/workerrootfs`、`cmd/dirextalk-worker-ami`、`internal/workerami` 的封闭发布行为，装入 Agent Core v1 Worker Harness 并重新生成 release manifest |
 | R-09 | 完成事件 | 旧 Agent `WatchEvents` 到 Message Server cursor relay 已不适配 | Agent conversation 消息 + durable completion Outbox + Message Server 去重通知 |
 | R-10 | Message Server Team facade | 旧 `p2p/internal/agentgrpc` 已被 Agent Gateway 取代 | 在 `agentgateway` 增加 action binding、schema pins 和结果 adapter |
 | R-11 | Message Server actions | 旧 action 集重复了 Core confirmation，且缺列表/取消/进度 | 只保留 Plan/Execution action；确认统一映射现有 Core confirmation |

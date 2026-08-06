@@ -18,8 +18,23 @@
 - Create `internal/agentcapability/team/capability.go` for the `agent.team.v1` JSON operation contract.
 - Create `cmd/dirextalk-agent/team_conversation_resolver.go` for the two server-owned model tools.
 - Create `api/proto/dirextalk/agent/v1/core_team_worker.proto` and `internal/coreteamworker/` for the private Worker protocol.
-- Restore `cmd/dirextalk-cloud-worker/`, `internal/coreteamruntime/`, `internal/coreteamaws/`, and `deploy/container/pi-worker/` by behavior, not by cherry-picking old packages.
+- Restore `cmd/dirextalk-cloud-worker/`, `internal/coreteamruntime/`, `internal/coreteaminput/`, release/rootfs/AMI tooling, typed AWS lifecycle, and Reaper by capability-level port from the proven closure. Reuse both implementation and tests where ownership boundaries still match; adapt them deliberately rather than blind cherry-picking.
 - Create `cmd/dirextalk-agent/core_team_compose.go` and extend current Core composition/configuration only after all readiness gates pass.
+
+## Mandatory Reuse Gate
+
+Before implementing or closing every Task, inspect the corresponding source
+row in `docs/central-os-pi-worker-migration-design.md#61-旧闭环全链路复用矩阵`.
+Record the exact old files/tests being ported and classify each as direct
+implementation port, behavior-test port with Agent Core rewiring, Core-already-
+supersedes, or explicit discard. A Task cannot be closed merely because new
+tests pass if an accepted old failure/recovery vector was omitted.
+
+The source worktrees are read-only references. Do not merge their branches,
+make the new checkout depend on them, or include their uncommitted Worker
+progress drafts. “No blind cherry-pick” does not mean “rewrite from zero”:
+compatible code should be ported and simplified only after its tests pass on
+the Agent Core v1 types.
 
 ### Task 1: Add The Closed Core Task Kind
 
@@ -548,8 +563,16 @@ git commit -m "feat: add fenced Team Worker protocol"
 ### Task 8: Restore The Official Pi Runtime And Worker Release
 
 **Files:**
+- Create: `internal/coreteaminput/types.go`
+- Create: `internal/coreteaminput/compile.go`
+- Create: `internal/coreteaminput/compile_test.go`
 - Create: `internal/coreteamruntime/pi.go`
 - Create: `internal/coreteamruntime/pi_test.go`
+- Create: `cmd/dirextalk-cloud-worker/receipt.go`
+- Create: `cmd/dirextalk-cloud-worker/receipt_unix.go`
+- Create: `cmd/dirextalk-cloud-worker/receipt_test.go`
+- Create: `cmd/dirextalk-cloud-worker/secret_unix.go`
+- Create: `cmd/dirextalk-cloud-worker/secret_unix_test.go`
 - Create: `internal/coreteamruntime/result.go`
 - Create: `internal/coreteamruntime/result_test.go`
 - Create: `cmd/dirextalk-cloud-worker/main.go`
@@ -557,10 +580,26 @@ git commit -m "feat: add fenced Team Worker protocol"
 - Create: `deploy/container/pi-worker/worker.Containerfile`
 - Create: `deploy/container/pi-worker/dirextalk-cloud-worker.service`
 - Create: `deploy/container/pi-worker/README.md`
+- Modify: `api/proto/dirextalk/agent/v1/core_team_worker.proto`
+- Modify: `internal/coreteamworker/types.go`
+- Modify: `internal/coreteamworker/service.go`
+- Modify: `internal/store/postgres/core_team_worker_store.go`
+- Modify: `migrations/agent_migrations.sql`
+
+**Qualified migration sources:** Port compatible implementation and tests from
+old `internal/workerruntime/{pi,process,failure,installation}*`,
+`internal/teaminput`, `internal/taskinput`,
+`internal/workerrunner/{input_action,runtime_action,runtime_result}*`, and
+`internal/workeroperation`. Rewire their identities and persistence to
+`coreteamworker`; do not recreate the old Worker RPC or Task stack. The old
+action checkpoint and root-helper receipt did not fence Pi execution, and the
+old credential reader did not unlink after read. Reuse their atomic journal,
+CAS, validation, and secret-canary patterns only; the model no-duplicate
+boundary and secure one-time secret consumption are new required behavior.
 
 - [ ] **Step 1: Port the accepted behavior tests before implementation**
 
-Recreate tests for Pi 0.83.0 event parsing, `dirextalk_submit_result`, output-token override, process timeout/output/non-zero failures, closed provider/auth/quota/rate/request/server/network failures, invalid event, missing final result, empty workspace, result size/digest, and raw-error destruction.
+Recreate tests for Pi 0.83.0 event parsing, `dirextalk_submit_result`, output-token override, process timeout/output/non-zero failures, closed provider/auth/quota/rate/request/server/network failures, invalid event, missing final result, empty workspace, result size/digest, and raw-error destruction. Also port canonical context/input manifest tests and add exact model/revision/context/credential/workspace digest binding, secure one-time secret-file consumption, write-before-run receipt, Complete-response validation, and restart replay that never invokes Pi twice.
 
 - [ ] **Step 2: Verify the tests fail**
 
@@ -577,24 +616,58 @@ type Result = coreteamworker.ResultPayloadV1
 type Runner interface { Run(context.Context, Assignment, Workspace) (Result, ClosedFailure, error) }
 ```
 
-Use argv arrays only inside the Worker process, an empty environment plus explicitly materialized model variables, a task-local `0600` Pi override, fixed output limits, no provider text in returned failures, and cleanup of temporary files in `defer`. The adapter converts the qualified Pi final extension plus aggregate usage into canonical `ResultPayloadV1`; it never forwards Pi event streams, tool payloads, stdout, stderr, or reasoning text.
+Use argv arrays only inside the Worker process, an empty environment plus explicitly materialized model variables, a task-local `0600` Pi override, fixed output limits, no provider text in returned failures, and cleanup of temporary files in `defer`. Central stores a required canonical runtime-context digest binding execution/role/attempt/Plan, model provider/name/interface/revision, context, credential, and input manifest. The Worker verifies every materialized byte against that assignment before claim execution.
+
+Before Pi spawn it atomically persists and fsyncs `launch_committed`; recovery
+from that state never runs Pi again and reports the closed
+`execution_uncertain` outcome. After Pi returns it atomically persists the
+complete canonical `CompleteRequest` as `completion_pending`; recovery
+replays only those exact bytes and the stable completion ID. It writes
+`completion_acked` only after validating every response field. Model
+credentials are safely opened through a fixed private directory, checked for
+owner/mode/link/size, unlinked and directory-fsynced before Pi. The mTLS
+credential remains outside Pi's filesystem view until completion recovery no
+longer needs it. The adapter converts the qualified Pi final extension plus
+aggregate usage into canonical `ResultPayloadV1`; it never forwards Pi event
+streams, tool payloads, stdout, stderr, or reasoning text.
 
 - [ ] **Step 4: Run real-binary qualification and build checks**
 
-Run: `DIREXTALK_PI_QUALIFY=1 GOWORK=off go test ./internal/coreteamruntime -run TestOfficialPiBinaryLoopback -count=1 && GOWORK=off go test -race ./internal/coreteamruntime ./cmd/dirextalk-cloud-worker -count=1 && GOWORK=off GOOS=linux GOARCH=amd64 go build ./cmd/dirextalk-cloud-worker`
+Run: `DIREXTALK_PI_QUALIFY=1 GOWORK=off go test ./internal/coreteamruntime -run TestOfficialPiBinaryLoopback -count=1 && GOWORK=off go test -race ./internal/coreteaminput ./internal/coreteamruntime ./internal/coreteamworker ./cmd/dirextalk-cloud-worker -count=1 && GOWORK=off GOOS=linux GOARCH=amd64 go build ./cmd/dirextalk-cloud-worker`
 
 Expected: PASS with pinned Pi and extension digests and one structured result.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/coreteamruntime cmd/dirextalk-cloud-worker deploy/container/pi-worker
+git add internal/coreteaminput internal/coreteamruntime internal/coreteamworker internal/store/postgres api/proto migrations cmd/dirextalk-cloud-worker deploy/container/pi-worker
 git commit -m "feat: restore qualified Pi Worker runtime"
 ```
 
 ### Task 9: Add Typed Ephemeral AWS Worker Lifecycle
 
 **Files:**
+- Create: `cmd/dirextalk-worker-rootfs/main.go`
+- Create: `cmd/dirextalk-worker-rootfs/main_test.go`
+- Create: `cmd/dirextalk-worker-ami/main.go`
+- Create: `cmd/dirextalk-worker-ami/main_test.go`
+- Create: `cmd/dirextalk-ecrctl/main.go`
+- Create: `cmd/dirextalk-ecrctl/main_test.go`
+- Create: `cmd/dirextalk-releasectl/main.go`
+- Create: `cmd/dirextalk-releasectl/main_test.go`
+- Create: `cmd/dirextalk-aws-reaper/main.go`
+- Create: `cmd/dirextalk-aws-reaper/main_test.go`
+- Create: `internal/releaseartifact/`
+- Create: `internal/releaseecr/`
+- Create: `internal/releasepublish/`
+- Create: `internal/workerrootfs/`
+- Create: `internal/workerami/`
+- Create: `internal/workeramictl/`
+- Create: `internal/coreteamfoundation/`
+- Create: `internal/coreteamrelease/`
+- Create: `internal/coreteambundle/`
+- Create: `internal/coreteamcredential/`
+- Create: `internal/coreteamreaper/`
 - Create: `internal/coreteamaws/provider.go`
 - Create: `internal/coreteamaws/provider_test.go`
 - Create: `internal/coreteamaws/sdk.go`
@@ -603,15 +676,52 @@ git commit -m "feat: restore qualified Pi Worker runtime"
 - Create: `internal/coreteamaws/template_test.go`
 - Create: `internal/store/postgres/core_team_resource_store.go`
 - Create: `internal/store/postgres/core_team_resource_store_integration_test.go`
+- Create: `internal/store/postgres/core_team_release_store.go`
+- Create: `internal/store/postgres/core_team_reaper_store.go`
+- Create: `deploy/awsfoundation/team-worker.yaml`
+- Create: `deploy/container/reaper.Containerfile`
 - Modify: `migrations/agent_migrations.sql`
 
-- [ ] **Step 1: Write failing provider and recovery tests**
+**Qualified migration source:**
 
-Require no ingress/SSH/SSM, encrypted root volume, exact AMI/runtime digest, SG/ENI/EIP/EC2/EBS tags, stable request tokens, write-before-mutate intents, create response-loss readback, delete response-loss readback, concurrent reconciliation, and `verified_destroyed` only after every resource is absent.
+Use local branch `codex/pi-worker-real-task-fix` at inspected commit
+`51bc9ae1d9c367ca58ea2cc35fbd090eb5b7a484` as a behavior and implementation
+reference for `workerrootfs + workerami`. Its Osaka Linux x86_64 AMI
+`ami-023e6b2d57694b86d` previously completed a correlated real Pi 0.83.0
+task and retained encrypted snapshot `snap-0ae9af10d9f1a406e`. Do not promote
+that AMI into Agent Core v1: it embeds the old Worker Harness and protocol.
+Port the tested archive hygiene, immutable installation manifest, private
+builder, digest attestation, resumable publication, bounded polling, cleanup,
+and independent AWS read-back. Replace the Worker binary, installation
+contract, bootstrap material, and control protocol with the current Agent Core
+v1 implementation.
+
+Also port the accepted behavior from old `workerrelease`, `workeramictl`,
+`releaseecr`, `releasepublish`, `awsfoundation`, `teambundle`,
+`teamcredential`, `secretbootstrap`, `workerrunner/s3_store`,
+`awsprovider`, `resource`, and `awsreaper`. Keep only the Pi Team
+resource graph and task-scoped bootstrap path; old generic installer,
+Knowledge, Managed service, Cloud Connection, and root-helper surfaces are not
+part of this migration.
+
+- [ ] **Step 1: Port the accepted rootfs/AMI tests, then write failing provider and recovery tests**
+
+First recreate the accepted tests for deterministic rootfs packing, Linux
+x86_64 release identity, complete Pi runtime assets, AppleDouble rejection,
+immutable installation manifest, private builder reachability, AMI
+attestation, resumable publication, builder cleanup, and independent negative
+read-back. Add ECR immutable-tag publication/readback, release resume, release
+import/selection, Foundation KMS/S3/DynamoDB/Lambda schedule, digest-only
+Reaper image, task bundle encryption/materialization, task-scoped model
+credential, expiry manifest, and Reaper CAS/fence tests. Then require no ingress/SSH/SSM on task Workers, encrypted root
+volume, exact AMI/runtime digest, SG/ENI/EIP/EC2/EBS tags, stable request
+tokens, write-before-mutate intents, create response-loss readback, delete
+response-loss readback, concurrent reconciliation, and
+`verified_destroyed` only after every resource is absent.
 
 - [ ] **Step 2: Verify failure**
 
-Run: `GOWORK=off go test ./internal/coreteamaws ./internal/store/postgres -run 'Test.*TeamAWS' -count=1`
+Run: `GOWORK=off go test ./internal/releaseartifact ./internal/releaseecr ./internal/releasepublish ./internal/workerrootfs ./internal/workerami ./internal/workeramictl ./internal/coreteamfoundation ./internal/coreteamrelease ./internal/coreteambundle ./internal/coreteamcredential ./internal/coreteamreaper ./cmd/dirextalk-worker-rootfs ./cmd/dirextalk-worker-ami ./cmd/dirextalk-ecrctl ./cmd/dirextalk-releasectl ./cmd/dirextalk-aws-reaper ./internal/coreteamaws ./internal/store/postgres -run 'Test.*(RootFS|AMI|Release|Foundation|Bundle|Credential|Reaper|TeamAWS)' -count=1`
 
 Expected: FAIL because the provider and ledger are absent.
 
@@ -628,18 +738,18 @@ type Provider interface {
 type CreateRequest struct { OwnerID, TaskID, ExecutionID, RoleID, AMIID, ImageDigest, Region, AvailabilityZone, InstanceType, ClientToken string; RootVolumeGiB uint32 }
 ```
 
-Reuse `coreworkload/aws.CredentialResolver` and the target Core pricing/readiness components. The Team provider may expose only the fixed Worker resource graph; no generic EC2 input, arbitrary tag, user data, IAM policy, URL, or shell field is representable.
+Reuse `coreworkload/aws.CredentialResolver` and the target Core pricing/readiness components. Reuse the old qualified publication, Foundation, and AMI construction mechanics by capability-level port, not by branch merge or historical AMI selection. The release command must publish immutable Agent/Worker/Reaper digests and produce only Linux `x86_64` Worker/Reaper artifacts; every tag is reconciled by digest read-back. Bootstrap may create only the fixed Team Foundation and a typed, task-scoped encrypted bundle with least-privilege object/secret access derived by Central; no caller/model can provide IAM policy, URL, user data, command, or shell. The Team provider may expose only the fixed Worker resource graph. Controller cleanup is primary; the independently scheduled digest-pinned Reaper is the expiry fallback and must use the same immutable ownership/fence facts.
 
 - [ ] **Step 4: Run template, provider, PostgreSQL, and race tests**
 
-Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteamaws ./internal/store/postgres -run 'Test.*TeamAWS' -count=1`
+Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/releaseartifact ./internal/releaseecr ./internal/releasepublish ./internal/workerrootfs ./internal/workerami ./internal/workeramictl ./internal/coreteamfoundation ./internal/coreteamrelease ./internal/coreteambundle ./internal/coreteamcredential ./internal/coreteamreaper ./cmd/dirextalk-worker-rootfs ./cmd/dirextalk-worker-ami ./cmd/dirextalk-ecrctl ./cmd/dirextalk-releasectl ./cmd/dirextalk-aws-reaper ./internal/coreteamaws ./internal/store/postgres -run 'Test.*(RootFS|AMI|Release|Foundation|Bundle|Credential|Reaper|TeamAWS)' -count=1`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/coreteamaws internal/store/postgres migrations
+git add cmd/dirextalk-worker-rootfs cmd/dirextalk-worker-ami cmd/dirextalk-ecrctl cmd/dirextalk-releasectl cmd/dirextalk-aws-reaper internal/releaseartifact internal/releaseecr internal/releasepublish internal/workerrootfs internal/workerami internal/workeramictl internal/coreteamfoundation internal/coreteamrelease internal/coreteambundle internal/coreteamcredential internal/coreteamreaper internal/coreteamaws internal/store/postgres deploy/awsfoundation/team-worker.yaml deploy/container/reaper.Containerfile migrations
 git commit -m "feat: manage ephemeral Pi Workers on AWS"
 ```
 
@@ -650,17 +760,31 @@ git commit -m "feat: manage ephemeral Pi Workers on AWS"
 - Create: `internal/coreteam/controller_test.go`
 - Create: `internal/coreteam/result.go`
 - Create: `internal/coreteam/result_test.go`
+- Create: `internal/coreteam/artifact.go`
+- Create: `internal/coreteam/artifact_test.go`
+- Create: `internal/coreteam/report.go`
+- Create: `internal/coreteam/report_test.go`
+- Modify: `internal/coreteam/service.go`
+- Modify: `internal/coreteam/service_test.go`
+- Modify: `internal/agentcapability/team/capability.go`
+- Modify: `internal/agentcapability/team/capability_test.go`
 - Create: `internal/store/postgres/core_team_result_store.go`
 - Create: `internal/store/postgres/core_team_controller_integration_test.go`
 - Modify: `migrations/agent_migrations.sql`
 
+**Qualified migration sources:** Port recovery vectors and compatible pure
+domain code from old `teamdispatch`, `teamcontroller`, `teamresult`,
+`teamartifact`, `teamreport`, `workerresult`, and
+`app/team_{result_collector,role_cleanup,task_coordinator}*`. Rewire their
+stores and task transitions to Agent Core v1.
+
 - [ ] **Step 1: Write failing lifecycle tests**
 
-Cover `intent -> input_ready -> provisioning -> active -> result_ready -> destroying -> completed`, max 3 active roles, dependency ordering, retry with new attempt/lease, cancel before/after create, result upload during cancel, controller restart, result digest mismatch, Worker-authored cloud claim removal, and terminal success only after cleanup.
+Cover `intent -> input_ready -> provisioning -> active -> result_ready -> destroying -> completed`, max 3 active roles, dependency ordering, retry with new attempt/lease, cancel before/after create, result upload during cancel, controller restart, result digest/size/media-type mismatch, artifact retention binding, canonical immutable report and usage aggregation, Worker-authored cloud claim removal, and terminal success only after cleanup. Extend the public execution projection and canonical capability result schemas with bounded role state/dependencies, progress, verified artifact metadata, report summary, and cleanup status; reject every internal Worker/cloud/lease/log field.
 
 - [ ] **Step 2: Verify failure**
 
-Run: `GOWORK=off go test ./internal/coreteam ./internal/store/postgres -run 'Test.*TeamController' -count=1`
+Run: `GOWORK=off go test ./internal/coreteam ./internal/agentcapability/team ./internal/store/postgres -run 'Test.*Team(Controller|Projection|Schema)' -count=1`
 
 Expected: FAIL because the controller does not exist.
 
@@ -675,14 +799,14 @@ Each call locks one execution, reads provider facts before mutation, starts at m
 
 - [ ] **Step 4: Run normal, race, and PostgreSQL restart tests**
 
-Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteam ./internal/store/postgres -run 'Test.*TeamController' -count=1`
+Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteam ./internal/agentcapability/team ./internal/store/postgres -run 'Test.*Team(Controller|Projection|Schema)' -count=1`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/coreteam internal/store/postgres migrations
+git add internal/coreteam internal/agentcapability/team internal/store/postgres migrations
 git commit -m "feat: reconcile Team Worker executions"
 ```
 
@@ -695,15 +819,29 @@ git commit -m "feat: reconcile Team Worker executions"
 - Create: `internal/store/postgres/core_team_progress_store_integration_test.go`
 - Create: `internal/coreteam/audit_relay.go`
 - Create: `internal/coreteam/audit_relay_test.go`
+- Create: `cmd/dirextalk-cloud-worker/milestone.go`
+- Create: `cmd/dirextalk-cloud-worker/milestone_test.go`
+- Modify: `cmd/dirextalk-cloud-worker/main.go`
+- Modify: `cmd/dirextalk-cloud-worker/main_test.go`
+- Modify: `internal/coreteam/service.go`
+- Modify: `internal/coreteam/service_test.go`
+- Modify: `internal/agentcapability/team/capability.go`
+- Modify: `internal/agentcapability/team/capability_test.go`
 - Modify: `migrations/agent_migrations.sql`
+
+**Qualified migration sources:** Reuse old `internal/workerlog` CloudWatch
+adapter, `internal/workerrunner/grpc_milestone_sink.go`, and their
+closed-vocabulary, session/fence, failure, secret, and stream tests. Use the reviewed three-repo Worker
+progress plans as requirements only; the uncommitted old
+`internal/workerprogress` and migration 64 draft are excluded.
 
 - [ ] **Step 1: Write failing milestone/replay/Outbox tests**
 
-Require stable event digest, exact replay preserving first receipt, same ID/different event rejection, stale lease rejection, immutable events, one Outbox row, fenced claim/confirm/retry, CloudWatch failure after durable ack, owner-scoped list/get, bounded timeline, and JSON absence of Worker/deployment/cloud/log/raw fields.
+Require stable event digest, exact replay preserving first receipt, same ID/different event rejection, stale lease rejection, immutable events, one Outbox row, fenced claim/confirm/retry, CloudWatch failure after durable ack, owner-scoped list/get, bounded timeline, and JSON absence of Worker/deployment/cloud/log/raw fields. Prove the Worker emits stable closed milestones before expensive execution, at result readiness, and on closed failure; an unavailable pre-run milestone prevents Pi launch, while a post-run relay failure uses the local completion receipt and never causes Pi to run again.
 
 - [ ] **Step 2: Verify failure**
 
-Run: `GOWORK=off go test ./internal/coreteam ./internal/store/postgres -run 'Test.*TeamProgress|Test.*TeamMilestone' -count=1`
+Run: `GOWORK=off go test ./internal/coreteam ./internal/agentcapability/team ./internal/store/postgres ./cmd/dirextalk-cloud-worker -run 'Test.*TeamProgress|Test.*TeamMilestone|Test.*Milestone' -count=1`
 
 Expected: FAIL because durable progress is absent.
 
@@ -716,18 +854,18 @@ type Health string
 const (HealthHealthy Health = "healthy"; HealthDelayed Health = "delayed"; HealthRecovering Health = "recovering"; HealthAttentionRequired Health = "attention_required"; HealthTerminal Health = "terminal")
 ```
 
-Use `core_team_milestones` immutable rows and `core_team_audit_outbox`. Worker RPC returns after the database transaction; the supervised relay writes the existing 30-day CloudWatch stream asynchronously and stores only closed retry codes.
+Use `core_team_milestones` immutable rows and `core_team_audit_outbox`. Worker RPC returns after the database transaction; the supervised relay writes the existing 30-day CloudWatch stream asynchronously and stores only closed retry codes. Project only the bounded public milestone vocabulary and derived progress through `agent.team.v1/executions_get`; update the canonical schema digest and keep raw Worker events, action identifiers, failure internals, and CloudWatch coordinates private.
 
 - [ ] **Step 4: Run PostgreSQL, race, and outage tests**
 
-Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteam ./internal/store/postgres -run 'Test.*(TeamProgress|TeamMilestone|AuditRelay)' -count=1`
+Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteam ./internal/agentcapability/team ./internal/store/postgres ./cmd/dirextalk-cloud-worker -run 'Test.*(TeamProgress|TeamMilestone|AuditRelay|Milestone)' -count=1`
 
 Expected: PASS, including simulated CloudWatch outage with Worker ack success.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/coreteam internal/store/postgres migrations
+git add internal/coreteam internal/agentcapability/team internal/store/postgres cmd/dirextalk-cloud-worker migrations
 git commit -m "feat: persist bounded Team Worker progress"
 ```
 
@@ -743,6 +881,12 @@ git commit -m "feat: persist bounded Team Worker progress"
 - Create: `cmd/dirextalk-agent/core_team_completion_sink_test.go`
 - Modify: `internal/capability/client/client.go`
 - Create: `internal/capability/client/service_notification_test.go`
+
+**Qualified migration sources:** Port old Agent Team finalizer/report
+atomicity, Message Server `agentcompletion/relay` correlation/cursor/replay,
+and Flutter completion dedupe test vectors. Do not port the old polling RPC or
+the Flutter code that creates a localized final assistant message; Central is
+the only final-message author in Agent Core v1.
 
 - [ ] **Step 1: Write failing atomicity and replay tests**
 
