@@ -81,6 +81,33 @@ func TestSandboxChildDoesNotUsePdeathsigAcrossPIDNamespace(t *testing.T) {
 	}
 }
 
+func TestCoreCgroupLimitsIncludeTrustedManagerOverhead(t *testing.T) {
+	base := LimitsV2{MemoryBytes: 16 << 20, Processes: 8}
+	ordinary, err := effectiveCgroupLimits(SandboxInvocationV2{Request: RequestV2{Limits: base}})
+	if err != nil || ordinary != base {
+		t.Fatalf("ordinary limits = %+v, err=%v", ordinary, err)
+	}
+	core, err := effectiveCgroupLimits(SandboxInvocationV2{Request: RequestV2{Limits: base}, CoreTmpfsBytes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if core.MemoryBytes != base.MemoryBytes+coreManagerMemoryOverheadBytes || core.Processes != base.Processes+coreManagerProcessOverhead {
+		t.Fatalf("core limits = %+v", core)
+	}
+}
+
+func TestCoreCgroupLimitOverheadFailsClosedOnOverflow(t *testing.T) {
+	maxInt64 := int64(^uint64(0) >> 1)
+	for _, limits := range []LimitsV2{
+		{MemoryBytes: maxInt64 - coreManagerMemoryOverheadBytes + 1, Processes: 1},
+		{MemoryBytes: 1, Processes: maxInt64 - coreManagerProcessOverhead + 1},
+	} {
+		if _, err := effectiveCgroupLimits(SandboxInvocationV2{Request: RequestV2{Limits: limits}, CoreTmpfsBytes: 1}); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("overflow limits %+v err=%v", limits, err)
+		}
+	}
+}
+
 func TestCgroupCleanupFailsClosedOnPopulatedOrRemoveFailure(t *testing.T) {
 	for _, test := range []struct {
 		name   string

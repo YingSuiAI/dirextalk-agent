@@ -40,6 +40,11 @@ type LinuxBackend struct {
 	ReexecPath string
 }
 
+const (
+	coreManagerMemoryOverheadBytes int64 = 32 << 20
+	coreManagerProcessOverhead     int64 = 8
+)
+
 // unavailableAt keeps Linux isolation diagnostics low-cardinality and safe to
 // return to trusted local callers. It deliberately excludes paths, errno, and
 // underlying OS error text.
@@ -412,6 +417,10 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	if inv.CoreTmpfsBytes > 0 && (inv.StdinFD >= 0 || len(inv.SecretFDs) != 0) {
 		return nil, unavailableAt("core_mode")
 	}
+	cgroupLimits, err := effectiveCgroupLimits(inv)
+	if err != nil {
+		return nil, err
+	}
 	files := make([]*os.File, 0, 7+len(inv.SecretFDs))
 	for _, item := range []struct {
 		fd   int
@@ -491,7 +500,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	}
 	releaseR.Close()
 	cg := filepath.Join(b.CgroupRoot, inv.Request.RunID)
-	if err = setupCgroup(cg, inv.Request.Limits, cmd.Process.Pid); err != nil {
+	if err = setupCgroup(cg, cgroupLimits, cmd.Process.Pid); err != nil {
 		_ = unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0)
 		_ = cmd.Wait()
 		_ = unix.Close(pidfd)
@@ -522,6 +531,22 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	}
 	go process.monitorCPU()
 	return process, nil
+}
+
+func effectiveCgroupLimits(inv SandboxInvocationV2) (LimitsV2, error) {
+	limits := inv.Request.Limits
+	if inv.CoreTmpfsBytes == 0 {
+		return limits, nil
+	}
+	// Core keeps one trusted Go manager outside the untrusted command. Its
+	// runtime threads and resident memory are implementation overhead, not the
+	// workload budget carried by the public request.
+	if limits.MemoryBytes > int64(^uint64(0)>>1)-coreManagerMemoryOverheadBytes || limits.Processes > int64(^uint64(0)>>1)-coreManagerProcessOverhead {
+		return LimitsV2{}, unavailableAt("core_limits")
+	}
+	limits.MemoryBytes += coreManagerMemoryOverheadBytes
+	limits.Processes += coreManagerProcessOverhead
+	return limits, nil
 }
 
 func sandboxChildSysProcAttr(pidfd *int) *syscall.SysProcAttr {
