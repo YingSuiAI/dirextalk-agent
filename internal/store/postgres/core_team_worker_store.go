@@ -29,6 +29,76 @@ func NewCoreTeamWorkerStore(store *Store) *CoreTeamWorkerStore {
 	return &CoreTeamWorkerStore{store: store}
 }
 
+func (s *CoreTeamWorkerStore) BindRoleAttemptRuntimeContext(ctx context.Context, command coreteamworker.RuntimeContextBindingCommand) (bool, error) {
+	if !s.ready(ctx) || command.Validate() != nil {
+		return false, coreteamworker.ErrInvalid
+	}
+	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if err = lockTeamWorkerDeprovisionGuard(ctx, tx); err != nil {
+		return false, err
+	}
+	if err = checkTeamWorkerAdmissionTx(ctx, tx, command.Scope); err != nil {
+		return false, err
+	}
+	var runStatus, executionStatus, taskStatus string
+	var attempt int
+	var existingDigest, workerID *string
+	err = tx.QueryRow(ctx, `
+		SELECT run.status,run.attempt,run.runtime_context_digest,run.worker_id::text,execution.status,task.status
+		FROM core_team_role_runs run
+		JOIN core_team_executions execution ON execution.owner_id=run.owner_id AND execution.account_generation=run.account_generation AND execution.execution_id=run.execution_id
+		JOIN core_tasks task ON task.task_id=execution.task_id
+		WHERE run.owner_id=$1 AND run.account_generation=$2 AND run.execution_id=$3 AND run.role_id=$4
+		FOR UPDATE OF run`, command.Scope.OwnerID, command.Scope.AccountGeneration, command.ExecutionID, command.RoleID).Scan(
+		&runStatus, &attempt, &existingDigest, &workerID, &executionStatus, &taskStatus,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, coreteamworker.ErrNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	if uint32(attempt) != command.Attempt {
+		return false, coreteamworker.ErrConflict
+	}
+	if existingDigest != nil {
+		if *existingDigest != command.Digest {
+			return false, coreteamworker.ErrConflict
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	if runStatus != string(coreteam.ExecutionQueued) || workerID != nil ||
+		(executionStatus != string(coreteam.ExecutionQueued) && executionStatus != string(coreteam.ExecutionRunning)) ||
+		(taskStatus != "queued" && taskStatus != "running") {
+		return false, coreteamworker.ErrConflict
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE core_team_role_runs
+		SET runtime_context_digest=$5,revision=revision+1,updated_at=$6
+		WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND role_id=$4
+		  AND attempt=$7 AND status='queued' AND worker_id IS NULL AND runtime_context_digest IS NULL`,
+		command.Scope.OwnerID, command.Scope.AccountGeneration, command.ExecutionID, command.RoleID,
+		command.Digest, command.At.UTC(), command.Attempt,
+	)
+	if err != nil || result.RowsAffected() != 1 {
+		if err == nil {
+			err = coreteamworker.ErrConflict
+		}
+		return false, teamWorkerWriteError(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
 func (s *CoreTeamWorkerStore) CreateChallenge(ctx context.Context, challenge coreteamworker.Challenge) (coreteamworker.Challenge, bool, error) {
 	if !s.ready(ctx) || challenge.Validate() != nil {
 		return coreteamworker.Challenge{}, false, coreteamworker.ErrInvalid
@@ -59,20 +129,21 @@ func (s *CoreTeamWorkerStore) CreateChallenge(ctx context.Context, challenge cor
 	}
 	var runStatus, executionStatus, taskStatus string
 	var attempt int
+	var runtimeContextDigest *string
 	err = tx.QueryRow(ctx, `
-		SELECT run.status,run.attempt,execution.status,task.status
+		SELECT run.status,run.attempt,run.runtime_context_digest,execution.status,task.status
 		FROM core_team_role_runs run
 		JOIN core_team_executions execution ON execution.owner_id=run.owner_id AND execution.account_generation=run.account_generation AND execution.execution_id=run.execution_id
 		JOIN core_tasks task ON task.task_id=execution.task_id
 		WHERE run.owner_id=$1 AND run.account_generation=$2 AND run.execution_id=$3 AND run.role_id=$4
-		FOR UPDATE OF run`, challenge.Scope.OwnerID, challenge.Scope.AccountGeneration, challenge.ExecutionID, challenge.RoleID).Scan(&runStatus, &attempt, &executionStatus, &taskStatus)
+		FOR UPDATE OF run`, challenge.Scope.OwnerID, challenge.Scope.AccountGeneration, challenge.ExecutionID, challenge.RoleID).Scan(&runStatus, &attempt, &runtimeContextDigest, &executionStatus, &taskStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coreteamworker.Challenge{}, false, coreteamworker.ErrNotFound
 	}
 	if err != nil {
 		return coreteamworker.Challenge{}, false, err
 	}
-	if runStatus != string(coreteam.ExecutionQueued) || uint32(attempt) != challenge.Attempt ||
+	if runStatus != string(coreteam.ExecutionQueued) || uint32(attempt) != challenge.Attempt || runtimeContextDigest == nil ||
 		(executionStatus != string(coreteam.ExecutionQueued) && executionStatus != string(coreteam.ExecutionRunning)) ||
 		(taskStatus != "queued" && taskStatus != "running") {
 		return coreteamworker.Challenge{}, false, coreteamworker.ErrConflict
@@ -206,7 +277,7 @@ func (s *CoreTeamWorkerStore) GetAssignment(ctx context.Context, access coreteam
 	var capabilitiesRaw []byte
 	err = tx.QueryRow(ctx, `
 		SELECT worker.worker_id::text,worker.owner_id,worker.account_generation,worker.identity_digest,worker.status,worker.enrollment_expires_at,
-		       run.execution_id::text,run.plan_id::text,run.role_id,run.attempt,run.status,
+		       run.execution_id::text,run.plan_id::text,run.role_id,run.attempt,run.status,run.runtime_context_digest,
 		       plan.digest,role.goal,role.capabilities,plan.runtime_id,plan.output_tokens
 		FROM core_team_workers worker
 		JOIN core_team_role_runs run ON run.owner_id=worker.owner_id AND run.account_generation=worker.account_generation AND run.execution_id=worker.execution_id AND run.role_id=worker.role_id AND run.worker_id=worker.worker_id
@@ -214,7 +285,7 @@ func (s *CoreTeamWorkerStore) GetAssignment(ctx context.Context, access coreteam
 		JOIN core_team_roles role ON role.owner_id=run.owner_id AND role.account_generation=run.account_generation AND role.plan_id=run.plan_id AND role.role_id=run.role_id
 		WHERE worker.worker_id=$1`, access.WorkerID).Scan(
 		&assignment.WorkerID, &scope.OwnerID, &scope.AccountGeneration, &identityDigest, &workerStatus, &enrollmentExpires,
-		&assignment.ExecutionID, &assignment.PlanID, &assignment.RoleID, &assignment.Attempt, &runStatus,
+		&assignment.ExecutionID, &assignment.PlanID, &assignment.RoleID, &assignment.Attempt, &runStatus, &assignment.RuntimeContextDigest,
 		&assignment.PlanDigest, &assignment.Goal, &capabilitiesRaw, &assignment.RuntimeID, &assignment.OutputTokens,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -438,7 +509,7 @@ func (s *CoreTeamWorkerStore) Complete(ctx context.Context, command coreteamwork
 	if err != nil {
 		return coreteamworker.CompletionReceipt{}, false, err
 	}
-	if err = state.requireFence(command.Access, command.Fence); err != nil {
+	if err = state.requireCompletionFence(command.Access, command.Fence); err != nil {
 		return coreteamworker.CompletionReceipt{}, false, err
 	}
 	status := string(coreteam.ExecutionCleaningUp)
@@ -449,7 +520,7 @@ func (s *CoreTeamWorkerStore) Complete(ctx context.Context, command coreteamwork
 	} else {
 		failure = string(command.FailureCode)
 	}
-	result, err := tx.Exec(ctx, `UPDATE core_team_role_runs SET status=$5,completion_id=$6,completion_outcome=$7,result_schema_version=$8,result_digest=$9,result_size_bytes=$10,result_payload=$11,failure_code=$12,completed_at=$13,lease_expires_at=NULL,revision=revision+1,updated_at=$13 WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND role_id=$4 AND status='running' AND worker_id=$14 AND attempt=$15 AND lease_epoch=$16 AND lease_expires_at>$13`,
+	result, err := tx.Exec(ctx, `UPDATE core_team_role_runs SET status=$5,completion_id=$6,completion_outcome=$7,result_schema_version=$8,result_digest=$9,result_size_bytes=$10,result_payload=$11,failure_code=$12,completed_at=$13,lease_expires_at=NULL,revision=revision+1,updated_at=$13 WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND role_id=$4 AND status='running' AND worker_id=$14 AND attempt=$15 AND lease_epoch=$16`,
 		state.OwnerID, state.AccountGeneration, state.ExecutionID, state.RoleID, status, command.CompletionID,
 		string(command.Outcome), schema, resultDigest, size, resultPayload, failure, command.Access.At.UTC(), command.Access.WorkerID, command.Fence.Attempt, command.Fence.LeaseEpoch)
 	if err != nil {
@@ -552,8 +623,8 @@ func lockTeamWorkerRun(ctx context.Context, tx pgx.Tx, workerID string) (teamWor
 }
 
 func (s teamWorkerRunState) authorize(access coreteamworker.WorkerAccess) error {
-	if access.Validate() != nil || access.WorkerID != s.WorkerID || access.IdentityDigest != s.IdentityDigest {
-		return coreteamworker.ErrUnauthorized
+	if err := s.authorizeIdentity(access); err != nil {
+		return err
 	}
 	if !s.EnrollmentExpires.After(access.At) {
 		return coreteamworker.ErrExpired
@@ -564,13 +635,32 @@ func (s teamWorkerRunState) authorize(access coreteamworker.WorkerAccess) error 
 	return nil
 }
 
+func (s teamWorkerRunState) authorizeIdentity(access coreteamworker.WorkerAccess) error {
+	if access.Validate() != nil || access.WorkerID != s.WorkerID || access.IdentityDigest != s.IdentityDigest {
+		return coreteamworker.ErrUnauthorized
+	}
+	return nil
+}
+
 func (s teamWorkerRunState) requireFence(access coreteamworker.WorkerAccess, fence coreteamworker.LeaseFence) error {
-	if err := s.authorize(access); err != nil {
+	if err := s.authorizeIdentity(access); err != nil {
 		return err
 	}
 	if fence.Validate() != nil || fence.WorkerID != s.WorkerID || fence.ExecutionID != s.ExecutionID || fence.RoleID != s.RoleID ||
 		fence.Attempt != s.Attempt || fence.LeaseEpoch != s.LeaseEpoch || s.RunStatus != string(coreteam.ExecutionRunning) ||
-		s.LeaseExpires == nil || !s.LeaseExpires.After(access.At) {
+		s.WorkerStatus != "active" || s.LeaseExpires == nil || !s.LeaseExpires.After(access.At) {
+		return coreteamworker.ErrLeaseConflict
+	}
+	return nil
+}
+
+func (s teamWorkerRunState) requireCompletionFence(access coreteamworker.WorkerAccess, fence coreteamworker.LeaseFence) error {
+	if err := s.authorizeIdentity(access); err != nil {
+		return err
+	}
+	if fence.Validate() != nil || fence.WorkerID != s.WorkerID || fence.ExecutionID != s.ExecutionID || fence.RoleID != s.RoleID ||
+		fence.Attempt != s.Attempt || fence.LeaseEpoch != s.LeaseEpoch || s.RunStatus != string(coreteam.ExecutionRunning) ||
+		s.WorkerStatus != "active" || s.LeaseExpires == nil {
 		return coreteamworker.ErrLeaseConflict
 	}
 	return nil

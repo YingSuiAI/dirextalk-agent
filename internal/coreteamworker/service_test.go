@@ -28,6 +28,7 @@ var (
 	testIdentity     = strings.Repeat("a", 64)
 	testPlanHash     = strings.Repeat("b", 64)
 	testEventHash    = strings.Repeat("c", 64)
+	testRuntimeHash  = strings.Repeat("d", 64)
 	testResultJSON   = []byte(`{"schema_version":1,"status":"completed","summary":"bounded result","deliverables":[],"tests":[],"risks":[],"usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":40,"reasoning_output_tokens":10}}`)
 	testResult       = sha256Hex(testResultJSON)
 )
@@ -134,6 +135,7 @@ func TestCoreTeamWorkerChallengeEnrollmentAndAssignment(t *testing.T) {
 
 	assignment, err := service.GetAssignment(context.Background(), AssignmentRequest{WorkerID: testWorker})
 	if err != nil || assignment.ExecutionID != testExecution || assignment.RoleID != "build" || assignment.PlanDigest != testPlanHash ||
+		assignment.RuntimeContextDigest != testRuntimeHash ||
 		len(assignment.Capabilities) != 2 || assignment.RuntimeID != coreteam.OfficialRuntimeID {
 		t.Fatalf("assignment=%+v err=%v", assignment, err)
 	}
@@ -325,6 +327,23 @@ func TestCoreTeamWorkerRejectsInvalidPayloadsAndRedactsProviderErrors(t *testing
 	}
 }
 
+func TestCoreTeamWorkerAssignmentRequiresBoundRuntimeContext(t *testing.T) {
+	repo := validWorkerRepository()
+	repo.assignment.RuntimeContextDigest = ""
+	service := newWorkerTestService(t, repo, identityVerifierStub{
+		worker: VerifiedIdentity{WorkerID: testWorker, Digest: testIdentity},
+	})
+
+	if _, err := service.GetAssignment(context.Background(), AssignmentRequest{WorkerID: testWorker}); !errors.Is(err, ErrRuntimeUnavailable) {
+		t.Fatalf("missing runtime-context digest err=%v", err)
+	}
+
+	repo.assignment.RuntimeContextDigest = strings.Repeat("D", 64)
+	if _, err := service.GetAssignment(context.Background(), AssignmentRequest{WorkerID: testWorker}); !errors.Is(err, ErrRuntimeUnavailable) {
+		t.Fatalf("non-canonical runtime-context digest err=%v", err)
+	}
+}
+
 func TestCoreTeamWorkerRejectsRepositoryAuthorityExpansion(t *testing.T) {
 	verifier := identityVerifierStub{
 		enrollment: VerifiedIdentity{WorkerID: testWorker, Digest: testIdentity},
@@ -428,8 +447,9 @@ func validWorkerRepository() *workerRepositoryStub {
 		assignment: Assignment{
 			WorkerID: testWorker, ExecutionID: testExecution, PlanID: testPlan, RoleID: "build", Attempt: 1,
 			PlanDigest: testPlanHash, Goal: "Implement and test the bounded change.",
-			Capabilities: []coreteam.Capability{coreteam.CapabilityRepositoryWrite, coreteam.CapabilityTest},
-			RuntimeID:    coreteam.OfficialRuntimeID, OutputTokens: 32768, ResultSchemaVersion: 1,
+			RuntimeContextDigest: testRuntimeHash,
+			Capabilities:         []coreteam.Capability{coreteam.CapabilityRepositoryWrite, coreteam.CapabilityTest},
+			RuntimeID:            coreteam.OfficialRuntimeID, OutputTokens: 32768, ResultSchemaVersion: 1,
 		},
 		lease:      Lease{Fence: fence, ExpiresAt: testNow.Add(time.Minute)},
 		milestone:  MilestoneReceipt{EventID: testMilestone, Sequence: 1, AcceptedAt: testNow},

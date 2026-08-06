@@ -35,6 +35,7 @@ func TestCoreTeamWorkerProtoExposesOnlyClosedPrivateProtocol(t *testing.T) {
 	}
 	for _, required := range []string{
 		"message CoreTeamWorkerLeaseFence", "uint32 attempt", "uint64 lease_epoch", "string plan_digest",
+		"string runtime_context_digest = 12;",
 		"string event_digest", "string result_digest", "google.protobuf.Timestamp expires_at",
 		"bytes result_json", "reserved 6;", `reserved "message";`,
 	} {

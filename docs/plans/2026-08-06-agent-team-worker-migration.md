@@ -568,11 +568,17 @@ git commit -m "feat: add fenced Team Worker protocol"
 - Create: `internal/coreteaminput/compile_test.go`
 - Create: `internal/coreteamruntime/pi.go`
 - Create: `internal/coreteamruntime/pi_test.go`
+- Create: `internal/coreteamruntime/process.go`
+- Create: `internal/coreteamruntime/pi_binary_integration_test.go`
+- Create: `internal/pisandbox/`
+- Create: `cmd/dirextalk-pi-sandbox/`
 - Create: `cmd/dirextalk-cloud-worker/receipt.go`
 - Create: `cmd/dirextalk-cloud-worker/receipt_unix.go`
 - Create: `cmd/dirextalk-cloud-worker/receipt_test.go`
 - Create: `cmd/dirextalk-cloud-worker/secret_unix.go`
 - Create: `cmd/dirextalk-cloud-worker/secret_unix_test.go`
+- Create: `cmd/dirextalk-cloud-worker/control_key_linux.go`
+- Create: `cmd/dirextalk-cloud-worker/control_key_linux_test.go`
 - Create: `internal/coreteamruntime/result.go`
 - Create: `internal/coreteamruntime/result_test.go`
 - Create: `cmd/dirextalk-cloud-worker/main.go`
@@ -597,17 +603,17 @@ old credential reader did not unlink after read. Reuse their atomic journal,
 CAS, validation, and secret-canary patterns only; the model no-duplicate
 boundary and secure one-time secret consumption are new required behavior.
 
-- [ ] **Step 1: Port the accepted behavior tests before implementation**
+- [x] **Step 1: Port the accepted behavior tests before implementation**
 
 Recreate tests for Pi 0.83.0 event parsing, `dirextalk_submit_result`, output-token override, process timeout/output/non-zero failures, closed provider/auth/quota/rate/request/server/network failures, invalid event, missing final result, empty workspace, result size/digest, and raw-error destruction. Also port canonical context/input manifest tests and add exact model/revision/context/credential/workspace digest binding, secure one-time secret-file consumption, write-before-run receipt, Complete-response validation, and restart replay that never invokes Pi twice.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run: `GOWORK=off go test ./internal/coreteamruntime ./cmd/dirextalk-cloud-worker -count=1`
 
 Expected: FAIL because the runtime and command do not exist.
 
-- [ ] **Step 3: Implement the exact runtime contract**
+- [x] **Step 3: Implement the exact runtime contract**
 
 ```go
 type FailureStage string
@@ -616,14 +622,27 @@ type Result = coreteamworker.ResultPayloadV1
 type Runner interface { Run(context.Context, Assignment, Workspace) (Result, ClosedFailure, error) }
 ```
 
-Use argv arrays only inside the Worker process, an empty environment plus explicitly materialized model variables, a task-local `0600` Pi override, fixed output limits, no provider text in returned failures, and cleanup of temporary files in `defer`. Central stores a required canonical runtime-context digest binding execution/role/attempt/Plan, model provider/name/interface/revision, context, credential, and input manifest. The Worker verifies every materialized byte against that assignment before claim execution.
+Use argv arrays only inside the Worker process, an empty environment plus explicitly materialized model variables, a task-local `0600` Pi override, fixed output limits, no provider text in returned failures, and cleanup of temporary files in `defer`. Central stores a required canonical runtime-context digest binding execution/role/attempt/Plan, model provider/name/interface/revision, context, credential, input manifest, and canonical materialized-workspace tree digest. The tree digest is domain-separated and covers every relative path, entry kind, executable bit, safe symlink target, regular-file size, and file-content digest under fixed file/byte/path limits. The Worker verifies the real workspace tree and every other materialized byte against the assignment before consuming the model credential or launching Pi. TLS, context, manifest, secret, receipt, runtime-state, and immutable digest-sidecar paths must remain outside the fixed workspace root.
 
-Before Pi spawn it atomically persists and fsyncs `launch_committed`; recovery
-from that state never runs Pi again and reports the closed
-`execution_uncertain` outcome. After Pi returns it atomically persists the
-complete canonical `CompleteRequest` as `completion_pending`; recovery
-replays only those exact bytes and the stable completion ID. It writes
-`completion_acked` only after validating every response field. Model
+The sandbox policy is derived only from the role's closed capability list. A
+role without `repository.write` receives read/execute access to the current
+workspace even when it has shell, test, or Git capability; only an explicit
+`repository.write` capability grants workspace mutation. Before result
+collection, Pi-owned entries are normalized to the shared Worker group while
+preserving executable intent. Recovery and cleanup use the parent Worker's
+fixed scoped filesystem identity transition for Pi-owned private entries and
+fail closed if the task root cannot be removed.
+
+Before Pi spawn it atomically persists and fsyncs `launch_committed` together
+with the deterministic, fence-bound `execution_uncertain` `CompleteRequest`;
+recovery from that state never initializes or runs Pi and submits only those
+exact bytes. After Pi returns it atomically persists the complete canonical
+`CompleteRequest` as `completion_pending`; recovery replays only those exact
+bytes and the stable completion ID. Central accepts this late completion after
+lease TTL expiry only while the Worker and exact execution/role/attempt/lease
+epoch are still current; any superseding attempt or epoch remains fenced. The
+Worker writes `completion_acked` only after validating every response field.
+Model
 credentials are safely opened through a fixed private directory, checked for
 owner/mode/link/size, unlinked and directory-fsynced before Pi. The mTLS
 credential remains outside Pi's filesystem view until completion recovery no
@@ -631,13 +650,35 @@ longer needs it. The adapter converts the qualified Pi final extension plus
 aggregate usage into canonical `ResultPayloadV1`; it never forwards Pi event
 streams, tool payloads, stdout, stderr, or reasoning text.
 
-- [ ] **Step 4: Run real-binary qualification and build checks**
+- [x] **Step 4: Run real-binary qualification and build checks**
 
 Run: `DIREXTALK_PI_QUALIFY=1 GOWORK=off go test ./internal/coreteamruntime -run TestOfficialPiBinaryLoopback -count=1 && GOWORK=off go test -race ./internal/coreteaminput ./internal/coreteamruntime ./internal/coreteamworker ./cmd/dirextalk-cloud-worker -count=1 && GOWORK=off GOOS=linux GOARCH=amd64 go build ./cmd/dirextalk-cloud-worker`
 
 Expected: PASS with pinned Pi and extension digests and one structured result.
 
-- [ ] **Step 5: Commit**
+Verified on 2026-08-07 with source archive SHA-256
+`92747519a06e8c8c4b446508144e4f869f50755a554239b565141d10ca09f048`
+on disposable AWS AL2023 `x86_64` instance `i-08b93e7d3f7876449` in
+`ap-northeast-3`. SSM command
+`b97b9bd6-72ae-4342-a073-2f6f599eb13e` passed focused and race tests, native
+Landlock ABI 2 enforcement, kernel child-credential transition from Worker UID
+`65532` to Pi UID `65533`, zero Pi capabilities, control-key isolation, real
+two-process no-duplicate execution, exact completion replay after response
+loss without Pi initialization, pinned Pi 0.83.0 loopback model execution, and
+the `linux/amd64` Containerfile build. The final image also ran bash and git as UID/GID
+`65532:65532`, pinned the parent Worker's three effective file capabilities,
+and verified parent-only receipt plus shared workspace modes. The capability
+qualification ran the parent as UID/GID `65532:65532` and proved it can recover
+and remove Pi-owned private entries using only `CAP_KILL`, `CAP_SETGID`, and
+`CAP_SETUID`. Worker- and Pi-owned repository files were normalized to the
+shared GID contract, a real Git status ran as Pi UID `65533`, and hard-linked
+workspace files failed closed. The resulting local qualification image was
+`sha256:f4833a7fb5f4fb2463d8106a79f81055d5aa368cd79d78a5c745a2995bf3ee5a`;
+the Worker and sandbox binary digests were respectively
+`fb760be314613fe70b5f1b6a042fbd1fff19867892c89478e9fdc2bf081d8b79`
+and `dcc1c648bdde144b9097d8414680e79b7731725a4834757ec8ac883504a43f2f`.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/coreteaminput internal/coreteamruntime internal/coreteamworker internal/store/postgres api/proto migrations cmd/dirextalk-cloud-worker deploy/container/pi-worker
@@ -708,9 +749,14 @@ part of this migration.
 
 First recreate the accepted tests for deterministic rootfs packing, Linux
 x86_64 release identity, complete Pi runtime assets, AppleDouble rejection,
+fixed `dirextalk-worker` passwd/group records at UID/GID `65532:65532`,
 immutable installation manifest, private builder reachability, AMI
 attestation, resumable publication, builder cleanup, and independent negative
-read-back. Add ECR immutable-tag publication/readback, release resume, release
+read-back. Require workspace archives to retain their independent download
+digest, then have the materializer compute the Task 8 canonical tree digest
+after extraction and reject any mismatch before credential consumption. Prove
+that all mutable control roots and fixed immutable digest sidecars remain
+disjoint from the workspace root. Add ECR immutable-tag publication/readback, release resume, release
 import/selection, Foundation KMS/S3/DynamoDB/Lambda schedule, digest-only
 Reaper image, task bundle encryption/materialization, task-scoped model
 credential, expiry manifest, and Reaper CAS/fence tests. Then require no ingress/SSH/SSM on task Workers, encrypted root
@@ -739,6 +785,14 @@ type CreateRequest struct { OwnerID, TaskID, ExecutionID, RoleID, AMIID, ImageDi
 ```
 
 Reuse `coreworkload/aws.CredentialResolver` and the target Core pricing/readiness components. Reuse the old qualified publication, Foundation, and AMI construction mechanics by capability-level port, not by branch merge or historical AMI selection. The release command must publish immutable Agent/Worker/Reaper digests and produce only Linux `x86_64` Worker/Reaper artifacts; every tag is reconciled by digest read-back. Bootstrap may create only the fixed Team Foundation and a typed, task-scoped encrypted bundle with least-privilege object/secret access derived by Central; no caller/model can provide IAM policy, URL, user data, command, or shell. The Team provider may expose only the fixed Worker resource graph. Controller cleanup is primary; the independently scheduled digest-pinned Reaper is the expiry fallback and must use the same immutable ownership/fence facts.
+
+The task materializer verifies each downloaded archive/object digest, extracts
+into the fixed task workspace using the qualified archive-hygiene rules, then
+computes the canonical materialized-tree digest from Task 8 and binds that
+value into the runtime context. It creates context, manifest, mTLS, secret,
+receipt, and runtime-state paths only in fixed private roots outside the
+workspace tree; archive-byte digests and materialized-tree digests are
+different typed facts and must never be substituted for one another.
 
 - [ ] **Step 4: Run template, provider, PostgreSQL, and race tests**
 

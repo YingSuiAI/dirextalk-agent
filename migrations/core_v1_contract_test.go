@@ -8,11 +8,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 5 {
-		t.Fatalf("CurrentVersion = %d, want 5", CurrentVersion)
+	if CurrentVersion != 6 {
+		t.Fatalf("CurrentVersion = %d, want 6", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" || entries[4] != "000005_team_worker_protocol.up.sql" {
+	if len(entries) != 6 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" || entries[4] != "000005_team_worker_protocol.up.sql" || entries[5] != "000006_team_worker_runtime_context.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -217,6 +217,29 @@ func TestCoreTeamWorkerSchemaContractIsClosed(t *testing.T) {
 	for _, forbidden := range []string{"access_key", "secret_key", "session_token", "provider_error", "stdout", "stderr", "reasoning", "tool_payload"} {
 		if strings.Contains(strings.ToLower(contents), forbidden) {
 			t.Errorf("Core Team Worker schema contains forbidden field %q", forbidden)
+		}
+	}
+}
+
+func TestCoreTeamWorkerRuntimeContextMigrationIsAppendOnlyAndClosed(t *testing.T) {
+	script, err := Files.ReadFile("000006_team_worker_runtime_context.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(script)
+	for _, required := range []string{
+		"ADD COLUMN runtime_context_digest text",
+		"runtime_context_digest ~ '^[a-f0-9]{64}$'",
+		"worker_id IS NULL OR runtime_context_digest IS NOT NULL",
+		"failure_code IN ('process','pi','invalid_result','timeout','canceled','internal','execution_uncertain')",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Errorf("runtime-context migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"access_key", "secret_key", "credential_value", "provider_error", "stdout", "stderr", "reasoning"} {
+		if strings.Contains(strings.ToLower(contents), forbidden) {
+			t.Errorf("runtime-context migration contains forbidden field %q", forbidden)
 		}
 	}
 }

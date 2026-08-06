@@ -39,6 +39,26 @@ func TestCoreTeamWorkerPostgresEnrollmentLeaseAndExactReplay(t *testing.T) {
 		RoleID: "research", Attempt: 1, IdentityDigest: identityDigest, IdempotencyKey: uuid.NewString(),
 		RequestDigest: strings.Repeat("9", 64), CreatedAt: now, ExpiresAt: now.Add(5 * time.Minute),
 	}
+	if _, _, err := repo.CreateChallenge(ctx, challenge); !errors.Is(err, coreteamworker.ErrConflict) {
+		t.Fatalf("challenge without bound runtime context err=%v", err)
+	}
+	runtimeContext := coreteamworker.RuntimeContextBindingCommand{
+		Scope: command.Scope, ExecutionID: command.InitialExecutionID, RoleID: "research", Attempt: 1,
+		Digest: strings.Repeat("f", 64), At: now,
+	}
+	replay, err := repo.BindRoleAttemptRuntimeContext(ctx, runtimeContext)
+	if err != nil || replay {
+		t.Fatalf("runtime-context bind replay=%v err=%v", replay, err)
+	}
+	replay, err = repo.BindRoleAttemptRuntimeContext(ctx, runtimeContext)
+	if err != nil || !replay {
+		t.Fatalf("runtime-context replay=%v err=%v", replay, err)
+	}
+	conflictingContext := runtimeContext
+	conflictingContext.Digest = strings.Repeat("e", 64)
+	if _, err := repo.BindRoleAttemptRuntimeContext(ctx, conflictingContext); !errors.Is(err, coreteamworker.ErrConflict) {
+		t.Fatalf("changed runtime-context digest err=%v", err)
+	}
 	createdChallenge, replay, err := repo.CreateChallenge(ctx, challenge)
 	if err != nil || replay || createdChallenge != challenge {
 		t.Fatalf("created challenge=%+v replay=%v err=%v", createdChallenge, replay, err)
@@ -81,7 +101,8 @@ func TestCoreTeamWorkerPostgresEnrollmentLeaseAndExactReplay(t *testing.T) {
 	access := coreteamworker.WorkerAccess{WorkerID: workerID, IdentityDigest: identityDigest, At: now.Add(2 * time.Second)}
 	assignment, err := repo.GetAssignment(ctx, access)
 	if err != nil || assignment.ExecutionID != command.InitialExecutionID || assignment.RoleID != "research" ||
-		assignment.Goal != command.Plan.Roles[0].Goal || assignment.PlanDigest != command.Plan.Digest || assignment.RuntimeID != coreteam.OfficialRuntimeID {
+		assignment.Goal != command.Plan.Roles[0].Goal || assignment.PlanDigest != command.Plan.Digest ||
+		assignment.RuntimeContextDigest != runtimeContext.Digest || assignment.RuntimeID != coreteam.OfficialRuntimeID {
 		t.Fatalf("assignment=%+v err=%v", assignment, err)
 	}
 	foreign := access
@@ -260,6 +281,9 @@ func TestCoreTeamWorkerPostgresEnrollmentLeaseAndExactReplay(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT status,result_digest,result_size_bytes,result_payload FROM core_team_role_runs WHERE execution_id=$1 AND role_id='research'`, command.InitialExecutionID).Scan(&roleStatus, &storedResultDigest, &storedResultSize, &storedResult); err != nil || roleStatus != string(coreteam.ExecutionCleaningUp) || storedResultDigest != complete.Result.Digest || storedResultSize != int64(len(complete.Result.PayloadJSON)) || !bytes.Equal(storedResult, complete.Result.PayloadJSON) {
 		t.Fatalf("role status=%q digest=%q size=%d payload=%q err=%v", roleStatus, storedResultDigest, storedResultSize, storedResult, err)
 	}
+	if _, err := repo.GetAssignment(ctx, access); !errors.Is(err, coreteamworker.ErrConflict) {
+		t.Fatalf("post-completion assignment err=%v, want conflict", err)
+	}
 	sameCompletion, replay, err := repo.Complete(ctx, complete)
 	if err != nil || !replay || sameCompletion != completed {
 		t.Fatalf("same completion=%+v replay=%v err=%v", sameCompletion, replay, err)
@@ -290,6 +314,7 @@ func TestCoreTeamWorkerPostgresRejectsExpiredEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := NewCoreTeamWorkerStore(store)
+	bindTeamWorkerRuntimeContext(t, ctx, repo, command, now)
 	challenge := coreteamworker.Challenge{
 		ChallengeID: uuid.NewString(), WorkerID: uuid.NewString(), Scope: command.Scope, ExecutionID: command.InitialExecutionID,
 		RoleID: "research", Attempt: 1, IdentityDigest: strings.Repeat("a", 64), IdempotencyKey: uuid.NewString(),
@@ -307,6 +332,53 @@ func TestCoreTeamWorkerPostgresRejectsExpiredEnrollment(t *testing.T) {
 	}
 }
 
+func TestCoreTeamWorkerPostgresAcceptsCurrentFenceCompletionAfterLeaseExpiry(t *testing.T) {
+	ctx, store, teamRepo, cleanup := teamStoreFixture(t)
+	defer cleanup()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	command := teamCreatePlanCommand(t, ctx, store, now)
+	if _, _, err := teamRepo.CreatePlan(ctx, command); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `UPDATE core_tasks SET status='queued' WHERE task_id=$1`, command.Plan.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewCoreTeamWorkerStore(store)
+	bindTeamWorkerRuntimeContext(t, ctx, repo, command, now)
+	workerID := uuid.NewString()
+	identityDigest := strings.Repeat("a", 64)
+	challenge := coreteamworker.Challenge{
+		ChallengeID: uuid.NewString(), WorkerID: workerID, Scope: command.Scope, ExecutionID: command.InitialExecutionID,
+		RoleID: "research", Attempt: 1, IdentityDigest: identityDigest, IdempotencyKey: uuid.NewString(),
+		RequestDigest: strings.Repeat("9", 64), CreatedAt: now, ExpiresAt: now.Add(5 * time.Minute),
+	}
+	if _, _, err := repo.CreateChallenge(ctx, challenge); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.Enroll(ctx, coreteamworker.EnrollmentCommand{
+		ChallengeID: challenge.ChallengeID, WorkerID: workerID, IdentityDigest: identityDigest,
+		At: now.Add(time.Second), ExpiresAt: now.Add(2 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lease, _, err := repo.Claim(ctx, coreteamworker.ClaimCommand{
+		Access:      coreteamworker.WorkerAccess{WorkerID: workerID, IdentityDigest: identityDigest, At: now.Add(2 * time.Second)},
+		ExecutionID: command.InitialExecutionID, RoleID: "research", Attempt: 1, ClaimID: uuid.NewString(), TTL: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	late := lease.ExpiresAt.Add(2 * time.Minute)
+	completed, replay, err := repo.Complete(ctx, coreteamworker.CompleteCommand{
+		Access: coreteamworker.WorkerAccess{WorkerID: workerID, IdentityDigest: identityDigest, At: late},
+		Fence:  lease.Fence, CompletionID: uuid.NewString(), Outcome: coreteamworker.OutcomeFailed,
+		FailureCode: coreteamworker.FailureExecutionUncertain,
+	})
+	if err != nil || replay || completed.Outcome != coreteamworker.OutcomeFailed || !completed.AcceptedAt.Equal(late) {
+		t.Fatalf("completion=%+v replay=%v err=%v", completed, replay, err)
+	}
+}
+
 func TestCoreTeamWorkerPostgresSerializesWithUncommittedAccountDeprovision(t *testing.T) {
 	ctx, store, teamRepo, cleanup := teamStoreFixture(t)
 	defer cleanup()
@@ -320,6 +392,7 @@ func TestCoreTeamWorkerPostgresSerializesWithUncommittedAccountDeprovision(t *te
 	}
 
 	repo := NewCoreTeamWorkerStore(store)
+	bindTeamWorkerRuntimeContext(t, ctx, repo, command, now)
 	workerID := uuid.NewString()
 	identityDigest := strings.Repeat("a", 64)
 	challenge := coreteamworker.Challenge{
@@ -390,4 +463,23 @@ func TestCoreTeamWorkerPostgresSerializesWithUncommittedAccountDeprovision(t *te
 	if err := store.pool.QueryRow(ctx, `SELECT lease_expires_at FROM core_team_role_runs WHERE execution_id=$1 AND role_id='research'`, command.InitialExecutionID).Scan(&leaseExpires); err != nil || !leaseExpires.Equal(claim.ExpiresAt) {
 		t.Fatalf("lease expiry changed across deprovision fence: got=%v want=%v err=%v", leaseExpires, claim.ExpiresAt, err)
 	}
+}
+
+func bindTeamWorkerRuntimeContext(
+	t *testing.T,
+	ctx context.Context,
+	repo *CoreTeamWorkerStore,
+	command coreteam.CreatePlanCommand,
+	at time.Time,
+) string {
+	t.Helper()
+	digest := strings.Repeat("f", 64)
+	replay, err := repo.BindRoleAttemptRuntimeContext(ctx, coreteamworker.RuntimeContextBindingCommand{
+		Scope: command.Scope, ExecutionID: command.InitialExecutionID, RoleID: "research", Attempt: 1,
+		Digest: digest, At: at,
+	})
+	if err != nil || replay {
+		t.Fatalf("bind runtime context replay=%v err=%v", replay, err)
+	}
+	return digest
 }

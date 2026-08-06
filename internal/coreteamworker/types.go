@@ -126,23 +126,44 @@ type AssignmentRequest struct {
 	WorkerID string `json:"worker_id"`
 }
 
+// RuntimeContextBindingCommand is owned by the Central controller. It freezes
+// the exact materialized runtime context before any Worker identity is issued.
+type RuntimeContextBindingCommand struct {
+	Scope       coreteam.Scope
+	ExecutionID string
+	RoleID      string
+	Attempt     uint32
+	Digest      string
+	At          time.Time
+}
+
+func (c RuntimeContextBindingCommand) Validate() error {
+	if c.Scope.Validate() != nil || !validUUID(c.ExecutionID) || !validRoleID(c.RoleID) ||
+		c.Attempt == 0 || !validDigest(c.Digest) || c.At.IsZero() {
+		return ErrInvalid
+	}
+	return nil
+}
+
 type Assignment struct {
-	WorkerID            string                `json:"worker_id"`
-	ExecutionID         string                `json:"execution_id"`
-	PlanID              string                `json:"plan_id"`
-	RoleID              string                `json:"role_id"`
-	Attempt             uint32                `json:"attempt"`
-	PlanDigest          string                `json:"plan_digest"`
-	Goal                string                `json:"goal"`
-	Capabilities        []coreteam.Capability `json:"capabilities"`
-	RuntimeID           string                `json:"runtime_id"`
-	OutputTokens        uint32                `json:"output_tokens"`
-	ResultSchemaVersion uint32                `json:"result_schema_version"`
+	WorkerID             string                `json:"worker_id"`
+	ExecutionID          string                `json:"execution_id"`
+	PlanID               string                `json:"plan_id"`
+	RoleID               string                `json:"role_id"`
+	Attempt              uint32                `json:"attempt"`
+	PlanDigest           string                `json:"plan_digest"`
+	RuntimeContextDigest string                `json:"runtime_context_digest"`
+	Goal                 string                `json:"goal"`
+	Capabilities         []coreteam.Capability `json:"capabilities"`
+	RuntimeID            string                `json:"runtime_id"`
+	OutputTokens         uint32                `json:"output_tokens"`
+	ResultSchemaVersion  uint32                `json:"result_schema_version"`
 }
 
 func (a Assignment) Validate() error {
 	if !validUUID(a.WorkerID) || !validUUID(a.ExecutionID) || !validUUID(a.PlanID) || !distinct(a.WorkerID, a.ExecutionID, a.PlanID) ||
-		!validRoleID(a.RoleID) || a.Attempt == 0 || !validDigest(a.PlanDigest) || !validText(a.Goal, coreteam.MaxRoleGoalBytes) ||
+		!validRoleID(a.RoleID) || a.Attempt == 0 || !validDigest(a.PlanDigest) || !validDigest(a.RuntimeContextDigest) ||
+		!validText(a.Goal, coreteam.MaxRoleGoalBytes) ||
 		a.RuntimeID != coreteam.OfficialRuntimeID || a.OutputTokens == 0 || a.OutputTokens > coreteam.MaxOutputTokens ||
 		a.ResultSchemaVersion != ResultSchemaVersion || !validCapabilities(a.Capabilities) {
 		return ErrInvalid
@@ -322,12 +343,13 @@ const (
 type FailureCode string
 
 const (
-	FailureProcess       FailureCode = "process"
-	FailurePi            FailureCode = "pi"
-	FailureInvalidResult FailureCode = "invalid_result"
-	FailureTimeout       FailureCode = "timeout"
-	FailureCanceled      FailureCode = "canceled"
-	FailureInternal      FailureCode = "internal"
+	FailureProcess            FailureCode = "process"
+	FailurePi                 FailureCode = "pi"
+	FailureInvalidResult      FailureCode = "invalid_result"
+	FailureTimeout            FailureCode = "timeout"
+	FailureCanceled           FailureCode = "canceled"
+	FailureInternal           FailureCode = "internal"
+	FailureExecutionUncertain FailureCode = "execution_uncertain"
 )
 
 type ResultUsageV1 struct {
@@ -464,6 +486,10 @@ type IdentityVerifier interface {
 	VerifyWorker(context.Context) (VerifiedIdentity, error)
 }
 
+type RuntimeContextBinder interface {
+	BindRoleAttemptRuntimeContext(context.Context, RuntimeContextBindingCommand) (bool, error)
+}
+
 func validUUID(value string) bool { return coretask.ValidUUID(value) }
 
 func validRoleID(value string) bool { return roleIDPattern.MatchString(value) }
@@ -533,7 +559,7 @@ func validHealth(value Health) bool {
 
 func validFailure(value FailureCode) bool {
 	switch value {
-	case FailureProcess, FailurePi, FailureInvalidResult, FailureTimeout, FailureCanceled, FailureInternal:
+	case FailureProcess, FailurePi, FailureInvalidResult, FailureTimeout, FailureCanceled, FailureInternal, FailureExecutionUncertain:
 		return true
 	default:
 		return false

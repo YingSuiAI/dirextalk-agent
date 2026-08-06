@@ -34,6 +34,7 @@ enum CoreTeamWorkerFailureCode {
   CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT = 4;
   CORE_TEAM_WORKER_FAILURE_CODE_CANCELED = 5;
   CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL = 6;
+  CORE_TEAM_WORKER_FAILURE_CODE_EXECUTION_UNCERTAIN = 7;
 }
 
 message CoreTeamWorkerLeaseFence {
@@ -93,6 +94,7 @@ message CoreTeamWorkerServiceGetAssignmentResponse {
   string runtime_id = 9;
   uint32 output_tokens = 10;
   uint32 result_schema_version = 11;
+  string runtime_context_digest = 12;
 }
 
 message CoreTeamWorkerServiceClaimRequest {

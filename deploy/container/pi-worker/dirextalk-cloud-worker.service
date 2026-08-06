@@ -1,0 +1,74 @@
+[Unit]
+Description=Dirextalk official Agent Core v1 Team Pi Worker
+Documentation=https://github.com/YingSuiAI/dirextalk-agent
+Wants=network-online.target
+After=network-online.target
+ConditionFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker
+ConditionPathExists=/etc/dirextalk-worker/worker.env
+ConditionPathIsReadWrite=/var/lib/dirextalk-worker
+StartLimitIntervalSec=5min
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=65532
+Group=65532
+WorkingDirectory=/var/lib/dirextalk-worker
+StateDirectory=dirextalk-worker dirextalk-worker/runtime-state dirextalk-worker/receipts dirextalk-worker/workspaces dirextalk-worker/tmp
+StateDirectoryMode=0770
+RuntimeDirectory=dirextalk-worker dirextalk-worker/secrets
+RuntimeDirectoryMode=0700
+UMask=0077
+
+Environment=HOME=/var/lib/dirextalk-worker
+Environment=TMPDIR=/var/lib/dirextalk-worker/tmp
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+Environment=DIREXTALK_PI_VERSION=0.83.0
+Environment=DIREXTALK_PI_EXECUTABLE=/opt/dirextalk-worker/runtimes/pi/bin/pi
+Environment=DIREXTALK_PI_EXECUTABLE_SHA256=c25c16162b62eda32deb0d544bcae5e5d6c6148958e17130e6aed2d115104f1a
+Environment=DIREXTALK_PI_EXTENSION=/opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts
+Environment=DIREXTALK_PI_EXTENSION_SHA256=39e98a6a8339a48c0b1609ff7aed3c7af0807ee9e2cb4a975b64e46a2e5f94d9
+Environment=DIREXTALK_PI_STATE_ROOT=/var/lib/dirextalk-worker/runtime-state
+Environment=DIREXTALK_PI_SEARCH_PATH=/usr/bin:/bin
+Environment=DIREXTALK_PI_SANDBOX=/usr/local/bin/dirextalk-pi-sandbox
+Environment=DIREXTALK_PI_SANDBOX_SHA256_FILE=/usr/local/share/dirextalk-worker/dirextalk-pi-sandbox.sha256
+Environment=DIREXTALK_WORKER_RECEIPT_ROOT=/var/lib/dirextalk-worker/receipts
+Environment=DIREXTALK_WORKER_SECRET_ROOT=/run/dirextalk-worker/secrets
+Environment=DIREXTALK_WORKER_BINARY_SHA256_FILE=/usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256
+EnvironmentFile=/etc/dirextalk-worker/worker.env
+
+ExecStart=/usr/local/bin/dirextalk-cloud-worker
+ExecStartPre=/bin/chmod 0700 /var/lib/dirextalk-worker/receipts
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_KILL CAP_SETGID CAP_SETUID
+AmbientCapabilities=CAP_KILL CAP_SETGID CAP_SETUID
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=ptraceable
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dirextalk-worker
+ProcSubset=pid
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SocketBindDeny=any
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

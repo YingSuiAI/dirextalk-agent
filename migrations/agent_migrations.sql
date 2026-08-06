@@ -3772,3 +3772,25 @@ CREATE TABLE core_team_worker_replays (
     PRIMARY KEY (worker_id,operation,idempotency_id)
 );
 -- dirextalk-agent migration end 000005_team_worker_protocol.up.sql
+-- dirextalk-agent migration begin 000006_team_worker_runtime_context.up.sql
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_team_role_runs
+        WHERE worker_id IS NOT NULL
+    ) OR EXISTS (
+        SELECT 1
+        FROM core_team_worker_challenges
+    ) THEN
+        RAISE EXCEPTION 'existing Team Worker state has no recoverable runtime context' USING ERRCODE = '55000';
+    END IF;
+END;
+$$;
+
+ALTER TABLE core_team_role_runs
+    ADD COLUMN runtime_context_digest text CHECK (runtime_context_digest IS NULL OR runtime_context_digest ~ '^[a-f0-9]{64}$'),
+    ADD CONSTRAINT core_team_role_run_runtime_context_binding CHECK (worker_id IS NULL OR runtime_context_digest IS NOT NULL),
+    DROP CONSTRAINT core_team_role_runs_failure_code_check,
+    ADD CONSTRAINT core_team_role_runs_failure_code_check CHECK (failure_code IS NULL OR failure_code IN ('process','pi','invalid_result','timeout','canceled','internal','execution_uncertain'));
+-- dirextalk-agent migration end 000006_team_worker_runtime_context.up.sql

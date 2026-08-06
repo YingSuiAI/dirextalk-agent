@@ -178,13 +178,14 @@ func (CoreTeamWorkerCompletionOutcome) EnumDescriptor() ([]byte, []int) {
 type CoreTeamWorkerFailureCode int32
 
 const (
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_UNSPECIFIED    CoreTeamWorkerFailureCode = 0
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_PROCESS        CoreTeamWorkerFailureCode = 1
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_PI             CoreTeamWorkerFailureCode = 2
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_INVALID_RESULT CoreTeamWorkerFailureCode = 3
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT        CoreTeamWorkerFailureCode = 4
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_CANCELED       CoreTeamWorkerFailureCode = 5
-	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL       CoreTeamWorkerFailureCode = 6
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_UNSPECIFIED         CoreTeamWorkerFailureCode = 0
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_PROCESS             CoreTeamWorkerFailureCode = 1
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_PI                  CoreTeamWorkerFailureCode = 2
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_INVALID_RESULT      CoreTeamWorkerFailureCode = 3
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT             CoreTeamWorkerFailureCode = 4
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_CANCELED            CoreTeamWorkerFailureCode = 5
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL            CoreTeamWorkerFailureCode = 6
+	CoreTeamWorkerFailureCode_CORE_TEAM_WORKER_FAILURE_CODE_EXECUTION_UNCERTAIN CoreTeamWorkerFailureCode = 7
 )
 
 // Enum value maps for CoreTeamWorkerFailureCode.
@@ -197,15 +198,17 @@ var (
 		4: "CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT",
 		5: "CORE_TEAM_WORKER_FAILURE_CODE_CANCELED",
 		6: "CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL",
+		7: "CORE_TEAM_WORKER_FAILURE_CODE_EXECUTION_UNCERTAIN",
 	}
 	CoreTeamWorkerFailureCode_value = map[string]int32{
-		"CORE_TEAM_WORKER_FAILURE_CODE_UNSPECIFIED":    0,
-		"CORE_TEAM_WORKER_FAILURE_CODE_PROCESS":        1,
-		"CORE_TEAM_WORKER_FAILURE_CODE_PI":             2,
-		"CORE_TEAM_WORKER_FAILURE_CODE_INVALID_RESULT": 3,
-		"CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT":        4,
-		"CORE_TEAM_WORKER_FAILURE_CODE_CANCELED":       5,
-		"CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL":       6,
+		"CORE_TEAM_WORKER_FAILURE_CODE_UNSPECIFIED":         0,
+		"CORE_TEAM_WORKER_FAILURE_CODE_PROCESS":             1,
+		"CORE_TEAM_WORKER_FAILURE_CODE_PI":                  2,
+		"CORE_TEAM_WORKER_FAILURE_CODE_INVALID_RESULT":      3,
+		"CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT":             4,
+		"CORE_TEAM_WORKER_FAILURE_CODE_CANCELED":            5,
+		"CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL":            6,
+		"CORE_TEAM_WORKER_FAILURE_CODE_EXECUTION_UNCERTAIN": 7,
 	}
 )
 
@@ -669,20 +672,21 @@ func (x *CoreTeamWorkerServiceGetAssignmentRequest) GetWorkerId() string {
 }
 
 type CoreTeamWorkerServiceGetAssignmentResponse struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId            string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	ExecutionId         string                 `protobuf:"bytes,2,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
-	PlanId              string                 `protobuf:"bytes,3,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
-	RoleId              string                 `protobuf:"bytes,4,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
-	Attempt             uint32                 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	PlanDigest          string                 `protobuf:"bytes,6,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
-	Goal                string                 `protobuf:"bytes,7,opt,name=goal,proto3" json:"goal,omitempty"`
-	Capabilities        []string               `protobuf:"bytes,8,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
-	RuntimeId           string                 `protobuf:"bytes,9,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
-	OutputTokens        uint32                 `protobuf:"varint,10,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	ResultSchemaVersion uint32                 `protobuf:"varint,11,opt,name=result_schema_version,json=resultSchemaVersion,proto3" json:"result_schema_version,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId             string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	ExecutionId          string                 `protobuf:"bytes,2,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	PlanId               string                 `protobuf:"bytes,3,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	RoleId               string                 `protobuf:"bytes,4,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	Attempt              uint32                 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	PlanDigest           string                 `protobuf:"bytes,6,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
+	Goal                 string                 `protobuf:"bytes,7,opt,name=goal,proto3" json:"goal,omitempty"`
+	Capabilities         []string               `protobuf:"bytes,8,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	RuntimeId            string                 `protobuf:"bytes,9,opt,name=runtime_id,json=runtimeId,proto3" json:"runtime_id,omitempty"`
+	OutputTokens         uint32                 `protobuf:"varint,10,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
+	ResultSchemaVersion  uint32                 `protobuf:"varint,11,opt,name=result_schema_version,json=resultSchemaVersion,proto3" json:"result_schema_version,omitempty"`
+	RuntimeContextDigest string                 `protobuf:"bytes,12,opt,name=runtime_context_digest,json=runtimeContextDigest,proto3" json:"runtime_context_digest,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *CoreTeamWorkerServiceGetAssignmentResponse) Reset() {
@@ -790,6 +794,13 @@ func (x *CoreTeamWorkerServiceGetAssignmentResponse) GetResultSchemaVersion() ui
 		return x.ResultSchemaVersion
 	}
 	return 0
+}
+
+func (x *CoreTeamWorkerServiceGetAssignmentResponse) GetRuntimeContextDigest() string {
+	if x != nil {
+		return x.RuntimeContextDigest
+	}
+	return ""
 }
 
 type CoreTeamWorkerServiceClaimRequest struct {
@@ -1401,7 +1412,7 @@ const file_dirextalk_agent_v1_core_team_worker_proto_rawDesc = "" +
 	"expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x12\x16\n" +
 	"\x06replay\x18\x06 \x01(\bR\x06replay\"H\n" +
 	")CoreTeamWorkerServiceGetAssignmentRequest\x12\x1b\n" +
-	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"\x89\x03\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"\xbf\x03\n" +
 	"*CoreTeamWorkerServiceGetAssignmentResponse\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x17\n" +
@@ -1416,7 +1427,8 @@ const file_dirextalk_agent_v1_core_team_worker_proto_rawDesc = "" +
 	"runtime_id\x18\t \x01(\tR\truntimeId\x12#\n" +
 	"\routput_tokens\x18\n" +
 	" \x01(\rR\foutputTokens\x122\n" +
-	"\x15result_schema_version\x18\v \x01(\rR\x13resultSchemaVersion\"\xb1\x01\n" +
+	"\x15result_schema_version\x18\v \x01(\rR\x13resultSchemaVersion\x124\n" +
+	"\x16runtime_context_digest\x18\f \x01(\tR\x14runtimeContextDigest\"\xb1\x01\n" +
 	"!CoreTeamWorkerServiceClaimRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12!\n" +
 	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12\x17\n" +
@@ -1478,7 +1490,7 @@ const file_dirextalk_agent_v1_core_team_worker_proto_rawDesc = "" +
 	"\x1fCoreTeamWorkerCompletionOutcome\x123\n" +
 	"/CORE_TEAM_WORKER_COMPLETION_OUTCOME_UNSPECIFIED\x10\x00\x121\n" +
 	"-CORE_TEAM_WORKER_COMPLETION_OUTCOME_SUCCEEDED\x10\x01\x12.\n" +
-	"*CORE_TEAM_WORKER_COMPLETION_OUTCOME_FAILED\x10\x02*\xd0\x02\n" +
+	"*CORE_TEAM_WORKER_COMPLETION_OUTCOME_FAILED\x10\x02*\x87\x03\n" +
 	"\x19CoreTeamWorkerFailureCode\x12-\n" +
 	")CORE_TEAM_WORKER_FAILURE_CODE_UNSPECIFIED\x10\x00\x12)\n" +
 	"%CORE_TEAM_WORKER_FAILURE_CODE_PROCESS\x10\x01\x12$\n" +
@@ -1486,7 +1498,8 @@ const file_dirextalk_agent_v1_core_team_worker_proto_rawDesc = "" +
 	",CORE_TEAM_WORKER_FAILURE_CODE_INVALID_RESULT\x10\x03\x12)\n" +
 	"%CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT\x10\x04\x12*\n" +
 	"&CORE_TEAM_WORKER_FAILURE_CODE_CANCELED\x10\x05\x12*\n" +
-	"&CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL\x10\x062\xe1\a\n" +
+	"&CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL\x10\x06\x125\n" +
+	"1CORE_TEAM_WORKER_FAILURE_CODE_EXECUTION_UNCERTAIN\x10\a2\xe1\a\n" +
 	"\x15CoreTeamWorkerService\x12\xac\x01\n" +
 	"\x17CreateIdentityChallenge\x12G.dirextalk.agent.v1.CoreTeamWorkerServiceCreateIdentityChallengeRequest\x1aH.dirextalk.agent.v1.CoreTeamWorkerServiceCreateIdentityChallengeResponse\x12y\n" +
 	"\x06Enroll\x126.dirextalk.agent.v1.CoreTeamWorkerServiceEnrollRequest\x1a7.dirextalk.agent.v1.CoreTeamWorkerServiceEnrollResponse\x12\x8e\x01\n" +
