@@ -79,7 +79,7 @@ func (e LinuxExecutor) ApplyPersistent(ctx context.Context, q Request) (Receipt,
 	}
 	defer unix.Close(workspace)
 	r := e.request(q, digest, argv)
-	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
+	p, err := extensionrunner.StartPersistentServiceV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
 	if err != nil {
 		return Receipt{}, ErrDenied
 	}
@@ -250,7 +250,7 @@ func (e LinuxExecutor) Probe() error {
 		return unavailableAt("workspace")
 	}
 	defer unix.Close(workspace)
-	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
+	p, err := extensionrunner.StartPersistentServiceV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
 	if err != nil || p == nil || !e.identityOwned(p.Identity()) {
 		return unavailableAt("sandbox")
 	}
@@ -334,7 +334,7 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 		return ErrDenied
 	}
 	defer unix.Close(workspace)
-	service, err := extensionrunner.RunCoreResultV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, q.Limits.DiskMB*1024*1024, q.Service)
+	service, err := extensionrunner.RunCoreResultV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, q.Limits.DiskMB*1024*1024, q.Service)
 	if err != nil || len(service) == 0 {
 		return ErrDenied
 	}
@@ -345,6 +345,10 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 		return ErrDenied
 	}
 	return nil
+}
+
+func (e LinuxExecutor) backend() extensionrunner.LinuxBackend {
+	return extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot, ProbeRoot: e.InstallRoot}
 }
 
 func (e LinuxExecutor) readWorkspaceService(q Request) ([]byte, error) {

@@ -65,6 +65,22 @@ func TestLinuxBackendProbeRejectsPartialCgroupDirectory(t *testing.T) {
 	}
 }
 
+func TestProbeRootMustBePrivateRunnerOwnedDirectory(t *testing.T) {
+	root := t.TempDir()
+	if !trustedProbeRoot(root) {
+		t.Fatal("private runner-owned probe root rejected")
+	}
+	if err := os.Chmod(root, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if trustedProbeRoot(root) {
+		t.Fatal("group-writable probe root accepted")
+	}
+	if trustedProbeRoot(filepath.Join(root, "missing")) {
+		t.Fatal("missing probe root accepted")
+	}
+}
+
 func TestProbeIDsConcurrentAreFresh(t *testing.T) {
 	const count = 32
 	seen := make(map[string]struct{}, count*3)

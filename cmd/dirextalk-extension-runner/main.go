@@ -73,7 +73,7 @@ func main() {
 	if err := validateCgroup(*cgroupRoot); err != nil {
 		die(err.Error())
 	}
-	backend := extensionrunner.LinuxBackend{CgroupRoot: *cgroupRoot}
+	backend := extensionrunner.LinuxBackend{CgroupRoot: *cgroupRoot, ProbeRoot: *installRoot}
 	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 10*time.Second)
 	err = backend.Probe(probeCtx)
 	cancelProbe()

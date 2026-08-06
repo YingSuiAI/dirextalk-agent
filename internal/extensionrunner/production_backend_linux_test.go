@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,70 @@ func TestSandboxBootstrapMustBeCanonicalAndSealed(t *testing.T) {
 	defer unix.Close(noncanonical)
 	if _, err = readSandboxBootstrap(noncanonical); err == nil {
 		t.Fatal("noncanonical bootstrap accepted")
+	}
+}
+
+func TestCoreSandboxBootstrapBindsManagerIdentity(t *testing.T) {
+	request := sandboxRequest()
+	value := bootstrapV1{
+		Request: request, RootDev: 1, RootIno: 2, EntryDev: 3, EntryIno: 4,
+		EntryMode: unix.S_IFREG | 0o555, EntrySize: 12, EntrySHA256: DigestBytes([]byte("entry")),
+		ManagerBase: "dirextalk-core-runner", ManagerRootDev: 5, ManagerRootIno: 6,
+		ManagerDev: 7, ManagerIno: 8, ManagerMode: unix.S_IFREG | 0o555,
+		ManagerSize: 13, ManagerSHA256: DigestBytes([]byte("manager")), CoreTmpfsBytes: 1 << 20,
+	}
+	seal := func(v bootstrapV1) int {
+		body, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd, err := sealedMemfd("core-bootstrap-test", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fd
+	}
+	fd := seal(value)
+	if _, err := readSandboxBootstrap(fd); err != nil {
+		unix.Close(fd)
+		t.Fatalf("valid manager binding rejected: %v", err)
+	}
+	unix.Close(fd)
+	for _, mutate := range []func(*bootstrapV1){
+		func(v *bootstrapV1) { v.ManagerBase = "../escape" },
+		func(v *bootstrapV1) { v.ManagerIno = 0 },
+		func(v *bootstrapV1) { v.ManagerMode |= 0o020 },
+		func(v *bootstrapV1) { v.ManagerSHA256 = strings.Repeat("0", 63) },
+	} {
+		tampered := value
+		mutate(&tampered)
+		fd = seal(tampered)
+		if _, err := readSandboxBootstrap(fd); err == nil {
+			unix.Close(fd)
+			t.Fatal("tampered manager binding accepted")
+		}
+		unix.Close(fd)
+	}
+}
+
+func TestManagerSourceBindsCurrentExecutableParent(t *testing.T) {
+	root, fd, base, rootStat, st, digest, err := openManagerSource("/proc/self/exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(root)
+	defer unix.Close(fd)
+	if !safeName(base) || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || st.Mode&unix.S_IFMT != unix.S_IFREG || digest == "" {
+		t.Fatalf("manager source base=%q root=%#o file=%#o digest=%q", base, rootStat.Mode, st.Mode, digest)
+	}
+	opened, err := unix.Openat(root, base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(opened)
+	var got unix.Stat_t
+	if unix.Fstat(opened, &got) != nil || got.Dev != st.Dev || got.Ino != st.Ino {
+		t.Fatal("manager basename did not resolve to the bound executable")
 	}
 }
 

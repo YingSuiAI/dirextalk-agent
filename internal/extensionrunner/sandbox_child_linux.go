@@ -108,6 +108,13 @@ func readSandboxBootstrap(fd int) (bootstrapV1, error) {
 		!digestRE.MatchString(value.EntrySHA256) {
 		return empty, ErrDenied
 	}
+	if value.CoreTmpfsBytes > 0 {
+		if !safeName(value.ManagerBase) || value.ManagerRootIno == 0 || value.ManagerIno == 0 || value.ManagerSize <= 0 || value.ManagerMode&unix.S_IFMT != unix.S_IFREG || value.ManagerMode&0o111 == 0 || value.ManagerMode&0o022 != 0 || !digestRE.MatchString(value.ManagerSHA256) {
+			return empty, ErrDenied
+		}
+	} else if value.ManagerBase != "" || value.ManagerRootDev != 0 || value.ManagerRootIno != 0 || value.ManagerDev != 0 || value.ManagerIno != 0 || value.ManagerMode != 0 || value.ManagerSize != 0 || value.ManagerSHA256 != "" {
+		return empty, ErrDenied
+	}
 	return value, nil
 }
 
@@ -235,28 +242,61 @@ func runSandboxManager(bootstrap bootstrapV1) error {
 	if bootstrap.CoreTmpfsBytes <= 0 {
 		return sandboxChildFailure("manager", ErrDenied)
 	}
-	if err := clearSandboxCapabilities(); err != nil {
-		return sandboxChildFailure("capabilities", err)
-	}
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return sandboxChildFailure("no-new-privs", err)
-	}
 	boot, err := unix.Dup(sandboxBootstrapFD)
 	if err != nil {
 		return sandboxChildFailure("manager", err)
 	}
 	bootFile := os.NewFile(uintptr(boot), "sandbox-bootstrap")
-	cmd := exec.Command("/run/manager", "__sandbox-command-v1")
+	releaseR, releaseW, err := os.Pipe()
+	if err != nil {
+		_ = bootFile.Close()
+		return sandboxChildFailure("manager-release", err)
+	}
+	managerPath := filepath.Join("/run/manager", bootstrap.ManagerBase)
+	cmd := exec.Command(managerPath, "__sandbox-command-v1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
-	// The inherited manager descriptor is not visible after chroot, so bind it
-	// through /proc/self/fd before descriptors are normalized by the command.
-	cmd.ExtraFiles = []*os.File{bootFile}
+	// Start waits for the kernel's exec result. The child then blocks on fd 4,
+	// allowing the trusted manager directory to be detached before any
+	// untrusted entry is executed.
+	cmd.ExtraFiles = []*os.File{bootFile, releaseR}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if cmd.Run() != nil {
+	if cmd.Start() != nil {
+		_ = releaseR.Close()
+		_ = releaseW.Close()
 		_ = bootFile.Close()
 		return sandboxChildFailure("command", ErrDenied)
 	}
+	_ = releaseR.Close()
 	_ = bootFile.Close()
+	abort := func() {
+		_ = releaseW.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	if err := unix.Unmount("/run/manager", unix.MNT_DETACH); err != nil {
+		abort()
+		return sandboxChildFailure("manager-hide", err)
+	}
+	if _, err := os.Lstat(managerPath); !errors.Is(err, os.ErrNotExist) {
+		abort()
+		return sandboxChildFailure("manager-hide", ErrDenied)
+	}
+	if err := clearSandboxCapabilities(); err != nil {
+		abort()
+		return sandboxChildFailure("capabilities", err)
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		abort()
+		return sandboxChildFailure("no-new-privs", err)
+	}
+	if n, err := releaseW.Write([]byte{1}); err != nil || n != 1 {
+		abort()
+		return sandboxChildFailure("manager-release", ErrDenied)
+	}
+	_ = releaseW.Close()
+	if cmd.Wait() != nil {
+		return sandboxChildFailure("command", ErrDenied)
+	}
 	if bootstrap.CoreResultPath != "" {
 		if err := exportSandboxResult(sandboxResultFD, bootstrap.CoreResultPath); err != nil {
 			return sandboxChildFailure("result-export", err)
@@ -266,6 +306,11 @@ func runSandboxManager(bootstrap bootstrapV1) error {
 }
 
 func runSandboxCommand(bootstrap bootstrapV1) error {
+	var release [1]byte
+	if n, err := unix.Read(4, release[:]); err != nil || n != 1 || release[0] != 1 {
+		return sandboxChildFailure("manager-release", ErrDenied)
+	}
+	_ = unix.Close(4)
 	if err := applySandboxRlimits(bootstrap.Request.Limits); err != nil {
 		return sandboxChildFailure("rlimits", err)
 	}
@@ -394,6 +439,25 @@ func verifySandboxDescriptors(bootstrap bootstrapV1) error {
 	}
 	for i, secret := range bootstrap.Request.Secrets {
 		if err := VerifySealedFD(nextFD+i, secret.Size, secret.SHA256); err != nil {
+			return ErrDenied
+		}
+	}
+	if bootstrap.CoreTmpfsBytes > 0 {
+		var rootStat unix.Stat_t
+		if err := unix.Fstat(sandboxManagerFD, &rootStat); err != nil || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(rootStat.Dev) != bootstrap.ManagerRootDev || rootStat.Ino != bootstrap.ManagerRootIno {
+			return ErrDenied
+		}
+		fd, err := unix.Openat(sandboxManagerFD, bootstrap.ManagerBase, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return ErrDenied
+		}
+		defer unix.Close(fd)
+		var st unix.Stat_t
+		if unix.Fstat(fd, &st) != nil || uint64(st.Dev) != bootstrap.ManagerDev || st.Ino != bootstrap.ManagerIno || st.Mode != bootstrap.ManagerMode || st.Size != bootstrap.ManagerSize {
+			return ErrDenied
+		}
+		digest, err := digestDescriptor(fd, st.Size)
+		if err != nil || digest != bootstrap.ManagerSHA256 {
 			return ErrDenied
 		}
 	}

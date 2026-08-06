@@ -26,6 +26,10 @@ import (
 // is unsafe.  Missing any kernel primitive is an availability failure.
 type LinuxBackend struct {
 	CgroupRoot string
+	// ProbeRoot is a runner-owned executable filesystem used only for the
+	// bounded readiness install. Production must set it explicitly rather than
+	// inheriting a possibly noexec process temporary directory.
+	ProbeRoot string
 	// ReexecPath is a trusted integration seam. Production leaves it empty and
 	// always re-executes /proc/self/exe.
 	ReexecPath string
@@ -121,7 +125,10 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 }
 
 func (b LinuxBackend) probeSandbox(ctx context.Context) error {
-	root, err := os.MkdirTemp("", "dirextalk-runner-probe-")
+	if !trustedProbeRoot(b.ProbeRoot) {
+		return unavailableAt("sandbox_root")
+	}
+	root, err := os.MkdirTemp(b.ProbeRoot, "dirextalk-runner-probe-")
 	if err != nil {
 		return unavailableAt("sandbox_root")
 	}
@@ -167,6 +174,14 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 		return unavailableAt("sandbox_wait")
 	}
 	return nil
+}
+
+func trustedProbeRoot(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return false
+	}
+	var st unix.Stat_t
+	return unix.Lstat(path, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Uid == uint32(os.Geteuid()) && st.Mode&0o022 == 0
 }
 
 func materializeProbeInstall(installRoot, self string) (*AdmittedInstall, string, error) {
@@ -279,6 +294,14 @@ type bootstrapV1 struct {
 	EntryMode      uint32    `json:"entry_mode"`
 	EntrySize      int64     `json:"entry_size"`
 	EntrySHA256    string    `json:"entry_sha256"`
+	ManagerBase    string    `json:"manager_base"`
+	ManagerRootDev uint64    `json:"manager_root_dev"`
+	ManagerRootIno uint64    `json:"manager_root_ino"`
+	ManagerDev     uint64    `json:"manager_dev"`
+	ManagerIno     uint64    `json:"manager_ino"`
+	ManagerMode    uint32    `json:"manager_mode"`
+	ManagerSize    int64     `json:"manager_size"`
+	ManagerSHA256  string    `json:"manager_sha256"`
 	CoreTmpfsBytes int64     `json:"core_tmpfs_bytes,omitempty"`
 	CoreResultPath string    `json:"core_result_path,omitempty"`
 }
@@ -309,6 +332,18 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	if err := unix.Access(self, unix.X_OK); err != nil {
 		return nil, unavailableAt("reexec")
 	}
+	var managerRoot, managerFD int = -1, -1
+	var managerBase, managerDigest string
+	var managerRootStat, managerStat unix.Stat_t
+	var managerErr error
+	if inv.CoreTmpfsBytes > 0 {
+		managerRoot, managerFD, managerBase, managerRootStat, managerStat, managerDigest, managerErr = openManagerSource(self)
+		if managerErr != nil {
+			return nil, unavailableAt("manager_fd")
+		}
+		defer unix.Close(managerRoot)
+		defer unix.Close(managerFD)
+	}
 	bs, err := json.Marshal(bootstrapV1{
 		Request:        inv.Request,
 		SecretCount:    len(inv.SecretFDs),
@@ -320,6 +355,14 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		EntryMode:      inv.Install.EntryMode,
 		EntrySize:      inv.Install.EntrySize,
 		EntrySHA256:    inv.Install.EntrySHA256,
+		ManagerBase:    managerBase,
+		ManagerRootDev: uint64(managerRootStat.Dev),
+		ManagerRootIno: managerRootStat.Ino,
+		ManagerDev:     uint64(managerStat.Dev),
+		ManagerIno:     managerStat.Ino,
+		ManagerMode:    managerStat.Mode,
+		ManagerSize:    managerStat.Size,
+		ManagerSHA256:  managerDigest,
 		CoreTmpfsBytes: inv.CoreTmpfsBytes,
 		CoreResultPath: inv.CoreResultPath,
 	})
@@ -380,7 +423,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		files = append(files, f)
 	}
 	if inv.CoreTmpfsBytes > 0 {
-		manager, e := os.Open(self)
+		manager, e := extra(managerRoot, "manager-root")
 		if e != nil {
 			return nil, unavailableAt("manager_fd")
 		}
@@ -474,6 +517,57 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	}
 	go process.monitorCPU()
 	return process, nil
+}
+
+func openManagerSource(self string) (int, int, string, unix.Stat_t, unix.Stat_t, string, error) {
+	var empty unix.Stat_t
+	path := self
+	if self == "/proc/self/exe" {
+		var err error
+		path, err = os.Executable()
+		if err != nil {
+			return -1, -1, "", empty, empty, "", err
+		}
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	base := filepath.Base(path)
+	if !safeName(base) {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	root, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	var rootStat unix.Stat_t
+	if unix.Fstat(root, &rootStat) != nil || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || !trustedExecutableOwner(rootStat.Uid) || rootStat.Mode&0o022 != 0 {
+		unix.Close(root)
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	fd, err := unix.Openat(root, base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		unix.Close(root)
+		return -1, -1, "", empty, empty, "", err
+	}
+	var st, selfStat unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || unix.Stat(self, &selfStat) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || !trustedExecutableOwner(st.Uid) || st.Mode&0o111 == 0 || st.Mode&0o022 != 0 || st.Dev != selfStat.Dev || st.Ino != selfStat.Ino || st.Size <= 0 {
+		unix.Close(fd)
+		unix.Close(root)
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	digest, err := digestDescriptor(fd, st.Size)
+	if err != nil {
+		unix.Close(fd)
+		unix.Close(root)
+		return -1, -1, "", empty, empty, "", err
+	}
+	return root, fd, base, rootStat, st, digest, nil
+}
+
+func trustedExecutableOwner(uid uint32) bool {
+	return uid == 0 || uid == uint32(os.Geteuid())
 }
 func sealedMemfd(n string, b []byte) (int, error) {
 	fd, e := unix.MemfdCreate(n, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)

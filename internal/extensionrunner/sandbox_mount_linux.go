@@ -27,9 +27,9 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD int) (in
 		return -1, sandboxChildFailure("layout", err)
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
-		if err := mountSandboxFile(sandboxManagerFD, rootFD, "run/manager", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY); err != nil {
+		if err := mountSandboxTree(sandboxManagerFD, rootFD, "run/manager", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "manager-clone", "manager-remount", "manager-bind"); err != nil {
 			unix.Close(rootFD)
-			return -1, sandboxChildFailure("manager-mount", err)
+			return -1, err
 		}
 	}
 	if err := mountSandboxTree(installFD, rootFD, "app", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "app-clone", "app-remount", "app-bind"); err != nil {
@@ -101,11 +101,7 @@ func createSandboxLayout(rootFD int) error {
 	if err := unix.Mkdirat(runFD, "secrets", 0o700); err != nil {
 		return err
 	}
-	fd, err := unix.Openat(runFD, "manager", unix.O_RDONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o500)
-	if err == nil {
-		err = unix.Close(fd)
-	}
-	return err
+	return unix.Mkdirat(runFD, "manager", 0o700)
 }
 
 func openSandboxDirAt(parentFD int, name string) (int, error) {
@@ -165,23 +161,6 @@ func mountSandboxTree(sourceFD, rootFD int, target string, attrs uint64, cloneSt
 		return sandboxChildFailure(moveStage, err)
 	}
 	return nil
-}
-
-func mountSandboxFile(sourceFD, rootFD int, target string, attrs uint64) error {
-	targetFD, err := unix.Openat(rootFD, target, unix.O_PATH|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(targetFD)
-	tree, err := unix.OpenTree(sourceFD, "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
-	if err != nil {
-		return err
-	}
-	defer unix.Close(tree)
-	if err = unix.MountSetattr(tree, "", uint(unix.AT_EMPTY_PATH), &unix.MountAttr{Attr_set: attrs}); err != nil {
-		return err
-	}
-	return unix.MoveMount(tree, "", targetFD, "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
 }
 
 func setSandboxMountAttrs(mountFD int, attrs uint64) error {
