@@ -466,8 +466,16 @@ func operationErrorCodeInternal(v string) capv1.ErrorCode {
 		return capv1.ErrorCode_ERROR_CODE_CONFLICT
 	case "PRECONDITION_FAILED":
 		return capv1.ErrorCode_ERROR_CODE_PRECONDITION_FAILED
+	case "NOT_READY":
+		return capv1.ErrorCode_ERROR_CODE_NOT_READY
+	case "UNAVAILABLE":
+		return capv1.ErrorCode_ERROR_CODE_UNAVAILABLE
 	case "UNCERTAIN":
 		return capv1.ErrorCode_ERROR_CODE_UNCERTAIN
+	case "CYCLE_DETECTED":
+		return capv1.ErrorCode_ERROR_CODE_CYCLE_DETECTED
+	case "RESOURCE_EXHAUSTED":
+		return capv1.ErrorCode_ERROR_CODE_RESOURCE_EXHAUSTED
 	default:
 		return capv1.ErrorCode_ERROR_CODE_UPSTREAM_FAILED
 	}
@@ -476,5 +484,21 @@ func operationStatusError(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return status.Error(codes.Canceled, err.Error())
 	}
-	return status.Error(codes.FailedPrecondition, err.Error())
+	if code, message, ok := operation.FailureDetails(err); ok {
+		switch code {
+		case "INVALID_ARGUMENT":
+			return status.Error(codes.InvalidArgument, message)
+		case "PERMISSION_DENIED":
+			return status.Error(codes.PermissionDenied, message)
+		case "NOT_FOUND":
+			return status.Error(codes.NotFound, message)
+		case "CONFLICT":
+			return status.Error(codes.Aborted, message)
+		case "PRECONDITION_FAILED", "NOT_READY":
+			return status.Error(codes.FailedPrecondition, message)
+		case "UNAVAILABLE", "UPSTREAM_FAILED":
+			return status.Error(codes.Unavailable, message)
+		}
+	}
+	return status.Error(codes.Unavailable, "Agent operation failed")
 }

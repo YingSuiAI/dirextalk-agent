@@ -1019,7 +1019,11 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 		_ = m.markUncertain(context.Background(), operationID, "operation outcome requires external reconciliation; side effect was not retried")
 		return
 	}
-	_ = m.Fail(context.Background(), operationID, "UPSTREAM_FAILED", safeMessage(err))
+	if code, message, ok := FailureDetails(err); ok {
+		_ = m.Fail(context.Background(), operationID, code, message)
+		return
+	}
+	_ = m.Fail(context.Background(), operationID, "UPSTREAM_FAILED", "Agent operation failed")
 }
 
 // Reconcile never replays a side effect whose outcome is unknown. Without a

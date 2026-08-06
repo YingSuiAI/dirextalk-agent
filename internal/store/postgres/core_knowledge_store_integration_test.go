@@ -114,6 +114,19 @@ type pgKnowledgeProvenanceSearch struct {
 	digest    string
 }
 
+type pgMemoryRecallSearch struct {
+	calls [][]string
+}
+
+func (s *pgMemoryRecallSearch) Search(_ context.Context, q coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
+	if q.Kind != coreknowledge.SourceKindMemory || q.Limit != 8 || len(q.SourceIDs) == 0 || len(q.SourceIDs) > knowledgeRecallBindingBatchSize {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+	}
+	ids := append([]string(nil), q.SourceIDs...)
+	s.calls = append(s.calls, ids)
+	return coreknowledge.SearchPage{Matches: []coreknowledge.SearchMatch{{SourceID: ids[0], ChunkRef: "chunk:0", Snippet: "recalled memory", Score: float64(len(s.calls))}}}, nil
+}
+
 func (s pgKnowledgeProvenanceSearch) Search(_ context.Context, q coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
 	if len(q.SourceIDs) == 0 {
 		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
@@ -315,6 +328,58 @@ func TestCoreKnowledgePostgresPersistenceAndCursor(t *testing.T) {
 	}
 	if retried, err := fresh.Delete(ctx, coreknowledge.DeleteCommand{IdempotencyKey: uuid.NewString(), SourceID: mem.ID, ExpectedRevision: failed.Revision}); err != nil || retried.Status != coreknowledge.SourceStatusDeleted {
 		t.Fatalf("cleanup retry=%+v err=%v", retried, err)
+	}
+}
+
+func TestCoreKnowledgePostgresMemoryRecallIsSnapshotFreeAndBatchesAllPromotedMemories(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	profileID := uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	createTestProfile(ctx, t, repo.store, profileID, "recall-embedding", "recall-secret")
+	insertSource := func(kind, status string, promoted bool) {
+		t.Helper()
+		id := uuid.NewString()
+		generation := ""
+		promotedRevision := int64(0)
+		var promotedProfile any
+		promotedProfileRevision := int64(0)
+		promotedDigest := ""
+		if promoted {
+			generation = "recall-" + id
+			promotedRevision = 1
+			promotedProfile = profileID
+			promotedProfileRevision = 1
+			promotedDigest = digest
+		}
+		if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,promoted_generation,promoted_revision,promoted_profile_id,promoted_profile_revision,promoted_collection_config_digest) VALUES($1,$2,$3,'recall',repeat('b',64),1,'text/plain',1,$4,$5,$6,$7,$8)`, id, kind, status, generation, promotedRevision, promotedProfile, promotedProfileRevision, promotedDigest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 129 {
+		insertSource("memory", "ready", true)
+	}
+	insertSource("memory", "ready", false)
+	insertSource("upload", "ready", true)
+	search := &pgMemoryRecallSearch{}
+	repo.search = search
+	var snapshotsBefore int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_list_snapshots`).Scan(&snapshotsBefore); err != nil {
+		t.Fatal(err)
+	}
+	page, err := repo.RecallMemory(ctx, "where do I live", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search.calls) != 2 || len(search.calls[0]) != 128 || len(search.calls[1]) != 1 || len(page.Matches) != 2 {
+		t.Fatalf("batch sizes=%v matches=%+v", []int{len(search.calls[0]), len(search.calls[1])}, page.Matches)
+	}
+	var snapshotsAfter int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_list_snapshots`).Scan(&snapshotsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotsAfter != snapshotsBefore {
+		t.Fatalf("private recall persisted search snapshot: before=%d after=%d", snapshotsBefore, snapshotsAfter)
 	}
 }
 

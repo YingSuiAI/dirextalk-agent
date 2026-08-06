@@ -14,6 +14,11 @@ contract](message-server-integration-development-contract.md), and
   PostgreSQL-backed profiles, conversations, Tasks, events, schedules,
   confirmations, and fenced recovery.
 - Provider-backed model catalog and durable Eino conversation/Task execution.
+- Native Chat/StreamChat and durable StartTurn now include the current prompt
+  in the provider request and perform first-conversation long-term-memory
+  recall through a private, snapshot-free semantic read. Recall is bounded,
+  memory-only, exact-promoted-revision, user-level untrusted context and is not
+  persisted or returned.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
 - MCP/Skill lifecycle with isolated extension-runner execution.
 - Knowledge mounts, uploads, memory, indexing, and semantic-search composition.
@@ -30,6 +35,9 @@ contract](message-server-integration-development-contract.md), and
   and Core Runner; the latter has nonce/full readiness and descriptor-only
   sealed-result boundaries.
 - Versioned, Buf-lint-clean Protobufs and focused Core contract tests.
+- Closed Capability conversation/history DTOs, conversation-bound newest-first
+  history cursors, strict UUID mutation keys, typed/redacted domain failures,
+  and post-composition durable-turn recovery.
 
 ## Verification commands
 
@@ -59,6 +67,13 @@ support.
   same-key retries, failed receipts, cancellation fencing, and out-of-order
   monotonic completion. The PostgreSQL restart/replay test is opt-in through
   `AGENT_TEST_POSTGRES_DSN` and skips when PG18 is unavailable.
+- On **2026-08-06**, the full Agent test suite passed against PostgreSQL 18.
+  The recall integration lane covered 129 promoted memory sources in bounded
+  batches and verified that private recall creates no
+  `core_knowledge_list_snapshots` row. Focused Chat/StreamChat and StartTurn
+  tests verified exact prompt delivery, user-level transient recall,
+  fail-closed provider dispatch, and no conversation persistence of recalled
+  snippets. `buf lint`, `go vet ./...`, and `go build ./cmd/...` also passed.
 - On **2026-07-25**, the explicitly authorized real AWS lane used the typed
   `CoreCloudControlService` in `us-east-1` to create and read back one tagged
   idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent

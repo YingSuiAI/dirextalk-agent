@@ -55,7 +55,11 @@ type ToolResult struct {
 }
 
 type Message struct {
-	ID             string       `json:"id"`
+	ID string `json:"id"`
+	// Sequence is the durable transcript ordinal loaded from PostgreSQL. New
+	// in-memory messages keep it at zero until the atomic conversation commit;
+	// public history adapters use it without exposing Core-only payload fields.
+	Sequence       int64        `json:"-"`
 	Role           Role         `json:"role"`
 	Content        string       `json:"content,omitempty"`
 	ToolCalls      []ToolCall   `json:"tool_calls,omitempty"`
@@ -443,14 +447,15 @@ type ToolCompletion struct {
 }
 
 var (
-	ErrInvalid               = errors.New("invalid conversation request")
-	ErrConflict              = errors.New("conversation conflict")
-	ErrInFlight              = errors.New("chat request in flight")
-	ErrCanceled              = errors.New("chat canceled")
-	ErrLeaseExpired          = errors.New("chat lease expired")
-	ErrDeleted               = errors.New("conversation deleted")
-	ErrChatFailed            = errors.New("chat failed")
-	ErrExtensionsUnsupported = errors.New("conversation extensions require durable turn")
+	ErrInvalid                 = errors.New("invalid conversation request")
+	ErrConflict                = errors.New("conversation conflict")
+	ErrInFlight                = errors.New("chat request in flight")
+	ErrCanceled                = errors.New("chat canceled")
+	ErrLeaseExpired            = errors.New("chat lease expired")
+	ErrDeleted                 = errors.New("conversation deleted")
+	ErrChatFailed              = errors.New("chat failed")
+	ErrMemoryRecallUnavailable = errors.New("long-term memory recall is unavailable")
+	ErrExtensionsUnsupported   = errors.New("conversation extensions require durable turn")
 )
 
 func validUUID(s string) bool {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -20,6 +21,7 @@ type Service struct {
 	store           Store
 	models          ModelRunner
 	extensions      ExtensionResolver
+	memoryRecall    MemoryRecallResolver
 	snapshots       SnapshotProfileResolver
 	now             func() time.Time
 	leaseTTL        time.Duration
@@ -31,6 +33,13 @@ type Service struct {
 	cancelSignals   map[string]chan struct{}
 	runtimeMu       sync.Mutex
 	runtime         map[string]*turnRuntime
+}
+
+// MemoryRecallResolver supplies a bounded, already-delimited model-only
+// context for a new conversation. Implementations must never return raw
+// credentials, source metadata, or unbounded content.
+type MemoryRecallResolver interface {
+	RecallMemory(context.Context, string) (string, error)
 }
 
 // SetExtensionResolver wires the production resolver after composition has
@@ -45,6 +54,15 @@ func (s *Service) SetExtensionResolver(resolver ExtensionResolver) {
 		return
 	}
 	s.extensions = resolver
+}
+
+// SetMemoryRecallResolver wires the optional Agent-owned long-term-memory
+// search after Knowledge composition has passed its readiness checks.
+func (s *Service) SetMemoryRecallResolver(resolver MemoryRecallResolver) {
+	if s == nil {
+		return
+	}
+	s.memoryRecall = resolver
 }
 
 type turnRuntime struct {
@@ -398,6 +416,9 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 	if emit != nil {
 		emit(StreamEvent{Kind: EventStarted, RequestID: cmd.RequestID, ConversationID: conv.ID})
 	}
+	persistedMessageCount := len(conv.Messages)
+	var recalledMemory string
+	memoryRecallResolved := false
 	user := Message{ID: uuid.NewString(), Role: RoleUser, Content: cmd.Prompt, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
 	conv.Messages = append(conv.Messages, user)
 	profile := lease.ProfileSnapshot.Profile()
@@ -435,7 +456,20 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			return ChatResponse{}, err
 		}
 		if !replayed {
-			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: conv.Snapshot(), Profile: resolvedProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
+			if persistedMessageCount == 0 && !memoryRecallResolved && s.memoryRecall != nil {
+				recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
+				recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, cmd.Prompt)
+				recallCancel()
+				if err != nil {
+					return ChatResponse{}, ErrMemoryRecallUnavailable
+				}
+				memoryRecallResolved = true
+			}
+			modelConversation, modelContextErr := modelConversationWithRecalledMemory(conv, persistedMessageCount, recalledMemory, cmd.ProfileID, cmd.RequestID)
+			if modelContextErr != nil {
+				return ChatResponse{}, modelContextErr
+			}
+			result, err = s.runModelHeartbeat(ctx, ModelRunRequest{Conversation: modelConversation, Profile: resolvedProfile, Snapshot: lease.ProfileSnapshot, Extensions: exts}, lease, cmd, deltaEmit)
 			if err != nil {
 				return ChatResponse{}, err
 			}
@@ -1284,6 +1318,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	if err != nil {
 		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
 	}
+	persistedMessageCount := len(conv.Messages)
 	if turn.ExpectedRevision != nil && conv.Revision != *turn.ExpectedRevision {
 		_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
 		return
@@ -1334,6 +1369,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		if err != nil {
 			return
 		}
+	}
+	var recalledMemory string
+	if !replayed && persistedMessageCount == 0 && s.memoryRecall != nil {
+		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
+		recalledMemory, err = s.memoryRecall.RecallMemory(recallCtx, turn.Prompt)
+		recallCancel()
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "memory_recall_unavailable", "long-term memory recall is unavailable")
+			return
+		}
+	}
+	var modelConversation Conversation
+	if !replayed {
+		modelConversation, err = modelConversationForTurn(conv, persistedMessageCount, turn, recalledMemory, s.clock())
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "invalid_model_context", "model context is invalid")
+			return
+		}
+	}
+	if durableDispatch {
 		if !replayed {
 			if _, err = dispatchStore.PrepareTurnModel(ctx, lease); err != nil {
 				if current, getErr := s.turns.GetTurn(ctx, turn.ID); getErr == nil && current.DispatchState == "dispatched" {
@@ -1352,7 +1407,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	} else {
 		go func() {
 			profile := turn.ProfileSnapshot.Profile()
-			result, runErr := s.models.Run(child, ModelRunRequest{Conversation: conv.Snapshot(), Profile: ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}, Snapshot: turn.ProfileSnapshot, ProfileSnapshot: turn.ProfileSnapshot, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)})
+			result, runErr := s.models.Run(child, ModelRunRequest{Conversation: modelConversation, Profile: ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}, Snapshot: turn.ProfileSnapshot, ProfileSnapshot: turn.ProfileSnapshot, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)})
 			resultCh <- struct {
 				result ModelRunResult
 				err    error
@@ -1468,4 +1523,76 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recalledMemory string, now time.Time) (Conversation, error) {
+	if insertAt < 0 || insertAt > len(conv.Messages) || !validUUID(turn.ID) || !validUUID(turn.ProfileID) {
+		return Conversation{}, ErrInvalid
+	}
+	out := conv.Snapshot()
+	prefix := append([]Message(nil), out.Messages[:insertAt]...)
+	suffix := append([]Message(nil), out.Messages[insertAt:]...)
+	createdAt := turn.CreatedAt.UTC()
+	if createdAt.IsZero() {
+		createdAt = now.UTC()
+	}
+	if len(prefix) > 0 && !createdAt.After(prefix[len(prefix)-1].CreatedAt) {
+		createdAt = prefix[len(prefix)-1].CreatedAt.Add(time.Nanosecond)
+	}
+	transient := make([]Message, 0, 2)
+	if memory := strings.TrimSpace(recalledMemory); memory != "" {
+		message := Message{
+			ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-memory-recall:"+turn.ID)).String(),
+			Role:           RoleUser,
+			Content:        memory,
+			CreatedAt:      createdAt,
+			ModelProfileID: turn.ProfileID,
+		}
+		if err := message.Validate(); err != nil {
+			return Conversation{}, err
+		}
+		transient = append(transient, message)
+		createdAt = createdAt.Add(time.Nanosecond)
+	}
+	user := Message{
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-user-prompt:"+turn.ID)).String(),
+		Role:           RoleUser,
+		Content:        turn.Prompt,
+		CreatedAt:      createdAt,
+		ModelProfileID: turn.ProfileID,
+	}
+	if err := user.Validate(); err != nil {
+		return Conversation{}, err
+	}
+	transient = append(transient, user)
+	out.Messages = append(prefix, transient...)
+	out.Messages = append(out.Messages, suffix...)
+	return out, nil
+}
+
+func modelConversationWithRecalledMemory(conv Conversation, insertAt int, recalledMemory, profileID, requestID string) (Conversation, error) {
+	out := conv.Snapshot()
+	memory := strings.TrimSpace(recalledMemory)
+	if memory == "" {
+		return out, nil
+	}
+	if insertAt < 0 || insertAt >= len(out.Messages) || !validUUID(profileID) || !validUUID(requestID) || out.Messages[insertAt].Role != RoleUser {
+		return Conversation{}, ErrInvalid
+	}
+	createdAt := out.Messages[insertAt].CreatedAt
+	message := Message{
+		ID:             uuid.NewSHA1(uuid.NameSpaceOID, []byte("chat-memory-recall:"+requestID)).String(),
+		Role:           RoleUser,
+		Content:        memory,
+		CreatedAt:      createdAt,
+		ModelProfileID: profileID,
+	}
+	if err := message.Validate(); err != nil {
+		return Conversation{}, err
+	}
+	prefix := append([]Message(nil), out.Messages[:insertAt]...)
+	suffix := append([]Message(nil), out.Messages[insertAt:]...)
+	out.Messages = append(prefix, message)
+	out.Messages = append(out.Messages, suffix...)
+	return out, nil
 }

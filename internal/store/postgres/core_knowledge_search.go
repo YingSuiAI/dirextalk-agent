@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,6 +12,102 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+const knowledgeRecallBindingBatchSize = 128
+
+// RecallMemory is the private, non-paginated semantic read used by Native
+// conversation execution. Unlike Search it never writes a cursor snapshot or
+// stores snippets. Source ids are selected in bounded keyset pages so a user
+// with more than the public 128-binding request limit remains searchable.
+func (r *CoreKnowledgeStore) RecallMemory(ctx context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
+	query := coreknowledge.SearchQuery{Query: strings.TrimSpace(prompt), Kind: coreknowledge.SourceKindMemory, Limit: limit}
+	if r == nil || r.store == nil || r.search == nil || ctx == nil || limit <= 0 || query.ValidateForRepository() != nil {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+	}
+	var (
+		cursor        string
+		matches       []coreknowledge.SearchMatch
+		provenance    coreknowledge.SearchProvenance
+		provenanceSet bool
+	)
+	seenMatches := make(map[string]struct{})
+	for {
+		if err := ctx.Err(); err != nil {
+			return coreknowledge.SearchPage{}, err
+		}
+		var (
+			rows pgx.Rows
+			err  error
+		)
+		if cursor == "" {
+			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' ORDER BY source_id LIMIT $1`, knowledgeRecallBindingBatchSize)
+		} else {
+			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' AND source_id>$1::uuid ORDER BY source_id LIMIT $2`, cursor, knowledgeRecallBindingBatchSize)
+		}
+		if err != nil {
+			return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+		}
+		ids := make([]string, 0, knowledgeRecallBindingBatchSize)
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+			}
+			ids = append(ids, id)
+		}
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+		}
+		if len(ids) == 0 {
+			break
+		}
+		allowed := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			allowed[id] = struct{}{}
+		}
+		page, err := r.search.Search(ctx, coreknowledge.SearchQuery{Query: query.Query, SourceIDs: ids, Kind: coreknowledge.SourceKindMemory, Limit: limit})
+		if err != nil {
+			return coreknowledge.SearchPage{}, err
+		}
+		if page.SearchProvenance != (coreknowledge.SearchProvenance{}) {
+			if provenanceSet && page.SearchProvenance != provenance {
+				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+			}
+			provenance, provenanceSet = page.SearchProvenance, true
+		}
+		for _, match := range page.Matches {
+			if _, ok := allowed[match.SourceID]; !ok {
+				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+			}
+			key := match.SourceID + "\x00" + match.ChunkRef
+			if _, duplicate := seenMatches[key]; duplicate {
+				continue
+			}
+			seenMatches[key] = struct{}{}
+			matches = append(matches, match)
+		}
+		cursor = ids[len(ids)-1]
+		if len(ids) < knowledgeRecallBindingBatchSize {
+			break
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Score != matches[j].Score {
+			return matches[i].Score > matches[j].Score
+		}
+		if matches[i].SourceID != matches[j].SourceID {
+			return matches[i].SourceID < matches[j].SourceID
+		}
+		return matches[i].ChunkRef < matches[j].ChunkRef
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return coreknowledge.SearchPage{Matches: matches, SearchMode: "semantic", SearchProvenance: provenance}, nil
+}
 
 func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
 	if err := q.ValidateForRepository(); err != nil {
@@ -58,7 +155,7 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 		}
 		searchIDs := append([]string(nil), q.SourceIDs...)
 		if q.Kind != "" && len(searchIDs) == 0 {
-			rows, queryErr := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind=$1 AND status='ready' ORDER BY source_id`, q.Kind)
+			rows, queryErr := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind=$1 AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_collection_config_digest IS NOT NULL ORDER BY source_id`, q.Kind)
 			if queryErr != nil {
 				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
 			}

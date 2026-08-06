@@ -407,6 +407,26 @@ func TestManager_ExecuteMapsTypedUncertainToUncertainState(t *testing.T) {
 	}
 }
 
+func TestManagerExecutePreservesClassifiedFailureAndRedactedMessage(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-classified", CapabilityID: "agent.chat.v1", OperationName: "create_conversation", RequestJSON: []byte(`{"idempotency_key":"id"}`), RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+		return nil, NewFailure("CONFLICT", "Agent state changed; refresh and retry", errors.New("database password secret"))
+	})
+	got, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateFailed || got.ErrorCode != "CONFLICT" || got.ErrorMessage != "Agent state changed; refresh and retry" || strings.Contains(got.ErrorMessage, "secret") {
+		t.Fatalf("classified failure=%+v", got)
+	}
+}
+
 func TestManager_Complete(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

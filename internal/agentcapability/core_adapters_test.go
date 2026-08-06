@@ -35,6 +35,101 @@ func TestEmitCapabilityProgressFailsClosedWhenLedgerRejectsEvent(t *testing.T) {
 	}
 }
 
+func TestConversationHistoryProjectionIsClosedAndPagesNewestMessagesInDisplayOrder(t *testing.T) {
+	conversationID := uuid.NewString()
+	profileID := uuid.NewString()
+	now := time.Now().UTC()
+	messages := []coreconversation.Message{
+		{ID: uuid.NewString(), Sequence: 1, Role: coreconversation.RoleUser, Content: "first", ModelProfileID: profileID, CreatedAt: now},
+		{ID: uuid.NewString(), Sequence: 2, Role: coreconversation.RoleTool, ToolResults: []coreconversation.ToolResult{{CallID: "call", Content: "private tool payload"}}, ModelProfileID: profileID, CreatedAt: now.Add(time.Second)},
+		{ID: uuid.NewString(), Sequence: 3, Role: coreconversation.RoleAssistant, Content: "second", ModelProfileID: profileID, CreatedAt: now.Add(2 * time.Second)},
+		{ID: uuid.NewString(), Sequence: 4, Role: coreconversation.RoleSystem, Content: "private system context", ModelProfileID: profileID, CreatedAt: now.Add(3 * time.Second)},
+		{ID: uuid.NewString(), Sequence: 5, Role: coreconversation.RoleUser, Content: "third", ModelProfileID: profileID, CreatedAt: now.Add(4 * time.Second)},
+	}
+	page, next, err := pageConversationMessages(conversationID, messages, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || page[0].MessageSeq != 3 || page[1].MessageSeq != 5 || next == "" {
+		t.Fatalf("first page=%+v next=%q", page, next)
+	}
+	raw, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("private tool payload")) || bytes.Contains(raw, []byte("private system context")) || !bytes.Contains(raw, []byte(`"references":[]`)) {
+		t.Fatalf("public history leaked Core-only fields: %s", raw)
+	}
+	older, finalCursor, err := pageConversationMessages(conversationID, messages, next, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(older) != 1 || older[0].MessageSeq != 1 || finalCursor != "" {
+		t.Fatalf("older page=%+v next=%q", older, finalCursor)
+	}
+	if _, _, err := pageConversationMessages(uuid.NewString(), messages, next, 2); !errors.Is(err, coreconversation.ErrInvalid) {
+		t.Fatalf("cross-conversation cursor err=%v", err)
+	}
+}
+
+func TestConversationProjectionUsesOnlyFlutterPublicFields(t *testing.T) {
+	now := time.Now().UTC()
+	deletedAt := now.Add(time.Second)
+	projected := projectConversation(coreconversation.Conversation{ID: uuid.NewString(), Title: "title", Revision: 3, CreatedAt: now, UpdatedAt: deletedAt, DeletedAt: &deletedAt, Summary: "private", ContextMessageOffset: 9})
+	raw, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if json.Unmarshal(raw, &fields) != nil || len(fields) != 6 || fields["status"] != "deleted" || fields["conversation_id"] == nil {
+		t.Fatalf("projection=%s", raw)
+	}
+	for _, forbidden := range []string{"id", "deleted_at", "summary", "context_message_offset", "messages"} {
+		if _, exists := fields[forbidden]; exists {
+			t.Fatalf("projection exposed %s: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestCreateConversationSchemaRequiresCanonicalIDs(t *testing.T) {
+	descriptor := (&coreChatCapability{}).Descriptor()
+	var schemaJSON string
+	for _, operation := range descriptor.GetOperations() {
+		if operation.GetOperationId() == "create_conversation" {
+			schemaJSON = operation.GetInputSchemaJson()
+			break
+		}
+	}
+	if schemaJSON == "" {
+		t.Fatal("create_conversation schema missing")
+	}
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties map[string]struct {
+			Format string `json:"format"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"conversation_id", "idempotency_key"} {
+		if !containsString(schema.Required, field) || schema.Properties[field].Format != "uuid" {
+			t.Fatalf("create_conversation schema does not require canonical %s: %s", field, schemaJSON)
+		}
+	}
+}
+
+func TestModelMutationsRequireCanonicalIdempotencyKey(t *testing.T) {
+	capability := &coreModelCapability{}
+	for _, operation := range []string{"sync_models", "create_model", "update_model", "delete_model"} {
+		for _, request := range [][]byte{[]byte(`{}`), []byte(`{"idempotency_key":"not-a-uuid"}`)} {
+			if _, err := capability.HandleOperation(context.Background(), operation, request); !errors.Is(err, coremodel.ErrInvalidIdempotencyKey) {
+				t.Fatalf("operation=%s request=%s err=%v", operation, request, err)
+			}
+		}
+	}
+}
+
 func TestModelSyncMapsSnakeCaseRolesAndSpeechMetadata(t *testing.T) {
 	repo := coremodel.NewMemoryProfileRepository()
 	service, err := coremodel.NewService(repo, nil)
@@ -315,7 +410,7 @@ func TestConcurrentModelSyncEmbeddingDefaultsConvergeToDurableDefault(t *testing
 	}
 	capability := &coreModelCapability{service: models, knowledge: knowledge}
 	left := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-abababababac","default_embedding_client_profile_id":"left","entries":[{"client_profile_id":"left","display_name":"Left","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"left","model_kind":"embedding","api_key":"secret-left"}]}`)
-	right := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-ababababad","default_embedding_client_profile_id":"right","entries":[{"client_profile_id":"right","display_name":"Right","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"right","model_kind":"embedding","api_key":"secret-right"}]}`)
+	right := []byte(`{"idempotency_key":"abababab-abab-4bab-8bab-abababababad","default_embedding_client_profile_id":"right","entries":[{"client_profile_id":"right","display_name":"Right","provider":"openai_compatible","base_url":"https://example.invalid/v1","model":"right","model_kind":"embedding","api_key":"secret-right"}]}`)
 	results := make(chan error, 2)
 	go func() { _, err := capability.HandleOperation(ctx, "sync_models", left); results <- err }()
 	go func() { _, err := capability.HandleOperation(ctx, "sync_models", right); results <- err }()

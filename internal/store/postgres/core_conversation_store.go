@@ -243,7 +243,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		return c, core.ErrConflict
 	}
 	c.Summary, c.ContextMessageOffset = summary, uint64(offset)
-	rows, e := s.pool.Query(ctx, `SELECT message_id,role,content,model_profile_id,created_at,payload_json,related_task_ids,tool_summaries FROM core_messages WHERE conversation_id=$1 ORDER BY sequence`, id)
+	rows, e := s.pool.Query(ctx, `SELECT message_id,sequence,role,content,model_profile_id,created_at,payload_json,related_task_ids,tool_summaries FROM core_messages WHERE conversation_id=$1 ORDER BY sequence`, id)
 	if e != nil {
 		return c, e
 	}
@@ -252,7 +252,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		var m core.Message
 		var prof *uuid.UUID
 		var payload, tasks, sums []byte
-		if e = rows.Scan(&m.ID, &m.Role, &m.Content, &prof, &m.CreatedAt, &payload, &tasks, &sums); e != nil {
+		if e = rows.Scan(&m.ID, &m.Sequence, &m.Role, &m.Content, &prof, &m.CreatedAt, &payload, &tasks, &sums); e != nil {
 			return c, e
 		}
 		if prof != nil {

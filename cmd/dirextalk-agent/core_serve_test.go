@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
@@ -28,6 +29,45 @@ type testKnowledgeSearchResolver struct{}
 
 func (testKnowledgeSearchResolver) Search(context.Context, coreknowledge.SearchQuery) (coreknowledge.SearchPage, error) {
 	return coreknowledge.SearchPage{}, nil
+}
+
+type memoryRecallSearchFunc func(context.Context, string, int) (coreknowledge.SearchPage, error)
+
+func (f memoryRecallSearchFunc) RecallMemory(ctx context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
+	return f(ctx, prompt, limit)
+}
+
+func TestCoreMemoryRecallResolverReturnsBoundedModelOnlyEnvelope(t *testing.T) {
+	sourceID := "11111111-1111-4111-8111-111111111111"
+	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(_ context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
+		if prompt != "where do I live" || limit != coreMemoryRecallLimit {
+			t.Fatalf("prompt=%q limit=%d", prompt, limit)
+		}
+		return coreknowledge.SearchPage{Matches: []coreknowledge.SearchMatch{
+			{SourceID: sourceID, Snippet: "lives in Shanghai"},
+			{SourceID: "22222222-2222-4222-8222-222222222222", Snippet: strings.Repeat("界", coreMemoryRecallMaxBytes)},
+		}}, nil
+	})}
+	value, err := resolver.RecallMemory(context.Background(), " where do I live ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(value, "[UNTRUSTED LONG-TERM MEMORY]") || !strings.HasSuffix(value, "[END UNTRUSTED LONG-TERM MEMORY]") || !strings.Contains(value, "lives in Shanghai") {
+		t.Fatalf("recall envelope=%q", value)
+	}
+	if strings.Contains(value, sourceID) || len(value) > coreMemoryRecallMaxBytes || !utf8.ValidString(value) {
+		t.Fatalf("recall leaked metadata or exceeded bounds: bytes=%d valid=%v", len(value), utf8.ValidString(value))
+	}
+}
+
+func TestCoreMemoryRecallResolverTreatsEmptyMemoryAsEmptyContext(t *testing.T) {
+	resolver := coreMemoryRecallResolver{service: memoryRecallSearchFunc(func(context.Context, string, int) (coreknowledge.SearchPage, error) {
+		return coreknowledge.SearchPage{}, nil
+	})}
+	value, err := resolver.RecallMemory(context.Background(), "nothing")
+	if err != nil || value != "" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
 }
 
 func TestComposeCoreKnowledgeDisabledDoesNotCreateProductionFallback(t *testing.T) {

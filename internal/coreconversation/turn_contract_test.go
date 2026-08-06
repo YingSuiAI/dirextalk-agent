@@ -30,6 +30,35 @@ type blockingTurnModel struct {
 	release chan struct{}
 }
 
+type capturingTurnModel struct {
+	request ModelRunRequest
+	runs    int
+}
+
+func (m *capturingTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.request = request
+	m.runs++
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "ok", CreatedAt: time.Now().UTC()}}, nil
+}
+
+type memoryRecallFunc func(context.Context, string) (string, error)
+
+func (f memoryRecallFunc) RecallMemory(ctx context.Context, prompt string) (string, error) {
+	return f(ctx, prompt)
+}
+
+type recallFailureTurnStore struct {
+	*publicActiveTurnStore
+	failedCode    string
+	failedSummary string
+}
+
+func (s *recallFailureTurnStore) FailTurn(_ context.Context, _ TurnLease, code, summary string) (Turn, error) {
+	s.failedCode, s.failedSummary = code, summary
+	s.turn.State = TurnFailed
+	return s.turn, nil
+}
+
 func (m *blockingTurnModel) Run(ctx context.Context, req ModelRunRequest) (ModelRunResult, error) {
 	close(m.started)
 	<-m.release
@@ -252,6 +281,63 @@ func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 	rotated.ProfileSnapshot.APIKey = "rotated-secret"
 	if rotated.Fingerprint() == cmd.Fingerprint() {
 		t.Fatal("profile snapshot mutation was not bound by the request digest")
+	}
+}
+
+func TestModelConversationForTurnInjectsTransientRecallAndCurrentPrompt(t *testing.T) {
+	profileID := uuid.NewString()
+	turn := Turn{ID: uuid.NewString(), Prompt: "what do you remember?", ProfileID: profileID, CreatedAt: time.Now().UTC()}
+	persisted := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "earlier", ModelProfileID: profileID, CreatedAt: turn.CreatedAt.Add(-time.Minute)}
+	recovered := Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "tool finished", ModelProfileID: profileID, CreatedAt: turn.CreatedAt.Add(time.Minute)}
+	original := Conversation{ID: uuid.NewString(), Messages: []Message{persisted, recovered}}
+	modelConversation, err := modelConversationForTurn(original, 1, turn, "[UNTRUSTED LONG-TERM MEMORY]\n- private fact\n[END UNTRUSTED LONG-TERM MEMORY]", turn.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modelConversation.Messages) != 4 || modelConversation.Messages[0].ID != persisted.ID || modelConversation.Messages[1].Role != RoleUser || modelConversation.Messages[2].Role != RoleUser || modelConversation.Messages[2].Content != turn.Prompt || modelConversation.Messages[3].ID != recovered.ID {
+		t.Fatalf("model-only context order=%+v", modelConversation.Messages)
+	}
+	if len(original.Messages) != 2 {
+		t.Fatalf("transient context mutated authoritative conversation: %+v", original.Messages)
+	}
+}
+
+func TestExecuteTurnRecallsNewConversationBeforeModel(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "remember my city", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}
+	store := &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recalledPrompt string
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(_ context.Context, prompt string) (string, error) {
+		recalledPrompt = prompt
+		return "[UNTRUSTED LONG-TERM MEMORY]\n- lives in Shanghai\n[END UNTRUSTED LONG-TERM MEMORY]", nil
+	}))
+	service.executeTurn(context.Background(), turn.ID)
+	if recalledPrompt != turn.Prompt || model.runs != 1 {
+		t.Fatalf("recall prompt=%q model runs=%d", recalledPrompt, model.runs)
+	}
+	if len(model.request.Conversation.Messages) != 2 || model.request.Conversation.Messages[0].Role != RoleUser || model.request.Conversation.Messages[1].Role != RoleUser || model.request.Conversation.Messages[1].Content != turn.Prompt {
+		t.Fatalf("model request omitted recall/current prompt: %+v", model.request.Conversation.Messages)
+	}
+}
+
+func TestExecuteTurnFailsClosedWhenMemoryRecallIsUnavailable(t *testing.T) {
+	snapshot := testTurnSnapshot()
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "remember", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}
+	store := &recallFailureTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: newFakeStore(), turn: turn}}
+	model := &capturingTurnModel{}
+	service, err := NewService(store, model, nil, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return snapshot, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(context.Context, string) (string, error) { return "", errors.New("private backend detail") }))
+	service.executeTurn(context.Background(), turn.ID)
+	if model.runs != 0 || store.failedCode != "memory_recall_unavailable" || store.failedSummary != "long-term memory recall is unavailable" {
+		t.Fatalf("runs=%d code=%q summary=%q", model.runs, store.failedCode, store.failedSummary)
 	}
 }
 

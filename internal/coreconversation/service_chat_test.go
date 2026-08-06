@@ -3,11 +3,90 @@ package coreconversation
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+type capturingChatModel struct {
+	request ModelRunRequest
+	runs    int
+}
+
+func (m *capturingChatModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.request = request
+	m.runs++
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "ok", CreatedAt: time.Now().UTC()}}, nil
+}
+
+func (m *capturingChatModel) Stream(ctx context.Context, request ModelRunRequest, emit func(ModelDelta) error) (ModelRunResult, error) {
+	result, err := m.Run(ctx, request)
+	if err == nil && emit != nil {
+		err = emit(ModelDelta{Text: result.Message.Content})
+	}
+	return result, err
+}
+
+func TestStreamChatRecallsOnlyIntoModelRequestForNewConversation(t *testing.T) {
+	store := newFakeStore()
+	model := &capturingChatModel{}
+	service, err := NewService(store, model, fakeExt{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recallCalls := 0
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(_ context.Context, prompt string) (string, error) {
+		recallCalls++
+		if prompt != "hello" {
+			t.Fatalf("recall prompt=%q", prompt)
+		}
+		return "[UNTRUSTED LONG-TERM MEMORY]\n- private city\n[END UNTRUSTED LONG-TERM MEMORY]", nil
+	}))
+	stream, err := service.StreamChat(context.Background(), command())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var done *ChatResponse
+	for event := range stream {
+		if event.Kind == EventDone {
+			done = event.Response
+		}
+	}
+	if done == nil || recallCalls != 1 || model.runs != 1 {
+		t.Fatalf("done=%+v recallCalls=%d modelRuns=%d", done, recallCalls, model.runs)
+	}
+	messages := model.request.Conversation.Messages
+	if len(messages) != 2 || messages[0].Role != RoleUser || !strings.Contains(messages[0].Content, "private city") || messages[1].Role != RoleUser || messages[1].Content != "hello" {
+		t.Fatalf("model-only recall order=%+v", messages)
+	}
+	persisted, err := store.LoadConversation(context.Background(), done.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Messages) != 2 || strings.Contains(persisted.Messages[0].Content, "private city") || strings.Contains(persisted.Messages[1].Content, "private city") {
+		t.Fatalf("recall leaked into durable conversation: %+v", persisted.Messages)
+	}
+}
+
+func TestChatFailsClosedBeforeModelWhenMemoryRecallUnavailable(t *testing.T) {
+	store := newFakeStore()
+	model := &capturingChatModel{}
+	service, err := NewService(store, model, fakeExt{}, fakeProfile{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetMemoryRecallResolver(memoryRecallFunc(func(context.Context, string) (string, error) {
+		return "", errors.New("private vector backend detail")
+	}))
+	if _, err = service.Chat(context.Background(), command()); !errors.Is(err, ErrMemoryRecallUnavailable) {
+		t.Fatalf("chat recall error=%v", err)
+	}
+	if model.runs != 0 || store.committed != 0 {
+		t.Fatalf("modelRuns=%d committed=%d", model.runs, store.committed)
+	}
+}
 
 func TestCompletedReplayAndConflict(t *testing.T) {
 	st := newFakeStore()
@@ -287,6 +366,9 @@ func TestCompletedModelStepReplaysWhenCompletionCommitFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	restarted.SetMemoryRecallResolver(memoryRecallFunc(func(context.Context, string) (string, error) {
+		return "", errors.New("recall must not run for a recorded model step")
+	}))
 	response, err := restarted.Chat(context.Background(), cmd)
 	if err != nil || response.Message.Content != "ok" || model.runs != 1 || base.committed != 1 {
 		t.Fatalf("replay response=%+v err=%v runs=%d commits=%d", response, err, model.runs, base.committed)

@@ -35,6 +35,9 @@ func (r *Registry) Register(cap Capability) {
 		return
 	}
 	desc := cap.Descriptor()
+	if _, classified := cap.(*errorClassifyingCapability); !classified {
+		cap = &errorClassifyingCapability{inner: cap}
+	}
 	r.capabilities[desc.CapabilityId] = cap
 }
 

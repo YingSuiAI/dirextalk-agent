@@ -1,11 +1,26 @@
 package agentcapability
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
+
+type registryErrorCapability struct{ err error }
+
+func (c registryErrorCapability) Descriptor() *capv1.CapabilityDescriptor {
+	return &capv1.CapabilityDescriptor{CapabilityId: "test.error.v1"}
+}
+
+func (c registryErrorCapability) HandleOperation(context.Context, string, []byte) ([]byte, error) {
+	return nil, c.err
+}
 
 func TestNewRegistryIsEmptyUntilExplicitlyComposed(t *testing.T) {
 	r := NewRegistry()
@@ -14,6 +29,38 @@ func TestNewRegistryIsEmptyUntilExplicitlyComposed(t *testing.T) {
 	}
 	if descriptors := r.List(); len(descriptors) != 0 {
 		t.Fatalf("uncomposed registry published %d capabilities", len(descriptors))
+	}
+}
+
+func TestRegistryClassifiesDomainErrorsWithRedactedPublicMessage(t *testing.T) {
+	r := NewRegistry()
+	r.Register(registryErrorCapability{err: coreconversation.ErrInvalid})
+	capability, ok := r.Get("test.error.v1")
+	if !ok {
+		t.Fatal("registered capability missing")
+	}
+	_, err := capability.HandleOperation(context.Background(), "read", []byte(`{}`))
+	code, message, classified := capabilityoperation.FailureDetails(err)
+	if !classified || code != "INVALID_ARGUMENT" || message != "Agent request is invalid" || !errors.Is(err, coreconversation.ErrInvalid) {
+		t.Fatalf("code=%q message=%q classified=%v err=%v", code, message, classified, err)
+	}
+}
+
+func TestRegistryRedactsUnclassifiedCapabilityErrors(t *testing.T) {
+	sentinel := errors.New("upstream response contained secret-sentinel")
+	r := NewRegistry()
+	r.Register(registryErrorCapability{err: sentinel})
+	capability, ok := r.Get("test.error.v1")
+	if !ok {
+		t.Fatal("registered capability missing")
+	}
+	_, err := capability.HandleOperation(context.Background(), "read", []byte(`{}`))
+	code, message, classified := capabilityoperation.FailureDetails(err)
+	if !classified || code != "UPSTREAM_FAILED" || message != "Agent operation failed" || !errors.Is(err, sentinel) {
+		t.Fatalf("code=%q message=%q classified=%v err=%v", code, message, classified, err)
+	}
+	if strings.Contains(message, "secret-sentinel") {
+		t.Fatalf("classified message leaked upstream detail: %q", message)
 	}
 }
 

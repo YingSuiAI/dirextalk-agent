@@ -55,6 +55,21 @@ multi-tenant model.
   `model_profile_id`/`model_profile_revision`/`credential_version` triple.
   Partial or stale pins fail before provider work; there is no default-profile
   fallback, and durable replays retain their original snapshot.
+- On the first turn of an empty Native conversation, `Chat`, `StreamChat`, and
+  `StartTurn` perform an Agent-internal semantic recall over only ready memory
+  sources whose current revision has an exact promoted embedding binding. The
+  bounded result is inserted as explicitly untrusted user-level reference data
+  before the current prompt for that model request only. It is never written to
+  conversation messages, turn/event payloads, public Knowledge cursor
+  snapshots, logs, or Capability results. An unavailable recall dependency
+  fails closed before model dispatch; an empty recall is a successful empty
+  context.
+- Capability conversation reads use a closed Flutter-facing projection.
+  Conversations expose only id/title/revision/timestamps/status; history
+  exposes only user/assistant messages with durable sequence, terminal status,
+  and a references array. The first history page contains the newest bounded
+  messages in ascending sequence order, and its opaque cursor is bound to the
+  conversation id and prior sequence.
 - Capability `agent.chat.v1/list_turns` accepts only a canonical conversation
   UUID, an optional opaque page token of at most 4,096 bytes, and an optional
   limit from 1 through 1,000. Its closed result projects exactly `turn_id`,
@@ -78,6 +93,9 @@ multi-tenant model.
   timestamps and replay receipts are monotonic when different keys complete
   out of order. The legacy gRPC `TestCredentialIdentity` method remains the
   separate non-keyed seam.
+- Neutral Capability model-profile mutations and conversation mutations also
+  require explicit canonical UUID idempotency keys. Missing or malformed keys
+  are rejected rather than replaced with adapter-generated identities.
 - Knowledge upload fields include declared size and whole-content SHA-256;
   chunks carry contiguous ordinal/offset and per-chunk digests. Commit rejects
   revision, size, or digest drift. Search cursors retain the secret-free

@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -167,6 +169,125 @@ type publicTurnMetadata struct {
 	UpdatedAt       time.Time                  `json:"updated_at"`
 }
 
+type publicConversation struct {
+	ConversationID string    `json:"conversation_id"`
+	Title          string    `json:"title"`
+	Revision       uint64    `json:"revision"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Status         string    `json:"status"`
+}
+
+type publicConversationMessage struct {
+	MessageID  string    `json:"message_id"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	CreatedAt  time.Time `json:"created_at"`
+	MessageSeq int64     `json:"message_seq"`
+	Status     string    `json:"status"`
+	References []any     `json:"references"`
+}
+
+type conversationMessageCursor struct {
+	Version        int    `json:"v"`
+	ConversationID string `json:"conversation_id"`
+	BeforeSequence int64  `json:"before_sequence"`
+}
+
+func projectConversation(value coreconversation.Conversation) publicConversation {
+	status := "active"
+	if value.DeletedAt != nil {
+		status = "deleted"
+	}
+	return publicConversation{
+		ConversationID: value.ID,
+		Title:          value.Title,
+		Revision:       value.Revision,
+		CreatedAt:      value.CreatedAt,
+		UpdatedAt:      value.UpdatedAt,
+		Status:         status,
+	}
+}
+
+func projectConversationMessages(values []coreconversation.Message) []publicConversationMessage {
+	result := make([]publicConversationMessage, 0, len(values))
+	for index, value := range values {
+		if (value.Role != coreconversation.RoleUser && value.Role != coreconversation.RoleAssistant) || strings.TrimSpace(value.Content) == "" {
+			continue
+		}
+		sequence := value.Sequence
+		if sequence <= 0 {
+			sequence = int64(index + 1)
+		}
+		result = append(result, publicConversationMessage{
+			MessageID:  value.ID,
+			Role:       string(value.Role),
+			Content:    value.Content,
+			CreatedAt:  value.CreatedAt,
+			MessageSeq: sequence,
+			Status:     "done",
+			References: make([]any, 0),
+		})
+	}
+	return result
+}
+
+func encodeConversationMessageCursor(conversationID string, beforeSequence int64) string {
+	raw, _ := json.Marshal(conversationMessageCursor{Version: 1, ConversationID: conversationID, BeforeSequence: beforeSequence})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func decodeConversationMessageCursor(value, conversationID string) (int64, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, nil
+	}
+	if len(value) > 4096 {
+		return 0, coreconversation.ErrInvalid
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return 0, coreconversation.ErrInvalid
+	}
+	var cursor conversationMessageCursor
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&cursor) != nil || decoder.Decode(&struct{}{}) != io.EOF || cursor.Version != 1 || cursor.ConversationID != conversationID || cursor.BeforeSequence <= 0 {
+		return 0, coreconversation.ErrInvalid
+	}
+	return cursor.BeforeSequence, nil
+}
+
+func pageConversationMessages(conversationID string, values []coreconversation.Message, cursor string, limit int) ([]publicConversationMessage, string, error) {
+	if !coretask.ValidUUID(conversationID) || limit <= 0 || limit > 200 {
+		return nil, "", coreconversation.ErrInvalid
+	}
+	before, err := decodeConversationMessageCursor(cursor, conversationID)
+	if err != nil {
+		return nil, "", err
+	}
+	projected := projectConversationMessages(values)
+	end := len(projected)
+	if before > 0 {
+		end = 0
+		for end < len(projected) && projected[end].MessageSeq < before {
+			end++
+		}
+		if end >= len(projected) || projected[end].MessageSeq != before {
+			return nil, "", coreconversation.ErrInvalid
+		}
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	page := append([]publicConversationMessage(nil), projected[start:end]...)
+	next := ""
+	if start > 0 && len(page) > 0 {
+		next = encodeConversationMessageCursor(conversationID, page[0].MessageSeq)
+	}
+	return page, next, nil
+}
+
 func publicTurnMetadataList(values []coreconversation.Turn) []publicTurnMetadata {
 	result := make([]publicTurnMetadata, 0, len(values))
 	for _, value := range values {
@@ -219,6 +340,9 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 	if key == "" {
 		key = stringValue(in, "request_id")
 	}
+	if chatOperationRequiresKey(operationID) && !coretask.ValidUUID(key) {
+		return nil, coreconversation.ErrInvalid
+	}
 	if key == "" {
 		key = uuid.NewString()
 	}
@@ -226,23 +350,57 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 	case "create_conversation":
 		title := stringValue(in, "title")
 		id := stringValue(in, "conversation_id")
-		if !coretask.ValidUUID(id) {
-			id = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation:"+key)).String()
+		if !coretask.ValidUUID(id) || !coretask.ValidUUID(key) {
+			return nil, coreconversation.ErrInvalid
 		}
 		receipt, err := c.service.CreateConversationReceipt(ctx, coreconversation.Conversation{ID: id, Title: title, Revision: 1}, key)
-		return marshalResult(map[string]any{"conversation": receipt.Conversation, "replayed": receipt.Replayed}, err)
+		return marshalResult(map[string]any{"conversation": projectConversation(receipt.Conversation), "replayed": receipt.Replayed}, err)
 	case "get_conversation":
-		value, err := c.service.GetConversation(ctx, stringValue(in, "conversation_id"))
-		return marshalResult(value, err)
+		conversationID := stringValue(in, "conversation_id")
+		if !coretask.ValidUUID(conversationID) {
+			return nil, coreconversation.ErrInvalid
+		}
+		limit, err := boundedIntValue(in, "limit", 100, 1, 200)
+		if err != nil {
+			return nil, err
+		}
+		pageToken, err := optionalBoundedString(in, "page_token", 4096)
+		if err != nil {
+			return nil, err
+		}
+		value, err := c.service.GetConversation(ctx, conversationID)
+		if err != nil {
+			return nil, err
+		}
+		messages, next, err := pageConversationMessages(conversationID, value.Messages, pageToken, limit)
+		return marshalResult(map[string]any{"conversation": projectConversation(value), "messages": messages, "next_page_token": next}, err)
 	case "list_conversations":
-		values, next, err := c.service.ListConversations(ctx, stringValue(in, "page_token"), intValue(in, "limit", 50))
-		return marshalResult(map[string]any{"conversations": values, "next_page_token": next}, err)
+		limit, err := boundedIntValue(in, "limit", 50, 1, 100)
+		if err != nil {
+			return nil, err
+		}
+		pageToken, err := optionalBoundedString(in, "page_token", 4096)
+		if err != nil {
+			return nil, err
+		}
+		values, next, err := c.service.ListConversations(ctx, pageToken, limit)
+		projected := make([]publicConversation, 0, len(values))
+		for _, value := range values {
+			projected = append(projected, projectConversation(value))
+		}
+		return marshalResult(map[string]any{"conversations": projected, "next_page_token": next}, err)
 	case "rename_conversation":
+		if !coretask.ValidUUID(key) {
+			return nil, coreconversation.ErrInvalid
+		}
 		receipt, err := c.service.RenameConversationReceipt(ctx, stringValue(in, "conversation_id"), stringValue(in, "title"), uintValue(in, "expected_revision"), key)
-		return marshalResult(map[string]any{"conversation": receipt.Conversation, "replayed": receipt.Replayed}, err)
+		return marshalResult(map[string]any{"conversation": projectConversation(receipt.Conversation), "replayed": receipt.Replayed}, err)
 	case "delete_conversation":
+		if !coretask.ValidUUID(key) {
+			return nil, coreconversation.ErrInvalid
+		}
 		receipt, err := c.service.DeleteConversationReceipt(ctx, stringValue(in, "conversation_id"), uintValue(in, "expected_revision"), key)
-		return marshalResult(map[string]any{"conversation": receipt.Conversation, "replayed": receipt.Replayed}, err)
+		return marshalResult(map[string]any{"conversation": projectConversation(receipt.Conversation), "replayed": receipt.Replayed}, err)
 	case "list_turns":
 		if err := validateListTurnsCapabilityInput(in); err != nil {
 			return nil, err
@@ -334,6 +492,15 @@ func validateListTurnsCapabilityInput(in map[string]json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+func chatOperationRequiresKey(operation string) bool {
+	switch operation {
+	case "create_conversation", "rename_conversation", "delete_conversation", "compress_context", "chat", "stream_chat":
+		return true
+	default:
+		return false
+	}
 }
 
 func emitCapabilityProgress(ctx context.Context, operationID string, event coreconversation.StreamEvent, progress func(context.Context, string, []byte) error) error {
@@ -451,7 +618,14 @@ func (c *coreModelCapability) HandleOperation(ctx context.Context, operationID s
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
 	}
-	key := valueOrUUID(in, "idempotency_key")
+	key := stringValue(in, "idempotency_key")
+	if modelMutationOperation(operationID) {
+		if !coretask.ValidUUID(key) {
+			return nil, coremodel.ErrInvalidIdempotencyKey
+		}
+	} else if !coretask.ValidUUID(key) {
+		key = valueOrUUID(in, "idempotency_key")
+	}
 	switch operationID {
 	case "sync_models":
 		var entries []syncProfileInput
@@ -1336,7 +1510,7 @@ func operationInputSchema(capabilityID, operation string) string {
 	const object = `{"type":"object","additionalProperties":true}`
 	switch capabilityID + ":" + operation {
 	case "agent.chat.v1:create_conversation":
-		return `{"type":"object","properties":{"title":{"type":"string"},"conversation_id":{"type":"string"},"idempotency_key":{"type":"string"}},"required":["idempotency_key"]}`
+		return `{"type":"object","properties":{"title":{"type":"string"},"conversation_id":{"type":"string","format":"uuid"},"idempotency_key":{"type":"string","format":"uuid"}},"required":["conversation_id","idempotency_key"]}`
 	case "agent.chat.v1:get_conversation":
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"page_token":{"type":"string"},"limit":{"type":"integer"}},"required":["conversation_id"]}`
 	case "agent.chat.v1:list_conversations":
@@ -1495,6 +1669,28 @@ func intValue(m map[string]json.RawMessage, key string, def int) int {
 	}
 	return v
 }
+func boundedIntValue(m map[string]json.RawMessage, key string, def, min, max int) (int, error) {
+	raw, present := m[key]
+	if !present {
+		return def, nil
+	}
+	var value int
+	if json.Unmarshal(raw, &value) != nil || value < min || value > max {
+		return 0, coreconversation.ErrInvalid
+	}
+	return value, nil
+}
+func optionalBoundedString(m map[string]json.RawMessage, key string, max int) (string, error) {
+	raw, present := m[key]
+	if !present {
+		return "", nil
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil || len(value) > max {
+		return "", coreconversation.ErrInvalid
+	}
+	return strings.TrimSpace(value), nil
+}
 func pageLimit(m map[string]json.RawMessage, def int) int {
 	if value := intValue(m, "limit", 0); value > 0 {
 		return value
@@ -1532,6 +1728,15 @@ func valueOrUUID(m map[string]json.RawMessage, key string) string {
 		return v
 	}
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key+":"+string(m[key]))).String()
+}
+
+func modelMutationOperation(operation string) bool {
+	switch operation {
+	case "sync_models", "create_model", "update_model", "delete_model":
+		return true
+	default:
+		return false
+	}
 }
 
 func knowledgeMutationOperation(operation string) bool {
