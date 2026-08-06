@@ -397,17 +397,17 @@ git commit -m "feat: bind Team spend to Core confirmation"
 - Modify: `internal/agentcapability/core_adapters.go`
 - Modify: `internal/agentcapability/core_adapters_test.go`
 
-- [ ] **Step 1: Write failing descriptor and operation tests**
+- [x] **Step 1: Write failing descriptor and operation tests**
 
 Require capability ID `agent.team.v1`, protocol 1, readiness false until all dependencies are ready, exact operations `plans_get`, `executions_list`, `executions_get`, and `executions_cancel`, safe/read vs high/mutation risks, 1 MiB maximum requests, strict schemas, owner from PermissionContext, and no internal identifiers in JSON.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `GOWORK=off go test ./internal/agentcapability/... ./internal/coreteam -run 'Test.*TeamCapability' -count=1`
 
 Expected: FAIL because the capability does not exist.
 
-- [ ] **Step 3: Implement the capability adapter**
+- [x] **Step 3: Implement the capability adapter**
 
 ```go
 const CapabilityID = "agent.team.v1"
@@ -421,13 +421,13 @@ var operations = []Operation{
 
 Generate deterministic schemas with `additionalProperties:false`; result schemas must enumerate public fields rather than use the current Execution V2 permissive result schema.
 
-- [ ] **Step 4: Run capability, grant, and canary tests**
+- [x] **Step 4: Run capability, grant, and canary tests**
 
 Run: `GOWORK=off go test ./internal/agentcapability/... ./internal/capability/... ./internal/coreteam -run 'Test.*(Team|Grant|Schema)' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/agentcapability internal/coreteam

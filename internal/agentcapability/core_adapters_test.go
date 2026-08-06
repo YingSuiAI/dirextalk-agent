@@ -19,9 +19,72 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
+
+type teamRegistryRepository struct{}
+
+func (teamRegistryRepository) CreatePlan(context.Context, coreteam.CreatePlanCommand) (coreteam.PlanRecord, bool, error) {
+	return coreteam.PlanRecord{}, false, coreteam.ErrInvalid
+}
+func (teamRegistryRepository) GetPlan(context.Context, coreteam.Scope, string) (coreteam.PlanRecord, error) {
+	return coreteam.PlanRecord{}, coreteam.ErrNotFound
+}
+func (teamRegistryRepository) CreateExecution(context.Context, coreteam.CreateExecutionCommand) (coreteam.Execution, bool, error) {
+	return coreteam.Execution{}, false, coreteam.ErrInvalid
+}
+func (teamRegistryRepository) GetExecution(context.Context, coreteam.Scope, string) (coreteam.Execution, error) {
+	return coreteam.Execution{}, coreteam.ErrNotFound
+}
+func (teamRegistryRepository) ListExecutions(context.Context, coreteam.ListQuery) (coreteam.Page, error) {
+	return coreteam.Page{}, nil
+}
+func (teamRegistryRepository) CompareAndSwapExecution(context.Context, coreteam.Scope, coreteam.Execution, uint64) (coreteam.Execution, error) {
+	return coreteam.Execution{}, coreteam.ErrInvalid
+}
+func (teamRegistryRepository) ListRunnableRoles(context.Context, coreteam.Scope, string, uint32) ([]coreteam.RoleRun, error) {
+	return nil, nil
+}
+
+type teamRegistryCancellation struct{}
+
+func (teamRegistryCancellation) CancelExecution(context.Context, coreteam.CancelExecutionRequest) (coreteam.Execution, error) {
+	return coreteam.Execution{}, coreteam.ErrNotFound
+}
+
+func TestCoreRegistryPublishesOnlyReadyTeamCapability(t *testing.T) {
+	repository := teamRegistryRepository{}
+	unready := coreteam.NewService(repository, nil)
+	if _, ok := NewCoreRegistry(CoreBindings{Team: unready}).Get("agent.team.v1"); ok {
+		t.Fatal("Team capability published without cancellation control")
+	}
+	ready := coreteam.NewService(repository, teamRegistryCancellation{})
+	capability, ok := NewCoreRegistry(CoreBindings{Team: ready}).Get("agent.team.v1")
+	if !ok || capability.Descriptor().GetCapabilityId() != "agent.team.v1" || !capability.Descriptor().GetReadiness() {
+		t.Fatalf("ready Team capability=%v ok=%v", capability, ok)
+	}
+}
+
+func TestTeamCapabilityErrorsUseStableRedactedPublicCodes(t *testing.T) {
+	tests := []struct {
+		err     error
+		code    string
+		message string
+	}{
+		{coreteam.ErrInvalid, "INVALID_ARGUMENT", "Agent request is invalid"},
+		{coreteam.ErrNotFound, "NOT_FOUND", "Agent resource was not found"},
+		{coreteam.ErrRevisionConflict, "CONFLICT", "Agent state changed; refresh and retry"},
+		{coreteam.ErrRuntimeUnavailable, "PRECONDITION_FAILED", "Agent configuration is not ready"},
+	}
+	for _, tt := range tests {
+		code, message, ok := capabilityoperation.FailureDetails(classifyCapabilityError(errors.Join(tt.err, errors.New("secret-sentinel"))))
+		if !ok || code != tt.code || message != tt.message || strings.Contains(message, "secret-sentinel") {
+			t.Fatalf("err=%v code=%q message=%q ok=%v", tt.err, code, message, ok)
+		}
+	}
+}
 
 func TestEmitCapabilityProgressFailsClosedWhenLedgerRejectsEvent(t *testing.T) {
 	want := errors.New("ledger unavailable")

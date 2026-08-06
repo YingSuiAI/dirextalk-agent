@@ -18,6 +18,7 @@ import (
 	"time"
 
 	executioncap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/executionv2"
+	teamcap "github.com/YingSuiAI/dirextalk-agent/internal/agentcapability/team"
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
@@ -29,6 +30,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
@@ -49,6 +51,7 @@ type CoreBindings struct {
 	// unary-only tests and embeddings.
 	CapabilityProgress func(context.Context, string, []byte) error
 	ExecutionV2        *coreexecutionv2.Service
+	Team               *coreteam.Service
 	AWS                *coreaws.Service
 	WebSearch          *corewebsearch.Service
 	// Voice and Misc are optional composition ports.  The Core registry owns
@@ -67,6 +70,11 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 	}
 	if bindings.ExecutionV2 != nil && bindings.ExecutionV2.ReadyForPublication() {
 		if capability, err := executioncap.NewCapability(bindings.ExecutionV2); err == nil {
+			r.Register(capability)
+		}
+	}
+	if bindings.Team != nil && bindings.Team.ReadyForPublication() {
+		if capability, err := teamcap.NewCapability(bindings.Team); err == nil {
 			r.Register(capability)
 		}
 	}

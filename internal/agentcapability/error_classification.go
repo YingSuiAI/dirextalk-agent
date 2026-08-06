@@ -9,6 +9,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -54,11 +55,13 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrPathTraversal),
 		errors.Is(err, coreknowledge.ErrLimitExceeded),
 		errors.Is(err, coreknowledge.ErrCursorConflict),
-		errors.Is(err, coredeprovision.ErrInvalid):
+		errors.Is(err, coredeprovision.ErrInvalid),
+		errors.Is(err, coreteam.ErrInvalid):
 		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", err)
 	case errors.Is(err, coreconversation.ErrDeleted),
 		errors.Is(err, coremodel.ErrProfileNotFound),
-		errors.Is(err, coreknowledge.ErrNotFound):
+		errors.Is(err, coreknowledge.ErrNotFound),
+		errors.Is(err, coreteam.ErrNotFound):
 		return capabilityoperation.NewFailure("NOT_FOUND", "Agent resource was not found", err)
 	case errors.Is(err, coreconversation.ErrConflict),
 		errors.Is(err, coreconversation.ErrInFlight),
@@ -69,12 +72,18 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrConflict),
 		errors.Is(err, coreknowledge.ErrIdempotencyConflict),
 		errors.Is(err, coreknowledge.ErrRevisionConflict),
-		errors.Is(err, coreknowledge.ErrSourceReferenced):
+		errors.Is(err, coreknowledge.ErrSourceReferenced),
+		errors.Is(err, coreteam.ErrConflict),
+		errors.Is(err, coreteam.ErrRevisionConflict),
+		errors.Is(err, coreteam.ErrExecutionActive):
 		return capabilityoperation.NewFailure("CONFLICT", "Agent state changed; refresh and retry", err)
 	case errors.Is(err, coremodel.ErrAPIKeyUnavailable),
 		errors.Is(err, coreknowledge.ErrIneligible),
 		errors.Is(err, coreknowledge.ErrCleanupPending),
-		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable):
+		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable),
+		errors.Is(err, coreteam.ErrRuntimeUnavailable),
+		errors.Is(err, coreteam.ErrQuoteUnavailable),
+		errors.Is(err, coreteam.ErrIdentityUnavailable):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
 	case errors.Is(err, coreconversation.ErrChatFailed):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent chat failed", err)

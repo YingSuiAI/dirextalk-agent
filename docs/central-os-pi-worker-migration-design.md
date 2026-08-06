@@ -10,9 +10,9 @@
 
 | 仓库 | 基线分支 | 冻结提交 |
 | --- | --- | --- |
-| `dirextalk-agent` | `origin/adam/agent-core-v1-integration` | `7ef2f10c00d0d77dc26ed0b13129282c819b3302` |
-| `dirextalk-message-server` | `origin/adam/agent-core-v1-integration` | `020935b20958099829b2b51d468ff2f15b6752d4` |
-| `dirextalk-flutter` | `origin/adam/agent-core-v1-integration` | `822a6afdcce6431f625334f705549fc4b10542f5` |
+| `dirextalk-agent` | `origin/adam/agent-core-v1-integration` | `a5474faa8643b1d104c4deafea6e831a54a1872f` |
+| `dirextalk-message-server` | `origin/adam/agent-core-v1-integration` | `51fac407aa552500a1e14c39ae142948ecb03795` |
+| `dirextalk-flutter` | `origin/adam/agent-core-v1-integration` | `00a4d9d6b5c3e59c048c7aa26b26ee613dcf38e9` |
 
 在不恢复旧 Native Agent 架构的前提下，把已完成真实 AWS 验收的 Central OS + Pi Worker 能力迁入 Agent Core v1，形成以下产品事实：
 
