@@ -28,11 +28,15 @@ var (
 	ErrPurgeClosed  = errors.New("external purge registry is closed")
 )
 
-// RootSpec names one Agent-owned filesystem root. Empty paths are omitted so
-// disabled compositions may leave their optional roots unconfigured.
+// RootSpec names one admitted filesystem root. Empty paths are omitted so
+// disabled compositions may leave their optional roots unconfigured. A
+// non-zero OwnerUID/WritableGroupGID pair admits the runner-owned shared
+// workspace only when its ownership and mode are exactly bound.
 type RootSpec struct {
-	Name string
-	Path string
+	Name             string
+	Path             string
+	OwnerUID         uint32
+	WritableGroupGID uint32
 }
 
 // CollectionPurger is the narrow external vector-store deletion boundary.
@@ -43,12 +47,14 @@ type CollectionPurger interface {
 }
 
 type trustedRoot struct {
-	name string
-	path string
-	file *os.File
-	dev  uint64
-	ino  uint64
-	uid  uint32
+	name   string
+	path   string
+	file   *os.File
+	dev    uint64
+	ino    uint64
+	uid    uint32
+	gid    uint32
+	shared bool
 }
 
 // PurgeRegistry binds every configured root and, optionally, one configured
@@ -62,8 +68,9 @@ type PurgeRegistry struct {
 }
 
 // NewPurgeRegistry validates and binds root directories. It rejects path
-// aliases, group/other-writable directories, duplicate/nested roots, and
-// symlinked final path components. The caller must Close the returned registry.
+// aliases, unauthorized writable directories, duplicate/nested roots, and
+// symlinked final path components. The one shared form requires exact pinned
+// owner/group/mode identity. The caller must Close the returned registry.
 func NewPurgeRegistry(specs []RootSpec, collection CollectionPurger) (*PurgeRegistry, error) {
 	ordered := append([]RootSpec(nil), specs...)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -84,7 +91,7 @@ func NewPurgeRegistry(specs []RootSpec, collection CollectionPurger) (*PurgeRegi
 			registry.Close()
 			return nil, fmt.Errorf("%w: root name", ErrPurgeInvalid)
 		}
-		root, err := bindTrustedRoot(name, path)
+		root, err := bindTrustedRoot(RootSpec{Name: name, Path: path, OwnerUID: spec.OwnerUID, WritableGroupGID: spec.WritableGroupGID})
 		if err != nil {
 			registry.Close()
 			return nil, err
@@ -106,7 +113,8 @@ func NewPurgeRegistry(specs []RootSpec, collection CollectionPurger) (*PurgeRegi
 	return registry, nil
 }
 
-func bindTrustedRoot(name, path string) (trustedRoot, error) {
+func bindTrustedRoot(spec RootSpec) (trustedRoot, error) {
+	name, path := spec.Name, spec.Path
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return trustedRoot{}, fmt.Errorf("%w: root %q must be absolute and clean", ErrPurgeInvalid, name)
 	}
@@ -123,16 +131,23 @@ func bindTrustedRoot(name, path string) (trustedRoot, error) {
 		_ = unix.Close(fd)
 		return trustedRoot{}, fmt.Errorf("%w: stat root %q: %v", ErrPurgeInvalid, name, err)
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Geteuid()) || stat.Mode&0o022 != 0 {
+	shared := spec.OwnerUID != 0 || spec.WritableGroupGID != 0
+	validIdentity := stat.Mode&unix.S_IFMT == unix.S_IFDIR
+	if shared {
+		validIdentity = validIdentity && spec.OwnerUID != 0 && spec.WritableGroupGID == uint32(os.Getegid()) && stat.Uid == spec.OwnerUID && stat.Gid == spec.WritableGroupGID && stat.Mode&0o777 == 0o770
+	} else {
+		validIdentity = validIdentity && stat.Uid == uint32(os.Geteuid()) && stat.Mode&0o022 == 0
+	}
+	if !validIdentity {
 		_ = unix.Close(fd)
-		return trustedRoot{}, fmt.Errorf("%w: root %q must be an Agent-owned directory without group/other write access", ErrPurgeInvalid, name)
+		return trustedRoot{}, fmt.Errorf("%w: root %q ownership or mode", ErrPurgeInvalid, name)
 	}
 	file := os.NewFile(uintptr(fd), path)
 	if file == nil {
 		_ = unix.Close(fd)
 		return trustedRoot{}, fmt.Errorf("%w: wrap root %q", ErrPurgeInvalid, name)
 	}
-	return trustedRoot{name: name, path: path, file: file, dev: uint64(stat.Dev), ino: uint64(stat.Ino), uid: stat.Uid}, nil
+	return trustedRoot{name: name, path: path, file: file, dev: uint64(stat.Dev), ino: stat.Ino, uid: stat.Uid, gid: stat.Gid, shared: shared}, nil
 }
 
 func pathsOverlap(a, b string) bool {
@@ -196,17 +211,27 @@ func (r *trustedRoot) verify() error {
 	if err := unix.Fstat(int(r.file.Fd()), &fdStat); err != nil {
 		return err
 	}
-	if uint64(fdStat.Dev) != r.dev || uint64(fdStat.Ino) != r.ino || fdStat.Mode&unix.S_IFMT != unix.S_IFDIR || fdStat.Uid != r.uid || fdStat.Mode&0o022 != 0 {
+	if uint64(fdStat.Dev) != r.dev || uint64(fdStat.Ino) != r.ino || !r.matches(fdStat) {
 		return errors.New("bound root identity changed")
 	}
 	var pathStat unix.Stat_t
 	if err := unix.Lstat(r.path, &pathStat); err != nil {
 		return err
 	}
-	if uint64(pathStat.Dev) != r.dev || uint64(pathStat.Ino) != r.ino || pathStat.Mode&unix.S_IFMT != unix.S_IFDIR || pathStat.Uid != r.uid || pathStat.Mode&0o022 != 0 {
+	if uint64(pathStat.Dev) != r.dev || uint64(pathStat.Ino) != r.ino || !r.matches(pathStat) {
 		return errors.New("configured root path was replaced")
 	}
 	return nil
+}
+
+func (r *trustedRoot) matches(stat unix.Stat_t) bool {
+	if r == nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != r.uid {
+		return false
+	}
+	if r.shared {
+		return stat.Gid == r.gid && stat.Mode&0o777 == 0o770
+	}
+	return stat.Mode&0o022 == 0
 }
 
 func purgeTrustedDirectory(ctx context.Context, root *os.File) error {

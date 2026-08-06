@@ -14,6 +14,37 @@ type testCollectionPurger struct {
 	err   error
 }
 
+func TestSharedPurgeRootRequiresExactRunnerOwnershipAndMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewPurgeRegistry([]RootSpec{{
+		Name:             "extension-workspace",
+		Path:             root,
+		OwnerUID:         uint32(os.Geteuid()),
+		WritableGroupGID: uint32(os.Getegid()),
+	}}, nil)
+	if err != nil {
+		t.Fatalf("valid shared purge root rejected: %v", err)
+	}
+	defer registry.Close()
+	if err := os.Chmod(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Purge(context.Background()); err == nil {
+		t.Fatal("shared purge root mode change was accepted")
+	}
+	if _, err := NewPurgeRegistry([]RootSpec{{
+		Name:             "wrong-group",
+		Path:             root,
+		OwnerUID:         uint32(os.Geteuid()),
+		WritableGroupGID: uint32(os.Getegid()) + 1,
+	}}, nil); !errors.Is(err, ErrPurgeInvalid) {
+		t.Fatalf("wrong shared group err=%v", err)
+	}
+}
+
 func (p *testCollectionPurger) DeleteCollection(context.Context) error {
 	p.calls++
 	return p.err
