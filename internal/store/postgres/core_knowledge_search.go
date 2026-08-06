@@ -15,6 +15,46 @@ import (
 
 const knowledgeRecallBindingBatchSize = 128
 
+type currentKnowledgeEmbeddingBinding struct {
+	profileID        string
+	profileRevision  int64
+	collectionDigest string
+}
+
+func (r *CoreKnowledgeStore) currentKnowledgeEmbeddingBinding(ctx context.Context) (currentKnowledgeEmbeddingBinding, error) {
+	config, err := r.GetEmbeddingConfig(ctx)
+	if err != nil {
+		return currentKnowledgeEmbeddingBinding{}, err
+	}
+	var revision int64
+	if err := r.store.pool.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, config.EmbeddingProfileID).Scan(&revision); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return currentKnowledgeEmbeddingBinding{}, coreknowledge.ErrNotFound
+		}
+		return currentKnowledgeEmbeddingBinding{}, coreknowledge.ErrConflict
+	}
+	if revision <= 0 {
+		return currentKnowledgeEmbeddingBinding{}, coreknowledge.ErrConflict
+	}
+	return currentKnowledgeEmbeddingBinding{
+		profileID:        config.EmbeddingProfileID,
+		profileRevision:  revision,
+		collectionDigest: config.CollectionConfigDigest,
+	}, nil
+}
+
+func (r *CoreKnowledgeStore) ActiveEmbeddingBinding(ctx context.Context) (coreknowledge.ActiveEmbeddingBinding, error) {
+	binding, err := r.currentKnowledgeEmbeddingBinding(ctx)
+	if err != nil {
+		return coreknowledge.ActiveEmbeddingBinding{}, err
+	}
+	return coreknowledge.ActiveEmbeddingBinding{
+		ProfileID:        binding.profileID,
+		ProfileRevision:  binding.profileRevision,
+		CollectionDigest: binding.collectionDigest,
+	}, nil
+}
+
 // RecallMemory is the private, non-paginated semantic read used by Native
 // conversation execution. Unlike Search it never writes a cursor snapshot or
 // stores snippets. Source ids are selected in bounded keyset pages so a user
@@ -23,6 +63,10 @@ func (r *CoreKnowledgeStore) RecallMemory(ctx context.Context, prompt string, li
 	query := coreknowledge.SearchQuery{Query: strings.TrimSpace(prompt), Kind: coreknowledge.SourceKindMemory, Limit: limit}
 	if r == nil || r.store == nil || r.search == nil || ctx == nil || limit <= 0 || query.ValidateForRepository() != nil {
 		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+	}
+	binding, err := r.currentKnowledgeEmbeddingBinding(ctx)
+	if err != nil {
+		return coreknowledge.SearchPage{}, err
 	}
 	var (
 		cursor        string
@@ -40,9 +84,9 @@ func (r *CoreKnowledgeStore) RecallMemory(ctx context.Context, prompt string, li
 			err  error
 		)
 		if cursor == "" {
-			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' ORDER BY source_id LIMIT $1`, knowledgeRecallBindingBatchSize)
+			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id=$1::uuid AND promoted_profile_revision=$2 AND promoted_collection_config_digest=$3 ORDER BY source_id LIMIT $4`, binding.profileID, binding.profileRevision, binding.collectionDigest, knowledgeRecallBindingBatchSize)
 		} else {
-			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' AND source_id>$1::uuid ORDER BY source_id LIMIT $2`, cursor, knowledgeRecallBindingBatchSize)
+			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id=$1::uuid AND promoted_profile_revision=$2 AND promoted_collection_config_digest=$3 AND source_id>$4::uuid ORDER BY source_id LIMIT $5`, binding.profileID, binding.profileRevision, binding.collectionDigest, cursor, knowledgeRecallBindingBatchSize)
 		}
 		if err != nil {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
@@ -248,7 +292,7 @@ func (r *CoreKnowledgeStore) ListAutoIndexCandidates(ctx context.Context, profil
 	if r == nil || r.store == nil || !validKnowledgeUUID(profileID) || len(collectionDigest) != 64 || limit <= 0 || limit > 256 {
 		return nil, coreknowledge.ErrInvalid
 	}
-	rows, err := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE status='ready' AND (promoted_revision < revision OR promoted_profile_id IS DISTINCT FROM $1::uuid OR promoted_collection_config_digest IS DISTINCT FROM $2) ORDER BY updated_at,source_id LIMIT $3`, profileID, strings.ToLower(collectionDigest), limit)
+	rows, err := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE status='ready' AND (promoted_revision < revision OR promoted_profile_id IS DISTINCT FROM $1::uuid OR promoted_profile_revision IS DISTINCT FROM (SELECT revision FROM core_model_profiles WHERE profile_id=$1::uuid AND deleted_at IS NULL) OR promoted_collection_config_digest IS DISTINCT FROM $2) ORDER BY updated_at,source_id LIMIT $3`, profileID, strings.ToLower(collectionDigest), limit)
 	if err != nil {
 		return nil, coreknowledge.ErrConflict
 	}
@@ -276,16 +320,16 @@ func (r *CoreKnowledgeStore) GetEmbeddingSourceStatus(ctx context.Context, sourc
 		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrInvalid
 	}
 	var status string
-	var revision, promotedRevision int64
+	var revision, promotedRevision, promotedProfileRevision, currentProfileRevision int64
 	var promotedProfile, promotedDigest string
-	err := r.store.pool.QueryRow(ctx, `SELECT status,revision,promoted_revision,COALESCE(promoted_profile_id::text,''),COALESCE(promoted_collection_config_digest,'') FROM core_knowledge_sources WHERE source_id=$1`, sourceID).Scan(&status, &revision, &promotedRevision, &promotedProfile, &promotedDigest)
+	err := r.store.pool.QueryRow(ctx, `SELECT status,revision,promoted_revision,COALESCE(promoted_profile_id::text,''),promoted_profile_revision,COALESCE(promoted_collection_config_digest,''),(SELECT revision FROM core_model_profiles WHERE profile_id=$2::uuid AND deleted_at IS NULL) FROM core_knowledge_sources WHERE source_id=$1`, sourceID, config.EmbeddingProfileID).Scan(&status, &revision, &promotedRevision, &promotedProfile, &promotedProfileRevision, &promotedDigest, &currentProfileRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrNotFound
 	}
 	if err != nil {
 		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrConflict
 	}
-	indexed := status == string(coreknowledge.SourceStatusReady) && promotedRevision == revision && promotedProfile == config.EmbeddingProfileID && strings.EqualFold(promotedDigest, config.CollectionConfigDigest)
+	indexed := status == string(coreknowledge.SourceStatusReady) && promotedRevision == revision && promotedProfile == config.EmbeddingProfileID && promotedProfileRevision == currentProfileRevision && strings.EqualFold(promotedDigest, config.CollectionConfigDigest)
 	return coreknowledge.EmbeddingSourceStatus{Status: coreknowledge.SourceStatus(status), Indexed: indexed, Stale: !indexed && status != string(coreknowledge.SourceStatusUploading), Revision: revision, PromotedRevision: promotedRevision}, nil
 }
 

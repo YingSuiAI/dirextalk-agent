@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -217,8 +218,18 @@ func (s *Service) requestAutomaticIndexWithConfig(ctx context.Context, source So
 	if s == nil || s.indexer == nil || source.ID == "" || source.Revision <= 0 || config.EmbeddingProfileID == "" || config.CollectionConfigDigest == "" {
 		return
 	}
-	key := uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/knowledge/auto-index/"+source.ID+"/"+strconv.FormatInt(source.Revision, 10)+"/"+config.EmbeddingProfileID+"/"+config.CollectionConfigDigest)).String()
-	_, _ = s.Index(ctx, IndexRequest{SourceIDs: []string{source.ID}, IdempotencyKey: key})
+	profileRevision := config.EmbeddingProfileRevision
+	var expectedBinding *ActiveEmbeddingBinding
+	if reader, ok := s.repository.(ActiveEmbeddingBindingReader); ok {
+		binding, err := reader.ActiveEmbeddingBinding(ctx)
+		if err != nil || binding.ProfileID != config.EmbeddingProfileID || binding.ProfileRevision <= 0 || !strings.EqualFold(binding.CollectionDigest, config.CollectionConfigDigest) {
+			return
+		}
+		profileRevision = binding.ProfileRevision
+		expectedBinding = &binding
+	}
+	key := uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/knowledge/auto-index/"+source.ID+"/"+strconv.FormatInt(source.Revision, 10)+"/"+config.EmbeddingProfileID+"/"+strconv.FormatInt(profileRevision, 10)+"/"+config.CollectionConfigDigest)).String()
+	_, _ = s.Index(ctx, IndexRequest{SourceIDs: []string{source.ID}, IdempotencyKey: key, ExpectedBinding: expectedBinding})
 }
 
 // EmbeddingStatus returns promoted/stale vector counts when the repository

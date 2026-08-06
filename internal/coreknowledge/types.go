@@ -313,6 +313,12 @@ type EmbeddingConfigCommand struct {
 	CollectionConfigDigest string
 }
 
+type ActiveEmbeddingBinding struct {
+	ProfileID        string
+	ProfileRevision  int64
+	CollectionDigest string
+}
+
 type EmbeddingSourceStatus struct {
 	Status           SourceStatus `json:"status"`
 	Indexed          bool         `json:"embedding_indexed"`
@@ -347,8 +353,9 @@ type EmbeddingStatusReader interface {
 type TaskReference struct{ TaskID string }
 
 type IndexRequest struct {
-	SourceIDs      []string
-	IdempotencyKey string
+	SourceIDs       []string
+	IdempotencyKey  string
+	ExpectedBinding *ActiveEmbeddingBinding
 }
 
 type Indexer interface {

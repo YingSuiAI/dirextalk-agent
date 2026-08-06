@@ -57,7 +57,10 @@ multi-tenant model.
   fallback, and durable replays retain their original snapshot.
 - On the first turn of an empty Native conversation, `Chat`, `StreamChat`, and
   `StartTurn` perform an Agent-internal semantic recall over only ready memory
-  sources whose current revision has an exact promoted embedding binding. The
+  sources whose current revision has a promoted embedding binding that exactly
+  matches the active embedding profile ID, profile revision, and collection
+  configuration digest. Sources awaiting reindex after an embedding-profile
+  change are stale recall candidates and are skipped until promotion. The
   bounded result is inserted as explicitly untrusted user-level reference data
   before the current prompt for that model request only. It is never written to
   conversation messages, turn/event payloads, public Knowledge cursor

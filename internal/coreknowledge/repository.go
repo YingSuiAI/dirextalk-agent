@@ -47,6 +47,14 @@ type AutoIndexCandidateReader interface {
 	ListAutoIndexCandidates(context.Context, string, string, int) ([]Source, error)
 }
 
+// ActiveEmbeddingBindingReader supplies the complete current non-secret
+// embedding identity used to derive automatic-index replay keys. Production
+// repositories should expose it so a profile revision or credential rotation
+// cannot replay an index task created for an older profile snapshot.
+type ActiveEmbeddingBindingReader interface {
+	ActiveEmbeddingBinding(context.Context) (ActiveEmbeddingBinding, error)
+}
+
 // ExistingIndexReader lets an explicit reindex request converge on a queued or
 // running automatic job for the same source revisions and embedding binding.
 // It is optional so metadata-only and in-memory indexers can retain the

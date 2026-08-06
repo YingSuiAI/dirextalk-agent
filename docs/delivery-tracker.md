@@ -74,6 +74,11 @@ support.
   tests verified exact prompt delivery, user-level transient recall,
   fail-closed provider dispatch, and no conversation persistence of recalled
   snippets. `buf lint`, `go vet ./...`, and `go build ./cmd/...` also passed.
+- On **2026-08-06**, PostgreSQL 18 integration tests verified that Native Chat
+  skips stale memory promotions after an embedding-profile ID or revision
+  change, reports them as stale rather than indexed, and requeues a source
+  whose active embedding profile revision advanced. Empty exact-binding recall
+  remained a successful empty context without calling the semantic backend.
 - On **2026-07-25**, the explicitly authorized real AWS lane used the typed
   `CoreCloudControlService` in `us-east-1` to create and read back one tagged
   idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent
