@@ -425,7 +425,7 @@ func writeTeamReplay(ctx context.Context, tx pgx.Tx, scope coreteam.Scope, opera
 }
 
 func requireTeamAdmission(ctx context.Context, tx pgx.Tx, scope coreteam.Scope) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, deprovisionAdvisoryLockName); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, deprovisionAdvisoryLockName); err != nil {
 		return err
 	}
 	var fenced bool

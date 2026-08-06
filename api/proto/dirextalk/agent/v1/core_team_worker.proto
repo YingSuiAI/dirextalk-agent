@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum CoreTeamWorkerStage {
+  CORE_TEAM_WORKER_STAGE_UNSPECIFIED = 0;
+  CORE_TEAM_WORKER_STAGE_PREPARING_INPUT = 1;
+  CORE_TEAM_WORKER_STAGE_RUNNING = 2;
+  CORE_TEAM_WORKER_STAGE_VALIDATING_RESULT = 3;
+}
+
+enum CoreTeamWorkerHealth {
+  CORE_TEAM_WORKER_HEALTH_UNSPECIFIED = 0;
+  CORE_TEAM_WORKER_HEALTH_HEALTHY = 1;
+  CORE_TEAM_WORKER_HEALTH_DELAYED = 2;
+  CORE_TEAM_WORKER_HEALTH_RECOVERING = 3;
+}
+
+enum CoreTeamWorkerCompletionOutcome {
+  CORE_TEAM_WORKER_COMPLETION_OUTCOME_UNSPECIFIED = 0;
+  CORE_TEAM_WORKER_COMPLETION_OUTCOME_SUCCEEDED = 1;
+  CORE_TEAM_WORKER_COMPLETION_OUTCOME_FAILED = 2;
+}
+
+enum CoreTeamWorkerFailureCode {
+  CORE_TEAM_WORKER_FAILURE_CODE_UNSPECIFIED = 0;
+  CORE_TEAM_WORKER_FAILURE_CODE_PROCESS = 1;
+  CORE_TEAM_WORKER_FAILURE_CODE_PI = 2;
+  CORE_TEAM_WORKER_FAILURE_CODE_INVALID_RESULT = 3;
+  CORE_TEAM_WORKER_FAILURE_CODE_TIMEOUT = 4;
+  CORE_TEAM_WORKER_FAILURE_CODE_CANCELED = 5;
+  CORE_TEAM_WORKER_FAILURE_CODE_INTERNAL = 6;
+}
+
+message CoreTeamWorkerLeaseFence {
+  string execution_id = 1;
+  string role_id = 2;
+  string worker_id = 3;
+  uint32 attempt = 4;
+  uint64 lease_epoch = 5;
+}
+
+message CoreTeamWorkerServiceCreateIdentityChallengeRequest {
+  string execution_id = 1;
+  string role_id = 2;
+  uint32 attempt = 3;
+  string identity_digest = 4;
+  string idempotency_key = 5;
+}
+
+message CoreTeamWorkerServiceCreateIdentityChallengeResponse {
+  string challenge_id = 1;
+  string worker_id = 2;
+  string execution_id = 3;
+  string role_id = 4;
+  uint32 attempt = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  bool replay = 8;
+}
+
+message CoreTeamWorkerServiceEnrollRequest {
+  string challenge_id = 1;
+  string worker_id = 2;
+}
+
+message CoreTeamWorkerServiceEnrollResponse {
+  string worker_id = 1;
+  string execution_id = 2;
+  string role_id = 3;
+  uint32 attempt = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  bool replay = 6;
+}
+
+message CoreTeamWorkerServiceGetAssignmentRequest {
+  string worker_id = 1;
+}
+
+message CoreTeamWorkerServiceGetAssignmentResponse {
+  string worker_id = 1;
+  string execution_id = 2;
+  string plan_id = 3;
+  string role_id = 4;
+  uint32 attempt = 5;
+  string plan_digest = 6;
+  string goal = 7;
+  repeated string capabilities = 8;
+  string runtime_id = 9;
+  uint32 output_tokens = 10;
+  uint32 result_schema_version = 11;
+}
+
+message CoreTeamWorkerServiceClaimRequest {
+  string worker_id = 1;
+  string execution_id = 2;
+  string role_id = 3;
+  uint32 attempt = 4;
+  string claim_id = 5;
+}
+
+message CoreTeamWorkerServiceClaimResponse {
+  CoreTeamWorkerLeaseFence fence = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  bool replay = 3;
+}
+
+message CoreTeamWorkerServiceHeartbeatRequest {
+  CoreTeamWorkerLeaseFence fence = 1;
+  string heartbeat_id = 2;
+}
+
+message CoreTeamWorkerServiceHeartbeatResponse {
+  CoreTeamWorkerLeaseFence fence = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  bool replay = 3;
+}
+
+message CoreTeamWorkerServiceEmitMilestoneRequest {
+  reserved 6;
+  reserved "message";
+
+  CoreTeamWorkerLeaseFence fence = 1;
+  string event_id = 2;
+  uint64 sequence = 3;
+  CoreTeamWorkerStage stage = 4;
+  CoreTeamWorkerHealth health = 5;
+  string event_digest = 7;
+}
+
+message CoreTeamWorkerServiceEmitMilestoneResponse {
+  string event_id = 1;
+  uint64 sequence = 2;
+  google.protobuf.Timestamp accepted_at = 3;
+  bool replay = 4;
+}
+
+message CoreTeamWorkerServiceCompleteRequest {
+  CoreTeamWorkerLeaseFence fence = 1;
+  string completion_id = 2;
+  CoreTeamWorkerCompletionOutcome outcome = 3;
+  uint32 result_schema_version = 4;
+  string result_digest = 5;
+  uint64 result_size_bytes = 6;
+  CoreTeamWorkerFailureCode failure_code = 7;
+  bytes result_json = 8;
+}
+
+message CoreTeamWorkerServiceCompleteResponse {
+  string completion_id = 1;
+  CoreTeamWorkerCompletionOutcome outcome = 2;
+  google.protobuf.Timestamp accepted_at = 3;
+  bool replay = 4;
+}
+
+service CoreTeamWorkerService {
+  rpc CreateIdentityChallenge(CoreTeamWorkerServiceCreateIdentityChallengeRequest) returns (CoreTeamWorkerServiceCreateIdentityChallengeResponse);
+  rpc Enroll(CoreTeamWorkerServiceEnrollRequest) returns (CoreTeamWorkerServiceEnrollResponse);
+  rpc GetAssignment(CoreTeamWorkerServiceGetAssignmentRequest) returns (CoreTeamWorkerServiceGetAssignmentResponse);
+  rpc Claim(CoreTeamWorkerServiceClaimRequest) returns (CoreTeamWorkerServiceClaimResponse);
+  rpc Heartbeat(CoreTeamWorkerServiceHeartbeatRequest) returns (CoreTeamWorkerServiceHeartbeatResponse);
+  rpc EmitMilestone(CoreTeamWorkerServiceEmitMilestoneRequest) returns (CoreTeamWorkerServiceEmitMilestoneResponse);
+  rpc Complete(CoreTeamWorkerServiceCompleteRequest) returns (CoreTeamWorkerServiceCompleteResponse);
+}

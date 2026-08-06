@@ -511,34 +511,34 @@ git commit -m "feat: expose Team planning to Central Agent"
 - Create: `internal/store/postgres/core_team_worker_store_integration_test.go`
 - Modify: `migrations/agent_migrations.sql`
 
-- [ ] **Step 1: Write failing protocol tests**
+- [x] **Step 1: Write failing protocol tests**
 
 Cover challenge, one-time enrollment, assignment, claim, heartbeat, milestone, complete, attempt/lease fencing, expired enrollment, replay, foreign Worker, and a secret canary in provider errors.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `GOWORK=off go test ./internal/coreteamworker ./internal/store/postgres -run 'TestCoreTeamWorker' -count=1`
 
 Expected: FAIL because the protocol and store do not exist.
 
-- [ ] **Step 3: Define and implement the closed protocol**
+- [x] **Step 3: Define and implement the closed protocol**
 
-The proto service exposes only `CreateIdentityChallenge`, `Enroll`, `GetAssignment`, `Claim`, `Heartbeat`, `EmitMilestone`, and `Complete`. Public messages carry canonical IDs, attempt, lease epoch, closed enums, digests, timestamps, and bounded result metadata. They contain no AWS credential, shell command, IP, AMI, log reference, raw error, stdout, reasoning, or tool payload.
+The proto service exposes only `CreateIdentityChallenge`, `Enroll`, `GetAssignment`, `Claim`, `Heartbeat`, `EmitMilestone`, and `Complete`. Private wire messages carry canonical IDs, attempt, lease epoch, closed enums, digests, timestamps, and bounded digest-bound structured result JSON plus metadata. `Complete` accepts only canonical `ResultPayloadV1`: schema version, closed status, bounded summary/deliverables/tests/risks, and aggregate token counters. Unknown fields, secret canaries, non-canonical JSON, raw reasoning, tool traffic, terminal output, and provider errors are rejected before repository persistence. No message contains an AWS credential, shell command, IP, AMI, or log reference.
 
 ```go
 type LeaseFence struct { ExecutionID, RoleID, WorkerID string; Attempt uint32; LeaseEpoch uint64 }
 type Service struct { repo Repository; verifier IdentityVerifier; now func() time.Time }
 ```
 
-Persist `core_team_worker_challenges`, `core_team_workers`, and lease fields on `core_team_role_runs`; all mutations use `SELECT ... FOR UPDATE` and exact fence comparison.
+Persist `core_team_worker_challenges`, `core_team_workers`, result payload, and lease fields on `core_team_role_runs`; all mutations use the account-deprovision guard, exact idempotent replay, `SELECT ... FOR UPDATE`, and complete owner/generation/execution/role/attempt/lease fencing. Worker `Complete` only moves the role to `cleaning_up`; Task 10 validates the closed result schema, promotes accepted content to ResultStore, proves cloud cleanup, and only then permits a terminal success.
 
-- [ ] **Step 4: Generate, test, and race-test**
+- [x] **Step 4: Generate, test, and race-test**
 
 Run: `buf lint && buf generate && AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteamworker ./internal/store/postgres -run 'TestCoreTeamWorker' -count=1`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add api/proto api/gen internal/coreteamworker internal/store/postgres migrations
@@ -573,11 +573,11 @@ Expected: FAIL because the runtime and command do not exist.
 ```go
 type FailureStage string
 const (FailureProcess FailureStage = "process"; FailurePi FailureStage = "pi")
-type Result struct { SchemaVersion uint32; Summary string; Deliverables []Deliverable; Tests []TestResult; Usage Usage }
+type Result = coreteamworker.ResultPayloadV1
 type Runner interface { Run(context.Context, Assignment, Workspace) (Result, ClosedFailure, error) }
 ```
 
-Use argv arrays only inside the Worker process, an empty environment plus explicitly materialized model variables, a task-local `0600` Pi override, fixed output limits, no provider text in returned failures, and cleanup of temporary files in `defer`.
+Use argv arrays only inside the Worker process, an empty environment plus explicitly materialized model variables, a task-local `0600` Pi override, fixed output limits, no provider text in returned failures, and cleanup of temporary files in `defer`. The adapter converts the qualified Pi final extension plus aggregate usage into canonical `ResultPayloadV1`; it never forwards Pi event streams, tool payloads, stdout, stderr, or reasoning text.
 
 - [ ] **Step 4: Run real-binary qualification and build checks**
 
@@ -813,7 +813,7 @@ type coreTeamComposition struct { service *coreteam.Service; controller *coretea
 func composeCoreTeam(cfg config.Config, deps coreTeamComposeDeps) (*coreTeamComposition, error)
 ```
 
-Add explicit config for enablement, Worker listener, Pi release manifest, max concurrency fixed at 3, AWS region, and relay intervals. Secret values remain file references or encrypted database records. Register `agent.team.v1` only after `ReadyForPublication()`.
+Add explicit config for enablement, Worker listener, Pi release manifest, max concurrency fixed at 3, AWS region, and relay intervals. The private Worker listener sets an explicit receive limit of `coreteamworker.MaxResultSizeBytes` plus fixed Protobuf envelope overhead and keeps all other RPCs under their narrower field limits; the Product/Core listener does not inherit this larger limit. Secret values remain file references or encrypted database records. Register `agent.team.v1` only after `ReadyForPublication()`.
 
 - [ ] **Step 4: Run full Agent verification and record current evidence**
 

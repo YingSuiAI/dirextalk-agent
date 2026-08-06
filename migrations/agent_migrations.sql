@@ -3699,3 +3699,76 @@ CREATE TRIGGER core_team_roles_immutable
 BEFORE UPDATE OR DELETE ON core_team_roles
 FOR EACH ROW EXECUTE FUNCTION core_team_reject_role_mutation();
 -- dirextalk-agent migration end 000004_team_and_aws_scope.up.sql
+-- dirextalk-agent migration begin 000005_team_worker_protocol.up.sql
+ALTER TABLE core_team_role_runs
+    ADD COLUMN attempt integer NOT NULL DEFAULT 1 CHECK (attempt > 0),
+    ADD COLUMN worker_id uuid,
+    ADD COLUMN worker_identity_digest text CHECK (worker_identity_digest IS NULL OR worker_identity_digest ~ '^[a-f0-9]{64}$'),
+    ADD COLUMN claim_id uuid,
+    ADD COLUMN lease_epoch bigint NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+    ADD COLUMN lease_expires_at timestamptz,
+    ADD COLUMN last_milestone_event_id uuid,
+    ADD COLUMN last_milestone_sequence bigint NOT NULL DEFAULT 0 CHECK (last_milestone_sequence >= 0),
+    ADD COLUMN last_milestone_digest text CHECK (last_milestone_digest IS NULL OR last_milestone_digest ~ '^[a-f0-9]{64}$'),
+    ADD COLUMN last_milestone_accepted_at timestamptz,
+    ADD COLUMN completion_id uuid,
+    ADD COLUMN completion_outcome text CHECK (completion_outcome IS NULL OR completion_outcome IN ('succeeded','failed')),
+    ADD COLUMN result_schema_version integer CHECK (result_schema_version IS NULL OR result_schema_version = 1),
+    ADD COLUMN result_digest text CHECK (result_digest IS NULL OR result_digest ~ '^[a-f0-9]{64}$'),
+    ADD COLUMN result_size_bytes bigint CHECK (result_size_bytes IS NULL OR result_size_bytes BETWEEN 1 AND 524288),
+    ADD COLUMN result_payload bytea CHECK (result_payload IS NULL OR octet_length(result_payload) BETWEEN 1 AND 524288),
+    ADD COLUMN failure_code text CHECK (failure_code IS NULL OR failure_code IN ('process','pi','invalid_result','timeout','canceled','internal')),
+    ADD COLUMN completed_at timestamptz,
+    ADD CONSTRAINT core_team_role_run_worker_binding CHECK ((worker_id IS NULL) = (worker_identity_digest IS NULL)),
+    ADD CONSTRAINT core_team_role_run_lease_binding CHECK ((claim_id IS NULL AND lease_epoch = 0 AND lease_expires_at IS NULL) OR (claim_id IS NOT NULL AND lease_epoch > 0)),
+    ADD CONSTRAINT core_team_role_run_milestone_binding CHECK ((last_milestone_event_id IS NULL AND last_milestone_sequence = 0 AND last_milestone_digest IS NULL AND last_milestone_accepted_at IS NULL) OR (last_milestone_event_id IS NOT NULL AND last_milestone_sequence > 0 AND last_milestone_digest IS NOT NULL AND last_milestone_accepted_at IS NOT NULL)),
+    ADD CONSTRAINT core_team_role_run_completion_binding CHECK ((completion_id IS NULL AND completion_outcome IS NULL AND result_schema_version IS NULL AND result_digest IS NULL AND result_size_bytes IS NULL AND result_payload IS NULL AND failure_code IS NULL AND completed_at IS NULL) OR (completion_id IS NOT NULL AND completed_at IS NOT NULL AND ((completion_outcome = 'succeeded' AND result_schema_version = 1 AND result_digest IS NOT NULL AND result_size_bytes = octet_length(result_payload) AND result_payload IS NOT NULL AND failure_code IS NULL) OR (completion_outcome = 'failed' AND result_schema_version IS NULL AND result_digest IS NULL AND result_size_bytes IS NULL AND result_payload IS NULL AND failure_code IS NOT NULL))));
+
+CREATE TABLE core_team_worker_challenges (
+    challenge_id uuid PRIMARY KEY,
+    worker_id uuid NOT NULL UNIQUE,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    execution_id uuid NOT NULL,
+    role_id text NOT NULL CHECK (role_id ~ '^[a-z][a-z0-9-]{0,62}$'),
+    attempt integer NOT NULL CHECK (attempt > 0),
+    identity_digest text NOT NULL CHECK (identity_digest ~ '^[a-f0-9]{64}$'),
+    idempotency_key uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    created_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL CHECK (expires_at > created_at),
+    consumed_at timestamptz,
+    UNIQUE (owner_id,account_generation,execution_id,role_id,attempt),
+    UNIQUE (owner_id,account_generation,idempotency_key),
+    FOREIGN KEY (owner_id,account_generation,execution_id,role_id) REFERENCES core_team_role_runs(owner_id,account_generation,execution_id,role_id) ON DELETE RESTRICT
+);
+CREATE INDEX core_team_worker_challenges_expiry_idx ON core_team_worker_challenges(expires_at) WHERE consumed_at IS NULL;
+
+CREATE TABLE core_team_workers (
+    worker_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    execution_id uuid NOT NULL,
+    role_id text NOT NULL CHECK (role_id ~ '^[a-z][a-z0-9-]{0,62}$'),
+    attempt integer NOT NULL CHECK (attempt > 0),
+    identity_digest text NOT NULL CHECK (identity_digest ~ '^[a-f0-9]{64}$'),
+    status text NOT NULL CHECK (status IN ('enrolled','active','completed')),
+    enrollment_expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL,
+    last_seen_at timestamptz NOT NULL,
+    UNIQUE (owner_id,account_generation,execution_id,role_id,attempt),
+    UNIQUE (worker_id,owner_id,account_generation,execution_id,role_id,attempt),
+    FOREIGN KEY (owner_id,account_generation,execution_id,role_id) REFERENCES core_team_role_runs(owner_id,account_generation,execution_id,role_id) ON DELETE RESTRICT
+);
+ALTER TABLE core_team_role_runs ADD CONSTRAINT core_team_role_runs_worker_fk FOREIGN KEY (worker_id,owner_id,account_generation,execution_id,role_id,attempt) REFERENCES core_team_workers(worker_id,owner_id,account_generation,execution_id,role_id,attempt) ON DELETE RESTRICT;
+
+CREATE TABLE core_team_worker_replays (
+    worker_id uuid NOT NULL REFERENCES core_team_workers(worker_id) ON DELETE RESTRICT,
+    operation text NOT NULL CHECK (operation IN ('claim','heartbeat','milestone','complete')),
+    idempotency_id uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 1048576),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (worker_id,operation,idempotency_id)
+);
+-- dirextalk-agent migration end 000005_team_worker_protocol.up.sql

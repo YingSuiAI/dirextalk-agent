@@ -7,7 +7,7 @@ import (
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" {
+	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" || entries[4] != "000005_team_worker_protocol.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Team scope migrations", entries)
 	}
 	migration := Ordered()[0]

@@ -552,3 +552,61 @@ func TestCoreTeamStoreSerializesWithUncommittedAccountDeprovision(t *testing.T) 
 		}
 	}
 }
+
+func TestCoreTeamAdmissionAllowsConcurrentSharedDeprovisionGuards(t *testing.T) {
+	ctx, store, _, cleanup := teamStoreFixture(t)
+	defer cleanup()
+	firstTx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstOpen := true
+	defer func() {
+		if firstOpen {
+			_ = firstTx.Rollback(context.Background())
+		}
+	}()
+	if err = requireTeamAdmission(ctx, firstTx, coreteam.Scope{OwnerID: "@shared-one:example.test", AccountGeneration: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	secondTx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOpen := true
+	defer func() {
+		if secondOpen {
+			_ = secondTx.Rollback(context.Background())
+		}
+	}()
+	result := make(chan error, 1)
+	go func() {
+		result <- requireTeamAdmission(ctx, secondTx, coreteam.Scope{OwnerID: "@shared-two:example.test", AccountGeneration: 1})
+	}()
+	select {
+	case admissionErr := <-result:
+		if admissionErr != nil {
+			t.Fatalf("second shared admission err=%v", admissionErr)
+		}
+	case <-time.After(150 * time.Millisecond):
+		if err = firstTx.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		firstOpen = false
+		select {
+		case <-result:
+		case <-time.After(5 * time.Second):
+			t.Fatal("second admission remained blocked after first rollback")
+		}
+		t.Fatal("Team admissions serialized on an exclusive deprovision guard")
+	}
+	if err = secondTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	secondOpen = false
+	if err = firstTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	firstOpen = false
+}

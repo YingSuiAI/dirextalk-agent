@@ -121,8 +121,8 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 2. 类型化 AWS 适配器创建受标签约束的 SG、ENI、EIP、加密 EBS 和 EC2；Worker 无入站端口、无 IAM/EC2/Foundation 控制权限。
 3. Worker 使用一次性身份材料主动连接 Agent，完成挑战、身份校验、领取、租约和心跳。
 4. Agent 提供内容寻址的输入清单。Worker 只获得该角色允许的输入、模型使用材料和结果上传权限。
-5. Pi 运行时执行固定角色任务，通过受限结果扩展提交结构化 `final.json` 和允许的产物。
-6. Agent 校验 schema、大小、digest、角色/尝试/租约绑定和结果证据后，才允许角色成功。
+5. Pi 运行时执行固定角色任务，通过 `Complete` 只提交 canonical、有界、SHA-256 绑定的 `ResultPayloadV1` 候选结果；载荷只含状态、摘要、交付项、测试、风险和累计 token 用量，未知字段、敏感 Key、原始思考、工具调用流、终端输出和 provider 错误在落库前拒绝。
+6. Agent 先把候选结果置于 `cleaning_up`，再校验 schema、大小、digest、角色/尝试/租约绑定和结果证据并迁入 ResultStore；校验和云资源清理都完成后才允许角色成功。
 
 ### 4.3 完成与清理
 

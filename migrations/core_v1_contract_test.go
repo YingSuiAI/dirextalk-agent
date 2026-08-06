@@ -8,11 +8,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 4 {
-		t.Fatalf("CurrentVersion = %d, want 4", CurrentVersion)
+	if CurrentVersion != 5 {
+		t.Fatalf("CurrentVersion = %d, want 5", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" {
+	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" || entries[4] != "000005_team_worker_protocol.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -185,6 +185,38 @@ func TestCoreTeamDurableSchemaContractIsClosed(t *testing.T) {
 			if strings.Contains(definition, forbidden) {
 				t.Errorf("%s contains secret-shaped column %q", table, forbidden)
 			}
+		}
+	}
+}
+
+func TestCoreTeamWorkerSchemaContractIsClosed(t *testing.T) {
+	script, err := Files.ReadFile("000005_team_worker_protocol.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(script)
+	for _, required := range []string{
+		"CREATE TABLE core_team_worker_challenges",
+		"CREATE TABLE core_team_workers",
+		"CREATE TABLE core_team_worker_replays",
+		"ADD COLUMN attempt integer NOT NULL DEFAULT 1",
+		"ADD COLUMN lease_epoch bigint NOT NULL DEFAULT 0",
+		"ADD COLUMN result_payload bytea",
+		"result_size_bytes BETWEEN 1 AND 524288",
+		"octet_length(result_payload) BETWEEN 1 AND 524288",
+		"ADD CONSTRAINT core_team_role_run_lease_binding",
+		"FOREIGN KEY (owner_id,account_generation,execution_id,role_id)",
+		"UNIQUE (worker_id,owner_id,account_generation,execution_id,role_id,attempt)",
+		"FOREIGN KEY (worker_id,owner_id,account_generation,execution_id,role_id,attempt) REFERENCES core_team_workers(worker_id,owner_id,account_generation,execution_id,role_id,attempt)",
+		"operation IN ('claim','heartbeat','milestone','complete')",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Errorf("Core Team Worker schema missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"access_key", "secret_key", "session_token", "provider_error", "stdout", "stderr", "reasoning", "tool_payload"} {
+		if strings.Contains(strings.ToLower(contents), forbidden) {
+			t.Errorf("Core Team Worker schema contains forbidden field %q", forbidden)
 		}
 	}
 }
