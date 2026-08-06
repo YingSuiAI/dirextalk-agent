@@ -150,17 +150,31 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
 		return sandboxChildFailure("map-namespace", err)
 	}
-	managerMountFD := -1
+	installMountFD, err := cloneSandboxTree(sandboxInstallFD)
+	if err != nil {
+		return sandboxChildFailure("app-clone", err)
+	}
+	workspaceMountFD, managerMountFD := -1, -1
 	defer func() {
+		if installMountFD >= 0 {
+			_ = unix.Close(installMountFD)
+		}
+		if workspaceMountFD >= 0 {
+			_ = unix.Close(workspaceMountFD)
+		}
 		if managerMountFD >= 0 {
 			_ = unix.Close(managerMountFD)
 		}
 	}()
 	if bootstrap.CoreTmpfsBytes > 0 {
-		var err error
 		managerMountFD, err = cloneSandboxTree(sandboxManagerFD)
 		if err != nil {
 			return sandboxChildFailure("manager-clone", err)
+		}
+	} else {
+		workspaceMountFD, err = cloneSandboxTree(sandboxWorkspaceFD)
+		if err != nil {
+			return sandboxChildFailure("work-clone", err)
 		}
 	}
 	if err := unix.Fchdir(sandboxWorkspaceFD); err != nil {
@@ -193,7 +207,7 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := verifyMappedSandboxDirs(mappedInstallFD, mappedWorkspaceFD); err != nil {
 		return sandboxChildFailure("map-verify", err)
 	}
-	rootFD, err := prepareSandboxMounts(bootstrap, mappedInstallFD, mappedWorkspaceFD, managerMountFD)
+	rootFD, err := prepareSandboxMounts(bootstrap, installMountFD, workspaceMountFD, managerMountFD)
 	if err != nil {
 		return sandboxChildFailure("mounts", err)
 	}
@@ -202,9 +216,11 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 			_ = unix.Close(rootFD)
 		}
 	}()
-	if managerMountFD >= 0 {
-		_ = unix.Close(managerMountFD)
-		managerMountFD = -1
+	for _, fd := range []*int{&installMountFD, &workspaceMountFD, &managerMountFD} {
+		if *fd >= 0 {
+			_ = unix.Close(*fd)
+			*fd = -1
+		}
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
 		_ = unix.Close(sandboxManagerFD)

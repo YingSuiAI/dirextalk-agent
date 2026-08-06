@@ -10,7 +10,7 @@ import (
 
 const sandboxMountBaseAttrs = unix.MOUNT_ATTR_NODEV | unix.MOUNT_ATTR_NOSUID
 
-func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD, managerMountFD int) (int, error) {
+func prepareSandboxMounts(bootstrap bootstrapV1, installMountFD, workspaceMountFD, managerMountFD int) (int, error) {
 	rootBytes := bootstrap.Request.Limits.MemoryBytes / 4
 	if rootBytes < 1<<20 {
 		rootBytes = 1 << 20
@@ -36,7 +36,11 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD, manager
 			return -1, err
 		}
 	}
-	if err := mountSandboxTree(installFD, rootFD, "app", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "app-clone", "app-remount", "app-bind"); err != nil {
+	if installMountFD < 0 {
+		unix.Close(rootFD)
+		return -1, sandboxChildFailure("app-clone", ErrDenied)
+	}
+	if err := mountDetachedSandboxTree(installMountFD, rootFD, "app", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "app-remount", "app-bind"); err != nil {
 		unix.Close(rootFD)
 		return -1, err
 	}
@@ -57,9 +61,15 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD, manager
 			return -1, sandboxChildFailure("work-tmpfs", e)
 		}
 		unix.Close(work)
-	} else if err := mountSandboxTree(workspaceFD, rootFD, "work", sandboxMountBaseAttrs|unix.MOUNT_ATTR_NOEXEC, "work-clone", "work-remount", "work-bind"); err != nil {
-		unix.Close(rootFD)
-		return -1, err
+	} else {
+		if workspaceMountFD < 0 {
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("work-clone", ErrDenied)
+		}
+		if err := mountDetachedSandboxTree(workspaceMountFD, rootFD, "work", sandboxMountBaseAttrs|unix.MOUNT_ATTR_NOEXEC, "work-remount", "work-bind"); err != nil {
+			unix.Close(rootFD)
+			return -1, err
+		}
 	}
 	if err := mountSandboxSecrets(rootFD, bootstrap); err != nil {
 		unix.Close(rootFD)
@@ -140,15 +150,6 @@ func newSandboxTmpfs(size int64, mode uint32, attrs uint64) (int, error) {
 
 func moveSandboxMount(mountFD, targetFD int) error {
 	return unix.MoveMount(mountFD, "", targetFD, "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
-}
-
-func mountSandboxTree(sourceFD, rootFD int, target string, attrs uint64, cloneStage, attrStage, moveStage string) error {
-	treeFD, err := cloneSandboxTree(sourceFD)
-	if err != nil {
-		return sandboxChildFailure(cloneStage, err)
-	}
-	defer unix.Close(treeFD)
-	return mountDetachedSandboxTree(treeFD, rootFD, target, attrs, attrStage, moveStage)
 }
 
 func cloneSandboxTree(sourceFD int) (int, error) {
