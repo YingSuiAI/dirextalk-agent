@@ -54,16 +54,22 @@ func (publication *Publication) rollbackWithSync(syncParent func(string) error) 
 		current.Size() != publication.manifest.Size {
 		return errors.New("published rootfs identity changed before rollback")
 	}
-	content, reviewed, links, err := readRegularFile(publication.output, current, MaxArchiveBytes)
+	parent, err := os.OpenRoot(filepath.Dir(publication.output))
+	if err != nil {
+		return errors.New("open rootfs publication directory")
+	}
+	defer parent.Close()
+	name := filepath.Base(publication.output)
+	content, reviewed, links, err := readRegularFile(parent, name, current, MaxArchiveBytes)
 	if err != nil || links != 1 || !sameFileState(publication.info, reviewed) ||
 		int64(len(content)) != publication.manifest.Size || sha256Digest(content) != publication.manifest.RootFSDigest {
 		return errors.New("published rootfs content changed before rollback")
 	}
-	final, err := os.Lstat(publication.output)
+	final, err := parent.Lstat(name)
 	if err != nil || !sameFileState(publication.info, final) {
 		return errors.New("published rootfs identity changed before rollback")
 	}
-	if err := os.Remove(publication.output); err != nil {
+	if err := parent.Remove(name); err != nil {
 		return errors.New("remove rolled back rootfs publication")
 	}
 	publication.closed = true

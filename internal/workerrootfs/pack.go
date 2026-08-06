@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -64,7 +65,7 @@ func prepareWithExpectedPiIdentity(root, output string, expectedPi releaseartifa
 	if err != nil {
 		return nil, err
 	}
-	entries, identity, err := snapshotRoot(rootPath)
+	entries, identity, err := snapshotAnchoredRoot(rootPath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -228,25 +229,54 @@ func withinRoot(root, candidate string) bool {
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
-func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
+func snapshotAnchoredRoot(rootPath string, afterOpen func()) (entries []packedEntry, identity ManifestV1, err error) {
+	before, err := os.Lstat(rootPath)
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+		return nil, ManifestV1{}, errors.New("root must be a real directory")
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, ManifestV1{}, errors.New("open anchored rootfs")
+	}
+	defer func() {
+		if closeErr := root.Close(); err == nil && closeErr != nil {
+			entries = nil
+			identity = ManifestV1{}
+			err = errors.New("close anchored rootfs")
+		}
+	}()
+	anchored, err := root.Lstat(".")
+	if err != nil || anchored.Mode()&os.ModeSymlink != 0 || !anchored.IsDir() || !sameFileState(before, anchored) {
+		return nil, ManifestV1{}, errors.New("anchored rootfs identity does not match path")
+	}
+	if afterOpen != nil {
+		afterOpen()
+	}
+	pathAfter, pathErr := os.Lstat(rootPath)
+	anchoredAfter, anchoredErr := root.Lstat(".")
+	if pathErr != nil || anchoredErr != nil || pathAfter.Mode()&os.ModeSymlink != 0 || !pathAfter.IsDir() ||
+		anchoredAfter.Mode()&os.ModeSymlink != 0 || !anchoredAfter.IsDir() || !sameFileState(anchored, anchoredAfter) ||
+		!sameFileState(anchored, pathAfter) {
+		return nil, ManifestV1{}, errors.New("rootfs path changed after anchoring")
+	}
+	return snapshotRoot(root, anchoredAfter)
+}
+
+func snapshotRoot(root *os.Root, rootIdentity os.FileInfo) ([]packedEntry, ManifestV1, error) {
 	allowed := make(map[string]entrySpec, len(rootfsEntries))
 	for _, spec := range rootfsEntries {
 		allowed[spec.path] = spec
 	}
 	seen := make(map[string]packedEntry, len(rootfsEntries))
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err := fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return errors.New("walk rootfs")
 		}
-		if path == root {
+		if path == "." {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return errors.New("rootfs path escapes root")
-		}
-		archivePath := filepath.ToSlash(relative)
-		if archivePath == "" || strings.HasPrefix(archivePath, "/") || strings.Contains(archivePath, "\\") || strings.HasPrefix(filepath.Base(archivePath), "._") {
+		archivePath := path
+		if !fs.ValidPath(archivePath) || archivePath == "" || strings.HasPrefix(filepath.Base(archivePath), "._") {
 			return errors.New("rootfs contains an invalid path")
 		}
 		spec, accepted := allowed[archivePath]
@@ -256,7 +286,7 @@ func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
 		if _, duplicate := seen[archivePath]; duplicate {
 			return errors.New("rootfs contains a duplicate path")
 		}
-		info, err := entry.Info()
+		info, err := root.Lstat(archivePath)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("inspect rootfs entry")
 		}
@@ -266,7 +296,7 @@ func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
 			if !info.IsDir() {
 				return errors.New("rootfs directory has an invalid type")
 			}
-			captured, links, err := captureDirectory(path, info)
+			captured, links, err := captureDirectory(root, archivePath, info)
 			if err != nil {
 				return err
 			}
@@ -276,7 +306,7 @@ func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
 			if !info.Mode().IsRegular() {
 				return errors.New("rootfs file has an invalid type")
 			}
-			content, captured, links, err := readRegularFile(path, info, spec.maxBytes)
+			content, captured, links, err := readRegularFile(root, archivePath, info, spec.maxBytes)
 			if err != nil {
 				return err
 			}
@@ -295,7 +325,7 @@ func snapshotRoot(root string) ([]packedEntry, ManifestV1, error) {
 	if len(seen) != len(rootfsEntries) {
 		return nil, ManifestV1{}, errors.New("rootfs is missing a required path")
 	}
-	if err := reviewRootSnapshot(root, seen); err != nil {
+	if err := reviewRootSnapshot(root, rootIdentity, seen); err != nil {
 		return nil, ManifestV1{}, err
 	}
 	entries := make([]packedEntry, 0, len(rootfsEntries)+1)
@@ -508,11 +538,11 @@ func validateHeader(header *tar.Header, spec entrySpec) error {
 	return nil
 }
 
-func readRegularFile(path string, initial os.FileInfo, maxBytes int64) ([]byte, os.FileInfo, uint64, error) {
+func readRegularFile(root *os.Root, path string, initial os.FileInfo, maxBytes int64) ([]byte, os.FileInfo, uint64, error) {
 	if initial.Size() <= 0 || initial.Size() > maxBytes {
 		return nil, nil, 0, errors.New("rootfs file exceeds its fixed size limit")
 	}
-	file, err := os.Open(path)
+	file, err := root.Open(path)
 	if err != nil {
 		return nil, nil, 0, errors.New("open rootfs file")
 	}
@@ -546,7 +576,7 @@ func readRegularFile(path string, initial os.FileInfo, maxBytes int64) ([]byte, 
 		return nil, nil, 0, errors.New("rootfs file changed during validation")
 	}
 	finalLinks, linkErr := regularFileLinkCount(file, final)
-	pathFinal, pathErr := os.Lstat(path)
+	pathFinal, pathErr := root.Lstat(path)
 	if linkErr != nil || pathErr != nil || finalLinks != links || !bytes.Equal(first, second) ||
 		!final.Mode().IsRegular() || !pathFinal.Mode().IsRegular() || !sameFileState(opened, final) || !sameFileState(final, pathFinal) {
 		return nil, nil, 0, errors.New("rootfs file changed during validation")
@@ -565,8 +595,8 @@ func readOpenFile(file *os.File, size, maxBytes int64) ([]byte, error) {
 	return content, nil
 }
 
-func captureDirectory(path string, initial os.FileInfo) (os.FileInfo, uint64, error) {
-	directory, err := os.Open(path)
+func captureDirectory(root *os.Root, path string, initial os.FileInfo) (os.FileInfo, uint64, error) {
+	directory, err := root.Open(path)
 	if err != nil {
 		return nil, 0, errors.New("open rootfs directory")
 	}
@@ -579,27 +609,30 @@ func captureDirectory(path string, initial os.FileInfo) (os.FileInfo, uint64, er
 	if err != nil {
 		return nil, 0, errors.New("inspect rootfs directory links")
 	}
-	pathFinal, err := os.Lstat(path)
+	pathFinal, err := root.Lstat(path)
 	if err != nil || !pathFinal.IsDir() || !sameFileState(opened, pathFinal) {
 		return nil, 0, errors.New("rootfs directory changed during validation")
 	}
 	return pathFinal, links, nil
 }
 
-func reviewRootSnapshot(root string, snapshot map[string]packedEntry) error {
+func reviewRootSnapshot(root *os.Root, rootIdentity os.FileInfo, snapshot map[string]packedEntry) error {
+	before, err := root.Lstat(".")
+	if err != nil || !sameFileState(rootIdentity, before) {
+		return errors.New("rootfs root changed after snapshot")
+	}
 	seen := make(map[string]struct{}, len(snapshot))
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return errors.New("review rootfs snapshot")
 		}
-		if path == root {
+		if path == "." {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		archivePath := path
+		if !fs.ValidPath(archivePath) || archivePath == "" {
 			return errors.New("rootfs review path escapes root")
 		}
-		archivePath := filepath.ToSlash(relative)
 		captured, exists := snapshot[archivePath]
 		if !exists {
 			return errors.New("rootfs changed after snapshot")
@@ -608,7 +641,7 @@ func reviewRootSnapshot(root string, snapshot map[string]packedEntry) error {
 			return errors.New("rootfs changed after snapshot")
 		}
 		seen[archivePath] = struct{}{}
-		info, err := entry.Info()
+		info, err := root.Lstat(archivePath)
 		if err != nil {
 			return errors.New("review rootfs entry")
 		}
@@ -619,13 +652,13 @@ func reviewRootSnapshot(root string, snapshot map[string]packedEntry) error {
 			if !info.IsDir() {
 				return errors.New("rootfs changed after snapshot")
 			}
-			reviewed, links, err = captureDirectory(path, info)
+			reviewed, links, err = captureDirectory(root, archivePath, info)
 		case regularEntry:
 			if !info.Mode().IsRegular() {
 				return errors.New("rootfs changed after snapshot")
 			}
 			var content []byte
-			content, reviewed, links, err = readRegularFile(path, info, captured.spec.maxBytes)
+			content, reviewed, links, err = readRegularFile(root, archivePath, info, captured.spec.maxBytes)
 			if err == nil && !bytes.Equal(content, captured.data) {
 				return errors.New("rootfs file content changed after snapshot")
 			}
@@ -643,12 +676,16 @@ func reviewRootSnapshot(root string, snapshot map[string]packedEntry) error {
 	if len(seen) != len(snapshot) {
 		return errors.New("rootfs changed after snapshot")
 	}
+	after, err := root.Lstat(".")
+	if err != nil || !sameFileState(rootIdentity, after) {
+		return errors.New("rootfs root changed after snapshot")
+	}
 	return nil
 }
 
 func sameFileState(left, right os.FileInfo) bool {
 	return left != nil && right != nil && os.SameFile(left, right) && left.Size() == right.Size() &&
-		left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
+		left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime()) && sameFileChangeState(left, right)
 }
 
 type publishedArchive struct {
@@ -697,9 +734,14 @@ func writeArchive(output string, entries []packedEntry, identity ManifestV1) (pu
 		_ = os.Remove(output)
 		return publishedArchive{}, errors.New("sync rootfs output directory")
 	}
+	publishedInfo, err := os.Lstat(output)
+	if err != nil || !publishedInfo.Mode().IsRegular() || !os.SameFile(info, publishedInfo) ||
+		info.Size() != publishedInfo.Size() || info.Mode() != publishedInfo.Mode() {
+		return publishedArchive{}, errors.New("inspect published rootfs archive")
+	}
 	identity.RootFSDigest = "sha256:" + hex.EncodeToString(hasher.Sum(nil))
 	identity.Size = info.Size()
-	return publishedArchive{manifest: identity, info: info}, nil
+	return publishedArchive{manifest: identity, info: publishedInfo}, nil
 }
 
 func writeCanonicalArchive(output io.Writer, entries []packedEntry) error {

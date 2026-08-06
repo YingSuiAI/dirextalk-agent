@@ -124,6 +124,46 @@ func TestRunRollsBackPublishedOutputWhenManifestWriteFails(t *testing.T) {
 	}
 }
 
+func TestRunReportsRollbackRequiredWhenRollbackFails(t *testing.T) {
+	const wantMessage = "worker rootfs rollback required\n"
+	for _, test := range []struct {
+		name        string
+		rollbackErr error
+	}{
+		{name: "identity rejected", rollbackErr: errors.New("changed artifact at /secret/path")},
+		{name: "delete failed", rollbackErr: errors.New("remove /secret/path: permission denied")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "root")
+			output := filepath.Join(t.TempDir(), "worker-rootfs.tar")
+			artifact := []byte("bound artifact retained for explicit cleanup")
+			prepare := func(_, gotOutput string) (rootfsPublication, error) {
+				if err := os.WriteFile(gotOutput, artifact, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return &testPublication{
+					manifest: workerrootfs.ManifestV1{Schema: "dirextalk.agent.team-worker-rootfs/v1", RootFSDigest: digest(artifact), Size: int64(len(artifact))},
+					rollback: func() error { return test.rollbackErr },
+				}, nil
+			}
+			var stderr bytes.Buffer
+			code := runWithPrepare(
+				[]string{"pack", "--root", root, "--output", output},
+				failingWriter{}, &stderr, prepare,
+			)
+			if code != 1 || stderr.String() != wantMessage {
+				t.Fatalf("run code = %d, stderr = %q", code, stderr.String())
+			}
+			if got := readRepoIndependentFile(t, output); !bytes.Equal(got, artifact) {
+				t.Fatal("rollback failure did not preserve the bound artifact")
+			}
+			if strings.Contains(stderr.String(), output) || strings.Contains(stderr.String(), test.rollbackErr.Error()) {
+				t.Fatalf("rollback-required output leaked details: %q", stderr.String())
+			}
+		})
+	}
+}
+
 func TestRunUsesFixedErrorsWithoutEchoingArguments(t *testing.T) {
 	secretLookingPath := filepath.Join(t.TempDir(), "must-not-be-echoed")
 	tests := []struct {
@@ -221,6 +261,15 @@ func readRepoFile(t *testing.T, relative string) []byte {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
+func readRepoIndependentFile(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}

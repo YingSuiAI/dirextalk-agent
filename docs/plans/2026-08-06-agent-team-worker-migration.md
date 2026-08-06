@@ -826,6 +826,40 @@ git diff --check
 The retained AWS qualification above remains the release-asset evidence; the
 review fix did not rerun the expensive Docker build.
 
+The second specification review on 2026-08-07 added three further TDD RED
+boundaries:
+
+```bash
+GOWORK=off go test ./internal/workerrootfs -run '^TestSnapshotAnchorsRootAcrossPathRenameAndReplacement$' -count=1
+GOWORK=off go test ./internal/workerrootfs -run '^TestSameFileStateRejectsSameInodeRewriteWithRestoredMtime$' -count=1
+GOWORK=off go test ./cmd/dirextalk-worker-rootfs -run '^TestRunReportsRollbackRequiredWhenRollbackFails$' -count=1
+```
+
+They respectively failed because no anchored-root snapshot existed,
+`sameFileState` ignored change metadata after a same-inode/same-size rewrite
+with restored mtime, and CLI output failure swallowed rollback errors. The
+fix uses Go 1.26 `os.OpenRoot`, verifies the non-symlink root identity before
+and after opening, traverses only `root.FS()` with `fs.WalkDir`, and accesses
+members only through relative `Root.Lstat`/`Root.Open` calls. Darwin and Linux
+compare nanosecond ctime in addition to inode, size, mode, and mtime; other
+platforms fail closed and atime is never compared. A failed manifest write
+now reports normal `outputMessage` only after successful rollback; identity
+rejection or deletion failure returns the fixed
+`worker rootfs rollback required` message and preserves the bound artifact for
+explicit cleanup without exposing a general delete API.
+
+Final second-review qualification:
+
+```bash
+GOWORK=off go test -race ./internal/cloud/canonical ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs -count=1
+GOWORK=off go vet ./internal/cloud/canonical ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs
+GOWORK=off GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/dirextalk-worker-rootfs-task9a-anchor-fix ./cmd/dirextalk-worker-rootfs
+git diff --check
+```
+
+The AWS/Docker qualification was not rerun; its retained evidence and
+immutable release digests above remain unchanged.
+
 Task 9A only packages the drop-ins and unit; it neither creates host accounts
 and state directories nor enables or starts the Worker. Task 9B must run
 `systemd-sysusers`, `systemd-tmpfiles`, and `getent` during AMI construction

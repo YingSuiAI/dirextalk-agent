@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	usageMessage  = "worker rootfs usage error\n"
-	packMessage   = "worker rootfs pack failed\n"
-	outputMessage = "worker rootfs output failed\n"
+	usageMessage    = "worker rootfs usage error\n"
+	packMessage     = "worker rootfs pack failed\n"
+	outputMessage   = "worker rootfs output failed\n"
+	rollbackMessage = "worker rootfs rollback required\n"
 )
 
 type rootfsPublication interface {
@@ -52,7 +53,10 @@ func runWithPrepare(arguments []string, stdout, stderr io.Writer, prepare prepar
 		return 1
 	}
 	if err := json.NewEncoder(stdout).Encode(publication.Manifest()); err != nil {
-		_ = publication.Rollback()
+		if rollbackErr := publication.Rollback(); rollbackErr != nil {
+			_, _ = io.WriteString(stderr, rollbackMessage)
+			return 1
+		}
 		_, _ = io.WriteString(stderr, outputMessage)
 		return 1
 	}

@@ -244,6 +244,75 @@ func TestPackRejectsSameInodeSameSizeRewriteDuringSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotAnchorsRootAcrossPathRenameAndReplacement(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	replacement := filepath.Join(parent, "replacement")
+	moved := filepath.Join(parent, "moved-original")
+	populateCurrentRootfs(t, root)
+	populateCurrentRootfs(t, replacement)
+	originalWorker := readFile(t, rooted(root, workerBinaryPath))
+	replacementWorker := bytes.Repeat([]byte{'R'}, len(originalWorker))
+	writeFile(t, replacement, workerBinaryPath, replacementWorker)
+	writeFile(t, replacement, workerSidecarPath, []byte(hexDigest(replacementWorker)+"  "+workerAbsolutePath+"\n"))
+
+	_, identity, err := snapshotAnchoredRoot(root, func() {
+		if err := os.Rename(root, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(replacement, root); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err != nil {
+		if err.Error() != "rootfs path changed after anchoring" {
+			t.Fatalf("anchored snapshot failed for an unrelated reason: %v", err)
+		}
+		return
+	}
+	if identity.WorkerBinaryDigest != digest(originalWorker) {
+		t.Fatalf("anchored snapshot silently read replacement tree: worker digest = %s", identity.WorkerBinaryDigest)
+	}
+}
+
+func TestSameFileStateRejectsSameInodeRewriteWithRestoredMtime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "source")
+	original := bytes.Repeat([]byte{'A'}, 4096)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := bytes.Repeat([]byte{'B'}, len(original))
+	if _, err := file.WriteAt(replacement, 0); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || before.Mode() != after.Mode() || !before.ModTime().Equal(after.ModTime()) {
+		t.Fatal("test did not preserve inode, size, mode, and mtime")
+	}
+	if sameFileState(before, after) {
+		t.Fatal("sameFileState() ignored change metadata after content rewrite")
+	}
+}
+
 func TestPackRejectsUnexpectedUnsafeOrUnboundRootfs(t *testing.T) {
 	tests := []struct {
 		name string
