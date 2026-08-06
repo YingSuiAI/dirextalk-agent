@@ -10,6 +10,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type errorClassifyingCapability struct {
@@ -37,6 +39,22 @@ func classifyCapabilityError(err error) error {
 	}
 	if _, _, classified := capabilityoperation.FailureDetails(err); classified {
 		return err
+	}
+	switch status.Code(err) {
+	case codes.InvalidArgument:
+		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Product request is invalid", err)
+	case codes.PermissionDenied:
+		return capabilityoperation.NewFailure("PERMISSION_DENIED", "Product operation is not permitted", err)
+	case codes.NotFound:
+		return capabilityoperation.NewFailure("NOT_FOUND", "Product resource was not found", err)
+	case codes.Aborted, codes.AlreadyExists:
+		return capabilityoperation.NewFailure("CONFLICT", "Product state changed; refresh and retry", err)
+	case codes.FailedPrecondition:
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Product operation prerequisites are not satisfied", err)
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return capabilityoperation.NewFailure("UNAVAILABLE", "Product service is unavailable", err)
+	case codes.ResourceExhausted:
+		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", "Product service capacity is exhausted", err)
 	}
 	switch {
 	case errors.Is(err, coreconversation.ErrInvalid),
