@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -104,6 +105,16 @@ func (s *PersistentServiceV1) Destroy(ctx context.Context) error {
 	go func() { _, _, _, e := s.process.Wait(); done <- e }()
 	select {
 	case e := <-done:
+		// cgroup.kill deliberately terminates a still-running service. The
+		// resulting ExitError proves process exit, while cleanup/accounting
+		// failures remain fatal and must not be collapsed into success.
+		var exitErr *exec.ExitError
+		if errors.As(e, &exitErr) &&
+			!errors.Is(e, errCgroupCleanup) &&
+			!errors.Is(e, errCPULimitExceeded) &&
+			!errors.Is(e, errCPUAccounting) {
+			return nil
+		}
 		return e
 	case <-ctx.Done():
 		return ctx.Err()

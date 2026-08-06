@@ -65,10 +65,13 @@ func main() {
 	if err := validateSocket(*socket); err != nil {
 		die(err.Error())
 	}
-	for _, p := range []string{*installRoot, *workspaceRoot, *stateRoot} {
+	for _, p := range []string{*installRoot, *stateRoot} {
 		if err := validateTrustedDir(p); err != nil {
 			die(err.Error())
 		}
+	}
+	if err := validateWorkspaceDir(*workspaceRoot, uint32(uid64)); err != nil {
+		die(err.Error())
 	}
 	if err := validateCgroup(*cgroupRoot); err != nil {
 		die(err.Error())
@@ -158,6 +161,16 @@ func validateTrustedDir(p string) error {
 	}
 	var st unix.Stat_t
 	if unix.Lstat(p, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Mode&0o022 != 0 {
+		return fmt.Errorf("unsafe trusted root")
+	}
+	return nil
+}
+func validateWorkspaceDir(p string, agentGID uint32) error {
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p || p == "/" || agentGID == 0 {
+		return fmt.Errorf("invalid trusted root")
+	}
+	var st unix.Stat_t
+	if unix.Lstat(p, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Gid != agentGID || st.Mode&0o777 != 0o770 {
 		return fmt.Errorf("unsafe trusted root")
 	}
 	return nil
