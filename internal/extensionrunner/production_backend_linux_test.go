@@ -9,12 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -144,16 +146,33 @@ func TestCoreSandboxBootstrapBindsManagerIdentity(t *testing.T) {
 	}
 }
 
-func TestManagerSourceBindsCurrentExecutableParent(t *testing.T) {
-	root, fd, base, rootStat, st, digest, err := openManagerSource("/proc/self/exe")
+func TestManagerSourceMaterializesContentAddressedPrivateBundle(t *testing.T) {
+	managerRoot := t.TempDir()
+	root, fd, base, rootStat, st, digest, err := materializeManagerSource("/proc/self/exe", managerRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unix.Close(root)
 	defer unix.Close(fd)
-	if !safeName(base) || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || st.Mode&unix.S_IFMT != unix.S_IFREG || digest == "" {
+	if base != managerBundleEntry || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || st.Mode&unix.S_IFMT != unix.S_IFREG || digest == "" {
 		t.Fatalf("manager source base=%q root=%#o file=%#o digest=%q", base, rootStat.Mode, st.Mode, digest)
 	}
+	managerRootInfo, err := os.Stat(managerRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managerRootStat := managerRootInfo.Sys().(*syscall.Stat_t)
+	if uint64(rootStat.Dev) != uint64(managerRootStat.Dev) {
+		t.Fatal("manager bundle was not materialized on ManagerRoot filesystem")
+	}
+	boundPath, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(boundPath) != managerRoot || filepath.Base(boundPath) != managerBundlePrefix+digest || digestRE.MatchString(filepath.Base(boundPath)) {
+		t.Fatalf("manager bundle path=%q is not hidden and content addressed", boundPath)
+	}
+	t.Cleanup(func() { _ = removePublishedTree(boundPath) })
 	opened, err := unix.Openat(root, base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +181,75 @@ func TestManagerSourceBindsCurrentExecutableParent(t *testing.T) {
 	var got unix.Stat_t
 	if unix.Fstat(opened, &got) != nil || got.Dev != st.Dev || got.Ino != st.Ino {
 		t.Fatal("manager basename did not resolve to the bound executable")
+	}
+	root2, fd2, _, rootStat2, _, digest2, err := materializeManagerSource("/proc/self/exe", managerRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(root2)
+	defer unix.Close(fd2)
+	if digest2 != digest || rootStat2.Dev != rootStat.Dev || rootStat2.Ino != rootStat.Ino {
+		t.Fatal("same manager digest created a second bundle")
+	}
+}
+
+func TestManagerBundleTamperFailsClosedWithoutRepair(t *testing.T) {
+	managerRoot := t.TempDir()
+	root, fd, _, _, _, digest, err := materializeManagerSource("/proc/self/exe", managerRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(fd)
+	unix.Close(root)
+	target := filepath.Join(managerRoot, managerBundlePrefix+digest)
+	if err := os.Chmod(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, _, _, err := materializeManagerSource("/proc/self/exe", managerRoot); err == nil {
+		t.Fatal("tampered existing manager bundle was repaired or accepted")
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("tampered bundle was modified: mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func TestManagerBundleConcurrentPublicationConverges(t *testing.T) {
+	managerRoot := t.TempDir()
+	type result struct {
+		root, fd int
+		stat     unix.Stat_t
+		digest   string
+		err      error
+	}
+	results := make(chan result, 4)
+	for range 4 {
+		go func() {
+			root, fd, _, st, _, digest, err := materializeManagerSource("/proc/self/exe", managerRoot)
+			results <- result{root: root, fd: fd, stat: st, digest: digest, err: err}
+		}()
+	}
+	var first result
+	for i := 0; i < 4; i++ {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("concurrent manager publication: %v", got.err)
+		}
+		unix.Close(got.fd)
+		unix.Close(got.root)
+		if i == 0 {
+			first = got
+			continue
+		}
+		if got.digest != first.digest || got.stat.Dev != first.stat.Dev || got.stat.Ino != first.stat.Ino {
+			t.Fatal("concurrent manager publication created divergent bundles")
+		}
+	}
+	target := filepath.Join(managerRoot, managerBundlePrefix+first.digest)
+	t.Cleanup(func() { _ = removePublishedTree(target) })
+	entries, err := os.ReadDir(managerRoot)
+	if err != nil || len(entries) != 1 || entries[0].Name() != filepath.Base(target) {
+		t.Fatalf("manager root contains per-invocation residue: entries=%v err=%v", entries, err)
 	}
 }
 

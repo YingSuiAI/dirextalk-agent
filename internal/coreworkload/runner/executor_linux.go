@@ -348,7 +348,7 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 }
 
 func (e LinuxExecutor) backend() extensionrunner.LinuxBackend {
-	return extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot, ProbeRoot: e.InstallRoot}
+	return extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot, ProbeRoot: e.InstallRoot, ManagerRoot: e.InstallRoot}
 }
 
 func (e LinuxExecutor) readWorkspaceService(q Request) ([]byte, error) {

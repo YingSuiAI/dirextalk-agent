@@ -30,6 +30,11 @@ type LinuxBackend struct {
 	// bounded readiness install. Production must set it explicitly rather than
 	// inheriting a possibly noexec process temporary directory.
 	ProbeRoot string
+	// ManagerRoot stores one content-addressed immutable manager bundle per
+	// executable digest. Core mode requires this runner-owned, exec-capable
+	// filesystem because container overlayfs directories cannot be open_tree
+	// cloned on every supported kernel.
+	ManagerRoot string
 	// ReexecPath is a trusted integration seam. Production leaves it empty and
 	// always re-executes /proc/self/exe.
 	ReexecPath string
@@ -337,7 +342,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	var managerRootStat, managerStat unix.Stat_t
 	var managerErr error
 	if inv.CoreTmpfsBytes > 0 {
-		managerRoot, managerFD, managerBase, managerRootStat, managerStat, managerDigest, managerErr = openManagerSource(self)
+		managerRoot, managerFD, managerBase, managerRootStat, managerStat, managerDigest, managerErr = materializeManagerSource(self, b.ManagerRoot)
 		if managerErr != nil {
 			return nil, unavailableAt("manager_fd")
 		}
@@ -519,8 +524,15 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	return process, nil
 }
 
-func openManagerSource(self string) (int, int, string, unix.Stat_t, unix.Stat_t, string, error) {
+const managerBundlePrefix = ".dirextalk-manager-v1-"
+const managerBundleEntry = "manager"
+const maxManagerBytes = 128 << 20
+
+func materializeManagerSource(self, managerRoot string) (int, int, string, unix.Stat_t, unix.Stat_t, string, error) {
 	var empty unix.Stat_t
+	if !trustedProbeRoot(managerRoot) {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
 	path := self
 	if self == "/proc/self/exe" {
 		var err error
@@ -537,33 +549,161 @@ func openManagerSource(self string) (int, int, string, unix.Stat_t, unix.Stat_t,
 	if !safeName(base) {
 		return -1, -1, "", empty, empty, "", ErrDenied
 	}
-	root, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	sourceRoot, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, -1, "", empty, empty, "", err
+	}
+	defer unix.Close(sourceRoot)
+	var sourceRootStat unix.Stat_t
+	if unix.Fstat(sourceRoot, &sourceRootStat) != nil || sourceRootStat.Mode&unix.S_IFMT != unix.S_IFDIR || !trustedExecutableOwner(sourceRootStat.Uid) || sourceRootStat.Mode&0o022 != 0 {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	sourceFD, err := unix.Openat(sourceRoot, base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	defer unix.Close(sourceFD)
+	var st, selfStat unix.Stat_t
+	if unix.Fstat(sourceFD, &st) != nil || unix.Stat(self, &selfStat) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || !trustedExecutableOwner(st.Uid) || st.Mode&0o111 == 0 || st.Mode&0o022 != 0 || st.Dev != selfStat.Dev || st.Ino != selfStat.Ino || st.Size <= 0 || st.Size > maxManagerBytes {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	digest, err := digestDescriptor(sourceFD, st.Size)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	target := filepath.Join(managerRoot, managerBundlePrefix+digest)
+	if _, err := os.Lstat(target); os.IsNotExist(err) {
+		if err := publishManagerBundle(managerRoot, target, sourceFD, st.Size, digest); err != nil {
+			return -1, -1, "", empty, empty, "", err
+		}
+	} else if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	root, fd, rootStat, managerStat, err := openManagerBundle(target, digest, st.Size)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	return root, fd, managerBundleEntry, rootStat, managerStat, digest, nil
+}
+
+func publishManagerBundle(managerRoot, target string, sourceFD int, size int64, digest string) error {
+	tmp, err := os.MkdirTemp(managerRoot, ".manager-publish-")
+	if err != nil {
+		return err
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = removePublishedTree(tmp)
+		}
+	}()
+	fd, err := unix.Open(filepath.Join(tmp, managerBundleEntry), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = copyDescriptor(sourceFD, fd, size); err == nil {
+		err = unix.Fsync(fd)
+	}
+	if err == nil {
+		err = unix.Fchmod(fd, 0o500)
+	}
+	closeErr := unix.Close(fd)
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = makePublishedTreeImmutable(tmp); err != nil {
+		return err
+	}
+	if err = unix.Renameat2(unix.AT_FDCWD, tmp, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			existingRoot, existing, _, _, validateErr := openManagerBundle(target, digest, size)
+			if existingRoot >= 0 {
+				unix.Close(existingRoot)
+			}
+			if existing >= 0 {
+				unix.Close(existing)
+			}
+			return validateErr
+		}
+		return err
+	}
+	published = true
+	return syncDirectory(managerRoot)
+}
+
+func copyDescriptor(sourceFD, targetFD int, size int64) error {
+	buf := make([]byte, 64<<10)
+	for offset := int64(0); offset < size; {
+		want := int64(len(buf))
+		if size-offset < want {
+			want = size - offset
+		}
+		n, err := unix.Pread(sourceFD, buf[:want], offset)
+		if err != nil || n <= 0 {
+			return ErrDenied
+		}
+		for written := 0; written < n; {
+			count, writeErr := unix.Write(targetFD, buf[written:n])
+			if writeErr != nil || count <= 0 {
+				return ErrDenied
+			}
+			written += count
+		}
+		offset += int64(n)
+	}
+	return nil
+}
+
+func openManagerBundle(target, digest string, size int64) (int, int, unix.Stat_t, unix.Stat_t, error) {
+	var empty unix.Stat_t
+	if filepath.Base(target) != managerBundlePrefix+digest || !digestRE.MatchString(digest) {
+		return -1, -1, empty, empty, ErrDenied
+	}
+	root, err := unix.Open(target, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, -1, empty, empty, err
 	}
 	var rootStat unix.Stat_t
-	if unix.Fstat(root, &rootStat) != nil || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || !trustedExecutableOwner(rootStat.Uid) || rootStat.Mode&0o022 != 0 {
+	if unix.Fstat(root, &rootStat) != nil || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || rootStat.Uid != uint32(os.Geteuid()) || rootStat.Mode&0o777 != 0o500 {
 		unix.Close(root)
-		return -1, -1, "", empty, empty, "", ErrDenied
+		return -1, -1, empty, empty, ErrDenied
 	}
-	fd, err := unix.Openat(root, base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	dup, err := unix.Dup(root)
 	if err != nil {
 		unix.Close(root)
-		return -1, -1, "", empty, empty, "", err
+		return -1, -1, empty, empty, err
 	}
-	var st, selfStat unix.Stat_t
-	if unix.Fstat(fd, &st) != nil || unix.Stat(self, &selfStat) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || !trustedExecutableOwner(st.Uid) || st.Mode&0o111 == 0 || st.Mode&0o022 != 0 || st.Dev != selfStat.Dev || st.Ino != selfStat.Ino || st.Size <= 0 {
-		unix.Close(fd)
+	dir := os.NewFile(uintptr(dup), "manager-bundle")
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil || len(entries) != 1 || entries[0].Name() != managerBundleEntry || !entries[0].Type().IsRegular() {
 		unix.Close(root)
-		return -1, -1, "", empty, empty, "", ErrDenied
+		return -1, -1, empty, empty, ErrDenied
 	}
-	digest, err := digestDescriptor(fd, st.Size)
+	fd, err := unix.Openat(root, managerBundleEntry, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
+		unix.Close(root)
+		return -1, -1, empty, empty, err
+	}
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uint32(os.Geteuid()) || st.Mode&0o777 != 0o500 || st.Nlink != 1 || st.Size != size {
 		unix.Close(fd)
 		unix.Close(root)
-		return -1, -1, "", empty, empty, "", err
+		return -1, -1, empty, empty, ErrDenied
 	}
-	return root, fd, base, rootStat, st, digest, nil
+	got, err := digestDescriptor(fd, st.Size)
+	if err != nil || got != digest {
+		unix.Close(fd)
+		unix.Close(root)
+		return -1, -1, empty, empty, ErrDenied
+	}
+	return root, fd, rootStat, st, nil
 }
 
 func trustedExecutableOwner(uid uint32) bool {
