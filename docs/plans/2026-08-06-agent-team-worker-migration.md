@@ -745,11 +745,65 @@ resource graph and task-scoped bootstrap path; old generic installer,
 Knowledge, Managed service, Cloud Connection, and root-helper surfaces are not
 part of this migration.
 
+#### Task 9A: Package the immutable Team Worker rootfs
+
+- [x] Bind the Linux `amd64` release identity to required immutable
+  Agent/Worker/Reaper OCI digests and the exact official Pi 0.83.0 asset
+  digests. Release identity uses the established deterministic CBOR+SHA-256
+  contract.
+- [x] Export and pack an exact, deterministic USTAR rootfs containing the
+  current Core v1 Worker, Pi sandbox, systemd unit, Pi runtime and result
+  extension, binary sidecars, and immutable per-file installation manifest.
+- [x] Reject AppleDouble, traversal, unlisted content, links, and special
+  files; create output without replacement. The CLI accepts only the closed
+  `pack --root --output` interface.
+- [x] Keep `/etc/passwd`, `/etc/group`, `/run`, and mutable `/var/lib` state
+  out of the archive. Package fixed `sysusers.d` and `tmpfiles.d` definitions
+  for Worker UID/GID `65532:65532`, Pi UID/shared GID `65533:65532`, durable
+  state directories, and `/run/dirextalk-worker/secrets`.
+
+TDD RED on 2026-08-07:
+
+```bash
+GOWORK=off go test ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs -count=1
+```
+
+The corrected tests failed because the release digest still used JSON rather
+than canonical CBOR, substituted Pi digests were accepted, the Containerfile
+had no `rootfs-export` stage, and the rootfs packer and CLI did not exist.
+
+GREEN qualification:
+
+```bash
+GOWORK=off go test -race ./internal/cloud/canonical ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs -count=1
+GOWORK=off go vet ./internal/cloud/canonical ./internal/releaseartifact ./internal/workerrootfs ./cmd/dirextalk-worker-rootfs
+GOWORK=off GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/dirextalk-worker-rootfs-task9a ./cmd/dirextalk-worker-rootfs
+git diff --check
+```
+
+The same source archive, SHA-256
+`41eb7f879fc33fd77a94872a8ae0f0361d09544a07bb48a457d244bdcbdeed2e`,
+was independently qualified on retained AWS AL2023 `x86_64` instance
+`i-08b93e7d3f7876449` in `ap-northeast-3`. SSM command
+`1c89d160-253a-4e13-9a79-d4dfb9bb408f` passed focused tests, the Linux static
+CLI build, two independent `rootfs-export` builds and byte-identical packs,
+the exact archive allowlist, sidecar checks, and the final `linux/amd64` image
+build. Both packs produced
+`sha256:844cadc94a7aa4956d5bf11921609351dc4d8f7c6bd7652f81233155ab22328b`;
+the qualification image was
+`sha256:63a8b21a7fab7e0aba9cf85abf04d9615a6ce1a794ba3c200a5793986ee6cd77`.
+
+Task 9A only packages the drop-ins and unit; it neither creates host accounts
+and state directories nor enables or starts the Worker. Task 9B must run
+`systemd-sysusers`, `systemd-tmpfiles`, and `getent` during AMI construction
+and verify the installed identities and paths before image publication.
+
 - [ ] **Step 1: Port the accepted rootfs/AMI tests, then write failing provider and recovery tests**
 
 First recreate the accepted tests for deterministic rootfs packing, Linux
 x86_64 release identity, complete Pi runtime assets, AppleDouble rejection,
-fixed `dirextalk-worker` passwd/group records at UID/GID `65532:65532`,
+fixed `sysusers`/`tmpfiles` records for Worker UID/GID `65532:65532` and Pi
+UID/shared GID `65533:65532` without packaging `/etc/passwd` or `/etc/group`,
 immutable installation manifest, private builder reachability, AMI
 attestation, resumable publication, builder cleanup, and independent negative
 read-back. Require workspace archives to retain their independent download

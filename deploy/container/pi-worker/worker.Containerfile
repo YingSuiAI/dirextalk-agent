@@ -89,15 +89,9 @@ RUN install -d -m 0755 \
         /out/etc/ssl/certs \
         /out/opt/dirextalk-worker/runtimes/pi/bin/theme \
         /out/opt/dirextalk-worker/runtimes/pi/extensions \
-        /out/usr/local/share/dirextalk-worker/systemd \
-    && install -d -m 0770 -o 65532 -g 65532 \
-        /out/var/lib/dirextalk-worker \
-        /out/var/lib/dirextalk-worker/runtime-state \
-        /out/var/lib/dirextalk-worker/workspaces \
-        /out/var/lib/dirextalk-worker/tmp \
-    && install -d -m 0700 -o 65532 -g 65532 \
-        /out/var/lib/dirextalk-worker/receipts \
-        /out/run/dirextalk-worker/secrets \
+        /out/usr/lib/sysusers.d \
+        /out/usr/lib/tmpfiles.d \
+        /out/usr/local/lib/systemd/system \
     && install -m 0444 /etc/ssl/certs/ca-certificates.crt \
         /out/etc/ssl/certs/ca-certificates.crt \
     && install -m 0555 /out/pi-runtime/pi \
@@ -115,11 +109,34 @@ RUN install -d -m 0755 \
     && install -m 0444 deploy/container/pi-worker/dirextalk-result.ts \
         /out/opt/dirextalk-worker/runtimes/pi/extensions/dirextalk-result.ts \
     && install -m 0444 deploy/container/pi-worker/dirextalk-cloud-worker.service \
-        /out/usr/local/share/dirextalk-worker/systemd/dirextalk-cloud-worker.service \
+        /out/usr/local/lib/systemd/system/dirextalk-cloud-worker.service \
+    && printf '%s\n' \
+        'g dirextalk-worker 65532 -' \
+        'u dirextalk-worker 65532:65532 "Dirextalk Team Worker" /var/lib/dirextalk-worker /usr/sbin/nologin' \
+        'u dirextalk-pi 65533:65532 "Dirextalk Pi Runtime" /var/lib/dirextalk-worker /usr/sbin/nologin' \
+        > /out/usr/lib/sysusers.d/dirextalk-worker.conf \
+    && printf '%s\n' \
+        'd /var/lib/dirextalk-worker 0770 65532 65532 -' \
+        'd /var/lib/dirextalk-worker/receipts 0700 65532 65532 -' \
+        'd /var/lib/dirextalk-worker/runtime-state 0770 65532 65532 -' \
+        'd /var/lib/dirextalk-worker/tmp 0770 65532 65532 -' \
+        'd /var/lib/dirextalk-worker/workspaces 0770 65532 65532 -' \
+        'd /run/dirextalk-worker 0700 65532 65532 -' \
+        'd /run/dirextalk-worker/secrets 0700 65532 65532 -' \
+        > /out/usr/lib/tmpfiles.d/dirextalk-worker.conf \
+    && printf '%s\n' \
+        '{"version":"0.83.0","archive_digest":"sha256:b0625eb623197b0afe20c870d21ef2f34481f1504e5777df3f698a66c7636f5f","executable_digest":"sha256:c25c16162b62eda32deb0d544bcae5e5d6c6148958e17130e6aed2d115104f1a","package_json_digest":"sha256:e02deae1cec07035807436c1864c88342e2f7d49050d03b858a3719f0c7aedbf","photon_wasm_digest":"sha256:10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c","dark_theme_digest":"sha256:d3e86b44313cc77abb26b3245857290bdec12a2d1f91ec4b8a30ca1d90aea328","light_theme_digest":"sha256:97321584a745e75113f08dd1b751bc2a70da28f132b242f1ae5c23816c5e10bc","theme_schema_digest":"sha256:51839872e9cca2ed8804a040b6222a10d0fd5bf6f241b5a4b2824fbb98f3abd1","result_extension_digest":"sha256:39e98a6a8339a48c0b1609ff7aed3c7af0807ee9e2cb4a975b64e46a2e5f94d9"}' \
+        > /out/usr/local/share/dirextalk-worker/pi-runtime-identity.json \
     && chmod 0555 /out/usr/local/bin/dirextalk-cloud-worker /out/usr/local/bin/dirextalk-pi-sandbox \
     && chmod 0444 /out/usr/local/share/dirextalk-worker/dirextalk-cloud-worker.sha256 \
         /out/usr/local/share/dirextalk-worker/dirextalk-pi-sandbox.sha256 \
+        /out/usr/local/share/dirextalk-worker/pi-runtime-identity.json \
+        /out/usr/lib/sysusers.d/dirextalk-worker.conf \
+        /out/usr/lib/tmpfiles.d/dirextalk-worker.conf \
     && rm -rf /out/pi-runtime
+
+FROM scratch AS rootfs-export
+COPY --from=build /out/ /
 
 FROM --platform=linux/amd64 docker.io/library/debian:bookworm-slim@sha256:362e64223cc0da95422b3b13c045186fc0a81250e765d31c025fbddf257f6143
 ARG VERSION
@@ -143,7 +160,15 @@ RUN apt-get update \
 
 COPY --from=build /out/ /
 
-RUN setcap cap_kill,cap_setgid,cap_setuid=ep /usr/local/bin/dirextalk-cloud-worker \
+RUN install -d -m 0770 -o 65532 -g 65532 \
+        /var/lib/dirextalk-worker \
+        /var/lib/dirextalk-worker/runtime-state \
+        /var/lib/dirextalk-worker/workspaces \
+        /var/lib/dirextalk-worker/tmp \
+    && install -d -m 0700 -o 65532 -g 65532 \
+        /var/lib/dirextalk-worker/receipts \
+        /run/dirextalk-worker/secrets \
+    && setcap cap_kill,cap_setgid,cap_setuid=ep /usr/local/bin/dirextalk-cloud-worker \
     && getcap /usr/local/bin/dirextalk-cloud-worker \
         | grep -Fx '/usr/local/bin/dirextalk-cloud-worker cap_kill,cap_setgid,cap_setuid=ep'
 
