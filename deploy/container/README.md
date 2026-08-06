@@ -119,12 +119,11 @@ owned by the Message Server split-agent Compose deployment.
 
 ## Extension runner seam
 
-The `agent_runner_workspaces` volume belongs to the isolated extension runner,
-not to the Agent purge registry. It must be treated as ephemeral execution
-scratch only; durable account data must stay under the Agent-mounted
-`agent_extension_workspaces`/staging roots. Keep extension execution disabled
-until the deployment also provisions an equivalent runner-volume cleanup
-sidecar and verifies it during account deprovision.
+The `agent_runner_workspaces` volume is the single shared execution workspace
+root used by the Agent and isolated extension runner. It is runner-owned with
+the exact identity `65531:65532` and mode `0770`; the Agent reaches it through
+its group and binds it into the account purge registry. Staging remains a
+separate Agent-private root.
 
 Keep `core_extension_enabled: false` until a Linux host delegates a private
 cgroup-v2 subtree to UID `65531` and the socket/install/workspace volume

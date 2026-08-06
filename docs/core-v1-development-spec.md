@@ -217,6 +217,9 @@ local stdio and remote HTTPS Streamable HTTP; Skills use the pinned Skill
 artifact and instructions. Local code runs only through the separate Linux
 extension runner with another UID, namespaces, a task workspace, and explicit
 secrets. No in-process or unconfirmed fallback is allowed.
+The task workspace root is one runner-owned, Agent-group-writable boundary
+with exact identity `65531:65532` and mode `0770`; Agent and runner deployments
+mount the same volume, while extension staging remains Agent-private.
 
 ### Knowledge
 

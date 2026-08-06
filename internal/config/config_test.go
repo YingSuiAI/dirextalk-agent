@@ -196,6 +196,38 @@ func TestValidateCoreExtensionEnabledFailsClosedOnPartialConfig(t *testing.T) {
 	}
 }
 
+func TestValidateExtensionWorkspaceRootRequiresExactSharedIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix ownership and mode contract")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid())
+	if _, err := validateExtensionWorkspaceRoot(root, "workspace", uid, gid); err != nil {
+		t.Fatalf("exact shared workspace rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name     string
+		uid, gid uint32
+		mode     os.FileMode
+	}{
+		{name: "private mode", uid: uid, gid: gid, mode: 0o700},
+		{name: "wrong owner", uid: uid + 1, gid: gid, mode: 0o770},
+		{name: "wrong group", uid: uid, gid: gid + 1, mode: 0o770},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Chmod(root, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := validateExtensionWorkspaceRoot(root, "workspace", tc.uid, tc.gid); err == nil {
+				t.Fatal("invalid shared workspace accepted")
+			}
+		})
+	}
+}
+
 func TestValidateCoreKnowledgeEnabledRequiresProductionComposition(t *testing.T) {
 	cfg := validCoreConfig(t)
 	root := t.TempDir()

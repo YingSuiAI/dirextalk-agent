@@ -52,6 +52,23 @@ func TestReadinessStagesContainNoRuntimeDetail(t *testing.T) {
 	}
 }
 
+func TestSandboxProbeWaitStageAllowsOnlyFixedChildDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		stderr string
+		want   string
+	}{
+		{"app-clone:permission\n", "sandbox_wait_app-clone_permission"},
+		{"map-namespace:unsupported", "sandbox_wait_map-namespace_unsupported"},
+		{"app-clone:/private/path", "sandbox_wait"},
+		{"unknown:permission", "sandbox_wait"},
+		{"app-clone:permission\nsecret", "sandbox_wait"},
+	} {
+		if got := sandboxProbeWaitStage([]byte(tc.stderr)); got != tc.want {
+			t.Fatalf("sandboxProbeWaitStage(%q) = %q, want %q", tc.stderr, got, tc.want)
+		}
+	}
+}
+
 func TestSetupCgroupReturnsSafeCreateStage(t *testing.T) {
 	err := setupCgroup(filepath.Join(t.TempDir(), "missing", "child"), LimitsV2{}, 1)
 	if !errors.Is(err, ErrUnavailable) {

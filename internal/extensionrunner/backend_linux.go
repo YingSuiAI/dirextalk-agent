@@ -180,10 +180,34 @@ func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 	if err != nil {
 		return unavailableAt("sandbox_start")
 	}
-	if _, _, _, err := process.Wait(); err != nil {
-		return unavailableAt("sandbox_wait")
+	if _, stderr, _, err := process.Wait(); err != nil {
+		return unavailableAt(sandboxProbeWaitStage(stderr))
 	}
 	return nil
+}
+
+func sandboxProbeWaitStage(stderr []byte) string {
+	const fallback = "sandbox_wait"
+	value := strings.TrimSpace(string(stderr))
+	if strings.Count(value, ":") != 1 {
+		return fallback
+	}
+	stage, cause, _ := strings.Cut(value, ":")
+	switch stage {
+	case "bootstrap", "descriptors", "release", "null", "map-fs", "map-namespace", "map-root", "map-pwd", "map-verify",
+		"mounts", "root-tmpfs", "root-remount", "layout", "app-clone", "app-bind", "app-remount",
+		"work-clone", "work-bind", "work-remount", "work-tmpfs", "manager-clone", "manager-bind", "manager-remount",
+		"manager", "manager-hide", "manager-release", "hide-scratch", "hide-remount", "secrets-tmpfs", "secrets-copy", "secrets-remount",
+		"root-switch", "stdin", "rlimits", "capabilities", "no-new-privs", "seccomp", "close-fds", "command", "exec", "result-export":
+	default:
+		return fallback
+	}
+	switch cause {
+	case "denied", "permission", "missing", "busy", "invalid", "unsupported", "other":
+		return fallback + "_" + stage + "_" + cause
+	default:
+		return fallback
+	}
 }
 
 func trustedProbeRoot(path string) bool {

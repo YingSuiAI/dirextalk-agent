@@ -120,6 +120,7 @@ type composeIsolationConfig struct {
 		User         string   `yaml:"user"`
 		Profiles     []string `yaml:"profiles"`
 		NetworkMode  string   `yaml:"network_mode"`
+		Cgroup       string   `yaml:"cgroup"`
 		CgroupParent string   `yaml:"cgroup_parent"`
 		Ports        []any    `yaml:"ports"`
 		Command      []string `yaml:"command"`
@@ -222,6 +223,16 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 		}
 		if config.Services["extension-runner"].NetworkMode != "none" || config.Services["core-runner"].NetworkMode != "none" {
 			t.Fatalf("stack %d runner network isolation is not explicit", i)
+		}
+		if config.Services["extension-runner"].Cgroup != "host" || config.Services["core-runner"].Cgroup != "host" {
+			t.Fatalf("stack %d runner cgroup namespaces are not host-bound", i)
+		}
+		coreMounts := make(map[string]string, len(config.Services["core"].Volumes))
+		for _, volume := range config.Services["core"].Volumes {
+			coreMounts[volume.Target] = volume.Source
+		}
+		if got := coreMounts["/var/lib/dirextalk-agent/extension-workspaces"]; got != "agent_runner_workspaces" {
+			t.Fatalf("stack %d Agent extension workspace volume = %q, want shared runner workspace", i, got)
 		}
 		for _, service := range []string{"extension-runner", "core-runner"} {
 			test := config.Services[service].Healthcheck.Test
