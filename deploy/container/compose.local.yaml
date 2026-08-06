@@ -156,6 +156,29 @@ services:
     depends_on:
       extension-socket-init:
         condition: service_completed_successfully
+      extension-runner-data-init:
+        condition: service_completed_successfully
+
+  extension-runner-data-init:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    entrypoint: ["sh"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - -ec
+      - >-
+        chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID} /install /state;
+        chmod 0700 /install /state;
+        chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:65532 /workspace;
+        chmod 0770 /workspace
+    volumes:
+      - agent_extension_install:/install
+      - agent_runner_workspaces:/workspace
+      - agent_extension_state:/state
+    network_mode: "none"
+    restart: "no"
 
   extension-socket-init:
     image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
