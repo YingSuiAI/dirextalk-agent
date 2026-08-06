@@ -3,6 +3,8 @@
 package extensionrunner
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"golang.org/x/sys/unix"
@@ -153,12 +155,40 @@ func moveSandboxMount(mountFD, targetFD int) error {
 }
 
 func cloneSandboxTree(sourceFD int) (int, error) {
-	sourcePathFD, err := unix.Openat(sourceFD, ".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	// The source descriptors were opened by the parent before this process
+	// unshared its mount namespace. An open_tree call made directly against
+	// one of those descriptors is rejected because the referenced mount still
+	// belongs to the old namespace. Reopen the same absolute directory through
+	// the current namespace, then prove that it is still the admitted inode
+	// before creating the detached bind mount.
+	sourcePathFD, err := reopenSandboxTreeSource(sourceFD)
 	if err != nil {
 		return -1, err
 	}
 	defer unix.Close(sourcePathFD)
-	return unix.OpenTree(sourcePathFD, "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+	return unix.OpenTree(sourcePathFD, ".", uint(unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+}
+
+func reopenSandboxTreeSource(sourceFD int) (int, error) {
+	path, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(sourceFD))
+	if err != nil || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return -1, ErrDenied
+	}
+	reopened, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW,
+		Resolve: unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_SYMLINKS,
+	})
+	if err != nil {
+		return -1, err
+	}
+	var inheritedStat, reopenedStat unix.Stat_t
+	if unix.Fstat(sourceFD, &inheritedStat) != nil || unix.Fstat(reopened, &reopenedStat) != nil ||
+		inheritedStat.Dev != reopenedStat.Dev || inheritedStat.Ino != reopenedStat.Ino ||
+		inheritedStat.Mode != reopenedStat.Mode || reopenedStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		unix.Close(reopened)
+		return -1, ErrDenied
+	}
+	return reopened, nil
 }
 
 func mountDetachedSandboxTree(treeFD, rootFD int, target string, attrs uint64, attrStage, moveStage string) error {
