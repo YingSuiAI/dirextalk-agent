@@ -328,9 +328,9 @@ func runSandboxManager(bootstrap bootstrapV1) error {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}
-	if err := unix.Unmount("/run/manager", unix.MNT_DETACH); err != nil {
+	if err := hideSandboxManagerMount(); err != nil {
 		abort()
-		return sandboxChildFailure("manager-hide", err)
+		return err
 	}
 	if _, err := os.Lstat(managerPath); !errors.Is(err, os.ErrNotExist) {
 		abort()

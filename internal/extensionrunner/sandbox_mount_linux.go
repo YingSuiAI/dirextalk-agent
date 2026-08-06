@@ -154,6 +154,26 @@ func moveSandboxMount(mountFD, targetFD int) error {
 	return unix.MoveMount(mountFD, "", targetFD, "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
 }
 
+func hideSandboxManagerMount() error {
+	// The sandbox root remains a detached mount tree, so umount2 by pathname
+	// returns EINVAL even though the manager is a mount within that tree. Cover
+	// it with an empty immutable mount before capabilities are cleared instead.
+	coverFD, err := newSandboxTmpfs(1<<20, 0o700, sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY|unix.MOUNT_ATTR_NOEXEC)
+	if err != nil {
+		return sandboxChildFailure("manager-hide", err)
+	}
+	defer unix.Close(coverFD)
+	targetFD, err := unix.Open("/run/manager", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return sandboxChildFailure("manager-hide", err)
+	}
+	defer unix.Close(targetFD)
+	if err := moveSandboxMount(coverFD, targetFD); err != nil {
+		return sandboxChildFailure("manager-hide", err)
+	}
+	return nil
+}
+
 func cloneSandboxTree(sourceFD int) (int, error) {
 	// The source descriptors were opened by the parent before this process
 	// unshared its mount namespace. An open_tree call made directly against

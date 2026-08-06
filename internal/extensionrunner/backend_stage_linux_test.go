@@ -69,6 +69,18 @@ func TestCgroupSettingsConstrainMemoryAndSwapBeforeRelease(t *testing.T) {
 	}
 }
 
+func TestSandboxChildDoesNotUsePdeathsigAcrossPIDNamespace(t *testing.T) {
+	pidfd := -1
+	attr := sandboxChildSysProcAttr(&pidfd)
+	if attr.Pdeathsig != 0 {
+		t.Fatalf("PID namespace child has Pdeathsig=%v", attr.Pdeathsig)
+	}
+	wantNamespaces := uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET)
+	if attr.Cloneflags != wantNamespaces || attr.PidFD != &pidfd {
+		t.Fatalf("sandbox child attributes = %+v", attr)
+	}
+}
+
 func TestCgroupCleanupFailsClosedOnPopulatedOrRemoveFailure(t *testing.T) {
 	for _, test := range []struct {
 		name   string

@@ -475,7 +475,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		}
 	}()
 	cmd.Env = []string{}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET, Unshareflags: 0, UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}}, GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}}, GidMappingsEnableSetgroups: false, Setpgid: true, Pdeathsig: syscall.SIGKILL, PidFD: &pidfd}
+	cmd.SysProcAttr = sandboxChildSysProcAttr(&pidfd)
 	var out, er boundedBuffer
 	if inv.PersistentOutputLimit > 0 {
 		budget := &outputBudget{limit: inv.PersistentOutputLimit}
@@ -522,6 +522,21 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	}
 	go process.monitorCPU()
 	return process, nil
+}
+
+func sandboxChildSysProcAttr(pidfd *int) *syscall.SysProcAttr {
+	// Do not combine Pdeathsig with CLONE_NEWPID. Go records the parent PID
+	// before clone and checks it again in the child; the namespace init cannot
+	// see its outer parent, so that check self-signals SIGKILL. The runner owns
+	// this child through its pidfd and exact cgroup kill/reap path instead.
+	return &syscall.SysProcAttr{
+		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+		Setpgid:                    true,
+		PidFD:                      pidfd,
+	}
 }
 
 const managerBundlePrefix = ".dirextalk-manager-v1-"
