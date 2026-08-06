@@ -10,7 +10,7 @@ import (
 
 const sandboxMountBaseAttrs = unix.MOUNT_ATTR_NODEV | unix.MOUNT_ATTR_NOSUID
 
-func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD int) (int, error) {
+func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD, managerMountFD int) (int, error) {
 	rootBytes := bootstrap.Request.Limits.MemoryBytes / 4
 	if rootBytes < 1<<20 {
 		rootBytes = 1 << 20
@@ -27,7 +27,11 @@ func prepareSandboxMounts(bootstrap bootstrapV1, installFD, workspaceFD int) (in
 		return -1, sandboxChildFailure("layout", err)
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
-		if err := mountSandboxTree(sandboxManagerFD, rootFD, "run/manager", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "manager-clone", "manager-remount", "manager-bind"); err != nil {
+		if managerMountFD < 0 {
+			unix.Close(rootFD)
+			return -1, sandboxChildFailure("manager-clone", ErrDenied)
+		}
+		if err := mountDetachedSandboxTree(managerMountFD, rootFD, "run/manager", sandboxMountBaseAttrs|unix.MOUNT_ATTR_RDONLY, "manager-remount", "manager-bind"); err != nil {
 			unix.Close(rootFD)
 			return -1, err
 		}
@@ -139,21 +143,29 @@ func moveSandboxMount(mountFD, targetFD int) error {
 }
 
 func mountSandboxTree(sourceFD, rootFD int, target string, attrs uint64, cloneStage, attrStage, moveStage string) error {
+	treeFD, err := cloneSandboxTree(sourceFD)
+	if err != nil {
+		return sandboxChildFailure(cloneStage, err)
+	}
+	defer unix.Close(treeFD)
+	return mountDetachedSandboxTree(treeFD, rootFD, target, attrs, attrStage, moveStage)
+}
+
+func cloneSandboxTree(sourceFD int) (int, error) {
+	sourcePathFD, err := unix.Openat(sourceFD, ".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(sourcePathFD)
+	return unix.OpenTree(sourcePathFD, "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+}
+
+func mountDetachedSandboxTree(treeFD, rootFD int, target string, attrs uint64, attrStage, moveStage string) error {
 	targetFD, err := openSandboxDirAt(rootFD, target)
 	if err != nil {
 		return sandboxChildFailure(moveStage, err)
 	}
 	defer unix.Close(targetFD)
-	sourcePathFD, err := unix.Openat(sourceFD, ".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return sandboxChildFailure(cloneStage, err)
-	}
-	defer unix.Close(sourcePathFD)
-	treeFD, err := unix.OpenTree(sourcePathFD, "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
-	if err != nil {
-		return sandboxChildFailure(cloneStage, err)
-	}
-	defer unix.Close(treeFD)
 	if err = unix.MountSetattr(treeFD, "", uint(unix.AT_EMPTY_PATH|unix.AT_RECURSIVE), &unix.MountAttr{Attr_set: attrs}); err != nil {
 		return sandboxChildFailure(attrStage, err)
 	}

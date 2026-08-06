@@ -142,6 +142,27 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.Unshare(unix.CLONE_FS); err != nil {
 		return sandboxChildFailure("map-fs", err)
 	}
+	// Create the sandbox-owned mount namespace while every admitted source is
+	// still reachable.  The manager bundle lives beside the admitted install,
+	// outside the temporary workspace root; cloning it after the first chroot
+	// is rejected by some kernels even though the inherited directory FD still
+	// identifies the correct inode.
+	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
+		return sandboxChildFailure("map-namespace", err)
+	}
+	managerMountFD := -1
+	defer func() {
+		if managerMountFD >= 0 {
+			_ = unix.Close(managerMountFD)
+		}
+	}()
+	if bootstrap.CoreTmpfsBytes > 0 {
+		var err error
+		managerMountFD, err = cloneSandboxTree(sandboxManagerFD)
+		if err != nil {
+			return sandboxChildFailure("manager-clone", err)
+		}
+	}
 	if err := unix.Fchdir(sandboxWorkspaceFD); err != nil {
 		return sandboxChildFailure("map-root", err)
 	}
@@ -151,27 +172,43 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	if err := unix.Fchdir(sandboxInstallFD); err != nil {
 		return sandboxChildFailure("map-pwd", err)
 	}
-	if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
-		return sandboxChildFailure("map-namespace", err)
-	}
 	mappedWorkspaceFD, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return sandboxChildFailure("map-verify", err)
 	}
-	defer unix.Close(mappedWorkspaceFD)
+	defer func() {
+		if mappedWorkspaceFD >= 0 {
+			_ = unix.Close(mappedWorkspaceFD)
+		}
+	}()
 	mappedInstallFD, err := unix.Open(".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return sandboxChildFailure("map-verify", err)
 	}
-	defer unix.Close(mappedInstallFD)
+	defer func() {
+		if mappedInstallFD >= 0 {
+			_ = unix.Close(mappedInstallFD)
+		}
+	}()
 	if err := verifyMappedSandboxDirs(mappedInstallFD, mappedWorkspaceFD); err != nil {
 		return sandboxChildFailure("map-verify", err)
 	}
-	rootFD, err := prepareSandboxMounts(bootstrap, mappedInstallFD, mappedWorkspaceFD)
+	rootFD, err := prepareSandboxMounts(bootstrap, mappedInstallFD, mappedWorkspaceFD, managerMountFD)
 	if err != nil {
 		return sandboxChildFailure("mounts", err)
 	}
-	defer unix.Close(rootFD)
+	defer func() {
+		if rootFD >= 0 {
+			_ = unix.Close(rootFD)
+		}
+	}()
+	if managerMountFD >= 0 {
+		_ = unix.Close(managerMountFD)
+		managerMountFD = -1
+	}
+	if bootstrap.CoreTmpfsBytes > 0 {
+		_ = unix.Close(sandboxManagerFD)
+	}
 	if err := unix.Fchdir(rootFD); err != nil {
 		return sandboxChildFailure("root-switch", err)
 	}
@@ -183,14 +220,15 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	}
 	closeAfterRoot := []int{sandboxBootstrapFD, sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
 	if bootstrap.CoreTmpfsBytes > 0 {
-		// The manager retains only bootstrap/result/immutable-manager fds. The
-		// old host workspace and all mount handles are closed before it starts
-		// the command.
+		// The manager retains only bootstrap/result descriptors. The old host
+		// workspace, manager source and all mount handles are closed before it
+		// starts the command.
 		closeAfterRoot = []int{sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
 	}
 	for _, fd := range closeAfterRoot {
 		_ = unix.Close(fd)
 	}
+	mappedInstallFD, mappedWorkspaceFD, rootFD = -1, -1, -1
 	if bootstrap.HasStdin {
 		if err := unix.Dup2(sandboxStdinFD, 0); err != nil {
 			return sandboxChildFailure("stdin", err)
@@ -237,8 +275,9 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 }
 
 func runSandboxManager(bootstrap bootstrapV1) error {
-	// The manager deliberately retains only its sealed bootstrap, immutable
-	// reexec image and result memfd. The command receives only bootstrap fd 3.
+	// The manager deliberately retains only its sealed bootstrap and optional
+	// result memfd. The immutable reexec image is reachable only through the
+	// temporary /run/manager mount; the command receives only bootstrap fd 3.
 	if bootstrap.CoreTmpfsBytes <= 0 {
 		return sandboxChildFailure("manager", ErrDenied)
 	}
@@ -311,6 +350,7 @@ func runSandboxCommand(bootstrap bootstrapV1) error {
 		return sandboxChildFailure("manager-release", ErrDenied)
 	}
 	_ = unix.Close(4)
+	_ = unix.Close(sandboxBootstrapFD)
 	if err := applySandboxRlimits(bootstrap.Request.Limits); err != nil {
 		return sandboxChildFailure("rlimits", err)
 	}
@@ -323,7 +363,7 @@ func runSandboxCommand(bootstrap bootstrapV1) error {
 	if err := installSandboxSeccomp(); err != nil {
 		return sandboxChildFailure("seccomp", err)
 	}
-	if err := unix.CloseRange(4, ^uint(0), unix.CLOSE_RANGE_UNSHARE); err != nil {
+	if err := unix.CloseRange(3, ^uint(0), unix.CLOSE_RANGE_UNSHARE); err != nil {
 		return sandboxChildFailure("close-fds", err)
 	}
 	return unix.Exec("/app/entry", sandboxExecArgv(bootstrap.Request.Argv), []string{})
