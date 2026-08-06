@@ -85,18 +85,24 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 	if limit > MaxSearchLimit {
 		return coreknowledge.SearchPage{}, ErrInvalid
 	}
-	profileID, configDigest, dimension, err := r.currentConfig(ctx)
-	if err != nil {
-		return coreknowledge.SearchPage{}, err
-	}
 	bindings, err := r.bindings.ResolveBindings(ctx, append([]string(nil), query.SourceIDs...))
 	if err != nil {
 		return coreknowledge.SearchPage{}, err
 	}
+	if err := validateRequestedBindings(query.SourceIDs, bindings); err != nil {
+		return coreknowledge.SearchPage{}, err
+	}
+	// An empty authoritative binding set is a valid empty corpus, not a vector
+	// backend request. In particular, deleting the last promoted source must
+	// not emit an embedding call or an invalid Qdrant filter.
+	if len(bindings) == 0 {
+		return coreknowledge.SearchPage{Matches: make([]coreknowledge.SearchMatch, 0)}, nil
+	}
 	if err := validateBindings(bindings); err != nil {
 		return coreknowledge.SearchPage{}, err
 	}
-	if err := validateRequestedBindings(query.SourceIDs, bindings); err != nil {
+	profileID, configDigest, dimension, err := r.currentConfig(ctx)
+	if err != nil {
 		return coreknowledge.SearchPage{}, err
 	}
 	profile, err := r.profiles.ResolveProfile(ctx, profileID)

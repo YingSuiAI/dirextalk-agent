@@ -369,11 +369,14 @@ func (q *QdrantStore) Search(ctx context.Context, query []float32, bindings []Bi
 	if err := validateVector(query, q.dimension); err != nil {
 		return nil, err
 	}
-	if err := validateBindings(bindings); err != nil {
-		return nil, err
-	}
 	if limit <= 0 || limit > MaxSearchLimit {
 		return nil, ErrInvalid
+	}
+	if len(bindings) == 0 {
+		return make([]Match, 0), nil
+	}
+	if err := validateBindings(bindings); err != nil {
+		return nil, err
 	}
 	should := make([]qdrantFilter, 0, len(bindings))
 	for _, binding := range bindings {

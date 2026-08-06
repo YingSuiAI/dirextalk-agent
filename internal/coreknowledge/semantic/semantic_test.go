@@ -263,6 +263,23 @@ func TestQdrantRejectsMalformedPayloadAndDimension(t *testing.T) {
 	}
 }
 
+func TestQdrantEmptyBindingsSkipHTTP(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, "unexpected request", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	q, err := NewQdrantStore(QdrantConfig{Endpoint: server.URL, Collection: "knowledge", Dimension: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, err := q.Search(context.Background(), []float32{1, 0}, nil, 5)
+	if err != nil || matches == nil || len(matches) != 0 || requests != 0 {
+		t.Fatalf("matches=%#v requests=%d err=%v", matches, requests, err)
+	}
+}
+
 func TestQdrantPromoteGenerationPaginatesAndReplays(t *testing.T) {
 	var scrollCalls, upserts int
 	interrupted := true

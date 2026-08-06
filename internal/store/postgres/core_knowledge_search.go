@@ -217,7 +217,7 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 			}
 			rows.Close()
 			if len(searchIDs) == 0 {
-				return coreknowledge.SearchPage{}, nil
+				return coreknowledge.SearchPage{Matches: make([]coreknowledge.SearchMatch, 0)}, nil
 			}
 		}
 		resolved, err := r.search.Search(ctx, coreknowledge.SearchQuery{Query: q.Query, SourceIDs: searchIDs, Limit: coreknowledge.MaxSearchResults, Kind: q.Kind})
@@ -249,7 +249,7 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 	if n == 0 {
 		n = 20
 	}
-	out := coreknowledge.SearchPage{SearchProvenance: provenance}
+	out := coreknowledge.SearchPage{Matches: make([]coreknowledge.SearchMatch, 0), SearchProvenance: provenance}
 	if n > len(matches) {
 		n = len(matches)
 	}

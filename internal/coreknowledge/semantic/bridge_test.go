@@ -40,14 +40,16 @@ func (e *bridgeEmbedder) Embed(context.Context, coremodel.Profile, []string) ([]
 }
 
 type bridgeVectorStore struct {
-	matches []Match
-	err     error
-	upserts int
+	matches  []Match
+	err      error
+	upserts  int
+	searches int
 }
 
 func (s *bridgeVectorStore) EnsureCollection(context.Context) error            { return nil }
 func (s *bridgeVectorStore) DeleteSource(context.Context, string, int64) error { return nil }
 func (s *bridgeVectorStore) Search(context.Context, []float32, []Binding, int) ([]Match, error) {
+	s.searches++
 	return s.matches, s.err
 }
 func (s *bridgeVectorStore) Upsert(context.Context, string, int64, []Chunk) error {
@@ -64,6 +66,22 @@ func TestSearchRejectsCrossSourceVectorResponse(t *testing.T) {
 	}
 	if _, err := r.Search(context.Background(), coreknowledge.SearchQuery{Query: "q"}); !errors.Is(err, ErrResponse) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSearchEmptyCorpusSkipsEmbeddingAndVectorStore(t *testing.T) {
+	e := &bridgeEmbedder{err: errors.New("embedding must not be called")}
+	s := &bridgeVectorStore{err: errors.New("vector store must not be called")}
+	r, err := NewSearchResolver(SearchConfig{Embedder: e, VectorStore: s, BindingResolver: bridgeBindingResolver{}, ProfileResolver: bridgeProfileResolver{err: errors.New("profile must not be resolved")}, EmbeddingProfileID: "p", Dimension: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := r.Search(context.Background(), coreknowledge.SearchQuery{Query: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Matches == nil || len(page.Matches) != 0 || e.calls != 0 || s.searches != 0 {
+		t.Fatalf("page=%#v embed_calls=%d vector_calls=%d", page, e.calls, s.searches)
 	}
 }
 
