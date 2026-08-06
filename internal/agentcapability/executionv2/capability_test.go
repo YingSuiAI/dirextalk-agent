@@ -8,12 +8,13 @@ import (
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
 func TestDescriptorMatchesMessageServerBindingOperations(t *testing.T) {
 	store := coreexecutionv2.NewMemoryStore()
-	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: store, Typed: coreexecutionv2.TypedPorts{Analyze: func(context.Context, string, coreexecutionv2.AnalyzeRequest) (map[string]any, error) {
+	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: store, Typed: coreexecutionv2.TypedPorts{Analyze: func(context.Context, coretask.OwnerScope, coreexecutionv2.AnalyzeRequest) (map[string]any, error) {
 		return map[string]any{"analysis_id": "22222222-2222-4222-8222-222222222222", "status": "ready"}, nil
 	}}})
 	if err != nil {
@@ -35,7 +36,11 @@ func TestDescriptorMatchesMessageServerBindingOperations(t *testing.T) {
 }
 
 func TestCapabilityDerivesOwnerFromAuthenticatedPermission(t *testing.T) {
-	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: coreexecutionv2.NewMemoryStore(), Typed: coreexecutionv2.TypedPorts{Analyze: func(context.Context, string, coreexecutionv2.AnalyzeRequest) (map[string]any, error) {
+	wantScope := coretask.OwnerScope{OwnerID: "@owner:example.test", AccountGeneration: 9}
+	domain, err := coreexecutionv2.NewService(coreexecutionv2.Config{Store: coreexecutionv2.NewMemoryStore(), Typed: coreexecutionv2.TypedPorts{Analyze: func(_ context.Context, got coretask.OwnerScope, _ coreexecutionv2.AnalyzeRequest) (map[string]any, error) {
+		if got != wantScope {
+			t.Fatalf("provider scope=%+v, want %+v", got, wantScope)
+		}
 		return map[string]any{"analysis_id": "22222222-2222-4222-8222-222222222222", "status": "ready"}, nil
 	}, Ready: func() bool { return true }}})
 	if err != nil {
@@ -44,7 +49,7 @@ func TestCapabilityDerivesOwnerFromAuthenticatedPermission(t *testing.T) {
 	capability, _ := NewCapability(domain)
 	input := map[string]any{"project_id": "11111111-1111-4111-8111-111111111111", "source": map[string]any{"kind": "git_https", "location": "https://github.com/example/repo", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "immutable": true}, "idempotency_key": "22222222-2222-4222-8222-222222222222"}
 	raw, _ := json.Marshal(input)
-	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: "@owner:example.test"})
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: wantScope.OwnerID, AccountGeneration: wantScope.AccountGeneration})
 	result, err := capability.HandleOperation(ctx, "projects_analyze", raw)
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +60,9 @@ func TestCapabilityDerivesOwnerFromAuthenticatedPermission(t *testing.T) {
 	}
 	if output["analysis"].(map[string]any)["owner_id"] != "@owner:example.test" {
 		t.Fatalf("owner=%v", output)
+	}
+	if output["analysis"].(map[string]any)["account_generation"] != float64(wantScope.AccountGeneration) {
+		t.Fatalf("generation=%v", output)
 	}
 	if _, err := capability.HandleOperation(context.Background(), "projects_analyze", raw); err == nil {
 		t.Fatal("ownerless capability call succeeded")
@@ -76,7 +84,7 @@ func TestNoProviderCapabilityIsNotReadyAndNotPublished(t *testing.T) {
 	if capability.Descriptor().GetReadinessReason() == "" {
 		t.Fatal("missing precise unavailable reason")
 	}
-	if _, err := capability.HandleAsOwner(context.Background(), "@owner:example.test", "agent.execution.v2.projects.analyze", map[string]any{"project_id": "11111111-1111-4111-8111-111111111111", "source": map[string]any{"kind": "git_https", "location": "https://github.com/example/repo", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "immutable": true}, "idempotency_key": "22222222-2222-4222-8222-222222222222"}); !errors.Is(err, coreexecutionv2.ErrMissingPort) {
+	if _, err := capability.HandleAsScope(context.Background(), coretask.OwnerScope{OwnerID: "@owner:example.test", AccountGeneration: 1}, "agent.execution.v2.projects.analyze", map[string]any{"project_id": "11111111-1111-4111-8111-111111111111", "source": map[string]any{"kind": "git_https", "location": "https://github.com/example/repo", "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "immutable": true}, "idempotency_key": "22222222-2222-4222-8222-222222222222"}); !errors.Is(err, coreexecutionv2.ErrMissingPort) {
 		t.Fatalf("unavailable action err=%v, want ErrMissingPort", err)
 	}
 }

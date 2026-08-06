@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
@@ -21,13 +22,17 @@ func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx conte
 	if s == nil || s.store == nil || !coretask.ValidUUID(command.ConfirmationID) || !coretask.ValidUUID(command.TaskID) || !coretask.ValidUUID(command.InstallationID) || !coretask.ValidUUID(command.IdempotencyKey) || command.ExpectedTaskRevision < 1 || command.ExpectedConfirmationRevision < 1 || command.Resolution != coreconfirmation.ExtensionUncertainAcknowledgedUnknownNoRetry {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrInvalid
 	}
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "confirmation", command.IdempotencyKey)
+	if scopeErr != nil {
+		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, scopeErr
+	}
 	digest := coreconfirmation.AcknowledgeExtensionExecutionUncertainDigest(command)
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, extensionUncertainAckOperation+":"+command.IdempotencyKey); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("%s:%s:%d:%s", extensionUncertainAckOperation, ownerID, generation, command.IdempotencyKey)); err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "core_extension_installation:"+command.InstallationID); err != nil {
@@ -35,7 +40,7 @@ func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx conte
 	}
 	var previousHash string
 	var previousRaw []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_confirmation_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, extensionUncertainAckOperation, command.IdempotencyKey).Scan(&previousHash, &previousRaw)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_confirmation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, ownerID, generation, extensionUncertainAckOperation, command.IdempotencyKey).Scan(&previousHash, &previousRaw)
 	if err == nil {
 		if previousHash != string(digest) {
 			return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrIdempotencyConflict
@@ -44,12 +49,18 @@ func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx conte
 		if json.Unmarshal(previousRaw, &replayed) != nil {
 			return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrBindingUnavailable
 		}
+		if err = requireConfirmationOwnerScopeTx(ctx, tx, replayed.Confirmation.ConfirmationID); err != nil {
+			return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 		}
 		return replayed, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
+	}
+	if err = requireConfirmationOwnerScopeTx(ctx, tx, command.ConfirmationID); err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
 
@@ -60,7 +71,14 @@ func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx conte
 	if err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
-	if cur.ConfirmationID != command.ConfirmationID || cur.TaskID != command.TaskID || cur.Binding.OperationDomain != "extension.execute" || cur.Binding.TargetID != command.InstallationID || cur.Binding.OwnerID != s.store.instanceID.String() || cur.State != coreconfirmation.StateConsumed || cur.Revision != command.ExpectedConfirmationRevision {
+	if cur.ConfirmationID != command.ConfirmationID || cur.TaskID != command.TaskID || cur.Binding.OperationDomain != "extension.execute" || cur.Binding.TargetID != command.InstallationID || cur.State != coreconfirmation.StateConsumed || cur.Revision != command.ExpectedConfirmationRevision {
+		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrConflict
+	}
+	var taskOwnerID string
+	if err = tx.QueryRow(ctx, `SELECT owner_id FROM core_task_scopes WHERE task_id=$1 FOR UPDATE`, command.TaskID).Scan(&taskOwnerID); err != nil {
+		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrConflict
+	}
+	if cur.Binding.OwnerID != taskOwnerID {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, coreconfirmation.ErrConflict
 	}
 	taskStore := NewCoreTaskStore(s.store)
@@ -134,7 +152,7 @@ func (s *CoreConfirmationStore) AcknowledgeExtensionExecutionUncertain(ctx conte
 	if err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_replays(operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4)`, extensionUncertainAckOperation, command.IdempotencyKey, string(digest), raw); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_confirmation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4,$5,$6)`, ownerID, generation, extensionUncertainAckOperation, command.IdempotencyKey, string(digest), raw); err != nil {
 		return coreconfirmation.AcknowledgeExtensionExecutionUncertainResult{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {

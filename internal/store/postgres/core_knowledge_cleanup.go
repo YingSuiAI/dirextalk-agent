@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -39,7 +40,8 @@ func (r *CoreKnowledgeStore) Delete(ctx context.Context, command coreknowledge.D
 		}
 		return replay.Source, replayErr
 	}
-	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 FOR UPDATE`, command.SourceID))
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, command.SourceID, ownerID, generation))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coreknowledge.Source{}, coreknowledge.ErrNotFound
 	}
@@ -207,12 +209,22 @@ func (r *CoreKnowledgeStore) Delete(ctx context.Context, command coreknowledge.D
 // deleting/cleanup_pending row and therefore safe to retry.
 func (r *CoreKnowledgeStore) resumeKnowledgeCleanup(ctx context.Context, command coreknowledge.DeleteCommand, hinted coreknowledge.Source) (coreknowledge.Source, error) {
 	var contentRef, relativePath, requestHash string
+	var ownerID string
+	var accountGeneration int64
 	var replayKey *uuid.UUID
-	if err := r.store.pool.QueryRow(ctx, `SELECT content_ref,relative_path,idempotency_key,request_hash FROM core_knowledge_cleanup WHERE source_id=$1`, hinted.ID).Scan(&contentRef, &relativePath, &replayKey, &requestHash); err != nil {
+	if err := r.store.pool.QueryRow(ctx, `SELECT cleanup.content_ref,cleanup.relative_path,cleanup.idempotency_key,cleanup.request_hash,source.owner_id,source.account_generation FROM core_knowledge_cleanup cleanup JOIN core_knowledge_sources source ON source.source_id=cleanup.source_id WHERE cleanup.source_id=$1`, hinted.ID).Scan(&contentRef, &relativePath, &replayKey, &requestHash, &ownerID, &accountGeneration); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) && hinted.Status == coreknowledge.SourceStatusDeleted {
 			return hinted, nil
 		}
 		return hinted, coreknowledge.ErrCleanupPending
+	}
+	replayCtx := ctx
+	if !strings.HasPrefix(ownerID, coretask.ReservedInternalOwnerPrefix) {
+		var scopeErr error
+		replayCtx, scopeErr = coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: ownerID, AccountGeneration: accountGeneration})
+		if scopeErr != nil {
+			return hinted, coreknowledge.ErrCleanupPending
+		}
 	}
 	var cleanupErr error
 	if hinted.Kind == coreknowledge.SourceKindMount {
@@ -241,7 +253,7 @@ func (r *CoreKnowledgeStore) resumeKnowledgeCleanup(ctx context.Context, command
 			return r.reloadCanonicalCleanup(ctx, current.ID)
 		}
 		if err == nil && replayKey != nil && requestHash != "" {
-			err = updateKnowledgeReplayHash(ctx, tx, "delete", replayKey.String(), requestHash, knowledgeReplay{Source: current}, coreknowledge.ErrCleanupPending)
+			err = updateKnowledgeReplayHash(replayCtx, tx, "delete", replayKey.String(), requestHash, knowledgeReplay{Source: current}, coreknowledge.ErrCleanupPending)
 		}
 		if err == nil {
 			err = tx.Commit(ctx)
@@ -260,7 +272,7 @@ func (r *CoreKnowledgeStore) resumeKnowledgeCleanup(ctx context.Context, command
 		return r.reloadCanonicalCleanup(ctx, current.ID)
 	}
 	if err == nil && replayKey != nil && requestHash != "" {
-		err = updateKnowledgeReplayHash(ctx, tx, "delete", replayKey.String(), requestHash, knowledgeReplay{Source: current}, nil)
+		err = updateKnowledgeReplayHash(replayCtx, tx, "delete", replayKey.String(), requestHash, knowledgeReplay{Source: current}, nil)
 	}
 	if err != nil || tx.Commit(ctx) != nil {
 		return current, coreknowledge.ErrCleanupPending
@@ -269,7 +281,8 @@ func (r *CoreKnowledgeStore) resumeKnowledgeCleanup(ctx context.Context, command
 }
 
 func (r *CoreKnowledgeStore) reloadCanonicalCleanup(ctx context.Context, sourceID string) (coreknowledge.Source, error) {
-	canonical, err := scanKnowledgeSource(r.store.pool.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1`, sourceID))
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	canonical, err := scanKnowledgeSource(r.store.pool.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, sourceID, ownerID, generation))
 	if err != nil {
 		return coreknowledge.Source{}, coreknowledge.ErrCleanupPending
 	}
@@ -399,7 +412,8 @@ func (r *CoreKnowledgeStore) resumeMemoryReplacementCleanup(ctx context.Context,
 
 func (r *CoreKnowledgeStore) Status(ctx context.Context) (coreknowledge.Status, error) {
 	var out coreknowledge.Status
-	rows, err := r.store.pool.Query(ctx, `SELECT status,count(*) FROM core_knowledge_sources GROUP BY status`)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	rows, err := r.store.pool.Query(ctx, `SELECT status,count(*) FROM core_knowledge_sources WHERE ($1='' OR (owner_id=$1 AND account_generation=$2)) GROUP BY status`, ownerID, generation)
 	if err != nil {
 		return out, coreknowledge.ErrConflict
 	}
@@ -436,7 +450,8 @@ func (r *CoreKnowledgeStore) EmbeddingStatus(ctx context.Context) (indexed, stal
 	if r == nil || r.store == nil || r.store.pool == nil {
 		return 0, 0, coreknowledge.ErrConflict
 	}
-	if err = r.store.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ready' AND COALESCE(promoted_revision,0)=revision AND revision>0), count(*) FILTER (WHERE status='ready' AND COALESCE(promoted_revision,0)<>revision) FROM core_knowledge_sources`).Scan(&indexed, &stale); err != nil {
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	if err = r.store.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ready' AND COALESCE(promoted_revision,0)=revision AND revision>0), count(*) FILTER (WHERE status='ready' AND COALESCE(promoted_revision,0)<>revision) FROM core_knowledge_sources WHERE ($1='' OR (owner_id=$1 AND account_generation=$2))`, ownerID, generation).Scan(&indexed, &stale); err != nil {
 		return 0, 0, coreknowledge.ErrConflict
 	}
 	return indexed, stale, nil

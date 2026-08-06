@@ -1,16 +1,18 @@
 package migrations
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 3 {
-		t.Fatalf("CurrentVersion = %d, want 3", CurrentVersion)
+	if CurrentVersion != 4 {
+		t.Fatalf("CurrentVersion = %d, want 4", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 3 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" {
+	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_team_and_aws_scope.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -95,25 +97,40 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	}
 }
 
-func TestTeamExecutionTaskKindSchemaContractIsClosed(t *testing.T) {
+func TestCoreV1BaselineChecksumRemainsImmutable(t *testing.T) {
 	script, err := Files.ReadFile("000001_core_v1_fresh.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	contents := string(script)
+	sum := sha256.Sum256(script)
+	if got, want := hex.EncodeToString(sum[:]), "71a0719dcf45f727e247607871f1e0726af447e7fff9fc625f8c5b7003e64bc0"; got != want {
+		t.Fatalf("Core v1 immutable checksum=%s want=%s", got, want)
+	}
+}
+
+func TestTeamExecutionTaskKindSchemaContractIsClosed(t *testing.T) {
+	base, err := Files.ReadFile("000001_core_v1_fresh.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := Files.ReadFile("000004_team_and_aws_scope.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(base) + string(team)
 	for _, exact := range []string{
 		"ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool','team_execution'));",
 		"ADD CONSTRAINT core_tasks_model_profile_kind_chk CHECK ((task_kind IN ('agent','knowledge_index')) = (model_profile_id IS NOT NULL));",
 		"ADD CONSTRAINT core_tasks_team_execution_binding_chk CHECK (task_kind <> 'team_execution' OR (model_profile_id IS NULL AND conversation_id IS NULL));",
 	} {
 		if !strings.Contains(contents, exact) {
-			t.Errorf("Core v1 baseline missing exact Team execution contract %q", exact)
+			t.Errorf("Core migrations missing exact Team execution contract %q", exact)
 		}
 	}
 }
 
 func TestCoreTeamDurableSchemaContractIsClosed(t *testing.T) {
-	script, err := Files.ReadFile("000001_core_v1_fresh.up.sql")
+	script, err := Files.ReadFile("000004_team_and_aws_scope.up.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +141,22 @@ func TestCoreTeamDurableSchemaContractIsClosed(t *testing.T) {
 		"CREATE TABLE core_team_executions",
 		"CREATE TABLE core_team_role_runs",
 		"CREATE TABLE core_team_replays",
+		"CREATE TABLE core_aws_change_request_replays",
+		"hash_version smallint NOT NULL DEFAULT 2",
+		"CREATE TABLE core_task_scopes",
+		"CREATE TRIGGER core_tasks_scope_default",
+		"ADD CONSTRAINT core_task_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)",
+		"ADD CONSTRAINT core_confirmation_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)",
+		"ADD CONSTRAINT core_schedule_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)",
+		"ADD CONSTRAINT core_knowledge_mutation_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)",
+		"ADD CONSTRAINT core_knowledge_index_replays_pkey PRIMARY KEY (owner_id,account_generation,idempotency_key)",
+		"CREATE TRIGGER core_knowledge_sources_scope_immutable",
+		"ADD CONSTRAINT core_knowledge_embedding_config_pkey PRIMARY KEY (owner_id,account_generation)",
+		"ADD CONSTRAINT core_knowledge_list_snapshots_pkey PRIMARY KEY (owner_id,account_generation,snapshot_id)",
+		"unrecoverable legacy Core Task replay target",
+		"unrecoverable legacy Core Confirmation replay target",
+		"unrecoverable legacy Core Schedule replay target",
+		"unrecoverable legacy Core Knowledge replay target",
 		"CREATE FUNCTION core_team_reject_plan_definition_mutation",
 		"CREATE TRIGGER core_team_plans_immutable_definition",
 		"CREATE TRIGGER core_team_roles_immutable",
@@ -153,5 +186,31 @@ func TestCoreTeamDurableSchemaContractIsClosed(t *testing.T) {
 				t.Errorf("%s contains secret-shaped column %q", table, forbidden)
 			}
 		}
+	}
+}
+
+func TestCoreAWSCredentialSchemaBindsOwnerGeneration(t *testing.T) {
+	script, err := Files.ReadFile("000004_team_and_aws_scope.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(script)
+	for _, needle := range []string{
+		"ADD COLUMN owner_id text",
+		"ADD COLUMN account_generation bigint",
+		"ALTER COLUMN owner_id SET NOT NULL",
+		"ALTER COLUMN account_generation SET NOT NULL",
+		"ADD CONSTRAINT core_aws_credentials_owner_id_chk",
+		"ADD CONSTRAINT core_aws_credentials_account_generation_chk",
+		"ADD CONSTRAINT core_aws_credential_test_claims_pkey PRIMARY KEY (owner_id,account_generation,idempotency_key)",
+		"ADD CONSTRAINT core_aws_credential_test_claims_credential_scope_fk",
+	} {
+		if !strings.Contains(contents, needle) {
+			t.Errorf("Core AWS credential scope migration missing %q", needle)
+		}
+	}
+	if !strings.Contains(contents, "CREATE INDEX core_aws_credentials_owner_idx") ||
+		!strings.Contains(contents, "ON core_aws_credentials(owner_id,account_generation,credential_id);") {
+		t.Error("Core AWS credential owner lookup index is missing")
 	}
 }

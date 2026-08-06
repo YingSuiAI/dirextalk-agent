@@ -6,6 +6,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/google/uuid"
 	"strings"
 	"testing"
@@ -38,12 +39,12 @@ func TestCoreAWSPostgresGenericTaskHandlerClaimExecuteTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := coreaws.Plan{ID: uuid.NewString(), CredentialID: credID, Region: "us-east-1", StackName: "generic-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
+	plan := coreaws.Plan{ID: uuid.NewString(), OwnerID: store.instanceID.String(), AccountGeneration: 1, CredentialID: credID, Region: "us-east-1", StackName: "generic-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
 	if _, err = NewCoreAWSStore(store).CreatePlan(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
 	coord := NewCoreAWSChangeCoordinator(store, time.Now)
-	req, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
+	req, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString(), Scope: coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,12 +108,12 @@ func TestCoreAWSPostgresGenericTaskHandlerReclaimsUncertainProviderMutation(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := coreaws.Plan{ID: uuid.NewString(), CredentialID: credID, Region: "us-east-1", StackName: "reclaim-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
+			plan := coreaws.Plan{ID: uuid.NewString(), OwnerID: store.instanceID.String(), AccountGeneration: 1, CredentialID: credID, Region: "us-east-1", StackName: "reclaim-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
 			if _, err = NewCoreAWSStore(store).CreatePlan(ctx, plan); err != nil {
 				t.Fatal(err)
 			}
 			coord := NewCoreAWSChangeCoordinator(store, time.Now)
-			req, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
+			req, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString(), Scope: coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -187,12 +188,12 @@ func TestCoreAWSPostgresRequestConfirmConsumeClaimCommitLifecycle(t *testing.T) 
 	if e != nil {
 		t.Fatal(e)
 	}
-	plan := coreaws.Plan{ID: uuid.NewString(), CredentialID: credID, Region: "us-east-1", StackName: "it-" + strings.ToLower(uuid.NewString()[:8]), Operation: coreaws.OperationCreate, Template: norm, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Capabilities: []string{}, Revision: 1, CreatedAt: now}
+	plan := coreaws.Plan{ID: uuid.NewString(), OwnerID: store.instanceID.String(), AccountGeneration: 1, CredentialID: credID, Region: "us-east-1", StackName: "it-" + strings.ToLower(uuid.NewString()[:8]), Operation: coreaws.OperationCreate, Template: norm, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Capabilities: []string{}, Revision: 1, CreatedAt: now}
 	if _, e = NewCoreAWSStore(store).CreatePlan(ctx, plan); e != nil {
 		t.Fatal(e)
 	}
 	coord := NewCoreAWSChangeCoordinator(store, time.Now)
-	reqInput := coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()}
+	reqInput := coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString(), Scope: coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}}
 	req, e := coord.RequestChange(ctx, reqInput)
 	if e != nil {
 		t.Fatal(e)
@@ -312,7 +313,7 @@ func TestCoreAWSPostgresCredentialReplaceCASAndPagination(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = aws.CreatePlan(ctx, coreaws.Plan{ID: uuid.NewString(), CredentialID: credentialIDs[0], Region: "us-east-1", StackName: "page-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}); err != nil {
+		if _, err = aws.CreatePlan(ctx, coreaws.Plan{ID: uuid.NewString(), OwnerID: store.instanceID.String(), AccountGeneration: 1, CredentialID: credentialIDs[0], Region: "us-east-1", StackName: "page-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}

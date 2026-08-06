@@ -116,6 +116,7 @@ type KnowledgeIndexTaskPayload struct {
 	SourceIDs              []string `json:"source_ids"`
 	ExpectedSourceRevision []uint64 `json:"expected_source_revisions"`
 	CollectionConfigDigest string   `json:"collection_config_digest"`
+	EmbeddingDimension     int      `json:"embedding_dimension"`
 }
 
 type AWSChangeTaskPayload struct {
@@ -380,7 +381,7 @@ func normalizePayload(s *TaskSpec) error {
 			return ErrInvalid
 		}
 		p := s.Payload.KnowledgeIndex
-		if len(p.SourceIDs) == 0 || len(p.SourceIDs) > MaxSourceIDCount || len(p.SourceIDs) != len(p.ExpectedSourceRevision) || strings.TrimSpace(p.CollectionConfigDigest) == "" || len(p.CollectionConfigDigest) != 64 || strings.ToLower(p.CollectionConfigDigest) != p.CollectionConfigDigest {
+		if len(p.SourceIDs) == 0 || len(p.SourceIDs) > MaxSourceIDCount || len(p.SourceIDs) != len(p.ExpectedSourceRevision) || strings.TrimSpace(p.CollectionConfigDigest) == "" || len(p.CollectionConfigDigest) != 64 || strings.ToLower(p.CollectionConfigDigest) != p.CollectionConfigDigest || p.EmbeddingDimension <= 0 || p.EmbeddingDimension > 16384 {
 			return ErrInvalid
 		}
 		if _, err := hex.DecodeString(p.CollectionConfigDigest); err != nil {

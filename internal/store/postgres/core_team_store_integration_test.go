@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
@@ -110,26 +111,30 @@ func teamTestPlan(t *testing.T, now time.Time) coreteam.Plan {
 	return plan
 }
 
-func teamTestBinding(plan coreteam.Plan) coreconfirmation.Binding {
-	digest := func(char string) coreconfirmation.Digest { return coreconfirmation.Digest(strings.Repeat(char, 64)) }
-	secretDigest := digest("d")
-	return coreconfirmation.Binding{
-		OwnerID: plan.OwnerID, OperationDomain: "team_execution", TargetID: plan.PlanID,
-		TargetRevision: int64(plan.Revision), TargetKind: "team_plan", SourceVersion: plan.Runtime.RuntimeID,
-		ContentDigest: coreconfirmation.Digest(plan.Digest), ParameterDigest: digest("b"),
-		NetworkDigest: digest("c"), SecretGrantDigest: secretDigest,
-		SecretGrants: []coreconfirmation.SecretGrant{{
-			ReferenceID: plan.CredentialID, Purpose: coreconfirmation.SecretPurposeAWSCredential, BindingDigest: secretDigest,
-		}},
+func teamTestBinding(t *testing.T, plan coreteam.Plan) coreconfirmation.Binding {
+	t.Helper()
+	binding, err := coreteam.ConfirmationBinding(plan)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return binding
 }
 
-func teamCreatePlanCommand(t *testing.T, now time.Time) coreteam.CreatePlanCommand {
+func teamCreatePlanCommand(t *testing.T, ctx context.Context, store *Store, now time.Time) coreteam.CreatePlanCommand {
 	t.Helper()
 	plan := teamTestPlan(t, now)
+	credential := coreaws.RehydrateCredentials(
+		plan.CredentialID, "team-plan", plan.Quote.Region, "", "",
+		[]byte("AKIA-TEAM-PLAN"), []byte("team-plan-secret"), nil,
+		0, int64(plan.CredentialRevision), now, now,
+	)
+	scope := coreteam.Scope{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration}
+	if _, err := NewCoreAWSStore(store).CreateCredentialGuarded(ctx, scope, credential); err != nil {
+		t.Fatal(err)
+	}
 	return coreteam.CreatePlanCommand{
-		Scope: coreteam.Scope{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration},
-		Plan:  plan, InitialExecutionID: uuid.NewString(), ConfirmationBinding: teamTestBinding(plan),
+		Scope: scope,
+		Plan:  plan, InitialExecutionID: uuid.NewString(), ConfirmationBinding: teamTestBinding(t, plan),
 		IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("e", 64), CreatedAt: now,
 	}
 }
@@ -138,7 +143,7 @@ func TestCoreTeamStoreCreatesAtomicPlanGraphAndExactReplay(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	command := teamCreatePlanCommand(t, now)
+	command := teamCreatePlanCommand(t, ctx, store, now)
 	if _, err := validateTeamPlanCommand(command); err != nil {
 		t.Fatalf("command preflight: %v", err)
 	}
@@ -189,7 +194,8 @@ func TestCoreTeamStoreCreatesAtomicPlanGraphAndExactReplay(t *testing.T) {
 	}
 
 	confirmation, err := NewCoreConfirmationStore(store).Get(ctx, command.Plan.ConfirmationID)
-	if err != nil || !confirmation.Binding.Equal(command.ConfirmationBinding) || confirmation.TaskID != command.Plan.TaskID || confirmation.State != coreconfirmation.StatePending {
+	if err != nil || !confirmation.Binding.Equal(command.ConfirmationBinding) || confirmation.TaskID != command.Plan.TaskID ||
+		confirmation.State != coreconfirmation.StatePending || !confirmation.ExpiresAt.Equal(command.Plan.Quote.ExpiresAt) {
 		t.Fatalf("confirmation=%#v err=%v", confirmation, err)
 	}
 	execution, err := repo.GetExecution(ctx, command.Scope, command.InitialExecutionID)
@@ -210,10 +216,10 @@ func TestCoreTeamStoreCreatesAtomicPlanGraphAndExactReplay(t *testing.T) {
 }
 
 func TestCoreTeamStoreRejectsReplayConflictAndScopesEveryRead(t *testing.T) {
-	ctx, _, repo, cleanup := teamStoreFixture(t)
+	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	command := teamCreatePlanCommand(t, now)
+	command := teamCreatePlanCommand(t, ctx, store, now)
 	created, _, err := repo.CreatePlan(ctx, command)
 	if err != nil {
 		t.Fatal(err)
@@ -242,7 +248,7 @@ func TestCoreTeamStoreRejectsReplayConflictAndScopesEveryRead(t *testing.T) {
 func TestCoreTeamStoreRejectsInitialExecutionIdentityCollision(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
-	command := teamCreatePlanCommand(t, time.Now().UTC().Truncate(time.Microsecond))
+	command := teamCreatePlanCommand(t, ctx, store, time.Now().UTC().Truncate(time.Microsecond))
 	command.InitialExecutionID = command.Plan.CredentialID
 	if _, _, err := repo.CreatePlan(ctx, command); !errors.Is(err, coreteam.ErrInvalid) {
 		t.Fatalf("identity collision err=%v", err)
@@ -259,7 +265,7 @@ func TestCoreTeamStoreSurvivesRestartAndRejectsPlanMutation(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	command := teamCreatePlanCommand(t, now)
+	command := teamCreatePlanCommand(t, ctx, store, now)
 	created, _, err := repo.CreatePlan(ctx, command)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +290,7 @@ func TestCoreTeamStoreExecutionCASListAndSchemaSafety(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	command := teamCreatePlanCommand(t, now)
+	command := teamCreatePlanCommand(t, ctx, store, now)
 	if _, _, err := repo.CreatePlan(ctx, command); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +333,7 @@ func TestCoreTeamStoreCreatesRetryOnlyAfterPriorExecutionAndConfirmationAreTermi
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	planCommand := teamCreatePlanCommand(t, now)
+	planCommand := teamCreatePlanCommand(t, ctx, store, now)
 	if _, _, err := repo.CreatePlan(ctx, planCommand); err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +343,7 @@ func TestCoreTeamStoreCreatesRetryOnlyAfterPriorExecutionAndConfirmationAreTermi
 	}
 	initial.Status = coreteam.ExecutionCanceled
 	initial.UpdatedAt = now.Add(time.Minute)
+	initial.CleanupVerifiedAt = initial.UpdatedAt
 	if _, err = repo.CompareAndSwapExecution(ctx, planCommand.Scope, initial, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +359,7 @@ func TestCoreTeamStoreCreatesRetryOnlyAfterPriorExecutionAndConfirmationAreTermi
 		Status: coreteam.ExecutionQueued, Revision: 1, CreatedAt: retryAt, UpdatedAt: retryAt,
 	}
 	retryCommand := coreteam.CreateExecutionCommand{
-		Scope: planCommand.Scope, Execution: retry, ConfirmationBinding: teamTestBinding(planCommand.Plan),
+		Scope: planCommand.Scope, Execution: retry, ConfirmationBinding: teamTestBinding(t, planCommand.Plan),
 		IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("9", 64), CreatedAt: retryAt,
 	}
 	if _, _, err := repo.CreateExecution(ctx, retryCommand); !errors.Is(err, coreteam.ErrConflict) {
@@ -390,7 +397,7 @@ func TestCoreTeamStoreRetryRequiresPriorCoreTaskToBeTerminal(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	planCommand := teamCreatePlanCommand(t, now)
+	planCommand := teamCreatePlanCommand(t, ctx, store, now)
 	if _, _, err := repo.CreatePlan(ctx, planCommand); err != nil {
 		t.Fatal(err)
 	}
@@ -400,6 +407,7 @@ func TestCoreTeamStoreRetryRequiresPriorCoreTaskToBeTerminal(t *testing.T) {
 	}
 	initial.Status = coreteam.ExecutionCanceled
 	initial.UpdatedAt = now.Add(time.Minute)
+	initial.CleanupVerifiedAt = initial.UpdatedAt
 	if _, err = repo.CompareAndSwapExecution(ctx, planCommand.Scope, initial, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +422,7 @@ func TestCoreTeamStoreRetryRequiresPriorCoreTaskToBeTerminal(t *testing.T) {
 		Status: coreteam.ExecutionQueued, Revision: 1, CreatedAt: retryAt, UpdatedAt: retryAt,
 	}
 	_, _, err = repo.CreateExecution(ctx, coreteam.CreateExecutionCommand{
-		Scope: planCommand.Scope, Execution: retry, ConfirmationBinding: teamTestBinding(planCommand.Plan),
+		Scope: planCommand.Scope, Execution: retry, ConfirmationBinding: teamTestBinding(t, planCommand.Plan),
 		IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("7", 64), CreatedAt: retryAt,
 	})
 	if !errors.Is(err, coreteam.ErrConflict) {
@@ -425,7 +433,7 @@ func TestCoreTeamStoreRetryRequiresPriorCoreTaskToBeTerminal(t *testing.T) {
 func TestCoreTeamStoreConcurrentDuplicateCreatesExactlyOnce(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
-	command := teamCreatePlanCommand(t, time.Now().UTC().Truncate(time.Microsecond))
+	command := teamCreatePlanCommand(t, ctx, store, time.Now().UTC().Truncate(time.Microsecond))
 	const callers = 8
 	type result struct {
 		record   coreteam.PlanRecord
@@ -480,7 +488,7 @@ func TestCoreTeamStoreConcurrentDuplicateCreatesExactlyOnce(t *testing.T) {
 func TestCoreTeamStoreAccountGenerationFenceLeavesNoPartialGraph(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
-	command := teamCreatePlanCommand(t, time.Now().UTC().Truncate(time.Microsecond))
+	command := teamCreatePlanCommand(t, ctx, store, time.Now().UTC().Truncate(time.Microsecond))
 	if _, err := store.pool.Exec(ctx, `INSERT INTO agent_account_deprovisions(owner_id,account_generation,idempotency_key,request_digest,state) VALUES($1,$2,$3,$4,'running')`, command.Scope.OwnerID, command.Scope.AccountGeneration, uuid.New(), make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +506,7 @@ func TestCoreTeamStoreAccountGenerationFenceLeavesNoPartialGraph(t *testing.T) {
 func TestCoreTeamStoreSerializesWithUncommittedAccountDeprovision(t *testing.T) {
 	ctx, store, repo, cleanup := teamStoreFixture(t)
 	defer cleanup()
-	command := teamCreatePlanCommand(t, time.Now().UTC().Truncate(time.Microsecond))
+	command := teamCreatePlanCommand(t, ctx, store, time.Now().UTC().Truncate(time.Microsecond))
 	deprovisionTx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)

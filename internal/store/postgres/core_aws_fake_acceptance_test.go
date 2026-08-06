@@ -11,6 +11,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/google/uuid"
 )
@@ -30,6 +31,11 @@ func acceptanceTemplate(version string) []byte {
 func TestCoreAWSPostgresFakeProviderAcceptanceRPC(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	var err error
+	ctx, err = coreaws.WithCredentialMutationScope(ctx, coreteam.Scope{OwnerID: "@fake-aws-acceptance:example.test", AccountGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	awsStore := NewCoreAWSStore(store)
 	coord := NewCoreAWSChangeCoordinator(store, time.Now)

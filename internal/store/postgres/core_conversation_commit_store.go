@@ -11,6 +11,14 @@ import (
 )
 
 func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core.AtomicCompletion) (core.ChatResponse, error) {
+	identity, e := s.resolveChatRequestIdentity(ctx, a.RequestID)
+	if e != nil {
+		return core.ChatResponse{}, e
+	}
+	conversationOwnerID, conversationGeneration, e := ownerScopeOrInternal(ctx, "conversation", a.Conversation.ID)
+	if e != nil {
+		return core.ChatResponse{}, core.ErrInvalid
+	}
 	tx, e := s.pool.Begin(ctx)
 	if e != nil {
 		return core.ChatResponse{}, e
@@ -18,14 +26,14 @@ func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core
 	defer tx.Rollback(ctx)
 	raw, _ := json.Marshal(a.Response)
 	var leaseResult pgconn.CommandTag
-	leaseResult, e = tx.Exec(ctx, `UPDATE core_chat_request_leases SET state='completed',response_json=$5,lease_id=NULL,lease_expires_at=NULL WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND request_fingerprint=$4 AND state='in_flight'`, a.RequestID, a.LeaseID, a.Epoch, a.Fingerprint, raw)
+	leaseResult, e = tx.Exec(ctx, `UPDATE core_chat_request_leases SET state='completed',response_json=$5,lease_id=NULL,lease_expires_at=NULL WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3 AND request_fingerprint=$4 AND state='in_flight'`, identity.storageRequestID, a.LeaseID, a.Epoch, a.Fingerprint, raw)
 	if e != nil {
 		return core.ChatResponse{}, core.ErrConflict
 	}
 	if leaseResult.RowsAffected() != 1 {
 		return core.ChatResponse{}, core.ErrConflict
 	}
-	convResult, e := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(conversation_id) DO UPDATE SET title=EXCLUDED.title,revision=EXCLUDED.revision,updated_at=EXCLUDED.updated_at WHERE core_conversations.revision=$6`, a.Conversation.ID, a.Conversation.Title, a.Conversation.Revision, a.Conversation.CreatedAt, a.Conversation.UpdatedAt, a.ExpectedRevision)
+	convResult, e := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at,owner_id,account_generation) VALUES($1,$2,$3,$4,$5,$7,$8) ON CONFLICT(conversation_id) DO UPDATE SET title=EXCLUDED.title,revision=EXCLUDED.revision,updated_at=EXCLUDED.updated_at WHERE core_conversations.revision=$6 AND core_conversations.owner_id=$7 AND core_conversations.account_generation=$8`, a.Conversation.ID, a.Conversation.Title, a.Conversation.Revision, a.Conversation.CreatedAt, a.Conversation.UpdatedAt, a.ExpectedRevision, conversationOwnerID, conversationGeneration)
 	if e != nil {
 		return core.ChatResponse{}, e
 	}
@@ -69,8 +77,12 @@ func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core
 	return a.Response, nil
 }
 func (s *CoreConversationStore) LoadModelStep(ctx context.Context, req, lease, fp string, epoch uint64, profile string, step int) (core.ModelRunResult, bool, error) {
+	identity, err := s.resolveChatRequestIdentity(ctx, req)
+	if err != nil {
+		return core.ModelRunResult{}, false, err
+	}
 	var raw []byte
-	e := s.pool.QueryRow(ctx, `SELECT result_json FROM core_model_steps l JOIN core_chat_request_leases r USING(request_id) WHERE l.request_id=$1 AND step_index=$2 AND r.lease_id=$3 AND r.lease_epoch=$4 AND r.request_fingerprint=$5 AND l.input_fingerprint=$5 AND l.profile_id=$6 AND l.state='completed' AND l.epoch=$4`, req, step, lease, epoch, fp, profile).Scan(&raw)
+	e := s.pool.QueryRow(ctx, `SELECT result_json FROM core_model_steps l JOIN core_chat_request_leases r USING(request_id) WHERE l.request_id=$1 AND step_index=$2 AND r.lease_id=$3 AND r.lease_epoch=$4 AND r.request_fingerprint=$5 AND l.input_fingerprint=$5 AND l.profile_id=$6 AND l.state='completed' AND l.epoch=$4`, identity.storageRequestID, step, lease, epoch, fp, profile).Scan(&raw)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return core.ModelRunResult{}, false, nil
 	}
@@ -82,8 +94,12 @@ func (s *CoreConversationStore) LoadModelStep(ctx context.Context, req, lease, f
 	return r, true, e
 }
 func (s *CoreConversationStore) RecordModelStep(ctx context.Context, req, lease, fp string, epoch uint64, profile string, step int, r core.ModelRunResult) error {
+	identity, err := s.resolveChatRequestIdentity(ctx, req)
+	if err != nil {
+		return err
+	}
 	raw, _ := json.Marshal(r)
-	result, e := s.pool.Exec(ctx, `INSERT INTO core_model_steps(request_id,step_index,input_fingerprint,profile_id,state,epoch,result_json) SELECT $1,$2,$3,$4,'completed',$5,$6 WHERE EXISTS(SELECT 1 FROM core_chat_request_leases WHERE request_id=$1 AND lease_id=$7 AND lease_epoch=$5 AND request_fingerprint=$3) ON CONFLICT(request_id,step_index) DO NOTHING`, req, step, fp, profile, epoch, raw, lease)
+	result, e := s.pool.Exec(ctx, `INSERT INTO core_model_steps(request_id,step_index,input_fingerprint,profile_id,state,epoch,result_json) SELECT $1,$2,$3,$4,'completed',$5,$6 WHERE EXISTS(SELECT 1 FROM core_chat_request_leases WHERE request_id=$1 AND lease_id=$7 AND lease_epoch=$5 AND request_fingerprint=$3) ON CONFLICT(request_id,step_index) DO NOTHING`, identity.storageRequestID, step, fp, profile, epoch, raw, lease)
 	if e != nil {
 		return e
 	}

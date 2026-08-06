@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,24 @@ type failingWorkerEmbedding struct{}
 
 func (failingWorkerEmbedding) Embed(context.Context, coremodel.Profile, []string) ([][]float32, error) {
 	return nil, context.DeadlineExceeded
+}
+
+type recordingWorkerEmbedding struct {
+	mu       sync.Mutex
+	profiles []string
+}
+
+func (e *recordingWorkerEmbedding) Embed(_ context.Context, profile coremodel.Profile, _ []string) ([][]float32, error) {
+	e.mu.Lock()
+	e.profiles = append(e.profiles, profile.ID)
+	e.mu.Unlock()
+	return [][]float32{{1, 0}}, nil
+}
+
+func (e *recordingWorkerEmbedding) profileIDs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.profiles...)
 }
 
 type workerProfiles struct{ id string }
@@ -82,7 +101,7 @@ func TestCoreKnowledgeWorkerPostgresRequestClaimPromoteAndSearchBinding(t *testi
 		t.Fatal(err)
 	}
 	configDigest := strings.Repeat("a", 64)
-	idx, err := NewKnowledgeIndexer(repo.store, profileID, configDigest)
+	idx, err := NewKnowledgeIndexer(repo.store, profileID, 2, configDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +131,233 @@ func TestCoreKnowledgeWorkerPostgresRequestClaimPromoteAndSearchBinding(t *testi
 	}
 }
 
+func TestCoreKnowledgeWorkerUsesQueuedOwnerBindingAfterConfigRotation(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	owner := coretask.OwnerScope{OwnerID: "@knowledge-worker-owner:example.test", AccountGeneration: 5}
+	ownerCtx, err := coretask.WithOwnerScope(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, profileB := uuid.NewString(), uuid.NewString()
+	createTestProfile(ownerCtx, t, repo.store, profileA, "queued-profile", "queued-secret")
+	createTestProfile(ownerCtx, t, repo.store, profileB, "current-profile", "current-secret")
+	digest := strings.Repeat("8", 64)
+	if _, err = repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileB, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.EnsureEmbeddingConfig(ownerCtx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileA, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	memory, err := repo.CreateMemory(ownerCtx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Title: "queued binding", Content: "use the queued profile", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileA, 2, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	ref, err := indexer.RequestIndex(ownerCtx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{memory.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.UpdateEmbeddingConfig(ownerCtx, coreknowledge.EmbeddingConfigCommand{IdempotencyKey: uuid.NewString(), EmbeddingProfileID: profileB, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, ExpectedRevision: 1}); !errors.Is(err, coreknowledge.ErrActiveTasks) {
+		t.Fatalf("active Knowledge task model switch err=%v, want active tasks", err)
+	}
+	// Simulate a rolling-upgrade legacy process bypassing the new admission
+	// rule. The worker must still honor its immutable queued binding.
+	if _, err = repo.store.pool.Exec(ctx, `UPDATE core_knowledge_embedding_config SET embedding_profile_id=$1,revision=revision+1,updated_at=clock_timestamp() WHERE owner_id=$2 AND account_generation=$3`, profileB, owner.OwnerID, owner.AccountGeneration); err != nil {
+		t.Fatal(err)
+	}
+	var jobDimension, payloadDimension int
+	if err = repo.store.pool.QueryRow(ctx, `SELECT job.embedding_dimension,(task.payload_json #>> '{knowledge_index,embedding_dimension}')::integer FROM core_knowledge_index_jobs job JOIN core_tasks task ON task.task_id=job.task_id WHERE job.task_id=$1`, ref.TaskID).Scan(&jobDimension, &payloadDimension); err != nil {
+		t.Fatal(err)
+	}
+	if jobDimension != 2 || payloadDimension != 2 {
+		t.Fatalf("immutable dimensions job=%d payload=%d", jobDimension, payloadDimension)
+	}
+	tasks := NewCoreTaskStore(repo.store)
+	task, _, err := tasks.ClaimNextDue(ctx, "knowledge-binding", time.Now().UTC(), time.Minute, 1)
+	if err != nil || task.ID != ref.TaskID {
+		t.Fatalf("claim=%+v err=%v", task, err)
+	}
+	backend, _ := semantic.NewMemoryStore(2)
+	embedder := &recordingWorkerEmbedding{}
+	engine, err := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: embedder, VectorStore: backend, ProfileResolver: repo.store, EmbeddingProfileID: profileB, Dimension: 2, ConfigReader: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewKnowledgeTaskHandler(repo.store, nil, repo.content.(*pgKnowledgeContent), engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome := handler(ctx, task); outcome.Err != nil {
+		t.Fatalf("worker outcome=%+v", outcome)
+	}
+	if profiles := embedder.profileIDs(); len(profiles) != 1 || profiles[0] != profileA {
+		t.Fatalf("embedded with profiles=%v, want immutable queued profile %s", profiles, profileA)
+	}
+	var promotedProfile string
+	if err = repo.store.pool.QueryRow(ctx, `SELECT promoted_profile_id::text FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&promotedProfile); err != nil || promotedProfile != profileA {
+		t.Fatalf("promoted profile=%s err=%v, want %s", promotedProfile, err, profileA)
+	}
+}
+
+func TestCoreKnowledgeModelSwitchSucceedsAfterActiveTaskCancellation(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	owner := coretask.OwnerScope{OwnerID: "@knowledge-switch-owner:example.test", AccountGeneration: 6}
+	ownerCtx, err := coretask.WithOwnerScope(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, profileB := uuid.NewString(), uuid.NewString()
+	createTestProfile(ownerCtx, t, repo.store, profileA, "profile-a", "secret-a")
+	createTestProfile(ownerCtx, t, repo.store, profileB, "profile-b", "secret-b")
+	digest := strings.Repeat("7", 64)
+	if _, err = repo.EnsureEmbeddingConfig(ownerCtx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileA, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	memory, err := repo.CreateMemory(ownerCtx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "cancel before switch", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileA, 2, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	ref, err := indexer.RequestIndex(ownerCtx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{memory.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := coreknowledge.EmbeddingConfigCommand{IdempotencyKey: uuid.NewString(), EmbeddingProfileID: profileB, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, ExpectedRevision: 1}
+	if _, err = repo.UpdateEmbeddingConfig(ownerCtx, command); !errors.Is(err, coreknowledge.ErrActiveTasks) {
+		t.Fatalf("active model switch err=%v", err)
+	}
+	tasks := NewCoreTaskStore(repo.store)
+	task, err := tasks.GetTask(ownerCtx, ref.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tasks.CancelTask(ownerCtx, coretask.CancelCommand{
+		TaskID: ref.TaskID,
+		Mutation: coretask.MutationCommand{
+			IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("6", 64), ExpectedRevision: task.Revision,
+		},
+		Reason: "switch model",
+		At:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	command.IdempotencyKey = uuid.NewString()
+	bound, err := repo.UpdateEmbeddingConfig(ownerCtx, command)
+	if err != nil || bound.EmbeddingProfileID != profileB || bound.Revision != 2 {
+		t.Fatalf("binding after cancellation=%+v err=%v", bound, err)
+	}
+}
+
+func TestCoreKnowledgeGenericFailurePathsReleaseModelSwitchFence(t *testing.T) {
+	tests := []struct {
+		name, code, cleanupKind string
+		timeout                 bool
+		terminal                func(context.Context, *CoreTaskStore, coretask.Task, coretask.Lease, time.Time) error
+	}{
+		{
+			name: "crashed_worker_times_out_during_reclaim", code: "task_timed_out", cleanupKind: "canceled_staging", timeout: true,
+			terminal: func(ctx context.Context, tasks *CoreTaskStore, _ coretask.Task, _ coretask.Lease, at time.Time) error {
+				_, _, err := tasks.ClaimNextDue(ctx, "knowledge-reclaimer", at.Add(2*time.Hour), time.Minute, 1)
+				if errors.Is(err, coretask.ErrNotFound) {
+					return nil
+				}
+				return err
+			},
+		},
+		{
+			name: "generic_worker_failure", code: "worker_failed", cleanupKind: "staging",
+			terminal: func(ctx context.Context, tasks *CoreTaskStore, task coretask.Task, lease coretask.Lease, at time.Time) error {
+				return tasks.FailTask(ctx, coretask.FailCommand{
+					Fence:     coretask.Fence{TaskID: task.ID, Attempt: lease.Attempt, LeaseEpoch: lease.Epoch, ExpectedRevision: task.Revision},
+					ErrorCode: "worker_failed", ErrorSummary: "worker failed", At: at,
+				})
+			},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, repo, cleanup := knowledgePGFixture(t)
+			defer cleanup()
+			owner := coretask.OwnerScope{OwnerID: "@knowledge-terminal-owner:example.test", AccountGeneration: int64(index + 11)}
+			ownerCtx, err := coretask.WithOwnerScope(ctx, owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profileA, profileB := uuid.NewString(), uuid.NewString()
+			createTestProfile(ownerCtx, t, repo.store, profileA, "profile-a", "secret-a")
+			createTestProfile(ownerCtx, t, repo.store, profileB, "profile-b", "secret-b")
+			digest := strings.Repeat("5", 64)
+			if _, err = repo.EnsureEmbeddingConfig(ownerCtx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileA, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+				t.Fatal(err)
+			}
+			memory, err := repo.CreateMemory(ownerCtx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "terminal cleanup", MediaType: "text/plain"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexer, err := NewKnowledgeIndexer(repo.store, profileA, 2, digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexer.SetEmbeddingConfigReader(repo)
+			ref, err := indexer.RequestIndex(ownerCtx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{memory.ID}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.timeout {
+				if _, err = repo.store.pool.Exec(ctx, `UPDATE core_tasks SET timeout_seconds=1 WHERE task_id=$1`, ref.TaskID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tasks := NewCoreTaskStore(repo.store)
+			at := time.Now().UTC()
+			task, lease, err := tasks.ClaimNextDue(ctx, "knowledge-worker", at, time.Minute, 1)
+			if err != nil || task.ID != ref.TaskID {
+				t.Fatalf("claim=%+v lease=%+v err=%v", task, lease, err)
+			}
+			if err = test.terminal(ctx, tasks, task, lease, at.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := tasks.GetTask(ownerCtx, ref.TaskID)
+			if err != nil || got.Status != coretask.StatusFailed || got.FailureCode != test.code {
+				t.Fatalf("task=%+v err=%v", got, err)
+			}
+			var jobStatus, jobCode, sourceStatus, sourceCode, cleanupKind string
+			if err = repo.store.pool.QueryRow(ctx, `SELECT status,error_code FROM core_knowledge_index_jobs WHERE task_id=$1`, ref.TaskID).Scan(&jobStatus, &jobCode); err != nil {
+				t.Fatal(err)
+			}
+			if err = repo.store.pool.QueryRow(ctx, `SELECT status,error_code FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&sourceStatus, &sourceCode); err != nil {
+				t.Fatal(err)
+			}
+			if err = repo.store.pool.QueryRow(ctx, `SELECT cleanup_kind FROM core_knowledge_generation_cleanup WHERE source_id=$1`, memory.ID).Scan(&cleanupKind); err != nil {
+				t.Fatal(err)
+			}
+			if jobStatus != "failed" || jobCode != test.code || sourceStatus != string(coreknowledge.SourceStatusReady) || sourceCode != test.code || cleanupKind != test.cleanupKind {
+				t.Fatalf("job=%s/%s source=%s/%s cleanup=%s", jobStatus, jobCode, sourceStatus, sourceCode, cleanupKind)
+			}
+			var activeRefs int
+			if err = repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, ref.TaskID).Scan(&activeRefs); err != nil || activeRefs != 0 {
+				t.Fatalf("active refs=%d err=%v", activeRefs, err)
+			}
+			bound, err := repo.UpdateEmbeddingConfig(ownerCtx, coreknowledge.EmbeddingConfigCommand{
+				IdempotencyKey: uuid.NewString(), EmbeddingProfileID: profileB, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, ExpectedRevision: 1,
+			})
+			if err != nil || bound.EmbeddingProfileID != profileB {
+				t.Fatalf("model switch after terminal=%+v err=%v", bound, err)
+			}
+		})
+	}
+}
+
 func TestCoreKnowledgeWorkerPostgresTamperAndStageSweep(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
@@ -119,7 +365,7 @@ func TestCoreKnowledgeWorkerPostgresTamperAndStageSweep(t *testing.T) {
 	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, _ := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "w", Content: "worker content", MediaType: "text/plain"})
 	cfg := strings.Repeat("b", 64)
-	idx, _ := NewKnowledgeIndexer(repo.store, profileID, cfg)
+	idx, _ := NewKnowledgeIndexer(repo.store, profileID, 2, cfg)
 	ref, err := idx.RequestIndex(ctx, coreknowledge.IndexRequest{SourceIDs: []string{mem.ID}, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +404,7 @@ func TestCoreKnowledgeWorkerPostgresEmbeddingFailureCommitsTerminalState(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewKnowledgeIndexer(repo.store, profileID, strings.Repeat("1", 64))
+	idx, err := NewKnowledgeIndexer(repo.store, profileID, 2, strings.Repeat("1", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +453,7 @@ func TestCoreKnowledgeWorkerPostgresMemoryUpdateSupersedesInFlightIndex(t *testi
 	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: configDigest, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	indexer, err := NewKnowledgeIndexer(repo.store, profileID, configDigest)
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, 2, configDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +521,7 @@ func TestCoreKnowledgeWorkerPostgresCancellationRestoresSource(t *testing.T) {
 	profileID := uuid.NewString()
 	createTestProfile(ctx, t, repo.store, profileID, "embed", "test")
 	mem, _ := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "cancel", Content: "cancel me", MediaType: "text/plain"})
-	idx, _ := NewKnowledgeIndexer(repo.store, profileID, strings.Repeat("c", 64))
+	idx, _ := NewKnowledgeIndexer(repo.store, profileID, 2, strings.Repeat("c", 64))
 	ref, err := idx.RequestIndex(ctx, coreknowledge.IndexRequest{SourceIDs: []string{mem.ID}, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
@@ -309,7 +555,7 @@ func TestCoreKnowledgeWorkerPostgresCancelLateUpsertRetainsTombstoneAndRecleans(
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx, err := NewKnowledgeIndexer(repo.store, profileID, strings.Repeat("e", 64))
+	idx, err := NewKnowledgeIndexer(repo.store, profileID, 2, strings.Repeat("e", 64))
 	if err != nil {
 		t.Fatal(err)
 	}

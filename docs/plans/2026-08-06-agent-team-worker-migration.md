@@ -235,21 +235,33 @@ git commit -m "feat: persist Core Team executions"
 - Create: `internal/coreteam/confirmation.go`
 - Create: `internal/coreteam/confirmation_test.go`
 - Create: `internal/store/postgres/core_team_confirmation.go`
+- Create: `internal/coretask/owner_scope.go`
+- Create: `internal/store/postgres/core_task_scope.go`
 - Modify: `internal/coreaws/service_credentials_plan.go`
 - Modify: `internal/coreaws/coreaws_test.go`
+- Modify: `internal/agentcapability/core_adapters.go`
+- Modify: `internal/capability/operation/manager.go`
+- Modify: `internal/store/postgres/core_task_store.go`
+- Modify: `internal/store/postgres/core_task_queue.go`
+- Modify: `internal/store/postgres/core_schedule_store.go`
+- Modify: `internal/store/postgres/core_knowledge_indexer.go`
+- Modify: `internal/store/postgres/core_confirmation_lifecycle.go`
+- Modify: `internal/store/postgres/core_confirmation_domain.go`
+- Modify: `internal/store/postgres/core_aws_coordinator_request.go`
+- Modify: `migrations/agent_migrations.sql`
 - Create: `internal/store/postgres/core_team_credential_guard_integration_test.go`
 
-- [ ] **Step 1: Write failing binding and mutation-guard tests**
+- [x] **Step 1: Write failing binding and mutation-guard tests**
 
 Test exact owner, Plan revision/digest, runtime/image/AMI, credential revision, quote, budget, region, instance, network, input digest, and expiry binding. Test create/update/delete credential returns `team_execution_active` while any Team execution is nonterminal and succeeds after verified cleanup.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `GOWORK=off go test ./internal/coreteam ./internal/coreaws ./internal/store/postgres -run 'Test.*(TeamConfirmation|TeamCredential)' -count=1`
 
 Expected: FAIL because resolver and guard are absent.
 
-- [ ] **Step 3: Implement the exact Core boundary**
+- [x] **Step 3: Implement the exact Core boundary**
 
 ```go
 type ActiveExecutionGuard interface { RequireNoActiveTeamExecution(context.Context, coreteam.Scope) error }
@@ -267,16 +279,111 @@ func ConfirmationBinding(plan Plan) (coreconfirmation.Binding, error) {
 
 Call the guard inside the same PostgreSQL transaction that mutates `core_aws_credentials`; do not implement a check-then-write race in the service layer.
 
-- [ ] **Step 4: Run focused and PostgreSQL race tests**
+The implementation also closes the pre-existing public Task/Confirmation
+tenant boundary. Every Task receives a durable `owner_id +
+account_generation` scope; AWS, Team, Schedule, Knowledge, Extension, Workload,
+and conversation-tool creation bind or inherit that scope in the same
+transaction. Owner-neutral internal work uses a reserved, non-public owner
+namespace. Public Capability operations derive scope only from
+`PermissionContext` and enforce it for reads, lists, events, confirmation,
+cancellation, retry, and affected replay boundaries. The service-token Core
+gRPC surface remains the separate internal API.
+
+Legacy AWS request replays remain readable but are upgraded from hash version
+1 only after the complete Change, Plan, Credential, Task, Confirmation, Task
+scope, and immutable confirmation-target relationship is locked and verified.
+Malformed legacy relationships fail closed rather than being promoted.
+
+- [x] **Step 4: Run focused and PostgreSQL race tests**
 
 Run: `AGENT_TEST_POSTGRES_DSN="$AGENT_TEAM_TEST_DSN" GOWORK=off go test -race ./internal/coreteam ./internal/coreaws ./internal/store/postgres -run 'Test.*(TeamConfirmation|TeamCredential)' -count=1`
 
 Expected: PASS, including concurrent launch vs key rotation.
 
-- [ ] **Step 5: Commit**
+Delivered evidence on 2026-08-06:
+
+- exact Team binding and credential create/replace/delete fencing pass;
+- foreign owner/generation Task and Confirmation read/mutation attempts return
+  not found, while the authenticated owner succeeds;
+- pending and confirmed-but-unclaimed Team rejection, expiry, task timeout, and
+  cancellation terminalize role/execution rows with verified cleanup before
+  releasing credential rotation;
+- Team execution creation versus rejection uses one canonical advisory/row
+  lock order and completes without deadlock;
+- eight concurrent scoped AWS request calls create one durable graph; malformed
+  legacy replay relationships are rejected and concurrent v1-to-v3 promotion
+  converges to one replay;
+- AWS Plan creation stores its owner-scoped idempotency receipt in the same
+  transaction as the immutable Plan; restart and eight-way concurrent replay
+  return one Plan, while changed input conflicts;
+- legacy request replay migration validates Change, Plan, Credential, Task and
+  Confirmation IDs, Confirmation scalar columns, Plan owner, and both
+  immutable binding copies before promotion;
+- public Task and Confirmation adapters preserve the caller's raw idempotency
+  key, while PostgreSQL receipts isolate that key by owner, account generation,
+  and operation; the v2-to-v3 migration replays legacy create, cancel, retry,
+  confirm, and reject results through the real public Capability API without
+  creating a duplicate Task;
+- Schedule and Knowledge mutation/index receipts use the same
+  owner-generation isolation while preserving raw caller keys; valid v2
+  Schedule and Knowledge receipts remain replayable after migration, malformed
+  entity links fail the migration, and receipts without authoritative entity
+  provenance move to a reserved internal quarantine scope;
+- public Knowledge source, upload, memory, list, search, status, and embedding
+  configuration operations enforce the same owner and account-generation
+  scope; source ownership is immutable, cursor snapshots are scope-keyed, and
+  legacy global configuration/snapshots migrate only to the Agent instance's
+  reserved internal Knowledge principal;
+- v3 freezes the Capability operation ledger before ExecutionV2 and Knowledge
+  scope migration, rejects nonterminal authoritative secret/source operations,
+  performs a final in-transaction conflict recheck, and leaves a database
+  trigger that rejects late completions from rolling-upgrade legacy processes
+  when their owner/account generation does not match the durable entity;
+- every Knowledge index Task/job snapshots the embedding profile ID, profile
+  revision, vector dimension, and collection-config digest; the Worker restores
+  owner scope from `core_task_scopes`, validates profile/source ownership again
+  before indexing and promotion, and never replaces the queued binding with the
+  current default configuration;
+- owner-neutral Knowledge maintenance scans only the reserved internal scope,
+  discovers a bounded set of public source owners, and reconciles each public
+  owner in its own authenticated scope rather than sweeping all tenants through
+  an unscoped query;
+- switching the owner-scoped Knowledge embedding model returns the stable
+  `ErrActiveTasks`/`FailedPrecondition` contract while a queued or running index
+  job exists; canceling or completing the task releases the Task profile
+  reference and permits the switch. Task creation and model switching share one
+  PostgreSQL advisory lock, while immutable Worker bindings remain a defense
+  against old binaries or recovery races that bypass admission;
+- ExecutionV2 records, revisions, events, secrets, provider outcomes, and
+  replay receipts are account-generation scoped; provider intent is durable
+  before dispatch, persisted outcomes are resumed without redispatch, and an
+  unknown outcome remains safely in progress instead of repeating a paid or
+  destructive provider action;
+- deterministic mutation markers and event IDs recover receipt loss, missing
+  journal events, and partial Run/Stage/Confirmation graphs while rejecting a
+  changed request under the same idempotency key; authentic legacy secret AAD
+  remains decryptable only in the uniquely recovered account generation;
+- legacy Task ownership accepts only exact `agent.tasks.v1` create/retry result
+  paths plus complete Schedule occurrence, Knowledge index/source, and AWS
+  Change/Plan/Credential/Confirmation relationship chains; get/list/read
+  results and recursive `related_task_ids` are never ownership evidence, and
+  conflicting authoritative chains abort the migration atomically;
+- public Capability domain failures map to stable public codes and fixed safe
+  messages; provider, database, and unknown error details are not persisted or
+  returned;
+- focused PostgreSQL migration, double-owner maintenance, model-switch,
+  cancellation, legacy-bypass, Worker binding, and promotion tests pass; the
+  complete PostgreSQL package passes in 68.191 seconds after these changes;
+- full PostgreSQL 18 suite and PostgreSQL race suite pass in Linux containers;
+- Linux full repository suite and full race suite pass with the
+  filesystem-hardening runner executed separately as uid 65534; `go vet
+  ./...`, native Go cross-compilation of `GOOS=linux GOARCH=amd64 go build
+  ./cmd/...`, `buf lint`, and `git diff --check` pass.
+
+- [x] **Step 5: Commit**
 
 ```bash
-git add internal/coreteam internal/coreaws internal/store/postgres
+git add cmd/dirextalk-agent docs internal/agentcapability internal/capability/operation internal/coreaws internal/coreruntime internal/coretask internal/coreteam internal/rpcapi internal/store/postgres migrations
 git commit -m "feat: bind Team spend to Core confirmation"
 ```
 

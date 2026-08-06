@@ -56,6 +56,11 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	ownerScope := coretask.OwnerScope{OwnerID: "@extension-owner:example.test", AccountGeneration: 6}
+	ctx, e = coretask.WithOwnerScope(ctx, ownerScope)
+	if e != nil {
+		t.Fatal(e)
+	}
 	ext := NewCoreExtensionStore(store)
 	cs := NewCoreConfirmationStore(store)
 	c, i := extensionFixture()
@@ -63,6 +68,30 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 	res, e := ext.CreateMutation(ctx, m)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if task, taskErr := NewCoreTaskStore(store).GetTask(ctx, res.TaskID); taskErr != nil || task.ID != res.TaskID {
+		t.Fatalf("owner read extension lifecycle Task=%#v err=%v", task, taskErr)
+	}
+	foreignCtx, scopeErr := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: "@extension-foreign:example.test", AccountGeneration: 6})
+	if scopeErr != nil {
+		t.Fatal(scopeErr)
+	}
+	if _, taskErr := NewCoreTaskStore(store).GetTask(foreignCtx, res.TaskID); !errors.Is(taskErr, coretask.ErrNotFound) {
+		t.Fatalf("foreign owner read extension lifecycle Task err=%v", taskErr)
+	}
+	if _, extensionErr := ext.Get(foreignCtx, res.Installation.ID); !errors.Is(extensionErr, coreextension.ErrNotFound) {
+		t.Fatalf("foreign owner read extension installation err=%v", extensionErr)
+	}
+	foreignPage, extensionErr := ext.List(foreignCtx, coreextension.ListQuery{PageSize: 50})
+	if extensionErr != nil || len(foreignPage.Installations) != 0 {
+		t.Fatalf("foreign owner list extension installations=%#v err=%v", foreignPage.Installations, extensionErr)
+	}
+	foreignMutation := m
+	foreignMutation.IdempotencyKey = uuid.NewString()
+	foreignMutation.InstallationID = res.Installation.ID
+	foreignMutation.ExpectedRevision = res.Installation.Revision
+	if _, extensionErr = ext.UpdateMutation(foreignCtx, foreignMutation, coreextension.StateUpdating); !errors.Is(extensionErr, coreextension.ErrNotFound) {
+		t.Fatalf("foreign owner update extension err=%v", extensionErr)
 	}
 	replay, e := ext.CreateMutation(ctx, m)
 	if e != nil || replay.TaskID != res.TaskID {
@@ -141,6 +170,53 @@ func TestCoreExtensionPostgresInstallUpdateUninstallLifecycle(t *testing.T) {
 		t.Fatalf("state=%s", gone.State)
 	}
 }
+
+func TestCoreExtensionReplayIdentityIsOwnerGenerationScoped(t *testing.T) {
+	ctx, store, _, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	extensions := NewCoreExtensionStore(store)
+	candidate, inspection := extensionFixture()
+	key := uuid.NewString()
+	mutation := coreextension.Mutation{
+		IdempotencyKey: key,
+		Candidate:      candidate,
+		Inspection:     inspection,
+		ArtifactPath:   filepath.Join(t.TempDir(), "fixture-bundle"),
+		ArtifactDigest: strings.Repeat("a", 64),
+	}
+
+	request := func(owner string, generation int64) coreextension.MutationResult {
+		t.Helper()
+		scoped, err := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: owner, AccountGeneration: generation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := extensions.CreateMutation(scoped, mutation)
+		if err != nil {
+			t.Fatalf("create extension owner=%s generation=%d: %v", owner, generation, err)
+		}
+		replay, err := extensions.CreateMutation(scoped, mutation)
+		if err != nil || replay.TaskID != result.TaskID || replay.ConfirmationID != result.ConfirmationID || replay.Installation.ID != result.Installation.ID {
+			t.Fatalf("owner replay result=%#v replay=%#v err=%v", result, replay, err)
+		}
+		return result
+	}
+
+	ownerA := request("@extension-replay-a:example.test", 2)
+	ownerB := request("@extension-replay-b:example.test", 2)
+	ownerANextGeneration := request("@extension-replay-a:example.test", 3)
+	if ownerA.TaskID == ownerB.TaskID || ownerA.TaskID == ownerANextGeneration.TaskID || ownerB.TaskID == ownerANextGeneration.TaskID {
+		t.Fatalf("cross-scope replay leaked task ids: a=%s b=%s a-next=%s", ownerA.TaskID, ownerB.TaskID, ownerANextGeneration.TaskID)
+	}
+	var receipts int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM core_extension_replays WHERE operation=$1 AND idempotency_key=$2`, coreextension.OperationInstall, key).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 3 {
+		t.Fatalf("extension replay receipts=%d, want one per owner generation", receipts)
+	}
+}
+
 func extensionFixture() (coreextension.Candidate, coreextension.Inspection) {
 	d := strings.Repeat("a", 64)
 	c := coreextension.Candidate{ID: "fixture", Kind: coreextension.KindMCP, Source: coreextension.SourceOfficialRegistry, Name: "fixture", Pin: coreextension.SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: d}, Transport: coreextension.TransportStdioStatic}

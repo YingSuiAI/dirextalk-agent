@@ -20,6 +20,7 @@ message CoreExecutionV2Record {
   bytes payload_json = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
+  int64 account_generation = 10;
 }
 
 message CoreExecutionV2ServiceExecuteRequest {
@@ -50,6 +51,7 @@ message CoreExecutionV2Event {
   string type = 6;
   bytes payload_json = 7;
   google.protobuf.Timestamp created_at = 8;
+  int64 account_generation = 9;
 }
 message CoreExecutionV2ServiceListEventsResponse {
   repeated CoreExecutionV2Event events = 1;

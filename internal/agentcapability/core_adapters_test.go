@@ -18,6 +18,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
@@ -908,6 +909,75 @@ func TestAccountDeprovisionCapabilityUsesAuthenticatedOwnerAndRejectsBodyIdentit
 	}
 	if _, err := capability.HandleOperation(ctx, "deprovision_account", []byte(`{"owner_id":"attacker","idempotency_key":"`+uuid.NewString()+`","confirmation":"deprovision_account"}`)); !errors.Is(err, coredeprovision.ErrInvalid) {
 		t.Fatalf("caller-supplied owner was accepted: %v", err)
+	}
+}
+
+func TestTaskAndConfirmationCapabilitiesDeriveOwnerScopeFromPermission(t *testing.T) {
+	permissionA := &capv1.PermissionContext{AuthenticatedOwnerId: "owner-a", AccountGeneration: 4}
+	permissionB := &capv1.PermissionContext{AuthenticatedOwnerId: "owner-b", AccountGeneration: 9}
+	ctxA := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, permissionA)
+	ctxB := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, permissionB)
+
+	scopedA, scopeA, err := capabilityOwnerScope(ctxA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, ok := coretask.OwnerScopeFromContext(scopedA); !ok || stored != scopeA || scopeA.OwnerID != "owner-a" || scopeA.AccountGeneration != 4 {
+		t.Fatalf("permission scope not injected: stored=%+v scope=%+v ok=%v", stored, scopeA, ok)
+	}
+	_, scopeB, err := capabilityOwnerScope(ctxB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scopeA == scopeB {
+		t.Fatal("different permissions produced the same owner scope")
+	}
+	if _, _, err = capabilityOwnerScope(context.Background()); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("missing permission context accepted: %v", err)
+	}
+	if !rejectsCallerProvidedOwner(map[string]json.RawMessage{"owner_id": json.RawMessage(`"attacker"`)}) ||
+		!rejectsCallerProvidedOwner(map[string]json.RawMessage{"account_generation": json.RawMessage(`99`)}) {
+		t.Fatal("caller-provided owner fields were not rejected")
+	}
+}
+
+type ownerScopeProbeCapability struct {
+	ctx context.Context
+	raw []byte
+}
+
+func (c *ownerScopeProbeCapability) Descriptor() *capv1.CapabilityDescriptor {
+	return descriptor("agent.scope_probe.v1", "Scope Probe", "test", []opSpec{{"probe", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:probe:write"}})
+}
+
+func (c *ownerScopeProbeCapability) HandleOperation(ctx context.Context, _ string, raw []byte) ([]byte, error) {
+	c.ctx = ctx
+	c.raw = append([]byte(nil), raw...)
+	return []byte(`{"ok":true}`), nil
+}
+
+func TestPublicCapabilityWrapperInjectsPermissionOwnerScope(t *testing.T) {
+	probe := &ownerScopeProbeCapability{}
+	capability := publicOwnerScopedCapability(probe)
+	permission := &capv1.PermissionContext{AuthenticatedOwnerId: "owner-from-grant", AccountGeneration: 12}
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, permission)
+	request := []byte(`{"value":"safe","idempotency_key":"00000000-0000-4000-8000-000000000123"}`)
+	if _, err := capability.HandleOperation(ctx, "probe", request); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(probe.raw, request) {
+		t.Fatalf("public wrapper changed caller replay identity: got=%s want=%s", probe.raw, request)
+	}
+	got, ok := coretask.OwnerScopeFromContext(probe.ctx)
+	want := coretask.OwnerScope{OwnerID: "owner-from-grant", AccountGeneration: 12}
+	if !ok || got != want {
+		t.Fatalf("public capability scope=%+v ok=%v, want %+v", got, ok, want)
+	}
+	if _, err := capability.HandleOperation(context.Background(), "probe", []byte(`{}`)); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("missing permission accepted: %v", err)
+	}
+	if _, err := capability.HandleOperation(ctx, "probe", []byte(`{"owner_id":"attacker"}`)); !errors.Is(err, coretask.ErrInvalid) {
+		t.Fatalf("body identity override accepted: %v", err)
 	}
 }
 

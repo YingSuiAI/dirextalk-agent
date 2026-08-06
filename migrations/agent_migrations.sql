@@ -984,8 +984,7 @@ CREATE TABLE core_conversation_tool_attempts (
     CHECK ((state IN ('completed','denied','canceled')) = (result_json IS NOT NULL))
 );
 ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_task_kind_chk;
-ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool','team_execution'));
-ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_team_execution_binding_chk CHECK (task_kind <> 'team_execution' OR (model_profile_id IS NULL AND conversation_id IS NULL));
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool'));
 
 CREATE TABLE core_workload_plans (
     plan_id uuid PRIMARY KEY,
@@ -1318,6 +1317,2231 @@ CREATE TABLE core_web_search_replays (
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (owner_id, account_generation, idempotency_key)
 );
+-- dirextalk-agent migration end 000001_core_v1_fresh.up.sql
+-- dirextalk-agent migration begin 000002_knowledge_search_provenance.up.sql
+-- Search cursor snapshots retain the exact semantic binding that produced
+-- their matches. The binding is nullable for non-semantic/list snapshots;
+-- populated rows must carry a complete secret-free profile projection.
+ALTER TABLE core_knowledge_list_snapshots
+    ADD COLUMN embedding_profile_id uuid,
+    ADD COLUMN embedding_profile_revision bigint,
+    ADD COLUMN embedding_model text NOT NULL DEFAULT '',
+    ADD COLUMN embedding_generation text NOT NULL DEFAULT '',
+    ADD COLUMN embedding_collection_config_digest text NOT NULL DEFAULT '',
+    ADD CONSTRAINT core_knowledge_snapshot_embedding_provenance_chk CHECK (
+        (embedding_profile_id IS NULL AND embedding_profile_revision IS NULL AND embedding_model = '' AND embedding_generation = '' AND embedding_collection_config_digest = '') OR
+        (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND embedding_generation = '' AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$')) OR
+        (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND length(embedding_generation) BETWEEN 1 AND 256 AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$'))
+    );
+-- dirextalk-agent migration end 000002_knowledge_search_provenance.up.sql
+-- dirextalk-agent migration begin 000003_aws_credential_test_claims.up.sql
+-- Provider calls run outside database transactions. A durable claim fences
+-- retries across process crashes: active in_progress claims are observed by
+-- bounded same-key waiters, failed/uncertain claims are terminal, and
+-- completed claims carry the secret-free typed response.
+CREATE TABLE core_aws_credential_test_claims (
+    idempotency_key uuid PRIMARY KEY,
+    claim_id uuid NOT NULL UNIQUE,
+    credential_id uuid NOT NULL REFERENCES core_aws_credentials(credential_id) ON DELETE CASCADE,
+    expected_revision bigint NOT NULL CHECK (expected_revision > 0),
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    state text NOT NULL CHECK (state IN ('in_progress','failed','uncertain','completed')),
+    lease_expires_at timestamptz NOT NULL,
+    completion_grace_until timestamptz NOT NULL,
+    response_json jsonb,
+    error_code text NOT NULL DEFAULT '',
+    error_message text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    completed_at timestamptz,
+    CHECK ((state = 'completed') = (response_json IS NOT NULL AND completed_at IS NOT NULL)),
+    CHECK ((state <> 'completed') = (response_json IS NULL AND completed_at IS NULL)),
+    CHECK ((state = 'failed') = (error_code = 'PROVIDER_FAILED' AND error_message <> '')),
+    CHECK ((state = 'uncertain') = (error_code = 'UNCERTAIN' AND error_message <> '')),
+    CHECK ((state IN ('in_progress','completed')) = (error_code = '' AND error_message = '')),
+    CHECK (completion_grace_until >= lease_expires_at),
+    CHECK (response_json IS NULL OR (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536))
+);
+CREATE INDEX core_aws_credential_test_claims_credential_idx ON core_aws_credential_test_claims(credential_id, expected_revision);
+-- dirextalk-agent migration end 000003_aws_credential_test_claims.up.sql
+-- dirextalk-agent migration begin 000004_team_and_aws_scope.up.sql
+-- Freeze the authoritative Capability ledger before any scoped domain table.
+-- An old Agent process that already owns a row lock drains before this lock is
+-- granted; a later writer waits until v4 commits and is then checked by the
+-- persistent completion guard installed below.
+LOCK TABLE agent_capability_operations IN ACCESS EXCLUSIVE MODE;
+
+CREATE FUNCTION agent_capability_operation_requires_v4_scope(capability text, operation text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+STRICT
+AS $$
+    SELECT CASE capability
+        WHEN 'agent.execution.v2' THEN operation = 'secrets_create'
+        WHEN 'agent.aws.v1' THEN operation IN ('create_credential','test_credential')
+        WHEN 'agent.schedules.v1' THEN operation = 'create_schedule'
+        WHEN 'agent.knowledge.v1' THEN operation IN ('create_memory','start_upload')
+        WHEN 'agent.chat.v1' THEN operation IN (
+            'create_conversation','chat','stream_chat','rename_conversation','delete_conversation','compress_context'
+        )
+        WHEN 'agent.models.v1' THEN operation IN ('create_model','sync_models','update_model','delete_model')
+        WHEN 'agent.tasks.v1' THEN operation IN ('create_task','retry_task')
+        WHEN 'agent.skills.v1' THEN operation IN (
+            'install_skill','install_mcp','update_skill','update_mcp','remove_skill','remove_mcp',
+            'enable_skill','skills_enable','enable_mcp','mcp_enable',
+            'disable_skill','skills_disable','disable_mcp','mcp_disable'
+        )
+        ELSE false
+    END
+$$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM agent_capability_operations
+        WHERE state IN ('pending','running')
+          AND agent_capability_operation_requires_v4_scope(capability_id,operation_name)
+    ) THEN
+        RAISE EXCEPTION 'nonterminal scoped capability operation blocks migration';
+    END IF;
+END;
+$$;
+
+-- Once all old scoped operations have drained, lock parent rows before child
+-- claim rows. This matches credential deletion and v4 claim completion order.
+LOCK TABLE
+    core_aws_credentials,
+    core_aws_credential_test_claims,
+    core_execution_v2_records,
+    core_execution_v2_revisions,
+    core_execution_v2_events,
+    core_execution_v2_secrets,
+    core_execution_v2_replays,
+    core_knowledge_sources
+IN ACCESS EXCLUSIVE MODE;
+
+-- Add Team as an owner-scoped Core Task kind without changing the immutable
+-- v1 baseline checksum.
+ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_task_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool','team_execution'));
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_team_execution_binding_chk CHECK (task_kind <> 'team_execution' OR (model_profile_id IS NULL AND conversation_id IS NULL));
+
+-- Bind every AWS credential to one authenticated owner account generation.
+-- Capability-created legacy rows are recovered from the durable redacted
+-- operation result; direct legacy Core RPC rows retain the Agent-instance
+-- generation-1 scope.
+ALTER TABLE core_aws_credentials
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+
+CREATE FUNCTION core_aws_try_legacy_result_json(value bytea)
+RETURNS jsonb
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $$
+BEGIN
+    RETURN convert_from(value,'UTF8')::jsonb;
+EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$;
+
+-- ExecutionV2 originally keyed durable state by owner only. Account reuse
+-- must never expose a previous generation's execution graph. Legacy record,
+-- event, revision, and replay rows have no complete generation provenance, so
+-- preserve them under an internal quarantine principal. Encrypted secrets are
+-- different: their legacy AAD contains the original owner ID, so retain that
+-- owner and require one authoritative completed secrets_create operation to
+-- recover the exact account generation. Any unresolved secret fails closed.
+ALTER TABLE core_execution_v2_records
+    ADD COLUMN account_generation bigint,
+    ADD COLUMN last_replay_action text,
+    ADD COLUMN last_idempotency_key uuid,
+    ADD COLUMN last_request_digest bytea;
+ALTER TABLE core_execution_v2_revisions
+    ADD COLUMN account_generation bigint;
+ALTER TABLE core_execution_v2_events
+    ADD COLUMN account_generation bigint;
+ALTER TABLE core_execution_v2_secrets
+    ADD COLUMN account_generation bigint,
+    ADD COLUMN aad_version smallint,
+    ADD COLUMN last_replay_action text,
+    ADD COLUMN last_idempotency_key uuid,
+    ADD COLUMN last_request_digest bytea;
+ALTER TABLE core_execution_v2_replays
+    ADD COLUMN account_generation bigint,
+    ADD COLUMN state text,
+    ADD COLUMN provider_response_json jsonb,
+    ADD COLUMN claim_token uuid,
+    ADD COLUMN lease_expires_at timestamptz,
+    ADD COLUMN updated_at timestamptz;
+
+ALTER TABLE core_execution_v2_revisions
+    DROP CONSTRAINT core_execution_v2_revisions_owner_id_resource_type_resourc_fkey;
+ALTER TABLE core_execution_v2_events
+    DROP CONSTRAINT core_execution_v2_events_owner_id_resource_type_resource_i_fkey;
+
+UPDATE core_execution_v2_records
+SET owner_id='__dirextalk_internal_execution_v2_legacy__:' || md5(owner_id),
+    account_generation=1;
+UPDATE core_execution_v2_revisions
+SET owner_id='__dirextalk_internal_execution_v2_legacy__:' || md5(owner_id),
+    account_generation=1;
+UPDATE core_execution_v2_events
+SET owner_id='__dirextalk_internal_execution_v2_legacy__:' || md5(owner_id),
+    account_generation=1;
+UPDATE core_execution_v2_replays
+SET owner_id='__dirextalk_internal_execution_v2_replay__:' || md5(owner_id),
+    account_generation=1,
+    state='completed',
+    updated_at=created_at;
+
+CREATE FUNCTION core_execution_v2_try_timestamptz(value text)
+RETURNS timestamptz
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $$
+BEGIN
+    RETURN value::timestamptz;
+EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$;
+
+CREATE TEMP TABLE core_execution_v2_secret_scope_candidates ON COMMIT DROP AS
+SELECT DISTINCT secret.secret_ref,
+       operation.owner_id,
+       operation.account_generation
+FROM core_execution_v2_secrets secret
+JOIN (
+    SELECT owner_id,
+           account_generation,
+           core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id='agent.execution.v2'
+      AND operation_name='secrets_create'
+      AND state='completed'
+      AND result_json IS NOT NULL
+      AND account_generation > 0
+) operation
+  ON operation.owner_id=secret.owner_id
+ AND jsonb_typeof(operation.result #> '{secret}')='object'
+ AND jsonb_typeof(operation.result #> '{secret,secret_ref}')='string'
+ AND jsonb_typeof(operation.result #> '{secret,revision}')='number'
+ AND jsonb_typeof(operation.result #> '{secret,provider}')='string'
+ AND jsonb_typeof(operation.result #> '{secret,purpose}')='string'
+ AND jsonb_typeof(operation.result #> '{secret,binding_digest}')='string'
+ AND jsonb_typeof(operation.result #> '{secret,status}')='string'
+ AND jsonb_typeof(operation.result #> '{secret,created_at}')='string'
+ AND jsonb_typeof(operation.result #> '{secret,updated_at}')='string'
+ AND operation.result #>> '{secret,secret_ref}'=secret.secret_ref::text
+ AND operation.result #>> '{secret,revision}'='1'
+ AND operation.result #>> '{secret,provider}'=secret.provider
+ AND operation.result #>> '{secret,purpose}'=secret.purpose
+ AND operation.result #>> '{secret,binding_digest}'=secret.binding_digest
+ AND operation.result #>> '{secret,status}'='active'
+ AND core_execution_v2_try_timestamptz(operation.result #>> '{secret,created_at}')=secret.created_at
+ AND core_execution_v2_try_timestamptz(operation.result #>> '{secret,updated_at}')=secret.created_at;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_execution_v2_secrets secret
+        LEFT JOIN core_execution_v2_secret_scope_candidates candidate
+          ON candidate.secret_ref=secret.secret_ref
+         AND candidate.owner_id=secret.owner_id
+        GROUP BY secret.owner_id,secret.secret_ref
+        HAVING count(DISTINCT candidate.account_generation) <> 1
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy ExecutionV2 secret account generation';
+    END IF;
+END;
+$$;
+UPDATE core_execution_v2_secrets secret
+SET account_generation=candidate.account_generation,
+    aad_version=1
+FROM core_execution_v2_secret_scope_candidates candidate
+WHERE candidate.secret_ref=secret.secret_ref
+  AND candidate.owner_id=secret.owner_id;
+
+DROP INDEX core_execution_v2_records_list_idx;
+DROP INDEX core_execution_v2_events_watch_idx;
+DROP INDEX core_execution_v2_secrets_list_idx;
+
+ALTER TABLE core_execution_v2_records
+    DROP CONSTRAINT core_execution_v2_records_pkey,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_execution_v2_records_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_execution_v2_records_last_replay_chk CHECK (
+        (last_replay_action IS NULL AND last_idempotency_key IS NULL AND last_request_digest IS NULL)
+        OR
+        (length(last_replay_action) BETWEEN 1 AND 128 AND last_idempotency_key IS NOT NULL AND octet_length(last_request_digest)=32)
+    ),
+    ADD CONSTRAINT core_execution_v2_records_pkey PRIMARY KEY(owner_id,account_generation,resource_type,resource_id);
+
+ALTER TABLE core_execution_v2_revisions
+    DROP CONSTRAINT core_execution_v2_revisions_pkey,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_execution_v2_revisions_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_execution_v2_revisions_pkey PRIMARY KEY(owner_id,account_generation,resource_type,resource_id,revision),
+    ADD CONSTRAINT core_execution_v2_revisions_record_fk FOREIGN KEY(owner_id,account_generation,resource_type,resource_id)
+        REFERENCES core_execution_v2_records(owner_id,account_generation,resource_type,resource_id) ON DELETE RESTRICT;
+
+ALTER TABLE core_execution_v2_events
+    DROP CONSTRAINT core_execution_v2_events_pkey,
+    DROP CONSTRAINT core_execution_v2_events_event_id_key,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_execution_v2_events_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_execution_v2_events_pkey PRIMARY KEY(owner_id,account_generation,resource_type,resource_id,sequence),
+    ADD CONSTRAINT core_execution_v2_events_owner_event_key UNIQUE(owner_id,account_generation,event_id),
+    ADD CONSTRAINT core_execution_v2_events_record_fk FOREIGN KEY(owner_id,account_generation,resource_type,resource_id)
+        REFERENCES core_execution_v2_records(owner_id,account_generation,resource_type,resource_id) ON DELETE RESTRICT;
+
+ALTER TABLE core_execution_v2_secrets
+    DROP CONSTRAINT core_execution_v2_secrets_pkey,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ALTER COLUMN aad_version SET NOT NULL,
+    ADD CONSTRAINT core_execution_v2_secrets_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_execution_v2_secrets_aad_version_chk CHECK (aad_version IN (1,2)),
+    ADD CONSTRAINT core_execution_v2_secrets_last_replay_chk CHECK (
+        (last_replay_action IS NULL AND last_idempotency_key IS NULL AND last_request_digest IS NULL)
+        OR
+        (length(last_replay_action) BETWEEN 1 AND 128 AND last_idempotency_key IS NOT NULL AND octet_length(last_request_digest)=32)
+    ),
+    ADD CONSTRAINT core_execution_v2_secrets_pkey PRIMARY KEY(owner_id,account_generation,secret_ref);
+
+ALTER TABLE core_execution_v2_replays
+    DROP CONSTRAINT core_execution_v2_replays_pkey,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ALTER COLUMN response_json DROP NOT NULL,
+    ALTER COLUMN state SET NOT NULL,
+    ALTER COLUMN updated_at SET NOT NULL,
+    ADD CONSTRAINT core_execution_v2_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_execution_v2_replays_provider_response_chk CHECK (provider_response_json IS NULL OR (jsonb_typeof(provider_response_json)='object' AND pg_column_size(provider_response_json) <= 4194304)),
+    ADD CONSTRAINT core_execution_v2_replays_state_chk CHECK (state IN ('running','dispatched','completed')),
+    ADD CONSTRAINT core_execution_v2_replays_state_payload_chk CHECK (
+        (state='running' AND response_json IS NULL AND provider_response_json IS NULL AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR
+        (state='dispatched' AND response_json IS NULL AND claim_token IS NOT NULL AND lease_expires_at IS NOT NULL)
+        OR
+        (state='completed' AND response_json IS NOT NULL AND claim_token IS NULL AND lease_expires_at IS NULL)
+    ),
+    ADD CONSTRAINT core_execution_v2_replays_pkey PRIMARY KEY(owner_id,account_generation,action,idempotency_key);
+
+CREATE INDEX core_execution_v2_records_list_idx
+    ON core_execution_v2_records(owner_id,account_generation,resource_type,created_at,resource_id);
+CREATE INDEX core_execution_v2_events_watch_idx
+    ON core_execution_v2_events(owner_id,account_generation,resource_type,resource_id,sequence);
+CREATE INDEX core_execution_v2_secrets_list_idx
+    ON core_execution_v2_secrets(owner_id,account_generation,secret_ref);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM (
+            SELECT core_aws_try_legacy_result_json(result_json) #>> '{credential,credential_id}' AS credential_id,
+                   owner_id,
+                   account_generation
+            FROM agent_capability_operations
+            WHERE capability_id = 'agent.aws.v1'
+              AND operation_name = 'create_credential'
+              AND state = 'completed'
+              AND result_json IS NOT NULL
+              AND account_generation > 0
+        ) parsed
+        WHERE credential_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        GROUP BY credential_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy AWS credential ownership';
+    END IF;
+END;
+$$;
+
+WITH capability_credentials AS (
+    SELECT credential_id,
+           min(owner_id) AS owner_id,
+           min(account_generation) AS account_generation
+    FROM (
+        SELECT core_aws_try_legacy_result_json(result_json) #>> '{credential,credential_id}' AS credential_id,
+               owner_id,
+               account_generation
+        FROM agent_capability_operations
+        WHERE capability_id = 'agent.aws.v1'
+          AND operation_name = 'create_credential'
+          AND state = 'completed'
+          AND result_json IS NOT NULL
+          AND account_generation > 0
+    ) parsed
+    WHERE credential_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    GROUP BY credential_id
+    HAVING count(DISTINCT (owner_id,account_generation)) = 1
+)
+UPDATE core_aws_credentials credential
+SET owner_id = capability.owner_id,
+    account_generation = capability.account_generation
+FROM capability_credentials capability
+WHERE credential.credential_id::text = capability.credential_id;
+
+UPDATE core_aws_credentials
+SET owner_id = COALESCE(owner_id, (SELECT agent_instance_id::text FROM agent_instance_metadata WHERE singleton)),
+    account_generation = COALESCE(account_generation, 1);
+
+ALTER TABLE core_aws_credentials
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_aws_credentials_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_aws_credentials_account_generation_chk CHECK (account_generation > 0);
+
+CREATE INDEX core_aws_credentials_owner_idx
+    ON core_aws_credentials(owner_id,account_generation,credential_id);
+ALTER TABLE core_aws_credentials
+    ADD CONSTRAINT core_aws_credentials_owner_key UNIQUE (owner_id,account_generation,credential_id);
+
+-- Credential-test provider fences share the exact credential owner scope.
+-- The same client-generated idempotency key is independent across accounts.
+ALTER TABLE core_aws_credential_test_claims
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+UPDATE core_aws_credential_test_claims claim
+SET owner_id = credential.owner_id,
+    account_generation = credential.account_generation
+FROM core_aws_credentials credential
+WHERE credential.credential_id = claim.credential_id;
+ALTER TABLE core_aws_credential_test_claims
+    DROP CONSTRAINT core_aws_credential_test_claims_pkey,
+    DROP CONSTRAINT core_aws_credential_test_claims_credential_id_fkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_aws_credential_test_claims_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_aws_credential_test_claims_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_aws_credential_test_claims_pkey PRIMARY KEY (owner_id,account_generation,idempotency_key),
+    ADD CONSTRAINT core_aws_credential_test_claims_credential_scope_fk FOREIGN KEY (owner_id,account_generation,credential_id) REFERENCES core_aws_credentials(owner_id,account_generation,credential_id) ON DELETE CASCADE;
+DROP INDEX core_aws_credential_test_claims_credential_idx;
+CREATE INDEX core_aws_credential_test_claims_credential_idx
+    ON core_aws_credential_test_claims(owner_id,account_generation,credential_id,expected_revision);
+
+-- Existing Core AWS Plans inherit the credential scope. Public reads and all
+-- confirmation bindings use these columns; internal recovery follows the
+-- already-bound Plan after admission.
+ALTER TABLE core_aws_plans
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+UPDATE core_aws_plans plan
+SET owner_id = credential.owner_id,
+    account_generation = credential.account_generation
+FROM core_aws_credentials credential
+WHERE credential.credential_id = plan.credential_id;
+ALTER TABLE core_aws_plans
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_aws_plans_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_aws_plans_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_aws_plans_credential_scope_fk FOREIGN KEY (owner_id,account_generation,credential_id) REFERENCES core_aws_credentials(owner_id,account_generation,credential_id) ON DELETE RESTRICT;
+CREATE INDEX core_aws_plans_owner_idx ON core_aws_plans(owner_id,account_generation,plan_id);
+
+-- Schedule execution is asynchronous, so the authenticated owner must remain
+-- on the durable parent after the Capability request context is gone.
+ALTER TABLE core_schedules
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_schedule_scope_candidates ON COMMIT DROP AS
+SELECT DISTINCT completed.result #>> '{schedule,id}' AS schedule_id,
+       completed.owner_id,
+       completed.account_generation
+FROM (
+    SELECT owner_id,
+           account_generation,
+           core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id = 'agent.schedules.v1'
+      AND operation_name = 'create_schedule'
+      AND state = 'completed'
+      AND result_json IS NOT NULL
+      AND account_generation > 0
+) completed
+JOIN core_schedules schedule ON schedule.schedule_id::text = completed.result #>> '{schedule,id}'
+WHERE completed.result IS NOT NULL;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_schedule_scope_candidates
+        GROUP BY schedule_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Schedule ownership';
+    END IF;
+END;
+$$;
+UPDATE core_schedules schedule
+SET owner_id = candidate.owner_id,
+    account_generation = candidate.account_generation
+FROM (
+    SELECT schedule_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_schedule_scope_candidates
+    GROUP BY schedule_id
+) candidate
+WHERE schedule.schedule_id::text = candidate.schedule_id;
+UPDATE core_schedules
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_schedule__:' || schedule_id::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_schedules
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_schedules_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_schedules_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_schedules_owner_key UNIQUE (owner_id,account_generation,schedule_id);
+CREATE INDEX core_schedules_owner_idx ON core_schedules(owner_id,account_generation,schedule_id);
+
+-- Knowledge auto-index runs after the originating mutation and after restart.
+-- Keep source ownership durable so the generated Task can inherit it without
+-- relying on an expired Capability request context.
+ALTER TABLE core_knowledge_sources
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_knowledge_source_scope_candidates ON COMMIT DROP AS
+WITH completed AS (
+    SELECT operation_name,
+           owner_id,
+           account_generation,
+           core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id = 'agent.knowledge.v1'
+      AND operation_name IN ('create_memory','start_upload')
+      AND state = 'completed'
+      AND result_json IS NOT NULL
+      AND account_generation > 0
+), values AS (
+    SELECT owner_id,account_generation,result #>> '{memory_id}' AS source_id
+    FROM completed
+    WHERE operation_name = 'create_memory' AND result IS NOT NULL
+    UNION ALL
+    SELECT owner_id,account_generation,result #>> '{source_id}' AS source_id
+    FROM completed
+    WHERE operation_name = 'start_upload' AND result IS NOT NULL
+)
+SELECT DISTINCT value.source_id,value.owner_id,value.account_generation
+FROM values value
+JOIN core_knowledge_sources source ON source.source_id::text = value.source_id;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_knowledge_source_scope_candidates
+        GROUP BY source_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Knowledge ownership';
+    END IF;
+END;
+$$;
+UPDATE core_knowledge_sources source
+SET owner_id = candidate.owner_id,
+    account_generation = candidate.account_generation
+FROM (
+    SELECT source_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_knowledge_source_scope_candidates
+    GROUP BY source_id
+) candidate
+WHERE source.source_id::text = candidate.source_id;
+UPDATE core_knowledge_sources
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_knowledge__:' || (SELECT agent_instance_id::text FROM agent_instance_metadata WHERE singleton)),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_knowledge_sources
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_knowledge_sources_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_knowledge_sources_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_knowledge_sources_owner_key UNIQUE (owner_id,account_generation,source_id);
+CREATE INDEX core_knowledge_sources_owner_idx ON core_knowledge_sources(owner_id,account_generation,source_id);
+CREATE FUNCTION core_knowledge_source_scope_default()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.owner_id IS NULL THEN
+        SELECT '__dirextalk_internal_knowledge__:' || agent_instance_id::text
+        INTO NEW.owner_id
+        FROM agent_instance_metadata
+        WHERE singleton;
+    END IF;
+    IF NEW.account_generation IS NULL THEN
+        NEW.account_generation := 1;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_knowledge_sources_scope_default
+BEFORE INSERT ON core_knowledge_sources
+FOR EACH ROW EXECUTE FUNCTION core_knowledge_source_scope_default();
+
+CREATE FUNCTION core_knowledge_source_scope_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id OR
+       NEW.account_generation IS DISTINCT FROM OLD.account_generation THEN
+        RAISE EXCEPTION 'Core Knowledge source owner scope is immutable'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_knowledge_sources_scope_immutable
+BEFORE UPDATE ON core_knowledge_sources
+FOR EACH ROW EXECUTE FUNCTION core_knowledge_source_scope_immutable();
+
+-- The ledger has remained locked since the first v3 statement. Recheck the
+-- admission fence and both candidate sets immediately after the authoritative
+-- entity scopes are durable, before installing the rolling-upgrade guard.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM agent_capability_operations
+        WHERE state IN ('pending','running')
+          AND agent_capability_operation_requires_v4_scope(capability_id,operation_name)
+    ) THEN
+        RAISE EXCEPTION 'nonterminal scoped capability operation blocks migration';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM core_execution_v2_secret_scope_candidates
+        GROUP BY secret_ref
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'late conflicting ExecutionV2 secret scope operation';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM core_knowledge_source_scope_candidates
+        GROUP BY source_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'late conflicting Core Knowledge scope operation';
+    END IF;
+END;
+$$;
+
+CREATE FUNCTION agent_capability_operation_result_json(value bytea)
+RETURNS jsonb
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $$
+BEGIN
+    RETURN convert_from(value,'UTF8')::jsonb;
+EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION agent_capability_operation_scope_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    result jsonb;
+    entity_id text;
+BEGIN
+    IF NEW.state <> 'completed' THEN
+        RETURN NEW;
+    END IF;
+    IF NEW.capability_id='agent.knowledge.v1'
+       AND NEW.operation_name IN ('create_memory','start_upload') THEN
+        result := agent_capability_operation_result_json(NEW.result_json);
+        entity_id := CASE NEW.operation_name
+            WHEN 'create_memory' THEN result #>> '{memory_id}'
+            WHEN 'start_upload' THEN result #>> '{source_id}'
+        END;
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1
+            FROM core_knowledge_sources source
+            WHERE source.source_id::text=entity_id
+              AND source.owner_id=NEW.owner_id
+              AND source.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed Knowledge operation owner scope does not match source'
+                USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.execution.v2'
+          AND NEW.operation_name='secrets_create' THEN
+        result := agent_capability_operation_result_json(NEW.result_json);
+        entity_id := result #>> '{secret,secret_ref}';
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1
+            FROM core_execution_v2_secrets secret
+            WHERE secret.secret_ref::text=entity_id
+              AND secret.owner_id=NEW.owner_id
+              AND secret.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed ExecutionV2 secret operation owner scope does not match secret'
+                USING ERRCODE='55000';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER agent_capability_operations_scope_guard
+BEFORE INSERT OR UPDATE ON agent_capability_operations
+FOR EACH ROW EXECUTE FUNCTION agent_capability_operation_scope_guard();
+
+-- The original Knowledge configuration and cursor snapshots were global.
+-- Quarantine those rows under the Agent instance, then make all future rows
+-- owner- and account-generation-scoped so an account replacement cannot see
+-- or overwrite the previous generation's semantic state.
+ALTER TABLE core_knowledge_embedding_config
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+UPDATE core_knowledge_embedding_config
+SET owner_id = '__dirextalk_internal_knowledge__:' || (SELECT agent_instance_id::text FROM agent_instance_metadata WHERE singleton),
+    account_generation = 1;
+ALTER TABLE core_knowledge_embedding_config
+    DROP CONSTRAINT core_knowledge_embedding_config_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_knowledge_embedding_config_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_knowledge_embedding_config_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_knowledge_embedding_config_pkey PRIMARY KEY (owner_id,account_generation);
+
+-- Every queued index job retains the exact vector dimension accepted with its
+-- profile/config binding. Legacy jobs can be recovered only from the v2
+-- singleton configuration; an unknown dimension is unsafe to guess.
+ALTER TABLE core_knowledge_index_jobs
+    ADD COLUMN embedding_dimension integer;
+UPDATE core_knowledge_index_jobs job
+SET embedding_dimension=config.dimension
+FROM core_knowledge_embedding_config config
+WHERE config.embedding_profile_id=job.profile_id;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM core_knowledge_index_jobs WHERE embedding_dimension IS NULL) THEN
+        RAISE EXCEPTION 'knowledge index job has no recoverable embedding dimension';
+    END IF;
+END;
+$$;
+ALTER TABLE core_knowledge_index_jobs
+    ALTER COLUMN embedding_dimension SET NOT NULL,
+    ADD CONSTRAINT core_knowledge_index_jobs_embedding_dimension_chk CHECK (embedding_dimension > 0 AND embedding_dimension <= 16384);
+UPDATE core_tasks task
+SET payload_json=jsonb_set(
+        task.payload_json,
+        '{knowledge_index,embedding_dimension}',
+        to_jsonb(job.embedding_dimension),
+        true
+    )
+FROM core_knowledge_index_jobs job
+WHERE task.task_id=job.task_id
+  AND task.task_kind='knowledge_index';
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_knowledge_index_jobs job
+        JOIN core_tasks task ON task.task_id=job.task_id
+        WHERE task.task_kind <> 'knowledge_index'
+           OR task.payload_json #>> '{knowledge_index,embedding_dimension}' <> job.embedding_dimension::text
+    ) THEN
+        RAISE EXCEPTION 'knowledge index task dimension does not match job';
+    END IF;
+END;
+$$;
+INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id)
+SELECT 'task',job.task_id,job.profile_id
+FROM core_knowledge_index_jobs job
+JOIN core_tasks task ON task.task_id=job.task_id
+WHERE job.status IN ('queued','running')
+  AND task.status IN ('queued','running')
+ON CONFLICT DO NOTHING;
+
+ALTER TABLE core_knowledge_list_snapshots
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+UPDATE core_knowledge_list_snapshots
+SET owner_id = '__dirextalk_internal_knowledge__:' || (SELECT agent_instance_id::text FROM agent_instance_metadata WHERE singleton),
+    account_generation = 1;
+ALTER TABLE core_knowledge_list_snapshots
+    DROP CONSTRAINT core_knowledge_list_snapshots_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_knowledge_list_snapshots_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_knowledge_list_snapshots_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_knowledge_list_snapshots_pkey PRIMARY KEY (owner_id,account_generation,snapshot_id);
+
+-- Chat request IDs are public idempotency keys. Keep the physical request_id
+-- globally unique for the existing execution graph, while scoping the public
+-- key by owner and account generation. New public rows use an owner-derived
+-- physical UUID; legacy rows remain addressable through idempotency_key.
+ALTER TABLE core_chat_request_leases
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_chat_request_scope_candidates ON COMMIT DROP AS
+WITH completed AS (
+    SELECT owner_id,account_generation,core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id='agent.chat.v1'
+      AND operation_name IN ('chat','stream_chat')
+      AND state='completed' AND result_json IS NOT NULL AND account_generation > 0
+)
+SELECT DISTINCT lease.request_id,completed.owner_id,completed.account_generation
+FROM completed
+JOIN core_chat_request_leases lease
+  ON lease.idempotency_key::text=COALESCE(completed.result #>> '{request_id}',completed.result #>> '{response,request_id}')
+WHERE lease.state='completed'
+  AND lease.response_json #>> '{conversation_id}'=COALESCE(completed.result #>> '{conversation_id}',completed.result #>> '{response,conversation_id}');
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM core_chat_request_scope_candidates
+        GROUP BY request_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Chat request ownership';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM agent_capability_operations completed
+        WHERE completed.capability_id='agent.chat.v1'
+          AND completed.operation_name IN ('chat','stream_chat')
+          AND completed.state='completed' AND completed.result_json IS NOT NULL
+          AND completed.account_generation > 0
+          AND NOT EXISTS (
+              SELECT 1
+              FROM core_chat_request_scope_candidates candidate
+              JOIN core_chat_request_leases lease ON lease.request_id=candidate.request_id
+              WHERE candidate.owner_id=completed.owner_id
+                AND candidate.account_generation=completed.account_generation
+                AND lease.idempotency_key::text=COALESCE(
+                    core_aws_try_legacy_result_json(completed.result_json) #>> '{request_id}',
+                    core_aws_try_legacy_result_json(completed.result_json) #>> '{response,request_id}'
+                )
+                AND lease.response_json #>> '{conversation_id}'=COALESCE(
+                    core_aws_try_legacy_result_json(completed.result_json) #>> '{conversation_id}',
+                    core_aws_try_legacy_result_json(completed.result_json) #>> '{response,conversation_id}'
+                )
+          )
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy completed Core Chat request graph';
+    END IF;
+END;
+$$;
+UPDATE core_chat_request_leases lease
+SET owner_id=candidate.owner_id,account_generation=candidate.account_generation
+FROM (
+    SELECT request_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_chat_request_scope_candidates GROUP BY request_id
+) candidate
+WHERE candidate.request_id=lease.request_id;
+
+-- Recover Conversation ownership only from completed public create/chat
+-- operations whose durable result graph names the same Conversation and
+-- authoritative Chat request lease.
+ALTER TABLE core_conversations
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_conversation_scope_candidates ON COMMIT DROP AS
+WITH completed AS (
+    SELECT operation_name,owner_id,account_generation,core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id='agent.chat.v1'
+      AND operation_name IN ('create_conversation','chat','stream_chat')
+      AND state='completed' AND result_json IS NOT NULL AND account_generation > 0
+), create_candidates AS (
+    SELECT conversation.conversation_id,completed.owner_id,completed.account_generation
+    FROM completed
+    JOIN core_conversations conversation
+      ON conversation.conversation_id::text=COALESCE(completed.result #>> '{conversation,conversation_id}',completed.result #>> '{conversation,id}')
+    WHERE completed.operation_name='create_conversation'
+), turn_candidates AS (
+    SELECT conversation.conversation_id,completed.owner_id,completed.account_generation
+    FROM completed
+    JOIN core_chat_request_leases lease
+      ON lease.idempotency_key::text=COALESCE(completed.result #>> '{request_id}',completed.result #>> '{response,request_id}')
+     AND lease.owner_id=completed.owner_id AND lease.account_generation=completed.account_generation
+     AND lease.state='completed'
+     AND lease.response_json #>> '{conversation_id}'=COALESCE(completed.result #>> '{conversation_id}',completed.result #>> '{response,conversation_id}')
+    JOIN core_conversations conversation
+      ON conversation.conversation_id::text=COALESCE(completed.result #>> '{conversation_id}',completed.result #>> '{response,conversation_id}')
+    WHERE completed.operation_name IN ('chat','stream_chat')
+)
+SELECT DISTINCT conversation_id,owner_id,account_generation FROM create_candidates
+UNION
+SELECT DISTINCT conversation_id,owner_id,account_generation FROM turn_candidates;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM core_conversation_scope_candidates
+        GROUP BY conversation_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Conversation ownership';
+    END IF;
+END;
+$$;
+UPDATE core_conversations conversation
+SET owner_id=candidate.owner_id,account_generation=candidate.account_generation
+FROM (
+    SELECT conversation_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_conversation_scope_candidates GROUP BY conversation_id
+) candidate
+WHERE candidate.conversation_id=conversation.conversation_id;
+UPDATE core_conversations
+SET owner_id=COALESCE(owner_id,'__dirextalk_internal_conversation__:' || conversation_id::text),
+    account_generation=COALESCE(account_generation,1);
+ALTER TABLE core_conversations
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_conversations_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_conversations_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_conversations_owner_key UNIQUE(owner_id,account_generation,conversation_id);
+CREATE INDEX core_conversations_owner_idx ON core_conversations(owner_id,account_generation,updated_at DESC,conversation_id);
+CREATE FUNCTION core_conversation_scope_default()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.owner_id IS NULL THEN NEW.owner_id := '__dirextalk_internal_conversation__:' || NEW.conversation_id::text; END IF;
+    IF NEW.account_generation IS NULL THEN NEW.account_generation := 1; END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_conversations_scope_default BEFORE INSERT ON core_conversations
+FOR EACH ROW EXECUTE FUNCTION core_conversation_scope_default();
+CREATE FUNCTION core_conversation_scope_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id OR NEW.account_generation IS DISTINCT FROM OLD.account_generation THEN
+        RAISE EXCEPTION 'Core Conversation owner scope is immutable' USING ERRCODE='55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_conversations_scope_immutable BEFORE UPDATE ON core_conversations
+FOR EACH ROW EXECUTE FUNCTION core_conversation_scope_immutable();
+
+ALTER TABLE core_conversation_turns
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+UPDATE core_conversation_turns turn
+SET owner_id=conversation.owner_id,account_generation=conversation.account_generation
+FROM core_conversations conversation
+WHERE conversation.conversation_id=turn.conversation_id;
+UPDATE core_conversation_turns
+SET owner_id=COALESCE(owner_id,'__dirextalk_internal_conversation_turn__:' || turn_id::text),
+    account_generation=COALESCE(account_generation,1);
+ALTER TABLE core_conversation_turns
+    DROP CONSTRAINT core_conversation_turns_request_id_key,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_conversation_turns_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_conversation_turns_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_conversation_turns_owner_request_key UNIQUE(owner_id,account_generation,request_id),
+    ADD CONSTRAINT core_conversation_turns_owner_key UNIQUE(owner_id,account_generation,turn_id);
+CREATE INDEX core_conversation_turns_owner_idx ON core_conversation_turns(owner_id,account_generation,conversation_id,created_at,turn_id);
+CREATE FUNCTION core_conversation_turn_scope_default()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.owner_id IS NULL THEN
+        SELECT owner_id,account_generation INTO NEW.owner_id,NEW.account_generation
+        FROM core_conversations WHERE conversation_id=NEW.conversation_id;
+    END IF;
+    IF NEW.owner_id IS NULL THEN NEW.owner_id := '__dirextalk_internal_conversation_turn__:' || NEW.turn_id::text; END IF;
+    IF NEW.account_generation IS NULL THEN NEW.account_generation := 1; END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_conversation_turns_scope_default BEFORE INSERT ON core_conversation_turns
+FOR EACH ROW EXECUTE FUNCTION core_conversation_turn_scope_default();
+
+-- Model Profiles are account-generation scoped. The old singleton defaults
+-- projection is rebuilt as one row per recovered owner scope.
+ALTER TABLE core_model_profiles
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_model_profile_scope_candidates ON COMMIT DROP AS
+WITH completed AS (
+    SELECT operation_name,owner_id,account_generation,core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id='agent.models.v1'
+      AND operation_name IN ('create_model','sync_models')
+      AND state='completed' AND result_json IS NOT NULL AND account_generation > 0
+), create_candidates AS (
+    SELECT profile.profile_id,completed.owner_id,completed.account_generation
+    FROM completed JOIN core_model_profiles profile ON profile.profile_id::text=completed.result #>> '{id}'
+    WHERE completed.operation_name='create_model'
+), sync_candidates AS (
+    SELECT profile.profile_id,completed.owner_id,completed.account_generation
+    FROM completed
+    JOIN LATERAL jsonb_array_elements(COALESCE(completed.result->'profiles','[]'::jsonb)) entry ON true
+    JOIN core_model_profiles profile
+      ON profile.profile_id::text=entry #>> '{id}'
+     AND COALESCE(profile.client_profile_id,'')=COALESCE(entry #>> '{client_profile_id}','')
+    WHERE completed.operation_name='sync_models'
+)
+SELECT DISTINCT profile_id,owner_id,account_generation FROM create_candidates
+UNION
+SELECT DISTINCT profile_id,owner_id,account_generation FROM sync_candidates;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM core_model_profile_scope_candidates
+        GROUP BY profile_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Model Profile ownership';
+    END IF;
+END;
+$$;
+UPDATE core_model_profiles profile
+SET owner_id=candidate.owner_id,account_generation=candidate.account_generation
+FROM (
+    SELECT profile_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_model_profile_scope_candidates GROUP BY profile_id
+) candidate
+WHERE candidate.profile_id=profile.profile_id;
+UPDATE core_model_profiles
+SET owner_id=COALESCE(owner_id,(
+        SELECT '__dirextalk_internal_legacy_models__:' || agent_instance_id::text
+        FROM agent_instance_metadata WHERE singleton
+    )),
+    account_generation=COALESCE(account_generation,1);
+
+CREATE TEMP TABLE core_model_profile_defaults_legacy ON COMMIT DROP AS
+SELECT default_client_profile_id,default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at
+FROM core_model_profile_defaults;
+DROP TABLE core_model_profile_defaults;
+ALTER TABLE core_model_profiles DROP CONSTRAINT core_model_profiles_client_profile_id_uq;
+ALTER TABLE core_model_profiles
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_model_profiles_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_model_profiles_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_model_profiles_owner_key UNIQUE(owner_id,account_generation,profile_id),
+    ADD CONSTRAINT core_model_profiles_owner_client_key UNIQUE(owner_id,account_generation,client_profile_id);
+CREATE INDEX core_model_profiles_owner_idx ON core_model_profiles(owner_id,account_generation,created_at,profile_id) WHERE deleted_at IS NULL;
+CREATE FUNCTION core_model_profile_scope_default()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.owner_id IS NULL THEN NEW.owner_id := '__dirextalk_internal_model_profile__:' || NEW.profile_id::text; END IF;
+    IF NEW.account_generation IS NULL THEN NEW.account_generation := 1; END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_model_profiles_scope_default BEFORE INSERT ON core_model_profiles
+FOR EACH ROW EXECUTE FUNCTION core_model_profile_scope_default();
+CREATE FUNCTION core_model_profile_scope_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id OR NEW.account_generation IS DISTINCT FROM OLD.account_generation THEN
+        RAISE EXCEPTION 'Core Model Profile owner scope is immutable' USING ERRCODE='55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_model_profiles_scope_immutable BEFORE UPDATE ON core_model_profiles
+FOR EACH ROW EXECUTE FUNCTION core_model_profile_scope_immutable();
+
+-- Failed Chat operations have no public result body, so recover their durable
+-- lease scope from the now-authoritative Conversation and Model Profile graph.
+-- Include completed-operation candidates too so disagreement between any two
+-- authoritative relationships aborts the migration instead of quarantining a
+-- public idempotency record and allowing a duplicate provider call.
+CREATE TEMP TABLE core_chat_request_terminal_scope_candidates ON COMMIT DROP AS
+SELECT lease.request_id,lease.owner_id,lease.account_generation
+FROM core_chat_request_leases lease
+WHERE lease.owner_id IS NOT NULL AND lease.account_generation IS NOT NULL
+UNION
+SELECT lease.request_id,conversation.owner_id,conversation.account_generation
+FROM core_chat_request_leases lease
+JOIN core_conversations conversation ON conversation.conversation_id=lease.conversation_id
+WHERE conversation.owner_id NOT LIKE '__dirextalk_internal_%'
+UNION
+SELECT lease.request_id,profile.owner_id,profile.account_generation
+FROM core_chat_request_leases lease
+JOIN core_model_profiles profile ON profile.profile_id=lease.profile_id
+WHERE profile.owner_id NOT LIKE '__dirextalk_internal_%';
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM core_chat_request_terminal_scope_candidates
+        GROUP BY request_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy terminal Core Chat request ownership';
+    END IF;
+END;
+$$;
+UPDATE core_chat_request_leases lease
+SET owner_id=candidate.owner_id,account_generation=candidate.account_generation
+FROM (
+    SELECT request_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_chat_request_terminal_scope_candidates GROUP BY request_id
+) candidate
+WHERE candidate.request_id=lease.request_id
+  AND lease.owner_id IS NULL AND lease.account_generation IS NULL;
+UPDATE core_chat_request_leases
+SET owner_id=COALESCE(owner_id,'__dirextalk_internal_chat_request__:' || idempotency_key::text),
+    account_generation=COALESCE(account_generation,1);
+ALTER TABLE core_chat_request_leases
+    DROP CONSTRAINT core_chat_request_leases_idempotency_key_key,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_chat_request_leases_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_chat_request_leases_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_chat_request_leases_owner_idempotency_key UNIQUE(owner_id,account_generation,idempotency_key);
+CREATE INDEX core_chat_request_leases_owner_idx ON core_chat_request_leases(owner_id,account_generation,created_at,request_id);
+CREATE FUNCTION core_chat_request_scope_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id OR NEW.account_generation IS DISTINCT FROM OLD.account_generation THEN
+        RAISE EXCEPTION 'Core Chat request owner scope is immutable' USING ERRCODE='55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_chat_request_scope_immutable BEFORE UPDATE ON core_chat_request_leases
+FOR EACH ROW EXECUTE FUNCTION core_chat_request_scope_immutable();
+
+CREATE TEMP TABLE core_model_defaults_scope_candidates ON COMMIT DROP AS
+SELECT legacy.updated_at,profile.owner_id,profile.account_generation
+FROM core_model_profile_defaults_legacy legacy
+JOIN LATERAL (VALUES
+    (legacy.default_client_profile_id),
+    (legacy.default_conversation_client_profile_id),
+    (legacy.default_embedding_client_profile_id),
+    (legacy.default_speech_client_profile_id)
+) value(client_profile_id) ON value.client_profile_id IS NOT NULL
+JOIN core_model_profiles profile ON profile.client_profile_id=value.client_profile_id;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM core_model_defaults_scope_candidates
+        GROUP BY updated_at HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Model Profile defaults ownership';
+    END IF;
+END;
+$$;
+CREATE TABLE core_model_profile_defaults (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    default_client_profile_id text,
+    default_conversation_client_profile_id text,
+    default_embedding_client_profile_id text,
+    default_speech_client_profile_id text,
+    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY(owner_id,account_generation),
+    FOREIGN KEY(owner_id,account_generation,default_client_profile_id) REFERENCES core_model_profiles(owner_id,account_generation,client_profile_id),
+    FOREIGN KEY(owner_id,account_generation,default_conversation_client_profile_id) REFERENCES core_model_profiles(owner_id,account_generation,client_profile_id),
+    FOREIGN KEY(owner_id,account_generation,default_embedding_client_profile_id) REFERENCES core_model_profiles(owner_id,account_generation,client_profile_id),
+    FOREIGN KEY(owner_id,account_generation,default_speech_client_profile_id) REFERENCES core_model_profiles(owner_id,account_generation,client_profile_id)
+);
+INSERT INTO core_model_profile_defaults(owner_id,account_generation,default_client_profile_id,default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at)
+SELECT COALESCE(candidate.owner_id,'__dirextalk_internal_model_defaults__:legacy'),
+       COALESCE(candidate.account_generation,1),
+       legacy.default_client_profile_id,legacy.default_conversation_client_profile_id,
+       legacy.default_embedding_client_profile_id,legacy.default_speech_client_profile_id,legacy.updated_at
+FROM core_model_profile_defaults_legacy legacy
+LEFT JOIN (
+    SELECT updated_at,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_model_defaults_scope_candidates GROUP BY updated_at
+) candidate ON candidate.updated_at=legacy.updated_at;
+
+-- Conversation and Model mutations share the legacy replay table, but each
+-- public raw key is isolated by authenticated owner account generation.
+ALTER TABLE core_mutation_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_mutation_replay_scope_candidates ON COMMIT DROP AS
+WITH entity_candidates AS (
+    SELECT replay.operation,replay.idempotency_key,conversation.owner_id,conversation.account_generation
+    FROM core_mutation_replays replay
+    JOIN core_conversations conversation ON conversation.conversation_id::text=CASE replay.operation
+        WHEN 'conversation.create' THEN replay.response_json #>> '{Conversation,id}'
+        WHEN 'conversation.rename' THEN replay.response_json #>> '{Conversation,id}'
+        WHEN 'conversation.delete' THEN replay.response_json #>> '{Conversation,id}'
+        WHEN 'conversation.context.compress' THEN replay.response_json #>> '{id}'
+    END
+    WHERE replay.operation LIKE 'conversation.%'
+    UNION ALL
+    SELECT replay.operation,replay.idempotency_key,profile.owner_id,profile.account_generation
+    FROM core_mutation_replays replay
+    JOIN core_model_profiles profile ON profile.profile_id::text=replay.response_json #>> '{Profile,id}'
+    WHERE replay.operation IN ('model_profile.create','model_profile.update','model_profile.delete')
+    UNION ALL
+    SELECT replay.operation,replay.idempotency_key,profile.owner_id,profile.account_generation
+    FROM core_mutation_replays replay
+    JOIN LATERAL jsonb_array_elements(COALESCE(replay.response_json->'profiles','[]'::jsonb)) entry ON true
+    JOIN core_model_profiles profile ON profile.profile_id::text=entry #>> '{id}'
+    WHERE replay.operation='model_profile.sync'
+), operation_candidates AS (
+    SELECT replay.operation,replay.idempotency_key,completed.owner_id,completed.account_generation
+    FROM core_mutation_replays replay
+    JOIN LATERAL (
+        SELECT operation_name,owner_id,account_generation,core_aws_try_legacy_result_json(result_json) AS result
+        FROM agent_capability_operations
+        WHERE state='completed' AND result_json IS NOT NULL AND account_generation > 0
+          AND capability_id IN ('agent.chat.v1','agent.models.v1')
+    ) completed ON true
+    WHERE replay.operation = CASE completed.operation_name
+        WHEN 'create_conversation' THEN 'conversation.create'
+        WHEN 'rename_conversation' THEN 'conversation.rename'
+        WHEN 'delete_conversation' THEN 'conversation.delete'
+        WHEN 'compress_context' THEN 'conversation.context.compress'
+        WHEN 'create_model' THEN 'model_profile.create'
+        WHEN 'update_model' THEN 'model_profile.update'
+        WHEN 'delete_model' THEN 'model_profile.delete'
+        WHEN 'sync_models' THEN 'model_profile.sync'
+    END
+      AND (
+          COALESCE(replay.response_json #>> '{Conversation,id}',replay.response_json #>> '{id}') = COALESCE(completed.result #>> '{conversation,id}',completed.result #>> '{id}')
+          OR replay.response_json #>> '{Profile,id}' = completed.result #>> '{id}'
+          OR replay.response_json = completed.result
+      )
+)
+SELECT DISTINCT operation,idempotency_key,owner_id,account_generation FROM entity_candidates
+UNION
+SELECT DISTINCT operation,idempotency_key,owner_id,account_generation FROM operation_candidates;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM core_mutation_replay_scope_candidates
+        GROUP BY operation,idempotency_key
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core mutation replay ownership';
+    END IF;
+END;
+$$;
+UPDATE core_mutation_replays replay
+SET owner_id=candidate.owner_id,account_generation=candidate.account_generation
+FROM (
+    SELECT operation,idempotency_key,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_mutation_replay_scope_candidates GROUP BY operation,idempotency_key
+) candidate
+WHERE candidate.operation=replay.operation AND candidate.idempotency_key=replay.idempotency_key;
+UPDATE core_mutation_replays
+SET owner_id=COALESCE(owner_id,'__dirextalk_internal_mutation_replay__:' || idempotency_key::text),
+    account_generation=COALESCE(account_generation,1);
+ALTER TABLE core_mutation_replays
+    DROP CONSTRAINT core_mutation_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_mutation_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_mutation_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_mutation_replays_pkey PRIMARY KEY(owner_id,account_generation,operation,idempotency_key);
+
+-- Every public Task and its Confirmation inherit one immutable account scope.
+-- Recover historical public ownership from the redacted Capability result
+-- ledger. Rows with no durable public provenance receive a unique reserved
+-- quarantine owner, never one shared principal. Internal Core RPC/runtime
+-- callers remain owner-neutral and do not use this public scope projection.
+CREATE TABLE core_task_scopes (
+    task_id uuid PRIMARY KEY REFERENCES core_tasks(task_id) ON DELETE CASCADE,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX core_task_scopes_owner_idx ON core_task_scopes(owner_id,account_generation,task_id);
+
+CREATE TEMP TABLE core_task_scope_candidates ON COMMIT DROP AS
+WITH completed_operations AS (
+    SELECT operation_name,
+           owner_id,
+           account_generation,
+           core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id = 'agent.tasks.v1'
+      AND operation_name IN ('create_task','retry_task')
+      AND state = 'completed'
+      AND result_json IS NOT NULL
+      AND account_generation > 0
+), completed_extension_operations AS (
+    SELECT operation_name,
+           owner_id,
+           account_generation,
+           core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id = 'agent.skills.v1'
+      AND operation_name IN ('install_skill','install_mcp','update_skill','update_mcp','remove_skill','remove_mcp')
+      AND state = 'completed'
+      AND result_json IS NOT NULL
+      AND account_generation > 0
+), direct_task_candidates AS (
+    SELECT completed.result #>> '{id}' AS task_id,
+           completed.owner_id,
+           completed.account_generation
+    FROM completed_operations completed
+    JOIN core_tasks task ON task.task_id::text = completed.result #>> '{id}'
+    WHERE completed.result IS NOT NULL
+      AND task.task_kind = 'agent'
+      AND (
+          (completed.operation_name = 'create_task' AND task.retry_of_task_id IS NULL)
+          OR (completed.operation_name = 'retry_task' AND task.retry_of_task_id IS NOT NULL)
+      )
+), schedule_task_candidates AS (
+    SELECT occurrence.task_id::text AS task_id,
+           schedule.owner_id,
+           schedule.account_generation
+    FROM core_schedule_occurrences occurrence
+    JOIN core_schedules schedule ON schedule.schedule_id = occurrence.schedule_id
+    JOIN core_tasks task ON task.task_id = occurrence.task_id
+), knowledge_task_candidates AS (
+    SELECT job.task_id::text AS task_id,
+           min(source.owner_id) AS owner_id,
+           min(source.account_generation) AS account_generation
+    FROM core_knowledge_index_jobs job
+    JOIN core_tasks task ON task.task_id = job.task_id
+       AND task.task_kind = 'knowledge_index'
+       AND task.payload_json #> '{knowledge_index,source_ids}' = job.source_ids
+    JOIN LATERAL jsonb_array_elements_text(job.source_ids) source_entry(source_id) ON true
+    JOIN core_knowledge_sources source ON source.source_id::text = source_entry.source_id
+    GROUP BY job.task_id,job.source_ids
+    HAVING count(*) = jsonb_array_length(job.source_ids)
+       AND count(DISTINCT (source.owner_id,source.account_generation)) = 1
+), aws_task_candidates AS (
+    SELECT change.task_id::text AS task_id,
+           plan.owner_id,
+           plan.account_generation
+    FROM core_aws_changes change
+    JOIN core_aws_plans plan ON plan.plan_id = change.plan_id
+       AND plan.credential_id = change.credential_id
+    JOIN core_aws_credentials credential ON credential.credential_id = change.credential_id
+       AND credential.owner_id = plan.owner_id
+       AND credential.account_generation = plan.account_generation
+    JOIN core_tasks task ON task.task_id = change.task_id
+       AND task.payload_json #>> '{aws_change,change_id}' = change.change_id::text
+    JOIN core_confirmations confirmation ON confirmation.confirmation_id = change.confirmation_id
+       AND confirmation.task_id = task.task_id
+    JOIN core_confirmation_target_bindings target_binding ON target_binding.confirmation_id = confirmation.confirmation_id
+    WHERE confirmation.binding_json = target_binding.binding_json
+      AND confirmation.operation_domain = confirmation.binding_json #>> '{OperationDomain}'
+      AND confirmation.target_id = confirmation.binding_json #>> '{TargetID}'
+      AND confirmation.target_revision::text = confirmation.binding_json #>> '{TargetRevision}'
+      AND COALESCE(confirmation.binding_json #>> '{OwnerID}','') IN ('',plan.owner_id)
+), extension_task_candidates AS (
+    SELECT lifecycle.task_id::text AS task_id,
+           completed.owner_id,
+           completed.account_generation
+    FROM completed_extension_operations completed
+    JOIN core_extension_lifecycles lifecycle
+      ON lifecycle.task_id::text = completed.result #>> '{task_id}'
+     AND lifecycle.confirmation_id::text = completed.result #>> '{confirmation_id}'
+     AND lifecycle.installation_id::text = completed.result #>> '{installation,id}'
+    JOIN core_extension_installations installation
+      ON installation.installation_id = lifecycle.installation_id
+     AND installation.revision = (completed.result #>> '{installation,revision}')::bigint
+    JOIN core_tasks task
+      ON task.task_id = lifecycle.task_id
+     AND task.task_kind = 'extension'
+     AND task.payload_json #>> '{extension,installation_id}' = lifecycle.installation_id::text
+     AND task.payload_json #>> '{extension,confirmation_id}' = lifecycle.confirmation_id::text
+    JOIN core_confirmations confirmation
+      ON confirmation.confirmation_id = lifecycle.confirmation_id
+     AND confirmation.task_id = lifecycle.task_id
+     AND confirmation.operation_domain = 'extension'
+     AND confirmation.target_id = lifecycle.installation_id::text
+     AND confirmation.target_revision = lifecycle.expected_revision
+    JOIN core_confirmation_target_bindings target_binding
+      ON target_binding.confirmation_id = confirmation.confirmation_id
+     AND target_binding.binding_json = confirmation.binding_json
+     AND lifecycle.binding_json = confirmation.binding_json
+    WHERE completed.result IS NOT NULL
+      AND confirmation.operation_domain = confirmation.binding_json #>> '{OperationDomain}'
+      AND confirmation.target_id = confirmation.binding_json #>> '{TargetID}'
+      AND confirmation.target_revision::text = confirmation.binding_json #>> '{TargetRevision}'
+      AND lifecycle.operation = CASE completed.operation_name
+          WHEN 'install_skill' THEN 'install'
+          WHEN 'install_mcp' THEN 'install'
+          WHEN 'update_skill' THEN 'update'
+          WHEN 'update_mcp' THEN 'update'
+          WHEN 'remove_skill' THEN 'uninstall'
+          WHEN 'remove_mcp' THEN 'uninstall'
+      END
+)
+SELECT DISTINCT task_id,owner_id,account_generation FROM direct_task_candidates
+UNION
+SELECT DISTINCT task_id,owner_id,account_generation FROM schedule_task_candidates
+UNION
+SELECT DISTINCT task_id,owner_id,account_generation FROM knowledge_task_candidates
+UNION
+SELECT DISTINCT task_id,owner_id,account_generation FROM aws_task_candidates
+UNION
+SELECT DISTINCT task_id,owner_id,account_generation FROM extension_task_candidates;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_task_scope_candidates
+        GROUP BY task_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Task ownership';
+    END IF;
+END;
+$$;
+
+INSERT INTO core_task_scopes(task_id,owner_id,account_generation,created_at)
+SELECT task.task_id,
+       COALESCE(candidate.owner_id,'__dirextalk_internal_legacy_task__:' || task.task_id::text),
+       COALESCE(candidate.account_generation,1),
+       task.created_at
+FROM core_tasks task
+LEFT JOIN (
+    SELECT task_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_task_scope_candidates
+    GROUP BY task_id
+) candidate ON candidate.task_id = task.task_id::text;
+
+-- An Extension installation is owned by the same account generation as every
+-- lifecycle Task that can mutate it. Legacy installations without a public
+-- lifecycle provenance remain isolated behind a per-installation reserved
+-- owner instead of becoming visible to the next authenticated account.
+ALTER TABLE core_extension_installations
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+CREATE TEMP TABLE core_extension_installation_scope_candidates ON COMMIT DROP AS
+SELECT DISTINCT lifecycle.installation_id,
+       scope.owner_id,
+       scope.account_generation
+FROM core_extension_lifecycles lifecycle
+JOIN core_task_scopes scope ON scope.task_id = lifecycle.task_id
+WHERE scope.owner_id NOT LIKE '__dirextalk_internal_%';
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_extension_installation_scope_candidates
+        GROUP BY installation_id
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Extension installation ownership';
+    END IF;
+END;
+$$;
+UPDATE core_extension_installations installation
+SET owner_id = candidate.owner_id,
+    account_generation = candidate.account_generation
+FROM (
+    SELECT installation_id,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_extension_installation_scope_candidates
+    GROUP BY installation_id
+) candidate
+WHERE candidate.installation_id = installation.installation_id;
+UPDATE core_extension_installations
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_extension__:' || installation_id::text),
+    account_generation = COALESCE(account_generation,1);
+-- Every lifecycle Task in one installation component inherits that component's
+-- recovered scope. This also aligns owner-neutral legacy lifecycle workers
+-- with the installation before Task and Confirmation replay receipts migrate.
+UPDATE core_task_scopes scope
+SET owner_id = installation.owner_id,
+    account_generation = installation.account_generation
+FROM core_extension_lifecycles lifecycle
+JOIN core_extension_installations installation ON installation.installation_id = lifecycle.installation_id
+WHERE scope.task_id = lifecycle.task_id;
+ALTER TABLE core_extension_installations
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_extension_installations_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_extension_installations_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_extension_installations_owner_key UNIQUE (owner_id,account_generation,installation_id);
+CREATE INDEX core_extension_installations_owner_idx ON core_extension_installations(owner_id,account_generation,installation_id);
+CREATE FUNCTION core_extension_installation_scope_default()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.owner_id IS NULL THEN
+        NEW.owner_id := '__dirextalk_internal_extension__:' || NEW.installation_id::text;
+    END IF;
+    IF NEW.account_generation IS NULL THEN
+        NEW.account_generation := 1;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_extension_installations_scope_default
+BEFORE INSERT ON core_extension_installations
+FOR EACH ROW EXECUTE FUNCTION core_extension_installation_scope_default();
+CREATE FUNCTION core_extension_installation_scope_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.account_generation IS DISTINCT FROM OLD.account_generation THEN
+        RAISE EXCEPTION 'Core Extension installation owner scope is immutable' USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_extension_installations_scope_immutable
+BEFORE UPDATE ON core_extension_installations
+FOR EACH ROW EXECUTE FUNCTION core_extension_installation_scope_immutable();
+
+-- Preserve v1 caller replay identities while making Task and Confirmation
+-- receipts account-generation scoped. Public receipts inherit the validated
+-- owner of their durable result object. Owner-neutral internal receipts move
+-- into a reserved key-specific namespace so they remain replayable without
+-- becoming reachable from an authenticated public context.
+ALTER TABLE core_task_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_task_replays replay
+        LEFT JOIN core_tasks task
+          ON task.task_id::text = COALESCE(replay.response_json #>> '{id}', replay.response_json #>> '{task_id}')
+        WHERE task.task_id IS NULL
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Task replay target';
+    END IF;
+END;
+$$;
+UPDATE core_task_replays replay
+SET owner_id = scope.owner_id,
+    account_generation = scope.account_generation
+FROM core_task_scopes scope
+WHERE scope.task_id::text = COALESCE(replay.response_json #>> '{id}', replay.response_json #>> '{task_id}')
+  AND scope.owner_id NOT LIKE '__dirextalk_internal_%';
+UPDATE core_task_replays
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_task_replay__:' || idempotency_key::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_task_replays
+    DROP CONSTRAINT core_task_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_task_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_task_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_task_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key);
+
+ALTER TABLE core_confirmation_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_confirmation_replays replay
+        LEFT JOIN core_confirmations confirmation
+          ON confirmation.confirmation_id::text = COALESCE(
+              replay.response_json #>> '{ConfirmationID}',
+              replay.response_json #>> '{Confirmation,ConfirmationID}'
+          )
+        WHERE confirmation.confirmation_id IS NULL
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Confirmation replay target';
+    END IF;
+END;
+$$;
+UPDATE core_confirmation_replays replay
+SET owner_id = scope.owner_id,
+    account_generation = scope.account_generation
+FROM core_confirmations confirmation
+JOIN core_task_scopes scope ON scope.task_id = confirmation.task_id
+WHERE confirmation.confirmation_id::text = COALESCE(
+        replay.response_json #>> '{ConfirmationID}',
+        replay.response_json #>> '{Confirmation,ConfirmationID}'
+    )
+  AND scope.owner_id NOT LIKE '__dirextalk_internal_%';
+UPDATE core_confirmation_replays
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_confirmation_replay__:' || idempotency_key::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_confirmation_replays
+    DROP CONSTRAINT core_confirmation_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_confirmation_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_confirmation_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_confirmation_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key);
+
+ALTER TABLE core_schedule_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_schedule_replays replay
+        LEFT JOIN core_schedules schedule ON schedule.schedule_id = replay.schedule_id
+        WHERE schedule.schedule_id IS NULL
+           OR schedule.schedule_id::text <> COALESCE(
+                replay.response_json #>> '{id}',
+                replay.response_json #>> '{schedule,id}'
+           )
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Schedule replay target';
+    END IF;
+	IF EXISTS (
+		SELECT 1
+		FROM core_schedule_replays replay
+		WHERE replay.operation = 'trigger_now'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM core_schedule_occurrences occurrence
+			JOIN core_tasks task ON task.task_id = occurrence.task_id
+			WHERE occurrence.schedule_id = replay.schedule_id
+			  AND occurrence.occurrence_id::text = replay.response_json #>> '{occurrence,id}'
+			  AND occurrence.schedule_id::text = replay.response_json #>> '{occurrence,schedule_id}'
+			  AND occurrence.task_id::text = replay.response_json #>> '{occurrence,task_id}'
+			  AND task.task_id::text = replay.response_json #>> '{task,id}'
+		  )
+	) THEN
+		RAISE EXCEPTION 'unrecoverable legacy Core Schedule trigger replay graph';
+	END IF;
+END;
+$$;
+UPDATE core_schedule_replays replay
+SET owner_id = schedule.owner_id,
+    account_generation = schedule.account_generation
+FROM core_schedules schedule
+WHERE schedule.schedule_id = replay.schedule_id
+  AND schedule.owner_id NOT LIKE '__dirextalk_internal_%';
+UPDATE core_schedule_replays
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_schedule_replay__:' || idempotency_key::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_schedule_replays
+    DROP CONSTRAINT core_schedule_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_schedule_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_schedule_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_schedule_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key);
+
+ALTER TABLE core_knowledge_mutation_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_knowledge_mutation_replays replay
+        LEFT JOIN core_knowledge_sources source ON source.source_id::text = COALESCE(
+            NULLIF(replay.response_json #>> '{source,ID}',''),
+            NULLIF(replay.response_json #>> '{upload,SourceID}',''),
+            NULLIF(replay.response_json #>> '{pair,source,ID}',''),
+            NULLIF(replay.response_json #>> '{pair,upload,SourceID}','')
+        )
+        WHERE COALESCE(
+            NULLIF(replay.response_json #>> '{source,ID}',''),
+            NULLIF(replay.response_json #>> '{upload,SourceID}',''),
+            NULLIF(replay.response_json #>> '{pair,source,ID}',''),
+            NULLIF(replay.response_json #>> '{pair,upload,SourceID}','')
+        ) IS NOT NULL
+          AND source.source_id IS NULL
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Knowledge replay target';
+    END IF;
+	IF EXISTS (
+		SELECT 1
+		FROM core_knowledge_mutation_replays replay
+		WHERE replay.operation IN ('upload.start','upload.chunk','upload.abort')
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM core_knowledge_uploads upload
+			JOIN core_knowledge_sources source ON source.source_id = upload.source_id
+			WHERE upload.upload_id::text = replay.response_json #>> '{upload,ID}'
+			  AND upload.source_id::text = replay.response_json #>> '{upload,SourceID}'
+		  )
+	) THEN
+		RAISE EXCEPTION 'unrecoverable legacy Core Knowledge upload replay graph';
+	END IF;
+	IF EXISTS (
+		SELECT 1
+		FROM core_knowledge_mutation_replays replay
+		WHERE replay.operation = 'upload.commit'
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM core_knowledge_uploads upload
+			JOIN core_knowledge_sources source ON source.source_id = upload.source_id
+			WHERE upload.upload_id::text = replay.response_json #>> '{pair,upload,ID}'
+			  AND upload.source_id::text = replay.response_json #>> '{pair,upload,SourceID}'
+			  AND source.source_id::text = replay.response_json #>> '{pair,source,ID}'
+		  )
+	) THEN
+		RAISE EXCEPTION 'unrecoverable legacy Core Knowledge commit replay graph';
+	END IF;
+END;
+$$;
+UPDATE core_knowledge_mutation_replays replay
+SET owner_id = source.owner_id,
+    account_generation = source.account_generation
+FROM core_knowledge_sources source
+WHERE source.source_id::text = COALESCE(
+        NULLIF(replay.response_json #>> '{source,ID}',''),
+        NULLIF(replay.response_json #>> '{upload,SourceID}',''),
+        NULLIF(replay.response_json #>> '{pair,source,ID}',''),
+        NULLIF(replay.response_json #>> '{pair,upload,SourceID}','')
+    )
+  AND source.owner_id NOT LIKE '__dirextalk_internal_%';
+UPDATE core_knowledge_mutation_replays
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_knowledge_replay__:' || idempotency_key::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_knowledge_mutation_replays
+    DROP CONSTRAINT core_knowledge_mutation_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_knowledge_mutation_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_knowledge_mutation_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_knowledge_mutation_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key);
+
+ALTER TABLE core_knowledge_index_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_knowledge_index_replays replay
+        WHERE replay.task_id::text <> replay.response_json #>> '{TaskID}'
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Knowledge index replay target';
+    END IF;
+END;
+$$;
+UPDATE core_knowledge_index_replays replay
+SET owner_id = scope.owner_id,
+    account_generation = scope.account_generation
+FROM core_task_scopes scope
+WHERE scope.task_id = replay.task_id
+  AND scope.owner_id NOT LIKE '__dirextalk_internal_%';
+UPDATE core_knowledge_index_replays
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_knowledge_index_replay__:' || idempotency_key::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_knowledge_index_replays
+    DROP CONSTRAINT core_knowledge_index_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_knowledge_index_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_knowledge_index_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_knowledge_index_replays_pkey PRIMARY KEY (owner_id,account_generation,idempotency_key);
+
+ALTER TABLE core_extension_replays
+    ADD COLUMN owner_id text,
+    ADD COLUMN account_generation bigint;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_extension_replays replay
+        WHERE replay.operation IN ('install','update','uninstall')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM core_extension_lifecycles lifecycle
+              JOIN core_extension_installations installation
+                ON installation.installation_id = lifecycle.installation_id
+              JOIN core_tasks task
+                ON task.task_id = lifecycle.task_id
+               AND task.task_kind = 'extension'
+               AND task.payload_json #>> '{extension,installation_id}' = lifecycle.installation_id::text
+               AND task.payload_json #>> '{extension,confirmation_id}' = lifecycle.confirmation_id::text
+              JOIN core_confirmations confirmation
+                ON confirmation.confirmation_id = lifecycle.confirmation_id
+               AND confirmation.task_id = lifecycle.task_id
+               AND confirmation.operation_domain = 'extension'
+               AND confirmation.target_id = lifecycle.installation_id::text
+               AND confirmation.target_revision = lifecycle.expected_revision
+              JOIN core_confirmation_target_bindings target_binding
+                ON target_binding.confirmation_id = confirmation.confirmation_id
+               AND target_binding.binding_json = confirmation.binding_json
+               AND lifecycle.binding_json = confirmation.binding_json
+              WHERE lifecycle.operation = replay.operation
+                AND lifecycle.installation_id::text = replay.response_json #>> '{installation,id}'
+                AND lifecycle.expected_revision::text = replay.response_json #>> '{installation,revision}'
+                AND lifecycle.confirmation_id::text = replay.response_json #>> '{confirmation_id}'
+                AND lifecycle.task_id::text = replay.response_json #>> '{task_id}'
+                AND confirmation.operation_domain = confirmation.binding_json #>> '{OperationDomain}'
+                AND confirmation.target_id = confirmation.binding_json #>> '{TargetID}'
+                AND confirmation.target_revision::text = confirmation.binding_json #>> '{TargetRevision}'
+          )
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Extension lifecycle replay graph';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM core_extension_replays replay
+        WHERE replay.operation IN ('enable','disable')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM core_extension_installations installation
+              WHERE installation.installation_id::text = replay.response_json #>> '{id}'
+          )
+    ) THEN
+        RAISE EXCEPTION 'unrecoverable legacy Core Extension toggle replay target';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM core_extension_replays
+        WHERE operation NOT IN ('install','update','uninstall','enable','disable')
+    ) THEN
+        RAISE EXCEPTION 'unknown legacy Core Extension replay operation';
+    END IF;
+END;
+$$;
+
+CREATE TEMP TABLE core_extension_replay_scope_candidates ON COMMIT DROP AS
+WITH completed_operations AS (
+    SELECT operation_name,
+           owner_id,
+           account_generation,
+           core_aws_try_legacy_result_json(result_json) AS result
+    FROM agent_capability_operations
+    WHERE capability_id = 'agent.skills.v1'
+      AND operation_name IN (
+          'install_skill','install_mcp','update_skill','update_mcp','remove_skill','remove_mcp',
+          'enable_skill','skills_enable','enable_mcp','mcp_enable',
+          'disable_skill','skills_disable','disable_mcp','mcp_disable'
+      )
+      AND state = 'completed'
+      AND result_json IS NOT NULL
+      AND account_generation > 0
+), lifecycle_candidates AS (
+    SELECT replay.operation,
+           replay.idempotency_key,
+           scope.owner_id,
+           scope.account_generation
+    FROM core_extension_replays replay
+    JOIN core_extension_lifecycles lifecycle
+      ON lifecycle.operation = replay.operation
+     AND lifecycle.task_id::text = replay.response_json #>> '{task_id}'
+     AND lifecycle.confirmation_id::text = replay.response_json #>> '{confirmation_id}'
+     AND lifecycle.installation_id::text = replay.response_json #>> '{installation,id}'
+    JOIN core_task_scopes scope ON scope.task_id = lifecycle.task_id
+    WHERE replay.operation IN ('install','update','uninstall')
+      AND scope.owner_id NOT LIKE '__dirextalk_internal_%'
+), operation_candidates AS (
+    SELECT replay.operation,
+           replay.idempotency_key,
+           completed.owner_id,
+           completed.account_generation
+    FROM core_extension_replays replay
+    JOIN completed_operations completed ON completed.result = replay.response_json
+    WHERE replay.operation = CASE completed.operation_name
+        WHEN 'install_skill' THEN 'install'
+        WHEN 'install_mcp' THEN 'install'
+        WHEN 'update_skill' THEN 'update'
+        WHEN 'update_mcp' THEN 'update'
+        WHEN 'remove_skill' THEN 'uninstall'
+        WHEN 'remove_mcp' THEN 'uninstall'
+        WHEN 'enable_skill' THEN 'enable'
+        WHEN 'skills_enable' THEN 'enable'
+        WHEN 'enable_mcp' THEN 'enable'
+        WHEN 'mcp_enable' THEN 'enable'
+        WHEN 'disable_skill' THEN 'disable'
+        WHEN 'skills_disable' THEN 'disable'
+        WHEN 'disable_mcp' THEN 'disable'
+        WHEN 'mcp_disable' THEN 'disable'
+    END
+)
+SELECT DISTINCT operation,idempotency_key,owner_id,account_generation FROM lifecycle_candidates
+UNION
+SELECT DISTINCT operation,idempotency_key,owner_id,account_generation FROM operation_candidates;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_extension_replay_scope_candidates
+        GROUP BY operation,idempotency_key
+        HAVING count(DISTINCT (owner_id,account_generation)) > 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous legacy Core Extension replay ownership';
+    END IF;
+END;
+$$;
+
+UPDATE core_extension_replays replay
+SET owner_id = candidate.owner_id,
+    account_generation = candidate.account_generation
+FROM (
+    SELECT operation,idempotency_key,min(owner_id) AS owner_id,min(account_generation) AS account_generation
+    FROM core_extension_replay_scope_candidates
+    GROUP BY operation,idempotency_key
+) candidate
+WHERE candidate.operation = replay.operation
+  AND candidate.idempotency_key = replay.idempotency_key;
+UPDATE core_extension_replays
+SET owner_id = COALESCE(owner_id,'__dirextalk_internal_extension_replay__:' || idempotency_key::text),
+    account_generation = COALESCE(account_generation,1);
+ALTER TABLE core_extension_replays
+    DROP CONSTRAINT core_extension_replays_pkey,
+    ALTER COLUMN owner_id SET NOT NULL,
+    ALTER COLUMN account_generation SET NOT NULL,
+    ADD CONSTRAINT core_extension_replays_owner_id_chk CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    ADD CONSTRAINT core_extension_replays_account_generation_chk CHECK (account_generation > 0),
+    ADD CONSTRAINT core_extension_replays_pkey PRIMARY KEY (owner_id,account_generation,operation,idempotency_key);
+
+-- The migration lock prevents operation completions while v4 derives account
+-- scopes. After commit, an old process may still attempt to complete work whose
+-- domain transaction committed against v3. Validate every result family used
+-- by the v4 scope/replay migration against its now-authoritative entity scope.
+CREATE OR REPLACE FUNCTION agent_capability_operation_scope_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    result jsonb;
+    entity_id text;
+BEGIN
+    IF NEW.state <> 'completed' OR
+       NOT agent_capability_operation_requires_v4_scope(NEW.capability_id,NEW.operation_name) THEN
+        RETURN NEW;
+    END IF;
+    result := agent_capability_operation_result_json(NEW.result_json);
+    IF NEW.capability_id='agent.knowledge.v1' THEN
+        entity_id := CASE NEW.operation_name
+            WHEN 'create_memory' THEN result #>> '{memory_id}'
+            WHEN 'start_upload' THEN result #>> '{source_id}'
+        END;
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM core_knowledge_sources source
+            WHERE source.source_id::text=entity_id
+              AND source.owner_id=NEW.owner_id AND source.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed Knowledge operation owner scope does not match source' USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.execution.v2' THEN
+        entity_id := result #>> '{secret,secret_ref}';
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM core_execution_v2_secrets secret
+            WHERE secret.secret_ref::text=entity_id
+              AND secret.owner_id=NEW.owner_id AND secret.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed ExecutionV2 secret operation owner scope does not match secret' USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.aws.v1' THEN
+        entity_id := CASE NEW.operation_name
+            WHEN 'create_credential' THEN result #>> '{credential,credential_id}'
+            WHEN 'test_credential' THEN result #>> '{credential_id}'
+        END;
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM core_aws_credentials credential
+            WHERE credential.credential_id::text=entity_id
+              AND credential.owner_id=NEW.owner_id AND credential.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed AWS credential operation owner scope does not match credential' USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.schedules.v1' THEN
+        entity_id := result #>> '{schedule,id}';
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM core_schedules schedule
+            WHERE schedule.schedule_id::text=entity_id
+              AND schedule.owner_id=NEW.owner_id AND schedule.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed Schedule operation owner scope does not match schedule' USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.tasks.v1' THEN
+        entity_id := result #>> '{id}';
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM core_task_scopes scope
+            JOIN core_tasks task ON task.task_id=scope.task_id AND task.task_kind='agent'
+            WHERE scope.task_id::text=entity_id
+              AND scope.owner_id=NEW.owner_id AND scope.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed Task operation owner scope does not match task' USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.chat.v1' THEN
+        entity_id := CASE NEW.operation_name
+            WHEN 'create_conversation' THEN COALESCE(result #>> '{conversation,conversation_id}',result #>> '{conversation,id}')
+            WHEN 'rename_conversation' THEN COALESCE(result #>> '{conversation,conversation_id}',result #>> '{conversation,id}')
+            WHEN 'delete_conversation' THEN COALESCE(result #>> '{conversation,conversation_id}',result #>> '{conversation,id}')
+            WHEN 'compress_context' THEN COALESCE(result #>> '{conversation_id}',result #>> '{conversation,conversation_id}',result #>> '{conversation,id}')
+            WHEN 'chat' THEN result #>> '{conversation_id}'
+            WHEN 'stream_chat' THEN COALESCE(result #>> '{conversation_id}',result #>> '{response,conversation_id}')
+        END;
+        IF NEW.operation_name IN ('chat','stream_chat') AND NOT EXISTS (
+            SELECT 1 FROM core_chat_request_leases lease
+            WHERE lease.idempotency_key::text=COALESCE(result #>> '{request_id}',result #>> '{response,request_id}')
+              AND lease.state='completed'
+              AND lease.response_json #>> '{conversation_id}'=entity_id
+              AND lease.owner_id=NEW.owner_id AND lease.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed Chat operation owner scope does not match request lease' USING ERRCODE='55000';
+        END IF;
+        IF entity_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM core_conversations conversation
+            WHERE conversation.conversation_id::text=entity_id
+              AND conversation.owner_id=NEW.owner_id AND conversation.account_generation=NEW.account_generation
+        ) THEN
+            RAISE EXCEPTION 'completed Conversation operation owner scope does not match conversation' USING ERRCODE='55000';
+        END IF;
+    ELSIF NEW.capability_id='agent.models.v1' THEN
+        IF NEW.operation_name='sync_models' THEN
+            IF jsonb_typeof(result->'profiles') IS DISTINCT FROM 'array' OR
+               jsonb_array_length(result->'profiles')=0 OR EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(result->'profiles') entry
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM core_model_profiles profile
+                       WHERE profile.profile_id::text=entry #>> '{id}'
+                         AND profile.owner_id=NEW.owner_id AND profile.account_generation=NEW.account_generation
+                   )
+               ) THEN
+                RAISE EXCEPTION 'completed Model sync operation owner scope does not match profiles' USING ERRCODE='55000';
+            END IF;
+        ELSE
+            entity_id := result #>> '{id}';
+            IF entity_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM core_model_profiles profile
+                WHERE profile.profile_id::text=entity_id
+                  AND profile.owner_id=NEW.owner_id AND profile.account_generation=NEW.account_generation
+            ) THEN
+                RAISE EXCEPTION 'completed Model operation owner scope does not match profile' USING ERRCODE='55000';
+            END IF;
+        END IF;
+    ELSIF NEW.capability_id='agent.skills.v1' THEN
+        IF NEW.operation_name IN ('install_skill','install_mcp','update_skill','update_mcp','remove_skill','remove_mcp') THEN
+            entity_id := result #>> '{installation,id}';
+            IF entity_id IS NULL OR result #>> '{task_id}' IS NULL OR NOT EXISTS (
+                SELECT 1 FROM core_extension_installations installation
+                JOIN core_extension_lifecycles lifecycle ON lifecycle.installation_id=installation.installation_id
+                JOIN core_task_scopes scope ON scope.task_id=lifecycle.task_id
+                WHERE installation.installation_id::text=entity_id
+                  AND lifecycle.task_id::text=result #>> '{task_id}'
+                  AND installation.owner_id=NEW.owner_id AND installation.account_generation=NEW.account_generation
+                  AND scope.owner_id=NEW.owner_id AND scope.account_generation=NEW.account_generation
+            ) THEN
+                RAISE EXCEPTION 'completed Extension lifecycle operation owner scope does not match installation' USING ERRCODE='55000';
+            END IF;
+        ELSE
+            entity_id := result #>> '{id}';
+            IF entity_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM core_extension_installations installation
+                WHERE installation.installation_id::text=entity_id
+                  AND installation.owner_id=NEW.owner_id AND installation.account_generation=NEW.account_generation
+            ) THEN
+                RAISE EXCEPTION 'completed Extension toggle operation owner scope does not match installation' USING ERRCODE='55000';
+            END IF;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM agent_capability_operations
+        WHERE state IN ('pending','running')
+          AND agent_capability_operation_requires_v4_scope(capability_id,operation_name)
+    ) THEN
+        RAISE EXCEPTION 'nonterminal scoped capability operation blocks migration';
+    END IF;
+END;
+$$;
+
+DROP FUNCTION core_execution_v2_try_timestamptz(text);
+DROP FUNCTION core_aws_try_legacy_result_json(bytea);
+
+CREATE FUNCTION core_task_scope_default()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO core_task_scopes(task_id,owner_id,account_generation,created_at)
+    VALUES(NEW.task_id,'__dirextalk_internal_task__:' || NEW.task_id::text,1,NEW.created_at);
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER core_tasks_scope_default
+AFTER INSERT ON core_tasks
+FOR EACH ROW EXECUTE FUNCTION core_task_scope_default();
+
+-- The v3 owner scope is part of every new AWS confirmation binding. Work that
+-- has not reached a provider is terminalized atomically and can be requested
+-- again. An active consumed request may already have mutated AWS, so upgrading
+-- over it is refused until the old runtime finishes reconciliation.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_confirmations confirmation
+        JOIN core_aws_changes change ON change.confirmation_id = confirmation.confirmation_id
+        LEFT JOIN core_confirmation_reservations reservation ON reservation.confirmation_id = confirmation.confirmation_id
+        WHERE confirmation.operation_domain = 'aws'
+          AND confirmation.state = 'consumed'
+          AND (change.status IN ('waiting_user','running') OR COALESCE(reservation.active,false))
+    ) THEN
+        RAISE EXCEPTION 'active consumed AWS change must be reconciled before account-scope upgrade';
+    END IF;
+END;
+$$;
+
+CREATE TEMP TABLE core_aws_binding_upgrade_affected ON COMMIT DROP AS
+SELECT confirmation.confirmation_id,
+       confirmation.task_id,
+       change.change_id,
+       task.status AS prior_task_status
+FROM core_confirmations confirmation
+JOIN core_tasks task ON task.task_id = confirmation.task_id
+JOIN core_aws_changes change ON change.confirmation_id = confirmation.confirmation_id
+WHERE confirmation.operation_domain = 'aws'
+  AND confirmation.state IN ('pending','confirmed');
+
+UPDATE core_tasks task
+SET status = 'failed',
+    attempt = GREATEST(task.attempt,1),
+    failure_code = 'binding_upgrade_reconfirmation_required',
+    failure_summary = 'AWS account scope changed; request confirmation again',
+    lease_holder = '',
+    lease_expires_at = NULL,
+    revision = task.revision + 1,
+    progress_sequence = task.progress_sequence + 1,
+    updated_at = clock_timestamp()
+FROM core_aws_binding_upgrade_affected affected
+WHERE task.task_id = affected.task_id
+  AND task.status IN ('waiting_user','queued','running');
+
+UPDATE core_task_runtime_concurrency
+SET running_count = GREATEST(0,running_count - (
+        SELECT count(*) FROM core_aws_binding_upgrade_affected WHERE prior_task_status = 'running'
+    )),
+    revision = revision + 1,
+    updated_at = clock_timestamp()
+WHERE singleton
+  AND EXISTS (SELECT 1 FROM core_aws_binding_upgrade_affected WHERE prior_task_status = 'running');
+
+INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at)
+SELECT task.task_id,
+       task.progress_sequence,
+       md5(task.task_id::text || ':binding_upgrade_reconfirmation_required')::uuid,
+       task.attempt,
+       'failed',
+       'binding_upgrade',
+       'binding_upgrade_reconfirmation_required',
+       'AWS account scope changed; request confirmation again',
+       task.updated_at
+FROM core_tasks task
+JOIN core_aws_binding_upgrade_affected affected ON affected.task_id = task.task_id
+WHERE task.status = 'failed'
+  AND task.failure_code = 'binding_upgrade_reconfirmation_required';
+
+UPDATE core_aws_changes change
+SET status = 'failed',
+    stage = 'failed',
+    error_code = 'binding_upgrade_reconfirmation_required',
+    error_summary = 'AWS account scope changed; request confirmation again',
+    revision = change.revision + 1,
+    updated_at = clock_timestamp()
+FROM core_aws_binding_upgrade_affected affected
+WHERE change.change_id = affected.change_id;
+
+INSERT INTO core_aws_events(change_id,sequence,event_id,task_id,kind,revision,at)
+SELECT change.change_id,
+       COALESCE((SELECT max(event.sequence) FROM core_aws_events event WHERE event.change_id = change.change_id),0) + 1,
+       md5(change.change_id::text || ':binding_upgrade_reconfirmation_required')::uuid,
+       change.task_id,
+       'binding_upgrade_reconfirmation_required',
+       change.revision,
+       change.updated_at
+FROM core_aws_changes change
+JOIN core_aws_binding_upgrade_affected affected ON affected.change_id = change.change_id;
+
+UPDATE core_confirmations confirmation
+SET state = 'expired',
+    terminal_code = 'binding_upgrade_reconfirmation_required',
+    terminal_reason = 'binding_upgrade_reconfirmation_required',
+    terminal_note = 'AWS account scope changed; request confirmation again',
+    revision = confirmation.revision + 1,
+    updated_at = clock_timestamp()
+FROM core_aws_binding_upgrade_affected affected
+WHERE confirmation.confirmation_id = affected.confirmation_id;
+
+DELETE FROM core_aws_replays replay
+USING core_aws_binding_upgrade_affected affected
+WHERE replay.operation = 'request_change'
+  AND replay.response_json #>> '{Change,ID}' = affected.change_id::text;
+
+-- Public request idempotency is tenant-scoped. Internal consume/complete and
+-- reconcile keys remain in core_aws_replays because they derive from one
+-- already-admitted Change rather than user-provided keys.
+CREATE TABLE core_aws_change_request_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    idempotency_key uuid NOT NULL,
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    hash_version smallint NOT NULL DEFAULT 2 CHECK (hash_version IN (1,2)),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id,account_generation,idempotency_key)
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM core_aws_replays replay
+        WHERE replay.operation = 'request_change'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM core_aws_changes change
+              JOIN core_aws_plans plan ON plan.plan_id = change.plan_id AND plan.credential_id = change.credential_id
+              JOIN core_aws_credentials credential ON credential.credential_id = change.credential_id AND credential.owner_id = plan.owner_id AND credential.account_generation = plan.account_generation
+              JOIN core_tasks task ON task.task_id = change.task_id
+              JOIN core_task_scopes scope ON scope.task_id = task.task_id AND scope.owner_id = plan.owner_id AND scope.account_generation = plan.account_generation
+              JOIN core_confirmations confirmation ON confirmation.confirmation_id = change.confirmation_id AND confirmation.task_id = task.task_id
+              JOIN core_confirmation_target_bindings target_binding ON target_binding.confirmation_id = confirmation.confirmation_id
+              WHERE change.change_id::text = replay.response_json #>> '{Change,ID}'
+                AND change.plan_id::text = replay.response_json #>> '{Change,PlanID}'
+                AND change.credential_id::text = replay.response_json #>> '{Change,CredentialID}'
+                AND change.task_id::text = replay.response_json #>> '{Change,TaskID}'
+                AND change.confirmation_id::text = replay.response_json #>> '{Change,ConfirmationID}'
+                AND task.task_id::text = replay.response_json #>> '{Task,ID}'
+                AND change.plan_id::text = replay.response_json #>> '{Task,PlanID}'
+                AND confirmation.confirmation_id::text = replay.response_json #>> '{Task,ConfirmationID}'
+                AND confirmation.confirmation_id::text = replay.response_json #>> '{Confirmation,ConfirmationID}'
+                AND task.task_id::text = replay.response_json #>> '{Confirmation,TaskID}'
+                AND task.payload_json #>> '{aws_change,change_id}' = change.change_id::text
+                AND confirmation.operation_domain = confirmation.binding_json #>> '{OperationDomain}'
+                AND confirmation.target_id = confirmation.binding_json #>> '{TargetID}'
+                AND confirmation.target_revision::text = confirmation.binding_json #>> '{TargetRevision}'
+                AND COALESCE(confirmation.binding_json #>> '{OwnerID}','') IN ('',plan.owner_id)
+                AND confirmation.binding_json = target_binding.binding_json
+                AND replay.response_json #> '{Confirmation,Binding}' = confirmation.binding_json
+          )
+    ) THEN
+        RAISE EXCEPTION 'malformed legacy AWS request replay relationship';
+    END IF;
+END;
+$$;
+
+INSERT INTO core_aws_change_request_replays(owner_id,account_generation,idempotency_key,request_hash,hash_version,response_json,created_at)
+SELECT plan.owner_id,plan.account_generation,replay.idempotency_key,replay.request_hash,1,replay.response_json,replay.created_at
+FROM core_aws_replays replay
+JOIN core_aws_changes change ON change.change_id::text = replay.response_json #>> '{Change,ID}'
+JOIN core_aws_plans plan ON plan.plan_id = change.plan_id
+WHERE replay.operation = 'request_change';
+DELETE FROM core_aws_replays WHERE operation = 'request_change';
+
+CREATE TABLE core_aws_credential_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    operation text NOT NULL CHECK (operation IN ('credential-create','credential-replace','credential-delete')),
+    idempotency_key uuid NOT NULL,
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    deleted boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id,account_generation,operation,idempotency_key)
+);
+
+CREATE TABLE core_aws_plan_replays (
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    idempotency_key uuid NOT NULL,
+    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
+    plan_id uuid NOT NULL REFERENCES core_aws_plans(plan_id) ON DELETE RESTRICT,
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (owner_id,account_generation,idempotency_key),
+    UNIQUE (owner_id,account_generation,plan_id)
+);
 
 -- Central Agent Team Plans bind one immutable official Pi role graph to an
 -- owner account generation. Generic Core Tasks remain owner-neutral; every
@@ -1350,7 +3574,8 @@ CREATE TABLE core_team_plans (
     plan_json jsonb NOT NULL CHECK (jsonb_typeof(plan_json) = 'object' AND pg_column_size(plan_json) <= 1048576 AND plan_json->>'status' = status),
     created_at timestamptz NOT NULL,
     CHECK (amount::numeric >= 0 AND hard_budget::numeric > 0 AND amount::numeric <= hard_budget::numeric),
-    UNIQUE (owner_id,account_generation,plan_id)
+    UNIQUE (owner_id,account_generation,plan_id),
+    FOREIGN KEY (owner_id,account_generation,credential_id) REFERENCES core_aws_credentials(owner_id,account_generation,credential_id) ON DELETE RESTRICT
 );
 CREATE INDEX core_team_plans_owner_created_idx ON core_team_plans(owner_id,account_generation,created_at DESC,plan_id);
 
@@ -1378,13 +3603,16 @@ CREATE TABLE core_team_executions (
     confirmation_id uuid NOT NULL UNIQUE REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
     status text NOT NULL CHECK (status IN ('queued','running','cleaning_up','completed','failed','canceled','timed_out')),
     revision bigint NOT NULL CHECK (revision > 0),
+    cleanup_verified_at timestamptz,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
+    CHECK ((status IN ('completed','failed','canceled','timed_out')) = (cleanup_verified_at IS NOT NULL)),
+    CHECK (cleanup_verified_at IS NULL OR (cleanup_verified_at >= created_at AND cleanup_verified_at <= updated_at)),
     UNIQUE (owner_id,account_generation,execution_id),
     FOREIGN KEY (owner_id,account_generation,plan_id) REFERENCES core_team_plans(owner_id,account_generation,plan_id) ON DELETE RESTRICT
 );
 CREATE INDEX core_team_executions_owner_updated_idx ON core_team_executions(owner_id,account_generation,updated_at DESC,execution_id);
-CREATE INDEX core_team_executions_active_idx ON core_team_executions(owner_id,account_generation,status) WHERE status IN ('queued','running','cleaning_up');
+CREATE INDEX core_team_executions_active_idx ON core_team_executions(owner_id,account_generation,status) WHERE status IN ('queued','running','cleaning_up') OR cleanup_verified_at IS NULL;
 
 CREATE TABLE core_team_role_runs (
     owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 256 AND owner_id !~ '[[:cntrl:]]'),
@@ -1470,50 +3698,4 @@ $$;
 CREATE TRIGGER core_team_roles_immutable
 BEFORE UPDATE OR DELETE ON core_team_roles
 FOR EACH ROW EXECUTE FUNCTION core_team_reject_role_mutation();
--- dirextalk-agent migration end 000001_core_v1_fresh.up.sql
--- dirextalk-agent migration begin 000002_knowledge_search_provenance.up.sql
--- Search cursor snapshots retain the exact semantic binding that produced
--- their matches. The binding is nullable for non-semantic/list snapshots;
--- populated rows must carry a complete secret-free profile projection.
-ALTER TABLE core_knowledge_list_snapshots
-    ADD COLUMN embedding_profile_id uuid,
-    ADD COLUMN embedding_profile_revision bigint,
-    ADD COLUMN embedding_model text NOT NULL DEFAULT '',
-    ADD COLUMN embedding_generation text NOT NULL DEFAULT '',
-    ADD COLUMN embedding_collection_config_digest text NOT NULL DEFAULT '',
-    ADD CONSTRAINT core_knowledge_snapshot_embedding_provenance_chk CHECK (
-        (embedding_profile_id IS NULL AND embedding_profile_revision IS NULL AND embedding_model = '' AND embedding_generation = '' AND embedding_collection_config_digest = '') OR
-        (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND embedding_generation = '' AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$')) OR
-        (embedding_profile_id IS NOT NULL AND embedding_profile_revision > 0 AND length(embedding_model) BETWEEN 1 AND 255 AND length(embedding_generation) BETWEEN 1 AND 256 AND (embedding_collection_config_digest = '' OR embedding_collection_config_digest ~ '^[a-f0-9]{64}$'))
-    );
--- dirextalk-agent migration end 000002_knowledge_search_provenance.up.sql
--- dirextalk-agent migration begin 000003_aws_credential_test_claims.up.sql
--- Provider calls run outside database transactions. A durable claim fences
--- retries across process crashes: active in_progress claims are observed by
--- bounded same-key waiters, failed/uncertain claims are terminal, and
--- completed claims carry the secret-free typed response.
-CREATE TABLE core_aws_credential_test_claims (
-    idempotency_key uuid PRIMARY KEY,
-    claim_id uuid NOT NULL UNIQUE,
-    credential_id uuid NOT NULL REFERENCES core_aws_credentials(credential_id) ON DELETE CASCADE,
-    expected_revision bigint NOT NULL CHECK (expected_revision > 0),
-    request_hash text NOT NULL CHECK (request_hash ~ '^[a-f0-9]{64}$'),
-    state text NOT NULL CHECK (state IN ('in_progress','failed','uncertain','completed')),
-    lease_expires_at timestamptz NOT NULL,
-    completion_grace_until timestamptz NOT NULL,
-    response_json jsonb,
-    error_code text NOT NULL DEFAULT '',
-    error_message text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-    completed_at timestamptz,
-    CHECK ((state = 'completed') = (response_json IS NOT NULL AND completed_at IS NOT NULL)),
-    CHECK ((state <> 'completed') = (response_json IS NULL AND completed_at IS NULL)),
-    CHECK ((state = 'failed') = (error_code = 'PROVIDER_FAILED' AND error_message <> '')),
-    CHECK ((state = 'uncertain') = (error_code = 'UNCERTAIN' AND error_message <> '')),
-    CHECK ((state IN ('in_progress','completed')) = (error_code = '' AND error_message = '')),
-    CHECK (completion_grace_until >= lease_expires_at),
-    CHECK (response_json IS NULL OR (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536))
-);
-CREATE INDEX core_aws_credential_test_claims_credential_idx ON core_aws_credential_test_claims(credential_id, expected_revision);
--- dirextalk-agent migration end 000003_aws_credential_test_claims.up.sql
+-- dirextalk-agent migration end 000004_team_and_aws_scope.up.sql

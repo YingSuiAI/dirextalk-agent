@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 )
 
 const (
@@ -16,16 +18,32 @@ func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (Crede
 	if s == nil || s.repo == nil {
 		return CredentialView{}, ErrInvalid
 	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return CredentialView{}, err
+	}
+	guarded, ok := s.repo.(GuardedCredentialRepository)
+	if !ok {
+		return CredentialView{}, ErrInvalid
+	}
 	if in.IdempotencyKey == "" {
 		in.IdempotencyKey = newUUID()
 	}
 	if !validUUID(in.IdempotencyKey) {
 		return CredentialView{}, ErrInvalid
 	}
-	digest := credentialInputDigest(in)
+	digest := canonicalDigest(struct {
+		Scope       coreteam.Scope
+		InputDigest string
+	}{scope, credentialInputDigest(in)})
+	if durable, ok := s.repo.(DurableCredentialMutationRepository); ok {
+		if replay, found, replayErr := durable.ReplayCredentialMutation(ctx, scope, CredentialMutationCreate, in.IdempotencyKey, digest); found || replayErr != nil {
+			return replay.Credential, replayErr
+		}
+	}
 	if mr, ok := s.repo.(*MemoryRepository); ok {
 		mr.mu.Lock()
-		if v, hit, e := mr.replayLocked("credential-save", in.IdempotencyKey, digest); hit {
+		if v, hit, e := mr.replayLocked(scopedReplayOperation("credential-save", scope), in.IdempotencyKey, digest); hit {
 			mr.mu.Unlock()
 			if e != nil {
 				return CredentialView{}, e
@@ -44,23 +62,59 @@ func (s *Service) SaveCredential(ctx context.Context, in CredentialInput) (Crede
 		return CredentialView{}, err
 	}
 	if mr, ok := s.repo.(*MemoryRepository); ok {
-		view, e := mr.saveCredentialIdempotent(ctx, c, in.IdempotencyKey, digest)
+		view, e := mr.saveCredentialIdempotent(ctx, scope, c, in.IdempotencyKey, digest)
 		return view, e
 	}
-	v, e := s.repo.CreateCredential(ctx, c)
+	if durable, ok := s.repo.(DurableCredentialMutationRepository); ok {
+		return durable.CreateCredentialGuardedIdempotent(ctx, scope, c, in.IdempotencyKey, digest)
+	}
+	v, e := guarded.CreateCredentialGuarded(ctx, scope, c)
 	return v.View(), e
 }
 func (s *Service) GetCredential(ctx context.Context, id string) (CredentialView, error) {
-	c, e := s.repo.GetCredential(ctx, id)
+	if s == nil || s.repo == nil || !validUUID(id) {
+		return CredentialView{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return CredentialView{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return CredentialView{}, err
+	}
+	c, e := repository.GetCredentialScoped(ctx, scope, id)
 	if e != nil {
 		return CredentialView{}, e
 	}
 	return c.View(), nil
 }
 func (s *Service) ListCredentials(ctx context.Context, size int, token string) (CredentialPage, error) {
-	return s.repo.ListCredentials(ctx, size, token)
+	if s == nil || s.repo == nil {
+		return CredentialPage{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return CredentialPage{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return CredentialPage{}, err
+	}
+	return repository.ListCredentialsScoped(ctx, scope, size, token)
 }
 func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, expected int64, idem ...string) (CredentialView, error) {
+	if s == nil || s.repo == nil {
+		return CredentialView{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return CredentialView{}, err
+	}
+	guarded, ok := s.repo.(GuardedCredentialRepository)
+	if !ok {
+		return CredentialView{}, ErrInvalid
+	}
 	key := ""
 	if len(idem) > 0 {
 		key = idem[0]
@@ -72,12 +126,18 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 		return CredentialView{}, ErrInvalid
 	}
 	digest := canonicalDigest(struct {
+		Scope       coreteam.Scope
 		InputDigest string
 		Expected    int64
-	}{credentialInputDigest(in), expected})
+	}{scope, credentialInputDigest(in), expected})
+	if durable, ok := s.repo.(DurableCredentialMutationRepository); ok {
+		if replay, found, replayErr := durable.ReplayCredentialMutation(ctx, scope, CredentialMutationReplace, key, digest); found || replayErr != nil {
+			return replay.Credential, replayErr
+		}
+	}
 	if mr, ok := s.repo.(*MemoryRepository); ok {
 		mr.mu.Lock()
-		if v, hit, e := mr.replayLocked("credential-replace", key, digest); hit {
+		if v, hit, e := mr.replayLocked(scopedReplayOperation("credential-replace", scope), key, digest); hit {
 			mr.mu.Unlock()
 			if e != nil {
 				return CredentialView{}, e
@@ -89,7 +149,11 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 	if !validUUID(in.ID) {
 		return CredentialView{}, ErrInvalid
 	}
-	old, e := s.repo.GetCredential(ctx, in.ID)
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return CredentialView{}, err
+	}
+	old, e := repository.GetCredentialScoped(ctx, scope, in.ID)
 	if e != nil {
 		return CredentialView{}, e
 	}
@@ -115,10 +179,13 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 		return CredentialView{}, err
 	}
 	if mr, ok := s.repo.(*MemoryRepository); ok {
-		view, e := mr.replaceCredentialIdempotent(ctx, c, expected, key, digest)
+		view, e := mr.replaceCredentialIdempotent(ctx, scope, c, expected, key, digest)
 		return view, e
 	}
-	v, e := s.repo.UpdateCredential(ctx, c, expected)
+	if durable, ok := s.repo.(DurableCredentialMutationRepository); ok {
+		return durable.UpdateCredentialGuardedIdempotent(ctx, scope, c, expected, key, digest)
+	}
+	v, e := guarded.UpdateCredentialGuarded(ctx, scope, c, expected)
 	if e != nil {
 		return CredentialView{}, e
 	}
@@ -126,6 +193,17 @@ func (s *Service) ReplaceCredential(ctx context.Context, in CredentialInput, exp
 	return view, nil
 }
 func (s *Service) DeleteCredential(ctx context.Context, id string, expected int64, idem ...string) error {
+	if s == nil || s.repo == nil {
+		return ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return err
+	}
+	guarded, ok := s.repo.(GuardedCredentialRepository)
+	if !ok {
+		return ErrInvalid
+	}
 	key := ""
 	if len(idem) > 0 {
 		key = idem[0]
@@ -137,19 +215,50 @@ func (s *Service) DeleteCredential(ctx context.Context, id string, expected int6
 		return ErrInvalid
 	}
 	digest := canonicalDigest(struct {
+		Scope    coreteam.Scope
 		ID       string
 		Expected int64
-	}{id, expected})
-	if mr, ok := s.repo.(*MemoryRepository); ok {
-		return mr.deleteCredentialIdempotent(ctx, id, expected, key, digest)
+	}{scope, id, expected})
+	if durable, ok := s.repo.(DurableCredentialMutationRepository); ok {
+		if _, found, replayErr := durable.ReplayCredentialMutation(ctx, scope, CredentialMutationDelete, key, digest); found || replayErr != nil {
+			return replayErr
+		}
 	}
-	return s.repo.DeleteCredential(ctx, id, expected)
+	if !validUUID(id) || expected < 1 {
+		return ErrInvalid
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return err
+	}
+	credential, err := repository.GetCredentialScoped(ctx, scope, id)
+	if err != nil {
+		return err
+	}
+	if credential.Revision != expected {
+		return ErrRevisionConflict
+	}
+	if mr, ok := s.repo.(*MemoryRepository); ok {
+		return mr.deleteCredentialIdempotent(ctx, scope, id, expected, key, digest)
+	}
+	if durable, ok := s.repo.(DurableCredentialMutationRepository); ok {
+		return durable.DeleteCredentialGuardedIdempotent(ctx, scope, id, expected, key, digest)
+	}
+	return guarded.DeleteCredentialGuarded(ctx, scope, id, expected)
 }
 func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest, error) {
 	if s.sts == nil {
 		return CredentialTest{}, ErrProvider
 	}
-	c, e := s.repo.GetCredential(ctx, id)
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return CredentialTest{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return CredentialTest{}, err
+	}
+	c, e := repository.GetCredentialScoped(ctx, scope, id)
 	if e != nil {
 		return CredentialTest{}, e
 	}
@@ -158,7 +267,7 @@ func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest
 		return CredentialTest{}, ErrProvider
 	}
 	testedAt := s.now().UTC()
-	updated, ue := s.repo.RecordCredentialIdentity(ctx, id, c.Revision, identity, testedAt)
+	updated, ue := repository.RecordCredentialIdentityScoped(ctx, scope, id, c.Revision, identity, testedAt)
 	if ue != nil {
 		return CredentialTest{}, ue
 	}
@@ -180,6 +289,10 @@ func (s *Service) TestCredentialIdempotent(ctx context.Context, id string, expec
 	if s.sts == nil {
 		return CredentialTest{}, ErrProvider
 	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return CredentialTest{}, err
+	}
 	repository, ok := s.repo.(CredentialIdentityIdempotencyRepository)
 	if !ok {
 		return CredentialTest{}, ErrConflict
@@ -190,7 +303,7 @@ func (s *Service) TestCredentialIdempotent(ctx context.Context, id string, expec
 		return CredentialTest{}, err
 	}
 	for {
-		claim, replay, err := repository.BeginCredentialTest(ctx, id, expectedRevision, idempotencyKey, leaseExpiresAt, completionGraceUntil)
+		claim, replay, err := repository.BeginCredentialTest(ctx, scope, id, expectedRevision, idempotencyKey, leaseExpiresAt, completionGraceUntil)
 		if err == nil {
 			if replay != nil {
 				return *replay, nil
@@ -306,22 +419,22 @@ func (s *Service) CreatePlan(ctx context.Context, in PlanInput) (PlanView, error
 	if !validUUID(in.IdempotencyKey) {
 		return PlanView{}, ErrInvalid
 	}
-	dig := canonicalDigest(in)
-	if mr, ok := s.repo.(*MemoryRepository); ok {
-		mr.mu.Lock()
-		if v, hit, e := mr.replayLocked("plan-create", in.IdempotencyKey, dig); hit {
-			mr.mu.Unlock()
-			if e != nil {
-				return PlanView{}, e
-			}
-			return *v.plan, nil
-		}
-		mr.mu.Unlock()
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return PlanView{}, err
 	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return PlanView{}, err
+	}
+	dig := canonicalDigest(struct {
+		Scope coreteam.Scope
+		Input PlanInput
+	}{scope, in})
 	if !validUUID(in.CredentialID) {
 		return PlanView{}, ErrInvalid
 	}
-	cred, e := s.repo.GetCredential(ctx, in.CredentialID)
+	cred, e := repository.GetCredentialScoped(ctx, scope, in.CredentialID)
 	if e != nil {
 		return PlanView{}, e
 	}
@@ -333,7 +446,7 @@ func (s *Service) CreatePlan(ctx context.Context, in PlanInput) (PlanView, error
 	if id == "" {
 		id = newUUID()
 	}
-	p := Plan{ID: id, CredentialID: in.CredentialID, Region: in.Region, StackName: in.StackName, Operation: in.Operation, Template: norm, TemplateSHA256: digest, Parameters: cloneMap(in.Parameters), Tags: cloneMap(in.Tags), Capabilities: append([]string(nil), in.Capabilities...), Revision: 1, CreatedAt: s.now().UTC()}
+	p := Plan{ID: id, OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, CredentialID: in.CredentialID, Region: in.Region, StackName: in.StackName, Operation: in.Operation, Template: norm, TemplateSHA256: digest, Parameters: cloneMap(in.Parameters), Tags: cloneMap(in.Tags), Capabilities: append([]string(nil), in.Capabilities...), Revision: 1, CreatedAt: s.now().UTC()}
 	if p.Region == "" {
 		p.Region = cred.Region
 	}
@@ -343,10 +456,7 @@ func (s *Service) CreatePlan(ctx context.Context, in PlanInput) (PlanView, error
 	if p.Region != cred.Region {
 		return PlanView{}, ErrConflict
 	}
-	if mr, ok := s.repo.(*MemoryRepository); ok {
-		return mr.createPlanIdempotent(ctx, p, in.IdempotencyKey, dig)
-	}
-	v, e := s.repo.CreatePlan(ctx, p)
+	v, e := repository.CreatePlanScoped(ctx, scope, p, in.IdempotencyKey, dig)
 	if e != nil {
 		return PlanView{}, e
 	}
@@ -354,17 +464,50 @@ func (s *Service) CreatePlan(ctx context.Context, in PlanInput) (PlanView, error
 	return view, nil
 }
 func (s *Service) GetPlan(ctx context.Context, id string) (PlanView, error) {
-	p, e := s.repo.GetPlan(ctx, id)
+	if s == nil || s.repo == nil || !validUUID(id) {
+		return PlanView{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return PlanView{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return PlanView{}, err
+	}
+	p, e := repository.GetPlanScoped(ctx, scope, id)
 	if e != nil {
 		return PlanView{}, e
 	}
 	return p.View(), nil
 }
 func (s *Service) ListPlans(ctx context.Context, size int, token string) (PlanPage, error) {
-	return s.repo.ListPlans(ctx, size, token)
+	if s == nil || s.repo == nil {
+		return PlanPage{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return PlanPage{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return PlanPage{}, err
+	}
+	return repository.ListPlansScoped(ctx, scope, size, token)
 }
 func (s *Service) Quote(ctx context.Context, id string) (Quote, error) {
-	p, e := s.repo.GetPlan(ctx, id)
+	if s == nil || s.repo == nil || !validUUID(id) {
+		return Quote{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return Quote{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return Quote{}, err
+	}
+	p, e := repository.GetPlanScoped(ctx, scope, id)
 	if e != nil {
 		return Quote{}, e
 	}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 	"github.com/google/uuid"
@@ -37,7 +38,15 @@ var operationNameRE = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 // CredentialRevision resolves the exact durable credential revision without
 // returning secret material. It is required so a request cannot reuse a
 // rotated credential under the same reference ID.
-type CredentialRevision func(context.Context, string) (uint64, error)
+type CredentialRevision func(context.Context, coretask.OwnerScope, string) (uint64, error)
+
+type CredentialResolver interface {
+	ResolveCredentialScoped(context.Context, coretask.OwnerScope, string) (workaws.CredentialHandle, error)
+}
+
+type CredentialRevisionResolver interface {
+	CredentialRevisionScoped(context.Context, coretask.OwnerScope, string) (uint64, error)
+}
 
 // Inspector is the only AWS target read boundary used by this adapter. An
 // implementation should be backed by the existing typed SSM/ECS provider and
@@ -84,21 +93,21 @@ type ReservationOffer struct {
 // must enforce an explicit operation allowlist and use typed requests; a
 // generic HTTP/AWS passthrough is deliberately not representable here.
 type BindingInvoker interface {
-	Invoke(context.Context, string, coreexecutionv2.InvokeRequest) (map[string]any, error)
+	Invoke(context.Context, coretask.OwnerScope, coreexecutionv2.InvokeRequest) (map[string]any, error)
 	Ready() bool
 }
 
 // RunReconciler reads an already persisted provider outcome. It must never
 // retry or dispatch an unknown mutation.
 type RunReconciler interface {
-	Reconcile(context.Context, string, coreexecutionv2.ReconcileRequest) (map[string]any, error)
+	Reconcile(context.Context, coretask.OwnerScope, coreexecutionv2.ReconcileRequest) (map[string]any, error)
 	Ready() bool
 }
 
 type Config struct {
 	Enabled             bool
 	Store               coreexecutionv2.Store
-	Credentials         workaws.CredentialResolver
+	Credentials         CredentialResolver
 	CredentialRevision  CredentialRevision
 	Inspector           Inspector
 	Reservations        ReservationCatalog
@@ -254,8 +263,8 @@ func (a *Adapter) ProviderInterfaces() coreexecutionv2.ProviderInterfaces {
 
 type analyzeProvider struct{ adapter *Adapter }
 
-func (p analyzeProvider) Analyze(ctx context.Context, owner string, req coreexecutionv2.AnalyzeRequest) (map[string]any, error) {
-	if p.adapter == nil || !p.adapter.Ready() || ctx == nil || strings.TrimSpace(owner) == "" {
+func (p analyzeProvider) Analyze(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.AnalyzeRequest) (map[string]any, error) {
+	if p.adapter == nil || !p.adapter.Ready() || ctx == nil || scope.Validate() != nil {
 		return nil, ErrNotReady
 	}
 	digest, err := canonicalDigest(struct {
@@ -266,7 +275,7 @@ func (p analyzeProvider) Analyze(ctx context.Context, owner string, req coreexec
 		return nil, ErrInvalid
 	}
 	return map[string]any{
-		"analysis_id": deterministicID(owner, "analysis", req.ProjectID+"\x00"+digest),
+		"analysis_id": deterministicID(scope, "analysis", req.ProjectID+"\x00"+digest),
 		"project_id":  req.ProjectID,
 		"status":      "ready",
 		"source": map[string]any{
@@ -280,7 +289,7 @@ func (p analyzeProvider) Analyze(ctx context.Context, owner string, req coreexec
 
 type importProvider struct{ adapter *Adapter }
 
-func (p importProvider) ImportTarget(ctx context.Context, owner string, req coreexecutionv2.TargetImportRequest) (map[string]any, error) {
+func (p importProvider) ImportTarget(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.TargetImportRequest) (map[string]any, error) {
 	a := p.adapter
 	if a == nil || !a.Ready() {
 		return nil, ErrNotReady
@@ -291,10 +300,10 @@ func (p importProvider) ImportTarget(ctx context.Context, owner string, req core
 	if req.CredentialID != a.cfg.CredentialReference {
 		return nil, ErrConflict
 	}
-	if err := a.checkCredentialRevision(ctx, req.CredentialID, req.CredentialRevision); err != nil {
+	if err := a.checkCredentialRevision(ctx, scope, req.CredentialID, req.CredentialRevision); err != nil {
 		return nil, err
 	}
-	h, err := a.cfg.Credentials.ResolveCredential(ctx, req.CredentialID)
+	h, err := a.cfg.Credentials.ResolveCredentialScoped(ctx, scope, req.CredentialID)
 	if err != nil || h.ReferenceID != req.CredentialID {
 		return nil, ErrUnavailable
 	}
@@ -310,8 +319,8 @@ func (p importProvider) ImportTarget(ctx context.Context, owner string, req core
 	if err != nil || inspection.State != "ready" || inspection.InstanceID != req.InstanceID || inspection.AccountID != h.AccountID || inspection.Region != h.Region {
 		return nil, ErrUnavailable
 	}
-	targetID := deterministicID(owner, "aws-ec2-ssm-target", h.AccountID+"\x00"+h.Region+"\x00"+req.InstanceID)
-	observationID := deterministicID(owner, "target-observation", req.IdempotencyKey)
+	targetID := deterministicID(scope, "aws-ec2-ssm-target", h.AccountID+"\x00"+h.Region+"\x00"+req.InstanceID)
+	observationID := deterministicID(scope, "target-observation", req.IdempotencyKey)
 	return map[string]any{
 		"target_id": targetID, "provider": "aws", "kind": "aws_ec2_instance", "revision": uint64(1),
 		"account_id": h.AccountID, "region": h.Region, "instance_id": req.InstanceID,
@@ -325,7 +334,7 @@ func (p importProvider) ImportTarget(ctx context.Context, owner string, req core
 
 type reserveProvider struct{ adapter *Adapter }
 
-func (p reserveProvider) ReserveTarget(ctx context.Context, owner string, req coreexecutionv2.TargetReserveRequest) (map[string]any, error) {
+func (p reserveProvider) ReserveTarget(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.TargetReserveRequest) (map[string]any, error) {
 	a := p.adapter
 	if a == nil || !a.Ready() {
 		return nil, ErrNotReady
@@ -333,10 +342,10 @@ func (p reserveProvider) ReserveTarget(ctx context.Context, owner string, req co
 	if err := a.ensureProbe(ctx); err != nil {
 		return nil, err
 	}
-	if err := a.checkCredentialRevision(ctx, req.CredentialID, req.CredentialRevision); err != nil {
+	if err := a.checkCredentialRevision(ctx, scope, req.CredentialID, req.CredentialRevision); err != nil {
 		return nil, err
 	}
-	h, err := a.cfg.Credentials.ResolveCredential(ctx, req.CredentialID)
+	h, err := a.cfg.Credentials.ResolveCredentialScoped(ctx, scope, req.CredentialID)
 	if err != nil || h.ReferenceID != req.CredentialID {
 		return nil, ErrUnavailable
 	}
@@ -344,14 +353,14 @@ func (p reserveProvider) ReserveTarget(ctx context.Context, owner string, req co
 	if err != nil || offer.InstanceType != req.InstanceType || offer.VolumeGiB != req.VolumeGiB || offer.Architecture != "x86_64" || offer.ManagementTransport != "aws_ssm" || !offer.PublicIP || offer.PublicInbound || offer.CostAmount == "" || offer.CostCurrency == "" || offer.CostExpiresAt.IsZero() || !offer.CostExpiresAt.After(a.cfg.Now().UTC()) {
 		return nil, ErrUnavailable
 	}
-	targetID := deterministicID(owner, "aws-compute-reservation", req.IdempotencyKey)
+	targetID := deterministicID(scope, "aws-compute-reservation", req.IdempotencyKey)
 	return map[string]any{
 		"target_id": targetID, "provider": "aws", "kind": "aws_compute_reservation", "revision": uint64(1),
 		"account_id": h.AccountID, "region": h.Region, "architecture": offer.Architecture,
 		"infrastructure_profile_id": offer.InfrastructureProfileID, "credential_id": req.CredentialID, "credential_revision": req.CredentialRevision,
 		"capabilities":    []any{"compute.catalog", "compute.provision", "target.aws_compute_reservation"},
 		"network":         map[string]any{"mode": "restricted"},
-		"credential_refs": []any{map[string]any{"ref": req.CredentialID, "purpose": "aws", "revision": req.CredentialRevision, "binding_digest": credentialBindingDigest(owner, req.CredentialID, req.CredentialRevision)}},
+		"credential_refs": []any{map[string]any{"ref": req.CredentialID, "purpose": "aws", "revision": req.CredentialRevision, "binding_digest": credentialBindingDigest(scope, req.CredentialID, req.CredentialRevision)}},
 		"compute_reservation": map[string]any{
 			"infrastructure_profile_id": offer.InfrastructureProfileID, "ami_parameter": offer.AMIParameter,
 			"instance_type": offer.InstanceType, "availability_zone": offer.AvailabilityZone, "volume_gib": offer.VolumeGiB,
@@ -363,7 +372,7 @@ func (p reserveProvider) ReserveTarget(ctx context.Context, owner string, req co
 
 type observeProvider struct{ adapter *Adapter }
 
-func (p observeProvider) Observe(ctx context.Context, owner string, req coreexecutionv2.TargetObserveRequest) (map[string]any, error) {
+func (p observeProvider) Observe(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.TargetObserveRequest) (map[string]any, error) {
 	a := p.adapter
 	if a == nil || !a.Ready() || a.cfg.Store == nil {
 		return nil, ErrNotReady
@@ -371,11 +380,11 @@ func (p observeProvider) Observe(ctx context.Context, owner string, req coreexec
 	if err := a.ensureProbe(ctx); err != nil {
 		return nil, err
 	}
-	record, err := a.cfg.Store.Read(ctx, owner, "target", req.TargetID, req.TargetRevision)
+	record, err := a.cfg.Store.Read(ctx, scope, "target", req.TargetID, req.TargetRevision)
 	if err != nil {
 		return nil, err
 	}
-	target, credential, err := a.targetFromRecord(ctx, record)
+	target, credential, err := a.targetFromRecord(ctx, scope, record)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +400,7 @@ func (p observeProvider) Observe(ctx context.Context, owner string, req coreexec
 
 type invokeProvider struct{ adapter *Adapter }
 
-func (p invokeProvider) Invoke(ctx context.Context, owner string, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
+func (p invokeProvider) Invoke(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
 	a := p.adapter
 	if a == nil || !a.Ready() || a.cfg.Invoker == nil {
 		return nil, ErrNotReady
@@ -402,7 +411,7 @@ func (p invokeProvider) Invoke(ctx context.Context, owner string, req coreexecut
 	if !contains(a.allowed, req.Operation) {
 		return nil, coreexecutionv2.ErrUnsupported
 	}
-	result, err := a.cfg.Invoker.Invoke(ctx, owner, req)
+	result, err := a.cfg.Invoker.Invoke(ctx, scope, req)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -411,7 +420,7 @@ func (p invokeProvider) Invoke(ctx context.Context, owner string, req coreexecut
 
 type reconcileProvider struct{ adapter *Adapter }
 
-func (p reconcileProvider) Reconcile(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest) (map[string]any, error) {
+func (p reconcileProvider) Reconcile(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest) (map[string]any, error) {
 	a := p.adapter
 	if a == nil || !a.Ready() || a.cfg.Reconciler == nil {
 		return nil, ErrNotReady
@@ -419,7 +428,7 @@ func (p reconcileProvider) Reconcile(ctx context.Context, owner string, req core
 	if err := a.ensureProbe(ctx); err != nil {
 		return nil, err
 	}
-	result, err := a.cfg.Reconciler.Reconcile(ctx, owner, req)
+	result, err := a.cfg.Reconciler.Reconcile(ctx, scope, req)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -431,13 +440,13 @@ type storeInvoker struct{ adapter *Adapter }
 func (i storeInvoker) Ready() bool {
 	return i.adapter != nil && i.adapter.cfg.Store != nil && i.adapter.cfg.Inspector != nil && i.adapter.cfg.Credentials != nil
 }
-func (i storeInvoker) Invoke(ctx context.Context, owner string, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
+func (i storeInvoker) Invoke(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
 	if !i.Ready() || req.Operation != "target.observe" {
 		return nil, coreexecutionv2.ErrUnsupported
 	}
 	targetID := stringValue(req.Input, "target_id")
 	if targetID == "" {
-		record, err := i.adapter.cfg.Store.Read(ctx, owner, "binding", req.BindingID, req.ExpectedRevision)
+		record, err := i.adapter.cfg.Store.Read(ctx, scope, "binding", req.BindingID, req.ExpectedRevision)
 		if err != nil {
 			return nil, err
 		}
@@ -450,7 +459,7 @@ func (i storeInvoker) Invoke(ctx context.Context, owner string, req coreexecutio
 	if targetRevision == 0 {
 		targetRevision = 1
 	}
-	return observeProvider{adapter: i.adapter}.Observe(ctx, owner, coreexecutionv2.TargetObserveRequest{TargetID: targetID, TargetRevision: targetRevision, IdempotencyKey: req.IdempotencyKey})
+	return observeProvider{adapter: i.adapter}.Observe(ctx, scope, coreexecutionv2.TargetObserveRequest{TargetID: targetID, TargetRevision: targetRevision, IdempotencyKey: req.IdempotencyKey})
 }
 
 type storeReconciler struct{ adapter *Adapter }
@@ -458,11 +467,11 @@ type storeReconciler struct{ adapter *Adapter }
 func (r storeReconciler) Ready() bool {
 	return r.adapter != nil && r.adapter.cfg.Store != nil && r.adapter.cfg.Inspector != nil && r.adapter.cfg.Credentials != nil
 }
-func (r storeReconciler) Reconcile(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest) (map[string]any, error) {
+func (r storeReconciler) Reconcile(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest) (map[string]any, error) {
 	if !r.Ready() {
 		return nil, ErrNotReady
 	}
-	run, err := r.adapter.cfg.Store.Read(ctx, owner, "run", req.RunID, 0)
+	run, err := r.adapter.cfg.Store.Read(ctx, scope, "run", req.RunID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +479,7 @@ func (r storeReconciler) Reconcile(ctx context.Context, owner string, req coreex
 	if !coreworkload.ValidUUID(planID) {
 		return nil, ErrConflict
 	}
-	plan, err := r.adapter.cfg.Store.Read(ctx, owner, "plan", planID, 0)
+	plan, err := r.adapter.cfg.Store.Read(ctx, scope, "plan", planID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +491,7 @@ func (r storeReconciler) Reconcile(ctx context.Context, owner string, req coreex
 	if targetRevision == 0 {
 		targetRevision = 1
 	}
-	observation, err := observeProvider{adapter: r.adapter}.Observe(ctx, owner, coreexecutionv2.TargetObserveRequest{TargetID: targetID, TargetRevision: targetRevision, IdempotencyKey: req.IdempotencyKey})
+	observation, err := observeProvider{adapter: r.adapter}.Observe(ctx, scope, coreexecutionv2.TargetObserveRequest{TargetID: targetID, TargetRevision: targetRevision, IdempotencyKey: req.IdempotencyKey})
 	if err != nil {
 		return nil, err
 	}
@@ -493,18 +502,18 @@ func (r storeReconciler) Reconcile(ctx context.Context, owner string, req coreex
 	return map[string]any{"run_id": req.RunID, "stage_id": req.StageID, "status": status, "target_id": targetID, "observation": observation}, nil
 }
 
-func (a *Adapter) checkCredentialRevision(ctx context.Context, ref string, revision uint64) error {
+func (a *Adapter) checkCredentialRevision(ctx context.Context, scope coretask.OwnerScope, ref string, revision uint64) error {
 	if revision == 0 || ref == "" || a == nil || a.cfg.CredentialRevision == nil {
 		return ErrInvalid
 	}
-	actual, err := a.cfg.CredentialRevision(ctx, ref)
+	actual, err := a.cfg.CredentialRevision(ctx, scope, ref)
 	if err != nil || actual != revision {
 		return ErrConflict
 	}
 	return nil
 }
 
-func (a *Adapter) targetFromRecord(ctx context.Context, record coreexecutionv2.Record) (coreworkload.TargetSettings, workaws.CredentialHandle, error) {
+func (a *Adapter) targetFromRecord(ctx context.Context, scope coretask.OwnerScope, record coreexecutionv2.Record) (coreworkload.TargetSettings, workaws.CredentialHandle, error) {
 	if record.Kind != "target" || record.Revision == 0 {
 		return coreworkload.TargetSettings{}, workaws.CredentialHandle{}, ErrConflict
 	}
@@ -517,10 +526,10 @@ func (a *Adapter) targetFromRecord(ctx context.Context, record coreexecutionv2.R
 	if credentialID == "" || credentialRevision == 0 {
 		return coreworkload.TargetSettings{}, workaws.CredentialHandle{}, ErrConflict
 	}
-	if err = a.checkCredentialRevision(ctx, credentialID, credentialRevision); err != nil {
+	if err = a.checkCredentialRevision(ctx, scope, credentialID, credentialRevision); err != nil {
 		return coreworkload.TargetSettings{}, workaws.CredentialHandle{}, err
 	}
-	credential, err := a.cfg.Credentials.ResolveCredential(ctx, credentialID)
+	credential, err := a.cfg.Credentials.ResolveCredentialScoped(ctx, scope, credentialID)
 	if err != nil {
 		return coreworkload.TargetSettings{}, workaws.CredentialHandle{}, ErrUnavailable
 	}
@@ -573,13 +582,13 @@ func observationMap(targetID string, revision uint64, inspection Inspection) map
 	return map[string]any{"target_id": targetID, "target_revision": revision, "state": inspection.State, "account_id": inspection.AccountID, "region": inspection.Region, "instance_id": inspection.InstanceID, "facts": facts, "observed_at": time.Now().UTC().Format(time.RFC3339Nano)}
 }
 
-func credentialBindingDigest(owner, ref string, revision uint64) string {
-	sum := sha256.Sum256([]byte("execution-v2-credential\x00" + owner + "\x00" + ref + "\x00" + fmt.Sprint(revision)))
+func credentialBindingDigest(scope coretask.OwnerScope, ref string, revision uint64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("execution-v2-credential\x00%s\x00%d\x00%s\x00%d", scope.OwnerID, scope.AccountGeneration, ref, revision)))
 	return hex.EncodeToString(sum[:])
 }
 
-func deterministicID(owner, namespace, key string) string {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(namespace+"\x00"+strings.TrimSpace(owner)+"\x00"+key)).String()
+func deterministicID(scope coretask.OwnerScope, namespace, key string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s", namespace, strings.TrimSpace(scope.OwnerID), scope.AccountGeneration, key))).String()
 }
 
 func canonicalDigest(value any) (string, error) {

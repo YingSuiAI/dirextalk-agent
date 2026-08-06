@@ -326,6 +326,8 @@ func coreKnowledgeRPCError(err error) error {
 		return status.Error(codes.AlreadyExists, "knowledge idempotency key conflict")
 	case errors.Is(err, coreknowledge.ErrRevisionConflict), errors.Is(err, coreknowledge.ErrCursorConflict):
 		return status.Error(codes.Aborted, "knowledge revision or cursor conflict")
+	case errors.Is(err, coreknowledge.ErrActiveTasks):
+		return status.Error(codes.FailedPrecondition, coreknowledge.ActiveTasksPublicMessage)
 	case errors.Is(err, coreknowledge.ErrChecksumMismatch):
 		return status.Error(codes.DataLoss, "knowledge checksum mismatch")
 	case errors.Is(err, coreknowledge.ErrCleanupPending), errors.Is(err, coreknowledge.ErrSourceReferenced), errors.Is(err, coreknowledge.ErrIneligible):

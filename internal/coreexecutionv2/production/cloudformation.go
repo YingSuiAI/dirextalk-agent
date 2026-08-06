@@ -35,6 +35,7 @@ var serviceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0
 
 type ComputeProvisionRequest struct {
 	OwnerID             string
+	AccountGeneration   int64
 	ReservationTargetID string
 	ReservationDigest   string
 	CredentialID        string
@@ -268,7 +269,7 @@ func (p *AWSCloudFormationProvisioner) ReconcileDestroy(ctx context.Context, req
 }
 
 func normalizeProvisionRequest(req ComputeProvisionRequest, h workaws.CredentialHandle) (ComputeProvisionRequest, error) {
-	if h.Validate() != nil || strings.TrimSpace(req.OwnerID) == "" || !validUUID(req.ReservationTargetID) || !validDigest(req.ReservationDigest) || req.CredentialID != h.ReferenceID || req.CredentialRevision == 0 || req.AccountID != h.AccountID || req.Region != h.Region || !validRegion(req.Region) || !validInstanceType(req.InstanceType) || !validAZ(req.Region, req.AvailabilityZone) || req.VolumeGiB < 8 || req.VolumeGiB > 16384 || strings.TrimSpace(req.AMIParameter) == "" || !req.PublicIP || req.PublicInbound {
+	if h.Validate() != nil || strings.TrimSpace(req.OwnerID) == "" || req.AccountGeneration <= 0 || !validUUID(req.ReservationTargetID) || !validDigest(req.ReservationDigest) || req.CredentialID != h.ReferenceID || req.CredentialRevision == 0 || req.AccountID != h.AccountID || req.Region != h.Region || !validRegion(req.Region) || !validInstanceType(req.InstanceType) || !validAZ(req.Region, req.AvailabilityZone) || req.VolumeGiB < 8 || req.VolumeGiB > 16384 || strings.TrimSpace(req.AMIParameter) == "" || !req.PublicIP || req.PublicInbound {
 		return ComputeProvisionRequest{}, ErrProvisionInvalid
 	}
 	if req.StackName == "" {
@@ -302,7 +303,7 @@ func provisionTemplate() string {
 }
 
 func provisionStackTags(req ComputeProvisionRequest) []cfn.Tag {
-	return []cfn.Tag{{Key: aws.String("dirextalk-managed"), Value: aws.String("execution-v2")}, {Key: aws.String("dirextalk-stack"), Value: aws.String(req.StackName)}, {Key: aws.String("dirextalk-reservation-target"), Value: aws.String(req.ReservationTargetID)}}
+	return []cfn.Tag{{Key: aws.String("dirextalk-managed"), Value: aws.String("execution-v2")}, {Key: aws.String("dirextalk-stack"), Value: aws.String(req.StackName)}, {Key: aws.String("dirextalk-reservation-target"), Value: aws.String(req.ReservationTargetID)}, {Key: aws.String("dirextalk-account-generation"), Value: aws.String(fmt.Sprint(req.AccountGeneration))}}
 }
 
 func resourceTags() []any {
@@ -395,7 +396,7 @@ func deterministicStackName(targetID string) string {
 }
 func changeSetName(req ComputeProvisionRequest) string { return "create-" + req.RequestDigest[:24] }
 func provisionRequestDigest(req ComputeProvisionRequest) string {
-	value := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%d\x00%s", req.OwnerID, req.ReservationTargetID, req.ReservationDigest, req.Region, req.InstanceType, req.VolumeGiB, req.AvailabilityZone)
+	value := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s\x00%s\x00%d\x00%s", req.OwnerID, req.AccountGeneration, req.ReservationTargetID, req.ReservationDigest, req.Region, req.InstanceType, req.VolumeGiB, req.AvailabilityZone)
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }

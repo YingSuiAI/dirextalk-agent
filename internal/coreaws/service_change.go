@@ -2,11 +2,30 @@ package coreaws
 
 import (
 	"context"
+
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 )
 
 func (s *Service) GetChange(ctx context.Context, id string) (Change, error) {
 	if s == nil || s.repo == nil || !validUUID(id) {
+		return Change{}, ErrInvalid
+	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return Change{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return Change{}, err
+	}
+	return repository.GetChangeScoped(ctx, scope, id)
+}
+
+// GetChangeForExecution follows a Change ID already bound into a durable Core
+// Task. It is intentionally absent from the user-facing RPC surface.
+func (s *Service) GetChangeForExecution(ctx context.Context, id string) (Change, error) {
+	if s == nil || s.repo == nil || ctx == nil || !validUUID(id) {
 		return Change{}, ErrInvalid
 	}
 	return s.repo.GetChange(ctx, id)
@@ -15,11 +34,20 @@ func (s *Service) ListChanges(ctx context.Context, size int, planID, token strin
 	if s == nil || s.repo == nil {
 		return ChangePage{}, ErrInvalid
 	}
-	return s.repo.ListChanges(ctx, size, planID, token)
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return ChangePage{}, err
+	}
+	repository, err := scopedRepository(s.repo)
+	if err != nil {
+		return ChangePage{}, err
+	}
+	return repository.ListChangesScoped(ctx, scope, size, planID, token)
 }
 
 type RequestChangeInput struct {
 	PlanID, IdempotencyKey string
+	Scope                  coreteam.Scope
 	Binding                coreconfirmation.Binding
 }
 type ChangeRequestResult struct {
@@ -32,6 +60,11 @@ func (s *Service) RequestChange(ctx context.Context, in RequestChangeInput) (Cha
 	if s == nil || s.coordinator == nil || !validUUID(in.PlanID) || !validUUID(in.IdempotencyKey) {
 		return ChangeRequestResult{}, ErrInvalid
 	}
+	scope, err := credentialMutationScope(ctx)
+	if err != nil {
+		return ChangeRequestResult{}, err
+	}
+	in.Scope = scope
 	return s.coordinator.RequestChange(ctx, in)
 }
 

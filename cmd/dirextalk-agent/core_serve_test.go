@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
@@ -175,12 +176,108 @@ func TestComposeCoreAWSEnabledFailsClosedWithoutDurableDependencies(t *testing.T
 func TestComposeCoreAWSGraphEnabledBuildsRPCAndTaskHandlerWithFakes(t *testing.T) {
 	repository := coreaws.NewMemoryRepository()
 	coordinator := coreaws.NewMemoryChangeCoordinator(repository, nil, nil, time.Now)
-	composition, err := composeCoreAWSGraph(config.Config{CoreAWSEnabled: true}, repository, coordinator, nil, nil, &coreaws.FakeSTSProvider{}, coreaws.NewFakeProvider(), time.Now)
+	composition, err := composeCoreAWSGraph(config.Config{CoreAWSEnabled: true, InstanceID: "00111111-1111-4111-8111-111111111111"}, repository, coordinator, nil, nil, &coreaws.FakeSTSProvider{}, coreaws.NewFakeProvider(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if composition == nil || composition.service == nil || composition.taskHandler == nil {
 		t.Fatalf("incomplete Core AWS composition: %#v", composition)
+	}
+}
+
+func TestComposeCoreAWSGraphFailsClosedWithoutInstanceScope(t *testing.T) {
+	repository := coreaws.NewMemoryRepository()
+	coordinator := coreaws.NewMemoryChangeCoordinator(repository, nil, nil, time.Now)
+	if _, err := composeCoreAWSGraph(config.Config{CoreAWSEnabled: true}, repository, coordinator, nil, nil, &coreaws.FakeSTSProvider{}, coreaws.NewFakeProvider(), time.Now); err == nil {
+		t.Fatal("Core AWS graph accepted a missing Agent instance scope")
+	}
+}
+
+func TestComposeCoreAWSGraphBindsLegacyScopeWithoutCapabilityAccount(t *testing.T) {
+	repository := coreaws.NewMemoryRepository()
+	coordinator := coreaws.NewMemoryChangeCoordinator(repository, nil, nil, time.Now)
+	cfg := config.Config{
+		CoreAWSEnabled: true,
+		InstanceID:     "01111111-1111-4111-8111-111111111111",
+	}
+	sts := &coreaws.FakeSTSProvider{Identity: coreaws.Identity{
+		AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/legacy", PrincipalID: "AIDALEGACY",
+	}}
+	composition, err := composeCoreAWSGraph(cfg, repository, coordinator, nil, nil, sts, coreaws.NewFakeProvider(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := composition.service.CreateCredential(context.Background(), &agentv1.CoreCloudControlServiceCreateCredentialRequest{
+		IdempotencyKey:  "02111111-1111-4111-8111-111111111111",
+		Name:            "trusted",
+		Region:          "ap-northeast-3",
+		AccessKeyId:     "AKIA-TRUSTED",
+		SecretAccessKey: "trusted-secret",
+	})
+	if err != nil || created.GetCredential().GetName() != "trusted" {
+		t.Fatalf("trusted composition create=%#v err=%v", created, err)
+	}
+	credentialID := created.GetCredential().GetCredentialId()
+	if got, getErr := composition.service.GetCredential(context.Background(), &agentv1.CoreCloudControlServiceGetCredentialRequest{CredentialId: credentialID}); getErr != nil || got.GetCredential().GetCredentialId() != credentialID {
+		t.Fatalf("legacy-scoped credential get=%#v err=%v", got, getErr)
+	}
+	if listed, listErr := composition.service.ListCredentials(context.Background(), &agentv1.CoreCloudControlServiceListCredentialsRequest{PageSize: 20}); listErr != nil || len(listed.GetCredentials()) != 1 {
+		t.Fatalf("legacy-scoped credential list=%#v err=%v", listed, listErr)
+	}
+	updated, err := composition.service.UpdateCredential(context.Background(), &agentv1.CoreCloudControlServiceUpdateCredentialRequest{
+		CredentialId: credentialID, IdempotencyKey: "03111111-1111-4111-8111-111111111111",
+		ExpectedRevision: created.GetCredential().GetRevision(), Name: "trusted-updated", Region: "ap-northeast-3",
+		AccessKeyId: "AKIA-TRUSTED-UPDATED", SecretAccessKey: "trusted-updated-secret",
+	})
+	if err != nil || updated.GetCredential().GetRevision() != 2 {
+		t.Fatalf("legacy-scoped credential update=%#v err=%v", updated, err)
+	}
+	if tested, testErr := composition.service.TestCredentialIdentity(context.Background(), &agentv1.CoreCloudControlServiceTestCredentialIdentityRequest{CredentialId: credentialID}); testErr != nil || tested.GetAccountId() != sts.Identity.AccountID {
+		t.Fatalf("legacy-scoped credential test=%#v err=%v", tested, testErr)
+	}
+	plan, err := composition.service.CreatePlan(context.Background(), &agentv1.CoreCloudControlServiceCreatePlanRequest{
+		IdempotencyKey: "04111111-1111-4111-8111-111111111111", CredentialId: credentialID,
+		StackName: "legacy-scope", Operation: agentv1.CoreAWSOperation_CORE_AWS_OPERATION_CREATE,
+		Template: []byte(`{"Resources":{}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := plan.GetPlan().GetPlanId()
+	if got, getErr := composition.service.GetPlan(context.Background(), &agentv1.CoreCloudControlServiceGetPlanRequest{PlanId: planID}); getErr != nil || got.GetPlan().GetPlanId() != planID {
+		t.Fatalf("legacy-scoped Plan get=%#v err=%v", got, getErr)
+	}
+	if listed, listErr := composition.service.ListPlans(context.Background(), &agentv1.CoreCloudControlServiceListPlansRequest{PageSize: 20}); listErr != nil || len(listed.GetPlans()) != 1 {
+		t.Fatalf("legacy-scoped Plan list=%#v err=%v", listed, listErr)
+	}
+	if quote, quoteErr := composition.service.Quote(context.Background(), &agentv1.CoreCloudControlServiceQuoteRequest{PlanId: planID}); quoteErr != nil || quote.GetQuote().GetPlanId() != planID {
+		t.Fatalf("legacy-scoped quote=%#v err=%v", quote, quoteErr)
+	}
+	requested, err := composition.service.RequestChange(context.Background(), &agentv1.CoreCloudControlServiceRequestChangeRequest{
+		PlanId: planID, IdempotencyKey: "05111111-1111-4111-8111-111111111111",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeID := requested.GetChange().GetChangeId()
+	if got, getErr := composition.service.GetChange(context.Background(), &agentv1.CoreCloudControlServiceGetChangeRequest{ChangeId: changeID}); getErr != nil || got.GetChange().GetChangeId() != changeID {
+		t.Fatalf("legacy-scoped Change get=%#v err=%v", got, getErr)
+	}
+	if listed, listErr := composition.service.ListChanges(context.Background(), &agentv1.CoreCloudControlServiceListChangesRequest{PageSize: 20, PlanId: planID}); listErr != nil || len(listed.GetChanges()) != 1 {
+		t.Fatalf("legacy-scoped Change list=%#v err=%v", listed, listErr)
+	}
+	disposable, err := composition.service.CreateCredential(context.Background(), &agentv1.CoreCloudControlServiceCreateCredentialRequest{
+		IdempotencyKey: "06111111-1111-4111-8111-111111111111", Name: "disposable", Region: "ap-northeast-3",
+		AccessKeyId: "AKIA-DISPOSABLE", SecretAccessKey: "disposable-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = composition.service.DeleteCredential(context.Background(), &agentv1.CoreCloudControlServiceDeleteCredentialRequest{
+		CredentialId: disposable.GetCredential().GetCredentialId(), ExpectedRevision: 1,
+		IdempotencyKey: "07111111-1111-4111-8111-111111111111",
+	}); err != nil {
+		t.Fatalf("legacy-scoped credential delete: %v", err)
 	}
 }
 

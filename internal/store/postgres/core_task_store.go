@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -28,10 +29,14 @@ type CoreTaskStore struct{ store *Store }
 func NewCoreTaskStore(store *Store) *CoreTaskStore { return &CoreTaskStore{store: store} }
 
 func (s *CoreTaskStore) LookupMutation(ctx context.Context, operation, key string) (coretask.MutationRecord, error) {
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "task", key)
+	if scopeErr != nil {
+		return coretask.MutationRecord{}, scopeErr
+	}
 	var digest string
 	var response []byte
 	var created time.Time
-	err := s.store.pool.QueryRow(ctx, `SELECT request_hash,response_json,created_at FROM core_task_replays WHERE operation=$1 AND idempotency_key=$2`, operation, key).Scan(&digest, &response, &created)
+	err := s.store.pool.QueryRow(ctx, `SELECT request_hash,response_json,created_at FROM core_task_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4`, ownerID, generation, operation, key).Scan(&digest, &response, &created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coretask.MutationRecord{}, coretask.ErrNotFound
 	}
@@ -44,7 +49,11 @@ func (s *CoreTaskStore) CommitMutation(ctx context.Context, r coretask.MutationR
 	if r.Validate() != nil {
 		return coretask.MutationRecord{}, coretask.ErrInvalid
 	}
-	_, err := s.store.pool.Exec(ctx, `INSERT INTO core_task_replays(operation,idempotency_key,request_hash,response_json,created_at) VALUES($1,$2,$3,$4,$5)`, r.Operation, r.IdempotencyKey, r.Digest, r.Response, r.CreatedAt.UTC())
+	ownerID, generation, err := replayOwnerScope(ctx, "task", r.IdempotencyKey)
+	if err != nil {
+		return coretask.MutationRecord{}, err
+	}
+	_, err = s.store.pool.Exec(ctx, `INSERT INTO core_task_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, ownerID, generation, r.Operation, r.IdempotencyKey, r.Digest, r.Response, r.CreatedAt.UTC())
 	if err != nil {
 		return coretask.MutationRecord{}, err
 	}
@@ -72,7 +81,7 @@ func (s *CoreTaskStore) createTaskTx(ctx context.Context, tx pgx.Tx, rawSpec cor
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	id := coreTaskID(spec.IdempotencyKey)
+	id := coreTaskID(ctx, spec.IdempotencyKey)
 	att, ext, know := coreTaskJSONBytes(spec.AttachmentRefs), coreTaskJSONBytes(spec.Extensions), coreTaskJSONBytes(spec.KnowledgeRefs)
 	payload, _ := json.Marshal(spec.Payload)
 	snapshot, err := resolveTaskSnapshotTx(ctx, tx, spec)
@@ -83,6 +92,9 @@ func (s *CoreTaskStore) createTaskTx(ctx context.Context, tx pgx.Tx, rawSpec cor
 	now := time.Now().UTC()
 	_, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,$10,1,$11,1,$12,$12,$13,$14)`, id, spec.Goal, spec.ConversationID, spec.ModelProfileID, spec.IdempotencyKey, att, ext, know, spec.TimeoutSeconds, status, at.UTC(), now, string(spec.Kind), payload)
 	if err != nil {
+		return coretask.Task{}, err
+	}
+	if err = bindTaskOwnerScopeTx(ctx, tx, id); err != nil {
 		return coretask.Task{}, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, id, snapshotRaw, snapshot.Digest); err != nil {
@@ -107,6 +119,9 @@ func (s *CoreTaskStore) GetTask(ctx context.Context, id string) (coretask.Task, 
 	if !coretask.ValidUUID(id) {
 		return coretask.Task{}, coretask.ErrInvalid
 	}
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		return s.taskRow(ctx, s.store.pool.QueryRow(ctx, taskSelect+` WHERE task_id=$1 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM core_task_scopes scope WHERE scope.task_id=core_tasks.task_id AND scope.owner_id=$2 AND scope.account_generation=$3)`, id, scope.OwnerID, scope.AccountGeneration))
+	}
 	return s.taskRow(ctx, s.store.pool.QueryRow(ctx, taskSelect+` WHERE task_id=$1 AND deleted_at IS NULL`, id))
 }
 func (s *CoreTaskStore) ListTasks(ctx context.Context, q coretask.TaskListQuery) ([]coretask.Task, string, error) {
@@ -121,7 +136,14 @@ func (s *CoreTaskStore) ListTasks(ctx context.Context, q coretask.TaskListQuery)
 		}
 		cursor = string(b)
 	}
-	rows, e := s.store.pool.Query(ctx, taskSelect+` WHERE ($1 OR deleted_at IS NULL) AND ($2='' OR status=$2) AND ($3='' OR task_id>$3::uuid) ORDER BY task_id LIMIT $4`, q.IncludeDeleted, coreTaskStatusString(q.Status), cursor, q.Limit+1)
+	args := []any{q.IncludeDeleted, coreTaskStatusString(q.Status), cursor}
+	where := ` WHERE ($1 OR deleted_at IS NULL) AND ($2='' OR status=$2) AND ($3='' OR task_id>$3::uuid)`
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where += ` AND EXISTS (SELECT 1 FROM core_task_scopes scope WHERE scope.task_id=core_tasks.task_id AND scope.owner_id=$4 AND scope.account_generation=$5)`
+	}
+	args = append(args, q.Limit+1)
+	rows, e := s.store.pool.Query(ctx, taskSelect+where+` ORDER BY task_id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if e != nil {
 		return nil, "", e
 	}
@@ -200,17 +222,21 @@ func (s *CoreTaskStore) mutateRaw(ctx context.Context, op string, m coretask.Mut
 	if m.Validate() != nil {
 		return nil, coretask.ErrInvalid
 	}
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "task", m.IdempotencyKey)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
 	tx, e := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if e != nil {
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_task:"+op+":"+m.IdempotencyKey); e != nil {
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("core_task:%s:%s:%d:%s", op, ownerID, generation, m.IdempotencyKey)); e != nil {
 		return nil, e
 	}
 	var d string
 	var raw json.RawMessage
-	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_task_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, op, m.IdempotencyKey).Scan(&d, &raw)
+	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_task_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, ownerID, generation, op, m.IdempotencyKey).Scan(&d, &raw)
 	if e == nil {
 		if d != m.RequestDigest {
 			return nil, coretask.ErrConflict
@@ -227,7 +253,7 @@ func (s *CoreTaskStore) mutateRaw(ctx context.Context, op string, m coretask.Mut
 	if e != nil {
 		return nil, e
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO core_task_replays(operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4)`, op, m.IdempotencyKey, m.RequestDigest, raw); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_task_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4,$5,$6)`, ownerID, generation, op, m.IdempotencyKey, m.RequestDigest, raw); e != nil {
 		return nil, e
 	}
 	if e = tx.Commit(ctx); e != nil {
@@ -244,6 +270,9 @@ func (s *CoreTaskStore) taskRow(ctx context.Context, r coreTaskScanner) (coretas
 	return scanCoreTask(r)
 }
 func (s *CoreTaskStore) taskTx(ctx context.Context, tx pgx.Tx, id string, includeDeleted bool) (coretask.Task, error) {
+	if err := requireTaskOwnerScopeTx(ctx, tx, id); err != nil {
+		return coretask.Task{}, err
+	}
 	where := ` WHERE task_id=$1`
 	if !includeDeleted {
 		where += ` AND deleted_at IS NULL`
@@ -251,6 +280,9 @@ func (s *CoreTaskStore) taskTx(ctx context.Context, tx pgx.Tx, id string, includ
 	return s.taskRow(ctx, tx.QueryRow(ctx, taskSelect+where, id))
 }
 func (s *CoreTaskStore) taskTxLocked(ctx context.Context, tx pgx.Tx, id string, includeDeleted bool) (coretask.Task, error) {
+	if err := requireTaskOwnerScopeTx(ctx, tx, id); err != nil {
+		return coretask.Task{}, err
+	}
 	where := ` WHERE task_id=$1`
 	if !includeDeleted {
 		where += ` AND deleted_at IS NULL`
@@ -322,7 +354,13 @@ func scanCoreTask(r coreTaskScanner) (coretask.Task, error) {
 	}
 	return t, nil
 }
-func coreTaskID(key string) string { return coretaskDeterministic("task:" + key) }
+func coreTaskID(ctx context.Context, key string) string {
+	seed := "task:" + key
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		seed = fmt.Sprintf("task:%s:%d:%s", scope.OwnerID, scope.AccountGeneration, key)
+	}
+	return coretaskDeterministic(seed)
+}
 func coretaskDeterministic(seed string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
 }

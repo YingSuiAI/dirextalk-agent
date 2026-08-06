@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/google/uuid"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -26,15 +27,16 @@ func TestCredentialIdentityBindsRevisionAndReplacementInvalidates(t *testing.T) 
 	r := NewMemoryRepository()
 	sts := &FakeSTSProvider{Identity: Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test"}}
 	s := NewService(r, nil, nil, sts, nil, nil)
-	view, err := s.SaveCredential(context.Background(), CredentialInput{Name: "prod", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
+	ctx := credentialTestContext()
+	view, err := s.SaveCredential(ctx, CredentialInput{Name: "prod", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	checked, err := s.TestCredential(context.Background(), view.ID)
+	checked, err := s.TestCredential(ctx, view.ID)
 	if err != nil || checked.CredentialRevision != 1 {
 		t.Fatalf("test=%#v err=%v", checked, err)
 	}
-	updated, err := s.ReplaceCredential(context.Background(), CredentialInput{ID: view.ID, Name: "prod2", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b"}, 1, uuid.NewString())
+	updated, err := s.ReplaceCredential(ctx, CredentialInput{ID: view.ID, Name: "prod2", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b"}, 1, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,9 +45,34 @@ func TestCredentialIdentityBindsRevisionAndReplacementInvalidates(t *testing.T) 
 	}
 }
 
+func TestAWSConfirmationBindingChangesWithOwnerGeneration(t *testing.T) {
+	_, repository, _, planView := workflowFixture(t)
+	plan, err := repository.GetPlan(context.Background(), planView.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := repository.GetCredential(context.Background(), plan.CredentialID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := BindingForPlan(plan, credential)
+	otherOwner := plan
+	otherOwner.OwnerID = "@other-aws-owner:example.test"
+	ownerBinding := BindingForPlan(otherOwner, credential)
+	if ownerBinding.OwnerID == base.OwnerID || reflect.DeepEqual(ownerBinding.SecretGrants, base.SecretGrants) {
+		t.Fatalf("owner change did not alter AWS authority: base=%#v changed=%#v", base, ownerBinding)
+	}
+	otherGeneration := plan
+	otherGeneration.AccountGeneration++
+	generationBinding := BindingForPlan(otherGeneration, credential)
+	if generationBinding.ParameterDigest == base.ParameterDigest || generationBinding.SecretGrantDigest == base.SecretGrantDigest {
+		t.Fatalf("account generation did not alter AWS authority: base=%#v changed=%#v", base, generationBinding)
+	}
+}
+
 func TestAtomicFullWorkflowUsesSingleProviderToken(t *testing.T) {
 	s, repo, provider, plan := workflowFixture(t)
-	requested, err := s.RequestChange(context.Background(), RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
+	requested, err := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}

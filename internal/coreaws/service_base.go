@@ -157,11 +157,16 @@ func bindingForPlan(p Plan, c Credentials) coreconfirmation.Binding {
 	param := canonicalDigest(struct {
 		Parameters, Tags   map[string]string
 		Capabilities       []string
+		AccountGeneration  int64
 		CredentialRevision int64
 		AccountID, UserARN string
-	}{p.Parameters, p.Tags, p.Capabilities, c.Revision, c.AccountID, c.UserARN})
-	secret := canonicalDigest([]string{c.ID})
-	return coreconfirmation.Binding{OperationDomain: "aws", TargetID: canonicalTargetKey(c.AccountID, p.Region, p.StackName), TargetRevision: p.Revision, SourceVersion: "core-v1", ContentDigest: coreconfirmation.Digest(p.TemplateSHA256), ParameterDigest: coreconfirmation.Digest(param), NetworkDigest: coreconfirmation.Digest(canonicalDigest([]string{})), SecretGrantDigest: coreconfirmation.Digest(secret), SecretGrants: []coreconfirmation.SecretGrant{{ReferenceID: c.ID, Purpose: coreconfirmation.SecretPurposeAWSCredential, BindingDigest: coreconfirmation.Digest(secret)}}}
+	}{p.Parameters, p.Tags, p.Capabilities, p.AccountGeneration, c.Revision, c.AccountID, c.UserARN})
+	secret := canonicalDigest(struct {
+		OwnerID           string
+		AccountGeneration int64
+		CredentialID      string
+	}{p.OwnerID, p.AccountGeneration, c.ID})
+	return coreconfirmation.Binding{OwnerID: p.OwnerID, OperationDomain: "aws", TargetID: canonicalTargetKey(c.AccountID, p.Region, p.StackName), TargetRevision: p.Revision, SourceVersion: "core-v1", ContentDigest: coreconfirmation.Digest(p.TemplateSHA256), ParameterDigest: coreconfirmation.Digest(param), NetworkDigest: coreconfirmation.Digest(canonicalDigest([]string{})), SecretGrantDigest: coreconfirmation.Digest(secret), SecretGrants: []coreconfirmation.SecretGrant{{ReferenceID: c.ID, Purpose: coreconfirmation.SecretPurposeAWSCredential, BindingDigest: coreconfirmation.Digest(secret)}}}
 }
 
 // BindingForPlan is the canonical immutable AWS confirmation binding builder.

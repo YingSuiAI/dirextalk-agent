@@ -833,7 +833,7 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		return nil, fmt.Errorf("Knowledge embedding config: %w", err)
 	}
 	configDigest := embeddingConfig.CollectionConfigDigest
-	indexer, err := postgres.NewKnowledgeIndexer(store, embeddingConfig.EmbeddingProfileID, configDigest)
+	indexer, err := postgres.NewKnowledgeIndexer(store, embeddingConfig.EmbeddingProfileID, embeddingConfig.Dimension, configDigest)
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
@@ -903,13 +903,33 @@ func (c *coreKnowledgeComposition) sweep(ctx context.Context) error {
 	if err := postgres.SweepStaleKnowledgeStagesWithBackend(ctx, c.store, c.backend); err != nil {
 		return err
 	}
-	if err := c.reconcileEmbeddingBinding(ctx); err != nil {
-		return err
-	}
 	// Metadata commits and task creation intentionally live in separate
 	// transactions. Reconcile the durable ready/unpromoted projection at
 	// startup and on every sweep so a crash between those transactions cannot
 	// leave a memory/upload permanently invisible to semantic search.
+	if err := c.reconcileKnowledgeScope(ctx); err != nil {
+		return err
+	}
+	scopes, err := postgres.ListKnowledgeOwnerScopes(ctx, c.store, 1024)
+	if err != nil {
+		return fmt.Errorf("list Knowledge owner scopes: %w", err)
+	}
+	for _, scope := range scopes {
+		scoped, scopeErr := coretask.WithOwnerScope(ctx, scope)
+		if scopeErr != nil {
+			return fmt.Errorf("restore Knowledge owner scope: %w", scopeErr)
+		}
+		if err := c.reconcileKnowledgeScope(scoped); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *coreKnowledgeComposition) reconcileKnowledgeScope(ctx context.Context) error {
+	if err := c.reconcileEmbeddingBinding(ctx); err != nil {
+		return err
+	}
 	if c.domain != nil {
 		return c.domain.ReconcileAutoIndex(ctx, 64)
 	}

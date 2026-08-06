@@ -9,7 +9,6 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2/production"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
-	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 )
 
 // coreExecutionV2Composition is deliberately separate from the neutral
@@ -22,7 +21,7 @@ type coreExecutionV2Composition struct {
 }
 
 type coreExecutionV2ComposeDeps struct {
-	credentialResolver  workaws.CredentialResolver
+	credentialResolver  production.CredentialResolver
 	credentialRevision  production.CredentialRevision
 	inspector           production.Inspector
 	reservations        production.ReservationCatalog

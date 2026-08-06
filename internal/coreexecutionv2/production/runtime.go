@@ -20,6 +20,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 )
@@ -35,7 +36,7 @@ type RuntimeConfig struct {
 	Workload           coreworkload.Provider
 	Provisioner        ComputeProvisioner
 	Inspector          Inspector
-	Credentials        workaws.CredentialResolver
+	Credentials        CredentialResolver
 	CredentialRevision CredentialRevision
 	Now                func() time.Time
 }
@@ -48,7 +49,7 @@ type Runtime struct {
 	workload         coreworkload.Provider
 	provisioner      ComputeProvisioner
 	inspector        Inspector
-	credentials      workaws.CredentialResolver
+	credentials      CredentialResolver
 	revisionResolver CredentialRevision
 	now              func() time.Time
 	ready            atomic.Bool
@@ -75,11 +76,11 @@ func (r *Runtime) Ready() bool {
 // validating this redacted result.  That separation makes a crash between
 // provider completion and record persistence recoverable: the next call sees
 // the provider readback and skips a duplicate mutation.
-func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest) (map[string]any, error) {
-	if !r.Ready() || strings.TrimSpace(owner) == "" || !coreworkload.ValidUUID(req.RunID) || !coreworkload.ValidUUID(req.StageID) {
+func (r *Runtime) Reconcile(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest) (map[string]any, error) {
+	if !r.Ready() || scope.Validate() != nil || !coreworkload.ValidUUID(req.RunID) || !coreworkload.ValidUUID(req.StageID) {
 		return nil, ErrRuntimeNotReady
 	}
-	run, err := r.store.Read(ctx, owner, "run", req.RunID, req.ExpectedRevision)
+	run, err := r.store.Read(ctx, scope, "run", req.RunID, req.ExpectedRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +92,7 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 	if terminalRunStatus(payloadStatus) {
 		return map[string]any{"run_id": req.RunID, "stage_id": req.StageID, "status": payloadStatus}, nil
 	}
-	stage, confirmation, bindingErr := r.validateReconcileBinding(ctx, owner, req, run)
+	stage, confirmation, bindingErr := r.validateReconcileBinding(ctx, scope, req, run)
 	if bindingErr != nil {
 		return nil, bindingErr
 	}
@@ -99,7 +100,7 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 	if !coreworkload.ValidUUID(planID) {
 		return nil, ErrRuntimeConflict
 	}
-	planRecord, err := r.store.Read(ctx, owner, "plan", planID, 0)
+	planRecord, err := r.store.Read(ctx, scope, "plan", planID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +112,7 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 	if targetRevision == 0 {
 		targetRevision = 1
 	}
-	targetRecord, err := r.store.Read(ctx, owner, "target", targetID, targetRevision)
+	targetRecord, err := r.store.Read(ctx, scope, "target", targetID, targetRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +126,7 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 		if !isComputeReservation(targetRecord.Payload) {
 			return nil, err
 		}
-		materialized, provisionResult, provisionErr := r.materializeReservation(ctx, owner, req, run, stage, confirmation, targetRecord)
+		materialized, provisionResult, provisionErr := r.materializeReservation(ctx, scope, req, run, stage, confirmation, targetRecord)
 		if provisionErr != nil {
 			return provisionResult, nil
 		}
@@ -139,7 +140,7 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 	if strings.EqualFold(stringValue(run.Payload, "operation"), "destroy") {
 		kind = coreworkload.OperationDestroy
 	}
-	operation := r.operationFromRun(owner, run, req, plan, kind, targetID)
+	operation := r.operationFromRun(scope, run, req, plan, kind, targetID)
 	finish := func(result map[string]any) map[string]any {
 		merged := make(map[string]any, len(provisionEnvelope)+len(result))
 		for key, value := range provisionEnvelope {
@@ -151,7 +152,7 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 		return merged
 	}
 	if kind == coreworkload.OperationDestroy && isComputeReservation(targetRecord.Payload) {
-		return r.reconcileReservationDestroy(ctx, owner, req, run, targetRecord, plan, finish)
+		return r.reconcileReservationDestroy(ctx, scope, req, run, targetRecord, plan, finish)
 	}
 	// A successful provider readback is authoritative and avoids replaying a
 	// mutation after a crash window or lost response.
@@ -191,17 +192,17 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 // confirmed run and durable stage binding are verified before dispatch. Keeping
 // apply/destroy out of this generic invocation surface prevents an allow-list
 // configuration mistake from bypassing the confirmation boundary.
-func (r *Runtime) Invoke(ctx context.Context, owner string, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
-	if !r.Ready() || strings.TrimSpace(owner) == "" || req.BindingID == "" {
+func (r *Runtime) Invoke(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
+	if !r.Ready() || scope.Validate() != nil || req.BindingID == "" {
 		return nil, ErrRuntimeNotReady
 	}
 	if req.Operation == "target.observe" {
-		return r.invokeTargetObserve(ctx, owner, req)
+		return r.invokeTargetObserve(ctx, scope, req)
 	}
 	if req.Operation != "workload.read" {
 		return nil, coreexecutionv2.ErrUnsupported
 	}
-	binding, err := r.store.Read(ctx, owner, "binding", req.BindingID, req.ExpectedRevision)
+	binding, err := r.store.Read(ctx, scope, "binding", req.BindingID, req.ExpectedRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +217,7 @@ func (r *Runtime) Invoke(ctx context.Context, owner string, req coreexecutionv2.
 	if !coreworkload.ValidUUID(targetID) || !coreworkload.ValidUUID(planID) {
 		return nil, ErrRuntimeConflict
 	}
-	planRecord, err := r.store.Read(ctx, owner, "plan", planID, 0)
+	planRecord, err := r.store.Read(ctx, scope, "plan", planID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +225,7 @@ func (r *Runtime) Invoke(ctx context.Context, owner string, req coreexecutionv2.
 	if targetRevision == 0 {
 		targetRevision = 1
 	}
-	targetRecord, err := r.store.Read(ctx, owner, "target", targetID, targetRevision)
+	targetRecord, err := r.store.Read(ctx, scope, "target", targetID, targetRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +233,7 @@ func (r *Runtime) Invoke(ctx context.Context, owner string, req coreexecutionv2.
 	if err != nil {
 		return nil, err
 	}
-	operation := r.operationFromBinding(owner, req, plan, false, targetID)
+	operation := r.operationFromBinding(scope, req, plan, false, targetID)
 	readback, err := r.workload.Read(ctx, plan, operation)
 	if err != nil {
 		return map[string]any{"status": "uncertain", "reason": "provider_outcome_uncertain", "target_id": targetID, "plan_id": planID}, nil
@@ -240,10 +241,10 @@ func (r *Runtime) Invoke(ctx context.Context, owner string, req coreexecutionv2.
 	return map[string]any{"status": statusForOperation(operation.Kind, readback), "target_id": targetID, "plan_id": planID, "readback": redactedReadback(readback)}, nil
 }
 
-func (r *Runtime) invokeTargetObserve(ctx context.Context, owner string, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
+func (r *Runtime) invokeTargetObserve(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.InvokeRequest) (map[string]any, error) {
 	targetID := stringValue(req.Input, "target_id")
 	if targetID == "" {
-		binding, err := r.store.Read(ctx, owner, "binding", req.BindingID, req.ExpectedRevision)
+		binding, err := r.store.Read(ctx, scope, "binding", req.BindingID, req.ExpectedRevision)
 		if err != nil {
 			return nil, err
 		}
@@ -256,7 +257,7 @@ func (r *Runtime) invokeTargetObserve(ctx context.Context, owner string, req cor
 	if targetRevision == 0 {
 		targetRevision = 1
 	}
-	record, err := r.store.Read(ctx, owner, "target", targetID, targetRevision)
+	record, err := r.store.Read(ctx, scope, "target", targetID, targetRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -269,11 +270,11 @@ func (r *Runtime) invokeTargetObserve(ctx context.Context, owner string, req cor
 	if credentialID == "" || credentialRevision == 0 {
 		return nil, ErrRuntimeConflict
 	}
-	actualRevision, err := r.credentialRevision(ctx, credentialID)
+	actualRevision, err := r.credentialRevision(ctx, scope, credentialID)
 	if err != nil || actualRevision != credentialRevision {
 		return nil, ErrRuntimeConflict
 	}
-	credential, err := r.credentials.ResolveCredential(ctx, credentialID)
+	credential, err := r.credentials.ResolveCredentialScoped(ctx, scope, credentialID)
 	if err != nil || credential.ReferenceID != credentialID {
 		return nil, ErrRuntimeConflict
 	}
@@ -284,11 +285,11 @@ func (r *Runtime) invokeTargetObserve(ctx context.Context, owner string, req cor
 	return observationMap(targetID, targetRevision, inspection), nil
 }
 
-func (r *Runtime) credentialRevision(ctx context.Context, reference string) (uint64, error) {
+func (r *Runtime) credentialRevision(ctx context.Context, scope coretask.OwnerScope, reference string) (uint64, error) {
 	if r == nil || r.revisionResolver == nil {
 		return 0, ErrRuntimeNotReady
 	}
-	return r.revisionResolver(ctx, reference)
+	return r.revisionResolver(ctx, scope, reference)
 }
 
 func (r *Runtime) planFromRecords(planRecord, targetRecord coreexecutionv2.Record, materialized ...any) (coreworkload.Plan, error) {
@@ -351,26 +352,26 @@ func isComputeReservation(payload map[string]any) bool {
 // at the provider boundary.  Runtime must not create a dispatch intent for a
 // caller that presents an unrelated stage or confirmation, even if this
 // provider is called directly by a composition test or a future adapter.
-func (r *Runtime) validateReconcileBinding(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run coreexecutionv2.Record) (coreexecutionv2.Record, coreexecutionv2.Record, error) {
+func (r *Runtime) validateReconcileBinding(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest, run coreexecutionv2.Record) (coreexecutionv2.Record, coreexecutionv2.Record, error) {
 	if stringValue(run.Payload, "stage_id") != req.StageID || stringValue(run.Payload, "confirmation_id") == "" {
 		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
 	}
-	stage, err := r.store.Read(ctx, owner, "stage", req.StageID, 0)
+	stage, err := r.store.Read(ctx, scope, "stage", req.StageID, 0)
 	if err != nil {
 		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, err
 	}
-	if stage.OwnerID != owner || stage.ID != req.StageID || stringValue(stage.Payload, "run_id") != req.RunID || stringValue(stage.Payload, "confirmation_id") != stringValue(run.Payload, "confirmation_id") || stringValue(stage.Payload, "plan_id") != stringValue(run.Payload, "plan_id") || stringValue(stage.Payload, "operation") != stringValue(run.Payload, "operation") || stage.Status == "waiting_user" {
+	if stage.OwnerID != scope.OwnerID || stage.AccountGeneration != scope.AccountGeneration || stage.ID != req.StageID || stringValue(stage.Payload, "run_id") != req.RunID || stringValue(stage.Payload, "confirmation_id") != stringValue(run.Payload, "confirmation_id") || stringValue(stage.Payload, "plan_id") != stringValue(run.Payload, "plan_id") || stringValue(stage.Payload, "operation") != stringValue(run.Payload, "operation") || stage.Status == "waiting_user" {
 		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
 	}
 	confirmationID := stringValue(run.Payload, "confirmation_id")
 	if !coreworkload.ValidUUID(confirmationID) || stringValue(stage.Payload, "confirmation_id") != confirmationID {
 		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
 	}
-	confirmation, err := r.store.Read(ctx, owner, "confirmation", confirmationID, 0)
+	confirmation, err := r.store.Read(ctx, scope, "confirmation", confirmationID, 0)
 	if err != nil {
 		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, err
 	}
-	if confirmation.OwnerID != owner || confirmation.ID != confirmationID || confirmation.Status != "confirmed" || stringValue(confirmation.Payload, "state") != "confirmed" || stringValue(confirmation.Payload, "run_id") != req.RunID || stringValue(confirmation.Payload, "stage_id") != req.StageID {
+	if confirmation.OwnerID != scope.OwnerID || confirmation.AccountGeneration != scope.AccountGeneration || confirmation.ID != confirmationID || confirmation.Status != "confirmed" || stringValue(confirmation.Payload, "state") != "confirmed" || stringValue(confirmation.Payload, "run_id") != req.RunID || stringValue(confirmation.Payload, "stage_id") != req.StageID {
 		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
 	}
 	return stage, confirmation, nil
@@ -381,8 +382,8 @@ func (r *Runtime) validateReconcileBinding(ctx context.Context, owner string, re
 // external mutation may have happened even when the process died before a
 // response or the neutral run CAS; every retry therefore uses Reconcile.
 // Store.Create provides the single-writer race fence for concurrent retries.
-func (r *Runtime) ensureProvisionIntent(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run, stage, confirmation, targetRecord coreexecutionv2.Record) (bool, error) {
-	intentID := deterministicID(owner, "execution-v2-provision-intent", req.RunID+"\x00"+req.StageID)
+func (r *Runtime) ensureProvisionIntent(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest, run, stage, confirmation, targetRecord coreexecutionv2.Record) (bool, error) {
+	intentID := deterministicID(scope, "execution-v2-provision-intent", req.RunID+"\x00"+req.StageID)
 	operation := stringValue(run.Payload, "operation")
 	planID := stringValue(run.Payload, "plan_id")
 	intentPayload := map[string]any{
@@ -399,13 +400,13 @@ func (r *Runtime) ensureProvisionIntent(ctx context.Context, owner string, req c
 		"target_id":             targetRecord.ID,
 		"target_revision":       targetRecord.Revision,
 		"request_digest": runtimeDigest(map[string]any{
-			"owner_id": owner, "run_id": req.RunID, "stage_id": req.StageID, "confirmation_id": stringValue(run.Payload, "confirmation_id"),
+			"owner_id": scope.OwnerID, "account_generation": scope.AccountGeneration, "run_id": req.RunID, "stage_id": req.StageID, "confirmation_id": stringValue(run.Payload, "confirmation_id"),
 			"plan_id": planID, "operation": operation, "target_id": targetRecord.ID, "target_revision": targetRecord.Revision, "target_digest": targetRecord.Digest,
 		}),
 	}
-	existing, err := r.store.Read(ctx, owner, "dispatch_intent", intentID, 0)
+	existing, err := r.store.Read(ctx, scope, "dispatch_intent", intentID, 0)
 	if err == nil {
-		if !provisionIntentMatches(existing, owner, intentPayload) {
+		if !provisionIntentMatches(existing, scope, intentPayload) {
 			return false, ErrRuntimeConflict
 		}
 		return true, nil
@@ -414,7 +415,7 @@ func (r *Runtime) ensureProvisionIntent(ctx context.Context, owner string, req c
 		return false, err
 	}
 	now := r.now().UTC()
-	intent := coreexecutionv2.Record{OwnerID: owner, Kind: "dispatch_intent", ID: intentID, Revision: 1, Status: "dispatching", Digest: runtimeDigest(intentPayload), Payload: intentPayload, CreatedAt: now, UpdatedAt: now}
+	intent := coreexecutionv2.Record{OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, Kind: "dispatch_intent", ID: intentID, Revision: 1, Status: "dispatching", Digest: runtimeDigest(intentPayload), Payload: intentPayload, CreatedAt: now, UpdatedAt: now}
 	if _, err = r.store.Create(ctx, intent); err == nil {
 		return false, nil
 	} else if !errors.Is(err, coreexecutionv2.ErrConflict) {
@@ -422,18 +423,18 @@ func (r *Runtime) ensureProvisionIntent(ctx context.Context, owner string, req c
 	}
 	// Another reconciler won the insert race. Re-read and continue through
 	// provider Reconcile; never fall back to Create after a conflict.
-	existing, err = r.store.Read(ctx, owner, "dispatch_intent", intentID, 0)
+	existing, err = r.store.Read(ctx, scope, "dispatch_intent", intentID, 0)
 	if err != nil {
 		return false, err
 	}
-	if !provisionIntentMatches(existing, owner, intentPayload) {
+	if !provisionIntentMatches(existing, scope, intentPayload) {
 		return false, ErrRuntimeConflict
 	}
 	return true, nil
 }
 
-func provisionIntentMatches(record coreexecutionv2.Record, owner string, expected map[string]any) bool {
-	if record.OwnerID != owner || record.Kind != "dispatch_intent" || record.Status != "dispatching" && record.Status != "accepted" && record.Status != "uncertain" {
+func provisionIntentMatches(record coreexecutionv2.Record, scope coretask.OwnerScope, expected map[string]any) bool {
+	if record.OwnerID != scope.OwnerID || record.AccountGeneration != scope.AccountGeneration || record.Kind != "dispatch_intent" || record.Status != "dispatching" && record.Status != "accepted" && record.Status != "uncertain" {
 		return false
 	}
 	for _, key := range []string{"kind", "run_id", "stage_id", "confirmation_id", "plan_id", "operation", "target_id", "request_digest"} {
@@ -449,7 +450,7 @@ func provisionIntentMatches(record coreexecutionv2.Record, owner string, expecte
 // it records provisioning_started even for an uncertain response.  Every
 // later call is Reconcile-only, so a lost CloudFormation response cannot turn
 // into a second EC2 stack request.
-func (r *Runtime) materializeReservation(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run, stage, confirmation coreexecutionv2.Record, targetRecord coreexecutionv2.Record) (coreworkload.TargetSettings, map[string]any, error) {
+func (r *Runtime) materializeReservation(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest, run, stage, confirmation coreexecutionv2.Record, targetRecord coreexecutionv2.Record) (coreworkload.TargetSettings, map[string]any, error) {
 	envelope := map[string]any{"run_id": req.RunID, "stage_id": req.StageID, "provisioning_started": true}
 	if r == nil || r.provisioner == nil || !r.provisioner.Ready() {
 		envelope["status"], envelope["reason"] = "uncertain", "provisioner_unavailable"
@@ -474,12 +475,12 @@ func (r *Runtime) materializeReservation(ctx context.Context, owner string, req 
 		envelope["status"], envelope["reason"] = "uncertain", "credential_binding_invalid"
 		return coreworkload.TargetSettings{}, envelope, ErrRuntimeConflict
 	}
-	actualRevision, revisionErr := r.credentialRevision(ctx, credentialID)
+	actualRevision, revisionErr := r.credentialRevision(ctx, scope, credentialID)
 	if revisionErr != nil || actualRevision != credentialRevision {
 		envelope["status"], envelope["reason"] = "uncertain", "credential_revision_conflict"
 		return coreworkload.TargetSettings{}, envelope, ErrRuntimeConflict
 	}
-	credential, credentialErr := r.credentials.ResolveCredential(ctx, credentialID)
+	credential, credentialErr := r.credentials.ResolveCredentialScoped(ctx, scope, credentialID)
 	if credentialErr != nil || credential.ReferenceID != credentialID || credential.AccountID != stringValue(targetRecord.Payload, "account_id") || credential.Region != stringValue(targetRecord.Payload, "region") {
 		envelope["status"], envelope["reason"] = "uncertain", "credential_precondition_failed"
 		return coreworkload.TargetSettings{}, envelope, ErrRuntimeConflict
@@ -490,18 +491,18 @@ func (r *Runtime) materializeReservation(ctx context.Context, owner string, req 
 		return coreworkload.TargetSettings{}, envelope, ErrRuntimeConflict
 	}
 	request := ComputeProvisionRequest{
-		OwnerID: owner, ReservationTargetID: targetRecord.ID, ReservationDigest: reservationDigest,
+		OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, ReservationTargetID: targetRecord.ID, ReservationDigest: reservationDigest,
 		CredentialID: credentialID, CredentialRevision: credentialRevision, AccountID: credential.AccountID, Region: credential.Region,
 		InstanceType: stringValue(reservation, "instance_type"), AvailabilityZone: stringValue(reservation, "availability_zone"),
 		VolumeGiB: uintValue(reservation, "volume_gib"), AMIParameter: stringValue(reservation, "ami_parameter"),
 		PublicIP: boolValueDefault(reservation, "public_ip", true), PublicInbound: boolValueDefault(reservation, "public_inbound", false),
 	}
-	started, intentErr := r.ensureProvisionIntent(ctx, owner, req, run, stage, confirmation, targetRecord)
+	started, intentErr := r.ensureProvisionIntent(ctx, scope, req, run, stage, confirmation, targetRecord)
 	if intentErr != nil {
 		envelope["status"], envelope["reason"] = "uncertain", "provision_intent_unavailable"
 		return coreworkload.TargetSettings{}, envelope, intentErr
 	}
-	envelope["provision_intent_id"] = deterministicID(owner, "execution-v2-provision-intent", req.RunID+"\x00"+req.StageID)
+	envelope["provision_intent_id"] = deterministicID(scope, "execution-v2-provision-intent", req.RunID+"\x00"+req.StageID)
 	var result ComputeProvisionResult
 	var provisionErr error
 	if started {
@@ -564,11 +565,11 @@ func boolValueDefault(values map[string]any, key string, fallback bool) bool {
 	return fallback
 }
 
-func (r *Runtime) reconcileReservationDestroy(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run coreexecutionv2.Record, targetRecord coreexecutionv2.Record, plan coreworkload.Plan, finish func(map[string]any) map[string]any) (map[string]any, error) {
+func (r *Runtime) reconcileReservationDestroy(ctx context.Context, scope coretask.OwnerScope, req coreexecutionv2.ReconcileRequest, run coreexecutionv2.Record, targetRecord coreexecutionv2.Record, plan coreworkload.Plan, finish func(map[string]any) map[string]any) (map[string]any, error) {
 	if r.provisioner == nil || !r.provisioner.Ready() {
 		return finish(map[string]any{"run_id": req.RunID, "stage_id": req.StageID, "status": "uncertain", "reason": "provisioner_unavailable"}), nil
 	}
-	request, credential, err := r.reservationRequest(ctx, owner, targetRecord)
+	request, credential, err := r.reservationRequest(ctx, scope, targetRecord)
 	if err != nil {
 		return finish(map[string]any{"run_id": req.RunID, "stage_id": req.StageID, "status": "uncertain", "reason": "credential_precondition_failed"}), nil
 	}
@@ -593,7 +594,7 @@ func (r *Runtime) reconcileReservationDestroy(ctx context.Context, owner string,
 	return finish(runtimeResult(req, "succeeded", readback)), nil
 }
 
-func (r *Runtime) reservationRequest(ctx context.Context, owner string, targetRecord coreexecutionv2.Record) (ComputeProvisionRequest, workaws.CredentialHandle, error) {
+func (r *Runtime) reservationRequest(ctx context.Context, scope coretask.OwnerScope, targetRecord coreexecutionv2.Record) (ComputeProvisionRequest, workaws.CredentialHandle, error) {
 	reservation, ok := targetRecord.Payload["compute_reservation"].(map[string]any)
 	if !ok {
 		encoded, marshalErr := json.Marshal(targetRecord.Payload["compute_reservation"])
@@ -606,29 +607,29 @@ func (r *Runtime) reservationRequest(ctx context.Context, owner string, targetRe
 	if !coreworkload.ValidUUID(credentialID) || credentialRevision == 0 || !coreworkload.ValidDigest(targetRecord.Digest) {
 		return ComputeProvisionRequest{}, workaws.CredentialHandle{}, ErrRuntimeConflict
 	}
-	actualRevision, err := r.credentialRevision(ctx, credentialID)
+	actualRevision, err := r.credentialRevision(ctx, scope, credentialID)
 	if err != nil || actualRevision != credentialRevision {
 		return ComputeProvisionRequest{}, workaws.CredentialHandle{}, ErrRuntimeConflict
 	}
-	credential, err := r.credentials.ResolveCredential(ctx, credentialID)
+	credential, err := r.credentials.ResolveCredentialScoped(ctx, scope, credentialID)
 	if err != nil || credential.ReferenceID != credentialID || credential.AccountID != stringValue(targetRecord.Payload, "account_id") || credential.Region != stringValue(targetRecord.Payload, "region") {
 		return ComputeProvisionRequest{}, workaws.CredentialHandle{}, ErrRuntimeConflict
 	}
-	request := ComputeProvisionRequest{OwnerID: owner, ReservationTargetID: targetRecord.ID, ReservationDigest: targetRecord.Digest, CredentialID: credentialID, CredentialRevision: credentialRevision, AccountID: credential.AccountID, Region: credential.Region, InstanceType: stringValue(reservation, "instance_type"), AvailabilityZone: stringValue(reservation, "availability_zone"), VolumeGiB: uintValue(reservation, "volume_gib"), AMIParameter: stringValue(reservation, "ami_parameter"), PublicIP: boolValueDefault(reservation, "public_ip", true), PublicInbound: boolValueDefault(reservation, "public_inbound", false)}
+	request := ComputeProvisionRequest{OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, ReservationTargetID: targetRecord.ID, ReservationDigest: targetRecord.Digest, CredentialID: credentialID, CredentialRevision: credentialRevision, AccountID: credential.AccountID, Region: credential.Region, InstanceType: stringValue(reservation, "instance_type"), AvailabilityZone: stringValue(reservation, "availability_zone"), VolumeGiB: uintValue(reservation, "volume_gib"), AMIParameter: stringValue(reservation, "ami_parameter"), PublicIP: boolValueDefault(reservation, "public_ip", true), PublicInbound: boolValueDefault(reservation, "public_inbound", false)}
 	return request, credential, nil
 }
 
-func (r *Runtime) operationFromRun(owner string, run coreexecutionv2.Record, req coreexecutionv2.ReconcileRequest, plan coreworkload.Plan, kind coreworkload.OperationKind, targetID string) coreworkload.Operation {
-	return coreworkload.Operation{ID: deterministicID(owner, "execution-v2-operation", run.ID+"\x00"+req.StageID), WorkloadID: targetID, PlanID: plan.ID, Kind: kind, PlanRevision: plan.Revision, PlanDigest: plan.Digest, TargetKind: plan.TargetKind, TaskID: deterministicID(owner, "execution-v2-task", run.ID+"\x00"+req.StageID), ConfirmationID: stringValue(run.Payload, "confirmation_id"), Status: coreworkload.OperationRunning, Revision: 1, CreatedAt: r.now().UTC(), UpdatedAt: r.now().UTC()}
+func (r *Runtime) operationFromRun(scope coretask.OwnerScope, run coreexecutionv2.Record, req coreexecutionv2.ReconcileRequest, plan coreworkload.Plan, kind coreworkload.OperationKind, targetID string) coreworkload.Operation {
+	return coreworkload.Operation{ID: deterministicID(scope, "execution-v2-operation", run.ID+"\x00"+req.StageID), WorkloadID: targetID, PlanID: plan.ID, Kind: kind, PlanRevision: plan.Revision, PlanDigest: plan.Digest, TargetKind: plan.TargetKind, TaskID: deterministicID(scope, "execution-v2-task", run.ID+"\x00"+req.StageID), ConfirmationID: stringValue(run.Payload, "confirmation_id"), Status: coreworkload.OperationRunning, Revision: 1, CreatedAt: r.now().UTC(), UpdatedAt: r.now().UTC()}
 }
 
-func (r *Runtime) operationFromBinding(owner string, req coreexecutionv2.InvokeRequest, plan coreworkload.Plan, destroy bool, targetID string) coreworkload.Operation {
+func (r *Runtime) operationFromBinding(scope coretask.OwnerScope, req coreexecutionv2.InvokeRequest, plan coreworkload.Plan, destroy bool, targetID string) coreworkload.Operation {
 	kind := coreworkload.OperationApply
 	if destroy {
 		kind = coreworkload.OperationDestroy
 	}
 	now := r.now().UTC()
-	return coreworkload.Operation{ID: deterministicID(owner, "execution-v2-binding-operation", req.BindingID+"\x00"+req.IdempotencyKey), WorkloadID: targetID, PlanID: plan.ID, Kind: kind, PlanRevision: plan.Revision, PlanDigest: plan.Digest, TargetKind: plan.TargetKind, TaskID: deterministicID(owner, "execution-v2-binding-task", req.BindingID+"\x00"+req.IdempotencyKey), ConfirmationID: deterministicID(owner, "execution-v2-binding-confirmation", req.BindingID), Status: coreworkload.OperationRunning, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	return coreworkload.Operation{ID: deterministicID(scope, "execution-v2-binding-operation", req.BindingID+"\x00"+req.IdempotencyKey), WorkloadID: targetID, PlanID: plan.ID, Kind: kind, PlanRevision: plan.Revision, PlanDigest: plan.Digest, TargetKind: plan.TargetKind, TaskID: deterministicID(scope, "execution-v2-binding-task", req.BindingID+"\x00"+req.IdempotencyKey), ConfirmationID: deterministicID(scope, "execution-v2-binding-confirmation", req.BindingID), Status: coreworkload.OperationRunning, Revision: 1, CreatedAt: now, UpdatedAt: now}
 }
 
 func runtimeResult(req coreexecutionv2.ReconcileRequest, status string, readback coreworkload.Readback) map[string]any {

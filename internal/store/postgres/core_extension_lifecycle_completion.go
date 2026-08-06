@@ -20,6 +20,9 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 		return coreextension.Installation{}, e
 	}
 	defer tx.Rollback(ctx)
+	if e = requireExtensionLifecycleScopeTx(ctx, tx, c.InstallationID, c.TaskID, c.ConfirmationID); e != nil {
+		return coreextension.Installation{}, e
+	}
 	var hash string
 	_ = tx.QueryRow(ctx, `SELECT completion_hash FROM core_extension_lifecycles WHERE installation_id=$1 AND confirmation_id=$2 FOR UPDATE`, c.InstallationID, c.ConfirmationID).Scan(&hash)
 	cd := digestPG(c, "completion")
@@ -169,6 +172,25 @@ func (s *CoreExtensionStore) CompleteLifecycle(ctx context.Context, c coreextens
 	return s.Get(ctx, c.InstallationID)
 }
 
+func requireExtensionLifecycleScopeTx(ctx context.Context, tx pgx.Tx, installationID, taskID, confirmationID string) error {
+	var valid bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM core_extension_lifecycles lifecycle
+		JOIN core_extension_installations installation ON installation.installation_id=lifecycle.installation_id
+		JOIN core_task_scopes scope ON scope.task_id=lifecycle.task_id
+		WHERE lifecycle.installation_id=$1 AND lifecycle.task_id=$2 AND lifecycle.confirmation_id=$3
+		  AND installation.owner_id=scope.owner_id
+		  AND installation.account_generation=scope.account_generation
+	)`, installationID, taskID, confirmationID).Scan(&valid); err != nil {
+		return err
+	}
+	if !valid {
+		return coreextension.ErrConflict
+	}
+	return nil
+}
+
 // rollbackExtensionLifecycleTx is called by confirmation expiry/staleness
 // while the confirmation, task, projection, and staged secrets share one
 // transaction. It is deliberately a no-op for non-extension confirmations.
@@ -177,8 +199,22 @@ func rollbackExtensionLifecycleTx(ctx context.Context, tx pgx.Tx, confirmationID
 	var operation string
 	var previousCandidate, previousNetwork, previousSecrets []byte
 	var previousKind, previousSource, previousCandidateID, previousName, previousDescription, previousTransport string
-	if err := tx.QueryRow(ctx, `SELECT installation_id::text,operation,previous_candidate_json,previous_kind,previous_source,previous_candidate_id,previous_name,previous_description,previous_transport,previous_network_grants_json,previous_secret_grants_json FROM core_extension_lifecycles WHERE confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&installationID, &operation, &previousCandidate, &previousKind, &previousSource, &previousCandidateID, &previousName, &previousDescription, &previousTransport, &previousNetwork, &previousSecrets); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT lifecycle.installation_id::text,lifecycle.operation,lifecycle.previous_candidate_json,lifecycle.previous_kind,lifecycle.previous_source,lifecycle.previous_candidate_id,lifecycle.previous_name,lifecycle.previous_description,lifecycle.previous_transport,lifecycle.previous_network_grants_json,lifecycle.previous_secret_grants_json
+		FROM core_extension_lifecycles lifecycle
+		JOIN core_extension_installations installation ON installation.installation_id=lifecycle.installation_id
+		JOIN core_task_scopes scope ON scope.task_id=lifecycle.task_id
+		WHERE lifecycle.confirmation_id=$1
+		  AND installation.owner_id=scope.owner_id
+		  AND installation.account_generation=scope.account_generation
+		FOR UPDATE OF lifecycle,installation,scope`, confirmationID).Scan(&installationID, &operation, &previousCandidate, &previousKind, &previousSource, &previousCandidateID, &previousName, &previousDescription, &previousTransport, &previousNetwork, &previousSecrets); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			var lifecycleExists bool
+			if existsErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_extension_lifecycles WHERE confirmation_id=$1)`, confirmationID).Scan(&lifecycleExists); existsErr != nil {
+				return existsErr
+			}
+			if lifecycleExists {
+				return coreextension.ErrConflict
+			}
 			return nil
 		}
 		return err

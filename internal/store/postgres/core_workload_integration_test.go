@@ -12,6 +12,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/google/uuid"
@@ -59,6 +60,12 @@ func (p *pgRecoveryProvider) Read(_ context.Context, plan coreworkload.Plan, op 
 func TestCoreWorkloadPostgresAtomicLifecycle(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	ownerScope := coretask.OwnerScope{OwnerID: "@workload-owner:example.test", AccountGeneration: 5}
+	var err error
+	ctx, err = coretask.WithOwnerScope(ctx, ownerScope)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ws := NewCoreWorkloadStore(store)
 	plan, err := ws.CreatePlan(ctx, coreworkload.PlanInput{IdempotencyKey: uuid.NewString(), Summary: "integration workload", TargetKind: coreworkload.TargetCoreRunner, Target: pgWorkloadTarget(), CommandSteps: []string{"install"}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
 	if err != nil {
@@ -68,6 +75,16 @@ func TestCoreWorkloadPostgresAtomicLifecycle(t *testing.T) {
 	first, err := ws.RequestOperation(ctx, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if task, taskErr := NewCoreTaskStore(store).GetTask(ctx, first.Task.ID); taskErr != nil || task.ID != first.Task.ID {
+		t.Fatalf("owner read workload Task=%#v err=%v", task, taskErr)
+	}
+	foreignCtx, scopeErr := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: "@workload-foreign:example.test", AccountGeneration: 5})
+	if scopeErr != nil {
+		t.Fatal(scopeErr)
+	}
+	if _, taskErr := NewCoreTaskStore(store).GetTask(foreignCtx, first.Task.ID); !errors.Is(taskErr, coretask.ErrNotFound) {
+		t.Fatalf("foreign owner read workload Task err=%v", taskErr)
 	}
 	replay, err := ws.RequestOperation(ctx, request)
 	if err != nil || replay.Operation.ID != first.Operation.ID {

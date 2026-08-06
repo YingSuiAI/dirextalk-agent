@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,7 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -147,6 +153,10 @@ func (s pgKnowledgeProvenanceSearch) Search(_ context.Context, q coreknowledge.S
 }
 
 func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, func()) {
+	return knowledgePGFixtureWithMaxConns(t, 0)
+}
+
+func knowledgePGFixtureWithMaxConns(t *testing.T, maxConns int32) (context.Context, *CoreKnowledgeStore, func()) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("DIREXTALK_TEST_DATABASE_URL"))
 	if dsn == "" {
@@ -177,6 +187,9 @@ func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, fun
 	}
 	cfg, _ := pgxpool.ParseConfig(dsn)
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		_ = dropKnowledgeSchema(admin, quoted)
@@ -212,6 +225,61 @@ func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, fun
 		cancel()
 	}
 	return ctx, repo, cleanup
+}
+
+func TestCoreKnowledgeRequestIndexDoesNotReborrowTransactionPool(t *testing.T) {
+	tests := []struct {
+		name, owner string
+		maxConns    int32
+		holdConns   int
+	}{
+		{name: "single_connection", owner: "@knowledge-single-connection:example.test", maxConns: 1},
+		{name: "saturated_pool", owner: "@knowledge-saturated-pool:example.test", maxConns: 2, holdConns: 1},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, repo, cleanup := knowledgePGFixtureWithMaxConns(t, test.maxConns)
+			defer cleanup()
+			ownerCtx, err := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: test.owner, AccountGeneration: int64(index + 21)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			profileID := uuid.NewString()
+			createTestProfile(ownerCtx, t, repo.store, profileID, "pool-profile", "pool-secret")
+			digest := strings.Repeat("4", 64)
+			if _, err = repo.EnsureEmbeddingConfig(ownerCtx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+				t.Fatal(err)
+			}
+			memory, err := repo.CreateMemory(ownerCtx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "pool binding", MediaType: "text/plain"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexer, err := NewKnowledgeIndexer(repo.store, profileID, 2, digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexer.SetEmbeddingConfigReader(repo)
+			held := make([]*pgxpool.Conn, 0, test.holdConns)
+			for range test.holdConns {
+				connection, acquireErr := repo.store.pool.Acquire(ctx)
+				if acquireErr != nil {
+					t.Fatal(acquireErr)
+				}
+				held = append(held, connection)
+			}
+			defer func() {
+				for _, connection := range held {
+					connection.Release()
+				}
+			}()
+			requestCtx, cancel := context.WithTimeout(ownerCtx, 2*time.Second)
+			defer cancel()
+			ref, err := indexer.RequestIndex(requestCtx, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{memory.ID}})
+			if err != nil || !coretask.ValidUUID(ref.TaskID) {
+				t.Fatalf("request index ref=%+v err=%v", ref, err)
+			}
+		})
+	}
 }
 func dropKnowledgeSchema(pool *pgxpool.Pool, schema string) error {
 	_, err := pool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
@@ -383,6 +451,44 @@ func TestCoreKnowledgePostgresMemoryRecallIsSnapshotFreeAndBatchesAllPromotedMem
 	}
 }
 
+func TestCoreKnowledgePostgresMemoryRecallRequiresExactOwnerGeneration(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	owner := coretask.OwnerScope{OwnerID: "@knowledge-recall-owner:example.test", AccountGeneration: 3}
+	ownerCtx, err := coretask.WithOwnerScope(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := uuid.NewString()
+	digest := strings.Repeat("a", 64)
+	createTestProfile(ctx, t, repo.store, profileID, "recall-scope-embedding", "recall-scope-secret")
+	sources := []struct {
+		id    string
+		scope coretask.OwnerScope
+	}{
+		{id: "11111111-1111-4111-8111-111111111111", scope: owner},
+		{id: "22222222-2222-4222-8222-222222222222", scope: coretask.OwnerScope{OwnerID: "@knowledge-recall-foreign:example.test", AccountGeneration: owner.AccountGeneration}},
+		{id: "33333333-3333-4333-8333-333333333333", scope: coretask.OwnerScope{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration + 1}},
+	}
+	for _, source := range sources {
+		if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,owner_id,account_generation,kind,status,title,digest,size_bytes,media_type,revision,promoted_generation,promoted_revision,promoted_profile_id,promoted_profile_revision,promoted_collection_config_digest) VALUES($1,$2,$3,'memory','ready','scoped recall',repeat('b',64),1,'text/plain',1,$4,1,$5,1,$6)`, source.id, source.scope.OwnerID, source.scope.AccountGeneration, "recall-"+source.id, profileID, digest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	search := &pgMemoryRecallSearch{}
+	repo.search = search
+	page, err := repo.RecallMemory(ownerCtx, "where do I live", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(search.calls) != 1 || len(search.calls[0]) != 1 || search.calls[0][0] != sources[0].id {
+		t.Fatalf("recall candidate ids=%v, want only owner generation source %q", search.calls, sources[0].id)
+	}
+	if len(page.Matches) != 1 || page.Matches[0].SourceID != sources[0].id {
+		t.Fatalf("recall matches=%+v, want only owner generation source %q", page.Matches, sources[0].id)
+	}
+}
+
 func TestCoreKnowledgePostgresCreateMemoryDefaultsTitleBeforeReplayDigest(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
@@ -400,6 +506,290 @@ func TestCoreKnowledgePostgresCreateMemoryDefaultsTitleBeforeReplayDigest(t *tes
 	}
 	if _, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: key, Title: "different", Content: "default title", MediaType: "text/plain"}); !errors.Is(err, coreknowledge.ErrIdempotencyConflict) {
 		t.Fatalf("changed title replay error=%v, want idempotency conflict", err)
+	}
+}
+
+func TestCoreKnowledgeReplayIdentityIsOwnerGenerationScoped(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	ctxA, err := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: "@knowledge-replay-a:example.test", AccountGeneration: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: "@knowledge-replay-b:example.test", AccountGeneration: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := uuid.NewString()
+	a, err := repo.CreateMemory(ctxA, coreknowledge.MemoryCommand{
+		IdempotencyKey: key, SourceID: uuid.NewString(), Title: "owner-a", Content: "owner-a", MediaType: "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := repo.CreateMemory(ctxB, coreknowledge.MemoryCommand{
+		IdempotencyKey: key, SourceID: uuid.NewString(), Title: "owner-b", Content: "owner-b", MediaType: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("owner-b create with same raw key: %v", err)
+	}
+	if a.ID == b.ID || a.Title != "owner-a" || b.Title != "owner-b" {
+		t.Fatalf("cross-owner Knowledge replay a=%#v b=%#v", a, b)
+	}
+	var receipts int
+	if err = repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_mutation_replays WHERE operation='memory' AND idempotency_key=$1`, key).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 2 {
+		t.Fatalf("Knowledge replay receipts=%d, want 2", receipts)
+	}
+}
+
+func TestPublicKnowledgeGeneratedIDsAreOwnerGenerationScoped(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	service, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Knowledge: service})
+	capability, ok := registry.Get("agent.knowledge.v1")
+	if !ok {
+		t.Fatal("Knowledge capability is not registered")
+	}
+	publicContext := func(owner string, generation int64) context.Context {
+		return capabilityclient.WithCallContext(ctx, &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: owner, AccountGeneration: generation})
+	}
+	ctxA := publicContext("@knowledge-generated-a:example.test", 2)
+	ctxB := publicContext("@knowledge-generated-b:example.test", 7)
+	memoryKey := uuid.NewString()
+	memoryRequest := []byte(fmt.Sprintf(`{"idempotency_key":%q,"title":"generated memory","content":"generated memory"}`, memoryKey))
+	createMemory := func(callCtx context.Context) string {
+		raw, callErr := capability.HandleOperation(callCtx, "create_memory", memoryRequest)
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		var result struct {
+			MemoryID string `json:"memory_id"`
+		}
+		if callErr = json.Unmarshal(raw, &result); callErr != nil {
+			t.Fatal(callErr)
+		}
+		return result.MemoryID
+	}
+	memoryA, memoryB := createMemory(ctxA), createMemory(ctxB)
+	if memoryA == "" || memoryB == "" || memoryA == memoryB {
+		t.Fatalf("generated Memory IDs a=%q b=%q", memoryA, memoryB)
+	}
+
+	uploadKey := uuid.NewString()
+	uploadBytes := []byte("generated upload")
+	uploadDigest := sha256.Sum256(uploadBytes)
+	uploadRequest := []byte(fmt.Sprintf(`{"idempotency_key":%q,"title":"generated upload","declared_size":%d,"content_sha256":%q,"media_type":"text/plain"}`, uploadKey, len(uploadBytes), hex.EncodeToString(uploadDigest[:])))
+	startUpload := func(callCtx context.Context) (string, string) {
+		raw, callErr := capability.HandleOperation(callCtx, "start_upload", uploadRequest)
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		var result struct {
+			UploadID string `json:"upload_id"`
+			SourceID string `json:"source_id"`
+		}
+		if callErr = json.Unmarshal(raw, &result); callErr != nil {
+			t.Fatal(callErr)
+		}
+		return result.UploadID, result.SourceID
+	}
+	uploadA, sourceA := startUpload(ctxA)
+	uploadB, sourceB := startUpload(ctxB)
+	if uploadA == "" || uploadB == "" || sourceA == "" || sourceB == "" || uploadA == uploadB || sourceA == sourceB {
+		t.Fatalf("generated Upload IDs a=%q/%q b=%q/%q", uploadA, sourceA, uploadB, sourceB)
+	}
+}
+
+func TestCoreKnowledgePublicResourcesAreOwnerGenerationScoped(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	service, err := coreknowledge.NewService(repo, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Knowledge: service})
+	capability, ok := registry.Get("agent.knowledge.v1")
+	if !ok {
+		t.Fatal("Knowledge capability is not registered")
+	}
+	publicContext := func(owner string, generation int64) context.Context {
+		return capabilityclient.WithCallContext(ctx, &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: owner, AccountGeneration: generation})
+	}
+	ctxA := publicContext("@knowledge-resource-owner:example.test", 4)
+	foreignContexts := []context.Context{
+		publicContext("@knowledge-resource-foreign:example.test", 4),
+		publicContext("@knowledge-resource-owner:example.test", 5),
+	}
+	call := func(callCtx context.Context, operation, request string) ([]byte, error) {
+		t.Helper()
+		return capability.HandleOperation(callCtx, operation, []byte(request))
+	}
+	createMemory := func(title, content string) string {
+		t.Helper()
+		raw, callErr := call(ctxA, "create_memory", fmt.Sprintf(`{"title":%q,"content":%q,"idempotency_key":%q}`, title, content, uuid.NewString()))
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		var result struct {
+			MemoryID string `json:"memory_id"`
+		}
+		if json.Unmarshal(raw, &result) != nil || result.MemoryID == "" {
+			t.Fatalf("create Memory result=%s", raw)
+		}
+		return result.MemoryID
+	}
+	memoryA := createMemory("owner memory a", "owner-only memory a")
+	_ = createMemory("owner memory b", "owner-only memory b")
+
+	uploadBytes := []byte("abc")
+	uploadDigest := sha256.Sum256(uploadBytes)
+	startRaw, err := call(ctxA, "start_upload", fmt.Sprintf(`{"title":"owner upload","declared_size":3,"content_sha256":%q,"media_type":"text/plain","idempotency_key":%q}`, hex.EncodeToString(uploadDigest[:]), uuid.NewString()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var upload struct {
+		UploadID string `json:"upload_id"`
+		SourceID string `json:"source_id"`
+	}
+	if json.Unmarshal(startRaw, &upload) != nil || upload.UploadID == "" || upload.SourceID == "" {
+		t.Fatalf("start Upload result=%s", startRaw)
+	}
+
+	listRaw, err := call(ctxA, "list_sources", `{"limit":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourcePage struct {
+		NextPageToken string `json:"next_page_token"`
+	}
+	if json.Unmarshal(listRaw, &sourcePage) != nil || sourcePage.NextPageToken == "" {
+		t.Fatalf("owner source page=%s", listRaw)
+	}
+	searchRaw, err := call(ctxA, "search_memory", fmt.Sprintf(`{"query":"owner-only","source_ids":[%q],"limit":1}`, memoryA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var searchPage struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if json.Unmarshal(searchRaw, &searchPage) != nil || searchPage.NextCursor == "" {
+		t.Fatalf("owner search page=%s", searchRaw)
+	}
+
+	for index, foreign := range foreignContexts {
+		for _, request := range []struct {
+			operation string
+			payload   string
+		}{
+			{"get_source", fmt.Sprintf(`{"source_id":%q}`, memoryA)},
+			{"get_memory", fmt.Sprintf(`{"memory_id":%q}`, memoryA)},
+			{"update_memory", fmt.Sprintf(`{"memory_id":%q,"expected_revision":1,"title":"stolen","content":"stolen","idempotency_key":%q}`, memoryA, uuid.NewString())},
+			{"delete_memory", fmt.Sprintf(`{"memory_id":%q,"expected_revision":1,"idempotency_key":%q}`, memoryA, uuid.NewString())},
+			{"delete_source", fmt.Sprintf(`{"source_id":%q,"expected_revision":1,"idempotency_key":%q}`, upload.SourceID, uuid.NewString())},
+			{"append_upload_chunk", fmt.Sprintf(`{"upload_id":%q,"ordinal":0,"offset_bytes":0,"data":"YWJj","chunk_sha256":%q,"idempotency_key":%q}`, upload.UploadID, hex.EncodeToString(uploadDigest[:]), uuid.NewString())},
+			{"commit_upload", fmt.Sprintf(`{"upload_id":%q,"expected_revision":1,"content_sha256":%q,"idempotency_key":%q}`, upload.UploadID, hex.EncodeToString(uploadDigest[:]), uuid.NewString())},
+			{"search_memory", fmt.Sprintf(`{"query":"owner-only","source_ids":[%q],"limit":1}`, memoryA)},
+		} {
+			if _, callErr := call(foreign, request.operation, request.payload); !errors.Is(callErr, coreknowledge.ErrNotFound) {
+				t.Fatalf("foreign context %d %s err=%v, want not found", index, request.operation, callErr)
+			}
+		}
+		foreignList, callErr := call(foreign, "list_sources", `{}`)
+		if callErr != nil {
+			t.Fatalf("foreign context %d list: %v", index, callErr)
+		}
+		var listed struct {
+			Sources []json.RawMessage `json:"sources"`
+		}
+		if json.Unmarshal(foreignList, &listed) != nil || len(listed.Sources) != 0 {
+			t.Fatalf("foreign context %d listed owner sources: %s", index, foreignList)
+		}
+		foreignMemories, callErr := call(foreign, "list_memories", `{}`)
+		if callErr != nil {
+			t.Fatalf("foreign context %d list memories: %v", index, callErr)
+		}
+		var memories struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(foreignMemories, &memories) != nil || len(memories.Items) != 0 {
+			t.Fatalf("foreign context %d listed owner memories: %s", index, foreignMemories)
+		}
+		statusRaw, callErr := call(foreign, "status", `{}`)
+		if callErr != nil {
+			t.Fatalf("foreign context %d status: %v", index, callErr)
+		}
+		var status struct {
+			Count int `json:"count"`
+		}
+		if json.Unmarshal(statusRaw, &status) != nil || status.Count != 0 {
+			t.Fatalf("foreign context %d status counted owner sources: %s", index, statusRaw)
+		}
+		if _, callErr = call(foreign, "list_sources", fmt.Sprintf(`{"limit":1,"page_token":%q}`, sourcePage.NextPageToken)); !errors.Is(callErr, coreknowledge.ErrCursorConflict) {
+			t.Fatalf("foreign context %d reused owner list cursor err=%v", index, callErr)
+		}
+		if _, callErr = call(foreign, "search_memory", fmt.Sprintf(`{"query":"owner-only","source_ids":[%q],"limit":1,"page_token":%q}`, memoryA, searchPage.NextCursor)); !errors.Is(callErr, coreknowledge.ErrCursorConflict) {
+			t.Fatalf("foreign context %d reused owner search cursor err=%v", index, callErr)
+		}
+	}
+
+	if _, err = call(ctxA, "append_upload_chunk", fmt.Sprintf(`{"upload_id":%q,"ordinal":0,"offset_bytes":0,"data":"YWJj","chunk_sha256":%q,"idempotency_key":%q}`, upload.UploadID, hex.EncodeToString(uploadDigest[:]), uuid.NewString())); err != nil {
+		t.Fatalf("owner append after foreign attempts: %v", err)
+	}
+	if _, err = call(ctxA, "commit_upload", fmt.Sprintf(`{"upload_id":%q,"expected_revision":2,"content_sha256":%q,"idempotency_key":%q}`, upload.UploadID, hex.EncodeToString(uploadDigest[:]), uuid.NewString())); err != nil {
+		t.Fatalf("owner commit after foreign attempts: %v", err)
+	}
+}
+
+func TestCoreKnowledgeEmbeddingConfigIsOwnerGenerationScoped(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	ownerA := coretask.OwnerScope{OwnerID: "@knowledge-config-owner:example.test", AccountGeneration: 3}
+	ownerB := coretask.OwnerScope{OwnerID: "@knowledge-config-foreign:example.test", AccountGeneration: 3}
+	ownerANext := coretask.OwnerScope{OwnerID: ownerA.OwnerID, AccountGeneration: 4}
+	ctxA, err := coretask.WithOwnerScope(ctx, ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, ownerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxANext, err := coretask.WithOwnerScope(ctx, ownerANext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := []struct {
+		ctx   context.Context
+		id    string
+		model string
+	}{
+		{ctxA, uuid.NewString(), "owner-a-embedding"},
+		{ctxB, uuid.NewString(), "owner-b-embedding"},
+		{ctxANext, uuid.NewString(), "owner-a-next-embedding"},
+	}
+	digest := strings.Repeat("f", 64)
+	for _, profile := range profiles {
+		createTestProfile(profile.ctx, t, repo.store, profile.id, profile.model, profile.model+"-secret")
+		config, ensureErr := repo.EnsureEmbeddingConfig(profile.ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profile.id, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1})
+		if ensureErr != nil {
+			t.Fatalf("ensure %s config: %v", profile.model, ensureErr)
+		}
+		if config.EmbeddingProfileID != profile.id {
+			t.Fatalf("%s config profile=%s want=%s", profile.model, config.EmbeddingProfileID, profile.id)
+		}
+	}
+	for _, profile := range profiles {
+		config, getErr := repo.GetEmbeddingConfig(profile.ctx)
+		if getErr != nil || config.EmbeddingProfileID != profile.id || config.Revision != 1 {
+			t.Fatalf("get %s config=%+v err=%v", profile.model, config, getErr)
+		}
 	}
 }
 
@@ -528,6 +918,50 @@ func TestCoreKnowledgePostgresMemoryReplacementCleanupRecoversAfterDeleteFailure
 	}
 }
 
+func TestCoreKnowledgeRecoveryUpdatesPublicOwnerReplay(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	owner := coretask.OwnerScope{OwnerID: "@knowledge-recovery-owner:example.test", AccountGeneration: 6}
+	ownerCtx, err := coretask.WithOwnerScope(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory, err := repo.CreateMemory(ownerCtx, coreknowledge.MemoryCommand{
+		IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Title: "recover delete", Content: "recover delete", MediaType: "text/plain",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, ok := repo.content.(*pgKnowledgeContent)
+	if !ok {
+		t.Fatal("unexpected Knowledge content fixture")
+	}
+	content.failDelete = true
+	deleteKey := uuid.NewString()
+	command := coreknowledge.DeleteCommand{IdempotencyKey: deleteKey, SourceID: memory.ID, ExpectedRevision: memory.Revision, Kind: coreknowledge.SourceKindMemory}
+	if _, err = repo.Delete(ownerCtx, command); !errors.Is(err, coreknowledge.ErrCleanupPending) {
+		t.Fatalf("initial delete err=%v, want cleanup pending", err)
+	}
+	if err = repo.RecoverPendingCleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err = repo.store.pool.QueryRow(ctx, `SELECT status FROM core_knowledge_sources WHERE source_id=$1`, memory.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(coreknowledge.SourceStatusDeleted) {
+		t.Fatalf("recovered public source status=%q, want deleted", status)
+	}
+	var raw []byte
+	if err = repo.store.pool.QueryRow(ctx, `SELECT response_json FROM core_knowledge_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='delete' AND idempotency_key=$3`, owner.OwnerID, owner.AccountGeneration, deleteKey).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var replay knowledgeReplay
+	if err = json.Unmarshal(raw, &replay); err != nil || replay.Source.Status != coreknowledge.SourceStatusDeleted {
+		t.Fatalf("recovered public replay=%#v err=%v", replay, err)
+	}
+}
+
 func TestCoreKnowledgePostgresDeleteResolvesPendingMemoryReplacement(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
@@ -632,6 +1066,53 @@ func TestCoreKnowledgePostgresAutoIndexCandidateAndPromotionProjection(t *testin
 	}
 }
 
+func TestCoreKnowledgeAutoIndexCandidatesRequireExactOwnerScope(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	ownerA := coretask.OwnerScope{OwnerID: "@knowledge-candidate-a:example.test", AccountGeneration: 3}
+	ownerB := coretask.OwnerScope{OwnerID: "@knowledge-candidate-b:example.test", AccountGeneration: 8}
+	ctxA, err := coretask.WithOwnerScope(ctx, ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, ownerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "internal", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceA, err := repo.CreateMemory(ctxA, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "owner a", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceB, err := repo.CreateMemory(ctxB, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "owner b", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID, digest := uuid.NewString(), strings.Repeat("9", 64)
+	for name, scoped := range map[string]struct {
+		ctx  context.Context
+		want string
+	}{
+		"internal": {ctx: ctx, want: internal.ID},
+		"owner_a":  {ctx: ctxA, want: sourceA.ID},
+		"owner_b":  {ctx: ctxB, want: sourceB.ID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidates, listErr := repo.ListAutoIndexCandidates(scoped.ctx, profileID, digest, 8)
+			if listErr != nil || len(candidates) != 1 || candidates[0].ID != scoped.want {
+				t.Fatalf("candidates=%+v err=%v, want only %s", candidates, listErr, scoped.want)
+			}
+		})
+	}
+	scopes, err := ListKnowledgeOwnerScopes(ctx, repo.store, 8)
+	if err != nil || len(scopes) != 2 || scopes[0] != ownerA || scopes[1] != ownerB {
+		t.Fatalf("public Knowledge scopes=%+v err=%v, want owner A and B only", scopes, err)
+	}
+}
+
 func TestCoreKnowledgeIndexerAutoExplicitAndConcurrentReplay(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
@@ -642,7 +1123,7 @@ func TestCoreKnowledgeIndexerAutoExplicitAndConcurrentReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	indexer, err := NewKnowledgeIndexer(repo.store, profileID, collectionDigest)
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, config.Dimension, collectionDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +1145,7 @@ func TestCoreKnowledgeIndexerAutoExplicitAndConcurrentReplay(t *testing.T) {
 	if err != nil || explicit.TaskID != auto.TaskID {
 		t.Fatalf("explicit request did not converge on automatic task: explicit=%+v auto=%+v err=%v", explicit, auto, err)
 	}
-	restarted, err := NewKnowledgeIndexer(repo.store, config.EmbeddingProfileID, config.CollectionConfigDigest)
+	restarted, err := NewKnowledgeIndexer(repo.store, config.EmbeddingProfileID, config.Dimension, config.CollectionConfigDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,6 +1178,46 @@ func TestCoreKnowledgeIndexerAutoExplicitAndConcurrentReplay(t *testing.T) {
 	}
 }
 
+func TestCoreKnowledgeAutoIndexPreservesSourceOwnerScope(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	ownerA := coretask.OwnerScope{OwnerID: "@knowledge-owner-a:example.test", AccountGeneration: 4}
+	ownerB := coretask.OwnerScope{OwnerID: "@knowledge-owner-b:example.test", AccountGeneration: 9}
+	ctxA, err := coretask.WithOwnerScope(ctx, ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, ownerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileID := uuid.NewString()
+	createTestProfile(ctxA, t, repo.store, profileID, "owner-index-embed", "owner-index-secret")
+	digest := strings.Repeat("e", 64)
+	if _, err = repo.EnsureEmbeddingConfig(ctxA, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	source, err := repo.CreateMemory(ctxA, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), SourceID: uuid.NewString(), Content: "owner scoped automatic task", MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, 2, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := indexer.RequestIndex(ctxA, coreknowledge.IndexRequest{IdempotencyKey: uuid.NewString(), SourceIDs: []string{source.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := NewCoreTaskStore(repo.store)
+	if _, err = tasks.GetTask(ctxB, ref.TaskID); !errors.Is(err, coretask.ErrNotFound) {
+		t.Fatalf("foreign owner read auto-index Task err=%v", err)
+	}
+	if task, ownerErr := tasks.GetTask(ctxA, ref.TaskID); ownerErr != nil || task.ID != ref.TaskID {
+		t.Fatalf("owner read auto-index Task=%#v err=%v", task, ownerErr)
+	}
+}
+
 func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
@@ -715,7 +1236,7 @@ func TestCoreKnowledgePostgresEmbeddingBindingMarksReadySourceStaleAndRequeues(t
 	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, "generation-old", oldProfile, digest); err != nil {
 		t.Fatal(err)
 	}
-	indexer, err := NewKnowledgeIndexer(repo.store, oldProfile, digest)
+	indexer, err := NewKnowledgeIndexer(repo.store, oldProfile, 2, digest)
 	if err != nil {
 		t.Fatal(err)
 	}

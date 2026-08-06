@@ -23,7 +23,9 @@ func (e Execution) Validate() error {
 	if !validUUID(e.ExecutionID) || !validUUID(e.PlanID) || !validUUID(e.TaskID) || !validUUID(e.ConfirmationID) ||
 		(Scope{OwnerID: e.OwnerID, AccountGeneration: e.AccountGeneration}).Validate() != nil ||
 		validateExecutionStatus(e.Status) != nil || e.Revision == 0 || e.CreatedAt.IsZero() ||
-		e.UpdatedAt.IsZero() || e.UpdatedAt.Before(e.CreatedAt) {
+		e.UpdatedAt.IsZero() || e.UpdatedAt.Before(e.CreatedAt) ||
+		(IsTerminalExecution(e.Status) != !e.CleanupVerifiedAt.IsZero()) ||
+		(!e.CleanupVerifiedAt.IsZero() && (e.CleanupVerifiedAt.Before(e.CreatedAt) || e.CleanupVerifiedAt.After(e.UpdatedAt))) {
 		return ErrInvalid
 	}
 	ids := map[string]struct{}{}
@@ -34,6 +36,15 @@ func (e Execution) Validate() error {
 		ids[id] = struct{}{}
 	}
 	return nil
+}
+
+func IsTerminalExecution(status ExecutionStatus) bool {
+	switch status {
+	case ExecutionCompleted, ExecutionFailed, ExecutionCanceled, ExecutionTimedOut:
+		return true
+	default:
+		return false
+	}
 }
 
 func CanTransitionExecution(from, to ExecutionStatus) bool {
@@ -63,6 +74,7 @@ type Execution struct {
 	AccountGeneration int64           `json:"account_generation"`
 	Status            ExecutionStatus `json:"status"`
 	Revision          uint64          `json:"revision"`
+	CleanupVerifiedAt time.Time       `json:"cleanup_verified_at,omitempty"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 }
@@ -118,4 +130,8 @@ type Repository interface {
 	ListExecutions(context.Context, ListQuery) (Page, error)
 	CompareAndSwapExecution(context.Context, Scope, Execution, uint64) (Execution, error)
 	ListRunnableRoles(context.Context, Scope, string, uint32) ([]RoleRun, error)
+}
+
+type ActiveExecutionGuard interface {
+	RequireNoActiveTeamExecution(context.Context, Scope) error
 }

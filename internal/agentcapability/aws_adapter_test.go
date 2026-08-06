@@ -13,9 +13,30 @@ import (
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
+
+type capabilityAWSGuardRepository struct {
+	*coreaws.MemoryRepository
+	scope coreteam.Scope
+}
+
+func (repository *capabilityAWSGuardRepository) CreateCredentialGuarded(ctx context.Context, scope coreteam.Scope, credential coreaws.Credentials) (coreaws.Credentials, error) {
+	repository.scope = scope
+	return repository.MemoryRepository.CreateCredential(ctx, credential)
+}
+
+func (repository *capabilityAWSGuardRepository) UpdateCredentialGuarded(ctx context.Context, scope coreteam.Scope, credential coreaws.Credentials, expected int64) (coreaws.Credentials, error) {
+	repository.scope = scope
+	return repository.MemoryRepository.UpdateCredential(ctx, credential, expected)
+}
+
+func (repository *capabilityAWSGuardRepository) DeleteCredentialGuarded(ctx context.Context, scope coreteam.Scope, id string, expected int64) error {
+	repository.scope = scope
+	return repository.MemoryRepository.DeleteCredential(ctx, id, expected)
+}
 
 func TestCoreAWSCapabilityUsesLowerSnakeRedactedCredentialDTO(t *testing.T) {
 	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, nil, nil, nil)
@@ -48,10 +69,14 @@ func TestCoreAWSCapabilityTestCredentialIsDurablyIdempotent(t *testing.T) {
 	const firstKey = "22222222-2222-4222-8222-222222222222"
 	const concurrentKey = "33333333-3333-4333-8333-333333333333"
 	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: "owner", AccountGeneration: 1, GrantedScopes: []string{"agent:aws:credentials:write"}})
+	serviceCtx, err := coreaws.WithCredentialMutationScope(ctx, coreteam.Scope{OwnerID: "owner", AccountGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sts := &coreaws.FakeSTSProvider{Identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test", PrincipalID: "principal"}}
 	now := time.Date(2026, time.August, 6, 1, 2, 3, 0, time.UTC)
 	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, sts, nil, func() time.Time { return now })
-	if _, err := service.SaveCredential(ctx, coreaws.CredentialInput{ID: credentialID, Name: "prod", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret", IdempotencyKey: "44444444-4444-4444-8444-444444444444"}); err != nil {
+	if _, err := service.SaveCredential(serviceCtx, coreaws.CredentialInput{ID: credentialID, Name: "prod", Region: "us-east-1", AccessKeyID: "access", SecretAccessKey: "secret", IdempotencyKey: "44444444-4444-4444-8444-444444444444"}); err != nil {
 		t.Fatal(err)
 	}
 	capability := NewCoreAWSCapability(service)
@@ -109,6 +134,28 @@ func TestCoreAWSCapabilityTestCredentialIsDurablyIdempotent(t *testing.T) {
 	}
 	if sts.Calls != 2 {
 		t.Fatalf("same-key concurrent provider calls=%d, want 2 total provider calls", sts.Calls)
+	}
+}
+
+func TestCoreAWSCapabilityCredentialScopeComesFromAuthenticatedContext(t *testing.T) {
+	repository := &capabilityAWSGuardRepository{MemoryRepository: coreaws.NewMemoryRepository()}
+	capability := NewCoreAWSCapability(coreaws.NewService(repository, nil, nil, nil, nil, nil))
+	permission := &capv1.PermissionContext{
+		AuthenticatedOwnerId: "owner-from-auth", AccountGeneration: 8,
+		GrantedScopes: []string{"agent:aws:credentials:write"},
+	}
+	ctx := capabilityclient.WithCallContext(context.Background(), &capv1.CallContext{}, permission)
+	_, err := capability.HandleOperation(ctx, "create_credential", []byte(`{"idempotency_key":"`+uuid.NewString()+`","name":"prod","region":"ap-northeast-3","access_key_id":"AKIA-AUTH","secret_access_key":"auth-secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := coreteam.Scope{OwnerID: permission.GetAuthenticatedOwnerId(), AccountGeneration: permission.GetAccountGeneration()}
+	if repository.scope != want {
+		t.Fatalf("credential scope=%#v want=%#v", repository.scope, want)
+	}
+	_, err = capability.HandleOperation(ctx, "create_credential", []byte(`{"idempotency_key":"`+uuid.NewString()+`","name":"forged","region":"ap-northeast-3","access_key_id":"AKIA-FORGED","secret_access_key":"forged-secret","owner_id":"forged-owner","account_generation":99}`))
+	if err == nil {
+		t.Fatal("credential request accepted caller-supplied owner scope")
 	}
 }
 

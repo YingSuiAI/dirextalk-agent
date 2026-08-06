@@ -32,12 +32,67 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 		return coretask.Task{}, coretask.Lease{}, e
 	}
 	var id string
-	e = tx.QueryRow(ctx, `SELECT task_id FROM core_tasks WHERE deleted_at IS NULL AND ((status='running' AND lease_expires_at <= $1) OR (status='queued' AND available_at <= $1) OR (status='waiting_user' AND execution_deadline_at IS NOT NULL AND execution_deadline_at <= $1)) ORDER BY CASE WHEN status='running' THEN 0 WHEN status='waiting_user' THEN 1 ELSE 2 END, available_at,created_at,task_id FOR UPDATE SKIP LOCKED LIMIT 1`, at.UTC()).Scan(&id)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
+	type dueCandidate struct {
+		id                     string
+		priority               int
+		availableAt, createdAt time.Time
 	}
-	if e != nil {
-		return coretask.Task{}, coretask.Lease{}, e
+	var cursor *dueCandidate
+	for id == "" {
+		args := []any{at.UTC()}
+		where := ""
+		if cursor != nil {
+			args = append(args, cursor.priority, cursor.availableAt, cursor.createdAt, cursor.id)
+			where = ` AND (CASE WHEN status='running' THEN 0 WHEN status='waiting_user' THEN 1 ELSE 2 END,available_at,created_at,task_id) > ($2,$3,$4,$5::uuid)`
+		}
+		rows, queryErr := tx.Query(ctx, `SELECT task_id::text,CASE WHEN status='running' THEN 0 WHEN status='waiting_user' THEN 1 ELSE 2 END,available_at,created_at FROM core_tasks WHERE deleted_at IS NULL AND ((status='running' AND lease_expires_at <= $1) OR (status='queued' AND available_at <= $1) OR (status='waiting_user' AND execution_deadline_at IS NOT NULL AND execution_deadline_at <= $1))`+where+` ORDER BY CASE WHEN status='running' THEN 0 WHEN status='waiting_user' THEN 1 ELSE 2 END,available_at,created_at,task_id LIMIT 256`, args...)
+		if queryErr != nil {
+			return coretask.Task{}, coretask.Lease{}, queryErr
+		}
+		candidates := make([]dueCandidate, 0, 256)
+		for rows.Next() {
+			var candidate dueCandidate
+			if e = rows.Scan(&candidate.id, &candidate.priority, &candidate.availableAt, &candidate.createdAt); e != nil {
+				rows.Close()
+				return coretask.Task{}, coretask.Lease{}, e
+			}
+			candidate.availableAt = candidate.availableAt.UTC()
+			candidate.createdAt = candidate.createdAt.UTC()
+			candidates = append(candidates, candidate)
+		}
+		if e = rows.Err(); e != nil {
+			rows.Close()
+			return coretask.Task{}, coretask.Lease{}, e
+		}
+		rows.Close()
+		if len(candidates) == 0 {
+			break
+		}
+		for _, candidate := range candidates {
+			var acquired bool
+			if acquired, e = tryLockTeamCredentialMutationForTask(ctx, tx, candidate.id); e != nil {
+				return coretask.Task{}, coretask.Lease{}, e
+			}
+			if !acquired {
+				continue
+			}
+			e = tx.QueryRow(ctx, `SELECT task_id::text FROM core_tasks WHERE task_id=$2 AND deleted_at IS NULL AND ((status='running' AND lease_expires_at <= $1) OR (status='queued' AND available_at <= $1) OR (status='waiting_user' AND execution_deadline_at IS NOT NULL AND execution_deadline_at <= $1)) FOR UPDATE SKIP LOCKED`, at.UTC(), candidate.id).Scan(&id)
+			if errors.Is(e, pgx.ErrNoRows) {
+				continue
+			}
+			if e != nil {
+				return coretask.Task{}, coretask.Lease{}, e
+			}
+			break
+		}
+		if len(candidates) < 256 {
+			break
+		}
+		last := candidates[len(candidates)-1]
+		cursor = &last
+	}
+	if id == "" {
+		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 	}
 	t, e := s.taskTx(ctx, tx, id, false)
 	if e != nil {
@@ -47,10 +102,19 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 	}
 	if t.ExecutionDeadlineAt != nil && !at.UTC().Before(*t.ExecutionDeadlineAt) {
-		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),failure_code='task_timed_out',failure_summary='task timed out',lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE task_id=$1`, id, at.UTC()); e != nil {
+		if e = terminalizeConfirmationForTaskTx(ctx, tx, id, "task_timed_out", at.UTC()); e != nil {
 			return coretask.Task{}, coretask.Lease{}, e
 		}
-		if e = terminalizeConfirmationForTaskTx(ctx, tx, id, "task_timed_out", at.UTC()); e != nil {
+		if t.Spec.Kind == coretask.TaskKindKnowledgeIndex {
+			quiescentAfter := at.UTC()
+			if t.Lease != nil && t.Lease.ExpiresAt.After(quiescentAfter) {
+				quiescentAfter = t.Lease.ExpiresAt
+			}
+			if e = failKnowledgeIndexTaskTx(ctx, tx, id, "task_timed_out", "task timed out", at.UTC(), &quiescentAfter); e != nil {
+				return coretask.Task{}, coretask.Lease{}, e
+			}
+		}
+		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),failure_code='task_timed_out',failure_summary='task timed out',lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE task_id=$1`, id, at.UTC()); e != nil {
 			return coretask.Task{}, coretask.Lease{}, e
 		}
 		if t.Status == coretask.StatusRunning {
@@ -135,12 +199,32 @@ func (s *CoreTaskStore) coreTerminal(ctx context.Context, f coretask.Fence, at t
 		return coretask.Task{}, e
 	}
 	defer tx.Rollback(ctx)
+	if e = lockTeamCredentialMutationForTask(ctx, tx, f.TaskID); e != nil {
+		return coretask.Task{}, e
+	}
+	current, e := s.taskTxLocked(ctx, tx, f.TaskID, false)
+	if e != nil {
+		return coretask.Task{}, e
+	}
+	if current.Status != coretask.StatusRunning || current.Attempt != f.Attempt || current.LeaseEpoch != f.LeaseEpoch || current.Revision != f.ExpectedRevision || current.Lease == nil || !current.Lease.ExpiresAt.After(at.UTC()) {
+		return coretask.Task{}, coretask.ErrLeaseConflict
+	}
 	tag, e := tx.Exec(ctx, `UPDATE core_tasks SET status=$1,result_json=$2,failure_code=$3,failure_summary=$4,lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$5 WHERE task_id=$6 AND status='running' AND attempt=$7 AND lease_epoch=$8 AND revision=$9 AND lease_expires_at>$5`, status, result, code, summary, at.UTC(), f.TaskID, f.Attempt, f.LeaseEpoch, f.ExpectedRevision)
 	if e != nil {
 		return coretask.Task{}, e
 	}
 	if tag.RowsAffected() != 1 {
 		return coretask.Task{}, coretask.ErrLeaseConflict
+	}
+	if status == string(coretask.StatusFailed) && current.Spec.Kind == coretask.TaskKindKnowledgeIndex {
+		var quiescentAfter *time.Time
+		if code == "task_timed_out" {
+			expiresAt := current.Lease.ExpiresAt
+			quiescentAfter = &expiresAt
+		}
+		if e = failKnowledgeIndexTaskTx(ctx, tx, f.TaskID, code, summary, at.UTC(), quiescentAfter); e != nil {
+			return coretask.Task{}, e
+		}
 	}
 	if code == "task_timed_out" {
 		if e = terminalizeConfirmationForTaskTx(ctx, tx, f.TaskID, code, at.UTC()); e != nil {
@@ -214,6 +298,9 @@ func (s *CoreTaskStore) AppendProgress(ctx context.Context, c coretask.ProgressC
 func (s *CoreTaskStore) ListProgress(ctx context.Context, id string, after uint64, limit int) ([]coretask.Progress, string, error) {
 	if !coretask.ValidUUID(id) || limit <= 0 || limit > 200 {
 		return nil, "", coretask.ErrInvalid
+	}
+	if e := requireTaskOwnerScope(ctx, s.store, id); e != nil {
+		return nil, "", e
 	}
 	rows, e := s.store.pool.Query(ctx, `SELECT sequence,event_id::text,attempt,status,phase,progress_message,percent,result_json,error_code,error_summary,occurred_at FROM core_task_events WHERE task_id=$1 AND sequence>$2 ORDER BY sequence LIMIT $3`, id, after, limit+1)
 	if e != nil {
@@ -307,6 +394,9 @@ func (s *CoreTaskStore) CancelTask(ctx context.Context, c coretask.CancelCommand
 		return coretask.Task{}, coretask.ErrInvalid
 	}
 	return s.mutateTask(ctx, coreTaskCancelOp, c.Mutation, func(tx pgx.Tx) (coretask.Task, error) {
+		if e := lockTeamCredentialMutationForTask(ctx, tx, c.TaskID); e != nil {
+			return coretask.Task{}, e
+		}
 		t, e := s.taskTx(ctx, tx, c.TaskID, false)
 		if e != nil {
 			return coretask.Task{}, e
@@ -334,15 +424,15 @@ func (s *CoreTaskStore) CancelTask(ctx context.Context, c coretask.CancelCommand
 				return coretask.Task{}, e
 			}
 		}
+		if e = terminalizeConfirmationForTaskTx(ctx, tx, c.TaskID, "task_canceled", c.At.UTC()); e != nil {
+			return coretask.Task{}, e
+		}
 		tag, e := tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',failure_code='user_canceled',failure_summary=$1,lease_epoch=$2,lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$3 WHERE task_id=$4 AND revision=$5`, c.Reason, epoch, c.At.UTC(), c.TaskID, c.Mutation.ExpectedRevision)
 		if e != nil || tag.RowsAffected() != 1 {
 			if e != nil {
 				return coretask.Task{}, e
 			}
 			return coretask.Task{}, coretask.ErrRevisionConflict
-		}
-		if e = terminalizeConfirmationForTaskTx(ctx, tx, c.TaskID, "task_canceled", c.At.UTC()); e != nil {
-			return coretask.Task{}, e
 		}
 		if running {
 			if _, e = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1 WHERE singleton=true`, c.At.UTC()); e != nil {
@@ -378,6 +468,9 @@ func (s *CoreTaskStore) RetryTask(ctx context.Context, c coretask.RetryCommand) 
 		att, ext, know := coreTaskJSONBytes(next.Spec.AttachmentRefs), coreTaskJSONBytes(next.Spec.Extensions), coreTaskJSONBytes(next.Spec.KnowledgeRefs)
 		payload, _ := json.Marshal(next.Spec.Payload)
 		if _, e = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,progress_sequence,available_at,retry_of_task_id,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,'queued',1,$10,$11,1,$12,$12,$13,$14)`, next.ID, next.Spec.Goal, next.Spec.ConversationID, next.Spec.ModelProfileID, next.Spec.IdempotencyKey, att, ext, know, next.Spec.TimeoutSeconds, next.Spec.AvailableAt, next.RetryOfTaskID, c.At.UTC(), string(next.Spec.Kind), payload); e != nil {
+			return coretask.Task{}, e
+		}
+		if e = bindTaskOwnerScopeTx(ctx, tx, next.ID); e != nil {
 			return coretask.Task{}, e
 		}
 		if _, e = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, next.ID, raw, orig.Snapshot.Digest); e != nil {

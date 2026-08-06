@@ -16,7 +16,7 @@ import (
 // runtime. Implementations must keep provider credentials and calls inside the
 // typed coreaws service.
 type AWSChangeService interface {
-	GetChange(context.Context, string) (coreaws.Change, error)
+	GetChangeForExecution(context.Context, string) (coreaws.Change, error)
 	ConsumeChange(context.Context, coreaws.ConsumeChangeCommand) (coreaws.Reservation, error)
 	ExecuteChange(context.Context, string) (coreaws.Change, error)
 }
@@ -41,7 +41,7 @@ func runAWSChangeTask(ctx context.Context, task coretask.Task, service AWSChange
 	if payload == nil || !coretask.ValidUUID(payload.ChangeID) {
 		return ManagedOutcome{Err: coretask.ErrInvalid, TerminalOwned: true}
 	}
-	change, err := service.GetChange(ctx, payload.ChangeID)
+	change, err := service.GetChangeForExecution(ctx, payload.ChangeID)
 	if err != nil {
 		return ManagedOutcome{Err: err}
 	}

@@ -340,7 +340,7 @@ func safeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	for _, candidate := range []error{ErrInvalid, ErrNotFound, ErrConflict, ErrIdempotencyConflict, ErrRevisionConflict, ErrChecksumMismatch, ErrPathTraversal, ErrCleanupPending} {
+	for _, candidate := range []error{ErrInvalid, ErrNotFound, ErrConflict, ErrActiveTasks, ErrIdempotencyConflict, ErrRevisionConflict, ErrChecksumMismatch, ErrPathTraversal, ErrCleanupPending} {
 		if errors.Is(err, candidate) {
 			return candidate
 		}

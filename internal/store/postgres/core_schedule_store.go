@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
@@ -20,9 +21,13 @@ type CoreScheduleStore struct{ store *Store }
 // adapters. It returns the persisted response even when the live schedule was
 // subsequently deleted.
 func (s *CoreScheduleStore) LookupScheduleMutation(ctx context.Context, operation, key, digest string) (coretask.Schedule, bool, error) {
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "schedule", key)
+	if scopeErr != nil {
+		return coretask.Schedule{}, false, scopeErr
+	}
 	var storedDigest string
 	var raw []byte
-	err := s.store.pool.QueryRow(ctx, `SELECT request_hash,response_json FROM core_schedule_replays WHERE operation=$1 AND idempotency_key=$2`, operation, key).Scan(&storedDigest, &raw)
+	err := s.store.pool.QueryRow(ctx, `SELECT request_hash,response_json FROM core_schedule_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4`, ownerID, generation, operation, key).Scan(&storedDigest, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coretask.Schedule{}, false, coretask.ErrNotFound
 	}
@@ -39,6 +44,27 @@ func (s *CoreScheduleStore) LookupScheduleMutation(ctx context.Context, operatio
 	return schedule, true, nil
 }
 
+func (s *CoreScheduleStore) LookupScheduleMutationIdentity(ctx context.Context, operation, key string) (coretask.Schedule, bool, error) {
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "schedule", key)
+	if scopeErr != nil {
+		return coretask.Schedule{}, false, scopeErr
+	}
+	var raw []byte
+	err := s.store.pool.QueryRow(ctx, `SELECT response_json FROM core_schedule_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4`, ownerID, generation, operation, key).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return coretask.Schedule{}, false, coretask.ErrNotFound
+	}
+	if err != nil {
+		return coretask.Schedule{}, false, err
+	}
+	var schedule coretask.Schedule
+	if json.Unmarshal(raw, &schedule) != nil {
+		return coretask.Schedule{}, false, coretask.ErrInvalid
+	}
+	schedule.Replayed = true
+	return schedule, true, nil
+}
+
 func NewCoreScheduleStore(s *Store) *CoreScheduleStore { return &CoreScheduleStore{store: s} }
 
 func (s *CoreScheduleStore) FindOccurrence(ctx context.Context, scheduleID, triggerKey string) (coretask.Occurrence, error) {
@@ -46,7 +72,13 @@ func (s *CoreScheduleStore) FindOccurrence(ctx context.Context, scheduleID, trig
 		return coretask.Occurrence{}, coretask.ErrInvalid
 	}
 	var out coretask.Occurrence
-	err := s.store.pool.QueryRow(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND trigger_key=$2`, scheduleID, triggerKey).Scan(&out.ID, &out.ScheduleID, &out.ScheduledFor, &out.TriggerKey, &out.TaskID, &out.CreatedAt)
+	args := []any{scheduleID, triggerKey}
+	where := ""
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where = ` AND EXISTS (SELECT 1 FROM core_schedules schedule WHERE schedule.schedule_id=core_schedule_occurrences.schedule_id AND schedule.owner_id=$3 AND schedule.account_generation=$4)`
+	}
+	err := s.store.pool.QueryRow(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND trigger_key=$2`+where, args...).Scan(&out.ID, &out.ScheduleID, &out.ScheduledFor, &out.TriggerKey, &out.TaskID, &out.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coretask.Occurrence{}, coretask.ErrNotFound
 	}
@@ -73,7 +105,13 @@ func (s *CoreScheduleStore) GetOccurrence(ctx context.Context, id string) (coret
 		return coretask.Occurrence{}, coretask.ErrInvalid
 	}
 	var out coretask.Occurrence
-	err := s.store.pool.QueryRow(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE occurrence_id=$1`, id).Scan(&out.ID, &out.ScheduleID, &out.ScheduledFor, &out.TriggerKey, &out.TaskID, &out.CreatedAt)
+	args := []any{id}
+	where := ""
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where = ` AND EXISTS (SELECT 1 FROM core_schedules schedule WHERE schedule.schedule_id=core_schedule_occurrences.schedule_id AND schedule.owner_id=$2 AND schedule.account_generation=$3)`
+	}
+	err := s.store.pool.QueryRow(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE occurrence_id=$1`+where, args...).Scan(&out.ID, &out.ScheduleID, &out.ScheduledFor, &out.TriggerKey, &out.TaskID, &out.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coretask.Occurrence{}, coretask.ErrNotFound
 	}
@@ -109,7 +147,13 @@ func (s *CoreScheduleStore) ListOccurrences(ctx context.Context, scheduleID, tok
 		}
 		afterID = cursor.ID
 	}
-	rows, err := s.store.pool.Query(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND ($2::timestamptz IS NULL OR (scheduled_for,occurrence_id)>($2,$3::uuid)) ORDER BY scheduled_for,occurrence_id LIMIT $4`, scheduleID, nullableScheduleTime(after), nullableScheduleUUID(afterID), limit+1)
+	args := []any{scheduleID, nullableScheduleTime(after), nullableScheduleUUID(afterID), limit + 1}
+	where := ""
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where = ` AND EXISTS (SELECT 1 FROM core_schedules schedule WHERE schedule.schedule_id=core_schedule_occurrences.schedule_id AND schedule.owner_id=$5 AND schedule.account_generation=$6)`
+	}
+	rows, err := s.store.pool.Query(ctx, `SELECT occurrence_id,schedule_id,scheduled_for,trigger_key,task_id,created_at FROM core_schedule_occurrences WHERE schedule_id=$1 AND ($2::timestamptz IS NULL OR (scheduled_for,occurrence_id)>($2,$3::uuid))`+where+` ORDER BY scheduled_for,occurrence_id LIMIT $4`, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -204,6 +248,9 @@ func (s *CoreScheduleStore) MaterializeNextDue(ctx context.Context, now time.Tim
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5,$6,$7,$8,$9,'queued',1,$10,1,$11,$11,$12,$13)`, taskID, spec.Goal, spec.ConversationID, spec.ModelProfileID, spec.IdempotencyKey, att, ext, know, spec.TimeoutSeconds, due, now.UTC(), string(spec.Kind), payload); err != nil {
 		return false, err
 	}
+	if err = copyTaskOwnerScopeFromScheduleTx(ctx, tx, taskID, schedule.ID); err != nil {
+		return false, err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, taskID, snapshotRaw, snapshot.Digest); err != nil {
 		return false, err
 	}
@@ -253,7 +300,11 @@ func (s *CoreScheduleStore) CreateSchedule(ctx context.Context, c coretask.Creat
 			}
 		}
 		tpl, _ := json.Marshal(v.Spec)
-		_, e := tx.Exec(ctx, `INSERT INTO core_schedules(schedule_id,name,task_template,run_at,cron,timezone,paused,next_run_at,last_scheduled_for,revision,created_at,updated_at) VALUES($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,NULLIF($9,'epoch'::timestamptz),$10,$11,$11)`, v.ID, v.Name, tpl, v.RunAt, v.Cron, v.Timezone, v.Paused, coreScheduleNullableTime(v.NextRunAt), coreScheduleNullableTime(v.LastScheduledFor), v.Revision, v.CreatedAt.UTC())
+		ownerID, generation, e := ownerScopeOrInternal(ctx, "schedule", v.ID)
+		if e != nil {
+			return coretask.Schedule{}, e
+		}
+		_, e = tx.Exec(ctx, `INSERT INTO core_schedules(schedule_id,owner_id,account_generation,name,task_template,run_at,cron,timezone,paused,next_run_at,last_scheduled_for,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,NULLIF($11,'epoch'::timestamptz),$12,$13,$13)`, v.ID, ownerID, generation, v.Name, tpl, v.RunAt, v.Cron, v.Timezone, v.Paused, coreScheduleNullableTime(v.NextRunAt), coreScheduleNullableTime(v.LastScheduledFor), v.Revision, v.CreatedAt.UTC())
 		if e != nil {
 			return coretask.Schedule{}, e
 		}
@@ -266,7 +317,13 @@ func (s *CoreScheduleStore) CreateSchedule(ctx context.Context, c coretask.Creat
 	})
 }
 func (s *CoreScheduleStore) GetSchedule(ctx context.Context, id string) (coretask.Schedule, error) {
-	return s.coreScheduleRow(ctx, s.store.pool.QueryRow(ctx, coreScheduleSelect+` WHERE schedule_id=$1 AND deleted_at IS NULL`, id))
+	args := []any{id}
+	where := ` WHERE schedule_id=$1 AND deleted_at IS NULL`
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where += ` AND owner_id=$2 AND account_generation=$3`
+	}
+	return s.coreScheduleRow(ctx, s.store.pool.QueryRow(ctx, coreScheduleSelect+where, args...))
 }
 func (s *CoreScheduleStore) ListSchedules(ctx context.Context, cursor string, limit int) ([]coretask.Schedule, string, error) {
 	if limit <= 0 || limit > 200 {
@@ -280,7 +337,14 @@ func (s *CoreScheduleStore) ListSchedules(ctx context.Context, cursor string, li
 		}
 		after = string(raw)
 	}
-	rows, err := s.store.pool.Query(ctx, coreScheduleSelect+` WHERE deleted_at IS NULL AND ($1='' OR schedule_id>$1::uuid) ORDER BY schedule_id LIMIT $2`, after, limit+1)
+	args := []any{after}
+	where := ` WHERE deleted_at IS NULL AND ($1='' OR schedule_id>$1::uuid)`
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where += ` AND owner_id=$2 AND account_generation=$3`
+	}
+	args = append(args, limit+1)
+	rows, err := s.store.pool.Query(ctx, coreScheduleSelect+where+` ORDER BY schedule_id LIMIT $`+fmt.Sprint(len(args)), args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -415,17 +479,21 @@ func (s *CoreScheduleStore) TriggerNow(ctx context.Context, c coretask.TriggerSc
 	if c.Validate() != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, coretask.ErrInvalid
 	}
+	ownerID, generation, err := replayOwnerScope(ctx, "schedule", c.Mutation.IdempotencyKey)
+	if err != nil {
+		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
+	}
 	tx, err := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_schedule:trigger_now:"+c.Mutation.IdempotencyKey); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("core_schedule:%s:%d:trigger_now:%s", ownerID, generation, c.Mutation.IdempotencyKey)); err != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 	}
 	var digest string
 	var replay []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_schedule_replays WHERE operation='trigger_now' AND idempotency_key=$1 FOR UPDATE`, c.Mutation.IdempotencyKey).Scan(&digest, &replay)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_schedule_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='trigger_now' AND idempotency_key=$3 FOR UPDATE`, ownerID, generation, c.Mutation.IdempotencyKey).Scan(&digest, &replay)
 	if err == nil {
 		if digest != c.Mutation.RequestDigest {
 			return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, coretask.ErrConflict
@@ -473,6 +541,9 @@ func (s *CoreScheduleStore) TriggerNow(ctx context.Context, c coretask.TriggerSc
 	if err != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 	}
+	if err = copyTaskOwnerScopeFromScheduleTx(ctx, tx, occ.TaskID, schedule.ID); err != nil {
+		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, occ.TaskID, snapshotRaw, snapshot.Digest); err != nil {
 		return coretask.Schedule{}, coretask.Occurrence{}, coretask.Task{}, err
 	}
@@ -497,7 +568,7 @@ func (s *CoreScheduleStore) TriggerNow(ctx context.Context, c coretask.TriggerSc
 		Occurrence coretask.Occurrence `json:"occurrence"`
 		Task       coretask.Task       `json:"task"`
 	}{schedule, occ, task})
-	if _, err = tx.Exec(ctx, `INSERT INTO core_schedule_replays(operation,idempotency_key,schedule_id,request_hash,response_json) VALUES('trigger_now',$1,$2,$3,$4)`, c.Mutation.IdempotencyKey, c.ScheduleID, c.Mutation.RequestDigest, raw); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_schedule_replays(owner_id,account_generation,operation,idempotency_key,schedule_id,request_hash,response_json) VALUES($1,$2,'trigger_now',$3,$4,$5,$6)`, ownerID, generation, c.Mutation.IdempotencyKey, c.ScheduleID, c.Mutation.RequestDigest, raw); err != nil {
 		return schedule, occ, task, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -510,17 +581,21 @@ func (s *CoreScheduleStore) coreScheduleMutate(ctx context.Context, op string, m
 	if m.Validate() != nil {
 		return coretask.Schedule{}, coretask.ErrInvalid
 	}
+	ownerID, generation, e := replayOwnerScope(ctx, "schedule", m.IdempotencyKey)
+	if e != nil {
+		return coretask.Schedule{}, e
+	}
 	tx, e := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if e != nil {
 		return coretask.Schedule{}, e
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "core_schedule:"+op+":"+m.IdempotencyKey); e != nil {
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("core_schedule:%s:%d:%s:%s", ownerID, generation, op, m.IdempotencyKey)); e != nil {
 		return coretask.Schedule{}, e
 	}
 	var d string
 	var raw []byte
-	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_schedule_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, op, m.IdempotencyKey).Scan(&d, &raw)
+	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_schedule_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, ownerID, generation, op, m.IdempotencyKey).Scan(&d, &raw)
 	if e == nil {
 		if d != m.RequestDigest {
 			return coretask.Schedule{}, coretask.ErrConflict
@@ -546,7 +621,7 @@ func (s *CoreScheduleStore) coreScheduleMutate(ctx context.Context, op string, m
 	if e != nil {
 		return v, e
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO core_schedule_replays(operation,idempotency_key,schedule_id,request_hash,response_json) VALUES($1,$2,$3,$4,$5)`, op, m.IdempotencyKey, v.ID, m.RequestDigest, raw); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_schedule_replays(owner_id,account_generation,operation,idempotency_key,schedule_id,request_hash,response_json) VALUES($1,$2,$3,$4,$5,$6,$7)`, ownerID, generation, op, m.IdempotencyKey, v.ID, m.RequestDigest, raw); e != nil {
 		return v, e
 	}
 	if e = tx.Commit(ctx); e != nil {
@@ -585,17 +660,27 @@ func (s *CoreScheduleStore) coreScheduleRow(ctx context.Context, r coreScheduleS
 }
 func (s *CoreScheduleStore) coreScheduleTx(ctx context.Context, tx pgx.Tx, id string, deleted bool) (coretask.Schedule, error) {
 	q := coreScheduleSelect + ` WHERE schedule_id=$1`
+	args := []any{id}
 	if !deleted {
 		q += ` AND deleted_at IS NULL`
 	}
-	return s.coreScheduleRow(ctx, tx.QueryRow(ctx, q, id))
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		q += ` AND owner_id=$2 AND account_generation=$3`
+	}
+	return s.coreScheduleRow(ctx, tx.QueryRow(ctx, q, args...))
 }
 func (s *CoreScheduleStore) coreScheduleTxLocked(ctx context.Context, tx pgx.Tx, id string, deleted bool) (coretask.Schedule, error) {
 	q := coreScheduleSelect + ` WHERE schedule_id=$1`
+	args := []any{id}
 	if !deleted {
 		q += ` AND deleted_at IS NULL`
 	}
-	return s.coreScheduleRow(ctx, tx.QueryRow(ctx, q+` FOR UPDATE`, id))
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		q += ` AND owner_id=$2 AND account_generation=$3`
+	}
+	return s.coreScheduleRow(ctx, tx.QueryRow(ctx, q+` FOR UPDATE`, args...))
 }
 func coreScheduleNullableTime(v time.Time) any {
 	if v.IsZero() {

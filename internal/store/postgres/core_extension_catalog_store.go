@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -15,7 +16,11 @@ func (s *CoreExtensionStore) Get(ctx context.Context, id string) (coreextension.
 	if uuid.Validate(id) != nil {
 		return coreextension.Installation{}, coreextension.ErrInvalid
 	}
-	return s.getTx(ctx, s.store.pool.QueryRow(ctx, `SELECT installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,''),network_grants_json,secret_grants_json,created_at,updated_at FROM core_extension_installations WHERE installation_id=$1`, id))
+	query := `SELECT installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,COALESCE(active_version_id::text,''),COALESCE(proposed_version_id::text,''),network_grants_json,secret_grants_json,created_at,updated_at FROM core_extension_installations WHERE installation_id=$1`
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		return s.getTx(ctx, s.store.pool.QueryRow(ctx, query+` AND owner_id=$2 AND account_generation=$3`, id, scope.OwnerID, scope.AccountGeneration))
+	}
+	return s.getTx(ctx, s.store.pool.QueryRow(ctx, query, id))
 }
 
 type extScanner interface{ Scan(...any) error }
@@ -75,7 +80,11 @@ func (s *CoreExtensionStore) List(ctx context.Context, q coreextension.ListQuery
 		}
 		after = string(b)
 	}
-	rows, e := s.store.pool.Query(ctx, `SELECT installation_id FROM core_extension_installations WHERE ($1='' OR installation_id>$1::uuid) AND ($2='' OR kind=$2) AND ($3='' OR source=$3) AND ($4='' OR state=$4) ORDER BY installation_id LIMIT $5`, after, string(q.Kind), string(q.Source), string(q.State), lim+1)
+	ownerID, generation := "", int64(0)
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		ownerID, generation = scope.OwnerID, scope.AccountGeneration
+	}
+	rows, e := s.store.pool.Query(ctx, `SELECT installation_id FROM core_extension_installations WHERE ($1='' OR installation_id>$1::uuid) AND ($2='' OR kind=$2) AND ($3='' OR source=$3) AND ($4='' OR state=$4) AND ($6='' OR (owner_id=$6 AND account_generation=$7)) ORDER BY installation_id LIMIT $5`, after, string(q.Kind), string(q.Source), string(q.State), lim+1, ownerID, generation)
 	if e != nil {
 		return coreextension.InstallationPage{}, e
 	}
@@ -99,7 +108,7 @@ func (s *CoreExtensionStore) List(ctx context.Context, q coreextension.ListQuery
 	}
 	if len(ids) == lim {
 		var more bool
-		_ = s.store.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_extension_installations WHERE installation_id>$1::uuid AND ($2='' OR kind=$2) AND ($3='' OR source=$3) AND ($4='' OR state=$4))`, ids[len(ids)-1], string(q.Kind), string(q.Source), string(q.State)).Scan(&more)
+		_ = s.store.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_extension_installations WHERE installation_id>$1::uuid AND ($2='' OR kind=$2) AND ($3='' OR source=$3) AND ($4='' OR state=$4) AND ($5='' OR (owner_id=$5 AND account_generation=$6)))`, ids[len(ids)-1], string(q.Kind), string(q.Source), string(q.State), ownerID, generation).Scan(&more)
 		if more {
 			out.NextPageToken = base64.RawURLEncoding.EncodeToString([]byte(ids[len(ids)-1]))
 		}

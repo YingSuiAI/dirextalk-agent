@@ -114,7 +114,7 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	searchSlot.set(resolver)
-	indexer, err := NewKnowledgeIndexer(baseRepo.store, profileID, collectionDigest)
+	indexer, err := NewKnowledgeIndexer(baseRepo.store, profileID, 2, collectionDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

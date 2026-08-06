@@ -9,6 +9,7 @@ import (
 // Registry manages all agent capabilities
 type Registry struct {
 	capabilities map[string]Capability
+	ownerScoped  bool
 }
 
 // Capability interface that all agent capabilities must implement
@@ -33,6 +34,9 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(cap Capability) {
 	if r == nil || cap == nil || cap.Descriptor() == nil {
 		return
+	}
+	if r.ownerScoped {
+		cap = publicOwnerScopedCapability(cap)
 	}
 	desc := cap.Descriptor()
 	if _, classified := cap.(*errorClassifyingCapability); !classified {

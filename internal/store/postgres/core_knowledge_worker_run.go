@@ -30,15 +30,28 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 	var jobID string
 	var status string
 	var profileRevision int64
+	var embeddingDimension int
 	var configDigest string
 	var jobProfileID string
+	var ownerID string
+	var accountGeneration int64
 	var jobSourcesRaw, jobRevisionsRaw []byte
-	err := w.store.pool.QueryRow(ctx, `SELECT job_id::text,generation,status,profile_id::text,profile_revision,collection_config_digest,source_ids,expected_revisions FROM core_knowledge_index_jobs WHERE task_id=$1`, task.ID).Scan(&jobID, &generation, &status, &jobProfileID, &profileRevision, &configDigest, &jobSourcesRaw, &jobRevisionsRaw)
+	err := w.store.pool.QueryRow(ctx, `SELECT job.job_id::text,job.generation,job.status,job.profile_id::text,job.profile_revision,job.embedding_dimension,job.collection_config_digest,job.source_ids,job.expected_revisions,scope.owner_id,scope.account_generation
+		FROM core_knowledge_index_jobs job
+		JOIN core_task_scopes scope ON scope.task_id=job.task_id
+		WHERE job.task_id=$1`, task.ID).Scan(&jobID, &generation, &status, &jobProfileID, &profileRevision, &embeddingDimension, &configDigest, &jobSourcesRaw, &jobRevisionsRaw, &ownerID, &accountGeneration)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return w.fail(ctx, task, "knowledge_job_not_found", "index job not found")
 	}
 	if err != nil {
 		return coreruntime.ManagedOutcome{Err: err}
+	}
+	if !strings.HasPrefix(ownerID, coretask.ReservedInternalOwnerPrefix) {
+		scoped, scopeErr := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: ownerID, AccountGeneration: accountGeneration})
+		if scopeErr != nil {
+			return w.fail(ctx, task, "knowledge_owner_scope_invalid", "index task owner scope is invalid")
+		}
+		ctx = scoped
 	}
 	if status == "succeeded" {
 		return coreruntime.ManagedOutcome{TerminalOwned: true}
@@ -46,7 +59,7 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 	if status == "canceled" || status == "failed" {
 		return coreruntime.ManagedOutcome{Err: coretask.ErrConflict, TerminalOwned: true}
 	}
-	if configDigest != p.CollectionConfigDigest || profileRevision <= 0 {
+	if configDigest != p.CollectionConfigDigest || profileRevision <= 0 || embeddingDimension != p.EmbeddingDimension || embeddingDimension <= 0 || embeddingDimension > 16384 {
 		return w.fail(ctx, task, "knowledge_binding_stale", "index configuration changed")
 	}
 	var jobSources []string
@@ -60,7 +73,8 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 		}
 	}
 	var currentProfileRevision int64
-	if err := w.store.pool.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, task.Spec.ModelProfileID).Scan(&currentProfileRevision); err != nil || currentProfileRevision != profileRevision {
+	publicOwnerID, publicGeneration := publicOwnerScopeValues(ctx)
+	if err := w.store.pool.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, task.Spec.ModelProfileID, publicOwnerID, publicGeneration).Scan(&currentProfileRevision); err != nil || currentProfileRevision != profileRevision {
 		return w.fail(ctx, task, "knowledge_profile_stale", "embedding profile changed")
 	}
 	if err := w.markRunning(ctx, task, jobID); err != nil {
@@ -93,7 +107,7 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 		var revision, size int64
 		var manifestRaw []byte
 		var promoted int64
-		err := w.store.pool.QueryRow(ctx, `SELECT kind,status,relative_path,digest,media_type,content_ref,revision,size_bytes,directory_manifest_json,promoted_revision FROM core_knowledge_sources WHERE source_id=$1`, sourceID).Scan(&kind, &sourceStatus, &rel, &digest, &media, &contentRef, &revision, &size, &manifestRaw, &promoted)
+		err := w.store.pool.QueryRow(ctx, `SELECT kind,status,relative_path,digest,media_type,content_ref,revision,size_bytes,directory_manifest_json,promoted_revision FROM core_knowledge_sources WHERE source_id=$1 AND owner_id=$2 AND account_generation=$3`, sourceID, ownerID, accountGeneration).Scan(&kind, &sourceStatus, &rel, &digest, &media, &contentRef, &revision, &size, &manifestRaw, &promoted)
 		if err != nil {
 			return w.fail(ctx, task, "knowledge_source_missing", "source not found")
 		}
@@ -121,7 +135,7 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 				}
 				dr := &digestReader{r: f, h: sha256.New(), max: entry.SizeBytes}
 				if e = w.checkTaskFence(ctx, task); e == nil {
-					e = w.engine.IndexIntoGeneration(ctx, generation, semantic.SourceDocument{ID: sourceID, Revision: revision, MediaType: entry.MediaType, Reader: dr, MaxBytes: entry.SizeBytes, ChunkPrefix: entry.Path})
+					e = w.engine.IndexIntoGeneration(ctx, generation, semantic.SourceDocument{ID: sourceID, Revision: revision, MediaType: entry.MediaType, Reader: dr, MaxBytes: entry.SizeBytes, ChunkPrefix: entry.Path, EmbeddingProfileID: jobProfileID, EmbeddingDimension: embeddingDimension})
 				}
 				if e == nil {
 					e = w.checkTaskFence(ctx, task)
@@ -149,7 +163,7 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 			}
 			dr := &digestReader{r: f, h: sha256.New(), max: size}
 			if err = w.checkTaskFence(ctx, task); err == nil {
-				err = w.engine.IndexIntoGeneration(ctx, generation, semantic.SourceDocument{ID: sourceID, Revision: revision, MediaType: media, Reader: dr, MaxBytes: size})
+				err = w.engine.IndexIntoGeneration(ctx, generation, semantic.SourceDocument{ID: sourceID, Revision: revision, MediaType: media, Reader: dr, MaxBytes: size, EmbeddingProfileID: jobProfileID, EmbeddingDimension: embeddingDimension})
 			}
 			if err == nil {
 				err = w.checkTaskFence(ctx, task)
@@ -175,7 +189,7 @@ func (w *knowledgeTaskWorker) run(ctx context.Context, task coretask.Task) corer
 		_ = stage.DeleteGeneration(context.Background(), generation)
 		return coreruntime.ManagedOutcome{Err: err, TerminalOwned: true}
 	}
-	if err := w.promote(ctx, task, jobID, generation, p.SourceIDs, p.ExpectedSourceRevision); err != nil {
+	if err := w.promote(ctx, task, jobID, generation, p.SourceIDs, p.ExpectedSourceRevision, embeddingDimension, ownerID, accountGeneration); err != nil {
 		// Promotion to the vector backend precedes the durable source binding.
 		// If the task fence was lost (notably cancel racing the final commit),
 		// compensate both the externally promoted points and the stage. The
@@ -244,7 +258,7 @@ func (w *knowledgeTaskWorker) progress(ctx context.Context, task *coretask.Task,
 	return err
 }
 
-func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, jobID, generation string, ids []string, revs []uint64) error {
+func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, jobID, generation string, ids []string, revs []uint64, embeddingDimension int, ownerID string, accountGeneration int64) error {
 	tx, err := w.store.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -262,22 +276,30 @@ func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, j
 	}
 	var jobStatus, jobGeneration, jobProfileID string
 	var jobProfileRevision int64
+	var jobEmbeddingDimension int
 	var jobConfig string
 	var jobTask string
-	if err = tx.QueryRow(ctx, `SELECT task_id::text,status,generation,profile_id::text,profile_revision,collection_config_digest FROM core_knowledge_index_jobs WHERE job_id=$1 FOR UPDATE`, jobID).Scan(&jobTask, &jobStatus, &jobGeneration, &jobProfileID, &jobProfileRevision, &jobConfig); err != nil {
+	var jobOwnerID string
+	var jobAccountGeneration int64
+	if err = tx.QueryRow(ctx, `SELECT job.task_id::text,job.status,job.generation,job.profile_id::text,job.profile_revision,job.embedding_dimension,job.collection_config_digest,scope.owner_id,scope.account_generation
+		FROM core_knowledge_index_jobs job
+		JOIN core_task_scopes scope ON scope.task_id=job.task_id
+		WHERE job.job_id=$1
+		FOR UPDATE OF job,scope`, jobID).Scan(&jobTask, &jobStatus, &jobGeneration, &jobProfileID, &jobProfileRevision, &jobEmbeddingDimension, &jobConfig, &jobOwnerID, &jobAccountGeneration); err != nil {
 		return err
 	}
-	if jobTask != task.ID || jobGeneration != generation || (jobStatus != "queued" && jobStatus != "running") {
+	if jobTask != task.ID || jobGeneration != generation || jobEmbeddingDimension != embeddingDimension || jobOwnerID != ownerID || jobAccountGeneration != accountGeneration || (jobStatus != "queued" && jobStatus != "running") {
 		return coretask.ErrConflict
 	}
 	var currentProfileRevision int64
-	if err = tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, jobProfileID).Scan(&currentProfileRevision); err != nil || currentProfileRevision != jobProfileRevision || jobConfig != task.Spec.Payload.KnowledgeIndex.CollectionConfigDigest || jobProfileID != task.Spec.ModelProfileID {
+	publicOwnerID, publicGeneration := publicOwnerScopeValues(ctx)
+	if err = tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, jobProfileID, publicOwnerID, publicGeneration).Scan(&currentProfileRevision); err != nil || currentProfileRevision != jobProfileRevision || jobConfig != task.Spec.Payload.KnowledgeIndex.CollectionConfigDigest || jobProfileID != task.Spec.ModelProfileID || jobEmbeddingDimension != task.Spec.Payload.KnowledgeIndex.EmbeddingDimension {
 		return coretask.ErrRevisionConflict
 	}
 	for i, id := range ids {
 		var srcStatus string
 		var srcRev int64
-		if err = tx.QueryRow(ctx, `SELECT status,revision FROM core_knowledge_sources WHERE source_id=$1 FOR UPDATE`, id).Scan(&srcStatus, &srcRev); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT status,revision FROM core_knowledge_sources WHERE source_id=$1 AND owner_id=$2 AND account_generation=$3 FOR UPDATE`, id, ownerID, accountGeneration).Scan(&srcStatus, &srcRev); err != nil {
 			return err
 		}
 		if srcStatus != string(coreknowledge.SourceStatusIndexing) || srcRev != int64(revs[i]) {
@@ -299,7 +321,7 @@ func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, j
 		if _, e := tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('knowledge_generation',$1,$2)`, id, jobProfileID); e != nil {
 			return e
 		}
-		tag, e := tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',promoted_generation=$2,promoted_revision=$3,promoted_profile_id=$4,promoted_profile_revision=$5,promoted_collection_config_digest=$6,updated_at=$7 WHERE source_id=$1 AND status='indexing' AND revision=$3`, id, generation, revs[i], jobProfileID, jobProfileRevision, jobConfig, now)
+		tag, e := tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',promoted_generation=$2,promoted_revision=$3,promoted_profile_id=$4,promoted_profile_revision=$5,promoted_collection_config_digest=$6,updated_at=$7 WHERE source_id=$1 AND owner_id=$8 AND account_generation=$9 AND status='indexing' AND revision=$3`, id, generation, revs[i], jobProfileID, jobProfileRevision, jobConfig, now, ownerID, accountGeneration)
 		if e != nil {
 			err = e
 			return err
@@ -310,6 +332,9 @@ func (w *knowledgeTaskWorker) promote(ctx context.Context, task coretask.Task, j
 	}
 	result, _ := json.Marshal(coretask.Result{Summary: "knowledge indexing complete"})
 	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_index_jobs SET status='succeeded',updated_at=$2 WHERE job_id=$1`, jobID, now); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, task.ID); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status='succeeded',result_json=$2,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$3 WHERE task_id=$1 AND status='running' AND attempt=$4 AND lease_epoch=$5 AND revision=$6 AND lease_holder=$7 AND lease_expires_at>$3`, task.ID, result, now, task.Attempt, task.LeaseEpoch, task.Revision, task.Lease.Holder)
@@ -344,23 +369,7 @@ func (w *knowledgeTaskWorker) fail(ctx context.Context, task coretask.Task, code
 	if status != string(coretask.StatusRunning) || uint32(attempt) != task.Attempt || uint64(epoch) != task.LeaseEpoch || uint64(revision) != task.Revision || task.Lease == nil || holder != task.Lease.Holder || !expires.After(now) {
 		return coreruntime.ManagedOutcome{Err: coretask.ErrLeaseConflict}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_index_jobs SET status='failed',error_code=$2,error_summary=$3,updated_at=$4 WHERE task_id=$1 AND status IN ('queued','running')`, task.ID, code, summary, now); err != nil {
-		return coreruntime.ManagedOutcome{Err: err}
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_knowledge_generation_cleanup(source_id,generation,cleanup_kind,revision)
-		SELECT x::uuid,j.generation,'staging',0 FROM core_knowledge_index_jobs j, jsonb_array_elements_text(j.source_ids) x
-		WHERE j.task_id=$1 ON CONFLICT DO NOTHING`, task.ID); err != nil {
-		return coreruntime.ManagedOutcome{Err: err}
-	}
-	if _, err = tx.Exec(ctx, `UPDATE core_knowledge_sources AS source
-		SET status='ready',error_code=$2,updated_at=$3
-		FROM (
-			SELECT item.value::uuid AS source_id,(job.expected_revisions ->> ((item.ordinality - 1)::int))::bigint AS expected_revision
-			FROM core_knowledge_index_jobs AS job
-			CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) WITH ORDINALITY AS item(value,ordinality)
-			WHERE job.task_id=$1
-		) AS expected
-		WHERE source.source_id=expected.source_id AND source.revision=expected.expected_revision AND source.status='indexing'`, task.ID, code, now); err != nil {
+	if err = failKnowledgeIndexTaskTx(ctx, tx, task.ID, code, summary, now, nil); err != nil {
 		return coreruntime.ManagedOutcome{Err: err}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE core_tasks SET status='failed',failure_code=$2,failure_summary=$3,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$4 WHERE task_id=$1 AND status='running' AND revision=$5 AND lease_epoch=$6 AND lease_holder=$7 AND lease_expires_at>$4`, task.ID, code, summary, now, task.Revision, task.LeaseEpoch, task.Lease.Holder)

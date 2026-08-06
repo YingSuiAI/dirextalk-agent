@@ -29,14 +29,28 @@ func (r bridgeBindingResolver) ResolveBindings(context.Context, []string) ([]Bin
 }
 
 type bridgeEmbedder struct {
-	vectors [][]float32
-	err     error
-	calls   int
+	vectors  [][]float32
+	err      error
+	calls    int
+	profiles []string
 }
 
-func (e *bridgeEmbedder) Embed(context.Context, coremodel.Profile, []string) ([][]float32, error) {
+func (e *bridgeEmbedder) Embed(_ context.Context, profile coremodel.Profile, _ []string) ([][]float32, error) {
 	e.calls++
+	e.profiles = append(e.profiles, profile.ID)
 	return e.vectors, e.err
+}
+
+type bridgeConfigReader struct{ config coreknowledge.EmbeddingConfig }
+
+func (r bridgeConfigReader) GetEmbeddingConfig(context.Context) (coreknowledge.EmbeddingConfig, error) {
+	return r.config, nil
+}
+
+type bridgeRequestedProfileResolver struct{}
+
+func (bridgeRequestedProfileResolver) ResolveProfile(_ context.Context, id string) (coremodel.Profile, error) {
+	return coremodel.Profile{ID: id, Provider: coremodel.ProviderOpenAICompatible, Model: "m", APIKey: "k"}, nil
 }
 
 type bridgeVectorStore struct {
@@ -122,5 +136,28 @@ func TestIndexEngineDeterministicReplayAndDimension(t *testing.T) {
 	}
 	if s.upserts != 1 {
 		t.Fatalf("upserts=%d", s.upserts)
+	}
+}
+
+func TestIndexEngineDocumentBindingOverridesRotatedConfig(t *testing.T) {
+	embedder := &bridgeEmbedder{vectors: [][]float32{{1, 0}}}
+	store := &bridgeVectorStore{}
+	engine, err := NewIndexEngine(IndexConfig{
+		Embedder: embedder, VectorStore: store, ProfileResolver: bridgeRequestedProfileResolver{},
+		EmbeddingProfileID: "fallback-profile", Dimension: 3,
+		ConfigReader: bridgeConfigReader{config: coreknowledge.EmbeddingConfig{EmbeddingProfileID: "rotated-profile", Dimension: 3}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := SourceDocument{
+		ID: "source", Revision: 1, MediaType: "text/plain", Reader: strings.NewReader("pinned"), MaxBytes: 100,
+		EmbeddingProfileID: "queued-profile", EmbeddingDimension: 2,
+	}
+	if err = engine.Index(context.Background(), document); err != nil {
+		t.Fatal(err)
+	}
+	if len(embedder.profiles) != 1 || embedder.profiles[0] != "queued-profile" {
+		t.Fatalf("embedded profiles=%v, want queued-profile", embedder.profiles)
 	}
 }

@@ -121,6 +121,126 @@ func TestCoreTaskStorePostgresInvariants(t *testing.T) {
 	_ = second
 }
 
+func TestCoreTaskReplayIdentityIsOwnerGenerationScoped(t *testing.T) {
+	ctx, store, _, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	tasks := NewCoreTaskStore(store)
+	ownerA := coretask.OwnerScope{OwnerID: "@task-replay-a:example.test", AccountGeneration: 3}
+	ownerB := coretask.OwnerScope{OwnerID: "@task-replay-b:example.test", AccountGeneration: 8}
+	ctxA, err := coretask.WithOwnerScope(ctx, ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, ownerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileA, profileB := uuid.NewString(), uuid.NewString()
+	createTestProfile(ctxA, t, store, profileA, "owner-a-model", "owner-a-secret")
+	createTestProfile(ctxB, t, store, profileB, "owner-b-model", "owner-b-secret")
+	key := uuid.NewString()
+	create := func(scoped context.Context, profileID string) coretask.Task {
+		spec := coretask.TaskSpec{Goal: "same caller replay key", ModelProfileID: profileID, IdempotencyKey: key}
+		digest, digestErr := spec.MutationDigest()
+		if digestErr != nil {
+			t.Fatal(digestErr)
+		}
+		task, createErr := tasks.CreateTask(scoped, coretask.CreateTaskCommand{Spec: spec, Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest}})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return task
+	}
+	firstA := create(ctxA, profileA)
+	firstB := create(ctxB, profileB)
+	if firstA.ID == firstB.ID {
+		t.Fatalf("same raw key produced a cross-owner Task ID: %s", firstA.ID)
+	}
+	if replayA, replayB := create(ctxA, profileA), create(ctxB, profileB); replayA.ID != firstA.ID || replayB.ID != firstB.ID {
+		t.Fatalf("owner replay mismatch: A=%s/%s B=%s/%s", firstA.ID, replayA.ID, firstB.ID, replayB.ID)
+	}
+	var receipts int
+	if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM core_task_replays WHERE operation='create' AND idempotency_key=$1`, key).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 2 {
+		t.Fatalf("owner-scoped replay receipts=%d want=2", receipts)
+	}
+}
+
+func TestCoreTaskClaimSkipsLockedCandidateWithoutBreakingFIFO(t *testing.T) {
+	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	tasks := NewCoreTaskStore(store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	create := func(goal string, at time.Time) coretask.Task {
+		t.Helper()
+		key := uuid.NewString()
+		spec := coretask.TaskSpec{Goal: goal, ModelProfileID: profile, IdempotencyKey: key, AvailableAt: at}
+		digest, _ := spec.MutationDigest()
+		task, err := tasks.CreateTask(ctx, coretask.CreateTaskCommand{Spec: spec, Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	first := create("locked first", now)
+	second := create("claimable second", now.Add(time.Millisecond))
+	lockTx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	if _, err = lockTx.Exec(ctx, `SELECT task_id FROM core_tasks WHERE task_id=$1 FOR UPDATE`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, _, err := tasks.ClaimNextDue(ctx, "skip-locked-worker", now.Add(time.Second), time.Minute, 2)
+	if err != nil || claimed.ID != second.ID {
+		t.Fatalf("claim behind locked FIFO head=%#v err=%v", claimed, err)
+	}
+}
+
+func TestCoreTaskClaimScansPastFullyLockedCandidatePage(t *testing.T) {
+	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO core_tasks(task_id,goal,model_profile_id,create_idempotency_key,task_kind,payload_json,status,revision,available_at,created_at,updated_at)
+		SELECT md5('locked-page-task:' || series)::uuid,'locked candidate page',$1,md5('locked-page-key:' || series)::uuid,'agent','{}'::jsonb,'queued',1,$2,$2,$2
+		FROM generate_series(1,256) series`, profile, now); err != nil {
+		t.Fatal(err)
+	}
+	laterID := uuid.NewString()
+	if _, err := store.pool.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,model_profile_id,create_idempotency_key,task_kind,payload_json,status,revision,available_at,created_at,updated_at) VALUES($1,'after locked page',$2,$3,'agent','{}'::jsonb,'queued',1,$4,$4,$4)`, laterID, profile, uuid.NewString(), now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	lockTx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockTx.Rollback(ctx)
+	locked, err := lockTx.Query(ctx, `SELECT task_id FROM core_tasks WHERE goal='locked candidate page' FOR UPDATE`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for locked.Next() {
+		var id string
+		if err = locked.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		count++
+	}
+	locked.Close()
+	if err = locked.Err(); err != nil || count != 256 {
+		t.Fatalf("locked candidates=%d err=%v", count, err)
+	}
+	claimed, _, err := NewCoreTaskStore(store).ClaimNextDue(ctx, "paged-skip-worker", now.Add(time.Second), time.Minute, 2)
+	if err != nil || claimed.ID != laterID {
+		t.Fatalf("claim after locked page=%#v err=%v", claimed, err)
+	}
+}
+
 func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
 	defer closeFixture()
@@ -151,7 +271,7 @@ func TestCoreTaskGenericPayloadPersistenceAndScheduleParity(t *testing.T) {
 	if err != nil || got.Spec.Kind != coretask.TaskKindExtension || got.Spec.Payload.Extension == nil {
 		t.Fatalf("extension roundtrip=%+v err=%v", got, err)
 	}
-	knowledge := create(coretask.TaskSpec{Kind: coretask.TaskKindKnowledgeIndex, Goal: "index", ModelProfileID: profile, IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{KnowledgeIndex: &coretask.KnowledgeIndexTaskPayload{SourceIDs: []string{"source-a"}, ExpectedSourceRevision: []uint64{2}, CollectionConfigDigest: strings.Repeat("b", 64)}}})
+	knowledge := create(coretask.TaskSpec{Kind: coretask.TaskKindKnowledgeIndex, Goal: "index", ModelProfileID: profile, IdempotencyKey: uuid.NewString(), Payload: coretask.TaskPayload{KnowledgeIndex: &coretask.KnowledgeIndexTaskPayload{SourceIDs: []string{"source-a"}, ExpectedSourceRevision: []uint64{2}, CollectionConfigDigest: strings.Repeat("b", 64), EmbeddingDimension: 2}}})
 	if got, err = tasks.GetTask(ctx, knowledge.ID); err != nil || got.Spec.Kind != coretask.TaskKindKnowledgeIndex {
 		t.Fatalf("knowledge roundtrip=%+v err=%v", got, err)
 	}

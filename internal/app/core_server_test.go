@@ -9,6 +9,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -221,7 +223,7 @@ func TestCoreServerTLSAuthHealthReflectionAndTokenRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reflectionStream.Send(&grpc_reflection_v1.ServerReflectionRequest{MessageRequest: &grpc_reflection_v1.ServerReflectionRequest_ListServices{ListServices: ""}}); err != nil {
+	if err := reflectionStream.Send(&grpc_reflection_v1.ServerReflectionRequest{MessageRequest: &grpc_reflection_v1.ServerReflectionRequest_ListServices{ListServices: ""}}); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatal(err)
 	}
 	if _, err := reflectionStream.Recv(); status.Code(err) != codes.Unauthenticated {

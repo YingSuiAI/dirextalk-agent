@@ -15,11 +15,11 @@ func workflowFixture(t *testing.T) (*Service, *MemoryRepository, *FakeProvider, 
 	r := NewMemoryRepository()
 	c := &testConfirm{}
 	s := NewService(r, c, testTasks{}, nil, NewFakeProvider(), nil)
-	cred, e := s.SaveCredential(context.Background(), CredentialInput{Name: "x", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
+	cred, e := s.SaveCredential(credentialTestContext(), CredentialInput{Name: "x", Region: "us-east-1", AccessKeyID: "a", SecretAccessKey: "b", IdempotencyKey: uuid.NewString()})
 	if e != nil {
 		t.Fatal(e)
 	}
-	p, e := s.CreatePlan(context.Background(), PlanInput{CredentialID: cred.ID, StackName: "demo", Operation: OperationCreate, Template: []byte(`{"Resources":{}}`), IdempotencyKey: uuid.NewString()})
+	p, e := s.CreatePlan(credentialTestContext(), PlanInput{CredentialID: cred.ID, StackName: "demo", Operation: OperationCreate, Template: []byte(`{"Resources":{}}`), IdempotencyKey: uuid.NewString()})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -79,7 +79,7 @@ func TestAtomicCoordinatorInjectedFailureNoOrphans(t *testing.T) {
 	s, r, _, p := workflowFixture(t)
 	m := s.coordinator.(*MemoryChangeCoordinator)
 	m.InjectFailure(true)
-	if _, e := s.RequestChange(context.Background(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()}); !errors.Is(e, ErrConflict) {
+	if _, e := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()}); !errors.Is(e, ErrConflict) {
 		t.Fatal(e)
 	}
 	if len(r.changes) != 0 {
@@ -89,12 +89,12 @@ func TestAtomicCoordinatorInjectedFailureNoOrphans(t *testing.T) {
 func TestServiceReconstructionReplay(t *testing.T) {
 	s, r, _, p := workflowFixture(t)
 	in := RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()}
-	a, e := s.RequestChange(context.Background(), in)
+	a, e := s.RequestChange(credentialTestContext(), in)
 	if e != nil {
 		t.Fatal(e)
 	}
 	s2 := NewService(r, s.confirmations, testTasks{}, nil, NewFakeProvider(), nil)
-	b, e := s2.RequestChange(context.Background(), in)
+	b, e := s2.RequestChange(credentialTestContext(), in)
 	if e != nil || a.Change.ID != b.Change.ID {
 		t.Fatal(e)
 	}
@@ -108,8 +108,8 @@ func TestConcurrentChangedCredentialReplayConflict(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	es := make([]error, 2)
-	go func() { defer wg.Done(); _, es[0] = s.SaveCredential(context.Background(), in) }()
-	go func() { defer wg.Done(); _, es[1] = s.SaveCredential(context.Background(), in2) }()
+	go func() { defer wg.Done(); _, es[0] = s.SaveCredential(credentialTestContext(), in) }()
+	go func() { defer wg.Done(); _, es[1] = s.SaveCredential(credentialTestContext(), in2) }()
 	wg.Wait()
 	if es[0] == nil && es[1] == nil {
 		t.Fatal("expected conflict")
@@ -120,13 +120,13 @@ func TestPlanReplayConflict(t *testing.T) {
 	_ = p
 	k := uuid.NewString()
 	in := PlanInput{CredentialID: "bad", IdempotencyKey: k}
-	if _, e := s.CreatePlan(context.Background(), in); e == nil {
+	if _, e := s.CreatePlan(credentialTestContext(), in); e == nil {
 		t.Fatal("invalid plan accepted")
 	}
 }
 func TestPendingConfirmationCannotExecute(t *testing.T) {
 	s, _, f, p := workflowFixture(t)
-	out, e := s.RequestChange(context.Background(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
+	out, e := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -139,7 +139,7 @@ func TestPendingConfirmationCannotExecute(t *testing.T) {
 }
 func TestCreateResponseLossReconciling(t *testing.T) {
 	s, r, f, p := workflowFixture(t)
-	out, err := s.RequestChange(context.Background(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
+	out, err := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,15 +172,15 @@ func TestExecuteResponseLossReconciling(t *testing.T) {
 }
 func TestDeleteResponseLossReconciling(t *testing.T) {
 	s, r, f, p := workflowFixture(t)
-	cred, err := s.GetCredential(context.Background(), p.CredentialID)
+	cred, err := s.GetCredential(credentialTestContext(), p.CredentialID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deletePlan, err := s.CreatePlan(context.Background(), PlanInput{CredentialID: cred.ID, Region: p.Region, StackName: p.StackName + "-delete", Operation: OperationDelete, Template: []byte(`{"Resources":{}}`), IdempotencyKey: uuid.NewString()})
+	deletePlan, err := s.CreatePlan(credentialTestContext(), PlanInput{CredentialID: cred.ID, Region: p.Region, StackName: p.StackName + "-delete", Operation: OperationDelete, Template: []byte(`{"Resources":{}}`), IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.RequestChange(context.Background(), RequestChangeInput{PlanID: deletePlan.ID, IdempotencyKey: uuid.NewString()})
+	out, err := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: deletePlan.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestDeleteResponseLossReconciling(t *testing.T) {
 }
 func TestCASFailurePreventsProviderCall(t *testing.T) {
 	s, _, f, p := workflowFixture(t)
-	out, _ := s.RequestChange(context.Background(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
+	out, _ := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
 	_ = out
 	if f.UnconfirmedMutationCalls() != 0 {
 		t.Fatal()
@@ -234,7 +234,7 @@ func TestAsyncInProgressNotSuccess(t *testing.T) {
 
 func TestAsyncCreatePollReconciliation(t *testing.T) {
 	s, repo, provider, plan := workflowFixture(t)
-	out, err := s.RequestChange(context.Background(), RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
+	out, err := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,12 +252,12 @@ func TestAsyncCreatePollReconciliation(t *testing.T) {
 
 func TestAsyncDeletePollReconciliation(t *testing.T) {
 	s, repo, provider, plan := workflowFixture(t)
-	deletePlan, err := s.CreatePlan(context.Background(), PlanInput{CredentialID: plan.CredentialID, Region: plan.Region, StackName: plan.StackName + "-delete", Operation: OperationDelete, Template: []byte(`{"Resources":{}}`), IdempotencyKey: uuid.NewString()})
+	deletePlan, err := s.CreatePlan(credentialTestContext(), PlanInput{CredentialID: plan.CredentialID, Region: plan.Region, StackName: plan.StackName + "-delete", Operation: OperationDelete, Template: []byte(`{"Resources":{}}`), IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider.Stacks[deletePlan.Region+"/"+deletePlan.StackName] = Stack{Region: deletePlan.Region, StackName: deletePlan.StackName, Status: "CREATE_COMPLETE", TemplateSHA256: deletePlan.TemplateSHA256, Parameters: map[string]string{}, Tags: map[string]string{}}
-	out, err := s.RequestChange(context.Background(), RequestChangeInput{PlanID: deletePlan.ID, IdempotencyKey: uuid.NewString()})
+	out, err := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: deletePlan.ID, IdempotencyKey: uuid.NewString()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestExactTerminalFingerprint(t *testing.T) {
 }
 func TestCompleteStaleFence(t *testing.T) {
 	s, _, _, p := workflowFixture(t)
-	out, _ := s.RequestChange(context.Background(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
+	out, _ := s.RequestChange(credentialTestContext(), RequestChangeInput{PlanID: p.ID, IdempotencyKey: uuid.NewString()})
 	_, e := s.CompleteChange(context.Background(), CompleteChangeCommand{ChangeID: out.Change.ID, ConfirmationID: out.Confirmation.ConfirmationID, ExpectedChangeRevision: 1, Status: ChangeSucceeded})
 	if e == nil {
 		t.Fatal("stale fence accepted")
@@ -290,7 +290,7 @@ func TestCompleteStaleFence(t *testing.T) {
 }
 func TestPaginationMutationStable(t *testing.T) {
 	s, _, _, _ := workflowFixture(t)
-	if _, e := s.ListCredentials(context.Background(), 1, ""); e != nil {
+	if _, e := s.ListCredentials(credentialTestContext(), 1, ""); e != nil {
 		t.Fatal(e)
 	}
 }

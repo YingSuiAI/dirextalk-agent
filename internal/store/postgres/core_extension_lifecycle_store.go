@@ -104,20 +104,28 @@ func (s *CoreExtensionStore) hasPinnedVersion(ctx context.Context, installationI
 
 func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i coreextension.Installation, m coreextension.Mutation) (coreextension.MutationResult, error) {
 	d := digestPG(m, op)
+	ownerID, generation, e := replayOwnerScope(ctx, "extension", key)
+	if e != nil {
+		return coreextension.MutationResult{}, coreextension.ErrInvalid
+	}
+	installationOwnerID, installationGeneration, e := ownerScopeOrInternal(ctx, "extension", i.ID)
+	if e != nil {
+		return coreextension.MutationResult{}, coreextension.ErrInvalid
+	}
 	tx, e := s.store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("insert extension installation: %w", e)
 	}
 	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension:`+key); e != nil {
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_extension:%s:%d:%s", ownerID, generation, key)); e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("extension advisory lock: %w", e)
 	}
-	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `core_extension_installation:`+i.ID); e != nil {
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_extension_installation:%s:%d:%s", installationOwnerID, installationGeneration, i.ID)); e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("extension installation advisory lock: %w", e)
 	}
 	var hash string
 	var raw []byte
-	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_extension_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, op, key).Scan(&hash, &raw)
+	e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_extension_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, ownerID, generation, op, key).Scan(&hash, &raw)
 	if e == nil {
 		if hash != d {
 			return coreextension.MutationResult{}, coreextension.ErrIdempotencyConflict
@@ -153,7 +161,7 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	}
 	var previousCandidate, previousNetwork, previousSecrets []byte
 	var previousKind, previousSource, previousCandidateID, previousName, previousDescription, previousTransport string
-	_ = tx.QueryRow(ctx, `SELECT candidate_json,kind,source,candidate_id,name,description,transport,network_grants_json,secret_grants_json FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, i.ID).Scan(&previousCandidate, &previousKind, &previousSource, &previousCandidateID, &previousName, &previousDescription, &previousTransport, &previousNetwork, &previousSecrets)
+	_ = tx.QueryRow(ctx, `SELECT candidate_json,kind,source,candidate_id,name,description,transport,network_grants_json,secret_grants_json FROM core_extension_installations WHERE installation_id=$1 AND owner_id=$2 AND account_generation=$3 FOR UPDATE`, i.ID, installationOwnerID, installationGeneration).Scan(&previousCandidate, &previousKind, &previousSource, &previousCandidateID, &previousName, &previousDescription, &previousTransport, &previousNetwork, &previousSecrets)
 	if op == coreextension.OperationInstall {
 		previousCandidate = nil
 		previousKind, previousSource, previousCandidateID, previousName, previousDescription, previousTransport = "", "", "", "", "", ""
@@ -162,6 +170,9 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	b := coreextension.LifecycleRequest{}
 	taskID := uuid.New()
 	binding := bindingPG(i, m)
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		binding.OwnerID = scope.OwnerID
+	}
 	expires := time.Now().UTC().Add(time.Hour)
 	cmd := coreconfirmation.RequestCommand{IdempotencyKey: key, TaskID: taskID.String(), Binding: binding, ExpiresAt: expires}
 	cmd.RequestDigest = coreconfirmation.Digest(digestPG(cmd, "request"))
@@ -173,7 +184,7 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	ngRaw, _ := json.Marshal(i.NetworkGrants)
 	sgRaw, _ := json.Marshal(i.SecretGrants)
 	var inserted bool
-	if tag, ee := tx.Exec(ctx, `INSERT INTO core_extension_installations(installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,active_version_id,proposed_version_id,network_grants_json,secret_grants_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,'')::uuid,NULLIF($13,'')::uuid,$14,$15,$16,$16) ON CONFLICT (installation_id) DO NOTHING`, i.ID, candRaw, string(i.Kind), string(i.Source), i.CandidateID, i.Name, i.Description, string(i.Transport), i.Revision, string(i.State), i.Enabled, i.ActiveVersionID, i.ProposedVersionID, ngRaw, sgRaw, i.CreatedAt); ee != nil {
+	if tag, ee := tx.Exec(ctx, `INSERT INTO core_extension_installations(installation_id,candidate_json,kind,source,candidate_id,name,description,transport,revision,state,enabled,active_version_id,proposed_version_id,network_grants_json,secret_grants_json,created_at,updated_at,owner_id,account_generation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,'')::uuid,NULLIF($13,'')::uuid,$14,$15,$16,$16,$17,$18) ON CONFLICT (installation_id) DO NOTHING`, i.ID, candRaw, string(i.Kind), string(i.Source), i.CandidateID, i.Name, i.Description, string(i.Transport), i.Revision, string(i.State), i.Enabled, i.ActiveVersionID, i.ProposedVersionID, ngRaw, sgRaw, i.CreatedAt, installationOwnerID, installationGeneration); ee != nil {
 		e = ee
 	} else {
 		inserted = tag.RowsAffected() == 1
@@ -183,13 +194,13 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	}
 	if !inserted {
 		var currentRev int64
-		if e = tx.QueryRow(ctx, `SELECT revision FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, i.ID).Scan(&currentRev); e != nil {
+		if e = tx.QueryRow(ctx, `SELECT revision FROM core_extension_installations WHERE installation_id=$1 AND owner_id=$2 AND account_generation=$3 FOR UPDATE`, i.ID, installationOwnerID, installationGeneration).Scan(&currentRev); e != nil {
 			return coreextension.MutationResult{}, fmt.Errorf("extension installation lock: %w", e)
 		}
 		if currentRev+1 != i.Revision {
 			return coreextension.MutationResult{}, coreextension.ErrRevisionConflict
 		}
-		if _, e = tx.Exec(ctx, `UPDATE core_extension_installations SET candidate_json=$2,kind=$3,source=$4,candidate_id=$5,name=$6,description=$7,transport=$8,state=$9,revision=$10,proposed_version_id=NULLIF($11,'')::uuid,network_grants_json=$12,secret_grants_json=$13,updated_at=$14 WHERE installation_id=$1 AND revision=$15`, i.ID, candRaw, string(i.Kind), string(i.Source), i.CandidateID, i.Name, i.Description, string(i.Transport), string(i.State), i.Revision, i.ProposedVersionID, ngRaw, sgRaw, i.UpdatedAt, currentRev); e != nil {
+		if _, e = tx.Exec(ctx, `UPDATE core_extension_installations SET candidate_json=$2,kind=$3,source=$4,candidate_id=$5,name=$6,description=$7,transport=$8,state=$9,revision=$10,proposed_version_id=NULLIF($11,'')::uuid,network_grants_json=$12,secret_grants_json=$13,updated_at=$14 WHERE installation_id=$1 AND revision=$15 AND owner_id=$16 AND account_generation=$17`, i.ID, candRaw, string(i.Kind), string(i.Source), i.CandidateID, i.Name, i.Description, string(i.Transport), string(i.State), i.Revision, i.ProposedVersionID, ngRaw, sgRaw, i.UpdatedAt, currentRev, installationOwnerID, installationGeneration); e != nil {
 			return coreextension.MutationResult{}, e
 		}
 	}
@@ -233,6 +244,9 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	if _, e = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,model_profile_id,create_idempotency_key,task_kind,payload_json,status,available_at,revision,created_at,updated_at) VALUES($1,$2,NULL,$3,'extension',$4,'waiting_user',$5,1,$5,$5)`, taskID, b.Task.Goal, key, payload, time.Now().UTC()); e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("insert extension task: %w", e)
 	}
+	if e = setTaskOwnerScopeValuesTx(ctx, tx, taskID.String(), installationOwnerID, installationGeneration); e != nil {
+		return coreextension.MutationResult{}, fmt.Errorf("bind extension task owner: %w", e)
+	}
 	if _, e = tx.Exec(ctx, `INSERT INTO core_confirmations(confirmation_id,operation_domain,target_id,target_revision,binding_json,task_id,state,revision,created_at,updated_at,expires_at) VALUES($1,'extension',$2,$3,$4,$5,'pending',1,$6,$6,$7)`, cid, i.ID, i.Revision, braw, taskID, time.Now().UTC(), expires); e != nil {
 		return coreextension.MutationResult{}, fmt.Errorf("insert extension confirmation: %w", e)
 	}
@@ -248,7 +262,7 @@ func (s *CoreExtensionStore) request(ctx context.Context, key, op string, i core
 	}
 	out := coreextension.MutationResult{Installation: i, ConfirmationID: cid.String(), TaskID: taskID.String()}
 	enc, _ := json.Marshal(out)
-	if _, e = tx.Exec(ctx, `INSERT INTO core_extension_replays(operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4)`, op, key, d, enc); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_extension_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4,$5,$6)`, ownerID, generation, op, key, d, enc); e != nil {
 		return coreextension.MutationResult{}, e
 	}
 	if e = tx.Commit(ctx); e != nil {

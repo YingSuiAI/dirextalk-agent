@@ -80,7 +80,7 @@ func TestCoreSecretSentinelAcrossAgentTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := executionStore.SaveSecret(ctx, coreexecutionv2.Secret{
-		OwnerID: "sentinel-owner", Ref: uuid.NewString(), Revision: 1, Provider: "openai",
+		OwnerID: "sentinel-owner", AccountGeneration: 1, Ref: uuid.NewString(), Revision: 1, Provider: "openai",
 		Purpose: "ai_provider_api_key", Value: canary, BindingDigest: strings.Repeat("c", 64), Status: "active", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)

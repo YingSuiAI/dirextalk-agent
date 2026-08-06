@@ -10,6 +10,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -49,6 +50,9 @@ func (s *CoreConfirmationStore) SweepExpired(ctx context.Context, now time.Time,
 	rows.Close()
 	count := 0
 	for _, candidate := range candidates {
+		if err = lockTeamCredentialMutationForConfirmation(ctx, tx, candidate.ConfirmationID); err != nil {
+			return 0, err
+		}
 		var status string
 		if err = tx.QueryRow(ctx, `SELECT status FROM core_tasks WHERE task_id=$1 FOR UPDATE`, candidate.TaskID).Scan(&status); err != nil {
 			return 0, err
@@ -124,15 +128,16 @@ func awsBindingTx(ctx context.Context, tx pgx.Tx, store *Store, confirmationID s
 	if store == nil {
 		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
 	}
-	var planID, credentialID, region, stack, operation, account, user string
+	var planID, ownerID, credentialID, region, stack, operation, account, user string
+	var accountGeneration int64
 	var template, paramsRaw, tagsRaw, capsRaw []byte
 	var templateSHA string
 	var planRevision, credentialRevision, verifiedRevision int64
-	err := tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &paramsRaw, &tagsRaw, &capsRaw, &planRevision, &account, &user, &credentialRevision, &verifiedRevision)
+	err := tx.QueryRow(ctx, `SELECT p.plan_id::text,p.owner_id,p.account_generation,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id AND c.owner_id=p.owner_id AND c.account_generation=p.account_generation WHERE x.confirmation_id=$1 FOR UPDATE`, confirmationID).Scan(&planID, &ownerID, &accountGeneration, &credentialID, &region, &stack, &operation, &template, &templateSHA, &paramsRaw, &tagsRaw, &capsRaw, &planRevision, &account, &user, &credentialRevision, &verifiedRevision)
 	if err != nil {
 		return coreconfirmation.Binding{}, err
 	}
-	credential, err := NewCoreAWSStore(store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, credentialID))
+	credential, err := NewCoreAWSStore(store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 AND owner_id=$2 AND account_generation=$3 FOR UPDATE`, credentialID, ownerID, accountGeneration))
 	if err != nil {
 		return coreconfirmation.Binding{}, err
 	}
@@ -144,7 +149,7 @@ func awsBindingTx(ctx context.Context, tx pgx.Tx, store *Store, confirmationID s
 	if json.Unmarshal(paramsRaw, &params) != nil || json.Unmarshal(tagsRaw, &tags) != nil || json.Unmarshal(capsRaw, &caps) != nil {
 		return coreconfirmation.Binding{}, coreconfirmation.ErrStale
 	}
-	plan := coreaws.Plan{ID: planID, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: params, Tags: tags, Capabilities: caps, Revision: planRevision}
+	plan := coreaws.Plan{ID: planID, OwnerID: ownerID, AccountGeneration: accountGeneration, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: params, Tags: tags, Capabilities: caps, Revision: planRevision}
 	return coreaws.BindingForPlan(plan, credential).Normalize()
 }
 func scanConfirmation(row interface{ Scan(...any) error }) (coreconfirmation.Confirmation, error) {
@@ -202,6 +207,9 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 		}
 		return terminalizeWorkloadBeforeDispatchTx(ctx, tx, ownerID, cur, "expired", status, "failed", reason, reason, at)
 	}
+	if err := terminalizeUnlaunchedTeamExecutionTx(ctx, tx, cur, reason, at); err != nil {
+		return cur, err
+	}
 	if _, e := tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,updated_at=$2,terminal_code=$3,terminal_reason=$3 WHERE confirmation_id=$1`, cur.ConfirmationID, at, reason); e != nil {
 		return cur, e
 	}
@@ -236,6 +244,86 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 	}
 	cur.State, cur.Revision, cur.UpdatedAt, cur.TerminalCode, cur.TerminalReason = coreconfirmation.StateExpired, cur.Revision+1, at, reason, reason
 	return cur, nil
+}
+
+// terminalizeUnlaunchedTeamExecutionTx releases the credential guard only
+// when durable task and role state prove that no Worker ever claimed work.
+func terminalizeUnlaunchedTeamExecutionTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, reason string, at time.Time) error {
+	if cur.Binding.OperationDomain != coreteam.TeamExecutionOperationDomain {
+		return nil
+	}
+	var scope coreteam.Scope
+	var executionID string
+	err := tx.QueryRow(ctx, `SELECT owner_id,account_generation,execution_id::text FROM core_team_executions WHERE task_id=$1 AND confirmation_id=$2`, cur.TaskID, cur.ConfirmationID).Scan(&scope.OwnerID, &scope.AccountGeneration, &executionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err = lockTeamCredentialMutation(ctx, tx, scope); err != nil {
+		return err
+	}
+	var executionStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM core_team_executions WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 FOR UPDATE`, scope.OwnerID, scope.AccountGeneration, executionID).Scan(&executionStatus); err != nil {
+		return err
+	}
+	if executionStatus != string(coreteam.ExecutionQueued) {
+		return nil
+	}
+
+	var taskStatus, leaseHolder string
+	var attempt int
+	var leaseEpoch int64
+	var leaseExpiresAt *time.Time
+	if err = tx.QueryRow(ctx, `SELECT status,attempt,lease_epoch,COALESCE(lease_holder,''),lease_expires_at FROM core_tasks WHERE task_id=$1 FOR UPDATE`, cur.TaskID).Scan(&taskStatus, &attempt, &leaseEpoch, &leaseHolder, &leaseExpiresAt); err != nil {
+		return err
+	}
+	if (taskStatus != "waiting_user" && taskStatus != "queued") || attempt != 0 || leaseEpoch != 0 || leaseHolder != "" || leaseExpiresAt != nil {
+		return nil
+	}
+
+	rows, err := tx.Query(ctx, `SELECT status FROM core_team_role_runs WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 FOR UPDATE`, scope.OwnerID, scope.AccountGeneration, executionID)
+	if err != nil {
+		return err
+	}
+	roleCount := 0
+	rolesUnlaunched := true
+	for rows.Next() {
+		var status string
+		if err = rows.Scan(&status); err != nil {
+			rows.Close()
+			return err
+		}
+		roleCount++
+		rolesUnlaunched = rolesUnlaunched && status == string(coreteam.ExecutionQueued)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if roleCount == 0 || !rolesUnlaunched {
+		return nil
+	}
+
+	terminalStatus := coreteam.ExecutionTimedOut
+	if reason == coreconfirmation.ReasonUserRejected || reason == "canceled" || reason == "task_canceled" {
+		terminalStatus = coreteam.ExecutionCanceled
+	} else if reason == coreconfirmation.ReasonStale {
+		terminalStatus = coreteam.ExecutionFailed
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_team_role_runs SET status=$4,revision=revision+1,updated_at=$5 WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND status='queued'`, scope.OwnerID, scope.AccountGeneration, executionID, string(terminalStatus), at.UTC()); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE core_team_executions SET status=$4,cleanup_verified_at=$5,revision=revision+1,updated_at=$5 WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND status='queued' AND cleanup_verified_at IS NULL`, scope.OwnerID, scope.AccountGeneration, executionID, string(terminalStatus), at.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return coreconfirmation.ErrConflict
+	}
+	return nil
 }
 
 // terminalizeWorkloadBeforeDispatchTx is deliberately narrower than generic
@@ -378,7 +466,13 @@ func extensionExecutionBindingTx(ctx context.Context, tx pgx.Tx, cur coreconfirm
 	var kind, transport, state, activeID string
 	var enabled bool
 	var revision int64
-	if err := tx.QueryRow(ctx, `SELECT kind,transport,state,revision,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR UPDATE`, payload.Extension.InstallationID).Scan(&kind, &transport, &state, &revision, &enabled, &activeID); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT installation.kind,installation.transport,installation.state,installation.revision,installation.enabled,COALESCE(installation.active_version_id::text,'')
+		FROM core_extension_installations installation
+		JOIN core_task_scopes scope ON scope.task_id=$2
+		WHERE installation.installation_id=$1
+		  AND installation.owner_id=scope.owner_id
+		  AND installation.account_generation=scope.account_generation
+		FOR UPDATE OF installation,scope`, payload.Extension.InstallationID, cur.TaskID).Scan(&kind, &transport, &state, &revision, &enabled, &activeID); err != nil {
 		return coreconfirmation.Binding{}, coreconfirmation.ErrBindingUnavailable
 	}
 	if state != string(coreextension.StateInstalled) || !enabled || revision != int64(payload.Extension.ExpectedRevision) || activeID == "" {
@@ -400,9 +494,13 @@ func extensionExecutionBindingTx(ctx context.Context, tx pgx.Tx, cur coreconfirm
 }
 
 func (s *CoreConfirmationStore) replay(ctx context.Context, tx pgx.Tx, op, key string, dig coreconfirmation.Digest) (coreconfirmation.Confirmation, bool, error) {
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "confirmation", key)
+	if scopeErr != nil {
+		return coreconfirmation.Confirmation{}, false, scopeErr
+	}
 	var d string
 	var raw []byte
-	e := tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_confirmation_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, op, key).Scan(&d, &raw)
+	e := tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_confirmation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, ownerID, generation, op, key).Scan(&d, &raw)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return coreconfirmation.Confirmation{}, false, nil
 	}
@@ -421,15 +519,16 @@ func (s *CoreConfirmationStore) replay(ctx context.Context, tx pgx.Tx, op, key s
 			}
 			return c, true, coreconfirmation.ErrExpired
 		}
-		if c.State == coreconfirmation.StateRejected {
-			return c, true, coreconfirmation.ErrConflict
-		}
 	}
 	return c, true, e
 }
 func (s *CoreConfirmationStore) putReplay(ctx context.Context, tx pgx.Tx, op, key string, dig coreconfirmation.Digest, c coreconfirmation.Confirmation) error {
+	ownerID, generation, err := replayOwnerScope(ctx, "confirmation", key)
+	if err != nil {
+		return err
+	}
 	raw, _ := json.Marshal(c)
-	_, e := tx.Exec(ctx, `INSERT INTO core_confirmation_replays(operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4)`, op, key, string(dig), raw)
+	_, e := tx.Exec(ctx, `INSERT INTO core_confirmation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4,$5,$6)`, ownerID, generation, op, key, string(dig), raw)
 	return e
 }
 
@@ -461,6 +560,9 @@ func terminalizeConversationToolTx(ctx context.Context, tx pgx.Tx, cur coreconfi
 // terminalizeConfirmationForTaskTx compensates pending/confirmed work while
 // preserving consumed provider reservations for reconciliation.
 func terminalizeConfirmationForTaskTx(ctx context.Context, tx pgx.Tx, taskID, reason string, at time.Time) error {
+	if err := lockTeamCredentialMutationForTask(ctx, tx, taskID); err != nil {
+		return err
+	}
 	cur, err := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE task_id=$1 AND state IN ('pending','confirmed','consumed') FOR UPDATE`, taskID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -472,6 +574,9 @@ func terminalizeConfirmationForTaskTx(ctx context.Context, tx pgx.Tx, taskID, re
 		if cur.Binding.OperationDomain == "aws" {
 			_, err = tx.Exec(ctx, `UPDATE core_aws_changes SET stage=$2,error_code=$3,error_summary='task terminalized; provider outcome requires reconciliation',revision=revision+1,updated_at=$4 WHERE confirmation_id=$1 AND status='running'`, cur.ConfirmationID, string(coreaws.StageReconciliationRequired), reason, at.UTC())
 		}
+		return err
+	}
+	if err = terminalizeUnlaunchedTeamExecutionTx(ctx, tx, cur, reason, at.UTC()); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,terminal_code=$2,terminal_reason=$2,updated_at=$3 WHERE confirmation_id=$1 AND state IN ('pending','confirmed')`, cur.ConfirmationID, reason, at.UTC()); err != nil {

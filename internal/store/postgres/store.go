@@ -134,30 +134,31 @@ func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, instanceID string)
 			if !bytes.Equal(recorded, checksum[:]) {
 				return fmt.Errorf("migration %d checksum does not match the applied schema", version)
 			}
-			continue
+		} else {
+			tx, err := connection.BeginTx(ctx, pgx.TxOptions{})
+			if err != nil {
+				return fmt.Errorf("begin migration %s: %w", entry, err)
+			}
+			if _, err := tx.Exec(ctx, string(script)); err != nil {
+				_ = tx.Rollback(ctx)
+				return fmt.Errorf("apply migration %s: %w", entry, err)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO agent_schema_migrations (version, checksum) VALUES ($1,$2)`, version, checksum[:]); err != nil {
+				_ = tx.Rollback(ctx)
+				return fmt.Errorf("record migration %s: %w", entry, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return fmt.Errorf("commit migration %s: %w", entry, err)
+			}
 		}
-		tx, err := connection.BeginTx(ctx, pgx.TxOptions{})
-		if err != nil {
-			return fmt.Errorf("begin migration %s: %w", entry, err)
-		}
-		if _, err := tx.Exec(ctx, string(script)); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("apply migration %s: %w", entry, err)
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_schema_migrations (version, checksum) VALUES ($1,$2)`, version, checksum[:]); err != nil {
-			_ = tx.Rollback(ctx)
-			return fmt.Errorf("record migration %s: %w", entry, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit migration %s: %w", entry, err)
+		// Later additive migrations may need the immutable instance identity to
+		// backfill owner-scoped rows, so initialize it immediately after v1.
+		if version == 1 {
+			if _, err := connection.Exec(ctx, `INSERT INTO agent_instance_metadata (agent_instance_id) VALUES ($1) ON CONFLICT (singleton) DO NOTHING`, parsed); err != nil {
+				return fmt.Errorf("initialize agent instance metadata: %w", err)
+			}
 		}
 	}
-
-	result, err := connection.Exec(ctx, `INSERT INTO agent_instance_metadata (agent_instance_id) VALUES ($1) ON CONFLICT (singleton) DO NOTHING`, parsed)
-	if err != nil {
-		return fmt.Errorf("initialize agent instance metadata: %w", err)
-	}
-	_ = result
 	return verifySchemaOn(ctx, connection, parsed)
 }
 

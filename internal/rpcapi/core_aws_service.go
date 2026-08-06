@@ -6,6 +6,7 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -14,19 +15,45 @@ import (
 // CoreCloudControlService adapts the Core v1 AWS service to gRPC.
 type CoreCloudControlService struct {
 	agentv1.UnimplementedCoreCloudControlServiceServer
-	service *coreaws.Service
+	service         *coreaws.Service
+	credentialScope *coreteam.Scope
 }
 
-func NewCoreCloudControlService(service *coreaws.Service) (*CoreCloudControlService, error) {
+func NewCoreCloudControlService(service *coreaws.Service, credentialScopes ...coreteam.Scope) (*CoreCloudControlService, error) {
 	if service == nil {
 		return nil, errors.New("core cloud control service requires service")
 	}
-	return &CoreCloudControlService{service: service}, nil
+	if len(credentialScopes) > 1 {
+		return nil, errors.New("core cloud control service accepts at most one credential scope")
+	}
+	adapter := &CoreCloudControlService{service: service}
+	if len(credentialScopes) == 1 {
+		scope := credentialScopes[0]
+		if scope.Validate() != nil {
+			return nil, errors.New("core cloud control service credential scope is invalid")
+		}
+		adapter.credentialScope = &scope
+	}
+	return adapter, nil
+}
+
+func (s *CoreCloudControlService) credentialMutationContext(ctx context.Context) (context.Context, error) {
+	if s == nil || ctx == nil {
+		return nil, coreaws.ErrInvalid
+	}
+	if s.credentialScope == nil {
+		return ctx, nil
+	}
+	return coreaws.WithCredentialMutationScope(ctx, *s.credentialScope)
 }
 
 func (s *CoreCloudControlService) CreateCredential(ctx context.Context, r *agentv1.CoreCloudControlServiceCreateCredentialRequest) (*agentv1.CoreCloudControlServiceCreateCredentialResponse, error) {
 	if r == nil || !validCoreUUID(r.GetIdempotencyKey()) {
 		return nil, status.Error(codes.InvalidArgument, "idempotency_key is invalid")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	v, err := s.service.SaveCredential(ctx, coreaws.CredentialInput{Name: r.GetName(), Region: r.GetRegion(), AccessKeyID: r.GetAccessKeyId(), SecretAccessKey: r.GetSecretAccessKey(), SessionToken: r.GetSessionToken(), IdempotencyKey: r.GetIdempotencyKey()})
 	if err != nil {
@@ -39,6 +66,10 @@ func (s *CoreCloudControlService) GetCredential(ctx context.Context, r *agentv1.
 	if r == nil || !validCoreUUID(r.GetCredentialId()) {
 		return nil, status.Error(codes.InvalidArgument, "credential_id is invalid")
 	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
+	}
 	v, err := s.service.GetCredential(ctx, r.GetCredentialId())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
@@ -49,6 +80,10 @@ func (s *CoreCloudControlService) GetCredential(ctx context.Context, r *agentv1.
 func (s *CoreCloudControlService) ListCredentials(ctx context.Context, r *agentv1.CoreCloudControlServiceListCredentialsRequest) (*agentv1.CoreCloudControlServiceListCredentialsResponse, error) {
 	if r == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	limit, err := pageLimit(r.GetPageSize())
 	if err != nil {
@@ -68,6 +103,10 @@ func (s *CoreCloudControlService) ListCredentials(ctx context.Context, r *agentv
 func (s *CoreCloudControlService) UpdateCredential(ctx context.Context, r *agentv1.CoreCloudControlServiceUpdateCredentialRequest) (*agentv1.CoreCloudControlServiceUpdateCredentialResponse, error) {
 	if r == nil || !validCoreUUID(r.GetCredentialId()) || !validCoreUUID(r.GetIdempotencyKey()) || r.GetExpectedRevision() < 1 {
 		return nil, status.Error(codes.InvalidArgument, "invalid credential update")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	// Empty secret fields mean preserve; the domain service retains the stored
 	// private payload while replacing only values explicitly supplied here.
@@ -95,6 +134,10 @@ func (s *CoreCloudControlService) DeleteCredential(ctx context.Context, r *agent
 	if r == nil || !validCoreUUID(r.GetCredentialId()) || !validCoreUUID(r.GetIdempotencyKey()) || r.GetExpectedRevision() < 1 {
 		return nil, status.Error(codes.InvalidArgument, "invalid credential deletion")
 	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
+	}
 	if err := s.service.DeleteCredential(ctx, r.GetCredentialId(), r.GetExpectedRevision(), r.GetIdempotencyKey()); err != nil {
 		return nil, coreAWSRPCError(err)
 	}
@@ -104,6 +147,10 @@ func (s *CoreCloudControlService) DeleteCredential(ctx context.Context, r *agent
 func (s *CoreCloudControlService) TestCredentialIdentity(ctx context.Context, r *agentv1.CoreCloudControlServiceTestCredentialIdentityRequest) (*agentv1.CoreCloudControlServiceTestCredentialIdentityResponse, error) {
 	if r == nil || !validCoreUUID(r.GetCredentialId()) {
 		return nil, status.Error(codes.InvalidArgument, "credential_id is invalid")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	v, err := s.service.TestCredential(ctx, r.GetCredentialId())
 	if err != nil {
@@ -115,6 +162,10 @@ func (s *CoreCloudControlService) TestCredentialIdentity(ctx context.Context, r 
 func (s *CoreCloudControlService) CreatePlan(ctx context.Context, r *agentv1.CoreCloudControlServiceCreatePlanRequest) (*agentv1.CoreCloudControlServiceCreatePlanResponse, error) {
 	if r == nil || !validCoreUUID(r.GetIdempotencyKey()) || !validCoreUUID(r.GetCredentialId()) {
 		return nil, status.Error(codes.InvalidArgument, "invalid plan creation")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	op, ok := operationFromProto(r.GetOperation())
 	if !ok {
@@ -131,6 +182,10 @@ func (s *CoreCloudControlService) GetPlan(ctx context.Context, r *agentv1.CoreCl
 	if r == nil || !validCoreUUID(r.GetPlanId()) {
 		return nil, status.Error(codes.InvalidArgument, "plan_id is invalid")
 	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
+	}
 	v, err := s.service.GetPlan(ctx, r.GetPlanId())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
@@ -141,6 +196,10 @@ func (s *CoreCloudControlService) GetPlan(ctx context.Context, r *agentv1.CoreCl
 func (s *CoreCloudControlService) ListPlans(ctx context.Context, r *agentv1.CoreCloudControlServiceListPlansRequest) (*agentv1.CoreCloudControlServiceListPlansResponse, error) {
 	if r == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	limit, err := pageLimit(r.GetPageSize())
 	if err != nil {
@@ -161,6 +220,10 @@ func (s *CoreCloudControlService) Quote(ctx context.Context, r *agentv1.CoreClou
 	if r == nil || !validCoreUUID(r.GetPlanId()) {
 		return nil, status.Error(codes.InvalidArgument, "plan_id is invalid")
 	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
+	}
 	v, err := s.service.Quote(ctx, r.GetPlanId())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
@@ -171,6 +234,10 @@ func (s *CoreCloudControlService) Quote(ctx context.Context, r *agentv1.CoreClou
 func (s *CoreCloudControlService) RequestChange(ctx context.Context, r *agentv1.CoreCloudControlServiceRequestChangeRequest) (*agentv1.CoreCloudControlServiceRequestChangeResponse, error) {
 	if r == nil || !validCoreUUID(r.GetPlanId()) || !validCoreUUID(r.GetIdempotencyKey()) {
 		return nil, status.Error(codes.InvalidArgument, "invalid change request")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	v, err := s.service.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: r.GetPlanId(), IdempotencyKey: r.GetIdempotencyKey()})
 	if err != nil {
@@ -183,6 +250,10 @@ func (s *CoreCloudControlService) GetChange(ctx context.Context, r *agentv1.Core
 	if r == nil || !validCoreUUID(r.GetChangeId()) {
 		return nil, status.Error(codes.InvalidArgument, "change_id is invalid")
 	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
+	}
 	v, err := s.service.GetChange(ctx, r.GetChangeId())
 	if err != nil {
 		return nil, coreAWSRPCError(err)
@@ -193,6 +264,10 @@ func (s *CoreCloudControlService) GetChange(ctx context.Context, r *agentv1.Core
 func (s *CoreCloudControlService) ListChanges(ctx context.Context, r *agentv1.CoreCloudControlServiceListChangesRequest) (*agentv1.CoreCloudControlServiceListChangesResponse, error) {
 	if r == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	limit, err := pageLimit(r.GetPageSize())
 	if err != nil {
@@ -215,6 +290,10 @@ func (s *CoreCloudControlService) ListChanges(ctx context.Context, r *agentv1.Co
 func (s *CoreCloudControlService) GetChangeStatus(ctx context.Context, r *agentv1.CoreCloudControlServiceGetChangeStatusRequest) (*agentv1.CoreCloudControlServiceGetChangeStatusResponse, error) {
 	if r == nil || !validCoreUUID(r.GetChangeId()) {
 		return nil, status.Error(codes.InvalidArgument, "change_id is invalid")
+	}
+	ctx, err := s.credentialMutationContext(ctx)
+	if err != nil {
+		return nil, coreAWSRPCError(err)
 	}
 	v, err := s.service.GetChange(ctx, r.GetChangeId())
 	if err != nil {
@@ -275,6 +354,8 @@ func coreAWSRPCError(err error) error {
 		return status.Error(codes.Aborted, "AWS revision conflict")
 	case errors.Is(err, coreaws.ErrUnconfirmed):
 		return status.Error(codes.FailedPrecondition, "AWS change requires confirmation")
+	case errors.Is(err, coreteam.ErrExecutionActive):
+		return status.Error(codes.FailedPrecondition, coreteam.ErrorCodeTeamExecutionActive)
 	case errors.Is(err, coreaws.ErrConflict):
 		return status.Error(codes.FailedPrecondition, "AWS state conflict")
 	case errors.Is(err, coreaws.ErrResponseUncertain), errors.Is(err, coreaws.ErrProvider):

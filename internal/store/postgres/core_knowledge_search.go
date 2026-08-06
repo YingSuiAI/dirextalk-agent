@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -22,6 +23,10 @@ const knowledgeRecallBindingBatchSize = 128
 func (r *CoreKnowledgeStore) RecallMemory(ctx context.Context, prompt string, limit int) (coreknowledge.SearchPage, error) {
 	query := coreknowledge.SearchQuery{Query: strings.TrimSpace(prompt), Kind: coreknowledge.SourceKindMemory, Limit: limit}
 	if r == nil || r.store == nil || r.search == nil || ctx == nil || limit <= 0 || query.ValidateForRepository() != nil {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+	}
+	ownerID, generation, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
 		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
 	}
 	var (
@@ -40,9 +45,9 @@ func (r *CoreKnowledgeStore) RecallMemory(ctx context.Context, prompt string, li
 			err  error
 		)
 		if cursor == "" {
-			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' ORDER BY source_id LIMIT $1`, knowledgeRecallBindingBatchSize)
+			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE owner_id=$1 AND account_generation=$2 AND kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' ORDER BY source_id LIMIT $3`, ownerID, generation, knowledgeRecallBindingBatchSize)
 		} else {
-			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' AND source_id>$1::uuid ORDER BY source_id LIMIT $2`, cursor, knowledgeRecallBindingBatchSize)
+			rows, err = r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE owner_id=$1 AND account_generation=$2 AND kind='memory' AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_profile_revision>0 AND promoted_collection_config_digest<>'' AND source_id>$3::uuid ORDER BY source_id LIMIT $4`, ownerID, generation, cursor, knowledgeRecallBindingBatchSize)
 		}
 		if err != nil {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
@@ -130,11 +135,15 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 	var provenance coreknowledge.SearchProvenance
 	var raw []byte
 	var exp time.Time
+	snapshotOwner, snapshotGeneration, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+	}
 	if q.PageToken != "" {
 		if c.Digest != digest {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrCursorConflict
 		}
-		if err = r.store.pool.QueryRow(ctx, `SELECT search_matches,expires_at,COALESCE(embedding_profile_id::text,''),COALESCE(embedding_profile_revision,0),embedding_model,embedding_generation,embedding_collection_config_digest FROM core_knowledge_list_snapshots WHERE snapshot_id=$1 AND query_digest=$2`, c.SnapshotID, digest).Scan(&raw, &exp, &provenance.EmbeddingProfileID, &provenance.EmbeddingProfileRevision, &provenance.EmbeddingModel, &provenance.EmbeddingGeneration, &provenance.CollectionConfigDigest); err != nil || !now.Before(exp) {
+		if err = r.store.pool.QueryRow(ctx, `SELECT search_matches,expires_at,COALESCE(embedding_profile_id::text,''),COALESCE(embedding_profile_revision,0),embedding_model,embedding_generation,embedding_collection_config_digest FROM core_knowledge_list_snapshots WHERE snapshot_id=$1 AND owner_id=$2 AND account_generation=$3 AND query_digest=$4`, c.SnapshotID, snapshotOwner, snapshotGeneration, digest).Scan(&raw, &exp, &provenance.EmbeddingProfileID, &provenance.EmbeddingProfileRevision, &provenance.EmbeddingModel, &provenance.EmbeddingGeneration, &provenance.CollectionConfigDigest); err != nil || !now.Before(exp) {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrCursorConflict
 		}
 		if json.Unmarshal(raw, &matches) != nil {
@@ -155,7 +164,11 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 		}
 		searchIDs := append([]string(nil), q.SourceIDs...)
 		if q.Kind != "" && len(searchIDs) == 0 {
-			rows, queryErr := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind=$1 AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_collection_config_digest IS NOT NULL ORDER BY source_id`, q.Kind)
+			ownerID, generation, scopeErr := r.knowledgeScope(ctx)
+			if scopeErr != nil {
+				return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
+			}
+			rows, queryErr := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE kind=$1 AND status='ready' AND promoted_revision=revision AND promoted_revision>0 AND promoted_profile_id IS NOT NULL AND promoted_collection_config_digest IS NOT NULL AND owner_id=$2 AND account_generation=$3 ORDER BY source_id`, q.Kind, ownerID, generation)
 			if queryErr != nil {
 				return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
 			}
@@ -184,10 +197,21 @@ func (r *CoreKnowledgeStore) Search(ctx context.Context, q coreknowledge.SearchQ
 		if len(matches) > coreknowledge.MaxSearchResults {
 			matches = matches[:coreknowledge.MaxSearchResults]
 		}
+		verifiedSources := make(map[string]struct{}, len(matches))
+		for _, match := range matches {
+			if _, seen := verifiedSources[match.SourceID]; seen {
+				continue
+			}
+			source, sourceErr := r.Get(ctx, match.SourceID)
+			if sourceErr != nil || source.Status != coreknowledge.SourceStatusReady || q.Kind != "" && source.Kind != q.Kind {
+				return coreknowledge.SearchPage{}, coreknowledge.ErrNotFound
+			}
+			verifiedSources[match.SourceID] = struct{}{}
+		}
 		provenance = resolved.SearchProvenance
 		snap := uuid.New()
 		enc, _ := json.Marshal(matches)
-		if _, err = r.store.pool.Exec(ctx, `INSERT INTO core_knowledge_list_snapshots(snapshot_id,query_digest,snapshot_at,expires_at,source_ids,search_matches,embedding_profile_id,embedding_profile_revision,embedding_model,embedding_generation,embedding_collection_config_digest) VALUES($1,$2,$3,$4,'[]'::jsonb,$5,NULLIF($6,'')::uuid,NULLIF($7,0),$8,$9,$10)`, snap, digest, now, now.Add(knowledgeSnapshotTTL), enc, provenance.EmbeddingProfileID, provenance.EmbeddingProfileRevision, provenance.EmbeddingModel, provenance.EmbeddingGeneration, provenance.CollectionConfigDigest); err != nil {
+		if _, err = r.store.pool.Exec(ctx, `INSERT INTO core_knowledge_list_snapshots(snapshot_id,owner_id,account_generation,query_digest,snapshot_at,expires_at,source_ids,search_matches,embedding_profile_id,embedding_profile_revision,embedding_model,embedding_generation,embedding_collection_config_digest) VALUES($1,$2,$3,$4,$5,$6,'[]'::jsonb,$7,NULLIF($8,'')::uuid,NULLIF($9,0),$10,$11,$12)`, snap, snapshotOwner, snapshotGeneration, digest, now, now.Add(knowledgeSnapshotTTL), enc, provenance.EmbeddingProfileID, provenance.EmbeddingProfileRevision, provenance.EmbeddingModel, provenance.EmbeddingGeneration, provenance.CollectionConfigDigest); err != nil {
 			return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
 		}
 		c = knowledgeCursor{SnapshotID: snap.String(), Snapshot: now, Digest: digest}
@@ -222,7 +246,8 @@ func (r *CoreKnowledgeStore) ResolveSources(ctx context.Context, ids []string) e
 			return coreknowledge.ErrInvalid
 		}
 	}
-	rows, err := r.store.pool.Query(ctx, `SELECT source_id,status FROM core_knowledge_sources WHERE source_id=ANY($1::uuid[])`, ids)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	rows, err := r.store.pool.Query(ctx, `SELECT source_id,status FROM core_knowledge_sources WHERE source_id=ANY($1::uuid[]) AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, ids, ownerID, generation)
 	if err != nil {
 		return coreknowledge.ErrConflict
 	}
@@ -248,7 +273,11 @@ func (r *CoreKnowledgeStore) ListAutoIndexCandidates(ctx context.Context, profil
 	if r == nil || r.store == nil || !validKnowledgeUUID(profileID) || len(collectionDigest) != 64 || limit <= 0 || limit > 256 {
 		return nil, coreknowledge.ErrInvalid
 	}
-	rows, err := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE status='ready' AND (promoted_revision < revision OR promoted_profile_id IS DISTINCT FROM $1::uuid OR promoted_collection_config_digest IS DISTINCT FROM $2) ORDER BY updated_at,source_id LIMIT $3`, profileID, strings.ToLower(collectionDigest), limit)
+	ownerID, generation, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
+		return nil, coreknowledge.ErrInvalid
+	}
+	rows, err := r.store.pool.Query(ctx, `SELECT source_id::text FROM core_knowledge_sources WHERE status='ready' AND (promoted_revision < revision OR promoted_profile_id IS DISTINCT FROM $1::uuid OR promoted_collection_config_digest IS DISTINCT FROM $2) AND owner_id=$3 AND account_generation=$4 ORDER BY updated_at,source_id LIMIT $5`, profileID, strings.ToLower(collectionDigest), ownerID, generation, limit)
 	if err != nil {
 		return nil, coreknowledge.ErrConflict
 	}
@@ -271,6 +300,39 @@ func (r *CoreKnowledgeStore) ListAutoIndexCandidates(ctx context.Context, profil
 	return result, nil
 }
 
+// ListKnowledgeOwnerScopes returns the bounded public tenant set that has
+// durable Knowledge sources. Reserved internal scopes are handled separately
+// by the owner-neutral maintenance pass.
+func ListKnowledgeOwnerScopes(ctx context.Context, store *Store, limit int) ([]coretask.OwnerScope, error) {
+	if ctx == nil || store == nil || limit <= 0 || limit > 4096 {
+		return nil, coreknowledge.ErrInvalid
+	}
+	rows, err := store.pool.Query(ctx, `SELECT DISTINCT owner_id,account_generation
+		FROM core_knowledge_sources
+		WHERE left(owner_id,$1) <> $2
+		ORDER BY owner_id,account_generation
+		LIMIT $3`, len(coretask.ReservedInternalOwnerPrefix), coretask.ReservedInternalOwnerPrefix, limit+1)
+	if err != nil {
+		return nil, coreknowledge.ErrConflict
+	}
+	defer rows.Close()
+	result := make([]coretask.OwnerScope, 0, limit)
+	for rows.Next() {
+		var scope coretask.OwnerScope
+		if err := rows.Scan(&scope.OwnerID, &scope.AccountGeneration); err != nil || scope.Validate() != nil {
+			return nil, coreknowledge.ErrConflict
+		}
+		result = append(result, scope)
+		if len(result) > limit {
+			return nil, coreknowledge.ErrConflict
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, coreknowledge.ErrConflict
+	}
+	return result, nil
+}
+
 func (r *CoreKnowledgeStore) GetEmbeddingSourceStatus(ctx context.Context, sourceID string, config coreknowledge.EmbeddingConfig) (coreknowledge.EmbeddingSourceStatus, error) {
 	if r == nil || r.store == nil || !validKnowledgeUUID(sourceID) || !validKnowledgeUUID(config.EmbeddingProfileID) || len(config.CollectionConfigDigest) != 64 {
 		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrInvalid
@@ -278,7 +340,8 @@ func (r *CoreKnowledgeStore) GetEmbeddingSourceStatus(ctx context.Context, sourc
 	var status string
 	var revision, promotedRevision int64
 	var promotedProfile, promotedDigest string
-	err := r.store.pool.QueryRow(ctx, `SELECT status,revision,promoted_revision,COALESCE(promoted_profile_id::text,''),COALESCE(promoted_collection_config_digest,'') FROM core_knowledge_sources WHERE source_id=$1`, sourceID).Scan(&status, &revision, &promotedRevision, &promotedProfile, &promotedDigest)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	err := r.store.pool.QueryRow(ctx, `SELECT status,revision,promoted_revision,COALESCE(promoted_profile_id::text,''),COALESCE(promoted_collection_config_digest,'') FROM core_knowledge_sources WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, sourceID, ownerID, generation).Scan(&status, &revision, &promotedRevision, &promotedProfile, &promotedDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coreknowledge.EmbeddingSourceStatus{}, coreknowledge.ErrNotFound
 	}

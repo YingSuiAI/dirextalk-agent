@@ -22,6 +22,7 @@ var (
 	ErrInvalid               = errors.New("invalid knowledge request")
 	ErrNotFound              = errors.New("knowledge source not found")
 	ErrConflict              = errors.New("knowledge conflict")
+	ErrActiveTasks           = errors.New("knowledge model has active tasks")
 	ErrIdempotencyConflict   = errors.New("knowledge idempotency conflict")
 	ErrRevisionConflict      = errors.New("knowledge revision conflict")
 	ErrChecksumMismatch      = errors.New("knowledge checksum mismatch")
@@ -33,6 +34,8 @@ var (
 	ErrCursorConflict        = errors.New("knowledge cursor does not match query")
 	ErrFilesystemUnavailable = errors.New("managed knowledge filesystem unavailable")
 )
+
+const ActiveTasksPublicMessage = "finish or cancel active knowledge tasks before changing the model"
 
 const (
 	MaxUploadBytes      int64 = 64 << 20

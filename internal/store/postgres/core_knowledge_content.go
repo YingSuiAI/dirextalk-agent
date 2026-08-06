@@ -57,10 +57,10 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 	}
 	uploadID, sourceID := metadata.UploadID, metadata.SourceID
 	if uploadID == "" {
-		uploadID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/upload/"+metadata.IdempotencyKey)).String()
+		uploadID = ownerScopedStableUUID(ctx, "dirextalk/upload", metadata.IdempotencyKey)
 	}
 	if sourceID == "" {
-		sourceID = uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk/source/"+metadata.IdempotencyKey)).String()
+		sourceID = ownerScopedStableUUID(ctx, "dirextalk/source", metadata.IdempotencyKey)
 	}
 	metadata.UploadID, metadata.SourceID = uploadID, sourceID
 	sink, err := r.content.Begin(ctx, metadata)
@@ -76,7 +76,15 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 	metaRaw, _ := json.Marshal(metadata)
 	s := coreknowledge.Source{ID: sourceID, Kind: coreknowledge.SourceKindUpload, Status: coreknowledge.SourceStatusUploading, Title: metadata.Title, RelativePath: metadata.RelativePath, Digest: strings.ToLower(metadata.ContentSHA256), SizeBytes: metadata.DeclaredSize, MediaType: metadata.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	u := coreknowledge.Upload{ID: uploadID, SourceID: sourceID, Status: coreknowledge.SourceStatusUploading, Metadata: metadata, ReceivedSize: 0, NextChunk: 0, Revision: 1, CreatedAt: now, UpdatedAt: now, Session: coreknowledge.UploadSession{UploadID: uploadID, SourceID: sourceID, Revision: 1}}
-	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,created_at,updated_at) VALUES($1,'upload','uploading',$2,$3,$4,$5,$6,1,$7,$7)`, sourceID, s.Title, s.RelativePath, s.Digest, s.SizeBytes, s.MediaType, now)
+	ownerID, generation, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
+		_ = sink.Abort(ctx)
+		return coreknowledge.Upload{}, coreknowledge.ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,created_at,updated_at,owner_id,account_generation) VALUES($1,'upload','uploading',$2,$3,$4,$5,$6,1,$7,$7,$8,$9)`, sourceID, s.Title, s.RelativePath, s.Digest, s.SizeBytes, s.MediaType, now, ownerID, generation)
+	if err == nil {
+		err = bindKnowledgeSourceOwnerScopeTx(ctx, tx, sourceID)
+	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_uploads(upload_id,source_id,metadata_json,declared_size,content_digest,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'uploading',$6,$6)`, uploadID, sourceID, metaRaw, metadata.DeclaredSize, strings.ToLower(metadata.ContentSHA256), now)
 	}
@@ -95,14 +103,17 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 		// and let an exact idempotency replay/readback reconcile the outcome.
 		_ = tx.Rollback(ctx)
 		var raw []byte
-		if readErr := r.store.pool.QueryRow(ctx, `SELECT response_json FROM core_knowledge_mutation_replays WHERE operation='upload.start' AND idempotency_key=$1`, uuid.MustParse(metadata.IdempotencyKey)).Scan(&raw); readErr == nil {
-			var canonical knowledgeReplay
-			if json.Unmarshal(raw, &canonical) == nil && canonical.Upload.ID != "" {
-				canonical.Upload.Replayed = true
-				r.mu.Lock()
-				r.sinks[canonical.Upload.ID] = sink
-				r.mu.Unlock()
-				return canonical.Upload, nil
+		ownerID, generation, scopeErr := replayOwnerScope(ctx, "knowledge", metadata.IdempotencyKey)
+		if scopeErr == nil {
+			if readErr := r.store.pool.QueryRow(ctx, `SELECT response_json FROM core_knowledge_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='upload.start' AND idempotency_key=$3`, ownerID, generation, uuid.MustParse(metadata.IdempotencyKey)).Scan(&raw); readErr == nil {
+				var canonical knowledgeReplay
+				if json.Unmarshal(raw, &canonical) == nil && canonical.Upload.ID != "" {
+					canonical.Upload.Replayed = true
+					r.mu.Lock()
+					r.sinks[canonical.Upload.ID] = sink
+					r.mu.Unlock()
+					return canonical.Upload, nil
+				}
 			}
 		}
 		return coreknowledge.Upload{}, coreknowledge.ErrConflict
@@ -121,11 +132,15 @@ func (r *CoreKnowledgeStore) GetUpload(ctx context.Context, id string) (coreknow
 }
 
 func (r *CoreKnowledgeStore) loadUpload(ctx context.Context, id string) (coreknowledge.Upload, error) {
-	query := `SELECT upload_id,source_id,metadata_json,status,received_size,next_ordinal,revision,created_at,updated_at FROM core_knowledge_uploads WHERE upload_id=$1`
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	query := `SELECT upload.upload_id,upload.source_id,upload.metadata_json,upload.status,upload.received_size,upload.next_ordinal,upload.revision,upload.created_at,upload.updated_at
+		FROM core_knowledge_uploads upload
+		JOIN core_knowledge_sources source ON source.source_id=upload.source_id
+		WHERE upload.upload_id=$1 AND ($2='' OR (source.owner_id=$2 AND source.account_generation=$3))`
 	var u coreknowledge.Upload
 	var raw []byte
 	var status string
-	if err := r.store.pool.QueryRow(ctx, query, id).Scan(&u.ID, &u.SourceID, &raw, &status, &u.ReceivedSize, &u.NextChunk, &u.Revision, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := r.store.pool.QueryRow(ctx, query, id, ownerID, generation).Scan(&u.ID, &u.SourceID, &raw, &status, &u.ReceivedSize, &u.NextChunk, &u.Revision, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return u, coreknowledge.ErrNotFound
 		}
@@ -291,7 +306,8 @@ func (r *CoreKnowledgeStore) CommitUpload(ctx context.Context, command coreknowl
 	u.Revision++
 	u.UpdatedAt = now
 	u.Session = coreknowledge.UploadSession{UploadID: u.ID, SourceID: u.SourceID, ReceivedSize: u.ReceivedSize, NextOrdinal: u.NextChunk, Revision: u.Revision}
-	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 FOR UPDATE`, u.SourceID))
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, u.SourceID, ownerID, generation))
 	if err != nil {
 		return coreknowledge.Upload{}, coreknowledge.Source{}, coreknowledge.ErrNotFound
 	}
@@ -460,7 +476,15 @@ func (r *CoreKnowledgeStore) CreateMemory(ctx context.Context, command coreknowl
 		tagsJSON, _ = json.Marshal(command.Tags)
 	}
 	s := coreknowledge.Source{ID: sourceID, Kind: coreknowledge.SourceKindMemory, Status: coreknowledge.SourceStatusReady, Title: command.Title, Digest: contentDigest, SizeBytes: metadata.DeclaredSize, MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now, Tags: append([]string(nil), command.Tags...)}
-	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,content_ref,tags_json,created_at,updated_at) VALUES($1,'memory','ready',$2,$3,$4,$5,1,$6,$7,$8,$8)`, s.ID, s.Title, s.Digest, s.SizeBytes, s.MediaType, ref.Ref, tagsJSON, now)
+	ownerID, generation, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
+		_ = r.content.Delete(ctx, ref)
+		return coreknowledge.Source{}, coreknowledge.ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,content_ref,tags_json,created_at,updated_at,owner_id,account_generation) VALUES($1,'memory','ready',$2,$3,$4,$5,1,$6,$7,$8,$8,$9,$10)`, s.ID, s.Title, s.Digest, s.SizeBytes, s.MediaType, ref.Ref, tagsJSON, now, ownerID, generation)
+	if err == nil {
+		err = bindKnowledgeSourceOwnerScopeTx(ctx, tx, s.ID)
+	}
 	if err == nil {
 		err = putKnowledgeReplay(ctx, tx, "memory", command.IdempotencyKey, digest, knowledgeReplay{Source: s}, nil)
 	}
@@ -496,7 +520,8 @@ func (r *CoreKnowledgeStore) UpdateMemory(ctx context.Context, command coreknowl
 		}
 		return coreknowledge.Source{}, replayErr
 	}
-	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 FOR UPDATE`, command.SourceID))
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	s, err := scanKnowledgeSource(tx.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, command.SourceID, ownerID, generation))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coreknowledge.Source{}, coreknowledge.ErrNotFound
 	}
@@ -587,14 +612,18 @@ func (r *CoreKnowledgeStore) UpdateMemory(ctx context.Context, command coreknowl
 }
 
 func (r *CoreKnowledgeStore) loadUploadTx(ctx context.Context, tx pgx.Tx, id string, lock bool) (coreknowledge.Upload, error) {
-	query := `SELECT upload_id,source_id,metadata_json,status,received_size,next_ordinal,revision,created_at,updated_at FROM core_knowledge_uploads WHERE upload_id=$1`
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	query := `SELECT upload.upload_id,upload.source_id,upload.metadata_json,upload.status,upload.received_size,upload.next_ordinal,upload.revision,upload.created_at,upload.updated_at
+		FROM core_knowledge_uploads upload
+		JOIN core_knowledge_sources source ON source.source_id=upload.source_id
+		WHERE upload.upload_id=$1 AND ($2='' OR (source.owner_id=$2 AND source.account_generation=$3))`
 	if lock {
-		query += ` FOR UPDATE`
+		query += ` FOR UPDATE OF upload,source`
 	}
 	var u coreknowledge.Upload
 	var raw []byte
 	var status string
-	if err := tx.QueryRow(ctx, query, id).Scan(&u.ID, &u.SourceID, &raw, &status, &u.ReceivedSize, &u.NextChunk, &u.Revision, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := tx.QueryRow(ctx, query, id, ownerID, generation).Scan(&u.ID, &u.SourceID, &raw, &status, &u.ReceivedSize, &u.NextChunk, &u.Revision, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return u, coreknowledge.ErrNotFound
 		}

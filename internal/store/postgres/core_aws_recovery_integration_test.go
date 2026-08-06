@@ -5,6 +5,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/google/uuid"
 	"strings"
 	"sync"
@@ -26,12 +27,12 @@ func TestCoreAWSPostgresReclaimAfterDurableClaimBeforeProviderCall(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := coreaws.Plan{ID: uuid.NewString(), CredentialID: credentialID, Region: "us-east-1", StackName: "claim-crash-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
+	plan := coreaws.Plan{ID: uuid.NewString(), OwnerID: store.instanceID.String(), AccountGeneration: 1, CredentialID: credentialID, Region: "us-east-1", StackName: "claim-crash-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
 	if _, err = aws.CreatePlan(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
 	coord := NewCoreAWSChangeCoordinator(store, time.Now)
-	requested, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
+	requested, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString(), Scope: coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,12 +124,12 @@ func TestCoreAWSPostgresConsumedCancelVsCompleteReconcilesAndReleasesTarget(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := coreaws.Plan{ID: uuid.NewString(), CredentialID: credentialID, Region: "us-east-1", StackName: "cancel-race-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
+	plan := coreaws.Plan{ID: uuid.NewString(), OwnerID: store.instanceID.String(), AccountGeneration: 1, CredentialID: credentialID, Region: "us-east-1", StackName: "cancel-race-" + uuid.NewString()[:8], Operation: coreaws.OperationCreate, Template: template, TemplateSHA256: digest, Parameters: map[string]string{}, Tags: map[string]string{}, Revision: 1, CreatedAt: now}
 	if _, err = aws.CreatePlan(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
 	coord := NewCoreAWSChangeCoordinator(store, time.Now)
-	requested, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()})
+	requested, err := coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString(), Scope: coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func TestCoreAWSPostgresConsumedCancelVsCompleteReconcilesAndReleasesTarget(t *t
 	if final.Reservation.Active {
 		t.Fatalf("terminal reconciliation retained reservation: %+v", final.Reservation)
 	}
-	if _, err = coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString()}); err != nil {
+	if _, err = coord.RequestChange(ctx, coreaws.RequestChangeInput{PlanID: plan.ID, IdempotencyKey: uuid.NewString(), Scope: coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}}); err != nil {
 		t.Fatalf("same-target request remained blocked after reconciliation: %v", err)
 	}
 }

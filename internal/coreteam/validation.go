@@ -24,6 +24,7 @@ var (
 	ErrRuntimeUnavailable  = errors.New("team runtime unavailable")
 	ErrQuoteUnavailable    = errors.New("team quote unavailable")
 	ErrIdentityUnavailable = errors.New("team identity unavailable")
+	ErrExecutionActive     = errors.New(ErrorCodeTeamExecutionActive)
 
 	roleIDPattern      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	imageDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 )
@@ -68,10 +69,10 @@ func (p *runtimeFakeProvider) readback(plan coreworkload.Plan, op coreworkload.O
 	return coreworkload.Readback{TargetKind: plan.TargetKind, WorkloadID: op.WorkloadID, State: p.state, Identity: plan.Target.Identity, ProviderVersion: "fake-v1", At: time.Now().UTC()}
 }
 
-func runtimeFixture(t *testing.T, provider coreworkload.Provider, state string) (*Runtime, *coreexecutionv2.MemoryStore, string, string, string) {
+func runtimeFixture(t *testing.T, provider coreworkload.Provider, state string) (*Runtime, *coreexecutionv2.MemoryStore, coretask.OwnerScope, string, string) {
 	t.Helper()
 	store := coreexecutionv2.NewMemoryStore()
-	owner := productionOwner
+	owner := productionScope
 	targetID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	planID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	runID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
@@ -79,7 +80,7 @@ func runtimeFixture(t *testing.T, provider coreworkload.Provider, state string) 
 	now := time.Now().UTC()
 	target := productionTargetTemplate()
 	targetPayload := map[string]any{"target_id": targetID, "credential_id": productionCred, "credential_revision": uint64(3), "target_settings": targetSettingsMap(target)}
-	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner, Kind: "target", ID: targetID, Revision: 1, Status: "active", Digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Payload: targetPayload, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "target", ID: targetID, Revision: 1, Status: "active", Digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Payload: targetPayload, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	compiled, err := coreexecutionv2.CompileApprovedPlan("generic-container-service", "deploy", "service")
@@ -87,18 +88,18 @@ func runtimeFixture(t *testing.T, provider coreworkload.Provider, state string) 
 		t.Fatal(err)
 	}
 	planPayload := map[string]any{"plan_id": planID, "target_id": targetID, "target_revision": uint64(1), "intent": "deploy", "purpose": "service", "recipe_id": "generic-container-service", "command_steps": []any{compiled.Commands[0], compiled.Commands[1]}, "recipe_digest": compiled.RecipeDigest, "command_steps_digest": compiled.CommandStepsDigest}
-	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner, Kind: "plan", ID: planID, Revision: 1, Status: "ready", Digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Payload: planPayload, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "plan", ID: planID, Revision: 1, Status: "ready", Digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Payload: planPayload, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	confirmationID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	runPayload := map[string]any{"plan_id": planID, "plan_revision": uint64(1), "operation": "deploy", "status": state, "stage_id": stageID, "confirmation_id": confirmationID}
-	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner, Kind: "run", ID: runID, Revision: 1, Status: state, Digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Payload: runPayload, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "run", ID: runID, Revision: 1, Status: state, Digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Payload: runPayload, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner, Kind: "stage", ID: stageID, Revision: 1, Status: "queued", Digest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", Payload: map[string]any{"run_id": runID, "plan_id": planID, "operation": "deploy", "stage_id": stageID, "confirmation_id": confirmationID, "task_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "stage", ID: stageID, Revision: 1, Status: "queued", Digest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", Payload: map[string]any{"run_id": runID, "plan_id": planID, "operation": "deploy", "stage_id": stageID, "confirmation_id": confirmationID, "task_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner, Kind: "confirmation", ID: confirmationID, Revision: 1, Status: "confirmed", Digest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Payload: map[string]any{"run_id": runID, "stage_id": stageID, "state": "confirmed"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "confirmation", ID: confirmationID, Revision: 1, Status: "confirmed", Digest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", Payload: map[string]any{"run_id": runID, "stage_id": stageID, "state": "confirmed"}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	credentials := fakeCredentials{}
@@ -109,31 +110,31 @@ func runtimeFixture(t *testing.T, provider coreworkload.Provider, state string) 
 	return runtime, store, owner, runID, stageID
 }
 
-func runtimeReservationFixture(t *testing.T, provisioner *runtimeFakeProvisioner) (*Runtime, *coreexecutionv2.MemoryStore, string, string, string) {
+func runtimeReservationFixture(t *testing.T, provisioner *runtimeFakeProvisioner) (*Runtime, *coreexecutionv2.MemoryStore, coretask.OwnerScope, string, string) {
 	t.Helper()
 	ctx := context.Background()
 	store := coreexecutionv2.NewMemoryStore()
 	now := time.Now().UTC()
-	owner := productionOwner
+	owner := productionScope
 	targetID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	planID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	runID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	stageID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	confirmationID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	reservation := map[string]any{"infrastructure_profile_id": "aws-ec2-general-linux-ssm-v1", "ami_parameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64", "instance_type": "t3.small", "availability_zone": "us-east-1a", "volume_gib": uint64(20), "architecture": "x86_64", "management_transport": "aws_ssm", "public_ip": true, "public_inbound": false}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "target", ID: targetID, Revision: 1, Status: "active", Digest: strings.Repeat("a", 64), Payload: map[string]any{"target_id": targetID, "kind": "aws_compute_reservation", "account_id": "123456789012", "region": "us-east-1", "credential_id": productionCred, "credential_revision": uint64(3), "compute_reservation": reservation}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "target", ID: targetID, Revision: 1, Status: "active", Digest: strings.Repeat("a", 64), Payload: map[string]any{"target_id": targetID, "kind": "aws_compute_reservation", "account_id": "123456789012", "region": "us-east-1", "credential_id": productionCred, "credential_revision": uint64(3), "compute_reservation": reservation}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "plan", ID: planID, Revision: 1, Status: "ready", Digest: strings.Repeat("b", 64), Payload: map[string]any{"plan_id": planID, "target_id": targetID, "target_revision": uint64(1), "intent": "deploy", "command_steps": []any{"echo immutable"}}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "plan", ID: planID, Revision: 1, Status: "ready", Digest: strings.Repeat("b", 64), Payload: map[string]any{"plan_id": planID, "target_id": targetID, "target_revision": uint64(1), "intent": "deploy", "command_steps": []any{"echo immutable"}}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "run", ID: runID, Revision: 1, Status: "queued", Digest: strings.Repeat("c", 64), Payload: map[string]any{"plan_id": planID, "plan_revision": uint64(1), "operation": "deploy", "status": "queued", "stage_id": stageID, "confirmation_id": confirmationID}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "run", ID: runID, Revision: 1, Status: "queued", Digest: strings.Repeat("c", 64), Payload: map[string]any{"plan_id": planID, "plan_revision": uint64(1), "operation": "deploy", "status": "queued", "stage_id": stageID, "confirmation_id": confirmationID}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "stage", ID: stageID, Revision: 1, Status: "queued", Digest: strings.Repeat("d", 64), Payload: map[string]any{"run_id": runID, "plan_id": planID, "operation": "deploy", "stage_id": stageID, "confirmation_id": confirmationID, "task_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "stage", ID: stageID, Revision: 1, Status: "queued", Digest: strings.Repeat("d", 64), Payload: map[string]any{"run_id": runID, "plan_id": planID, "operation": "deploy", "stage_id": stageID, "confirmation_id": confirmationID, "task_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "confirmation", ID: confirmationID, Revision: 1, Status: "confirmed", Digest: strings.Repeat("e", 64), Payload: map[string]any{"run_id": runID, "stage_id": stageID, "state": "confirmed"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "confirmation", ID: confirmationID, Revision: 1, Status: "confirmed", Digest: strings.Repeat("e", 64), Payload: map[string]any{"run_id": runID, "stage_id": stageID, "state": "confirmed"}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	credentials := fakeCredentials{}
@@ -162,26 +163,26 @@ func TestRuntimeReservationRecoversAfterCloudFormationResponseLoss(t *testing.T)
 	ctx := context.Background()
 	store := coreexecutionv2.NewMemoryStore()
 	now := time.Now().UTC()
-	owner := productionOwner
+	owner := productionScope
 	targetID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	planID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	runID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	stageID := "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	reservation := map[string]any{"infrastructure_profile_id": "aws-ec2-general-linux-ssm-v1", "ami_parameter": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64", "instance_type": "t3.small", "availability_zone": "us-east-1a", "volume_gib": uint64(20), "architecture": "x86_64", "management_transport": "aws_ssm", "public_ip": true, "public_inbound": false}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "target", ID: targetID, Revision: 1, Status: "active", Digest: strings.Repeat("a", 64), Payload: map[string]any{"target_id": targetID, "kind": "aws_compute_reservation", "account_id": "123456789012", "region": "us-east-1", "credential_id": productionCred, "credential_revision": uint64(3), "compute_reservation": reservation}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "target", ID: targetID, Revision: 1, Status: "active", Digest: strings.Repeat("a", 64), Payload: map[string]any{"target_id": targetID, "kind": "aws_compute_reservation", "account_id": "123456789012", "region": "us-east-1", "credential_id": productionCred, "credential_revision": uint64(3), "compute_reservation": reservation}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "plan", ID: planID, Revision: 1, Status: "ready", Digest: strings.Repeat("b", 64), Payload: map[string]any{"plan_id": planID, "target_id": targetID, "target_revision": uint64(1), "intent": "deploy", "command_steps": []any{"echo immutable"}}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "plan", ID: planID, Revision: 1, Status: "ready", Digest: strings.Repeat("b", 64), Payload: map[string]any{"plan_id": planID, "target_id": targetID, "target_revision": uint64(1), "intent": "deploy", "command_steps": []any{"echo immutable"}}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	confirmationID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "run", ID: runID, Revision: 1, Status: "queued", Digest: strings.Repeat("c", 64), Payload: map[string]any{"plan_id": planID, "plan_revision": uint64(1), "operation": "deploy", "status": "queued", "stage_id": stageID, "confirmation_id": confirmationID}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "run", ID: runID, Revision: 1, Status: "queued", Digest: strings.Repeat("c", 64), Payload: map[string]any{"plan_id": planID, "plan_revision": uint64(1), "operation": "deploy", "status": "queued", "stage_id": stageID, "confirmation_id": confirmationID}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "stage", ID: stageID, Revision: 1, Status: "queued", Digest: strings.Repeat("d", 64), Payload: map[string]any{"run_id": runID, "plan_id": planID, "operation": "deploy", "stage_id": stageID, "confirmation_id": confirmationID, "task_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "stage", ID: stageID, Revision: 1, Status: "queued", Digest: strings.Repeat("d", 64), Payload: map[string]any{"run_id": runID, "plan_id": planID, "operation": "deploy", "stage_id": stageID, "confirmation_id": confirmationID, "task_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner, Kind: "confirmation", ID: confirmationID, Revision: 1, Status: "confirmed", Digest: strings.Repeat("e", 64), Payload: map[string]any{"run_id": runID, "stage_id": stageID, "state": "confirmed"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(ctx, coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "confirmation", ID: confirmationID, Revision: 1, Status: "confirmed", Digest: strings.Repeat("e", 64), Payload: map[string]any{"run_id": runID, "stage_id": stageID, "state": "confirmed"}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	provisioner := &runtimeFakeProvisioner{createErr: ErrProvisionUncertain, result: ComputeProvisionResult{StackName: "dirextalk-exec-aaaaaaaaaaaaaaaaaaaaaaaa", Status: "CREATE_IN_PROGRESS"}}
@@ -271,7 +272,7 @@ func TestRuntimeBindingOperationsRemainTyped(t *testing.T) {
 	bindingID := "99999999-9999-4999-8999-999999999999"
 	targetID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	planID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner, Kind: "binding", ID: bindingID, Revision: 1, Status: "active", Digest: "9999999999999999999999999999999999999999999999999999999999999999", Payload: map[string]any{"target_id": targetID, "plan_id": planID}, CreatedAt: now, UpdatedAt: now}); err != nil {
+	if _, err := store.Create(context.Background(), coreexecutionv2.Record{OwnerID: owner.OwnerID, AccountGeneration: owner.AccountGeneration, Kind: "binding", ID: bindingID, Revision: 1, Status: "active", Digest: "9999999999999999999999999999999999999999999999999999999999999999", Payload: map[string]any{"target_id": targetID, "plan_id": planID}, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := runtime.Invoke(context.Background(), owner, coreexecutionv2.InvokeRequest{BindingID: bindingID, Operation: "workload.read", ExpectedRevision: 1, IdempotencyKey: "ffffffff-ffff-4fff-8fff-ffffffffffff", Input: map[string]any{"target_id": targetID, "plan_id": planID}})

@@ -9,6 +9,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2/production"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	workaws "github.com/YingSuiAI/dirextalk-agent/internal/coreworkload/aws"
 )
@@ -17,10 +18,10 @@ const executionComposeCredential = "11111111-1111-4111-8111-111111111111"
 
 type executionComposeCredentials struct{}
 
-func (executionComposeCredentials) ResolveCredential(context.Context, string) (workaws.CredentialHandle, error) {
+func (executionComposeCredentials) ResolveCredentialScoped(context.Context, coretask.OwnerScope, string) (workaws.CredentialHandle, error) {
 	return workaws.CredentialHandle{ReferenceID: executionComposeCredential, Region: "us-east-1", AccountID: "123456789012", PrincipalARN: "arn:aws:iam::123456789012:role/execution", AccessKeyID: "access", SecretAccessKey: "secret"}, nil
 }
-func (executionComposeCredentials) CredentialRevision(context.Context, string) (uint64, error) {
+func (executionComposeCredentials) CredentialRevisionScoped(context.Context, coretask.OwnerScope, string) (uint64, error) {
 	return 3, nil
 }
 
@@ -48,7 +49,7 @@ func executionComposeConfig() config.Config {
 
 func executionComposeDeps() coreExecutionV2ComposeDeps {
 	credentials := executionComposeCredentials{}
-	return coreExecutionV2ComposeDeps{credentialResolver: credentials, credentialRevision: credentials.CredentialRevision, inspector: executionComposeInspector{}, reservations: executionComposeReservations{}, importTarget: executionComposeTarget(), credentialReference: executionComposeCredential, probe: func(context.Context) error { return nil }}
+	return coreExecutionV2ComposeDeps{credentialResolver: credentials, credentialRevision: credentials.CredentialRevisionScoped, inspector: executionComposeInspector{}, reservations: executionComposeReservations{}, importTarget: executionComposeTarget(), credentialReference: executionComposeCredential, probe: func(context.Context) error { return nil }}
 }
 
 func TestComposeCoreExecutionV2BindsAllRoutesAfterReadiness(t *testing.T) {

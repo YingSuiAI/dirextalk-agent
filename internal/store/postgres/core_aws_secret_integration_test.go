@@ -11,10 +11,22 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func coreAWSCredentialTestScope(t *testing.T, ctx context.Context, store *Store) (context.Context, coreteam.Scope) {
+	t.Helper()
+	scope := coreteam.Scope{OwnerID: store.instanceID.String(), AccountGeneration: 1}
+	scoped, err := coreaws.WithCredentialMutationScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return scoped, scope
+}
 
 // This is a real PostgreSQL boundary test: it proves the credential table
 // contains only envelopes, the key is required to rehydrate a provider
@@ -207,6 +219,7 @@ func (p *blockingCredentialTestSTS) Calls() int {
 func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	ctx, _ = coreAWSCredentialTestScope(t, ctx, store)
 	credentialStore := NewCoreAWSStore(store)
 	credentialID := uuid.NewString()
 	createdAt := time.Date(2026, 8, 6, 1, 2, 3, 0, time.UTC)
@@ -269,9 +282,95 @@ func TestCoreAWSPostgresNeutralCredentialTestReplaySurvivesRestart(t *testing.T)
 	}
 }
 
+func TestCoreAWSPostgresCredentialTestIdempotencyIsScopedByOwnerGeneration(t *testing.T) {
+	ctx, store, _, cleanup := corePG18Fixture(t)
+	defer cleanup()
+	credentialStore := NewCoreAWSStore(store)
+	provider := &countingCredentialTestSTS{identity: coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/scoped", PrincipalID: "scoped"}}
+	service := coreaws.NewService(credentialStore, nil, nil, provider, nil, time.Now)
+	scopes := []coreteam.Scope{
+		{OwnerID: "@pg-owner-a:example.test", AccountGeneration: 1},
+		{OwnerID: "@pg-owner-b:example.test", AccountGeneration: 1},
+	}
+	const key = "abababab-abab-4bab-8bab-abababababab"
+	for index, scope := range scopes {
+		scopedCtx, err := coreaws.WithCredentialMutationScope(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credentialID := uuid.NewString()
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		credential := coreaws.RehydrateCredentials(credentialID, "scoped-test", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, now, now)
+		if _, err = credentialStore.CreateCredentialGuarded(scopedCtx, scope, credential); err != nil {
+			t.Fatalf("create owner %d credential: %v", index, err)
+		}
+		if _, err = service.TestCredentialIdempotent(scopedCtx, credentialID, 1, key); err != nil {
+			t.Fatalf("test owner %d credential: %v", index, err)
+		}
+	}
+	if provider.Calls() != 2 {
+		t.Fatalf("provider calls=%d, want one independent call per owner", provider.Calls())
+	}
+	var claims, owners int
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*),count(DISTINCT owner_id) FROM core_aws_credential_test_claims WHERE idempotency_key=$1`, key).Scan(&claims, &owners); err != nil {
+		t.Fatal(err)
+	}
+	if claims != 2 || owners != 2 {
+		t.Fatalf("scoped claims=%d owners=%d, want 2/2", claims, owners)
+	}
+}
+
+func TestCoreAWSPostgresCredentialTestCompletionAndDeleteDoNotDeadlock(t *testing.T) {
+	ctx, store, _, cleanup := corePG18Fixture(t)
+	defer cleanup()
+	credentialStore := NewCoreAWSStore(store)
+	scope := coreteam.Scope{OwnerID: "@pg-delete-race:example.test", AccountGeneration: 1}
+	credentialID := uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	credential := coreaws.RehydrateCredentials(credentialID, "delete race", "us-east-1", "", "", []byte("access"), []byte("secret"), nil, 0, 1, now, now)
+	if _, err := credentialStore.CreateCredentialGuarded(ctx, scope, credential); err != nil {
+		t.Fatal(err)
+	}
+	claim, replay, err := credentialStore.BeginCredentialTest(ctx, scope, credentialID, 1, uuid.NewString())
+	if err != nil || replay != nil {
+		t.Fatalf("begin claim=%+v replay=%+v err=%v", claim, replay, err)
+	}
+	if _, err = store.Pool().Exec(ctx, `CREATE FUNCTION delay_credential_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.4); RETURN OLD; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pool().Exec(ctx, `CREATE TRIGGER delay_credential_delete BEFORE DELETE ON core_aws_credentials FOR EACH ROW EXECUTE FUNCTION delay_credential_delete()`); err != nil {
+		t.Fatal(err)
+	}
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- credentialStore.DeleteCredentialGuarded(ctx, scope, credentialID, 1)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	completeDone := make(chan error, 1)
+	go func() {
+		_, completeErr := credentialStore.CompleteCredentialTest(ctx, claim, coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/delete-race", PrincipalID: "delete-race"}, now.Add(time.Minute))
+		completeDone <- completeErr
+	}()
+	deleteErr := <-deleteDone
+	completeErr := <-completeDone
+	for operation, operationErr := range map[string]error{"delete": deleteErr, "complete": completeErr} {
+		var pgErr *pgconn.PgError
+		if errors.As(operationErr, &pgErr) && pgErr.Code == "40P01" {
+			t.Fatalf("%s deadlocked: %v", operation, operationErr)
+		}
+	}
+	if deleteErr != nil {
+		t.Fatalf("delete credential: %v", deleteErr)
+	}
+	if completeErr != nil && !errors.Is(completeErr, coreaws.ErrResponseUncertain) {
+		t.Fatalf("complete credential test after delete: %v", completeErr)
+	}
+}
+
 func TestCoreAWSPostgresNeutralCredentialTestClaimFailsClosedAfterCrash(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	ctx, scope := coreAWSCredentialTestScope(t, ctx, store)
 	credentialStore := NewCoreAWSStore(store)
 	credentialID := uuid.NewString()
 	createdAt := time.Date(2026, 8, 6, 1, 2, 3, 0, time.UTC)
@@ -280,7 +379,7 @@ func TestCoreAWSPostgresNeutralCredentialTestClaimFailsClosedAfterCrash(t *testi
 		t.Fatal(err)
 	}
 	const key = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	claim, replay, err := credentialStore.BeginCredentialTest(ctx, credentialID, 1, key, createdAt, createdAt)
+	claim, replay, err := credentialStore.BeginCredentialTest(ctx, scope, credentialID, 1, key, createdAt, createdAt)
 	if err != nil || replay != nil || claim.ClaimID == "" {
 		t.Fatalf("begin claim=%+v replay=%+v err=%v", claim, replay, err)
 	}
@@ -308,6 +407,7 @@ func TestCoreAWSPostgresNeutralCredentialTestClaimFailsClosedAfterCrash(t *testi
 func TestCoreAWSPostgresNeutralCredentialTestSameKeyWaitersReplayAfterSlowProvider(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	ctx, _ = coreAWSCredentialTestScope(t, ctx, store)
 	credentialStore := NewCoreAWSStore(store)
 	credentialID := uuid.NewString()
 	createdAt := time.Now().UTC().Truncate(time.Microsecond)
@@ -355,6 +455,7 @@ func TestCoreAWSPostgresNeutralCredentialTestSameKeyWaitersReplayAfterSlowProvid
 func TestCoreAWSPostgresCredentialTestCompletionKeepsCredentialTimesMonotonicAcrossKeys(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	ctx, scope := coreAWSCredentialTestScope(t, ctx, store)
 	credentialStore := NewCoreAWSStore(store)
 	credentialID := uuid.NewString()
 	createdAt := time.Date(2026, 8, 6, 1, 0, 0, 0, time.UTC)
@@ -364,11 +465,11 @@ func TestCoreAWSPostgresCredentialTestCompletionKeepsCredentialTimesMonotonicAcr
 	}
 	newerKey := uuid.NewString()
 	olderKey := uuid.NewString()
-	newerClaim, replay, err := credentialStore.BeginCredentialTest(ctx, credentialID, 1, newerKey)
+	newerClaim, replay, err := credentialStore.BeginCredentialTest(ctx, scope, credentialID, 1, newerKey)
 	if err != nil || replay != nil {
 		t.Fatalf("begin newer claim=%+v replay=%+v err=%v", newerClaim, replay, err)
 	}
-	olderClaim, replay, err := credentialStore.BeginCredentialTest(ctx, credentialID, 1, olderKey)
+	olderClaim, replay, err := credentialStore.BeginCredentialTest(ctx, scope, credentialID, 1, olderKey)
 	if err != nil || replay != nil {
 		t.Fatalf("begin older claim=%+v replay=%+v err=%v", olderClaim, replay, err)
 	}
@@ -408,6 +509,7 @@ func TestCoreAWSPostgresCredentialTestCompletionKeepsCredentialTimesMonotonicAcr
 func TestCoreAWSPostgresCredentialDeleteCascadesTestClaims(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
+	ctx, scope := coreAWSCredentialTestScope(t, ctx, store)
 	credentialStore := NewCoreAWSStore(store)
 	for _, testCase := range []struct{ id, key string }{
 		{uuid.NewString(), uuid.NewString()},
@@ -418,7 +520,7 @@ func TestCoreAWSPostgresCredentialDeleteCascadesTestClaims(t *testing.T) {
 		if _, err := credentialStore.CreateCredential(ctx, credential); err != nil {
 			t.Fatal(err)
 		}
-		claim, _, err := credentialStore.BeginCredentialTest(ctx, testCase.id, 1, testCase.key)
+		claim, _, err := credentialStore.BeginCredentialTest(ctx, scope, testCase.id, 1, testCase.key)
 		if err != nil {
 			t.Fatal(err)
 		}

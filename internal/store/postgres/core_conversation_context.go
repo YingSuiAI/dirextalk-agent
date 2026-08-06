@@ -22,14 +22,22 @@ func (s *CoreConversationStore) CompressConversationContext(ctx context.Context,
 		return core.Conversation{}, core.ErrInvalid
 	}
 	digest := contextDigestPG(id, summary, offset, expected)
+	replayOwnerID, replayGeneration, scopeErr := replayOwnerScope(ctx, "mutation", requestID)
+	if scopeErr != nil {
+		return core.Conversation{}, core.ErrInvalid
+	}
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.Conversation{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_mutation:%s:%d:conversation.context.compress:%s", replayOwnerID, replayGeneration, requestID)); err != nil {
+		return core.Conversation{}, err
+	}
 	var stored string
 	var replay []byte
-	if err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='conversation.context.compress' AND idempotency_key=$1`, requestID).Scan(&stored, &replay); err == nil {
+	if err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='conversation.context.compress' AND idempotency_key=$3`, replayOwnerID, replayGeneration, requestID).Scan(&stored, &replay); err == nil {
 		if stored != digest {
 			return core.Conversation{}, core.ErrConflict
 		}
@@ -49,7 +57,7 @@ func (s *CoreConversationStore) CompressConversationContext(ctx context.Context,
 	var deleted *time.Time
 	var existingSummary string
 	var existingOffset int64
-	if err = tx.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1 FOR UPDATE`, id).Scan(&out.ID, &out.Title, &out.Revision, &out.CreatedAt, &out.UpdatedAt, &deleted, &existingSummary, &existingOffset); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1 AND ($2='' OR (c.owner_id=$2 AND c.account_generation=$3)) FOR UPDATE OF c`, id, ownerID, generation).Scan(&out.ID, &out.Title, &out.Revision, &out.CreatedAt, &out.UpdatedAt, &deleted, &existingSummary, &existingOffset); err != nil {
 		return core.Conversation{}, core.ErrConflict
 	}
 	if deleted != nil || existingOffset < 0 || out.Revision != expected {
@@ -65,7 +73,7 @@ func (s *CoreConversationStore) CompressConversationContext(ctx context.Context,
 	now := time.Now().UTC()
 	changed := existingSummary != summary || uint64(existingOffset) != offset
 	if changed {
-		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2 WHERE conversation_id=$1 AND revision=$3 AND deleted_at IS NULL`, id, now, expected); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2 WHERE conversation_id=$1 AND revision=$3 AND deleted_at IS NULL AND ($4='' OR (owner_id=$4 AND account_generation=$5))`, id, now, expected, ownerID, generation); err != nil {
 			return core.Conversation{}, err
 		}
 		out.Revision++
@@ -77,7 +85,7 @@ func (s *CoreConversationStore) CompressConversationContext(ctx context.Context,
 	out.DeletedAt = deleted
 	out.Summary, out.ContextMessageOffset = summary, offset
 	raw, _ := json.Marshal(out)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES('conversation.context.compress',$1,$2,$3)`, requestID, digest, raw); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,'conversation.context.compress',$3,$4,$5)`, replayOwnerID, replayGeneration, requestID, digest, raw); err != nil {
 		return core.Conversation{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {

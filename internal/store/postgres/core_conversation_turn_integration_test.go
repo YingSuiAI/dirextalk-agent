@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -86,6 +88,41 @@ func openTurnDB(t *testing.T) *turnDBHarness {
 func turnCommand() core.TurnStartCommand {
 	s := coremodel.ExecutionSnapshot{ProfileID: uuid.NewString(), Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test", APIKey: "integration-secret"}
 	return core.TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: s.ProfileID, ExpectedProfileRevision: s.Revision, ExpectedCredentialVersion: s.CredentialVersion, ProfileSnapshot: s}
+}
+
+func TestCoreConversationTurnIdentityIsOwnerGenerationScoped(t *testing.T) {
+	h := openTurnDB(t)
+	base := turnCommand()
+	ownerA := coretask.OwnerScope{OwnerID: "@turn-owner-a:example.test", AccountGeneration: 2}
+	ownerB := coretask.OwnerScope{OwnerID: "@turn-owner-b:example.test", AccountGeneration: 2}
+	ctxA, err := coretask.WithOwnerScope(context.Background(), ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(context.Background(), ownerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnA, err := h.store.StartTurn(ctxA, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := base
+	other.ConversationID = uuid.NewString()
+	turnB, err := h.store.StartTurn(ctxB, other)
+	if err != nil {
+		t.Fatalf("same request ID in another owner scope: %v", err)
+	}
+	if turnA.ID == turnB.ID {
+		t.Fatalf("Turn ID crossed owner scope: %s", turnA.ID)
+	}
+	if _, err = h.store.GetTurn(ctxB, turnA.ID); !errors.Is(err, core.ErrConflict) {
+		t.Fatalf("foreign Turn read err=%v", err)
+	}
+	turnsB, _, err := h.store.ListTurns(ctxB, other.ConversationID, "", 50)
+	if err != nil || len(turnsB) != 1 || turnsB[0].ID != turnB.ID {
+		t.Fatalf("owner B Turn list=%#v err=%v", turnsB, err)
+	}
 }
 
 func TestCoreConversationTurnConcurrentStartIdempotencyPostgres(t *testing.T) {

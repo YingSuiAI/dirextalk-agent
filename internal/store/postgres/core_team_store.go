@@ -43,6 +43,9 @@ func (s *CoreTeamStore) CreatePlan(ctx context.Context, command coreteam.CreateP
 	if err = requireTeamAdmission(ctx, tx, command.Scope); err != nil {
 		return coreteam.PlanRecord{}, false, err
 	}
+	if err = lockTeamCredentialMutation(ctx, tx, command.Scope); err != nil {
+		return coreteam.PlanRecord{}, false, err
+	}
 	if err = lockTeamReplay(ctx, tx, command.Scope, teamReplayCreatePlan, command.IdempotencyKey); err != nil {
 		return coreteam.PlanRecord{}, false, err
 	}
@@ -57,6 +60,9 @@ func (s *CoreTeamStore) CreatePlan(ctx context.Context, command coreteam.CreateP
 			return coreteam.PlanRecord{}, false, err
 		}
 		return replay, true, nil
+	}
+	if err = requireTeamCredentialRevision(ctx, tx, command.Plan); err != nil {
+		return coreteam.PlanRecord{}, false, err
 	}
 	now := command.CreatedAt.UTC()
 	execution := coreteam.Execution{
@@ -143,6 +149,9 @@ func (s *CoreTeamStore) CreateExecution(ctx context.Context, command coreteam.Cr
 	if err = requireTeamAdmission(ctx, tx, command.Scope); err != nil {
 		return coreteam.Execution{}, false, err
 	}
+	if err = lockTeamCredentialMutation(ctx, tx, command.Scope); err != nil {
+		return coreteam.Execution{}, false, err
+	}
 	if err = lockTeamReplay(ctx, tx, command.Scope, teamReplayCreateExecution, command.IdempotencyKey); err != nil {
 		return coreteam.Execution{}, false, err
 	}
@@ -163,6 +172,9 @@ func (s *CoreTeamStore) CreateExecution(ctx context.Context, command coreteam.Cr
 		return coreteam.Execution{}, false, err
 	}
 	if err = planRecord.Plan.ValidateAt(command.CreatedAt.UTC()); err != nil {
+		return coreteam.Execution{}, false, err
+	}
+	if err = requireTeamCredentialRevision(ctx, tx, planRecord.Plan); err != nil {
 		return coreteam.Execution{}, false, err
 	}
 	if !teamIDsDistinct(
@@ -303,7 +315,7 @@ func (s *CoreTeamStore) CompareAndSwapExecution(ctx context.Context, scope coret
 		return coreteam.Execution{}, coreteam.ErrConflict
 	}
 	next.Revision = expected + 1
-	result, err := tx.Exec(ctx, `UPDATE core_team_executions SET status=$4,revision=$5,updated_at=$6 WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND revision=$7`, scope.OwnerID, scope.AccountGeneration, next.ExecutionID, string(next.Status), next.Revision, next.UpdatedAt.UTC(), expected)
+	result, err := tx.Exec(ctx, `UPDATE core_team_executions SET status=$4,revision=$5,updated_at=$6,cleanup_verified_at=$7 WHERE owner_id=$1 AND account_generation=$2 AND execution_id=$3 AND revision=$8`, scope.OwnerID, scope.AccountGeneration, next.ExecutionID, string(next.Status), next.Revision, next.UpdatedAt.UTC(), nullableTeamTime(next.CleanupVerifiedAt), expected)
 	if err != nil {
 		return coreteam.Execution{}, err
 	}
@@ -367,18 +379,6 @@ func validateTeamPlanCommand(command coreteam.CreatePlanCommand) (coreconfirmati
 		return coreconfirmation.Binding{}, coreteam.ErrInvalid
 	}
 	return validateTeamBinding(command.Plan, command.ConfirmationBinding)
-}
-
-func validateTeamBinding(plan coreteam.Plan, binding coreconfirmation.Binding) (coreconfirmation.Binding, error) {
-	normalized, err := binding.Normalize()
-	if err != nil || normalized.OwnerID != plan.OwnerID || normalized.OperationDomain != "team_execution" ||
-		normalized.TargetID != plan.PlanID || normalized.TargetRevision != int64(plan.Revision) || normalized.TargetKind != "team_plan" ||
-		normalized.SourceVersion != plan.Runtime.RuntimeID || string(normalized.ContentDigest) != plan.Digest || len(normalized.SecretGrants) != 1 ||
-		normalized.SecretGrants[0].ReferenceID != plan.CredentialID || normalized.SecretGrants[0].Purpose != coreconfirmation.SecretPurposeAWSCredential ||
-		normalized.SecretGrants[0].BindingDigest != normalized.SecretGrantDigest {
-		return coreconfirmation.Binding{}, coreteam.ErrInvalid
-	}
-	return normalized, nil
 }
 
 func validTeamReplayInput(idempotencyKey, digest string, at time.Time) bool {
@@ -495,6 +495,9 @@ func insertTeamTaskAndConfirmation(ctx context.Context, tx pgx.Tx, plan coreteam
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULL,NULL,$3,'[]','[]','[]',0,'waiting_user',0,1,$4,1,$4,$4,'team_execution',$5)`, execution.TaskID, spec.Goal, spec.IdempotencyKey, at.UTC(), payloadRaw); err != nil {
 		return err
 	}
+	if err = setTaskOwnerScopeTx(ctx, tx, execution.TaskID, coretask.OwnerScope{OwnerID: plan.OwnerID, AccountGeneration: plan.AccountGeneration}); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,0,'waiting_user','confirmation','waiting for owner confirmation',$3)`, execution.TaskID, uuid.New(), at.UTC()); err != nil {
 		return err
 	}
@@ -582,16 +585,27 @@ func validateTeamPlanRecord(record coreteam.PlanRecord, scope coreteam.Scope) er
 	return nil
 }
 
-const teamExecutionSelect = `SELECT execution_id::text,plan_id::text,task_id::text,confirmation_id::text,owner_id,account_generation,status,revision,created_at,updated_at FROM core_team_executions`
+const teamExecutionSelect = `SELECT execution_id::text,plan_id::text,task_id::text,confirmation_id::text,owner_id,account_generation,status,revision,cleanup_verified_at,created_at,updated_at FROM core_team_executions`
 
 func scanTeamExecution(row interface{ Scan(...any) error }) (coreteam.Execution, error) {
 	var execution coreteam.Execution
 	var status string
-	err := row.Scan(&execution.ExecutionID, &execution.PlanID, &execution.TaskID, &execution.ConfirmationID, &execution.OwnerID, &execution.AccountGeneration, &status, &execution.Revision, &execution.CreatedAt, &execution.UpdatedAt)
+	var cleanupVerifiedAt *time.Time
+	err := row.Scan(&execution.ExecutionID, &execution.PlanID, &execution.TaskID, &execution.ConfirmationID, &execution.OwnerID, &execution.AccountGeneration, &status, &execution.Revision, &cleanupVerifiedAt, &execution.CreatedAt, &execution.UpdatedAt)
 	execution.Status = coreteam.ExecutionStatus(status)
+	if cleanupVerifiedAt != nil {
+		execution.CleanupVerifiedAt = cleanupVerifiedAt.UTC()
+	}
 	execution.CreatedAt = execution.CreatedAt.UTC()
 	execution.UpdatedAt = execution.UpdatedAt.UTC()
 	return execution, err
+}
+
+func nullableTeamTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
 }
 
 func validTeamExecutionStatus(status coreteam.ExecutionStatus) bool {

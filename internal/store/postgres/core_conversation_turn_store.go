@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -27,6 +28,10 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	}
 	defer tx.Rollback(ctx)
 	fp := c.Fingerprint()
+	conversationOwnerID, conversationGeneration, err := ownerScopeOrInternal(ctx, "conversation", c.ConversationID)
+	if err != nil {
+		return core.Turn{}, core.ErrInvalid
+	}
 	var existing core.Turn
 	if err = s.scanTurn(ctx, tx, c.RequestID, &existing); err == nil {
 		if existing.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() || existing.RequestFingerprint != fp {
@@ -41,7 +46,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	}
 	if c.ExpectedRevision != nil {
 		var revision uint64
-		if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL`, c.ConversationID).Scan(&revision); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND owner_id=$2 AND account_generation=$3 AND deleted_at IS NULL`, c.ConversationID, conversationOwnerID, conversationGeneration).Scan(&revision); err != nil {
 			return core.Turn{}, core.ErrConflict
 		}
 		if revision != *c.ExpectedRevision {
@@ -53,11 +58,19 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	// completion transaction advances this row with the fenced revision.
 	now := time.Now().UTC()
 	if c.ExpectedRevision == nil {
-		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,'',1,$2,$2) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, now); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at,owner_id,account_generation) VALUES($1,'',1,$2,$2,$3,$4) ON CONFLICT(conversation_id) DO NOTHING`, c.ConversationID, now, conversationOwnerID, conversationGeneration); err != nil {
 			return core.Turn{}, err
 		}
 	}
-	turnID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+c.RequestID)).String()
+	var ownsConversation bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_conversations WHERE conversation_id=$1 AND owner_id=$2 AND account_generation=$3 AND deleted_at IS NULL)`, c.ConversationID, conversationOwnerID, conversationGeneration).Scan(&ownsConversation); err != nil || !ownsConversation {
+		return core.Turn{}, core.ErrConflict
+	}
+	turnSeed := fmt.Sprintf("conversation-turn:%s:%d:%s", conversationOwnerID, conversationGeneration, c.RequestID)
+	if _, public := coretask.OwnerScopeFromContext(ctx); !public {
+		turnSeed = "conversation-turn:" + c.RequestID
+	}
+	turnID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(turnSeed)).String()
 	metadataSnapshot := c.ProfileSnapshot
 	metadataSnapshot.APIKey = ""
 	raw, _ := json.Marshal(metadataSnapshot)
@@ -72,7 +85,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 		textSnapshots = []core.ExtensionExecutionSnapshot{}
 	}
 	extRaw, _ := json.Marshal(textSnapshots)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',1,1,1,$15,$15)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), now); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at,owner_id,account_generation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',1,1,1,$15,$15,$16,$17)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), now, conversationOwnerID, conversationGeneration); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			_ = tx.Rollback(ctx)
@@ -130,7 +143,8 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	var extensionRaw []byte
 	var snapshotKeyVersion uint32
 	var snapshotNonce, snapshotCiphertext []byte
-	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE (request_id=$1 OR turn_id=$1) AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, key, ownerID, generation).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -240,7 +254,8 @@ func (s *CoreConversationStore) ListTurns(ctx context.Context, conversationID, t
 			return nil, "", core.ErrInvalid
 		}
 	}
-	rows, err := s.pool.Query(ctx, `SELECT turn_id,created_at FROM core_conversation_turns WHERE conversation_id=$1 AND ($2::timestamptz IS NULL OR (created_at,turn_id)>($2,$3::uuid)) ORDER BY created_at,turn_id LIMIT $4`, conversationID, nullableTime(after.CreatedAt), nullableUUID(after.TurnID), limit+1)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	rows, err := s.pool.Query(ctx, `SELECT turn_id,created_at FROM core_conversation_turns WHERE conversation_id=$1 AND ($2::timestamptz IS NULL OR (created_at,turn_id)>($2,$3::uuid)) AND ($5='' OR (owner_id=$5 AND account_generation=$6)) ORDER BY created_at,turn_id LIMIT $4`, conversationID, nullableTime(after.CreatedAt), nullableUUID(after.TurnID), limit+1, ownerID, generation)
 	if err != nil {
 		return nil, "", err
 	}
@@ -503,7 +518,12 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 	if result.RowsAffected() != 1 {
 		return core.Turn{}, core.ErrConflict
 	}
-	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,'',$2,$3,$3) ON CONFLICT(conversation_id) DO UPDATE SET revision=$2,updated_at=$3 WHERE core_conversations.revision=$4`, response.ConversationID, response.Revision, now, response.Revision-1)
+	var conversationOwnerID string
+	var conversationGeneration int64
+	if err = tx.QueryRow(ctx, `SELECT owner_id,account_generation FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, lease.Turn.ID).Scan(&conversationOwnerID, &conversationGeneration); err != nil {
+		return core.Turn{}, core.ErrConflict
+	}
+	convResult, err := tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at,owner_id,account_generation) VALUES($1,'',$2,$3,$3,$5,$6) ON CONFLICT(conversation_id) DO UPDATE SET revision=$2,updated_at=$3 WHERE core_conversations.revision=$4 AND core_conversations.owner_id=$5 AND core_conversations.account_generation=$6`, response.ConversationID, response.Revision, now, response.Revision-1, conversationOwnerID, conversationGeneration)
 	if err != nil {
 		return core.Turn{}, err
 	}

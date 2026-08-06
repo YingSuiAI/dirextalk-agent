@@ -1,13 +1,19 @@
 package postgres
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
 
@@ -106,6 +112,85 @@ func TestCoreScheduleStorePostgresAtomicMaterialization(t *testing.T) {
 	}
 }
 
+func TestCoreScheduleReplayIdentityIsOwnerGenerationScoped(t *testing.T) {
+	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	schedules := NewCoreScheduleStore(store)
+	ctxA, err := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: "@schedule-replay-a:example.test", AccountGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, coretask.OwnerScope{OwnerID: "@schedule-replay-b:example.test", AccountGeneration: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	key := uuid.NewString()
+	create := func(callCtx context.Context, name, digest string) coretask.Schedule {
+		runAt := now.Add(time.Hour)
+		value := coretask.Schedule{
+			ID: uuid.NewString(), Name: name,
+			Spec:  coretask.TaskTemplate{Goal: name, ModelProfileID: profile},
+			RunAt: &runAt, NextRunAt: runAt, Timezone: "UTC",
+			Revision: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		created, createErr := schedules.CreateSchedule(callCtx, coretask.CreateScheduleCommand{
+			Schedule: value,
+			Mutation: coretask.MutationCommand{IdempotencyKey: key, RequestDigest: digest},
+		})
+		if createErr != nil {
+			t.Fatalf("create %s: %v", name, createErr)
+		}
+		return created
+	}
+	a := create(ctxA, "owner-a", strings.Repeat("a", 64))
+	b := create(ctxB, "owner-b", strings.Repeat("b", 64))
+	if a.ID == b.ID || a.Name != "owner-a" || b.Name != "owner-b" {
+		t.Fatalf("cross-owner schedule replay a=%#v b=%#v", a, b)
+	}
+	var receipts int
+	if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM core_schedule_replays WHERE operation='create' AND idempotency_key=$1`, key).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if receipts != 2 {
+		t.Fatalf("schedule replay receipts=%d, want 2", receipts)
+	}
+}
+
+func TestPublicScheduleGeneratedIDIsOwnerGenerationScoped(t *testing.T) {
+	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	registry := agentcapability.NewCoreRegistry(agentcapability.CoreBindings{Schedules: NewCoreScheduleStore(store)})
+	capability, ok := registry.Get("agent.schedules.v1")
+	if !ok {
+		t.Fatal("Schedule capability is not registered")
+	}
+	publicContext := func(owner string, generation int64) context.Context {
+		return capabilityclient.WithCallContext(ctx, &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: owner, AccountGeneration: generation})
+	}
+	key := uuid.NewString()
+	runAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	request := []byte(fmt.Sprintf(`{"idempotency_key":%q,"name":"public generated","run_at":%q,"timezone":"UTC","spec":{"goal":"public generated","model_profile_id":%q}}`, key, runAt, profile))
+	create := func(callCtx context.Context) coretask.Schedule {
+		raw, err := capability.HandleOperation(callCtx, "create_schedule", request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result struct {
+			Schedule coretask.Schedule `json:"schedule"`
+		}
+		if err = json.Unmarshal(raw, &result); err != nil {
+			t.Fatal(err)
+		}
+		return result.Schedule
+	}
+	a := create(publicContext("@schedule-generated-a:example.test", 3))
+	b := create(publicContext("@schedule-generated-b:example.test", 9))
+	if a.ID == "" || b.ID == "" || a.ID == b.ID {
+		t.Fatalf("generated Schedule IDs a=%q b=%q", a.ID, b.ID)
+	}
+}
+
 func TestCoreScheduleStorePostgresDrainsConcurrentDueSchedules(t *testing.T) {
 	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
 	defer closeFixture()
@@ -197,6 +282,51 @@ func TestCoreScheduleStorePostgresDrainsConcurrentDueSchedules(t *testing.T) {
 		if got.Cron != "" && !got.NextRunAt.After(now) {
 			t.Fatalf("cron cursor remains due: %#v", got)
 		}
+	}
+}
+
+func TestCoreScheduleMaterializationPreservesPublicOwnerScope(t *testing.T) {
+	ctx, store, profile, closeFixture := coreTaskScheduleFixture(t)
+	defer closeFixture()
+	ownerA := coretask.OwnerScope{OwnerID: "@schedule-owner-a:example.test", AccountGeneration: 3}
+	ownerB := coretask.OwnerScope{OwnerID: "@schedule-owner-b:example.test", AccountGeneration: 8}
+	ctxA, err := coretask.WithOwnerScope(ctx, ownerA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctxB, err := coretask.WithOwnerScope(ctx, ownerB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Minute)
+	runAt := now.Add(-time.Minute)
+	schedule := coretask.Schedule{
+		ID: uuid.NewString(), Name: "owner-scoped once",
+		Spec:  coretask.TaskTemplate{Goal: "owner-scoped scheduled task", ModelProfileID: profile},
+		RunAt: &runAt, Timezone: "UTC", NextRunAt: runAt, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	schedules := NewCoreScheduleStore(store)
+	if _, err = schedules.CreateSchedule(ctxA, coretask.CreateScheduleCommand{
+		Schedule: schedule,
+		Mutation: coretask.MutationCommand{IdempotencyKey: uuid.NewString(), RequestDigest: strings.Repeat("a", 64)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = schedules.GetSchedule(ctxB, schedule.ID); !errors.Is(err, coretask.ErrNotFound) {
+		t.Fatalf("foreign owner read schedule err=%v", err)
+	}
+	if materialized, materializeErr := schedules.MaterializeNextDue(ctx, now, minuteCron{}); materializeErr != nil || !materialized {
+		t.Fatalf("background materialization=%v err=%v", materialized, materializeErr)
+	}
+	var taskID string
+	if err = store.pool.QueryRow(ctx, `SELECT task_id::text FROM core_schedule_occurrences WHERE schedule_id=$1`, schedule.ID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = NewCoreTaskStore(store).GetTask(ctxB, taskID); !errors.Is(err, coretask.ErrNotFound) {
+		t.Fatalf("foreign owner read materialized Task err=%v", err)
+	}
+	if task, ownerErr := NewCoreTaskStore(store).GetTask(ctxA, taskID); ownerErr != nil || task.ID != taskID {
+		t.Fatalf("owner read materialized Task=%#v err=%v", task, ownerErr)
 	}
 }
 

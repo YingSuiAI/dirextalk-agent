@@ -29,7 +29,7 @@ type coreWorkloadComposition struct {
 	// These typed seams are consumed only by the opt-in execution.v2
 	// composition.  Keeping them on the already-probed workload graph avoids
 	// a second credential or provider construction path in core_serve.
-	executionCredentialResolver  workaws.CredentialResolver
+	executionCredentialResolver  production.CredentialResolver
 	executionCredentialRevision  production.CredentialRevision
 	executionInspector           production.Inspector
 	executionReservations        production.ReservationCatalog
@@ -135,9 +135,11 @@ func composeCoreWorkloadWithDeps(cfg config.Config, store *postgres.Store, domai
 		if readinessAWSConfigured(cfg.CoreAWSSSMReadiness, coreworkload.TargetAWSEC2SSM) {
 			routes[coreworkload.TargetAWSEC2SSM] = ssmProvider
 			comp.awsSSMReady = true
-			comp.executionCredentialResolver = deps.credentialResolver
-			if revisionResolver, ok := deps.credentialResolver.(workaws.CredentialRevisionResolver); ok {
-				comp.executionCredentialRevision = revisionResolver.CredentialRevision
+			if resolver, ok := deps.credentialResolver.(production.CredentialResolver); ok {
+				comp.executionCredentialResolver = resolver
+			}
+			if revisionResolver, ok := deps.credentialResolver.(production.CredentialRevisionResolver); ok {
+				comp.executionCredentialRevision = revisionResolver.CredentialRevisionScoped
 			}
 			comp.executionInspector = production.InspectorFunc(func(inspectCtx context.Context, target coreworkload.TargetSettings, credential workaws.CredentialHandle) (production.Inspection, error) {
 				inspection, inspectErr := ssmProvider.Inspect(inspectCtx, target, credential)

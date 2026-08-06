@@ -11,6 +11,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -34,14 +35,14 @@ func awsBinding(p coreaws.Plan, cred coreaws.Credentials) coreconfirmation.Bindi
 	return coreaws.BindingForPlan(p, cred)
 }
 func (c *CoreAWSChangeCoordinator) RequestChange(ctx context.Context, in coreaws.RequestChangeInput) (coreaws.ChangeRequestResult, error) {
-	if _, e := uuid.Parse(in.PlanID); e != nil {
+	if _, e := uuid.Parse(in.PlanID); e != nil || in.Scope.Validate() != nil {
 		return coreaws.ChangeRequestResult{}, coreaws.ErrInvalid
 	}
-	p, e := NewCoreAWSStore(c.store).GetPlan(ctx, in.PlanID)
+	p, e := NewCoreAWSStore(c.store).GetPlanScoped(ctx, in.Scope, in.PlanID)
 	if e != nil {
 		return coreaws.ChangeRequestResult{}, e
 	}
-	cred, e := NewCoreAWSStore(c.store).GetCredential(ctx, p.CredentialID)
+	cred, e := NewCoreAWSStore(c.store).GetCredentialScoped(ctx, in.Scope, p.CredentialID)
 	if e != nil {
 		return coreaws.ChangeRequestResult{}, e
 	}
@@ -58,28 +59,62 @@ func (c *CoreAWSChangeCoordinator) RequestChange(ctx context.Context, in coreaws
 		return coreaws.ChangeRequestResult{}, e
 	}
 	defer tx.Rollback(ctx)
-	reqHash := sha256.Sum256([]byte(in.PlanID + ":" + in.IdempotencyKey + ":" + b.TargetID + ":" + fmt.Sprint(b.TargetRevision)))
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_aws:request_change:%d:%s:%s", in.Scope.AccountGeneration, in.Scope.OwnerID, in.IdempotencyKey)); e != nil {
+		return coreaws.ChangeRequestResult{}, e
+	}
+	reqHash := sha256.Sum256([]byte(in.Scope.OwnerID + ":" + fmt.Sprint(in.Scope.AccountGeneration) + ":" + in.PlanID + ":" + in.IdempotencyKey + ":" + b.TargetID + ":" + fmt.Sprint(b.TargetRevision)))
+	reqHashHex := hex.EncodeToString(reqHash[:])
 	var replayRaw []byte
-	if e = tx.QueryRow(ctx, `SELECT response_json FROM core_aws_replays WHERE operation='request_change' AND idempotency_key=$1 AND request_hash=$2`, in.IdempotencyKey, hex.EncodeToString(reqHash[:])).Scan(&replayRaw); e == nil {
+	var storedHash string
+	var hashVersion int
+	if e = tx.QueryRow(ctx, `SELECT request_hash,hash_version,response_json FROM core_aws_change_request_replays WHERE owner_id=$1 AND account_generation=$2 AND idempotency_key=$3 FOR UPDATE`, in.Scope.OwnerID, in.Scope.AccountGeneration, in.IdempotencyKey).Scan(&storedHash, &hashVersion, &replayRaw); e == nil {
 		var out coreaws.ChangeRequestResult
-		if json.Unmarshal(replayRaw, &out) == nil {
-			return out, nil
+		if json.Unmarshal(replayRaw, &out) != nil {
+			return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
 		}
+		switch hashVersion {
+		case 2:
+			if storedHash != reqHashHex {
+				return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
+			}
+		case 1:
+			legacyHash := sha256.Sum256([]byte(in.PlanID + ":" + in.IdempotencyKey + ":" + b.TargetID + ":" + fmt.Sprint(b.TargetRevision)))
+			if storedHash != hex.EncodeToString(legacyHash[:]) {
+				return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
+			}
+			matches, matchErr := legacyAWSRequestReplayMatchesTx(ctx, tx, in, b, out)
+			if matchErr != nil {
+				return coreaws.ChangeRequestResult{}, matchErr
+			}
+			if !matches {
+				return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
+			}
+			tag, updateErr := tx.Exec(ctx, `UPDATE core_aws_change_request_replays SET request_hash=$4,hash_version=2 WHERE owner_id=$1 AND account_generation=$2 AND idempotency_key=$3 AND request_hash=$5 AND hash_version=1`, in.Scope.OwnerID, in.Scope.AccountGeneration, in.IdempotencyKey, reqHashHex, storedHash)
+			if updateErr != nil {
+				return coreaws.ChangeRequestResult{}, updateErr
+			}
+			if tag.RowsAffected() != 1 {
+				return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
+			}
+			if e = tx.Commit(ctx); e != nil {
+				return coreaws.ChangeRequestResult{}, e
+			}
+		default:
+			return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
+		}
+		return out, nil
 	}
 	if e != nil && !errors.Is(e, pgx.ErrNoRows) {
 		return coreaws.ChangeRequestResult{}, e
-	}
-	if errors.Is(e, pgx.ErrNoRows) {
-		var oldHash string
-		if qe := tx.QueryRow(ctx, `SELECT request_hash FROM core_aws_replays WHERE operation='request_change' AND idempotency_key=$1`, in.IdempotencyKey).Scan(&oldHash); qe == nil && oldHash != hex.EncodeToString(reqHash[:]) {
-			return coreaws.ChangeRequestResult{}, coreaws.ErrIdempotencyConflict
-		}
 	}
 	tid, cid, chid := uuid.New(), uuid.New(), uuid.New()
 	raw, _ := json.Marshal(b)
 	payload, _ := json.Marshal(map[string]any{"aws_change": map[string]string{"change_id": chid.String()}})
 	_, e = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,model_profile_id,create_idempotency_key,task_kind,payload_json,status,revision,available_at,created_at,updated_at) VALUES($1,$2,NULL,$3,'aws_change',$4,'waiting_user',1,$5,$5,$5)`, tid, "AWS change", in.IdempotencyKey, payload, now)
 	if e != nil {
+		return coreaws.ChangeRequestResult{}, e
+	}
+	if e = setTaskOwnerScopeTx(ctx, tx, tid.String(), coretask.OwnerScope{OwnerID: in.Scope.OwnerID, AccountGeneration: in.Scope.AccountGeneration}); e != nil {
 		return coreaws.ChangeRequestResult{}, e
 	}
 	_, e = tx.Exec(ctx, `INSERT INTO core_confirmations(confirmation_id,operation_domain,target_id,target_revision,binding_json,task_id,state,revision,created_at,updated_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,'pending',1,$7,$7,$8)`, cid, b.OperationDomain, b.TargetID, b.TargetRevision, raw, tid, now, now.Add(24*time.Hour))
@@ -104,7 +139,7 @@ func (c *CoreAWSChangeCoordinator) RequestChange(ctx context.Context, in coreaws
 	}
 	out := coreaws.ChangeRequestResult{Change: ch, Task: coreaws.Task{ID: tid.String(), Status: "waiting_user", Revision: 1, PlanID: p.ID, ConfirmationID: cid.String()}, Confirmation: coreconfirmation.Confirmation{ConfirmationID: cid.String(), Binding: b, TaskID: tid.String(), State: coreconfirmation.StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(24 * time.Hour)}}
 	snap, _ := json.Marshal(out)
-	_, e = tx.Exec(ctx, `INSERT INTO core_aws_replays(operation,idempotency_key,request_hash,response_json) VALUES('request_change',$1,$2,$3)`, in.IdempotencyKey, hex.EncodeToString(reqHash[:]), snap)
+	_, e = tx.Exec(ctx, `INSERT INTO core_aws_change_request_replays(owner_id,account_generation,idempotency_key,request_hash,hash_version,response_json) VALUES($1,$2,$3,$4,2,$5)`, in.Scope.OwnerID, in.Scope.AccountGeneration, in.IdempotencyKey, reqHashHex, snap)
 	if e != nil {
 		return coreaws.ChangeRequestResult{}, e
 	}
@@ -112,6 +147,47 @@ func (c *CoreAWSChangeCoordinator) RequestChange(ctx context.Context, in coreaws
 		return coreaws.ChangeRequestResult{}, e
 	}
 	return out, nil
+}
+
+func legacyAWSRequestReplayMatchesTx(ctx context.Context, tx pgx.Tx, in coreaws.RequestChangeInput, binding coreconfirmation.Binding, out coreaws.ChangeRequestResult) (bool, error) {
+	if out.Change.ID == "" || out.Change.PlanID != in.PlanID || out.Change.TaskID != out.Task.ID || out.Change.ConfirmationID != out.Confirmation.ConfirmationID ||
+		out.Change.CredentialID == "" || out.Task.PlanID != in.PlanID || out.Task.ConfirmationID != out.Confirmation.ConfirmationID || out.Confirmation.TaskID != out.Task.ID {
+		return false, nil
+	}
+	replayBinding, err := out.Confirmation.Binding.Normalize()
+	if err != nil || replayBinding.OperationDomain != "aws" || replayBinding.TargetID != binding.TargetID || replayBinding.TargetRevision != binding.TargetRevision {
+		return false, nil
+	}
+	var marker int
+	var confirmationBindingRaw, targetBindingRaw []byte
+	err = tx.QueryRow(ctx, `
+		SELECT 1,confirmation.binding_json,target_binding.binding_json
+		FROM core_aws_changes change
+		JOIN core_aws_plans plan ON plan.plan_id=change.plan_id AND plan.credential_id=change.credential_id
+		JOIN core_aws_credentials credential ON credential.credential_id=change.credential_id AND credential.owner_id=plan.owner_id AND credential.account_generation=plan.account_generation
+		JOIN core_tasks task ON task.task_id=change.task_id
+		JOIN core_task_scopes scope ON scope.task_id=task.task_id AND scope.owner_id=plan.owner_id AND scope.account_generation=plan.account_generation
+		JOIN core_confirmations confirmation ON confirmation.confirmation_id=change.confirmation_id AND confirmation.task_id=task.task_id
+		JOIN core_confirmation_target_bindings target_binding ON target_binding.confirmation_id=confirmation.confirmation_id
+		WHERE change.change_id=$1 AND change.plan_id=$2 AND change.credential_id=$3
+		  AND change.task_id=$4 AND change.confirmation_id=$5
+		  AND plan.owner_id=$6 AND plan.account_generation=$7
+		  AND confirmation.operation_domain=$8 AND confirmation.target_id=$9 AND confirmation.target_revision=$10
+		FOR UPDATE OF change,plan,credential,task,scope,confirmation,target_binding`,
+		out.Change.ID, in.PlanID, out.Change.CredentialID, out.Task.ID, out.Confirmation.ConfirmationID,
+		in.Scope.OwnerID, in.Scope.AccountGeneration, replayBinding.OperationDomain, replayBinding.TargetID, replayBinding.TargetRevision).Scan(&marker, &confirmationBindingRaw, &targetBindingRaw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil || marker != 1 {
+		return false, err
+	}
+	var storedConfirmationBinding, storedTargetBinding coreconfirmation.Binding
+	if json.Unmarshal(confirmationBindingRaw, &storedConfirmationBinding) != nil || json.Unmarshal(targetBindingRaw, &storedTargetBinding) != nil ||
+		!storedConfirmationBinding.Equal(replayBinding) || !storedTargetBinding.Equal(replayBinding) {
+		return false, nil
+	}
+	return true, nil
 }
 func (c *CoreAWSChangeCoordinator) ConsumeChange(ctx context.Context, cmd coreaws.ConsumeChangeCommand) (coreaws.Reservation, error) {
 	tx, e := c.store.pool.Begin(ctx)
@@ -164,14 +240,15 @@ func (c *CoreAWSChangeCoordinator) ConsumeChange(ctx context.Context, cmd coreaw
 	} else if (ts != "waiting_user" && ts != "queued") || tr != cmd.ExpectedTaskRevision {
 		return coreaws.Reservation{}, coreaws.ErrConflict
 	}
-	var planID, credentialID, region, stack, account, user, templateSHA, operation string
+	var planID, ownerID, credentialID, region, stack, account, user, templateSHA, operation string
+	var accountGeneration int64
 	now := c.now().UTC()
 	var template, parametersRaw, tagsRaw, capabilitiesRaw []byte
 	var planRev, verified, credRevision int64
-	if e = tx.QueryRow(ctx, `SELECT p.plan_id::text,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id WHERE x.change_id=$1 FOR UPDATE`, cmd.ChangeID).Scan(&planID, &credentialID, &region, &stack, &operation, &template, &templateSHA, &parametersRaw, &tagsRaw, &capabilitiesRaw, &planRev, &account, &user, &credRevision, &verified); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT p.plan_id::text,p.owner_id,p.account_generation,p.credential_id::text,p.region,p.stack_name,p.operation,p.template,p.template_sha256,p.parameters_json,p.tags_json,p.capabilities_json,p.revision,c.account_id,c.user_arn,c.revision,c.verified_revision FROM core_aws_changes x JOIN core_aws_plans p ON p.plan_id=x.plan_id JOIN core_aws_credentials c ON c.credential_id=x.credential_id AND c.owner_id=p.owner_id AND c.account_generation=p.account_generation WHERE x.change_id=$1 FOR UPDATE`, cmd.ChangeID).Scan(&planID, &ownerID, &accountGeneration, &credentialID, &region, &stack, &operation, &template, &templateSHA, &parametersRaw, &tagsRaw, &capabilitiesRaw, &planRev, &account, &user, &credRevision, &verified); e != nil {
 		return coreaws.Reservation{}, e
 	}
-	cred, e := NewCoreAWSStore(c.store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, credentialID))
+	cred, e := NewCoreAWSStore(c.store).scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 AND owner_id=$2 AND account_generation=$3 FOR UPDATE`, credentialID, ownerID, accountGeneration))
 	if e != nil {
 		return coreaws.Reservation{}, e
 	}
@@ -180,7 +257,7 @@ func (c *CoreAWSChangeCoordinator) ConsumeChange(ctx context.Context, cmd coreaw
 	_ = json.Unmarshal(parametersRaw, &parameters)
 	_ = json.Unmarshal(tagsRaw, &tags)
 	_ = json.Unmarshal(capabilitiesRaw, &capabilities)
-	plan := coreaws.Plan{ID: planID, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: parameters, Tags: tags, Capabilities: capabilities, Revision: planRev}
+	plan := coreaws.Plan{ID: planID, OwnerID: ownerID, AccountGeneration: accountGeneration, CredentialID: credentialID, Region: region, StackName: stack, Operation: coreaws.Operation(operation), Template: template, TemplateSHA256: templateSHA, Parameters: parameters, Tags: tags, Capabilities: capabilities, Revision: planRev}
 	wantBinding, _ := coreaws.BindingForPlan(plan, cred).Normalize()
 	storedBinding, _ := cmd.Binding.Normalize()
 	if verified != credRevision || account == "" || user == "" || !storedBinding.Equal(wantBinding) {

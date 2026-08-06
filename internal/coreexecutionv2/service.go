@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -43,6 +44,14 @@ type Service struct {
 	ready     func() bool
 	now       func() time.Time
 }
+
+type replayIdentity struct {
+	action string
+	key    string
+	digest []byte
+}
+
+type replayIdentityContextKey struct{}
 
 func NewService(cfg Config) (*Service, error) {
 	if cfg.Store == nil {
@@ -149,21 +158,23 @@ func (s *Service) ReadinessReason() string {
 	return ""
 }
 
-func (s *Service) Get(ctx context.Context, owner, kind, id string, revision uint64) (Record, error) {
-	if s == nil || s.store == nil || strings.TrimSpace(owner) == "" {
+func (s *Service) Get(ctx context.Context, scope coretask.OwnerScope, kind, id string, revision uint64) (Record, error) {
+	if s == nil || s.store == nil || scope.Validate() != nil {
 		return Record{}, ErrInvalid
 	}
-	return s.store.Read(ctx, strings.TrimSpace(owner), strings.TrimSpace(kind), strings.TrimSpace(id), revision)
+	scope.OwnerID = strings.TrimSpace(scope.OwnerID)
+	return s.store.Read(ctx, scope, strings.TrimSpace(kind), strings.TrimSpace(id), revision)
 }
 
-func (s *Service) Events(ctx context.Context, owner, kind, id string, after uint64, limit int) ([]Event, uint64, error) {
-	if s == nil || s.store == nil || strings.TrimSpace(owner) == "" {
+func (s *Service) Events(ctx context.Context, scope coretask.OwnerScope, kind, id string, after uint64, limit int) ([]Event, uint64, error) {
+	if s == nil || s.store == nil || scope.Validate() != nil {
 		return nil, 0, ErrInvalid
 	}
 	if limit < 1 || limit > 200 {
 		return nil, 0, ErrInvalid
 	}
-	return s.store.Events(ctx, strings.TrimSpace(owner), strings.TrimSpace(kind), strings.TrimSpace(id), after, limit)
+	scope.OwnerID = strings.TrimSpace(scope.OwnerID)
+	return s.store.Events(ctx, scope, strings.TrimSpace(kind), strings.TrimSpace(id), after, limit)
 }
 
 func validAction(action string) bool {
@@ -171,25 +182,25 @@ func validAction(action string) bool {
 	return ok
 }
 
-func (s *Service) Handle(ctx context.Context, owner, action string, params map[string]any) (map[string]any, error) {
+func (s *Service) Handle(ctx context.Context, scope coretask.OwnerScope, action string, params map[string]any) (map[string]any, error) {
 	if s == nil || !s.Ready() {
 		return nil, ErrNotReady
 	}
-	owner = strings.TrimSpace(owner)
-	if owner == "" || !validAction(action) {
+	if scope.Validate() != nil || !validAction(action) {
 		return nil, ErrInvalid
 	}
+	scope.OwnerID = strings.TrimSpace(scope.OwnerID)
 	params = cloneMap(params)
 	if err := validateAction(action, params); err != nil {
 		return nil, err
 	}
 	if strings.HasPrefix(action, "agent.execution.v2.secrets.") {
-		return s.handleSecret(ctx, owner, action, params)
+		return s.handleSecret(ctx, scope, action, params)
 	}
 	if isReadAction(action) {
-		return s.handleRead(ctx, owner, action, params)
+		return s.handleRead(ctx, scope, action, params)
 	}
-	return s.handleMutation(ctx, owner, action, params)
+	return s.handleMutation(ctx, scope, action, params)
 }
 
 func isReadAction(action string) bool {
@@ -294,31 +305,78 @@ func requestDigest(action string, params map[string]any) ([]byte, string, error)
 	return digest[:], hex.EncodeToString(digest[:]), nil
 }
 
-func deterministicID(owner, action, idempotencyKey string) string {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(owner+"\x00"+action+"\x00"+idempotencyKey)).String()
+func deterministicID(scope coretask.OwnerScope, action, idempotencyKey string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s\x00%d\x00%s\x00%s", scope.OwnerID, scope.AccountGeneration, action, idempotencyKey))).String()
 }
 
-func (s *Service) replay(ctx context.Context, owner, action, idem string, digest []byte) (map[string]any, bool, error) {
-	replay, ok, err := s.store.Replay(ctx, owner, action, idem)
-	if err != nil || !ok {
-		return nil, ok, err
+func (s *Service) beginReplay(ctx context.Context, scope coretask.OwnerScope, action, idem string, digest []byte) (map[string]any, bool, ReplayClaim, error) {
+	const replayLease = 5 * time.Minute
+	for {
+		claim, err := s.store.BeginReplay(ctx, scope, action, idem, digest, s.now().UTC(), replayLease)
+		if errors.Is(err, ErrReplayInProgress) {
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, false, ReplayClaim{}, ctx.Err()
+			case <-timer.C:
+				continue
+			}
+		}
+		if err != nil {
+			return nil, false, ReplayClaim{}, err
+		}
+		if !claim.Completed {
+			if claim.Dispatched && len(claim.ProviderResponse) == 0 {
+				return nil, false, claim, ErrReplayInProgress
+			}
+			return nil, false, claim, nil
+		}
+		var result map[string]any
+		if err := json.Unmarshal(claim.Response, &result); err != nil {
+			return nil, true, ReplayClaim{}, ErrConflict
+		}
+		return result, true, ReplayClaim{}, nil
 	}
-	if !equalBytes(replay.Digest, digest) {
-		return nil, true, ErrConflict
-	}
-	var result map[string]any
-	if err := json.Unmarshal(replay.Response, &result); err != nil {
-		return nil, true, ErrConflict
-	}
-	return result, true, nil
 }
 
-func (s *Service) saveReplay(ctx context.Context, owner, action, idem string, digest []byte, result map[string]any) error {
+func (s *Service) providerPayload(ctx context.Context, scope coretask.OwnerScope, action, idem string, digest []byte, claim ReplayClaim, call func() (map[string]any, error), validate func(map[string]any) error) (map[string]any, bool, error) {
+	if claim.Dispatched {
+		var payload map[string]any
+		if err := json.Unmarshal(claim.ProviderResponse, &payload); err != nil || payload == nil {
+			return nil, true, ErrConflict
+		}
+		if err := validate(payload); err != nil {
+			return nil, true, err
+		}
+		return payload, true, nil
+	}
+	if err := s.store.MarkReplayDispatched(ctx, scope, action, idem, digest, claim.Token, s.now().UTC()); err != nil {
+		return nil, false, err
+	}
+	payload, err := call()
+	if err != nil {
+		return nil, true, err
+	}
+	if err := validate(payload); err != nil {
+		return nil, true, err
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, true, err
+	}
+	if err := s.store.StoreReplayProviderResponse(ctx, scope, action, idem, digest, claim.Token, raw, s.now().UTC()); err != nil {
+		return nil, true, err
+	}
+	return payload, true, nil
+}
+
+func (s *Service) completeReplay(ctx context.Context, scope coretask.OwnerScope, action, idem string, digest []byte, token string, result map[string]any) error {
 	raw, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
-	return s.store.SaveReplay(ctx, owner, action, idem, digest, raw)
+	return s.store.CompleteReplay(ctx, scope, action, idem, digest, token, raw, s.now().UTC())
 }
 
 func equalBytes(a, b []byte) bool {
@@ -333,9 +391,10 @@ func equalBytes(a, b []byte) bool {
 	return true
 }
 
-func ownedPayload(owner string, payload map[string]any) map[string]any {
+func ownedPayload(scope coretask.OwnerScope, payload map[string]any) map[string]any {
 	out := cloneMap(payload)
-	out["owner_id"] = owner
+	out["owner_id"] = scope.OwnerID
+	out["account_generation"] = scope.AccountGeneration
 	return out
 }
 
@@ -345,28 +404,113 @@ func digestPayload(payload map[string]any) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func (s *Service) putNew(ctx context.Context, owner, kind, id, status string, payload map[string]any) (Record, error) {
+func (s *Service) putNew(ctx context.Context, scope coretask.OwnerScope, kind, id, status string, payload map[string]any) (Record, error) {
 	now := s.now().UTC()
-	payload = ownedPayload(owner, payload)
-	record := Record{OwnerID: owner, Kind: kind, ID: id, Revision: 1, Status: status, Digest: digestPayload(payload), Payload: payload, CreatedAt: now, UpdatedAt: now}
-	return s.store.Create(ctx, record)
+	payload = ownedPayload(scope, payload)
+	record := Record{OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, Kind: kind, ID: id, Revision: 1, Status: status, Digest: digestPayload(payload), Payload: payload, CreatedAt: now, UpdatedAt: now}
+	bindReplayMutation(ctx, &record)
+	created, err := s.store.Create(ctx, record)
+	if !errors.Is(err, ErrConflict) {
+		return created, err
+	}
+	existing, readErr := s.store.Read(ctx, scope, kind, id, 0)
+	if readErr == nil && existing.Revision == 1 && existing.Status == record.Status && existing.Digest == record.Digest && sameReplayMutation(ctx, existing) {
+		return existing, nil
+	}
+	return Record{}, err
 }
 
 func (s *Service) update(ctx context.Context, record Record, status string, payload map[string]any) (Record, error) {
-	payload = ownedPayload(record.OwnerID, payload)
+	payload = ownedPayload(canonicalScope(record), payload)
 	record.Status = status
 	record.Digest = digestPayload(payload)
 	record.Payload = payload
 	record.UpdatedAt = s.now().UTC()
-	return s.store.Update(ctx, record, record.Revision)
+	bindReplayMutation(ctx, &record)
+	updated, err := s.store.Update(ctx, record, record.Revision)
+	if !errors.Is(err, ErrConflict) {
+		return updated, err
+	}
+	current, readErr := s.store.Read(ctx, canonicalScope(record), record.Kind, record.ID, 0)
+	if readErr == nil && current.Revision == record.Revision+1 && current.Status == record.Status && current.Digest == record.Digest && sameReplayMutation(ctx, current) {
+		return current, nil
+	}
+	return Record{}, err
+}
+
+func (s *Service) ensureUpdate(ctx context.Context, record Record, status string, payload map[string]any) (Record, error) {
+	desired := ownedPayload(canonicalScope(record), payload)
+	if record.Status == status && record.Digest == digestPayload(desired) && sameReplayMutation(ctx, record) {
+		return record, nil
+	}
+	return s.update(ctx, record, status, payload)
+}
+
+func (s *Service) mutationBase(ctx context.Context, scope coretask.OwnerScope, kind, id string, expected uint64) (Record, error) {
+	current, err := s.store.Read(ctx, scope, kind, id, 0)
+	if err != nil {
+		return Record{}, err
+	}
+	if current.Revision == expected {
+		return current, nil
+	}
+	if current.Revision != expected+1 {
+		return Record{}, ErrConflict
+	}
+	if !sameReplayMutation(ctx, current) {
+		return Record{}, ErrConflict
+	}
+	base, err := s.store.Read(ctx, scope, kind, id, expected)
+	if err != nil {
+		return Record{}, ErrConflict
+	}
+	return base, nil
+}
+
+func bindReplayMutation(ctx context.Context, record *Record) {
+	replay, ok := ctx.Value(replayIdentityContextKey{}).(replayIdentity)
+	if !ok || record == nil {
+		return
+	}
+	record.MutationAction = replay.action
+	record.MutationKey = replay.key
+	record.MutationDigest = append([]byte(nil), replay.digest...)
+}
+
+func sameReplayMutation(ctx context.Context, record Record) bool {
+	replay, ok := ctx.Value(replayIdentityContextKey{}).(replayIdentity)
+	return ok && record.MutationAction == replay.action && record.MutationKey == replay.key && equalBytes(record.MutationDigest, replay.digest)
+}
+
+func bindSecretReplayMutation(ctx context.Context, secret *Secret) {
+	replay, ok := ctx.Value(replayIdentityContextKey{}).(replayIdentity)
+	if !ok || secret == nil {
+		return
+	}
+	secret.MutationAction = replay.action
+	secret.MutationKey = replay.key
+	secret.MutationDigest = append([]byte(nil), replay.digest...)
+}
+
+func sameSecretReplayMutation(ctx context.Context, secret Secret) bool {
+	replay, ok := ctx.Value(replayIdentityContextKey{}).(replayIdentity)
+	return ok && secret.MutationAction == replay.action && secret.MutationKey == replay.key && equalBytes(secret.MutationDigest, replay.digest)
 }
 
 func (s *Service) emit(ctx context.Context, record Record, eventType string, payload map[string]any) error {
-	_, err := s.store.AppendEvent(ctx, Event{OwnerID: record.OwnerID, Kind: record.Kind, ResourceID: record.ID, EventID: uuid.NewString(), Type: eventType, Payload: ownedPayload(record.OwnerID, payload), CreatedAt: s.now().UTC()})
+	eventID := uuid.NewString()
+	if replay, ok := ctx.Value(replayIdentityContextKey{}).(replayIdentity); ok {
+		eventID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%d\x00%s\x00%s\x00%s", record.OwnerID, record.AccountGeneration, record.Kind, record.ID, record.Revision, eventType, replay.action, replay.key))).String()
+	}
+	_, err := s.store.AppendEvent(ctx, Event{OwnerID: record.OwnerID, AccountGeneration: record.AccountGeneration, Kind: record.Kind, ResourceID: record.ID, EventID: eventID, Type: eventType, Payload: ownedPayload(canonicalScope(record), payload), CreatedAt: s.now().UTC()})
 	return err
 }
 
-func (s *Service) handleRead(ctx context.Context, owner, action string, in map[string]any) (map[string]any, error) {
+func canonicalScope(record Record) coretask.OwnerScope {
+	return coretask.OwnerScope{OwnerID: record.OwnerID, AccountGeneration: record.AccountGeneration}
+}
+
+func (s *Service) handleRead(ctx context.Context, scope coretask.OwnerScope, action string, in map[string]any) (map[string]any, error) {
 	kind := kindForAction(action)
 	if action == "agent.execution.v2.deployments.events" || action == "agent.execution.v2.runs.events" {
 		field := idField(action)
@@ -379,13 +523,13 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 		if limit < 1 || limit > 200 {
 			return nil, ErrInvalid
 		}
-		events, next, err := s.store.Events(ctx, owner, kind, id, after, limit)
+		events, next, err := s.store.Events(ctx, scope, kind, id, after, limit)
 		if err != nil {
 			return nil, err
 		}
 		values := make([]any, 0, len(events))
 		for _, event := range events {
-			item := ownedPayload(owner, event.Payload)
+			item := ownedPayload(scope, event.Payload)
 			item["event_id"], item["sequence"], item["type"], item["at"] = event.EventID, event.Sequence, event.Type, event.CreatedAt.UTC().Format(time.RFC3339Nano)
 			if kind == "run" {
 				item["run_id"] = id
@@ -418,7 +562,7 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 				}
 			}
 		}
-		items, next, err := s.store.List(ctx, owner, kind, filter, stringParam(in, "page_token"), limit)
+		items, next, err := s.store.List(ctx, scope, kind, filter, stringParam(in, "page_token"), limit)
 		if err != nil {
 			return nil, err
 		}
@@ -449,7 +593,7 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 		return nil, err
 	}
 	revision := uintParam(in, "revision")
-	record, err := s.store.Read(ctx, owner, kind, id, revision)
+	record, err := s.store.Read(ctx, scope, kind, id, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +601,7 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 	result := map[string]any{key: publicRecord(record)}
 	if kind == "run" {
 		stages := []any{}
-		if stage, stageErr := stageForRun(ctx, s.store, owner, record); stageErr == nil {
+		if stage, stageErr := stageForRun(ctx, s.store, scope, record); stageErr == nil {
 			stages = append(stages, stageView(stage))
 		} else if !errors.Is(stageErr, ErrNotFound) {
 			return nil, stageErr
@@ -468,7 +612,7 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 }
 
 func publicRecord(record Record) map[string]any {
-	out := ownedPayload(record.OwnerID, record.Payload)
+	out := ownedPayload(canonicalScope(record), record.Payload)
 	out["id"] = record.ID
 	out["revision"] = record.Revision
 	out["status"] = record.Status

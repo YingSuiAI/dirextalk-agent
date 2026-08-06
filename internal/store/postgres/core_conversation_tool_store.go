@@ -99,6 +99,9 @@ func (s *CoreConversationStore) PrepareConversationTool(ctx context.Context, c c
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,$3,$4,'[]','[]','[]',0,'waiting_user',1,1,$5,1,$5,$5,'conversation_tool',$6)`, taskID, spec.Goal, c.Lease.Turn.ConversationID, c.IdempotencyKey, now, raw); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}
+	if err = bindTaskOwnerScopeTx(ctx, tx, taskID); err != nil {
+		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_tool_attempts(turn_id,attempt_id,task_id,round,call_id,execution_id,extension_snapshot_digest,installation_id,version_id,installation_revision,tool_name,tool_schema_digest,arguments_digest,arguments_json,confirmation_id,state,safe_summary,created_at,updated_at,lease_epoch) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'waiting_confirmation',$16,$16,1)`, c.Lease.Turn.ID, attemptID, taskID, c.Round, c.Call.ID, executionID, c.Snapshot.ContentDigest, c.Snapshot.InstallationID, c.Snapshot.VersionID, c.Snapshot.InstallationRevision, c.Call.Name, c.Snapshot.ToolSchemaDigest, c.ArgumentsDigest, args, confID, c.SafeSummary, now); err != nil {
 		return core.ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, err
 	}

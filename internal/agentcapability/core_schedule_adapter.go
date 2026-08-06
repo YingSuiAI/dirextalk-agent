@@ -110,6 +110,29 @@ func (c *coreScheduleCapability) HandleOperation(ctx context.Context, operationI
 		if err != nil {
 			return nil, err
 		}
+		if !scheduleInputHasExplicitID(in) {
+			if reader, ok := c.store.(interface {
+				LookupScheduleMutationIdentity(context.Context, string, string) (coretask.Schedule, bool, error)
+			}); ok {
+				legacy, replayed, replayErr := reader.LookupScheduleMutationIdentity(ctx, "create", key)
+				if replayErr == nil && replayed {
+					requestIdentity, requestErr := scheduleCreateIdentityDigest(schedule)
+					legacyIdentity, legacyErr := scheduleCreateIdentityDigest(legacy)
+					if requestErr != nil || legacyErr != nil || requestIdentity != legacyIdentity {
+						return nil, coretask.ErrConflict
+					}
+					return marshalResult(scheduleMutationResult(legacy), nil)
+				}
+				if replayErr != nil && replayErr != coretask.ErrNotFound {
+					return nil, replayErr
+				}
+			}
+			schedule.ID = ownerScopedCapabilityUUID(ctx, "schedule", key)
+			schedule, err = schedule.Normalize()
+			if err != nil {
+				return nil, err
+			}
+		}
 		digest, err := coretask.CanonicalMutationDigest(map[string]any{"operation": operationID, "schedule": schedule})
 		if err != nil {
 			return nil, err
@@ -225,6 +248,27 @@ func hasIdentityOverride(in map[string]json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+func scheduleInputHasExplicitID(in map[string]json.RawMessage) bool {
+	if coretask.ValidUUID(stringValue(in, "id")) || coretask.ValidUUID(stringValue(in, "schedule_id")) {
+		return true
+	}
+	var nested struct {
+		ID string `json:"id"`
+	}
+	return len(in["schedule"]) > 0 && json.Unmarshal(in["schedule"], &nested) == nil && coretask.ValidUUID(nested.ID)
+}
+
+func scheduleCreateIdentityDigest(schedule coretask.Schedule) (string, error) {
+	return coretask.CanonicalMutationDigest(struct {
+		Name     string
+		Spec     coretask.TaskTemplate
+		RunAt    *time.Time
+		Cron     string
+		Timezone string
+		Paused   bool
+	}{schedule.Name, schedule.Spec, schedule.RunAt, schedule.Cron, schedule.Timezone, schedule.Paused})
 }
 
 const (

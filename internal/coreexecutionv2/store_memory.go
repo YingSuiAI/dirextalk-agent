@@ -2,11 +2,25 @@ package coreexecutionv2
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/google/uuid"
 )
+
+type memoryReplay struct {
+	digest           []byte
+	response         []byte
+	providerResponse []byte
+	token            string
+	leaseExpiresAt   time.Time
+	completed        bool
+	dispatched       bool
+}
 
 // MemoryStore is intentionally strict and mirrors the PostgreSQL CAS rules;
 // it is suitable for focused contract tests and local composition probes.
@@ -14,28 +28,35 @@ type MemoryStore struct {
 	mu        sync.RWMutex
 	records   map[string]Record
 	revisions map[string]map[uint64]Record
-	replays   map[string]Replay
+	replays   map[string]memoryReplay
 	events    map[string][]Event
 	secrets   map[string]Secret
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{records: map[string]Record{}, revisions: map[string]map[uint64]Record{}, replays: map[string]Replay{}, events: map[string][]Event{}, secrets: map[string]Secret{}}
+	return &MemoryStore{records: map[string]Record{}, revisions: map[string]map[uint64]Record{}, replays: map[string]memoryReplay{}, events: map[string][]Event{}, secrets: map[string]Secret{}}
 }
 
-func recordKey(owner, kind, id string) string   { return owner + "\x00" + kind + "\x00" + id }
-func replayKey(owner, action, id string) string { return owner + "\x00" + action + "\x00" + id }
-func eventKey(owner, kind, id string) string    { return recordKey(owner, kind, id) }
+func scopeKey(owner string, generation int64) string { return owner + "\x00" + fmt.Sprint(generation) }
+func recordKey(owner string, generation int64, kind, id string) string {
+	return scopeKey(owner, generation) + "\x00" + kind + "\x00" + id
+}
+func replayKey(scope coretask.OwnerScope, action, id string) string {
+	return scopeKey(scope.OwnerID, scope.AccountGeneration) + "\x00" + action + "\x00" + id
+}
+func eventKey(owner string, generation int64, kind, id string) string {
+	return recordKey(owner, generation, kind, id)
+}
 
-func (m *MemoryStore) Read(_ context.Context, owner, kind, id string, revision uint64) (Record, error) {
+func (m *MemoryStore) Read(_ context.Context, scope coretask.OwnerScope, kind, id string, revision uint64) (Record, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	record, ok := m.records[recordKey(owner, kind, id)]
+	record, ok := m.records[recordKey(scope.OwnerID, scope.AccountGeneration, kind, id)]
 	if !ok {
 		return Record{}, ErrNotFound
 	}
 	if revision > 0 && revision != record.Revision {
-		if historical, exists := m.revisions[recordKey(owner, kind, id)][revision]; exists {
+		if historical, exists := m.revisions[recordKey(scope.OwnerID, scope.AccountGeneration, kind, id)][revision]; exists {
 			return cloneRecord(historical), nil
 		}
 		return Record{}, ErrNotFound
@@ -43,12 +64,12 @@ func (m *MemoryStore) Read(_ context.Context, owner, kind, id string, revision u
 	return cloneRecord(record), nil
 }
 
-func (m *MemoryStore) List(_ context.Context, owner, kind string, filter map[string]string, token string, limit int) ([]Record, string, error) {
+func (m *MemoryStore) List(_ context.Context, scope coretask.OwnerScope, kind string, filter map[string]string, token string, limit int) ([]Record, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	items := make([]Record, 0)
 	for _, record := range m.records {
-		if record.OwnerID != owner || record.Kind != kind {
+		if record.OwnerID != scope.OwnerID || record.AccountGeneration != scope.AccountGeneration || record.Kind != kind {
 			continue
 		}
 		match := true
@@ -111,7 +132,7 @@ func (m *MemoryStore) List(_ context.Context, owner, kind string, filter map[str
 func (m *MemoryStore) Create(_ context.Context, record Record) (Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := recordKey(record.OwnerID, record.Kind, record.ID)
+	key := recordKey(record.OwnerID, record.AccountGeneration, record.Kind, record.ID)
 	if _, exists := m.records[key]; exists {
 		return Record{}, ErrConflict
 	}
@@ -123,7 +144,7 @@ func (m *MemoryStore) Create(_ context.Context, record Record) (Record, error) {
 func (m *MemoryStore) Update(_ context.Context, record Record, expected uint64) (Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := recordKey(record.OwnerID, record.Kind, record.ID)
+	key := recordKey(record.OwnerID, record.AccountGeneration, record.Kind, record.ID)
 	current, ok := m.records[key]
 	if !ok {
 		return Record{}, ErrNotFound
@@ -140,35 +161,102 @@ func (m *MemoryStore) Update(_ context.Context, record Record, expected uint64) 
 	return cloneRecord(record), nil
 }
 
-func (m *MemoryStore) Replay(_ context.Context, owner, action, id string) (Replay, bool, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	replay, ok := m.replays[replayKey(owner, action, id)]
-	if !ok {
-		return Replay{}, false, nil
-	}
-	replay.Response = append([]byte(nil), replay.Response...)
-	replay.Digest = append([]byte(nil), replay.Digest...)
-	return replay, true, nil
-}
-func (m *MemoryStore) SaveReplay(_ context.Context, owner, action, id string, digest, response []byte) error {
+func (m *MemoryStore) BeginReplay(_ context.Context, scope coretask.OwnerScope, action, id string, digest []byte, now time.Time, lease time.Duration) (ReplayClaim, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := replayKey(owner, action, id)
+	key := replayKey(scope, action, id)
 	if old, ok := m.replays[key]; ok {
-		if !equalBytes(old.Digest, digest) {
-			return ErrConflict
+		if !equalBytes(old.digest, digest) {
+			return ReplayClaim{}, ErrConflict
 		}
+		if old.completed {
+			return ReplayClaim{Response: append([]byte(nil), old.response...), Completed: true}, nil
+		}
+		if now.Before(old.leaseExpiresAt) {
+			return ReplayClaim{}, ErrReplayInProgress
+		}
+		if old.dispatched && len(old.providerResponse) == 0 {
+			return ReplayClaim{Dispatched: true}, nil
+		}
+	}
+	token := uuid.NewString()
+	old := m.replays[key]
+	old.digest = append([]byte(nil), digest...)
+	old.token = token
+	old.leaseExpiresAt = now.Add(lease)
+	m.replays[key] = old
+	return ReplayClaim{Token: token, Dispatched: old.dispatched, ProviderResponse: append([]byte(nil), old.providerResponse...)}, nil
+}
+
+func (m *MemoryStore) MarkReplayDispatched(_ context.Context, scope coretask.OwnerScope, action, id string, digest []byte, token string, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := replayKey(scope, action, id)
+	current, ok := m.replays[key]
+	if !ok || current.completed || current.dispatched || current.token != token || !equalBytes(current.digest, digest) {
+		return ErrConflict
+	}
+	current.dispatched = true
+	m.replays[key] = current
+	return nil
+}
+
+func (m *MemoryStore) StoreReplayProviderResponse(_ context.Context, scope coretask.OwnerScope, action, id string, digest []byte, token string, response []byte, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := replayKey(scope, action, id)
+	current, ok := m.replays[key]
+	if !ok || current.completed || !current.dispatched || current.token != token || !equalBytes(current.digest, digest) {
+		return ErrConflict
+	}
+	current.providerResponse = append([]byte(nil), response...)
+	m.replays[key] = current
+	return nil
+}
+
+func (m *MemoryStore) CompleteReplay(_ context.Context, scope coretask.OwnerScope, action, id string, digest []byte, token string, response []byte, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := replayKey(scope, action, id)
+	current, ok := m.replays[key]
+	if !ok || current.completed || current.token != token || !equalBytes(current.digest, digest) {
+		return ErrConflict
+	}
+	current.response = append([]byte(nil), response...)
+	current.completed = true
+	current.token = ""
+	current.leaseExpiresAt = time.Time{}
+	m.replays[key] = current
+	return nil
+}
+
+func (m *MemoryStore) AbortReplay(_ context.Context, scope coretask.OwnerScope, action, id string, digest []byte, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := replayKey(scope, action, id)
+	current, ok := m.replays[key]
+	if !ok {
 		return nil
 	}
-	m.replays[key] = Replay{Digest: append([]byte(nil), digest...), Response: append([]byte(nil), response...)}
+	if current.completed || current.dispatched || current.token != token || !equalBytes(current.digest, digest) {
+		return ErrConflict
+	}
+	delete(m.replays, key)
 	return nil
 }
 
 func (m *MemoryStore) AppendEvent(_ context.Context, event Event) (Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := eventKey(event.OwnerID, event.Kind, event.ResourceID)
+	key := eventKey(event.OwnerID, event.AccountGeneration, event.Kind, event.ResourceID)
+	for _, existing := range m.events[key] {
+		if existing.EventID == event.EventID {
+			if existing.Type != event.Type || digestPayload(existing.Payload) != digestPayload(event.Payload) {
+				return Event{}, ErrConflict
+			}
+			return existing, nil
+		}
+	}
 	event.Sequence = uint64(len(m.events[key]) + 1)
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()
@@ -176,10 +264,10 @@ func (m *MemoryStore) AppendEvent(_ context.Context, event Event) (Event, error)
 	m.events[key] = append(m.events[key], event)
 	return event, nil
 }
-func (m *MemoryStore) Events(_ context.Context, owner, kind, id string, after uint64, limit int) ([]Event, uint64, error) {
+func (m *MemoryStore) Events(_ context.Context, scope coretask.OwnerScope, kind, id string, after uint64, limit int) ([]Event, uint64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	source := m.events[eventKey(owner, kind, id)]
+	source := m.events[eventKey(scope.OwnerID, scope.AccountGeneration, kind, id)]
 	out := make([]Event, 0)
 	for _, event := range source {
 		if event.Sequence > after && len(out) < limit {
@@ -193,28 +281,28 @@ func (m *MemoryStore) Events(_ context.Context, owner, kind, id string, after ui
 func (m *MemoryStore) SaveSecret(_ context.Context, secret Secret) (Secret, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := recordKey(secret.OwnerID, "secret", secret.Ref)
+	key := recordKey(secret.OwnerID, secret.AccountGeneration, "secret", secret.Ref)
 	if _, ok := m.secrets[key]; ok {
 		return Secret{}, ErrConflict
 	}
 	m.secrets[key] = secret
 	return secret, nil
 }
-func (m *MemoryStore) ReadSecret(_ context.Context, owner, ref string, revision uint64) (Secret, error) {
+func (m *MemoryStore) ReadSecret(_ context.Context, scope coretask.OwnerScope, ref string, revision uint64) (Secret, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	secret, ok := m.secrets[recordKey(owner, "secret", ref)]
+	secret, ok := m.secrets[recordKey(scope.OwnerID, scope.AccountGeneration, "secret", ref)]
 	if !ok || revision > 0 && revision != secret.Revision {
 		return Secret{}, ErrSecretNotFound
 	}
 	return secret, nil
 }
-func (m *MemoryStore) ListSecrets(_ context.Context, owner, token string, limit int) ([]Secret, string, error) {
+func (m *MemoryStore) ListSecrets(_ context.Context, scope coretask.OwnerScope, token string, limit int) ([]Secret, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	items := make([]Secret, 0)
 	for _, secret := range m.secrets {
-		if secret.OwnerID == owner {
+		if secret.OwnerID == scope.OwnerID && secret.AccountGeneration == scope.AccountGeneration {
 			items = append(items, secret)
 		}
 	}
@@ -241,7 +329,7 @@ func (m *MemoryStore) ListSecrets(_ context.Context, owner, token string, limit 
 func (m *MemoryStore) RevokeSecret(_ context.Context, secret Secret, expected uint64) (Secret, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	key := recordKey(secret.OwnerID, "secret", secret.Ref)
+	key := recordKey(secret.OwnerID, secret.AccountGeneration, "secret", secret.Ref)
 	current, ok := m.secrets[key]
 	if !ok {
 		return Secret{}, ErrSecretNotFound

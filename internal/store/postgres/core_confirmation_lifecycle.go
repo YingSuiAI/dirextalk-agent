@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -81,7 +82,13 @@ func (s *CoreConfirmationStore) Request(ctx context.Context, c coreconfirmation.
 	return c2, nil
 }
 func (s *CoreConfirmationStore) Get(ctx context.Context, id string) (coreconfirmation.Confirmation, error) {
-	c, e := scanConfirmation(s.store.pool.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1`, id))
+	var c coreconfirmation.Confirmation
+	var e error
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		c, e = scanConfirmation(s.store.pool.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1 AND EXISTS (SELECT 1 FROM core_task_scopes scope WHERE scope.task_id=core_confirmations.task_id AND scope.owner_id=$2 AND scope.account_generation=$3)`, id, scope.OwnerID, scope.AccountGeneration))
+	} else {
+		c, e = scanConfirmation(s.store.pool.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1`, id))
+	}
 	if errors.Is(e, pgx.ErrNoRows) {
 		e = coreconfirmation.ErrNotFound
 	}
@@ -101,6 +108,9 @@ func (s *CoreConfirmationStore) List(ctx context.Context, q coreconfirmation.Lis
 	}
 	sort.Strings(states)
 	filter := q.Domain + "\x00" + q.TargetID + "\x00" + strings.Join(states, ",")
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		filter = scope.OwnerID + "\x00" + fmt.Sprint(scope.AccountGeneration) + "\x00" + filter
+	}
 	var ct time.Time
 	var cid string
 	if q.PageToken != "" {
@@ -121,6 +131,10 @@ func (s *CoreConfirmationStore) List(ctx context.Context, q coreconfirmation.Lis
 	where := []string{"TRUE"}
 	args := []any{}
 	add := func(sql string, v any) { args = append(args, v); where = append(where, fmt.Sprintf(sql, len(args))) }
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		args = append(args, scope.OwnerID, scope.AccountGeneration)
+		where = append(where, fmt.Sprintf("EXISTS (SELECT 1 FROM core_task_scopes scope WHERE scope.task_id=core_confirmations.task_id AND scope.owner_id=$%d AND scope.account_generation=$%d)", len(args)-1, len(args)))
+	}
 	if q.Domain != "" {
 		add("operation_domain=$%d", q.Domain)
 	}
@@ -174,7 +188,13 @@ func (s *CoreConfirmationStore) Confirm(ctx context.Context, c coreconfirmation.
 	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `confirmation:confirm:`+c.IdempotencyKey); e != nil {
 		return coreconfirmation.Confirmation{}, e
 	}
+	if e = lockTeamCredentialMutationForConfirmation(ctx, tx, c.ConfirmationID); e != nil {
+		return coreconfirmation.Confirmation{}, e
+	}
 	if old, ok, e := s.replay(ctx, tx, "confirm", c.IdempotencyKey, c.RequestDigest); ok || e != nil {
+		if ok && e == nil {
+			e = requireConfirmationOwnerScopeTx(ctx, tx, old.ConfirmationID)
+		}
 		if !ok || e != nil || old.State != coreconfirmation.StateConfirmed {
 			return old, e
 		}
@@ -190,6 +210,9 @@ func (s *CoreConfirmationStore) Confirm(ctx context.Context, c coreconfirmation.
 			return old, coreconfirmation.ErrConflict
 		}
 		return old, nil
+	}
+	if e = requireConfirmationOwnerScopeTx(ctx, tx, c.ConfirmationID); e != nil {
+		return coreconfirmation.Confirmation{}, e
 	}
 	cur, e := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1`, c.ConfirmationID))
 	if errors.Is(e, pgx.ErrNoRows) {
@@ -263,8 +286,17 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `confirmation:reject:`+c.IdempotencyKey); e != nil {
 		return coreconfirmation.Confirmation{}, e
 	}
+	if e = lockTeamCredentialMutationForConfirmation(ctx, tx, c.ConfirmationID); e != nil {
+		return coreconfirmation.Confirmation{}, e
+	}
 	if old, ok, e := s.replay(ctx, tx, "reject", c.IdempotencyKey, c.RequestDigest); ok || e != nil {
+		if ok && e == nil {
+			e = requireConfirmationOwnerScopeTx(ctx, tx, old.ConfirmationID)
+		}
 		return old, e
+	}
+	if e = requireConfirmationOwnerScopeTx(ctx, tx, c.ConfirmationID); e != nil {
+		return coreconfirmation.Confirmation{}, e
 	}
 	cur, e := scanConfirmation(tx.QueryRow(ctx, confirmationSelect+` WHERE confirmation_id=$1`, c.ConfirmationID))
 	if errors.Is(e, pgx.ErrNoRows) {
@@ -306,6 +338,9 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 			return cur, e
 		}
 		return cur, nil
+	}
+	if e = terminalizeUnlaunchedTeamExecutionTx(ctx, tx, cur, coreconfirmation.ReasonUserRejected, c.At.UTC()); e != nil {
+		return cur, e
 	}
 	if _, e = tx.Exec(ctx, `UPDATE core_confirmations SET state='rejected',revision=revision+1,updated_at=$2,terminal_code='user_rejected',terminal_reason='user_rejected',terminal_note=$3 WHERE confirmation_id=$1`, c.ConfirmationID, c.At.UTC(), strings.TrimSpace(c.Reason)); e != nil {
 		return cur, e
@@ -370,6 +405,9 @@ func (s *CoreConfirmationStore) Consume(ctx context.Context, c coreconfirmation.
 	}
 	defer tx.Rollback(ctx)
 	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `confirmation:consume:`+c.IdempotencyKey); e != nil {
+		return coreconfirmation.Confirmation{}, e
+	}
+	if e = lockTeamCredentialMutationForConfirmation(ctx, tx, c.ConfirmationID); e != nil {
 		return coreconfirmation.Confirmation{}, e
 	}
 	if old, ok, e := s.replay(ctx, tx, "consume", c.IdempotencyKey, c.RequestDigest); ok || e != nil {
@@ -441,6 +479,9 @@ func (s *CoreConfirmationStore) Expire(ctx context.Context, c coreconfirmation.E
 	}
 	defer tx.Rollback(ctx)
 	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `confirmation:expire:`+c.IdempotencyKey); e != nil {
+		return coreconfirmation.Confirmation{}, e
+	}
+	if e = lockTeamCredentialMutationForConfirmation(ctx, tx, c.ConfirmationID); e != nil {
 		return coreconfirmation.Confirmation{}, e
 	}
 	if old, ok, e := s.replay(ctx, tx, "expire", c.IdempotencyKey, c.RequestDigest); ok || e != nil {

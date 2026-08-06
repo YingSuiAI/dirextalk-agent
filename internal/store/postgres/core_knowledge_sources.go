@@ -102,8 +102,15 @@ func (r *CoreKnowledgeStore) CreateMount(ctx context.Context, command coreknowle
 	if manifestJSON == nil {
 		manifestJSON = []byte(`{}`)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,directory_manifest_json,directory_manifest_digest,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, s.ID, s.Kind, s.Status, s.Title, s.RelativePath, s.Digest, s.SizeBytes, s.MediaType, s.Revision, manifestJSON, manifestDigest, s.CreatedAt, s.UpdatedAt)
+	ownerID, generation, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
+		return coreknowledge.Source{}, coreknowledge.ErrInvalid
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,relative_path,digest,size_bytes,media_type,revision,directory_manifest_json,directory_manifest_digest,created_at,updated_at,owner_id,account_generation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, s.ID, s.Kind, s.Status, s.Title, s.RelativePath, s.Digest, s.SizeBytes, s.MediaType, s.Revision, manifestJSON, manifestDigest, s.CreatedAt, s.UpdatedAt, ownerID, generation)
 	if err != nil {
+		return coreknowledge.Source{}, coreknowledge.ErrConflict
+	}
+	if err = bindKnowledgeSourceOwnerScopeTx(ctx, tx, s.ID); err != nil {
 		return coreknowledge.Source{}, coreknowledge.ErrConflict
 	}
 	if err = putKnowledgeReplay(ctx, tx, "mount", command.IdempotencyKey, digest, knowledgeReplay{Source: s}, nil); err != nil {
@@ -119,7 +126,8 @@ func (r *CoreKnowledgeStore) Get(ctx context.Context, id string) (coreknowledge.
 	if !validKnowledgeUUID(id) {
 		return coreknowledge.Source{}, coreknowledge.ErrInvalid
 	}
-	s, err := scanKnowledgeSource(r.store.pool.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1`, id))
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	s, err := scanKnowledgeSource(r.store.pool.QueryRow(ctx, knowledgeSourceSelect+` WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, id, ownerID, generation))
 	if errors.Is(err, pgx.ErrNoRows) || s.Status == coreknowledge.SourceStatusDeleted {
 		return coreknowledge.Source{}, coreknowledge.ErrNotFound
 	}
@@ -236,8 +244,13 @@ func (r *CoreKnowledgeStore) List(ctx context.Context, q coreknowledge.ListQuery
 	var ids []string
 	now := r.nowUTC()
 	var projections []coreknowledge.Source
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	snapshotOwner, snapshotGeneration, scopeErr := r.knowledgeScope(ctx)
+	if scopeErr != nil {
+		return coreknowledge.Page{}, coreknowledge.ErrInvalid
+	}
 	if q.PageToken == "" {
-		rows, e := r.store.pool.Query(ctx, knowledgeSourceSelect+` WHERE ($1='' OR kind=$1) AND ($2='' OR status=$2) AND source_id IS NOT NULL ORDER BY source_id`, q.Kind, q.Status)
+		rows, e := r.store.pool.Query(ctx, knowledgeSourceSelect+` WHERE ($1='' OR kind=$1) AND ($2='' OR status=$2) AND ($3='' OR (owner_id=$3 AND account_generation=$4)) AND source_id IS NOT NULL ORDER BY source_id`, q.Kind, q.Status, ownerID, generation)
 		if e != nil {
 			return coreknowledge.Page{}, coreknowledge.ErrConflict
 		}
@@ -257,7 +270,7 @@ func (r *CoreKnowledgeStore) List(ctx context.Context, q coreknowledge.ListQuery
 		snapID := uuid.New()
 		raw, _ := json.Marshal(ids)
 		projectionRaw, _ := json.Marshal(projections)
-		if _, e = r.store.pool.Exec(ctx, `INSERT INTO core_knowledge_list_snapshots(snapshot_id,query_digest,snapshot_at,expires_at,source_ids,search_matches) VALUES($1,$2,$3,$4,$5,$6)`, snapID, digest, now, now.Add(knowledgeSnapshotTTL), raw, projectionRaw); e != nil {
+		if _, e = r.store.pool.Exec(ctx, `INSERT INTO core_knowledge_list_snapshots(snapshot_id,owner_id,account_generation,query_digest,snapshot_at,expires_at,source_ids,search_matches) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, snapID, snapshotOwner, snapshotGeneration, digest, now, now.Add(knowledgeSnapshotTTL), raw, projectionRaw); e != nil {
 			return coreknowledge.Page{}, coreknowledge.ErrConflict
 		}
 		c = knowledgeCursor{SnapshotID: snapID.String(), Snapshot: now, Digest: digest}
@@ -268,7 +281,7 @@ func (r *CoreKnowledgeStore) List(ctx context.Context, q coreknowledge.ListQuery
 	var raw []byte
 	var projectionRaw []byte
 	var snapshotAt, expires time.Time
-	if err = r.store.pool.QueryRow(ctx, `SELECT source_ids,search_matches,snapshot_at,expires_at FROM core_knowledge_list_snapshots WHERE snapshot_id=$1 AND query_digest=$2`, c.SnapshotID, digest).Scan(&raw, &projectionRaw, &snapshotAt, &expires); err != nil || !now.Before(expires) {
+	if err = r.store.pool.QueryRow(ctx, `SELECT source_ids,search_matches,snapshot_at,expires_at FROM core_knowledge_list_snapshots WHERE snapshot_id=$1 AND owner_id=$2 AND account_generation=$3 AND query_digest=$4`, c.SnapshotID, snapshotOwner, snapshotGeneration, digest).Scan(&raw, &projectionRaw, &snapshotAt, &expires); err != nil || !now.Before(expires) {
 		return coreknowledge.Page{}, coreknowledge.ErrCursorConflict
 	}
 	if json.Unmarshal(raw, &ids) != nil {

@@ -3,6 +3,8 @@ package coreaws
 import (
 	"context"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 )
 
 const (
@@ -63,7 +65,7 @@ type Repository interface {
 // TestCredentialIdentity path deliberately does not use this optional
 // interface and remains non-keyed.
 type CredentialIdentityIdempotencyRepository interface {
-	BeginCredentialTest(context.Context, string, int64, string, ...time.Time) (CredentialTestClaim, *CredentialTest, error)
+	BeginCredentialTest(context.Context, coreteam.Scope, string, int64, string, ...time.Time) (CredentialTestClaim, *CredentialTest, error)
 	CompleteCredentialTest(context.Context, CredentialTestClaim, Identity, time.Time) (CredentialTest, error)
 	MarkCredentialTestUncertain(context.Context, CredentialTestClaim) error
 	MarkCredentialTestFailed(context.Context, CredentialTestClaim) error
@@ -77,9 +79,82 @@ type CredentialIdentityIdempotencyRepository interface {
 type CredentialTestClaim struct {
 	ClaimID              string
 	IdempotencyKey       string
+	OwnerID              string
+	AccountGeneration    int64
 	CredentialID         string
 	ExpectedRevision     int64
 	LeaseExpiresAt       time.Time
 	CompletionGraceUntil time.Time
 	Credential           Credentials
+}
+
+// GuardedCredentialRepository is the production mutation boundary. Each
+// implementation must serialize the Team active-execution check and the
+// credential write in one transaction for the exact owner account generation.
+type GuardedCredentialRepository interface {
+	CreateCredentialGuarded(context.Context, coreteam.Scope, Credentials) (Credentials, error)
+	UpdateCredentialGuarded(context.Context, coreteam.Scope, Credentials, int64) (Credentials, error)
+	DeleteCredentialGuarded(context.Context, coreteam.Scope, string, int64) error
+}
+
+// ScopedRepository is the public Core AWS data boundary. Internal recovery
+// code may follow already-bound Plan IDs, but caller-facing reads and writes
+// must match both authenticated owner identity components.
+type ScopedRepository interface {
+	GetCredentialScoped(context.Context, coreteam.Scope, string) (Credentials, error)
+	ListCredentialsScoped(context.Context, coreteam.Scope, int, string) (CredentialPage, error)
+	RecordCredentialIdentityScoped(context.Context, coreteam.Scope, string, int64, Identity, time.Time) (Credentials, error)
+	CreatePlanScoped(context.Context, coreteam.Scope, Plan, string, string) (Plan, error)
+	GetPlanScoped(context.Context, coreteam.Scope, string) (Plan, error)
+	ListPlansScoped(context.Context, coreteam.Scope, int, string) (PlanPage, error)
+	GetChangeScoped(context.Context, coreteam.Scope, string) (Change, error)
+	ListChangesScoped(context.Context, coreteam.Scope, int, string, string) (ChangePage, error)
+}
+
+const (
+	CredentialMutationCreate  = "credential-create"
+	CredentialMutationReplace = "credential-replace"
+	CredentialMutationDelete  = "credential-delete"
+)
+
+type CredentialMutationReplay struct {
+	Credential CredentialView
+	Deleted    bool
+}
+
+// DurableCredentialMutationRepository stores the idempotency receipt in the
+// same transaction as the active-Team check and credential mutation.
+type DurableCredentialMutationRepository interface {
+	ReplayCredentialMutation(context.Context, coreteam.Scope, string, string, string) (CredentialMutationReplay, bool, error)
+	CreateCredentialGuardedIdempotent(context.Context, coreteam.Scope, Credentials, string, string) (CredentialView, error)
+	UpdateCredentialGuardedIdempotent(context.Context, coreteam.Scope, Credentials, int64, string, string) (CredentialView, error)
+	DeleteCredentialGuardedIdempotent(context.Context, coreteam.Scope, string, int64, string, string) error
+}
+
+type credentialMutationScopeKey struct{}
+
+func WithCredentialMutationScope(ctx context.Context, scope coreteam.Scope) (context.Context, error) {
+	if ctx == nil || scope.Validate() != nil {
+		return nil, ErrInvalid
+	}
+	return context.WithValue(ctx, credentialMutationScopeKey{}, scope), nil
+}
+
+func credentialMutationScope(ctx context.Context) (coreteam.Scope, error) {
+	if ctx == nil {
+		return coreteam.Scope{}, ErrInvalid
+	}
+	scope, ok := ctx.Value(credentialMutationScopeKey{}).(coreteam.Scope)
+	if !ok || scope.Validate() != nil {
+		return coreteam.Scope{}, ErrInvalid
+	}
+	return scope, nil
+}
+
+func scopedRepository(repository Repository) (ScopedRepository, error) {
+	scoped, ok := repository.(ScopedRepository)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	return scoped, nil
 }

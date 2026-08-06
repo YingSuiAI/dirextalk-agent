@@ -72,6 +72,14 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 	if installation.State != coreextension.StateInstalled || !installation.Enabled || installation.Revision != in.ExpectedRevision || installation.ActiveVersionID == "" {
 		return coreextension.ExecuteResult{}, coreextension.ErrRevisionConflict
 	}
+	var installationOwnerID string
+	var installationGeneration int64
+	if err = c.store.pool.QueryRow(ctx, `SELECT owner_id,account_generation FROM core_extension_installations WHERE installation_id=$1`, installation.ID).Scan(&installationOwnerID, &installationGeneration); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return coreextension.ExecuteResult{}, coreextension.ErrNotFound
+		}
+		return coreextension.ExecuteResult{}, coreextension.ErrConflict
+	}
 	var version coreextension.VersionRecord
 	found := false
 	for _, candidate := range installation.Versions {
@@ -95,7 +103,7 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 	if installation.Kind == coreextension.KindMCP && strings.TrimSpace(in.ToolName) == "" {
 		return coreextension.ExecuteResult{}, coreextension.ErrInvalid
 	}
-	binding, err := extensionExecutionBinding(c.store.instanceID.String(), installation, version, in.ToolName, canonical)
+	binding, err := extensionExecutionBinding(installationOwnerID, installation, version, in.ToolName, canonical)
 	if err != nil {
 		return coreextension.ExecuteResult{}, err
 	}
@@ -127,6 +135,9 @@ func (c *PostgresExtensionExecutionCoordinator) RequestTask(ctx context.Context,
 		}
 		task, e := taskStore.createTaskTx(ctx, tx, spec, string(coretask.StatusWaitingUser))
 		if e != nil {
+			return coretask.Task{}, e
+		}
+		if e = setTaskOwnerScopeValuesTx(ctx, tx, task.ID, installationOwnerID, installationGeneration); e != nil {
 			return coretask.Task{}, e
 		}
 		raw, e := json.Marshal(binding)

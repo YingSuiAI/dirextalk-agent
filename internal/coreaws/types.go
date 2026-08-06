@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/google/uuid"
 )
 
@@ -192,22 +193,25 @@ func CredentialTestBindingDigest(credentialID string, expectedRevision int64) st
 }
 
 type Plan struct {
-	ID             string
-	CredentialID   string
-	Region         string
-	StackName      string
-	Operation      Operation
-	Template       []byte
-	TemplateSHA256 string
-	Parameters     map[string]string
-	Tags           map[string]string
-	Capabilities   []string
-	Revision       int64
-	CreatedAt      time.Time
+	ID                string
+	OwnerID           string
+	AccountGeneration int64
+	CredentialID      string
+	Region            string
+	StackName         string
+	Operation         Operation
+	Template          []byte
+	TemplateSHA256    string
+	Parameters        map[string]string
+	Tags              map[string]string
+	Capabilities      []string
+	Revision          int64
+	CreatedAt         time.Time
 }
 
 func (p Plan) Validate() error {
-	if !validUUID(p.ID) || !validUUID(p.CredentialID) || !validRegion(p.Region) || !validStackName(p.StackName) || !validOperation(p.Operation) || p.Revision < 1 || len(p.Template) == 0 || len(p.Template) > 51200 {
+	if !validUUID(p.ID) || (coreteam.Scope{OwnerID: p.OwnerID, AccountGeneration: p.AccountGeneration}).Validate() != nil ||
+		!validUUID(p.CredentialID) || !validRegion(p.Region) || !validStackName(p.StackName) || !validOperation(p.Operation) || p.Revision < 1 || len(p.Template) == 0 || len(p.Template) > 51200 {
 		return ErrInvalid
 	}
 	norm, digest, err := normalizeTemplate(p.Template)

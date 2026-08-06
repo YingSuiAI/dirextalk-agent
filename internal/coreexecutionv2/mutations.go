@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -516,7 +517,7 @@ func validateProviderPayload(payload map[string]any) error {
 	return validateSafeInput(payload)
 }
 
-func (s *Service) handleMutation(ctx context.Context, owner, action string, in map[string]any) (map[string]any, error) {
+func (s *Service) handleMutation(ctx context.Context, scope coretask.OwnerScope, action string, in map[string]any) (map[string]any, error) {
 	idem, err := idempotency(in)
 	if err != nil {
 		return nil, err
@@ -525,61 +526,84 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 	if err != nil {
 		return nil, err
 	}
-	if replay, ok, err := s.replay(ctx, owner, action, idem, digest); err != nil || ok {
+	replay, ok, claim, err := s.beginReplay(ctx, scope, action, idem, digest)
+	if err != nil || ok {
 		return replay, err
 	}
+	ctx = context.WithValue(ctx, replayIdentityContextKey{}, replayIdentity{action: action, key: idem, digest: append([]byte(nil), digest...)})
+	completed := false
+	dispatched := claim.Dispatched
+	defer func() {
+		if !completed && !dispatched {
+			_ = s.store.AbortReplay(context.WithoutCancel(ctx), scope, action, idem, digest, claim.Token)
+		}
+	}()
 	bare := strings.TrimPrefix(action, "agent.execution.v2.")
 	var result map[string]any
 	switch bare {
 	case "projects.analyze":
-		var payload map[string]any
-		if s.providers.Analyze != nil {
-			payload, err = s.providers.Analyze(ctx, owner, in)
-		} else {
+		if s.providers.Analyze == nil {
 			err = ErrMissingPort
+			break
 		}
-		if err == nil {
-			if err = validateProviderPayload(payload); err != nil {
-				break
+		var payload map[string]any
+		var providerDispatched bool
+		payload, providerDispatched, err = s.providerPayload(ctx, scope, action, idem, digest, claim, func() (map[string]any, error) {
+			return s.providers.Analyze(ctx, scope, in)
+		}, func(payload map[string]any) error {
+			if err := validateProviderPayload(payload); err != nil {
+				return err
 			}
 			if _, idErr := idParam(payload, "analysis_id"); idErr != nil {
-				err = fmt.Errorf("%w: provider analysis_id is invalid", ErrUnsafeOutput)
-				break
+				return fmt.Errorf("%w: provider analysis_id is invalid", ErrUnsafeOutput)
 			}
-			id := deterministicID(owner, action, idem)
-			record, e := s.putNew(ctx, owner, "analysis", id, "ready", payload)
+			return nil
+		})
+		dispatched = dispatched || providerDispatched
+		if err == nil {
+			id := deterministicID(scope, action, idem)
+			record, e := s.putNew(ctx, scope, "analysis", id, "ready", payload)
 			err = e
 			if err == nil {
-				_ = s.emit(ctx, record, "analysis_created", payload)
+				if err = s.emit(ctx, record, "analysis_created", payload); err != nil {
+					break
+				}
 				result = map[string]any{"analysis": publicRecord(record)}
 			}
 		}
 	case "targets.import", "targets.reserve", "targets.observe":
-		var payload map[string]any
-		switch bare {
-		case "targets.import":
-			if s.providers.ImportTarget != nil {
-				payload, err = s.providers.ImportTarget(ctx, owner, in)
-			} else {
-				err = ErrMissingPort
-			}
-		case "targets.reserve":
-			if s.providers.ReserveTarget != nil {
-				payload, err = s.providers.ReserveTarget(ctx, owner, in)
-			} else {
-				err = ErrMissingPort
-			}
-		case "targets.observe":
-			if s.providers.Observe != nil {
-				payload, err = s.providers.Observe(ctx, owner, in)
-			} else {
-				err = ErrMissingPort
-			}
+		var provider func() (map[string]any, error)
+		switch {
+		case bare == "targets.import" && s.providers.ImportTarget != nil:
+			provider = func() (map[string]any, error) { return s.providers.ImportTarget(ctx, scope, in) }
+		case bare == "targets.reserve" && s.providers.ReserveTarget != nil:
+			provider = func() (map[string]any, error) { return s.providers.ReserveTarget(ctx, scope, in) }
+		case bare == "targets.observe" && s.providers.Observe != nil:
+			provider = func() (map[string]any, error) { return s.providers.Observe(ctx, scope, in) }
+		default:
+			err = ErrMissingPort
+			break
 		}
-		if err == nil {
-			if err = validateProviderPayload(payload); err != nil {
-				break
+		if err != nil {
+			break
+		}
+		var payload map[string]any
+		var providerDispatched bool
+		payload, providerDispatched, err = s.providerPayload(ctx, scope, action, idem, digest, claim, provider, func(payload map[string]any) error {
+			if err := validateProviderPayload(payload); err != nil {
+				return err
 			}
+			id := stringParam(payload, "target_id")
+			if id == "" && bare == "targets.observe" {
+				id = stringParam(in, "target_id")
+			}
+			if _, idErr := idParam(map[string]any{"target_id": id}, "target_id"); idErr != nil {
+				return fmt.Errorf("%w: provider target_id is invalid", ErrUnsafeOutput)
+			}
+			return nil
+		})
+		dispatched = dispatched || providerDispatched
+		if err == nil {
 			if bare == "targets.observe" {
 				// Observation is a readback fact, not a second target row. Keep
 				// the durable target revision untouched and return the provider's
@@ -597,13 +621,15 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 					err = fmt.Errorf("%w: provider target_id is invalid", ErrUnsafeOutput)
 					break
 				}
-				if existing, readErr := s.store.Read(ctx, owner, "target", id, 0); readErr == nil {
-					_ = s.emit(ctx, existing, "target_observed", payload)
+				if existing, readErr := s.store.Read(ctx, scope, "target", id, 0); readErr == nil {
+					if err = s.emit(ctx, existing, "target_observed", payload); err != nil {
+						break
+					}
 				} else if !errors.Is(readErr, ErrNotFound) {
 					err = readErr
 					break
 				}
-				result = map[string]any{"observation": ownedPayload(owner, payload)}
+				result = map[string]any{"observation": ownedPayload(scope, payload)}
 				break
 			}
 			id := stringParam(payload, "target_id")
@@ -612,16 +638,14 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 					err = fmt.Errorf("%w: provider target_id is required", ErrUnsafeOutput)
 					break
 				}
-				id = deterministicID(owner, action, idem)
+				id = deterministicID(scope, action, idem)
 			}
-			if _, idErr := idParam(map[string]any{"target_id": id}, "target_id"); idErr != nil {
-				err = fmt.Errorf("%w: provider target_id is invalid", ErrUnsafeOutput)
-				break
-			}
-			record, e := s.putNew(ctx, owner, "target", id, "active", payload)
+			record, e := s.putNew(ctx, scope, "target", id, "active", payload)
 			err = e
 			if err == nil {
-				_ = s.emit(ctx, record, "target_changed", payload)
+				if err = s.emit(ctx, record, "target_changed", payload); err != nil {
+					break
+				}
 				result = map[string]any{"target": publicRecord(record)}
 				if bare == "targets.observe" {
 					result = map[string]any{"observation": publicRecord(record)}
@@ -630,14 +654,14 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 					if observationID := stringParam(payload, "observation_id"); observationID != "" {
 						result["observation_id"] = observationID
 						if observation, ok := payload["observation"].(map[string]any); ok {
-							result["observation"] = ownedPayload(owner, observation)
+							result["observation"] = ownedPayload(scope, observation)
 						}
 					}
 				}
 			}
 		}
 	case "plans.create":
-		id := deterministicID(owner, action, idem)
+		id := deterministicID(scope, action, idem)
 		compiled, compileErr := compiledPlanPayload(in)
 		if compileErr != nil {
 			err = compileErr
@@ -647,19 +671,19 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 		for key, value := range compiled {
 			payload[key] = value
 		}
-		record, e := s.putNew(ctx, owner, "plan", id, "ready", payload)
+		record, e := s.putNew(ctx, scope, "plan", id, "ready", payload)
 		err = e
 		if err == nil {
-			_ = s.emit(ctx, record, "plan_created", payload)
+			if err = s.emit(ctx, record, "plan_created", payload); err != nil {
+				break
+			}
 			result = map[string]any{"plan": publicRecord(record)}
 		}
 	case "plans.revise":
 		id, _ := idParam(in, "plan_id")
-		existing, e := s.store.Read(ctx, owner, "plan", id, 0)
+		existing, e := s.mutationBase(ctx, scope, "plan", id, uintParam(in, "expected_revision"))
 		if e != nil {
 			err = e
-		} else if existing.Revision != uintParam(in, "expected_revision") {
-			err = ErrConflict
 		} else {
 			payload := cloneMap(existing.Payload)
 			for _, key := range []string{"intent", "recipe_id", "target_id", "target_revision", "purpose", "ai_configuration"} {
@@ -678,76 +702,57 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 			updated, e := s.update(ctx, existing, "ready", payload)
 			err = e
 			if err == nil {
-				_ = s.emit(ctx, updated, "plan_revised", payload)
+				if err = s.emit(ctx, updated, "plan_revised", payload); err != nil {
+					break
+				}
 				result = map[string]any{"plan": publicRecord(updated)}
 			}
 		}
 	case "runs.create":
 		planID, _ := idParam(in, "plan_id")
-		plan, planErr := s.store.Read(ctx, owner, "plan", planID, uintParam(in, "plan_revision"))
+		plan, planErr := s.store.Read(ctx, scope, "plan", planID, uintParam(in, "plan_revision"))
 		if planErr != nil {
 			err = planErr
 		} else {
-			id := deterministicID(owner, action, idem)
+			id := deterministicID(scope, action, idem)
 			operation := stringParam(in, "operation")
-			stageID := stageIDForRun(owner, id, planID, operation)
-			taskID := taskIDForStage(owner, stageID)
+			stageID := stageIDForRun(scope, id, planID, operation)
+			taskID := taskIDForStage(scope, stageID)
 			confirmationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(id+"\x00confirmation")).String()
-			// A process may crash after creating the run but before writing the
-			// stage/confirmation/replay. Re-read deterministic records and finish
-			// the same envelope instead of manufacturing a second execution slot.
-			record, existingErr := s.store.Read(ctx, owner, "run", id, 0)
-			if existingErr == nil {
-				if stringParam(record.Payload, "plan_id") != planID || stringParam(record.Payload, "operation") != operation {
-					err = ErrConflict
-					break
-				}
-				if stringParam(record.Payload, "stage_id") != stageID || stringParam(record.Payload, "confirmation_id") != confirmationID {
-					err = ErrConflict
-					break
-				}
-			} else if !errors.Is(existingErr, ErrNotFound) {
-				err = existingErr
+			// putNew verifies the complete replay identity and payload if a crash
+			// left the deterministic run behind before the replay receipt.
+			payload := map[string]any{"plan_id": planID, "plan_revision": plan.Revision, "operation": operation, "trigger_kind": stringParam(in, "trigger_kind"), "status": "waiting_user", "revision": uint64(1), "requires_confirmation": true, "confirmation_id": confirmationID, "stage_id": stageID, "task_id": taskID, "dispatch_mode": "public_reconcile"}
+			record, createErr := s.putNew(ctx, scope, "run", id, "waiting_user", payload)
+			if createErr != nil {
+				err = createErr
 				break
-			} else {
-				payload := map[string]any{"plan_id": planID, "plan_revision": plan.Revision, "operation": operation, "trigger_kind": stringParam(in, "trigger_kind"), "status": "waiting_user", "revision": uint64(1), "requires_confirmation": true, "confirmation_id": confirmationID, "stage_id": stageID, "task_id": taskID, "dispatch_mode": "public_reconcile"}
-				record, err = s.putNew(ctx, owner, "run", id, "waiting_user", payload)
-				if err != nil {
-					break
-				}
 			}
-			stage, stageErr := s.store.Read(ctx, owner, "stage", stageID, 0)
-			if errors.Is(stageErr, ErrNotFound) {
-				stage, stageErr = s.putNew(ctx, owner, "stage", stageID, "waiting_user", stageRecordPayload(owner, id, planID, operation, taskID, confirmationID, plan.Revision))
-			}
+			stage, stageErr := s.putNew(ctx, scope, "stage", stageID, "waiting_user", stageRecordPayload(scope, id, planID, operation, taskID, confirmationID, plan.Revision))
 			if stageErr != nil {
 				err = stageErr
 				break
 			}
-			confirmation, confirmationErr := s.store.Read(ctx, owner, "confirmation", confirmationID, 0)
-			if errors.Is(confirmationErr, ErrNotFound) {
-				confirmationPayload := map[string]any{"run_id": id, "stage_id": stageID, "state": "pending", "binding": map[string]any{"plan_id": planID, "plan_revision": plan.Revision, "operation": operation, "stage_id": stageID, "stage_revision": stage.Revision, "task_id": taskID}, "preview": map[string]any{"operation": operation, "stage_id": stageID, "task_id": taskID}}
-				confirmation, confirmationErr = s.putNew(ctx, owner, "confirmation", confirmationID, "pending", confirmationPayload)
-				if confirmationErr == nil {
-					_ = s.emit(ctx, confirmation, "confirmation_created", confirmationPayload)
-				}
+			confirmationPayload := map[string]any{"run_id": id, "stage_id": stageID, "state": "pending", "binding": map[string]any{"plan_id": planID, "plan_revision": plan.Revision, "operation": operation, "stage_id": stageID, "stage_revision": stage.Revision, "task_id": taskID}, "preview": map[string]any{"operation": operation, "stage_id": stageID, "task_id": taskID}}
+			confirmation, confirmationErr := s.putNew(ctx, scope, "confirmation", confirmationID, "pending", confirmationPayload)
+			if confirmationErr == nil {
+				confirmationErr = s.emit(ctx, confirmation, "confirmation_created", confirmationPayload)
 			}
 			if confirmationErr != nil {
 				err = confirmationErr
 				break
 			}
-			_ = s.emit(ctx, record, "run_created", record.Payload)
+			if err = s.emit(ctx, record, "run_created", record.Payload); err != nil {
+				break
+			}
 			result = map[string]any{"run": publicRecord(record), "stages": []any{stageView(stage)}}
 		}
 	case "runs.cancel", "runs.reconcile":
 		id, _ := idParam(in, "run_id")
-		existing, e := s.store.Read(ctx, owner, "run", id, 0)
+		existing, e := s.mutationBase(ctx, scope, "run", id, uintParam(in, "expected_revision"))
 		if e != nil {
 			err = e
-		} else if existing.Revision != uintParam(in, "expected_revision") {
-			err = ErrConflict
 		} else {
-			stage, stageErr := stageForRun(ctx, s.store, owner, existing)
+			stage, stageErr := stageForRun(ctx, s.store, scope, existing)
 			if stageErr != nil {
 				err = stageErr
 				break
@@ -785,7 +790,7 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 					err = fmt.Errorf("%w: stage confirmation binding is missing", ErrConflict)
 					break
 				}
-				confirmation, confirmationErr := s.store.Read(ctx, owner, "confirmation", confirmationID, 0)
+				confirmation, confirmationErr := s.store.Read(ctx, scope, "confirmation", confirmationID, 0)
 				if confirmationErr != nil {
 					err = confirmationErr
 					break
@@ -803,22 +808,31 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 					err = ErrMissingPort
 					break
 				}
-				providerPayload, pe := s.providers.Reconcile(ctx, owner, in)
+				providerPayload, providerDispatched, pe := s.providerPayload(ctx, scope, action, idem, digest, claim, func() (map[string]any, error) {
+					return s.providers.Reconcile(ctx, scope, in)
+				}, func(providerPayload map[string]any) error {
+					if err := validateSafeInput(providerPayload); err != nil {
+						return err
+					}
+					for key, expected := range map[string]string{"run_id": existing.ID, "stage_id": stage.ID, "confirmation_id": stringParam(stage.Payload, "confirmation_id"), "task_id": stringParam(stage.Payload, "task_id")} {
+						if actual := stringParam(providerPayload, key); actual != "" && actual != expected {
+							return fmt.Errorf("%w: provider %s binding mismatch", ErrConflict, key)
+						}
+					}
+					status := stringParam(providerPayload, "status")
+					if status == "" {
+						status = "succeeded"
+					}
+					switch status {
+					case "succeeded", "failed", "canceled", "uncertain", "running", "queued":
+						return nil
+					default:
+						return ErrUnsafeOutput
+					}
+				})
+				dispatched = dispatched || providerDispatched
 				if pe != nil {
 					err = pe
-					break
-				}
-				if pe = validateSafeInput(providerPayload); pe != nil {
-					err = pe
-					break
-				}
-				for key, expected := range map[string]string{"run_id": existing.ID, "stage_id": stage.ID, "confirmation_id": stringParam(stage.Payload, "confirmation_id"), "task_id": stringParam(stage.Payload, "task_id")} {
-					if actual := stringParam(providerPayload, key); actual != "" && actual != expected {
-						err = fmt.Errorf("%w: provider %s binding mismatch", ErrConflict, key)
-						break
-					}
-				}
-				if err != nil {
 					break
 				}
 				for key, value := range providerPayload {
@@ -828,12 +842,6 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 				if status == "" {
 					status = "succeeded"
 				}
-				switch status {
-				case "succeeded", "failed", "canceled", "uncertain", "running", "queued":
-				default:
-					err = ErrUnsafeOutput
-					break
-				}
 				eventType = "run_reconciled"
 			}
 			if err != nil {
@@ -842,7 +850,9 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 			updated, e := s.update(ctx, existing, status, payload)
 			err = e
 			if err == nil {
-				_ = s.emit(ctx, updated, eventType, payload)
+				if err = s.emit(ctx, updated, eventType, payload); err != nil {
+					break
+				}
 				stagePayload := cloneMap(stage.Payload)
 				stagePayload["status"] = status
 				stagePayload["run_revision"] = updated.Revision
@@ -851,28 +861,31 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 						stagePayload[key] = value
 					}
 				}
-				if updatedStage, stageUpdateErr := s.update(ctx, stage, status, stagePayload); stageUpdateErr == nil {
-					stage = updatedStage
+				updatedStage, stageUpdateErr := s.ensureUpdate(ctx, stage, status, stagePayload)
+				if stageUpdateErr != nil {
+					err = stageUpdateErr
+					break
 				}
+				stage = updatedStage
 				result = map[string]any{"run": publicRecord(updated), "stages": []any{stageView(stage)}}
 			}
 		}
 	case "runs.retry":
 		id, _ := idParam(in, "run_id")
-		existing, e := s.store.Read(ctx, owner, "run", id, 0)
+		existing, e := s.store.Read(ctx, scope, "run", id, 0)
 		if e != nil {
 			err = e
 		} else if existing.Revision != uintParam(in, "expected_revision") {
 			err = ErrConflict
 		} else {
-			newID := deterministicID(owner, action, idem)
+			newID := deterministicID(scope, action, idem)
 			payload := cloneMap(existing.Payload)
 			payload["retry_of_run_id"] = existing.ID
 			payload["status"] = "waiting_user"
 			planID := stringParam(payload, "plan_id")
 			operation := stringParam(payload, "operation")
-			stageID := stageIDForRun(owner, newID, planID, operation)
-			taskID := taskIDForStage(owner, stageID)
+			stageID := stageIDForRun(scope, newID, planID, operation)
+			taskID := taskIDForStage(scope, stageID)
 			confirmationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(newID+"\x00confirmation")).String()
 			payload["stage_id"] = stageID
 			payload["task_id"] = taskID
@@ -881,33 +894,35 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 			payload["requires_confirmation"] = true
 			delete(payload, "provisioning_started")
 			delete(payload, "provision_intent_id")
-			record, e := s.putNew(ctx, owner, "run", newID, "waiting_user", payload)
+			record, e := s.putNew(ctx, scope, "run", newID, "waiting_user", payload)
 			err = e
 			if err == nil {
-				stagePayload := stageRecordPayload(owner, newID, planID, operation, taskID, confirmationID, uintParam(payload, "plan_revision"))
-				stage, stageErr := s.putNew(ctx, owner, "stage", stageID, "waiting_user", stagePayload)
+				stagePayload := stageRecordPayload(scope, newID, planID, operation, taskID, confirmationID, uintParam(payload, "plan_revision"))
+				stage, stageErr := s.putNew(ctx, scope, "stage", stageID, "waiting_user", stagePayload)
 				if stageErr != nil {
 					err = stageErr
 					break
 				}
 				confirmationPayload := map[string]any{"run_id": newID, "stage_id": stageID, "state": "pending", "binding": map[string]any{"plan_id": planID, "plan_revision": uintParam(payload, "plan_revision"), "operation": operation, "stage_id": stageID, "stage_revision": stage.Revision, "task_id": taskID}, "preview": map[string]any{"operation": operation, "stage_id": stageID, "task_id": taskID}}
-				confirmation, confirmationErr := s.putNew(ctx, owner, "confirmation", confirmationID, "pending", confirmationPayload)
+				confirmation, confirmationErr := s.putNew(ctx, scope, "confirmation", confirmationID, "pending", confirmationPayload)
 				if confirmationErr != nil {
 					err = confirmationErr
 					break
 				}
-				_ = s.emit(ctx, record, "run_retried", payload)
-				_ = s.emit(ctx, confirmation, "confirmation_created", confirmationPayload)
+				if err = s.emit(ctx, record, "run_retried", payload); err != nil {
+					break
+				}
+				if err = s.emit(ctx, confirmation, "confirmation_created", confirmationPayload); err != nil {
+					break
+				}
 				result = map[string]any{"run": publicRecord(record), "stages": []any{stageView(stage)}}
 			}
 		}
 	case "confirmations.confirm", "confirmations.reject":
 		id, _ := idParam(in, "confirmation_id")
-		existing, e := s.store.Read(ctx, owner, "confirmation", id, 0)
+		existing, e := s.mutationBase(ctx, scope, "confirmation", id, uintParam(in, "expected_revision"))
 		if e != nil {
 			err = e
-		} else if existing.Revision != uintParam(in, "expected_revision") {
-			err = ErrConflict
 		} else {
 			status := "confirmed"
 			if bare == "confirmations.reject" {
@@ -918,27 +933,48 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 			updated, e := s.update(ctx, existing, status, payload)
 			err = e
 			if err == nil {
-				_ = s.emit(ctx, updated, "confirmation_"+status, payload)
+				if err = s.emit(ctx, updated, "confirmation_"+status, payload); err != nil {
+					break
+				}
 				if runID := stringParam(payload, "run_id"); runID != "" {
-					if run, re := s.store.Read(ctx, owner, "run", runID, 0); re == nil && run.Revision > 0 {
+					run, runErr := s.store.Read(ctx, scope, "run", runID, 0)
+					if runErr != nil {
+						err = runErr
+						break
+					}
+					if run.Revision > 0 {
 						nextStatus := "queued"
 						if status == "rejected" {
 							nextStatus = "rejected"
 						}
 						nextPayload := cloneMap(run.Payload)
 						nextPayload["confirmation_state"] = status
-						if next, ue := s.update(ctx, run, nextStatus, nextPayload); ue == nil {
-							_ = s.emit(ctx, next, "run_"+nextStatus, run.Payload)
-							if stage, stageErr := stageForRun(ctx, s.store, owner, run); stageErr == nil && stage.Status == "waiting_user" {
-								stagePayload := cloneMap(stage.Payload)
-								stagePayload["status"] = nextStatus
-								stagePayload["confirmation_state"] = status
-								if updatedStage, updateErr := s.update(ctx, stage, nextStatus, stagePayload); updateErr == nil {
-									stage = updatedStage
-								}
+						next, updateErr := s.ensureUpdate(ctx, run, nextStatus, nextPayload)
+						if updateErr != nil {
+							err = updateErr
+							break
+						}
+						if err = s.emit(ctx, next, "run_"+nextStatus, nextPayload); err != nil {
+							break
+						}
+						stage, stageErr := stageForRun(ctx, s.store, scope, run)
+						if stageErr != nil {
+							err = stageErr
+							break
+						}
+						if stage.Status == "waiting_user" {
+							stagePayload := cloneMap(stage.Payload)
+							stagePayload["status"] = nextStatus
+							stagePayload["confirmation_state"] = status
+							if _, updateErr = s.ensureUpdate(ctx, stage, nextStatus, stagePayload); updateErr != nil {
+								err = updateErr
+								break
 							}
 						}
 					}
+				}
+				if err != nil {
+					break
 				}
 				result = map[string]any{"confirmation": publicRecord(updated)}
 			}
@@ -947,14 +983,13 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 		if s.providers.Invoke == nil {
 			err = ErrMissingPort
 		} else {
-			payload, e := s.providers.Invoke(ctx, owner, in)
-			err = e
+			payload, providerDispatched, providerErr := s.providerPayload(ctx, scope, action, idem, digest, claim, func() (map[string]any, error) {
+				return s.providers.Invoke(ctx, scope, in)
+			}, func(payload map[string]any) error { return validateSafeInput(payload) })
+			dispatched = dispatched || providerDispatched
+			err = providerErr
 			if err == nil {
-				if e = validateSafeInput(payload); e != nil {
-					err = e
-				} else {
-					result = map[string]any{"result": payload}
-				}
+				result = map[string]any{"result": payload}
 			}
 		}
 	default:
@@ -965,23 +1000,24 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 	if err != nil {
 		return nil, err
 	}
-	if err := s.saveReplay(ctx, owner, action, idem, digest, result); err != nil {
+	if err := s.completeReplay(ctx, scope, action, idem, digest, claim.Token, result); err != nil {
 		return nil, err
 	}
+	completed = true
 	return result, nil
 }
 
-func (s *Service) handleSecret(ctx context.Context, owner, action string, in map[string]any) (map[string]any, error) {
+func (s *Service) handleSecret(ctx context.Context, scope coretask.OwnerScope, action string, in map[string]any) (map[string]any, error) {
 	if action == "agent.execution.v2.secrets.get" || action == "agent.execution.v2.secrets.list" {
 		if action == "agent.execution.v2.secrets.get" {
 			ref, _ := idParam(in, "secret_ref")
-			secret, err := s.store.ReadSecret(ctx, owner, ref, uintParam(in, "revision"))
+			secret, err := s.store.ReadSecret(ctx, scope, ref, uintParam(in, "revision"))
 			if err != nil {
 				return nil, err
 			}
 			return map[string]any{"secret": publicSecret(secret)}, nil
 		}
-		items, next, err := s.store.ListSecrets(ctx, owner, stringParam(in, "page_token"), intParam(in, "page_size", 100))
+		items, next, err := s.store.ListSecrets(ctx, scope, stringParam(in, "page_token"), intParam(in, "page_size", 100))
 		if err != nil {
 			return nil, err
 		}
@@ -999,43 +1035,71 @@ func (s *Service) handleSecret(ctx context.Context, owner, action string, in map
 	if err != nil {
 		return nil, err
 	}
-	if replay, ok, err := s.replay(ctx, owner, action, idem, digest); err != nil || ok {
+	replay, ok, claim, err := s.beginReplay(ctx, scope, action, idem, digest)
+	if err != nil || ok {
 		return replay, err
 	}
+	ctx = context.WithValue(ctx, replayIdentityContextKey{}, replayIdentity{action: action, key: idem, digest: append([]byte(nil), digest...)})
+	completed := false
+	defer func() {
+		if !completed {
+			_ = s.store.AbortReplay(context.WithoutCancel(ctx), scope, action, idem, digest, claim.Token)
+		}
+	}()
 	switch action {
 	case "agent.execution.v2.secrets.create":
 		value := stringParam(in, "value")
 		sum := sha256.Sum256([]byte(value))
-		ref := deterministicID(owner, action, idem)
+		ref := deterministicID(scope, action, idem)
 		now := s.now().UTC()
-		secret, e := s.store.SaveSecret(ctx, Secret{OwnerID: owner, Ref: ref, Revision: 1, Provider: stringParam(in, "provider"), Purpose: stringParam(in, "purpose"), Value: value, BindingDigest: hex.EncodeToString(sum[:]), Status: "active", CreatedAt: now, UpdatedAt: now})
+		desired := Secret{OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, Ref: ref, Revision: 1, Provider: stringParam(in, "provider"), Purpose: stringParam(in, "purpose"), Value: value, BindingDigest: hex.EncodeToString(sum[:]), Status: "active", CreatedAt: now, UpdatedAt: now}
+		bindSecretReplayMutation(ctx, &desired)
+		secret, e := s.store.SaveSecret(ctx, desired)
+		if errors.Is(e, ErrConflict) {
+			existing, readErr := s.store.ReadSecret(ctx, scope, ref, 0)
+			if readErr == nil && existing.Revision == desired.Revision && existing.Provider == desired.Provider && existing.Purpose == desired.Purpose && existing.BindingDigest == desired.BindingDigest && existing.Status == desired.Status && existing.Value == desired.Value && sameSecretReplayMutation(ctx, existing) {
+				secret, e = existing, nil
+			}
+		}
 		if e != nil {
 			return nil, e
 		}
 		result := map[string]any{"secret": publicSecret(secret)}
-		if e = s.saveReplay(ctx, owner, action, idem, digest, result); e != nil {
+		if e = s.completeReplay(ctx, scope, action, idem, digest, claim.Token, result); e != nil {
 			return nil, e
 		}
+		completed = true
 		return result, nil
 	case "agent.execution.v2.secrets.revoke":
 		ref, _ := idParam(in, "secret_ref")
-		secret, e := s.store.ReadSecret(ctx, owner, ref, 0)
+		secret, e := s.store.ReadSecret(ctx, scope, ref, 0)
 		if e != nil {
 			return nil, e
 		}
-		if secret.Revision != uintParam(in, "expected_revision") {
+		expected := uintParam(in, "expected_revision")
+		if secret.Revision == expected+1 && secret.Status == "revoked" && sameSecretReplayMutation(ctx, secret) {
+			result := map[string]any{"secret": publicSecret(secret)}
+			if e = s.completeReplay(ctx, scope, action, idem, digest, claim.Token, result); e != nil {
+				return nil, e
+			}
+			completed = true
+			return result, nil
+		}
+		if secret.Revision != expected {
 			return nil, ErrConflict
 		}
 		secret.Status = "revoked"
 		secret.UpdatedAt = s.now().UTC()
+		bindSecretReplayMutation(ctx, &secret)
 		updated, e := s.store.RevokeSecret(ctx, secret, secret.Revision)
 		if e != nil {
 			return nil, e
 		}
 		result := map[string]any{"secret": publicSecret(updated)}
-		if e = s.saveReplay(ctx, owner, action, idem, digest, result); e != nil {
+		if e = s.completeReplay(ctx, scope, action, idem, digest, claim.Token, result); e != nil {
 			return nil, e
 		}
+		completed = true
 		return result, nil
 	default:
 		return nil, ErrUnsupported
@@ -1043,5 +1107,5 @@ func (s *Service) handleSecret(ctx context.Context, owner, action string, in map
 }
 
 func publicSecret(secret Secret) map[string]any {
-	return map[string]any{"secret_ref": secret.Ref, "revision": secret.Revision, "provider": secret.Provider, "purpose": secret.Purpose, "binding_digest": secret.BindingDigest, "status": secret.Status, "created_at": secret.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": secret.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	return map[string]any{"owner_id": secret.OwnerID, "account_generation": secret.AccountGeneration, "secret_ref": secret.Ref, "revision": secret.Revision, "provider": secret.Provider, "purpose": secret.Purpose, "binding_digest": secret.BindingDigest, "status": secret.Status, "created_at": secret.CreatedAt.UTC().Format(time.RFC3339Nano), "updated_at": secret.UpdatedAt.UTC().Format(time.RFC3339Nano)}
 }

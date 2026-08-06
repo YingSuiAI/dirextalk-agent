@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -27,14 +28,25 @@ func (s *CoreConversationStore) CreateConversationMutation(ctx context.Context, 
 	if err := c.Validate(); err != nil {
 		return core.ConversationMutationResponse{}, err
 	}
+	replayOwnerID, replayGeneration, e := replayOwnerScope(ctx, "mutation", c.RequestID)
+	if e != nil {
+		return core.ConversationMutationResponse{}, core.ErrInvalid
+	}
+	conversationOwnerID, conversationGeneration, e := ownerScopeOrInternal(ctx, "conversation", c.Conversation.ID)
+	if e != nil {
+		return core.ConversationMutationResponse{}, core.ErrInvalid
+	}
 	tx, e := s.pool.Begin(ctx)
 	if e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
 	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_mutation:%s:%d:conversation.create:%s", replayOwnerID, replayGeneration, c.RequestID)); e != nil {
+		return core.ConversationMutationResponse{}, e
+	}
 	var raw []byte
 	var storedHash string
-	if e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='conversation.create' AND idempotency_key=$1`, c.RequestID).Scan(&storedHash, &raw); e == nil {
+	if e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='conversation.create' AND idempotency_key=$3`, replayOwnerID, replayGeneration, c.RequestID).Scan(&storedHash, &raw); e == nil {
 		if storedHash != c.Fingerprint {
 			return core.ConversationMutationResponse{}, core.ErrConflict
 		}
@@ -52,12 +64,12 @@ func (s *CoreConversationStore) CreateConversationMutation(ctx context.Context, 
 	now := time.Now().UTC()
 	conversation := c.Conversation
 	conversation.CreatedAt, conversation.UpdatedAt = now, now
-	if _, e = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5)`, conversation.ID, conversation.Title, conversation.Revision, conversation.CreatedAt, conversation.UpdatedAt); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_conversations(conversation_id,title,revision,created_at,updated_at,owner_id,account_generation) VALUES($1,$2,$3,$4,$5,$6,$7)`, conversation.ID, conversation.Title, conversation.Revision, conversation.CreatedAt, conversation.UpdatedAt, conversationOwnerID, conversationGeneration); e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
 	r := core.ConversationMutationResponse{Conversation: conversation, RequestID: c.RequestID}
 	raw, _ = json.Marshal(r)
-	if _, e = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES('conversation.create',$1,$2,$3)`, c.RequestID, c.Fingerprint, raw); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_mutation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,'conversation.create',$3,$4,$5)`, replayOwnerID, replayGeneration, c.RequestID, c.Fingerprint, raw); e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
 	if e = tx.Commit(ctx); e != nil {
@@ -70,14 +82,22 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 	if err := c.Validate(); err != nil {
 		return core.ConversationMutationResponse{}, err
 	}
+	replayOwnerID, replayGeneration, e := replayOwnerScope(ctx, "mutation", c.RequestID)
+	if e != nil {
+		return core.ConversationMutationResponse{}, core.ErrInvalid
+	}
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	tx, e := s.pool.Begin(ctx)
 	if e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
 	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_mutation:%s:%d:conversation.delete:%s", replayOwnerID, replayGeneration, c.RequestID)); e != nil {
+		return core.ConversationMutationResponse{}, e
+	}
 	var raw []byte
 	var storedHash string
-	if e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='conversation.delete' AND idempotency_key=$1`, c.RequestID).Scan(&storedHash, &raw); e == nil {
+	if e = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='conversation.delete' AND idempotency_key=$3`, replayOwnerID, replayGeneration, c.RequestID).Scan(&storedHash, &raw); e == nil {
 		if storedHash != c.Fingerprint {
 			return core.ConversationMutationResponse{}, core.ErrConflict
 		}
@@ -94,7 +114,7 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 	}
 	var conv core.Conversation
 	var del *time.Time
-	if e = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1`, c.ConversationID).Scan(&conv.ID, &conv.Title, &conv.Revision, &conv.CreatedAt, &conv.UpdatedAt, &del); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, c.ConversationID, ownerID, generation).Scan(&conv.ID, &conv.Title, &conv.Revision, &conv.CreatedAt, &conv.UpdatedAt, &del); e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
 	normalizeConversationTimesPG(&conv, del)
@@ -102,7 +122,7 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 		return core.ConversationMutationResponse{}, core.ErrConflict
 	}
 	now := time.Now().UTC()
-	result, e := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2,deleted_at=$2 WHERE conversation_id=$1 AND revision=$3 AND deleted_at IS NULL`, c.ConversationID, now, c.ExpectedRevision)
+	result, e := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2,deleted_at=$2 WHERE conversation_id=$1 AND revision=$3 AND deleted_at IS NULL AND ($4='' OR (owner_id=$4 AND account_generation=$5))`, c.ConversationID, now, c.ExpectedRevision, ownerID, generation)
 	if e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
@@ -114,7 +134,7 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 	conv.DeletedAt = &now
 	r := core.ConversationMutationResponse{Conversation: conv, RequestID: c.RequestID, Deleted: true}
 	raw, _ = json.Marshal(r)
-	if _, e = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES('conversation.delete',$1,$2,$3)`, c.RequestID, c.Fingerprint, raw); e != nil {
+	if _, e = tx.Exec(ctx, `INSERT INTO core_mutation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,'conversation.delete',$3,$4,$5)`, replayOwnerID, replayGeneration, c.RequestID, c.Fingerprint, raw); e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
 	if e = tx.Commit(ctx); e != nil {
@@ -130,14 +150,22 @@ func (s *CoreConversationStore) RenameConversationMutation(ctx context.Context, 
 		return core.ConversationMutationResponse{}, core.ErrInvalid
 	}
 	digest := digestRenamePG(id, title, expected)
+	replayOwnerID, replayGeneration, scopeErr := replayOwnerScope(ctx, "mutation", requestID)
+	if scopeErr != nil {
+		return core.ConversationMutationResponse{}, core.ErrInvalid
+	}
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.ConversationMutationResponse{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("core_mutation:%s:%d:conversation.rename:%s", replayOwnerID, replayGeneration, requestID)); err != nil {
+		return core.ConversationMutationResponse{}, err
+	}
 	var stored string
 	var replay []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation='conversation.rename' AND idempotency_key=$1`, requestID).Scan(&stored, &replay)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation='conversation.rename' AND idempotency_key=$3`, replayOwnerID, replayGeneration, requestID).Scan(&stored, &replay)
 	if err == nil {
 		if stored != digest {
 			return core.ConversationMutationResponse{}, core.ErrConflict
@@ -157,7 +185,7 @@ func (s *CoreConversationStore) RenameConversationMutation(ctx context.Context, 
 	}
 	var conversation core.Conversation
 	var deleted *time.Time
-	if err = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1 FOR UPDATE`, id).Scan(&conversation.ID, &conversation.Title, &conversation.Revision, &conversation.CreatedAt, &conversation.UpdatedAt, &deleted); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, id, ownerID, generation).Scan(&conversation.ID, &conversation.Title, &conversation.Revision, &conversation.CreatedAt, &conversation.UpdatedAt, &deleted); err != nil {
 		return core.ConversationMutationResponse{}, core.ErrConflict
 	}
 	normalizeConversationTimesPG(&conversation, deleted)
@@ -165,7 +193,7 @@ func (s *CoreConversationStore) RenameConversationMutation(ctx context.Context, 
 		return core.ConversationMutationResponse{}, core.ErrConflict
 	}
 	now := time.Now().UTC()
-	if tag, updateErr := tx.Exec(ctx, `UPDATE core_conversations SET title=$2,revision=revision+1,updated_at=$3 WHERE conversation_id=$1 AND revision=$4 AND deleted_at IS NULL`, id, title, now, expected); updateErr != nil || tag.RowsAffected() != 1 {
+	if tag, updateErr := tx.Exec(ctx, `UPDATE core_conversations SET title=$2,revision=revision+1,updated_at=$3 WHERE conversation_id=$1 AND revision=$4 AND deleted_at IS NULL AND ($5='' OR (owner_id=$5 AND account_generation=$6))`, id, title, now, expected, ownerID, generation); updateErr != nil || tag.RowsAffected() != 1 {
 		if updateErr != nil {
 			return core.ConversationMutationResponse{}, updateErr
 		}
@@ -174,7 +202,7 @@ func (s *CoreConversationStore) RenameConversationMutation(ctx context.Context, 
 	conversation.Title, conversation.Revision, conversation.UpdatedAt = title, expected+1, now
 	out := core.ConversationMutationResponse{Conversation: conversation, RequestID: requestID}
 	replay, _ = json.Marshal(out)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES('conversation.rename',$1,$2,$3)`, requestID, digest, replay); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,'conversation.rename',$3,$4,$5)`, replayOwnerID, replayGeneration, requestID, digest, replay); err != nil {
 		return core.ConversationMutationResponse{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -245,7 +273,8 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 	var del *time.Time
 	var summary string
 	var offset int64
-	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset); e != nil {
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1 AND ($2='' OR (c.owner_id=$2 AND c.account_generation=$3))`, id, ownerID, generation).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset); e != nil {
 		return c, core.ErrConflict
 	}
 	normalizeConversationTimesPG(&c, del)
@@ -325,8 +354,9 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 	}
 	var rows pgx.Rows
 	var e error
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	if strings.TrimSpace(token) == "" {
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND ($2='' OR (c.owner_id=$2 AND c.account_generation=$3)) ORDER BY c.updated_at DESC,c.conversation_id LIMIT $1`, limit, ownerID, generation)
 	} else {
 		parts := strings.SplitN(token, "|", 2)
 		if len(parts) != 2 {
@@ -336,7 +366,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		if pe != nil || !coreUUID(parts[1]) {
 			return nil, "", core.ErrInvalid
 		}
-		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit)
+		rows, e = s.pool.Query(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.deleted_at IS NULL AND (c.updated_at < $1 OR (c.updated_at = $1 AND c.conversation_id > $2)) AND ($4='' OR (c.owner_id=$4 AND c.account_generation=$5)) ORDER BY c.updated_at DESC,c.conversation_id ASC LIMIT $3`, ct, parts[1], limit, ownerID, generation)
 	}
 	if e != nil {
 		return nil, "", e
@@ -364,6 +394,13 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		next = last.UpdatedAt.Format(time.RFC3339Nano) + "|" + last.ID
 	}
 	return out, next, nil
+}
+
+func publicOwnerScopeValues(ctx context.Context) (string, int64) {
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		return scope.OwnerID, scope.AccountGeneration
+	}
+	return "", 0
 }
 func coreUUID(value string) bool {
 	id, e := uuid.Parse(value)

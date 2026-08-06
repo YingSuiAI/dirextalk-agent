@@ -65,7 +65,7 @@ func provisionTestCredential() workaws.CredentialHandle {
 }
 
 func provisionTestRequest() ComputeProvisionRequest {
-	return ComputeProvisionRequest{OwnerID: productionOwner, ReservationTargetID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ReservationDigest: strings.Repeat("a", 64), CredentialID: productionCred, CredentialRevision: 3, AccountID: "123456789012", Region: "us-east-1", InstanceType: "t3.small", AvailabilityZone: "us-east-1a", VolumeGiB: 20, AMIParameter: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64", PublicIP: true}
+	return ComputeProvisionRequest{OwnerID: productionOwner, AccountGeneration: productionScope.AccountGeneration, ReservationTargetID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ReservationDigest: strings.Repeat("a", 64), CredentialID: productionCred, CredentialRevision: 3, AccountID: "123456789012", Region: "us-east-1", InstanceType: "t3.small", AvailabilityZone: "us-east-1a", VolumeGiB: 20, AMIParameter: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64", PublicIP: true}
 }
 
 func TestAWSCloudFormationProvisionerUsesDeterministicChangeSetAndNoInboundRules(t *testing.T) {
@@ -81,7 +81,7 @@ func TestAWSCloudFormationProvisionerUsesDeterministicChangeSetAndNoInboundRules
 	if client.createInput == nil || aws.ToString(client.createInput.StackName) != deterministicStackName(provisionTestRequest().ReservationTargetID) || aws.ToString(client.createInput.ChangeSetName) == "" {
 		t.Fatalf("unfenced change-set input: %#v", client.createInput)
 	}
-	if aws.ToString(client.createInput.RoleARN) != "arn:aws:iam::123456789012:role/dirextalk-cfn-execution" || len(client.createInput.Tags) != 3 {
+	if aws.ToString(client.createInput.RoleARN) != "arn:aws:iam::123456789012:role/dirextalk-cfn-execution" || len(client.createInput.Tags) != 4 {
 		t.Fatalf("service role/stack tags missing: role=%q tags=%v", aws.ToString(client.createInput.RoleARN), client.createInput.Tags)
 	}
 	template := aws.ToString(client.createInput.TemplateBody)

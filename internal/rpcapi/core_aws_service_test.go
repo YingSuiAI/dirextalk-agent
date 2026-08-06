@@ -6,9 +6,26 @@ import (
 
 	agentv1 "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type rpcAWSTestSTS struct{}
+
+type rpcBlockedCredentialRepository struct{ *coreaws.MemoryRepository }
+
+func (repo *rpcBlockedCredentialRepository) CreateCredentialGuarded(context.Context, coreteam.Scope, coreaws.Credentials) (coreaws.Credentials, error) {
+	return coreaws.Credentials{}, coreteam.ErrExecutionActive
+}
+
+func (repo *rpcBlockedCredentialRepository) UpdateCredentialGuarded(context.Context, coreteam.Scope, coreaws.Credentials, int64) (coreaws.Credentials, error) {
+	return coreaws.Credentials{}, coreteam.ErrExecutionActive
+}
+
+func (repo *rpcBlockedCredentialRepository) DeleteCredentialGuarded(context.Context, coreteam.Scope, string, int64) error {
+	return coreteam.ErrExecutionActive
+}
 
 func (rpcAWSTestSTS) GetCallerIdentity(context.Context, coreaws.CredentialHandle) (coreaws.Identity, error) {
 	return coreaws.Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/test", PrincipalID: "principal"}, nil
@@ -21,7 +38,49 @@ func newRPCAWSFixture(t *testing.T) (*CoreCloudControlService, context.Context) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return adapter, context.Background()
+	ctx, err := coreaws.WithCredentialMutationScope(context.Background(), coreteam.Scope{OwnerID: "@rpc-aws-test:example.test", AccountGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adapter, ctx
+}
+
+func TestCoreCloudControlServiceTrustedCredentialScope(t *testing.T) {
+	service := coreaws.NewService(coreaws.NewMemoryRepository(), nil, nil, rpcAWSTestSTS{}, coreaws.NewFakeProvider(), nil)
+	scope := coreteam.Scope{OwnerID: "@rpc-aws-trusted:example.test", AccountGeneration: 7}
+	adapter, err := NewCoreCloudControlService(service, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := adapter.CreateCredential(context.Background(), &agentv1.CoreCloudControlServiceCreateCredentialRequest{
+		IdempotencyKey:  "10111111-1111-4111-8111-111111111111",
+		Name:            "trusted",
+		Region:          "ap-northeast-3",
+		AccessKeyId:     "AKIA-TRUSTED",
+		SecretAccessKey: "trusted-secret",
+	})
+	if err != nil || created.GetCredential().GetName() != "trusted" {
+		t.Fatalf("trusted scope create=%#v err=%v", created, err)
+	}
+	if _, err = NewCoreCloudControlService(service, coreteam.Scope{}); err == nil {
+		t.Fatal("constructor accepted an invalid trusted credential scope")
+	}
+}
+
+func TestCoreCloudControlServiceReturnsExactTeamExecutionActive(t *testing.T) {
+	repository := &rpcBlockedCredentialRepository{MemoryRepository: coreaws.NewMemoryRepository()}
+	service := coreaws.NewService(repository, nil, nil, rpcAWSTestSTS{}, coreaws.NewFakeProvider(), nil)
+	adapter, err := NewCoreCloudControlService(service, coreteam.Scope{OwnerID: "@rpc-aws-blocked:example.test", AccountGeneration: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.CreateCredential(context.Background(), &agentv1.CoreCloudControlServiceCreateCredentialRequest{
+		IdempotencyKey: "11111111-2222-4222-8222-222222222222",
+		Name:           "blocked", Region: "ap-northeast-3", AccessKeyId: "AKIA-BLOCKED", SecretAccessKey: "blocked-secret",
+	})
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != coreteam.ErrorCodeTeamExecutionActive {
+		t.Fatalf("RPC status=%s message=%q", status.Code(err), status.Convert(err).Message())
+	}
 }
 
 func TestCoreCloudControlServiceCredentialsAndPlan(t *testing.T) {
@@ -51,7 +110,10 @@ func TestCoreCloudControlServiceCredentialsAndPlan(t *testing.T) {
 }
 
 func TestCoreCloudControlServiceChangeReadsSurviveServiceRecreation(t *testing.T) {
-	ctx := context.Background()
+	ctx, err := coreaws.WithCredentialMutationScope(context.Background(), coreteam.Scope{OwnerID: "@rpc-aws-restart:example.test", AccountGeneration: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	repo := coreaws.NewMemoryRepository()
 	newService := func() *coreaws.Service {
 		return coreaws.NewService(repo, nil, nil, rpcAWSTestSTS{}, coreaws.NewFakeProvider(), nil)

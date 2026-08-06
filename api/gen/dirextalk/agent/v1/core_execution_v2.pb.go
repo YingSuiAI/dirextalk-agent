@@ -27,18 +27,19 @@ const (
 // Capability API for the public proxy; this service is also useful for Core
 // composition and focused deployment probes.
 type CoreExecutionV2Record struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	Id            string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
-	Revision      uint64                 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
-	Status        string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
-	Digest        string                 `protobuf:"bytes,6,opt,name=digest,proto3" json:"digest,omitempty"`
-	PayloadJson   []byte                 `protobuf:"bytes,7,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId           string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	Id                string                 `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Revision          uint64                 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
+	Status            string                 `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	Digest            string                 `protobuf:"bytes,6,opt,name=digest,proto3" json:"digest,omitempty"`
+	PayloadJson       []byte                 `protobuf:"bytes,7,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
+	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	AccountGeneration int64                  `protobuf:"varint,10,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CoreExecutionV2Record) Reset() {
@@ -132,6 +133,13 @@ func (x *CoreExecutionV2Record) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *CoreExecutionV2Record) GetAccountGeneration() int64 {
+	if x != nil {
+		return x.AccountGeneration
+	}
+	return 0
 }
 
 type CoreExecutionV2ServiceExecuteRequest struct {
@@ -403,17 +411,18 @@ func (x *CoreExecutionV2ServiceListEventsRequest) GetLimit() int32 {
 }
 
 type CoreExecutionV2Event struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	OwnerId       string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
-	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
-	ResourceId    string                 `protobuf:"bytes,3,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
-	Sequence      uint64                 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	EventId       string                 `protobuf:"bytes,5,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
-	Type          string                 `protobuf:"bytes,6,opt,name=type,proto3" json:"type,omitempty"`
-	PayloadJson   []byte                 `protobuf:"bytes,7,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	OwnerId           string                 `protobuf:"bytes,1,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
+	Kind              string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`
+	ResourceId        string                 `protobuf:"bytes,3,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	Sequence          uint64                 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	EventId           string                 `protobuf:"bytes,5,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	Type              string                 `protobuf:"bytes,6,opt,name=type,proto3" json:"type,omitempty"`
+	PayloadJson       []byte                 `protobuf:"bytes,7,opt,name=payload_json,json=payloadJson,proto3" json:"payload_json,omitempty"`
+	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	AccountGeneration int64                  `protobuf:"varint,9,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CoreExecutionV2Event) Reset() {
@@ -502,6 +511,13 @@ func (x *CoreExecutionV2Event) GetCreatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *CoreExecutionV2Event) GetAccountGeneration() int64 {
+	if x != nil {
+		return x.AccountGeneration
+	}
+	return 0
+}
+
 type CoreExecutionV2ServiceListEventsResponse struct {
 	state         protoimpl.MessageState  `protogen:"open.v1"`
 	Events        []*CoreExecutionV2Event `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
@@ -558,7 +574,7 @@ var File_dirextalk_agent_v1_core_execution_v2_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_execution_v2_proto_rawDesc = "" +
 	"\n" +
-	"*dirextalk/agent/v1/core_execution_v2.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\x02\n" +
+	"*dirextalk/agent/v1/core_execution_v2.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xea\x02\n" +
 	"\x15CoreExecutionV2Record\x12\x19\n" +
 	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x0e\n" +
@@ -570,7 +586,9 @@ const file_dirextalk_agent_v1_core_execution_v2_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\"a\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12-\n" +
+	"\x12account_generation\x18\n" +
+	" \x01(\x03R\x11accountGeneration\"a\n" +
 	"$CoreExecutionV2ServiceExecuteRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12!\n" +
 	"\frequest_json\x18\x02 \x01(\fR\vrequestJson\"H\n" +
@@ -587,7 +605,7 @@ const file_dirextalk_agent_v1_core_execution_v2_proto_rawDesc = "" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12%\n" +
 	"\x0eafter_sequence\x18\x03 \x01(\x04R\rafterSequence\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\x05R\x05limit\"\x8f\x02\n" +
+	"\x05limit\x18\x04 \x01(\x05R\x05limit\"\xbe\x02\n" +
 	"\x14CoreExecutionV2Event\x12\x19\n" +
 	"\bowner_id\x18\x01 \x01(\tR\aownerId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1f\n" +
@@ -598,7 +616,8 @@ const file_dirextalk_agent_v1_core_execution_v2_proto_rawDesc = "" +
 	"\x04type\x18\x06 \x01(\tR\x04type\x12!\n" +
 	"\fpayload_json\x18\a \x01(\fR\vpayloadJson\x129\n" +
 	"\n" +
-	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\"\x91\x01\n" +
+	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12-\n" +
+	"\x12account_generation\x18\t \x01(\x03R\x11accountGeneration\"\x91\x01\n" +
 	"(CoreExecutionV2ServiceListEventsResponse\x12@\n" +
 	"\x06events\x18\x01 \x03(\v2(.dirextalk.agent.v1.CoreExecutionV2EventR\x06events\x12#\n" +
 	"\rnext_sequence\x18\x02 \x01(\x04R\fnextSequence2\x96\x03\n" +

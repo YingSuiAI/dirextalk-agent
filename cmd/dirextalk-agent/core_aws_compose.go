@@ -9,6 +9,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
 )
@@ -47,7 +48,16 @@ func composeCoreAWSGraph(cfg config.Config, repository coreaws.Repository, coord
 		return nil, errors.New("Core AWS graph dependencies are incomplete")
 	}
 	service := coreaws.NewServiceWithCoordinator(repository, coordinator, confirmations, tasks, sts, provider, now)
-	rpcService, err := rpcapi.NewCoreCloudControlService(service)
+	var rpcService *rpcapi.CoreCloudControlService
+	var err error
+	// The legacy Core AWS gRPC surface is Agent-instance scoped and remains on
+	// generation 1 across Capability account rotations. User-facing Capability
+	// calls carry their authenticated owner/generation in each request instead.
+	credentialScope := coreteam.Scope{OwnerID: cfg.InstanceID, AccountGeneration: 1}
+	if credentialScope.Validate() != nil {
+		return nil, errors.New("Core AWS graph requires a valid Agent instance scope")
+	}
+	rpcService, err = rpcapi.NewCoreCloudControlService(service, credentialScope)
 	if err != nil {
 		return nil, err
 	}

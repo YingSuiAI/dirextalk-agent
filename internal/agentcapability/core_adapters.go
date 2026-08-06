@@ -61,7 +61,7 @@ type CoreBindings struct {
 }
 
 func NewCoreRegistry(bindings CoreBindings) *Registry {
-	r := &Registry{capabilities: make(map[string]Capability)}
+	r := &Registry{capabilities: make(map[string]Capability), ownerScoped: true}
 	if bindings.Conversation != nil {
 		r.Register(&coreChatCapability{service: bindings.Conversation, models: bindings.Models, progress: bindings.CapabilityProgress})
 	}
@@ -111,6 +111,40 @@ func NewCoreRegistry(bindings CoreBindings) *Registry {
 		r.Register(&coreAccountCapability{service: bindings.Deprovision, purge: bindings.DeprovisionPurge})
 	}
 	return r
+}
+
+type publicOwnerScopeCapability struct{ inner Capability }
+
+func publicOwnerScopedCapability(inner Capability) Capability {
+	if inner == nil {
+		return nil
+	}
+	if _, alreadyScoped := inner.(*publicOwnerScopeCapability); alreadyScoped {
+		return inner
+	}
+	return &publicOwnerScopeCapability{inner: inner}
+}
+
+func (c *publicOwnerScopeCapability) Descriptor() *capv1.CapabilityDescriptor {
+	if c == nil || c.inner == nil {
+		return nil
+	}
+	return c.inner.Descriptor()
+}
+
+func (c *publicOwnerScopeCapability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
+	if c == nil || c.inner == nil {
+		return nil, coretask.ErrInvalid
+	}
+	var input map[string]json.RawMessage
+	if json.Unmarshal(raw, &input) == nil && rejectsCallerProvidedOwner(input) {
+		return nil, coretask.ErrInvalid
+	}
+	scoped, _, err := capabilityOwnerScope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.inner.HandleOperation(scoped, operationID, raw)
 }
 
 // coreAccountCapability is intentionally only registered on the mTLS
@@ -551,6 +585,28 @@ func emitCapabilityProgress(ctx context.Context, operationID string, event corec
 
 type coreConfirmationCapability struct{ service *coreconfirmation.Service }
 
+func capabilityOwnerScope(ctx context.Context) (context.Context, coretask.OwnerScope, error) {
+	permission, ok := capabilityclient.PermissionFromContext(ctx)
+	scope := coretask.OwnerScope{}
+	if ok && permission != nil {
+		scope = coretask.OwnerScope{OwnerID: permission.GetAuthenticatedOwnerId(), AccountGeneration: permission.GetAccountGeneration()}
+	}
+	if scope.Validate() != nil {
+		return nil, coretask.OwnerScope{}, coretask.ErrInvalid
+	}
+	scoped, err := coretask.WithOwnerScope(ctx, scope)
+	return scoped, scope, err
+}
+
+func rejectsCallerProvidedOwner(in map[string]json.RawMessage) bool {
+	for _, field := range []string{"owner_id", "authenticated_owner_id", "account_generation"} {
+		if _, present := in[field]; present {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *coreConfirmationCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return descriptor("agent.confirmations.v1", "Confirmations", "Owner confirmation and reconciliation", []opSpec{
 		{"get", capv1.OperationType_OPERATION_TYPE_READ, "agent:confirmations:read"},
@@ -568,6 +624,13 @@ func (c *coreConfirmationCapability) HandleOperation(ctx context.Context, operat
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
+	}
+	if rejectsCallerProvidedOwner(in) {
+		return nil, coreconfirmation.ErrInvalid
+	}
+	var err error
+	if ctx, _, err = capabilityOwnerScope(ctx); err != nil {
+		return nil, coreconfirmation.ErrInvalid
 	}
 	key := valueOrUUID(in, "idempotency_key")
 	switch operationID {
@@ -756,6 +819,13 @@ func (c *coreTaskCapability) HandleOperation(ctx context.Context, operationID st
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
+	}
+	if rejectsCallerProvidedOwner(in) {
+		return nil, coretask.ErrInvalid
+	}
+	var err error
+	if ctx, _, err = capabilityOwnerScope(ctx); err != nil {
+		return nil, coretask.ErrInvalid
 	}
 	key := valueOrUUID(in, "idempotency_key")
 	switch operationID {
@@ -988,10 +1058,16 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		}
 		sum := sha256.Sum256([]byte(content))
 		sourceID := stringValue(in, "source_id")
+		generatedSourceID := !coretask.ValidUUID(sourceID)
 		if !coretask.ValidUUID(sourceID) {
-			sourceID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("memory:"+key)).String()
+			sourceID = ownerScopedCapabilityUUID(ctx, "memory", key)
 		}
-		source, err := c.service.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: key, SourceID: sourceID, Title: stringValue(in, "title"), Content: content, ContentSHA256: hex.EncodeToString(sum[:]), MediaType: mediaType, Tags: stringSlice(in, "tags")})
+		command := coreknowledge.MemoryCommand{IdempotencyKey: key, SourceID: sourceID, Title: stringValue(in, "title"), Content: content, ContentSHA256: hex.EncodeToString(sum[:]), MediaType: mediaType, Tags: stringSlice(in, "tags")}
+		source, err := c.service.CreateMemory(ctx, command)
+		if generatedSourceID && errors.Is(err, coreknowledge.ErrIdempotencyConflict) {
+			command.SourceID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("memory:"+key)).String()
+			source, err = c.service.CreateMemory(ctx, command)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1628,6 +1704,14 @@ func marshalResult(v any, err error) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(v)
+}
+
+func ownerScopedCapabilityUUID(ctx context.Context, namespace, key string) string {
+	seed := namespace + ":" + key
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		seed = fmt.Sprintf("%s:%s:%d:%s", namespace, scope.OwnerID, scope.AccountGeneration, key)
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
 }
 
 func sourceJSON(source coreknowledge.Source) map[string]any {

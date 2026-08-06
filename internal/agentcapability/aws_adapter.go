@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"strings"
 
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -77,6 +79,14 @@ func (c *coreAWSCapability) HandleOperation(ctx context.Context, operationID str
 		return nil, coreaws.ErrInvalid
 	}
 	if err := requireCapabilityIdentity(ctx); err != nil {
+		return nil, err
+	}
+	permission, _ := capabilityclient.PermissionFromContext(ctx)
+	var err error
+	ctx, err = coreaws.WithCredentialMutationScope(ctx, coreteam.Scope{
+		OwnerID: permission.GetAuthenticatedOwnerId(), AccountGeneration: permission.GetAccountGeneration(),
+	})
+	if err != nil {
 		return nil, err
 	}
 	in, err := decodeAWSInput(raw, awsFields(operationID))

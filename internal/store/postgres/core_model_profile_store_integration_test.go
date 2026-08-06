@@ -165,7 +165,11 @@ func TestCoreModelProfileStoreIntegration(t *testing.T) {
 	}
 	for callErr := range updateErrs {
 		if callErr != nil {
-			t.Fatalf("concurrent update error: %v", callErr)
+			var replayRows int
+			var storedRevision int64
+			_ = pool.QueryRow(ctx, `SELECT count(*) FROM core_mutation_replays WHERE operation=$1 AND idempotency_key=$2`, profileUpdateOp, updateKey).Scan(&replayRows)
+			_ = pool.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1`, concurrentProfile.ID).Scan(&storedRevision)
+			t.Fatalf("concurrent update error: %v (replays=%d revision=%d)", callErr, replayRows, storedRevision)
 		}
 	}
 	if replayCount != 1 {
@@ -326,14 +330,15 @@ func TestCoreModelProfileStoreSyncIntegration(t *testing.T) {
 		t.Fatalf("invalid default err=%v", err)
 	}
 	var defaultID string
-	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
+	modelOwnerID := internalEntityOwnerID("model", instanceID)
+	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE owner_id=$1 AND account_generation=1`, modelOwnerID).Scan(&defaultID); err != nil || defaultID != "two" {
 		t.Fatalf("default changed after failed batch: default=%q err=%v", defaultID, err)
 	}
 	_, err = store.SyncProfiles(ctx, uuid.NewString(), "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", coremodel.SyncProfileCommand{DefaultClientProfileID: "one", Entries: []coremodel.SyncProfileEntry{{ClientProfileID: "one", ExpectedRevision: int64PtrStore(1), DisplayName: "should rollback", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}, {ClientProfileID: "two", ExpectedRevision: int64PtrStore(99), DisplayName: "stale", Provider: coremodel.ProviderOpenAICompatible, Model: "model", APIKey: nil}}})
 	if !errors.Is(err, coremodel.ErrRevisionConflict) {
 		t.Fatalf("stale sync err=%v", err)
 	}
-	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&defaultID); err != nil || defaultID != "two" {
+	if err = pool.QueryRow(ctx, `SELECT default_client_profile_id FROM core_model_profile_defaults WHERE owner_id=$1 AND account_generation=1`, modelOwnerID).Scan(&defaultID); err != nil || defaultID != "two" {
 		t.Fatalf("default changed after stale batch: default=%q err=%v", defaultID, err)
 	}
 	one, _ := store.GetProfile(ctx, created.Profiles[0].ID)

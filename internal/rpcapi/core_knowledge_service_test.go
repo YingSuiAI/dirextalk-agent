@@ -145,6 +145,13 @@ func TestCoreKnowledgeErrorMappingDoesNotExposeDetails(t *testing.T) {
 	}
 }
 
+func TestCoreKnowledgeActiveTasksRequiresTaskTermination(t *testing.T) {
+	err := coreKnowledgeRPCError(coreknowledge.ErrActiveTasks)
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "finish or cancel active knowledge tasks before changing the model" {
+		t.Fatalf("%v", err)
+	}
+}
+
 func TestCoreKnowledgeSearchProjectsPageProvenance(t *testing.T) {
 	repo := &knowledgeRPCRepo{searchPage: coreknowledge.SearchPage{
 		Matches:       []coreknowledge.SearchMatch{{SourceID: "source", ChunkRef: "chunk:0", Snippet: "result", Score: .9}},

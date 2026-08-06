@@ -55,6 +55,23 @@ func TestExecutionValidationAndTransitions(t *testing.T) {
 	}
 }
 
+func TestTerminalExecutionRequiresVerifiedCleanup(t *testing.T) {
+	execution := validExecution()
+	execution.Status = ExecutionFailed
+	execution.UpdatedAt = execution.UpdatedAt.Add(time.Minute)
+	if !errors.Is(execution.Validate(), ErrInvalid) {
+		t.Fatal("terminal execution without cleanup verification was accepted")
+	}
+	execution.CleanupVerifiedAt = execution.UpdatedAt
+	if err := execution.Validate(); err != nil {
+		t.Fatalf("verified terminal execution rejected: %v", err)
+	}
+	execution.Status = ExecutionCleaningUp
+	if !errors.Is(execution.Validate(), ErrInvalid) {
+		t.Fatal("nonterminal execution claimed cleanup verification")
+	}
+}
+
 func TestExecutionValidationRejectsInvalidIdentityAndTime(t *testing.T) {
 	for name, mutate := range map[string]func(*Execution){
 		"execution id":           func(value *Execution) { value.ExecutionID = "execution" },

@@ -454,6 +454,9 @@ func (s *CoreWorkloadStore) RequestOperation(ctx context.Context, c coreworkload
 	if _, err = tx.Exec(ctx, `INSERT INTO core_tasks(task_id,goal,conversation_id,model_profile_id,create_idempotency_key,attachment_refs,extensions_json,knowledge_refs,timeout_seconds,status,attempt,progress_sequence,available_at,revision,created_at,updated_at,task_kind,payload_json) VALUES($1,$2,NULL,NULL,$3,'[]','[]','[]',0,'waiting_user',1,1,$4,1,$4,$4,'workload',$5)`, taskID, spec.Goal, spec.IdempotencyKey, now, specRaw); err != nil {
 		return coreworkload.RequestResult{}, err
 	}
+	if err = bindTaskOwnerScopeTx(ctx, tx, taskID); err != nil {
+		return coreworkload.RequestResult{}, err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) VALUES($1,1,$2,1,'waiting_user','confirmation','waiting for owner confirmation',$3)`, taskID, uuid.New(), now); err != nil {
 		return coreworkload.RequestResult{}, err
 	}

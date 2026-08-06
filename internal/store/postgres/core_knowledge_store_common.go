@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -96,10 +98,11 @@ func (r *CoreKnowledgeStore) ResolveBindings(ctx context.Context, sourceIDs []st
 	}
 	var rows pgx.Rows
 	var err error
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	if len(sourceIDs) == 0 {
-		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE status='ready' AND promoted_revision=revision AND promoted_revision > 0 ORDER BY source_id`)
+		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE status='ready' AND promoted_revision=revision AND promoted_revision > 0 AND ($1='' OR (owner_id=$1 AND account_generation=$2)) ORDER BY source_id`, ownerID, generation)
 	} else {
-		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE source_id = ANY($1::uuid[]) AND status='ready' AND promoted_revision=revision AND promoted_revision > 0 ORDER BY source_id`, sourceIDs)
+		rows, err = r.store.pool.Query(ctx, `SELECT source_id::text,promoted_revision,promoted_generation,promoted_profile_id::text,promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE source_id = ANY($1::uuid[]) AND status='ready' AND promoted_revision=revision AND promoted_revision > 0 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) ORDER BY source_id`, sourceIDs, ownerID, generation)
 	}
 	if err != nil {
 		return nil, coreknowledge.ErrConflict
@@ -124,6 +127,13 @@ func (r *CoreKnowledgeStore) ResolveBindings(ctx context.Context, sourceIDs []st
 		return nil, coreknowledge.ErrNotFound
 	}
 	return out, nil
+}
+
+func (r *CoreKnowledgeStore) knowledgeScope(ctx context.Context) (string, int64, error) {
+	if r == nil || r.store == nil {
+		return "", 0, coretask.ErrInvalid
+	}
+	return ownerScopeOrInternal(ctx, "knowledge", r.store.instanceID.String())
 }
 
 func coreknowledgeValidUUID(id string) bool { _, err := uuid.Parse(id); return err == nil }
@@ -192,7 +202,11 @@ func knowledgeErrorCode(err error) string {
 }
 
 func lockKnowledgeKey(ctx context.Context, tx pgx.Tx, operation, key string) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "knowledge:"+operation+":"+key)
+	ownerID, generation, err := replayOwnerScope(ctx, "knowledge", key)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("knowledge:%s:%d:%s:%s", ownerID, generation, operation, key))
 	return err
 }
 
@@ -201,9 +215,13 @@ func replayKnowledge(ctx context.Context, tx pgx.Tx, operation, key, digest stri
 	if err != nil {
 		return false, coreknowledge.ErrInvalid
 	}
+	ownerID, generation, err := replayOwnerScope(ctx, "knowledge", key)
+	if err != nil {
+		return false, coreknowledge.ErrInvalid
+	}
 	var stored, code string
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json,error_code FROM core_knowledge_mutation_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, operation, id).Scan(&stored, &raw, &code)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json,error_code FROM core_knowledge_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, ownerID, generation, operation, id).Scan(&stored, &raw, &code)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -224,11 +242,15 @@ func putKnowledgeReplay(ctx context.Context, tx pgx.Tx, operation, key, digest s
 	if parseErr != nil {
 		return coreknowledge.ErrInvalid
 	}
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "knowledge", key)
+	if scopeErr != nil {
+		return coreknowledge.ErrInvalid
+	}
 	raw, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
 		return coreknowledge.ErrConflict
 	}
-	_, dbErr := tx.Exec(ctx, `INSERT INTO core_knowledge_mutation_replays(operation,idempotency_key,request_hash,response_json,error_code) VALUES($1,$2,$3,$4,$5)`, operation, id, digest, raw, knowledgeErrorCode(err))
+	_, dbErr := tx.Exec(ctx, `INSERT INTO core_knowledge_mutation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json,error_code) VALUES($1,$2,$3,$4,$5,$6,$7)`, ownerID, generation, operation, id, digest, raw, knowledgeErrorCode(err))
 	return dbErr
 }
 
@@ -237,11 +259,15 @@ func updateKnowledgeReplay(ctx context.Context, tx pgx.Tx, operation, key string
 	if parseErr != nil {
 		return coreknowledge.ErrInvalid
 	}
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "knowledge", key)
+	if scopeErr != nil {
+		return coreknowledge.ErrInvalid
+	}
 	raw, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
 		return coreknowledge.ErrConflict
 	}
-	_, dbErr := tx.Exec(ctx, `UPDATE core_knowledge_mutation_replays SET response_json=$3,error_code=$4 WHERE operation=$1 AND idempotency_key=$2`, operation, id, raw, knowledgeErrorCode(err))
+	_, dbErr := tx.Exec(ctx, `UPDATE core_knowledge_mutation_replays SET response_json=$5,error_code=$6 WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4`, ownerID, generation, operation, id, raw, knowledgeErrorCode(err))
 	return dbErr
 }
 
@@ -250,11 +276,15 @@ func updateKnowledgeReplayHash(ctx context.Context, tx pgx.Tx, operation, key, r
 	if parseErr != nil || len(requestHash) != sha256.Size*2 {
 		return coreknowledge.ErrInvalid
 	}
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "knowledge", key)
+	if scopeErr != nil {
+		return coreknowledge.ErrInvalid
+	}
 	raw, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
 		return coreknowledge.ErrConflict
 	}
-	tag, dbErr := tx.Exec(ctx, `UPDATE core_knowledge_mutation_replays SET response_json=$3,error_code=$4 WHERE operation=$1 AND idempotency_key=$2 AND request_hash=$5`, operation, id, raw, knowledgeErrorCode(err), requestHash)
+	tag, dbErr := tx.Exec(ctx, `UPDATE core_knowledge_mutation_replays SET response_json=$5,error_code=$6 WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 AND request_hash=$7`, ownerID, generation, operation, id, raw, knowledgeErrorCode(err), requestHash)
 	if dbErr != nil {
 		return dbErr
 	}

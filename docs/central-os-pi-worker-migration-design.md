@@ -154,14 +154,23 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 - 存在运行中任务时返回固定错误 `team_execution_active`，Flutter 提供“查看任务”和“终止任务”入口；不得边运行边换 key。
 - Worker 永远不接收用户 AWS key，也不能获得创建或销毁云资源的权限。
 
-### 5.3 审批与费用
+### 5.3 模型配置
+
+- 用户范围内存在 `queued` 或 `running` 的 Knowledge 索引任务时，禁止切换嵌入模型；App 应提示用户先等待任务完成，或进入“运行与任务”终止相关任务。
+- 任务取消或进入终态并释放活动模型引用后，才允许切换；“检查活动任务”和“写入新模型配置”必须与任务创建使用同一数据库互斥边界，不能采用先查后改的竞态实现。
+- 每个索引任务永久绑定排队时的 owner、account generation、模型 ID、模型 revision、向量维度和 collection config digest。即使旧版本进程或恢复竞态绕过切换门禁，Worker 也只能使用任务绑定，不能重新读取当前默认模型覆盖它。
+- Central 的后台维护先处理系统内部范围，再枚举有 Knowledge 资料的公共用户，并为每位用户恢复独立 owner scope；禁止无上下文扫描跨用户资料或配置。
+
+### 5.4 审批与费用
 
 - Team 不迁入旧的独立 approval-device 数据库和密钥体系，统一使用 Agent Core 的 `coreconfirmation`。
 - Team confirmation 必须扩展完整绑定字段，不能把预算、AMI、runtime、credential revision、区域或网络权限放进自由文本。
+- 面向用户的 Task 与 Confirmation 必须由 Capability `PermissionContext` 派生 `owner_id + account_generation`，并在任务、事件、确认和幂等回执的数据层统一隔离；调用者不能在请求正文覆盖身份。
+- 带 Agent service token 的 Core gRPC 只作为内部管理和运行时接口，不作为 Message Server 的 owner-authenticated 产品入口。
 - 价格预估与 hard budget 必须由受信服务生成，模型只能提出角色和能力需求。
 - 开发验收单次预计费用低于人民币 10 元时，可以按用户已有授权直接创建一次性测试资源；测试仍必须真实走产品 confirmation 和 hard budget，不能用自动化后门削弱正式契约。
 
-### 5.4 进度和隐私
+### 5.5 进度和隐私
 
 - Central PostgreSQL 是产品进度的唯一读源；CloudWatch 仅用于异步审计。
 - Worker milestone 先在数据库中和 audit Outbox 原子落盘，再异步写 CloudWatch；CloudWatch 故障不能让已接收的 Worker 任务失败。
@@ -240,7 +249,7 @@ Flutter 不直接连接 Agent，不保存 Worker/AWS 坐标，不把运行过程
 | A-03 | Capability 合同 | `agent.team.v1` catalog readiness、operation schema/digest、owner/account-generation/grant 测试通过 |
 | A-04 | 数据权威 | Team 顶层绑定 Core Task；PostgreSQL 重启后 Plan/Execution/role/Worker/result/cleanup 仍可恢复 |
 | A-05 | 隔离与密钥 | Secret canary 不进入 DB 普通字段、事件、日志、错误、API、Worker bundle 或 Git；Worker 无 AWS key |
-| A-06 | 确认与换 key | 未确认不能创建 AWS；活动 Team 时 AWS key 变更返回 `team_execution_active`；取消清理后可变更 |
+| A-06 | 确认与配置变更 | 未确认不能创建 AWS；活动 Team 时 AWS key 变更返回 `team_execution_active`；活动 Knowledge 索引时模型切换返回明确的 FailedPrecondition；取消或终态清理后才可变更 |
 | A-07 | 单 Pi 本地资格 | 固定 Pi/extension/release digest；真实 Pi 二进制 loopback 产生合法结果；输出预算和 closed failure 分类通过 |
 | A-08 | 单 Pi 控制器 | 本地/fake provider 从 Plan 到 completed，覆盖恢复、取消、失败、结果校验和全部资源销毁状态 |
 | A-09 | Message Server | Product action contract、gateway schema pins、owner auth、结果去敏、完成通知去重收据和无本地执行账本测试通过 |

@@ -18,6 +18,7 @@ import (
 // immutable snapshot before the task row becomes visible.
 func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpec) (coretask.ExecutionSnapshot, error) {
 	var snapshot coretask.ExecutionSnapshot
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	boundProfileID := ""
 	var boundProfileRevision int64
 	if spec.Kind == coretask.TaskKindAgent || spec.Kind == coretask.TaskKindKnowledgeIndex {
@@ -25,7 +26,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 		var provider string
 		var temperature, topP *float64
 		var apiConfigured bool
-		err := tx.QueryRow(ctx, `SELECT profile_id::text,revision,provider,base_url,model_name,system_prompt,temperature,top_p,max_output_tokens,context_window,reasoning_effort,api_key_configured FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, spec.ModelProfileID).Scan(&model.ProfileID, &model.Revision, &provider, &model.BaseURL, &model.Model, &model.SystemPrompt, &temperature, &topP, &model.MaxOutputTokens, &model.ContextWindow, &model.ReasoningEffort, &apiConfigured)
+		err := tx.QueryRow(ctx, `SELECT profile_id::text,revision,provider,base_url,model_name,system_prompt,temperature,top_p,max_output_tokens,context_window,reasoning_effort,api_key_configured FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR SHARE`, spec.ModelProfileID, ownerID, generation).Scan(&model.ProfileID, &model.Revision, &provider, &model.BaseURL, &model.Model, &model.SystemPrompt, &temperature, &topP, &model.MaxOutputTokens, &model.ContextWindow, &model.ReasoningEffort, &apiConfigured)
 		if err != nil || !apiConfigured {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
@@ -53,7 +54,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 		var revision int64
 		var kind, state, activeVersion string
 		var enabled bool
-		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR SHARE`, selected.ID).Scan(&revision, &kind, &state, &enabled, &activeVersion); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR SHARE`, selected.ID, ownerID, generation).Scan(&revision, &kind, &state, &enabled, &activeVersion); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
 			}
@@ -109,7 +110,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 		var revision int64
 		var kind, state, activeVersion string
 		var enabled bool
-		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 FOR SHARE`, p.InstallationID).Scan(&revision, &kind, &state, &enabled, &activeVersion); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT revision,kind,state,enabled,COALESCE(active_version_id::text,'') FROM core_extension_installations WHERE installation_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR SHARE`, p.InstallationID, ownerID, generation).Scan(&revision, &kind, &state, &enabled, &activeVersion); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
 			}
@@ -148,11 +149,11 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 
 	for _, id := range spec.KnowledgeRefs {
 		var revision int64
-		var status, digest, manifestDigest, generation string
+		var status, digest, manifestDigest, promotedGeneration string
 		var promotedProfile string
 		var promotedProfileRevision int64
 		var promotedCollectionDigest string
-		if err := tx.QueryRow(ctx, `SELECT revision,status,digest,directory_manifest_digest,promoted_generation,COALESCE(promoted_profile_id::text,''),promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE source_id=$1 FOR SHARE`, id).Scan(&revision, &status, &digest, &manifestDigest, &generation, &promotedProfile, &promotedProfileRevision, &promotedCollectionDigest); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT revision,status,digest,directory_manifest_digest,promoted_generation,COALESCE(promoted_profile_id::text,''),promoted_profile_revision,promoted_collection_config_digest FROM core_knowledge_sources WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR SHARE`, id, ownerID, generation).Scan(&revision, &status, &digest, &manifestDigest, &promotedGeneration, &promotedProfile, &promotedProfileRevision, &promotedCollectionDigest); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
 			}
@@ -166,17 +167,17 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 			indexDigest = manifestDigest
 		}
 		if len(indexDigest) != 64 {
-			if generation == "" {
+			if promotedGeneration == "" {
 				return coretask.ExecutionSnapshot{}, coretask.ErrConflict
 			}
-			indexDigest = digestSnapshotValue(generation)
+			indexDigest = digestSnapshotValue(promotedGeneration)
 		}
 		snapshot.Knowledge = append(snapshot.Knowledge, coretask.KnowledgeExecutionSnapshot{SourceID: id, Revision: revision, ContentDigest: strings.ToLower(digest), IndexDigest: indexDigest, Ready: true})
 	}
 	for _, id := range spec.AttachmentRefs {
 		var relative, digest, media, status, kind string
 		var size, revision int64
-		if err := tx.QueryRow(ctx, `SELECT relative_path,digest,media_type,size_bytes,status,revision,kind FROM core_knowledge_sources WHERE source_id=$1 FOR SHARE`, id).Scan(&relative, &digest, &media, &size, &status, &revision, &kind); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT relative_path,digest,media_type,size_bytes,status,revision,kind FROM core_knowledge_sources WHERE source_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR SHARE`, id, ownerID, generation).Scan(&relative, &digest, &media, &size, &status, &revision, &kind); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coretask.ExecutionSnapshot{}, coretask.ErrNotFound
 			}

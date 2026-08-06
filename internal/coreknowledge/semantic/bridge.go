@@ -252,13 +252,15 @@ func isDigest(value string) bool {
 }
 
 type SourceDocument struct {
-	ID          string
-	SourceID    string // SourceID is accepted as an explicit alias for ID.
-	Revision    int64
-	MediaType   string
-	Reader      io.Reader
-	MaxBytes    int64
-	ChunkPrefix string
+	ID                 string
+	SourceID           string // SourceID is accepted as an explicit alias for ID.
+	Revision           int64
+	MediaType          string
+	Reader             io.Reader
+	MaxBytes           int64
+	ChunkPrefix        string
+	EmbeddingProfileID string
+	EmbeddingDimension int
 }
 
 type IndexConfig struct {
@@ -348,7 +350,13 @@ func (e *IndexEngine) index(ctx context.Context, document SourceDocument, genera
 		return ErrInvalid
 	}
 	profileID, dimension := e.profile, e.dim
-	if e.configReader != nil {
+	documentProfileID := strings.TrimSpace(document.EmbeddingProfileID)
+	if documentProfileID != "" || document.EmbeddingDimension != 0 {
+		if documentProfileID == "" || document.EmbeddingDimension <= 0 || document.EmbeddingDimension > 16384 {
+			return ErrInvalid
+		}
+		profileID, dimension = documentProfileID, document.EmbeddingDimension
+	} else if e.configReader != nil {
 		cfg, err := e.configReader.GetEmbeddingConfig(ctx)
 		if err != nil || strings.TrimSpace(cfg.EmbeddingProfileID) == "" || cfg.Dimension <= 0 {
 			return ErrResponse

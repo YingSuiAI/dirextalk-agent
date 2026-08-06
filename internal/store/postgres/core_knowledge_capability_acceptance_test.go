@@ -13,9 +13,12 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
 
@@ -30,6 +33,12 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	}
 	ctx, baseRepo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
+	scope := coretask.OwnerScope{OwnerID: "@knowledge-acceptance:example.test", AccountGeneration: 2}
+	ctx = capabilityclient.WithCallContext(ctx, &capv1.CallContext{}, &capv1.PermissionContext{AuthenticatedOwnerId: scope.OwnerID, AccountGeneration: scope.AccountGeneration})
+	ctx, err := coretask.WithOwnerScope(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
 	content, err := coreknowledge.NewRootContentPort(t.TempDir(), 1<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +110,7 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	indexer, err := NewKnowledgeIndexer(baseRepo.store, config.EmbeddingProfileID, config.CollectionConfigDigest)
+	indexer, err := NewKnowledgeIndexer(baseRepo.store, config.EmbeddingProfileID, config.Dimension, config.CollectionConfigDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,11 +129,21 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 		t.Fatal("knowledge capability not registered")
 	}
 	syncRequest := []byte(`{"idempotency_key":"11111111-1111-4111-8111-111111111111","default_embedding_client_profile_id":"embed","entries":[{"client_profile_id":"embed","display_name":"Embedding","provider":"openai_compatible","base_url":"` + embedding.URL + `","model":"text-embedding-test","model_kind":"embedding","api_key":"embedding-secret"}]}`)
-	if _, err := modelsCapability.HandleOperation(ctx, "sync_models", syncRequest); err != nil {
+	syncRaw, err := modelsCapability.HandleOperation(ctx, "sync_models", syncRequest)
+	if err != nil {
 		t.Fatal(err)
 	}
+	var syncResult struct {
+		Profiles []struct {
+			ID string `json:"id"`
+		} `json:"profiles"`
+	}
+	if json.Unmarshal(syncRaw, &syncResult) != nil || len(syncResult.Profiles) != 1 || !coretask.ValidUUID(syncResult.Profiles[0].ID) {
+		t.Fatalf("sync result = %s", syncRaw)
+	}
+	embeddingProfileID := syncResult.Profiles[0].ID
 	bound, err := repo.GetEmbeddingConfig(ctx)
-	if err != nil || bound.EmbeddingProfileID != coremodel.SyncProfileID("embed") || bound.Revision != 2 {
+	if err != nil || bound.EmbeddingProfileID != embeddingProfileID || bound.Revision != 2 {
 		t.Fatalf("synced embedding binding = %+v err=%v", bound, err)
 	}
 	memoryRaw, err := knowledgeCapability.HandleOperation(ctx, "create_memory", []byte(`{"title":"memory","content":"semantic capability memory","idempotency_key":"22222222-2222-4222-8222-222222222222"}`))
@@ -136,7 +155,7 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	memoryID, _ := memory["memory_id"].(string)
-	if memoryID == "" || memory["embedding_profile_id"] != coremodel.SyncProfileID("embed") {
+	if memoryID == "" || memory["embedding_profile_id"] != embeddingProfileID {
 		t.Fatalf("memory projection = %s", memoryRaw)
 	}
 	contentBytes := []byte("semantic capability upload")
@@ -166,7 +185,7 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := NewCoreTaskStore(baseRepo.store)
-	engine, err := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: embedder, VectorStore: backend, ProfileResolver: profileResolverFromService{models}, EmbeddingProfileID: coremodel.SyncProfileID("embed"), Dimension: 2, ConfigReader: repo})
+	engine, err := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: embedder, VectorStore: backend, ProfileResolver: profileResolverFromService{models}, EmbeddingProfileID: embeddingProfileID, Dimension: 2, ConfigReader: repo})
 	if err != nil {
 		t.Fatal(err)
 	}

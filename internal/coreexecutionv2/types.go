@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
 const (
@@ -21,84 +23,100 @@ const (
 )
 
 var (
-	ErrInvalid        = errors.New("execution.v2: invalid request")
-	ErrNotFound       = errors.New("execution.v2: record not found")
-	ErrConflict       = errors.New("execution.v2: revision or idempotency conflict")
-	ErrNotReady       = errors.New("execution.v2: capability is not ready")
-	ErrUnsafeOutput   = errors.New("execution.v2: unsafe provider output")
-	ErrSecretNotFound = errors.New("execution.v2: secret not found")
-	ErrUnsupported    = errors.New("execution.v2: unsupported action")
-	ErrMissingPort    = errors.New("execution.v2: provider port is not configured")
+	ErrInvalid          = errors.New("execution.v2: invalid request")
+	ErrNotFound         = errors.New("execution.v2: record not found")
+	ErrConflict         = errors.New("execution.v2: revision or idempotency conflict")
+	ErrNotReady         = errors.New("execution.v2: capability is not ready")
+	ErrUnsafeOutput     = errors.New("execution.v2: unsafe provider output")
+	ErrSecretNotFound   = errors.New("execution.v2: secret not found")
+	ErrUnsupported      = errors.New("execution.v2: unsupported action")
+	ErrMissingPort      = errors.New("execution.v2: provider port is not configured")
+	ErrReplayInProgress = errors.New("execution.v2: idempotent request is in progress")
 )
 
 // Record is a durable owner-scoped immutable snapshot.  A new revision is a
 // new snapshot; callers never mutate a previously returned map in place.
 type Record struct {
-	OwnerID   string         `json:"owner_id"`
-	Kind      string         `json:"kind"`
-	ID        string         `json:"id"`
-	Revision  uint64         `json:"revision"`
-	Status    string         `json:"status"`
-	Digest    string         `json:"digest"`
-	Payload   map[string]any `json:"payload"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	OwnerID           string         `json:"owner_id"`
+	AccountGeneration int64          `json:"account_generation"`
+	Kind              string         `json:"kind"`
+	ID                string         `json:"id"`
+	Revision          uint64         `json:"revision"`
+	Status            string         `json:"status"`
+	Digest            string         `json:"digest"`
+	Payload           map[string]any `json:"payload"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	MutationAction    string         `json:"-"`
+	MutationKey       string         `json:"-"`
+	MutationDigest    []byte         `json:"-"`
 }
 
 type Event struct {
-	OwnerID    string         `json:"owner_id"`
-	Kind       string         `json:"kind"`
-	ResourceID string         `json:"resource_id"`
-	Sequence   uint64         `json:"sequence"`
-	EventID    string         `json:"event_id"`
-	Type       string         `json:"type"`
-	Payload    map[string]any `json:"payload"`
-	CreatedAt  time.Time      `json:"created_at"`
+	OwnerID           string         `json:"owner_id"`
+	AccountGeneration int64          `json:"account_generation"`
+	Kind              string         `json:"kind"`
+	ResourceID        string         `json:"resource_id"`
+	Sequence          uint64         `json:"sequence"`
+	EventID           string         `json:"event_id"`
+	Type              string         `json:"type"`
+	Payload           map[string]any `json:"payload"`
+	CreatedAt         time.Time      `json:"created_at"`
 }
 
-type Replay struct {
-	Response []byte
-	Digest   []byte
+type ReplayClaim struct {
+	Token            string
+	Response         []byte
+	ProviderResponse []byte
+	Completed        bool
+	Dispatched       bool
 }
 
 // Store is the only persistence dependency of the domain.  The repository
 // includes a PostgreSQL implementation and a deterministic in-memory
 // implementation for boundary tests.
 type Store interface {
-	Read(context.Context, string, string, string, uint64) (Record, error)
-	List(context.Context, string, string, map[string]string, string, int) ([]Record, string, error)
+	Read(context.Context, coretask.OwnerScope, string, string, uint64) (Record, error)
+	List(context.Context, coretask.OwnerScope, string, map[string]string, string, int) ([]Record, string, error)
 	Create(context.Context, Record) (Record, error)
 	Update(context.Context, Record, uint64) (Record, error)
-	Replay(context.Context, string, string, string) (Replay, bool, error)
-	SaveReplay(context.Context, string, string, string, []byte, []byte) error
+	BeginReplay(context.Context, coretask.OwnerScope, string, string, []byte, time.Time, time.Duration) (ReplayClaim, error)
+	MarkReplayDispatched(context.Context, coretask.OwnerScope, string, string, []byte, string, time.Time) error
+	StoreReplayProviderResponse(context.Context, coretask.OwnerScope, string, string, []byte, string, []byte, time.Time) error
+	CompleteReplay(context.Context, coretask.OwnerScope, string, string, []byte, string, []byte, time.Time) error
+	AbortReplay(context.Context, coretask.OwnerScope, string, string, []byte, string) error
 	AppendEvent(context.Context, Event) (Event, error)
-	Events(context.Context, string, string, string, uint64, int) ([]Event, uint64, error)
+	Events(context.Context, coretask.OwnerScope, string, string, uint64, int) ([]Event, uint64, error)
 	SaveSecret(context.Context, Secret) (Secret, error)
-	ReadSecret(context.Context, string, string, uint64) (Secret, error)
-	ListSecrets(context.Context, string, string, int) ([]Secret, string, error)
+	ReadSecret(context.Context, coretask.OwnerScope, string, uint64) (Secret, error)
+	ListSecrets(context.Context, coretask.OwnerScope, string, int) ([]Secret, string, error)
 	RevokeSecret(context.Context, Secret, uint64) (Secret, error)
 }
 
 type Secret struct {
-	OwnerID       string    `json:"owner_id"`
-	Ref           string    `json:"secret_ref"`
-	Revision      uint64    `json:"revision"`
-	Provider      string    `json:"provider"`
-	Purpose       string    `json:"purpose"`
-	Value         string    `json:"-"`
-	BindingDigest string    `json:"binding_digest"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	OwnerID           string    `json:"owner_id"`
+	AccountGeneration int64     `json:"account_generation"`
+	Ref               string    `json:"secret_ref"`
+	Revision          uint64    `json:"revision"`
+	Provider          string    `json:"provider"`
+	Purpose           string    `json:"purpose"`
+	Value             string    `json:"-"`
+	BindingDigest     string    `json:"binding_digest"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	MutationAction    string    `json:"-"`
+	MutationKey       string    `json:"-"`
+	MutationDigest    []byte    `json:"-"`
 }
 
 type Providers struct {
-	Analyze       func(context.Context, string, map[string]any) (map[string]any, error)
-	ImportTarget  func(context.Context, string, map[string]any) (map[string]any, error)
-	ReserveTarget func(context.Context, string, map[string]any) (map[string]any, error)
-	Observe       func(context.Context, string, map[string]any) (map[string]any, error)
-	Invoke        func(context.Context, string, map[string]any) (map[string]any, error)
-	Reconcile     func(context.Context, string, map[string]any) (map[string]any, error)
+	Analyze       func(context.Context, coretask.OwnerScope, map[string]any) (map[string]any, error)
+	ImportTarget  func(context.Context, coretask.OwnerScope, map[string]any) (map[string]any, error)
+	ReserveTarget func(context.Context, coretask.OwnerScope, map[string]any) (map[string]any, error)
+	Observe       func(context.Context, coretask.OwnerScope, map[string]any) (map[string]any, error)
+	Invoke        func(context.Context, coretask.OwnerScope, map[string]any) (map[string]any, error)
+	Reconcile     func(context.Context, coretask.OwnerScope, map[string]any) (map[string]any, error)
 }
 
 // Source is the immutable source pin supplied to an analyzer.  Keeping this
@@ -163,12 +181,12 @@ type InvokeRequest struct {
 // Composition code can adapt the existing Core Workload/AWS SSM/ECS services
 // to these ports after it has proved the corresponding readiness gate.
 type TypedPorts struct {
-	Analyze       func(context.Context, string, AnalyzeRequest) (map[string]any, error)
-	ImportTarget  func(context.Context, string, TargetImportRequest) (map[string]any, error)
-	ReserveTarget func(context.Context, string, TargetReserveRequest) (map[string]any, error)
-	Observe       func(context.Context, string, TargetObserveRequest) (map[string]any, error)
-	Invoke        func(context.Context, string, InvokeRequest) (map[string]any, error)
-	Reconcile     func(context.Context, string, ReconcileRequest) (map[string]any, error)
+	Analyze       func(context.Context, coretask.OwnerScope, AnalyzeRequest) (map[string]any, error)
+	ImportTarget  func(context.Context, coretask.OwnerScope, TargetImportRequest) (map[string]any, error)
+	ReserveTarget func(context.Context, coretask.OwnerScope, TargetReserveRequest) (map[string]any, error)
+	Observe       func(context.Context, coretask.OwnerScope, TargetObserveRequest) (map[string]any, error)
+	Invoke        func(context.Context, coretask.OwnerScope, InvokeRequest) (map[string]any, error)
+	Reconcile     func(context.Context, coretask.OwnerScope, ReconcileRequest) (map[string]any, error)
 	// Ready is a composition proof, not a liveness hint. It should only return
 	// true after the exact configured provider route has passed its typed
 	// startup probe (for example the existing Workload AWS SSM/ECS Probe).
@@ -180,22 +198,22 @@ type TypedPorts struct {
 // than callbacks. Each interface is intentionally one operation wide so a
 // deployment can prove and bind only the route it actually configured.
 type AnalyzeProvider interface {
-	Analyze(context.Context, string, AnalyzeRequest) (map[string]any, error)
+	Analyze(context.Context, coretask.OwnerScope, AnalyzeRequest) (map[string]any, error)
 }
 type TargetImportProvider interface {
-	ImportTarget(context.Context, string, TargetImportRequest) (map[string]any, error)
+	ImportTarget(context.Context, coretask.OwnerScope, TargetImportRequest) (map[string]any, error)
 }
 type TargetReserveProvider interface {
-	ReserveTarget(context.Context, string, TargetReserveRequest) (map[string]any, error)
+	ReserveTarget(context.Context, coretask.OwnerScope, TargetReserveRequest) (map[string]any, error)
 }
 type TargetObserveProvider interface {
-	Observe(context.Context, string, TargetObserveRequest) (map[string]any, error)
+	Observe(context.Context, coretask.OwnerScope, TargetObserveRequest) (map[string]any, error)
 }
 type BindingInvokeProvider interface {
-	Invoke(context.Context, string, InvokeRequest) (map[string]any, error)
+	Invoke(context.Context, coretask.OwnerScope, InvokeRequest) (map[string]any, error)
 }
 type RunReconcileProvider interface {
-	Reconcile(context.Context, string, ReconcileRequest) (map[string]any, error)
+	Reconcile(context.Context, coretask.OwnerScope, ReconcileRequest) (map[string]any, error)
 }
 
 type ProviderInterfaces struct {
@@ -211,51 +229,51 @@ type ProviderInterfaces struct {
 func AdaptProviderInterfaces(in ProviderInterfaces) TypedPorts {
 	var out TypedPorts
 	if in.Analyze != nil {
-		out.Analyze = func(ctx context.Context, owner string, req AnalyzeRequest) (map[string]any, error) {
+		out.Analyze = func(ctx context.Context, scope coretask.OwnerScope, req AnalyzeRequest) (map[string]any, error) {
 			if in.Analyze == nil {
 				return nil, ErrMissingPort
 			}
-			return in.Analyze.Analyze(ctx, owner, req)
+			return in.Analyze.Analyze(ctx, scope, req)
 		}
 	}
 	if in.ImportTarget != nil {
-		out.ImportTarget = func(ctx context.Context, owner string, req TargetImportRequest) (map[string]any, error) {
+		out.ImportTarget = func(ctx context.Context, scope coretask.OwnerScope, req TargetImportRequest) (map[string]any, error) {
 			if in.ImportTarget == nil {
 				return nil, ErrMissingPort
 			}
-			return in.ImportTarget.ImportTarget(ctx, owner, req)
+			return in.ImportTarget.ImportTarget(ctx, scope, req)
 		}
 	}
 	if in.ReserveTarget != nil {
-		out.ReserveTarget = func(ctx context.Context, owner string, req TargetReserveRequest) (map[string]any, error) {
+		out.ReserveTarget = func(ctx context.Context, scope coretask.OwnerScope, req TargetReserveRequest) (map[string]any, error) {
 			if in.ReserveTarget == nil {
 				return nil, ErrMissingPort
 			}
-			return in.ReserveTarget.ReserveTarget(ctx, owner, req)
+			return in.ReserveTarget.ReserveTarget(ctx, scope, req)
 		}
 	}
 	if in.Observe != nil {
-		out.Observe = func(ctx context.Context, owner string, req TargetObserveRequest) (map[string]any, error) {
+		out.Observe = func(ctx context.Context, scope coretask.OwnerScope, req TargetObserveRequest) (map[string]any, error) {
 			if in.Observe == nil {
 				return nil, ErrMissingPort
 			}
-			return in.Observe.Observe(ctx, owner, req)
+			return in.Observe.Observe(ctx, scope, req)
 		}
 	}
 	if in.Invoke != nil {
-		out.Invoke = func(ctx context.Context, owner string, req InvokeRequest) (map[string]any, error) {
+		out.Invoke = func(ctx context.Context, scope coretask.OwnerScope, req InvokeRequest) (map[string]any, error) {
 			if in.Invoke == nil {
 				return nil, ErrMissingPort
 			}
-			return in.Invoke.Invoke(ctx, owner, req)
+			return in.Invoke.Invoke(ctx, scope, req)
 		}
 	}
 	if in.Reconcile != nil {
-		out.Reconcile = func(ctx context.Context, owner string, req ReconcileRequest) (map[string]any, error) {
+		out.Reconcile = func(ctx context.Context, scope coretask.OwnerScope, req ReconcileRequest) (map[string]any, error) {
 			if in.Reconcile == nil {
 				return nil, ErrMissingPort
 			}
-			return in.Reconcile.Reconcile(ctx, owner, req)
+			return in.Reconcile.Reconcile(ctx, scope, req)
 		}
 	}
 	out.Ready = in.Ready
@@ -268,61 +286,61 @@ func AdaptProviderInterfaces(in ProviderInterfaces) TypedPorts {
 func AdaptTypedPorts(ports TypedPorts) Providers {
 	var out Providers
 	if ports.Analyze != nil {
-		out.Analyze = func(ctx context.Context, owner string, in map[string]any) (map[string]any, error) {
+		out.Analyze = func(ctx context.Context, scope coretask.OwnerScope, in map[string]any) (map[string]any, error) {
 			if ports.Analyze == nil {
 				return nil, ErrMissingPort
 			}
-			return ports.Analyze(ctx, owner, AnalyzeRequest{
+			return ports.Analyze(ctx, scope, AnalyzeRequest{
 				ProjectID: stringParam(in, "project_id"), Source: sourceFromInput(in["source"]), IdempotencyKey: stringParam(in, "idempotency_key"),
 			})
 		}
 	}
 	if ports.ImportTarget != nil {
-		out.ImportTarget = func(ctx context.Context, owner string, in map[string]any) (map[string]any, error) {
+		out.ImportTarget = func(ctx context.Context, scope coretask.OwnerScope, in map[string]any) (map[string]any, error) {
 			if ports.ImportTarget == nil {
 				return nil, ErrMissingPort
 			}
-			return ports.ImportTarget(ctx, owner, TargetImportRequest{
+			return ports.ImportTarget(ctx, scope, TargetImportRequest{
 				CredentialID: stringParam(in, "credential_id"), CredentialRevision: uintParam(in, "credential_revision"), InstanceID: stringParam(in, "instance_id"), IdempotencyKey: stringParam(in, "idempotency_key"),
 			})
 		}
 	}
 	if ports.ReserveTarget != nil {
-		out.ReserveTarget = func(ctx context.Context, owner string, in map[string]any) (map[string]any, error) {
+		out.ReserveTarget = func(ctx context.Context, scope coretask.OwnerScope, in map[string]any) (map[string]any, error) {
 			if ports.ReserveTarget == nil {
 				return nil, ErrMissingPort
 			}
-			return ports.ReserveTarget(ctx, owner, TargetReserveRequest{
+			return ports.ReserveTarget(ctx, scope, TargetReserveRequest{
 				CredentialID: stringParam(in, "credential_id"), CredentialRevision: uintParam(in, "credential_revision"), InstanceType: stringParam(in, "instance_type"), VolumeGiB: uintParam(in, "volume_gib"), IdempotencyKey: stringParam(in, "idempotency_key"),
 			})
 		}
 	}
 	if ports.Observe != nil {
-		out.Observe = func(ctx context.Context, owner string, in map[string]any) (map[string]any, error) {
+		out.Observe = func(ctx context.Context, scope coretask.OwnerScope, in map[string]any) (map[string]any, error) {
 			if ports.Observe == nil {
 				return nil, ErrMissingPort
 			}
-			return ports.Observe(ctx, owner, TargetObserveRequest{
+			return ports.Observe(ctx, scope, TargetObserveRequest{
 				TargetID: stringParam(in, "target_id"), TargetRevision: uintParam(in, "target_revision"), IdempotencyKey: stringParam(in, "idempotency_key"),
 			})
 		}
 	}
 	if ports.Invoke != nil {
-		out.Invoke = func(ctx context.Context, owner string, in map[string]any) (map[string]any, error) {
+		out.Invoke = func(ctx context.Context, scope coretask.OwnerScope, in map[string]any) (map[string]any, error) {
 			if ports.Invoke == nil {
 				return nil, ErrMissingPort
 			}
-			return ports.Invoke(ctx, owner, InvokeRequest{
+			return ports.Invoke(ctx, scope, InvokeRequest{
 				BindingID: stringParam(in, "binding_id"), Operation: stringParam(in, "operation"), ExpectedRevision: uintParam(in, "expected_revision"), IdempotencyKey: stringParam(in, "idempotency_key"), Input: cloneMap(in["input"].(map[string]any)),
 			})
 		}
 	}
 	if ports.Reconcile != nil {
-		out.Reconcile = func(ctx context.Context, owner string, in map[string]any) (map[string]any, error) {
+		out.Reconcile = func(ctx context.Context, scope coretask.OwnerScope, in map[string]any) (map[string]any, error) {
 			if ports.Reconcile == nil {
 				return nil, ErrMissingPort
 			}
-			return ports.Reconcile(ctx, owner, ReconcileRequest{
+			return ports.Reconcile(ctx, scope, ReconcileRequest{
 				RunID: stringParam(in, "run_id"), StageID: stringParam(in, "stage_id"), ExpectedRevision: uintParam(in, "expected_revision"), IdempotencyKey: stringParam(in, "idempotency_key"),
 			})
 		}
@@ -346,7 +364,7 @@ type Config struct {
 // ActionPort is useful to composition code that wants to expose execution.v2
 // without importing the concrete service implementation.
 type ActionPort interface {
-	Handle(context.Context, string, string, map[string]any) (map[string]any, error)
+	Handle(context.Context, coretask.OwnerScope, string, map[string]any) (map[string]any, error)
 }
 
 func cloneMap(in map[string]any) map[string]any {

@@ -12,6 +12,8 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/google/uuid"
 )
@@ -69,6 +71,10 @@ type CredentialStore interface {
 	GetCredential(context.Context, string) (coreaws.Credentials, error)
 }
 
+type scopedCredentialStore interface {
+	GetCredentialScoped(context.Context, coreteam.Scope, string) (coreaws.Credentials, error)
+}
+
 // DurableCredentialResolver resolves one exact, verified credential revision
 // for an operation. It deliberately does not cache, serialize, or log the
 // returned secret material.
@@ -103,11 +109,46 @@ func (r *DurableCredentialResolver) ResolveCredential(ctx context.Context, ref s
 	return h, nil
 }
 
+func (r *DurableCredentialResolver) ResolveCredentialScoped(ctx context.Context, scope coretask.OwnerScope, ref string) (CredentialHandle, error) {
+	if r == nil {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	store, ok := r.store.(scopedCredentialStore)
+	if !ok || scope.Validate() != nil || !canonicalUUID(ref) {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	c, err := store.GetCredentialScoped(ctx, coreteam.Scope{OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration}, ref)
+	if err != nil || c.ID != ref || c.Revision <= 0 || c.VerifiedRevision != c.Revision || strings.TrimSpace(c.Region) == "" || strings.TrimSpace(c.AccountID) == "" || strings.TrimSpace(c.UserARN) == "" {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	access, secret, session := c.StoredSecretBytes()
+	h := CredentialHandle{ReferenceID: ref, Region: c.Region, AccountID: c.AccountID, PrincipalARN: c.UserARN, AccessKeyID: string(access), SecretAccessKey: string(secret), SessionToken: string(session)}
+	if err := h.Validate(); err != nil {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	return h, nil
+}
+
 func (r *DurableCredentialResolver) CredentialRevision(ctx context.Context, ref string) (uint64, error) {
 	if r == nil || r.store == nil || !canonicalUUID(ref) {
 		return 0, ErrPrecondition
 	}
 	c, err := r.store.GetCredential(ctx, ref)
+	if err != nil || c.ID != ref || c.Revision <= 0 || c.VerifiedRevision != c.Revision {
+		return 0, ErrPrecondition
+	}
+	return uint64(c.Revision), nil
+}
+
+func (r *DurableCredentialResolver) CredentialRevisionScoped(ctx context.Context, scope coretask.OwnerScope, ref string) (uint64, error) {
+	if r == nil {
+		return 0, ErrPrecondition
+	}
+	store, ok := r.store.(scopedCredentialStore)
+	if !ok || scope.Validate() != nil || !canonicalUUID(ref) {
+		return 0, ErrPrecondition
+	}
+	c, err := store.GetCredentialScoped(ctx, coreteam.Scope{OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration}, ref)
 	if err != nil || c.ID != ref || c.Revision <= 0 || c.VerifiedRevision != c.Revision {
 		return 0, ErrPrecondition
 	}

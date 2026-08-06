@@ -12,6 +12,7 @@ import (
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
@@ -135,12 +136,16 @@ func actionForOperation(operation string) (string, bool) {
 	return "", false
 }
 
-func ownerFromContext(ctx context.Context) (string, error) {
+func scopeFromContext(ctx context.Context) (coretask.OwnerScope, error) {
 	permission, ok := capabilityclient.PermissionFromContext(ctx)
-	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" {
-		return "", fmt.Errorf("%w: authenticated owner is required", coreexecutionv2.ErrInvalid)
+	if !ok || permission == nil {
+		return coretask.OwnerScope{}, fmt.Errorf("%w: authenticated owner scope is required", coreexecutionv2.ErrInvalid)
 	}
-	return strings.TrimSpace(permission.GetAuthenticatedOwnerId()), nil
+	scope := coretask.OwnerScope{OwnerID: strings.TrimSpace(permission.GetAuthenticatedOwnerId()), AccountGeneration: permission.GetAccountGeneration()}
+	if scope.Validate() != nil {
+		return coretask.OwnerScope{}, fmt.Errorf("%w: authenticated owner scope is required", coreexecutionv2.ErrInvalid)
+	}
+	return scope, nil
 }
 
 func (c *Capability) HandleOperation(ctx context.Context, operationID string, raw []byte) ([]byte, error) {
@@ -157,23 +162,23 @@ func (c *Capability) HandleOperation(ctx context.Context, operationID string, ra
 			return nil, coreexecutionv2.ErrInvalid
 		}
 	}
-	owner, err := ownerFromContext(ctx)
+	scope, err := scopeFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
-	result, err := c.service.Handle(ctx, owner, action, input)
+	result, err := c.service.Handle(ctx, scope, action, input)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(result)
 }
 
-// HandleAsOwner is a narrow non-transport hook for unit tests and the typed
+// HandleAsScope is a narrow non-transport hook for unit tests and the typed
 // Core adapter. Production capability RPCs should use HandleOperation so the
-// owner always comes from the authenticated PermissionContext.
-func (c *Capability) HandleAsOwner(ctx context.Context, owner, action string, input map[string]any) (map[string]any, error) {
+// scope always comes from the authenticated PermissionContext.
+func (c *Capability) HandleAsScope(ctx context.Context, scope coretask.OwnerScope, action string, input map[string]any) (map[string]any, error) {
 	if c == nil || c.service == nil {
 		return nil, coreexecutionv2.ErrNotReady
 	}
-	return c.service.Handle(ctx, owner, action, input)
+	return c.service.Handle(ctx, scope, action, input)
 }

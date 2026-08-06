@@ -10,6 +10,19 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfig"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
+	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -515,6 +528,148 @@ func TestManager_Fail(t *testing.T) {
 	}
 	if retrieved.ErrorMessage != "Test error" {
 		t.Errorf("ErrorMessage mismatch")
+	}
+}
+
+func TestManager_ExecuteClassifiesActiveTeamExecutionAsPreconditionFailed(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	manager := NewManager(db)
+	op := &Operation{
+		ID:                "op-team-execution-active",
+		CapabilityID:      "agent.aws.v1",
+		OperationName:     "replace_credential",
+		RequestJSON:       []byte(`{}`),
+		RequestDigest:     []byte("digest-team-execution-active"),
+		OwnerID:           "owner",
+		AccountGeneration: 7,
+	}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+		return nil, coreteam.ErrExecutionActive
+	})
+
+	stored, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if stored.State != StateFailed {
+		t.Fatalf("state = %q, want %q", stored.State, StateFailed)
+	}
+	if stored.ErrorCode != "PRECONDITION_FAILED" {
+		t.Fatalf("error code = %q, want PRECONDITION_FAILED", stored.ErrorCode)
+	}
+	if stored.ErrorMessage != "team_execution_active" {
+		t.Fatalf("error message = %q, want team_execution_active", stored.ErrorMessage)
+	}
+	wire := stored.ToProto()
+	if wire.Error == nil {
+		t.Fatal("wire error is nil")
+	}
+	if wire.Error.Code != capv1.ErrorCode_ERROR_CODE_PRECONDITION_FAILED {
+		t.Fatalf("wire error code = %s, want PRECONDITION_FAILED", wire.Error.Code)
+	}
+	if wire.Error.Message != "team_execution_active" {
+		t.Fatalf("wire error message = %q, want team_execution_active", wire.Error.Message)
+	}
+}
+
+func TestManager_ExecuteClassifiesDomainErrorsAndRedactsUnknownDetails(t *testing.T) {
+	tests := []struct {
+		name, code, message string
+		err                 error
+	}{
+		{name: "invalid", err: coretask.ErrInvalid, code: "INVALID_ARGUMENT", message: "invalid operation request"},
+		{name: "not_found", err: coreaws.ErrNotFound, code: "NOT_FOUND", message: "requested resource was not found"},
+		{name: "revision_conflict", err: coreknowledge.ErrRevisionConflict, code: "CONFLICT", message: "operation conflicts with current resource state"},
+		{name: "idempotency_conflict", err: coreconfirmation.ErrIdempotencyConflict, code: "CONFLICT", message: "operation conflicts with current resource state"},
+		{name: "runtime_not_ready", err: coreteam.ErrRuntimeUnavailable, code: "NOT_READY", message: "required operation dependency is not ready"},
+		{name: "limit", err: coreknowledge.ErrLimitExceeded, code: "RESOURCE_EXHAUSTED", message: "operation exceeds the allowed resource limit"},
+		{name: "provider", err: coreaws.ErrProvider, code: "UPSTREAM_FAILED", message: "operation failed"},
+		{name: "conversation_invalid", err: coreconversation.ErrInvalid, code: "INVALID_ARGUMENT", message: "invalid operation request"},
+		{name: "extension_not_found", err: coreextension.ErrNotFound, code: "NOT_FOUND", message: "requested resource was not found"},
+		{name: "model_revision_conflict", err: coremodel.ErrRevisionConflict, code: "CONFLICT", message: "operation conflicts with current resource state"},
+		{name: "deprovision_not_ready", err: coredeprovision.ErrNotReady, code: "NOT_READY", message: "required operation dependency is not ready"},
+		{name: "voice_forbidden", err: corevoice.ErrForbidden, code: "PERMISSION_DENIED", message: "operation is not permitted for this account"},
+		{name: "web_search_disabled", err: corewebsearch.ErrDisabled, code: "NOT_READY", message: "required operation dependency is not ready"},
+		{name: "execution_not_found", err: coreexecutionv2.ErrNotFound, code: "NOT_FOUND", message: "requested resource was not found"},
+		{name: "config_conflict", err: coreconfig.ErrConflict, code: "CONFLICT", message: "operation conflicts with current resource state"},
+		{name: "unknown_redacted", err: errors.New("pq: relation secret_accounts failed with sk-live-should-never-leak"), code: "UPSTREAM_FAILED", message: "operation failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			defer db.Close()
+			manager := NewManager(db)
+			op := &Operation{
+				ID: "op-public-error-" + test.name, CapabilityID: "agent.test.v1", OperationName: "mutate",
+				RequestDigest: []byte("public-error-digest"), OwnerID: "owner", AccountGeneration: 2,
+			}
+			if err := manager.Start(context.Background(), op); err != nil {
+				t.Fatal(err)
+			}
+			manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+				return nil, test.err
+			})
+			stored, err := manager.Get(context.Background(), op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.State != StateFailed || stored.ErrorCode != test.code || stored.ErrorMessage != test.message {
+				t.Fatalf("stored error state=%s code=%q message=%q", stored.State, stored.ErrorCode, stored.ErrorMessage)
+			}
+			wire := stored.ToProto()
+			if wire.Error == nil || wire.Error.Message != test.message || strings.Contains(wire.Error.Message, "secret_accounts") || strings.Contains(wire.Error.Message, "sk-live") {
+				t.Fatalf("wire error=%#v", wire.Error)
+			}
+		})
+	}
+}
+
+func TestManager_ExecuteClassifiesActiveKnowledgeTasksAsPublicPrecondition(t *testing.T) {
+	tests := []struct {
+		capabilityID string
+		operation    string
+	}{
+		{capabilityID: "agent.knowledge.v1", operation: "update_config"},
+		{capabilityID: "agent.models.v1", operation: "sync_models"},
+	}
+	for _, test := range tests {
+		t.Run(test.capabilityID+"_"+test.operation, func(t *testing.T) {
+			db := setupTestDB(t)
+			defer db.Close()
+			manager := NewManager(db)
+			op := &Operation{
+				ID:                "op-active-knowledge-" + strings.ReplaceAll(test.operation, "_", "-"),
+				CapabilityID:      test.capabilityID,
+				OperationName:     test.operation,
+				RequestDigest:     []byte("active-knowledge-digest"),
+				OwnerID:           "owner",
+				AccountGeneration: 2,
+			}
+			if err := manager.Start(context.Background(), op); err != nil {
+				t.Fatal(err)
+			}
+			manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+				return nil, coreknowledge.ErrActiveTasks
+			})
+			stored, err := manager.Get(context.Background(), op.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const message = "finish or cancel active knowledge tasks before changing the model"
+			if stored.State != StateFailed || stored.ErrorCode != "PRECONDITION_FAILED" || stored.ErrorMessage != message {
+				t.Fatalf("stored error state=%s code=%q message=%q", stored.State, stored.ErrorCode, stored.ErrorMessage)
+			}
+			wire := stored.ToProto()
+			if wire.Error == nil || wire.Error.Code != capv1.ErrorCode_ERROR_CODE_PRECONDITION_FAILED || wire.Error.Message != message {
+				t.Fatalf("wire error=%#v", wire.Error)
+			}
+		})
 	}
 }
 

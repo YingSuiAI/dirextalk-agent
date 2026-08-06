@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -145,9 +147,13 @@ func (s *Store) ReplayProfile(ctx context.Context, operation, key, digest string
 	if len(digest) != 64 {
 		return coremodel.MutationSnapshot{}, false, coremodel.ErrInvalidProfile
 	}
+	ownerID, generation, scopeErr := replayOwnerScope(ctx, "mutation", key)
+	if scopeErr != nil {
+		return coremodel.MutationSnapshot{}, false, coremodel.ErrInvalidProfile
+	}
 	var storedDigest string
 	var raw []byte
-	err = s.pool.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation=$1 AND idempotency_key=$2`, operation, parsed).Scan(&storedDigest, &raw)
+	err = s.pool.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4`, ownerID, generation, operation, parsed).Scan(&storedDigest, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coremodel.MutationSnapshot{}, false, nil
 	}
@@ -188,6 +194,10 @@ func (s *Store) CreateProfile(ctx context.Context, p coremodel.Profile, key, dig
 	}
 	p.CreatedAt = p.CreatedAt.UTC().Truncate(time.Microsecond)
 	p.UpdatedAt = p.UpdatedAt.UTC().Truncate(time.Microsecond)
+	ownerID, generation, scopeErr := s.modelOwnerScope(ctx)
+	if scopeErr != nil {
+		return coremodel.MutationSnapshot{}, coremodel.ErrInvalidProfile
+	}
 	return s.mutateProfile(ctx, profileCreateOp, key, digest, func(tx pgx.Tx) (coremodel.MutationSnapshot, error) {
 		modalities, providerConfig, providerSecretStatus := profileMetadataJSON(p)
 		envelope, sealErr := s.sealProfileSecret(p)
@@ -200,7 +210,7 @@ func (s *Store) CreateProfile(ctx context.Context, p coremodel.Profile, key, dig
 			return coremodel.MutationSnapshot{}, sealErr
 		}
 		providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
-		_, err := tx.Exec(ctx, `INSERT INTO core_model_profiles (profile_id,client_profile_id,display_name,provider,model_kind,input_modalities,provider_config,provider_secret_status,provider_secrets_key_version,provider_secrets_nonce,provider_secrets_ciphertext,base_url,model_name,system_prompt,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,temperature,top_p,max_output_tokens,context_window,reasoning_effort,revision,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`, p.ID, nullableClientProfileID(p.ClientProfileID), p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.CreatedAt.UTC(), p.UpdatedAt.UTC())
+		_, err := tx.Exec(ctx, `INSERT INTO core_model_profiles (profile_id,client_profile_id,display_name,provider,model_kind,input_modalities,provider_config,provider_secret_status,provider_secrets_key_version,provider_secrets_nonce,provider_secrets_ciphertext,base_url,model_name,system_prompt,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,temperature,top_p,max_output_tokens,context_window,reasoning_effort,revision,created_at,updated_at,owner_id,account_generation) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`, p.ID, nullableClientProfileID(p.ClientProfileID), p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), ownerID, generation)
 		if err != nil {
 			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 		}
@@ -228,7 +238,16 @@ func (s *Store) ResolveProfile(ctx context.Context, id string) (coremodel.Profil
 func (s *Store) GetProfileDefaults(ctx context.Context) (coremodel.ProfileDefaults, error) {
 	var out coremodel.ProfileDefaults
 	var conversation, embedding, speech *string
-	err := s.pool.QueryRow(ctx, `SELECT default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id FROM core_model_profile_defaults WHERE singleton=true`).Scan(&conversation, &embedding, &speech)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	query := `SELECT default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id FROM core_model_profile_defaults`
+	args := []any{}
+	if ownerID != "" {
+		query += ` WHERE owner_id=$1 AND account_generation=$2`
+		args = append(args, ownerID, generation)
+	} else {
+		query += ` ORDER BY updated_at DESC LIMIT 1`
+	}
+	err := s.pool.QueryRow(ctx, query, args...).Scan(&conversation, &embedding, &speech)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, nil
 	}
@@ -257,12 +276,17 @@ func (s *Store) RunConnectionTest(ctx context.Context, key, digest, profileID st
 		return coremodel.ConnectionTestResult{}, false, ErrProfileStoreUnavailable
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, profileTestConnectionOp+":"+id.String()); err != nil {
+	replayOwnerID, replayGeneration, scopeErr := replayOwnerScope(ctx, "mutation", key)
+	if scopeErr != nil {
+		return coremodel.ConnectionTestResult{}, false, coremodel.ErrInvalidProfile
+	}
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("%s:%s:%d:%s", profileTestConnectionOp, replayOwnerID, replayGeneration, id)); err != nil {
 		return coremodel.ConnectionTestResult{}, false, ErrProfileStoreUnavailable
 	}
 	var storedDigest string
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, profileTestConnectionOp, id).Scan(&storedDigest, &raw)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, replayOwnerID, replayGeneration, profileTestConnectionOp, id).Scan(&storedDigest, &raw)
 	if err == nil {
 		if storedDigest != digest {
 			return coremodel.ConnectionTestResult{}, true, coremodel.ErrIdempotencyConflict
@@ -279,7 +303,7 @@ func (s *Store) RunConnectionTest(ctx context.Context, key, digest, profileID st
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return coremodel.ConnectionTestResult{}, false, ErrProfileStoreUnavailable
 	}
-	p, err := scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, profileID))
+	p, err := scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, profileID, ownerID, generation))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return coremodel.ConnectionTestResult{ErrorCode: "not_found"}, false, coremodel.ErrProfileNotFound
@@ -300,7 +324,7 @@ func (s *Store) RunConnectionTest(ctx context.Context, key, digest, profileID st
 	if err != nil {
 		return coremodel.ConnectionTestResult{}, false, ErrProfileStoreUnavailable
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO core_mutation_replays (operation,idempotency_key,request_hash,response_json) VALUES ($1,$2,$3,$4)`, profileTestConnectionOp, id, digest, encoded); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO core_mutation_replays (owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES ($1,$2,$3,$4,$5,$6)`, replayOwnerID, replayGeneration, profileTestConnectionOp, id, digest, encoded); err != nil {
 		return coremodel.ConnectionTestResult{}, false, mapProfileDBError(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -318,7 +342,8 @@ func (s *Store) ListProfiles(ctx context.Context, cursor string, limit int) ([]c
 		}
 		after = string(b)
 	}
-	rows, err := s.pool.Query(ctx, profileSelectColumns+` FROM core_model_profiles WHERE deleted_at IS NULL AND ($1='' OR profile_id > $1::uuid) ORDER BY profile_id LIMIT $2`, after, limit+1)
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	rows, err := s.pool.Query(ctx, profileSelectColumns+` FROM core_model_profiles WHERE deleted_at IS NULL AND ($1='' OR profile_id > $1::uuid) AND ($3='' OR (owner_id=$3 AND account_generation=$4)) ORDER BY profile_id LIMIT $2`, after, limit+1, ownerID, generation)
 	if err != nil {
 		return nil, "", ErrProfileStoreUnavailable
 	}
@@ -351,7 +376,11 @@ func (s *Store) UpdateProfile(ctx context.Context, p coremodel.Profile, key, dig
 	}
 	p.CreatedAt = p.CreatedAt.UTC().Truncate(time.Microsecond)
 	p.UpdatedAt = p.UpdatedAt.UTC().Truncate(time.Microsecond)
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	return s.mutateProfile(ctx, profileUpdateOp, key, digest, func(tx pgx.Tx) (coremodel.MutationSnapshot, error) {
+		if err := s.lockProfileRevision(ctx, tx, p.ID, expected); err != nil {
+			return coremodel.MutationSnapshot{}, err
+		}
 		var refs int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM core_model_profile_active_refs WHERE profile_id=$1`, p.ID).Scan(&refs); err != nil {
 			return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
@@ -370,7 +399,7 @@ func (s *Store) UpdateProfile(ctx context.Context, p coremodel.Profile, key, dig
 			return coremodel.MutationSnapshot{}, sealErr
 		}
 		providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
-		result, err := tx.Exec(ctx, `UPDATE core_model_profiles SET display_name=$2,provider=$3,model_kind=$4,input_modalities=$5::jsonb,provider_config=$6::jsonb,provider_secret_status=$7::jsonb,provider_secrets_key_version=$8,provider_secrets_nonce=$9,provider_secrets_ciphertext=$10,base_url=$11,model_name=$12,system_prompt=$13,api_key_configured=$14,credential_version=$15,api_key_key_version=$16,api_key_nonce=$17,api_key_ciphertext=$18,temperature=$19,top_p=$20,max_output_tokens=$21,context_window=$22,reasoning_effort=$23,revision=$24,updated_at=$25 WHERE profile_id=$1 AND deleted_at IS NULL AND revision=$26`, p.ID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt.UTC(), expected)
+		result, err := tx.Exec(ctx, `UPDATE core_model_profiles SET display_name=$2,provider=$3,model_kind=$4,input_modalities=$5::jsonb,provider_config=$6::jsonb,provider_secret_status=$7::jsonb,provider_secrets_key_version=$8,provider_secrets_nonce=$9,provider_secrets_ciphertext=$10,base_url=$11,model_name=$12,system_prompt=$13,api_key_configured=$14,credential_version=$15,api_key_key_version=$16,api_key_nonce=$17,api_key_ciphertext=$18,temperature=$19,top_p=$20,max_output_tokens=$21,context_window=$22,reasoning_effort=$23,revision=$24,updated_at=$25 WHERE profile_id=$1 AND deleted_at IS NULL AND revision=$26 AND ($27='' OR (owner_id=$27 AND account_generation=$28))`, p.ID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt.UTC(), expected, ownerID, generation)
 		if err != nil {
 			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 		}
@@ -392,8 +421,9 @@ func (s *Store) UpdateProfile(ctx context.Context, p coremodel.Profile, key, dig
 }
 
 func (s *Store) DeleteProfile(ctx context.Context, id, key, digest string, expected int64) (coremodel.MutationSnapshot, error) {
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	return s.mutateProfile(ctx, profileDeleteOp, key, digest, func(tx pgx.Tx) (coremodel.MutationSnapshot, error) {
-		p, err := scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR UPDATE`, id))
+		p, err := scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, id, ownerID, generation))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return coremodel.MutationSnapshot{}, coremodel.ErrProfileNotFound
@@ -416,7 +446,7 @@ func (s *Store) DeleteProfile(ctx context.Context, id, key, digest string, expec
 		if _, err := tx.Exec(ctx, `DELETE FROM core_model_profile_secret_revisions WHERE profile_id=$1 AND NOT EXISTS (SELECT 1 FROM core_task_execution_snapshots WHERE snapshot_json->'model'->>'profile_id'=$1::text)`, id); err != nil {
 			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM core_model_profiles WHERE profile_id=$1`, id); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM core_model_profiles WHERE profile_id=$1 AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, id, ownerID, generation); err != nil {
 			return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 		}
 		return coremodel.MutationSnapshot{Profile: p.Public(), Deleted: true}, nil
@@ -433,12 +463,21 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, profileSyncOp+":"+id.String()); err != nil {
+	replayOwnerID, replayGeneration, scopeErr := replayOwnerScope(ctx, "mutation", key)
+	if scopeErr != nil {
+		return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+	}
+	modelOwnerID, modelGeneration, scopeErr := s.modelOwnerScope(ctx)
+	if scopeErr != nil {
+		return coremodel.SyncProfileResult{}, coremodel.ErrInvalidProfile
+	}
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("%s:%s:%d:%s", profileSyncOp, replayOwnerID, replayGeneration, id)); err != nil {
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
 	var storedDigest string
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, profileSyncOp, id).Scan(&storedDigest, &raw)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, replayOwnerID, replayGeneration, profileSyncOp, id).Scan(&storedDigest, &raw)
 	if err == nil {
 		if storedDigest != digest {
 			return coremodel.SyncProfileResult{}, coremodel.ErrIdempotencyConflict
@@ -467,7 +506,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 		}
 		seen[e.ClientProfileID] = struct{}{}
 		var p coremodel.Profile
-		p, err = scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL FOR UPDATE`, e.ClientProfileID))
+		p, err = scanProfile(tx.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, e.ClientProfileID, ownerID, generation))
 		exists := err == nil
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
@@ -517,7 +556,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 				return coremodel.SyncProfileResult{}, sealErr
 			}
 			providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
-			_, err = tx.Exec(ctx, `UPDATE core_model_profiles SET display_name=$2,provider=$3,model_kind=$4,input_modalities=$5::jsonb,provider_config=$6::jsonb,provider_secret_status=$7::jsonb,provider_secrets_key_version=$8,provider_secrets_nonce=$9,provider_secrets_ciphertext=$10,base_url=$11,model_name=$12,system_prompt=$13,api_key_configured=$14,credential_version=$15,api_key_key_version=$16,api_key_nonce=$17,api_key_ciphertext=$18,temperature=$19,top_p=$20,max_output_tokens=$21,context_window=$22,reasoning_effort=$23,revision=$24,updated_at=$25 WHERE profile_id=$1`, p.ID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt)
+			_, err = tx.Exec(ctx, `UPDATE core_model_profiles SET display_name=$2,provider=$3,model_kind=$4,input_modalities=$5::jsonb,provider_config=$6::jsonb,provider_secret_status=$7::jsonb,provider_secrets_key_version=$8,provider_secrets_nonce=$9,provider_secrets_ciphertext=$10,base_url=$11,model_name=$12,system_prompt=$13,api_key_configured=$14,credential_version=$15,api_key_key_version=$16,api_key_nonce=$17,api_key_ciphertext=$18,temperature=$19,top_p=$20,max_output_tokens=$21,context_window=$22,reasoning_effort=$23,revision=$24,updated_at=$25 WHERE profile_id=$1 AND ($26='' OR (owner_id=$26 AND account_generation=$27))`, p.ID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.UpdatedAt, ownerID, generation)
 			if err != nil {
 				return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 			}
@@ -535,7 +574,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			if e.ExpectedRevision != nil {
 				return coremodel.SyncProfileResult{}, coremodel.ErrRevisionConflict
 			}
-			p = coremodel.Profile{ID: deterministicSyncProfileID(e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature, TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+			p = coremodel.Profile{ID: deterministicSyncProfileID(ctx, e.ClientProfileID), ClientProfileID: e.ClientProfileID, DisplayName: e.DisplayName, Provider: e.Provider, ModelKind: e.ModelKind, InputModalities: append([]string(nil), e.InputModalities...), ProviderConfig: e.ProviderConfig, ProviderSecrets: e.ProviderSecrets, BaseURL: e.BaseURL, Model: e.Model, APIKey: valueOrEmpty(e.APIKey), SystemPrompt: e.SystemPrompt, Temperature: e.Temperature, TopP: e.TopP, MaxOutputTokens: e.MaxOutputTokens, ContextWindow: e.ContextWindow, ReasoningEffort: e.ReasoningEffort, Revision: 1, CredentialVersion: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 			p, err = coremodel.ValidateProfile(p)
 			if err != nil {
 				return coremodel.SyncProfileResult{}, err
@@ -551,7 +590,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 				return coremodel.SyncProfileResult{}, sealErr
 			}
 			providerKeyVersion, providerKeyNonce, providerKeyCipher := providerSecretStatusArgs(providerEnvelope)
-			_, err = tx.Exec(ctx, `INSERT INTO core_model_profiles (profile_id,client_profile_id,display_name,provider,model_kind,input_modalities,provider_config,provider_secret_status,provider_secrets_key_version,provider_secrets_nonce,provider_secrets_ciphertext,base_url,model_name,system_prompt,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,temperature,top_p,max_output_tokens,context_window,reasoning_effort,revision,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`, p.ID, p.ClientProfileID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.CreatedAt, p.UpdatedAt)
+			_, err = tx.Exec(ctx, `INSERT INTO core_model_profiles (profile_id,client_profile_id,display_name,provider,model_kind,input_modalities,provider_config,provider_secret_status,provider_secrets_key_version,provider_secrets_nonce,provider_secrets_ciphertext,base_url,model_name,system_prompt,api_key_configured,credential_version,api_key_key_version,api_key_nonce,api_key_ciphertext,temperature,top_p,max_output_tokens,context_window,reasoning_effort,revision,created_at,updated_at,owner_id,account_generation) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`, p.ID, p.ClientProfileID, p.DisplayName, string(p.Provider), p.ModelKind, modalities, providerConfig, providerSecretStatus, providerKeyVersion, providerKeyNonce, providerKeyCipher, p.BaseURL, p.Model, p.SystemPrompt, p.APIKey != "", p.CredentialVersion, keyVersion, keyNonce, keyCipher, p.Temperature, p.TopP, p.MaxOutputTokens, p.ContextWindow, p.ReasoningEffort, p.Revision, p.CreatedAt, p.UpdatedAt, modelOwnerID, modelGeneration)
 			if err != nil {
 				return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 			}
@@ -570,7 +609,7 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 	}
 	if out.DefaultClientProfileID != "" {
 		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL)`, out.DefaultClientProfileID).Scan(&exists); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3)))`, out.DefaultClientProfileID, ownerID, generation).Scan(&exists); err != nil {
 			return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 		}
 		if !exists {
@@ -588,21 +627,21 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 			continue
 		}
 		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL)`, value).Scan(&exists); err != nil || !exists {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_model_profiles WHERE client_profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3)))`, value, ownerID, generation).Scan(&exists); err != nil || !exists {
 			if err != nil {
 				return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 			}
 			return coremodel.SyncProfileResult{}, coremodel.ErrProfileNotFound
 		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(singleton,default_client_profile_id,default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES(true,$1,$2,$3,$4,clock_timestamp()) ON CONFLICT (singleton) DO UPDATE SET default_client_profile_id=EXCLUDED.default_client_profile_id,default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, nullableClientProfileID(out.DefaultClientProfileID), nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_defaults(owner_id,account_generation,default_client_profile_id,default_conversation_client_profile_id,default_embedding_client_profile_id,default_speech_client_profile_id,updated_at) VALUES($1,$2,$3,$4,$5,$6,clock_timestamp()) ON CONFLICT (owner_id,account_generation) DO UPDATE SET default_client_profile_id=EXCLUDED.default_client_profile_id,default_conversation_client_profile_id=EXCLUDED.default_conversation_client_profile_id,default_embedding_client_profile_id=EXCLUDED.default_embedding_client_profile_id,default_speech_client_profile_id=EXCLUDED.default_speech_client_profile_id,updated_at=EXCLUDED.updated_at`, modelOwnerID, modelGeneration, nullableClientProfileID(out.DefaultClientProfileID), nullableClientProfileID(out.DefaultConversationProfileID), nullableClientProfileID(out.DefaultEmbeddingProfileID), nullableClientProfileID(out.DefaultSpeechProfileID)); err != nil {
 		return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 	}
 	encoded, err := json.Marshal(out)
 	if err != nil {
 		return coremodel.SyncProfileResult{}, ErrProfileStoreUnavailable
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4)`, profileSyncOp, id, digest, encoded); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO core_mutation_replays(owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES($1,$2,$3,$4,$5,$6)`, replayOwnerID, replayGeneration, profileSyncOp, id, digest, encoded); err != nil {
 		return coremodel.SyncProfileResult{}, mapProfileDBError(err)
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -611,8 +650,21 @@ func (s *Store) SyncProfiles(ctx context.Context, key, digest string, cmd coremo
 	return out, nil
 }
 
-func deterministicSyncProfileID(clientID string) string {
+func deterministicSyncProfileID(ctx context.Context, clientID string) string {
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		return uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("model-profile:%s:%d:%s", scope.OwnerID, scope.AccountGeneration, clientID))).String()
+	}
 	return coremodel.SyncProfileID(clientID)
+}
+
+func (s *Store) modelOwnerScope(ctx context.Context) (string, int64, error) {
+	if scope, ok := coretask.OwnerScopeFromContext(ctx); ok {
+		if scope.Validate() != nil {
+			return "", 0, coretask.ErrInvalid
+		}
+		return scope.OwnerID, scope.AccountGeneration, nil
+	}
+	return ownerScopeOrInternal(ctx, "model", s.instanceID.String())
 }
 
 func (s *Store) mutateProfile(ctx context.Context, operation, key, digest string, apply func(pgx.Tx) (coremodel.MutationSnapshot, error)) (coremodel.MutationSnapshot, error) {
@@ -625,12 +677,16 @@ func (s *Store) mutateProfile(ctx context.Context, operation, key, digest string
 		return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, operation+":"+id.String()); err != nil {
+	replayOwnerID, replayGeneration, scopeErr := replayOwnerScope(ctx, "mutation", key)
+	if scopeErr != nil {
+		return coremodel.MutationSnapshot{}, coremodel.ErrInvalidProfile
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("%s:%s:%d:%s", operation, replayOwnerID, replayGeneration, id)); err != nil {
 		return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
 	}
 	var storedDigest string
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE operation=$1 AND idempotency_key=$2 FOR UPDATE`, operation, id).Scan(&storedDigest, &raw)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_mutation_replays WHERE owner_id=$1 AND account_generation=$2 AND operation=$3 AND idempotency_key=$4 FOR UPDATE`, replayOwnerID, replayGeneration, operation, id).Scan(&storedDigest, &raw)
 	if err == nil {
 		if storedDigest != digest {
 			return coremodel.MutationSnapshot{}, coremodel.ErrIdempotencyConflict
@@ -656,7 +712,7 @@ func (s *Store) mutateProfile(ctx context.Context, operation, key, digest string
 	if err != nil {
 		return coremodel.MutationSnapshot{}, ErrProfileStoreUnavailable
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO core_mutation_replays (operation,idempotency_key,request_hash,response_json) VALUES ($1,$2,$3,$4)`, operation, id, digest, encoded); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO core_mutation_replays (owner_id,account_generation,operation,idempotency_key,request_hash,response_json) VALUES ($1,$2,$3,$4,$5,$6)`, replayOwnerID, replayGeneration, operation, id, digest, encoded); err != nil {
 		return coremodel.MutationSnapshot{}, mapProfileDBError(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -666,7 +722,8 @@ func (s *Store) mutateProfile(ctx context.Context, operation, key, digest string
 }
 
 func (s *Store) loadProfile(ctx context.Context, id string, requireKey bool) (coremodel.Profile, error) {
-	p, err := scanProfile(s.pool.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, id))
+	ownerID, generation := publicOwnerScopeValues(ctx)
+	p, err := scanProfile(s.pool.QueryRow(ctx, profileSelectColumns+` FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3))`, id, ownerID, generation))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return coremodel.Profile{}, coremodel.ErrProfileNotFound
@@ -804,8 +861,16 @@ func equalStringMap(left, right map[string]string) bool {
 }
 
 func (s *Store) revisionOrNotFound(ctx context.Context, tx pgx.Tx, id string, expected int64) error {
+	if err := s.lockProfileRevision(ctx, tx, id, expected); err != nil {
+		return err
+	}
+	return coremodel.ErrRevisionConflict
+}
+
+func (s *Store) lockProfileRevision(ctx context.Context, tx pgx.Tx, id string, expected int64) error {
+	ownerID, generation := publicOwnerScopeValues(ctx)
 	var revision int64
-	err := tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, id).Scan(&revision)
+	err := tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL AND ($2='' OR (owner_id=$2 AND account_generation=$3)) FOR UPDATE`, id, ownerID, generation).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return coremodel.ErrProfileNotFound
 	}
@@ -815,7 +880,7 @@ func (s *Store) revisionOrNotFound(ctx context.Context, tx pgx.Tx, id string, ex
 	if revision != expected {
 		return coremodel.ErrRevisionConflict
 	}
-	return coremodel.ErrRevisionConflict
+	return nil
 }
 
 var ErrProfileStoreUnavailable = errors.New("model profile store unavailable")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/google/uuid"
 	"sort"
 	"strconv"
@@ -31,16 +32,17 @@ func decodeChangeCursor(planID, token string) (string, error) {
 }
 
 type MemoryRepository struct {
-	mu            sync.RWMutex
-	credentials   map[string]Credentials
-	plans         map[string]Plan
-	changes       map[string]Change
-	tasks         map[string]Task
-	confirmations map[string]coreconfirmation.Confirmation
-	reservations  map[string]Reservation
-	events        []ChangeEvent
-	replays       map[string]memoryReplay
-	testClaims    map[string]memoryCredentialTestClaim
+	mu               sync.RWMutex
+	credentials      map[string]Credentials
+	credentialScopes map[string]coreteam.Scope
+	plans            map[string]Plan
+	changes          map[string]Change
+	tasks            map[string]Task
+	confirmations    map[string]coreconfirmation.Confirmation
+	reservations     map[string]Reservation
+	events           []ChangeEvent
+	replays          map[string]memoryReplay
+	testClaims       map[string]memoryCredentialTestClaim
 }
 
 type ChangeEvent struct {
@@ -76,7 +78,7 @@ const (
 )
 
 func NewMemoryRepository() *MemoryRepository {
-	return &MemoryRepository{credentials: map[string]Credentials{}, plans: map[string]Plan{}, changes: map[string]Change{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]Reservation{}, replays: map[string]memoryReplay{}, testClaims: map[string]memoryCredentialTestClaim{}}
+	return &MemoryRepository{credentials: map[string]Credentials{}, credentialScopes: map[string]coreteam.Scope{}, plans: map[string]Plan{}, changes: map[string]Change{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]Reservation{}, replays: map[string]memoryReplay{}, testClaims: map[string]memoryCredentialTestClaim{}}
 }
 
 func replayKey(op, key string) string { return op + ":" + key }
@@ -165,13 +167,17 @@ func (r *MemoryRepository) replayLocked(op, key, digest string) (memoryReplay, b
 	}
 	return v, true, nil
 }
-func (r *MemoryRepository) saveCredentialIdempotent(_ context.Context, c Credentials, key, digest string) (CredentialView, error) {
+func scopedReplayOperation(operation string, scope coreteam.Scope) string {
+	return operation + ":" + canonicalDigest(scope)
+}
+func (r *MemoryRepository) saveCredentialIdempotent(_ context.Context, scope coreteam.Scope, c Credentials, key, digest string) (CredentialView, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.replays == nil {
 		r.replays = map[string]memoryReplay{}
 	}
-	if v, ok, e := r.replayLocked("credential-save", key, digest); ok {
+	operation := scopedReplayOperation("credential-save", scope)
+	if v, ok, e := r.replayLocked(operation, key, digest); ok {
 		if e != nil {
 			return CredentialView{}, e
 		}
@@ -181,17 +187,19 @@ func (r *MemoryRepository) saveCredentialIdempotent(_ context.Context, c Credent
 		return CredentialView{}, ErrConflict
 	}
 	r.credentials[c.ID] = cloneCredential(c)
+	r.credentialScopes[c.ID] = scope
 	v := c.View()
-	r.replays[replayKey("credential-save", key)] = memoryReplay{digest: digest, credential: &v}
+	r.replays[replayKey(operation, key)] = memoryReplay{digest: digest, credential: &v}
 	return v, nil
 }
-func (r *MemoryRepository) replaceCredentialIdempotent(_ context.Context, c Credentials, expected int64, key, digest string) (CredentialView, error) {
+func (r *MemoryRepository) replaceCredentialIdempotent(_ context.Context, scope coreteam.Scope, c Credentials, expected int64, key, digest string) (CredentialView, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.replays == nil {
 		r.replays = map[string]memoryReplay{}
 	}
-	if v, ok, e := r.replayLocked("credential-replace", key, digest); ok {
+	operation := scopedReplayOperation("credential-replace", scope)
+	if v, ok, e := r.replayLocked(operation, key, digest); ok {
 		if e != nil {
 			return CredentialView{}, e
 		}
@@ -201,21 +209,25 @@ func (r *MemoryRepository) replaceCredentialIdempotent(_ context.Context, c Cred
 	if !ok {
 		return CredentialView{}, ErrNotFound
 	}
+	if r.credentialScopes[c.ID] != scope {
+		return CredentialView{}, ErrNotFound
+	}
 	if old.Revision != expected || c.Revision != expected+1 {
 		return CredentialView{}, ErrRevisionConflict
 	}
 	r.credentials[c.ID] = cloneCredential(c)
 	v := c.View()
-	r.replays[replayKey("credential-replace", key)] = memoryReplay{digest: digest, credential: &v}
+	r.replays[replayKey(operation, key)] = memoryReplay{digest: digest, credential: &v}
 	return v, nil
 }
-func (r *MemoryRepository) deleteCredentialIdempotent(_ context.Context, id string, expected int64, key, digest string) error {
+func (r *MemoryRepository) deleteCredentialIdempotent(_ context.Context, scope coreteam.Scope, id string, expected int64, key, digest string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.replays == nil {
 		r.replays = map[string]memoryReplay{}
 	}
-	if v, ok, e := r.replayLocked("credential-delete", key, digest); ok {
+	operation := scopedReplayOperation("credential-delete", scope)
+	if v, ok, e := r.replayLocked(operation, key, digest); ok {
 		if e != nil {
 			return e
 		}
@@ -227,17 +239,21 @@ func (r *MemoryRepository) deleteCredentialIdempotent(_ context.Context, id stri
 	if !ok {
 		return ErrNotFound
 	}
+	if r.credentialScopes[id] != scope {
+		return ErrNotFound
+	}
 	if old.Revision != expected {
 		return ErrRevisionConflict
 	}
 	delete(r.credentials, id)
+	delete(r.credentialScopes, id)
 	for claimKey, claim := range r.testClaims {
 		if claim.claim.CredentialID == id {
 			delete(r.testClaims, claimKey)
 		}
 	}
 	v := old.View()
-	r.replays[replayKey("credential-delete", key)] = memoryReplay{digest: digest, deleted: true, credential: &v}
+	r.replays[replayKey(operation, key)] = memoryReplay{digest: digest, deleted: true, credential: &v}
 	return nil
 }
 func (r *MemoryRepository) createPlanIdempotent(_ context.Context, p Plan, key, digest string) (PlanView, error) {
@@ -246,18 +262,23 @@ func (r *MemoryRepository) createPlanIdempotent(_ context.Context, p Plan, key, 
 	if r.replays == nil {
 		r.replays = map[string]memoryReplay{}
 	}
-	if v, ok, e := r.replayLocked("plan-create", key, digest); ok {
+	scope := coreteam.Scope{OwnerID: p.OwnerID, AccountGeneration: p.AccountGeneration}
+	operation := scopedReplayOperation("plan-create", scope)
+	if v, ok, e := r.replayLocked(operation, key, digest); ok {
 		if e != nil {
 			return PlanView{}, e
 		}
 		return *v.plan, nil
+	}
+	if r.credentialScopes[p.CredentialID] != scope {
+		return PlanView{}, ErrNotFound
 	}
 	if _, ok := r.plans[p.ID]; ok {
 		return PlanView{}, ErrConflict
 	}
 	r.plans[p.ID] = clonePlan(p)
 	v := p.View()
-	r.replays[replayKey("plan-create", key)] = memoryReplay{digest: digest, plan: &v}
+	r.replays[replayKey(operation, key)] = memoryReplay{digest: digest, plan: &v}
 	return v, nil
 }
 func (r *MemoryRepository) CreateCredential(_ context.Context, c Credentials) (Credentials, error) {
@@ -351,6 +372,235 @@ func (r *MemoryRepository) DeleteCredential(_ context.Context, id string, expect
 	return nil
 }
 
+func (r *MemoryRepository) CreateCredentialGuarded(ctx context.Context, scope coreteam.Scope, credential Credentials) (Credentials, error) {
+	if scope.Validate() != nil || credential.Validate() != nil {
+		return Credentials{}, ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.credentials[credential.ID]; exists {
+		return Credentials{}, ErrConflict
+	}
+	if r.credentialScopes == nil {
+		r.credentialScopes = map[string]coreteam.Scope{}
+	}
+	r.credentials[credential.ID] = cloneCredential(credential)
+	r.credentialScopes[credential.ID] = scope
+	return cloneCredential(credential), nil
+}
+
+func (r *MemoryRepository) UpdateCredentialGuarded(ctx context.Context, scope coreteam.Scope, credential Credentials, expected int64) (Credentials, error) {
+	if scope.Validate() != nil || credential.Validate() != nil || credential.Revision != expected+1 {
+		return Credentials{}, ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old, exists := r.credentials[credential.ID]
+	if !exists || r.credentialScopes[credential.ID] != scope {
+		return Credentials{}, ErrNotFound
+	}
+	if old.Revision != expected {
+		return Credentials{}, ErrRevisionConflict
+	}
+	r.credentials[credential.ID] = cloneCredential(credential)
+	return cloneCredential(credential), nil
+}
+
+func (r *MemoryRepository) DeleteCredentialGuarded(ctx context.Context, scope coreteam.Scope, id string, expected int64) error {
+	if scope.Validate() != nil {
+		return ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	old, exists := r.credentials[id]
+	if !exists || r.credentialScopes[id] != scope {
+		return ErrNotFound
+	}
+	if old.Revision != expected {
+		return ErrRevisionConflict
+	}
+	delete(r.credentials, id)
+	delete(r.credentialScopes, id)
+	return nil
+}
+
+var _ GuardedCredentialRepository = (*MemoryRepository)(nil)
+
+func (r *MemoryRepository) GetCredentialScoped(_ context.Context, scope coreteam.Scope, id string) (Credentials, error) {
+	if scope.Validate() != nil {
+		return Credentials{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	credential, exists := r.credentials[id]
+	if !exists || r.credentialScopes[id] != scope {
+		return Credentials{}, ErrNotFound
+	}
+	return cloneCredential(credential), nil
+}
+
+func (r *MemoryRepository) ListCredentialsScoped(_ context.Context, scope coreteam.Scope, size int, token string) (CredentialPage, error) {
+	if scope.Validate() != nil || size < 0 || size > 100 {
+		return CredentialPage{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.credentials))
+	for id := range r.credentials {
+		if r.credentialScopes[id] == scope {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	start, err := startAfter(ids, token)
+	if err != nil || start > len(ids) {
+		return CredentialPage{}, ErrInvalid
+	}
+	end := len(ids)
+	if size > 0 && end > start+size {
+		end = start + size
+	}
+	items := make([]CredentialView, 0, end-start)
+	for _, id := range ids[start:end] {
+		items = append(items, r.credentials[id].View())
+	}
+	next := ""
+	if end < len(ids) {
+		next = ids[end-1]
+	}
+	return CredentialPage{Items: items, NextPageToken: next}, nil
+}
+
+func (r *MemoryRepository) RecordCredentialIdentityScoped(_ context.Context, scope coreteam.Scope, id string, expected int64, identity Identity, testedAt time.Time) (Credentials, error) {
+	if scope.Validate() != nil || testedAt.IsZero() {
+		return Credentials{}, ErrInvalid
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	credential, exists := r.credentials[id]
+	if !exists || r.credentialScopes[id] != scope {
+		return Credentials{}, ErrNotFound
+	}
+	if credential.Revision != expected {
+		return Credentials{}, ErrRevisionConflict
+	}
+	credential.AccountID, credential.UserARN, credential.VerifiedRevision = identity.AccountID, identity.UserARN, credential.Revision
+	credential.TestedAt, credential.UpdatedAt = testedAt.UTC(), testedAt.UTC()
+	r.credentials[id] = cloneCredential(credential)
+	return cloneCredential(credential), nil
+}
+
+func (r *MemoryRepository) CreatePlanScoped(ctx context.Context, scope coreteam.Scope, plan Plan, idempotencyKey, requestDigest string) (Plan, error) {
+	if scope.Validate() != nil || plan.Validate() != nil || plan.OwnerID != scope.OwnerID || plan.AccountGeneration != scope.AccountGeneration || !validUUID(idempotencyKey) || len(requestDigest) != 64 || strings.IndexFunc(requestDigest, func(r rune) bool { return r < '0' || r > '9' && r < 'a' || r > 'f' }) >= 0 {
+		return Plan{}, ErrInvalid
+	}
+	view, err := r.createPlanIdempotent(ctx, plan, idempotencyKey, requestDigest)
+	if err != nil {
+		return Plan{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return clonePlan(r.plans[view.ID]), nil
+}
+
+func (r *MemoryRepository) GetPlanScoped(_ context.Context, scope coreteam.Scope, id string) (Plan, error) {
+	if scope.Validate() != nil {
+		return Plan{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	plan, exists := r.plans[id]
+	if !exists || plan.OwnerID != scope.OwnerID || plan.AccountGeneration != scope.AccountGeneration {
+		return Plan{}, ErrNotFound
+	}
+	return clonePlan(plan), nil
+}
+
+func (r *MemoryRepository) ListPlansScoped(_ context.Context, scope coreteam.Scope, size int, token string) (PlanPage, error) {
+	if scope.Validate() != nil || size < 0 || size > 100 {
+		return PlanPage{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.plans))
+	for id, plan := range r.plans {
+		if plan.OwnerID == scope.OwnerID && plan.AccountGeneration == scope.AccountGeneration {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	start, err := startAfter(ids, token)
+	if err != nil || start > len(ids) {
+		return PlanPage{}, ErrInvalid
+	}
+	end := len(ids)
+	if size > 0 && end > start+size {
+		end = start + size
+	}
+	items := make([]PlanView, 0, end-start)
+	for _, id := range ids[start:end] {
+		items = append(items, r.plans[id].View())
+	}
+	next := ""
+	if end < len(ids) {
+		next = ids[end-1]
+	}
+	return PlanPage{Items: items, NextPageToken: next}, nil
+}
+
+func (r *MemoryRepository) GetChangeScoped(_ context.Context, scope coreteam.Scope, id string) (Change, error) {
+	if scope.Validate() != nil {
+		return Change{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	change, exists := r.changes[id]
+	plan, planExists := r.plans[change.PlanID]
+	if !exists || !planExists || plan.OwnerID != scope.OwnerID || plan.AccountGeneration != scope.AccountGeneration {
+		return Change{}, ErrNotFound
+	}
+	return change, nil
+}
+
+func (r *MemoryRepository) ListChangesScoped(_ context.Context, scope coreteam.Scope, size int, planID, token string) (ChangePage, error) {
+	if scope.Validate() != nil || size < 0 || size > 100 {
+		return ChangePage{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.changes))
+	for id, change := range r.changes {
+		plan, exists := r.plans[change.PlanID]
+		if exists && plan.OwnerID == scope.OwnerID && plan.AccountGeneration == scope.AccountGeneration && (planID == "" || change.PlanID == planID) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	lastID, err := decodeChangeCursor(planID, token)
+	if err != nil {
+		return ChangePage{}, ErrInvalid
+	}
+	start, err := startAfter(ids, lastID)
+	if err != nil || start > len(ids) {
+		return ChangePage{}, ErrInvalid
+	}
+	end := len(ids)
+	if size > 0 && end > start+size {
+		end = start + size
+	}
+	items := make([]Change, 0, end-start)
+	for _, id := range ids[start:end] {
+		items = append(items, r.changes[id])
+	}
+	next := ""
+	if end < len(ids) {
+		next = encodeChangeCursor(planID, ids[end-1])
+	}
+	return ChangePage{Items: items, NextPageToken: next}, nil
+}
+
+var _ ScopedRepository = (*MemoryRepository)(nil)
+
 func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string, expected int64, identity Identity, testedAt time.Time) (Credentials, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -373,8 +623,8 @@ func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string
 // provider while the repository mutex is held. Existing in-progress claims
 // are reported to bounded same-key waiters; uncertain claims fail closed so a
 // retry can never issue a second provider request after an ambiguous crash.
-func (r *MemoryRepository) BeginCredentialTest(_ context.Context, id string, expected int64, key string, leaseTimes ...time.Time) (CredentialTestClaim, *CredentialTest, error) {
-	if r == nil || !validUUID(id) || !validUUID(key) || expected < 1 {
+func (r *MemoryRepository) BeginCredentialTest(_ context.Context, scope coreteam.Scope, id string, expected int64, key string, leaseTimes ...time.Time) (CredentialTestClaim, *CredentialTest, error) {
+	if r == nil || scope.Validate() != nil || !validUUID(id) || !validUUID(key) || expected < 1 {
 		return CredentialTestClaim{}, nil, ErrInvalid
 	}
 	leaseExpiresAt, completionGraceUntil, err := CredentialTestLeaseTimes(time.Now(), leaseTimes...)
@@ -382,12 +632,13 @@ func (r *MemoryRepository) BeginCredentialTest(_ context.Context, id string, exp
 		return CredentialTestClaim{}, nil, err
 	}
 	digest := CredentialTestBindingDigest(id, expected)
+	claimKey := replayKey(scopedReplayOperation("test-credential-claim", scope), key)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.testClaims == nil {
 		r.testClaims = make(map[string]memoryCredentialTestClaim)
 	}
-	if existing, ok := r.testClaims[key]; ok {
+	if existing, ok := r.testClaims[claimKey]; ok {
 		if existing.digest != digest {
 			return CredentialTestClaim{}, nil, ErrIdempotencyConflict
 		}
@@ -410,25 +661,27 @@ func (r *MemoryRepository) BeginCredentialTest(_ context.Context, id string, exp
 		}
 	}
 	credential, ok := r.credentials[id]
-	if !ok {
+	if !ok || r.credentialScopes[id] != scope {
 		return CredentialTestClaim{}, nil, ErrNotFound
 	}
 	if credential.Revision != expected {
 		return CredentialTestClaim{}, nil, ErrRevisionConflict
 	}
-	claim := CredentialTestClaim{ClaimID: newUUID(), IdempotencyKey: key, CredentialID: id, ExpectedRevision: expected, LeaseExpiresAt: leaseExpiresAt, CompletionGraceUntil: completionGraceUntil, Credential: cloneCredential(credential)}
-	r.testClaims[key] = memoryCredentialTestClaim{claim: claim, digest: digest, state: memoryCredentialTestInProgress}
+	claim := CredentialTestClaim{ClaimID: newUUID(), IdempotencyKey: key, OwnerID: scope.OwnerID, AccountGeneration: scope.AccountGeneration, CredentialID: id, ExpectedRevision: expected, LeaseExpiresAt: leaseExpiresAt, CompletionGraceUntil: completionGraceUntil, Credential: cloneCredential(credential)}
+	r.testClaims[claimKey] = memoryCredentialTestClaim{claim: claim, digest: digest, state: memoryCredentialTestInProgress}
 	return claim, nil, nil
 }
 
 func (r *MemoryRepository) CompleteCredentialTest(_ context.Context, claim CredentialTestClaim, identity Identity, testedAt time.Time) (CredentialTest, error) {
-	if r == nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 || testedAt.IsZero() {
+	scope := coreteam.Scope{OwnerID: claim.OwnerID, AccountGeneration: claim.AccountGeneration}
+	if r == nil || scope.Validate() != nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 || testedAt.IsZero() {
 		return CredentialTest{}, ErrInvalid
 	}
 	digest := CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	existing, ok := r.testClaims[claim.IdempotencyKey]
+	claimKey := replayKey(scopedReplayOperation("test-credential-claim", scope), claim.IdempotencyKey)
+	existing, ok := r.testClaims[claimKey]
 	if !ok || existing.digest != digest || existing.claim.ClaimID != claim.ClaimID {
 		return CredentialTest{}, ErrResponseUncertain
 	}
@@ -442,7 +695,7 @@ func (r *MemoryRepository) CompleteCredentialTest(_ context.Context, claim Crede
 		return CredentialTest{}, ErrResponseUncertain
 	}
 	credential, ok := r.credentials[claim.CredentialID]
-	if !ok {
+	if !ok || r.credentialScopes[claim.CredentialID] != scope {
 		return CredentialTest{}, ErrNotFound
 	}
 	if credential.Revision != claim.ExpectedRevision {
@@ -463,11 +716,11 @@ func (r *MemoryRepository) CompleteCredentialTest(_ context.Context, claim Crede
 	}
 	test := CredentialTest{CredentialID: claim.CredentialID, Identity: persistedIdentity, CredentialRevision: credential.Revision, TestedAt: persistedTestedAt}
 	existing.state, existing.test = memoryCredentialTestCompleted, &test
-	r.testClaims[claim.IdempotencyKey] = existing
+	r.testClaims[claimKey] = existing
 	if r.replays == nil {
 		r.replays = make(map[string]memoryReplay)
 	}
-	r.replays[replayKey("test_credential", claim.IdempotencyKey)] = memoryReplay{digest: digest, test: &test}
+	r.replays[replayKey(scopedReplayOperation("test_credential", scope), claim.IdempotencyKey)] = memoryReplay{digest: digest, test: &test}
 	return test, nil
 }
 
@@ -479,13 +732,15 @@ func laterTime(current, candidate time.Time) time.Time {
 }
 
 func (r *MemoryRepository) MarkCredentialTestUncertain(_ context.Context, claim CredentialTestClaim) error {
-	if r == nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 {
+	scope := coreteam.Scope{OwnerID: claim.OwnerID, AccountGeneration: claim.AccountGeneration}
+	if r == nil || scope.Validate() != nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 {
 		return ErrInvalid
 	}
 	digest := CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	existing, ok := r.testClaims[claim.IdempotencyKey]
+	claimKey := replayKey(scopedReplayOperation("test-credential-claim", scope), claim.IdempotencyKey)
+	existing, ok := r.testClaims[claimKey]
 	if !ok || existing.digest != digest || existing.claim.ClaimID != claim.ClaimID {
 		return ErrResponseUncertain
 	}
@@ -496,18 +751,20 @@ func (r *MemoryRepository) MarkCredentialTestUncertain(_ context.Context, claim 
 		return ErrResponseUncertain
 	}
 	existing.state = memoryCredentialTestUncertain
-	r.testClaims[claim.IdempotencyKey] = existing
+	r.testClaims[claimKey] = existing
 	return nil
 }
 
 func (r *MemoryRepository) MarkCredentialTestFailed(_ context.Context, claim CredentialTestClaim) error {
-	if r == nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 {
+	scope := coreteam.Scope{OwnerID: claim.OwnerID, AccountGeneration: claim.AccountGeneration}
+	if r == nil || scope.Validate() != nil || !validUUID(claim.ClaimID) || !validUUID(claim.IdempotencyKey) || !validUUID(claim.CredentialID) || claim.ExpectedRevision < 1 {
 		return ErrInvalid
 	}
 	digest := CredentialTestBindingDigest(claim.CredentialID, claim.ExpectedRevision)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	existing, ok := r.testClaims[claim.IdempotencyKey]
+	claimKey := replayKey(scopedReplayOperation("test-credential-claim", scope), claim.IdempotencyKey)
+	existing, ok := r.testClaims[claimKey]
 	if !ok || existing.digest != digest || existing.claim.ClaimID != claim.ClaimID {
 		return ErrResponseUncertain
 	}
@@ -518,7 +775,7 @@ func (r *MemoryRepository) MarkCredentialTestFailed(_ context.Context, claim Cre
 		return ErrResponseUncertain
 	}
 	existing.state = memoryCredentialTestFailed
-	r.testClaims[claim.IdempotencyKey] = existing
+	r.testClaims[claimKey] = existing
 	return nil
 }
 func (r *MemoryRepository) CreatePlan(_ context.Context, p Plan) (Plan, error) {

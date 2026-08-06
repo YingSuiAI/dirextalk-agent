@@ -18,6 +18,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfig"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corevoice"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corewebsearch"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -999,7 +1012,7 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 	defer func() { cancel(); m.mu.Lock(); delete(m.cancel, operationID); m.mu.Unlock() }()
 	op, err = m.Get(ctx, operationID)
 	if err != nil {
-		_ = m.Fail(context.Background(), operationID, "NOT_FOUND", err.Error())
+		_ = m.Fail(context.Background(), operationID, "NOT_FOUND", "operation record was not found")
 		return
 	}
 	result, err := handler(ctx, op)
@@ -1012,7 +1025,7 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
-		_ = m.markUncertain(context.Background(), operationID, err.Error())
+		_ = m.markUncertain(context.Background(), operationID, "operation outcome is uncertain")
 		return
 	}
 	if IsUncertain(err) {
@@ -1023,7 +1036,8 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 		_ = m.Fail(context.Background(), operationID, code, message)
 		return
 	}
-	_ = m.Fail(context.Background(), operationID, "UPSTREAM_FAILED", "Agent operation failed")
+	code, message := publicOperationFailure(err)
+	_ = m.Fail(context.Background(), operationID, code, message)
 }
 
 // Reconcile never replays a side effect whose outcome is unknown. Without a
@@ -1289,13 +1303,96 @@ func errorCodeToProto(code string) capv1.ErrorCode {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+func publicOperationFailure(err error) (string, string) {
+	if errors.Is(err, coreteam.ErrExecutionActive) {
+		return "PRECONDITION_FAILED", coreteam.ErrorCodeTeamExecutionActive
+	}
+	if errors.Is(err, coreknowledge.ErrActiveTasks) {
+		return "PRECONDITION_FAILED", coreknowledge.ActiveTasksPublicMessage
+	}
+	if errorIsAny(err,
+		ErrInvalid, coreaws.ErrInvalid, coretask.ErrInvalid, coreconfirmation.ErrInvalid,
+		coreconfig.ErrInvalid, coreconversation.ErrInvalid, coredeprovision.ErrInvalid,
+		coreexecutionv2.ErrInvalid, coreexecutionv2.ErrUnsupported,
+		coreextension.ErrInvalid,
+		coreknowledge.ErrInvalid, coreknowledge.ErrChecksumMismatch, coreknowledge.ErrPathTraversal,
+		coremodel.ErrInvalidProfile, coremodel.ErrInvalidBaseURL, coremodel.ErrUnsupportedProvider,
+		coremodel.ErrInvalidCompletionRequest, coremodel.ErrInvalidIdempotencyKey, coremodel.ErrInvalidCursor, coremodel.ErrInvalidPageSize,
+		coreteam.ErrInvalid, corevoice.ErrInvalid, corewebsearch.ErrInvalid,
+	) {
+		return "INVALID_ARGUMENT", "invalid operation request"
+	}
+	if errorIsAny(err,
+		coreaws.ErrNotFound, coretask.ErrNotFound, coreconfirmation.ErrNotFound,
+		coreconfig.ErrNotFound, coreconversation.ErrDeleted,
+		coreexecutionv2.ErrNotFound, coreexecutionv2.ErrSecretNotFound,
+		coreextension.ErrNotFound, coreknowledge.ErrNotFound, coremodel.ErrProfileNotFound,
+		coreteam.ErrNotFound, corevoice.ErrNotFound,
+	) {
+		return "NOT_FOUND", "requested resource was not found"
+	}
+	if errorIsAny(err,
+		ErrIdempotencyConflict,
+		coreaws.ErrConflict, coreaws.ErrRevisionConflict, coreaws.ErrIdempotencyConflict,
+		coretask.ErrConflict, coretask.ErrRevisionConflict, coretask.ErrLeaseConflict, coretask.ErrDispatchStarted, coretask.ErrTerminal, coretask.ErrLedgerConflict,
+		coreconfirmation.ErrConflict, coreconfirmation.ErrRevisionConflict, coreconfirmation.ErrIdempotencyConflict, coreconfirmation.ErrStale,
+		coreconfirmation.ErrExpired, coreconfirmation.ErrInvalidTransition, coreconfirmation.ErrTaskFenceConflict, coreconfirmation.ErrBindingUnavailable,
+		coreconfig.ErrConflict,
+		coreconversation.ErrConflict, coreconversation.ErrInFlight, coreconversation.ErrCanceled, coreconversation.ErrLeaseExpired,
+		coredeprovision.ErrConflict, coredeprovision.ErrClosed, coredeprovision.ErrPurgeClosed,
+		coreexecutionv2.ErrConflict,
+		coreextension.ErrConflict, coreextension.ErrIdempotencyConflict, coreextension.ErrRevisionConflict,
+		coreknowledge.ErrConflict, coreknowledge.ErrIdempotencyConflict, coreknowledge.ErrRevisionConflict, coreknowledge.ErrCleanupPending,
+		coreknowledge.ErrIneligible, coreknowledge.ErrSourceReferenced, coreknowledge.ErrCursorConflict,
+		coremodel.ErrIdempotencyConflict, coremodel.ErrRevisionConflict, coremodel.ErrProfileInUse, coremodel.ErrSyncConflict,
+		coreteam.ErrConflict, coreteam.ErrRevisionConflict,
+		corevoice.ErrConflict, corevoice.ErrTerminal, corevoice.ErrBusy, corevoice.ErrExpired,
+		corewebsearch.ErrRevisionConflict, corewebsearch.ErrIdempotencyConflict,
+	) {
+		return "CONFLICT", "operation conflicts with current resource state"
+	}
+	if errors.Is(err, coreaws.ErrUnconfirmed) {
+		return "PRECONDITION_FAILED", "operation precondition was not satisfied"
+	}
+	if errorIsAny(err, coreconversation.ErrExtensionsUnsupported, corevoice.ErrTranscriptDisabled) {
+		return "PRECONDITION_FAILED", "operation precondition was not satisfied"
+	}
+	if errorIsAny(err,
+		coredeprovision.ErrNotReady, coreexecutionv2.ErrNotReady, coreexecutionv2.ErrMissingPort,
+		coremodel.ErrAPIKeyUnavailable,
+		coreteam.ErrRuntimeUnavailable, coreteam.ErrQuoteUnavailable, coreteam.ErrIdentityUnavailable,
+		corewebsearch.ErrNotConfigured, corewebsearch.ErrDisabled,
+	) {
+		return "NOT_READY", "required operation dependency is not ready"
+	}
+	if errorIsAny(err, coreknowledge.ErrLimitExceeded, coremodel.ErrCompletionRequestTooLarge) {
+		return "RESOURCE_EXHAUSTED", "operation exceeds the allowed resource limit"
+	}
+	if errorIsAny(err, coreknowledge.ErrFilesystemUnavailable, coremodel.ErrProviderUnavailable, coremodel.ErrProfileRepository, corevoice.ErrUnavailable, corewebsearch.ErrRepository) {
+		return "UNAVAILABLE", "operation dependency is unavailable"
+	}
+	if errors.Is(err, corevoice.ErrForbidden) {
+		return "PERMISSION_DENIED", "operation is not permitted for this account"
+	}
+	if errors.Is(err, coreaws.ErrResponseUncertain) {
+		return "UNCERTAIN", "operation outcome is uncertain"
+	}
+	return "UPSTREAM_FAILED", safeMessage(err)
+}
+
+func errorIsAny(err error, targets ...error) bool {
+	for _, target := range targets {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
 func safeMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	s := err.Error()
-	if len(s) > 4096 {
-		s = s[:4096]
-	}
-	return s
+	return "operation failed"
 }

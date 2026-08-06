@@ -208,5 +208,50 @@ func cancelKnowledgeIndexTaskTx(ctx context.Context, tx pgx.Tx, taskID string, n
 	if _, err := tx.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',error_code='user_canceled',updated_at=$2 WHERE source_id IN (SELECT jsonb_array_elements_text(source_ids)::uuid FROM core_knowledge_index_jobs WHERE task_id=$1) AND status='indexing'`, taskID, now); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, taskID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func failKnowledgeIndexTaskTx(ctx context.Context, tx pgx.Tx, taskID, code, summary string, now time.Time, quiescentAfter *time.Time) error {
+	if _, err := tx.Exec(ctx, `UPDATE core_knowledge_index_jobs SET status='failed',error_code=$2,error_summary=$3,updated_at=$4 WHERE task_id=$1 AND status IN ('queued','running')`, taskID, code, summary, now); err != nil {
+		return err
+	}
+	cleanupKind := "staging"
+	var quiescent any
+	if quiescentAfter != nil {
+		cleanupKind = "canceled_staging"
+		quiescent = quiescentAfter.UTC()
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO core_knowledge_generation_cleanup(source_id,generation,cleanup_kind,revision,quiescent_after)
+		SELECT x::uuid,j.generation,$2,0,$3 FROM core_knowledge_index_jobs j, jsonb_array_elements_text(j.source_ids) x
+		WHERE j.task_id=$1
+		ON CONFLICT(source_id,generation) DO UPDATE SET
+		  cleanup_kind=CASE
+		    WHEN core_knowledge_generation_cleanup.cleanup_kind='canceled_staging' OR EXCLUDED.cleanup_kind='canceled_staging' THEN 'canceled_staging'
+		    ELSE 'staging'
+		  END,
+		  quiescent_after=CASE
+		    WHEN core_knowledge_generation_cleanup.cleanup_kind='canceled_staging' OR EXCLUDED.cleanup_kind='canceled_staging'
+		      THEN GREATEST(COALESCE(core_knowledge_generation_cleanup.quiescent_after,EXCLUDED.quiescent_after),EXCLUDED.quiescent_after)
+		    ELSE core_knowledge_generation_cleanup.quiescent_after
+		  END`, taskID, cleanupKind, quiescent); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE core_knowledge_sources AS source
+		SET status='ready',error_code=$2,updated_at=$3
+		FROM (
+			SELECT item.value::uuid AS source_id,(job.expected_revisions ->> ((item.ordinality - 1)::int))::bigint AS expected_revision
+			FROM core_knowledge_index_jobs AS job
+			CROSS JOIN LATERAL jsonb_array_elements_text(job.source_ids) WITH ORDINALITY AS item(value,ordinality)
+			WHERE job.task_id=$1
+		) AS expected
+		WHERE source.source_id=expected.source_id AND source.revision=expected.expected_revision AND source.status='indexing'`, taskID, code, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM core_model_profile_active_refs WHERE owner_kind='task' AND owner_id=$1`, taskID); err != nil {
+		return err
+	}
 	return nil
 }

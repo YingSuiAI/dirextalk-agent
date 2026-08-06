@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 )
 
 // MemoryChangeCoordinator owns the complete AWS lifecycle in one serialized
@@ -31,18 +32,20 @@ func (m *MemoryChangeCoordinator) InjectFailure(fail bool) {
 }
 
 func (m *MemoryChangeCoordinator) RequestChange(ctx context.Context, in RequestChangeInput) (ChangeRequestResult, error) {
-	if m == nil || m.repo == nil {
+	if m == nil || m.repo == nil || in.Scope.Validate() != nil {
 		return ChangeRequestResult{}, ErrInvalid
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	digest := canonicalDigest(struct {
 		PlanID  string
+		Scope   coreteam.Scope
 		Binding coreconfirmation.Binding
-	}{in.PlanID, in.Binding})
+	}{in.PlanID, in.Scope, in.Binding})
+	replayOperation := scopedReplayOperation("change-request", in.Scope)
 	m.repo.mu.Lock()
 	defer m.repo.mu.Unlock()
-	if v, ok, e := m.repo.replayLocked("change-request", in.IdempotencyKey, digest); ok {
+	if v, ok, e := m.repo.replayLocked(replayOperation, in.IdempotencyKey, digest); ok {
 		if e != nil {
 			return ChangeRequestResult{}, e
 		}
@@ -52,11 +55,11 @@ func (m *MemoryChangeCoordinator) RequestChange(ctx context.Context, in RequestC
 		return ChangeRequestResult{}, ErrConflict
 	}
 	p, ok := m.repo.plans[in.PlanID]
-	if !ok {
+	if !ok || p.OwnerID != in.Scope.OwnerID || p.AccountGeneration != in.Scope.AccountGeneration {
 		return ChangeRequestResult{}, ErrNotFound
 	}
 	cred, ok := m.repo.credentials[p.CredentialID]
-	if !ok {
+	if !ok || m.repo.credentialScopes[p.CredentialID] != in.Scope {
 		return ChangeRequestResult{}, ErrNotFound
 	}
 	binding := bindingForPlan(p, cred)
@@ -79,7 +82,7 @@ func (m *MemoryChangeCoordinator) RequestChange(ctx context.Context, in RequestC
 	out := ChangeRequestResult{Change: c, Task: task, Confirmation: conf}
 	m.repo.changes[c.ID], m.repo.tasks[task.ID], m.repo.confirmations[conf.ConfirmationID] = c, task, conf
 	m.repo.events = append(m.repo.events, ChangeEvent{ChangeID: c.ID, TaskID: task.ID, Kind: "change_requested", Revision: c.Revision, At: now})
-	m.repo.replays[replayKey("change-request", in.IdempotencyKey)] = memoryReplay{digest: digest, change: &out}
+	m.repo.replays[replayKey(replayOperation, in.IdempotencyKey)] = memoryReplay{digest: digest, change: &out}
 	return out, nil
 }
 

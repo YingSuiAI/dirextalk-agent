@@ -152,7 +152,7 @@ func TestTaskKindsEnforceModelProfilePolicy(t *testing.T) {
 			spec.Payload.Extension = &ExtensionTaskPayload{Operation: ExtensionOperationExecuteTool, InstallationID: testID2, ExpectedRevision: 1, Version: "1.0.0", Digest: strings.Repeat("a", 64), ToolName: "echo", CanonicalInputJSON: json.RawMessage(`{"value":1}`)}
 		case TaskKindKnowledgeIndex:
 			spec.ModelProfileID = testID2
-			spec.Payload.KnowledgeIndex = &KnowledgeIndexTaskPayload{SourceIDs: []string{"source-1"}, ExpectedSourceRevision: []uint64{1}, CollectionConfigDigest: strings.Repeat("a", 64)}
+			spec.Payload.KnowledgeIndex = &KnowledgeIndexTaskPayload{SourceIDs: []string{"source-1"}, ExpectedSourceRevision: []uint64{1}, CollectionConfigDigest: strings.Repeat("a", 64), EmbeddingDimension: 2}
 		case TaskKindAWSChange:
 			spec.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID2}
 		case TaskKindWorkload:

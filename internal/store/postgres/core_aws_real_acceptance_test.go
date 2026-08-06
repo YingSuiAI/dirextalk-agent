@@ -14,6 +14,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreteam"
 	"github.com/YingSuiAI/dirextalk-agent/internal/rpcapi"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -59,6 +60,10 @@ func TestCoreAWSRealProviderLifecycle(t *testing.T) {
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
+	ctx, err = coreaws.WithCredentialMutationScope(ctx, coreteam.Scope{OwnerID: "@real-aws-acceptance:example.test", AccountGeneration: 1})
+	if err != nil {
+		t.Fatal("bind real AWS acceptance credential scope")
+	}
 	awsStore := NewCoreAWSStore(store)
 	coord := NewCoreAWSChangeCoordinator(store, time.Now)
 	confirmDomain, err := coreconfirmation.NewService(NewCoreConfirmationStore(store))

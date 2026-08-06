@@ -4,18 +4,20 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
 // Stage records are first-class execution-v2 snapshots.  The public API uses
 // deterministic reconcile rather than a hidden worker, so the stage binds the
 // run, task identity, confirmation, plan revision, and operation in one
 // owner-scoped durable record.
-func stageIDForRun(owner, runID, planID, operation string) string {
-	return deterministicID(owner, "execution-v2-stage", runID+"\x00"+planID+"\x00"+operation)
+func stageIDForRun(scope coretask.OwnerScope, runID, planID, operation string) string {
+	return deterministicID(scope, "execution-v2-stage", runID+"\x00"+planID+"\x00"+operation)
 }
 
-func taskIDForStage(owner, stageID string) string {
-	return deterministicID(owner, "execution-v2-task", stageID)
+func taskIDForStage(scope coretask.OwnerScope, stageID string) string {
+	return deterministicID(scope, "execution-v2-task", stageID)
 }
 
 func stagePayload(runID, planID, operation, taskID, confirmationID string, planRevision uint64) map[string]any {
@@ -27,13 +29,13 @@ func stagePayload(runID, planID, operation, taskID, confirmationID string, planR
 	}
 }
 
-func stageRecordPayload(owner, runID, planID, operation, taskID, confirmationID string, planRevision uint64) map[string]any {
+func stageRecordPayload(scope coretask.OwnerScope, runID, planID, operation, taskID, confirmationID string, planRevision uint64) map[string]any {
 	payload := stagePayload(runID, planID, operation, taskID, confirmationID, planRevision)
-	payload["binding"].(map[string]any)["stage_id"] = stageIDForRun(owner, runID, planID, operation)
+	payload["binding"].(map[string]any)["stage_id"] = stageIDForRun(scope, runID, planID, operation)
 	return payload
 }
 
-func stageForRun(ctx context.Context, store Store, owner string, run Record) (Record, error) {
+func stageForRun(ctx context.Context, store Store, scope coretask.OwnerScope, run Record) (Record, error) {
 	if store == nil || run.Kind != "run" {
 		return Record{}, ErrInvalid
 	}
@@ -41,11 +43,11 @@ func stageForRun(ctx context.Context, store Store, owner string, run Record) (Re
 	if stageID == "" {
 		return Record{}, ErrNotFound
 	}
-	stage, err := store.Read(ctx, owner, "stage", stageID, 0)
+	stage, err := store.Read(ctx, scope, "stage", stageID, 0)
 	if err != nil {
 		return Record{}, err
 	}
-	if stage.OwnerID != owner || stringParam(stage.Payload, "run_id") != run.ID || stage.ID != stageID {
+	if stage.OwnerID != scope.OwnerID || stage.AccountGeneration != scope.AccountGeneration || stringParam(stage.Payload, "run_id") != run.ID || stage.ID != stageID {
 		return Record{}, fmt.Errorf("%w: stage binding mismatch", ErrConflict)
 	}
 	return stage, nil
