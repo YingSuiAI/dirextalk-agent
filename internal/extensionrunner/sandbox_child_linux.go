@@ -236,15 +236,18 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	}
 	closeAfterRoot := []int{sandboxBootstrapFD, sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
 	if bootstrap.CoreTmpfsBytes > 0 {
-		// The manager retains only bootstrap/result descriptors. The old host
-		// workspace, manager source and all mount handles are closed before it
-		// starts the command.
-		closeAfterRoot = []int{sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD, rootFD}
+		// The manager child retains only bootstrap/result descriptors. Its
+		// trusted parent keeps the detached sandbox-root handle just long enough
+		// to cover the manager mount after exec; it closes every host descriptor.
+		closeAfterRoot = []int{sandboxReleaseFD, sandboxInstallFD, sandboxEntryFD, sandboxWorkspaceFD, mappedInstallFD, mappedWorkspaceFD}
 	}
 	for _, fd := range closeAfterRoot {
 		_ = unix.Close(fd)
 	}
-	mappedInstallFD, mappedWorkspaceFD, rootFD = -1, -1, -1
+	mappedInstallFD, mappedWorkspaceFD = -1, -1
+	if bootstrap.CoreTmpfsBytes == 0 {
+		rootFD = -1
+	}
 	if bootstrap.HasStdin {
 		if err := unix.Dup2(sandboxStdinFD, 0); err != nil {
 			return sandboxChildFailure("stdin", err)
@@ -259,7 +262,9 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 		_ = unix.Close(sandboxStdinFD + btoi(bootstrap.HasStdin) + i)
 	}
 	if bootstrap.CoreTmpfsBytes > 0 {
-		return runSandboxManager(bootstrap)
+		managerRootFD := rootFD
+		rootFD = -1
+		return runSandboxManager(bootstrap, managerRootFD)
 	}
 	if err := verifySandboxStandardFDs(); err != nil {
 		return sandboxChildFailure("close-fds", err)
@@ -290,13 +295,14 @@ func runSandboxChild(bootstrap bootstrapV1) error {
 	return nil
 }
 
-func runSandboxManager(bootstrap bootstrapV1) error {
+func runSandboxManager(bootstrap bootstrapV1, rootFD int) error {
 	// The manager deliberately retains only its sealed bootstrap and optional
 	// result memfd. The immutable reexec image is reachable only through the
 	// temporary /run/manager mount; the command receives only bootstrap fd 3.
-	if bootstrap.CoreTmpfsBytes <= 0 {
+	if bootstrap.CoreTmpfsBytes <= 0 || rootFD < 0 {
 		return sandboxChildFailure("manager", ErrDenied)
 	}
+	defer unix.Close(rootFD)
 	boot, err := unix.Dup(sandboxBootstrapFD)
 	if err != nil {
 		return sandboxChildFailure("manager", err)
@@ -328,7 +334,7 @@ func runSandboxManager(bootstrap bootstrapV1) error {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}
-	if err := hideSandboxManagerMount(); err != nil {
+	if err := hideSandboxManagerMount(rootFD); err != nil {
 		abort()
 		return err
 	}

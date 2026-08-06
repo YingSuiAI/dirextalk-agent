@@ -154,7 +154,7 @@ func moveSandboxMount(mountFD, targetFD int) error {
 	return unix.MoveMount(mountFD, "", targetFD, "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
 }
 
-func hideSandboxManagerMount() error {
+func hideSandboxManagerMount(rootFD int) error {
 	// The sandbox root remains a detached mount tree, so umount2 by pathname
 	// returns EINVAL even though the manager is a mount within that tree. Cover
 	// it with an empty immutable mount before capabilities are cleared instead.
@@ -163,7 +163,10 @@ func hideSandboxManagerMount() error {
 		return sandboxChildFailure("manager-hide", err)
 	}
 	defer unix.Close(coverFD)
-	targetFD, err := unix.Open("/run/manager", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	targetFD, err := unix.Openat2(rootFD, "run/manager", &unix.OpenHow{
+		Flags:   unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW,
+		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
 	if err != nil {
 		return sandboxChildFailure("manager-hide", err)
 	}
