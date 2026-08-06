@@ -51,6 +51,7 @@ type BackendInfo struct {
 	Status                  string   `json:"status"`
 	InstanceID              string   `json:"instance_id,omitempty"`
 	APIVersion              string   `json:"api_version,omitempty"`
+	ReleaseVersion          string   `json:"release_version,omitempty"`
 	Capabilities            []string `json:"capabilities"`
 	SupportedModelProviders []string `json:"supported_model_providers"`
 }
@@ -144,7 +145,7 @@ func (c *infoCapability) Descriptor() *capv1.CapabilityDescriptor {
 			Type:         capv1.OperationType_OPERATION_TYPE_READ,
 			Scope:        "agent:info:read",
 			InputSchema:  `{"additionalProperties":false,"properties":{},"type":"object"}`,
-			ResultSchema: `{"additionalProperties":false,"properties":{"core":{"$ref":"#/$defs/backend"},"embedded":{"$ref":"#/$defs/backend"}},"required":["core","embedded"],"$defs":{"backend":{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}},"type":"object"}`,
+			ResultSchema: `{"additionalProperties":false,"properties":{"core":{"$ref":"#/$defs/backend"},"embedded":{"$ref":"#/$defs/backend"}},"required":["core","embedded"],"$defs":{"backend":{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"release_version":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}},"type":"object"}`,
 		},
 		{
 			ID:           "get_status",
@@ -153,7 +154,7 @@ func (c *infoCapability) Descriptor() *capv1.CapabilityDescriptor {
 			Type:         capv1.OperationType_OPERATION_TYPE_READ,
 			Scope:        "agent:info:read",
 			InputSchema:  `{"additionalProperties":false,"properties":{},"type":"object"}`,
-			ResultSchema: `{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}`,
+			ResultSchema: `{"additionalProperties":false,"properties":{"api_version":{"type":"string"},"available":{"type":"boolean"},"capabilities":{"items":{"type":"string"},"type":"array"},"configured":{"type":"boolean"},"instance_id":{"type":"string"},"release_version":{"type":"string"},"status":{"type":"string"},"supported_model_providers":{"items":{"type":"string"},"type":"array"}},"required":["available","configured","status","capabilities","supported_model_providers"],"type":"object"}`,
 		},
 		{
 			ID:           "list_models",
@@ -224,6 +225,7 @@ func normalizeBackendInfo(value BackendInfo) BackendInfo {
 	value.Status = normalizeStatus(value.Status)
 	value.InstanceID = safeString(value.InstanceID, maxRuntimeNameBytes)
 	value.APIVersion = safeString(value.APIVersion, maxRuntimeNameBytes)
+	value.ReleaseVersion = safeString(value.ReleaseVersion, maxRuntimeNameBytes)
 	value.Capabilities = normalizeStrings(value.Capabilities, maxRuntimeNameBytes)
 	value.SupportedModelProviders = normalizeStrings(value.SupportedModelProviders, maxRuntimeNameBytes)
 	return value

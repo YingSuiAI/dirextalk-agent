@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	"github.com/YingSuiAI/dirextalk-agent/internal/config"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/store/postgres"
@@ -23,6 +24,9 @@ func main() {
 }
 
 func run(arguments []string) error {
+	if err := buildinfo.Validate(); err != nil {
+		return err
+	}
 	configPath, command, healthOptions, err := parseArguments(arguments)
 	if err != nil {
 		return err

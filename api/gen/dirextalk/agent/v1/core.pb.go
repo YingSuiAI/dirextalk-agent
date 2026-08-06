@@ -198,11 +198,12 @@ func (*GetInstanceInfoRequest) Descriptor() ([]byte, []int) {
 }
 
 type GetInstanceInfoResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	ApiVersion    string                 `protobuf:"bytes,2,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId     string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	ApiVersion     string                 `protobuf:"bytes,2,opt,name=api_version,json=apiVersion,proto3" json:"api_version,omitempty"`
+	ReleaseVersion string                 `protobuf:"bytes,3,opt,name=release_version,json=releaseVersion,proto3" json:"release_version,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GetInstanceInfoResponse) Reset() {
@@ -249,6 +250,13 @@ func (x *GetInstanceInfoResponse) GetApiVersion() string {
 	return ""
 }
 
+func (x *GetInstanceInfoResponse) GetReleaseVersion() string {
+	if x != nil {
+		return x.ReleaseVersion
+	}
+	return ""
+}
+
 var File_dirextalk_agent_v1_core_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_proto_rawDesc = "" +
@@ -262,12 +270,13 @@ const file_dirextalk_agent_v1_core_proto_rawDesc = "" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12G\n" +
 	"\fcapabilities\x18\x02 \x03(\v2#.dirextalk.agent.v1.AgentCapabilityR\fcapabilities\"\x18\n" +
-	"\x16GetInstanceInfoRequest\"[\n" +
+	"\x16GetInstanceInfoRequest\"\x84\x01\n" +
 	"\x17GetInstanceInfoResponse\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1f\n" +
 	"\vapi_version\x18\x02 \x01(\tR\n" +
-	"apiVersion2\xe6\x01\n" +
+	"apiVersion\x12'\n" +
+	"\x0frelease_version\x18\x03 \x01(\tR\x0ereleaseVersion2\xe6\x01\n" +
 	"\fAgentService\x12j\n" +
 	"\x0fGetCapabilities\x12*.dirextalk.agent.v1.GetCapabilitiesRequest\x1a+.dirextalk.agent.v1.GetCapabilitiesResponse\x12j\n" +
 	"\x0fGetInstanceInfo\x12*.dirextalk.agent.v1.GetInstanceInfoRequest\x1a+.dirextalk.agent.v1.GetInstanceInfoResponseBIZGgithub.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1b\x06proto3"

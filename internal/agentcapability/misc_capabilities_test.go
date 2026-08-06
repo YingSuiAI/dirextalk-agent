@@ -19,7 +19,7 @@ func capabilityTestContext() context.Context {
 func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T) {
 	capability := NewInfoCapability(InfoProviderFunc{
 		BackendsFunc: func(context.Context) (BackendsSnapshot, error) {
-			return BackendsSnapshot{Embedded: BackendInfo{Status: "READY", Capabilities: []string{"memory.server", "memory.server", "agent.info"}}, Core: BackendInfo{Status: "future-secret-status", Capabilities: []string{"z", "a"}}}, nil
+			return BackendsSnapshot{Embedded: BackendInfo{Status: "READY", Capabilities: []string{"memory.server", "memory.server", "agent.info"}}, Core: BackendInfo{Status: "future-secret-status", ReleaseVersion: " v1.0.0 ", Capabilities: []string{"z", "a"}}}, nil
 		},
 		StatusFunc: func(context.Context) (BackendInfo, error) { return BackendInfo{Status: "ready"}, nil },
 		ModelsFunc: func(_ context.Context, request ModelCatalogRequest) (ModelCatalogResult, error) {
@@ -30,14 +30,20 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 		},
 	})
 	var catalogSchema string
+	var statusSchema string
 	for _, operation := range capability.Descriptor().GetOperations() {
 		if operation.GetOperationId() == "list_models" {
 			catalogSchema = operation.GetInputSchemaJson()
-			break
+		}
+		if operation.GetOperationId() == "get_status" {
+			statusSchema = operation.GetResultSchemaJson()
 		}
 	}
 	if !strings.Contains(catalogSchema, `"writeOnly":true`) || strings.Contains(catalogSchema, `"write_only"`) {
 		t.Fatalf("model catalog API key schema is not standard writeOnly: %s", catalogSchema)
+	}
+	if !strings.Contains(statusSchema, `"release_version":{"type":"string"}`) {
+		t.Fatalf("Agent status schema omitted release_version: %s", statusSchema)
 	}
 	result, err := capability.HandleOperation(capabilityTestContext(), "get_backends", []byte(`{}`))
 	if err != nil {
@@ -50,7 +56,7 @@ func TestInfoCapabilityUsesAuthenticatedContextAndNormalizesOutput(t *testing.T)
 	if value.Embedded.Status != "ready" || strings.Join(value.Embedded.Capabilities, ",") != "agent.info,memory.server" {
 		t.Fatalf("normalized backend = %#v", value.Embedded)
 	}
-	if value.Core.Status != "unknown" {
+	if value.Core.Status != "unknown" || value.Core.ReleaseVersion != "v1.0.0" {
 		t.Fatalf("unknown status was not fail-closed: %#v", value.Core)
 	}
 	if _, err := capability.HandleOperation(capabilityTestContext(), "get_backends", []byte(`{"owner_id":"attacker"}`)); err == nil {

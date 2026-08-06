@@ -30,6 +30,12 @@ Capability service after their production graph and readiness proof pass.
 Health and reflection are optional. Core has no REST API, admin UI, or
 multi-user authorization surface.
 
+`AgentService.GetInstanceInfo` and authenticated `agent.info.v1` status expose
+the immutable image `release_version` separately from `api_version`. Release
+builds inject a v-prefixed semantic version (for example `v1.0.0`) into the
+Agent binary; local builds report `dev`. This field contains no revision,
+credential, endpoint, or other secret deployment metadata.
+
 ## Transport and authentication
 
 The server uses TLS 1.3 and one deployment-generated token read from the

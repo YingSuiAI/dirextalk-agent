@@ -34,6 +34,9 @@ contract](message-server-integration-development-contract.md), and
 - Unified Agent image and split Compose services for Core, extension runner,
   and Core Runner; the latter has nonce/full readiness and descriptor-only
   sealed-result boundaries.
+- Unified image builds validate and inject the immutable release version into
+  the Core binary; authenticated instance info and `agent.info.v1` status
+  report it separately from the `v1` API protocol version.
 - Versioned, Buf-lint-clean Protobufs and focused Core contract tests.
 - Closed Capability conversation/history DTOs, conversation-bound newest-first
   history cursors, strict UUID mutation keys, typed/redacted domain failures,
