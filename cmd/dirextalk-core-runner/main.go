@@ -20,6 +20,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "__probe-child-v1" {
+		probeChild()
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "__sandbox-probe-v1" {
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "__sandbox-child-v1" {
 		if err := extensionrunner.SandboxChildV1(); err != nil {
 			die("sandbox child failed")
@@ -67,7 +74,22 @@ func main() {
 		die("unsafe state root")
 	}
 	if e = supervisor.Serve(ctx, l); e != nil {
+		if stage, ok := runner.ReadinessStage(e); ok {
+			die("runner readiness failed at " + stage)
+		}
 		die("runner stopped")
+	}
+}
+
+func probeChild() {
+	gate := os.NewFile(uintptr(3), "probe-release")
+	if gate == nil {
+		os.Exit(2)
+	}
+	defer gate.Close()
+	var release [1]byte
+	if n, err := gate.Read(release[:]); err != nil || n != 1 || release[0] != 1 {
+		os.Exit(2)
 	}
 }
 

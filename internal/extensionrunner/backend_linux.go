@@ -40,31 +40,31 @@ func unavailableAt(stage string) error {
 
 func (b LinuxBackend) Probe(ctx context.Context) error {
 	if ctx == nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_context")
 	}
 	if b.CgroupRoot == "" || !filepath.IsAbs(b.CgroupRoot) {
-		return unavailableAt("validate/probe")
+		return unavailableAt("cgroup_root")
 	}
 	var fs unix.Statfs_t
 	if unix.Statfs(b.CgroupRoot, &fs) != nil || fs.Type != unix.CGROUP2_SUPER_MAGIC {
-		return unavailableAt("validate/probe")
+		return unavailableAt("cgroup_filesystem")
 	}
 	controllers, e := os.ReadFile(filepath.Join(b.CgroupRoot, "cgroup.controllers"))
 	if e != nil || !hasController(string(controllers), "cpu") || !hasController(string(controllers), "memory") || !hasController(string(controllers), "pids") {
-		return unavailableAt("validate/probe")
+		return unavailableAt("cgroup_controllers")
 	}
 	for _, name := range []string{"cpu", "memory", "pids"} {
 		if !hasController(string(mustReadFile(filepath.Join(b.CgroupRoot, "cgroup.subtree_control"))), name) {
-			return unavailableAt("validate/probe")
+			return unavailableAt("cgroup_delegation")
 		}
 	}
 	nameBytes := make([]byte, 16)
 	if _, e = rand.Read(nameBytes); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_identity")
 	}
 	child := filepath.Join(b.CgroupRoot, "dirextalk-probe-"+hex.EncodeToString(nameBytes))
 	if e = os.Mkdir(child, 0o700); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_create")
 	}
 	cleaned := false
 	defer func() {
@@ -74,7 +74,7 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 	}()
 	for file, value := range map[string]string{"memory.max": "16777216", "pids.max": "8", "cpu.max": "10000 100000"} {
 		if e = writeCgroup(filepath.Join(child, file), value); e != nil {
-			return unavailableAt("validate/probe")
+			return unavailableAt("probe_cgroup_limits")
 		}
 	}
 	self := b.ReexecPath
@@ -82,11 +82,11 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 		self, e = os.Executable()
 	}
 	if e != nil || self == "" {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_executable")
 	}
 	releaseR, releaseW, e := os.Pipe()
 	if e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_release_pipe")
 	}
 	command := exec.CommandContext(ctx, self, "__probe-child-v1")
 	command.ExtraFiles = []*os.File{releaseR}
@@ -94,7 +94,7 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 	if e = command.Start(); e != nil {
 		releaseR.Close()
 		releaseW.Close()
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_child_start")
 	}
 	releaseR.Close()
 	pid := strconv.Itoa(command.Process.Pid)
@@ -102,19 +102,19 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 		_ = command.Process.Kill()
 		releaseW.Close()
 		_ = command.Wait()
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_attach")
 	}
 	_, _ = releaseW.Write([]byte{1})
 	releaseW.Close()
 	if e = command.Wait(); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_child_wait")
 	}
 	procs, e := os.ReadFile(filepath.Join(child, "cgroup.procs"))
 	if e != nil || len(strings.TrimSpace(string(procs))) != 0 {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_empty")
 	}
 	if e = os.Remove(child); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_remove")
 	}
 	cleaned = true
 	return b.probeSandbox(ctx)
@@ -123,59 +123,59 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 func (b LinuxBackend) probeSandbox(ctx context.Context) error {
 	root, err := os.MkdirTemp("", "dirextalk-runner-probe-")
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_root")
 	}
 	defer os.RemoveAll(root)
 	installRoot := filepath.Join(root, "installs")
 	workspaceRoot := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(filepath.Join(installRoot, "probe"), 0o700); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_install_root")
 	}
 	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_workspace_root")
 	}
 	self := b.ReexecPath
 	if self == "" {
 		self, err = os.Executable()
 		if err != nil {
-			return unavailableAt("sandbox/probe")
+			return unavailableAt("sandbox_executable")
 		}
 	}
 	entry := filepath.Join(installRoot, "probe", "entry")
 	source, err := os.ReadFile(self)
 	if err != nil || os.WriteFile(entry, source, 0o500) != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_entry")
 	}
 	digest := DigestBytes(source)
 	manifest := []ManifestEntry{{Path: "entry", SHA256: digest, Size: int64(len(source))}}
 	manifestDigest := ManifestDigest(manifest)
 	if err := os.Rename(filepath.Join(installRoot, "probe"), filepath.Join(installRoot, manifestDigest)); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_publish")
 	}
 	install, err := OpenAdmittedInstall(filepath.Join(installRoot), manifestDigest, manifest)
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_admit")
 	}
 	defer install.Close()
 	workspace, err := unix.Open(workspaceRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_workspace")
 	}
 	defer unix.Close(workspace)
 	runID, taskID, fence, err := probeIDs()
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_identity")
 	}
 	request := RequestV2{RunID: runID, TaskID: taskID, TaskFence: fence, InstallDigest: manifestDigest, Entry: "entry", Argv: []string{"entry", "__sandbox-probe-v1"}, TimeoutMS: 2000, Limits: LimitsV2{CPUSeconds: 1, MemoryBytes: 16 << 20, Processes: 8, FileBytes: 16 << 20, OpenFiles: 64}}
 	if err := ValidateRequestV2(request); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_request")
 	}
 	process, err := b.startV2(ctx, SandboxInvocationV2{Request: request, Install: install, WorkspaceFD: workspace, StdinFD: -1})
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_start")
 	}
 	if _, _, _, err := process.Wait(); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_wait")
 	}
 	return nil
 }

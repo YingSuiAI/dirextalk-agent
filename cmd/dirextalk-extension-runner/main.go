@@ -73,6 +73,16 @@ func main() {
 	if err := validateCgroup(*cgroupRoot); err != nil {
 		die(err.Error())
 	}
+	backend := extensionrunner.LinuxBackend{CgroupRoot: *cgroupRoot}
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 10*time.Second)
+	err = backend.Probe(probeCtx)
+	cancelProbe()
+	if err != nil {
+		// Backend diagnostics contain only a fixed stage token. Running this
+		// once at startup makes container failures actionable without polling
+		// health checks emitting repeated messages.
+		die(err.Error())
+	}
 	listener, err := extensionrunner.Listen(*socket, 0o660)
 	if err != nil {
 		die("listen: " + err.Error())
@@ -80,7 +90,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	defer listener.Close()
-	r := extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: *installRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: *workspaceRoot}, V2Backend: extensionrunner.LinuxBackend{CgroupRoot: *cgroupRoot}}
+	r := extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: *installRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: *workspaceRoot}, V2Backend: backend}
 	registry, err := extensionrunner.NewPersistentRunRegistry(*stateRoot)
 	if err != nil {
 		die("registry: " + err.Error())

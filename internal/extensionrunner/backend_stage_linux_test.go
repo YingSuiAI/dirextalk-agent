@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,26 @@ func TestUnavailableAtUsesSafeStableStages(t *testing.T) {
 				t.Fatalf("safe diagnostic = %q, want %q", err, want)
 			}
 		})
+	}
+}
+
+func TestReadinessStagesContainNoRuntimeDetail(t *testing.T) {
+	for _, stage := range []string{
+		"probe_context", "cgroup_root", "cgroup_filesystem", "cgroup_controllers", "cgroup_delegation",
+		"probe_identity", "probe_cgroup_create", "probe_cgroup_limits", "probe_executable", "probe_release_pipe",
+		"probe_child_start", "probe_cgroup_attach", "probe_child_wait", "probe_cgroup_empty", "probe_cgroup_remove",
+		"sandbox_root", "sandbox_install_root", "sandbox_workspace_root", "sandbox_executable", "sandbox_entry",
+		"sandbox_publish", "sandbox_admit", "sandbox_workspace", "sandbox_identity", "sandbox_request", "sandbox_start", "sandbox_wait",
+	} {
+		err := unavailableAt(stage)
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("stage %q lost unavailable sentinel", stage)
+		}
+		for _, forbidden := range []string{"/", "errno", "permission denied", "secret"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("stage %q leaked runtime detail %q: %q", stage, forbidden, err)
+			}
+		}
 	}
 }
 

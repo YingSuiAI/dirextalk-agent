@@ -31,3 +31,42 @@ func TestServeAcceptsRequiredFlagArguments(t *testing.T) {
 		t.Fatalf("required argv rejected: %v %s", e, out)
 	}
 }
+
+func TestProbeChildWaitsForReleaseByte(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "runner")
+	build := exec.Command("go", "build", "-o", exe, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	releaseR, releaseW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseW.Close()
+	cmd := exec.Command(exe, "__probe-child-v1")
+	cmd.ExtraFiles = []*os.File{releaseR}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	releaseR.Close()
+	if _, err := releaseW.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	releaseW.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("probe child: %v", err)
+	}
+}
+
+func TestSandboxProbeEntrySucceeds(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "runner")
+	build := exec.Command("go", "build", "-o", exe, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v %s", err, out)
+	}
+	if out, err := exec.Command(exe, "__sandbox-probe-v1").CombinedOutput(); err != nil {
+		t.Fatalf("sandbox probe: %v %s", err, out)
+	}
+}

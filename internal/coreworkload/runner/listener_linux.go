@@ -3,14 +3,19 @@
 package runner
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Listen creates only a Unix SOCK_SEQPACKET endpoint in a pre-existing,
-// protected directory. It never unlinks a path it did not create.
+// protected directory. A same-UID stale socket may be removed only after its
+// inode is stable across a refused connection probe. Ordinary files, foreign
+// sockets, and active listeners are never removed.
 func Listen(path string, owner uint32) (*net.UnixListener, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || owner == 0 {
 		return nil, ErrDenied
@@ -24,7 +29,7 @@ func Listen(path string, owner uint32) (*net.UnixListener, error) {
 	if !ok || uint32(dirStat.Uid) != owner {
 		return nil, ErrDenied
 	}
-	if _, e = os.Lstat(path); e == nil || !os.IsNotExist(e) {
+	if e = clearStaleSocket(path, owner); e != nil {
 		return nil, ErrDenied
 	}
 	l, e := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
@@ -46,4 +51,48 @@ func Listen(path string, owner uint32) (*net.UnixListener, error) {
 		return nil, ErrDenied
 	}
 	return l, nil
+}
+
+type socketIdentity struct {
+	dev, ino uint64
+	uid      uint32
+}
+
+func clearStaleSocket(path string, owner uint32) error {
+	var before unix.Stat_t
+	err := unix.Lstat(path, &before)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if err != nil || before.Mode&unix.S_IFMT != unix.S_IFSOCK || before.Uid != owner {
+		return ErrDenied
+	}
+	want := socketIdentity{dev: uint64(before.Dev), ino: before.Ino, uid: before.Uid}
+	fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	err = unix.Connect(fd, &unix.SockaddrUnix{Name: path})
+	_ = unix.Close(fd)
+	if err == nil {
+		return ErrDenied
+	}
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if !errors.Is(err, unix.ECONNREFUSED) {
+		return ErrDenied
+	}
+	var after unix.Stat_t
+	if err = unix.Lstat(path, &after); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	got := socketIdentity{dev: uint64(after.Dev), ino: after.Ino, uid: after.Uid}
+	if after.Mode&unix.S_IFMT != unix.S_IFSOCK || got != want {
+		return ErrDenied
+	}
+	return unix.Unlink(path)
 }

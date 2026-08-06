@@ -10,6 +10,7 @@ import (
 	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -204,50 +205,76 @@ func (e LinuxExecutor) ReapPersistent(_ context.Context, prior Receipt) error {
 // The dynamic tmpfs/cgroup proof remains inside RunCoreResultV1 during Apply;
 // callers keep capability disabled if that full proof cannot run.
 func (e LinuxExecutor) Probe() error {
-	if !absolutePrivateDir(e.InstallRoot) || !absolutePrivateDir(e.WorkspaceRoot) || !absolutePrivateDir(e.CgroupRoot) || e.publishShell() != nil {
-		return ErrDenied
+	if !absolutePrivateDir(e.InstallRoot) {
+		return unavailableAt("install_root")
+	}
+	if !absolutePrivateDir(e.WorkspaceRoot) {
+		return unavailableAt("workspace_root")
+	}
+	if !absoluteCgroupDir(e.CgroupRoot) {
+		return unavailableAt("cgroup_root")
+	}
+	if e.publishShell() != nil {
+		return unavailableAt("static_shell")
 	}
 	// Exercise the exact ephemeral Core result path before advertising a
 	// runner: user namespace mounts, seccomp, cgroup attach/cleanup and sealed
 	// result extraction all happen below. Nothing is retained after this call.
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		return ErrDenied
+		return unavailableAt("identity")
 	}
 	id := hex.EncodeToString(token[:])
 	q := Request{Action: "apply", WorkloadID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], OperationID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], PlanDigest: strings.Repeat("0", 64), PlanRevision: 1, DispatchClaim: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], DispatchEpoch: 1, CommandSteps: []string{"printf '#!/bin/sh\\nexit 0\\n' > readiness-service"}, Service: "readiness-service", Limits: coreworkload.ResourceLimits{CPU: 1, MemoryMB: 16, Processes: 8, DiskMB: 16, TimeoutS: 1, OutputMB: 1}}
 	if q.Validate() != nil {
-		return ErrDenied
+		return unavailableAt("request")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := e.runInstall(ctx, q); err != nil {
-		return ErrDenied
+		return unavailableAt("install")
 	}
 	defer e.removeWorkspace(q)
 	service, err := e.readWorkspaceService(q)
 	if err != nil {
-		return ErrDenied
+		return unavailableAt("result")
 	}
 	digest, install, argv, err := e.publishService(service)
 	if err != nil {
-		return ErrDenied
+		return unavailableAt("publish")
 	}
 	defer install.Close()
 	defer e.removeBundle(digest)
 	workspace, err := (extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}).ResolveWorkspace(q.OperationID, q.DispatchClaim)
 	if err != nil {
-		return ErrDenied
+		return unavailableAt("workspace")
 	}
 	defer unix.Close(workspace)
 	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
-	if err != nil || !e.identityOwned(p.Identity()) {
-		return ErrDenied
+	if err != nil || p == nil || !e.identityOwned(p.Identity()) {
+		return unavailableAt("sandbox")
 	}
 	if p.Destroy(context.Background()) != nil {
-		return ErrDenied
+		return unavailableAt("cleanup")
 	}
 	return nil
+}
+
+type readinessError struct{ stage string }
+
+func (e readinessError) Error() string { return "core runner unavailable at " + e.stage }
+func (e readinessError) Unwrap() error { return ErrDenied }
+
+func unavailableAt(stage string) error { return readinessError{stage: stage} }
+
+// ReadinessStage exposes only the fixed, low-cardinality startup stage. It
+// deliberately never returns paths, errno values, or wrapped OS error text.
+func ReadinessStage(err error) (string, bool) {
+	var target readinessError
+	if !errors.As(err, &target) {
+		return "", false
+	}
+	return target.stage, true
 }
 
 func absolutePrivateDir(path string) bool {
@@ -260,6 +287,22 @@ func absolutePrivateDir(path string) bool {
 	}
 	owner, ok := st.Sys().(*syscall.Stat_t)
 	return ok && uint32(owner.Uid) == uint32(os.Geteuid())
+}
+
+func absoluteCgroupDir(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return false
+	}
+	var st unix.Stat_t
+	var fs unix.Statfs_t
+	if unix.Stat(path, &st) != nil || unix.Statfs(path, &fs) != nil {
+		return false
+	}
+	return safeCgroupStat(st, fs, uint32(os.Geteuid()))
+}
+
+func safeCgroupStat(st unix.Stat_t, fs unix.Statfs_t, owner uint32) bool {
+	return fs.Type == unix.CGROUP2_SUPER_MAGIC && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Uid == owner && st.Mode&0o022 == 0
 }
 
 func (e LinuxExecutor) validLimits(q Request) bool {

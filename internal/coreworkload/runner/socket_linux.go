@@ -467,8 +467,10 @@ type intentReaper interface {
 }
 
 func (s *Supervisor) reconcileStartup() error {
-	if probe, ok := s.executor.(interface{ Probe() error }); ok && probe.Probe() != nil {
-		return ErrDenied
+	if probe, ok := s.executor.(interface{ Probe() error }); ok {
+		if err := probe.Probe(); err != nil {
+			return err
+		}
 	}
 	if s.store == nil {
 		return nil
