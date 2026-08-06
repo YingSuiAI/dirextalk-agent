@@ -98,7 +98,7 @@ func main() {
 	if err != nil {
 		die("registry: " + err.Error())
 	}
-	s := extensionrunner.Server{Listener: listener, Authorizer: extensionrunner.UIDAllowlist{uint32(uid64): {}}, RunnerUID: uint32(os.Geteuid()), Runner: r, Registry: registry, PublicationRoot: *installRoot}
+	s := extensionrunner.Server{Listener: listener, Authorizer: extensionrunner.UIDAllowlist{uint32(uid64): {}}, RunnerUID: uint32(os.Geteuid()), SharedWorkspaceGID: uint32(uid64), Runner: r, Registry: registry, PublicationRoot: *installRoot}
 	if err := s.ServeV2(ctx); err != nil {
 		slog.Error("extension runner stopped", "error", err)
 		os.Exit(1)

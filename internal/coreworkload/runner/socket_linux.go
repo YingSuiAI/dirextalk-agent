@@ -183,12 +183,13 @@ func peerUID(c *net.UnixConn) uint32 {
 // it cannot manufacture a completed mutation, so Read returns unavailable and
 // the Agent's durable operation becomes uncertain rather than redispatched.
 type Supervisor struct {
-	uid      uint32
-	executor Executor
-	store    *ReceiptStore
-	mu       sync.Mutex
-	receipts map[string]Receipt
-	ready    bool
+	uid       uint32
+	runnerUID uint32
+	executor  Executor
+	store     *ReceiptStore
+	mu        sync.Mutex
+	receipts  map[string]Receipt
+	ready     bool
 }
 
 func NewPersistentSupervisor(agentUID uint32, stateRoot string, executor Executor) (*Supervisor, error) {
@@ -196,11 +197,11 @@ func NewPersistentSupervisor(agentUID uint32, stateRoot string, executor Executo
 	if e != nil {
 		return nil, e
 	}
-	return &Supervisor{uid: agentUID, executor: executor, store: store, receipts: map[string]Receipt{}}, nil
+	return &Supervisor{uid: agentUID, runnerUID: uint32(os.Geteuid()), executor: executor, store: store, receipts: map[string]Receipt{}}, nil
 }
 
 func NewSupervisor(agentUID uint32, executors ...Executor) *Supervisor {
-	s := &Supervisor{uid: agentUID, receipts: map[string]Receipt{}}
+	s := &Supervisor{uid: agentUID, runnerUID: uint32(os.Geteuid()), receipts: map[string]Receipt{}}
 	if len(executors) == 1 {
 		s.executor = executors[0]
 	}
@@ -227,9 +228,7 @@ func (s *Supervisor) Serve(ctx context.Context, l *net.UnixListener) error {
 }
 func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 	defer c.Close()
-	if peerUID(c) != s.uid {
-		return
-	}
+	uid := peerUID(c)
 	b := make([]byte, MaxPacketBytes)
 	n, e := c.Read(b)
 	if e != nil || n == 0 {
@@ -237,6 +236,9 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 	}
 	var probe ProbeRequest
 	if json.Unmarshal(b[:n], &probe) == nil && probe.Probe != "" {
+		if !s.allowPeer(uid, true) {
+			return
+		}
 		s.mu.Lock()
 		ready := s.ready && probe.Version == ProtocolV1 && len(probe.Nonce) >= 32
 		s.mu.Unlock()
@@ -245,6 +247,9 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 		}
 		raw, _ := json.Marshal(ProbeResponse{Version: ProtocolV1, Nonce: probe.Nonce, Ready: true})
 		_, _ = c.Write(raw)
+		return
+	}
+	if !s.allowPeer(uid, false) {
 		return
 	}
 	var q Request
@@ -452,6 +457,13 @@ func (s *Supervisor) serve(parent context.Context, c *net.UnixConn) {
 	s.mu.Unlock()
 	raw, _ := json.Marshal(r)
 	_, _ = c.Write(raw)
+}
+
+func (s *Supervisor) allowPeer(uid uint32, probe bool) bool {
+	if s != nil && uid == s.uid {
+		return true
+	}
+	return s != nil && probe && s.runnerUID != 0 && uid == s.runnerUID
 }
 func sameLifecycleRequest(q Request, r Receipt) bool {
 	return r.WorkloadID == q.WorkloadID && r.PlanDigest == q.PlanDigest && r.PlanRevision == q.PlanRevision && r.Service == q.Service
