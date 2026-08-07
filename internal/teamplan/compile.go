@@ -292,6 +292,20 @@ func boundRuntimeTokens(
 	return tokens
 }
 
+// AssignmentTokensMatchProposal verifies the deterministic runtime limit that
+// is applied after the model proposal and before a Plan is signed.
+func AssignmentTokensMatchProposal(
+	assignment WorkerAssignment,
+	proposed TokenEstimate,
+) bool {
+	bounded := boundRuntimeTokens(
+		RuntimeRelease{Adapter: assignment.RuntimeAdapter},
+		ModelOffer{Provider: assignment.ModelProvider},
+		proposed,
+	)
+	return assignment.Tokens == bounded
+}
+
 func selectCompute(
 	release RuntimeRelease,
 	role RoleProposal,

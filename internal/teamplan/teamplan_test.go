@@ -147,6 +147,17 @@ func TestCompileRequiresQualifiedPiDeepSeekOutputBudget(t *testing.T) {
 			runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
 		t.Fatalf("bound Pi+DeepSeek tokens = %#v", plan.Assignments[0].Tokens)
 	}
+	if !AssignmentTokensMatchProposal(
+		plan.Assignments[0],
+		request.Proposal.Roles[0].Tokens,
+	) {
+		t.Fatal("signed Pi token bound no longer matches its proposal")
+	}
+	tampered := request.Proposal.Roles[0].Tokens
+	tampered.InputMaximum++
+	if AssignmentTokensMatchProposal(plan.Assignments[0], tampered) {
+		t.Fatal("signed Pi token bound accepted a changed proposal")
+	}
 	request.Proposal.Roles[0].Tokens.OutputMinimum =
 		runtimebounds.PiDeepSeekMaximumRequestOutputTokens + 1
 	if _, err := Compile(request); !errors.Is(err, ErrRuntimeBudget) {

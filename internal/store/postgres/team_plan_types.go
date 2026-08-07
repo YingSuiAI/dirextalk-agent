@@ -241,7 +241,10 @@ func teamPlanMatchesPreparationIntent(
 			assignment.Workspace != role.Workspace ||
 			!slices.Equal(assignment.DependsOnRoleIDs, dependencies) ||
 			assignment.Duration != role.Duration ||
-			assignment.Tokens != role.Tokens ||
+			!teamplan.AssignmentTokensMatchProposal(
+				assignment,
+				role.Tokens,
+			) ||
 			assignment.Resources.VCPU < role.MinimumResources.VCPU ||
 			assignment.Resources.MemoryMiB < role.MinimumResources.MemoryMiB ||
 			assignment.Resources.DiskGiB < role.MinimumResources.DiskGiB ||
