@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
 	"github.com/google/uuid"
 )
 
@@ -399,6 +400,17 @@ func proposalFailureFeedback(err error) (string, string, bool, bool) {
 		return "no_qualified_compute", "No trusted compute offer matches the requested shape. Reduce optional compute requirements within the trusted limits without changing the user goal.", true, true
 	case errors.Is(err, teamplan.ErrBudgetExceeded):
 		return "budget_exceeded", "Reduce team size, duration, and token estimates while preserving the user goal.", true, true
+	case errors.Is(err, teampricing.ErrComputeEvidenceUnavailable):
+		return "compute_evidence_unavailable", "Fresh read-only compute price, quota, or availability evidence could not be obtained. Retry once without changing the user goal or proposal shape.", true, true
+	case errors.Is(err, teampricing.ErrCredentialReadinessUnavailable):
+		return "model_credential_readiness_unavailable", "The configured Worker model credential could not be checked for readiness. Retry once without changing the user goal or model requirements.", true, true
+	case errors.Is(err, teampricing.ErrPricingEvidenceExpired):
+		return "compute_evidence_expired", "The fresh compute evidence expired before the Plan could be signed. Retry once without changing the user goal.", true, true
+	case errors.Is(err, teamplan.ErrPricingExpired),
+		errors.Is(err, teamplan.ErrPricingChanged):
+		return "pricing_snapshot_changed", "The trusted pricing snapshot changed or expired before the Plan could be signed. Retry once without changing the user goal.", true, true
+	case errors.Is(err, teamorchestration.ErrFactMismatch):
+		return "preparation_fact_mismatch", "Server-owned planning facts did not agree, so no Plan or cloud resource was created. Do not retry this request.", false, true
 	default:
 		return "", "", false, false
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
+	"github.com/YingSuiAI/dirextalk-agent/internal/teampricing"
 	"github.com/google/uuid"
 )
 
@@ -574,6 +575,37 @@ func TestProposalFailureFeedbackSeparatesMarketplaceAndCapacity(
 			retryable,
 			safe,
 		)
+	}
+}
+
+func TestProposalFailureFeedbackClassifiesPreparationEvidenceFailures(
+	t *testing.T,
+) {
+	t.Parallel()
+	tests := []struct {
+		err       error
+		reason    string
+		retryable bool
+	}{
+		{teampricing.ErrComputeEvidenceUnavailable, "compute_evidence_unavailable", true},
+		{teampricing.ErrCredentialReadinessUnavailable, "model_credential_readiness_unavailable", true},
+		{teampricing.ErrPricingEvidenceExpired, "compute_evidence_expired", true},
+		{teamplan.ErrPricingChanged, "pricing_snapshot_changed", true},
+		{teamorchestration.ErrFactMismatch, "preparation_fact_mismatch", false},
+	}
+	for _, test := range tests {
+		reason, guidance, retryable, safe := proposalFailureFeedback(test.err)
+		if !safe || guidance == "" || reason != test.reason ||
+			retryable != test.retryable {
+			t.Fatalf(
+				"feedback for %v = reason=%q guidance=%q retryable=%t safe=%t",
+				test.err,
+				reason,
+				guidance,
+				retryable,
+				safe,
+			)
+		}
 	}
 }
 

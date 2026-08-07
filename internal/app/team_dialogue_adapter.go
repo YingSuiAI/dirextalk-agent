@@ -278,6 +278,11 @@ func validTeamPlanningFailureReason(reasonCode string) bool {
 		"no_qualified_model",
 		"no_qualified_compute",
 		"budget_exceeded",
+		"compute_evidence_unavailable",
+		"model_credential_readiness_unavailable",
+		"compute_evidence_expired",
+		"pricing_snapshot_changed",
+		"preparation_fact_mismatch",
 		"preparation_failed":
 		return true
 	default:
