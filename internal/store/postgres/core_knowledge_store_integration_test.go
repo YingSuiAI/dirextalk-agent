@@ -398,6 +398,28 @@ func TestCoreKnowledgePostgresMemoryRecallIsSnapshotFreeAndBatchesAllPromotedMem
 	}
 }
 
+func TestCoreKnowledgePostgresMemoryRecallEmptyCorpusDoesNotRequireEmbeddingBinding(t *testing.T) {
+	ctx, repo, cleanup := knowledgePGFixture(t)
+	defer cleanup()
+	search := &pgMemoryRecallSearch{}
+	repo.search = search
+
+	page, err := repo.RecallMemory(ctx, "where do I live", 8)
+	if err != nil || len(page.Matches) != 0 || page.SearchMode != "semantic" || len(search.calls) != 0 {
+		t.Fatalf("empty recall page=%+v semantic_calls=%d err=%v", page, len(search.calls), err)
+	}
+
+	if _, err := repo.CreateMemory(ctx, coreknowledge.MemoryCommand{IdempotencyKey: uuid.NewString(), Title: "memory", Content: "remember me", MediaType: "text/plain"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.RecallMemory(ctx, "where do I live", 8); !errors.Is(err, coreknowledge.ErrNotFound) {
+		t.Fatalf("ready memory without embedding binding error=%v, want ErrNotFound", err)
+	}
+	if len(search.calls) != 0 {
+		t.Fatalf("semantic search called without embedding binding: %d", len(search.calls))
+	}
+}
+
 func TestCoreKnowledgePostgresCreateMemoryDefaultsTitleBeforeReplayDigest(t *testing.T) {
 	ctx, repo, cleanup := knowledgePGFixture(t)
 	defer cleanup()

@@ -64,6 +64,13 @@ func (r *CoreKnowledgeStore) RecallMemory(ctx context.Context, prompt string, li
 	if r == nil || r.store == nil || r.search == nil || ctx == nil || limit <= 0 || query.ValidateForRepository() != nil {
 		return coreknowledge.SearchPage{}, coreknowledge.ErrInvalid
 	}
+	var hasReadyMemory bool
+	if err := r.store.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_knowledge_sources WHERE kind='memory' AND status='ready')`).Scan(&hasReadyMemory); err != nil {
+		return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
+	}
+	if !hasReadyMemory {
+		return coreknowledge.SearchPage{Matches: make([]coreknowledge.SearchMatch, 0), SearchMode: "semantic"}, nil
+	}
 	binding, err := r.currentKnowledgeEmbeddingBinding(ctx)
 	if err != nil {
 		return coreknowledge.SearchPage{}, err
