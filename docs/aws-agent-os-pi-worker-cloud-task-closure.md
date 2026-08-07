@@ -851,6 +851,8 @@ App 自动收到完成消息和 Artifact metadata，公开结果不含 Worker ri
 | Process 限制 | `internal/workerruntime/process.go` |
 | 失败分类 | `internal/workerruntime/failure.go` |
 | Result Manifest | `internal/workerrunner/runtime_result.go` |
+| Worker RootFS 构建 | `cmd/dirextalk-worker-rootfs/`、`internal/workerrootfs/` |
+| Worker AMI 构建与验证 | `internal/workerami/`、`deploy/container/worker-ami/` |
 | Result 校验 | `internal/workerresult/collector.go` |
 | S3 Collector | `internal/app/team_result_collector.go` |
 | 清理 | `internal/app/team_role_cleanup.go` |
