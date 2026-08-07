@@ -240,11 +240,13 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 				t.Fatalf("stack %d %s is missing its runner readiness probe: %v", i, service, test)
 			}
 		}
-		for _, service := range []string{"extension-socket-init", "core-runner-socket-init"} {
-			command := strings.Join(config.Services[service].Command, " ")
-			if !strings.Contains(command, "chmod 3770 /socket") {
-				t.Fatalf("stack %d %s does not preserve setgid/sticky socket mode: %q", i, service, command)
-			}
+		extensionSocketInit := strings.Join(config.Services["extension-socket-init"].Command, " ")
+		if !strings.Contains(extensionSocketInit, "chmod 2750 /socket") || strings.Contains(extensionSocketInit, "chmod 3770 /socket") {
+			t.Fatalf("stack %d extension socket parent must be setgid and not group-writable: %q", i, extensionSocketInit)
+		}
+		coreRunnerSocketInit := strings.Join(config.Services["core-runner-socket-init"].Command, " ")
+		if !strings.Contains(coreRunnerSocketInit, "chmod 3770 /socket") {
+			t.Fatalf("stack %d Core Runner socket init does not preserve setgid/sticky mode: %q", i, coreRunnerSocketInit)
 		}
 		dataInit := config.Services["extension-runner-data-init"]
 		dataInitCommand := strings.Join(dataInit.Command, " ")

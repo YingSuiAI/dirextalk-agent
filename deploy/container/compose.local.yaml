@@ -186,16 +186,17 @@ services:
     entrypoint: ["sh"]
     user: "0:0"
     cap_drop: ["ALL"]
-    # Preserve the setgid bit after assigning the shared runner/Agent group;
-    # the socket listener rejects a writable directory without setgid+sticky.
+    # Preserve the setgid bit so the runner-owned socket inherits the shared
+    # Agent group. The directory itself is not group-writable because the
+    # extension client deliberately rejects replaceable socket parents.
     cap_add: ["CHOWN", "FOWNER", "FSETID"]
     security_opt: ["no-new-privileges:true"]
     command:
       - -ec
       - >-
-        install -d -m 3770 /socket;
+        install -d -m 2750 /socket;
         chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:65532 /socket;
-        chmod 3770 /socket
+        chmod 2750 /socket
     volumes:
       - agent_extension_socket:/socket
     network_mode: "none"
