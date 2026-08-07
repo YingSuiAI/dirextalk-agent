@@ -28,7 +28,8 @@ contract](message-server-integration-development-contract.md), and
   Registry remotes are accepted only when the manifest declares exactly one
   header-free `streamable-http` endpoint; other header or transport shapes
   fail closed because the current runtime cannot reproduce them losslessly.
-- Knowledge mounts, uploads, memory, indexing, and semantic-search composition.
+- Knowledge mounts, uploads, memory, indexing, semantic-search composition,
+  and the bounded read-only `knowledge_search` Native conversation tool.
 - Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
   and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
 - Neutral Capability Knowledge mutations now require explicit UUID idempotency

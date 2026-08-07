@@ -73,6 +73,13 @@ multi-tenant model.
   snapshots, logs, or Capability results. An unavailable recall dependency
   fails closed before model dispatch; an empty recall is a successful empty
   context.
+- Authenticated Native conversations also receive one Agent-owned, read-only
+  `knowledge_search` model tool when Knowledge is enabled. It searches only
+  ready sources with promoted bindings that match the active embedding
+  profile revision and collection digest. The tool accepts a bounded query,
+  optional source IDs, and a result limit; it returns bounded passages plus
+  secret-free embedding provenance and never calls back through Product
+  Capability.
 - Capability conversation reads use a closed Flutter-facing projection.
   Conversations expose only id/title/revision/timestamps/status; history
   exposes only user/assistant messages with durable sequence, terminal status,

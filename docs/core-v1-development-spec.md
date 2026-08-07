@@ -155,6 +155,14 @@ disable, generation change, or deprovision therefore fails closed before any
 Tavily request. A service restart rebuilds the executable closure from the
 encrypted repository.
 
+When Knowledge is enabled, the same resolver chain adds one Agent-owned,
+read-only `knowledge_search` tool for authenticated Native conversations. It
+uses the existing semantic search boundary directly, accepts only a bounded
+query, optional source IDs, and limit, and returns bounded passages with the
+secret-free embedding provenance. Ready/promoted binding checks remain owned
+by Knowledge storage; the tool does not route through Product Capability or
+accept client-supplied credentials.
+
 ### Tasks and schedules
 
 Tasks support immediate and scheduled execution, cancellation, retry as a new

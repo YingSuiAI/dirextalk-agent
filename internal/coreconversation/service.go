@@ -1586,7 +1586,7 @@ func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots [
 	}
 	selections := make([]ExtensionSelection, 0, len(snapshots))
 	for _, snapshot := range snapshots {
-		if snapshot.Source == "builtin:web_search:tavily" || snapshot.Source == "product-capability" {
+		if snapshot.Source == "builtin:web_search:tavily" || snapshot.Source == "builtin:knowledge:semantic" || snapshot.Source == "product-capability" {
 			continue
 		}
 		selections = append(selections, snapshot.Selection)

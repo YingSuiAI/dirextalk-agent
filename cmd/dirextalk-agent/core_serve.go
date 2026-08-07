@@ -389,8 +389,8 @@ func serveCore(cfg config.Config) error {
 		}
 		slog.Info("dirextalk-agent Product Capability client ready", "server", cfg.ProductCapabilityAddress)
 	}
-	// Compose model-facing tools in one resolver chain. Web Search remains
-	// available without Product Capability, but both inject tools only for an
+	// Compose model-facing tools in one resolver chain. Agent-owned built-ins
+	// remain available without Product Capability, but inject tools only for an
 	// authenticated Capability call.
 	var conversationResolver coreconversation.ExtensionResolver
 	if extensionComposition != nil {
@@ -398,6 +398,9 @@ func serveCore(cfg config.Config) error {
 	}
 	if productCapabilityClient != nil {
 		conversationResolver = &productConversationResolver{base: conversationResolver, product: productCapabilityClient}
+	}
+	if knowledgeComposition != nil {
+		conversationResolver = &knowledgeConversationResolver{base: conversationResolver, search: knowledgeComposition.domain}
 	}
 	conversation.SetExtensionResolver(&webSearchConversationResolver{base: conversationResolver, service: webSearchService})
 	if knowledgeComposition != nil {

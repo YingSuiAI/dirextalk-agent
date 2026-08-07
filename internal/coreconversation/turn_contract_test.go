@@ -527,6 +527,22 @@ func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testin
 	}
 }
 
+func TestResolveAcceptedTurnExtensionsRebuildsKnowledgeBuiltinFromPinnedSource(t *testing.T) {
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "1.0.0", Digest: strings.Repeat("a", 64), AllowedTools: []string{"knowledge_search"}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:knowledge:semantic", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"knowledge_search"}, ReadOnly: true}
+	resolved := ResolvedExtension{Selection: selection, Snapshot: snapshot, Tools: []coremodel.Tool{{Name: "knowledge_search", InputSchema: map[string]any{"type": "object"}}}}
+	service := &Service{extensions: extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		if len(selections) != 0 {
+			t.Fatalf("persisted Knowledge builtin was passed to installed-extension resolution: %+v", selections)
+		}
+		return []ResolvedExtension{resolved}, nil
+	})}
+	got, err := service.resolveAcceptedTurnExtensions(context.Background(), []ExtensionExecutionSnapshot{snapshot})
+	if err != nil || len(got) != 1 || got[0].Snapshot.Source != snapshot.Source {
+		t.Fatalf("resolved=%+v err=%v", got, err)
+	}
+}
+
 func TestExecuteTurnFailsClosedWhenMemoryRecallIsUnavailable(t *testing.T) {
 	snapshot := testTurnSnapshot()
 	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "remember", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}
