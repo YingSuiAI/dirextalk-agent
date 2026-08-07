@@ -118,7 +118,7 @@ func TestCloudDialoguePreflightScansRequestHistory(t *testing.T) {
 		if len(request.Messages) < 3 ||
 			!strings.Contains(
 				request.Messages[0].Content,
-				"Trusted current Task status preflight",
+				"Trusted prior-Task status preflight",
 			) ||
 			!strings.Contains(
 				request.Messages[0].Content,
@@ -130,16 +130,19 @@ func TestCloudDialoguePreflightScansRequestHistory(t *testing.T) {
 			) {
 			t.Fatalf("authoritative preflight missing: %#v", request.Messages)
 		}
-		assistantCall := request.Messages[len(request.Messages)-2]
-		toolResult := request.Messages[len(request.Messages)-1]
+		assistantCall := request.Messages[len(request.Messages)-3]
+		toolResult := request.Messages[len(request.Messages)-2]
+		latestUser := request.Messages[len(request.Messages)-1]
 		if assistantCall.Role != modelapi.RoleAssistant ||
 			len(assistantCall.ToolCalls) != 1 ||
 			assistantCall.ToolCalls[0].Function.Name != CloudDialogueToolTeamTaskStatus ||
 			toolResult.Role != modelapi.RoleTool ||
 			toolResult.ToolCallID != assistantCall.ToolCalls[0].ID ||
 			!strings.Contains(toolResult.Content, `"execution_status":"finished"`) ||
-			!strings.Contains(toolResult.Content, `"outcome_status":"failed"`) {
-			t.Fatalf("authoritative tool result is not the latest context: %#v", request.Messages)
+			!strings.Contains(toolResult.Content, `"outcome_status":"failed"`) ||
+			latestUser.Role != modelapi.RoleUser ||
+			latestUser.Content != "build a separate new deliverable" {
+			t.Fatalf("authoritative tool result was not placed before the latest user: %#v", request.Messages)
 		}
 		return finalEngineResult("new task required"), nil
 	}}

@@ -70,8 +70,8 @@ func trustedTaskStatusPreflight(
 			return taskStatusPreflightResult{}
 		}
 		return taskStatusPreflightResult{
-			ProjectProfile: "Trusted current Task status preflight (authoritative server read; older conversation text is stale if it conflicts). " +
-				"The following tool result is the current source of truth. A terminal Task or failed, canceled, timed_out, or interrupted outcome MUST NOT be reused or described as awaiting approval:\n" +
+			ProjectProfile: "Trusted prior-Task status preflight (authoritative server read; older conversation text is stale if it conflicts). " +
+				"This read precedes the latest user message and is not evidence that the latest message asks about this Task. Use it only when the latest message explicitly inspects, continues, retries, or cancels that Task. A new deliverable remains a new request even when it reuses the same project name. A terminal Task or failed, canceled, timed_out, or interrupted outcome MUST NOT be reused or described as awaiting approval:\n" +
 				string(encoded),
 			Messages: []modelapi.Message{
 				{
@@ -88,6 +88,27 @@ func trustedTaskStatusPreflight(
 		}
 	}
 	return taskStatusPreflightResult{}
+}
+
+func insertTaskStatusPreflightBeforeLatestUser(
+	messages []modelapi.Message,
+	preflight []modelapi.Message,
+) []modelapi.Message {
+	if len(preflight) == 0 {
+		return messages
+	}
+	insertAt := len(messages)
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == modelapi.RoleUser {
+			insertAt = index
+			break
+		}
+	}
+	result := make([]modelapi.Message, 0, len(messages)+len(preflight))
+	result = append(result, messages[:insertAt]...)
+	result = append(result, preflight...)
+	result = append(result, messages[insertAt:]...)
+	return result
 }
 
 func historicalTaskStatusCandidates(messages []modelapi.Message) []string {

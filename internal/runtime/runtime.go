@@ -435,7 +435,10 @@ func (r *Runtime) prepare(ctx context.Context, request ChatRequest) (state runSt
 		)
 		if preflight.ProjectProfile != "" {
 			projectProfile += "\n\n" + preflight.ProjectProfile
-			history = append(history, preflight.Messages...)
+			history = insertTaskStatusPreflightBeforeLatestUser(
+				history,
+				preflight.Messages,
+			)
 		}
 	}
 	contextByteBudget, ok := modelInputByteBudget(config.ModelProfile, tools.definitions)
