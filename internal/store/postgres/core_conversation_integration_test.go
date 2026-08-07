@@ -34,6 +34,19 @@ type integrationModelStream struct{}
 func (integrationModelStream) Recv() (coremodel.Delta, error) { return coremodel.Delta{}, io.EOF }
 func (integrationModelStream) Close() error                   { return nil }
 
+type integrationConversationRunner struct{}
+
+func (integrationConversationRunner) Run(_ context.Context, request core.ModelRunRequest) (core.ModelRunResult, error) {
+	createdAt := request.Conversation.Messages[len(request.Conversation.Messages)-1].CreatedAt.Add(time.Nanosecond)
+	return core.ModelRunResult{Done: true, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "ok", CreatedAt: createdAt}}, nil
+}
+
+type integrationSnapshotResolver struct{ snapshot coremodel.ExecutionSnapshot }
+
+func (r integrationSnapshotResolver) ResolveProfileSnapshot(context.Context, string) (coremodel.ExecutionSnapshot, error) {
+	return r.snapshot, nil
+}
+
 func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	dsn := os.Getenv("AGENT_TEST_POSTGRES_DSN")
 	if dsn == "" {
@@ -115,10 +128,32 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if e != nil || loadedInitial.Title != c.Title {
 		t.Fatalf("title persistence=%+v err=%v", loadedInitial, e)
 	}
+	if loadedInitial.CreatedAt.Location() != time.UTC || loadedInitial.UpdatedAt.Location() != time.UTC || loadedInitial.ValidateForPersistence() != nil {
+		t.Fatalf("loaded conversation timestamps were not normalized to UTC: created=%v updated=%v", loadedInitial.CreatedAt.Location(), loadedInitial.UpdatedAt.Location())
+	}
+	mutationConversation := core.Conversation{ID: uuid.NewString(), Title: "mutation timestamps", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	if _, e = cs.CreateConversationMutation(ctx, core.CreateConversationCommand{RequestID: uuid.NewString(), Conversation: mutationConversation, Fingerprint: digestConversationPG(mutationConversation)}); e != nil {
+		t.Fatal(e)
+	}
+	renamed, e := cs.RenameConversationMutation(ctx, mutationConversation.ID, "renamed", 1, uuid.NewString())
+	if e != nil || renamed.Conversation.CreatedAt.Location() != time.UTC || renamed.Conversation.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("rename response timestamps were not normalized to UTC: response=%+v err=%v", renamed, e)
+	}
+	deleted, e := cs.DeleteConversationMutation(ctx, core.DeleteConversationCommand{RequestID: uuid.NewString(), ConversationID: mutationConversation.ID, ExpectedRevision: 2, Fingerprint: digestDeletePG(mutationConversation.ID, 2)})
+	if e != nil || deleted.Conversation.CreatedAt.Location() != time.UTC || deleted.Conversation.UpdatedAt.Location() != time.UTC || deleted.Conversation.DeletedAt == nil || deleted.Conversation.DeletedAt.Location() != time.UTC {
+		t.Fatalf("delete response timestamps were not normalized to UTC: response=%+v err=%v", deleted, e)
+	}
 	rid := uuid.NewString()
 	lease, e := cs.ClaimChat(ctx, rid, c.ID, sha256hexPG([]byte("chat")), uuid.NewString(), nil, now, time.Minute)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if e = cs.ReleaseChat(ctx, rid, lease.LeaseID, lease.Epoch); e != nil {
+		t.Fatalf("release chat lease: %v", e)
+	}
+	lease, e = cs.ClaimChat(ctx, rid, c.ID, sha256hexPG([]byte("chat")), lease.ProfileID, nil, now, time.Minute)
+	if e != nil || lease.Status != core.ClaimReclaimed || lease.Epoch <= 1 {
+		t.Fatalf("released lease was not reclaimable: lease=%+v err=%v", lease, e)
 	}
 	profileID := lease.ProfileID
 	nowProfile := time.Now().UTC().Truncate(time.Microsecond)
@@ -144,7 +179,10 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	if _, e = s.DeleteProfile(ctx, profileID, uuid.NewString(), sha256hexPG([]byte("integration-delete-profile")), 1); e != nil {
 		t.Fatal(e)
 	}
-	reclaimed, e := cs.ClaimChat(ctx, rid, c.ID, sha256hexPG([]byte("chat")), profileID, nil, now.Add(2*time.Minute), time.Minute)
+	if e = cs.ReleaseChat(ctx, rid, bound.LeaseID, bound.Epoch); e != nil {
+		t.Fatalf("release snapshot-bound chat lease: %v", e)
+	}
+	reclaimed, e := cs.ClaimChat(ctx, rid, c.ID, sha256hexPG([]byte("chat")), profileID, nil, now, time.Minute)
 	if e != nil || reclaimed.Status != core.ClaimReclaimed || reclaimed.ProfileSnapshotDigest != snapshot.Digest() {
 		t.Fatalf("reclaimed=%+v err=%v", reclaimed, e)
 	}
@@ -221,6 +259,33 @@ func TestCoreConversationPostgresIntegrationOptIn(t *testing.T) {
 	commitProfile := uuid.NewString()
 	if _, e = s.CreateProfile(ctx, coremodel.Profile{ID: commitProfile, DisplayName: "integration", Provider: coremodel.ProviderOpenAICompatible, ModelKind: coremodel.ModelKindConversation, BaseURL: "https://example.invalid", Model: "test-model", APIKey: "commit-secret", Revision: 1, CreatedAt: nowProfile, UpdatedAt: nowProfile}, uuid.NewString(), sha256hexPG([]byte("commit-profile-create"))); e != nil {
 		t.Fatal(e)
+	}
+	chatSnapshot := coremodel.ExecutionSnapshot{ProfileID: commitProfile, Revision: 1, CredentialVersion: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: "https://example.invalid", Model: "test-model", APIKey: "commit-secret"}
+	chatService, e := core.NewService(cs, integrationConversationRunner{}, nil, integrationSnapshotResolver{snapshot: chatSnapshot})
+	if e != nil {
+		t.Fatal(e)
+	}
+	chatConversation := core.Conversation{ID: uuid.NewString(), Title: "round trip", Revision: 1, CreatedAt: nowProfile, UpdatedAt: nowProfile}
+	if _, e = cs.CreateConversationMutation(ctx, core.CreateConversationCommand{RequestID: uuid.NewString(), Conversation: chatConversation, Fingerprint: digestConversationPG(chatConversation)}); e != nil {
+		t.Fatal(e)
+	}
+	firstChat, e := chatService.Chat(ctx, core.ChatCommand{RequestID: uuid.NewString(), ConversationID: chatConversation.ID, Prompt: "first", ProfileID: commitProfile, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1})
+	if e != nil {
+		t.Fatalf("first round-trip chat: %v", e)
+	}
+	expectedRevision := firstChat.Revision
+	if _, e = chatService.Chat(ctx, core.ChatCommand{RequestID: uuid.NewString(), ConversationID: chatConversation.ID, Prompt: "second", ProfileID: commitProfile, ExpectedRevision: &expectedRevision, ExpectedProfileRevision: 1, ExpectedCredentialVersion: 1}); e != nil {
+		t.Fatalf("second round-trip chat: %v", e)
+	}
+	loadedChat, e := cs.LoadConversation(ctx, chatConversation.ID)
+	if e != nil || len(loadedChat.Messages) != 4 || loadedChat.ValidateForPersistence() != nil {
+		t.Fatalf("round-trip conversation=%+v err=%v", loadedChat, e)
+	}
+	for i := 1; i < len(loadedChat.Messages); i++ {
+		previous, current := loadedChat.Messages[i-1].CreatedAt, loadedChat.Messages[i].CreatedAt
+		if !current.After(previous) || current.Sub(previous) < time.Microsecond || current.Nanosecond()%int(time.Microsecond) != 0 {
+			t.Fatalf("message timestamps are not persistably ordered: previous=%s current=%s", previous.Format(time.RFC3339Nano), current.Format(time.RFC3339Nano))
+		}
 	}
 	commitLease, e := cs.ClaimChat(ctx, commitReq, commitConv.ID, sha256hexPG([]byte("commit")), commitProfile, nil, now, time.Minute)
 	if e != nil {
@@ -331,7 +396,10 @@ func TestCoreConversationModelStepReplayAfterReclaim(t *testing.T) {
 	}
 	// Simulate a worker crash after model-step persistence.  The lease is
 	// expired but the step row is intentionally left completed.
-	fresh, err := conversationStore.ClaimChat(ctx, requestID, conversationID, fingerprint, profileID, nil, now.Add(2*time.Minute), time.Minute)
+	if _, err = pool.Exec(ctx, `UPDATE core_chat_request_leases SET lease_expires_at=clock_timestamp() WHERE request_id=$1 AND lease_id=$2 AND lease_epoch=$3`, requestID, old.LeaseID, old.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := conversationStore.ClaimChat(ctx, requestID, conversationID, fingerprint, profileID, nil, now, time.Minute)
 	if err != nil || fresh.Status != core.ClaimReclaimed || fresh.Epoch <= old.Epoch {
 		t.Fatalf("fresh lease=%+v err=%v", fresh, err)
 	}

@@ -26,10 +26,24 @@ import (
 // is unsafe.  Missing any kernel primitive is an availability failure.
 type LinuxBackend struct {
 	CgroupRoot string
+	// ProbeRoot is a runner-owned executable filesystem used only for the
+	// bounded readiness install. Production must set it explicitly rather than
+	// inheriting a possibly noexec process temporary directory.
+	ProbeRoot string
+	// ManagerRoot stores one content-addressed immutable manager bundle per
+	// executable digest. Core mode requires this runner-owned, exec-capable
+	// filesystem because container overlayfs directories cannot be open_tree
+	// cloned on every supported kernel.
+	ManagerRoot string
 	// ReexecPath is a trusted integration seam. Production leaves it empty and
 	// always re-executes /proc/self/exe.
 	ReexecPath string
 }
+
+const (
+	coreManagerMemoryOverheadBytes int64 = 32 << 20
+	coreManagerProcessOverhead     int64 = 8
+)
 
 // unavailableAt keeps Linux isolation diagnostics low-cardinality and safe to
 // return to trusted local callers. It deliberately excludes paths, errno, and
@@ -40,31 +54,31 @@ func unavailableAt(stage string) error {
 
 func (b LinuxBackend) Probe(ctx context.Context) error {
 	if ctx == nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_context")
 	}
 	if b.CgroupRoot == "" || !filepath.IsAbs(b.CgroupRoot) {
-		return unavailableAt("validate/probe")
+		return unavailableAt("cgroup_root")
 	}
 	var fs unix.Statfs_t
 	if unix.Statfs(b.CgroupRoot, &fs) != nil || fs.Type != unix.CGROUP2_SUPER_MAGIC {
-		return unavailableAt("validate/probe")
+		return unavailableAt("cgroup_filesystem")
 	}
 	controllers, e := os.ReadFile(filepath.Join(b.CgroupRoot, "cgroup.controllers"))
 	if e != nil || !hasController(string(controllers), "cpu") || !hasController(string(controllers), "memory") || !hasController(string(controllers), "pids") {
-		return unavailableAt("validate/probe")
+		return unavailableAt("cgroup_controllers")
 	}
 	for _, name := range []string{"cpu", "memory", "pids"} {
 		if !hasController(string(mustReadFile(filepath.Join(b.CgroupRoot, "cgroup.subtree_control"))), name) {
-			return unavailableAt("validate/probe")
+			return unavailableAt("cgroup_delegation")
 		}
 	}
 	nameBytes := make([]byte, 16)
 	if _, e = rand.Read(nameBytes); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_identity")
 	}
 	child := filepath.Join(b.CgroupRoot, "dirextalk-probe-"+hex.EncodeToString(nameBytes))
 	if e = os.Mkdir(child, 0o700); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_create")
 	}
 	cleaned := false
 	defer func() {
@@ -74,7 +88,7 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 	}()
 	for file, value := range map[string]string{"memory.max": "16777216", "pids.max": "8", "cpu.max": "10000 100000"} {
 		if e = writeCgroup(filepath.Join(child, file), value); e != nil {
-			return unavailableAt("validate/probe")
+			return unavailableAt("probe_cgroup_limits")
 		}
 	}
 	self := b.ReexecPath
@@ -82,11 +96,11 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 		self, e = os.Executable()
 	}
 	if e != nil || self == "" {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_executable")
 	}
 	releaseR, releaseW, e := os.Pipe()
 	if e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_release_pipe")
 	}
 	command := exec.CommandContext(ctx, self, "__probe-child-v1")
 	command.ExtraFiles = []*os.File{releaseR}
@@ -94,7 +108,7 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 	if e = command.Start(); e != nil {
 		releaseR.Close()
 		releaseW.Close()
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_child_start")
 	}
 	releaseR.Close()
 	pid := strconv.Itoa(command.Process.Pid)
@@ -102,82 +116,167 @@ func (b LinuxBackend) Probe(ctx context.Context) error {
 		_ = command.Process.Kill()
 		releaseW.Close()
 		_ = command.Wait()
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_attach")
 	}
 	_, _ = releaseW.Write([]byte{1})
 	releaseW.Close()
 	if e = command.Wait(); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_child_wait")
 	}
 	procs, e := os.ReadFile(filepath.Join(child, "cgroup.procs"))
 	if e != nil || len(strings.TrimSpace(string(procs))) != 0 {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_empty")
 	}
 	if e = os.Remove(child); e != nil {
-		return unavailableAt("validate/probe")
+		return unavailableAt("probe_cgroup_remove")
 	}
 	cleaned = true
 	return b.probeSandbox(ctx)
 }
 
 func (b LinuxBackend) probeSandbox(ctx context.Context) error {
-	root, err := os.MkdirTemp("", "dirextalk-runner-probe-")
-	if err != nil {
-		return unavailableAt("sandbox/probe")
+	if !trustedProbeRoot(b.ProbeRoot) {
+		return unavailableAt("sandbox_root")
 	}
-	defer os.RemoveAll(root)
+	root, err := os.MkdirTemp(b.ProbeRoot, "dirextalk-runner-probe-")
+	if err != nil {
+		return unavailableAt("sandbox_root")
+	}
+	defer removePublishedTree(root)
 	installRoot := filepath.Join(root, "installs")
 	workspaceRoot := filepath.Join(root, "workspace")
-	if err := os.MkdirAll(filepath.Join(installRoot, "probe"), 0o700); err != nil {
-		return unavailableAt("sandbox/probe")
+	if err := os.Mkdir(installRoot, 0o700); err != nil {
+		return unavailableAt("sandbox_install_root")
 	}
 	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_workspace_root")
 	}
 	self := b.ReexecPath
 	if self == "" {
 		self, err = os.Executable()
 		if err != nil {
-			return unavailableAt("sandbox/probe")
+			return unavailableAt("sandbox_executable")
 		}
 	}
-	entry := filepath.Join(installRoot, "probe", "entry")
-	source, err := os.ReadFile(self)
-	if err != nil || os.WriteFile(entry, source, 0o500) != nil {
-		return unavailableAt("sandbox/probe")
-	}
-	digest := DigestBytes(source)
-	manifest := []ManifestEntry{{Path: "entry", SHA256: digest, Size: int64(len(source))}}
-	manifestDigest := ManifestDigest(manifest)
-	if err := os.Rename(filepath.Join(installRoot, "probe"), filepath.Join(installRoot, manifestDigest)); err != nil {
-		return unavailableAt("sandbox/probe")
-	}
-	install, err := OpenAdmittedInstall(filepath.Join(installRoot), manifestDigest, manifest)
+	install, manifestDigest, err := materializeProbeInstall(installRoot, self)
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return err
 	}
 	defer install.Close()
 	workspace, err := unix.Open(workspaceRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_workspace")
 	}
 	defer unix.Close(workspace)
 	runID, taskID, fence, err := probeIDs()
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_identity")
 	}
 	request := RequestV2{RunID: runID, TaskID: taskID, TaskFence: fence, InstallDigest: manifestDigest, Entry: "entry", Argv: []string{"entry", "__sandbox-probe-v1"}, TimeoutMS: 2000, Limits: LimitsV2{CPUSeconds: 1, MemoryBytes: 16 << 20, Processes: 8, FileBytes: 16 << 20, OpenFiles: 64}}
 	if err := ValidateRequestV2(request); err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_request")
 	}
 	process, err := b.startV2(ctx, SandboxInvocationV2{Request: request, Install: install, WorkspaceFD: workspace, StdinFD: -1})
 	if err != nil {
-		return unavailableAt("sandbox/probe")
+		return unavailableAt("sandbox_start")
 	}
-	if _, _, _, err := process.Wait(); err != nil {
-		return unavailableAt("sandbox/probe")
+	if _, stderr, _, err := process.Wait(); err != nil {
+		return unavailableAt(sandboxProbeWaitStage(stderr))
 	}
 	return nil
+}
+
+func sandboxProbeWaitStage(stderr []byte) string {
+	const fallback = "sandbox_wait"
+	value := strings.TrimSpace(string(stderr))
+	if strings.Count(value, ":") != 1 {
+		return fallback
+	}
+	stage, cause, _ := strings.Cut(value, ":")
+	switch stage {
+	case "bootstrap", "descriptors", "release", "null", "map-fs", "map-namespace", "map-root", "map-pwd", "map-verify",
+		"mounts", "root-tmpfs", "root-remount", "layout", "app-clone", "app-bind", "app-remount",
+		"work-clone", "work-bind", "work-remount", "work-tmpfs", "manager-clone", "manager-bind", "manager-remount",
+		"manager", "manager-hide", "manager-release", "hide-scratch", "hide-remount", "secrets-tmpfs", "secrets-copy", "secrets-remount",
+		"root-switch", "stdin", "rlimits", "capabilities", "no-new-privs", "seccomp", "close-fds", "command", "exec", "result-export":
+	default:
+		return fallback
+	}
+	switch cause {
+	case "denied", "permission", "missing", "busy", "invalid", "unsupported", "other":
+		return fallback + "_" + stage + "_" + cause
+	default:
+		return fallback
+	}
+}
+
+func trustedProbeRoot(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return false
+	}
+	var st unix.Stat_t
+	return unix.Lstat(path, &st) == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Uid == uint32(os.Geteuid()) && st.Mode&0o022 == 0
+}
+
+func materializeProbeInstall(installRoot, self string) (*AdmittedInstall, string, error) {
+	probe := filepath.Join(installRoot, "probe")
+	if err := os.Mkdir(probe, 0o700); err != nil {
+		return nil, "", unavailableAt("sandbox_install_root")
+	}
+	entry := filepath.Join(probe, "entry")
+	source, err := os.ReadFile(self)
+	if err != nil || writeFileSync(entry, source, 0o500) != nil {
+		return nil, "", unavailableAt("sandbox_entry")
+	}
+	manifest := []ManifestEntry{{Path: "entry", SHA256: DigestBytes(source), Size: int64(len(source))}}
+	manifestDigest := ManifestDigest(manifest)
+	manifestBody, err := json.Marshal(DiskInstallManifestV1{SchemaVersion: installManifestSchemaV1, Entries: manifest})
+	if err != nil || writeFileSync(filepath.Join(probe, installManifestName), append(manifestBody, '\n'), 0o400) != nil {
+		return nil, "", unavailableAt("sandbox_entry")
+	}
+	if err := makePublishedTreeImmutable(probe); err != nil {
+		return nil, "", unavailableAt("sandbox_publish")
+	}
+	target := filepath.Join(installRoot, manifestDigest)
+	if err := unix.Renameat2(unix.AT_FDCWD, probe, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE); err != nil {
+		return nil, "", unavailableAt("sandbox_publish")
+	}
+	if err := syncDirectory(installRoot); err != nil {
+		return nil, "", unavailableAt("sandbox_publish")
+	}
+	install, err := OpenAdmittedInstall(target, manifestDigest, manifest)
+	if err != nil {
+		return nil, "", unavailableAt("sandbox_admit")
+	}
+	return install, manifestDigest, nil
+}
+
+func writeFileSync(path string, body []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(body); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 func probeIDs() (string, string, string, error) {
@@ -229,6 +328,14 @@ type bootstrapV1 struct {
 	EntryMode      uint32    `json:"entry_mode"`
 	EntrySize      int64     `json:"entry_size"`
 	EntrySHA256    string    `json:"entry_sha256"`
+	ManagerBase    string    `json:"manager_base"`
+	ManagerRootDev uint64    `json:"manager_root_dev"`
+	ManagerRootIno uint64    `json:"manager_root_ino"`
+	ManagerDev     uint64    `json:"manager_dev"`
+	ManagerIno     uint64    `json:"manager_ino"`
+	ManagerMode    uint32    `json:"manager_mode"`
+	ManagerSize    int64     `json:"manager_size"`
+	ManagerSHA256  string    `json:"manager_sha256"`
 	CoreTmpfsBytes int64     `json:"core_tmpfs_bytes,omitempty"`
 	CoreResultPath string    `json:"core_result_path,omitempty"`
 }
@@ -259,6 +366,18 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	if err := unix.Access(self, unix.X_OK); err != nil {
 		return nil, unavailableAt("reexec")
 	}
+	var managerRoot, managerFD int = -1, -1
+	var managerBase, managerDigest string
+	var managerRootStat, managerStat unix.Stat_t
+	var managerErr error
+	if inv.CoreTmpfsBytes > 0 {
+		managerRoot, managerFD, managerBase, managerRootStat, managerStat, managerDigest, managerErr = materializeManagerSource(self, b.ManagerRoot)
+		if managerErr != nil {
+			return nil, unavailableAt("manager_fd")
+		}
+		defer unix.Close(managerRoot)
+		defer unix.Close(managerFD)
+	}
 	bs, err := json.Marshal(bootstrapV1{
 		Request:        inv.Request,
 		SecretCount:    len(inv.SecretFDs),
@@ -270,6 +389,14 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		EntryMode:      inv.Install.EntryMode,
 		EntrySize:      inv.Install.EntrySize,
 		EntrySHA256:    inv.Install.EntrySHA256,
+		ManagerBase:    managerBase,
+		ManagerRootDev: uint64(managerRootStat.Dev),
+		ManagerRootIno: managerRootStat.Ino,
+		ManagerDev:     uint64(managerStat.Dev),
+		ManagerIno:     managerStat.Ino,
+		ManagerMode:    managerStat.Mode,
+		ManagerSize:    managerStat.Size,
+		ManagerSHA256:  managerDigest,
 		CoreTmpfsBytes: inv.CoreTmpfsBytes,
 		CoreResultPath: inv.CoreResultPath,
 	})
@@ -314,6 +441,10 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	if inv.CoreTmpfsBytes > 0 && (inv.StdinFD >= 0 || len(inv.SecretFDs) != 0) {
 		return nil, unavailableAt("core_mode")
 	}
+	cgroupLimits, err := effectiveCgroupLimits(inv)
+	if err != nil {
+		return nil, err
+	}
 	files := make([]*os.File, 0, 7+len(inv.SecretFDs))
 	for _, item := range []struct {
 		fd   int
@@ -330,7 +461,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		files = append(files, f)
 	}
 	if inv.CoreTmpfsBytes > 0 {
-		manager, e := os.Open(self)
+		manager, e := extra(managerRoot, "manager-root")
 		if e != nil {
 			return nil, unavailableAt("manager_fd")
 		}
@@ -377,7 +508,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 		}
 	}()
 	cmd.Env = []string{}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET, Unshareflags: 0, UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}}, GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}}, GidMappingsEnableSetgroups: false, Setpgid: true, Pdeathsig: syscall.SIGKILL, PidFD: &pidfd}
+	cmd.SysProcAttr = sandboxChildSysProcAttr(&pidfd)
 	var out, er boundedBuffer
 	if inv.PersistentOutputLimit > 0 {
 		budget := &outputBudget{limit: inv.PersistentOutputLimit}
@@ -393,7 +524,7 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	}
 	releaseR.Close()
 	cg := filepath.Join(b.CgroupRoot, inv.Request.RunID)
-	if err = setupCgroup(cg, inv.Request.Limits, cmd.Process.Pid); err != nil {
+	if err = setupCgroup(cg, cgroupLimits, cmd.Process.Pid); err != nil {
 		_ = unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0)
 		_ = cmd.Wait()
 		_ = unix.Close(pidfd)
@@ -424,6 +555,223 @@ func (b LinuxBackend) startV2(ctx context.Context, inv SandboxInvocationV2) (Pro
 	}
 	go process.monitorCPU()
 	return process, nil
+}
+
+func effectiveCgroupLimits(inv SandboxInvocationV2) (LimitsV2, error) {
+	limits := inv.Request.Limits
+	if inv.CoreTmpfsBytes == 0 {
+		return limits, nil
+	}
+	// Core keeps one trusted Go manager outside the untrusted command. Its
+	// runtime threads and resident memory are implementation overhead, not the
+	// workload budget carried by the public request.
+	if limits.MemoryBytes > int64(^uint64(0)>>1)-coreManagerMemoryOverheadBytes || limits.Processes > int64(^uint64(0)>>1)-coreManagerProcessOverhead {
+		return LimitsV2{}, unavailableAt("core_limits")
+	}
+	limits.MemoryBytes += coreManagerMemoryOverheadBytes
+	limits.Processes += coreManagerProcessOverhead
+	return limits, nil
+}
+
+func sandboxChildSysProcAttr(pidfd *int) *syscall.SysProcAttr {
+	// Do not combine Pdeathsig with CLONE_NEWPID. Go records the parent PID
+	// before clone and checks it again in the child; the namespace init cannot
+	// see its outer parent, so that check self-signals SIGKILL. The runner owns
+	// this child through its pidfd and exact cgroup kill/reap path instead.
+	return &syscall.SysProcAttr{
+		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+		Setpgid:                    true,
+		PidFD:                      pidfd,
+	}
+}
+
+const managerBundlePrefix = ".dirextalk-manager-v1-"
+const managerBundleEntry = "manager"
+const maxManagerBytes = 128 << 20
+
+func materializeManagerSource(self, managerRoot string) (int, int, string, unix.Stat_t, unix.Stat_t, string, error) {
+	var empty unix.Stat_t
+	if !trustedProbeRoot(managerRoot) {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	path := self
+	if self == "/proc/self/exe" {
+		var err error
+		path, err = os.Executable()
+		if err != nil {
+			return -1, -1, "", empty, empty, "", err
+		}
+	}
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	base := filepath.Base(path)
+	if !safeName(base) {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	sourceRoot, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	defer unix.Close(sourceRoot)
+	var sourceRootStat unix.Stat_t
+	if unix.Fstat(sourceRoot, &sourceRootStat) != nil || sourceRootStat.Mode&unix.S_IFMT != unix.S_IFDIR || !trustedExecutableOwner(sourceRootStat.Uid) || sourceRootStat.Mode&0o022 != 0 {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	sourceFD, err := unix.Openat(sourceRoot, base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	defer unix.Close(sourceFD)
+	var st, selfStat unix.Stat_t
+	if unix.Fstat(sourceFD, &st) != nil || unix.Stat(self, &selfStat) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || !trustedExecutableOwner(st.Uid) || st.Mode&0o111 == 0 || st.Mode&0o022 != 0 || st.Dev != selfStat.Dev || st.Ino != selfStat.Ino || st.Size <= 0 || st.Size > maxManagerBytes {
+		return -1, -1, "", empty, empty, "", ErrDenied
+	}
+	digest, err := digestDescriptor(sourceFD, st.Size)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	target := filepath.Join(managerRoot, managerBundlePrefix+digest)
+	if _, err := os.Lstat(target); os.IsNotExist(err) {
+		if err := publishManagerBundle(managerRoot, target, sourceFD, st.Size, digest); err != nil {
+			return -1, -1, "", empty, empty, "", err
+		}
+	} else if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	root, fd, rootStat, managerStat, err := openManagerBundle(target, digest, st.Size)
+	if err != nil {
+		return -1, -1, "", empty, empty, "", err
+	}
+	return root, fd, managerBundleEntry, rootStat, managerStat, digest, nil
+}
+
+func publishManagerBundle(managerRoot, target string, sourceFD int, size int64, digest string) error {
+	tmp, err := os.MkdirTemp(managerRoot, ".manager-publish-")
+	if err != nil {
+		return err
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = removePublishedTree(tmp)
+		}
+	}()
+	fd, err := unix.Open(filepath.Join(tmp, managerBundleEntry), unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = copyDescriptor(sourceFD, fd, size); err == nil {
+		err = unix.Fsync(fd)
+	}
+	if err == nil {
+		err = unix.Fchmod(fd, 0o500)
+	}
+	closeErr := unix.Close(fd)
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = makePublishedTreeImmutable(tmp); err != nil {
+		return err
+	}
+	if err = unix.Renameat2(unix.AT_FDCWD, tmp, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			existingRoot, existing, _, _, validateErr := openManagerBundle(target, digest, size)
+			if existingRoot >= 0 {
+				unix.Close(existingRoot)
+			}
+			if existing >= 0 {
+				unix.Close(existing)
+			}
+			return validateErr
+		}
+		return err
+	}
+	published = true
+	return syncDirectory(managerRoot)
+}
+
+func copyDescriptor(sourceFD, targetFD int, size int64) error {
+	buf := make([]byte, 64<<10)
+	for offset := int64(0); offset < size; {
+		want := int64(len(buf))
+		if size-offset < want {
+			want = size - offset
+		}
+		n, err := unix.Pread(sourceFD, buf[:want], offset)
+		if err != nil || n <= 0 {
+			return ErrDenied
+		}
+		for written := 0; written < n; {
+			count, writeErr := unix.Write(targetFD, buf[written:n])
+			if writeErr != nil || count <= 0 {
+				return ErrDenied
+			}
+			written += count
+		}
+		offset += int64(n)
+	}
+	return nil
+}
+
+func openManagerBundle(target, digest string, size int64) (int, int, unix.Stat_t, unix.Stat_t, error) {
+	var empty unix.Stat_t
+	if filepath.Base(target) != managerBundlePrefix+digest || !digestRE.MatchString(digest) {
+		return -1, -1, empty, empty, ErrDenied
+	}
+	root, err := unix.Open(target, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, -1, empty, empty, err
+	}
+	var rootStat unix.Stat_t
+	if unix.Fstat(root, &rootStat) != nil || rootStat.Mode&unix.S_IFMT != unix.S_IFDIR || rootStat.Uid != uint32(os.Geteuid()) || rootStat.Mode&0o777 != 0o500 {
+		unix.Close(root)
+		return -1, -1, empty, empty, ErrDenied
+	}
+	dup, err := unix.Dup(root)
+	if err != nil {
+		unix.Close(root)
+		return -1, -1, empty, empty, err
+	}
+	dir := os.NewFile(uintptr(dup), "manager-bundle")
+	entries, err := dir.ReadDir(-1)
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil || len(entries) != 1 || entries[0].Name() != managerBundleEntry || !entries[0].Type().IsRegular() {
+		unix.Close(root)
+		return -1, -1, empty, empty, ErrDenied
+	}
+	fd, err := unix.Openat(root, managerBundleEntry, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		unix.Close(root)
+		return -1, -1, empty, empty, err
+	}
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != uint32(os.Geteuid()) || st.Mode&0o777 != 0o500 || st.Nlink != 1 || st.Size != size {
+		unix.Close(fd)
+		unix.Close(root)
+		return -1, -1, empty, empty, ErrDenied
+	}
+	got, err := digestDescriptor(fd, st.Size)
+	if err != nil || got != digest {
+		unix.Close(fd)
+		unix.Close(root)
+		return -1, -1, empty, empty, ErrDenied
+	}
+	return root, fd, rootStat, st, nil
+}
+
+func trustedExecutableOwner(uid uint32) bool {
+	return uid == 0 || uid == uint32(os.Geteuid())
 }
 func sealedMemfd(n string, b []byte) (int, error) {
 	fd, e := unix.MemfdCreate(n, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)

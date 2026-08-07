@@ -16,6 +16,7 @@ func TestSandboxChildFailureUsesOnlySafeStage(t *testing.T) {
 		"bootstrap", "descriptors", "release", "mount-private", "null", "pivot", "stdin",
 		"rlimits", "capabilities", "no-new-privs", "seccomp", "close-fds", "exec",
 		"root-tmpfs", "layout", "app-clone", "app-bind", "app-remount", "work-clone", "work-bind", "work-remount",
+		"manager-clone", "manager-bind", "manager-remount", "manager-hide", "manager-release",
 		"hide-scratch", "hide-remount", "secrets-tmpfs", "secrets-copy", "secrets-remount",
 	} {
 		t.Run(stage, func(t *testing.T) {

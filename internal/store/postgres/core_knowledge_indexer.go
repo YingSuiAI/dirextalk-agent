@@ -33,19 +33,25 @@ func (i *KnowledgeIndexer) SetEmbeddingConfigReader(reader coreknowledge.Embeddi
 	}
 }
 
-func (i *KnowledgeIndexer) currentBinding(ctx context.Context) (string, string, error) {
-	if i == nil || i.store == nil || ctx == nil {
-		return "", "", coreknowledge.ErrInvalid
+func (i *KnowledgeIndexer) currentBindingTx(ctx context.Context, tx pgx.Tx) (string, string, int64, error) {
+	if i == nil || i.store == nil || ctx == nil || tx == nil {
+		return "", "", 0, coreknowledge.ErrInvalid
 	}
 	profileID, configDigest := i.embeddingProfileID, i.collectionConfigDigest
 	if i.configReader != nil {
-		config, err := i.configReader.GetEmbeddingConfig(ctx)
-		if err != nil || !coretask.ValidUUID(config.EmbeddingProfileID) || config.Dimension <= 0 || len(config.CollectionConfigDigest) != 64 {
-			return "", "", coreknowledge.ErrConflict
+		if err := tx.QueryRow(ctx, `SELECT embedding_profile_id::text,collection_config_digest FROM core_knowledge_embedding_config WHERE singleton=true FOR SHARE`).Scan(&profileID, &configDigest); errors.Is(err, pgx.ErrNoRows) {
+			return "", "", 0, coreknowledge.ErrNotFound
+		} else if err != nil || !coretask.ValidUUID(profileID) || len(configDigest) != 64 {
+			return "", "", 0, coreknowledge.ErrConflict
 		}
-		profileID, configDigest = config.EmbeddingProfileID, config.CollectionConfigDigest
 	}
-	return profileID, configDigest, nil
+	var profileRevision int64
+	if err := tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL FOR SHARE`, profileID).Scan(&profileRevision); errors.Is(err, pgx.ErrNoRows) {
+		return "", "", 0, coreknowledge.ErrNotFound
+	} else if err != nil || profileRevision <= 0 {
+		return "", "", 0, coreknowledge.ErrConflict
+	}
+	return profileID, configDigest, profileRevision, nil
 }
 
 func NewKnowledgeIndexer(store *Store, embeddingProfileID, collectionConfigDigest string) (*KnowledgeIndexer, error) {
@@ -72,22 +78,14 @@ func (i *KnowledgeIndexer) RequestIndex(ctx context.Context, request coreknowled
 		}
 		seen[id] = struct{}{}
 	}
-	profileID, configDigest, err := i.currentBinding(ctx)
-	if err != nil {
-		return coreknowledge.TaskReference{}, err
+	if request.ExpectedBinding != nil && (!coretask.ValidUUID(request.ExpectedBinding.ProfileID) || request.ExpectedBinding.ProfileRevision <= 0 || len(request.ExpectedBinding.CollectionDigest) != 64) {
+		return coreknowledge.TaskReference{}, coreknowledge.ErrInvalid
 	}
 	// Core Task payload validation requires a canonical strictly increasing
 	// source order. Index requests are set-like, so normalize the copy before
 	// hashing and persisting the durable task/job pair.
 	request.SourceIDs = append([]string(nil), request.SourceIDs...)
 	sort.Strings(request.SourceIDs)
-	h := sha256.New()
-	b, _ := json.Marshal(struct {
-		Sources         []string
-		Profile, Config string
-	}{request.SourceIDs, profileID, configDigest})
-	h.Write(b)
-	digest := hex.EncodeToString(h.Sum(nil))
 	tx, err := i.store.pool.Begin(ctx)
 	if err != nil {
 		return coreknowledge.TaskReference{}, coreknowledge.ErrConflict
@@ -96,6 +94,21 @@ func (i *KnowledgeIndexer) RequestIndex(ctx context.Context, request coreknowled
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('knowledge:index:' || $1,0))`, request.IdempotencyKey); err != nil {
 		return coreknowledge.TaskReference{}, coreknowledge.ErrConflict
 	}
+	profileID, configDigest, profileRevision, err := i.currentBindingTx(ctx, tx)
+	if err != nil {
+		return coreknowledge.TaskReference{}, err
+	}
+	if expected := request.ExpectedBinding; expected != nil && (expected.ProfileID != profileID || expected.ProfileRevision != profileRevision || !strings.EqualFold(expected.CollectionDigest, configDigest)) {
+		return coreknowledge.TaskReference{}, coreknowledge.ErrRevisionConflict
+	}
+	h := sha256.New()
+	b, _ := json.Marshal(struct {
+		Sources         []string
+		Profile, Config string
+		ProfileRevision int64
+	}{request.SourceIDs, profileID, configDigest, profileRevision})
+	h.Write(b)
+	digest := hex.EncodeToString(h.Sum(nil))
 	var storedHash string
 	var response []byte
 	err = tx.QueryRow(ctx, `SELECT request_hash,response_json FROM core_knowledge_index_replays WHERE idempotency_key=$1 FOR UPDATE`, request.IdempotencyKey).Scan(&storedHash, &response)
@@ -135,12 +148,6 @@ func (i *KnowledgeIndexer) RequestIndex(ctx context.Context, request coreknowled
 		}
 		snaps = append(snaps, s)
 		revs = append(revs, uint64(s.rev))
-	}
-	var profileRevision int64
-	if err = tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, profileID).Scan(&profileRevision); errors.Is(err, pgx.ErrNoRows) {
-		return coreknowledge.TaskReference{}, coreknowledge.ErrNotFound
-	} else if err != nil {
-		return coreknowledge.TaskReference{}, coreknowledge.ErrConflict
 	}
 	idsJSON, _ := json.Marshal(request.SourceIDs)
 	revsJSON, _ := json.Marshal(revs)
@@ -215,15 +222,15 @@ func (i *KnowledgeIndexer) FindExistingIndex(ctx context.Context, request corekn
 		seen[id] = struct{}{}
 	}
 	sort.Strings(ids)
-	profileID, configDigest, err := i.currentBinding(ctx)
-	if err != nil {
-		return coreknowledge.TaskReference{}, false, err
-	}
 	tx, err := i.store.pool.Begin(ctx)
 	if err != nil {
 		return coreknowledge.TaskReference{}, false, coreknowledge.ErrConflict
 	}
 	defer tx.Rollback(ctx)
+	profileID, configDigest, profileRevision, err := i.currentBindingTx(ctx, tx)
+	if err != nil {
+		return coreknowledge.TaskReference{}, false, err
+	}
 	revs := make([]uint64, 0, len(ids))
 	for _, id := range ids {
 		var revision int64
@@ -234,12 +241,6 @@ func (i *KnowledgeIndexer) FindExistingIndex(ctx context.Context, request corekn
 		} else {
 			revs = append(revs, uint64(revision))
 		}
-	}
-	var profileRevision int64
-	if err := tx.QueryRow(ctx, `SELECT revision FROM core_model_profiles WHERE profile_id=$1 AND deleted_at IS NULL`, profileID).Scan(&profileRevision); errors.Is(err, pgx.ErrNoRows) {
-		return coreknowledge.TaskReference{}, false, coreknowledge.ErrNotFound
-	} else if err != nil {
-		return coreknowledge.TaskReference{}, false, coreknowledge.ErrConflict
 	}
 	idsJSON, _ := json.Marshal(ids)
 	revsJSON, _ := json.Marshal(revs)

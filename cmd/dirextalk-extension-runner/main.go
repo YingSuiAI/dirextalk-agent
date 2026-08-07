@@ -65,12 +65,25 @@ func main() {
 	if err := validateSocket(*socket); err != nil {
 		die(err.Error())
 	}
-	for _, p := range []string{*installRoot, *workspaceRoot, *stateRoot} {
+	for _, p := range []string{*installRoot, *stateRoot} {
 		if err := validateTrustedDir(p); err != nil {
 			die(err.Error())
 		}
 	}
+	if err := validateWorkspaceDir(*workspaceRoot, uint32(uid64)); err != nil {
+		die(err.Error())
+	}
 	if err := validateCgroup(*cgroupRoot); err != nil {
+		die(err.Error())
+	}
+	backend := extensionrunner.LinuxBackend{CgroupRoot: *cgroupRoot, ProbeRoot: *installRoot}
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 10*time.Second)
+	err = backend.Probe(probeCtx)
+	cancelProbe()
+	if err != nil {
+		// Backend diagnostics contain only a fixed stage token. Running this
+		// once at startup makes container failures actionable without polling
+		// health checks emitting repeated messages.
 		die(err.Error())
 	}
 	listener, err := extensionrunner.Listen(*socket, 0o660)
@@ -80,12 +93,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	defer listener.Close()
-	r := extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: *installRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: *workspaceRoot}, V2Backend: extensionrunner.LinuxBackend{CgroupRoot: *cgroupRoot}}
+	r := extensionrunner.Runner{InstallResolver: extensionrunner.DiskInstallResolver{Root: *installRoot}, WorkspaceResolver: extensionrunner.DiskWorkspaceResolver{Root: *workspaceRoot}, V2Backend: backend}
 	registry, err := extensionrunner.NewPersistentRunRegistry(*stateRoot)
 	if err != nil {
 		die("registry: " + err.Error())
 	}
-	s := extensionrunner.Server{Listener: listener, Authorizer: extensionrunner.UIDAllowlist{uint32(uid64): {}}, RunnerUID: uint32(os.Geteuid()), Runner: r, Registry: registry, PublicationRoot: *installRoot}
+	s := extensionrunner.Server{Listener: listener, Authorizer: extensionrunner.UIDAllowlist{uint32(uid64): {}}, RunnerUID: uint32(os.Geteuid()), SharedWorkspaceGID: uint32(uid64), Runner: r, Registry: registry, PublicationRoot: *installRoot}
 	if err := s.ServeV2(ctx); err != nil {
 		slog.Error("extension runner stopped", "error", err)
 		os.Exit(1)
@@ -148,6 +161,16 @@ func validateTrustedDir(p string) error {
 	}
 	var st unix.Stat_t
 	if unix.Lstat(p, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Mode&0o022 != 0 {
+		return fmt.Errorf("unsafe trusted root")
+	}
+	return nil
+}
+func validateWorkspaceDir(p string, agentGID uint32) error {
+	if !filepath.IsAbs(p) || filepath.Clean(p) != p || p == "/" || agentGID == 0 {
+		return fmt.Errorf("invalid trusted root")
+	}
+	var st unix.Stat_t
+	if unix.Lstat(p, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Uid != uint32(os.Geteuid()) || st.Gid != agentGID || st.Mode&0o777 != 0o770 {
 		return fmt.Errorf("unsafe trusted root")
 	}
 	return nil

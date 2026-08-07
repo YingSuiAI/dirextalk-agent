@@ -118,6 +118,7 @@ services:
     image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *runner-hardening
     entrypoint: ["/usr/local/bin/dirextalk-extension-runner"]
+    cgroup: host
     cgroup_parent: ${DIREXTALK_EXTENSION_CGROUP_PARENT:-${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}-extension.slice}
     group_add: ["65532"]
     command:
@@ -156,6 +157,29 @@ services:
     depends_on:
       extension-socket-init:
         condition: service_completed_successfully
+      extension-runner-data-init:
+        condition: service_completed_successfully
+
+  extension-runner-data-init:
+    image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
+    entrypoint: ["sh"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - -ec
+      - >-
+        chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID} /install /state;
+        chmod 0700 /install /state;
+        chown ${DIREXTALK_CORE_EXTENSION_RUNNER_UID:?set the extension runner UID}:65532 /workspace;
+        chmod 0770 /workspace
+    volumes:
+      - agent_extension_install:/install
+      - agent_runner_workspaces:/workspace
+      - agent_extension_state:/state
+    network_mode: "none"
+    restart: "no"
 
   extension-socket-init:
     image: ${DIREXTALK_POSTGRES_IMAGE_IMMUTABLE:?set an immutable PostgreSQL 18 image reference}
@@ -183,6 +207,7 @@ services:
     image: ${DIREXTALK_AGENT_IMAGE_IMMUTABLE:?set the immutable Agent runtime image reference}
     <<: *core-runner-hardening
     entrypoint: ["/usr/local/bin/dirextalk-core-runner"]
+    cgroup: host
     cgroup_parent: ${DIREXTALK_CORE_RUNNER_CGROUP_PARENT:-${DIREXTALK_AGENT_STACK_NAME:?set a unique per-stack Compose project name}-core-runner.slice}
     group_add: ["65532"]
     command: ["serve", "--socket", "${DIREXTALK_CORE_WORKLOAD_RUNNER_SOCKET:?set the Core Runner socket path}", "--agent-uid", "65532", "--install-root", "/var/lib/dirextalk-core-runner/installs", "--workspace-root", "/var/lib/dirextalk-core-runner/workspaces", "--cgroup-root", "/cgroup", "--static-shell", "/usr/local/libexec/dirextalk-core-shell", "--state-root", "/var/lib/dirextalk-core-runner/state"]
@@ -237,7 +262,7 @@ services:
         source: agent_extension_socket
         target: ${DIREXTALK_CORE_EXTENSION_RUNNER_DIR:?set the extension runner socket directory}
       - agent_extension_staging:/var/lib/dirextalk-agent/extension-staging
-      - agent_extension_workspaces:/var/lib/dirextalk-agent/extension-workspaces
+      - agent_runner_workspaces:/var/lib/dirextalk-agent/extension-workspaces
       - agent_secret_material:/run/secrets:ro
       - type: volume
         source: core_runner_socket
@@ -280,8 +305,6 @@ volumes:
     name: ${DIREXTALK_AGENT_INSTALL_VOLUME:?set a unique per-stack extension install volume name}
   agent_extension_staging:
     name: ${DIREXTALK_AGENT_STAGING_VOLUME:?set a unique per-stack extension staging volume name}
-  agent_extension_workspaces:
-    name: ${DIREXTALK_AGENT_WORKSPACE_VOLUME:?set a unique per-stack extension workspace volume name}
   agent_runner_workspaces:
     name: ${DIREXTALK_AGENT_RUNNER_WORKSPACE_VOLUME:?set a unique per-stack runner workspace volume name}
   agent_extension_state:

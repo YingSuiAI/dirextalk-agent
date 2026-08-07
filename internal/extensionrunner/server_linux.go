@@ -27,12 +27,13 @@ type UIDAllowlist map[uint32]struct{}
 func (a UIDAllowlist) Allow(uid uint32) bool { _, ok := a[uid]; return ok }
 
 type Server struct {
-	Listener        UnixListener
-	Authorizer      PeerAuthorizer
-	RunnerUID       uint32
-	Runner          Runner
-	Registry        *RunRegistry
-	PublicationRoot string
+	Listener           UnixListener
+	Authorizer         PeerAuthorizer
+	RunnerUID          uint32
+	SharedWorkspaceGID uint32
+	Runner             Runner
+	Registry           *RunRegistry
+	PublicationRoot    string
 }
 type UnixListener interface {
 	AcceptUnix() (*net.UnixConn, error)
@@ -239,7 +240,9 @@ func (s Server) ready(ctx context.Context) bool {
 		return false
 	}
 	if resolver, ok := s.Runner.WorkspaceResolver.(DiskWorkspaceResolver); ok && !safeRunnerRoot(resolver.Root) {
-		return false
+		if s.SharedWorkspaceGID == 0 || !safeSharedRunnerRoot(resolver.Root, s.SharedWorkspaceGID) {
+			return false
+		}
 	}
 	return true
 }
@@ -254,6 +257,18 @@ func safeRunnerRoot(path string) bool {
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	return ok && uint32(st.Uid) == uint32(os.Geteuid())
+}
+
+func safeSharedRunnerRoot(path string, gid uint32) bool {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" || gid == 0 {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o770 {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint32(st.Uid) == uint32(os.Geteuid()) && uint32(st.Gid) == gid
 }
 
 func writePublicationResponse(conn *net.UnixConn, response any, fd int) {
@@ -508,6 +523,9 @@ func makePublishedTreeImmutable(root string) error {
 		return err
 	}
 	for i := len(directories) - 1; i >= 0; i-- {
+		if err = os.Chmod(directories[i], 0500); err != nil {
+			return err
+		}
 		dir, err := os.Open(directories[i])
 		if err != nil {
 			return err
@@ -517,9 +535,6 @@ func makePublishedTreeImmutable(root string) error {
 			return err
 		}
 		if err = dir.Close(); err != nil {
-			return err
-		}
-		if err = os.Chmod(directories[i], 0500); err != nil {
 			return err
 		}
 	}

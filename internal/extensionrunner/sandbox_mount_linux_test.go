@@ -10,7 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestOpenTreeEmptyPathOptIn(t *testing.T) {
+func TestCloneSandboxTreeReopensCurrentNamespacePath(t *testing.T) {
 	if os.Getenv("DIREXTALK_EXTENSION_RUNNER_MOUNT_API_TEST") != "1" {
 		t.Skip("set DIREXTALK_EXTENSION_RUNNER_MOUNT_API_TEST=1 in a mount-api-capable namespace")
 	}
@@ -19,16 +19,48 @@ func TestOpenTreeEmptyPathOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	pathFD, err := unix.Openat(fd, ".", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(pathFD)
-	treeFD, err := unix.OpenTree(pathFD, "", uint(unix.AT_EMPTY_PATH|unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC))
+	treeFD, err := cloneSandboxTree(fd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unix.Close(treeFD)
+}
+
+func TestReopenSandboxTreeSourcePreservesDescriptorIdentity(t *testing.T) {
+	fd, err := unix.Open(t.TempDir(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	reopened, err := reopenSandboxTreeSource(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(reopened)
+	var inheritedStat, reopenedStat unix.Stat_t
+	if unix.Fstat(fd, &inheritedStat) != nil || unix.Fstat(reopened, &reopenedStat) != nil {
+		t.Fatal("fstat failed")
+	}
+	if inheritedStat.Dev != reopenedStat.Dev || inheritedStat.Ino != reopenedStat.Ino || inheritedStat.Mode != reopenedStat.Mode {
+		t.Fatalf("reopened descriptor identity changed: inherited=%+v reopened=%+v", inheritedStat, reopenedStat)
+	}
+}
+
+func TestCloneSandboxTreeRejectsNonDirectorySource(t *testing.T) {
+	root := t.TempDir()
+	file := root + "/entry"
+	if err := os.WriteFile(file, []byte("manager"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	fileFD, err := unix.Open(file, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fileFD)
+	if tree, err := cloneSandboxTree(fileFD); err == nil {
+		unix.Close(tree)
+		t.Fatal("regular-file source unexpectedly cloned as a sandbox tree")
+	}
 }
 
 func TestSandboxMountBaseAttrsHardenDevicesAndSetID(t *testing.T) {

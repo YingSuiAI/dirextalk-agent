@@ -436,7 +436,11 @@ func (r *CoreKnowledgeStore) EmbeddingStatus(ctx context.Context) (indexed, stal
 	if r == nil || r.store == nil || r.store.pool == nil {
 		return 0, 0, coreknowledge.ErrConflict
 	}
-	if err = r.store.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ready' AND COALESCE(promoted_revision,0)=revision AND revision>0), count(*) FILTER (WHERE status='ready' AND COALESCE(promoted_revision,0)<>revision) FROM core_knowledge_sources`).Scan(&indexed, &stale); err != nil {
+	binding, err := r.currentKnowledgeEmbeddingBinding(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err = r.store.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='ready' AND promoted_revision=revision AND revision>0 AND promoted_profile_id=$1::uuid AND promoted_profile_revision=$2 AND promoted_collection_config_digest=$3), count(*) FILTER (WHERE status='ready' AND (promoted_revision=revision AND revision>0 AND promoted_profile_id=$1::uuid AND promoted_profile_revision=$2 AND promoted_collection_config_digest=$3) IS NOT TRUE) FROM core_knowledge_sources`, binding.profileID, binding.profileRevision, binding.collectionDigest).Scan(&indexed, &stale); err != nil {
 		return 0, 0, coreknowledge.ErrConflict
 	}
 	return indexed, stale, nil

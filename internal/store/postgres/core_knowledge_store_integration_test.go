@@ -337,6 +337,9 @@ func TestCoreKnowledgePostgresMemoryRecallIsSnapshotFreeAndBatchesAllPromotedMem
 	profileID := uuid.NewString()
 	digest := strings.Repeat("a", 64)
 	createTestProfile(ctx, t, repo.store, profileID, "recall-embedding", "recall-secret")
+	if _, err := repo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: profileID, Dimension: 2, Collection: "knowledge", CollectionConfigDigest: digest, Revision: 1}); err != nil {
+		t.Fatal(err)
+	}
 	insertSource := func(kind, status string, promoted bool) {
 		t.Helper()
 		id := uuid.NewString()
@@ -361,6 +364,10 @@ func TestCoreKnowledgePostgresMemoryRecallIsSnapshotFreeAndBatchesAllPromotedMem
 	}
 	insertSource("memory", "ready", false)
 	insertSource("upload", "ready", true)
+	staleID := uuid.NewString()
+	if _, err := repo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,promoted_generation,promoted_revision,promoted_profile_id,promoted_profile_revision,promoted_collection_config_digest) VALUES($1,'memory','ready','stale recall',repeat('c',64),1,'text/plain',1,$2,1,$3,2,$4)`, staleID, "stale-"+staleID, profileID, digest); err != nil {
+		t.Fatal(err)
+	}
 	search := &pgMemoryRecallSearch{}
 	repo.search = search
 	var snapshotsBefore int
@@ -380,6 +387,14 @@ func TestCoreKnowledgePostgresMemoryRecallIsSnapshotFreeAndBatchesAllPromotedMem
 	}
 	if snapshotsAfter != snapshotsBefore {
 		t.Fatalf("private recall persisted search snapshot: before=%d after=%d", snapshotsBefore, snapshotsAfter)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_model_profiles SET revision=3 WHERE profile_id=$1`, profileID); err != nil {
+		t.Fatal(err)
+	}
+	search.calls = nil
+	page, err = repo.RecallMemory(ctx, "where do I live", 8)
+	if err != nil || len(page.Matches) != 0 || len(search.calls) != 0 {
+		t.Fatalf("stale-only recall page=%+v semantic_calls=%d err=%v", page, len(search.calls), err)
 	}
 }
 
@@ -618,8 +633,24 @@ func TestCoreKnowledgePostgresAutoIndexCandidateAndPromotionProjection(t *testin
 	if err != nil || state.Indexed || state.Status != coreknowledge.SourceStatusReady || !state.Stale {
 		t.Fatalf("unpromoted state = %+v err=%v", state, err)
 	}
+	indexer, err := NewKnowledgeIndexer(repo.store, profileID, collectionDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexer.SetEmbeddingConfigReader(repo)
+	service, err := coreknowledge.NewService(repo, indexer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ReconcileAutoIndex(ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	var revisionOneJobs int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_index_jobs WHERE source_ids @> jsonb_build_array($1::text) AND profile_id=$2::uuid AND profile_revision=1`, source.ID, profileID).Scan(&revisionOneJobs); err != nil || revisionOneJobs != 1 {
+		t.Fatalf("profile revision 1 jobs=%d err=%v", revisionOneJobs, err)
+	}
 	generation := "auto-generation-" + uuid.NewString()
-	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, generation, profileID, collectionDigest); err != nil {
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_knowledge_sources SET status='ready',promoted_generation=$2,promoted_revision=revision,promoted_profile_id=$3,promoted_profile_revision=1,promoted_collection_config_digest=$4 WHERE source_id=$1`, source.ID, generation, profileID, collectionDigest); err != nil {
 		t.Fatal(err)
 	}
 	state, err = repo.GetEmbeddingSourceStatus(ctx, source.ID, config)
@@ -629,6 +660,48 @@ func TestCoreKnowledgePostgresAutoIndexCandidateAndPromotionProjection(t *testin
 	candidates, err = repo.ListAutoIndexCandidates(ctx, config.EmbeddingProfileID, config.CollectionConfigDigest, 8)
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("promoted candidates = %+v err=%v", candidates, err)
+	}
+	if _, err := repo.store.pool.Exec(ctx, `UPDATE core_model_profiles SET revision=2 WHERE profile_id=$1`, profileID); err != nil {
+		t.Fatal(err)
+	}
+	state, err = repo.GetEmbeddingSourceStatus(ctx, source.ID, config)
+	if err != nil || state.Indexed || !state.Stale {
+		t.Fatalf("profile-revision stale state = %+v err=%v", state, err)
+	}
+	indexed, stale, err := repo.EmbeddingStatus(ctx)
+	if err != nil || indexed != 0 || stale != 1 {
+		t.Fatalf("profile-revision aggregate status indexed=%d stale=%d err=%v", indexed, stale, err)
+	}
+	candidates, err = repo.ListAutoIndexCandidates(ctx, config.EmbeddingProfileID, config.CollectionConfigDigest, 8)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != source.ID {
+		t.Fatalf("profile-revision candidates = %+v err=%v", candidates, err)
+	}
+	staleKey := uuid.NewString()
+	if _, err := indexer.RequestIndex(ctx, coreknowledge.IndexRequest{
+		SourceIDs:      []string{source.ID},
+		IdempotencyKey: staleKey,
+		ExpectedBinding: &coreknowledge.ActiveEmbeddingBinding{
+			ProfileID:        profileID,
+			ProfileRevision:  1,
+			CollectionDigest: collectionDigest,
+		},
+	}); !errors.Is(err, coreknowledge.ErrRevisionConflict) {
+		t.Fatalf("stale expected binding error = %v, want ErrRevisionConflict", err)
+	}
+	var staleReplays int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_index_replays WHERE idempotency_key=$1`, staleKey).Scan(&staleReplays); err != nil || staleReplays != 0 {
+		t.Fatalf("stale binding replay count=%d err=%v", staleReplays, err)
+	}
+	if err := service.ReconcileAutoIndex(ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	var revisionTwoJobs int
+	if err := repo.store.pool.QueryRow(ctx, `SELECT count(*) FROM core_knowledge_index_jobs WHERE source_ids @> jsonb_build_array($1::text) AND profile_id=$2::uuid AND profile_revision=2`, source.ID, profileID).Scan(&revisionTwoJobs); err != nil || revisionTwoJobs != 1 {
+		t.Fatalf("profile revision 2 jobs=%d err=%v", revisionTwoJobs, err)
+	}
+	state, err = repo.GetEmbeddingSourceStatus(ctx, source.ID, config)
+	if err != nil || state.Status != coreknowledge.SourceStatusIndexing || state.Indexed {
+		t.Fatalf("profile-revision requeue state = %+v err=%v", state, err)
 	}
 }
 

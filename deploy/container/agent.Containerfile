@@ -5,12 +5,14 @@
 FROM --platform=linux/amd64 docker.io/library/golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
+ARG VERSION=dev
 RUN apk add --no-cache busybox-static ca-certificates
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-agent ./cmd/dirextalk-agent \
+    AGENT_EXPECT_RELEASE_VERSION="$VERSION" go test -run '^TestInjectedReleaseVersion$' -ldflags="-X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" ./internal/buildinfo \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags="-s -w -buildid= -X github.com/YingSuiAI/dirextalk-agent/internal/buildinfo.ReleaseVersion=$VERSION" -o /out/usr/local/bin/dirextalk-agent ./cmd/dirextalk-agent \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-extension-runner ./cmd/dirextalk-extension-runner \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags netgo,osusergo -ldflags='-s -w -buildid=' -o /out/usr/local/bin/dirextalk-core-runner ./cmd/dirextalk-core-runner
 RUN install -d -m 0755 /out/etc/ssl/certs /out/etc/dirextalk-agent /out/var/lib/dirextalk-agent \

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
@@ -653,7 +654,12 @@ func ValidateCoreExtension(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	workspaceRoot, err := validateExtensionRoot(cfg.CoreExtensionWorkspaceRoot, "core_extension_workspace_root")
+	workspaceRoot, err := validateExtensionWorkspaceRoot(
+		cfg.CoreExtensionWorkspaceRoot,
+		"core_extension_workspace_root",
+		cfg.CoreExtensionRunnerUID,
+		uint32(os.Getegid()),
+	)
 	if err != nil {
 		return err
 	}
@@ -686,6 +692,28 @@ func validateExtensionRoot(path, name string) (string, error) {
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("%s must be Agent-owned and private", name)
+	}
+	return path, nil
+}
+
+func validateExtensionWorkspaceRoot(path, name string, runnerUID, agentGID uint32) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("%s must be an absolute clean path", name)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved != path {
+		return "", fmt.Errorf("%s must resolve without symlinks", name)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%s must resolve to a directory", name)
+	}
+	if runtime.GOOS != "windows" {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || runnerUID == 0 || agentGID == 0 || stat.Uid != runnerUID || stat.Gid != agentGID || info.Mode().Perm() != 0o770 {
+			return "", fmt.Errorf("%s must be runner-owned and Agent-group writable", name)
+		}
 	}
 	return path, nil
 }

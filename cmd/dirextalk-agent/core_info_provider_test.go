@@ -6,10 +6,15 @@ import (
 	"testing"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
 func TestCoreInfoProviderReportsExternalCoreOnly(t *testing.T) {
+	originalVersion := buildinfo.ReleaseVersion
+	buildinfo.ReleaseVersion = "v1.0.0"
+	t.Cleanup(func() { buildinfo.ReleaseVersion = originalVersion })
+
 	provider := newCoreInfoProvider("11111111-1111-4111-8111-111111111111", func() []*capv1.CapabilityDescriptor {
 		return []*capv1.CapabilityDescriptor{coreInfoDescriptor("agent.info.v1", true)}
 	}, nil)
@@ -20,7 +25,7 @@ func TestCoreInfoProviderReportsExternalCoreOnly(t *testing.T) {
 	if backends.Embedded.Available || backends.Embedded.Status != "disabled" {
 		t.Fatalf("embedded backend survived hard split: %#v", backends.Embedded)
 	}
-	if !backends.Core.Available || !backends.Core.Configured || backends.Core.Status != "ready" || backends.Core.APIVersion != coreAPIVersion {
+	if !backends.Core.Available || !backends.Core.Configured || backends.Core.Status != "ready" || backends.Core.APIVersion != coreAPIVersion || backends.Core.ReleaseVersion != "v1.0.0" {
 		t.Fatalf("Core backend is not ready: %#v", backends.Core)
 	}
 	if len(backends.Core.SupportedModelProviders) == 0 {

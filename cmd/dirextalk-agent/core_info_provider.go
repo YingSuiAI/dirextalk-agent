@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	"github.com/YingSuiAI/dirextalk-agent/internal/buildinfo"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
@@ -49,6 +50,7 @@ func coreBackendInfo(instanceID string, descriptorSource func() []*capv1.Capabil
 		Status:                  "ready",
 		InstanceID:              instanceID,
 		APIVersion:              coreAPIVersion,
+		ReleaseVersion:          buildinfo.Version(),
 		Capabilities:            coreClientCapabilities(descriptorSource),
 		SupportedModelProviders: append([]string(nil), coreSupportedModelProviders...),
 	}

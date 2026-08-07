@@ -106,6 +106,22 @@ func TestProbeRequiresNonceBackedSupervisorResponse(t *testing.T) {
 	}
 }
 
+func TestSupervisorPeerAuthorizationSeparatesSelfProbeAndMutation(t *testing.T) {
+	s := &Supervisor{uid: 65532, runnerUID: 65530}
+	if !s.allowPeer(65530, true) {
+		t.Fatal("runner self probe was denied")
+	}
+	if s.allowPeer(65530, false) {
+		t.Fatal("runner self mutation was allowed")
+	}
+	if !s.allowPeer(65532, false) {
+		t.Fatal("Agent mutation was denied")
+	}
+	if s.allowPeer(65531, true) {
+		t.Fatal("foreign probe was allowed")
+	}
+}
+
 func TestProbeRejectsInertSameUIDListener(t *testing.T) {
 	d := t.TempDir()
 	_ = os.Chmod(d, 0700)

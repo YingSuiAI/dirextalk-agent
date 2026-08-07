@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -153,7 +154,8 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	uploadID, _ := upload["upload_id"].(string)
-	if uploadID == "" {
+	uploadSourceID, _ := upload["source_id"].(string)
+	if uploadID == "" || uploadSourceID == "" {
 		t.Fatalf("upload receipt = %s", startResult)
 	}
 	chunkDigest := sha256.Sum256(contentBytes)
@@ -223,6 +225,38 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	}
 	if !strings.Contains(string(restartedSearch), memoryID) {
 		t.Fatalf("restart semantic search omitted memory: %s", restartedSearch)
+	}
+
+	// Delete both promoted sources through the client-facing capability. The
+	// next unfiltered search traverses capability -> service -> PostgreSQL ->
+	// semantic binding resolution with a genuinely empty corpus.
+	memorySource, err := restartedRepo.Get(ctx, memoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadSource, err := restartedRepo.Get(ctx, uploadSourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restartedKnowledgeCapability.HandleOperation(ctx, "delete_memory", []byte(`{"memory_id":"`+memoryID+`","expected_revision":`+strconv.FormatInt(memorySource.Revision, 10)+`,"idempotency_key":"66666666-6666-4666-8666-666666666666"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restartedKnowledgeCapability.HandleOperation(ctx, "delete_source", []byte(`{"source_id":"`+uploadSourceID+`","expected_revision":`+strconv.FormatInt(uploadSource.Revision, 10)+`,"idempotency_key":"77777777-7777-4777-8777-777777777777"}`)); err != nil {
+		t.Fatal(err)
+	}
+	queriesBefore := qdrant.queryCount()
+	embeddingsBefore := embeddingCalls
+	emptyRaw, err := restartedKnowledgeCapability.HandleOperation(ctx, "search_knowledge", []byte(`{"query":"empty corpus","limit":5}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var empty map[string]any
+	if err := json.Unmarshal(emptyRaw, &empty); err != nil {
+		t.Fatal(err)
+	}
+	emptyItems, ok := empty["items"].([]any)
+	if !ok || len(emptyItems) != 0 || embeddingCalls != embeddingsBefore || qdrant.queryCount() != queriesBefore {
+		t.Fatalf("empty corpus result=%s embedding_calls=%d->%d qdrant_queries=%d->%d", emptyRaw, embeddingsBefore, embeddingCalls, queriesBefore, qdrant.queryCount())
 	}
 }
 

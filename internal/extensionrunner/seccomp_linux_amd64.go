@@ -29,6 +29,9 @@ func sandboxAllowedSyscalls() []uint32 {
 		unix.SYS_READV,
 		unix.SYS_WRITEV,
 		unix.SYS_ACCESS,
+		// Static BusyBox uses the legacy open syscall for shell redirections.
+		// /work remains the only writable mount inside the sandbox.
+		unix.SYS_OPEN,
 		unix.SYS_PIPE,
 		unix.SYS_SELECT,
 		unix.SYS_SCHED_YIELD,

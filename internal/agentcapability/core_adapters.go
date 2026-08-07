@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -430,34 +431,62 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if err != nil {
 			return nil, err
 		}
-		var collected []coreconversation.StreamEvent
-		var response *coreconversation.ChatResponse
-		for event := range events {
-			if c.progress != nil {
-				progressID := operationID
-				if durableID, ok := capabilityoperation.OperationIDFromContext(ctx); ok {
-					progressID = durableID
-				}
-				if err := emitCapabilityProgress(ctx, progressID, event, c.progress); err != nil {
-					// A stream is resumable only when every progress event is
-					// durably sequenced. Stop before returning a successful result
-					// if the ledger cannot persist the event.
-					return nil, err
-				}
-			} else {
-				collected = append(collected, event)
-			}
-			if event.Response != nil {
-				response = event.Response
-			}
-		}
-		if c.progress != nil && response != nil {
-			return marshalResult(response, nil)
-		}
-		return marshalResult(map[string]any{"events": collected, "response": response}, nil)
+		return consumeChatStream(ctx, operationID, events, c.progress)
 	default:
 		return nil, fmt.Errorf("unknown chat operation %q", operationID)
 	}
+}
+
+func consumeChatStream(ctx context.Context, operationID string, events <-chan coreconversation.StreamEvent, progress func(context.Context, string, []byte) error) ([]byte, error) {
+	var collected []coreconversation.StreamEvent
+	var response *coreconversation.ChatResponse
+	for event := range events {
+		if progress != nil {
+			progressID := operationID
+			if durableID, ok := capabilityoperation.OperationIDFromContext(ctx); ok {
+				progressID = durableID
+			}
+			if err := emitCapabilityProgress(ctx, progressID, event, progress); err != nil {
+				// A stream is resumable only when every progress event is
+				// durably sequenced. Stop before returning a successful result
+				// if the ledger cannot persist the event.
+				return nil, err
+			}
+		} else {
+			collected = append(collected, event)
+		}
+		if event.Kind == coreconversation.EventError {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, coreconversation.ErrCanceled
+			}
+			switch event.ErrCode {
+			case "conflict":
+				return nil, coreconversation.ErrConflict
+			case "in_flight":
+				return nil, coreconversation.ErrInFlight
+			case "canceled", "cancelled":
+				return nil, coreconversation.ErrCanceled
+			default:
+				return nil, coreconversation.ErrChatFailed
+			}
+		}
+		if event.Kind == coreconversation.EventDone && event.Response != nil {
+			response = event.Response
+		}
+	}
+	// A closed stream without the Core commit-backed done response is never a
+	// successful operation. This also covers cancellation suppressing a final
+	// error event on the producer channel.
+	if response == nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, coreconversation.ErrCanceled
+		}
+		return nil, coreconversation.ErrChatFailed
+	}
+	if progress != nil {
+		return marshalResult(response, nil)
+	}
+	return marshalResult(map[string]any{"events": collected, "response": response}, nil)
 }
 
 func validateListTurnsCapabilityInput(in map[string]json.RawMessage) error {

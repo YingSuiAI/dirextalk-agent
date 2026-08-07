@@ -27,4 +27,5 @@ message GetInstanceInfoRequest {}
 message GetInstanceInfoResponse {
   string instance_id = 1;
   string api_version = 2;
+  string release_version = 3;
 }

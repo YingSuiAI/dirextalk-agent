@@ -10,6 +10,7 @@ import (
 	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func (e LinuxExecutor) ApplyPersistent(ctx context.Context, q Request) (Receipt,
 	}
 	defer unix.Close(workspace)
 	r := e.request(q, digest, argv)
-	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
+	p, err := extensionrunner.StartPersistentServiceV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
 	if err != nil {
 		return Receipt{}, ErrDenied
 	}
@@ -204,50 +205,76 @@ func (e LinuxExecutor) ReapPersistent(_ context.Context, prior Receipt) error {
 // The dynamic tmpfs/cgroup proof remains inside RunCoreResultV1 during Apply;
 // callers keep capability disabled if that full proof cannot run.
 func (e LinuxExecutor) Probe() error {
-	if !absolutePrivateDir(e.InstallRoot) || !absolutePrivateDir(e.WorkspaceRoot) || !absolutePrivateDir(e.CgroupRoot) || e.publishShell() != nil {
-		return ErrDenied
+	if !absolutePrivateDir(e.InstallRoot) {
+		return unavailableAt("install_root")
+	}
+	if !absolutePrivateDir(e.WorkspaceRoot) {
+		return unavailableAt("workspace_root")
+	}
+	if !absoluteCgroupDir(e.CgroupRoot) {
+		return unavailableAt("cgroup_root")
+	}
+	if e.publishShell() != nil {
+		return unavailableAt("static_shell")
 	}
 	// Exercise the exact ephemeral Core result path before advertising a
 	// runner: user namespace mounts, seccomp, cgroup attach/cleanup and sealed
 	// result extraction all happen below. Nothing is retained after this call.
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
-		return ErrDenied
+		return unavailableAt("identity")
 	}
 	id := hex.EncodeToString(token[:])
 	q := Request{Action: "apply", WorkloadID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], OperationID: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], PlanDigest: strings.Repeat("0", 64), PlanRevision: 1, DispatchClaim: id[:8] + "-" + id[8:12] + "-4" + id[13:16] + "-8" + id[17:20] + "-" + id[20:], DispatchEpoch: 1, CommandSteps: []string{"printf '#!/bin/sh\\nexit 0\\n' > readiness-service"}, Service: "readiness-service", Limits: coreworkload.ResourceLimits{CPU: 1, MemoryMB: 16, Processes: 8, DiskMB: 16, TimeoutS: 1, OutputMB: 1}}
 	if q.Validate() != nil {
-		return ErrDenied
+		return unavailableAt("request")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := e.runInstall(ctx, q); err != nil {
-		return ErrDenied
+		return unavailableAt("install")
 	}
 	defer e.removeWorkspace(q)
 	service, err := e.readWorkspaceService(q)
 	if err != nil {
-		return ErrDenied
+		return unavailableAt("result")
 	}
 	digest, install, argv, err := e.publishService(service)
 	if err != nil {
-		return ErrDenied
+		return unavailableAt("publish")
 	}
 	defer install.Close()
 	defer e.removeBundle(digest)
 	workspace, err := (extensionrunner.DiskWorkspaceResolver{Root: e.WorkspaceRoot}).ResolveWorkspace(q.OperationID, q.DispatchClaim)
 	if err != nil {
-		return ErrDenied
+		return unavailableAt("workspace")
 	}
 	defer unix.Close(workspace)
-	p, err := extensionrunner.StartPersistentServiceV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
-	if err != nil || !e.identityOwned(p.Identity()) {
-		return ErrDenied
+	p, err := extensionrunner.StartPersistentServiceV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: e.request(q, digest, argv), Install: install, WorkspaceFD: workspace, StdinFD: -1, CoreTmpfsBytes: q.Limits.DiskMB * 1024 * 1024}, time.Millisecond, q.Limits.OutputMB*1024*1024)
+	if err != nil || p == nil || !e.identityOwned(p.Identity()) {
+		return unavailableAt("sandbox")
 	}
 	if p.Destroy(context.Background()) != nil {
-		return ErrDenied
+		return unavailableAt("cleanup")
 	}
 	return nil
+}
+
+type readinessError struct{ stage string }
+
+func (e readinessError) Error() string { return "core runner unavailable at " + e.stage }
+func (e readinessError) Unwrap() error { return ErrDenied }
+
+func unavailableAt(stage string) error { return readinessError{stage: stage} }
+
+// ReadinessStage exposes only the fixed, low-cardinality startup stage. It
+// deliberately never returns paths, errno values, or wrapped OS error text.
+func ReadinessStage(err error) (string, bool) {
+	var target readinessError
+	if !errors.As(err, &target) {
+		return "", false
+	}
+	return target.stage, true
 }
 
 func absolutePrivateDir(path string) bool {
@@ -260,6 +287,22 @@ func absolutePrivateDir(path string) bool {
 	}
 	owner, ok := st.Sys().(*syscall.Stat_t)
 	return ok && uint32(owner.Uid) == uint32(os.Geteuid())
+}
+
+func absoluteCgroupDir(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return false
+	}
+	var st unix.Stat_t
+	var fs unix.Statfs_t
+	if unix.Stat(path, &st) != nil || unix.Statfs(path, &fs) != nil {
+		return false
+	}
+	return safeCgroupStat(st, fs, uint32(os.Geteuid()))
+}
+
+func safeCgroupStat(st unix.Stat_t, fs unix.Statfs_t, owner uint32) bool {
+	return fs.Type == unix.CGROUP2_SUPER_MAGIC && st.Mode&unix.S_IFMT == unix.S_IFDIR && st.Uid == owner && st.Mode&0o022 == 0
 }
 
 func (e LinuxExecutor) validLimits(q Request) bool {
@@ -291,7 +334,7 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 		return ErrDenied
 	}
 	defer unix.Close(workspace)
-	service, err := extensionrunner.RunCoreResultV1(ctx, extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot}, extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, q.Limits.DiskMB*1024*1024, q.Service)
+	service, err := extensionrunner.RunCoreResultV1(ctx, e.backend(), extensionrunner.SandboxInvocationV2{Request: r, Install: install, WorkspaceFD: workspace, StdinFD: -1}, q.Limits.DiskMB*1024*1024, q.Service)
 	if err != nil || len(service) == 0 {
 		return ErrDenied
 	}
@@ -302,6 +345,10 @@ func (e LinuxExecutor) runInstall(ctx context.Context, q Request) error {
 		return ErrDenied
 	}
 	return nil
+}
+
+func (e LinuxExecutor) backend() extensionrunner.LinuxBackend {
+	return extensionrunner.LinuxBackend{CgroupRoot: e.CgroupRoot, ProbeRoot: e.InstallRoot, ManagerRoot: e.InstallRoot}
 }
 
 func (e LinuxExecutor) readWorkspaceService(q Request) ([]byte, error) {
@@ -352,34 +399,117 @@ func (e LinuxExecutor) publishService(service []byte) (string, *extensionrunner.
 		return "", nil, nil, ErrDenied
 	}
 	d := extensionrunner.ManifestDigest(entries)
-	target := filepath.Join(e.InstallRoot, d)
-	if err := os.Mkdir(target, 0700); err != nil && !os.IsExist(err) {
-		return "", nil, nil, err
-	}
-	for n, b := range files {
-		if err := writeSync(filepath.Join(target, n), b, 0500); err != nil {
-			return "", nil, nil, err
-		}
-	}
-	manifest, err := json.Marshal(extensionrunner.DiskInstallManifestV1{SchemaVersion: "dirextalk.extension.install-manifest/v1", Entries: entries})
-	if err != nil {
-		return "", nil, nil, err
-	}
-	if err = writeSync(filepath.Join(target, ".dirextalk-install-v1.json"), append(manifest, '\n'), 0400); err != nil {
-		return "", nil, nil, err
-	}
-	if dfd, e := os.Open(target); e == nil {
-		e = dfd.Sync()
-		_ = dfd.Close()
-		if e != nil {
-			return "", nil, nil, e
-		}
-	}
-	install, err := (extensionrunner.DiskInstallResolver{Root: e.InstallRoot}).ResolveInstall(d)
+	install, err := e.publishImmutableInstall(d, entries, files)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	return d, install, argv, nil
+}
+
+func (e LinuxExecutor) publishImmutableInstall(digest string, entries []extensionrunner.ManifestEntry, files map[string][]byte) (*extensionrunner.AdmittedInstall, error) {
+	resolver := extensionrunner.DiskInstallResolver{Root: e.InstallRoot}
+	target := filepath.Join(e.InstallRoot, digest)
+	if _, err := os.Lstat(target); err == nil {
+		// A digest path is immutable once visible. Reuse it only after the full
+		// descriptor-backed admission proof; never repair or overwrite a
+		// partial or unknown tree in place.
+		return resolver.ResolveInstall(digest)
+	} else if !os.IsNotExist(err) {
+		return nil, ErrDenied
+	}
+	tmp, err := os.MkdirTemp(e.InstallRoot, ".publish-")
+	if err != nil {
+		return nil, err
+	}
+	var tmpStat unix.Stat_t
+	if err = unix.Lstat(tmp, &tmpStat); err != nil || tmpStat.Mode&unix.S_IFMT != unix.S_IFDIR || tmpStat.Uid != uint32(os.Geteuid()) {
+		return nil, ErrDenied
+	}
+	published := false
+	publishedNames := []string{".dirextalk-install-v1.json"}
+	for name := range files {
+		publishedNames = append(publishedNames, name)
+	}
+	defer func() {
+		if !published {
+			removePublishTemp(tmp, uint64(tmpStat.Dev), tmpStat.Ino, tmpStat.Uid, publishedNames)
+		}
+	}()
+	for name, body := range files {
+		if filepath.Base(name) != name || name == "." || name == "" {
+			return nil, ErrDenied
+		}
+		if err := writeSync(filepath.Join(tmp, name), body, 0o500); err != nil {
+			return nil, err
+		}
+	}
+	manifest, err := json.Marshal(extensionrunner.DiskInstallManifestV1{SchemaVersion: "dirextalk.extension.install-manifest/v1", Entries: entries})
+	if err != nil {
+		return nil, err
+	}
+	if err = writeSync(filepath.Join(tmp, ".dirextalk-install-v1.json"), append(manifest, '\n'), 0o400); err != nil {
+		return nil, err
+	}
+	if err = os.Chmod(tmp, 0o500); err != nil {
+		return nil, err
+	}
+	if err = syncDir(tmp); err != nil {
+		return nil, err
+	}
+	if err = unix.Renameat2(unix.AT_FDCWD, tmp, unix.AT_FDCWD, target, unix.RENAME_NOREPLACE); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return resolver.ResolveInstall(digest)
+		}
+		return nil, err
+	}
+	published = true
+	if err = syncDir(e.InstallRoot); err != nil {
+		return nil, err
+	}
+	return resolver.ResolveInstall(digest)
+}
+
+func removePublishTemp(path string, dev, ino uint64, uid uint32, names []string) {
+	dirFD, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	defer unix.Close(dirFD)
+	var st unix.Stat_t
+	if unix.Fstat(dirFD, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || uint64(st.Dev) != dev || st.Ino != ino || st.Uid != uid {
+		return
+	}
+	if unix.Fchmod(dirFD, 0o700) != nil {
+		return
+	}
+	for _, name := range names {
+		if filepath.Base(name) == name && name != "." && name != "" {
+			_ = unix.Unlinkat(dirFD, name, 0)
+		}
+	}
+	parentFD, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return
+	}
+	defer unix.Close(parentFD)
+	var current unix.Stat_t
+	if unix.Fstatat(parentFD, filepath.Base(path), &current, unix.AT_SYMLINK_NOFOLLOW) != nil || uint64(current.Dev) != dev || current.Ino != ino || current.Uid != uid || current.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return
+	}
+	_ = unix.Unlinkat(parentFD, filepath.Base(path), unix.AT_REMOVEDIR)
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err == nil {
+		err = closeErr
+	}
+	return err
 }
 func writeSync(path string, b []byte, mode os.FileMode) error {
 	f, e := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
@@ -468,21 +598,11 @@ func (e LinuxExecutor) publishShell() error {
 	}
 	m := []extensionrunner.ManifestEntry{{Path: "entry", SHA256: extensionrunner.DigestBytes(b), Size: int64(len(b))}}
 	d := extensionrunner.ManifestDigest(m)
-	target := filepath.Join(e.InstallRoot, d)
-	if _, err = os.Stat(target); err == nil {
-		return nil
-	}
-	if err = os.Mkdir(target, 0700); err != nil {
-		return err
-	}
-	if err = writeSync(filepath.Join(target, "entry"), b, 0500); err != nil {
-		return err
-	}
-	manifest, err := json.Marshal(extensionrunner.DiskInstallManifestV1{SchemaVersion: "dirextalk.extension.install-manifest/v1", Entries: m})
+	install, err := e.publishImmutableInstall(d, m, map[string][]byte{"entry": b})
 	if err != nil {
 		return err
 	}
-	return writeSync(filepath.Join(target, ".dirextalk-install-v1.json"), append(manifest, '\n'), 0400)
+	return install.Close()
 }
 
 var _ = sha256.Size

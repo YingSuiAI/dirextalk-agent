@@ -97,6 +97,7 @@ func (s *CoreConversationStore) DeleteConversationMutation(ctx context.Context, 
 	if e = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1`, c.ConversationID).Scan(&conv.ID, &conv.Title, &conv.Revision, &conv.CreatedAt, &conv.UpdatedAt, &del); e != nil {
 		return core.ConversationMutationResponse{}, e
 	}
+	normalizeConversationTimesPG(&conv, del)
 	if conv.Revision != c.ExpectedRevision {
 		return core.ConversationMutationResponse{}, core.ErrConflict
 	}
@@ -159,7 +160,7 @@ func (s *CoreConversationStore) RenameConversationMutation(ctx context.Context, 
 	if err = tx.QueryRow(ctx, `SELECT conversation_id,title,revision,created_at,updated_at,deleted_at FROM core_conversations WHERE conversation_id=$1 FOR UPDATE`, id).Scan(&conversation.ID, &conversation.Title, &conversation.Revision, &conversation.CreatedAt, &conversation.UpdatedAt, &deleted); err != nil {
 		return core.ConversationMutationResponse{}, core.ErrConflict
 	}
-	conversation.DeletedAt = deleted
+	normalizeConversationTimesPG(&conversation, deleted)
 	if deleted != nil || conversation.Revision != expected {
 		return core.ConversationMutationResponse{}, core.ErrConflict
 	}
@@ -230,6 +231,15 @@ func stringArrayJSONPG(values []string) ([]byte, error) {
 	return json.Marshal(values)
 }
 
+func normalizeConversationTimesPG(conversation *core.Conversation, deletedAt *time.Time) {
+	conversation.CreatedAt = conversation.CreatedAt.UTC()
+	conversation.UpdatedAt = conversation.UpdatedAt.UTC()
+	if deletedAt != nil {
+		value := deletedAt.UTC()
+		conversation.DeletedAt = &value
+	}
+}
+
 func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string) (core.Conversation, error) {
 	var c core.Conversation
 	var del *time.Time
@@ -238,7 +248,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 	if e := s.pool.QueryRow(ctx, `SELECT c.conversation_id,c.title,c.revision,c.created_at,c.updated_at,c.deleted_at,COALESCE(x.summary,''),COALESCE(x.message_offset,0) FROM core_conversations c LEFT JOIN core_conversation_contexts x ON x.conversation_id=c.conversation_id WHERE c.conversation_id=$1`, id).Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &del, &summary, &offset); e != nil {
 		return c, core.ErrConflict
 	}
-	c.DeletedAt = del
+	normalizeConversationTimesPG(&c, del)
 	if offset < 0 {
 		return c, core.ErrConflict
 	}
@@ -255,6 +265,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		if e = rows.Scan(&m.ID, &m.Sequence, &m.Role, &m.Content, &prof, &m.CreatedAt, &payload, &tasks, &sums); e != nil {
 			return c, e
 		}
+		m.CreatedAt = m.CreatedAt.UTC()
 		if prof != nil {
 			m.ModelProfileID = prof.String()
 		}
@@ -340,6 +351,7 @@ func (s *CoreConversationStore) ListConversations(ctx context.Context, token str
 		if e = rows.Scan(&c.ID, &c.Title, &c.Revision, &c.CreatedAt, &c.UpdatedAt, &d, &summary, &offset); e != nil {
 			return nil, "", e
 		}
+		normalizeConversationTimesPG(&c, d)
 		if offset < 0 {
 			return nil, "", core.ErrConflict
 		}

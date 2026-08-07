@@ -251,6 +251,13 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	if err != nil || len(conversation.Messages) != 2 {
 		t.Fatalf("conversation=%+v err=%v", conversation, err)
 	}
+	if err := conversation.ValidateForPersistence(); err != nil {
+		t.Fatalf("persisted turn conversation is invalid: %v", err)
+	}
+	userAt, assistantAt := conversation.Messages[0].CreatedAt, conversation.Messages[1].CreatedAt
+	if userAt.Location() != time.UTC || assistantAt.Location() != time.UTC || userAt.Nanosecond()%int(time.Microsecond) != 0 || assistantAt.Nanosecond()%int(time.Microsecond) != 0 || assistantAt.Sub(userAt) != time.Microsecond {
+		t.Fatalf("turn timestamps are not persistably ordered: user=%s assistant=%s", userAt.Format(time.RFC3339Nano), assistantAt.Format(time.RFC3339Nano))
+	}
 	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
 	if err != nil || len(events) < 2 {
 		t.Fatalf("events=%d err=%v", len(events), err)

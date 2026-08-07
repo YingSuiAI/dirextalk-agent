@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,43 @@ func TestUnavailableAtUsesSafeStableStages(t *testing.T) {
 	}
 }
 
+func TestReadinessStagesContainNoRuntimeDetail(t *testing.T) {
+	for _, stage := range []string{
+		"probe_context", "cgroup_root", "cgroup_filesystem", "cgroup_controllers", "cgroup_delegation",
+		"probe_identity", "probe_cgroup_create", "probe_cgroup_limits", "probe_executable", "probe_release_pipe",
+		"probe_child_start", "probe_cgroup_attach", "probe_child_wait", "probe_cgroup_empty", "probe_cgroup_remove",
+		"sandbox_root", "sandbox_install_root", "sandbox_workspace_root", "sandbox_executable", "sandbox_entry",
+		"sandbox_publish", "sandbox_admit", "sandbox_workspace", "sandbox_identity", "sandbox_request", "sandbox_start", "sandbox_wait",
+	} {
+		err := unavailableAt(stage)
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("stage %q lost unavailable sentinel", stage)
+		}
+		for _, forbidden := range []string{"/", "errno", "permission denied", "secret"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("stage %q leaked runtime detail %q: %q", stage, forbidden, err)
+			}
+		}
+	}
+}
+
+func TestSandboxProbeWaitStageAllowsOnlyFixedChildDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		stderr string
+		want   string
+	}{
+		{"app-clone:permission\n", "sandbox_wait_app-clone_permission"},
+		{"map-namespace:unsupported", "sandbox_wait_map-namespace_unsupported"},
+		{"app-clone:/private/path", "sandbox_wait"},
+		{"unknown:permission", "sandbox_wait"},
+		{"app-clone:permission\nsecret", "sandbox_wait"},
+	} {
+		if got := sandboxProbeWaitStage([]byte(tc.stderr)); got != tc.want {
+			t.Fatalf("sandboxProbeWaitStage(%q) = %q, want %q", tc.stderr, got, tc.want)
+		}
+	}
+}
+
 func TestSetupCgroupReturnsSafeCreateStage(t *testing.T) {
 	err := setupCgroup(filepath.Join(t.TempDir(), "missing", "child"), LimitsV2{}, 1)
 	if !errors.Is(err, ErrUnavailable) {
@@ -45,6 +83,45 @@ func TestCgroupSettingsConstrainMemoryAndSwapBeforeRelease(t *testing.T) {
 	settings := cgroupSettings(LimitsV2{MemoryBytes: 123, Processes: 4}, 99)
 	if len(settings) < 2 || settings[0].n != "memory.max" || settings[0].v != "123" || settings[1].n != "memory.swap.max" || settings[1].v != "0" {
 		t.Fatalf("memory limits are not first cgroup settings: %#v", settings)
+	}
+}
+
+func TestSandboxChildDoesNotUsePdeathsigAcrossPIDNamespace(t *testing.T) {
+	pidfd := -1
+	attr := sandboxChildSysProcAttr(&pidfd)
+	if attr.Pdeathsig != 0 {
+		t.Fatalf("PID namespace child has Pdeathsig=%v", attr.Pdeathsig)
+	}
+	wantNamespaces := uintptr(unix.CLONE_NEWUSER | unix.CLONE_NEWPID | unix.CLONE_NEWIPC | unix.CLONE_NEWNET)
+	if attr.Cloneflags != wantNamespaces || attr.PidFD != &pidfd {
+		t.Fatalf("sandbox child attributes = %+v", attr)
+	}
+}
+
+func TestCoreCgroupLimitsIncludeTrustedManagerOverhead(t *testing.T) {
+	base := LimitsV2{MemoryBytes: 16 << 20, Processes: 8}
+	ordinary, err := effectiveCgroupLimits(SandboxInvocationV2{Request: RequestV2{Limits: base}})
+	if err != nil || ordinary != base {
+		t.Fatalf("ordinary limits = %+v, err=%v", ordinary, err)
+	}
+	core, err := effectiveCgroupLimits(SandboxInvocationV2{Request: RequestV2{Limits: base}, CoreTmpfsBytes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if core.MemoryBytes != base.MemoryBytes+coreManagerMemoryOverheadBytes || core.Processes != base.Processes+coreManagerProcessOverhead {
+		t.Fatalf("core limits = %+v", core)
+	}
+}
+
+func TestCoreCgroupLimitOverheadFailsClosedOnOverflow(t *testing.T) {
+	maxInt64 := int64(^uint64(0) >> 1)
+	for _, limits := range []LimitsV2{
+		{MemoryBytes: maxInt64 - coreManagerMemoryOverheadBytes + 1, Processes: 1},
+		{MemoryBytes: 1, Processes: maxInt64 - coreManagerProcessOverhead + 1},
+	} {
+		if _, err := effectiveCgroupLimits(SandboxInvocationV2{Request: RequestV2{Limits: limits}, CoreTmpfsBytes: 1}); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("overflow limits %+v err=%v", limits, err)
+		}
 	}
 }
 

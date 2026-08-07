@@ -55,6 +55,25 @@ func TestServerPeerAuthorizationSeparatesProbeAndMutation(t *testing.T) {
 	}
 }
 
+func TestSharedRunnerRootRequiresExactGroupAndMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if !safeSharedRunnerRoot(root, uint32(os.Getegid())) {
+		t.Fatal("valid shared runner root rejected")
+	}
+	if safeSharedRunnerRoot(root, uint32(os.Getegid())+1) {
+		t.Fatal("shared runner root accepted with wrong group")
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if safeSharedRunnerRoot(root, uint32(os.Getegid())) {
+		t.Fatal("private mode accepted for shared runner root")
+	}
+}
+
 func TestLinuxBackendProbeRejectsPartialCgroupDirectory(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "partial-cgroup")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -62,6 +81,22 @@ func TestLinuxBackendProbeRejectsPartialCgroupDirectory(t *testing.T) {
 	}
 	if err := (LinuxBackend{CgroupRoot: root}).Probe(context.Background()); err == nil {
 		t.Fatal("probe accepted a non-cgroup directory")
+	}
+}
+
+func TestProbeRootMustBePrivateRunnerOwnedDirectory(t *testing.T) {
+	root := t.TempDir()
+	if !trustedProbeRoot(root) {
+		t.Fatal("private runner-owned probe root rejected")
+	}
+	if err := os.Chmod(root, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if trustedProbeRoot(root) {
+		t.Fatal("group-writable probe root accepted")
+	}
+	if trustedProbeRoot(filepath.Join(root, "missing")) {
+		t.Fatal("missing probe root accepted")
 	}
 }
 

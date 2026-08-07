@@ -75,6 +75,7 @@ path or fixture fallback.
    changes; do not duplicate detailed specifications here.
 5. Real AWS mutation checks require explicit authorization, a disposable
    account, and independent resource read-back.
+6. Write Git commit messages in English.
 
 Typical checks:
 

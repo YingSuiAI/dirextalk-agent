@@ -120,6 +120,7 @@ type composeIsolationConfig struct {
 		User         string   `yaml:"user"`
 		Profiles     []string `yaml:"profiles"`
 		NetworkMode  string   `yaml:"network_mode"`
+		Cgroup       string   `yaml:"cgroup"`
 		CgroupParent string   `yaml:"cgroup_parent"`
 		Ports        []any    `yaml:"ports"`
 		Command      []string `yaml:"command"`
@@ -191,8 +192,8 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 		configs[i] = renderLocalCompose(t, out)
 	}
 	for i, config := range configs {
-		if len(config.Services) != 8 {
-			t.Fatalf("stack %d should define exactly eight services, got %d", i, len(config.Services))
+		if len(config.Services) != 9 {
+			t.Fatalf("stack %d should define exactly nine services, got %d", i, len(config.Services))
 		}
 		if _, ok := config.Services["postgres"]; !ok {
 			t.Fatalf("stack %d is missing its Agent-owned Postgres service", i)
@@ -223,6 +224,16 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 		if config.Services["extension-runner"].NetworkMode != "none" || config.Services["core-runner"].NetworkMode != "none" {
 			t.Fatalf("stack %d runner network isolation is not explicit", i)
 		}
+		if config.Services["extension-runner"].Cgroup != "host" || config.Services["core-runner"].Cgroup != "host" {
+			t.Fatalf("stack %d runner cgroup namespaces are not host-bound", i)
+		}
+		coreMounts := make(map[string]string, len(config.Services["core"].Volumes))
+		for _, volume := range config.Services["core"].Volumes {
+			coreMounts[volume.Target] = volume.Source
+		}
+		if got := coreMounts["/var/lib/dirextalk-agent/extension-workspaces"]; got != "agent_runner_workspaces" {
+			t.Fatalf("stack %d Agent extension workspace volume = %q, want shared runner workspace", i, got)
+		}
 		for _, service := range []string{"extension-runner", "core-runner"} {
 			test := config.Services[service].Healthcheck.Test
 			if len(test) < 4 || test[0] != "CMD" || test[2] != "probe" {
@@ -234,6 +245,38 @@ func TestBootstrapLocalComposeIsolationUsesUniqueStackResources(t *testing.T) {
 			if !strings.Contains(command, "chmod 3770 /socket") {
 				t.Fatalf("stack %d %s does not preserve setgid/sticky socket mode: %q", i, service, command)
 			}
+		}
+		dataInit := config.Services["extension-runner-data-init"]
+		dataInitCommand := strings.Join(dataInit.Command, " ")
+		for _, contract := range []string{
+			"chown 65531:65531 /install /state",
+			"chmod 0700 /install /state",
+			"chown 65531:65532 /workspace",
+			"chmod 0770 /workspace",
+		} {
+			if !strings.Contains(dataInitCommand, contract) {
+				t.Fatalf("stack %d extension runner data initialization is missing %q: %q", i, contract, dataInitCommand)
+			}
+		}
+		if dataInit.User != "0:0" || dataInit.NetworkMode != "none" {
+			t.Fatalf("stack %d extension runner data initializer is not isolated: user=%q network=%q", i, dataInit.User, dataInit.NetworkMode)
+		}
+		dataMounts := make(map[string]string, len(dataInit.Volumes))
+		for _, volume := range dataInit.Volumes {
+			dataMounts[volume.Target] = volume.Source
+		}
+		for target, source := range map[string]string{
+			"/install":   "agent_extension_install",
+			"/workspace": "agent_runner_workspaces",
+			"/state":     "agent_extension_state",
+		} {
+			if dataMounts[target] != source {
+				t.Fatalf("stack %d extension runner data initializer mount %s=%q, want %q", i, target, dataMounts[target], source)
+			}
+		}
+		dataDependency, ok := config.Services["extension-runner"].DependsOn["extension-runner-data-init"]
+		if !ok || dataDependency.Condition != "service_completed_successfully" {
+			t.Fatalf("stack %d extension runner must wait for initialized data roots: %+v", i, config.Services["extension-runner"].DependsOn)
 		}
 		if len(config.Services["extension-runner"].Profiles) != 0 || len(config.Services["core-runner"].Profiles) != 0 {
 			t.Fatalf("stack %d runner services must start by default", i)

@@ -10,6 +10,8 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type errorClassifyingCapability struct {
@@ -29,8 +31,30 @@ func classifyCapabilityError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, coreconversation.ErrCanceled) {
+		return errors.Join(context.Canceled, err)
+	}
 	if _, _, classified := capabilityoperation.FailureDetails(err); classified {
 		return err
+	}
+	switch status.Code(err) {
+	case codes.InvalidArgument:
+		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Product request is invalid", err)
+	case codes.PermissionDenied:
+		return capabilityoperation.NewFailure("PERMISSION_DENIED", "Product operation is not permitted", err)
+	case codes.NotFound:
+		return capabilityoperation.NewFailure("NOT_FOUND", "Product resource was not found", err)
+	case codes.Aborted, codes.AlreadyExists:
+		return capabilityoperation.NewFailure("CONFLICT", "Product state changed; refresh and retry", err)
+	case codes.FailedPrecondition:
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Product operation prerequisites are not satisfied", err)
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return capabilityoperation.NewFailure("UNAVAILABLE", "Product service is unavailable", err)
+	case codes.ResourceExhausted:
+		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", "Product service capacity is exhausted", err)
 	}
 	switch {
 	case errors.Is(err, coreconversation.ErrInvalid),
@@ -68,10 +92,10 @@ func classifyCapabilityError(err error) error {
 	case errors.Is(err, coremodel.ErrAPIKeyUnavailable),
 		errors.Is(err, coreknowledge.ErrIneligible),
 		errors.Is(err, coreknowledge.ErrCleanupPending),
-		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable),
-		errors.Is(err, coreconversation.ErrChatFailed),
-		errors.Is(err, coreconversation.ErrCanceled):
+		errors.Is(err, coreconversation.ErrMemoryRecallUnavailable):
 		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent configuration is not ready", err)
+	case errors.Is(err, coreconversation.ErrChatFailed):
+		return capabilityoperation.NewFailure("PRECONDITION_FAILED", "Agent chat failed", err)
 	case errors.Is(err, coremodel.ErrProfileRepository),
 		errors.Is(err, coremodel.ErrConnectionTestFailed),
 		errors.Is(err, coremodel.ErrProviderUnavailable),

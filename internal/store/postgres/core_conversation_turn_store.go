@@ -478,6 +478,10 @@ func (s *CoreConversationStore) TurnEventBounds(ctx context.Context, id string) 
 }
 
 func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnLease, response core.ChatResponse) (core.Turn, error) {
+	response.Message.CreatedAt = response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
+	if response.Message.CreatedAt.IsZero() {
+		return core.Turn{}, core.ErrInvalid
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return core.Turn{}, err
@@ -510,7 +514,7 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, response.ConversationID).Scan(&nextSequence); err != nil {
 		return core.Turn{}, err
 	}
-	user := core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: response.Message.CreatedAt.Add(-time.Nanosecond)}
+	user := core.Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn-user:"+lease.Turn.RequestID)).String(), Role: core.RoleUser, Content: lease.Turn.Prompt, ModelProfileID: lease.Turn.ProfileID, CreatedAt: response.Message.CreatedAt.Add(-time.Microsecond)}
 	for i, m := range []core.Message{user, response.Message} {
 		payload, _ := json.Marshal(m)
 		tasks, _ := stringArrayJSONPG(m.RelatedTaskIDs)

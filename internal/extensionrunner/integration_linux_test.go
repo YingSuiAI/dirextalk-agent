@@ -27,7 +27,7 @@ func TestLinuxIsolationIntegrationOptIn(t *testing.T) {
 		t.Fatal("DIREXTALK_EXTENSION_RUNNER_CGROUP_ROOT must be absolute")
 	}
 	runnerBinary := buildRunnerBinary(t)
-	backend := LinuxBackend{CgroupRoot: cgroupRoot, ReexecPath: runnerBinary}
+	backend := LinuxBackend{CgroupRoot: cgroupRoot, ProbeRoot: t.TempDir(), ReexecPath: runnerBinary}
 	if err := backend.Probe(context.Background()); err != nil {
 		t.Fatalf("real isolation kernel unavailable: %v", err)
 	}

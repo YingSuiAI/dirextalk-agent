@@ -28,6 +28,21 @@ func TestValidationBoundsAndOrdering(t *testing.T) {
 		t.Fatal("oversized name accepted")
 	}
 }
+
+func TestNextMessageTimeUsesPersistableMicrosecondOrdering(t *testing.T) {
+	base := time.Date(2026, 8, 6, 1, 2, 3, 123456000, time.UTC)
+	conversation := Conversation{Messages: []Message{{CreatedAt: base}}}
+
+	next := nextMessageTime(conversation, base.Add(time.Nanosecond))
+	if !next.Equal(base.Add(time.Microsecond)) || next.Nanosecond()%int(time.Microsecond) != 0 {
+		t.Fatalf("next timestamp=%s, want=%s", next.Format(time.RFC3339Nano), base.Add(time.Microsecond).Format(time.RFC3339Nano))
+	}
+
+	later := nextMessageTime(conversation, base.Add(2*time.Microsecond+999*time.Nanosecond))
+	if !later.Equal(base.Add(2 * time.Microsecond)) {
+		t.Fatalf("later timestamp=%s", later.Format(time.RFC3339Nano))
+	}
+}
 func TestDigestIncludesAllowedTools(t *testing.T) {
 	id := uuid.NewString()
 	a := []ResolvedExtension{{Selection: ExtensionSelection{ID: id, Kind: ExtensionMCP, Version: "1", Digest: "d", AllowedTools: []string{"b", "a"}}}}

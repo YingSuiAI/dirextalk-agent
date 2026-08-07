@@ -28,10 +28,14 @@ func TestCoreExternalPurgeRegistryPurgesConfiguredRootsWhenKnowledgeDisabled(t *
 			t.Fatal(err)
 		}
 	}
+	if err := os.Chmod(roots["extension-workspace"], 0o770); err != nil {
+		t.Fatal(err)
+	}
 	registry, err := composeCoreExternalPurge(config.Config{
 		CoreKnowledgeEnabled:       false,
 		CoreExtensionStagingRoot:   roots["extension-staging"],
 		CoreExtensionWorkspaceRoot: roots["extension-workspace"],
+		CoreExtensionRunnerUID:     uint32(os.Geteuid()),
 		CoreKnowledgeContentRoot:   roots["knowledge-content"],
 		CoreKnowledgeMountRoot:     roots["knowledge-mount"],
 	})

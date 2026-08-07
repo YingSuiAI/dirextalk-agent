@@ -279,8 +279,15 @@ func (s *acceptanceSearchSlot) Search(ctx context.Context, q coreknowledge.Searc
 
 type acceptanceQdrant struct {
 	*httptest.Server
-	mu     sync.Mutex
-	points map[string][]map[string]any
+	mu      sync.Mutex
+	points  map[string][]map[string]any
+	queries int
+}
+
+func (q *acceptanceQdrant) queryCount() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.queries
 }
 
 func newAcceptanceQdrant(t *testing.T) *acceptanceQdrant {
@@ -313,6 +320,13 @@ func (q *acceptanceQdrant) handle(w http.ResponseWriter, r *http.Request) {
 			Limit int `json:"limit"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&request)
+		q.mu.Lock()
+		q.queries++
+		q.mu.Unlock()
+		if len(request.Filter.Should) == 0 {
+			http.Error(w, "empty Qdrant filter", http.StatusBadRequest)
+			return
+		}
 		allowed := map[string]bool{}
 		for _, branch := range request.Filter.Should {
 			for _, condition := range branch.Must {
