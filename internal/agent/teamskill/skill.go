@@ -561,7 +561,10 @@ func planMatchesProposal(
 			assignment.WorkClass != role.WorkClass ||
 			assignment.Workspace != role.Workspace ||
 			assignment.Duration != role.Duration ||
-			assignment.Tokens != role.Tokens {
+			!teamplan.AssignmentTokensMatchProposal(
+				assignment,
+				role.Tokens,
+			) {
 			return false
 		}
 		required := append(

@@ -13,6 +13,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
 	runtimeapi "github.com/YingSuiAI/dirextalk-agent/internal/runtime"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamorchestration"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamplan"
@@ -216,6 +217,49 @@ func TestSkillPreparesServerBoundPlanWithoutExposingExecutionFacts(
 			err,
 			calls,
 		)
+	}
+}
+
+func TestPlanSummaryAcceptsDeterministicPiTokenBound(t *testing.T) {
+	t.Parallel()
+	proposal, err := teamplan.DecodeProposalJSON(
+		proposalArguments(t),
+		testPolicy(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal.Roles[0].Tokens.OutputExpected = 500_000
+	proposal.Roles[0].Tokens.OutputMaximum = 1_000_000
+	assignment := teamplan.WorkerAssignment{
+		RoleID:               proposal.Roles[0].RoleID,
+		Title:                proposal.Roles[0].Title,
+		Objective:            proposal.Roles[0].Objective,
+		WorkClass:            proposal.Roles[0].WorkClass,
+		RequiredCapabilities: append([]teamplan.Capability(nil), proposal.Roles[0].RequiredCapabilities...),
+		Workspace:            proposal.Roles[0].Workspace,
+		DependsOnRoleIDs:     append([]string(nil), proposal.Roles[0].DependsOnRoleIDs...),
+		Duration:             proposal.Roles[0].Duration,
+		Tokens:               proposal.Roles[0].Tokens,
+		RuntimeAdapter:       teamplan.AdapterPiV1,
+		ModelProvider:        "deepseek",
+	}
+	assignment.Tokens.OutputExpected =
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens
+	assignment.Tokens.OutputMaximum =
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens
+	plan := teamplan.Plan{
+		ProposalConfidence: proposal.Confidence,
+		ProposalRationale:  proposal.Rationale,
+		WorkerCount:        1,
+		Assignments:        []teamplan.WorkerAssignment{assignment},
+	}
+	if !planMatchesProposal(plan, proposal) {
+		t.Fatal("runtime-bounded Pi Plan was rejected by the model-visible summary")
+	}
+	proposal.Roles[0].Tokens.InputMaximum++
+	if planMatchesProposal(plan, proposal) {
+		t.Fatal("unrelated token mutation was accepted by the model-visible summary")
 	}
 }
 
