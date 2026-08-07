@@ -100,8 +100,126 @@ func TestConsumeChatStreamErrorsRemainClassifiable(t *testing.T) {
 	close(stream)
 	_, err := consumeChatStream(context.Background(), "stream_chat", stream, nil)
 	classified := classifyCapabilityError(err)
-	if !errors.Is(classified, context.Canceled) || !errors.Is(classified, coreconversation.ErrCanceled) {
+	code, _, ok := capabilityoperation.FailureDetails(classified)
+	if !ok || code != "CANCELLED" || errors.Is(classified, context.Canceled) || !errors.Is(classified, coreconversation.ErrCanceled) {
 		t.Fatalf("cancellation classification=%v", classified)
+	}
+}
+
+func TestConsumeDurableTurnStreamPersistsReplayableProgressAndTerminal(t *testing.T) {
+	operationID := uuid.NewString()
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: operationID, ConversationID: uuid.NewString()}
+	response := &coreconversation.ChatResponse{RequestID: operationID, ConversationID: turn.ConversationID, Done: true}
+	events := make(chan coreconversation.TurnEvent, 3)
+	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 1, Kind: coreconversation.TurnEventAccepted}
+	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 2, Kind: coreconversation.TurnEventStarted}
+	events <- coreconversation.TurnEvent{TurnID: turn.ID, Sequence: 3, Kind: coreconversation.TurnEventDone, Response: response}
+	close(events)
+
+	var progressIDs []string
+	var progressEvents []coreconversation.StreamEvent
+	ctx := capabilityoperation.WithOperationID(context.Background(), operationID)
+	raw, err := consumeDurableTurnStream(ctx, "stream_chat", turn, events, func(_ context.Context, gotID string, payload []byte) error {
+		var event coreconversation.StreamEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			return err
+		}
+		progressIDs = append(progressIDs, gotID)
+		progressEvents = append(progressEvents, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(progressEvents) != 2 || len(progressIDs) != 2 {
+		t.Fatalf("progress ids=%v events=%+v", progressIDs, progressEvents)
+	}
+	for index, event := range progressEvents {
+		if progressIDs[index] != operationID || event.RequestID != operationID || event.ConversationID != turn.ConversationID {
+			t.Fatalf("progress[%d] id=%q event=%+v", index, progressIDs[index], event)
+		}
+	}
+	if progressEvents[0].Kind != coreconversation.EventStarted || progressEvents[0].TurnSequence != 1 || progressEvents[1].Kind != coreconversation.EventStarted || progressEvents[1].TurnSequence != 2 {
+		t.Fatalf("progress events=%+v", progressEvents)
+	}
+	var result coreconversation.ChatResponse
+	if json.Unmarshal(raw, &result) != nil || result.RequestID != operationID || result.ConversationID != turn.ConversationID || !result.Done {
+		t.Fatalf("terminal result=%s", raw)
+	}
+}
+
+func TestConsumeDurableTurnStreamProjectsTerminalFailureAndReplayGap(t *testing.T) {
+	turn := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString()}
+	tests := []struct {
+		name     string
+		event    coreconversation.TurnEvent
+		wantErr  error
+		wantCode string
+	}{
+		{name: "cancelled", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventCanceled}, wantErr: coreconversation.ErrCanceled, wantCode: "canceled"},
+		{name: "failed", event: coreconversation.TurnEvent{Kind: coreconversation.TurnEventError, ErrorCode: "provider_failed", ErrorSummary: "safe summary"}, wantErr: coreconversation.ErrChatFailed, wantCode: "provider_failed"},
+		{name: "replay gap", event: coreconversation.TurnEvent{ReplayGap: true, FirstSequence: 4, LastSequence: 7}, wantErr: coreconversation.ErrChatFailed, wantCode: "replay_gap"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projected := durableTurnStreamEvent(turn, tt.event)
+			if projected == nil || projected.Kind != coreconversation.EventError || projected.ErrCode != tt.wantCode {
+				t.Fatalf("projected event=%+v", projected)
+			}
+			events := make(chan coreconversation.TurnEvent, 1)
+			events <- tt.event
+			close(events)
+			progressCalls := 0
+			_, err := consumeDurableTurnStream(context.Background(), "stream_chat", turn, events, func(context.Context, string, []byte) error {
+				progressCalls++
+				return nil
+			})
+			if !errors.Is(err, tt.wantErr) || progressCalls != 0 {
+				t.Fatalf("progress=%d err=%v", progressCalls, err)
+			}
+		})
+	}
+}
+
+type durableTurnCancelerStub struct {
+	turn     coreconversation.Turn
+	commands []coreconversation.TurnCancelCommand
+}
+
+func (s *durableTurnCancelerStub) GetTurn(context.Context, string) (coreconversation.Turn, error) {
+	return s.turn, nil
+}
+
+func (s *durableTurnCancelerStub) CancelTurn(_ context.Context, command coreconversation.TurnCancelCommand) (coreconversation.Turn, error) {
+	s.commands = append(s.commands, command)
+	s.turn.CancelRequested = true
+	return s.turn, nil
+}
+
+func TestCancelDurableTurnUsesCurrentRevisionAndDeterministicRequestIdentity(t *testing.T) {
+	accepted := coreconversation.Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), Revision: 1, State: coreconversation.TurnAccepted}
+	stub := &durableTurnCancelerStub{turn: coreconversation.Turn{ID: accepted.ID, RequestID: accepted.RequestID, Revision: 4, State: coreconversation.TurnRunning}}
+	if err := cancelDurableTurn(stub, accepted); err != nil {
+		t.Fatal(err)
+	}
+	if err := cancelDurableTurn(stub, accepted); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.commands) != 2 {
+		t.Fatalf("cancel commands=%+v", stub.commands)
+	}
+	wantRequestID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("capability-turn-cancel:"+accepted.RequestID)).String()
+	for _, command := range stub.commands {
+		if command.TurnID != accepted.ID || command.ExpectedRevision != 4 || command.RequestID != wantRequestID {
+			t.Fatalf("cancel command=%+v", command)
+		}
+	}
+	stub.turn.State = coreconversation.TurnCompleted
+	if err := cancelDurableTurn(stub, accepted); err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.commands) != 2 {
+		t.Fatalf("terminal turn was cancelled again: %+v", stub.commands)
 	}
 }
 

@@ -57,7 +57,10 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 			return core.Turn{}, err
 		}
 	}
-	turnID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+c.RequestID)).String()
+	turnID := c.TurnID
+	if turnID == "" {
+		turnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+c.RequestID)).String()
+	}
 	metadataSnapshot := c.ProfileSnapshot
 	metadataSnapshot.APIKey = ""
 	raw, _ := json.Marshal(metadataSnapshot)
@@ -388,6 +391,36 @@ func (s *CoreConversationStore) RecordTurnModelResult(ctx context.Context, lease
 		return core.ErrConflict
 	}
 	return nil
+}
+
+func (s *CoreConversationStore) ContinueTurnAfterReadOnlyTool(ctx context.Context, lease core.TurnLease, call core.ToolCall, result core.ToolResult) (core.Turn, error) {
+	if call.Validate() != nil || result.Validate() != nil || result.CallID != call.ID {
+		return core.Turn{}, core.ErrInvalid
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return core.Turn{}, err
+	}
+	defer tx.Rollback(ctx)
+	var state, dispatchState string
+	var lastSequence int64
+	if err = tx.QueryRow(ctx, `SELECT state,dispatch_state,last_sequence FROM core_conversation_turns WHERE turn_id=$1 AND lease_id=$2 AND lease_epoch=$3 FOR UPDATE`, lease.Turn.ID, lease.LeaseID, lease.Epoch).Scan(&state, &dispatchState, &lastSequence); err != nil || state != string(core.TurnRunning) || dispatchState != "completed" {
+		return core.Turn{}, core.ErrConflict
+	}
+	now := time.Now().UTC()
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+1, core.TurnEvent{Kind: core.TurnEventToolCall, ToolCall: &call}, now); err != nil {
+		return core.Turn{}, err
+	}
+	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, lastSequence+2, core.TurnEvent{Kind: core.TurnEventToolResult, ToolResult: &result}, now); err != nil {
+		return core.Turn{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_conversation_turns SET state='accepted',dispatch_state='',dispatch_epoch=0,dispatch_result_json=NULL,lease_id=NULL,lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE turn_id=$1`, lease.Turn.ID, now); err != nil {
+		return core.Turn{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return core.Turn{}, err
+	}
+	return s.GetTurn(ctx, lease.Turn.ID)
 }
 
 func (s *CoreConversationStore) MarkTurnModelUncertain(ctx context.Context, lease core.TurnLease, code, summary string) error {

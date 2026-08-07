@@ -426,15 +426,109 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if err != nil {
 			return nil, err
 		}
-		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion}
-		events, err := c.service.StreamChat(ctx, cmd)
+		turnID, ok := capabilityoperation.OperationIDFromContext(ctx)
+		if !ok || !coretask.ValidUUID(turnID) {
+			return nil, coreconversation.ErrInvalid
+		}
+		turn, err := c.service.StartTurn(ctx, coreconversation.TurnStartCommand{TurnID: turnID, RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion})
 		if err != nil {
 			return nil, err
 		}
-		return consumeChatStream(ctx, operationID, events, c.progress)
+		events, err := c.service.WatchTurnEvents(ctx, turn.ID, 0, 1000)
+		if err != nil {
+			return nil, err
+		}
+		result, err := consumeDurableTurnStream(ctx, operationID, turn, events, c.progress)
+		if errors.Is(context.Cause(ctx), capabilityoperation.ErrExplicitCancel) {
+			if cancelErr := cancelDurableTurn(c.service, turn); cancelErr != nil {
+				return nil, cancelErr
+			}
+			return nil, coreconversation.ErrCanceled
+		}
+		return result, err
 	default:
 		return nil, fmt.Errorf("unknown chat operation %q", operationID)
 	}
+}
+
+func consumeDurableTurnStream(ctx context.Context, operationID string, turn coreconversation.Turn, events <-chan coreconversation.TurnEvent, progress func(context.Context, string, []byte) error) ([]byte, error) {
+	var response *coreconversation.ChatResponse
+	for event := range events {
+		streamEvent := durableTurnStreamEvent(turn, event)
+		if streamEvent == nil {
+			continue
+		}
+		switch streamEvent.Kind {
+		case coreconversation.EventDone:
+			response = streamEvent.Response
+		case coreconversation.EventError:
+			switch streamEvent.ErrCode {
+			case "canceled", "cancelled":
+				return nil, coreconversation.ErrCanceled
+			case "conflict":
+				return nil, coreconversation.ErrConflict
+			default:
+				return nil, coreconversation.ErrChatFailed
+			}
+		default:
+			if err := emitCapabilityProgress(ctx, operationID, *streamEvent, progress); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if response != nil {
+		return marshalResult(response, nil)
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, coreconversation.ErrCanceled
+	}
+	return nil, coreconversation.ErrChatFailed
+}
+
+func durableTurnStreamEvent(turn coreconversation.Turn, event coreconversation.TurnEvent) *coreconversation.StreamEvent {
+	base := coreconversation.StreamEvent{TurnSequence: event.Sequence, RequestID: turn.RequestID, ConversationID: turn.ConversationID}
+	switch event.Kind {
+	case coreconversation.TurnEventAccepted, coreconversation.TurnEventStarted:
+		base.Kind = coreconversation.EventStarted
+	case coreconversation.TurnEventDelta:
+		base.Kind, base.Text = coreconversation.EventDelta, event.Text
+	case coreconversation.TurnEventToolCall, coreconversation.TurnEventWaitingConfirmation:
+		base.Kind, base.ToolCall = coreconversation.EventToolCall, event.ToolCall
+	case coreconversation.TurnEventToolResult:
+		base.Kind, base.ToolResult = coreconversation.EventToolResult, event.ToolResult
+	case coreconversation.TurnEventDone:
+		base.Kind, base.Response = coreconversation.EventDone, event.Response
+	case coreconversation.TurnEventCanceled:
+		base.Kind, base.ErrCode, base.ErrSummary = coreconversation.EventError, "canceled", "turn canceled"
+	case coreconversation.TurnEventError:
+		base.Kind, base.ErrCode, base.ErrSummary = coreconversation.EventError, event.ErrorCode, event.ErrorSummary
+	default:
+		if !event.ReplayGap {
+			return nil
+		}
+		base.Kind, base.ErrCode, base.ErrSummary = coreconversation.EventError, "replay_gap", "durable turn event history is incomplete"
+	}
+	return &base
+}
+
+type durableTurnCanceler interface {
+	GetTurn(context.Context, string) (coreconversation.Turn, error)
+	CancelTurn(context.Context, coreconversation.TurnCancelCommand) (coreconversation.Turn, error)
+}
+
+func cancelDurableTurn(service durableTurnCanceler, accepted coreconversation.Turn) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	turn, err := service.GetTurn(ctx, accepted.ID)
+	if err != nil {
+		return err
+	}
+	if turn.State == coreconversation.TurnCompleted || turn.State == coreconversation.TurnCanceled || turn.State == coreconversation.TurnFailed {
+		return nil
+	}
+	requestID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("capability-turn-cancel:"+accepted.RequestID)).String()
+	_, err = service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: requestID, TurnID: turn.ID, ExpectedRevision: turn.Revision})
+	return err
 }
 
 func consumeChatStream(ctx context.Context, operationID string, events <-chan coreconversation.StreamEvent, progress func(context.Context, string, []byte) error) ([]byte, error) {

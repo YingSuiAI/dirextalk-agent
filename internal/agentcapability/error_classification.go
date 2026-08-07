@@ -24,6 +24,12 @@ func (c *errorClassifyingCapability) Descriptor() *capv1.CapabilityDescriptor {
 
 func (c *errorClassifyingCapability) HandleOperation(ctx context.Context, operationID string, inputJSON []byte) ([]byte, error) {
 	result, err := c.inner.HandleOperation(ctx, operationID, inputJSON)
+	if errors.Is(err, coreconversation.ErrCanceled) {
+		if errors.Is(context.Cause(ctx), capabilityoperation.ErrExplicitCancel) {
+			return result, errors.Join(context.Canceled, err)
+		}
+		return result, capabilityoperation.NewFailure("CANCELLED", "Agent chat turn was cancelled", err)
+	}
 	return result, classifyCapabilityError(err)
 }
 
@@ -35,7 +41,7 @@ func classifyCapabilityError(err error) error {
 		return err
 	}
 	if errors.Is(err, coreconversation.ErrCanceled) {
-		return errors.Join(context.Canceled, err)
+		return capabilityoperation.NewFailure("CANCELLED", "Agent chat turn was cancelled", err)
 	}
 	if _, _, classified := capabilityoperation.FailureDetails(err); classified {
 		return err

@@ -91,6 +91,9 @@ type TurnEvent struct {
 }
 
 type TurnStartCommand struct {
+	// TurnID is set by adapters that already own a canonical public turn
+	// identity. RequestID remains the independent business idempotency key.
+	TurnID                    string
 	RequestID                 string
 	ConversationID            string
 	Prompt                    string
@@ -153,6 +156,10 @@ type ConversationToolRecoveryStore interface {
 	ResumeConversationTurn(context.Context, string) error
 }
 
+type ReadOnlyConversationToolStore interface {
+	ContinueTurnAfterReadOnlyTool(context.Context, TurnLease, ToolCall, ToolResult) (Turn, error)
+}
+
 type TurnStore interface {
 	StartTurn(context.Context, TurnStartCommand) (Turn, error)
 	GetTurn(context.Context, string) (Turn, error)
@@ -195,7 +202,7 @@ type TurnUncertainStore interface {
 }
 
 func (c TurnStartCommand) Validate() error {
-	if !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {
+	if (c.TurnID != "" && !validUUID(c.TurnID)) || !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {
 		return ErrInvalid
 	}
 	if err := validateText(c.Prompt, MaxContentBytes); err != nil {
@@ -247,7 +254,7 @@ func (s ExtensionExecutionSnapshot) Validate() error {
 }
 
 func (c TurnStartCommand) Fingerprint() string {
-	return digest(turnStructDigest(c.RequestID, c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, c.ExpectedRevision, c.ProfileSnapshot.Digest(), c.ExtensionSnapshotDigest()))
+	return digest(turnStructDigest(c.TurnID, c.RequestID, c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, c.ExpectedRevision, c.ProfileSnapshot.Digest(), c.ExtensionSnapshotDigest()))
 }
 
 func (c TurnStartCommand) ExtensionSnapshotDigest() string {

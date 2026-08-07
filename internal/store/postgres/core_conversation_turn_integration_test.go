@@ -114,6 +114,23 @@ func TestCoreConversationTurnConcurrentStartIdempotencyPostgres(t *testing.T) {
 	}
 }
 
+func TestCoreConversationTurnPreservesPublicTurnIdentityInListPostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	cmd.TurnID = uuid.NewString()
+	turn, err := h.store.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.ID != cmd.TurnID {
+		t.Fatalf("turn id=%q want capability operation id=%q", turn.ID, cmd.TurnID)
+	}
+	turns, next, err := h.store.ListTurns(context.Background(), cmd.ConversationID, "", 10)
+	if err != nil || next != "" || len(turns) != 1 || turns[0].ID != cmd.TurnID || turns[0].RequestID != cmd.RequestID {
+		t.Fatalf("turns=%+v next=%q err=%v", turns, next, err)
+	}
+}
+
 func TestCoreConversationTurnConcurrentDifferentPayloadConflictPostgres(t *testing.T) {
 	h := openTurnDB(t)
 	base := turnCommand()

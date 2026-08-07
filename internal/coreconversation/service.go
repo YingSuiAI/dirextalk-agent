@@ -916,6 +916,9 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		// an idempotent retry binds the same conversation before execution.
 		cmd.ConversationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation:"+cmd.RequestID)).String()
 	}
+	if cmd.TurnID == "" {
+		cmd.TurnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+cmd.RequestID)).String()
+	}
 	if lookup, ok := s.turns.(TurnRequestLookup); ok {
 		if existing, lookupErr := lookup.GetTurnByRequestID(ctx, cmd.RequestID); lookupErr == nil {
 			// Replays are checked against the immutable snapshot already bound to
@@ -933,7 +936,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 				return Turn{}, ErrConflict
 			}
 			if existing.State == TurnAccepted || existing.State == TurnRunning {
-				s.startTurnSupervisor(existing.ID, nil)
+				s.startTurnSupervisor(existing.ID, context.WithoutCancel(ctx))
 			}
 			return existing, nil
 		} else if !errors.Is(lookupErr, ErrConflict) {
@@ -953,7 +956,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if err := validateProfilePins(cmd.ProfileSnapshot, cmd.ProfileID, cmd.ExpectedProfileRevision, cmd.ExpectedCredentialVersion); err != nil {
 		return Turn{}, err
 	}
-	if len(cmd.Extensions) > 0 && len(cmd.ExtensionSnapshots) == 0 {
+	if len(cmd.ExtensionSnapshots) == 0 {
 		if s.extensions == nil {
 			return Turn{}, ErrInvalid
 		}
@@ -961,8 +964,17 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		if err != nil {
 			return Turn{}, err
 		}
-		if len(resolved) != len(cmd.Extensions) {
-			return Turn{}, ErrConflict
+		for _, selection := range cmd.Extensions {
+			matched := false
+			for _, candidate := range resolved {
+				if candidate.Selection.ID == selection.ID && candidate.Selection.Version == selection.Version && candidate.Selection.Digest == selection.Digest {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return Turn{}, ErrConflict
+			}
 		}
 		cmd.ExtensionSnapshots = make([]ExtensionExecutionSnapshot, 0, len(resolved))
 		for _, ext := range resolved {
@@ -984,7 +996,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 		return Turn{}, err
 	}
 	if turn.State == TurnAccepted || turn.State == TurnRunning {
-		s.startTurnSupervisor(turn.ID, nil)
+		s.startTurnSupervisor(turn.ID, context.WithoutCancel(ctx))
 	}
 	return turn, nil
 }
@@ -1324,6 +1336,15 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 		conv = Conversation{ID: turn.ConversationID, Revision: 0, CreatedAt: s.clock(), UpdatedAt: s.clock()}
 	}
 	persistedMessageCount := len(conv.Messages)
+	resolvedExtensions, err := s.resolveAcceptedTurnExtensions(ctx, turn.ExtensionSnapshots)
+	if err != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, "extension_snapshot_unavailable", "accepted extension snapshot is unavailable")
+		return
+	}
+	if err = s.appendReadOnlyTurnToolHistory(ctx, turn, &conv); err != nil {
+		_, _ = s.turns.FailTurn(ctx, lease, "tool_history_unavailable", "durable tool history is unavailable")
+		return
+	}
 	if turn.ExpectedRevision != nil && conv.Revision != *turn.ExpectedRevision {
 		_, _ = s.turns.FailTurn(ctx, lease, "revision_conflict", "conversation revision changed")
 		return
@@ -1412,7 +1433,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	} else {
 		go func() {
 			profile := turn.ProfileSnapshot.Profile()
-			result, runErr := s.models.Run(child, ModelRunRequest{Conversation: modelConversation, Profile: ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}, Snapshot: turn.ProfileSnapshot, ProfileSnapshot: turn.ProfileSnapshot, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)})
+			result, runErr := s.models.Run(child, ModelRunRequest{Conversation: modelConversation, Profile: ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}, Snapshot: turn.ProfileSnapshot, ProfileSnapshot: turn.ProfileSnapshot, Extensions: resolvedExtensions, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)})
 			resultCh <- struct {
 				result ModelRunResult
 				err    error
@@ -1459,6 +1480,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 				call := calls[0]
 				var bound ExtensionExecutionSnapshot
+				var executable *ResolvedExtension
 				for _, candidate := range turn.ExtensionSnapshots {
 					if containsTool(candidate.ToolNames, call.Name) {
 						if bound.Selection.ID != "" {
@@ -1470,6 +1492,34 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 				if bound.Selection.ID == "" {
 					_, _ = s.turns.FailTurn(ctx, lease, "tool_unavailable", "requested tool is not in the accepted snapshot")
+					return
+				}
+				for index := range resolvedExtensions {
+					candidate := &resolvedExtensions[index]
+					if candidate.Selection.ID == bound.Selection.ID && containsTool(candidate.Snapshot.ToolNames, call.Name) {
+						executable = candidate
+						break
+					}
+				}
+				if bound.ReadOnly && executable != nil && executable.Execute != nil {
+					if durableDispatch && !replayed {
+						if err := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); err != nil {
+							return
+						}
+					}
+					result, executeErr := executable.Execute(child, ToolExecutionRequest{Call: call})
+					if executeErr != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "tool_execution_failed", "read-only tool execution failed")
+						return
+					}
+					readOnlyStore, ok := s.turns.(ReadOnlyConversationToolStore)
+					if !ok {
+						_, _ = s.turns.FailTurn(ctx, lease, "tool_store_unavailable", "read-only tool store is unavailable")
+						return
+					}
+					if _, err = readOnlyStore.ContinueTurnAfterReadOnlyTool(ctx, lease, call, result); err != nil {
+						return
+					}
 					return
 				}
 				args, argsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
@@ -1528,6 +1578,80 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			cancel()
 		}
 	}
+}
+
+func (s *Service) resolveAcceptedTurnExtensions(ctx context.Context, snapshots []ExtensionExecutionSnapshot) ([]ResolvedExtension, error) {
+	if len(snapshots) == 0 {
+		return nil, nil
+	}
+	selections := make([]ExtensionSelection, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if snapshot.Source == "builtin:web_search:tavily" || snapshot.Source == "product-capability" {
+			continue
+		}
+		selections = append(selections, snapshot.Selection)
+	}
+	resolved, err := s.extensions.ResolveExtensions(ctx, selections)
+	if err != nil || len(resolved) != len(snapshots) {
+		return nil, ErrConflict
+	}
+	remaining := make(map[string]string, len(snapshots))
+	for _, snapshot := range snapshots {
+		remaining[snapshot.Selection.ID] = snapshot.ContentDigest + ":" + snapshot.ArtifactDigest + ":" + snapshot.ToolSchemaDigest
+	}
+	for _, extension := range resolved {
+		snapshot := snapshotForResolved(extension)
+		want, ok := remaining[snapshot.Selection.ID]
+		if !ok || want != snapshot.ContentDigest+":"+snapshot.ArtifactDigest+":"+snapshot.ToolSchemaDigest {
+			return nil, ErrConflict
+		}
+		delete(remaining, snapshot.Selection.ID)
+	}
+	if len(remaining) != 0 {
+		return nil, ErrConflict
+	}
+	return resolved, nil
+}
+
+func (s *Service) appendReadOnlyTurnToolHistory(ctx context.Context, turn Turn, conversation *Conversation) error {
+	if conversation == nil {
+		return ErrInvalid
+	}
+	hasReadOnly := false
+	for _, snapshot := range turn.ExtensionSnapshots {
+		if snapshot.ReadOnly {
+			hasReadOnly = true
+			break
+		}
+	}
+	if !hasReadOnly {
+		return nil
+	}
+	events, err := s.turns.LoadTurnEvents(ctx, turn.ID, 0, 1000)
+	if err != nil {
+		return err
+	}
+	calls := make(map[string]ToolCall)
+	for _, event := range events {
+		if event.Kind == TurnEventToolCall && event.ToolCall != nil {
+			calls[event.ToolCall.ID] = *event.ToolCall
+			continue
+		}
+		if event.Kind != TurnEventToolResult || event.ToolResult == nil {
+			continue
+		}
+		call, ok := calls[event.ToolResult.CallID]
+		if !ok {
+			return ErrConflict
+		}
+		createdAt := nextMessageTime(*conversation, event.CreatedAt)
+		conversation.Messages = append(conversation.Messages,
+			Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-read-only-call:"+turn.ID+":"+call.ID)).String(), Role: RoleAssistant, ToolCalls: []ToolCall{call}, CreatedAt: createdAt, ModelProfileID: turn.ProfileID},
+			Message{ID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("turn-read-only-result:"+turn.ID+":"+call.ID)).String(), Role: RoleTool, ToolResults: []ToolResult{*event.ToolResult}, CreatedAt: createdAt.Add(time.Nanosecond), ModelProfileID: turn.ProfileID},
+		)
+		delete(calls, call.ID)
+	}
+	return nil
 }
 
 func modelConversationForTurn(conv Conversation, insertAt int, turn Turn, recalledMemory string, now time.Time) (Conversation, error) {

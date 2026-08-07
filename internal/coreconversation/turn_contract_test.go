@@ -3,11 +3,14 @@ package coreconversation
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
 
@@ -33,6 +36,136 @@ type blockingTurnModel struct {
 type capturingTurnModel struct {
 	request ModelRunRequest
 	runs    int
+}
+
+type twoRoundReadOnlyModel struct {
+	call     ToolCall
+	requests []ModelRunRequest
+}
+
+func (m *twoRoundReadOnlyModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
+	m.requests = append(m.requests, request)
+	if len(m.requests) == 1 {
+		message := Message{ID: uuid.NewString(), Role: RoleAssistant, ToolCalls: []ToolCall{m.call}, CreatedAt: time.Now().UTC()}
+		return ModelRunResult{Message: message, ToolCalls: []ToolCall{m.call}}, nil
+	}
+	return ModelRunResult{Done: true, Message: Message{ID: uuid.NewString(), Role: RoleAssistant, Content: "final answer", CreatedAt: time.Now().UTC()}}, nil
+}
+
+type readOnlyTurnStore struct {
+	*publicActiveTurnStore
+	events        []TurnEvent
+	dispatchState string
+	dispatch      ModelRunResult
+	failedCode    string
+}
+
+func (s *readOnlyTurnStore) FailTurn(_ context.Context, _ TurnLease, code, _ string) (Turn, error) {
+	s.failedCode = code
+	return s.turn, nil
+}
+
+func (s *readOnlyTurnStore) PrepareConversationTool(context.Context, PrepareToolCommand) (ToolAttempt, coretask.Task, coreconfirmation.Confirmation, error) {
+	return ToolAttempt{}, coretask.Task{}, coreconfirmation.Confirmation{}, ErrInvalid
+}
+
+func (s *readOnlyTurnStore) ClaimTurn(_ context.Context, _ string, _ time.Time, _ time.Duration) (TurnLease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turn.State = TurnRunning
+	return TurnLease{Turn: s.turn, LeaseID: "read-only-lease", Epoch: 1}, nil
+}
+
+func (s *readOnlyTurnStore) AppendTurnEvent(_ context.Context, _ string, event TurnEvent) (TurnEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turn.LastSequence++
+	event.TurnID, event.Sequence, event.CreatedAt = s.turn.ID, s.turn.LastSequence, time.Now().UTC()
+	s.events = append(s.events, event)
+	return event, nil
+}
+
+func (s *readOnlyTurnStore) LoadTurnEvents(_ context.Context, _ string, after int64, limit int) ([]TurnEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []TurnEvent
+	for _, event := range s.events {
+		if event.Sequence > after && len(result) < limit {
+			result = append(result, event)
+		}
+	}
+	return result, nil
+}
+
+func (s *readOnlyTurnStore) TurnEventBounds(context.Context, string) (int64, int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		return 0, 0, nil
+	}
+	return s.events[0].Sequence, s.events[len(s.events)-1].Sequence, nil
+}
+
+func (s *readOnlyTurnStore) PrepareTurnModel(context.Context, TurnLease) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dispatchState = "dispatched"
+	return s.turn, nil
+}
+
+func (s *readOnlyTurnStore) LoadTurnModelResult(context.Context, string) (ModelRunResult, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dispatch, s.dispatchState == "completed", nil
+}
+
+func (s *readOnlyTurnStore) RecordTurnModelResult(_ context.Context, _ TurnLease, result ModelRunResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dispatchState != "dispatched" {
+		return ErrConflict
+	}
+	s.dispatch, s.dispatchState = result, "completed"
+	return nil
+}
+
+func (s *readOnlyTurnStore) MarkTurnModelUncertain(context.Context, TurnLease, string, string) error {
+	return ErrConflict
+}
+
+func (s *readOnlyTurnStore) ContinueTurnAfterReadOnlyTool(_ context.Context, _ TurnLease, call ToolCall, result ToolResult) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dispatchState != "completed" || result.CallID != call.ID {
+		return Turn{}, ErrConflict
+	}
+	now := time.Now().UTC()
+	for _, event := range []TurnEvent{{Kind: TurnEventToolCall, ToolCall: &call}, {Kind: TurnEventToolResult, ToolResult: &result}} {
+		s.turn.LastSequence++
+		event.TurnID, event.Sequence, event.CreatedAt = s.turn.ID, s.turn.LastSequence, now
+		s.events = append(s.events, event)
+	}
+	s.dispatchState, s.dispatch = "", ModelRunResult{}
+	s.turn.State = TurnAccepted
+	s.turn.Revision++
+	return s.turn, nil
+}
+
+func (s *readOnlyTurnStore) CommitTurn(_ context.Context, _ TurnLease, response ChatResponse) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.turn.LastSequence++
+	s.events = append(s.events, TurnEvent{TurnID: s.turn.ID, Sequence: s.turn.LastSequence, Kind: TurnEventDone, Response: &response, CreatedAt: time.Now().UTC()})
+	s.turn.State = TurnCompleted
+	s.turn.Response = &response
+	s.turn.Revision++
+	return s.turn, nil
+}
+
+type extensionResolverFunc func(context.Context, []ExtensionSelection) ([]ResolvedExtension, error)
+
+func (f extensionResolverFunc) ResolveExtensions(ctx context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+	return f(ctx, selections)
 }
 
 func (m *capturingTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
@@ -110,7 +243,11 @@ func (s *supervisorRetryTurnStore) CommitTurn(_ context.Context, _ TurnLease, _ 
 func (s *publicActiveTurnStore) StartTurn(_ context.Context, cmd TurnStartCommand) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.turn = Turn{ID: uuid.NewString(), RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ProfileSnapshot: cmd.ProfileSnapshot, ProfileSnapshotDigest: cmd.ProfileSnapshot.Digest(), Revision: 1, State: TurnAccepted, LastSequence: 1}
+	turnID := cmd.TurnID
+	if turnID == "" {
+		turnID = uuid.NewString()
+	}
+	s.turn = Turn{ID: turnID, RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ProfileSnapshot: cmd.ProfileSnapshot, ProfileSnapshotDigest: cmd.ProfileSnapshot.Digest(), Revision: 1, State: TurnAccepted, LastSequence: 1}
 	return s.turn, nil
 }
 func (s *publicActiveTurnStore) GetTurn(_ context.Context, _ string) (Turn, error) {
@@ -265,7 +402,7 @@ func testTurnSnapshot() coremodel.ExecutionSnapshot {
 func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 	snapshot := testTurnSnapshot()
 	revision := uint64(1)
-	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ExpectedRevision: &revision, ProfileSnapshot: snapshot}
+	cmd := TurnStartCommand{TurnID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ExpectedRevision: &revision, ProfileSnapshot: snapshot}
 	if err := cmd.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +413,11 @@ func TestStartTurnFingerprintBindsImmutableSnapshotAndPrompt(t *testing.T) {
 	changed.Prompt = "changed"
 	if changed.Fingerprint() == cmd.Fingerprint() {
 		t.Fatal("prompt mutation was not bound by the request digest")
+	}
+	changed = cmd
+	changed.TurnID = uuid.NewString()
+	if changed.Fingerprint() == cmd.Fingerprint() {
+		t.Fatal("turn identity mutation was not bound by the request digest")
 	}
 	rotated := cmd
 	rotated.ProfileSnapshot.APIKey = "rotated-secret"
@@ -325,6 +467,66 @@ func TestExecuteTurnRecallsNewConversationBeforeModel(t *testing.T) {
 	}
 }
 
+func TestDurableReadOnlyToolPersistsEventsAndCompletesSecondModelRound(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-1", Digest: strings.Repeat("a", 64), AllowedTools: []string{"web_search"}}
+	snapshot := ExtensionExecutionSnapshot{Selection: selection, InstallationID: selection.ID, VersionID: selection.Version, Source: "builtin:web_search:tavily", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64), ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64), ToolNames: []string{"web_search"}, ReadOnly: true}
+	call := ToolCall{ID: uuid.NewString(), Name: "web_search", Arguments: `{"query":"Dirextalk"}`}
+	executions := 0
+	resolved := ResolvedExtension{
+		Selection: selection,
+		Snapshot:  snapshot,
+		Tools:     []coremodel.Tool{{Name: "web_search", InputSchema: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+			executions++
+			return ToolResult{CallID: call.ID, ToolName: call.Name, Content: `{"answer":"found"}`, Summary: "search complete"}, nil
+		},
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID, Prompt: "search then answer", ProfileID: profile.ProfileID, ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(), ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}, ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(), State: TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC()}
+	store := &readOnlyTurnStore{publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn}, events: []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}}}
+	model := &twoRoundReadOnlyModel{call: call}
+	resolver := extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		if len(selections) != 0 {
+			t.Fatalf("builtin resolver received persisted synthetic selection: %+v", selections)
+		}
+		return []ResolvedExtension{resolved}, nil
+	})
+	service, err := NewService(store, model, resolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+	first, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || first.State != TurnAccepted || store.dispatchState != "" || executions != 1 {
+		t.Fatalf("first round turn=%+v dispatch=%q executions=%d failed=%q err=%v", first, store.dispatchState, executions, store.failedCode, err)
+	}
+	service.executeTurn(context.Background(), turn.ID)
+	terminal, err := store.GetTurn(context.Background(), turn.ID)
+	if err != nil || terminal.State != TurnCompleted || terminal.Response == nil || terminal.Response.Message.Content != "final answer" || len(model.requests) != 2 {
+		t.Fatalf("terminal=%+v model rounds=%d err=%v", terminal, len(model.requests), err)
+	}
+	if len(model.requests[1].Conversation.Messages) != 3 || len(model.requests[1].Conversation.Messages[1].ToolCalls) != 1 || len(model.requests[1].Conversation.Messages[2].ToolResults) != 1 {
+		t.Fatalf("second-round durable context=%+v", model.requests[1].Conversation.Messages)
+	}
+	var toolCalls, toolResults, done int
+	for _, event := range store.events {
+		switch event.Kind {
+		case TurnEventToolCall:
+			toolCalls++
+		case TurnEventToolResult:
+			toolResults++
+		case TurnEventDone:
+			done++
+		}
+	}
+	if toolCalls != 1 || toolResults != 1 || done != 1 {
+		t.Fatalf("durable events=%+v", store.events)
+	}
+}
+
 func TestExecuteTurnFailsClosedWhenMemoryRecallIsUnavailable(t *testing.T) {
 	snapshot := testTurnSnapshot()
 	turn := Turn{ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "remember", ProfileID: snapshot.ProfileID, ProfileSnapshot: snapshot, State: TurnAccepted, Revision: 1, CreatedAt: time.Now().UTC()}
@@ -343,18 +545,18 @@ func TestExecuteTurnFailsClosedWhenMemoryRecallIsUnavailable(t *testing.T) {
 
 func TestStartTurnReplayDoesNotResolveRotatedProfile(t *testing.T) {
 	snapshot := testTurnSnapshot()
-	cmd := TurnStartCommand{RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
+	cmd := TurnStartCommand{TurnID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: uuid.NewString(), Prompt: "hello", ProfileID: snapshot.ProfileID, ExpectedProfileRevision: snapshot.Revision, ExpectedCredentialVersion: snapshot.CredentialVersion, ProfileSnapshot: snapshot}
 	if err := cmd.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	store := &replayTurnStore{fakeStore: newFakeStore(), turn: Turn{ID: uuid.NewString(), RequestID: cmd.RequestID, RequestFingerprint: cmd.Fingerprint(), ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, State: TurnCompleted, ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest()}}
+	store := &replayTurnStore{fakeStore: newFakeStore(), turn: Turn{ID: cmd.TurnID, RequestID: cmd.RequestID, RequestFingerprint: cmd.Fingerprint(), ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, State: TurnCompleted, ProfileSnapshot: snapshot, ProfileSnapshotDigest: snapshot.Digest()}}
 	resolved := 0
 	profiles := snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { resolved++; return snapshot, nil })
 	service, err := NewService(store, &fakeModel{}, nil, profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.StartTurn(context.Background(), TurnStartCommand{RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ExpectedProfileRevision: cmd.ExpectedProfileRevision, ExpectedCredentialVersion: cmd.ExpectedCredentialVersion}); err != nil {
+	if _, err = service.StartTurn(context.Background(), TurnStartCommand{TurnID: cmd.TurnID, RequestID: cmd.RequestID, ConversationID: cmd.ConversationID, Prompt: cmd.Prompt, ProfileID: cmd.ProfileID, ExpectedProfileRevision: cmd.ExpectedProfileRevision, ExpectedCredentialVersion: cmd.ExpectedCredentialVersion}); err != nil {
 		t.Fatal(err)
 	}
 	if resolved != 0 {

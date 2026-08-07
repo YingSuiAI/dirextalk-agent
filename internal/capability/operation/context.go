@@ -1,6 +1,11 @@
 package operation
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrExplicitCancel = errors.New("capability operation explicitly cancelled")
 
 type operationIDContextKey struct{}
 

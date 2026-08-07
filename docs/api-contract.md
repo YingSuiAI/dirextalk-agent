@@ -86,6 +86,12 @@ multi-tenant model.
   `terminal_summary`, `created_at`, and `updated_at`; prompts, request identity,
   model/profile data, credentials, and execution snapshots never cross the
   Capability boundary.
+- Capability `agent.chat.v1/stream_chat` starts and watches the same durable
+  conversation turn exposed by `list_turns`. Its canonical Capability
+  `operation_id` is the public `turn_id`; the request id remains the distinct
+  client-message idempotency identity. Disconnecting a WatchOperation consumer
+  does not cancel execution, while cancelling the Capability operation requests
+  cancellation of that exact durable turn.
 - Stored credentials are write-only from ordinary read/list APIs. Responses
   expose status, fingerprints, revisions, or binding digests, never secret
   bytes. Agent-owned secret fields use the configured encrypted-at-rest store.

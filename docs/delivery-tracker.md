@@ -19,6 +19,10 @@ contract](message-server-integration-development-contract.md), and
   recall through a private, snapshot-free semantic read. Recall is bounded,
   memory-only, exact-promoted-revision, user-level untrusted context and is not
   persisted or returned.
+- Neutral `agent.chat.v1/stream_chat` now executes through the same durable
+  conversation-turn ledger used by list, cancellation, replay, and recovery;
+  its Capability operation identity is the public turn identity while the
+  client-message request identity remains a separate idempotency fence.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
 - MCP/Skill lifecycle with isolated extension-runner execution.
 - Knowledge mounts, uploads, memory, indexing, and semantic-search composition.

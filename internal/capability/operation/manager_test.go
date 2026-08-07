@@ -723,6 +723,114 @@ func TestManager_Cancel(t *testing.T) {
 	}
 }
 
+func TestManagerCancelWaitsForExplicitHandlerCancellation(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-explicit-cancel", CapabilityID: "agent.chat.v1", OperationName: "stream_chat", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	domainCancelled := make(chan struct{})
+	go manager.Execute(context.Background(), op.ID, func(ctx context.Context, _ *Operation) ([]byte, error) {
+		close(started)
+		<-ctx.Done()
+		if !errors.Is(context.Cause(ctx), ErrExplicitCancel) {
+			t.Errorf("handler cause=%v", context.Cause(ctx))
+		}
+		close(domainCancelled)
+		return nil, context.Canceled
+	})
+	<-started
+	if err := manager.Cancel(context.Background(), op.ID, "owner requested cancellation"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-domainCancelled:
+	default:
+		t.Fatal("outer cancellation completed before handler cancellation")
+	}
+	got, err := manager.Get(context.Background(), op.ID)
+	if err != nil || got.State != StateCancelled {
+		t.Fatalf("operation=%+v err=%v", got, err)
+	}
+}
+
+func TestManagerDeadlineDoesNotCarryExplicitCancelCause(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-deadline", CapabilityID: "agent.chat.v1", OperationName: "stream_chat", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		manager.Execute(parent, op.ID, func(ctx context.Context, _ *Operation) ([]byte, error) {
+			<-ctx.Done()
+			if errors.Is(context.Cause(ctx), ErrExplicitCancel) {
+				t.Error("parent cancellation was misclassified as explicit stop")
+			}
+			return nil, ctx.Err()
+		})
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		got, err := manager.Get(context.Background(), op.ID)
+		if err == nil && got.State == StateRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("operation did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+	got, err := manager.Get(context.Background(), op.ID)
+	if err != nil || got.State != StateUncertain {
+		t.Fatalf("operation=%+v err=%v", got, err)
+	}
+}
+
+func TestManagerDomainCancellationUsesCancelledTerminal(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	manager := NewManager(db)
+	op := &Operation{ID: "op-domain-cancel", CapabilityID: "agent.chat.v1", OperationName: "stream_chat", RequestDigest: []byte("digest"), OwnerID: "owner", AccountGeneration: 1}
+	if err := manager.Start(context.Background(), op); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		manager.Execute(context.Background(), op.ID, func(context.Context, *Operation) ([]byte, error) {
+			return nil, NewFailure("CANCELLED", "Agent chat turn was cancelled", errors.New("domain turn cancelled"))
+		})
+		close(done)
+	}()
+	<-done
+	got, err := manager.Get(context.Background(), op.ID)
+	if err != nil || got.State != StateCancelled || got.ErrorMessage != "Agent chat turn was cancelled" {
+		t.Fatalf("operation=%+v err=%v", got, err)
+	}
+	events, err := manager.getEvents(context.Background(), op.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, event := range events {
+		if event.EventType == "cancelled" || event.EventType == "result" || event.EventType == "error" {
+			terminal++
+		}
+	}
+	if terminal != 1 || events[len(events)-1].EventType != "cancelled" {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
 func TestManager_Watch(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

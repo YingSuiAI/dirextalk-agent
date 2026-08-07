@@ -203,12 +203,17 @@ type watcher struct {
 	keepAfterSeal bool
 }
 
+type executionRuntime struct {
+	cancel context.CancelCauseFunc
+	done   chan error
+}
+
 type Manager struct {
 	db       backend
 	postgres bool
 	mu       sync.Mutex
 	watchers map[string]map[*watcher]struct{}
-	cancel   map[string]context.CancelFunc
+	runtime  map[string]*executionRuntime
 	// secrets contains ephemeral values extracted from the in-flight request.
 	// It is never persisted and is cleared after terminal event publication;
 	// it only lets the ledger redact a handler's free-form error/result text
@@ -421,7 +426,7 @@ func sensitiveJSONKey(key string) bool {
 // NewManager accepts either *pgxpool.Pool (production) or *sql.DB (tests).
 // Passing another value creates an inert manager which reports ErrInvalid.
 func NewManager(db any) *Manager {
-	m := &Manager{watchers: make(map[string]map[*watcher]struct{}), cancel: make(map[string]context.CancelFunc), secrets: make(map[string][]string)}
+	m := &Manager{watchers: make(map[string]map[*watcher]struct{}), runtime: make(map[string]*executionRuntime), secrets: make(map[string][]string)}
 	switch v := db.(type) {
 	case *pgxpool.Pool:
 		if v != nil {
@@ -814,6 +819,30 @@ func (m *Manager) Cancel(ctx context.Context, operationID, reason string) error 
 	if err := m.ensure(); err != nil {
 		return err
 	}
+	op, err := m.Get(ctx, operationID)
+	if err != nil {
+		return err
+	}
+	if op.State == StateCancelled {
+		return nil
+	}
+	if op.State != StatePending && op.State != StateRunning {
+		return ErrTerminal
+	}
+	m.mu.Lock()
+	runtime := m.runtime[operationID]
+	m.mu.Unlock()
+	if runtime != nil {
+		runtime.cancel(ErrExplicitCancel)
+		select {
+		case handlerErr := <-runtime.done:
+			if handlerErr != nil && !errors.Is(handlerErr, context.Canceled) && !errors.Is(handlerErr, ErrExplicitCancel) {
+				return handlerErr
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	reason = m.redactString(operationID, reason)
 	now := time.Now().UTC()
 	res, err := m.db.exec(ctx, `UPDATE `+m.table("operations")+` SET state=?,error_message=?,updated_at=?,completed_at=? WHERE `+m.opIDColumn()+`=? AND state IN (?,?)`, string(StateCancelled), reason, now, now, operationID, string(StatePending), string(StateRunning))
@@ -829,12 +858,6 @@ func (m *Manager) Cancel(ctx context.Context, operationID, reason string) error 
 			return nil
 		}
 		return ErrTerminal
-	}
-	m.mu.Lock()
-	cancel := m.cancel[operationID]
-	m.mu.Unlock()
-	if cancel != nil {
-		cancel()
 	}
 	if err := m.emitEvent(ctx, operationID, "cancelled", mustJSON(map[string]any{"reason": reason})); err != nil {
 		return err
@@ -989,22 +1012,41 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 		return
 	}
 	defer release()
+	ctx, cancel := context.WithCancelCause(parent)
+	runtime := &executionRuntime{cancel: cancel, done: make(chan error, 1)}
+	var handlerErr error
+	m.mu.Lock()
+	m.runtime[operationID] = runtime
+	m.mu.Unlock()
+	defer func() {
+		runtime.done <- handlerErr
+		close(runtime.done)
+		cancel(nil)
+		m.mu.Lock()
+		delete(m.runtime, operationID)
+		m.mu.Unlock()
+	}()
 	if err := m.claimRunning(parent, operationID); err != nil {
+		handlerErr = err
 		return
 	}
-	ctx, cancel := context.WithCancel(parent)
-	m.mu.Lock()
-	m.cancel[operationID] = cancel
-	m.mu.Unlock()
-	defer func() { cancel(); m.mu.Lock(); delete(m.cancel, operationID); m.mu.Unlock() }()
+	if errors.Is(context.Cause(ctx), ErrExplicitCancel) {
+		handlerErr = context.Canceled
+		return
+	}
 	op, err = m.Get(ctx, operationID)
 	if err != nil {
+		handlerErr = err
 		_ = m.Fail(context.Background(), operationID, "NOT_FOUND", err.Error())
 		return
 	}
 	result, err := handler(ctx, op)
+	handlerErr = err
 	if err == nil {
 		_ = m.Complete(context.Background(), operationID, result)
+		return
+	}
+	if errors.Is(context.Cause(ctx), ErrExplicitCancel) {
 		return
 	}
 	current, getErr := m.Get(context.Background(), operationID)
@@ -1020,6 +1062,10 @@ func (m *Manager) Execute(parent context.Context, operationID string, handler Ha
 		return
 	}
 	if code, message, ok := FailureDetails(err); ok {
+		if code == "CANCELLED" {
+			_ = m.terminal(context.Background(), operationID, StateCancelled, nil, "", message)
+			return
+		}
 		_ = m.Fail(context.Background(), operationID, code, message)
 		return
 	}

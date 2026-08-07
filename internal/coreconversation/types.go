@@ -169,6 +169,7 @@ const (
 
 type StreamEvent struct {
 	Kind           StreamEventKind `json:"kind"`
+	TurnSequence   int64           `json:"turn_sequence,omitempty"`
 	RequestID      string          `json:"request_id"`
 	ConversationID string          `json:"conversation_id"`
 	Text           string          `json:"text,omitempty"`
