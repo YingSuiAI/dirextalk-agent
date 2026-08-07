@@ -10,6 +10,7 @@ import (
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/awsfoundation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamapproval"
@@ -1038,6 +1039,80 @@ func TestPreparePlanRejectsRepositoryFactSubstitution(t *testing.T) {
 	)
 	if !errors.Is(err, ErrFactMismatch) {
 		t.Fatalf("PreparePlan() error = %v, want ErrFactMismatch", err)
+	}
+}
+
+func TestPreparedPlanMatchesIntentAcceptsDeterministicPiTokenBound(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	offers := orchestrationOfferFixture(t, now)
+	proposal := orchestrationProposalFixture()
+	proposal.Roles[0].Tokens.OutputExpected = 500_000
+	proposal.Roles[0].Tokens.OutputMaximum = 1_000_000
+	planID := uuid.NewString()
+	goalDigest := "sha256:" + strings.Repeat("d", 64)
+	plan, err := orchestrationPlanFixture(
+		teamplan.CatalogCompileRequest{
+			PlanID:     planID,
+			Revision:   1,
+			OwnerID:    "owner-team",
+			GoalDigest: goalDigest,
+			TaskInput: orchestrationInputBinding(
+				"owner-team",
+				orchestrationTaskID,
+				goalDigest,
+			),
+			Proposal: proposal,
+			Policy:   orchestrationPolicyFixture(),
+			Offers:   offers,
+		},
+		"sha256:"+strings.Repeat("c", 64),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Assignments[0].RuntimeFamily = teamplan.RuntimePi
+	plan.Assignments[0].RuntimeAdapter = teamplan.AdapterPiV1
+	plan.Assignments[0].ModelProvider = "deepseek"
+	plan.Assignments[0].Tokens = proposal.Roles[0].Tokens
+	plan.Assignments[0].Tokens.OutputExpected =
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens
+	plan.Assignments[0].Tokens.OutputMaximum =
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := PreparedPlanFact{
+		Offer: OfferFact{
+			OwnerID:  plan.OwnerID,
+			Document: offers.Document(),
+			Digest:   offers.Digest(),
+		},
+		Plan: PlanFact{
+			TaskID:         orchestrationTaskID,
+			Plan:           plan,
+			PlanDigest:     digest,
+			Status:         PlanReadyForConfirmation,
+			RecordRevision: 1,
+		},
+	}
+	intent := PreparationIntent{
+		OwnerID:      plan.OwnerID,
+		TaskID:       orchestrationTaskID,
+		ConnectionID: plan.ProviderScope.ConnectionID,
+		PlanID:       plan.PlanID,
+		Revision:     plan.Revision,
+		GoalDigest:   plan.GoalDigest,
+		TaskInput:    plan.TaskInput,
+		Proposal:     proposal,
+	}
+	if !preparedPlanMatchesIntent(prepared, intent) {
+		t.Fatal("deterministically bounded Pi Plan no longer matches its preparation intent")
+	}
+	intent.Proposal.Roles[0].Tokens.InputMaximum++
+	if preparedPlanMatchesIntent(prepared, intent) {
+		t.Fatal("unrelated token mutation was accepted")
 	}
 }
 
