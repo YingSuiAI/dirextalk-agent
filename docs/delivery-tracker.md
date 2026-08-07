@@ -34,6 +34,11 @@ contract](message-server-integration-development-contract.md), and
 - Unified Agent image and split Compose services for Core, extension runner,
   and Core Runner; the latter has nonce/full readiness and descriptor-only
   sealed-result boundaries.
+- Agent Task execution no longer terminates at eight model/tool rounds.
+  Newly created snapshots pin a versioned five-repeat no-progress watchdog;
+  durable model/tool ledgers allow rounds 0-511, with 512 retained only as a
+  non-configurable internal safety fuse. Identical tool work and the safety
+  fuse have separate stable terminal classifications.
 - Unified image builds validate and inject the immutable release version into
   the Core binary; authenticated instance info and `agent.info.v1` status
   report it separately from the `v1` API protocol version.
@@ -98,6 +103,12 @@ support.
   present, but publication still requires `core_execution_v2_enabled`, every
   typed route, the exact target proof, and the configured CloudFormation service
   role; live AWS provision/read-back acceptance is not recorded.
+- PostgreSQL 18 acceptance of the migration chain through migration 4, snapshot
+  policy pinning, and durable round persistence at rounds 8 and 511 passed on
+  **2026-08-07**. Focused domain/migration tests, Windows execution of the
+  isolated beyond-eight and no-progress bounded-loop cases, and Linux
+  cross-builds for `coreruntime` and the PostgreSQL store also passed. Full
+  Linux package execution and restart/replay acceptance remain to be recorded.
 
 These gates are evidence requirements, not fallback behavior: a missing proof
 keeps the corresponding capability unpublished while planning and unrelated

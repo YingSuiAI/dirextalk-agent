@@ -171,6 +171,15 @@ durable orchestrator for model dispatch, tool calls, retries, recovery, and
 uncertain outcomes. Core v1 does not expose Eino graphs as a user-authored
 workflow surface.
 
+Agent execution has no eight-round product limit. The immutable execution
+snapshot pins a versioned no-progress policy, while the Task's durable
+execution deadline remains the normal time boundary. A watchdog reconstructs
+progress from ledgered tool names, argument digests, and redacted result
+digests, so restart/replay reaches the same decision. Five consecutive
+identical tool rounds fail with `agent_no_progress`. A non-configurable
+512-round ledger fuse exists only to contain corrupted or otherwise runaway
+execution and is classified separately as `agent_safety_fuse`.
+
 Workload Tasks use that same revision/attempt/lease-epoch fencing path. The
 local runner receives only a descriptor request bound to the dispatch; it
 never receives Agent credentials, raw secrets, or a database connection.

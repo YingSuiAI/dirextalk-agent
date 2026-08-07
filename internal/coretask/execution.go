@@ -17,7 +17,42 @@ import (
 	"time"
 )
 
-const MaxAgentRounds = 8
+const (
+	// MaxAgentLedgerRounds is an internal corruption/cost-containment fuse for
+	// the durable model/tool ledger. Product execution is governed by the task
+	// deadline and AgentExecutionPolicy; callers cannot configure this value.
+	MaxAgentLedgerRounds = 512
+
+	AgentExecutionPolicyVersion         = 1
+	DefaultNoProgressRepeatLimit uint32 = 5
+	MaxNoProgressRepeatLimit     uint32 = 32
+)
+
+// AgentExecutionPolicy is the immutable, non-secret progress policy pinned to
+// one Agent task snapshot. The emergency ledger fuse deliberately remains a
+// server constant and is not part of this user/task policy.
+type AgentExecutionPolicy struct {
+	Version               uint32 `json:"version"`
+	NoProgressRepeatLimit uint32 `json:"no_progress_repeat_limit"`
+}
+
+// DefaultAgentExecutionPolicy returns the server-owned policy bound to newly
+// created Agent tasks. It has no side effects and contains no user input.
+func DefaultAgentExecutionPolicy() AgentExecutionPolicy {
+	return AgentExecutionPolicy{
+		Version:               AgentExecutionPolicyVersion,
+		NoProgressRepeatLimit: DefaultNoProgressRepeatLimit,
+	}
+}
+
+// Validate rejects unknown policy versions and watchdog windows that are too
+// small to tolerate ordinary polling or too large to provide useful safety.
+func (p AgentExecutionPolicy) Validate() error {
+	if p.Version != AgentExecutionPolicyVersion || p.NoProgressRepeatLimit < 2 || p.NoProgressRepeatLimit > MaxNoProgressRepeatLimit {
+		return ErrInvalid
+	}
+	return nil
+}
 
 type ModelProfileSnapshot struct {
 	ProfileID       string   `json:"profile_id"`
@@ -80,7 +115,19 @@ type ExecutionSnapshot struct {
 	Extensions  []ExtensionExecutionSnapshot `json:"extensions,omitempty"`
 	Knowledge   []KnowledgeExecutionSnapshot `json:"knowledge,omitempty"`
 	Attachments []AttachmentDescriptor       `json:"attachments,omitempty"`
+	AgentPolicy *AgentExecutionPolicy        `json:"agent_policy,omitempty"`
 	Digest      string                       `json:"digest"`
+}
+
+// EffectiveAgentPolicy returns the immutable snapshot policy. Snapshots
+// created before the policy field existed use the current server default;
+// their original digest remains valid because the absent field is not
+// normalized into persisted JSON.
+func (s ExecutionSnapshot) EffectiveAgentPolicy() AgentExecutionPolicy {
+	if s.AgentPolicy == nil {
+		return DefaultAgentExecutionPolicy()
+	}
+	return *s.AgentPolicy
 }
 
 func (s ExecutionSnapshot) canonicalWithoutDigest() ([]byte, error) {
@@ -148,6 +195,11 @@ func normalizeSnapshot(s *ExecutionSnapshot) {
 func (s ExecutionSnapshot) Validate() error {
 	if s.Digest == "" {
 		return ErrInvalid
+	}
+	if s.AgentPolicy != nil {
+		if err := s.AgentPolicy.Validate(); err != nil {
+			return err
+		}
 	}
 	if s.Model.ProfileID != "" {
 		if !ValidUUID(s.Model.ProfileID) || s.Model.Revision <= 0 || len(s.Model.Digest) != 64 || len(s.Model.SecretRef) == 0 || s.Model.Provider == "" || s.Model.BaseURL == "" || s.Model.Model == "" {
@@ -278,7 +330,7 @@ type ToolCallLedger struct {
 }
 
 func (m ModelRoundLedger) Validate() error {
-	if !ValidUUID(m.TaskID) || m.Attempt == 0 || m.Round >= MaxAgentRounds || m.LeaseEpoch == 0 || m.TaskRevision == 0 || len(m.InputDigest) != 64 || !validModelState(m.State) {
+	if !ValidUUID(m.TaskID) || m.Attempt == 0 || m.Round >= MaxAgentLedgerRounds || m.LeaseEpoch == 0 || m.TaskRevision == 0 || len(m.InputDigest) != 64 || !validModelState(m.State) {
 		return ErrInvalid
 	}
 	if m.State == ModelRoundCompleted && len(m.Response) == 0 {
@@ -293,7 +345,7 @@ func (m ModelRoundLedger) Validate() error {
 	return nil
 }
 func (t ToolCallLedger) Validate() error {
-	if !ValidUUID(t.TaskID) || t.Attempt == 0 || t.Round >= MaxAgentRounds || t.LeaseEpoch == 0 || t.TaskRevision == 0 || strings.TrimSpace(t.CallID) == "" || len(t.ToolDigest) != 64 || len(t.ArgumentsDigest) != 64 || !validToolState(t.State) {
+	if !ValidUUID(t.TaskID) || t.Attempt == 0 || t.Round >= MaxAgentLedgerRounds || t.LeaseEpoch == 0 || t.TaskRevision == 0 || strings.TrimSpace(t.CallID) == "" || len(t.ToolDigest) != 64 || len(t.ArgumentsDigest) != 64 || !validToolState(t.State) {
 		return ErrInvalid
 	}
 	if t.State == ToolCallCompleted && len(t.Result) == 0 {

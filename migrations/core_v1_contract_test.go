@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 3 {
-		t.Fatalf("CurrentVersion = %d, want 3", CurrentVersion)
+	if CurrentVersion != 4 {
+		t.Fatalf("CurrentVersion = %d, want 4", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 3 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" {
+	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_resumable_agent_rounds.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -74,6 +74,15 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{"CREATE TABLE core_aws_credential_test_claims", "state IN ('in_progress','failed','uncertain','completed')", "error_code", "request_hash", "lease_expires_at", "completion_grace_until"} {
 		if !strings.Contains(string(claims), needle) {
 			t.Errorf("AWS credential test claim migration missing %q", needle)
+		}
+	}
+	rounds, err := Files.ReadFile(entries[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"core_task_model_rounds_round_check", "core_task_tool_calls_round_check", "round BETWEEN 0 AND 511"} {
+		if !strings.Contains(string(rounds), needle) {
+			t.Errorf("resumable Agent round migration missing %q", needle)
 		}
 	}
 	for _, forbidden := range []string{

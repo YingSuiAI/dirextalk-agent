@@ -15,11 +15,41 @@ import (
 )
 
 var (
-	ErrAgentRoundLimit  = errors.New("agent_round_limit")
+	ErrAgentSafetyFuse  = errors.New("agent_safety_fuse")
+	ErrAgentNoProgress  = errors.New("agent_no_progress")
 	ErrToolUnauthorized = errors.New("tool_unauthorized")
 	ErrToolUnavailable  = errors.New("tool_unavailable")
 	ErrModelUncertain   = errors.New("model_uncertain")
 )
+
+type roundProgressEntry struct {
+	ToolName        string `json:"tool_name"`
+	ArgumentsDigest string `json:"arguments_digest"`
+	ResultDigest    string `json:"result_digest"`
+}
+
+type agentProgressWatchdog struct {
+	lastDigest string
+	repeats    uint32
+}
+
+// Observe records one completed tool round and reports whether the same tool,
+// arguments, and durable redacted result repeated for the configured window.
+// It has no side effects outside the in-memory execution attempt; replaying
+// durable ledger rows reconstructs the same sequence after restart.
+func (w *agentProgressWatchdog) Observe(entries []roundProgressEntry, limit uint32) bool {
+	if w == nil || len(entries) == 0 || limit < 2 {
+		return false
+	}
+	digest := digestJSON(entries)
+	if digest == w.lastDigest {
+		w.repeats++
+	} else {
+		w.lastDigest = digest
+		w.repeats = 1
+	}
+	return w.repeats >= limit
+}
 
 func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Task) (coretask.Result, error, *coretask.Fence) {
 	if task.Snapshot == nil {
@@ -32,6 +62,10 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 		return coretask.Result{}, errors.New("immutable snapshot profile resolver is unavailable"), nil
 	}
 	snap := task.Snapshot
+	policy := snap.EffectiveAgentPolicy()
+	if err := policy.Validate(); err != nil {
+		return coretask.Result{}, err, nil
+	}
 	profile, err := e.executionProfile(ctx, snap.Model)
 	if err != nil {
 		return coretask.Result{}, err, nil
@@ -102,7 +136,8 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 	if fence.Attempt == 0 {
 		fence.Attempt = 1
 	}
-	for round := uint32(0); round < coretask.MaxAgentRounds; round++ {
+	watchdog := &agentProgressWatchdog{}
+	for round := uint32(0); round < coretask.MaxAgentLedgerRounds; round++ {
 		input := coremodel.CompletionRequest{Messages: cloneMessages(messages), Tools: snapshotTools(*snap)}
 		inputDigest := digestJSON(input)
 		var completion coremodel.Completion
@@ -181,6 +216,7 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 			return result, nil, &fence
 		}
 		messages = append(messages, completion.Message)
+		progressEntries := make([]roundProgressEntry, 0, len(completion.Message.ToolCalls))
 		for _, call := range completion.Message.ToolCalls {
 			if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Function.Name) == "" {
 				return coretask.Result{}, errors.New("invalid model tool call"), &fence
@@ -196,6 +232,7 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 				return coretask.Result{}, errors.New("invalid tool arguments"), &fence
 			}
 			toolDigest := extensionDigest(*snap, call.Function.Name)
+			argumentsDigest := digestJSON(args)
 			var toolResult ToolResult
 			if e.ledger != nil {
 				entry, getErr := e.ledger.GetToolCall(ctx, task.ID, fence.Attempt, round, call.ID)
@@ -207,6 +244,7 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 						toolResult = ToolResult{JSON: entry.Result}
 						fence.ExpectedRevision = entry.TaskRevision + 1
 						messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: string(entry.Result)})
+						progressEntries = append(progressEntries, roundProgressEntry{ToolName: call.Function.Name, ArgumentsDigest: entry.ArgumentsDigest, ResultDigest: digestJSON(entry.Result)})
 						continue
 					}
 					if entry.State == coretask.ToolCallDispatched {
@@ -219,7 +257,7 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 				} else if !errors.Is(getErr, coretask.ErrNotFound) {
 					return coretask.Result{}, getErr, &fence
 				}
-				prepared, prepErr := e.ledger.PrepareToolCall(ctx, coretask.ToolCallCommand{Fence: fence, Round: round, CallID: call.ID, ToolDigest: toolDigest, ArgumentsDigest: digestJSON(args), At: nowUTC()})
+				prepared, prepErr := e.ledger.PrepareToolCall(ctx, coretask.ToolCallCommand{Fence: fence, Round: round, CallID: call.ID, ToolDigest: toolDigest, ArgumentsDigest: argumentsDigest, At: nowUTC()})
 				if prepErr != nil {
 					return coretask.Result{}, prepErr, &fence
 				}
@@ -268,12 +306,19 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 					return coretask.Result{}, ErrToolUncertain, &fence
 				}
 				fence.ExpectedRevision = completed.TaskRevision + 1
+				toolResult.JSON = resultJSON
+				progressEntries = append(progressEntries, roundProgressEntry{ToolName: call.Function.Name, ArgumentsDigest: argumentsDigest, ResultDigest: digestJSON(resultJSON)})
 			} else if e.tools != nil {
 				binding := extensionForTool(*snap, call.Function.Name)
 				toolResult, err = e.tools.DispatchTool(ctx, ToolInvocation{TaskID: task.ID, CallID: call.ID, Name: call.Function.Name, Attempt: fence.Attempt, Round: round, Arguments: args, ExtensionDigest: toolDigest, ExtensionVersionID: binding.VersionID, InstallationID: binding.InstallationID, ExtensionKind: binding.Kind, ArtifactDigest: binding.ArtifactDigest, ToolSchemaDigest: toolSchemaDigest(*snap, call.Function.Name)})
 				if err != nil {
 					return coretask.Result{}, err, nil
 				}
+				resultValue := any(toolResult.JSON)
+				if len(toolResult.JSON) == 0 {
+					resultValue = toolResult.Content
+				}
+				progressEntries = append(progressEntries, roundProgressEntry{ToolName: call.Function.Name, ArgumentsDigest: argumentsDigest, ResultDigest: digestJSON(resultValue)})
 			}
 			content := toolResult.Content
 			if content == "" {
@@ -281,8 +326,11 @@ func (e *TaskExecutor) executeBoundedAgent(ctx context.Context, task coretask.Ta
 			}
 			messages = append(messages, coremodel.Message{Role: coremodel.RoleTool, ToolCallID: call.ID, Name: call.Function.Name, Content: content})
 		}
+		if watchdog.Observe(progressEntries, policy.NoProgressRepeatLimit) {
+			return coretask.Result{}, ErrAgentNoProgress, &fence
+		}
 	}
-	return coretask.Result{}, ErrAgentRoundLimit, &fence
+	return coretask.Result{}, ErrAgentSafetyFuse, &fence
 }
 
 func (e *TaskExecutor) markModelUncertain(ctx context.Context, fence coretask.Fence, round uint32) (coretask.ModelRoundLedger, error) {

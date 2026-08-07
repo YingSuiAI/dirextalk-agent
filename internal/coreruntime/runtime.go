@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -347,9 +346,13 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 		errorCode = "model_uncertain"
 		errorSummary = "model execution outcome is uncertain; replay is forbidden"
 	}
-	if errors.Is(err, ErrAgentRoundLimit) {
-		errorCode = "agent_round_limit"
-		errorSummary = "agent round limit exceeded"
+	if errors.Is(err, ErrAgentNoProgress) {
+		errorCode = "agent_no_progress"
+		errorSummary = "agent repeated the same tool work without observable progress"
+	}
+	if errors.Is(err, ErrAgentSafetyFuse) {
+		errorCode = "agent_safety_fuse"
+		errorSummary = "agent exceeded the internal durable ledger safety fuse"
 	}
 	if errors.Is(err, ErrToolUnauthorized) {
 		errorCode = "tool_unauthorized"
@@ -364,21 +367,6 @@ func (p *WorkerPool) execute(parent context.Context, task coretask.Task, lease c
 		errorSummary = "task input is unsupported in Core v1"
 	}
 	_ = p.store.FailTask(writeCtx, coretask.FailCommand{Fence: fence, ErrorCode: errorCode, ErrorSummary: errorSummary, At: time.Now().UTC()})
-}
-
-func boundedSummary(s string) string {
-	if len([]byte(s)) <= coretask.MaxSummaryBytes {
-		return s
-	}
-	var b strings.Builder
-	for _, r := range s {
-		n := len(string(r))
-		if b.Len()+n > coretask.MaxSummaryBytes {
-			break
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
 }
 
 type ScheduleLoop struct {

@@ -18,6 +18,10 @@ import (
 // immutable snapshot before the task row becomes visible.
 func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpec) (coretask.ExecutionSnapshot, error) {
 	var snapshot coretask.ExecutionSnapshot
+	if spec.Kind == coretask.TaskKindAgent {
+		policy := coretask.DefaultAgentExecutionPolicy()
+		snapshot.AgentPolicy = &policy
+	}
 	boundProfileID := ""
 	var boundProfileRevision int64
 	if spec.Kind == coretask.TaskKindAgent || spec.Kind == coretask.TaskKindKnowledgeIndex {

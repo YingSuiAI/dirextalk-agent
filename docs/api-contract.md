@@ -121,6 +121,15 @@ is the common explicit-confirmation boundary for side-effecting MCP/Skill and
 typed cloud operations. `WorkloadService` uses the distinct `WORKLOAD` Task
 kind and owner-only operation/event/actual read-back actions.
 
+Agent Task model/tool rounds are internal durable ledger positions, not a
+public request budget. Productive execution continues beyond eight rounds
+under the Task execution deadline. Newly created Agent Task snapshots pin the
+current progress-policy version and no-progress repeat window. Five
+consecutive rounds with the same ordered tool names, canonical argument
+digests, and redacted durable result digests fail as `agent_no_progress`.
+Round 512 is an internal fault-containment fuse and fails as
+`agent_safety_fuse`; callers cannot configure or extend it through this API.
+
 ## Capability and readiness semantics
 
 Registration is not publication. `AgentService.GetCapabilities` and the

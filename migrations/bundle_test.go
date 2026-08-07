@@ -7,8 +7,8 @@ import (
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 3 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" {
-		t.Fatalf("entries=%v, want the immutable baseline plus provenance and AWS claim migrations", entries)
+	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_resumable_agent_rounds.up.sql" {
+		t.Fatalf("entries=%v, want the immutable baseline plus three additive migrations", entries)
 	}
 	migration := Ordered()[0]
 	if migration.Version != 1 {
@@ -27,6 +27,10 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	claims := Ordered()[2]
 	if claims.Version != 3 || len(claims.Script) == 0 || claims.Script[len(claims.Script)-1] != '\n' || !bytes.Contains(claims.Script, []byte("core_aws_credential_test_claims")) {
 		t.Fatal("AWS credential test claim migration missing durable fence")
+	}
+	rounds := Ordered()[3]
+	if rounds.Version != 4 || len(rounds.Script) == 0 || rounds.Script[len(rounds.Script)-1] != '\n' || !bytes.Contains(rounds.Script, []byte("round BETWEEN 0 AND 511")) {
+		t.Fatal("resumable Agent round migration missing widened ledger fence")
 	}
 	for _, needle := range []string{
 		"CREATE TABLE agent_instance_metadata",

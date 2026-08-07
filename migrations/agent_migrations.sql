@@ -1364,3 +1364,14 @@ CREATE TABLE core_aws_credential_test_claims (
 );
 CREATE INDEX core_aws_credential_test_claims_credential_idx ON core_aws_credential_test_claims(credential_id, expected_revision);
 -- dirextalk-agent migration end 000003_aws_credential_test_claims.up.sql
+-- dirextalk-agent migration begin 000004_resumable_agent_rounds.up.sql
+-- Eight rounds was a product-visible termination policy. Agent work now runs
+-- under a durable task deadline plus a no-progress watchdog. These constraints
+-- retain only the large internal ledger fuse used for fault containment.
+ALTER TABLE core_task_model_rounds
+    DROP CONSTRAINT core_task_model_rounds_round_check,
+    ADD CONSTRAINT core_task_model_rounds_round_check CHECK (round BETWEEN 0 AND 511);
+ALTER TABLE core_task_tool_calls
+    DROP CONSTRAINT core_task_tool_calls_round_check,
+    ADD CONSTRAINT core_task_tool_calls_round_check CHECK (round BETWEEN 0 AND 511);
+-- dirextalk-agent migration end 000004_resumable_agent_rounds.up.sql
