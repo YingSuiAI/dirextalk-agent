@@ -178,8 +178,12 @@ func selectAssignment(
 				DiskGiB:   compute.DiskGiB,
 				Arch:      compute.Architecture,
 			},
-			Duration:  role.Duration,
-			Tokens:    role.Tokens,
+			Duration: role.Duration,
+			Tokens: boundRuntimeTokens(
+				release,
+				model,
+				role.Tokens,
+			),
 			ColdStart: release.ColdStart,
 		}
 		canonicalizeAssignment(&assignment)
@@ -239,9 +243,13 @@ func selectModel(
 		}
 		qualifiedBeforeBudget = true
 		if release.Adapter == AdapterPiV1 &&
-			strings.EqualFold(offer.Provider, "deepseek") &&
-			role.Tokens.OutputMaximum < runtimebounds.PiDeepSeekMinimumOutputTokens {
-			continue
+			strings.EqualFold(offer.Provider, "deepseek") {
+			if role.Tokens.OutputMaximum <
+				runtimebounds.PiDeepSeekMinimumOutputTokens ||
+				role.Tokens.OutputMinimum >
+					runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
+				continue
+			}
 		}
 		expected, err := estimateModelCost(
 			role.Tokens.InputExpected,
@@ -263,6 +271,25 @@ func selectModel(
 		}
 	}
 	return best, found, qualifiedBeforeBudget, nil
+}
+
+func boundRuntimeTokens(
+	release RuntimeRelease,
+	model ModelOffer,
+	tokens TokenEstimate,
+) TokenEstimate {
+	if release.Adapter != AdapterPiV1 ||
+		!strings.EqualFold(model.Provider, "deepseek") ||
+		tokens.OutputMaximum <=
+			runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
+		return tokens
+	}
+	tokens.OutputMaximum =
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens
+	if tokens.OutputExpected > tokens.OutputMaximum {
+		tokens.OutputExpected = tokens.OutputMaximum
+	}
+	return tokens
 }
 
 func selectCompute(

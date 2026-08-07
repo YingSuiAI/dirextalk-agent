@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 )
 
@@ -132,6 +133,24 @@ func TestCompileRequiresQualifiedPiDeepSeekOutputBudget(t *testing.T) {
 	request.Proposal.Roles[0].Tokens.OutputMaximum = 512
 	if _, err := Compile(request); err != nil {
 		t.Fatalf("Compile() rejected qualified Pi+DeepSeek output budget: %v", err)
+	}
+	request.Proposal.Roles[0].Tokens.OutputMinimum = 512
+	request.Proposal.Roles[0].Tokens.OutputExpected = 500_000
+	request.Proposal.Roles[0].Tokens.OutputMaximum = 1_000_000
+	plan, err := Compile(request)
+	if err != nil {
+		t.Fatalf("Compile() rejected a boundable Pi+DeepSeek output budget: %v", err)
+	}
+	if plan.Assignments[0].Tokens.OutputExpected !=
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens ||
+		plan.Assignments[0].Tokens.OutputMaximum !=
+			runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
+		t.Fatalf("bound Pi+DeepSeek tokens = %#v", plan.Assignments[0].Tokens)
+	}
+	request.Proposal.Roles[0].Tokens.OutputMinimum =
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens + 1
+	if _, err := Compile(request); !errors.Is(err, ErrRuntimeBudget) {
+		t.Fatalf("Compile() error = %v, want ErrRuntimeBudget", err)
 	}
 }
 
