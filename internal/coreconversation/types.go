@@ -27,6 +27,8 @@ const (
 	MaxToolCallsPerMessage   = 64
 	MaxToolResultsPerMessage = 64
 	MaxRelatedTaskIDs        = 32
+	MaxRelatedPlanIDs        = 32
+	MaxReferences            = 32
 	MaxSummaryBytes          = 4096
 )
 
@@ -46,12 +48,53 @@ type ToolCall struct {
 	ExecutionID string `json:"execution_id,omitempty"`
 }
 type ToolResult struct {
-	CallID         string   `json:"call_id"`
-	ToolName       string   `json:"tool_name,omitempty"`
-	Content        string   `json:"content"`
-	IsError        bool     `json:"is_error,omitempty"`
-	RelatedTaskIDs []string `json:"related_task_ids,omitempty"`
-	Summary        string   `json:"summary,omitempty"`
+	CallID         string      `json:"call_id"`
+	ToolName       string      `json:"tool_name,omitempty"`
+	Content        string      `json:"content"`
+	IsError        bool        `json:"is_error,omitempty"`
+	RelatedTaskIDs []string    `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string    `json:"related_plan_ids,omitempty"`
+	References     []Reference `json:"references,omitempty"`
+	Summary        string      `json:"summary,omitempty"`
+}
+
+type Reference struct {
+	Kind                 string `json:"kind"`
+	AccountGeneration    uint64 `json:"account_generation,omitempty"`
+	TaskID               string `json:"task_id,omitempty"`
+	PlanID               string `json:"plan_id,omitempty"`
+	PlanRevision         uint64 `json:"plan_revision,omitempty"`
+	PlanDigest           string `json:"plan_digest,omitempty"`
+	RunID                string `json:"run_id,omitempty"`
+	RunRevision          uint64 `json:"run_revision,omitempty"`
+	RunDigest            string `json:"run_digest,omitempty"`
+	DeploymentID         string `json:"deployment_id,omitempty"`
+	ExecutionID          string `json:"execution_id,omitempty"`
+	ConfirmationID       string `json:"confirmation_id,omitempty"`
+	ConfirmationRevision uint64 `json:"confirmation_revision,omitempty"`
+	StageID              string `json:"stage_id,omitempty"`
+	StageRevision        uint64 `json:"stage_revision,omitempty"`
+	StageDigest          string `json:"stage_digest,omitempty"`
+	TargetID             string `json:"target_id,omitempty"`
+	TargetRevision       uint64 `json:"target_revision,omitempty"`
+	TargetDigest         string `json:"target_digest,omitempty"`
+	PreviewDigest        string `json:"preview_digest,omitempty"`
+	BindingDigest        string `json:"binding_digest,omitempty"`
+	QuoteDigest          string `json:"quote_digest,omitempty"`
+	ExecutionDigest      string `json:"execution_digest,omitempty"`
+	RiskLevel            string `json:"risk_level,omitempty"`
+	GateType             string `json:"gate_type,omitempty"`
+	BindingID            string `json:"binding_id,omitempty"`
+	BindingRevision      uint64 `json:"binding_revision,omitempty"`
+	ProjectID            string `json:"project_id,omitempty"`
+	Status               string `json:"status,omitempty"`
+	State                string `json:"state,omitempty"`
+	RoomID               string `json:"room_id,omitempty"`
+	RoomType             string `json:"room_type,omitempty"`
+	ChannelID            string `json:"channel_id,omitempty"`
+	PostID               string `json:"post_id,omitempty"`
+	Title                string `json:"title,omitempty"`
+	Preview              string `json:"preview,omitempty"`
 }
 
 type Message struct {
@@ -67,6 +110,8 @@ type Message struct {
 	CreatedAt      time.Time    `json:"created_at"`
 	ModelProfileID string       `json:"model_profile_id"`
 	RelatedTaskIDs []string     `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string     `json:"related_plan_ids,omitempty"`
+	References     []Reference  `json:"references,omitempty"`
 	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
 }
 
@@ -152,6 +197,8 @@ type ChatResponse struct {
 	Done           bool         `json:"done"`
 	ModelProfileID string       `json:"model_profile_id"`
 	RelatedTaskIDs []string     `json:"related_task_ids,omitempty"`
+	RelatedPlanIDs []string     `json:"related_plan_ids,omitempty"`
+	References     []Reference  `json:"references,omitempty"`
 	ToolSummaries  []string     `json:"tool_summaries,omitempty"`
 	ToolResults    []ToolResult `json:"tool_results,omitempty"`
 }
@@ -241,6 +288,7 @@ type ModelRunRequest struct {
 	Profile            ResolvedProfile
 	Snapshot           coremodel.ExecutionSnapshot
 	ProfileSnapshot    coremodel.ExecutionSnapshot
+	Intrinsics         []ResolvedIntrinsic
 	Extensions         []ResolvedExtension
 	ExtensionSnapshots []ExtensionExecutionSnapshot
 }
@@ -249,6 +297,8 @@ type ModelRunResult struct {
 	ToolCalls      []ToolCall
 	Done           bool
 	RelatedTaskIDs []string
+	RelatedPlanIDs []string
+	References     []Reference
 	ToolSummaries  []string
 }
 type ResolvedProfile struct {
@@ -266,6 +316,29 @@ type ResolvedExtension struct {
 	// extension.  Legacy MCP/Skill resolvers may leave it empty; the runtime
 	// then falls back to the pinned snapshot names with an object schema.
 	Tools []coremodel.Tool
+}
+
+// ResolvedIntrinsic is a Core-owned model tool. It is deliberately separate
+// from extension snapshots and never crosses MCP, Skills, or Extension Runner
+// resolution. The executor must atomically commit the durable turn before it
+// reports success.
+type ResolvedIntrinsic struct {
+	Tool    coremodel.Tool
+	Execute func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error)
+}
+
+type IntrinsicExecutionRequest struct {
+	Lease              TurnLease
+	Call               ToolCall
+	CanonicalArguments json.RawMessage
+}
+
+type IntrinsicExecutionResult struct {
+	TurnCommitted bool
+}
+
+type IntrinsicResolver interface {
+	ResolveIntrinsicTools(context.Context, TurnLease) ([]ResolvedIntrinsic, error)
 }
 
 // ExtensionSnapshotResolver may resolve an already-pinned snapshot to an
@@ -463,6 +536,190 @@ func validUUID(s string) bool {
 	id, err := uuid.Parse(s)
 	return err == nil && id != uuid.Nil && strings.ToLower(s) == id.String()
 }
+
+func validReferenceDigest(value string) bool {
+	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func (r Reference) Validate() error {
+	kind := strings.TrimSpace(r.Kind)
+	if kind == "" || kind != r.Kind {
+		return ErrInvalid
+	}
+	switch kind {
+	case "execution_plan", "execution_run", "execution_confirmation":
+		if r.TaskID != "" {
+			return validateCloudWorkerReference(r)
+		}
+		return validateGenericExecutionReference(r)
+	case "service_binding":
+		if hasCloudWorkerOnlyReferenceFields(r) || hasConversationReferenceFields(r) ||
+			!validUUID(r.BindingID) || r.BindingRevision == 0 || !validReferenceDigest(r.BindingDigest) ||
+			!validUUID(r.DeploymentID) || !validUUID(r.ProjectID) || !validUUID(r.RunID) ||
+			!validUUID(r.TargetID) || r.TargetRevision == 0 || !validReferenceDigest(r.TargetDigest) ||
+			r.PlanID != "" || r.PlanRevision != 0 || r.PlanDigest != "" || r.RunRevision != 0 || r.RunDigest != "" ||
+			r.ConfirmationID != "" || r.ConfirmationRevision != 0 || r.StageID != "" || r.StageRevision != 0 ||
+			r.StageDigest != "" || r.PreviewDigest != "" || r.RiskLevel != "" || r.GateType != "" || r.Status != "" || r.State != "" {
+			return ErrInvalid
+		}
+		return nil
+	case "room":
+		if hasExecutionReferenceFields(r) || strings.TrimSpace(r.RoomID) == "" || r.RoomID != strings.TrimSpace(r.RoomID) || len(r.RoomID) > 512 || r.ChannelID != "" || r.PostID != "" || len(r.RoomType) > 128 || !utf8.ValidString(r.RoomType) || !validReferencePresentation(r) {
+			return ErrInvalid
+		}
+		return nil
+	case "channel_post":
+		if hasExecutionReferenceFields(r) || strings.TrimSpace(r.RoomID) == "" || r.RoomID != strings.TrimSpace(r.RoomID) || strings.TrimSpace(r.ChannelID) == "" || r.ChannelID != strings.TrimSpace(r.ChannelID) || strings.TrimSpace(r.PostID) == "" || r.PostID != strings.TrimSpace(r.PostID) || len(r.RoomID) > 512 || len(r.ChannelID) > 512 || len(r.PostID) > 512 || r.RoomType != "" || !validReferencePresentation(r) {
+			return ErrInvalid
+		}
+		return nil
+	default:
+		return ErrInvalid
+	}
+}
+
+func validateCloudWorkerReference(r Reference) error {
+	if hasConversationReferenceFields(r) || r.AccountGeneration == 0 || !validUUID(r.TaskID) ||
+		!validUUID(r.PlanID) || r.PlanRevision == 0 || !validReferenceDigest(r.PlanDigest) ||
+		!validUUID(r.RunID) || r.RunID != r.ExecutionID || r.RunRevision == 0 || !validReferenceDigest(r.RunDigest) ||
+		!validUUID(r.ConfirmationID) || r.ConfirmationRevision == 0 || !validReferenceDigest(r.BindingDigest) ||
+		!validReferenceDigest(r.QuoteDigest) || !validReferenceDigest(r.ExecutionDigest) ||
+		r.DeploymentID != "" || r.StageID != "" || r.StageRevision != 0 || r.StageDigest != "" ||
+		r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" || r.PreviewDigest != "" ||
+		r.RiskLevel != "" || r.GateType != "" || r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" {
+		return ErrInvalid
+	}
+	if r.Kind == "execution_confirmation" {
+		if r.Status != "" || !validConfirmationReferenceState(r.State) {
+			return ErrInvalid
+		}
+	} else if r.State != "" || !validExecutionReferenceStatus(r.Status) {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validateGenericExecutionReference(r Reference) error {
+	if hasConversationReferenceFields(r) || hasCloudWorkerOnlyReferenceFields(r) {
+		return ErrInvalid
+	}
+	switch r.Kind {
+	case "execution_plan":
+		if !validUUID(r.PlanID) || r.PlanRevision == 0 || !validReferenceDigest(r.PlanDigest) ||
+			r.RunID != "" || r.RunRevision != 0 || r.RunDigest != "" || r.DeploymentID != "" ||
+			r.ConfirmationID != "" || r.ConfirmationRevision != 0 || r.StageID != "" || r.StageRevision != 0 ||
+			r.StageDigest != "" || r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" ||
+			r.PreviewDigest != "" || r.BindingDigest != "" || r.RiskLevel != "" || r.GateType != "" ||
+			r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" || r.Status != "" || r.State != "" {
+			return ErrInvalid
+		}
+	case "execution_run":
+		if !validUUID(r.RunID) || r.RunRevision == 0 || !validReferenceDigest(r.RunDigest) ||
+			!validUUID(r.PlanID) || r.PlanRevision == 0 || !validReferenceDigest(r.PlanDigest) ||
+			(r.DeploymentID != "" && !validUUID(r.DeploymentID)) || !validBoundedOptional(r.Status, 64) ||
+			r.ConfirmationID != "" || r.ConfirmationRevision != 0 || r.StageID != "" || r.StageRevision != 0 ||
+			r.StageDigest != "" || r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" ||
+			r.PreviewDigest != "" || r.BindingDigest != "" || r.RiskLevel != "" || r.GateType != "" ||
+			r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" || r.State != "" {
+			return ErrInvalid
+		}
+	case "execution_confirmation":
+		if !validUUID(r.ConfirmationID) || !validUUID(r.PlanID) || r.PlanRevision == 0 || !validReferenceDigest(r.PlanDigest) ||
+			!validUUID(r.RunID) || r.RunRevision == 0 || !validUUID(r.StageID) || r.StageRevision == 0 ||
+			!validReferenceDigest(r.StageDigest) || !validUUID(r.TargetID) || r.TargetRevision == 0 ||
+			!validReferenceDigest(r.TargetDigest) || r.DeploymentID != "" || r.BindingID != "" ||
+			r.BindingRevision != 0 || r.ProjectID != "" || r.Status != "" {
+			return ErrInvalid
+		}
+		full := r.ConfirmationRevision != 0 || r.BindingDigest != "" || r.PreviewDigest != ""
+		if full {
+			if r.ConfirmationRevision == 0 || !validReferenceDigest(r.BindingDigest) || !validReferenceDigest(r.PreviewDigest) ||
+				r.RunDigest != "" || !validBoundedOptional(r.State, 64) || !validBoundedOptional(r.RiskLevel, 16) ||
+				!validBoundedOptional(r.GateType, 128) {
+				return ErrInvalid
+			}
+		} else if !validReferenceDigest(r.RunDigest) || r.State != "" || r.RiskLevel != "" || r.GateType != "" {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validBoundedOptional(value string, limit int) bool {
+	return value == strings.TrimSpace(value) && len(value) <= limit && utf8.ValidString(value)
+}
+
+func hasConversationReferenceFields(r Reference) bool {
+	return r.RoomID != "" || r.RoomType != "" || r.ChannelID != "" || r.PostID != "" || r.Title != "" || r.Preview != ""
+}
+
+func hasCloudWorkerOnlyReferenceFields(r Reference) bool {
+	return r.AccountGeneration != 0 || r.TaskID != "" || r.ExecutionID != "" || r.QuoteDigest != "" || r.ExecutionDigest != ""
+}
+
+func hasExecutionReferenceFields(r Reference) bool {
+	return hasCloudWorkerOnlyReferenceFields(r) || r.PlanID != "" || r.PlanRevision != 0 || r.PlanDigest != "" ||
+		r.RunID != "" || r.RunRevision != 0 || r.RunDigest != "" || r.DeploymentID != "" ||
+		r.ConfirmationID != "" || r.ConfirmationRevision != 0 || r.StageID != "" || r.StageRevision != 0 ||
+		r.StageDigest != "" || r.TargetID != "" || r.TargetRevision != 0 || r.TargetDigest != "" ||
+		r.PreviewDigest != "" || r.BindingDigest != "" || r.RiskLevel != "" || r.GateType != "" ||
+		r.BindingID != "" || r.BindingRevision != 0 || r.ProjectID != "" || r.Status != "" || r.State != ""
+}
+
+func validReferencePresentation(r Reference) bool {
+	return len(r.Title) <= 512 && len(r.Preview) <= MaxSummaryBytes && utf8.ValidString(r.Title) && utf8.ValidString(r.Preview)
+}
+
+func referenceKey(value Reference) string {
+	raw, _ := json.Marshal(value)
+	return string(raw)
+}
+
+func validateReferences(values []Reference) error {
+	if len(values) > MaxReferences {
+		return ErrInvalid
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value.Validate() != nil {
+			return ErrInvalid
+		}
+		key := referenceKey(value)
+		if _, duplicate := seen[key]; duplicate {
+			return ErrInvalid
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func validExecutionReferenceStatus(value string) bool {
+	switch value {
+	case "waiting_user", "queued", "provisioning", "awaiting_worker", "running", "collecting", "validating", "cleaning", "succeeded", "failed", "canceled", "rejected", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func validConfirmationReferenceState(value string) bool {
+	switch value {
+	case "pending", "confirmed", "consumed", "rejected", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func cloneReferences(values []Reference) []Reference {
+	return append([]Reference(nil), values...)
+}
 func validateText(s string, max int) error {
 	if strings.TrimSpace(s) == "" || len(s) > max || !utf8.ValidString(s) {
 		return ErrInvalid
@@ -519,10 +776,15 @@ func (r ToolResult) Validate() error {
 	if err := validateText(r.Content, MaxToolResultsBytes); err != nil {
 		return err
 	}
-	if len(r.RelatedTaskIDs) > MaxRelatedTaskIDs || len(r.Summary) > MaxSummaryBytes || !utf8.ValidString(r.Summary) {
+	if len(r.RelatedTaskIDs) > MaxRelatedTaskIDs || len(r.RelatedPlanIDs) > MaxRelatedPlanIDs || len(r.Summary) > MaxSummaryBytes || !utf8.ValidString(r.Summary) || validateReferences(r.References) != nil {
 		return ErrInvalid
 	}
 	for _, id := range r.RelatedTaskIDs {
+		if !validUUID(id) {
+			return ErrInvalid
+		}
+	}
+	for _, id := range r.RelatedPlanIDs {
 		if !validUUID(id) {
 			return ErrInvalid
 		}
@@ -533,10 +795,15 @@ func (m Message) Validate() error {
 	if !validUUID(m.ID) || m.CreatedAt.IsZero() || m.CreatedAt.Location() != time.UTC || !validUUID(m.ModelProfileID) || len(m.ToolCalls) > MaxToolCallsPerMessage || len(m.ToolResults) > MaxToolResultsPerMessage {
 		return ErrInvalid
 	}
-	if len(m.RelatedTaskIDs) > MaxRelatedTaskIDs || len(m.ToolSummaries) > MaxRelatedTaskIDs {
+	if len(m.RelatedTaskIDs) > MaxRelatedTaskIDs || len(m.RelatedPlanIDs) > MaxRelatedPlanIDs || len(m.ToolSummaries) > MaxRelatedTaskIDs || validateReferences(m.References) != nil {
 		return ErrInvalid
 	}
 	for _, id := range m.RelatedTaskIDs {
+		if !validUUID(id) {
+			return ErrInvalid
+		}
+	}
+	for _, id := range m.RelatedPlanIDs {
 		if !validUUID(id) {
 			return ErrInvalid
 		}
@@ -628,7 +895,7 @@ func (s ExtensionSelection) Validate() error {
 		return ErrInvalid
 	}
 	for _, t := range s.AllowedTools {
-		if strings.TrimSpace(t) == "" {
+		if strings.TrimSpace(t) == "" || t == coremodel.IntrinsicCloudWorkerProposeToolName {
 			return ErrInvalid
 		}
 	}
@@ -726,6 +993,15 @@ func (c Conversation) Snapshot() Conversation {
 	for i := range out.Messages {
 		out.Messages[i].ToolCalls = append([]ToolCall(nil), out.Messages[i].ToolCalls...)
 		out.Messages[i].ToolResults = append([]ToolResult(nil), out.Messages[i].ToolResults...)
+		for j := range out.Messages[i].ToolResults {
+			out.Messages[i].ToolResults[j].RelatedTaskIDs = append([]string(nil), out.Messages[i].ToolResults[j].RelatedTaskIDs...)
+			out.Messages[i].ToolResults[j].RelatedPlanIDs = append([]string(nil), out.Messages[i].ToolResults[j].RelatedPlanIDs...)
+			out.Messages[i].ToolResults[j].References = cloneReferences(out.Messages[i].ToolResults[j].References)
+		}
+		out.Messages[i].RelatedTaskIDs = append([]string(nil), out.Messages[i].RelatedTaskIDs...)
+		out.Messages[i].RelatedPlanIDs = append([]string(nil), out.Messages[i].RelatedPlanIDs...)
+		out.Messages[i].References = cloneReferences(out.Messages[i].References)
+		out.Messages[i].ToolSummaries = append([]string(nil), out.Messages[i].ToolSummaries...)
 	}
 	return out
 }

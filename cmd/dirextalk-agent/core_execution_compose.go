@@ -33,6 +33,9 @@ type coreExecutionV2ComposeDeps struct {
 	reconciler          production.RunReconciler
 	workload            coreworkload.Provider
 	provisioner         production.ComputeProvisioner
+	cloudWorker         coreexecutionv2.CloudWorkerExecutionPort
+	runLifecycle        coreexecutionv2.GenericRunLifecycle
+	confirmationReader  coreexecutionv2.GenericRunConfirmationReader
 }
 
 func composeCoreExecutionV2(cfg config.Config, store coreexecutionv2.Store, deps coreExecutionV2ComposeDeps) (*coreExecutionV2Composition, error) {
@@ -42,8 +45,26 @@ func composeCoreExecutionV2(cfg config.Config, store coreexecutionv2.Store, deps
 	if err := config.ValidateCoreExecutionV2(&cfg); err != nil {
 		return nil, err
 	}
-	if store == nil || deps.credentialResolver == nil || deps.credentialRevision == nil || deps.inspector == nil || deps.reservations == nil || deps.probe == nil {
-		return nil, fmt.Errorf("%w: execution.v2 typed AWS dependencies are incomplete", production.ErrInvalid)
+	if store == nil {
+		return nil, fmt.Errorf("%w: execution.v2 durable store is required", production.ErrInvalid)
+	}
+	// Cloud Worker is an independent Execution V2 route and does not import or
+	// manage a standing SSM target. When the optional generic SSM route is not
+	// configured, publish Cloud Worker with empty provider interfaces; generic
+	// provider mutations remain fail-closed with ErrMissingPort. Conversely,
+	// the generic typed route may publish without a Cloud Worker port.
+	if cfg.CoreAWSSSMReadiness == nil {
+		domain, domainErr := coreexecutionv2.NewServiceWithProviderInterfacesCloudWorkerAndRunLifecycle(store, coreexecutionv2.ProviderInterfaces{}, deps.cloudWorker, deps.runLifecycle, time.Now)
+		if domainErr != nil {
+			return nil, fmt.Errorf("compose execution.v2 Cloud Worker domain: %w", domainErr)
+		}
+		if !domain.ReadyForPublication() {
+			return nil, fmt.Errorf("%w: %s", production.ErrNotReady, domain.ReadinessReason())
+		}
+		return &coreExecutionV2Composition{domain: domain}, nil
+	}
+	if deps.credentialResolver == nil || deps.credentialRevision == nil || deps.inspector == nil || deps.reservations == nil || deps.probe == nil {
+		return nil, fmt.Errorf("%w: execution.v2 generic typed AWS dependencies are incomplete", production.ErrInvalid)
 	}
 	var runtime *production.Runtime
 	var err error
@@ -51,7 +72,7 @@ func composeCoreExecutionV2(cfg config.Config, store coreexecutionv2.Store, deps
 		if deps.provisioner == nil {
 			return nil, fmt.Errorf("%w: CloudFormation provisioner is required when AWS workload execution is enabled", production.ErrInvalid)
 		}
-		runtime, err = production.NewRuntime(production.RuntimeConfig{Store: store, Workload: deps.workload, Provisioner: deps.provisioner, Inspector: deps.inspector, Credentials: deps.credentialResolver, CredentialRevision: deps.credentialRevision, Now: time.Now})
+		runtime, err = production.NewRuntime(production.RuntimeConfig{Store: store, ConfirmationReader: deps.confirmationReader, Workload: deps.workload, Provisioner: deps.provisioner, Inspector: deps.inspector, Credentials: deps.credentialResolver, CredentialRevision: deps.credentialRevision, Now: time.Now})
 		if err != nil {
 			return nil, fmt.Errorf("compose execution.v2 runtime: %w", err)
 		}
@@ -83,7 +104,7 @@ func composeCoreExecutionV2(cfg config.Config, store coreexecutionv2.Store, deps
 	if providerComposition == nil || !providerComposition.Ready() || !providerComposition.Interfaces().Ready() {
 		return nil, fmt.Errorf("%w: provider readiness proof is false", production.ErrNotReady)
 	}
-	domain, err := coreexecutionv2.NewServiceWithProviderInterfaces(store, providerComposition.Interfaces(), time.Now)
+	domain, err := coreexecutionv2.NewServiceWithProviderInterfacesCloudWorkerAndRunLifecycle(store, providerComposition.Interfaces(), deps.cloudWorker, deps.runLifecycle, time.Now)
 	if err != nil {
 		return nil, fmt.Errorf("compose execution.v2 domain: %w", err)
 	}

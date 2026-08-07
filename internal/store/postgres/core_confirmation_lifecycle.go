@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -229,20 +230,42 @@ func (s *CoreConfirmationStore) Confirm(ctx context.Context, c coreconfirmation.
 	if !matches {
 		return s.staleAndReplay(ctx, tx, cur, "confirm", c.IdempotencyKey, c.RequestDigest, c.At.UTC())
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_confirmations SET state='confirmed',revision=revision+1,updated_at=$2 WHERE confirmation_id=$1`, c.ConfirmationID, c.At.UTC()); e != nil {
-		return cur, e
+	confirmationUpdate, e := tx.Exec(ctx, `UPDATE core_confirmations SET state='confirmed',revision=revision+1,updated_at=$2
+		WHERE confirmation_id=$1 AND state='pending' AND revision=$3`, c.ConfirmationID, c.At.UTC(), cur.Revision)
+	if e != nil || confirmationUpdate.RowsAffected() != 1 {
+		if e != nil {
+			return cur, e
+		}
+		return cur, coreconfirmation.ErrConflict
 	}
 	// Workload confirmations are consumed by the fenced Workload handler;
 	// confirming only changes approval state and must not enqueue or execute.
 	if !strings.HasPrefix(cur.Binding.OperationDomain, "workload:") {
-		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='queued',available_at=$2,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, c.At.UTC()); e != nil {
-			return cur, e
+		taskUpdate, updateErr := tx.Exec(ctx, `UPDATE core_tasks SET status='queued',available_at=$2,revision=revision+1,
+			progress_sequence=progress_sequence+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, c.At.UTC())
+		if updateErr != nil || taskUpdate.RowsAffected() != 1 {
+			if updateErr != nil {
+				return cur, updateErr
+			}
+			return cur, coreconfirmation.ErrConflict
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'queued','confirmation_confirmed','confirmation confirmed',$3 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), c.At.UTC()); e != nil {
-			return cur, e
+		eventInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,occurred_at)
+			SELECT task_id,progress_sequence,$2,attempt,'queued','confirmation_confirmed','confirmation confirmed',$3
+			FROM core_tasks WHERE task_id=$1 AND status='queued'`, cur.TaskID, uuid.New(), c.At.UTC())
+		if insertErr != nil || eventInsert.RowsAffected() != 1 {
+			if insertErr != nil {
+				return cur, insertErr
+			}
+			return cur, coreconfirmation.ErrConflict
 		}
 	}
+	if e = projectExecutionV2RunConfirmationTx(ctx, tx, cur, "queued", c.At.UTC()); e != nil {
+		return cur, e
+	}
 	if e = projectAWSConfirmationTx(ctx, tx, cur, "running", "confirmed", "", "", "confirmed", c.At.UTC()); e != nil {
+		return cur, e
+	}
+	if e = projectCloudWorkerConfirmationTx(ctx, tx, cur, cloudworker.StateQueued, "confirmation_confirmed", c.At.UTC()); e != nil {
 		return cur, e
 	}
 	cur.State, cur.Revision, cur.UpdatedAt = coreconfirmation.StateConfirmed, cur.Revision+1, c.At.UTC()
@@ -307,16 +330,34 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 		}
 		return cur, nil
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_confirmations SET state='rejected',revision=revision+1,updated_at=$2,terminal_code='user_rejected',terminal_reason='user_rejected',terminal_note=$3 WHERE confirmation_id=$1`, c.ConfirmationID, c.At.UTC(), strings.TrimSpace(c.Reason)); e != nil {
-		return cur, e
+	confirmationUpdate, updateErr := tx.Exec(ctx, `UPDATE core_confirmations SET state='rejected',revision=revision+1,
+		updated_at=$2,terminal_code='user_rejected',terminal_reason='user_rejected',terminal_note=$3
+		WHERE confirmation_id=$1 AND state='pending' AND revision=$4`, c.ConfirmationID, c.At.UTC(), strings.TrimSpace(c.Reason), cur.Revision)
+	if updateErr != nil || confirmationUpdate.RowsAffected() != 1 {
+		if updateErr != nil {
+			return cur, updateErr
+		}
+		return cur, coreconfirmation.ErrConflict
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',attempt=GREATEST(attempt,1),failure_code='user_rejected',revision=revision+1,updated_at=$2 WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, c.At.UTC()); e != nil {
-		return cur, e
+	taskUpdate, updateErr := tx.Exec(ctx, `UPDATE core_tasks SET status='canceled',attempt=GREATEST(attempt,1),
+		failure_code='user_rejected',revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$2
+		WHERE task_id=$1 AND status='waiting_user'`, cur.TaskID, c.At.UTC())
+	if updateErr != nil || taskUpdate.RowsAffected() != 1 {
+		if updateErr != nil {
+			return cur, updateErr
+		}
+		return cur, coreconfirmation.ErrConflict
 	}
-	if _, e = tx.Exec(ctx, `UPDATE core_tasks SET progress_sequence=progress_sequence+1 WHERE task_id=$1`, cur.TaskID); e != nil {
-		return cur, e
+	eventInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,error_code,occurred_at)
+		SELECT task_id,progress_sequence,$2,attempt,'canceled','confirmation_rejected','confirmation rejected','user_rejected',$3
+		FROM core_tasks WHERE task_id=$1 AND status='canceled'`, cur.TaskID, uuid.New(), c.At.UTC())
+	if insertErr != nil || eventInsert.RowsAffected() != 1 {
+		if insertErr != nil {
+			return cur, insertErr
+		}
+		return cur, coreconfirmation.ErrConflict
 	}
-	if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,progress_message,error_code,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'canceled','confirmation_rejected','confirmation rejected','user_rejected',$3 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), c.At.UTC()); e != nil {
+	if e = projectExecutionV2RunConfirmationTx(ctx, tx, cur, "rejected", c.At.UTC()); e != nil {
 		return cur, e
 	}
 	if e = terminalizeConversationToolTx(ctx, tx, cur, "denied", coreconfirmation.ReasonUserRejected, c.At.UTC()); e != nil {
@@ -328,6 +369,9 @@ func (s *CoreConfirmationStore) Reject(ctx context.Context, c coreconfirmation.R
 		}
 	}
 	if e = projectAWSConfirmationTx(ctx, tx, cur, "canceled", "canceled", coreconfirmation.ReasonUserRejected, coreconfirmation.ReasonUserRejected, coreconfirmation.ReasonUserRejected, c.At.UTC()); e != nil {
+		return cur, e
+	}
+	if e = projectCloudWorkerConfirmationTx(ctx, tx, cur, cloudworker.StateRejected, "confirmation_rejected", c.At.UTC()); e != nil {
 		return cur, e
 	}
 	cur.State, cur.Revision, cur.UpdatedAt, cur.TerminalCode, cur.TerminalReason = coreconfirmation.StateRejected, cur.Revision+1, c.At.UTC(), coreconfirmation.ReasonUserRejected, coreconfirmation.ReasonUserRejected

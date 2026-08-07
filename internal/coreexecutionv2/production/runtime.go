@@ -32,6 +32,7 @@ var (
 
 type RuntimeConfig struct {
 	Store              coreexecutionv2.Store
+	ConfirmationReader coreexecutionv2.GenericRunConfirmationReader
 	Workload           coreworkload.Provider
 	Provisioner        ComputeProvisioner
 	Inspector          Inspector
@@ -45,6 +46,7 @@ type RuntimeConfig struct {
 // publication and cannot be changed back to ready after a fatal close.
 type Runtime struct {
 	store            coreexecutionv2.Store
+	confirmations    coreexecutionv2.GenericRunConfirmationReader
 	workload         coreworkload.Provider
 	provisioner      ComputeProvisioner
 	inspector        Inspector
@@ -55,19 +57,22 @@ type Runtime struct {
 }
 
 func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
-	if cfg.Store == nil || cfg.Workload == nil || cfg.Inspector == nil || cfg.Credentials == nil || cfg.CredentialRevision == nil {
+	if cfg.ConfirmationReader == nil && cfg.Store != nil {
+		cfg.ConfirmationReader, _ = cfg.Store.(coreexecutionv2.GenericRunConfirmationReader)
+	}
+	if cfg.Store == nil || cfg.ConfirmationReader == nil || cfg.Workload == nil || cfg.Inspector == nil || cfg.Credentials == nil || cfg.CredentialRevision == nil {
 		return nil, ErrRuntimeInvalid
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	r := &Runtime{store: cfg.Store, workload: cfg.Workload, provisioner: cfg.Provisioner, inspector: cfg.Inspector, credentials: cfg.Credentials, revisionResolver: cfg.CredentialRevision, now: cfg.Now}
+	r := &Runtime{store: cfg.Store, confirmations: cfg.ConfirmationReader, workload: cfg.Workload, provisioner: cfg.Provisioner, inspector: cfg.Inspector, credentials: cfg.Credentials, revisionResolver: cfg.CredentialRevision, now: cfg.Now}
 	r.ready.Store(true)
 	return r, nil
 }
 
 func (r *Runtime) Ready() bool {
-	return r != nil && r.ready.Load() && r.store != nil && r.workload != nil && r.inspector != nil && r.credentials != nil && r.revisionResolver != nil
+	return r != nil && r.ready.Load() && r.store != nil && r.confirmations != nil && r.workload != nil && r.inspector != nil && r.credentials != nil && r.revisionResolver != nil
 }
 
 // Reconcile executes one owner-scoped run/stage.  It never mutates the run
@@ -99,9 +104,17 @@ func (r *Runtime) Reconcile(ctx context.Context, owner string, req coreexecution
 	if !coreworkload.ValidUUID(planID) {
 		return nil, ErrRuntimeConflict
 	}
-	planRecord, err := r.store.Read(ctx, owner, "plan", planID, 0)
+	planRevision := uintValue(run.Payload, "plan_revision")
+	planDigest := stringValue(run.Payload, "plan_digest")
+	if planRevision == 0 || !coreworkload.ValidDigest(planDigest) {
+		return nil, ErrRuntimeConflict
+	}
+	planRecord, err := r.store.Read(ctx, owner, "plan", planID, planRevision)
 	if err != nil {
 		return nil, err
+	}
+	if planRecord.Revision != planRevision || planRecord.Digest != planDigest {
+		return nil, ErrRuntimeConflict
 	}
 	targetID := stringValue(planRecord.Payload, "target_id")
 	if !coreworkload.ValidUUID(targetID) {
@@ -351,27 +364,34 @@ func isComputeReservation(payload map[string]any) bool {
 // at the provider boundary.  Runtime must not create a dispatch intent for a
 // caller that presents an unrelated stage or confirmation, even if this
 // provider is called directly by a composition test or a future adapter.
-func (r *Runtime) validateReconcileBinding(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run coreexecutionv2.Record) (coreexecutionv2.Record, coreexecutionv2.Record, error) {
-	if stringValue(run.Payload, "stage_id") != req.StageID || stringValue(run.Payload, "confirmation_id") == "" {
-		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
+func (r *Runtime) validateReconcileBinding(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run coreexecutionv2.Record) (coreexecutionv2.Record, coreconfirmation.Confirmation, error) {
+	if r.confirmations == nil || stringValue(run.Payload, "stage_id") != req.StageID || stringValue(run.Payload, "confirmation_id") == "" {
+		return coreexecutionv2.Record{}, coreconfirmation.Confirmation{}, ErrRuntimeConflict
 	}
 	stage, err := r.store.Read(ctx, owner, "stage", req.StageID, 0)
 	if err != nil {
-		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, err
+		return coreexecutionv2.Record{}, coreconfirmation.Confirmation{}, err
 	}
-	if stage.OwnerID != owner || stage.ID != req.StageID || stringValue(stage.Payload, "run_id") != req.RunID || stringValue(stage.Payload, "confirmation_id") != stringValue(run.Payload, "confirmation_id") || stringValue(stage.Payload, "plan_id") != stringValue(run.Payload, "plan_id") || stringValue(stage.Payload, "operation") != stringValue(run.Payload, "operation") || stage.Status == "waiting_user" {
-		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
+	if stage.OwnerID != owner || stage.ID != req.StageID || stringValue(stage.Payload, "run_id") != req.RunID || stringValue(stage.Payload, "confirmation_id") != stringValue(run.Payload, "confirmation_id") || stringValue(stage.Payload, "plan_id") != stringValue(run.Payload, "plan_id") || stringValue(stage.Payload, "operation") != stringValue(run.Payload, "operation") || stringValue(stage.Payload, "task_id") != stringValue(run.Payload, "task_id") || uintValue(stage.Payload, "account_generation") != uintValue(run.Payload, "account_generation") || uintValue(stage.Payload, "plan_revision") != uintValue(run.Payload, "plan_revision") || stringValue(stage.Payload, "plan_digest") != stringValue(run.Payload, "plan_digest") || stage.Status == "waiting_user" {
+		return coreexecutionv2.Record{}, coreconfirmation.Confirmation{}, ErrRuntimeConflict
 	}
 	confirmationID := stringValue(run.Payload, "confirmation_id")
 	if !coreworkload.ValidUUID(confirmationID) || stringValue(stage.Payload, "confirmation_id") != confirmationID {
-		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
+		return coreexecutionv2.Record{}, coreconfirmation.Confirmation{}, ErrRuntimeConflict
 	}
-	confirmation, err := r.store.Read(ctx, owner, "confirmation", confirmationID, 0)
+	confirmation, err := r.confirmations.ReadGenericRunConfirmation(ctx, owner, confirmationID)
 	if err != nil {
-		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, err
+		return coreexecutionv2.Record{}, coreconfirmation.Confirmation{}, ErrRuntimeConflict
 	}
-	if confirmation.OwnerID != owner || confirmation.ID != confirmationID || confirmation.Status != "confirmed" || stringValue(confirmation.Payload, "state") != "confirmed" || stringValue(confirmation.Payload, "run_id") != req.RunID || stringValue(confirmation.Payload, "stage_id") != req.StageID {
-		return coreexecutionv2.Record{}, coreexecutionv2.Record{}, ErrRuntimeConflict
+	snapshot := coreexecutionv2.GenericRunAuthoritySnapshot{
+		OwnerID: owner, AccountGeneration: uintValue(run.Payload, "account_generation"),
+		RunID: req.RunID, StageID: req.StageID, TaskID: stringValue(run.Payload, "task_id"),
+		PlanID: stringValue(run.Payload, "plan_id"), PlanRevision: uintValue(run.Payload, "plan_revision"),
+		PlanDigest: stringValue(run.Payload, "plan_digest"), ConfirmationID: confirmationID,
+		Operation: stringValue(run.Payload, "operation"),
+	}
+	if req.IdempotencyKey != snapshot.TaskID || coreexecutionv2.ValidateGenericRunConfirmation(confirmation, snapshot, coreconfirmation.StateConsumed) != nil {
+		return coreexecutionv2.Record{}, coreconfirmation.Confirmation{}, ErrRuntimeConflict
 	}
 	return stage, confirmation, nil
 }
@@ -381,7 +401,7 @@ func (r *Runtime) validateReconcileBinding(ctx context.Context, owner string, re
 // external mutation may have happened even when the process died before a
 // response or the neutral run CAS; every retry therefore uses Reconcile.
 // Store.Create provides the single-writer race fence for concurrent retries.
-func (r *Runtime) ensureProvisionIntent(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run, stage, confirmation, targetRecord coreexecutionv2.Record) (bool, error) {
+func (r *Runtime) ensureProvisionIntent(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run, stage coreexecutionv2.Record, confirmation coreconfirmation.Confirmation, targetRecord coreexecutionv2.Record) (bool, error) {
 	intentID := deterministicID(owner, "execution-v2-provision-intent", req.RunID+"\x00"+req.StageID)
 	operation := stringValue(run.Payload, "operation")
 	planID := stringValue(run.Payload, "plan_id")
@@ -449,7 +469,7 @@ func provisionIntentMatches(record coreexecutionv2.Record, owner string, expecte
 // it records provisioning_started even for an uncertain response.  Every
 // later call is Reconcile-only, so a lost CloudFormation response cannot turn
 // into a second EC2 stack request.
-func (r *Runtime) materializeReservation(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run, stage, confirmation coreexecutionv2.Record, targetRecord coreexecutionv2.Record) (coreworkload.TargetSettings, map[string]any, error) {
+func (r *Runtime) materializeReservation(ctx context.Context, owner string, req coreexecutionv2.ReconcileRequest, run, stage coreexecutionv2.Record, confirmation coreconfirmation.Confirmation, targetRecord coreexecutionv2.Record) (coreworkload.TargetSettings, map[string]any, error) {
 	envelope := map[string]any{"run_id": req.RunID, "stage_id": req.StageID, "provisioning_started": true}
 	if r == nil || r.provisioner == nil || !r.provisioner.Ready() {
 		envelope["status"], envelope["reason"] = "uncertain", "provisioner_unavailable"

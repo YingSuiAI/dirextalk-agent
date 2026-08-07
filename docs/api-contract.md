@@ -20,6 +20,11 @@ Core gRPC composition may register:
 - `CoreCloudControlService`;
 - `WorkloadService` for durable workload planning and operations.
 
+`WorkerControlService` is not part of this public composition list. It is
+registered only on a dedicated TLS 1.3 Worker listener with Worker identity
+verification; Flutter, Message Server, and the Agent service token cannot call
+it.
+
 Registration means only that an authenticated RPC endpoint is present; it does
 not publish a client capability or prove that an optional provider is ready.
 At HEAD, `CoreExecutionV2Service` has a Protobuf/adapter seam but is not
@@ -143,7 +148,37 @@ multi-tenant model.
 background model, extension, Knowledge, and AWS work. `ConfirmationService`
 is the common explicit-confirmation boundary for side-effecting MCP/Skill and
 typed cloud operations. `WorkloadService` uses the distinct `WORKLOAD` Task
-kind and owner-only operation/event/actual read-back actions.
+kind and owner-only operation/event/actual read-back actions. The single
+ephemeral Pi path uses `CLOUD_WORKER`; its payload pins plan/revision/digest,
+confirmation, conversation/turn, quote, execution digest, and account generation;
+while the real CoreTask claim and launch material separately pin attempt and
+lease epoch.
+
+Cloud Worker offers are created only by the Core intrinsic
+`cloud_worker.propose` during an authoritative conversation turn. Public
+clients use `agent.execution.v2.plans.get/list`,
+`agent.execution.v2.runs.get/list/cancel/events`, and
+`agent.execution.v2.artifacts.get/download`; they use
+`agent.core.confirmations.get/list/confirm/reject` for authorization. The
+Execution V2 confirmation aliases and public `runs.reconcile` operation do not
+exist. The durable controller performs provider reconciliation and cleanup.
+
+`agent.chat.v1/upload_attachment_begin` requires `kind` (`image`, `file`, or
+`workspace_archive`) and a matching approved `mime_type`. A turn accepts at
+most four sources, at most one workspace archive, and at most 8 MiB combined;
+each source remains immutably bound to owner, account generation, turn request,
+revision, size, and SHA-256. Workspace archives use the single constrained
+tar+gzip media type and are never exposed as arbitrary local paths.
+
+`agent.execution.v2.artifacts.download` is a safe read for retained,
+centrally verified Cloud Worker artifacts only. Its closed request contains
+`record_kind=cloud_worker`, one artifact UUID, a bounded offset below the
+8 MiB output ceiling, and a 1..512 KiB chunk limit. Each call revalidates the
+owner/account generation, retention revision and expiry, current AWS
+account/Region/credential revision, then reads and verifies the complete exact
+S3 object version before returning one non-empty top-level base64 chunk with
+chunk and whole-object SHA-256. It creates no download lease, extends no
+retention, and exposes no S3 identity.
 
 ## Capability and readiness semantics
 
@@ -157,10 +192,12 @@ domains stay absent and fail closed when selected.
   credential/target readiness block and the complete typed provider graph.
   Startup performs no AWS calls; the first explicit provider action probes the
   exact target and returns a per-operation precondition on failure.
-- `agent.execution.v2` additionally requires `core_execution_v2_enabled`,
-  every typed provider route, the exact target proof, and the configured
-  CloudFormation service role. A missing route leaves all operation IDs
-  unpublished; see [execution-v2.md](execution-v2.md).
+- `agent.execution.v2` publishes only operations whose complete typed route is
+  ready. Cloud Worker mutation readiness additionally requires its PostgreSQL
+  store/controller, private WorkerControl listener, provider ledger/Reaper,
+  exact account/Region/credential/AMI pins, and completion outbox. Fake
+  qualification does not imply real AWS readiness; see
+  [execution-v2.md](execution-v2.md).
 
 Message Server reaches Agent through the authenticated Capability boundary and
 projects only its existing ProductCore action names and Native Agent stream

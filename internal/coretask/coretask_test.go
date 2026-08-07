@@ -47,6 +47,46 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerTaskCannotInheritLocalRuntimeBindings(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	payload := &CloudWorkerTaskPayload{
+		ExecutionID: testID, AccountGeneration: 1,
+		PlanID: testID2, PlanRevision: 1, PlanDigest: digest,
+		ConfirmationID: "00000000-0000-4000-8000-000000000003",
+		TurnID:         "00000000-0000-4000-8000-000000000004",
+		ConversationID: "00000000-0000-4000-8000-000000000005",
+		QuoteDigest:    digest, ExecutionDigest: digest,
+	}
+	base := TaskSpec{
+		Kind: TaskKindCloudWorker, Goal: "run in the cloud", ModelProfileID: testID,
+		IdempotencyKey: "00000000-0000-4000-8000-000000000006",
+		ConversationID: payload.ConversationID,
+		Payload:        TaskPayload{CloudWorker: payload},
+	}
+	if _, err := base.Normalize(); err != nil {
+		t.Fatalf("canonical Cloud Worker task rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*TaskSpec){
+		"attachments": func(spec *TaskSpec) { spec.AttachmentRefs = []string{"local-file"} },
+		"mcp": func(spec *TaskSpec) {
+			spec.Extensions = []ExtensionSelection{{Kind: ExtensionMCP, ID: testID2, Version: "1", Digest: digest}}
+		},
+		"skills": func(spec *TaskSpec) {
+			spec.Extensions = []ExtensionSelection{{Kind: ExtensionSkill, ID: testID2, Version: "1", Digest: digest}}
+		},
+		"knowledge": func(spec *TaskSpec) { spec.KnowledgeRefs = []string{testID2} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			mutate(&changed)
+			if _, err := changed.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Cloud Worker inherited %s binding: %v", name, err)
+			}
+		})
+	}
+}
+
 var testID = "00000000-0000-4000-8000-000000000001"
 var testID2 = "00000000-0000-4000-8000-000000000002"
 

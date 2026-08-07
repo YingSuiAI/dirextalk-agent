@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 )
@@ -21,6 +22,7 @@ type Service struct {
 	store           Store
 	models          ModelRunner
 	extensions      ExtensionResolver
+	intrinsics      IntrinsicResolver
 	memoryRecall    MemoryRecallResolver
 	snapshots       SnapshotProfileResolver
 	now             func() time.Time
@@ -54,6 +56,17 @@ func (s *Service) SetExtensionResolver(resolver ExtensionResolver) {
 		return
 	}
 	s.extensions = resolver
+}
+
+// SetIntrinsicResolver wires Core-owned tools after their transactional
+// stores and trusted context resolvers are ready. A nil resolver removes the
+// intrinsic catalog; production readiness is responsible for failing closed
+// when Cloud Worker is configured but this graph is incomplete.
+func (s *Service) SetIntrinsicResolver(resolver IntrinsicResolver) {
+	if s == nil {
+		return
+	}
+	s.intrinsics = resolver
 }
 
 // SetMemoryRecallResolver wires the optional Agent-owned long-term-memory
@@ -190,6 +203,19 @@ func stableStrings(in []string) []string {
 			seen[v] = true
 			out = append(out, v)
 		}
+	}
+	return out
+}
+func stableReferences(in []Reference) []Reference {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]Reference, 0, len(in))
+	for _, value := range in {
+		key := referenceKey(value)
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }
@@ -434,6 +460,8 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		return ChatResponse{}, err
 	}
 	var relatedTasks []string
+	var relatedPlans []string
+	var references []Reference
 	var toolSummaries []string
 	for round := 0; round < 8; round++ {
 		if err := ctx.Err(); err != nil {
@@ -487,8 +515,12 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		}
 		result.Message.ModelProfileID = cmd.ProfileID
 		result.Message.RelatedTaskIDs = append([]string(nil), result.RelatedTaskIDs...)
+		result.Message.RelatedPlanIDs = append([]string(nil), result.RelatedPlanIDs...)
+		result.Message.References = cloneReferences(result.References)
 		result.Message.ToolSummaries = append([]string(nil), result.ToolSummaries...)
 		result.Message.RelatedTaskIDs = stableIDs(append(result.Message.RelatedTaskIDs, relatedTasks...))
+		result.Message.RelatedPlanIDs = stableIDs(append(result.Message.RelatedPlanIDs, relatedPlans...))
+		result.Message.References = stableReferences(append(result.Message.References, references...))
 		result.Message.ToolSummaries = stableStrings(append(result.Message.ToolSummaries, toolSummaries...))
 		result.Message.CreatedAt = nextMessageTime(conv, result.Message.CreatedAt)
 		if err := result.Message.Validate(); err != nil {
@@ -499,10 +531,14 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 		}
 		if !replayed {
 			result.Message.RelatedTaskIDs = stableIDs(result.Message.RelatedTaskIDs)
+			result.Message.RelatedPlanIDs = stableIDs(result.Message.RelatedPlanIDs)
+			result.Message.References = stableReferences(result.Message.References)
 			result.Message.ToolSummaries = stableStrings(result.Message.ToolSummaries)
 			result.Message.ModelProfileID = cmd.ProfileID
 			result.Message.ToolCalls = append([]ToolCall(nil), result.Message.ToolCalls...)
 			result.RelatedTaskIDs = append([]string(nil), result.Message.RelatedTaskIDs...)
+			result.RelatedPlanIDs = append([]string(nil), result.Message.RelatedPlanIDs...)
+			result.References = cloneReferences(result.Message.References)
 			result.ToolSummaries = append([]string(nil), result.Message.ToolSummaries...)
 			result.ToolCalls = nil
 			if err := s.store.RecordModelStep(ctx, cmd.RequestID, lease.LeaseID, lease.Fingerprint, lease.Epoch, cmd.ProfileID, round, result); err != nil {
@@ -523,7 +559,7 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			for _, persistedMessage := range conv.Messages {
 				allToolResults = append(allToolResults, persistedMessage.ToolResults...)
 			}
-			resp := ChatResponse{RequestID: cmd.RequestID, ConversationID: conv.ID, Revision: conv.Revision, Message: result.Message, Done: true, ModelProfileID: cmd.ProfileID, RelatedTaskIDs: result.Message.RelatedTaskIDs, ToolSummaries: result.Message.ToolSummaries, ToolResults: allToolResults}
+			resp := ChatResponse{RequestID: cmd.RequestID, ConversationID: conv.ID, Revision: conv.Revision, Message: result.Message, Done: true, ModelProfileID: cmd.ProfileID, RelatedTaskIDs: result.Message.RelatedTaskIDs, RelatedPlanIDs: result.Message.RelatedPlanIDs, References: cloneReferences(result.Message.References), ToolSummaries: result.Message.ToolSummaries, ToolResults: allToolResults}
 			if renewed, err := s.store.RenewChat(ctx, cmd.RequestID, lease.LeaseID, lease.Epoch, s.clock(), leaseTTL(cmd, s.leaseTTL)); err != nil {
 				return ChatResponse{}, err
 			} else {
@@ -660,10 +696,14 @@ func (s *Service) run(ctx context.Context, cmd ChatCommand, conv Conversation, l
 			}
 			tm := Message{ID: uuid.NewString(), Role: RoleTool, ToolResults: []ToolResult{tr}, CreatedAt: nextMessageTime(conv, s.clock()), ModelProfileID: cmd.ProfileID}
 			tm.RelatedTaskIDs = stableIDs(tr.RelatedTaskIDs)
+			tm.RelatedPlanIDs = stableIDs(tr.RelatedPlanIDs)
+			tm.References = stableReferences(tr.References)
 			if tr.Summary != "" {
 				tm.ToolSummaries = []string{tr.Summary}
 			}
 			relatedTasks = append(relatedTasks, tr.RelatedTaskIDs...)
+			relatedPlans = append(relatedPlans, tr.RelatedPlanIDs...)
+			references = append(references, tr.References...)
 			if tr.Summary != "" {
 				toolSummaries = append(toolSummaries, tr.Summary)
 			}
@@ -898,6 +938,39 @@ func (s *Service) ListTurns(ctx context.Context, conversationID, cursor string, 
 	return lister.ListTurns(ctx, conversationID, cursor, limit)
 }
 
+func (s *Service) BeginTurnAttachmentUpload(ctx context.Context, command BeginTurnAttachmentUploadCommand) (TurnAttachmentUpload, error) {
+	if s == nil {
+		return TurnAttachmentUpload{}, ErrInvalid
+	}
+	store, ok := s.turns.(TurnAttachmentUploadStore)
+	if !ok {
+		return TurnAttachmentUpload{}, ErrInvalid
+	}
+	return store.BeginTurnAttachmentUpload(ctx, command)
+}
+
+func (s *Service) AppendTurnAttachmentUpload(ctx context.Context, command AppendTurnAttachmentUploadCommand) (TurnAttachmentUpload, error) {
+	if s == nil {
+		return TurnAttachmentUpload{}, ErrInvalid
+	}
+	store, ok := s.turns.(TurnAttachmentUploadStore)
+	if !ok {
+		return TurnAttachmentUpload{}, ErrInvalid
+	}
+	return store.AppendTurnAttachmentUpload(ctx, command)
+}
+
+func (s *Service) CommitTurnAttachmentUpload(ctx context.Context, command CommitTurnAttachmentUploadCommand) (TurnAttachment, error) {
+	if s == nil {
+		return TurnAttachment{}, ErrInvalid
+	}
+	store, ok := s.turns.(TurnAttachmentUploadStore)
+	if !ok {
+		return TurnAttachment{}, ErrInvalid
+	}
+	return store.CommitTurnAttachmentUpload(ctx, command)
+}
+
 // StartTurn durably accepts a prompt before starting any model work. The
 // execution goroutine intentionally uses a background context; disconnecting
 // the initiating RPC therefore cannot abandon an accepted turn.
@@ -919,6 +992,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 	if cmd.TurnID == "" {
 		cmd.TurnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+cmd.RequestID)).String()
 	}
+	cmd.AcceptedAttachmentIDs = append([]string(nil), cmd.AcceptedAttachmentIDs...)
 	if lookup, ok := s.turns.(TurnRequestLookup); ok {
 		if existing, lookupErr := lookup.GetTurnByRequestID(ctx, cmd.RequestID); lookupErr == nil {
 			// Replays are checked against the immutable snapshot already bound to
@@ -926,6 +1000,7 @@ func (s *Service) StartTurn(ctx context.Context, cmd TurnStartCommand) (Turn, er
 			check := cmd
 			check.ProfileSnapshot = existing.ProfileSnapshot
 			check.ExtensionSnapshots = append([]ExtensionExecutionSnapshot(nil), existing.ExtensionSnapshots...)
+			check.AttachmentSources = append([]TurnAttachment(nil), existing.AttachmentSources...)
 			if len(check.Extensions) == 0 {
 				check.Extensions = snapshotSelections(existing.ExtensionSnapshots)
 			}
@@ -1414,6 +1489,26 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			return
 		}
 	}
+	var intrinsicTools []ResolvedIntrinsic
+	if s.intrinsics != nil {
+		intrinsicTools, err = s.intrinsics.ResolveIntrinsicTools(ctx, lease)
+		if err != nil {
+			_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
+			return
+		}
+		seen := make(map[string]struct{}, len(intrinsicTools))
+		for _, intrinsic := range intrinsicTools {
+			if intrinsic.Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName || intrinsic.Tool.InputSchema == nil || intrinsic.Execute == nil {
+				_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_invalid", "Core intrinsic tool binding is invalid")
+				return
+			}
+			if _, duplicate := seen[intrinsic.Tool.Name]; duplicate {
+				_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_conflict", "Core intrinsic tool binding is ambiguous")
+				return
+			}
+			seen[intrinsic.Tool.Name] = struct{}{}
+		}
+	}
 	if durableDispatch {
 		if !replayed {
 			if _, err = dispatchStore.PrepareTurnModel(ctx, lease); err != nil {
@@ -1433,7 +1528,21 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 	} else {
 		go func() {
 			profile := turn.ProfileSnapshot.Profile()
-			result, runErr := s.models.Run(child, ModelRunRequest{Conversation: modelConversation, Profile: ResolvedProfile{ID: profile.ID, DisplayName: profile.DisplayName, Provider: string(profile.Provider), Model: profile.Model, SystemPrompt: profile.SystemPrompt}, Snapshot: turn.ProfileSnapshot, ProfileSnapshot: turn.ProfileSnapshot, Extensions: resolvedExtensions, ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...)})
+			result, runErr := s.models.Run(child, ModelRunRequest{
+				Conversation: modelConversation,
+				Profile: ResolvedProfile{
+					ID:           profile.ID,
+					DisplayName:  profile.DisplayName,
+					Provider:     string(profile.Provider),
+					Model:        profile.Model,
+					SystemPrompt: profile.SystemPrompt,
+				},
+				Snapshot:           turn.ProfileSnapshot,
+				ProfileSnapshot:    turn.ProfileSnapshot,
+				Intrinsics:         append([]ResolvedIntrinsic(nil), intrinsicTools...),
+				Extensions:         resolvedExtensions,
+				ExtensionSnapshots: append([]ExtensionExecutionSnapshot(nil), turn.ExtensionSnapshots...),
+			})
 			resultCh <- struct {
 				result ModelRunResult
 				err    error
@@ -1472,6 +1581,41 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				calls := out.result.ToolCalls
 				if len(calls) == 0 {
 					calls = out.result.Message.ToolCalls
+				}
+				for _, call := range calls {
+					if call.Name != coremodel.IntrinsicCloudWorkerProposeToolName {
+						continue
+					}
+					if len(calls) != 1 {
+						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_batch_rejected", "Core intrinsic tool must be the only call in a model round")
+						return
+					}
+					var intrinsic *ResolvedIntrinsic
+					for index := range intrinsicTools {
+						if intrinsicTools[index].Tool.Name == call.Name {
+							intrinsic = &intrinsicTools[index]
+							break
+						}
+					}
+					if intrinsic == nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_unavailable", "Core intrinsic tool is unavailable")
+						return
+					}
+					arguments, argumentsErr := canonicalJSON(call.Arguments, MaxToolArgumentsBytes)
+					if argumentsErr != nil {
+						_, _ = s.turns.FailTurn(ctx, lease, "invalid_intrinsic_arguments", "Core intrinsic arguments are invalid")
+						return
+					}
+					if durableDispatch && !replayed {
+						if recordErr := dispatchStore.RecordTurnModelResult(ctx, lease, out.result); recordErr != nil {
+							return
+						}
+					}
+					intrinsicResult, intrinsicErr := intrinsic.Execute(ctx, IntrinsicExecutionRequest{Lease: lease, Call: call, CanonicalArguments: arguments})
+					if intrinsicErr != nil || !intrinsicResult.TurnCommitted {
+						_, _ = s.turns.FailTurn(ctx, lease, "intrinsic_failed", "Core intrinsic operation failed")
+					}
+					return
 				}
 				toolStore, ok := s.turns.(ConversationToolStore)
 				if !ok || len(turn.ExtensionSnapshots) == 0 {
@@ -1550,6 +1694,10 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 				}
 			}
 			m := out.result.Message
+			m.RelatedTaskIDs = stableIDs(append(m.RelatedTaskIDs, out.result.RelatedTaskIDs...))
+			m.RelatedPlanIDs = stableIDs(append(m.RelatedPlanIDs, out.result.RelatedPlanIDs...))
+			m.References = stableReferences(append(m.References, out.result.References...))
+			m.ToolSummaries = stableStrings(append(m.ToolSummaries, out.result.ToolSummaries...))
 			userTime := nextMessageTime(conv, s.clock())
 			m.ModelProfileID, m.Role, m.CreatedAt = turn.ProfileID, RoleAssistant, userTime.Add(time.Microsecond)
 			if m.ID == "" {
@@ -1562,7 +1710,7 @@ func (s *Service) executeTurn(ctx context.Context, id string) {
 			conv.Messages = append(conv.Messages, Message{ID: uuid.NewString(), Role: RoleUser, Content: turn.Prompt, ModelProfileID: turn.ProfileID, CreatedAt: userTime}, m)
 			conv.Revision++
 			conv.UpdatedAt = s.clock()
-			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID}
+			response := ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: conv.Revision, Message: m, Done: true, ModelProfileID: turn.ProfileID, RelatedTaskIDs: append([]string(nil), m.RelatedTaskIDs...), RelatedPlanIDs: append([]string(nil), m.RelatedPlanIDs...), References: cloneReferences(m.References), ToolSummaries: append([]string(nil), m.ToolSummaries...)}
 			_, _ = s.turns.CommitTurn(ctx, lease, response)
 			return
 		case <-heartbeat.C:

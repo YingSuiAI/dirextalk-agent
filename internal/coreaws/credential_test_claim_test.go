@@ -245,7 +245,7 @@ func TestMemoryCredentialTestProviderFailureHasExactReplayReceipt(t *testing.T) 
 	}
 }
 
-func TestMemoryCredentialTestCompletionKeepsCredentialTimesMonotonicAcrossKeys(t *testing.T) {
+func TestMemoryCredentialTestCompletionRejectsDivergentIdentityForImmutableRevision(t *testing.T) {
 	repo := NewMemoryRepository()
 	const credentialID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	const newerKey = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
@@ -271,15 +271,11 @@ func TestMemoryCredentialTestCompletionKeepsCredentialTimesMonotonicAcrossKeys(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	older, err := repo.CompleteCredentialTest(context.Background(), olderClaim, olderIdentity, olderAt)
-	if err != nil {
-		t.Fatal(err)
+	if _, err = repo.CompleteCredentialTest(context.Background(), olderClaim, olderIdentity, olderAt); !errors.Is(err, ErrConflict) {
+		t.Fatalf("divergent identity for immutable revision = %v, want conflict", err)
 	}
 	if !newer.TestedAt.Equal(newerAt) {
 		t.Fatalf("newer receipt tested_at=%v, want %v", newer.TestedAt, newerAt)
-	}
-	if !older.TestedAt.Equal(newerAt) {
-		t.Fatalf("older receipt tested_at=%v, want persisted newer time %v", older.TestedAt, newerAt)
 	}
 	stored, err := repo.GetCredential(context.Background(), credentialID)
 	if err != nil {
@@ -291,12 +287,9 @@ func TestMemoryCredentialTestCompletionKeepsCredentialTimesMonotonicAcrossKeys(t
 	if stored.AccountID != newerIdentity.AccountID || stored.UserARN != newerIdentity.UserARN {
 		t.Fatalf("older completion replaced newer identity: account=%q user=%q", stored.AccountID, stored.UserARN)
 	}
-	if older.Identity.AccountID != newerIdentity.AccountID || older.Identity.UserARN != newerIdentity.UserARN {
-		t.Fatalf("older receipt identity=%+v, want persisted newer identity %+v", older.Identity, newerIdentity)
-	}
 }
 
-func TestMemoryCredentialDeleteCascadesCredentialTestClaims(t *testing.T) {
+func TestMemoryCredentialDisablePreservesCredentialTestClaims(t *testing.T) {
 	repo := NewMemoryRepository()
 	const completedID = "77777777-7777-4777-8777-777777777777"
 	const completedKey = "88888888-8888-4888-8888-888888888888"
@@ -311,7 +304,8 @@ func TestMemoryCredentialDeleteCascadesCredentialTestClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.CompleteCredentialTest(context.Background(), completedClaim, Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/delete", PrincipalID: "delete"}, time.Unix(2, 0)); err != nil {
+	completed, err := repo.CompleteCredentialTest(context.Background(), completedClaim, Identity{AccountID: "123456789012", UserARN: "arn:aws:iam::123456789012:user/delete", PrincipalID: "delete"}, time.Unix(2, 0))
+	if err != nil {
 		t.Fatal(err)
 	}
 	uncertainClaim, _, err := repo.BeginCredentialTest(context.Background(), uncertainID, 1, uncertainKey)
@@ -327,10 +321,10 @@ func TestMemoryCredentialDeleteCascadesCredentialTestClaims(t *testing.T) {
 	if err := repo.DeleteCredential(context.Background(), uncertainID, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := repo.BeginCredentialTest(context.Background(), completedID, 1, completedKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("deleted completed claim replay=%v, want credential not found", err)
+	if _, replay, err := repo.BeginCredentialTest(context.Background(), completedID, 1, completedKey); err != nil || replay == nil || *replay != completed {
+		t.Fatalf("disabled completed claim replay=%+v err=%v", replay, err)
 	}
-	if _, _, err := repo.BeginCredentialTest(context.Background(), uncertainID, 1, uncertainKey); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("deleted uncertain claim replay=%v, want credential not found", err)
+	if _, _, err := repo.BeginCredentialTest(context.Background(), uncertainID, 1, uncertainKey); !errors.Is(err, ErrResponseUncertain) {
+		t.Fatalf("disabled uncertain claim replay=%v, want response uncertain", err)
 	}
 }

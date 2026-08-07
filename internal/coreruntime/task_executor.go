@@ -105,7 +105,7 @@ func (e *TaskExecutor) SetSkillInstructionResolver(s SkillInstructionResolver) {
 func (e *TaskExecutor) SetWorkloadHandler(h *coreworkload.Handler) { e.workload = h }
 
 func (e *TaskExecutor) RegisterHandler(kind coretask.TaskKind, handler TaskHandler) error {
-	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindAWSChange && kind != coretask.TaskKindWorkload) || handler == nil {
+	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindAWSChange && kind != coretask.TaskKindWorkload && kind != coretask.TaskKindCloudWorker && kind != coretask.TaskKindExecutionV2Run) || handler == nil {
 		return errors.New("invalid task handler")
 	}
 	e.mu.Lock()
@@ -201,6 +201,14 @@ func isWorkloadTerminal(status coreworkload.OperationStatus) bool {
 func taskExecutionContext(ctx context.Context, task coretask.Task) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Cloud Worker runtime and cleanup deadlines belong to its durable domain
+	// controller.  Applying the generic CoreTask deadline here can cancel the
+	// controller after AWS mutation but before resource destruction, leaving no
+	// handler able to finish cleanup, projection, or the completion outbox.
+	// Parent cancellation and lease loss still cancel this context normally.
+	if task.Spec.Kind == coretask.TaskKindCloudWorker {
+		return context.WithCancel(ctx)
 	}
 	if task.ExecutionDeadlineAt != nil {
 		return context.WithDeadline(ctx, task.ExecutionDeadlineAt.UTC())

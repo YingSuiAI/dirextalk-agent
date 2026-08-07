@@ -6,8 +6,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreaws"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
@@ -159,6 +161,9 @@ func scanConfirmation(row interface{ Scan(...any) error }) (coreconfirmation.Con
 	if e = json.Unmarshal(braw, &c.Binding); e != nil {
 		return c, e
 	}
+	// Owner identity is part of the immutable authorization binding; project it
+	// onto the public confirmation without duplicating a mutable owner column.
+	c.OwnerID = c.Binding.OwnerID
 	return c, nil
 }
 
@@ -178,6 +183,135 @@ func projectAWSConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreconfirmati
 		return err
 	}
 	return appendAWSAndTaskEvent(ctx, tx, changeID, cur.TaskID, kind, revision+1, 0, statusForTaskEvent(status), at)
+}
+
+func projectCloudWorkerConfirmationTx(ctx context.Context, tx pgx.Tx, cur coreconfirmation.Confirmation, next cloudworker.ExecutionState, kind string, at time.Time) error {
+	if cur.Binding.OperationDomain != cloudworker.OperationDomain {
+		return nil
+	}
+	execution, err := scanCloudWorkerExecution(tx.QueryRow(ctx, cloudWorkerExecutionSelect+` WHERE execution_id=$1 FOR UPDATE`, cur.Binding.ExecutionID))
+	if err != nil {
+		return err
+	}
+	if execution.TaskID != cur.TaskID || execution.ConfirmationID != cur.ConfirmationID || execution.PlanID != cur.Binding.PlanID ||
+		execution.PlanDigest != string(cur.Binding.PlanDigest) || execution.ExecutionDigest != string(cur.Binding.ExecutionDigest) ||
+		execution.ProviderMutationStarted {
+		return coreconfirmation.ErrStale
+	}
+	transitioned, err := execution.Transition(next, at.UTC())
+	if err != nil {
+		return coreconfirmation.ErrConflict
+	}
+	if err = saveCloudWorkerExecutionTx(ctx, tx, execution, transitioned, kind); err != nil {
+		return err
+	}
+	if next != cloudworker.StateRejected && next != cloudworker.StateExpired {
+		return nil
+	}
+	plan, err := scanCloudWorkerPlan(tx.QueryRow(ctx, cloudWorkerPlanSelect+` WHERE plan_id=$1`, execution.PlanID))
+	if err != nil || plan.ExecutionID != transitioned.ExecutionID || plan.TaskID != cur.TaskID || plan.ConfirmationID != cur.ConfirmationID {
+		return coreconfirmation.ErrStale
+	}
+	return terminalizeCloudWorkerTurnTx(ctx, tx, cur, plan, transitioned, next, at.UTC())
+}
+
+// terminalizeCloudWorkerTurnTx closes the original Native Agent turn when an
+// offer is rejected or expires before any provider mutation. The conversation
+// receives an explicit durable assistant message and turn event; App caches
+// are never expected to invent a terminal response from a stale offer card.
+func terminalizeCloudWorkerTurnTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	confirmation coreconfirmation.Confirmation,
+	plan cloudworker.Plan,
+	execution cloudworker.Execution,
+	terminal cloudworker.ExecutionState,
+	at time.Time,
+) error {
+	if execution.ProviderMutationStarted || execution.Cleanup.ResourcesTotal != 0 ||
+		(terminal != cloudworker.StateRejected && terminal != cloudworker.StateExpired && terminal != cloudworker.StateCanceled) {
+		return coreconfirmation.ErrStale
+	}
+	var turn struct {
+		OwnerID, ConversationID, ProfileID, State string
+		AccountGeneration, Revision, LastSequence uint64
+	}
+	if err := tx.QueryRow(ctx, `SELECT owner_id,account_generation,conversation_id::text,profile_id::text,state,revision,last_sequence
+		FROM core_conversation_turns WHERE turn_id=$1 FOR UPDATE`, plan.TurnID).Scan(
+		&turn.OwnerID, &turn.AccountGeneration, &turn.ConversationID, &turn.ProfileID, &turn.State, &turn.Revision, &turn.LastSequence); err != nil {
+		return err
+	}
+	if turn.OwnerID != plan.OwnerID || turn.AccountGeneration != plan.AccountGeneration ||
+		turn.ConversationID != plan.ConversationID || turn.ProfileID != plan.ModelAuthorization.ModelProfileID ||
+		turn.State != string(core.TurnWaitingConfirmation) {
+		return coreconfirmation.ErrStale
+	}
+	var conversationRevision uint64
+	if err := tx.QueryRow(ctx, `SELECT revision FROM core_conversations WHERE conversation_id=$1 AND deleted_at IS NULL FOR UPDATE`, plan.ConversationID).Scan(&conversationRevision); err != nil {
+		return err
+	}
+	binding, err := cloudworker.BindingForPlan(plan)
+	if err != nil || !confirmation.Binding.Equal(binding) {
+		return coreconfirmation.ErrStale
+	}
+	confirmationState := string(coreconfirmation.StateExpired)
+	turnState, eventKind := string(core.TurnFailed), core.TurnEventError
+	code := confirmation.TerminalReason
+	if code == "" {
+		code = coreconfirmation.ReasonExpired
+	}
+	summary := "Cloud Worker offer expired before authorization. No AWS resources were created."
+	if terminal == cloudworker.StateRejected {
+		confirmationState = string(coreconfirmation.StateRejected)
+		turnState, eventKind = string(core.TurnCanceled), core.TurnEventCanceled
+		code = coreconfirmation.ReasonUserRejected
+		summary = "Cloud Worker offer was rejected. No AWS resources were created."
+	} else if terminal == cloudworker.StateCanceled {
+		turnState, eventKind = string(core.TurnCanceled), core.TurnEventCanceled
+		code = "user_canceled"
+		summary = "Cloud Worker task was canceled before dispatch. No AWS resources were created."
+	}
+	references := cloudWorkerReferences(plan, execution, binding, uint64(confirmation.Revision+1), confirmationState)
+	message := core.Message{
+		ID:   deterministicCloudWorkerUUID("cloud-worker-offer-terminal-message", plan.ExecutionID+":"+string(terminal)),
+		Role: core.RoleAssistant, Content: summary, ModelProfileID: turn.ProfileID,
+		RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID},
+		References: references, CreatedAt: at,
+	}
+	if message.Validate() != nil {
+		return coreconfirmation.ErrStale
+	}
+	var messageSequence int64
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(sequence),0)+1 FROM core_messages WHERE conversation_id=$1`, plan.ConversationID).Scan(&messageSequence); err != nil {
+		return err
+	}
+	if err = insertCloudWorkerMessageTx(ctx, tx, plan.ConversationID, messageSequence, message); err != nil {
+		return err
+	}
+	event := core.TurnEvent{
+		TurnID: plan.TurnID, Sequence: int64(turn.LastSequence + 1), Kind: eventKind,
+		Message: &message, ConfirmationID: plan.ConfirmationID, ExecutionID: plan.ExecutionID,
+		Status: string(terminal), RelatedTaskIDs: []string{plan.TaskID}, RelatedPlanIDs: []string{plan.PlanID},
+		References: references, ErrorCode: code, ErrorSummary: summary, CreatedAt: at,
+	}
+	eventRaw, _ := json.Marshal(event)
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at)
+		VALUES($1,$2,$3,$4,$5)`, plan.TurnID, event.Sequence, string(event.Kind), eventRaw, at); err != nil {
+		return err
+	}
+	turnUpdate, err := tx.Exec(ctx, `UPDATE core_conversation_turns SET state=$2,terminal_code=$3,terminal_summary=$4,
+		revision=revision+1,last_sequence=$5,lease_id=NULL,lease_expires_at=NULL,updated_at=$6
+		WHERE turn_id=$1 AND state='waiting_confirmation' AND revision=$7`, plan.TurnID, turnState, code, summary,
+		event.Sequence, at, turn.Revision)
+	if err != nil || turnUpdate.RowsAffected() != 1 {
+		return coreconfirmation.ErrConflict
+	}
+	conversationUpdate, err := tx.Exec(ctx, `UPDATE core_conversations SET revision=revision+1,updated_at=$2
+		WHERE conversation_id=$1 AND revision=$3`, plan.ConversationID, at, conversationRevision)
+	if err != nil || conversationUpdate.RowsAffected() != 1 {
+		return coreconfirmation.ErrConflict
+	}
+	return nil
 }
 func statusForTaskEvent(changeStatus string) string {
 	switch changeStatus {
@@ -202,20 +336,42 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 		}
 		return terminalizeWorkloadBeforeDispatchTx(ctx, tx, ownerID, cur, "expired", status, "failed", reason, reason, at)
 	}
-	if _, e := tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,updated_at=$2,terminal_code=$3,terminal_reason=$3 WHERE confirmation_id=$1`, cur.ConfirmationID, at, reason); e != nil {
-		return cur, e
+	confirmationUpdate, e := tx.Exec(ctx, `UPDATE core_confirmations SET state='expired',revision=revision+1,
+		updated_at=$2,terminal_code=$3,terminal_reason=$3 WHERE confirmation_id=$1 AND state=$4 AND revision=$5`,
+		cur.ConfirmationID, at, reason, cur.State, cur.Revision)
+	if e != nil || confirmationUpdate.RowsAffected() != 1 {
+		if e != nil {
+			return cur, e
+		}
+		return cur, coreconfirmation.ErrConflict
 	}
 	var st string
 	if e := tx.QueryRow(ctx, `SELECT status FROM core_tasks WHERE task_id=$1 FOR UPDATE`, cur.TaskID).Scan(&st); e == nil && (st == "waiting_user" || st == "queued" || st == "running") {
-		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),failure_code=$2,failure_summary=$3,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$4 WHERE task_id=$1`, cur.TaskID, reason, reason, at); e != nil {
-			return cur, e
+		taskUpdate, updateErr := tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),failure_code=$2,
+			failure_summary=$3,lease_holder='',lease_expires_at=NULL,revision=revision+1,progress_sequence=progress_sequence+1,updated_at=$4
+			WHERE task_id=$1 AND status=$5`, cur.TaskID, reason, reason, at, st)
+		if updateErr != nil || taskUpdate.RowsAffected() != 1 {
+			if updateErr != nil {
+				return cur, updateErr
+			}
+			return cur, coreconfirmation.ErrConflict
 		}
-		if _, e = tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at) SELECT task_id,progress_sequence,$2,attempt,'failed',$3,$4,$5,$6 FROM core_tasks WHERE task_id=$1`, cur.TaskID, uuid.New(), reason, reason, reason, at); e != nil {
-			return cur, e
+		eventInsert, insertErr := tx.Exec(ctx, `INSERT INTO core_task_events(task_id,sequence,event_id,attempt,status,phase,error_code,error_summary,occurred_at)
+			SELECT task_id,progress_sequence,$2,attempt,'failed',$3,$4,$5,$6 FROM core_tasks WHERE task_id=$1 AND status='failed'`,
+			cur.TaskID, uuid.New(), reason, reason, reason, at)
+		if insertErr != nil || eventInsert.RowsAffected() != 1 {
+			if insertErr != nil {
+				return cur, insertErr
+			}
+			return cur, coreconfirmation.ErrConflict
 		}
 		if st == "running" {
-			if _, e = tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1 WHERE singleton=true`, at); e != nil {
-				return cur, e
+			concurrencyUpdate, updateErr := tx.Exec(ctx, `UPDATE core_task_runtime_concurrency SET running_count=GREATEST(0,running_count-1),revision=revision+1,updated_at=$1 WHERE singleton=true`, at)
+			if updateErr != nil || concurrencyUpdate.RowsAffected() != 1 {
+				if updateErr != nil {
+					return cur, updateErr
+				}
+				return cur, coreconfirmation.ErrConflict
 			}
 		}
 	}
@@ -223,6 +379,9 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 		if e := rollbackExtensionLifecycleTx(ctx, tx, cur.ConfirmationID); e != nil {
 			return cur, e
 		}
+	}
+	if e := projectExecutionV2RunConfirmationTx(ctx, tx, cur, "expired", at); e != nil {
+		return cur, e
 	}
 	if e := terminalizeConversationToolTx(ctx, tx, cur, "denied", reason, at); e != nil {
 		return cur, e
@@ -232,6 +391,9 @@ func terminalizeExpiredTx(ctx context.Context, tx pgx.Tx, ownerID any, cur corec
 		awsStatus, awsStage = "canceled", "canceled"
 	}
 	if e := projectAWSConfirmationTx(ctx, tx, cur, awsStatus, awsStage, reason, reason, reason, at); e != nil {
+		return cur, e
+	}
+	if e := projectCloudWorkerConfirmationTx(ctx, tx, cur, cloudworker.StateExpired, "confirmation_expired", at); e != nil {
 		return cur, e
 	}
 	cur.State, cur.Revision, cur.UpdatedAt, cur.TerminalCode, cur.TerminalReason = coreconfirmation.StateExpired, cur.Revision+1, at, reason, reason

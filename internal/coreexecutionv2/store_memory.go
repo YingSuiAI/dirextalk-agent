@@ -6,21 +6,34 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 )
 
 // MemoryStore is intentionally strict and mirrors the PostgreSQL CAS rules;
 // it is suitable for focused contract tests and local composition probes.
 type MemoryStore struct {
-	mu        sync.RWMutex
-	records   map[string]Record
-	revisions map[string]map[uint64]Record
-	replays   map[string]Replay
-	events    map[string][]Event
-	secrets   map[string]Secret
+	mu                     sync.RWMutex
+	records                map[string]Record
+	revisions              map[string]map[uint64]Record
+	replays                map[string]Replay
+	events                 map[string][]Event
+	secrets                map[string]Secret
+	genericTasks           map[string]coretask.Task
+	genericConfirmations   map[string]coreconfirmation.Confirmation
+	genericCreateEnvelopes map[string]GenericRunEnvelope
+	genericCancelReplays   map[string]genericRunCancelReplay
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{records: map[string]Record{}, revisions: map[string]map[uint64]Record{}, replays: map[string]Replay{}, events: map[string][]Event{}, secrets: map[string]Secret{}}
+	return &MemoryStore{
+		records: map[string]Record{}, revisions: map[string]map[uint64]Record{},
+		replays: map[string]Replay{}, events: map[string][]Event{}, secrets: map[string]Secret{},
+		genericTasks: map[string]coretask.Task{}, genericConfirmations: map[string]coreconfirmation.Confirmation{},
+		genericCreateEnvelopes: map[string]GenericRunEnvelope{},
+		genericCancelReplays:   map[string]genericRunCancelReplay{},
+	}
 }
 
 func recordKey(owner, kind, id string) string   { return owner + "\x00" + kind + "\x00" + id }

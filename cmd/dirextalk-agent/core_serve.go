@@ -178,6 +178,10 @@ func serveCore(cfg config.Config) error {
 		return fmt.Errorf("initialize task executor: %w", err)
 	}
 	taskExecutor.SetAgentLedger(taskStore)
+	cloudComposition, err := composeCoreCloudWorker(processCtx, cfg, store, conversationStore, profiles, taskStore)
+	if err != nil {
+		return fmt.Errorf("initialize Cloud Worker composition: %w", err)
+	}
 	var knowledgeComposition *coreKnowledgeComposition
 	if !lifecycleFence.IsSealed() {
 		knowledgeComposition, err = composeCoreKnowledge(cfg, store, profiles, lifecycleFence)
@@ -217,9 +221,10 @@ func serveCore(cfg config.Config) error {
 		workloadService = workloadComposition.service
 		taskExecutor.SetWorkloadHandler(workloadComposition.taskHandler)
 	}
-	executionComposition, err := composeCoreExecutionV2(cfg, executionStore, func() coreExecutionV2ComposeDeps {
+	genericRunStore := postgres.NewCoreExecutionV2RunStore(store)
+	executionDeps := func() coreExecutionV2ComposeDeps {
 		if workloadComposition == nil {
-			return coreExecutionV2ComposeDeps{}
+			return coreExecutionV2ComposeDeps{runLifecycle: genericRunStore, confirmationReader: genericRunStore}
 		}
 		return coreExecutionV2ComposeDeps{
 			credentialResolver:  workloadComposition.executionCredentialResolver,
@@ -231,8 +236,14 @@ func serveCore(cfg config.Config) error {
 			importTarget:        workloadComposition.executionImportTarget,
 			credentialReference: workloadComposition.executionCredentialReference,
 			probe:               workloadComposition.executionProbe,
+			runLifecycle:        genericRunStore,
+			confirmationReader:  genericRunStore,
 		}
-	}())
+	}()
+	if cloudComposition != nil {
+		executionDeps.cloudWorker = cloudComposition.executionPort
+	}
+	executionComposition, err := composeCoreExecutionV2(cfg, executionStore, executionDeps)
 	if err != nil {
 		return fmt.Errorf("initialize execution v2 composition: %w", err)
 	}
@@ -242,6 +253,16 @@ func serveCore(cfg config.Config) error {
 	if extensionComposition != nil {
 		taskExecutor.SetToolDispatcher(extensionComposition.toolDispatcher)
 		taskExecutor.SetSkillInstructionResolver(extensionComposition.skillResolver)
+	}
+	if executionComposition != nil && executionComposition.domain.ActionReady("agent.execution.v2.runs.create") {
+		if err := taskExecutor.RegisterHandler(coretask.TaskKindExecutionV2Run, executionComposition.domain.GenericRunHandler()); err != nil {
+			return fmt.Errorf("register Execution V2 run task handler: %w", err)
+		}
+	}
+	if cloudComposition != nil {
+		if err := taskExecutor.RegisterHandler(coretask.TaskKindCloudWorker, cloudComposition.taskHandler); err != nil {
+			return fmt.Errorf("register Cloud Worker task handler: %w", err)
+		}
 	}
 	if knowledgeComposition != nil {
 		if err := taskExecutor.RegisterHandler(coretask.TaskKindKnowledgeIndex, knowledgeComposition.taskHandler); err != nil {
@@ -346,6 +367,7 @@ func serveCore(cfg config.Config) error {
 	var capabilityServer *capabilityserver.Server
 	var productCapabilityClient *capabilityclient.Client
 	var voiceCallbackServer *http.Server
+	cloudPrivateStarted := false
 	if cfg.CoreVoiceEnabled && cfg.CoreVoiceCallbackEnabled {
 		callbackHandler, callbackErr := corevoice.NewCallbackHandler(corevoice.CallbackHandlerConfig{
 			Service: voiceService, AccountGeneration: cfg.CapabilityAccountGeneration, ReadTimeout: cfg.CoreVoiceCallbackReadTimeout,
@@ -389,6 +411,26 @@ func serveCore(cfg config.Config) error {
 		}
 		slog.Info("dirextalk-agent Product Capability client ready", "server", cfg.ProductCapabilityAddress)
 	}
+	if cloudComposition != nil {
+		if productCapabilityClient == nil {
+			return fmt.Errorf("Cloud Worker completion callback requires Product Capability")
+		}
+		if err := cloudComposition.BindCompletion(productCapabilityClient, cfg.CoreCloudWorker.CompletionOutboxInterval); err != nil {
+			return fmt.Errorf("bind Cloud Worker completion outbox: %w", err)
+		}
+		if err := cloudComposition.StartPrivate(); err != nil {
+			return fmt.Errorf("start Cloud Worker private listeners: %w", err)
+		}
+		cloudPrivateStarted = true
+		conversation.SetIntrinsicResolver(cloudComposition.intrinsic)
+	}
+	defer func() {
+		if cloudPrivateStarted {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+			_ = cloudComposition.StopPrivate(closeCtx)
+			closeCancel()
+		}
+	}()
 	// Compose model-facing tools in one resolver chain. Agent-owned built-ins
 	// remain available without Product Capability, but inject tools only for an
 	// authenticated Capability call.
@@ -548,6 +590,9 @@ func serveCore(cfg config.Config) error {
 	}
 	return runCoreLifecycle(processCtx, listener, coreServer, scheduleLoop, workerPool, cfg.CoreShutdownGrace, func() {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), cfg.CoreShutdownGrace)
+		if cloudPrivateStarted {
+			_ = cloudComposition.StopPrivate(closeCtx)
+		}
 		if capabilityServer != nil {
 			_ = capabilityServer.Stop(closeCtx)
 		}
@@ -566,7 +611,7 @@ func serveCore(cfg config.Config) error {
 			pool.Close()
 			poolClosed = true
 		}
-	}, cleanup, extensionCleanup, confirmationExpiry)
+	}, append([]coreLifecycleCleaner{cleanup, extensionCleanup, confirmationExpiry}, cloudComposition.Cleaners()...)...)
 }
 
 // capabilityRegistryAdapter keeps the domain registry independent from the

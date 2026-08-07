@@ -253,7 +253,7 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 		return c, core.ErrConflict
 	}
 	c.Summary, c.ContextMessageOffset = summary, uint64(offset)
-	rows, e := s.pool.Query(ctx, `SELECT message_id,sequence,role,content,model_profile_id,created_at,payload_json,related_task_ids,tool_summaries FROM core_messages WHERE conversation_id=$1 ORDER BY sequence`, id)
+	rows, e := s.pool.Query(ctx, `SELECT message_id,sequence,role,content,model_profile_id,created_at,payload_json,related_task_ids,related_plan_ids,references_json,tool_summaries FROM core_messages WHERE conversation_id=$1 ORDER BY sequence`, id)
 	if e != nil {
 		return c, e
 	}
@@ -261,8 +261,8 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 	for rows.Next() {
 		var m core.Message
 		var prof *uuid.UUID
-		var payload, tasks, sums []byte
-		if e = rows.Scan(&m.ID, &m.Sequence, &m.Role, &m.Content, &prof, &m.CreatedAt, &payload, &tasks, &sums); e != nil {
+		var payload, tasks, plans, references, sums []byte
+		if e = rows.Scan(&m.ID, &m.Sequence, &m.Role, &m.Content, &prof, &m.CreatedAt, &payload, &tasks, &plans, &references, &sums); e != nil {
 			return c, e
 		}
 		m.CreatedAt = m.CreatedAt.UTC()
@@ -270,6 +270,8 @@ func (s *CoreConversationStore) LoadConversation(ctx context.Context, id string)
 			m.ModelProfileID = prof.String()
 		}
 		_ = json.Unmarshal(tasks, &m.RelatedTaskIDs)
+		_ = json.Unmarshal(plans, &m.RelatedPlanIDs)
+		_ = json.Unmarshal(references, &m.References)
 		_ = json.Unmarshal(sums, &m.ToolSummaries)
 		c.Messages = append(c.Messages, m)
 	}

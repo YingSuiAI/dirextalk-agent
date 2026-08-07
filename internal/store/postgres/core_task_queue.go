@@ -46,7 +46,13 @@ func (s *CoreTaskStore) ClaimNextDue(ctx context.Context, holder string, at time
 	if t.Status == coretask.StatusQueued && running >= max {
 		return coretask.Task{}, coretask.Lease{}, coretask.ErrNotFound
 	}
-	if t.ExecutionDeadlineAt != nil && !at.UTC().Before(*t.ExecutionDeadlineAt) {
+	// CLOUD_WORKER owns its execution and cleanup deadlines in the durable
+	// plan/controller state machine.  A generic timeout here would bypass the
+	// controller after provider mutation and could strand AWS resources, the
+	// final conversation projection, and the completion outbox.  An expired
+	// Cloud Worker lease must therefore remain reclaimable until the domain
+	// controller reaches a cleanup-verified terminal state.
+	if t.Spec.Kind != coretask.TaskKindCloudWorker && t.ExecutionDeadlineAt != nil && !at.UTC().Before(*t.ExecutionDeadlineAt) {
 		if _, e = tx.Exec(ctx, `UPDATE core_tasks SET status='failed',attempt=GREATEST(attempt,1),failure_code='task_timed_out',failure_summary='task timed out',lease_holder='',lease_expires_at=NULL,revision=revision+1,updated_at=$2 WHERE task_id=$1`, id, at.UTC()); e != nil {
 			return coretask.Task{}, coretask.Lease{}, e
 		}

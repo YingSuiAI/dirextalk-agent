@@ -1,8 +1,10 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -12,10 +14,16 @@ import (
 	"time"
 
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
+)
+
+const (
+	agentExecutionCompletionCapability = "product.agent_execution.v1"
+	agentExecutionCompletionOperation  = "record_completion"
 )
 
 // Config 是 ProductCapability 客户端配置
@@ -485,6 +493,79 @@ func (c *Client) StartOperationWithPermission(
 	}
 
 	return c.client.StartOperation(c.authenticatedContext(ctx), req)
+}
+
+// RecordAgentExecutionCompletion starts the one service-originated Product
+// mutation which is permitted without a user PermissionContext. It is kept as
+// a fixed method instead of exposing a generic unauthorised StartOperation
+// escape hatch. The Product boundary still authenticates the Agent instance,
+// direction token, mTLS identity and account generation from transport
+// metadata, then injects the local owner identity itself.
+func (c *Client) RecordAgentExecutionCompletion(
+	ctx context.Context,
+	operationID string,
+	requestJSON []byte,
+	requestDigest []byte,
+) (*capv1.StartOperationResponse, error) {
+	if c == nil || c.client == nil {
+		return nil, fmt.Errorf("product capability client is unavailable")
+	}
+	if err := capv1.ValidateOperationID(operationID); err != nil {
+		return nil, fmt.Errorf("agent execution completion operation id is invalid: %w", err)
+	}
+	canonical, err := capv1.CanonicalizeJSON(requestJSON)
+	if err != nil || !bytes.Equal(canonical, requestJSON) {
+		return nil, fmt.Errorf("agent execution completion request must be canonical JSON")
+	}
+	if err := capv1.ValidateRequestDigest(requestDigest); err != nil {
+		return nil, fmt.Errorf("agent execution completion request digest is invalid: %w", err)
+	}
+	expectedDigest := sha256.Sum256(requestJSON)
+	if subtle.ConstantTimeCompare(expectedDigest[:], requestDigest) != 1 {
+		return nil, fmt.Errorf("agent execution completion request digest does not match request_json")
+	}
+	if err := c.acquireMutationSem(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseMutationSem()
+	callCtx, err := freshAgentServiceCallContext(ctx, operationID)
+	if err != nil {
+		return nil, err
+	}
+	releaseFence, err := c.enterProductCall(callCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseFence()
+	return c.client.StartOperation(c.authenticatedContext(ctx), &capv1.StartOperationRequest{
+		CallContext: callCtx, Permission: nil, OperationId: operationID,
+		CapabilityId:  agentExecutionCompletionCapability,
+		Operation:     agentExecutionCompletionOperation,
+		RequestJson:   append([]byte(nil), requestJSON...),
+		RequestDigest: append([]byte(nil), requestDigest...),
+	})
+}
+
+func freshAgentServiceCallContext(ctx context.Context, operationID string) (*capv1.CallContext, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("agent service call context is required")
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
+		deadline = value
+	}
+	if !deadline.After(time.Now()) {
+		return nil, context.DeadlineExceeded
+	}
+	call := capv1.NewCallContext(uuid.NewString(), operationID, deadline.UnixMilli())
+	call, err := capv1.AppendCallNode(call, capv1.NodeAgent)
+	if err != nil {
+		return nil, fmt.Errorf("construct Agent service call path: %w", err)
+	}
+	if err := capv1.ValidateStrictCallContext(call); err != nil {
+		return nil, fmt.Errorf("construct Agent service call context: %w", err)
+	}
+	return call, nil
 }
 
 // DescribeCapabilities fetches the Product catalog over the authenticated

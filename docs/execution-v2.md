@@ -1,71 +1,276 @@
-# Agent-owned execution.v2
+# Agent-owned Execution V2
 
-`agent.execution.v2.*` is an Agent-owned capability surface. Message Server
-keeps the public ProductCore action names and forwards them through the neutral
-Capability API; it does not persist analyses, targets, plans, runs,
-deployments, confirmations, artifacts, bindings, or execution secrets.
+`agent.execution.v2.*` is the only public execution surface. Message Server
+keeps the ProductCore action envelope and proxies authenticated owner calls;
+it does not store Agent plans, runs, confirmations, artifacts, worker leases,
+AWS credentials, or result bodies.
 
-## Durable contract
+## One execution model
 
-The migration bundle (`migrations/agent_migrations.sql`) creates the fresh
-`core_execution_v2_*` tables. Records and run stages are owner-scoped and
-revision/CAS protected. Request UUIDs replay the exact response only when the
-canonical request digest matches; events are sequence-numbered and resumable.
-Unknown provider outcomes go through reconcile rather than implicit retry.
+Execution V2 keeps its non-conflicting analysis, target, deployment,
+service-binding, secret, plan/run read, list, cancel, event, and artifact
+operations. Cloud Worker plans are created only inside an authoritative Native
+Agent turn by the built-in `cloud_worker.propose` tool. A client cannot create
+an AWS Cloud Worker plan or run directly.
 
-The adapter exposes the exact 33 operation IDs consumed by the Message Server
-gateway. Analysis, AWS target import/reserve/observe, reconciliation, and
-service-binding invocation are typed provider ports. A missing port fails
-closed with `execution_v2_not_ready`/`execution_v2_missing_port`; the adapter
-never invents an AWS result.
+There is one confirmation authority:
+`agent.core.confirmations.get/list/confirm/reject`. Execution V2 does not
+publish confirmation aliases. Provider progression is owned by the durable
+Agent controller, so `agent.execution.v2.runs.reconcile` is not a public
+operation. Uncertain provider responses are reconciled internally by immutable
+read-back; they are never treated as permission to repeat a mutation.
 
-Secret create/get/list/revoke stores secret bytes only in Agent-owned storage.
-Ordinary responses contain provider, purpose, revision, status, and binding
-digest, never the value.
+For a non-Cloud-Worker run, create/retry atomically writes the run, first
+stage, real `EXECUTION_V2_RUN` CoreTask, and real CoreConfirmation. Confirming
+projects the task plus run/stage to `queued` in that same transaction;
+rejecting or expiring the confirmation terminalizes all three before any
+provider call. There is no Execution V2 confirmation record or reconciliation
+shadow to repair after a restart.
 
-Plans compile from a code-reviewed typed recipe/intent allowlist. The current
-recipe is `generic-container-service` with `intent=deploy` and
-`purpose=service`; callers cannot submit shell text. `plans.create` and
-`plans.revise` persist non-empty typed command steps, provider command set,
-recipe digest, and command-step digest. `runs.create` persists one deterministic
-stage with stable stage/task/confirmation IDs, revision, digest, and binding.
-After confirmation, `runs.reconcile` is the deterministic provider
-dispatch/recovery path and reuses the same stage on replay or restart.
+This is a fresh-state contract. There is no Team/role/assignment/DAG surface,
+old Worker API, approval-device path, compatibility alias, version selector,
+dual read, or dual write.
 
-For an EC2 reservation, an owner-scoped `dispatch_intent` is written before
-the first CloudFormation change-set request. It pins run/stage/confirmation,
-plan/target revisions, operation, and request digest. Its one-way fence makes a
-subsequent reconcile read back the existing stack instead of creating a
-second one after a crash or lost provider response.
+## Local and cloud execution boundary
 
-## Composition and publication
+Native Agent conversations remain local-first. The existing local sandbox,
+light-task worker pool, MCP, Skills, Knowledge, Conversation Tools, and
+Extension Runner remain available. Only a `CLOUD_WORKER` CoreTask crosses the
+AWS boundary.
 
-Composition creates the Agent store, adapts every typed Workload/AWS route,
-constructs the Execution V2 service, registers the neutral capability, and may
-register the typed `CoreExecutionV2Service` for gRPC probes. Startup performs
-no AWS calls; the first explicit target/reservation/observe/reconcile action
-performs the configured exact-target readiness probe.
+The built-in proposal tool is eligible only when a trusted turn policy proves
+one of these facts:
 
-`core_execution_v2_enabled` is required but insufficient: all typed provider
-routes, the exact durable credential/target proof, the dedicated
-CloudFormation service role, and the neutral adapter must be present before
-the 33 operation IDs publish. A schema-only descriptor or Product Capability
-bridge never publishes a partial surface. See the [delivery tracker](delivery-tracker.md)
-for implementation and verification status.
+- the user explicitly requested cloud execution; or
+- the local scheduler supplied immutable evidence that the current local
+  execution budget cannot satisfy the request.
 
-No Message Server database table or migration is required by this domain.
+A model assertion and a local execution failure are not budget evidence. A
+local failure never silently upgrades to paid cloud execution, and a cloud
+failure never falls back to a hidden local rerun.
 
-## AWS provisioning boundary
+The cloud recipe and adapter are fixed:
 
-The EC2 reservation path uses a fixed typed CloudFormation template and a
-configured, non-wildcard `core_aws_cloudformation_service_role_arn`. Missing,
-malformed, cross-account, or unconfigured roles fail closed; the caller
-credential is never a fallback service role. The caller needs only the exact
-CloudFormation change-set/read/delete calls plus `iam:PassRole` for that ARN.
+```text
+recipe  = ephemeral-pi-task
+adapter = pi_json_task_v1
+```
 
-The stack and supported taggable resources carry
-`dirextalk-managed=execution-v2`, a deterministic stack name, and the
-reservation target UUID. Read-back returns stack, instance, and logical-to-
-physical identifiers. Cleanup uses the exact stack name/ID and reservation tag,
-then independently audits the fixed logical IDs and orphaned
-`dirextalk-exec-*` stacks.
+Every execution owns exactly one EC2 instance, one Worker process, and one Pi
+process invocation. Pi may invoke ordinary approved tools, but a second Pi
+exec is forbidden. The Worker does not load the user's local MCP installations, Skills,
+Extension Runner, local sandbox credentials, or Agent database. It receives
+only a short-lived model relay grant, exact versioned input objects, its exact
+artifact prefix, and the approved network/secret grant descriptors.
+
+Workspace modes are closed:
+
+- `none`: no user workspace is mounted;
+- `read_only`: the immutable manifest is fetched and mounted read-only;
+- `write`: work happens in an isolated copy and returns a patch, archive, or
+  artifact; it never writes directly into the user's local files.
+
+For `write`, the Worker snapshots the isolated workspace before Pi starts and
+collects only the post-run delta. The authoritative `workspace.delta.tar.gz` has the
+fixed layout `meta/delta.json` plus `files/<canonical-workspace-path>` for each
+added, modified, or type-replaced entry. Deletions are typed, sorted records in
+`meta/delta.json`; unchanged input bytes are never repackaged. The optional
+`changes.patch` is a convenience view and is never the apply or integrity
+authority. The baseline retains an opened workspace root through collection;
+directory enumeration and every content read are resolved beneath that fd with
+Linux `openat2` using no-symlink, no-magic-link, and no-cross-mount constraints.
+Collection starts only after the execution gate proves the Worker cgroup has
+exactly the Worker process and no Pi or tool descendant left alive.
+
+## Durable authorities and atomic offer
+
+PostgreSQL migration `000004` adds the single Cloud Worker schema. The
+authorities are:
+
+| Fact | Authority |
+|---|---|
+| Conversation, offer, status reference, final reply | CoreConversation messages and turn events |
+| Plan, quote, run, artifacts, AWS graph | Strongly typed Cloud Worker records under Execution V2 |
+| Queue, attempt, lease, epoch | CoreTask with kind `CLOUD_WORKER` |
+| User decision | CoreConfirmation |
+| Claim, heartbeat, completion | private WorkerControlService session |
+| App invalidation | Message Server's minimal completion receipt |
+
+One PostgreSQL transaction creates the plan, execution, waiting-user task,
+confirmation, assistant offer message, turn event, complete reference snapshot,
+and offer outbox. Confirm, reject, expiry, requote, and terminal conversation
+projection updates use the same atomic boundary. A replay returns the exact
+existing objects only when its canonical request digest matches.
+
+A public conversation reference carries account generation plus the exact
+task, plan, run/execution, confirmation, revision, quote, binding, and execution
+digests. It is an invalidation/link, not mutation authority. Clients must read
+the current Plan, Run, and CoreConfirmation and verify their linkage before
+confirming, rejecting, or cancelling.
+
+## Authorization-bound plan
+
+A sealed Cloud Worker plan binds all fields that affect cost or authority:
+
+- owner, account generation, conversation, turn, objective digest and safe
+  summary;
+- exact input manifest and workspace mode;
+- model profile/revision, provider/model/interface, credential version, and
+  protected credential binding;
+- AWS account, Region, credential revision, instance/EBS parameters;
+- AMI, Worker release, and Pi runtime digests;
+- maximum runtime, token and output limits;
+- network grants, secret grant descriptors, artifact prefix and retention;
+- quote source time, expiry, estimate, basis digest, and hard authorized cost
+  ceiling.
+
+Any change produces a different authorization/execution digest and therefore
+a fresh quote and fresh CoreConfirmation. An expired quote, credential drift,
+model drift, input drift, instance drift, or grant drift cannot reuse an old
+confirmation.
+
+Public projections are explicit allow-lists. They omit AWS credential IDs,
+raw objectives, user-prompt and private model-binding digests, exact S3
+locations, placement/bootstrap/relay material, provider resource IDs,
+infrastructure/authorization-basis digests, secret values, and Worker
+diagnostics.
+
+## State machine and controller
+
+The success path is fixed:
+
+```text
+waiting_user -> queued -> provisioning -> awaiting_worker
+             -> running -> collecting -> validating -> cleaning -> succeeded
+```
+
+Reject and expiry terminate before the first AWS mutation. Cancellation first
+fences the Worker session, then enters cleanup. Provision, Worker, collection,
+and validation failures also enter cleanup. A failed, cancelled, or successful
+execution cannot become terminal until every recorded EC2, EBS, ENI, EIP,
+security-group, IAM role/profile, and stack identity is independently read
+back as `verified_destroyed`.
+
+The controller never synchronously runs Pi after provisioning. It waits for a
+durable WorkerControl terminal session, collects the exact S3 object version,
+validates its digest/schema/limits, freezes the result, cleans all resources,
+and only then writes the final conversation result. Controller restart and
+CoreTask lease reclaim read the original dispatch intent and resource ledger;
+they cannot create a second instance.
+
+## Worker identity and result boundary
+
+WorkerControlService is private and runs on a dedicated TLS 1.3, worker-only
+listener. It is not registered on the public Agent service-token listener or
+in the Capability catalog. Identity challenge and claim bind AWS account,
+Region, EC2 instance/launch identity, execution, task, account generation,
+attempt, and lease epoch. Challenges are single-use; session tokens are stored
+only as digests; heartbeat sequence and terminal calls are idempotent and
+reject replay, cancellation, and stale leases.
+
+Claim returns the exact runtime task, immutable input manifest, exact artifact
+scope, short-lived model relay grant, heartbeat interval, and not-after time.
+The canonical Pi final result is bounded by the approved `max_tokens` and
+output bytes. Collection uses one exact versioned S3 object and verifies
+version, key/prefix, media type, size, digest, manifest, task/lease binding,
+and canonical final schema before any user-visible conclusion is accepted.
+For a `write` result, central validation additionally requires exactly one
+delta archive bound to the authorized runtime input-manifest digest. It rejects
+non-canonical JSON/gzip/tar, undeclared or missing members, unsafe paths or
+member types, metadata/content mismatches, and compressed or expanded output
+over the Plan limit before an Artifact can become `verified`.
+
+Pi execution is guarded by an independent root-owned systemd service using
+`FAN_OPEN_EXEC_PERM`. Only this Gate holds `CAP_SYS_ADMIN`; the Worker holds
+only the UID/GID transition capabilities and Pi holds none. Gate registration
+is authenticated with kernel `SO_PEERCRED` and binds the Worker UID/PID, boot
+identity, process start ticks, exact cgroup, execution/task/attempt, and lease
+epoch. The first Worker child must be the pinned Pi device/inode/SHA-256; a
+second exec of the same inode or a copied executable with the same digest is
+denied while ordinary task tools remain available. Path replacement before
+the first exec is also denied because the permission event validates the
+kernel-opened FD rather than a mutable pathname.
+
+WorkerControl completion carries the canonical terminal topology proof. The
+Agent revalidates its current task lease/fence, runtime-task digest, Worker
+release digest, Pi digest, and future clock skew. Proof age alone is not an
+authorization boundary because bounded result upload happens after proof
+creation. Completion requires exactly one allowed Pi exec, zero active Pi
+processes or descendants, and exactly the Worker remaining in its cgroup;
+result parsing and `write` workspace collection cannot precede that proof.
+Gate loss, daemon/orphan residue, replay drift, or cancellation fails closed.
+
+## AWS provider and cleanup
+
+The typed AWS provider writes a deterministic dispatch intent and complete
+owner/execution/launch identity before its first mutation. Every external
+read, delete, retry, and postcondition revalidates account, Region, provider
+ID, immutable launch identity, and owner/execution tags. An unknown create or
+delete response causes read-back only; it is never followed by a blind repeat.
+
+Workers have no inbound rule and no SSM access. Egress permits only controlled
+DNS/TLS proxy routes and explicitly approved destinations. FQDN policy is
+enforced by the controlled proxy; Security Groups are not claimed to provide
+FQDN filtering.
+
+The Resource Ledger and Reaper converge cleanup after process restart or
+lease loss. Cleanup uncertainty remains non-terminal and retryable only through
+identity-revalidated read-back/deletion of the original resources.
+
+Every centrally accepted output artifact also has a private retention record
+bound to owner/account generation, AWS account/Region/credential revision,
+execution/Plan digest, exact bucket/key/version, media type, byte length,
+SHA-256, and the Plan-authorized expiry. These S3 fields never enter the public
+artifact DTO. At expiry, a durable cleaner claims one version with a fenced
+lease, revalidates PostgreSQL and live AWS identity before and after the exact
+`DeleteObjectVersion`, and concludes only from exact-version read-back. An
+ambiguous delete is read back and retried after a durable delay; restart and
+concurrent sweepers cannot delete a same-name replacement or publish
+`verified_deleted` without absence proof.
+
+The sole public byte-read path is
+`agent.execution.v2.artifacts.download`. It accepts only
+`record_kind=cloud_worker`, the artifact UUID, an offset below the 8 MiB
+artifact ceiling, and a 1..512 KiB chunk limit. Every call reads a retained
+authority snapshot, revalidates the current AWS binding, fetches the exact S3
+version, verifies its bucket owner, KMS identity, media type, size, metadata
+digest, and complete SHA-256, then repeats both PostgreSQL and AWS fences before
+returning a non-empty chunk. A concurrent cleaner claim, expiry, credential
+drift, object drift, or stale owner generation fails closed. Downloads neither
+create a lease nor extend retention, and public results contain no S3 address.
+
+## Completion callback and App recovery
+
+After result freeze and verified cleanup, Agent appends one idempotent result
+message to the original conversation and dispatches the durable completion
+outbox through the fixed private
+`product.agent_execution.v1/record_completion` callback. Message Server stores
+only the minimal receipt and emits `agent.execution.v2.completed`; result text,
+artifacts, plan details, and AWS evidence remain Agent-owned.
+
+The App treats that realtime event only as invalidation. It reloads Agent
+history and Execution V2, deduplicates the result message, and displays only
+centrally validated deliverables. It never exposes S3 addresses, secrets,
+private Worker diagnostics, or unvalidated risk conclusions.
+
+## Activation and evidence
+
+Startup and fake-provider qualification perform no AWS mutation. Real AWS
+activation requires an explicitly supplied disposable account, Region, Worker
+AMI, credential revision, and cost ceiling. Worker AMIs are rebuilt only when
+their transitive Agent/Worker inputs change; Message Server or Flutter-only
+changes reuse the proven immutable AMI digest.
+
+Local checks may explicitly skip the real fanotify permission test when the
+host lacks root or `CAP_SYS_ADMIN`; such a skip is not AMI evidence. The
+candidate AMI/kernel must record a non-skipped fanotify pass plus boot evidence
+that both required fence units are active before the Worker, only the Gate has
+`CAP_SYS_ADMIN`, Pi has no capability, the terminal cgroup-empty proof is
+accepted centrally, and no SSH/SSM or inbound listener exists. Any missing
+observation keeps that AMI digest unpublished.
+
+Release evidence includes deterministic digest/requote tests, PostgreSQL
+atomicity and restart tests, Worker identity/replay tests, Pi loopback and exact
+S3 result tests, provider/Reaper fault injection, callback/realtime replay,
+Flutter authority/linkage tests, and one explicitly authorized fresh-state
+AWS inventory proving the temporary resource set is empty after completion.

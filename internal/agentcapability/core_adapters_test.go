@@ -14,6 +14,7 @@ import (
 
 	capabilityclient "github.com/YingSuiAI/dirextalk-agent/internal/capability/client"
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
@@ -22,6 +23,152 @@ import (
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
+
+func TestConfirmationCapabilityFencesOpaqueIDsByPermissionOwner(t *testing.T) {
+	now := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	repository := coreconfirmation.NewMemoryRepository(func() time.Time { return now })
+	service, err := coreconfirmation.NewService(repository, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	const owner = "@owner:example.test"
+	confirmation, err := service.Request(context.Background(), coreconfirmation.RequestCommand{
+		IdempotencyKey: uuid.NewString(), TaskID: uuid.NewString(), ExpiresAt: now.Add(time.Hour), At: now,
+		Binding: coreconfirmation.Binding{
+			OwnerID: owner, OperationDomain: "mcp", TargetID: "server-1", TargetRevision: 1,
+			SourceVersion: "1", ContentDigest: coreconfirmation.Digest(strings.Repeat("a", 64)),
+			ParameterDigest:   coreconfirmation.Digest(strings.Repeat("b", 64)),
+			NetworkDigest:     coreconfirmation.Digest(strings.Repeat("c", 64)),
+			SecretGrantDigest: coreconfirmation.Digest(strings.Repeat("d", 64)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreConfirmationCapability{service: service}
+	raw := []byte(`{"confirmation_id":"` + confirmation.ConfirmationID + `"}`)
+	if _, err := capability.HandleOperation(context.Background(), "get", raw); !errors.Is(err, coreconfirmation.ErrInvalid) {
+		t.Fatalf("missing permission error = %v", err)
+	}
+	foreign := capabilityclient.WithCallContext(context.Background(), nil, &capv1.PermissionContext{AuthenticatedOwnerId: "@foreign:example.test", AccountGeneration: 1})
+	if _, err := capability.HandleOperation(foreign, "get", raw); !errors.Is(err, coreconfirmation.ErrNotFound) {
+		t.Fatalf("foreign owner error = %v", err)
+	}
+	authorized := capabilityclient.WithCallContext(context.Background(), nil, &capv1.PermissionContext{AuthenticatedOwnerId: owner, AccountGeneration: 1})
+	if result, err := capability.HandleOperation(authorized, "get", raw); err != nil || !bytes.Contains(result, []byte(confirmation.ConfirmationID)) {
+		t.Fatalf("authorized result=%s err=%v", result, err)
+	}
+}
+
+func newCloudWorkerConfirmationCapability(t *testing.T) (*coreConfirmationCapability, context.Context, coreconfirmation.Confirmation, []string) {
+	t.Helper()
+	now := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	repository := coreconfirmation.NewMemoryRepository(func() time.Time { return now })
+	service, err := coreconfirmation.NewService(repository, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	const owner = "@owner:example.test"
+	executionID := "11111111-1111-4111-8111-111111111111"
+	referenceIDs := []string{
+		"22222222-2222-4222-8222-222222222222",
+		"33333333-3333-4333-8333-333333333333",
+	}
+	referenceDigests := []string{strings.Repeat("e", 64), strings.Repeat("f", 64)}
+	binding := coreconfirmation.Binding{
+		OwnerID: owner, AccountGeneration: 7, OperationDomain: "cloud_worker.execute",
+		TargetID: executionID, TargetRevision: 1, TargetKind: "ephemeral_pi_worker",
+		SourceVersion: "ephemeral-pi-task", SourceCommit: strings.Repeat("a", 64),
+		ContentDigest:     coreconfirmation.Digest(strings.Repeat("1", 64)),
+		ManifestDigest:    coreconfirmation.Digest(strings.Repeat("2", 64)),
+		ExecutionDigest:   coreconfirmation.Digest(strings.Repeat("3", 64)),
+		PermissionDigest:  coreconfirmation.Digest(strings.Repeat("4", 64)),
+		ParameterDigest:   coreconfirmation.Digest(strings.Repeat("5", 64)),
+		NetworkDigest:     coreconfirmation.Digest(strings.Repeat("6", 64)),
+		SecretGrantDigest: coreconfirmation.Digest(strings.Repeat("7", 64)),
+		SelectedTool:      "cloud_worker.propose",
+		NetworkGrants:     []string{"controlled_https_egress"},
+		SecretGrants: []coreconfirmation.SecretGrant{
+			{ReferenceID: referenceIDs[0], Purpose: coreconfirmation.SecretPurposeModelAPIKey, BindingDigest: coreconfirmation.Digest(referenceDigests[0])},
+			{ReferenceID: referenceIDs[1], Purpose: coreconfirmation.SecretPurposeModelAPIKey, BindingDigest: coreconfirmation.Digest(referenceDigests[1])},
+		},
+		ExecutionID: executionID, PlanID: "44444444-4444-4444-8444-444444444444", PlanRevision: 1,
+		PlanDigest: coreconfirmation.Digest(strings.Repeat("8", 64)), RunID: executionID, RunRevision: 1,
+		RunDigest: coreconfirmation.Digest(strings.Repeat("9", 64)), QuoteDigest: coreconfirmation.Digest(strings.Repeat("b", 64)),
+	}
+	encoded, err := json.Marshal(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(encoded)
+	binding.Digest = coreconfirmation.Digest(hex.EncodeToString(sum[:]))
+	confirmation, err := service.Request(context.Background(), coreconfirmation.RequestCommand{
+		IdempotencyKey: uuid.NewString(), TaskID: uuid.NewString(), Binding: binding,
+		ExpiresAt: now.Add(time.Hour), At: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := capabilityclient.WithCallContext(context.Background(), nil, &capv1.PermissionContext{
+		AuthenticatedOwnerId: owner, AccountGeneration: 7,
+	})
+	return &coreConfirmationCapability{service: service}, ctx, confirmation, append(referenceIDs, referenceDigests...)
+}
+
+func TestCloudWorkerConfirmationCapabilityExposesPurposeOnlySecretGrants(t *testing.T) {
+	for _, operation := range []string{"get", "list", "confirm", "reject"} {
+		t.Run(operation, func(t *testing.T) {
+			capability, ctx, confirmation, privateValues := newCloudWorkerConfirmationCapability(t)
+			var request []byte
+			switch operation {
+			case "get":
+				request = []byte(`{"confirmation_id":"` + confirmation.ConfirmationID + `"}`)
+			case "list":
+				request = []byte(`{"operation_domain":"cloud_worker.execute"}`)
+			case "confirm":
+				request = []byte(`{"confirmation_id":"` + confirmation.ConfirmationID + `","expected_revision":1,"idempotency_key":"` + uuid.NewString() + `"}`)
+			case "reject":
+				request = []byte(`{"confirmation_id":"` + confirmation.ConfirmationID + `","expected_revision":1,"idempotency_key":"` + uuid.NewString() + `","reason":"user_rejected"}`)
+			}
+			result, err := capability.HandleOperation(ctx, operation, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, privateValue := range privateValues {
+				if bytes.Contains(result, []byte(privateValue)) {
+					t.Fatalf("%s leaked private Cloud Worker grant material %q: %s", operation, privateValue, result)
+				}
+			}
+			if bytes.Contains(result, []byte(`"reference_id"`)) || bytes.Contains(result, []byte(`"binding_digest"`)) {
+				t.Fatalf("%s leaked private Cloud Worker grant fields: %s", operation, result)
+			}
+
+			var envelope map[string]json.RawMessage
+			if err := json.Unmarshal(result, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			confirmationRaw := envelope["confirmation"]
+			if operation == "list" {
+				var values []json.RawMessage
+				if err := json.Unmarshal(envelope["confirmations"], &values); err != nil || len(values) != 1 {
+					t.Fatalf("list confirmations=%s err=%v", envelope["confirmations"], err)
+				}
+				confirmationRaw = values[0]
+			}
+			var projected struct {
+				Binding struct {
+					SecretGrants []map[string]any `json:"secret_grants"`
+				} `json:"binding"`
+			}
+			if err := json.Unmarshal(confirmationRaw, &projected); err != nil {
+				t.Fatal(err)
+			}
+			if len(projected.Binding.SecretGrants) != 1 || len(projected.Binding.SecretGrants[0]) != 1 || projected.Binding.SecretGrants[0]["purpose"] != string(coreconfirmation.SecretPurposeModelAPIKey) {
+				t.Fatalf("%s secret grants are not purpose-only: %s", operation, confirmationRaw)
+			}
+		})
+	}
+}
 
 func TestEmitCapabilityProgressFailsClosedWhenLedgerRejectsEvent(t *testing.T) {
 	want := errors.New("ledger unavailable")
@@ -863,7 +1010,7 @@ func TestCapabilityProgressUsesDurableOperationContext(t *testing.T) {
 	}
 }
 
-func TestCoreDescriptorsBindInputSchemaDigests(t *testing.T) {
+func TestCoreDescriptorsBindSchemasAndDigests(t *testing.T) {
 	for _, descriptor := range []*capv1.CapabilityDescriptor{
 		descriptorForTest("agent.chat.v1"),
 		descriptorForTest("agent.models.v1"),
@@ -878,6 +1025,22 @@ func TestCoreDescriptorsBindInputSchemaDigests(t *testing.T) {
 			digest := sha256.Sum256([]byte(operation.GetInputSchemaJson()))
 			if string(digest[:]) != string(operation.GetInputSchemaDigest()) {
 				t.Fatalf("%s/%s input schema digest mismatch", descriptor.GetCapabilityId(), operation.GetOperationId())
+			}
+			if operation.GetResultSchemaJson() == "" || !json.Valid([]byte(operation.GetResultSchemaJson())) || len(operation.GetResultSchemaDigest()) != sha256.Size {
+				t.Fatalf("%s/%s missing result schema binding", descriptor.GetCapabilityId(), operation.GetOperationId())
+			}
+			resultDigest := sha256.Sum256([]byte(operation.GetResultSchemaJson()))
+			if string(resultDigest[:]) != string(operation.GetResultSchemaDigest()) {
+				t.Fatalf("%s/%s result schema digest mismatch", descriptor.GetCapabilityId(), operation.GetOperationId())
+			}
+			if operation.GetOperationType() == capv1.OperationType_OPERATION_TYPE_DURABLE_STREAM {
+				if operation.GetEventSchemaJson() == "" || !json.Valid([]byte(operation.GetEventSchemaJson())) || len(operation.GetEventSchemaDigest()) != sha256.Size {
+					t.Fatalf("%s/%s missing event schema binding", descriptor.GetCapabilityId(), operation.GetOperationId())
+				}
+				eventDigest := sha256.Sum256([]byte(operation.GetEventSchemaJson()))
+				if string(eventDigest[:]) != string(operation.GetEventSchemaDigest()) {
+					t.Fatalf("%s/%s event schema digest mismatch", descriptor.GetCapabilityId(), operation.GetOperationId())
+				}
 			}
 		}
 	}
@@ -1003,11 +1166,89 @@ func TestChatCapabilitySchemaRequiresProfilePins(t *testing.T) {
 	}
 }
 
+type durableTurnCapabilityStub struct {
+	conversation coreconversation.Conversation
+}
+
+func (stub *durableTurnCapabilityStub) GetConversation(_ context.Context, id string) (coreconversation.Conversation, error) {
+	if id != stub.conversation.ID {
+		return coreconversation.Conversation{}, coreconversation.ErrInvalid
+	}
+	return stub.conversation, nil
+}
+
+func TestConsumeDurableTurnStreamPublishesWaitingConfirmationOffer(t *testing.T) {
+	requestID, turnID, conversationID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	profileID, taskID, planID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	executionID, confirmationID := uuid.NewString(), uuid.NewString()
+	now := time.Now().UTC()
+	digest := strings.Repeat("a", 64)
+	base := coreconversation.Reference{
+		AccountGeneration: 7, TaskID: taskID, PlanID: planID, PlanRevision: 1,
+		PlanDigest: digest, RunID: executionID, RunRevision: 1, RunDigest: digest,
+		ExecutionID: executionID, ConfirmationID: confirmationID, ConfirmationRevision: 1,
+		BindingDigest: digest, QuoteDigest: digest, ExecutionDigest: digest,
+	}
+	planReference, runReference, confirmationReference := base, base, base
+	planReference.Kind, planReference.Status = "execution_plan", "waiting_user"
+	runReference.Kind, runReference.Status = "execution_run", "waiting_user"
+	confirmationReference.Kind, confirmationReference.State = "execution_confirmation", "pending"
+	references := []coreconversation.Reference{planReference, runReference, confirmationReference}
+	message := coreconversation.Message{
+		ID: uuid.NewString(), Role: coreconversation.RoleAssistant,
+		Content: "Cloud Worker quote is ready for confirmation.", ModelProfileID: profileID,
+		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID},
+		References: references, CreatedAt: now,
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	stub := &durableTurnCapabilityStub{conversation: coreconversation.Conversation{ID: conversationID, Revision: 3}}
+	events := make(chan coreconversation.TurnEvent, 3)
+	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 1, Kind: coreconversation.TurnEventAccepted, CreatedAt: now}
+	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 2, Kind: coreconversation.TurnEventStarted, CreatedAt: now}
+	events <- coreconversation.TurnEvent{TurnID: turnID, Sequence: 3, Kind: coreconversation.TurnEventWaitingConfirmation,
+		Message: &message, ConfirmationID: confirmationID, ExecutionID: executionID,
+		RelatedTaskIDs: []string{taskID}, RelatedPlanIDs: []string{planID}, References: references,
+		Status: "waiting_user", CreatedAt: now}
+	close(events)
+	var progress []coreconversation.StreamEvent
+	raw, err := consumeDurableTurnStreamWithConversation(
+		context.Background(), "stream_chat",
+		coreconversation.Turn{ID: turnID, RequestID: requestID, ConversationID: conversationID, State: coreconversation.TurnAccepted, Revision: 1},
+		events, stub,
+		func(_ context.Context, operationID string, raw []byte) error {
+			if operationID != "stream_chat" {
+				t.Fatalf("operation id = %q", operationID)
+			}
+			var event coreconversation.StreamEvent
+			if err := json.Unmarshal(raw, &event); err != nil {
+				return err
+			}
+			progress = append(progress, event)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response coreconversation.ChatResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Done || response.RequestID != requestID || response.Revision != 3 || response.Message.ID != message.ID ||
+		len(response.RelatedTaskIDs) != 1 || len(response.RelatedPlanIDs) != 1 || len(response.References) != 3 ||
+		len(progress) != 2 || progress[0].Kind != coreconversation.EventStarted || progress[1].Kind != coreconversation.EventStarted ||
+		progress[0].RequestID != requestID || progress[0].ConversationID != conversationID {
+		t.Fatalf("offer response=%+v progress=%+v", response, progress)
+	}
+}
+
 func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 	createdAt := time.Date(2026, 8, 6, 1, 2, 3, 0, time.UTC)
 	metadata := publicTurnMetadataList([]coreconversation.Turn{{
 		ID:                      "11111111-1111-4111-8111-111111111111",
-		RequestID:               "request-must-not-cross",
+		RequestID:               "33333333-3333-4333-8333-333333333333",
 		RequestFingerprint:      "fingerprint-must-not-cross",
 		ConversationID:          "22222222-2222-4222-8222-222222222222",
 		Prompt:                  "prompt-must-not-cross",
@@ -1032,10 +1273,11 @@ func TestListTurnsCapabilityPublishesOnlyCanonicalMetadata(t *testing.T) {
 	}
 	turns := envelope["turns"].([]any)
 	turn := turns[0].(map[string]any)
-	if len(turn) != 9 || turn["turn_id"] == nil || turn["conversation_id"] == nil || turn["state"] != "completed" {
+	if len(turn) != 9 || turn["turn_id"] == nil || turn["idempotency_key"] != nil ||
+		turn["conversation_id"] == nil || turn["state"] != "completed" {
 		t.Fatalf("canonical turn metadata = %#v", turn)
 	}
-	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "request_id", "prompt", "profile_id", "ProfileSnapshot"} {
+	for _, forbidden := range []string{"ID", "RequestID", "Prompt", "ProfileID", "idempotency_key", "request_id", "prompt", "profile_id", "ProfileSnapshot"} {
 		if _, leaked := turn[forbidden]; leaked {
 			t.Fatalf("private turn field %q leaked: %#v", forbidden, turn)
 		}

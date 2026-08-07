@@ -31,16 +31,18 @@ func decodeChangeCursor(planID, token string) (string, error) {
 }
 
 type MemoryRepository struct {
-	mu            sync.RWMutex
-	credentials   map[string]Credentials
-	plans         map[string]Plan
-	changes       map[string]Change
-	tasks         map[string]Task
-	confirmations map[string]coreconfirmation.Confirmation
-	reservations  map[string]Reservation
-	events        []ChangeEvent
-	replays       map[string]memoryReplay
-	testClaims    map[string]memoryCredentialTestClaim
+	mu                  sync.RWMutex
+	credentials         map[string]Credentials
+	credentialRevisions map[string]map[int64]Credentials
+	disabledCredentials map[string]time.Time
+	plans               map[string]Plan
+	changes             map[string]Change
+	tasks               map[string]Task
+	confirmations       map[string]coreconfirmation.Confirmation
+	reservations        map[string]Reservation
+	events              []ChangeEvent
+	replays             map[string]memoryReplay
+	testClaims          map[string]memoryCredentialTestClaim
 }
 
 type ChangeEvent struct {
@@ -76,7 +78,7 @@ const (
 )
 
 func NewMemoryRepository() *MemoryRepository {
-	return &MemoryRepository{credentials: map[string]Credentials{}, plans: map[string]Plan{}, changes: map[string]Change{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]Reservation{}, replays: map[string]memoryReplay{}, testClaims: map[string]memoryCredentialTestClaim{}}
+	return &MemoryRepository{credentials: map[string]Credentials{}, credentialRevisions: map[string]map[int64]Credentials{}, disabledCredentials: map[string]time.Time{}, plans: map[string]Plan{}, changes: map[string]Change{}, tasks: map[string]Task{}, confirmations: map[string]coreconfirmation.Confirmation{}, reservations: map[string]Reservation{}, replays: map[string]memoryReplay{}, testClaims: map[string]memoryCredentialTestClaim{}}
 }
 
 func replayKey(op, key string) string { return op + ":" + key }
@@ -181,6 +183,10 @@ func (r *MemoryRepository) saveCredentialIdempotent(_ context.Context, c Credent
 		return CredentialView{}, ErrConflict
 	}
 	r.credentials[c.ID] = cloneCredential(c)
+	if r.credentialRevisions == nil {
+		r.credentialRevisions = map[string]map[int64]Credentials{}
+	}
+	r.credentialRevisions[c.ID] = map[int64]Credentials{c.Revision: cloneCredential(c)}
 	v := c.View()
 	r.replays[replayKey("credential-save", key)] = memoryReplay{digest: digest, credential: &v}
 	return v, nil
@@ -198,13 +204,20 @@ func (r *MemoryRepository) replaceCredentialIdempotent(_ context.Context, c Cred
 		return *v.credential, nil
 	}
 	old, ok := r.credentials[c.ID]
-	if !ok {
+	if !ok || !r.disabledCredentials[c.ID].IsZero() {
 		return CredentialView{}, ErrNotFound
 	}
 	if old.Revision != expected || c.Revision != expected+1 {
 		return CredentialView{}, ErrRevisionConflict
 	}
 	r.credentials[c.ID] = cloneCredential(c)
+	if r.credentialRevisions[c.ID] == nil {
+		r.credentialRevisions[c.ID] = map[int64]Credentials{}
+	}
+	if _, exists := r.credentialRevisions[c.ID][c.Revision]; exists {
+		return CredentialView{}, ErrConflict
+	}
+	r.credentialRevisions[c.ID][c.Revision] = cloneCredential(c)
 	v := c.View()
 	r.replays[replayKey("credential-replace", key)] = memoryReplay{digest: digest, credential: &v}
 	return v, nil
@@ -230,12 +243,10 @@ func (r *MemoryRepository) deleteCredentialIdempotent(_ context.Context, id stri
 	if old.Revision != expected {
 		return ErrRevisionConflict
 	}
-	delete(r.credentials, id)
-	for claimKey, claim := range r.testClaims {
-		if claim.claim.CredentialID == id {
-			delete(r.testClaims, claimKey)
-		}
+	if !r.disabledCredentials[id].IsZero() {
+		return ErrNotFound
 	}
+	r.disabledCredentials[id] = time.Now().UTC()
 	v := old.View()
 	r.replays[replayKey("credential-delete", key)] = memoryReplay{digest: digest, deleted: true, credential: &v}
 	return nil
@@ -270,12 +281,29 @@ func (r *MemoryRepository) CreateCredential(_ context.Context, c Credentials) (C
 		return Credentials{}, ErrConflict
 	}
 	r.credentials[c.ID] = cloneCredential(c)
+	if r.credentialRevisions == nil {
+		r.credentialRevisions = map[string]map[int64]Credentials{}
+	}
+	r.credentialRevisions[c.ID] = map[int64]Credentials{c.Revision: cloneCredential(c)}
 	return cloneCredential(c), nil
 }
 func (r *MemoryRepository) GetCredential(_ context.Context, id string) (Credentials, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	c, ok := r.credentials[id]
+	if !ok || !r.disabledCredentials[id].IsZero() {
+		return Credentials{}, ErrNotFound
+	}
+	return cloneCredential(c), nil
+}
+func (r *MemoryRepository) GetCredentialRevision(_ context.Context, id string, revision int64) (Credentials, error) {
+	if r == nil || revision < 1 {
+		return Credentials{}, ErrInvalid
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	versions := r.credentialRevisions[id]
+	c, ok := versions[revision]
 	if !ok {
 		return Credentials{}, ErrNotFound
 	}
@@ -289,6 +317,9 @@ func (r *MemoryRepository) ListCredentials(_ context.Context, size int, token st
 	defer r.mu.RUnlock()
 	ids := make([]string, 0, len(r.credentials))
 	for id := range r.credentials {
+		if !r.disabledCredentials[id].IsZero() {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -320,7 +351,7 @@ func (r *MemoryRepository) UpdateCredential(_ context.Context, c Credentials, ex
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	old, ok := r.credentials[c.ID]
-	if !ok {
+	if !ok || !r.disabledCredentials[c.ID].IsZero() {
 		return Credentials{}, ErrNotFound
 	}
 	if old.Revision != expected {
@@ -330,24 +361,26 @@ func (r *MemoryRepository) UpdateCredential(_ context.Context, c Credentials, ex
 		return Credentials{}, ErrRevisionConflict
 	}
 	r.credentials[c.ID] = cloneCredential(c)
+	if r.credentialRevisions[c.ID] == nil {
+		r.credentialRevisions[c.ID] = map[int64]Credentials{}
+	}
+	if _, exists := r.credentialRevisions[c.ID][c.Revision]; exists {
+		return Credentials{}, ErrConflict
+	}
+	r.credentialRevisions[c.ID][c.Revision] = cloneCredential(c)
 	return cloneCredential(c), nil
 }
 func (r *MemoryRepository) DeleteCredential(_ context.Context, id string, expected int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	old, ok := r.credentials[id]
-	if !ok {
+	if !ok || !r.disabledCredentials[id].IsZero() {
 		return ErrNotFound
 	}
 	if old.Revision != expected {
 		return ErrRevisionConflict
 	}
-	delete(r.credentials, id)
-	for claimKey, claim := range r.testClaims {
-		if claim.claim.CredentialID == id {
-			delete(r.testClaims, claimKey)
-		}
-	}
+	r.disabledCredentials[id] = time.Now().UTC()
 	return nil
 }
 
@@ -355,7 +388,7 @@ func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c, ok := r.credentials[id]
-	if !ok {
+	if !ok || !r.disabledCredentials[id].IsZero() {
 		return Credentials{}, ErrNotFound
 	}
 	if c.Revision != expected {
@@ -364,7 +397,25 @@ func (r *MemoryRepository) RecordCredentialIdentity(_ context.Context, id string
 	if testedAt.IsZero() {
 		return Credentials{}, ErrInvalid
 	}
-	c.AccountID, c.UserARN, c.VerifiedRevision, c.TestedAt, c.UpdatedAt = identity.AccountID, identity.UserARN, c.Revision, testedAt.UTC(), testedAt.UTC()
+	if r.credentialRevisions[id] == nil {
+		return Credentials{}, ErrConflict
+	}
+	version, exists := r.credentialRevisions[id][expected]
+	if !exists {
+		return Credentials{}, ErrConflict
+	}
+	persistedAt := testedAt.UTC()
+	if !version.TestedAt.IsZero() {
+		if version.AccountID != identity.AccountID || version.UserARN != identity.UserARN {
+			return Credentials{}, ErrConflict
+		}
+		persistedAt = version.TestedAt
+	}
+	version.AccountID, version.UserARN, version.VerifiedRevision, version.TestedAt = identity.AccountID, identity.UserARN, version.Revision, persistedAt
+	version.UpdatedAt = laterTime(version.UpdatedAt, persistedAt)
+	r.credentialRevisions[id][expected] = cloneCredential(version)
+	c.AccountID, c.UserARN, c.VerifiedRevision, c.TestedAt = identity.AccountID, identity.UserARN, c.Revision, persistedAt
+	c.UpdatedAt = laterTime(c.UpdatedAt, persistedAt)
 	r.credentials[id] = cloneCredential(c)
 	return cloneCredential(c), nil
 }
@@ -410,7 +461,7 @@ func (r *MemoryRepository) BeginCredentialTest(_ context.Context, id string, exp
 		}
 	}
 	credential, ok := r.credentials[id]
-	if !ok {
+	if !ok || !r.disabledCredentials[id].IsZero() {
 		return CredentialTestClaim{}, nil, ErrNotFound
 	}
 	if credential.Revision != expected {
@@ -441,26 +492,27 @@ func (r *MemoryRepository) CompleteCredentialTest(_ context.Context, claim Crede
 	if existing.state != memoryCredentialTestInProgress {
 		return CredentialTest{}, ErrResponseUncertain
 	}
-	credential, ok := r.credentials[claim.CredentialID]
+	credential, ok := r.credentialRevisions[claim.CredentialID][claim.ExpectedRevision]
 	if !ok {
 		return CredentialTest{}, ErrNotFound
 	}
-	if credential.Revision != claim.ExpectedRevision {
-		return CredentialTest{}, ErrRevisionConflict
-	}
 	testedAt = testedAt.UTC()
-	persistedTestedAt := laterTime(credential.TestedAt, testedAt)
-	persistedUpdatedAt := laterTime(credential.UpdatedAt, testedAt)
-	if !credential.TestedAt.After(testedAt) {
-		credential.AccountID, credential.UserARN = identity.AccountID, identity.UserARN
+	if !credential.TestedAt.IsZero() && (credential.AccountID != identity.AccountID || credential.UserARN != identity.UserARN) {
+		return CredentialTest{}, ErrConflict
 	}
+	persistedTestedAt := credential.TestedAt
+	if persistedTestedAt.IsZero() {
+		persistedTestedAt = testedAt
+	}
+	persistedUpdatedAt := laterTime(credential.UpdatedAt, persistedTestedAt)
+	credential.AccountID, credential.UserARN = identity.AccountID, identity.UserARN
 	credential.VerifiedRevision = credential.Revision
 	credential.TestedAt, credential.UpdatedAt = persistedTestedAt, persistedUpdatedAt
-	r.credentials[claim.CredentialID] = cloneCredential(credential)
-	persistedIdentity := identity
-	if credential.TestedAt.After(testedAt) {
-		persistedIdentity.AccountID, persistedIdentity.UserARN = credential.AccountID, credential.UserARN
+	r.credentialRevisions[claim.CredentialID][claim.ExpectedRevision] = cloneCredential(credential)
+	if current, currentOK := r.credentials[claim.CredentialID]; currentOK && current.Revision == claim.ExpectedRevision && r.disabledCredentials[claim.CredentialID].IsZero() {
+		r.credentials[claim.CredentialID] = cloneCredential(credential)
 	}
+	persistedIdentity := identity
 	test := CredentialTest{CredentialID: claim.CredentialID, Identity: persistedIdentity, CredentialRevision: credential.Revision, TestedAt: persistedTestedAt}
 	existing.state, existing.test = memoryCredentialTestCompleted, &test
 	r.testClaims[claim.IdempotencyKey] = existing

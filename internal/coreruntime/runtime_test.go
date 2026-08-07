@@ -140,6 +140,34 @@ func TestTaskExecutorManagedDispatch(t *testing.T) {
 	}
 }
 
+func TestCloudWorkerHandlerDoesNotReplaceLocalAgentRoute(t *testing.T) {
+	ex, err := NewTaskExecutor(fakeProfiles{}, func(coremodel.Profile) (coremodel.Client, error) {
+		t.Fatal("local Agent task reached the model factory without its immutable snapshot")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloudCalls := 0
+	if err := ex.RegisterHandler(coretask.TaskKindCloudWorker, func(context.Context, coretask.Task) ManagedOutcome {
+		cloudCalls++
+		return ManagedOutcome{TerminalOwned: true}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ex.Execute(context.Background(), coretask.Task{
+		ID: "00000000-0000-4000-8000-000000000001",
+		Spec: coretask.TaskSpec{
+			Kind: coretask.TaskKindAgent, Goal: "local task",
+			ModelProfileID: "00000000-0000-4000-8000-000000000002",
+			IdempotencyKey: "00000000-0000-4000-8000-000000000003",
+		},
+	})
+	if cloudCalls != 0 || err == nil || !strings.Contains(err.Error(), "execution snapshot is required") {
+		t.Fatalf("local route was displaced: cloud_calls=%d err=%v", cloudCalls, err)
+	}
+}
+
 func TestTaskExecutorRequiresImmutableSnapshot(t *testing.T) {
 	ex, err := NewTaskExecutor(fakeProfiles{}, func(coremodel.Profile) (coremodel.Client, error) { return &fakeClient{}, nil })
 	if err != nil {
@@ -180,6 +208,32 @@ func TestTaskExecutorAppliesDeadlineToManagedHandler(t *testing.T) {
 	out := <-done
 	if !errors.Is(out.Err, context.DeadlineExceeded) || out.Result.Text != "" {
 		t.Fatalf("outcome=%+v", out)
+	}
+}
+
+func TestTaskExecutorCloudWorkerDeadlineRemainsDomainOwned(t *testing.T) {
+	ex, err := NewTaskExecutor(fakeProfiles{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if err := ex.RegisterHandler(coretask.TaskKindCloudWorker, func(ctx context.Context, _ coretask.Task) ManagedOutcome {
+		called = true
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("cloud worker received expired generic context: %v", err)
+		}
+		return ManagedOutcome{TerminalOwned: true}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(-time.Second)
+	task := coretask.Task{
+		Spec:                coretask.TaskSpec{Kind: coretask.TaskKindCloudWorker},
+		ExecutionDeadlineAt: &deadline,
+	}
+	out, err := ex.ExecuteManaged(context.Background(), task)
+	if err != nil || !called || !out.TerminalOwned || out.Err != nil {
+		t.Fatalf("called=%v outcome=%+v err=%v", called, out, err)
 	}
 }
 

@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconfirmation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -44,6 +46,8 @@ type Turn struct {
 	ID                       string
 	RequestID                string
 	RequestFingerprint       string `json:"-"`
+	OwnerID                  string `json:"-"`
+	AccountGeneration        uint64 `json:"-"`
 	ConversationID           string
 	Prompt                   string
 	ProfileID                string
@@ -66,6 +70,8 @@ type Turn struct {
 	ProfileSnapshotDigest    string                       `json:"-"`
 	ExtensionSnapshots       []ExtensionExecutionSnapshot `json:"-"`
 	ExtensionSnapshotDigest  string                       `json:"-"`
+	AttachmentSources        []TurnAttachment             `json:"-"`
+	AttachmentSnapshotDigest string                       `json:"-"`
 }
 
 type TurnEvent struct {
@@ -81,6 +87,9 @@ type TurnEvent struct {
 	AttemptID      string
 	ExecutionID    string
 	Status         string
+	RelatedTaskIDs []string
+	RelatedPlanIDs []string
+	References     []Reference
 	ErrorCode      string
 	ErrorSummary   string
 	FirstSequence  int64
@@ -95,6 +104,8 @@ type TurnStartCommand struct {
 	// identity. RequestID remains the independent business idempotency key.
 	TurnID                    string
 	RequestID                 string
+	OwnerID                   string
+	AccountGeneration         uint64
 	ConversationID            string
 	Prompt                    string
 	ProfileID                 string
@@ -104,6 +115,8 @@ type TurnStartCommand struct {
 	ProfileSnapshot           coremodel.ExecutionSnapshot
 	Extensions                []ExtensionSelection
 	ExtensionSnapshots        []ExtensionExecutionSnapshot
+	AcceptedAttachmentIDs     []string
+	AttachmentSources         []TurnAttachment
 }
 
 type TurnCancelCommand struct {
@@ -205,6 +218,10 @@ func (c TurnStartCommand) Validate() error {
 	if (c.TurnID != "" && !validUUID(c.TurnID)) || !validUUID(c.RequestID) || !validUUID(c.ProfileID) || (c.ConversationID != "" && !validUUID(c.ConversationID)) || c.ExpectedProfileRevision <= 0 || c.ExpectedCredentialVersion <= 0 {
 		return ErrInvalid
 	}
+	c.OwnerID = strings.TrimSpace(c.OwnerID)
+	if (c.OwnerID == "") != (c.AccountGeneration == 0) || len(c.OwnerID) > 512 || !utf8.ValidString(c.OwnerID) {
+		return ErrInvalid
+	}
 	if err := validateText(c.Prompt, MaxContentBytes); err != nil {
 		return err
 	}
@@ -230,6 +247,22 @@ func (c TurnStartCommand) Validate() error {
 	if len(c.Extensions) > 0 && len(c.ExtensionSnapshots) == 0 {
 		return ErrInvalid
 	}
+	if len(c.AcceptedAttachmentIDs) > MaxTurnAttachments {
+		return ErrInvalid
+	}
+	seenAttachments := make(map[string]struct{}, len(c.AcceptedAttachmentIDs))
+	for _, id := range c.AcceptedAttachmentIDs {
+		if !validUUID(id) {
+			return ErrInvalid
+		}
+		if _, duplicate := seenAttachments[id]; duplicate {
+			return ErrConflict
+		}
+		seenAttachments[id] = struct{}{}
+	}
+	if len(c.AttachmentSources) > 0 && ValidateAcceptedTurnAttachments(c.RequestID, c.AcceptedAttachmentIDs, c.AttachmentSources) != nil {
+		return ErrInvalid
+	}
 	return nil
 }
 
@@ -242,7 +275,7 @@ func (s ExtensionExecutionSnapshot) Validate() error {
 	}
 	seen := map[string]struct{}{}
 	for _, name := range s.ToolNames {
-		if name == "" || len(name) > MaxToolNameBytes {
+		if name == "" || len(name) > MaxToolNameBytes || name == coremodel.IntrinsicCloudWorkerProposeToolName {
 			return ErrInvalid
 		}
 		if _, ok := seen[name]; ok {
@@ -254,7 +287,22 @@ func (s ExtensionExecutionSnapshot) Validate() error {
 }
 
 func (c TurnStartCommand) Fingerprint() string {
-	return digest(turnStructDigest(c.TurnID, c.RequestID, c.ConversationID, c.Prompt, c.ProfileID, c.ExpectedProfileRevision, c.ExpectedCredentialVersion, c.ExpectedRevision, c.ProfileSnapshot.Digest(), c.ExtensionSnapshotDigest()))
+	return digest(turnStructDigest(
+		c.TurnID,
+		c.RequestID,
+		strings.TrimSpace(c.OwnerID),
+		c.AccountGeneration,
+		c.ConversationID,
+		c.Prompt,
+		c.ProfileID,
+		c.ExpectedProfileRevision,
+		c.ExpectedCredentialVersion,
+		c.ExpectedRevision,
+		c.ProfileSnapshot.Digest(),
+		c.ExtensionSnapshotDigest(),
+		c.AcceptedAttachmentIDs,
+		TurnAttachmentSnapshotDigest(c.AttachmentSources),
+	))
 }
 
 func (c TurnStartCommand) ExtensionSnapshotDigest() string {

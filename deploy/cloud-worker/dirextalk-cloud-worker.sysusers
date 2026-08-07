@@ -1,0 +1,4 @@
+g dirextalk-cloud-worker 65531
+g dirextalk-pi 65532
+u dirextalk-cloud-worker 65531:dirextalk-cloud-worker "Dirextalk ephemeral Pi Cloud Worker" /var/lib/dirextalk-cloud-worker /usr/sbin/nologin
+u dirextalk-pi 65532:dirextalk-pi "Dirextalk untrusted Pi task" /nonexistent /usr/sbin/nologin

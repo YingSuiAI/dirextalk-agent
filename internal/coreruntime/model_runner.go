@@ -80,13 +80,27 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 	}
 	tools := make([]coremodel.Tool, 0)
 	seenTools := make(map[string]struct{})
+	for _, intrinsic := range req.Intrinsics {
+		tool := intrinsic.Tool
+		if strings.TrimSpace(tool.Name) == "" || intrinsic.Execute == nil {
+			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+		}
+		if _, exists := seenTools[tool.Name]; exists {
+			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+		}
+		seenTools[tool.Name] = struct{}{}
+		if tool.InputSchema == nil {
+			return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
+		}
+		tools = append(tools, tool)
+	}
 	for _, ext := range req.Extensions {
 		for _, tool := range ext.Tools {
 			if strings.TrimSpace(tool.Name) == "" {
 				continue
 			}
 			if _, exists := seenTools[tool.Name]; exists {
-				continue
+				return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 			}
 			seenTools[tool.Name] = struct{}{}
 			if tool.InputSchema == nil {
@@ -101,7 +115,7 @@ func (r *ModelRunner) resolve(ctx context.Context, req coreconversation.ModelRun
 					continue
 				}
 				if _, exists := seenTools[name]; exists {
-					continue
+					return coremodel.Profile{}, nil, coremodel.CompletionRequest{}, coremodel.ErrInvalidCompletionRequest
 				}
 				seenTools[name] = struct{}{}
 				tools = append(tools, coremodel.Tool{Name: name, Description: "extension tool", InputSchema: map[string]any{"type": "object"}})

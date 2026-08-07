@@ -59,6 +59,14 @@ type CredentialResolver interface {
 type CredentialRevisionResolver interface {
 	CredentialRevision(context.Context, string) (uint64, error)
 }
+
+// ExactCredentialResolver resolves an immutable, already-verified revision.
+// It is intentionally distinct from the current/new-plan pointer: disabled or
+// rotated revisions remain available only to work that already persisted the
+// exact credential binding.
+type ExactCredentialResolver interface {
+	ResolveCredentialRevision(context.Context, string, uint64) (CredentialHandle, error)
+}
 type SecretResolver interface {
 	ResolveSecretReference(context.Context, string) (string, error)
 }
@@ -67,6 +75,7 @@ type SecretResolver interface {
 // resolver. Implementations must materialize secret bytes only for this call.
 type CredentialStore interface {
 	GetCredential(context.Context, string) (coreaws.Credentials, error)
+	GetCredentialRevision(context.Context, string, int64) (coreaws.Credentials, error)
 }
 
 // DurableCredentialResolver resolves one exact, verified credential revision
@@ -92,6 +101,21 @@ func (r *DurableCredentialResolver) ResolveCredential(ctx context.Context, ref s
 		return CredentialHandle{}, ErrPrecondition
 	}
 	c, err := r.store.GetCredential(ctx, ref)
+	return credentialHandle(ref, c, err)
+}
+
+func (r *DurableCredentialResolver) ResolveCredentialRevision(ctx context.Context, ref string, revision uint64) (CredentialHandle, error) {
+	if r == nil || r.store == nil || !canonicalUUID(ref) || revision == 0 || revision > uint64(^uint64(0)>>1) {
+		return CredentialHandle{}, ErrPrecondition
+	}
+	c, err := r.store.GetCredentialRevision(ctx, ref, int64(revision))
+	if err == nil && uint64(c.Revision) != revision {
+		err = ErrPrecondition
+	}
+	return credentialHandle(ref, c, err)
+}
+
+func credentialHandle(ref string, c coreaws.Credentials, err error) (CredentialHandle, error) {
 	if err != nil || c.ID != ref || c.Revision <= 0 || c.VerifiedRevision != c.Revision || strings.TrimSpace(c.Region) == "" || strings.TrimSpace(c.AccountID) == "" || strings.TrimSpace(c.UserARN) == "" {
 		return CredentialHandle{}, ErrPrecondition
 	}
@@ -272,4 +296,5 @@ func validSecretPurpose(v coreconfirmation.SecretPurpose) bool {
 }
 
 var _ CredentialResolver = (*DurableCredentialResolver)(nil)
+var _ ExactCredentialResolver = (*DurableCredentialResolver)(nil)
 var _ SecretResolver = CanonicalSecretReference{}

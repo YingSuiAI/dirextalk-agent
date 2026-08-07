@@ -167,6 +167,18 @@ func TestValidateCoreExecutionV2RequiresDedicatedCloudFormationRole(t *testing.T
 	}
 }
 
+func TestValidateCoreExecutionV2CloudWorkerOnlyDoesNotRequireSSM(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreExecutionV2Enabled = true
+	cfg.CoreAWSSSMReadiness = nil
+	cfg.CoreExecutionV2ProbeTimeout = 0
+	cfg.CoreExecutionV2BindingOperations = nil
+	cfg.CoreAWSCloudFormationServiceRoleARN = ""
+	if err := ValidateCoreExecutionV2(&cfg); err != nil {
+		t.Fatalf("Cloud Worker-only Execution V2 rejected: %v", err)
+	}
+}
+
 func TestValidateCoreAWSRejectsSymlinkedMasterKey(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions differ on Windows")

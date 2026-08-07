@@ -312,7 +312,19 @@ func coreTaskProto(t coretask.Task) *agentv1.CoreTask {
 	if p := t.Spec.Payload.Workload; p != nil {
 		workload = &agentv1.CoreWorkloadTaskPayload{WorkloadId: p.WorkloadID, PlanId: p.PlanID, OperationId: p.OperationID, PlanRevision: int64(p.PlanRevision), PlanDigest: p.PlanDigest, TargetKind: p.TargetKind, ConfirmationId: p.ConfirmationID, ExecutionSnapshot: rawJSONStruct(p.ExecutionSnapshot)}
 	}
-	return &agentv1.CoreTask{TaskId: t.ID, Goal: t.Spec.Goal, ConversationId: t.Spec.ConversationID, ModelProfileId: t.Spec.ModelProfileID, AttachmentRefs: t.Spec.AttachmentRefs, Extensions: extensionsProto(t.Spec.Extensions), KnowledgeRefs: t.Spec.KnowledgeRefs, TimeoutSeconds: t.Spec.TimeoutSeconds, Status: statusProto(t.Status), Attempt: t.Attempt, LeaseEpoch: t.LeaseEpoch, AvailableAt: timestampOrNil(t.AvailableAt), RetryOfTaskId: t.RetryOfTaskID, Result: resultStruct(t.Result), FailureCode: t.FailureCode, FailureSummary: t.FailureSummary, Revision: int64(t.Revision), CreatedAt: timestampOrNil(t.CreatedAt), UpdatedAt: timestampOrNil(t.UpdatedAt), Kind: taskKindProto(t.Spec.Kind), Workload: workload}
+	var conversationTool *agentv1.CoreConversationToolTaskPayload
+	if p := t.Spec.Payload.ConversationTool; p != nil {
+		conversationTool = &agentv1.CoreConversationToolTaskPayload{TurnId: p.TurnID, AttemptId: p.AttemptID, Round: p.Round, CallId: p.CallID, ExtensionSnapshotDigest: p.ExtensionSnapshotDigest, InstallationId: p.InstallationID, VersionId: p.VersionID, InstallationRevision: p.InstallationRevision, ToolName: p.ToolName, ToolSchemaDigest: p.ToolSchemaDigest, ArgumentsDigest: p.ArgumentsDigest, ConfirmationId: p.ConfirmationID, SafeSummary: p.SafeSummary}
+	}
+	var cloudWorker *agentv1.CoreCloudWorkerTaskPayload
+	if p := t.Spec.Payload.CloudWorker; p != nil {
+		cloudWorker = &agentv1.CoreCloudWorkerTaskPayload{ExecutionId: p.ExecutionID, AccountGeneration: p.AccountGeneration, PlanId: p.PlanID, PlanRevision: p.PlanRevision, PlanDigest: p.PlanDigest, ConfirmationId: p.ConfirmationID, TurnId: p.TurnID, ConversationId: p.ConversationID, QuoteDigest: p.QuoteDigest, ExecutionDigest: p.ExecutionDigest}
+	}
+	var executionV2Run *agentv1.CoreExecutionV2RunTaskPayload
+	if p := t.Spec.Payload.ExecutionV2Run; p != nil {
+		executionV2Run = &agentv1.CoreExecutionV2RunTaskPayload{OwnerId: p.OwnerID, AccountGeneration: p.AccountGeneration, RunId: p.RunID, StageId: p.StageID, PlanId: p.PlanID, PlanRevision: p.PlanRevision, PlanDigest: p.PlanDigest, ConfirmationId: p.ConfirmationID, Operation: p.Operation}
+	}
+	return &agentv1.CoreTask{TaskId: t.ID, Goal: t.Spec.Goal, ConversationId: t.Spec.ConversationID, ModelProfileId: t.Spec.ModelProfileID, AttachmentRefs: t.Spec.AttachmentRefs, Extensions: extensionsProto(t.Spec.Extensions), KnowledgeRefs: t.Spec.KnowledgeRefs, TimeoutSeconds: t.Spec.TimeoutSeconds, Status: statusProto(t.Status), Attempt: t.Attempt, LeaseEpoch: t.LeaseEpoch, AvailableAt: timestampOrNil(t.AvailableAt), RetryOfTaskId: t.RetryOfTaskID, Result: resultStruct(t.Result), FailureCode: t.FailureCode, FailureSummary: t.FailureSummary, Revision: int64(t.Revision), CreatedAt: timestampOrNil(t.CreatedAt), UpdatedAt: timestampOrNil(t.UpdatedAt), Kind: taskKindProto(t.Spec.Kind), Workload: workload, ConversationTool: conversationTool, CloudWorker: cloudWorker, ExecutionV2Run: executionV2Run}
 }
 func taskKindProto(k coretask.TaskKind) agentv1.CoreTaskKind {
 	switch k {
@@ -324,6 +336,12 @@ func taskKindProto(k coretask.TaskKind) agentv1.CoreTaskKind {
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_AWS_CHANGE
 	case coretask.TaskKindWorkload:
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_WORKLOAD
+	case coretask.TaskKindConversationTool:
+		return agentv1.CoreTaskKind_CORE_TASK_KIND_CONVERSATION_TOOL
+	case coretask.TaskKindCloudWorker:
+		return agentv1.CoreTaskKind_CORE_TASK_KIND_CLOUD_WORKER
+	case coretask.TaskKindExecutionV2Run:
+		return agentv1.CoreTaskKind_CORE_TASK_KIND_EXECUTION_V2_RUN
 	case coretask.TaskKindAgent, "":
 		return agentv1.CoreTaskKind_CORE_TASK_KIND_AGENT
 	default:

@@ -180,13 +180,13 @@ type publicConversation struct {
 }
 
 type publicConversationMessage struct {
-	MessageID  string    `json:"message_id"`
-	Role       string    `json:"role"`
-	Content    string    `json:"content"`
-	CreatedAt  time.Time `json:"created_at"`
-	MessageSeq int64     `json:"message_seq"`
-	Status     string    `json:"status"`
-	References []any     `json:"references"`
+	MessageID  string                       `json:"message_id"`
+	Role       string                       `json:"role"`
+	Content    string                       `json:"content"`
+	CreatedAt  time.Time                    `json:"created_at"`
+	MessageSeq int64                        `json:"message_seq"`
+	Status     string                       `json:"status"`
+	References []coreconversation.Reference `json:"references"`
 }
 
 type conversationMessageCursor struct {
@@ -220,6 +220,10 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 		if sequence <= 0 {
 			sequence = int64(index + 1)
 		}
+		references := append([]coreconversation.Reference(nil), value.References...)
+		if references == nil {
+			references = make([]coreconversation.Reference, 0)
+		}
 		result = append(result, publicConversationMessage{
 			MessageID:  value.ID,
 			Role:       string(value.Role),
@@ -227,7 +231,7 @@ func projectConversationMessages(values []coreconversation.Message) []publicConv
 			CreatedAt:  value.CreatedAt,
 			MessageSeq: sequence,
 			Status:     "done",
-			References: make([]any, 0),
+			References: references,
 		})
 	}
 	return result
@@ -289,20 +293,24 @@ func pageConversationMessages(conversationID string, values []coreconversation.M
 	return page, next, nil
 }
 
+func projectPublicTurnMetadata(value coreconversation.Turn) publicTurnMetadata {
+	return publicTurnMetadata{
+		TurnID:          value.ID,
+		ConversationID:  value.ConversationID,
+		State:           value.State,
+		Revision:        value.Revision,
+		LastSequence:    value.LastSequence,
+		TerminalCode:    value.TerminalCode,
+		TerminalSummary: value.TerminalSummary,
+		CreatedAt:       value.CreatedAt,
+		UpdatedAt:       value.UpdatedAt,
+	}
+}
+
 func publicTurnMetadataList(values []coreconversation.Turn) []publicTurnMetadata {
 	result := make([]publicTurnMetadata, 0, len(values))
 	for _, value := range values {
-		result = append(result, publicTurnMetadata{
-			TurnID:          value.ID,
-			ConversationID:  value.ConversationID,
-			State:           value.State,
-			Revision:        value.Revision,
-			LastSequence:    value.LastSequence,
-			TerminalCode:    value.TerminalCode,
-			TerminalSummary: value.TerminalSummary,
-			CreatedAt:       value.CreatedAt,
-			UpdatedAt:       value.UpdatedAt,
-		})
+		result = append(result, projectPublicTurnMetadata(value))
 	}
 	return result
 }
@@ -318,6 +326,9 @@ func (c *coreChatCapability) Descriptor() *capv1.CapabilityDescriptor {
 		{"compress_context", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"summarize", capv1.OperationType_OPERATION_TYPE_READ, "agent:chat:read"},
 		{"chat", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
+		{"upload_attachment_begin", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
+		{"upload_attachment_append", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
+		{"upload_attachment_commit", capv1.OperationType_OPERATION_TYPE_MUTATION, "agent:chat:write"},
 		{"stream_chat", capv1.OperationType_OPERATION_TYPE_DURABLE_STREAM, "agent:chat:write"},
 	})
 }
@@ -421,7 +432,80 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		cmd := coreconversation.ChatCommand{RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion}
 		value, err := c.service.Chat(ctx, cmd)
 		return marshalResult(value, err)
+	case "upload_attachment_begin":
+		var request struct {
+			IdempotencyKey string `json:"idempotency_key"`
+			TurnRequestID  string `json:"turn_request_id"`
+			Kind           string `json:"kind"`
+			Name           string `json:"name"`
+			MimeType       string `json:"mime_type"`
+			DeclaredSize   uint64 `json:"declared_size"`
+			ContentSHA256  string `json:"content_sha256"`
+		}
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, coreconversation.ErrInvalid
+		}
+		ownerID, generation, err := authenticatedChatOwner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		value, err := c.service.BeginTurnAttachmentUpload(ctx, coreconversation.BeginTurnAttachmentUploadCommand{
+			OwnerID: ownerID, AccountGeneration: generation, IdempotencyKey: request.IdempotencyKey,
+			TurnRequestID: request.TurnRequestID, Kind: request.Kind, Name: request.Name, MediaType: request.MimeType,
+			DeclaredSize: request.DeclaredSize, ContentSHA256: request.ContentSHA256,
+		})
+		return marshalResult(value, err)
+	case "upload_attachment_append":
+		var request struct {
+			IdempotencyKey   string `json:"idempotency_key"`
+			UploadID         string `json:"upload_id"`
+			ExpectedRevision uint64 `json:"expected_revision"`
+			Ordinal          uint32 `json:"ordinal"`
+			OffsetBytes      uint64 `json:"offset_bytes"`
+			DataBase64       string `json:"data_base64"`
+			ChunkSHA256      string `json:"chunk_sha256"`
+		}
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, coreconversation.ErrInvalid
+		}
+		data, err := decodeCanonicalAttachmentChunk(request.DataBase64)
+		if err != nil {
+			return nil, err
+		}
+		defer clear(data)
+		ownerID, generation, err := authenticatedChatOwner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		value, err := c.service.AppendTurnAttachmentUpload(ctx, coreconversation.AppendTurnAttachmentUploadCommand{
+			OwnerID: ownerID, AccountGeneration: generation, IdempotencyKey: request.IdempotencyKey,
+			UploadID: request.UploadID, ExpectedRevision: request.ExpectedRevision, Ordinal: request.Ordinal,
+			OffsetBytes: request.OffsetBytes, Data: data, ChunkSHA256: request.ChunkSHA256,
+		})
+		return marshalResult(value, err)
+	case "upload_attachment_commit":
+		var request struct {
+			IdempotencyKey   string `json:"idempotency_key"`
+			UploadID         string `json:"upload_id"`
+			ExpectedRevision uint64 `json:"expected_revision"`
+			ContentSHA256    string `json:"content_sha256"`
+		}
+		if err := decodeStrictObject(raw, &request); err != nil {
+			return nil, coreconversation.ErrInvalid
+		}
+		ownerID, generation, err := authenticatedChatOwner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		value, err := c.service.CommitTurnAttachmentUpload(ctx, coreconversation.CommitTurnAttachmentUploadCommand{
+			OwnerID: ownerID, AccountGeneration: generation, IdempotencyKey: request.IdempotencyKey,
+			UploadID: request.UploadID, ExpectedRevision: request.ExpectedRevision, ContentSHA256: request.ContentSHA256,
+		})
+		return marshalResult(value, err)
 	case "stream_chat":
+		if err := validateDurableStreamChatInput(in); err != nil {
+			return nil, err
+		}
 		profileID, profileRevision, credentialVersion, err := c.resolveProfilePins(in)
 		if err != nil {
 			return nil, err
@@ -430,7 +514,16 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if !ok || !coretask.ValidUUID(turnID) {
 			return nil, coreconversation.ErrInvalid
 		}
-		turn, err := c.service.StartTurn(ctx, coreconversation.TurnStartCommand{TurnID: turnID, RequestID: key, ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID, ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion})
+		ownerID, generation, err := authenticatedChatOwner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		turn, err := c.service.StartTurn(ctx, coreconversation.TurnStartCommand{
+			TurnID: turnID, RequestID: key, OwnerID: ownerID, AccountGeneration: generation,
+			ConversationID: stringValue(in, "conversation_id"), Prompt: stringValue(in, "message"), ProfileID: profileID,
+			ExpectedProfileRevision: profileRevision, ExpectedCredentialVersion: credentialVersion,
+			AcceptedAttachmentIDs: stringSlice(in, "accepted_attachment_ids"),
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -438,7 +531,7 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 		if err != nil {
 			return nil, err
 		}
-		result, err := consumeDurableTurnStream(ctx, operationID, turn, events, c.progress)
+		result, err := consumeDurableTurnStreamWithConversation(ctx, operationID, turn, events, c.service, c.progress)
 		if errors.Is(context.Cause(ctx), capabilityoperation.ErrExplicitCancel) {
 			if cancelErr := cancelDurableTurn(c.service, turn); cancelErr != nil {
 				return nil, cancelErr
@@ -451,9 +544,110 @@ func (c *coreChatCapability) HandleOperation(ctx context.Context, operationID st
 	}
 }
 
-func consumeDurableTurnStream(ctx context.Context, operationID string, turn coreconversation.Turn, events <-chan coreconversation.TurnEvent, progress func(context.Context, string, []byte) error) ([]byte, error) {
+func validateDurableStreamChatInput(in map[string]json.RawMessage) error {
+	allowed := map[string]struct{}{
+		"idempotency_key": {}, "conversation_id": {}, "message": {},
+		"model_profile_id": {}, "model_profile_revision": {}, "credential_version": {},
+		"accepted_attachment_ids": {},
+	}
+	for key := range in {
+		if _, ok := allowed[key]; !ok {
+			return coreconversation.ErrInvalid
+		}
+	}
+	if !coretask.ValidUUID(stringValue(in, "idempotency_key")) ||
+		!coretask.ValidUUID(stringValue(in, "model_profile_id")) ||
+		int64Value(in, "model_profile_revision") <= 0 || int64Value(in, "credential_version") <= 0 ||
+		strings.TrimSpace(stringValue(in, "message")) == "" {
+		return coreconversation.ErrInvalid
+	}
+	conversationID := stringValue(in, "conversation_id")
+	if conversationID != "" && !coretask.ValidUUID(conversationID) {
+		return coreconversation.ErrInvalid
+	}
+	if raw, present := in["accepted_attachment_ids"]; present {
+		var ids []string
+		if json.Unmarshal(raw, &ids) != nil || len(ids) > coreconversation.MaxTurnAttachments {
+			return coreconversation.ErrInvalid
+		}
+		seen := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			if !coretask.ValidUUID(id) {
+				return coreconversation.ErrInvalid
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return coreconversation.ErrInvalid
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func authenticatedChatOwner(ctx context.Context) (string, uint64, error) {
+	permission, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
+		return "", 0, coreconversation.ErrInvalid
+	}
+	return strings.TrimSpace(permission.GetAuthenticatedOwnerId()), uint64(permission.GetAccountGeneration()), nil
+}
+
+func decodeCanonicalAttachmentChunk(value string) ([]byte, error) {
+	if value == "" || len(value) > base64.StdEncoding.EncodedLen(coreconversation.MaxTurnAttachmentChunkBytes) {
+		return nil, coreconversation.ErrInvalid
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(decoded) == 0 || len(decoded) > coreconversation.MaxTurnAttachmentChunkBytes || base64.StdEncoding.EncodeToString(decoded) != value {
+		clear(decoded)
+		return nil, coreconversation.ErrInvalid
+	}
+	return decoded, nil
+}
+
+func consumeDurableTurnStream(
+	ctx context.Context,
+	operationID string,
+	turn coreconversation.Turn,
+	events <-chan coreconversation.TurnEvent,
+	progress func(context.Context, string, []byte) error,
+) ([]byte, error) {
+	return consumeDurableTurnStreamWithConversation(ctx, operationID, turn, events, nil, progress)
+}
+
+type durableTurnConversationReader interface {
+	GetConversation(context.Context, string) (coreconversation.Conversation, error)
+}
+
+func consumeDurableTurnStreamWithConversation(
+	ctx context.Context,
+	operationID string,
+	turn coreconversation.Turn,
+	events <-chan coreconversation.TurnEvent,
+	conversations durableTurnConversationReader,
+	progress func(context.Context, string, []byte) error,
+) ([]byte, error) {
 	var response *coreconversation.ChatResponse
 	for event := range events {
+		if event.Kind == coreconversation.TurnEventWaitingConfirmation && event.Message != nil {
+			if conversations == nil || event.Message.Validate() != nil || !coretask.ValidUUID(event.ConfirmationID) ||
+				!coretask.ValidUUID(event.ExecutionID) || len(event.RelatedTaskIDs) == 0 || len(event.RelatedPlanIDs) == 0 ||
+				len(event.References) != 3 {
+				return nil, coreconversation.ErrChatFailed
+			}
+			conversation, err := conversations.GetConversation(ctx, turn.ConversationID)
+			if err != nil || conversation.ID != turn.ConversationID || conversation.Revision == 0 {
+				return nil, coreconversation.ErrChatFailed
+			}
+			response = &coreconversation.ChatResponse{
+				RequestID: turn.RequestID, ConversationID: turn.ConversationID,
+				Revision: conversation.Revision, Message: *event.Message, Done: true,
+				ModelProfileID: event.Message.ModelProfileID,
+				RelatedTaskIDs: append([]string(nil), event.RelatedTaskIDs...),
+				RelatedPlanIDs: append([]string(nil), event.RelatedPlanIDs...),
+				References:     append([]coreconversation.Reference(nil), event.References...),
+			}
+			continue
+		}
 		streamEvent := durableTurnStreamEvent(turn, event)
 		if streamEvent == nil {
 			continue
@@ -462,14 +656,7 @@ func consumeDurableTurnStream(ctx context.Context, operationID string, turn core
 		case coreconversation.EventDone:
 			response = streamEvent.Response
 		case coreconversation.EventError:
-			switch streamEvent.ErrCode {
-			case "canceled", "cancelled":
-				return nil, coreconversation.ErrCanceled
-			case "conflict":
-				return nil, coreconversation.ErrConflict
-			default:
-				return nil, coreconversation.ErrChatFailed
-			}
+			return nil, classifyDurableTurnFailure(streamEvent.ErrCode)
 		default:
 			if err := emitCapabilityProgress(ctx, operationID, *streamEvent, progress); err != nil {
 				return nil, err
@@ -529,6 +716,19 @@ func cancelDurableTurn(service durableTurnCanceler, accepted coreconversation.Tu
 	requestID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("capability-turn-cancel:"+accepted.RequestID)).String()
 	_, err = service.CancelTurn(ctx, coreconversation.TurnCancelCommand{RequestID: requestID, TurnID: turn.ID, ExpectedRevision: turn.Revision})
 	return err
+}
+
+func classifyDurableTurnFailure(code string) error {
+	switch strings.TrimSpace(code) {
+	case "conflict", "revision_conflict":
+		return coreconversation.ErrConflict
+	case "in_flight":
+		return coreconversation.ErrInFlight
+	case "canceled", "cancelled":
+		return coreconversation.ErrCanceled
+	default:
+		return coreconversation.ErrChatFailed
+	}
 }
 
 func consumeChatStream(ctx context.Context, operationID string, events <-chan coreconversation.StreamEvent, progress func(context.Context, string, []byte) error) ([]byte, error) {
@@ -619,7 +819,8 @@ func validateListTurnsCapabilityInput(in map[string]json.RawMessage) error {
 
 func chatOperationRequiresKey(operation string) bool {
 	switch operation {
-	case "create_conversation", "rename_conversation", "delete_conversation", "compress_context", "chat", "stream_chat":
+	case "create_conversation", "rename_conversation", "delete_conversation", "compress_context", "chat",
+		"upload_attachment_begin", "upload_attachment_append", "upload_attachment_commit", "stream_chat":
 		return true
 	default:
 		return false
@@ -627,6 +828,10 @@ func chatOperationRequiresKey(operation string) bool {
 }
 
 func emitCapabilityProgress(ctx context.Context, operationID string, event coreconversation.StreamEvent, progress func(context.Context, string, []byte) error) error {
+	return emitCapabilityProgressValue(ctx, operationID, event, progress)
+}
+
+func emitCapabilityProgressValue(ctx context.Context, operationID string, event any, progress func(context.Context, string, []byte) error) error {
 	if progress == nil {
 		return nil
 	}
@@ -659,6 +864,14 @@ func (c *coreConfirmationCapability) HandleOperation(ctx context.Context, operat
 	if c == nil || c.service == nil {
 		return nil, coreconfirmation.ErrInvalid
 	}
+	permission, ok := capabilityclient.PermissionFromContext(ctx)
+	if !ok || permission == nil || strings.TrimSpace(permission.GetAuthenticatedOwnerId()) == "" || permission.GetAccountGeneration() <= 0 {
+		return nil, coreconfirmation.ErrInvalid
+	}
+	authority := coreconfirmation.Authority{
+		OwnerID:           permission.GetAuthenticatedOwnerId(),
+		AccountGeneration: uint64(permission.GetAccountGeneration()),
+	}
 	var in map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
@@ -666,21 +879,25 @@ func (c *coreConfirmationCapability) HandleOperation(ctx context.Context, operat
 	key := valueOrUUID(in, "idempotency_key")
 	switch operationID {
 	case "get":
-		value, err := c.service.Get(ctx, stringValue(in, "confirmation_id"))
-		return marshalResult(map[string]any{"confirmation": value}, err)
+		value, err := c.service.GetAuthorized(ctx, authority, stringValue(in, "confirmation_id"))
+		return marshalResult(map[string]any{"confirmation": value.Public()}, err)
 	case "list":
 		var states []coreconfirmation.State
 		for _, value := range stringSlice(in, "states") {
 			states = append(states, coreconfirmation.State(value))
 		}
-		page, err := c.service.List(ctx, coreconfirmation.ListQuery{PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Domain: stringValue(in, "operation_domain"), TargetID: stringValue(in, "target_id"), States: states})
-		return marshalResult(map[string]any{"confirmations": page.Confirmations, "next_page_token": page.NextPageToken}, err)
+		page, err := c.service.ListAuthorized(ctx, authority, coreconfirmation.ListQuery{PageSize: pageLimit(in, 50), PageToken: stringValue(in, "page_token"), Domain: stringValue(in, "operation_domain"), TargetID: stringValue(in, "target_id"), States: states})
+		publicConfirmations := make([]coreconfirmation.PublicConfirmation, 0, len(page.Confirmations))
+		for _, value := range page.Confirmations {
+			publicConfirmations = append(publicConfirmations, value.Public())
+		}
+		return marshalResult(map[string]any{"confirmations": publicConfirmations, "next_page_token": page.NextPageToken}, err)
 	case "confirm":
-		value, err := c.service.Confirm(ctx, coreconfirmation.ConfirmCommand{ConfirmationID: stringValue(in, "confirmation_id"), IdempotencyKey: key, ExpectedRevision: int64Value(in, "expected_revision")})
-		return marshalResult(map[string]any{"confirmation": value}, err)
+		value, err := c.service.ConfirmAuthorized(ctx, authority, coreconfirmation.ConfirmCommand{ConfirmationID: stringValue(in, "confirmation_id"), IdempotencyKey: key, ExpectedRevision: int64Value(in, "expected_revision")})
+		return marshalResult(map[string]any{"confirmation": value.Public()}, err)
 	case "reject":
-		value, err := c.service.Reject(ctx, coreconfirmation.RejectCommand{ConfirmationID: stringValue(in, "confirmation_id"), IdempotencyKey: key, ExpectedRevision: int64Value(in, "expected_revision"), Reason: stringValue(in, "reason"), Note: stringValue(in, "note")})
-		return marshalResult(map[string]any{"confirmation": value}, err)
+		value, err := c.service.RejectAuthorized(ctx, authority, coreconfirmation.RejectCommand{ConfirmationID: stringValue(in, "confirmation_id"), IdempotencyKey: key, ExpectedRevision: int64Value(in, "expected_revision"), Reason: stringValue(in, "reason"), Note: stringValue(in, "note")})
+		return marshalResult(map[string]any{"confirmation": value.Public()}, err)
 	case "acknowledge_extension_execution_uncertain":
 		value, err := c.service.AcknowledgeExtensionExecutionUncertain(ctx, coreconfirmation.AcknowledgeExtensionExecutionUncertainCommand{ConfirmationID: stringValue(in, "confirmation_id"), TaskID: stringValue(in, "task_id"), InstallationID: stringValue(in, "installation_id"), ExpectedTaskRevision: int64Value(in, "expected_task_revision"), ExpectedConfirmationRevision: int64Value(in, "expected_confirmation_revision"), Resolution: coreconfirmation.ExtensionUncertainResolution(stringValue(in, "resolution")), IdempotencyKey: key})
 		return marshalResult(value, err)
@@ -1610,8 +1827,11 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 		resultSchema := operationResultSchema(id, s.id)
 		resultDigest := sha256.Sum256([]byte(resultSchema))
 		op := &capv1.OperationDescriptor{OperationId: s.id, DisplayName: s.id, OperationType: s.typ, Audience: []capv1.Audience{capv1.Audience_AUDIENCE_OWNER_CLIENT, capv1.Audience_AUDIENCE_NATIVE_AGENT}, RiskLevel: capv1.RiskLevel_RISK_LEVEL_SAFE, RequiredScopes: []string{s.scope}, InputSchemaJson: inputSchema, InputSchemaDigest: inputDigest[:], ResultSchemaJson: resultSchema, ResultSchemaDigest: resultDigest[:], MaxRequestSizeBytes: 1 << 20, TimeoutClass: "medium"}
+		if id == "agent.chat.v1" && s.id == "upload_attachment_append" {
+			op.MaxRequestSizeBytes = 2 << 20
+		}
 		if s.typ == capv1.OperationType_OPERATION_TYPE_DURABLE_STREAM {
-			eventSchema := `{"type":"object"}`
+			eventSchema := operationEventSchema(id, s.id)
 			eventDigest := sha256.Sum256([]byte(eventSchema))
 			op.EventSchemaJson, op.EventSchemaDigest = eventSchema, eventDigest[:]
 			op.TimeoutClass = "long"
@@ -1619,6 +1839,12 @@ func descriptor(id, name, description string, specs []opSpec) *capv1.CapabilityD
 		d.Operations = append(d.Operations, op)
 	}
 	return d
+}
+
+const publicTurnMetadataSchema = `{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"}`
+
+func operationEventSchema(string, string) string {
+	return `{"type":"object"}`
 }
 
 func operationResultSchema(capabilityID, operation string) string {
@@ -1630,7 +1856,11 @@ func operationResultSchema(capabilityID, operation string) string {
 	case "agent.knowledge.v1:status":
 		return `{"additionalProperties":false,"properties":{"checked_at":{"format":"date-time","type":"string"},"cleanup_pending_count":{"minimum":0,"type":"integer"},"count":{"minimum":0,"type":"integer"},"embedding_indexed":{"minimum":0,"type":"integer"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_stale":{"minimum":0,"type":"integer"},"failed_count":{"minimum":0,"type":"integer"},"indexing_count":{"minimum":0,"type":"integer"},"max_source_bytes":{"const":16777216,"type":"integer"},"quota_limit_bytes":{"const":67108864,"type":"integer"},"quota_remaining_bytes":{"minimum":0,"type":"integer"},"quota_used_bytes":{"minimum":0,"type":"integer"},"ready_count":{"minimum":0,"type":"integer"},"supported":{"type":"boolean"},"uploading_count":{"minimum":0,"type":"integer"}},"required":["supported","count","embedding_indexed","embedding_stale","ready_count","uploading_count","indexing_count","failed_count","cleanup_pending_count","checked_at","quota_used_bytes","quota_limit_bytes","quota_remaining_bytes","max_source_bytes"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
-		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"},"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
+		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":` + publicTurnMetadataSchema + `,"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
+	case "agent.chat.v1:upload_attachment_begin", "agent.chat.v1:upload_attachment_append":
+		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"max_chunk_bytes":{"minimum":1,"type":"integer"},"received_size":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"enum":["receiving","committed","consumed"],"type":"string"},"turn_request_id":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["upload_id","source_id","turn_request_id","status","received_size","max_chunk_bytes","revision","expires_at"],"type":"object"}`
+	case "agent.chat.v1:upload_attachment_commit":
+		return `{"additionalProperties":false,"properties":{"expires_at":{"format":"date-time","type":"string"},"kind":{"enum":["image","file","workspace_archive"],"type":"string"},"mime_type":{"maxLength":255,"minLength":1,"type":"string"},"name":{"maxLength":255,"minLength":1,"type":"string"},"revision":{"minimum":1,"type":"integer"},"sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"size_bytes":{"maximum":8388608,"minimum":1,"type":"integer"},"source_id":{"format":"uuid","type":"string"},"status":{"const":"committed","type":"string"},"turn_request_id":{"format":"uuid","type":"string"}},"required":["source_id","revision","turn_request_id","kind","name","mime_type","size_bytes","sha256","status","expires_at"],"type":"object"}`
 	default:
 		return `{"type":"object"}`
 	}
@@ -1663,8 +1893,16 @@ func operationInputSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"conversation_id":{"type":"string"},"expected_revision":{"type":"integer"},"memory_window":{"type":"integer"},"idempotency_key":{"type":"string"}},"required":["conversation_id","expected_revision","idempotency_key"]}`
 	case "agent.chat.v1:summarize":
 		return `{"type":"object","properties":{"text":{"type":"string"},"room_id":{"type":"string"}}}`
-	case "agent.chat.v1:chat", "agent.chat.v1:stream_chat":
+	case "agent.chat.v1:chat":
 		return `{"type":"object","properties":{"idempotency_key":{"type":"string"},"conversation_id":{"type":"string"},"message":{"type":"string"},"model_profile_id":{"type":"string"},"model_profile_revision":{"type":"integer"},"credential_version":{"type":"integer"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
+	case "agent.chat.v1:upload_attachment_begin":
+		return `{"additionalProperties":false,"properties":{"content_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"declared_size":{"maximum":8388608,"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"kind":{"enum":["image","file","workspace_archive"],"type":"string"},"mime_type":{"maxLength":255,"minLength":1,"type":"string"},"name":{"maxLength":255,"minLength":1,"type":"string"},"turn_request_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","turn_request_id","kind","name","mime_type","declared_size","content_sha256"],"type":"object"}`
+	case "agent.chat.v1:upload_attachment_append":
+		return `{"additionalProperties":false,"properties":{"chunk_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"data_base64":{"maxLength":1398104,"minLength":4,"type":"string"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"offset_bytes":{"minimum":0,"type":"integer"},"ordinal":{"minimum":0,"type":"integer"},"upload_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","upload_id","expected_revision","ordinal","offset_bytes","data_base64","chunk_sha256"],"type":"object"}`
+	case "agent.chat.v1:upload_attachment_commit":
+		return `{"additionalProperties":false,"properties":{"content_sha256":{"pattern":"^[a-f0-9]{64}$","type":"string"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"upload_id":{"format":"uuid","type":"string"}},"required":["idempotency_key","upload_id","expected_revision","content_sha256"],"type":"object"}`
+	case "agent.chat.v1:stream_chat":
+		return `{"additionalProperties":false,"type":"object","properties":{"accepted_attachment_ids":{"items":{"format":"uuid","type":"string"},"maxItems":4,"uniqueItems":true,"type":"array"},"idempotency_key":{"format":"uuid","type":"string"},"conversation_id":{"format":"uuid","type":"string"},"message":{"minLength":1,"type":"string"},"model_profile_id":{"format":"uuid","type":"string"},"model_profile_revision":{"minimum":1,"type":"integer"},"credential_version":{"minimum":1,"type":"integer"}},"required":["idempotency_key","message","model_profile_id","model_profile_revision","credential_version"]}`
 	case "agent.models.v1:sync_models":
 		return `{"type":"object","additionalProperties":false,"properties":{"idempotency_key":{"type":"string"},"default_client_profile_id":{"type":"string"},"default_conversation_client_profile_id":{"type":"string"},"default_embedding_client_profile_id":{"type":"string"},"default_speech_client_profile_id":{"type":"string"},"entries":{"type":"array"}},"required":["idempotency_key","entries"]}`
 	case "agent.knowledge.v1:list_sources":

@@ -19,6 +19,9 @@ type credentialStore struct{ value coreaws.Credentials }
 func (s credentialStore) GetCredential(context.Context, string) (coreaws.Credentials, error) {
 	return s.value, nil
 }
+func (s credentialStore) GetCredentialRevision(context.Context, string, int64) (coreaws.Credentials, error) {
+	return s.value, nil
+}
 
 func TestDurableCredentialResolverRequiresVerifiedCurrentRevision(t *testing.T) {
 	id := uuid.NewString()
@@ -31,6 +34,13 @@ func TestDurableCredentialResolverRequiresVerifiedCurrentRevision(t *testing.T) 
 	h, err := r.ResolveCredential(context.Background(), id)
 	if err != nil || h.SecretAccessKey != "secret" || h.ReferenceID != id {
 		t.Fatalf("handle=%+v err=%v", h, err)
+	}
+	exact, err := r.ResolveCredentialRevision(context.Background(), id, 1)
+	if err != nil || exact.ReferenceID != id || exact.AccountID != "123456789012" {
+		t.Fatalf("exact handle=%+v err=%v", exact, err)
+	}
+	if _, err := r.ResolveCredentialRevision(context.Background(), id, 2); !errors.Is(err, ErrPrecondition) {
+		t.Fatalf("mismatched exact revision accepted: %v", err)
 	}
 	raw, _ := json.Marshal(h)
 	if strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "AKIA") {

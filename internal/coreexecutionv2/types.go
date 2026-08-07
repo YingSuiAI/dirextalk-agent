@@ -336,11 +336,13 @@ func sourceFromInput(raw any) Source {
 }
 
 type Config struct {
-	Store     Store
-	Providers Providers
-	Typed     TypedPorts
-	Ready     func() bool
-	Now       func() time.Time
+	Store        Store
+	Providers    Providers
+	Typed        TypedPorts
+	CloudWorker  CloudWorkerExecutionPort
+	RunLifecycle GenericRunLifecycle
+	Ready        func() bool
+	Now          func() time.Time
 }
 
 // ActionPort is useful to composition code that wants to expose execution.v2

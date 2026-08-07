@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 4 {
-		t.Fatalf("CurrentVersion = %d, want 4", CurrentVersion)
+	if CurrentVersion != 5 {
+		t.Fatalf("CurrentVersion = %d, want 5", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" {
+	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -83,6 +83,35 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{"CREATE TABLE core_aws_credential_test_claims", "state IN ('in_progress','failed','uncertain','completed')", "error_code", "request_hash", "lease_expires_at", "completion_grace_until"} {
 		if !strings.Contains(string(claims), needle) {
 			t.Errorf("AWS credential test claim migration missing %q", needle)
+		}
+	}
+	cloudWorker, err := Files.ReadFile(entries[4])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{
+		"CREATE TABLE core_cloud_worker_plans",
+		"CREATE TABLE core_cloud_worker_executions",
+		"CREATE TABLE core_cloud_worker_aws_ledger",
+		"CREATE TABLE core_cloud_worker_output_journals",
+		"CREATE TABLE core_cloud_worker_output_versions",
+		"CREATE TABLE core_cloud_worker_sessions",
+		"CREATE TABLE core_cloud_worker_model_budgets",
+		"input_manifest_json bytea",
+		"runtime_task_json bytea",
+		"'execution_v2_run'",
+		"'execution_v2_run_create','execution_v2_run_retry','execution_v2_run_cancel'",
+		"DROP CONSTRAINT core_task_replays_operation_check",
+		"DROP CONSTRAINT core_execution_v2_records_resource_type_check",
+		"resource_type IN ('analysis','target','plan','deployment','run','stage','artifact','binding','dispatch_intent')",
+	} {
+		if !strings.Contains(string(cloudWorker), needle) {
+			t.Errorf("Cloud Worker migration missing %q", needle)
+		}
+	}
+	for _, forbidden := range []string{"input_manifest_json jsonb", "runtime_task_json jsonb"} {
+		if strings.Contains(string(cloudWorker), forbidden) {
+			t.Errorf("Cloud Worker migration rewrites authorization-bound bytes via %q", forbidden)
 		}
 	}
 	for _, forbidden := range []string{

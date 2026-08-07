@@ -173,7 +173,7 @@ func (r *MemoryRepository) Request(_ context.Context, command RequestCommand) (C
 		}
 	}
 	id := uuid.New().String()
-	value := Confirmation{ConfirmationID: id, Binding: binding, TaskID: strings.TrimSpace(command.TaskID), State: StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now, ExpiresAt: command.ExpiresAt}
+	value := Confirmation{ConfirmationID: id, OwnerID: binding.OwnerID, Binding: binding, TaskID: strings.TrimSpace(command.TaskID), State: StatePending, Revision: 1, CreatedAt: now, UpdatedAt: now, ExpiresAt: command.ExpiresAt}
 	r.items[id] = cloneConfirmation(value)
 	r.targetBindings[id] = binding
 	r.order = append(r.order, id)

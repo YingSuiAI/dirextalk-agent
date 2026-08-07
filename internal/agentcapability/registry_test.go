@@ -9,10 +9,38 @@ import (
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreexecutionv2"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 )
 
 type registryErrorCapability struct{ err error }
+
+type registryCloudWorkerPort struct{}
+
+func (registryCloudWorkerPort) GetPlan(context.Context, coreexecutionv2.CloudWorkerPlanGetRequest) (coreexecutionv2.CloudWorkerObject, error) {
+	return nil, nil
+}
+func (registryCloudWorkerPort) ListPlans(context.Context, coreexecutionv2.CloudWorkerListRequest) (coreexecutionv2.CloudWorkerPage, error) {
+	return coreexecutionv2.CloudWorkerPage{}, nil
+}
+func (registryCloudWorkerPort) GetRun(context.Context, coreexecutionv2.CloudWorkerRunGetRequest) (coreexecutionv2.CloudWorkerObject, error) {
+	return nil, nil
+}
+func (registryCloudWorkerPort) ListRuns(context.Context, coreexecutionv2.CloudWorkerListRequest) (coreexecutionv2.CloudWorkerPage, error) {
+	return coreexecutionv2.CloudWorkerPage{}, nil
+}
+func (registryCloudWorkerPort) CancelRun(context.Context, coreexecutionv2.CloudWorkerRunCancelRequest) (coreexecutionv2.CloudWorkerObject, error) {
+	return nil, nil
+}
+func (registryCloudWorkerPort) RunEvents(context.Context, coreexecutionv2.CloudWorkerRunEventsRequest) (coreexecutionv2.CloudWorkerEventPage, error) {
+	return coreexecutionv2.CloudWorkerEventPage{}, nil
+}
+func (registryCloudWorkerPort) GetArtifact(context.Context, coreexecutionv2.CloudWorkerArtifactGetRequest) (coreexecutionv2.CloudWorkerObject, error) {
+	return nil, nil
+}
+func (registryCloudWorkerPort) DownloadArtifact(context.Context, coreexecutionv2.CloudWorkerArtifactDownloadRequest) (coreexecutionv2.CloudWorkerArtifactChunk, error) {
+	return coreexecutionv2.CloudWorkerArtifactChunk{}, nil
+}
 
 func (c registryErrorCapability) Descriptor() *capv1.CapabilityDescriptor {
 	return &capv1.CapabilityDescriptor{CapabilityId: "test.error.v1"}
@@ -96,5 +124,24 @@ func TestCoreRegistryDoesNotPublishExecutionV2WithoutTypedProvider(t *testing.T)
 	r := NewCoreRegistry(CoreBindings{ExecutionV2: domain})
 	if _, ok := r.Get(coreexecutionv2.CapabilityID); ok {
 		t.Fatal("execution.v2 published without a typed provider readiness proof")
+	}
+}
+
+func TestCloudWorkerExecutionV2CoexistsWithLocalSkillsAndMCP(t *testing.T) {
+	domain, err := coreexecutionv2.NewServiceWithProviderInterfacesAndCloudWorker(
+		coreexecutionv2.NewMemoryStore(), coreexecutionv2.ProviderInterfaces{}, registryCloudWorkerPort{}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewCoreRegistry(CoreBindings{
+		ExecutionV2: domain,
+		Extensions:  coreextension.NewService(nil, nil, nil),
+	})
+	if _, ok := r.Get(coreexecutionv2.CapabilityID); !ok {
+		t.Fatal("Cloud Worker Execution V2 capability was not published")
+	}
+	if _, ok := r.Get("agent.skills.v1"); !ok {
+		t.Fatal("Cloud Worker publication displaced the local Skills/MCP capability")
 	}
 }

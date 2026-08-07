@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/auth"
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreworkload"
 	"github.com/YingSuiAI/dirextalk-agent/internal/secretbox"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
@@ -79,11 +81,13 @@ type Config struct {
 	CoreWorkloadEnabled                 bool                  `yaml:"core_workload_enabled" mapstructure:"core_workload_enabled"`
 	CoreWorkloadRunnerSocket            string                `yaml:"core_workload_runner_socket" mapstructure:"core_workload_runner_socket"`
 	CoreWorkloadRunnerUID               uint32                `yaml:"core_workload_runner_uid" mapstructure:"core_workload_runner_uid"`
-	// execution.v2 is Agent-owned and remains disabled unless an explicit
-	// SSM target/readiness proof and all typed provider routes are composed.
+	// execution.v2 is Agent-owned. Cloud Worker reads/cancellation are composed
+	// independently; an optional SSM target enables the generic imported-target
+	// routes only after their own typed readiness proof succeeds.
 	CoreExecutionV2Enabled           bool          `yaml:"core_execution_v2_enabled" mapstructure:"core_execution_v2_enabled"`
 	CoreExecutionV2ProbeTimeout      time.Duration `yaml:"core_execution_v2_probe_timeout" mapstructure:"core_execution_v2_probe_timeout"`
 	CoreExecutionV2BindingOperations []string      `yaml:"core_execution_v2_binding_operations" mapstructure:"core_execution_v2_binding_operations"`
+	CoreCloudWorker                  CloudWorker   `yaml:"core_cloud_worker" mapstructure:"core_cloud_worker"`
 	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
 	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
 	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
@@ -120,6 +124,70 @@ type Config struct {
 	CoreVoiceCallbackTLSKeyFile      string        `yaml:"core_voice_callback_tls_key_file" mapstructure:"core_voice_callback_tls_key_file"`
 	CoreVoiceCallbackReadTimeout     time.Duration `yaml:"core_voice_callback_read_timeout" mapstructure:"core_voice_callback_read_timeout"`
 	CoreVoiceCallbackWriteTimeout    time.Duration `yaml:"core_voice_callback_write_timeout" mapstructure:"core_voice_callback_write_timeout"`
+}
+
+// CloudWorker is the non-secret, exact production binding for the single
+// ephemeral Pi Worker route. Credential material remains in CoreAWS storage;
+// this block pins only its durable ID and verified revision.
+type CloudWorker struct {
+	Enabled                       bool          `yaml:"enabled" mapstructure:"enabled"`
+	AccountID                     string        `yaml:"account_id" mapstructure:"account_id"`
+	Region                        string        `yaml:"region" mapstructure:"region"`
+	CredentialID                  string        `yaml:"credential_id" mapstructure:"credential_id"`
+	CredentialRevision            uint64        `yaml:"credential_revision" mapstructure:"credential_revision"`
+	InstanceType                  string        `yaml:"instance_type" mapstructure:"instance_type"`
+	Architecture                  string        `yaml:"architecture" mapstructure:"architecture"`
+	RootDeviceName                string        `yaml:"root_device_name" mapstructure:"root_device_name"`
+	VolumeGiB                     uint64        `yaml:"volume_gib" mapstructure:"volume_gib"`
+	VolumeType                    string        `yaml:"volume_type" mapstructure:"volume_type"`
+	VolumeIOPS                    uint64        `yaml:"volume_iops" mapstructure:"volume_iops"`
+	VolumeThroughputMiB           uint64        `yaml:"volume_throughput_mib" mapstructure:"volume_throughput_mib"`
+	AMIID                         string        `yaml:"ami_id" mapstructure:"ami_id"`
+	AMIDigest                     string        `yaml:"ami_digest" mapstructure:"ami_digest"`
+	WorkerReleaseDigest           string        `yaml:"worker_release_digest" mapstructure:"worker_release_digest"`
+	PiRuntimeDigest               string        `yaml:"pi_runtime_digest" mapstructure:"pi_runtime_digest"`
+	HostNetworkPolicySHA256       string        `yaml:"host_network_policy_sha256" mapstructure:"host_network_policy_sha256"`
+	VPCID                         string        `yaml:"vpc_id" mapstructure:"vpc_id"`
+	SubnetID                      string        `yaml:"subnet_id" mapstructure:"subnet_id"`
+	DNSResolverCIDRs              []string      `yaml:"dns_resolver_cidrs" mapstructure:"dns_resolver_cidrs"`
+	TLSProxyCIDRs                 []string      `yaml:"tls_proxy_cidrs" mapstructure:"tls_proxy_cidrs"`
+	AllowedFQDNs                  []string      `yaml:"allowed_fqdns" mapstructure:"allowed_fqdns"`
+	OutboundProxyURL              string        `yaml:"outbound_proxy_url" mapstructure:"outbound_proxy_url"`
+	OutboundProxyServerName       string        `yaml:"outbound_proxy_server_name" mapstructure:"outbound_proxy_server_name"`
+	OutboundProxyTrustSHA256      string        `yaml:"outbound_proxy_trust_bundle_sha256" mapstructure:"outbound_proxy_trust_bundle_sha256"`
+	ArtifactBucket                string        `yaml:"artifact_bucket" mapstructure:"artifact_bucket"`
+	ArtifactBasePrefix            string        `yaml:"artifact_base_prefix" mapstructure:"artifact_base_prefix"`
+	ArtifactKMSKeyARN             string        `yaml:"artifact_kms_key_arn" mapstructure:"artifact_kms_key_arn"`
+	ArtifactRetention             time.Duration `yaml:"artifact_retention" mapstructure:"artifact_retention"`
+	WorkerControlListenAddress    string        `yaml:"worker_control_listen" mapstructure:"worker_control_listen"`
+	WorkerControlEndpoint         string        `yaml:"worker_control_endpoint" mapstructure:"worker_control_endpoint"`
+	WorkerControlServerName       string        `yaml:"worker_control_server_name" mapstructure:"worker_control_server_name"`
+	WorkerControlTLSCertFile      string        `yaml:"worker_control_tls_cert_file" mapstructure:"worker_control_tls_cert_file"`
+	WorkerControlTLSKeyFile       string        `yaml:"worker_control_tls_key_file" mapstructure:"worker_control_tls_key_file"`
+	WorkerControlTrustSHA256      string        `yaml:"worker_control_trust_bundle_sha256" mapstructure:"worker_control_trust_bundle_sha256"`
+	WorkerControlMaxConcurrentRPC int           `yaml:"worker_control_max_concurrent_rpc" mapstructure:"worker_control_max_concurrent_rpc"`
+	ModelRelayListenAddress       string        `yaml:"model_relay_listen" mapstructure:"model_relay_listen"`
+	ModelRelayEndpoint            string        `yaml:"model_relay_endpoint" mapstructure:"model_relay_endpoint"`
+	ModelRelayServerName          string        `yaml:"model_relay_server_name" mapstructure:"model_relay_server_name"`
+	ModelRelayTLSCertFile         string        `yaml:"model_relay_tls_cert_file" mapstructure:"model_relay_tls_cert_file"`
+	ModelRelayTLSKeyFile          string        `yaml:"model_relay_tls_key_file" mapstructure:"model_relay_tls_key_file"`
+	ModelRelayTrustSHA256         string        `yaml:"model_relay_trust_bundle_sha256" mapstructure:"model_relay_trust_bundle_sha256"`
+	IIDCertificateFile            string        `yaml:"iid_certificate_file" mapstructure:"iid_certificate_file"`
+	PricingCatalogFile            string        `yaml:"pricing_catalog_file" mapstructure:"pricing_catalog_file"`
+	PricingCatalogSHA256          string        `yaml:"pricing_catalog_sha256" mapstructure:"pricing_catalog_sha256"`
+	RuntimeQualificationFile      string        `yaml:"runtime_qualification_file" mapstructure:"runtime_qualification_file"`
+	RuntimeQualificationSHA256    string        `yaml:"runtime_qualification_sha256" mapstructure:"runtime_qualification_sha256"`
+	QuoteTTL                      time.Duration `yaml:"quote_ttl" mapstructure:"quote_ttl"`
+	MaximumCatalogAge             time.Duration `yaml:"maximum_catalog_age" mapstructure:"maximum_catalog_age"`
+	ContingencyBasisPoints        uint32        `yaml:"contingency_basis_points" mapstructure:"contingency_basis_points"`
+	AbsoluteHardLimitMicros       int64         `yaml:"absolute_hard_limit_micros" mapstructure:"absolute_hard_limit_micros"`
+	MaxRuntime                    time.Duration `yaml:"max_runtime" mapstructure:"max_runtime"`
+	MaxTokens                     uint64        `yaml:"max_tokens" mapstructure:"max_tokens"`
+	MaxOutputBytes                uint64        `yaml:"max_output_bytes" mapstructure:"max_output_bytes"`
+	ControllerPollInterval        time.Duration `yaml:"controller_poll_interval" mapstructure:"controller_poll_interval"`
+	WorkerHeartbeatInterval       time.Duration `yaml:"worker_heartbeat_interval" mapstructure:"worker_heartbeat_interval"`
+	ReaperInterval                time.Duration `yaml:"reaper_interval" mapstructure:"reaper_interval"`
+	CompletionOutboxInterval      time.Duration `yaml:"completion_outbox_interval" mapstructure:"completion_outbox_interval"`
 }
 
 // AWSWorkloadReadiness is non-secret, explicit startup proof configuration.
@@ -210,6 +278,9 @@ func ValidateCore(cfg *Config) error {
 		return err
 	}
 	if err := ValidateCoreExecutionV2(cfg); err != nil {
+		return err
+	}
+	if err := ValidateCoreCloudWorker(cfg); err != nil {
 		return err
 	}
 	if err := ValidateCoreVoice(cfg); err != nil {
@@ -305,6 +376,12 @@ func ValidateCoreExecutionV2(cfg *Config) error {
 	if cfg == nil || !cfg.CoreExecutionV2Enabled {
 		return nil
 	}
+	// No SSM readiness block means this process is publishing only the
+	// strongly typed Cloud Worker routes. Their complete dependency proof is
+	// performed by the composition root, which has access to the store/port.
+	if cfg.CoreAWSSSMReadiness == nil {
+		return nil
+	}
 	if cfg.CoreExecutionV2ProbeTimeout <= 0 || cfg.CoreExecutionV2ProbeTimeout > 2*time.Minute {
 		return errors.New("core_execution_v2_probe_timeout must be between 1ns and 2m")
 	}
@@ -322,13 +399,225 @@ func ValidateCoreExecutionV2(cfg *Config) error {
 		}
 		seen[operation] = struct{}{}
 	}
-	if cfg.CoreAWSEnabled == false || cfg.CoreAWSSSMReadiness == nil {
-		return errors.New("core_execution_v2_enabled requires core_aws_enabled and core_aws_ssm_readiness")
+	if cfg.CoreAWSEnabled == false {
+		return errors.New("core_aws_ssm_readiness requires core_aws_enabled")
 	}
 	if !awsServiceRoleARNRE.MatchString(strings.TrimSpace(cfg.CoreAWSCloudFormationServiceRoleARN)) {
 		return errors.New("core_aws_cloudformation_service_role_arn must be an explicit IAM role ARN")
 	}
 	return nil
+}
+
+var (
+	cloudWorkerDigestRE  = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	cloudWorkerAccountRE = regexp.MustCompile(`^[0-9]{12}$`)
+	cloudWorkerRegionRE  = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
+	cloudWorkerAWSIDRE   = regexp.MustCompile(`^(?:ami|vpc|subnet)-[0-9a-f]{8,17}$`)
+)
+
+// ValidateCoreCloudWorker makes the paid route an all-or-nothing opt-in. A
+// disabled block never affects the local sandbox/MCP/Skills path; an enabled
+// block cannot publish or start with a partial AWS, TLS, pricing, or release
+// qualification binding.
+func ValidateCoreCloudWorker(cfg *Config) error {
+	if cfg == nil || !cfg.CoreCloudWorker.Enabled {
+		return nil
+	}
+	worker := &cfg.CoreCloudWorker
+	if !cfg.CoreExecutionV2Enabled || !cfg.CoreAWSEnabled || !cfg.CapabilityEnabled || !cfg.ProductCapabilityEnabled {
+		return errors.New("core_cloud_worker requires core_execution_v2, core_aws, Capability, and Product Capability")
+	}
+	if cfg.CapabilityAccountGeneration <= 0 || cfg.ProductCapabilityAccountGeneration != cfg.CapabilityAccountGeneration {
+		return errors.New("core_cloud_worker requires one matching positive Capability account generation")
+	}
+	if !cloudWorkerAccountRE.MatchString(strings.TrimSpace(worker.AccountID)) ||
+		!cloudWorkerRegionRE.MatchString(strings.TrimSpace(worker.Region)) {
+		return errors.New("core_cloud_worker account_id and region are invalid")
+	}
+	credential, err := uuid.Parse(strings.TrimSpace(worker.CredentialID))
+	if err != nil || credential == uuid.Nil || credential.String() != strings.TrimSpace(worker.CredentialID) || worker.CredentialRevision == 0 {
+		return errors.New("core_cloud_worker credential_id and credential_revision must be exact")
+	}
+	if strings.TrimSpace(worker.InstanceType) == "" || len(worker.InstanceType) > 64 ||
+		(worker.Architecture != "x86_64" && worker.Architecture != "arm64") ||
+		!strings.HasPrefix(worker.RootDeviceName, "/dev/") || worker.VolumeGiB < 8 || worker.VolumeGiB > 16384 ||
+		worker.VolumeType != "gp3" || worker.VolumeIOPS < 3000 || worker.VolumeIOPS > 16000 ||
+		worker.VolumeThroughputMiB < 125 || worker.VolumeThroughputMiB > 1000 ||
+		!cloudWorkerAWSIDRE.MatchString(worker.AMIID) || !strings.HasPrefix(worker.AMIID, "ami-") ||
+		!cloudWorkerAWSIDRE.MatchString(worker.VPCID) || !strings.HasPrefix(worker.VPCID, "vpc-") ||
+		!cloudWorkerAWSIDRE.MatchString(worker.SubnetID) || !strings.HasPrefix(worker.SubnetID, "subnet-") {
+		return errors.New("core_cloud_worker compute or placement binding is invalid")
+	}
+	for name, digest := range map[string]string{
+		"ami_digest": worker.AMIDigest, "worker_release_digest": worker.WorkerReleaseDigest,
+		"pi_runtime_digest": worker.PiRuntimeDigest, "host_network_policy_sha256": worker.HostNetworkPolicySHA256,
+		"outbound_proxy_trust_bundle_sha256": worker.OutboundProxyTrustSHA256,
+		"worker_control_trust_bundle_sha256": worker.WorkerControlTrustSHA256,
+		"model_relay_trust_bundle_sha256":    worker.ModelRelayTrustSHA256,
+		"pricing_catalog_sha256":             worker.PricingCatalogSHA256,
+		"runtime_qualification_sha256":       worker.RuntimeQualificationSHA256,
+	} {
+		if !cloudWorkerDigestRE.MatchString(strings.TrimSpace(digest)) {
+			return fmt.Errorf("core_cloud_worker %s must be a lowercase SHA-256", name)
+		}
+	}
+	if err := validateCloudWorkerNetwork(worker); err != nil {
+		return err
+	}
+	controlHost, err := validateCloudWorkerHTTPS("worker_control_endpoint", worker.WorkerControlEndpoint, worker.WorkerControlServerName)
+	if err != nil {
+		return err
+	}
+	relayHost, err := validateCloudWorkerHTTPS("model_relay_endpoint", worker.ModelRelayEndpoint, worker.ModelRelayServerName)
+	if err != nil {
+		return err
+	}
+	allowed := make(map[string]bool, len(worker.AllowedFQDNs))
+	for _, value := range worker.AllowedFQDNs {
+		allowed[strings.ToLower(strings.TrimSpace(value))] = true
+	}
+	if !allowed[controlHost] || !allowed[relayHost] {
+		return errors.New("core_cloud_worker allowed_fqdns must include WorkerControl and Model Relay server names")
+	}
+	if strings.TrimSpace(worker.WorkerControlListenAddress) == "" || strings.TrimSpace(worker.ModelRelayListenAddress) == "" ||
+		worker.WorkerControlListenAddress == worker.ModelRelayListenAddress ||
+		worker.WorkerControlListenAddress == cfg.ListenAddress || worker.ModelRelayListenAddress == cfg.ListenAddress ||
+		worker.WorkerControlListenAddress == cfg.CapabilityListenAddress || worker.ModelRelayListenAddress == cfg.CapabilityListenAddress {
+		return errors.New("core_cloud_worker private listeners must be non-empty and distinct")
+	}
+	if worker.WorkerControlMaxConcurrentRPC == 0 {
+		worker.WorkerControlMaxConcurrentRPC = 64
+	}
+	if worker.WorkerControlMaxConcurrentRPC < 1 || worker.WorkerControlMaxConcurrentRPC > 1024 {
+		return errors.New("core_cloud_worker worker_control_max_concurrent_rpc is invalid")
+	}
+	for name, path := range map[string]string{
+		"worker_control_tls_cert_file": worker.WorkerControlTLSCertFile,
+		"worker_control_tls_key_file":  worker.WorkerControlTLSKeyFile,
+		"model_relay_tls_cert_file":    worker.ModelRelayTLSCertFile,
+		"model_relay_tls_key_file":     worker.ModelRelayTLSKeyFile,
+		"iid_certificate_file":         worker.IIDCertificateFile,
+		"pricing_catalog_file":         worker.PricingCatalogFile,
+		"runtime_qualification_file":   worker.RuntimeQualificationFile,
+	} {
+		resolved, resolveErr := canonicalPath(path)
+		if resolveErr != nil {
+			return fmt.Errorf("canonicalize core_cloud_worker %s: %w", name, resolveErr)
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("core_cloud_worker %s must resolve to a regular file", name)
+		}
+		if strings.HasSuffix(name, "tls_key_file") && runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("core_cloud_worker %s must not be group/world accessible", name)
+		}
+		switch name {
+		case "worker_control_tls_cert_file":
+			worker.WorkerControlTLSCertFile = resolved
+		case "worker_control_tls_key_file":
+			worker.WorkerControlTLSKeyFile = resolved
+		case "model_relay_tls_cert_file":
+			worker.ModelRelayTLSCertFile = resolved
+		case "model_relay_tls_key_file":
+			worker.ModelRelayTLSKeyFile = resolved
+		case "iid_certificate_file":
+			worker.IIDCertificateFile = resolved
+		case "pricing_catalog_file":
+			worker.PricingCatalogFile = resolved
+		case "runtime_qualification_file":
+			worker.RuntimeQualificationFile = resolved
+		}
+	}
+	if len(worker.ArtifactBucket) < 3 || len(worker.ArtifactBucket) > 63 ||
+		worker.ArtifactBasePrefix == "" || strings.HasPrefix(worker.ArtifactBasePrefix, "/") ||
+		!strings.HasSuffix(worker.ArtifactBasePrefix, "/") || strings.Contains(worker.ArtifactBasePrefix, "..") ||
+		!strings.HasPrefix(worker.ArtifactKMSKeyARN, "arn:aws:kms:"+worker.Region+":"+worker.AccountID+":key/") {
+		return errors.New("core_cloud_worker artifact binding is invalid")
+	}
+	if worker.ArtifactRetention <= 0 || worker.ArtifactRetention > 30*24*time.Hour {
+		return errors.New("core_cloud_worker artifact_retention must be between 1ns and 30d")
+	}
+	if worker.QuoteTTL == 0 {
+		worker.QuoteTTL = 5 * time.Minute
+	}
+	if worker.MaximumCatalogAge == 0 {
+		worker.MaximumCatalogAge = 5 * time.Minute
+	}
+	if worker.ControllerPollInterval == 0 {
+		worker.ControllerPollInterval = 500 * time.Millisecond
+	}
+	if worker.WorkerHeartbeatInterval == 0 {
+		worker.WorkerHeartbeatInterval = 10 * time.Second
+	}
+	if worker.ReaperInterval == 0 {
+		worker.ReaperInterval = 30 * time.Second
+	}
+	if worker.CompletionOutboxInterval == 0 {
+		worker.CompletionOutboxInterval = time.Second
+	}
+	if worker.QuoteTTL <= 0 || worker.QuoteTTL > 15*time.Minute || worker.MaximumCatalogAge <= 0 || worker.MaximumCatalogAge > 15*time.Minute ||
+		worker.ContingencyBasisPoints > 10_000 || worker.AbsoluteHardLimitMicros <= 0 ||
+		worker.MaxRuntime < time.Minute || worker.MaxRuntime > 24*time.Hour || worker.MaxRuntime%time.Second != 0 ||
+		worker.MaxTokens == 0 || worker.MaxTokens > 10_000_000 || worker.MaxOutputBytes == 0 || worker.MaxOutputBytes > cloudworker.MaxCloudWorkerOutputBytes ||
+		worker.ControllerPollInterval <= 0 || worker.ControllerPollInterval > 30*time.Second ||
+		worker.WorkerHeartbeatInterval < time.Second || worker.WorkerHeartbeatInterval > time.Minute ||
+		worker.ReaperInterval < time.Second || worker.ReaperInterval > 10*time.Minute ||
+		worker.CompletionOutboxInterval < 100*time.Millisecond || worker.CompletionOutboxInterval > time.Minute {
+		return errors.New("core_cloud_worker cost, limit, or controller interval is invalid")
+	}
+	worker.AccountID = strings.TrimSpace(worker.AccountID)
+	worker.Region = strings.TrimSpace(worker.Region)
+	worker.CredentialID = strings.TrimSpace(worker.CredentialID)
+	worker.WorkerControlServerName = controlHost
+	worker.ModelRelayServerName = relayHost
+	return nil
+}
+
+func validateCloudWorkerNetwork(worker *CloudWorker) error {
+	if worker == nil || len(worker.DNSResolverCIDRs) == 0 || len(worker.DNSResolverCIDRs) > 16 ||
+		len(worker.TLSProxyCIDRs) == 0 || len(worker.TLSProxyCIDRs) > 16 ||
+		len(worker.AllowedFQDNs) == 0 || len(worker.AllowedFQDNs) > 64 {
+		return errors.New("core_cloud_worker network grants are incomplete")
+	}
+	seen := map[string]bool{}
+	for _, cidr := range append(append([]string(nil), worker.DNSResolverCIDRs...), worker.TLSProxyCIDRs...) {
+		ip, network, err := net.ParseCIDR(cidr)
+		if err != nil || ip.To4() == nil || network.String() != cidr || cidr == "0.0.0.0/0" || seen["cidr:"+cidr] {
+			return errors.New("core_cloud_worker network CIDRs must be unique canonical IPv4 ranges")
+		}
+		seen["cidr:"+cidr] = true
+	}
+	for index, value := range worker.AllowedFQDNs {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || len(value) > 253 || !strings.Contains(value, ".") || net.ParseIP(value) != nil ||
+			strings.ContainsAny(value, "*/:@\r\n\x00") || seen["fqdn:"+value] {
+			return errors.New("core_cloud_worker allowed_fqdns contains an invalid value")
+		}
+		seen["fqdn:"+value] = true
+		worker.AllowedFQDNs[index] = value
+	}
+	proxyHost, err := validateCloudWorkerHTTPS("outbound_proxy_url", worker.OutboundProxyURL, worker.OutboundProxyServerName)
+	if err != nil {
+		return err
+	}
+	parsed, _ := url.Parse(worker.OutboundProxyURL)
+	if parsed.Port() != "443" || parsed.Path != "" {
+		return errors.New("core_cloud_worker outbound_proxy_url must use port 443 without a path")
+	}
+	worker.OutboundProxyServerName = proxyHost
+	return nil
+}
+
+func validateCloudWorkerHTTPS(name, raw, serverName string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	serverName = strings.ToLower(strings.TrimSpace(serverName))
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		parsed.Hostname() != serverName || serverName == "" || !strings.Contains(serverName, ".") || net.ParseIP(serverName) != nil ||
+		strings.ContainsAny(serverName, "*/:@\r\n\x00") {
+		return "", fmt.Errorf("core_cloud_worker %s must be an exact HTTPS server binding", name)
+	}
+	return serverName, nil
 }
 
 var awsServiceRoleARNRE = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,512}$`)

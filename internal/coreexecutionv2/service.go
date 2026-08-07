@@ -19,9 +19,8 @@ var actionNames = []string{
 	"agent.execution.v2.targets.list", "agent.execution.v2.targets.get", "agent.execution.v2.targets.import", "agent.execution.v2.targets.reserve", "agent.execution.v2.targets.observe",
 	"agent.execution.v2.plans.create", "agent.execution.v2.plans.revise", "agent.execution.v2.plans.get", "agent.execution.v2.plans.list",
 	"agent.execution.v2.deployments.list", "agent.execution.v2.deployments.get", "agent.execution.v2.deployments.events",
-	"agent.execution.v2.runs.create", "agent.execution.v2.runs.get", "agent.execution.v2.runs.list", "agent.execution.v2.runs.cancel", "agent.execution.v2.runs.retry", "agent.execution.v2.runs.reconcile", "agent.execution.v2.runs.events",
-	"agent.execution.v2.confirmations.get", "agent.execution.v2.confirmations.list", "agent.execution.v2.confirmations.confirm", "agent.execution.v2.confirmations.reject",
-	"agent.execution.v2.artifacts.get", "agent.execution.v2.service_bindings.list", "agent.execution.v2.service_bindings.get", "agent.execution.v2.service_bindings.invoke",
+	"agent.execution.v2.runs.create", "agent.execution.v2.runs.get", "agent.execution.v2.runs.list", "agent.execution.v2.runs.cancel", "agent.execution.v2.runs.retry", "agent.execution.v2.runs.events",
+	"agent.execution.v2.artifacts.get", "agent.execution.v2.artifacts.download", "agent.execution.v2.service_bindings.list", "agent.execution.v2.service_bindings.get", "agent.execution.v2.service_bindings.invoke",
 	"agent.execution.v2.secrets.create", "agent.execution.v2.secrets.get", "agent.execution.v2.secrets.list", "agent.execution.v2.secrets.revoke",
 }
 
@@ -38,16 +37,20 @@ var actionSet = func() map[string]struct{} {
 func Actions() []string { return append([]string(nil), actionNames...) }
 
 type Service struct {
-	store     Store
-	providers Providers
-	ready     func() bool
-	now       func() time.Time
+	store         Store
+	providers     Providers
+	cloudWorker   CloudWorkerExecutionPort
+	runLifecycle  GenericRunLifecycle
+	ready         func() bool
+	providerReady func() bool
+	now           func() time.Time
 }
 
 func NewService(cfg Config) (*Service, error) {
 	if cfg.Store == nil {
 		return nil, ErrInvalid
 	}
+	providerReady := cfg.Typed.Ready
 	if typed := AdaptTypedPorts(cfg.Typed); typed.Analyze != nil || typed.ImportTarget != nil || typed.ReserveTarget != nil || typed.Observe != nil || typed.Invoke != nil || typed.Reconcile != nil {
 		// Typed ports are the production boundary. Keep explicitly supplied
 		// callbacks available for narrow tests/embeddings, but never let a
@@ -70,12 +73,6 @@ func NewService(cfg Config) (*Service, error) {
 		if cfg.Providers.Reconcile == nil {
 			cfg.Providers.Reconcile = typed.Reconcile
 		}
-		if cfg.Ready == nil {
-			cfg.Ready = cfg.Typed.Ready
-			if cfg.Ready == nil {
-				cfg.Ready = func() bool { return false }
-			}
-		}
 	}
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
@@ -83,7 +80,13 @@ func NewService(cfg Config) (*Service, error) {
 	if cfg.Ready == nil {
 		cfg.Ready = func() bool { return true }
 	}
-	return &Service{store: cfg.Store, providers: cfg.Providers, ready: cfg.Ready, now: cfg.Now}, nil
+	if providerReady == nil {
+		providerReady = cfg.Ready
+	}
+	if cfg.RunLifecycle == nil {
+		cfg.RunLifecycle, _ = cfg.Store.(GenericRunLifecycle)
+	}
+	return &Service{store: cfg.Store, providers: cfg.Providers, cloudWorker: cfg.CloudWorker, runLifecycle: cfg.RunLifecycle, ready: cfg.Ready, providerReady: providerReady, now: cfg.Now}, nil
 }
 
 func (s *Service) Ready() bool { return s != nil && s.ready != nil && s.ready() }
@@ -97,54 +100,50 @@ func (s *Service) ActionReady(action string) bool {
 	}
 	switch action {
 	case "agent.execution.v2.projects.analyze":
-		return s.providers.Analyze != nil
+		return s.providerReady != nil && s.providerReady() && s.providers.Analyze != nil
 	case "agent.execution.v2.targets.import":
-		return s.providers.ImportTarget != nil
+		return s.providerReady != nil && s.providerReady() && s.providers.ImportTarget != nil
 	case "agent.execution.v2.targets.reserve":
-		return s.providers.ReserveTarget != nil
+		return s.providerReady != nil && s.providerReady() && s.providers.ReserveTarget != nil
 	case "agent.execution.v2.targets.observe":
-		return s.providers.Observe != nil
+		return s.providerReady != nil && s.providerReady() && s.providers.Observe != nil
 	case "agent.execution.v2.service_bindings.invoke":
-		return s.providers.Invoke != nil
-	case "agent.execution.v2.runs.reconcile":
-		return s.providers.Reconcile != nil
+		return s.providerReady != nil && s.providerReady() && s.providers.Invoke != nil
+	case "agent.execution.v2.runs.create", "agent.execution.v2.runs.retry":
+		return s.providerReady != nil && s.providerReady() && s.providers.Reconcile != nil && s.runLifecycle != nil
+	case "agent.execution.v2.artifacts.download":
+		return s.cloudWorker != nil
 	default:
 		return true
 	}
 }
 
-// ReadyForPublication is deliberately stricter than Ready. The neutral
-// catalog cannot express readiness per operation, so a process must prove all
-// provider-backed routes before publishing a misleading 33-operation
-// capability. Individual direct calls still get a precise ErrMissingPort.
+func (s *Service) genericProviderReady() bool {
+	if s == nil || s.providerReady == nil || !s.providerReady() {
+		return false
+	}
+	return s.providers.Analyze != nil || s.providers.ImportTarget != nil ||
+		s.providers.ReserveTarget != nil || s.providers.Observe != nil ||
+		s.providers.Invoke != nil || (s.providers.Reconcile != nil && s.runLifecycle != nil)
+}
+
+// ReadyForPublication keeps the two Execution V2 authorities independent.
+// A process may publish the shared catalog for the Cloud Worker read/cancel
+// route, for at least one ready generic typed provider route, or for both.
+// Missing routes remain fail-closed at their exact dispatch boundary.
 func (s *Service) ReadyForPublication() bool {
 	if s == nil || !s.Ready() {
 		return false
 	}
-	return s.providers.Analyze != nil && s.providers.ImportTarget != nil && s.providers.ReserveTarget != nil && s.providers.Observe != nil && s.providers.Invoke != nil && s.providers.Reconcile != nil
+	return s.cloudWorker != nil || s.genericProviderReady()
 }
 
 func (s *Service) ReadinessReason() string {
 	if s == nil || !s.Ready() {
 		return "execution.v2 provider composition is not ready"
 	}
-	if s.providers.Analyze == nil {
-		return "execution.v2 analyze provider is unavailable"
-	}
-	if s.providers.ImportTarget == nil {
-		return "execution.v2 target import provider is unavailable"
-	}
-	if s.providers.ReserveTarget == nil {
-		return "execution.v2 target reservation provider is unavailable"
-	}
-	if s.providers.Observe == nil {
-		return "execution.v2 target observation provider is unavailable"
-	}
-	if s.providers.Invoke == nil {
-		return "execution.v2 binding invocation provider is unavailable"
-	}
-	if s.providers.Reconcile == nil {
-		return "execution.v2 run reconciliation provider is unavailable"
+	if s.cloudWorker == nil && !s.genericProviderReady() {
+		return "execution.v2 has no ready Cloud Worker or generic typed provider route"
 	}
 	return ""
 }
@@ -172,16 +171,31 @@ func validAction(action string) bool {
 }
 
 func (s *Service) Handle(ctx context.Context, owner, action string, params map[string]any) (map[string]any, error) {
+	return s.HandleWithAuthority(ctx, Authority{OwnerID: owner}, action, params)
+}
+
+// HandleWithAuthority is the authenticated entry point for requests that can
+// reach Cloud Worker records. Generic Execution V2 calls continue to use the
+// owner-only authority; explicit cloud_worker routing additionally requires a
+// positive account generation.
+func (s *Service) HandleWithAuthority(ctx context.Context, authority Authority, action string, params map[string]any) (map[string]any, error) {
 	if s == nil || !s.Ready() {
 		return nil, ErrNotReady
 	}
-	owner = strings.TrimSpace(owner)
+	owner := strings.TrimSpace(authority.OwnerID)
 	if owner == "" || !validAction(action) {
 		return nil, ErrInvalid
 	}
+	authority.OwnerID = owner
 	params = cloneMap(params)
 	if err := validateAction(action, params); err != nil {
 		return nil, err
+	}
+	if stringParam(params, "record_kind") == RecordKindCloudWorker {
+		if authority.AccountGeneration == 0 {
+			return nil, fmt.Errorf("%w: positive account generation is required for cloud_worker", ErrInvalid)
+		}
+		return s.handleCloudWorker(ctx, authority, action, params)
 	}
 	if strings.HasPrefix(action, "agent.execution.v2.secrets.") {
 		return s.handleSecret(ctx, owner, action, params)
@@ -189,12 +203,12 @@ func (s *Service) Handle(ctx context.Context, owner, action string, params map[s
 	if isReadAction(action) {
 		return s.handleRead(ctx, owner, action, params)
 	}
-	return s.handleMutation(ctx, owner, action, params)
+	return s.handleMutation(ctx, authority, action, params)
 }
 
 func isReadAction(action string) bool {
 	switch action {
-	case "agent.execution.v2.analyses.get", "agent.execution.v2.targets.list", "agent.execution.v2.targets.get", "agent.execution.v2.plans.get", "agent.execution.v2.plans.list", "agent.execution.v2.deployments.list", "agent.execution.v2.deployments.get", "agent.execution.v2.deployments.events", "agent.execution.v2.runs.get", "agent.execution.v2.runs.list", "agent.execution.v2.runs.events", "agent.execution.v2.confirmations.get", "agent.execution.v2.confirmations.list", "agent.execution.v2.artifacts.get", "agent.execution.v2.service_bindings.list", "agent.execution.v2.service_bindings.get", "agent.execution.v2.secrets.get", "agent.execution.v2.secrets.list":
+	case "agent.execution.v2.analyses.get", "agent.execution.v2.targets.list", "agent.execution.v2.targets.get", "agent.execution.v2.plans.get", "agent.execution.v2.plans.list", "agent.execution.v2.deployments.list", "agent.execution.v2.deployments.get", "agent.execution.v2.deployments.events", "agent.execution.v2.runs.get", "agent.execution.v2.runs.list", "agent.execution.v2.runs.events", "agent.execution.v2.artifacts.get", "agent.execution.v2.artifacts.download", "agent.execution.v2.service_bindings.list", "agent.execution.v2.service_bindings.get", "agent.execution.v2.secrets.get", "agent.execution.v2.secrets.list":
 		return true
 	default:
 		return false
@@ -217,8 +231,6 @@ func kindForAction(action string) string {
 		return "deployment"
 	case "runs":
 		return "run"
-	case "confirmations":
-		return "confirmation"
 	case "artifacts":
 		return "artifact"
 	case "service_bindings":
@@ -238,11 +250,9 @@ func idField(action string) string {
 		return "plan_id"
 	case "agent.execution.v2.deployments.get", "agent.execution.v2.deployments.events":
 		return "deployment_id"
-	case "agent.execution.v2.runs.get", "agent.execution.v2.runs.cancel", "agent.execution.v2.runs.retry", "agent.execution.v2.runs.reconcile", "agent.execution.v2.runs.events":
+	case "agent.execution.v2.runs.get", "agent.execution.v2.runs.cancel", "agent.execution.v2.runs.retry", "agent.execution.v2.runs.events":
 		return "run_id"
-	case "agent.execution.v2.confirmations.get", "agent.execution.v2.confirmations.confirm", "agent.execution.v2.confirmations.reject":
-		return "confirmation_id"
-	case "agent.execution.v2.artifacts.get":
+	case "agent.execution.v2.artifacts.get", "agent.execution.v2.artifacts.download":
 		return "artifact_id"
 	case "agent.execution.v2.service_bindings.get", "agent.execution.v2.service_bindings.invoke":
 		return "binding_id"
@@ -396,7 +406,7 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 		}
 		return map[string]any{"events": values, "next_sequence": next}, nil
 	}
-	if action == "agent.execution.v2.targets.list" || action == "agent.execution.v2.plans.list" || action == "agent.execution.v2.deployments.list" || action == "agent.execution.v2.runs.list" || action == "agent.execution.v2.confirmations.list" || action == "agent.execution.v2.service_bindings.list" || action == "agent.execution.v2.secrets.list" {
+	if action == "agent.execution.v2.targets.list" || action == "agent.execution.v2.plans.list" || action == "agent.execution.v2.deployments.list" || action == "agent.execution.v2.runs.list" || action == "agent.execution.v2.service_bindings.list" || action == "agent.execution.v2.secrets.list" {
 		limit := intParam(in, "page_size", 100)
 		if limit == 0 {
 			limit = intParam(in, "limit", 100)
@@ -408,14 +418,6 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 		for _, key := range []string{"project_id", "deployment_id", "status"} {
 			if value := stringParam(in, key); value != "" {
 				filter[key] = value
-			}
-		}
-		if action == "agent.execution.v2.confirmations.list" {
-			if raw, ok := in["states"]; ok {
-				states := stateValues(raw)
-				if len(states) > 0 {
-					filter["state"] = strings.Join(states, ",")
-				}
 			}
 		}
 		items, next, err := s.store.List(ctx, owner, kind, filter, stringParam(in, "page_token"), limit)
@@ -434,8 +436,6 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 			key = "deployments"
 		case "run":
 			key = "runs"
-		case "confirmation":
-			key = "confirmations"
 		case "binding":
 			key = "bindings"
 		case "secret":
@@ -453,7 +453,7 @@ func (s *Service) handleRead(ctx context.Context, owner, action string, in map[s
 	if err != nil {
 		return nil, err
 	}
-	key := map[string]string{"analysis": "analysis", "target": "target", "plan": "plan", "deployment": "deployment", "run": "run", "confirmation": "confirmation", "artifact": "artifact", "binding": "binding"}[kind]
+	key := map[string]string{"analysis": "analysis", "target": "target", "plan": "plan", "deployment": "deployment", "run": "run", "artifact": "artifact", "binding": "binding"}[kind]
 	result := map[string]any{key: publicRecord(record)}
 	if kind == "run" {
 		stages := []any{}
@@ -490,9 +490,6 @@ func publicRecord(record Record) map[string]any {
 	}
 	if record.Kind == "run" {
 		out["run_id"] = record.ID
-	}
-	if record.Kind == "confirmation" {
-		out["confirmation_id"] = record.ID
 	}
 	if record.Kind == "artifact" {
 		out["artifact_id"] = record.ID
