@@ -220,7 +220,7 @@ func validSkill(s SkillEntry) bool {
 }
 func validRemote(r RemoteEndpoint) bool {
 	u, e := url.Parse(r.URL)
-	return e == nil && u.Scheme == "https" && u.Host != "" && u.Host == strings.ToLower(u.Host) && validUUID(r.CredentialReferenceID) && u.User == nil && u.Fragment == "" && u.RawQuery == "" && !strings.Contains(u.Path, "..")
+	return e == nil && u.Scheme == "https" && u.Host != "" && u.Host == strings.ToLower(u.Host) && (r.CredentialReferenceID == "" || validUUID(r.CredentialReferenceID)) && u.User == nil && u.Fragment == "" && u.RawQuery == "" && !strings.Contains(u.Path, "..")
 }
 
 type NetworkGrant struct {
@@ -381,14 +381,23 @@ func (i Inspection) Validate() error {
 		if !matched {
 			return ErrInvalid
 		}
-		secretMatched := false
-		for _, g := range i.SecretGrants {
-			if g.ReferenceID == i.Execution.Remote.CredentialReferenceID {
-				secretMatched = true
+		credentialRef := i.Execution.Remote.CredentialReferenceID
+		if credentialRef == "" {
+			for _, g := range i.SecretGrants {
+				if g.Purpose == SecretPurposeMCPCredential {
+					return ErrInvalid
+				}
 			}
-		}
-		if !secretMatched {
-			return ErrInvalid
+		} else {
+			secretMatched := false
+			for _, g := range i.SecretGrants {
+				if g.ReferenceID == credentialRef && g.Purpose == SecretPurposeMCPCredential {
+					secretMatched = true
+				}
+			}
+			if !secretMatched {
+				return ErrInvalid
+			}
 		}
 	}
 	return nil

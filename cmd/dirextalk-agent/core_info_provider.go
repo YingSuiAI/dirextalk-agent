@@ -15,6 +15,15 @@ var coreSupportedModelProviders = []string{
 	"anthropic", "deepseek", "gemini", "openai", "openai_compatible", "openrouter", "xai",
 }
 
+var (
+	coreMCPRequiredOperations = []string{
+		"discover_mcp", "get_mcp", "list_mcp", "inspect_mcp", "install_mcp", "update_mcp", "remove_mcp", "enable_mcp", "disable_mcp", "list_tools", "execute_mcp",
+	}
+	coreSkillsRequiredOperations = []string{
+		"discover_skill", "get_skill", "list_skills", "inspect_skill", "install_skill", "update_skill", "remove_skill", "enable_skill", "disable_skill", "invoke_skill",
+	}
+)
+
 // newCoreInfoProvider exposes only non-secret process metadata. The embedded
 // backend is deliberately disabled after the hard split; all Native Agent
 // work is served by this Agent Core process. The descriptor source is delayed
@@ -121,26 +130,30 @@ func coreDescriptorTokens(descriptor *capv1.CapabilityDescriptor) []string {
 }
 
 func coreSkillsTokens(descriptor *capv1.CapabilityDescriptor) []string {
-	hasMCP, hasSkills := false, false
+	var tokens []string
+	if coreDescriptorHasOperations(descriptor, coreMCPRequiredOperations) {
+		tokens = append(tokens, "mcp")
+	}
+	if coreDescriptorHasOperations(descriptor, coreSkillsRequiredOperations) {
+		tokens = append(tokens, "skills.server")
+	}
+	return tokens
+}
+
+func coreDescriptorHasOperations(descriptor *capv1.CapabilityDescriptor, required []string) bool {
+	operations := make(map[string]struct{}, len(descriptor.GetOperations()))
 	for _, operation := range descriptor.GetOperations() {
 		if operation == nil {
 			continue
 		}
-		switch operation.GetOperationId() {
-		case "list_mcp":
-			hasMCP = true
-		case "discover_skill", "get_skill", "list_skills", "inspect_skill", "install_skill", "update_skill", "remove_skill", "enable_skill", "disable_skill", "invoke_skill":
-			hasSkills = true
+		operations[operation.GetOperationId()] = struct{}{}
+	}
+	for _, operation := range required {
+		if _, ok := operations[operation]; !ok {
+			return false
 		}
 	}
-	var tokens []string
-	if hasMCP {
-		tokens = append(tokens, "mcp")
-	}
-	if hasSkills {
-		tokens = append(tokens, "skills.server")
-	}
-	return tokens
+	return true
 }
 
 func coreExecutionTokens(descriptor *capv1.CapabilityDescriptor) []string {

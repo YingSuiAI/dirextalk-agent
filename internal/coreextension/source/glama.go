@@ -161,7 +161,7 @@ func (a *Glama) Inspect(ctx context.Context, req core.InspectRequest) (core.Insp
 	if err := a.c.validateRemote(ctx, remote); err != nil {
 		return core.Inspection{}, err
 	}
-	i, _, e := baseInspection(c, []rawFile{{Path: "manifest.json", Content: string(b), Digest: digestBytes(b)}}, remote)
+	i, _, e := baseInspection(c, []rawFile{{Path: "manifest.json", Content: string(b), Digest: digestBytes(b)}}, remote, true)
 	return i, e
 }
 func (a *Glama) Fetch(ctx context.Context, c core.Candidate) (core.FetchArtifact, error) {
@@ -191,7 +191,7 @@ func (a *Glama) Fetch(ctx context.Context, c core.Candidate) (core.FetchArtifact
 	if err := a.c.validateRemote(ctx, remote); err != nil {
 		return core.FetchArtifact{}, err
 	}
-	i, artifact, e := baseInspection(cand, []rawFile{{Path: "manifest.json", Content: string(b)}}, remote)
+	i, artifact, e := baseInspection(cand, []rawFile{{Path: "manifest.json", Content: string(b)}}, remote, true)
 	if e != nil {
 		return core.FetchArtifact{}, e
 	}

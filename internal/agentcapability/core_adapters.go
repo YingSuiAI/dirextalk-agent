@@ -1571,20 +1571,17 @@ func mutationFromInput(in map[string]json.RawMessage) (coreextension.Mutation, e
 		ReferenceID string `json:"reference_id"`
 		Purpose     string `json:"purpose"`
 		SecretValue string `json:"secret_value"`
-		Value       string `json:"value"`
 	}
 	if raw := in["secret_inputs"]; len(raw) > 0 {
-		if json.Unmarshal(raw, &secretInputs) != nil {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&secretInputs) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 			return coreextension.Mutation{}, coreextension.ErrInvalid
 		}
 	}
 	inputs := make([]coreextension.SecretInput, 0, len(secretInputs))
 	for _, value := range secretInputs {
-		secret := value.SecretValue
-		if secret == "" {
-			secret = value.Value
-		}
-		inputs = append(inputs, coreextension.SecretInput{ReferenceID: value.ReferenceID, Purpose: coreextension.SecretPurpose(value.Purpose), Value: secret})
+		inputs = append(inputs, coreextension.SecretInput{ReferenceID: value.ReferenceID, Purpose: coreextension.SecretPurpose(value.Purpose), Value: value.SecretValue})
 	}
 	return coreextension.Mutation{IdempotencyKey: valueOrUUID(in, "idempotency_key"), InstallationID: stringValue(in, "installation_id"), ExpectedRevision: int64Value(in, "expected_revision"), Candidate: candidate, Inspection: inspection, SecretInputs: inputs}, nil
 }
@@ -1632,6 +1629,14 @@ func operationResultSchema(capabilityID, operation string) string {
 func operationInputSchema(capabilityID, operation string) string {
 	const object = `{"type":"object","additionalProperties":true}`
 	switch capabilityID + ":" + operation {
+	case "agent.skills.v1:install_mcp":
+		return `{"additionalProperties":false,"properties":{"candidate":{"type":"object"},"idempotency_key":{"format":"uuid","type":"string"},"inspection":{"type":"object"},"secret_inputs":{"items":{"additionalProperties":false,"properties":{"purpose":{"const":"mcp_credential","type":"string"},"reference_id":{"format":"uuid","type":"string"},"secret_value":{"minLength":1,"type":"string","writeOnly":true}},"required":["reference_id","purpose","secret_value"],"type":"object"},"type":"array"}},"required":["idempotency_key","candidate","inspection"],"type":"object"}`
+	case "agent.skills.v1:update_mcp":
+		return `{"additionalProperties":false,"properties":{"candidate":{"type":"object"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"inspection":{"type":"object"},"installation_id":{"format":"uuid","type":"string"},"secret_inputs":{"items":{"additionalProperties":false,"properties":{"purpose":{"const":"mcp_credential","type":"string"},"reference_id":{"format":"uuid","type":"string"},"secret_value":{"minLength":1,"type":"string","writeOnly":true}},"required":["reference_id","purpose","secret_value"],"type":"object"},"type":"array"}},"required":["idempotency_key","installation_id","expected_revision","candidate","inspection"],"type":"object"}`
+	case "agent.skills.v1:install_skill":
+		return `{"additionalProperties":false,"properties":{"candidate":{"type":"object"},"idempotency_key":{"format":"uuid","type":"string"},"inspection":{"type":"object"},"secret_inputs":{"items":{"additionalProperties":false,"properties":{"purpose":{"const":"skill_secret","type":"string"},"reference_id":{"format":"uuid","type":"string"},"secret_value":{"minLength":1,"type":"string","writeOnly":true}},"required":["reference_id","purpose","secret_value"],"type":"object"},"type":"array"}},"required":["idempotency_key","candidate","inspection"],"type":"object"}`
+	case "agent.skills.v1:update_skill":
+		return `{"additionalProperties":false,"properties":{"candidate":{"type":"object"},"expected_revision":{"minimum":1,"type":"integer"},"idempotency_key":{"format":"uuid","type":"string"},"inspection":{"type":"object"},"installation_id":{"format":"uuid","type":"string"},"secret_inputs":{"items":{"additionalProperties":false,"properties":{"purpose":{"const":"skill_secret","type":"string"},"reference_id":{"format":"uuid","type":"string"},"secret_value":{"minLength":1,"type":"string","writeOnly":true}},"required":["reference_id","purpose","secret_value"],"type":"object"},"type":"array"}},"required":["idempotency_key","installation_id","expected_revision","candidate","inspection"],"type":"object"}`
 	case "agent.chat.v1:create_conversation":
 		return `{"type":"object","properties":{"title":{"type":"string"},"conversation_id":{"type":"string","format":"uuid"},"idempotency_key":{"type":"string","format":"uuid"}},"required":["conversation_id","idempotency_key"]}`
 	case "agent.chat.v1:get_conversation":

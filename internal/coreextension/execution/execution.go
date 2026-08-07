@@ -355,8 +355,11 @@ func (e *RemoteExecutor) ExecuteBoundExact(ctx context.Context, endpoint core.Re
 }
 
 func (e *RemoteExecutor) providerBoundExact(endpoint core.RemoteEndpoint, installationID, versionID, purpose, bindingDigest string) (*mcphttp.Provider, error) {
-	if endpoint.URL == "" || endpoint.CredentialReferenceID == "" {
+	if endpoint.URL == "" {
 		return nil, core.ErrInvalid
+	}
+	if endpoint.CredentialReferenceID == "" {
+		return mcphttp.New([]mcphttp.ServerConfig{{ID: "mcp", Endpoint: endpoint.URL}}, nil, e.Options...)
 	}
 	resolver := remoteSecrets{owner: e, install: installationID, version: versionID, purpose: purpose, ref: endpoint.CredentialReferenceID, binding: bindingDigest}
 	return mcphttp.New([]mcphttp.ServerConfig{{ID: "mcp", Endpoint: endpoint.URL, SecretRef: endpoint.CredentialReferenceID}}, resolver, e.Options...)

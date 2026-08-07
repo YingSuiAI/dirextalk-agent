@@ -146,6 +146,15 @@ func extensionFixture() (coreextension.Candidate, coreextension.Inspection) {
 	c := coreextension.Candidate{ID: "fixture", Kind: coreextension.KindMCP, Source: coreextension.SourceOfficialRegistry, Name: "fixture", Pin: coreextension.SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: d}, Transport: coreextension.TransportStdioStatic}
 	return c, coreextension.Inspection{Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d, Execution: coreextension.ExecutionDescriptor{Stdio: &coreextension.StaticEntry{RelativePath: "bin/run", Digest: d, Argv: []string{"run"}}}}
 }
+func publicRemoteExtensionFixture() (coreextension.Candidate, coreextension.Inspection) {
+	d := strings.Repeat("a", 64)
+	c := coreextension.Candidate{ID: "public-remote", Kind: coreextension.KindMCP, Source: coreextension.SourceOfficialRegistry, Name: "public-remote", Pin: coreextension.SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: d}, Transport: coreextension.TransportStreamableHTTP}
+	return c, coreextension.Inspection{
+		Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d,
+		Execution:     coreextension.ExecutionDescriptor{Remote: &coreextension.RemoteEndpoint{URL: "https://example.com/mcp"}},
+		NetworkGrants: []coreextension.NetworkGrant{{Scheme: "https", Host: "example.com", Port: 443, PathPrefix: "/mcp", Digest: d}},
+	}
+}
 func runTask(ctx context.Context, t *testing.T, p *pgxpool.Pool, id string) {
 	if _, e := p.Exec(ctx, `UPDATE core_tasks SET status='running',attempt=1,lease_epoch=1,lease_holder='fixture',lease_expires_at=clock_timestamp()+interval '10 minutes',revision=2 WHERE task_id=$1`, id); e != nil {
 		t.Fatal(e)
@@ -332,7 +341,7 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	}
 	ext := NewCoreExtensionStore(store)
 	cs := NewCoreConfirmationStore(store)
-	c, i := extensionFixture()
+	c, i := publicRemoteExtensionFixture()
 	artifactDigest := strings.Repeat("f", 64)
 	m := coreextension.Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: i, ArtifactPath: filepath.Join(t.TempDir(), "bundle"), ArtifactDigest: artifactDigest}
 	res, e := ext.CreateMutation(ctx, m)
@@ -373,8 +382,12 @@ func TestCoreExtensionPostgresExecutionFenceReplay(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = coord.Resolve(ctx, claimed); e != nil {
+	invocation, e := coord.Resolve(ctx, claimed)
+	if e != nil {
 		t.Fatal(e)
+	}
+	if invocation.Remote == nil || invocation.Remote.Endpoint.URL != "https://example.com/mcp" || invocation.Remote.Endpoint.CredentialReferenceID != "" || invocation.Remote.Purpose != "" || invocation.Remote.BindingDigest != "" {
+		t.Fatalf("public remote invocation=%#v", invocation)
 	}
 	wrong := claimed
 	wrong.LeaseEpoch++

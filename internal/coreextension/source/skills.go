@@ -105,7 +105,7 @@ func (a *SkillsSh) Inspect(ctx context.Context, req core.InspectRequest) (core.I
 		return core.Inspection{}, e
 	}
 	c := core.Candidate{ID: req.ID, Kind: core.KindSkill, Source: core.SourceSkillsSh, Name: req.ID, Description: rawString(root, "description", "summary"), Pin: req.Pin, Transport: core.TransportSkillStatic}
-	i, _, e := baseInspection(c, files, "")
+	i, _, e := baseInspection(c, files, "", false)
 	if e != nil {
 		return core.Inspection{}, e
 	}
@@ -130,7 +130,7 @@ func (a *SkillsSh) Fetch(ctx context.Context, c core.Candidate) (core.FetchArtif
 		return core.FetchArtifact{}, e
 	}
 	c.Description = rawString(root, "description", "summary")
-	i, artifact, e := baseInspection(c, files, "")
+	i, artifact, e := baseInspection(c, files, "", false)
 	if e != nil {
 		return core.FetchArtifact{}, e
 	}

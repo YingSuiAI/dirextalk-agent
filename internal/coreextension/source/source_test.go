@@ -48,6 +48,35 @@ func TestOfficialRegistryFixedResponses(t *testing.T) {
 	if err := i.Validate(); err != nil {
 		t.Fatalf("inspection: %v", err)
 	}
+	if i.Execution.Remote == nil || i.Execution.Remote.CredentialReferenceID != "" || len(i.SecretGrants) != 0 {
+		t.Fatalf("no-auth remote gained a credential binding: %#v", i)
+	}
+}
+
+func TestOfficialRegistryRemoteRequiresExactHeaderFreeTransport(t *testing.T) {
+	for _, headers := range []any{nil, []any{}} {
+		manifest := map[string]any{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp"}}}
+		if headers != nil {
+			manifest["remotes"].([]any)[0].(map[string]any)["headers"] = headers
+		}
+		remote, required, err := officialRemote(manifest)
+		if err != nil || remote == "" || required {
+			t.Fatalf("header-free remote=%q required=%v err=%v", remote, required, err)
+		}
+	}
+	unsupported := []map[string]any{
+		{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp", "headers": []any{map[string]any{"name": "Authorization", "isRequired": true, "isSecret": true}}}}},
+		{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp", "headers": []any{map[string]any{"name": "X-Optional", "isRequired": false}}}}},
+		{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp", "headers": []any{map[string]any{"name": "X-Fixed", "value": "fixed"}}}}},
+		{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://mcp.example.test/mcp", "headers": "malformed"}}},
+		{"remotes": []any{map[string]any{"type": "http", "url": "https://mcp.example.test/mcp"}}},
+		{"remotes": []any{map[string]any{"type": "streamable-http", "url": "https://one.example.test/mcp"}, map[string]any{"type": "streamable-http", "url": "https://two.example.test/mcp"}}},
+	}
+	for index, manifest := range unsupported {
+		if _, _, err := officialRemote(manifest); err != ErrUnsupported {
+			t.Fatalf("unsupported manifest[%d] err=%v", index, err)
+		}
+	}
 }
 
 func TestHTTPBoundaryRejectsOversizeRedirectAndRedactsToken(t *testing.T) {

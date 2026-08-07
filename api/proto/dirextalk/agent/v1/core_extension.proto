@@ -12,6 +12,7 @@ enum CoreSecretPurpose { CORE_SECRET_PURPOSE_UNSPECIFIED = 0; CORE_SECRET_PURPOS
 
 message CoreSourcePin { string registry_version = 1; string registry_sha256 = 2; string git_commit = 3; string git_sha256 = 4; }
 message CoreStaticEntry { string relative_path = 1; string digest = 2; repeated string argv = 3; }
+// credential_reference_id is empty for public Streamable HTTP endpoints.
 message CoreRemoteEndpoint { string url = 1; string credential_reference_id = 2; }
 message CoreSkillEntry { string relative_path = 1; string digest = 2; bool executable = 3; repeated string argv = 4; }
 message CoreExtensionSecretGrantDescriptor { string reference_id = 1; CoreSecretPurpose purpose = 2; string binding_digest = 3; bool configured = 4; }

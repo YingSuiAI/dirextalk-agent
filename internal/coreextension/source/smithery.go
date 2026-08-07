@@ -156,7 +156,7 @@ func (a *Smithery) Inspect(ctx context.Context, req core.InspectRequest) (core.I
 		return core.Inspection{}, err
 	}
 	files := []rawFile{{Path: "manifest.json", Content: string(b), Digest: digestBytes(b)}}
-	i, _, e := baseInspection(c, files, remote)
+	i, _, e := baseInspection(c, files, remote, true)
 	return i, e
 }
 func (a *Smithery) Fetch(ctx context.Context, c core.Candidate) (core.FetchArtifact, error) {
@@ -184,7 +184,7 @@ func (a *Smithery) Fetch(ctx context.Context, c core.Candidate) (core.FetchArtif
 	if err := a.c.validateRemote(ctx, remote); err != nil {
 		return core.FetchArtifact{}, err
 	}
-	i, artifact, e := baseInspection(cand, []rawFile{{Path: "manifest.json", Content: string(b)}}, remote)
+	i, artifact, e := baseInspection(cand, []rawFile{{Path: "manifest.json", Content: string(b)}}, remote, true)
 	if e != nil {
 		return core.FetchArtifact{}, e
 	}

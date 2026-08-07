@@ -336,10 +336,10 @@ func canonicalFiles(files []rawFile, max int64) ([]rawFile, []byte, error) {
 	return files, b, nil
 }
 
-func baseInspection(c core.Candidate, files []rawFile, remoteURL string) (core.Inspection, []byte, error) {
-	return baseInspectionLimit(c, files, remoteURL, DefaultMaxBody)
+func baseInspection(c core.Candidate, files []rawFile, remoteURL string, remoteCredentialRequired bool) (core.Inspection, []byte, error) {
+	return baseInspectionLimit(c, files, remoteURL, remoteCredentialRequired, DefaultMaxBody)
 }
-func baseInspectionLimit(c core.Candidate, files []rawFile, remoteURL string, max int64) (core.Inspection, []byte, error) {
+func baseInspectionLimit(c core.Candidate, files []rawFile, remoteURL string, remoteCredentialRequired bool, max int64) (core.Inspection, []byte, error) {
 	if err := c.Validate(); err != nil {
 		return core.Inspection{}, nil, core.ErrInvalid
 	}
@@ -358,7 +358,6 @@ func baseInspectionLimit(c core.Candidate, files []rawFile, remoteURL string, ma
 		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(remoteURL, "{}") {
 			return core.Inspection{}, nil, ErrUnsupported
 		}
-		ref := credentialRef(c.ID)
 		p := u.EscapedPath()
 		if p == "" {
 			p = "/"
@@ -369,9 +368,14 @@ func baseInspectionLimit(c core.Candidate, files []rawFile, remoteURL string, ma
 			fmt.Sscan(u.Port(), &n)
 			port = uint32(n)
 		}
-		i.Execution = core.ExecutionDescriptor{Remote: &core.RemoteEndpoint{URL: u.String(), CredentialReferenceID: ref}}
+		endpoint := &core.RemoteEndpoint{URL: u.String()}
 		i.NetworkGrants = []core.NetworkGrant{{Scheme: u.Scheme, Host: u.Hostname(), Port: port, PathPrefix: p, Digest: digestBytes([]byte(u.Scheme + "://" + u.Hostname() + p))}}
-		i.SecretGrants = []core.SecretGrantDescriptor{{ReferenceID: ref, Purpose: core.SecretPurposeMCPCredential, BindingDigest: digestBytes([]byte("credential:" + ref)), Configured: false}}
+		if remoteCredentialRequired {
+			ref := credentialRef(c.ID)
+			endpoint.CredentialReferenceID = ref
+			i.SecretGrants = []core.SecretGrantDescriptor{{ReferenceID: ref, Purpose: core.SecretPurposeMCPCredential, BindingDigest: digestBytes([]byte("credential:" + ref)), Configured: false}}
+		}
+		i.Execution = core.ExecutionDescriptor{Remote: endpoint}
 	} else if c.Kind == core.KindSkill {
 		var skill rawFile
 		found := false

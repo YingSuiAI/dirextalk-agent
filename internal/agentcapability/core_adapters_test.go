@@ -16,6 +16,7 @@ import (
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
@@ -315,6 +316,37 @@ func TestModelMutationsRequireCanonicalIdempotencyKey(t *testing.T) {
 				t.Fatalf("operation=%s request=%s err=%v", operation, request, err)
 			}
 		}
+	}
+}
+
+func TestModelConnectionResultUsesThePublicWireShape(t *testing.T) {
+	repo := coremodel.NewMemoryProfileRepository()
+	service, err := coremodel.NewService(repo, coremodel.ConnectionTesterFunc(func(context.Context, coremodel.Profile) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiKey := "write-only-key"
+	profileID := "11111111-1111-4111-8111-111111111111"
+	if _, err := service.Create(context.Background(), coremodel.CreateProfileCommand{
+		IdempotencyKey: "11111111-1111-4111-8111-111111111112",
+		Spec: coremodel.ProfileSpec{
+			ID: profileID, DisplayName: "Profile", Provider: coremodel.ProviderOpenAICompatible,
+			BaseURL: "https://example.com/v1", Model: "model", APIKey: &apiKey,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capability := &coreModelCapability{service: service}
+	raw, err := capability.HandleOperation(context.Background(), "test_model", []byte(`{"profile_id":"11111111-1111-4111-8111-111111111111","idempotency_key":"11111111-1111-4111-8111-111111111113"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["reachable"] != true || result["error_code"] != "" || result["OK"] != nil || result["ErrorCode"] != nil {
+		t.Fatalf("unexpected model test wire result: %s", raw)
 	}
 }
 
@@ -848,6 +880,96 @@ func TestCoreDescriptorsBindInputSchemaDigests(t *testing.T) {
 				t.Fatalf("%s/%s input schema digest mismatch", descriptor.GetCapabilityId(), operation.GetOperationId())
 			}
 		}
+	}
+}
+
+func TestExtensionMutationSchemasPublishOnlyWriteOnlySecretValue(t *testing.T) {
+	descriptor := (&coreExtensionCapability{}).Descriptor()
+	wantPurpose := map[string]string{
+		"install_mcp": "mcp_credential", "update_mcp": "mcp_credential",
+		"install_skill": "skill_secret", "update_skill": "skill_secret",
+	}
+	for _, operation := range descriptor.GetOperations() {
+		purpose, ok := wantPurpose[operation.GetOperationId()]
+		if !ok {
+			continue
+		}
+		var schema struct {
+			AdditionalProperties bool `json:"additionalProperties"`
+			Properties           map[string]struct {
+				Items struct {
+					AdditionalProperties bool                      `json:"additionalProperties"`
+					Properties           map[string]map[string]any `json:"properties"`
+				} `json:"items"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal([]byte(operation.GetInputSchemaJson()), &schema); err != nil {
+			t.Fatalf("%s schema: %v", operation.GetOperationId(), err)
+		}
+		secretItems := schema.Properties["secret_inputs"].Items
+		if schema.AdditionalProperties || secretItems.AdditionalProperties || secretItems.Properties["secret_value"]["writeOnly"] != true || secretItems.Properties["purpose"]["const"] != purpose {
+			t.Fatalf("unsafe %s secret schema: %s", operation.GetOperationId(), operation.GetInputSchemaJson())
+		}
+		if _, legacy := secretItems.Properties["value"]; legacy || strings.Contains(operation.GetInputSchemaJson(), `"value"`) {
+			t.Fatalf("%s publishes legacy generic value alias: %s", operation.GetOperationId(), operation.GetInputSchemaJson())
+		}
+		delete(wantPurpose, operation.GetOperationId())
+	}
+	if len(wantPurpose) != 0 {
+		t.Fatalf("missing extension mutation schemas: %v", wantPurpose)
+	}
+}
+
+type capturingExtensionService struct {
+	coreextension.Service
+	mutation coreextension.Mutation
+	calls    int
+}
+
+func (s *capturingExtensionService) RequestInstall(_ context.Context, mutation coreextension.Mutation) (coreextension.MutationResult, error) {
+	s.calls++
+	s.mutation = mutation
+	return coreextension.MutationResult{}, nil
+}
+
+func TestExtensionMutationHandlerRejectsLegacySecretValueAlias(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	ref := uuid.NewString()
+	candidate := coreextension.Candidate{ID: "fixture", Kind: coreextension.KindMCP, Source: coreextension.SourceOfficialRegistry, Name: "fixture", Pin: coreextension.SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: digest}, Transport: coreextension.TransportStreamableHTTP}
+	inspection := coreextension.Inspection{
+		Candidate: candidate, ContentDigest: digest, ManifestDigest: digest, ExecutionDigest: digest, NetworkSchemaDigest: digest, SecretSchemaDigest: digest,
+		Execution:     coreextension.ExecutionDescriptor{Remote: &coreextension.RemoteEndpoint{URL: "https://example.com/mcp", CredentialReferenceID: ref}},
+		NetworkGrants: []coreextension.NetworkGrant{{Scheme: "https", Host: "example.com", Port: 443, PathPrefix: "/mcp", Digest: digest}},
+		SecretGrants:  []coreextension.SecretGrantDescriptor{{ReferenceID: ref, Purpose: coreextension.SecretPurposeMCPCredential, BindingDigest: digest}},
+	}
+	base := map[string]any{"idempotency_key": uuid.NewString(), "candidate": candidate, "inspection": inspection}
+	for _, test := range []struct {
+		name      string
+		secret    map[string]any
+		wantError bool
+	}{
+		{name: "write-only field", secret: map[string]any{"reference_id": ref, "purpose": "mcp_credential", "secret_value": "token"}},
+		{name: "legacy alias", secret: map[string]any{"reference_id": ref, "purpose": "mcp_credential", "value": "token"}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := map[string]any{}
+			for key, value := range base {
+				input[key] = value
+			}
+			input["secret_inputs"] = []any{test.secret}
+			raw, _ := json.Marshal(input)
+			service := &capturingExtensionService{}
+			_, err := (&coreExtensionCapability{service: service}).HandleOperation(context.Background(), "install_mcp", raw)
+			if test.wantError {
+				if !errors.Is(err, coreextension.ErrInvalid) || service.calls != 0 {
+					t.Fatalf("legacy alias err=%v", err)
+				}
+				return
+			}
+			if err != nil || service.calls != 1 || len(service.mutation.SecretInputs) != 1 || service.mutation.SecretInputs[0].Value != "token" {
+				t.Fatalf("calls=%d mutation=%#v err=%v", service.calls, service.mutation, err)
+			}
+		})
 	}
 }
 

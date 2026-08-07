@@ -534,8 +534,8 @@ func (s *Service) ResolveDefaultProfileID(ctx context.Context, modelKind string)
 }
 
 type ConnectionTestResult struct {
-	OK        bool
-	ErrorCode string
+	OK        bool   `json:"reachable"`
+	ErrorCode string `json:"error_code"`
 }
 
 func (s *Service) TestConnection(ctx context.Context, id string) (ConnectionTestResult, error) {

@@ -423,6 +423,7 @@ func (x *CoreStaticEntry) GetArgv() []string {
 	return nil
 }
 
+// credential_reference_id is empty for public Streamable HTTP endpoints.
 type CoreRemoteEndpoint struct {
 	state                 protoimpl.MessageState `protogen:"open.v1"`
 	Url                   string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`

@@ -213,8 +213,11 @@ retry and new proposals stay blocked until explicit operational reconciliation.
 
 Extensions are discovered from pinned sources and persisted with immutable
 version, content, artifact, schema, network, and secret bindings. MCP supports
-local stdio and remote HTTPS Streamable HTTP; Skills use the pinned Skill
-artifact and instructions. Local code runs only through the separate Linux
+local stdio and remote HTTPS Streamable HTTP. A remote registry declaration
+without required authentication has no credential reference or secret grant and
+sends no Authorization header; a supported required bearer credential keeps its
+write-only, version-bound secret grant. Skills use the pinned Skill artifact and
+instructions. Local code runs only through the separate Linux
 extension runner with another UID, namespaces, a task workspace, and explicit
 secrets. No in-process or unconfirmed fallback is allowed.
 The task workspace root is one runner-owned, Agent-group-writable boundary

@@ -125,6 +125,35 @@ func registryCandidate(m map[string]any) (core.Candidate, bool) {
 	return core.Candidate{ID: candidateID(string(core.SourceOfficialRegistry), id), Kind: core.KindMCP, Source: core.SourceOfficialRegistry, Name: name, Description: desc, Pin: pin, Transport: transport}, true
 }
 
+// officialRemote resolves the only official-registry remote shape the Agent
+// can execute without changing its semantics: one header-free Streamable HTTP
+// endpoint. The current runtime can add only its own Bearer header; registry
+// header declarations (including optional or secret ones) are not enough to
+// prove that transformation is lossless, so they fail closed.
+func officialRemote(m map[string]any) (string, bool, error) {
+	rs := rawSlice(m["remotes"])
+	if len(rs) != 1 {
+		return "", false, ErrUnsupported
+	}
+	rm := rawMap(rs[0])
+	if rm == nil || strings.ToLower(strings.TrimSpace(rawString(rm, "type", "transport"))) != "streamable-http" {
+		return "", false, ErrUnsupported
+	}
+	remote := rawString(rm, "url", "endpoint")
+	if remote == "" {
+		return "", false, ErrUnsupported
+	}
+	rawHeaders, hasHeaders := rm["headers"]
+	headers := rawSlice(rawHeaders)
+	if hasHeaders && headers == nil {
+		return "", false, ErrUnsupported
+	}
+	if len(headers) != 0 {
+		return "", false, ErrUnsupported
+	}
+	return remote, false, nil
+}
+
 func (a *OfficialRegistry) Inspect(ctx context.Context, req core.InspectRequest) (core.Inspection, error) {
 	if req.Kind != core.KindMCP || req.Source != core.SourceOfficialRegistry || req.ID == "" || req.Pin.RegistryVersion == "" {
 		return core.Inspection{}, core.ErrInvalid
@@ -152,23 +181,15 @@ func (a *OfficialRegistry) Inspect(ctx context.Context, req core.InspectRequest)
 	if cand.Pin != req.Pin || cand.ID != req.ID {
 		return core.Inspection{}, ErrMalformed
 	}
-	remote := ""
 	files := []rawFile{{Path: "manifest.json", Content: string(b), Digest: digestBytes(b)}}
-	if rs := rawSlice(m["remotes"]); len(rs) > 0 {
-		rm := rawMap(rs[0])
-		typ := strings.ToLower(rawString(rm, "type", "transport"))
-		if strings.Contains(typ, "sse") || strings.Contains(typ, "template") {
-			return core.Inspection{}, ErrUnsupported
-		}
-		remote = rawString(rm, "url", "endpoint")
-	}
-	if remote == "" {
-		return core.Inspection{}, ErrUnsupported
+	remote, requiresCredential, err := officialRemote(m)
+	if err != nil {
+		return core.Inspection{}, err
 	}
 	if err := a.c.validateRemote(ctx, remote); err != nil {
 		return core.Inspection{}, err
 	}
-	i, _, err := baseInspection(cand, files, remote)
+	i, _, err := baseInspection(cand, files, remote, requiresCredential)
 	return i, err
 }
 
@@ -188,18 +209,14 @@ func (a *OfficialRegistry) Fetch(ctx context.Context, c core.Candidate) (core.Fe
 	if !ok || cand.ID != c.ID || cand.Pin != c.Pin {
 		return core.FetchArtifact{}, ErrMalformed
 	}
-	remote := ""
-	if rs := rawSlice(m["remotes"]); len(rs) > 0 {
-		rm := rawMap(rs[0])
-		remote = rawString(rm, "url", "endpoint")
-	}
-	if remote == "" {
-		return core.FetchArtifact{}, ErrUnsupported
+	remote, requiresCredential, err := officialRemote(m)
+	if err != nil {
+		return core.FetchArtifact{}, err
 	}
 	if err := a.c.validateRemote(ctx, remote); err != nil {
 		return core.FetchArtifact{}, err
 	}
-	i, artifact, err := baseInspection(cand, []rawFile{{Path: "manifest.json", Content: string(b)}}, remote)
+	i, artifact, err := baseInspection(cand, []rawFile{{Path: "manifest.json", Content: string(b)}}, remote, requiresCredential)
 	if err != nil {
 		return core.FetchArtifact{}, err
 	}

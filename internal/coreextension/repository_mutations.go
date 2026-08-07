@@ -215,6 +215,9 @@ func validateSecretInputs(m Mutation) error {
 	}
 	if m.Inspection.Execution.Remote != nil {
 		ref := m.Inspection.Execution.Remote.CredentialReferenceID
+		if ref == "" {
+			return nil
+		}
 		found := false
 		for _, g := range m.Inspection.SecretGrants {
 			if g.ReferenceID == ref {

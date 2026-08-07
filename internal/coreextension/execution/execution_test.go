@@ -176,6 +176,9 @@ func (testSecret) ResolveExactBound(context.Context, string, string, string, str
 
 func TestRemoteExecutorTLSListAndCall(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
+		}
 		var req struct {
 			Method string `json:"method"`
 			ID     uint64 `json:"id"`
@@ -209,6 +212,35 @@ func TestRemoteExecutorTLSListAndCall(t *testing.T) {
 	result, err := e.ExecuteBoundExact(context.Background(), endpoint, installationID, versionID, purpose, bindingDigest, "mcp__mcp__echo", json.RawMessage(`{}`))
 	if err != nil || result.Text != "ok" {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestRemoteExecutorWithoutCredentialOmitsAuthorization(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("unexpected authorization=%q", got)
+		}
+		var req struct {
+			Method string `json:"method"`
+			ID     uint64 `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "initialize":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{}}}`, req.ID)
+		case "tools/list":
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}`, req.ID)
+		default:
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":{}}`))
+		}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	e := &RemoteExecutor{Options: []mcphttp.Option{mcphttp.WithEndpointPolicy(mcphttp.EndpointPolicyFunc(func(context.Context, *url.URL) error { return nil })), mcphttp.WithRoundTripper(srv.Client().Transport)}}
+	tools, err := e.ListToolsBoundExact(context.Background(), core.RemoteEndpoint{URL: u.String()}, uuid.NewString(), uuid.NewString(), "", "")
+	if err != nil || len(tools) != 1 || tools[0].Name != "mcp__mcp__echo" {
+		t.Fatalf("tools=%#v err=%v", tools, err)
 	}
 }
 

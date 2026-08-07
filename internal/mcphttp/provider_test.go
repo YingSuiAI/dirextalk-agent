@@ -89,6 +89,27 @@ func TestProviderNegotiatesStreamableHTTPAndCallsTool(t *testing.T) {
 	capture.assertAuthorizationRemoved(t)
 }
 
+func TestProviderWithoutCredentialOmitsAuthorization(t *testing.T) {
+	t.Parallel()
+	harness := &mcpHarness{t: t, tools: []map[string]any{{"name": "ping", "inputSchema": map[string]any{"type": "object"}}}}
+	server := httptest.NewTLSServer(http.HandlerFunc(harness.handle))
+	t.Cleanup(server.Close)
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.Header.Get("Authorization"); got != "" {
+			return nil, fmt.Errorf("unexpected authorization header %q", got)
+		}
+		return server.Client().Transport.RoundTrip(request)
+	})
+	provider, err := New([]ServerConfig{{ID: "public", Endpoint: server.URL + "/mcp"}}, nil, WithEndpointPolicy(allowEndpointPolicy), WithRoundTripper(transport))
+	if err != nil {
+		t.Fatalf("new provider: %v", err)
+	}
+	tools, err := provider.Tools(context.Background())
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("tools=%#v err=%v", tools, err)
+	}
+}
+
 func TestProviderCancellationAndTimeout(t *testing.T) {
 	t.Parallel()
 

@@ -195,7 +195,7 @@ func (a *GitHub) inspectRepo(ctx context.Context, repo string, kind core.Kind, p
 			return core.Inspection{}, nil, err
 		}
 	}
-	i, artifact, e := baseInspectionLimit(c, files, remote, a.c.max)
+	i, artifact, e := baseInspectionLimit(c, files, remote, true, a.c.max)
 	if e != nil {
 		return core.Inspection{}, nil, e
 	}

@@ -24,7 +24,10 @@ contract](message-server-integration-development-contract.md), and
   its Capability operation identity is the public turn identity while the
   client-message request identity remains a separate idempotency fence.
 - Agent-owned encrypted Tavily Web Search configuration and guarded dispatch.
-- MCP/Skill lifecycle with isolated extension-runner execution.
+- MCP/Skill lifecycle with isolated extension-runner execution. Official
+  Registry remotes are accepted only when the manifest declares exactly one
+  header-free `streamable-http` endpoint; other header or transport shapes
+  fail closed because the current runtime cannot reproduce them losslessly.
 - Knowledge mounts, uploads, memory, indexing, and semantic-search composition.
 - Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
   and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
@@ -63,6 +66,12 @@ support.
 
 ## Verified evidence
 
+- On **2026-08-07**, focused extension, MCP HTTP, and Agent Capability tests
+  covered exact header-free official-registry inspection, installation without
+  secret input, credential-free invocation, omitted Authorization headers,
+  fail-closed declared headers, and write-only public secret inputs. The
+  opt-in PostgreSQL execution integration test carries the public remote
+  through persisted install, `RequestTask`, confirmation, claim, and `Resolve`.
 - Linux isolation verification passed in privileged cgroup-v2 and non-root
   delegated systemd scopes, covering detached roots, hidden host/config paths,
   denied network, explicit secret exposure, descendant cancellation,

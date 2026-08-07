@@ -2,6 +2,7 @@ package coreextension
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -102,6 +103,27 @@ func TestRemoteRequiresExactGrantAndCredential(t *testing.T) {
 	i.NetworkGrants[0].PathPrefix = "/other"
 	if i.Validate() == nil {
 		t.Fatal("grant drift accepted")
+	}
+}
+
+func TestRemoteWithoutCredentialRequiresNoSecretGrant(t *testing.T) {
+	d := strings.Repeat("a", 64)
+	c := Candidate{ID: "public-remote", Kind: KindMCP, Source: SourceOfficialRegistry, Name: "public-remote", Pin: SourcePin{RegistryVersion: "1", RegistrySHA256: d}, Transport: TransportStreamableHTTP}
+	i := Inspection{
+		Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d,
+		Execution:     ExecutionDescriptor{Remote: &RemoteEndpoint{URL: "https://example.com/mcp"}},
+		NetworkGrants: []NetworkGrant{{Scheme: "https", Host: "example.com", Port: 443, PathPrefix: "/mcp", Digest: d}},
+	}
+	if err := i.Validate(); err != nil {
+		t.Fatalf("no-auth inspection: %v", err)
+	}
+	raw, err := json.Marshal(i.Execution.Remote)
+	if err != nil || !strings.Contains(string(raw), `"credential_reference_id":""`) {
+		t.Fatalf("public remote projection must retain empty credential reference: %s err=%v", raw, err)
+	}
+	i.SecretGrants = []SecretGrantDescriptor{{ReferenceID: uuid.NewString(), Purpose: SecretPurposeMCPCredential, BindingDigest: d}}
+	if i.Validate() == nil {
+		t.Fatal("no-auth remote accepted an unrelated MCP credential grant")
 	}
 }
 
@@ -501,6 +523,31 @@ func TestServerSideInspectFetchAndArtifactReceipt(t *testing.T) {
 	got, _ := r.Get(context.Background(), res.Installation.ID)
 	if got.Versions[0].ArtifactPath != "artifacts/x" || got.Versions[0].ArtifactDigest != d {
 		t.Fatalf("artifact receipt: %#v", got.Versions[0])
+	}
+}
+
+func TestServerSideInstallPublicRemoteWithoutSecret(t *testing.T) {
+	d := digestBytes([]byte("artifact"))
+	c := Candidate{ID: "public-remote", Kind: KindMCP, Source: SourceOfficialRegistry, Name: "public-remote", Pin: SourcePin{RegistryVersion: "1", RegistrySHA256: d}, Transport: TransportStreamableHTTP}
+	ins := Inspection{
+		Candidate: c, ContentDigest: d, ManifestDigest: d, ExecutionDigest: d, NetworkSchemaDigest: d, SecretSchemaDigest: d,
+		Execution:     ExecutionDescriptor{Remote: &RemoteEndpoint{URL: "https://example.com/mcp"}},
+		NetworkGrants: []NetworkGrant{{Scheme: "https", Host: "example.com", Port: 443, PathPrefix: "/mcp", Digest: d}},
+	}
+	a := testAdapter{inspection: ins, artifact: FetchArtifact{Candidate: c, Content: []byte("artifact"), ContentDigest: d, Inspection: ins}}
+	reg := NewRegistry()
+	if err := reg.Register(SourceOfficialRegistry, a); err != nil {
+		t.Fatal(err)
+	}
+	r := NewMemoryRepository()
+	svc := NewServiceWithStores(serviceTestRepository{r}, reg, nil, &testArtifacts{}, NewFingerprintSecretStore())
+	res, err := svc.RequestInstall(context.Background(), Mutation{IdempotencyKey: uuid.NewString(), Candidate: c, Inspection: ins})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Get(context.Background(), res.Installation.ID)
+	if err != nil || len(got.Versions) != 1 || len(got.Versions[0].SecretGrants) != 0 || got.Versions[0].Execution.Remote == nil || got.Versions[0].Execution.Remote.CredentialReferenceID != "" {
+		t.Fatalf("public remote installation=%#v err=%v", got, err)
 	}
 }
 

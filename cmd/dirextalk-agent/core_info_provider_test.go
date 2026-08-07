@@ -50,7 +50,10 @@ func TestCoreInfoProviderProjectsReadyDescriptorsToStableClientTokens(t *testing
 		coreInfoDescriptor("agent.voice.v1", true),
 		coreInfoDescriptor("agent.web_search.v1", true, "get_config", "update_config", "test"),
 		coreInfoDescriptor("agent.confirmations.v1", true),
-		coreInfoDescriptor("agent.skills.v1", true, "invoke_product", "list_mcp", "discover_skill"),
+		coreInfoDescriptor("agent.skills.v1", true, append(
+			append([]string{"invoke_product"}, coreMCPRequiredOperations...),
+			coreSkillsRequiredOperations...,
+		)...),
 		coreInfoDescriptor("agent.aws.v1", true),
 		coreInfoDescriptor("agent.models.v1", true),
 		coreInfoDescriptor("agent.knowledge.v1", true),
@@ -123,6 +126,73 @@ func TestCoreInfoProviderDoesNotInferSkillsOrExecutionTokens(t *testing.T) {
 	if !reflect.DeepEqual(backends.Core.Capabilities, want) {
 		t.Fatalf("Core capabilities = %#v, want %#v", backends.Core.Capabilities, want)
 	}
+}
+
+func TestCoreSkillsTokensRequireCompleteTypedLifecycles(t *testing.T) {
+	tests := []struct {
+		name       string
+		operations []string
+		want       []string
+	}{
+		{
+			name:       "mcp missing enable",
+			operations: coreInfoOperationsWithout(coreMCPRequiredOperations, "enable_mcp"),
+			want:       nil,
+		},
+		{
+			name:       "mcp missing disable",
+			operations: coreInfoOperationsWithout(coreMCPRequiredOperations, "disable_mcp"),
+			want:       nil,
+		},
+		{
+			name:       "mcp missing execute",
+			operations: coreInfoOperationsWithout(coreMCPRequiredOperations, "execute_mcp"),
+			want:       nil,
+		},
+		{
+			name:       "mcp complete",
+			operations: coreMCPRequiredOperations,
+			want:       []string{"mcp"},
+		},
+		{
+			name:       "skills missing enable",
+			operations: coreInfoOperationsWithout(coreSkillsRequiredOperations, "enable_skill"),
+			want:       nil,
+		},
+		{
+			name:       "skills missing disable",
+			operations: coreInfoOperationsWithout(coreSkillsRequiredOperations, "disable_skill"),
+			want:       nil,
+		},
+		{
+			name:       "skills missing execute",
+			operations: coreInfoOperationsWithout(coreSkillsRequiredOperations, "invoke_skill"),
+			want:       nil,
+		},
+		{
+			name:       "skills complete",
+			operations: coreSkillsRequiredOperations,
+			want:       []string{"skills.server"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := coreSkillsTokens(coreInfoDescriptor("agent.skills.v1", true, tt.operations...))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("coreSkillsTokens() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func coreInfoOperationsWithout(operations []string, excluded string) []string {
+	result := make([]string, 0, len(operations)-1)
+	for _, operation := range operations {
+		if operation != excluded {
+			result = append(result, operation)
+		}
+	}
+	return result
 }
 
 func coreInfoDescriptor(id string, readiness bool, operations ...string) *capv1.CapabilityDescriptor {

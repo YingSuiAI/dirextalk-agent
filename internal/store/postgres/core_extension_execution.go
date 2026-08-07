@@ -314,16 +314,11 @@ func (c *PostgresExtensionExecutionCoordinator) Resolve(ctx context.Context, tas
 		if p.Operation != coretask.ExtensionOperationExecuteTool || p.ToolName == "" {
 			return execution.Invocation{}, coretask.ErrConflict
 		}
-		binding := ""
-		for _, g := range version.SecretGrants {
-			if g.ReferenceID == version.Execution.Remote.CredentialReferenceID {
-				binding = g.BindingDigest
-			}
+		purpose, binding, bindErr := remoteCredentialBinding(version)
+		if bindErr != nil {
+			return execution.Invocation{}, bindErr
 		}
-		if binding == "" {
-			return execution.Invocation{}, execution.ErrSecretBinding
-		}
-		return execution.Invocation{Kind: coreextension.KindMCP, Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: pinned.VersionID, Purpose: string(coreextension.SecretPurposeMCPCredential), BindingDigest: binding, Tool: p.ToolName, Input: append(json.RawMessage(nil), p.CanonicalInputJSON...)}}, nil
+		return execution.Invocation{Kind: coreextension.KindMCP, Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: pinned.VersionID, Purpose: purpose, BindingDigest: binding, Tool: p.ToolName, Input: append(json.RawMessage(nil), p.CanonicalInputJSON...)}}, nil
 	}
 	if version.Execution.Skill != nil && p.Operation == coretask.ExtensionOperationExecuteSkill {
 		if len(version.ArtifactDigest) != 64 || p.ArtifactDigest != version.ArtifactDigest {
@@ -454,16 +449,11 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		if toolName == "" {
 			return execution.Invocation{}, coretask.ErrConflict
 		}
-		binding := ""
-		for _, g := range version.SecretGrants {
-			if g.ReferenceID == version.Execution.Remote.CredentialReferenceID {
-				binding = g.BindingDigest
-			}
+		purpose, binding, bindErr := remoteCredentialBinding(version)
+		if bindErr != nil {
+			return execution.Invocation{}, bindErr
 		}
-		if binding == "" {
-			return execution.Invocation{}, execution.ErrSecretBinding
-		}
-		return execution.Invocation{Kind: coreextension.KindMCP, Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: p.VersionID, Purpose: string(coreextension.SecretPurposeMCPCredential), BindingDigest: binding, Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...)}}, nil
+		return execution.Invocation{Kind: coreextension.KindMCP, Remote: &execution.RemoteInvocation{Endpoint: *version.Execution.Remote, InstallationID: p.InstallationID, VersionID: p.VersionID, Purpose: purpose, BindingDigest: binding, Tool: toolName, Input: append(json.RawMessage(nil), argsJSON...)}}, nil
 	}
 	if version.Execution.Skill != nil {
 		if version.Execution.Skill.Executable && c.WorkspaceRoot == "" {
@@ -476,6 +466,22 @@ func (c *PostgresExtensionExecutionCoordinator) ResolveConversationInvocation(ct
 		return execution.Invocation{Kind: coreextension.KindSkill, Skill: skill}, nil
 	}
 	return execution.Invocation{}, coretask.ErrConflict
+}
+
+func remoteCredentialBinding(version coreextension.VersionRecord) (string, string, error) {
+	if version.Execution.Remote == nil {
+		return "", "", coreextension.ErrInvalid
+	}
+	ref := version.Execution.Remote.CredentialReferenceID
+	if ref == "" {
+		return "", "", nil
+	}
+	for _, grant := range version.SecretGrants {
+		if grant.ReferenceID == ref && grant.Purpose == coreextension.SecretPurposeMCPCredential && grant.Configured && grant.BindingDigest != "" {
+			return string(coreextension.SecretPurposeMCPCredential), grant.BindingDigest, nil
+		}
+	}
+	return "", "", execution.ErrSecretBinding
 }
 
 func secretBindings(installationID, versionID string, v coreextension.VersionRecord) []execution.SecretBinding {
