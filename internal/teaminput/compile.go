@@ -12,6 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/security"
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
@@ -113,7 +114,7 @@ func Compile(request CompileRequest) (CompiledInput, error) {
 		ModelProvider:      role.ModelProvider,
 		Model:              role.Model,
 		ModelInterface:     modelInterface,
-		MaxOutputTokens:    role.Tokens.OutputMaximum,
+		MaxOutputTokens:    runtimeRequestOutputTokens(role),
 		CredentialSlot:     role.ModelCredentialSlot,
 		IncludePatch:       includePatch,
 	}
@@ -269,6 +270,16 @@ func Compile(request CompileRequest) (CompiledInput, error) {
 			role.ModelCredentialSlot,
 		),
 	}, nil
+}
+
+func runtimeRequestOutputTokens(role teamexecution.RoleV1) uint64 {
+	maximum := role.Tokens.OutputMaximum
+	if role.RuntimeAdapter == teamplan.AdapterPiV1 &&
+		strings.EqualFold(role.ModelProvider, "deepseek") &&
+		maximum > runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
+		return runtimebounds.PiDeepSeekMaximumRequestOutputTokens
+	}
+	return maximum
 }
 
 func teamInputObjectName(

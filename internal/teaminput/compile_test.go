@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/recipe"
+	"github.com/YingSuiAI/dirextalk-agent/internal/runtimebounds"
 	"github.com/YingSuiAI/dirextalk-agent/internal/task"
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
 	"github.com/YingSuiAI/dirextalk-agent/internal/teamexecution"
@@ -136,6 +137,47 @@ func TestCompileCarriesQualifiedPiAdapterIntoRuntimeTask(t *testing.T) {
 		compiled.RuntimeTask.RuntimeVersion != "0.83.0" ||
 		compiled.RuntimeTask.RuntimeReleaseID != role.RuntimeReleaseID {
 		t.Fatalf("Pi runtime task = %#v", compiled.RuntimeTask)
+	}
+}
+
+func TestCompileBoundsPiDeepSeekRequestWithoutReducingTaskBudget(t *testing.T) {
+	t.Parallel()
+	execution, _ := teamInputExecutionFixture(t)
+	role := &execution.Roles[1]
+	role.RuntimeFamily = teamplan.RuntimePi
+	role.RuntimeVersion = "0.83.0"
+	role.RuntimeAdapter = teamplan.AdapterPiV1
+	role.RuntimeReleaseID = uuid.NewString()
+	role.ModelProvider = "deepseek"
+	role.Model = "deepseek-v4-pro"
+	role.ModelInterface = teamplan.ModelOpenAICompatible
+	role.Tokens.OutputMinimum = 512
+	role.Tokens.OutputExpected = 100_000
+	role.Tokens.OutputMaximum = 1_000_000
+	executionDigest, err := execution.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := Compile(
+		teamInputCompileRequest(execution, executionDigest),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compiled.Destroy()
+	if compiled.RuntimeTask.MaxOutputTokens !=
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
+		t.Fatalf(
+			"Pi request max output tokens = %d",
+			compiled.RuntimeTask.MaxOutputTokens,
+		)
+	}
+	if compiled.CredentialGrant.MaximumOutputTokens !=
+		role.Tokens.OutputMaximum {
+		t.Fatalf(
+			"task output budget = %d",
+			compiled.CredentialGrant.MaximumOutputTokens,
+		)
 	}
 }
 
