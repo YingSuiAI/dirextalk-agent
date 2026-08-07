@@ -140,7 +140,7 @@ func TestCompileCarriesQualifiedPiAdapterIntoRuntimeTask(t *testing.T) {
 	}
 }
 
-func TestCompileBoundsPiDeepSeekRequestWithoutReducingTaskBudget(t *testing.T) {
+func TestCompileBindsPiDeepSeekRequestAndCredentialOutputLimits(t *testing.T) {
 	t.Parallel()
 	execution, _ := teamInputExecutionFixture(t)
 	role := &execution.Roles[1]
@@ -173,9 +173,9 @@ func TestCompileBoundsPiDeepSeekRequestWithoutReducingTaskBudget(t *testing.T) {
 		)
 	}
 	if compiled.CredentialGrant.MaximumOutputTokens !=
-		role.Tokens.OutputMaximum {
+		runtimebounds.PiDeepSeekMaximumRequestOutputTokens {
 		t.Fatalf(
-			"task output budget = %d",
+			"credential output limit = %d",
 			compiled.CredentialGrant.MaximumOutputTokens,
 		)
 	}

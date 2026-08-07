@@ -224,7 +224,7 @@ func Compile(request CompileRequest) (CompiledInput, error) {
 		Model:                  role.Model,
 		ModelInterface:         modelInterface,
 		MaximumInputTokens:     role.Tokens.InputMaximum,
-		MaximumOutputTokens:    role.Tokens.OutputMaximum,
+		MaximumOutputTokens:    runtimeRequestOutputTokens(role),
 		MaximumDurationSeconds: role.Duration.MaximumSeconds,
 	}
 	if validateCredentialGrant(credentialGrant) != nil {
