@@ -34,6 +34,7 @@ const (
 	TaskKindAgent            TaskKind = "agent"
 	TaskKindExtension        TaskKind = "extension"
 	TaskKindKnowledgeIndex   TaskKind = "knowledge_index"
+	TaskKindMemoryReconcile  TaskKind = "memory_reconcile"
 	TaskKindAWSChange        TaskKind = "aws_change"
 	TaskKindWorkload         TaskKind = "workload"
 	TaskKindConversationTool TaskKind = "conversation_tool"
@@ -105,6 +106,15 @@ type KnowledgeIndexTaskPayload struct {
 	CollectionConfigDigest string   `json:"collection_config_digest"`
 }
 
+// MemoryReconcileTaskPayload pins the completed conversation turn and the
+// deterministic contracts which will review the model's untrusted memory
+// candidates. The task never contains candidate text or credentials.
+type MemoryReconcileTaskPayload struct {
+	TurnID                 string `json:"turn_id"`
+	CandidateSchemaVersion int    `json:"candidate_schema_version"`
+	PolicyVersion          int    `json:"policy_version"`
+}
+
 type AWSChangeTaskPayload struct {
 	ChangeID string `json:"change_id"`
 }
@@ -114,6 +124,7 @@ type TaskPayload struct {
 	ConversationTool *ConversationToolTaskPayload `json:"conversation_tool,omitempty"`
 	Extension        *ExtensionTaskPayload        `json:"extension,omitempty"`
 	KnowledgeIndex   *KnowledgeIndexTaskPayload   `json:"knowledge_index,omitempty"`
+	MemoryReconcile  *MemoryReconcileTaskPayload  `json:"memory_reconcile,omitempty"`
 	AWSChange        *AWSChangeTaskPayload        `json:"aws_change,omitempty"`
 	Workload         *WorkloadTaskPayload         `json:"workload,omitempty"`
 }
@@ -259,10 +270,10 @@ func (s TaskSpec) Normalize() (TaskSpec, error) {
 	if err := normalizePayload(&s); err != nil {
 		return TaskSpec{}, err
 	}
-	if (s.Kind == TaskKindAgent || s.Kind == TaskKindKnowledgeIndex) && !ValidUUID(s.ModelProfileID) {
+	if (s.Kind == TaskKindAgent || s.Kind == TaskKindKnowledgeIndex || s.Kind == TaskKindMemoryReconcile) && !ValidUUID(s.ModelProfileID) {
 		return TaskSpec{}, ErrInvalid
 	}
-	if s.Kind != TaskKindAgent && s.Kind != TaskKindKnowledgeIndex && s.ModelProfileID != "" && !ValidUUID(s.ModelProfileID) {
+	if s.Kind != TaskKindAgent && s.Kind != TaskKindKnowledgeIndex && s.Kind != TaskKindMemoryReconcile && s.ModelProfileID != "" && !ValidUUID(s.ModelProfileID) {
 		return TaskSpec{}, ErrInvalid
 	}
 	if s.Kind != TaskKindAgent && (s.ConversationID != "" || len(s.AttachmentRefs) != 0 || len(s.Extensions) != 0 || len(s.KnowledgeRefs) != 0) {
@@ -296,6 +307,9 @@ func normalizePayload(s *TaskSpec) error {
 		count++
 	}
 	if s.Payload.KnowledgeIndex != nil {
+		count++
+	}
+	if s.Payload.MemoryReconcile != nil {
 		count++
 	}
 	if s.Payload.AWSChange != nil {
@@ -376,6 +390,15 @@ func normalizePayload(s *TaskSpec) error {
 			if p.SourceIDs[i] <= p.SourceIDs[i-1] {
 				return ErrInvalid
 			}
+		}
+	case TaskKindMemoryReconcile:
+		if count != 1 || s.Payload.MemoryReconcile == nil {
+			return ErrInvalid
+		}
+		p := s.Payload.MemoryReconcile
+		p.TurnID = strings.TrimSpace(p.TurnID)
+		if !ValidUUID(p.TurnID) || p.CandidateSchemaVersion != 1 || p.PolicyVersion != 1 {
+			return ErrInvalid
 		}
 	case TaskKindAWSChange:
 		if count != 1 || s.Payload.AWSChange == nil || !ValidUUID(strings.TrimSpace(s.Payload.AWSChange.ChangeID)) {

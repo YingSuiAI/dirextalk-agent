@@ -88,7 +88,7 @@ func (s *CoreTaskStore) createTaskTx(ctx context.Context, tx pgx.Tx, rawSpec cor
 	if _, err = tx.Exec(ctx, `INSERT INTO core_task_execution_snapshots(task_id,snapshot_json,snapshot_digest) VALUES($1,$2,$3)`, id, snapshotRaw, snapshot.Digest); err != nil {
 		return coretask.Task{}, err
 	}
-	if spec.Kind == coretask.TaskKindAgent {
+	if spec.Kind == coretask.TaskKindAgent || spec.Kind == coretask.TaskKindMemoryReconcile {
 		if _, err = tx.Exec(ctx, `INSERT INTO core_model_profile_active_refs(owner_kind,owner_id,profile_id) VALUES('task',$1,$2)`, id, spec.ModelProfileID); err != nil {
 			return coretask.Task{}, err
 		}

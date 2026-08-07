@@ -58,4 +58,8 @@ func TestCoreTaskRoundPolicyPersistsBeyondEightPostgres(t *testing.T) {
 			t.Fatalf("stored round %d = %+v, %v", round, stored, getErr)
 		}
 	}
+	latest, err := tasks.LatestModelRound(ctx, claimed.ID, coretask.MaxAgentLedgerRounds-1)
+	if err != nil || latest.State != coretask.ModelRoundCompleted || latest.Attempt != claimed.Attempt {
+		t.Fatalf("latest model receipt = %+v, %v", latest, err)
+	}
 }

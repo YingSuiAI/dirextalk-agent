@@ -245,6 +245,24 @@ func (s *CoreTaskStore) toolTx(ctx context.Context, tx rowQuerier, taskID string
 func (s *CoreTaskStore) GetModelRound(ctx context.Context, taskID string, attempt, round uint32) (coretask.ModelRoundLedger, error) {
 	return s.modelRoundTx(ctx, s.store.pool, taskID, attempt, round)
 }
+
+// LatestModelRound returns the newest durable model receipt for one logical
+// task round across lease attempts. Background handlers use it to replay an
+// observed completion after worker restart and to avoid repeating a provider
+// call whose dispatch outcome is uncertain.
+func (s *CoreTaskStore) LatestModelRound(ctx context.Context, taskID string, round uint32) (coretask.ModelRoundLedger, error) {
+	if !coretask.ValidUUID(taskID) || round >= coretask.MaxAgentLedgerRounds {
+		return coretask.ModelRoundLedger{}, coretask.ErrInvalid
+	}
+	var attempt uint32
+	if err := s.store.pool.QueryRow(ctx, `SELECT attempt FROM core_task_model_rounds WHERE task_id=$1 AND round=$2 ORDER BY attempt DESC LIMIT 1`, taskID, round).Scan(&attempt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return coretask.ModelRoundLedger{}, coretask.ErrNotFound
+		}
+		return coretask.ModelRoundLedger{}, err
+	}
+	return s.modelRoundTx(ctx, s.store.pool, taskID, attempt, round)
+}
 func (s *CoreTaskStore) GetToolCall(ctx context.Context, taskID string, attempt, round uint32, callID string) (coretask.ToolCallLedger, error) {
 	return s.toolTx(ctx, s.store.pool, taskID, attempt, round, callID)
 }

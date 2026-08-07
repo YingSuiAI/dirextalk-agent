@@ -201,7 +201,7 @@ func RetryTask(original Task, request RetryRequest) (Task, error) {
 	if original.Status != StatusSucceeded && original.Status != StatusFailed && original.Status != StatusCanceled {
 		return Task{}, ErrConflict
 	}
-	if original.Spec.Kind != "" && original.Spec.Kind != TaskKindAgent {
+	if original.Spec.Kind != "" && original.Spec.Kind != TaskKindAgent && original.Spec.Kind != TaskKindMemoryReconcile {
 		return Task{}, ErrConflict
 	}
 	if original.FailureCode == "tool_uncertain" || original.FailureCode == "model_uncertain" {

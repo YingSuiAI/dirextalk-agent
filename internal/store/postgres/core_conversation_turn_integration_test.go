@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -261,5 +263,47 @@ func TestCoreConversationTurnHistoryAndEventsAtomicPostgres(t *testing.T) {
 	events, err := h.store.LoadTurnEvents(context.Background(), turn.ID, 0, 10)
 	if err != nil || len(events) < 2 {
 		t.Fatalf("events=%d err=%v", len(events), err)
+	}
+}
+
+func TestCoreConversationTurnCompletionAtomicallyQueuesMemoryReconcilePostgres(t *testing.T) {
+	h := openTurnDB(t)
+	cmd := turnCommand()
+	turn, err := h.store.StartTurn(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createTestProfile(context.Background(), t, h.store.Store, turn.ProfileID, "test", "integration-secret")
+	h.store.EnableAutomaticMemory()
+	lease, err := h.store.ClaimTurn(context.Background(), turn.ID, time.Now().UTC(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := core.ChatResponse{RequestID: turn.RequestID, ConversationID: turn.ConversationID, Revision: 2, Message: core.Message{ID: uuid.NewString(), Role: core.RoleAssistant, Content: "done", ModelProfileID: turn.ProfileID, CreatedAt: time.Now().UTC()}}
+	if _, err = h.store.CommitTurn(context.Background(), lease, response); err != nil {
+		t.Fatal(err)
+	}
+	var kind, modelProfileID string
+	var payloadJSON, snapshotJSON []byte
+	if err = h.pool.QueryRow(context.Background(), `SELECT t.task_kind,t.model_profile_id::text,t.payload_json,s.snapshot_json FROM core_tasks t JOIN core_task_execution_snapshots s USING(task_id) WHERE t.task_kind='memory_reconcile'`).Scan(&kind, &modelProfileID, &payloadJSON, &snapshotJSON); err != nil {
+		t.Fatal(err)
+	}
+	var payload coretask.TaskPayload
+	if err = json.Unmarshal(payloadJSON, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot coretask.ExecutionSnapshot
+	if err = json.Unmarshal(snapshotJSON, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if kind != string(coretask.TaskKindMemoryReconcile) || modelProfileID != turn.ProfileID || payload.MemoryReconcile == nil || payload.MemoryReconcile.TurnID != turn.ID || payload.MemoryReconcile.CandidateSchemaVersion != 1 || payload.MemoryReconcile.PolicyVersion != 1 || snapshot.Model.ProfileID != turn.ProfileID {
+		t.Fatalf("kind=%q profile=%q payload=%+v snapshot=%+v", kind, modelProfileID, payload.MemoryReconcile, snapshot.Model)
+	}
+	if _, err = h.store.CommitTurn(context.Background(), lease, response); err == nil {
+		t.Fatal("completed turn replay unexpectedly committed")
+	}
+	var count int
+	if err = h.pool.QueryRow(context.Background(), `SELECT count(*) FROM core_tasks WHERE task_kind='memory_reconcile'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("memory task count=%d err=%v", count, err)
 	}
 }

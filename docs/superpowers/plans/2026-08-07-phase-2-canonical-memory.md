@@ -6,6 +6,17 @@ Move the Product Agent's useful automatic-memory behavior into Agent Core
 without importing its file-backed authority or allowing model output to mutate
 memory directly.
 
+## Status at 2026-08-07
+
+- Slice 2A complete: strict candidate schema, deterministic policy, and
+  reconciler.
+- Slice 2B complete: canonical PostgreSQL slots, immutable revisions,
+  tombstones, provenance, and idempotent revision fencing.
+- Slice 2C complete: atomic turn/task creation, pinned tool-free extraction,
+  cross-attempt completion replay, secret-free receipts, canonical writes,
+  Knowledge auto-index requests, and an opt-in composition gate.
+- Slice 2D remains: canonical-only recall and owner correction/deletion APIs.
+
 ## Slice 2A: Domain policy and reconciler
 
 - Add a versioned extraction envelope and strict bounded parser.

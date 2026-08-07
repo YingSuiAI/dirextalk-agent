@@ -371,7 +371,7 @@ func (s *CoreTaskStore) RetryTask(ctx context.Context, c coretask.RetryCommand) 
 		if e != nil {
 			return coretask.Task{}, e
 		}
-		if orig.Spec.Kind != coretask.TaskKindAgent || orig.Snapshot == nil {
+		if (orig.Spec.Kind != coretask.TaskKindAgent && orig.Spec.Kind != coretask.TaskKindMemoryReconcile) || orig.Snapshot == nil {
 			return coretask.Task{}, coretask.ErrConflict
 		}
 		raw, _ := json.Marshal(orig.Snapshot)

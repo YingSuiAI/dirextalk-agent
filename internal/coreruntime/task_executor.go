@@ -105,7 +105,7 @@ func (e *TaskExecutor) SetSkillInstructionResolver(s SkillInstructionResolver) {
 func (e *TaskExecutor) SetWorkloadHandler(h *coreworkload.Handler) { e.workload = h }
 
 func (e *TaskExecutor) RegisterHandler(kind coretask.TaskKind, handler TaskHandler) error {
-	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindAWSChange && kind != coretask.TaskKindWorkload) || handler == nil {
+	if (kind != coretask.TaskKindExtension && kind != coretask.TaskKindConversationTool && kind != coretask.TaskKindKnowledgeIndex && kind != coretask.TaskKindMemoryReconcile && kind != coretask.TaskKindAWSChange && kind != coretask.TaskKindWorkload) || handler == nil {
 		return errors.New("invalid task handler")
 	}
 	e.mu.Lock()

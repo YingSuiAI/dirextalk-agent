@@ -259,7 +259,16 @@ model output. Secret candidates are rejected before persistence. This internal
 projection is not a second content store: current text remains behind the
 Knowledge content boundary and semantic indexing continues through the
 Knowledge indexer. The automatic extraction capability remains unpublished
-until its durable background task and user-control adapters are wired.
+by default. When `core_automatic_memory_enabled` is set alongside the complete
+Knowledge composition, turn completion and one `memory_reconcile` task are
+committed atomically. That task pins the accepted turn/model snapshot, uses no
+tools, stores only deterministic-policy-accepted candidates in its durable
+provider receipt, and creates immutable Knowledge sources which request normal
+automatic indexing. A completed receipt is replayed across worker attempts;
+an uncertain provider dispatch fails closed and is never repeated. The v1
+handler skips any turn with a tool attempt so third-party output is not
+promoted as a user statement. Default publication still requires
+canonical-only recall plus owner correction/deletion adapters.
 
 ### AWS
 

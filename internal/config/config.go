@@ -85,6 +85,7 @@ type Config struct {
 	CoreExecutionV2ProbeTimeout      time.Duration `yaml:"core_execution_v2_probe_timeout" mapstructure:"core_execution_v2_probe_timeout"`
 	CoreExecutionV2BindingOperations []string      `yaml:"core_execution_v2_binding_operations" mapstructure:"core_execution_v2_binding_operations"`
 	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
+	CoreAutomaticMemoryEnabled       bool          `yaml:"core_automatic_memory_enabled" mapstructure:"core_automatic_memory_enabled"`
 	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
 	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
 	CoreKnowledgeContentQuotaBytes   int64         `yaml:"core_knowledge_content_quota_bytes" mapstructure:"core_knowledge_content_quota_bytes"`
@@ -205,6 +206,9 @@ func ValidateCore(cfg *Config) error {
 	}
 	if err := ValidateCoreKnowledge(cfg); err != nil {
 		return err
+	}
+	if cfg.CoreAutomaticMemoryEnabled && !cfg.CoreKnowledgeEnabled {
+		return errors.New("core_automatic_memory_enabled requires core_knowledge_enabled")
 	}
 	if err := ValidateCoreExtension(cfg); err != nil {
 		return err

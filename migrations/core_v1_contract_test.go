@@ -6,11 +6,11 @@ import (
 )
 
 func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
-	if CurrentVersion != 5 {
-		t.Fatalf("CurrentVersion = %d, want 5", CurrentVersion)
+	if CurrentVersion != 6 {
+		t.Fatalf("CurrentVersion = %d, want 6", CurrentVersion)
 	}
 	entries := Entries()
-	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_resumable_agent_rounds.up.sql" || entries[4] != "000005_canonical_memory_slots.up.sql" {
+	if len(entries) != 6 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_resumable_agent_rounds.up.sql" || entries[4] != "000005_canonical_memory_slots.up.sql" || entries[5] != "000006_memory_reconcile_tasks.up.sql" {
 		t.Fatalf("unexpected baseline entries: %v", entries)
 	}
 	script, err := Files.ReadFile(entries[0])
@@ -92,6 +92,15 @@ func TestCoreV1BaselineContainsRequiredSchema(t *testing.T) {
 	for _, needle := range []string{"CREATE TABLE core_memory_slots", "core_memory_slots_identity_idx", "CREATE TABLE core_memory_revisions", "candidate_schema_version", "policy_version", "source_turn_id", "request_digest"} {
 		if !strings.Contains(string(memory), needle) {
 			t.Errorf("canonical memory migration missing %q", needle)
+		}
+	}
+	memoryTasks, err := Files.ReadFile(entries[5])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"memory_reconcile", "core_tasks_task_kind_chk", "core_tasks_model_profile_kind_chk"} {
+		if !strings.Contains(string(memoryTasks), needle) {
+			t.Errorf("memory task migration missing %q", needle)
 		}
 	}
 	for _, forbidden := range []string{

@@ -256,6 +256,15 @@ func TestValidateCoreKnowledgeEnabledRequiresProductionComposition(t *testing.T)
 	}
 }
 
+func TestValidateCoreAutomaticMemoryRequiresKnowledge(t *testing.T) {
+	cfg := validCoreConfig(t)
+	cfg.CoreAutomaticMemoryEnabled = true
+	cfg.CoreKnowledgeEnabled = false
+	if err := ValidateCore(&cfg); err == nil || !strings.Contains(err.Error(), "requires core_knowledge_enabled") {
+		t.Fatalf("ValidateCore() error = %v", err)
+	}
+}
+
 func TestValidateCoreVoiceDisabledDoesNotRequireProviderSecrets(t *testing.T) {
 	cfg := validCoreConfig(t)
 	cfg.CoreVoiceEnabled = false

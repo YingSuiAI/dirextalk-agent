@@ -7,8 +7,8 @@ import (
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_resumable_agent_rounds.up.sql" || entries[4] != "000005_canonical_memory_slots.up.sql" {
-		t.Fatalf("entries=%v, want the immutable baseline plus four additive migrations", entries)
+	if len(entries) != 6 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_resumable_agent_rounds.up.sql" || entries[4] != "000005_canonical_memory_slots.up.sql" || entries[5] != "000006_memory_reconcile_tasks.up.sql" {
+		t.Fatalf("entries=%v, want the immutable baseline plus five additive migrations", entries)
 	}
 	migration := Ordered()[0]
 	if migration.Version != 1 {
@@ -35,6 +35,10 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	memory := Ordered()[4]
 	if memory.Version != 5 || len(memory.Script) == 0 || memory.Script[len(memory.Script)-1] != '\n' || !bytes.Contains(memory.Script, []byte("CREATE TABLE core_memory_slots")) || !bytes.Contains(memory.Script, []byte("CREATE TABLE core_memory_revisions")) {
 		t.Fatal("canonical memory migration missing durable slots or revisions")
+	}
+	memoryTasks := Ordered()[5]
+	if memoryTasks.Version != 6 || len(memoryTasks.Script) == 0 || memoryTasks.Script[len(memoryTasks.Script)-1] != '\n' || !bytes.Contains(memoryTasks.Script, []byte("memory_reconcile")) {
+		t.Fatal("automatic memory task migration missing task constraints")
 	}
 	for _, needle := range []string{
 		"CREATE TABLE agent_instance_metadata",

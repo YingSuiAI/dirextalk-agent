@@ -76,6 +76,7 @@ core_workload_runner_uid: 65530
 #     ecs_security_group_ids: [sg-0123456789abcdef0]
 #     ecs_desired_count: 1
 core_knowledge_enabled: false
+core_automatic_memory_enabled: false
 # Native Voice remains disabled unless the neutral Capability listener is
 # enabled with the same positive account generation. URLs may point to the
 # message-server's existing public relay; mounted files must be mode 0600.

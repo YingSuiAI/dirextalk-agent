@@ -24,7 +24,7 @@ func resolveTaskSnapshotTx(ctx context.Context, tx pgx.Tx, spec coretask.TaskSpe
 	}
 	boundProfileID := ""
 	var boundProfileRevision int64
-	if spec.Kind == coretask.TaskKindAgent || spec.Kind == coretask.TaskKindKnowledgeIndex {
+	if spec.Kind == coretask.TaskKindAgent || spec.Kind == coretask.TaskKindKnowledgeIndex || spec.Kind == coretask.TaskKindMemoryReconcile {
 		var model coretask.ModelProfileSnapshot
 		var provider string
 		var temperature, topP *float64

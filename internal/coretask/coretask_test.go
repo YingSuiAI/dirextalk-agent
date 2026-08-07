@@ -47,6 +47,37 @@ func TestGenericTaskPayloadBranchesAndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMemoryReconcileTaskPayloadValidation(t *testing.T) {
+	spec := TaskSpec{
+		Kind:           TaskKindMemoryReconcile,
+		Goal:           "extract durable memory candidates",
+		ModelProfileID: testID2,
+		IdempotencyKey: testID,
+		TimeoutSeconds: 120,
+		Payload:        TaskPayload{MemoryReconcile: &MemoryReconcileTaskPayload{TurnID: testID, CandidateSchemaVersion: 1, PolicyVersion: 1}},
+	}
+	if _, err := spec.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*TaskSpec){
+		"missing model":   func(s *TaskSpec) { s.ModelProfileID = "" },
+		"invalid turn":    func(s *TaskSpec) { s.Payload.MemoryReconcile.TurnID = "bad" },
+		"unknown schema":  func(s *TaskSpec) { s.Payload.MemoryReconcile.CandidateSchemaVersion = 2 },
+		"unknown policy":  func(s *TaskSpec) { s.Payload.MemoryReconcile.PolicyVersion = 2 },
+		"parallel branch": func(s *TaskSpec) { s.Payload.AWSChange = &AWSChangeTaskPayload{ChangeID: testID2} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := spec
+			payload := *spec.Payload.MemoryReconcile
+			bad.Payload.MemoryReconcile = &payload
+			mutate(&bad)
+			if _, err := bad.Normalize(); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Normalize() error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
 var testID = "00000000-0000-4000-8000-000000000001"
 var testID2 = "00000000-0000-4000-8000-000000000002"
 
@@ -346,6 +377,18 @@ func TestRetryRejectsNonAgentTask(t *testing.T) {
 	a.Status = StatusFailed
 	if _, err := RetryTask(a, RetryRequest{TaskID: a.ID, IdempotencyKey: testID2, RequestDigest: strings.Repeat("d", 64), ExpectedRevision: a.Revision, At: a.UpdatedAt.Add(time.Second)}); err != ErrConflict {
 		t.Fatalf("non-Agent retry err=%v, want ErrConflict", err)
+	}
+}
+
+func TestRetryAllowsMemoryReconcileTask(t *testing.T) {
+	a := baseTask()
+	a.Spec.Kind = TaskKindMemoryReconcile
+	a.Spec.AttachmentRefs = nil
+	a.Spec.Payload.MemoryReconcile = &MemoryReconcileTaskPayload{TurnID: testID, CandidateSchemaVersion: 1, PolicyVersion: 1}
+	a.Status = StatusFailed
+	result, err := RetryTask(a, RetryRequest{TaskID: a.ID, IdempotencyKey: testID2, RequestDigest: strings.Repeat("d", 64), ExpectedRevision: a.Revision, At: a.UpdatedAt.Add(time.Second)})
+	if err != nil || result.Spec.Kind != TaskKindMemoryReconcile || result.Spec.Payload.MemoryReconcile == nil {
+		t.Fatalf("RetryTask() result=%+v error=%v", result, err)
 	}
 }
 

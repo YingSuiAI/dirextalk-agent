@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
@@ -14,13 +15,26 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type CoreConversationStore struct{ *Store }
+type CoreConversationStore struct {
+	*Store
+	automaticMemory atomic.Bool
+}
 
 func NewCoreConversationStore(store *Store) (*CoreConversationStore, error) {
 	if store == nil {
 		return nil, errors.New("postgres store is required")
 	}
 	return &CoreConversationStore{Store: store}, nil
+}
+
+// EnableAutomaticMemory allows completed turns to enqueue one durable memory
+// reconciliation task in the same database transaction as the assistant
+// message. Callers enable it only after the task handler and Knowledge
+// composition are ready; the flag changes no already committed turn.
+func (s *CoreConversationStore) EnableAutomaticMemory() {
+	if s != nil {
+		s.automaticMemory.Store(true)
+	}
 }
 
 func (s *CoreConversationStore) CreateConversationMutation(ctx context.Context, c core.CreateConversationCommand) (core.ConversationMutationResponse, error) {

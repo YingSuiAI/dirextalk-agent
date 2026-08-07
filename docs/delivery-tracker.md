@@ -39,6 +39,16 @@ contract](message-server-integration-development-contract.md), and
   durable model/tool ledgers allow rounds 0-511, with 512 retained only as a
   non-configurable internal safety fuse. Identical tool work and the safety
   fuse have separate stable terminal classifications.
+- Optional automatic memory now commits one `memory_reconcile` task in the
+  same PostgreSQL transaction as a completed turn. The task pins the turn and
+  model snapshot, calls the model without tools, persists only policy-accepted
+  secret-free candidates in its durable receipt, reconciles canonical slots,
+  and submits new immutable Knowledge memory sources to automatic indexing.
+  Completed receipts replay across worker attempts; dispatched or uncertain
+  provider calls are never repeated. Tool-derived turns are conservatively
+  skipped in this first version. The feature remains opt-in through
+  `core_automatic_memory_enabled` and requires the production Knowledge
+  composition.
 - Unified image builds validate and inject the immutable release version into
   the Core binary; authenticated instance info and `agent.info.v1` status
   report it separately from the `v1` API protocol version.
@@ -113,10 +123,12 @@ support.
   privacy/value policy, and canonical create/update/delete/noop reconciler are
   covered by focused domain tests. PostgreSQL 18 acceptance covers a unique
   `(scope, key)` slot, immutable source-revision pins, create/update/delete
-  revisions, stale-write rejection, exact idempotency replay, tombstones, and
-  restart readback. The background extraction task, indexing, recall, and
-  user-control adapters are not yet wired, so automatic memory remains
-  unpublished.
+  revisions, stale-write rejection, exact idempotency replay, tombstones,
+  restart readback, and atomic completed-turn/task creation through migration
+  6. Linux tests cover create/replay without duplicate writes, secret
+  candidate removal from durable receipts, and tool-derived-turn skipping.
+  Canonical-only recall and owner correction/deletion adapters remain to be
+  wired before automatic memory is published by default.
 
 These gates are evidence requirements, not fallback behavior: a missing proof
 keeps the corresponding capability unpublished while planning and unrelated

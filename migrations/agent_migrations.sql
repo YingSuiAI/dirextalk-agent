@@ -1431,3 +1431,11 @@ CREATE TABLE core_memory_revisions (
 );
 CREATE UNIQUE INDEX core_memory_revisions_source_idx ON core_memory_revisions(source_id) WHERE source_id IS NOT NULL;
 -- dirextalk-agent migration end 000005_canonical_memory_slots.up.sql
+-- dirextalk-agent migration begin 000006_memory_reconcile_tasks.up.sql
+-- Completed turns enqueue an internal model-backed memory task. Both checks
+-- are replaced additively because earlier migration bodies are immutable.
+ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_task_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk CHECK (task_kind IN ('agent','extension','knowledge_index','memory_reconcile','aws_change','workload','conversation_tool'));
+ALTER TABLE core_tasks DROP CONSTRAINT IF EXISTS core_tasks_model_profile_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_model_profile_kind_chk CHECK ((task_kind IN ('agent','knowledge_index','memory_reconcile')) = (model_profile_id IS NOT NULL));
+-- dirextalk-agent migration end 000006_memory_reconcile_tasks.up.sql

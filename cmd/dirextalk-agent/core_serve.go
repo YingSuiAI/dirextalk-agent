@@ -255,6 +255,25 @@ func serveCore(cfg config.Config) error {
 			knowledgeComposition.Close()
 			return fmt.Errorf("initial Knowledge stage cleanup: %w", cleanupErr)
 		}
+		if cfg.CoreAutomaticMemoryEnabled {
+			memoryStore, memoryErr := postgres.NewCoreMemoryStore(store, nil)
+			if memoryErr != nil {
+				knowledgeComposition.Close()
+				return fmt.Errorf("initialize canonical memory store: %w", memoryErr)
+			}
+			memoryHandler, memoryErr := coreruntime.NewMemoryReconcileHandler(store, nil, conversationStore, memoryStore, knowledgeComposition.domain, taskStore)
+			if memoryErr != nil {
+				knowledgeComposition.Close()
+				return fmt.Errorf("initialize automatic memory handler: %w", memoryErr)
+			}
+			if memoryErr = taskExecutor.RegisterHandler(coretask.TaskKindMemoryReconcile, memoryHandler); memoryErr != nil {
+				knowledgeComposition.Close()
+				return fmt.Errorf("register automatic memory task handler: %w", memoryErr)
+			}
+			// Enable task creation only after every execution dependency is
+			// registered, preventing an accepted turn from queuing orphan work.
+			conversationStore.EnableAutomaticMemory()
+		}
 	}
 	if awsComposition != nil {
 		if err := taskExecutor.RegisterHandler(coretask.TaskKindAWSChange, awsComposition.taskHandler); err != nil {

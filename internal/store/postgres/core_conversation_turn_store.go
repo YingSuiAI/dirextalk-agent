@@ -10,6 +10,8 @@ import (
 	"time"
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreconversation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/corememory"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -193,6 +195,18 @@ func (s *CoreConversationStore) GetTurn(ctx context.Context, id string) (core.Tu
 		return out, core.ErrConflict
 	}
 	return out, err
+}
+
+// HasTurnToolAttempts reports whether a completed turn consumed any extension
+// result. Automatic memory skips such turns in v1 so third-party tool output
+// cannot be promoted into owner memory as if the user had stated it.
+func (s *CoreConversationStore) HasTurnToolAttempts(ctx context.Context, id string) (bool, error) {
+	if !coretask.ValidUUID(id) {
+		return false, core.ErrInvalid
+	}
+	var exists bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM core_conversation_tool_attempts WHERE turn_id=$1)`, id).Scan(&exists)
+	return exists, err
 }
 
 func (s *CoreConversationStore) GetTurnByRequestID(ctx context.Context, id string) (core.Turn, error) {
@@ -477,6 +491,10 @@ func (s *CoreConversationStore) TurnEventBounds(ctx context.Context, id string) 
 	return *first, *last, nil
 }
 
+// CommitTurn atomically publishes the completed assistant response and, when
+// enabled, one durable background memory-reconciliation task. A task creation
+// failure rolls back the whole transaction so a visible completed turn can
+// never silently lose its required background work.
 func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnLease, response core.ChatResponse) (core.Turn, error) {
 	response.Message.CreatedAt = response.Message.CreatedAt.UTC().Truncate(time.Microsecond)
 	if response.Message.CreatedAt.IsZero() {
@@ -549,10 +567,37 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 	if err = insertTurnEventTx(ctx, tx, lease.Turn.ID, turn.LastSequence+1, core.TurnEvent{Kind: core.TurnEventDone, Message: &response.Message, Response: &response}, now); err != nil {
 		return core.Turn{}, err
 	}
+	if s.automaticMemory.Load() {
+		if err = s.enqueueAutomaticMemoryTx(ctx, tx, turn, now); err != nil {
+			return core.Turn{}, err
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}
 	return s.GetTurn(ctx, lease.Turn.ID)
+}
+
+// enqueueAutomaticMemoryTx creates the turn-derived task with a deterministic
+// idempotency key while the caller's completion transaction is still open.
+// It writes only provenance and contract versions; candidate text is produced
+// later by the isolated task handler.
+func (s *CoreConversationStore) enqueueAutomaticMemoryTx(ctx context.Context, tx pgx.Tx, turn core.Turn, now time.Time) error {
+	key := uuid.NewSHA1(uuid.NameSpaceOID, []byte("memory-reconcile:"+turn.ID)).String()
+	_, err := NewCoreTaskStore(s.Store).createTaskTx(ctx, tx, coretask.TaskSpec{
+		Kind:           coretask.TaskKindMemoryReconcile,
+		Goal:           "extract durable memory candidates from a completed conversation turn",
+		ModelProfileID: turn.ProfileID,
+		IdempotencyKey: key,
+		TimeoutSeconds: 120,
+		AvailableAt:    now,
+		Payload: coretask.TaskPayload{MemoryReconcile: &coretask.MemoryReconcileTaskPayload{
+			TurnID:                 turn.ID,
+			CandidateSchemaVersion: corememory.CandidateSchemaVersion,
+			PolicyVersion:          corememory.PolicyVersion,
+		}},
+	}, string(coretask.StatusQueued))
+	return err
 }
 
 func (s *CoreConversationStore) RequestTurnCancel(ctx context.Context, c core.TurnCancelCommand) (core.Turn, error) {
