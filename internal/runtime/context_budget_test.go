@@ -22,6 +22,19 @@ func TestCloudDialoguePolicyKeepsWorkerRisksOutOfUserSummary(t *testing.T) {
 	}
 }
 
+func TestCloudDialoguePolicyRoutesByTaskInsteadOfTriggerPhrases(t *testing.T) {
+	t.Parallel()
+	for _, required := range []string{
+		"from the task's scope, duration, tool needs, and deliverables, not from trigger phrases",
+		"Never require or ask the user to mention Team Plan, Worker, cloud, delegation, or a tool name",
+		"request only indispensable execution primitives",
+	} {
+		if !strings.Contains(cloudDialoguePolicy, required) {
+			t.Fatalf("cloud dialogue autonomous-routing policy lacks %q", required)
+		}
+	}
+}
+
 func TestChatTrimsOversizedHistoryToProfileContextBudget(t *testing.T) {
 	t.Parallel()
 

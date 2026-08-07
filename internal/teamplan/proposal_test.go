@@ -3,6 +3,7 @@ package teamplan
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,49 @@ func TestProposalInputSchemaIsClosedAndPolicyBound(t *testing.T) {
 	policy.MaxWorkers = 0
 	if _, err := ProposalInputSchema(policy); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid policy schema error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestProposalInputSchemaNarrowsCapabilitiesToCurrentRuntimeSurface(
+	t *testing.T,
+) {
+	t.Parallel()
+	policy := validCompileRequest().Policy
+	schema, err := ProposalInputSchemaForCapabilities(
+		policy,
+		[]Capability{
+			CapabilityTest,
+			CapabilityRepositoryWrite,
+			CapabilityShell,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role := proposalSchemaItems(proposalProperty(schema, "roles"))
+	capabilities := proposalSchemaItems(
+		proposalProperty(role, "required_capabilities"),
+	)
+	want := []string{"repository.write", "shell", "test"}
+	if !reflect.DeepEqual(capabilities["enum"], want) {
+		t.Fatalf("runtime-bound capability enum = %#v, want %#v", capabilities["enum"], want)
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"document"`) ||
+		strings.Contains(string(encoded), `"data.analysis"`) {
+		t.Fatalf("runtime-bound schema retained unsupported deliverable capabilities: %s", encoded)
+	}
+	if _, err := ProposalInputSchemaForCapabilities(policy, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty capability surface error = %v, want ErrInvalid", err)
+	}
+	if _, err := ProposalInputSchemaForCapabilities(
+		policy,
+		[]Capability{CapabilityShell, CapabilityShell},
+	); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate capability surface error = %v, want ErrInvalid", err)
 	}
 }
 

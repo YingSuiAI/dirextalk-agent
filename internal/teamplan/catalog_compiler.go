@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/taskinput"
@@ -50,6 +51,15 @@ type CatalogCompiler struct {
 	approvalGate      WorkerReleaseApprovalGate
 	catalogRevision   string
 	now               func() time.Time
+}
+
+// RuntimePlanningProfile is the de-secreted planning surface of one currently
+// qualified runtime. It intentionally omits release IDs, images, launch facts,
+// pricing, credentials, and provider coordinates.
+type RuntimePlanningProfile struct {
+	Family       RuntimeFamily
+	Capabilities []Capability
+	WorkClasses  []WorkClass
 }
 
 func NewCatalogCompiler(catalog *RuntimeCatalog) (*CatalogCompiler, error) {
@@ -139,6 +149,59 @@ func (compiler *CatalogCompiler) CatalogRevision() string {
 		return ""
 	}
 	return compiler.catalogRevision
+}
+
+// PlanningProfiles gives model-facing planning code a current, trusted hint
+// without weakening compile-time runtime qualification.
+func (compiler *CatalogCompiler) PlanningProfiles() (
+	[]RuntimePlanningProfile,
+	error,
+) {
+	if compiler == nil || compiler.catalog == nil || compiler.now == nil {
+		return nil, ErrInvalid
+	}
+	now := compiler.now().UTC().Truncate(time.Second)
+	if now.IsZero() {
+		return nil, ErrInvalid
+	}
+	releases, err := compiler.qualifiedReleases(now)
+	if err != nil {
+		return nil, err
+	}
+	if len(releases) == 0 {
+		return nil, ErrNoRuntime
+	}
+	profiles := make([]RuntimePlanningProfile, 0, len(releases))
+	for _, release := range releases {
+		workClasses := make([]WorkClass, 0, len(release.Suitability))
+		for _, suitability := range release.Suitability {
+			workClasses = append(workClasses, suitability.WorkClass)
+		}
+		slices.Sort(workClasses)
+		profiles = append(profiles, RuntimePlanningProfile{
+			Family:       release.Family,
+			Capabilities: append([]Capability(nil), release.Capabilities...),
+			WorkClasses:  workClasses,
+		})
+	}
+	slices.SortFunc(profiles, func(left, right RuntimePlanningProfile) int {
+		if byFamily := strings.Compare(string(left.Family), string(right.Family)); byFamily != 0 {
+			return byFamily
+		}
+		return strings.Compare(
+			strings.Join(capabilityStrings(left.Capabilities), "\x00"),
+			strings.Join(capabilityStrings(right.Capabilities), "\x00"),
+		)
+	})
+	return profiles, nil
+}
+
+func capabilityStrings(values []Capability) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, string(value))
+	}
+	return result
 }
 
 func (compiler *CatalogCompiler) ResolveRuntimeLaunchEvidence(

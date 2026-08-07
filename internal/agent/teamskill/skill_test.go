@@ -37,6 +37,18 @@ func (function policyResolverFunc) ResolveTeamPolicy(
 	return function(ctx, ownerID)
 }
 
+type runtimeProfileResolverFunc func() (
+	[]teamplan.RuntimePlanningProfile,
+	error,
+)
+
+func (function runtimeProfileResolverFunc) PlanningProfiles() (
+	[]teamplan.RuntimePlanningProfile,
+	error,
+) {
+	return function()
+}
+
 func TestSkillPreparesServerBoundPlanWithoutExposingExecutionFacts(
 	t *testing.T,
 ) {
@@ -203,6 +215,87 @@ func TestSkillPreparesServerBoundPlanWithoutExposingExecutionFacts(
 			err,
 			calls,
 		)
+	}
+}
+
+func TestSkillGuidesNaturalLanguagePlanningWithCurrentRuntimeCapabilities(
+	t *testing.T,
+) {
+	t.Parallel()
+	policy := testPolicy()
+	skill, err := New(Dependencies{
+		Policies: policyResolverFunc(func(
+			context.Context,
+			string,
+		) (teamplan.Policy, error) {
+			return policy, nil
+		}),
+		Runtimes: runtimeProfileResolverFunc(func() (
+			[]teamplan.RuntimePlanningProfile,
+			error,
+		) {
+			return []teamplan.RuntimePlanningProfile{{
+				Family: teamplan.RuntimePi,
+				Capabilities: []teamplan.Capability{
+					teamplan.CapabilityRepositoryWrite,
+					teamplan.CapabilityShell,
+					teamplan.CapabilityTest,
+				},
+				WorkClasses: []teamplan.WorkClass{
+					teamplan.WorkSoftwareImplementation,
+				},
+			}}, nil
+		}),
+		Preparation: PreparationPortFunc(func(
+			context.Context,
+			PrepareRequest,
+		) (teamorchestration.PlanFact, error) {
+			t.Fatal("tool definition test reached plan preparation")
+			return teamorchestration.PlanFact{}, nil
+		}),
+		TaskLifecycle: testPlanningTaskLifecycle(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := BindCallScope(context.Background(), CallScope{
+		OwnerID:      "owner-1",
+		ConnectionID: testConnectionID,
+		Goal:         testGoal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := skill.Tools(ctx, runtimeapi.ToolRequest{
+		RequestID:         testRequestID,
+		OwnerID:           "owner-1",
+		ConversationID:    "conversation-natural-language",
+		LatestUserMessage: testGoal,
+	})
+	if err != nil || len(tools) != 1 {
+		t.Fatalf("Tools() = %#v, %v", tools, err)
+	}
+	role := schemaItems(schemaProperty(tools[0].Definition.InputSchema, "roles"))
+	capabilities := schemaItems(schemaProperty(role, "required_capabilities"))
+	want := []string{"repository.write", "shell", "test"}
+	if !reflect.DeepEqual(capabilities["enum"], want) {
+		t.Fatalf("current runtime capability enum = %#v, want %#v", capabilities["enum"], want)
+	}
+	description := tools[0].Definition.Description
+	for _, required := range []string{
+		"user does not need to mention Team Plan",
+		"Current qualified runtime families: pi",
+		"repository.write, shell, test",
+	} {
+		if !strings.Contains(description, required) {
+			t.Fatalf("tool description lacks %q: %s", required, description)
+		}
+	}
+	for _, unsupported := range []string{`"document"`, `"data.analysis"`} {
+		encoded, marshalErr := json.Marshal(tools[0].Definition.InputSchema)
+		if marshalErr != nil || strings.Contains(string(encoded), unsupported) {
+			t.Fatalf("tool schema contains unsupported %s: %s, %v", unsupported, encoded, marshalErr)
+		}
 	}
 }
 

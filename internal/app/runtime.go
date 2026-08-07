@@ -381,6 +381,7 @@ func NewRuntimeComposition(store *postgres.Store, instanceID, mountedSecretsDir,
 		}
 		teamSkill, skillErr := teamskill.New(teamskill.Dependencies{
 			Policies:      options.teamPolicies,
+			Runtimes:      options.teamPlans,
 			Preparation:   teamDialogue,
 			TaskLifecycle: teamDialogue,
 		})

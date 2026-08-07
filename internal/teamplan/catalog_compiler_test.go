@@ -45,6 +45,19 @@ func TestCatalogCompilerInjectsVerifiedCatalogAndRechecksPlan(t *testing.T) {
 	); err != nil {
 		t.Fatalf("VerifyPlan() error = %v", err)
 	}
+	profiles, err := compiler.PlanningProfiles()
+	if err != nil || len(profiles) != len(catalog.QualifiedReleases()) {
+		t.Fatalf("PlanningProfiles() = %#v, %v", profiles, err)
+	}
+	if len(profiles[0].Capabilities) == 0 || len(profiles[0].WorkClasses) == 0 {
+		t.Fatalf("planning profile omitted the execution surface: %#v", profiles[0])
+	}
+	originalCapability := profiles[0].Capabilities[0]
+	profiles[0].Capabilities[0] = CapabilityDocument
+	reloaded, err := compiler.PlanningProfiles()
+	if err != nil || reloaded[0].Capabilities[0] != originalCapability {
+		t.Fatalf("planning profiles leaked mutable catalog state: %#v, %v", reloaded, err)
+	}
 
 	tampered := plan
 	tampered.Assignments = append(

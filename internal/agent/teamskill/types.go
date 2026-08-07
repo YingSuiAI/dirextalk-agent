@@ -79,6 +79,13 @@ type PolicyResolver interface {
 	) (teamplan.Policy, error)
 }
 
+// RuntimeProfileResolver exposes only the de-secreted planning surface of the
+// current qualified runtime catalog. Plan compilation still performs the
+// authoritative runtime, model, compute, price, and Marketplace checks.
+type RuntimeProfileResolver interface {
+	PlanningProfiles() ([]teamplan.RuntimePlanningProfile, error)
+}
+
 type PrepareRequest struct {
 	RequestID    string
 	OwnerID      string
@@ -133,6 +140,7 @@ func (function PlanningTaskLifecycleFunc) CloseUnplannedTeamTask(
 
 type Dependencies struct {
 	Policies      PolicyResolver
+	Runtimes      RuntimeProfileResolver
 	Preparation   PreparationPort
 	TaskLifecycle PlanningTaskLifecycle
 }

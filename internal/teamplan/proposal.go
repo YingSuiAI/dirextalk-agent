@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -115,9 +116,27 @@ func ValidateProposal(proposal TeamProposal, policy Policy) error {
 // ProposalInputSchema returns the exact closed schema supplied to the capture
 // tool. Limits are derived from the trusted policy, not from model output.
 func ProposalInputSchema(policy Policy) (map[string]any, error) {
+	return ProposalInputSchemaForCapabilities(policy, validCapabilities())
+}
+
+// ProposalInputSchemaForCapabilities narrows the model-visible capability
+// vocabulary to execution primitives present in the current trusted runtime
+// catalog. The compiler remains authoritative for matching one complete
+// runtime; this hint prevents deliverable types from being mistaken for
+// indispensable runtime capabilities.
+func ProposalInputSchemaForCapabilities(
+	policy Policy,
+	allowedCapabilities []Capability,
+) (map[string]any, error) {
 	if err := validatePolicy(policy); err != nil {
 		return nil, err
 	}
+	allowedCapabilities = append([]Capability(nil), allowedCapabilities...)
+	if len(allowedCapabilities) == 0 ||
+		!uniqueValues(allowedCapabilities, validCapability) {
+		return nil, ErrInvalid
+	}
+	slices.Sort(allowedCapabilities)
 	schema := proposalSchemaForType(reflect.TypeOf(proposalInputV1{}))
 	constrainIntegerSchema(proposalProperty(schema, "confidence"), 1, 100)
 	constrainStringSchema(proposalProperty(schema, "rationale"), 1, 4096)
@@ -141,7 +160,7 @@ func ProposalInputSchema(policy Policy) (map[string]any, error) {
 	capabilities["minItems"] = 1
 	capabilities["maxItems"] = 24
 	capabilities["uniqueItems"] = true
-	proposalSchemaItems(capabilities)["enum"] = stringValues(validCapabilities())
+	proposalSchemaItems(capabilities)["enum"] = stringValues(allowedCapabilities)
 
 	families := proposalProperty(role, "preferred_families")
 	families["maxItems"] = len(policy.AllowedRuntimeFamilies)

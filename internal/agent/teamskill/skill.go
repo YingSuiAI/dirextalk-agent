@@ -72,7 +72,17 @@ func (skill *Skill) Tools(
 	if err != nil {
 		return nil, err
 	}
+	allowedCapabilities, runtimeGuidance := planningRuntimeGuidance(
+		skill.dependencies.Runtimes,
+		policy,
+	)
 	inputSchema, err := teamplan.ProposalInputSchema(policy)
+	if len(allowedCapabilities) > 0 {
+		inputSchema, err = teamplan.ProposalInputSchemaForCapabilities(
+			policy,
+			allowedCapabilities,
+		)
+	}
 	if err != nil {
 		return nil, ErrInvalidDependencies
 	}
@@ -83,7 +93,7 @@ func (skill *Skill) Tools(
 	return []runtimeapi.Tool{{
 		Definition: modelapi.Tool{
 			Name:        ToolPrepare,
-			Description: "Prepare one immutable, priced Team Plan for a substantial remote software implementation, review, or test task. Propose the smallest useful team. Current production execution supports one qualified Pi Worker. The server binds the user goal, AWS connection, runtime catalog, model credentials, compute offers, price, and policy. This operation creates no instance, starts no Worker, delivers no secret, and cannot approve spending.",
+			Description: "Prepare one immutable, priced Team Plan for a substantial remote software implementation, review, or test task. Decide from the task itself; the user does not need to mention Team Plan, Worker, cloud, or this tool. Propose the smallest useful team and list only indispensable execution primitives, not deliverable types: README or report files use repository.write, and calculations performed through code or shell do not require a separate document or data.analysis capability. " + runtimeGuidance + " The server binds the user goal, AWS connection, runtime catalog, model credentials, compute offers, price, and policy. This operation creates no instance, starts no Worker, delivers no secret, and cannot approve spending.",
 			InputSchema: inputSchema,
 		},
 		Run: func(
@@ -224,6 +234,67 @@ func (skill *Skill) Tools(
 			}, nil
 		},
 	}}, nil
+}
+
+func planningRuntimeGuidance(
+	resolver RuntimeProfileResolver,
+	policy teamplan.Policy,
+) ([]teamplan.Capability, string) {
+	if resolver == nil {
+		return nil, "Use only capabilities exposed by the tool schema."
+	}
+	profiles, err := resolver.PlanningProfiles()
+	if err != nil {
+		return nil, "The runtime planning hint is temporarily unavailable; use only capabilities exposed by the tool schema."
+	}
+	allowedFamilies := make(map[teamplan.RuntimeFamily]struct{}, len(policy.AllowedRuntimeFamilies))
+	for _, family := range policy.AllowedRuntimeFamilies {
+		allowedFamilies[family] = struct{}{}
+	}
+	capabilitySet := make(map[teamplan.Capability]struct{})
+	familySet := make(map[teamplan.RuntimeFamily]struct{})
+	for _, profile := range profiles {
+		if _, allowed := allowedFamilies[profile.Family]; !allowed {
+			continue
+		}
+		familySet[profile.Family] = struct{}{}
+		for _, capability := range profile.Capabilities {
+			capabilitySet[capability] = struct{}{}
+		}
+	}
+	if len(capabilitySet) == 0 {
+		return nil, "No current runtime planning hint matched policy; use only capabilities exposed by the tool schema."
+	}
+	capabilities := make([]teamplan.Capability, 0, len(capabilitySet))
+	for capability := range capabilitySet {
+		capabilities = append(capabilities, capability)
+	}
+	slices.Sort(capabilities)
+	families := make([]teamplan.RuntimeFamily, 0, len(familySet))
+	for family := range familySet {
+		families = append(families, family)
+	}
+	slices.Sort(families)
+	return capabilities, "Current qualified runtime families: " +
+		strings.Join(runtimeFamilyStrings(families), ", ") +
+		". Current proposal capabilities: " +
+		strings.Join(capabilityNames(capabilities), ", ") + "."
+}
+
+func runtimeFamilyStrings(values []teamplan.RuntimeFamily) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, string(value))
+	}
+	return result
+}
+
+func capabilityNames(values []teamplan.Capability) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, string(value))
+	}
+	return result
 }
 
 func (skill *Skill) closeUnplannedTask(
