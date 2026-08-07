@@ -3,6 +3,7 @@ package corememory
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -123,5 +124,22 @@ func TestCandidateBounds(t *testing.T) {
 	candidate.Text = fmt.Sprintf("%0*d", MaxMemoryTextBytes+1, 0)
 	if err := candidate.Validate(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestApplyCommandRejectsSecretAndUnpinnedSource(t *testing.T) {
+	command := ApplyCommand{IdempotencyKey: "11111111-1111-4111-8111-111111111111", Action: ChangeCreate, Slot: SlotKey{Scope: ScopeOwner, CanonicalKey: "profile.location.city"}, SourceID: "22222222-2222-4222-8222-222222222222", SourceRevision: 1, TextDigest: strings.Repeat("a", 64), Type: MemoryTypeFact, Sensitivity: SensitivityLow, Confidence: 0.9, Importance: 0.8, CandidateSchemaVersion: CandidateSchemaVersion, PolicyVersion: PolicyVersion}
+	if err := command.Validate(); err != nil {
+		t.Fatalf("valid command: %v", err)
+	}
+	secret := command
+	secret.Sensitivity = SensitivitySecret
+	if err := secret.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("secret err=%v", err)
+	}
+	unpinned := command
+	unpinned.SourceRevision = 0
+	if err := unpinned.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unpinned err=%v", err)
 	}
 }

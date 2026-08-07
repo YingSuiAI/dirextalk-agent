@@ -1375,3 +1375,59 @@ ALTER TABLE core_task_tool_calls
     DROP CONSTRAINT core_task_tool_calls_round_check,
     ADD CONSTRAINT core_task_tool_calls_round_check CHECK (round BETWEEN 0 AND 511);
 -- dirextalk-agent migration end 000004_resumable_agent_rounds.up.sql
+-- dirextalk-agent migration begin 000005_canonical_memory_slots.up.sql
+-- Automatic memory is a versioned canonical projection over immutable
+-- Knowledge memory sources. Model candidates never write these tables
+-- directly; the deterministic reconciler owns every revision transition.
+CREATE TABLE core_memory_slots (
+    memory_id uuid PRIMARY KEY,
+    scope text NOT NULL CHECK (scope IN ('owner','conversation')),
+    canonical_key text NOT NULL CHECK (length(canonical_key) BETWEEN 3 AND 120 AND canonical_key = lower(canonical_key) AND canonical_key ~ '^(profile|preference|goal|project)\.[a-z0-9]([a-z0-9_.-]{0,117}[a-z0-9])?$'),
+    conversation_id uuid REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    memory_type text NOT NULL CHECK (memory_type IN ('fact','preference')),
+    sensitivity text NOT NULL CHECK (sensitivity IN ('low','sensitive')),
+    state text NOT NULL CHECK (state IN ('active','deleted')),
+    current_revision bigint NOT NULL CHECK (current_revision > 0),
+    current_source_id uuid REFERENCES core_knowledge_sources(source_id) ON DELETE RESTRICT,
+    current_source_revision bigint NOT NULL DEFAULT 0 CHECK (current_source_revision >= 0),
+    current_text_digest text NOT NULL DEFAULT '' CHECK (current_text_digest = '' OR current_text_digest ~ '^[a-f0-9]{64}$'),
+    confidence double precision NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    importance double precision NOT NULL CHECK (importance >= 0 AND importance <= 1),
+    candidate_schema_version integer NOT NULL CHECK (candidate_schema_version > 0),
+    policy_version integer NOT NULL CHECK (policy_version > 0),
+    source_conversation_id uuid REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    source_turn_id uuid REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK ((scope='owner' AND conversation_id IS NULL) OR (scope='conversation' AND conversation_id IS NOT NULL)),
+    CHECK ((source_conversation_id IS NULL) = (source_turn_id IS NULL)),
+    CHECK ((state='active' AND current_source_id IS NOT NULL AND current_source_revision > 0 AND current_text_digest <> '') OR (state='deleted' AND current_source_id IS NULL AND current_source_revision = 0 AND current_text_digest = ''))
+);
+CREATE UNIQUE INDEX core_memory_slots_identity_idx ON core_memory_slots(scope,canonical_key,COALESCE(conversation_id,'00000000-0000-0000-0000-000000000000'::uuid));
+CREATE INDEX core_memory_slots_active_idx ON core_memory_slots(scope,conversation_id,updated_at,memory_id) WHERE state='active';
+
+CREATE TABLE core_memory_revisions (
+    memory_id uuid NOT NULL REFERENCES core_memory_slots(memory_id) ON DELETE RESTRICT,
+    revision bigint NOT NULL CHECK (revision > 0),
+    action text NOT NULL CHECK (action IN ('create','update','delete')),
+    source_id uuid REFERENCES core_knowledge_sources(source_id) ON DELETE RESTRICT,
+    source_revision bigint NOT NULL DEFAULT 0 CHECK (source_revision >= 0),
+    text_digest text NOT NULL DEFAULT '' CHECK (text_digest = '' OR text_digest ~ '^[a-f0-9]{64}$'),
+    memory_type text NOT NULL CHECK (memory_type IN ('fact','preference')),
+    sensitivity text NOT NULL CHECK (sensitivity IN ('low','sensitive')),
+    confidence double precision NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    importance double precision NOT NULL CHECK (importance >= 0 AND importance <= 1),
+    candidate_schema_version integer NOT NULL CHECK (candidate_schema_version > 0),
+    policy_version integer NOT NULL CHECK (policy_version > 0),
+    source_conversation_id uuid REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    source_turn_id uuid REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    idempotency_key uuid NOT NULL UNIQUE,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json)='object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY(memory_id,revision),
+    CHECK ((source_conversation_id IS NULL) = (source_turn_id IS NULL)),
+    CHECK ((action IN ('create','update') AND source_id IS NOT NULL AND source_revision > 0 AND text_digest <> '') OR (action='delete' AND source_id IS NULL AND source_revision = 0 AND text_digest = ''))
+);
+CREATE UNIQUE INDEX core_memory_revisions_source_idx ON core_memory_revisions(source_id) WHERE source_id IS NOT NULL;
+-- dirextalk-agent migration end 000005_canonical_memory_slots.up.sql

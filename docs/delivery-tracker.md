@@ -111,9 +111,12 @@ support.
   Linux package execution and restart/replay acceptance remain to be recorded.
 - Automatic canonical-memory candidate schema, strict parser, deterministic
   privacy/value policy, and canonical create/update/delete/noop reconciler are
-  covered by focused domain tests. Durable slot/revision persistence, the
-  background extraction task, indexing, and user-control integration are not
-  yet wired, so automatic memory remains unpublished.
+  covered by focused domain tests. PostgreSQL 18 acceptance covers a unique
+  `(scope, key)` slot, immutable source-revision pins, create/update/delete
+  revisions, stale-write rejection, exact idempotency replay, tombstones, and
+  restart readback. The background extraction task, indexing, recall, and
+  user-control adapters are not yet wired, so automatic memory remains
+  unpublished.
 
 These gates are evidence requirements, not fallback behavior: a missing proof
 keeps the corresponding capability unpublished while planning and unrelated

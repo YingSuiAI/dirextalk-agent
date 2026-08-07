@@ -250,6 +250,17 @@ same provenance even if the current default embedding profile is rebound.
 `agent.knowledge.v1` `get_config` and `update_config` return the same current
 projection, without API keys or provider secret material.
 
+Automatic memory uses a separate canonical projection over immutable Knowledge
+memory sources. `(scope, canonical_key)` identifies one slot; each accepted
+create, update, or delete appends a revision with its source revision, policy
+version, extraction-schema version, provenance IDs, and exact idempotency
+receipt. Deletes retain a tombstone and cannot be silently revived by later
+model output. Secret candidates are rejected before persistence. This internal
+projection is not a second content store: current text remains behind the
+Knowledge content boundary and semantic indexing continues through the
+Knowledge indexer. The automatic extraction capability remains unpublished
+until its durable background task and user-control adapters are wired.
+
 ### AWS
 
 Typed AWS credentials, `TestCredentialIdentity` identity checks, plans, quotes,
