@@ -17,7 +17,6 @@ const (
 	// never exceed the approved role or Team hard-budget boundaries.
 	OfferSnapshotValidity          = 24 * time.Hour
 	ComputePricingEvidenceValidity = 15 * time.Minute
-	ModelPricingEvidenceValidity   = 7 * 24 * time.Hour
 	maximumOfferSources            = 8
 )
 
@@ -330,11 +329,10 @@ func normalizeOfferSnapshot(
 			source.CapturedAt.After(document.CapturedAt) {
 			return OfferSnapshotDocument{}, ErrInvalid
 		}
-		maximumAge := ComputePricingEvidenceValidity
-		if source.Kind == OfferSourceModelPricing {
-			maximumAge = ModelPricingEvidenceValidity
-		}
-		if document.CapturedAt.Sub(source.CapturedAt) > maximumAge {
+		// Model pricing receipts retain their audit timestamp without expiring.
+		if source.Kind != OfferSourceModelPricing &&
+			document.CapturedAt.Sub(source.CapturedAt) >
+				ComputePricingEvidenceValidity {
 			return OfferSnapshotDocument{}, ErrInvalid
 		}
 		key := string(source.Kind) + "\x00" + source.SourceID

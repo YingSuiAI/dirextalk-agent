@@ -198,6 +198,40 @@ func TestSnapshotServiceFailsClosedOnEvidenceAndCredentialErrors(t *testing.T) {
 	}
 }
 
+func TestSnapshotServiceAcceptsHistoricalModelPricingEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	document := validCatalogDocument()
+	for index := range document.Sources {
+		document.Sources[index].CapturedAt = time.Date(
+			2020, 1, 1, 0, 0, 0, 0, time.UTC,
+		)
+	}
+	models, err := NewModelOfferCatalog(document, profileCatalog(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := newSnapshotService(
+		models,
+		&fakeCredentialReadiness{},
+		&fakeComputePort{evidence: validComputeEvidence(now)},
+		func() time.Time { return now },
+		func() (string, error) {
+			return "10000000-0000-4000-8000-000000000099", nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Build(
+		context.Background(),
+		validPricingProviderScope(),
+		"us-east-1",
+	); err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+}
+
 func TestSnapshotServiceRejectsInvalidRegionBeforeProviderCall(t *testing.T) {
 	t.Parallel()
 	models, err := NewModelOfferCatalog(validCatalogDocument(), profileCatalog(t))

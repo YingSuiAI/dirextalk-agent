@@ -149,14 +149,12 @@ func (service *SnapshotService) Build(
 
 	sources := append(service.models.sourceReceipts(), compute.Sources...)
 	for _, source := range sources {
-		maximumAge := teamplan.ComputePricingEvidenceValidity
-		if source.Kind == teamplan.OfferSourceModelPricing {
-			maximumAge = teamplan.ModelPricingEvidenceValidity
-		}
 		if source.CapturedAt.After(capturedAt) {
 			return nil, ErrInvalidSnapshotRequest
 		}
-		if capturedAt.Sub(source.CapturedAt) > maximumAge {
+		if source.Kind != teamplan.OfferSourceModelPricing &&
+			capturedAt.Sub(source.CapturedAt) >
+				teamplan.ComputePricingEvidenceValidity {
 			return nil, ErrPricingEvidenceExpired
 		}
 	}

@@ -99,16 +99,6 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 				}
 			}
 		},
-		"stale model pricing": func(document *OfferSnapshotDocument) {
-			for index := range document.Sources {
-				if document.Sources[index].Kind == OfferSourceModelPricing {
-					document.Sources[index].CapturedAt =
-						document.CapturedAt.Add(
-							-ModelPricingEvidenceValidity - time.Microsecond,
-						)
-				}
-			}
-		},
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -118,6 +108,21 @@ func TestOfferSnapshotRejectsMissingEvidenceRegionDriftAndSecrets(t *testing.T) 
 				t.Fatalf("NewOfferSnapshot() error = %v, want ErrInvalid", err)
 			}
 		})
+	}
+}
+
+func TestOfferSnapshotAcceptsHistoricalModelPricingEvidence(t *testing.T) {
+	t.Parallel()
+	document := validOfferSnapshot(t, validCompileRequest()).Document()
+	for index := range document.Sources {
+		if document.Sources[index].Kind == OfferSourceModelPricing {
+			document.Sources[index].CapturedAt = time.Date(
+				2020, 1, 1, 0, 0, 0, 0, time.UTC,
+			)
+		}
+	}
+	if _, err := NewOfferSnapshot(document); err != nil {
+		t.Fatalf("NewOfferSnapshot() error = %v", err)
 	}
 }
 
