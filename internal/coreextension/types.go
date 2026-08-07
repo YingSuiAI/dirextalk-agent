@@ -612,7 +612,12 @@ type SourceAdapter interface {
 
 type ArtifactReceipt struct {
 	RelativePath string
-	Digest       string
+	// ContentDigest authenticates the canonical bytes returned by SourceAdapter.Fetch.
+	ContentDigest string
+	// ArtifactDigest identifies the immutable materialized install consumed by the runner.
+	ArtifactDigest string
+	// CleanupToken fences removal of this materialization generation.
+	CleanupToken string
 }
 type ArtifactStore interface {
 	Materialize(context.Context, FetchArtifact) (ArtifactReceipt, error)

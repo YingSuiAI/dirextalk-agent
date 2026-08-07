@@ -22,6 +22,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
 	"github.com/YingSuiAI/dirextalk-agent/internal/mcphttp"
 	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
 func TestDecodeCanonicalArtifactRejectsUnsafeForms(t *testing.T) {
@@ -33,6 +34,19 @@ func TestDecodeCanonicalArtifactRejectsUnsafeForms(t *testing.T) {
 	} {
 		if _, err := decodeCanonical([]byte(raw)); err == nil {
 			t.Fatalf("accepted unsafe artifact %q", raw)
+		}
+	}
+}
+
+func TestMaterializerValidPathRejectsOnlyUnsafeCharacters(t *testing.T) {
+	for _, path := range []string{"manifest.json", "nested/SKILL.md", "nested/deeper/entry"} {
+		if !validPath(path) {
+			t.Fatalf("valid path rejected: %q", path)
+		}
+	}
+	for _, path := range []string{"nested\\entry", "nested\x00entry", "nested\rentry", "nested\nentry"} {
+		if validPath(path) {
+			t.Fatalf("unsafe path accepted: %q", path)
 		}
 	}
 }
@@ -65,9 +79,409 @@ func TestCanonicalArtifactFixtureIsExact(t *testing.T) {
 	_ = os.Chmod(one.Root, 0700)
 }
 
+func TestRemoveStagedArtifactRejectsSameNameSymlink(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	cleanupID := uuid.NewString()
+	outside := t.TempDir()
+	marker := filepath.Join(outside, "keep")
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, digest)); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveStagedArtifact(root, digest, cleanupID); !errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("same-name symlink cleanup err=%v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("cleanup crossed staging ownership boundary: %v", err)
+	}
+}
+
+func TestRemoveStagedArtifactRemovesNestedImmutableTree(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("b", 64)
+	cleanupID := uuid.NewString()
+	target := filepath.Join(root, digest)
+	nested := filepath.Join(target, "nested", "deeper")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "SKILL.md"), []byte("# test\n"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{nested, filepath.Dir(nested), target} {
+		if err := os.Chmod(directory, 0500); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveStagedArtifact(root, digest, cleanupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nested staged artifact still exists: %v", err)
+	}
+}
+
+func TestRemoveStagedArtifactPartialDeleteRetriesOwnedTombstone(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("d", 64)
+	cleanupID := uuid.NewString()
+	target := filepath.Join(root, digest)
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "two"} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte(name), 0400); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(target, 0500); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err := removeStagedArtifact(root, digest, cleanupID, &stagedRemovalHooks{afterEntryRemove: func() error {
+		calls++
+		if calls == 1 {
+			return unix.EIO
+		}
+		return nil
+	}})
+	if !errors.Is(err, unix.EIO) || errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("partial cleanup syscall classification=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, stagedRemovalName(cleanupID))); err != nil {
+		t.Fatalf("owned tombstone was lost: %v", err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("partially deleted tombstone restored as authoritative digest: %v", err)
+	}
+	if err := RemoveStagedArtifact(root, digest, cleanupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, stagedRemovedName(cleanupID))); err != nil {
+		t.Fatalf("retry did not persist completion marker: %v", err)
+	}
+}
+
+func TestRemoveStagedArtifactPreservesSameNameReplacement(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("e", 64)
+	cleanupID := uuid.NewString()
+	target := filepath.Join(root, digest)
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "old"), []byte("old"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0500); err != nil {
+		t.Fatal(err)
+	}
+	err := removeStagedArtifact(root, digest, cleanupID, &stagedRemovalHooks{afterTopRename: func(rootFD int, digest, _ string) error {
+		if err := unix.Mkdirat(rootFD, digest, 0700); err != nil {
+			return err
+		}
+		fd, err := unix.Openat(rootFD, digest+"/replacement", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+		if err != nil {
+			return err
+		}
+		_, writeErr := unix.Write(fd, []byte("replacement"))
+		closeErr := unix.Close(fd)
+		if writeErr != nil {
+			return writeErr
+		}
+		return closeErr
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(target, "replacement")
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "replacement" {
+		t.Fatalf("same-name replacement changed: %q err=%v", got, err)
+	}
+	if err := RemoveStagedArtifact(root, digest, cleanupID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "replacement" {
+		t.Fatalf("stable retry crossed into replacement: %q err=%v", got, err)
+	}
+}
+
+func TestRemoveStagedArtifactRenameCollisionIsIdentityMismatch(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("f", 64)
+	cleanupID := uuid.NewString()
+	target := filepath.Join(root, digest)
+	if err := os.Mkdir(target, 0500); err != nil {
+		t.Fatal(err)
+	}
+	err := removeStagedArtifact(root, digest, cleanupID, &stagedRemovalHooks{beforeTopRename: func(rootFD int, _, tombstone string) error {
+		return unix.Mkdirat(rootFD, tombstone, 0500)
+	}})
+	if !errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("rename identity collision error=%v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("rename collision moved authoritative target: %v", err)
+	}
+}
+
+func TestRemoveStagedArtifactPreservesInfrastructureErrors(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	err := RemoveStagedArtifact(missingRoot, strings.Repeat("a", 64), uuid.NewString())
+	if !errors.Is(err, unix.ENOENT) || errors.Is(err, core.ErrInvalid) {
+		t.Fatalf("missing-root syscall classification=%v", err)
+	}
+}
+
 type publicationFake struct {
 	called int
 	digest string
+}
+
+type productionSourceAdapter struct {
+	inspection core.Inspection
+	artifact   core.FetchArtifact
+}
+
+func (a productionSourceAdapter) Search(context.Context, core.SearchQuery) (core.Page, error) {
+	return core.Page{}, nil
+}
+func (a productionSourceAdapter) Inspect(context.Context, core.InspectRequest) (core.Inspection, error) {
+	return a.inspection, nil
+}
+func (a productionSourceAdapter) Fetch(context.Context, core.Candidate) (core.FetchArtifact, error) {
+	return a.artifact, nil
+}
+
+type productionLifecycleCoordinator struct{}
+
+func (productionLifecycleCoordinator) CreateTask(context.Context, core.ExecuteRequest) (string, error) {
+	return uuid.NewString(), nil
+}
+
+type productionRepository struct{ *core.MemoryRepository }
+
+func (productionRepository) Search(context.Context, core.SearchQuery) (core.Page, error) {
+	return core.Page{}, nil
+}
+
+type failOnceProductionRepository struct {
+	productionRepository
+	failure error
+}
+
+func (r *failOnceProductionRepository) CreateMutation(ctx context.Context, mutation core.Mutation) (core.MutationResult, error) {
+	if r.failure != nil {
+		err := r.failure
+		r.failure = nil
+		return core.MutationResult{}, err
+	}
+	return r.productionRepository.CreateMutation(ctx, mutation)
+}
+
+type productionToolRuntime struct{}
+
+func (productionToolRuntime) ListTools(context.Context, core.Installation, core.VersionRecord) ([]core.Tool, error) {
+	return nil, nil
+}
+func (productionToolRuntime) CallTool(context.Context, core.Installation, core.VersionRecord, string, []byte) (string, error) {
+	return "", nil
+}
+
+func TestProductionServiceCompensationCrashMarkerReclaimDoesNotCrossRetryGeneration(t *testing.T) {
+	body := []byte("# compensation recovery\n")
+	files := []materialFile{{Path: "SKILL.md", Content: base64.RawStdEncoding.EncodeToString(body)}}
+	canonical, err := json.Marshal(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentDigest := digestBytes(canonical)
+	entryDigest := digestBytes(body)
+	candidate := core.Candidate{ID: "example/recovery", Kind: core.KindSkill, Source: core.SourceGitHub, Name: "example/recovery", Pin: core.SourcePin{GitCommit: strings.Repeat("a", 40), GitSHA256: contentDigest}, Transport: core.TransportSkillStatic}
+	execution := core.ExecutionDescriptor{Skill: &core.SkillEntry{RelativePath: "SKILL.md", Digest: entryDigest}}
+	inspection := core.Inspection{Candidate: candidate, ContentDigest: contentDigest, ManifestDigest: digestJSON([]map[string]string{{"path": "SKILL.md", "digest": entryDigest}}), ExecutionDigest: digestJSON(execution), NetworkSchemaDigest: digestJSON([]core.NetworkGrant(nil)), SecretSchemaDigest: digestJSON([]core.SecretGrantDescriptor{}), Execution: execution}
+	artifact := core.FetchArtifact{Candidate: candidate, Content: canonical, ContentDigest: contentDigest, ManifestDigest: inspection.ManifestDigest, Inspection: inspection}
+	registry := core.NewRegistry()
+	if err := registry.Register(candidate.Source, productionSourceAdapter{inspection: inspection, artifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	materializer, err := NewMaterializer(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failedCleanupToken string
+	removeCalls := 0
+	artifacts := ArtifactStoreAdapter{Materializer: materializer, RemoveFunc: func(_ context.Context, digest, cleanupToken string) error {
+		removeCalls++
+		if removeCalls == 1 {
+			failedCleanupToken = cleanupToken
+			return removeStagedArtifact(root, digest, cleanupToken, &stagedRemovalHooks{afterEntryRemove: func() error { return unix.EIO }})
+		}
+		return RemoveStagedArtifact(root, digest, cleanupToken)
+	}}
+	repository := &failOnceProductionRepository{productionRepository: productionRepository{MemoryRepository: core.NewMemoryRepository()}, failure: errors.New("injected repository failure")}
+	service, err := core.NewProductionService(repository, registry, productionLifecycleCoordinator{}, artifacts, core.NewFingerprintSecretStore(), productionToolRuntime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := core.Mutation{IdempotencyKey: uuid.NewString(), Candidate: candidate, Inspection: inspection}
+	if _, err := service.RequestInstall(context.Background(), mutation); err == nil {
+		t.Fatal("repository failure was not returned")
+	}
+	if failedCleanupToken == "" {
+		t.Fatal("compensation cleanup token was not retained")
+	}
+	if _, err := os.Stat(filepath.Join(root, stagedRemovalName(failedCleanupToken))); err != nil {
+		t.Fatalf("EIO compensation tombstone missing: %v", err)
+	}
+	result, err := service.RequestInstall(context.Background(), mutation)
+	if err != nil {
+		t.Fatalf("same-idempotency retry failed: %v", err)
+	}
+	newGeneration := filepath.Join(root, result.Installation.Versions[0].ArtifactDigest, ".dirextalk-install-v1.json")
+	if err := ResumeStagedArtifactRemoval(root, failedCleanupToken); err != nil {
+		t.Fatalf("orphan compensation reclaim failed: %v", err)
+	}
+	if err := RemoveStagedArtifactMarker(root, failedCleanupToken); err != nil {
+		t.Fatalf("orphan completion marker GC failed: %v", err)
+	}
+	if _, err := os.Stat(newGeneration); err != nil {
+		t.Fatalf("old compensation reclaim crossed into retry generation: %v", err)
+	}
+	if err := os.Chmod(filepath.Dir(newGeneration), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProductionArtifactStoreAdapterPreservesDigestsAndCleanupTokenABA(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate func(string) core.Candidate
+		execution func(string) core.ExecutionDescriptor
+		files     func() []materialFile
+		network   func(string) []core.NetworkGrant
+	}{
+		{
+			name: "mcp",
+			candidate: func(contentDigest string) core.Candidate {
+				return core.Candidate{ID: "calculator@1.0.0", Kind: core.KindMCP, Source: core.SourceOfficialRegistry, Name: "calculator", Pin: core.SourcePin{RegistryVersion: "1.0.0", RegistrySHA256: contentDigest}, Transport: core.TransportStreamableHTTP}
+			},
+			execution: func(string) core.ExecutionDescriptor {
+				return core.ExecutionDescriptor{Remote: &core.RemoteEndpoint{URL: "https://calculator.example/mcp"}}
+			},
+			files: func() []materialFile {
+				return []materialFile{{Path: "manifest.json", Content: base64.RawStdEncoding.EncodeToString([]byte(`{"name":"calculator"}`))}}
+			},
+			network: func(digest string) []core.NetworkGrant {
+				return []core.NetworkGrant{{Scheme: "https", Host: "calculator.example", Port: 443, PathPrefix: "/mcp", Digest: digest}}
+			},
+		},
+		{
+			name: "skill",
+			candidate: func(contentDigest string) core.Candidate {
+				return core.Candidate{ID: "example/skill", Kind: core.KindSkill, Source: core.SourceGitHub, Name: "example/skill", Pin: core.SourcePin{GitCommit: strings.Repeat("a", 40), GitSHA256: contentDigest}, Transport: core.TransportSkillStatic}
+			},
+			execution: func(entryDigest string) core.ExecutionDescriptor {
+				return core.ExecutionDescriptor{Skill: &core.SkillEntry{RelativePath: "SKILL.md", Digest: entryDigest}}
+			},
+			files: func() []materialFile {
+				return []materialFile{{Path: "SKILL.md", Content: base64.RawStdEncoding.EncodeToString([]byte("# Acceptance skill\n"))}}
+			},
+			network: func(string) []core.NetworkGrant { return nil },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := tt.files()
+			canonical, err := json.Marshal(files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contentDigest := digestBytes(canonical)
+			entry, err := base64.RawStdEncoding.DecodeString(files[0].Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entryDigest := digestBytes(entry)
+			candidate := tt.candidate(contentDigest)
+			manifestDigest := digestJSON([]map[string]string{{"path": files[0].Path, "digest": entryDigest}})
+			execution := tt.execution(entryDigest)
+			inspection := core.Inspection{
+				Candidate:           candidate,
+				ContentDigest:       contentDigest,
+				ManifestDigest:      manifestDigest,
+				ExecutionDigest:     digestJSON(execution),
+				NetworkSchemaDigest: digestJSON(tt.network(contentDigest)),
+				SecretSchemaDigest:  digestJSON([]core.SecretGrantDescriptor{}),
+				Execution:           execution,
+				NetworkGrants:       tt.network(contentDigest),
+			}
+			artifact := core.FetchArtifact{Candidate: candidate, Content: canonical, ContentDigest: contentDigest, ManifestDigest: manifestDigest, Inspection: inspection}
+			registry := core.NewRegistry()
+			if err := registry.Register(candidate.Source, productionSourceAdapter{inspection: inspection, artifact: artifact}); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			materializer, err := NewMaterializer(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifacts := ArtifactStoreAdapter{Materializer: materializer, RemoveFunc: func(_ context.Context, digest, cleanupID string) error {
+				return RemoveStagedArtifact(root, digest, cleanupID)
+			}}
+			repository := productionRepository{MemoryRepository: core.NewMemoryRepository()}
+			service, err := core.NewProductionService(repository, registry, productionLifecycleCoordinator{}, artifacts, core.NewFingerprintSecretStore(), productionToolRuntime{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := service.RequestInstall(context.Background(), core.Mutation{IdempotencyKey: uuid.NewString(), Candidate: candidate, Inspection: inspection})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installation, err := repository.Get(context.Background(), result.Installation.ID)
+			if err != nil || len(installation.Versions) != 1 {
+				t.Fatalf("installation=%#v err=%v", installation, err)
+			}
+			version := installation.Versions[0]
+			if version.ContentDigest != contentDigest || version.ArtifactDigest == contentDigest || version.ArtifactPath != version.ArtifactDigest {
+				t.Fatalf("digest identities collapsed: content=%q path=%q artifact=%q", version.ContentDigest, version.ArtifactPath, version.ArtifactDigest)
+			}
+			if _, err := os.Stat(filepath.Join(root, version.ArtifactPath, ".dirextalk-install-v1.json")); err != nil {
+				t.Fatalf("staged artifact missing: %v", err)
+			}
+			cleanupID := uuid.NewString()
+			if err := artifacts.Remove(context.Background(), core.ArtifactReceipt{RelativePath: version.ArtifactPath, ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, CleanupToken: cleanupID}); err != nil {
+				t.Fatalf("staged artifact cleanup failed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, stagedRemovedName(cleanupID))); err != nil {
+				t.Fatalf("cleanup completion marker missing: %v", err)
+			}
+			rematerialized, err := materializer.Materialize(context.Background(), artifact)
+			if err != nil {
+				t.Fatalf("same-digest rematerialization failed: %v", err)
+			}
+			if rematerialized.Digest != version.ArtifactDigest {
+				t.Fatalf("same-digest generation changed: %q", rematerialized.Digest)
+			}
+			if _, err := os.Stat(filepath.Join(root, stagedRemovedName(cleanupID))); err != nil {
+				t.Fatalf("new generation changed old completion marker: %v", err)
+			}
+			if err := artifacts.Remove(context.Background(), core.ArtifactReceipt{RelativePath: version.ArtifactPath, ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, CleanupToken: cleanupID}); err != nil {
+				t.Fatalf("old cleanup retry failed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, version.ArtifactDigest, ".dirextalk-install-v1.json")); err != nil {
+				t.Fatalf("old cleanup retry crossed into new generation: %v", err)
+			}
+			if err := artifacts.Remove(context.Background(), core.ArtifactReceipt{RelativePath: version.ArtifactPath, ContentDigest: version.ContentDigest, ArtifactDigest: version.ArtifactDigest, CleanupToken: uuid.NewString()}); err != nil {
+				t.Fatalf("rematerialized cleanup failed: %v", err)
+			}
+		})
+	}
 }
 
 func (p *publicationFake) Publish(_ context.Context, entries []extensionrunner.ManifestEntry, files []extensionrunner.PublishFile) (extensionrunner.PublishResponse, error) {

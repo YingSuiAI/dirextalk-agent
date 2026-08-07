@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,6 +25,7 @@ import (
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coretask"
+	"github.com/google/uuid"
 )
 
 type testKnowledgeSearchResolver struct{}
@@ -198,6 +201,31 @@ func TestComposeCoreExtensionEnabledFailsClosedWithoutRunnerOrStore(t *testing.T
 	cfg := config.Config{CoreExtensionEnabled: true}
 	if _, err := composeCoreExtension(cfg, nil); err == nil {
 		t.Fatal("enabled Core Extension accepted missing runner/store configuration")
+	}
+}
+
+func TestCoreExtensionArtifactRemoveFuncUsesBoundStagingCleanup(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	cleanupID := uuid.NewString()
+	target := filepath.Join(root, digest)
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "manifest.json"), []byte("{}"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0500); err != nil {
+		t.Fatal(err)
+	}
+	if err := coreExtensionArtifactRemoveFunc(root)(context.Background(), digest, cleanupID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged artifact still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".removed-"+cleanupID)); err != nil {
+		t.Fatalf("synchronous cleanup generation fence missing: %v", err)
 	}
 }
 

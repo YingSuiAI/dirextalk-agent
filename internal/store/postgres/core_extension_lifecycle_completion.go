@@ -234,6 +234,7 @@ func enqueueArtifactCleanupTx(ctx context.Context, tx pgx.Tx, installationID str
 	if uuid.Validate(installationID) != nil || uuid.Validate(version.VersionID) != nil || len(version.ArtifactDigest) != 64 || filepath.Base(version.ArtifactPath) != version.ArtifactDigest || !validCleanupReason(reason) {
 		return coreextension.ErrInvalid
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO core_extension_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,staging_relative_path,reason) VALUES($1,$2,$3,$4,$4,$5) ON CONFLICT (installation_id,version_id,artifact_digest) WHERE state IN ('pending','running','failed') DO NOTHING`, uuid.New(), installationID, version.VersionID, version.ArtifactDigest, reason)
+	cleanupID := extensionArtifactCleanupID(installationID, version.VersionID, version.ArtifactDigest)
+	_, err := tx.Exec(ctx, `INSERT INTO core_extension_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,staging_relative_path,reason) VALUES($1,$2,$3,$4,$4,$5) ON CONFLICT (cleanup_id) DO NOTHING`, cleanupID, installationID, version.VersionID, version.ArtifactDigest, reason)
 	return err
 }

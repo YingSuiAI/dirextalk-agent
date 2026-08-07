@@ -17,6 +17,7 @@ import (
 
 	core "github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
 	"github.com/YingSuiAI/dirextalk-agent/internal/extensionrunner"
+	"github.com/google/uuid"
 )
 
 const (
@@ -50,7 +51,7 @@ type Materializer struct {
 }
 type ArtifactStoreAdapter struct {
 	Materializer *Materializer
-	RemoveFunc   func(context.Context, string) error
+	RemoveFunc   func(context.Context, string, string) error
 }
 
 func (a ArtifactStoreAdapter) Materialize(ctx context.Context, f core.FetchArtifact) (core.ArtifactReceipt, error) {
@@ -61,16 +62,16 @@ func (a ArtifactStoreAdapter) Materialize(ctx context.Context, f core.FetchArtif
 	if err != nil {
 		return core.ArtifactReceipt{}, err
 	}
-	return core.ArtifactReceipt{RelativePath: m.Digest, Digest: m.Digest}, nil
+	return core.ArtifactReceipt{RelativePath: m.Digest, ContentDigest: f.ContentDigest, ArtifactDigest: m.Digest, CleanupToken: uuid.NewString()}, nil
 }
 func (a ArtifactStoreAdapter) Remove(ctx context.Context, r core.ArtifactReceipt) error {
-	if r.RelativePath == "" || r.RelativePath != r.Digest {
+	if r.RelativePath == "" || r.RelativePath != r.ArtifactDigest || len(r.ContentDigest) != 64 || uuid.Validate(r.CleanupToken) != nil {
 		return core.ErrInvalid
 	}
 	if a.RemoveFunc == nil {
 		return errors.New("runner cleanup unavailable")
 	}
-	return a.RemoveFunc(ctx, r.Digest)
+	return a.RemoveFunc(ctx, r.ArtifactDigest, r.CleanupToken)
 }
 
 type Publisher interface {
@@ -399,7 +400,7 @@ func manifestForRoot(root string) ([]extensionrunner.ManifestEntry, error) {
 }
 
 func validPath(p string) bool {
-	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\\\\x00\\r\\n") || filepath.Clean(filepath.FromSlash(p)) != filepath.FromSlash(p) {
+	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00\r\n") || filepath.Clean(filepath.FromSlash(p)) != filepath.FromSlash(p) {
 		return false
 	}
 	for _, part := range strings.Split(p, "/") {

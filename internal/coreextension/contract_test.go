@@ -464,7 +464,8 @@ func (a testAdapter) Fetch(context.Context, Candidate) (FetchArtifact, error) { 
 type testArtifacts struct{ removed int }
 
 func (s *testArtifacts) Materialize(context.Context, FetchArtifact) (ArtifactReceipt, error) {
-	return ArtifactReceipt{RelativePath: "artifacts/x", Digest: digestBytes([]byte("artifact"))}, nil
+	digest := digestBytes([]byte("artifact"))
+	return ArtifactReceipt{RelativePath: "artifacts/x", ContentDigest: digest, ArtifactDigest: digest, CleanupToken: uuid.NewString()}, nil
 }
 func (s *testArtifacts) Remove(context.Context, ArtifactReceipt) error { s.removed++; return nil }
 
@@ -577,7 +578,7 @@ func TestPrepareMutationFencesReviewedInspectionBeforeSideEffects(t *testing.T) 
 		if err := reg.Register(SourceOfficialRegistry, a); err != nil {
 			t.Fatal(err)
 		}
-		artifacts := &countedArtifacts{receipt: ArtifactReceipt{RelativePath: "artifacts/x", Digest: d}}
+		artifacts := &countedArtifacts{receipt: ArtifactReceipt{RelativePath: "artifacts/x", ContentDigest: d, ArtifactDigest: d, CleanupToken: uuid.NewString()}}
 		secrets := &countedSecrets{}
 		r := NewMemoryRepository()
 		return NewServiceWithStores(serviceTestRepository{r}, reg, nil, artifacts, secrets), r, a, artifacts, secrets

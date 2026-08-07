@@ -355,7 +355,8 @@ func (r *MemoryRepository) CompleteLifecycle(_ context.Context, c Completion) (I
 		if r.artifactStore != nil && i.ProposedVersionID != "" {
 			for _, v := range i.Versions {
 				if v.VersionID == i.ProposedVersionID && v.ArtifactPath != "" {
-					if err := r.artifactStore.Remove(context.Background(), ArtifactReceipt{RelativePath: v.ArtifactPath, Digest: v.ArtifactDigest}); err != nil {
+					cleanupToken := uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk-agent/core-extension-memory-cleanup/v1\x00"+id+"\x00"+v.VersionID+"\x00"+v.ArtifactDigest)).String()
+					if err := r.artifactStore.Remove(context.Background(), ArtifactReceipt{RelativePath: v.ArtifactPath, ContentDigest: v.ContentDigest, ArtifactDigest: v.ArtifactDigest, CleanupToken: cleanupToken}); err != nil {
 						return Installation{}, err
 					}
 				}

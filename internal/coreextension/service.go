@@ -182,11 +182,11 @@ func (s *service) prepareMutation(ctx context.Context, m Mutation) (Mutation, Ar
 	if e != nil {
 		return m, ArtifactReceipt{}, e
 	}
-	if !validDigest(receipt.Digest) || receipt.Digest != f.ContentDigest || receipt.RelativePath == "" {
+	if !validDigest(receipt.ContentDigest) || receipt.ContentDigest != f.ContentDigest || !validDigest(receipt.ArtifactDigest) || !validUUID(receipt.CleanupToken) || receipt.RelativePath == "" {
 		_ = s.artifacts.Remove(context.WithoutCancel(ctx), receipt)
 		return Mutation{}, ArtifactReceipt{}, ErrInvalid
 	}
-	m.ArtifactPath, m.ArtifactDigest = receipt.RelativePath, receipt.Digest
+	m.ArtifactPath, m.ArtifactDigest = receipt.RelativePath, receipt.ArtifactDigest
 	m.Candidate = in.Candidate
 	m.Inspection = in
 	m.Inspection.SecretGrants = bound

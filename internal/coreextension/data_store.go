@@ -37,10 +37,10 @@ func (s *FileArtifactStore) Materialize(_ context.Context, f FetchArtifact) (Art
 		_ = os.Remove(tmp)
 		return ArtifactReceipt{}, err
 	}
-	return ArtifactReceipt{RelativePath: name, Digest: f.ContentDigest}, nil
+	return ArtifactReceipt{RelativePath: name, ContentDigest: f.ContentDigest, ArtifactDigest: f.ContentDigest, CleanupToken: uuid.NewString()}, nil
 }
 func (s *FileArtifactStore) Remove(_ context.Context, r ArtifactReceipt) error {
-	if r.RelativePath == "" || filepath.Base(r.RelativePath) != r.RelativePath {
+	if r.RelativePath == "" || filepath.Base(r.RelativePath) != r.RelativePath || uuid.Validate(r.CleanupToken) != nil {
 		return ErrInvalid
 	}
 	err := os.Remove(filepath.Join(s.Root, r.RelativePath))

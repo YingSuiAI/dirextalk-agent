@@ -6,12 +6,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/coredeprovision"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreextension/execution"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreruntime"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // CoreExtensionArtifactCleaner converges digest-addressed Agent staging after
@@ -83,8 +86,13 @@ func (c *CoreExtensionArtifactCleaner) Enqueue(ctx context.Context, version core
 	if c == nil || c.Store == nil || uuid.Validate(installationID) != nil || uuid.Validate(version.VersionID) != nil || len(version.ArtifactDigest) != 64 || version.ArtifactPath == "" || filepath.Base(version.ArtifactPath) != version.ArtifactDigest || !validCleanupReason(reason) {
 		return coreextension.ErrInvalid
 	}
-	_, err := c.Store.pool.Exec(ctx, `INSERT INTO core_extension_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,staging_relative_path,reason) VALUES($1,$2,$3,$4,$4,$5) ON CONFLICT (installation_id,version_id,artifact_digest) WHERE state IN ('pending','running','failed') DO NOTHING`, uuid.New(), installationID, version.VersionID, version.ArtifactDigest, reason)
+	cleanupID := extensionArtifactCleanupID(installationID, version.VersionID, version.ArtifactDigest)
+	_, err := c.Store.pool.Exec(ctx, `INSERT INTO core_extension_artifact_cleanup(cleanup_id,installation_id,version_id,artifact_digest,staging_relative_path,reason) VALUES($1,$2,$3,$4,$4,$5) ON CONFLICT (cleanup_id) DO NOTHING`, cleanupID, installationID, version.VersionID, version.ArtifactDigest, reason)
 	return err
+}
+
+func extensionArtifactCleanupID(installationID, versionID, artifactDigest string) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("dirextalk-agent/core-extension-cleanup/v1\x00"+installationID+"\x00"+versionID+"\x00"+artifactDigest)).String()
 }
 
 // Sweep claims due rows and removes only a validated digest child of Root.
@@ -104,6 +112,9 @@ func (c *CoreExtensionArtifactCleaner) Sweep(ctx context.Context, limit int) (in
 }
 
 func (c *CoreExtensionArtifactCleaner) sweep(ctx context.Context, limit int) (int, error) {
+	if err := c.recoverStagedCleanupMarkers(ctx); err != nil {
+		return 0, err
+	}
 	rows, err := c.Store.pool.Query(ctx, `SELECT cleanup_id,artifact_digest FROM core_extension_artifact_cleanup WHERE ((state IN ('pending','failed') AND next_attempt_at<=clock_timestamp()) OR (state='running' AND updated_at<clock_timestamp()-interval '5 minutes')) ORDER BY next_attempt_at,cleanup_id LIMIT $1`, limit)
 	if err != nil {
 		return 0, err
@@ -128,20 +139,102 @@ func (c *CoreExtensionArtifactCleaner) sweep(ctx context.Context, limit int) (in
 		if err = c.Store.pool.QueryRow(ctx, `UPDATE core_extension_artifact_cleanup SET state='running',attempt=attempt+1,updated_at=clock_timestamp() WHERE cleanup_id=$1 AND ((state IN ('pending','failed') AND next_attempt_at<=clock_timestamp()) OR (state='running' AND updated_at<clock_timestamp()-interval '5 minutes')) RETURNING true`, x.id).Scan(&claimed); err != nil {
 			continue
 		}
-		path, pathErr := cleanupPath(c.Root, x.digest)
+		pathErr := removeStagedExtensionArtifact(c.Root, x.digest, x.id)
 		if pathErr == nil {
-			pathErr = os.RemoveAll(path)
-		}
-		if pathErr == nil {
-			_, err = c.Store.pool.Exec(ctx, `UPDATE core_extension_artifact_cleanup SET state='succeeded',last_error='',completed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE cleanup_id=$1 AND state='running'`, x.id)
-			if err == nil {
+			tag, updateErr := c.Store.pool.Exec(ctx, `UPDATE core_extension_artifact_cleanup SET state='succeeded',last_error='',completed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE cleanup_id=$1 AND state='running'`, x.id)
+			if updateErr != nil {
+				return completed, updateErr
+			}
+			if tag.RowsAffected() == 1 {
 				completed++
+				if err = removeStagedExtensionArtifactCompletion(c.Root, x.id, "succeeded"); err != nil {
+					return completed, err
+				}
 			}
 			continue
 		}
 		_, _ = c.Store.pool.Exec(ctx, `UPDATE core_extension_artifact_cleanup SET state='failed',last_error=$2,next_attempt_at=clock_timestamp()+interval '1 minute',updated_at=clock_timestamp() WHERE cleanup_id=$1 AND state='running'`, x.id, pathErr.Error())
 	}
 	return completed, nil
+}
+
+func removeStagedExtensionArtifact(root, digest, cleanupID string) error {
+	path, err := cleanupPath(root, digest)
+	if err != nil {
+		return err
+	}
+	if uuid.Validate(cleanupID) != nil {
+		return coreextension.ErrInvalid
+	}
+	return execution.RemoveStagedArtifact(root, filepath.Base(path), cleanupID)
+}
+
+func removeStagedExtensionArtifactCompletion(root, cleanupID, state string) error {
+	if state != "succeeded" {
+		return nil
+	}
+	return execution.RemoveStagedArtifactMarker(root, cleanupID)
+}
+
+func (c *CoreExtensionArtifactCleaner) recoverStagedCleanupMarkers(ctx context.Context) error {
+	entries, err := os.ReadDir(c.Root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		name := entry.Name()
+		removing := strings.HasPrefix(name, ".remove-")
+		removed := strings.HasPrefix(name, ".removed-")
+		if !removing && !removed {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			continue
+		}
+		prefix := ".removed-"
+		if removing {
+			prefix = ".remove-"
+		}
+		cleanupID := strings.TrimPrefix(name, prefix)
+		parsed, parseErr := uuid.Parse(cleanupID)
+		if parseErr != nil || parsed.String() != cleanupID {
+			continue
+		}
+		var state string
+		hasDurableRow := true
+		if err := c.Store.pool.QueryRow(ctx, `SELECT state FROM core_extension_artifact_cleanup WHERE cleanup_id=$1`, cleanupID).Scan(&state); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return err
+			}
+			hasDurableRow = false
+		}
+		if removing {
+			if hasDurableRow {
+				continue
+			}
+			if err := execution.ResumeStagedArtifactRemoval(c.Root, cleanupID); err != nil {
+				return err
+			}
+			if err := execution.RemoveStagedArtifactMarker(c.Root, cleanupID); err != nil {
+				return err
+			}
+			continue
+		}
+		if hasDurableRow && state != "succeeded" {
+			continue
+		}
+		if err := execution.RemoveStagedArtifactMarker(c.Root, cleanupID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cleanupPath(root, digest string) (string, error) {

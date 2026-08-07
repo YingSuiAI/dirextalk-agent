@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -346,15 +344,7 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 	if err != nil {
 		return nil, err
 	}
-	artifacts := execution.ArtifactStoreAdapter{Materializer: materializer, RemoveFunc: func(_ context.Context, digest string) error {
-		if len(digest) != 64 {
-			return coreextension.ErrInvalid
-		}
-		if _, err := hex.DecodeString(digest); err != nil {
-			return coreextension.ErrInvalid
-		}
-		return os.RemoveAll(filepath.Join(cfg.CoreExtensionStagingRoot, digest))
-	}}
+	artifacts := execution.ArtifactStoreAdapter{Materializer: materializer, RemoveFunc: coreExtensionArtifactRemoveFunc(cfg.CoreExtensionStagingRoot)}
 	local := &execution.LocalExecutor{Runner: runner, Secrets: secretStore}
 	remote := &execution.RemoteExecutor{Secrets: secretStore}
 	runtime := postgres.NewPostgresExtensionRunnerToolRuntime(store, execCoord, local, remote)
@@ -400,4 +390,10 @@ func composeCoreExtension(cfg config.Config, store *postgres.Store) (*coreExtens
 		}
 	}
 	return &coreExtensionComposition{domain: service, mcpService: mcpService, skillService: skillService, taskHandler: dispatch, lifecycleHandler: lifecycleHandler, executionHandler: executionHandler, conversationToolHandler: conversationToolHandler, conversationResolver: conversationExtensionResolver{store: extStore}, toolDispatcher: &pinnedExtensionDispatcher{tasks: postgres.NewCoreTaskStore(store), store: extStore, coord: execCoord, local: local, remote: remote}, skillResolver: &pinnedSkillResolver{store: extStore, runner: runner}, artifactCleaner: artifactCleaner}, nil
+}
+
+func coreExtensionArtifactRemoveFunc(root string) func(context.Context, string, string) error {
+	return func(_ context.Context, digest, cleanupToken string) error {
+		return execution.RemoveStagedArtifact(root, digest, cleanupToken)
+	}
 }
