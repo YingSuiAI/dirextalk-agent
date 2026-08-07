@@ -794,7 +794,7 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 	if store == nil || profiles == nil {
 		return nil, errors.New("Knowledge composition requires postgres store and model profiles")
 	}
-	content, err := coreknowledge.NewRootContentPort(cfg.CoreKnowledgeContentRoot, cfg.CoreKnowledgeContentQuotaBytes)
+	content, err := coreknowledge.NewRootContentPort(cfg.CoreKnowledgeContentRoot, coreknowledge.MaxIndexableContentBytes)
 	if err != nil {
 		return nil, fmt.Errorf("content root: %w", err)
 	}
@@ -803,22 +803,22 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		_ = content.Close()
 		return nil, fmt.Errorf("mount root: %w", err)
 	}
-	embedder, err := semantic.NewHTTPEmbedder(semantic.HTTPEmbedderConfig{Dimension: cfg.CoreKnowledgeQdrantDimension})
+	embedder, err := semantic.NewHTTPEmbedder(semantic.HTTPEmbedderConfig{Dimension: cfg.CoreKnowledgeVectorDimension})
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
 		return nil, fmt.Errorf("embedding transport: %w", err)
 	}
-	backend, err := semantic.NewQdrantStore(semantic.QdrantConfig{Endpoint: cfg.CoreKnowledgeQdrantEndpoint, Collection: cfg.CoreKnowledgeQdrantCollection, Dimension: cfg.CoreKnowledgeQdrantDimension})
+	backend, err := postgres.NewKnowledgeVectorStore(store, cfg.CoreKnowledgeVectorDimension)
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
-		return nil, fmt.Errorf("Qdrant store: %w", err)
+		return nil, fmt.Errorf("Knowledge vector store: %w", err)
 	}
-	if err := waitForQdrantCollection(context.Background(), backend, 60*time.Second, time.Second); err != nil {
+	if err := backend.EnsureCollection(context.Background()); err != nil {
 		_ = opener.Close()
 		_ = content.Close()
-		return nil, fmt.Errorf("Qdrant readiness: %w", err)
+		return nil, fmt.Errorf("Knowledge vector schema: %w", err)
 	}
 	slot := &knowledgeSearchSlot{}
 	repository, err := postgres.NewCoreKnowledgeStore(store, postgres.CoreKnowledgeStoreConfig{
@@ -829,7 +829,7 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 		_ = content.Close()
 		return nil, fmt.Errorf("Knowledge store: %w", err)
 	}
-	embeddingConfig, err := repository.EnsureEmbeddingConfig(context.Background(), coreknowledge.EmbeddingConfig{EmbeddingProfileID: cfg.CoreKnowledgeEmbeddingProfileID, Dimension: cfg.CoreKnowledgeQdrantDimension, Collection: cfg.CoreKnowledgeQdrantCollection, CollectionConfigDigest: knowledgeCollectionDigest(cfg), Revision: 1})
+	embeddingConfig, err := repository.EnsureEmbeddingConfig(context.Background(), coreknowledge.EmbeddingConfig{EmbeddingProfileID: cfg.CoreKnowledgeEmbeddingProfileID, Dimension: cfg.CoreKnowledgeVectorDimension, Collection: knowledgeVectorCollection, CollectionConfigDigest: knowledgeCollectionDigest(cfg), Revision: 1})
 	if err != nil {
 		_ = opener.Close()
 		_ = content.Close()
@@ -882,8 +882,10 @@ func composeCoreKnowledge(cfg config.Config, store *postgres.Store, profiles *co
 }
 
 func knowledgeCollectionDigest(cfg config.Config) string {
-	return postgres.KnowledgeCollectionDigest(cfg.CoreKnowledgeQdrantCollection, cfg.CoreKnowledgeQdrantDimension)
+	return postgres.KnowledgeCollectionDigest(knowledgeVectorCollection, cfg.CoreKnowledgeVectorDimension)
 }
+
+const knowledgeVectorCollection = "core_knowledge_vectors"
 
 func (c *coreKnowledgeComposition) Sweep(ctx context.Context) error {
 	if c != nil && c.mutationGuard != nil {

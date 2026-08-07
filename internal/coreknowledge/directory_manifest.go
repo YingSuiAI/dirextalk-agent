@@ -22,8 +22,8 @@ import (
 const (
 	DefaultManifestMaxDepth            = 16
 	DefaultManifestMaxFiles            = 4096
-	DefaultManifestMaxFileBytes  int64 = 64 << 20
-	DefaultManifestMaxTotalBytes int64 = 256 << 20
+	DefaultManifestMaxFileBytes  int64 = MaxSourceBytes
+	DefaultManifestMaxTotalBytes int64 = MaxSourceBytes
 )
 
 type DirectoryManifestLimits struct {

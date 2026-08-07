@@ -94,7 +94,7 @@ func (r *SearchResolver) Search(ctx context.Context, query coreknowledge.SearchQ
 	}
 	// An empty authoritative binding set is a valid empty corpus, not a vector
 	// backend request. In particular, deleting the last promoted source must
-	// not emit an embedding call or an invalid Qdrant filter.
+	// not emit an embedding call or an unscoped vector query.
 	if len(bindings) == 0 {
 		return coreknowledge.SearchPage{Matches: make([]coreknowledge.SearchMatch, 0)}, nil
 	}

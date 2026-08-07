@@ -93,6 +93,9 @@ func corePGFixture(t *testing.T, dsn string) (context.Context, *Store, string, f
 		pool.Close()
 		admin.Close()
 		cancel()
+		if !strictDSN && strings.Contains(err.Error(), `extension "vector" is not available`) {
+			t.Skipf("pgvector unavailable: %v", err)
+		}
 		t.Fatal(err)
 	}
 	keyring, err := secretbox.New(secretbox.KeyVersionMin, bytes.Repeat([]byte{0x5a}, secretbox.MasterKeySize))

@@ -22,10 +22,7 @@ import (
 
 const knowledgeSnapshotTTL = 5 * time.Minute
 
-const (
-	knowledgeMaxActiveUploads = 8
-	knowledgeMaxReservedBytes = 128 << 20
-)
+const knowledgeMaxActiveUploads = 8
 
 // resumableContentPort is optional. Implementations which can reopen a
 // content sink after a process restart should provide it.
@@ -127,6 +124,42 @@ func (r *CoreKnowledgeStore) ResolveBindings(ctx context.Context, sourceIDs []st
 }
 
 func coreknowledgeValidUUID(id string) bool { _, err := uuid.Parse(id); return err == nil }
+
+func reserveKnowledgeQuota(ctx context.Context, tx pgx.Tx, replacingSourceID string, newSize int64) error {
+	if newSize < 0 || newSize > coreknowledge.MaxSourceBytes {
+		return coreknowledge.ErrLimitExceeded
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('knowledge:content-quota',0))`); err != nil {
+		return coreknowledge.ErrConflict
+	}
+	var used int64
+	var replacing any
+	if replacingSourceID != "" {
+		replacing = replacingSourceID
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(size_bytes),0) FROM core_knowledge_sources WHERE status NOT IN ('deleting','deleted') AND ($1::uuid IS NULL OR source_id<>$1::uuid)`, replacing).Scan(&used); err != nil {
+		return coreknowledge.ErrConflict
+	}
+	if used+newSize > coreknowledge.MaxIndexableContentBytes {
+		return coreknowledge.ErrQuotaExceeded
+	}
+	return nil
+}
+
+func (r *CoreKnowledgeStore) QuotaStatus(ctx context.Context) (coreknowledge.QuotaStatus, error) {
+	if r == nil || r.store == nil {
+		return coreknowledge.QuotaStatus{}, coreknowledge.ErrInvalid
+	}
+	var used int64
+	if err := r.store.pool.QueryRow(ctx, `SELECT COALESCE(sum(size_bytes),0) FROM core_knowledge_sources WHERE status NOT IN ('deleting','deleted')`).Scan(&used); err != nil {
+		return coreknowledge.QuotaStatus{}, coreknowledge.ErrConflict
+	}
+	remaining := coreknowledge.MaxIndexableContentBytes - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	return coreknowledge.QuotaStatus{UsedBytes: used, LimitBytes: coreknowledge.MaxIndexableContentBytes, RemainingBytes: remaining, MaxSourceBytes: coreknowledge.MaxSourceBytes}, nil
+}
 func (r *CoreKnowledgeStore) nowUTC() time.Time {
 	if r.now == nil {
 		return time.Now().UTC()

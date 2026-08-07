@@ -143,6 +143,15 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 	return value, safeError(err)
 }
 
+func (s *Service) QuotaStatus(ctx context.Context) (QuotaStatus, error) {
+	reader, ok := s.repository.(QuotaStatusReader)
+	if !ok {
+		return QuotaStatus{}, ErrConflict
+	}
+	status, err := reader.QuotaStatus(ctx)
+	return status, safeError(err)
+}
+
 func (s *Service) GetEmbeddingConfig(ctx context.Context) (EmbeddingConfig, error) {
 	reader, ok := s.repository.(EmbeddingConfigReader)
 	if !ok {
@@ -356,7 +365,7 @@ func safeError(err error) error {
 			return candidate
 		}
 	}
-	for _, candidate := range []error{ErrLimitExceeded, ErrIneligible, ErrSourceReferenced, ErrCursorConflict, ErrFilesystemUnavailable} {
+	for _, candidate := range []error{ErrLimitExceeded, ErrQuotaExceeded, ErrIneligible, ErrSourceReferenced, ErrCursorConflict, ErrFilesystemUnavailable} {
 		if errors.Is(err, candidate) {
 			return candidate
 		}

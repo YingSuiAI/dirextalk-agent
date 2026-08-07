@@ -30,6 +30,9 @@ contract](message-server-integration-development-contract.md), and
   fail closed because the current runtime cannot reproduce them losslessly.
 - Knowledge mounts, uploads, memory, indexing, semantic-search composition,
   and the bounded read-only `knowledge_search` Native conversation tool.
+  Semantic generations now use pgvector inside Agent PostgreSQL with exact
+  binding-filtered cosine search, fixed 64 MiB aggregate/16 MiB source content
+  limits, and the closed Knowledge quota status/error contract.
 - Typed Core AWS credentials, plans, confirmation-bound CloudControl changes,
   and `WorkloadService` planning/confirmation with a fenced `WORKLOAD` Task.
 - Neutral Capability Knowledge mutations now require explicit UUID idempotency

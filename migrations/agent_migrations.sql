@@ -1364,3 +1364,40 @@ CREATE TABLE core_aws_credential_test_claims (
 );
 CREATE INDEX core_aws_credential_test_claims_credential_idx ON core_aws_credential_test_claims(credential_id, expected_revision);
 -- dirextalk-agent migration end 000003_aws_credential_test_claims.up.sql
+-- dirextalk-agent migration begin 000004_knowledge_pgvector.up.sql
+-- Knowledge vectors share the Agent-owned PostgreSQL backup, transaction and
+-- deprovision boundary. This fresh-state schema requires the mature pgvector
+-- extension and deliberately has no external-vector fallback.
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE core_knowledge_vector_generations (
+    generation text PRIMARY KEY CHECK (length(generation) BETWEEN 1 AND 256),
+    state text NOT NULL CHECK (state IN ('staged','promoted')),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    promoted_at timestamptz
+);
+
+CREATE TABLE core_knowledge_vectors (
+    point_id uuid PRIMARY KEY,
+    generation text NOT NULL REFERENCES core_knowledge_vector_generations(generation) ON DELETE CASCADE,
+    state text NOT NULL CHECK (state IN ('staged','promoted')),
+    source_id uuid NOT NULL REFERENCES core_knowledge_sources(source_id) ON DELETE CASCADE,
+    revision bigint NOT NULL CHECK (revision > 0),
+    chunk_ref text NOT NULL CHECK (length(chunk_ref) BETWEEN 1 AND 512),
+    digest text NOT NULL CHECK (digest ~ '^[a-f0-9]{64}$'),
+    snippet text NOT NULL CHECK (octet_length(snippet) <= 1048576),
+    embedding vector NOT NULL CHECK (vector_dims(embedding) BETWEEN 1 AND 2000),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (generation, source_id, revision, chunk_ref)
+);
+CREATE INDEX core_knowledge_vectors_binding_idx
+    ON core_knowledge_vectors (state, source_id, revision, generation, point_id);
+
+ALTER TABLE core_knowledge_sources
+    ADD CONSTRAINT core_knowledge_source_size_chk CHECK (size_bytes <= 16777216);
+ALTER TABLE core_knowledge_uploads
+    DROP CONSTRAINT core_knowledge_uploads_declared_size_check,
+    ADD CONSTRAINT core_knowledge_uploads_declared_size_check CHECK (declared_size > 0 AND declared_size <= 16777216);
+ALTER TABLE core_knowledge_upload_reservations
+    ADD CONSTRAINT core_knowledge_upload_reservation_size_chk CHECK (reserved_bytes <= 16777216);
+-- dirextalk-agent migration end 000004_knowledge_pgvector.up.sql

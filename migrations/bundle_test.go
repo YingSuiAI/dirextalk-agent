@@ -2,12 +2,14 @@ package migrations
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 )
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 3 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" {
+	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" {
 		t.Fatalf("entries=%v, want the immutable baseline plus provenance and AWS claim migrations", entries)
 	}
 	migration := Ordered()[0]
@@ -27,6 +29,17 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	claims := Ordered()[2]
 	if claims.Version != 3 || len(claims.Script) == 0 || claims.Script[len(claims.Script)-1] != '\n' || !bytes.Contains(claims.Script, []byte("core_aws_credential_test_claims")) {
 		t.Fatal("AWS credential test claim migration missing durable fence")
+	}
+	pgvector := Ordered()[3]
+	if pgvector.Version != 4 || !bytes.Contains(pgvector.Script, []byte("CREATE EXTENSION IF NOT EXISTS vector")) || !bytes.Contains(pgvector.Script, []byte("CREATE TABLE core_knowledge_vectors")) {
+		t.Fatal("pgvector migration missing required fresh-state schema")
+	}
+	immutable := map[int]string{0: "71a0719dcf45f727e247607871f1e0726af447e7fff9fc625f8c5b7003e64bc0", 1: "91c124b8967f4ddb8ffbb3ac4baa131dd21d397eafb87026718b3819bcd13468", 2: "563f8f2b4a49c1e66e33f3a8ab6fdf606f21674fc45fad4c36add6ddc81f615a"}
+	for index, want := range immutable {
+		sum := sha256.Sum256(Ordered()[index].Script)
+		if got := hex.EncodeToString(sum[:]); got != want {
+			t.Fatalf("committed migration %d checksum=%s want=%s", index+1, got, want)
+		}
 	}
 	for _, needle := range []string{
 		"CREATE TABLE agent_instance_metadata",

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
+	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -44,6 +45,26 @@ func TestClassifyCapabilityErrorMapsProductGRPCStatus(t *testing.T) {
 				t.Fatal("classified failure did not retain its internal cause")
 			}
 		})
+	}
+}
+
+func TestClassifyCapabilityErrorDistinguishesKnowledgeQuotaFromRequestLimit(t *testing.T) {
+	quota := classifyCapabilityError(coreknowledge.ErrQuotaExceeded)
+	code, message, ok := capabilityoperation.FailureDetails(quota)
+	if !ok || code != "RESOURCE_EXHAUSTED" || message != capabilityoperation.KnowledgeQuotaExceededMessage {
+		t.Fatalf("quota classification code=%q message=%q ok=%v", code, message, ok)
+	}
+	if details := capabilityoperation.SafeFailureDetails(code, message); details["code"] != "knowledge_quota_exceeded" {
+		t.Fatalf("quota details=%v", details)
+	}
+
+	limit := classifyCapabilityError(coreknowledge.ErrLimitExceeded)
+	code, message, ok = capabilityoperation.FailureDetails(limit)
+	if !ok || code != "INVALID_ARGUMENT" || message != "Agent request is invalid" {
+		t.Fatalf("limit classification code=%q message=%q ok=%v", code, message, ok)
+	}
+	if details := capabilityoperation.SafeFailureDetails(code, message); details != nil {
+		t.Fatalf("ordinary request limit published quota details: %v", details)
 	}
 }
 

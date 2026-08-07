@@ -190,6 +190,9 @@ func knowledgePGFixture(t *testing.T) (context.Context, *CoreKnowledgeStore, fun
 		_ = dropKnowledgeSchema(admin, quoted)
 		admin.Close()
 		cancel()
+		if strings.Contains(err.Error(), `extension "vector" is not available`) {
+			t.Skipf("pgvector unavailable: %v", err)
+		}
 		t.Fatal(err)
 	}
 	store, err := New(pool, instance, testSecretKeyring(t))

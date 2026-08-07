@@ -1249,6 +1249,10 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 		if err != nil {
 			return nil, err
 		}
+		quota, err := c.service.QuotaStatus(ctx)
+		if err != nil {
+			return nil, err
+		}
 		projection := c.embeddingProjection(ctx)
 		total := s.ReadyCount + s.UploadingCount + s.IndexingCount + s.FailedCount + s.CleanupPendingCount
 		indexed, stale := 0, s.ReadyCount
@@ -1266,6 +1270,10 @@ func (c *coreKnowledgeCapability) HandleOperation(ctx context.Context, operation
 			"failed_count":          s.FailedCount,
 			"cleanup_pending_count": s.CleanupPendingCount,
 			"checked_at":            s.CheckedAt,
+			"quota_used_bytes":      quota.UsedBytes,
+			"quota_limit_bytes":     quota.LimitBytes,
+			"quota_remaining_bytes": quota.RemainingBytes,
+			"max_source_bytes":      quota.MaxSourceBytes,
 		}
 		return marshalResult(mergeKnowledgeProjection(result, projection), nil)
 	default:
@@ -1619,6 +1627,8 @@ func operationResultSchema(capabilityID, operation string) string {
 		return `{"type":"object","properties":{"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"dimension":{"type":"integer"},"collection":{"type":"string"},"collection_config_digest":{"type":"string"},"revision":{"type":"integer"},"updated_at":{"type":"string"}},"required":["embedding_profile_id","embedding_profile_revision","embedding_model","collection_config_digest","revision"]}`
 	case "agent.knowledge.v1:search_knowledge", "agent.knowledge.v1:search_memory":
 		return `{"type":"object","properties":{"items":{"type":"array"},"next_cursor":{"type":"string"},"search_mode":{"type":"string"},"embedding_profile_id":{"type":"string"},"embedding_profile_revision":{"type":"integer"},"embedding_model":{"type":"string"},"embedding_generation":{"type":"string"},"collection_config_digest":{"type":"string"}},"required":["items","next_cursor","search_mode"]}`
+	case "agent.knowledge.v1:status":
+		return `{"additionalProperties":false,"properties":{"checked_at":{"format":"date-time","type":"string"},"cleanup_pending_count":{"minimum":0,"type":"integer"},"count":{"minimum":0,"type":"integer"},"embedding_indexed":{"minimum":0,"type":"integer"},"embedding_model":{"type":"string"},"embedding_profile_id":{"format":"uuid","type":"string"},"embedding_profile_revision":{"minimum":1,"type":"integer"},"embedding_stale":{"minimum":0,"type":"integer"},"failed_count":{"minimum":0,"type":"integer"},"indexing_count":{"minimum":0,"type":"integer"},"max_source_bytes":{"const":16777216,"type":"integer"},"quota_limit_bytes":{"const":67108864,"type":"integer"},"quota_remaining_bytes":{"minimum":0,"type":"integer"},"quota_used_bytes":{"minimum":0,"type":"integer"},"ready_count":{"minimum":0,"type":"integer"},"supported":{"type":"boolean"},"uploading_count":{"minimum":0,"type":"integer"}},"required":["supported","count","embedding_indexed","embedding_stale","ready_count","uploading_count","indexing_count","failed_count","cleanup_pending_count","checked_at","quota_used_bytes","quota_limit_bytes","quota_remaining_bytes","max_source_bytes"],"type":"object"}`
 	case "agent.chat.v1:list_turns":
 		return `{"additionalProperties":false,"properties":{"next_page_token":{"type":"string"},"turns":{"items":{"additionalProperties":false,"properties":{"conversation_id":{"format":"uuid","type":"string"},"created_at":{"format":"date-time","type":"string"},"last_sequence":{"minimum":0,"type":"integer"},"revision":{"minimum":1,"type":"integer"},"state":{"enum":["accepted","running","waiting_confirmation","completed","canceled","failed"],"type":"string"},"terminal_code":{"type":"string"},"terminal_summary":{"type":"string"},"turn_id":{"format":"uuid","type":"string"},"updated_at":{"format":"date-time","type":"string"}},"required":["turn_id","conversation_id","state","revision","last_sequence","terminal_code","terminal_summary","created_at","updated_at"],"type":"object"},"type":"array"}},"required":["turns","next_page_token"],"type":"object"}`
 	default:

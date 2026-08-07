@@ -33,11 +33,6 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 	if err = lockKnowledgeKey(ctx, tx, "upload.start", metadata.IdempotencyKey); err != nil {
 		return coreknowledge.Upload{}, coreknowledge.ErrConflict
 	}
-	// Serialize the bounded reservation ledger so concurrent uploads cannot
-	// over-commit the configured per-instance quota.
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('knowledge:upload-quota',0))`); err != nil {
-		return coreknowledge.Upload{}, coreknowledge.ErrConflict
-	}
 	var replay knowledgeReplay
 	if ok, replayErr := replayKnowledge(ctx, tx, "upload.start", metadata.IdempotencyKey, digest, &replay); ok {
 		if replayErr == nil {
@@ -47,12 +42,14 @@ func (r *CoreKnowledgeStore) StartUpload(ctx context.Context, metadata coreknowl
 		}
 		return coreknowledge.Upload{}, replayErr
 	}
+	if err = reserveKnowledgeQuota(ctx, tx, "", metadata.DeclaredSize); err != nil {
+		return coreknowledge.Upload{}, err
+	}
 	var active int
-	var reserved int64
-	if err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE active), COALESCE(sum(reserved_bytes) FILTER (WHERE active),0) FROM core_knowledge_upload_reservations`).Scan(&active, &reserved); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE active) FROM core_knowledge_upload_reservations`).Scan(&active); err != nil {
 		return coreknowledge.Upload{}, coreknowledge.ErrConflict
 	}
-	if active >= knowledgeMaxActiveUploads || reserved+metadata.DeclaredSize > knowledgeMaxReservedBytes {
+	if active >= knowledgeMaxActiveUploads {
 		return coreknowledge.Upload{}, coreknowledge.ErrLimitExceeded
 	}
 	uploadID, sourceID := metadata.UploadID, metadata.SourceID
@@ -432,6 +429,9 @@ func (r *CoreKnowledgeStore) CreateMemory(ctx context.Context, command coreknowl
 		}
 		return coreknowledge.Source{}, replayErr
 	}
+	if err = reserveKnowledgeQuota(ctx, tx, "", int64(len([]byte(command.Content)))); err != nil {
+		return coreknowledge.Source{}, err
+	}
 	sourceID := command.SourceID
 	if sourceID == "" {
 		sourceID = uuid.NewString()
@@ -508,6 +508,9 @@ func (r *CoreKnowledgeStore) UpdateMemory(ctx context.Context, command coreknowl
 	}
 	if s.Revision != command.ExpectedRevision {
 		return coreknowledge.Source{}, coreknowledge.ErrRevisionConflict
+	}
+	if err = reserveKnowledgeQuota(ctx, tx, s.ID, int64(len([]byte(command.Content)))); err != nil {
+		return coreknowledge.Source{}, err
 	}
 	oldDigest, oldSize := s.Digest, s.SizeBytes
 	contentDigest := digestBytesKnowledge([]byte(command.Content))

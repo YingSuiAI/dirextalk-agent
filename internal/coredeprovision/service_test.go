@@ -57,7 +57,7 @@ func TestServicePropagatesExternalPurgeFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := errors.New("qdrant unavailable")
+	want := errors.New("external purge unavailable")
 	result, err := service.Deprovision(context.Background(), Command{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}, func(context.Context) error { return want })
 	if !errors.Is(err, want) {
 		t.Fatalf("external error=%v, want %v", err, want)
@@ -110,9 +110,9 @@ func (s *fencedPurgeStore) Deprovision(_ context.Context, _ Command, external fu
 
 func TestServicePurgeDrainsAdmittedMutationBeforeDBAndExternalCleanup(t *testing.T) {
 	root := t.TempDir()
-	qdrantMarker := filepath.Join(root, "qdrant.marker")
+	externalMarker := filepath.Join(root, "external.marker")
 	fileMarker := filepath.Join(root, "file.marker")
-	if err := os.WriteFile(qdrantMarker, []byte("old"), 0o600); err != nil {
+	if err := os.WriteFile(externalMarker, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(fileMarker, []byte("old"), 0o600); err != nil {
@@ -132,7 +132,7 @@ func TestServicePurgeDrainsAdmittedMutationBeforeDBAndExternalCleanup(t *testing
 	var deprovisionErr error
 	go func() {
 		result, deprovisionErr = service.Deprovision(context.Background(), Command{OwnerID: "owner", AccountGeneration: 1, IdempotencyKey: uuid.NewString(), Confirmation: Confirmation}, func(context.Context) error {
-			_ = os.Remove(qdrantMarker)
+			_ = os.Remove(externalMarker)
 			_ = os.Remove(fileMarker)
 			return nil
 		})
@@ -142,7 +142,7 @@ func TestServicePurgeDrainsAdmittedMutationBeforeDBAndExternalCleanup(t *testing
 	go func() {
 		// This models an already-admitted worker/handler crossing its external
 		// side-effect boundary immediately before the purge starts waiting.
-		_ = os.WriteFile(qdrantMarker, []byte("new"), 0o600)
+		_ = os.WriteFile(externalMarker, []byte("new"), 0o600)
 		_ = os.WriteFile(fileMarker, []byte("new"), 0o600)
 		store.mu.Lock()
 		store.dbRows = 1
@@ -162,8 +162,8 @@ func TestServicePurgeDrainsAdmittedMutationBeforeDBAndExternalCleanup(t *testing
 	if deprovisionErr != nil || !result.DatabasePurged || !result.ExternalPurged {
 		t.Fatalf("deprovision result=%+v err=%v", result, deprovisionErr)
 	}
-	if _, err := os.Stat(qdrantMarker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("qdrant residue=%v", err)
+	if _, err := os.Stat(externalMarker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("external residue=%v", err)
 	}
 	if _, err := os.Stat(fileMarker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("filesystem residue=%v", err)

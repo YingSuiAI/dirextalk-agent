@@ -218,7 +218,7 @@ func TestPurgeRegistryRejectsExcessiveDirectoryDepth(t *testing.T) {
 func TestPurgeRegistryDoesNotClaimSuccessOnCollectionFailure(t *testing.T) {
 	root := t.TempDir()
 	writePurgeSentinel(t, root, "nested/sentinel", "secret")
-	want := errors.New("qdrant unavailable")
+	want := errors.New("external collection unavailable")
 	collection := &testCollectionPurger{err: want}
 	registry, err := NewPurgeRegistry([]RootSpec{{Name: "knowledge", Path: root}}, collection)
 	if err != nil {

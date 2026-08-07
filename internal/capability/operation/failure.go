@@ -14,6 +14,8 @@ type Failure struct {
 	cause   error
 }
 
+const KnowledgeQuotaExceededMessage = "Knowledge content quota is exhausted"
+
 func (e *Failure) Error() string { return e.message }
 func (e *Failure) Unwrap() error { return e.cause }
 
@@ -24,6 +26,13 @@ func NewFailure(code, message string, cause error) error {
 		return cause
 	}
 	return &Failure{code: code, message: message, cause: cause}
+}
+
+func SafeFailureDetails(code, message string) map[string]string {
+	if strings.EqualFold(strings.TrimSpace(code), "RESOURCE_EXHAUSTED") && strings.TrimSpace(message) == KnowledgeQuotaExceededMessage {
+		return map[string]string{"code": "knowledge_quota_exceeded"}
+	}
+	return nil
 }
 
 func FailureDetails(err error) (code, message string, ok bool) {

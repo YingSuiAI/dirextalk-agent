@@ -93,6 +93,9 @@ func (r *CoreKnowledgeStore) CreateMount(ctx context.Context, command coreknowle
 	if manifestJSON == nil && !fallbackRead {
 		return coreknowledge.Source{}, coreknowledge.ErrFilesystemUnavailable
 	}
+	if err = reserveKnowledgeQuota(ctx, tx, "", command.SizeBytes); err != nil {
+		return coreknowledge.Source{}, err
+	}
 	id := command.SourceID
 	if id == "" {
 		id = uuid.NewString()

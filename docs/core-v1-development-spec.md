@@ -235,7 +235,16 @@ mount the same volume, while extension staging remains Agent-private.
 ### Knowledge
 
 Knowledge supports Agent-owned mounts, bounded uploads, memory, source status,
-indexing, and semantic search. Content is opened through root-bound ports.
+indexing, and semantic search. Semantic vectors and their staged/promoted
+generations live in the Agent-owned PostgreSQL database through pgvector; no
+external vector service or fallback is part of Core v1. Content is opened
+through root-bound ports. Indexable content has one fixed aggregate quota of
+64 MiB and a fixed 16 MiB maximum per source. Uploading reservations count
+toward the aggregate quota. Knowledge status publishes exactly
+`quota_used_bytes`, `quota_limit_bytes`, `quota_remaining_bytes`, and
+`max_source_bytes`; an aggregate-quota rejection is the canonical
+`knowledge_quota_exceeded` resource-exhausted failure, while parser and
+single-source limits remain invalid requests.
 Uploads declare one whole-content SHA-256 and size, validate each chunk's
 SHA-256 and contiguous offset/ordinal, and become `ready` only after commit
 rechecks the expected revision, full digest, size, and finalized content. Source

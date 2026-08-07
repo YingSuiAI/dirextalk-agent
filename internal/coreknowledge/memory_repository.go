@@ -38,7 +38,6 @@ type repositorySnapshot struct {
 
 const (
 	maxActiveUploads = 8
-	maxReservedBytes = 128 << 20
 	snapshotTTL      = 5 * time.Minute
 	maxSnapshots     = 128
 )
@@ -224,6 +223,9 @@ func (r *MemoryRepository) CreateMount(ctx context.Context, command MountCommand
 	if _, exists := r.sources[id]; exists {
 		return Source{}, ErrConflict
 	}
+	if r.quotaUsedLocked("")+command.SizeBytes > MaxIndexableContentBytes {
+		return Source{}, ErrQuotaExceeded
+	}
 	now := r.nowUTC()
 	s := Source{ID: id, Kind: SourceKindMount, Status: SourceStatusReady, Title: command.Title, RelativePath: command.RelativePath, Digest: strings.ToLower(command.Digest), SizeBytes: command.SizeBytes, MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	r.sources[id] = s
@@ -256,9 +258,13 @@ func (r *MemoryRepository) StartUpload(ctx context.Context, metadata UploadMetad
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.activeUploads >= maxActiveUploads || r.reservedBytes+metadata.DeclaredSize > maxReservedBytes {
+	if r.activeUploads >= maxActiveUploads {
 		_ = sink.Abort(ctx)
 		return Upload{}, ErrLimitExceeded
+	}
+	if r.quotaUsedLocked("")+metadata.DeclaredSize > MaxIndexableContentBytes {
+		_ = sink.Abort(ctx)
+		return Upload{}, ErrQuotaExceeded
 	}
 	if v, err, ok := r.replayLocked(metadata.IdempotencyKey, d); ok {
 		_ = sink.Abort(ctx)
@@ -483,6 +489,9 @@ func (r *MemoryRepository) CreateMemory(_ context.Context, command MemoryCommand
 	if _, exists := r.sources[id]; exists {
 		return Source{}, ErrConflict
 	}
+	if r.quotaUsedLocked("")+int64(len([]byte(command.Content))) > MaxIndexableContentBytes {
+		return Source{}, ErrQuotaExceeded
+	}
 	now := r.nowUTC()
 	s := Source{ID: id, Kind: SourceKindMemory, Status: SourceStatusReady, Title: command.Title, Digest: digest, SizeBytes: int64(len(command.Content)), MediaType: command.MediaType, Revision: 1, CreatedAt: now, UpdatedAt: now, Tags: append([]string(nil), command.Tags...)}
 	r.sources[id], r.contents[id] = s, command.Content
@@ -511,6 +520,9 @@ func (r *MemoryRepository) UpdateMemory(_ context.Context, command UpdateMemoryC
 	}
 	if s.Revision != command.ExpectedRevision {
 		return Source{}, ErrRevisionConflict
+	}
+	if r.quotaUsedLocked(s.ID)+int64(len([]byte(command.Content))) > MaxIndexableContentBytes {
+		return Source{}, ErrQuotaExceeded
 	}
 	digest := digestBytes([]byte(command.Content))
 	if command.ContentSHA256 != "" && !strings.EqualFold(command.ContentSHA256, digest) {
@@ -772,6 +784,27 @@ func (r *MemoryRepository) Status(_ context.Context) (Status, error) {
 		}
 	}
 	return out, nil
+}
+
+func (r *MemoryRepository) QuotaStatus(_ context.Context) (QuotaStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	used := r.quotaUsedLocked("")
+	remaining := MaxIndexableContentBytes - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	return QuotaStatus{UsedBytes: used, LimitBytes: MaxIndexableContentBytes, RemainingBytes: remaining, MaxSourceBytes: MaxSourceBytes}, nil
+}
+
+func (r *MemoryRepository) quotaUsedLocked(excludingSourceID string) int64 {
+	used := r.reservedBytes
+	for _, source := range r.sources {
+		if source.ID != excludingSourceID && source.Status != SourceStatusDeleting && source.Status != SourceStatusDeleted {
+			used += source.SizeBytes
+		}
+	}
+	return used
 }
 
 func (r *MemoryRepository) Search(_ context.Context, q SearchQuery) (SearchPage, error) {

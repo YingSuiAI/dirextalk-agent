@@ -25,6 +25,25 @@ func TestStartOperationResponseReportsDurableReplay(t *testing.T) {
 	}
 }
 
+func TestKnowledgeQuotaFailureDetailsSurviveDurableStartWatchAndReconcileShapes(t *testing.T) {
+	op := &operation.Operation{ID: "operation-quota", State: operation.StateFailed, ErrorCode: "RESOURCE_EXHAUSTED", ErrorMessage: operation.KnowledgeQuotaExceededMessage}
+	started := startOperationResponse(op, false)
+	if started.GetError().GetDetails()["code"] != "knowledge_quota_exceeded" {
+		t.Fatalf("start error=%v", started.GetError())
+	}
+	watched := eventProto(operation.Event{OperationID: op.ID, EventType: "error", EventJSON: []byte(`{"error_code":"RESOURCE_EXHAUSTED","error_message":"Knowledge content quota is exhausted"}`)})
+	if watched.GetError().GetError().GetDetails()["code"] != "knowledge_quota_exceeded" {
+		t.Fatalf("watch error=%v", watched.GetError())
+	}
+	reconciled := capabilityError(op.ErrorCode, op.ErrorMessage)
+	if reconciled.GetDetails()["code"] != "knowledge_quota_exceeded" {
+		t.Fatalf("reconcile error=%v", reconciled)
+	}
+	if got := operationStatusError(operation.NewFailure(op.ErrorCode, op.ErrorMessage, errors.New("quota"))); status.Code(got) != codes.ResourceExhausted || status.Convert(got).Message() != operation.KnowledgeQuotaExceededMessage {
+		t.Fatalf("direct query status=%v", got)
+	}
+}
+
 func TestOperationStatusErrorRedactsUnclassifiedDetails(t *testing.T) {
 	sentinel := errors.New("provider returned secret-sentinel")
 	for _, err := range []error{

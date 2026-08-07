@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YingSuiAI/dirextalk-agent/internal/agentcapability"
+	capabilityoperation "github.com/YingSuiAI/dirextalk-agent/internal/capability/operation"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coreknowledge/semantic"
 	"github.com/YingSuiAI/dirextalk-agent/internal/coremodel"
@@ -31,7 +32,7 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	}
 	ctx, baseRepo, cleanup := knowledgePGFixture(t)
 	defer cleanup()
-	content, err := coreknowledge.NewRootContentPort(t.TempDir(), 1<<20)
+	content, err := coreknowledge.NewRootContentPort(t.TempDir(), coreknowledge.MaxIndexableContentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,15 +70,13 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
 	}))
 	defer embedding.Close()
-	qdrant := newAcceptanceQdrant(t)
-	defer qdrant.Close()
 
 	models, err := coremodel.NewService(baseRepo.store, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	collectionDigest := KnowledgeCollectionDigest("knowledge", 2)
-	if _, err := baseRepo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: uuid.NewString(), Dimension: 2, Collection: "knowledge", CollectionConfigDigest: collectionDigest, Revision: 1}); err != nil {
+	collectionDigest := KnowledgeCollectionDigest("core_knowledge_vectors", 2)
+	if _, err := baseRepo.EnsureEmbeddingConfig(ctx, coreknowledge.EmbeddingConfig{EmbeddingProfileID: uuid.NewString(), Dimension: 2, Collection: "core_knowledge_vectors", CollectionConfigDigest: collectionDigest, Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
 	searchSlot := &acceptanceSearchSlot{}
@@ -89,8 +88,11 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend, err := semantic.NewQdrantStore(semantic.QdrantConfig{Endpoint: qdrant.URL, Collection: "knowledge", Dimension: 2, APIKey: "qdrant-secret"})
+	backend, err := NewKnowledgeVectorStore(baseRepo.store, 2)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.EnsureCollection(ctx); err != nil {
 		t.Fatal(err)
 	}
 	resolver, err := semantic.NewSearchResolver(semantic.SearchConfig{Embedder: embedder, VectorStore: backend, BindingResolver: repo, ProfileResolver: models, EmbeddingProfileID: uuid.NewString(), CollectionConfigDigest: collectionDigest, Dimension: 2, ConfigReader: repo})
@@ -119,6 +121,16 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	knowledgeCapability, ok := registry.Get("agent.knowledge.v1")
 	if !ok {
 		t.Fatal("knowledge capability not registered")
+	}
+	var statusSchema string
+	for _, operation := range knowledgeCapability.Descriptor().GetOperations() {
+		if operation.GetOperationId() == "status" {
+			statusSchema = operation.GetResultSchemaJson()
+		}
+	}
+	var schema map[string]any
+	if statusSchema == "" || json.Unmarshal([]byte(statusSchema), &schema) != nil || schema["additionalProperties"] != false {
+		t.Fatalf("closed Knowledge status schema=%s", statusSchema)
 	}
 	syncRequest := []byte(`{"idempotency_key":"11111111-1111-4111-8111-111111111111","default_embedding_client_profile_id":"embed","entries":[{"client_profile_id":"embed","display_name":"Embedding","provider":"openai_compatible","base_url":"` + embedding.URL + `","model":"text-embedding-test","model_kind":"embedding","api_key":"embedding-secret"}]}`)
 	if _, err := modelsCapability.HandleOperation(ctx, "sync_models", syncRequest); err != nil {
@@ -166,6 +178,23 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	commitRaw := []byte(`{"upload_id":"` + uploadID + `","content_sha256":"` + hex.EncodeToString(digest[:]) + `","idempotency_key":"55555555-5555-4555-8555-555555555555"}`)
 	if _, err := knowledgeCapability.HandleOperation(ctx, "commit_upload", commitRaw); err != nil {
 		t.Fatal(err)
+	}
+	statusRaw, err := knowledgeCapability.HandleOperation(ctx, "status", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statusResult map[string]any
+	if json.Unmarshal(statusRaw, &statusResult) != nil {
+		t.Fatalf("status=%s", statusRaw)
+	}
+	usedBytes := float64(len([]byte("semantic capability memory")) + len(contentBytes))
+	for key, want := range map[string]float64{
+		"quota_used_bytes": usedBytes, "quota_limit_bytes": 64 << 20,
+		"quota_remaining_bytes": float64(64<<20) - usedBytes, "max_source_bytes": 16 << 20,
+	} {
+		if statusResult[key] != want {
+			t.Fatalf("%s=%v want=%v status=%s", key, statusResult[key], want, statusRaw)
+		}
 	}
 	tasks := NewCoreTaskStore(baseRepo.store)
 	engine, err := semantic.NewIndexEngine(semantic.IndexConfig{Embedder: embedder, VectorStore: backend, ProfileResolver: profileResolverFromService{models}, EmbeddingProfileID: coremodel.SyncProfileID("embed"), Dimension: 2, ConfigReader: repo})
@@ -244,7 +273,6 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 	if _, err := restartedKnowledgeCapability.HandleOperation(ctx, "delete_source", []byte(`{"source_id":"`+uploadSourceID+`","expected_revision":`+strconv.FormatInt(uploadSource.Revision, 10)+`,"idempotency_key":"77777777-7777-4777-8777-777777777777"}`)); err != nil {
 		t.Fatal(err)
 	}
-	queriesBefore := qdrant.queryCount()
 	embeddingsBefore := embeddingCalls
 	emptyRaw, err := restartedKnowledgeCapability.HandleOperation(ctx, "search_knowledge", []byte(`{"query":"empty corpus","limit":5}`))
 	if err != nil {
@@ -255,8 +283,22 @@ func TestCoreKnowledgeCapabilitySyncUploadMemorySearchAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptyItems, ok := empty["items"].([]any)
-	if !ok || len(emptyItems) != 0 || embeddingCalls != embeddingsBefore || qdrant.queryCount() != queriesBefore {
-		t.Fatalf("empty corpus result=%s embedding_calls=%d->%d qdrant_queries=%d->%d", emptyRaw, embeddingsBefore, embeddingCalls, queriesBefore, qdrant.queryCount())
+	if !ok || len(emptyItems) != 0 || embeddingCalls != embeddingsBefore {
+		t.Fatalf("empty corpus result=%s embedding_calls=%d->%d", emptyRaw, embeddingsBefore, embeddingCalls)
+	}
+
+	// The public capability preserves the one intentional RESOURCE_EXHAUSTED
+	// shape for aggregate content quota, while the persisted details remain
+	// safe and machine-readable.
+	for i := 0; i < 4; i++ {
+		if _, err := baseRepo.store.pool.Exec(ctx, `INSERT INTO core_knowledge_sources(source_id,kind,status,title,digest,size_bytes,media_type,revision,created_at,updated_at) VALUES($1,'memory','ready',$2,$3,$4,'text/plain',1,clock_timestamp(),clock_timestamp())`, uuid.NewString(), "quota", strings.Repeat("a", 64), coreknowledge.MaxSourceBytes); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, quotaErr := restartedKnowledgeCapability.HandleOperation(ctx, "start_upload", []byte(`{"declared_size":1,"content_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","media_type":"text/plain","idempotency_key":"88888888-8888-4888-8888-888888888888"}`))
+	code, message, classified := capabilityoperation.FailureDetails(quotaErr)
+	if !classified || code != "RESOURCE_EXHAUSTED" || message != capabilityoperation.KnowledgeQuotaExceededMessage || capabilityoperation.SafeFailureDetails(code, message)["code"] != "knowledge_quota_exceeded" {
+		t.Fatalf("quota capability error=%v code=%q message=%q", quotaErr, code, message)
 	}
 }
 

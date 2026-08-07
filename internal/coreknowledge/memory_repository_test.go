@@ -248,6 +248,29 @@ func TestMemoryRepositoryLimitsAndFinalizeReplay(t *testing.T) {
 	}
 }
 
+func TestMemoryRepositoryQuotaStatusIncludesUploadingReservations(t *testing.T) {
+	r := newTestRepository()
+	for i := 0; i < 4; i++ {
+		_, err := r.StartUpload(context.Background(), UploadMetadata{
+			IdempotencyKey: fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012d", i),
+			MediaType:      "application/octet-stream",
+			DeclaredSize:   MaxSourceBytes,
+			ContentSHA256:  strings.Repeat("a", 64),
+		})
+		if err != nil {
+			t.Fatalf("reservation %d: %v", i, err)
+		}
+	}
+	quota, err := r.QuotaStatus(context.Background())
+	if err != nil || quota.UsedBytes != MaxIndexableContentBytes || quota.RemainingBytes != 0 || quota.MaxSourceBytes != MaxSourceBytes {
+		t.Fatalf("quota=%+v err=%v", quota, err)
+	}
+	_, err = r.StartUpload(context.Background(), UploadMetadata{IdempotencyKey: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", MediaType: "application/octet-stream", DeclaredSize: 1, ContentSHA256: strings.Repeat("b", 64)})
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("aggregate quota error=%v", err)
+	}
+}
+
 func TestMemoryRepositoryDeleteFenceAndCleanupRetry(t *testing.T) {
 	r := newTestRepository()
 	s, err := r.CreateMount(context.Background(), MountCommand{IdempotencyKey: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", RelativePath: "docs/a.txt", SizeBytes: 1, MediaType: "text/plain", FileOpener: testOpener{}})

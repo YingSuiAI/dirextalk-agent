@@ -20,7 +20,7 @@ type memoryPoint struct {
 
 // MemoryStore is a deterministic, concurrency-safe fake/vector store for
 // acceptance and local operation. It applies the same source/revision fence
-// and dimension checks as the Qdrant implementation.
+// and dimension checks as the production PostgreSQL implementation.
 type MemoryStore struct {
 	mu        sync.RWMutex
 	dimension int

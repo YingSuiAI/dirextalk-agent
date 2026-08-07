@@ -13,6 +13,17 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+func TestOperationToProtoPublishesKnowledgeQuotaDetailsOnlyForCanonicalFailure(t *testing.T) {
+	op := (&Operation{ID: "quota-op", State: StateFailed, ErrorCode: "RESOURCE_EXHAUSTED", ErrorMessage: KnowledgeQuotaExceededMessage}).ToProto()
+	if op.GetError().GetCode().String() != "ERROR_CODE_RESOURCE_EXHAUSTED" || op.GetError().GetMessage() != KnowledgeQuotaExceededMessage || op.GetError().GetDetails()["code"] != "knowledge_quota_exceeded" {
+		t.Fatalf("quota operation proto=%v", op)
+	}
+	other := (&Operation{ID: "capacity-op", State: StateFailed, ErrorCode: "RESOURCE_EXHAUSTED", ErrorMessage: "Product service capacity is exhausted"}).ToProto()
+	if other.GetError() == nil || other.GetError().GetDetails() != nil {
+		t.Fatalf("unrelated resource failure details=%v", other.GetError())
+	}
+}
+
 func setupTestDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {

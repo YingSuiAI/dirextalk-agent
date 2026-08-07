@@ -28,6 +28,7 @@ var (
 	ErrPathTraversal         = errors.New("knowledge path is outside managed directory")
 	ErrCleanupPending        = errors.New("knowledge file cleanup pending")
 	ErrLimitExceeded         = errors.New("knowledge request exceeds limit")
+	ErrQuotaExceeded         = errors.New("knowledge content quota exceeded")
 	ErrIneligible            = errors.New("knowledge source is not eligible")
 	ErrSourceReferenced      = errors.New("knowledge source is still referenced")
 	ErrCursorConflict        = errors.New("knowledge cursor does not match query")
@@ -35,13 +36,15 @@ var (
 )
 
 const (
-	MaxUploadBytes      int64 = 64 << 20
-	MaxUploadChunkBytes int   = 1 << 20
-	MaxMemoryBytes      int   = 1 << 20
-	MaxMemoryTags       int   = 16
-	MaxMemoryTagBytes   int   = 64
-	MaxSnippetBytes     int   = 4096
-	MaxSearchResults    int   = 100
+	MaxIndexableContentBytes int64 = 64 << 20
+	MaxSourceBytes           int64 = 16 << 20
+	MaxUploadBytes           int64 = MaxSourceBytes
+	MaxUploadChunkBytes      int   = 1 << 20
+	MaxMemoryBytes           int   = 1 << 20
+	MaxMemoryTags            int   = 16
+	MaxMemoryTagBytes        int   = 64
+	MaxSnippetBytes          int   = 4096
+	MaxSearchResults         int   = 100
 )
 
 type SourceKind string
@@ -281,6 +284,17 @@ type Status struct {
 	FailedCount         int       `json:"failed_count"`
 	CleanupPendingCount int       `json:"cleanup_pending_count"`
 	CheckedAt           time.Time `json:"checked_at"`
+}
+
+type QuotaStatus struct {
+	UsedBytes      int64 `json:"quota_used_bytes"`
+	LimitBytes     int64 `json:"quota_limit_bytes"`
+	RemainingBytes int64 `json:"quota_remaining_bytes"`
+	MaxSourceBytes int64 `json:"max_source_bytes"`
+}
+
+type QuotaStatusReader interface {
+	QuotaStatus(context.Context) (QuotaStatus, error)
 }
 
 // EmbeddingConfig is the owner-scoped semantic binding used by new index and
@@ -531,8 +545,11 @@ func validMemoryTags(tags []string) bool {
 	return true
 }
 func (m UploadMetadata) validate() error {
-	if !validUUID(m.IdempotencyKey) || (m.UploadID != "" && !validUUID(m.UploadID)) || (m.SourceID != "" && !validUUID(m.SourceID)) || m.DeclaredSize <= 0 || m.DeclaredSize > MaxUploadBytes || m.MediaType == "" || !validDigest(m.ContentSHA256) {
+	if !validUUID(m.IdempotencyKey) || (m.UploadID != "" && !validUUID(m.UploadID)) || (m.SourceID != "" && !validUUID(m.SourceID)) || m.DeclaredSize <= 0 || m.MediaType == "" || !validDigest(m.ContentSHA256) {
 		return ErrInvalid
+	}
+	if m.DeclaredSize > MaxUploadBytes {
+		return ErrLimitExceeded
 	}
 	if m.RelativePath != "" {
 		if err := validateRelativePath(m.RelativePath); err != nil {

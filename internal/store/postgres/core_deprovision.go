@@ -112,7 +112,7 @@ func (s *CoreDeprovisionStore) Deprovision(ctx context.Context, command coredepr
 		return coredeprovision.Result{}, fmt.Errorf("commit Agent database purge: %w", err)
 	}
 
-	// Filesystem and Qdrant deletion are idempotent and happen only after the
+	// Filesystem deletion is idempotent and happens only after the
 	// relational fence is durable. A retry can therefore safely resume this
 	// phase without replaying any user mutation.
 	if err := externalPurge(ctx); err != nil {

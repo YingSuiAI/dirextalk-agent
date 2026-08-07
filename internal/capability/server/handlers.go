@@ -188,7 +188,7 @@ func startOperationResponse(accepted *operation.Operation, created bool) *capv1.
 	if accepted == nil {
 		return &capv1.StartOperationResponse{}
 	}
-	return &capv1.StartOperationResponse{
+	response := &capv1.StartOperationResponse{
 		OperationId: accepted.ID,
 		State:       stateToProto(accepted.State),
 		// `replayed` is transport metadata from the outer durable operation
@@ -196,6 +196,10 @@ func startOperationResponse(accepted *operation.Operation, created bool) *capv1.
 		// not guess whether StartOrGet admitted a new operation.
 		Replayed: !created,
 	}
+	if accepted.ErrorCode != "" {
+		response.Error = capabilityError(accepted.ErrorCode, accepted.ErrorMessage)
+	}
+	return response
 }
 
 func canonicalRequestDigest(desc *capv1.CapabilityDescriptor, opDesc *capv1.OperationDescriptor, req *capv1.StartOperationRequest) ([]byte, error) {
@@ -311,7 +315,7 @@ func eventProto(event operation.Event) *capv1.WatchOperationEvent {
 			ErrorMessage string `json:"error_message"`
 		}
 		_ = json.Unmarshal(event.EventJSON, &p)
-		out.Event = &capv1.WatchOperationEvent_Error{Error: &capv1.ErrorEvent{Error: &capv1.CapabilityError{Code: operationErrorCode(p.ErrorCode), Message: p.ErrorMessage}}}
+		out.Event = &capv1.WatchOperationEvent_Error{Error: &capv1.ErrorEvent{Error: capabilityError(p.ErrorCode, p.ErrorMessage)}}
 	case "cancelled":
 		var p struct {
 			Reason string `json:"reason"`
@@ -375,7 +379,7 @@ func (s *Server) ReconcileOperation(ctx context.Context, req *capv1.ReconcileOpe
 	}
 	resp := &capv1.ReconcileOperationResponse{State: stateToProto(op.State), ResultJson: op.ResultJSON}
 	if op.ErrorCode != "" {
-		resp.Error = &capv1.CapabilityError{Code: operationErrorCode(op.ErrorCode), Message: op.ErrorMessage}
+		resp.Error = capabilityError(op.ErrorCode, op.ErrorMessage)
 	}
 	return resp, nil
 }
@@ -454,6 +458,9 @@ func stateToProto(state operation.State) capv1.OperationState {
 }
 func operationStateFromString(v string) capv1.OperationState { return stateToProto(operation.State(v)) }
 func operationErrorCode(v string) capv1.ErrorCode            { return operationErrorCodeInternal(v) }
+func capabilityError(code, message string) *capv1.CapabilityError {
+	return &capv1.CapabilityError{Code: operationErrorCode(code), Message: message, Details: operation.SafeFailureDetails(code, message)}
+}
 func operationErrorCodeInternal(v string) capv1.ErrorCode {
 	switch v {
 	case "INVALID_ARGUMENT":
@@ -498,6 +505,8 @@ func operationStatusError(err error) error {
 			return status.Error(codes.FailedPrecondition, message)
 		case "UNAVAILABLE", "UPSTREAM_FAILED":
 			return status.Error(codes.Unavailable, message)
+		case "RESOURCE_EXHAUSTED":
+			return status.Error(codes.ResourceExhausted, message)
 		}
 	}
 	return status.Error(codes.Unavailable, "Agent operation failed")

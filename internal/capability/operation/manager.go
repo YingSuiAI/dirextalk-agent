@@ -1283,7 +1283,7 @@ func (op *Operation) ToProto() *capv1.GetOperationResponse {
 	}
 	resp := &capv1.GetOperationResponse{OperationId: op.ID, State: stateToProto(op.State), ResultJson: append([]byte(nil), op.ResultJSON...), Sequence: op.Sequence}
 	if op.ErrorCode != "" {
-		resp.Error = &capv1.CapabilityError{Code: errorCodeToProto(op.ErrorCode), Message: op.ErrorMessage}
+		resp.Error = &capv1.CapabilityError{Code: errorCodeToProto(op.ErrorCode), Message: op.ErrorMessage, Details: SafeFailureDetails(op.ErrorCode, op.ErrorMessage)}
 	}
 	return resp
 }

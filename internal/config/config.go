@@ -87,11 +87,8 @@ type Config struct {
 	CoreKnowledgeEnabled             bool          `yaml:"core_knowledge_enabled" mapstructure:"core_knowledge_enabled"`
 	CoreKnowledgeContentRoot         string        `yaml:"core_knowledge_content_root" mapstructure:"core_knowledge_content_root"`
 	CoreKnowledgeMountRoot           string        `yaml:"core_knowledge_mount_root" mapstructure:"core_knowledge_mount_root"`
-	CoreKnowledgeContentQuotaBytes   int64         `yaml:"core_knowledge_content_quota_bytes" mapstructure:"core_knowledge_content_quota_bytes"`
 	CoreKnowledgeEmbeddingProfileID  string        `yaml:"core_knowledge_embedding_profile_id" mapstructure:"core_knowledge_embedding_profile_id"`
-	CoreKnowledgeQdrantEndpoint      string        `yaml:"core_knowledge_qdrant_endpoint" mapstructure:"core_knowledge_qdrant_endpoint"`
-	CoreKnowledgeQdrantCollection    string        `yaml:"core_knowledge_qdrant_collection" mapstructure:"core_knowledge_qdrant_collection"`
-	CoreKnowledgeQdrantDimension     int           `yaml:"core_knowledge_qdrant_dimension" mapstructure:"core_knowledge_qdrant_dimension"`
+	CoreKnowledgeVectorDimension     int           `yaml:"core_knowledge_vector_dimension" mapstructure:"core_knowledge_vector_dimension"`
 	CoreKnowledgeSweepInterval       time.Duration `yaml:"core_knowledge_sweep_interval" mapstructure:"core_knowledge_sweep_interval"`
 	// Native Voice is an optional Agent-owned capability.  Credentials are
 	// mounted-file references only; the values are read request-locally and
@@ -736,32 +733,19 @@ func ValidateCoreKnowledge(cfg *Config) error {
 	if pathsOverlap(contentRoot, mountRoot) {
 		return errors.New("core_knowledge_content_root and core_knowledge_mount_root must not overlap")
 	}
-	if cfg.CoreKnowledgeContentQuotaBytes <= 0 || cfg.CoreKnowledgeContentQuotaBytes > 1<<40 {
-		return errors.New("core_knowledge_content_quota_bytes must be positive and at most 1TiB")
-	}
 	parsedProfile, err := uuid.Parse(strings.TrimSpace(cfg.CoreKnowledgeEmbeddingProfileID))
 	if err != nil || parsedProfile == uuid.Nil || parsedProfile.String() != strings.TrimSpace(cfg.CoreKnowledgeEmbeddingProfileID) {
 		return errors.New("core_knowledge_embedding_profile_id must be a UUID")
 	}
-	endpoint := strings.TrimRight(strings.TrimSpace(cfg.CoreKnowledgeQdrantEndpoint), "/")
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || strings.ContainsAny(endpoint, "\x00\r\n") {
-		return errors.New("core_knowledge_qdrant_endpoint must be an absolute HTTP(S) URL")
-	}
-	if strings.TrimSpace(cfg.CoreKnowledgeQdrantCollection) == "" || len(cfg.CoreKnowledgeQdrantCollection) > 256 || strings.ContainsAny(cfg.CoreKnowledgeQdrantCollection, "\x00\r\n") {
-		return errors.New("core_knowledge_qdrant_collection is required")
-	}
-	if cfg.CoreKnowledgeQdrantDimension <= 0 || cfg.CoreKnowledgeQdrantDimension > 1<<20 {
-		return errors.New("core_knowledge_qdrant_dimension must be positive")
+	if cfg.CoreKnowledgeVectorDimension <= 0 || cfg.CoreKnowledgeVectorDimension > 2000 {
+		return errors.New("core_knowledge_vector_dimension must be between 1 and 2000")
 	}
 	if cfg.CoreKnowledgeSweepInterval < 100*time.Millisecond || cfg.CoreKnowledgeSweepInterval > time.Hour {
 		return errors.New("core_knowledge_sweep_interval must be between 100ms and 1h")
 	}
 	cfg.CoreKnowledgeContentRoot = contentRoot
 	cfg.CoreKnowledgeMountRoot = mountRoot
-	cfg.CoreKnowledgeQdrantEndpoint = endpoint
 	cfg.CoreKnowledgeEmbeddingProfileID = parsedProfile.String()
-	cfg.CoreKnowledgeQdrantCollection = strings.TrimSpace(cfg.CoreKnowledgeQdrantCollection)
 	return nil
 }
 

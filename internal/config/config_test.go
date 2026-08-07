@@ -242,17 +242,11 @@ func TestValidateCoreKnowledgeEnabledRequiresProductionComposition(t *testing.T)
 	cfg.CoreKnowledgeEnabled = true
 	cfg.CoreKnowledgeContentRoot = contentRoot
 	cfg.CoreKnowledgeMountRoot = mountRoot
-	cfg.CoreKnowledgeContentQuotaBytes = 64 << 20
 	cfg.CoreKnowledgeEmbeddingProfileID = "11111111-1111-4111-8111-111111111111"
-	cfg.CoreKnowledgeQdrantEndpoint = "https://qdrant.example.test/"
-	cfg.CoreKnowledgeQdrantCollection = "knowledge"
-	cfg.CoreKnowledgeQdrantDimension = 384
+	cfg.CoreKnowledgeVectorDimension = 384
 	cfg.CoreKnowledgeSweepInterval = 30 * time.Second
 	if err := ValidateCore(&cfg); err != nil {
 		t.Fatal(err)
-	}
-	if cfg.CoreKnowledgeQdrantEndpoint != "https://qdrant.example.test" {
-		t.Fatalf("endpoint normalization = %q", cfg.CoreKnowledgeQdrantEndpoint)
 	}
 }
 

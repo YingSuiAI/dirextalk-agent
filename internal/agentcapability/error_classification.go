@@ -80,6 +80,8 @@ func classifyCapabilityError(err error) error {
 		errors.Is(err, coreknowledge.ErrCursorConflict),
 		errors.Is(err, coredeprovision.ErrInvalid):
 		return capabilityoperation.NewFailure("INVALID_ARGUMENT", "Agent request is invalid", err)
+	case errors.Is(err, coreknowledge.ErrQuotaExceeded):
+		return capabilityoperation.NewFailure("RESOURCE_EXHAUSTED", capabilityoperation.KnowledgeQuotaExceededMessage, err)
 	case errors.Is(err, coreconversation.ErrDeleted),
 		errors.Is(err, coremodel.ErrProfileNotFound),
 		errors.Is(err, coreknowledge.ErrNotFound):

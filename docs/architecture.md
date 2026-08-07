@@ -20,7 +20,7 @@ CoreServer (TLS token interceptor, optional health/reflection)
       +-- confirmations / MCP / Skills / Knowledge / typed AWS
       +-- worker pool and scheduler
       +-- PostgreSQL for durable state, snapshots, leases, events, digests
-      +-- Qdrant through the Knowledge semantic ports
+      +-- pgvector in Agent-owned PostgreSQL through the Knowledge semantic ports
       +-- extension-runner through an authenticated Unix socket
       +-- Core Runner through a separate authenticated Unix socket
 ```

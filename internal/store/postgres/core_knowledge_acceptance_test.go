@@ -33,8 +33,7 @@ func (r acceptanceProfileResolver) ResolveProfile(context.Context, string) (core
 
 // TestCoreKnowledgeAcceptanceProductionLane runs the §8.8 flow against the
 // real PostgreSQL repository, descriptor-rooted filesystem ports, and the
-// HTTP embedding/Qdrant contracts. The external services are deterministic
-// httptest fakes; no model or Qdrant network is required.
+// HTTP embedding contract and Agent-owned PostgreSQL pgvector backend. The embedding service is a deterministic httptest fake; no model network is required.
 func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	if strings.TrimSpace(os.Getenv("DIREXTALK_TEST_DATABASE_URL")) == "" && strings.TrimSpace(os.Getenv("AGENT_TEST_POSTGRES_DSN")) == "" {
 		t.Setenv("DIREXTALK_TEST_DATABASE_URL", acceptancePostgresDSN)
@@ -57,7 +56,7 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	}
 	defer opener.Close()
 	contentRoot := t.TempDir()
-	content, err := coreknowledge.NewRootContentPort(contentRoot, 1<<20)
+	content, err := coreknowledge.NewRootContentPort(contentRoot, coreknowledge.MaxIndexableContentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,15 +96,16 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	}))
 	defer embedding.Close()
 
-	qdrant := newAcceptanceQdrant(t)
-	defer qdrant.Close()
 	profile := acceptanceProfileResolver{profile: coremodel.Profile{ID: profileID, Revision: 1, Provider: coremodel.ProviderOpenAICompatible, BaseURL: embedding.URL, Model: "acceptance-embed", APIKey: "acceptance-secret"}}
 	embedder, err := semantic.NewHTTPEmbedder(semantic.HTTPEmbedderConfig{Dimension: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend, err := semantic.NewQdrantStore(semantic.QdrantConfig{Endpoint: qdrant.URL, Collection: "knowledge", Dimension: 2, APIKey: "qdrant-secret"})
+	backend, err := NewKnowledgeVectorStore(baseRepo.store, 2)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.EnsureCollection(ctx); err != nil {
 		t.Fatal(err)
 	}
 	const collectionDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -188,7 +188,7 @@ func TestCoreKnowledgeAcceptanceProductionLane(t *testing.T) {
 	// content remain usable without replaying the upload.
 	_ = content.Close()
 	_ = opener.Close()
-	content2, err := coreknowledge.NewRootContentPort(contentRoot, 1<<20)
+	content2, err := coreknowledge.NewRootContentPort(contentRoot, coreknowledge.MaxIndexableContentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,117 +275,4 @@ func (s *acceptanceSearchSlot) Search(ctx context.Context, q coreknowledge.Searc
 		return coreknowledge.SearchPage{}, coreknowledge.ErrConflict
 	}
 	return r.Search(ctx, q)
-}
-
-type acceptanceQdrant struct {
-	*httptest.Server
-	mu      sync.Mutex
-	points  map[string][]map[string]any
-	queries int
-}
-
-func (q *acceptanceQdrant) queryCount() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.queries
-}
-
-func newAcceptanceQdrant(t *testing.T) *acceptanceQdrant {
-	q := &acceptanceQdrant{points: map[string][]map[string]any{}}
-	q.Server = httptest.NewServer(http.HandlerFunc(q.handle))
-	return q
-}
-
-func (q *acceptanceQdrant) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("api-key") != "qdrant-secret" {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	collection := ""
-	if len(parts) >= 2 && parts[0] == "collections" {
-		collection = parts[1]
-	}
-	w.Header().Set("Content-Type", "application/json")
-	if strings.HasSuffix(r.URL.Path, "/points/query") || strings.HasSuffix(r.URL.Path, "/points/search") {
-		var request struct {
-			Filter struct {
-				Should []struct {
-					Must []struct {
-						Key   string
-						Match struct{ Value any }
-					} `json:"must"`
-				} `json:"should"`
-			} `json:"filter"`
-			Limit int `json:"limit"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&request)
-		q.mu.Lock()
-		q.queries++
-		q.mu.Unlock()
-		if len(request.Filter.Should) == 0 {
-			http.Error(w, "empty Qdrant filter", http.StatusBadRequest)
-			return
-		}
-		allowed := map[string]bool{}
-		for _, branch := range request.Filter.Should {
-			for _, condition := range branch.Must {
-				if condition.Key == "source_id" {
-					if source, ok := condition.Match.Value.(string); ok {
-						allowed[source] = true
-					}
-				}
-			}
-		}
-		q.mu.Lock()
-		all := append([]map[string]any(nil), q.points["knowledge"]...)
-		q.mu.Unlock()
-		result := make([]map[string]any, 0, len(all))
-		for _, point := range all {
-			payload, _ := point["payload"].(map[string]any)
-			source, _ := payload["source_id"].(string)
-			if len(allowed) == 0 || allowed[source] {
-				result = append(result, map[string]any{"id": point["id"], "score": 0.91, "payload": payload})
-			}
-		}
-		if request.Limit > 0 && len(result) > request.Limit {
-			result = result[:request.Limit]
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points": result}})
-		return
-	}
-	if strings.HasSuffix(r.URL.Path, "/points/scroll") {
-		q.mu.Lock()
-		result := append([]map[string]any(nil), q.points[collection]...)
-		q.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"points": result, "next_page_offset": nil}})
-		return
-	}
-	if strings.HasSuffix(r.URL.Path, "/points") && r.Method == http.MethodPut {
-		var request struct {
-			Points []map[string]any `json:"points"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&request)
-		q.mu.Lock()
-		q.points[collection] = append(q.points[collection], request.Points...)
-		q.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"status": "completed"}})
-		return
-	}
-	if strings.HasSuffix(r.URL.Path, "/points/delete") {
-		q.mu.Lock()
-		delete(q.points, collection)
-		q.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"status": "completed"}})
-		return
-	}
-	if r.Method == http.MethodDelete {
-		q.mu.Lock()
-		delete(q.points, collection)
-		q.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"status": "ok"}})
-		return
-	}
-	// Collection GET/PUT contract, including stage collections.
-	_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"config": map[string]any{"params": map[string]any{"vectors": map[string]any{"size": 2}}}}})
 }

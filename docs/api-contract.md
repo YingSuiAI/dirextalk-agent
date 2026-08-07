@@ -122,6 +122,17 @@ multi-tenant model.
   chunks carry contiguous ordinal/offset and per-chunk digests. Commit rejects
   revision, size, or digest drift. Search cursors retain the secret-free
   embedding provenance used for their page.
+- Knowledge vectors are stored in Agent PostgreSQL through pgvector. Process
+  configuration supplies only the vector dimension; endpoint, collection, and
+  content-quota settings are not public configuration. The aggregate indexable
+  content limit is 64 MiB, each source is limited to 16 MiB, and uploading
+  reservations count toward the aggregate. Status returns
+  `quota_used_bytes`, `quota_limit_bytes`, `quota_remaining_bytes`, and
+  `max_source_bytes`. Only aggregate exhaustion returns
+  `RESOURCE_EXHAUSTED` with the safe message
+  `Knowledge content quota is exhausted` and detail code
+  `knowledge_quota_exceeded`; parser and per-source limit failures remain
+  `INVALID_ARGUMENT`.
 - `agent.web_search.v1` exposes `get_config`, `update_config`, and `test` for
   the typed Tavily provider. Only `update_config` accepts the write-only key;
   chat requests carry no `tool_credentials` envelope.
