@@ -1,0 +1,46 @@
+[Unit]
+Description=Dirextalk privileged Pi execution permission gate
+Documentation=https://github.com/YingSuiAI/dirextalk-agent
+Before=dirextalk-cloud-worker.service
+AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker-exec-gate
+AssertFileIsExecutable=/usr/local/bin/dirextalk-cloud-worker
+AssertFileIsExecutable=/usr/local/lib/dirextalk-cloud-worker/pi/pi
+
+[Service]
+Type=exec
+User=root
+Group=dirextalk-cloud-worker
+ExecStart=/usr/local/bin/dirextalk-cloud-worker-exec-gate
+Restart=no
+RuntimeDirectory=dirextalk-cloud-worker-exec-gate
+RuntimeDirectoryMode=0750
+UMask=0007
+StandardOutput=journal+console
+StandardError=journal+console
+TasksMax=8
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_KILL
+AmbientCapabilities=CAP_SYS_ADMIN CAP_KILL
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

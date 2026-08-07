@@ -168,6 +168,12 @@ func (f extensionResolverFunc) ResolveExtensions(ctx context.Context, selections
 	return f(ctx, selections)
 }
 
+type intrinsicResolverFunc func(context.Context, TurnLease) ([]ResolvedIntrinsic, error)
+
+func (f intrinsicResolverFunc) ResolveIntrinsicTools(ctx context.Context, lease TurnLease) ([]ResolvedIntrinsic, error) {
+	return f(ctx, lease)
+}
+
 func (m *capturingTurnModel) Run(_ context.Context, request ModelRunRequest) (ModelRunResult, error) {
 	m.request = request
 	m.runs++
@@ -540,6 +546,73 @@ func TestResolveAcceptedTurnExtensionsRebuildsKnowledgeBuiltinFromPinnedSource(t
 	got, err := service.resolveAcceptedTurnExtensions(context.Background(), []ExtensionExecutionSnapshot{snapshot})
 	if err != nil || len(got) != 1 || got[0].Snapshot.Source != snapshot.Source {
 		t.Fatalf("resolved=%+v err=%v", got, err)
+	}
+}
+
+func TestExecuteTurnPreservesCloudWorkerIntrinsicAndLocalExtensionTools(t *testing.T) {
+	profile := testTurnSnapshot()
+	conversationID := uuid.NewString()
+	selection := ExtensionSelection{
+		Kind: ExtensionMCP, ID: uuid.NewString(), Version: "config-1",
+		Digest: strings.Repeat("a", 64), AllowedTools: []string{"local_lookup"},
+	}
+	snapshot := ExtensionExecutionSnapshot{
+		Selection: selection, InstallationID: selection.ID, VersionID: selection.Version,
+		Source: "mcp:test", ContentDigest: selection.Digest, ArtifactDigest: strings.Repeat("b", 64),
+		ToolSchemaDigest: strings.Repeat("c", 64), NetworkBindingDigest: strings.Repeat("d", 64),
+		ToolNames: []string{"local_lookup"}, ReadOnly: true,
+	}
+	resolved := ResolvedExtension{
+		Selection: selection,
+		Snapshot:  snapshot,
+		Tools:     []coremodel.Tool{{Name: "local_lookup", InputSchema: map[string]any{"type": "object"}}},
+		Execute: func(context.Context, ToolExecutionRequest) (ToolResult, error) {
+			return ToolResult{}, nil
+		},
+	}
+	base := newFakeStore()
+	base.conv[conversationID] = Conversation{ID: conversationID, Revision: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	turn := Turn{
+		ID: uuid.NewString(), RequestID: uuid.NewString(), ConversationID: conversationID,
+		Prompt: "compare local context before proposing cloud execution", ProfileID: profile.ProfileID,
+		ProfileSnapshot: profile, ProfileSnapshotDigest: profile.Digest(),
+		ExtensionSnapshots:      []ExtensionExecutionSnapshot{snapshot},
+		ExtensionSnapshotDigest: TurnStartCommand{ExtensionSnapshots: []ExtensionExecutionSnapshot{snapshot}}.ExtensionSnapshotDigest(),
+		State:                   TurnAccepted, Revision: 1, LastSequence: 1, CreatedAt: time.Now().UTC(),
+	}
+	store := &readOnlyTurnStore{
+		publicActiveTurnStore: &publicActiveTurnStore{fakeStore: base, turn: turn},
+		events:                []TurnEvent{{TurnID: turn.ID, Sequence: 1, Kind: TurnEventAccepted, CreatedAt: turn.CreatedAt}},
+	}
+	model := &capturingTurnModel{}
+	resolver := extensionResolverFunc(func(_ context.Context, selections []ExtensionSelection) ([]ResolvedExtension, error) {
+		if len(selections) != 1 || selections[0].ID != selection.ID {
+			t.Fatalf("extension selections=%+v", selections)
+		}
+		return []ResolvedExtension{resolved}, nil
+	})
+	service, err := NewService(store, model, resolver, snapshotResolverFunc(func(context.Context, string) (coremodel.ExecutionSnapshot, error) { return profile, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.SetIntrinsicResolver(intrinsicResolverFunc(func(_ context.Context, lease TurnLease) ([]ResolvedIntrinsic, error) {
+		if lease.Turn.ID != turn.ID {
+			t.Fatalf("intrinsic lease turn=%q", lease.Turn.ID)
+		}
+		return []ResolvedIntrinsic{{
+			Tool: coremodel.Tool{Name: coremodel.IntrinsicCloudWorkerProposeToolName, InputSchema: map[string]any{"type": "object"}},
+			Execute: func(context.Context, IntrinsicExecutionRequest) (IntrinsicExecutionResult, error) {
+				return IntrinsicExecutionResult{TurnCommitted: true}, nil
+			},
+		}}, nil
+	}))
+
+	service.executeTurn(context.Background(), turn.ID)
+
+	if model.runs != 1 || len(model.request.Intrinsics) != 1 ||
+		model.request.Intrinsics[0].Tool.Name != coremodel.IntrinsicCloudWorkerProposeToolName ||
+		len(model.request.Extensions) != 1 || model.request.Extensions[0].Selection.ID != selection.ID {
+		t.Fatalf("model request lost intrinsic or extension: %+v", model.request)
 	}
 }
 

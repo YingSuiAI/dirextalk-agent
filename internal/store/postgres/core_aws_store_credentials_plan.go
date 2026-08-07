@@ -157,8 +157,23 @@ func (s *CoreAWSStore) CreateCredential(ctx context.Context, c coreaws.Credentia
 		return coreaws.Credentials{}, err
 	}
 	configured := credentialSessionConfigured(c)
-	_, e := s.store.pool.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.CreatedAt, c.UpdatedAt)
+	tx, e := s.store.pool.Begin(ctx)
 	if e != nil {
+		return coreaws.Credentials{}, e
+	}
+	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credentials(credential_id,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.CreatedAt, c.UpdatedAt); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revisions(credential_id,revision,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, c.ID, c.Revision, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.CreatedAt); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	if !c.TestedAt.IsZero() {
+		if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revision_evidence(credential_id,revision,account_id,user_arn,tested_at) VALUES($1,$2,$3,$4,$5)`, c.ID, c.Revision, c.AccountID, c.UserARN, c.TestedAt); e != nil {
+			return coreaws.Credentials{}, e
+		}
+	}
+	if e = tx.Commit(ctx); e != nil {
 		return coreaws.Credentials{}, e
 	}
 	return c, nil
@@ -167,13 +182,19 @@ func (s *CoreAWSStore) GetCredential(ctx context.Context, id string) (coreaws.Cr
 	if s == nil || s.store == nil {
 		return coreaws.Credentials{}, coreaws.ErrInvalid
 	}
-	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1`, id))
+	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id))
+}
+func (s *CoreAWSStore) GetCredentialRevision(ctx context.Context, id string, revision int64) (coreaws.Credentials, error) {
+	if s == nil || s.store == nil || revision < 1 {
+		return coreaws.Credentials{}, coreaws.ErrInvalid
+	}
+	return s.scanCredentialRow(s.store.pool.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at) FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2`, id, revision))
 }
 func (s *CoreAWSStore) ListCredentials(ctx context.Context, size int, token string) (coreaws.CredentialPage, error) {
 	if size < 0 || size > 100 {
 		return coreaws.CredentialPage{}, coreaws.ErrInvalid
 	}
-	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE credential_id::text>$1 ORDER BY credential_id LIMIT $2`, token, size+1)
+	rows, e := s.store.pool.Query(ctx, `SELECT credential_id::text,name,region,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at,TRUE,TRUE,session_token_configured FROM core_aws_credentials WHERE disabled_at IS NULL AND credential_id::text>$1 ORDER BY credential_id LIMIT $2`, token, size+1)
 	if e != nil {
 		return coreaws.CredentialPage{}, e
 	}
@@ -208,17 +229,28 @@ func (s *CoreAWSStore) UpdateCredential(ctx context.Context, c coreaws.Credentia
 		return coreaws.Credentials{}, err
 	}
 	configured := credentialSessionConfigured(c)
-	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET name=$2,region=$3,secret_key_version=$4,access_key_id_nonce=$5,access_key_id_ciphertext=$6,secret_access_key_nonce=$7,secret_access_key_ciphertext=$8,session_token_nonce=$9,session_token_ciphertext=$10,session_token_configured=$11,account_id=$12,user_arn=$13,verified_revision=$14,revision=$15,tested_at=$16,updated_at=$17 WHERE credential_id=$1 AND revision=$18`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.UpdatedAt, expected)
+	tx, e := s.store.pool.Begin(ctx)
+	if e != nil {
+		return coreaws.Credentials{}, e
+	}
+	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revisions(credential_id,revision,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,session_token_configured,created_at) SELECT credential_id,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12 FROM core_aws_credentials WHERE credential_id=$1 AND revision=$13 AND disabled_at IS NULL`, c.ID, c.Revision, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.UpdatedAt, expected); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	tag, e := tx.Exec(ctx, `UPDATE core_aws_credentials SET name=$2,region=$3,secret_key_version=$4,access_key_id_nonce=$5,access_key_id_ciphertext=$6,secret_access_key_nonce=$7,secret_access_key_ciphertext=$8,session_token_nonce=$9,session_token_ciphertext=$10,session_token_configured=$11,account_id=$12,user_arn=$13,verified_revision=$14,revision=$15,tested_at=$16,updated_at=$17 WHERE credential_id=$1 AND revision=$18 AND disabled_at IS NULL`, c.ID, c.Name, c.Region, encrypted.keyVersion, encrypted.accessNonce, encrypted.accessCiphertext, encrypted.secretNonce, encrypted.secretCiphertext, encrypted.sessionNonce, encrypted.sessionCiphertext, configured, c.AccountID, c.UserARN, c.VerifiedRevision, c.Revision, nullableCredentialTime(c.TestedAt), c.UpdatedAt, expected)
 	if e != nil {
 		return coreaws.Credentials{}, e
 	}
 	if tag.RowsAffected() != 1 {
 		return coreaws.Credentials{}, coreaws.ErrRevisionConflict
 	}
+	if e = tx.Commit(ctx); e != nil {
+		return coreaws.Credentials{}, e
+	}
 	return s.GetCredential(ctx, c.ID)
 }
 func (s *CoreAWSStore) DeleteCredential(ctx context.Context, id string, expected int64) error {
-	tag, e := s.store.pool.Exec(ctx, `DELETE FROM core_aws_credentials WHERE credential_id=$1 AND revision=$2`, id, expected)
+	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET disabled_at=clock_timestamp(),updated_at=clock_timestamp() WHERE credential_id=$1 AND revision=$2 AND disabled_at IS NULL`, id, expected)
 	if e == nil && tag.RowsAffected() == 0 {
 		return coreaws.ErrRevisionConflict
 	}
@@ -228,13 +260,29 @@ func (s *CoreAWSStore) RecordCredentialIdentity(ctx context.Context, id string, 
 	if testedAt.IsZero() {
 		return coreaws.Credentials{}, coreaws.ErrInvalid
 	}
-	testedAt = testedAt.UTC()
-	tag, e := s.store.pool.Exec(ctx, `UPDATE core_aws_credentials SET account_id=$2,user_arn=$3,verified_revision=$4,tested_at=$5,updated_at=$5 WHERE credential_id=$1 AND revision=$4`, id, i.AccountID, i.UserARN, rev, testedAt)
+	testedAt = testedAt.UTC().Truncate(time.Microsecond)
+	tx, e := s.store.pool.Begin(ctx)
 	if e != nil {
 		return coreaws.Credentials{}, e
 	}
-	if tag.RowsAffected() != 1 {
+	defer tx.Rollback(ctx)
+	var active bool
+	if e = tx.QueryRow(ctx, `SELECT revision=$2 AND disabled_at IS NULL FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, id, rev).Scan(&active); e != nil || !active {
 		return coreaws.Credentials{}, coreaws.ErrRevisionConflict
+	}
+	if _, e = tx.Exec(ctx, `INSERT INTO core_aws_credential_revision_evidence(credential_id,revision,account_id,user_arn,tested_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (credential_id,revision) DO NOTHING`, id, rev, i.AccountID, i.UserARN, testedAt); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	var persistedAccount, persistedARN string
+	var persistedAt time.Time
+	if e = tx.QueryRow(ctx, `SELECT account_id,user_arn,tested_at FROM core_aws_credential_revision_evidence WHERE credential_id=$1 AND revision=$2`, id, rev).Scan(&persistedAccount, &persistedARN, &persistedAt); e != nil || persistedAccount != i.AccountID || persistedARN != i.UserARN {
+		return coreaws.Credentials{}, coreaws.ErrConflict
+	}
+	if _, e = tx.Exec(ctx, `UPDATE core_aws_credentials SET account_id=$2,user_arn=$3,verified_revision=$4,tested_at=$5,updated_at=GREATEST(updated_at,$5) WHERE credential_id=$1 AND revision=$4 AND disabled_at IS NULL`, id, persistedAccount, persistedARN, rev, persistedAt); e != nil {
+		return coreaws.Credentials{}, e
+	}
+	if e = tx.Commit(ctx); e != nil {
+		return coreaws.Credentials{}, e
 	}
 	return s.GetCredential(ctx, id)
 }
@@ -293,7 +341,17 @@ func (s *CoreAWSStore) BeginCredentialTest(ctx context.Context, id string, expec
 	if !errors.Is(claimErr, pgx.ErrNoRows) {
 		return coreaws.CredentialTestClaim{}, nil, claimErr
 	}
-	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1`, id))
+	var currentRevision int64
+	if err = tx.QueryRow(ctx, `SELECT revision FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id).Scan(&currentRevision); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return coreaws.CredentialTestClaim{}, nil, coreaws.ErrNotFound
+		}
+		return coreaws.CredentialTestClaim{}, nil, err
+	}
+	if currentRevision != expected {
+		return coreaws.CredentialTestClaim{}, nil, coreaws.ErrRevisionConflict
+	}
+	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 AND disabled_at IS NULL`, id))
 	if err != nil {
 		return coreaws.CredentialTestClaim{}, nil, err
 	}
@@ -352,22 +410,25 @@ func (s *CoreAWSStore) CompleteCredentialTest(ctx context.Context, claim coreaws
 	if state != "in_progress" {
 		return coreaws.CredentialTest{}, coreaws.ErrResponseUncertain
 	}
-	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT credential_id::text,name,region,secret_key_version,access_key_id_nonce,access_key_id_ciphertext,secret_access_key_nonce,secret_access_key_ciphertext,session_token_nonce,session_token_ciphertext,account_id,user_arn,verified_revision,revision,tested_at,created_at,updated_at FROM core_aws_credentials WHERE credential_id=$1 FOR UPDATE`, claim.CredentialID))
+	credential, err := s.scanCredentialRow(tx.QueryRow(ctx, `SELECT c.credential_id::text,c.name,r.region,r.secret_key_version,r.access_key_id_nonce,r.access_key_id_ciphertext,r.secret_access_key_nonce,r.secret_access_key_ciphertext,r.session_token_nonce,r.session_token_ciphertext,COALESCE(e.account_id,''),COALESCE(e.user_arn,''),CASE WHEN e.tested_at IS NULL THEN 0 ELSE r.revision END,r.revision,e.tested_at,r.created_at,COALESCE(e.tested_at,r.created_at) FROM core_aws_credentials c JOIN core_aws_credential_revisions r ON r.credential_id=c.credential_id LEFT JOIN core_aws_credential_revision_evidence e ON e.credential_id=r.credential_id AND e.revision=r.revision WHERE c.credential_id=$1 AND r.revision=$2 FOR UPDATE OF r`, claim.CredentialID, claim.ExpectedRevision))
 	if err != nil {
 		return coreaws.CredentialTest{}, err
 	}
-	if credential.Revision != claim.ExpectedRevision {
-		return coreaws.CredentialTest{}, coreaws.ErrRevisionConflict
-	}
-	var persistedAccountID, persistedUserARN string
-	var persistedTestedAt, persistedUpdatedAt time.Time
-	if err := tx.QueryRow(ctx, `UPDATE core_aws_credentials SET account_id=CASE WHEN tested_at IS NULL OR tested_at <= $5 THEN $2 ELSE account_id END,user_arn=CASE WHEN tested_at IS NULL OR tested_at <= $5 THEN $3 ELSE user_arn END,verified_revision=$4,tested_at=GREATEST(COALESCE(tested_at,'epoch'::timestamptz),$5),updated_at=GREATEST(updated_at,$5) WHERE credential_id=$1 AND revision=$4 RETURNING account_id,user_arn,tested_at,updated_at`, claim.CredentialID, identity.AccountID, identity.UserARN, claim.ExpectedRevision, testedAt).Scan(&persistedAccountID, &persistedUserARN, &persistedTestedAt, &persistedUpdatedAt); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return coreaws.CredentialTest{}, coreaws.ErrRevisionConflict
-		}
+	_ = credential
+	if _, err = tx.Exec(ctx, `INSERT INTO core_aws_credential_revision_evidence(credential_id,revision,account_id,user_arn,tested_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT (credential_id,revision) DO NOTHING`, claim.CredentialID, claim.ExpectedRevision, identity.AccountID, identity.UserARN, testedAt); err != nil {
 		return coreaws.CredentialTest{}, err
 	}
-	_ = persistedUpdatedAt
+	var persistedAccountID, persistedUserARN string
+	var persistedTestedAt time.Time
+	if err = tx.QueryRow(ctx, `SELECT account_id,user_arn,tested_at FROM core_aws_credential_revision_evidence WHERE credential_id=$1 AND revision=$2`, claim.CredentialID, claim.ExpectedRevision).Scan(&persistedAccountID, &persistedUserARN, &persistedTestedAt); err != nil {
+		return coreaws.CredentialTest{}, err
+	}
+	if persistedAccountID != identity.AccountID || persistedUserARN != identity.UserARN {
+		return coreaws.CredentialTest{}, coreaws.ErrConflict
+	}
+	if _, err = tx.Exec(ctx, `UPDATE core_aws_credentials SET account_id=$2,user_arn=$3,verified_revision=$4,tested_at=$5,updated_at=GREATEST(updated_at,$5) WHERE credential_id=$1 AND revision=$4 AND disabled_at IS NULL`, claim.CredentialID, persistedAccountID, persistedUserARN, claim.ExpectedRevision, persistedTestedAt); err != nil {
+		return coreaws.CredentialTest{}, err
+	}
 	identity.AccountID, identity.UserARN = persistedAccountID, persistedUserARN
 	test := coreaws.CredentialTest{CredentialID: claim.CredentialID, Identity: identity, CredentialRevision: claim.ExpectedRevision, TestedAt: persistedTestedAt.UTC()}
 	encoded, err := json.Marshal(test)

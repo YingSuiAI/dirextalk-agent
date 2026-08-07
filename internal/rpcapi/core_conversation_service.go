@@ -78,9 +78,9 @@ func turnProto(t coreconversation.Turn) *agentv1.CoreConversationTurn {
 }
 
 func turnEventProto(e coreconversation.TurnEvent) *agentv1.ConversationServiceWatchTurnEventsResponse {
-	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, AttemptId: e.AttemptID, ExecutionId: e.ExecutionID, Status: e.Status}
+	out := &agentv1.CoreConversationTurnEvent{TurnId: e.TurnID, Sequence: e.Sequence, Kind: string(e.Kind), Text: e.Text, ErrorCode: e.ErrorCode, ErrorSummary: e.ErrorSummary, FirstSequence: e.FirstSequence, LastSequence: e.LastSequence, ReplayGap: e.ReplayGap, CreatedAt: timestamppb.New(e.CreatedAt), ConfirmationId: e.ConfirmationID, AttemptId: e.AttemptID, ExecutionId: e.ExecutionID, Status: e.Status, RelatedTaskIds: append([]string(nil), e.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), e.RelatedPlanIDs...), References: referenceProtos(e.References)}
 	if e.ToolResult != nil {
-		out.ToolResult = &agentv1.CoreToolResult{ToolName: e.ToolResult.ToolName, Summary: e.ToolResult.Summary, RelatedTaskIds: e.ToolResult.RelatedTaskIDs, ToolSummaries: summaryList(e.ToolResult.Summary)}
+		out.ToolResult = toolResultProto(*e.ToolResult)
 	}
 	if e.Message != nil {
 		conversationID := e.TurnID
@@ -90,6 +90,31 @@ func turnEventProto(e coreconversation.TurnEvent) *agentv1.ConversationServiceWa
 		out.Message = msgProto(*e.Message, e.Sequence, conversationID)
 	}
 	return &agentv1.ConversationServiceWatchTurnEventsResponse{Event: out}
+}
+
+func referenceProto(r coreconversation.Reference) *agentv1.CoreConversationReference {
+	return &agentv1.CoreConversationReference{
+		Kind: r.Kind, AccountGeneration: r.AccountGeneration, TaskId: r.TaskID,
+		PlanId: r.PlanID, PlanRevision: r.PlanRevision, PlanDigest: r.PlanDigest,
+		RunId: r.RunID, RunRevision: r.RunRevision, RunDigest: r.RunDigest,
+		ExecutionId: r.ExecutionID, ConfirmationId: r.ConfirmationID,
+		ConfirmationRevision: r.ConfirmationRevision, BindingDigest: r.BindingDigest,
+		QuoteDigest: r.QuoteDigest, ExecutionDigest: r.ExecutionDigest,
+		Status: r.Status, State: r.State, RoomId: r.RoomID, RoomType: r.RoomType,
+		ChannelId: r.ChannelID, PostId: r.PostID, Title: r.Title, Preview: r.Preview,
+	}
+}
+
+func referenceProtos(values []coreconversation.Reference) []*agentv1.CoreConversationReference {
+	out := make([]*agentv1.CoreConversationReference, 0, len(values))
+	for _, value := range values {
+		out = append(out, referenceProto(value))
+	}
+	return out
+}
+
+func toolResultProto(value coreconversation.ToolResult) *agentv1.CoreToolResult {
+	return &agentv1.CoreToolResult{ToolName: value.ToolName, Summary: value.Summary, RelatedTaskIds: append([]string(nil), value.RelatedTaskIDs...), ToolSummaries: summaryList(value.Summary), RelatedPlanIds: append([]string(nil), value.RelatedPlanIDs...), References: referenceProtos(value.References)}
 }
 func convProto(c coreconversation.Conversation) *agentv1.CoreConversation {
 	return &agentv1.CoreConversation{ConversationId: c.ID, Title: c.Title, Revision: int64(c.Revision), CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt)}
@@ -106,7 +131,7 @@ func msgProto(m coreconversation.Message, seq int64, conversationID ...string) *
 	if len(conversationID) > 0 {
 		id = conversationID[0]
 	}
-	return &agentv1.CoreConversationMessage{MessageId: m.ID, ConversationId: id, Sequence: seq, Role: string(m.Role), Content: m.Content, ModelProfileId: m.ModelProfileID, Payload: payload, RelatedTaskIds: m.RelatedTaskIDs, ToolSummaries: m.ToolSummaries, CreatedAt: timestamppb.New(m.CreatedAt)}
+	return &agentv1.CoreConversationMessage{MessageId: m.ID, ConversationId: id, Sequence: seq, Role: string(m.Role), Content: m.Content, ModelProfileId: m.ModelProfileID, Payload: payload, RelatedTaskIds: append([]string(nil), m.RelatedTaskIDs...), ToolSummaries: append([]string(nil), m.ToolSummaries...), CreatedAt: timestamppb.New(m.CreatedAt), RelatedPlanIds: append([]string(nil), m.RelatedPlanIDs...), References: referenceProtos(m.References)}
 }
 func extensionCommands(in []*agentv1.CoreExtensionSelection) []coreconversation.ExtensionSelection {
 	if len(in) == 0 {
@@ -213,7 +238,7 @@ func (s *CoreConversationService) Chat(ctx context.Context, r *agentv1.Conversat
 	if e != nil {
 		return nil, mapErr(e)
 	}
-	return &agentv1.ConversationServiceChatResponse{Conversation: &agentv1.CoreConversation{ConversationId: res.ConversationID, Revision: int64(res.Revision)}, Message: msgProto(res.Message, int64(res.Revision), res.ConversationID), RelatedTaskIds: res.RelatedTaskIDs}, nil
+	return &agentv1.ConversationServiceChatResponse{Conversation: &agentv1.CoreConversation{ConversationId: res.ConversationID, Revision: int64(res.Revision)}, Message: msgProto(res.Message, int64(res.Revision), res.ConversationID), RelatedTaskIds: append([]string(nil), res.RelatedTaskIDs...), RelatedPlanIds: append([]string(nil), res.RelatedPlanIDs...), References: referenceProtos(res.References)}, nil
 }
 func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStreamChatRequest, stream agentv1.ConversationService_StreamChatServer) error {
 	if e := validateRPCChatRequest(r.GetExtensions(), r.GetKnowledgeRefs()); e != nil {
@@ -241,15 +266,15 @@ func (s *CoreConversationService) StreamChat(r *agentv1.ConversationServiceStrea
 			}
 		case coreconversation.EventToolResult:
 			if ev.ToolResult != nil {
-				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Name: ev.ToolResult.ToolName, Status: "completed", RelatedTaskIds: ev.ToolResult.RelatedTaskIDs, ToolSummaries: summaryList(ev.ToolResult.Summary)}}}
+				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Tool{Tool: &agentv1.CoreStreamChatToolProgress{Name: ev.ToolResult.ToolName, Status: "completed", RelatedTaskIds: append([]string(nil), ev.ToolResult.RelatedTaskIDs...), ToolSummaries: summaryList(ev.ToolResult.Summary), RelatedPlanIds: append([]string(nil), ev.ToolResult.RelatedPlanIDs...), References: referenceProtos(ev.ToolResult.References)}}}
 			}
 		case coreconversation.EventDone:
 			if ev.Response != nil {
 				results := make([]*agentv1.CoreToolResult, 0, len(ev.Response.ToolResults))
 				for _, tr := range ev.Response.ToolResults {
-					results = append(results, &agentv1.CoreToolResult{ToolName: tr.ToolName, Summary: tr.Summary, RelatedTaskIds: tr.RelatedTaskIDs, ToolSummaries: summaryList(tr.Summary)})
+					results = append(results, toolResultProto(tr))
 				}
-				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Done{Done: &agentv1.CoreStreamChatDone{Message: msgProto(ev.Response.Message, int64(ev.Response.Revision), ev.Response.ConversationID), RelatedTaskIds: ev.Response.RelatedTaskIDs, ToolResults: results}}}
+				out = &agentv1.ConversationServiceStreamChatResponse{Event: &agentv1.ConversationServiceStreamChatResponse_Done{Done: &agentv1.CoreStreamChatDone{Message: msgProto(ev.Response.Message, int64(ev.Response.Revision), ev.Response.ConversationID), RelatedTaskIds: append([]string(nil), ev.Response.RelatedTaskIDs...), ToolResults: results, RelatedPlanIds: append([]string(nil), ev.Response.RelatedPlanIDs...), References: referenceProtos(ev.Response.References)}}}
 			}
 		case coreconversation.EventError:
 			return mapStreamError(ev.ErrCode)

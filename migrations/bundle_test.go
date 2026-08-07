@@ -5,12 +5,39 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
+
+	"github.com/YingSuiAI/dirextalk-agent/internal/cloudworker"
 )
+
+func TestCommittedMigrationBytesRemainImmutable(t *testing.T) {
+	expected := []struct {
+		name   string
+		size   int
+		sha256 string
+	}{
+		{"000001_core_v1_fresh.up.sql", 84149, "71a0719dcf45f727e247607871f1e0726af447e7fff9fc625f8c5b7003e64bc0"},
+		{"000002_knowledge_search_provenance.up.sql", 1352, "91c124b8967f4ddb8ffbb3ac4baa131dd21d397eafb87026718b3819bcd13468"},
+		{"000003_aws_credential_test_claims.up.sql", 1855, "563f8f2b4a49c1e66e33f3a8ab6fdf606f21674fc45fad4c36add6ddc81f615a"},
+		{"000004_knowledge_pgvector.up.sql", 1941, "a9c7f8f495b4b5dc967f4534a94ccb8563cdd0d7b32f6b9d34fd471459156ad6"},
+		{"000005_cloud_worker_v1.up.sql", 47971, "cb2c08c8799161ae8dcc39f6c9940b618bf61702a8f676d9d75e51a056041fde"},
+	}
+	ordered := Ordered()
+	if len(ordered) < len(expected) {
+		t.Fatalf("migration count = %d, want at least %d", len(ordered), len(expected))
+	}
+	for index, want := range expected {
+		migration := ordered[index]
+		digest := sha256.Sum256(migration.Script)
+		if migration.Name != want.name || len(migration.Script) != want.size || hex.EncodeToString(digest[:]) != want.sha256 {
+			t.Fatalf("committed migration %d drifted: name=%q size=%d sha256=%x", index+1, migration.Name, len(migration.Script), digest)
+		}
+	}
+}
 
 func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	entries := Entries()
-	if len(entries) != 4 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" {
-		t.Fatalf("entries=%v, want the immutable baseline plus provenance and AWS claim migrations", entries)
+	if len(entries) != 5 || entries[0] != "000001_core_v1_fresh.up.sql" || entries[1] != "000002_knowledge_search_provenance.up.sql" || entries[2] != "000003_aws_credential_test_claims.up.sql" || entries[3] != "000004_knowledge_pgvector.up.sql" || entries[4] != "000005_cloud_worker_v1.up.sql" {
+		t.Fatalf("entries=%v, want the immutable baseline plus provenance, AWS claim, and Cloud Worker migrations", entries)
 	}
 	migration := Ordered()[0]
 	if migration.Version != 1 {
@@ -34,11 +61,27 @@ func TestBundleContainsCoreV1Migrations(t *testing.T) {
 	if pgvector.Version != 4 || !bytes.Contains(pgvector.Script, []byte("CREATE EXTENSION IF NOT EXISTS vector")) || !bytes.Contains(pgvector.Script, []byte("CREATE TABLE core_knowledge_vectors")) {
 		t.Fatal("pgvector migration missing required fresh-state schema")
 	}
-	immutable := map[int]string{0: "71a0719dcf45f727e247607871f1e0726af447e7fff9fc625f8c5b7003e64bc0", 1: "91c124b8967f4ddb8ffbb3ac4baa131dd21d397eafb87026718b3819bcd13468", 2: "563f8f2b4a49c1e66e33f3a8ab6fdf606f21674fc45fad4c36add6ddc81f615a"}
-	for index, want := range immutable {
-		sum := sha256.Sum256(Ordered()[index].Script)
-		if got := hex.EncodeToString(sum[:]); got != want {
-			t.Fatalf("committed migration %d checksum=%s want=%s", index+1, got, want)
+	cloudWorker := Ordered()[4]
+	if cloudWorker.Version != 5 || len(cloudWorker.Script) == 0 || cloudWorker.Script[len(cloudWorker.Script)-1] != '\n' {
+		t.Fatal("Cloud Worker migration lost its source newline")
+	}
+	if !bytes.Contains(cloudWorker.Script, []byte(cloudworker.PostgresOutputJournalSchemaRequirement)) {
+		t.Fatal("Cloud Worker migration drifted from the output journal schema requirement")
+	}
+	for _, needle := range []string{
+		"core_cloud_worker_plans",
+		"core_cloud_worker_executions",
+		"core_cloud_worker_launch_material",
+		"core_cloud_worker_aws_ledger",
+		"core_cloud_worker_output_journals",
+		"core_cloud_worker_output_versions",
+		"core_cloud_worker_identity_challenges",
+		"core_cloud_worker_sessions",
+		"core_cloud_worker_model_budgets",
+		"core_cloud_worker_completion_outbox",
+	} {
+		if !bytes.Contains(cloudWorker.Script, []byte(needle)) {
+			t.Fatalf("Cloud Worker migration missing %q", needle)
 		}
 	}
 	for _, needle := range []string{

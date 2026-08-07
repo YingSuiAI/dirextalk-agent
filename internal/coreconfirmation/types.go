@@ -102,32 +102,42 @@ func (d Digest) Valid() bool {
 type Binding struct {
 	// OwnerID identifies the single Agent owner/instance that authorized this
 	// operation. It is a stable identity descriptor, never a secret.
-	OwnerID           string
-	OperationDomain   string
-	TargetID          string
-	TargetRevision    int64
-	TargetKind        string
-	SourceVersion     string
-	SourceCommit      string
-	ContentDigest     Digest
-	ManifestDigest    Digest
-	ExecutionDigest   Digest
-	PermissionDigest  Digest
-	ParameterDigest   Digest
-	NetworkDigest     Digest
-	SecretGrantDigest Digest
-	SelectedTool      string
-	SelectedCommand   []string
-	NetworkGrants     []string
-	SecretGrants      []SecretGrant
+	OwnerID           string        `json:"owner_id"`
+	AccountGeneration uint64        `json:"account_generation,omitempty"`
+	OperationDomain   string        `json:"operation_domain"`
+	TargetID          string        `json:"target_id"`
+	TargetRevision    int64         `json:"target_revision"`
+	TargetKind        string        `json:"target_kind"`
+	SourceVersion     string        `json:"source_version"`
+	SourceCommit      string        `json:"source_commit"`
+	ContentDigest     Digest        `json:"content_digest"`
+	ManifestDigest    Digest        `json:"manifest_digest"`
+	ExecutionDigest   Digest        `json:"execution_digest"`
+	PermissionDigest  Digest        `json:"permission_digest"`
+	ParameterDigest   Digest        `json:"parameter_digest"`
+	NetworkDigest     Digest        `json:"network_digest"`
+	SecretGrantDigest Digest        `json:"secret_grant_digest"`
+	SelectedTool      string        `json:"selected_tool"`
+	SelectedCommand   []string      `json:"selected_command"`
+	NetworkGrants     []string      `json:"network_grants"`
+	SecretGrants      []SecretGrant `json:"secret_grants"`
+	ExecutionID       string        `json:"execution_id,omitempty"`
+	PlanID            string        `json:"plan_id,omitempty"`
+	PlanRevision      int64         `json:"plan_revision,omitempty"`
+	PlanDigest        Digest        `json:"plan_digest,omitempty"`
+	RunID             string        `json:"run_id,omitempty"`
+	RunRevision       int64         `json:"run_revision,omitempty"`
+	RunDigest         Digest        `json:"run_digest,omitempty"`
+	QuoteDigest       Digest        `json:"quote_digest,omitempty"`
+	Digest            Digest        `json:"digest,omitempty"`
 }
 
 // SecretGrant is a safe descriptor. It can identify an authorized secret but
 // cannot represent the secret value itself.
 type SecretGrant struct {
-	ReferenceID   string
-	Purpose       SecretPurpose
-	BindingDigest Digest
+	ReferenceID   string        `json:"reference_id"`
+	Purpose       SecretPurpose `json:"purpose"`
+	BindingDigest Digest        `json:"binding_digest"`
 }
 
 type SecretPurpose string
@@ -148,6 +158,9 @@ func (b Binding) normalized() (Binding, error) {
 	b.SourceCommit = strings.TrimSpace(b.SourceCommit)
 	b.TargetKind = strings.TrimSpace(b.TargetKind)
 	b.SelectedTool = strings.TrimSpace(b.SelectedTool)
+	b.ExecutionID = strings.TrimSpace(b.ExecutionID)
+	b.PlanID = strings.TrimSpace(b.PlanID)
+	b.RunID = strings.TrimSpace(b.RunID)
 	if b.OperationDomain == "" || b.TargetID == "" || b.TargetRevision < 1 || (b.SourceVersion == "" && b.SourceCommit == "") {
 		return Binding{}, ErrInvalid
 	}
@@ -160,6 +173,24 @@ func (b Binding) normalized() (Binding, error) {
 		if d != "" && !d.Valid() {
 			return Binding{}, ErrInvalid
 		}
+	}
+	cloudFields := b.ExecutionID != "" || b.PlanID != "" || b.RunID != "" || b.PlanRevision != 0 || b.RunRevision != 0 || b.PlanDigest != "" || b.RunDigest != "" || b.QuoteDigest != "" || b.Digest != ""
+	if cloudFields {
+		if b.OperationDomain != "cloud_worker.execute" || b.AccountGeneration == 0 || !validateUUID(b.ExecutionID) || !validateUUID(b.PlanID) || !validateUUID(b.RunID) || b.ExecutionID != b.TargetID || b.RunID != b.ExecutionID || b.PlanRevision < 1 || b.RunRevision < 1 {
+			return Binding{}, ErrInvalid
+		}
+		for _, d := range []Digest{b.PlanDigest, b.RunDigest, b.QuoteDigest, b.Digest} {
+			if !d.Valid() {
+				return Binding{}, ErrInvalid
+			}
+		}
+	}
+	if b.OperationDomain == "execution_v2.run" {
+		if b.OwnerID == "" || b.AccountGeneration == 0 || cloudFields || !validateUUID(b.TargetID) {
+			return Binding{}, ErrInvalid
+		}
+	} else if b.AccountGeneration != 0 && b.OperationDomain != "cloud_worker.execute" {
+		return Binding{}, ErrInvalid
 	}
 	for _, command := range b.SelectedCommand {
 		if command == "" || strings.ContainsAny(command, "\r\n\x00") {
@@ -174,6 +205,15 @@ func (b Binding) normalized() (Binding, error) {
 	b.SecretGrants, err = normalizeSecretGrantList(b.SecretGrants)
 	if err != nil {
 		return Binding{}, err
+	}
+	if cloudFields {
+		supplied := b.Digest
+		b.Digest = ""
+		expected := canonicalDigest(b)
+		b.Digest = supplied
+		if supplied != expected {
+			return Binding{}, ErrInvalid
+		}
 	}
 	return b, nil
 }
@@ -238,12 +278,14 @@ func (b Binding) Equal(other Binding) bool {
 	if errA != nil || errB != nil {
 		return false
 	}
-	return a.OwnerID == c.OwnerID && a.OperationDomain == c.OperationDomain && a.TargetID == c.TargetID && a.TargetRevision == c.TargetRevision && a.TargetKind == c.TargetKind &&
+	return a.OwnerID == c.OwnerID && a.AccountGeneration == c.AccountGeneration && a.OperationDomain == c.OperationDomain && a.TargetID == c.TargetID && a.TargetRevision == c.TargetRevision && a.TargetKind == c.TargetKind &&
 		a.SourceVersion == c.SourceVersion && a.SourceCommit == c.SourceCommit && a.ContentDigest == c.ContentDigest &&
 		a.ManifestDigest == c.ManifestDigest && a.ExecutionDigest == c.ExecutionDigest && a.PermissionDigest == c.PermissionDigest &&
 		a.ParameterDigest == c.ParameterDigest && a.NetworkDigest == c.NetworkDigest && a.SecretGrantDigest == c.SecretGrantDigest &&
 		a.SelectedTool == c.SelectedTool && equalStrings(a.SelectedCommand, c.SelectedCommand) &&
-		equalStrings(a.NetworkGrants, c.NetworkGrants) && equalSecretGrants(a.SecretGrants, c.SecretGrants)
+		equalStrings(a.NetworkGrants, c.NetworkGrants) && equalSecretGrants(a.SecretGrants, c.SecretGrants) &&
+		a.ExecutionID == c.ExecutionID && a.PlanID == c.PlanID && a.PlanRevision == c.PlanRevision && a.PlanDigest == c.PlanDigest &&
+		a.RunID == c.RunID && a.RunRevision == c.RunRevision && a.RunDigest == c.RunDigest && a.QuoteDigest == c.QuoteDigest && a.Digest == c.Digest
 }
 
 func equalSecretGrants(a, b []SecretGrant) bool {
@@ -271,17 +313,18 @@ func equalStrings(a, b []string) bool {
 }
 
 type Confirmation struct {
-	ConfirmationID string
-	Binding        Binding
-	TaskID         string
-	State          State
-	Revision       int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	ExpiresAt      time.Time
-	TerminalCode   string
-	TerminalNote   string
-	TerminalReason string
+	ConfirmationID string    `json:"confirmation_id"`
+	OwnerID        string    `json:"owner_id"`
+	Binding        Binding   `json:"binding"`
+	TaskID         string    `json:"task_id"`
+	State          State     `json:"state"`
+	Revision       int64     `json:"revision"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	TerminalCode   string    `json:"terminal_code"`
+	TerminalNote   string    `json:"terminal_note"`
+	TerminalReason string    `json:"terminal_reason"`
 }
 
 type Reservation struct {
@@ -384,9 +427,15 @@ type Page struct {
 }
 
 func cloneConfirmation(in Confirmation) Confirmation {
-	in.Binding.NetworkGrants = append([]string(nil), in.Binding.NetworkGrants...)
-	in.Binding.SecretGrants = append([]SecretGrant(nil), in.Binding.SecretGrants...)
-	in.Binding.SelectedCommand = append([]string(nil), in.Binding.SelectedCommand...)
+	if in.Binding.NetworkGrants != nil {
+		in.Binding.NetworkGrants = append(make([]string, 0, len(in.Binding.NetworkGrants)), in.Binding.NetworkGrants...)
+	}
+	if in.Binding.SecretGrants != nil {
+		in.Binding.SecretGrants = append(make([]SecretGrant, 0, len(in.Binding.SecretGrants)), in.Binding.SecretGrants...)
+	}
+	if in.Binding.SelectedCommand != nil {
+		in.Binding.SelectedCommand = append(make([]string, 0, len(in.Binding.SelectedCommand)), in.Binding.SelectedCommand...)
+	}
 	return in
 }
 

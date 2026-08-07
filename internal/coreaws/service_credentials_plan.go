@@ -163,7 +163,7 @@ func (s *Service) TestCredential(ctx context.Context, id string) (CredentialTest
 		return CredentialTest{}, ue
 	}
 	c = updated
-	return CredentialTest{CredentialID: id, Identity: identity, CredentialRevision: c.Revision, TestedAt: testedAt}, nil
+	return CredentialTest{CredentialID: id, Identity: identity, CredentialRevision: c.Revision, TestedAt: c.TestedAt}, nil
 }
 
 // TestCredentialIdempotent is the neutral Capability-only credential test.

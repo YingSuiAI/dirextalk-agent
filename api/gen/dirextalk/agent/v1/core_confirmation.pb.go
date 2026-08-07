@@ -206,6 +206,16 @@ type CoreConfirmationBinding struct {
 	PermissionDigest  string                       `protobuf:"bytes,16,opt,name=permission_digest,json=permissionDigest,proto3" json:"permission_digest,omitempty"`
 	SelectedTool      string                       `protobuf:"bytes,17,opt,name=selected_tool,json=selectedTool,proto3" json:"selected_tool,omitempty"`
 	SelectedCommand   []string                     `protobuf:"bytes,18,rep,name=selected_command,json=selectedCommand,proto3" json:"selected_command,omitempty"`
+	AccountGeneration uint64                       `protobuf:"varint,19,opt,name=account_generation,json=accountGeneration,proto3" json:"account_generation,omitempty"`
+	ExecutionId       string                       `protobuf:"bytes,20,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	PlanId            string                       `protobuf:"bytes,21,opt,name=plan_id,json=planId,proto3" json:"plan_id,omitempty"`
+	PlanRevision      int64                        `protobuf:"varint,22,opt,name=plan_revision,json=planRevision,proto3" json:"plan_revision,omitempty"`
+	PlanDigest        string                       `protobuf:"bytes,23,opt,name=plan_digest,json=planDigest,proto3" json:"plan_digest,omitempty"`
+	RunId             string                       `protobuf:"bytes,24,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	RunRevision       int64                        `protobuf:"varint,25,opt,name=run_revision,json=runRevision,proto3" json:"run_revision,omitempty"`
+	RunDigest         string                       `protobuf:"bytes,26,opt,name=run_digest,json=runDigest,proto3" json:"run_digest,omitempty"`
+	QuoteDigest       string                       `protobuf:"bytes,27,opt,name=quote_digest,json=quoteDigest,proto3" json:"quote_digest,omitempty"`
+	Digest            string                       `protobuf:"bytes,28,opt,name=digest,proto3" json:"digest,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -366,6 +376,76 @@ func (x *CoreConfirmationBinding) GetSelectedCommand() []string {
 	return nil
 }
 
+func (x *CoreConfirmationBinding) GetAccountGeneration() uint64 {
+	if x != nil {
+		return x.AccountGeneration
+	}
+	return 0
+}
+
+func (x *CoreConfirmationBinding) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *CoreConfirmationBinding) GetPlanId() string {
+	if x != nil {
+		return x.PlanId
+	}
+	return ""
+}
+
+func (x *CoreConfirmationBinding) GetPlanRevision() int64 {
+	if x != nil {
+		return x.PlanRevision
+	}
+	return 0
+}
+
+func (x *CoreConfirmationBinding) GetPlanDigest() string {
+	if x != nil {
+		return x.PlanDigest
+	}
+	return ""
+}
+
+func (x *CoreConfirmationBinding) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *CoreConfirmationBinding) GetRunRevision() int64 {
+	if x != nil {
+		return x.RunRevision
+	}
+	return 0
+}
+
+func (x *CoreConfirmationBinding) GetRunDigest() string {
+	if x != nil {
+		return x.RunDigest
+	}
+	return ""
+}
+
+func (x *CoreConfirmationBinding) GetQuoteDigest() string {
+	if x != nil {
+		return x.QuoteDigest
+	}
+	return ""
+}
+
+func (x *CoreConfirmationBinding) GetDigest() string {
+	if x != nil {
+		return x.Digest
+	}
+	return ""
+}
+
 type CoreSecretGrantDescriptor struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ReferenceId   string                 `protobuf:"bytes,1,opt,name=reference_id,json=referenceId,proto3" json:"reference_id,omitempty"`
@@ -439,6 +519,7 @@ type CoreConfirmation struct {
 	TerminalReason string                   `protobuf:"bytes,9,opt,name=terminal_reason,json=terminalReason,proto3" json:"terminal_reason,omitempty"`
 	TerminalCode   string                   `protobuf:"bytes,10,opt,name=terminal_code,json=terminalCode,proto3" json:"terminal_code,omitempty"`
 	TerminalNote   string                   `protobuf:"bytes,11,opt,name=terminal_note,json=terminalNote,proto3" json:"terminal_note,omitempty"`
+	OwnerId        string                   `protobuf:"bytes,12,opt,name=owner_id,json=ownerId,proto3" json:"owner_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -546,6 +627,13 @@ func (x *CoreConfirmation) GetTerminalCode() string {
 func (x *CoreConfirmation) GetTerminalNote() string {
 	if x != nil {
 		return x.TerminalNote
+	}
+	return ""
+}
+
+func (x *CoreConfirmation) GetOwnerId() string {
+	if x != nil {
+		return x.OwnerId
 	}
 	return ""
 }
@@ -1146,7 +1234,7 @@ var File_dirextalk_agent_v1_core_confirmation_proto protoreflect.FileDescriptor
 
 const file_dirextalk_agent_v1_core_confirmation_proto_rawDesc = "" +
 	"\n" +
-	"*dirextalk/agent/v1/core_confirmation.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\"dirextalk/agent/v1/core_task.proto\"\x87\x06\n" +
+	"*dirextalk/agent/v1/core_confirmation.proto\x12\x12dirextalk.agent.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\"dirextalk/agent/v1/core_task.proto\"\xcc\b\n" +
 	"\x17CoreConfirmationBinding\x12)\n" +
 	"\x10operation_domain\x18\x01 \x01(\tR\x0foperationDomain\x12\x1b\n" +
 	"\ttarget_id\x18\x02 \x01(\tR\btargetId\x12'\n" +
@@ -1167,11 +1255,23 @@ const file_dirextalk_agent_v1_core_confirmation_proto_rawDesc = "" +
 	"\x10execution_digest\x18\x0f \x01(\tR\x0fexecutionDigest\x12+\n" +
 	"\x11permission_digest\x18\x10 \x01(\tR\x10permissionDigest\x12#\n" +
 	"\rselected_tool\x18\x11 \x01(\tR\fselectedTool\x12)\n" +
-	"\x10selected_command\x18\x12 \x03(\tR\x0fselectedCommand\"\xab\x01\n" +
+	"\x10selected_command\x18\x12 \x03(\tR\x0fselectedCommand\x12-\n" +
+	"\x12account_generation\x18\x13 \x01(\x04R\x11accountGeneration\x12!\n" +
+	"\fexecution_id\x18\x14 \x01(\tR\vexecutionId\x12\x17\n" +
+	"\aplan_id\x18\x15 \x01(\tR\x06planId\x12#\n" +
+	"\rplan_revision\x18\x16 \x01(\x03R\fplanRevision\x12\x1f\n" +
+	"\vplan_digest\x18\x17 \x01(\tR\n" +
+	"planDigest\x12\x15\n" +
+	"\x06run_id\x18\x18 \x01(\tR\x05runId\x12!\n" +
+	"\frun_revision\x18\x19 \x01(\x03R\vrunRevision\x12\x1d\n" +
+	"\n" +
+	"run_digest\x18\x1a \x01(\tR\trunDigest\x12!\n" +
+	"\fquote_digest\x18\x1b \x01(\tR\vquoteDigest\x12\x16\n" +
+	"\x06digest\x18\x1c \x01(\tR\x06digest\"\xab\x01\n" +
 	"\x19CoreSecretGrantDescriptor\x12!\n" +
 	"\freference_id\x18\x01 \x01(\tR\vreferenceId\x12D\n" +
 	"\apurpose\x18\x02 \x01(\x0e2*.dirextalk.agent.v1.CoreSecretGrantPurposeR\apurpose\x12%\n" +
-	"\x0ebinding_digest\x18\x03 \x01(\tR\rbindingDigest\"\x9c\x04\n" +
+	"\x0ebinding_digest\x18\x03 \x01(\tR\rbindingDigest\"\xb7\x04\n" +
 	"\x10CoreConfirmation\x12'\n" +
 	"\x0fconfirmation_id\x18\x01 \x01(\tR\x0econfirmationId\x12E\n" +
 	"\abinding\x18\x02 \x01(\v2+.dirextalk.agent.v1.CoreConfirmationBindingR\abinding\x12\x17\n" +
@@ -1187,7 +1287,8 @@ const file_dirextalk_agent_v1_core_confirmation_proto_rawDesc = "" +
 	"\x0fterminal_reason\x18\t \x01(\tR\x0eterminalReason\x12#\n" +
 	"\rterminal_code\x18\n" +
 	" \x01(\tR\fterminalCode\x12#\n" +
-	"\rterminal_note\x18\v \x01(\tR\fterminalNote\"H\n" +
+	"\rterminal_note\x18\v \x01(\tR\fterminalNote\x12\x19\n" +
+	"\bowner_id\x18\f \x01(\tR\aownerId\"H\n" +
 	"\x1dConfirmationServiceGetRequest\x12'\n" +
 	"\x0fconfirmation_id\x18\x01 \x01(\tR\x0econfirmationId\"j\n" +
 	"\x1eConfirmationServiceGetResponse\x12H\n" +

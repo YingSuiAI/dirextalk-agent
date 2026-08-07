@@ -41,8 +41,10 @@ func (s *CoreConversationStore) CommitChatCompletion(ctx context.Context, a core
 	for i, m := range a.Conversation.Messages {
 		payload, _ := json.Marshal(m)
 		tasks, _ := stringArrayJSONPG(m.RelatedTaskIDs)
+		plans, _ := stringArrayJSONPG(m.RelatedPlanIDs)
+		references, _ := json.Marshal(m.References)
 		sums, _ := stringArrayJSONPG(m.ToolSummaries)
-		if _, e = tx.Exec(ctx, `INSERT INTO core_messages(message_id,conversation_id,sequence,role,content,model_profile_id,payload_json,related_task_ids,tool_summaries,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(message_id) DO NOTHING`, m.ID, a.Conversation.ID, i+1, m.Role, m.Content, nullableUUIDPG(m.ModelProfileID), payload, tasks, sums, m.CreatedAt); e != nil {
+		if _, e = tx.Exec(ctx, `INSERT INTO core_messages(message_id,conversation_id,sequence,role,content,model_profile_id,payload_json,related_task_ids,related_plan_ids,references_json,tool_summaries,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(message_id) DO NOTHING`, m.ID, a.Conversation.ID, i+1, m.Role, m.Content, nullableUUIDPG(m.ModelProfileID), payload, tasks, plans, references, sums, m.CreatedAt); e != nil {
 			return core.ChatResponse{}, e
 		}
 		if m.ModelProfileID != "" {

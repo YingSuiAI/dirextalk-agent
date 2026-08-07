@@ -2,11 +2,11 @@ syntax = "proto3";
 
 package dirextalk.agent.v1;
 
-option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
-
-import "google/protobuf/timestamp.proto";
-import "google/protobuf/struct.proto";
 import "dirextalk/agent/v1/core_task.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
 
 message CoreConversation {
   string conversation_id = 1;
@@ -14,6 +14,37 @@ message CoreConversation {
   int64 revision = 3;
   google.protobuf.Timestamp created_at = 4;
   google.protobuf.Timestamp updated_at = 5;
+}
+
+// A server-authored reference is the public, secret-free link from a durable
+// conversation event back to its authoritative product record. Cloud Worker
+// references always carry the complete owner-generation and digest fence;
+// clients must re-read the named Plan, Run and CoreConfirmation before a
+// mutation instead of treating this projection as authority.
+message CoreConversationReference {
+  string kind = 1;
+  uint64 account_generation = 2;
+  string task_id = 3;
+  string plan_id = 4;
+  uint64 plan_revision = 5;
+  string plan_digest = 6;
+  string run_id = 7;
+  uint64 run_revision = 8;
+  string run_digest = 9;
+  string execution_id = 10;
+  string confirmation_id = 11;
+  uint64 confirmation_revision = 12;
+  string binding_digest = 13;
+  string quote_digest = 14;
+  string execution_digest = 15;
+  string status = 16;
+  string state = 17;
+  string room_id = 18;
+  string room_type = 19;
+  string channel_id = 20;
+  string post_id = 21;
+  string title = 22;
+  string preview = 23;
 }
 
 message CoreConversationMessage {
@@ -27,15 +58,27 @@ message CoreConversationMessage {
   repeated string related_task_ids = 8;
   repeated string tool_summaries = 9;
   google.protobuf.Timestamp created_at = 10;
+  repeated string related_plan_ids = 11;
+  repeated CoreConversationReference references = 12;
 }
 
 message ConversationServiceCreateRequest {
   string idempotency_key = 1;
   string title = 2;
 }
-message ConversationServiceCreateResponse { CoreConversation conversation = 1; }
-message ConversationServiceGetRequest { string conversation_id = 1; string page_token = 2; int32 page_size = 3; }
-message ConversationServiceGetResponse { CoreConversation conversation = 1; repeated CoreConversationMessage messages = 2; string next_page_token = 3; }
+message ConversationServiceCreateResponse {
+  CoreConversation conversation = 1;
+}
+message ConversationServiceGetRequest {
+  string conversation_id = 1;
+  string page_token = 2;
+  int32 page_size = 3;
+}
+message ConversationServiceGetResponse {
+  CoreConversation conversation = 1;
+  repeated CoreConversationMessage messages = 2;
+  string next_page_token = 3;
+}
 message ConversationServiceListRequest {
   int32 page_size = 1;
   string page_token = 2;
@@ -66,6 +109,8 @@ message ConversationServiceChatResponse {
   CoreConversation conversation = 1;
   CoreConversationMessage message = 2;
   repeated string related_task_ids = 3;
+  repeated string related_plan_ids = 4;
+  repeated CoreConversationReference references = 5;
 }
 
 message ConversationServiceStreamChatRequest {
@@ -79,23 +124,31 @@ message ConversationServiceStreamChatRequest {
   optional int64 model_profile_revision = 8;
   optional int64 credential_version = 9;
 }
-message CoreStreamChatDelta { string text = 1; }
+message CoreStreamChatDelta {
+  string text = 1;
+}
 message CoreStreamChatToolProgress {
   string name = 1;
   string status = 2;
   repeated string related_task_ids = 3;
   repeated string tool_summaries = 4;
+  repeated string related_plan_ids = 5;
+  repeated CoreConversationReference references = 6;
 }
 message CoreToolResult {
   string tool_name = 1;
   string summary = 2;
   repeated string related_task_ids = 3;
   repeated string tool_summaries = 4;
+  repeated string related_plan_ids = 5;
+  repeated CoreConversationReference references = 6;
 }
 message CoreStreamChatDone {
   CoreConversationMessage message = 1;
   repeated string related_task_ids = 2;
   repeated CoreToolResult tool_results = 3;
+  repeated string related_plan_ids = 4;
+  repeated CoreConversationReference references = 5;
 }
 message ConversationServiceStreamChatResponse {
   oneof event {
@@ -135,9 +188,15 @@ message ConversationServiceStartTurnRequest {
   optional int64 model_profile_revision = 7;
   optional int64 credential_version = 8;
 }
-message ConversationServiceStartTurnResponse { CoreConversationTurn turn = 1; }
-message ConversationServiceGetTurnRequest { string turn_id = 1; }
-message ConversationServiceGetTurnResponse { CoreConversationTurn turn = 1; }
+message ConversationServiceStartTurnResponse {
+  CoreConversationTurn turn = 1;
+}
+message ConversationServiceGetTurnRequest {
+  string turn_id = 1;
+}
+message ConversationServiceGetTurnResponse {
+  CoreConversationTurn turn = 1;
+}
 message ConversationServiceWatchTurnEventsRequest {
   string turn_id = 1;
   int64 after_sequence = 2;
@@ -160,15 +219,22 @@ message CoreConversationTurnEvent {
   string execution_id = 14;
   string status = 15;
   CoreToolResult tool_result = 16;
+  repeated string related_task_ids = 17;
+  repeated string related_plan_ids = 18;
+  repeated CoreConversationReference references = 19;
 }
 message ConversationServiceCancelTurnRequest {
   string idempotency_key = 1;
   string turn_id = 2;
   int64 expected_revision = 3;
 }
-message ConversationServiceCancelTurnResponse { CoreConversationTurn turn = 1; }
+message ConversationServiceCancelTurnResponse {
+  CoreConversationTurn turn = 1;
+}
 
-message ConversationServiceWatchTurnEventsResponse { CoreConversationTurnEvent event = 1; }
+message ConversationServiceWatchTurnEventsResponse {
+  CoreConversationTurnEvent event = 1;
+}
 
 service ConversationService {
   rpc Create(ConversationServiceCreateRequest) returns (ConversationServiceCreateResponse);

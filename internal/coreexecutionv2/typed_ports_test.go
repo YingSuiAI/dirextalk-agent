@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+type executionV2StoreOnly struct{ Store }
+
 type fakeTypedProvider struct{ calls map[string]int }
 
 func (f *fakeTypedProvider) mark(name string) { f.calls[name]++ }
@@ -65,26 +67,57 @@ func TestAdaptProviderInterfacesPreservesTypedProviderBoundary(t *testing.T) {
 	}
 }
 
-func TestServicePublicationRequiresEveryProviderRoute(t *testing.T) {
+func TestServicePublicationAcceptsEitherIndependentProviderRoute(t *testing.T) {
 	fake := &fakeTypedProvider{calls: map[string]int{}}
-	service, err := NewServiceWithProviderInterfaces(NewMemoryStore(), ProviderInterfaces{
-		Analyze: fake, ImportTarget: fake, ReserveTarget: fake, Observe: fake, Invoke: fake, Reconcile: fake,
+	cloud := &cloudWorkerPortFake{calls: map[string]int{}}
+	service, err := NewServiceWithProviderInterfacesAndCloudWorker(NewMemoryStore(), ProviderInterfaces{
+		Analyze: fake, ImportTarget: fake, ReserveTarget: fake, Observe: fake, Invoke: fake,
 		Ready: func() bool { return true },
-	}, nil)
+	}, cloud, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !service.ReadyForPublication() || service.ReadinessReason() != "" {
 		t.Fatalf("full typed provider set not publishable: ready=%v reason=%q", service.ReadyForPublication(), service.ReadinessReason())
 	}
-	service, err = NewServiceWithProviderInterfaces(NewMemoryStore(), ProviderInterfaces{Analyze: fake, Ready: func() bool { return true }}, nil)
+	service, err = NewServiceWithProviderInterfacesAndCloudWorker(NewMemoryStore(), ProviderInterfaces{Analyze: fake, Ready: func() bool { return true }}, cloud, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.ReadyForPublication() || service.ReadinessReason() == "" {
-		t.Fatalf("partial typed provider set was publishable: ready=%v reason=%q", service.ReadyForPublication(), service.ReadinessReason())
+	if !service.ReadyForPublication() || service.ReadinessReason() != "" {
+		t.Fatalf("Cloud Worker route was blocked by partial generic providers: ready=%v reason=%q", service.ReadyForPublication(), service.ReadinessReason())
 	}
 	if service.ActionReady("agent.execution.v2.projects.analyze") != true || service.ActionReady("agent.execution.v2.targets.import") {
 		t.Fatalf("partial route readiness was not precise: analyze=%v import=%v", service.ActionReady("agent.execution.v2.projects.analyze"), service.ActionReady("agent.execution.v2.targets.import"))
+	}
+	service, err = NewServiceWithProviderInterfaces(NewMemoryStore(), ProviderInterfaces{
+		Analyze: fake, ImportTarget: fake, ReserveTarget: fake, Observe: fake, Invoke: fake, Ready: func() bool { return true },
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !service.ReadyForPublication() || service.ReadinessReason() != "" {
+		t.Fatalf("generic-only provider was not publishable: ready=%v reason=%q", service.ReadyForPublication(), service.ReadinessReason())
+	}
+	service, err = NewServiceWithProviderInterfaces(NewMemoryStore(), ProviderInterfaces{Analyze: fake, Ready: func() bool { return false }}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.ReadyForPublication() || service.ReadinessReason() != "execution.v2 has no ready Cloud Worker or generic typed provider route" {
+		t.Fatalf("unready generic-only provider published: ready=%v reason=%q", service.ReadyForPublication(), service.ReadinessReason())
+	}
+	service, err = NewServiceWithProviderInterfaces(NewMemoryStore(), ProviderInterfaces{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.ReadyForPublication() || service.ReadinessReason() != "execution.v2 has no ready Cloud Worker or generic typed provider route" {
+		t.Fatalf("empty provider composition published: ready=%v reason=%q", service.ReadyForPublication(), service.ReadinessReason())
+	}
+	service, err = NewServiceWithProviderInterfaces(executionV2StoreOnly{Store: NewMemoryStore()}, ProviderInterfaces{Reconcile: fake, Ready: func() bool { return true }}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.ReadyForPublication() || service.ActionReady("agent.execution.v2.runs.create") {
+		t.Fatalf("reconcile-only provider without lifecycle published: ready=%v run_ready=%v", service.ReadyForPublication(), service.ActionReady("agent.execution.v2.runs.create"))
 	}
 }

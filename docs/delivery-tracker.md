@@ -40,8 +40,9 @@ contract](message-server-integration-development-contract.md), and
   Provider tests use a persisted claim outside database locks; same-key active
   retries poll through the persisted 30-second lease plus completion grace and
   replay completed or deterministic failed receipts, while crash or completion
-  uncertainty fails closed without lease takeover. Different-key completions
-  preserve monotonic credential verification timestamps.
+  uncertainty fails closed without lease takeover. Credential revisions and
+  their first verified AWS identity remain immutable across rotation and soft
+  disable; a different account or principal proof fails closed.
 - Unified Agent image and split Compose services for Core, extension runner,
   and Core Runner; the latter has nonce/full readiness and descriptor-only
   sealed-result boundaries.
@@ -52,6 +53,20 @@ contract](message-server-integration-development-contract.md), and
 - Closed Capability conversation/history DTOs, conversation-bound newest-first
   history cursors, strict UUID mutation keys, typed/redacted domain failures,
   and post-composition durable-turn recovery.
+- Native durable turns expose the canonical public `turn_id` through
+  `list_turns` and use it as the durable Capability operation identity. The
+  client-message request identity remains a private idempotency fence, and an
+  explicit Capability operation cancellation fences that exact durable turn.
+- The single Cloud Worker source path uses `ephemeral-pi-task` /
+  `pi_json_task_v1`, a real `CLOUD_WORKER` CoreTask and CoreConfirmation,
+  atomic conversation offer/outbox persistence, private WorkerControl fencing,
+  an exact-version result collector, and a typed eight-resource AWS ledger with
+  Reaper cleanup. It does not replace the local sandbox, MCP, Skills,
+  Knowledge, Conversation Tools, Extension Runner, or light-task worker pool.
+- Generic Execution V2 run creation/retry now uses a real
+  `EXECUTION_V2_RUN` CoreTask and CoreConfirmation. The public confirmation
+  aliases and public `runs.reconcile` operation are absent; provider recovery is
+  controller-owned.
 
 ## Verification commands
 
@@ -103,7 +118,39 @@ support.
   `CoreCloudControlService` in `us-east-1` to create and read back one tagged
   idle SQS queue in one CloudFormation stack, then confirm/delete it. Independent
   deletion verification and a post-run prefix audit found zero active stacks or
-  queues. This evidence covers Core CloudControl only.
+  queues. This evidence covers Core CloudControl only. It is not Cloud Worker,
+  Worker AMI, one-EC2/one-Worker/one-Pi, artifact collection, or Cloud Worker
+  inventory-zero evidence and must not be used as such.
+- On **2026-08-07**, `go test ./internal/cloudworker/... -count=1` passed. The
+  fake/provider qualification covers deterministic plan/quote binding and hard
+  cost ceilings, requote/drift fences, one-dispatch recovery, Worker identity
+  and stale-lease rejection, Pi canonical-final/token limits, exact-version S3
+  staging/result collection, controlled egress contracts, eight-resource
+  cleanup, Reaper fault injection, and bounded public artifact download. The
+  download lane verifies complete exact-version content before slicing, strict
+  chunk/range/digest output, owner/account-generation isolation, retention and
+  Cleaner races, and AWS credential drift before and after the read. These
+  tests use fakes or SDK test doubles and perform no AWS mutation.
+- On **2026-08-07**, `go test ./internal/store/postgres -run 'CloudWorker' -count=1`
+  passed against the local PostgreSQL 18 test service. In particular,
+  `TestCloudWorkerFreshStateIntrinsicToVerifiedCompletionWithoutAWSMutation`
+  passed the fresh-state path from `cloud_worker.propose` through atomic offer,
+  owner confirmation, one fake provider dispatch, real PostgreSQL-backed
+  WorkerControl challenge/claim/heartbeat/complete, canonical Pi final parsing,
+  exact-version central validation, eight `verified_destroyed` resource
+  projections, one conversation result message, and one durable completion
+  outbox record. The provider in this test deliberately constructs no AWS SDK
+  client, so this is fake/provider qualification rather than live-cloud proof.
+- On **2026-08-08**, the complete Agent suite passed with PostgreSQL 18:
+  `GOFLAGS=-buildvcs=false go test ./...`, `go vet ./...`,
+  `GOFLAGS=-buildvcs=false go build ./cmd/...`, `buf lint`, and
+  `git diff --check`. The `GOFLAGS` override disables only Go VCS stamping,
+  which otherwise resolves the parent `/home/adam` Git directory instead of
+  this linked worktree; it does not change compiled source or test behavior.
+  Focused fresh-state tests additionally covered atomic Cloud Worker offer
+  creation, exact credential-revision restart recovery, output-version journal
+  cleanup, and the final second S3 inventory proof. No real AWS mutation was
+  performed.
 
 ## Remaining release gates
 
@@ -111,10 +158,29 @@ support.
 - Live `workload.aws_ssm` and `workload.aws_ecs` acceptance is not recorded;
   their exact target/readiness probes remain per-operation gates.
 - Live `workload.core_runner` workload execution is not recorded.
-- `agent.execution.v2` source composition and focused provider/fence tests are
-  present, but publication still requires `core_execution_v2_enabled`, every
-  typed route, the exact target proof, and the configured CloudFormation service
-  role; live AWS provision/read-back acceptance is not recorded.
+- Generic non-Cloud-Worker Execution V2 provider mutations still require their
+  exact typed route, target proof, and configured CloudFormation service role;
+  live generic AWS provision/read-back acceptance is not recorded.
+- Production `cloud_worker.propose` accepts an explicit cloud command and one
+  structural local-budget case: the frozen turn contains a validated workspace
+  archive, while the versioned Native runtime policy has no general workspace
+  executor. Its deterministic evidence binds owner/account generation,
+  turn/request/conversation/revision, prompt digest, profile snapshot, attachment
+  snapshot, and policy revision. All other budget cases remain fail-closed;
+  transient concurrency, model arguments, timeouts, and failed local execution
+  never become budget evidence.
+- No Worker AMI has been built, booted, or qualified from the immutable
+  `deploy/cloud-worker` inputs. Repository contract tests and a fake/provider
+  pass do not establish an AMI digest as production-ready.
+- No real Cloud Worker AWS mutation has been executed. The required authorized
+  disposable account, Region, credential revision, Worker AMI, and explicit
+  cost ceiling have not been supplied for this lane.
+- The fresh-state real-cloud acceptance remains open: App conversation offer,
+  user confirmation, exactly one EC2/Worker/Pi, exact artifact collection,
+  verified cleanup, unique result delivery, and an independent post-run AWS
+  inventory proving zero temporary EC2, EBS, ENI, EIP, security group, IAM
+  role/profile, and stack resources. No inventory-zero evidence package exists
+  for Cloud Worker yet.
 
 These gates are evidence requirements, not fallback behavior: a missing proof
 keeps the corresponding capability unpublished while planning and unrelated

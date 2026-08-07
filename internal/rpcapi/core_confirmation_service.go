@@ -94,11 +94,25 @@ func (s *CoreConfirmationService) AcknowledgeExtensionExecutionUncertain(ctx con
 	return &agentv1.ConfirmationServiceAcknowledgeExtensionExecutionUncertainResponse{Confirmation: confirmationProto(result.Confirmation), Task: coreTaskProto(result.Task), Resolution: r.GetResolution(), ReservationReleased: result.ReservationReleased}, nil
 }
 func confirmationProto(c coreconfirmation.Confirmation) *agentv1.CoreConfirmation {
-	b := &agentv1.CoreConfirmationBinding{OperationDomain: c.Binding.OperationDomain, TargetId: c.Binding.TargetID, TargetRevision: c.Binding.TargetRevision, SourceVersion: c.Binding.SourceVersion, SourceCommit: c.Binding.SourceCommit, ContentDigest: string(c.Binding.ContentDigest), ParameterDigest: string(c.Binding.ParameterDigest), NetworkDigest: string(c.Binding.NetworkDigest), SecretGrantDigest: string(c.Binding.SecretGrantDigest), NetworkGrants: c.Binding.NetworkGrants, OwnerId: c.Binding.OwnerID, TargetKind: c.Binding.TargetKind, ManifestDigest: string(c.Binding.ManifestDigest), ExecutionDigest: string(c.Binding.ExecutionDigest), PermissionDigest: string(c.Binding.PermissionDigest), SelectedTool: c.Binding.SelectedTool, SelectedCommand: append([]string(nil), c.Binding.SelectedCommand...)}
-	for _, g := range c.Binding.SecretGrants {
+	publicBinding := c.Binding.Public()
+	b := &agentv1.CoreConfirmationBinding{
+		OperationDomain: c.Binding.OperationDomain, TargetId: c.Binding.TargetID, TargetRevision: c.Binding.TargetRevision,
+		SourceVersion: c.Binding.SourceVersion, SourceCommit: c.Binding.SourceCommit,
+		ContentDigest: string(c.Binding.ContentDigest), ParameterDigest: string(c.Binding.ParameterDigest),
+		NetworkDigest: string(c.Binding.NetworkDigest), SecretGrantDigest: string(c.Binding.SecretGrantDigest),
+		NetworkGrants: append([]string(nil), c.Binding.NetworkGrants...), OwnerId: c.Binding.OwnerID,
+		TargetKind: c.Binding.TargetKind, ManifestDigest: string(c.Binding.ManifestDigest),
+		ExecutionDigest: string(c.Binding.ExecutionDigest), PermissionDigest: string(c.Binding.PermissionDigest),
+		SelectedTool: c.Binding.SelectedTool, SelectedCommand: append([]string(nil), c.Binding.SelectedCommand...),
+		AccountGeneration: c.Binding.AccountGeneration, ExecutionId: c.Binding.ExecutionID,
+		PlanId: c.Binding.PlanID, PlanRevision: c.Binding.PlanRevision, PlanDigest: string(c.Binding.PlanDigest),
+		RunId: c.Binding.RunID, RunRevision: c.Binding.RunRevision, RunDigest: string(c.Binding.RunDigest),
+		QuoteDigest: string(c.Binding.QuoteDigest), Digest: string(c.Binding.Digest),
+	}
+	for _, g := range publicBinding.SecretGrants {
 		b.SecretGrants = append(b.SecretGrants, &agentv1.CoreSecretGrantDescriptor{ReferenceId: g.ReferenceID, Purpose: secretPurposeProto(g.Purpose), BindingDigest: string(g.BindingDigest)})
 	}
-	return &agentv1.CoreConfirmation{ConfirmationId: c.ConfirmationID, Binding: b, TaskId: c.TaskID, State: confirmationStateProto(c.State), Revision: c.Revision, CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt), ExpiresAt: timestamppb.New(c.ExpiresAt), TerminalReason: c.TerminalReason, TerminalCode: c.TerminalCode, TerminalNote: c.TerminalNote}
+	return &agentv1.CoreConfirmation{ConfirmationId: c.ConfirmationID, OwnerId: c.OwnerID, Binding: b, TaskId: c.TaskID, State: confirmationStateProto(c.State), Revision: c.Revision, CreatedAt: timestamppb.New(c.CreatedAt), UpdatedAt: timestamppb.New(c.UpdatedAt), ExpiresAt: timestamppb.New(c.ExpiresAt), TerminalReason: c.TerminalReason, TerminalCode: c.TerminalCode, TerminalNote: c.TerminalNote}
 }
 func secretPurposeProto(p coreconfirmation.SecretPurpose) agentv1.CoreSecretGrantPurpose {
 	switch p {

@@ -18,6 +18,11 @@ import (
 // StartTurn stores the complete immutable request binding and its accepted
 // event in one transaction. A request UUID is the idempotency identity.
 func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartCommand) (core.Turn, error) {
+	// The caller selects source UUIDs only. Immutable metadata is always
+	// resolved from the attachment authority while this transaction holds the
+	// source locks.
+	c.AcceptedAttachmentIDs = append([]string(nil), c.AcceptedAttachmentIDs...)
+	c.AttachmentSources = nil
 	if err := c.Validate(); err != nil {
 		return core.Turn{}, err
 	}
@@ -26,9 +31,13 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 		return core.Turn{}, err
 	}
 	defer tx.Rollback(ctx)
-	fp := c.Fingerprint()
 	var existing core.Turn
 	if err = s.scanTurn(ctx, tx, c.RequestID, &existing); err == nil {
+		c.AttachmentSources = append([]core.TurnAttachment(nil), existing.AttachmentSources...)
+		if err = c.Validate(); err != nil {
+			return core.Turn{}, core.ErrConflict
+		}
+		fp := c.Fingerprint()
 		if existing.ProfileSnapshotDigest != c.ProfileSnapshot.Digest() || existing.RequestFingerprint != fp {
 			return core.Turn{}, core.ErrConflict
 		}
@@ -61,6 +70,10 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	if turnID == "" {
 		turnID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("conversation-turn:"+c.RequestID)).String()
 	}
+	if err = resolveAcceptedTurnAttachments(ctx, tx, &c, turnID); err != nil {
+		return core.Turn{}, err
+	}
+	fp := c.Fingerprint()
 	metadataSnapshot := c.ProfileSnapshot
 	metadataSnapshot.APIKey = ""
 	raw, _ := json.Marshal(metadataSnapshot)
@@ -75,7 +88,13 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 		textSnapshots = []core.ExtensionExecutionSnapshot{}
 	}
 	extRaw, _ := json.Marshal(textSnapshots)
-	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'accepted',1,1,1,$15,$15)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), now); err != nil {
+	attachmentSnapshots := c.AttachmentSources
+	if attachmentSnapshots == nil {
+		attachmentSnapshots = []core.TurnAttachment{}
+	}
+	attachmentRaw, _ := json.Marshal(attachmentSnapshots)
+	attachmentDigest := core.TurnAttachmentSnapshotDigest(c.AttachmentSources)
+	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turns(turn_id,request_id,conversation_id,request_fingerprint,owner_id,account_generation,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,state,revision,last_sequence,lease_epoch,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'accepted',1,1,1,$19,$19)`, turnID, c.RequestID, nullableUUIDPG(c.ConversationID), fp, c.OwnerID, c.AccountGeneration, c.Prompt, c.ProfileID, nullableUint64(c.ExpectedRevision), raw, c.ProfileSnapshot.Digest(), envelope.KeyVersion, envelope.Nonce, envelope.Ciphertext, extRaw, c.ExtensionSnapshotDigest(), attachmentRaw, attachmentDigest, now); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			_ = tx.Rollback(ctx)
@@ -89,6 +108,9 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 		}
 		return core.Turn{}, err
 	}
+	if err = consumeAcceptedTurnAttachments(ctx, tx, c, turnID); err != nil {
+		return core.Turn{}, err
+	}
 	payload, _ := json.Marshal(core.TurnEvent{TurnID: turnID, Sequence: 1, Kind: core.TurnEventAccepted, CreatedAt: now})
 	if _, err = tx.Exec(ctx, `INSERT INTO core_conversation_turn_events(turn_id,sequence,kind,payload_json,created_at) VALUES($1,1,$2,$3,$4)`, turnID, string(core.TurnEventAccepted), payload, now); err != nil {
 		return core.Turn{}, err
@@ -96,7 +118,7 @@ func (s *CoreConversationStore) StartTurn(ctx context.Context, c core.TurnStartC
 	if err = tx.Commit(ctx); err != nil {
 		return core.Turn{}, err
 	}
-	return core.Turn{ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest()}, nil
+	return core.Turn{ID: turnID, RequestID: c.RequestID, RequestFingerprint: fp, OwnerID: c.OwnerID, AccountGeneration: c.AccountGeneration, ConversationID: c.ConversationID, Prompt: c.Prompt, ProfileID: c.ProfileID, ExpectedRevision: cloneRevision(c.ExpectedRevision), Revision: 1, State: core.TurnAccepted, LastSequence: 1, CreatedAt: now, UpdatedAt: now, ProfileSnapshot: c.ProfileSnapshot, ProfileSnapshotDigest: c.ProfileSnapshot.Digest(), ExtensionSnapshots: append([]core.ExtensionExecutionSnapshot(nil), c.ExtensionSnapshots...), ExtensionSnapshotDigest: c.ExtensionSnapshotDigest(), AttachmentSources: append([]core.TurnAttachment(nil), c.AttachmentSources...), AttachmentSnapshotDigest: attachmentDigest}, nil
 }
 
 func nullableUint64(v *uint64) any {
@@ -122,7 +144,7 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	var expected *int64
 	var snapshot []byte
 	var responseRaw []byte
-	var digest, extensionDigest, state, code, summary string
+	var digest, extensionDigest, attachmentDigest, state, code, summary string
 	var cancel bool
 	var cancelRequestID *uuid.UUID
 	var cancelRequestFingerprint *string
@@ -130,10 +152,10 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	var dispatchState string
 	var dispatchEpoch uint64
 	var last int64
-	var extensionRaw []byte
+	var extensionRaw, attachmentRaw []byte
 	var snapshotKeyVersion uint32
 	var snapshotNonce, snapshotCiphertext []byte
-	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
+	err := q.QueryRow(ctx, `SELECT turn_id,request_id,request_fingerprint,owner_id,account_generation,conversation_id,prompt,profile_id,expected_revision,profile_snapshot_json,profile_snapshot_digest,profile_snapshot_key_version,profile_snapshot_api_key_nonce,profile_snapshot_api_key_ciphertext,extension_snapshot_json,extension_snapshot_digest,attachment_snapshot_json,attachment_snapshot_digest,state,cancel_requested,cancel_request_id,cancel_request_fingerprint,revision,last_sequence,terminal_code,terminal_summary,response_json,dispatch_state,dispatch_epoch,dispatch_result_json,created_at,updated_at FROM core_conversation_turns WHERE request_id=$1 OR turn_id=$1`, key).Scan(&out.ID, &out.RequestID, &out.RequestFingerprint, &out.OwnerID, &out.AccountGeneration, &conv, &out.Prompt, &profile, &expected, &snapshot, &digest, &snapshotKeyVersion, &snapshotNonce, &snapshotCiphertext, &extensionRaw, &extensionDigest, &attachmentRaw, &attachmentDigest, &state, &cancel, &cancelRequestID, &cancelRequestFingerprint, &out.Revision, &last, &code, &summary, &responseRaw, &dispatchState, &dispatchEpoch, &dispatchResult, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -164,7 +186,19 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 	out.ProfileSnapshotDigest, out.State, out.CancelRequested, out.LastSequence = digest, core.TurnState(state), cancel, last
 	out.ExtensionSnapshotDigest = extensionDigest
 	if len(extensionRaw) > 0 {
-		_ = json.Unmarshal(extensionRaw, &out.ExtensionSnapshots)
+		if json.Unmarshal(extensionRaw, &out.ExtensionSnapshots) != nil {
+			return core.ErrConflict
+		}
+	}
+	out.AttachmentSnapshotDigest = attachmentDigest
+	if len(attachmentRaw) > 0 {
+		if json.Unmarshal(attachmentRaw, &out.AttachmentSources) != nil ||
+			core.ValidateAcceptedTurnAttachments(out.RequestID, attachmentSourceIDs(out.AttachmentSources), out.AttachmentSources) != nil ||
+			core.TurnAttachmentSnapshotDigest(out.AttachmentSources) != attachmentDigest {
+			return core.ErrConflict
+		}
+	} else if attachmentDigest != "" {
+		return core.ErrConflict
 	}
 	if cancelRequestID != nil {
 		out.CancelRequestID = cancelRequestID.String()
@@ -187,6 +221,14 @@ func (s *CoreConversationStore) scanTurn(ctx context.Context, q turnRow, key str
 		}
 	}
 	return nil
+}
+
+func attachmentSourceIDs(values []core.TurnAttachment) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.SourceID)
+	}
+	return ids
 }
 
 func (s *CoreConversationStore) GetTurn(ctx context.Context, id string) (core.Turn, error) {
@@ -551,8 +593,10 @@ func (s *CoreConversationStore) CommitTurn(ctx context.Context, lease core.TurnL
 	for i, m := range []core.Message{user, response.Message} {
 		payload, _ := json.Marshal(m)
 		tasks, _ := stringArrayJSONPG(m.RelatedTaskIDs)
+		plans, _ := stringArrayJSONPG(m.RelatedPlanIDs)
+		references, _ := json.Marshal(m.References)
 		sums, _ := stringArrayJSONPG(m.ToolSummaries)
-		insertResult, insertErr := tx.Exec(ctx, `INSERT INTO core_messages(message_id,conversation_id,sequence,role,content,model_profile_id,payload_json,related_task_ids,tool_summaries,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(message_id) DO NOTHING`, m.ID, response.ConversationID, nextSequence+int64(i), m.Role, m.Content, nullableUUIDPG(m.ModelProfileID), payload, tasks, sums, m.CreatedAt)
+		insertResult, insertErr := tx.Exec(ctx, `INSERT INTO core_messages(message_id,conversation_id,sequence,role,content,model_profile_id,payload_json,related_task_ids,related_plan_ids,references_json,tool_summaries,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(message_id) DO NOTHING`, m.ID, response.ConversationID, nextSequence+int64(i), m.Role, m.Content, nullableUUIDPG(m.ModelProfileID), payload, tasks, plans, references, sums, m.CreatedAt)
 		if insertErr != nil {
 			return core.Turn{}, insertErr
 		}

@@ -1,0 +1,28 @@
+[Unit]
+Description=Dirextalk Pi host egress fence
+DefaultDependencies=no
+After=systemd-sysusers.service local-fs.target
+Before=network-pre.target dirextalk-cloud-worker.service
+Wants=network-pre.target
+AssertPathExists=/usr/local/share/dirextalk-cloud-worker/pi-egress.nft
+AssertFileIsExecutable=/usr/sbin/nft
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft --check --file /usr/local/share/dirextalk-cloud-worker/pi-egress.nft
+ExecStart=-/usr/sbin/nft delete table inet dirextalk_cloud_worker
+ExecStart=/usr/sbin/nft --file /usr/local/share/dirextalk-cloud-worker/pi-egress.nft
+ExecStart=/usr/sbin/nft list table inet dirextalk_cloud_worker
+RemainAfterExit=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

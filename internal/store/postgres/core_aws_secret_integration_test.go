@@ -352,7 +352,7 @@ func TestCoreAWSPostgresNeutralCredentialTestSameKeyWaitersReplayAfterSlowProvid
 	}
 }
 
-func TestCoreAWSPostgresCredentialTestCompletionKeepsCredentialTimesMonotonicAcrossKeys(t *testing.T) {
+func TestCoreAWSPostgresCredentialTestCompletionRejectsDivergentIdentityForImmutableRevision(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
 	credentialStore := NewCoreAWSStore(store)
@@ -380,15 +380,11 @@ func TestCoreAWSPostgresCredentialTestCompletionKeepsCredentialTimesMonotonicAcr
 	if err != nil {
 		t.Fatal(err)
 	}
-	older, err := credentialStore.CompleteCredentialTest(ctx, olderClaim, olderIdentity, olderAt)
-	if err != nil {
-		t.Fatal(err)
+	if _, err = credentialStore.CompleteCredentialTest(ctx, olderClaim, olderIdentity, olderAt); !errors.Is(err, coreaws.ErrConflict) {
+		t.Fatalf("divergent identity for immutable revision = %v, want conflict", err)
 	}
 	if !newer.TestedAt.Equal(newerAt) {
 		t.Fatalf("newer receipt tested_at=%v, want %v", newer.TestedAt, newerAt)
-	}
-	if !older.TestedAt.Equal(newerAt) {
-		t.Fatalf("older receipt tested_at=%v, want persisted newer time %v", older.TestedAt, newerAt)
 	}
 	stored, err := credentialStore.GetCredential(ctx, credentialID)
 	if err != nil {
@@ -400,12 +396,9 @@ func TestCoreAWSPostgresCredentialTestCompletionKeepsCredentialTimesMonotonicAcr
 	if stored.AccountID != newerIdentity.AccountID || stored.UserARN != newerIdentity.UserARN {
 		t.Fatalf("older completion replaced newer identity: account=%q user=%q", stored.AccountID, stored.UserARN)
 	}
-	if older.Identity.AccountID != newerIdentity.AccountID || older.Identity.UserARN != newerIdentity.UserARN {
-		t.Fatalf("older receipt identity=%+v, want persisted newer identity %+v", older.Identity, newerIdentity)
-	}
 }
 
-func TestCoreAWSPostgresCredentialDeleteCascadesTestClaims(t *testing.T) {
+func TestCoreAWSPostgresCredentialDisablePreservesTestClaims(t *testing.T) {
 	ctx, store, _, cleanup := corePG18Fixture(t)
 	defer cleanup()
 	credentialStore := NewCoreAWSStore(store)
@@ -432,8 +425,11 @@ func TestCoreAWSPostgresCredentialDeleteCascadesTestClaims(t *testing.T) {
 		if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM core_aws_credential_test_claims WHERE credential_id=$1`, testCase.id).Scan(&claims); err != nil {
 			t.Fatal(err)
 		}
-		if claims != 0 {
-			t.Fatalf("credential %s retained %d test claims after delete", testCase.id, claims)
+		if claims != 1 {
+			t.Fatalf("credential %s retained %d test claims after disable, want 1", testCase.id, claims)
+		}
+		if _, _, err := credentialStore.BeginCredentialTest(ctx, testCase.id, 1, testCase.key); !errors.Is(err, coreaws.ErrResponseUncertain) {
+			t.Fatalf("disabled credential lost exact uncertain receipt: %v", err)
 		}
 	}
 }

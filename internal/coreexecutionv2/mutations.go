@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 var (
@@ -27,11 +25,10 @@ var allowedFields = map[string]map[string]struct{}{
 	"analyses.get":     {"analysis_id": {}}, "targets.list": {"page_size": {}, "page_token": {}}, "targets.get": {"target_id": {}, "revision": {}},
 	"targets.import": {"credential_id": {}, "credential_revision": {}, "instance_id": {}, "idempotency_key": {}}, "targets.reserve": {"credential_id": {}, "credential_revision": {}, "instance_type": {}, "volume_gib": {}, "idempotency_key": {}}, "targets.observe": {"target_id": {}, "target_revision": {}, "idempotency_key": {}},
 	"plans.create": {"project_id": {}, "analysis_id": {}, "intent": {}, "recipe_id": {}, "target_id": {}, "target_revision": {}, "purpose": {}, "ai_configuration": {}, "idempotency_key": {}},
-	"plans.revise": {"plan_id": {}, "intent": {}, "recipe_id": {}, "target_id": {}, "target_revision": {}, "purpose": {}, "ai_configuration": {}, "idempotency_key": {}, "expected_revision": {}}, "plans.get": {"plan_id": {}, "revision": {}}, "plans.list": {"page_size": {}, "page_token": {}},
+	"plans.revise": {"plan_id": {}, "intent": {}, "recipe_id": {}, "target_id": {}, "target_revision": {}, "purpose": {}, "ai_configuration": {}, "idempotency_key": {}, "expected_revision": {}}, "plans.get": {"record_kind": {}, "plan_id": {}, "revision": {}}, "plans.list": {"record_kind": {}, "page_size": {}, "page_token": {}},
 	"deployments.list": {"project_id": {}, "page_size": {}, "page_token": {}}, "deployments.get": {"deployment_id": {}}, "deployments.events": {"deployment_id": {}, "after_sequence": {}, "limit": {}},
-	"runs.create": {"plan_id": {}, "plan_revision": {}, "operation": {}, "trigger_kind": {}, "rollback_of_run_id": {}, "idempotency_key": {}}, "runs.get": {"run_id": {}}, "runs.list": {"project_id": {}, "deployment_id": {}, "page_size": {}, "page_token": {}}, "runs.cancel": {"run_id": {}, "idempotency_key": {}, "expected_revision": {}}, "runs.retry": {"run_id": {}, "idempotency_key": {}, "expected_revision": {}}, "runs.reconcile": {"run_id": {}, "stage_id": {}, "idempotency_key": {}, "expected_revision": {}}, "runs.events": {"run_id": {}, "after_sequence": {}, "limit": {}},
-	"confirmations.get": {"confirmation_id": {}}, "confirmations.list": {"page_size": {}, "page_token": {}, "states": {}}, "confirmations.confirm": {"confirmation_id": {}, "idempotency_key": {}, "expected_revision": {}}, "confirmations.reject": {"confirmation_id": {}, "idempotency_key": {}, "expected_revision": {}},
-	"artifacts.get": {"artifact_id": {}}, "service_bindings.list": {"project_id": {}, "page_size": {}, "page_token": {}}, "service_bindings.get": {"binding_id": {}}, "service_bindings.invoke": {"binding_id": {}, "operation": {}, "idempotency_key": {}, "expected_revision": {}, "input": {}},
+	"runs.create": {"record_kind": {}, "plan_id": {}, "plan_revision": {}, "operation": {}, "trigger_kind": {}, "rollback_of_run_id": {}, "idempotency_key": {}}, "runs.get": {"record_kind": {}, "run_id": {}}, "runs.list": {"record_kind": {}, "project_id": {}, "deployment_id": {}, "page_size": {}, "page_token": {}}, "runs.cancel": {"record_kind": {}, "run_id": {}, "idempotency_key": {}, "expected_revision": {}}, "runs.retry": {"record_kind": {}, "run_id": {}, "idempotency_key": {}, "expected_revision": {}}, "runs.events": {"record_kind": {}, "run_id": {}, "after_sequence": {}, "limit": {}},
+	"artifacts.get": {"record_kind": {}, "artifact_id": {}}, "artifacts.download": {"record_kind": {}, "artifact_id": {}, "offset_bytes": {}, "max_chunk_bytes": {}}, "service_bindings.list": {"project_id": {}, "page_size": {}, "page_token": {}}, "service_bindings.get": {"binding_id": {}}, "service_bindings.invoke": {"binding_id": {}, "operation": {}, "idempotency_key": {}, "expected_revision": {}, "input": {}},
 	"secrets.create": {"provider": {}, "purpose": {}, "value": {}, "idempotency_key": {}}, "secrets.get": {"secret_ref": {}, "revision": {}}, "secrets.list": {"page_size": {}, "page_token": {}}, "secrets.revoke": {"secret_ref": {}, "expected_revision": {}, "idempotency_key": {}},
 }
 
@@ -45,6 +42,9 @@ func validateAction(action string, in map[string]any) error {
 		if _, ok := fields[key]; !ok {
 			return fmt.Errorf("%w: unknown field %s", ErrInvalid, key)
 		}
+	}
+	if _, present := in["record_kind"]; present && stringParam(in, "record_kind") != "cloud_worker" {
+		return fmt.Errorf("%w: record_kind must be cloud_worker", ErrInvalid)
 	}
 	requireID := func(key string) error { _, err := idParam(in, key); return err }
 	requireIdem := func() error { _, err := idempotency(in); return err }
@@ -65,7 +65,7 @@ func validateAction(action string, in map[string]any) error {
 		return validateSource(in["source"])
 	case "analyses.get":
 		return requireID("analysis_id")
-	case "targets.list", "plans.list", "deployments.list", "runs.list", "confirmations.list", "service_bindings.list", "secrets.list":
+	case "targets.list", "plans.list", "deployments.list", "runs.list", "service_bindings.list", "secrets.list":
 		if err := validatePage(in); err != nil {
 			return err
 		}
@@ -73,26 +73,6 @@ func validateAction(action string, in map[string]any) error {
 			if _, present := in[key]; present {
 				if _, err := idParam(in, key); err != nil {
 					return err
-				}
-			}
-		}
-		if bare == "confirmations.list" {
-			if raw, ok := in["states"]; ok {
-				values := stateValues(raw)
-				if values == nil || len(values) > 5 {
-					return fmt.Errorf("%w: states must be an array", ErrInvalid)
-				}
-				seen := map[string]bool{}
-				for _, state := range values {
-					switch state {
-					case "pending", "confirmed", "consumed", "rejected", "expired":
-					default:
-						return fmt.Errorf("%w: invalid confirmation state", ErrInvalid)
-					}
-					if seen[state] {
-						return fmt.Errorf("%w: duplicate confirmation state", ErrInvalid)
-					}
-					seen[state] = true
 				}
 			}
 		}
@@ -192,9 +172,6 @@ func validateAction(action string, in map[string]any) error {
 			return err
 		}
 		operation := stringParam(in, "operation")
-		if operation == "" {
-			return fmt.Errorf("%w: operation is required", ErrInvalid)
-		}
 		switch operation {
 		case "execute", "deploy", "upgrade", "repair", "destroy":
 			if _, ok := in["rollback_of_run_id"]; ok {
@@ -225,34 +202,27 @@ func validateAction(action string, in map[string]any) error {
 			return err
 		}
 		return requireIdem()
-	case "runs.reconcile":
-		if err := requireID("run_id"); err != nil {
-			return err
-		}
-		if err := requireID("stage_id"); err != nil {
-			return err
-		}
-		if err := requireRevision("expected_revision"); err != nil {
-			return err
-		}
-		return requireIdem()
 	case "runs.events":
 		if err := requireID("run_id"); err != nil {
 			return err
 		}
 		return validateEvents(in)
-	case "confirmations.get":
-		return requireID("confirmation_id")
-	case "confirmations.confirm", "confirmations.reject":
-		if err := requireID("confirmation_id"); err != nil {
-			return err
-		}
-		if err := requireRevision("expected_revision"); err != nil {
-			return err
-		}
-		return requireIdem()
 	case "artifacts.get":
 		return requireID("artifact_id")
+	case "artifacts.download":
+		if stringParam(in, "record_kind") != RecordKindCloudWorker {
+			return fmt.Errorf("%w: record_kind=cloud_worker is required", ErrInvalid)
+		}
+		if err := requireID("artifact_id"); err != nil {
+			return err
+		}
+		if _, ok := exactBoundedUint(in, "offset_bytes", true, MaxCloudWorkerArtifactDownloadOffsetBytes); !ok {
+			return fmt.Errorf("%w: offset_bytes must be a bounded nonnegative integer", ErrInvalid)
+		}
+		if _, ok := exactBoundedUint(in, "max_chunk_bytes", false, MaxCloudWorkerArtifactDownloadChunkBytes); !ok {
+			return fmt.Errorf("%w: max_chunk_bytes must be between 1 and %d", ErrInvalid, MaxCloudWorkerArtifactDownloadChunkBytes)
+		}
+		return nil
 	case "service_bindings.get":
 		return requireID("binding_id")
 	case "service_bindings.invoke":
@@ -301,23 +271,37 @@ func validateAction(action string, in map[string]any) error {
 	return nil
 }
 
-func stateValues(raw any) []string {
-	switch values := raw.(type) {
-	case []any:
-		out := make([]string, 0, len(values))
-		for _, value := range values {
-			state, ok := value.(string)
-			if !ok {
-				return nil
-			}
-			out = append(out, state)
-		}
-		return out
-	case []string:
-		return append([]string(nil), values...)
-	default:
-		return nil
+func exactBoundedUint(in map[string]any, key string, allowZero bool, maximum uint64) (uint64, bool) {
+	value, present := in[key]
+	if !present {
+		return 0, false
 	}
+	var result uint64
+	switch current := value.(type) {
+	case float64:
+		if current < 0 || current > float64(maximum) || current != float64(uint64(current)) {
+			return 0, false
+		}
+		result = uint64(current)
+	case int:
+		if current < 0 {
+			return 0, false
+		}
+		result = uint64(current)
+	case int64:
+		if current < 0 {
+			return 0, false
+		}
+		result = uint64(current)
+	case uint64:
+		result = current
+	default:
+		return 0, false
+	}
+	if result > maximum || (!allowZero && result == 0) {
+		return 0, false
+	}
+	return result, true
 }
 
 func optionalPositive(in map[string]any, key string) error {
@@ -516,7 +500,8 @@ func validateProviderPayload(payload map[string]any) error {
 	return validateSafeInput(payload)
 }
 
-func (s *Service) handleMutation(ctx context.Context, owner, action string, in map[string]any) (map[string]any, error) {
+func (s *Service) handleMutation(ctx context.Context, authority Authority, action string, in map[string]any) (map[string]any, error) {
+	owner := strings.TrimSpace(authority.OwnerID)
 	idem, err := idempotency(in)
 	if err != nil {
 		return nil, err
@@ -683,265 +668,78 @@ func (s *Service) handleMutation(ctx context.Context, owner, action string, in m
 			}
 		}
 	case "runs.create":
+		if s.runLifecycle == nil || s.providers.Reconcile == nil {
+			err = ErrMissingPort
+			break
+		}
 		planID, _ := idParam(in, "plan_id")
 		plan, planErr := s.store.Read(ctx, owner, "plan", planID, uintParam(in, "plan_revision"))
 		if planErr != nil {
 			err = planErr
-		} else {
-			id := deterministicID(owner, action, idem)
-			operation := stringParam(in, "operation")
-			stageID := stageIDForRun(owner, id, planID, operation)
-			taskID := taskIDForStage(owner, stageID)
-			confirmationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(id+"\x00confirmation")).String()
-			// A process may crash after creating the run but before writing the
-			// stage/confirmation/replay. Re-read deterministic records and finish
-			// the same envelope instead of manufacturing a second execution slot.
-			record, existingErr := s.store.Read(ctx, owner, "run", id, 0)
-			if existingErr == nil {
-				if stringParam(record.Payload, "plan_id") != planID || stringParam(record.Payload, "operation") != operation {
-					err = ErrConflict
-					break
-				}
-				if stringParam(record.Payload, "stage_id") != stageID || stringParam(record.Payload, "confirmation_id") != confirmationID {
-					err = ErrConflict
-					break
-				}
-			} else if !errors.Is(existingErr, ErrNotFound) {
-				err = existingErr
-				break
-			} else {
-				payload := map[string]any{"plan_id": planID, "plan_revision": plan.Revision, "operation": operation, "trigger_kind": stringParam(in, "trigger_kind"), "status": "waiting_user", "revision": uint64(1), "requires_confirmation": true, "confirmation_id": confirmationID, "stage_id": stageID, "task_id": taskID, "dispatch_mode": "public_reconcile"}
-				record, err = s.putNew(ctx, owner, "run", id, "waiting_user", payload)
-				if err != nil {
-					break
-				}
-			}
-			stage, stageErr := s.store.Read(ctx, owner, "stage", stageID, 0)
-			if errors.Is(stageErr, ErrNotFound) {
-				stage, stageErr = s.putNew(ctx, owner, "stage", stageID, "waiting_user", stageRecordPayload(owner, id, planID, operation, taskID, confirmationID, plan.Revision))
-			}
-			if stageErr != nil {
-				err = stageErr
-				break
-			}
-			confirmation, confirmationErr := s.store.Read(ctx, owner, "confirmation", confirmationID, 0)
-			if errors.Is(confirmationErr, ErrNotFound) {
-				confirmationPayload := map[string]any{"run_id": id, "stage_id": stageID, "state": "pending", "binding": map[string]any{"plan_id": planID, "plan_revision": plan.Revision, "operation": operation, "stage_id": stageID, "stage_revision": stage.Revision, "task_id": taskID}, "preview": map[string]any{"operation": operation, "stage_id": stageID, "task_id": taskID}}
-				confirmation, confirmationErr = s.putNew(ctx, owner, "confirmation", confirmationID, "pending", confirmationPayload)
-				if confirmationErr == nil {
-					_ = s.emit(ctx, confirmation, "confirmation_created", confirmationPayload)
-				}
-			}
-			if confirmationErr != nil {
-				err = confirmationErr
-				break
-			}
-			_ = s.emit(ctx, record, "run_created", record.Payload)
-			result = map[string]any{"run": publicRecord(record), "stages": []any{stageView(stage)}}
+			break
 		}
-	case "runs.cancel", "runs.reconcile":
-		id, _ := idParam(in, "run_id")
-		existing, e := s.store.Read(ctx, owner, "run", id, 0)
-		if e != nil {
-			err = e
-		} else if existing.Revision != uintParam(in, "expected_revision") {
-			err = ErrConflict
-		} else {
-			stage, stageErr := stageForRun(ctx, s.store, owner, existing)
-			if stageErr != nil {
-				err = stageErr
-				break
-			}
-			if bare == "runs.reconcile" {
-				if stringParam(in, "stage_id") != stage.ID {
-					err = ErrConflict
-					break
-				}
-				if stageTerminal(stage.Status) {
-					if existing.Status != stage.Status {
-						recoveredPayload := cloneMap(existing.Payload)
-						for key, value := range stage.Payload {
-							if key == "status" || key == "reason" || key == "target_id" || key == "plan_id" || key == "observation" || key == "provisioning" || key == "materialized_target" || key == "provisioning_started" || key == "provisioning_destroy_started" {
-								recoveredPayload[key] = value
-							}
-						}
-						if recovered, recoverErr := s.update(ctx, existing, stage.Status, recoveredPayload); recoverErr == nil {
-							existing = recovered
-						}
-					}
-					result = map[string]any{"run": publicRecord(existing), "stages": []any{stageView(stage)}}
-					break
-				}
-				if stage.Status == "waiting_user" {
-					err = fmt.Errorf("%w: confirmation is required before reconcile", ErrConflict)
-					break
-				}
-				// A reconcile is authorized only by the confirmation bound to
-				// this exact run/stage.  The stage status is a durable projection,
-				// not an authority by itself: a partial write or manual mutation
-				// must never let the provider run without a confirmed operation.
-				confirmationID := stringParam(stage.Payload, "confirmation_id")
-				if confirmationID == "" {
-					err = fmt.Errorf("%w: stage confirmation binding is missing", ErrConflict)
-					break
-				}
-				confirmation, confirmationErr := s.store.Read(ctx, owner, "confirmation", confirmationID, 0)
-				if confirmationErr != nil {
-					err = confirmationErr
-					break
-				}
-				if stringParam(confirmation.Payload, "run_id") != existing.ID || stringParam(confirmation.Payload, "stage_id") != stage.ID || stringParam(confirmation.Payload, "state") != "confirmed" || confirmation.Status != "confirmed" {
-					err = fmt.Errorf("%w: confirmation is not bound and confirmed", ErrConflict)
-					break
-				}
-			}
-			status := "canceled"
-			eventType := "run_canceled"
-			payload := cloneMap(existing.Payload)
-			if bare == "runs.reconcile" {
-				if s.providers.Reconcile == nil {
-					err = ErrMissingPort
-					break
-				}
-				providerPayload, pe := s.providers.Reconcile(ctx, owner, in)
-				if pe != nil {
-					err = pe
-					break
-				}
-				if pe = validateSafeInput(providerPayload); pe != nil {
-					err = pe
-					break
-				}
-				for key, expected := range map[string]string{"run_id": existing.ID, "stage_id": stage.ID, "confirmation_id": stringParam(stage.Payload, "confirmation_id"), "task_id": stringParam(stage.Payload, "task_id")} {
-					if actual := stringParam(providerPayload, key); actual != "" && actual != expected {
-						err = fmt.Errorf("%w: provider %s binding mismatch", ErrConflict, key)
-						break
-					}
-				}
-				if err != nil {
-					break
-				}
-				for key, value := range providerPayload {
-					payload[key] = value
-				}
-				status = stringParam(providerPayload, "status")
-				if status == "" {
-					status = "succeeded"
-				}
-				switch status {
-				case "succeeded", "failed", "canceled", "uncertain", "running", "queued":
-				default:
-					err = ErrUnsafeOutput
-					break
-				}
-				eventType = "run_reconciled"
-			}
-			if err != nil {
-				break
-			}
-			updated, e := s.update(ctx, existing, status, payload)
-			err = e
-			if err == nil {
-				_ = s.emit(ctx, updated, eventType, payload)
-				stagePayload := cloneMap(stage.Payload)
-				stagePayload["status"] = status
-				stagePayload["run_revision"] = updated.Revision
-				for key, value := range payload {
-					if key == "status" || key == "reason" || key == "target_id" || key == "plan_id" || key == "observation" || key == "provisioning" || key == "materialized_target" || key == "provisioning_started" || key == "provisioning_destroy_started" {
-						stagePayload[key] = value
-					}
-				}
-				if updatedStage, stageUpdateErr := s.update(ctx, stage, status, stagePayload); stageUpdateErr == nil {
-					stage = updatedStage
-				}
-				result = map[string]any{"run": publicRecord(updated), "stages": []any{stageView(stage)}}
-			}
+		command, commandErr := newGenericRunCreateCommand(authority, plan, stringParam(in, "operation"), stringParam(in, "trigger_kind"), stringParam(in, "rollback_of_run_id"), "", idem, s.now().UTC())
+		if commandErr != nil {
+			err = commandErr
+			break
 		}
+		envelope, createErr := s.runLifecycle.CreateGenericRun(ctx, command)
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		result = map[string]any{"run": publicRecord(envelope.Run), "stages": []any{stageView(envelope.Stage)}}
 	case "runs.retry":
-		id, _ := idParam(in, "run_id")
-		existing, e := s.store.Read(ctx, owner, "run", id, 0)
-		if e != nil {
-			err = e
-		} else if existing.Revision != uintParam(in, "expected_revision") {
-			err = ErrConflict
-		} else {
-			newID := deterministicID(owner, action, idem)
-			payload := cloneMap(existing.Payload)
-			payload["retry_of_run_id"] = existing.ID
-			payload["status"] = "waiting_user"
-			planID := stringParam(payload, "plan_id")
-			operation := stringParam(payload, "operation")
-			stageID := stageIDForRun(owner, newID, planID, operation)
-			taskID := taskIDForStage(owner, stageID)
-			confirmationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(newID+"\x00confirmation")).String()
-			payload["stage_id"] = stageID
-			payload["task_id"] = taskID
-			payload["confirmation_id"] = confirmationID
-			payload["confirmation_state"] = "pending"
-			payload["requires_confirmation"] = true
-			delete(payload, "provisioning_started")
-			delete(payload, "provision_intent_id")
-			record, e := s.putNew(ctx, owner, "run", newID, "waiting_user", payload)
-			err = e
-			if err == nil {
-				stagePayload := stageRecordPayload(owner, newID, planID, operation, taskID, confirmationID, uintParam(payload, "plan_revision"))
-				stage, stageErr := s.putNew(ctx, owner, "stage", stageID, "waiting_user", stagePayload)
-				if stageErr != nil {
-					err = stageErr
-					break
-				}
-				confirmationPayload := map[string]any{"run_id": newID, "stage_id": stageID, "state": "pending", "binding": map[string]any{"plan_id": planID, "plan_revision": uintParam(payload, "plan_revision"), "operation": operation, "stage_id": stageID, "stage_revision": stage.Revision, "task_id": taskID}, "preview": map[string]any{"operation": operation, "stage_id": stageID, "task_id": taskID}}
-				confirmation, confirmationErr := s.putNew(ctx, owner, "confirmation", confirmationID, "pending", confirmationPayload)
-				if confirmationErr != nil {
-					err = confirmationErr
-					break
-				}
-				_ = s.emit(ctx, record, "run_retried", payload)
-				_ = s.emit(ctx, confirmation, "confirmation_created", confirmationPayload)
-				result = map[string]any{"run": publicRecord(record), "stages": []any{stageView(stage)}}
-			}
+		if s.runLifecycle == nil || s.providers.Reconcile == nil {
+			err = ErrMissingPort
+			break
 		}
-	case "confirmations.confirm", "confirmations.reject":
-		id, _ := idParam(in, "confirmation_id")
-		existing, e := s.store.Read(ctx, owner, "confirmation", id, 0)
-		if e != nil {
-			err = e
-		} else if existing.Revision != uintParam(in, "expected_revision") {
+		id, _ := idParam(in, "run_id")
+		existing, readErr := s.store.Read(ctx, owner, "run", id, 0)
+		if readErr != nil {
+			err = readErr
+			break
+		}
+		if existing.Revision != uintParam(in, "expected_revision") {
 			err = ErrConflict
-		} else {
-			status := "confirmed"
-			if bare == "confirmations.reject" {
-				status = "rejected"
-			}
-			payload := cloneMap(existing.Payload)
-			payload["state"] = status
-			updated, e := s.update(ctx, existing, status, payload)
-			err = e
-			if err == nil {
-				_ = s.emit(ctx, updated, "confirmation_"+status, payload)
-				if runID := stringParam(payload, "run_id"); runID != "" {
-					if run, re := s.store.Read(ctx, owner, "run", runID, 0); re == nil && run.Revision > 0 {
-						nextStatus := "queued"
-						if status == "rejected" {
-							nextStatus = "rejected"
-						}
-						nextPayload := cloneMap(run.Payload)
-						nextPayload["confirmation_state"] = status
-						if next, ue := s.update(ctx, run, nextStatus, nextPayload); ue == nil {
-							_ = s.emit(ctx, next, "run_"+nextStatus, run.Payload)
-							if stage, stageErr := stageForRun(ctx, s.store, owner, run); stageErr == nil && stage.Status == "waiting_user" {
-								stagePayload := cloneMap(stage.Payload)
-								stagePayload["status"] = nextStatus
-								stagePayload["confirmation_state"] = status
-								if updatedStage, updateErr := s.update(ctx, stage, nextStatus, stagePayload); updateErr == nil {
-									stage = updatedStage
-								}
-							}
-						}
-					}
-				}
-				result = map[string]any{"confirmation": publicRecord(updated)}
-			}
+			break
+		}
+		switch existing.Status {
+		case "failed", "canceled", "rejected", "expired":
+		default:
+			err = fmt.Errorf("%w: only a terminal unsuccessful run can be retried", ErrConflict)
+			break
+		}
+		if err != nil {
+			break
+		}
+		planID := stringParam(existing.Payload, "plan_id")
+		plan, planErr := s.store.Read(ctx, owner, "plan", planID, uintParam(existing.Payload, "plan_revision"))
+		if planErr != nil {
+			err = planErr
+			break
+		}
+		command, commandErr := newGenericRunCreateCommand(authority, plan, stringParam(existing.Payload, "operation"), "retry", stringParam(existing.Payload, "rollback_of_run_id"), existing.ID, idem, s.now().UTC())
+		if commandErr != nil {
+			err = commandErr
+			break
+		}
+		envelope, createErr := s.runLifecycle.CreateGenericRun(ctx, command)
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		result = map[string]any{"run": publicRecord(envelope.Run), "stages": []any{stageView(envelope.Stage)}}
+	case "runs.cancel":
+		if s.runLifecycle == nil {
+			err = ErrMissingPort
+			break
+		}
+		id, _ := idParam(in, "run_id")
+		envelope, cancelErr := s.runLifecycle.CancelGenericRun(ctx, GenericRunCancelCommand{Authority: authority, RunID: id, ExpectedRevision: uintParam(in, "expected_revision"), IdempotencyKey: idem, At: s.now().UTC()})
+		err = cancelErr
+		if err == nil {
+			result = map[string]any{"run": publicRecord(envelope.Run), "stages": []any{stageView(envelope.Stage)}}
 		}
 	case "service_bindings.invoke":
 		if s.providers.Invoke == nil {

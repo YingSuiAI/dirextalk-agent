@@ -23,12 +23,20 @@ CoreServer (TLS token interceptor, optional health/reflection)
       +-- pgvector in Agent-owned PostgreSQL through the Knowledge semantic ports
       +-- extension-runner through an authenticated Unix socket
       +-- Core Runner through a separate authenticated Unix socket
+      +-- Cloud Worker controller / Resource Ledger / completion outbox
+      |
+      +-- dedicated TLS 1.3 WorkerControl listener
+              |
+              +-- one ephemeral EC2 Worker + one Pi process
 ```
 
 `serveCore` composes enabled domains before starting workers. Optional domains
 are absent from the public registry until their composition and readiness
 checks pass. Background model, extension, Knowledge, and AWS work use the same
 durable Task/event path; the Agent never creates a parallel execution history.
+Local Agent/MCP/Skill/Knowledge work remains on the existing sandbox and worker
+pool. Only a confirmed `CLOUD_WORKER` Task can use the ephemeral AWS path; it
+never silently replaces or retries a local task.
 
 ## Ownership
 
@@ -60,9 +68,12 @@ multi-tenant authorization, or caller-scope model.
 MCP and Skill execution uses a separate isolated extension runner. Core Runner
 work uses a separate descriptor-only boundary. Neither runner receives the
 Agent database connection or raw Agent credentials, and unavailable isolation
-fails closed rather than falling back in-process. Container, socket, mount,
-network, identity, and cgroup separation is part of the deployment contract;
-see the [Message Server integration contract](message-server-integration-development-contract.md).
+fails closed rather than falling back in-process. A Cloud Worker receives no
+local MCP, Skills, Extension Runner, local credentials, or Agent database; its
+private WorkerControl session supplies only immutable task/input bindings,
+short-lived model authorization, and exact artifact scope. Container, socket,
+mount, network, identity, and cgroup separation is part of the deployment
+contract; see the [Message Server integration contract](message-server-integration-development-contract.md).
 
 ## Non-goals
 

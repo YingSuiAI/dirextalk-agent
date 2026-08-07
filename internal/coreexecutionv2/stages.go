@@ -6,10 +6,9 @@ import (
 	"strings"
 )
 
-// Stage records are first-class execution-v2 snapshots.  The public API uses
-// deterministic reconcile rather than a hidden worker, so the stage binds the
-// run, task identity, confirmation, plan revision, and operation in one
-// owner-scoped durable record.
+// Stage records are first-class execution-v2 snapshots. The internal durable
+// controller owns dispatch, while the stage binds the run, task identity,
+// confirmation, plan revision, and operation in one owner-scoped record.
 func stageIDForRun(owner, runID, planID, operation string) string {
 	return deterministicID(owner, "execution-v2-stage", runID+"\x00"+planID+"\x00"+operation)
 }
@@ -22,7 +21,7 @@ func stagePayload(runID, planID, operation, taskID, confirmationID string, planR
 	return map[string]any{
 		"run_id": runID, "plan_id": planID, "plan_revision": planRevision, "operation": operation,
 		"task_id": taskID, "confirmation_id": confirmationID, "status": "waiting_user",
-		"dispatch_mode": "public_reconcile", "requires_confirmation": true,
+		"dispatch_mode": "durable_controller", "requires_confirmation": true,
 		"binding": map[string]any{"run_id": runID, "plan_id": planID, "operation": operation, "task_id": taskID, "confirmation_id": confirmationID},
 	}
 }

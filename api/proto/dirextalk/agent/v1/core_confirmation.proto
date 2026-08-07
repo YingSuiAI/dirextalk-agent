@@ -43,6 +43,16 @@ message CoreConfirmationBinding {
   string permission_digest = 16;
   string selected_tool = 17;
   repeated string selected_command = 18;
+  uint64 account_generation = 19;
+  string execution_id = 20;
+  string plan_id = 21;
+  int64 plan_revision = 22;
+  string plan_digest = 23;
+  string run_id = 24;
+  int64 run_revision = 25;
+  string run_digest = 26;
+  string quote_digest = 27;
+  string digest = 28;
 }
 
 message CoreSecretGrantDescriptor {
@@ -72,6 +82,7 @@ message CoreConfirmation {
   string terminal_reason = 9;
   string terminal_code = 10;
   string terminal_note = 11;
+  string owner_id = 12;
 }
 
 message ConfirmationServiceGetRequest { string confirmation_id = 1; }

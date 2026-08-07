@@ -1,0 +1,358 @@
+syntax = "proto3";
+
+package dirextalk.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/YingSuiAI/dirextalk-agent/api/gen/dirextalk/agent/v1;agentv1";
+
+enum CoreCloudWorkerWorkspaceMode {
+  CORE_CLOUD_WORKER_WORKSPACE_MODE_UNSPECIFIED = 0;
+  CORE_CLOUD_WORKER_WORKSPACE_MODE_NONE = 1;
+  CORE_CLOUD_WORKER_WORKSPACE_MODE_READ_ONLY = 2;
+  CORE_CLOUD_WORKER_WORKSPACE_MODE_WRITE = 3;
+}
+
+enum CoreCloudWorkerExecutionState {
+  CORE_CLOUD_WORKER_EXECUTION_STATE_UNSPECIFIED = 0;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_WAITING_USER = 1;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_QUEUED = 2;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_PROVISIONING = 3;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_AWAITING_WORKER = 4;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_RUNNING = 5;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_COLLECTING = 6;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_VALIDATING = 7;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_CLEANING = 8;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_SUCCEEDED = 9;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_FAILED = 10;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_CANCELED = 11;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_REJECTED = 12;
+  CORE_CLOUD_WORKER_EXECUTION_STATE_EXPIRED = 13;
+}
+
+message CoreCloudWorkerAwsProjection {
+  string account_id = 1;
+  string region = 2;
+  uint64 credential_revision = 3;
+}
+
+message CoreCloudWorkerComputeProjection {
+  string instance_type = 1;
+  string architecture = 2;
+  string root_device_name = 3;
+  uint64 volume_gib = 4;
+  string volume_type = 5;
+  uint64 volume_iops = 6;
+  uint64 volume_throughput_mib = 7;
+  string ami_id = 8;
+  string ami_digest = 9;
+  string worker_release_digest = 10;
+  string pi_runtime_digest = 11;
+  string host_network_policy_sha256 = 12;
+}
+
+message CoreCloudWorkerLimits {
+  uint64 max_runtime_seconds = 1;
+  uint64 max_tokens = 2;
+  uint64 max_output_bytes = 3;
+}
+
+// Public Cloud Worker grants expose only their approved purpose. Private
+// reference IDs and per-reference binding digests are sealed into aggregate
+// authorization digests and are not representable here.
+message CoreCloudWorkerSecretGrantProjection {
+  string purpose = 1;
+}
+
+message CoreCloudWorkerModelAuthorizationProjection {
+  string model_profile_id = 1;
+  uint64 model_profile_revision = 2;
+  string provider = 3;
+  string model = 4;
+  string interface = 5;
+  uint64 credential_version = 6;
+  reserved 7;
+}
+
+message CoreCloudWorkerQuote {
+  int64 amount_micros = 1;
+  string currency = 2;
+  google.protobuf.Timestamp source_time = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  int64 maximum_authorized_cost_micros = 5;
+  reserved 6;
+  string digest = 7;
+}
+
+// This is a public, secret-free projection. Credential IDs, exact S3
+// locations, provider IDs, bootstrap tokens and private input manifests are
+// deliberately not representable.
+message CoreCloudWorkerPlan {
+  string owner_id = 1;
+  uint64 account_generation = 2;
+  string plan_id = 3;
+  uint64 revision = 4;
+  string status = 5;
+  string digest = 6;
+  string execution_id = 7;
+  string task_id = 8;
+  string confirmation_id = 9;
+  string conversation_id = 10;
+  string turn_id = 11;
+  string recipe_id = 12;
+  string adapter = 13;
+  string objective_summary = 14;
+  reserved 15, 16;
+  string proposal_reason = 17;
+  string input_manifest_digest = 18;
+  uint64 input_manifest_item_count = 19;
+  CoreCloudWorkerWorkspaceMode workspace_mode = 20;
+  CoreCloudWorkerModelAuthorizationProjection model_authorization = 21;
+  CoreCloudWorkerAwsProjection aws = 22;
+  CoreCloudWorkerComputeProjection compute = 23;
+  CoreCloudWorkerLimits limits = 24;
+  repeated string network_grants = 25;
+  repeated CoreCloudWorkerSecretGrantProjection secret_grants = 26;
+  uint64 artifact_retention_seconds = 27;
+  CoreCloudWorkerQuote quote = 28;
+  reserved 29, 30;
+  string execution_digest = 31;
+  google.protobuf.Timestamp created_at = 32;
+  google.protobuf.Timestamp updated_at = 33;
+}
+
+message CoreCloudWorkerCleanupSummary {
+  bool verified_destroyed = 1;
+  google.protobuf.Timestamp verified_at = 2;
+  uint64 resources_total = 3;
+  uint64 resources_verified_destroyed = 4;
+}
+
+message CoreCloudWorkerExecution {
+  string owner_id = 1;
+  uint64 account_generation = 2;
+  string run_id = 3;
+  string execution_id = 4;
+  string plan_id = 5;
+  uint64 plan_revision = 6;
+  string plan_digest = 7;
+  string task_id = 8;
+  string confirmation_id = 9;
+  string conversation_id = 10;
+  string turn_id = 11;
+  CoreCloudWorkerExecutionState status = 12;
+  uint64 revision = 13;
+  string digest = 14;
+  CoreCloudWorkerWorkspaceMode workspace_mode = 15;
+  reserved 16;
+  string quote_digest = 17;
+  string execution_digest = 18;
+  CoreCloudWorkerCleanupSummary cleanup = 19;
+  repeated string artifact_ids = 20;
+  string failure_code = 21;
+  string failure_summary = 22;
+  google.protobuf.Timestamp created_at = 23;
+  google.protobuf.Timestamp updated_at = 24;
+  bool cancellation_requested = 25;
+}
+
+message CoreCloudWorkerArtifact {
+  string artifact_id = 1;
+  string execution_id = 2;
+  string kind = 3;
+  string name = 4;
+  string media_type = 5;
+  uint64 size_bytes = 6;
+  string sha256 = 7;
+  string status = 8;
+  google.protobuf.Timestamp created_at = 9;
+  string owner_id = 10;
+  uint64 account_generation = 11;
+}
+
+message CoreCloudWorkerTaskFence {
+  string execution_id = 1;
+  string task_id = 2;
+  uint64 account_generation = 3;
+  uint32 attempt = 4;
+  uint64 lease_epoch = 5;
+}
+
+message CoreCloudWorkerLaunchLookup {
+  string execution_id = 1;
+  string task_id = 2;
+  uint64 account_generation = 3;
+  string instance_id = 4;
+  string launch_identity = 5;
+}
+
+message WorkerControlServiceIssueIdentityChallengeRequest {
+  CoreCloudWorkerLaunchLookup launch = 1;
+  string idempotency_key = 2;
+}
+
+message WorkerControlServiceIssueIdentityChallengeResponse {
+  string challenge_id = 1;
+  string nonce = 2;
+  CoreCloudWorkerTaskFence fence = 3;
+  google.protobuf.Timestamp expires_at = 4;
+}
+
+message CoreCloudWorkerIdentityProof {
+  string method = 1;
+  bytes payload = 2;
+}
+
+message WorkerControlServiceClaimRequest {
+  string challenge_id = 1;
+  string nonce = 2;
+  CoreCloudWorkerTaskFence fence = 3;
+  CoreCloudWorkerIdentityProof proof = 4;
+}
+
+message CoreCloudWorkerModelGrant {
+  string grant_id = 1;
+  bytes bearer_token = 2;
+  string model_binding_digest = 3;
+  string audience_digest = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  string relay_url = 6;
+  string relay_binding_digest = 7;
+  uint64 max_tokens = 8;
+  string limit_digest = 9;
+}
+
+enum CoreCloudWorkerSessionState {
+  CORE_CLOUD_WORKER_SESSION_STATE_UNSPECIFIED = 0;
+  CORE_CLOUD_WORKER_SESSION_STATE_ACTIVE = 1;
+  CORE_CLOUD_WORKER_SESSION_STATE_COMPLETED = 2;
+  CORE_CLOUD_WORKER_SESSION_STATE_FAILED = 3;
+}
+
+enum CoreCloudWorkerRuntimeTopologyState {
+  CORE_CLOUD_WORKER_RUNTIME_TOPOLOGY_STATE_UNSPECIFIED = 0;
+  CORE_CLOUD_WORKER_RUNTIME_TOPOLOGY_STATE_ACTIVE = 1;
+  CORE_CLOUD_WORKER_RUNTIME_TOPOLOGY_STATE_TERMINAL = 2;
+  CORE_CLOUD_WORKER_RUNTIME_TOPOLOGY_STATE_VIOLATED = 3;
+}
+
+message CoreCloudWorkerProcessIdentity {
+  int32 pid = 1;
+  uint64 start_time_ticks = 2;
+  uint64 device = 3;
+  uint64 inode = 4;
+  string sha256 = 5;
+}
+
+// Private proof produced by the privileged Linux exec gate. It is never
+// projected into Product Capability or public Execution V2 DTOs.
+message CoreCloudWorkerRuntimeTopologyProof {
+  string schema_version = 1;
+  CoreCloudWorkerRuntimeTopologyState state = 2;
+  string run_id = 3;
+  string execution_id = 4;
+  string task_id = 5;
+  uint32 attempt = 6;
+  uint64 lease_epoch = 7;
+  string runtime_task_sha256 = 8;
+  string boot_id = 9;
+  string cgroup_sha256 = 10;
+  string policy_sha256 = 11;
+  CoreCloudWorkerProcessIdentity worker = 12;
+  CoreCloudWorkerProcessIdentity pi = 13;
+  uint32 worker_process_count = 14;
+  uint32 active_pi_processes = 15;
+  uint32 total_allowed_pi_execs = 16;
+  int64 observed_at_unix_nano = 17;
+  string violation_code = 18;
+  uint32 cgroup_process_count = 19;
+  uint32 active_descendants = 20;
+}
+
+message CoreCloudWorkerObjectClaim {
+  string bucket = 1;
+  string key = 2;
+  string version_id = 3;
+  string sha256 = 4;
+  int64 size_bytes = 5;
+  string media_type = 6;
+}
+
+message CoreCloudWorkerSession {
+  string session_id = 1;
+  CoreCloudWorkerTaskFence fence = 2;
+  CoreCloudWorkerSessionState state = 3;
+  uint64 progress_sequence = 4;
+  CoreCloudWorkerObjectClaim result = 5;
+  string failure_code = 6;
+  string failure_summary = 7;
+  uint64 revision = 8;
+  google.protobuf.Timestamp claimed_at = 9;
+  google.protobuf.Timestamp heartbeat_at = 10;
+  google.protobuf.Timestamp finished_at = 11;
+  CoreCloudWorkerRuntimeTopologyProof runtime_topology = 12;
+  string runtime_topology_digest = 13;
+}
+
+message WorkerControlServiceClaimResponse {
+  CoreCloudWorkerSession session = 1;
+  bytes session_token = 2;
+  CoreCloudWorkerModelGrant model_grant = 3;
+  // Canonical private execution inputs. The two digests are also bound into
+  // immutable launch data before the first AWS mutation. Neither payload is
+  // representable on the public Agent service or Product Capability seam.
+  bytes runtime_task_json = 4;
+  string runtime_task_digest = 5;
+  bytes input_manifest_json = 6;
+  string input_manifest_digest = 7;
+  string artifact_bucket = 8;
+  string artifact_key_prefix = 9;
+  uint64 heartbeat_interval_millis = 10;
+  google.protobuf.Timestamp not_after = 11;
+}
+
+message WorkerControlServiceHeartbeatRequest {
+  string session_id = 1;
+  bytes session_token = 2;
+  CoreCloudWorkerTaskFence fence = 3;
+  uint64 progress_sequence = 4;
+  string idempotency_key = 5;
+}
+message WorkerControlServiceHeartbeatResponse {
+  CoreCloudWorkerSession session = 1;
+}
+
+message WorkerControlServiceCompleteRequest {
+  string session_id = 1;
+  bytes session_token = 2;
+  CoreCloudWorkerTaskFence fence = 3;
+  CoreCloudWorkerObjectClaim claim = 4;
+  string idempotency_key = 5;
+  CoreCloudWorkerRuntimeTopologyProof runtime_topology = 6;
+}
+message WorkerControlServiceCompleteResponse {
+  CoreCloudWorkerSession session = 1;
+}
+
+message WorkerControlServiceFailRequest {
+  string session_id = 1;
+  bytes session_token = 2;
+  CoreCloudWorkerTaskFence fence = 3;
+  string code = 4;
+  string summary = 5;
+  string idempotency_key = 6;
+}
+message WorkerControlServiceFailResponse {
+  CoreCloudWorkerSession session = 1;
+}
+
+// WorkerControlService is private Worker-only transport. It is not registered
+// in the public Product Capability catalog and must use a dedicated TLS 1.3,
+// method-scoped authentication listener.
+service WorkerControlService {
+  rpc IssueIdentityChallenge(WorkerControlServiceIssueIdentityChallengeRequest) returns (WorkerControlServiceIssueIdentityChallengeResponse);
+  rpc Claim(WorkerControlServiceClaimRequest) returns (WorkerControlServiceClaimResponse);
+  rpc Heartbeat(WorkerControlServiceHeartbeatRequest) returns (WorkerControlServiceHeartbeatResponse);
+  rpc Complete(WorkerControlServiceCompleteRequest) returns (WorkerControlServiceCompleteResponse);
+  rpc Fail(WorkerControlServiceFailRequest) returns (WorkerControlServiceFailResponse);
+}

@@ -39,6 +39,40 @@ callback over its authenticated mTLS channel. Callbacks do not become a second
 Agent database or execution ledger, and neither direction accepts raw Agent
 secrets from Flutter.
 
+The one Cloud Worker terminal callback is the fixed private
+`product.agent_execution.v1/record_completion` operation. Agent dispatches it
+only from a durable outbox after the result message is frozen and all recorded
+AWS resources are independently `verified_destroyed`. It uses a fresh
+Agent-to-Product call context and canonical request digest; it carries no
+owner/model Permission. Message Server still authenticates mTLS, direction
+token, Agent instance, and account generation, injects its local owner, and
+stores only an idempotent minimal receipt plus
+`agent.execution.v2.completed` invalidation. Result text and artifacts stay in
+Agent authority.
+
+Unary/stream conversation projections carry additive `related_task_ids`,
+`related_plan_ids`, and strict reference snapshots. A Cloud Worker reference
+binds account generation and exact task, plan, run/execution, confirmation,
+revision, quote, binding, and execution digests. Message Server forwards these
+server-authored values without reconstructing them; Flutter must read the
+current Agent Plan, Run, and CoreConfirmation before any mutation.
+
+Artifact bytes cross this proxy only through the read-only
+`agent.execution.v2.artifacts.download` operation. Message Server forwards its
+closed four-field request and strict top-level chunk result without storing the
+bytes or reconstructing storage identity. The Agent remains responsible for
+owner/account-generation and retention fences, complete exact-version object
+verification, and the per-chunk and whole-artifact digests; neither service
+publishes an S3 bucket, key, or version.
+
+The Native durable stream starts with the Agent-authored `accepted` progress
+event. Every progress event carries the start `idempotency_key`, Agent-internal
+`turn_id`, conversation id, and turn revision; no `request_id` alias is
+published. Message Server forwards this business acceptance and identity rather
+than synthesizing a second accepted event. Turn history uses the same
+`turn_id`/`idempotency_key` pair, and `agent.chat.v1/stop_turn` accepts only its
+own UUID idempotency key plus the authoritative turn id and expected revision.
+
 ## Deployment boundary
 
 The split deployment builds one immutable image from

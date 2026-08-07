@@ -29,9 +29,11 @@ planning notes; no compatibility path or fixture fallback is part of Core v1.
   Knowledge metadata, typed AWS configuration, and encrypted Web Search
   configuration.
 - The Agent also owns the current `agent.execution.v2.*` analysis, target,
-  plan, deployment, run, confirmation, artifact, service-binding, and secret
-  records. Message Server remains a public action facade only; execution.v2
-  data and idempotency/event history are stored in the Agent database.
+  plan, deployment, run, artifact, service-binding, and secret records.
+  Authorization is owned only by the generic CoreConfirmation domain; there
+  is no Execution V2 confirmation shadow. Message Server remains a public
+  action facade only; execution data and idempotency/event history are stored
+  in the Agent database.
 - Message Server calls Agent Core over TLS gRPC/Capability mTLS with
   deployment-generated protected credentials and account-generation fences. The
   Agent-to-Message-Server Product Capability callback is a separate direction;
@@ -107,9 +109,10 @@ The Core v1 acceptance set covers these ten observable scenarios:
    process tree and delegated cgroup are gone before the task is cleaned.
 8. Knowledge covers Agent-owned mounts, bounded uploads, memory, indexing,
    and semantic search with revision and digest checks.
-9. Core CloudControl fake-provider flows cover confirmation, durable recovery,
-   and confirmed destroy operations; provider acceptance evidence is recorded
-   in the [delivery tracker](delivery-tracker.md).
+9. Core CloudControl and single Pi Cloud Worker fake-provider flows cover
+   quote/confirmation, durable recovery, exact result validation, cancellation,
+   and verified cleanup; provider acceptance evidence is recorded in the
+   [delivery tracker](delivery-tracker.md).
 10. Storage remains Agent-owned and tests prove operation without a business
     server repository or shared product database.
 
@@ -168,8 +171,9 @@ accept client-supplied credentials.
 Tasks support immediate and scheduled execution, cancellation, retry as a new
 idempotent Task, deletion, durable progress, and event replay. The supported
 Task kinds are Agent, Extension, Conversation Tool, Knowledge indexing,
-`AWS_CHANGE`, and `WORKLOAD`. A Task is claimed with an attempt, lease epoch,
-and expected revision; only the fenced owner may checkpoint or terminalize it.
+`AWS_CHANGE`, `WORKLOAD`, and `CLOUD_WORKER`. A Task is claimed with an
+attempt, lease epoch, and expected revision; only the fenced owner may
+checkpoint or terminalize it.
 Schedules create independent Tasks for one-time or Cron occurrences. Core v1
 has no priority, DAG/graph, task dependency authoring, or cluster/pool
 scheduler.
@@ -280,10 +284,55 @@ for the request-local SDK call and never logs them.
 
 Fake-provider lifecycle tests and source-level typed-provider checks cover
 confirmation, read-back, and cleanup. Typed workload routes require their own
-exact readiness blocks and lazy target probes; `agent.execution.v2` additionally
-requires its complete typed provider graph and dedicated CloudFormation service
-role. The [API contract](api-contract.md) defines publication gates; evidence
-and remaining verification are recorded in the [delivery tracker](delivery-tracker.md).
+exact readiness blocks and lazy target probes. Generic non-Cloud-Worker
+Execution V2 operations publish only when their own typed provider route is
+ready, including a dedicated CloudFormation service role where that operation
+requires one. The single Pi Cloud Worker route has its independent PostgreSQL,
+controller, provider-ledger/Reaper, private-listener, and completion-outbox
+readiness gate. The [API contract](api-contract.md) defines publication gates;
+evidence and remaining verification are recorded in the
+[delivery tracker](delivery-tracker.md).
+
+### Single Pi Cloud Worker
+
+The Native Agent remains local-first and retains its local sandbox, worker
+pool, MCP, Skills, Knowledge, Conversation Tools, and Extension Runner. The
+Core intrinsic `cloud_worker.propose` may create a paid offer only from a turn
+whose trusted policy proves an explicit user cloud request or immutable local
+budget insufficiency. A local failure is not proof and never triggers an
+automatic upgrade.
+
+The only recipe is `ephemeral-pi-task` with adapter `pi_json_task_v1`. One
+confirmed execution creates exactly one EC2 instance, one Worker, and one Pi
+process. Its plan binds every cost/authority field, including immutable input,
+workspace mode, model and credential revisions, AWS/compute/AMI digests,
+limits, grants, retention, quote expiry, and hard cost ceiling. Any drift
+requires a fresh quote and CoreConfirmation.
+
+The controller progresses the durable `CLOUD_WORKER` Task through
+`waiting_user`, `queued`, `provisioning`, `awaiting_worker`, `running`,
+`collecting`, `validating`, and `cleaning`. It waits for the private durable
+WorkerControl session rather than running Pi itself. Success, failure, and
+cancellation remain non-terminal until the Resource Ledger proves every AWS
+resource `verified_destroyed`. Unknown AWS responses and reclaimed leases use
+identity-bound read-back of the original dispatch; they cannot provision a
+second instance.
+
+The Worker receives no local MCP/Skill/Extension Runner state. It receives only
+the exact runtime task and versioned input manifest, short-lived model relay
+grant, exact artifact S3 prefix, heartbeat deadline, and approved grants.
+Turn inputs use one owner/account-generation/request-bound upload authority for
+images, approved ordinary code/document files, and at most one constrained
+`application/vnd.dirextalk.workspace+tar+gzip` workspace archive. The Agent
+validates the archive before commit and again before staging; the Worker repeats
+validation while extracting into `workspace/`. Both boundaries reject links,
+special files, traversal/absolute paths, path/case collisions, duplicate
+entries, trailing data, excessive entries, and compressed expansion beyond
+256 MiB. `read_only` removes write permission after extraction; `write` uses a
+private copy and can return only centrally validated deltas/artifacts.
+Workspace `write` produces a patch/archive/artifact from an isolated copy and
+never writes into local files. The full contract is
+[Execution V2](execution-v2.md).
 
 ## Security and data rules
 

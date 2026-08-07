@@ -193,6 +193,49 @@ func TestProgressProtoPreservesEventIDResultAndZeroTimestamp(t *testing.T) {
 	}
 }
 
+func TestCoreTaskProtoProjectsDurableSpecializedPayloads(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	ids := []string{
+		"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
+		"33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444",
+		"55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666",
+	}
+	tests := []struct {
+		name  string
+		task  coretask.Task
+		check func(*agentv1.CoreTask) bool
+	}{
+		{
+			name: "conversation_tool",
+			task: coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindConversationTool, Payload: coretask.TaskPayload{ConversationTool: &coretask.ConversationToolTaskPayload{TurnID: ids[0], AttemptID: ids[1], Round: 2, CallID: "call-1", ExtensionSnapshotDigest: digest, InstallationID: ids[2], VersionID: ids[3], InstallationRevision: 4, ToolName: "lookup", ToolSchemaDigest: digest, ArgumentsDigest: digest, ConfirmationID: ids[4], SafeSummary: "safe"}}}},
+			check: func(value *agentv1.CoreTask) bool {
+				return value.GetKind() == agentv1.CoreTaskKind_CORE_TASK_KIND_CONVERSATION_TOOL && value.GetConversationTool().GetTurnId() == ids[0] && value.GetConversationTool().GetInstallationRevision() == 4
+			},
+		},
+		{
+			name: "cloud_worker",
+			task: coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindCloudWorker, Payload: coretask.TaskPayload{CloudWorker: &coretask.CloudWorkerTaskPayload{ExecutionID: ids[0], AccountGeneration: 7, PlanID: ids[1], PlanRevision: 3, PlanDigest: digest, ConfirmationID: ids[2], TurnID: ids[3], ConversationID: ids[4], QuoteDigest: digest, ExecutionDigest: digest}}}},
+			check: func(value *agentv1.CoreTask) bool {
+				return value.GetKind() == agentv1.CoreTaskKind_CORE_TASK_KIND_CLOUD_WORKER && value.GetCloudWorker().GetExecutionId() == ids[0] && value.GetCloudWorker().GetAccountGeneration() == 7
+			},
+		},
+		{
+			name: "execution_v2_run",
+			task: coretask.Task{Spec: coretask.TaskSpec{Kind: coretask.TaskKindExecutionV2Run, Payload: coretask.TaskPayload{ExecutionV2Run: &coretask.ExecutionV2RunTaskPayload{OwnerID: "@owner:example.test", AccountGeneration: 9, RunID: ids[0], StageID: ids[1], PlanID: ids[2], PlanRevision: 5, PlanDigest: digest, ConfirmationID: ids[3], Operation: "deploy"}}}},
+			check: func(value *agentv1.CoreTask) bool {
+				return value.GetKind() == agentv1.CoreTaskKind_CORE_TASK_KIND_EXECUTION_V2_RUN && value.GetExecutionV2Run().GetRunId() == ids[0] && value.GetExecutionV2Run().GetAccountGeneration() == 9
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if projected := coreTaskProto(test.task); !test.check(projected) {
+				t.Fatalf("projection=%v", projected)
+			}
+		})
+	}
+}
+
 func TestScheduleCursorValidationIsInvalidArgument(t *testing.T) {
 	fake := &coreScheduleStoreFake{}
 	_, err := NewCoreScheduleService(fake).List(context.Background(), &agentv1.ScheduleServiceListRequest{PageToken: "not-base64"})

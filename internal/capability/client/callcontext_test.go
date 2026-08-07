@@ -2,12 +2,18 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	capv1 "github.com/YingSuiAI/dirextalk-capability-api/gen/go/dirextalk/capability/v1"
 	"github.com/google/uuid"
 )
+
+type unusedProductCapabilityClient struct {
+	capv1.ProductCapabilityServiceClient
+}
 
 func TestValidatePermissionRequiresServerIssuedPrincipalAndRootBinding(t *testing.T) {
 	valid := &capv1.PermissionContext{
@@ -27,6 +33,39 @@ func TestValidatePermissionRequiresServerIssuedPrincipalAndRootBinding(t *testin
 		if err := validatePermission(value); err == nil {
 			t.Fatalf("%s permission accepted", name)
 		}
+	}
+}
+
+func TestFreshAgentServiceCallContextStartsIndependentAgentRoute(t *testing.T) {
+	operationID := uuid.NewString()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	first, err := freshAgentServiceCallContext(ctx, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := freshAgentServiceCallContext(ctx, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GetRootOperationId() != operationID || first.GetRoute() != capv1.NodeAgent || first.GetHop() != 1 || first.GetParentCallId() != "" {
+		t.Fatalf("service call context = %#v", first)
+	}
+	if first.GetChainId() == second.GetChainId() {
+		t.Fatal("service-originated retries must use a fresh call chain")
+	}
+}
+
+func TestRecordAgentExecutionCompletionRejectsMismatchedRequestDigest(t *testing.T) {
+	client := &Client{client: &unusedProductCapabilityClient{}}
+	_, err := client.RecordAgentExecutionCompletion(
+		context.Background(),
+		uuid.NewString(),
+		[]byte(`{"event_id":"00000000-0000-4000-8000-000000000001"}`),
+		bytes.Repeat([]byte{1}, 32),
+	)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched completion digest error = %v", err)
 	}
 }
 

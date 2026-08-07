@@ -42,6 +42,7 @@ func CredentialTestLeaseTimes(now time.Time, supplied ...time.Time) (time.Time, 
 type Repository interface {
 	CreateCredential(context.Context, Credentials) (Credentials, error)
 	GetCredential(context.Context, string) (Credentials, error)
+	GetCredentialRevision(context.Context, string, int64) (Credentials, error)
 	ListCredentials(context.Context, int, string) (CredentialPage, error)
 	UpdateCredential(context.Context, Credentials, int64) (Credentials, error)
 	DeleteCredential(context.Context, string, int64) error

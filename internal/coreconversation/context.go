@@ -168,8 +168,12 @@ func (m Message) Snapshot() Message {
 	m.ToolResults = append([]ToolResult(nil), m.ToolResults...)
 	for i := range m.ToolResults {
 		m.ToolResults[i].RelatedTaskIDs = append([]string(nil), m.ToolResults[i].RelatedTaskIDs...)
+		m.ToolResults[i].RelatedPlanIDs = append([]string(nil), m.ToolResults[i].RelatedPlanIDs...)
+		m.ToolResults[i].References = cloneReferences(m.ToolResults[i].References)
 	}
 	m.RelatedTaskIDs = append([]string(nil), m.RelatedTaskIDs...)
+	m.RelatedPlanIDs = append([]string(nil), m.RelatedPlanIDs...)
+	m.References = cloneReferences(m.References)
 	m.ToolSummaries = append([]string(nil), m.ToolSummaries...)
 	return m
 }

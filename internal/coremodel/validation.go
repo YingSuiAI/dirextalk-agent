@@ -25,6 +25,15 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 var geminiModelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,256}$`)
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
+const IntrinsicCloudWorkerProposeToolName = "cloud_worker.propose"
+
+// validToolName deliberately does not turn dotted names into a general
+// extension namespace. Only Core-owned intrinsics may use a dotted name;
+// MCP/Skill tools retain the existing conservative identifier grammar.
+func validToolName(value string) bool {
+	return toolNamePattern.MatchString(value) || value == IntrinsicCloudWorkerProposeToolName
+}
+
 func ValidateClientProfileID(id string) error {
 	if !validText(strings.TrimSpace(id), 256, true, false) {
 		return fmt.Errorf("%w: invalid client profile id", ErrInvalidProfile)
@@ -67,7 +76,7 @@ func ValidateCompletionRequest(r CompletionRequest) error {
 			return ErrInvalidCompletionRequest
 		}
 		for _, call := range m.ToolCalls {
-			if !validText(call.ID, 256, true, false) || !toolNamePattern.MatchString(call.Function.Name) || !validText(call.Function.Arguments, 1<<20, true, false) {
+			if !validText(call.ID, 256, true, false) || !validToolName(call.Function.Name) || !validText(call.Function.Arguments, 1<<20, true, false) {
 				return ErrInvalidCompletionRequest
 			}
 			var object map[string]any
@@ -77,7 +86,7 @@ func ValidateCompletionRequest(r CompletionRequest) error {
 		}
 	}
 	for _, t := range r.Tools {
-		if !toolNamePattern.MatchString(t.Name) || !validText(t.Description, 4096, false, true) || t.InputSchema == nil {
+		if !validToolName(t.Name) || !validText(t.Description, 4096, false, true) || t.InputSchema == nil {
 			return ErrInvalidCompletionRequest
 		}
 		b, err := json.Marshal(t.InputSchema)

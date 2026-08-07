@@ -1401,3 +1401,763 @@ ALTER TABLE core_knowledge_uploads
 ALTER TABLE core_knowledge_upload_reservations
     ADD CONSTRAINT core_knowledge_upload_reservation_size_chk CHECK (reserved_bytes <= 16777216);
 -- dirextalk-agent migration end 000004_knowledge_pgvector.up.sql
+-- dirextalk-agent migration begin 000005_cloud_worker_v1.up.sql
+-- One fresh-state Cloud Worker schema.  Durable CoreTask/CoreConfirmation rows
+-- remain the queue and approval authority; these tables own only the strongly
+-- typed execution, launch, Worker-control and cleanup projections.
+-- AWS credential secrets are append-only revisions. core_aws_credentials is
+-- only the mutable current/new-plan pointer; disabling it must not destroy an
+-- exact revision still referenced by cleanup, result collection or retention.
+CREATE TABLE core_aws_credential_revisions (
+    credential_id uuid NOT NULL REFERENCES core_aws_credentials(credential_id) ON DELETE CASCADE,
+    revision bigint NOT NULL CHECK (revision > 0),
+    region text NOT NULL,
+    secret_key_version integer NOT NULL CHECK (secret_key_version > 0),
+    access_key_id_nonce bytea NOT NULL CHECK (octet_length(access_key_id_nonce) = 12),
+    access_key_id_ciphertext bytea NOT NULL CHECK (octet_length(access_key_id_ciphertext) >= 16),
+    secret_access_key_nonce bytea NOT NULL CHECK (octet_length(secret_access_key_nonce) = 12),
+    secret_access_key_ciphertext bytea NOT NULL CHECK (octet_length(secret_access_key_ciphertext) >= 16),
+    session_token_nonce bytea NOT NULL CHECK (octet_length(session_token_nonce) = 12),
+    session_token_ciphertext bytea NOT NULL CHECK (octet_length(session_token_ciphertext) >= 16),
+    session_token_configured boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (credential_id, revision)
+);
+CREATE TABLE core_aws_credential_revision_evidence (
+    credential_id uuid NOT NULL,
+    revision bigint NOT NULL CHECK (revision > 0),
+    account_id text NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
+    user_arn text NOT NULL CHECK (length(user_arn) BETWEEN 1 AND 2048),
+    tested_at timestamptz NOT NULL,
+    PRIMARY KEY (credential_id, revision),
+    FOREIGN KEY (credential_id, revision)
+        REFERENCES core_aws_credential_revisions(credential_id, revision) ON DELETE CASCADE
+);
+ALTER TABLE core_aws_credentials
+    ADD COLUMN disabled_at timestamptz,
+    ADD CONSTRAINT core_aws_credentials_disabled_time_chk
+        CHECK (disabled_at IS NULL OR disabled_at >= created_at);
+ALTER TABLE core_aws_credential_test_claims
+    ADD CONSTRAINT core_aws_credential_test_claims_exact_revision_fk
+    FOREIGN KEY (credential_id, expected_revision)
+    REFERENCES core_aws_credential_revisions(credential_id, revision) ON DELETE RESTRICT;
+
+ALTER TABLE core_messages
+    ADD COLUMN related_plan_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN references_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD CONSTRAINT core_messages_related_plan_ids_chk CHECK (
+        jsonb_typeof(related_plan_ids) = 'array' AND
+        jsonb_array_length(related_plan_ids) <= 32 AND
+        pg_column_size(related_plan_ids) <= 65536
+    ),
+    ADD CONSTRAINT core_messages_references_json_chk CHECK (
+        jsonb_typeof(references_json) = 'array' AND
+        jsonb_array_length(references_json) <= 32 AND
+        pg_column_size(references_json) <= 262144
+    );
+
+ALTER TABLE core_conversation_turns
+    ADD COLUMN owner_id text NOT NULL DEFAULT '' CHECK (length(owner_id) <= 512),
+    ADD COLUMN account_generation bigint NOT NULL DEFAULT 0 CHECK (account_generation >= 0),
+    ADD COLUMN attachment_snapshot_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ADD COLUMN attachment_snapshot_digest text NOT NULL DEFAULT '',
+    ADD CONSTRAINT core_conversation_turns_owner_generation_chk CHECK (
+        (owner_id = '' AND account_generation = 0) OR
+        (owner_id <> '' AND account_generation > 0)
+    ),
+    ADD CONSTRAINT core_conversation_turns_attachment_snapshot_chk CHECK (
+        jsonb_typeof(attachment_snapshot_json) = 'array' AND
+        jsonb_array_length(attachment_snapshot_json) <= 4 AND
+        pg_column_size(attachment_snapshot_json) <= 32768 AND
+        ((jsonb_array_length(attachment_snapshot_json) = 0 AND attachment_snapshot_digest = '') OR
+         (jsonb_array_length(attachment_snapshot_json) > 0 AND attachment_snapshot_digest ~ '^[a-f0-9]{64}$'))
+    );
+
+-- Native Agent attachments are uploaded in bounded chunks before stream_chat.
+-- The raw base64 never enters a turn, event, operation replay, or public
+-- result. A committed source is immutable and can be consumed by exactly the
+-- owner/generation/future request to which begin bound it.
+CREATE TABLE core_conversation_attachment_uploads (
+    upload_id uuid PRIMARY KEY,
+    source_id uuid NOT NULL UNIQUE,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    turn_request_id uuid NOT NULL,
+    begin_idempotency_key uuid NOT NULL UNIQUE,
+    begin_request_digest char(64) NOT NULL CHECK (begin_request_digest ~ '^[a-f0-9]{64}$'),
+    kind text NOT NULL CHECK (kind IN ('image','file','workspace_archive')),
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 255),
+    media_type text NOT NULL CHECK (length(media_type) BETWEEN 1 AND 255),
+    declared_size bigint NOT NULL CHECK (declared_size BETWEEN 1 AND 8388608),
+    content_sha256 char(64) NOT NULL CHECK (content_sha256 ~ '^[a-f0-9]{64}$'),
+    content_bytes bytea NOT NULL DEFAULT ''::bytea CHECK (octet_length(content_bytes) <= 8388608),
+    received_size bigint NOT NULL DEFAULT 0 CHECK (received_size BETWEEN 0 AND 8388608),
+    next_ordinal integer NOT NULL DEFAULT 0 CHECK (next_ordinal BETWEEN 0 AND 4096),
+    status text NOT NULL CHECK (status IN ('receiving','committed','consumed')),
+    revision bigint NOT NULL CHECK (revision > 0),
+    expires_at timestamptz NOT NULL,
+    consumed_turn_id uuid REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK (octet_length(content_bytes) = received_size),
+    CHECK (received_size <= declared_size),
+    CHECK (
+        (kind = 'image' AND media_type IN ('image/jpeg','image/png','image/webp')) OR
+        (kind = 'workspace_archive' AND media_type = 'application/vnd.dirextalk.workspace+tar+gzip') OR
+        (kind = 'file' AND media_type <> 'application/vnd.dirextalk.workspace+tar+gzip')
+    ),
+    CHECK (status <> 'receiving' OR consumed_turn_id IS NULL),
+    CHECK (status <> 'committed' OR (consumed_turn_id IS NULL AND received_size = declared_size)),
+    CHECK (status <> 'consumed' OR (consumed_turn_id IS NOT NULL AND received_size = declared_size)),
+    CHECK (expires_at > created_at),
+    CHECK (updated_at >= created_at)
+);
+CREATE INDEX core_conversation_attachment_uploads_turn_idx
+    ON core_conversation_attachment_uploads (owner_id, account_generation, turn_request_id, source_id);
+CREATE UNIQUE INDEX core_conversation_attachment_uploads_one_workspace_idx
+    ON core_conversation_attachment_uploads (owner_id, account_generation, turn_request_id)
+    WHERE kind = 'workspace_archive';
+
+CREATE TABLE core_conversation_attachment_replays (
+    operation text NOT NULL CHECK (operation IN ('append','commit')),
+    idempotency_key uuid NOT NULL,
+    request_digest char(64) NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    upload_id uuid NOT NULL REFERENCES core_conversation_attachment_uploads(upload_id) ON DELETE RESTRICT,
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 32768),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (operation, idempotency_key)
+);
+
+ALTER TABLE core_task_replays
+    DROP CONSTRAINT core_task_replays_operation_check;
+ALTER TABLE core_task_replays
+    ADD CONSTRAINT core_task_replays_operation_check CHECK (
+        operation IN ('create','cancel','retry','delete','execution_v2_run_create','execution_v2_run_retry','execution_v2_run_cancel')
+    );
+
+ALTER TABLE core_execution_v2_records
+    DROP CONSTRAINT core_execution_v2_records_resource_type_check;
+ALTER TABLE core_execution_v2_records
+    ADD CONSTRAINT core_execution_v2_records_resource_type_check CHECK (
+        resource_type IN ('analysis','target','plan','deployment','run','stage','artifact','binding','dispatch_intent')
+    );
+
+ALTER TABLE core_tasks DROP CONSTRAINT core_tasks_task_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_task_kind_chk
+    CHECK (task_kind IN ('agent','extension','knowledge_index','aws_change','workload','conversation_tool','cloud_worker','execution_v2_run'));
+ALTER TABLE core_tasks DROP CONSTRAINT core_tasks_model_profile_kind_chk;
+ALTER TABLE core_tasks ADD CONSTRAINT core_tasks_model_profile_kind_chk
+    CHECK ((task_kind IN ('agent','knowledge_index','cloud_worker')) = (model_profile_id IS NOT NULL));
+
+CREATE TABLE core_cloud_worker_plans (
+    plan_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    revision bigint NOT NULL CHECK (revision > 0),
+    digest text NOT NULL CHECK (digest ~ '^[a-f0-9]{64}$'),
+    execution_digest text NOT NULL CHECK (execution_digest ~ '^[a-f0-9]{64}$'),
+    authorization_basis_digest text NOT NULL CHECK (authorization_basis_digest ~ '^[a-f0-9]{64}$'),
+    quote_digest text NOT NULL CHECK (quote_digest ~ '^[a-f0-9]{64}$'),
+    input_manifest_digest text NOT NULL CHECK (input_manifest_digest ~ '^[a-f0-9]{64}$'),
+    model_binding_digest text NOT NULL CHECK (model_binding_digest ~ '^[a-f0-9]{64}$'),
+    credential_id uuid NOT NULL,
+    credential_revision bigint NOT NULL CHECK (credential_revision > 0),
+    execution_id uuid NOT NULL UNIQUE,
+    task_id uuid NOT NULL UNIQUE,
+    confirmation_id uuid NOT NULL UNIQUE,
+    conversation_id uuid NOT NULL REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    recipe_id text NOT NULL CHECK (recipe_id = 'ephemeral-pi-task'),
+    adapter text NOT NULL CHECK (adapter = 'pi_json_task_v1'),
+    workspace_mode text NOT NULL CHECK (workspace_mode IN ('none','read_only','write')),
+    status text NOT NULL CHECK (status = 'waiting_user'),
+    quote_expires_at timestamptz NOT NULL,
+    plan_json jsonb NOT NULL CHECK (jsonb_typeof(plan_json) = 'object' AND pg_column_size(plan_json) <= 1048576),
+    private_json jsonb NOT NULL CHECK (jsonb_typeof(private_json) = 'object' AND pg_column_size(private_json) <= 1048576),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK (updated_at >= created_at),
+    CHECK (quote_expires_at > created_at),
+    FOREIGN KEY (credential_id, credential_revision)
+        REFERENCES core_aws_credential_revisions(credential_id, revision) ON DELETE RESTRICT
+);
+CREATE INDEX core_cloud_worker_plans_owner_idx
+    ON core_cloud_worker_plans (owner_id, created_at DESC, plan_id);
+CREATE INDEX core_cloud_worker_plans_turn_idx
+    ON core_cloud_worker_plans (turn_id, created_at, plan_id);
+
+CREATE TABLE core_cloud_worker_executions (
+    execution_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    plan_revision bigint NOT NULL CHECK (plan_revision > 0),
+    plan_digest text NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    task_id uuid NOT NULL UNIQUE REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    confirmation_id uuid NOT NULL UNIQUE REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
+    conversation_id uuid NOT NULL REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    state text NOT NULL CHECK (state IN (
+        'waiting_user','queued','provisioning','awaiting_worker','running',
+        'collecting','validating','cleaning','succeeded','failed','canceled','rejected','expired'
+    )),
+    revision bigint NOT NULL CHECK (revision > 0),
+    digest text NOT NULL CHECK (digest ~ '^[a-f0-9]{64}$'),
+    quote_digest text NOT NULL CHECK (quote_digest ~ '^[a-f0-9]{64}$'),
+    execution_digest text NOT NULL CHECK (execution_digest ~ '^[a-f0-9]{64}$'),
+    provider_mutation_started boolean NOT NULL DEFAULT false,
+    terminal_intent text NOT NULL DEFAULT '' CHECK (length(terminal_intent) <= 64),
+    needs_reconcile boolean NOT NULL DEFAULT false,
+    execution_json jsonb NOT NULL CHECK (jsonb_typeof(execution_json) = 'object' AND pg_column_size(execution_json) <= 1048576),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK (updated_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_executions_owner_list_idx
+    ON core_cloud_worker_executions (owner_id, created_at DESC, execution_id);
+CREATE INDEX core_cloud_worker_executions_controller_idx
+    ON core_cloud_worker_executions (state, updated_at, execution_id)
+    WHERE state NOT IN ('succeeded','failed','canceled','rejected','expired');
+
+ALTER TABLE core_cloud_worker_plans
+    ADD CONSTRAINT core_cloud_worker_plans_execution_fk
+    FOREIGN KEY (execution_id) REFERENCES core_cloud_worker_executions(execution_id)
+    DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE core_cloud_worker_events (
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    sequence bigint NOT NULL CHECK (sequence > 0),
+    event_id uuid NOT NULL UNIQUE,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    kind text NOT NULL CHECK (length(kind) BETWEEN 1 AND 64),
+    state text NOT NULL CHECK (state IN (
+        'waiting_user','queued','provisioning','awaiting_worker','running',
+        'collecting','validating','cleaning','succeeded','failed','canceled','rejected','expired'
+    )),
+    revision bigint NOT NULL CHECK (revision > 0),
+    payload_digest text NOT NULL CHECK (payload_digest ~ '^[a-f0-9]{64}$'),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 262144),
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (execution_id, sequence)
+);
+CREATE INDEX core_cloud_worker_events_replay_idx
+    ON core_cloud_worker_events (execution_id, sequence);
+
+CREATE TABLE core_cloud_worker_resources (
+    resource_id uuid PRIMARY KEY,
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    provider text NOT NULL CHECK (provider IN ('aws','fake')),
+    kind text NOT NULL CHECK (kind IN ('security_group','iam_role','instance_profile','eni','eip','ebs','ec2','stack')),
+    provider_id text NOT NULL DEFAULT '' CHECK (provider_id = '' OR length(provider_id) BETWEEN 1 AND 2048),
+    account_id text NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
+    region text NOT NULL CHECK (length(region) BETWEEN 1 AND 64),
+    launch_identity text NOT NULL CHECK (length(launch_identity) BETWEEN 1 AND 256),
+    state text NOT NULL CHECK (state IN ('planned','created','delete_requested','verified_destroyed')),
+    revision bigint NOT NULL CHECK (revision > 0),
+    resource_json jsonb NOT NULL CHECK (jsonb_typeof(resource_json) = 'object' AND pg_column_size(resource_json) <= 262144),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    verified_at timestamptz,
+    UNIQUE (execution_id, kind),
+    CHECK ((state IN ('created','delete_requested')) = (provider_id <> '') OR state IN ('planned','verified_destroyed')),
+    CHECK ((state = 'verified_destroyed') = (verified_at IS NOT NULL)),
+    CHECK (updated_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_resources_cleanup_idx
+    ON core_cloud_worker_resources (execution_id, state, resource_id);
+
+CREATE TABLE core_cloud_worker_artifacts (
+    artifact_id uuid PRIMARY KEY,
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    kind text NOT NULL CHECK (length(kind) BETWEEN 1 AND 64),
+    name text NOT NULL CHECK (length(name) BETWEEN 1 AND 255),
+    media_type text NOT NULL CHECK (length(media_type) BETWEEN 1 AND 255),
+    size_bytes bigint NOT NULL CHECK (size_bytes BETWEEN 1 AND 8388608),
+    sha256 text NOT NULL CHECK (sha256 ~ '^[a-f0-9]{64}$'),
+    status text NOT NULL CHECK (status = 'verified'),
+    -- These columns are private retention authority and are never selected by
+    -- an Execution V2/public artifact projection. A mutable object name is not
+    -- sufficient: every retained result is bound to one exact S3 version and
+    -- the Plan/AWS owner identity that authorized it.
+    s3_bucket text NOT NULL CHECK (length(s3_bucket) BETWEEN 3 AND 63),
+    s3_key text NOT NULL CHECK (length(s3_key) BETWEEN 1 AND 1024),
+    s3_version_id text NOT NULL CHECK (length(s3_version_id) BETWEEN 1 AND 1024 AND s3_version_id <> 'null'),
+    retention_owner_id text NOT NULL CHECK (length(retention_owner_id) BETWEEN 1 AND 512),
+    retention_account_id text NOT NULL CHECK (retention_account_id ~ '^[0-9]{12}$'),
+    retention_account_generation bigint NOT NULL CHECK (retention_account_generation > 0),
+    retention_region text NOT NULL CHECK (length(retention_region) BETWEEN 1 AND 64),
+    retention_credential_id uuid NOT NULL,
+    retention_credential_revision bigint NOT NULL CHECK (retention_credential_revision > 0),
+    retention_provider_id text NOT NULL CHECK (length(retention_provider_id) BETWEEN 1 AND 255),
+    retention_plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    retention_plan_digest text NOT NULL CHECK (retention_plan_digest ~ '^[a-f0-9]{64}$'),
+    retention_key_prefix text NOT NULL CHECK (length(retention_key_prefix) BETWEEN 1 AND 1024),
+    retention_kms_key_arn text NOT NULL CHECK (length(retention_kms_key_arn) BETWEEN 1 AND 2048),
+    retention_expires_at timestamptz NOT NULL,
+    retention_state text NOT NULL CHECK (retention_state IN ('retained','delete_started','delete_uncertain','verified_deleted')),
+    retention_revision bigint NOT NULL CHECK (retention_revision > 0),
+    retention_deletion_claim_id uuid,
+    retention_deletion_lease_until timestamptz,
+    retention_delete_attempts integer NOT NULL DEFAULT 0 CHECK (retention_delete_attempts >= 0),
+    retention_next_attempt_at timestamptz NOT NULL,
+    retention_updated_at timestamptz NOT NULL,
+    retention_verified_deleted_at timestamptz,
+    artifact_json jsonb NOT NULL CHECK (jsonb_typeof(artifact_json) = 'object' AND pg_column_size(artifact_json) <= 262144),
+    created_at timestamptz NOT NULL,
+    UNIQUE (execution_id, name),
+    UNIQUE (s3_bucket, s3_key, s3_version_id),
+    FOREIGN KEY (retention_credential_id, retention_credential_revision)
+        REFERENCES core_aws_credential_revisions(credential_id, revision) ON DELETE RESTRICT,
+    CHECK (retention_expires_at > created_at),
+    CHECK (retention_updated_at >= created_at),
+    CHECK ((retention_state = 'delete_started') = (retention_deletion_claim_id IS NOT NULL AND retention_deletion_lease_until IS NOT NULL)),
+    CHECK (retention_state = 'delete_started' OR (retention_deletion_claim_id IS NULL AND retention_deletion_lease_until IS NULL)),
+    CHECK ((retention_state = 'verified_deleted') = (retention_verified_deleted_at IS NOT NULL))
+);
+CREATE INDEX core_cloud_worker_artifacts_execution_idx
+    ON core_cloud_worker_artifacts (execution_id, created_at, artifact_id);
+CREATE INDEX core_cloud_worker_artifacts_retention_idx
+    ON core_cloud_worker_artifacts (retention_next_attempt_at, artifact_id)
+    WHERE retention_state <> 'verified_deleted';
+
+CREATE TABLE core_cloud_worker_offer_replays (
+    idempotency_key uuid PRIMARY KEY,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 1048576),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE TABLE core_cloud_worker_mutation_replays (
+    operation text NOT NULL CHECK (operation IN ('request_cancel')),
+    idempotency_key uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) DEFERRABLE INITIALLY DEFERRED,
+    response_revision bigint NOT NULL CHECK (response_revision > 0),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (operation, idempotency_key)
+);
+
+CREATE TABLE core_cloud_worker_offer_outbox (
+    event_id uuid PRIMARY KEY,
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    conversation_id uuid NOT NULL REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    payload_digest text NOT NULL CHECK (payload_digest ~ '^[a-f0-9]{64}$'),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 262144),
+    created_at timestamptz NOT NULL,
+    delivered_at timestamptz
+);
+CREATE INDEX core_cloud_worker_offer_outbox_pending_idx
+    ON core_cloud_worker_offer_outbox (created_at, event_id) WHERE delivered_at IS NULL;
+
+CREATE TABLE core_cloud_worker_completion_outbox (
+    event_id uuid PRIMARY KEY,
+    execution_id uuid NOT NULL UNIQUE REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    conversation_id uuid NOT NULL REFERENCES core_conversations(conversation_id) ON DELETE RESTRICT,
+    turn_id uuid NOT NULL REFERENCES core_conversation_turns(turn_id) ON DELETE RESTRICT,
+    result_message_id uuid NOT NULL UNIQUE REFERENCES core_messages(message_id) ON DELETE RESTRICT,
+    terminal_state text NOT NULL CHECK (terminal_state IN ('succeeded','failed','canceled')),
+    payload_digest text NOT NULL CHECK (payload_digest ~ '^[a-f0-9]{64}$'),
+    payload_json jsonb NOT NULL CHECK (jsonb_typeof(payload_json) = 'object' AND pg_column_size(payload_json) <= 65536),
+    created_at timestamptz NOT NULL,
+    delivered_at timestamptz,
+    delivery_state text NOT NULL DEFAULT 'pending' CHECK (delivery_state IN ('pending','claimed','delivered')),
+    delivery_holder uuid,
+    delivery_lease_until timestamptz,
+    next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    delivery_attempts integer NOT NULL DEFAULT 0 CHECK (delivery_attempts >= 0),
+    last_error text NOT NULL DEFAULT '' CHECK (length(last_error) <= 1024),
+    CHECK ((delivery_state = 'claimed') = (delivery_holder IS NOT NULL AND delivery_lease_until IS NOT NULL)),
+    CHECK ((delivery_state = 'delivered') = (delivered_at IS NOT NULL)),
+    CHECK (delivery_state = 'claimed' OR (delivery_holder IS NULL AND delivery_lease_until IS NULL))
+);
+CREATE INDEX core_cloud_worker_completion_outbox_pending_idx
+    ON core_cloud_worker_completion_outbox (next_attempt_at, created_at, event_id) WHERE delivery_state <> 'delivered';
+
+CREATE TABLE core_cloud_worker_begin_authorizations (
+    execution_id uuid PRIMARY KEY REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    task_id uuid NOT NULL REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    confirmation_id uuid NOT NULL REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
+    confirmation_revision bigint NOT NULL CHECK (confirmation_revision >= 3),
+    confirmation_binding_digest text NOT NULL CHECK (confirmation_binding_digest ~ '^[a-f0-9]{64}$'),
+    confirmed_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL,
+    UNIQUE (task_id, task_attempt, lease_epoch)
+);
+
+CREATE TABLE core_cloud_worker_launch_material (
+    execution_id uuid PRIMARY KEY REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    plan_revision bigint NOT NULL CHECK (plan_revision > 0),
+    execution_revision bigint NOT NULL CHECK (execution_revision > 0),
+    task_id uuid NOT NULL REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    confirmation_id uuid NOT NULL REFERENCES core_confirmations(confirmation_id) ON DELETE RESTRICT,
+    confirmation_revision bigint NOT NULL CHECK (confirmation_revision >= 3),
+    confirmation_binding_digest text NOT NULL CHECK (confirmation_binding_digest ~ '^[a-f0-9]{64}$'),
+    confirmed_at timestamptz NOT NULL,
+    source_manifest_sha256 text NOT NULL CHECK (source_manifest_sha256 ~ '^[a-f0-9]{64}$'),
+    staged_manifest_sha256 text NOT NULL CHECK (staged_manifest_sha256 ~ '^[a-f0-9]{64}$'),
+    input_manifest_sha256 text NOT NULL CHECK (input_manifest_sha256 ~ '^[a-f0-9]{64}$'),
+    runtime_task_sha256 text NOT NULL CHECK (runtime_task_sha256 ~ '^[a-f0-9]{64}$'),
+    launch_identity text NOT NULL DEFAULT '' CHECK (launch_identity = '' OR launch_identity ~ '^[a-f0-9]{64}$'),
+    intent_digest text NOT NULL DEFAULT '' CHECK (intent_digest = '' OR intent_digest ~ '^[a-f0-9]{64}$'),
+    aws_identity_json jsonb CHECK (aws_identity_json IS NULL OR (jsonb_typeof(aws_identity_json) = 'object' AND pg_column_size(aws_identity_json) <= 65536)),
+    dispatch_prepared_at timestamptz,
+    staged_manifest_json jsonb NOT NULL CHECK (jsonb_typeof(staged_manifest_json) = 'object' AND pg_column_size(staged_manifest_json) <= 524288),
+    -- These are authorization-bound canonical wire bytes. jsonb rewrites key
+    -- order/whitespace on readback and would therefore invalidate their stored
+    -- SHA-256 values after a controller restart or task reclaim.
+    input_manifest_json bytea NOT NULL CHECK (octet_length(input_manifest_json) BETWEEN 2 AND 524288),
+    runtime_task_json bytea NOT NULL CHECK (octet_length(runtime_task_json) BETWEEN 2 AND 524288),
+    qualification_json jsonb NOT NULL CHECK (jsonb_typeof(qualification_json) = 'object' AND pg_column_size(qualification_json) <= 65536),
+    authorized_at timestamptz NOT NULL,
+    CHECK (authorized_at >= confirmed_at),
+    CHECK ((launch_identity = '' AND intent_digest = '' AND aws_identity_json IS NULL AND dispatch_prepared_at IS NULL) OR
+           (launch_identity <> '' AND intent_digest <> '' AND aws_identity_json IS NOT NULL AND dispatch_prepared_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX core_cloud_worker_launch_material_identity_idx
+    ON core_cloud_worker_launch_material (launch_identity) WHERE launch_identity <> '';
+
+-- Durable AWS intent/ledger.  Identity fields are repeated outside record_json
+-- so every read, retry and delete can revalidate the immutable owner boundary.
+CREATE TABLE core_cloud_worker_aws_ledger (
+    identity_key text PRIMARY KEY CHECK (length(identity_key) BETWEEN 1 AND 2048),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_id char(12) NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    region text NOT NULL CHECK (length(region) BETWEEN 1 AND 64),
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    task_id uuid NOT NULL REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    task_attempt bigint NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    provider_id text NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 2048),
+    launch_identity char(64) NOT NULL CHECK (launch_identity ~ '^[a-f0-9]{64}$'),
+    generation bigint NOT NULL CHECK (generation > 0),
+    plan_digest char(64) NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    infrastructure_digest char(64) NOT NULL CHECK (infrastructure_digest ~ '^[a-f0-9]{64}$'),
+    intent_digest char(64) NOT NULL CHECK (intent_digest ~ '^[a-f0-9]{64}$'),
+    state text NOT NULL CHECK (state IN ('intent_recorded','create_started','create_uncertain','provisioning','active','destroying','verified_destroyed','failed')),
+    destroy_deadline timestamptz NOT NULL,
+    cleanup_requested_at timestamptz,
+    revision bigint NOT NULL CHECK (revision > 0),
+    record_json jsonb NOT NULL CHECK (jsonb_typeof(record_json) = 'object' AND pg_column_size(record_json) <= 262144),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE (account_id, account_generation, owner_id, execution_id),
+    CHECK (updated_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_aws_ledger_reap_idx
+    ON core_cloud_worker_aws_ledger (destroy_deadline, identity_key)
+    WHERE state <> 'verified_destroyed';
+
+CREATE TABLE core_cloud_worker_input_staging (
+    identity_key text PRIMARY KEY,
+    identity_digest char(64) NOT NULL CHECK (identity_digest ~ '^[a-f0-9]{64}$'),
+    owner_id text NOT NULL,
+    account_id char(12) NOT NULL,
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    region text NOT NULL,
+    provider_id text NOT NULL,
+    execution_id uuid NOT NULL,
+    plan_digest char(64) NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    input_id uuid NOT NULL,
+    state text NOT NULL CHECK (state IN ('intent_recorded','put_started','put_uncertain','version_bound','delete_started','delete_uncertain','verified_destroyed')),
+    version_id text NOT NULL DEFAULT '',
+    mutation_lease_until timestamptz,
+    mutation_attempts integer NOT NULL DEFAULT 0 CHECK (mutation_attempts BETWEEN 0 AND 1),
+    delete_attempts integer NOT NULL DEFAULT 0 CHECK (delete_attempts >= 0),
+    revision bigint NOT NULL CHECK (revision > 0),
+    record_json jsonb NOT NULL CHECK (jsonb_typeof(record_json) = 'object' AND pg_column_size(record_json) <= 131072),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    UNIQUE (account_id, account_generation, owner_id, execution_id, input_id)
+);
+CREATE INDEX core_cloud_worker_input_staging_cleanup_idx
+    ON core_cloud_worker_input_staging (owner_id, account_generation, execution_id, input_id)
+    WHERE state <> 'verified_destroyed';
+
+-- Every S3 version the Worker could have created is inventoried below the
+-- exact execution prefix. Accepted artifact versions enter retention; result,
+-- failure, cancel, delete-marker and response-unknown versions are deleted by
+-- exact VersionId and proven absent by a second complete inventory.
+CREATE TABLE core_cloud_worker_output_journals (
+    identity_key text PRIMARY KEY,
+    identity_digest char(64) NOT NULL CHECK (identity_digest ~ '^[a-f0-9]{64}$'),
+    execution_identity_digest char(64) NOT NULL CHECK (execution_identity_digest ~ '^[a-f0-9]{64}$'),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_id char(12) NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    region text NOT NULL CHECK (length(region) BETWEEN 1 AND 64),
+    credential_id uuid NOT NULL,
+    credential_revision bigint NOT NULL CHECK (credential_revision > 0),
+    provider_id text NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 2048),
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    plan_digest char(64) NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    task_id uuid NOT NULL REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    bucket text NOT NULL CHECK (length(bucket) BETWEEN 3 AND 63),
+    key_prefix text NOT NULL CHECK (length(key_prefix) BETWEEN 1 AND 1024),
+    kms_key_arn text NOT NULL CHECK (length(kms_key_arn) BETWEEN 1 AND 2048),
+    state text NOT NULL CHECK (state IN ('approved','cleaning','verified_clean')),
+    inventory_attempts integer NOT NULL DEFAULT 0 CHECK (inventory_attempts >= 0),
+    revision bigint NOT NULL CHECK (revision > 0),
+    record_json jsonb NOT NULL CHECK (jsonb_typeof(record_json) = 'object' AND pg_column_size(record_json) <= 131072),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    verified_clean_at timestamptz,
+    UNIQUE (execution_id, task_attempt, lease_epoch),
+    FOREIGN KEY (credential_id, credential_revision)
+        REFERENCES core_aws_credential_revisions(credential_id, revision) ON DELETE RESTRICT,
+    CHECK (updated_at >= created_at),
+    CHECK ((state = 'approved') = (inventory_attempts = 0)),
+    CHECK ((state = 'verified_clean') = (verified_clean_at IS NOT NULL)),
+    CHECK (verified_clean_at IS NULL OR verified_clean_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_output_journals_cleanup_idx
+    ON core_cloud_worker_output_journals (owner_id, account_generation, execution_id, task_attempt, lease_epoch)
+    WHERE state <> 'verified_clean';
+
+CREATE TABLE core_cloud_worker_output_versions (
+    identity_key text PRIMARY KEY,
+    identity_digest char(64) NOT NULL CHECK (identity_digest ~ '^[a-f0-9]{64}$'),
+    execution_identity_digest char(64) NOT NULL CHECK (execution_identity_digest ~ '^[a-f0-9]{64}$'),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_id char(12) NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    region text NOT NULL CHECK (length(region) BETWEEN 1 AND 64),
+    credential_id uuid NOT NULL,
+    credential_revision bigint NOT NULL CHECK (credential_revision > 0),
+    provider_id text NOT NULL CHECK (length(provider_id) BETWEEN 1 AND 2048),
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    plan_digest char(64) NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    task_id uuid NOT NULL REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    bucket text NOT NULL CHECK (length(bucket) BETWEEN 3 AND 63),
+    key_prefix text NOT NULL CHECK (length(key_prefix) BETWEEN 1 AND 1024),
+    kms_key_arn text NOT NULL CHECK (length(kms_key_arn) BETWEEN 1 AND 2048),
+    object_key text NOT NULL CHECK (length(object_key) BETWEEN 1 AND 1024),
+    version_id text NOT NULL CHECK (length(version_id) BETWEEN 1 AND 1024),
+    delete_marker boolean NOT NULL,
+    size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
+    state text NOT NULL CHECK (state IN ('discovered','delete_started','delete_uncertain','verified_deleted','retained')),
+    delete_attempts integer NOT NULL DEFAULT 0 CHECK (delete_attempts >= 0),
+    revision bigint NOT NULL CHECK (revision > 0),
+    record_json jsonb NOT NULL CHECK (jsonb_typeof(record_json) = 'object' AND pg_column_size(record_json) <= 131072),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    verified_deleted_at timestamptz,
+    UNIQUE (bucket, object_key, version_id),
+    FOREIGN KEY (credential_id, credential_revision)
+        REFERENCES core_aws_credential_revisions(credential_id, revision) ON DELETE RESTRICT,
+    CHECK (updated_at >= created_at),
+    CHECK (NOT delete_marker OR size_bytes = 0),
+    CHECK (state NOT IN ('discovered','retained') OR delete_attempts = 0),
+    CHECK ((state = 'verified_deleted') = (verified_deleted_at IS NOT NULL)),
+    CHECK (verified_deleted_at IS NULL OR verified_deleted_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_output_versions_cleanup_idx
+    ON core_cloud_worker_output_versions (owner_id, account_generation, execution_id, state, object_key, version_id)
+    WHERE state NOT IN ('verified_deleted','retained');
+
+CREATE TABLE core_cloud_worker_launch_expectations (
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    task_id uuid NOT NULL REFERENCES core_tasks(task_id) ON DELETE RESTRICT,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    account_id text NOT NULL CHECK (account_id ~ '^[0-9]{12}$'),
+    region text NOT NULL CHECK (length(region) BETWEEN 1 AND 64),
+    instance_id text NOT NULL CHECK (instance_id ~ '^i-[0-9a-f]{8,32}$'),
+    launch_identity text NOT NULL CHECK (length(launch_identity) BETWEEN 1 AND 256),
+    role_arn text NOT NULL CHECK (length(role_arn) BETWEEN 1 AND 2048),
+    role_id text NOT NULL CHECK (role_id ~ '^[A-Za-z0-9_]{16,128}$'),
+    instance_profile_id text NOT NULL CHECK (instance_profile_id ~ '^[A-Za-z0-9_]{16,128}$'),
+    required_tags_json jsonb NOT NULL CHECK (jsonb_typeof(required_tags_json) = 'object' AND pg_column_size(required_tags_json) <= 32768),
+    runtime_task_sha256 text NOT NULL CHECK (runtime_task_sha256 ~ '^[a-f0-9]{64}$'),
+    input_manifest_sha256 text NOT NULL CHECK (input_manifest_sha256 ~ '^[a-f0-9]{64}$'),
+    artifact_bucket text NOT NULL CHECK (length(artifact_bucket) BETWEEN 3 AND 63),
+    artifact_prefix text NOT NULL CHECK (length(artifact_prefix) BETWEEN 1 AND 1024),
+    maximum_artifact_bytes bigint NOT NULL CHECK (maximum_artifact_bytes BETWEEN 1 AND 8388608),
+    created_at timestamptz NOT NULL,
+    current boolean NOT NULL DEFAULT true,
+    superseded_at timestamptz,
+    PRIMARY KEY (execution_id, task_attempt, lease_epoch),
+    UNIQUE (task_id, task_attempt, lease_epoch),
+    CHECK (current = (superseded_at IS NULL))
+);
+CREATE UNIQUE INDEX core_cloud_worker_launch_expectations_current_idx
+    ON core_cloud_worker_launch_expectations (execution_id) WHERE current;
+
+CREATE TABLE core_cloud_worker_identity_challenges (
+    challenge_id uuid PRIMARY KEY,
+    nonce_digest bytea NOT NULL CHECK (octet_length(nonce_digest) = 32),
+    execution_id uuid NOT NULL,
+    task_id uuid NOT NULL,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    expectation_json jsonb NOT NULL CHECK (jsonb_typeof(expectation_json) = 'object' AND pg_column_size(expectation_json) <= 65536),
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz,
+    created_at timestamptz NOT NULL,
+    FOREIGN KEY (task_id, task_attempt, lease_epoch)
+        REFERENCES core_cloud_worker_launch_expectations(task_id, task_attempt, lease_epoch) ON DELETE RESTRICT,
+    CHECK (expires_at > created_at),
+    CHECK (consumed_at IS NULL OR consumed_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_identity_challenges_fence_idx
+    ON core_cloud_worker_identity_challenges (task_id, task_attempt, lease_epoch, created_at DESC);
+
+CREATE TABLE core_cloud_worker_challenge_replays (
+    idempotency_key uuid PRIMARY KEY,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    challenge_id uuid NOT NULL REFERENCES core_cloud_worker_identity_challenges(challenge_id) ON DELETE RESTRICT,
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE TABLE core_cloud_worker_session_fences (
+    execution_id uuid NOT NULL,
+    task_id uuid NOT NULL,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    fenced_at timestamptz NOT NULL,
+    reason text NOT NULL CHECK (length(reason) BETWEEN 1 AND 512),
+    PRIMARY KEY (execution_id, task_id, task_attempt, lease_epoch),
+    FOREIGN KEY (task_id, task_attempt, lease_epoch)
+        REFERENCES core_cloud_worker_launch_expectations(task_id, task_attempt, lease_epoch) ON DELETE RESTRICT
+);
+
+CREATE TABLE core_cloud_worker_sessions (
+    session_id uuid PRIMARY KEY,
+    challenge_id uuid NOT NULL UNIQUE REFERENCES core_cloud_worker_identity_challenges(challenge_id) ON DELETE RESTRICT,
+    execution_id uuid NOT NULL,
+    task_id uuid NOT NULL,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    token_digest bytea NOT NULL CHECK (octet_length(token_digest) = 32),
+    expectation_json jsonb NOT NULL CHECK (jsonb_typeof(expectation_json) = 'object' AND pg_column_size(expectation_json) <= 65536),
+    identity_json jsonb NOT NULL CHECK (jsonb_typeof(identity_json) = 'object' AND pg_column_size(identity_json) <= 65536),
+    state text NOT NULL CHECK (state IN ('active','completed','failed')),
+    progress_sequence bigint NOT NULL DEFAULT 0 CHECK (progress_sequence >= 0),
+    result_claim_json jsonb CHECK (result_claim_json IS NULL OR (jsonb_typeof(result_claim_json) = 'object' AND pg_column_size(result_claim_json) <= 65536)),
+    runtime_topology_json jsonb CHECK (runtime_topology_json IS NULL OR (jsonb_typeof(runtime_topology_json) = 'object' AND pg_column_size(runtime_topology_json) <= 65536)),
+    runtime_topology_digest char(64) CHECK (runtime_topology_digest IS NULL OR runtime_topology_digest ~ '^[a-f0-9]{64}$'),
+    failure_code text NOT NULL DEFAULT '' CHECK (length(failure_code) <= 64),
+    failure_summary text NOT NULL DEFAULT '' CHECK (length(failure_summary) <= 512),
+    revision bigint NOT NULL CHECK (revision > 0),
+    claimed_at timestamptz NOT NULL,
+    heartbeat_at timestamptz NOT NULL,
+    finished_at timestamptz,
+    FOREIGN KEY (task_id, task_attempt, lease_epoch)
+        REFERENCES core_cloud_worker_launch_expectations(task_id, task_attempt, lease_epoch) ON DELETE RESTRICT,
+    CHECK ((state = 'active') = (finished_at IS NULL)),
+    CHECK ((state = 'completed') = (result_claim_json IS NOT NULL)),
+    CHECK ((state = 'completed') = (runtime_topology_json IS NOT NULL AND runtime_topology_digest IS NOT NULL)),
+    CHECK ((state = 'failed') = (failure_code <> ''))
+);
+CREATE UNIQUE INDEX core_cloud_worker_sessions_one_active_idx
+    ON core_cloud_worker_sessions (execution_id, task_id, task_attempt, lease_epoch)
+    WHERE state = 'active';
+CREATE INDEX core_cloud_worker_sessions_fence_idx
+    ON core_cloud_worker_sessions (execution_id, task_id, task_attempt, lease_epoch, claimed_at DESC);
+
+CREATE TABLE core_cloud_worker_model_budgets (
+    execution_id uuid PRIMARY KEY REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    plan_id uuid NOT NULL REFERENCES core_cloud_worker_plans(plan_id) ON DELETE RESTRICT,
+    plan_revision bigint NOT NULL CHECK (plan_revision > 0),
+    plan_digest char(64) NOT NULL CHECK (plan_digest ~ '^[a-f0-9]{64}$'),
+    limit_digest char(64) NOT NULL CHECK (limit_digest ~ '^[a-f0-9]{64}$'),
+    max_tokens bigint NOT NULL CHECK (max_tokens BETWEEN 1 AND 10000000),
+    reserved_tokens bigint NOT NULL DEFAULT 0 CHECK (reserved_tokens >= 0),
+    settled_tokens bigint NOT NULL DEFAULT 0 CHECK (settled_tokens >= 0),
+    revision bigint NOT NULL CHECK (revision > 0),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK (reserved_tokens + settled_tokens <= max_tokens),
+    CHECK (updated_at >= created_at)
+);
+
+CREATE TABLE core_cloud_worker_model_grants (
+    grant_id uuid PRIMARY KEY,
+    owner_id text NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 512),
+    account_generation bigint NOT NULL CHECK (account_generation > 0),
+    execution_id uuid NOT NULL REFERENCES core_cloud_worker_executions(execution_id) ON DELETE RESTRICT,
+    task_id uuid NOT NULL,
+    task_attempt integer NOT NULL CHECK (task_attempt > 0),
+    lease_epoch bigint NOT NULL CHECK (lease_epoch > 0),
+    session_id uuid NOT NULL REFERENCES core_cloud_worker_sessions(session_id) ON DELETE RESTRICT,
+    token_digest bytea NOT NULL UNIQUE CHECK (octet_length(token_digest) = 32),
+    model_profile_id uuid NOT NULL REFERENCES core_model_profiles(profile_id) ON DELETE RESTRICT,
+    model_profile_revision bigint NOT NULL CHECK (model_profile_revision > 0),
+    credential_version bigint NOT NULL CHECK (credential_version > 0),
+    provider text NOT NULL CHECK (provider IN ('openai','openai_compatible')),
+    model_interface text NOT NULL CHECK (model_interface IN ('openai_responses','openai_compatible')),
+    model_name text NOT NULL CHECK (length(model_name) BETWEEN 1 AND 256),
+    credential_binding_digest char(64) NOT NULL CHECK (credential_binding_digest ~ '^[a-f0-9]{64}$'),
+    model_binding_digest char(64) NOT NULL CHECK (model_binding_digest ~ '^[a-f0-9]{64}$'),
+    audience_digest char(64) NOT NULL CHECK (audience_digest ~ '^[a-f0-9]{64}$'),
+    limit_digest char(64) NOT NULL CHECK (limit_digest ~ '^[a-f0-9]{64}$'),
+    relay_binding_digest char(64) NOT NULL CHECK (relay_binding_digest ~ '^[a-f0-9]{64}$'),
+    relay_url text NOT NULL CHECK (length(relay_url) BETWEEN 1 AND 2048),
+    max_tokens bigint NOT NULL CHECK (max_tokens BETWEEN 1 AND 10000000),
+    reserved_tokens bigint NOT NULL DEFAULT 0 CHECK (reserved_tokens >= 0),
+    settled_tokens bigint NOT NULL DEFAULT 0 CHECK (settled_tokens >= 0),
+    state text NOT NULL CHECK (state IN ('active','fenced','terminal')),
+    reason_code text NOT NULL DEFAULT '' CHECK (length(reason_code) <= 64),
+    expires_at timestamptz NOT NULL,
+    activated_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    fenced_at timestamptz,
+    terminal_at timestamptz,
+    revision bigint NOT NULL CHECK (revision > 0),
+    FOREIGN KEY (task_id, task_attempt, lease_epoch)
+        REFERENCES core_cloud_worker_launch_expectations(task_id, task_attempt, lease_epoch) ON DELETE RESTRICT,
+    CHECK (reserved_tokens + settled_tokens <= max_tokens),
+    CHECK (expires_at > activated_at),
+    CHECK ((state = 'active') = (reason_code = '' AND fenced_at IS NULL AND terminal_at IS NULL)),
+    CHECK ((state = 'fenced') = (fenced_at IS NOT NULL AND terminal_at IS NULL)),
+    CHECK ((state = 'terminal') = (terminal_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX core_cloud_worker_model_grants_one_active_idx
+    ON core_cloud_worker_model_grants (execution_id) WHERE state = 'active';
+
+CREATE TABLE core_cloud_worker_model_invocations (
+    invocation_id uuid PRIMARY KEY,
+    grant_id uuid NOT NULL REFERENCES core_cloud_worker_model_grants(grant_id) ON DELETE RESTRICT,
+    path text NOT NULL CHECK (path IN ('/v1/responses','/v1/chat/completions')),
+    request_digest char(64) NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    reserved_tokens bigint NOT NULL CHECK (reserved_tokens BETWEEN 1 AND 10000000),
+    actual_tokens bigint CHECK (actual_tokens IS NULL OR (actual_tokens >= 0 AND actual_tokens <= reserved_tokens)),
+    state text NOT NULL CHECK (state IN ('reserved','settled','refunded')),
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL,
+    CHECK ((state = 'settled') = (actual_tokens IS NOT NULL)),
+    CHECK (state = 'settled' OR actual_tokens IS NULL),
+    CHECK (updated_at >= created_at)
+);
+CREATE INDEX core_cloud_worker_model_invocations_grant_idx
+    ON core_cloud_worker_model_invocations (grant_id, state, created_at);
+
+CREATE TABLE core_cloud_worker_session_replays (
+    operation text NOT NULL CHECK (operation IN ('heartbeat','complete','fail')),
+    session_id uuid NOT NULL REFERENCES core_cloud_worker_sessions(session_id) ON DELETE RESTRICT,
+    idempotency_key uuid NOT NULL,
+    request_digest text NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    response_json jsonb NOT NULL CHECK (jsonb_typeof(response_json) = 'object' AND pg_column_size(response_json) <= 65536),
+    created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (operation, session_id, idempotency_key)
+);
+-- dirextalk-agent migration end 000005_cloud_worker_v1.up.sql
