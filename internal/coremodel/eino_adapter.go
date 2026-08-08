@@ -2,6 +2,7 @@ package coremodel
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,7 +115,15 @@ func (m *einoModel) WithTools(infos []*schema.ToolInfo) (einoComponentsModel.Too
 }
 
 func (m *einoModel) Generate(ctx context.Context, input []*schema.Message, _ ...einoComponentsModel.Option) (*schema.Message, error) {
-	completion, err := m.delegate.Generate(ctx, CompletionRequest{Messages: fromEinoMessages(input), Tools: append([]Tool(nil), m.tools...)})
+	messages, err := fromEinoMessages(input)
+	if err != nil {
+		return nil, err
+	}
+	request := CompletionRequest{Messages: messages, Tools: append([]Tool(nil), m.tools...)}
+	if err := ValidateCompletionRequest(request); err != nil {
+		return nil, err
+	}
+	completion, err := m.delegate.Generate(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +132,17 @@ func (m *einoModel) Generate(ctx context.Context, input []*schema.Message, _ ...
 
 func (m *einoModel) Stream(ctx context.Context, input []*schema.Message, _ ...einoComponentsModel.Option) (*schema.StreamReader[*schema.Message], error) {
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream, err := m.delegate.Stream(streamCtx, CompletionRequest{Messages: fromEinoMessages(input), Tools: append([]Tool(nil), m.tools...)})
+	messages, err := fromEinoMessages(input)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	request := CompletionRequest{Messages: messages, Tools: append([]Tool(nil), m.tools...)}
+	if err := ValidateCompletionRequest(request); err != nil {
+		cancel()
+		return nil, err
+	}
+	stream, err := m.delegate.Stream(streamCtx, request)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -208,6 +227,19 @@ func toEinoMessages(messages []Message) []*schema.Message {
 
 func toEinoMessage(message Message) *schema.Message {
 	result := &schema.Message{Role: toEinoRole(message.Role), Content: message.Content, Name: message.Name, ToolCallID: message.ToolCallID, ToolName: message.Name, ReasoningContent: message.ReasoningContent}
+	if len(message.InputParts) > 0 {
+		result.Content = ""
+		result.UserInputMultiContent = make([]schema.MessageInputPart, 0, len(message.InputParts))
+		for _, part := range message.InputParts {
+			switch part.Type {
+			case MessageInputPartText:
+				result.UserInputMultiContent = append(result.UserInputMultiContent, schema.MessageInputPart{Type: schema.ChatMessagePartTypeText, Text: part.Text})
+			case MessageInputPartImage:
+				encoded := base64.StdEncoding.EncodeToString(part.Image.data)
+				result.UserInputMultiContent = append(result.UserInputMultiContent, schema.MessageInputPart{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &encoded, MIMEType: part.Image.MIMEType}}})
+			}
+		}
+	}
 	if len(message.ToolCalls) > 0 {
 		result.ToolCalls = make([]schema.ToolCall, 0, len(message.ToolCalls))
 		for _, call := range message.ToolCalls {
@@ -218,14 +250,52 @@ func toEinoMessage(message Message) *schema.Message {
 	return result
 }
 
-func fromEinoMessages(messages []*schema.Message) []Message {
+func fromEinoMessages(messages []*schema.Message) ([]Message, error) {
 	result := make([]Message, 0, len(messages))
 	for _, message := range messages {
 		if message != nil {
-			result = append(result, fromEinoMessage(message))
+			converted, err := fromEinoInputMessage(message)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, converted)
 		}
 	}
-	return result
+	return result, nil
+}
+
+func fromEinoInputMessage(message *schema.Message) (Message, error) {
+	result := fromEinoMessage(message)
+	if len(message.UserInputMultiContent) == 0 {
+		return result, nil
+	}
+	if message.Role != schema.User || message.Content != "" || len(message.MultiContent) > 0 {
+		return Message{}, ErrInvalidCompletionRequest
+	}
+	result.Content = ""
+	result.InputParts = make([]MessageInputPart, 0, len(message.UserInputMultiContent))
+	for _, part := range message.UserInputMultiContent {
+		switch part.Type {
+		case schema.ChatMessagePartTypeText:
+			if part.Image != nil || part.Audio != nil || part.Video != nil || part.File != nil {
+				return Message{}, ErrInvalidCompletionRequest
+			}
+			result.InputParts = append(result.InputParts, MessageInputPart{Type: MessageInputPartText, Text: part.Text})
+		case schema.ChatMessagePartTypeImageURL:
+			if part.Image == nil || part.Image.URL != nil || part.Image.Base64Data == nil || part.Text != "" {
+				return Message{}, ErrInvalidCompletionRequest
+			}
+			decoded, err := base64.StdEncoding.Strict().DecodeString(*part.Image.Base64Data)
+			if err != nil {
+				return Message{}, ErrInvalidCompletionRequest
+			}
+			result.InputParts = append(result.InputParts, MessageInputPart{Type: MessageInputPartImage, Image: NewImageInput(part.Image.MIMEType, decoded)})
+			clear(decoded)
+		default:
+			return Message{}, ErrInvalidCompletionRequest
+		}
+	}
+	return result, nil
 }
 
 func fromEinoMessage(message *schema.Message) Message {

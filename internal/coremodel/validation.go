@@ -28,6 +28,7 @@ var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 const (
 	IntrinsicCloudWorkerProposeToolName = "cloud_worker.propose"
 	IntrinsicScheduleCreateToolName     = "agent.schedule.create"
+	maxImageInputBytes                  = 8 << 20
 )
 
 func IsIntrinsicToolName(value string) bool {
@@ -81,6 +82,9 @@ func ValidateCompletionRequest(r CompletionRequest) error {
 		if !validText(m.Content, 1<<20, false, true) || !validText(m.Name, 128, false, false) || !validText(m.ToolCallID, 256, false, false) {
 			return ErrInvalidCompletionRequest
 		}
+		if err := validateMessageInputParts(m); err != nil {
+			return err
+		}
 		if m.Role == RoleTool && m.ToolCallID == "" {
 			return ErrInvalidCompletionRequest
 		}
@@ -112,6 +116,49 @@ func ValidateCompletionRequest(r CompletionRequest) error {
 	return nil
 }
 
+func validateMessageInputParts(m Message) error {
+	if len(m.InputParts) == 0 {
+		return nil
+	}
+	if m.Role != RoleUser || m.Content != "" || len(m.InputParts) > 32 {
+		return ErrInvalidCompletionRequest
+	}
+	textPrompt := false
+	imageBytes := 0
+	for _, part := range m.InputParts {
+		switch part.Type {
+		case MessageInputPartText:
+			if part.Image != nil || !validText(part.Text, 1<<20, true, true) {
+				return ErrInvalidCompletionRequest
+			}
+			textPrompt = true
+		case MessageInputPartImage:
+			if part.Text != "" || part.Image == nil || !validImageMIMEType(part.Image.MIMEType) || len(part.Image.data) == 0 || len(part.Image.data) > maxImageInputBytes {
+				return ErrInvalidCompletionRequest
+			}
+			imageBytes += len(part.Image.data)
+			if imageBytes > maxImageInputBytes {
+				return ErrCompletionRequestTooLarge
+			}
+		default:
+			return ErrInvalidCompletionRequest
+		}
+	}
+	if !textPrompt {
+		return ErrInvalidCompletionRequest
+	}
+	return nil
+}
+
+func validImageMIMEType(value string) bool {
+	switch value {
+	case "image/jpeg", "image/png", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
 func estimateCompletionBytes(r CompletionRequest) int {
 	total := 0
 	add := func(n int) {
@@ -121,6 +168,9 @@ func estimateCompletionBytes(r CompletionRequest) int {
 	}
 	for _, m := range r.Messages {
 		add(64 + len(m.Content) + len(m.Name) + len(m.ToolCallID))
+		for _, part := range m.InputParts {
+			add(32 + len(part.Text))
+		}
 		for _, c := range m.ToolCalls {
 			add(128 + len(c.ID) + len(c.Type) + len(c.Function.Name) + len(c.Function.Arguments))
 		}
@@ -179,6 +229,9 @@ func validateRequestBudget(p Profile, r CompletionRequest) error {
 	total := len(p.SystemPrompt) + len(p.Model)
 	for _, m := range r.Messages {
 		total += len(m.Content) + len(m.Name) + len(m.ToolCallID)
+		for _, part := range m.InputParts {
+			total += len(part.Text)
+		}
 		for _, call := range m.ToolCalls {
 			total += len(call.ID) + len(call.Type) + len(call.Function.Name) + len(call.Function.Arguments)
 		}

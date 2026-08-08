@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,11 @@ import (
 
 const maxResponseBytes = 4 << 20
 const maxRequestBytes = 2 << 20
+
+// Eight raw image MiB expands to roughly 10.7 MiB in base64. The separate
+// encoded ceiling also leaves room for the existing 2 MiB text budget after
+// JSON escaping without increasing that text budget.
+const maxMultimodalEncodedRequestBytes = 16 << 20
 
 var (
 	ErrProviderUnavailable = errors.New("model provider is unavailable")
@@ -236,6 +242,11 @@ func (c *providerClient) Stream(ctx context.Context, request CompletionRequest) 
 	if err != nil {
 		return nil, err
 	}
+	defer clear(reqBody)
+	if len(reqBody) > maxMultimodalEncodedRequestBytes {
+		cancel()
+		return nil, ErrCompletionRequestTooLarge
+	}
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodPost, c.endpoint(true), bytes.NewReader(reqBody))
 	if err != nil {
 		cancel()
@@ -267,6 +278,10 @@ func (c *providerClient) do(ctx context.Context, payload any, stream bool) ([]by
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return nil, 0, nil, err
+	}
+	defer clear(b)
+	if len(b) > maxMultimodalEncodedRequestBytes {
+		return nil, 0, nil, ErrCompletionRequestTooLarge
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(stream), bytes.NewReader(b))
 	if err != nil {
@@ -329,7 +344,11 @@ func openAIPayload(p Profile, r CompletionRequest, stream bool) map[string]any {
 func openAIMessages(messages []Message) []any {
 	out := make([]any, 0, len(messages))
 	for _, msg := range messages {
-		entry := map[string]any{"role": string(msg.Role), "content": msg.Content}
+		content := any(msg.Content)
+		if len(msg.InputParts) > 0 {
+			content = openAIInputParts(msg.InputParts)
+		}
+		entry := map[string]any{"role": string(msg.Role), "content": content}
 		if msg.Name != "" {
 			entry["name"] = msg.Name
 		}
@@ -348,6 +367,21 @@ func openAIMessages(messages []Message) []any {
 			entry["tool_calls"] = calls
 		}
 		out = append(out, entry)
+	}
+	return out
+}
+
+func openAIInputParts(parts []MessageInputPart) []any {
+	out := make([]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case MessageInputPartText:
+			out = append(out, map[string]any{"type": "text", "text": part.Text})
+		case MessageInputPartImage:
+			encoded := base64.StdEncoding.EncodeToString(part.Image.data)
+			out = append(out, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:" + part.Image.MIMEType + ";base64," + encoded}})
+			encoded = ""
+		}
 	}
 	return out
 }
@@ -391,7 +425,11 @@ func anthropicPayload(p Profile, r CompletionRequest, stream bool) map[string]an
 			}
 			messages = append(messages, map[string]any{"role": "assistant", "content": blocks})
 		default:
-			messages = append(messages, map[string]any{"role": string(m.Role), "content": m.Content})
+			content := any(m.Content)
+			if len(m.InputParts) > 0 {
+				content = anthropicInputParts(m.InputParts)
+			}
+			messages = append(messages, map[string]any{"role": string(m.Role), "content": content})
 		}
 	}
 	m := map[string]any{"model": p.Model, "messages": messages, "max_tokens": p.MaxOutputTokens, "stream": stream}
@@ -417,6 +455,21 @@ func anthropicPayload(p Profile, r CompletionRequest, stream bool) map[string]an
 	return m
 }
 
+func anthropicInputParts(parts []MessageInputPart) []any {
+	out := make([]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case MessageInputPartText:
+			out = append(out, map[string]any{"type": "text", "text": part.Text})
+		case MessageInputPartImage:
+			encoded := base64.StdEncoding.EncodeToString(part.Image.data)
+			out = append(out, map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": part.Image.MIMEType, "data": encoded}})
+			encoded = ""
+		}
+	}
+	return out
+}
+
 func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 	contents := make([]any, 0, len(r.Messages))
 	systemParts := make([]any, 0, 1)
@@ -433,7 +486,9 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 			role = "model"
 		}
 		parts := make([]any, 0, len(m.ToolCalls)+1)
-		if m.Content != "" {
+		if len(m.InputParts) > 0 {
+			parts = append(parts, geminiInputParts(m.InputParts)...)
+		} else if m.Content != "" {
 			parts = append(parts, map[string]any{"text": m.Content})
 		}
 		if m.Role == RoleTool {
@@ -482,6 +537,21 @@ func geminiPayload(p Profile, r CompletionRequest) map[string]any {
 		m["tools"] = []any{map[string]any{"functionDeclarations": fds}}
 	}
 	return m
+}
+
+func geminiInputParts(input []MessageInputPart) []any {
+	parts := make([]any, 0, len(input))
+	for _, part := range input {
+		switch part.Type {
+		case MessageInputPartText:
+			parts = append(parts, map[string]any{"text": part.Text})
+		case MessageInputPartImage:
+			encoded := base64.StdEncoding.EncodeToString(part.Image.data)
+			parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": part.Image.MIMEType, "data": encoded}})
+			encoded = ""
+		}
+	}
+	return parts
 }
 
 func decodeCompletion(provider ModelProvider, body []byte, _ http.Header) (Completion, error) {

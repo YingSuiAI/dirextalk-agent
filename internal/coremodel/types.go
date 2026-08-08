@@ -319,11 +319,66 @@ const (
 type Message struct {
 	Role             Role
 	Content          string
+	InputParts       []MessageInputPart
 	ReasoningContent string
 	Name             string
 	ToolCallID       string
 	ToolCalls        []ToolCall
 }
+
+type MessageInputPartType string
+
+const (
+	MessageInputPartText  MessageInputPartType = "text"
+	MessageInputPartImage MessageInputPartType = "image"
+)
+
+// MessageInputPart is a provider-neutral, in-memory user input. Images have no
+// URL or path representation by design: callers must supply already-authorized
+// bytes through NewImageInput.
+type MessageInputPart struct {
+	Type  MessageInputPartType `json:"type"`
+	Text  string               `json:"text,omitempty"`
+	Image *ImageInput          `json:"image,omitempty"`
+}
+
+// ImageInput deliberately keeps bytes private so ordinary JSON, String, and
+// structured logging cannot serialize image contents.
+type ImageInput struct {
+	MIMEType string `json:"mime_type"`
+	data     []byte
+}
+
+func NewImageInput(mimeType string, data []byte) *ImageInput {
+	return &ImageInput{MIMEType: mimeType, data: append([]byte(nil), data...)}
+}
+
+func (i *ImageInput) Bytes() []byte {
+	if i == nil {
+		return nil
+	}
+	return append([]byte(nil), i.data...)
+}
+
+// Destroy clears the in-memory image copy once the caller has finished the
+// provider request. It is safe to call repeatedly or on a nil receiver.
+func (i *ImageInput) Destroy() {
+	if i == nil {
+		return
+	}
+	clear(i.data)
+	i.data = nil
+	i.MIMEType = ""
+}
+
+func (i *ImageInput) String() string {
+	if i == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("ImageInput{MIMEType:%q,Bytes:<redacted:%d>}", i.MIMEType, len(i.data))
+}
+
+func (i *ImageInput) GoString() string { return i.String() }
 
 type ToolCall struct {
 	Index    int
